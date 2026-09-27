@@ -63,13 +63,16 @@ describe('DXF round trip', () => {
     const ins = state.entities.find((e) => e.type === 'insert');
     if (ins?.type === 'insert') {
       expect(ins.block).toBe('HPB11_NO');
-      expect(ins.attributes).toEqual({ TAG1: 'PB101', DESC1: 'START' });
+      // the ACADE data / pin attributes come back too (with their defaults)
+      expect(ins.attributes).toMatchObject({ TAG1: 'PB101', DESC1: 'START' });
+      expect(ins.attributes.X1TERM01).toBeDefined();
     }
     // Block definitions survive with their attribute definitions
     const blk = state.blocks.HPB11_NO!;
     expect(blk).toBeDefined();
     expect(blk.entities.length).toBe(findSymbol('HPB11_NO')!.entities.length);
-    expect(blk.attributes.map((a) => a.tag)).toEqual(['TAG1', 'DESC1']);
+    expect(blk.attributes.map((a) => a.tag).slice(0, 2)).toEqual(['TAG1', 'DESC1']);
+    expect(blk.attributes.map((a) => a.tag)).toContain('X1TERM01');
     // Layers round trip
     expect(state.layers.find((l) => l.name === 'WIRES')?.color).toBe(1);
     expect(state.currentLayer).toBe('0');

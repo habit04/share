@@ -1,15 +1,24 @@
 import type { Point } from '../core/geometry';
-import * as g from '../core/geometry';
 import type { Entity, LineEntity, InsertEntity, TextEntity } from '../core/entities';
-import { newId } from '../core/entities';
+import { newId, insertTransform } from '../core/entities';
 import type { Drawing } from '../core/document';
 import { LineTool } from './draw';
 import type { Tool, ToolContext, LadderSettings } from './types';
 import { findSymbol, tagPrefix, ALL_SYMBOLS, WIRE_DOT } from '../electrical/symbols';
 import { IEC_SYMBOLS } from '../electrical/iec';
+import { isWire, isHorizontal, wireTeeAt, findWireAt, breakWire, nearestReference, wireDot, hasDotAt } from '../electrical/ladder';
+import { assignWireNumbers as assignWireNumbersImpl, breakForInsert, type WireNumberOptions } from '../electrical/wires';
+import { readWdSettings, type WdSettings } from '../electrical/wdm';
+import { nextTag, usedTags, usedTagsOfFamily } from '../electrical/tags';
+import { pinAttributes, DATA_ATTRIBUTES } from '../electrical/attributes';
+import { isChildBlock } from '../electrical/families';
+import { parentCandidates, childAttributes } from '../electrical/xref';
+import type { ElectricalUi, ComponentDialogInit } from '../electrical/ui';
 
-const lookupSymbol = (name: string) => findSymbol(name) ?? IEC_SYMBOLS.find((s) => s.name === name);
-import { entityBounds } from '../core/entities';
+// Pure helpers moved to src/electrical/ladder.ts; re-exported for existing callers and tests.
+export { isWire, isHorizontal, wireTeeAt, findWireAt, breakWire, nearestReference, wireDot };
+
+export const lookupSymbol = (name: string) => findSymbol(name) ?? IEC_SYMBOLS.find((s) => s.name === name);
 
 const fmt = (p: Point) => `${p.x.toFixed(4)}, ${p.y.toFixed(4)}`;
 
@@ -22,33 +31,6 @@ export const DEFAULT_LADDER: LadderSettings = {
   threePhase: false,
   drawRungs: false,
 };
-
-/** Wires are lines on the WIRES layer. */
-export function isWire(e: Entity): e is LineEntity {
-  return e.type === 'line' && e.layer.startsWith('WIRES');
-}
-
-export function isHorizontal(l: LineEntity): boolean {
-  return Math.abs(l.a.y - l.b.y) < 1e-6;
-}
-
-/** True when p lies on the interior of an existing wire segment (a tee). */
-export function wireTeeAt(doc: Drawing, p: Point, tol = 1e-6): LineEntity | null {
-  for (const e of doc.entities) {
-    if (!isWire(e)) continue;
-    if (g.dist(p, e.a) < tol || g.dist(p, e.b) < tol) continue;
-    if (g.distToSegment(p, e.a, e.b) < tol) return e;
-  }
-  return null;
-}
-
-export function wireDot(p: Point): InsertEntity {
-  return { id: newId(), layer: 'WIRES', color: 'ByLayer', type: 'insert', block: WIRE_DOT.name, position: p, rotation: 0, scale: 1, attributes: {} };
-}
-
-function hasDotAt(doc: Drawing, p: Point): boolean {
-  return doc.entities.some((e) => e.type === 'insert' && e.block === WIRE_DOT.name && g.dist(e.position, p) < 1e-6);
-}
 
 /** AEWIRE: like LINE, but always on WIRES layer and ortho-constrained; adds junction dots at tees. */
 export class WireTool extends LineTool {
@@ -64,9 +46,6 @@ export class WireTool extends LineTool {
   }
   protected override makeSegment(ctx: ToolContext, a: Point, b: Point): Entity {
     return super.makeSegment(ctx, a, b);
-  }
-  private dotIfTee(ctx: ToolContext, p: Point): void {
-    if (wireTeeAt(ctx.doc, p, ctx.aperture() * 0.5) && !hasDotAt(ctx.doc, p)) ctx.doc.addEntities([wireDot(p)]);
   }
   override onPoint(p: Point, ctx: ToolContext): void {
     // Wires must be orthogonal: force the second point onto the axis with the larger delta.
@@ -172,51 +151,7 @@ export class LadderTool implements Tool {
   }
 }
 
-/**
- * Find the horizontal wire nearest to the point (within tolerance) so a
- * component can be inserted in-line and the wire broken around it.
- */
-export function findWireAt(doc: Drawing, p: Point, tol: number): LineEntity | null {
-  let best: LineEntity | null = null;
-  let bestD = tol;
-  for (const e of doc.entities) {
-    if (!isWire(e) || !isHorizontal(e)) continue;
-    const d = g.distToSegment(p, e.a, e.b);
-    if (d <= bestD) {
-      bestD = d;
-      best = e;
-    }
-  }
-  return best;
-}
-
-/** Break a horizontal wire around [x0, x1]. Returns the replacement pieces (0-2 lines). */
-export function breakWire(wire: LineEntity, x0: number, x1: number): LineEntity[] {
-  const left = Math.min(wire.a.x, wire.b.x);
-  const right = Math.max(wire.a.x, wire.b.x);
-  const y = wire.a.y;
-  const out: LineEntity[] = [];
-  if (x0 - left > 1e-6) out.push({ ...wire, id: newId(), a: { x: left, y }, b: { x: x0, y } });
-  if (right - x1 > 1e-6) out.push({ ...wire, id: newId(), a: { x: x1, y }, b: { x: right, y } });
-  return out;
-}
-
-/** Nearest ladder rung reference number for a y position (based on MISC-layer numeric texts). */
-export function nearestReference(doc: Drawing, p: Point): string | null {
-  let best: string | null = null;
-  let bestD = Infinity;
-  for (const e of doc.entities) {
-    if (e.type !== 'text' || e.layer !== 'MISC' || !/^\d+$/.test(e.text)) continue;
-    const d = Math.abs(e.position.y - p.y);
-    if (d < bestD) {
-      bestD = d;
-      best = e.text;
-    }
-  }
-  return bestD < 0.6 ? best : null;
-}
-
-/** Next free tag for a prefix, e.g. PB101 -> PB102 if in use. */
+/** Next free tag for a prefix using the plain "%F%N" rule (kept for callers that predate WD_M settings). */
 export function uniqueTag(doc: Drawing, prefix: string, ref: string | null): string {
   const used = new Set<string>();
   for (const e of doc.entities) if (e.type === 'insert' && e.attributes.TAG1) used.add(e.attributes.TAG1);
@@ -230,13 +165,58 @@ export function uniqueTag(doc: Drawing, prefix: string, ref: string | null): str
   }
 }
 
+/** Build the Insert/Edit Component dialog state for a block placed at a point (or an existing insert). */
+export function componentDialogInit(doc: Drawing, block: string, at: Point, existing?: InsertEntity, settings: WdSettings = readWdSettings(doc)): ComponentDialogInit {
+  const def = doc.lookupBlock(block) ?? lookupSymbol(block);
+  const family = tagPrefix(block);
+  const attrs: Record<string, string> = {};
+  if (def) for (const a of def.attributes) attrs[a.tag] = existing?.attributes[a.tag] ?? (existing ? '' : a.default);
+  if (existing) for (const [k, v] of Object.entries(existing.attributes)) attrs[k] = v;
+  const child = isChildBlock(block);
+  const used = usedTagsOfFamily(doc, family);
+  const suggested = child ? '' : existing?.attributes.TAG1 || nextTag(usedTags(doc), family, nearestReference(doc, at), settings);
+  if (!existing && !child && attrs.TAG1 !== undefined) attrs.TAG1 = suggested;
+  if (!existing && settings.iecInstallation && !attrs.INST) attrs.INST = settings.iecInstallation;
+  if (!existing && settings.iecLocation && !attrs.LOC) attrs.LOC = settings.iecLocation;
+  const pins = def ? pinAttributes(def).map((a) => ({ tag: a.tag, label: a.prompt, value: attrs[a.tag] ?? a.default })) : [];
+  for (const k of DATA_ATTRIBUTES) if (attrs[k] === undefined) attrs[k] = '';
+  return {
+    block,
+    blockDescription: def?.description ?? '',
+    family,
+    isNew: !existing,
+    attrs,
+    pins,
+    used,
+    nextTag: suggested,
+    parents: child ? parentCandidates(doc) : undefined,
+    isChild: child,
+  };
+}
+
+/** Apply dialog results: parent data for children, drop empty optional attributes. */
+export function componentAttributes(result: Record<string, string>, parent?: InsertEntity): Record<string, string> {
+  const attrs: Record<string, string> = { ...result };
+  if (parent) Object.assign(attrs, childAttributes(parent), result.DESC1 ? { DESC1: result.DESC1 } : {});
+  for (const k of Object.keys(attrs)) {
+    if (attrs[k] === '' && !['TAG1', 'DESC1', 'TERM01'].includes(k)) delete attrs[k];
+  }
+  return attrs;
+}
+
 /** AECOMPONENT: pick a symbol from the icon menu, place it, trim the wire, edit tag/description. */
 export class ComponentTool implements Tool {
   readonly name = 'AECOMPONENT';
   private block: string | null = null;
   private lastTarget: LineEntity | null = null;
 
-  constructor(private preset?: string) {}
+  constructor(
+    private preset?: string,
+    private eui?: () => ElectricalUi,
+    private settings?: () => WdSettings,
+    /** Parent device a child contact is linked to (Insert Child Contact flow). */
+    private parentId?: string,
+  ) {}
 
   start(ctx: ToolContext): void {
     ctx.doc.ensureBlocks([...ALL_SYMBOLS, ...IEC_SYMBOLS]);
@@ -283,48 +263,52 @@ export class ComponentTool implements Tool {
   onPoint(p: Point, ctx: ToolContext): void {
     if (!this.block) return;
     const block = lookupSymbol(this.block)!;
-    const { pos, wire } = this.target(ctx, p);
-    const prefix = tagPrefix(this.block);
+    const { pos } = this.target(ctx, p);
     const hasTag = block.attributes.some((a) => a.tag === 'TAG1');
-    const ref = nearestReference(ctx.doc, pos);
-    const initTag = hasTag ? uniqueTag(ctx.doc, prefix, ref) : '';
-    const initDesc = '';
+    const isTerminal = block.attributes.some((a) => a.tag === 'TERM01');
     ctx.setPreview([]);
 
-    const place = (tag: string, desc: string, mfg = '', cat = '') => {
-      const attrs: Record<string, string> = {};
-      if (hasTag) attrs.TAG1 = tag;
-      if (block.attributes.some((a) => a.tag === 'DESC1')) attrs.DESC1 = desc;
-      if (block.attributes.some((a) => a.tag === 'TERM01')) attrs.TERM01 = tag;
-      if (mfg) attrs.MFG = mfg;
-      if (cat) attrs.CAT = cat;
+    const place = (attrs: Record<string, string>) => {
       const ins = this.makeInsert(pos, attrs);
-      ctx.doc.transact((s) => {
-        let entities = s.entities;
-        if (wire) {
-          // Break the wire over the symbol's actual horizontal extent (stubs included).
-          const b = entityBounds(ins, ctx.doc.lookupBlock);
-          const half = b ? Math.max(b.max.x - pos.x, pos.x - b.min.x) : 0.375;
-          const left = b ? b.min.x : pos.x - 0.375;
-          const right = b ? b.max.x : pos.x + 0.375;
-          void half;
-          const pieces = breakWire(wire, left, right);
-          entities = entities.filter((e) => e.id !== wire.id).concat(pieces);
-        }
-        return { ...s, entities: [...entities, ins] };
-      });
-      ctx.log(`Inserted ${this.block}${tag ? ` as ${tag}` : ''}.`);
+      ctx.doc.transact((s) => ({ ...s, entities: breakForInsert([...s.entities, ins], ins, ctx.doc.lookupBlock) }));
+      ctx.log(`Inserted ${this.block}${attrs.TAG1 ? ` as ${attrs.TAG1}` : ''}.`);
     };
 
-    if (hasTag) {
-      void ctx.ui.editComponent({ tag: initTag, desc: initDesc, block: this.block }).then((r) => {
-        if (r) place(r.tag, r.desc, r.mfg, r.cat);
+    if (!hasTag && !isTerminal) {
+      place({});
+      ctx.finish();
+      return;
+    }
+    const settings = this.settings?.() ?? readWdSettings(ctx.doc);
+    const init = componentDialogInit(ctx.doc, this.block, pos, undefined, settings);
+    const presetParent = this.parentId ? ctx.doc.entities.find((e): e is InsertEntity => e.id === this.parentId) : undefined;
+    if (presetParent) Object.assign(init.attrs, childAttributes(presetParent));
+    if (isTerminal && !hasTag) {
+      // Terminals: number them with the plain text prompt (next free number of the strip).
+      const nums = ctx.doc.entities.filter((e) => e.type === 'insert' && e.attributes.TERM01).map((e) => parseInt((e as InsertEntity).attributes.TERM01!, 10)).filter(Number.isFinite);
+      const next = String((nums.length ? Math.max(...nums) : 0) + 1);
+      void ctx.ui.textInput('Terminal', 'Terminal number', next).then((v) => {
+        if (v !== null) place({ ...init.attrs, TERM01: v.trim() });
         ctx.finish();
       });
-    } else {
-      place('', '');
-      ctx.finish();
+      return;
     }
+    const eui = this.eui?.();
+    if (eui) {
+      void eui.editComponent(init).then((r) => {
+        if (r) {
+          const pid = r.parentId ?? this.parentId;
+          const parent = pid ? ctx.doc.entities.find((e): e is InsertEntity => e.id === pid) : undefined;
+          place(componentAttributes(r.attrs, parent));
+        }
+        ctx.finish();
+      });
+      return;
+    }
+    void ctx.ui.editComponent({ tag: init.attrs.TAG1 ?? '', desc: '', block: this.block }).then((r) => {
+      if (r) place(componentAttributes({ ...init.attrs, TAG1: r.tag, DESC1: r.desc, MFG: r.mfg, CAT: r.cat }));
+      ctx.finish();
+    });
   }
 
   onText(_t: string, _ctx: ToolContext): void {}
@@ -338,62 +322,17 @@ export class ComponentTool implements Tool {
 }
 
 /**
- * AEWIRENO: number every horizontal wire net. Nets are groups of collinear
- * wire pieces (a rung broken by components is one net). Like AutoCAD
- * Electrical, the number is the nearest ladder rung reference; additional
- * nets on the same reference get a letter suffix (100, 100A, 100B ...). When
- * no ladder references exist, numbers run sequentially from `start`.
+ * AEWIRENO: number every horizontal wire net (see electrical/wires.ts). The
+ * numeric form keeps the old `assignWireNumbers(doc, start)` signature.
  */
-export function assignWireNumbers(doc: Drawing, start = 100): number {
-  const wires = doc.entities.filter((e): e is LineEntity => isWire(e) && isHorizontal(e));
-  if (wires.length === 0) return 0;
-  const sorted = [...wires].sort((a, b) => b.a.y - a.a.y || Math.min(a.a.x, a.b.x) - Math.min(b.a.x, b.b.x));
-  // Group into nets: same y and x-ranges that touch or are separated only by a component gap (< 1.2 in).
-  const nets: LineEntity[][] = [];
-  for (const w of sorted) {
-    const last = nets[nets.length - 1];
-    const wl = Math.min(w.a.x, w.b.x);
-    if (last && Math.abs(last[0]!.a.y - w.a.y) < 1e-6) {
-      const lastRight = Math.max(...last.map((x) => Math.max(x.a.x, x.b.x)));
-      if (wl - lastRight < 1.2) {
-        last.push(w);
-        continue;
-      }
-    }
-    nets.push([w]);
-  }
-  const refs = doc.entities.filter((e): e is TextEntity => e.type === 'text' && e.layer === 'MISC' && /^\d+$/.test(e.text));
-  const used = new Map<string, number>();
-  const texts: Entity[] = [];
-  let seq = start;
-  for (const net of nets) {
-    const first = net[0]!;
-    let label: string;
-    const ref = refs.length ? nearestReference(doc, { x: first.a.x, y: first.a.y }) : null;
-    if (ref) {
-      const n = used.get(ref) ?? 0;
-      used.set(ref, n + 1);
-      label = n === 0 ? ref : `${ref}${String.fromCharCode(64 + n)}`;
-    } else {
-      label = String(seq);
-      seq += 1;
-    }
-    const x = Math.min(first.a.x, first.b.x) + 0.15;
-    texts.push({
-      id: newId(),
-      type: 'text',
-      layer: 'WIRENO',
-      color: 'ByLayer',
-      position: { x, y: first.a.y + 0.05 },
-      text: label,
-      height: 0.125,
-      rotation: 0,
-      align: 'left',
-    });
-  }
-  doc.transact((s) => ({
-    ...s,
-    entities: [...s.entities.filter((e) => !(e.type === 'text' && e.layer === 'WIRENO')), ...texts],
-  }));
-  return texts.length;
+export function assignWireNumbers(doc: Drawing, opts: WireNumberOptions | number = {}): number {
+  return assignWireNumbersImpl(doc, opts);
+}
+
+/** World position of a pin attribute of an insert. */
+export function pinPosition(ins: InsertEntity, tag: string, lookup: Drawing['lookupBlock']): Point | null {
+  const block = lookup(ins.block);
+  const a = block?.attributes.find((x) => x.tag === tag);
+  if (!block || !a) return null;
+  return insertTransform(ins, block)(a.position);
 }

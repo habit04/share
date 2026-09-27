@@ -1,0 +1,1469 @@
+[
+ {
+  "family": "PB",
+  "mfg": "SWITCHCO",
+  "cat": "SP22-FR-1NO",
+  "desc": "22MM FLUSH PUSH BUTTON, RED, 1 N.O. CONTACT",
+  "rating": "10A 600V",
+  "type": "NO",
+  "assycode": ""
+ },
+ {
+  "family": "PB",
+  "mfg": "SWITCHCO",
+  "cat": "SP22-FR-1NC",
+  "desc": "22MM FLUSH PUSH BUTTON, RED, 1 N.C. CONTACT",
+  "rating": "10A 600V",
+  "type": "NC",
+  "assycode": ""
+ },
+ {
+  "family": "PB",
+  "mfg": "SWITCHCO",
+  "cat": "SP22-FG-1NO",
+  "desc": "22MM FLUSH PUSH BUTTON, GREEN, 1 N.O. CONTACT",
+  "rating": "10A 600V",
+  "type": "NO",
+  "assycode": ""
+ },
+ {
+  "family": "PB",
+  "mfg": "SWITCHCO",
+  "cat": "SP22-FG-1NC",
+  "desc": "22MM FLUSH PUSH BUTTON, GREEN, 1 N.C. CONTACT",
+  "rating": "10A 600V",
+  "type": "NC",
+  "assycode": ""
+ },
+ {
+  "family": "PB",
+  "mfg": "SWITCHCO",
+  "cat": "SP22-FB-1NO",
+  "desc": "22MM FLUSH PUSH BUTTON, BLACK, 1 N.O. CONTACT",
+  "rating": "10A 600V",
+  "type": "NO",
+  "assycode": ""
+ },
+ {
+  "family": "PB",
+  "mfg": "SWITCHCO",
+  "cat": "SP22-FB-1NC",
+  "desc": "22MM FLUSH PUSH BUTTON, BLACK, 1 N.C. CONTACT",
+  "rating": "10A 600V",
+  "type": "NC",
+  "assycode": ""
+ },
+ {
+  "family": "PB",
+  "mfg": "SWITCHCO",
+  "cat": "SP22-FY-1NO",
+  "desc": "22MM FLUSH PUSH BUTTON, YELLOW, 1 N.O. CONTACT",
+  "rating": "10A 600V",
+  "type": "NO",
+  "assycode": ""
+ },
+ {
+  "family": "PB",
+  "mfg": "SWITCHCO",
+  "cat": "SP22-FY-1NC",
+  "desc": "22MM FLUSH PUSH BUTTON, YELLOW, 1 N.C. CONTACT",
+  "rating": "10A 600V",
+  "type": "NC",
+  "assycode": ""
+ },
+ {
+  "family": "PB",
+  "mfg": "SWITCHCO",
+  "cat": "SP22-ESR-1NC",
+  "desc": "22MM MUSHROOM E-STOP, RED, TWIST RELEASE, 1 N.C.",
+  "rating": "10A 600V",
+  "type": "NC",
+  "assycode": ""
+ },
+ {
+  "family": "PB",
+  "mfg": "SWITCHCO",
+  "cat": "SP22-ESR-2NC",
+  "desc": "22MM MUSHROOM E-STOP, RED, TWIST RELEASE, 2 N.C.",
+  "rating": "10A 600V",
+  "type": "NC",
+  "assycode": ""
+ },
+ {
+  "family": "PB",
+  "mfg": "SWITCHCO",
+  "cat": "SP22-ILG-24",
+  "desc": "22MM ILLUMINATED PUSH BUTTON, GREEN, 24V LED, 1 N.O.",
+  "rating": "10A 600V",
+  "type": "NO",
+  "assycode": ""
+ },
+ {
+  "family": "PB",
+  "mfg": "OPERATRIX",
+  "cat": "OP30-PB-NO",
+  "desc": "30MM PUSH BUTTON, BLACK, N.O. CONTACT BLOCK",
+  "rating": "10A 600V",
+  "type": "NO",
+  "assycode": ""
+ },
+ {
+  "family": "PB",
+  "mfg": "OPERATRIX",
+  "cat": "OP30-PB-NC",
+  "desc": "30MM PUSH BUTTON, RED, N.C. CONTACT BLOCK",
+  "rating": "10A 600V",
+  "type": "NC",
+  "assycode": ""
+ },
+ {
+  "family": "FTS",
+  "mfg": "SWITCHCO",
+  "cat": "FS-1-NO",
+  "desc": "FOOT SWITCH, SINGLE PEDAL, 1 N.O.",
+  "rating": "15A 250V",
+  "type": "NO",
+  "assycode": ""
+ },
+ {
+  "family": "FTS",
+  "mfg": "SWITCHCO",
+  "cat": "FS-1-NC",
+  "desc": "FOOT SWITCH, SINGLE PEDAL, 1 N.C.",
+  "rating": "15A 250V",
+  "type": "NC",
+  "assycode": ""
+ },
+ {
+  "family": "SS",
+  "mfg": "SWITCHCO",
+  "cat": "SS22-2P-M",
+  "desc": "22MM SELECTOR SWITCH, 2 POSITION, MAINTAINED, 1 N.O.",
+  "rating": "10A 600V",
+  "type": "NO",
+  "assycode": ""
+ },
+ {
+  "family": "SS",
+  "mfg": "SWITCHCO",
+  "cat": "SS22-3P-M",
+  "desc": "22MM SELECTOR SWITCH, 3 POSITION, MAINTAINED, 2 N.O.",
+  "rating": "10A 600V",
+  "type": "NO",
+  "assycode": ""
+ },
+ {
+  "family": "SS",
+  "mfg": "SWITCHCO",
+  "cat": "SS22-3P-K",
+  "desc": "22MM KEY SELECTOR SWITCH, 3 POSITION, 2 N.O.",
+  "rating": "10A 600V",
+  "type": "NO",
+  "assycode": ""
+ },
+ {
+  "family": "SW",
+  "mfg": "SWITCHCO",
+  "cat": "TS-1P-15",
+  "desc": "TOGGLE SWITCH, SPST, 15A",
+  "rating": "15A 125V",
+  "type": "NO",
+  "assycode": ""
+ },
+ {
+  "family": "LS",
+  "mfg": "SENSORIX",
+  "cat": "LS-RL-1NO1NC",
+  "desc": "LIMIT SWITCH, ROLLER LEVER, 1 N.O. + 1 N.C.",
+  "rating": "10A 300V",
+  "type": "NO",
+  "assycode": ""
+ },
+ {
+  "family": "LS",
+  "mfg": "SENSORIX",
+  "cat": "LS-PL-1NO1NC",
+  "desc": "LIMIT SWITCH, PLUNGER, 1 N.O. + 1 N.C.",
+  "rating": "10A 300V",
+  "type": "NO",
+  "assycode": ""
+ },
+ {
+  "family": "LS",
+  "mfg": "SENSORIX",
+  "cat": "LS-WW-1NO1NC",
+  "desc": "LIMIT SWITCH, WOBBLE STICK, 1 N.O. + 1 N.C.",
+  "rating": "10A 300V",
+  "type": "NO",
+  "assycode": ""
+ },
+ {
+  "family": "PRS",
+  "mfg": "SENSORIX",
+  "cat": "PX-M18-PNP-NO",
+  "desc": "INDUCTIVE PROXIMITY SENSOR, M18, PNP, N.O., 8MM",
+  "rating": "200MA 24VDC",
+  "type": "NO",
+  "assycode": ""
+ },
+ {
+  "family": "PRS",
+  "mfg": "SENSORIX",
+  "cat": "PX-M12-PNP-NC",
+  "desc": "INDUCTIVE PROXIMITY SENSOR, M12, PNP, N.C., 4MM",
+  "rating": "200MA 24VDC",
+  "type": "NC",
+  "assycode": ""
+ },
+ {
+  "family": "PRS",
+  "mfg": "SENSORIX",
+  "cat": "PX-CAP-M30",
+  "desc": "CAPACITIVE PROXIMITY SENSOR, M30, PNP, N.O., 15MM",
+  "rating": "200MA 24VDC",
+  "type": "NO",
+  "assycode": ""
+ },
+ {
+  "family": "PS",
+  "mfg": "PROCESSGUARD",
+  "cat": "PS-A-1-15",
+  "desc": "PRESSURE SWITCH, 1-15 PSI, SPDT",
+  "rating": "10A 250V",
+  "type": "NO",
+  "assycode": ""
+ },
+ {
+  "family": "PS",
+  "mfg": "PROCESSGUARD",
+  "cat": "PS-A-10-100",
+  "desc": "PRESSURE SWITCH, 10-100 PSI, SPDT",
+  "rating": "10A 250V",
+  "type": "NO",
+  "assycode": ""
+ },
+ {
+  "family": "FLS",
+  "mfg": "PROCESSGUARD",
+  "cat": "FLS-PD-1",
+  "desc": "FLOW SWITCH, PADDLE TYPE, 1 INCH NPT, SPDT",
+  "rating": "10A 250V",
+  "type": "NO",
+  "assycode": ""
+ },
+ {
+  "family": "TS",
+  "mfg": "PROCESSGUARD",
+  "cat": "TS-B-40-110",
+  "desc": "TEMPERATURE SWITCH, BULB, 40-110 C, SPDT",
+  "rating": "10A 250V",
+  "type": "NO",
+  "assycode": ""
+ },
+ {
+  "family": "FS",
+  "mfg": "PROCESSGUARD",
+  "cat": "LS-FL-SS",
+  "desc": "FLOAT SWITCH, STAINLESS, SIDE MOUNT, SPST",
+  "rating": "5A 250V",
+  "type": "NO",
+  "assycode": ""
+ },
+ {
+  "family": "CR",
+  "mfg": "RELIACO",
+  "cat": "RC-4PDT-24D",
+  "desc": "GENERAL PURPOSE RELAY, 4PDT, 24VDC COIL, 10A",
+  "rating": "10A 250V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "CR",
+  "mfg": "RELIACO",
+  "cat": "RC-4PDT-120A",
+  "desc": "GENERAL PURPOSE RELAY, 4PDT, 120VAC COIL, 10A",
+  "rating": "10A 250V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "CR",
+  "mfg": "RELIACO",
+  "cat": "RC-2PDT-24D",
+  "desc": "GENERAL PURPOSE RELAY, 2PDT, 24VDC COIL, 15A",
+  "rating": "15A 250V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "CR",
+  "mfg": "RELIACO",
+  "cat": "RC-SOCK-14",
+  "desc": "RELAY SOCKET, 14 PIN, DIN RAIL",
+  "rating": "10A 250V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "CR",
+  "mfg": "RELIACO",
+  "cat": "RC-SLIM-24D",
+  "desc": "SLIM INTERFACE RELAY, SPDT, 24VDC, 6A",
+  "rating": "6A 250V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "CR",
+  "mfg": "RELIACO",
+  "cat": "RC-SR-2NO1NC",
+  "desc": "SAFETY RELAY, 2 N.O. + 1 N.C., 24VDC, DUAL CHANNEL",
+  "rating": "6A 250V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "TD",
+  "mfg": "RELIACO",
+  "cat": "TR-ON-24D-60S",
+  "desc": "TIMER RELAY, ON-DELAY, 0.1-60S, 24VDC, DPDT",
+  "rating": "10A 250V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "TD",
+  "mfg": "RELIACO",
+  "cat": "TR-OFF-120A-60S",
+  "desc": "TIMER RELAY, OFF-DELAY, 0.1-60S, 120VAC, DPDT",
+  "rating": "10A 250V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "TD",
+  "mfg": "RELIACO",
+  "cat": "TR-MF-24D",
+  "desc": "TIMER RELAY, MULTIFUNCTION, 0.1S-100H, 24VDC, DPDT",
+  "rating": "10A 250V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "M",
+  "mfg": "AMPERION",
+  "cat": "AC3-09-120A",
+  "desc": "IEC CONTACTOR, 9A AC-3, 120VAC COIL, 1 N.O. AUX",
+  "rating": "9A 600V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "M",
+  "mfg": "AMPERION",
+  "cat": "AC3-09-24D",
+  "desc": "IEC CONTACTOR, 9A AC-3, 24VDC COIL, 1 N.O. AUX",
+  "rating": "9A 600V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "M",
+  "mfg": "AMPERION",
+  "cat": "AC3-12-120A",
+  "desc": "IEC CONTACTOR, 12A AC-3, 120VAC COIL, 1 N.O. AUX",
+  "rating": "12A 600V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "M",
+  "mfg": "AMPERION",
+  "cat": "AC3-12-24D",
+  "desc": "IEC CONTACTOR, 12A AC-3, 24VDC COIL, 1 N.O. AUX",
+  "rating": "12A 600V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "M",
+  "mfg": "AMPERION",
+  "cat": "AC3-18-120A",
+  "desc": "IEC CONTACTOR, 18A AC-3, 120VAC COIL, 1 N.O. AUX",
+  "rating": "18A 600V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "M",
+  "mfg": "AMPERION",
+  "cat": "AC3-18-24D",
+  "desc": "IEC CONTACTOR, 18A AC-3, 24VDC COIL, 1 N.O. AUX",
+  "rating": "18A 600V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "M",
+  "mfg": "AMPERION",
+  "cat": "AC3-25-120A",
+  "desc": "IEC CONTACTOR, 25A AC-3, 120VAC COIL, 1 N.O. AUX",
+  "rating": "25A 600V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "M",
+  "mfg": "AMPERION",
+  "cat": "AC3-25-24D",
+  "desc": "IEC CONTACTOR, 25A AC-3, 24VDC COIL, 1 N.O. AUX",
+  "rating": "25A 600V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "M",
+  "mfg": "AMPERION",
+  "cat": "AC3-32-120A",
+  "desc": "IEC CONTACTOR, 32A AC-3, 120VAC COIL, 1 N.O. AUX",
+  "rating": "32A 600V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "M",
+  "mfg": "AMPERION",
+  "cat": "AC3-32-24D",
+  "desc": "IEC CONTACTOR, 32A AC-3, 24VDC COIL, 1 N.O. AUX",
+  "rating": "32A 600V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "M",
+  "mfg": "AMPERION",
+  "cat": "AC3-40-120A",
+  "desc": "IEC CONTACTOR, 40A AC-3, 120VAC COIL, 1 N.O. AUX",
+  "rating": "40A 600V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "M",
+  "mfg": "AMPERION",
+  "cat": "AC3-40-24D",
+  "desc": "IEC CONTACTOR, 40A AC-3, 24VDC COIL, 1 N.O. AUX",
+  "rating": "40A 600V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "M",
+  "mfg": "AMPERION",
+  "cat": "AC3-65-120A",
+  "desc": "IEC CONTACTOR, 65A AC-3, 120VAC COIL, 1 N.O. AUX",
+  "rating": "65A 600V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "M",
+  "mfg": "AMPERION",
+  "cat": "AC3-65-24D",
+  "desc": "IEC CONTACTOR, 65A AC-3, 24VDC COIL, 1 N.O. AUX",
+  "rating": "65A 600V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "M",
+  "mfg": "AMPERION",
+  "cat": "NEMA-1-120A",
+  "desc": "NEMA SIZE 1 CONTACTOR, 27A, 120VAC COIL",
+  "rating": "27A 600V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "M",
+  "mfg": "AMPERION",
+  "cat": "NEMA-2-120A",
+  "desc": "NEMA SIZE 2 CONTACTOR, 45A, 120VAC COIL",
+  "rating": "45A 600V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "M",
+  "mfg": "AMPERION",
+  "cat": "AUX-1NO1NC",
+  "desc": "AUXILIARY CONTACT BLOCK, 1 N.O. + 1 N.C., FRONT MOUNT",
+  "rating": "10A 600V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "OL",
+  "mfg": "AMPERION",
+  "cat": "OL-E-1-5",
+  "desc": "ELECTRONIC OVERLOAD RELAY, 1-5A, CLASS 10, 1 N.O. + 1 N.C.",
+  "rating": "5A",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "OL",
+  "mfg": "AMPERION",
+  "cat": "OL-E-4-20",
+  "desc": "ELECTRONIC OVERLOAD RELAY, 4-20A, CLASS 10, 1 N.O. + 1 N.C.",
+  "rating": "20A",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "OL",
+  "mfg": "AMPERION",
+  "cat": "OL-E-16-65",
+  "desc": "ELECTRONIC OVERLOAD RELAY, 16-65A, CLASS 10/20, 1 N.O. + 1 N.C.",
+  "rating": "65A",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "OL",
+  "mfg": "AMPERION",
+  "cat": "OL-T-2-10",
+  "desc": "THERMAL OVERLOAD RELAY, 2-10A, CLASS 10",
+  "rating": "10A",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "FU",
+  "mfg": "FUSEWORKS",
+  "cat": "CC-1",
+  "desc": "CLASS CC TIME-DELAY FUSE, 1A, 600V",
+  "rating": "1A 600V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "FU",
+  "mfg": "FUSEWORKS",
+  "cat": "CC-2",
+  "desc": "CLASS CC TIME-DELAY FUSE, 2A, 600V",
+  "rating": "2A 600V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "FU",
+  "mfg": "FUSEWORKS",
+  "cat": "CC-3",
+  "desc": "CLASS CC TIME-DELAY FUSE, 3A, 600V",
+  "rating": "3A 600V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "FU",
+  "mfg": "FUSEWORKS",
+  "cat": "CC-5",
+  "desc": "CLASS CC TIME-DELAY FUSE, 5A, 600V",
+  "rating": "5A 600V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "FU",
+  "mfg": "FUSEWORKS",
+  "cat": "CC-10",
+  "desc": "CLASS CC TIME-DELAY FUSE, 10A, 600V",
+  "rating": "10A 600V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "FU",
+  "mfg": "FUSEWORKS",
+  "cat": "CC-15",
+  "desc": "CLASS CC TIME-DELAY FUSE, 15A, 600V",
+  "rating": "15A 600V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "FU",
+  "mfg": "FUSEWORKS",
+  "cat": "CC-20",
+  "desc": "CLASS CC TIME-DELAY FUSE, 20A, 600V",
+  "rating": "20A 600V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "FU",
+  "mfg": "FUSEWORKS",
+  "cat": "CC-30",
+  "desc": "CLASS CC TIME-DELAY FUSE, 30A, 600V",
+  "rating": "30A 600V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "FU",
+  "mfg": "FUSEWORKS",
+  "cat": "FH-CC-1P",
+  "desc": "CLASS CC FUSE HOLDER, 1 POLE, DIN RAIL",
+  "rating": "30A 600V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "FU",
+  "mfg": "FUSEWORKS",
+  "cat": "FH-CC-3P",
+  "desc": "CLASS CC FUSE HOLDER, 3 POLE, DIN RAIL",
+  "rating": "30A 600V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "FU",
+  "mfg": "FUSEWORKS",
+  "cat": "FU-5X20-2A",
+  "desc": "GLASS FUSE 5X20MM, 2A, FAST ACTING",
+  "rating": "2A 250V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "CB",
+  "mfg": "VOLTEX",
+  "cat": "MCB-1P-C2",
+  "desc": "MINIATURE CIRCUIT BREAKER, 1 POLE, C CURVE, 2A",
+  "rating": "2A 480V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "CB",
+  "mfg": "VOLTEX",
+  "cat": "MCB-3P-C2",
+  "desc": "MINIATURE CIRCUIT BREAKER, 3 POLE, C CURVE, 2A",
+  "rating": "2A 480V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "CB",
+  "mfg": "VOLTEX",
+  "cat": "MCB-1P-C4",
+  "desc": "MINIATURE CIRCUIT BREAKER, 1 POLE, C CURVE, 4A",
+  "rating": "4A 480V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "CB",
+  "mfg": "VOLTEX",
+  "cat": "MCB-3P-C4",
+  "desc": "MINIATURE CIRCUIT BREAKER, 3 POLE, C CURVE, 4A",
+  "rating": "4A 480V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "CB",
+  "mfg": "VOLTEX",
+  "cat": "MCB-1P-C6",
+  "desc": "MINIATURE CIRCUIT BREAKER, 1 POLE, C CURVE, 6A",
+  "rating": "6A 480V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "CB",
+  "mfg": "VOLTEX",
+  "cat": "MCB-3P-C6",
+  "desc": "MINIATURE CIRCUIT BREAKER, 3 POLE, C CURVE, 6A",
+  "rating": "6A 480V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "CB",
+  "mfg": "VOLTEX",
+  "cat": "MCB-1P-C10",
+  "desc": "MINIATURE CIRCUIT BREAKER, 1 POLE, C CURVE, 10A",
+  "rating": "10A 480V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "CB",
+  "mfg": "VOLTEX",
+  "cat": "MCB-3P-C10",
+  "desc": "MINIATURE CIRCUIT BREAKER, 3 POLE, C CURVE, 10A",
+  "rating": "10A 480V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "CB",
+  "mfg": "VOLTEX",
+  "cat": "MCB-1P-C16",
+  "desc": "MINIATURE CIRCUIT BREAKER, 1 POLE, C CURVE, 16A",
+  "rating": "16A 480V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "CB",
+  "mfg": "VOLTEX",
+  "cat": "MCB-3P-C16",
+  "desc": "MINIATURE CIRCUIT BREAKER, 3 POLE, C CURVE, 16A",
+  "rating": "16A 480V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "CB",
+  "mfg": "VOLTEX",
+  "cat": "MCB-1P-C20",
+  "desc": "MINIATURE CIRCUIT BREAKER, 1 POLE, C CURVE, 20A",
+  "rating": "20A 480V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "CB",
+  "mfg": "VOLTEX",
+  "cat": "MCB-3P-C20",
+  "desc": "MINIATURE CIRCUIT BREAKER, 3 POLE, C CURVE, 20A",
+  "rating": "20A 480V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "CB",
+  "mfg": "VOLTEX",
+  "cat": "MCB-1P-C32",
+  "desc": "MINIATURE CIRCUIT BREAKER, 1 POLE, C CURVE, 32A",
+  "rating": "32A 480V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "CB",
+  "mfg": "VOLTEX",
+  "cat": "MCB-3P-C32",
+  "desc": "MINIATURE CIRCUIT BREAKER, 3 POLE, C CURVE, 32A",
+  "rating": "32A 480V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "CB",
+  "mfg": "VOLTEX",
+  "cat": "MCB-2P-D4",
+  "desc": "MINIATURE CIRCUIT BREAKER, 2 POLE, D CURVE, 4A",
+  "rating": "4A 480V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "CB",
+  "mfg": "VOLTEX",
+  "cat": "MPCB-1-1.6",
+  "desc": "MANUAL MOTOR PROTECTOR, 1-1.6A, 3 POLE",
+  "rating": "1.6A 600V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "CB",
+  "mfg": "VOLTEX",
+  "cat": "MPCB-4-6.3",
+  "desc": "MANUAL MOTOR PROTECTOR, 4-6.3A, 3 POLE",
+  "rating": "6.3A 600V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "DS",
+  "mfg": "VOLTEX",
+  "cat": "DS-30-3P",
+  "desc": "NON-FUSED DISCONNECT SWITCH, 30A, 3 POLE, 600V",
+  "rating": "30A 600V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "DS",
+  "mfg": "VOLTEX",
+  "cat": "DS-60-3P",
+  "desc": "NON-FUSED DISCONNECT SWITCH, 60A, 3 POLE, 600V",
+  "rating": "60A 600V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "DS",
+  "mfg": "VOLTEX",
+  "cat": "DS-30-3P-F",
+  "desc": "FUSED DISCONNECT SWITCH, 30A, 3 POLE, CLASS J",
+  "rating": "30A 600V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "DS",
+  "mfg": "VOLTEX",
+  "cat": "DS-RH-30",
+  "desc": "ROTARY DISCONNECT, 30A, 3 POLE, DOOR MOUNT HANDLE",
+  "rating": "30A 600V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "LT",
+  "mfg": "SWITCHCO",
+  "cat": "PL22-R-24",
+  "desc": "22MM PILOT LIGHT, RED, 24V AC/DC LED",
+  "rating": "24V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "LT",
+  "mfg": "SWITCHCO",
+  "cat": "PL22-R-120",
+  "desc": "22MM PILOT LIGHT, RED, 120VAC LED",
+  "rating": "120V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "LT",
+  "mfg": "SWITCHCO",
+  "cat": "PL22-G-24",
+  "desc": "22MM PILOT LIGHT, GREEN, 24V AC/DC LED",
+  "rating": "24V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "LT",
+  "mfg": "SWITCHCO",
+  "cat": "PL22-G-120",
+  "desc": "22MM PILOT LIGHT, GREEN, 120VAC LED",
+  "rating": "120V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "LT",
+  "mfg": "SWITCHCO",
+  "cat": "PL22-A-24",
+  "desc": "22MM PILOT LIGHT, AMBER, 24V AC/DC LED",
+  "rating": "24V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "LT",
+  "mfg": "SWITCHCO",
+  "cat": "PL22-A-120",
+  "desc": "22MM PILOT LIGHT, AMBER, 120VAC LED",
+  "rating": "120V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "LT",
+  "mfg": "SWITCHCO",
+  "cat": "PL22-B-24",
+  "desc": "22MM PILOT LIGHT, BLUE, 24V AC/DC LED",
+  "rating": "24V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "LT",
+  "mfg": "SWITCHCO",
+  "cat": "PL22-B-120",
+  "desc": "22MM PILOT LIGHT, BLUE, 120VAC LED",
+  "rating": "120V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "LT",
+  "mfg": "SWITCHCO",
+  "cat": "PL22-W-24",
+  "desc": "22MM PILOT LIGHT, WHITE, 24V AC/DC LED",
+  "rating": "24V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "LT",
+  "mfg": "SWITCHCO",
+  "cat": "PL22-W-120",
+  "desc": "22MM PILOT LIGHT, WHITE, 120VAC LED",
+  "rating": "120V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "LT",
+  "mfg": "SWITCHCO",
+  "cat": "PL22-R-PTT-120",
+  "desc": "22MM PUSH-TO-TEST PILOT LIGHT, RED, 120VAC",
+  "rating": "120V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "LT",
+  "mfg": "OPERATRIX",
+  "cat": "ST-3-RAG-24",
+  "desc": "STACK LIGHT, 3 TIER RED/AMBER/GREEN, 24VDC",
+  "rating": "24VDC",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "HN",
+  "mfg": "SIGNALTONE",
+  "cat": "HN-120-100",
+  "desc": "INDUSTRIAL HORN, 120VAC, 100DB",
+  "rating": "120VAC",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "HN",
+  "mfg": "SIGNALTONE",
+  "cat": "HN-24-90",
+  "desc": "INDUSTRIAL HORN, 24VDC, 90DB",
+  "rating": "24VDC",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "BZ",
+  "mfg": "SIGNALTONE",
+  "cat": "BZ-22-24",
+  "desc": "22MM PANEL BUZZER, 24V AC/DC, 80DB",
+  "rating": "24V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "BL",
+  "mfg": "SIGNALTONE",
+  "cat": "BL-6-120",
+  "desc": "6 INCH VIBRATING BELL, 120VAC",
+  "rating": "120VAC",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "MTR",
+  "mfg": "TORQUEMAX",
+  "cat": "TM-0P5-4-TEFC",
+  "desc": "MOTOR, 0.5 HP, 1800 RPM, 3PH 460V, TEFC, 1.1A FLA",
+  "rating": "0.5HP 460V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "MTR",
+  "mfg": "TORQUEMAX",
+  "cat": "TM-1-4-TEFC",
+  "desc": "MOTOR, 1 HP, 1800 RPM, 3PH 460V, TEFC, 2.1A FLA",
+  "rating": "1HP 460V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "MTR",
+  "mfg": "TORQUEMAX",
+  "cat": "TM-2-4-TEFC",
+  "desc": "MOTOR, 2 HP, 1800 RPM, 3PH 460V, TEFC, 3.4A FLA",
+  "rating": "2HP 460V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "MTR",
+  "mfg": "TORQUEMAX",
+  "cat": "TM-3-4-TEFC",
+  "desc": "MOTOR, 3 HP, 1800 RPM, 3PH 460V, TEFC, 4.8A FLA",
+  "rating": "3HP 460V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "MTR",
+  "mfg": "TORQUEMAX",
+  "cat": "TM-5-4-TEFC",
+  "desc": "MOTOR, 5 HP, 1800 RPM, 3PH 460V, TEFC, 7.6A FLA",
+  "rating": "5HP 460V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "MTR",
+  "mfg": "TORQUEMAX",
+  "cat": "TM-7P5-4-TEFC",
+  "desc": "MOTOR, 7.5 HP, 1800 RPM, 3PH 460V, TEFC, 11A FLA",
+  "rating": "7.5HP 460V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "MTR",
+  "mfg": "TORQUEMAX",
+  "cat": "TM-10-4-TEFC",
+  "desc": "MOTOR, 10 HP, 1800 RPM, 3PH 460V, TEFC, 14A FLA",
+  "rating": "10HP 460V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "MTR",
+  "mfg": "TORQUEMAX",
+  "cat": "TM-15-4-TEFC",
+  "desc": "MOTOR, 15 HP, 1800 RPM, 3PH 460V, TEFC, 21A FLA",
+  "rating": "15HP 460V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "MTR",
+  "mfg": "TORQUEMAX",
+  "cat": "TM-20-4-TEFC",
+  "desc": "MOTOR, 20 HP, 1800 RPM, 3PH 460V, TEFC, 27A FLA",
+  "rating": "20HP 460V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "MTR",
+  "mfg": "TORQUEMAX",
+  "cat": "TM-1P-1-115",
+  "desc": "MOTOR, 1 HP, 1725 RPM, 1PH 115/230V, TEFC",
+  "rating": "1HP 115V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "SOL",
+  "mfg": "FLOWMATIC",
+  "cat": "SV-24D-1/4",
+  "desc": "SOLENOID COIL, 24VDC, 1/4 INCH VALVE",
+  "rating": "24VDC 9W",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "SOL",
+  "mfg": "FLOWMATIC",
+  "cat": "SV-120A-1/4",
+  "desc": "SOLENOID COIL, 120VAC, 1/4 INCH VALVE",
+  "rating": "120VAC 10VA",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "SV",
+  "mfg": "FLOWMATIC",
+  "cat": "V52-1/4-24D",
+  "desc": "5/2 SOLENOID VALVE, 1/4 INCH, SPRING RETURN, 24VDC",
+  "rating": "24VDC",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "SV",
+  "mfg": "FLOWMATIC",
+  "cat": "V32-1/8-24D",
+  "desc": "3/2 SOLENOID VALVE, 1/8 INCH, 24VDC",
+  "rating": "24VDC",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "SV",
+  "mfg": "FLOWMATIC",
+  "cat": "V22-1/2-120A",
+  "desc": "2/2 SOLENOID VALVE, 1/2 INCH, 120VAC, NC",
+  "rating": "120VAC",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "T",
+  "mfg": "VOLTEX",
+  "cat": "CT-100-480-120",
+  "desc": "CONTROL TRANSFORMER, 100VA, 480/240-120V",
+  "rating": "100VA",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "T",
+  "mfg": "VOLTEX",
+  "cat": "CT-250-480-120",
+  "desc": "CONTROL TRANSFORMER, 250VA, 480/240-120V",
+  "rating": "250VA",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "T",
+  "mfg": "VOLTEX",
+  "cat": "CT-500-480-120",
+  "desc": "CONTROL TRANSFORMER, 500VA, 480/240-120V",
+  "rating": "500VA",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "T",
+  "mfg": "VOLTEX",
+  "cat": "CT-1000-480-120",
+  "desc": "CONTROL TRANSFORMER, 1000VA, 480/240-120V",
+  "rating": "1000VA",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "PS",
+  "mfg": "VOLTEX",
+  "cat": "PSU-24-5",
+  "desc": "DIN RAIL POWER SUPPLY, 24VDC, 5A, 120-240VAC INPUT",
+  "rating": "24VDC 5A",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "PS",
+  "mfg": "VOLTEX",
+  "cat": "PSU-24-10",
+  "desc": "DIN RAIL POWER SUPPLY, 24VDC, 10A, 120-240VAC INPUT",
+  "rating": "24VDC 10A",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "BT",
+  "mfg": "VOLTEX",
+  "cat": "BT-12-7",
+  "desc": "SEALED LEAD ACID BATTERY, 12V, 7AH",
+  "rating": "12V 7AH",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "MOV",
+  "mfg": "VOLTEX",
+  "cat": "SPD-120-1",
+  "desc": "SURGE SUPPRESSOR, 120VAC, DIN RAIL",
+  "rating": "120VAC",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "RCPT",
+  "mfg": "VOLTEX",
+  "cat": "RCPT-GFCI-15",
+  "desc": "GFCI DUPLEX RECEPTACLE, 15A, 125V",
+  "rating": "15A 125V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "RCPT",
+  "mfg": "VOLTEX",
+  "cat": "RCPT-DIN-15",
+  "desc": "DIN RAIL CONVENIENCE RECEPTACLE, 15A, 125V",
+  "rating": "15A 125V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "VM",
+  "mfg": "METRIX",
+  "cat": "VM-72-600",
+  "desc": "ANALOG VOLTMETER, 72MM, 0-600VAC",
+  "rating": "600V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "AM",
+  "mfg": "METRIX",
+  "cat": "AM-72-50",
+  "desc": "ANALOG AMMETER, 72MM, 0-50A, 5A CT INPUT",
+  "rating": "50A",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "R",
+  "mfg": "METRIX",
+  "cat": "RES-10W-100",
+  "desc": "POWER RESISTOR, 10W, 100 OHM",
+  "rating": "10W",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "C",
+  "mfg": "METRIX",
+  "cat": "CAP-MOT-40",
+  "desc": "MOTOR RUN CAPACITOR, 40UF, 370V",
+  "rating": "370V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "D",
+  "mfg": "METRIX",
+  "cat": "DIO-1N54",
+  "desc": "RECTIFIER DIODE, 3A, 400V",
+  "rating": "3A 400V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "TB",
+  "mfg": "CLAMPTECH",
+  "cat": "TB-4-GY",
+  "desc": "SCREW TERMINAL BLOCK, 4MM2, GRAY",
+  "rating": "32A 800V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "TB",
+  "mfg": "CLAMPTECH",
+  "cat": "TB-4-BU",
+  "desc": "SCREW TERMINAL BLOCK, 4MM2, BLUE (NEUTRAL)",
+  "rating": "32A 800V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "TB",
+  "mfg": "CLAMPTECH",
+  "cat": "TB-4-GNYE",
+  "desc": "GROUND TERMINAL BLOCK, 4MM2, GREEN/YELLOW",
+  "rating": "",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "TB",
+  "mfg": "CLAMPTECH",
+  "cat": "TB-2.5-GY",
+  "desc": "SCREW TERMINAL BLOCK, 2.5MM2, GRAY",
+  "rating": "24A 800V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "TB",
+  "mfg": "CLAMPTECH",
+  "cat": "TB-10-GY",
+  "desc": "SCREW TERMINAL BLOCK, 10MM2, GRAY",
+  "rating": "57A 800V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "TB",
+  "mfg": "CLAMPTECH",
+  "cat": "TB-FUSE-5X20",
+  "desc": "FUSE TERMINAL BLOCK, 5X20MM, WITH LED",
+  "rating": "6.3A 250V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "TB",
+  "mfg": "CLAMPTECH",
+  "cat": "TB-END-4",
+  "desc": "END COVER FOR 4MM2 TERMINAL BLOCK",
+  "rating": "",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "TB",
+  "mfg": "CLAMPTECH",
+  "cat": "TB-END-BRKT",
+  "desc": "END BRACKET, DIN RAIL",
+  "rating": "",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "TB",
+  "mfg": "CLAMPTECH",
+  "cat": "TB-JUMP-2",
+  "desc": "JUMPER BAR, 2 POLE, 4MM2",
+  "rating": "",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "TB",
+  "mfg": "CLAMPTECH",
+  "cat": "TB-JUMP-10",
+  "desc": "JUMPER BAR, 10 POLE, 4MM2",
+  "rating": "",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "PLC",
+  "mfg": "LOGICORE",
+  "cat": "LC-CPU-1214",
+  "desc": "PLC CPU, 14 DI / 10 DO / 2 AI, 24VDC, ETHERNET",
+  "rating": "24VDC",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "PLC",
+  "mfg": "LOGICORE",
+  "cat": "LC-DI-16",
+  "desc": "PLC DIGITAL INPUT MODULE, 16 POINT, 24VDC SINK/SOURCE",
+  "rating": "24VDC",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "PLC",
+  "mfg": "LOGICORE",
+  "cat": "LC-DI-32",
+  "desc": "PLC DIGITAL INPUT MODULE, 32 POINT, 24VDC",
+  "rating": "24VDC",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "PLC",
+  "mfg": "LOGICORE",
+  "cat": "LC-DO-16R",
+  "desc": "PLC DIGITAL OUTPUT MODULE, 16 POINT, RELAY 2A",
+  "rating": "2A 250V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "PLC",
+  "mfg": "LOGICORE",
+  "cat": "LC-DO-16T",
+  "desc": "PLC DIGITAL OUTPUT MODULE, 16 POINT, TRANSISTOR 0.5A",
+  "rating": "24VDC 0.5A",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "PLC",
+  "mfg": "LOGICORE",
+  "cat": "LC-AI-8",
+  "desc": "PLC ANALOG INPUT MODULE, 8 CHANNEL, 4-20MA / 0-10V",
+  "rating": "",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "PLC",
+  "mfg": "LOGICORE",
+  "cat": "LC-AO-4",
+  "desc": "PLC ANALOG OUTPUT MODULE, 4 CHANNEL, 4-20MA / 0-10V",
+  "rating": "",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "PLC",
+  "mfg": "LOGICORE",
+  "cat": "LC-RTD-4",
+  "desc": "PLC RTD INPUT MODULE, 4 CHANNEL, PT100",
+  "rating": "",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "PLC",
+  "mfg": "LOGICORE",
+  "cat": "LC-HMI-7",
+  "desc": "OPERATOR PANEL, 7 INCH TOUCH, ETHERNET",
+  "rating": "24VDC",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "PLC",
+  "mfg": "LOGICORE",
+  "cat": "LC-ENET-SW5",
+  "desc": "UNMANAGED ETHERNET SWITCH, 5 PORT, DIN RAIL",
+  "rating": "24VDC",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "PLC",
+  "mfg": "LOGICORE",
+  "cat": "LC-VFD-2",
+  "desc": "VARIABLE FREQUENCY DRIVE, 2 HP, 460V, 3PH",
+  "rating": "2HP 460V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "PLC",
+  "mfg": "LOGICORE",
+  "cat": "LC-VFD-5",
+  "desc": "VARIABLE FREQUENCY DRIVE, 5 HP, 460V, 3PH",
+  "rating": "5HP 460V",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "HTR",
+  "mfg": "THERMAX",
+  "cat": "HT-PNL-100",
+  "desc": "ENCLOSURE HEATER, 100W, 120/240V, WITH THERMOSTAT",
+  "rating": "100W",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "HTR",
+  "mfg": "THERMAX",
+  "cat": "HT-PNL-200",
+  "desc": "ENCLOSURE HEATER, 200W, 120/240V, WITH THERMOSTAT",
+  "rating": "200W",
+  "type": "",
+  "assycode": ""
+ },
+ {
+  "family": "HTR",
+  "mfg": "THERMAX",
+  "cat": "HT-FAN-4",
+  "desc": "ENCLOSURE FILTER FAN, 4 INCH, 120VAC",
+  "rating": "120VAC",
+  "type": "",
+  "assycode": ""
+ }
+]

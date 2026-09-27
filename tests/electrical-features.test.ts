@@ -47,14 +47,23 @@ describe('cross references', () => {
     expect(cr.contacts.map((c) => `${c.kind}${c.ref}`).sort()).toEqual(['NC102', 'NO101']);
     const n = updateCrossReferences(d);
     expect(n).toBe(1);
-    const xrefTexts = d.entities.filter((e) => e.type === 'text' && e.layer === 'XREF').map((e) => (e.type === 'text' ? e.text : ''));
-    expect(xrefTexts).toContain('NO: 101');
-    expect(xrefTexts).toContain('NC: 102');
+    let xrefTexts = d.entities.filter((e) => e.type === 'text' && e.layer === 'XREF').map((e) => (e.type === 'text' ? e.text : ''));
+    // ACADE-style compact summary under the coil
+    expect(xrefTexts).toContain('NO 101 / NC 102');
+    // table style: NO / NC rows with rung references drawn with lines
+    updateCrossReferences(d, { xrefFormat: '%N', sheet: '1', xrefStyle: 'table' });
+    xrefTexts = d.entities.filter((e) => e.type === 'text' && e.layer === 'XREF').map((e) => (e.type === 'text' ? e.text : ''));
+    expect(xrefTexts).toContain('NO');
+    expect(xrefTexts).toContain('101');
+    expect(xrefTexts).toContain('NC');
+    expect(xrefTexts).toContain('102');
+    expect(d.entities.some((e) => e.type === 'line' && e.layer === 'XREF')).toBe(true);
     expect(xrefTexts.filter((t) => t === '100')).toHaveLength(2);
     expect(d.layer('XREF')).toBeDefined();
     // re-running replaces
-    updateCrossReferences(d);
-    expect(d.entities.filter((e) => e.type === 'text' && e.layer === 'XREF')).toHaveLength(4);
+    const count = d.entities.filter((e) => e.layer === 'XREF').length;
+    updateCrossReferences(d, { xrefFormat: '%N', sheet: '1', xrefStyle: 'table' });
+    expect(d.entities.filter((e) => e.layer === 'XREF')).toHaveLength(count);
   });
 });
 
@@ -71,7 +80,7 @@ describe('reports', () => {
     const r = componentReport(ladderDoc());
     const row = r.rows.find((x) => x[0] === 'CR100')!;
     expect(row[2]).toBe('ACME');
-    expect(row[6]).toBe('100');
+    expect(row[r.columns.indexOf('Rung')]).toBe('100');
     expect(r.rows.some((x) => x[0] === '7')).toBe(true);
   });
   it('wire from/to finds the devices touching each numbered net', () => {
