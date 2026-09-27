@@ -291,6 +291,20 @@ export function tagPrefix(blockName: string): string {
     [/^HCA/, 'C'],
     [/^HXF/, 'T'],
     [/^HPLC/, 'PLC'],
+    [/^IEC_K_COIL|^IEC_K_N/, 'K'],
+    [/^IEC_KM/, 'KM'],
+    [/^IEC_KT/, 'KT'],
+    [/^IEC_S_/, 'S'],
+    [/^IEC_Q_/, 'Q'],
+    [/^IEC_F_/, 'F'],
+    [/^IEC_P_/, 'P'],
+    [/^IEC_M_/, 'M'],
+    [/^IEC_X_/, 'X'],
+    [/^IEC_R/, 'R'],
+    [/^IEC_C/, 'C'],
+    [/^IEC_L/, 'L'],
+    [/^IEC_T/, 'T'],
+    [/^IEC_PLC/, 'PLC'],
   ];
   for (const [re, p] of map) if (re.test(blockName)) return p;
   return 'DEV';

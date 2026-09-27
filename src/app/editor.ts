@@ -12,7 +12,14 @@ import { EraseTool, MoveTool, CopyTool, RotateTool, DistTool } from '../tools/mo
 import { WireTool, LadderTool, ComponentTool, assignWireNumbers } from '../tools/electrical';
 import { TrimTool, ExtendTool, OffsetTool, MirrorTool, ScaleTool, ExplodeTool, ZoomWindowTool } from '../tools/edit';
 import { lineweightDisplay } from '../render/draw';
-import { ALL_SYMBOLS } from '../electrical/symbols';
+import { ALL_SYMBOLS, WIRE_DOT } from '../electrical/symbols';
+import { IEC_SYMBOLS } from '../electrical/iec';
+import { updateCrossReferences } from '../electrical/xref';
+import { TITLE_BLOCK, newFromTemplate, SHEET_SIZES, type SheetSize } from '../electrical/templates';
+import { PlcModuleTool, SignalArrowTool, TerminalStripTool, DEFAULT_PLC, DEFAULT_STRIP, SOURCE_ARROW, DEST_ARROW, type PlcModuleSettings, type TerminalStripSettings } from '../tools/plc';
+import { gripPoints } from '../core/entities';
+import { parseProject, serializeProject, defaultProject, resolveDrawingPath, baseName, type Project } from './project';
+import { loadSettings, saveSettings, pushRecent, type UserSettings } from './settings';
 import { readDxf, writeDxf } from '../io/dxf';
 import { parsePointInput, isPlainNumber } from './input';
 import { convertDwg, type DwgImportPayload } from '../io/dwg';
@@ -41,6 +48,9 @@ export interface FileBridge {
   /** Desktop only: open DXF or DWG (DWG parsed by LibreDWG in the main process). */
   openDrawing?(file?: string): Promise<OpenResult | null>;
   saveDxf(path: string | null, text: string, suggestName: string): Promise<string | null>;
+  openProject?(file?: string): Promise<{ path: string; text: string } | null>;
+  saveText?(suggestName: string, text: string, filterName: string, ext: string): Promise<string | null>;
+  plotPdf?(dataUrl: string, suggestName: string, landscape: boolean): Promise<string | null>;
 }
 
 const VERSION = '0.1.0';
@@ -88,10 +98,26 @@ export class Editor {
   private cursorWorld: Point | null = null;
   ui: ToolContext['ui'] | null = null;
   fileBridge: FileBridge | null = null;
+  /** Extra UI hooks provided by main.ts. */
+  hooks: {
+    reports?: (key: string) => void;
+    template?: () => Promise<{ size: SheetSize; fields: Record<string, string> } | null>;
+    plc?: (init: PlcModuleSettings) => Promise<PlcModuleSettings | null>;
+    terminalStrip?: (init: TerminalStripSettings) => Promise<TerminalStripSettings | null>;
+    wireType?: (current: string) => Promise<string | null>;
+    properties?: () => void;
+    projectChanged?: () => void;
+  } = {};
+  settings: UserSettings = loadSettings();
+  project: Project = defaultProject();
+  /** Layer new wires go on (AEWIRETYPE). */
+  wireLayer = 'WIRES';
+  private gripDrag: { entity: Entity; index: number; start: Point } | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.viewport = new Viewport(canvas, this.doc);
-    this.doc.ensureBlocks(ALL_SYMBOLS);
+    this.doc.ensureBlocks([...ALL_SYMBOLS, ...IEC_SYMBOLS, TITLE_BLOCK, SOURCE_ARROW, DEST_ARROW]);
+    this.applySettings();
     this.doc.subscribe(() => {
       // Drop selection ids that no longer exist.
       const ids = new Set(this.doc.entities.map((e) => e.id));
@@ -209,6 +235,15 @@ export class Editor {
   }
 
   cancel(): void {
+    if (this.gripDrag) {
+      this.gripDrag = null;
+      this.overlay.ghost = [];
+      this.overlay.trackFrom = null;
+      this.updateCursorMode();
+      this.setPrompt('Type a command');
+      this.render();
+      return;
+    }
     if (this.tool) {
       this.log('*Cancel*');
       this.tool.onCancel(this.makeContext());
@@ -236,6 +271,39 @@ export class Editor {
     this.overlay.hover = null;
     this.dragStart = null;
     this.dragWorld = null;
+  }
+
+  applySettings(): void {
+    const st = this.settings;
+    this.viewport.settings.gridVisible = st.gridVisible;
+    this.viewport.settings.crosshairSize = st.crosshairSize;
+    this.snap.gridSnap = st.gridSnap;
+    this.snap.ortho = st.ortho;
+    this.snap.polar = st.polar;
+    this.snap.osnap = st.osnap;
+    this.dynamicInput = st.dynamicInput;
+    lineweightDisplay.enabled = st.lineweightDisplay;
+  }
+
+  persistSettings(): void {
+    this.settings = {
+      ...this.settings,
+      gridVisible: this.viewport.settings.gridVisible,
+      crosshairSize: this.viewport.settings.crosshairSize,
+      gridSnap: this.snap.gridSnap,
+      ortho: this.snap.ortho,
+      polar: this.snap.polar,
+      osnap: this.snap.osnap,
+      dynamicInput: this.dynamicInput,
+      lineweightDisplay: lineweightDisplay.enabled,
+    };
+    saveSettings(this.settings);
+  }
+
+  private rememberRecent(path: string): void {
+    this.settings = { ...this.settings, recentFiles: pushRecent(this.settings.recentFiles, path) };
+    saveSettings(this.settings);
+    this.emit('file');
   }
 
   /** Whether typed input should be treated as literal text (TEXT command content). */
@@ -342,7 +410,7 @@ export class Editor {
       }
     });
     // Electrical
-    reg('AEWIRE', ['WIRE', 'W'], 'Insert wire', (ed) => ed.startTool(new WireTool()));
+    reg('AEWIRE', ['WIRE', 'W'], 'Insert wire', (ed) => ed.startTool(new WireTool(ed.wireLayer)));
     reg('AELADDER', ['LADDER'], 'Insert ladder', (ed) => ed.startTool(new LadderTool()));
     reg('AECOMPONENT', ['COMPONENT', 'CMP', 'AEC'], 'Insert component from icon menu', (ed, arg) => ed.startTool(new ComponentTool(arg)));
     reg('AEWIRENO', ['WIRENO'], 'Insert wire numbers', (ed, arg) => {
@@ -351,6 +419,45 @@ export class Editor {
       ed.log(`${n} wire number(s) assigned.`);
     });
     reg('LAYER', ['LA'], 'Layer properties', (ed) => ed.emitLayerDialog());
+    reg('PROPERTIES', ['PR', 'CH', 'MO'], 'Properties palette', (ed) => ed.hooks.properties?.());
+    reg('AEXREF', ['XREF'], 'Update coil/contact cross-references', (ed) => {
+      const n = updateCrossReferences(ed.doc);
+      ed.log(`Cross-references updated for ${n} tag(s).`);
+    });
+    reg('AEREPORT', ['REPORT', 'BOM'], 'Schematic reports [bom/components/wires/terminals/audit]', (ed, arg) => ed.hooks.reports?.((arg ?? 'bom').toLowerCase()));
+    reg('AEPLC', ['PLC'], 'Insert parametric PLC I/O module', (ed) => ed.startTool(new PlcModuleTool((init) => ed.hooks.plc?.(init) ?? Promise.resolve(init ?? DEFAULT_PLC))));
+    reg('AETERMSTRIP', ['TERMSTRIP'], 'Insert terminal strip', (ed) => ed.startTool(new TerminalStripTool((init) => ed.hooks.terminalStrip?.(init) ?? Promise.resolve(init ?? DEFAULT_STRIP))));
+    reg('AESOURCE', ['SOURCE'], 'Insert source signal arrow', (ed) => ed.startTool(new SignalArrowTool('source', (t, l, i) => (ed.ui ?? fallbackUi).textInput(t, l, i))));
+    reg('AEDEST', ['DEST'], 'Insert destination signal arrow', (ed) => ed.startTool(new SignalArrowTool('destination', (t, l, i) => (ed.ui ?? fallbackUi).textInput(t, l, i))));
+    reg('AEWIRETYPE', ['WIRETYPE'], 'Choose the wire type (layer) for new wires', (ed) => {
+      void (ed.hooks.wireType?.(ed.wireLayer) ?? Promise.resolve(null)).then((layer) => {
+        if (layer) {
+          ed.wireLayer = layer;
+          ed.log(`Wire type set to ${layer}.`);
+        }
+      });
+    });
+    reg('NEWSHEET', ['TEMPLATE'], 'New drawing from a sheet template', (ed) => {
+      void ed.confirmDiscardPublic().then((ok) => {
+        if (!ok) return;
+        void (ed.hooks.template?.() ?? Promise.resolve({ size: SHEET_SIZES[1]!, fields: {} })).then((r) => {
+          if (!r) return;
+          ed.loadState(newFromTemplate(r.size, r.fields), null);
+          ed.doc.dirty = true;
+          ed.log(`New ${r.size.name} sheet.`);
+        });
+      });
+    });
+    reg('OPENPROJECT', ['PROJECT'], 'Open a project file', (ed, arg) => void ed.openProject(arg));
+    reg('PROJECTADD', [], 'Add the current drawing to the project', (ed) => ed.addCurrentToProject());
+    reg('PROJECTSAVE', [], 'Save the project file', (ed) => void ed.saveProject());
+    reg('PLOT', ['PRINT', 'PDF'], 'Plot the drawing to PDF', (ed) => void ed.plot());
+    reg('RECENT', [], 'Open a recent file by index', (ed, arg) => {
+      const i = parseInt(arg ?? '1', 10) - 1;
+      const f = ed.settings.recentFiles[i];
+      if (f) void ed.openFile(f);
+      else ed.settings.recentFiles.forEach((r, k) => ed.log(`  ${k + 1}. ${r}`));
+    });
   }
 
   layerDialogRequested: (() => void) | null = null;
@@ -463,6 +570,7 @@ export class Editor {
     const state =
       name === 'grid' ? this.viewport.settings.gridVisible : name === 'lw' ? lineweightDisplay.enabled : name === 'dyn' ? this.dynamicInput : this.snap[name];
     this.log(`<${name.toUpperCase()} ${state ? 'on' : 'off'}>`);
+    this.persistSettings();
     this.emit('snap');
     this.render();
   }
@@ -519,7 +627,7 @@ export class Editor {
   newDrawingNow(): void {
     const fresh = new Drawing();
     this.doc.load(fresh.snapshot, null);
-    this.doc.ensureBlocks(ALL_SYMBOLS);
+    this.doc.ensureBlocks([...ALL_SYMBOLS, ...IEC_SYMBOLS, TITLE_BLOCK, SOURCE_ARROW, DEST_ARROW, WIRE_DOT]);
     this.selection.clear();
     this.viewport.zoomToBounds(null);
     this.log('New drawing.');
@@ -530,7 +638,7 @@ export class Editor {
 
   loadState(state: DrawingState, path: string | null): void {
     this.doc.load(state, path);
-    this.doc.ensureBlocks(ALL_SYMBOLS);
+    this.doc.ensureBlocks([...ALL_SYMBOLS, ...IEC_SYMBOLS, TITLE_BLOCK, SOURCE_ARROW, DEST_ARROW, WIRE_DOT]);
     this.selection.clear();
     this.zoomExtents();
     this.emit('file');
@@ -548,6 +656,7 @@ export class Editor {
         this.log(file ? `Opening ${file} ...` : 'Opening ...');
         const res = await this.fileBridge.openDrawing(file);
         if (!res) return;
+        this.rememberRecent(res.path);
         if (res.kind === 'dwg') {
           const { state, skipped } = convertDwg(res.payload);
           // DWG is read-only for us; saving goes to a sibling .dxf so the original is never overwritten.
@@ -587,8 +696,105 @@ export class Editor {
       this.doc.filePath = path;
       this.doc.dirty = false;
       this.log(`Saved ${path}`);
+      this.rememberRecent(path);
       this.emit('file');
     }
+  }
+
+  confirmDiscardPublic(): Promise<boolean> {
+    return this.confirmDiscard();
+  }
+
+  async openProject(file?: string): Promise<void> {
+    if (!this.fileBridge?.openProject) {
+      this.log('Projects need the desktop app.');
+      return;
+    }
+    try {
+      const res = await this.fileBridge.openProject(file);
+      if (!res) return;
+      this.project = parseProject(res.text, res.path);
+      this.log(`Project ${this.project.name}: ${this.project.drawings.length} drawing(s).`);
+      this.rememberRecent(res.path);
+      this.hooks.projectChanged?.();
+      this.emit('file');
+    } catch (err) {
+      this.log(`Failed to open project: ${(err as Error).message}`);
+    }
+  }
+
+  addCurrentToProject(): void {
+    if (!this.doc.filePath) {
+      this.log('Save the drawing first, then add it to the project.');
+      return;
+    }
+    const file = this.project.path ? relativeTo(this.project.path, this.doc.filePath) : this.doc.filePath;
+    if (this.project.drawings.some((d) => d.file === file)) {
+      this.log('Drawing is already in the project.');
+      return;
+    }
+    this.project = { ...this.project, drawings: [...this.project.drawings, { file }] };
+    this.hooks.projectChanged?.();
+    this.log(`Added ${baseName(file)} to project ${this.project.name}. Use PROJECTSAVE to write the project file.`);
+    this.emit('file');
+  }
+
+  async saveProject(): Promise<void> {
+    if (!this.fileBridge?.saveText) {
+      this.log('Projects need the desktop app.');
+      return;
+    }
+    const p = await this.fileBridge.saveText(this.project.path ?? `${this.project.name.replace(/\s+/g, '_')}.vcproj.json`, serializeProject(this.project), 'VoltCAD Project', 'json');
+    if (p) {
+      this.project = { ...this.project, path: p };
+      this.log(`Project saved: ${p}`);
+      this.rememberRecent(p);
+      this.hooks.projectChanged?.();
+    }
+  }
+
+  /** Open a drawing that belongs to the project (by index or path). */
+  openProjectDrawing(index: number): void {
+    const d = this.project.drawings[index];
+    if (!d) return;
+    void this.openFile(resolveDrawingPath(this.project, d));
+  }
+
+  /** Render the drawing extents to a white sheet and hand it to the main process as PDF. */
+  async plot(): Promise<void> {
+    if (!this.fileBridge?.plotPdf) {
+      this.log('Plotting needs the desktop app.');
+      return;
+    }
+    const b = this.doc.extents();
+    if (!b) {
+      this.log('Nothing to plot.');
+      return;
+    }
+    const w = b.max.x - b.min.x;
+    const h = b.max.y - b.min.y;
+    const landscape = w >= h;
+    const dpi = 150;
+    const margin = 0.25;
+    const pw = Math.ceil((w + margin * 2) * dpi);
+    const ph = Math.ceil((h + margin * 2) * dpi);
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.min(pw, 12000);
+    canvas.height = Math.min(ph, 12000);
+    const k = Math.min(canvas.width / pw, canvas.height / ph) * dpi;
+    const ctx = canvas.getContext('2d')!;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    const tf = { scale: k, toScreen: (p: Point) => ({ x: (p.x - b.min.x + margin) * k, y: (b.max.y - p.y + margin) * k }) };
+    const { drawEntity } = await import('../render/draw');
+    const hidden = new Set(this.doc.layers.filter((l) => !l.visible).map((l) => l.name));
+    for (const e of this.doc.entities) {
+      if (hidden.has(e.layer)) continue;
+      drawEntity(ctx, e, tf, this.doc.layers, this.doc.lookupBlock, { strokeOverride: '#000000', lineWidthOverride: Math.max(1, Math.round(dpi / 100)) });
+    }
+    const dataUrl = canvas.toDataURL('image/png');
+    const out = await this.fileBridge.plotPdf(dataUrl, this.fileName().replace(/\.[^.]+$/, '') + '.pdf', landscape);
+    if (out) this.log(`Plotted to ${out}`);
   }
 
   fileName(): string {
@@ -639,6 +845,14 @@ export class Editor {
     this.overlay.cursor = world;
     this.overlay.snap = snap;
 
+    if (this.gripDrag) {
+      const moved = applyGrip(this.gripDrag.entity, this.gripDrag.index, world);
+      this.overlay.ghost = moved ? [moved] : [];
+      this.overlay.dynText = [`${g.dist(this.gripDrag.start, world).toFixed(4)}`];
+      this.render();
+      this.emit('view');
+      return;
+    }
     if (this.dragStart && this.dragWorld) {
       const raw = this.viewport.toWorld(s);
       if (g.dist(this.dragStart, s) > 3) {
@@ -676,6 +890,22 @@ export class Editor {
     }
     // Selection (default tool or selection request)
     const raw = this.viewport.toWorld(s);
+    // Grip editing: press on a grip of a selected entity to stretch it.
+    if (!this.selReq && this.selection.size > 0) {
+      const gripTol = 6 * this.viewport.worldPerPixel();
+      for (const e of this.doc.entities) {
+        if (!this.selection.has(e.id)) continue;
+        const idx = gripPoints(e).findIndex((gp) => g.dist(gp, raw) <= gripTol);
+        if (idx >= 0) {
+          this.gripDrag = { entity: e, index: idx, start: raw };
+          this.overlay.trackFrom = gripPoints(e)[idx]!;
+          this.setPrompt('** STRETCH **  Specify stretch point:');
+          this.overlay.cursorMode = 'point';
+          this.render();
+          return;
+        }
+      }
+    }
     const hit = pickEntity(raw, this.doc.entities, this.doc.lookupBlock, this.pickAperture(), this.hiddenLayers(), this.lockedLayers());
     if (hit) {
       this.toggleSelect([hit.id], ev.shiftKey);
@@ -691,6 +921,20 @@ export class Editor {
       return;
     }
     if (ev.button !== 0) return;
+    if (this.gripDrag) {
+      const s = this.screenFromEvent(ev);
+      const { world } = this.resolveCursor(s);
+      const moved = applyGrip(this.gripDrag.entity, this.gripDrag.index, world);
+      this.gripDrag = null;
+      this.overlay.ghost = [];
+      this.overlay.trackFrom = null;
+      this.overlay.dynText = [];
+      this.updateCursorMode();
+      this.setPrompt('Type a command');
+      if (moved) this.doc.replaceEntities([moved]);
+      this.render();
+      return;
+    }
     if (this.dragStart && this.dragWorld) {
       const s = this.screenFromEvent(ev);
       if (this.overlay.selectionBox) {
@@ -713,7 +957,37 @@ export class Editor {
   }
 
   onDoubleClick(ev: MouseEvent): void {
-    if (ev.button === 1) this.zoomExtents();
+    if (ev.button === 1) {
+      this.zoomExtents();
+      return;
+    }
+    if (ev.button !== 0 || this.tool) return;
+    const raw = this.viewport.toWorld(this.screenFromEvent(ev));
+    const hit = pickEntity(raw, this.doc.entities, this.doc.lookupBlock, this.pickAperture(), this.hiddenLayers(), this.lockedLayers());
+    if (!hit) return;
+    const ui = this.ui ?? fallbackUi;
+    if (hit.type === 'text') {
+      void ui.textInput('Edit Text', 'Contents', hit.text).then((v) => {
+        if (v !== null && v !== hit.text) this.doc.replaceEntities([{ ...hit, text: v }]);
+      });
+    } else if (hit.type === 'insert' && (hit.attributes.TAG1 !== undefined || hit.attributes.TERM01 !== undefined)) {
+      void ui
+        .editComponent({ tag: hit.attributes.TAG1 ?? hit.attributes.TERM01 ?? '', desc: hit.attributes.DESC1 ?? '', block: hit.block, mfg: hit.attributes.MFG, cat: hit.attributes.CAT })
+        .then((r) => {
+          if (!r) return;
+          const attrs = { ...hit.attributes };
+          if (hit.attributes.TAG1 !== undefined) attrs.TAG1 = r.tag;
+          if (hit.attributes.TERM01 !== undefined) attrs.TERM01 = r.tag;
+          attrs.DESC1 = r.desc;
+          if (r.mfg) attrs.MFG = r.mfg;
+          else delete attrs.MFG;
+          if (r.cat) attrs.CAT = r.cat;
+          else delete attrs.CAT;
+          this.doc.replaceEntities([{ ...hit, attributes: attrs }]);
+        });
+    } else {
+      this.hooks.properties?.();
+    }
   }
 
   private toggleSelect(ids: string[], remove: boolean): void {
@@ -832,8 +1106,42 @@ export class Editor {
 
 const fallbackUi: ToolContext['ui'] = {
   pickSymbol: async () => null,
-  editComponent: async (init) => ({ tag: init.tag, desc: init.desc }),
+  editComponent: async (init) => ({ tag: init.tag, desc: init.desc, mfg: init.mfg ?? '', cat: init.cat ?? '' }),
   ladderSettings: async (init: LadderSettings) => init,
   textInput: async (_t, _l, init) => init,
   confirm: async () => true,
 };
+
+/** Move grip `index` of an entity to `p` (AutoCAD grip stretch semantics). */
+export function applyGrip(e: Entity, index: number, p: Point): Entity | null {
+  switch (e.type) {
+    case 'line':
+      if (index === 0) return { ...e, a: p };
+      if (index === 2) return { ...e, b: p };
+      {
+        const d = g.sub(p, g.mid(e.a, e.b));
+        return { ...e, a: g.add(e.a, d), b: g.add(e.b, d) };
+      }
+    case 'circle':
+      if (index === 0) return { ...e, center: p };
+      return { ...e, radius: Math.max(1e-6, g.dist(e.center, p)) };
+    case 'arc': {
+      if (index === 3) return { ...e, center: p };
+      const a = g.angleOf(e.center, p);
+      if (index === 0) return { ...e, startAngle: a };
+      if (index === 2) return { ...e, endAngle: a };
+      return { ...e, radius: Math.max(1e-6, g.dist(e.center, p)) };
+    }
+    case 'polyline':
+      return { ...e, points: e.points.map((q, i) => (i === index ? p : q)) };
+    case 'text':
+    case 'insert':
+      return { ...e, position: p };
+  }
+}
+
+function relativeTo(projectPath: string, file: string): string {
+  const dir = projectPath.replace(/[\\/][^\\/]*$/, '');
+  if (file.startsWith(dir + '/') || file.startsWith(dir + '\\')) return file.slice(dir.length + 1);
+  return file;
+}

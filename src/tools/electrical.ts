@@ -6,6 +6,9 @@ import type { Drawing } from '../core/document';
 import { LineTool } from './draw';
 import type { Tool, ToolContext, LadderSettings } from './types';
 import { findSymbol, tagPrefix, ALL_SYMBOLS, WIRE_DOT } from '../electrical/symbols';
+import { IEC_SYMBOLS } from '../electrical/iec';
+
+const lookupSymbol = (name: string) => findSymbol(name) ?? IEC_SYMBOLS.find((s) => s.name === name);
 import { entityBounds } from '../core/entities';
 
 const fmt = (p: Point) => `${p.x.toFixed(4)}, ${p.y.toFixed(4)}`;
@@ -22,7 +25,7 @@ export const DEFAULT_LADDER: LadderSettings = {
 
 /** Wires are lines on the WIRES layer. */
 export function isWire(e: Entity): e is LineEntity {
-  return e.type === 'line' && e.layer === 'WIRES';
+  return e.type === 'line' && e.layer.startsWith('WIRES');
 }
 
 export function isHorizontal(l: LineEntity): boolean {
@@ -50,8 +53,11 @@ function hasDotAt(doc: Drawing, p: Point): boolean {
 /** AEWIRE: like LINE, but always on WIRES layer and ortho-constrained; adds junction dots at tees. */
 export class WireTool extends LineTool {
   override readonly name = 'AEWIRE';
+  constructor(private wireLayer = 'WIRES') {
+    super();
+  }
   override start(ctx: ToolContext): void {
-    this.layer = 'WIRES';
+    this.layer = this.wireLayer;
     ctx.doc.ensureBlocks([WIRE_DOT]);
     super.start(ctx);
     ctx.prompt('Specify wire start:');
@@ -233,10 +239,11 @@ export class ComponentTool implements Tool {
   constructor(private preset?: string) {}
 
   start(ctx: ToolContext): void {
-    ctx.doc.ensureBlocks(ALL_SYMBOLS);
+    ctx.doc.ensureBlocks([...ALL_SYMBOLS, ...IEC_SYMBOLS]);
+    ctx.prompt('Select a symbol from the icon menu...');
     const choose = this.preset ? Promise.resolve(this.preset) : ctx.ui.pickSymbol();
     void choose.then((name) => {
-      if (!name || !findSymbol(name)) {
+      if (!name || !lookupSymbol(name)) {
         ctx.finish();
         return;
       }
@@ -275,7 +282,7 @@ export class ComponentTool implements Tool {
 
   onPoint(p: Point, ctx: ToolContext): void {
     if (!this.block) return;
-    const block = findSymbol(this.block)!;
+    const block = lookupSymbol(this.block)!;
     const { pos, wire } = this.target(ctx, p);
     const prefix = tagPrefix(this.block);
     const hasTag = block.attributes.some((a) => a.tag === 'TAG1');
@@ -284,11 +291,13 @@ export class ComponentTool implements Tool {
     const initDesc = '';
     ctx.setPreview([]);
 
-    const place = (tag: string, desc: string) => {
+    const place = (tag: string, desc: string, mfg = '', cat = '') => {
       const attrs: Record<string, string> = {};
       if (hasTag) attrs.TAG1 = tag;
       if (block.attributes.some((a) => a.tag === 'DESC1')) attrs.DESC1 = desc;
       if (block.attributes.some((a) => a.tag === 'TERM01')) attrs.TERM01 = tag;
+      if (mfg) attrs.MFG = mfg;
+      if (cat) attrs.CAT = cat;
       const ins = this.makeInsert(pos, attrs);
       ctx.doc.transact((s) => {
         let entities = s.entities;
@@ -309,7 +318,7 @@ export class ComponentTool implements Tool {
 
     if (hasTag) {
       void ctx.ui.editComponent({ tag: initTag, desc: initDesc, block: this.block }).then((r) => {
-        if (r) place(r.tag, r.desc);
+        if (r) place(r.tag, r.desc, r.mfg, r.cat);
         ctx.finish();
       });
     } else {

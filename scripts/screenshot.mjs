@@ -65,6 +65,53 @@ await page.evaluate(() => document.querySelector('.modal-backdrop')?.remove());
 await page.evaluate(() => window.editor.runCommand('LAYER'));
 await page.waitForTimeout(200);
 await page.screenshot({ path: 'screenshots/05-layers.png' });
+await page.keyboard.press('Escape');
+await page.evaluate(() => document.querySelector('.modal-backdrop')?.remove());
+
+// Properties palette with a component selected
+await page.evaluate(() => {
+  const ed = window.editor;
+  const ins = ed.doc.entities.find((e) => e.type === 'insert' && e.attributes.TAG1 === 'M102');
+  ed.selection = new Set([ins.id]);
+  ed.emit?.('selection');
+  ed.runCommand('PROPERTIES');
+  ed.render();
+});
+await page.waitForTimeout(200);
+await page.screenshot({ path: 'screenshots/06-properties.png' });
+await page.evaluate(() => window.editor.runCommand('PROPERTIES'));
+
+// Cross references + reports
+await page.evaluate(() => {
+  window.editor.selection = new Set();
+  window.editor.runCommand('AEXREF');
+  window.editor.runCommand('AEREPORT bom');
+});
+await page.waitForTimeout(250);
+await page.screenshot({ path: 'screenshots/07-reports.png' });
+await page.keyboard.press('Escape');
+await page.evaluate(() => document.querySelector('.modal-backdrop')?.remove());
+
+// New sheet from template (B size) with a PLC module and the Home tab
+await page.evaluate(() => {
+  window.editor.doc.dirty = false; // skip the unsaved-changes prompt
+  window.editor.runCommand('NEWSHEET');
+});
+await page.waitForTimeout(250);
+await page.screenshot({ path: 'screenshots/08-template-dialog.png' });
+await page.click('.modal .btn.primary >> nth=-1');
+await page.waitForTimeout(250);
+await page.evaluate(() => {
+  const ed = window.editor;
+  ed.runCommand('AEPLC');
+});
+await page.waitForTimeout(200);
+await page.click('.modal .btn.primary >> nth=-1');
+await page.waitForTimeout(100);
+await page.evaluate(() => window.editor.submitInput('3,9'));
+await page.evaluate(() => window.editor.zoomExtents());
+await page.waitForTimeout(200);
+await page.screenshot({ path: 'screenshots/09-sheet-plc.png' });
 
 await browser.close();
 server.close();

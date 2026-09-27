@@ -12,13 +12,50 @@
     "electron:dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .\"",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "screenshot": "node scripts/screenshot.mjs"
+    "screenshot": "node scripts/screenshot.mjs",
+    "dist": "npm run build && electron-builder",
+    "dist:dir": "npm run build && electron-builder --dir"
+  },
+  "build": {
+    "appId": "com.voltcad.app",
+    "productName": "VoltCAD 2D",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "electron/**",
+      "scripts/dwg-reader.mjs",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/@mlightcad/libredwg-web/**"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.graphics-design"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Graphics"
+    }
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
     "concurrently": "^9.1.0",
     "cross-env": "^7.0.3",
     "electron": "^33.2.0",
+    "electron-builder": "^26.15.3",
     "playwright": "^1.49.0",
     "typescript": "^5.7.2",
     "vite": "^6.0.3",

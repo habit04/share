@@ -4,7 +4,9 @@ import { Ribbon } from './ui/ribbon';
 import { CommandLine } from './ui/commandline';
 import { StatusBar } from './ui/statusbar';
 import { ProjectManager } from './ui/projectmanager';
-import { pickSymbolDialog, editComponentDialog, ladderDialog, textInputDialog, layerDialog, confirmDialog } from './ui/dialogs';
+import { pickSymbolDialog, editComponentDialog, ladderDialog, textInputDialog, layerDialog, confirmDialog, reportsDialog, templateDialog, plcDialog, terminalStripDialog, wireTypeDialog } from './ui/dialogs';
+import { PropertiesPalette } from './ui/properties';
+import { saveSettings } from './app/settings';
 import { buildTitleBar, buildFileTabs, buildLayoutTabs, installContextMenu, buildNavBar } from './ui/chrome';
 import { seedDemoDrawing } from './app/demo';
 
@@ -13,6 +15,9 @@ declare global {
     voltcad?: {
       openDxf(): Promise<{ path: string; text: string } | null>;
       openDrawing(file?: string): Promise<import('./app/editor').OpenResult | null>;
+      openProject(file?: string): Promise<{ path: string; text: string } | null>;
+      saveText(suggestName: string, text: string, filterName: string, ext: string): Promise<string | null>;
+      plotPdf(dataUrl: string, suggestName: string, landscape: boolean): Promise<string | null>;
       saveDxf(path: string | null, text: string, suggestName: string): Promise<string | null>;
       onMenuCommand(cb: (cmd: string) => void): void;
       onQueryDirty(cb: () => boolean): void;
@@ -49,6 +54,15 @@ function browserFileBridge(): FileBridge {
   };
 }
 
+async function browserDownload(name: string, text: string): Promise<string | null> {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  return name;
+}
+
 function boot(): void {
   const app = document.getElementById('app')!;
   app.innerHTML = `
@@ -65,6 +79,7 @@ function boot(): void {
         <div id="layout-tabs"></div>
         <div id="command-window"></div>
       </div>
+      <div id="properties"></div>
     </div>
     <div id="statusbar"></div>`;
 
@@ -72,18 +87,47 @@ function boot(): void {
   const editor = new Editor(canvas);
   editor.fileBridge = window.voltcad ?? browserFileBridge();
   editor.ui = {
-    pickSymbol: () => pickSymbolDialog(editor),
+    pickSymbol: () =>
+      pickSymbolDialog(editor, editor.settings.symbolStandard, (std) => {
+        editor.settings = { ...editor.settings, symbolStandard: std };
+        saveSettings(editor.settings);
+      }),
     editComponent: (init) => editComponentDialog(editor, init),
     ladderSettings: (init) => ladderDialog(init),
     textInput: (t, l, i) => textInputDialog(t, l, i),
     confirm: (t, m) => confirmDialog(t, m),
   };
   editor.layerDialogRequested = () => layerDialog(editor);
-  editor.register({ name: 'TOGGLEPM', aliases: [], description: 'Toggle Project Manager palette', run: () => pm.toggle() });
+  editor.register({
+    name: 'TOGGLEPM',
+    aliases: [],
+    description: 'Toggle Project Manager palette',
+    run: () => {
+      pm.toggle();
+      editor.settings = { ...editor.settings, projectManagerVisible: !pm.el.classList.contains('hidden') };
+      saveSettings(editor.settings);
+    },
+  });
+  editor.hooks = {
+    reports: (key) => reportsDialog(editor, key, (name, csv) => editor.fileBridge?.saveText?.(name, csv, 'CSV', 'csv') ?? browserDownload(name, csv)),
+    template: () => templateDialog(),
+    plc: (init) => plcDialog(init),
+    terminalStrip: (init) => terminalStripDialog(init),
+    wireType: (cur) => wireTypeDialog(editor, cur),
+    properties: () => props.toggle(),
+    projectChanged: () => pm.refresh(),
+  };
 
   buildTitleBar(editor, document.getElementById('titlebar')!);
-  new Ribbon(editor, document.getElementById('ribbon')!);
+  const ribbon = new Ribbon(editor, document.getElementById('ribbon')!);
+  ribbon.setActive(editor.settings.ribbonTab);
+  ribbon.onTabChange = (i) => {
+    editor.settings = { ...editor.settings, ribbonTab: i };
+    saveSettings(editor.settings);
+  };
   const pm = new ProjectManager(editor, document.getElementById('project-manager')!);
+  if (!editor.settings.projectManagerVisible) pm.el.classList.add('hidden');
+  const props = new PropertiesPalette(editor, document.getElementById('properties')!);
   buildFileTabs(editor, document.getElementById('file-tabs')!);
   buildLayoutTabs(editor, document.getElementById('layout-tabs')!);
   const cmd = new CommandLine(editor, document.getElementById('command-window')!);

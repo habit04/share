@@ -27,7 +27,7 @@ export interface ToolContext {
   /** Modal helpers implemented by the UI layer. */
   ui: {
     pickSymbol(): Promise<string | null>;
-    editComponent(init: { tag: string; desc: string; block: string }): Promise<{ tag: string; desc: string } | null>;
+    editComponent(init: { tag: string; desc: string; block: string; mfg?: string; cat?: string }): Promise<{ tag: string; desc: string; mfg: string; cat: string } | null>;
     ladderSettings(init: LadderSettings): Promise<LadderSettings | null>;
     textInput(title: string, label: string, init: string): Promise<string | null>;
     confirm(title: string, message: string): Promise<boolean>;

@@ -63,7 +63,7 @@ export const RIBBON: RibbonTab[] = [
       },
       {
         title: 'Layers',
-        buttons: [B('Layer\nProperties', 'layers', 'LAYER')],
+        buttons: [B('Layer\nProperties', 'layers', 'LAYER'), B('Properties', 'props', 'PROPERTIES', 'small'), B('Plot', 'plot', 'PLOT', 'small')],
       },
       {
         title: 'View',
@@ -88,11 +88,11 @@ export const RIBBON: RibbonTab[] = [
     panels: [
       {
         title: 'Project Tools',
-        buttons: [B('Manager', 'project', 'HELP'), B('New\nDrawing', 'new', 'NEW'), B('Open', 'open', 'OPEN', 'small'), B('Save', 'save', 'SAVE', 'small'), B('Save As', 'saveas', 'SAVEAS', 'small')],
+        buttons: [B('Manager', 'project', 'TOGGLEPM'), B('New\nDrawing', 'new', 'NEWSHEET'), B('Open\nProject', 'open', 'OPENPROJECT'), B('Open', 'open', 'OPEN', 'small'), B('Save', 'save', 'SAVE', 'small'), B('Save As', 'saveas', 'SAVEAS', 'small')],
       },
       {
         title: 'Other Tools',
-        buttons: [B('Drawing\nProperties', 'props', 'LIST'), B('Settings', 'settings', 'HELP', 'small'), B('Reference\nNumbers', 'wireno', 'AEWIRENO', 'small')],
+        buttons: [B('Drawing\nProperties', 'props', 'PROPERTIES'), B('Plot to\nPDF', 'plot', 'PLOT'), B('Add to\nProject', 'plus', 'PROJECTADD', 'small'), B('Save\nProject', 'save', 'PROJECTSAVE', 'small'), B('Reference\nNumbers', 'wireno', 'AEWIRENO', 'small')],
       },
     ],
   },
@@ -131,7 +131,11 @@ export const RIBBON: RibbonTab[] = [
       },
       {
         title: 'Edit Wires/Wire Numbers',
-        buttons: [B('Edit Wire\nNumber', 'edit', 'AEWIRENO', 'small'), B('Swap', 'swap', 'ROTATE', 'small'), B('Explode', 'explode', 'EXPLODE', 'small')],
+        buttons: [B('Edit Wire\nNumber', 'edit', 'AEWIRENO', 'small'), B('Wire Type', 'wiremulti', 'AEWIRETYPE', 'small'), B('Explode', 'explode', 'EXPLODE', 'small')],
+      },
+      {
+        title: 'Other Tools',
+        buttons: [B('Cross\nReference', 'swap', 'AEXREF'), B('PLC\nModule', 'plc', 'AEPLC'), B('Source\nArrow', 'extend', 'AESOURCE', 'small'), B('Dest.\nArrow', 'offset', 'AEDEST', 'small'), B('Properties', 'props', 'PROPERTIES', 'small')],
       },
     ],
   },
@@ -139,14 +143,14 @@ export const RIBBON: RibbonTab[] = [
     name: 'Panel',
     panels: [
       { title: 'Insert Component Footprints', buttons: [B('Icon\nMenu', 'panel', 'AECOMPONENT'), B('Schematic\nList', 'report', 'LIST', 'small'), B('Manual', 'edit', 'AECOMPONENT', 'small')] },
-      { title: 'Terminal Footprints', buttons: [B('Terminal', 'terminal', 'AECOMPONENT HT0001', 'small'), B('Editor', 'edit', 'LIST', 'small')] },
+      { title: 'Terminal Footprints', buttons: [B('Terminal\nStrip', 'panel', 'AETERMSTRIP'), B('Terminal', 'terminal', 'AECOMPONENT HT0001', 'small'), B('Editor', 'edit', 'PROPERTIES', 'small')] },
     ],
   },
   {
     name: 'Reports',
     panels: [
-      { title: 'Schematic', buttons: [B('Reports', 'report', 'LIST'), B('Missing Bill\nof Material', 'report', 'LIST', 'small'), B('Electrical\nAudit', 'check', 'LIST', 'small')] },
-      { title: 'Panel', buttons: [B('Reports', 'report', 'LIST')] },
+      { title: 'Schematic', buttons: [B('Reports', 'report', 'AEREPORT bom'), B('Bill of\nMaterial', 'report', 'AEREPORT bom', 'small'), B('Component\nReport', 'report', 'AEREPORT components', 'small'), B('Wire\nFrom/To', 'wire', 'AEREPORT wires', 'small'), B('Terminal\nReport', 'terminal', 'AEREPORT terminals', 'small'), B('Electrical\nAudit', 'check', 'AEREPORT audit', 'small')] },
+      { title: 'Panel', buttons: [B('Reports', 'report', 'AEREPORT terminals')] },
     ],
   },
   {
@@ -168,7 +172,7 @@ export const RIBBON: RibbonTab[] = [
     name: 'View',
     panels: [
       { title: 'Navigate 2D', buttons: [B('Pan', 'pan', 'PAN'), B('Zoom\nExtents', 'zoomext', 'ZOOM E'), B('Window', 'zoomwin', 'ZOOM W', 'small'), B('Zoom In', 'zoomin', 'ZOOM I', 'small'), B('Zoom Out', 'zoomout', 'ZOOM O', 'small')] },
-      { title: 'Palettes', buttons: [B('Project\nManager', 'project', 'TOGGLEPM'), B('Properties', 'props', 'LIST', 'small'), B('Layers', 'layers', 'LAYER', 'small')] },
+      { title: 'Palettes', buttons: [B('Project\nManager', 'project', 'TOGGLEPM'), B('Properties', 'props', 'PROPERTIES', 'small'), B('Layers', 'layers', 'LAYER', 'small')] },
     ],
   },
 ];
@@ -190,10 +194,13 @@ export class Ribbon {
     this.setActive(2); // Schematic tab is the natural home for an electrical workspace
   }
 
+  onTabChange: ((i: number) => void) | null = null;
+
   setActive(i: number): void {
-    this.active = i;
+    this.active = Math.max(0, Math.min(RIBBON.length - 1, i));
     this.renderTabs();
     this.renderBody();
+    this.onTabChange?.(this.active);
   }
 
   private renderTabs(): void {

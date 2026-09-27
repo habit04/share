@@ -180,6 +180,73 @@ ipcMain.handle('open-drawing', async (ev, file) => {
   return openDrawingFile(win, file);
 });
 
+/** Read a project file and register its drawings as openable paths. */
+ipcMain.handle('open-project', async (ev, file) => {
+  const win = BrowserWindow.fromWebContents(ev.sender);
+  if (file !== undefined && typeof file !== 'string') throw new Error('Invalid path');
+  if (!file) {
+    const res = await dialog.showOpenDialog(win, {
+      title: 'Open Project',
+      filters: [{ name: 'VoltCAD Project', extensions: ['json'] }],
+      properties: ['openFile'],
+    });
+    if (res.canceled || res.filePaths.length === 0) return null;
+    file = res.filePaths[0];
+  } else if (!knownPaths.has(file)) throw new Error('Unknown file path');
+  const text = await fs.readFile(file, 'utf8');
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error('Not a valid project file');
+  }
+  knownPaths.add(file);
+  const dir = path.dirname(file);
+  if (parsed && Array.isArray(parsed.drawings)) {
+    for (const d of parsed.drawings) {
+      if (d && typeof d.file === 'string') knownPaths.add(path.isAbsolute(d.file) ? d.file : path.join(dir, d.file));
+    }
+  }
+  return { path: file, text };
+});
+
+/** Save arbitrary text (CSV report, project file) through a save dialog. */
+ipcMain.handle('save-text', async (ev, suggestName, text, filterName, ext) => {
+  const win = BrowserWindow.fromWebContents(ev.sender);
+  if (typeof text !== 'string') throw new Error('Invalid payload');
+  const res = await dialog.showSaveDialog(win, {
+    title: 'Save',
+    defaultPath: String(suggestName || 'export.txt'),
+    filters: [{ name: String(filterName || 'Text'), extensions: [String(ext || 'txt')] }],
+  });
+  if (res.canceled || !res.filePath) return null;
+  await fs.writeFile(res.filePath, text, 'utf8');
+  knownPaths.add(res.filePath);
+  return res.filePath;
+});
+
+/** Plot: the renderer sends a PNG data URL of the sheet; we print it to PDF via a hidden window. */
+ipcMain.handle('plot-pdf', async (ev, dataUrl, suggestName, landscape) => {
+  const win = BrowserWindow.fromWebContents(ev.sender);
+  if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/png;base64,')) throw new Error('Invalid image');
+  const res = await dialog.showSaveDialog(win, {
+    title: 'Plot to PDF',
+    defaultPath: String(suggestName || 'Drawing1.pdf'),
+    filters: [{ name: 'PDF', extensions: ['pdf'] }],
+  });
+  if (res.canceled || !res.filePath) return null;
+  const hidden = new BrowserWindow({ show: false, webPreferences: { sandbox: true, contextIsolation: true } });
+  try {
+    const html = `<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;background:#fff}img{width:100%;height:auto;display:block}@page{margin:0}</style></head><body><img src="${dataUrl}"></body></html>`;
+    await hidden.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+    const pdf = await hidden.webContents.printToPDF({ landscape: Boolean(landscape), printBackground: true, margins: { marginType: 'none' } });
+    await fs.writeFile(res.filePath, pdf);
+    return res.filePath;
+  } finally {
+    hidden.destroy();
+  }
+});
+
 ipcMain.handle('open-dxf', async (ev) => {
   const win = BrowserWindow.fromWebContents(ev.sender);
   const r = await openDrawingFile(win);
