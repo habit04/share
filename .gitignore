@@ -7,3 +7,4 @@ screenshots/*.png
 _*.mjs
 _*.test.ts
 .claude/worktrees/
+tests/zz_*
