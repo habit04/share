@@ -23,6 +23,8 @@ import { loadSettings, saveSettings, pushRecent, type UserSettings } from './set
 import { readDxf, writeDxf } from '../io/dxf';
 import { parsePointInput, isPlainNumber } from './input';
 import { convertDwg, type DwgImportPayload } from '../io/dwg';
+import type { ElectricalUi } from '../electrical/ui';
+import { registerElectricalCommands } from './commands-electrical';
 
 export type EditorEvent = 'change' | 'selection' | 'tool' | 'view' | 'snap' | 'file' | 'log';
 
@@ -107,6 +109,8 @@ export class Editor {
     wireType?: (current: string) => Promise<string | null>;
     properties?: () => void;
     projectChanged?: () => void;
+    /** AutoCAD Electrical-style dialogs (see src/electrical/ui.ts); defaults come from src/ui/electrical-dialogs.ts. */
+    electrical?: ElectricalUi;
   } = {};
   settings: UserSettings = loadSettings();
   project: Project = defaultProject();
@@ -458,6 +462,7 @@ export class Editor {
       if (f) void ed.openFile(f);
       else ed.settings.recentFiles.forEach((r, k) => ed.log(`  ${k + 1}. ${r}`));
     });
+    registerElectricalCommands(this);
   }
 
   layerDialogRequested: (() => void) | null = null;
