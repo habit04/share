@@ -26,10 +26,11 @@ trademarks are used.
 ## Download and run
 
 Ready-made installers are built by the **Build installers** GitHub Actions workflow
-(Actions tab, run it or push a `v*` tag): a Windows installer (`.exe`), a macOS disk
-image (`.dmg`) and Linux `.AppImage` / `.deb` packages appear as workflow artifacts, and
-tagged builds are attached to a GitHub Release. The builds are unsigned, so Windows
-SmartScreen and macOS Gatekeeper will ask for confirmation the first time.
+(Actions tab, run it or push a `v*` tag): a Windows installer (`.exe`), macOS disk
+images (`.dmg`, Apple Silicon and Intel) and Linux `.AppImage` / `.deb` packages appear as workflow artifacts, and
+tagged builds are attached to a GitHub Release. The builds are not signed with a vendor certificate, so Windows SmartScreen asks for
+confirmation ("More info" then "Run anyway") and macOS asks once under System Settings >
+Privacy & Security > "Open Anyway" (macOS builds are ad-hoc signed so they are not reported as damaged).
 
 ## Run from source
 
