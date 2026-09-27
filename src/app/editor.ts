@@ -23,6 +23,8 @@ import { loadSettings, saveSettings, pushRecent, type UserSettings } from './set
 import { readDxf, writeDxf } from '../io/dxf';
 import { parsePointInput, isPlainNumber } from './input';
 import { convertDwg, type DwgImportPayload } from '../io/dwg';
+import { registerDraftingCommands } from './commands-drafting';
+import { trackFromPoints } from '../core/snap';
 
 export type EditorEvent = 'change' | 'selection' | 'tool' | 'view' | 'snap' | 'file' | 'log';
 
@@ -266,6 +268,9 @@ export class Editor {
     this.overlay.preview = [];
     this.overlay.ghost = [];
     this.overlay.trackFrom = null;
+    this.overlay.acquired = undefined;
+    this.overlay.trackPaths = undefined;
+    this.acquired = [];
     this.overlay.dynText = [];
     this.overlay.selectionBox = null;
     this.overlay.hover = null;
@@ -458,7 +463,11 @@ export class Editor {
       if (f) void ed.openFile(f);
       else ed.settings.recentFiles.forEach((r, k) => ed.log(`  ${k + 1}. ${r}`));
     });
+    registerDraftingCommands(this);
   }
+
+  /** Hook for keywords typed at a "Select objects:" prompt (ALL / Last / Previous); returns true when handled. */
+  selectionKeyword: ((text: string, ids: Set<string>) => boolean) | null = null;
 
   layerDialogRequested: (() => void) | null = null;
   private emitLayerDialog(): void {
@@ -493,13 +502,14 @@ export class Editor {
     }
     this.log(`${this.prompt} ${text}`);
     if (this.selReq) {
-      if (text.toUpperCase() === 'ALL') {
-        for (const e of this.doc.entities) this.selReq.ids.add(e.id);
+      const handled = this.selectionKeyword ? this.selectionKeyword(text, this.selReq.ids) : false;
+      if (handled || text.toUpperCase() === 'ALL') {
+        if (!handled) for (const e of this.doc.entities) this.selReq.ids.add(e.id);
         this.selection = new Set(this.selReq.ids);
         this.emit('selection');
         this.render();
         this.log(`${this.selReq.ids.size} found`);
-      }
+      } else this.log('Expects a point or Window/Last/Crossing/BOX/ALL/Fence/WPolygon/CPolygon/Add/Remove/Previous/Undo');
       return;
     }
     if (this.tool) {
@@ -550,6 +560,9 @@ export class Editor {
 
   private acceptPoint(p: Point): void {
     this.lastPoint = p;
+    this.acquired = [];
+    this.overlay.acquired = undefined;
+    this.overlay.trackPaths = undefined;
     this.tool?.onPoint(p, this.makeContext());
     this.emit('tool');
   }
@@ -823,12 +836,31 @@ export class Editor {
     const snap = wantSnap
       ? findObjectSnap(raw, this.doc.entities, this.doc.lookupBlock, this.snap, aperture, this.overlay.trackFrom, this.hiddenLayers())
       : null;
-    if (snap) return { world: snap.point, snap };
+    this.overlay.trackPaths = undefined;
+    if (snap) {
+      // Object snap tracking acquires the points the cursor pauses on (the last two).
+      if (this.snap.otrack && wantSnap && snap.kind !== 'perpendicular' && snap.kind !== 'nearest') {
+        if (!this.acquired.some((q) => g.eq(q, snap.point, 1e-9))) this.acquired = [...this.acquired.slice(-1), snap.point];
+        this.overlay.acquired = this.acquired;
+      }
+      return { world: snap.point, snap };
+    }
     let p = raw;
+    if (this.snap.otrack && wantSnap) {
+      const bases = this.overlay.trackFrom ? [...this.acquired, this.overlay.trackFrom] : this.acquired;
+      const tr = trackFromPoints(raw, bases, this.snap, aperture);
+      if (tr) {
+        this.overlay.trackPaths = tr.paths;
+        return { world: tr.point, snap: { point: tr.point, kind: 'tracking' } };
+      }
+    }
     if (this.overlay.trackFrom) p = constrainDirection(this.overlay.trackFrom, p, this.snap);
     p = snapToGrid(p, this.snap);
     return { world: p, snap: null };
   }
+
+  /** Points acquired for object snap tracking; cleared whenever a point is accepted. */
+  private acquired: Point[] = [];
 
   onMouseMove(ev: MouseEvent): void {
     const s = this.screenFromEvent(ev);
