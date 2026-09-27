@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { writeDxf, readDxf } from '../src/io/dxf';
 import { Drawing } from '../src/core/document';
 import type { Entity } from '../src/core/entities';
+import { polylineVertices } from '../src/core/entities';
 import { ALL_SYMBOLS, findSymbol } from '../src/electrical/symbols';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -130,9 +131,12 @@ describe('DXF round trip', () => {
     if (ins?.type === 'insert') expect(ins.attributes.SECRET).toBe('hidden value');
     const pl = s.entities.find((e) => e.type === 'polyline');
     if (pl?.type === 'polyline') {
-      expect(pl.points.length).toBeGreaterThan(5); // semicircle tessellated
+      expect(pl.points).toHaveLength(2); // the bulge is kept, not tessellated
+      expect(pl.bulges?.[0]).toBe(1);
+      const verts = polylineVertices(pl);
+      expect(verts.length).toBeGreaterThan(5); // semicircle tessellated for display
       // positive bulge = counter-clockwise from (0,0) to (2,0): the arc passes below the chord
-      const bottom = Math.min(...pl.points.map((p) => p.y));
+      const bottom = Math.min(...verts.map((p) => p.y));
       expect(bottom).toBeCloseTo(-1, 1);
     }
     // the invisible attribute must round-trip as invisible

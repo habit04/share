@@ -1,11 +1,19 @@
 /**
- * Minimal DXF (AC1015 / AutoCAD 2000) reader and writer.
- * Supports LINE, CIRCLE, ARC, LWPOLYLINE, TEXT, INSERT (+ ATTRIB), BLOCK, LAYER.
+ * DXF (AC1015 / AutoCAD 2000) reader and writer.
+ * Entities: LINE, CIRCLE, ARC, LWPOLYLINE (bulges, constant width), POLYLINE,
+ * TEXT, MTEXT, INSERT (+ ATTRIB), ELLIPSE, POINT, XLINE, RAY, SOLID/TRACE,
+ * DIMENSION (with its anonymous *D block). Tables: LAYER (linetype, lineweight,
+ * frozen/off/locked), LTYPE (dash patterns), VIEW, DIMSTYLE, BLOCK_RECORD.
+ * Header: units, limits, LTSCALE, PDMODE/PDSIZE, DIM* variables, CELTYPE/CELWEIGHT.
  */
-import type { Entity, BlockDef, Layer, AttributeDef, ColorSpec } from '../core/entities';
-import { newId } from '../core/entities';
-import type { DrawingState } from '../core/document';
-import { DEFAULT_LAYERS } from '../core/document';
+import type { Entity, BlockDef, Layer, AttributeDef, ColorSpec, DimensionEntity, PolylineEntity, MTextEntity, DimStyle } from '../core/entities';
+import { newId, dimensionParts, textWidth } from '../core/entities';
+import { dimensionTextPoint, dimensionMeasurement, STANDARD_DIMSTYLE } from '../core/dimension';
+import { mtextToDxf, mtextFromDxf, type MTextAttachment } from '../core/mtext';
+import type { DrawingState, DrawingHeader, NamedView } from '../core/document';
+import { DEFAULT_LAYERS, DEFAULT_HEADER } from '../core/document';
+import { STANDARD_LINETYPES, findLinetype, patternLength, type Linetype } from '../core/linetypes';
+import type { LinearUnits } from '../core/units';
 import * as g from '../core/geometry';
 
 // ---------------------------------------------------------------- writing
@@ -41,11 +49,165 @@ function writeEntityCommon(w: Writer, e: Entity, owner: string, kind: string, su
   w.pair(330, owner);
   w.pair(100, 'AcDbEntity');
   w.pair(8, e.layer);
+  if (e.linetype && e.linetype.toUpperCase() !== 'BYLAYER') w.pair(6, e.linetype);
   if (e.color !== 'ByLayer') w.pair(62, colorCode(e.color));
+  if (e.ltscale !== undefined && e.ltscale !== 1) w.pair(48, e.ltscale);
+  if (e.lineWeight !== undefined) w.pair(370, e.lineWeight < 0 ? Math.round(e.lineWeight) : Math.round(e.lineWeight * 100));
   w.pair(100, subclass);
 }
 
-function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonly<Record<string, BlockDef>>): void {
+function writeTextLike(w: Writer, position: g.Point, height: number, text: string, rotation: number, align: 'left' | 'center' | 'right'): void {
+  w.pair(10, position.x);
+  w.pair(20, position.y);
+  w.pair(30, 0);
+  w.pair(40, height);
+  w.pair(1, text);
+  if (rotation !== 0) w.pair(50, g.deg(rotation));
+  const h = align === 'center' ? 1 : align === 'right' ? 2 : 0;
+  if (h !== 0) {
+    w.pair(72, h);
+    w.pair(11, position.x);
+    w.pair(21, position.y);
+    w.pair(31, 0);
+  }
+}
+
+function writePolyline(w: Writer, e: PolylineEntity, owner: string): void {
+  if (e.filled && e.closed && (e.points.length === 3 || e.points.length === 4)) {
+    // Filled triangles/quads (dimension arrowheads) are SOLIDs so every reader fills them.
+    writeEntityCommon(w, e, owner, 'SOLID', 'AcDbTrace');
+    const p = e.points;
+    // SOLID vertex order is 1-2-4-3 (bow tie convention)
+    const order = p.length === 3 ? [p[0]!, p[1]!, p[2]!, p[2]!] : [p[0]!, p[1]!, p[3]!, p[2]!];
+    order.forEach((pt, i) => {
+      w.pair(10 + i, pt.x);
+      w.pair(20 + i, pt.y);
+      w.pair(30 + i, 0);
+    });
+    return;
+  }
+  writeEntityCommon(w, e, owner, 'LWPOLYLINE', 'AcDbPolyline');
+  w.pair(90, e.points.length);
+  w.pair(70, e.closed ? 1 : 0);
+  if (e.width) w.pair(43, e.width);
+  e.points.forEach((p, i) => {
+    w.pair(10, p.x);
+    w.pair(20, p.y);
+    const b = e.bulges?.[i] ?? 0;
+    if (Math.abs(b) > 1e-12) w.pair(42, b);
+  });
+}
+
+function writeMText(w: Writer, e: MTextEntity, owner: string): void {
+  writeEntityCommon(w, e, owner, 'MTEXT', 'AcDbMText');
+  w.pair(10, e.position.x);
+  w.pair(20, e.position.y);
+  w.pair(30, 0);
+  w.pair(40, e.height);
+  w.pair(41, e.width);
+  w.pair(71, e.attachment);
+  w.pair(72, 1);
+  const text = mtextToDxf(e.text);
+  // Long strings go in 250-char chunks of code 3 followed by a final code 1.
+  let rest = text;
+  while (rest.length > 250) {
+    w.pair(3, rest.slice(0, 250));
+    rest = rest.slice(250);
+  }
+  w.pair(1, rest);
+  w.pair(7, 'Standard');
+  w.pair(11, Math.cos(e.rotation));
+  w.pair(21, Math.sin(e.rotation));
+  w.pair(31, 0);
+  w.pair(73, 1);
+  w.pair(44, e.lineSpacing || 1);
+}
+
+const DIM_TYPE: Record<DimensionEntity['kind'], number> = { linear: 0, aligned: 1, angular: 5, diameter: 3, radius: 4 };
+
+function radialPoints(e: DimensionEntity): { q: g.Point; far: g.Point } {
+  const r = g.dist(e.p1, e.p2);
+  const toLoc = g.sub(e.linePoint, e.p1);
+  const dir = g.len(toLoc) > 1e-9 ? g.normalize(toLoc) : g.normalize(g.sub(e.p2, e.p1));
+  return { q: g.add(e.p1, g.scale(dir, r)), far: g.sub(e.p1, g.scale(dir, r)) };
+}
+
+function writeDimension(w: Writer, e: DimensionEntity, owner: string, blockName: string): void {
+  writeEntityCommon(w, e, owner, 'DIMENSION', 'AcDbDimension');
+  w.pair(280, 0);
+  w.pair(2, blockName);
+  let defpoint: g.Point;
+  switch (e.kind) {
+    case 'linear':
+    case 'aligned': {
+      const u = e.kind === 'linear' ? { x: Math.cos(e.rotation), y: Math.sin(e.rotation) } : g.len(g.sub(e.p2, e.p1)) > 1e-12 ? g.normalize(g.sub(e.p2, e.p1)) : { x: 1, y: 0 };
+      defpoint = g.add(e.linePoint, g.scale(u, g.dot(g.sub(e.p2, e.linePoint), u)));
+      break;
+    }
+    case 'radius':
+      defpoint = e.p1;
+      break;
+    case 'diameter':
+      defpoint = radialPoints(e).q;
+      break;
+    case 'angular':
+      defpoint = e.linePoint;
+      break;
+  }
+  w.pair(10, defpoint.x);
+  w.pair(20, defpoint.y);
+  w.pair(30, 0);
+  const tp = e.textPosition ?? dimensionTextPoint(e, textWidth);
+  w.pair(11, tp.x);
+  w.pair(21, tp.y);
+  w.pair(31, 0);
+  w.pair(70, DIM_TYPE[e.kind] | 32 | (e.textPosition ? 128 : 0));
+  w.pair(71, 5);
+  w.pair(42, dimensionMeasurement(e));
+  if (e.text !== undefined && e.text !== '') w.pair(1, e.text);
+  w.pair(3, e.style.name);
+  switch (e.kind) {
+    case 'linear':
+    case 'aligned':
+      w.pair(100, 'AcDbAlignedDimension');
+      w.pair(13, e.p1.x);
+      w.pair(23, e.p1.y);
+      w.pair(33, 0);
+      w.pair(14, e.p2.x);
+      w.pair(24, e.p2.y);
+      w.pair(34, 0);
+      if (e.kind === 'linear') {
+        w.pair(50, g.deg(e.rotation));
+        w.pair(100, 'AcDbRotatedDimension');
+      }
+      break;
+    case 'radius':
+    case 'diameter': {
+      w.pair(100, e.kind === 'radius' ? 'AcDbRadialDimension' : 'AcDbDiametricDimension');
+      const { q, far } = radialPoints(e);
+      const p15 = e.kind === 'radius' ? q : far;
+      w.pair(15, p15.x);
+      w.pair(25, p15.y);
+      w.pair(35, 0);
+      w.pair(40, Math.max(0, g.dist(e.linePoint, q)));
+      break;
+    }
+    case 'angular':
+      w.pair(100, 'AcDb3PointAngularDimension');
+      w.pair(13, e.p1.x);
+      w.pair(23, e.p1.y);
+      w.pair(33, 0);
+      w.pair(14, e.p2.x);
+      w.pair(24, e.p2.y);
+      w.pair(34, 0);
+      w.pair(15, e.center?.x ?? 0);
+      w.pair(25, e.center?.y ?? 0);
+      w.pair(35, 0);
+      break;
+  }
+}
+
+function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonly<Record<string, BlockDef>>, dimBlocks?: Map<string, string>): void {
   switch (e.type) {
     case 'line':
       writeEntityCommon(w, e, owner, 'LINE', 'AcDbLine');
@@ -88,32 +250,53 @@ function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonly<Recor
       w.pair(51, g.deg(g.normAngle(e.endAngle)));
       break;
     case 'polyline':
-      writeEntityCommon(w, e, owner, 'LWPOLYLINE', 'AcDbPolyline');
-      w.pair(90, e.points.length);
-      w.pair(70, e.closed ? 1 : 0);
-      for (const p of e.points) {
-        w.pair(10, p.x);
-        w.pair(20, p.y);
-      }
+      writePolyline(w, e, owner);
       break;
     case 'text': {
       writeEntityCommon(w, e, owner, 'TEXT', 'AcDbText');
-      w.pair(10, e.position.x);
-      w.pair(20, e.position.y);
-      w.pair(30, 0);
-      w.pair(40, e.height);
-      w.pair(1, e.text);
-      if (e.rotation !== 0) w.pair(50, g.deg(e.rotation));
-      const h = e.align === 'center' ? 1 : e.align === 'right' ? 2 : 0;
-      if (h !== 0) {
-        w.pair(72, h);
-        w.pair(11, e.position.x);
-        w.pair(21, e.position.y);
-        w.pair(31, 0);
-      }
+      writeTextLike(w, e.position, e.height, e.text, e.rotation, e.align);
       w.pair(100, 'AcDbText');
       break;
     }
+    case 'mtext':
+      writeMText(w, e, owner);
+      break;
+    case 'ellipse':
+      writeEntityCommon(w, e, owner, 'ELLIPSE', 'AcDbEllipse');
+      w.pair(10, e.center.x);
+      w.pair(20, e.center.y);
+      w.pair(30, 0);
+      w.pair(11, e.majorAxis.x);
+      w.pair(21, e.majorAxis.y);
+      w.pair(31, 0);
+      w.pair(210, 0);
+      w.pair(220, 0);
+      w.pair(230, 1);
+      w.pair(40, e.ratio);
+      w.pair(41, e.startParam);
+      w.pair(42, e.endParam);
+      break;
+    case 'point':
+      writeEntityCommon(w, e, owner, 'POINT', 'AcDbPoint');
+      w.pair(10, e.position.x);
+      w.pair(20, e.position.y);
+      w.pair(30, 0);
+      break;
+    case 'xline':
+    case 'ray': {
+      writeEntityCommon(w, e, owner, e.type === 'xline' ? 'XLINE' : 'RAY', e.type === 'xline' ? 'AcDbXline' : 'AcDbRay');
+      const d = g.normalize(e.direction);
+      w.pair(10, e.base.x);
+      w.pair(20, e.base.y);
+      w.pair(30, 0);
+      w.pair(11, d.x);
+      w.pair(21, d.y);
+      w.pair(31, 0);
+      break;
+    }
+    case 'dimension':
+      writeDimension(w, e, owner, dimBlocks?.get(e.id) ?? '*D0');
+      break;
     case 'insert': {
       const block = blocks[e.block];
       const hasAttribs = block ? block.attributes.length > 0 : false;
@@ -141,19 +324,7 @@ function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonly<Recor
           w.pair(100, 'AcDbEntity');
           w.pair(8, e.layer);
           w.pair(100, 'AcDbText');
-          w.pair(10, world.x);
-          w.pair(20, world.y);
-          w.pair(30, 0);
-          w.pair(40, a.height * e.scale);
-          w.pair(1, value);
-          if (e.rotation !== 0) w.pair(50, g.deg(e.rotation));
-          const h = a.align === 'center' ? 1 : a.align === 'right' ? 2 : 0;
-          if (h !== 0) {
-            w.pair(72, h);
-            w.pair(11, world.x);
-            w.pair(21, world.y);
-            w.pair(31, 0);
-          }
+          writeTextLike(w, world, a.height * e.scale, value, e.rotation, a.align);
           w.pair(100, 'AcDbAttribute');
           w.pair(2, a.tag);
           w.pair(70, a.invisible ? 1 : 0);
@@ -169,30 +340,91 @@ function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonly<Recor
   }
 }
 
+/** Linetype names referenced anywhere in the drawing (layers, entities, block entities). */
+function usedLinetypes(state: DrawingState): Linetype[] {
+  const names = new Set<string>();
+  for (const l of state.layers) if (l.linetype) names.add(l.linetype.toUpperCase());
+  const scan = (list: readonly Entity[]) => {
+    for (const e of list) if (e.linetype) names.add(e.linetype.toUpperCase());
+  };
+  scan(state.entities);
+  for (const b of Object.values(state.blocks)) scan(b.entities);
+  const extra = state.header?.linetypes ?? [];
+  const out: Linetype[] = [];
+  for (const lt of extra) out.push(lt);
+  for (const n of names) {
+    if (n === 'BYLAYER' || n === 'BYBLOCK' || n === 'CONTINUOUS') continue;
+    if (out.some((l) => l.name.toUpperCase() === n)) continue;
+    const std = findLinetype(n);
+    out.push(std ?? { name: n, description: '', pattern: [] });
+  }
+  return out;
+}
+
 export function writeDxf(state: DrawingState): string {
   const w = new Writer();
   const MODEL_SPACE = '1F';
   const PAPER_SPACE = '1B';
+  const header = state.header ?? DEFAULT_HEADER;
+  const ds = header.dimStyle;
   const blockList = Object.values(state.blocks);
   // Pre-assign a BLOCK_RECORD handle per block; block entities use it as their owner (330).
   const blockRecordHandles = new Map<string, string>();
   for (const b of blockList) blockRecordHandles.set(b.name, w.nextHandle());
+  // Anonymous *D blocks that carry each dimension's picture.
+  const dimBlocks = new Map<string, string>();
+  const dimEntities = state.entities.filter((e): e is DimensionEntity => e.type === 'dimension');
+  dimEntities.forEach((d, i) => {
+    const name = `*D${i + 1}`;
+    dimBlocks.set(d.id, name);
+    blockRecordHandles.set(name, w.nextHandle());
+  });
+  const linetypes = usedLinetypes(state);
 
   // HEADER
   w.pair(0, 'SECTION');
   w.pair(2, 'HEADER');
-  w.pair(9, '$ACADVER');
-  w.pair(1, 'AC1015');
-  w.pair(9, '$HANDSEED');
-  w.pair(5, 'FFFF');
-  w.pair(9, '$INSUNITS');
-  w.pair(70, 1);
-  w.pair(9, '$CLAYER');
-  w.pair(8, state.currentLayer);
-  w.pair(9, '$LTSCALE');
-  w.pair(40, 1);
-  w.pair(9, '$TEXTSTYLE');
-  w.pair(7, 'Standard');
+  const hv = (name: string, code: number, value: string | number) => {
+    w.pair(9, name);
+    w.pair(code, value);
+  };
+  const hpt = (name: string, p: g.Point) => {
+    w.pair(9, name);
+    w.pair(10, p.x);
+    w.pair(20, p.y);
+    w.pair(30, 0);
+  };
+  hv('$ACADVER', 1, 'AC1015');
+  hv('$HANDSEED', 5, 'FFFF');
+  hv('$INSUNITS', 70, header.units.insunits);
+  hv('$LUNITS', 70, header.units.lunits);
+  hv('$LUPREC', 70, header.units.luprec);
+  hv('$AUNITS', 70, 0);
+  hv('$AUPREC', 70, header.units.auprec);
+  hv('$CLAYER', 8, state.currentLayer);
+  hv('$CELTYPE', 6, header.celtype || 'ByLayer');
+  hv('$CELWEIGHT', 370, header.celweight === undefined ? -1 : Math.round(header.celweight * 100));
+  hv('$LTSCALE', 40, header.ltscale);
+  hv('$CELTSCALE', 40, 1);
+  hpt('$LIMMIN', header.limits.min);
+  hpt('$LIMMAX', header.limits.max);
+  hv('$PDMODE', 70, header.pdmode);
+  hv('$PDSIZE', 40, header.pdsize);
+  hv('$TEXTSTYLE', 7, 'Standard');
+  hv('$DIMSTYLE', 2, ds.name);
+  hv('$DIMSCALE', 40, ds.scale);
+  hv('$DIMASZ', 40, ds.arrowSize);
+  hv('$DIMEXO', 40, ds.extOffset);
+  hv('$DIMEXE', 40, ds.extExtend);
+  hv('$DIMTXT', 40, ds.textHeight);
+  hv('$DIMCEN', 40, ds.centerMark);
+  hv('$DIMGAP', 40, ds.textGap);
+  hv('$DIMTAD', 70, 0);
+  hv('$DIMTIH', 70, 1);
+  hv('$DIMTOH', 70, 1);
+  hv('$DIMDEC', 70, ds.decimals);
+  hv('$DIMADEC', 70, ds.angularDecimals);
+  hv('$DIMLUNIT', 70, ds.lunit);
   w.pair(0, 'ENDSEC');
 
   // CLASSES (empty)
@@ -230,26 +462,34 @@ export function writeDxf(state: DrawingState): string {
     w.pair(20, 0);
     w.pair(11, 1);
     w.pair(21, 1);
-    w.pair(12, 5);
-    w.pair(22, 4);
-    w.pair(40, 12);
+    w.pair(12, (header.limits.min.x + header.limits.max.x) / 2);
+    w.pair(22, (header.limits.min.y + header.limits.max.y) / 2);
+    w.pair(40, header.limits.max.y - header.limits.min.y);
     w.pair(41, 1.6);
     w.pair(72, 1000);
   });
-  table('LTYPE', '5', 3, () => {
-    for (const name of ['ByBlock', 'ByLayer', 'Continuous']) {
-      record('LTYPE', '5', 'AcDbLinetypeTableRecord', name);
-      w.pair(3, name === 'Continuous' ? 'Solid line' : '');
+  table('LTYPE', '5', 3 + linetypes.length, () => {
+    const ltRecord = (lt: Linetype) => {
+      record('LTYPE', '5', 'AcDbLinetypeTableRecord', lt.name);
+      w.pair(3, lt.description);
       w.pair(72, 65);
-      w.pair(73, 0);
-      w.pair(40, 0);
-    }
+      w.pair(73, lt.pattern.length);
+      w.pair(40, patternLength(lt.pattern));
+      for (const seg of lt.pattern) {
+        w.pair(49, seg);
+        w.pair(74, 0);
+      }
+    };
+    ltRecord({ name: 'ByBlock', description: '', pattern: [] });
+    ltRecord({ name: 'ByLayer', description: '', pattern: [] });
+    ltRecord(STANDARD_LINETYPES[0]!);
+    for (const lt of linetypes) ltRecord(lt);
   });
   table('LAYER', '2', state.layers.length, () => {
     for (const l of state.layers) {
-      record('LAYER', '2', 'AcDbLayerTableRecord', l.name, l.locked ? 4 : 0);
-      w.pair(62, l.visible ? l.color : -l.color);
-      w.pair(6, 'Continuous');
+      record('LAYER', '2', 'AcDbLayerTableRecord', l.name, (l.locked ? 4 : 0) | (l.frozen ? 1 : 0));
+      w.pair(62, l.visible || l.frozen ? l.color : -l.color);
+      w.pair(6, l.linetype && l.linetype.toUpperCase() !== 'BYLAYER' ? l.linetype : 'Continuous');
       w.pair(370, Math.round(l.lineWeight * 100));
       w.pair(390, 'F');
     }
@@ -264,7 +504,26 @@ export function writeDxf(state: DrawingState): string {
     w.pair(3, 'txt');
     w.pair(4, '');
   });
-  table('VIEW', '6', 0, () => {});
+  table('VIEW', '6', header.views.length, () => {
+    for (const v of header.views) {
+      record('VIEW', '6', 'AcDbViewTableRecord', v.name);
+      w.pair(40, v.height);
+      w.pair(10, v.center.x);
+      w.pair(20, v.center.y);
+      w.pair(41, v.height * 1.5);
+      w.pair(11, 0);
+      w.pair(21, 0);
+      w.pair(31, 1);
+      w.pair(12, 0);
+      w.pair(22, 0);
+      w.pair(32, 0);
+      w.pair(42, 50);
+      w.pair(43, 0);
+      w.pair(44, 0);
+      w.pair(50, 0);
+      w.pair(71, 0);
+    }
+  });
   table('UCS', '7', 0, () => {});
   table('APPID', '9', 1, () => {
     record('APPID', '9', 'AcDbRegAppTableRecord', 'ACAD');
@@ -276,10 +535,23 @@ export function writeDxf(state: DrawingState): string {
     w.pair(330, 'A');
     w.pair(100, 'AcDbSymbolTableRecord');
     w.pair(100, 'AcDbDimStyleTableRecord');
-    w.pair(2, 'Standard');
+    w.pair(2, ds.name);
     w.pair(70, 0);
+    w.pair(40, ds.scale);
+    w.pair(41, ds.arrowSize);
+    w.pair(42, ds.extOffset);
+    w.pair(44, ds.extExtend);
+    w.pair(140, ds.textHeight);
+    w.pair(141, ds.centerMark);
+    w.pair(147, ds.textGap);
+    w.pair(73, 1);
+    w.pair(74, 1);
+    w.pair(77, 0);
+    w.pair(179, ds.angularDecimals);
+    w.pair(271, ds.decimals);
+    w.pair(277, ds.lunit);
   });
-  table('BLOCK_RECORD', '1', 2 + blockList.length, () => {
+  table('BLOCK_RECORD', '1', 2 + blockRecordHandles.size, () => {
     const brec = (handle: string, name: string) => {
       w.pair(0, 'BLOCK_RECORD');
       w.pair(5, handle);
@@ -293,14 +565,14 @@ export function writeDxf(state: DrawingState): string {
     };
     brec(MODEL_SPACE, '*Model_Space');
     brec(PAPER_SPACE, '*Paper_Space');
-    for (const b of blockList) brec(blockRecordHandles.get(b.name)!, b.name);
+    for (const [name, handle] of blockRecordHandles) brec(handle, name);
   });
   w.pair(0, 'ENDSEC');
 
   // BLOCKS
   w.pair(0, 'SECTION');
   w.pair(2, 'BLOCKS');
-  const blockShell = (owner: string, name: string, base: { x: number; y: number }, body: () => void) => {
+  const blockShell = (owner: string, name: string, base: { x: number; y: number }, flags: number, description: string | undefined, body: () => void) => {
     w.pair(0, 'BLOCK');
     w.pair(5, w.nextHandle());
     w.pair(330, owner);
@@ -308,12 +580,13 @@ export function writeDxf(state: DrawingState): string {
     w.pair(8, '0');
     w.pair(100, 'AcDbBlockBegin');
     w.pair(2, name);
-    w.pair(70, 0);
+    w.pair(70, flags);
     w.pair(10, base.x);
     w.pair(20, base.y);
     w.pair(30, 0);
     w.pair(3, name);
     w.pair(1, '');
+    if (description) w.pair(4, description);
     body();
     w.pair(0, 'ENDBLK');
     w.pair(5, w.nextHandle());
@@ -322,62 +595,40 @@ export function writeDxf(state: DrawingState): string {
     w.pair(8, '0');
     w.pair(100, 'AcDbBlockEnd');
   };
-  blockShell(MODEL_SPACE, '*Model_Space', { x: 0, y: 0 }, () => {});
-  blockShell(PAPER_SPACE, '*Paper_Space', { x: 0, y: 0 }, () => {});
+  blockShell(MODEL_SPACE, '*Model_Space', { x: 0, y: 0 }, 0, undefined, () => {});
+  blockShell(PAPER_SPACE, '*Paper_Space', { x: 0, y: 0 }, 0, undefined, () => {});
   for (const b of blockList) {
     const owner = blockRecordHandles.get(b.name)!;
-    w.pair(0, 'BLOCK');
-    w.pair(5, w.nextHandle());
-    w.pair(330, owner);
-    w.pair(100, 'AcDbEntity');
-    w.pair(8, '0');
-    w.pair(100, 'AcDbBlockBegin');
-    w.pair(2, b.name);
-    w.pair(70, b.attributes.length > 0 ? 2 : 0);
-    w.pair(10, b.basePoint.x);
-    w.pair(20, b.basePoint.y);
-    w.pair(30, 0);
-    w.pair(3, b.name);
-    w.pair(1, '');
-    if (b.description) w.pair(4, b.description);
-    for (const e of b.entities) writeEntity(w, e, owner, state.blocks);
-    for (const a of b.attributes) {
-      w.pair(0, 'ATTDEF');
-      w.pair(5, w.nextHandle());
-      w.pair(330, owner);
-      w.pair(100, 'AcDbEntity');
-      w.pair(8, '0');
-      w.pair(100, 'AcDbText');
-      w.pair(10, a.position.x);
-      w.pair(20, a.position.y);
-      w.pair(30, 0);
-      w.pair(40, a.height);
-      w.pair(1, a.default);
-      const h = a.align === 'center' ? 1 : a.align === 'right' ? 2 : 0;
-      if (h !== 0) {
-        w.pair(72, h);
-        w.pair(11, a.position.x);
-        w.pair(21, a.position.y);
-        w.pair(31, 0);
+    blockShell(owner, b.name, b.basePoint, b.attributes.length > 0 ? 2 : 0, b.description, () => {
+      for (const e of b.entities) writeEntity(w, e, owner, state.blocks);
+      for (const a of b.attributes) {
+        w.pair(0, 'ATTDEF');
+        w.pair(5, w.nextHandle());
+        w.pair(330, owner);
+        w.pair(100, 'AcDbEntity');
+        w.pair(8, '0');
+        w.pair(100, 'AcDbText');
+        writeTextLike(w, a.position, a.height, a.default, 0, a.align);
+        w.pair(100, 'AcDbAttributeDefinition');
+        w.pair(3, a.prompt);
+        w.pair(2, a.tag);
+        w.pair(70, a.invisible ? 1 : 0);
       }
-      w.pair(100, 'AcDbAttributeDefinition');
-      w.pair(3, a.prompt);
-      w.pair(2, a.tag);
-      w.pair(70, a.invisible ? 1 : 0);
-    }
-    w.pair(0, 'ENDBLK');
-    w.pair(5, w.nextHandle());
-    w.pair(330, owner);
-    w.pair(100, 'AcDbEntity');
-    w.pair(8, '0');
-    w.pair(100, 'AcDbBlockEnd');
+    });
+  }
+  for (const d of dimEntities) {
+    const name = dimBlocks.get(d.id)!;
+    const owner = blockRecordHandles.get(name)!;
+    blockShell(owner, name, { x: 0, y: 0 }, 1, undefined, () => {
+      for (const part of dimensionParts(d)) writeEntity(w, { ...part, color: part.color === 'ByLayer' ? 0 : part.color } as Entity, owner, state.blocks);
+    });
   }
   w.pair(0, 'ENDSEC');
 
   // ENTITIES
   w.pair(0, 'SECTION');
   w.pair(2, 'ENTITIES');
-  for (const e of state.entities) writeEntity(w, e, MODEL_SPACE, state.blocks);
+  for (const e of state.entities) writeEntity(w, e, MODEL_SPACE, state.blocks, dimBlocks);
   w.pair(0, 'ENDSEC');
 
   // OBJECTS: root dictionary with the mandatory ACAD_GROUP entry
@@ -443,13 +694,89 @@ const num = (o: Obj, code: number, dflt = 0): number => {
   const v = parseFloat(p.value);
   return Number.isNaN(v) ? dflt : v;
 };
+const has = (o: Obj, code: number): boolean => o.groups.some((x) => x.code === code);
 const str = (o: Obj, code: number, dflt = ''): string => o.groups.find((x) => x.code === code)?.value ?? dflt;
+const pt = (o: Obj, xCode: number, dflt: g.Point = { x: 0, y: 0 }): g.Point => (has(o, xCode) ? { x: num(o, xCode), y: num(o, xCode + 10) } : dflt);
 
-function readEntityObj(o: Obj): Entity | null {
+/** Entity properties common to every DXF entity (layer, colour, linetype, lineweight, ltscale). */
+function commonProps(o: Obj): { id: string; layer: string; color: ColorSpec; linetype?: string; lineWeight?: number; ltscale?: number } {
   const layer = str(o, 8, '0');
   const rawColor = o.groups.find((x) => x.code === 62);
   const color: ColorSpec = rawColor && parseInt(rawColor.value, 10) !== 256 ? parseInt(rawColor.value, 10) : 'ByLayer';
-  const base = { id: newId(), layer, color };
+  const base: { id: string; layer: string; color: ColorSpec; linetype?: string; lineWeight?: number; ltscale?: number } = { id: newId(), layer, color };
+  const lt = str(o, 6);
+  if (lt && lt.toUpperCase() !== 'BYLAYER') base.linetype = lt;
+  if (has(o, 370)) {
+    const lw = Math.trunc(num(o, 370));
+    if (lw >= 0) base.lineWeight = lw / 100;
+    else if (lw === -2) base.lineWeight = -2;
+  }
+  if (has(o, 48) && num(o, 48) !== 1) base.ltscale = num(o, 48);
+  return base;
+}
+
+function readDimStyleFromEntity(o: Obj, styles: Map<string, DimStyle>, fallback: DimStyle): DimStyle {
+  const name = str(o, 3);
+  return (name && styles.get(name.toUpperCase())) || fallback;
+}
+
+function readDimension(o: Obj, base: ReturnType<typeof commonProps>, style: DimStyle): Entity | null {
+  const flags = Math.trunc(num(o, 70));
+  const type = flags & 15;
+  const userText = flags & 128 ? pt(o, 11) : undefined;
+  const textRaw = str(o, 1);
+  const text = textRaw && textRaw !== '<>' ? textRaw : undefined;
+  const common = { ...base, type: 'dimension' as const, text, textPosition: userText, style };
+  const subclasses = o.groups.filter((x) => x.code === 100).map((x) => x.value);
+  switch (type) {
+    case 0: {
+      const p1 = pt(o, 13);
+      const p2 = pt(o, 14);
+      const rotation = g.rad(num(o, 50));
+      return { ...common, kind: 'linear', p1, p2, linePoint: pt(o, 10), rotation };
+    }
+    case 1:
+      return { ...common, kind: 'aligned', p1: pt(o, 13), p2: pt(o, 14), linePoint: pt(o, 10), rotation: 0 };
+    case 3: {
+      const a = pt(o, 10);
+      const b = pt(o, 15);
+      const center = g.mid(a, b);
+      const leader = num(o, 40);
+      const dir = g.normalize(g.sub(a, center));
+      return { ...common, kind: 'diameter', p1: center, p2: a, linePoint: userText ?? g.add(a, g.scale(dir, leader)), rotation: 0 };
+    }
+    case 4: {
+      const center = pt(o, 10);
+      const q = pt(o, 15);
+      const leader = num(o, 40);
+      const dir = g.normalize(g.sub(q, center));
+      return { ...common, kind: 'radius', p1: center, p2: q, linePoint: userText ?? g.add(q, g.scale(dir, leader)), rotation: 0 };
+    }
+    case 5:
+      return { ...common, kind: 'angular', p1: pt(o, 13), p2: pt(o, 14), center: pt(o, 15), linePoint: pt(o, 10), rotation: 0 };
+    case 2: {
+      // Two-line angular: legs 13->14 and 15->10, arc point 16.
+      if (!subclasses.includes('AcDb2LineAngularDimension') && !has(o, 16)) return null;
+      const a1 = pt(o, 13);
+      const a2 = pt(o, 14);
+      const b1 = pt(o, 15);
+      const b2 = pt(o, 10);
+      const r = g.sub(a2, a1);
+      const s = g.sub(b2, b1);
+      const denom = g.cross(r, s);
+      if (Math.abs(denom) < 1e-12) return null;
+      const t = g.cross(g.sub(b1, a1), s) / denom;
+      const center = g.add(a1, g.scale(r, t));
+      const far = (p: g.Point, q: g.Point) => (g.dist(p, center) >= g.dist(q, center) ? p : q);
+      return { ...common, kind: 'angular', p1: far(a1, a2), p2: far(b1, b2), center, linePoint: pt(o, 16), rotation: 0 };
+    }
+    default:
+      return null;
+  }
+}
+
+function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
+  const base = commonProps(o);
   switch (o.kind) {
     case 'LINE':
       return { ...base, type: 'line', a: { x: num(o, 10), y: num(o, 20) }, b: { x: num(o, 11), y: num(o, 21) } };
@@ -484,17 +811,28 @@ function readEntityObj(o: Obj): Entity | null {
         const r = g.dist(pts[0]!, pts[1]!) / 2 + width / 2;
         return { ...base, type: 'circle', center: c, radius: r, filled: true };
       }
-      return { ...base, type: 'polyline', points: tessellateBulges(pts, bulges, closed), closed };
+      const hasBulge = bulges.some((b) => Math.abs(b) > 1e-12);
+      return { ...base, type: 'polyline', points: pts, closed, bulges: hasBulge ? bulges : undefined, width: width > 0 ? width : undefined };
     }
     case 'POLYLINE':
       // Old-style POLYLINE with VERTEX children is handled by caller.
       return null;
+    case 'SOLID':
+    case 'TRACE': {
+      const p1 = pt(o, 10);
+      const p2 = pt(o, 11);
+      const p3 = pt(o, 12);
+      const p4 = has(o, 13) ? pt(o, 13) : p3;
+      // bow-tie order 1-2-4-3
+      const points = g.eq(p3, p4) ? [p1, p2, p3] : [p1, p2, p4, p3];
+      return { ...base, type: 'polyline', points, closed: true, filled: true };
+    }
     case 'TEXT': {
       const h = num(o, 72, 0);
       const v = num(o, 73, 0);
       const align: 'left' | 'center' | 'right' = h === 1 || h === 4 ? 'center' : h === 2 ? 'right' : 'left';
       // Alignment point (11/21) applies for any non-default justification; fit/aligned (3/5) keep the first point.
-      const useAlignPt = (h !== 0 || v !== 0) && h !== 3 && h !== 5 && o.groups.some((x) => x.code === 11);
+      const useAlignPt = (h !== 0 || v !== 0) && h !== 3 && h !== 5 && has(o, 11);
       let position = useAlignPt ? { x: num(o, 11), y: num(o, 21) } : { x: num(o, 10), y: num(o, 20) };
       const height = num(o, 40, 0.125);
       const rotation = g.rad(num(o, 50));
@@ -505,26 +843,57 @@ function readEntityObj(o: Obj): Entity | null {
     }
     case 'MTEXT': {
       // MTEXT: 10/20 attachment corner, 71 attachment point (1..9), 11/21 direction vector, 50 rotation (radians)
-      const ap = Math.trunc(num(o, 71, 1));
+      const ap = Math.max(1, Math.min(9, Math.trunc(num(o, 71, 1)))) as MTextAttachment;
+      const hasDir = has(o, 11);
+      const rotation = hasDir ? Math.atan2(num(o, 21), num(o, 11)) : num(o, 50);
+      const height = num(o, 40, 0.125);
+      const raw = o.groups
+        .filter((x) => x.code === 1 || x.code === 3)
+        .map((x) => x.value)
+        .join('');
+      if (has(o, 41)) {
+        return {
+          ...base,
+          type: 'mtext',
+          position: { x: num(o, 10), y: num(o, 20) },
+          text: mtextFromDxf(raw),
+          height,
+          width: Math.max(0, num(o, 41)),
+          rotation,
+          attachment: ap,
+          lineSpacing: num(o, 44, 1) || 1,
+        };
+      }
+      // Minimal MTEXT without a reference width: keep it as single-line TEXT.
       const col = (ap - 1) % 3;
       const row = Math.floor((ap - 1) / 3);
       const align: 'left' | 'center' | 'right' = col === 1 ? 'center' : col === 2 ? 'right' : 'left';
-      const hasDir = o.groups.some((x) => x.code === 11);
-      const rotation = hasDir ? Math.atan2(num(o, 21), num(o, 11)) : num(o, 50);
-      const height = num(o, 40, 0.125);
       const drop = row === 0 ? height : row === 1 ? height / 2 : 0;
       const corner = { x: num(o, 10), y: num(o, 20) };
       const position = { x: corner.x + Math.sin(rotation) * drop, y: corner.y - Math.cos(rotation) * drop };
-      const text = o.groups
-        .filter((x) => x.code === 1 || x.code === 3)
-        .map((x) => x.value)
-        .join('')
-        .replace(/\\P/g, ' ')
-        .replace(/\{\\[^;]*;([^}]*)\}/g, '$1')
-        .replace(/\\[A-Za-z][^;]*;/g, '')
-        .replace(/[{}]/g, '');
-      return { ...base, type: 'text', position, text, height, rotation, align };
+      return { ...base, type: 'text', position, text: mtextFromDxf(raw).replace(/\n/g, ' '), height, rotation, align };
     }
+    case 'ELLIPSE': {
+      const start = num(o, 41, 0);
+      const end = num(o, 42, 2 * Math.PI);
+      return {
+        ...base,
+        type: 'ellipse',
+        center: pt(o, 10),
+        majorAxis: pt(o, 11, { x: 1, y: 0 }),
+        ratio: Math.min(1, Math.max(1e-6, num(o, 40, 1))),
+        startParam: start,
+        endParam: end,
+      };
+    }
+    case 'POINT':
+      return { ...base, type: 'point', position: pt(o, 10) };
+    case 'XLINE':
+      return { ...base, type: 'xline', base: pt(o, 10), direction: g.normalize(pt(o, 11, { x: 1, y: 0 })) };
+    case 'RAY':
+      return { ...base, type: 'ray', base: pt(o, 10), direction: g.normalize(pt(o, 11, { x: 1, y: 0 })) };
+    case 'DIMENSION':
+      return readDimension(o, base, readDimStyleFromEntity(o, ctx.dimStyles, ctx.dimStyle));
     case 'INSERT': {
       const sx = num(o, 41, 1);
       const sy = num(o, 42, sx);
@@ -544,63 +913,41 @@ function readEntityObj(o: Obj): Entity | null {
   }
 }
 
-/** Expand bulge (arc) segments of a polyline into straight segments. */
-function tessellateBulges(pts: g.Point[], bulges: number[], closed: boolean): g.Point[] {
-  if (!bulges.some((b) => Math.abs(b) > 1e-9)) return pts;
-  const out: g.Point[] = [];
-  const n = pts.length;
-  const segCount = closed ? n : n - 1;
-  for (let i = 0; i < segCount; i += 1) {
-    const a = pts[i]!;
-    const b = pts[(i + 1) % n]!;
-    const bulge = bulges[i] ?? 0;
-    out.push(a);
-    if (Math.abs(bulge) < 1e-9) continue;
-    const theta = 4 * Math.atan(bulge);
-    const chord = g.dist(a, b);
-    if (chord < 1e-12) continue;
-    const r = chord / (2 * Math.sin(Math.abs(theta) / 2));
-    const m = g.mid(a, b);
-    const d = Math.sqrt(Math.max(0, r * r - (chord / 2) * (chord / 2)));
-    const nrm = { x: -(b.y - a.y) / chord, y: (b.x - a.x) / chord };
-    const side = Math.abs(theta) <= Math.PI ? Math.sign(theta) : -Math.sign(theta);
-    const c = { x: m.x + nrm.x * d * side, y: m.y + nrm.y * d * side };
-    const a0 = g.angleOf(c, a);
-    const steps = Math.max(2, Math.ceil(Math.abs(theta) / (Math.PI / 12)));
-    for (let k = 1; k < steps; k += 1) out.push(g.polar(c, a0 + (theta * k) / steps, r));
-  }
-  if (!closed) out.push(pts[n - 1]!);
-  return out;
+interface ReadContext {
+  dimStyles: Map<string, DimStyle>;
+  dimStyle: DimStyle;
 }
 
 /** Parse a list of entity objects, folding ATTRIB/SEQEND into inserts and VERTEX into polylines. */
-function readEntities(objs: Obj[]): Entity[] {
+function readEntities(objs: Obj[], ctx: ReadContext): Entity[] {
   const out: Entity[] = [];
   let i = 0;
   while (i < objs.length) {
     const o = objs[i]!;
     if (o.kind === 'POLYLINE') {
       const pts: g.Point[] = [];
+      const bulges: number[] = [];
       const closed = (num(o, 70) & 1) === 1;
       let j = i + 1;
       while (j < objs.length && objs[j]!.kind === 'VERTEX') {
         pts.push({ x: num(objs[j]!, 10), y: num(objs[j]!, 20) });
+        bulges.push(num(objs[j]!, 42, 0));
         j += 1;
       }
       if (j < objs.length && objs[j]!.kind === 'SEQEND') j += 1;
-      const rawColor = o.groups.find((x) => x.code === 62);
+      const width = num(o, 40, 0);
       out.push({
-        id: newId(),
+        ...commonProps(o),
         type: 'polyline',
-        layer: str(o, 8, '0'),
-        color: rawColor && parseInt(rawColor.value, 10) !== 256 ? parseInt(rawColor.value, 10) : 'ByLayer',
         points: pts,
         closed,
+        bulges: bulges.some((b) => Math.abs(b) > 1e-12) ? bulges : undefined,
+        width: width > 0 ? width : undefined,
       });
       i = j;
       continue;
     }
-    const e = readEntityObj(o);
+    const e = readEntityObj(o, ctx);
     if (e && e.type === 'insert') {
       const attrs: Record<string, string> = {};
       let j = i + 1;
@@ -619,12 +966,36 @@ function readEntities(objs: Obj[]): Entity[] {
   return out;
 }
 
+function readDimStyleRecord(o: Obj, base: DimStyle): DimStyle {
+  const lunit = Math.trunc(num(o, 277, base.lunit));
+  return {
+    name: str(o, 2) || base.name,
+    scale: num(o, 40, base.scale) || 1,
+    arrowSize: num(o, 41, base.arrowSize),
+    extOffset: num(o, 42, base.extOffset),
+    extExtend: num(o, 44, base.extExtend),
+    textHeight: num(o, 140, base.textHeight),
+    centerMark: num(o, 141, base.centerMark),
+    textGap: num(o, 147, base.textGap),
+    angularDecimals: Math.max(0, Math.trunc(num(o, 179, base.angularDecimals))),
+    decimals: Math.trunc(num(o, 271, base.decimals)),
+    lunit: (lunit >= 1 && lunit <= 5 ? lunit : base.lunit) as LinearUnits,
+  };
+}
+
 export function readDxf(text: string): DrawingState {
   const pairs = tokenize(text);
   const layers: Layer[] = [];
   const blocks: Record<string, BlockDef> = {};
   let entities: Entity[] = [];
   let currentLayer = '0';
+  const headerVars = new Map<string, Pair[]>();
+  const dimStyles = new Map<string, DimStyle>();
+  const linetypes: Linetype[] = [];
+  const views: NamedView[] = [];
+  // Header DIM* variables define the current style; the DIMSTYLE table gives named styles.
+  let headerDimStyle: DimStyle = STANDARD_DIMSTYLE;
+  const ctx: ReadContext = { dimStyles, dimStyle: STANDARD_DIMSTYLE };
 
   // find sections
   let i = 0;
@@ -636,23 +1007,66 @@ export function readDxf(text: string): DrawingState {
       while (j < pairs.length && !(pairs[j]!.code === 0 && pairs[j]!.value === 'ENDSEC')) j += 1;
       const objs = objects(pairs, i + 2, j);
       if (name === 'HEADER') {
+        let cur: Pair[] | null = null;
         for (let k = i + 2; k < j; k += 1) {
-          if (pairs[k]!.code === 9 && pairs[k]!.value === '$CLAYER') currentLayer = pairs[k + 1]?.value ?? '0';
+          const q = pairs[k]!;
+          if (q.code === 9) {
+            cur = [];
+            headerVars.set(q.value, cur);
+          } else cur?.push(q);
         }
+        currentLayer = headerVars.get('$CLAYER')?.[0]?.value ?? '0';
+        const hnum = (v: string, dflt: number) => {
+          const raw = headerVars.get(v)?.[0]?.value;
+          const n = raw === undefined ? NaN : parseFloat(raw);
+          return Number.isFinite(n) ? n : dflt;
+        };
+        const lunit = Math.trunc(hnum('$DIMLUNIT', STANDARD_DIMSTYLE.lunit));
+        headerDimStyle = {
+          name: headerVars.get('$DIMSTYLE')?.[0]?.value || 'Standard',
+          scale: hnum('$DIMSCALE', 1) || 1,
+          arrowSize: hnum('$DIMASZ', STANDARD_DIMSTYLE.arrowSize),
+          extOffset: hnum('$DIMEXO', STANDARD_DIMSTYLE.extOffset),
+          extExtend: hnum('$DIMEXE', STANDARD_DIMSTYLE.extExtend),
+          textHeight: hnum('$DIMTXT', STANDARD_DIMSTYLE.textHeight),
+          centerMark: hnum('$DIMCEN', STANDARD_DIMSTYLE.centerMark),
+          textGap: hnum('$DIMGAP', STANDARD_DIMSTYLE.textGap),
+          decimals: Math.trunc(hnum('$DIMDEC', STANDARD_DIMSTYLE.decimals)),
+          angularDecimals: Math.max(0, Math.trunc(hnum('$DIMADEC', 0))),
+          lunit: (lunit >= 1 && lunit <= 5 ? lunit : 2) as LinearUnits,
+        };
+        ctx.dimStyle = headerDimStyle;
       } else if (name === 'TABLES') {
         for (const o of objs) {
-          if (o.kind !== 'LAYER') continue;
-          const name2 = str(o, 2);
-          if (!name2) continue;
-          const c = Math.trunc(num(o, 62, 7));
-          const flags = Math.trunc(num(o, 70));
-          layers.push({
-            name: name2,
-            color: Math.abs(c) || 7,
-            visible: c >= 0 && (flags & 1) === 0, // negative colour = off, flag 1 = frozen
-            locked: (flags & 4) === 4,
-            lineWeight: num(o, 370, 25) / 100,
-          });
+          if (o.kind === 'LAYER') {
+            const name2 = str(o, 2);
+            if (!name2) continue;
+            const c = Math.trunc(num(o, 62, 7));
+            const flags = Math.trunc(num(o, 70));
+            const lt = str(o, 6);
+            layers.push({
+              name: name2,
+              color: Math.abs(c) || 7,
+              visible: c >= 0 && (flags & 1) === 0, // negative colour = off, flag 1 = frozen
+              frozen: (flags & 1) === 1 || undefined,
+              locked: (flags & 4) === 4,
+              lineWeight: num(o, 370, 25) / 100,
+              linetype: lt && lt.toUpperCase() !== 'CONTINUOUS' ? lt : undefined,
+            });
+          } else if (o.kind === 'LTYPE') {
+            const ltName = str(o, 2);
+            if (!ltName || /^(BYLAYER|BYBLOCK|CONTINUOUS)$/i.test(ltName)) continue;
+            const pattern = o.groups.filter((x) => x.code === 49).map((x) => parseFloat(x.value)).filter((v) => Number.isFinite(v));
+            const std = findLinetype(ltName);
+            if (std && std.pattern.length === pattern.length && std.pattern.every((v, k) => Math.abs(v - pattern[k]!) < 1e-9)) continue;
+            linetypes.push({ name: ltName, description: str(o, 3), pattern });
+          } else if (o.kind === 'DIMSTYLE') {
+            const ds = readDimStyleRecord(o, STANDARD_DIMSTYLE);
+            dimStyles.set(ds.name.toUpperCase(), ds);
+          } else if (o.kind === 'VIEW') {
+            const vname = str(o, 2);
+            if (vname) views.push({ name: vname, center: pt(o, 10), height: num(o, 40, 10) || 10 });
+          }
         }
       } else if (name === 'BLOCKS') {
         let k = 0;
@@ -670,7 +1084,7 @@ export function readDxf(text: string): DrawingState {
             .map((x) => {
               const h = num(x, 72, 0);
               const align: 'left' | 'center' | 'right' = h === 1 || h === 4 ? 'center' : h === 2 ? 'right' : 'left';
-              const useAlignPt = h !== 0 && x.groups.some((y) => y.code === 11);
+              const useAlignPt = h !== 0 && has(x, 11);
               return {
                 tag: str(x, 2),
                 prompt: str(x, 3),
@@ -683,11 +1097,15 @@ export function readDxf(text: string): DrawingState {
             });
           const bname = str(o, 2);
           const anonymousLayout = /^\*(MODEL_SPACE|PAPER_SPACE)/i.test(bname);
-          if (bname && !anonymousLayout) {
+          const dimensionPicture = /^\*D\d*$/i.test(bname);
+          if (bname && !anonymousLayout && !dimensionPicture) {
             blocks[bname] = {
               name: bname,
               basePoint: { x: num(o, 10), y: num(o, 20) },
-              entities: readEntities(inner.filter((x) => x.kind !== 'ATTDEF')),
+              entities: readEntities(
+                inner.filter((x) => x.kind !== 'ATTDEF'),
+                ctx,
+              ),
               attributes,
               description: str(o, 4) || undefined,
             };
@@ -695,7 +1113,7 @@ export function readDxf(text: string): DrawingState {
           k = m + 1;
         }
       } else if (name === 'ENTITIES') {
-        entities = readEntities(objs);
+        entities = readEntities(objs, ctx);
       }
       i = j + 1;
     } else i += 1;
@@ -715,5 +1133,40 @@ export function readDxf(text: string): DrawingState {
   for (const b of Object.values(blocks)) for (const e of b.entities) ensure(e.layer);
   ensure(currentLayer);
 
-  return { entities, layers, blocks, currentLayer };
+  const hnum = (v: string, dflt: number) => {
+    const raw = headerVars.get(v)?.[0]?.value;
+    const n = raw === undefined ? NaN : parseFloat(raw);
+    return Number.isFinite(n) ? n : dflt;
+  };
+  const hpt = (v: string, dflt: g.Point): g.Point => {
+    const grp = headerVars.get(v);
+    if (!grp) return dflt;
+    const x = grp.find((q) => q.code === 10);
+    const y = grp.find((q) => q.code === 20);
+    return x && y ? { x: parseFloat(x.value), y: parseFloat(y.value) } : dflt;
+  };
+  const lunits = Math.trunc(hnum('$LUNITS', DEFAULT_HEADER.units.lunits));
+  const celweightRaw = Math.trunc(hnum('$CELWEIGHT', -1));
+  const celtype = headerVars.get('$CELTYPE')?.[0]?.value || 'ByLayer';
+  const namedStyle = dimStyles.get(headerDimStyle.name.toUpperCase());
+  const header: DrawingHeader = {
+    units: {
+      lunits: (lunits >= 1 && lunits <= 5 ? lunits : 2) as LinearUnits,
+      luprec: Math.max(0, Math.trunc(hnum('$LUPREC', DEFAULT_HEADER.units.luprec))),
+      insunits: Math.trunc(hnum('$INSUNITS', DEFAULT_HEADER.units.insunits)),
+      auprec: Math.max(0, Math.trunc(hnum('$AUPREC', 0))),
+    },
+    ltscale: hnum('$LTSCALE', 1) || 1,
+    limits: { min: hpt('$LIMMIN', DEFAULT_HEADER.limits.min), max: hpt('$LIMMAX', DEFAULT_HEADER.limits.max) },
+    pdmode: Math.trunc(hnum('$PDMODE', 0)),
+    pdsize: hnum('$PDSIZE', 0),
+    // Header DIM* variables win when present (they describe the current style); otherwise the named record.
+    dimStyle: headerVars.has('$DIMTXT') ? headerDimStyle : namedStyle ?? headerDimStyle,
+    linetypes,
+    views,
+    celtype: /^BYLAYER$/i.test(celtype) ? 'ByLayer' : celtype,
+    celweight: celweightRaw >= 0 ? celweightRaw / 100 : undefined,
+  };
+
+  return { entities, layers, blocks, currentLayer, header };
 }

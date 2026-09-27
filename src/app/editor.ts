@@ -17,7 +17,7 @@ import { IEC_SYMBOLS } from '../electrical/iec';
 import { updateCrossReferences } from '../electrical/xref';
 import { TITLE_BLOCK, newFromTemplate, SHEET_SIZES, type SheetSize } from '../electrical/templates';
 import { PlcModuleTool, SignalArrowTool, TerminalStripTool, DEFAULT_PLC, DEFAULT_STRIP, SOURCE_ARROW, DEST_ARROW, type PlcModuleSettings, type TerminalStripSettings } from '../tools/plc';
-import { gripPoints } from '../core/entities';
+import { gripPoints, moveGrip } from '../core/entities';
 import { parseProject, serializeProject, defaultProject, resolveDrawingPath, baseName, type Project } from './project';
 import { loadSettings, saveSettings, pushRecent, type UserSettings } from './settings';
 import { readDxf, writeDxf } from '../io/dxf';
@@ -1114,30 +1114,7 @@ const fallbackUi: ToolContext['ui'] = {
 
 /** Move grip `index` of an entity to `p` (AutoCAD grip stretch semantics). */
 export function applyGrip(e: Entity, index: number, p: Point): Entity | null {
-  switch (e.type) {
-    case 'line':
-      if (index === 0) return { ...e, a: p };
-      if (index === 2) return { ...e, b: p };
-      {
-        const d = g.sub(p, g.mid(e.a, e.b));
-        return { ...e, a: g.add(e.a, d), b: g.add(e.b, d) };
-      }
-    case 'circle':
-      if (index === 0) return { ...e, center: p };
-      return { ...e, radius: Math.max(1e-6, g.dist(e.center, p)) };
-    case 'arc': {
-      if (index === 3) return { ...e, center: p };
-      const a = g.angleOf(e.center, p);
-      if (index === 0) return { ...e, startAngle: a };
-      if (index === 2) return { ...e, endAngle: a };
-      return { ...e, radius: Math.max(1e-6, g.dist(e.center, p)) };
-    }
-    case 'polyline':
-      return { ...e, points: e.points.map((q, i) => (i === index ? p : q)) };
-    case 'text':
-    case 'insert':
-      return { ...e, position: p };
-  }
+  return moveGrip(e, index, p);
 }
 
 function relativeTo(projectPath: string, file: string): string {

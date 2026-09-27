@@ -1,10 +1,10 @@
 import type { Point, Bounds } from '../core/geometry';
 import * as g from '../core/geometry';
 import type { Entity } from '../core/entities';
-import { gripPoints } from '../core/entities';
+import { gripPoints, entityBounds } from '../core/entities';
 import type { Drawing } from '../core/document';
-import type { SnapResult } from '../core/snap';
-import { drawEntity, type Transform } from './draw';
+import type { SnapResult, TrackPath } from '../core/snap';
+import { drawEntity, renderSettings, type Transform } from './draw';
 
 export interface ViewportOverlay {
   /** Entities being constructed (rubber band). */
@@ -27,6 +27,11 @@ export interface ViewportOverlay {
   dynText: string[];
   /** idle: crosshair + pickbox, point: crosshair only, select: pickbox only (AutoCAD prompt states). */
   cursorMode: 'idle' | 'point' | 'select';
+  /** Object snap tracking: acquired points and the alignment paths the cursor currently follows. */
+  acquired?: readonly Point[];
+  trackPaths?: readonly TrackPath[];
+  /** Fence / polygon selection in progress (SELECT F / WP / CP). */
+  selectionPolygon?: { points: readonly Point[]; mode: 'fence' | 'window' | 'crossing' } | null;
 }
 
 export interface ViewSettings {
@@ -35,6 +40,8 @@ export interface ViewSettings {
   background: string;
   crosshairSize: number; // percent of screen (AutoCAD 5..100)
   pickBox: number; // px
+  /** GRIDDISPLAY bit 0: show the grid beyond the drawing limits (LIMITS). */
+  gridBeyondLimits: boolean;
 }
 
 export class Viewport {
@@ -47,7 +54,9 @@ export class Viewport {
   width = 1;
   height = 1;
   dpr = 1;
-  settings: ViewSettings = { gridVisible: true, gridSize: 0.5, background: '#212830', crosshairSize: 5, pickBox: 3 };
+  settings: ViewSettings = { gridVisible: true, gridSize: 0.5, background: '#212830', crosshairSize: 5, pickBox: 3, gridBeyondLimits: true };
+  /** Previous view states for ZOOM Previous (most recent last). */
+  readonly viewHistory: Array<{ center: Point; scale: number }> = [];
   private raf = 0;
 
   constructor(canvas: HTMLCanvasElement, private doc: Drawing) {
@@ -67,7 +76,32 @@ export class Viewport {
   }
 
   get transform(): Transform {
-    return { scale: this.scale, toScreen: (p) => this.toScreen(p) };
+    return { scale: this.scale, toScreen: (p) => this.toScreen(p), viewBounds: this.visibleBounds() };
+  }
+
+  /** Remember the current view (call before changing it) so ZOOM Previous can return. */
+  pushView(): void {
+    const last = this.viewHistory[this.viewHistory.length - 1];
+    if (last && Math.abs(last.scale - this.scale) < 1e-12 && g.eq(last.center, this.center, 1e-9)) return;
+    this.viewHistory.push({ center: this.center, scale: this.scale });
+    if (this.viewHistory.length > 20) this.viewHistory.shift();
+  }
+
+  /** Restore the previous view. Returns false when there is none. */
+  popView(): boolean {
+    const v = this.viewHistory.pop();
+    if (!v) return false;
+    this.center = v.center;
+    this.scale = v.scale;
+    return true;
+  }
+
+  /** Visible height in world units (VIEW records store this). */
+  get viewHeight(): number {
+    return this.height / this.scale;
+  }
+  set viewHeight(h: number) {
+    if (h > 0) this.scale = Math.min(1e6, Math.max(1e-4, this.height / h));
   }
 
   toScreen(p: Point): Point {
@@ -129,6 +163,12 @@ export class Viewport {
 
     if (this.settings.gridVisible) this.drawGrid();
 
+    const header = this.doc.header;
+    renderSettings.ltscale = header.ltscale;
+    renderSettings.pdmode = header.pdmode;
+    renderSettings.pdsize = header.pdsize;
+    renderSettings.linetypes = header.linetypes;
+
     const tf = this.transform;
     const layers = this.doc.layers;
     const hidden = new Set(layers.filter((l) => !l.visible).map((l) => l.name));
@@ -139,8 +179,13 @@ export class Viewport {
       if (hidden.has(e.layer)) continue;
       const selected = ov.selection.has(e.id);
       const hovered = ov.hover === e.id && !selected;
-      // (bounds culling is cheap for lines; skip complex culling for others)
-      if (e.type === 'line' && !segmentMayIntersect(e.a, e.b, viewBounds)) continue;
+      // Cull anything whose bounds miss the view (bounds are cached for compound entities).
+      if (e.type === 'line') {
+        if (!segmentMayIntersect(e.a, e.b, viewBounds)) continue;
+      } else if (e.type !== 'xline' && e.type !== 'ray') {
+        const b = entityBounds(e, lookup);
+        if (b && !g.boundsIntersect(b, viewBounds)) continue;
+      }
       if (selected) {
         drawEntity(ctx, e, tf, layers, lookup, { dashed: true, alpha: 0.95 });
       } else if (hovered) {
@@ -162,7 +207,10 @@ export class Viewport {
     for (const e of ov.preview) drawEntity(ctx, e, tf, layers, lookup);
 
     if (ov.selectionBox) this.drawSelectionBox(ov.selectionBox);
+    if (ov.selectionPolygon && ov.selectionPolygon.points.length > 0) this.drawSelectionPolygon(ov.selectionPolygon, ov.cursor);
     if (ov.trackFrom && ov.cursor) this.drawTrack(ov.trackFrom, ov.cursor);
+    if (ov.acquired) for (const p of ov.acquired) this.drawAcquired(p);
+    if (ov.trackPaths && ov.cursor) for (const tp of ov.trackPaths) this.drawTrackPath(tp, ov.cursor);
     if (ov.snap) this.drawSnapMarker(ov.snap);
     if (ov.cursor) this.drawCrosshair(ov.cursor, ov.dynText, ov.cursorMode);
     this.drawUcsIcon();
@@ -176,7 +224,20 @@ export class Viewport {
 
   private drawGrid(): void {
     const { ctx } = this;
-    const vb = this.visibleBounds();
+    let vb = this.visibleBounds();
+    if (!this.settings.gridBeyondLimits) {
+      // GRIDDISPLAY = 0: the grid covers only the LIMITS rectangle.
+      const lim = this.doc.header.limits;
+      vb = {
+        min: { x: Math.max(vb.min.x, lim.min.x), y: Math.max(vb.min.y, lim.min.y) },
+        max: { x: Math.min(vb.max.x, lim.max.x), y: Math.min(vb.max.y, lim.max.y) },
+      };
+      if (vb.min.x >= vb.max.x || vb.min.y >= vb.max.y) return;
+    }
+    const top = this.toScreen({ x: 0, y: vb.max.y }).y;
+    const bottom = this.toScreen({ x: 0, y: vb.min.y }).y;
+    const left = this.toScreen({ x: vb.min.x, y: 0 }).x;
+    const right = this.toScreen({ x: vb.max.x, y: 0 }).x;
     let step = this.settings.gridSize;
     // Keep minor spacing at >= 10 px, like AutoCAD's adaptive grid.
     while (step * this.scale < 10) step *= 5;
@@ -190,32 +251,38 @@ export class Viewport {
     ctx.strokeStyle = 'rgba(255,255,255,0.055)';
     ctx.beginPath();
     for (let x = startX; x <= vb.max.x; x += step) {
-      if (isMajor(x)) continue;
+      if (isMajor(x) || x < vb.min.x) continue;
       const sx = Math.round(this.toScreen({ x, y: 0 }).x) + 0.5;
-      ctx.moveTo(sx, 0);
-      ctx.lineTo(sx, this.height);
+      ctx.moveTo(sx, top);
+      ctx.lineTo(sx, bottom);
     }
     for (let y = startY; y <= vb.max.y; y += step) {
-      if (isMajor(y)) continue;
+      if (isMajor(y) || y < vb.min.y) continue;
       const sy = Math.round(this.toScreen({ x: 0, y }).y) + 0.5;
-      ctx.moveTo(0, sy);
-      ctx.lineTo(this.width, sy);
+      ctx.moveTo(left, sy);
+      ctx.lineTo(right, sy);
     }
     ctx.stroke();
 
     ctx.strokeStyle = 'rgba(255,255,255,0.13)';
     ctx.beginPath();
     for (let x = Math.floor(vb.min.x / major) * major; x <= vb.max.x; x += major) {
+      if (x < vb.min.x) continue;
       const sx = Math.round(this.toScreen({ x, y: 0 }).x) + 0.5;
-      ctx.moveTo(sx, 0);
-      ctx.lineTo(sx, this.height);
+      ctx.moveTo(sx, top);
+      ctx.lineTo(sx, bottom);
     }
     for (let y = Math.floor(vb.min.y / major) * major; y <= vb.max.y; y += major) {
+      if (y < vb.min.y) continue;
       const sy = Math.round(this.toScreen({ x: 0, y }).y) + 0.5;
-      ctx.moveTo(0, sy);
-      ctx.lineTo(this.width, sy);
+      ctx.moveTo(left, sy);
+      ctx.lineTo(right, sy);
     }
     ctx.stroke();
+    if (!this.settings.gridBeyondLimits) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+      ctx.strokeRect(Math.round(left) + 0.5, Math.round(top) + 0.5, Math.round(right - left), Math.round(bottom - top));
+    }
 
     // Axes
     const o = this.toScreen({ x: 0, y: 0 });
@@ -310,6 +377,73 @@ export class Viewport {
     ctx.restore();
   }
 
+  private drawSelectionPolygon(poly: { points: readonly Point[]; mode: 'fence' | 'window' | 'crossing' }, cursor: Point | null): void {
+    const { ctx } = this;
+    const pts = [...poly.points, ...(cursor ? [cursor] : [])].map((p) => this.toScreen(p));
+    if (pts.length < 2) return;
+    ctx.save();
+    ctx.lineWidth = 1;
+    if (poly.mode === 'window') {
+      ctx.fillStyle = 'rgba(70, 110, 220, 0.25)';
+      ctx.strokeStyle = '#6a8fe8';
+    } else {
+      ctx.fillStyle = 'rgba(80, 200, 90, 0.22)';
+      ctx.strokeStyle = '#6fd07a';
+      ctx.setLineDash([5, 4]);
+    }
+    ctx.beginPath();
+    ctx.moveTo(pts[0]!.x, pts[0]!.y);
+    for (let i = 1; i < pts.length; i += 1) ctx.lineTo(pts[i]!.x, pts[i]!.y);
+    if (poly.mode !== 'fence') {
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /** Small "+" marker on an acquired tracking point. */
+  private drawAcquired(p: Point): void {
+    const { ctx } = this;
+    const s = this.toScreen(p);
+    ctx.save();
+    ctx.strokeStyle = '#3ff23f';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(s.x - 4, s.y);
+    ctx.lineTo(s.x + 4, s.y);
+    ctx.moveTo(s.x, s.y - 4);
+    ctx.lineTo(s.x, s.y + 4);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /** Dotted alignment path through an acquired point, drawn across the whole view. */
+  private drawTrackPath(tp: TrackPath, cursor: Point): void {
+    const { ctx } = this;
+    const d = { x: Math.cos(tp.angle), y: Math.sin(tp.angle) };
+    const span = Math.max(this.width, this.height) / this.scale;
+    const a = this.toScreen(g.add(tp.from, g.scale(d, -span)));
+    const b = this.toScreen(g.add(tp.from, g.scale(d, span)));
+    ctx.save();
+    ctx.strokeStyle = 'rgba(120, 220, 120, 0.7)';
+    ctx.setLineDash([2, 4]);
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+    const c = this.toScreen(cursor);
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.moveTo(c.x - 5, c.y - 5);
+    ctx.lineTo(c.x + 5, c.y + 5);
+    ctx.moveTo(c.x - 5, c.y + 5);
+    ctx.lineTo(c.x + 5, c.y - 5);
+    ctx.stroke();
+    ctx.restore();
+  }
+
   private drawTrack(from: Point, to: Point): void {
     const { ctx } = this;
     const a = this.toScreen(from);
@@ -377,6 +511,24 @@ export class Viewport {
         ctx.lineTo(s.x - r, s.y + r);
         ctx.lineTo(s.x + r, s.y - r);
         ctx.closePath();
+        break;
+      case 'tangent':
+        ctx.arc(s.x, s.y, r, 0, Math.PI * 2);
+        ctx.moveTo(s.x - r, s.y - r);
+        ctx.lineTo(s.x + r, s.y - r);
+        break;
+      case 'node':
+        ctx.arc(s.x, s.y, r, 0, Math.PI * 2);
+        ctx.moveTo(s.x - r, s.y - r);
+        ctx.lineTo(s.x + r, s.y + r);
+        ctx.moveTo(s.x - r, s.y + r);
+        ctx.lineTo(s.x + r, s.y - r);
+        break;
+      case 'tracking':
+        ctx.moveTo(s.x - r, s.y - r);
+        ctx.lineTo(s.x + r, s.y + r);
+        ctx.moveTo(s.x - r, s.y + r);
+        ctx.lineTo(s.x + r, s.y - r);
         break;
       default:
         ctx.rect(s.x - r, s.y - r, r * 2, r * 2);

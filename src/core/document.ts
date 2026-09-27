@@ -1,13 +1,60 @@
 import type { Entity, BlockDef, Layer, BlockLookup } from './entities';
 import { entityBounds } from './entities';
-import type { Bounds } from './geometry';
+import type { Bounds, Point } from './geometry';
 import { unionBounds } from './geometry';
+import type { DimStyle } from './dimension';
+import { STANDARD_DIMSTYLE } from './dimension';
+import type { Linetype } from './linetypes';
+import type { UnitSettings } from './units';
+import { DEFAULT_UNITS } from './units';
+
+/** A named view (VIEW command): world centre and view height. */
+export interface NamedView {
+  readonly name: string;
+  readonly center: Point;
+  /** Visible height in drawing units. */
+  readonly height: number;
+}
+
+/** Drawing-wide settings that AutoCAD keeps as header variables. */
+export interface DrawingHeader {
+  readonly units: UnitSettings;
+  /** $LTSCALE */
+  readonly ltscale: number;
+  /** $LIMMIN / $LIMMAX */
+  readonly limits: Bounds;
+  /** $PDMODE / $PDSIZE for POINT entities. */
+  readonly pdmode: number;
+  readonly pdsize: number;
+  /** Current dimension style (the values new dimensions get). */
+  readonly dimStyle: DimStyle;
+  /** Linetypes loaded in the drawing beyond the standard set (DXF LTYPE table). */
+  readonly linetypes: readonly Linetype[];
+  readonly views: readonly NamedView[];
+  /** $CELTYPE / $CELWEIGHT: properties given to new entities ('ByLayer' / undefined = inherit). */
+  readonly celtype: string;
+  readonly celweight?: number;
+}
+
+export const DEFAULT_HEADER: DrawingHeader = {
+  units: DEFAULT_UNITS,
+  ltscale: 1,
+  limits: { min: { x: 0, y: 0 }, max: { x: 12, y: 9 } },
+  pdmode: 0,
+  pdsize: 0,
+  dimStyle: STANDARD_DIMSTYLE,
+  linetypes: [],
+  views: [],
+  celtype: 'ByLayer',
+};
 
 export interface DrawingState {
   readonly entities: readonly Entity[];
   readonly layers: readonly Layer[];
   readonly blocks: Readonly<Record<string, BlockDef>>;
   readonly currentLayer: string;
+  /** Optional so states built elsewhere (templates, converters) stay valid; defaults apply when absent. */
+  readonly header?: DrawingHeader;
 }
 
 export type DocListener = (doc: Drawing) => void;
@@ -60,6 +107,16 @@ export class Drawing {
   }
   get snapshot(): DrawingState {
     return this.state;
+  }
+  get header(): DrawingHeader {
+    return this.state.header ?? DEFAULT_HEADER;
+  }
+
+  /** Change header variables (UNITS, LIMITS, LTSCALE, DIMSTYLE, VIEW ...). Not undoable, like AutoCAD system variables. */
+  setHeader(patch: Partial<DrawingHeader>): void {
+    this.state = { ...this.state, header: { ...this.header, ...patch } };
+    this.dirty = true;
+    this.emit();
   }
 
   readonly lookupBlock: BlockLookup = (name) => this.state.blocks[name];
@@ -132,9 +189,31 @@ export class Drawing {
 
   // ---- convenience mutations -------------------------------------------
 
-  addEntities(entities: readonly Entity[]): void {
+  /**
+   * Add entities as one undo step. New objects pick up the current entity
+   * linetype / lineweight (CELTYPE / CELWEIGHT) unless they already carry one;
+   * pass `applyDefaults = false` for copies that must keep their own properties.
+   */
+  addEntities(entities: readonly Entity[], applyDefaults = true): void {
     if (entities.length === 0) return;
-    this.transact((s) => ({ ...s, entities: [...s.entities, ...entities] }));
+    const h = this.header;
+    const wantLt = applyDefaults && h.celtype && h.celtype.toUpperCase() !== 'BYLAYER';
+    const wantLw = applyDefaults && h.celweight !== undefined;
+    const list = wantLt || wantLw
+      ? entities.map((e) => {
+          let out: Entity = e;
+          if (wantLt && e.linetype === undefined) out = { ...out, linetype: h.celtype } as Entity;
+          if (wantLw && e.lineWeight === undefined) out = { ...out, lineWeight: h.celweight } as Entity;
+          return out;
+        })
+      : entities;
+    this.transact((s) => ({ ...s, entities: [...s.entities, ...list] }));
+  }
+
+  /** Remove some entities and add others in a single undo step. */
+  replaceWith(removeIds: Iterable<string>, add: readonly Entity[]): void {
+    const set = new Set(removeIds);
+    this.transact((s) => ({ ...s, entities: [...s.entities.filter((e) => !set.has(e.id)), ...add] }));
   }
 
   removeEntities(ids: Iterable<string>): void {
@@ -185,6 +264,24 @@ export class Drawing {
 
   defineBlock(block: BlockDef): void {
     this.transact((s) => ({ ...s, blocks: { ...s.blocks, [block.name]: block } }));
+  }
+
+  removeBlocks(names: Iterable<string>): void {
+    const set = new Set(names);
+    if (set.size === 0) return;
+    this.transact((s) => {
+      const blocks: Record<string, BlockDef> = {};
+      for (const [k, v] of Object.entries(s.blocks)) if (!set.has(k)) blocks[k] = v;
+      return { ...s, blocks };
+    });
+  }
+
+  removeLayers(names: Iterable<string>): void {
+    const set = new Set(names);
+    set.delete('0');
+    set.delete(this.state.currentLayer);
+    if (set.size === 0) return;
+    this.transact((s) => ({ ...s, layers: s.layers.filter((l) => !set.has(l.name)) }));
   }
 
   /** Ensure blocks exist without creating undo entries (used by symbol library). */
