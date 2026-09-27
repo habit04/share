@@ -31,6 +31,8 @@ export interface ToolContext {
     ladderSettings(init: LadderSettings): Promise<LadderSettings | null>;
     textInput(title: string, label: string, init: string): Promise<string | null>;
     confirm(title: string, message: string): Promise<boolean>;
+    /** AutoCAD-style Save / Don't Save / Cancel prompt. */
+    saveChanges?(fileName: string): Promise<'save' | 'discard' | 'cancel'>;
   };
   /** Selection mode flag used by tools that need a selection set first. */
   requestSelection(prompt: string, onDone: (ids: string[]) => void): void;

@@ -339,9 +339,9 @@ ipcMain.handle('save-text', async (ev, suggestName, text, filterName, ext) => {
 });
 
 /** Plot: the renderer sends a PNG data URL of the sheet; we print it to PDF via a hidden window. */
-ipcMain.handle('plot-pdf', async (ev, dataUrl, suggestName, landscape) => {
+ipcMain.handle('plot-pdf', async (ev, dataUrl, suggestName, landscape, sheet) => {
   const win = BrowserWindow.fromWebContents(ev.sender);
-  if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/png;base64,')) throw new Error('Invalid image');
+  if (typeof dataUrl !== 'string' || !/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(dataUrl)) throw new Error('Invalid image');
   const res = await dialog.showSaveDialog(win, {
     title: 'Plot to PDF',
     defaultPath: String(suggestName || 'Drawing1.pdf'),
@@ -350,9 +350,18 @@ ipcMain.handle('plot-pdf', async (ev, dataUrl, suggestName, landscape) => {
   if (res.canceled || !res.filePath) return null;
   const hidden = new BrowserWindow({ show: false, webPreferences: { sandbox: true, contextIsolation: true } });
   try {
-    const html = `<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;background:#fff}img{width:100%;height:auto;display:block}@page{margin:0}</style></head><body><img src="${dataUrl}"></body></html>`;
+    // Keep the navigation URL tiny and inject the (possibly multi-megabyte) image afterwards.
+    const html = '<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;background:#fff;height:100%}img{width:100%;height:100%;object-fit:contain;display:block}@page{margin:0}</style></head><body><img id="p"></body></html>';
     await hidden.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
-    const pdf = await hidden.webContents.printToPDF({ landscape: Boolean(landscape), printBackground: true, margins: { marginType: 'none' } });
+    await hidden.webContents.executeJavaScript(`new Promise((ok, fail) => { const i = document.getElementById('p'); i.onload = () => ok(true); i.onerror = () => fail(new Error('image')); i.src = ${JSON.stringify(dataUrl)}; })`);
+    // Page size from the sheet aspect (microns); default to Letter/A-ish when not given.
+    const w = sheet && Number.isFinite(sheet.width) && sheet.width > 0 ? sheet.width : landscape ? 11 : 8.5;
+    const h = sheet && Number.isFinite(sheet.height) && sheet.height > 0 ? sheet.height : landscape ? 8.5 : 11;
+    const pdf = await hidden.webContents.printToPDF({
+      printBackground: true,
+      margins: { marginType: 'none' },
+      pageSize: { width: Math.round(w * 25400), height: Math.round(h * 25400) },
+    });
     await fs.writeFile(res.filePath, pdf);
     return res.filePath;
   } finally {

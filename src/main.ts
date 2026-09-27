@@ -5,7 +5,7 @@ import { Ribbon, ELECTRICAL_TABS } from './ui/ribbon';
 import { CommandLine } from './ui/commandline';
 import { StatusBar } from './ui/statusbar';
 import { ProjectManager } from './ui/projectmanager';
-import { pickSymbolDialog, editComponentDialog, ladderDialog, textInputDialog, layerDialog, confirmDialog, reportsDialog, templateDialog, plcDialog, terminalStripDialog, wireTypeDialog } from './ui/dialogs';
+import { pickSymbolDialog, editComponentDialog, ladderDialog, textInputDialog, layerDialog, confirmDialog, saveChangesDialog, reportsDialog, templateDialog, plcDialog, terminalStripDialog, wireTypeDialog } from './ui/dialogs';
 import { PropertiesPalette } from './ui/properties';
 import { saveSettings } from './app/settings';
 import { buildTitleBar, buildFileTabs, buildLayoutTabs, installContextMenu, buildNavBar } from './ui/chrome';
@@ -88,7 +88,7 @@ function boot(): void {
       <div class="center">
         <div id="file-tabs"></div>
         <div class="canvas-wrap"><canvas id="drawing" tabindex="0"></canvas>
-          <div class="viewcube" title="Top view"><span class="vc-n">N</span><span class="vc-e">E</span><span class="vc-s">S</span><span class="vc-w">W</span><span class="vc-face">TOP</span></div>
+          <div class="viewcube" title="Top view"><span class="vc-n">N</span><span class="vc-e">E</span><span class="vc-s">S</span><span class="vc-w">W</span><span class="vc-face">TOP</span><span class="vc-wcs">WCS ▾</span></div>
           <div class="navbar" id="navbar"></div>
         </div>
         <div id="layout-tabs"></div>
@@ -112,6 +112,7 @@ function boot(): void {
     ladderSettings: (init) => ladderDialog(init),
     textInput: (t, l, i) => textInputDialog(t, l, i),
     confirm: (t, m) => confirmDialog(t, m),
+    saveChanges: (name) => saveChangesDialog(name),
   };
   editor.layerDialogRequested = () => layerDialog(editor);
   applyUiSettings(editor);

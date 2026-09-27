@@ -2,7 +2,6 @@ import type { Editor } from '../app/editor';
 import type { Entity } from '../core/entities';
 import { aciToCss, ACI_NAMES } from '../render/palette';
 import { icon } from './icons';
-import { esc } from './dom';
 
 /** Properties palette: shows and edits the current selection (docked right). */
 export class PropertiesPalette {
@@ -121,13 +120,16 @@ export class PropertiesPalette {
     b.appendChild(
       this.row(
         'Layer',
-        this.select(layerVal === '*VARIES*' ? [['*VARIES*', '*VARIES*'], ...layers] : layers, layerVal, (v) => doc.replaceEntities(sel.map((e) => ({ ...e, layer: v })))),
+        this.select(layerVal === '*VARIES*' ? [['*VARIES*', '*VARIES*'], ...layers] : layers, layerVal, (v) => {
+          if (v !== '*VARIES*') doc.replaceEntities(sel.map((e) => ({ ...e, layer: v })));
+        }),
       ),
     );
     const colorVal = common('color');
-    const colorSel = this.select(colorVal === '*VARIES*' ? [['*VARIES*', '*VARIES*'], ...colors] : colors, colorVal, (v) =>
-      doc.replaceEntities(sel.map((e) => ({ ...e, color: v === 'ByLayer' ? ('ByLayer' as const) : parseInt(v, 10) }))),
-    );
+    const colorSel = this.select(colorVal === '*VARIES*' ? [['*VARIES*', '*VARIES*'], ...colors] : colors, colorVal, (v) => {
+      if (v === '*VARIES*') return;
+      doc.replaceEntities(sel.map((e) => ({ ...e, color: v === 'ByLayer' ? ('ByLayer' as const) : parseInt(v, 10) })));
+    });
     const swatchWrap = document.createElement('span');
     swatchWrap.className = 'prop-color';
     const sw = document.createElement('span');
@@ -153,6 +155,8 @@ export class PropertiesPalette {
         b.appendChild(this.row('Start Y', numInput(e.a.y, (n) => patch({ a: { x: e.a.x, y: n } }))));
         b.appendChild(this.row('End X', numInput(e.b.x, (n) => patch({ b: { x: n, y: e.b.y } }))));
         b.appendChild(this.row('End Y', numInput(e.b.y, (n) => patch({ b: { x: e.b.x, y: n } }))));
+        b.appendChild(this.row('Delta X', num(e.b.x - e.a.x)));
+        b.appendChild(this.row('Delta Y', num(e.b.y - e.a.y)));
         b.appendChild(this.row('Length', num(Math.hypot(e.b.x - e.a.x, e.b.y - e.a.y))));
         b.appendChild(this.row('Angle', `${((Math.atan2(e.b.y - e.a.y, e.b.x - e.a.x) * 180) / Math.PI).toFixed(2)}°`));
         break;
@@ -183,7 +187,7 @@ export class PropertiesPalette {
         break;
       case 'insert': {
         const block = doc.lookupBlock(e.block);
-        b.appendChild(this.row('Block', esc(e.block)));
+        b.appendChild(this.row('Name', e.block));
         if (block?.description) b.appendChild(this.row('Symbol', block.description));
         b.appendChild(this.row('X', numInput(e.position.x, (n) => patch({ position: { x: n, y: e.position.y } }))));
         b.appendChild(this.row('Y', numInput(e.position.y, (n) => patch({ position: { x: e.position.x, y: n } }))));

@@ -187,7 +187,7 @@ export class StatusBar {
         this.wsEl,
         [
           { label: 'Drafting & Annotation', check: this.editor.settings.workspace === 'drafting', run: () => this.editor.runCommand('WORKSPACE drafting') },
-          { label: 'ACADE & 2D Drafting (Electrical)', check: this.editor.settings.workspace === 'electrical', run: () => this.editor.runCommand('WORKSPACE electrical') },
+          { label: 'Electrical & 2D Drafting', check: this.editor.settings.workspace === 'electrical', run: () => this.editor.runCommand('WORKSPACE electrical') },
           null,
           { label: 'Workspace Settings... (Options)', run: () => this.editor.runCommand('OPTIONS') },
         ],
@@ -307,7 +307,7 @@ export class StatusBar {
     for (const [k, el] of this.buttons) el.classList.toggle('status-hidden', !this.visible(k));
     const s = this.editor.settings;
     this.scaleEl.innerHTML = `<span>${s.annotationScale}</span>${icon('chevron')}`;
-    this.wsEl.innerHTML = `${icon('settings')} <span>${s.workspace === 'drafting' ? 'Drafting &amp; Annotation' : 'ACADE &amp; 2D Drafting'}</span>${icon('chevron')}`;
+    this.wsEl.innerHTML = `${icon('settings')} <span>${s.workspace === 'drafting' ? 'Drafting &amp; Annotation' : 'Electrical &amp; 2D Drafting'}</span>${icon('chevron')}`;
     const unitName = s.units[0]!.toUpperCase() + s.units.slice(1);
     this.unitsEl.textContent = `${unitName} · ${s.unitSuffix}`;
     this.refreshCoords();

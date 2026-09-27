@@ -1236,3 +1236,110 @@ canvas#drawing {
   font-size: 10px;
   padding-left: 8px;
 }
+
+/* review round 2 */
+.project-tree {
+  overflow-x: hidden;
+}
+.tree-node > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.input[type='number'] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+.input::-webkit-inner-spin-button,
+.input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+fieldset {
+  border: 1px solid #c8c8c8;
+  padding: 6px 10px 8px;
+  margin: 0 0 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+legend {
+  font-size: 12px;
+  color: #333;
+  padding: 0 4px;
+}
+.component-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.component-preview-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.iconmenu-options {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  margin-top: 8px;
+  font-size: 12px;
+}
+.iconmenu-options label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.iconmenu-options .input.small {
+  width: 60px;
+}
+.iconmenu-options .input.typeit {
+  width: 120px;
+}
+.iconmenu-grid {
+  grid-template-columns: repeat(auto-fill, 96px);
+  grid-auto-rows: 100px;
+}
+.report-table.selectable tbody tr {
+  cursor: pointer;
+}
+.report-table.selectable tbody tr.active {
+  background: #cce4f7;
+}
+.report-table {
+  font: 12px var(--mono);
+}
+.report-table th {
+  text-transform: uppercase;
+  font: 600 11px var(--font);
+}
+.layer-toolbar {
+  display: flex;
+  gap: 2px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.layer-toolbar .layer-search {
+  margin-left: auto;
+  width: 200px;
+}
+.prop-row {
+  grid-template-columns: 45% 1fr;
+  border-bottom: 1px solid #3c3c3c;
+  font-size: 12px;
+  min-height: 21px;
+}
+.prop-label {
+  border-right: 1px solid #3c3c3c;
+}
+.viewcube .vc-wcs {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -14px;
+  text-align: center;
+  font-size: 10px;
+  color: rgba(230, 230, 230, 0.6);
+}

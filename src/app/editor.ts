@@ -52,7 +52,7 @@ export interface FileBridge {
   saveDxf(path: string | null, text: string, suggestName: string): Promise<string | null>;
   openProject?(file?: string): Promise<{ path: string; text: string } | null>;
   saveText?(suggestName: string, text: string, filterName: string, ext: string): Promise<string | null>;
-  plotPdf?(dataUrl: string, suggestName: string, landscape: boolean): Promise<string | null>;
+  plotPdf?(dataUrl: string, suggestName: string, landscape: boolean, sheet?: { width: number; height: number }): Promise<string | null>;
 }
 
 const VERSION = '0.1.0';
@@ -121,6 +121,8 @@ export class Editor {
   project: Project = defaultProject();
   /** Layer new wires go on (AEWIRETYPE). */
   wireLayer = 'WIRES';
+  /** File name to suggest in Save As (set by DWG import). */
+  suggestedName: string | null = null;
   private gripDrag: { entity: Entity; index: number; start: Point } | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
@@ -632,6 +634,15 @@ export class Editor {
   private async confirmDiscard(): Promise<boolean> {
     if (!this.doc.dirty) return true;
     const ui = this.ui ?? fallbackUi;
+    if (ui.saveChanges) {
+      const r = await ui.saveChanges(this.fileName());
+      if (r === 'cancel') return false;
+      if (r === 'save') {
+        await this.saveFile(false);
+        return !this.doc.dirty;
+      }
+      return true;
+    }
     return ui.confirm('Unsaved changes', `${this.fileName()} has unsaved changes. Discard them?`);
   }
 
@@ -676,9 +687,10 @@ export class Editor {
         this.rememberRecent(res.path);
         if (res.kind === 'dwg') {
           const { state, skipped } = convertDwg(res.payload);
-          // DWG is read-only for us; saving goes to a sibling .dxf so the original is never overwritten.
-          this.loadState(state, res.path.replace(/\.dwg$/i, '.dxf'));
+          // DWG is read-only for us: keep the file untitled so SAVE asks where to write the DXF copy.
+          this.loadState(state, null);
           this.doc.dirty = true;
+          this.suggestedName = res.path.replace(/\.dwg$/i, '.dxf').split(/[\\/]/).pop() ?? null;
           const skippedText = Object.keys(skipped).length
             ? ` Skipped unsupported: ${Object.entries(skipped).map(([k, v]) => `${k}×${v}`).join(', ')}.`
             : '';
@@ -708,10 +720,11 @@ export class Editor {
       return;
     }
     const text = writeDxf(this.doc.snapshot);
-    const path = await this.fileBridge.saveDxf(saveAs ? null : this.doc.filePath, text, this.fileName());
+    const path = await this.fileBridge.saveDxf(saveAs ? null : this.doc.filePath, text, this.suggestedName ?? this.fileName());
     if (path) {
       this.doc.filePath = path;
       this.doc.dirty = false;
+      this.suggestedName = null;
       this.log(`Saved ${path}`);
       this.rememberRecent(path);
       this.emit('file');
@@ -810,7 +823,7 @@ export class Editor {
       drawEntity(ctx, e, tf, this.doc.layers, this.doc.lookupBlock, { strokeOverride: '#000000', lineWidthOverride: Math.max(1, Math.round(dpi / 100)) });
     }
     const dataUrl = canvas.toDataURL('image/png');
-    const out = await this.fileBridge.plotPdf(dataUrl, this.fileName().replace(/\.[^.]+$/, '') + '.pdf', landscape);
+    const out = await this.fileBridge.plotPdf(dataUrl, this.fileName().replace(/\.[^.]+$/, '') + '.pdf', landscape, { width: w + margin * 2, height: h + margin * 2 });
     if (out) this.log(`Plotted to ${out}`);
   }
 
