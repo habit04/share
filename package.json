@@ -49,7 +49,9 @@
         "AppImage",
         "deb"
       ],
-      "category": "Graphics"
+      "category": "Graphics",
+      "maintainer": "JCad Electrical <maintainer@jcad.invalid>",
+      "synopsis": "2D electrical schematic drafting"
     },
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}"
   },
