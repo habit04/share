@@ -5,7 +5,10 @@
 import type { Point } from '../core/geometry';
 import type { Entity, TextEntity, InsertEntity, BlockDef } from '../core/entities';
 import { newId } from '../core/entities';
+import type { Drawing } from '../core/document';
 import type { Tool, ToolContext } from './types';
+import { nearestReference } from '../electrical/ladder';
+import { readWdSettings } from '../electrical/wdm';
 
 const fmt = (p: Point) => `${p.x.toFixed(4)}, ${p.y.toFixed(4)}`;
 
@@ -119,6 +122,14 @@ export const DEST_ARROW: BlockDef = {
   ],
 };
 
+/** "sheet/rung" reference for a point, e.g. "2/103", or coordinates when the drawing has no ladder references. */
+export function signalReference(doc: Drawing, q: Point): string {
+  const ref = nearestReference(doc, q);
+  const sheet = readWdSettings(doc).sheet;
+  if (ref) return sheet ? `${sheet}/${ref}` : ref;
+  return `${q.x.toFixed(1)},${q.y.toFixed(1)}`;
+}
+
 /** Insert a source or destination arrow at a wire end and link matching signal codes. */
 export class SignalArrowTool implements Tool {
   readonly name: string;
@@ -146,7 +157,8 @@ export class SignalArrowTool implements Tool {
       const mine = this.make(p, c);
       // Link with the matching arrow of the other kind: write each other's location as XREF.
       const other = ctx.doc.entities.find((e): e is InsertEntity => e.type === 'insert' && e.block === (this.kind === 'source' ? DEST_ARROW.name : SOURCE_ARROW.name) && e.attributes.SIGCODE === c);
-      const where = (q: Point) => `${q.x.toFixed(1)},${q.y.toFixed(1)}`;
+      // Cross-reference text like ACADE: sheet / rung reference of the other end (coordinates when no ladder).
+      const where = (q: Point) => signalReference(ctx.doc, q);
       ctx.doc.transact((s) => {
         let entities = s.entities;
         let ins = mine;

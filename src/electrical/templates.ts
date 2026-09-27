@@ -109,3 +109,24 @@ export function newFromTemplate(size: SheetSize, fields: Partial<Record<string, 
   d.addEntities(sheetEntities(size, fields));
   return d.snapshot;
 }
+
+/**
+ * UPDATE TITLE BLOCK: write project / drawing fields into the title block
+ * insert (only attributes the block defines). Returns false when the drawing
+ * has no title block.
+ */
+export function updateTitleBlock(doc: Drawing, fields: Record<string, string>): boolean {
+  const tb = doc.entities.find((e): e is InsertEntity => e.type === 'insert' && e.block === TITLE_BLOCK.name);
+  if (!tb) return false;
+  const def = doc.lookupBlock(TITLE_BLOCK.name) ?? TITLE_BLOCK;
+  const allowed = new Set(def.attributes.map((a) => a.tag));
+  const attrs = { ...tb.attributes };
+  let changed = false;
+  for (const [k, v] of Object.entries(fields)) {
+    if (!allowed.has(k) || attrs[k] === v) continue;
+    attrs[k] = v;
+    changed = true;
+  }
+  if (changed) doc.replaceEntities([{ ...tb, attributes: attrs }]);
+  return true;
+}

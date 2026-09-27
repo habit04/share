@@ -235,6 +235,160 @@ await page.mouse.move(hoverPos.x, hoverPos.y);
 await page.waitForTimeout(700);
 await shot('20-rollover-tooltip');
 
+// ---------------------------------------------------------------- electrical feature parity scenes
+const closeModal = async () => {
+  await page.keyboard.press('Escape');
+  await page.evaluate(() => document.querySelectorAll('.modal-backdrop').forEach((m) => m.remove()));
+};
+const reloadDemo = async () => {
+  await page.goto(`http://localhost:${port}/?demo`);
+  await page.waitForTimeout(400);
+};
+
+// 10: Insert/Edit Component dialog with ACADE data, used tags and pins
+await reloadDemo();
+await page.evaluate(() => window.editor.runCommand('AECOMPONENT HPB11_NO'));
+await page.waitForTimeout(100);
+await page.evaluate(() => window.editor.submitInput('7.2,5'));
+await page.waitForTimeout(300);
+await page.screenshot({ path: 'screenshots/10-component-dialog.png' });
+await closeModal();
+
+// 11: Catalog browser
+await page.evaluate(() => {
+  const ed = window.editor;
+  const ins = ed.doc.entities.find((e) => e.type === 'insert' && e.attributes.TAG1 === 'LS103');
+  ed.selection = new Set([ins.id]);
+  ed.runCommand('AECATALOG');
+});
+await page.waitForTimeout(300);
+await page.screenshot({ path: 'screenshots/11-catalog-browser.png' });
+await closeModal();
+
+// 12: Child contact flow (parent list) + toggled NC contact, scoot and wire gap applied to the drawing
+await page.evaluate(() => window.editor.runCommand('AECHILD'));
+await page.waitForTimeout(300);
+await page.screenshot({ path: 'screenshots/12-child-contact.png' });
+await closeModal();
+await page.evaluate(() => {
+  const ed = window.editor;
+  ed.runCommand('AEXREF');
+  const c = ed.doc.entities.find((e) => e.type === 'insert' && e.block === 'HCR1_NO' && Math.abs(e.position.y - 6) < 0.01);
+  ed.selection = new Set([c.id]);
+  ed.runCommand('AETOGGLENC');
+  ed.runCommand('AEXREF');
+  ed.zoomExtents();
+});
+await page.waitForTimeout(200);
+await page.screenshot({ path: 'screenshots/13-xref-tables.png' });
+
+// 14: Electrical audit with jump-to-error
+await page.evaluate(() => window.editor.runCommand('AEAUDIT'));
+await page.waitForTimeout(300);
+await page.screenshot({ path: 'screenshots/14-audit.png' });
+await closeModal();
+
+// 15: Reports: PLC I/O + wire labels + put on drawing
+await page.evaluate(() => window.editor.runCommand('AEREPORT labels'));
+await page.waitForTimeout(400);
+await page.screenshot({ path: 'screenshots/15-report-wire-labels.png' });
+await closeModal();
+
+// 16: Panel: schematic list dialog, then footprints, balloon and nameplate placed on a panel area
+await page.evaluate(() => window.editor.runCommand('AESCHEMATICLIST'));
+await page.waitForTimeout(400);
+await page.screenshot({ path: 'screenshots/16-schematic-list.png' });
+await closeModal();
+await page.evaluate(() => {
+  const ed = window.editor;
+  // Place footprints for a few tags via the command with a preselected component.
+  const place = (tag, x, y) => {
+    const ins = ed.doc.entities.find((e) => e.type === 'insert' && e.attributes.TAG1 === tag);
+    ed.selection = new Set([ins.id]);
+    ed.runCommand('AEFOOTPRINT');
+    ed.submitInput(`${x},${y}`);
+  };
+  place('PB100', 13.5, 8);
+  place('PB101', 15, 8);
+  place('LT101', 16.5, 8);
+  place('CR100', 13.6, 5.8);
+  place('OL102', 15.8, 5.6);
+  place('FU100', 17.8, 5.8);
+  // footprints are picked on their outline (like any block), so aim at the rectangle edge
+  ed.runCommand('AENAMEPLATE');
+  ed.submitInput('14.55,8');
+  ed.submitInput('15,9.6');
+  ed.runCommand('AEBALLOON');
+  ed.submitInput('13.0,5.8');
+  ed.submitInput('12.4,7');
+  ed.zoomExtents();
+});
+await page.waitForTimeout(250);
+await page.screenshot({ path: 'screenshots/17-panel-footprints.png' });
+
+// 18: Terminal strip editor
+await page.evaluate(() => window.editor.runCommand('AETERMEDIT'));
+await page.waitForTimeout(300);
+await page.screenshot({ path: 'screenshots/18-terminal-strip-editor.png' });
+await closeModal();
+
+// 19: Drawing properties (WD_M settings)
+await page.evaluate(() => window.editor.runCommand('AEDRAWINGPROPS'));
+await page.waitForTimeout(300);
+await page.screenshot({ path: 'screenshots/19-drawing-properties.png' });
+await closeModal();
+
+// 20: Circuit builder: reversing starter on a new sheet, plus a 3-phase bus with a 3-pole disconnect
+await page.evaluate(() => {
+  window.editor.doc.dirty = false;
+  window.editor.runCommand('NEWSHEET');
+});
+await page.waitForTimeout(200);
+await page.click('.modal .btn.primary >> nth=-1');
+await page.waitForTimeout(200);
+await page.evaluate(() => window.editor.runCommand('AECIRCUIT'));
+await page.waitForTimeout(250);
+await page.evaluate(() => {
+  const sel = document.querySelector('.modal select');
+  sel.value = 'reversing';
+  sel.dispatchEvent(new Event('change'));
+});
+await page.screenshot({ path: 'screenshots/20-circuit-builder.png' });
+await page.click('.modal .btn.primary >> nth=-1');
+await page.waitForTimeout(150);
+await page.evaluate(() => window.editor.submitInput('2,9'));
+await page.waitForTimeout(100);
+await page.evaluate(() => {
+  const ed = window.editor;
+  ed.runCommand('AEMULTIBUS');
+});
+await page.waitForTimeout(200);
+await page.evaluate(() => {
+  const sel = document.querySelectorAll('.modal select')[0];
+  sel.value = 'horizontal';
+  sel.dispatchEvent(new Event('change'));
+});
+await page.click('.modal .btn.primary >> nth=-1');
+await page.waitForTimeout(100);
+await page.evaluate(() => {
+  const ed = window.editor;
+  ed.submitInput('2,4');
+  ed.submitInput('12,4');
+  ed.runCommand('AECOMPONENT3 HDS1');
+});
+await page.waitForTimeout(150);
+await page.evaluate(() => window.editor.submitInput('4,4'));
+await page.waitForTimeout(250);
+await page.click('.modal .btn.primary >> nth=-1');
+await page.waitForTimeout(100);
+await page.evaluate(() => {
+  const ed = window.editor;
+  ed.runCommand('AETITLEBLOCK');
+  ed.zoomExtents();
+});
+await page.waitForTimeout(250);
+await page.screenshot({ path: 'screenshots/21-circuit-and-3phase.png' });
+
 await browser.close();
 server.close();
 console.log('screenshots written to ./screenshots');

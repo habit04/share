@@ -88,6 +88,25 @@ export const icons: Record<string, string> = {
   freeze: wrap('<path d="M12 3v18M4 7l16 10M4 17L20 7"/><path class="ac" d="M12 3l-2 2M12 3l2 2M12 21l-2-2M12 21l2-2"/>'),
   plot: wrap('<path d="M7 8V4h10v4"/><rect x="3" y="8" width="18" height="9" rx="1"/><path class="ac" d="M7 14h10v6H7z"/>'),
   bolt: wrap('<path d="M13 2L5 14h6l-1 8 9-13h-6z" fill="currentColor" stroke="none"/>'),
+  // --- electrical feature icons (original line art) ---
+  child: wrap('<path d="M2 16h6M14 16h8"/><path class="ac" d="M8 12v8M14 12v8"/><circle cx="12" cy="5" r="2.5"/><path d="M12 7.5V11"/>'),
+  threephase: wrap('<path d="M2 6h6M2 12h6M2 18h6M16 6h6M16 12h6M16 18h6"/><path class="ac" d="M8 6l6-3M8 12l6-3M8 18l6-3"/><path d="M12 4v13" stroke-dasharray="2 2"/>'),
+  circuit: wrap('<path d="M4 3v18M20 3v18"/><path d="M4 8h4M11 8h4M18 8h2M4 15h4M11 15h9"/><path class="ac" d="M8 6v4M11 6v4"/><circle class="ac" cx="16.5" cy="8" r="1.8"/><path d="M8 13v4M11 13v4"/>'),
+  catalog: wrap('<path d="M4 4h12l3 3v13H4z"/><path class="ac" d="M7 9h8M7 12h8M7 15h5"/><circle cx="17" cy="17" r="3"/><path d="M19 19l3 3"/>'),
+  toggle: wrap('<path d="M2 12h6M16 12h6"/><path d="M8 7v10M16 7v10"/><path class="ac" d="M6 6l12 12"/><path d="M12 3l3 2-3 2"/>'),
+  retag: wrap('<path d="M4 4h7l9 9-7 7-9-9z"/><circle class="ac" cx="8" cy="8" r="1.3" fill="currentColor"/><path class="ac" d="M17 3a5 5 0 0 1 4 6M21 3v6h-6"/>'),
+  gap: wrap('<path d="M12 3v18"/><path d="M2 12h7M15 12h7"/><path class="ac" d="M9 12a3 3 0 0 1 6 0"/>'),
+  loop: wrap('<path d="M12 3v18"/><path d="M2 14h6M16 14h6"/><path class="ac" d="M8 14a4 4 0 0 1 8 0"/>'),
+  align: wrap('<path d="M12 2v20" stroke-dasharray="3 2"/><rect x="5" y="5" width="14" height="4"/><rect class="ac" x="8" y="12" width="8" height="4"/><path d="M4 19l4 2-4 2M20 19l-4 2 4 2"/>'),
+  audit: wrap('<path d="M6 3h9l4 4v14H6z"/><path class="ac" d="M9 14l2 2 4-5"/><path d="M9 9h6"/>'),
+  balloon: wrap('<circle cx="14" cy="9" r="6"/><path class="ac" d="M12 7v4h4"/><path d="M10 14l-7 7"/>'),
+  nameplate: wrap('<rect x="2" y="8" width="20" height="8" rx="1"/><circle cx="5" cy="12" r="0.8" fill="currentColor"/><circle cx="19" cy="12" r="0.8" fill="currentColor"/><path class="ac" d="M8 12h8"/>'),
+  titleblock: wrap('<rect x="2" y="4" width="20" height="16"/><path d="M2 14h20M12 14v6M2 17h20"/><path class="ac" d="M5 8h8"/>'),
+  footprint: wrap('<rect x="4" y="4" width="16" height="16"/><circle cx="7" cy="7" r="1"/><circle cx="17" cy="7" r="1"/><circle cx="7" cy="17" r="1"/><circle cx="17" cy="17" r="1"/><path class="ac" d="M9 12h6"/>'),
+  strip: wrap('<rect x="2" y="8" width="20" height="8"/><path d="M7 8v8M12 8v8M17 8v8"/><path class="ac" d="M4.5 12h0M9.5 12h0M14.5 12h0M19.5 12h0" stroke-width="2.5"/>'),
+  dwgprops: wrap('<path d="M5 3h10l4 4v14H5z"/><path class="ac" d="M9 11h6M9 15h6"/><circle cx="17" cy="17" r="3"/><path d="M17 14.5v1M17 18.5v1M14.5 17h1M18.5 17h1"/>'),
+  wireleader: wrap('<path d="M2 18h20"/><path class="ac" d="M9 18l6-9"/><rect x="14" y="4" width="8" height="5"/>'),
+  copyno: wrap('<path d="M2 8h20M2 18h20"/><path class="ac" d="M6 3h4v4M6 13h4v4"/><path d="M12 10l0 4 3-2z" fill="currentColor"/>'),
 };
 
 export function icon(name: string, cls = ''): string {

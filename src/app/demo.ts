@@ -3,6 +3,19 @@ import type { Entity, LineEntity } from '../core/entities';
 import { newId } from '../core/entities';
 import { breakWire, assignWireNumbers, wireDot } from '../tools/electrical';
 import { WIRE_DOT } from '../electrical/symbols';
+import { writeWdSettings, DEFAULT_WD_SETTINGS } from '../electrical/wdm';
+
+/** Catalog data for the demo devices (generic parts from the built-in catalog). */
+const CATALOG: Record<string, { MFG: string; CAT: string }> = {
+  FU100: { MFG: 'FUSEWORKS', CAT: 'CC-5' },
+  PB100: { MFG: 'SWITCHCO', CAT: 'SP22-FR-1NC' },
+  PB101: { MFG: 'SWITCHCO', CAT: 'SP22-FG-1NO' },
+  CR100: { MFG: 'RELIACO', CAT: 'RC-4PDT-120A' },
+  LT101: { MFG: 'SWITCHCO', CAT: 'PL22-R-120' },
+  OL102: { MFG: 'AMPERION', CAT: 'OL-E-4-20' },
+  M102: { MFG: 'TORQUEMAX', CAT: 'TM-5-4-TEFC' },
+  PB104: { MFG: 'SWITCHCO', CAT: 'SP22-ESR-1NC' },
+};
 
 /** Seed a small motor-control ladder so screenshots and manual testing have content. */
 export function seedDemoDrawing(editor: Editor): void {
@@ -27,17 +40,12 @@ export function seedDemoDrawing(editor: Editor): void {
     rotation: 0,
     align,
   });
-  const ins = (block: string, x: number, y: number, tag: string, desc: string): Entity => ({
-    id: newId(),
-    type: 'insert',
-    layer: 'SYMS',
-    color: 'ByLayer',
-    block,
-    position: { x, y },
-    rotation: 0,
-    scale: 1,
-    attributes: { TAG1: tag, DESC1: desc },
-  });
+  const ins = (block: string, x: number, y: number, tag: string, desc: string): Entity => {
+    const attrs: Record<string, string> = { TAG1: tag, DESC1: desc };
+    const c = CATALOG[tag];
+    if (c) Object.assign(attrs, c, { INST: 'MCC1', LOC: 'PNL1' });
+    return { id: newId(), type: 'insert', layer: 'SYMS', color: 'ByLayer', block, position: { x, y }, rotation: 0, scale: 1, attributes: attrs };
+  };
   /** Place components on a rung wire, breaking it around each symbol (±0.375). */
   const rung = (y: number, comps: Array<[string, number, string, string]>, x0 = left, x1 = right): void => {
     let pieces: LineEntity[] = [wire(x0, y, x1, y)];
@@ -90,8 +98,13 @@ export function seedDemoDrawing(editor: Editor): void {
     ['HPB13_NC', 3.4, 'PB104', 'E-STOP'],
     ['HHN1', 8.6, 'HN104', 'ALARM HORN'],
   ]);
-  // Rung 105: terminal and ground stub
-  ents.push(ins('HT0001', 2.0, top - 5, '1', ''), wire(left, top - 5, 1.625, top - 5), wire(2.375, top - 5, 3.5, top - 5), ins('HGND', 3.5, top - 5, '', ''));
+  // Rung 105: terminal (strip TB1, terminal 1) and ground stub
+  ents.push(
+    { id: newId(), type: 'insert', layer: 'SYMS', color: 'ByLayer', block: 'HT0001', position: { x: 2.0, y: top - 5 }, rotation: 0, scale: 1, attributes: { TERM01: '1', TAGSTRIP: 'TB1', MFG: 'CLAMPTECH', CAT: 'TB-4-GY' } },
+    wire(left, top - 5, 1.625, top - 5),
+    wire(2.375, top - 5, 3.5, top - 5),
+    { id: newId(), type: 'insert', layer: 'SYMS', color: 'ByLayer', block: 'HGND', position: { x: 3.5, y: top - 5 }, rotation: 0, scale: 1, attributes: {} },
+  );
 
   // Title block
   ents.push({
@@ -111,6 +124,8 @@ export function seedDemoDrawing(editor: Editor): void {
 
   editor.doc.addEntities(ents);
   assignWireNumbers(editor.doc, 100);
+  // Drawing settings block (WD_M): sheet 2, reference-based tags, ACADE-style defaults.
+  writeWdSettings(editor.doc, { ...DEFAULT_WD_SETTINGS, sheet: '2', drawingNumber: '002', drawingDescription: 'CONVEYOR 1 - MOTOR CONTROL', iecInstallation: 'MCC1', iecLocation: 'PNL1' });
   editor.doc.dirty = false;
   editor.zoomExtents();
 }
