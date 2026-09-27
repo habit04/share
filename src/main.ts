@@ -12,7 +12,7 @@ import { seedDemoDrawing } from './app/demo';
 
 declare global {
   interface Window {
-    voltcad?: {
+    jautocad?: {
       openDxf(): Promise<{ path: string; text: string } | null>;
       openDrawing(file?: string): Promise<import('./app/editor').OpenResult | null>;
       openProject(file?: string): Promise<{ path: string; text: string } | null>;
@@ -85,7 +85,7 @@ function boot(): void {
 
   const canvas = document.getElementById('drawing') as HTMLCanvasElement;
   const editor = new Editor(canvas);
-  editor.fileBridge = window.voltcad ?? browserFileBridge();
+  editor.fileBridge = window.jautocad ?? browserFileBridge();
   editor.ui = {
     pickSymbol: () =>
       pickSymbolDialog(editor, editor.settings.symbolStandard, (std) => {
@@ -183,15 +183,15 @@ function boot(): void {
   ro.observe(canvas.parentElement!);
   editor.resize();
 
-  window.voltcad?.onMenuCommand((c) => editor.runCommand(c));
+  window.jautocad?.onMenuCommand((c) => editor.runCommand(c));
   // Unsaved-work guard: the browser prompt, and the Electron close handler asks via this flag.
   window.addEventListener('beforeunload', (ev) => {
-    if (editor.doc.dirty && !window.voltcad) {
+    if (editor.doc.dirty && !window.jautocad) {
       ev.preventDefault();
       ev.returnValue = '';
     }
   });
-  window.voltcad?.onQueryDirty(() => editor.doc.dirty);
+  window.jautocad?.onQueryDirty(() => editor.doc.dirty);
 
   if (new URLSearchParams(location.search).has('demo')) {
     seedDemoDrawing(editor);

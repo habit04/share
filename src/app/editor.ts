@@ -131,7 +131,7 @@ export class Editor {
       this.render();
     });
     this.registerCommands();
-    this.log(`VoltCAD 2D ${VERSION} — type a command (LINE, AEWIRE, AELADDER, AECOMPONENT ...) or HELP.`);
+    this.log(`JAutoCad ${VERSION} — type a command (LINE, AEWIRE, AELADDER, AECOMPONENT ...) or HELP.`);
   }
 
   // ------------------------------------------------------------- events
@@ -744,7 +744,7 @@ export class Editor {
       this.log('Projects need the desktop app.');
       return;
     }
-    const p = await this.fileBridge.saveText(this.project.path ?? `${this.project.name.replace(/\s+/g, '_')}.vcproj.json`, serializeProject(this.project), 'VoltCAD Project', 'json');
+    const p = await this.fileBridge.saveText(this.project.path ?? `${this.project.name.replace(/\s+/g, '_')}.jacproj.json`, serializeProject(this.project), 'JAutoCad Project', 'json');
     if (p) {
       this.project = { ...this.project, path: p };
       this.log(`Project saved: ${p}`);

@@ -109,7 +109,7 @@ describe('templates and projects', () => {
     if (tb2?.type === 'insert') expect(tb2.attributes.TITLE).toBe('MOTOR CONTROL');
   });
   it('parses, serialises and resolves project files', () => {
-    const p = parseProject('{"name":"Line 1","drawings":[{"file":"001.dxf","description":"Power"},{"file":"/abs/002.dxf"},{"bad":true}]}', '/proj/line1.vcproj.json');
+    const p = parseProject('{"name":"Line 1","drawings":[{"file":"001.dxf","description":"Power"},{"file":"/abs/002.dxf"},{"bad":true}]}', '/proj/line1.jacproj.json');
     expect(p.drawings).toHaveLength(2);
     expect(resolveDrawingPath(p, p.drawings[0]!)).toBe('/proj/001.dxf');
     expect(resolveDrawingPath(p, p.drawings[1]!)).toBe('/abs/002.dxf');

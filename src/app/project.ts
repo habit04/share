@@ -1,5 +1,5 @@
 /**
- * Project file (.vcproj.json): the list of drawings that make up a project,
+ * Project file (.jacproj.json): the list of drawings that make up a project,
  * shown in the Project Manager. Paths are stored relative to the project file.
  */
 export interface ProjectDrawing {
@@ -16,7 +16,7 @@ export interface Project {
   path?: string;
 }
 
-export const PROJECT_EXT = '.vcproj.json';
+export const PROJECT_EXT = '.jacproj.json';
 
 export function parseProject(text: string, path?: string): Project {
   const raw = JSON.parse(text) as Partial<Project>;

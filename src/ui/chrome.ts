@@ -16,8 +16,8 @@ export function buildTitleBar(editor: Editor, el: HTMLElement): void {
   ];
   const logo = document.createElement('div');
   logo.className = 'app-logo';
-  logo.innerHTML = `${icon('bolt')}<span>V</span>`;
-  logo.title = 'VoltCAD 2D';
+  logo.innerHTML = `${icon('bolt')}<span>J</span>`;
+  logo.title = 'JAutoCad';
   const bar = document.createElement('div');
   bar.className = 'qat';
   for (const [ic, title, cmd] of qat) {
@@ -46,8 +46,8 @@ export function buildTitleBar(editor: Editor, el: HTMLElement): void {
   infocenter.querySelector('.ic-btn:last-child')!.addEventListener('click', () => editor.runCommand('HELP'));
   el.append(logo, bar, title, search, infocenter);
   const refresh = () => {
-    title.textContent = `VoltCAD 2D Electrical  —  ${editor.fileName()}${editor.doc.dirty ? '*' : ''}`;
-    document.title = `${editor.fileName()}${editor.doc.dirty ? '*' : ''} — VoltCAD 2D Electrical`;
+    title.textContent = `JAutoCad Electrical  —  ${editor.fileName()}${editor.doc.dirty ? '*' : ''}`;
+    document.title = `${editor.fileName()}${editor.doc.dirty ? '*' : ''} — JAutoCad Electrical`;
   };
   editor.on('file', refresh);
   editor.on('change', refresh);

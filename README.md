@@ -1,4 +1,4 @@
-# VoltCAD 2D
+# JAutoCad
 
 A desktop 2D electrical schematic drafting application whose workspace is modelled on
 AutoCAD Electrical: ribbon, Project Manager and Properties palettes, command window,
@@ -63,7 +63,7 @@ keywords shown in `[brackets]` are clickable.
 | AETERMSTRIP | TERMSTRIP | Panel terminal strip |
 | AEREPORT [bom/components/wires/terminals/audit] | REPORT, BOM | Reports with CSV export |
 | NEWSHEET | TEMPLATE | New drawing from an ANSI / ISO sheet template with title block |
-| OPENPROJECT, PROJECTADD, PROJECTSAVE | PROJECT | Project files (`*.vcproj.json`) listing drawings |
+| OPENPROJECT, PROJECTADD, PROJECTSAVE | PROJECT | Project files (`*.jacproj.json`) listing drawings |
 | NEW, OPEN, SAVE, SAVEAS, PLOT, RECENT | Ctrl+N / O / S / Shift+S | Files: DXF and DWG open, DXF save, PDF plot |
 
 Mouse: wheel zooms at the cursor, middle-drag pans, double middle-click zooms extents.

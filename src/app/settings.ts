@@ -14,7 +14,7 @@ export interface UserSettings {
   recentFiles: string[];
 }
 
-const KEY = 'voltcad.settings.v1';
+const KEY = 'jautocad.settings.v1';
 
 export const DEFAULT_SETTINGS: UserSettings = {
   gridVisible: true,

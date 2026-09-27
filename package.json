@@ -1,8 +1,8 @@
 {
-  "name": "voltcad",
+  "name": "jautocad",
   "version": "0.1.0",
   "description": "2D electrical schematic drafting application (desktop)",
-  "author": "VoltCAD contributors",
+  "author": "JAutoCad contributors",
   "private": true,
   "main": "electron/main.cjs",
   "type": "module",
@@ -18,8 +18,8 @@
     "dist:dir": "npm run build && electron-builder --dir"
   },
   "build": {
-    "appId": "com.voltcad.app",
-    "productName": "VoltCAD 2D",
+    "appId": "com.jautocad.app",
+    "productName": "JAutoCad",
     "directories": {
       "output": "release"
     },
