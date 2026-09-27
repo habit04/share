@@ -1006,6 +1006,13 @@ export class Editor {
         if (v !== null && v !== hit.text) this.doc.replaceEntities([{ ...hit, text: v }]);
       });
     } else if (hit.type === 'insert' && (hit.attributes.TAG1 !== undefined || hit.attributes.TERM01 !== undefined)) {
+      if (this.commands.has('AEEDITCOMPONENT')) {
+        // The AutoCAD Electrical-style dialog edits the full data set of the picked component.
+        this.selection = new Set([hit.id]);
+        this.emit('selection');
+        this.runCommand('AEEDITCOMPONENT');
+        return;
+      }
       void ui
         .editComponent({ tag: hit.attributes.TAG1 ?? hit.attributes.TERM01 ?? '', desc: hit.attributes.DESC1 ?? '', block: hit.block, mfg: hit.attributes.MFG, cat: hit.attributes.CAT })
         .then((r) => {
