@@ -330,6 +330,7 @@ export function layerDialog(editor: Editor): void {
   const m = modal('Layer Properties Manager', 760, 'dark');
   const table = document.createElement('table');
   table.className = 'layer-table';
+  let statusEl: HTMLElement | null = null;
   const colourName = (c: number) => (ACI_NAMES[c] ?? String(c)).toLowerCase();
   const render = () => {
     table.innerHTML = `<thead><tr><th>S</th><th>Name</th><th>On</th><th>Freeze</th><th>Lock</th><th>Plot</th><th>Color</th><th>Linetype</th><th>Lineweight</th><th>Transparency</th></tr></thead>`;
@@ -366,7 +367,7 @@ export function layerDialog(editor: Editor): void {
         editor.doc.updateLayer(l.name, { locked: !l.locked });
         render();
       });
-      status.textContent = `All: ${editor.doc.layers.length} layers displayed of ${editor.doc.layers.length} total layers`;
+      if (statusEl) statusEl.textContent = `All: ${editor.doc.layers.length} layers displayed of ${editor.doc.layers.length} total layers`;
       tr.querySelector('.color')!.addEventListener('click', () => {
         const next = ((l.color % 9) + 1) as number;
         editor.doc.updateLayer(l.name, { color: next });
@@ -379,6 +380,7 @@ export function layerDialog(editor: Editor): void {
   render();
   const status = document.createElement('div');
   status.className = 'hint';
+  statusEl = status;
   status.textContent = `All: ${editor.doc.layers.length} layers displayed of ${editor.doc.layers.length} total layers`;
   const toolbar = document.createElement('div');
   toolbar.className = 'layer-toolbar';
