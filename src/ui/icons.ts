@@ -34,7 +34,7 @@ export const icons: Record<string, string> = {
   layeron: wrap('<path d="M2 12s4-6 10-6 10 6 10 6-4 6-10 6S2 12 2 12z"/><circle class="ac" cx="12" cy="12" r="3"/>'),
   lock: wrap('<rect x="6" y="11" width="12" height="9"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>'),
   props: wrap('<rect x="4" y="3" width="16" height="18"/><path d="M8 8h8M8 12h8M8 16h5"/>'),
-  wire: wrap('<path d="M3 12h6l2-5 2 10 2-5h6"/><circle class="ac" cx="3" cy="12" r="1.3" fill="currentColor"/><circle class="ac" cx="21" cy="12" r="1.3" fill="currentColor"/>'),
+  wire: wrap('<path d="M3 12h18"/><path d="M12 12v7"/><circle class="ac" cx="3" cy="12" r="1.4" fill="currentColor"/><circle class="ac" cx="21" cy="12" r="1.4" fill="currentColor"/><circle class="ac" cx="12" cy="12" r="1.8" fill="currentColor"/>'),
   wiremulti: wrap('<path d="M3 7h18M3 17h18"/><path class="ac" d="M3 12h18"/>'),
   ladder: wrap('<path d="M6 3v18M18 3v18"/><path class="ac" d="M6 7h12M6 12h12M6 17h12"/>'),
   wireno: wrap('<path d="M3 15h18"/><path class="ac" d="M8 5h3v6M8 11h6"/><path d="M15 5h3a1.5 1.5 0 0 1 0 3h-1a1.5 1.5 0 0 0 0 3h3" />'),

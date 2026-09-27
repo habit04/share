@@ -837,7 +837,7 @@ export class Editor {
     const hidden = new Set(this.doc.layers.filter((l) => !l.visible).map((l) => l.name));
     for (const e of this.doc.entities) {
       if (hidden.has(e.layer)) continue;
-      drawEntity(ctx, e, tf, this.doc.layers, this.doc.lookupBlock, { strokeOverride: '#000000', lineWidthOverride: Math.max(1, Math.round(dpi / 100)) });
+      drawEntity(ctx, e, tf, this.doc.layers, this.doc.lookupBlock, { strokeOverride: '#000000', lineWidthOverride: Math.max(1, Math.round(dpi / 100)), hidden });
     }
     const dataUrl = canvas.toDataURL('image/png');
     const out = await this.fileBridge.plotPdf(dataUrl, this.fileName().replace(/\.[^.]+$/, '') + '.pdf', landscape, { width: w + margin * 2, height: h + margin * 2 });
@@ -866,7 +866,7 @@ export class Editor {
   private resolveCursor(screen: Point): { world: Point; snap: SnapResult | null } {
     const raw = this.viewport.toWorld(screen);
     const aperture = (this.viewport.settings.pickBox + 4) * this.viewport.worldPerPixel();
-    const wantSnap = this.tool !== null && !this.selReq;
+    const wantSnap = (this.tool !== null || this.gripDrag !== null) && !this.selReq;
     const snap = wantSnap
       ? findObjectSnap(raw, this.doc.entities, this.doc.lookupBlock, this.snap, aperture, this.overlay.trackFrom, this.hiddenLayers())
       : null;
@@ -990,7 +990,8 @@ export class Editor {
     if (this.gripDrag) {
       const s = this.screenFromEvent(ev);
       const { world } = this.resolveCursor(s);
-      const moved = applyGrip(this.gripDrag.entity, this.gripDrag.index, world);
+      const original = gripPoints(this.gripDrag.entity)[this.gripDrag.index];
+      const moved = original && g.dist(original, world) > 1e-9 ? applyGrip(this.gripDrag.entity, this.gripDrag.index, world) : null;
       this.gripDrag = null;
       this.overlay.ghost = [];
       this.overlay.trackFrom = null;

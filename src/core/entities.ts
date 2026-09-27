@@ -649,7 +649,8 @@ export function mirrorEntityAcross(e: Entity, a: Point, b: Point): Entity {
     case 'text':
       return { ...e, position: reflect(e.position) };
     case 'insert':
-      return { ...e, position: reflect(e.position), rotation: reflectAngle(e.rotation) };
+      // Mirrored (negative) scales are not modelled; keep the orientation so attribute text stays readable.
+      return { ...e, position: reflect(e.position) };
     case 'ellipse': {
       const tip = reflect(g.add(e.center, e.majorAxis));
       const c = reflect(e.center);

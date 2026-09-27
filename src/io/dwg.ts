@@ -201,16 +201,16 @@ function convertEntity(e: DwgEntity, blockIndex: Map<string, string>, dimStyle: 
     case 'TEXT': {
       const t = e as DwgTextEntity;
       const align = halign(t.halign);
-      const useEnd = t.halign !== 0 && t.endPoint && (t.endPoint.x !== 0 || t.endPoint.y !== 0);
-      return {
-        ...base,
-        type: 'text',
-        position: useEnd ? p2(t.endPoint) : p2(t.startPoint),
-        text: t.text ?? '',
-        height: t.textHeight || 0.125,
-        rotation: t.rotation ?? 0,
-        align,
-      };
+      const h = t.halign ?? 0;
+      const v = t.valign ?? 0;
+      // Alignment point applies for any non-default justification except Aligned/Fit (3/5), which keep the first point.
+      const useEnd = (h !== 0 || v !== 0) && h !== 3 && h !== 5 && t.endPoint && (t.endPoint.x !== 0 || t.endPoint.y !== 0);
+      const height = t.textHeight || 0.125;
+      const rotation = t.rotation ?? 0;
+      let position = useEnd ? p2(t.endPoint) : p2(t.startPoint);
+      const drop = v === 2 ? height / 2 : v === 3 ? height : 0;
+      if (drop) position = { x: position.x + Math.sin(rotation) * drop, y: position.y - Math.cos(rotation) * drop };
+      return { ...base, type: 'text', position, text: t.text ?? '', height, rotation, align };
     }
     case 'MTEXT': {
       const m = e as DwgMTextEntity;
@@ -273,7 +273,7 @@ function convertEntity(e: DwgEntity, blockIndex: Map<string, string>, dimStyle: 
         block: name,
         position: p2(i.insertionPoint),
         rotation: i.rotation ?? 0,
-        scale: i.xScale || 1,
+        scale: Math.abs(i.xScale) || 1,
         attributes: attrs,
       };
     }
@@ -284,14 +284,20 @@ function convertEntity(e: DwgEntity, blockIndex: Map<string, string>, dimStyle: 
 
 function convertAttdef(a: DwgAttdefEntity): AttributeDef {
   const t = a.text;
-  const useAlign = t?.halign !== 0 && a.alignmentPoint && (a.alignmentPoint.x !== 0 || a.alignmentPoint.y !== 0);
+  const h = t?.halign ?? 0;
+  const v = t?.valign ?? 0;
+  const useAlign = (h !== 0 || v !== 0) && h !== 3 && h !== 5 && a.alignmentPoint && (a.alignmentPoint.x !== 0 || a.alignmentPoint.y !== 0);
+  const height = t?.textHeight || 0.125;
+  let position = useAlign ? p2(a.alignmentPoint) : p2(t?.startPoint);
+  const drop = v === 2 ? height / 2 : v === 3 ? height : 0;
+  if (drop) position = { x: position.x, y: position.y - drop };
   return {
     tag: a.tag || a.attrTag || 'ATTR',
     prompt: a.prompt ?? '',
     default: t?.text ?? '',
-    position: useAlign ? p2(a.alignmentPoint) : p2(t?.startPoint),
-    height: t?.textHeight || 0.125,
-    align: halign(t?.halign),
+    position,
+    height,
+    align: halign(h),
     invisible: ((a.flags ?? 0) & 1) === 1,
   };
 }
@@ -347,12 +353,18 @@ function readHeader(h: DwgImportPayload['header']): DrawingHeader {
 export function convertDwg(payload: DwgImportPayload): DwgImportResult {
   const skipped: Record<string, number> = {};
   const header = readHeader(payload.header ?? {});
+  const isLayout = (name: string) => /^\*(MODEL_SPACE|PAPER_SPACE)/i.test(name);
+  // Anonymous blocks (*U12 ...) hold dynamic-block and array geometry; keep them under a legal name.
+  const publicName = (name: string) => (name.startsWith('*') ? `ANON_${name.slice(1).replace(/[^A-Za-z0-9_]/g, '_')}` : name);
   const blockIndex = new Map<string, string>();
-  for (const b of payload.blocks) if (b.name && !b.name.startsWith('*')) blockIndex.set(b.name.toUpperCase(), b.name);
+  for (const b of payload.blocks) if (b.name && !isLayout(b.name)) blockIndex.set(b.name.toUpperCase(), publicName(b.name));
+  // libredwg-web lists paper-space entities in db.entities without flagging them: skip them by handle.
+  const paperHandles = new Set<string>();
+  for (const b of payload.blocks) if (b.name && /^\*PAPER_SPACE/i.test(b.name)) for (const e of b.entities) if (e.handle) paperHandles.add(e.handle);
 
   const blocks: Record<string, BlockDef> = {};
   for (const b of payload.blocks) {
-    if (!b.name || b.name.startsWith('*')) continue;
+    if (!b.name || isLayout(b.name)) continue;
     const entities: Entity[] = [];
     const attributes: AttributeDef[] = [];
     for (const e of b.entities) {
@@ -364,13 +376,14 @@ export function convertDwg(payload: DwgImportPayload): DwgImportResult {
       if (c) entities.push(c);
       else skipped[e.type] = (skipped[e.type] ?? 0) + 1;
     }
-    blocks[b.name] = { name: b.name, basePoint: p2(b.basePoint), entities, attributes, description: b.description || undefined };
+    const name = publicName(b.name);
+    blocks[name] = { name, basePoint: p2(b.basePoint), entities, attributes, description: b.description || undefined };
   }
 
   const entities: Entity[] = [];
   for (const e of payload.entities) {
-    if (e.isInPaperSpace) continue;
-    if (e.type === 'ATTDEF' || e.type === 'VIEWPORT') continue;
+    if (e.isInPaperSpace || (e.handle && paperHandles.has(e.handle))) continue;
+    if (e.type === 'ATTDEF' || e.type === 'VIEWPORT' || e.type === 'ATTRIB') continue; // ATTRIBs are folded into their INSERTs
     const c = convertEntity(e, blockIndex, header.dimStyle);
     if (c) entities.push(c);
     else skipped[e.type] = (skipped[e.type] ?? 0) + 1;

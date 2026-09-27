@@ -195,11 +195,11 @@ export class Viewport {
         if (b && !g.boundsIntersect(b, viewBounds)) continue;
       }
       if (selected) {
-        drawEntity(ctx, e, tf, layers, lookup, { dashed: this.settings.selectionEffect !== 'solid', lineWidthOverride: this.settings.selectionEffect === 'solid' ? 2.5 : undefined, alpha: 0.95 });
+        drawEntity(ctx, e, tf, layers, lookup, { dashed: this.settings.selectionEffect !== 'solid', lineWidthOverride: this.settings.selectionEffect === 'solid' ? 2.5 : undefined, alpha: 0.95, hidden });
       } else if (hovered) {
-        drawEntity(ctx, e, tf, layers, lookup, { lineWidthOverride: 2.5, dashed: true, alpha: 0.95 });
+        drawEntity(ctx, e, tf, layers, lookup, { lineWidthOverride: 2, alpha: 0.95, hidden });
       } else {
-        drawEntity(ctx, e, tf, layers, lookup);
+        drawEntity(ctx, e, tf, layers, lookup, { hidden });
       }
     }
 

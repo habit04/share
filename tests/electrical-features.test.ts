@@ -71,10 +71,10 @@ describe('cross references', () => {
 describe('reports', () => {
   it('bill of material groups by catalog and skips contacts', () => {
     const r = billOfMaterial(ladderDoc());
-    const pb = r.rows.find((row) => row[3] === 'PB-22')!;
+    const pb = r.rows.find((row) => row[2] === 'PB-22')!;
     expect(pb[1]).toBe('2');
     expect(pb[5]).toBe('PB102, PB103');
-    expect(r.rows.some((row) => row[5]?.includes('CR100') && row[3] === 'R-1')).toBe(true);
+    expect(r.rows.some((row) => row[5]?.includes('CR100') && row[2] === 'R-1')).toBe(true);
     expect(r.rows.filter((row) => row[5]?.includes('CR100'))).toHaveLength(1);
   });
   it('component report lists tags with rung and catalog data', () => {

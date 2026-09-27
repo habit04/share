@@ -237,7 +237,7 @@ describe('reports', () => {
     expect(missing.rows.map((r) => r[0])).toEqual(['I:0/3', 'LT101']);
     expect(missing.rows[1]![4]).toBe('MFG, CAT');
     const bom = billOfMaterial(d);
-    expect(bom.rows.some((r) => r[3] === 'RC-4PDT-120A' && r[5] === 'CR100')).toBe(true);
+    expect(bom.rows.some((r) => r[2] === 'RC-4PDT-120A' && r[5] === 'CR100')).toBe(true);
     const ft = wireFromToReport(d);
     expect(ft.rows.find((r) => r[0] === '101')!.slice(1, 3)).toEqual(['L1', 'CR100']);
     expect(REPORTS.map((r) => r.key)).toEqual(expect.arrayContaining(['labels', 'plc', 'missing', 'strip', 'panel']));

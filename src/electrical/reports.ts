@@ -69,8 +69,8 @@ export function billOfMaterial(doc: Drawing): Report {
   }
   const rows = [...groups.values()]
     .sort((a, b) => a.cat.localeCompare(b.cat))
-    .map((g, i) => [String(i + 1), String(g.tags.length), g.mfg, g.cat, g.desc, g.tags.filter(Boolean).join(', ')]);
-  return { title: 'Bill of Material', columns: ['Item', 'Qty', 'Manufacturer', 'Catalog / Symbol', 'Description', 'Tags'], rows };
+    .map((g, i) => [String(i + 1), String(g.tags.length), g.cat, g.mfg, g.desc, g.tags.filter(Boolean).join(', ')]);
+  return { title: 'Bill of Material', columns: ['Item', 'Qty', 'Catalog / Symbol', 'Manufacturer', 'Description', 'Tags'], rows };
 }
 
 /** Devices whose stubs touch a net, in x order. */

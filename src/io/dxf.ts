@@ -34,6 +34,9 @@ class Writer {
     this.handle += 1;
     return this.handle.toString(16).toUpperCase();
   }
+  lastHandle(): number {
+    return this.handle;
+  }
   toString(): string {
     return this.out.join('\r\n') + '\r\n';
   }
@@ -395,7 +398,7 @@ export function writeDxf(state: DrawingState): string {
     w.pair(30, 0);
   };
   hv('$ACADVER', 1, 'AC1015');
-  hv('$HANDSEED', 5, 'FFFF');
+  hv('$HANDSEED', 5, 'HANDSEED_PLACEHOLDER');
   hv('$INSUNITS', 70, header.units.insunits);
   hv('$LUNITS', 70, header.units.lunits);
   hv('$LUPREC', 70, header.units.luprec);
@@ -648,7 +651,8 @@ export function writeDxf(state: DrawingState): string {
   w.pair(281, 1);
   w.pair(0, 'ENDSEC');
   w.pair(0, 'EOF');
-  return w.toString();
+  // The handle seed must exceed every handle used in the file.
+  return w.toString().replace('HANDSEED_PLACEHOLDER', (w.lastHandle() + 1).toString(16).toUpperCase());
 }
 
 // ---------------------------------------------------------------- reading
@@ -664,7 +668,7 @@ function tokenize(text: string): Pair[] {
   for (let i = 0; i + 1 < lines.length; i += 2) {
     const code = parseInt(lines[i]!.trim(), 10);
     if (Number.isNaN(code)) continue;
-    pairs.push({ code, value: lines[i + 1]!.trim() });
+    pairs.push({ code, value: lines[i + 1]!.replace(/\s+$/, '') });
   }
   return pairs;
 }

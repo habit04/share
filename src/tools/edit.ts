@@ -135,7 +135,8 @@ export class TrimTool implements Tool {
   }
 
   private cutters(ctx: ToolContext, target: Entity): Entity[] {
-    const all = this.edges.length ? ctx.doc.entities.filter((e) => this.edges.includes(e.id)) : ctx.doc.entities;
+    const edgeSet = new Set(this.edges);
+    const all = edgeSet.size ? ctx.doc.entities.filter((e) => edgeSet.has(e.id)) : ctx.doc.entities;
     return all.filter((e) => e.id !== target.id);
   }
 
@@ -193,7 +194,7 @@ export class TrimTool implements Tool {
         ctx.log('Segment does not intersect a cutting edge.');
         return;
       }
-      replacement = [...explodePolylineExcept(target, best), ...pieces];
+      replacement = target.bulges?.some((bu) => Math.abs(bu) > 1e-9) ? [...explodePolylineExcept(target, best), ...pieces] : trimPolylineSegment(target, best, pieces);
     } else {
       ctx.log('Cannot trim this object type.');
       return;
@@ -223,6 +224,33 @@ function polylineSegments(pl: PolylineEntity): Array<[Point, Point]> {
   const out: Array<[Point, Point]> = [];
   for (let i = 0; i < pl.points.length - 1; i += 1) out.push([pl.points[i]!, pl.points[i + 1]!]);
   if (pl.closed && pl.points.length > 2) out.push([pl.points[pl.points.length - 1]!, pl.points[0]!]);
+  return out;
+}
+
+/**
+ * Replace segment `index` of a straight polyline by the trimmed pieces, keeping
+ * the rest as polylines (AutoCAD keeps a polyline a polyline when trimmed).
+ */
+function trimPolylineSegment(pl: PolylineEntity, index: number, pieces: LineEntity[]): Entity[] {
+  const pts = pl.closed ? [...pl.points.slice(index + 1), ...pl.points.slice(0, index + 1)] : pl.points;
+  // For a closed polyline, rotate so the trimmed segment is the closing one: it becomes open.
+  const i = pl.closed ? pts.length - 1 : index;
+  const before = pts.slice(0, i + 1); // ... up to the segment start
+  const after = pts.slice(i + 1); // segment end onwards
+  const keepStart = pieces.find((q) => g.eq(q.a, pts[i]!, 1e-9));
+  const keepEnd = pieces.find((q) => g.eq(q.b, pts[i + 1]!, 1e-9));
+  const out: Entity[] = [];
+  const mk = (points: Point[]): Entity | null =>
+    points.length >= 2 ? { id: newId(), layer: pl.layer, color: pl.color, type: 'polyline', points, closed: false } : null;
+  const first = mk(keepStart ? [...before, keepStart.b] : before);
+  const second = mk(keepEnd ? [keepEnd.a, ...after] : after);
+  if (pl.closed && first && second && !keepStart && !keepEnd) {
+    // both sides survive as one open polyline running from the segment end around to its start
+    const joined = mk([...(second.type === 'polyline' ? second.points : []), ...(first.type === 'polyline' ? first.points : [])]);
+    return joined ? [joined] : [];
+  }
+  if (first) out.push(first);
+  if (second) out.push(second);
   return out;
 }
 
@@ -266,7 +294,8 @@ export class ExtendTool implements Tool {
       if (target) ctx.log('Only lines can be extended.');
       return;
     }
-    const boundaries = (this.edges.length ? ctx.doc.entities.filter((e) => this.edges.includes(e.id)) : ctx.doc.entities).filter((e) => e.id !== target.id);
+    const edgeSet = new Set(this.edges);
+    const boundaries = (edgeSet.size ? ctx.doc.entities.filter((e) => edgeSet.has(e.id)) : ctx.doc.entities).filter((e) => e.id !== target.id);
     const params: number[] = [];
     for (const b of boundaries) params.push(...lineEntityParams(target.a, target.b, b, ctx.doc.lookupBlock));
     const pickT = paramOnLine(p, target.a, target.b);
@@ -367,22 +396,22 @@ export class OffsetTool implements Tool {
     const v = parseFloat(text);
     if (Number.isFinite(v) && v > 0) {
       this.distance = v;
+      this.distanceAccepted = true;
       ctx.prompt('Select object to offset or <exit>:');
       return;
     }
     ctx.log('Requires a positive distance.');
   }
+  private distanceAccepted = false;
   onEnter(ctx: ToolContext): void {
-    if (!this.target && ctx.prompt) {
-      // Enter at the distance prompt accepts the default
+    if (!this.target && !this.distanceAccepted) {
+      // Enter at the distance prompt accepts the default; the next Enter exits.
+      this.distanceAccepted = true;
       ctx.prompt('Select object to offset or <exit>:');
-      this.entered = (this.entered ?? 0) + 1;
-      if (this.entered > 1) ctx.finish();
       return;
     }
     ctx.finish();
   }
-  private entered: number | undefined;
   onCancel(ctx: ToolContext): void {
     ctx.finish();
   }
@@ -561,24 +590,24 @@ export class ExplodeTool extends SelectionTool {
   protected begin(ctx: ToolContext): void {
     const targets = this.entities(ctx);
     const out: Entity[] = [];
-    let n = 0;
+    const exploded = new Set<string>();
     for (const e of targets) {
       if (e.type === 'insert') {
         out.push(...explodeInsert(e, ctx.doc.lookupBlock).map((x) => ({ ...x, id: newId() })));
-        n += 1;
+        exploded.add(e.id);
       } else if (e.type === 'polyline') {
         out.push(...explodePolylineExcept(e, -1));
-        n += 1;
-      } else out.push(e);
+        exploded.add(e.id);
+      }
     }
+    const n = exploded.size;
     if (n === 0) {
       ctx.log('Nothing to explode.');
       ctx.finish();
       return;
     }
-    const ids = new Set(this.ids);
-    ctx.doc.transact((s) => ({ ...s, entities: [...s.entities.filter((x) => !ids.has(x.id)), ...out] }));
-    ctx.selection = new Set(out.map((x) => x.id));
+    ctx.doc.transact((s) => ({ ...s, entities: [...s.entities.filter((x) => !exploded.has(x.id)), ...out] }));
+    ctx.selection = new Set([...this.ids.filter((id) => !exploded.has(id)), ...out.map((x) => x.id)]);
     ctx.log(`${n} object(s) exploded.`);
     ctx.finish();
   }

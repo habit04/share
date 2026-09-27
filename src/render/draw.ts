@@ -18,6 +18,8 @@ export interface DrawStyle {
   lineWidthOverride?: number;
   dashed?: boolean;
   alpha?: number;
+  /** Layers turned off / frozen: sub-entities of blocks on these layers are skipped. */
+  hidden?: ReadonlySet<string>;
 }
 
 export function resolveColor(e: Entity, layers: readonly Layer[]): string {
@@ -264,6 +266,7 @@ function drawGeometry(
       break;
     case 'insert': {
       for (const sub of explodeInsert(e, lookup)) {
+        if (style.hidden?.has(sub.layer)) continue;
         const subColor = style.strokeOverride ?? resolveColor(sub, layers);
         ctx.strokeStyle = subColor;
         ctx.fillStyle = subColor;

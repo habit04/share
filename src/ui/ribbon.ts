@@ -63,7 +63,7 @@ export const RIBBON: RibbonTab[] = [
       },
       {
         title: 'Layers',
-        buttons: [B('Layer\nProperties', 'layers', 'LAYER'), B('Properties', 'props', 'PROPERTIES', 'small'), B('Plot', 'plot', 'PLOT', 'small'), B('Linetype', 'linetype', 'LINETYPE', 'small')],
+        buttons: [B('Layer\nProperties', 'layers', 'LAYER'), B('Properties', 'props', 'PROPERTIES', 'small'), B('Linetype', 'linetype', 'LINETYPE', 'small')],
       },
       {
         title: 'View',
@@ -150,7 +150,7 @@ export const RIBBON: RibbonTab[] = [
       },
       {
         title: 'Project Data',
-        buttons: [B('Update\nTitle Block', 'titleblock', 'AETITLEBLOCK'), B('Project\nProperties', 'settings', 'AEPROJECTPROPS', 'small'), B('Load\nCatalog', 'catalog', 'AECATALOGLOAD', 'small'), B('Retag', 'retag', 'AERETAG', 'small')],
+        buttons: [B('Title\nBlock', 'titleblock', 'AETITLEBLOCK'), B('Project\nProperties', 'settings', 'AEPROJECTPROPS', 'small'), B('Load\nCatalog', 'catalog', 'AECATALOGLOAD', 'small'), B('Retag', 'retag', 'AERETAG', 'small')],
       },
     ],
   },
