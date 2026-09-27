@@ -38,6 +38,14 @@ describe('electrical helpers', () => {
     assignWireNumbers(d, 200);
     expect(d.entities.filter((e) => e.type === 'text' && e.layer === 'WIRENO')).toHaveLength(3);
   });
+  it('assignWireNumbers uses ladder rung references with letter suffixes', () => {
+    const d = new Drawing();
+    const ref = (y: number, t: string): Entity => ({ id: `r${t}`, layer: 'MISC', color: 'ByLayer', type: 'text', position: { x: 0.75, y: y - 0.06 }, text: t, height: 0.125, rotation: 0, align: 'right' });
+    d.addEntities([ref(8, '100'), ref(7, '101'), wire('a', 1, 8, 10), wire('b', 1, 7.5, 5), wire('c', 1, 7, 10), wire('far', 20, 7, 25)]);
+    assignWireNumbers(d, 100);
+    const nums = d.entities.filter((e): e is Extract<Entity, { type: 'text' }> => e.type === 'text' && e.layer === 'WIRENO').map((t) => t.text);
+    expect(nums).toEqual(['100', '100A', '101', '101A']);
+  });
   it('uniqueTag avoids collisions', () => {
     const d = new Drawing();
     d.addEntities([{ id: 'i', layer: 'SYMS', color: 'ByLayer', type: 'insert', block: 'HPB11_NO', position: { x: 0, y: 0 }, rotation: 0, scale: 1, attributes: { TAG1: 'PB100' } }]);

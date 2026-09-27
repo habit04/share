@@ -51,6 +51,12 @@ export const RIBBON: RibbonTab[] = [
           B('Copy', 'copy', 'COPY', 'small'),
           B('Rotate', 'rotate', 'ROTATE', 'small'),
           B('Erase', 'erase', 'ERASE', 'small'),
+          B('Mirror', 'mirror', 'MIRROR', 'small'),
+          B('Scale', 'scale', 'SCALE', 'small'),
+          B('Trim', 'trim', 'TRIM', 'small'),
+          B('Extend', 'extend', 'EXTEND', 'small'),
+          B('Offset', 'offset', 'OFFSET', 'small'),
+          B('Explode', 'explode', 'EXPLODE', 'small'),
           B('Undo', 'undo', 'UNDO', 'small'),
           B('Redo', 'redo', 'REDO', 'small'),
         ],
@@ -63,6 +69,7 @@ export const RIBBON: RibbonTab[] = [
         title: 'View',
         buttons: [
           B('Extents', 'zoomext', 'ZOOM E', 'small'),
+          B('Window', 'zoomwin', 'ZOOM W', 'small'),
           B('Zoom In', 'zoomin', 'ZOOM I', 'small'),
           B('Zoom Out', 'zoomout', 'ZOOM O', 'small'),
           B('Grid', 'grid', 'GRID', 'small'),
@@ -93,13 +100,13 @@ export const RIBBON: RibbonTab[] = [
     name: 'Schematic',
     panels: [
       {
-        title: 'Insert Wires / Wire Numbers',
+        title: 'Insert Wires/Wire Numbers',
         buttons: [
           B('Wire', 'wire', 'AEWIRE'),
           B('Ladder', 'ladder', 'AELADDER'),
           B('Wire\nNumbers', 'wireno', 'AEWIRENO'),
           B('Multiple\nBus', 'wiremulti', 'AEWIRE', 'small'),
-          B('Trim Wire', 'trim', 'ERASE', 'small'),
+          B('Trim Wire', 'trim', 'TRIM', 'small'),
           B('Scoot', 'scoot', 'MOVE', 'small'),
         ],
       },
@@ -123,8 +130,8 @@ export const RIBBON: RibbonTab[] = [
         buttons: [B('Edit', 'edit', 'LIST'), B('Move\nComponent', 'move', 'MOVE', 'small'), B('Copy\nComponent', 'copy', 'COPY', 'small'), B('Delete\nComponent', 'erase', 'ERASE', 'small')],
       },
       {
-        title: 'Edit Wires / Wire Numbers',
-        buttons: [B('Edit Wire\nNumber', 'edit', 'AEWIRENO', 'small'), B('Swap', 'swap', 'ROTATE', 'small'), B('Explode', 'explode', 'HELP', 'small')],
+        title: 'Edit Wires/Wire Numbers',
+        buttons: [B('Edit Wire\nNumber', 'edit', 'AEWIRENO', 'small'), B('Swap', 'swap', 'ROTATE', 'small'), B('Explode', 'explode', 'EXPLODE', 'small')],
       },
     ],
   },
@@ -150,9 +157,17 @@ export const RIBBON: RibbonTab[] = [
     ],
   },
   {
+    name: 'Conversion Tools',
+    panels: [{ title: 'Convert', buttons: [B('Explode', 'explode', 'EXPLODE'), B('Convert\nText', 'text', 'TEXT', 'small'), B('Line to\nWire', 'wire', 'LINE2WIRE', 'small')] }],
+  },
+  {
+    name: 'Add-ins',
+    panels: [{ title: 'Apps', buttons: [B('Command\nList', 'info', 'HELP')] }],
+  },
+  {
     name: 'View',
     panels: [
-      { title: 'Navigate 2D', buttons: [B('Pan', 'pan', 'HELP'), B('Zoom\nExtents', 'zoomext', 'ZOOM E'), B('Zoom In', 'zoomin', 'ZOOM I', 'small'), B('Zoom Out', 'zoomout', 'ZOOM O', 'small')] },
+      { title: 'Navigate 2D', buttons: [B('Pan', 'pan', 'PAN'), B('Zoom\nExtents', 'zoomext', 'ZOOM E'), B('Window', 'zoomwin', 'ZOOM W', 'small'), B('Zoom In', 'zoomin', 'ZOOM I', 'small'), B('Zoom Out', 'zoomout', 'ZOOM O', 'small')] },
       { title: 'Palettes', buttons: [B('Project\nManager', 'project', 'TOGGLEPM'), B('Properties', 'props', 'LIST', 'small'), B('Layers', 'layers', 'LAYER', 'small')] },
     ],
   },
@@ -214,7 +229,7 @@ export class Ribbon {
         const b = document.createElement('button');
         b.className = `ribbon-btn ${btn.size === 'small' ? 'small' : 'large'}`;
         b.title = btn.tooltip ?? `${btn.label.replace('\n', ' ')}  (${btn.command})`;
-        b.innerHTML = `<span class="ribbon-icon">${icon(btn.icon)}</span><span class="ribbon-label">${btn.label.replace('\n', '<br>')}</span>`;
+        b.innerHTML = `<span class="ribbon-icon">${icon(btn.icon)}</span><span class="ribbon-label">${btn.label.replace('\n', btn.size === 'small' ? ' ' : '<br>')}</span>`;
         b.addEventListener('click', () => this.editor.runCommand(btn.command));
         if (btn.size === 'small') {
           if (!smallCol || smallCol.childElementCount >= 3) {
@@ -230,7 +245,7 @@ export class Ribbon {
       }
       const title = document.createElement('div');
       title.className = 'ribbon-panel-title';
-      title.textContent = panel.title;
+      title.innerHTML = `<span>${panel.title}</span><span class="panel-arrow">${icon('chevron')}</span>`;
       p.append(content, title);
       this.bodyEl.appendChild(p);
     }

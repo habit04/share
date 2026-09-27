@@ -1,4 +1,5 @@
 import type { Editor } from '../app/editor';
+import { icon } from './icons';
 
 /** Docked command window: scrolling history plus the input line. */
 export class CommandLine {
@@ -39,10 +40,16 @@ export class CommandLine {
         }
         this.input.value = '';
         this.editor.submitInput(v);
-      } else if (ev.key === ' ' && this.input.value.trim() === '' ) {
-        // Space acts as Enter in AutoCAD when the line is empty
+      } else if (ev.key === ' ' && !this.editor.acceptsFreeText()) {
+        // Space acts as Enter (AutoCAD muscle memory: "L<space>"), except while typing text content.
         ev.preventDefault();
-        this.editor.submitInput('');
+        const v = this.input.value;
+        if (v.trim()) {
+          this.typed.push(v);
+          this.typedIndex = this.typed.length;
+        }
+        this.input.value = '';
+        this.editor.submitInput(v);
       } else if (ev.key === 'ArrowUp') {
         ev.preventDefault();
         if (this.typedIndex > 0) {
@@ -59,10 +66,8 @@ export class CommandLine {
           this.input.value = '';
         }
       } else if (ev.key === 'Escape') {
+        // The window-level handler cancels the command; here we only clear the typed text.
         this.input.value = '';
-        this.editor.cancel();
-      } else if (ev.key.startsWith('F') && ev.key.length <= 3) {
-        if (this.editor.onKeyDown(ev)) ev.preventDefault();
       }
     });
 
@@ -77,7 +82,29 @@ export class CommandLine {
   }
 
   private renderPrompt(): void {
-    this.promptEl.textContent = this.editor.tool || this.editor.prompt !== 'Type a command' ? `${this.editor.toolName ? this.editor.toolName + ' ' : ''}${this.editor.prompt}` : '';
+    const text = this.editor.tool || this.editor.prompt !== 'Type a command' ? `${this.editor.toolName ? this.editor.toolName + ' ' : ''}${this.editor.prompt}` : '';
+    this.promptEl.innerHTML = '';
+    // Render [Option/Keywords] in accent colour like AutoCAD's clickable options.
+    const parts = text.split(/(\[[^\]]*\])/);
+    for (const part of parts) {
+      if (!part) continue;
+      if (part.startsWith('[') && part.endsWith(']')) {
+        this.promptEl.appendChild(document.createTextNode('['));
+        part
+          .slice(1, -1)
+          .split('/')
+          .forEach((opt, i, arr) => {
+            const b = document.createElement('span');
+            b.className = 'prompt-option';
+            b.textContent = opt;
+            b.title = `Option: ${opt}`;
+            b.addEventListener('click', () => this.editor.submitInput(opt.replace(/[^A-Za-z]/g, '').slice(0, 1)));
+            this.promptEl.appendChild(b);
+            if (i < arr.length - 1) this.promptEl.appendChild(document.createTextNode('/'));
+          });
+        this.promptEl.appendChild(document.createTextNode(']'));
+      } else this.promptEl.appendChild(document.createTextNode(part));
+    }
     this.input.placeholder = this.editor.tool ? '' : 'Type a command';
   }
 

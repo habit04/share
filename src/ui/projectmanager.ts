@@ -1,5 +1,6 @@
 import type { Editor } from '../app/editor';
 import { icon } from './icons';
+import { esc } from './dom';
 
 /** Left-docked Project Manager palette (project tree + details pane). */
 export class ProjectManager {
@@ -11,10 +12,16 @@ export class ProjectManager {
     this.el = container;
     this.el.className = 'palette project-manager';
 
+    // AutoCAD palettes carry a vertical title strip on the docked edge.
+    const strip = document.createElement('div');
+    strip.className = 'palette-strip';
+    strip.innerHTML = `<span class="palette-strip-btns">${icon('close')}${icon('pin')}${icon('settings')}</span><span class="palette-strip-title">Project Manager</span>`;
+    strip.querySelector('svg')?.addEventListener('click', () => this.el.classList.add('hidden'));
+    const body = document.createElement('div');
+    body.className = 'palette-body';
     const bar = document.createElement('div');
     bar.className = 'palette-titlebar';
-    bar.innerHTML = `<span class="palette-title">PROJECT MANAGER</span><span class="palette-title-btns">${icon('pin')}${icon('close')}</span>`;
-    bar.querySelector('svg:last-child')?.addEventListener('click', () => this.el.classList.add('hidden'));
+    bar.innerHTML = `<span class="palette-title">Project Manager</span>`;
 
     const toolbar = document.createElement('div');
     toolbar.className = 'palette-toolbar';
@@ -29,7 +36,7 @@ export class ProjectManager {
     toolbar.append(mk('new', 'New drawing', 'NEW'), mk('open', 'Open drawing', 'OPEN'), mk('save', 'Save drawing', 'SAVE'), mk('report', 'Reports', 'LIST'), mk('settings', 'Project properties', 'HELP'));
     const proj = document.createElement('div');
     proj.className = 'palette-project-select';
-    proj.innerHTML = `<span>SAMPLE PROJECT</span>${icon('chevron')}`;
+    proj.innerHTML = `<span>Sample Project</span>${icon('chevron')}`;
 
     this.treeEl = document.createElement('div');
     this.treeEl.className = 'project-tree';
@@ -40,7 +47,8 @@ export class ProjectManager {
     this.detailsEl = document.createElement('div');
     this.detailsEl.className = 'project-details';
 
-    this.el.append(bar, toolbar, proj, this.treeEl, detailsHeader, this.detailsEl);
+    body.append(bar, toolbar, proj, this.treeEl, detailsHeader, this.detailsEl);
+    this.el.append(strip, body);
 
     editor.on('file', () => this.render());
     editor.on('change', () => this.renderDetails());
@@ -56,8 +64,8 @@ export class ProjectManager {
     const name = this.editor.fileName();
     const others = ['001 - Main Power.dxf', '002 - Motor Control.dxf', '003 - PLC I/O.dxf', '004 - Panel Layout.dxf'];
     this.treeEl.innerHTML = `
-      <div class="tree-node open"><span class="tree-twisty">▾</span>${icon('project')}<span>SAMPLE PROJECT</span></div>
-      <div class="tree-node active lvl1"><span class="tree-twisty"></span>${icon('model')}<span>${name}${this.editor.doc.dirty ? '*' : ''}</span></div>
+      <div class="tree-node open"><span class="tree-twisty">▾</span>${icon('project')}<span>Sample Project</span></div>
+      <div class="tree-node active lvl1"><span class="tree-twisty"></span>${icon('model')}<span>${esc(name)}${this.editor.doc.dirty ? '*' : ''}</span></div>
       ${others.map((o) => `<div class="tree-node lvl1"><span class="tree-twisty"></span>${icon('model')}<span>${o}</span></div>`).join('')}
       <div class="tree-node lvl1 muted"><span class="tree-twisty">▸</span>${icon('report')}<span>Reports</span></div>
     `;
@@ -72,7 +80,7 @@ export class ProjectManager {
     const wires = doc.entities.filter((e) => e.type === 'line' && e.layer === 'WIRES').length;
     const sel = this.editor.selection.size;
     this.detailsEl.innerHTML = `
-      <div class="kv"><span>File</span><span>${this.editor.fileName()}</span></div>
+      <div class="kv"><span>File</span><span>${esc(this.editor.fileName())}</span></div>
       <div class="kv"><span>Status</span><span>${doc.dirty ? 'Modified' : 'Saved'}</span></div>
       <div class="kv"><span>Layers</span><span>${doc.layers.length}</span></div>
       <div class="kv"><span>Objects</span><span>${doc.entities.length}</span></div>

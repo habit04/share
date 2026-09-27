@@ -1,5 +1,6 @@
 import type { Point, Bounds } from './geometry';
 import * as g from './geometry';
+import { strokeTextWidth } from '../render/hershey';
 
 /** AutoCAD Color Index-like palette (subset), 'ByLayer' means inherit. */
 export type ColorSpec = 'ByLayer' | number;
@@ -20,6 +21,8 @@ export interface CircleEntity extends EntityBase {
   readonly type: 'circle';
   readonly center: Point;
   readonly radius: number;
+  /** Solid-filled (wire junction dots); saved to DXF as a zero-hole donut. */
+  readonly filled?: boolean;
 }
 
 export interface ArcEntity extends EntityBase {
@@ -65,6 +68,8 @@ export interface AttributeDef {
   readonly position: Point;
   readonly height: number;
   readonly align: 'left' | 'center' | 'right';
+  /** ATTDEF flag 1: value is stored but not displayed (ACADE symbols carry many of these). */
+  readonly invisible?: boolean;
 }
 
 export interface BlockDef {
@@ -115,7 +120,7 @@ export function arcMidpoint(arc: ArcEntity): Point {
 
 /** Estimate text width in drawing units (monospace-ish approximation). */
 export function textWidth(text: string, height: number): number {
-  return text.length * height * 0.7;
+  return strokeTextWidth(text, height);
 }
 
 export function textBounds(t: TextEntity): Bounds {
@@ -140,8 +145,34 @@ export function insertTransform(ins: InsertEntity, block: BlockDef): (p: Point) 
   };
 }
 
-/** Expand an insert into world-space entities (recursively). */
+interface InsertCache {
+  block: BlockDef;
+  exploded: Entity[];
+  bounds: Bounds | null;
+}
+/** Entities are immutable, so an insert's exploded geometry can be cached by identity. */
+const insertCache = new WeakMap<InsertEntity, InsertCache>();
+
+function cachedInsert(ins: InsertEntity, lookup: BlockLookup): InsertCache | null {
+  const block = lookup(ins.block);
+  if (!block) return null;
+  const hit = insertCache.get(ins);
+  if (hit && hit.block === block) return hit;
+  const exploded = explodeInsertUncached(ins, lookup, 0);
+  let bounds: Bounds | null = null;
+  for (const sub of exploded) bounds = g.unionBounds(bounds, entityBounds(sub, lookup));
+  const entry = { block, exploded, bounds: bounds ?? g.boundsOfPoints([ins.position]) };
+  insertCache.set(ins, entry);
+  return entry;
+}
+
+/** Expand an insert into world-space entities (recursively). Cached per insert. */
 export function explodeInsert(ins: InsertEntity, lookup: BlockLookup, depth = 0): Entity[] {
+  if (depth === 0) return cachedInsert(ins, lookup)?.exploded ?? [];
+  return explodeInsertUncached(ins, lookup, depth);
+}
+
+function explodeInsertUncached(ins: InsertEntity, lookup: BlockLookup, depth: number): Entity[] {
   const block = lookup(ins.block);
   if (!block || depth > 8) return [];
   const tf = insertTransform(ins, block);
@@ -151,13 +182,14 @@ export function explodeInsert(ins: InsertEntity, lookup: BlockLookup, depth = 0)
   }
   // Attribute text
   for (const a of block.attributes) {
+    if (a.invisible) continue;
     const value = ins.attributes[a.tag] ?? a.default;
     if (!value) continue;
     out.push({
       type: 'text',
       id: `${ins.id}:${a.tag}`,
-      layer: ins.layer,
-      color: ins.color,
+      layer: attributeLayer(a.tag, ins.layer),
+      color: 'ByLayer',
       position: tf(a.position),
       text: value,
       height: a.height * ins.scale,
@@ -166,6 +198,15 @@ export function explodeInsert(ins: InsertEntity, lookup: BlockLookup, depth = 0)
     });
   }
   return out;
+}
+
+/** Attribute text lives on the conventional AutoCAD Electrical layers. */
+export function attributeLayer(tag: string, fallback: string): string {
+  const t = tag.toUpperCase();
+  if (t.startsWith('TAG')) return 'TAGS';
+  if (t.startsWith('DESC')) return 'DESC';
+  if (t.startsWith('TERM')) return 'TERMS';
+  return fallback;
 }
 
 function transformEntity(
@@ -233,11 +274,8 @@ export function entityBounds(e: Entity, lookup: BlockLookup): Bounds | null {
       return g.boundsOfPoints(e.points);
     case 'text':
       return textBounds(e);
-    case 'insert': {
-      let b: Bounds | null = null;
-      for (const sub of explodeInsert(e, lookup)) b = g.unionBounds(b, entityBounds(sub, lookup));
-      return b ?? g.boundsOfPoints([e.position]);
-    }
+    case 'insert':
+      return cachedInsert(e, lookup)?.bounds ?? g.boundsOfPoints([e.position]);
   }
 }
 

@@ -66,4 +66,46 @@ describe('entities', () => {
     expect(names.size).toBe(ALL_SYMBOLS.length);
     for (const s of ALL_SYMBOLS) expect(s.entities.length).toBeGreaterThan(0);
   });
+
+  it('nested inserts explode through the depth guard and rotation', () => {
+    const inner: BlockDef = { name: 'INNER', basePoint: { x: 0, y: 0 }, entities: [{ id: 'l', layer: '0', color: 'ByLayer', type: 'line', a: { x: 0, y: 0 }, b: { x: 1, y: 0 } }], attributes: [] };
+    const outer: BlockDef = {
+      name: 'OUTER',
+      basePoint: { x: 0, y: 0 },
+      entities: [{ id: 'i', layer: '0', color: 'ByLayer', type: 'insert', block: 'INNER', position: { x: 0, y: 1 }, rotation: Math.PI / 2, scale: 2, attributes: {} }],
+      attributes: [],
+    };
+    const look = (n: string) => (n === 'INNER' ? inner : n === 'OUTER' ? outer : undefined);
+    const top: InsertEntity = { id: 't', layer: 'SYMS', color: 'ByLayer', type: 'insert', block: 'OUTER', position: { x: 10, y: 10 }, rotation: 0, scale: 1, attributes: {} };
+    const parts = explodeInsert(top, look);
+    expect(parts).toHaveLength(1);
+    const l = parts[0]!;
+    if (l.type === 'line') {
+      expect(l.a.x).toBeCloseTo(10);
+      expect(l.a.y).toBeCloseTo(11);
+      expect(l.b.x).toBeCloseTo(10);
+      expect(l.b.y).toBeCloseTo(13); // length 1 * scale 2, rotated 90°
+    }
+    // self-referencing block terminates
+    const loop: BlockDef = { name: 'LOOP', basePoint: { x: 0, y: 0 }, entities: [{ id: 'x', layer: '0', color: 'ByLayer', type: 'insert', block: 'LOOP', position: { x: 1, y: 0 }, rotation: 0, scale: 1, attributes: {} }], attributes: [] };
+    const parts2 = explodeInsert({ ...top, id: 'loop', block: 'LOOP' }, (n) => (n === 'LOOP' ? loop : undefined));
+    expect(parts2.length).toBe(0);
+  });
+
+  it('explodeInsert is cached per insert and refreshes when the block changes', () => {
+    const ins: InsertEntity = { id: 'c', layer: 'SYMS', color: 'ByLayer', type: 'insert', block: 'HCR1', position: { x: 0, y: 0 }, rotation: 0, scale: 1, attributes: {} };
+    const first = explodeInsert(ins, lookup);
+    expect(explodeInsert(ins, lookup)).toBe(first);
+    const other: BlockDef = { ...findSymbol('HCR1')!, entities: [] };
+    const second = explodeInsert(ins, () => other);
+    expect(second).not.toBe(first);
+    expect(second).toHaveLength(0);
+  });
+
+  it('invisible attributes are not exploded into text', () => {
+    const blk: BlockDef = { name: 'INV', basePoint: { x: 0, y: 0 }, entities: [], attributes: [{ tag: 'HIDE', prompt: '', default: 'x', position: { x: 0, y: 0 }, height: 0.1, align: 'left', invisible: true }, { tag: 'SHOW', prompt: '', default: 'y', position: { x: 0, y: 0 }, height: 0.1, align: 'left' }] };
+    const ins: InsertEntity = { id: 'v', layer: 'SYMS', color: 'ByLayer', type: 'insert', block: 'INV', position: { x: 0, y: 0 }, rotation: 0, scale: 1, attributes: {} };
+    const parts = explodeInsert(ins, () => blk);
+    expect(parts.map((p) => (p.type === 'text' ? p.text : ''))).toEqual(['y']);
+  });
 });

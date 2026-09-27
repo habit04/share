@@ -24,5 +24,9 @@
     "vite": "^6.0.3",
     "vitest": "^2.1.8",
     "wait-on": "^8.0.1"
+  },
+  "dependencies": {
+    "@mlightcad/libredwg-web": "^0.7.14",
+    "hershey": "^2.1.7"
   }
 }

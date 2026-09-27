@@ -57,6 +57,20 @@ function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonly<Recor
       w.pair(31, 0);
       break;
     case 'circle':
+      if (e.filled) {
+        // Solid dot: a DONUT with zero inner radius = closed LWPOLYLINE of two bulge-1 vertices with constant width.
+        writeEntityCommon(w, e, owner, 'LWPOLYLINE', 'AcDbPolyline');
+        w.pair(90, 2);
+        w.pair(70, 1);
+        w.pair(43, e.radius);
+        w.pair(10, e.center.x - e.radius / 2);
+        w.pair(20, e.center.y);
+        w.pair(42, 1);
+        w.pair(10, e.center.x + e.radius / 2);
+        w.pair(20, e.center.y);
+        w.pair(42, 1);
+        break;
+      }
       writeEntityCommon(w, e, owner, 'CIRCLE', 'AcDbCircle');
       w.pair(10, e.center.x);
       w.pair(20, e.center.y);
@@ -142,7 +156,7 @@ function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonly<Recor
           }
           w.pair(100, 'AcDbAttribute');
           w.pair(2, a.tag);
-          w.pair(70, 0);
+          w.pair(70, a.invisible ? 1 : 0);
         }
         w.pair(0, 'SEQEND');
         w.pair(5, w.nextHandle());
@@ -157,48 +171,164 @@ function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonly<Recor
 
 export function writeDxf(state: DrawingState): string {
   const w = new Writer();
+  const MODEL_SPACE = '1F';
+  const PAPER_SPACE = '1B';
+  const blockList = Object.values(state.blocks);
+  // Pre-assign a BLOCK_RECORD handle per block; block entities use it as their owner (330).
+  const blockRecordHandles = new Map<string, string>();
+  for (const b of blockList) blockRecordHandles.set(b.name, w.nextHandle());
+
   // HEADER
   w.pair(0, 'SECTION');
   w.pair(2, 'HEADER');
   w.pair(9, '$ACADVER');
   w.pair(1, 'AC1015');
+  w.pair(9, '$HANDSEED');
+  w.pair(5, 'FFFF');
   w.pair(9, '$INSUNITS');
   w.pair(70, 1);
   w.pair(9, '$CLAYER');
   w.pair(8, state.currentLayer);
+  w.pair(9, '$LTSCALE');
+  w.pair(40, 1);
+  w.pair(9, '$TEXTSTYLE');
+  w.pair(7, 'Standard');
   w.pair(0, 'ENDSEC');
 
-  // TABLES (layers only; minimal but valid)
+  // CLASSES (empty)
+  w.pair(0, 'SECTION');
+  w.pair(2, 'CLASSES');
+  w.pair(0, 'ENDSEC');
+
+  // TABLES
   w.pair(0, 'SECTION');
   w.pair(2, 'TABLES');
-  w.pair(0, 'TABLE');
-  w.pair(2, 'LAYER');
-  w.pair(5, '2');
-  w.pair(330, '0');
-  w.pair(100, 'AcDbSymbolTable');
-  w.pair(70, state.layers.length);
-  for (const l of state.layers) {
-    w.pair(0, 'LAYER');
+
+  const table = (name: string, handle: string, count: number, body: () => void) => {
+    w.pair(0, 'TABLE');
+    w.pair(2, name);
+    w.pair(5, handle);
+    w.pair(330, '0');
+    w.pair(100, 'AcDbSymbolTable');
+    w.pair(70, count);
+    body();
+    w.pair(0, 'ENDTAB');
+  };
+  const record = (kind: string, owner: string, subclass: string, name: string, flags = 0) => {
+    w.pair(0, kind);
     w.pair(5, w.nextHandle());
-    w.pair(330, '2');
+    w.pair(330, owner);
     w.pair(100, 'AcDbSymbolTableRecord');
-    w.pair(100, 'AcDbLayerTableRecord');
-    w.pair(2, l.name);
-    w.pair(70, l.locked ? 4 : 0);
-    w.pair(62, l.visible ? l.color : -l.color);
-    w.pair(6, 'Continuous');
-    w.pair(370, Math.round(l.lineWeight * 100));
-  }
-  w.pair(0, 'ENDTAB');
+    w.pair(100, subclass);
+    w.pair(2, name);
+    w.pair(70, flags);
+  };
+
+  table('VPORT', '8', 1, () => {
+    record('VPORT', '8', 'AcDbViewportTableRecord', '*Active');
+    w.pair(10, 0);
+    w.pair(20, 0);
+    w.pair(11, 1);
+    w.pair(21, 1);
+    w.pair(12, 5);
+    w.pair(22, 4);
+    w.pair(40, 12);
+    w.pair(41, 1.6);
+    w.pair(72, 1000);
+  });
+  table('LTYPE', '5', 3, () => {
+    for (const name of ['ByBlock', 'ByLayer', 'Continuous']) {
+      record('LTYPE', '5', 'AcDbLinetypeTableRecord', name);
+      w.pair(3, name === 'Continuous' ? 'Solid line' : '');
+      w.pair(72, 65);
+      w.pair(73, 0);
+      w.pair(40, 0);
+    }
+  });
+  table('LAYER', '2', state.layers.length, () => {
+    for (const l of state.layers) {
+      record('LAYER', '2', 'AcDbLayerTableRecord', l.name, l.locked ? 4 : 0);
+      w.pair(62, l.visible ? l.color : -l.color);
+      w.pair(6, 'Continuous');
+      w.pair(370, Math.round(l.lineWeight * 100));
+      w.pair(390, 'F');
+    }
+  });
+  table('STYLE', '3', 1, () => {
+    record('STYLE', '3', 'AcDbTextStyleTableRecord', 'Standard');
+    w.pair(40, 0);
+    w.pair(41, 1);
+    w.pair(50, 0);
+    w.pair(71, 0);
+    w.pair(42, 0.2);
+    w.pair(3, 'txt');
+    w.pair(4, '');
+  });
+  table('VIEW', '6', 0, () => {});
+  table('UCS', '7', 0, () => {});
+  table('APPID', '9', 1, () => {
+    record('APPID', '9', 'AcDbRegAppTableRecord', 'ACAD');
+  });
+  table('DIMSTYLE', 'A', 1, () => {
+    w.pair(100, 'AcDbDimStyleTable');
+    w.pair(0, 'DIMSTYLE');
+    w.pair(105, w.nextHandle());
+    w.pair(330, 'A');
+    w.pair(100, 'AcDbSymbolTableRecord');
+    w.pair(100, 'AcDbDimStyleTableRecord');
+    w.pair(2, 'Standard');
+    w.pair(70, 0);
+  });
+  table('BLOCK_RECORD', '1', 2 + blockList.length, () => {
+    const brec = (handle: string, name: string) => {
+      w.pair(0, 'BLOCK_RECORD');
+      w.pair(5, handle);
+      w.pair(330, '1');
+      w.pair(100, 'AcDbSymbolTableRecord');
+      w.pair(100, 'AcDbBlockTableRecord');
+      w.pair(2, name);
+      w.pair(70, 0);
+      w.pair(280, 1);
+      w.pair(281, 0);
+    };
+    brec(MODEL_SPACE, '*Model_Space');
+    brec(PAPER_SPACE, '*Paper_Space');
+    for (const b of blockList) brec(blockRecordHandles.get(b.name)!, b.name);
+  });
   w.pair(0, 'ENDSEC');
 
   // BLOCKS
   w.pair(0, 'SECTION');
   w.pair(2, 'BLOCKS');
-  for (const b of Object.values(state.blocks)) {
-    const owner = w.nextHandle();
+  const blockShell = (owner: string, name: string, base: { x: number; y: number }, body: () => void) => {
     w.pair(0, 'BLOCK');
-    w.pair(5, owner);
+    w.pair(5, w.nextHandle());
+    w.pair(330, owner);
+    w.pair(100, 'AcDbEntity');
+    w.pair(8, '0');
+    w.pair(100, 'AcDbBlockBegin');
+    w.pair(2, name);
+    w.pair(70, 0);
+    w.pair(10, base.x);
+    w.pair(20, base.y);
+    w.pair(30, 0);
+    w.pair(3, name);
+    w.pair(1, '');
+    body();
+    w.pair(0, 'ENDBLK');
+    w.pair(5, w.nextHandle());
+    w.pair(330, owner);
+    w.pair(100, 'AcDbEntity');
+    w.pair(8, '0');
+    w.pair(100, 'AcDbBlockEnd');
+  };
+  blockShell(MODEL_SPACE, '*Model_Space', { x: 0, y: 0 }, () => {});
+  blockShell(PAPER_SPACE, '*Paper_Space', { x: 0, y: 0 }, () => {});
+  for (const b of blockList) {
+    const owner = blockRecordHandles.get(b.name)!;
+    w.pair(0, 'BLOCK');
+    w.pair(5, w.nextHandle());
+    w.pair(330, owner);
     w.pair(100, 'AcDbEntity');
     w.pair(8, '0');
     w.pair(100, 'AcDbBlockBegin');
@@ -233,7 +363,7 @@ export function writeDxf(state: DrawingState): string {
       w.pair(100, 'AcDbAttributeDefinition');
       w.pair(3, a.prompt);
       w.pair(2, a.tag);
-      w.pair(70, 0);
+      w.pair(70, a.invisible ? 1 : 0);
     }
     w.pair(0, 'ENDBLK');
     w.pair(5, w.nextHandle());
@@ -247,7 +377,24 @@ export function writeDxf(state: DrawingState): string {
   // ENTITIES
   w.pair(0, 'SECTION');
   w.pair(2, 'ENTITIES');
-  for (const e of state.entities) writeEntity(w, e, '1F', state.blocks);
+  for (const e of state.entities) writeEntity(w, e, MODEL_SPACE, state.blocks);
+  w.pair(0, 'ENDSEC');
+
+  // OBJECTS: root dictionary with the mandatory ACAD_GROUP entry
+  w.pair(0, 'SECTION');
+  w.pair(2, 'OBJECTS');
+  w.pair(0, 'DICTIONARY');
+  w.pair(5, 'C');
+  w.pair(330, '0');
+  w.pair(100, 'AcDbDictionary');
+  w.pair(281, 1);
+  w.pair(3, 'ACAD_GROUP');
+  w.pair(350, 'D');
+  w.pair(0, 'DICTIONARY');
+  w.pair(5, 'D');
+  w.pair(330, 'C');
+  w.pair(100, 'AcDbDictionary');
+  w.pair(281, 1);
   w.pair(0, 'ENDSEC');
   w.pair(0, 'EOF');
   return w.toString();
@@ -319,47 +466,111 @@ function readEntityObj(o: Obj): Entity | null {
       };
     case 'LWPOLYLINE': {
       const pts: g.Point[] = [];
+      const bulges: number[] = [];
       let x: number | null = null;
       for (const p of o.groups) {
         if (p.code === 10) x = parseFloat(p.value);
         else if (p.code === 20 && x !== null) {
           pts.push({ x, y: parseFloat(p.value) });
+          bulges.push(0);
           x = null;
-        }
+        } else if (p.code === 42 && bulges.length) bulges[bulges.length - 1] = parseFloat(p.value);
       }
-      return { ...base, type: 'polyline', points: pts, closed: (num(o, 70) & 1) === 1 };
+      const closed = (num(o, 70) & 1) === 1;
+      const width = num(o, 43, 0);
+      // Zero-hole donut (two bulge-1 vertices, constant width = radius): read back as a filled dot.
+      if (closed && pts.length === 2 && width > 0 && Math.abs((bulges[0] ?? 0) - 1) < 1e-6 && Math.abs((bulges[1] ?? 0) - 1) < 1e-6) {
+        const c = g.mid(pts[0]!, pts[1]!);
+        const r = g.dist(pts[0]!, pts[1]!) / 2 + width / 2;
+        return { ...base, type: 'circle', center: c, radius: r, filled: true };
+      }
+      return { ...base, type: 'polyline', points: tessellateBulges(pts, bulges, closed), closed };
     }
     case 'POLYLINE':
       // Old-style POLYLINE with VERTEX children is handled by caller.
       return null;
-    case 'TEXT':
-    case 'MTEXT': {
+    case 'TEXT': {
       const h = num(o, 72, 0);
+      const v = num(o, 73, 0);
       const align: 'left' | 'center' | 'right' = h === 1 || h === 4 ? 'center' : h === 2 ? 'right' : 'left';
-      const useAlignPt = h !== 0 && o.groups.some((x) => x.code === 11);
-      const position = useAlignPt ? { x: num(o, 11), y: num(o, 21) } : { x: num(o, 10), y: num(o, 20) };
+      // Alignment point (11/21) applies for any non-default justification; fit/aligned (3/5) keep the first point.
+      const useAlignPt = (h !== 0 || v !== 0) && h !== 3 && h !== 5 && o.groups.some((x) => x.code === 11);
+      let position = useAlignPt ? { x: num(o, 11), y: num(o, 21) } : { x: num(o, 10), y: num(o, 20) };
+      const height = num(o, 40, 0.125);
+      const rotation = g.rad(num(o, 50));
+      // Vertical justification: shift down to the baseline (1 bottom, 2 middle, 3 top).
+      const drop = v === 2 ? height / 2 : v === 3 ? height : 0;
+      if (drop) position = { x: position.x + Math.sin(rotation) * drop, y: position.y - Math.cos(rotation) * drop };
+      return { ...base, type: 'text', position, text: str(o, 1), height, rotation, align };
+    }
+    case 'MTEXT': {
+      // MTEXT: 10/20 attachment corner, 71 attachment point (1..9), 11/21 direction vector, 50 rotation (radians)
+      const ap = Math.trunc(num(o, 71, 1));
+      const col = (ap - 1) % 3;
+      const row = Math.floor((ap - 1) / 3);
+      const align: 'left' | 'center' | 'right' = col === 1 ? 'center' : col === 2 ? 'right' : 'left';
+      const hasDir = o.groups.some((x) => x.code === 11);
+      const rotation = hasDir ? Math.atan2(num(o, 21), num(o, 11)) : num(o, 50);
+      const height = num(o, 40, 0.125);
+      const drop = row === 0 ? height : row === 1 ? height / 2 : 0;
+      const corner = { x: num(o, 10), y: num(o, 20) };
+      const position = { x: corner.x + Math.sin(rotation) * drop, y: corner.y - Math.cos(rotation) * drop };
       const text = o.groups
         .filter((x) => x.code === 1 || x.code === 3)
         .map((x) => x.value)
         .join('')
         .replace(/\\P/g, ' ')
         .replace(/\{\\[^;]*;([^}]*)\}/g, '$1')
-        .replace(/\\[A-Za-z][^;]*;/g, '');
-      return { ...base, type: 'text', position, text, height: num(o, 40, 0.125), rotation: g.rad(num(o, 50)), align };
+        .replace(/\\[A-Za-z][^;]*;/g, '')
+        .replace(/[{}]/g, '');
+      return { ...base, type: 'text', position, text, height, rotation, align };
     }
-    case 'INSERT':
+    case 'INSERT': {
+      const sx = num(o, 41, 1);
+      const sy = num(o, 42, sx);
+      // Mirrored (negative) and non-uniform scales are not represented; keep the magnitude of X.
       return {
         ...base,
         type: 'insert',
         block: str(o, 2),
         position: { x: num(o, 10), y: num(o, 20) },
-        scale: num(o, 41, 1),
-        rotation: g.rad(num(o, 50)),
+        scale: Math.abs(sx) || 1,
+        rotation: g.rad(num(o, 50)) + (sx < 0 !== sy < 0 ? 0 : 0),
         attributes: {},
       };
+    }
     default:
       return null;
   }
+}
+
+/** Expand bulge (arc) segments of a polyline into straight segments. */
+function tessellateBulges(pts: g.Point[], bulges: number[], closed: boolean): g.Point[] {
+  if (!bulges.some((b) => Math.abs(b) > 1e-9)) return pts;
+  const out: g.Point[] = [];
+  const n = pts.length;
+  const segCount = closed ? n : n - 1;
+  for (let i = 0; i < segCount; i += 1) {
+    const a = pts[i]!;
+    const b = pts[(i + 1) % n]!;
+    const bulge = bulges[i] ?? 0;
+    out.push(a);
+    if (Math.abs(bulge) < 1e-9) continue;
+    const theta = 4 * Math.atan(bulge);
+    const chord = g.dist(a, b);
+    if (chord < 1e-12) continue;
+    const r = chord / (2 * Math.sin(Math.abs(theta) / 2));
+    const m = g.mid(a, b);
+    const d = Math.sqrt(Math.max(0, r * r - (chord / 2) * (chord / 2)));
+    const nrm = { x: -(b.y - a.y) / chord, y: (b.x - a.x) / chord };
+    const side = Math.abs(theta) <= Math.PI ? Math.sign(theta) : -Math.sign(theta);
+    const c = { x: m.x + nrm.x * d * side, y: m.y + nrm.y * d * side };
+    const a0 = g.angleOf(c, a);
+    const steps = Math.max(2, Math.ceil(Math.abs(theta) / (Math.PI / 12)));
+    for (let k = 1; k < steps; k += 1) out.push(g.polar(c, a0 + (theta * k) / steps, r));
+  }
+  if (!closed) out.push(pts[n - 1]!);
+  return out;
 }
 
 /** Parse a list of entity objects, folding ATTRIB/SEQEND into inserts and VERTEX into polylines. */
@@ -434,11 +645,12 @@ export function readDxf(text: string): DrawingState {
           const name2 = str(o, 2);
           if (!name2) continue;
           const c = Math.trunc(num(o, 62, 7));
+          const flags = Math.trunc(num(o, 70));
           layers.push({
             name: name2,
             color: Math.abs(c) || 7,
-            visible: c >= 0,
-            locked: (num(o, 70) & 4) === 4,
+            visible: c >= 0 && (flags & 1) === 0, // negative colour = off, flag 1 = frozen
+            locked: (flags & 4) === 4,
             lineWeight: num(o, 370, 25) / 100,
           });
         }
@@ -466,10 +678,12 @@ export function readDxf(text: string): DrawingState {
                 position: useAlignPt ? { x: num(x, 11), y: num(x, 21) } : { x: num(x, 10), y: num(x, 20) },
                 height: num(x, 40, 0.125),
                 align,
+                invisible: (Math.trunc(num(x, 70)) & 1) === 1,
               };
             });
           const bname = str(o, 2);
-          if (bname && !bname.startsWith('*')) {
+          const anonymousLayout = /^\*(MODEL_SPACE|PAPER_SPACE)/i.test(bname);
+          if (bname && !anonymousLayout) {
             blocks[bname] = {
               name: bname,
               basePoint: { x: num(o, 10), y: num(o, 20) },

@@ -3,6 +3,7 @@ import { explodeInsert, entityBounds } from '../core/entities';
 import type { Point } from '../core/geometry';
 import * as g from '../core/geometry';
 import { aciToCss } from './palette';
+import { strokeText, hasStrokeFont } from './hershey';
 
 export interface Transform {
   toScreen(p: Point): Point;
@@ -22,12 +23,14 @@ export function resolveColor(e: Entity, layers: readonly Layer[]): string {
   return aciToCss(layer?.color ?? 7);
 }
 
-export function resolveLineWidth(e: Entity, layers: readonly Layer[], tf: Transform): number {
+/** LWDISPLAY: when off (AutoCAD default) everything draws 1 px; when on, widths are fixed pixels per mm. */
+export const lineweightDisplay = { enabled: false };
+
+export function resolveLineWidth(e: Entity, layers: readonly Layer[], _tf: Transform): number {
+  if (!lineweightDisplay.enabled) return 1;
   const layer = layers.find((l) => l.name === e.layer);
   const mm = layer?.lineWeight ?? 0.25;
-  // lineweight display: 0.25mm ≈ 1px at normal zoom; scale gently with zoom
-  const px = Math.max(1, (mm / 0.25) * Math.min(2, Math.max(1, tf.scale / 60)));
-  return px;
+  return Math.max(1, Math.round((mm / 0.25) * 10) / 10);
 }
 
 /** Draw a single entity. Inserts are exploded recursively. */
@@ -45,8 +48,8 @@ export function drawEntity(
   ctx.strokeStyle = color;
   ctx.fillStyle = color;
   ctx.lineWidth = width;
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
+  ctx.lineCap = 'butt';
+  ctx.lineJoin = 'miter';
   if (style.alpha !== undefined) ctx.globalAlpha = style.alpha;
   if (style.dashed) ctx.setLineDash([6, 4]);
   drawGeometry(ctx, e, tf, layers, lookup, style);
@@ -75,14 +78,16 @@ function drawGeometry(
       const c = tf.toScreen(e.center);
       ctx.beginPath();
       ctx.arc(c.x, c.y, e.radius * tf.scale, 0, Math.PI * 2);
-      ctx.stroke();
+      if (e.filled) ctx.fill();
+      else ctx.stroke();
       break;
     }
     case 'arc': {
       const c = tf.toScreen(e.center);
       // screen Y is flipped, so a CCW world arc is drawn CW-in-canvas terms with negated angles
       ctx.beginPath();
-      ctx.arc(c.x, c.y, e.radius * tf.scale, -e.startAngle, -e.endAngle, true);
+      if (g.normAngle(e.endAngle - e.startAngle) < g.EPS) ctx.arc(c.x, c.y, e.radius * tf.scale, 0, Math.PI * 2);
+      else ctx.arc(c.x, c.y, e.radius * tf.scale, -e.startAngle, -e.endAngle, true);
       ctx.stroke();
       break;
     }
@@ -102,12 +107,27 @@ function drawGeometry(
     case 'text': {
       const p = tf.toScreen(e.position);
       const px = e.height * tf.scale;
-      if (px < 2) {
-        // too small: draw a placeholder line like AutoCAD's QTEXT
-        const w = e.text.length * px * 0.7;
+      if (px < 2.5) {
+        // too small to read: draw a placeholder bar like AutoCAD's QTEXT
+        const w = e.text.length * px * 0.8;
+        const c = Math.cos(e.rotation);
+        const sn = Math.sin(e.rotation);
+        const off = e.align === 'center' ? -w / 2 : e.align === 'right' ? -w : 0;
         ctx.beginPath();
-        ctx.moveTo(p.x, p.y);
-        ctx.lineTo(p.x + w, p.y);
+        ctx.moveTo(p.x + off * c, p.y - off * sn);
+        ctx.lineTo(p.x + (off + w) * c, p.y - (off + w) * sn);
+        ctx.stroke();
+        break;
+      }
+      if (hasStrokeFont) {
+        ctx.beginPath();
+        for (const stroke of strokeText(e.text, e.position, e.height, e.rotation, e.align)) {
+          for (let i = 0; i < stroke.length; i += 1) {
+            const sp = tf.toScreen(stroke[i]!);
+            if (i === 0) ctx.moveTo(sp.x, sp.y);
+            else ctx.lineTo(sp.x, sp.y);
+          }
+        }
         ctx.stroke();
         break;
       }
@@ -156,5 +176,5 @@ export function drawPreview(
     scale: s,
     toScreen: (p) => ({ x: width / 2 + (p.x - cx) * s, y: height / 2 - (p.y - cy) * s }),
   };
-  for (const e of entities) drawEntity(ctx, e, tf, layers, lookup, { strokeOverride: color, lineWidthOverride: 1.4 });
+  for (const e of entities) drawEntity(ctx, e, tf, layers, lookup, { strokeOverride: color, lineWidthOverride: 1 });
 }

@@ -32,4 +32,20 @@ describe('geometry', () => {
     expect(p.x).toBeCloseTo(1);
     expect(p.y).toBeCloseTo(2);
   });
+
+  it('bounds of points and union', () => {
+    const b = g.boundsOfPoints([{ x: 1, y: 5 }, { x: -2, y: 3 }])!;
+    expect(b).toEqual({ min: { x: -2, y: 3 }, max: { x: 1, y: 5 } });
+    expect(g.unionBounds(null, b)).toBe(b);
+    expect(g.boundsContains(b, { min: { x: -1, y: 4 }, max: { x: 0, y: 4.5 } })).toBe(true);
+    expect(g.boundsIntersect(b, { min: { x: 1, y: 5 }, max: { x: 2, y: 6 } })).toBe(true);
+    expect(g.boundsIntersect(b, { min: { x: 1.1, y: 5 }, max: { x: 2, y: 6 } })).toBe(false);
+  });
+  it('circle-circle intersections', () => {
+    const pts = g.circleCircleIntersections({ x: 0, y: 0 }, 1, { x: 1, y: 0 }, 1);
+    expect(pts).toHaveLength(2);
+    for (const p of pts) expect(p.x).toBeCloseTo(0.5);
+    expect(g.circleCircleIntersections({ x: 0, y: 0 }, 1, { x: 5, y: 0 }, 1)).toHaveLength(0);
+    expect(g.circleCircleIntersections({ x: 0, y: 0 }, 1, { x: 2, y: 0 }, 1)).toHaveLength(1);
+  });
 });

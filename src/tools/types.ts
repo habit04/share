@@ -30,6 +30,7 @@ export interface ToolContext {
     editComponent(init: { tag: string; desc: string; block: string }): Promise<{ tag: string; desc: string } | null>;
     ladderSettings(init: LadderSettings): Promise<LadderSettings | null>;
     textInput(title: string, label: string, init: string): Promise<string | null>;
+    confirm(title: string, message: string): Promise<boolean>;
   };
   /** Selection mode flag used by tools that need a selection set first. */
   requestSelection(prompt: string, onDone: (ids: string[]) => void): void;
@@ -42,6 +43,8 @@ export interface LadderSettings {
   firstReference: number;
   referenceStep: number;
   threePhase: boolean;
+  /** Draw a wire on every rung (otherwise only rails and reference numbers). */
+  drawRungs?: boolean;
 }
 
 export interface Tool {
@@ -56,4 +59,6 @@ export interface Tool {
   onCancel(ctx: ToolContext): void;
   /** Whether typed plain numbers should be treated as direct-distance entry. */
   readonly acceptsDistance?: boolean;
+  /** When true, typed input is passed to onText verbatim (no point parsing, Space is a character). */
+  acceptsFreeText?(): boolean;
 }

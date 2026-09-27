@@ -25,6 +25,8 @@ export interface ViewportOverlay {
   trackFrom: Point | null;
   /** Dynamic input text near cursor. */
   dynText: string[];
+  /** idle: crosshair + pickbox, point: crosshair only, select: pickbox only (AutoCAD prompt states). */
+  cursorMode: 'idle' | 'point' | 'select';
 }
 
 export interface ViewSettings {
@@ -45,7 +47,7 @@ export class Viewport {
   width = 1;
   height = 1;
   dpr = 1;
-  settings: ViewSettings = { gridVisible: true, gridSize: 0.5, background: '#212830', crosshairSize: 100, pickBox: 6 };
+  settings: ViewSettings = { gridVisible: true, gridSize: 0.5, background: '#212830', crosshairSize: 5, pickBox: 3 };
   private raf = 0;
 
   constructor(canvas: HTMLCanvasElement, private doc: Drawing) {
@@ -142,7 +144,7 @@ export class Viewport {
       if (selected) {
         drawEntity(ctx, e, tf, layers, lookup, { dashed: true, alpha: 0.95 });
       } else if (hovered) {
-        drawEntity(ctx, e, tf, layers, lookup, { lineWidthOverride: 3, alpha: 0.9 });
+        drawEntity(ctx, e, tf, layers, lookup, { lineWidthOverride: 2.5, dashed: true, alpha: 0.95 });
       } else {
         drawEntity(ctx, e, tf, layers, lookup);
       }
@@ -162,7 +164,7 @@ export class Viewport {
     if (ov.selectionBox) this.drawSelectionBox(ov.selectionBox);
     if (ov.trackFrom && ov.cursor) this.drawTrack(ov.trackFrom, ov.cursor);
     if (ov.snap) this.drawSnapMarker(ov.snap);
-    if (ov.cursor) this.drawCrosshair(ov.cursor, ov.dynText);
+    if (ov.cursor) this.drawCrosshair(ov.cursor, ov.dynText, ov.cursorMode);
     this.drawUcsIcon();
   }
 
@@ -217,19 +219,19 @@ export class Viewport {
 
     // Axes
     const o = this.toScreen({ x: 0, y: 0 });
-    ctx.strokeStyle = 'rgba(200,60,60,0.6)';
+    ctx.strokeStyle = 'rgba(200,60,60,0.3)';
     ctx.beginPath();
     ctx.moveTo(0, Math.round(o.y) + 0.5);
     ctx.lineTo(this.width, Math.round(o.y) + 0.5);
     ctx.stroke();
-    ctx.strokeStyle = 'rgba(80,200,80,0.6)';
+    ctx.strokeStyle = 'rgba(80,200,80,0.3)';
     ctx.beginPath();
     ctx.moveTo(Math.round(o.x) + 0.5, 0);
     ctx.lineTo(Math.round(o.x) + 0.5, this.height);
     ctx.stroke();
   }
 
-  private drawCrosshair(world: Point, dynText: string[]): void {
+  private drawCrosshair(world: Point, dynText: string[], mode: ViewportOverlay['cursorMode']): void {
     const { ctx } = this;
     const s = this.toScreen(world);
     const x = Math.round(s.x) + 0.5;
@@ -239,17 +241,21 @@ export class Viewport {
     ctx.save();
     ctx.lineWidth = 1;
     ctx.strokeStyle = '#ffffff';
-    ctx.beginPath();
-    ctx.moveTo(x - half, y);
-    ctx.lineTo(x - box, y);
-    ctx.moveTo(x + box, y);
-    ctx.lineTo(x + half, y);
-    ctx.moveTo(x, y - half);
-    ctx.lineTo(x, y - box);
-    ctx.moveTo(x, y + box);
-    ctx.lineTo(x, y + half);
-    ctx.stroke();
-    ctx.strokeRect(x - box, y - box, box * 2, box * 2);
+    if (mode !== 'select') {
+      // crosshair; in a point prompt the lines meet at the cursor (no pickbox gap)
+      const gap = mode === 'idle' ? box : 0;
+      ctx.beginPath();
+      ctx.moveTo(x - half, y);
+      ctx.lineTo(x - gap, y);
+      ctx.moveTo(x + gap, y);
+      ctx.lineTo(x + half, y);
+      ctx.moveTo(x, y - half);
+      ctx.lineTo(x, y - gap);
+      ctx.moveTo(x, y + gap);
+      ctx.lineTo(x, y + half);
+      ctx.stroke();
+    }
+    if (mode !== 'point') ctx.strokeRect(x - box, y - box, box * 2, box * 2);
 
     if (dynText.length > 0) {
       ctx.font = '11px "Segoe UI", system-ui, sans-serif';
@@ -272,8 +278,8 @@ export class Viewport {
     const { ctx } = this;
     const h = 4;
     ctx.save();
-    ctx.fillStyle = '#0a3aa8';
-    ctx.strokeStyle = '#7fb2ff';
+    ctx.fillStyle = '#1a3dff';
+    ctx.strokeStyle = '#0b0b0b';
     ctx.lineWidth = 1;
     ctx.fillRect(Math.round(s.x) - h, Math.round(s.y) - h, h * 2, h * 2);
     ctx.strokeRect(Math.round(s.x) - h + 0.5, Math.round(s.y) - h + 0.5, h * 2, h * 2);

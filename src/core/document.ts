@@ -17,8 +17,9 @@ export const DEFAULT_LAYERS: Layer[] = [
   { name: 'WIRES', color: 1, visible: true, locked: false, lineWeight: 0.35 },
   { name: 'WIRENO', color: 3, visible: true, locked: false, lineWeight: 0.25 },
   { name: 'SYMS', color: 4, visible: true, locked: false, lineWeight: 0.25 },
-  { name: 'TAGS', color: 2, visible: true, locked: false, lineWeight: 0.25 },
-  { name: 'DESC', color: 6, visible: true, locked: false, lineWeight: 0.25 },
+  { name: 'TAGS', color: 4, visible: true, locked: false, lineWeight: 0.25 },
+  { name: 'DESC', color: 7, visible: true, locked: false, lineWeight: 0.25 },
+  { name: 'TERMS', color: 7, visible: true, locked: false, lineWeight: 0.25 },
   { name: 'LADDER', color: 8, visible: true, locked: false, lineWeight: 0.25 },
   { name: 'MISC', color: 7, visible: true, locked: false, lineWeight: 0.25 },
 ];
@@ -139,14 +140,28 @@ export class Drawing {
   removeEntities(ids: Iterable<string>): void {
     const set = new Set(ids);
     if (set.size === 0) return;
-    this.transact((s) => ({ ...s, entities: s.entities.filter((e) => !set.has(e.id)) }));
+    this.transact((s) => {
+      const entities = s.entities.filter((e) => !set.has(e.id));
+      return entities.length === s.entities.length ? s : { ...s, entities };
+    });
   }
 
   /** Replace entities by id (used by move/rotate/edit). */
   replaceEntities(replacements: readonly Entity[]): void {
     if (replacements.length === 0) return;
     const map = new Map(replacements.map((e) => [e.id, e]));
-    this.transact((s) => ({ ...s, entities: s.entities.map((e) => map.get(e.id) ?? e) }));
+    this.transact((s) => {
+      let changed = false;
+      const entities = s.entities.map((e) => {
+        const r = map.get(e.id);
+        if (r && r !== e) {
+          changed = true;
+          return r;
+        }
+        return e;
+      });
+      return changed ? { ...s, entities } : s;
+    });
   }
 
   setCurrentLayer(name: string): void {

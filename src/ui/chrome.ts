@@ -1,5 +1,6 @@
 import type { Editor } from '../app/editor';
 import { icon } from './icons';
+import { esc } from './dom';
 
 /** Title bar with Quick Access Toolbar. */
 export function buildTitleBar(editor: Editor, el: HTMLElement): void {
@@ -39,7 +40,11 @@ export function buildTitleBar(editor: Editor, el: HTMLElement): void {
       searchInput.value = '';
     }
   });
-  el.append(logo, bar, title, search);
+  const infocenter = document.createElement('div');
+  infocenter.className = 'infocenter';
+  infocenter.innerHTML = `<button class="ic-btn user" title="Sign in">${icon('user')}<span>Sign In</span></button><button class="ic-btn" title="Help (F1)">${icon('help')}</button>`;
+  infocenter.querySelector('.ic-btn:last-child')!.addEventListener('click', () => editor.runCommand('HELP'));
+  el.append(logo, bar, title, search, infocenter);
   const refresh = () => {
     title.textContent = `VoltCAD 2D Electrical  —  ${editor.fileName()}${editor.doc.dirty ? '*' : ''}`;
     document.title = `${editor.fileName()}${editor.doc.dirty ? '*' : ''} — VoltCAD 2D Electrical`;
@@ -53,7 +58,7 @@ export function buildTitleBar(editor: Editor, el: HTMLElement): void {
 export function buildFileTabs(editor: Editor, el: HTMLElement): void {
   el.className = 'file-tabs';
   const refresh = () => {
-    el.innerHTML = `<div class="file-tab active"><span>${editor.fileName()}${editor.doc.dirty ? '*' : ''}</span>${icon('close')}</div><button class="file-tab-add" title="New drawing">${icon('plus')}</button>`;
+    el.innerHTML = `<div class="file-tab active"><span>${esc(editor.fileName())}${editor.doc.dirty ? '*' : ''}</span>${icon('close')}</div><button class="file-tab-add" title="New drawing">${icon('plus')}</button><span class="file-tabs-spacer"></span><button class="file-tab-list" title="File tab list">${icon('chevron')}</button>`;
     el.querySelector('.file-tab-add')!.addEventListener('click', () => editor.runCommand('NEW'));
   };
   editor.on('file', refresh);
@@ -104,6 +109,12 @@ export function installContextMenu(editor: Editor, canvas: HTMLElement): void {
           null,
           ['Zoom Extents', () => editor.zoomExtents()],
           ['Deselect All', () => editor.cancel()],
+          null,
+          ['Recent Input  ▸', () => {}],
+          ['Clipboard  ▸', () => {}],
+          ['Isolate  ▸', () => {}],
+          null,
+          ['Options...', () => editor.runCommand('HELP')],
         ];
     for (const it of items) {
       if (!it) {
@@ -134,4 +145,23 @@ export function installContextMenu(editor: Editor, canvas: HTMLElement): void {
   window.addEventListener('keydown', (ev) => {
     if (ev.key === 'Escape') hide();
   });
+}
+
+/** Navigation bar under the ViewCube (wheel, pan, zoom, orbit, show motion). */
+export function buildNavBar(editor: Editor, el: HTMLElement): void {
+  const items: Array<[string, string, () => void]> = [
+    ['navwheel', 'Navigation wheel', () => editor.runCommand('PAN')],
+    ['pan', 'Pan', () => editor.runCommand('PAN')],
+    ['zoomext', 'Zoom extents', () => editor.zoomExtents()],
+    ['zoomwin', 'Zoom window', () => editor.runCommand('ZOOM W')],
+    ['orbit', 'Orbit (2D drawing: not available)', () => editor.log('Orbit is not available in a 2D drawing.')],
+  ];
+  for (const [ic, title, fn] of items) {
+    const b = document.createElement('button');
+    b.className = 'nav-btn';
+    b.title = title;
+    b.innerHTML = icon(ic);
+    b.addEventListener('click', fn);
+    el.appendChild(b);
+  }
 }

@@ -5,7 +5,8 @@ import { newId } from '../core/entities';
 import type { Drawing } from '../core/document';
 import { LineTool } from './draw';
 import type { Tool, ToolContext, LadderSettings } from './types';
-import { findSymbol, tagPrefix, ALL_SYMBOLS } from '../electrical/symbols';
+import { findSymbol, tagPrefix, ALL_SYMBOLS, WIRE_DOT } from '../electrical/symbols';
+import { entityBounds } from '../core/entities';
 
 const fmt = (p: Point) => `${p.x.toFixed(4)}, ${p.y.toFixed(4)}`;
 
@@ -16,6 +17,7 @@ export const DEFAULT_LADDER: LadderSettings = {
   firstReference: 100,
   referenceStep: 1,
   threePhase: false,
+  drawRungs: false,
 };
 
 /** Wires are lines on the WIRES layer. */
@@ -27,13 +29,38 @@ export function isHorizontal(l: LineEntity): boolean {
   return Math.abs(l.a.y - l.b.y) < 1e-6;
 }
 
-/** AEWIRE: like LINE, but always on WIRES layer and ortho-constrained. */
+/** True when p lies on the interior of an existing wire segment (a tee). */
+export function wireTeeAt(doc: Drawing, p: Point, tol = 1e-6): LineEntity | null {
+  for (const e of doc.entities) {
+    if (!isWire(e)) continue;
+    if (g.dist(p, e.a) < tol || g.dist(p, e.b) < tol) continue;
+    if (g.distToSegment(p, e.a, e.b) < tol) return e;
+  }
+  return null;
+}
+
+export function wireDot(p: Point): InsertEntity {
+  return { id: newId(), layer: 'WIRES', color: 'ByLayer', type: 'insert', block: WIRE_DOT.name, position: p, rotation: 0, scale: 1, attributes: {} };
+}
+
+function hasDotAt(doc: Drawing, p: Point): boolean {
+  return doc.entities.some((e) => e.type === 'insert' && e.block === WIRE_DOT.name && g.dist(e.position, p) < 1e-6);
+}
+
+/** AEWIRE: like LINE, but always on WIRES layer and ortho-constrained; adds junction dots at tees. */
 export class WireTool extends LineTool {
   override readonly name = 'AEWIRE';
   override start(ctx: ToolContext): void {
     this.layer = 'WIRES';
+    ctx.doc.ensureBlocks([WIRE_DOT]);
     super.start(ctx);
     ctx.prompt('Specify wire start:');
+  }
+  protected override makeSegment(ctx: ToolContext, a: Point, b: Point): Entity {
+    return super.makeSegment(ctx, a, b);
+  }
+  private dotIfTee(ctx: ToolContext, p: Point): void {
+    if (wireTeeAt(ctx.doc, p, ctx.aperture() * 0.5) && !hasDotAt(ctx.doc, p)) ctx.doc.addEntities([wireDot(p)]);
   }
   override onPoint(p: Point, ctx: ToolContext): void {
     // Wires must be orthogonal: force the second point onto the axis with the larger delta.
@@ -44,7 +71,13 @@ export class WireTool extends LineTool {
       const dy = Math.abs(p.y - last.y);
       q = dx >= dy ? { x: p.x, y: last.y } : { x: last.x, y: p.y };
     }
+    const before = ctx.doc.entities.length;
     super.onPoint(q, ctx);
+    // A wire that starts or ends in the middle of another wire is a tee: mark it with a dot.
+    if (ctx.doc.entities.length !== before || this.points.length === 1) {
+      const tee = wireTeeAt(ctx.doc, q, ctx.aperture() * 0.5);
+      if (tee && !hasDotAt(ctx.doc, q)) ctx.doc.addEntities([wireDot(q)]);
+    }
     if (this.points.length >= 1) ctx.prompt('Specify wire end or [Undo]:');
   }
   override onMove(p: Point, ctx: ToolContext): void {
@@ -105,10 +138,7 @@ export class LadderTool implements Tool {
         align: 'right',
       };
       out.push(t);
-      // rung tick marks on rails (AutoCAD Electrical draws rung reference numbers only; we add short ticks)
-      if (i === 0 || i === s.rungs - 1) {
-        // top/bottom rung drawn as a wire so the ladder is a usable circuit skeleton
-      }
+      if (s.drawRungs) out.push({ id: newId(), layer: 'WIRES', color: 'ByLayer', type: 'line', a: { x: left, y }, b: { x: right, y } });
     }
     void ctx;
     return out;
@@ -263,8 +293,13 @@ export class ComponentTool implements Tool {
       ctx.doc.transact((s) => {
         let entities = s.entities;
         if (wire) {
-          // symbol half-width: 0.375 for in-line symbols
-          const pieces = breakWire(wire, pos.x - 0.375, pos.x + 0.375);
+          // Break the wire over the symbol's actual horizontal extent (stubs included).
+          const b = entityBounds(ins, ctx.doc.lookupBlock);
+          const half = b ? Math.max(b.max.x - pos.x, pos.x - b.min.x) : 0.375;
+          const left = b ? b.min.x : pos.x - 0.375;
+          const right = b ? b.max.x : pos.x + 0.375;
+          void half;
+          const pieces = breakWire(wire, left, right);
           entities = entities.filter((e) => e.id !== wire.id).concat(pieces);
         }
         return { ...s, entities: [...entities, ins] };
@@ -293,35 +328,59 @@ export class ComponentTool implements Tool {
   }
 }
 
-/** AEWIRENO: number every horizontal wire segment, top to bottom, left to right. */
+/**
+ * AEWIRENO: number every horizontal wire net. Nets are groups of collinear
+ * wire pieces (a rung broken by components is one net). Like AutoCAD
+ * Electrical, the number is the nearest ladder rung reference; additional
+ * nets on the same reference get a letter suffix (100, 100A, 100B ...). When
+ * no ladder references exist, numbers run sequentially from `start`.
+ */
 export function assignWireNumbers(doc: Drawing, start = 100): number {
   const wires = doc.entities.filter((e): e is LineEntity => isWire(e) && isHorizontal(e));
-  // Group collinear touching wires as a single "net" so a wire broken by a component gets one number.
+  if (wires.length === 0) return 0;
   const sorted = [...wires].sort((a, b) => b.a.y - a.a.y || Math.min(a.a.x, a.b.x) - Math.min(b.a.x, b.b.x));
+  // Group into nets: same y and x-ranges that touch or are separated only by a component gap (< 1.2 in).
   const nets: LineEntity[][] = [];
   for (const w of sorted) {
     const last = nets[nets.length - 1];
+    const wl = Math.min(w.a.x, w.b.x);
     if (last && Math.abs(last[0]!.a.y - w.a.y) < 1e-6) {
-      last.push(w);
-    } else nets.push([w]);
+      const lastRight = Math.max(...last.map((x) => Math.max(x.a.x, x.b.x)));
+      if (wl - lastRight < 1.2) {
+        last.push(w);
+        continue;
+      }
+    }
+    nets.push([w]);
   }
+  const refs = doc.entities.filter((e): e is TextEntity => e.type === 'text' && e.layer === 'MISC' && /^\d+$/.test(e.text));
+  const used = new Map<string, number>();
   const texts: Entity[] = [];
-  let n = start;
+  let seq = start;
   for (const net of nets) {
     const first = net[0]!;
-    const x = Math.min(first.a.x, first.b.x) + 0.6;
+    let label: string;
+    const ref = refs.length ? nearestReference(doc, { x: first.a.x, y: first.a.y }) : null;
+    if (ref) {
+      const n = used.get(ref) ?? 0;
+      used.set(ref, n + 1);
+      label = n === 0 ? ref : `${ref}${String.fromCharCode(64 + n)}`;
+    } else {
+      label = String(seq);
+      seq += 1;
+    }
+    const x = Math.min(first.a.x, first.b.x) + 0.15;
     texts.push({
       id: newId(),
       type: 'text',
       layer: 'WIRENO',
       color: 'ByLayer',
       position: { x, y: first.a.y + 0.05 },
-      text: String(n),
-      height: 0.1,
+      text: label,
+      height: 0.125,
       rotation: 0,
       align: 'left',
     });
-    n += 1;
   }
   doc.transact((s) => ({
     ...s,

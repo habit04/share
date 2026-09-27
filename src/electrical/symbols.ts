@@ -49,8 +49,8 @@ const T = (x: number, y: number, text: string, h = 0.1): Entity => ({
   align: 'center',
 });
 
-const tagAttr = (y = 0.3): AttributeDef => ({ tag: 'TAG1', prompt: 'Component tag', default: '', position: { x: 0, y }, height: 0.1, align: 'center' });
-const descAttr = (y = -0.45): AttributeDef => ({ tag: 'DESC1', prompt: 'Description', default: '', position: { x: 0, y }, height: 0.09, align: 'center' });
+const tagAttr = (y = 0.3): AttributeDef => ({ tag: 'TAG1', prompt: 'Component tag', default: '', position: { x: 0, y }, height: 0.125, align: 'center' });
+const descAttr = (y = -0.45): AttributeDef => ({ tag: 'DESC1', prompt: 'Description', default: '', position: { x: 0, y }, height: 0.1, align: 'center' });
 
 /** Wire stubs from the connection points to the symbol body. */
 const stubs = (bodyHalf: number): Entity[] => [L(-HALF, 0, -bodyHalf, 0), L(bodyHalf, 0, HALF, 0)];
@@ -84,7 +84,7 @@ const pbNO = block('HPB11_NO', 'Push button, normally open', [
   C(GAP, 0, 0.03),
   L(-GAP - 0.06, 0.09, GAP + 0.06, 0.09),
   L(0, 0.09, 0, 0.2),
-  L(-0.08, 0.2, 0.08, 0.2),
+  L(-0.125, 0.2, 0.125, 0.2),
 ]);
 const pbNC = block('HPB12_NC', 'Push button, normally closed', [
   ...stubs(GAP),
@@ -92,7 +92,7 @@ const pbNC = block('HPB12_NC', 'Push button, normally closed', [
   C(GAP, 0, 0.03),
   L(-GAP - 0.06, -0.06, GAP + 0.06, -0.06),
   L(0, -0.06, 0, 0.2),
-  L(-0.08, 0.2, 0.08, 0.2),
+  L(-0.125, 0.2, 0.125, 0.2),
 ]);
 const mushroom = block('HPB13_NC', 'Mushroom head push button (E-stop), normally closed', [
   ...stubs(GAP),
@@ -117,7 +117,7 @@ const limitNC = block('HLS12_NC', 'Limit switch, normally closed', [
   C(-GAP, 0, 0.03),
   C(GAP, 0, 0.03),
   L(-GAP, 0, GAP + 0.08, -0.08),
-  L(GAP + 0.08, -0.08, GAP + 0.14, 0.02),
+  L(GAP + 0.08, -0.08, GAP + 0.18, 0.04),
 ]);
 const selector = block('HSS11', 'Selector switch, 2 position', [
   ...stubs(GAP),
@@ -161,12 +161,12 @@ const solenoid = block('HSOL1', 'Solenoid coil', [
   A(-0.08, 0, 0.08, 0, 180),
   A(0.08, 0, 0.08, 0, 180),
 ]);
-const light = block('HLT1R', 'Pilot light', [
-  ...stubs(0.125),
-  C(0, 0, 0.125),
-  L(-0.088, -0.088, 0.088, 0.088),
-  L(-0.088, 0.088, 0.088, -0.088),
-]);
+const light = block(
+  'HLT1R',
+  'Pilot light',
+  [...stubs(0.125), C(0, 0, 0.125), L(-0.088, -0.088, 0.088, 0.088), L(-0.088, 0.088, 0.088, -0.088)],
+  [tagAttr(0.32), descAttr(-0.48)],
+);
 const horn = block('HHN1', 'Horn / alarm', [
   ...stubs(0.1),
   P([[-0.1, -0.08], [-0.1, 0.08], [0.02, 0.08], [0.02, -0.08]], true),
@@ -195,7 +195,7 @@ const overload = block('HOL1', 'Overload relay (thermal)', [
   P([[-0.12, 0], [-0.12, 0.1], [-0.04, 0.1], [-0.04, -0.1], [0.04, -0.1], [0.04, 0.1], [0.12, 0.1], [0.12, 0]]),
 ]);
 const terminal = block('HT0001', 'Terminal', [...stubs(0.05), C(0, 0, 0.05)], [
-  { tag: 'TERM01', prompt: 'Terminal number', default: '', position: { x: 0, y: 0.1 }, height: 0.08, align: 'center' },
+  { tag: 'TERM01', prompt: 'Terminal number', default: '', position: { x: 0, y: 0.1 }, height: 0.1, align: 'center' },
 ]);
 const ground = block(
   'HGND',
@@ -240,6 +240,15 @@ const plcInput = block(
   ],
 );
 
+/** Wire junction dot, inserted wherever a wire tees into another. */
+export const WIRE_DOT: BlockDef = {
+  name: 'WDDOT',
+  description: 'Wire junction dot',
+  basePoint: { x: 0, y: 0 },
+  entities: [{ ...base, id: id(), type: 'circle', center: { x: 0, y: 0 }, radius: 0.035, filled: true }],
+  attributes: [],
+};
+
 export const SYMBOL_CATEGORIES: SymbolCategory[] = [
   { name: 'Push Buttons', symbols: [pbNO, pbNC, mushroom] },
   { name: 'Selector Switches', symbols: [selector, disconnect] },
@@ -252,7 +261,7 @@ export const SYMBOL_CATEGORIES: SymbolCategory[] = [
   { name: 'Terminals / Misc', symbols: [terminal, ground, resistor, capacitor, plcInput] },
 ];
 
-export const ALL_SYMBOLS: BlockDef[] = SYMBOL_CATEGORIES.flatMap((c) => c.symbols);
+export const ALL_SYMBOLS: BlockDef[] = [...SYMBOL_CATEGORIES.flatMap((c) => c.symbols), WIRE_DOT];
 
 export function findSymbol(name: string): BlockDef | undefined {
   return ALL_SYMBOLS.find((s) => s.name === name);

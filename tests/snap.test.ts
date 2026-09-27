@@ -54,4 +54,19 @@ describe('selection', () => {
     const withL3 = { min: { x: -1, y: -3 }, max: { x: 5, y: 6 } };
     expect(selectByBox(withL3, 'window', ents, lookup, new Set())).toHaveLength(3);
   });
+
+  it('crossing box entirely inside a circle selects nothing', () => {
+    const box = { min: { x: 9.8, y: 9.8 }, max: { x: 10.2, y: 10.2 } };
+    expect(selectByBox(box, 'crossing', ents, lookup, new Set())).toHaveLength(0);
+  });
+  it('perpendicular snap from a base point', () => {
+    const s2 = { ...defaultSnapSettings(), endpoint: false, midpoint: false, intersection: false };
+    const r = findObjectSnap({ x: 1.05, y: 0.1 }, ents, lookup, s2, 0.2, { x: 1, y: 3 }, new Set());
+    expect(r?.kind).toBe('perpendicular');
+    expect(r!.point.x).toBeCloseTo(1);
+    expect(r!.point.y).toBeCloseTo(0);
+  });
+  it('hidden layers are excluded from snapping', () => {
+    expect(findObjectSnap({ x: 3.95, y: 0.02 }, ents, lookup, defaultSnapSettings(), 0.2, null, new Set(['0']))).toBeNull();
+  });
 });

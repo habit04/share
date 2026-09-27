@@ -76,7 +76,7 @@ export class MoveTool extends SelectionTool {
       return;
     }
     const d = g.sub(p, this.base);
-    ctx.doc.replaceEntities(this.entities(ctx).map((e) => translateEntity(e, d)));
+    if (g.len(d) > 1e-12) ctx.doc.replaceEntities(this.entities(ctx).map((e) => translateEntity(e, d)));
     ctx.finish();
   }
 

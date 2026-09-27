@@ -4,12 +4,13 @@ import { SYMBOL_CATEGORIES, findSymbol } from '../electrical/symbols';
 import { drawPreview } from '../render/draw';
 import { aciToCss, ACI_NAMES } from '../render/palette';
 import { icon } from './icons';
+import { esc } from './dom';
 
-function modal(title: string, width = 520): { root: HTMLElement; body: HTMLElement; footer: HTMLElement; close: () => void } {
+function modal(title: string, width = 520, theme: 'light' | 'dark' = 'light'): { root: HTMLElement; body: HTMLElement; footer: HTMLElement; close: () => void; onClose: (fn: () => void) => void } {
   const root = document.createElement('div');
   root.className = 'modal-backdrop';
   const dlg = document.createElement('div');
-  dlg.className = 'modal';
+  dlg.className = `modal ${theme}`;
   dlg.style.width = `${width}px`;
   const head = document.createElement('div');
   head.className = 'modal-title';
@@ -21,9 +22,24 @@ function modal(title: string, width = 520): { root: HTMLElement; body: HTMLEleme
   dlg.append(head, body, footer);
   root.appendChild(dlg);
   document.body.appendChild(root);
-  const close = () => root.remove();
-  head.querySelector('.modal-close')!.addEventListener('click', close);
-  return { root, body, footer, close };
+  const closers: Array<() => void> = [];
+  const close = () => {
+    root.remove();
+    window.removeEventListener('keydown', onKey, true);
+  };
+  const onKey = (ev: KeyboardEvent) => {
+    if (ev.key === 'Escape') {
+      ev.stopPropagation();
+      for (const fn of closers) fn();
+      close();
+    }
+  };
+  window.addEventListener('keydown', onKey, true);
+  head.querySelector('.modal-close')!.addEventListener('click', () => {
+    for (const fn of closers) fn();
+    close();
+  });
+  return { root, body, footer, close, onClose: (fn) => closers.push(fn) };
 }
 
 function button(label: string, primary = false): HTMLButtonElement {
@@ -61,7 +77,7 @@ export function pickSymbolDialog(editor: Editor): Promise<string | null> {
       m.close();
       resolve(v);
     };
-    m.root.querySelector('.modal-close')!.addEventListener('click', () => finish(null));
+    m.onClose(() => finish(null));
 
     const wrap = document.createElement('div');
     wrap.className = 'iconmenu';
@@ -83,7 +99,7 @@ export function pickSymbolDialog(editor: Editor): Promise<string | null> {
         canvas.width = 96;
         canvas.height = 72;
         const ctx = canvas.getContext('2d')!;
-        drawPreview(ctx, s.entities, editor.doc.layers, editor.doc.lookupBlock, 96, 72, '#d8dde6', 10);
+        drawPreview(ctx, s.entities, editor.doc.layers, editor.doc.lookupBlock, 96, 72, '#202020', 10);
         const label = document.createElement('span');
         label.textContent = s.description ?? s.name;
         cell.append(canvas, label);
@@ -129,14 +145,14 @@ export function editComponentDialog(
       m.close();
       resolve(v);
     };
-    m.root.querySelector('.modal-close')!.addEventListener('click', () => finish(null));
+    m.onClose(() => finish(null));
 
     const sym = findSymbol(init.block);
     const preview = document.createElement('canvas');
     preview.width = 140;
     preview.height = 90;
     preview.className = 'component-preview';
-    if (sym) drawPreview(preview.getContext('2d')!, sym.entities, editor.doc.layers, editor.doc.lookupBlock, 140, 90, '#d8dde6', 12);
+    if (sym) drawPreview(preview.getContext('2d')!, sym.entities, editor.doc.layers, editor.doc.lookupBlock, 140, 90, '#202020', 12);
 
     const tag = textInput(init.tag);
     const desc = textInput(init.desc);
@@ -179,18 +195,21 @@ export function ladderDialog(init: LadderSettings): Promise<LadderSettings | nul
       m.close();
       resolve(v);
     };
-    m.root.querySelector('.modal-close')!.addEventListener('click', () => finish(null));
+    m.onClose(() => finish(null));
     const width = textInput(String(init.width), 'number');
     const spacing = textInput(String(init.spacing), 'number');
     const rungs = textInput(String(init.rungs), 'number');
     const first = textInput(String(init.firstReference), 'number');
     const step = textInput(String(init.referenceStep), 'number');
-    const phase = document.createElement('input');
-    phase.type = 'checkbox';
-    phase.checked = init.threePhase;
+    const phaseWrap = document.createElement('div');
+    phaseWrap.className = 'radio-row';
+    phaseWrap.innerHTML = `<label><input type="radio" name="phase" value="1" ${init.threePhase ? '' : 'checked'}> 1 Phase</label><label><input type="radio" name="phase" value="3" ${init.threePhase ? 'checked' : ''}> 3 Phase</label>`;
+    const rungsWrap = document.createElement('div');
+    rungsWrap.className = 'radio-row';
+    rungsWrap.innerHTML = `<label><input type="checkbox" id="ladder-draw-rungs" ${init.drawRungs === false ? '' : 'checked'}> Draw rungs</label>`;
     const grid = document.createElement('div');
     grid.className = 'form-grid';
-    grid.append(field('Width', width), field('Spacing', spacing), field('Rungs', rungs), field('1st Reference', first), field('Index', step), field('3 Phase', phase));
+    grid.append(field('Width', width), field('Spacing', spacing), field('Rungs', rungs), field('1st Reference', first), field('Index', step), field('Phase', phaseWrap), field('Rungs', rungsWrap));
     m.body.appendChild(grid);
     const ok = button('OK', true);
     const cancel = button('Cancel');
@@ -201,7 +220,8 @@ export function ladderDialog(init: LadderSettings): Promise<LadderSettings | nul
         rungs: Math.max(1, Math.min(200, Math.round(parseFloat(rungs.value) || init.rungs))),
         firstReference: Math.round(parseFloat(first.value) || init.firstReference),
         referenceStep: Math.max(1, Math.round(parseFloat(step.value) || init.referenceStep)),
-        threePhase: phase.checked,
+        threePhase: (phaseWrap.querySelector('input[name=phase]:checked') as HTMLInputElement | null)?.value === '3',
+        drawRungs: (rungsWrap.querySelector('#ladder-draw-rungs') as HTMLInputElement).checked,
       };
       finish(s);
     });
@@ -226,7 +246,7 @@ export function textInputDialog(title: string, label: string, init: string): Pro
       m.close();
       resolve(v);
     };
-    m.root.querySelector('.modal-close')!.addEventListener('click', () => finish(null));
+    m.onClose(() => finish(null));
     const input = textInput(init);
     m.body.appendChild(field(label, input));
     const ok = button('OK', true);
@@ -242,13 +262,14 @@ export function textInputDialog(title: string, label: string, init: string): Pro
   });
 }
 
-/** Layer Properties Manager. */
+/** Layer Properties Manager (dark palette like AutoCAD's). */
 export function layerDialog(editor: Editor): void {
-  const m = modal('Layer Properties Manager', 640);
+  const m = modal('Layer Properties Manager', 760, 'dark');
   const table = document.createElement('table');
   table.className = 'layer-table';
+  const colourName = (c: number) => (ACI_NAMES[c] ?? String(c)).toLowerCase();
   const render = () => {
-    table.innerHTML = `<thead><tr><th></th><th>Name</th><th>On</th><th>Lock</th><th>Color</th><th>Lineweight</th></tr></thead>`;
+    table.innerHTML = `<thead><tr><th>S</th><th>Name</th><th>On</th><th>Freeze</th><th>Lock</th><th>Color</th><th>Linetype</th><th>Lineweight</th><th>Plot</th></tr></thead>`;
     const tb = document.createElement('tbody');
     for (const l of editor.doc.layers) {
       const tr = document.createElement('tr');
@@ -256,11 +277,14 @@ export function layerDialog(editor: Editor): void {
       tr.className = isCurrent ? 'current' : '';
       tr.innerHTML = `
         <td class="cur">${isCurrent ? icon('check') : ''}</td>
-        <td class="name">${l.name}</td>
-        <td class="tog on-${l.visible}">${icon('layeron')}</td>
+        <td class="name">${esc(l.name)}</td>
+        <td class="tog on-${l.visible}">${icon('bulb')}</td>
+        <td class="tog freeze-false">${icon('freeze')}</td>
         <td class="tog lock-${l.locked}">${icon('lock')}</td>
-        <td class="color"><span class="swatch" style="background:${aciToCss(l.color)}"></span>${ACI_NAMES[l.color] ?? l.color}</td>
-        <td>${l.lineWeight.toFixed(2)} mm</td>`;
+        <td class="color"><span class="swatch" style="background:${aciToCss(l.color)}"></span>${colourName(l.color)}</td>
+        <td>Continuous</td>
+        <td>${Math.abs(l.lineWeight - 0.25) < 1e-9 ? 'Default' : `${l.lineWeight.toFixed(2)} mm`}</td>
+        <td class="tog plot-true">${icon('plot')}</td>`;
       tr.querySelector('.name')!.addEventListener('dblclick', () => {
         editor.doc.setCurrentLayer(l.name);
         render();
@@ -269,11 +293,12 @@ export function layerDialog(editor: Editor): void {
         editor.doc.setCurrentLayer(l.name);
         render();
       });
-      tr.querySelectorAll('.tog')[0]!.addEventListener('click', () => {
+      const togs = tr.querySelectorAll('.tog');
+      togs[0]!.addEventListener('click', () => {
         editor.doc.updateLayer(l.name, { visible: !l.visible });
         render();
       });
-      tr.querySelectorAll('.tog')[1]!.addEventListener('click', () => {
+      togs[2]!.addEventListener('click', () => {
         editor.doc.updateLayer(l.name, { locked: !l.locked });
         render();
       });
@@ -307,4 +332,31 @@ export function layerDialog(editor: Editor): void {
   const close = button('Close', true);
   close.addEventListener('click', () => m.close());
   m.footer.append(close);
+}
+
+/** Yes / No confirmation. */
+export function confirmDialog(title: string, message: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const m = modal(title, 420);
+    let done = false;
+    const finish = (v: boolean) => {
+      if (done) return;
+      done = true;
+      m.close();
+      resolve(v);
+    };
+    m.onClose(() => finish(false));
+    const p = document.createElement('p');
+    p.textContent = message;
+    m.body.appendChild(p);
+    const yes = button('Yes', true);
+    const no = button('No');
+    yes.addEventListener('click', () => finish(true));
+    no.addEventListener('click', () => finish(false));
+    m.footer.append(yes, no);
+    yes.focus();
+    m.root.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') yes.click();
+    });
+  });
 }

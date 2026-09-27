@@ -3,6 +3,8 @@ import { writeDxf, readDxf } from '../src/io/dxf';
 import { Drawing } from '../src/core/document';
 import type { Entity } from '../src/core/entities';
 import { ALL_SYMBOLS, findSymbol } from '../src/electrical/symbols';
+import { readFileSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
 
 function sample(): Drawing {
   const d = new Drawing();
@@ -82,5 +84,83 @@ describe('DXF round trip', () => {
     expect(pl.type).toBe('polyline');
     if (pl.type === 'polyline') expect(pl.points).toHaveLength(3);
     expect(s.layers.map((l) => l.name).sort()).toEqual(['0', 'A', 'B']);
+  });
+
+  it('writes the mandatory AC1015 tables and sections', () => {
+    const text = writeDxf(sample().snapshot);
+    for (const t of ['BLOCK_RECORD', 'LTYPE', 'STYLE', 'APPID', 'DIMSTYLE', 'VPORT']) expect(text).toContain(`\r\n2\r\n${t}\r\n`);
+    expect(text).toContain('$HANDSEED');
+    expect(text).toContain('*Model_Space');
+    expect(text).toContain('\r\n2\r\nCLASSES\r\n');
+    expect(text).toContain('\r\n2\r\nOBJECTS\r\n');
+    // every block entity's owner must be a BLOCK_RECORD handle, never the model-space handle
+    const blocksSection = text.slice(text.indexOf('\r\n2\r\nBLOCKS\r\n'), text.indexOf('\r\n2\r\nENTITIES\r\n'));
+    expect(/\r\n330\r\n1F\r\n/.test(blocksSection.slice(blocksSection.indexOf('HPB11_NO')))).toBe(false);
+  });
+
+  it('parses MTEXT with attachment and direction vector', () => {
+    const dxf = ['0', 'SECTION', '2', 'ENTITIES', '0', 'MTEXT', '8', '0', '10', '5', '20', '6', '40', '0.2', '71', '1', '11', '0.7071', '21', '0.7071', '1', '{\\fArial;Hello}\\PWorld', '0', 'ENDSEC', '0', 'EOF'].join('\n');
+    const s = readDxf(dxf);
+    const t = s.entities[0]!;
+    expect(t.type).toBe('text');
+    if (t.type === 'text') {
+      expect(t.text).toBe('Hello World');
+      expect(t.rotation).toBeCloseTo(Math.PI / 4, 3);
+      expect(t.align).toBe('left');
+      // top-left attachment: baseline is one text height below the corner, along the rotated up-vector
+      expect(t.position.x).toBeCloseTo(5 + Math.sin(Math.PI / 4) * 0.2, 3);
+      expect(t.position.y).toBeCloseTo(6 - Math.cos(Math.PI / 4) * 0.2, 3);
+    }
+  });
+
+  it('honours invisible attributes, frozen/off layers and bulges', () => {
+    const dxf = [
+      '0', 'SECTION', '2', 'TABLES', '0', 'TABLE', '2', 'LAYER', '0', 'LAYER', '2', 'HID', '70', '1', '62', '3', '0', 'LAYER', '2', 'OFF', '70', '0', '62', '-3', '0', 'ENDTAB', '0', 'ENDSEC',
+      '0', 'SECTION', '2', 'BLOCKS', '0', 'BLOCK', '2', 'B', '10', '0', '20', '0', '0', 'ATTDEF', '8', '0', '10', '0', '20', '0', '40', '0.1', '1', 'x', '3', 'p', '2', 'SECRET', '70', '1', '0', 'ENDBLK', '0', 'ENDSEC',
+      '0', 'SECTION', '2', 'ENTITIES',
+      '0', 'INSERT', '8', '0', '66', '1', '2', 'B', '10', '1', '20', '1', '0', 'ATTRIB', '8', '0', '10', '1', '20', '1', '40', '0.1', '1', 'hidden value', '2', 'SECRET', '70', '1', '0', 'SEQEND',
+      '0', 'LWPOLYLINE', '8', '0', '90', '2', '70', '0', '10', '0', '20', '0', '42', '1', '10', '2', '20', '0',
+      '0', 'ENDSEC', '0', 'EOF',
+    ].join('\n');
+    const s = readDxf(dxf);
+    expect(s.layers.find((l) => l.name === 'HID')?.visible).toBe(false);
+    expect(s.layers.find((l) => l.name === 'OFF')?.visible).toBe(false);
+    expect(s.blocks.B!.attributes[0]!.invisible).toBe(true);
+    const ins = s.entities.find((e) => e.type === 'insert');
+    if (ins?.type === 'insert') expect(ins.attributes.SECRET).toBe('hidden value');
+    const pl = s.entities.find((e) => e.type === 'polyline');
+    if (pl?.type === 'polyline') {
+      expect(pl.points.length).toBeGreaterThan(5); // semicircle tessellated
+      // positive bulge = counter-clockwise from (0,0) to (2,0): the arc passes below the chord
+      const bottom = Math.min(...pl.points.map((p) => p.y));
+      expect(bottom).toBeCloseTo(-1, 1);
+    }
+    // the invisible attribute must round-trip as invisible
+    const again = readDxf(writeDxf(s));
+    expect(again.blocks.B!.attributes[0]!.invisible).toBe(true);
+  });
+
+  it('round-trips a filled wire dot as a donut', () => {
+    const d = new Drawing();
+    d.addEntities([{ id: 'dot', layer: 'WIRES', color: 'ByLayer', type: 'circle', center: { x: 3, y: 4 }, radius: 0.035, filled: true }]);
+    const text = writeDxf(d.snapshot);
+    expect(text).toContain('LWPOLYLINE');
+    const back = readDxf(text);
+    const c = back.entities[0]!;
+    expect(c.type).toBe('circle');
+    if (c.type === 'circle') {
+      expect(c.filled).toBe(true);
+      expect(c.center.x).toBeCloseTo(3);
+      expect(c.radius).toBeCloseTo(0.035);
+    }
+  });
+
+  const fixture = join(__dirname, '..', 'fixtures', 'example_2000.dxf');
+  it.skipIf(!existsSync(fixture))('reads the LibreDWG example_2000.dxf fixture', () => {
+    const s = readDxf(readFileSync(fixture, 'utf8'));
+    expect(s.entities.length).toBeGreaterThan(30);
+    expect(s.layers.length).toBeGreaterThanOrEqual(5);
+    expect(Object.keys(s.blocks).length).toBeGreaterThanOrEqual(2);
+    for (const e of s.entities) if (e.type === 'insert') expect(s.blocks[e.block]).toBeDefined();
   });
 });

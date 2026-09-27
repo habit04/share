@@ -10,8 +10,12 @@ import type { Tool, ToolContext, LadderSettings } from '../tools/types';
 import { LineTool, PolylineTool, CircleTool, ArcTool, RectangleTool, TextTool } from '../tools/draw';
 import { EraseTool, MoveTool, CopyTool, RotateTool, DistTool } from '../tools/modify';
 import { WireTool, LadderTool, ComponentTool, assignWireNumbers } from '../tools/electrical';
+import { TrimTool, ExtendTool, OffsetTool, MirrorTool, ScaleTool, ExplodeTool, ZoomWindowTool } from '../tools/edit';
+import { lineweightDisplay } from '../render/draw';
 import { ALL_SYMBOLS } from '../electrical/symbols';
 import { readDxf, writeDxf } from '../io/dxf';
+import { parsePointInput, isPlainNumber } from './input';
+import { convertDwg, type DwgImportPayload } from '../io/dwg';
 
 export type EditorEvent = 'change' | 'selection' | 'tool' | 'view' | 'snap' | 'file' | 'log';
 
@@ -28,8 +32,14 @@ interface SelectionRequest {
   ids: Set<string>;
 }
 
+export type OpenResult =
+  | { path: string; kind: 'dxf'; text: string }
+  | { path: string; kind: 'dwg'; payload: DwgImportPayload; version?: string };
+
 export interface FileBridge {
   openDxf(): Promise<{ path: string; text: string } | null>;
+  /** Desktop only: open DXF or DWG (DWG parsed by LibreDWG in the main process). */
+  openDrawing?(file?: string): Promise<OpenResult | null>;
   saveDxf(path: string | null, text: string, suggestName: string): Promise<string | null>;
 }
 
@@ -43,6 +53,8 @@ export class Editor {
   tool: Tool | null = null;
   toolName = '';
   lastCommand = '';
+  /** Full command line (with arguments) for Enter-to-repeat. */
+  lastCommandLine = '';
   lastPoint: Point | null = null;
   history: string[] = [];
   prompt = 'Type a command';
@@ -57,6 +69,7 @@ export class Editor {
     cursor: null,
     trackFrom: null,
     dynText: [],
+    cursorMode: 'idle',
   };
   private listeners: Record<EditorEvent, Set<() => void>> = {
     change: new Set(),
@@ -157,7 +170,7 @@ export class Editor {
         ed.render();
       },
       setDynText: (lines) => {
-        ed.overlay.dynText = lines;
+        ed.overlay.dynText = ed.dynamicInput ? lines : [];
         ed.render();
       },
       finish: () => ed.finishTool(),
@@ -165,6 +178,7 @@ export class Editor {
       ui: ed.ui ?? fallbackUi,
       requestSelection: (prompt, onDone) => {
         ed.selReq = { prompt, onDone, ids: new Set() };
+        ed.updateCursorMode();
         ed.setPrompt(prompt);
       },
     };
@@ -178,6 +192,7 @@ export class Editor {
     this.lastCommand = tool.name;
     this.log(`Command: ${tool.name}`);
     tool.start(this.makeContext());
+    this.updateCursorMode();
     this.emit('tool');
     this.render();
   }
@@ -187,6 +202,7 @@ export class Editor {
     this.toolName = '';
     this.selReq = null;
     this.clearOverlay();
+    this.updateCursorMode();
     this.setPrompt('Type a command');
     this.emit('tool');
     this.render();
@@ -217,8 +233,18 @@ export class Editor {
     this.overlay.trackFrom = null;
     this.overlay.dynText = [];
     this.overlay.selectionBox = null;
+    this.overlay.hover = null;
     this.dragStart = null;
     this.dragWorld = null;
+  }
+
+  /** Whether typed input should be treated as literal text (TEXT command content). */
+  acceptsFreeText(): boolean {
+    return this.tool?.acceptsFreeText?.() ?? false;
+  }
+
+  private updateCursorMode(): void {
+    this.overlay.cursorMode = this.selReq ? 'select' : this.tool ? 'point' : 'idle';
   }
 
   // ------------------------------------------------------------- commands
@@ -242,6 +268,31 @@ export class Editor {
     reg('COPY', ['CO', 'CP'], 'Copy objects', (ed) => ed.startTool(new CopyTool()));
     reg('ROTATE', ['RO'], 'Rotate objects', (ed) => ed.startTool(new RotateTool()));
     reg('DIST', ['DI'], 'Measure distance', (ed) => ed.startTool(new DistTool()));
+    reg('TRIM', ['TR'], 'Trim objects at cutting edges', (ed) => ed.startTool(new TrimTool()));
+    reg('EXTEND', ['EX'], 'Extend lines to boundary edges', (ed) => ed.startTool(new ExtendTool()));
+    reg('OFFSET', ['O'], 'Offset lines, arcs, circles, polylines', (ed) => ed.startTool(new OffsetTool()));
+    reg('MIRROR', ['MI'], 'Mirror objects about a line', (ed) => ed.startTool(new MirrorTool()));
+    reg('SCALE', ['SC'], 'Scale objects about a base point', (ed) => ed.startTool(new ScaleTool()));
+    reg('EXPLODE', ['X'], 'Explode blocks and polylines', (ed) => ed.startTool(new ExplodeTool()));
+    reg('PAN', ['P'], 'Pan (hold middle mouse or drag)', (ed) => ed.log('Drag with the middle mouse button to pan; wheel zooms; double middle-click zooms extents.'));
+    reg('LWDISPLAY', ['LW'], 'Toggle lineweight display', (ed) => ed.toggle('lw'));
+    reg('DYNMODE', ['DYN', 'F12'], 'Toggle dynamic input', (ed) => ed.toggle('dyn'));
+    reg('CURSORSIZE', [], 'Crosshair size in percent of screen (5-100)', (ed, arg) => {
+      const v = parseInt(arg ?? '', 10);
+      if (Number.isFinite(v) && v >= 1 && v <= 100) {
+        ed.viewport.settings.crosshairSize = v;
+        ed.render();
+      } else ed.log(`CURSORSIZE = ${ed.viewport.settings.crosshairSize} (enter 1-100)`);
+    });
+    reg('LINE2WIRE', [], 'Convert selected lines to wires', (ed) => {
+      const lines = ed.entitiesSelected().filter((e) => e.type === 'line');
+      if (lines.length === 0) {
+        ed.log('Select lines first.');
+        return;
+      }
+      ed.doc.replaceEntities(lines.map((e) => ({ ...e, layer: 'WIRES', color: 'ByLayer' as const })));
+      ed.log(`${lines.length} line(s) converted to wires.`);
+    });
     reg('UNDO', ['U'], 'Undo last action', (ed) => {
       if (!ed.doc.undo()) ed.log('Nothing to undo.');
     });
@@ -251,9 +302,18 @@ export class Editor {
     reg('ZOOM', ['Z'], 'Zoom [Extents/All/In/Out]', (ed, arg) => {
       const a = (arg ?? 'E').toUpperCase();
       if (a.startsWith('E') || a.startsWith('A')) ed.zoomExtents();
-      else if (a.startsWith('I')) ed.viewport.zoomAt({ x: ed.viewport.width / 2, y: ed.viewport.height / 2 }, 1.5);
+      else if (a.startsWith('W')) {
+        ed.startTool(
+          new ZoomWindowTool((b) => {
+            ed.viewport.zoomToBounds(b, 0.02);
+            ed.render();
+            ed.emit('view');
+          }),
+        );
+        return;
+      } else if (a.startsWith('I')) ed.viewport.zoomAt({ x: ed.viewport.width / 2, y: ed.viewport.height / 2 }, 1.5);
       else if (a.startsWith('O')) ed.viewport.zoomAt({ x: ed.viewport.width / 2, y: ed.viewport.height / 2 }, 1 / 1.5);
-      else ed.log('Zoom options: Extents, All, In, Out');
+      else ed.log('Zoom options: Extents, All, Window, In, Out');
       ed.render();
       ed.emit('view');
     });
@@ -269,7 +329,7 @@ export class Editor {
       ed.render();
     });
     reg('NEW', ['QNEW'], 'New drawing', (ed) => ed.newDrawing());
-    reg('OPEN', [], 'Open a DXF drawing', (ed) => void ed.openFile());
+    reg('OPEN', [], 'Open a DXF or DWG drawing', (ed, arg) => void ed.openFile(arg));
     reg('SAVE', ['QSAVE'], 'Save drawing (DXF)', (ed) => void ed.saveFile(false));
     reg('SAVEAS', [], 'Save drawing as (DXF)', (ed) => void ed.saveFile(true));
     reg('LIST', ['LI'], 'List selected objects', (ed) => ed.listSelection());
@@ -309,6 +369,7 @@ export class Editor {
     }
     if (this.tool) this.cancel();
     this.lastCommand = def.name;
+    this.lastCommandLine = text;
     // Commands that are not tools still get logged
     if (!['LINE', 'PLINE', 'CIRCLE', 'ARC', 'RECTANG', 'TEXT', 'ERASE', 'MOVE', 'COPY', 'ROTATE', 'DIST', 'AEWIRE', 'AELADDER', 'AECOMPONENT'].includes(def.name))
       this.log(`Command: ${def.name}`);
@@ -335,13 +396,17 @@ export class Editor {
       return;
     }
     if (this.tool) {
+      if (this.acceptsFreeText()) {
+        this.tool.onText(raw, this.makeContext());
+        return;
+      }
       const p = this.parsePoint(text);
       if (p) {
         this.acceptPoint(p);
         return;
       }
       const num = parseFloat(text);
-      if (this.tool.acceptsDistance && /^-?\d*\.?\d+$/.test(text) && Number.isFinite(num) && this.overlay.trackFrom && this.cursorWorld) {
+      if (this.tool.acceptsDistance && isPlainNumber(text) && Number.isFinite(num) && this.overlay.trackFrom && this.cursorWorld) {
         // direct distance entry along the cursor direction
         const dir = constrainDirection(this.overlay.trackFrom, this.cursorWorld, this.snap);
         const ang = g.angleOf(this.overlay.trackFrom, dir);
@@ -358,6 +423,7 @@ export class Editor {
     if (this.selReq) {
       const req = this.selReq;
       this.selReq = null;
+      this.updateCursorMode();
       const ids = [...req.ids];
       this.setPrompt('');
       req.onDone(ids);
@@ -367,30 +433,12 @@ export class Editor {
       this.tool.onEnter(this.makeContext());
       return;
     }
-    if (this.lastCommand) this.runCommand(this.lastCommand);
+    if (this.lastCommandLine) this.runCommand(this.lastCommandLine);
   }
 
   /** Parse absolute "x,y", relative "@dx,dy" and polar "@d<a" input. */
   parsePoint(text: string): Point | null {
-    const t = text.replace(/\s+/g, '');
-    const rel = t.startsWith('@');
-    const body = rel ? t.slice(1) : t;
-    const base = this.lastPoint ?? { x: 0, y: 0 };
-    let m = /^(-?[\d.]+)<(-?[\d.]+)$/.exec(body);
-    if (m) {
-      const d = parseFloat(m[1]!);
-      const a = g.rad(parseFloat(m[2]!));
-      if (!Number.isFinite(d) || !Number.isFinite(a)) return null;
-      return g.polar(rel ? base : { x: 0, y: 0 }, a, d);
-    }
-    m = /^(-?[\d.]+),(-?[\d.]+)$/.exec(body);
-    if (m) {
-      const x = parseFloat(m[1]!);
-      const y = parseFloat(m[2]!);
-      if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
-      return rel ? { x: base.x + x, y: base.y + y } : { x, y };
-    }
-    return null;
+    return parsePointInput(text, this.lastPoint ?? { x: 0, y: 0 });
   }
 
   private acceptPoint(p: Point): void {
@@ -399,8 +447,12 @@ export class Editor {
     this.emit('tool');
   }
 
-  toggle(name: 'grid' | 'gridSnap' | 'ortho' | 'polar' | 'osnap'): void {
+  dynamicInput = true;
+
+  toggle(name: 'grid' | 'gridSnap' | 'ortho' | 'polar' | 'osnap' | 'lw' | 'dyn'): void {
     if (name === 'grid') this.viewport.settings.gridVisible = !this.viewport.settings.gridVisible;
+    else if (name === 'lw') lineweightDisplay.enabled = !lineweightDisplay.enabled;
+    else if (name === 'dyn') this.dynamicInput = !this.dynamicInput;
     else if (name === 'ortho') {
       this.snap.ortho = !this.snap.ortho;
       if (this.snap.ortho) this.snap.polar = false;
@@ -408,7 +460,8 @@ export class Editor {
       this.snap.polar = !this.snap.polar;
       if (this.snap.polar) this.snap.ortho = false;
     } else this.snap[name] = !this.snap[name];
-    const state = name === 'grid' ? this.viewport.settings.gridVisible : this.snap[name];
+    const state =
+      name === 'grid' ? this.viewport.settings.gridVisible : name === 'lw' ? lineweightDisplay.enabled : name === 'dyn' ? this.dynamicInput : this.snap[name];
     this.log(`<${name.toUpperCase()} ${state ? 'on' : 'off'}>`);
     this.emit('snap');
     this.render();
@@ -451,7 +504,19 @@ export class Editor {
   }
 
   // ------------------------------------------------------------- files
+  private async confirmDiscard(): Promise<boolean> {
+    if (!this.doc.dirty) return true;
+    const ui = this.ui ?? fallbackUi;
+    return ui.confirm('Unsaved changes', `${this.fileName()} has unsaved changes. Discard them?`);
+  }
+
   newDrawing(): void {
+    void this.confirmDiscard().then((ok) => {
+      if (ok) this.newDrawingNow();
+    });
+  }
+
+  newDrawingNow(): void {
     const fresh = new Drawing();
     this.doc.load(fresh.snapshot, null);
     this.doc.ensureBlocks(ALL_SYMBOLS);
@@ -472,19 +537,42 @@ export class Editor {
     this.emit('selection');
   }
 
-  async openFile(): Promise<void> {
+  async openFile(file?: string): Promise<void> {
     if (!this.fileBridge) {
       this.log('No file access in this environment.');
       return;
     }
-    const res = await this.fileBridge.openDxf();
-    if (!res) return;
+    if (!(await this.confirmDiscard())) return;
     try {
+      if (this.fileBridge.openDrawing) {
+        this.log(file ? `Opening ${file} ...` : 'Opening ...');
+        const res = await this.fileBridge.openDrawing(file);
+        if (!res) return;
+        if (res.kind === 'dwg') {
+          const { state, skipped } = convertDwg(res.payload);
+          // DWG is read-only for us; saving goes to a sibling .dxf so the original is never overwritten.
+          this.loadState(state, res.path.replace(/\.dwg$/i, '.dxf'));
+          this.doc.dirty = true;
+          const skippedText = Object.keys(skipped).length
+            ? ` Skipped unsupported: ${Object.entries(skipped).map(([k, v]) => `${k}×${v}`).join(', ')}.`
+            : '';
+          this.log(`Imported DWG ${res.path} (${res.version || 'unknown version'}): ${state.entities.length} entities, ${state.layers.length} layers, ${Object.keys(state.blocks).length} blocks.${skippedText}`);
+          this.log('DWG import is read-only; use SAVE to write a DXF copy next to the original.');
+          this.emit('file');
+          return;
+        }
+        const state = readDxf(res.text);
+        this.loadState(state, res.path);
+        this.log(`Opened ${res.path}: ${state.entities.length} entities, ${state.layers.length} layers, ${Object.keys(state.blocks).length} blocks.`);
+        return;
+      }
+      const res = await this.fileBridge.openDxf();
+      if (!res) return;
       const state = readDxf(res.text);
       this.loadState(state, res.path);
       this.log(`Opened ${res.path}: ${state.entities.length} entities, ${state.layers.length} layers, ${Object.keys(state.blocks).length} blocks.`);
     } catch (err) {
-      this.log(`Failed to read DXF: ${(err as Error).message}`);
+      this.log(`Failed to open drawing: ${(err as Error).message}`);
     }
   }
 
@@ -696,6 +784,10 @@ export class Editor {
     if (ev.ctrlKey || ev.metaKey) {
       const k = key.toLowerCase();
       if (k === 'z') {
+        if (!ev.shiftKey && this.tool && (this.tool.name === 'LINE' || this.tool.name === 'PLINE' || this.tool.name === 'AEWIRE')) {
+          this.tool.onText('U', this.makeContext()); // stay in the command, undo the last segment
+          return true;
+        }
         this.runCommand(ev.shiftKey ? 'REDO' : 'UNDO');
         return true;
       }
@@ -743,4 +835,5 @@ const fallbackUi: ToolContext['ui'] = {
   editComponent: async (init) => ({ tag: init.tag, desc: init.desc }),
   ladderSettings: async (init: LadderSettings) => init,
   textInput: async (_t, _l, init) => init,
+  confirm: async () => true,
 };

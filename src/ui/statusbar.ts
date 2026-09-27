@@ -1,5 +1,6 @@
 import type { Editor } from '../app/editor';
 import { icon } from './icons';
+import { lineweightDisplay } from '../render/draw';
 
 interface ToggleDef {
   key: string;
@@ -16,7 +17,8 @@ const TOGGLES: ToggleDef[] = [
   { key: 'polar', icon: 'polar', title: 'Polar tracking (F10)', isOn: (e) => e.snap.polar, toggle: (e) => e.toggle('polar') },
   { key: 'osnap', icon: 'osnap', title: 'Object snap (F3)', isOn: (e) => e.snap.osnap, toggle: (e) => e.toggle('osnap') },
   { key: 'otrack', icon: 'otrack', title: 'Object snap tracking (F11)', isOn: () => false, toggle: () => {} },
-  { key: 'lw', icon: 'lw', title: 'Show/hide lineweight', isOn: () => true, toggle: () => {} },
+  { key: 'dyn', icon: 'dyn', title: 'Dynamic input (F12)', isOn: (e) => e.dynamicInput, toggle: (e) => e.toggle('dyn') },
+  { key: 'lw', icon: 'lw', title: 'Show/hide lineweight (LWDISPLAY)', isOn: () => lineweightDisplay.enabled, toggle: (e) => e.toggle('lw') },
 ];
 
 export class StatusBar {
@@ -59,6 +61,8 @@ export class StatusBar {
 
     this.scaleEl = document.createElement('div');
     this.scaleEl.className = 'status-text';
+    this.scaleEl.innerHTML = `<span>1:1</span>${icon('chevron')}`;
+    this.scaleEl.title = 'Annotation scale';
     this.el.appendChild(this.scaleEl);
 
     const ws = document.createElement('div');
@@ -72,6 +76,12 @@ export class StatusBar {
     units.textContent = 'Decimal · in';
     this.el.appendChild(units);
 
+    const customize = document.createElement('button');
+    customize.className = 'status-btn';
+    customize.innerHTML = icon('menu');
+    customize.title = 'Customization';
+    this.el.appendChild(customize);
+
     editor.on('view', () => this.refreshCoords());
     editor.on('snap', () => this.refresh());
     this.refresh();
@@ -80,8 +90,6 @@ export class StatusBar {
   private refreshCoords(): void {
     const p = this.editor.cursorPosition();
     if (p) this.coordsEl.textContent = `${p.x.toFixed(4)}, ${p.y.toFixed(4)}, 0.0000`;
-    const s = this.editor.viewport.scale;
-    this.scaleEl.textContent = `1:${(96 / s).toFixed(2)}`;
   }
 
   refresh(): void {

@@ -343,6 +343,10 @@ export class TextTool implements Tool {
     if (!this.pos) ctx.setDynText([fmt(p)]);
   }
 
+  acceptsFreeText(): boolean {
+    return this.pos !== null;
+  }
+
   onText(text: string, ctx: ToolContext): void {
     if (!this.pos) {
       ctx.log('Specify a start point first.');
