@@ -64,7 +64,28 @@ keywords shown in `[brackets]` are clickable.
 | AEREPORT [bom/components/wires/terminals/audit] | REPORT, BOM | Reports with CSV export |
 | NEWSHEET | TEMPLATE | New drawing from an ANSI / ISO sheet template with title block |
 | OPENPROJECT, PROJECTADD, PROJECTSAVE | PROJECT | Project files (`*.jacproj.json`) listing drawings |
-| NEW, OPEN, SAVE, SAVEAS, PLOT, RECENT | Ctrl+N / O / S / Shift+S | Files: DXF and DWG open, DXF save, PDF plot |
+| NEW, OPEN, SAVE, SAVEAS, PLOT, RECENT | Ctrl+N / O / S / Shift+S / P | Files: DXF and DWG open, DXF save, PDF plot. NEW / OPEN work in file tabs |
+| CLOSE, CLOSEALL, CLOSEALLOTHER, NEXTTAB, PREVTAB | Ctrl+W, Ctrl+Tab | Drawing tabs (several open documents) |
+| OPTIONS | OP | Options dialog: Display, Drafting, Selection, Files (autosave), Units — applied live |
+| DSETTINGS | DS, SE | Drafting Settings: Snap and Grid, Polar Tracking, Object Snap modes, Dynamic Input |
+| LAYISO, LAYUNISO, LAYOFF, LAYON, LAYFRZ, LAYTHW, LAYLCK, LAYULK, LAYMCUR, LAYMCH, LAYCUR, CLAYER | | Layer tools behind the Home > Layers ribbon panel |
+| COLOR, LINETYPE, LWEIGHT | CECOLOR, LT, LW | Current colour / linetype / lineweight (Home > Properties panel; colour applies to a selection) |
+| QPMODE, TOOLPALETTES, WORKSPACE, ANNOSCALE, CLEANSCREEN, COMMANDLINE | QP, Ctrl+3, Ctrl+0, Ctrl+9 | Quick Properties, Tool Palettes window, workspace switch, annotation scale, clean screen, command window |
+| HELP, TEXTSCR | F1, F2 | Searchable command reference + keyboard shortcuts; text window with the history |
+| COPYCLIP, CUTCLIP, PASTECLIP | Ctrl+C / X / V | In-application object clipboard |
+| AUTOSAVE | | Write autosave files now (a timer does this every N minutes; see Options > Files) |
+
+**Command line:** an AutoComplete list opens as you type (prefix and mid-string matches, recently used
+first, with the description and aliases); Tab / arrows cycle, Enter or Space accepts. Right-click on the
+canvas offers Repeat, Recent Input, Clipboard and Isolate flyouts. The red **J** button opens the
+application menu (New / Open / Save / Export / Plot / Recent Documents / Options / Exit).
+
+**Workspace:** file tabs hold several drawings (Ctrl+Tab cycles, middle-click closes, hover shows a
+thumbnail); the Project Manager and Properties palettes can be resized by dragging their inner edge
+and auto-hidden with the pin in their strip (widths are remembered). The status bar buttons have
+settings menus (small arrow / right-click), the coordinate readout cycles absolute / relative / off,
+and the customization button shows or hides items. Autosave writes modified drawings to the app data
+folder every 10 minutes (Options > Files); the Drawing Recovery Manager offers them at the next start.
 
 Mouse: wheel zooms at the cursor, middle-drag pans, double middle-click zooms extents.
 Click picks; drag left-to-right is a window selection (blue), right-to-left is crossing (green);
@@ -92,7 +113,8 @@ src/io          DXF reader / writer, DWG converter (LibreDWG database -> drawing
 src/render      ACI palette, entity drawing, Hershey stroke font, viewport (grid, crosshair, grips, markers)
 src/tools       drawing, modify, edit (trim/extend/offset/...), electrical and PLC/arrow/terminal tools
 src/app         Editor controller, coordinate input parsing, settings, project model, demo seed
-src/ui          ribbon, command window, status bar, palettes (project manager, properties), dialogs, chrome
+src/ui          ribbon, command window (+ autocomplete), status bar, palettes (project manager, properties,
+                tool palettes), dialogs (options, drafting settings, help, recovery), menus, chrome
 src/electrical  JIC and IEC symbol libraries, cross-referencing, reports, sheet templates
 scripts         DWG reader (Node / Electron main), dwg2dxf CLI, screenshot capture
 ```

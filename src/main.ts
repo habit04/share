@@ -1,6 +1,7 @@
 import './styles/app.css';
+import './styles/parity.css';
 import { Editor, type FileBridge } from './app/editor';
-import { Ribbon } from './ui/ribbon';
+import { Ribbon, ELECTRICAL_TABS } from './ui/ribbon';
 import { CommandLine } from './ui/commandline';
 import { StatusBar } from './ui/statusbar';
 import { ProjectManager } from './ui/projectmanager';
@@ -9,6 +10,18 @@ import { PropertiesPalette } from './ui/properties';
 import { saveSettings } from './app/settings';
 import { buildTitleBar, buildFileTabs, buildLayoutTabs, installContextMenu, buildNavBar } from './ui/chrome';
 import { seedDemoDrawing } from './app/demo';
+import { optionsDialog, applyUiSettings, updateSettings } from './ui/options';
+import { draftingSettingsDialog } from './ui/dsettings';
+import { registerLayerCommands, buildLayerPanelContent, buildPropertiesPanelContent } from './ui/layerpanel';
+import { QuickProperties, installRolloverTooltips } from './ui/quickprops';
+import { makePaletteResizable, installAutoHide } from './ui/palettes';
+import { ToolPalettes } from './ui/toolpalettes';
+import { helpDialog, textWindowDialog } from './ui/help';
+import { Autosaver, bridgeAutosaveStore, localAutosaveStore, type AutosaveBridge } from './app/autosave';
+import { recoveryDialog } from './ui/recovery';
+import { showAppMenu } from './ui/appmenu';
+import { EntityClipboard } from './ui/clipboard';
+import { closeMenus } from './ui/menu';
 
 declare global {
   interface Window {
@@ -21,8 +34,10 @@ declare global {
       saveDxf(path: string | null, text: string, suggestName: string): Promise<string | null>;
       onMenuCommand(cb: (cmd: string) => void): void;
       onQueryDirty(cb: () => boolean): void;
+      setRecentFiles?(files: string[]): void;
+      quit?(): void;
       platform: string;
-    };
+    } & Partial<AutosaveBridge>;
   }
 }
 
@@ -84,6 +99,7 @@ function boot(): void {
     <div id="statusbar"></div>`;
 
   const canvas = document.getElementById('drawing') as HTMLCanvasElement;
+  const canvasWrap = canvas.parentElement as HTMLElement;
   const editor = new Editor(canvas);
   editor.fileBridge = window.jautocad ?? browserFileBridge();
   editor.ui = {
@@ -98,28 +114,113 @@ function boot(): void {
     confirm: (t, m) => confirmDialog(t, m),
   };
   editor.layerDialogRequested = () => layerDialog(editor);
-  editor.register({
-    name: 'TOGGLEPM',
-    aliases: [],
-    description: 'Toggle Project Manager palette',
-    run: () => {
-      pm.toggle();
-      editor.settings = { ...editor.settings, projectManagerVisible: !pm.el.classList.contains('hidden') };
-      saveSettings(editor.settings);
-    },
+  applyUiSettings(editor);
+
+  // ------------------------------------------------------------ commands owned by the UI layer
+  const reg = (name: string, aliases: string[], description: string, run: (ed: Editor, arg?: string) => void) => editor.register({ name, aliases, description, run });
+  reg('TOGGLEPM', [], 'Toggle Project Manager palette', () => {
+    pm.toggle();
+    editor.settings = { ...editor.settings, projectManagerVisible: !pm.el.classList.contains('hidden') };
+    saveSettings(editor.settings);
   });
+  registerLayerCommands(editor);
+
+  // Multi-document: NEW / OPEN / NEWSHEET / RECENT work with file tabs.
+  const origOpen = editor.commands.get('OPEN')!;
+  const origNewSheet = editor.commands.get('NEWSHEET')!;
+  reg('NEW', ['QNEW'], 'New drawing (opens a new file tab)', (ed) => {
+    ed.sessions.add();
+    ed.log('New drawing.');
+  });
+  reg('OPEN', [], 'Open a DXF or DWG drawing in a new tab', (ed, arg) => void ed.sessions.openInTab(arg, (f) => ed.openFile(f)));
+  reg('NEWSHEET', ['TEMPLATE'], 'New drawing from a sheet template (new tab)', (ed, arg) => {
+    ed.sessions.add();
+    origNewSheet.run(ed, arg);
+  });
+  reg('RECENT', [], 'Open a recent file by index', (ed, arg) => {
+    const i = parseInt(arg ?? '1', 10) - 1;
+    const f = ed.settings.recentFiles[i];
+    if (!f) return ed.settings.recentFiles.forEach((r, k) => ed.log(`  ${k + 1}. ${r}`));
+    if (f.endsWith('.json')) void ed.openProject(f);
+    else void ed.sessions.openInTab(f, (x) => origOpen.run(ed, x) as unknown as Promise<void>);
+  });
+  const closeTab = async (i: number): Promise<boolean> => {
+    if (editor.sessions.isDirty(i)) {
+      const ok = await confirmDialog('Unsaved changes', `${editor.sessions.titleOf(i)} has unsaved changes. Discard them?`);
+      if (!ok) return false;
+    }
+    void autosaver.discardFor(editor.sessions.all[i]!.id);
+    editor.sessions.close(i);
+    return true;
+  };
+  reg('CLOSE', [], 'Close the current drawing tab', (ed) => void closeTab(ed.sessions.active));
+  reg('CLOSEALL', [], 'Close all drawing tabs', async (ed) => {
+    for (let i = ed.sessions.count - 1; i >= 0; i -= 1) if (!(await closeTab(i))) break;
+  });
+  reg('CLOSEALLOTHER', [], 'Close all other drawing tabs', async (ed) => {
+    const keep = ed.sessions.all[ed.sessions.active]!.id;
+    for (let i = ed.sessions.count - 1; i >= 0; i -= 1) {
+      if (ed.sessions.all[i]!.id === keep) continue;
+      if (!(await closeTab(i))) break;
+    }
+  });
+  reg('NEXTTAB', [], 'Switch to the next drawing tab (Ctrl+Tab)', (ed) => ed.sessions.cycle(1));
+  reg('PREVTAB', [], 'Switch to the previous drawing tab (Ctrl+Shift+Tab)', (ed) => ed.sessions.cycle(-1));
+
+  reg('OPTIONS', ['OP', 'CONFIG'], 'Options dialog (Display, Drafting, Selection, Files, Units)', (ed, arg) => optionsDialog(ed, parseInt(arg ?? '0', 10) || 0));
+  reg('DSETTINGS', ['DS', 'SE', 'DDRMODES'], 'Drafting Settings (Snap and Grid, Polar, Object Snap, Dynamic Input)', (ed, arg) => draftingSettingsDialog(ed, parseInt(arg ?? '0', 10) || 0));
+  reg('HELP', ['?', 'F1'], 'Help: searchable command reference and keyboard shortcuts', (ed, arg) => helpDialog(ed, arg ?? ''));
+  reg('TEXTSCR', ['F2', 'TEXTWINDOW'], 'Text window with the command history', (ed) => textWindowDialog(ed));
+  reg('COMMANDLINE', [], 'Show the command window (Ctrl+9)', () => setCommandWindow(true));
+  reg('COMMANDLINEHIDE', [], 'Hide the command window (Ctrl+9)', () => setCommandWindow(false));
+  reg('CLEANSCREEN', ['CLEANSCREENON', 'CLEANSCREENOFF'], 'Toggle clean screen (Ctrl+0)', () => {
+    app.classList.toggle('clean-screen');
+    editor.resize();
+  });
+  reg('QPMODE', ['QP'], 'Toggle Quick Properties panel on selection', (ed) => {
+    updateSettings(ed, { quickProperties: !ed.settings.quickProperties });
+    ed.log(`<Quick Properties ${ed.settings.quickProperties ? 'on' : 'off'}>`);
+    qp.render();
+  });
+  reg('TOOLPALETTES', ['TP', 'TOOLPALETTESCLOSE'], 'Toggle the Tool Palettes window (Ctrl+3)', () => tp.toggle());
+  reg('WORKSPACE', ['WSCURRENT'], 'Switch workspace [drafting/electrical]', (ed, arg) => {
+    const ws = (arg ?? '').toLowerCase().startsWith('d') ? 'drafting' : (arg ?? '').toLowerCase().startsWith('e') ? 'electrical' : null;
+    if (!ws) return ed.log(`Workspace: ${ed.settings.workspace}. Options: drafting, electrical.`);
+    updateSettings(ed, { workspace: ws });
+    ribbon.refresh();
+    ed.log(`Workspace: ${ws === 'drafting' ? 'Drafting & Annotation' : 'ACADE & 2D Drafting'}.`);
+  });
+  reg('ANNOSCALE', ['CANNOSCALE'], 'Set the annotation scale (e.g. 1:50)', (ed, arg) => {
+    const v = (arg ?? '').trim();
+    if (!/^\d+(\.\d+)?:\d+(\.\d+)?$/.test(v)) return ed.log(`Annotation scale: ${ed.settings.annotationScale}`);
+    updateSettings(ed, { annotationScale: v });
+  });
+  reg('COPYCLIP', [], 'Copy selected objects to the clipboard (Ctrl+C)', () => clipboard.copy());
+  reg('CUTCLIP', [], 'Cut selected objects to the clipboard (Ctrl+X)', () => clipboard.cut());
+  reg('PASTECLIP', [], 'Paste objects from the clipboard at the cursor (Ctrl+V)', () => clipboard.paste());
+  reg('AUTOSAVE', [], 'Write autosave files now', () => void autosaver.runNow().then((n) => editor.log(`${n} drawing(s) autosaved.`)));
+  reg('PURGE', [], 'Purge unused layers (not available: layers cannot be removed yet)', (ed) => ed.log('PURGE is not available in this version.'));
+
   editor.hooks = {
     reports: (key) => reportsDialog(editor, key, (name, csv) => editor.fileBridge?.saveText?.(name, csv, 'CSV', 'csv') ?? browserDownload(name, csv)),
     template: () => templateDialog(),
     plc: (init) => plcDialog(init),
     terminalStrip: (init) => terminalStripDialog(init),
     wireType: (cur) => wireTypeDialog(editor, cur),
-    properties: () => props.toggle(),
+    properties: () => {
+      props.toggle();
+      editor.settings = { ...editor.settings, propertiesVisible: !props.el.classList.contains('hidden') };
+      saveSettings(editor.settings);
+    },
     projectChanged: () => pm.refresh(),
   };
 
-  buildTitleBar(editor, document.getElementById('titlebar')!);
+  // ------------------------------------------------------------ chrome
+  buildTitleBar(editor, document.getElementById('titlebar')!, (anchor) => showAppMenu(editor, anchor, { exit: () => (window.jautocad?.quit ? window.jautocad.quit() : window.close()) }));
   const ribbon = new Ribbon(editor, document.getElementById('ribbon')!);
+  ribbon.customPanelContent.set('Home/Layers', buildLayerPanelContent(editor));
+  ribbon.extraPanels.push({ tab: 'Home', after: 'Layers', title: 'Properties', el: buildPropertiesPanelContent(editor) });
+  ribbon.tabFilter = (name) => editor.settings.workspace === 'electrical' || !ELECTRICAL_TABS.includes(name);
   ribbon.setActive(editor.settings.ribbonTab);
   ribbon.onTabChange = (i) => {
     editor.settings = { ...editor.settings, ribbonTab: i };
@@ -127,17 +228,54 @@ function boot(): void {
   };
   const pm = new ProjectManager(editor, document.getElementById('project-manager')!);
   if (!editor.settings.projectManagerVisible) pm.el.classList.add('hidden');
+  makePaletteResizable(pm.el, { edge: 'right', initial: editor.settings.paletteWidths.projectManager, onWidth: (w) => updateSettings(editor, { paletteWidths: { ...editor.settings.paletteWidths, projectManager: Math.round(w) } }) });
+  installAutoHide(pm.el, { initial: editor.settings.paletteAutoHide.projectManager, onChange: (a) => updateSettings(editor, { paletteAutoHide: { ...editor.settings.paletteAutoHide, projectManager: a } }) });
   const props = new PropertiesPalette(editor, document.getElementById('properties')!);
+  makePaletteResizable(props.el, { edge: 'left', initial: editor.settings.paletteWidths.properties, onWidth: (w) => updateSettings(editor, { paletteWidths: { ...editor.settings.paletteWidths, properties: Math.round(w) } }) });
+  installAutoHide(props.el, { initial: editor.settings.paletteAutoHide.properties, onChange: (a) => updateSettings(editor, { paletteAutoHide: { ...editor.settings.paletteAutoHide, properties: a } }) });
+  if (editor.settings.propertiesVisible) props.toggle();
   buildFileTabs(editor, document.getElementById('file-tabs')!);
   buildLayoutTabs(editor, document.getElementById('layout-tabs')!);
-  const cmd = new CommandLine(editor, document.getElementById('command-window')!);
+  const cmdEl = document.getElementById('command-window')!;
+  const cmd = new CommandLine(editor, cmdEl, editor.settings.recentInput);
+  cmd.onRecentChanged = (recent) => {
+    editor.settings = { ...editor.settings, recentInput: [...recent] };
+    saveSettings(editor.settings);
+  };
+  const setCommandWindow = (visible: boolean) => {
+    cmdEl.classList.toggle('hidden', !visible);
+    if (editor.settings.commandWindowVisible !== visible) {
+      editor.settings = { ...editor.settings, commandWindowVisible: visible };
+      saveSettings(editor.settings);
+    }
+    editor.resize();
+  };
+  setCommandWindow(editor.settings.commandWindowVisible);
   new StatusBar(editor, document.getElementById('statusbar')!);
-  installContextMenu(editor, canvas);
+  const clipboard = new EntityClipboard(editor);
+  installContextMenu(editor, canvas, { recentInput: () => cmd.recentInput(), runInput: (t) => cmd.setText(t, true), clipboard });
   buildNavBar(editor, document.getElementById('navbar')!);
+  const qp = new QuickProperties(editor, canvasWrap);
+  installRolloverTooltips(editor, canvas, canvasWrap);
+  const tp = new ToolPalettes(editor, canvasWrap);
 
-  // Mouse
+  // ------------------------------------------------------------ autosave + recovery
+  const bridge = window.jautocad;
+  const store = bridge?.autosaveWrite && bridge.autosaveList && bridge.autosaveRead && bridge.autosaveRemove ? bridgeAutosaveStore(bridge as AutosaveBridge) : localAutosaveStore(localStorage);
+  const autosaver = new Autosaver(editor.sessions, store, () => editor.settings.autosaveMinutes);
+  autosaver.onSaved = (n) => editor.log(`Autosave: ${n} drawing(s) written.`);
+  autosaver.start();
+  editor.on('snap', () => autosaver.restart()); // settings changed (interval may differ)
+  editor.on('file', () => {
+    if (!editor.doc.dirty && editor.doc.filePath) void autosaver.discardFor(editor.sessions.current.id);
+    window.jautocad?.setRecentFiles?.(editor.settings.recentFiles);
+  });
+  window.jautocad?.setRecentFiles?.(editor.settings.recentFiles);
+
+  // ------------------------------------------------------------ mouse
   canvas.addEventListener('mousemove', (ev) => editor.onMouseMove(ev));
   canvas.addEventListener('mousedown', (ev) => {
+    closeMenus();
     editor.onMouseDown(ev);
     cmd.focus();
   });
@@ -156,14 +294,31 @@ function boot(): void {
   canvas.addEventListener('wheel', (ev) => editor.onWheel(ev), { passive: false });
   canvas.addEventListener('mouseleave', () => editor.onMouseLeave());
 
-  // Keyboard: anything typed while the canvas has focus goes to the command line.
+  // ------------------------------------------------------------ keyboard
   window.addEventListener('keydown', (ev) => {
     const target = ev.target as HTMLElement;
-    const inField = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA';
+    const inField = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT';
     if (document.querySelector('.modal-backdrop')) return; // dialogs handle their own keys
     const typing = inField && (target as HTMLInputElement).value !== '';
+    const ctrl = ev.ctrlKey || ev.metaKey;
+    const k = ev.key.toLowerCase();
+    // Global chrome shortcuts (before the editor so they work everywhere).
+    if (ev.key === 'F1') return run('HELP');
+    if (ev.key === 'F2') return run('TEXTSCR');
+    if (ctrl && ev.key === 'Tab') return run(ev.shiftKey ? 'PREVTAB' : 'NEXTTAB');
+    if (ctrl && (k === 'w' || ev.key === 'F4')) return run('CLOSE');
+    if (ctrl && k === '1') return run('PROPERTIES');
+    if (ctrl && k === '3') return run('TOOLPALETTES');
+    if (ctrl && k === '9') return run(cmdEl.classList.contains('hidden') ? 'COMMANDLINE' : 'COMMANDLINEHIDE');
+    if (ctrl && k === '0') return run('CLEANSCREEN');
+    if (ctrl && k === 'p') return run('PLOT');
+    if (ctrl && !typing && !editor.tool) {
+      if (k === 'c') return run('COPYCLIP');
+      if (k === 'x') return run('CUTCLIP');
+      if (k === 'v') return run('PASTECLIP');
+    }
     // While editing typed text, Delete / Ctrl+A belong to the text field, not the drawing.
-    if (typing && (ev.key === 'Delete' || ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'a'))) return;
+    if (typing && (ev.key === 'Delete' || (ctrl && k === 'a'))) return;
     if (editor.onKeyDown(ev)) {
       ev.preventDefault();
       return;
@@ -172,9 +327,13 @@ function boot(): void {
       if (ev.key === 'Enter') {
         editor.pressEnter();
         ev.preventDefault();
-      } else if (ev.key.length === 1 && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+      } else if (ev.key.length === 1 && !ctrl && !ev.altKey) {
         cmd.focus();
       }
+    }
+    function run(command: string): void {
+      ev.preventDefault();
+      editor.runCommand(command);
     }
   });
 
@@ -186,20 +345,22 @@ function boot(): void {
   window.jautocad?.onMenuCommand((c) => editor.runCommand(c));
   // Unsaved-work guard: the browser prompt, and the Electron close handler asks via this flag.
   window.addEventListener('beforeunload', (ev) => {
-    if (editor.doc.dirty && !window.jautocad) {
+    if (editor.sessions.anyDirty() && !window.jautocad) {
       ev.preventDefault();
       ev.returnValue = '';
     }
   });
-  window.jautocad?.onQueryDirty(() => editor.doc.dirty);
+  window.jautocad?.onQueryDirty(() => editor.sessions.anyDirty());
 
   if (new URLSearchParams(location.search).has('demo')) {
     seedDemoDrawing(editor);
   }
   editor.zoomExtents();
   cmd.focus();
+  if (!new URLSearchParams(location.search).has('norecover')) void recoveryDialog(editor, store);
   // expose for automation / debugging
-  (window as unknown as { editor: Editor }).editor = editor;
+  (window as unknown as { editor: Editor; jacUi: unknown }).editor = editor;
+  (window as unknown as { jacUi: unknown }).jacUi = { ribbon, cmd, qp, tp, pm, props, clipboard, autosaver, store };
 }
 
 boot();
