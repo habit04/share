@@ -35,6 +35,14 @@ export interface ViewSettings {
   background: string;
   crosshairSize: number; // percent of screen (AutoCAD 5..100)
   pickBox: number; // px
+  // Optional appearance overrides driven by the Options dialog (defaults keep the classic look).
+  crosshairColor?: string;
+  gridStyle?: 'lines' | 'dots';
+  gripSize?: number; // half-size in px
+  gripColor?: string;
+  snapMarkerSize?: number; // px
+  snapMarkerColor?: string;
+  selectionEffect?: 'dashed' | 'solid';
 }
 
 export class Viewport {
@@ -142,7 +150,7 @@ export class Viewport {
       // (bounds culling is cheap for lines; skip complex culling for others)
       if (e.type === 'line' && !segmentMayIntersect(e.a, e.b, viewBounds)) continue;
       if (selected) {
-        drawEntity(ctx, e, tf, layers, lookup, { dashed: true, alpha: 0.95 });
+        drawEntity(ctx, e, tf, layers, lookup, { dashed: this.settings.selectionEffect !== 'solid', lineWidthOverride: this.settings.selectionEffect === 'solid' ? 2.5 : undefined, alpha: 0.95 });
       } else if (hovered) {
         drawEntity(ctx, e, tf, layers, lookup, { lineWidthOverride: 2.5, dashed: true, alpha: 0.95 });
       } else {
@@ -187,16 +195,24 @@ export class Viewport {
     ctx.lineWidth = 1;
     const isMajor = (v: number) => Math.abs(v / major - Math.round(v / major)) < 1e-6;
 
+    if (this.settings.gridStyle === 'dots') {
+      // Dot grid (AutoCAD 2D model space style): one dot per minor intersection.
+      ctx.fillStyle = 'rgba(255,255,255,0.28)';
+      for (let x = startX; x <= vb.max.x; x += step) {
+        const sx = Math.round(this.toScreen({ x, y: 0 }).x);
+        for (let y = startY; y <= vb.max.y; y += step) ctx.fillRect(sx, Math.round(this.toScreen({ x: 0, y }).y), 1, 1);
+      }
+    }
     ctx.strokeStyle = 'rgba(255,255,255,0.055)';
     ctx.beginPath();
     for (let x = startX; x <= vb.max.x; x += step) {
-      if (isMajor(x)) continue;
+      if (isMajor(x) || this.settings.gridStyle === 'dots') continue;
       const sx = Math.round(this.toScreen({ x, y: 0 }).x) + 0.5;
       ctx.moveTo(sx, 0);
       ctx.lineTo(sx, this.height);
     }
     for (let y = startY; y <= vb.max.y; y += step) {
-      if (isMajor(y)) continue;
+      if (isMajor(y) || this.settings.gridStyle === 'dots') continue;
       const sy = Math.round(this.toScreen({ x: 0, y }).y) + 0.5;
       ctx.moveTo(0, sy);
       ctx.lineTo(this.width, sy);
@@ -240,7 +256,7 @@ export class Viewport {
     const box = this.settings.pickBox;
     ctx.save();
     ctx.lineWidth = 1;
-    ctx.strokeStyle = '#ffffff';
+    ctx.strokeStyle = this.settings.crosshairColor ?? '#ffffff';
     if (mode !== 'select') {
       // crosshair; in a point prompt the lines meet at the cursor (no pickbox gap)
       const gap = mode === 'idle' ? box : 0;
@@ -276,9 +292,9 @@ export class Viewport {
 
   private drawGrip(s: Point): void {
     const { ctx } = this;
-    const h = 4;
+    const h = this.settings.gripSize ?? 4;
     ctx.save();
-    ctx.fillStyle = '#1a3dff';
+    ctx.fillStyle = this.settings.gripColor ?? '#1a3dff';
     ctx.strokeStyle = '#0b0b0b';
     ctx.lineWidth = 1;
     ctx.fillRect(Math.round(s.x) - h, Math.round(s.y) - h, h * 2, h * 2);
@@ -328,9 +344,9 @@ export class Viewport {
   private drawSnapMarker(snap: SnapResult): void {
     const { ctx } = this;
     const s = this.toScreen(snap.point);
-    const r = 7;
+    const r = this.settings.snapMarkerSize ?? 7;
     ctx.save();
-    ctx.strokeStyle = '#3ff23f';
+    ctx.strokeStyle = this.settings.snapMarkerColor ?? '#3ff23f';
     ctx.lineWidth = 2;
     ctx.beginPath();
     switch (snap.kind) {
