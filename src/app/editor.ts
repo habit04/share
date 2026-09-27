@@ -20,6 +20,8 @@ import { PlcModuleTool, SignalArrowTool, TerminalStripTool, DEFAULT_PLC, DEFAULT
 import { gripPoints } from '../core/entities';
 import { parseProject, serializeProject, defaultProject, resolveDrawingPath, baseName, type Project } from './project';
 import { loadSettings, saveSettings, pushRecent, type UserSettings } from './settings';
+import { SessionManager } from './sessions';
+import type { ColorSpec } from '../core/entities';
 import { readDxf, writeDxf } from '../io/dxf';
 import { parsePointInput, isPlainNumber } from './input';
 import { convertDwg, type DwgImportPayload } from '../io/dwg';
@@ -57,6 +59,13 @@ const VERSION = '0.1.0';
 
 export class Editor {
   readonly doc = new Drawing();
+  // ---- UI/workflow extensions (file tabs, Properties panel) — logic lives in app/sessions.ts / src/ui.
+  /** Open drawings ("file tabs"); the active one is `doc`. */
+  readonly sessions: SessionManager = new SessionManager(this);
+  /** Current colour / linetype / lineweight for new objects (Home > Properties panel). */
+  currentColor: ColorSpec = 'ByLayer';
+  currentLinetype = 'ByLayer';
+  currentLineweight = 'ByLayer';
   readonly viewport: Viewport;
   readonly snap: SnapSettings = defaultSnapSettings();
   selection = new Set<string>();
@@ -141,6 +150,14 @@ export class Editor {
   }
   private emit(ev: EditorEvent): void {
     for (const fn of this.listeners[ev]) fn();
+  }
+  /** Public event dispatch for UI-layer modules (sessions, palettes). */
+  notify(ev: EditorEvent): void {
+    this.emit(ev);
+  }
+  /** Activate an open drawing tab (see `sessions`). */
+  switchSession(i: number): boolean {
+    return this.sessions.switchTo(i);
   }
 
   log(text: string): void {
@@ -798,7 +815,7 @@ export class Editor {
   }
 
   fileName(): string {
-    if (!this.doc.filePath) return 'Drawing1.dxf';
+    if (!this.doc.filePath) return this.sessions.untitledName;
     return this.doc.filePath.split(/[\\/]/).pop() ?? 'Drawing1.dxf';
   }
 

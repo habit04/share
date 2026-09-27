@@ -1,23 +1,28 @@
 import type { Editor } from '../app/editor';
 import { icon } from './icons';
+import './icons-ui';
 import { esc } from './dom';
+import { drawPreview } from '../render/draw';
+import { sessionTitle } from '../app/sessions';
+import { showMenu, type MenuItem } from './menu';
 
-/** Title bar with Quick Access Toolbar. */
-export function buildTitleBar(editor: Editor, el: HTMLElement): void {
+/** Title bar with Quick Access Toolbar, InfoCenter search and the application-menu button. */
+export function buildTitleBar(editor: Editor, el: HTMLElement, onAppMenu?: (anchor: HTMLElement) => void): void {
   el.className = 'titlebar';
   const qat: Array<[string, string, string]> = [
     ['new', 'New (Ctrl+N)', 'NEW'],
     ['open', 'Open (Ctrl+O)', 'OPEN'],
     ['save', 'Save (Ctrl+S)', 'SAVE'],
     ['saveas', 'Save As (Ctrl+Shift+S)', 'SAVEAS'],
-    ['print', 'Plot', 'HELP'],
+    ['print', 'Plot (Ctrl+P)', 'PLOT'],
     ['undo', 'Undo (Ctrl+Z)', 'UNDO'],
     ['redo', 'Redo (Ctrl+Y)', 'REDO'],
   ];
-  const logo = document.createElement('div');
+  const logo = document.createElement('button');
   logo.className = 'app-logo';
   logo.innerHTML = `${icon('bolt')}<span>J</span>`;
-  logo.title = 'JAutoCad';
+  logo.title = 'Application menu';
+  logo.addEventListener('click', () => onAppMenu?.(logo));
   const bar = document.createElement('div');
   bar.className = 'qat';
   for (const [ic, title, cmd] of qat) {
@@ -28,6 +33,20 @@ export function buildTitleBar(editor: Editor, el: HTMLElement): void {
     b.addEventListener('click', () => editor.runCommand(cmd));
     bar.appendChild(b);
   }
+  const more = document.createElement('button');
+  more.className = 'qat-btn qat-more';
+  more.innerHTML = icon('chevron');
+  more.title = 'Customize Quick Access Toolbar';
+  more.addEventListener('click', () =>
+    showMenu(more, [
+      { label: 'Workspace: Drafting & Annotation', check: editor.settings.workspace === 'drafting', run: () => editor.runCommand('WORKSPACE drafting') },
+      { label: 'Workspace: Electrical', check: editor.settings.workspace === 'electrical', run: () => editor.runCommand('WORKSPACE electrical') },
+      null,
+      { label: 'Show Menu Bar (F10 in AutoCAD)', run: () => editor.log('The native menu bar is provided by the desktop window.') },
+      { label: 'Options...', run: () => editor.runCommand('OPTIONS') },
+    ]),
+  );
+  bar.appendChild(more);
   const title = document.createElement('div');
   title.className = 'window-title';
   const search = document.createElement('div');
@@ -36,7 +55,7 @@ export function buildTitleBar(editor: Editor, el: HTMLElement): void {
   const searchInput = search.querySelector('input')!;
   searchInput.addEventListener('keydown', (ev) => {
     if (ev.key === 'Enter') {
-      editor.runCommand(searchInput.value);
+      editor.runCommand(`HELP ${searchInput.value}`);
       searchInput.value = '';
     }
   });
@@ -54,12 +73,105 @@ export function buildTitleBar(editor: Editor, el: HTMLElement): void {
   refresh();
 }
 
-/** Drawing file tabs above the canvas. */
+/** Drawing file tabs above the canvas: one per open document session. */
 export function buildFileTabs(editor: Editor, el: HTMLElement): void {
   el.className = 'file-tabs';
+  let preview: HTMLElement | null = null;
+  let previewTimer = 0;
+  const hidePreview = () => {
+    window.clearTimeout(previewTimer);
+    preview?.remove();
+    preview = null;
+  };
+  const closeTab = (i: number) => {
+    const doIt = () => editor.sessions.close(i);
+    if (!editor.sessions.isDirty(i)) return doIt();
+    void editor.ui?.confirm('Unsaved changes', `${editor.sessions.titleOf(i)} has unsaved changes. Discard them?`).then((ok) => {
+      if (ok) doIt();
+    });
+  };
   const refresh = () => {
-    el.innerHTML = `<div class="file-tab active"><span>${esc(editor.fileName())}${editor.doc.dirty ? '*' : ''}</span>${icon('close')}</div><button class="file-tab-add" title="New drawing">${icon('plus')}</button><span class="file-tabs-spacer"></span><button class="file-tab-list" title="File tab list">${icon('chevron')}</button>`;
-    el.querySelector('.file-tab-add')!.addEventListener('click', () => editor.runCommand('NEW'));
+    hidePreview();
+    el.innerHTML = '';
+    const sessions = editor.sessions.all;
+    sessions.forEach((s, i) => {
+      const tab = document.createElement('div');
+      const active = i === editor.sessions.active;
+      tab.className = 'file-tab' + (active ? ' active' : '');
+      const dirty = editor.sessions.isDirty(i);
+      tab.innerHTML = `<span class="file-tab-name">${esc(sessionTitle(s))}${dirty ? '*' : ''}</span><button class="file-tab-close" title="Close">${icon('close')}</button>`;
+      tab.title = s.filePath ?? sessionTitle(s);
+      tab.addEventListener('click', (ev) => {
+        if ((ev.target as HTMLElement).closest('.file-tab-close')) return;
+        editor.switchSession(i);
+      });
+      tab.addEventListener('auxclick', (ev) => {
+        if (ev.button === 1) {
+          ev.preventDefault();
+          closeTab(i);
+        }
+      });
+      tab.addEventListener('contextmenu', (ev) => {
+        ev.preventDefault();
+        showMenu({ x: ev.clientX, y: ev.clientY }, [
+          { label: 'New', run: () => editor.runCommand('NEW') },
+          { label: 'Open...', run: () => editor.runCommand('OPEN') },
+          { label: 'Save', run: () => editor.runCommand('SAVE') },
+          { label: 'Save As...', run: () => editor.runCommand('SAVEAS') },
+          null,
+          { label: 'Close', run: () => closeTab(i) },
+          { label: 'Close All Other Drawings', run: () => editor.runCommand('CLOSEALLOTHER') },
+          null,
+          { label: 'Copy Full File Path', disabled: !s.filePath, run: () => void navigator.clipboard?.writeText(s.filePath ?? '') },
+        ]);
+      });
+      tab.querySelector('.file-tab-close')!.addEventListener('click', () => closeTab(i));
+      // Hover preview thumbnail (AutoCAD shows model/layout thumbnails).
+      tab.addEventListener('mouseenter', () => {
+        window.clearTimeout(previewTimer);
+        previewTimer = window.setTimeout(() => {
+          hidePreview();
+          const st = i === editor.sessions.active ? editor.doc.snapshot : s.state;
+          preview = document.createElement('div');
+          preview.className = 'file-tab-preview';
+          const c = document.createElement('canvas');
+          c.width = 220;
+          c.height = 150;
+          const ctx = c.getContext('2d')!;
+          ctx.fillStyle = editor.viewport.settings.background;
+          ctx.fillRect(0, 0, c.width, c.height);
+          drawPreview(ctx, st.entities, st.layers, (n) => st.blocks[n], c.width, c.height, '#d8d8d8', 10);
+          const cap = document.createElement('div');
+          cap.className = 'file-tab-preview-title';
+          cap.textContent = `${sessionTitle(s)} — Model`;
+          preview.append(c, cap);
+          document.body.appendChild(preview);
+          const r = tab.getBoundingClientRect();
+          preview.style.left = `${Math.min(r.left, window.innerWidth - 240)}px`;
+          preview.style.top = `${r.bottom + 2}px`;
+        }, 450);
+      });
+      tab.addEventListener('mouseleave', hidePreview);
+      el.appendChild(tab);
+    });
+    const add = document.createElement('button');
+    add.className = 'file-tab-add';
+    add.title = 'New drawing (Ctrl+N)';
+    add.innerHTML = icon('plus');
+    add.addEventListener('click', () => editor.runCommand('NEW'));
+    const spacer = document.createElement('span');
+    spacer.className = 'file-tabs-spacer';
+    const list = document.createElement('button');
+    list.className = 'file-tab-list';
+    list.title = 'File tab list';
+    list.innerHTML = icon('chevron');
+    list.addEventListener('click', () =>
+      showMenu(
+        list,
+        editor.sessions.all.map((s, i) => ({ label: `${sessionTitle(s)}${editor.sessions.isDirty(i) ? '*' : ''}`, check: i === editor.sessions.active, run: () => editor.switchSession(i) })),
+      ),
+    );
+    el.append(add, spacer, list);
   };
   editor.on('file', refresh);
   editor.on('change', refresh);
@@ -67,83 +179,81 @@ export function buildFileTabs(editor: Editor, el: HTMLElement): void {
 }
 
 /** Model / Layout tabs under the canvas. */
-export function buildLayoutTabs(_editor: Editor, el: HTMLElement): void {
+export function buildLayoutTabs(editor: Editor, el: HTMLElement): void {
   el.className = 'layout-tabs';
   el.innerHTML = `
     <button class="layout-tab active">Model</button>
     <button class="layout-tab">Layout1</button>
     <button class="layout-tab">Layout2</button>
     <button class="layout-tab add" title="New layout">${icon('plus')}</button>`;
+  el.querySelectorAll<HTMLButtonElement>('.layout-tab:not(.active):not(.add)').forEach((b) =>
+    b.addEventListener('click', () => editor.log('Paper-space layouts are not available yet; plot from model space with PLOT.')),
+  );
 }
 
-/** Right-click context menu on the canvas. */
-export function installContextMenu(editor: Editor, canvas: HTMLElement): void {
-  let menu: HTMLElement | null = null;
-  const hide = () => {
-    menu?.remove();
-    menu = null;
-  };
+/** Right-click context menu on the canvas (with Recent Input, Clipboard and Isolate flyouts). */
+export function installContextMenu(editor: Editor, canvas: HTMLElement, opts: { recentInput?: () => readonly string[]; runInput?: (text: string) => void; clipboard?: { cut(): void; copy(): void; paste(): void; canPaste(): boolean } } = {}): void {
   canvas.addEventListener('contextmenu', (ev) => {
     ev.preventDefault();
-    hide();
-    menu = document.createElement('div');
-    menu.className = 'context-menu';
-    const items: Array<[string, () => void] | null> = editor.tool
+    const recent = opts.recentInput?.() ?? [];
+    const recentItems: MenuItem[] = recent.length ? recent.slice(0, 12).map((r) => ({ label: r, run: () => (opts.runInput ? opts.runInput(r) : editor.runCommand(r)) })) : [{ label: '(no recent input)', disabled: true, run: () => {} }];
+    const hasSel = editor.selection.size > 0;
+    const items: MenuItem[] = editor.tool
       ? [
-          ['Enter', () => editor.pressEnter()],
-          ['Cancel', () => editor.cancel()],
+          { label: 'Enter', run: () => editor.pressEnter() },
+          { label: 'Cancel', run: () => editor.cancel() },
           null,
-          ['Pan', () => {}],
-          ['Zoom Extents', () => editor.zoomExtents()],
+          { label: 'Recent Input', items: recentItems },
+          null,
+          { label: 'Pan', run: () => editor.runCommand('PAN') },
+          { label: 'Zoom Extents', run: () => editor.zoomExtents() },
+          { label: 'Zoom Window', run: () => editor.runCommand('ZOOM W') },
+          null,
+          { label: 'Snap Overrides', items: [{ label: 'Object Snap Settings...', run: () => editor.runCommand('DSETTINGS') }, { label: 'Toggle Object Snap (F3)', run: () => editor.toggle('osnap') }, { label: 'Toggle Ortho (F8)', run: () => editor.toggle('ortho') }, { label: 'Toggle Polar (F10)', run: () => editor.toggle('polar') }] },
         ]
       : [
-          [editor.lastCommand ? `Repeat ${editor.lastCommand}` : 'Repeat', () => editor.pressEnter()],
+          { label: editor.lastCommand ? `Repeat ${editor.lastCommand}` : 'Repeat', run: () => editor.pressEnter(), disabled: !editor.lastCommand },
+          { label: 'Recent Input', items: recentItems },
           null,
-          ['Erase', () => editor.runCommand('ERASE')],
-          ['Move', () => editor.runCommand('MOVE')],
-          ['Copy Selection', () => editor.runCommand('COPY')],
-          ['Rotate', () => editor.runCommand('ROTATE')],
+          {
+            label: 'Clipboard',
+            items: [
+              { label: 'Cut\tCtrl+X', disabled: !hasSel, run: () => opts.clipboard?.cut() },
+              { label: 'Copy\tCtrl+C', disabled: !hasSel, run: () => opts.clipboard?.copy() },
+              { label: 'Paste\tCtrl+V', disabled: !(opts.clipboard?.canPaste() ?? false), run: () => opts.clipboard?.paste() },
+            ],
+          },
+          {
+            label: 'Isolate',
+            items: [
+              { label: 'Isolate Objects (layers of selection)', disabled: !hasSel, run: () => editor.runCommand('LAYISO') },
+              { label: 'Hide Objects (turn layer off)', disabled: !hasSel, run: () => editor.runCommand('LAYOFF') },
+              { label: 'End Object Isolation', run: () => editor.runCommand('LAYUNISO') },
+            ],
+          },
           null,
-          ['Undo', () => editor.runCommand('UNDO')],
-          ['Redo', () => editor.runCommand('REDO')],
+          { label: 'Undo\tCtrl+Z', run: () => editor.runCommand('UNDO'), disabled: !editor.doc.canUndo() },
+          { label: 'Redo\tCtrl+Y', run: () => editor.runCommand('REDO'), disabled: !editor.doc.canRedo() },
           null,
-          ['Zoom Extents', () => editor.zoomExtents()],
-          ['Deselect All', () => editor.cancel()],
+          { label: 'Erase', disabled: !hasSel, run: () => editor.runCommand('ERASE') },
+          { label: 'Move', disabled: !hasSel, run: () => editor.runCommand('MOVE') },
+          { label: 'Copy Selection', disabled: !hasSel, run: () => editor.runCommand('COPY') },
+          { label: 'Rotate', disabled: !hasSel, run: () => editor.runCommand('ROTATE') },
+          { label: 'Scale', disabled: !hasSel, run: () => editor.runCommand('SCALE') },
           null,
-          ['Recent Input  ▸', () => {}],
-          ['Clipboard  ▸', () => {}],
-          ['Isolate  ▸', () => {}],
+          { label: 'Pan', run: () => editor.runCommand('PAN') },
+          { label: 'Zoom Extents', run: () => editor.zoomExtents() },
+          { label: 'Zoom Window', run: () => editor.runCommand('ZOOM W') },
           null,
-          ['Options...', () => editor.runCommand('HELP')],
+          { label: 'Quick Select...', run: () => editor.runCommand('SELECTALL') },
+          { label: 'Select All\tCtrl+A', run: () => editor.runCommand('SELECTALL') },
+          { label: 'Deselect All', disabled: !hasSel, run: () => editor.cancel() },
+          null,
+          { label: 'Quick Properties', check: editor.settings.quickProperties, run: () => editor.runCommand('QPMODE') },
+          { label: 'Properties', run: () => editor.runCommand('PROPERTIES') },
+          { label: 'Options...', run: () => editor.runCommand('OPTIONS') },
         ];
-    for (const it of items) {
-      if (!it) {
-        const sep = document.createElement('div');
-        sep.className = 'context-sep';
-        menu.appendChild(sep);
-        continue;
-      }
-      const b = document.createElement('button');
-      b.className = 'context-item';
-      b.textContent = it[0];
-      b.addEventListener('click', () => {
-        hide();
-        it[1]();
-      });
-      menu.appendChild(b);
-    }
-    menu.style.left = `${ev.clientX}px`;
-    menu.style.top = `${ev.clientY}px`;
-    document.body.appendChild(menu);
-    const r = menu.getBoundingClientRect();
-    if (r.bottom > window.innerHeight) menu.style.top = `${ev.clientY - r.height}px`;
-    if (r.right > window.innerWidth) menu.style.left = `${ev.clientX - r.width}px`;
-  });
-  window.addEventListener('mousedown', (ev) => {
-    if (menu && !menu.contains(ev.target as Node)) hide();
-  });
-  window.addEventListener('keydown', (ev) => {
-    if (ev.key === 'Escape') hide();
+    showMenu({ x: ev.clientX, y: ev.clientY }, items);
   });
 }
 
