@@ -21,7 +21,7 @@ jobs:
             artifact: JCad-Electrical-Windows
             glob: release/*.exe
           - os: macos-latest
-            target: --mac dmg
+            target: --mac dmg --arm64 --x64
             artifact: JCad-Electrical-macOS
             glob: release/*.dmg
           - os: ubuntu-latest
