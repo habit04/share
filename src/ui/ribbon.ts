@@ -177,11 +177,20 @@ export const RIBBON: RibbonTab[] = [
   },
 ];
 
+/** Ribbon tabs that belong to the Electrical workspace (hidden in "Drafting & Annotation"). */
+export const ELECTRICAL_TABS = ['Project', 'Schematic', 'Panel', 'Reports', 'Import/Export Data', 'Conversion Tools'];
+
 export class Ribbon {
   readonly el: HTMLElement;
   private active = 0;
   private tabsEl: HTMLElement;
   private bodyEl: HTMLElement;
+  /** Extra controls appended to a data-table panel, keyed "Tab/Panel" (e.g. the layer dropdown). */
+  readonly customPanelContent = new Map<string, HTMLElement>();
+  /** Whole panels inserted after a named panel (e.g. Home > Properties combos). */
+  readonly extraPanels: Array<{ tab: string; after: string; title: string; el: HTMLElement }> = [];
+  /** Workspace filter: tabs for which this returns false are not shown. */
+  tabFilter: (name: string) => boolean = () => true;
 
   constructor(private editor: Editor, container: HTMLElement) {
     this.el = container;
@@ -198,14 +207,24 @@ export class Ribbon {
 
   setActive(i: number): void {
     this.active = Math.max(0, Math.min(RIBBON.length - 1, i));
+    if (!this.tabFilter(RIBBON[this.active]!.name)) {
+      const first = RIBBON.findIndex((t) => this.tabFilter(t.name));
+      if (first >= 0) this.active = first;
+    }
     this.renderTabs();
     this.renderBody();
     this.onTabChange?.(this.active);
   }
 
+  /** Re-render after the workspace filter or custom content changed. */
+  refresh(): void {
+    this.setActive(this.active);
+  }
+
   private renderTabs(): void {
     this.tabsEl.innerHTML = '';
     RIBBON.forEach((tab, i) => {
+      if (!this.tabFilter(tab.name)) return;
       const b = document.createElement('button');
       b.className = 'ribbon-tab' + (i === this.active ? ' active' : '');
       b.textContent = tab.name;
@@ -250,11 +269,26 @@ export class Ribbon {
           content.appendChild(b);
         }
       }
+      const custom = this.customPanelContent.get(`${tab.name}/${panel.title}`);
+      if (custom) content.appendChild(custom);
       const title = document.createElement('div');
       title.className = 'ribbon-panel-title';
       title.innerHTML = `<span>${panel.title}</span><span class="panel-arrow">${icon('chevron')}</span>`;
       p.append(content, title);
       this.bodyEl.appendChild(p);
+      for (const extra of this.extraPanels) {
+        if (extra.tab !== tab.name || extra.after !== panel.title) continue;
+        const ep = document.createElement('div');
+        ep.className = 'ribbon-panel';
+        const ec = document.createElement('div');
+        ec.className = 'ribbon-panel-content';
+        ec.appendChild(extra.el);
+        const et = document.createElement('div');
+        et.className = 'ribbon-panel-title';
+        et.innerHTML = `<span>${extra.title}</span><span class="panel-arrow">${icon('chevron')}</span>`;
+        ep.append(ec, et);
+        this.bodyEl.appendChild(ep);
+      }
     }
   }
 }

@@ -91,11 +91,18 @@ export class ProjectManager {
     recent.forEach((f, i) => rows.push(`<div class="tree-node lvl1" data-recent="${i}" title="${esc(f)}"><span class="tree-twisty"></span>${icon('model')}<span>${esc(baseName(f))}</span></div>`));
     rows.push(`<div class="tree-node lvl1 muted" data-reports="1"><span class="tree-twisty">▸</span>${icon('report')}<span>Reports</span></div>`);
     this.treeEl.innerHTML = rows.join('');
-    this.treeEl.querySelectorAll<HTMLElement>('[data-index]').forEach((n) => n.addEventListener('dblclick', () => this.editor.openProjectDrawing(parseInt(n.dataset.index!, 10))));
+    // Drawings open in their own file tab (or switch to the tab that already shows them).
+    const openInTab = (f: string) => void this.editor.sessions.openInTab(f, (x) => this.editor.openFile(x));
+    this.treeEl.querySelectorAll<HTMLElement>('[data-index]').forEach((n) =>
+      n.addEventListener('dblclick', () => {
+        const d = project.drawings[parseInt(n.dataset.index!, 10)];
+        if (d) openInTab(resolveDrawingPath(project, d));
+      }),
+    );
     this.treeEl.querySelectorAll<HTMLElement>('[data-recent]').forEach((n) =>
       n.addEventListener('dblclick', () => {
         const f = this.editor.settings.recentFiles[parseInt(n.dataset.recent!, 10)];
-        if (f) void (f.endsWith('.json') ? this.editor.openProject(f) : this.editor.openFile(f));
+        if (f) void (f.endsWith('.json') ? this.editor.openProject(f) : openInTab(f));
       }),
     );
     this.treeEl.querySelector('[data-reports]')?.addEventListener('dblclick', () => this.editor.runCommand('AEREPORT bom'));
