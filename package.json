@@ -1,8 +1,8 @@
 {
-  "name": "jautocad",
+  "name": "jcad-electrical",
   "version": "0.1.0",
   "description": "2D electrical schematic drafting application (desktop)",
-  "author": "JAutoCad contributors",
+  "author": "JCad Electrical contributors",
   "private": true,
   "main": "electron/main.cjs",
   "type": "module",
@@ -18,8 +18,8 @@
     "dist:dir": "npm run build && electron-builder --dir"
   },
   "build": {
-    "appId": "com.jautocad.app",
-    "productName": "JAutoCad",
+    "appId": "com.jcad.electrical",
+    "productName": "JCad Electrical",
     "directories": {
       "output": "release"
     },

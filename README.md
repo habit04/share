@@ -1,4 +1,4 @@
-# JAutoCad
+# JCad Electrical
 
 A desktop 2D electrical schematic drafting application whose workspace is modelled on
 AutoCAD Electrical: ribbon, Project Manager and Properties palettes, command window,
@@ -83,7 +83,7 @@ keywords shown in `[brackets]` are clickable.
 | AEREPORT [bom/components/wires/labels/plc/missing/terminals/strip/panel/audit] | REPORT, BOM | Reports: drawing or project-wide, CSV export, "Put on Drawing" table |
 | AEAUDIT | AUDIT | Electrical Audit dialog with jump-to-error |
 | NEWSHEET | TEMPLATE | New drawing from an ANSI / ISO sheet template with title block |
-| OPENPROJECT, PROJECTADD, PROJECTSAVE | PROJECT | Project files (`*.jacproj.json`) listing drawings, description lines and settings |
+| OPENPROJECT, PROJECTADD, PROJECTSAVE | PROJECT | Project files (`*.jcadproj.json`) listing drawings, description lines and settings |
 | NEW, OPEN, SAVE, SAVEAS, PLOT, RECENT | Ctrl+N / O / S / Shift+S / P | Files: DXF and DWG open, DXF save, PDF plot. NEW / OPEN work in file tabs |
 | CLOSE, CLOSEALL, CLOSEALLOTHER, NEXTTAB, PREVTAB | Ctrl+W, Ctrl+Tab | Drawing tabs (several open documents) |
 | OPTIONS | OP | Options dialog: Display, Drafting, Selection, Files (autosave), Units — applied live |

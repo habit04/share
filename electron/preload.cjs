@@ -1,6 +1,6 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
-contextBridge.exposeInMainWorld('jautocad', {
+contextBridge.exposeInMainWorld('jcad', {
   openDxf: () => ipcRenderer.invoke('open-dxf'),
   openDrawing: (file) => ipcRenderer.invoke('open-drawing', file),
   openProject: (file) => ipcRenderer.invoke('open-project', file),

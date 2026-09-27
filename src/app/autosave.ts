@@ -37,7 +37,7 @@ export interface KeyValueStorage {
   readonly length: number;
 }
 
-const PREFIX = 'jautocad.autosave.';
+const PREFIX = 'jcad.autosave.';
 
 /** Browser fallback: keeps autosaves in localStorage (small drawings only). */
 export function localAutosaveStore(storage: KeyValueStorage): AutosaveStore {

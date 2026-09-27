@@ -25,7 +25,7 @@ import { closeMenus } from './ui/menu';
 
 declare global {
   interface Window {
-    jautocad?: {
+    jcad?: {
       openDxf(): Promise<{ path: string; text: string } | null>;
       openDrawing(file?: string): Promise<import('./app/editor').OpenResult | null>;
       openProject(file?: string): Promise<{ path: string; text: string } | null>;
@@ -101,7 +101,7 @@ function boot(): void {
   const canvas = document.getElementById('drawing') as HTMLCanvasElement;
   const canvasWrap = canvas.parentElement as HTMLElement;
   const editor = new Editor(canvas);
-  editor.fileBridge = window.jautocad ?? browserFileBridge();
+  editor.fileBridge = window.jcad ?? browserFileBridge();
   editor.ui = {
     pickSymbol: () =>
       pickSymbolDialog(editor, editor.settings.symbolStandard, (std) => {
@@ -217,7 +217,7 @@ function boot(): void {
   };
 
   // ------------------------------------------------------------ chrome
-  buildTitleBar(editor, document.getElementById('titlebar')!, (anchor) => showAppMenu(editor, anchor, { exit: () => (window.jautocad?.quit ? window.jautocad.quit() : window.close()) }));
+  buildTitleBar(editor, document.getElementById('titlebar')!, (anchor) => showAppMenu(editor, anchor, { exit: () => (window.jcad?.quit ? window.jcad.quit() : window.close()) }));
   const ribbon = new Ribbon(editor, document.getElementById('ribbon')!);
   ribbon.customPanelContent.set('Home/Layers', buildLayerPanelContent(editor));
   ribbon.extraPanels.push({ tab: 'Home', after: 'Layers', title: 'Properties', el: buildPropertiesPanelContent(editor) });
@@ -261,7 +261,7 @@ function boot(): void {
   const tp = new ToolPalettes(editor, canvasWrap);
 
   // ------------------------------------------------------------ autosave + recovery
-  const bridge = window.jautocad;
+  const bridge = window.jcad;
   const store = bridge?.autosaveWrite && bridge.autosaveList && bridge.autosaveRead && bridge.autosaveRemove ? bridgeAutosaveStore(bridge as AutosaveBridge) : localAutosaveStore(localStorage);
   const autosaver = new Autosaver(editor.sessions, store, () => editor.settings.autosaveMinutes);
   autosaver.onSaved = (n) => editor.log(`Autosave: ${n} drawing(s) written.`);
@@ -269,9 +269,9 @@ function boot(): void {
   editor.on('snap', () => autosaver.restart()); // settings changed (interval may differ)
   editor.on('file', () => {
     if (!editor.doc.dirty && editor.doc.filePath) void autosaver.discardFor(editor.sessions.current.id);
-    window.jautocad?.setRecentFiles?.(editor.settings.recentFiles);
+    window.jcad?.setRecentFiles?.(editor.settings.recentFiles);
   });
-  window.jautocad?.setRecentFiles?.(editor.settings.recentFiles);
+  window.jcad?.setRecentFiles?.(editor.settings.recentFiles);
 
   // ------------------------------------------------------------ mouse
   canvas.addEventListener('mousemove', (ev) => editor.onMouseMove(ev));
@@ -343,15 +343,15 @@ function boot(): void {
   ro.observe(canvas.parentElement!);
   editor.resize();
 
-  window.jautocad?.onMenuCommand((c) => editor.runCommand(c));
+  window.jcad?.onMenuCommand((c) => editor.runCommand(c));
   // Unsaved-work guard: the browser prompt, and the Electron close handler asks via this flag.
   window.addEventListener('beforeunload', (ev) => {
-    if (editor.sessions.anyDirty() && !window.jautocad) {
+    if (editor.sessions.anyDirty() && !window.jcad) {
       ev.preventDefault();
       ev.returnValue = '';
     }
   });
-  window.jautocad?.onQueryDirty(() => editor.sessions.anyDirty());
+  window.jcad?.onQueryDirty(() => editor.sessions.anyDirty());
 
   if (new URLSearchParams(location.search).has('demo')) {
     seedDemoDrawing(editor);

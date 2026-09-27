@@ -268,7 +268,7 @@ describe('reports', () => {
 
 describe('project and title block', () => {
   it('parses settings and description lines, resolves catalog paths', () => {
-    const p = parseProject('{"name":"Line 1","descriptions":["ACME PLANT","CUSTOMER X"],"settings":{"catalogFile":"parts.json","tagMode":"sequential","installation":"MCC1"},"drawings":[{"file":"001.dxf","description":"POWER","sheet":"1","dwgno":"E-001"},{"file":"002.dxf"}]}', '/proj/line1.jacproj.json');
+    const p = parseProject('{"name":"Line 1","descriptions":["ACME PLANT","CUSTOMER X"],"settings":{"catalogFile":"parts.json","tagMode":"sequential","installation":"MCC1"},"drawings":[{"file":"001.dxf","description":"POWER","sheet":"1","dwgno":"E-001"},{"file":"002.dxf"}]}', '/proj/line1.jcadproj.json');
     expect(p.settings).toMatchObject({ catalogFile: 'parts.json', tagMode: 'sequential', installation: 'MCC1' });
     expect(p.descriptions).toEqual(['ACME PLANT', 'CUSTOMER X']);
     expect(p.drawings[0]).toMatchObject({ dwgno: 'E-001', sheet: '1' });
@@ -281,7 +281,7 @@ describe('project and title block', () => {
     expect(projectDrawingIndex(p, null)).toBe(-1);
   });
   it('fills title block fields from project + drawing and writes them into the sheet', () => {
-    const p = parseProject('{"name":"Line 1","descriptions":["ACME PLANT","CUSTOMER X","JOB 42"],"drawings":[{"file":"001.dxf","description":"POWER","dwgno":"E-001"},{"file":"002.dxf","description":"CONTROL"}]}', '/proj/l.jacproj.json');
+    const p = parseProject('{"name":"Line 1","descriptions":["ACME PLANT","CUSTOMER X","JOB 42"],"drawings":[{"file":"001.dxf","description":"POWER","dwgno":"E-001"},{"file":"002.dxf","description":"CONTROL"}]}', '/proj/l.jcadproj.json');
     const f = titleBlockFields(p, 1);
     expect(f).toMatchObject({ PROJECT: 'ACME PLANT', CUSTOMER: 'CUSTOMER X', JOB: 'JOB 42', TITLE: 'CONTROL', SHEET: '2 OF 2', DWGNO: '002' });
     expect(titleBlockFields(p, -1, 'FALLBACK').TITLE).toBe('FALLBACK');

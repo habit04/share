@@ -112,7 +112,7 @@ export function showAppMenu(editor: Editor, _anchor: HTMLElement, opts: { exit?:
   opt.addEventListener('click', run('OPTIONS'));
   const exit = document.createElement('button');
   exit.className = 'btn';
-  exit.textContent = 'Exit JAutoCad';
+  exit.textContent = 'Exit JCad Electrical';
   exit.addEventListener('click', () => {
     close();
     if (opts.exit) opts.exit();

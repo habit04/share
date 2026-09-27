@@ -805,7 +805,7 @@ export function createElectricalDialogs(editor: Editor): ElectricalUi {
     reports: (opts) => electricalReportsDialog(editor, opts),
     openTextFile: async (accept) => {
       // Desktop: the project file dialog reads any JSON file; browser: a file input.
-      if (editor.fileBridge?.openProject && window.jautocad) {
+      if (editor.fileBridge?.openProject && window.jcad) {
         try {
           return await editor.fileBridge.openProject();
         } catch {

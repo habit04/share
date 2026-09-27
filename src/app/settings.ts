@@ -64,9 +64,9 @@ export interface UserSettings {
   recentInput: string[];
 }
 
-export const SETTINGS_KEY = 'jautocad.settings.v2';
+export const SETTINGS_KEY = 'jcad.settings.v2';
 /** Older keys, migrated on first load. */
-export const LEGACY_SETTINGS_KEYS = ['jautocad.settings.v1'];
+export const LEGACY_SETTINGS_KEYS = ['jcad.settings.v1'];
 
 export const DEFAULT_SETTINGS: UserSettings = {
   gridVisible: true,

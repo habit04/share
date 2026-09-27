@@ -65,8 +65,8 @@ export function buildTitleBar(editor: Editor, el: HTMLElement, onAppMenu?: (anch
   infocenter.querySelector('.ic-btn:last-child')!.addEventListener('click', () => editor.runCommand('HELP'));
   el.append(logo, bar, title, search, infocenter);
   const refresh = () => {
-    title.textContent = `JAutoCad Electrical  —  ${editor.fileName()}${editor.doc.dirty ? '*' : ''}`;
-    document.title = `${editor.fileName()}${editor.doc.dirty ? '*' : ''} — JAutoCad Electrical`;
+    title.textContent = `JCad Electrical  —  ${editor.fileName()}${editor.doc.dirty ? '*' : ''}`;
+    document.title = `${editor.fileName()}${editor.doc.dirty ? '*' : ''} — JCad Electrical`;
   };
   editor.on('file', refresh);
   editor.on('change', refresh);

@@ -150,7 +150,7 @@ export class Editor {
       this.render();
     });
     this.registerCommands();
-    this.log(`JAutoCad ${VERSION} — type a command (LINE, AEWIRE, AELADDER, AECOMPONENT ...) or HELP.`);
+    this.log(`JCad Electrical ${VERSION} — type a command (LINE, AEWIRE, AELADDER, AECOMPONENT ...) or HELP.`);
   }
 
   // ------------------------------------------------------------- events
@@ -791,7 +791,7 @@ export class Editor {
       this.log('Projects need the desktop app.');
       return;
     }
-    const p = await this.fileBridge.saveText(this.project.path ?? `${this.project.name.replace(/\s+/g, '_')}.jacproj.json`, serializeProject(this.project), 'JAutoCad Project', 'json');
+    const p = await this.fileBridge.saveText(this.project.path ?? `${this.project.name.replace(/\s+/g, '_')}.jcadproj.json`, serializeProject(this.project), 'JCad Electrical Project', 'json');
     if (p) {
       this.project = { ...this.project, path: p };
       this.log(`Project saved: ${p}`);

@@ -35,7 +35,7 @@ export const SHORTCUTS: Array<[string, string]> = [
 
 /** HELP / F1: searchable command reference built from the registered commands. */
 export function helpDialog(editor: Editor, query = ''): void {
-  const m = modal('JAutoCad Help', 760, 'dark');
+  const m = modal('JCad Electrical Help', 760, 'dark');
   const commands = document.createElement('div');
   const search = document.createElement('input');
   search.className = 'input help-search';
@@ -94,7 +94,7 @@ export function helpDialog(editor: Editor, query = ''): void {
   keysWrap.append(keys);
 
   const about = document.createElement('div');
-  about.innerHTML = `<p><b>JAutoCad Electrical</b> — 2D electrical schematic drafting.</p>
+  about.innerHTML = `<p><b>JCad Electrical</b> — 2D electrical schematic drafting.</p>
     <p>Type commands at the command line (AutoComplete lists matches as you type; Tab cycles, Enter accepts). Option keywords in [brackets] are clickable. Coordinates: <code>x,y</code>, <code>@dx,dy</code>, <code>@dist&lt;angle</code>, or type a distance while dragging.</p>
     <p>Native DXF (AutoCAD 2000) save; DWG R14–2018 import; PDF plot; CSV reports. All artwork and symbol geometry are original.</p>`;
 
@@ -107,7 +107,7 @@ export function helpDialog(editor: Editor, query = ''): void {
 
 /** TEXTSCR / F2: the command history in a larger, selectable window. */
 export function textWindowDialog(editor: Editor): void {
-  const m = modal('JAutoCad Text Window', 760, 'dark');
+  const m = modal('JCad Electrical Text Window', 760, 'dark');
   const pre = document.createElement('div');
   pre.className = 'text-window';
   pre.textContent = editor.history.join('\n');

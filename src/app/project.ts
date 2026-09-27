@@ -1,5 +1,5 @@
 /**
- * Project file (.jacproj.json): the list of drawings that make up a project,
+ * Project file (.jcadproj.json): the list of drawings that make up a project,
  * shown in the Project Manager, plus the project description lines used by
  * the title block and project-wide settings (catalog file, tag formats,
  * IEC codes). Paths are stored relative to the project file.
@@ -37,7 +37,7 @@ export interface Project {
   path?: string;
 }
 
-export const PROJECT_EXT = '.jacproj.json';
+export const PROJECT_EXT = '.jcadproj.json';
 
 /** Title-block attribute names fed by the project description lines, in order. */
 export const DESCRIPTION_LINES = ['PROJECT', 'CUSTOMER', 'JOB', 'DRAWN', 'CHECKED', 'APPROVED', 'LINE7', 'LINE8', 'LINE9', 'LINE10', 'LINE11', 'LINE12'];

@@ -177,7 +177,7 @@ async function createWindow() {
     minWidth: 1000,
     minHeight: 640,
     backgroundColor: '#2b2b2b',
-    title: 'JAutoCad Electrical',
+    title: 'JCad Electrical',
     show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -300,7 +300,7 @@ ipcMain.handle('open-project', async (ev, file) => {
   if (!file) {
     const res = await dialog.showOpenDialog(win, {
       title: 'Open Project',
-      filters: [{ name: 'JAutoCad Project', extensions: ['json'] }],
+      filters: [{ name: 'JCad Electrical Project', extensions: ['json'] }],
       properties: ['openFile'],
     });
     if (res.canceled || res.filePaths.length === 0) return null;
@@ -453,7 +453,7 @@ ipcMain.on('app-quit', (ev) => {
   if (win) win.close();
 });
 
-// Headless probe used by packaging smoke tests:  jautocad --probe-dwg <file.dwg>
+// Headless probe used by packaging smoke tests:  jcad --probe-dwg <file.dwg>
 const probeIndex = process.argv.indexOf('--probe-dwg');
 if (probeIndex >= 0) {
   app.whenReady().then(async () => {
