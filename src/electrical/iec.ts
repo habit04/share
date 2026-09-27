@@ -42,7 +42,7 @@ const ktOnNO = block('IEC_KT_ON_NO', 'On-delay contact, NO (IEC)', [...stubs(0.1
 const ktOnNC = block('IEC_KT_ON_NC', 'On-delay contact, NC (IEC)', [...stubs(0.15), blade(), stop(), A(-0.02, 0.34, 0.08, 180, 360)]);
 const ktOffNO = block('IEC_KT_OFF_NO', 'Off-delay contact, NO (IEC)', [...stubs(0.15), blade(), A(-0.02, 0.24, 0.08, 0, 180)]);
 const ktOffNC = block('IEC_KT_OFF_NC', 'Off-delay contact, NC (IEC)', [...stubs(0.15), blade(), stop(), A(-0.02, 0.26, 0.08, 0, 180)]);
-const pbNO = block('IEC_S_PB_NO', 'Push button, NO (IEC)', [...stubs(0.15), blade(), L(-0.02, 0.09, -0.02, 0.3), L(-0.12, 0.3, 0.08, 0.3), L(-0.06, 0.13, -0.06, 0.18), L(0.02, 0.13, 0.02, 0.18)]);
+const pbNO = block('IEC_S_PB_NO', 'Push button, NO (IEC)', [...stubs(0.15), blade(), L(-0.02, 0.09, -0.02, 0.3), L(-0.12, 0.3, 0.08, 0.3)]);
 const pbNC = block('IEC_S_PB_NC', 'Push button, NC (IEC)', [...stubs(0.15), blade(), stop(), L(-0.02, 0.09, -0.02, 0.3), L(-0.12, 0.3, 0.08, 0.3)]);
 const estop = block('IEC_S_ESTOP', 'Emergency stop, NC (IEC)', [...stubs(0.15), blade(), stop(), L(-0.02, 0.09, -0.02, 0.26), A(-0.02, 0.28, 0.1, 0, 180), L(-0.12, 0.28, 0.08, 0.28)]);
 const selector = block('IEC_S_SEL', 'Selector switch (IEC)', [...stubs(0.15), blade(), L(-0.02, 0.09, -0.02, 0.26), L(-0.1, 0.26, 0.06, 0.26), L(-0.1, 0.26, -0.1, 0.32), L(0.06, 0.26, 0.06, 0.32)]);
@@ -77,7 +77,7 @@ const breaker3 = block(
 );
 const fuse = block('IEC_F_FUSE', 'Fuse (IEC)', [...stubs(0.2), P([[-0.2, -0.06], [0.2, -0.06], [0.2, 0.06], [-0.2, 0.06]], true), L(-0.25, 0, 0.25, 0)]);
 const coil = block('IEC_K_COIL', 'Relay coil (IEC)', [...stubs(0.15), box()]);
-const contactor = block('IEC_KM_COIL', 'Contactor coil (IEC)', [...stubs(0.15), box(), T(0, -0.04, 'KM', 0.08)]);
+const contactor = block('IEC_KM_COIL', 'Contactor coil (IEC)', [...stubs(0.15), box()]);
 const timerOn = block('IEC_KT_ON', 'Timer, on-delay (IEC)', [...stubs(0.15), box(), L(-0.1, 0.16, 0.1, 0.16), L(-0.1, 0.16, 0, 0.24), L(0.1, 0.16, 0, 0.24)]);
 const timerOff = block('IEC_KT_OFF', 'Timer, off-delay (IEC)', [...stubs(0.15), box(), L(-0.1, 0.24, 0.1, 0.24), L(-0.1, 0.24, 0, 0.16), L(0.1, 0.24, 0, 0.16)]);
 const valve = block('IEC_Y_VALVE', 'Solenoid valve (IEC)', [...stubs(0.15), box(), L(0, -0.1, 0, -0.2), P([[-0.1, -0.2], [0.1, -0.2], [-0.1, -0.32], [0.1, -0.32]], true)]);

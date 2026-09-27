@@ -63,3 +63,47 @@ describe('electrical helpers', () => {
     expect(nearestReference(d, { x: 5, y: 3 })).toBeNull();
   });
 });
+
+describe('AEWIRE tool', () => {
+  it('adds a tee dot with the segment in one undo step and dots pass-through ends', async () => {
+    const { WireTool } = await import('../src/tools/electrical');
+    const d = new Drawing();
+    d.addEntities([wire('h', 0, 5, 9)]);
+    const ctx = {
+      doc: d,
+      snap: {} as never,
+      selection: new Set<string>(),
+      aperture: () => 0.05,
+      prompt: () => {},
+      log: () => {},
+      setPreview: () => {},
+      setGhost: () => {},
+      setTrackFrom: () => {},
+      setDynText: () => {},
+      finish: () => {},
+      runCommand: () => {},
+      ui: {} as never,
+      requestSelection: () => {},
+    };
+    const t = new WireTool();
+    t.start(ctx as never);
+    t.onPoint({ x: 4, y: 5 }, ctx as never); // starts on the existing wire -> dot
+    expect(d.entities.filter((e) => e.type === 'insert')).toHaveLength(1);
+    t.onPoint({ x: 4, y: 8 }, ctx as never); // vertical segment
+    expect(d.entities.filter((e) => e.type === 'line')).toHaveLength(2);
+    t.onText('U', ctx as never); // removes the segment in one step
+    expect(d.entities.filter((e) => e.type === 'line')).toHaveLength(1);
+    expect(d.entities.filter((e) => e.type === 'insert')).toHaveLength(1);
+    t.onText('U', ctx as never); // removes the start dot
+    expect(d.entities.filter((e) => e.type === 'insert')).toHaveLength(0);
+    // a new wire passing over the end of an existing wire gets a dot there
+    d.addEntities([wire('stub', 2, 7, 6)]);
+    const t2 = new WireTool();
+    t2.start(ctx as never);
+    t2.onPoint({ x: 6, y: 6 }, ctx as never);
+    t2.onPoint({ x: 6, y: 9 }, ctx as never);
+    const dots = d.entities.filter((e) => e.type === 'insert');
+    expect(dots).toHaveLength(1);
+    if (dots[0]?.type === 'insert') expect(dots[0].position).toEqual({ x: 6, y: 7 });
+  });
+});

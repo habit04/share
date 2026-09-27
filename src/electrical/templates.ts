@@ -75,7 +75,7 @@ export function sheetEntities(size: SheetSize, fields: Partial<Record<string, st
   }
   for (let i = 0; i < cols; i += 1) {
     const x = m + ((W - 2 * m) * (i + 0.5)) / cols;
-    out.push(T(x, 0.18, String(cols - i), 0.14, 'center'), T(x, H - 0.32, String(cols - i), 0.14, 'center'));
+    out.push(T(x, 0.18, String(cols - i), 0.12, 'center'), T(x, H - 0.32, String(cols - i), 0.12, 'center'));
   }
   for (let i = 1; i < rows; i += 1) {
     const y = m + ((H - 2 * m) * i) / rows;
@@ -84,7 +84,7 @@ export function sheetEntities(size: SheetSize, fields: Partial<Record<string, st
   for (let i = 0; i < rows; i += 1) {
     const y = m + ((H - 2 * m) * (i + 0.5)) / rows;
     const label = String.fromCharCode(65 + i);
-    out.push(T(m / 2, y - 0.07, label, 0.14, 'center'), T(W - m / 2, y - 0.07, label, 0.14, 'center'));
+    out.push(T(m / 2, y - 0.07, label, 0.12, 'center'), T(W - m / 2, y - 0.07, label, 0.12, 'center'));
   }
   const tb: InsertEntity = {
     id: newId(),

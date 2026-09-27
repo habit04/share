@@ -1,4 +1,5 @@
 import type { Point } from '../core/geometry';
+import * as g from '../core/geometry';
 import type { Entity, LineEntity, InsertEntity, TextEntity } from '../core/entities';
 import { newId, insertTransform } from '../core/entities';
 import type { Drawing } from '../core/document';
@@ -47,6 +48,8 @@ export class WireTool extends LineTool {
   protected override makeSegment(ctx: ToolContext, a: Point, b: Point): Entity {
     return super.makeSegment(ctx, a, b);
   }
+  private startDot = false;
+
   override onPoint(p: Point, ctx: ToolContext): void {
     // Wires must be orthogonal: force the second point onto the axis with the larger delta.
     const last = this.points[this.points.length - 1];
@@ -55,15 +58,41 @@ export class WireTool extends LineTool {
       const dx = Math.abs(p.x - last.x);
       const dy = Math.abs(p.y - last.y);
       q = dx >= dy ? { x: p.x, y: last.y } : { x: last.x, y: p.y };
+      if (g.eq(last, q, 1e-9)) return;
     }
-    const before = ctx.doc.entities.length;
-    super.onPoint(q, ctx);
-    // A wire that starts or ends in the middle of another wire is a tee: mark it with a dot.
-    if (ctx.doc.entities.length !== before || this.points.length === 1) {
-      const tee = wireTeeAt(ctx.doc, q, ctx.aperture() * 0.5);
-      if (tee && !hasDotAt(ctx.doc, q)) ctx.doc.addEntities([wireDot(q)]);
+    const tol = ctx.aperture() * 0.5;
+    const adds: Entity[] = [];
+    const dotAt = (pt: Point) => {
+      if (hasDotAt(ctx.doc, pt) || adds.some((d) => d.type === 'insert' && g.dist(d.position, pt) < 1e-6)) return;
+      adds.push(wireDot(pt));
+    };
+    if (last) adds.push(this.makeSegment(ctx, last, q));
+    // A wire that starts or ends in the middle of another wire is a tee.
+    if (wireTeeAt(ctx.doc, q, tol)) dotAt(q);
+    // A wire that passes over the end of an existing wire is a tee as well.
+    if (last) {
+      for (const e of ctx.doc.entities) {
+        if (!isWire(e)) continue;
+        for (const end of [e.a, e.b]) {
+          if (g.dist(end, last) > tol && g.dist(end, q) > tol && g.distToSegment(end, last, q) < tol) dotAt(end);
+        }
+      }
     }
-    if (this.points.length >= 1) ctx.prompt('Specify wire end or [Undo]:');
+    // Segment and its junction dots are one undo step, so [Undo] removes both.
+    if (adds.length) ctx.doc.addEntities(adds);
+    if (!last) this.startDot = adds.length > 0;
+    this.points.push(q);
+    ctx.setTrackFrom(q);
+    ctx.prompt(this.points.length >= 2 ? 'Specify wire end or [Close/Undo]:' : 'Specify wire end or [Undo]:');
+    this.onMove(this.cursor ?? q, ctx);
+  }
+  override onText(text: string, ctx: ToolContext): void {
+    const t = text.trim().toUpperCase();
+    if ((t === 'U' || t === 'UNDO') && this.points.length === 1 && this.startDot) {
+      ctx.doc.undo(); // the dot placed at the start point
+      this.startDot = false;
+    }
+    super.onText(text, ctx);
   }
   override onMove(p: Point, ctx: ToolContext): void {
     const last = this.points[this.points.length - 1];
