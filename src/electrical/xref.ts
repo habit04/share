@@ -81,7 +81,7 @@ const ROW = 0.16;
 export function contactTable(x: XrefEntry, s: Pick<WdSettings, 'xrefFormat' | 'sheet'>): Entity[] {
   if (!x.coil) return [];
   const cx = x.coil.position.x;
-  const top = x.coil.position.y - 0.62;
+  const top = x.coil.position.y - 0.18;
   const rows: Array<[string, string]> = [];
   const no = x.contacts.filter((c) => c.kind === 'NO').map((c) => formatXref(c.ref, s));
   const nc = x.contacts.filter((c) => c.kind === 'NC').map((c) => formatXref(c.ref, s));
@@ -90,14 +90,12 @@ export function contactTable(x: XrefEntry, s: Pick<WdSettings, 'xrefFormat' | 's
   const out: Entity[] = [];
   const text = (px: number, py: number, t: string, align: 'left' | 'center' | 'right'): TextEntity => ({ id: newId(), type: 'text', layer: XREF_LAYER, color: 'ByLayer', position: { x: px, y: py }, text: t, height: H, rotation: 0, align });
   const line = (x1: number, y1: number, x2: number, y2: number): LineEntity => ({ id: newId(), type: 'line', layer: XREF_LAYER, color: 'ByLayer', a: { x: x1, y: y1 }, b: { x: x2, y: y2 } });
-  if (rows.length === 0) {
-    out.push(text(cx, top - 0.04, '(no contacts)', 'center'));
-    return out;
-  }
+  if (rows.length === 0) return out;
   const col1 = 0.3;
   const col2 = Math.max(0.5, ...rows.map((r) => textWidth(r[1], H) + 0.1));
   const w = col1 + col2;
-  const left = cx - w / 2;
+  // Sits to the right of the coil symbol, between the coil and the L2 rail.
+  const left = cx + 0.42;
   const bottom = top - rows.length * ROW;
   out.push(line(left, top, left + w, top), line(left, bottom, left + w, bottom), line(left, top, left, bottom), line(left + w, top, left + w, bottom), line(left + col1, top, left + col1, bottom));
   rows.forEach((r, i) => {
@@ -119,16 +117,24 @@ export function updateCrossReferences(doc: Drawing, settings: Pick<WdSettings, '
   for (const x of xref) {
     if (x.coil && settings.xrefStyle === 'table') out.push(...contactTable(x, settings));
     else if (x.coil && x.contacts.length) {
-      const summary = contactSummary(x, settings);
-      out.push({ id: newId(), type: 'text', layer: XREF_LAYER, color: 'ByLayer', position: { x: x.coil.position.x, y: x.coil.position.y - 0.56 }, text: summary, height: H, rotation: 0, align: 'center' });
+      // One reference per line to the right of the coil (ACADE places the contact list beside the coil).
+      const no = x.contacts.filter((c) => c.kind === 'NO').map((c) => formatXref(c.ref, settings));
+      const nc = x.contacts.filter((c) => c.kind === 'NC').map((c) => `${formatXref(c.ref, settings)} NC`);
+      const lines = [...no, ...nc];
+      lines.forEach((t, i) =>
+        out.push({ id: newId(), type: 'text', layer: XREF_LAYER, color: 'ByLayer', position: { x: x.coil!.position.x + 0.45, y: x.coil!.position.y - 0.03 - i * 0.12 }, text: t, height: H, rotation: 0, align: 'left' }),
+      );
     }
     for (const c of x.contacts) {
       const ref = x.coil ? formatXref(x.coilRef, settings) : 'no coil';
       out.push({ id: newId(), type: 'text', layer: XREF_LAYER, color: 'ByLayer', position: { x: c.insert.position.x, y: c.insert.position.y - 0.28 }, text: ref, height: H, rotation: 0, align: 'center' });
     }
   }
-  if (!doc.layer(XREF_LAYER)) doc.addLayer({ name: XREF_LAYER, color: 8, visible: true, locked: false, lineWeight: 0.25 });
-  doc.transact((s) => ({ ...s, entities: [...s.entities.filter((e) => e.layer !== XREF_LAYER), ...out] }));
+  doc.transact((s) => ({
+    ...s,
+    layers: s.layers.some((l) => l.name === XREF_LAYER) ? s.layers : [...s.layers, { name: XREF_LAYER, color: 8, visible: true, locked: false, lineWeight: 0.25 }],
+    entities: [...s.entities.filter((e) => e.layer !== XREF_LAYER), ...out],
+  }));
   return xref.length;
 }
 

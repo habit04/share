@@ -213,10 +213,12 @@ describe('parent / child relationships', () => {
     expect(updateCrossReferences(d)).toBe(2);
     const texts = d.entities.filter((e): e is TextEntity => e.type === 'text' && e.layer === 'XREF').map((e) => e.text);
     expect(texts.filter((t) => t === '100')).toHaveLength(3);
-    expect(texts).toContain('NO 101, 102 / NC 102');
+    // one reference per line beside the coil; NC references carry an "NC" suffix
+    expect(texts).toContain('101');
+    expect(texts).toContain('102 NC');
     expect(texts).not.toContain('(no contacts)');
     updateCrossReferences(d, { ...DEFAULT_WD_SETTINGS, xrefStyle: 'table' });
-    expect(d.entities.filter((e): e is TextEntity => e.type === 'text' && e.layer === 'XREF').map((e) => e.text)).toContain('(no contacts)');
+    expect(d.entities.filter((e): e is TextEntity => e.type === 'text' && e.layer === 'XREF').map((e) => e.text)).not.toContain('(no contacts)');
   });
   it('toggles NO / NC variants in place', () => {
     const exists = (n: string) => !!findSymbol(n);

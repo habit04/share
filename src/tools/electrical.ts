@@ -84,6 +84,7 @@ export class LadderTool implements Tool {
 
   start(ctx: ToolContext): void {
     this.ready = false;
+    ctx.prompt('Insert Ladder...');
     void ctx.ui.ladderSettings(this.settings).then((s) => {
       if (!s) {
         ctx.finish();

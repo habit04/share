@@ -48,8 +48,9 @@ describe('cross references', () => {
     const n = updateCrossReferences(d);
     expect(n).toBe(1);
     let xrefTexts = d.entities.filter((e) => e.type === 'text' && e.layer === 'XREF').map((e) => (e.type === 'text' ? e.text : ''));
-    // ACADE-style compact summary under the coil
-    expect(xrefTexts).toContain('NO 101 / NC 102');
+    // ACADE-style references beside the coil, one per line, NC marked
+    expect(xrefTexts).toContain('101');
+    expect(xrefTexts).toContain('102 NC');
     // table style: NO / NC rows with rung references drawn with lines
     updateCrossReferences(d, { xrefFormat: '%N', sheet: '1', xrefStyle: 'table' });
     xrefTexts = d.entities.filter((e) => e.type === 'text' && e.layer === 'XREF').map((e) => (e.type === 'text' ? e.text : ''));

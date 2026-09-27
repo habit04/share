@@ -36,7 +36,8 @@ export function buildPlcModule(origin: Point, s: PlcModuleSettings): Entity[] {
   out.push(
     { id: newId(), layer: 'SYMS', color: 'ByLayer', type: 'polyline', closed: true, points: [{ x: left, y: top }, { x: left + width, y: top }, { x: left + width, y: top - height }, { x: left, y: top - height }] },
     text(left + width / 2, top + 0.12, s.tag, 0.125, 'center', 'TAGS'),
-    text(left + width / 2, top - 0.22, s.description, 0.08, 'center', 'DESC'),
+    text(left + width / 2, top - 0.25, s.description, 0.07, 'center', 'DESC'),
+    line(left, top - 0.4, left + width, top - 0.4, 'SYMS'),
   );
   for (let i = 0; i < s.points; i += 1) {
     const y = top - 0.5 - i * s.spacing;
@@ -44,11 +45,11 @@ export function buildPlcModule(origin: Point, s: PlcModuleSettings): Entity[] {
     if (s.kind === 'input') {
       out.push(line(left - 0.75, y, left, y, 'WIRES'));
       out.push(text(left + 0.08, y - 0.04, addr, 0.08, 'left', 'TAGS'));
-      out.push(text(left + width - 0.08, y - 0.04, `IN ${i}`, 0.07, 'right', 'DESC'));
+      out.push(text(left + width - 0.08, y - 0.04, String(i), 0.07, 'right', 'TERMS'));
     } else {
       out.push(line(left + width, y, left + width + 0.75, y, 'WIRES'));
       out.push(text(left + width - 0.08, y - 0.04, addr, 0.08, 'right', 'TAGS'));
-      out.push(text(left + 0.08, y - 0.04, `OUT ${i}`, 0.07, 'left', 'DESC'));
+      out.push(text(left + 0.08, y - 0.04, String(i), 0.07, 'left', 'TERMS'));
     }
     if (i < s.points - 1) out.push(line(left, y - s.spacing / 2, left + width, y - s.spacing / 2, 'SYMS', 8));
   }
@@ -62,6 +63,7 @@ export class PlcModuleTool implements Tool {
   constructor(private ask: (init: PlcModuleSettings) => Promise<PlcModuleSettings | null>) {}
   start(ctx: ToolContext): void {
     this.ready = false;
+    ctx.prompt('Insert PLC Module...');
     void this.ask(this.settings).then((s) => {
       if (!s) {
         ctx.finish();
@@ -218,6 +220,7 @@ export class TerminalStripTool implements Tool {
   constructor(private ask: (init: TerminalStripSettings) => Promise<TerminalStripSettings | null>) {}
   start(ctx: ToolContext): void {
     this.ready = false;
+    ctx.prompt('Insert Terminal Strip...');
     void this.ask(this.settings).then((s) => {
       if (!s) {
         ctx.finish();

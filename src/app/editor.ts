@@ -239,7 +239,6 @@ export class Editor {
     this.tool = tool;
     this.toolName = tool.name;
     this.lastCommand = tool.name;
-    this.log(`Command: ${tool.name}`);
     tool.start(this.makeContext());
     this.updateCursorMode();
     this.emit('tool');
@@ -501,9 +500,7 @@ export class Editor {
     if (this.tool) this.cancel();
     this.lastCommand = def.name;
     this.lastCommandLine = text;
-    // Commands that are not tools still get logged
-    if (!['LINE', 'PLINE', 'CIRCLE', 'ARC', 'RECTANG', 'TEXT', 'ERASE', 'MOVE', 'COPY', 'ROTATE', 'DIST', 'AEWIRE', 'AELADDER', 'AECOMPONENT'].includes(def.name))
-      this.log(`Command: ${def.name}`);
+    this.log(`Command: ${def.name}`);
     def.run(this, rest.join(' ') || undefined);
     this.emit('tool');
   }

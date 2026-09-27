@@ -235,7 +235,8 @@ export class CommandLine {
   }
 
   private renderPrompt(): void {
-    const text = this.editor.tool || this.editor.prompt !== 'Type a command' ? `${this.editor.toolName ? this.editor.toolName + ' ' : ''}${this.editor.prompt}` : '';
+    const promptText = this.editor.prompt === 'Type a command' ? '' : this.editor.prompt;
+    const text = this.editor.tool || promptText ? `${this.editor.toolName ? this.editor.toolName + ' ' : ''}${promptText}`.trim() : '';
     this.promptEl.innerHTML = '';
     // Render [Option/Keywords] in accent colour like AutoCAD's clickable options.
     const parts = text.split(/(\[[^\]]*\])/);
