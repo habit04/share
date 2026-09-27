@@ -131,8 +131,12 @@ async function createWindow() {
 }
 
 let dwgReader = null;
+/** The reader and the LibreDWG wasm are unpacked from the asar so Node's ESM loader can import them. */
+function dwgReaderPath() {
+  return path.join(__dirname, '..', 'scripts', 'dwg-reader.mjs').replace(/app\.asar([\\/])/, 'app.asar.unpacked$1');
+}
 async function readDwg(bytes) {
-  if (!dwgReader) dwgReader = import(path.join(__dirname, '..', 'scripts', 'dwg-reader.mjs'));
+  if (!dwgReader) dwgReader = import(require('node:url').pathToFileURL(dwgReaderPath()).href);
   const mod = await dwgReader;
   try {
     return await mod.readDwgPayload(bytes, 'dwg');
@@ -273,6 +277,23 @@ ipcMain.handle('save-dxf', async (ev, existingPath, text, suggestName) => {
   knownPaths.add(target);
   return target;
 });
+
+// Headless probe used by packaging smoke tests:  voltcad --probe-dwg <file.dwg>
+const probeIndex = process.argv.indexOf('--probe-dwg');
+if (probeIndex >= 0) {
+  app.whenReady().then(async () => {
+    try {
+      const file = process.argv[probeIndex + 1];
+      const { payload, version } = await readDwg(await fs.readFile(file));
+      process.stdout.write(`PROBE_OK ${version} entities=${payload.entities.length} blocks=${payload.blocks.length}\n`);
+      app.exit(0);
+    } catch (err) {
+      process.stdout.write(`PROBE_FAIL ${err && err.message}\n`);
+      app.exit(1);
+    }
+  });
+  return;
+}
 
 app.whenReady().then(() => {
   createWindow();

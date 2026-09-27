@@ -2,6 +2,7 @@
   "name": "voltcad",
   "version": "0.1.0",
   "description": "2D electrical schematic drafting application (desktop)",
+  "author": "VoltCAD contributors",
   "private": true,
   "main": "electron/main.cjs",
   "type": "module",
@@ -29,7 +30,8 @@
       "package.json"
     ],
     "asarUnpack": [
-      "node_modules/@mlightcad/libredwg-web/**"
+      "node_modules/@mlightcad/libredwg-web/**",
+      "scripts/**"
     ],
     "win": {
       "target": [

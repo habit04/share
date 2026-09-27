@@ -4,3 +4,5 @@ release/
 *.log
 .DS_Store
 screenshots/*.png
+_*.mjs
+_*.test.ts
