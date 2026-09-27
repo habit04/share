@@ -5,7 +5,7 @@
 import type { Point } from '../core/geometry';
 import * as g from '../core/geometry';
 import type { Entity, LineEntity, PolylineEntity, ArcEntity, CircleEntity } from '../core/entities';
-import { newId, explodeInsert, entitySegments, arcPoints } from '../core/entities';
+import { newId, explodeInsert, entitySegments, arcPoints, mirrorEntityAcross, scaleEntityBy } from '../core/entities';
 import { pickEntity } from '../core/selection';
 import type { Tool, ToolContext } from './types';
 
@@ -476,31 +476,7 @@ abstract class SelectionTool implements Tool {
 }
 
 export function mirrorEntity(e: Entity, a: Point, b: Point): Entity {
-  const d = g.normalize(g.sub(b, a));
-  const reflect = (p: Point): Point => {
-    const v = g.sub(p, a);
-    const proj = g.scale(d, g.dot(v, d));
-    const perp = g.sub(v, proj);
-    return g.add(a, g.sub(proj, perp));
-  };
-  const lineAngle = Math.atan2(d.y, d.x);
-  const reflectAngle = (t: number) => 2 * lineAngle - t;
-  switch (e.type) {
-    case 'line':
-      return { ...e, a: reflect(e.a), b: reflect(e.b) };
-    case 'circle':
-      return { ...e, center: reflect(e.center) };
-    case 'arc':
-      return { ...e, center: reflect(e.center), startAngle: reflectAngle(e.endAngle), endAngle: reflectAngle(e.startAngle) };
-    case 'polyline':
-      return { ...e, points: e.points.map(reflect) };
-    case 'text':
-      // AutoCAD MIRRTEXT=0: text position mirrors but stays readable
-      return { ...e, position: reflect(e.position) };
-    case 'insert':
-      // Mirror the insertion point; symbols are re-inserted with mirrored rotation and negative scale isn't supported, so keep orientation.
-      return { ...e, position: reflect(e.position), rotation: reflectAngle(e.rotation) };
-  }
+  return mirrorEntityAcross(e, a, b);
 }
 
 export class MirrorTool extends SelectionTool {
@@ -534,21 +510,7 @@ export class MirrorTool extends SelectionTool {
 }
 
 export function scaleEntity(e: Entity, base: Point, k: number): Entity {
-  const tf = (p: Point) => g.add(base, g.scale(g.sub(p, base), k));
-  switch (e.type) {
-    case 'line':
-      return { ...e, a: tf(e.a), b: tf(e.b) };
-    case 'circle':
-      return { ...e, center: tf(e.center), radius: e.radius * k };
-    case 'arc':
-      return { ...e, center: tf(e.center), radius: e.radius * k };
-    case 'polyline':
-      return { ...e, points: e.points.map(tf) };
-    case 'text':
-      return { ...e, position: tf(e.position), height: e.height * k };
-    case 'insert':
-      return { ...e, position: tf(e.position), scale: e.scale * k };
-  }
+  return scaleEntityBy(e, base, k);
 }
 
 export class ScaleTool extends SelectionTool {

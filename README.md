@@ -33,6 +33,7 @@ npm run dev              # renderer only, in a browser (http://localhost:5173/?d
 npm test                 # unit tests (includes DWG fixtures in ./fixtures)
 npm run typecheck
 npm run build && npm run screenshot   # screenshots/*.png from headless Chromium
+node scripts/screenshot-drafting.mjs  # dimensions, linetypes, polyline arcs, arrays
 npm run dist             # installers via electron-builder (win/mac/linux)
 node scripts/dwg2dxf.mjs in.dwg [out.dxf]   # command-line DWG -> DXF
 ```
@@ -48,10 +49,16 @@ keywords shown in `[brackets]` are clickable.
 
 | Command | Alias | Purpose |
 | --- | --- | --- |
-| LINE, PLINE, CIRCLE, ARC, RECTANG, TEXT | L, PL, C, A, REC, T | Draw |
+| LINE, PLINE [Arc/Close/Halfwidth/Length/Undo/Width], CIRCLE, ARC, RECTANG, TEXT | L, PL, C, A, REC, T | Draw |
+| ELLIPSE [Arc/Center], POINT, XLINE [Hor/Ver/Ang/Bisect/Offset], RAY, DONUT, POLYGON [Edge/Inscribed/Circumscribed], MTEXT [Height/Justify/Line spacing/Rotation/Width] | EL, PO, XL, DO, POL, MT | More entities (PDMODE / PDSIZE set the point marker) |
+| DIMLINEAR [Horizontal/Vertical/Rotated/Text], DIMALIGNED, DIMRADIUS, DIMDIAMETER, DIMANGULAR, DIMSTYLE [Save/Restore/STatus/Variables/Apply], DIMTXT, DIMASZ, DIMEXO, DIMEXE, DIMGAP, DIMCEN, DIMSCALE, DIMDEC, DIMADEC, DIMLUNIT | DLI, DAL, DRA, DDI, DAN, D | Dimensions (Standard and ISO-25 styles; Enter at the first prompt dimensions a picked object) |
 | ERASE, MOVE, COPY, ROTATE, MIRROR, SCALE, TRIM, EXTEND, OFFSET, EXPLODE | E, M, CO, RO, MI, SC, TR, EX, O, X | Modify |
-| DIST, LIST, PROPERTIES | DI, LI, PR | Inquiry, Properties palette |
-| UNDO, REDO, ZOOM [E/W/I/O], GRID, SNAP, ORTHO, POLAR, OSNAP, DYNMODE, LWDISPLAY, CURSORSIZE, LAYER | U, Z, F7, F9, F8, F10, F3, F12, LW, LA | View / settings (persisted) |
+| FILLET [Radius/Trim/Polyline/Multiple], CHAMFER [Distance/Angle/Trim/Multiple], ARRAY / ARRAYRECT / ARRAYPOLAR, STRETCH, BREAK [First point], JOIN, LENGTHEN [DElta/Percent/Total], ALIGN, MATCHPROP, CHPROP | F, CHA, AR, S, BR, J, LEN, AL, MA | More modify commands |
+| BLOCK, INSERT [Scale/Rotate, attribute prompts], PURGE [Blocks/LAyers/LTypes/All] | B, I, PU | Blocks |
+| DIST [Multiple points], AREA [Object/Add/Subtract], ID, LIST, PROPERTIES | DI, AA, LI, PR | Inquiry, Properties palette |
+| UNDO, REDO, ZOOM [All/Center/Extents/Previous/Scale/Window/OBject/In/Out], VIEW [Save/Restore/Delete/Window/?], REGEN, UNITS, LIMITS [ON/OFF], GRIDDISPLAY, GRID, SNAP, ORTHO, POLAR, POLARANG, OSNAP, OSNAPSET (END MID CEN NOD QUA INT INS PER TAN NEA NONE), OTRACK, DYNMODE, LWDISPLAY, CURSORSIZE | U, Z, V, RE, UN, F7, F9, F8, F10, F3, F11, F12, LW | View / settings (persisted) |
+| LAYER (dialog) / LAYER or -LAYER [?/Make/Set/New/ON/OFF/Color/Ltype/LWeight/Freeze/Thaw/LOck/Unlock] names, LINETYPE [?/Load/Set], LTSCALE, CELTYPE, LWEIGHT, CELWEIGHT | LA, LT, LTS | Layers, linetypes (Continuous, DASHED, HIDDEN, CENTER, PHANTOM, DOT, DASHDOT, DIVIDE, BORDER and 2x variants), lineweights |
+| SELECT [Window/Crossing/Fence/WPolygon/CPolygon/Previous/Last/ALL/Add/Remove/Undo], QSELECT [type layer color], SELECTALL | | Selection sets; ALL / Last / Previous also work at any "Select objects:" prompt |
 | AEWIRE | WIRE, W | Orthogonal wire on the current wire type; junction dots at tees |
 | AEWIRETYPE | WIRETYPE | Choose the wire layer (gauge / colour) for new wires |
 | AELADDER | LADDER | Insert a ladder (width, spacing, rungs, references, 1/3 phase) |
@@ -103,7 +110,12 @@ folder every 10 minutes (Options > Files); the Drawing Recovery Manager offers t
 Mouse: wheel zooms at the cursor, middle-drag pans, double middle-click zooms extents.
 Click picks; drag left-to-right is a window selection (blue), right-to-left is crossing (green);
 Shift-click removes from the selection. Drag a blue grip to stretch; double-click text or a
-component to edit it. Object snaps: endpoint, midpoint, center, intersection, perpendicular.
+component to edit it. Object snaps: endpoint, midpoint, center, quadrant, node, intersection,
+perpendicular, tangent, nearest, insertion (OSNAPSET); object snap tracking (OTRACK) draws
+alignment paths from the last two acquired points, with POLARANG increments when POLARMODE has
+bit 2 set. Dashed linetypes scale with LTSCALE and the zoom, like AutoCAD, and turn solid when
+the pattern would be finer than a few pixels. Dimension text uses the DIMLUNIT/DIMDEC format and
+the `%%c`, `%%d`, `%%p` control codes render as diameter, degree and plus/minus symbols.
 
 ## AutoCAD Electrical-style data model
 
@@ -123,12 +135,19 @@ that is searched first.
 
 ## File formats
 
-- **DXF (AC1015 / AutoCAD 2000)** is the native save format: layers, blocks, attributes
-  (including invisible ones), LINE / CIRCLE / ARC / LWPOLYLINE (with bulges on read) / TEXT /
-  MTEXT (read) / INSERT. Wire junction dots are written as zero-hole donuts so they stay filled
-  in other CAD programs. The writer emits the full table set (BLOCK_RECORD, LTYPE, STYLE, APPID,
-  DIMSTYLE, VPORT, $HANDSEED, CLASSES, OBJECTS) that AutoCAD expects.
-- **DWG** (R14 - 2018) opens through LibreDWG. The import is read-only; SAVE writes a DXF next
+- **DXF (AC1015 / AutoCAD 2000)** is the native save format: layers (linetype, lineweight,
+  frozen/off/locked), blocks, attributes (including invisible ones), LINE / CIRCLE / ARC /
+  LWPOLYLINE (bulges and constant width round-trip) / TEXT / MTEXT / INSERT / ELLIPSE / POINT /
+  XLINE / RAY / SOLID and DIMENSION (linear, aligned, radius, diameter, angular) written with an
+  anonymous `*D` picture block so other CAD programs show them. Per-entity linetype (code 6),
+  lineweight (370) and linetype scale (48), LTYPE dash patterns, the VIEW table, DIMSTYLE and the
+  header variables for units, limits, LTSCALE, PDMODE/PDSIZE, CELTYPE/CELWEIGHT and DIM* all round
+  trip. Wire junction dots are written as zero-hole donuts so they stay filled in other CAD
+  programs. The writer emits the full table set (BLOCK_RECORD, LTYPE, STYLE, APPID, DIMSTYLE,
+  VPORT, $HANDSEED, CLASSES, OBJECTS) that AutoCAD expects.
+- **DWG** (R14 - 2018) opens through LibreDWG, including dimensions, ellipses, points, MTEXT,
+  construction lines, solids, polyline bulges, entity/layer linetypes and lineweights and the
+  header units / limits / dimension variables. The import is read-only; SAVE writes a DXF next
   to the original. Sample files from the LibreDWG test suite live in `fixtures/` and are used
   by the tests.
 - **PDF** plotting renders the extents onto a white sheet.

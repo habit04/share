@@ -53,6 +53,7 @@ export async function readDwgPayload(bytes, kind = 'dwg') {
       frozen: x.frozen,
       locked: x.locked,
       lineweight: x.lineweight,
+      lineType: x.lineType,
     })),
     blocks: (db.tables?.BLOCK_RECORD?.entries ?? []).map((b) => ({
       name: b.name,

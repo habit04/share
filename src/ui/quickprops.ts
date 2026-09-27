@@ -21,6 +21,8 @@ export function kindName(e: Entity): string {
       return 'Text';
     case 'insert':
       return 'Block Reference';
+    default:
+      return e.type.charAt(0).toUpperCase() + e.type.slice(1);
   }
 }
 

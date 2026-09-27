@@ -40,3 +40,31 @@ describe('DWG import (LibreDWG wasm)', () => {
     expect(state.layers.find((l) => l.name === 'Tavolo 2')?.color).toBe(2);
   }, 60000);
 });
+
+describe('DWG import of drafting entities', () => {
+  it.skipIf(!existsSync(join(fixtures, 'example_2000.dwg')))('converts dimensions, ellipse, point, mtext, xline and ray with bulges kept', async () => {
+    const { payload } = await readDwgPayload(readFileSync(join(fixtures, 'example_2000.dwg')), 'dwg');
+    const { state, skipped } = convertDwg(payload);
+    const types = new Set(state.entities.map((e) => e.type));
+    for (const t of ['dimension', 'ellipse', 'point', 'mtext', 'xline', 'ray'] as const) expect(types.has(t), t).toBe(true);
+    expect(skipped.DIMENSION ?? 0).toBeLessThanOrEqual(3); // ordinate dimensions are not modelled
+    const dims = state.entities.filter((e) => e.type === 'dimension');
+    expect(dims.length).toBeGreaterThanOrEqual(5);
+    const aligned = dims.find((d) => d.type === 'dimension' && d.kind === 'aligned');
+    expect(aligned).toBeDefined();
+    if (aligned?.type === 'dimension') expect(aligned.style.name).toBe('ISO-25');
+    const mt = state.entities.find((e) => e.type === 'mtext');
+    if (mt?.type === 'mtext') {
+      expect(mt.text).toContain('\n');
+      expect(mt.width).toBeGreaterThan(0);
+    }
+    const bulged = state.entities.find((e) => e.type === 'polyline' && e.bulges?.some((b) => Math.abs(b) > 1e-9));
+    expect(bulged).toBeDefined();
+    expect(state.header?.units.insunits).toBe(4);
+    expect(state.header?.limits.max.x).toBeCloseTo(420);
+    // and everything survives our DXF writer / reader
+    const back = readDxf(writeDxf(state));
+    expect(back.entities.filter((e) => e.type === 'dimension').length).toBe(dims.length);
+    expect(back.entities.some((e) => e.type === 'ellipse')).toBe(true);
+  }, 60000);
+});

@@ -17,7 +17,7 @@ import { IEC_SYMBOLS } from '../electrical/iec';
 import { updateCrossReferences } from '../electrical/xref';
 import { TITLE_BLOCK, newFromTemplate, SHEET_SIZES, type SheetSize } from '../electrical/templates';
 import { PlcModuleTool, SignalArrowTool, TerminalStripTool, DEFAULT_PLC, DEFAULT_STRIP, SOURCE_ARROW, DEST_ARROW, type PlcModuleSettings, type TerminalStripSettings } from '../tools/plc';
-import { gripPoints } from '../core/entities';
+import { gripPoints, moveGrip } from '../core/entities';
 import { parseProject, serializeProject, defaultProject, resolveDrawingPath, baseName, type Project } from './project';
 import { loadSettings, saveSettings, pushRecent, type UserSettings } from './settings';
 import { SessionManager } from './sessions';
@@ -27,6 +27,8 @@ import { parsePointInput, isPlainNumber } from './input';
 import { convertDwg, type DwgImportPayload } from '../io/dwg';
 import type { ElectricalUi } from '../electrical/ui';
 import { registerElectricalCommands } from './commands-electrical';
+import { registerDraftingCommands } from './commands-drafting';
+import { trackFromPoints } from '../core/snap';
 
 export type EditorEvent = 'change' | 'selection' | 'tool' | 'view' | 'snap' | 'file' | 'log';
 
@@ -35,6 +37,8 @@ export interface CommandDef {
   aliases: string[];
   description: string;
   run: (editor: Editor, arg?: string) => void;
+  /** The command starts a Tool (which logs "Command: NAME" itself). */
+  startsTool?: boolean;
 }
 
 interface SelectionRequest {
@@ -288,6 +292,9 @@ export class Editor {
     this.overlay.preview = [];
     this.overlay.ghost = [];
     this.overlay.trackFrom = null;
+    this.overlay.acquired = undefined;
+    this.overlay.trackPaths = undefined;
+    this.acquired = [];
     this.overlay.dynText = [];
     this.overlay.selectionBox = null;
     this.overlay.hover = null;
@@ -480,8 +487,12 @@ export class Editor {
       if (f) void ed.openFile(f);
       else ed.settings.recentFiles.forEach((r, k) => ed.log(`  ${k + 1}. ${r}`));
     });
+    registerDraftingCommands(this);
     registerElectricalCommands(this);
   }
+
+  /** Hook for keywords typed at a "Select objects:" prompt (ALL / Last / Previous); returns true when handled. */
+  selectionKeyword: ((text: string, ids: Set<string>) => boolean) | null = null;
 
   layerDialogRequested: (() => void) | null = null;
   private emitLayerDialog(): void {
@@ -500,7 +511,7 @@ export class Editor {
     if (this.tool) this.cancel();
     this.lastCommand = def.name;
     this.lastCommandLine = text;
-    this.log(`Command: ${def.name}`);
+    if (!def.startsTool) this.log(`Command: ${def.name}`);
     def.run(this, rest.join(' ') || undefined);
     this.emit('tool');
   }
@@ -514,13 +525,14 @@ export class Editor {
     }
     this.log(`${this.prompt} ${text}`);
     if (this.selReq) {
-      if (text.toUpperCase() === 'ALL') {
-        for (const e of this.doc.entities) this.selReq.ids.add(e.id);
+      const handled = this.selectionKeyword ? this.selectionKeyword(text, this.selReq.ids) : false;
+      if (handled || text.toUpperCase() === 'ALL') {
+        if (!handled) for (const e of this.doc.entities) this.selReq.ids.add(e.id);
         this.selection = new Set(this.selReq.ids);
         this.emit('selection');
         this.render();
         this.log(`${this.selReq.ids.size} found`);
-      }
+      } else this.log('Expects a point or Window/Last/Crossing/BOX/ALL/Fence/WPolygon/CPolygon/Add/Remove/Previous/Undo');
       return;
     }
     if (this.tool) {
@@ -571,6 +583,9 @@ export class Editor {
 
   private acceptPoint(p: Point): void {
     this.lastPoint = p;
+    this.acquired = [];
+    this.overlay.acquired = undefined;
+    this.overlay.trackPaths = undefined;
     this.tool?.onPoint(p, this.makeContext());
     this.emit('tool');
   }
@@ -855,12 +870,31 @@ export class Editor {
     const snap = wantSnap
       ? findObjectSnap(raw, this.doc.entities, this.doc.lookupBlock, this.snap, aperture, this.overlay.trackFrom, this.hiddenLayers())
       : null;
-    if (snap) return { world: snap.point, snap };
+    this.overlay.trackPaths = undefined;
+    if (snap) {
+      // Object snap tracking acquires the points the cursor pauses on (the last two).
+      if (this.snap.otrack && wantSnap && snap.kind !== 'perpendicular' && snap.kind !== 'nearest') {
+        if (!this.acquired.some((q) => g.eq(q, snap.point, 1e-9))) this.acquired = [...this.acquired.slice(-1), snap.point];
+        this.overlay.acquired = this.acquired;
+      }
+      return { world: snap.point, snap };
+    }
     let p = raw;
+    if (this.snap.otrack && wantSnap) {
+      const bases = this.overlay.trackFrom ? [...this.acquired, this.overlay.trackFrom] : this.acquired;
+      const tr = trackFromPoints(raw, bases, this.snap, aperture);
+      if (tr) {
+        this.overlay.trackPaths = tr.paths;
+        return { world: tr.point, snap: { point: tr.point, kind: 'tracking' } };
+      }
+    }
     if (this.overlay.trackFrom) p = constrainDirection(this.overlay.trackFrom, p, this.snap);
     p = snapToGrid(p, this.snap);
     return { world: p, snap: null };
   }
+
+  /** Points acquired for object snap tracking; cleared whenever a point is accepted. */
+  private acquired: Point[] = [];
 
   onMouseMove(ev: MouseEvent): void {
     const s = this.screenFromEvent(ev);
@@ -1153,30 +1187,7 @@ const fallbackUi: ToolContext['ui'] = {
 
 /** Move grip `index` of an entity to `p` (AutoCAD grip stretch semantics). */
 export function applyGrip(e: Entity, index: number, p: Point): Entity | null {
-  switch (e.type) {
-    case 'line':
-      if (index === 0) return { ...e, a: p };
-      if (index === 2) return { ...e, b: p };
-      {
-        const d = g.sub(p, g.mid(e.a, e.b));
-        return { ...e, a: g.add(e.a, d), b: g.add(e.b, d) };
-      }
-    case 'circle':
-      if (index === 0) return { ...e, center: p };
-      return { ...e, radius: Math.max(1e-6, g.dist(e.center, p)) };
-    case 'arc': {
-      if (index === 3) return { ...e, center: p };
-      const a = g.angleOf(e.center, p);
-      if (index === 0) return { ...e, startAngle: a };
-      if (index === 2) return { ...e, endAngle: a };
-      return { ...e, radius: Math.max(1e-6, g.dist(e.center, p)) };
-    }
-    case 'polyline':
-      return { ...e, points: e.points.map((q, i) => (i === index ? p : q)) };
-    case 'text':
-    case 'insert':
-      return { ...e, position: p };
-  }
+  return moveGrip(e, index, p);
 }
 
 function relativeTo(projectPath: string, file: string): string {

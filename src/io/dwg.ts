@@ -18,18 +18,29 @@ import type {
   DwgInsertEntity,
   DwgAttdefEntity,
   DwgBlockRecordTableEntry,
+  DwgEllipseEntity,
+  DwgPointEntity,
+  DwgXlineEntity,
+  DwgRayEntity,
+  DwgDimensionEntity,
+  DwgSolidEntity,
 } from '@mlightcad/libredwg-web';
-import type { Entity, BlockDef, Layer, AttributeDef, ColorSpec } from '../core/entities';
+import type { Entity, BlockDef, Layer, AttributeDef, ColorSpec, MTextAttachment } from '../core/entities';
 import { newId } from '../core/entities';
-import type { DrawingState } from '../core/document';
-import { DEFAULT_LAYERS } from '../core/document';
+import type { DrawingState, DrawingHeader } from '../core/document';
+import { DEFAULT_LAYERS, DEFAULT_HEADER } from '../core/document';
 import type { Point } from '../core/geometry';
+import * as g from '../core/geometry';
+import { STANDARD_DIMSTYLE, type DimStyle } from '../core/dimension';
+import { mtextFromDxf } from '../core/mtext';
+import { LINEWEIGHTS } from '../core/linetypes';
+import type { LinearUnits } from '../core/units';
 
 /** Subset of DwgDatabase we actually need (what the main process sends over IPC). */
 export interface DwgImportPayload {
   header: { CLAYER?: unknown; INSUNITS?: unknown } & Record<string, unknown>;
   entities: DwgEntity[];
-  layers: Array<{ name: string; colorIndex: number; off: boolean; frozen: boolean; locked: boolean; lineweight: number }>;
+  layers: Array<{ name: string; colorIndex: number; off: boolean; frozen: boolean; locked: boolean; lineweight: number; lineType?: string }>;
   blocks: Array<Pick<DwgBlockRecordTableEntry, 'name' | 'basePoint' | 'entities' | 'description'>>;
   version?: string;
 }
@@ -46,6 +57,7 @@ export function toImportPayload(db: DwgDatabase, version?: string): DwgImportPay
       frozen: l.frozen,
       locked: l.locked,
       lineweight: l.lineweight,
+      lineType: l.lineType,
     })),
     blocks: (db.tables?.BLOCK_RECORD?.entries ?? []).map((b) => ({
       name: b.name,
@@ -65,32 +77,77 @@ function color(e: DwgEntity): ColorSpec {
   return c;
 }
 
-/** Tessellate an LWPOLYLINE / POLYLINE2D segment with a bulge into points (excluding the start point). */
-function bulgePoints(a: Point, b: Point, bulge: number): Point[] {
-  if (!bulge || Math.abs(bulge) < 1e-9) return [b];
-  const theta = 4 * Math.atan(bulge); // included angle, signed
-  const chord = Math.hypot(b.x - a.x, b.y - a.y);
-  if (chord < 1e-12) return [b];
-  const r = chord / (2 * Math.sin(Math.abs(theta) / 2));
-  const mx = (a.x + b.x) / 2;
-  const my = (a.y + b.y) / 2;
-  const d = Math.sqrt(Math.max(0, r * r - (chord / 2) * (chord / 2)));
-  const nx = -(b.y - a.y) / chord;
-  const ny = (b.x - a.x) / chord;
-  const sign = theta > 0 ? 1 : -1;
-  // centre lies to the left of chord for CCW (positive bulge) when |theta| < π
-  const side = Math.abs(theta) <= Math.PI ? sign : -sign;
-  const cx = mx + nx * d * side;
-  const cy = my + ny * d * side;
-  const a0 = Math.atan2(a.y - cy, a.x - cx);
-  const n = Math.max(2, Math.ceil(Math.abs(theta) / (Math.PI / 12)));
-  const out: Point[] = [];
-  for (let i = 1; i <= n; i += 1) {
-    const t = a0 + (theta * i) / n;
-    out.push({ x: cx + r * Math.cos(t), y: cy + r * Math.sin(t) });
-  }
-  out[out.length - 1] = b;
+/** DWG lineweight enum: 0..23 index the standard table, 29 ByLayer, 30 ByBlock, 31 Default. */
+function lineweightMm(code: number | undefined): number | undefined {
+  if (code === undefined || code < 0 || code > 23) return undefined;
+  return LINEWEIGHTS[code];
+}
+
+function baseProps(e: DwgEntity): { id: string; layer: string; color: ColorSpec; linetype?: string; lineWeight?: number; ltscale?: number } {
+  const out: { id: string; layer: string; color: ColorSpec; linetype?: string; lineWeight?: number; ltscale?: number } = { id: newId(), layer: e.layer || '0', color: color(e) };
+  if (e.lineType && !/^bylayer$/i.test(e.lineType)) out.linetype = e.lineType;
+  const lw = lineweightMm(e.lineweight);
+  if (lw !== undefined) out.lineWeight = lw;
+  if (e.lineTypeScale && e.lineTypeScale !== 1) out.ltscale = e.lineTypeScale;
   return out;
+}
+
+/** The union of LibreDWG's dimension subtypes, flattened to optional fields. */
+interface DimAny {
+  dimensionType?: number;
+  definitionPoint?: { x: number; y: number };
+  textPoint?: { x: number; y: number };
+  text?: string;
+  subDefinitionPoint1?: { x: number; y: number };
+  subDefinitionPoint2?: { x: number; y: number };
+  centerPoint?: { x: number; y: number };
+  arcPoint?: { x: number; y: number };
+  rotationAngle?: number;
+  leaderLength?: number;
+}
+
+function convertDimension(raw: DwgDimensionEntity, base: ReturnType<typeof baseProps>, style: DimStyle): Entity | null {
+  const d = raw as unknown as DimAny;
+  const type = (d.dimensionType ?? 0) & 15;
+  const userText = ((d.dimensionType ?? 0) & 128) !== 0 ? p2(d.textPoint) : undefined;
+  const text = d.text && d.text !== '<>' ? d.text : undefined;
+  const common = { ...base, type: 'dimension' as const, text, textPosition: userText, style };
+  const dp = p2(d.definitionPoint);
+  switch (type) {
+    case 0:
+      return { ...common, kind: 'linear', p1: p2(d.subDefinitionPoint1), p2: p2(d.subDefinitionPoint2), linePoint: dp, rotation: d.rotationAngle ?? 0 };
+    case 1:
+      return { ...common, kind: 'aligned', p1: p2(d.subDefinitionPoint1), p2: p2(d.subDefinitionPoint2), linePoint: dp, rotation: 0 };
+    case 3: {
+      const far = p2(d.centerPoint);
+      const center = g.mid(dp, far);
+      const dir = g.normalize(g.sub(dp, center));
+      return { ...common, kind: 'diameter', p1: center, p2: dp, linePoint: userText ?? g.add(dp, g.scale(dir, d.leaderLength ?? 0)), rotation: 0 };
+    }
+    case 4: {
+      const q = p2(d.centerPoint);
+      const dir = g.normalize(g.sub(q, dp));
+      return { ...common, kind: 'radius', p1: dp, p2: q, linePoint: userText ?? g.add(q, g.scale(dir, d.leaderLength ?? 0)), rotation: 0 };
+    }
+    case 5:
+      return { ...common, kind: 'angular', p1: p2(d.subDefinitionPoint1), p2: p2(d.subDefinitionPoint2), center: p2(d.centerPoint), linePoint: dp, rotation: 0 };
+    case 2: {
+      const a1 = p2(d.subDefinitionPoint1);
+      const a2 = p2(d.subDefinitionPoint2);
+      const b1 = p2(d.centerPoint);
+      const b2 = dp;
+      const r = g.sub(a2, a1);
+      const sv = g.sub(b2, b1);
+      const denom = g.cross(r, sv);
+      if (Math.abs(denom) < 1e-12) return null;
+      const t = g.cross(g.sub(b1, a1), sv) / denom;
+      const center = g.add(a1, g.scale(r, t));
+      const far = (p: Point, q: Point) => (g.dist(p, center) >= g.dist(q, center) ? p : q);
+      return { ...common, kind: 'angular', p1: far(a1, a2), p2: far(b1, b2), center, linePoint: p2(d.arcPoint), rotation: 0 };
+    }
+    default:
+      return null;
+  }
 }
 
 function halign(h: number | undefined): 'left' | 'center' | 'right' {
@@ -99,16 +156,8 @@ function halign(h: number | undefined): 'left' | 'center' | 'right' {
   return 'left';
 }
 
-function cleanMText(s: string): string {
-  return s
-    .replace(/\\P/g, ' ')
-    .replace(/\{\\[^;]*;([^}]*)\}/g, '$1')
-    .replace(/\\[A-Za-z][^;]*;/g, '')
-    .replace(/[{}]/g, '');
-}
-
-function convertEntity(e: DwgEntity, blockIndex: Map<string, string>): Entity | null {
-  const base = { id: newId(), layer: e.layer || '0', color: color(e) };
+function convertEntity(e: DwgEntity, blockIndex: Map<string, string>, dimStyle: DimStyle = STANDARD_DIMSTYLE): Entity | null {
+  const base = baseProps(e);
   switch (e.type) {
     case 'LINE': {
       const l = e as DwgLineEntity;
@@ -133,22 +182,21 @@ function convertEntity(e: DwgEntity, blockIndex: Map<string, string>): Entity | 
         const b = p2(verts[1]);
         return { ...base, type: 'circle', center: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, radius: Math.hypot(b.x - a.x, b.y - a.y) / 2 + cw / 2, filled: true };
       }
-      const pts: Point[] = [p2(verts[0])];
-      for (let i = 0; i < verts.length - 1; i += 1) pts.push(...bulgePoints(p2(verts[i]), p2(verts[i + 1]), verts[i]!.bulge));
-      if (closed && verts.length > 1 && verts[verts.length - 1]!.bulge) {
-        const arc = bulgePoints(p2(verts[verts.length - 1]), p2(verts[0]), verts[verts.length - 1]!.bulge);
-        pts.push(...arc.slice(0, -1));
-      }
-      return { ...base, type: 'polyline', points: pts, closed };
+      // Bulges are kept (the polyline entity carries arc segments); widths per vertex collapse to the constant width.
+      const pts = verts.map((v) => p2(v));
+      const bulges = verts.map((v) => v.bulge || 0);
+      const hasBulge = bulges.some((b) => Math.abs(b) > 1e-12);
+      const width = cw > 0 ? cw : verts[0]?.startWidth && verts.every((v) => Math.abs((v.startWidth ?? 0) - (verts[0]!.startWidth ?? 0)) < 1e-9) ? verts[0]!.startWidth : 0;
+      return { ...base, type: 'polyline', points: pts, closed, bulges: hasBulge ? bulges : undefined, width: width && width > 0 ? width : undefined };
     }
     case 'POLYLINE2D': {
       const pl = e as DwgPolyline2dEntity;
       const verts = pl.vertices ?? [];
       if (verts.length === 0) return null;
       const closed = (pl.flag & 1) === 1;
-      const pts: Point[] = [p2(verts[0])];
-      for (let i = 0; i < verts.length - 1; i += 1) pts.push(...bulgePoints(p2(verts[i]), p2(verts[i + 1]), verts[i]!.bulge));
-      return { ...base, type: 'polyline', points: pts, closed };
+      const pts = verts.map((v) => p2(v));
+      const bulges = verts.map((v) => v.bulge || 0);
+      return { ...base, type: 'polyline', points: pts, closed, bulges: bulges.some((b) => Math.abs(b) > 1e-12) ? bulges : undefined };
     }
     case 'TEXT': {
       const t = e as DwgTextEntity;
@@ -167,17 +215,53 @@ function convertEntity(e: DwgEntity, blockIndex: Map<string, string>): Entity | 
     case 'MTEXT': {
       const m = e as DwgMTextEntity;
       const h = m.textHeight || 0.125;
-      const ap = m.attachmentPoint ?? 1; // 1..9: TL TC TR ML MC MR BL BC BR
-      const col = (ap - 1) % 3;
-      const row = Math.floor((ap - 1) / 3);
-      const align: 'left' | 'center' | 'right' = col === 0 ? 'left' : col === 1 ? 'center' : 'right';
-      // Move insertion point to baseline of the first line for top/middle attachment.
-      const rot = m.rotation ?? (m.direction ? Math.atan2(m.direction.y, m.direction.x) : 0);
-      const drop = row === 0 ? h : row === 1 ? h / 2 : 0;
-      const ins = p2(m.insertionPoint);
-      const position = { x: ins.x + Math.sin(rot) * drop, y: ins.y - Math.cos(rot) * drop };
-      return { ...base, type: 'text', position, text: cleanMText(m.text ?? ''), height: h, rotation: rot, align };
+      const ap = Math.max(1, Math.min(9, m.attachmentPoint ?? 1)) as MTextAttachment; // 1..9: TL TC TR ML MC MR BL BC BR
+      const rot = m.direction && (m.direction.x !== 0 || m.direction.y !== 0) ? Math.atan2(m.direction.y, m.direction.x) : m.rotation ?? 0;
+      return {
+        ...base,
+        type: 'mtext',
+        position: p2(m.insertionPoint),
+        text: mtextFromDxf(m.text ?? ''),
+        height: h,
+        width: Math.max(0, m.rectWidth ?? 0),
+        rotation: rot,
+        attachment: ap,
+        lineSpacing: m.lineSpacing && m.lineSpacing > 0 ? m.lineSpacing : 1,
+      };
     }
+    case 'ELLIPSE': {
+      const el = e as DwgEllipseEntity;
+      return {
+        ...base,
+        type: 'ellipse',
+        center: p2(el.center),
+        majorAxis: p2(el.majorAxisEndPoint),
+        ratio: Math.min(1, Math.max(1e-6, el.axisRatio || 1)),
+        startParam: el.startAngle ?? 0,
+        endParam: el.endAngle ?? 2 * Math.PI,
+      };
+    }
+    case 'POINT':
+      return { ...base, type: 'point', position: p2((e as DwgPointEntity).position) };
+    case 'XLINE': {
+      const x = e as DwgXlineEntity;
+      return { ...base, type: 'xline', base: p2(x.firstPoint), direction: g.normalize(p2(x.unitDirection)) };
+    }
+    case 'RAY': {
+      const r = e as DwgRayEntity;
+      return { ...base, type: 'ray', base: p2(r.firstPoint), direction: g.normalize(p2(r.unitDirection)) };
+    }
+    case 'SOLID': {
+      const so = e as DwgSolidEntity;
+      const c1 = p2(so.corner1);
+      const c2 = p2(so.corner2);
+      const c3 = p2(so.corner3);
+      const c4 = so.corner4 ? p2(so.corner4) : c3;
+      const points = g.eq(c3, c4) ? [c1, c2, c3] : [c1, c2, c4, c3];
+      return { ...base, type: 'polyline', points, closed: true, filled: true };
+    }
+    case 'DIMENSION':
+      return convertDimension(e as DwgDimensionEntity, base, dimStyle);
     case 'INSERT': {
       const i = e as DwgInsertEntity;
       const attrs: Record<string, string> = {};
@@ -218,8 +302,51 @@ export interface DwgImportResult {
 }
 
 /** Convert a LibreDWG database payload into a DrawingState. */
+/** Header variables LibreDWG exposes (numbers, strings, points). */
+function readHeader(h: DwgImportPayload['header']): DrawingHeader {
+  const num = (k: string, d: number): number => {
+    const v = h[k];
+    return typeof v === 'number' && Number.isFinite(v) ? v : d;
+  };
+  const pt = (k: string, d: Point): Point => {
+    const v = h[k] as { x?: number; y?: number } | undefined;
+    return v && typeof v.x === 'number' && typeof v.y === 'number' ? { x: v.x, y: v.y } : d;
+  };
+  const lunits = Math.trunc(num('LUNITS', 2));
+  const dimlunit = Math.trunc(num('DIMLUNIT', 2));
+  const dimStyle: DimStyle = {
+    name: typeof h.DIMSTYLE === 'string' && h.DIMSTYLE ? h.DIMSTYLE : 'Standard',
+    textHeight: num('DIMTXT', STANDARD_DIMSTYLE.textHeight),
+    arrowSize: num('DIMASZ', STANDARD_DIMSTYLE.arrowSize),
+    extOffset: num('DIMEXO', STANDARD_DIMSTYLE.extOffset),
+    extExtend: num('DIMEXE', STANDARD_DIMSTYLE.extExtend),
+    textGap: num('DIMGAP', STANDARD_DIMSTYLE.textGap),
+    centerMark: num('DIMCEN', STANDARD_DIMSTYLE.centerMark),
+    scale: num('DIMSCALE', 1) || 1,
+    decimals: Math.max(0, Math.trunc(num('DIMDEC', 4))),
+    lunit: (dimlunit >= 1 && dimlunit <= 5 ? dimlunit : 2) as LinearUnits,
+    angularDecimals: Math.max(0, Math.trunc(num('DIMADEC', 0))),
+  };
+  return {
+    ...DEFAULT_HEADER,
+    units: {
+      lunits: (lunits >= 1 && lunits <= 5 ? lunits : 2) as LinearUnits,
+      luprec: Math.max(0, Math.trunc(num('LUPREC', 4))),
+      insunits: Math.trunc(num('INSUNITS', 1)),
+      auprec: Math.max(0, Math.trunc(num('AUPREC', 0))),
+    },
+    ltscale: num('LTSCALE', 1) || 1,
+    limits: { min: pt('LIMMIN', DEFAULT_HEADER.limits.min), max: pt('LIMMAX', DEFAULT_HEADER.limits.max) },
+    pdmode: Math.trunc(num('PDMODE', 0)),
+    pdsize: num('PDSIZE', 0),
+    dimStyle,
+    celtype: typeof h.CELTYPE === 'string' && h.CELTYPE ? h.CELTYPE : 'ByLayer',
+  };
+}
+
 export function convertDwg(payload: DwgImportPayload): DwgImportResult {
   const skipped: Record<string, number> = {};
+  const header = readHeader(payload.header ?? {});
   const blockIndex = new Map<string, string>();
   for (const b of payload.blocks) if (b.name && !b.name.startsWith('*')) blockIndex.set(b.name.toUpperCase(), b.name);
 
@@ -233,7 +360,7 @@ export function convertDwg(payload: DwgImportPayload): DwgImportResult {
         attributes.push(convertAttdef(e as DwgAttdefEntity));
         continue;
       }
-      const c = convertEntity(e, blockIndex);
+      const c = convertEntity(e, blockIndex, header.dimStyle);
       if (c) entities.push(c);
       else skipped[e.type] = (skipped[e.type] ?? 0) + 1;
     }
@@ -244,7 +371,7 @@ export function convertDwg(payload: DwgImportPayload): DwgImportResult {
   for (const e of payload.entities) {
     if (e.isInPaperSpace) continue;
     if (e.type === 'ATTDEF' || e.type === 'VIEWPORT') continue;
-    const c = convertEntity(e, blockIndex);
+    const c = convertEntity(e, blockIndex, header.dimStyle);
     if (c) entities.push(c);
     else skipped[e.type] = (skipped[e.type] ?? 0) + 1;
   }
@@ -256,7 +383,8 @@ export function convertDwg(payload: DwgImportPayload): DwgImportResult {
       color: Math.abs(l.colorIndex) || 7,
       visible: !l.off && !l.frozen,
       locked: !!l.locked,
-      lineWeight: l.lineweight > 0 && l.lineweight < 200 ? l.lineweight / 100 : 0.25,
+      lineWeight: lineweightMm(l.lineweight) ?? 0.25,
+      linetype: l.lineType && !/^(continuous|bylayer)$/i.test(l.lineType) ? l.lineType : undefined,
     }));
   const names = new Set(layers.map((l) => l.name));
   const ensure = (n: string) => {
@@ -275,5 +403,5 @@ export function convertDwg(payload: DwgImportPayload): DwgImportResult {
     layers.find((l) => l.name.toUpperCase().replace(/\s+/g, '_') === rawClayer.toUpperCase().replace(/\s+/g, '_'))?.name ??
     '0';
 
-  return { state: { entities, layers, blocks, currentLayer }, skipped };
+  return { state: { entities, layers, blocks, currentLayer, header }, skipped };
 }
