@@ -23,7 +23,15 @@ trademarks are used.
   electrical helpers, reports, templates, projects). **Playwright** screenshot script for
   visual checks.
 
-## Run
+## Download and run
+
+Ready-made installers are built by the **Build installers** GitHub Actions workflow
+(Actions tab, run it or push a `v*` tag): a Windows installer (`.exe`), a macOS disk
+image (`.dmg`) and Linux `.AppImage` / `.deb` packages appear as workflow artifacts, and
+tagged builds are attached to a GitHub Release. The builds are unsigned, so Windows
+SmartScreen and macOS Gatekeeper will ask for confirmation the first time.
+
+## Run from source
 
 ```bash
 npm install

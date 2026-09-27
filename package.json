@@ -42,7 +42,8 @@
       "target": [
         "dmg"
       ],
-      "category": "public.app-category.graphics-design"
+      "category": "public.app-category.graphics-design",
+      "identity": null
     },
     "linux": {
       "target": [
@@ -50,6 +51,12 @@
         "deb"
       ],
       "category": "Graphics"
+    },
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDir": true,
+      "perMachine": false
     }
   },
   "devDependencies": {
