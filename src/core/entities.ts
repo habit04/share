@@ -252,7 +252,8 @@ export interface PolySegment {
 export function polylineSegments(pl: PolylineEntity): PolySegment[] {
   const n = pl.points.length;
   const out: PolySegment[] = [];
-  const count = pl.closed && n > 2 ? n : n - 1;
+  // A closed two-vertex polyline (a DONUT) has two arc segments, so the closing segment counts from n = 2.
+  const count = pl.closed && n >= 2 ? n : n - 1;
   for (let i = 0; i < count; i += 1) {
     const a = pl.points[i]!;
     const b = pl.points[(i + 1) % n]!;
@@ -280,7 +281,7 @@ export function polylineVertices(pl: PolylineEntity): Point[] {
       const a0 = g.angleOf(s.arc.center, s.a);
       for (let k = 1; k < steps; k += 1) out.push(g.polar(s.arc.center, a0 + (s.arc.sweep * k) / steps, s.arc.radius));
     }
-    if (!pl.closed || pl.points.length <= 2) out.push(pl.points[pl.points.length - 1]!);
+    if (!pl.closed) out.push(pl.points[pl.points.length - 1]!);
   }
   polyCache.set(pl, out);
   return out;

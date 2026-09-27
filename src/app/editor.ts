@@ -33,6 +33,8 @@ export interface CommandDef {
   aliases: string[];
   description: string;
   run: (editor: Editor, arg?: string) => void;
+  /** The command starts a Tool (which logs "Command: NAME" itself). */
+  startsTool?: boolean;
 }
 
 interface SelectionRequest {
@@ -487,7 +489,7 @@ export class Editor {
     this.lastCommand = def.name;
     this.lastCommandLine = text;
     // Commands that are not tools still get logged
-    if (!['LINE', 'PLINE', 'CIRCLE', 'ARC', 'RECTANG', 'TEXT', 'ERASE', 'MOVE', 'COPY', 'ROTATE', 'DIST', 'AEWIRE', 'AELADDER', 'AECOMPONENT'].includes(def.name))
+    if (!def.startsTool && !['LINE', 'PLINE', 'CIRCLE', 'ARC', 'RECTANG', 'TEXT', 'ERASE', 'MOVE', 'COPY', 'ROTATE', 'DIST', 'AEWIRE', 'AELADDER', 'AECOMPONENT'].includes(def.name))
       this.log(`Command: ${def.name}`);
     def.run(this, rest.join(' ') || undefined);
     this.emit('tool');

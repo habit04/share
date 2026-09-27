@@ -63,7 +63,7 @@ export const RIBBON: RibbonTab[] = [
       },
       {
         title: 'Layers',
-        buttons: [B('Layer\nProperties', 'layers', 'LAYER'), B('Properties', 'props', 'PROPERTIES', 'small'), B('Plot', 'plot', 'PLOT', 'small')],
+        buttons: [B('Layer\nProperties', 'layers', 'LAYER'), B('Properties', 'props', 'PROPERTIES', 'small'), B('Plot', 'plot', 'PLOT', 'small'), B('Linetype', 'linetype', 'LINETYPE', 'small')],
       },
       {
         title: 'View',
@@ -79,7 +79,61 @@ export const RIBBON: RibbonTab[] = [
       },
       {
         title: 'Utilities',
-        buttons: [B('List', 'props', 'LIST', 'small'), B('Select All', 'check', 'SELECTALL', 'small'), B('Help', 'info', 'HELP', 'small')],
+        buttons: [B('List', 'props', 'LIST', 'small'), B('Select All', 'check', 'SELECTALL', 'small'), B('Help', 'info', 'HELP', 'small'), B('Area', 'area', 'AREA', 'small'), B('ID Point', 'id', 'ID', 'small'), B('Quick Select', 'qselect', 'QSELECT', 'small')],
+      },
+      // ---- drafting parity panels
+      {
+        title: 'Draw More',
+        buttons: [
+          B('Ellipse', 'ellipse', 'ELLIPSE', 'small'),
+          B('Polygon', 'polygon', 'POLYGON', 'small'),
+          B('Donut', 'donut', 'DONUT', 'small'),
+          B('Point', 'point', 'POINT', 'small'),
+          B('Xline', 'xline', 'XLINE', 'small'),
+          B('Ray', 'ray', 'RAY', 'small'),
+        ],
+      },
+      {
+        title: 'Modify More',
+        buttons: [
+          B('Fillet', 'fillet', 'FILLET', 'small'),
+          B('Chamfer', 'chamfer', 'CHAMFER', 'small'),
+          B('Array', 'array', 'ARRAY', 'small'),
+          B('Stretch', 'stretch', 'STRETCH', 'small'),
+          B('Break', 'break', 'BREAK', 'small'),
+          B('Join', 'join', 'JOIN', 'small'),
+          B('Lengthen', 'lengthen', 'LENGTHEN', 'small'),
+          B('Align', 'align', 'ALIGN', 'small'),
+          B('Match', 'matchprop', 'MATCHPROP', 'small'),
+        ],
+      },
+      {
+        title: 'Block',
+        buttons: [B('Insert', 'insert', 'INSERT'), B('Create', 'block', 'BLOCK', 'small'), B('Purge', 'purge', 'PURGE', 'small'), B('Explode', 'explode', 'EXPLODE', 'small')],
+      },
+    ],
+  },
+  {
+    name: 'Annotate',
+    panels: [
+      {
+        title: 'Text',
+        buttons: [B('Multiline\nText', 'mtext', 'MTEXT'), B('Single Line', 'text', 'TEXT', 'small'), B('Lineweight', 'lw', 'LWEIGHT', 'small'), B('Linetype', 'linetype', 'LINETYPE', 'small')],
+      },
+      {
+        title: 'Dimensions',
+        buttons: [
+          B('Linear', 'dimlinear', 'DIMLINEAR'),
+          B('Aligned', 'dimaligned', 'DIMALIGNED', 'small'),
+          B('Angular', 'dimangular', 'DIMANGULAR', 'small'),
+          B('Radius', 'dimradius', 'DIMRADIUS', 'small'),
+          B('Diameter', 'dimdiameter', 'DIMDIAMETER', 'small'),
+          B('Dim Style', 'props', 'DIMSTYLE', 'small'),
+        ],
+      },
+      {
+        title: 'Markup',
+        buttons: [B('Distance', 'dist', 'DIST', 'small'), B('Area', 'area', 'AREA', 'small'), B('List', 'props', 'LIST', 'small')],
       },
     ],
   },
@@ -173,6 +227,8 @@ export const RIBBON: RibbonTab[] = [
     panels: [
       { title: 'Navigate 2D', buttons: [B('Pan', 'pan', 'PAN'), B('Zoom\nExtents', 'zoomext', 'ZOOM E'), B('Window', 'zoomwin', 'ZOOM W', 'small'), B('Zoom In', 'zoomin', 'ZOOM I', 'small'), B('Zoom Out', 'zoomout', 'ZOOM O', 'small')] },
       { title: 'Palettes', buttons: [B('Project\nManager', 'project', 'TOGGLEPM'), B('Properties', 'props', 'PROPERTIES', 'small'), B('Layers', 'layers', 'LAYER', 'small')] },
+      // ---- drafting parity panels
+      { title: 'Views', buttons: [B('Previous', 'zoomprev', 'ZOOM P', 'small'), B('Zoom All', 'zoomext', 'ZOOM A', 'small'), B('Named\nViews', 'view', 'VIEW', 'small'), B('Units', 'units', 'UNITS', 'small'), B('Limits', 'grid', 'LIMITS', 'small'), B('Regen', 'redo', 'REGEN', 'small')] },
     ],
   },
 ];

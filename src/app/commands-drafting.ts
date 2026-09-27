@@ -23,7 +23,7 @@ import { blockTool, insertTool, referencedBlocks, unusedLayers, unusedLinetypes 
 import { distTool, idTool, areaTool, listTool } from '../tools/inquiry';
 import { selectTool, qselectTool, selectionKeyword, selectionHistory } from '../tools/select';
 
-type Reg = (name: string, aliases: string[], description: string, run: (ed: Editor, arg?: string) => void) => void;
+type Reg = (name: string, aliases: string[], description: string, run: (ed: Editor, arg?: string) => void, startsTool?: boolean) => void;
 
 /** Editor.emit is private; view changes made here still need to notify the status bar. */
 function emitView(ed: Editor): void {
@@ -81,7 +81,7 @@ function sysvar(reg: Reg, name: string, description: string, get: (ed: Editor) =
         if (r && 'value' in r && r.value !== cur) apply(r.value);
       }),
     );
-  });
+  }, true);
 }
 
 // ------------------------------------------------------------------ ZOOM / VIEW
@@ -775,7 +775,8 @@ function purgeTool(ed: Editor, arg?: string): Tool {
 // ------------------------------------------------------------------ registration
 
 export function registerDraftingCommands(editor: Editor): void {
-  const reg: Reg = (name, aliases, description, run) => editor.register({ name, aliases, description, run });
+  // Every registration below starts a Tool unless it says otherwise (REGEN, OTRACK, LAYER with arguments).
+  const reg: Reg = (name, aliases, description, run, startsTool = true) => editor.register({ name, aliases, description, run, startsTool });
 
   // Dimensions
   reg('DIMLINEAR', ['DLI', 'DIMLIN'], 'Linear dimension (horizontal/vertical/rotated)', (ed) => ed.startTool(dimLinearTool()));
@@ -848,10 +849,16 @@ export function registerDraftingCommands(editor: Editor): void {
   );
   reg('VIEW', ['V', '-VIEW', 'DDVIEW'], 'Named views [?/Delete/Restore/Save/Window]', (ed, arg) => ed.startTool(viewTool(ed, arg)));
   reg('ZOOM', ['Z'], 'Zoom [All/Center/Extents/Previous/Scale/Window/OBject/In/Out]', (ed, arg) => ed.startTool(zoomTool(ed, arg)));
-  reg('REGEN', ['RE', 'REGENALL', 'REA'], 'Regenerate the drawing', (ed) => {
-    ed.log('Regenerating model.');
-    ed.render();
-  });
+  reg(
+    'REGEN',
+    ['RE', 'REGENALL', 'REA'],
+    'Regenerate the drawing',
+    (ed) => {
+      ed.log('Regenerating model.');
+      ed.render();
+    },
+    false,
+  );
 
   // Selection
   reg('SELECT', [], 'Select objects [Window/Crossing/Fence/WPolygon/CPolygon/Previous/Last/ALL/Add/Remove/Undo]', (ed) => ed.startTool(selectTool()));
@@ -872,27 +879,45 @@ export function registerDraftingCommands(editor: Editor): void {
     ed.log(applyLayerOption(ed, opt, parts.slice(1)));
     ed.render();
   };
-  reg('-LAYER', [], 'Layer options [?/Make/Set/New/ON/OFF/Color/Ltype/LWeight/Freeze/Thaw/LOck/Unlock]', layerCommand);
+  reg('-LAYER', [], 'Layer options [?/Make/Set/New/ON/OFF/Color/Ltype/LWeight/Freeze/Thaw/LOck/Unlock]', layerCommand, false);
   const layerDialog = editor.commands.get('LAYER');
-  reg('LAYER', ['LA', 'DDLMODES'], 'Layer Properties Manager (with options: LAYER ON|OFF|Freeze|Thaw|LOck|Unlock|Make|Set|New|Color|Ltype|LWeight <names>)', (ed, arg) => {
-    if (arg && arg.trim()) layerCommand(ed, arg);
-    else layerDialog?.run(ed, arg);
-  });
+  reg(
+    'LAYER',
+    ['LA', 'DDLMODES'],
+    'Layer Properties Manager (with options: LAYER ON|OFF|Freeze|Thaw|LOck|Unlock|Make|Set|New|Color|Ltype|LWeight <names>)',
+    (ed, arg) => {
+      if (arg && arg.trim()) layerCommand(ed, arg);
+      else layerDialog?.run(ed, arg);
+    },
+    false,
+  );
   reg('LINETYPE', ['LT', 'LTYPE', '-LINETYPE', 'DDLTYPE'], 'Linetypes [?/Load/Set]', (ed, arg) => ed.startTool(linetypeTool(ed, arg)));
   reg('CELTYPE', [], 'Current entity linetype', (ed, arg) => ed.startTool(linetypeTool(ed, `Set${arg ? ` ${arg}` : ''}`)));
   reg('LWEIGHT', ['-LWEIGHT', 'LINEWEIGHT'], 'Default lineweight for new objects', (ed, arg) => ed.startTool(lweightTool(ed, arg)));
   reg('CELWEIGHT', [], 'Current entity lineweight', (ed, arg) => ed.startTool(lweightTool(ed, arg)));
 
   // Object snap settings and tracking
-  reg('OSNAPSET', ['-OSNAP', 'OSMODE'], 'Set running object snap modes (END MID CEN NOD QUA INT INS PER TAN NEA NONE)', (ed, arg) => {
-    if (arg) osnapSet(ed, arg);
-    else ed.startTool(osnapTool(ed));
-  });
-  reg('OTRACK', ['F11'], 'Toggle object snap tracking', (ed, arg) => {
-    ed.snap.otrack = arg ? /^(on|1)$/i.test(arg.trim()) : !ed.snap.otrack;
-    ed.log(`<Otrack ${ed.snap.otrack ? 'on' : 'off'}>`);
-    ed.render();
-  });
+  reg(
+    'OSNAPSET',
+    ['-OSNAP', 'OSMODE'],
+    'Set running object snap modes (END MID CEN NOD QUA INT INS PER TAN NEA NONE)',
+    (ed, arg) => {
+      if (arg) osnapSet(ed, arg);
+      else ed.startTool(osnapTool(ed));
+    },
+    false,
+  );
+  reg(
+    'OTRACK',
+    ['F11'],
+    'Toggle object snap tracking',
+    (ed, arg) => {
+      ed.snap.otrack = arg ? /^(on|1)$/i.test(arg.trim()) : !ed.snap.otrack;
+      ed.log(`<Otrack ${ed.snap.otrack ? 'on' : 'off'}>`);
+      ed.render();
+    },
+    false,
+  );
   sysvar(reg, 'POLARANG', 'Polar tracking angle increment (degrees)', (ed) => ed.snap.polarIncrement, (ed, v) => {
     ed.snap.polarIncrement = v;
   });
