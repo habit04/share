@@ -166,8 +166,16 @@ export function childAttributes(parent: InsertEntity): Record<string, string> {
   return out;
 }
 
-/** Child contact block that matches a parent's standard (JIC or IEC). */
-export function childBlockFor(parentBlock: string, kind: 'NO' | 'NC'): string {
+/** Library callbacks for choosing a child contact block (xref.ts does not import the library itself). */
+export interface ChildBlockOptions {
+  /** Whether a block exists in the library or the drawing (findLibrarySymbol / lookupBlock). */
+  exists?: (name: string) => boolean;
+  /** User CONTACT symbols that fit this parent (same family) and contact kind, best first. */
+  candidates?: (parentBlock: string, kind: 'NO' | 'NC') => string[];
+}
+
+/** Built-in child contact block that matches a parent's standard (JIC or IEC). */
+export function builtinChildBlockFor(parentBlock: string, kind: 'NO' | 'NC'): string {
   if (parentBlock.startsWith('IEC_KM')) return `IEC_KM_${kind}`;
   if (parentBlock.startsWith('IEC_KT_OFF')) return `IEC_KT_OFF_${kind}`;
   if (parentBlock.startsWith('IEC_KT')) return `IEC_KT_ON_${kind}`;
@@ -176,4 +184,27 @@ export function childBlockFor(parentBlock: string, kind: 'NO' | 'NC'): string {
   if (parentBlock.startsWith('HTD2')) return `HTD2_${kind}`;
   if (parentBlock.startsWith('HTD')) return `HTD1_${kind}`;
   return `HCR1_${kind}`;
+}
+
+/**
+ * Child contact blocks for a parent, best first: the parent's own twin
+ * (`<parent without _NO/_NC>_<kind>`, the naming the Symbol Builder steers
+ * to) when it exists, then the user library's contacts of the same family,
+ * then the built-in contact of the parent's standard.
+ */
+export function childBlockChoices(parentBlock: string, kind: 'NO' | 'NC', opts: ChildBlockOptions = {}): string[] {
+  const out: string[] = [];
+  const push = (n: string) => {
+    if (!out.includes(n)) out.push(n);
+  };
+  const sibling = `${parentBlock.replace(/_N[OC]$/, '')}_${kind}`;
+  if (opts.exists?.(sibling)) push(sibling);
+  for (const n of opts.candidates?.(parentBlock, kind) ?? []) push(n);
+  push(builtinChildBlockFor(parentBlock, kind));
+  return out;
+}
+
+/** The child contact block to insert for a parent (see childBlockChoices). */
+export function childBlockFor(parentBlock: string, kind: 'NO' | 'NC', opts: ChildBlockOptions = {}): string {
+  return childBlockChoices(parentBlock, kind, opts)[0]!;
 }

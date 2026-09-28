@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { Drawing } from '../src/core/document';
 import type { Entity, InsertEntity, LineEntity, TextEntity } from '../src/core/entities';
-import { newId, entityBounds } from '../src/core/entities';
+import { newId, entityBounds, explodeInsert } from '../src/core/entities';
 import { ALL_SYMBOLS } from '../src/electrical/symbols';
 import { breakWire, wireDot } from '../src/electrical/ladder';
 import {
@@ -31,7 +31,9 @@ import {
   breakForInsert,
   connectionLevels,
   isWireNumber,
+  polePins,
 } from '../src/electrical/wires';
+import { writeDxf, readDxf } from '../src/io/dxf';
 
 const wire = (x1: number, y1: number, x2: number, y2: number, layer = 'WIRES'): LineEntity => ({ id: newId(), layer, color: 'ByLayer', type: 'line', a: { x: x1, y: y1 }, b: { x: x2, y: y2 } });
 const ins = (block: string, x: number, y: number, attrs: Record<string, string> = {}): InsertEntity => ({ id: newId(), layer: 'SYMS', color: 'ByLayer', type: 'insert', block, position: { x, y }, rotation: 0, scale: 1, attributes: attrs });
@@ -174,6 +176,36 @@ describe('multiple bus and 3-phase insertion', () => {
       expect(ws).toHaveLength(2);
     }
     expect(d.entities.some((e) => e.type === 'line' && e.layer === 'LINK')).toBe(true);
+    // per-pole pins (HDS1 defaults 1/2): 1/2, 3/4, 5/6; TAG1 shown on pole 1 only, kept on every pole for reports
+    expect(r.inserts.map((i) => [i.attributes.X1TERM01, i.attributes.X4TERM02])).toEqual([
+      ['1', '2'],
+      ['3', '4'],
+      ['5', '6'],
+    ]);
+    expect(r.inserts.map((i) => i.hiddenAttributes ?? [])).toEqual([[], ['TAG1'], ['TAG1']]);
+    const texts = (i: InsertEntity) => explodeInsert(i, d.lookupBlock).filter((e): e is TextEntity => e.type === 'text').map((e) => e.text);
+    expect(texts(r.inserts[0]!)).toContain('DS100');
+    expect(texts(r.inserts[1]!)).not.toContain('DS100');
+    // the hidden flag survives a DXF round trip (ATTRIB flag 1 on an insert whose ATTDEF is visible)
+    const back = readDxf(writeDxf(d.snapshot));
+    const poles = back.entities.filter((e): e is InsertEntity => e.type === 'insert' && e.block === 'HDS1').sort((a, b) => b.position.y - a.position.y);
+    expect(poles.map((p) => p.hiddenAttributes ?? [])).toEqual([[], ['TAG1'], ['TAG1']]);
+    expect(poles.map((p) => p.attributes.TAG1)).toEqual(['DS100', 'DS100', 'DS100']);
+  });
+  it('offsets pin numbers per pole: numeric by pin count, L1/T1 by pole, A1/A2 unchanged, typed pins respected', () => {
+    const d = doc([]);
+    const hds1 = d.lookupBlock('HDS1');
+    expect(polePins(hds1, {}, 1)).toEqual({ X1TERM01: '1', X4TERM02: '2' });
+    expect(polePins(hds1, {}, 2)).toEqual({ X1TERM01: '3', X4TERM02: '4' });
+    expect(polePins(hds1, {}, 3)).toEqual({ X1TERM01: '5', X4TERM02: '6' });
+    // the dialog's pole-1 values are the base
+    expect(polePins(hds1, { X1TERM01: '11', X4TERM02: '12' }, 2)).toEqual({ X1TERM01: '13', X4TERM02: '14' });
+    expect(polePins(hds1, { X1TERM01: 'L1', X4TERM02: 'T1' }, 2)).toEqual({ X1TERM01: 'L2', X4TERM02: 'T2' });
+    expect(polePins(hds1, { X1TERM01: 'L1', X4TERM02: 'T1' }, 3)).toEqual({ X1TERM01: 'L3', X4TERM02: 'T3' });
+    // a coil's A1/A2 (or any non-numeric mix) stays the same on every pole
+    expect(polePins(d.lookupBlock('HCR1'), {}, 2)).toEqual({});
+    expect(polePins(d.lookupBlock('HCR1'), {}, 1)).toEqual({ X1TERM01: 'A1', X4TERM02: 'A2' });
+    expect(polePins(undefined, {}, 2)).toEqual({});
   });
 });
 

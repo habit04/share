@@ -77,6 +77,11 @@ export interface InsertEntity extends EntityBase {
   readonly scale: number;
   /** Attribute values (tag -> value), e.g. TAG1 = "PB101". */
   readonly attributes: Readonly<Record<string, string>>;
+  /**
+   * Visible attributes of the block that this insert does not display (ATTRIB flag 1 on the
+   * insert only), e.g. TAG1 on poles 2 and 3 of a 3-pole device. The value is kept for reports.
+   */
+  readonly hiddenAttributes?: readonly string[];
 }
 
 export interface EllipseEntity extends EntityBase {
@@ -134,6 +139,8 @@ export interface AttributeDef {
   readonly align: 'left' | 'center' | 'right';
   /** ATTDEF flag 1: value is stored but not displayed (ACADE symbols carry many of these). */
   readonly invisible?: boolean;
+  /** Text rotation in radians (DXF group 50), like TextEntity; undefined = 0. Adds to the insert rotation. */
+  readonly rotation?: number;
 }
 
 export interface BlockDef {
@@ -414,7 +421,7 @@ function explodeInsertUncached(ins: InsertEntity, lookup: BlockLookup, depth: nu
   }
   // Attribute text
   for (const a of block.attributes) {
-    if (a.invisible) continue;
+    if (a.invisible || ins.hiddenAttributes?.includes(a.tag)) continue;
     const value = ins.attributes[a.tag] ?? a.default;
     if (!value) continue;
     out.push({
@@ -425,7 +432,7 @@ function explodeInsertUncached(ins: InsertEntity, lookup: BlockLookup, depth: nu
       position: tf(a.position),
       text: value,
       height: a.height * ins.scale,
-      rotation: ins.rotation,
+      rotation: ins.rotation + (a.rotation ?? 0),
       align: a.align,
     });
   }

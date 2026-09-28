@@ -1,18 +1,18 @@
 import type { Point } from '../core/geometry';
 import * as g from '../core/geometry';
-import type { Entity, LineEntity, InsertEntity, TextEntity } from '../core/entities';
+import type { Entity, LineEntity, InsertEntity, TextEntity, BlockDef } from '../core/entities';
 import { newId, insertTransform } from '../core/entities';
 import type { Drawing } from '../core/document';
 import { LineTool } from './draw';
-import type { Tool, ToolContext, LadderSettings } from './types';
-import { tagPrefix, WIRE_DOT } from '../electrical/symbols';
+import type { Tool, ToolContext, LadderSettings, SymbolPick } from './types';
+import { tagPrefix, registerTagPrefixes, WIRE_DOT } from '../electrical/symbols';
 import { LIBRARY_BLOCKS, findLibrarySymbol } from '../electrical/library';
 import { isWire, isHorizontal, wireTeeAt, findWireAt, breakWire, nearestReference, wireDot, hasDotAt } from '../electrical/ladder';
-import { assignWireNumbers as assignWireNumbersImpl, breakForInsert, type WireNumberOptions } from '../electrical/wires';
+import { assignWireNumbers as assignWireNumbersImpl, breakForInsert, connectsVertically, findOrientedWireAt, type WireNumberOptions } from '../electrical/wires';
 import { readWdSettings, type WdSettings } from '../electrical/wdm';
 import { nextTag, usedTags, usedTagsOfFamily } from '../electrical/tags';
-import { pinAttributes, DATA_ATTRIBUTES } from '../electrical/attributes';
-import { isChildBlock } from '../electrical/families';
+import { pinAttributes, DATA_ATTRIBUTES, isVerticalBlock, verticalVariant, verticalVariantName } from '../electrical/attributes';
+import { isChildBlock, isCoilBlock, registerSymbolRole } from '../electrical/families';
 import { parentCandidates, childAttributes } from '../electrical/xref';
 import type { ElectricalUi, ComponentDialogInit } from '../electrical/ui';
 
@@ -20,6 +20,35 @@ import type { ElectricalUi, ComponentDialogInit } from '../electrical/ui';
 export { isWire, isHorizontal, wireTeeAt, findWireAt, breakWire, nearestReference, wireDot };
 
 export const lookupSymbol = (name: string) => findLibrarySymbol(name);
+
+/** Normalise an icon-menu result: a bare block name means the horizontal orientation. */
+export function symbolPick(v: SymbolPick | string | null | undefined): SymbolPick | null {
+  if (!v) return null;
+  return typeof v === 'string' ? { name: v, orientation: 'H' } : v;
+}
+
+/**
+ * Resolve the block to insert for an icon-menu choice. The drawing's own
+ * definition wins over the library (like AutoCAD, and like componentDialogInit).
+ * For the Vertical orientation of a horizontal symbol: a vertical twin in the
+ * library or the drawing (VPB11_NO for HPB11_NO, or NAME_V) is used; otherwise
+ * the twin is built by rotating the symbol -90 degrees (`verticalVariant`) and
+ * defined in the drawing under the twin's name, so TAG1 / DESC stay readable
+ * and the wire connections sit on top / bottom.
+ */
+export function resolveSymbolPick(doc: Drawing, pick: SymbolPick): { def: BlockDef; note: string | null } | null {
+  const lookup = (n: string) => doc.lookupBlock(n) ?? lookupSymbol(n);
+  const def = lookup(pick.name);
+  if (!def) return null;
+  if (pick.orientation !== 'V' || isVerticalBlock(def)) return { def, note: null };
+  const twinName = verticalVariantName(def.name);
+  const twin = lookup(twinName) ?? (def.name.startsWith('H') ? lookup(`${def.name}_V`) : undefined);
+  if (twin) return { def: twin, note: `Vertical: ${twin.name} inserted for ${def.name}.` };
+  // The generated twin tags and cross-references like its horizontal source.
+  registerTagPrefixes([[new RegExp(`^${twinName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`), tagPrefix(def.name)]]);
+  registerSymbolRole(twinName, isCoilBlock(def.name) ? 'coil' : isChildBlock(def.name) ? 'child' : 'none');
+  return { def: verticalVariant(def, twinName), note: `Vertical: no ${twinName} in the library; ${def.name} rotated -90 degrees as block ${twinName} (tag and description kept readable).` };
+}
 
 const fmt = (p: Point) => `${p.x.toFixed(4)}, ${p.y.toFixed(4)}`;
 
@@ -251,18 +280,26 @@ export class ComponentTool implements Tool {
   start(ctx: ToolContext): void {
     ctx.doc.ensureBlocks(LIBRARY_BLOCKS);
     ctx.prompt('Select a symbol from the icon menu...');
-    const choose = this.preset ? Promise.resolve(this.preset) : ctx.ui.pickSymbol();
-    void choose.then((name) => {
-      const def = name ? lookupSymbol(name) : undefined;
-      if (!name || !def) {
+    const choose: Promise<SymbolPick | string | null> = this.preset ? Promise.resolve(this.preset) : ctx.ui.pickSymbol();
+    void choose.then((picked) => {
+      const pick = symbolPick(picked);
+      const r = pick ? resolveSymbolPick(ctx.doc, pick) : null;
+      if (!pick || !r) {
+        if (pick) ctx.log(`Unknown symbol ${pick.name}.`);
         ctx.finish();
         return;
       }
-      // User-library symbols are not part of LIBRARY_BLOCKS: define the block in this drawing.
-      ctx.doc.ensureBlocks([def]);
-      this.block = def.name;
-      ctx.prompt(`Specify insertion point for ${def.name}:`);
+      // User-library symbols (and generated vertical twins) are not part of LIBRARY_BLOCKS: define the block in this drawing.
+      ctx.doc.ensureBlocks([r.def]);
+      this.block = r.def.name;
+      if (r.note) ctx.log(r.note);
+      ctx.prompt(`Specify insertion point for ${r.def.name}:`);
     });
+  }
+
+  /** The drawing's block definition (it wins over the library copy, like componentDialogInit). */
+  private definition(ctx: ToolContext): BlockDef | undefined {
+    return this.block ? ctx.doc.lookupBlock(this.block) ?? lookupSymbol(this.block) : undefined;
   }
 
   private makeInsert(pos: Point, attrs: Record<string, string> = {}): InsertEntity {
@@ -280,6 +317,12 @@ export class ComponentTool implements Tool {
   }
 
   private target(ctx: ToolContext, p: Point): { pos: Point; wire: LineEntity | null } {
+    // A symbol that connects at its top / bottom snaps to a vertical wire; the usual inline symbol to a horizontal one.
+    if (connectsVertically(this.makeInsert(p), ctx.doc.lookupBlock)) {
+      const v = findOrientedWireAt(ctx.doc.entities, p, ctx.aperture() * 2.5, 'vertical');
+      if (v) return { pos: { x: v.a.x, y: p.y }, wire: v };
+      return { pos: p, wire: null };
+    }
     const wire = findWireAt(ctx.doc, p, ctx.aperture() * 2.5);
     if (wire) return { pos: { x: p.x, y: wire.a.y }, wire };
     return { pos: p, wire: null };
@@ -295,7 +338,8 @@ export class ComponentTool implements Tool {
 
   onPoint(p: Point, ctx: ToolContext): void {
     if (!this.block) return;
-    const block = lookupSymbol(this.block)!;
+    const block = this.definition(ctx);
+    if (!block) return;
     ctx.doc.ensureBlocks([block]);
     const { pos } = this.target(ctx, p);
     const hasTag = block.attributes.some((a) => a.tag === 'TAG1');

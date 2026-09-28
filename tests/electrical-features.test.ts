@@ -13,6 +13,8 @@ import { buildPlcModule, buildTerminalStrip, DEFAULT_PLC, DEFAULT_STRIP } from '
 import { assignWireNumbers, breakWire } from '../src/tools/electrical';
 import { applyGrip } from '../src/app/editor';
 import { writeDxf, readDxf } from '../src/io/dxf';
+import { SessionManager, type SessionHost } from '../src/app/sessions';
+import { Autosaver, type AutosaveStore } from '../src/app/autosave';
 
 const ins = (block: string, x: number, y: number, attrs: Record<string, string>): Entity => ({ id: newId(), layer: 'SYMS', color: 'ByLayer', type: 'insert', block, position: { x, y }, rotation: 0, scale: 1, attributes: attrs });
 const ref = (y: number, t: string): Entity => ({ id: newId(), layer: 'MISC', color: 'ByLayer', type: 'text', position: { x: 0.75, y: y - 0.06 }, text: t, height: 0.125, rotation: 0, align: 'right' });
@@ -158,5 +160,49 @@ describe('parametric builders', () => {
     expect(mid.b).toEqual({ x: 3, y: 1 });
     const c: Entity = { id: 'c', layer: '0', color: 'ByLayer', type: 'circle', center: { x: 0, y: 0 }, radius: 1 };
     expect((applyGrip(c, 1, { x: 3, y: 0 }) as Extract<Entity, { type: 'circle' }>).radius).toBe(3);
+  });
+});
+
+describe('symbol tabs: dirty prompt and autosave', () => {
+  function host(): SessionHost {
+    const doc = new Drawing();
+    return {
+      doc,
+      viewport: { center: { x: 0, y: 0 }, scale: 1 },
+      selection: new Set<string>(),
+      loadState(state, path) {
+        doc.load(state, path);
+      },
+    };
+  }
+  it('a dirty Symbol Builder tab counts for the close prompt but is skipped by the DXF autosave', async () => {
+    const h = host();
+    const sm = new SessionManager(h);
+    // tab 2 is a symbol session (the Symbol Builder registers its id), opened dirty like SymbolBuilder.open does
+    const symbolTab = sm.add(undefined, null, true);
+    const symbolId = sm.all[symbolTab]!.id;
+    expect(sm.anyDirty()).toBe(true); // onQueryDirty -> sessions.anyDirty(): closing the app prompts for the symbol
+    sm.switchTo(0);
+    expect(sm.anyDirty()).toBe(true);
+    const written: string[] = [];
+    const store: AutosaveStore = {
+      async write(name) {
+        written.push(name);
+      },
+      async list() {
+        return [];
+      },
+      async read() {
+        return null;
+      },
+      async remove() {},
+    };
+    const saver = new Autosaver(sm, store, () => 10, (id) => id === symbolId);
+    expect(await saver.runNow()).toBe(0);
+    expect(written).toEqual([]);
+    // a dirty drawing tab is still autosaved
+    h.doc.addEntities([wire(0, 1, 5)]);
+    expect(await saver.runNow()).toBe(1);
+    expect(written).toHaveLength(1);
   });
 });

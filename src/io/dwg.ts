@@ -156,7 +156,7 @@ function halign(h: number | undefined): 'left' | 'center' | 'right' {
   return 'left';
 }
 
-function convertEntity(e: DwgEntity, blockIndex: Map<string, string>, dimStyle: DimStyle = STANDARD_DIMSTYLE): Entity | null {
+function convertEntity(e: DwgEntity, blockIndex: Map<string, string>, dimStyle: DimStyle = STANDARD_DIMSTYLE, blocks?: Record<string, BlockDef>): Entity | null {
   const base = baseProps(e);
   switch (e.type) {
     case 'LINE': {
@@ -265,8 +265,16 @@ function convertEntity(e: DwgEntity, blockIndex: Map<string, string>, dimStyle: 
     case 'INSERT': {
       const i = e as DwgInsertEntity;
       const attrs: Record<string, string> = {};
-      for (const a of i.attribs ?? []) attrs[a.tag || a.attrTag] = a.text?.text ?? '';
+      const hidden: string[] = [];
+      for (const a of i.attribs ?? []) {
+        const tag = a.tag || a.attrTag;
+        attrs[tag] = a.text?.text ?? '';
+        if (((a as { flags?: number }).flags ?? 0) & 1) hidden.push(tag);
+      }
       const name = blockIndex.get((i.name ?? '').toUpperCase()) ?? i.name;
+      // An invisible ATTRIB whose ATTDEF is visible hides that attribute on this insert only.
+      const def = blocks?.[name];
+      const hiddenHere = def ? hidden.filter((t) => def.attributes.some((a) => a.tag === t && !a.invisible)) : [];
       return {
         ...base,
         type: 'insert',
@@ -275,6 +283,7 @@ function convertEntity(e: DwgEntity, blockIndex: Map<string, string>, dimStyle: 
         rotation: i.rotation ?? 0,
         scale: Math.abs(i.xScale) || 1,
         attributes: attrs,
+        ...(hiddenHere.length ? { hiddenAttributes: hiddenHere } : {}),
       };
     }
     default:
@@ -291,6 +300,7 @@ function convertAttdef(a: DwgAttdefEntity): AttributeDef {
   let position = useAlign ? p2(a.alignmentPoint) : p2(t?.startPoint);
   const drop = v === 2 ? height / 2 : v === 3 ? height : 0;
   if (drop) position = { x: position.x, y: position.y - drop };
+  const rotation = t?.rotation ?? 0;
   return {
     tag: a.tag || a.attrTag || 'ATTR',
     prompt: a.prompt ?? '',
@@ -299,6 +309,7 @@ function convertAttdef(a: DwgAttdefEntity): AttributeDef {
     height,
     align: halign(h),
     invisible: ((a.flags ?? 0) & 1) === 1,
+    ...(Math.abs(rotation) > 1e-9 ? { rotation } : {}),
   };
 }
 
@@ -384,7 +395,7 @@ export function convertDwg(payload: DwgImportPayload): DwgImportResult {
   for (const e of payload.entities) {
     if (e.isInPaperSpace || (e.handle && paperHandles.has(e.handle))) continue;
     if (e.type === 'ATTDEF' || e.type === 'VIEWPORT' || e.type === 'ATTRIB') continue; // ATTRIBs are folded into their INSERTs
-    const c = convertEntity(e, blockIndex, header.dimStyle);
+    const c = convertEntity(e, blockIndex, header.dimStyle, blocks);
     if (c) entities.push(c);
     else skipped[e.type] = (skipped[e.type] ?? 0) + 1;
   }

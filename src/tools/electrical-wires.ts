@@ -34,7 +34,7 @@ import { toggleVariant, isComponent, isChild } from '../electrical/families';
 import { LIBRARY_BLOCKS } from '../electrical/library';
 import { readWdSettings } from '../electrical/wdm';
 import type { ElectricalUi } from '../electrical/ui';
-import { componentDialogInit, componentAttributes, lookupSymbol } from './electrical';
+import { componentDialogInit, componentAttributes, lookupSymbol, symbolPick, resolveSymbolPick } from './electrical';
 
 const fmt = (p: Point) => `${p.x.toFixed(4)}, ${p.y.toFixed(4)}`;
 
@@ -255,9 +255,11 @@ export class ThreePhaseComponentTool extends PickTool {
   start(ctx: ToolContext): void {
     ctx.doc.ensureBlocks(LIBRARY_BLOCKS);
     const choose = this.preset ? Promise.resolve(this.preset) : ctx.ui.pickSymbol();
-    void choose.then((name) => {
-      const def = name ? lookupSymbol(name) : undefined;
-      if (!name || !def) {
+    void choose.then((picked) => {
+      // Poles sit in horizontal phase wires: the orientation radio is ignored here.
+      const pick = symbolPick(picked);
+      const def = pick ? ctx.doc.lookupBlock(pick.name) ?? lookupSymbol(pick.name) : undefined;
+      if (!def) {
         ctx.finish();
         return;
       }
@@ -410,7 +412,11 @@ export class ToggleNcTool extends PickTool {
     for (const e of list) {
       const v = toggleVariant(e.block, exists);
       if (!v) {
-        ctx.log(`${e.block} has no NO/NC variant.`);
+        const m = /^(.*)_(NO|NC)$/.exec(e.block);
+        if (m) {
+          const twin = `${m[1]}_${m[2] === 'NO' ? 'NC' : 'NO'}`;
+          ctx.log(`${e.block} has no NO/NC variant: create ${twin} with Symbol Builder > Create NO/NC twin (AESYMBUILDER ${e.block}).`);
+        } else ctx.log(`${e.block} has no NO/NC variant (paired symbols share a stem and end in _NO / _NC).`);
         continue;
       }
       const def = lookupSymbol(v);
@@ -447,12 +453,15 @@ export class SwapBlockTool extends PickTool {
     else ctx.prompt('Select component to swap:');
   }
   private swap(e: InsertEntity, ctx: ToolContext): void {
-    void ctx.ui.pickSymbol().then((name) => {
-      const def = name ? lookupSymbol(name) : undefined;
-      if (!def) {
+    void ctx.ui.pickSymbol().then((picked) => {
+      const pick = symbolPick(picked);
+      const r = pick ? resolveSymbolPick(ctx.doc, pick) : null;
+      if (!r) {
         ctx.finish();
         return;
       }
+      const def = r.def;
+      if (r.note) ctx.log(r.note);
       ctx.doc.ensureBlocks([def]);
       const replaced: InsertEntity = { ...e, block: def.name };
       // keep the wires broken correctly for the new symbol width
