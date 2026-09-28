@@ -52,21 +52,52 @@ declare global {
   }
 }
 
+/** Show a native file picker; resolves with the chosen File (null when cancelled). */
+function pickBrowserFile(accept: string): Promise<File | null> {
+  return new Promise((resolve) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = accept;
+    input.style.display = 'none';
+    input.addEventListener('change', () => {
+      input.remove();
+      resolve(input.files?.[0] ?? null);
+    });
+    input.addEventListener('cancel', () => {
+      input.remove();
+      resolve(null);
+    });
+    document.body.appendChild(input);
+    input.click();
+  });
+}
+
+/**
+ * File access without Electron (website / `npm run dev`): files come from the browser's
+ * file picker and go to its Downloads folder. DWG files are parsed in the page by
+ * LibreDWG's WebAssembly (src/io/dwg-browser.ts, loaded on first use).
+ */
 function browserFileBridge(): FileBridge {
   return {
-    openDxf: () =>
-      new Promise((resolve) => {
-        const input = document.createElement('input');
-        input.type = 'file';
-        input.accept = '.dxf';
-        input.addEventListener('change', async () => {
-          const f = input.files?.[0];
-          if (!f) return resolve(null);
-          resolve({ path: f.name, text: await f.text() });
-        });
-        input.addEventListener('cancel', () => resolve(null));
-        input.click();
-      }),
+    openDxf: async () => {
+      const f = await pickBrowserFile('.dxf');
+      return f ? { path: f.name, text: await f.text() } : null;
+    },
+    openDrawing: async () => {
+      const f = await pickBrowserFile('.dxf,.dwg');
+      if (!f) return null;
+      const { drawingKindOf } = await import('./io/dwg-browser');
+      if (drawingKindOf(f.name) === 'dwg') {
+        const { readDwgInBrowser, describeDwgError } = await import('./io/dwg-browser');
+        try {
+          const { payload, version } = await readDwgInBrowser(await f.arrayBuffer());
+          return { path: f.name, kind: 'dwg', payload, version };
+        } catch (err) {
+          throw new Error(describeDwgError(err));
+        }
+      }
+      return { path: f.name, kind: 'dxf', text: await f.text() };
+    },
     saveDxf: async (path, text, suggestName) => {
       const name = path ?? suggestName;
       const blob = new Blob([text], { type: 'application/dxf' });
@@ -80,6 +111,60 @@ function browserFileBridge(): FileBridge {
     // Text exports (AESYMLIBEXPORT JSON, REPORTBUG's Save Report, CSV) download in the browser build.
     saveText: (suggestName, text) => browserDownload(suggestName, text),
   };
+}
+
+/**
+ * Browser edition notice (GitHub Pages). Shown with `?web`, or whenever there is no Electron
+ * bridge and the page is not a `?demo` capture; the dismissal is remembered per browser.
+ */
+function installWebBanner(app: HTMLElement): void {
+  const params = new URLSearchParams(location.search);
+  const forced = params.has('web');
+  if (!forced && (window.jcad || params.has('demo'))) return;
+  const key = 'jcad.webBannerDismissed';
+  try {
+    if (!forced && localStorage.getItem(key) === '1') return;
+  } catch {
+    /* storage unavailable: always show */
+  }
+  const style = document.createElement('style');
+  style.textContent = `
+    .web-banner { display: flex; align-items: center; gap: 10px; padding: 5px 10px; font-size: 12px; line-height: 1.35;
+      background: #1f3a5f; color: #e6eefc; border-bottom: 1px solid #3d8bff; flex: 0 0 auto; }
+    .web-banner strong { font-weight: 600; }
+    .web-banner span { flex: 1 1 auto; min-width: 0; }
+    .web-banner a { color: #9cc4ff; white-space: nowrap; }
+    .web-banner button { flex: 0 0 auto; background: transparent; border: 1px solid #6a9be0; color: inherit; border-radius: 3px;
+      padding: 1px 7px; cursor: pointer; font: inherit; }
+    .web-banner button:hover { background: rgba(255,255,255,0.12); }`;
+  document.head.appendChild(style);
+  const bar = document.createElement('div');
+  bar.className = 'web-banner';
+  bar.setAttribute('role', 'note');
+  const text = document.createElement('span');
+  const label = document.createElement('strong');
+  label.textContent = 'Browser edition: ';
+  text.append(label, 'files are opened from and saved to your Downloads folder; install the desktop app for autosave, projects and updates. ');
+  const link = document.createElement('a');
+  link.href = '../';
+  link.textContent = 'Get the desktop app';
+  text.appendChild(link);
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.title = 'Dismiss';
+  close.setAttribute('aria-label', 'Dismiss');
+  close.textContent = '×';
+  close.addEventListener('click', () => {
+    bar.remove();
+    try {
+      localStorage.setItem(key, '1');
+    } catch {
+      /* ignore */
+    }
+    window.dispatchEvent(new Event('resize'));
+  });
+  bar.append(text, close);
+  app.insertBefore(bar, app.firstChild);
 }
 
 async function browserDownload(name: string, text: string): Promise<string | null> {
@@ -112,6 +197,8 @@ function boot(): void {
       <div id="symbol-builder"></div>
     </div>
     <div id="statusbar"></div>`;
+
+  installWebBanner(app);
 
   const canvas = document.getElementById('drawing') as HTMLCanvasElement;
   const canvasWrap = canvas.parentElement as HTMLElement;

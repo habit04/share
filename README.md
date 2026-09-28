@@ -32,6 +32,34 @@ tagged builds are attached to a GitHub Release. The builds are not signed with a
 confirmation ("More info" then "Run anyway") and macOS asks once under System Settings >
 Privacy & Security > "Open Anyway" (macOS builds are ad-hoc signed so they are not reported as damaged).
 
+### Website and browser edition
+
+The public website, <https://habit04.github.io/share/>, is a landing page (download buttons filled
+from the latest GitHub Release through the GitHub API, screenshots, first-launch notes, the author
+and donation details from `src/app/about.json`) plus a **browser edition** of the application at
+`https://habit04.github.io/share/app/`. It is built by `.github/workflows/pages.yml` on pushes to the
+branch `claude/autocad-program-feasibility-53w7j7` (paths `site/**`, `src/**`, `scripts/build-site.mjs`,
+...) or by running the workflow manually, and deployed with GitHub Pages. The first deployment needs
+**Settings > Pages > Build and deployment > Source: GitHub Actions** (the workflow's
+`configure-pages` step tries to enable it as well).
+
+```bash
+npm run build:site                      # site/ + about.json -> site-dist/, vite build --mode site -> site-dist/app/
+node scripts/screenshot-site.mjs        # Playwright: landing page at desktop/phone widths -> screenshots/site-*.png,
+                                        # then opens fixtures/example_2000.dwg in the browser edition (site-app-dwg.png)
+node scripts/screenshot-site.mjs --images   # also re-captures the landing-page pictures into site/img/
+npx serve site-dist                     # or any static server, to look at it locally
+```
+
+The browser edition is the same renderer; without Electron the file bridge uses the browser's
+file picker and Downloads folder, and **DWG files are parsed in the page** by the LibreDWG
+WebAssembly build (`src/io/dwg-browser.ts`, loaded on the first `.dwg`; about 9.5 MB, 2 MB
+compressed). Limitations compared with the desktop app: no projects, autosave, recent-file paths
+or updates; saves always download a DXF; the user symbol library lives in the browser's
+localStorage; the page's Content-Security-Policy allows `'unsafe-eval'` for Emscripten (the
+Electron build keeps the strict policy and never loads the wasm, `__JCAD_WEB__` is false there);
+the wasm reserves about 1 GB of memory, so phones and 32-bit browsers may refuse to load it.
+
 ### Updates
 
 The application checks GitHub Releases for a newer version a few seconds after it starts

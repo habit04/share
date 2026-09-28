@@ -1,0 +1,61 @@
+name: Website (GitHub Pages)
+
+# Builds the landing page (site/) and the browser edition (Vite, mode "site") into site-dist/
+# and deploys it to GitHub Pages: https://habit04.github.io/share/
+#
+# First time only: Settings > Pages > Build and deployment > Source must be "GitHub Actions"
+# (configure-pages with `enablement: true` tries to switch it on for you when the token may).
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['claude/autocad-program-feasibility-53w7j7']
+    paths:
+      - 'site/**'
+      - 'src/**'
+      - 'index.html'
+      - 'vite.config.ts'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'scripts/build-site.mjs'
+      - '.github/workflows/pages.yml'
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+      - run: node scripts/build-site.mjs
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site-dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
