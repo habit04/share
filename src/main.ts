@@ -76,6 +76,8 @@ function browserFileBridge(): FileBridge {
       setTimeout(() => URL.revokeObjectURL(a.href), 2000);
       return name;
     },
+    // Text exports (AESYMLIBEXPORT JSON, REPORTBUG's Save Report, CSV) download in the browser build.
+    saveText: (suggestName, text) => browserDownload(suggestName, text),
   };
 }
 

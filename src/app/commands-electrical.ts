@@ -28,8 +28,9 @@ import { FootprintTool, BalloonTool, NameplateTool } from '../tools/panel';
 import { assignWireNumbers, DEFAULT_BUS } from '../electrical/wires';
 import { readWdSettings, writeWdSettings, WD_M_BLOCK, type WdSettings } from '../electrical/wdm';
 import { retagDrawing } from '../electrical/tags';
-import { updateCrossReferences, parentCandidates, childBlockFor } from '../electrical/xref';
-import { LIBRARY_BLOCKS } from '../electrical/library';
+import { updateCrossReferences, parentCandidates, childBlockChoices, type ChildBlockOptions } from '../electrical/xref';
+import { LIBRARY_BLOCKS, findLibrarySymbol } from '../electrical/library';
+import { tagPrefix } from '../electrical/symbols';
 import { userLibrary } from '../electrical/userlib';
 import { setUserCatalog, parseCatalog, userCatalogSize, catalogFamilyFor } from '../electrical/catalog';
 import { schematicList, terminalStripTable, applyTerminalEdits, BALLOON_BLOCK, NAMEPLATE_BLOCK } from '../electrical/panel';
@@ -141,6 +142,21 @@ export async function loadProjectCatalog(editor: Editor): Promise<void> {
   }
 }
 
+/** Library lookups for childBlockChoices: drawing / library blocks and the user library's same-family contacts. */
+export function childBlockOptions(editor: Pick<Editor, 'doc'>): ChildBlockOptions {
+  return {
+    exists: (name) => !!editor.doc.lookupBlock(name) || !!findLibrarySymbol(name),
+    candidates: (parentBlock, kind) => {
+      const family = tagPrefix(parentBlock);
+      return userLibrary
+        .all()
+        .filter((s) => s.wdtype === 'CONTACT' && s.family === family && new RegExp(`_${kind}$`).test(s.block.name))
+        .map((s) => s.block.name)
+        .sort();
+    },
+  };
+}
+
 export function registerElectricalCommands(editor: Editor): void {
   const reg = (name: string, aliases: string[], description: string, run: (ed: Editor, arg?: string) => void) => editor.register({ name, aliases, description, run });
   const ui = () => electricalUi(editor);
@@ -162,12 +178,17 @@ export function registerElectricalCommands(editor: Editor): void {
         if (!id) return;
         const parent = ed.doc.entities.find((e): e is InsertEntity => e.id === id);
         if (!parent) return;
-        const kind = await ui().pickList(`Contact type for ${parent.attributes.TAG1}`, [
-          { value: 'NO', label: 'Normally open', detail: childBlockFor(parent.block, 'NO') },
-          { value: 'NC', label: 'Normally closed', detail: childBlockFor(parent.block, 'NC') },
-        ]);
-        if (!kind) return;
-        ed.startTool(new ComponentTool(childBlockFor(parent.block, kind as 'NO' | 'NC'), ui, settings, parent.id));
+        // User child symbols first (the parent's own _NO/_NC twin, then same-family user contacts), then the built-in contact.
+        const items = (['NO', 'NC'] as const).flatMap((kind) =>
+          childBlockChoices(parent.block, kind, childBlockOptions(ed)).map((block) => ({
+            value: block,
+            label: kind === 'NO' ? 'Normally open' : 'Normally closed',
+            detail: `${block}${userLibrary.has(block) ? ' (user library)' : ''}  ${findLibrarySymbol(block)?.description ?? ed.doc.lookupBlock(block)?.description ?? ''}`.trimEnd(),
+          })),
+        );
+        const block = await ui().pickList(`Contact type for ${parent.attributes.TAG1}`, items, { detailHeader: 'Symbol' });
+        if (!block) return;
+        ed.startTool(new ComponentTool(block, ui, settings, parent.id));
       });
   });
   reg('AECOMPONENT3', ['COMPONENT3', 'AEC3'], 'Insert a 3-phase (3-pole) component onto a 3-wire bus', (ed, arg) => ed.startTool(new ThreePhaseComponentTool(arg, ui)));
