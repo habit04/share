@@ -38,6 +38,11 @@ export interface UserSettings {
   selectionEffect: 'dashed' | 'solid';
   // --- Options > Files
   autosaveMinutes: number;
+  // --- Plot / Print
+  plotPaper: string;
+  plotOrientation: 'auto' | 'landscape' | 'portrait';
+  plotScale: string;
+  plotMargin: number;
   // --- Options > Units
   units: 'decimal' | 'engineering' | 'architectural' | 'fractional';
   unitSuffix: 'in' | 'mm' | 'ft' | 'm';
@@ -95,6 +100,10 @@ export const DEFAULT_SETTINGS: UserSettings = {
   gripHoverColor: '#ff3d3d',
   selectionEffect: 'dashed',
   autosaveMinutes: 10,
+  plotPaper: 'tabloid',
+  plotOrientation: 'auto',
+  plotScale: 'fit',
+  plotMargin: 0.25,
   units: 'decimal',
   unitSuffix: 'in',
   precision: 4,
@@ -126,6 +135,7 @@ const RANGES: Partial<Record<keyof UserSettings, [number, number]>> = {
   pickboxSize: [0, 20],
   gripSize: [1, 20],
   autosaveMinutes: [0, 240],
+  plotMargin: [0, 5],
   precision: [0, 8],
   snapSpacing: [1e-6, 1e6],
   gridSpacing: [1e-6, 1e6],
@@ -173,6 +183,9 @@ export function normalizeSettings(input: unknown): UserSettings {
 
 const ENUMS: Partial<Record<keyof UserSettings, string[]>> = {
   symbolStandard: ['JIC', 'IEC'],
+  plotPaper: ['fit', 'letter', 'legal', 'tabloid', 'ansi-c', 'ansi-d', 'ansi-e', 'arch-c', 'arch-d', 'a4', 'a3', 'a2', 'a1', 'a0'],
+  plotOrientation: ['auto', 'landscape', 'portrait'],
+  plotScale: ['fit', '1:1', '1:2', '1:4', '2:1'],
   ribbonTheme: ['dark', 'light'],
   selectionEffect: ['dashed', 'solid'],
   units: ['decimal', 'engineering', 'architectural', 'fractional'],

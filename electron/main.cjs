@@ -381,13 +381,12 @@ ipcMain.handle('plot-pdf', async (ev, dataUrl, suggestName, landscape, sheet) =>
     const html = '<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;background:#fff;height:100%}img{width:100%;height:100%;object-fit:contain;display:block}@page{margin:0}</style></head><body><img id="p"></body></html>';
     await hidden.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
     await hidden.webContents.executeJavaScript(`new Promise((ok, fail) => { const i = document.getElementById('p'); i.onload = () => ok(true); i.onerror = () => fail(new Error('image')); i.src = ${JSON.stringify(dataUrl)}; })`);
-    // Page size from the sheet aspect (microns); default to Letter/A-ish when not given.
-    const w = sheet && Number.isFinite(sheet.width) && sheet.width > 0 ? sheet.width : landscape ? 11 : 8.5;
-    const h = sheet && Number.isFinite(sheet.height) && sheet.height > 0 ? sheet.height : landscape ? 8.5 : 11;
+    // printToPDF takes a named size or {width, height} in INCHES (print() uses microns).
     const pdf = await hidden.webContents.printToPDF({
       printBackground: true,
       margins: { marginType: 'none' },
-      pageSize: { width: Math.round(w * 25400), height: Math.round(h * 25400) },
+      landscape: Boolean(landscape),
+      pageSize: pdfPageSize(sheet, landscape),
     });
     await fs.writeFile(res.filePath, pdf);
     return res.filePath;
@@ -396,19 +395,36 @@ ipcMain.handle('plot-pdf', async (ev, dataUrl, suggestName, landscape, sheet) =>
   }
 });
 
+const NAMED_PAGES = new Set(['A0', 'A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'Legal', 'Letter', 'Tabloid', 'Ledger']);
+/** Sheet dimensions in portrait inches (Electron applies `landscape` itself). */
+function sheetPortrait(sheet, landscape) {
+  const w = sheet && Number.isFinite(sheet.width) && sheet.width > 0 ? sheet.width : landscape ? 11 : 8.5;
+  const h = sheet && Number.isFinite(sheet.height) && sheet.height > 0 ? sheet.height : landscape ? 8.5 : 11;
+  return w > h ? { width: h, height: w } : { width: w, height: h };
+}
+/** printToPDF page size: a named paper when possible, else inches. */
+function pdfPageSize(sheet, landscape) {
+  if (sheet && NAMED_PAGES.has(sheet.electron)) return sheet.electron;
+  return sheetPortrait(sheet, landscape);
+}
+/** print() page size: a named paper when possible, else microns. */
+function printPageSize(sheet, landscape) {
+  if (sheet && NAMED_PAGES.has(sheet.electron) && sheet.electron !== 'Ledger') return sheet.electron;
+  const p = sheetPortrait(sheet, landscape);
+  return { width: Math.round(p.width * 25400), height: Math.round(p.height * 25400) };
+}
+
 /** Render the plot image in a hidden window and hand it to the OS print dialog. */
 ipcMain.handle('print-drawing', async (ev, dataUrl, title, landscape, sheet) => {
   const win = BrowserWindow.fromWebContents(ev.sender);
   if (typeof dataUrl !== 'string' || !/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(dataUrl)) throw new Error('Invalid image');
-  const w = sheet && Number.isFinite(sheet.width) && sheet.width > 0 ? sheet.width : landscape ? 11 : 8.5;
-  const h = sheet && Number.isFinite(sheet.height) && sheet.height > 0 ? sheet.height : landscape ? 8.5 : 11;
   const hidden = new BrowserWindow({ show: false, parent: win || undefined, webPreferences: { sandbox: true, contextIsolation: true } });
   try {
     const html = `<!doctype html><html><head><meta charset="utf-8"><title>${String(title || 'Drawing').replace(/[<>&]/g, '')}</title><style>html,body{margin:0;background:#fff;height:100%}img{width:100%;height:100%;object-fit:contain;display:block}@page{margin:0;size:${landscape ? 'landscape' : 'portrait'}}</style></head><body><img id="p"></body></html>`;
     await hidden.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
     await hidden.webContents.executeJavaScript(`new Promise((ok, fail) => { const i = document.getElementById('p'); i.onload = () => ok(true); i.onerror = () => fail(new Error('image')); i.src = ${JSON.stringify(dataUrl)}; })`);
     return await new Promise((resolve, reject) => {
-      hidden.webContents.print({ silent: false, printBackground: true, landscape: Boolean(landscape), margins: { marginType: 'none' }, pageSize: { width: Math.round(w * 25400), height: Math.round(h * 25400) } }, (success, failureReason) => {
+      hidden.webContents.print({ silent: false, printBackground: true, landscape: Boolean(landscape), margins: { marginType: 'none' }, pageSize: printPageSize(sheet, landscape) }, (success, failureReason) => {
         if (success) resolve(true);
         else if (!failureReason || /cancel/i.test(failureReason)) resolve(false);
         else reject(new Error(failureReason));

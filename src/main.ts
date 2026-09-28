@@ -18,6 +18,7 @@ import { makePaletteResizable, installAutoHide } from './ui/palettes';
 import { ToolPalettes } from './ui/toolpalettes';
 import { helpDialog, textWindowDialog } from './ui/help';
 import { reportProblemDialog } from './ui/report';
+import { plotDialog } from './ui/plot';
 import { installDiagnostics } from './app/diagnostics';
 import { drawingKindOf, readDwgInBrowser, describeDwgError } from './io/dwg-browser';
 import { donateUrl } from './app/about';
@@ -38,8 +39,8 @@ declare global {
       openDrawing(file?: string): Promise<import('./app/editor').OpenResult | null>;
       openProject(file?: string): Promise<{ path: string; text: string } | null>;
       saveText(suggestName: string, text: string, filterName: string, ext: string): Promise<string | null>;
-      plotPdf(dataUrl: string, suggestName: string, landscape: boolean, sheet?: { width: number; height: number }): Promise<string | null>;
-      printDrawing?(dataUrl: string, title: string, landscape: boolean, sheet?: { width: number; height: number }): Promise<boolean>;
+      plotPdf(dataUrl: string, suggestName: string, landscape: boolean, sheet?: { width: number; height: number; electron?: string }): Promise<string | null>;
+      printDrawing?(dataUrl: string, title: string, landscape: boolean, sheet?: { width: number; height: number; electron?: string }): Promise<boolean>;
       saveDxf(path: string | null, text: string, suggestName: string): Promise<string | null>;
       onMenuCommand(cb: (cmd: string) => void): void;
       onQueryDirty(cb: () => boolean): void;
@@ -82,7 +83,7 @@ function pickBrowserFile(accept: string): Promise<File | null> {
  * LibreDWG's WebAssembly (src/io/dwg-browser.ts, loaded on first use).
  */
 /** Open the rendered sheet in a new window and call the browser's print dialog. */
-function browserPrint(dataUrl: string, title: string, landscape: boolean): Promise<boolean> {
+function browserPrint(dataUrl: string, title: string, landscape: boolean, sheet?: { width: number; height: number }): Promise<boolean> {
   return new Promise((resolve) => {
     const w = window.open('', '_blank', 'noopener=no,width=1100,height=800');
     if (!w) {
@@ -91,7 +92,7 @@ function browserPrint(dataUrl: string, title: string, landscape: boolean): Promi
     }
     const safeTitle = title.replace(/[<>&]/g, '');
     w.document.write(
-      `<!doctype html><html><head><meta charset="utf-8"><title>${safeTitle}</title><style>html,body{margin:0;background:#fff;height:100%}img{width:100%;height:100%;object-fit:contain;display:block}@page{margin:0;size:${landscape ? 'landscape' : 'portrait'}}</style></head><body><img id="p"></body></html>`,
+      `<!doctype html><html><head><meta charset="utf-8"><title>${safeTitle}</title><style>html,body{margin:0;background:#fff;height:100%}img{width:100%;height:100%;object-fit:contain;display:block}@page{margin:0;size:${sheet ? `${sheet.width.toFixed(2)}in ${sheet.height.toFixed(2)}in` : landscape ? 'landscape' : 'portrait'}}</style></head><body><img id="p"></body></html>`,
     );
     w.document.close();
     const img = w.document.getElementById('p') as HTMLImageElement;
@@ -140,7 +141,7 @@ function browserFileBridge(): FileBridge {
     // Text exports (AESYMLIBEXPORT JSON, REPORTBUG's Save Report, CSV) download in the browser build.
     saveText: (suggestName, text) => browserDownload(suggestName, text),
     // Browser: the print dialog also offers "Save as PDF", which stands in for PLOT.
-    printDrawing: (dataUrl, title, landscape) => browserPrint(dataUrl, title, landscape),
+    printDrawing: (dataUrl, title, landscape, sheet) => browserPrint(dataUrl, title, landscape, sheet),
   };
 }
 
@@ -399,6 +400,7 @@ function boot(): void {
   reg('AUTOSAVE', [], 'Write autosave files now', () => void autosaver.runNow().then((n) => editor.log(`${n} drawing(s) autosaved.`)));
 
   editor.hooks = {
+    plot: (mode) => plotDialog(editor, mode),
     reports: (key) => reportsDialog(editor, key, (name, csv) => editor.fileBridge?.saveText?.(name, csv, 'CSV', 'csv') ?? browserDownload(name, csv)),
     template: () => templateDialog(),
     plc: (init) => plcDialog(init),

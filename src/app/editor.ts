@@ -23,6 +23,7 @@ import { loadSettings, saveSettings, pushRecent, type UserSettings } from './set
 import { SessionManager, applySaveResult } from './sessions';
 import type { ColorSpec } from '../core/entities';
 import { readDxf, writeDxf } from '../io/dxf';
+import { layoutPage, type PlotOptions } from './plot';
 import { parsePointInput, isPlainNumber } from './input';
 import { convertDwg, type DwgImportPayload } from '../io/dwg';
 import type { ElectricalUi } from '../electrical/ui';
@@ -52,6 +53,13 @@ export type OpenResult =
   | { path: string; kind: 'dxf'; text: string }
   | { path: string; kind: 'dwg'; payload: DwgImportPayload; version?: string };
 
+/** Sheet size in inches (already oriented) plus Electron's named page size when there is one. */
+export interface PlotSheet {
+  width: number;
+  height: number;
+  electron?: string;
+}
+
 export interface FileBridge {
   openDxf(): Promise<{ path: string; text: string } | null>;
   /** Desktop only: open DXF or DWG (DWG parsed by LibreDWG in the main process). */
@@ -59,9 +67,9 @@ export interface FileBridge {
   saveDxf(path: string | null, text: string, suggestName: string): Promise<string | null>;
   openProject?(file?: string): Promise<{ path: string; text: string } | null>;
   saveText?(suggestName: string, text: string, filterName: string, ext: string): Promise<string | null>;
-  plotPdf?(dataUrl: string, suggestName: string, landscape: boolean, sheet?: { width: number; height: number }): Promise<string | null>;
+  plotPdf?(dataUrl: string, suggestName: string, landscape: boolean, sheet?: PlotSheet): Promise<string | null>;
   /** Print the rendered sheet through the system print dialog; resolves true when a job was sent. */
-  printDrawing?(dataUrl: string, title: string, landscape: boolean, sheet?: { width: number; height: number }): Promise<boolean>;
+  printDrawing?(dataUrl: string, title: string, landscape: boolean, sheet?: PlotSheet): Promise<boolean>;
 }
 
 /** Version compiled in from package.json (see vite.config.ts); 'dev' under plain vitest. */
@@ -133,6 +141,8 @@ export class Editor {
     electrical?: ElectricalUi;
     /** Symbol Builder start dialog and palette (src/ui/symbol-builder.ts). */
     symbolBuilder?: SymbolBuilderUi;
+    /** Plot / Print dialog (paper, orientation, scale, margins); null = cancelled. */
+    plot?: (mode: 'pdf' | 'print') => Promise<PlotOptions | null>;
   } = {};
   settings: UserSettings = loadSettings();
   project: Project = defaultProject();
@@ -823,32 +833,44 @@ export class Editor {
   }
 
   /** Render the drawing extents to a white sheet and hand it to the main process as PDF. */
-  /** Render the drawing extents onto a white sheet (150 dpi, black lines) for plotting / printing. */
-  async renderPlotImage(): Promise<{ dataUrl: string; landscape: boolean; sheet: { width: number; height: number } } | null> {
+  /**
+   * Render the drawing extents onto the chosen paper (white sheet, black lines, hidden
+   * layers left out) for plotting / printing. The image has exactly the sheet's proportions.
+   */
+  async renderPlotImage(opts: PlotOptions): Promise<{ dataUrl: string; landscape: boolean; sheet: { width: number; height: number }; electron?: string; reducedToFit: boolean } | null> {
     const b = this.doc.extents();
     if (!b) return null;
     const w = b.max.x - b.min.x;
     const h = b.max.y - b.min.y;
-    const landscape = w >= h;
+    const lay = layoutPage(w, h, opts);
     const dpi = 150;
-    const margin = 0.25;
-    const pw = Math.ceil((w + margin * 2) * dpi);
-    const ph = Math.ceil((h + margin * 2) * dpi);
+    const pw = Math.ceil(lay.sheet.width * dpi);
+    const ph = Math.ceil(lay.sheet.height * dpi);
     const canvas = document.createElement('canvas');
-    canvas.width = Math.min(pw, 12000);
-    canvas.height = Math.min(ph, 12000);
-    const k = Math.min(canvas.width / pw, canvas.height / ph) * dpi;
+    // Cap the bitmap (E-size at 150 dpi is 6600 x 5100); scale the dpi down for anything larger.
+    const shrink = Math.min(1, 12000 / pw, 12000 / ph);
+    canvas.width = Math.round(pw * shrink);
+    canvas.height = Math.round(ph * shrink);
+    const px = dpi * shrink; // pixels per inch on the bitmap
+    const k = lay.scale * px; // pixels per drawing unit
     const ctx = canvas.getContext('2d')!;
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
-    const tf = { scale: k, toScreen: (p: Point) => ({ x: (p.x - b.min.x + margin) * k, y: (b.max.y - p.y + margin) * k }) };
+    const ox = lay.origin.x * px;
+    const oy = lay.origin.y * px;
+    const tf = { scale: k, toScreen: (p: Point) => ({ x: ox + (p.x - b.min.x) * k, y: oy + (b.max.y - p.y) * k }) };
     const { drawEntity } = await import('../render/draw');
     const hidden = new Set(this.doc.layers.filter((l) => !l.visible).map((l) => l.name));
     for (const e of this.doc.entities) {
       if (hidden.has(e.layer)) continue;
-      drawEntity(ctx, e, tf, this.doc.layers, this.doc.lookupBlock, { strokeOverride: '#000000', lineWidthOverride: Math.max(1, Math.round(dpi / 100)), hidden });
+      drawEntity(ctx, e, tf, this.doc.layers, this.doc.lookupBlock, { strokeOverride: '#000000', lineWidthOverride: Math.max(1, Math.round(px / 100)), hidden });
     }
-    return { dataUrl: canvas.toDataURL('image/png'), landscape, sheet: { width: w + margin * 2, height: h + margin * 2 } };
+    return { dataUrl: canvas.toDataURL('image/png'), landscape: lay.landscape, sheet: lay.sheet, electron: lay.electron, reducedToFit: lay.reducedToFit };
+  }
+
+  private plotOptions(): PlotOptions {
+    const s = this.settings;
+    return { paper: s.plotPaper, orientation: s.plotOrientation, scale: s.plotScale, margin: s.plotMargin };
   }
 
   async plot(): Promise<void> {
@@ -856,13 +878,16 @@ export class Editor {
       this.log('Plotting needs the desktop app (in the browser use PRINT and choose "Save as PDF").');
       return;
     }
-    const img = await this.renderPlotImage();
+    const opts = await (this.hooks.plot?.('pdf') ?? Promise.resolve(this.plotOptions()));
+    if (!opts) return;
+    const img = await this.renderPlotImage(opts);
     if (!img) {
       this.log('Nothing to plot.');
       return;
     }
-    const out = await this.fileBridge.plotPdf(img.dataUrl, this.fileName().replace(/\.[^.]+$/, '') + '.pdf', img.landscape, img.sheet);
-    if (out) this.log(`Plotted to ${out}`);
+    if (img.reducedToFit) this.log('The chosen scale did not fit the paper; the drawing was scaled down to fit.');
+    const out = await this.fileBridge.plotPdf(img.dataUrl, this.fileName().replace(/\.[^.]+$/, '') + '.pdf', img.landscape, { ...img.sheet, electron: img.electron });
+    if (out) this.log(`Plotted to ${out} (${img.sheet.width.toFixed(2)} x ${img.sheet.height.toFixed(2)} in).`);
   }
 
   /** PRINT: send the drawing to a printer through the system print dialog. */
@@ -871,13 +896,16 @@ export class Editor {
       this.log('Printing is not available here.');
       return;
     }
-    const img = await this.renderPlotImage();
+    const opts = await (this.hooks.plot?.('print') ?? Promise.resolve(this.plotOptions()));
+    if (!opts) return;
+    const img = await this.renderPlotImage(opts);
     if (!img) {
       this.log('Nothing to print.');
       return;
     }
+    if (img.reducedToFit) this.log('The chosen scale did not fit the paper; the drawing was scaled down to fit.');
     try {
-      const ok = await this.fileBridge.printDrawing(img.dataUrl, this.fileName().replace(/\.[^.]+$/, ''), img.landscape, img.sheet);
+      const ok = await this.fileBridge.printDrawing(img.dataUrl, this.fileName().replace(/\.[^.]+$/, ''), img.landscape, { ...img.sheet, electron: img.electron });
       this.log(ok ? 'Sent to the printer.' : 'Print cancelled.');
     } catch (err) {
       this.log(`Print failed: ${(err as Error).message}`);

@@ -321,7 +321,11 @@ edit or delete it.
   to the original. Sample files from the LibreDWG test suite live in `fixtures/` and are used
   by the tests. Mirrored and stretched block references keep their X/Y scales (circles and
   arcs inside a stretched block become polylines).
-- **PDF** plotting renders the extents onto a white sheet.
+- **PDF** plotting and **printing** render the extents onto a chosen paper (Letter, Legal,
+  Tabloid 11 x 17, ANSI C/D/E, Arch C/D, ISO A4-A0, or a custom sheet fitted to the drawing)
+  with automatic or forced orientation, fit-to-paper or a fixed scale (1:1, 1:2, 1:4, 2:1)
+  and margins; the choices are remembered. Output is a raster image of the drawing (black
+  lines, hidden layers left out), which any printer or plotter accepts.
 - **CSV** export for every report.
 
 ## Layout of the source
