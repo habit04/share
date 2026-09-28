@@ -64,3 +64,19 @@ describe('aggregated symbol library', () => {
     expect(findLibrarySymbol('hcr1_no')?.name).toBe('HCR1_NO');
   });
 });
+
+describe('library blocks in saved drawings', () => {
+  it('drops unreferenced library blocks on write and keeps used and foreign ones', async () => {
+    const { Drawing } = await import('../src/core/document');
+    const { withoutUnusedLibraryBlocks } = await import('../src/electrical/library');
+    const { writeDxf } = await import('../src/io/dxf');
+    const d = new Drawing();
+    d.ensureBlocks(LIBRARY_BLOCKS);
+    d.ensureBlocks([{ name: 'USERBLOCK', description: 'mine', basePoint: { x: 0, y: 0 }, entities: [], attributes: [] }]);
+    d.addEntities([{ id: 'i1', layer: '0', color: 'ByLayer', type: 'insert', block: 'HCR1_NO', position: { x: 0, y: 0 }, rotation: 0, scale: 1, attributes: {} }]);
+    const slim = withoutUnusedLibraryBlocks(d.snapshot);
+    expect(Object.keys(slim.blocks).sort()).toEqual(['HCR1_NO', 'USERBLOCK']);
+    expect(writeDxf(slim).length).toBeLessThan(writeDxf(d.snapshot).length / 10);
+    expect(withoutUnusedLibraryBlocks(slim)).toBe(slim);
+  });
+});

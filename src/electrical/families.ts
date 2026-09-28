@@ -9,7 +9,7 @@ import type { Entity, InsertEntity } from '../core/entities';
 /** Coils / parent devices whose contacts are children: relays, timers, contactors (JIC and IEC). */
 export const COIL_RE = /^(HCR1|HTD[1-4]|HKM1|HSOL1|HSV[12]|HSR1|HLR1|HAR1|HCN1|HPM1|IEC_K_COIL|IEC_K_LATCH|IEC_K_CNT|IEC_K_SAFETY|IEC_KA_COIL|IEC_KM_COIL|IEC_KT_ON|IEC_KT_OFF|IEC_KT_STAR|IEC_KT_CYC|IEC_Y_)/;
 /** Child contacts: they share the parent's tag and never appear in the BOM on their own. */
-export const CHILD_RE = /^(HCR1_N[OC]|HTD[12]_N[OC]|HKM1_N[OC]|HSR1_N[OC]|HLR1_N[OC]|HAR1_N[OC]|HCN1_N[OC]|HPM1_N[OC]|IEC_K_N[OC]|IEC_K_SAFETY_N[OC]|IEC_KA_N[OC]|IEC_KM_N[OC]|IEC_KT_(ON|OFF)_N[OC]|IEC_KT_STAR_(Y_NC|D_NO))$/;
+export const CHILD_RE = /^(HCR1_N[OC]|HTD[12]_N[OC]|HKM1_N[OC]|HSR1_N[OC]|HLR1_N[OC]|HAR1_N[OC]|HCN1_N[OC]|HPM1_N[OC]|IEC_K_N[OC]|IEC_K_SAFETY_N[OC]|IEC_KA_N[OC]|IEC_KM_N[OC]|IEC_KM_MAIN3|IEC_KT_(ON|OFF)_N[OC]|IEC_KT_STAR_(Y_NC|D_NO))$/;
 /** Blocks that are drawing furniture rather than components. */
 export const NON_COMPONENT_RE = /^(WDDOT|WD_SRC_ARROW|WD_DST_ARROW|WD_M|WD_TITLEBLOCK|WD_BALLOON|WD_NAMEPLATE|WD_GAP|WD_FP_)/;
 

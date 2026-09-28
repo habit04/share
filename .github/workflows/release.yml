@@ -46,6 +46,16 @@ jobs:
       - run: npm ci
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+      - name: Check that the release tag matches package.json
+        if: ${{ github.event.inputs.tag != '' || startsWith(github.ref, 'refs/tags/v') }}
+        shell: bash
+        run: |
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          version="v$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$version" ]; then
+            echo "Release tag $tag does not match package.json version $version (the updater compares both)."
+            exit 1
+          fi
       - run: npm run build
       - run: npx electron-builder ${{ matrix.target }} --publish never
         env:

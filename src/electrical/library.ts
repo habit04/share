@@ -5,16 +5,15 @@
  * document and report sees the same list.
  */
 import type { BlockDef } from '../core/entities';
-import { SYMBOL_CATEGORIES, ALL_SYMBOLS, WIRE_DOT, registerTagPrefixes } from './symbols';
+import type { DrawingState } from '../core/document';
+import { referencedBlocks } from '../tools/blocks';
+import { SYMBOL_CATEGORIES, ALL_SYMBOLS, WIRE_DOT } from './symbols';
 import type { SymbolCategory } from './symbols';
 import { IEC_CATEGORIES, IEC_SYMBOLS } from './iec';
-import { JIC_CONTROL_CATEGORIES, JIC_CONTROL_SYMBOLS, JIC_CONTROL_TAG_PREFIXES } from './symbols-jic-control';
-import { POWER_FLUID_CATEGORIES, POWER_FLUID_SYMBOLS, POWER_FLUID_TAG_PREFIXES } from './symbols-power-fluid';
-import { IEC_EXTENDED_CATEGORIES, IEC_EXTENDED_SYMBOLS, IEC_EXTENDED_TAG_PREFIXES } from './iec-extended';
-
-// Family rules of the extended libraries take precedence over the core table
-// (registration order: the first matching rule wins, so the most specific sets go first).
-registerTagPrefixes([...POWER_FLUID_TAG_PREFIXES, ...JIC_CONTROL_TAG_PREFIXES, ...IEC_EXTENDED_TAG_PREFIXES]);
+import { JIC_CONTROL_CATEGORIES, JIC_CONTROL_SYMBOLS } from './symbols-jic-control';
+import { POWER_FLUID_CATEGORIES, POWER_FLUID_SYMBOLS } from './symbols-power-fluid';
+import { IEC_EXTENDED_CATEGORIES, IEC_EXTENDED_SYMBOLS } from './iec-extended';
+// The extended libraries' tag-prefix rules are part of the static table in symbols.ts.
 
 /** JIC (NFPA 79 ladder) categories: core set first, then the extended sets. */
 export const JIC_LIBRARY: SymbolCategory[] = [...SYMBOL_CATEGORIES, ...JIC_CONTROL_CATEGORIES, ...POWER_FLUID_CATEGORIES];
@@ -36,7 +35,7 @@ export const LIBRARY_BLOCKS: BlockDef[] = [...LIBRARY_SYMBOLS, WIRE_DOT];
 const byName = new Map<string, BlockDef>();
 for (const s of LIBRARY_BLOCKS) if (!byName.has(s.name)) byName.set(s.name, s);
 
-/** Find any built-in symbol by block name (case-insensitive). */
+/** Find any built-in symbol by block name (block names are upper case; lower-case input is accepted). */
 export function findLibrarySymbol(name: string): BlockDef | undefined {
   return byName.get(name) ?? byName.get(name.toUpperCase());
 }
@@ -69,4 +68,22 @@ export function librarySummary(): { jic: number; iec: number; total: number; cat
   const jic = JIC_LIBRARY.reduce((n, c) => n + c.symbols.length, 0);
   const iec = IEC_LIBRARY.reduce((n, c) => n + c.symbols.length, 0);
   return { jic, iec, total: jic + iec, categories: JIC_LIBRARY.length + IEC_LIBRARY.length };
+}
+
+const LIBRARY_NAMES = new Set(LIBRARY_BLOCKS.map((b) => b.name));
+
+/**
+ * The state without built-in library blocks that nothing references. Used when a
+ * drawing is written (SAVE, autosave) so a file only carries the symbols it uses;
+ * `ensureBlocks` puts the whole library back when the drawing is opened.
+ */
+export function withoutUnusedLibraryBlocks(state: DrawingState): DrawingState {
+  const used = referencedBlocks(state);
+  const blocks: Record<string, BlockDef> = {};
+  let dropped = 0;
+  for (const [name, def] of Object.entries(state.blocks)) {
+    if (LIBRARY_NAMES.has(name) && !used.has(name)) dropped += 1;
+    else blocks[name] = def;
+  }
+  return dropped === 0 ? state : { ...state, blocks };
 }

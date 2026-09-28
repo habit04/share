@@ -8,6 +8,9 @@
 import type { BlockDef, Entity, AttributeDef } from '../core/entities';
 import type { Point } from '../core/geometry';
 import { withAcadeAttributes } from './attributes';
+import { JIC_CONTROL_TAG_PREFIXES } from './symbols-jic-control';
+import { POWER_FLUID_TAG_PREFIXES } from './symbols-power-fluid';
+import { IEC_EXTENDED_TAG_PREFIXES } from './iec-extended';
 
 const HALF = 0.375; // half width of an inline symbol
 const GAP = 0.125; // half of the contact gap
@@ -492,11 +495,15 @@ export const WIRE_DOT: BlockDef = {
   attributes: [],
 };
 
-/** Tag-prefix rules contributed by the extended libraries (see library.ts). */
-const extraPrefixes: Array<[RegExp, string]> = [];
-/** Register block-name patterns -> tag prefix for symbols outside this module. */
+/**
+ * Tag-prefix rules of the extended libraries. They are consulted before the core
+ * table (first match wins) so a more specific rule such as HCAP -> CAP beats HCA -> C.
+ * Static, so every importer of tagPrefix sees the same answers regardless of load order.
+ */
+const extraPrefixes: Array<[RegExp, string]> = [...POWER_FLUID_TAG_PREFIXES, ...JIC_CONTROL_TAG_PREFIXES, ...IEC_EXTENDED_TAG_PREFIXES];
+/** Add block-name patterns -> tag prefix for symbols outside the built-in libraries (user libraries). */
 export function registerTagPrefixes(entries: Array<[RegExp, string]>): void {
-  for (const e of entries) extraPrefixes.push(e);
+  for (const e of entries) if (!extraPrefixes.some(([re, p]) => re.source === e[0].source && p === e[1])) extraPrefixes.push(e);
 }
 
 /** Default component tag prefix by family (AutoCAD Electrical style e.g. PB, CR, LT). */

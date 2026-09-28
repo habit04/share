@@ -149,6 +149,7 @@ export function pickSymbolDialog(editor: Editor, standard: 'JIC' | 'IEC' = 'JIC'
         b.textContent = c.name;
         b.addEventListener('click', () => {
           active = i;
+          search.value = '';
           renderCats();
           renderGrid();
         });

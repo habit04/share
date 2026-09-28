@@ -11,6 +11,7 @@
  *    Developer ID signed app; the ad-hoc signed builds cannot be swapped by Squirrel.)
  */
 const { app, dialog, shell, net } = require('electron');
+const { parseVersion, compareVersions } = require('./version.cjs');
 
 const OWNER = 'habit04';
 const REPO = 'share';
@@ -23,27 +24,8 @@ let autoUpdater = null;
 let checking = false;
 let downloaded = null; // version string once an update has been downloaded
 let statusSink = () => {};
-
-/** Parse "v1.2.3" / "1.2.3-beta.1" into comparable parts. */
-function parseVersion(v) {
-  const m = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?/.exec(String(v || '').trim());
-  if (!m) return null;
-  return { parts: [Number(m[1]), Number(m[2]), Number(m[3])], pre: m[4] || '' };
-}
-
-/** 1 if a > b, -1 if a < b, 0 if equal or unparsable. */
-function compareVersions(a, b) {
-  const pa = parseVersion(a);
-  const pb = parseVersion(b);
-  if (!pa || !pb) return 0;
-  for (let i = 0; i < 3; i += 1) {
-    if (pa.parts[i] !== pb.parts[i]) return pa.parts[i] > pb.parts[i] ? 1 : -1;
-  }
-  // A pre-release is older than the final release of the same number.
-  if (pa.pre && !pb.pre) return -1;
-  if (!pa.pre && pb.pre) return 1;
-  return pa.pre === pb.pre ? 0 : pa.pre > pb.pre ? 1 : -1;
-}
+/** Asks the window whether it may close (unsaved-work prompt); set by main. */
+let confirmRestart = async () => true;
 
 /** Whether electron-updater can replace this installation in place. */
 function canSelfUpdate() {
@@ -77,6 +59,11 @@ async function fetchLatestRelease() {
   return { version, url: String(json.html_url || RELEASES_PAGE), notes: String(json.body || ''), assets };
 }
 
+/** Only links into this project's GitHub repository are ever opened. */
+function safeUrl(u) {
+  return /^https:\/\/github\.com\/habit04\/share\//.test(String(u || '')) ? String(u) : RELEASES_PAGE;
+}
+
 /** The download that fits this machine, or the release page. */
 function assetFor(release) {
   const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
@@ -86,7 +73,7 @@ function assetFor(release) {
     : process.env.APPIMAGE ? (a) => /\.AppImage$/i.test(a.name)
     : (a) => /\.deb$/i.test(a.name);
   const hit = release.assets.find(want);
-  return hit ? hit.url : release.url;
+  return safeUrl(hit ? hit.url : release.url);
 }
 
 async function checkViaApi(win, interactive) {
@@ -113,24 +100,30 @@ async function checkViaApi(win, interactive) {
     cancelId: 2,
   });
   if (r.response === 0) await shell.openExternal(assetFor(release));
-  else if (r.response === 1) await shell.openExternal(release.url);
+  else if (r.response === 1) await shell.openExternal(safeUrl(release.url));
   return { state: 'available', version: release.version };
+}
+
+/** Offer to restart into the downloaded update; the unsaved-work prompt runs first. */
+async function offerRestart(win, version) {
+  const r = await dialog.showMessageBox(win, {
+    type: 'info',
+    title: 'Update Ready',
+    message: `JCad Electrical ${version} has been downloaded.`,
+    detail: 'Restart now to install it, or it will be installed when you quit.',
+    buttons: ['Restart Now', 'Later'],
+    defaultId: 0,
+    cancelId: 1,
+  });
+  if (r.response !== 0) return;
+  if (await confirmRestart(win)) getAutoUpdater().quitAndInstall(false, true);
 }
 
 async function checkViaUpdater(win, interactive) {
   const u = getAutoUpdater();
   const current = app.getVersion();
   if (downloaded) {
-    const r = await dialog.showMessageBox(win, {
-      type: 'info',
-      title: 'Update Ready',
-      message: `JCad Electrical ${downloaded} has been downloaded.`,
-      detail: 'Restart now to install it, or it will be installed when you quit.',
-      buttons: ['Restart Now', 'Later'],
-      defaultId: 0,
-      cancelId: 1,
-    });
-    if (r.response === 0) u.quitAndInstall(false, true);
+    await offerRestart(win, downloaded);
     return { state: 'downloaded', version: downloaded };
   }
   const result = await u.checkForUpdates();
@@ -153,19 +146,17 @@ async function checkViaUpdater(win, interactive) {
   });
   if (r.response !== 0) return { state: 'available', version: info.version };
   statusSink({ state: 'downloading', percent: 0 });
-  await u.downloadUpdate();
+  try {
+    await u.downloadUpdate();
+  } catch (err) {
+    // The user asked for this download: always tell them it failed.
+    const e = err instanceof Error ? err : new Error(String(err));
+    e.userEngaged = true;
+    throw e;
+  }
   downloaded = info.version;
   statusSink({ state: 'downloaded', version: info.version });
-  const done = await dialog.showMessageBox(win, {
-    type: 'info',
-    title: 'Update Ready',
-    message: `JCad Electrical ${info.version} has been downloaded.`,
-    detail: 'Restart now to install it, or it will be installed when you quit.',
-    buttons: ['Restart Now', 'Later'],
-    defaultId: 0,
-    cancelId: 1,
-  });
-  if (done.response === 0) u.quitAndInstall(false, true);
+  await offerRestart(win, info.version);
   return { state: 'downloaded', version: info.version };
 }
 
@@ -182,15 +173,16 @@ async function checkForUpdates(win, { interactive = true } = {}) {
       try {
         return await checkViaUpdater(win, interactive);
       } catch (err) {
-        // Missing update metadata on the release, blocked download, ...: fall back to the plain check.
-        if (interactive) return await checkViaApi(win, interactive);
+        // Missing update metadata on the release, ...: fall back to the plain check (but never
+        // after the user already clicked Download - that failure is reported below).
+        if (interactive && !(err && err.userEngaged)) return await checkViaApi(win, interactive);
         throw err;
       }
     }
     return await checkViaApi(win, interactive);
   } catch (err) {
     statusSink({ state: 'error', message: String((err && err.message) || err) });
-    if (interactive) {
+    if (interactive || (err && err.userEngaged)) {
       const r = await dialog.showMessageBox(win, {
         type: 'warning',
         title: 'Check for Updates',
@@ -227,5 +219,9 @@ module.exports = {
   RELEASES_PAGE,
   onStatus(fn) {
     statusSink = typeof fn === 'function' ? fn : () => {};
+  },
+  /** fn(win) -> Promise<boolean>: may the application close now (unsaved work handled)? */
+  onConfirmRestart(fn) {
+    confirmRestart = typeof fn === 'function' ? fn : async () => true;
   },
 };

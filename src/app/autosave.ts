@@ -4,6 +4,7 @@
  */
 import type { DrawingState } from '../core/document';
 import { writeDxf } from '../io/dxf';
+import { withoutUnusedLibraryBlocks } from '../electrical/library';
 import { sessionTitle, type SessionManager } from './sessions';
 
 export interface AutosaveMeta {
@@ -130,7 +131,7 @@ export class Autosaver {
       const s = all.find((x) => x.id === id)!;
       const name = autosaveName(sessionTitle(s), s.id);
       try {
-        await this.store.write(name, writeDxf(s.state), { originalPath: s.filePath, title: sessionTitle(s), savedAt: Date.now() });
+        await this.store.write(name, writeDxf(withoutUnusedLibraryBlocks(s.state)), { originalPath: s.filePath, title: sessionTitle(s), savedAt: Date.now() });
         this.lastSaved.set(id, s.state);
         this.names.set(id, name);
         n += 1;

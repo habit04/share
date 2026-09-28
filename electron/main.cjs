@@ -171,6 +171,50 @@ function buildMenu(win) {
 }
 
 let mainWindow = null;
+/** Set when electron-updater is about to quit and relaunch: the close veto must not run then. */
+let quittingForUpdate = false;
+require('electron').autoUpdater.on('before-quit-for-update', () => {
+  quittingForUpdate = true;
+});
+
+/**
+ * May the window close now? Resolves false when the user cancels or chooses Save (the
+ * SAVE command runs and the user closes again afterwards). Also used before an update restart.
+ */
+function confirmClose(win) {
+  return new Promise((resolve) => {
+    if (win.isDestroyed() || win.webContents.isDestroyed()) return resolve(true);
+    let settled = false;
+    const finish = (v) => {
+      if (settled) return;
+      settled = true;
+      resolve(v);
+    };
+    const onState = (_ev, dirty) => {
+      if (!dirty) return finish(true);
+      const r = dialog.showMessageBoxSync(win, {
+        type: 'warning',
+        buttons: ['Save', "Don't Save", 'Cancel'],
+        defaultId: 0,
+        cancelId: 2,
+        message: 'Save changes to the drawing before closing?',
+        detail: 'Autosave copies of modified drawings are kept for the Drawing Recovery Manager.',
+      });
+      if (r === 1) return finish(true);
+      if (r === 0) win.webContents.send('menu-command', 'SAVE');
+      finish(false);
+    };
+    ipcMain.once('dirty-state', onState);
+    win.webContents.send('query-dirty');
+    // If the renderer never answers (e.g. crashed), close anyway.
+    setTimeout(() => {
+      if (settled) return;
+      ipcMain.removeListener('dirty-state', onState);
+      finish(true);
+    }, 3000);
+  });
+}
+updater.onConfirmRestart((win) => confirmClose(win));
 
 async function createWindow() {
   const b = initialBounds();
@@ -201,40 +245,13 @@ async function createWindow() {
   // Ask the renderer whether there is unsaved work before closing.
   let allowClose = false;
   win.on('close', (e) => {
-    if (allowClose || win.webContents.isDestroyed()) return;
+    if (allowClose || quittingForUpdate || win.webContents.isDestroyed()) return;
     e.preventDefault();
-    const onState = (_ev, dirty) => {
-      if (!dirty) {
-        allowClose = true;
-        win.close();
-        return;
-      }
-      const r = dialog.showMessageBoxSync(win, {
-        type: 'warning',
-        buttons: ['Save', "Don't Save", 'Cancel'],
-        defaultId: 0,
-        cancelId: 2,
-        message: 'Save changes to the drawing before closing?',
-        detail: 'Autosave copies of modified drawings are kept for the Drawing Recovery Manager.',
-      });
-      if (r === 2) return;
-      if (r === 1) {
-        allowClose = true;
-        win.close();
-        return;
-      }
-      win.webContents.send('menu-command', 'SAVE');
-    };
-    ipcMain.once('dirty-state', onState);
-    win.webContents.send('query-dirty');
-    // If the renderer never answers (e.g. crashed), close anyway.
-    setTimeout(() => {
-      if (!allowClose && ipcMain.listenerCount('dirty-state') > 0) {
-        ipcMain.removeListener('dirty-state', onState);
-        allowClose = true;
-        win.close();
-      }
-    }, 3000);
+    void confirmClose(win).then((ok) => {
+      if (!ok) return;
+      allowClose = true;
+      win.close();
+    });
   });
   if (DEV_URL) {
     await win.loadURL(DEV_URL);

@@ -13,7 +13,7 @@ import { WireTool, LadderTool, ComponentTool, assignWireNumbers } from '../tools
 import { TrimTool, ExtendTool, OffsetTool, MirrorTool, ScaleTool, ExplodeTool, ZoomWindowTool } from '../tools/edit';
 import { lineweightDisplay } from '../render/draw';
 import { WIRE_DOT } from '../electrical/symbols';
-import { LIBRARY_SYMBOLS } from '../electrical/library';
+import { LIBRARY_SYMBOLS, withoutUnusedLibraryBlocks } from '../electrical/library';
 import { updateCrossReferences } from '../electrical/xref';
 import { TITLE_BLOCK, newFromTemplate, SHEET_SIZES, type SheetSize } from '../electrical/templates';
 import { PlcModuleTool, SignalArrowTool, TerminalStripTool, DEFAULT_PLC, DEFAULT_STRIP, SOURCE_ARROW, DEST_ARROW, type PlcModuleSettings, type TerminalStripSettings } from '../tools/plc';
@@ -61,7 +61,8 @@ export interface FileBridge {
   plotPdf?(dataUrl: string, suggestName: string, landscape: boolean, sheet?: { width: number; height: number }): Promise<string | null>;
 }
 
-const VERSION = '0.1.0';
+/** Version compiled in from package.json (see vite.config.ts); 'dev' under plain vitest. */
+const VERSION: string = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : 'dev';
 
 export class Editor {
   readonly doc = new Drawing();
@@ -736,7 +737,7 @@ export class Editor {
       this.log('No file access in this environment.');
       return;
     }
-    const text = writeDxf(this.doc.snapshot);
+    const text = writeDxf(withoutUnusedLibraryBlocks(this.doc.snapshot));
     const path = await this.fileBridge.saveDxf(saveAs ? null : this.doc.filePath, text, this.suggestedName ?? this.fileName());
     if (path) {
       this.doc.filePath = path;

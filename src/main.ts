@@ -182,17 +182,30 @@ function boot(): void {
       return;
     }
     ed.log('Checking for updates...');
-    void b.checkForUpdates().then((r) => {
-      if (r.state === 'up-to-date') ed.log(`JCad Electrical ${r.version ?? ''} is up to date.`);
-      else if (r.state === 'available') ed.log(`Update available: JCad Electrical ${r.version ?? ''}.`);
-      else if (r.state === 'downloaded') ed.log(`Update ${r.version ?? ''} downloaded; it installs when the application restarts.`);
-      else if (r.state === 'error') ed.log(`Update check failed: ${r.message ?? 'unknown error'}`);
-    });
+    void b
+      .checkForUpdates()
+      .then((r) => {
+        if (r.state === 'up-to-date') ed.log(`JCad Electrical ${r.version ?? ''} is up to date.`);
+        else if (r.state === 'available') ed.log(`Update available: JCad Electrical ${r.version ?? ''}.`);
+        else if (r.state === 'downloaded') ed.log(`Update ${r.version ?? ''} downloaded; it installs when the application restarts.`);
+        else if (r.state === 'busy') ed.log('An update check is already running.');
+        else if (r.state === 'error') ed.log(`Update check failed: ${r.message ?? 'unknown error'}`);
+      })
+      .catch((err: unknown) => ed.log(`Update check failed: ${err instanceof Error ? err.message : String(err)}`));
   });
+  let lastProgressStep = -1;
   window.jcad?.onUpdateStatus?.((s) => {
     if (s.state === 'available') editor.log(`A newer JCad Electrical (${s.version ?? ''}) is available${s.manual ? ' on the releases page' : ''}.`);
-    else if (s.state === 'downloading' && s.percent !== undefined && s.percent % 25 === 0) editor.log(`Downloading update: ${s.percent}%`);
-    else if (s.state === 'downloaded') editor.log(`Update ${s.version ?? ''} downloaded; restart to install.`);
+    else if (s.state === 'downloading' && s.percent !== undefined) {
+      const step = Math.floor(s.percent / 25);
+      if (step !== lastProgressStep) {
+        lastProgressStep = step;
+        editor.log(`Downloading update: ${step * 25}%`);
+      }
+    } else if (s.state === 'downloaded') {
+      lastProgressStep = -1;
+      editor.log(`Update ${s.version ?? ''} downloaded; restart to install.`);
+    }
   });
   reg('COMMANDLINE', [], 'Show the command window (Ctrl+9)', () => setCommandWindow(true));
   reg('COMMANDLINEHIDE', [], 'Hide the command window (Ctrl+9)', () => setCommandWindow(false));
@@ -222,7 +235,6 @@ function boot(): void {
   reg('CUTCLIP', [], 'Cut selected objects to the clipboard (Ctrl+X)', () => clipboard.cut());
   reg('PASTECLIP', [], 'Paste objects from the clipboard at the cursor (Ctrl+V)', () => clipboard.paste());
   reg('AUTOSAVE', [], 'Write autosave files now', () => void autosaver.runNow().then((n) => editor.log(`${n} drawing(s) autosaved.`)));
-  reg('PURGE', [], 'Purge unused layers (not available: layers cannot be removed yet)', (ed) => ed.log('PURGE is not available in this version.'));
 
   editor.hooks = {
     reports: (key) => reportsDialog(editor, key, (name, csv) => editor.fileBridge?.saveText?.(name, csv, 'CSV', 'csv') ?? browserDownload(name, csv)),
