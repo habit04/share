@@ -1,5 +1,5 @@
 import type { Editor } from '../app/editor';
-import type { LadderSettings } from '../tools/types';
+import type { LadderSettings, SymbolPick } from '../tools/types';
 import { libraryCategories, findLibrarySymbol, searchLibrary, librarySummary } from '../electrical/library';
 import type { Report } from '../electrical/reports';
 import { REPORTS, reportToCsv } from '../electrical/reports';
@@ -80,16 +80,23 @@ export function findAnySymbol(name: string) {
   return findLibrarySymbol(name);
 }
 
-export function pickSymbolDialog(editor: Editor, standard: 'JIC' | 'IEC' = 'JIC', onStandard?: (s: 'JIC' | 'IEC') => void): Promise<string | null> {
+/**
+ * Insert Component icon menu. Resolves the chosen block with the orientation
+ * radio (H = as drawn, V = vertical: the ComponentTool inserts the V twin or
+ * rotates the symbol), or null when cancelled.
+ */
+export function pickSymbolDialog(editor: Editor, standard: 'JIC' | 'IEC' = 'JIC', onStandard?: (s: 'JIC' | 'IEC') => void): Promise<SymbolPick | null> {
   return new Promise((resolve) => {
     const m = modal(`Insert Component: ${standard} Schematic Symbols`, 820);
     const categories = () => libraryCategories(standard);
     let done = false;
+    const orientation = (): 'H' | 'V' => ((m.root.querySelector('input[name="orient"]:checked') as HTMLInputElement | null)?.value === 'v' ? 'V' : 'H');
     const finish = (v: string | null) => {
       if (done) return;
       done = true;
+      const pick: SymbolPick | null = v ? { name: v, orientation: orientation() } : null;
       m.close();
-      resolve(v);
+      resolve(pick);
     };
     m.onClose(() => finish(null));
 
@@ -148,18 +155,33 @@ export function pickSymbolDialog(editor: Editor, standard: 'JIC' | 'IEC' = 'JIC'
             ev.preventDefault();
             showMenu({ x: ev.clientX, y: ev.clientY }, [
               { label: 'Insert', run: () => finish(s.name) },
-              { label: 'Edit in Symbol Builder', run: () => openBuilder(s.name) },
+              {
+                label: 'Edit in Symbol Builder',
+                run: () => {
+                  // The symbol may have been deleted (another tab, an import) since the grid was drawn.
+                  if (!userLibrary.has(s.name)) {
+                    editor.log(`${s.name} is no longer in the user library.`);
+                    refresh();
+                    return;
+                  }
+                  openBuilder(s.name);
+                },
+              },
               null,
               {
                 label: 'Delete from Library',
                 run: () => {
-                  void confirmDialog('Delete symbol', `Remove ${s.name} from the user library?`).then((yes) => {
+                  void confirmDialog('Delete symbol', `Remove ${s.name} from the user library? Drawings that already use it keep their copy of the block.`).then((yes) => {
                     if (!yes) return;
-                    userLibrary.remove(s.name);
-                    editor.log(`${s.name} removed from the user library.`);
-                    active = Math.min(active, categories().length - 1);
-                    renderCats();
-                    renderGrid();
+                    try {
+                      if (userLibrary.remove(s.name)) editor.log(`${s.name} removed from the user library.`);
+                      else editor.log(`${s.name} was not in the user library.`);
+                      if (userLibrary.lastError) editor.log(`User symbol library not written: ${userLibrary.lastError}`);
+                    } catch (err) {
+                      editor.log(`${s.name} could not be removed: ${(err as Error).message}`);
+                    }
+                    // Deleting the last symbol of a category (or the last user symbol) removes its User: category.
+                    refresh();
                   });
                 },
               },
@@ -183,6 +205,13 @@ export function pickSymbolDialog(editor: Editor, standard: 'JIC' | 'IEC' = 'JIC'
         });
         cats.appendChild(b);
       });
+    };
+    /** Re-render categories and grid after the user library changed (a category may have disappeared). */
+    const refresh = () => {
+      active = Math.max(0, Math.min(active, categories().length - 1));
+      renderCats();
+      renderGrid();
+      updateEditButton();
     };
     renderCats();
     renderGrid();
@@ -210,12 +239,15 @@ export function pickSymbolDialog(editor: Editor, standard: 'JIC' | 'IEC' = 'JIC'
     newSym.addEventListener('click', () => openBuilder());
     const editSym = button('Edit...');
     editSym.className += ' left';
-    editSym.title = userLibrary.size ? 'Edit a user symbol in the Symbol Builder' : 'No user symbols yet (New Symbol... creates one)';
-    editSym.disabled = userLibrary.size === 0;
+    const updateEditButton = () => {
+      editSym.title = userLibrary.size ? 'Edit a user symbol in the Symbol Builder' : 'No user symbols yet (New Symbol... creates one)';
+      editSym.disabled = userLibrary.size === 0;
+    };
+    updateEditButton();
     editSym.addEventListener('click', () => {
       void chooseUserSymbolDialog(editor).then((name) => {
         if (name) openBuilder(name);
-        else renderGrid();
+        else refresh(); // the chooser may have deleted or imported symbols
       });
     });
     const std = button(standard === 'JIC' ? 'Switch to IEC' : 'Switch to JIC');

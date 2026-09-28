@@ -327,10 +327,10 @@ function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonly<Recor
           w.pair(100, 'AcDbEntity');
           w.pair(8, e.layer);
           w.pair(100, 'AcDbText');
-          writeTextLike(w, world, a.height * e.scale, value, e.rotation, a.align);
+          writeTextLike(w, world, a.height * e.scale, value, e.rotation + (a.rotation ?? 0), a.align);
           w.pair(100, 'AcDbAttribute');
           w.pair(2, a.tag);
-          w.pair(70, a.invisible ? 1 : 0);
+          w.pair(70, a.invisible || e.hiddenAttributes?.includes(a.tag) ? 1 : 0);
         }
         w.pair(0, 'SEQEND');
         w.pair(5, w.nextHandle());
@@ -611,7 +611,7 @@ export function writeDxf(state: DrawingState): string {
         w.pair(100, 'AcDbEntity');
         w.pair(8, '0');
         w.pair(100, 'AcDbText');
-        writeTextLike(w, a.position, a.height, a.default, 0, a.align);
+        writeTextLike(w, a.position, a.height, a.default, a.rotation ?? 0, a.align);
         w.pair(100, 'AcDbAttributeDefinition');
         w.pair(3, a.prompt);
         w.pair(2, a.tag);
@@ -920,6 +920,8 @@ function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
 interface ReadContext {
   dimStyles: Map<string, DimStyle>;
   dimStyle: DimStyle;
+  /** Block definitions read so far (BLOCKS precedes ENTITIES), for per-insert attribute visibility. */
+  blocks?: Record<string, BlockDef>;
 }
 
 /** Parse a list of entity objects, folding ATTRIB/SEQEND into inserts and VERTEX into polylines. */
@@ -954,13 +956,19 @@ function readEntities(objs: Obj[], ctx: ReadContext): Entity[] {
     const e = readEntityObj(o, ctx);
     if (e && e.type === 'insert') {
       const attrs: Record<string, string> = {};
+      const hidden: string[] = [];
       let j = i + 1;
       while (j < objs.length && objs[j]!.kind === 'ATTRIB') {
-        attrs[str(objs[j]!, 2)] = str(objs[j]!, 1);
+        const tag = str(objs[j]!, 2);
+        attrs[tag] = str(objs[j]!, 1);
+        if ((Math.trunc(num(objs[j]!, 70)) & 1) === 1) hidden.push(tag);
         j += 1;
       }
       if (j < objs.length && objs[j]!.kind === 'SEQEND') j += 1;
-      out.push({ ...e, attributes: attrs });
+      // An ATTRIB flagged invisible whose ATTDEF is visible hides that attribute on this insert only.
+      const def = ctx.blocks?.[e.block];
+      const hiddenHere = def ? hidden.filter((t) => def.attributes.some((a) => a.tag === t && !a.invisible)) : [];
+      out.push({ ...e, attributes: attrs, ...(hiddenHere.length ? { hiddenAttributes: hiddenHere } : {}) });
       i = j;
       continue;
     }
@@ -999,7 +1007,7 @@ export function readDxf(text: string): DrawingState {
   const views: NamedView[] = [];
   // Header DIM* variables define the current style; the DIMSTYLE table gives named styles.
   let headerDimStyle: DimStyle = STANDARD_DIMSTYLE;
-  const ctx: ReadContext = { dimStyles, dimStyle: STANDARD_DIMSTYLE };
+  const ctx: ReadContext = { dimStyles, dimStyle: STANDARD_DIMSTYLE, blocks };
 
   // find sections
   let i = 0;
@@ -1089,6 +1097,7 @@ export function readDxf(text: string): DrawingState {
               const h = num(x, 72, 0);
               const align: 'left' | 'center' | 'right' = h === 1 || h === 4 ? 'center' : h === 2 ? 'right' : 'left';
               const useAlignPt = h !== 0 && has(x, 11);
+              const rotation = g.rad(num(x, 50, 0));
               return {
                 tag: str(x, 2),
                 prompt: str(x, 3),
@@ -1097,6 +1106,7 @@ export function readDxf(text: string): DrawingState {
                 height: num(x, 40, 0.125),
                 align,
                 invisible: (Math.trunc(num(x, 70)) & 1) === 1,
+                ...(Math.abs(rotation) > 1e-9 ? { rotation } : {}),
               };
             });
           const bname = str(o, 2);

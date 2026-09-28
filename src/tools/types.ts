@@ -26,7 +26,8 @@ export interface ToolContext {
   runCommand(name: string): void;
   /** Modal helpers implemented by the UI layer. */
   ui: {
-    pickSymbol(): Promise<string | null>;
+    /** Icon menu: the chosen block (a bare name means horizontal) or null when cancelled. */
+    pickSymbol(): Promise<SymbolPick | string | null>;
     editComponent(init: { tag: string; desc: string; block: string; mfg?: string; cat?: string }): Promise<{ tag: string; desc: string; mfg: string; cat: string } | null>;
     ladderSettings(init: LadderSettings): Promise<LadderSettings | null>;
     textInput(title: string, label: string, init: string): Promise<string | null>;
@@ -36,6 +37,12 @@ export interface ToolContext {
   };
   /** Selection mode flag used by tools that need a selection set first. */
   requestSelection(prompt: string, onDone: (ids: string[]) => void): void;
+}
+
+/** Result of the Insert Component icon menu: the block and the orientation radio (H = as drawn, V = vertical). */
+export interface SymbolPick {
+  name: string;
+  orientation: 'H' | 'V';
 }
 
 export interface LadderSettings {

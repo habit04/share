@@ -9,11 +9,12 @@
  */
 import type { Point } from '../core/geometry';
 import * as g from '../core/geometry';
-import type { Entity, LineEntity, InsertEntity, TextEntity, BlockLookup, ArcEntity } from '../core/entities';
+import type { Entity, LineEntity, InsertEntity, TextEntity, BlockLookup, ArcEntity, BlockDef } from '../core/entities';
 import { newId, entityBounds, textWidth, insertTransform, explodeInsert } from '../core/entities';
 import type { Drawing } from '../core/document';
 import { isWire, isHorizontal, isVertical, breakWire, breakVerticalWire, nearestReference, wireNumberText, WIRENO_HEIGHT } from './ladder';
 import { WIRE_DOT } from './symbols';
+import { connectionVector, pinAttributes, pinDir } from './attributes';
 
 export interface WireEdit {
   remove: string[];
@@ -137,20 +138,64 @@ export function symbolSpan(ins: InsertEntity, lookup: BlockLookup): g.Bounds {
   return b ?? g.boundsOfPoints([ins.position])!;
 }
 
-/** World-space y levels of a symbol's wire connections (from its X?TERM pin attributes), or its own y. */
-export function connectionLevels(ins: InsertEntity, lookup: BlockLookup): number[] {
+/** A wire connection of a placed symbol in world space: where it is and which way the wire runs. */
+export interface WorldConnection {
+  point: Point;
+  /** True when the wire arriving here runs horizontally (a left / right connection after the insert rotation). */
+  horizontal: boolean;
+}
+
+/** World-space wire connections of an insert from its X?TERM pin attributes, honouring the insert rotation. */
+export function worldConnections(ins: InsertEntity, lookup: BlockLookup): WorldConnection[] {
   const block = lookup(ins.block);
-  if (!block) return [ins.position.y];
+  if (!block) return [];
   const tf = insertTransform(ins, block);
-  const ys = block.attributes.filter((a) => /^X[14]TERM\d+$/.test(a.tag)).map((a) => tf(a.position).y);
+  const out: WorldConnection[] = [];
+  for (const a of block.attributes) {
+    const dir = pinDir(a.tag);
+    if (dir === null) continue;
+    const v = g.rotate(connectionVector(dir), ins.rotation);
+    out.push({ point: tf(a.position), horizontal: Math.abs(v.x) >= Math.abs(v.y) });
+  }
+  return out;
+}
+
+const uniqueValues = (vals: number[]): number[] => {
   const uniq: number[] = [];
-  for (const y of ys) if (!uniq.some((u) => Math.abs(u - y) < 1e-4)) uniq.push(y);
-  return uniq.length ? uniq : [ins.position.y];
+  for (const v of vals) if (!uniq.some((u) => Math.abs(u - v) < 1e-4)) uniq.push(v);
+  return uniq;
+};
+
+/**
+ * World-space y levels of a symbol's horizontal wire connections (left / right
+ * pins), or its own y when the block has no pin attributes at all. A symbol
+ * that only connects at its top / bottom has no horizontal levels.
+ */
+export function connectionLevels(ins: InsertEntity, lookup: BlockLookup): number[] {
+  const all = worldConnections(ins, lookup);
+  if (all.length === 0) return [ins.position.y];
+  return uniqueValues(all.filter((c) => c.horizontal).map((c) => c.point.y));
+}
+
+/** World-space x columns of a symbol's vertical wire connections (top / bottom pins). */
+export function connectionColumns(ins: InsertEntity, lookup: BlockLookup): number[] {
+  return uniqueValues(
+    worldConnections(ins, lookup)
+      .filter((c) => !c.horizontal)
+      .map((c) => c.point.x),
+  );
+}
+
+/** Whether a placed symbol sits in a vertical wire (its connections are top / bottom only). */
+export function connectsVertically(ins: InsertEntity, lookup: BlockLookup): boolean {
+  const all = worldConnections(ins, lookup);
+  return all.length > 0 && all.every((c) => !c.horizontal);
 }
 
 /**
  * Lift a component off its wires: the wire pieces touching its left and
- * right edges on each connection level are merged back into one wire.
+ * right edges on each connection level (or its top and bottom edges on each
+ * connection column) are merged back into one wire.
  */
 export function liftFromWires(entities: readonly Entity[], ins: InsertEntity, lookup: BlockLookup): Entity[] {
   const b = symbolSpan(ins, lookup);
@@ -166,10 +211,25 @@ export function liftFromWires(entities: readonly Entity[], ins: InsertEntity, lo
     out = out.filter((e) => e !== left && e !== right);
     out.push(merged);
   }
+  for (const x of connectionColumns(ins, lookup)) {
+    const below = out.find((e): e is LineEntity => isWire(e) && isVertical(e) && Math.abs(e.a.x - x) < 0.05 && Math.abs(Math.max(e.a.y, e.b.y) - b.min.y) < 0.02);
+    const above = out.find((e): e is LineEntity => isWire(e) && isVertical(e) && Math.abs(e.a.x - x) < 0.05 && Math.abs(Math.min(e.a.y, e.b.y) - b.max.y) < 0.02);
+    if (!below && !above) continue;
+    const y0 = below ? Math.min(below.a.y, below.b.y) : b.min.y;
+    const y1 = above ? Math.max(above.a.y, above.b.y) : b.max.y;
+    const proto = above ?? below!;
+    const merged: LineEntity = { ...proto, id: newId(), a: { x: proto.a.x, y: y1 }, b: { x: proto.a.x, y: y0 } };
+    out = out.filter((e) => e !== below && e !== above);
+    out.push(merged);
+  }
   return out;
 }
 
-/** Break every horizontal wire the (placed) component crosses on its connection levels. */
+/**
+ * Break every wire the (placed) component crosses: horizontal wires on its
+ * connection levels, vertical wires on its connection columns (a vertical
+ * symbol dropped on a vertical wire is trimmed around exactly like a horizontal one).
+ */
 export function breakForInsert(entities: readonly Entity[], ins: InsertEntity, lookup: BlockLookup): Entity[] {
   const b = symbolSpan(ins, lookup);
   let out = [...entities];
@@ -178,7 +238,27 @@ export function breakForInsert(entities: readonly Entity[], ins: InsertEntity, l
     if (!wire) continue;
     out = out.filter((e) => e !== wire).concat(breakWire(wire, b.min.x, b.max.x));
   }
+  for (const x of connectionColumns(ins, lookup)) {
+    const wire = out.find((e): e is LineEntity => isWire(e) && isVertical(e) && Math.abs(e.a.x - x) < 0.05 && Math.min(e.a.y, e.b.y) < b.max.y - 1e-6 && Math.max(e.a.y, e.b.y) > b.min.y + 1e-6);
+    if (!wire) continue;
+    out = out.filter((e) => e !== wire).concat(breakVerticalWire(wire, b.min.y, b.max.y));
+  }
   return out;
+}
+
+/** The wire (of the wanted orientation) nearest to a point within tolerance. */
+export function findOrientedWireAt(entities: readonly Entity[], p: Point, tol: number, orientation: 'horizontal' | 'vertical'): LineEntity | null {
+  let best: LineEntity | null = null;
+  let bestD = tol;
+  for (const e of entities) {
+    if (!isWire(e) || !(orientation === 'vertical' ? isVertical(e) : isHorizontal(e))) continue;
+    const d = g.distToSegment(p, e.a, e.b);
+    if (d <= bestD) {
+      bestD = d;
+      best = e;
+    }
+  }
+  return best;
 }
 
 /** The x-extent a component may occupy on its wire (rail to rail) after lifting. */
@@ -212,7 +292,8 @@ export function scootComponent(entities: readonly Entity[], ins: InsertEntity, l
   const halfL = ins.position.x - b.min.x;
   const halfR = b.max.x - ins.position.x;
   let x = newX;
-  const ext = wireExtentAt(lifted, connectionLevels(ins, lookup)[0]!, ins.position.x);
+  const level = connectionLevels(ins, lookup)[0];
+  const ext = level === undefined ? null : wireExtentAt(lifted, level, ins.position.x);
   if (ext) x = Math.max(ext.x0 + halfL, Math.min(ext.x1 - halfR, x));
   const moved: InsertEntity = { ...ins, position: { x, y: ins.position.y } };
   const after = breakForInsert([...lifted, moved], moved, lookup);
@@ -285,15 +366,52 @@ export function threePhaseWires(entities: readonly Entity[], p: Point, tol = 0.3
 }
 
 /**
+ * Pin numbers of pole `pole` (1-based) of a multi-pole device built from a
+ * single-pole symbol, like the per-pole blocks of the ACADE library: numeric
+ * defaults advance by the pin count per pole (1/2, 3/4, 5/6), L1/T1-style
+ * defaults take the pole number (L1/T1, L2/T2, L3/T3) and anything else
+ * (A1/A2, 13/14 typed for a control contact) is kept on every pole. `base`
+ * holds the pole-1 values (dialog input), falling back to the block defaults;
+ * pole 1 gets those values written out explicitly.
+ */
+export function polePins(block: BlockDef | undefined, base: Readonly<Record<string, string>>, pole: number): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!block) return out;
+  const pins = pinAttributes(block).map((a) => ({ tag: a.tag, value: base[a.tag] ?? a.default }));
+  const numeric = pins.every((p) => /^\d+$/.test(p.value));
+  const phase = pins.every((p) => /^[LT]1$/.test(p.value));
+  for (const p of pins) {
+    if (pole <= 1) out[p.tag] = p.value;
+    else if (numeric) out[p.tag] = String(parseInt(p.value, 10) + pins.length * (pole - 1));
+    else if (phase) out[p.tag] = p.value.replace(/1$/, String(pole));
+  }
+  return out;
+}
+
+/**
  * Insert one symbol on each of three phase wires (poles 1-3 share the tag;
- * poles 2 and 3 carry POLE=2/3 so reports count the device once) joined by
- * a dashed mechanical link.
+ * poles 2 and 3 carry POLE=2/3 so reports count the device once, their TAG1
+ * is hidden and their pins are offset per pole) joined by a dashed mechanical link.
  */
 export function insertThreePole(entities: readonly Entity[], block: string, x: number, wires: LineEntity[], attrs: Record<string, string>, lookup: BlockLookup): WireEdit & { inserts: InsertEntity[] } {
   let current: Entity[] = [...entities];
   const inserts: InsertEntity[] = [];
+  const def = lookup(block);
+  const showsTag = !!def?.attributes.some((a) => a.tag === 'TAG1' && !a.invisible) && attrs.TAG1 !== undefined;
   wires.forEach((w, i) => {
-    const ins: InsertEntity = { id: newId(), layer: 'SYMS', color: 'ByLayer', type: 'insert', block, position: { x, y: w.a.y }, rotation: 0, scale: 1, attributes: { ...attrs, POLE: String(i + 1) } };
+    const pole = i + 1;
+    const ins: InsertEntity = {
+      id: newId(),
+      layer: 'SYMS',
+      color: 'ByLayer',
+      type: 'insert',
+      block,
+      position: { x, y: w.a.y },
+      rotation: 0,
+      scale: 1,
+      attributes: { ...attrs, ...polePins(def, attrs, pole), POLE: String(pole) },
+      ...(pole > 1 && showsTag ? { hiddenAttributes: ['TAG1'] } : {}),
+    };
     inserts.push(ins);
     current = breakForInsert([...current, ins], ins, lookup);
   });

@@ -8,7 +8,9 @@
  * X4 = right, X8 = bottom; the value is the pin number).
  */
 import type { AttributeDef, BlockDef, Entity, InsertEntity } from '../core/entities';
+import { similarityTransform, entityBounds } from '../core/entities';
 import type { Point } from '../core/geometry';
+import * as g from '../core/geometry';
 
 /** Half width of an inline symbol: stubs end at x = +-HALF. */
 export const SYMBOL_HALF = 0.375;
@@ -28,15 +30,36 @@ export interface ConnectionPoint {
 
 const near = (a: number, b: number, tol = 1e-6) => Math.abs(a - b) < tol;
 
+/** ACADE direction code of a connection: 1 left, 2 top, 4 right, 8 bottom. */
+export type ConnectionDir = 1 | 2 | 4 | 8;
+
+/** Unit vector a connection faces (block space): the side of the symbol box the wire comes from. */
+export function connectionVector(dir: ConnectionDir): Point {
+  return dir === 1 ? { x: -1, y: 0 } : dir === 4 ? { x: 1, y: 0 } : dir === 2 ? { x: 0, y: 1 } : { x: 0, y: -1 };
+}
+
+/** Direction code of a unit-ish vector (world space): the side it points to. */
+export function connectionDirOf(v: Point): ConnectionDir {
+  if (Math.abs(v.x) >= Math.abs(v.y)) return v.x < 0 ? 1 : 4;
+  return v.y > 0 ? 2 : 8;
+}
+
+/** Direction code of a pin attribute tag (X1TERM01 -> 1), or null. */
+export function pinDir(tag: string): ConnectionDir | null {
+  const m = /^X([1248])TERM\d+$/.exec(tag);
+  return m ? (parseInt(m[1]!, 10) as ConnectionDir) : null;
+}
+
 /**
  * Wire-connection points of a symbol, derived from its geometry: line
- * endpoints on the symbol edge (x = +-HALF) or, for symbols with a single
+ * endpoints on the symbol edge (x = +-HALF for a horizontal symbol, y = +-HALF
+ * on the symbol axis for a vertical one) or, for symbols with a single
  * vertical connection (ground), the base point.
  */
 export function connectionPoints(block: BlockDef): ConnectionPoint[] {
-  const pts: Array<{ dir: 1 | 2 | 4 | 8; point: Point }> = [];
+  const pts: Array<{ dir: ConnectionDir; point: Point }> = [];
   const seen = new Set<string>();
-  const push = (dir: 1 | 2 | 4 | 8, p: Point) => {
+  const push = (dir: ConnectionDir, p: Point) => {
     const key = `${dir}:${p.x.toFixed(4)},${p.y.toFixed(4)}`;
     if (seen.has(key)) return;
     seen.add(key);
@@ -47,6 +70,9 @@ export function connectionPoints(block: BlockDef): ConnectionPoint[] {
     for (const p of [e.a, e.b]) {
       if (near(p.x, -SYMBOL_HALF)) push(1, p);
       else if (near(p.x, SYMBOL_HALF)) push(4, p);
+      // Vertical symbols (VPB11 style): stubs on the axis reach the top / bottom of the box.
+      else if (near(p.x, 0) && near(p.y, SYMBOL_HALF)) push(2, p);
+      else if (near(p.x, 0) && near(p.y, -SYMBOL_HALF)) push(8, p);
     }
   }
   if (pts.length === 0) {
@@ -134,6 +160,55 @@ export function withAcadeAttributes(block: BlockDef, family: string, wdtype?: st
   const extra = acadeAttributes(block, family, wdtype);
   if (extra.length === 0) return block;
   return { ...block, attributes: [...block.attributes, ...extra] };
+}
+
+/** Whether a symbol connects only at its top / bottom (a vertical symbol: VPB11 style, or a rotated horizontal one). */
+export function isVerticalBlock(block: BlockDef): boolean {
+  const dirs = block.attributes.map((a) => pinDir(a.tag)).filter((d): d is ConnectionDir => d !== null);
+  return dirs.length > 0 && dirs.every((d) => d === 2 || d === 8);
+}
+
+/** Name of the vertical twin of a horizontal symbol: HPB11_NO -> VPB11_NO, IEC_S_PB_NO -> IEC_S_PB_NO_V. */
+export function verticalVariantName(name: string): string {
+  return /^H[A-Z0-9]/.test(name) && !name.startsWith('H_') ? `V${name.slice(1)}` : `${name}_V`;
+}
+
+/**
+ * Build the vertical variant of a horizontal symbol the way AutoCAD Electrical
+ * ships V-prefixed twins of its H symbols: the geometry is rotated -90 degrees
+ * about the base point (the left connection ends up on top), the wire connection
+ * attributes are re-coded (X1 -> X2, X4 -> X8, X2 -> X4, X8 -> X1) and renumbered
+ * top to bottom keeping their pin defaults, and the visible attributes stay
+ * horizontal: TAG1 and the description lines sit to the right of the symbol.
+ */
+export function verticalVariant(block: BlockDef, name = verticalVariantName(block.name)): BlockDef {
+  const angle = -Math.PI / 2;
+  const tf = (p: Point) => g.add(block.basePoint, g.rotate(g.sub(p, block.basePoint), angle));
+  const entities = block.entities.map((e) => similarityTransform(e, tf, angle, 1));
+  let bounds: g.Bounds | null = null;
+  for (const e of entities) bounds = g.unionBounds(bounds, entityBounds(e, () => undefined));
+  const right = (bounds?.max.x ?? 0.2) + 0.08;
+  const remap: Record<ConnectionDir, ConnectionDir> = { 1: 2, 4: 8, 2: 4, 8: 1 };
+  const pins = block.attributes
+    .map((a) => ({ a, dir: pinDir(a.tag) }))
+    .filter((x): x is { a: AttributeDef; dir: ConnectionDir } => x.dir !== null)
+    .map(({ a, dir }) => ({ a, dir: remap[dir], point: tf(a.position) }))
+    .sort((p, q) => q.point.y - p.point.y || p.dir - q.dir);
+  const attributes: AttributeDef[] = [];
+  for (const a of block.attributes) {
+    if (pinDir(a.tag) !== null) continue;
+    const { rotation: _r, ...rest } = a;
+    void _r;
+    if (a.invisible) {
+      attributes.push({ ...rest, position: tf(a.position) });
+      continue;
+    }
+    // Readable text beside the vertical symbol (ACADE puts TAG1 to the upper right, DESC1-3 under it).
+    const row = a.tag === 'TAG1' ? 0.02 : a.tag === 'DESC1' ? -0.14 : a.tag === 'DESC2' ? -0.27 : a.tag === 'DESC3' ? -0.4 : a.tag === 'TERM01' ? -0.06 : null;
+    attributes.push(row === null ? { ...rest, position: tf(a.position) } : { ...rest, position: { x: block.basePoint.x + right, y: block.basePoint.y + row }, align: 'left' });
+  }
+  pins.forEach((p, i) => attributes.push({ ...p.a, tag: `X${p.dir}TERM${String(i + 1).padStart(2, '0')}`, prompt: `Pin ${i + 1}`, position: p.point }));
+  return { ...block, name, entities, attributes, description: block.description ? `${block.description} (vertical)` : undefined };
 }
 
 /** Pin attribute tags of an insert's block, in pin order. */

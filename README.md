@@ -99,10 +99,10 @@ keywords shown in `[brackets]` are clickable.
 | AEWIRE | WIRE, W | Orthogonal wire on the current wire type; junction dots at tees |
 | AEWIRETYPE | WIRETYPE | Choose the wire layer (gauge / colour) for new wires |
 | AELADDER | LADDER | Insert a ladder (width, spacing, rungs, references, 1/3 phase) |
-| AECOMPONENT [block] | CMP | Icon menu (JIC or IEC, 450+ symbols in 52 categories with a search box); breaks the wire; Insert/Edit Component dialog with INST, LOC, DESC1-3, MFG, CAT, ASSYCODE, RATING, pins, "Used" tag list and Catalog Lookup |
+| AECOMPONENT [block] | CMP | Icon menu (JIC or IEC, 450+ symbols in 52 categories with a search box, Horizontal / Vertical orientation); breaks the wire (horizontal or vertical); Insert/Edit Component dialog with INST, LOC, DESC1-3, MFG, CAT, ASSYCODE, RATING, pins, "Used" tag list and Catalog Lookup |
 | AEEDITCOMPONENT | AEEDIT | Edit an existing component (retagging a parent carries its contacts along) |
-| AECHILD | CHILD | Insert a child contact: pick the parent coil from a list, NO or NC, data copied from the parent |
-| AECOMPONENT3 [block] | AEC3 | Insert a 3-pole device on a 3-wire bus (poles share the tag, POLE=1..3, dashed link) |
+| AECHILD | CHILD | Insert a child contact: pick the parent coil from a list, then the contact (the parent's own `_NO` / `_NC` twin and same-family user contacts first, then the built-in contact), data copied from the parent |
+| AECOMPONENT3 [block] | AEC3 | Insert a 3-pole device on a 3-wire bus (poles share the tag, POLE=1..3, TAG1 shown on pole 1 only, pins 1/2 - 3/4 - 5/6 or L1/T1 - L2/T2 - L3/T3 per pole, dashed link) |
 | AERETAG [S] | RETAG | Renumber all (or selected) tags in ladder order with the drawing's tag format |
 | AETOGGLENC, AESWAP, AEUPDATEBLOCK | TOGGLENC, SWAPBLOCK, UPDATEBLOCK | NO/NC variant in place; swap a symbol keeping its data; refresh block definitions from the library |
 | AECATALOG [family], AECATALOGLOAD | CATALOG, LOADCATALOG | Catalog Browser (built-in generic parts + user JSON catalog from the project settings) |
@@ -196,6 +196,16 @@ extents), **Save to Library**, **Save and Insert** (returns to the drawing and s
 at the origin) and **Close**. Saving compiles the tab into a block with the full ACADE attribute set
 (`withAcadeAttributes`), registers the family as the block's tag prefix and its coil / contact role,
 and redefines the block in open drawings that already use it.
+
+**Vertical symbols.** A symbol whose stubs end on the axis at y = +-0.375 (instead of x = +-0.375)
+is a vertical symbol: its connections are detected as top (`X2TERMnn`) / bottom (`X8TERMnn`) pins,
+AECOMPONENT snaps it to a vertical wire and breaks that wire around it (junction dots and trim keep
+working), and its attribute text may carry a rotation (`AttributeDef.rotation`, ATTDEF group 50 in
+DXF / DWG). The icon menu's **Vertical** radio inserts the vertical twin of a horizontal symbol when
+the library has one - ACADE naming, `V` + the rest of the name (`HPB11_NO` -> `VPB11_NO`) or
+`NAME_V` - and otherwise builds it on the fly (`verticalVariant`: geometry rotated -90 degrees, left
+/ right pins become top / bottom, TAG1 and DESC1-3 stay horizontal to the right of the symbol) as a
+block of the drawing under the twin's name; the command log says which happened.
 
 The **user library** is one JSON document, `user-library.json` in the application data folder
 (`app.getPath('userData')`; localStorage key `jcad.userlib.v1` in the browser), holding
