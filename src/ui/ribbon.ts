@@ -294,6 +294,16 @@ export const RIBBON: RibbonTab[] = [
 /** Ribbon tabs that belong to the Electrical workspace (hidden in "Drafting & Annotation"). */
 export const ELECTRICAL_TABS = ['Project', 'Schematic', 'Panel', 'Reports', 'Import/Export Data', 'Conversion Tools'];
 
+let currentRibbon: Ribbon | null = null;
+
+/** Activate a ribbon tab by name from modules that do not hold the Ribbon instance (e.g. the Symbol Builder shows Schematic). */
+export function showRibbonTab(name: string): boolean {
+  const i = RIBBON.findIndex((t) => t.name === name);
+  if (i < 0 || !currentRibbon) return false;
+  currentRibbon.showTab(i);
+  return true;
+}
+
 export class Ribbon {
   readonly el: HTMLElement;
   private active = 0;
@@ -315,6 +325,18 @@ export class Ribbon {
     this.bodyEl.className = 'ribbon-body';
     this.el.append(this.tabsEl, this.bodyEl);
     this.setActive(2); // Schematic tab is the natural home for an electrical workspace
+    currentRibbon = this;
+  }
+
+  /** Active tab index. */
+  get activeTab(): number {
+    return this.active;
+  }
+
+  /** Show a tab (no-op when it is already active or hidden by the workspace filter). */
+  showTab(i: number): void {
+    if (i === this.active || !RIBBON[i] || !this.tabFilter(RIBBON[i]!.name)) return;
+    this.setActive(i);
   }
 
   onTabChange: ((i: number) => void) | null = null;

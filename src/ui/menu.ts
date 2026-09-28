@@ -55,7 +55,11 @@ export function showMenu(anchor: HTMLElement | { x: number; y: number }, items: 
     if (!root.contains(ev.target as Node)) closeMenus();
   };
   const onKey = (ev: KeyboardEvent) => {
-    if (ev.key === 'Escape') closeMenus();
+    if (ev.key !== 'Escape') return;
+    // Escape belongs to the menu alone: a modal dialog underneath must stay open.
+    ev.stopImmediatePropagation();
+    ev.preventDefault();
+    closeMenus();
   };
   const onBlur = () => closeMenus();
   // Defer so the click that opened the menu does not close it.
