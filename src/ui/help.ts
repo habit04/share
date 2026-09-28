@@ -112,7 +112,12 @@ export function helpDialog(editor: Editor, query = ''): void {
     m.close();
     editor.runCommand('CHECKUPDATES');
   });
-  updateRow.append(check, info);
+  const report = button('Report a Problem…');
+  report.addEventListener('click', () => {
+    m.close();
+    editor.runCommand('REPORTBUG');
+  });
+  updateRow.append(check, report, info);
   const bridge = window.jcad;
   if (bridge?.appInfo) {
     void bridge.appInfo().then((i) => {

@@ -161,6 +161,9 @@ function buildMenu(win) {
         { label: 'Keyboard Shortcuts', click: send('HELP shortcuts') },
         { label: 'Text Window (F2)', click: send('TEXTSCR') },
         { type: 'separator' },
+        { label: 'Report a Problem…', click: send('REPORTBUG') },
+        { label: 'Send Feedback…', click: send('FEEDBACK') },
+        { type: 'separator' },
         { label: 'Check for Updates…', click: () => void updater.checkForUpdates(win, { interactive: true }) },
         { label: 'Release Notes (GitHub)', click: () => void require('electron').shell.openExternal(updater.RELEASES_PAGE) },
         { label: `About JCad Electrical ${app.getVersion()}`, click: send('HELP about') },
@@ -497,6 +500,13 @@ ipcMain.handle('app-info', () => ({
   selfUpdate: updater.canSelfUpdate(),
   releases: updater.RELEASES_PAGE,
 }));
+/** Links the renderer may open: this project's GitHub repository only. */
+ipcMain.handle('open-external', async (_ev, url) => {
+  const u = String(url || '');
+  if (!/^https:\/\/github\.com\/habit04\/share(\/|$)/.test(u) || u.length > 16000) return false;
+  await require('electron').shell.openExternal(u);
+  return true;
+});
 ipcMain.handle('check-updates', (ev) => {
   const win = BrowserWindow.fromWebContents(ev.sender) || mainWindow;
   return updater.checkForUpdates(win, { interactive: true });
@@ -526,6 +536,22 @@ if (probeIndex >= 0) {
   });
   return;
 }
+
+// Main-process failures go to a log the user can send with a problem report.
+const errorLog = () => path.join(stateDir(), 'error.log');
+function logMainError(kind, err) {
+  const line = `[${new Date().toISOString()}] ${kind}: ${err && err.stack ? err.stack : String(err)}\n`;
+  try {
+    fsSync.mkdirSync(stateDir(), { recursive: true });
+    fsSync.appendFileSync(errorLog(), line);
+  } catch {
+    /* nothing else we can do */
+  }
+}
+process.on('uncaughtException', (err) => logMainError('uncaughtException', err));
+process.on('unhandledRejection', (err) => logMainError('unhandledRejection', err));
+app.on('render-process-gone', (_ev, _wc, details) => logMainError('render-process-gone', new Error(`${details.reason} (exit code ${details.exitCode})`)));
+app.on('child-process-gone', (_ev, details) => logMainError('child-process-gone', new Error(`${details.type} ${details.reason}`)));
 
 app.whenReady().then(() => {
   loadPersistedPaths();

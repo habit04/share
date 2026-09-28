@@ -278,7 +278,7 @@ export const RIBBON: RibbonTab[] = [
   },
   {
     name: 'Add-ins',
-    panels: [{ title: 'Apps', buttons: [B('Command\nList', 'info', 'HELP')] }],
+    panels: [{ title: 'Apps', buttons: [B('Command\nList', 'info', 'HELP'), B('Report\nProblem', 'info', 'REPORTBUG')] }],
   },
   {
     name: 'View',

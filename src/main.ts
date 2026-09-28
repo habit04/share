@@ -17,6 +17,8 @@ import { QuickProperties, installRolloverTooltips } from './ui/quickprops';
 import { makePaletteResizable, installAutoHide } from './ui/palettes';
 import { ToolPalettes } from './ui/toolpalettes';
 import { helpDialog, textWindowDialog } from './ui/help';
+import { reportProblemDialog } from './ui/report';
+import { installDiagnostics } from './app/diagnostics';
 import { Autosaver, bridgeAutosaveStore, localAutosaveStore, type AutosaveBridge } from './app/autosave';
 import { recoveryDialog } from './ui/recovery';
 import { showAppMenu } from './ui/appmenu';
@@ -40,6 +42,7 @@ declare global {
       setRecentFiles?(files: string[]): void;
       quit?(): void;
       appInfo?(): Promise<{ version: string; platform: string; arch: string; packaged: boolean; selfUpdate: boolean; releases: string }>;
+      openExternal?(url: string): Promise<boolean>;
       checkForUpdates?(): Promise<{ state: string; version?: string; message?: string }>;
       onUpdateStatus?(cb: (status: { state: string; version?: string; percent?: number; message?: string; manual?: boolean }) => void): void;
       platform: string;
@@ -86,6 +89,7 @@ async function browserDownload(name: string, text: string): Promise<string | nul
 }
 
 function boot(): void {
+  installDiagnostics();
   const app = document.getElementById('app')!;
   app.innerHTML = `
     <div id="titlebar"></div>
@@ -182,6 +186,8 @@ function boot(): void {
   reg('DSETTINGS', ['DS', 'SE', 'DDRMODES'], 'Drafting Settings (Snap and Grid, Polar, Object Snap, Dynamic Input)', (ed, arg) => draftingSettingsDialog(ed, parseInt(arg ?? '0', 10) || 0));
   reg('HELP', ['?', 'F1'], 'Help: searchable command reference and keyboard shortcuts', (ed, arg) => helpDialog(ed, arg ?? ''));
   reg('TEXTSCR', ['F2', 'TEXTWINDOW'], 'Text window with the command history', (ed) => textWindowDialog(ed));
+  reg('REPORTBUG', ['BUGREPORT', 'REPORTPROBLEM'], 'Report a problem: prefilled GitHub issue, copy or save a report with diagnostics', (ed) => reportProblemDialog(ed, 'bug'));
+  reg('FEEDBACK', ['SENDFEEDBACK', 'FEATUREREQUEST'], 'Send feedback or request a feature', (ed) => reportProblemDialog(ed, 'feedback'));
   reg('CHECKUPDATES', ['UPDATE', 'CHECKFORUPDATES'], 'Check GitHub Releases for a newer JCad Electrical', (ed) => {
     const b = window.jcad;
     if (!b?.checkForUpdates) {

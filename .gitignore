@@ -10,3 +10,4 @@ _*.test.ts
 tests/zz_*
 screenshots/library/
 screenshots/symbol-builder-*.png
+screenshots/report-dialog.png

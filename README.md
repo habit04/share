@@ -48,6 +48,16 @@ shows the installed version.
 Update metadata is only written when the `publish` block in `package.json` is present;
 `release.yml` uploads the `.yml` and `.blockmap` files next to the installers.
 
+### Reporting problems
+
+**Help > Report a Problem…** (command `REPORTBUG`) collects a description, the version and
+platform, the recent command-line history and any errors the renderer captured, and then
+either opens a prefilled GitHub issue (`.github/ISSUE_TEMPLATE/bug_report.yml`), copies the
+report to the clipboard, or saves it as a text file (optionally with the current drawing as
+DXF) for e-mail. Nothing is sent automatically. The main process appends crashes to
+`error.log` in the app data folder. **Help > Send Feedback…** (`FEEDBACK`) opens the feature
+request form.
+
 ## Run from source
 
 ```bash
@@ -120,6 +130,8 @@ keywords shown in `[brackets]` are clickable.
 | COLOR, LINETYPE, LWEIGHT | CECOLOR, LT, LW | Current colour / linetype / lineweight (Home > Properties panel; colour applies to a selection) |
 | QPMODE, TOOLPALETTES, WORKSPACE, ANNOSCALE, CLEANSCREEN, COMMANDLINE | QP, Ctrl+3, Ctrl+0, Ctrl+9 | Quick Properties, Tool Palettes window, workspace switch, annotation scale, clean screen, command window |
 | HELP, TEXTSCR | F1, F2 | Searchable command reference + keyboard shortcuts; text window with the history |
+| REPORTBUG, FEEDBACK | BUGREPORT, FEATUREREQUEST | Report a problem / send feedback: prefilled GitHub issue, or copy / save a report (version, platform, command history, captured errors, optional DXF) |
+| CHECKUPDATES | UPDATE | Check GitHub Releases for a newer version (Help > Check for Updates) |
 | COPYCLIP, CUTCLIP, PASTECLIP | Ctrl+C / X / V | In-application object clipboard |
 | AUTOSAVE | | Write autosave files now (a timer does this every N minutes; see Options > Files) |
 
