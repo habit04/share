@@ -43,7 +43,6 @@ export function buildTitleBar(editor: Editor, el: HTMLElement, onAppMenu?: (anch
       { label: 'Workspace: Drafting & Annotation', check: editor.settings.workspace === 'drafting', run: () => editor.runCommand('WORKSPACE drafting') },
       { label: 'Workspace: Electrical', check: editor.settings.workspace === 'electrical', run: () => editor.runCommand('WORKSPACE electrical') },
       null,
-      { label: 'Show Menu Bar (F10 in AutoCAD)', run: () => editor.log('The native menu bar is provided by the desktop window.') },
       { label: 'Options...', run: () => editor.runCommand('OPTIONS') },
     ]),
   );
@@ -54,12 +53,17 @@ export function buildTitleBar(editor: Editor, el: HTMLElement, onAppMenu?: (anch
   search.className = 'title-search';
   search.innerHTML = `<input placeholder="Type a keyword or phrase" spellcheck="false">${icon('search')}`;
   const searchInput = search.querySelector('input')!;
+  const runSearch = () => {
+    editor.runCommand(`HELP ${searchInput.value}`);
+    searchInput.value = '';
+  };
   searchInput.addEventListener('keydown', (ev) => {
-    if (ev.key === 'Enter') {
-      editor.runCommand(`HELP ${searchInput.value}`);
-      searchInput.value = '';
-    }
+    if (ev.key === 'Enter') runSearch();
   });
+  const searchIcon = search.querySelector('svg');
+  searchIcon?.addEventListener('click', runSearch);
+  searchIcon?.setAttribute('role', 'button');
+  searchIcon?.setAttribute('aria-label', 'Search the command reference');
   const infocenter = document.createElement('div');
   infocenter.className = 'infocenter';
   infocenter.innerHTML = `<button class="ic-btn user" title="About JCad Electrical, the author and how to support the project">${icon('user')}<span>Support</span></button><button class="ic-btn" title="Help (F1)">${icon('help')}</button>`;
@@ -182,17 +186,14 @@ export function buildFileTabs(editor: Editor, el: HTMLElement): void {
   refresh();
 }
 
-/** Model / Layout tabs under the canvas. */
+/**
+ * Model tab under the canvas. Paper-space layouts do not exist yet, so there are no
+ * Layout1 / Layout2 / "+" tabs to click: only the Model tab, which says so.
+ */
 export function buildLayoutTabs(editor: Editor, el: HTMLElement): void {
   el.className = 'layout-tabs';
-  el.innerHTML = `
-    <button class="layout-tab active">Model</button>
-    <button class="layout-tab">Layout1</button>
-    <button class="layout-tab">Layout2</button>
-    <button class="layout-tab add" title="New layout">${icon('plus')}</button>`;
-  el.querySelectorAll<HTMLButtonElement>('.layout-tab:not(.active):not(.add)').forEach((b) =>
-    b.addEventListener('click', () => editor.log('Paper-space layouts are not available yet; plot from model space with PLOT.')),
-  );
+  el.innerHTML = `<button class="layout-tab active" title="Model space (paper-space layouts are not supported yet)">Model</button>`;
+  el.querySelector('.layout-tab')!.addEventListener('click', () => editor.log('Only model space is available: paper-space layouts are not supported yet. Plot from model space with PLOT.'));
 }
 
 /** Right-click context menu on the canvas (with Recent Input, Clipboard and Isolate flyouts). */
@@ -213,7 +214,7 @@ export function installContextMenu(editor: Editor, canvas: HTMLElement, opts: { 
           { label: 'Zoom Extents', run: () => editor.zoomExtents() },
           { label: 'Zoom Window', run: () => editor.runCommand('ZOOM W') },
           null,
-          { label: 'Snap Overrides', items: [{ label: 'Object Snap Settings...', run: () => editor.runCommand('DSETTINGS') }, { label: 'Toggle Object Snap (F3)', run: () => editor.toggle('osnap') }, { label: 'Toggle Ortho (F8)', run: () => editor.toggle('ortho') }, { label: 'Toggle Polar (F10)', run: () => editor.toggle('polar') }] },
+          { label: 'Snap Overrides', items: [{ label: 'Object Snap Settings...', run: () => editor.runCommand('DSETTINGS 2') }, { label: 'Toggle Object Snap (F3)', run: () => editor.toggle('osnap') }, { label: 'Toggle Ortho (F8)', run: () => editor.toggle('ortho') }, { label: 'Toggle Polar (F10)', run: () => editor.toggle('polar') }] },
         ]
       : [
           { label: editor.lastCommand ? `Repeat ${editor.lastCommand}` : 'Repeat', run: () => editor.pressEnter(), disabled: !editor.lastCommand },
@@ -249,7 +250,7 @@ export function installContextMenu(editor: Editor, canvas: HTMLElement, opts: { 
           { label: 'Zoom Extents', run: () => editor.zoomExtents() },
           { label: 'Zoom Window', run: () => editor.runCommand('ZOOM W') },
           null,
-          { label: 'Quick Select...', run: () => editor.runCommand('SELECTALL') },
+          { label: 'Quick Select...', run: () => editor.runCommand('QSELECT') },
           { label: 'Select All\tCtrl+A', run: () => editor.runCommand('SELECTALL') },
           { label: 'Deselect All', disabled: !hasSel, run: () => editor.cancel() },
           null,
@@ -261,14 +262,12 @@ export function installContextMenu(editor: Editor, canvas: HTMLElement, opts: { 
   });
 }
 
-/** Navigation bar under the ViewCube (wheel, pan, zoom, orbit, show motion). */
+/** Navigation bar under the ViewCube: pan and zoom (no wheel / orbit: this is a 2D program). */
 export function buildNavBar(editor: Editor, el: HTMLElement): void {
   const items: Array<[string, string, () => void]> = [
-    ['navwheel', 'Navigation wheel', () => editor.runCommand('PAN')],
-    ['pan', 'Pan', () => editor.runCommand('PAN')],
+    ['pan', 'Pan (PAN)', () => editor.runCommand('PAN')],
     ['zoomext', 'Zoom extents', () => editor.zoomExtents()],
     ['zoomwin', 'Zoom window', () => editor.runCommand('ZOOM W')],
-    ['orbit', 'Orbit (2D drawing: not available)', () => editor.log('Orbit is not available in a 2D drawing.')],
   ];
   for (const [ic, title, fn] of items) {
     const b = document.createElement('button');

@@ -1,4 +1,4 @@
-import type { Entity, BlockDef, Layer, BlockLookup } from './entities';
+import type { Entity, BlockDef, Layer, BlockLookup, ColorSpec } from './entities';
 import { entityBounds } from './entities';
 import type { Bounds, Point } from './geometry';
 import { unionBounds } from './geometry';
@@ -89,6 +89,8 @@ export class Drawing {
   private readonly maxUndo = 200;
   public filePath: string | null = null;
   public dirty = false;
+  /** Current colour for new objects (CECOLOR; Home > Properties colour combo). 'ByLayer' leaves new objects alone. */
+  public currentColor: ColorSpec = 'ByLayer';
 
   constructor(initial?: Partial<DrawingState>) {
     this.state = {
@@ -198,7 +200,8 @@ export class Drawing {
 
   /**
    * Add entities as one undo step. New objects pick up the current entity
-   * linetype / lineweight (CELTYPE / CELWEIGHT) unless they already carry one;
+   * linetype / lineweight (CELTYPE / CELWEIGHT) unless they already carry one,
+   * and the current colour (CECOLOR) when they were created ByLayer;
    * pass `applyDefaults = false` for copies that must keep their own properties.
    */
   addEntities(entities: readonly Entity[], applyDefaults = true): void {
@@ -206,11 +209,13 @@ export class Drawing {
     const h = this.header;
     const wantLt = applyDefaults && h.celtype && h.celtype.toUpperCase() !== 'BYLAYER';
     const wantLw = applyDefaults && h.celweight !== undefined;
-    const list = wantLt || wantLw
+    const wantColor = applyDefaults && this.currentColor !== 'ByLayer';
+    const list = wantLt || wantLw || wantColor
       ? entities.map((e) => {
           let out: Entity = e;
           if (wantLt && e.linetype === undefined) out = { ...out, linetype: h.celtype } as Entity;
           if (wantLw && e.lineWeight === undefined) out = { ...out, lineWeight: h.celweight } as Entity;
+          if (wantColor && e.color === 'ByLayer') out = { ...out, color: this.currentColor } as Entity;
           return out;
         })
       : entities;

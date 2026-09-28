@@ -45,6 +45,8 @@ export interface ViewSettings {
   gridStyle?: 'lines' | 'dots';
   gripSize?: number; // half-size in px
   gripColor?: string;
+  /** Colour of a grip under the cursor (Options > Selection > Hover grip color). */
+  gripHoverColor?: string;
   snapMarkerSize?: number; // px
   snapMarkerColor?: string;
   selectionEffect?: 'dashed' | 'solid';
@@ -214,10 +216,11 @@ export class Viewport {
     }
 
     // Grips for selected
+    const cursorScreen = ov.cursor ? this.toScreen(ov.cursor) : null;
     if (ov.selection.size > 0 && ov.selection.size <= 400) {
       for (const e of this.doc.entities) {
         if (!ov.selection.has(e.id)) continue;
-        for (const gp of gripPoints(e)) this.drawGrip(this.toScreen(gp));
+        for (const gp of gripPoints(e)) this.drawGrip(this.toScreen(gp), cursorScreen);
       }
     }
 
@@ -367,11 +370,12 @@ export class Viewport {
     ctx.restore();
   }
 
-  private drawGrip(s: Point): void {
+  private drawGrip(s: Point, cursor: Point | null = null): void {
     const { ctx } = this;
     const h = this.settings.gripSize ?? 4;
+    const hot = cursor !== null && Math.abs(cursor.x - s.x) <= h + 2 && Math.abs(cursor.y - s.y) <= h + 2;
     ctx.save();
-    ctx.fillStyle = this.settings.gripColor ?? '#1a3dff';
+    ctx.fillStyle = hot ? (this.settings.gripHoverColor ?? '#ff3d3d') : (this.settings.gripColor ?? '#1a3dff');
     ctx.strokeStyle = '#0b0b0b';
     ctx.lineWidth = 1;
     ctx.fillRect(Math.round(s.x) - h, Math.round(s.y) - h, h * 2, h * 2);

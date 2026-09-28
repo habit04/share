@@ -79,7 +79,7 @@ export class QuickProperties {
     const doc = this.editor.doc;
     this.headEl.innerHTML = `<span class="qp-title">${sel.length === 1 ? kindName(sel[0]!) : `All (${sel.length})`}</span><button title="Customize (Options > Selection)">${icon('settings')}</button><button title="Close">${icon('close')}</button>`;
     const btns = this.headEl.querySelectorAll('button');
-    btns[0]!.addEventListener('click', () => this.editor.runCommand('OPTIONS'));
+    btns[0]!.addEventListener('click', () => this.editor.runCommand('OPTIONS 2'));
     btns[1]!.addEventListener('click', () => {
       this.dismissedFor = this.key();
       this.el.classList.add('hidden');

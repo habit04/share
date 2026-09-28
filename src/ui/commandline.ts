@@ -198,8 +198,9 @@ export class CommandLine {
     document.querySelectorAll('.context-menu').forEach((m) => m.remove());
     const menu = document.createElement('div');
     menu.className = 'context-menu';
-    const items: Array<[string, () => void] | null> = [
-      ['Recent Commands', () => {}],
+    // `null` action = a caption row (not clickable).
+    const items: Array<[string, (() => void) | null] | null> = [
+      ['Recent Commands', null],
       ...this.recent.slice(0, 8).map((r): [string, () => void] => [`   ${r}`, () => this.setText(r, true)]),
       null,
       ['Text Window (F2)', () => this.editor.runCommand('TEXTSCR')],
@@ -215,10 +216,16 @@ export class CommandLine {
       const b = document.createElement('button');
       b.className = 'context-item';
       b.textContent = it[0];
-      b.addEventListener('click', () => {
-        menu.remove();
-        it[1]();
-      });
+      const run = it[1];
+      if (!run) {
+        b.className += ' disabled';
+        b.disabled = true;
+        if (this.recent.length === 0) b.textContent = 'Recent Commands (none yet)';
+      } else
+        b.addEventListener('click', () => {
+          menu.remove();
+          run();
+        });
       menu.appendChild(b);
     }
     document.body.appendChild(menu);

@@ -44,7 +44,7 @@ import { validBlockName } from '../tools/blocks';
 import type { SymbolBuilder, SymbolBuilderUi, SymbolBuilderStart, StartDialogInit, SymbolSource } from '../tools/symbol-builder';
 import { electricalUi } from '../app/commands-electrical';
 import { modal, button } from './dialogkit';
-import { makePaletteResizable } from './palettes';
+import { makePaletteResizable, installAutoHide } from './palettes';
 import { updateSettings } from './options';
 import { icon } from './icons';
 import { esc } from './dom';
@@ -1241,6 +1241,8 @@ export function createSymbolBuilderUi(editor: Editor, container: HTMLElement): S
     min: 240,
     onWidth: (w) => updateSettings(editor, { paletteWidths: { ...editor.settings.paletteWidths, symbolBuilder: Math.round(w) } }),
   });
+  // The pin in the title strip (labelled Auto-hide) collapses the palette to its strip, like Properties.
+  installAutoHide(palette.el, { initial: editor.settings.paletteAutoHide.symbolBuilder, onChange: (a) => updateSettings(editor, { paletteAutoHide: { ...editor.settings.paletteAutoHide, symbolBuilder: a } }) });
   return {
     palette,
     start: (init) => symbolBuilderStartDialog(editor, init),

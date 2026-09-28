@@ -13,6 +13,8 @@ interface RibbonPanel {
   title: string;
   buttons: RibbonButton[];
   /** Small buttons are stacked 3 per column. */
+  /** Dialog-launcher arrow in the panel title (AutoCAD's ↘): the settings dialog behind the panel. No launcher, no arrow. */
+  launcher?: { command: string; tooltip: string };
 }
 
 interface RibbonTab {
@@ -64,6 +66,7 @@ export const RIBBON: RibbonTab[] = [
       {
         title: 'Layers',
         buttons: [B('Layer\nProperties', 'layers', 'LAYER'), B('Properties', 'props', 'PROPERTIES', 'small'), B('Linetype', 'linetype', 'LINETYPE', 'small')],
+        launcher: { command: 'LAYER', tooltip: 'Layer Properties Manager (LAYER)' },
       },
       {
         title: 'View',
@@ -76,6 +79,7 @@ export const RIBBON: RibbonTab[] = [
           B('Snap', 'snap', 'SNAP', 'small'),
           B('Ortho', 'ortho', 'ORTHO', 'small'),
         ],
+        launcher: { command: 'DSETTINGS', tooltip: 'Drafting Settings: snap, grid, polar, object snap (DSETTINGS)' },
       },
       {
         title: 'Utilities',
@@ -130,6 +134,7 @@ export const RIBBON: RibbonTab[] = [
           B('Diameter', 'dimdiameter', 'DIMDIAMETER', 'small'),
           B('Dim Style', 'props', 'DIMSTYLE', 'small'),
         ],
+        launcher: { command: 'DIMSTYLE', tooltip: 'Dimension style (DIMSTYLE)' },
       },
       {
         title: 'Markup',
@@ -146,7 +151,7 @@ export const RIBBON: RibbonTab[] = [
       },
       {
         title: 'Other Tools',
-        buttons: [B('Drawing\nProperties', 'dwgprops', 'AEDRAWINGPROPS'), B('Plot to\nPDF', 'plot', 'PLOT'), B('Add to\nProject', 'plus', 'PROJECTADD', 'small'), B('Save\nProject', 'save', 'PROJECTSAVE', 'small'), B('Reference\nNumbers', 'wireno', 'AEWIRENO', 'small')],
+        buttons: [B('Drawing\nProperties', 'dwgprops', 'AEDRAWINGPROPS'), B('Plot to\nPDF', 'plot', 'PLOT'), B('Add to\nProject', 'plus', 'PROJECTADD', 'small'), B('Save\nProject', 'save', 'PROJECTSAVE', 'small'), B('Wire\nNumbers', 'wireno', 'AEWIRENO', 'small')],
       },
       {
         title: 'Project Data',
@@ -240,7 +245,7 @@ export const RIBBON: RibbonTab[] = [
         title: 'Terminal Footprints',
         buttons: [B('Terminal\nStrip', 'strip', 'AETERMSTRIP'), B('Terminal', 'terminal', 'AECOMPONENT HT0001', 'small'), B('Editor', 'edit', 'AETERMEDIT', 'small')],
       },
-      { title: 'Other Tools', buttons: [B('Panel\nReports', 'report', 'AEREPORT panel'), B('Terminal\nReport', 'strip', 'AEREPORT strip', 'small'), B('Audit', 'audit', 'AEAUDIT', 'small')] },
+      { title: 'Other Tools', buttons: [B('Panel\nReports', 'report', 'AEREPORT panel'), B('Terminal\nReport', 'terminal', 'AEREPORT terminals', 'small'), B('Strip\nReport', 'strip', 'AEREPORT strip', 'small'), B('Audit', 'audit', 'AEAUDIT', 'small')] },
     ],
   },
   {
@@ -274,7 +279,7 @@ export const RIBBON: RibbonTab[] = [
   },
   {
     name: 'Conversion Tools',
-    panels: [{ title: 'Convert', buttons: [B('Explode', 'explode', 'EXPLODE'), B('Convert\nText', 'text', 'TEXT', 'small'), B('Line to\nWire', 'wire', 'LINE2WIRE', 'small')] }],
+    panels: [{ title: 'Convert', buttons: [B('Explode', 'explode', 'EXPLODE'), B('Line to\nWire', 'wire', 'LINE2WIRE', 'small')] }],
   },
   {
     name: 'Add-ins',
@@ -409,7 +414,16 @@ export class Ribbon {
       if (custom) content.appendChild(custom);
       const title = document.createElement('div');
       title.className = 'ribbon-panel-title';
-      title.innerHTML = `<span>${panel.title}</span><span class="panel-arrow">${icon('chevron')}</span>`;
+      title.innerHTML = `<span>${panel.title}</span>`;
+      if (panel.launcher) {
+        const launch = document.createElement('button');
+        launch.className = 'panel-arrow';
+        launch.title = panel.launcher.tooltip;
+        launch.innerHTML = icon('chevron');
+        const cmd = panel.launcher.command;
+        launch.addEventListener('click', () => this.editor.runCommand(cmd));
+        title.appendChild(launch);
+      }
       p.append(content, title);
       this.bodyEl.appendChild(p);
       for (const extra of this.extraPanels) {
@@ -421,7 +435,7 @@ export class Ribbon {
         ec.appendChild(extra.el);
         const et = document.createElement('div');
         et.className = 'ribbon-panel-title';
-        et.innerHTML = `<span>${extra.title}</span><span class="panel-arrow">${icon('chevron')}</span>`;
+        et.innerHTML = `<span>${extra.title}</span>`;
         ep.append(ec, et);
         this.bodyEl.appendChild(ep);
       }

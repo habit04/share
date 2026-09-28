@@ -46,17 +46,25 @@ export function setFrozen(editor: Editor, name: string, frozen: boolean): void {
   }
 }
 
-export const LINETYPES = ['ByLayer', 'ByBlock', 'Continuous', 'Dashed', 'Center', 'Hidden', 'Phantom', 'Dot'];
+/** Linetype combo entries; picking one runs CELTYPE (the drawing's current entity linetype, applied to new objects). */
+export const LINETYPES = ['ByLayer', 'ByBlock', 'Continuous', 'DASHED', 'CENTER', 'HIDDEN', 'PHANTOM', 'DOT'];
 export const LINEWEIGHTS = ['ByLayer', 'ByBlock', 'Default', '0.00 mm', '0.05 mm', '0.09 mm', '0.13 mm', '0.15 mm', '0.18 mm', '0.20 mm', '0.25 mm', '0.30 mm', '0.35 mm', '0.40 mm', '0.50 mm', '0.53 mm', '0.60 mm', '0.70 mm', '0.80 mm', '0.90 mm', '1.00 mm', '1.06 mm', '1.20 mm', '1.40 mm', '1.58 mm', '2.00 mm', '2.11 mm'];
-const COLOR_CHOICES: Array<[ColorSpec | 'ByBlock', string]> = [
+const COLOR_CHOICES: Array<[ColorSpec, string]> = [
   ['ByLayer', 'ByLayer'],
-  ['ByBlock', 'ByBlock'],
   ...([1, 2, 3, 4, 5, 6, 7, 8, 9] as const).map((i): [ColorSpec, string] => [i, ACI_NAMES[i] ?? String(i)]),
   ...([250, 251, 252, 253, 254, 255] as const).map((i): [ColorSpec, string] => [i, `Color ${i}`]),
 ];
 
-function colorLabel(c: ColorSpec | 'ByBlock' | '*VARIES*'): string {
-  if (c === 'ByLayer' || c === 'ByBlock' || c === '*VARIES*') return c;
+/** Combo label for the header's CELWEIGHT (undefined = ByLayer, -2 = ByBlock, else millimetres). */
+function lineweightLabel(w: number | undefined): string {
+  if (w === undefined || w === -1) return 'ByLayer';
+  if (w === -2) return 'ByBlock';
+  if (w === -3) return 'Default';
+  return `${w.toFixed(2)} mm`;
+}
+
+function colorLabel(c: ColorSpec | '*VARIES*'): string {
+  if (c === 'ByLayer' || c === '*VARIES*') return c;
   return ACI_NAMES[c] ?? `Color ${c}`;
 }
 
@@ -142,22 +150,8 @@ export function registerLayerCommands(editor: Editor): void {
     if (c === null) return ed.log('Enter ByLayer or a colour index 1-255.');
     setColor(ed, c);
   });
-  reg('LINETYPE', ['LT', 'CELTYPE'], 'Set the current linetype', (ed, arg) => {
-    const a = (arg ?? '').trim();
-    const lt = LINETYPES.find((x) => x.toLowerCase() === a.toLowerCase());
-    if (!lt) return ed.log(`Current linetype: ${ed.currentLinetype}. Options: ${LINETYPES.join(', ')}`);
-    ed.currentLinetype = lt;
-    ed.notify('snap');
-    ed.log(`Current linetype: ${lt}`);
-  });
-  reg('LWEIGHT', ['LINEWEIGHT', 'CELWEIGHT'], 'Set the current lineweight', (ed, arg) => {
-    const a = (arg ?? '').trim();
-    const lw = LINEWEIGHTS.find((x) => x.toLowerCase() === a.toLowerCase() || x.replace(' mm', '') === a);
-    if (!lw) return ed.log(`Current lineweight: ${ed.currentLineweight}`);
-    ed.currentLineweight = lw;
-    ed.notify('snap');
-    ed.log(`Current lineweight: ${lw}`);
-  });
+  // LINETYPE / CELTYPE and LWEIGHT / CELWEIGHT are the drafting commands (src/app/commands-drafting.ts):
+  // they set the drawing header that Drawing.addEntities applies to new objects.
 }
 
 function setColor(ed: Editor, c: ColorSpec): void {
@@ -338,23 +332,25 @@ export function buildPropertiesPanelContent(editor: Editor): HTMLElement {
     color.lead.innerHTML = `<span class="swatch" style="background:${swatchColor}"></span>`;
     color.label.textContent = colorLabel(c);
     lt.lead.innerHTML = `<span class="combo-ic">${icon('linetype')}</span>`;
-    lt.label.textContent = editor.currentLinetype;
+    lt.label.textContent = editor.doc.header.celtype;
     lw.lead.innerHTML = `<span class="combo-ic">${icon('lineweight')}</span>`;
-    lw.label.textContent = editor.currentLineweight;
+    lw.label.textContent = lineweightLabel(editor.doc.header.celweight);
   };
   color.el.addEventListener('click', () =>
     showMenu(
       color.el,
       COLOR_CHOICES.map(([c, name]): MenuItem => ({
         label: name,
-        swatch: c === 'ByLayer' ? aciToCss(editor.doc.layer(editor.doc.currentLayer)?.color ?? 7) : c === 'ByBlock' ? '#fff' : aciToCss(c),
+        swatch: c === 'ByLayer' ? aciToCss(editor.doc.layer(editor.doc.currentLayer)?.color ?? 7) : aciToCss(c),
         check: editor.currentColor === c,
-        run: () => setColor(editor, c === 'ByBlock' ? 'ByLayer' : c),
+        run: () => setColor(editor, c),
       })),
     ),
   );
-  lt.el.addEventListener('click', () => showMenu(lt.el, LINETYPES.map((n): MenuItem => ({ label: n, check: editor.currentLinetype === n, run: () => editor.runCommand(`LINETYPE ${n}`) }))));
-  lw.el.addEventListener('click', () => showMenu(lw.el, LINEWEIGHTS.map((n): MenuItem => ({ label: n, check: editor.currentLineweight === n, run: () => editor.runCommand(`LWEIGHT ${n}`) }))));
+  lt.el.addEventListener('click', () => showMenu(lt.el, LINETYPES.map((n): MenuItem => ({ label: n, check: editor.doc.header.celtype.toUpperCase() === n.toUpperCase(), run: () => editor.runCommand(`CELTYPE ${n}`) }))));
+  lw.el.addEventListener('click', () =>
+    showMenu(lw.el, LINEWEIGHTS.filter((n) => n !== 'Default').map((n): MenuItem => ({ label: n, check: lineweightLabel(editor.doc.header.celweight) === n, run: () => editor.runCommand(`CELWEIGHT ${n.replace(' mm', '')}`) }))),
+  );
   wrap.append(color.el, lt.el, lw.el);
   editor.on('change', refresh);
   editor.on('selection', refresh);

@@ -12,6 +12,7 @@ import { aciToCss, ACI_NAMES } from '../render/palette';
 import { icon } from './icons';
 import { esc } from './dom';
 import { showMenu } from './menu';
+import { isFrozen, setFrozen } from './layerpanel';
 import { userLibrary } from '../electrical/userlib';
 import { chooseUserSymbolDialog } from './symbol-builder';
 
@@ -220,7 +221,7 @@ export function pickSymbolDialog(editor: Editor, standard: 'JIC' | 'IEC' = 'JIC'
 
     const options = document.createElement('div');
     options.className = 'iconmenu-options';
-    options.innerHTML = `<label><input type="radio" name="orient" value="h" checked> Horizontal</label><label><input type="radio" name="orient" value="v"> Vertical</label><label>Scale schematic: <input class="input small" value="1.000"></label><label>Type it: <input class="input typeit" placeholder="block name"></label>`;
+    options.innerHTML = `<label><input type="radio" name="orient" value="h" checked> Horizontal</label><label><input type="radio" name="orient" value="v"> Vertical</label><label>Type it: <input class="input typeit" placeholder="block name"></label>`;
     const typeIt = options.querySelector('.typeit') as HTMLInputElement;
     typeIt.addEventListener('keydown', (ev) => {
       if (ev.key === 'Enter' && typeIt.value.trim()) finish(typeIt.value.trim().toUpperCase());
@@ -437,21 +438,21 @@ export function layerDialog(editor: Editor): void {
   let statusEl: HTMLElement | null = null;
   const colourName = (c: number) => (ACI_NAMES[c] ?? String(c)).toLowerCase();
   const render = () => {
-    table.innerHTML = `<thead><tr><th>S</th><th>Name</th><th>On</th><th>Freeze</th><th>Lock</th><th>Plot</th><th>Color</th><th>Linetype</th><th>Lineweight</th><th>Transparency</th></tr></thead>`;
+    table.innerHTML = `<thead><tr><th>S</th><th>Name</th><th>On</th><th>Freeze</th><th>Lock</th><th>Color</th><th>Linetype</th><th>Lineweight</th><th>Transparency</th></tr></thead>`;
     const tb = document.createElement('tbody');
     for (const l of editor.doc.layers) {
       const tr = document.createElement('tr');
       const isCurrent = l.name === editor.doc.currentLayer;
+      const frozen = isFrozen(editor, l.name);
       tr.className = isCurrent ? 'current' : '';
       tr.innerHTML = `
         <td class="cur">${isCurrent ? icon('check') : ''}</td>
         <td class="name">${esc(l.name)}</td>
-        <td class="tog on-${l.visible}">${icon('bulb')}</td>
-        <td class="tog freeze-false">${icon('freeze')}</td>
-        <td class="tog lock-${l.locked}">${icon('lock')}</td>
-        <td class="tog plot-true">${icon('plot')}</td>
-        <td class="color"><span class="swatch" style="background:${aciToCss(l.color)}"></span>${colourName(l.color)}</td>
-        <td>Continuous</td>
+        <td class="tog on-${l.visible && !frozen}" title="On / Off">${icon('bulb')}</td>
+        <td class="tog freeze-${frozen}" title="Freeze / Thaw">${icon('freeze')}</td>
+        <td class="tog lock-${l.locked}" title="Lock / Unlock">${icon('lock')}</td>
+        <td class="color" title="Click for the next colour"><span class="swatch" style="background:${aciToCss(l.color)}"></span>${colourName(l.color)}</td>
+        <td>${esc(l.linetype ?? 'Continuous')}</td>
         <td>${Math.abs(l.lineWeight - 0.25) < 1e-9 ? 'Default' : `${l.lineWeight.toFixed(2)} mm`}</td>
         <td>0</td>`;
       tr.querySelector('.name')!.addEventListener('dblclick', () => {
@@ -464,7 +465,12 @@ export function layerDialog(editor: Editor): void {
       });
       const togs = tr.querySelectorAll('.tog');
       togs[0]!.addEventListener('click', () => {
-        editor.doc.updateLayer(l.name, { visible: !l.visible });
+        if (frozen) setFrozen(editor, l.name, false);
+        else editor.doc.updateLayer(l.name, { visible: !l.visible });
+        render();
+      });
+      togs[1]!.addEventListener('click', () => {
+        setFrozen(editor, l.name, !frozen);
         render();
       });
       togs[2]!.addEventListener('click', () => {
@@ -515,7 +521,6 @@ export function layerDialog(editor: Editor): void {
       editor.doc.transact((s) => ({ ...s, layers: s.layers.filter((l) => l.name !== cur), currentLayer: '0' }));
       render();
     }),
-    tool('check', 'Set Current (double-click a name)', () => {}),
     name,
   );
   name.addEventListener('input', () => {

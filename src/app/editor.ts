@@ -10,7 +10,7 @@ import type { Tool, ToolContext, LadderSettings } from '../tools/types';
 import { LineTool, PolylineTool, CircleTool, ArcTool, RectangleTool, TextTool } from '../tools/draw';
 import { EraseTool, MoveTool, CopyTool, RotateTool, DistTool } from '../tools/modify';
 import { WireTool, LadderTool, ComponentTool, assignWireNumbers } from '../tools/electrical';
-import { TrimTool, ExtendTool, OffsetTool, MirrorTool, ScaleTool, ExplodeTool, ZoomWindowTool } from '../tools/edit';
+import { TrimTool, ExtendTool, OffsetTool, MirrorTool, ScaleTool, ExplodeTool, ZoomWindowTool, PanTool } from '../tools/edit';
 import { lineweightDisplay } from '../render/draw';
 import { WIRE_DOT } from '../electrical/symbols';
 import { LIBRARY_SYMBOLS, withoutUnusedLibraryBlocks } from '../electrical/library';
@@ -70,10 +70,13 @@ export class Editor {
   // ---- UI/workflow extensions (file tabs, Properties panel) — logic lives in app/sessions.ts / src/ui.
   /** Open drawings ("file tabs"); the active one is `doc`. */
   readonly sessions: SessionManager = new SessionManager(this);
-  /** Current colour / linetype / lineweight for new objects (Home > Properties panel). */
-  currentColor: ColorSpec = 'ByLayer';
-  currentLinetype = 'ByLayer';
-  currentLineweight = 'ByLayer';
+  /** Current colour for new objects (Home > Properties panel; applied by Drawing.addEntities). Linetype / lineweight live in the drawing header (CELTYPE / CELWEIGHT). */
+  get currentColor(): ColorSpec {
+    return this.doc.currentColor;
+  }
+  set currentColor(c: ColorSpec) {
+    this.doc.currentColor = c;
+  }
   readonly viewport: Viewport;
   readonly snap: SnapSettings = defaultSnapSettings();
   selection = new Set<string>();
@@ -375,7 +378,7 @@ export class Editor {
     reg('MIRROR', ['MI'], 'Mirror objects about a line', (ed) => ed.startTool(new MirrorTool()));
     reg('SCALE', ['SC'], 'Scale objects about a base point', (ed) => ed.startTool(new ScaleTool()));
     reg('EXPLODE', ['X'], 'Explode blocks and polylines', (ed) => ed.startTool(new ExplodeTool()));
-    reg('PAN', ['P'], 'Pan (hold middle mouse or drag)', (ed) => ed.log('Drag with the middle mouse button to pan; wheel zooms; double middle-click zooms extents.'));
+    reg('PAN', ['P'], 'Pan: drag with the left button (or any time with the middle button); Esc ends', (ed) => ed.startTool(new PanTool()));
     reg('LWDISPLAY', ['LW'], 'Toggle lineweight display', (ed) => ed.toggle('lw'));
     reg('DYNMODE', ['DYN', 'F12'], 'Toggle dynamic input', (ed) => ed.toggle('dyn'));
     reg('CURSORSIZE', [], 'Crosshair size in percent of screen (5-100)', (ed, arg) => {
@@ -597,7 +600,7 @@ export class Editor {
 
   dynamicInput = true;
 
-  toggle(name: 'grid' | 'gridSnap' | 'ortho' | 'polar' | 'osnap' | 'lw' | 'dyn'): void {
+  toggle(name: 'grid' | 'gridSnap' | 'ortho' | 'polar' | 'osnap' | 'otrack' | 'lw' | 'dyn'): void {
     if (name === 'grid') this.viewport.settings.gridVisible = !this.viewport.settings.gridVisible;
     else if (name === 'lw') lineweightDisplay.enabled = !lineweightDisplay.enabled;
     else if (name === 'dyn') this.dynamicInput = !this.dynamicInput;
@@ -874,7 +877,8 @@ export class Editor {
   /** Compute the effective (snapped/constrained) world point for the cursor. */
   private resolveCursor(screen: Point): { world: Point; snap: SnapResult | null } {
     const raw = this.viewport.toWorld(screen);
-    const aperture = (this.viewport.settings.pickBox + 4) * this.viewport.worldPerPixel();
+    // Object snap target box: Options > Drafting > Aperture Size (px, full box; default 10 -> 7 px reach).
+    const aperture = (this.settings.apertureSize / 2 + 2) * this.viewport.worldPerPixel();
     const wantSnap = (this.tool !== null || this.gripDrag !== null) && !this.selReq;
     const snap = wantSnap
       ? findObjectSnap(raw, this.doc.entities, this.doc.lookupBlock, this.snap, aperture, this.overlay.trackFrom, this.hiddenLayers())
@@ -952,7 +956,7 @@ export class Editor {
   onMouseDown(ev: MouseEvent): void {
     const s = this.screenFromEvent(ev);
     this.lastMouse = s;
-    if (ev.button === 1) {
+    if (ev.button === 1 || (ev.button === 0 && this.tool instanceof PanTool && !this.selReq)) {
       ev.preventDefault();
       this.panning = true;
       return;
@@ -991,7 +995,7 @@ export class Editor {
   }
 
   onMouseUp(ev: MouseEvent): void {
-    if (ev.button === 1) {
+    if (ev.button === 1 || (ev.button === 0 && this.panning)) {
       this.panning = false;
       return;
     }
@@ -1136,6 +1140,14 @@ export class Editor {
     }
     if (key === 'F10') {
       this.toggle('polar');
+      return true;
+    }
+    if (key === 'F11') {
+      this.toggle('otrack');
+      return true;
+    }
+    if (key === 'F12') {
+      this.toggle('dyn');
       return true;
     }
     if (ev.ctrlKey || ev.metaKey) {

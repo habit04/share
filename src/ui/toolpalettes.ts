@@ -25,6 +25,8 @@ export class ToolPalettes {
     strip.className = 'palette-strip';
     strip.innerHTML = `<span class="palette-strip-btns">${icon('close')}${icon('drag')}</span><span class="palette-strip-title">Tool Palettes - Schematic Symbols</span>`;
     strip.querySelector('svg')!.addEventListener('click', () => this.toggle(false));
+    // The dotted grip is the drag handle (makeDraggable ignores the other strip icons).
+    strip.querySelectorAll('svg')[1]?.setAttribute('data-drag-handle', '');
     const main = document.createElement('div');
     main.className = 'tp-main';
     this.searchEl = document.createElement('input');

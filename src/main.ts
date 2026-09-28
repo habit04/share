@@ -202,7 +202,7 @@ function boot(): void {
       <div class="center">
         <div id="file-tabs"></div>
         <div class="canvas-wrap"><canvas id="drawing" tabindex="0"></canvas>
-          <div class="viewcube" title="Top view"><span class="vc-n">N</span><span class="vc-e">E</span><span class="vc-s">S</span><span class="vc-w">W</span><span class="vc-face">TOP</span><span class="vc-wcs">WCS ▾</span></div>
+          <div class="viewcube" title="Top view"><span class="vc-n">N</span><span class="vc-e">E</span><span class="vc-s">S</span><span class="vc-w">W</span><span class="vc-face">TOP</span><span class="vc-wcs">WCS</span></div>
           <div class="navbar" id="navbar"></div>
         </div>
         <div id="layout-tabs"></div>
@@ -261,6 +261,11 @@ function boot(): void {
     if (!f) return ed.settings.recentFiles.forEach((r, k) => ed.log(`  ${k + 1}. ${r}`));
     if (f.endsWith('.json')) void ed.openProject(f);
     else void ed.sessions.openInTab(f, (x) => origOpen.run(ed, x) as unknown as Promise<void>);
+  });
+  reg('CLEARRECENT', [], 'Clear the recent file list (File > Open Recent > Clear Recent)', (ed) => {
+    updateSettings(ed, { recentFiles: [] });
+    ed.notify('file');
+    ed.log('Recent file list cleared.');
   });
   const closeTab = async (i: number): Promise<boolean> => {
     // Symbol Builder tabs save to the user library instead of a file.
@@ -355,11 +360,9 @@ function boot(): void {
     ribbon.refresh();
     ed.log(`Workspace: ${ws === 'drafting' ? 'Drafting & Annotation' : 'ACADE & 2D Drafting'}.`);
   });
-  reg('ANNOSCALE', ['CANNOSCALE'], 'Set the annotation scale (e.g. 1:50)', (ed, arg) => {
-    const v = (arg ?? '').trim();
-    if (!/^\d+(\.\d+)?:\d+(\.\d+)?$/.test(v)) return ed.log(`Annotation scale: ${ed.settings.annotationScale}`);
-    updateSettings(ed, { annotationScale: v });
-  });
+  reg('ANNOSCALE', ['CANNOSCALE'], 'Annotation scale (annotative objects are not supported yet)', (ed) =>
+    ed.log('Annotative scaling is not supported yet: set text heights directly and scale dimensions with DIMSCALE.'),
+  );
   reg('COPYCLIP', [], 'Copy selected objects to the clipboard (Ctrl+C)', () => clipboard.copy());
   reg('CUTCLIP', [], 'Cut selected objects to the clipboard (Ctrl+X)', () => clipboard.cut());
   reg('PASTECLIP', [], 'Paste objects from the clipboard at the cursor (Ctrl+V)', () => clipboard.paste());

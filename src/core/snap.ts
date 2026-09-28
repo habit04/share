@@ -32,6 +32,8 @@ export interface SnapSettings {
   ortho: boolean;
   polar: boolean;
   polarIncrement: number; // degrees
+  /** Additional polar angles in degrees (DSETTINGS > Polar Tracking), absolute, tracked in both directions. */
+  polarAdditional?: readonly number[];
   /** Object snap tracking (alignment paths from acquired points). */
   otrack: boolean;
   /** Track along polar increments as well as orthogonal directions (POLARMODE bit 1). */
@@ -233,8 +235,12 @@ export function constrainDirection(base: Point, target: Point, settings: SnapSet
   if (settings.polar) {
     const inc = g.rad(settings.polarIncrement);
     const a = g.angleOf(base, target);
-    const snapped = Math.round(a / inc) * inc;
-    if (Math.abs(g.normAngle(a - snapped)) < g.rad(6) || Math.abs(g.normAngle(snapped - a)) < g.rad(6)) {
+    const off = (x: number) => Math.min(Math.abs(g.normAngle(a - x)), Math.abs(g.normAngle(x - a)));
+    let snapped = Math.round(a / inc) * inc;
+    for (const deg of settings.polarAdditional ?? []) {
+      for (const x of [g.rad(deg), g.rad(deg) + Math.PI]) if (off(x) < off(snapped)) snapped = x;
+    }
+    if (off(snapped) < g.rad(6)) {
       return g.polar(base, snapped, g.dist(base, target));
     }
   }

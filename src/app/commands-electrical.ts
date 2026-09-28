@@ -264,7 +264,7 @@ export function registerElectricalCommands(editor: Editor): void {
   reg('AEWIREGAP', ['WIREGAP'], 'Insert wire gaps at crossings', (ed) => ed.startTool(new WireGapTool('gap')));
   reg('AEWIRELOOP', ['WIRELOOP'], 'Insert wire jump-over loops at crossings', (ed) => ed.startTool(new WireGapTool('loop')));
   reg('AESCOOT', ['SCOOT'], 'Scoot: slide a component or wire number along its wire', (ed) => ed.startTool(new ScootTool()));
-  reg('AEALIGN', ['ALIGN'], 'Align components with a reference [Vertical/Horizontal]', (ed, arg) => ed.startTool(new AlignTool(arg?.toUpperCase().startsWith('H') ? 'horizontal' : 'vertical')));
+  reg('AEALIGN', [], 'Align components with a reference [Vertical/Horizontal]', (ed, arg) => ed.startTool(new AlignTool(arg?.toUpperCase().startsWith('H') ? 'horizontal' : 'vertical')));
   reg('AEMULTIBUS', ['MULTIBUS', 'BUS'], 'Multiple bus: N parallel wires', (ed) => ed.startTool(new MultiBusTool((init) => ui().busSettings(init), { ...DEFAULT_BUS, layer: ed.wireLayer })));
   reg('AEWIRENO', ['WIRENO'], 'Insert wire numbers (fixed numbers are kept)', (ed, arg) => {
     const s = settings();

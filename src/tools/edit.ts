@@ -613,6 +613,25 @@ export class ExplodeTool extends SelectionTool {
   }
 }
 
+// ------------------------------------------------------------------ PAN
+
+/** PAN: drag with the left button to pan (the editor moves the view while this tool is active); Esc / Enter ends it. */
+export class PanTool implements Tool {
+  readonly name = 'PAN';
+  start(ctx: ToolContext): void {
+    ctx.prompt('Drag to pan. Press Esc or Enter to exit.');
+  }
+  onPoint(_p: Point, _ctx: ToolContext): void {}
+  onMove(_p: Point, _ctx: ToolContext): void {}
+  onText(_t: string, _c: ToolContext): void {}
+  onEnter(ctx: ToolContext): void {
+    ctx.finish();
+  }
+  onCancel(ctx: ToolContext): void {
+    ctx.finish();
+  }
+}
+
 // ------------------------------------------------------------------ ZOOM WINDOW
 
 export class ZoomWindowTool implements Tool {

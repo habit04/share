@@ -60,28 +60,16 @@ export function draftingSettingsDialog(editor: Editor, initialTab = 0): void {
   cols.append(
     dlgGroup('Snap spacing', [
       snapOn,
-      dlgRow('Snap X spacing', numberInput(cur().snapSpacing, 0.001, 1e6, 0.125, (v) => set({ snapSpacing: v }))),
-      dlgRow('Snap Y spacing', numberInput(cur().snapSpacing, 0.001, 1e6, 0.125, (v) => set({ snapSpacing: v }))),
-      (() => {
-        const n = document.createElement('div');
-        n.className = 'dlg-note';
-        n.textContent = 'Equal X and Y spacing.';
-        return n;
-      })(),
+      dlgRow('Snap spacing (X = Y)', numberInput(cur().snapSpacing, 0.001, 1e6, 0.125, (v) => set({ snapSpacing: v }))),
     ]),
     dlgGroup('Grid spacing', [
       gridOn,
-      dlgRow('Grid X spacing', numberInput(cur().gridSpacing, 0.001, 1e6, 0.125, (v) => set({ gridSpacing: v }))),
-      dlgRow('Grid Y spacing', numberInput(cur().gridSpacing, 0.001, 1e6, 0.125, (v) => set({ gridSpacing: v }))),
-      dlgRow('Major line every', textField('5', () => {}, '5')),
+      dlgRow('Grid spacing (X = Y)', numberInput(cur().gridSpacing, 0.001, 1e6, 0.125, (v) => set({ gridSpacing: v }))),
     ]),
   );
   snapGrid.append(
     cols,
-    dlgGroup('Grid style', [
-      dlgRow('Display grid as', selectInput([['lines', 'Lines'], ['dots', 'Dots']], cur().gridStyle, (v) => set({ gridStyle: v as 'lines' | 'dots' }))),
-      dlgCheck('Adaptive grid (subdivide below 10 px)', true, () => {}),
-    ]),
+    dlgGroup('Grid style', [dlgRow('Display grid as', selectInput([['lines', 'Lines'], ['dots', 'Dots']], cur().gridStyle, (v) => set({ gridStyle: v as 'lines' | 'dots' })))]),
   );
 
   // ---- Polar Tracking
@@ -129,17 +117,15 @@ export function draftingSettingsDialog(editor: Editor, initialTab = 0): void {
     polarOn,
     dlgGroup('Polar Angle Settings', [
       dlgRow('Increment angle', selectInput(['90', '45', '30', '22.5', '18', '15', '10', '5'].map((a) => [a, `${a}°`]), String(cur().polarIncrement), (v) => set({ polarIncrement: parseFloat(v) }))),
-      dlgCheck('Additional angles', cur().polarAdditional.length > 0, () => {}),
-      additional,
-      addRow,
       (() => {
         const n = document.createElement('div');
         n.className = 'dlg-note';
-        n.textContent = 'Additional angles are stored with your settings; the cursor snaps to the increment angle and its multiples.';
+        n.textContent = 'Additional angles (absolute, measured from 0° East) are tracked in both directions besides the increment angle and its multiples.';
         return n;
       })(),
+      additional,
+      addRow,
     ]),
-    dlgGroup('Polar Angle measurement', [dlgCheck('Absolute', true, () => {}), dlgCheck('Relative to last segment', false, () => {})]),
   );
 
   // ---- Object Snap
@@ -188,9 +174,12 @@ export function draftingSettingsDialog(editor: Editor, initialTab = 0): void {
     dlgCheck('Enable Dynamic Input (F12)', editor.dynamicInput, (v) => {
       if (v !== editor.dynamicInput) editor.toggle('dyn');
     }),
-    dlgGroup('Pointer Input', [dlgCheck('Show coordinates near the crosshair', true, () => {}), dlgRow('Format', selectInput([['polar', 'Polar (distance<angle)'], ['cartesian', 'Cartesian']], 'polar', () => {}))]),
-    dlgGroup('Dimension Input', [dlgCheck('Show dimension input where possible', true, () => {})]),
-    dlgGroup('Dynamic Prompts', [dlgCheck('Show command prompting and command input near the crosshair', true, () => {})]),
+    (() => {
+      const n = document.createElement('div');
+      n.className = 'dlg-note';
+      n.textContent = 'Dynamic Input shows the values a command is asking for (coordinates, distances) next to the crosshair.';
+      return n;
+    })(),
   );
 
   m.body.appendChild(tabbedDialog([['Snap and Grid', snapGrid], ['Polar Tracking', polar], ['Object Snap', osnap], ['Dynamic Input', dyn]], initialTab));

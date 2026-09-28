@@ -41,7 +41,9 @@ export const SHORTCUTS: Array<[string, string]> = [
 export function helpDialog(editor: Editor, query = ''): void {
   const m = modal('JCad Electrical Help', 760, 'dark');
   const openAbout = /^about$/i.test(query.trim());
-  if (openAbout) query = '';
+  // HELP shortcuts (Help > Keyboard Shortcuts in the desktop menu) opens that tab instead of searching for the word.
+  const openShortcuts = /^(shortcuts|keys)$/i.test(query.trim());
+  if (openAbout || openShortcuts) query = '';
   const commands = document.createElement('div');
   const search = document.createElement('input');
   search.className = 'input help-search';
@@ -170,7 +172,7 @@ export function helpDialog(editor: Editor, query = ''): void {
     info.textContent = `Version ${APP_VERSION_LABEL} (browser preview) — updates are delivered with the desktop application.`;
   }
 
-  m.body.appendChild(tabbedDialog([['Commands', commands], ['Keyboard Shortcuts', keysWrap], ['About', about]], openAbout ? 2 : 0));
+  m.body.appendChild(tabbedDialog([['Commands', commands], ['Keyboard Shortcuts', keysWrap], ['About', about]], openAbout ? 2 : openShortcuts ? 1 : 0));
   const close = button('Close', true);
   close.addEventListener('click', () => m.close());
   m.footer.append(close);

@@ -16,7 +16,7 @@ export class ProjectManager {
     // AutoCAD palettes carry a vertical title strip on the docked edge.
     const strip = document.createElement('div');
     strip.className = 'palette-strip';
-    strip.innerHTML = `<span class="palette-strip-btns">${icon('close')}${icon('pin')}${icon('settings')}</span><span class="palette-strip-title">Project Manager</span>`;
+    strip.innerHTML = `<span class="palette-strip-btns">${icon('close')}${icon('pin')}</span><span class="palette-strip-title">Project Manager</span>`;
     strip.querySelector('svg')?.addEventListener('click', () => this.el.classList.add('hidden'));
     const body = document.createElement('div');
     body.className = 'palette-body';
@@ -34,7 +34,7 @@ export class ProjectManager {
       b.addEventListener('click', () => this.editor.runCommand(cmd));
       return b;
     };
-    toolbar.append(mk('new', 'New drawing from template', 'NEWSHEET'), mk('open', 'Open project', 'OPENPROJECT'), mk('plus', 'Add current drawing to project', 'PROJECTADD'), mk('save', 'Save project', 'PROJECTSAVE'), mk('report', 'Reports', 'AEREPORT bom'), mk('settings', 'Properties', 'PROPERTIES'));
+    toolbar.append(mk('new', 'New drawing from template', 'NEWSHEET'), mk('open', 'Open project', 'OPENPROJECT'), mk('plus', 'Add current drawing to project', 'PROJECTADD'), mk('save', 'Save project', 'PROJECTSAVE'), mk('report', 'Reports', 'AEREPORT bom'), mk('settings', 'Project properties (AEPROJECTPROPS)', 'AEPROJECTPROPS'));
     const proj = document.createElement('div');
     proj.className = 'palette-project-select';
     proj.innerHTML = `<span class="pm-project-name">Sample Project</span>${icon('chevron')}`;
@@ -46,7 +46,7 @@ export class ProjectManager {
 
     const detailsHeader = document.createElement('div');
     detailsHeader.className = 'palette-section-title';
-    detailsHeader.innerHTML = `<span>Details</span><span>Preview</span>`;
+    detailsHeader.innerHTML = `<span>Details</span>`;
     this.detailsEl = document.createElement('div');
     this.detailsEl.className = 'project-details';
 
@@ -89,7 +89,7 @@ export class ProjectManager {
     rows.push(`<div class="tree-node open"><span class="tree-twisty">▾</span>${icon('open')}<span>Recent Files</span></div>`);
     if (recent.length === 0) rows.push(`<div class="tree-node lvl1 muted"><span class="tree-twisty"></span><span>none</span></div>`);
     recent.forEach((f, i) => rows.push(`<div class="tree-node lvl1" data-recent="${i}" title="${esc(f)}"><span class="tree-twisty"></span>${icon('model')}<span>${esc(baseName(f))}</span></div>`));
-    rows.push(`<div class="tree-node lvl1 muted" data-reports="1"><span class="tree-twisty">▸</span>${icon('report')}<span>Reports</span></div>`);
+    rows.push(`<div class="tree-node lvl1 muted" data-reports="1" title="Double-click to open the reports (AEREPORT)"><span class="tree-twisty"></span>${icon('report')}<span>Reports</span></div>`);
     this.treeEl.innerHTML = rows.join('');
     // Drawings open in their own file tab (or switch to the tab that already shows them).
     const openInTab = (f: string) => void this.editor.sessions.openInTab(f, (x) => this.editor.openFile(x));

@@ -70,7 +70,8 @@ export function installAutoHide(el: HTMLElement, opts: { initial: boolean; onCha
 export function makeDraggable(el: HTMLElement, handle: HTMLElement): void {
   let off: { x: number; y: number } | null = null;
   handle.addEventListener('mousedown', (ev) => {
-    if ((ev.target as HTMLElement).closest('svg, button, input')) return;
+    const control = (ev.target as Element).closest('svg, button, input');
+    if (control && !control.hasAttribute('data-drag-handle')) return;
     const r = el.getBoundingClientRect();
     off = { x: ev.clientX - r.left, y: ev.clientY - r.top };
     ev.preventDefault();

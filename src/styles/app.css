@@ -136,6 +136,9 @@ svg {
   height: 22px;
   color: var(--text-dim);
 }
+.title-search svg {
+  cursor: pointer;
+}
 .title-search input {
   background: transparent;
   border: none;
@@ -255,6 +258,21 @@ svg {
   width: 10px;
   height: 10px;
   color: var(--text-muted);
+}
+/* Dialog launcher: only on panels that have a settings dialog behind them. */
+.ribbon-panel-title button.panel-arrow {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 2px;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
+.ribbon-panel-title button.panel-arrow:hover {
+  background: var(--bg-hover);
+  border-color: var(--border);
 }
 .ribbon-btn {
   display: flex;

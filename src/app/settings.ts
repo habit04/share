@@ -51,7 +51,7 @@ export interface UserSettings {
   osnapModes: OsnapModes;
   // --- Palettes / chrome
   paletteWidths: { projectManager: number; properties: number; toolPalettes: number; symbolBuilder: number };
-  paletteAutoHide: { projectManager: boolean; properties: boolean };
+  paletteAutoHide: { projectManager: boolean; properties: boolean; symbolBuilder: boolean };
   /** Symbol Builder palette: which sections are collapsed. */
   symbolBuilderCollapsed: { symbol: boolean; preview: boolean; attributes: boolean; defaults: boolean; pins: boolean };
   propertiesVisible: boolean;
@@ -105,7 +105,7 @@ export const DEFAULT_SETTINGS: UserSettings = {
   polarAdditional: [],
   osnapModes: { endpoint: true, midpoint: true, center: true, quadrant: false, intersection: true, perpendicular: true, nearest: false },
   paletteWidths: { projectManager: 268, properties: 250, toolPalettes: 240, symbolBuilder: 300 },
-  paletteAutoHide: { projectManager: false, properties: false },
+  paletteAutoHide: { projectManager: false, properties: false, symbolBuilder: false },
   symbolBuilderCollapsed: { symbol: false, preview: false, attributes: false, defaults: true, pins: false },
   propertiesVisible: false,
   toolPalettesVisible: false,

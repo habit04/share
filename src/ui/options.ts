@@ -15,6 +15,7 @@ export function applyUiSettings(editor: Editor): void {
   vs.pickBox = s.pickboxSize;
   vs.gripSize = s.gripSize;
   vs.gripColor = s.gripColor;
+  vs.gripHoverColor = s.gripHoverColor;
   vs.snapMarkerSize = s.autosnapMarkerSize;
   vs.snapMarkerColor = s.autosnapMarkerColor;
   vs.selectionEffect = s.selectionEffect;
@@ -22,6 +23,7 @@ export function applyUiSettings(editor: Editor): void {
   vs.gridStyle = s.gridStyle;
   editor.snap.gridSize = s.snapSpacing;
   editor.snap.polarIncrement = s.polarIncrement;
+  editor.snap.polarAdditional = [...s.polarAdditional];
   for (const k of Object.keys(s.osnapModes) as Array<keyof typeof s.osnapModes>) editor.snap[k] = s.osnapModes[k];
   document.getElementById('ribbon')?.classList.toggle('light', s.ribbonTheme === 'light');
   editor.render();
@@ -89,9 +91,6 @@ export function optionsDialog(editor: Editor, initialTab = 0): void {
   };
   drafting.append(
     dlgGroup('AutoSnap Settings', [
-      dlgCheck('Marker', true, () => {}),
-      dlgCheck('Magnet', true, () => {}),
-      dlgCheck('Display AutoSnap tooltip', cur().rolloverTooltips, (v) => set({ rolloverTooltips: v })),
       dlgRow('AutoSnap marker color', colorInput(cur().autosnapMarkerColor, (v) => {
         set({ autosnapMarkerColor: v });
         drawMarker();
@@ -103,7 +102,7 @@ export function optionsDialog(editor: Editor, initialTab = 0): void {
         drawMarker();
       }, true)),
     ]),
-    dlgGroup('Aperture Size', [
+    dlgGroup('Aperture Size (object snap target box)', [
       dlgRow('Size (1-50 px)', numberInput(cur().apertureSize, 1, 50, 1, (v) => {
         set({ apertureSize: v });
         drawMarker();
@@ -168,7 +167,13 @@ export function optionsDialog(editor: Editor, initialTab = 0): void {
     dlgGroup('Length', [
       dlgRow('Type', selectInput([['decimal', 'Decimal'], ['engineering', 'Engineering'], ['architectural', 'Architectural'], ['fractional', 'Fractional']], cur().units, (v) => set({ units: v as UserSettings['units'] }))),
       dlgRow('Precision (decimal places)', numberInput(cur().precision, 0, 8, 1, (v) => set({ precision: v }))),
-      dlgRow('Insertion scale unit', selectInput([['in', 'Inches'], ['mm', 'Millimeters'], ['ft', 'Feet'], ['m', 'Meters']], cur().unitSuffix, (v) => set({ unitSuffix: v as UserSettings['unitSuffix'] }))),
+      dlgRow('Unit label (status bar)', selectInput([['in', 'Inches'], ['mm', 'Millimeters'], ['ft', 'Feet'], ['m', 'Meters']], cur().unitSuffix, (v) => set({ unitSuffix: v as UserSettings['unitSuffix'] }))),
+      (() => {
+        const n = document.createElement('div');
+        n.className = 'dlg-note';
+        n.textContent = "These change how lengths are displayed. The drawing's own insertion units are set with the UNITS command.";
+        return n;
+      })(),
     ]),
     dlgGroup('Coordinate Display', [
       dlgRow('Status bar coordinates', selectInput([['absolute', 'Absolute'], ['relative', 'Relative to last point'], ['off', 'Off']], cur().coordDisplay, (v) => set({ coordDisplay: v as UserSettings['coordDisplay'] }))),

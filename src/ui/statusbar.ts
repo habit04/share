@@ -17,8 +17,6 @@ interface ToggleDef {
   menu?: (ed: Editor, refresh: () => void) => MenuItem[];
 }
 
-const SCALES = ['1:1', '1:2', '1:4', '1:8', '1:16', '1:32', '2:1', '4:1', '8:1'];
-
 const TOGGLES: ToggleDef[] = [
   {
     key: 'grid',
@@ -70,7 +68,14 @@ const TOGGLES: ToggleDef[] = [
       { label: 'Object Snap Settings...', run: () => e.runCommand('DSETTINGS 2') },
     ],
   },
-  { key: 'otrack', icon: 'otrack', title: 'Object snap tracking (F11) — not available', isOn: () => false, toggle: (e) => e.log('Object snap tracking is not implemented yet.') },
+  {
+    key: 'otrack',
+    icon: 'otrack',
+    title: 'Object snap tracking (F11)',
+    isOn: (e) => e.snap.otrack,
+    toggle: (e) => e.toggle('otrack'),
+    menu: (e) => [{ label: 'Object Snap Settings...', run: () => e.runCommand('DSETTINGS 2') }, { label: 'Tracking Settings...', run: () => e.runCommand('DSETTINGS 1') }],
+  },
   {
     key: 'dyn',
     icon: 'dyn',
@@ -84,7 +89,6 @@ const TOGGLES: ToggleDef[] = [
 ];
 
 const RIGHT_ITEMS: Array<[string, string]> = [
-  ['scale', 'Annotation scale'],
   ['workspace', 'Workspace switching'],
   ['units', 'Units'],
   ['isolate', 'Isolate objects'],
@@ -95,7 +99,6 @@ export class StatusBar {
   readonly el: HTMLElement;
   private coordsEl: HTMLElement;
   private buttons = new Map<string, HTMLElement>();
-  private scaleEl: HTMLElement;
   private wsEl: HTMLElement;
   private unitsEl: HTMLElement;
   private lastCoordPoint: { x: number; y: number } | null = null;
@@ -129,7 +132,8 @@ export class StatusBar {
     const model = document.createElement('button');
     model.className = 'status-btn on text';
     model.textContent = 'MODEL';
-    model.title = 'Model space (layouts are not available)';
+    model.title = 'Model space (paper-space layouts are not supported yet)';
+    model.addEventListener('click', () => this.editor.log('Only model space is available: paper-space layouts are not supported yet. Plot from model space with PLOT.'));
     this.el.appendChild(model);
     this.buttons.set('model', model);
 
@@ -166,18 +170,8 @@ export class StatusBar {
     spacer.className = 'status-spacer';
     this.el.appendChild(spacer);
 
-    this.scaleEl = document.createElement('div');
-    this.scaleEl.className = 'status-text clickable';
-    this.scaleEl.title = 'Annotation scale of the current view';
-    this.scaleEl.addEventListener('click', () =>
-      showMenu(
-        this.scaleEl,
-        [...SCALES.map((s): MenuItem => ({ label: s, check: this.editor.settings.annotationScale === s, run: () => this.setScale(s) })), null, { label: 'Custom...', run: () => this.editor.log('Type a scale like 1:50 at the command line: ANNOSCALE 1:50') }],
-        { above: true, alignRight: true },
-      ),
-    );
-    this.el.appendChild(this.scaleEl);
-    this.buttons.set('scale', this.scaleEl);
+    // No annotation-scale control: there are no annotative objects, so a scale picker would change nothing.
+    // Text and dimension sizes are set directly (text height, DIMSCALE).
 
     this.wsEl = document.createElement('div');
     this.wsEl.className = 'status-text clickable';
@@ -188,8 +182,6 @@ export class StatusBar {
         [
           { label: 'Drafting & Annotation', check: this.editor.settings.workspace === 'drafting', run: () => this.editor.runCommand('WORKSPACE drafting') },
           { label: 'Electrical & 2D Drafting', check: this.editor.settings.workspace === 'electrical', run: () => this.editor.runCommand('WORKSPACE electrical') },
-          null,
-          { label: 'Workspace Settings... (Options)', run: () => this.editor.runCommand('OPTIONS') },
         ],
         { above: true, alignRight: true },
       ),
@@ -248,12 +240,6 @@ export class StatusBar {
     this.refresh();
   }
 
-  private setScale(s: string): void {
-    updateSettings(this.editor, { annotationScale: s });
-    this.editor.log(`Annotation scale set to ${s}.`);
-    this.refresh();
-  }
-
   private showCustomize(anchor: HTMLElement): void {
     const items: MenuItem[] = [
       { label: 'Coordinates', check: this.visible('coords'), run: () => this.setVisible('coords', !this.visible('coords')) },
@@ -306,7 +292,6 @@ export class StatusBar {
     }
     for (const [k, el] of this.buttons) el.classList.toggle('status-hidden', !this.visible(k));
     const s = this.editor.settings;
-    this.scaleEl.innerHTML = `<span>${s.annotationScale}</span>${icon('chevron')}`;
     this.wsEl.innerHTML = `${icon('settings')} <span>${s.workspace === 'drafting' ? 'Drafting &amp; Annotation' : 'Electrical &amp; 2D Drafting'}</span>${icon('chevron')}`;
     const unitName = s.units[0]!.toUpperCase() + s.units.slice(1);
     this.unitsEl.textContent = `${unitName} · ${s.unitSuffix}`;
