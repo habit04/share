@@ -19,6 +19,7 @@ import { ToolPalettes } from './ui/toolpalettes';
 import { helpDialog, textWindowDialog } from './ui/help';
 import { reportProblemDialog } from './ui/report';
 import { installDiagnostics } from './app/diagnostics';
+import { drawingKindOf, readDwgInBrowser, describeDwgError } from './io/dwg-browser';
 import { donateUrl } from './app/about';
 import { Autosaver, bridgeAutosaveStore, localAutosaveStore, type AutosaveBridge } from './app/autosave';
 import { recoveryDialog } from './ui/recovery';
@@ -88,9 +89,7 @@ function browserFileBridge(): FileBridge {
     openDrawing: async () => {
       const f = await pickBrowserFile('.dxf,.dwg');
       if (!f) return null;
-      const { drawingKindOf } = await import('./io/dwg-browser');
       if (drawingKindOf(f.name) === 'dwg') {
-        const { readDwgInBrowser, describeDwgError } = await import('./io/dwg-browser');
         try {
           const { payload, version } = await readDwgInBrowser(await f.arrayBuffer());
           return { path: f.name, kind: 'dwg', payload, version };
@@ -180,6 +179,20 @@ async function browserDownload(name: string, text: string): Promise<string | nul
 
 function boot(): void {
   installDiagnostics();
+  // A page loaded before a redeploy asks for chunks that no longer exist (hashed names change):
+  // reload once to pick up the current build instead of failing the open.
+  window.addEventListener('vite:preloadError', (ev) => {
+    let already = false;
+    try {
+      already = sessionStorage.getItem('jcad.reloadedForStaleChunk') === '1';
+      sessionStorage.setItem('jcad.reloadedForStaleChunk', '1');
+    } catch {
+      /* storage blocked: just try once */
+    }
+    if (already) return;
+    ev.preventDefault();
+    window.location.reload();
+  });
   const app = document.getElementById('app')!;
   app.innerHTML = `
     <div id="titlebar"></div>

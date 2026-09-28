@@ -41,6 +41,7 @@ export function wasmSupported(scope: { WebAssembly?: unknown } = globalThis as {
 export function describeDwgError(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
   if (/memory|RangeError|allocat/i.test(msg)) return `Not enough memory to load the DWG reader in this browser (${msg}). Try a desktop browser or the desktop app.`;
+  if (/Failed to fetch dynamically imported module|Importing a module script failed|error loading dynamically imported module/i.test(msg)) return `The browser edition was updated while this page was open. Reload the page (F5) and open the drawing again.`;
   if (/wasm|WebAssembly|CompileError|LinkError/i.test(msg)) return `The DWG reader (WebAssembly) could not be loaded: ${msg}`;
   return msg;
 }

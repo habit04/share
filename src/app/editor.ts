@@ -708,7 +708,7 @@ export class Editor {
         if (!res) return;
         this.rememberRecent(res.path);
         if (res.kind === 'dwg') {
-          const { state, skipped } = convertDwg(res.payload);
+          const { state, skipped, notes } = convertDwg(res.payload);
           // DWG is read-only for us: keep the file untitled so SAVE asks where to write the DXF copy.
           this.loadState(state, null);
           this.doc.dirty = true;
@@ -717,6 +717,7 @@ export class Editor {
             ? ` Skipped unsupported: ${Object.entries(skipped).map(([k, v]) => `${k}×${v}`).join(', ')}.`
             : '';
           this.log(`Imported DWG ${res.path} (${res.version || 'unknown version'}): ${state.entities.length} entities, ${state.layers.length} layers, ${Object.keys(state.blocks).length} blocks.${skippedText}`);
+          for (const n of notes) this.log(`DWG import: ${n}`);
           this.log('DWG import is read-only; use SAVE to write a DXF copy next to the original.');
           this.emit('file');
           return;

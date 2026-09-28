@@ -42,7 +42,7 @@ export interface DwgImportPayload {
   header: { CLAYER?: unknown; INSUNITS?: unknown } & Record<string, unknown>;
   entities: DwgEntity[];
   layers: Array<{ name: string; colorIndex: number; off: boolean; frozen: boolean; locked: boolean; lineweight: number; lineType?: string }>;
-  blocks: Array<Pick<DwgBlockRecordTableEntry, 'name' | 'basePoint' | 'entities' | 'description'>>;
+  blocks: Array<Pick<DwgBlockRecordTableEntry, 'name' | 'basePoint' | 'entities' | 'description'> & { handle?: string }>;
   version?: string;
 }
 
@@ -65,6 +65,7 @@ export function toImportPayload(db: DwgDatabase, version?: string): DwgImportPay
       basePoint: b.basePoint,
       entities: b.entities ?? [],
       description: b.description,
+      handle: (b as { handle?: string }).handle,
     })),
     version,
   };
@@ -155,6 +156,121 @@ function halign(h: number | undefined): 'left' | 'center' | 'right' {
   if (h === 1 || h === 4) return 'center';
   if (h === 2) return 'right';
   return 'left';
+}
+
+interface DwgHatchVertex {
+  x: number;
+  y: number;
+  bulge?: number;
+}
+interface DwgHatchEdge {
+  type?: number; // 1 line, 2 arc, 3 ellipse, 4 spline
+  start?: { x: number; y: number };
+  end?: { x: number; y: number };
+  center?: { x: number; y: number };
+  radius?: number;
+  startAngle?: number;
+  endAngle?: number;
+  isCounterClockwise?: number | boolean;
+  majorAxis?: { x: number; y: number };
+  minorAxisRatio?: number;
+  controlPoints?: Array<{ x: number; y: number }>;
+  fitPoints?: Array<{ x: number; y: number }>;
+}
+interface DwgHatchPath {
+  boundaryPathTypeFlag?: number; // 1 external, 2 polyline, 4 derived, 8 textbox, 16 outermost
+  hasBulge?: number;
+  isClosed?: number;
+  vertices?: DwgHatchVertex[];
+  edges?: DwgHatchEdge[];
+}
+interface DwgHatchLike {
+  solidFill?: number | boolean;
+  patternName?: string;
+  boundaryPaths?: DwgHatchPath[];
+}
+
+const deg2rad = (d: number) => (d * Math.PI) / 180;
+
+/** Points of one hatch boundary path (polyline paths keep their bulges; edge paths are sampled). */
+function hatchPathGeometry(path: DwgHatchPath): { points: Point[]; bulges?: number[] } | null {
+  if (path.vertices && path.vertices.length >= 2) {
+    const points = path.vertices.map((v) => p2(v));
+    const bulges = path.vertices.map((v) => v.bulge ?? 0);
+    return { points, bulges: bulges.some((b) => Math.abs(b) > 1e-12) ? bulges : undefined };
+  }
+  const points: Point[] = [];
+  const push = (pt: Point) => {
+    const last = points[points.length - 1];
+    if (!last || !g.eq(last, pt)) points.push(pt);
+  };
+  for (const ed of path.edges ?? []) {
+    switch (ed.type) {
+      case 1:
+        if (ed.start) push(p2(ed.start));
+        if (ed.end) push(p2(ed.end));
+        break;
+      case 2: {
+        if (!ed.center || ed.radius === undefined) break;
+        // Angles come in degrees in DXF-style payloads; radians are unlikely to exceed 2*pi.
+        const toRad = (v: number) => (Math.abs(v) > 2 * Math.PI + 1e-6 ? deg2rad(v) : v);
+        let s0 = toRad(ed.startAngle ?? 0);
+        let e0 = toRad(ed.endAngle ?? 2 * Math.PI);
+        const ccw = ed.isCounterClockwise === undefined ? true : Boolean(ed.isCounterClockwise);
+        if (!ccw) [s0, e0] = [-s0, -e0];
+        let sweep = e0 - s0;
+        if (sweep <= 1e-9) sweep += 2 * Math.PI;
+        const n = Math.max(4, Math.ceil((sweep / (2 * Math.PI)) * 32));
+        for (let i = 0; i <= n; i += 1) {
+          const t = s0 + (sweep * i) / n;
+          push({ x: ed.center.x + ed.radius * Math.cos(t), y: ed.center.y + ed.radius * Math.sin(t) });
+        }
+        break;
+      }
+      case 3: {
+        if (!ed.center || !ed.majorAxis) break;
+        const ratio = ed.minorAxisRatio ?? 1;
+        const s0 = ed.startAngle ?? 0;
+        const e0 = ed.endAngle ?? 2 * Math.PI;
+        let sweep = e0 - s0;
+        if (sweep <= 1e-9) sweep += 2 * Math.PI;
+        const n = Math.max(8, Math.ceil((sweep / (2 * Math.PI)) * 48));
+        const minor = { x: -ed.majorAxis.y * ratio, y: ed.majorAxis.x * ratio };
+        for (let i = 0; i <= n; i += 1) {
+          const t = s0 + (sweep * i) / n;
+          push({ x: ed.center.x + ed.majorAxis.x * Math.cos(t) + minor.x * Math.sin(t), y: ed.center.y + ed.majorAxis.y * Math.cos(t) + minor.y * Math.sin(t) });
+        }
+        break;
+      }
+      case 4: {
+        for (const pt of ed.fitPoints?.length ? ed.fitPoints : ed.controlPoints ?? []) push(p2(pt));
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  return points.length >= 2 ? { points } : null;
+}
+
+/**
+ * A HATCH becomes one closed polyline per boundary path. Solid hatches fill their outer
+ * boundaries; pattern hatches keep only the outlines (the pattern itself is not drawn).
+ */
+export function convertHatch(e: DwgEntity): Entity[] {
+  const h = e as unknown as DwgHatchLike;
+  const base = baseProps(e);
+  const solid = Boolean(h.solidFill) || /^SOLID$/i.test(h.patternName ?? '');
+  const out: Entity[] = [];
+  const paths = h.boundaryPaths ?? [];
+  paths.forEach((path, i) => {
+    const geom = hatchPathGeometry(path);
+    if (!geom) return;
+    const flag = path.boundaryPathTypeFlag ?? 0;
+    const external = (flag & 1) === 1 || (flag & 16) === 16 || paths.length === 1;
+    out.push({ ...base, id: i === 0 ? base.id : newId(), type: 'polyline', points: geom.points, closed: true, bulges: geom.bulges, ...(solid && external ? { filled: true } : {}) });
+  });
+  return out;
 }
 
 function convertEntity(e: DwgEntity, blockIndex: Map<string, string>, dimStyle: DimStyle = STANDARD_DIMSTYLE, blocks?: Record<string, BlockDef>): Entity | null {
@@ -317,6 +433,8 @@ function convertAttdef(a: DwgAttdefEntity): AttributeDef {
 export interface DwgImportResult {
   state: DrawingState;
   skipped: Record<string, number>;
+  /** Human-readable remarks about approximations made during the import. */
+  notes: string[];
 }
 
 /** Convert a LibreDWG database payload into a DrawingState. */
@@ -364,6 +482,7 @@ function readHeader(h: DwgImportPayload['header']): DrawingHeader {
 
 export function convertDwg(payload: DwgImportPayload): DwgImportResult {
   const skipped: Record<string, number> = {};
+  const notes: string[] = [];
   const header = readHeader(payload.header ?? {});
   const isLayout = (name: string) => /^\*(MODEL_SPACE|PAPER_SPACE)/i.test(name);
   // Anonymous blocks (*U12 ...) hold dynamic-block and array geometry; keep them under a legal name.
@@ -384,6 +503,12 @@ export function convertDwg(payload: DwgImportPayload): DwgImportResult {
         attributes.push(convertAttdef(e as DwgAttdefEntity));
         continue;
       }
+      if (e.type === 'HATCH') {
+        const parts = convertHatch(e);
+        if (parts.length) entities.push(...parts);
+        else skipped[e.type] = (skipped[e.type] ?? 0) + 1;
+        continue;
+      }
       const c = convertEntity(e, blockIndex, header.dimStyle);
       if (c) entities.push(c);
       else skipped[e.type] = (skipped[e.type] ?? 0) + 1;
@@ -392,10 +517,48 @@ export function convertDwg(payload: DwgImportPayload): DwgImportResult {
     blocks[name] = { name, basePoint: p2(b.basePoint), entities, attributes, description: b.description || undefined };
   }
 
+  // ACAD_TABLE entities draw through an anonymous *T<n> block that holds the rendered grid and
+  // cell text. The entity's own fields are often unreadable; match blocks by handle first, then
+  // hand out the unreferenced *T blocks in order.
+  const insertedNames = new Set<string>();
+  for (const e of payload.entities) if (e.type === 'INSERT') insertedNames.add(String((e as DwgInsertEntity).name ?? '').toUpperCase());
+  const tableBlocksByHandle = new Map<string, string>();
+  const spareTableBlocks: string[] = [];
+  for (const b of payload.blocks) {
+    if (!b.name || !/^\*T\d+$/i.test(b.name) || insertedNames.has(b.name.toUpperCase())) continue;
+    if (b.handle) tableBlocksByHandle.set(String(b.handle).toUpperCase(), publicName(b.name));
+    spareTableBlocks.push(publicName(b.name));
+  }
+  const tableInsert = (e: DwgEntity): Entity | null => {
+    const t = e as unknown as { blockRecordHandle?: string; startPoint?: { x: number; y: number }; rowCount?: number };
+    const byHandle = t.blockRecordHandle ? tableBlocksByHandle.get(String(t.blockRecordHandle).toUpperCase()) : undefined;
+    const name = byHandle ?? spareTableBlocks.shift();
+    if (!name) return null;
+    if (byHandle) {
+      const i = spareTableBlocks.indexOf(byHandle);
+      if (i >= 0) spareTableBlocks.splice(i, 1);
+    }
+    const at = p2(t.startPoint);
+    if (!t.rowCount && at.x === 0 && at.y === 0) notes.push(`Table ${name}: its position could not be read, so it was placed at 0,0 (MOVE it if needed).`);
+    return { ...baseProps(e), type: 'insert', block: name, position: at, rotation: 0, scale: 1, attributes: {} };
+  };
+
   const entities: Entity[] = [];
   for (const e of payload.entities) {
     if (e.isInPaperSpace || (e.handle && paperHandles.has(e.handle))) continue;
     if (e.type === 'ATTDEF' || e.type === 'VIEWPORT' || e.type === 'ATTRIB') continue; // ATTRIBs are folded into their INSERTs
+    if (e.type === 'HATCH') {
+      const parts = convertHatch(e);
+      if (parts.length) entities.push(...parts);
+      else skipped[e.type] = (skipped[e.type] ?? 0) + 1;
+      continue;
+    }
+    if (e.type === 'ACAD_TABLE') {
+      const ins = tableInsert(e);
+      if (ins) entities.push(ins);
+      else skipped[e.type] = (skipped[e.type] ?? 0) + 1;
+      continue;
+    }
     const c = convertEntity(e, blockIndex, header.dimStyle, blocks);
     if (c) entities.push(c);
     else skipped[e.type] = (skipped[e.type] ?? 0) + 1;
@@ -428,5 +591,5 @@ export function convertDwg(payload: DwgImportPayload): DwgImportResult {
     layers.find((l) => l.name.toUpperCase().replace(/\s+/g, '_') === rawClayer.toUpperCase().replace(/\s+/g, '_'))?.name ??
     '0';
 
-  return { state: { entities, layers, blocks, currentLayer, header }, skipped };
+  return { state: { entities, layers, blocks, currentLayer, header }, skipped, notes };
 }
