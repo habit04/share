@@ -1,6 +1,5 @@
 import type { Editor } from '../app/editor';
-import { SYMBOL_CATEGORIES } from '../electrical/symbols';
-import { IEC_CATEGORIES } from '../electrical/iec';
+import { JIC_LIBRARY, IEC_LIBRARY } from '../electrical/library';
 import type { BlockDef } from '../core/entities';
 import { drawPreview } from '../render/draw';
 import { icon } from './icons';
@@ -50,7 +49,7 @@ export class ToolPalettes {
   }
 
   private categories(): Array<{ name: string; symbols: BlockDef[] }> {
-    return [...SYMBOL_CATEGORIES, ...IEC_CATEGORIES];
+    return [...JIC_LIBRARY, ...IEC_LIBRARY];
   }
 
   toggle(show?: boolean): void {

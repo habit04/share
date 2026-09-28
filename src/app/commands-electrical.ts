@@ -29,8 +29,7 @@ import { assignWireNumbers, DEFAULT_BUS } from '../electrical/wires';
 import { readWdSettings, writeWdSettings, WD_M_BLOCK, type WdSettings } from '../electrical/wdm';
 import { retagDrawing } from '../electrical/tags';
 import { updateCrossReferences, parentCandidates, childBlockFor } from '../electrical/xref';
-import { ALL_SYMBOLS } from '../electrical/symbols';
-import { IEC_SYMBOLS } from '../electrical/iec';
+import { LIBRARY_BLOCKS } from '../electrical/library';
 import { setUserCatalog, parseCatalog, userCatalogSize, catalogFamilyFor } from '../electrical/catalog';
 import { schematicList, terminalStripTable, applyTerminalEdits, BALLOON_BLOCK, NAMEPLATE_BLOCK } from '../electrical/panel';
 import { buildMotorCircuit, makeTagger, DEFAULT_CIRCUIT, type CircuitOptions } from '../electrical/circuits';
@@ -65,7 +64,7 @@ export async function projectDocuments(editor: Editor): Promise<Array<{ name: st
       const state = res.kind === 'dwg' ? convertDwg(res.payload).state : readDxf(res.text);
       const doc = new Drawing();
       doc.load(state, path);
-      doc.ensureBlocks([...ALL_SYMBOLS, ...IEC_SYMBOLS]);
+      doc.ensureBlocks(LIBRARY_BLOCKS);
       out.push({ name: baseName(path), doc });
     } catch (err) {
       editor.log(`Skipped ${baseName(path)}: ${(err as Error).message}`);
@@ -180,7 +179,7 @@ export function registerElectricalCommands(editor: Editor): void {
   reg('AETOGGLENC', ['TOGGLENC'], 'Toggle a contact between NO and NC', (ed) => ed.startTool(new ToggleNcTool()));
   reg('AESWAP', ['SWAPBLOCK', 'AESWAPBLOCK'], 'Swap a component symbol, keeping its data', (ed) => ed.startTool(new SwapBlockTool()));
   reg('AEUPDATEBLOCK', ['UPDATEBLOCK'], 'Update symbol block definitions from the library', (ed) => {
-    const lib = [...ALL_SYMBOLS, ...IEC_SYMBOLS, WD_M_BLOCK, BALLOON_BLOCK, NAMEPLATE_BLOCK];
+    const lib = [...LIBRARY_BLOCKS, WD_M_BLOCK, BALLOON_BLOCK, NAMEPLATE_BLOCK];
     let n = 0;
     ed.doc.transact((s) => {
       const blocks = { ...s.blocks };

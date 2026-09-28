@@ -91,7 +91,7 @@ export function defaultPins(family: string, block: string): string[] {
 }
 
 /** Build the invisible ACADE attribute set for a symbol (data + wire connection attributes). */
-export function acadeAttributes(block: BlockDef, family: string): AttributeDef[] {
+export function acadeAttributes(block: BlockDef, family: string, wdtype?: string): AttributeDef[] {
   const existing = new Set(block.attributes.map((a) => a.tag));
   const out: AttributeDef[] = [];
   const inv = (tag: string, x: number, y: number, def = ''): AttributeDef => ({ tag, prompt: tag, default: def, position: { x, y }, height: 0.07, align: 'center', invisible: true });
@@ -107,7 +107,7 @@ export function acadeAttributes(block: BlockDef, family: string): AttributeDef[]
     for (const t of DATA_ATTRIBUTES) {
       if (existing.has(t) || t === 'DESC2' || t === 'DESC3') continue;
       const i = DATA_ATTRIBUTES.indexOf(t);
-      out.push(inv(t, -0.3 + (i % 4) * 0.2, top + Math.floor(i / 4) * 0.1, t === 'WDTYPE' ? wdType(block.name, family) : ''));
+      out.push(inv(t, -0.3 + (i % 4) * 0.2, top + Math.floor(i / 4) * 0.1, t === 'WDTYPE' ? wdType(block.name, family, wdtype) : ''));
     }
     if (existing.has('TERM01') && !existing.has('TAGSTRIP')) out.push(inv('TAGSTRIP', 0, -0.15, ''));
   }
@@ -120,7 +120,8 @@ export function acadeAttributes(block: BlockDef, family: string): AttributeDef[]
 }
 
 /** Symbol type code stored in WDTYPE. */
-export function wdType(block: string, family: string): string {
+export function wdType(block: string, family: string, override?: string): string {
+  if (override) return override;
   if (/_N[OC]$/.test(block) && /^(HCR|HTD|HKM|IEC_K|IEC_KM|IEC_KT)/.test(block)) return 'CONTACT';
   if (/^(HCR1|HTD|HKM1|IEC_K_COIL|IEC_KM_COIL|IEC_KT)/.test(block) && !/_N[OC]$/.test(block)) return 'COIL';
   if (/^(HT0|IEC_X_TERM)/.test(block)) return 'TERM';
@@ -129,8 +130,8 @@ export function wdType(block: string, family: string): string {
 }
 
 /** Return a copy of the block with the ACADE attribute set appended. */
-export function withAcadeAttributes(block: BlockDef, family: string): BlockDef {
-  const extra = acadeAttributes(block, family);
+export function withAcadeAttributes(block: BlockDef, family: string, wdtype?: string): BlockDef {
+  const extra = acadeAttributes(block, family, wdtype);
   if (extra.length === 0) return block;
   return { ...block, attributes: [...block.attributes, ...extra] };
 }

@@ -2,6 +2,7 @@ const { app, BrowserWindow, Menu, dialog, ipcMain, screen } = require('electron'
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const fsSync = require('node:fs');
+const updater = require('./updater.cjs');
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL;
 
@@ -159,6 +160,10 @@ function buildMenu(win) {
         { label: 'Help (F1)', click: send('HELP') },
         { label: 'Keyboard Shortcuts', click: send('HELP shortcuts') },
         { label: 'Text Window (F2)', click: send('TEXTSCR') },
+        { type: 'separator' },
+        { label: 'Check for Updates…', click: () => void updater.checkForUpdates(win, { interactive: true }) },
+        { label: 'Release Notes (GitHub)', click: () => void require('electron').shell.openExternal(updater.RELEASES_PAGE) },
+        { label: `About JCad Electrical ${app.getVersion()}`, click: send('HELP about') },
       ],
     },
   ];
@@ -448,6 +453,23 @@ ipcMain.on('set-recent-files', (ev, files) => {
   const win = BrowserWindow.fromWebContents(ev.sender);
   if (win) buildMenu(win);
 });
+// ------------------------------------------------------------------ updates
+ipcMain.handle('app-info', () => ({
+  version: app.getVersion(),
+  platform: process.platform,
+  arch: process.arch,
+  packaged: app.isPackaged,
+  selfUpdate: updater.canSelfUpdate(),
+  releases: updater.RELEASES_PAGE,
+}));
+ipcMain.handle('check-updates', (ev) => {
+  const win = BrowserWindow.fromWebContents(ev.sender) || mainWindow;
+  return updater.checkForUpdates(win, { interactive: true });
+});
+updater.onStatus((status) => {
+  for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.webContents.send('update-status', status);
+});
+
 ipcMain.on('app-quit', (ev) => {
   const win = BrowserWindow.fromWebContents(ev.sender);
   if (win) win.close();
@@ -473,6 +495,7 @@ if (probeIndex >= 0) {
 app.whenReady().then(() => {
   loadPersistedPaths();
   createWindow();
+  updater.scheduleStartupCheck(() => mainWindow);
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });

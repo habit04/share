@@ -6,8 +6,7 @@ import type { Entity, BlockDef, InsertEntity } from '../core/entities';
 import { newId } from '../core/entities';
 import type { DrawingState } from '../core/document';
 import { Drawing } from '../core/document';
-import { ALL_SYMBOLS } from './symbols';
-import { IEC_SYMBOLS } from './iec';
+import { LIBRARY_BLOCKS } from './library';
 
 export interface SheetSize {
   key: string;
@@ -104,7 +103,7 @@ export function sheetEntities(size: SheetSize, fields: Partial<Record<string, st
 /** A fresh drawing state from a template. */
 export function newFromTemplate(size: SheetSize, fields: Partial<Record<string, string>> = {}): DrawingState {
   const d = new Drawing();
-  d.ensureBlocks([...ALL_SYMBOLS, ...IEC_SYMBOLS, TITLE_BLOCK]);
+  d.ensureBlocks([...LIBRARY_BLOCKS, TITLE_BLOCK]);
   d.addLayer({ name: 'BORDER', color: 7, visible: true, locked: false, lineWeight: 0.5 });
   d.addEntities(sheetEntities(size, fields));
   return d.snapshot;

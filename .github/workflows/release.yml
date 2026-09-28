@@ -19,17 +19,23 @@ jobs:
           - os: windows-latest
             target: --win nsis
             artifact: JCad-Electrical-Windows
-            glob: release/*.exe
+            glob: |
+              release/*.exe
+              release/*.exe.blockmap
+              release/latest*.yml
           - os: macos-latest
             target: --mac dmg --arm64 --x64
             artifact: JCad-Electrical-macOS
-            glob: release/*.dmg
+            glob: |
+              release/*.dmg
+              release/latest*.yml
           - os: ubuntu-latest
             target: --linux AppImage deb
             artifact: JCad-Electrical-Linux
             glob: |
               release/*.AppImage
               release/*.deb
+              release/latest*.yml
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5

@@ -29,5 +29,11 @@ contextBridge.exposeInMainWorld('jcad', {
       ipcRenderer.send('dirty-state', dirty);
     });
   },
+  // Updates (GitHub Releases)
+  appInfo: () => ipcRenderer.invoke('app-info'),
+  checkForUpdates: () => ipcRenderer.invoke('check-updates'),
+  onUpdateStatus: (cb) => {
+    ipcRenderer.on('update-status', (_ev, status) => cb(status));
+  },
   platform: process.platform,
 });

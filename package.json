@@ -1,6 +1,6 @@
 {
   "name": "jcad-electrical",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "2D electrical schematic drafting application (desktop)",
   "author": "JCad Electrical contributors",
   "private": true,
@@ -60,7 +60,13 @@
       "maintainer": "JCad Electrical <maintainer@jcad.invalid>",
       "synopsis": "2D electrical schematic drafting"
     },
-    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "artifactName": "${name}-${version}-${os}-${arch}.${ext}",
+    "publish": {
+      "provider": "github",
+      "owner": "habit04",
+      "repo": "share",
+      "releaseType": "release"
+    },
     "afterPack": "scripts/afterPack.cjs"
   },
   "devDependencies": {
@@ -77,6 +83,7 @@
   },
   "dependencies": {
     "@mlightcad/libredwg-web": "^0.7.14",
+    "electron-updater": "^6.8.9",
     "hershey": "^2.1.7"
   }
 }

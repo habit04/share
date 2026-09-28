@@ -956,10 +956,20 @@ canvas#drawing {
 .iconmenu {
   display: flex;
   gap: 10px;
-  height: 380px;
+  height: 420px;
+}
+.iconmenu-search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.iconmenu-search .input {
+  flex: 1;
 }
 .iconmenu-cats {
-  width: 200px;
+  width: 220px;
+  flex: none;
   display: flex;
   flex-direction: column;
   border: 1px solid #b9b9b9;
@@ -1342,4 +1352,18 @@ legend {
   text-align: center;
   font-size: 10px;
   color: rgba(230, 230, 230, 0.6);
+}
+
+/* Help > About: version line and update row */
+.help-version {
+  color: var(--accent, #4aa3ff);
+  font-weight: 600;
+  margin-left: 4px;
+}
+.help-update-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+  flex-wrap: wrap;
 }

@@ -22,8 +22,7 @@ import { DATA_ATTRIBUTES } from '../electrical/attributes';
 import type { WdSettings } from '../electrical/wdm';
 import type { Project } from '../app/project';
 import { DESCRIPTION_LINES } from '../app/project';
-import { findSymbol } from '../electrical/symbols';
-import { IEC_SYMBOLS } from '../electrical/iec';
+import { findLibrarySymbol } from '../electrical/library';
 import { drawPreview } from '../render/draw';
 import { icon } from './icons';
 import { esc } from './dom';
@@ -162,7 +161,7 @@ function dialog<T>(title: string, width: number, build: (m: Modal, finish: (v: T
   });
 }
 
-const findAnySymbol = (name: string) => findSymbol(name) ?? IEC_SYMBOLS.find((s) => s.name === name);
+const findAnySymbol = (name: string) => findLibrarySymbol(name);
 
 const selectableRow = (tr: HTMLTableRowElement, onSelect: () => void, onActivate: () => void) => {
   tr.style.cursor = 'pointer';

@@ -32,6 +32,22 @@ tagged builds are attached to a GitHub Release. The builds are not signed with a
 confirmation ("More info" then "Run anyway") and macOS asks once under System Settings >
 Privacy & Security > "Open Anyway" (macOS builds are ad-hoc signed so they are not reported as damaged).
 
+### Updates
+
+The application checks GitHub Releases for a newer version a few seconds after it starts
+and on **Help > Check for Updates…** (command `CHECKUPDATES`, alias `UPDATE`). Help > About
+shows the installed version.
+
+- **Windows installer and Linux AppImage** update in place: the new build is downloaded
+  (electron-updater reads the `latest*.yml` metadata that electron-builder attaches to each
+  release) and installed when the application restarts.
+- **macOS and Linux .deb** are told when a newer release exists and offered the matching
+  download (in-place replacement on macOS needs a Developer ID signed app, which the ad-hoc
+  signed builds are not).
+
+Update metadata is only written when the `publish` block in `package.json` is present;
+`release.yml` uploads the `.yml` and `.blockmap` files next to the installers.
+
 ## Run from source
 
 ```bash

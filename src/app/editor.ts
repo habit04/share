@@ -12,8 +12,8 @@ import { EraseTool, MoveTool, CopyTool, RotateTool, DistTool } from '../tools/mo
 import { WireTool, LadderTool, ComponentTool, assignWireNumbers } from '../tools/electrical';
 import { TrimTool, ExtendTool, OffsetTool, MirrorTool, ScaleTool, ExplodeTool, ZoomWindowTool } from '../tools/edit';
 import { lineweightDisplay } from '../render/draw';
-import { ALL_SYMBOLS, WIRE_DOT } from '../electrical/symbols';
-import { IEC_SYMBOLS } from '../electrical/iec';
+import { WIRE_DOT } from '../electrical/symbols';
+import { LIBRARY_SYMBOLS } from '../electrical/library';
 import { updateCrossReferences } from '../electrical/xref';
 import { TITLE_BLOCK, newFromTemplate, SHEET_SIZES, type SheetSize } from '../electrical/templates';
 import { PlcModuleTool, SignalArrowTool, TerminalStripTool, DEFAULT_PLC, DEFAULT_STRIP, SOURCE_ARROW, DEST_ARROW, type PlcModuleSettings, type TerminalStripSettings } from '../tools/plc';
@@ -135,7 +135,7 @@ export class Editor {
 
   constructor(canvas: HTMLCanvasElement) {
     this.viewport = new Viewport(canvas, this.doc);
-    this.doc.ensureBlocks([...ALL_SYMBOLS, ...IEC_SYMBOLS, TITLE_BLOCK, SOURCE_ARROW, DEST_ARROW]);
+    this.doc.ensureBlocks([...LIBRARY_SYMBOLS, WIRE_DOT, TITLE_BLOCK, SOURCE_ARROW, DEST_ARROW]);
     this.applySettings();
     this.doc.subscribe(() => {
       // Drop selection ids that no longer exist.
@@ -672,7 +672,7 @@ export class Editor {
   newDrawingNow(): void {
     const fresh = new Drawing();
     this.doc.load(fresh.snapshot, null);
-    this.doc.ensureBlocks([...ALL_SYMBOLS, ...IEC_SYMBOLS, TITLE_BLOCK, SOURCE_ARROW, DEST_ARROW, WIRE_DOT]);
+    this.doc.ensureBlocks([...LIBRARY_SYMBOLS, TITLE_BLOCK, SOURCE_ARROW, DEST_ARROW, WIRE_DOT]);
     this.selection.clear();
     this.viewport.zoomToBounds(null);
     this.log('New drawing.');
@@ -683,7 +683,7 @@ export class Editor {
 
   loadState(state: DrawingState, path: string | null): void {
     this.doc.load(state, path);
-    this.doc.ensureBlocks([...ALL_SYMBOLS, ...IEC_SYMBOLS, TITLE_BLOCK, SOURCE_ARROW, DEST_ARROW, WIRE_DOT]);
+    this.doc.ensureBlocks([...LIBRARY_SYMBOLS, TITLE_BLOCK, SOURCE_ARROW, DEST_ARROW, WIRE_DOT]);
     this.selection.clear();
     this.zoomExtents();
     this.emit('file');

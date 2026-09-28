@@ -1,7 +1,6 @@
 import type { Editor } from '../app/editor';
 import type { LadderSettings } from '../tools/types';
-import { SYMBOL_CATEGORIES, findSymbol } from '../electrical/symbols';
-import { IEC_CATEGORIES, IEC_SYMBOLS } from '../electrical/iec';
+import { libraryCategories, findLibrarySymbol, searchLibrary, librarySummary } from '../electrical/library';
 import type { Report } from '../electrical/reports';
 import { REPORTS, reportToCsv } from '../electrical/reports';
 import { SHEET_SIZES, TITLE_BLOCK } from '../electrical/templates';
@@ -75,13 +74,13 @@ function textInput(value: string, type = 'text'): HTMLInputElement {
 
 /** Insert Component icon menu: categories on the left, symbol previews on the right. */
 export function findAnySymbol(name: string) {
-  return findSymbol(name) ?? IEC_SYMBOLS.find((s) => s.name === name);
+  return findLibrarySymbol(name);
 }
 
 export function pickSymbolDialog(editor: Editor, standard: 'JIC' | 'IEC' = 'JIC', onStandard?: (s: 'JIC' | 'IEC') => void): Promise<string | null> {
   return new Promise((resolve) => {
-    const m = modal(`Insert Component: ${standard} Schematic Symbols`, 760);
-    const categories = () => (standard === 'IEC' ? IEC_CATEGORIES : SYMBOL_CATEGORIES);
+    const m = modal(`Insert Component: ${standard} Schematic Symbols`, 820);
+    const categories = () => libraryCategories(standard);
     let done = false;
     const finish = (v: string | null) => {
       if (done) return;
@@ -90,6 +89,19 @@ export function pickSymbolDialog(editor: Editor, standard: 'JIC' | 'IEC' = 'JIC'
       resolve(v);
     };
     m.onClose(() => finish(null));
+
+    // Search across every category of the current standard (name, description, category).
+    const searchRow = document.createElement('div');
+    searchRow.className = 'iconmenu-search';
+    const search = document.createElement('input');
+    search.className = 'input';
+    search.placeholder = `Search ${librarySummary()[standard === 'IEC' ? 'iec' : 'jic']} ${standard} symbols by name or description`;
+    search.spellcheck = false;
+    search.addEventListener('keydown', (ev) => ev.stopPropagation());
+    const countEl = document.createElement('span');
+    countEl.className = 'dlg-note';
+    searchRow.append(search, countEl);
+    m.body.appendChild(searchRow);
 
     const wrap = document.createElement('div');
     wrap.className = 'iconmenu';
@@ -103,8 +115,17 @@ export function pickSymbolDialog(editor: Editor, standard: 'JIC' | 'IEC' = 'JIC'
     let active = 0;
     const renderGrid = () => {
       grid.innerHTML = '';
+      const q = search.value.trim();
       const cat = categories()[active]!;
-      for (const s of cat.symbols) {
+      const symbols = q ? searchLibrary(standard, q) : cat.symbols;
+      countEl.textContent = q ? `${symbols.length} match(es)` : `${cat.symbols.length} in ${cat.name}`;
+      if (symbols.length === 0) {
+        const none = document.createElement('div');
+        none.className = 'dlg-note';
+        none.textContent = 'No symbols match.';
+        grid.appendChild(none);
+      }
+      for (const s of symbols) {
         const cell = document.createElement('button');
         cell.className = 'iconmenu-cell';
         const canvas = document.createElement('canvas');
@@ -136,6 +157,8 @@ export function pickSymbolDialog(editor: Editor, standard: 'JIC' | 'IEC' = 'JIC'
     };
     renderCats();
     renderGrid();
+    search.addEventListener('input', renderGrid);
+    setTimeout(() => search.focus(), 0);
 
     const options = document.createElement('div');
     options.className = 'iconmenu-options';

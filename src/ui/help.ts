@@ -2,6 +2,9 @@ import type { Editor, CommandDef } from '../app/editor';
 import { modal, button, tabbedDialog } from './dialogkit';
 import { esc } from './dom';
 
+/** Version compiled into the renderer (package.json version via Vite define). */
+export const APP_VERSION_LABEL: string = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : 'dev';
+
 export const SHORTCUTS: Array<[string, string]> = [
   ['F1', 'Help'],
   ['F2', 'Text window (command history)'],
@@ -36,6 +39,8 @@ export const SHORTCUTS: Array<[string, string]> = [
 /** HELP / F1: searchable command reference built from the registered commands. */
 export function helpDialog(editor: Editor, query = ''): void {
   const m = modal('JCad Electrical Help', 760, 'dark');
+  const openAbout = /^about$/i.test(query.trim());
+  if (openAbout) query = '';
   const commands = document.createElement('div');
   const search = document.createElement('input');
   search.className = 'input help-search';
@@ -94,11 +99,31 @@ export function helpDialog(editor: Editor, query = ''): void {
   keysWrap.append(keys);
 
   const about = document.createElement('div');
-  about.innerHTML = `<p><b>JCad Electrical</b> — 2D electrical schematic drafting.</p>
+  about.innerHTML = `<p><b>JCad Electrical</b> <span class="help-version">${esc(APP_VERSION_LABEL)}</span> — 2D electrical schematic drafting.</p>
     <p>Type commands at the command line (AutoComplete lists matches as you type; Tab cycles, Enter accepts). Option keywords in [brackets] are clickable. Coordinates: <code>x,y</code>, <code>@dx,dy</code>, <code>@dist&lt;angle</code>, or type a distance while dragging.</p>
-    <p>Native DXF (AutoCAD 2000) save; DWG R14–2018 import; PDF plot; CSV reports. All artwork and symbol geometry are original.</p>`;
+    <p>Native DXF (AutoCAD 2000) save; DWG R14–2018 import; PDF plot; CSV reports. All artwork and symbol geometry are original.</p>
+    <p class="help-update-row"></p>`;
+  const updateRow = about.querySelector('.help-update-row') as HTMLElement;
+  const info = document.createElement('span');
+  info.className = 'dlg-note';
+  info.textContent = 'Version information is available in the desktop application.';
+  const check = button('Check for Updates…');
+  check.addEventListener('click', () => {
+    m.close();
+    editor.runCommand('CHECKUPDATES');
+  });
+  updateRow.append(check, info);
+  const bridge = window.jcad;
+  if (bridge?.appInfo) {
+    void bridge.appInfo().then((i) => {
+      info.textContent = `Version ${i.version} (${i.platform} ${i.arch})${i.selfUpdate ? ' — updates install in place from GitHub Releases.' : ' — new versions are offered from the GitHub Releases page.'}`;
+    });
+  } else {
+    check.disabled = true;
+    info.textContent = `Version ${APP_VERSION_LABEL} (browser preview) — updates are delivered with the desktop application.`;
+  }
 
-  m.body.appendChild(tabbedDialog([['Commands', commands], ['Keyboard Shortcuts', keysWrap], ['About', about]], 0));
+  m.body.appendChild(tabbedDialog([['Commands', commands], ['Keyboard Shortcuts', keysWrap], ['About', about]], openAbout ? 2 : 0));
   const close = button('Close', true);
   close.addEventListener('click', () => m.close());
   m.footer.append(close);

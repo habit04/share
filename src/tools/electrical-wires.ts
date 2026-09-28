@@ -31,8 +31,7 @@ import {
   type WireEdit,
 } from '../electrical/wires';
 import { toggleVariant, isComponent, isChild } from '../electrical/families';
-import { ALL_SYMBOLS } from '../electrical/symbols';
-import { IEC_SYMBOLS } from '../electrical/iec';
+import { LIBRARY_BLOCKS } from '../electrical/library';
 import { readWdSettings } from '../electrical/wdm';
 import type { ElectricalUi } from '../electrical/ui';
 import { componentDialogInit, componentAttributes, lookupSymbol } from './electrical';
@@ -254,7 +253,7 @@ export class ThreePhaseComponentTool extends PickTool {
     super();
   }
   start(ctx: ToolContext): void {
-    ctx.doc.ensureBlocks([...ALL_SYMBOLS, ...IEC_SYMBOLS]);
+    ctx.doc.ensureBlocks(LIBRARY_BLOCKS);
     const choose = this.preset ? Promise.resolve(this.preset) : ctx.ui.pickSymbol();
     void choose.then((name) => {
       if (!name || !lookupSymbol(name)) {

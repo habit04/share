@@ -5,8 +5,8 @@ import { newId, insertTransform } from '../core/entities';
 import type { Drawing } from '../core/document';
 import { LineTool } from './draw';
 import type { Tool, ToolContext, LadderSettings } from './types';
-import { findSymbol, tagPrefix, ALL_SYMBOLS, WIRE_DOT } from '../electrical/symbols';
-import { IEC_SYMBOLS } from '../electrical/iec';
+import { tagPrefix, WIRE_DOT } from '../electrical/symbols';
+import { LIBRARY_BLOCKS, findLibrarySymbol } from '../electrical/library';
 import { isWire, isHorizontal, wireTeeAt, findWireAt, breakWire, nearestReference, wireDot, hasDotAt } from '../electrical/ladder';
 import { assignWireNumbers as assignWireNumbersImpl, breakForInsert, type WireNumberOptions } from '../electrical/wires';
 import { readWdSettings, type WdSettings } from '../electrical/wdm';
@@ -19,7 +19,7 @@ import type { ElectricalUi, ComponentDialogInit } from '../electrical/ui';
 // Pure helpers moved to src/electrical/ladder.ts; re-exported for existing callers and tests.
 export { isWire, isHorizontal, wireTeeAt, findWireAt, breakWire, nearestReference, wireDot };
 
-export const lookupSymbol = (name: string) => findSymbol(name) ?? IEC_SYMBOLS.find((s) => s.name === name);
+export const lookupSymbol = (name: string) => findLibrarySymbol(name);
 
 const fmt = (p: Point) => `${p.x.toFixed(4)}, ${p.y.toFixed(4)}`;
 
@@ -249,7 +249,7 @@ export class ComponentTool implements Tool {
   ) {}
 
   start(ctx: ToolContext): void {
-    ctx.doc.ensureBlocks([...ALL_SYMBOLS, ...IEC_SYMBOLS]);
+    ctx.doc.ensureBlocks(LIBRARY_BLOCKS);
     ctx.prompt('Select a symbol from the icon menu...');
     const choose = this.preset ? Promise.resolve(this.preset) : ctx.ui.pickSymbol();
     void choose.then((name) => {

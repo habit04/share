@@ -492,8 +492,16 @@ export const WIRE_DOT: BlockDef = {
   attributes: [],
 };
 
+/** Tag-prefix rules contributed by the extended libraries (see library.ts). */
+const extraPrefixes: Array<[RegExp, string]> = [];
+/** Register block-name patterns -> tag prefix for symbols outside this module. */
+export function registerTagPrefixes(entries: Array<[RegExp, string]>): void {
+  for (const e of entries) extraPrefixes.push(e);
+}
+
 /** Default component tag prefix by family (AutoCAD Electrical style e.g. PB, CR, LT). */
 export function tagPrefix(blockName: string): string {
+  for (const [re, p] of extraPrefixes) if (re.test(blockName)) return p;
   const map: Array<[RegExp, string]> = [
     [/^HPB/, 'PB'],
     [/^HFT/, 'FTS'],

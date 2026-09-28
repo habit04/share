@@ -36,6 +36,9 @@ declare global {
       onQueryDirty(cb: () => boolean): void;
       setRecentFiles?(files: string[]): void;
       quit?(): void;
+      appInfo?(): Promise<{ version: string; platform: string; arch: string; packaged: boolean; selfUpdate: boolean; releases: string }>;
+      checkForUpdates?(): Promise<{ state: string; version?: string; message?: string }>;
+      onUpdateStatus?(cb: (status: { state: string; version?: string; percent?: number; message?: string; manual?: boolean }) => void): void;
       platform: string;
     } & Partial<AutosaveBridge>;
   }
@@ -172,6 +175,25 @@ function boot(): void {
   reg('DSETTINGS', ['DS', 'SE', 'DDRMODES'], 'Drafting Settings (Snap and Grid, Polar, Object Snap, Dynamic Input)', (ed, arg) => draftingSettingsDialog(ed, parseInt(arg ?? '0', 10) || 0));
   reg('HELP', ['?', 'F1'], 'Help: searchable command reference and keyboard shortcuts', (ed, arg) => helpDialog(ed, arg ?? ''));
   reg('TEXTSCR', ['F2', 'TEXTWINDOW'], 'Text window with the command history', (ed) => textWindowDialog(ed));
+  reg('CHECKUPDATES', ['UPDATE', 'CHECKFORUPDATES'], 'Check GitHub Releases for a newer JCad Electrical', (ed) => {
+    const b = window.jcad;
+    if (!b?.checkForUpdates) {
+      ed.log('Updates are checked by the desktop application; download builds from https://github.com/habit04/share/releases');
+      return;
+    }
+    ed.log('Checking for updates...');
+    void b.checkForUpdates().then((r) => {
+      if (r.state === 'up-to-date') ed.log(`JCad Electrical ${r.version ?? ''} is up to date.`);
+      else if (r.state === 'available') ed.log(`Update available: JCad Electrical ${r.version ?? ''}.`);
+      else if (r.state === 'downloaded') ed.log(`Update ${r.version ?? ''} downloaded; it installs when the application restarts.`);
+      else if (r.state === 'error') ed.log(`Update check failed: ${r.message ?? 'unknown error'}`);
+    });
+  });
+  window.jcad?.onUpdateStatus?.((s) => {
+    if (s.state === 'available') editor.log(`A newer JCad Electrical (${s.version ?? ''}) is available${s.manual ? ' on the releases page' : ''}.`);
+    else if (s.state === 'downloading' && s.percent !== undefined && s.percent % 25 === 0) editor.log(`Downloading update: ${s.percent}%`);
+    else if (s.state === 'downloaded') editor.log(`Update ${s.version ?? ''} downloaded; restart to install.`);
+  });
   reg('COMMANDLINE', [], 'Show the command window (Ctrl+9)', () => setCommandWindow(true));
   reg('COMMANDLINEHIDE', [], 'Hide the command window (Ctrl+9)', () => setCommandWindow(false));
   reg('CLEANSCREEN', ['CLEANSCREENON', 'CLEANSCREENOFF'], 'Toggle clean screen (Ctrl+0)', () => {
