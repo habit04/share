@@ -603,7 +603,8 @@ export function writeDxf(state: DrawingState): string {
   blockShell(PAPER_SPACE, '*Paper_Space', { x: 0, y: 0 }, 0, undefined, () => {});
   for (const b of blockList) {
     const owner = blockRecordHandles.get(b.name)!;
-    blockShell(owner, b.name, b.basePoint, b.attributes.length > 0 ? 2 : 0, b.description, () => {
+    // Anonymous blocks (*T tables, *U dynamic blocks) must carry flag 1 or AutoCAD rejects the name.
+    blockShell(owner, b.name, b.basePoint, (b.attributes.length > 0 ? 2 : 0) | (b.name.startsWith('*') ? 1 : 0), b.description, () => {
       for (const e of b.entities) writeEntity(w, e, owner, state.blocks);
       for (const a of b.attributes) {
         w.pair(0, 'ATTDEF');
@@ -899,6 +900,12 @@ function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
       return { ...base, type: 'ray', base: pt(o, 10), direction: g.normalize(pt(o, 11, { x: 1, y: 0 })) };
     case 'DIMENSION':
       return readDimension(o, base, readDimStyleFromEntity(o, ctx.dimStyles, ctx.dimStyle));
+    case 'ACAD_TABLE': {
+      // A table draws through its anonymous *T block (group 2) at the insertion point (10/20).
+      const block = str(o, 2);
+      if (!block) return null;
+      return { ...base, type: 'insert', block, position: { x: num(o, 10), y: num(o, 20) }, rotation: 0, scale: 1, attributes: {} };
+    }
     case 'INSERT': {
       const sx = num(o, 41, 1);
       const sy = num(o, 42, sx);

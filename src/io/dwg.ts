@@ -27,7 +27,7 @@ import type {
 } from '@mlightcad/libredwg-web';
 import { insertScales, insertScaleFields } from './dxf';
 import type { Entity, BlockDef, Layer, AttributeDef, ColorSpec, MTextAttachment } from '../core/entities';
-import { newId } from '../core/entities';
+import { newId, entityBounds } from '../core/entities';
 import type { DrawingState, DrawingHeader } from '../core/document';
 import { DEFAULT_LAYERS, DEFAULT_HEADER } from '../core/document';
 import type { Point } from '../core/geometry';
@@ -539,9 +539,12 @@ export function convertDwg(payload: DwgImportPayload): DwgImportResult {
       if (i >= 0) spareTableBlocks.splice(i, 1);
     }
     const at = p2(t.startPoint);
-    if (!t.rowCount && at.x === 0 && at.y === 0) notes.push(`Table ${name}: its position could not be read, so it was placed at 0,0 (MOVE it if needed).`);
-    return { ...baseProps(e), type: 'insert', block: name, position: at, rotation: 0, scale: 1, attributes: {} };
+    const ins: Entity = { ...baseProps(e), type: 'insert', block: name, position: at, rotation: 0, scale: 1, attributes: {} };
+    if (!t.rowCount && at.x === 0 && at.y === 0) unplacedTables.push(ins);
+    return ins;
   };
+  /** Tables whose insertion point LibreDWG could not decode (2013+ DWG); placed after the pass. */
+  const unplacedTables: Entity[] = [];
 
   const entities: Entity[] = [];
   for (const e of payload.entities) {
@@ -562,6 +565,48 @@ export function convertDwg(payload: DwgImportPayload): DwgImportResult {
     const c = convertEntity(e, blockIndex, header.dimStyle, blocks);
     if (c) entities.push(c);
     else skipped[e.type] = (skipped[e.type] ?? 0) + 1;
+  }
+
+  // Estimate a place for tables with an unreadable insertion point: top-left inside the
+  // largest block reference (the sheet border) when the table fits, else beside the drawing.
+  if (unplacedTables.length) {
+    const lookup = (n: string) => blocks[n];
+    const others = entities.filter((e) => !unplacedTables.includes(e));
+    let sheet: g.Bounds | null = null;
+    let all: g.Bounds | null = null;
+    for (const e of others) {
+      const b = entityBounds(e, lookup);
+      if (!b) continue;
+      all = g.unionBounds(all, b);
+      if (e.type === 'insert' && (!sheet || (b.max.x - b.min.x) * (b.max.y - b.min.y) > (sheet.max.x - sheet.min.x) * (sheet.max.y - sheet.min.y))) sheet = b;
+    }
+    let cursorX: number | null = null;
+    for (const ins of unplacedTables) {
+      if (ins.type !== 'insert') continue;
+      const tb = entityBounds(ins, lookup);
+      if (!tb) continue;
+      const tw = tb.max.x - tb.min.x;
+      const th = tb.max.y - tb.min.y;
+      let target: Point | null = null;
+      let where = '';
+      if (sheet) {
+        const margin = Math.max(0.5, (sheet.max.x - sheet.min.x) * 0.03);
+        if (tw + 2 * margin <= sheet.max.x - sheet.min.x && th + 2 * margin <= sheet.max.y - sheet.min.y) {
+          target = { x: sheet.min.x + margin, y: sheet.max.y - margin - th };
+          where = 'inside the sheet border';
+        }
+      }
+      if (!target && all) {
+        cursorX = cursorX ?? all.max.x + Math.max(1, (all.max.x - all.min.x) * 0.05);
+        target = { x: cursorX, y: all.max.y - th };
+        cursorX += tw + 1;
+        where = 'to the right of the drawing';
+      }
+      if (!target) continue;
+      const idx = entities.indexOf(ins);
+      entities[idx] = { ...ins, position: { x: ins.position.x + (target.x - tb.min.x), y: ins.position.y + (target.y - tb.min.y) } };
+      notes.push(`Table ${ins.block}: this DWG format does not expose the table's position to the reader, so it was placed ${where} (estimated). MOVE it to its spot; a DXF saved from AutoCAD keeps the exact position.`);
+    }
   }
 
   const layers: Layer[] = payload.layers
