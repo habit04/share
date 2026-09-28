@@ -13,3 +13,4 @@ screenshots/symbol-builder-*.png
 screenshots/report-dialog.png
 keys/
 *.pem
+site-dist/
