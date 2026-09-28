@@ -1462,3 +1462,19 @@
 .about-license {
   margin-top: 12px;
 }
+
+/* Disabled dialog buttons must look disabled */
+.modal .btn:disabled,
+.modal .btn.primary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  filter: grayscale(0.4);
+}
+.dlg-warning {
+  margin: 10px 0;
+  padding: 8px 10px;
+  border-left: 3px solid #e0a020;
+  background: #3a3220;
+  color: #ffd98a;
+  font-size: 12px;
+}

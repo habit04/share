@@ -4,11 +4,17 @@ import { modal, button, dlgRow, dlgGroup, numberInput, selectInput } from './dia
 import { PAPER_SIZES, PLOT_SCALES, layoutPage, type PlotOptions } from '../app/plot';
 import { saveSettings } from '../app/settings';
 
-export function plotDialog(editor: Editor, mode: 'pdf' | 'print'): Promise<PlotOptions | null> {
+export interface PlotChoice {
+  options: PlotOptions;
+  action: 'pdf' | 'print';
+}
+
+/** One dialog for both outputs: "Plot to PDF" writes a file, "Print" opens the system / browser print dialog. */
+export function plotDialog(editor: Editor, mode: 'pdf' | 'print'): Promise<PlotChoice | null> {
   return new Promise((resolve) => {
-    const m = modal(mode === 'pdf' ? 'Plot to PDF' : 'Print', 520, 'dark');
+    const m = modal(mode === 'pdf' ? 'Plot to PDF' : 'Print', 560, 'dark');
     let done = false;
-    const finish = (v: PlotOptions | null) => {
+    const finish = (v: PlotChoice | null) => {
       if (done) return;
       done = true;
       m.close();
@@ -20,9 +26,18 @@ export function plotDialog(editor: Editor, mode: 'pdf' | 'print'): Promise<PlotO
     const preview = document.createElement('div');
     preview.className = 'dlg-note';
     const b = editor.doc.extents();
+    const empty = document.createElement('div');
+    empty.className = 'dlg-warning';
+    if (!b) {
+      const hiddenAll = editor.doc.entities.length > 0;
+      empty.textContent = hiddenAll
+        ? 'Nothing to plot: every object in this tab is on a hidden layer. Turn a layer on (LAYER) and try again.'
+        : `Nothing to plot: the tab "${editor.fileName()}" has no objects. Open a drawing (OPEN) or switch to its tab in the strip above the canvas, then plot again.`;
+      m.body.appendChild(empty);
+    }
     const refresh = () => {
       if (!b) {
-        preview.textContent = 'Nothing to plot: the drawing is empty.';
+        preview.textContent = '';
         return;
       }
       const w = b.max.x - b.min.x;
@@ -43,18 +58,24 @@ export function plotDialog(editor: Editor, mode: 'pdf' | 'print'): Promise<PlotO
     );
     const note = document.createElement('p');
     note.className = 'dlg-note';
-    note.textContent = mode === 'pdf' ? 'The PDF page is the sheet size chosen above. Lines print black; hidden layers are left out.' : 'The system print dialog opens next: pick the printer and its paper tray there (choose the same paper size as above).';
+    note.textContent = 'Plot to PDF writes a file at the sheet size above. Print opens the print dialog, where you pick the printer and its paper tray (choose the same paper size). Lines print black; hidden layers are left out.';
     m.body.appendChild(note);
     refresh();
-    const ok = button(mode === 'pdf' ? 'Plot' : 'Print', true);
-    ok.disabled = !b;
-    ok.addEventListener('click', () => {
+    const choose = (action: 'pdf' | 'print') => {
       editor.settings = { ...editor.settings, plotPaper: opts.paper, plotOrientation: opts.orientation, plotScale: opts.scale, plotMargin: opts.margin };
       saveSettings(editor.settings);
-      finish(opts);
-    });
+      finish({ options: opts, action });
+    };
+    const pdf = button('Plot to PDF', mode === 'pdf');
+    pdf.disabled = !b;
+    pdf.title = b ? 'Write a PDF file' : 'Nothing to plot';
+    pdf.addEventListener('click', () => choose('pdf'));
+    const print = button('Print…', mode === 'print');
+    print.disabled = !b;
+    print.title = b ? 'Open the print dialog to choose a printer' : 'Nothing to print';
+    print.addEventListener('click', () => choose('print'));
     const cancel = button('Cancel');
     cancel.addEventListener('click', () => finish(null));
-    m.footer.append(ok, cancel);
+    m.footer.append(pdf, print, cancel);
   });
 }

@@ -141,8 +141,8 @@ export class Editor {
     electrical?: ElectricalUi;
     /** Symbol Builder start dialog and palette (src/ui/symbol-builder.ts). */
     symbolBuilder?: SymbolBuilderUi;
-    /** Plot / Print dialog (paper, orientation, scale, margins); null = cancelled. */
-    plot?: (mode: 'pdf' | 'print') => Promise<PlotOptions | null>;
+    /** Plot / Print dialog (paper, orientation, scale, margins and which output); null = cancelled. */
+    plot?: (mode: 'pdf' | 'print') => Promise<{ options: PlotOptions; action: 'pdf' | 'print' } | null>;
   } = {};
   settings: UserSettings = loadSettings();
   project: Project = defaultProject();
@@ -873,40 +873,43 @@ export class Editor {
     return { paper: s.plotPaper, orientation: s.plotOrientation, scale: s.plotScale, margin: s.plotMargin };
   }
 
+  /** PLOT: open the Plot / Print dialog (default: PDF) and run the chosen output. */
   async plot(): Promise<void> {
-    if (!this.fileBridge?.plotPdf) {
-      this.log('Plotting is not available here.');
-      return;
-    }
-    const opts = await (this.hooks.plot?.('pdf') ?? Promise.resolve(this.plotOptions()));
-    if (!opts) return;
-    const img = await this.renderPlotImage(opts);
+    await this.plotOrPrint('pdf');
+  }
+
+  /** PRINT: open the Plot / Print dialog (default: printer) and run the chosen output. */
+  async print(): Promise<void> {
+    await this.plotOrPrint('print');
+  }
+
+  private async plotOrPrint(mode: 'pdf' | 'print'): Promise<void> {
+    const choice = await (this.hooks.plot?.(mode) ?? Promise.resolve({ options: this.plotOptions(), action: mode }));
+    if (!choice) return;
+    const img = await this.renderPlotImage(choice.options);
     if (!img) {
-      this.log('Nothing to plot.');
+      this.log('Nothing to plot: this tab has no visible objects.');
       return;
     }
     if (img.reducedToFit) this.log('The chosen scale did not fit the paper; the drawing was scaled down to fit.');
-    const out = await this.fileBridge.plotPdf(img.dataUrl, this.fileName().replace(/\.[^.]+$/, '') + '.pdf', img.landscape, { ...img.sheet, electron: img.electron });
-    if (out) this.log(`Plotted to ${out} (${img.sheet.width.toFixed(2)} x ${img.sheet.height.toFixed(2)} in).`);
-  }
-
-  /** PRINT: send the drawing to a printer through the system print dialog. */
-  async print(): Promise<void> {
+    const sheet = { ...img.sheet, electron: img.electron };
+    const base = this.fileName().replace(/\.[^.]+$/, '');
+    if (choice.action === 'pdf') {
+      if (!this.fileBridge?.plotPdf) {
+        this.log('Plotting is not available here.');
+        return;
+      }
+      const out = await this.fileBridge.plotPdf(img.dataUrl, `${base}.pdf`, img.landscape, sheet);
+      if (out) this.log(`Plotted to ${out} (${img.sheet.width.toFixed(2)} x ${img.sheet.height.toFixed(2)} in).`);
+      return;
+    }
     if (!this.fileBridge?.printDrawing) {
       this.log('Printing is not available here.');
       return;
     }
-    const opts = await (this.hooks.plot?.('print') ?? Promise.resolve(this.plotOptions()));
-    if (!opts) return;
-    const img = await this.renderPlotImage(opts);
-    if (!img) {
-      this.log('Nothing to print.');
-      return;
-    }
-    if (img.reducedToFit) this.log('The chosen scale did not fit the paper; the drawing was scaled down to fit.');
     try {
-      const ok = await this.fileBridge.printDrawing(img.dataUrl, this.fileName().replace(/\.[^.]+$/, ''), img.landscape, { ...img.sheet, electron: img.electron });
-      this.log(ok ? 'Sent to the printer.' : 'Print cancelled.');
+      const ok = await this.fileBridge.printDrawing(img.dataUrl, base, img.landscape, sheet);
+      this.log(ok ? 'Sent to the print dialog.' : 'Print cancelled.');
     } catch (err) {
       this.log(`Print failed: ${(err as Error).message}`);
     }
