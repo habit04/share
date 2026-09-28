@@ -1,4 +1,2 @@
 # Shown as the "Sponsor" button on the repository page.
-# Set the Cash App page here once the cashtag in src/app/about.json is filled in, e.g.
-# custom: ["https://cash.app/$YourCashtag"]
-custom: []
+custom: ["https://cash.app/$jr0481"]
