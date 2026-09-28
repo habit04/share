@@ -875,7 +875,7 @@ export class Editor {
 
   async plot(): Promise<void> {
     if (!this.fileBridge?.plotPdf) {
-      this.log('Plotting needs the desktop app (in the browser use PRINT and choose "Save as PDF").');
+      this.log('Plotting is not available here.');
       return;
     }
     const opts = await (this.hooks.plot?.('pdf') ?? Promise.resolve(this.plotOptions()));

@@ -160,7 +160,7 @@ keywords shown in `[brackets]` are clickable.
 | AEAUDIT | AUDIT | Electrical Audit dialog with jump-to-error |
 | NEWSHEET | TEMPLATE | New drawing from an ANSI / ISO sheet template with title block |
 | OPENPROJECT, PROJECTADD, PROJECTSAVE | PROJECT | Project files (`*.jcadproj.json`) listing drawings, description lines and settings |
-| NEW, OPEN, SAVE, SAVEAS, PLOT, PRINT, RECENT | Ctrl+N / O / S / Shift+S / P / Shift+P | Files: DXF and DWG open, DXF save, PDF plot, print through the system dialog (browser edition: the print dialog's "Save as PDF" stands in for PLOT). NEW / OPEN work in file tabs |
+| NEW, OPEN, SAVE, SAVEAS, PLOT, PRINT, RECENT | Ctrl+N / O / S / Shift+S / P / Shift+P | Files: DXF and DWG open, DXF save, PDF plot, print through the system dialog (the browser edition builds the PDF in the page and prints through the browser's dialog). NEW / OPEN work in file tabs |
 | CLOSE, CLOSEALL, CLOSEALLOTHER, NEXTTAB, PREVTAB | Ctrl+W, Ctrl+Tab | Drawing tabs (several open documents) |
 | OPTIONS | OP | Options dialog: Display, Drafting, Selection, Files (autosave), Units — applied live |
 | DSETTINGS | DS, SE | Drafting Settings: Snap and Grid, Polar Tracking, Object Snap modes, Dynamic Input |

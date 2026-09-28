@@ -84,29 +84,73 @@ function pickBrowserFile(accept: string): Promise<File | null> {
  */
 /** Open the rendered sheet in a new window and call the browser's print dialog. */
 function browserPrint(dataUrl: string, title: string, landscape: boolean, sheet?: { width: number; height: number }): Promise<boolean> {
+  // A hidden iframe prints from the page itself: no popup permission needed and the
+  // @page size matches the chosen sheet.
   return new Promise((resolve) => {
-    const w = window.open('', '_blank', 'noopener=no,width=1100,height=800');
-    if (!w) {
-      resolve(false);
+    const frame = document.createElement('iframe');
+    frame.style.cssText = 'position:fixed;right:0;bottom:0;width:1px;height:1px;border:0;opacity:0;pointer-events:none';
+    frame.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(frame);
+    const finish = (ok: boolean) => {
+      setTimeout(() => frame.remove(), 1000);
+      resolve(ok);
+    };
+    const doc = frame.contentDocument;
+    const win = frame.contentWindow;
+    if (!doc || !win) {
+      finish(false);
       return;
     }
-    const safeTitle = title.replace(/[<>&]/g, '');
-    w.document.write(
-      `<!doctype html><html><head><meta charset="utf-8"><title>${safeTitle}</title><style>html,body{margin:0;background:#fff;height:100%}img{width:100%;height:100%;object-fit:contain;display:block}@page{margin:0;size:${sheet ? `${sheet.width.toFixed(2)}in ${sheet.height.toFixed(2)}in` : landscape ? 'landscape' : 'portrait'}}</style></head><body><img id="p"></body></html>`,
+    const size = sheet ? `${sheet.width.toFixed(2)}in ${sheet.height.toFixed(2)}in` : landscape ? 'landscape' : 'portrait';
+    doc.open();
+    doc.write(
+      `<!doctype html><html><head><meta charset="utf-8"><title>${title.replace(/[<>&]/g, '')}</title><style>html,body{margin:0;background:#fff;height:100%}img{width:100%;height:100%;object-fit:contain;display:block}@page{margin:0;size:${size}}</style></head><body><img id="p"></body></html>`,
     );
-    w.document.close();
-    const img = w.document.getElementById('p') as HTMLImageElement;
+    doc.close();
+    const img = doc.getElementById('p') as HTMLImageElement | null;
+    if (!img) {
+      finish(false);
+      return;
+    }
     img.onload = () => {
-      w.focus();
-      w.print();
-      setTimeout(() => {
-        w.close();
-        resolve(true);
-      }, 500);
+      try {
+        win.focus();
+        win.print();
+        finish(true);
+      } catch {
+        finish(false);
+      }
     };
-    img.onerror = () => resolve(false);
+    img.onerror = () => finish(false);
     img.src = dataUrl;
   });
+}
+
+/** Browser edition PLOT: build the PDF in the page (lossless when deflate is available) and download it. */
+async function browserPlotPdf(dataUrl: string, suggestName: string, sheet: { width: number; height: number }): Promise<string | null> {
+  const { imagePdf, deflate, rgbaToRgb, dataUrlBytes } = await import('./io/pdf');
+  const img = new Image();
+  await new Promise<void>((ok, fail) => {
+    img.onload = () => ok();
+    img.onerror = () => fail(new Error('Could not decode the plot image.'));
+    img.src = dataUrl;
+  });
+  const canvas = document.createElement('canvas');
+  canvas.width = img.naturalWidth;
+  canvas.height = img.naturalHeight;
+  const ctx = canvas.getContext('2d')!;
+  ctx.drawImage(img, 0, 0);
+  const rgb = rgbaToRgb(ctx.getImageData(0, 0, canvas.width, canvas.height).data);
+  const packed = await deflate(rgb);
+  const pdf = packed
+    ? imagePdf({ width: canvas.width, height: canvas.height, data: packed, kind: 'rgb', deflated: true }, sheet, suggestName)
+    : imagePdf({ width: canvas.width, height: canvas.height, data: dataUrlBytes(canvas.toDataURL('image/jpeg', 0.92)), kind: 'jpeg' }, sheet, suggestName);
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([pdf.buffer.slice(pdf.byteOffset, pdf.byteOffset + pdf.byteLength) as ArrayBuffer], { type: 'application/pdf' }));
+  a.download = suggestName;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  return suggestName;
 }
 
 function browserFileBridge(): FileBridge {
@@ -140,7 +184,8 @@ function browserFileBridge(): FileBridge {
     },
     // Text exports (AESYMLIBEXPORT JSON, REPORTBUG's Save Report, CSV) download in the browser build.
     saveText: (suggestName, text) => browserDownload(suggestName, text),
-    // Browser: the print dialog also offers "Save as PDF", which stands in for PLOT.
+    // Browser: PLOT builds the PDF in the page and downloads it; PRINT uses the browser's print dialog.
+    plotPdf: (dataUrl, suggestName, _landscape, sheet) => browserPlotPdf(dataUrl, suggestName, sheet ?? { width: 11, height: 8.5 }),
     printDrawing: (dataUrl, title, landscape, sheet) => browserPrint(dataUrl, title, landscape, sheet),
   };
 }
