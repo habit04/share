@@ -54,7 +54,7 @@ export function showAppMenu(editor: Editor, _anchor: HTMLElement, opts: { exit?:
     { label: 'Save', icon: 'save', run: run('SAVE') },
     { label: 'Save As', icon: 'saveas', run: run('SAVEAS') },
     { label: 'Export', icon: 'export', sub: [{ label: 'DXF (AutoCAD 2000)...', run: run('SAVEAS') }, { label: 'PDF...', run: run('PLOT') }, { label: 'Bill of Material CSV...', run: run('AEREPORT bom') }, { label: 'Wire From/To CSV...', run: run('AEREPORT wires') }] },
-    { label: 'Plot', icon: 'plot', run: run('PLOT') },
+    { label: 'Plot', icon: 'plot', run: run('PLOT'), sub: [{ label: 'Plot to PDF...', run: run('PLOT') }, { label: 'Print...', run: run('PRINT') }] },
     { label: 'Drawing Utilities', icon: 'wrench', sub: [{ label: 'Drawing Properties...', run: run('AEDRAWINGPROPS') }, { label: 'Units (Options > Units)', run: run('OPTIONS 4') }, { label: 'Audit report', run: run('AEREPORT audit') }, { label: 'Purge (blocks, layers, linetypes)...', run: run('PURGE') }] },
     { label: 'Close', icon: 'close', run: run('CLOSE'), sub: [{ label: 'Current Drawing', run: run('CLOSE') }, { label: 'All Drawings', run: run('CLOSEALL') }] },
   ];

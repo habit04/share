@@ -60,6 +60,8 @@ export interface FileBridge {
   openProject?(file?: string): Promise<{ path: string; text: string } | null>;
   saveText?(suggestName: string, text: string, filterName: string, ext: string): Promise<string | null>;
   plotPdf?(dataUrl: string, suggestName: string, landscape: boolean, sheet?: { width: number; height: number }): Promise<string | null>;
+  /** Print the rendered sheet through the system print dialog; resolves true when a job was sent. */
+  printDrawing?(dataUrl: string, title: string, landscape: boolean, sheet?: { width: number; height: number }): Promise<boolean>;
 }
 
 /** Version compiled in from package.json (see vite.config.ts); 'dev' under plain vitest. */
@@ -487,7 +489,8 @@ export class Editor {
     reg('OPENPROJECT', ['PROJECT'], 'Open a project file', (ed, arg) => void ed.openProject(arg));
     reg('PROJECTADD', [], 'Add the current drawing to the project', (ed) => ed.addCurrentToProject());
     reg('PROJECTSAVE', [], 'Save the project file', (ed) => void ed.saveProject());
-    reg('PLOT', ['PRINT', 'PDF'], 'Plot the drawing to PDF', (ed) => void ed.plot());
+    reg('PLOT', ['PDF'], 'Plot the drawing to PDF', (ed) => void ed.plot());
+    reg('PRINT', ['PRINTDRAWING'], 'Print the drawing (system print dialog)', (ed) => void ed.print());
     reg('RECENT', [], 'Open a recent file by index', (ed, arg) => {
       const i = parseInt(arg ?? '1', 10) - 1;
       const f = ed.settings.recentFiles[i];
@@ -820,16 +823,10 @@ export class Editor {
   }
 
   /** Render the drawing extents to a white sheet and hand it to the main process as PDF. */
-  async plot(): Promise<void> {
-    if (!this.fileBridge?.plotPdf) {
-      this.log('Plotting needs the desktop app.');
-      return;
-    }
+  /** Render the drawing extents onto a white sheet (150 dpi, black lines) for plotting / printing. */
+  async renderPlotImage(): Promise<{ dataUrl: string; landscape: boolean; sheet: { width: number; height: number } } | null> {
     const b = this.doc.extents();
-    if (!b) {
-      this.log('Nothing to plot.');
-      return;
-    }
+    if (!b) return null;
     const w = b.max.x - b.min.x;
     const h = b.max.y - b.min.y;
     const landscape = w >= h;
@@ -851,9 +848,40 @@ export class Editor {
       if (hidden.has(e.layer)) continue;
       drawEntity(ctx, e, tf, this.doc.layers, this.doc.lookupBlock, { strokeOverride: '#000000', lineWidthOverride: Math.max(1, Math.round(dpi / 100)), hidden });
     }
-    const dataUrl = canvas.toDataURL('image/png');
-    const out = await this.fileBridge.plotPdf(dataUrl, this.fileName().replace(/\.[^.]+$/, '') + '.pdf', landscape, { width: w + margin * 2, height: h + margin * 2 });
+    return { dataUrl: canvas.toDataURL('image/png'), landscape, sheet: { width: w + margin * 2, height: h + margin * 2 } };
+  }
+
+  async plot(): Promise<void> {
+    if (!this.fileBridge?.plotPdf) {
+      this.log('Plotting needs the desktop app (in the browser use PRINT and choose "Save as PDF").');
+      return;
+    }
+    const img = await this.renderPlotImage();
+    if (!img) {
+      this.log('Nothing to plot.');
+      return;
+    }
+    const out = await this.fileBridge.plotPdf(img.dataUrl, this.fileName().replace(/\.[^.]+$/, '') + '.pdf', img.landscape, img.sheet);
     if (out) this.log(`Plotted to ${out}`);
+  }
+
+  /** PRINT: send the drawing to a printer through the system print dialog. */
+  async print(): Promise<void> {
+    if (!this.fileBridge?.printDrawing) {
+      this.log('Printing is not available here.');
+      return;
+    }
+    const img = await this.renderPlotImage();
+    if (!img) {
+      this.log('Nothing to print.');
+      return;
+    }
+    try {
+      const ok = await this.fileBridge.printDrawing(img.dataUrl, this.fileName().replace(/\.[^.]+$/, ''), img.landscape, img.sheet);
+      this.log(ok ? 'Sent to the printer.' : 'Print cancelled.');
+    } catch (err) {
+      this.log(`Print failed: ${(err as Error).message}`);
+    }
   }
 
   fileName(): string {

@@ -38,7 +38,8 @@ declare global {
       openDrawing(file?: string): Promise<import('./app/editor').OpenResult | null>;
       openProject(file?: string): Promise<{ path: string; text: string } | null>;
       saveText(suggestName: string, text: string, filterName: string, ext: string): Promise<string | null>;
-      plotPdf(dataUrl: string, suggestName: string, landscape: boolean): Promise<string | null>;
+      plotPdf(dataUrl: string, suggestName: string, landscape: boolean, sheet?: { width: number; height: number }): Promise<string | null>;
+      printDrawing?(dataUrl: string, title: string, landscape: boolean, sheet?: { width: number; height: number }): Promise<boolean>;
       saveDxf(path: string | null, text: string, suggestName: string): Promise<string | null>;
       onMenuCommand(cb: (cmd: string) => void): void;
       onQueryDirty(cb: () => boolean): void;
@@ -80,6 +81,33 @@ function pickBrowserFile(accept: string): Promise<File | null> {
  * file picker and go to its Downloads folder. DWG files are parsed in the page by
  * LibreDWG's WebAssembly (src/io/dwg-browser.ts, loaded on first use).
  */
+/** Open the rendered sheet in a new window and call the browser's print dialog. */
+function browserPrint(dataUrl: string, title: string, landscape: boolean): Promise<boolean> {
+  return new Promise((resolve) => {
+    const w = window.open('', '_blank', 'noopener=no,width=1100,height=800');
+    if (!w) {
+      resolve(false);
+      return;
+    }
+    const safeTitle = title.replace(/[<>&]/g, '');
+    w.document.write(
+      `<!doctype html><html><head><meta charset="utf-8"><title>${safeTitle}</title><style>html,body{margin:0;background:#fff;height:100%}img{width:100%;height:100%;object-fit:contain;display:block}@page{margin:0;size:${landscape ? 'landscape' : 'portrait'}}</style></head><body><img id="p"></body></html>`,
+    );
+    w.document.close();
+    const img = w.document.getElementById('p') as HTMLImageElement;
+    img.onload = () => {
+      w.focus();
+      w.print();
+      setTimeout(() => {
+        w.close();
+        resolve(true);
+      }, 500);
+    };
+    img.onerror = () => resolve(false);
+    img.src = dataUrl;
+  });
+}
+
 function browserFileBridge(): FileBridge {
   return {
     openDxf: async () => {
@@ -111,6 +139,8 @@ function browserFileBridge(): FileBridge {
     },
     // Text exports (AESYMLIBEXPORT JSON, REPORTBUG's Save Report, CSV) download in the browser build.
     saveText: (suggestName, text) => browserDownload(suggestName, text),
+    // Browser: the print dialog also offers "Save as PDF", which stands in for PLOT.
+    printDrawing: (dataUrl, title, landscape) => browserPrint(dataUrl, title, landscape),
   };
 }
 
@@ -495,6 +525,7 @@ function boot(): void {
     if (ctrl && k === '3') return run('TOOLPALETTES');
     if (ctrl && k === '9') return run(cmdEl.classList.contains('hidden') ? 'COMMANDLINE' : 'COMMANDLINEHIDE');
     if (ctrl && k === '0') return run('CLEANSCREEN');
+    if (ctrl && ev.shiftKey && k === 'p') return run('PRINT');
     if (ctrl && k === 'p') return run('PLOT');
     if (ctrl && !typing && !editor.tool) {
       if (k === 'c') return run('COPYCLIP');

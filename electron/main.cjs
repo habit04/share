@@ -88,6 +88,7 @@ function buildMenu(win) {
         { label: 'Save', accelerator: 'CmdOrCtrl+S', click: send('SAVE') },
         { label: 'Save As…', accelerator: 'CmdOrCtrl+Shift+S', click: send('SAVEAS') },
         { label: 'Plot to PDF…', accelerator: 'CmdOrCtrl+P', click: send('PLOT') },
+        { label: 'Print…', accelerator: 'CmdOrCtrl+Shift+P', click: send('PRINT') },
         { type: 'separator' },
         { label: 'Options…', click: send('OPTIONS') },
         { type: 'separator' },
@@ -390,6 +391,29 @@ ipcMain.handle('plot-pdf', async (ev, dataUrl, suggestName, landscape, sheet) =>
     });
     await fs.writeFile(res.filePath, pdf);
     return res.filePath;
+  } finally {
+    hidden.destroy();
+  }
+});
+
+/** Render the plot image in a hidden window and hand it to the OS print dialog. */
+ipcMain.handle('print-drawing', async (ev, dataUrl, title, landscape, sheet) => {
+  const win = BrowserWindow.fromWebContents(ev.sender);
+  if (typeof dataUrl !== 'string' || !/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(dataUrl)) throw new Error('Invalid image');
+  const w = sheet && Number.isFinite(sheet.width) && sheet.width > 0 ? sheet.width : landscape ? 11 : 8.5;
+  const h = sheet && Number.isFinite(sheet.height) && sheet.height > 0 ? sheet.height : landscape ? 8.5 : 11;
+  const hidden = new BrowserWindow({ show: false, parent: win || undefined, webPreferences: { sandbox: true, contextIsolation: true } });
+  try {
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>${String(title || 'Drawing').replace(/[<>&]/g, '')}</title><style>html,body{margin:0;background:#fff;height:100%}img{width:100%;height:100%;object-fit:contain;display:block}@page{margin:0;size:${landscape ? 'landscape' : 'portrait'}}</style></head><body><img id="p"></body></html>`;
+    await hidden.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+    await hidden.webContents.executeJavaScript(`new Promise((ok, fail) => { const i = document.getElementById('p'); i.onload = () => ok(true); i.onerror = () => fail(new Error('image')); i.src = ${JSON.stringify(dataUrl)}; })`);
+    return await new Promise((resolve, reject) => {
+      hidden.webContents.print({ silent: false, printBackground: true, landscape: Boolean(landscape), margins: { marginType: 'none' }, pageSize: { width: Math.round(w * 25400), height: Math.round(h * 25400) } }, (success, failureReason) => {
+        if (success) resolve(true);
+        else if (!failureReason || /cancel/i.test(failureReason)) resolve(false);
+        else reject(new Error(failureReason));
+      });
+    });
   } finally {
     hidden.destroy();
   }

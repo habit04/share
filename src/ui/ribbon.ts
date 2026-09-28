@@ -151,7 +151,7 @@ export const RIBBON: RibbonTab[] = [
       },
       {
         title: 'Other Tools',
-        buttons: [B('Drawing\nProperties', 'dwgprops', 'AEDRAWINGPROPS'), B('Plot to\nPDF', 'plot', 'PLOT'), B('Add to\nProject', 'plus', 'PROJECTADD', 'small'), B('Save\nProject', 'save', 'PROJECTSAVE', 'small'), B('Wire\nNumbers', 'wireno', 'AEWIRENO', 'small')],
+        buttons: [B('Drawing\nProperties', 'dwgprops', 'AEDRAWINGPROPS'), B('Plot to\nPDF', 'plot', 'PLOT'), B('Print', 'plot', 'PRINT', 'small'), B('Add to\nProject', 'plus', 'PROJECTADD', 'small'), B('Save\nProject', 'save', 'PROJECTSAVE', 'small'), B('Wire\nNumbers', 'wireno', 'AEWIRENO', 'small')],
       },
       {
         title: 'Project Data',

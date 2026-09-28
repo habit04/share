@@ -22,6 +22,7 @@ export const SHORTCUTS: Array<[string, string]> = [
   ['Ctrl+S', 'Save'],
   ['Ctrl+Shift+S', 'Save As'],
   ['Ctrl+P', 'Plot to PDF'],
+  ['Ctrl+Shift+P', 'Print (system print dialog)'],
   ['Ctrl+Z / Ctrl+Y', 'Undo / Redo'],
   ['Ctrl+A', 'Select all'],
   ['Ctrl+C / Ctrl+X / Ctrl+V', 'Copy / Cut / Paste objects'],
