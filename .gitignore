@@ -8,3 +8,4 @@ _*.mjs
 _*.test.ts
 .claude/worktrees/
 tests/zz_*
+screenshots/library/

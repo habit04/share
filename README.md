@@ -59,6 +59,7 @@ npm test                 # unit tests (includes DWG fixtures in ./fixtures)
 npm run typecheck
 npm run build && npm run screenshot   # screenshots/*.png from headless Chromium
 node scripts/screenshot-drafting.mjs  # dimensions, linetypes, polyline arcs, arrays
+node scripts/screenshot-library.mjs   # every Insert Component category (screenshots/library/)
 npm run dist             # installers via electron-builder (win/mac/linux)
 node scripts/dwg2dxf.mjs in.dwg [out.dxf]   # command-line DWG -> DXF
 ```
@@ -87,7 +88,7 @@ keywords shown in `[brackets]` are clickable.
 | AEWIRE | WIRE, W | Orthogonal wire on the current wire type; junction dots at tees |
 | AEWIRETYPE | WIRETYPE | Choose the wire layer (gauge / colour) for new wires |
 | AELADDER | LADDER | Insert a ladder (width, spacing, rungs, references, 1/3 phase) |
-| AECOMPONENT [block] | CMP | Icon menu (JIC or IEC); breaks the wire; Insert/Edit Component dialog with INST, LOC, DESC1-3, MFG, CAT, ASSYCODE, RATING, pins, "Used" tag list and Catalog Lookup |
+| AECOMPONENT [block] | CMP | Icon menu (JIC or IEC, 450+ symbols in 52 categories with a search box); breaks the wire; Insert/Edit Component dialog with INST, LOC, DESC1-3, MFG, CAT, ASSYCODE, RATING, pins, "Used" tag list and Catalog Lookup |
 | AEEDITCOMPONENT | AEEDIT | Edit an existing component (retagging a parent carries its contacts along) |
 | AECHILD | CHILD | Insert a child contact: pick the parent coil from a list, NO or NC, data copied from the parent |
 | AECOMPONENT3 [block] | AEC3 | Insert a 3-pole device on a 3-wire bus (poles share the tag, POLE=1..3, dashed link) |
@@ -189,7 +190,9 @@ src/app         Editor controller, electrical command registry, coordinate input
                 autosave, project model, demo seed
 src/ui          ribbon, command window (+ autocomplete), status bar, palettes (project manager, properties,
                 tool palettes), dialogs (options, drafting settings, help, recovery), electrical dialogs, menus, chrome
-src/electrical  JIC and IEC symbol libraries, ACADE attributes, WD_M settings, tags, catalog, xref,
+src/electrical  symbol libraries (symbols.ts / symbols-jic-control.ts / symbols-power-fluid.ts JIC, one-line,
+                PLC and fluid power; iec.ts / iec-extended.ts IEC 60617; library.ts aggregates them; symbol-kit.ts
+                shared primitives), ACADE attributes, WD_M settings, tags, catalog, xref,
                 wire tools, panel layout, circuits, audit, reports, sheet templates, dialog contract (ui.ts)
 scripts         DWG reader (Node / Electron main), dwg2dxf CLI, screenshot capture
 ```

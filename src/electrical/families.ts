@@ -7,9 +7,9 @@
 import type { Entity, InsertEntity } from '../core/entities';
 
 /** Coils / parent devices whose contacts are children: relays, timers, contactors (JIC and IEC). */
-export const COIL_RE = /^(HCR1|HTD[12]|HKM1|HSOL1|HSV1|IEC_K_COIL|IEC_KM_COIL|IEC_KT_ON|IEC_KT_OFF|IEC_Y_)/;
+export const COIL_RE = /^(HCR1|HTD[1-4]|HKM1|HSOL1|HSV[12]|HSR1|HLR1|HAR1|HCN1|HPM1|IEC_K_COIL|IEC_K_LATCH|IEC_K_CNT|IEC_K_SAFETY|IEC_KA_COIL|IEC_KM_COIL|IEC_KT_ON|IEC_KT_OFF|IEC_KT_STAR|IEC_KT_CYC|IEC_Y_)/;
 /** Child contacts: they share the parent's tag and never appear in the BOM on their own. */
-export const CHILD_RE = /^(HCR1_N[OC]|HTD[12]_N[OC]|HKM1_N[OC]|IEC_K_N[OC]|IEC_KM_N[OC]|IEC_KT_(ON|OFF)_N[OC])$/;
+export const CHILD_RE = /^(HCR1_N[OC]|HTD[12]_N[OC]|HKM1_N[OC]|HSR1_N[OC]|HLR1_N[OC]|HAR1_N[OC]|HCN1_N[OC]|HPM1_N[OC]|IEC_K_N[OC]|IEC_K_SAFETY_N[OC]|IEC_KA_N[OC]|IEC_KM_N[OC]|IEC_KT_(ON|OFF)_N[OC]|IEC_KT_STAR_(Y_NC|D_NO))$/;
 /** Blocks that are drawing furniture rather than components. */
 export const NON_COMPONENT_RE = /^(WDDOT|WD_SRC_ARROW|WD_DST_ARROW|WD_M|WD_TITLEBLOCK|WD_BALLOON|WD_NAMEPLATE|WD_GAP|WD_FP_)/;
 
@@ -61,6 +61,35 @@ export function toggleVariant(block: string, exists: (name: string) => boolean):
     HFL12_NC: 'HFL11_NO',
     HPX11_NO: 'HPX12_NC',
     HPX12_NC: 'HPX11_NO',
+    // Extended JIC control library: numbered pilot-device pairs.
+    HPB14_NO: 'HPB15_NC',
+    HPB15_NC: 'HPB14_NO',
+    HPB16_NO: 'HPB17_NC',
+    HPB17_NC: 'HPB16_NO',
+    HPB21_NC: 'HPB22_NO',
+    HPB22_NO: 'HPB21_NC',
+    HKS11_NO: 'HKS12_NC',
+    HKS12_NC: 'HKS11_NO',
+    HJS11_NO: 'HJS12_NC',
+    HJS12_NC: 'HJS11_NO',
+    HPE11_NO: 'HPE12_NC',
+    HPE12_NC: 'HPE11_NO',
+    HPE13_NO: 'HPE14_NC',
+    HPE14_NC: 'HPE13_NO',
+    HPX13_NO: 'HPX14_NC',
+    HPX14_NC: 'HPX13_NO',
+    HUS11_NO: 'HUS12_NC',
+    HUS12_NC: 'HUS11_NO',
+    HSPS11_NO: 'HSPS12_NC',
+    HSPS12_NC: 'HSPS11_NO',
+    HVS11_NO: 'HVS12_NC',
+    HVS12_NC: 'HVS11_NO',
+    HLV11_NO: 'HLV12_NC',
+    HLV12_NC: 'HLV11_NO',
+    HZS11_NO: 'HZS12_NC',
+    HZS12_NC: 'HZS11_NO',
+    HGS11_NC: 'HGS12_NO',
+    HGS12_NO: 'HGS11_NC',
   };
   const candidate = explicit[block] ?? (block.endsWith('_NO') ? block.replace(/_NO$/, '_NC') : block.endsWith('_NC') ? block.replace(/_NC$/, '_NO') : null);
   return candidate && exists(candidate) ? candidate : null;

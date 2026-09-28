@@ -8,22 +8,26 @@ import type { BlockDef } from '../core/entities';
 import { SYMBOL_CATEGORIES, ALL_SYMBOLS, WIRE_DOT, registerTagPrefixes } from './symbols';
 import type { SymbolCategory } from './symbols';
 import { IEC_CATEGORIES, IEC_SYMBOLS } from './iec';
-// Extended libraries (control, power / PLC / fluid power, IEC) register here as they land.
-const EXTRA_JIC: SymbolCategory[] = [];
-const EXTRA_IEC: SymbolCategory[] = [];
-registerTagPrefixes([]);
+import { JIC_CONTROL_CATEGORIES, JIC_CONTROL_SYMBOLS, JIC_CONTROL_TAG_PREFIXES } from './symbols-jic-control';
+import { POWER_FLUID_CATEGORIES, POWER_FLUID_SYMBOLS, POWER_FLUID_TAG_PREFIXES } from './symbols-power-fluid';
+import { IEC_EXTENDED_CATEGORIES, IEC_EXTENDED_SYMBOLS, IEC_EXTENDED_TAG_PREFIXES } from './iec-extended';
+
+// Family rules of the extended libraries take precedence over the core table
+// (registration order: the first matching rule wins, so the most specific sets go first).
+registerTagPrefixes([...POWER_FLUID_TAG_PREFIXES, ...JIC_CONTROL_TAG_PREFIXES, ...IEC_EXTENDED_TAG_PREFIXES]);
 
 /** JIC (NFPA 79 ladder) categories: core set first, then the extended sets. */
-export const JIC_LIBRARY: SymbolCategory[] = [...SYMBOL_CATEGORIES, ...EXTRA_JIC];
+export const JIC_LIBRARY: SymbolCategory[] = [...SYMBOL_CATEGORIES, ...JIC_CONTROL_CATEGORIES, ...POWER_FLUID_CATEGORIES];
 /** IEC 60617 categories: core set first, then the extended set. */
-export const IEC_LIBRARY: SymbolCategory[] = [...IEC_CATEGORIES, ...EXTRA_IEC];
+export const IEC_LIBRARY: SymbolCategory[] = [...IEC_CATEGORIES, ...IEC_EXTENDED_CATEGORIES];
 
 /** Every schematic symbol block (JIC + IEC), excluding the junction dot. */
 export const LIBRARY_SYMBOLS: BlockDef[] = [
   ...ALL_SYMBOLS.filter((s) => s.name !== WIRE_DOT.name),
-  ...EXTRA_JIC.flatMap((c) => c.symbols),
+  ...JIC_CONTROL_SYMBOLS,
+  ...POWER_FLUID_SYMBOLS,
   ...IEC_SYMBOLS,
-  ...EXTRA_IEC.flatMap((c) => c.symbols),
+  ...IEC_EXTENDED_SYMBOLS,
 ];
 
 /** Blocks a drawing needs so any library symbol can be inserted (includes the junction dot). */
