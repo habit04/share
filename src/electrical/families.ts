@@ -13,19 +13,30 @@ export const CHILD_RE = /^(HCR1_N[OC]|HTD[12]_N[OC]|HKM1_N[OC]|HSR1_N[OC]|HLR1_N
 /** Blocks that are drawing furniture rather than components. */
 export const NON_COMPONENT_RE = /^(WDDOT|WD_SRC_ARROW|WD_DST_ARROW|WD_M|WD_TITLEBLOCK|WD_BALLOON|WD_NAMEPLATE|WD_GAP|WD_FP_)/;
 
-/** Roles of symbols outside the built-in library (Symbol Builder: parent coil / child contact). */
-const extraCoils = new Set<string>();
-const extraChildren = new Set<string>();
-/** Register (or clear with role 'none') the coil / contact role of a user symbol block. */
-export function registerSymbolRole(block: string, role: 'coil' | 'child' | 'none'): void {
-  extraCoils.delete(block);
-  extraChildren.delete(block);
-  if (role === 'coil') extraCoils.add(block);
-  else if (role === 'child') extraChildren.add(block);
-}
+export type SymbolRole = 'coil' | 'child' | 'none';
 
-export const isCoilBlock = (block: string): boolean => extraCoils.has(block) || (COIL_RE.test(block) && !/_N[OC]$/.test(block));
-export const isChildBlock = (block: string): boolean => extraChildren.has(block) || CHILD_RE.test(block);
+/**
+ * Explicit roles of symbols outside the built-in library (Symbol Builder: parent coil /
+ * child contact / standalone). An entry here is consulted before the name patterns and
+ * vetoes them, so a standalone user symbol called HCR1_MINE is not a coil.
+ */
+const roles = new Map<string, SymbolRole>();
+/** Register the role of a user symbol block; `undefined` forgets it (the block falls back to the name patterns). */
+export function registerSymbolRole(block: string, role: SymbolRole | undefined): void {
+  if (role === undefined) roles.delete(block);
+  else roles.set(block, role);
+}
+/** The registered role of a block, if any. */
+export const symbolRole = (block: string): SymbolRole | undefined => roles.get(block);
+
+/** Role by the built-in name patterns (the star-delta / IEC_KM_MAIN3 children are in CHILD_RE). */
+const builtinRole = (block: string): SymbolRole | undefined => (CHILD_RE.test(block) ? 'child' : COIL_RE.test(block) && !/_N[OC]$/.test(block) ? 'coil' : undefined);
+/** Role carried by the insert itself (ACADE WDTYPE attribute), used when neither the library nor the name knows the block. */
+const wdtypeRole = (e: InsertEntity): SymbolRole | undefined => (e.attributes.WDTYPE === 'COIL' ? 'coil' : e.attributes.WDTYPE === 'CONTACT' ? 'child' : undefined);
+const insertRole = (e: InsertEntity): SymbolRole | undefined => roles.get(e.block) ?? builtinRole(e.block) ?? wdtypeRole(e);
+
+export const isCoilBlock = (block: string): boolean => (roles.get(block) ?? builtinRole(block)) === 'coil';
+export const isChildBlock = (block: string): boolean => (roles.get(block) ?? builtinRole(block)) === 'child';
 export const isFootprintBlock = (block: string): boolean => block.startsWith('WD_FP_');
 
 /**
@@ -39,8 +50,13 @@ export type PoleInsert = InsertEntity & { readonly __kind: 'pole' };
 export type TerminalInsert = InsertEntity & { readonly __kind: 'terminal' };
 export type FootprintInsert = InsertEntity & { readonly __kind: 'footprint' };
 
-export const isCoil = (e: Entity): e is CoilInsert => e.type === 'insert' && isCoilBlock(e.block);
-export const isChild = (e: Entity): e is ChildInsert => e.type === 'insert' && isChildBlock(e.block);
+/**
+ * Coil / child insert. Falls back to the insert's WDTYPE value when the block has no
+ * registered role and matches no built-in pattern, so a drawing made with user symbols
+ * keeps its BOM and cross-reference behaviour on a seat without that user library.
+ */
+export const isCoil = (e: Entity): e is CoilInsert => e.type === 'insert' && insertRole(e) === 'coil';
+export const isChild = (e: Entity): e is ChildInsert => e.type === 'insert' && insertRole(e) === 'child';
 /** Second and further poles of a 3-phase device inserted with AECOMPONENT3 (POLE = 2, 3). */
 export const isExtraPole = (e: Entity): e is PoleInsert => e.type === 'insert' && parseInt(e.attributes.POLE ?? '1', 10) > 1;
 export const isTerminal = (e: Entity): e is TerminalInsert => e.type === 'insert' && e.attributes.TERM01 !== undefined && !NON_COMPONENT_RE.test(e.block);

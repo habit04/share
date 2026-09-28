@@ -468,20 +468,35 @@ ipcMain.handle('autosave-remove', async (_ev, name) => {
 
 // ------------------------------------------------------------------ user symbol library (app data folder)
 const userLibraryFile = () => path.join(stateDir(), 'user-library.json');
+/** Only a missing file means "no library yet"; any other failure (EBUSY, EPERM, EIO) is reported so the renderer refuses to overwrite. */
 ipcMain.handle('user-library-read', async () => {
   try {
     return await fs.readFile(userLibraryFile(), 'utf8');
-  } catch {
-    return null;
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return null;
+    throw err;
   }
 });
 ipcMain.handle('user-library-write', async (_ev, json) => {
   if (typeof json !== 'string' || json.length > 64 * 1024 * 1024) throw new Error('Invalid payload');
   await fs.mkdir(stateDir(), { recursive: true });
-  // Write to a temporary file first so a crash mid-write cannot truncate the library.
-  const tmp = userLibraryFile() + '.tmp';
-  await fs.writeFile(tmp, json, 'utf8');
-  await fs.rename(tmp, userLibraryFile());
+  const file = userLibraryFile();
+  // Write to a temporary file and fsync it so a crash or power loss mid-write cannot leave an
+  // empty or truncated library, keep the previous file as one .bak, then rename atomically.
+  const tmp = file + '.tmp';
+  const fh = await fs.open(tmp, 'w');
+  try {
+    await fh.writeFile(json, 'utf8');
+    await fh.sync();
+  } finally {
+    await fh.close();
+  }
+  try {
+    await fs.copyFile(file, file + '.bak');
+  } catch (err) {
+    if (!err || err.code !== 'ENOENT') throw err; // first write: nothing to back up
+  }
+  await fs.rename(tmp, file);
 });
 
 /** The renderer keeps the Recent Documents list; we mirror it into the native File > Open Recent menu. */
@@ -536,6 +551,21 @@ if (probeIndex >= 0) {
   });
   return;
 }
+
+// One running instance per user: the user library, recent list and window state are whole-file
+// writes, so a second instance would silently overwrite the first one's changes. The probe above
+// runs headless and must not take (or be blocked by) the lock.
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+  return;
+}
+app.on('second-instance', () => {
+  const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : BrowserWindow.getAllWindows()[0];
+  if (!win) return;
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+});
 
 // Main-process failures go to a log the user can send with a problem report.
 const errorLog = () => path.join(stateDir(), 'error.log');

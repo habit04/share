@@ -1,8 +1,17 @@
-import { describe, it, expect } from 'vitest';
-import { JIC_LIBRARY, IEC_LIBRARY, LIBRARY_SYMBOLS, LIBRARY_BLOCKS, findLibrarySymbol, searchLibrary, librarySummary } from '../src/electrical/library';
+import { describe, it, expect, afterEach } from 'vitest';
+import { JIC_LIBRARY, IEC_LIBRARY, LIBRARY_SYMBOLS, LIBRARY_BLOCKS, findLibrarySymbol, searchLibrary, librarySummary, libraryCategories, withoutUnusedLibraryBlocks, isLibrarySymbol } from '../src/electrical/library';
 import { tagPrefix, WIRE_DOT } from '../src/electrical/symbols';
 import { isCoilBlock, isChildBlock, toggleVariant } from '../src/electrical/families';
 import { connectionPoints } from '../src/electrical/attributes';
+import { userLibrary } from '../src/electrical/userlib';
+import { Drawing } from '../src/core/document';
+import type { BlockDef, InsertEntity, LineEntity } from '../src/core/entities';
+
+const userBlock = (name: string): BlockDef => {
+  const stub: LineEntity = { id: `${name}-l`, layer: '0', color: 'ByLayer', type: 'line', a: { x: -0.375, y: 0 }, b: { x: 0.375, y: 0 } };
+  return { name, description: `${name} user symbol`, basePoint: { x: 0, y: 0 }, entities: [stub], attributes: [{ tag: 'TAG1', prompt: 'TAG', default: '', position: { x: 0, y: 0.2 }, height: 0.1, align: 'center' }] };
+};
+const insertOf = (id: string, block: string): InsertEntity => ({ id, layer: '0', color: 'ByLayer', type: 'insert', block, position: { x: 0, y: 0 }, rotation: 0, scale: 1, attributes: {} });
 
 describe('aggregated symbol library', () => {
   it('holds the core and extended sets with unique block names', () => {
@@ -78,5 +87,72 @@ describe('library blocks in saved drawings', () => {
     expect(Object.keys(slim.blocks).sort()).toEqual(['HCR1_NO', 'USERBLOCK']);
     expect(writeDxf(slim).length).toBeLessThan(writeDxf(d.snapshot).length / 10);
     expect(withoutUnusedLibraryBlocks(slim)).toBe(slim);
+  });
+});
+
+describe('user symbols in the aggregated library', () => {
+  afterEach(async () => {
+    for (const n of userLibrary.names()) userLibrary.remove(n);
+    await userLibrary.flush();
+  });
+
+  it('lists the User: categories first, then the built-ins in their usual order', () => {
+    expect(libraryCategories('JIC')).toEqual(JIC_LIBRARY);
+    userLibrary.put({ block: userBlock('LIBT_PB1'), standard: 'JIC', category: 'Mine', family: 'PB' });
+    userLibrary.put({ block: userBlock('LIBT_LT1'), standard: 'JIC', category: 'Also mine', family: 'LT' });
+    userLibrary.put({ block: userBlock('LIBT_IEC1'), standard: 'IEC', category: 'IEC mine', family: 'S' });
+    const jic = libraryCategories('JIC');
+    expect(jic.slice(0, 2).map((c) => c.name)).toEqual(['User: Also mine', 'User: Mine']);
+    expect(jic.slice(2)).toEqual(JIC_LIBRARY);
+    const iec = libraryCategories('IEC');
+    expect(iec[0]!.name).toBe('User: IEC mine');
+    expect(iec.slice(1)).toEqual(IEC_LIBRARY);
+    expect(iec.some((c) => c.name === 'User: Mine')).toBe(false);
+    // the summary counts the user symbols with their standard and is otherwise unchanged
+    const sum = librarySummary();
+    expect(sum.user).toBe(3);
+    expect(sum.jic).toBe(JIC_LIBRARY.reduce((n, c) => n + c.symbols.length, 0) + 2);
+    expect(sum.iec).toBe(IEC_LIBRARY.reduce((n, c) => n + c.symbols.length, 0) + 1);
+    expect(sum.categories).toBe(JIC_LIBRARY.length + IEC_LIBRARY.length + 3);
+  });
+
+  it('skips built-in names on import by default (the application-wide library knows the built-ins)', async () => {
+    const json = JSON.stringify({ symbols: [{ block: userBlock('HPB11_NO'), standard: 'JIC', category: 'Mine', family: 'PB' }, { block: userBlock('libt_imp1'), standard: 'JIC', category: 'Mine', family: 'PB' }] });
+    expect(userLibrary.importJson(json)).toEqual({ added: 1, updated: 0, skipped: 0, reserved: 1, rejected: [] });
+    expect(userLibrary.has('HPB11_NO')).toBe(false);
+    expect(userLibrary.has('LIBT_IMP1')).toBe(true);
+    expect(findLibrarySymbol('HPB11_NO')?.description).not.toBe('HPB11_NO user symbol');
+    expect(libraryCategories('JIC').filter((c) => c.symbols.some((s) => s.name === 'HPB11_NO'))).toHaveLength(1);
+    await userLibrary.flush();
+  });
+
+  it('ignores a user symbol without geometry or attributes instead of breaking the menu, search and lookup', () => {
+    userLibrary.put({ block: { name: 'LIBT_EMPTY', basePoint: { x: 0, y: 0 }, entities: [], attributes: [] }, standard: 'JIC', category: 'Mine', family: 'PB' });
+    userLibrary.put({ block: userBlock('LIBT_FULL'), standard: 'JIC', category: 'Mine', family: 'PB' });
+    expect(findLibrarySymbol('LIBT_EMPTY')).toBeUndefined();
+    expect(findLibrarySymbol('LIBT_FULL')?.name).toBe('LIBT_FULL');
+    expect(isLibrarySymbol('LIBT_EMPTY')).toBe(true); // it is still a library name (not a private block)
+    const mine = libraryCategories('JIC').find((c) => c.name === 'User: Mine');
+    expect(mine?.symbols.map((s) => s.name)).toEqual(['LIBT_FULL']);
+    expect(searchLibrary('JIC', 'libt_').map((s) => s.name)).toEqual(['LIBT_FULL']);
+    userLibrary.remove('LIBT_FULL');
+    expect(libraryCategories('JIC').some((c) => c.name.startsWith('User:'))).toBe(false);
+  });
+
+  it('keeps a user block that is referenced only from inside another block', () => {
+    userLibrary.put({ block: userBlock('LIBT_INNER'), standard: 'JIC', category: 'Mine', family: 'PB' });
+    userLibrary.put({ block: userBlock('LIBT_UNUSED'), standard: 'JIC', category: 'Mine', family: 'PB' });
+    userLibrary.put({ block: userBlock('LIBT_DEEP'), standard: 'JIC', category: 'Mine', family: 'PB' });
+    const d = new Drawing();
+    // the drawing's own copy of LIBT_INNER references another user symbol (the drawing's definition wins over the library's)
+    d.ensureBlocks([{ ...userLibrary.get('LIBT_INNER')!.block, entities: [insertOf('n3', 'LIBT_DEEP')] }]);
+    d.ensureBlocks(LIBRARY_BLOCKS);
+    d.ensureBlocks([userLibrary.get('LIBT_INNER')!.block, userLibrary.get('LIBT_UNUSED')!.block, userLibrary.get('LIBT_DEEP')!.block]);
+    // a private block of the drawing (kept whatever happens) holds the user symbol and a built-in
+    d.ensureBlocks([{ name: 'PRIVATE_OUTER', basePoint: { x: 0, y: 0 }, entities: [insertOf('n1', 'LIBT_INNER'), insertOf('n2', 'HCR1_NO')], attributes: [] }]);
+    d.addEntities([insertOf('m1', 'HPB11_NO')]);
+    const slim = withoutUnusedLibraryBlocks(d.snapshot);
+    expect(Object.keys(slim.blocks).sort()).toEqual(['HCR1_NO', 'HPB11_NO', 'LIBT_DEEP', 'LIBT_INNER', 'PRIVATE_OUTER']);
+    expect(slim.blocks.LIBT_UNUSED).toBeUndefined();
   });
 });

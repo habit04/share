@@ -279,9 +279,9 @@ describe('user symbol library', () => {
     expect(parseUserLibrary(json)).toHaveLength(1);
     expect(parseUserLibrary(json)[0]!.standard).toBe('IEC');
     const other = new UserLibrary(memoryUserLibraryStore());
-    expect(other.importJson(json)).toEqual({ added: 1, updated: 0, skipped: 0 });
-    expect(other.importJson(json, { replace: false })).toEqual({ added: 0, updated: 0, skipped: 1 });
-    expect(other.importJson(json)).toEqual({ added: 0, updated: 1, skipped: 0 });
+    expect(other.importJson(json)).toEqual({ added: 1, updated: 0, skipped: 0, reserved: 0, rejected: [] });
+    expect(other.importJson(json, { replace: false })).toEqual({ added: 0, updated: 0, skipped: 1, reserved: 0, rejected: [] });
+    expect(other.importJson(json)).toEqual({ added: 0, updated: 1, skipped: 0, reserved: 0, rejected: [] });
     expect(() => parseUserLibrary('not json')).toThrow();
     expect(() => parseUserLibrary('[{"bogus":1}]')).toThrow();
     expect(parseUserLibrary('[]')).toEqual([]);
@@ -310,13 +310,13 @@ describe('user symbols in the library and the insert tools', () => {
     return userLibrary.put({ block: symbolStateToBlock(state, meta), standard: 'JIC', category: 'My symbols', family: 'PB', ...extra });
   }
 
-  it('shows the User: category after the built-ins and finds / searches / tags user symbols', () => {
+  it('shows the User: category before the built-ins and finds / searches / tags user symbols', () => {
     const before = libraryCategories('JIC').length;
     addUserSymbol();
     const cats = libraryCategories('JIC');
     expect(cats).toHaveLength(before + 1);
-    expect(cats[cats.length - 1]!.name).toBe('User: My symbols');
-    expect(cats[cats.length - 1]!.symbols.map((s) => s.name)).toEqual(['USER_PB9']);
+    expect(cats[0]!.name).toBe('User: My symbols');
+    expect(cats[0]!.symbols.map((s) => s.name)).toEqual(['USER_PB9']);
     expect(libraryCategories('IEC').some((c) => c.name.startsWith('User:'))).toBe(false);
     expect(libraryCategoryNames('JIC')).toContain('My symbols');
     expect(libraryCategoryNames('JIC')).toContain('Push Buttons');
