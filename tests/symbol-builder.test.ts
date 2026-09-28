@@ -24,6 +24,8 @@ import {
   SYMATTR_LAYER,
   SYMPIN_LAYER,
   wdtypeFor,
+  markerTag,
+  markerDefault,
   type SymbolMeta,
 } from '../src/electrical/symbol-builder-core';
 import { validBlockName } from '../src/tools/blocks';
@@ -63,7 +65,7 @@ describe('symbol builder conversion', () => {
       const visible = src.attributes.filter((a) => !a.invisible).map((a) => a.tag).sort();
       expect(sym.state.entities.filter((e): e is TextEntity => e.type === 'text' && e.layer === SYMATTR_LAYER).map((t) => t.text).sort()).toEqual(visible);
       const pinTags = src.attributes.filter((a) => /^X[1248]TERM/.test(a.tag)).map((a) => a.tag).sort();
-      expect(sym.state.entities.filter((e): e is TextEntity => e.type === 'text' && e.layer === SYMPIN_LAYER).map((t) => t.text).sort()).toEqual(pinTags);
+      expect(sym.state.entities.filter((e): e is TextEntity => e.type === 'text' && e.layer === SYMPIN_LAYER).map((t) => markerTag(t.text)).sort()).toEqual(pinTags);
 
       const back = symbolStateToBlock(sym.state, sym.meta);
       expect(back.name).toBe(name);
@@ -123,10 +125,10 @@ describe('symbol builder conversion', () => {
 
   it('numbers explicit pins with the geometry connections top-to-bottom, left before right, and keeps their default numbers', () => {
     const { state, meta } = makeUserPushButton('USER_CR1');
-    const top = pinMarkerEntity(2, { x: 0, y: 0.2 }, 9);
-    const bottom = pinMarkerEntity(8, { x: 0, y: -0.2 }, 9);
+    const top = pinMarkerEntity(2, { x: 0, y: 0.2 }, 9, 'A1');
+    const bottom = pinMarkerEntity(8, { x: 0, y: -0.2 }, 9, 'A2');
     const st = { ...state, entities: [...state.entities, top, bottom] };
-    const m: SymbolMeta = { ...meta, family: 'CR', pinDefaults: { [top.id]: 'A1', [bottom.id]: 'A2' } };
+    const m: SymbolMeta = { ...meta, family: 'CR' };
     const pins = compilePins(st, m);
     expect(pins.map((p) => [p.tag, p.default])).toEqual([
       ['X2TERM01', 'A1'],
@@ -137,9 +139,9 @@ describe('symbol builder conversion', () => {
     const block = symbolStateToBlock(st, m);
     expect(block.attributes.filter((a) => /^X[1248]TERM/.test(a.tag))).toHaveLength(4);
     // an explicit marker on a geometry connection replaces the auto pin (no duplicate) and wins the number
-    const left = pinMarkerEntity(1, { x: -0.375, y: 0 }, 1);
+    const left = pinMarkerEntity(1, { x: -0.375, y: 0 }, 1, '21');
     const st2 = { ...state, entities: [...state.entities, left] };
-    const pins2 = compilePins(st2, { ...meta, pinDefaults: { [left.id]: '21' } });
+    const pins2 = compilePins(st2, meta);
     expect(pins2.map((p) => [p.tag, p.default, p.markerId !== undefined])).toEqual([
       ['X1TERM01', '21', true],
       ['X4TERM02', '4', false],
@@ -171,15 +173,15 @@ describe('symbol builder conversion', () => {
     const tag = plain.state.entities.find((e): e is TextEntity => e.type === 'text' && e.layer === SYMATTR_LAYER);
     expect(tag).toMatchObject({ text: 'TAG1', position: { x: 2, y: 2 } });
     const pin = plain.state.entities.find((e): e is TextEntity => e.type === 'text' && e.layer === SYMPIN_LAYER)!;
-    expect(pin).toMatchObject({ text: 'X1TERM01', position: { x: -1, y: 0 } });
-    expect(plain.meta.pinDefaults[pin.id]).toBe('13');
+    expect(pin).toMatchObject({ text: 'X1TERM01=13', position: { x: -1, y: 0 } });
+    expect(markerDefault(pin.text)).toBe('13');
+    expect(plain.meta.attrDefaults.SECRET).toBe('x'); // invisible vendor attribute default is kept
     const partno = plain.state.entities.find((e): e is TextEntity => e.type === 'text' && e.layer === '0');
     expect(partno?.text).toBe('PB-100'); // unknown visible attribute keeps its text
     expect(plain.state.entities.some((e) => e.type === 'text' && e.text === 'x')).toBe(false);
 
     // Scaled to the inline width about the centre of the geometry.
-    const b = boundsOfEntities(outer.entities, (n) => state.blocks[n]);
-    const center = resolveBasePoint('center', b, outer.basePoint);
+    const center = resolveBasePoint('center', outer.entities, (n) => state.blocks[n], outer.basePoint);
     expect(center).toEqual({ x: 3, y: 1 });
     const scaled = harvestBlock(state, 'MFR_PB', { basePoint: center, scaleToWidth: 0.75 })!;
     const sb = boundsOfEntities(scaled.state.entities.filter((e) => e.layer === '0'), () => undefined)!;

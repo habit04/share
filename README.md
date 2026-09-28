@@ -106,7 +106,7 @@ keywords shown in `[brackets]` are clickable.
 | AERETAG [S] | RETAG | Renumber all (or selected) tags in ladder order with the drawing's tag format |
 | AETOGGLENC, AESWAP, AEUPDATEBLOCK | TOGGLENC, SWAPBLOCK, UPDATEBLOCK | NO/NC variant in place; swap a symbol keeping its data; refresh block definitions from the library |
 | AECATALOG [family], AECATALOGLOAD | CATALOG, LOADCATALOG | Catalog Browser (built-in generic parts + user JSON catalog from the project settings) |
-| AESYMBUILDER [name] | SYMBUILDER, SYMBOLBUILDER, SYMEDIT | Symbol Builder: draw or harvest a schematic symbol in its own tab, place TAG1 / DESC1 / pins from the palette and save it to the user library (also New Symbol... / Edit... in the icon menu); AESYMSAVE, AESYMCHECK, AESYMDELETE, AESYMLIBEXPORT / AESYMLIBIMPORT maintain the library |
+| AESYMBUILDER [name] | SYMBUILDER, SYMBOLBUILDER, SYMEDIT | Symbol Builder: draw or harvest a schematic symbol in its own tab, place TAG1 / DESC1 / pins from the palette and save it to the user library (also New Symbol... / Edit... in the icon menu); AESYMSAVE, AESYMCHECK, AESYMVERTICAL, AESYMTWIN, AESYMTEXT2ATTR, AESYMRENAME, AESYMDELETE, AESYMLIBEXPORT / AESYMLIBIMPORT maintain the library |
 | AEWIRENO | WIRENO | Number every wire net by rung reference (100, 100A, ...); fixed numbers (layer WIREFIXED) are kept |
 | AEEDITWIRENO, AECOPYWIRENO, AEWIRENOLEADER | EDITWIRENO, ... | Edit a wire number (fixed flag, above / below / in-line, find & replace); copy a number; move it with a leader |
 | AETRIMWIRE, AEWIREGAP, AEWIRELOOP | TRIMWIRE, WIREGAP, WIRELOOP | Remove a wire segment between breaks; gap or jump-over loop at crossings |
@@ -177,25 +177,49 @@ that is searched first.
 
 `AESYMBUILDER` (Schematic > Symbol Builder, or **New Symbol...** in the Insert Component icon menu)
 creates symbols that behave exactly like the built-in ones. The start dialog asks for the block
-name, description, standard (JIC / IEC), category, family (tag prefix) and type (parent coil,
-child contact NO / NC, standalone device, terminal, PLC point) and where to start from: a blank
-sheet, a copy of any library symbol, a **block of the current drawing** (the way to harvest
-symbols from manufacturer DWGs: nested blocks are exploded to primitives, ACADE attribute
-definitions become placeholders, the geometry can be scaled to the 0.75 in inline width) or the
-selected objects (you pick the base point). The symbol then opens in its own file tab
-(`Symbol: NAME`): geometry on layer `0` in inches around the origin, attribute placeholders as
-text on layer `SYMATTR` (the text is the attribute tag), explicit wire-connection pins as text on
-layer `SYMPIN` (`X1TERM01` ... - the digit is the ACADE direction 1 left, 2 top, 4 right, 8 bottom).
-Every drafting command works in that tab; the viewport draws the origin, the 0.75 x 0.75 in box and
-the inline stub guides (connections at x = +-0.375, y = 0 are detected automatically from line
-endpoints). The docked **Symbol Builder** palette edits the name / family / type, places or removes
-attributes (TAG1, DESC1-3, TERM01, INST, LOC, MFG, CAT ...), lists detected and explicit pins with
-their default pin numbers, shows a live preview and offers **Check** (name, connections, TAG1,
-extents), **Save to Library**, **Save and Insert** (returns to the drawing and starts
-`AECOMPONENT NAME`), **Export DXF...** (a DXF whose BLOCKS section holds the symbol plus one insert
-at the origin) and **Close**. Saving compiles the tab into a block with the full ACADE attribute set
-(`withAcadeAttributes`), registers the family as the block's tag prefix and its coil / contact role,
-and redefines the block in open drawings that already use it.
+name (spaces become `_`), description, standard (JIC / IEC), category, family (tag prefix), role
+(parent coil, child contact NO / NC, device, terminal, PLC point), NO / NC contact and orientation
+(horizontal = inline on a rung, vertical = on a vertical wire), and where to start from: a blank
+sheet with the role's attribute template already placed (TAG1 + DESC1, or TERM01), a copy of any
+library symbol, a **block of the current drawing** (the way to harvest symbols from manufacturer
+DWGs: nested blocks are exploded to primitives, ACADE attribute definitions become placeholders,
+every attribute default - MFG, CAT, DESC1, TAG1 and unknown vendor attributes - is kept, the base
+point can be the wire-stub midpoint or the centre of the geometry ignoring text, the geometry can
+be scaled to the 0.75 in inline width with the stub ends snapped onto y = 0 and x = +-0.375; blocks
+named like a built-in symbol are offered as `USER_<name>`) or the selected objects (you pick the
+base point). Enter submits the dialog. The symbol then opens in its own file tab (`Symbol: NAME`):
+geometry on layer `0` in inches around the origin, attribute placeholders as text on layer
+`SYMATTR` (the text is the attribute tag), explicit wire-connection pins as text on layer `SYMPIN`
+(`X1TERM01`, or `X4TERM02=14` with a default pin number). The **direction of a pin comes from
+where its marker sits** (the line end at x = -0.375 is a left pin whatever the text says; the digit
+is only used when no geometry is near), so COPY / MIRROR / ROTATE keep the pins right and the marker
+labels are renumbered to match the palette and the saved block. Connections are also detected from
+the geometry alone (line ends at x = +-0.375, or y = +-0.375 for vertical symbols). Every drafting
+command works in that tab; the viewport draws the origin, the 0.75 x 0.75 in box and the stub
+guides, and the ribbon switches to Schematic. The symbol's name / family / role / orientation /
+defaults live in the document state, so Ctrl+Z undoes them like geometry.
+
+The docked **Symbol Builder** palette (collapsible sections, remembered) edits the name, family,
+role, contact and orientation, places, moves or removes attributes (TAG1, DESC1-3, TERM01, INST,
+LOC, MFG, CAT, RATING1 ...) with their **default values**, edits the invisible data defaults
+(MFG, CAT, RATING1, INST, LOC, ASSYCODE and vendor attributes), converts selected plain text
+into an attribute placeholder, lists detected and explicit pins with their default pin numbers,
+shows a live preview of exactly what is placed and keeps a **Check** area above the buttons
+(name, connections, duplicate or wrong-side pins, markers off a line end, TAG1 over the geometry,
+tag-like plain text, layers, standard vs name, child families without a parent, extents; the Check
+button carries the error count and Save is disabled while errors exist). **Make vertical** opens
+the vertical variant (`HPB11_NO` -> `VPB11_NO`, `USER_PB1` -> `USER_PB1_V`) in a new tab with the
+geometry rotated, pins top / bottom and TAG1 / DESC1 to the right of the stub; **NC / NO twin**
+opens the sibling with the `_NO` / `_NC` name, pins 13/14 <-> 11/12 and the description reworded
+(the blade line of a standard contact is added or removed). **Save to Library** (Ctrl+S) writes
+the symbol; saving an existing symbol under a new name asks Rename / Save as copy / Cancel.
+**Save and Insert** returns to the drawing and starts `AECOMPONENT NAME`, **Export DXF...**
+(also Save As in a symbol tab) writes a DXF whose BLOCKS section holds the symbol plus one insert
+at the origin, and **Close** asks to save when changed (a failed save shows the errors). Saving
+compiles the tab into a block with the full ACADE attribute set (`withAcadeAttributes`; DESC2 /
+DESC3 stay invisible unless placed), registers the family as the block's tag prefix and its
+coil / contact role, and redefines the block in open drawings that already use it. Editing a
+symbol that is already open switches to its tab instead of opening a second one.
 
 The **user library** is one JSON document, `user-library.json` in the application data folder
 (`app.getPath('userData')`; localStorage key `jcad.userlib.v1` in the browser), holding
@@ -204,8 +228,11 @@ in the icon menu and tool palettes under `User: <category>` after the built-in c
 found by the search box and `findLibrarySymbol`, insert with AECOMPONENT / AECHILD / AECOMPONENT3 /
 AETOGGLENC / AESWAP like any built-in symbol, and are written into a drawing only when it uses them
 (`AEUPDATEBLOCK` refreshes them). `AESYMLIBEXPORT` / `AESYMLIBIMPORT` exchange the library (or one
-symbol) as JSON between installations; right-click a user symbol in the icon menu to edit or
-delete it.
+symbol) as JSON between installations (the browser build downloads the file); the icon menu's
+**Edit...** chooser has a filter box and Rename / Delete / Export / Import buttons, and
+`AESYMRENAME old new`, `AESYMDELETE`, `AESYMVERTICAL`, `AESYMTWIN`, `AESYMTEXT2ATTR`, `AESYMCHECK`
+and `AESYMSAVE` do the same from the command line; right-click a user symbol in the icon menu to
+edit or delete it.
 
 ## File formats
 

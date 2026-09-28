@@ -55,6 +55,12 @@ export interface DrawingState {
   readonly currentLayer: string;
   /** Optional so states built elsewhere (templates, converters) stay valid; defaults apply when absent. */
   readonly header?: DrawingHeader;
+  /**
+   * Application data that belongs to the document and travels with its undo history
+   * (the Symbol Builder keeps the symbol's name / family / kind here so Ctrl+Z restores
+   * them like geometry). Not written to DXF; absent for ordinary drawings.
+   */
+  readonly meta?: Readonly<Record<string, unknown>>;
 }
 
 export type DocListener = (doc: Drawing) => void;
@@ -90,6 +96,7 @@ export class Drawing {
       layers: initial?.layers ?? DEFAULT_LAYERS.map((l) => ({ ...l })),
       blocks: initial?.blocks ?? {},
       currentLayer: initial?.currentLayer ?? '0',
+      ...(initial?.meta ? { meta: initial.meta } : {}),
     };
   }
 
