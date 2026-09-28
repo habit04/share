@@ -74,7 +74,12 @@ export interface InsertEntity extends EntityBase {
   readonly block: string;
   readonly position: Point;
   readonly rotation: number;
+  /** Uniform (X) scale factor, always positive. */
   readonly scale: number;
+  /** Y scale when it differs from `scale` (non-uniform insert, DXF group 42). Positive. */
+  readonly scaleY?: number;
+  /** Mirrored about the block's Y axis before rotation (DXF: negative X scale). */
+  readonly mirror?: boolean;
   /** Attribute values (tag -> value), e.g. TAG1 = "PB101". */
   readonly attributes: Readonly<Record<string, string>>;
   /**
@@ -374,14 +379,103 @@ export function mtextParts(m: MTextEntity): TextEntity[] {
   return parts;
 }
 
-/** Transform a block-space point into world space for a given insert. */
+/** Transform a block-space point into world space for a given insert (mirror, scale X/Y, rotate, move). */
 export function insertTransform(ins: InsertEntity, block: BlockDef): (p: Point) => Point {
+  const sx = ins.scale * (ins.mirror ? -1 : 1);
+  const sy = ins.scaleY ?? ins.scale;
   return (p) => {
     const local = g.sub(p, block.basePoint);
-    const scaled = g.scale(local, ins.scale);
+    const scaled = { x: local.x * sx, y: local.y * sy };
     const rotated = g.rotate(scaled, ins.rotation);
     return g.add(ins.position, rotated);
   };
+}
+
+/** True when the insert is a plain similarity (no mirror, uniform scale). */
+export const isSimilarInsert = (ins: InsertEntity): boolean => !ins.mirror && (ins.scaleY === undefined || Math.abs(ins.scaleY - ins.scale) < 1e-12);
+
+/** Normalise an angle into [0, 2pi). */
+const normAngle = (t: number): number => {
+  const two = 2 * Math.PI;
+  let a = t % two;
+  if (a < 0) a += two;
+  return Math.abs(a) < 1e-12 || Math.abs(a - two) < 1e-12 ? 0 : a;
+};
+
+const flipAlign = (al: 'left' | 'center' | 'right'): 'left' | 'center' | 'right' => (al === 'left' ? 'right' : al === 'right' ? 'left' : al);
+
+/** Sample an arc / circle into a polyline (used when a non-uniform scale would turn it into an ellipse). */
+function sampledPolyline(e: CircleEntity | ArcEntity, tf: (p: Point) => Point): PolylineEntity {
+  const full = e.type === 'circle';
+  const start = full ? 0 : e.startAngle;
+  let sweep = full ? 2 * Math.PI : g.normAngle(e.endAngle - e.startAngle);
+  if (sweep < g.EPS) sweep = 2 * Math.PI;
+  const n = Math.max(8, Math.ceil((sweep / (2 * Math.PI)) * 48));
+  const points: Point[] = [];
+  for (let i = 0; i <= (full ? n - 1 : n); i += 1) {
+    const t = start + (sweep * i) / n;
+    points.push(tf({ x: e.center.x + e.radius * Math.cos(t), y: e.center.y + e.radius * Math.sin(t) }));
+  }
+  return { id: e.id, layer: e.layer, color: e.color, linetype: e.linetype, lineWeight: e.lineWeight, ltscale: e.ltscale, type: 'polyline', points, closed: full };
+}
+
+/**
+ * Apply a general block transform (mirror about the block Y axis, independent X/Y scale,
+ * rotation, translation). Text stays readable (position moves, glyphs are not mirrored),
+ * arcs keep their visible sweep, and circles / arcs under a non-uniform scale become polylines.
+ */
+export function blockTransform(e: Entity, tf: (p: Point) => Point, rotation: number, sx: number, sy: number, mirror: boolean): Entity {
+  const uniform = Math.abs(sx - sy) < 1e-12;
+  const k = Math.sqrt(Math.abs(sx * sy));
+  const vec = (v: Point): Point => g.rotate({ x: v.x * sx * (mirror ? -1 : 1), y: v.y * sy }, rotation);
+  // Angle of a block-space direction after the transform (mirror flips it, then rotation adds).
+  const ang = (t: number): number => normAngle((mirror ? Math.PI - t : t) + rotation);
+  switch (e.type) {
+    case 'line':
+      return { ...e, a: tf(e.a), b: tf(e.b) };
+    case 'circle':
+      return uniform ? { ...e, center: tf(e.center), radius: e.radius * k } : sampledPolyline(e, tf);
+    case 'arc':
+      if (!uniform) return sampledPolyline(e, tf);
+      return mirror
+        ? { ...e, center: tf(e.center), radius: e.radius * k, startAngle: ang(e.endAngle), endAngle: ang(e.startAngle) }
+        : { ...e, center: tf(e.center), radius: e.radius * k, startAngle: e.startAngle + rotation, endAngle: e.endAngle + rotation };
+    case 'polyline':
+      return { ...e, points: e.points.map(tf), bulges: mirror ? e.bulges?.map((bu) => -bu) : e.bulges, width: e.width !== undefined ? e.width * k : e.width };
+    case 'text':
+      return { ...e, position: tf(e.position), height: e.height * k, rotation: e.rotation + rotation, align: mirror ? flipAlign(e.align) : e.align };
+    case 'mtext':
+      return { ...e, position: tf(e.position), height: e.height * k, width: e.width * k, rotation: e.rotation + rotation };
+    case 'insert':
+      return {
+        ...e,
+        position: tf(e.position),
+        rotation: normAngle(mirror ? Math.PI - e.rotation + rotation : e.rotation + rotation),
+        scale: e.scale * Math.abs(sx),
+        ...(uniform && e.scaleY === undefined ? {} : { scaleY: (e.scaleY ?? e.scale) * Math.abs(sy) }),
+        ...(mirror ? { mirror: !e.mirror } : {}),
+      };
+    case 'ellipse': {
+      const c = tf(e.center);
+      return { ...e, center: c, majorAxis: vec(e.majorAxis), ...(mirror ? { startParam: -e.endParam, endParam: -e.startParam } : {}) };
+    }
+    case 'point':
+      return { ...e, position: tf(e.position) };
+    case 'xline':
+    case 'ray':
+      return { ...e, base: tf(e.base), direction: vec(e.direction) };
+    case 'dimension':
+      return {
+        ...e,
+        p1: tf(e.p1),
+        p2: tf(e.p2),
+        linePoint: tf(e.linePoint),
+        center: e.center ? tf(e.center) : e.center,
+        textPosition: e.textPosition ? tf(e.textPosition) : e.textPosition,
+        rotation: e.kind === 'linear' ? ang(e.rotation) : e.rotation + rotation,
+        style: k === 1 ? e.style : { ...e.style, scale: e.style.scale * k },
+      };
+  }
 }
 
 interface InsertCache {
@@ -416,8 +510,9 @@ function explodeInsertUncached(ins: InsertEntity, lookup: BlockLookup, depth: nu
   if (!block || depth > 8) return [];
   const tf = insertTransform(ins, block);
   const out: Entity[] = [];
+  const similar = isSimilarInsert(ins);
   for (const e of block.entities) {
-    out.push(...transformEntity(e, tf, ins.rotation, ins.scale, lookup, depth + 1, ins.layer, ins.color, ins.linetype));
+    out.push(...transformEntity(e, tf, ins, similar, lookup, depth + 1));
   }
   // Attribute text
   for (const a of block.attributes) {
@@ -431,9 +526,9 @@ function explodeInsertUncached(ins: InsertEntity, lookup: BlockLookup, depth: nu
       color: 'ByLayer',
       position: tf(a.position),
       text: value,
-      height: a.height * ins.scale,
+      height: a.height * Math.sqrt(ins.scale * (ins.scaleY ?? ins.scale)),
       rotation: ins.rotation + (a.rotation ?? 0),
-      align: a.align,
+      align: ins.mirror ? flipAlign(a.align) : a.align,
     });
   }
   return out;
@@ -462,7 +557,7 @@ export function similarityTransform(e: Entity, tf: (p: Point) => Point, rotation
     case 'text':
       return { ...e, position: tf(e.position), height: e.height * k, rotation: e.rotation + rotation };
     case 'insert':
-      return { ...e, position: tf(e.position), rotation: e.rotation + rotation, scale: e.scale * k };
+      return { ...e, position: tf(e.position), rotation: e.rotation + rotation, scale: e.scale * k, ...(e.scaleY !== undefined ? { scaleY: e.scaleY * k } : {}) };
     case 'ellipse':
       return { ...e, center: tf(e.center), majorAxis: g.rotate(g.scale(e.majorAxis, k), rotation) };
     case 'point':
@@ -486,22 +581,13 @@ export function similarityTransform(e: Entity, tf: (p: Point) => Point, rotation
   }
 }
 
-function transformEntity(
-  e: Entity,
-  tf: (p: Point) => Point,
-  rotation: number,
-  scaleFactor: number,
-  lookup: BlockLookup,
-  depth: number,
-  layer: string,
-  color: ColorSpec,
-  linetype: string | undefined,
-): Entity[] {
+function transformEntity(e: Entity, tf: (p: Point) => Point, ins: InsertEntity, similar: boolean, lookup: BlockLookup, depth: number): Entity[] {
   // Entities on layer "0" inside a block inherit the insert's layer (AutoCAD behaviour).
-  const lay = e.layer === '0' ? layer : e.layer;
-  const col: ColorSpec = e.color === 'ByLayer' && e.layer === '0' ? color : e.color;
-  const lt = e.linetype && e.linetype.toUpperCase() === 'BYBLOCK' ? linetype : e.linetype;
-  const moved = similarityTransform({ ...e, layer: lay, color: col, linetype: lt }, tf, rotation, scaleFactor);
+  const lay = e.layer === '0' ? ins.layer : e.layer;
+  const col: ColorSpec = e.color === 'ByLayer' && e.layer === '0' ? ins.color : e.color;
+  const lt = e.linetype && e.linetype.toUpperCase() === 'BYBLOCK' ? ins.linetype : e.linetype;
+  const styled = { ...e, layer: lay, color: col, linetype: lt } as Entity;
+  const moved = similar ? similarityTransform(styled, tf, ins.rotation, ins.scale) : blockTransform(styled, tf, ins.rotation, ins.scale, ins.scaleY ?? ins.scale, Boolean(ins.mirror));
   if (moved.type === 'insert') return explodeInsert(moved, lookup, depth);
   return [moved];
 }
@@ -656,8 +742,9 @@ export function mirrorEntityAcross(e: Entity, a: Point, b: Point): Entity {
     case 'text':
       return { ...e, position: reflect(e.position) };
     case 'insert':
-      // Mirrored (negative) scales are not modelled; keep the orientation so attribute text stays readable.
-      return { ...e, position: reflect(e.position) };
+      // A reflection is a mirror about the block's Y axis plus a rotation: the block geometry is
+      // mirrored while attribute / text glyphs stay readable (MIRRTEXT = 0), like AutoCAD.
+      return { ...e, position: reflect(e.position), rotation: normAngle(reflectAngle(e.rotation) + Math.PI), mirror: !e.mirror };
     case 'ellipse': {
       const tip = reflect(g.add(e.center, e.majorAxis));
       const c = reflect(e.center);

@@ -7,7 +7,7 @@
  * Header: units, limits, LTSCALE, PDMODE/PDSIZE, DIM* variables, CELTYPE/CELWEIGHT.
  */
 import type { Entity, BlockDef, Layer, AttributeDef, ColorSpec, DimensionEntity, PolylineEntity, MTextEntity, DimStyle } from '../core/entities';
-import { newId, dimensionParts, textWidth } from '../core/entities';
+import { newId, dimensionParts, textWidth, insertTransform } from '../core/entities';
 import { dimensionTextPoint, dimensionMeasurement, STANDARD_DIMSTYLE } from '../core/dimension';
 import { mtextToDxf, mtextFromDxf, type MTextAttachment } from '../core/mtext';
 import type { DrawingState, DrawingHeader, NamedView } from '../core/document';
@@ -309,25 +309,26 @@ function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonly<Recor
       w.pair(10, e.position.x);
       w.pair(20, e.position.y);
       w.pair(30, 0);
-      if (e.scale !== 1) {
-        w.pair(41, e.scale);
-        w.pair(42, e.scale);
+      const sy = e.scaleY ?? e.scale;
+      if (e.scale !== 1 || sy !== 1 || e.mirror) {
+        w.pair(41, e.mirror ? -e.scale : e.scale);
+        w.pair(42, sy);
         w.pair(43, e.scale);
       }
       if (e.rotation !== 0) w.pair(50, g.deg(e.rotation));
       if (hasAttribs && block) {
+        const toWorld = insertTransform(e, block);
         for (const a of block.attributes) {
           const value = e.attributes[a.tag] ?? a.default;
           // Attribute position in world space
-          const local = g.sub(a.position, block.basePoint);
-          const world = g.add(e.position, g.rotate(g.scale(local, e.scale), e.rotation));
+          const world = toWorld(a.position);
           w.pair(0, 'ATTRIB');
           w.pair(5, w.nextHandle());
           w.pair(330, owner);
           w.pair(100, 'AcDbEntity');
           w.pair(8, e.layer);
           w.pair(100, 'AcDbText');
-          writeTextLike(w, world, a.height * e.scale, value, e.rotation + (a.rotation ?? 0), a.align);
+          writeTextLike(w, world, a.height * Math.sqrt(e.scale * sy), value, e.rotation + (a.rotation ?? 0), e.mirror ? (a.align === 'left' ? 'right' : a.align === 'right' ? 'left' : a.align) : a.align);
           w.pair(100, 'AcDbAttribute');
           w.pair(2, a.tag);
           w.pair(70, a.invisible || e.hiddenAttributes?.includes(a.tag) ? 1 : 0);
@@ -901,20 +902,40 @@ function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
     case 'INSERT': {
       const sx = num(o, 41, 1);
       const sy = num(o, 42, sx);
-      // Mirrored (negative) and non-uniform scales are not represented; keep the magnitude of X.
       return {
         ...base,
         type: 'insert',
         block: str(o, 2),
         position: { x: num(o, 10), y: num(o, 20) },
-        scale: Math.abs(sx) || 1,
-        rotation: g.rad(num(o, 50)) + (sx < 0 !== sy < 0 ? 0 : 0),
+        rotation: g.rad(num(o, 50)) + insertScales(sx, sy).rotationOffset,
         attributes: {},
+        ...insertScaleFields(sx, sy),
       };
     }
     default:
       return null;
   }
+}
+
+/**
+ * Signed DXF / DWG X and Y scales -> the insert's scale, scaleY, mirror and rotation offset.
+ * A negative X scale is a mirror about the block Y axis; a negative Y scale is the same
+ * mirror followed by a half turn.
+ */
+export function insertScales(sx: number, sy: number): { scale: number; scaleY?: number; mirror?: boolean; rotationOffset: number } {
+  const ax = Math.abs(sx) || 1;
+  const ay = Math.abs(sy) || ax;
+  const mirror = sx < 0 !== sy < 0;
+  const out: { scale: number; scaleY?: number; mirror?: boolean; rotationOffset: number } = { scale: ax, rotationOffset: sy < 0 ? Math.PI : 0 };
+  if (Math.abs(ay - ax) > 1e-12) out.scaleY = ay;
+  if (mirror) out.mirror = true;
+  return out;
+}
+
+/** Insert fields (scale / scaleY / mirror) from signed X and Y scales, for spreading into an entity. */
+export function insertScaleFields(sx: number, sy: number): { scale: number; scaleY?: number; mirror?: boolean } {
+  const sc = insertScales(sx, sy);
+  return { scale: sc.scale, ...(sc.scaleY !== undefined ? { scaleY: sc.scaleY } : {}), ...(sc.mirror ? { mirror: true } : {}) };
 }
 
 interface ReadContext {

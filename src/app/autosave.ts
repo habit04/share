@@ -52,11 +52,9 @@ export function localAutosaveStore(storage: KeyValueStorage): AutosaveStore {
   };
   return {
     async write(name, text, meta) {
-      try {
-        storage.setItem(PREFIX + name, JSON.stringify({ meta, text }));
-      } catch {
-        /* quota exceeded: skip this autosave */
-      }
+      // A full or blocked storage must surface as a failure: the autosaver then keeps the
+      // drawing marked as not backed up and retries on the next tick.
+      storage.setItem(PREFIX + name, JSON.stringify({ meta, text }));
     },
     async list() {
       const out: AutosaveEntry[] = [];
@@ -105,6 +103,8 @@ export class Autosaver {
   private lastSaved = new Map<number, DrawingState>();
   private names = new Map<number, string>();
   onSaved: ((count: number) => void) | null = null;
+  /** Called once per failed write (storage full, disk error); the drawing is retried next tick. */
+  onError: ((title: string, err: unknown) => void) | null = null;
 
   constructor(
     private sessions: SessionManager,
@@ -135,18 +135,32 @@ export class Autosaver {
     let n = 0;
     for (const id of ids) {
       const s = all.find((x) => x.id === id)!;
-      const name = autosaveName(sessionTitle(s), s.id);
+      // A recovered drawing keeps writing to the backup it was recovered from.
+      const name = this.names.get(id) ?? autosaveName(sessionTitle(s), s.id);
       try {
         await this.store.write(name, writeDxf(withoutUnusedLibraryBlocks(s.state)), { originalPath: s.filePath, title: sessionTitle(s), savedAt: Date.now() });
         this.lastSaved.set(id, s.state);
         this.names.set(id, name);
         n += 1;
-      } catch {
-        /* ignore: next tick retries */
+      } catch (err) {
+        this.onError?.(sessionTitle(s), err);
       }
     }
     if (n) this.onSaved?.(n);
     return n;
+  }
+
+  /**
+   * A drawing opened from the Drawing Recovery Manager keeps its backup file until it is
+   * saved for real (discardFor) - a second crash before then must not lose the work.
+   */
+  adopt(sessionId: number, name: string): void {
+    this.names.set(sessionId, name);
+    this.lastSaved.delete(sessionId);
+  }
+  /** Backup file name currently associated with a session, if any. */
+  nameFor(sessionId: number): string | undefined {
+    return this.names.get(sessionId);
   }
 
   /** After a successful save or a clean close, the autosave for that session is obsolete. */

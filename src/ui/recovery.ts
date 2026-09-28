@@ -1,5 +1,5 @@
 import type { Editor } from '../app/editor';
-import type { AutosaveEntry, AutosaveStore } from '../app/autosave';
+import type { AutosaveEntry, AutosaveStore, Autosaver } from '../app/autosave';
 import { readDxf } from '../io/dxf';
 import { modal, button } from './dialogkit';
 import { icon } from './icons';
@@ -7,12 +7,12 @@ import './icons-ui';
 import { esc } from './dom';
 
 /** Drawing Recovery Manager: offered at startup when autosave files exist. */
-export async function recoveryDialog(editor: Editor, store: AutosaveStore): Promise<void> {
+export async function recoveryDialog(editor: Editor, store: AutosaveStore, autosaver?: Pick<Autosaver, 'adopt'>): Promise<void> {
   const entries = await store.list();
   if (entries.length === 0) return;
   const m = modal('Drawing Recovery Manager', 560, 'dark');
   const intro = document.createElement('p');
-  intro.textContent = 'The following drawings were autosaved and not saved afterwards. Open a recovered drawing to continue with it (it opens as a modified, unsaved copy), or discard it.';
+  intro.textContent = 'The following drawings were autosaved and not saved afterwards. Open a recovered drawing to continue with it (it opens as a modified, unsaved copy; the backup is kept until you save), or discard it.';
   const list = document.createElement('div');
   list.className = 'recovery-list';
   const render = (items: AutosaveEntry[]) => {
@@ -28,10 +28,12 @@ export async function recoveryDialog(editor: Editor, store: AutosaveStore): Prom
         if (!text) return editor.log(`Could not read autosave ${e.name}.`);
         try {
           const state = readDxf(text);
-          editor.sessions.add(state, e.originalPath, true);
+          const idx = editor.sessions.add(state, e.originalPath, true);
           editor.zoomExtents();
-          editor.log(`Recovered ${e.title} from autosave (${state.entities.length} entities). Use SAVE to keep it.`);
-          await store.remove(e.name);
+          // The backup stays on disk (and keeps being refreshed) until this drawing is saved.
+          const session = editor.sessions.all[idx];
+          if (session) autosaver?.adopt(session.id, e.name);
+          editor.log(`Recovered ${e.title} from autosave (${state.entities.length} entities). Use SAVE to keep it; the backup is kept until then.`);
           row.remove();
           if (!list.childElementCount) m.close();
         } catch (err) {

@@ -221,3 +221,29 @@ export class SessionManager {
     if (!reuse && this.isPristine(idx)) this.close(idx, from);
   }
 }
+
+/**
+ * Record the outcome of a completed save. The save serialised `savedState` of session
+ * `sessionId`; only that revision is marked clean, so edits made while the file was
+ * being written (or in another tab) keep their "unsaved changes" flag.
+ * Returns what happened for the command log.
+ */
+export function applySaveResult(sessions: SessionManager, host: SessionHost, sessionId: number, savedState: DrawingState, path: string): 'clean' | 'newer-edits' | 'closed' {
+  const active = sessions.current;
+  if (active.id === sessionId) {
+    host.doc.filePath = path;
+    if (host.doc.snapshot === savedState) {
+      host.doc.dirty = false;
+      return 'clean';
+    }
+    return 'newer-edits';
+  }
+  const s = sessions.all.find((x) => x.id === sessionId);
+  if (!s) return 'closed';
+  s.filePath = path;
+  if (s.state === savedState) {
+    s.dirty = false;
+    return 'clean';
+  }
+  return 'newer-edits';
+}

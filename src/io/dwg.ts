@@ -25,6 +25,7 @@ import type {
   DwgDimensionEntity,
   DwgSolidEntity,
 } from '@mlightcad/libredwg-web';
+import { insertScales, insertScaleFields } from './dxf';
 import type { Entity, BlockDef, Layer, AttributeDef, ColorSpec, MTextAttachment } from '../core/entities';
 import { newId } from '../core/entities';
 import type { DrawingState, DrawingHeader } from '../core/document';
@@ -280,8 +281,8 @@ function convertEntity(e: DwgEntity, blockIndex: Map<string, string>, dimStyle: 
         type: 'insert',
         block: name,
         position: p2(i.insertionPoint),
-        rotation: i.rotation ?? 0,
-        scale: Math.abs(i.xScale) || 1,
+        rotation: (i.rotation ?? 0) + insertScales(i.xScale ?? 1, (i as { yScale?: number }).yScale ?? i.xScale ?? 1).rotationOffset,
+        ...insertScaleFields(i.xScale ?? 1, (i as { yScale?: number }).yScale ?? i.xScale ?? 1),
         attributes: attrs,
         ...(hiddenHere.length ? { hiddenAttributes: hiddenHere } : {}),
       };

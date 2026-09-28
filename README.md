@@ -146,6 +146,9 @@ and auto-hidden with the pin in their strip (widths are remembered). The status 
 settings menus (small arrow / right-click), the coordinate readout cycles absolute / relative / off,
 and the customization button shows or hides items. Autosave writes modified drawings to the app data
 folder every 10 minutes (Options > Files); the Drawing Recovery Manager offers them at the next start.
+A recovered drawing keeps its backup (and keeps refreshing it) until it is saved for real. A save
+only clears the "unsaved changes" flag for the exact revision that was written, so edits made
+while the save dialog was open stay flagged.
 
 Mouse: wheel zooms at the cursor, middle-drag pans, double middle-click zooms extents.
 Click picks; drag left-to-right is a window selection (blue), right-to-left is crossing (green);
@@ -223,7 +226,9 @@ delete it.
   frozen/off/locked), blocks, attributes (including invisible ones), LINE / CIRCLE / ARC /
   LWPOLYLINE (bulges and constant width round-trip) / TEXT / MTEXT / INSERT / ELLIPSE / POINT /
   XLINE / RAY / SOLID and DIMENSION (linear, aligned, radius, diameter, angular) written with an
-  anonymous `*D` picture block so other CAD programs show them. Per-entity linetype (code 6),
+  anonymous `*D` picture block so other CAD programs show them. Mirrored (negative X scale) and
+  non-uniform inserts (groups 41/42) round-trip; a mirrored block draws its geometry reflected
+  while attribute text stays readable, and MIRROR on a component produces exactly that. Per-entity linetype (code 6),
   lineweight (370) and linetype scale (48), LTYPE dash patterns, the VIEW table, DIMSTYLE and the
   header variables for units, limits, LTSCALE, PDMODE/PDSIZE, CELTYPE/CELWEIGHT and DIM* all round
   trip. Wire junction dots are written as zero-hole donuts so they stay filled in other CAD
@@ -233,7 +238,8 @@ delete it.
   construction lines, solids, polyline bulges, entity/layer linetypes and lineweights and the
   header units / limits / dimension variables. The import is read-only; SAVE writes a DXF next
   to the original. Sample files from the LibreDWG test suite live in `fixtures/` and are used
-  by the tests.
+  by the tests. Mirrored and stretched block references keep their X/Y scales (circles and
+  arcs inside a stretched block become polylines).
 - **PDF** plotting renders the extents onto a white sheet.
 - **CSV** export for every report.
 

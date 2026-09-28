@@ -322,6 +322,7 @@ function boot(): void {
   const store = bridge?.autosaveWrite && bridge.autosaveList && bridge.autosaveRead && bridge.autosaveRemove ? bridgeAutosaveStore(bridge as AutosaveBridge) : localAutosaveStore(localStorage);
   const autosaver = new Autosaver(editor.sessions, store, () => editor.settings.autosaveMinutes, (id) => symbolBuilderOf(editor).sessions.has(id));
   autosaver.onSaved = (n) => editor.log(`Autosave: ${n} drawing(s) written.`);
+  autosaver.onError = (title, err) => editor.log(`Autosave of ${title} failed: ${err instanceof Error ? err.message : String(err)} (will retry).`);
   autosaver.start();
   editor.on('snap', () => autosaver.restart()); // settings changed (interval may differ)
   editor.on('file', () => {
@@ -415,7 +416,7 @@ function boot(): void {
   }
   editor.zoomExtents();
   cmd.focus();
-  if (!new URLSearchParams(location.search).has('norecover')) void recoveryDialog(editor, store);
+  if (!new URLSearchParams(location.search).has('norecover')) void recoveryDialog(editor, store, autosaver);
   // expose for automation / debugging
   (window as unknown as { editor: Editor; jacUi: unknown }).editor = editor;
   (window as unknown as { jacUi: unknown }).jacUi = { ribbon, cmd, qp, tp, pm, props, clipboard, autosaver, store };

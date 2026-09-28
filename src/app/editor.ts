@@ -20,7 +20,7 @@ import { PlcModuleTool, SignalArrowTool, TerminalStripTool, DEFAULT_PLC, DEFAULT
 import { gripPoints, moveGrip } from '../core/entities';
 import { parseProject, serializeProject, defaultProject, resolveDrawingPath, baseName, type Project } from './project';
 import { loadSettings, saveSettings, pushRecent, type UserSettings } from './settings';
-import { SessionManager } from './sessions';
+import { SessionManager, applySaveResult } from './sessions';
 import type { ColorSpec } from '../core/entities';
 import { readDxf, writeDxf } from '../io/dxf';
 import { parsePointInput, isPlainNumber } from './input';
@@ -741,13 +741,16 @@ export class Editor {
       this.log('No file access in this environment.');
       return;
     }
-    const text = writeDxf(withoutUnusedLibraryBlocks(this.doc.snapshot));
+    // Remember exactly which document revision goes to disk: edits made while the file
+    // dialog / write is pending (or in another tab) must stay flagged as unsaved.
+    const sessionId = this.sessions.current.id;
+    const savedState = this.doc.snapshot;
+    const text = writeDxf(withoutUnusedLibraryBlocks(savedState));
     const path = await this.fileBridge.saveDxf(saveAs ? null : this.doc.filePath, text, this.suggestedName ?? this.fileName());
     if (path) {
-      this.doc.filePath = path;
-      this.doc.dirty = false;
-      this.suggestedName = null;
-      this.log(`Saved ${path}`);
+      const outcome = applySaveResult(this.sessions, this, sessionId, savedState, path);
+      if (outcome === 'clean' && this.sessions.current.id === sessionId) this.suggestedName = null;
+      this.log(outcome === 'newer-edits' ? `Saved ${path} (edits made during the save are still unsaved).` : `Saved ${path}`);
       this.rememberRecent(path);
       this.emit('file');
     }
