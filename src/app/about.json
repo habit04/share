@@ -1,10 +1,19 @@
 {
   "author": {
     "name": "Justin Rodriguez",
-    "title": "",
-    "bio": "",
+    "title": "Founder of JCad Electrical",
+    "bio": "Justin is a single dad with a passion for the electrical trade and the self-improvement world. He started JCad Electrical because small panel shops, electricians and students deserve a real schematic tool without a big subscription: one that opens the DWG files they already have and works the way AutoCAD Electrical users expect. JCad is free and built in the open. Every download, bug report and tip helps it grow.",
     "location": "",
-    "links": []
+    "links": [
+      {
+        "label": "Project on GitHub",
+        "url": "https://github.com/habit04/share"
+      },
+      {
+        "label": "Releases",
+        "url": "https://github.com/habit04/share/releases"
+      }
+    ]
   },
   "donate": {
     "cashtag": "jr0481",
