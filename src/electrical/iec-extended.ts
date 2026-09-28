@@ -69,7 +69,7 @@ const pin = (tag: string, x: number, y: number, def: string): AttributeDef => ({
 /** Address-style TAG1 used by PLC I/O points. */
 const addrAttr = (def: string, y = 0.2): AttributeDef => ({ tag: 'TAG1', prompt: 'Address', default: def, position: { x: 0, y }, height: 0.08, align: 'center' });
 /** Attributes for an n-pole symbol (poles 0.5 apart, pole 1 on the base point). */
-const poleAttrs = (poles: number, tagY = 0.5): AttributeDef[] => [tagAttr(tagY), descAttr(-(poles - 1) * 0.5 - 0.45)];
+const poleAttrs = (poles: number, tagY = 0.5): AttributeDef[] => [tagAttr(tagY), descAttr(-(poles - 1) * 0.5 - 0.3)];
 const POLES3 = [0, -0.5, -1.0];
 
 // ------------------------------------------------------------------ buttons & switches II (S)
@@ -182,7 +182,7 @@ const flowSensor = sensor('IEC_B_FLOW', 'Flow sensor (IEC)', [L(-0.16, 0.1, -0.0
 
 // ------------------------------------------------------------------ relays & timers II (K, KA, KT)
 
-const kaCoil = symbol({ name: 'IEC_KA_COIL', description: 'Auxiliary relay coil (IEC)', family: 'KA', wdtype: 'COIL', entities: [...stubs(0.15), box(), T(0, 0.14, 'KA', 0.06)], attributes: [tagAttr(0.35), descAttr(-0.45)] });
+const kaCoil = symbol({ name: 'IEC_KA_COIL', description: 'Auxiliary relay coil (IEC)', family: 'KA', wdtype: 'COIL', entities: [...stubs(0.15), box(), T(0, 0.14, 'KA', 0.06)], attributes: [tagAttr(0.35), descAttr(-0.45), pin('X1TERM01', -HALF, 0, 'A1'), pin('X4TERM02', HALF, 0, 'A2')] });
 const kaNO = symbol({ name: 'IEC_KA_NO', description: 'Auxiliary relay contact, NO (IEC)', family: 'KA', wdtype: 'CONTACT', entities: [...stubs(0.15), blade(), T(0, 0.22, 'KA', 0.06)] });
 const kaNC = symbol({ name: 'IEC_KA_NC', description: 'Auxiliary relay contact, NC (IEC)', family: 'KA', wdtype: 'CONTACT', entities: [...stubs(0.15), blade(), stop(), T(0, 0.24, 'KA', 0.06)] });
 const latchRelay = symbol({

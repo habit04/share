@@ -55,6 +55,11 @@ function pilot(nc: boolean, glyph: (yc: number, s: number) => Entity[], stemX = 
   const yc = 0.25 * s;
   return [...stubs(GAP), ...dots(), nc ? bladeNC() : bladeNO(), L(stemX, bladeY(nc, stemX), stemX, yc - glyphHalf * s), ...glyph(yc, s)];
 }
+/** Attribute slots for a pilot() symbol: the glyph needs the space above (NO) or below (NC) the contact. */
+const pilotAttrs = (nc: boolean): AttributeDef[] => (nc ? [tagAttr(0.3), descAttr(-0.55)] : [tagAttr(0.42), descAttr(-0.45)]);
+/** A complete pilot-device symbol (NO or NC) with its actuator glyph. */
+const pilotSymbol = (name: string, description: string, family: string, nc: boolean, glyph: (yc: number, s: number) => Entity[], stemX = 0, glyphHalf = 0.06): BlockDef =>
+  symbol({ name, description, family, entities: pilot(nc, glyph, stemX, glyphHalf), attributes: pilotAttrs(nc) });
 
 /** Push-button operator: a bar across the blade tips and a stem up to the cap. */
 const pbOperator = (nc: boolean, capY: number): Entity[] => {
@@ -97,6 +102,7 @@ const maintainedPB = (name: string, desc: string, nc: boolean) =>
     description: desc,
     family: 'PB',
     entities: [...pbOperator(nc, 0.2), flatCap(0.2), L(0.2, 0.12, 0.2, 0.28), arrowHead(0.2, 0.28, 0, 1, 0.03), arrowHead(0.2, 0.12, 0, -1, 0.03)],
+    attributes: [tagAttr(0.36), descAttr(-0.45)],
   });
 const pbMaintNO = maintainedPB('HPB16_NO', 'Maintained (push-pull) push button, normally open', false);
 const pbMaintNC = maintainedPB('HPB17_NC', 'Maintained (push-pull) push button, normally closed', true);
@@ -110,8 +116,8 @@ const pbMushroomNO = symbol({
 
 /** Key operator: key bow (ring) on the stem with two teeth. */
 const keyGlyph = (yc: number, s: number): Entity[] => [C(0, yc, 0.05), L(0, yc - 0.05 * s, 0.04, yc - 0.05 * s), L(0, yc - 0.09 * s, 0.03, yc - 0.09 * s)];
-const keyNO = symbol({ name: 'HKS11_NO', description: 'Key switch, normally open', family: 'KS', entities: pilot(false, keyGlyph, 0, 0.05) });
-const keyNC = symbol({ name: 'HKS12_NC', description: 'Key switch, normally closed', family: 'KS', entities: pilot(true, keyGlyph, 0, 0.05) });
+const keyNO = pilotSymbol('HKS11_NO', 'Key switch, normally open', 'KS', false, keyGlyph, 0, 0.05);
+const keyNC = pilotSymbol('HKS12_NC', 'Key switch, normally closed', 'KS', true, keyGlyph, 0, 0.05);
 
 /** Joystick operator: ball on the stem with a left/right travel arrow. */
 const joyGlyph = (yc: number, s: number): Entity[] => [
@@ -120,8 +126,8 @@ const joyGlyph = (yc: number, s: number): Entity[] => [
   arrowHead(-0.1, yc + 0.05 * s, -1, 0, 0.03),
   arrowHead(0.1, yc + 0.05 * s, 1, 0, 0.03),
 ];
-const joyNO = symbol({ name: 'HJS11_NO', description: 'Joystick contact, normally open', family: 'JS', entities: pilot(false, joyGlyph, 0, 0.055) });
-const joyNC = symbol({ name: 'HJS12_NC', description: 'Joystick contact, normally closed', family: 'JS', entities: pilot(true, joyGlyph, 0, 0.055) });
+const joyNO = pilotSymbol('HJS11_NO', 'Joystick contact, normally open', 'JS', false, joyGlyph, 0, 0.055);
+const joyNC = pilotSymbol('HJS12_NC', 'Joystick contact, normally closed', 'JS', true, joyGlyph, 0, 0.055);
 
 const thumbwheel = symbol({
   name: 'HTW1',
@@ -199,20 +205,20 @@ const retroReflective = (yc: number): Entity[] => [
   L(-0.19, yc - 0.06, -0.16, yc - 0.02),
   L(-0.19, yc + 0.02, -0.16, yc + 0.06),
 ];
-const peThruNO = symbol({ name: 'HPE11_NO', description: 'Photo eye, through-beam, normally open', family: 'PE', entities: pilot(false, throughBeam, 0.17, 0.05) });
-const peThruNC = symbol({ name: 'HPE12_NC', description: 'Photo eye, through-beam, normally closed', family: 'PE', entities: pilot(true, throughBeam, 0.17, 0.05) });
-const peRetroNO = symbol({ name: 'HPE13_NO', description: 'Photo eye, retroreflective, normally open', family: 'PE', entities: pilot(false, retroReflective, 0.17, 0.05) });
-const peRetroNC = symbol({ name: 'HPE14_NC', description: 'Photo eye, retroreflective, normally closed', family: 'PE', entities: pilot(true, retroReflective, 0.17, 0.05) });
+const peThruNO = pilotSymbol('HPE11_NO', 'Photo eye, through-beam, normally open', 'PE', false, throughBeam, 0.17, 0.05);
+const peThruNC = pilotSymbol('HPE12_NC', 'Photo eye, through-beam, normally closed', 'PE', true, throughBeam, 0.17, 0.05);
+const peRetroNO = pilotSymbol('HPE13_NO', 'Photo eye, retroreflective, normally open', 'PE', false, retroReflective, 0.17, 0.05);
+const peRetroNC = pilotSymbol('HPE14_NC', 'Photo eye, retroreflective, normally closed', 'PE', true, retroReflective, 0.17, 0.05);
 
 /** Capacitive prox: housing with two sensing plates on the target side. */
 const capProx = (yc: number): Entity[] => [housing(0, yc), L(-0.1, yc - 0.045, -0.1, yc + 0.045), L(-0.14, yc - 0.045, -0.14, yc + 0.045)];
-const capNO = symbol({ name: 'HPX13_NO', description: 'Capacitive proximity switch, normally open', family: 'PRS', entities: pilot(false, capProx) });
-const capNC = symbol({ name: 'HPX14_NC', description: 'Capacitive proximity switch, normally closed', family: 'PRS', entities: pilot(true, capProx) });
+const capNO = pilotSymbol('HPX13_NO', 'Capacitive proximity switch, normally open', 'PRS', false, capProx);
+const capNC = pilotSymbol('HPX14_NC', 'Capacitive proximity switch, normally closed', 'PRS', true, capProx);
 
 /** Ultrasonic: housing with three sound-wave arcs. */
 const ultrasonic = (yc: number): Entity[] => [housing(0, yc), A(-0.06, yc, 0.05, 125, 235), A(-0.06, yc, 0.09, 135, 225), A(-0.06, yc, 0.13, 145, 215)];
-const usNO = symbol({ name: 'HUS11_NO', description: 'Ultrasonic sensor, normally open', family: 'US', entities: pilot(false, ultrasonic) });
-const usNC = symbol({ name: 'HUS12_NC', description: 'Ultrasonic sensor, normally closed', family: 'US', entities: pilot(true, ultrasonic) });
+const usNO = pilotSymbol('HUS11_NO', 'Ultrasonic sensor, normally open', 'US', false, ultrasonic);
+const usNC = pilotSymbol('HUS12_NC', 'Ultrasonic sensor, normally closed', 'US', true, ultrasonic);
 
 const encoder = symbol({
   name: 'HENC1',
@@ -231,26 +237,26 @@ const encoder = symbol({
 
 /** Speed: a rotor with a curved arrow around it. */
 const speedGlyph = (yc: number): Entity[] => [C(0, yc, 0.045), A(0, yc, 0.09, 30, 300), arrowHead(0.078, yc + 0.045, 0.5, -1, 0.035)];
-const speedNO = symbol({ name: 'HSPS11_NO', description: 'Speed switch, normally open', family: 'SPS', entities: pilot(false, speedGlyph, 0, 0.09) });
-const speedNC = symbol({ name: 'HSPS12_NC', description: 'Speed switch, normally closed', family: 'SPS', entities: pilot(true, speedGlyph, 0, 0.09) });
+const speedNO = pilotSymbol('HSPS11_NO', 'Speed switch, normally open', 'SPS', false, speedGlyph, 0, 0.09);
+const speedNC = pilotSymbol('HSPS12_NC', 'Speed switch, normally closed', 'SPS', true, speedGlyph, 0, 0.09);
 
 /** Vibration: housing with a shaking waveform. */
 const vibGlyph = (yc: number): Entity[] => [housing(0, yc, 0.22, 0.12), P([[-0.09, yc], [-0.06, yc + 0.04], [-0.02, yc - 0.04], [0.02, yc + 0.04], [0.06, yc - 0.04], [0.09, yc]])];
-const vibNO = symbol({ name: 'HVS11_NO', description: 'Vibration switch, normally open', family: 'VS', entities: pilot(false, vibGlyph) });
-const vibNC = symbol({ name: 'HVS12_NC', description: 'Vibration switch, normally closed', family: 'VS', entities: pilot(true, vibGlyph) });
+const vibNO = pilotSymbol('HVS11_NO', 'Vibration switch, normally open', 'VS', false, vibGlyph);
+const vibNC = pilotSymbol('HVS12_NC', 'Vibration switch, normally closed', 'VS', true, vibGlyph);
 
 /** Level: open vessel (open side away from the stem) with a rippled liquid line. */
 const levelGlyph = (yc: number, s: number): Entity[] => [
   P([[-0.1, yc + 0.07 * s], [-0.1, yc - 0.07 * s], [0.1, yc - 0.07 * s], [0.1, yc + 0.07 * s]]),
   P([[-0.1, yc], [-0.05, yc + 0.02], [0, yc], [0.05, yc + 0.02], [0.1, yc]]),
 ];
-const levelNO = symbol({ name: 'HLV11_NO', description: 'Level switch, normally open', family: 'LVL', entities: pilot(false, levelGlyph, 0, 0.07) });
-const levelNC = symbol({ name: 'HLV12_NC', description: 'Level switch, normally closed', family: 'LVL', entities: pilot(true, levelGlyph, 0, 0.07) });
+const levelNO = pilotSymbol('HLV11_NO', 'Level switch, normally open', 'LVL', false, levelGlyph, 0, 0.07);
+const levelNC = pilotSymbol('HLV12_NC', 'Level switch, normally closed', 'LVL', true, levelGlyph, 0, 0.07);
 
 /** Position / zone: a travel line with end stops and a position marker. */
 const zoneGlyph = (yc: number): Entity[] => [L(-0.15, yc, 0.15, yc), L(-0.15, yc - 0.04, -0.15, yc + 0.04), L(0.15, yc - 0.04, 0.15, yc + 0.04), C(0.05, yc, 0.025, true)];
-const zoneNO = symbol({ name: 'HZS11_NO', description: 'Position / zone switch, normally open', family: 'ZS', entities: pilot(false, zoneGlyph, 0, 0) });
-const zoneNC = symbol({ name: 'HZS12_NC', description: 'Position / zone switch, normally closed', family: 'ZS', entities: pilot(true, zoneGlyph, 0, 0) });
+const zoneNO = pilotSymbol('HZS11_NO', 'Position / zone switch, normally open', 'ZS', false, zoneGlyph, 0, 0);
+const zoneNC = pilotSymbol('HZS12_NC', 'Position / zone switch, normally closed', 'ZS', true, zoneGlyph, 0, 0);
 
 // 5. Safety devices ------------------------------------------------------
 
@@ -274,12 +280,12 @@ const doorGlyph = (yc: number, s: number): Entity[] => [
   L(-0.12, yc - 0.07 * s, 0.05, yc + 0.01 * s),
   C(-0.12, yc + 0.03 * s, 0.012, true),
 ];
-const doorNC = symbol({ name: 'HGS11_NC', description: 'Door interlock (guard) switch, normally closed', family: 'GS', entities: pilot(true, doorGlyph, 0, 0.07) });
-const doorNO = symbol({ name: 'HGS12_NO', description: 'Door interlock (guard) switch, normally open', family: 'GS', entities: pilot(false, doorGlyph, 0, 0.07) });
+const doorNC = pilotSymbol('HGS11_NC', 'Door interlock (guard) switch, normally closed', 'GS', true, doorGlyph, 0, 0.07);
+const doorNO = pilotSymbol('HGS12_NO', 'Door interlock (guard) switch, normally open', 'GS', false, doorGlyph, 0, 0.07);
 
 /** Safety mat: flat mat with a foot-force arrow. */
 const matGlyph = (yc: number, s: number): Entity[] => [R(0, yc, 0.28, 0.05), L(0, yc + 0.13 * s, 0, yc + 0.04 * s), arrowHead(0, yc + 0.04 * s, 0, -s, 0.035)];
-const safetyMat = symbol({ name: 'HSM11_NC', description: 'Safety mat, normally closed', family: 'SM', entities: pilot(true, matGlyph, 0, 0.025) });
+const safetyMat = pilotSymbol('HSM11_NC', 'Safety mat, normally closed', 'SM', true, matGlyph, 0, 0.025);
 
 const lightCurtain = symbol({
   name: 'HLC11',
