@@ -28,6 +28,7 @@ import { closeMenus } from './ui/menu';
 import { createSymbolBuilderUi } from './ui/symbol-builder';
 import { symbolBuilderOf } from './tools/symbol-builder';
 import { userLibrary, bridgeUserLibraryStore, localUserLibraryStore, type UserLibraryBridge } from './electrical/userlib';
+import { packRegistry, bridgePackStore, localPackStore, type PacksBridge } from './electrical/packs';
 
 declare global {
   interface Window {
@@ -48,7 +49,8 @@ declare global {
       onUpdateStatus?(cb: (status: { state: string; version?: string; percent?: number; message?: string; manual?: boolean }) => void): void;
       platform: string;
     } & Partial<AutosaveBridge> &
-      Partial<UserLibraryBridge>;
+      Partial<UserLibraryBridge> &
+      Partial<PacksBridge>;
   }
 }
 
@@ -328,6 +330,14 @@ function boot(): void {
   void userLibrary.load().then((n) => {
     if (n) editor.log(`User symbol library: ${n} symbol(s) available in the icon menu (User: categories).`);
     if (userLibrary.lastError) editor.log(`User symbol library could not be read: ${userLibrary.lastError}`);
+  });
+
+  // ------------------------------------------------------------ catalog packs (signed manufacturer catalogs)
+  packRegistry.setStore(bridge?.packsList && bridge.packsRead && bridge.packsWrite && bridge.packsRemove ? bridgePackStore(bridge as PacksBridge) : localPackStore(localStorage));
+  void packRegistry.load().then(({ loaded, errors }) => {
+    if (loaded) editor.log(`Catalog packs: ${loaded} installed (${packRegistry.list().map((p) => `${p.doc.name} - licensed to ${p.doc.license.licensee}`).join('; ')}).`);
+    for (const p of packRegistry.list()) if (p.verified.expired) editor.log(`Warning: the licence of catalog pack "${p.doc.name}" expired on ${p.verified.expires}. The parts keep working; renew to receive updates.`);
+    for (const e of errors) editor.log(`Catalog pack not loaded: ${e}`);
   });
 
   // ------------------------------------------------------------ autosave + recovery

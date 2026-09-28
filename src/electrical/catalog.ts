@@ -1,8 +1,10 @@
 /**
  * Parts catalog: a built-in JSON database of generic parts per family
- * (manufacturers and catalog numbers are invented) plus an optional user
- * catalog loaded from a JSON file named in the project settings. The
- * Catalog Browser searches it to fill MFG / CAT / DESC on a component.
+ * (manufacturers and catalog numbers are invented), an optional user
+ * catalog loaded from a JSON file named in the project settings, and the
+ * rows of the installed catalog packs (signed manufacturer catalogs, see
+ * packs.ts). Lookups search user catalog > packs (install order) > built-in.
+ * The Catalog Browser searches it to fill MFG / CAT / DESC on a component.
  */
 import builtin from './catalog.json';
 
@@ -15,11 +17,18 @@ export interface CatalogItem {
   /** NO / NC for contact-style parts, so the browser can prefer the matching variant. */
   type?: string;
   assycode?: string;
+  /** Panel footprint block (WD_FP_<family>) the part should use, when the publisher knows it. */
+  footprint?: string;
   /** Where the item came from. */
-  source?: 'builtin' | 'user';
+  source?: CatalogSource;
+  /** Name of the catalog pack the item came from (`source === 'pack'`). */
+  pack?: string;
 }
 
-function normalise(raw: unknown, source: 'builtin' | 'user'): CatalogItem[] {
+export type CatalogSource = 'builtin' | 'user' | 'pack';
+
+/** Normalise raw catalog rows (JSON objects) into upper-cased items; rows without a catalog number are dropped. */
+export function normaliseCatalog(raw: unknown, source: CatalogSource, pack?: string): CatalogItem[] {
   if (!Array.isArray(raw)) return [];
   const out: CatalogItem[] = [];
   for (const r of raw) {
@@ -29,21 +38,33 @@ function normalise(raw: unknown, source: 'builtin' | 'user'): CatalogItem[] {
     const family = str('family').toUpperCase();
     const cat = str('cat');
     if (!cat) continue;
-    out.push({ family, mfg: str('mfg').toUpperCase(), cat: cat.toUpperCase(), desc: str('desc').toUpperCase(), rating: str('rating') || undefined, type: str('type') || undefined, assycode: str('assycode') || undefined, source });
+    const item: CatalogItem = { family, mfg: str('mfg').toUpperCase(), cat: cat.toUpperCase(), desc: str('desc').toUpperCase(), rating: str('rating') || undefined, type: str('type').toUpperCase() || undefined, assycode: str('assycode') || undefined, source };
+    const footprint = str('footprint').toUpperCase();
+    if (footprint) item.footprint = footprint;
+    if (source === 'pack' && pack) item.pack = pack;
+    out.push(item);
   }
   return out;
 }
 
-export const BUILTIN_CATALOG: CatalogItem[] = normalise(builtin, 'builtin');
+/** Label for the browser's Source column: "user", the pack name, or "built-in". */
+export function catalogSourceLabel(item: CatalogItem): string {
+  if (item.source === 'user') return 'user';
+  if (item.source === 'pack') return item.pack ?? 'pack';
+  return 'built-in';
+}
+
+export const BUILTIN_CATALOG: CatalogItem[] = normaliseCatalog(builtin, 'builtin');
 
 let userCatalog: CatalogItem[] = [];
+let packCatalog: CatalogItem[] = [];
 
 /** Parse a user catalog file (JSON array of items, or {"items": [...]}). Throws on malformed input. */
 export function parseCatalog(text: string): CatalogItem[] {
   const raw = JSON.parse(text) as unknown;
   const arr = Array.isArray(raw) ? raw : raw && typeof raw === 'object' && Array.isArray((raw as { items?: unknown }).items) ? (raw as { items: unknown[] }).items : null;
   if (!arr) throw new Error('Catalog file must be a JSON array of parts');
-  return normalise(arr, 'user');
+  return normaliseCatalog(arr, 'user');
 }
 
 /** Install (or clear) the user catalog. User items are searched before the built-in ones. */
@@ -55,8 +76,18 @@ export function userCatalogSize(): number {
   return userCatalog.length;
 }
 
+/** Replace the merged rows of the installed catalog packs (packs.ts calls this whenever the registry changes). */
+export function setPackCatalog(items: CatalogItem[]): void {
+  packCatalog = items;
+}
+
+export function packCatalogSize(): number {
+  return packCatalog.length;
+}
+
+/** Merge order: user catalog, then the packs in install order, then the built-in parts. */
 export function allCatalogItems(): CatalogItem[] {
-  return [...userCatalog, ...BUILTIN_CATALOG];
+  return [...userCatalog, ...packCatalog, ...BUILTIN_CATALOG];
 }
 
 export function catalogFamilies(items: CatalogItem[] = allCatalogItems()): string[] {

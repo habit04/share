@@ -15,6 +15,13 @@ contextBridge.exposeInMainWorld('jcad', {
   // User symbol library (Symbol Builder): one JSON document in the app data folder
   userLibraryRead: () => ipcRenderer.invoke('user-library-read'),
   userLibraryWrite: (json) => ipcRenderer.invoke('user-library-write', json),
+  // Catalog packs (signed manufacturer catalogs): one *.jcadpack.json per pack in the app data folder
+  packsDir: () => ipcRenderer.invoke('packs-dir'),
+  packsList: () => ipcRenderer.invoke('packs-list'),
+  packsRead: (name) => ipcRenderer.invoke('packs-read', name),
+  packsWrite: (name, text) => ipcRenderer.invoke('packs-write', name, text),
+  packsRemove: (name) => ipcRenderer.invoke('packs-remove', name),
+  pickPackFile: () => ipcRenderer.invoke('pick-pack-file'),
   // Native menu mirrors of renderer state
   setRecentFiles: (files) => ipcRenderer.send('set-recent-files', files),
   quit: () => ipcRenderer.send('app-quit'),

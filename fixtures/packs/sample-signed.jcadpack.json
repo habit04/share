@@ -1,0 +1,136 @@
+{
+ "format": "jcad-pack/1",
+ "id": "sample-parts-2026",
+ "name": "Sample manufacturer parts",
+ "publisher": "Justin Rodriguez",
+ "version": "2026.1",
+ "kind": "catalog",
+ "license": {
+  "licensee": "Sample Panel Shop <shop@example.com>",
+  "issued": "2026-09-28",
+  "expires": "2027-09-28",
+  "seats": 1
+ },
+ "catalog": [
+  {
+   "family": "PB",
+   "mfg": "SAMPLE-MFG",
+   "cat": "800FP-F3",
+   "desc": "22MM FLUSH PUSH BUTTON, GREEN, MOMENTARY",
+   "rating": "10A 600V",
+   "type": "NO",
+   "footprint": "WD_FP_PB"
+  },
+  {
+   "family": "PB",
+   "mfg": "SAMPLE-MFG",
+   "cat": "800FP-F4",
+   "desc": "22MM FLUSH PUSH BUTTON, RED, MOMENTARY",
+   "rating": "10A 600V",
+   "type": "NC",
+   "footprint": "WD_FP_PB"
+  },
+  {
+   "family": "PB",
+   "mfg": "SAMPLE-MFG",
+   "cat": "800FP-E4",
+   "desc": "22MM E-STOP, RED MUSHROOM, TWIST RELEASE",
+   "rating": "10A 600V",
+   "type": "NC",
+   "footprint": "WD_FP_PB"
+  },
+  {
+   "family": "CR",
+   "mfg": "SAMPLE-MFG",
+   "cat": "700-HA32A1",
+   "desc": "GP RELAY, 3PDT, 120VAC COIL, 8-PIN OCTAL",
+   "rating": "10A 300V",
+   "footprint": "WD_FP_CR"
+  },
+  {
+   "family": "CR",
+   "mfg": "SAMPLE-MFG",
+   "cat": "700-HA32Z24",
+   "desc": "GP RELAY, 3PDT, 24VDC COIL, 8-PIN OCTAL",
+   "rating": "10A 300V",
+   "footprint": "WD_FP_CR"
+  },
+  {
+   "family": "M",
+   "mfg": "SAMPLE-MFG",
+   "cat": "100-C09D10",
+   "desc": "IEC CONTACTOR, 9A, 3-POLE, 120VAC COIL, 1 N.O. AUX",
+   "rating": "9A 600V",
+   "footprint": "WD_FP_M"
+  },
+  {
+   "family": "M",
+   "mfg": "SAMPLE-MFG",
+   "cat": "100-C23D10",
+   "desc": "IEC CONTACTOR, 23A, 3-POLE, 120VAC COIL, 1 N.O. AUX",
+   "rating": "23A 600V",
+   "footprint": "WD_FP_M"
+  },
+  {
+   "family": "OL",
+   "mfg": "SAMPLE-MFG",
+   "cat": "193-EECB",
+   "desc": "E1 PLUS OVERLOAD RELAY, 1.0-5.0A, CLASS 10",
+   "rating": "5A",
+   "footprint": "WD_FP_OL"
+  },
+  {
+   "family": "CB",
+   "mfg": "SAMPLE-MFG",
+   "cat": "1489-M1C100",
+   "desc": "MINIATURE CIRCUIT BREAKER, 1-POLE, 10A, C CURVE",
+   "rating": "10A 480Y/277V",
+   "footprint": "WD_FP_CB"
+  },
+  {
+   "family": "CB",
+   "mfg": "SAMPLE-MFG",
+   "cat": "1489-M3C200",
+   "desc": "MINIATURE CIRCUIT BREAKER, 3-POLE, 20A, C CURVE",
+   "rating": "20A 480Y/277V",
+   "footprint": "WD_FP_CB"
+  },
+  {
+   "family": "LT",
+   "mfg": "SAMPLE-MFG",
+   "cat": "800FP-P3",
+   "desc": "22MM PILOT LIGHT, GREEN, 120VAC LED",
+   "rating": "120VAC",
+   "footprint": "WD_FP_LT"
+  },
+  {
+   "family": "LT",
+   "mfg": "SAMPLE-MFG",
+   "cat": "800FP-P4",
+   "desc": "22MM PILOT LIGHT, RED, 120VAC LED",
+   "rating": "120VAC",
+   "footprint": "WD_FP_LT"
+  },
+  {
+   "family": "PS",
+   "mfg": "SAMPLE-MFG",
+   "cat": "1606-XLE120E",
+   "desc": "POWER SUPPLY, 120W, 24VDC, 5A",
+   "rating": "100-240VAC IN",
+   "footprint": "WD_FP_PS"
+  },
+  {
+   "family": "TB",
+   "mfg": "SAMPLE-MFG",
+   "cat": "1492-J4",
+   "desc": "FEED-THROUGH TERMINAL BLOCK, 4MM2, GRAY",
+   "rating": "32A 600V",
+   "footprint": "WD_FP_TB"
+  }
+ ],
+ "signature": {
+  "alg": "ed25519",
+  "keyId": "pub-2026",
+  "value": "UhuS04mwOo9hTjqejIU2Hfj+lclPYb1YjAni8Xt7AljKDFRL3P3iFnwmqpnroPCffU77hkDFjXa6EYPo0WeuBw=="
+ }
+}

@@ -11,3 +11,5 @@ tests/zz_*
 screenshots/library/
 screenshots/symbol-builder-*.png
 screenshots/report-dialog.png
+keys/
+*.pem

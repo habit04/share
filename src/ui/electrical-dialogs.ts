@@ -9,7 +9,8 @@
 import type { Editor } from '../app/editor';
 import type { ElectricalUi, ComponentDialogInit, ComponentDialogResult, PickItem, DrawingPropertiesInit, DrawingPropertiesResult, WireNumberDialogInit, WireNumberDialogResult, ReportsDialogOptions } from '../electrical/ui';
 import type { CatalogItem } from '../electrical/catalog';
-import { searchCatalog, catalogFamilies, catalogFamilyFor, userCatalogSize } from '../electrical/catalog';
+import { searchCatalog, catalogFamilies, catalogFamilyFor, userCatalogSize, packCatalogSize, catalogSourceLabel } from '../electrical/catalog';
+import { packRegistry, packStatus, type InstalledPack } from '../electrical/packs';
 import type { SchematicListRow, TerminalRow } from '../electrical/panel';
 import type { BusSettings } from '../electrical/wires';
 import type { CircuitOptions } from '../electrical/circuits';
@@ -301,10 +302,30 @@ export function componentDialog(editor: Editor, init: ComponentDialogInit, catal
 
 // ---------------------------------------------------------------- Catalog Browser
 
-export function catalogBrowserDialog(init: { family?: string; query?: string; type?: string }): Promise<CatalogItem | null> {
-  return dialog<CatalogItem>('Catalog Browser', 820, (m, finish) => {
-    const fams = catalogFamilies();
-    const family = select([['', '(all families)'], ...fams.map((f): [string, string] => [f, f])], init.family && fams.includes(init.family) ? init.family : '');
+/** "built-in + user catalog (n) + n pack(s) (m parts)" for the browser's status line. */
+export function catalogSourcesSummary(): string {
+  const parts = ['built-in'];
+  if (userCatalogSize()) parts.push(`user catalog (${userCatalogSize()})`);
+  const packs = packRegistry.list().filter((p) => p.verified.ok);
+  if (packs.length) parts.push(`${packs.length} pack(s) (${packCatalogSize()} parts)`);
+  return parts.join(' + ');
+}
+
+export function catalogBrowserDialog(init: { family?: string; query?: string; type?: string }, editor?: Editor): Promise<CatalogItem | null> {
+  return dialog<CatalogItem>('Catalog Browser', 860, (m, finish) => {
+    const family = select([['', '(all families)']], '');
+    const fillFamilies = (keep: string) => {
+      const fams = catalogFamilies();
+      family.innerHTML = '';
+      for (const [v, label] of [['', '(all families)'], ...fams.map((f): [string, string] => [f, f])] as Array<[string, string]>) {
+        const o = document.createElement('option');
+        o.value = v;
+        o.textContent = label;
+        family.appendChild(o);
+      }
+      family.value = keep && fams.includes(keep) ? keep : '';
+    };
+    fillFamilies(init.family ?? '');
     const search = textInput(init.query ?? '');
     search.placeholder = 'Search catalog number, manufacturer, description...';
     const top = grid(2);
@@ -319,26 +340,133 @@ export function catalogBrowserDialog(init: { family?: string; query?: string; ty
       current = null;
       for (const it of items) {
         const tr = document.createElement('tr');
-        tr.innerHTML = [it.family, it.mfg, it.cat, it.desc, it.rating ?? '', it.type ?? '', it.source === 'user' ? 'user' : 'built-in'].map((c) => `<td>${esc(c)}</td>`).join('');
+        tr.innerHTML = [it.family, it.mfg, it.cat, it.desc, it.rating ?? '', it.type ?? '', catalogSourceLabel(it)].map((c) => `<td>${esc(c)}</td>`).join('');
         selectableRow(tr, () => (current = it), () => finish(it));
         body.appendChild(tr);
       }
       if (items.length === 0) body.innerHTML = '<tr><td colspan="7">No matching parts</td></tr>';
-      status.textContent = `${items.length} part(s)${userCatalogSize() ? ` — user catalog: ${userCatalogSize()} part(s)` : ' — built-in catalog (load a user catalog with AECATALOGLOAD)'}`;
+      const expired = packRegistry.list().filter((p) => p.verified.ok && p.verified.expired);
+      status.textContent = `${items.length} part(s) — ${catalogSourcesSummary()}${expired.length ? ` — expired: ${expired.map((p) => `${p.doc.name} (${p.verified.expires})`).join(', ')}` : ''}${userCatalogSize() || packRegistry.size ? '' : ' (AECATALOGLOAD loads a user catalog; Packs... installs a catalog pack)'}`;
     };
     family.addEventListener('change', render);
     search.addEventListener('input', render);
     render();
     m.body.append(top, wrapScroll(t, 360), status);
     const ok = button('OK', true);
+    const packs = button('Packs...');
+    packs.title = 'Install or remove signed manufacturer catalog packs (AEPACKS)';
+    packs.addEventListener('click', () => {
+      void packsDialog(editor).then(() => {
+        fillFamilies(family.value);
+        render();
+      });
+    });
     const cancel = button('Cancel');
     ok.addEventListener('click', () => finish(current));
     cancel.addEventListener('click', () => finish(null));
-    m.footer.append(ok, cancel);
+    m.footer.append(ok, packs, cancel);
     search.focus();
     m.root.addEventListener('keydown', (ev) => {
-      if (ev.key === 'Enter' && current) ok.click();
+      if (ev.key === 'Enter' && current && (ev.target as HTMLElement).tagName !== 'BUTTON') ok.click();
     });
+  });
+}
+
+// ---------------------------------------------------------------- Catalog packs
+
+/**
+ * Pick a pack file (native dialog on the desktop, <input type=file> in a browser), verify
+ * it and install it. Logs the outcome through `editor.log` when an editor is given and
+ * returns the installed pack, or null when cancelled / refused.
+ */
+export async function installPackFromPicker(editor?: Editor): Promise<InstalledPack | null> {
+  let picked: { name: string; text: string } | null = null;
+  try {
+    if (window.jcad?.pickPackFile) picked = await window.jcad.pickPackFile();
+    else {
+      const r = await browserOpenTextFile('.json,.jcadpack.json');
+      picked = r ? { name: r.path, text: r.text } : null;
+    }
+  } catch (err) {
+    editor?.log(`Catalog pack not installed: ${(err as Error).message}`);
+    return null;
+  }
+  if (!picked) return null;
+  try {
+    const p = await packRegistry.install(picked.text);
+    editor?.log(`Catalog pack installed: ${p.doc.name} v${p.doc.version} by ${p.doc.publisher} - ${p.items.length} part(s), licensed to ${p.doc.license.licensee}, ${packStatus(p)}.`);
+    if (p.verified.expired) editor?.log(`Warning: the licence of "${p.doc.name}" expired on ${p.verified.expires}. The parts keep working; renew to receive updates.`);
+    return p;
+  } catch (err) {
+    editor?.log(`Catalog pack ${picked.name} refused: ${(err as Error).message}`);
+    return null;
+  }
+}
+
+/** Catalog Browser > Packs...: installed packs (licensee, expiry, part count, status), Install..., Remove. */
+export function packsDialog(editor?: Editor): Promise<boolean | null> {
+  return dialog<boolean>('Catalog Packs', 860, (m, finish) => {
+    const { table: t, body } = table(['Pack', 'Version', 'Publisher', 'Licensed to', 'Expires', 'Parts', 'Status']);
+    let current: InstalledPack | null = null;
+    const status = document.createElement('div');
+    status.className = 'hint';
+    const where = document.createElement('div');
+    where.className = 'hint';
+    const remove = button('Remove');
+    const render = () => {
+      const list = packRegistry.list();
+      body.innerHTML = '';
+      current = null;
+      remove.disabled = true;
+      for (const p of list) {
+        const tr = document.createElement('tr');
+        const st = packStatus(p);
+        tr.innerHTML = [p.doc.name, p.doc.version, p.doc.publisher, p.doc.license.licensee, p.doc.license.expires ?? 'never', String(p.items.length), st].map((c) => `<td>${esc(c)}</td>`).join('');
+        if (p.verified.expired) tr.style.color = '#8a5a00';
+        selectableRow(
+          tr,
+          () => {
+            current = p;
+            remove.disabled = false;
+          },
+          () => undefined,
+        );
+        body.appendChild(tr);
+      }
+      if (list.length === 0) body.innerHTML = '<tr><td colspan="7">No catalog packs installed. Install... adds a signed *.jcadpack.json file issued to you by the publisher.</td></tr>';
+      const errs = packRegistry.errors;
+      status.textContent = errs.length ? `Not loaded: ${errs.join('; ')}` : `${list.length} pack(s), ${packCatalogSize()} part(s) searched after the user catalog and before the built-in parts.`;
+      where.textContent = `Files: ${packRegistry.location ?? 'app data folder, packs/'}. Packs are verified against the publisher key on every start; an edited or unsigned file is refused, an expired one keeps working but is flagged.`;
+    };
+    render();
+    const unsubscribe = packRegistry.onChange(render);
+    m.onClose(unsubscribe);
+    m.body.append(wrapScroll(t, 300), status, where);
+    const install = button('Install...', true);
+    install.addEventListener('click', () => {
+      install.disabled = true;
+      void installPackFromPicker(editor)
+        .then((p) => {
+          if (p) status.textContent = `Installed ${p.doc.name}: ${p.items.length} part(s), licensed to ${p.doc.license.licensee}, ${packStatus(p)}.`;
+          else if (editor) status.textContent = 'Nothing installed (see the command window for the reason).';
+        })
+        .finally(() => (install.disabled = false));
+    });
+    remove.disabled = true;
+    remove.addEventListener('click', () => {
+      const p = current;
+      if (!p) return;
+      void packRegistry.remove(p.doc.id).then((ok) => {
+        if (ok) editor?.log(`Catalog pack removed: ${p.doc.name}.`);
+        render();
+      });
+    });
+    const close = button('Close');
+    close.addEventListener('click', () => {
+      unsubscribe();
+      finish(true);
+    });
+    m.footer.append(install, remove, close);
   });
 }
 
@@ -790,8 +918,8 @@ function browserOpenTextFile(accept: string): Promise<{ path: string; text: stri
 /** The default dialog set installed on editor.hooks.electrical. */
 export function createElectricalDialogs(editor: Editor): ElectricalUi {
   const ui: ElectricalUi = {
-    editComponent: (init) => componentDialog(editor, init, (family, type) => catalogBrowserDialog({ family, type })),
-    catalogBrowser: (init) => catalogBrowserDialog(init),
+    editComponent: (init) => componentDialog(editor, init, (family, type) => catalogBrowserDialog({ family, type }, editor)),
+    catalogBrowser: (init) => catalogBrowserDialog(init, editor),
     pickList: (title, items, opts) => pickListDialog(title, items, opts),
     schematicList: (rows) => schematicListDialog(rows),
     terminalStripEditor: (rows) => terminalStripEditorDialog(rows),

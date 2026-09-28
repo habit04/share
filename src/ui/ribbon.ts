@@ -150,7 +150,7 @@ export const RIBBON: RibbonTab[] = [
       },
       {
         title: 'Project Data',
-        buttons: [B('Title\nBlock', 'titleblock', 'AETITLEBLOCK'), B('Project\nProperties', 'settings', 'AEPROJECTPROPS', 'small'), B('Load\nCatalog', 'catalog', 'AECATALOGLOAD', 'small'), B('Retag', 'retag', 'AERETAG', 'small')],
+        buttons: [B('Title\nBlock', 'titleblock', 'AETITLEBLOCK'), B('Project\nProperties', 'settings', 'AEPROJECTPROPS', 'small'), B('Load\nCatalog', 'catalog', 'AECATALOGLOAD', 'small'), B('Catalog\nPacks', 'catalog', 'AEPACKS', 'small', 'Catalog packs: install or remove signed manufacturer catalogs  (AEPACKS)'), B('Retag', 'retag', 'AERETAG', 'small')],
       },
     ],
   },

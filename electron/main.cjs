@@ -500,6 +500,72 @@ ipcMain.handle('user-library-write', async (_ev, json) => {
   await fs.rename(tmp, file);
 });
 
+// ------------------------------------------------------------------ catalog packs (app data folder / packs)
+// Signed manufacturer catalogs (*.jcadpack.json, see docs/CATALOG-PACKS.md). The renderer verifies the
+// signature; the main process only stores the files verbatim, one per pack, with atomic writes.
+const packsDir = () => path.join(stateDir(), 'packs');
+const PACK_NAME_RE = /^[A-Za-z0-9._-]+\.jcadpack\.json$/;
+const MAX_PACK_BYTES = 20 * 1024 * 1024;
+function safePackName(name) {
+  if (typeof name !== 'string' || name.length > 200 || name.includes('..') || !PACK_NAME_RE.test(name)) throw new Error('Invalid pack file name');
+  return name;
+}
+ipcMain.handle('packs-dir', () => packsDir());
+ipcMain.handle('packs-list', async () => {
+  try {
+    return (await fs.readdir(packsDir())).filter((f) => PACK_NAME_RE.test(f)).sort();
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return [];
+    throw err;
+  }
+});
+ipcMain.handle('packs-read', async (_ev, name) => {
+  const file = path.join(packsDir(), safePackName(name));
+  try {
+    const st = await fs.stat(file);
+    if (st.size > MAX_PACK_BYTES) throw new Error(`Pack file is larger than ${MAX_PACK_BYTES / (1024 * 1024)} MB`);
+    return await fs.readFile(file, 'utf8');
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return null;
+    throw err;
+  }
+});
+ipcMain.handle('packs-write', async (_ev, name, text) => {
+  const file = path.join(packsDir(), safePackName(name));
+  if (typeof text !== 'string' || text.length > MAX_PACK_BYTES) throw new Error('Invalid pack payload');
+  await fs.mkdir(packsDir(), { recursive: true });
+  // Same discipline as the user library: write + fsync a temporary file, then rename over the target.
+  const tmp = file + '.tmp';
+  const fh = await fs.open(tmp, 'w');
+  try {
+    await fh.writeFile(text, 'utf8');
+    await fh.sync();
+  } finally {
+    await fh.close();
+  }
+  await fs.rename(tmp, file);
+});
+ipcMain.handle('packs-remove', async (_ev, name) => {
+  await fs.rm(path.join(packsDir(), safePackName(name)), { force: true });
+});
+/** Native picker for a pack file; returns { name, text } (the renderer verifies and stores it) or null. */
+ipcMain.handle('pick-pack-file', async (ev) => {
+  const win = BrowserWindow.fromWebContents(ev.sender);
+  const res = await dialog.showOpenDialog(win, {
+    title: 'Install Catalog Pack',
+    filters: [
+      { name: 'JCad Catalog Pack', extensions: ['json'] },
+      { name: 'All Files', extensions: ['*'] },
+    ],
+    properties: ['openFile'],
+  });
+  if (res.canceled || res.filePaths.length === 0) return null;
+  const file = res.filePaths[0];
+  const st = await fs.stat(file);
+  if (st.size > MAX_PACK_BYTES) throw new Error(`Pack file is larger than ${MAX_PACK_BYTES / (1024 * 1024)} MB`);
+  return { name: path.basename(file), text: await fs.readFile(file, 'utf8') };
+});
+
 /** The renderer keeps the Recent Documents list; we mirror it into the native File > Open Recent menu. */
 ipcMain.on('set-recent-files', (ev, files) => {
   if (!Array.isArray(files)) return;

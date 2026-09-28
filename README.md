@@ -114,7 +114,8 @@ keywords shown in `[brackets]` are clickable.
 | AECOMPONENT3 [block] | AEC3 | Insert a 3-pole device on a 3-wire bus (poles share the tag, POLE=1..3, TAG1 shown on pole 1 only, pins 1/2 - 3/4 - 5/6 or L1/T1 - L2/T2 - L3/T3 per pole, dashed link) |
 | AERETAG [S] | RETAG | Renumber all (or selected) tags in ladder order with the drawing's tag format |
 | AETOGGLENC, AESWAP, AEUPDATEBLOCK | TOGGLENC, SWAPBLOCK, UPDATEBLOCK | NO/NC variant in place; swap a symbol keeping its data; refresh block definitions from the library |
-| AECATALOG [family], AECATALOGLOAD | CATALOG, LOADCATALOG | Catalog Browser (built-in generic parts + user JSON catalog from the project settings) |
+| AECATALOG [family], AECATALOGLOAD | CATALOG, LOADCATALOG | Catalog Browser (built-in generic parts + user JSON catalog from the project settings + installed catalog packs, with a Source column) |
+| AEPACKS, AEPACKINSTALL, AEPACKLIST | PACKS, INSTALLPACK, PACKLIST | Catalog packs: install / remove signed manufacturer catalogs (`*.jcadpack.json`), show who they are licensed to and until when |
 | AESYMBUILDER [name] | SYMBUILDER, SYMBOLBUILDER, SYMEDIT | Symbol Builder: draw or harvest a schematic symbol in its own tab, place TAG1 / DESC1 / pins from the palette and save it to the user library (also New Symbol... / Edit... in the icon menu); AESYMSAVE, AESYMCHECK, AESYMVERTICAL, AESYMTWIN, AESYMTEXT2ATTR, AESYMRENAME, AESYMDELETE, AESYMLIBEXPORT / AESYMLIBIMPORT maintain the library |
 | AEWIRENO | WIRENO | Number every wire net by rung reference (100, 100A, ...); fixed numbers (layer WIREFIXED) are kept |
 | AEEDITWIRENO, AECOPYWIRENO, AEWIRENOLEADER | EDITWIRENO, ... | Edit a wire number (fixed flag, above / below / in-line, find & replace); copy a number; move it with a leader |
@@ -184,6 +185,22 @@ are `WD_FP_<family>` blocks with `P_TAG1`, `P_ITEM`, `P_DESC1`-`2`, `P_MFG`, `P_
 The parts catalog (`src/electrical/catalog.json`) is a generic, invented set of parts per family; a
 project can name a user catalog JSON file (array of `{family, mfg, cat, desc, rating, type, assycode}`)
 that is searched first.
+
+### Catalog packs
+
+The application is free (GPL); real manufacturer catalogs are sold separately as **catalog packs**:
+one signed `*.jcadpack.json` file per buyer holding `{format: "jcad-pack/1", id, name, publisher,
+version, kind: "catalog", license: {licensee, issued, expires, seats}, catalog: [...], signature}`.
+The publisher signs the canonical JSON of the document (Ed25519) and the app carries the matching
+public key(s) in `src/electrical/pack-keys.json`; **Catalog Browser > Packs...** (`AEPACKS`) installs a
+file after verifying it, shows "Licensed to <buyer>" and the expiry, and refuses unsigned, edited or
+unknown-key packs. An expired pack keeps working (the buyer keeps the data they paid for) but is
+flagged. Installed packs live in `userData/packs/` (browser: localStorage `jcad.packs.v1`) and are
+verified again on every start; their parts are searched after the user catalog and before the
+built-in one, and the browser's Source column names the pack. `scripts/pack-sign.mjs` (`keygen`,
+`csv2catalog`, `sign`, `verify`) is the publisher's tool; `docs/CATALOG-PACKS.md` walks through the
+whole flow and is frank about what a signature check can and cannot do in a GPL program. The key in
+`pack-keys.json` is a sample: replace it with your own before selling anything.
 
 ### Symbol Builder
 

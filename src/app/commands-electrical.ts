@@ -33,6 +33,7 @@ import { LIBRARY_BLOCKS, findLibrarySymbol } from '../electrical/library';
 import { tagPrefix } from '../electrical/symbols';
 import { userLibrary } from '../electrical/userlib';
 import { setUserCatalog, parseCatalog, userCatalogSize, catalogFamilyFor } from '../electrical/catalog';
+import { packRegistry, packStatus } from '../electrical/packs';
 import { schematicList, terminalStripTable, applyTerminalEdits, BALLOON_BLOCK, NAMEPLATE_BLOCK } from '../electrical/panel';
 import { buildMotorCircuit, makeTagger, DEFAULT_CIRCUIT, type CircuitOptions } from '../electrical/circuits';
 import { auditIssues } from '../electrical/audit';
@@ -43,7 +44,7 @@ import { titleBlockFields, projectDrawingIndex, resolveDrawingPath, resolveProje
 import { readDxf } from '../io/dxf';
 import { convertDwg } from '../io/dwg';
 import type { ElectricalUi } from '../electrical/ui';
-import { createElectricalDialogs } from '../ui/electrical-dialogs';
+import { createElectricalDialogs, packsDialog, installPackFromPicker } from '../ui/electrical-dialogs';
 import { isComponent } from '../electrical/families';
 
 /** The dialog set: whatever main.ts installed on `hooks.electrical`, else the built-in dialogs (created lazily). */
@@ -243,6 +244,19 @@ export function registerElectricalCommands(editor: Editor): void {
         ed.log(`Catalog not loaded: ${(err as Error).message}`);
       }
     });
+  });
+  // ---- catalog packs (signed manufacturer catalogs, see docs/CATALOG-PACKS.md)
+  reg('AEPACKS', ['PACKS', 'CATALOGPACKS'], 'Catalog packs: list, install or remove signed manufacturer catalogs', (ed) => void packsDialog(ed));
+  reg('AEPACKINSTALL', ['PACKINSTALL', 'INSTALLPACK'], 'Install a catalog pack file (*.jcadpack.json) after verifying its signature', (ed) => void installPackFromPicker(ed));
+  reg('AEPACKLIST', ['PACKLIST'], 'List the installed catalog packs (licensee, expiry, part count)', (ed) => {
+    const list = packRegistry.list();
+    if (list.length === 0) {
+      ed.log('No catalog packs installed (AEPACKINSTALL installs a *.jcadpack.json file).');
+      return;
+    }
+    for (const p of list) ed.log(`${p.doc.name} v${p.doc.version} (${p.doc.id}) by ${p.doc.publisher}: ${p.items.length} part(s), licensed to ${p.doc.license.licensee}, ${packStatus(p)}.`);
+    for (const e of packRegistry.errors) ed.log(`Not loaded: ${e}`);
+    ed.log(`${list.length} pack(s); files in ${packRegistry.location ?? 'the app data folder (packs/)'}.`);
   });
 
   // ---- wires
