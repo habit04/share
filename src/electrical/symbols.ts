@@ -501,9 +501,23 @@ export const WIRE_DOT: BlockDef = {
  * Static, so every importer of tagPrefix sees the same answers regardless of load order.
  */
 const extraPrefixes: Array<[RegExp, string]> = [...POWER_FLUID_TAG_PREFIXES, ...JIC_CONTROL_TAG_PREFIXES, ...IEC_EXTENDED_TAG_PREFIXES];
-/** Add block-name patterns -> tag prefix for symbols outside the built-in libraries (user libraries). */
+/**
+ * Add block-name patterns -> tag prefix for symbols outside the built-in libraries (user
+ * libraries). A pattern that is already registered has its prefix replaced, so a user
+ * symbol whose family changes takes the new prefix.
+ */
 export function registerTagPrefixes(entries: Array<[RegExp, string]>): void {
-  for (const e of entries) if (!extraPrefixes.some(([re, p]) => re.source === e[0].source && p === e[1])) extraPrefixes.push(e);
+  for (const e of entries) {
+    const i = extraPrefixes.findIndex(([re]) => re.source === e[0].source && re.flags === e[0].flags);
+    if (i >= 0) extraPrefixes[i] = e;
+    else extraPrefixes.push(e);
+  }
+}
+
+/** Remove a previously registered pattern (a user symbol deleted from the library). */
+export function unregisterTagPrefix(pattern: RegExp): void {
+  const i = extraPrefixes.findIndex(([re]) => re.source === pattern.source && re.flags === pattern.flags);
+  if (i >= 0) extraPrefixes.splice(i, 1);
 }
 
 /** Default component tag prefix by family (AutoCAD Electrical style e.g. PB, CR, LT). */

@@ -256,12 +256,14 @@ export class ThreePhaseComponentTool extends PickTool {
     ctx.doc.ensureBlocks(LIBRARY_BLOCKS);
     const choose = this.preset ? Promise.resolve(this.preset) : ctx.ui.pickSymbol();
     void choose.then((name) => {
-      if (!name || !lookupSymbol(name)) {
+      const def = name ? lookupSymbol(name) : undefined;
+      if (!name || !def) {
         ctx.finish();
         return;
       }
-      this.block = name;
-      ctx.prompt(`Pick the top phase wire where ${name} goes (3 wires, evenly spaced):`);
+      ctx.doc.ensureBlocks([def]);
+      this.block = def.name;
+      ctx.prompt(`Pick the top phase wire where ${def.name} goes (3 wires, evenly spaced):`);
     });
   }
   override onMove(p: Point, ctx: ToolContext): void {

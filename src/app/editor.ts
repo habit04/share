@@ -28,6 +28,7 @@ import { convertDwg, type DwgImportPayload } from '../io/dwg';
 import type { ElectricalUi } from '../electrical/ui';
 import { registerElectricalCommands } from './commands-electrical';
 import { registerDraftingCommands } from './commands-drafting';
+import { registerSymbolBuilderCommands, type SymbolBuilderUi } from '../tools/symbol-builder';
 import { trackFromPoints } from '../core/snap';
 
 export type EditorEvent = 'change' | 'selection' | 'tool' | 'view' | 'snap' | 'file' | 'log';
@@ -125,6 +126,8 @@ export class Editor {
     projectChanged?: () => void;
     /** AutoCAD Electrical-style dialogs (see src/electrical/ui.ts); defaults come from src/ui/electrical-dialogs.ts. */
     electrical?: ElectricalUi;
+    /** Symbol Builder start dialog and palette (src/ui/symbol-builder.ts). */
+    symbolBuilder?: SymbolBuilderUi;
   } = {};
   settings: UserSettings = loadSettings();
   project: Project = defaultProject();
@@ -490,6 +493,7 @@ export class Editor {
     });
     registerDraftingCommands(this);
     registerElectricalCommands(this);
+    registerSymbolBuilderCommands(this);
   }
 
   /** Hook for keywords typed at a "Select objects:" prompt (ALL / Last / Previous); returns true when handled. */

@@ -36,7 +36,7 @@ describe('settings normalisation and migration', () => {
     expect(s.osnapModes.endpoint).toBe(false);
     expect(s.osnapModes.quadrant).toBe(false);
     expect(s.statusBarItems).toEqual({ grid: false, custom: true });
-    expect(s.paletteWidths).toEqual({ projectManager: 268, properties: 300, toolPalettes: 240 });
+    expect(s.paletteWidths).toEqual({ projectManager: 268, properties: 300, toolPalettes: 240, symbolBuilder: 300 });
   });
   it('migrates a v1 blob when no v2 blob exists, and prefers v2 otherwise', () => {
     const v1 = JSON.stringify({ gridVisible: false, ribbonTab: 4, recentFiles: ['x.dxf'], symbolStandard: 'IEC' });

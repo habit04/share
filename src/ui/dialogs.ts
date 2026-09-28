@@ -11,6 +11,9 @@ import { drawPreview } from '../render/draw';
 import { aciToCss, ACI_NAMES } from '../render/palette';
 import { icon } from './icons';
 import { esc } from './dom';
+import { showMenu } from './menu';
+import { userLibrary } from '../electrical/userlib';
+import { chooseUserSymbolDialog } from './symbol-builder';
 
 function modal(title: string, width = 520, theme: 'light' | 'dark' = 'light'): { root: HTMLElement; body: HTMLElement; footer: HTMLElement; close: () => void; onClose: (fn: () => void) => void } {
   const root = document.createElement('div');
@@ -138,6 +141,31 @@ export function pickSymbolDialog(editor: Editor, standard: 'JIC' | 'IEC' = 'JIC'
         cell.append(canvas, label);
         cell.title = s.name;
         cell.addEventListener('click', () => finish(s.name));
+        if (userLibrary.has(s.name)) {
+          cell.classList.add('user-symbol');
+          cell.title = `${s.name} (user library; right-click to edit)`;
+          cell.addEventListener('contextmenu', (ev) => {
+            ev.preventDefault();
+            showMenu({ x: ev.clientX, y: ev.clientY }, [
+              { label: 'Insert', run: () => finish(s.name) },
+              { label: 'Edit in Symbol Builder', run: () => openBuilder(s.name) },
+              null,
+              {
+                label: 'Delete from Library',
+                run: () => {
+                  void confirmDialog('Delete symbol', `Remove ${s.name} from the user library?`).then((yes) => {
+                    if (!yes) return;
+                    userLibrary.remove(s.name);
+                    editor.log(`${s.name} removed from the user library.`);
+                    active = Math.min(active, categories().length - 1);
+                    renderCats();
+                    renderGrid();
+                  });
+                },
+              },
+            ]);
+          });
+        }
         grid.appendChild(cell);
       }
     };
@@ -170,6 +198,26 @@ export function pickSymbolDialog(editor: Editor, standard: 'JIC' | 'IEC' = 'JIC'
       ev.stopPropagation();
     });
     m.body.appendChild(options);
+    // Symbol Builder: create a new symbol, or edit one of the user symbols. Both close the icon menu
+    // without inserting; the command starts once the pending component tool has been cancelled.
+    const openBuilder = (name?: string) => {
+      finish(null);
+      setTimeout(() => editor.runCommand(name ? `AESYMBUILDER ${name}` : 'AESYMBUILDER'), 0);
+    };
+    const newSym = button('New Symbol...');
+    newSym.className += ' left';
+    newSym.title = 'Symbol Builder: draw a new symbol and save it to the user library (AESYMBUILDER)';
+    newSym.addEventListener('click', () => openBuilder());
+    const editSym = button('Edit...');
+    editSym.className += ' left';
+    editSym.title = userLibrary.size ? 'Edit a user symbol in the Symbol Builder' : 'No user symbols yet (New Symbol... creates one)';
+    editSym.disabled = userLibrary.size === 0;
+    editSym.addEventListener('click', () => {
+      void chooseUserSymbolDialog(editor).then((name) => {
+        if (name) openBuilder(name);
+        else renderGrid();
+      });
+    });
     const std = button(standard === 'JIC' ? 'Switch to IEC' : 'Switch to JIC');
     std.className += ' left';
     std.addEventListener('click', () => {
@@ -182,7 +230,7 @@ export function pickSymbolDialog(editor: Editor, standard: 'JIC' | 'IEC' = 'JIC'
     });
     const cancel = button('Cancel');
     cancel.addEventListener('click', () => finish(null));
-    m.footer.append(std, cancel);
+    m.footer.append(std, newSym, editSym, cancel);
   });
 }
 

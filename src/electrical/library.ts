@@ -13,7 +13,9 @@ import { IEC_CATEGORIES, IEC_SYMBOLS } from './iec';
 import { JIC_CONTROL_CATEGORIES, JIC_CONTROL_SYMBOLS } from './symbols-jic-control';
 import { POWER_FLUID_CATEGORIES, POWER_FLUID_SYMBOLS } from './symbols-power-fluid';
 import { IEC_EXTENDED_CATEGORIES, IEC_EXTENDED_SYMBOLS } from './iec-extended';
-// The extended libraries' tag-prefix rules are part of the static table in symbols.ts.
+import { userLibrary, USER_CATEGORY_PREFIX } from './userlib';
+// The extended libraries' tag-prefix rules are part of the static table in symbols.ts;
+// user symbols (Symbol Builder) register theirs when they are added to the user library.
 
 /** JIC (NFPA 79 ladder) categories: core set first, then the extended sets. */
 export const JIC_LIBRARY: SymbolCategory[] = [...SYMBOL_CATEGORIES, ...JIC_CONTROL_CATEGORIES, ...POWER_FLUID_CATEGORIES];
@@ -35,14 +37,36 @@ export const LIBRARY_BLOCKS: BlockDef[] = [...LIBRARY_SYMBOLS, WIRE_DOT];
 const byName = new Map<string, BlockDef>();
 for (const s of LIBRARY_BLOCKS) if (!byName.has(s.name)) byName.set(s.name, s);
 
-/** Find any built-in symbol by block name (block names are upper case; lower-case input is accepted). */
+/** Find any built-in or user symbol by block name (block names are upper case; lower-case input is accepted). */
 export function findLibrarySymbol(name: string): BlockDef | undefined {
-  return byName.get(name) ?? byName.get(name.toUpperCase());
+  return byName.get(name) ?? byName.get(name.toUpperCase()) ?? userLibrary.get(name)?.block;
 }
 
-/** Categories of one standard, used by the icon menu and tool palettes. */
+/** Whether a block name belongs to the built-in library. */
+export function isBuiltinSymbol(name: string): boolean {
+  return byName.has(name);
+}
+
+/** Whether a block name is a built-in or user library symbol (as opposed to a block private to a drawing). */
+export function isLibrarySymbol(name: string): boolean {
+  return byName.has(name) || userLibrary.has(name);
+}
+
+/** Categories of one standard, used by the icon menu and tool palettes: built-ins first, then "User: <category>" groups. */
 export function libraryCategories(standard: 'JIC' | 'IEC'): SymbolCategory[] {
-  return standard === 'IEC' ? IEC_LIBRARY : JIC_LIBRARY;
+  const builtin = standard === 'IEC' ? IEC_LIBRARY : JIC_LIBRARY;
+  const user = userLibrary.categoriesOf(standard);
+  return user.length ? [...builtin, ...user] : builtin;
+}
+
+/** Category names of one standard without the "IEC: " / "User: " prefixes (Symbol Builder category list). */
+export function libraryCategoryNames(standard: 'JIC' | 'IEC'): string[] {
+  const out: string[] = [];
+  for (const c of libraryCategories(standard)) {
+    const n = c.name.replace(/^IEC: /, '').replace(USER_CATEGORY_PREFIX, '');
+    if (!out.includes(n)) out.push(n);
+  }
+  return out;
 }
 
 /** Symbols whose name or description contains the query (all categories of the standard). */
@@ -63,26 +87,29 @@ export function searchLibrary(standard: 'JIC' | 'IEC', query: string): BlockDef[
   return out;
 }
 
-/** Library size summary for the About tab and reports. */
-export function librarySummary(): { jic: number; iec: number; total: number; categories: number } {
-  const jic = JIC_LIBRARY.reduce((n, c) => n + c.symbols.length, 0);
-  const iec = IEC_LIBRARY.reduce((n, c) => n + c.symbols.length, 0);
-  return { jic, iec, total: jic + iec, categories: JIC_LIBRARY.length + IEC_LIBRARY.length };
+/** Library size summary for the About tab and reports (user symbols counted with their standard). */
+export function librarySummary(): { jic: number; iec: number; total: number; categories: number; user: number } {
+  const jicCats = libraryCategories('JIC');
+  const iecCats = libraryCategories('IEC');
+  const jic = jicCats.reduce((n, c) => n + c.symbols.length, 0);
+  const iec = iecCats.reduce((n, c) => n + c.symbols.length, 0);
+  return { jic, iec, total: jic + iec, categories: jicCats.length + iecCats.length, user: userLibrary.size };
 }
 
 const LIBRARY_NAMES = new Set(LIBRARY_BLOCKS.map((b) => b.name));
 
 /**
- * The state without built-in library blocks that nothing references. Used when a
- * drawing is written (SAVE, autosave) so a file only carries the symbols it uses;
- * `ensureBlocks` puts the whole library back when the drawing is opened.
+ * The state without library blocks (built-in or user) that nothing references. Used when
+ * a drawing is written (SAVE, autosave) so a file only carries the symbols it uses;
+ * `ensureBlocks` puts the built-in library back when the drawing is opened and user
+ * symbols are re-added from the user library when they are inserted.
  */
 export function withoutUnusedLibraryBlocks(state: DrawingState): DrawingState {
   const used = referencedBlocks(state);
   const blocks: Record<string, BlockDef> = {};
   let dropped = 0;
   for (const [name, def] of Object.entries(state.blocks)) {
-    if (LIBRARY_NAMES.has(name) && !used.has(name)) dropped += 1;
+    if ((LIBRARY_NAMES.has(name) || userLibrary.has(name)) && !used.has(name)) dropped += 1;
     else blocks[name] = def;
   }
   return dropped === 0 ? state : { ...state, blocks };

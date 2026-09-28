@@ -1,5 +1,6 @@
 import type { Editor } from '../app/editor';
-import { JIC_LIBRARY, IEC_LIBRARY } from '../electrical/library';
+import { libraryCategories } from '../electrical/library';
+import { userLibrary } from '../electrical/userlib';
 import type { BlockDef } from '../core/entities';
 import { drawPreview } from '../render/draw';
 import { icon } from './icons';
@@ -45,11 +46,16 @@ export class ToolPalettes {
     makeDraggable(this.el, strip);
     this.renderTabs();
     this.renderGrid();
+    userLibrary.onChange(() => {
+      this.active = Math.min(this.active, Math.max(0, this.categories().length - 1));
+      this.renderTabs();
+      if (!this.el.classList.contains('hidden')) this.renderGrid();
+    });
     if (editor.settings.toolPalettesVisible) this.toggle(true);
   }
 
   private categories(): Array<{ name: string; symbols: BlockDef[] }> {
-    return [...JIC_LIBRARY, ...IEC_LIBRARY];
+    return [...libraryCategories('JIC'), ...libraryCategories('IEC')];
   }
 
   toggle(show?: boolean): void {

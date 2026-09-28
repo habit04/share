@@ -22,6 +22,9 @@ import { recoveryDialog } from './ui/recovery';
 import { showAppMenu } from './ui/appmenu';
 import { EntityClipboard } from './ui/clipboard';
 import { closeMenus } from './ui/menu';
+import { createSymbolBuilderUi } from './ui/symbol-builder';
+import { symbolBuilderOf } from './tools/symbol-builder';
+import { userLibrary, bridgeUserLibraryStore, localUserLibraryStore, type UserLibraryBridge } from './electrical/userlib';
 
 declare global {
   interface Window {
@@ -40,7 +43,8 @@ declare global {
       checkForUpdates?(): Promise<{ state: string; version?: string; message?: string }>;
       onUpdateStatus?(cb: (status: { state: string; version?: string; percent?: number; message?: string; manual?: boolean }) => void): void;
       platform: string;
-    } & Partial<AutosaveBridge>;
+    } & Partial<AutosaveBridge> &
+      Partial<UserLibraryBridge>;
   }
 }
 
@@ -98,6 +102,7 @@ function boot(): void {
         <div id="command-window"></div>
       </div>
       <div id="properties"></div>
+      <div id="symbol-builder"></div>
     </div>
     <div id="statusbar"></div>`;
 
@@ -149,6 +154,8 @@ function boot(): void {
     else void ed.sessions.openInTab(f, (x) => origOpen.run(ed, x) as unknown as Promise<void>);
   });
   const closeTab = async (i: number): Promise<boolean> => {
+    // Symbol Builder tabs save to the user library instead of a file.
+    if (symbolBuilderOf(editor).isSymbolSession(i)) return symbolBuilderOf(editor).closeSession(i);
     if (editor.sessions.isDirty(i)) {
       const ok = await confirmDialog('Unsaved changes', `${editor.sessions.titleOf(i)} has unsaved changes. Discard them?`);
       if (!ok) return false;
@@ -248,6 +255,7 @@ function boot(): void {
       saveSettings(editor.settings);
     },
     projectChanged: () => pm.refresh(),
+    symbolBuilder: createSymbolBuilderUi(editor, document.getElementById('symbol-builder')!),
   };
 
   // ------------------------------------------------------------ chrome
@@ -294,10 +302,17 @@ function boot(): void {
   installRolloverTooltips(editor, canvas, canvasWrap);
   const tp = new ToolPalettes(editor, canvasWrap);
 
-  // ------------------------------------------------------------ autosave + recovery
+  // ------------------------------------------------------------ user symbol library (Symbol Builder)
   const bridge = window.jcad;
+  userLibrary.setStore(bridge?.userLibraryRead && bridge.userLibraryWrite ? bridgeUserLibraryStore(bridge as UserLibraryBridge) : localUserLibraryStore(localStorage));
+  void userLibrary.load().then((n) => {
+    if (n) editor.log(`User symbol library: ${n} symbol(s) available in the icon menu (User: categories).`);
+    if (userLibrary.lastError) editor.log(`User symbol library could not be read: ${userLibrary.lastError}`);
+  });
+
+  // ------------------------------------------------------------ autosave + recovery
   const store = bridge?.autosaveWrite && bridge.autosaveList && bridge.autosaveRead && bridge.autosaveRemove ? bridgeAutosaveStore(bridge as AutosaveBridge) : localAutosaveStore(localStorage);
-  const autosaver = new Autosaver(editor.sessions, store, () => editor.settings.autosaveMinutes);
+  const autosaver = new Autosaver(editor.sessions, store, () => editor.settings.autosaveMinutes, (id) => symbolBuilderOf(editor).sessions.has(id));
   autosaver.onSaved = (n) => editor.log(`Autosave: ${n} drawing(s) written.`);
   autosaver.start();
   editor.on('snap', () => autosaver.restart()); // settings changed (interval may differ)

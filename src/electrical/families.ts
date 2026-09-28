@@ -13,8 +13,19 @@ export const CHILD_RE = /^(HCR1_N[OC]|HTD[12]_N[OC]|HKM1_N[OC]|HSR1_N[OC]|HLR1_N
 /** Blocks that are drawing furniture rather than components. */
 export const NON_COMPONENT_RE = /^(WDDOT|WD_SRC_ARROW|WD_DST_ARROW|WD_M|WD_TITLEBLOCK|WD_BALLOON|WD_NAMEPLATE|WD_GAP|WD_FP_)/;
 
-export const isCoilBlock = (block: string): boolean => COIL_RE.test(block) && !/_N[OC]$/.test(block);
-export const isChildBlock = (block: string): boolean => CHILD_RE.test(block);
+/** Roles of symbols outside the built-in library (Symbol Builder: parent coil / child contact). */
+const extraCoils = new Set<string>();
+const extraChildren = new Set<string>();
+/** Register (or clear with role 'none') the coil / contact role of a user symbol block. */
+export function registerSymbolRole(block: string, role: 'coil' | 'child' | 'none'): void {
+  extraCoils.delete(block);
+  extraChildren.delete(block);
+  if (role === 'coil') extraCoils.add(block);
+  else if (role === 'child') extraChildren.add(block);
+}
+
+export const isCoilBlock = (block: string): boolean => extraCoils.has(block) || (COIL_RE.test(block) && !/_N[OC]$/.test(block));
+export const isChildBlock = (block: string): boolean => extraChildren.has(block) || CHILD_RE.test(block);
 export const isFootprintBlock = (block: string): boolean => block.startsWith('WD_FP_');
 
 /**

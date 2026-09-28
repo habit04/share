@@ -5,6 +5,7 @@ import { esc } from './dom';
 import { drawPreview } from '../render/draw';
 import { sessionTitle } from '../app/sessions';
 import { showMenu, type MenuItem } from './menu';
+import { symbolBuilderOf } from '../tools/symbol-builder';
 
 /** Title bar with Quick Access Toolbar, InfoCenter search and the application-menu button. */
 export function buildTitleBar(editor: Editor, el: HTMLElement, onAppMenu?: (anchor: HTMLElement) => void): void {
@@ -85,6 +86,8 @@ export function buildFileTabs(editor: Editor, el: HTMLElement): void {
   };
   const closeTab = (i: number) => {
     const doIt = () => editor.sessions.close(i);
+    const sb = symbolBuilderOf(editor);
+    if (sb.isSymbolSession(i)) return void sb.closeSession(i);
     if (!editor.sessions.isDirty(i)) return doIt();
     void editor.ui?.confirm('Unsaved changes', `${editor.sessions.titleOf(i)} has unsaved changes. Discard them?`).then((ok) => {
       if (ok) doIt();

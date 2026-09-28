@@ -253,12 +253,15 @@ export class ComponentTool implements Tool {
     ctx.prompt('Select a symbol from the icon menu...');
     const choose = this.preset ? Promise.resolve(this.preset) : ctx.ui.pickSymbol();
     void choose.then((name) => {
-      if (!name || !lookupSymbol(name)) {
+      const def = name ? lookupSymbol(name) : undefined;
+      if (!name || !def) {
         ctx.finish();
         return;
       }
-      this.block = name;
-      ctx.prompt(`Specify insertion point for ${name}:`);
+      // User-library symbols are not part of LIBRARY_BLOCKS: define the block in this drawing.
+      ctx.doc.ensureBlocks([def]);
+      this.block = def.name;
+      ctx.prompt(`Specify insertion point for ${def.name}:`);
     });
   }
 
@@ -293,6 +296,7 @@ export class ComponentTool implements Tool {
   onPoint(p: Point, ctx: ToolContext): void {
     if (!this.block) return;
     const block = lookupSymbol(this.block)!;
+    ctx.doc.ensureBlocks([block]);
     const { pos } = this.target(ctx, p);
     const hasTag = block.attributes.some((a) => a.tag === 'TAG1');
     const isTerminal = block.attributes.some((a) => a.tag === 'TERM01');

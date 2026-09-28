@@ -50,7 +50,7 @@ export interface UserSettings {
   polarAdditional: number[];
   osnapModes: OsnapModes;
   // --- Palettes / chrome
-  paletteWidths: { projectManager: number; properties: number; toolPalettes: number };
+  paletteWidths: { projectManager: number; properties: number; toolPalettes: number; symbolBuilder: number };
   paletteAutoHide: { projectManager: boolean; properties: boolean };
   propertiesVisible: boolean;
   toolPalettesVisible: boolean;
@@ -102,7 +102,7 @@ export const DEFAULT_SETTINGS: UserSettings = {
   polarIncrement: 90,
   polarAdditional: [],
   osnapModes: { endpoint: true, midpoint: true, center: true, quadrant: false, intersection: true, perpendicular: true, nearest: false },
-  paletteWidths: { projectManager: 268, properties: 250, toolPalettes: 240 },
+  paletteWidths: { projectManager: 268, properties: 250, toolPalettes: 240, symbolBuilder: 300 },
   paletteAutoHide: { projectManager: false, properties: false },
   propertiesVisible: false,
   toolPalettesVisible: false,

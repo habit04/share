@@ -106,7 +106,13 @@ export class Autosaver {
   private names = new Map<number, string>();
   onSaved: ((count: number) => void) | null = null;
 
-  constructor(private sessions: SessionManager, private store: AutosaveStore, private minutes: () => number) {}
+  constructor(
+    private sessions: SessionManager,
+    private store: AutosaveStore,
+    private minutes: () => number,
+    /** Sessions that are not drawings (Symbol Builder tabs) are never autosaved. */
+    private skip: (sessionId: number) => boolean = () => false,
+  ) {}
 
   start(): void {
     this.stop();
@@ -125,7 +131,7 @@ export class Autosaver {
 
   async runNow(): Promise<number> {
     const all = this.sessions.all;
-    const ids = sessionsToAutosave(all, this.lastSaved);
+    const ids = sessionsToAutosave(all, this.lastSaved).filter((id) => !this.skip(id));
     let n = 0;
     for (const id of ids) {
       const s = all.find((x) => x.id === id)!;

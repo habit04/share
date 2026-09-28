@@ -30,6 +30,7 @@ import { readWdSettings, writeWdSettings, WD_M_BLOCK, type WdSettings } from '..
 import { retagDrawing } from '../electrical/tags';
 import { updateCrossReferences, parentCandidates, childBlockFor } from '../electrical/xref';
 import { LIBRARY_BLOCKS } from '../electrical/library';
+import { userLibrary } from '../electrical/userlib';
 import { setUserCatalog, parseCatalog, userCatalogSize, catalogFamilyFor } from '../electrical/catalog';
 import { schematicList, terminalStripTable, applyTerminalEdits, BALLOON_BLOCK, NAMEPLATE_BLOCK } from '../electrical/panel';
 import { buildMotorCircuit, makeTagger, DEFAULT_CIRCUIT, type CircuitOptions } from '../electrical/circuits';
@@ -178,8 +179,8 @@ export function registerElectricalCommands(editor: Editor): void {
   });
   reg('AETOGGLENC', ['TOGGLENC'], 'Toggle a contact between NO and NC', (ed) => ed.startTool(new ToggleNcTool()));
   reg('AESWAP', ['SWAPBLOCK', 'AESWAPBLOCK'], 'Swap a component symbol, keeping its data', (ed) => ed.startTool(new SwapBlockTool()));
-  reg('AEUPDATEBLOCK', ['UPDATEBLOCK'], 'Update symbol block definitions from the library', (ed) => {
-    const lib = [...LIBRARY_BLOCKS, WD_M_BLOCK, BALLOON_BLOCK, NAMEPLATE_BLOCK];
+  reg('AEUPDATEBLOCK', ['UPDATEBLOCK'], 'Update symbol block definitions from the library (built-in and user symbols)', (ed) => {
+    const lib = [...LIBRARY_BLOCKS, ...userLibrary.all().map((s) => s.block), WD_M_BLOCK, BALLOON_BLOCK, NAMEPLATE_BLOCK];
     let n = 0;
     ed.doc.transact((s) => {
       const blocks = { ...s.blocks };

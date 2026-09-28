@@ -37,4 +37,6 @@ Object.assign(icons, {
   autohide: wrap('<path d="M4 4v16"/><path class="ac" d="M9 12h11M16 8l4 4-4 4"/>'),
   angle: wrap('<path d="M4 20h16L4 6z"/><path class="ac" d="M11 20a7 7 0 0 0-3-6"/>'),
   scaleList: wrap('<path d="M3 17L17 3"/><path d="M3 21h18M21 3v18"/><path class="ac" d="M7 17l2-2M11 13l2-2"/>'),
+  // Symbol Builder: a contact symbol inside a dashed editing frame with a pencil.
+  symbolbuilder: wrap('<rect x="3" y="5" width="18" height="14" stroke-dasharray="2.5 2"/><path d="M3 12h5M16 12h5"/><path class="ac" d="M10 8.5v7M14 8.5v7"/><path d="M15 21l5-5 1.5 1.5-5 5H15z" fill="currentColor" stroke="none"/>'),
 });

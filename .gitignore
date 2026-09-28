@@ -9,3 +9,4 @@ _*.test.ts
 .claude/worktrees/
 tests/zz_*
 screenshots/library/
+screenshots/symbol-builder-*.png

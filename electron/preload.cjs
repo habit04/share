@@ -12,6 +12,9 @@ contextBridge.exposeInMainWorld('jcad', {
   autosaveList: () => ipcRenderer.invoke('autosave-list'),
   autosaveRead: (name) => ipcRenderer.invoke('autosave-read', name),
   autosaveRemove: (name) => ipcRenderer.invoke('autosave-remove', name),
+  // User symbol library (Symbol Builder): one JSON document in the app data folder
+  userLibraryRead: () => ipcRenderer.invoke('user-library-read'),
+  userLibraryWrite: (json) => ipcRenderer.invoke('user-library-write', json),
   // Native menu mirrors of renderer state
   setRecentFiles: (files) => ipcRenderer.send('set-recent-files', files),
   quit: () => ipcRenderer.send('app-quit'),

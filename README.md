@@ -60,6 +60,7 @@ npm run typecheck
 npm run build && npm run screenshot   # screenshots/*.png from headless Chromium
 node scripts/screenshot-drafting.mjs  # dimensions, linetypes, polyline arcs, arrays
 node scripts/screenshot-library.mjs   # every Insert Component category (screenshots/library/)
+node scripts/screenshot-symbol-builder.mjs   # Symbol Builder dialog, session + palette, user category
 npm run dist             # installers via electron-builder (win/mac/linux)
 node scripts/dwg2dxf.mjs in.dwg [out.dxf]   # command-line DWG -> DXF
 ```
@@ -95,6 +96,7 @@ keywords shown in `[brackets]` are clickable.
 | AERETAG [S] | RETAG | Renumber all (or selected) tags in ladder order with the drawing's tag format |
 | AETOGGLENC, AESWAP, AEUPDATEBLOCK | TOGGLENC, SWAPBLOCK, UPDATEBLOCK | NO/NC variant in place; swap a symbol keeping its data; refresh block definitions from the library |
 | AECATALOG [family], AECATALOGLOAD | CATALOG, LOADCATALOG | Catalog Browser (built-in generic parts + user JSON catalog from the project settings) |
+| AESYMBUILDER [name] | SYMBUILDER, SYMBOLBUILDER, SYMEDIT | Symbol Builder: draw or harvest a schematic symbol in its own tab, place TAG1 / DESC1 / pins from the palette and save it to the user library (also New Symbol... / Edit... in the icon menu); AESYMSAVE, AESYMCHECK, AESYMDELETE, AESYMLIBEXPORT / AESYMLIBIMPORT maintain the library |
 | AEWIRENO | WIRENO | Number every wire net by rung reference (100, 100A, ...); fixed numbers (layer WIREFIXED) are kept |
 | AEEDITWIRENO, AECOPYWIRENO, AEWIRENOLEADER | EDITWIRENO, ... | Edit a wire number (fixed flag, above / below / in-line, find & replace); copy a number; move it with a leader |
 | AETRIMWIRE, AEWIREGAP, AEWIRELOOP | TRIMWIRE, WIREGAP, WIRELOOP | Remove a wire segment between breaks; gap or jump-over loop at crossings |
@@ -159,6 +161,40 @@ The parts catalog (`src/electrical/catalog.json`) is a generic, invented set of 
 project can name a user catalog JSON file (array of `{family, mfg, cat, desc, rating, type, assycode}`)
 that is searched first.
 
+### Symbol Builder
+
+`AESYMBUILDER` (Schematic > Symbol Builder, or **New Symbol...** in the Insert Component icon menu)
+creates symbols that behave exactly like the built-in ones. The start dialog asks for the block
+name, description, standard (JIC / IEC), category, family (tag prefix) and type (parent coil,
+child contact NO / NC, standalone device, terminal, PLC point) and where to start from: a blank
+sheet, a copy of any library symbol, a **block of the current drawing** (the way to harvest
+symbols from manufacturer DWGs: nested blocks are exploded to primitives, ACADE attribute
+definitions become placeholders, the geometry can be scaled to the 0.75 in inline width) or the
+selected objects (you pick the base point). The symbol then opens in its own file tab
+(`Symbol: NAME`): geometry on layer `0` in inches around the origin, attribute placeholders as
+text on layer `SYMATTR` (the text is the attribute tag), explicit wire-connection pins as text on
+layer `SYMPIN` (`X1TERM01` ... - the digit is the ACADE direction 1 left, 2 top, 4 right, 8 bottom).
+Every drafting command works in that tab; the viewport draws the origin, the 0.75 x 0.75 in box and
+the inline stub guides (connections at x = +-0.375, y = 0 are detected automatically from line
+endpoints). The docked **Symbol Builder** palette edits the name / family / type, places or removes
+attributes (TAG1, DESC1-3, TERM01, INST, LOC, MFG, CAT ...), lists detected and explicit pins with
+their default pin numbers, shows a live preview and offers **Check** (name, connections, TAG1,
+extents), **Save to Library**, **Save and Insert** (returns to the drawing and starts
+`AECOMPONENT NAME`), **Export DXF...** (a DXF whose BLOCKS section holds the symbol plus one insert
+at the origin) and **Close**. Saving compiles the tab into a block with the full ACADE attribute set
+(`withAcadeAttributes`), registers the family as the block's tag prefix and its coil / contact role,
+and redefines the block in open drawings that already use it.
+
+The **user library** is one JSON document, `user-library.json` in the application data folder
+(`app.getPath('userData')`; localStorage key `jcad.userlib.v1` in the browser), holding
+`{ block, standard, category, family, wdtype, created, modified }` per symbol. Its symbols appear
+in the icon menu and tool palettes under `User: <category>` after the built-in categories, are
+found by the search box and `findLibrarySymbol`, insert with AECOMPONENT / AECHILD / AECOMPONENT3 /
+AETOGGLENC / AESWAP like any built-in symbol, and are written into a drawing only when it uses them
+(`AEUPDATEBLOCK` refreshes them). `AESYMLIBEXPORT` / `AESYMLIBIMPORT` exchange the library (or one
+symbol) as JSON between installations; right-click a user symbol in the icon menu to edit or
+delete it.
+
 ## File formats
 
 - **DXF (AC1015 / AutoCAD 2000)** is the native save format: layers (linetype, lineweight,
@@ -191,8 +227,9 @@ src/app         Editor controller, electrical command registry, coordinate input
 src/ui          ribbon, command window (+ autocomplete), status bar, palettes (project manager, properties,
                 tool palettes), dialogs (options, drafting settings, help, recovery), electrical dialogs, menus, chrome
 src/electrical  symbol libraries (symbols.ts / symbols-jic-control.ts / symbols-power-fluid.ts JIC, one-line,
-                PLC and fluid power; iec.ts / iec-extended.ts IEC 60617; library.ts aggregates them; symbol-kit.ts
-                shared primitives), ACADE attributes, WD_M settings, tags, catalog, xref,
+                PLC and fluid power; iec.ts / iec-extended.ts IEC 60617; library.ts aggregates them with the
+                user library userlib.ts; symbol-kit.ts shared primitives; symbol-builder-core.ts symbol <-> block
+                conversions), ACADE attributes, WD_M settings, tags, catalog, xref,
                 wire tools, panel layout, circuits, audit, reports, sheet templates, dialog contract (ui.ts)
 scripts         DWG reader (Node / Electron main), dwg2dxf CLI, screenshot capture
 ```

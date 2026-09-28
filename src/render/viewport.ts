@@ -65,6 +65,11 @@ export class Viewport {
   settings: ViewSettings = { gridVisible: true, gridSize: 0.5, background: '#212830', crosshairSize: 5, pickBox: 3, gridBeyondLimits: true };
   /** Previous view states for ZOOM Previous (most recent last). */
   readonly viewHistory: Array<{ center: Point; scale: number }> = [];
+  /**
+   * Extra background painter drawn after the grid and before the entities
+   * (Symbol Builder guides). Not part of the document; null for normal drawings.
+   */
+  underlay: ((ctx: CanvasRenderingContext2D, vp: Viewport) => void) | null = null;
   private raf = 0;
 
   constructor(canvas: HTMLCanvasElement, private doc: Drawing) {
@@ -170,6 +175,11 @@ export class Viewport {
     ctx.fillRect(0, 0, this.width, this.height);
 
     if (this.settings.gridVisible) this.drawGrid();
+    if (this.underlay) {
+      ctx.save();
+      this.underlay(ctx, this);
+      ctx.restore();
+    }
 
     const header = this.doc.header;
     renderSettings.ltscale = header.ltscale;

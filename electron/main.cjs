@@ -463,6 +463,24 @@ ipcMain.handle('autosave-remove', async (_ev, name) => {
   await fs.rm(path.join(autosaveDir(), n + '.json'), { force: true });
 });
 
+// ------------------------------------------------------------------ user symbol library (app data folder)
+const userLibraryFile = () => path.join(stateDir(), 'user-library.json');
+ipcMain.handle('user-library-read', async () => {
+  try {
+    return await fs.readFile(userLibraryFile(), 'utf8');
+  } catch {
+    return null;
+  }
+});
+ipcMain.handle('user-library-write', async (_ev, json) => {
+  if (typeof json !== 'string' || json.length > 64 * 1024 * 1024) throw new Error('Invalid payload');
+  await fs.mkdir(stateDir(), { recursive: true });
+  // Write to a temporary file first so a crash mid-write cannot truncate the library.
+  const tmp = userLibraryFile() + '.tmp';
+  await fs.writeFile(tmp, json, 'utf8');
+  await fs.rename(tmp, userLibraryFile());
+});
+
 /** The renderer keeps the Recent Documents list; we mirror it into the native File > Open Recent menu. */
 ipcMain.on('set-recent-files', (ev, files) => {
   if (!Array.isArray(files)) return;

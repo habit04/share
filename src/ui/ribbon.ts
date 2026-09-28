@@ -188,6 +188,7 @@ export const RIBBON: RibbonTab[] = [
           B('3 Phase', 'threephase', 'AECOMPONENT3', 'small'),
           B('Catalog\nBrowser', 'catalog', 'AECATALOG', 'small'),
           B('Circuit\nBuilder', 'circuit', 'AECIRCUIT'),
+          B('Symbol\nBuilder', 'symbolbuilder', 'AESYMBUILDER', 'large', 'Symbol Builder: create or edit a schematic symbol and save it to the user library  (AESYMBUILDER)'),
         ],
       },
       {
