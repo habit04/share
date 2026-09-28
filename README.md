@@ -32,6 +32,13 @@ tagged builds are attached to a GitHub Release. The builds are not signed with a
 confirmation ("More info" then "Run anyway") and macOS asks once under System Settings >
 Privacy & Security > "Open Anyway" (macOS builds are ad-hoc signed so they are not reported as damaged).
 
+Windows signing through Azure Artifact Signing is wired in but switches on only when the repository has
+all seven secrets `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_SIGNING_ENDPOINT`,
+`AZURE_SIGNING_ACCOUNT`, `AZURE_CERT_PROFILE` and `AZURE_PUBLISHER_NAME` (`scripts/azure-signing.mjs`
+adds `win.azureSignOptions` on the Windows runner, and the workflow then checks every `.exe` is validly
+signed). `AZURE_PUBLISHER_NAME` must equal the certificate's subject name exactly, because the updater
+rejects an update whose signer differs from it.
+
 ### Website and browser edition
 
 The public website, <https://habit04.github.io/share/>, is a landing page (download buttons filled
