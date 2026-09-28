@@ -48,6 +48,15 @@ shows the installed version.
 Update metadata is only written when the `publish` block in `package.json` is present;
 `release.yml` uploads the `.yml` and `.blockmap` files next to the installers.
 
+### About the author and donations
+
+Help > About shows who made JCad Electrical and a **Donate with Cash App** button; Help >
+Donate and the `DONATE` command open the same page. Everything comes from
+`src/app/about.json`: fill in `author.name`, `title`, `bio`, `location`, `links` (label + https
+URL on github.com or cash.app) and `donate.cashtag` (without the `$`). Leave the cashtag empty
+to hide the donate button. Put the same Cash App URL into `.github/FUNDING.yml` to get the
+Sponsor button on the repository page.
+
 ### Reporting problems
 
 **Help > Report a Problem…** (command `REPORTBUG`) collects a description, the version and

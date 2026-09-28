@@ -1434,3 +1434,31 @@
   white-space: pre-wrap;
   margin: 6px 0;
 }
+
+/* Help > About: author and donate */
+.about-author h4 {
+  margin: 14px 0 4px;
+  font-size: 13px;
+}
+.about-author p {
+  margin: 4px 0 8px;
+  white-space: pre-line;
+}
+.about-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 6px 0 10px;
+}
+.about-donate {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid #3c3c3c;
+  background: #262626;
+}
+.about-donate p {
+  margin: 0 0 8px;
+}
+.about-license {
+  margin-top: 12px;
+}

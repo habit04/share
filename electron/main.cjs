@@ -161,12 +161,13 @@ function buildMenu(win) {
         { label: 'Keyboard Shortcuts', click: send('HELP shortcuts') },
         { label: 'Text Window (F2)', click: send('TEXTSCR') },
         { type: 'separator' },
+        { label: 'Donate (Cash App)…', click: send('DONATE') },
         { label: 'Report a Problem…', click: send('REPORTBUG') },
         { label: 'Send Feedback…', click: send('FEEDBACK') },
         { type: 'separator' },
         { label: 'Check for Updates…', click: () => void updater.checkForUpdates(win, { interactive: true }) },
         { label: 'Release Notes (GitHub)', click: () => void require('electron').shell.openExternal(updater.RELEASES_PAGE) },
-        { label: `About JCad Electrical ${app.getVersion()}`, click: send('HELP about') },
+        { label: `About JCad Electrical ${app.getVersion()}`, click: send('ABOUT') },
       ],
     },
   ];
@@ -515,10 +516,11 @@ ipcMain.handle('app-info', () => ({
   selfUpdate: updater.canSelfUpdate(),
   releases: updater.RELEASES_PAGE,
 }));
-/** Links the renderer may open: this project's GitHub repository only. */
+/** Links the renderer may open: this project's GitHub pages and the Cash App donation page. */
 ipcMain.handle('open-external', async (_ev, url) => {
   const u = String(url || '');
-  if (!/^https:\/\/github\.com\/habit04\/share(\/|$)/.test(u) || u.length > 16000) return false;
+  const allowed = /^https:\/\/github\.com\/habit04\/share(\/|$)/.test(u) || /^https:\/\/cash\.app\/\$[A-Za-z][A-Za-z0-9_-]{0,19}$/.test(u);
+  if (!allowed || u.length > 16000) return false;
   await require('electron').shell.openExternal(u);
   return true;
 });

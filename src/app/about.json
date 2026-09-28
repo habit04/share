@@ -1,0 +1,19 @@
+{
+  "author": {
+    "name": "",
+    "title": "",
+    "bio": "",
+    "location": "",
+    "links": []
+  },
+  "donate": {
+    "cashtag": "",
+    "message": "JCad Electrical is free. If it saves you time, a tip helps keep it going."
+  },
+  "project": {
+    "homepage": "https://github.com/habit04/share",
+    "issues": "https://github.com/habit04/share/issues",
+    "releases": "https://github.com/habit04/share/releases",
+    "license": "GPL-3.0 (LibreDWG is GPL-3.0; all artwork and symbol geometry are original)"
+  }
+}

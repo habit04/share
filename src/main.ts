@@ -19,6 +19,7 @@ import { ToolPalettes } from './ui/toolpalettes';
 import { helpDialog, textWindowDialog } from './ui/help';
 import { reportProblemDialog } from './ui/report';
 import { installDiagnostics } from './app/diagnostics';
+import { donateUrl } from './app/about';
 import { Autosaver, bridgeAutosaveStore, localAutosaveStore, type AutosaveBridge } from './app/autosave';
 import { recoveryDialog } from './ui/recovery';
 import { showAppMenu } from './ui/appmenu';
@@ -188,6 +189,17 @@ function boot(): void {
   reg('DSETTINGS', ['DS', 'SE', 'DDRMODES'], 'Drafting Settings (Snap and Grid, Polar, Object Snap, Dynamic Input)', (ed, arg) => draftingSettingsDialog(ed, parseInt(arg ?? '0', 10) || 0));
   reg('HELP', ['?', 'F1'], 'Help: searchable command reference and keyboard shortcuts', (ed, arg) => helpDialog(ed, arg ?? ''));
   reg('TEXTSCR', ['F2', 'TEXTWINDOW'], 'Text window with the command history', (ed) => textWindowDialog(ed));
+  reg('DONATE', ['TIP', 'SUPPORT'], 'Support JCad Electrical (opens the Cash App page)', (ed) => {
+    const url = donateUrl();
+    if (!url) {
+      ed.log('No donation link is configured (see src/app/about.json).');
+      return;
+    }
+    ed.log(`Opening ${url}`);
+    if (window.jcad?.openExternal) void window.jcad.openExternal(url);
+    else window.open(url, '_blank', 'noopener');
+  });
+  reg('ABOUT', [], 'About JCad Electrical, the author and how to support it', (ed) => helpDialog(ed, 'about'));
   reg('REPORTBUG', ['BUGREPORT', 'REPORTPROBLEM'], 'Report a problem: prefilled GitHub issue, copy or save a report with diagnostics', (ed) => reportProblemDialog(ed, 'bug'));
   reg('FEEDBACK', ['SENDFEEDBACK', 'FEATUREREQUEST'], 'Send feedback or request a feature', (ed) => reportProblemDialog(ed, 'feedback'));
   reg('CHECKUPDATES', ['UPDATE', 'CHECKFORUPDATES'], 'Check GitHub Releases for a newer JCad Electrical', (ed) => {

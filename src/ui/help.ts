@@ -1,6 +1,7 @@
 import type { Editor, CommandDef } from '../app/editor';
 import { modal, button, tabbedDialog } from './dialogkit';
 import { esc } from './dom';
+import { aboutInfo, donateUrl, authorLinks, safeAboutUrl } from '../app/about';
 
 /** Version compiled into the renderer (package.json version via Vite define). */
 export const APP_VERSION_LABEL: string = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : 'dev';
@@ -99,10 +100,51 @@ export function helpDialog(editor: Editor, query = ''): void {
   keysWrap.append(keys);
 
   const about = document.createElement('div');
+  const ab = aboutInfo();
+  const openLink = (url: string) => {
+    const safe = safeAboutUrl(url);
+    if (!safe) return;
+    if (window.jcad?.openExternal) void window.jcad.openExternal(safe);
+    else window.open(safe, '_blank', 'noopener');
+  };
   about.innerHTML = `<p><b>JCad Electrical</b> <span class="help-version">${esc(APP_VERSION_LABEL)}</span> — 2D electrical schematic drafting.</p>
     <p>Type commands at the command line (AutoComplete lists matches as you type; Tab cycles, Enter accepts). Option keywords in [brackets] are clickable. Coordinates: <code>x,y</code>, <code>@dx,dy</code>, <code>@dist&lt;angle</code>, or type a distance while dragging.</p>
     <p>Native DXF (AutoCAD 2000) save; DWG R14–2018 import; PDF plot; CSV reports. All artwork and symbol geometry are original.</p>
-    <p class="help-update-row"></p>`;
+    <p class="help-update-row"></p>
+    <div class="about-author"></div>
+    <div class="about-donate"></div>
+    <p class="dlg-note about-license">${esc(ab.project.license)}</p>`;
+  const authorEl = about.querySelector('.about-author') as HTMLElement;
+  if (ab.author.name || ab.author.bio) {
+    const head = document.createElement('h4');
+    head.textContent = ab.author.name ? `Made by ${ab.author.name}${ab.author.title ? `, ${ab.author.title}` : ''}${ab.author.location ? ` (${ab.author.location})` : ''}` : 'About the author';
+    authorEl.appendChild(head);
+    if (ab.author.bio) {
+      const bio = document.createElement('p');
+      bio.textContent = ab.author.bio;
+      authorEl.appendChild(bio);
+    }
+    const links = authorLinks();
+    if (links.length) {
+      const row = document.createElement('div');
+      row.className = 'about-links';
+      for (const l of links) {
+        const b = button(l.label);
+        b.addEventListener('click', () => openLink(l.url));
+        row.appendChild(b);
+      }
+      authorEl.appendChild(row);
+    }
+  }
+  const donateEl = about.querySelector('.about-donate') as HTMLElement;
+  const donate = donateUrl();
+  if (donate) {
+    const msg = document.createElement('p');
+    msg.textContent = ab.donate.message;
+    const b = button(`Donate with Cash App ($${ab.donate.cashtag.replace(/^\$/, '')})`, true);
+    b.addEventListener('click', () => openLink(donate));
+    donateEl.append(msg, b);
+  }
   const updateRow = about.querySelector('.help-update-row') as HTMLElement;
   const info = document.createElement('span');
   info.className = 'dlg-note';
