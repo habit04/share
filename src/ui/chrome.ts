@@ -62,7 +62,8 @@ export function buildTitleBar(editor: Editor, el: HTMLElement, onAppMenu?: (anch
   });
   const infocenter = document.createElement('div');
   infocenter.className = 'infocenter';
-  infocenter.innerHTML = `<button class="ic-btn user" title="Sign in">${icon('user')}<span>Sign In</span></button><button class="ic-btn" title="Help (F1)">${icon('help')}</button>`;
+  infocenter.innerHTML = `<button class="ic-btn user" title="About JCad Electrical, the author and how to support the project">${icon('user')}<span>Support</span></button><button class="ic-btn" title="Help (F1)">${icon('help')}</button>`;
+  infocenter.querySelector('.ic-btn.user')!.addEventListener('click', () => editor.runCommand('ABOUT'));
   infocenter.querySelector('.ic-btn:last-child')!.addEventListener('click', () => editor.runCommand('HELP'));
   el.append(logo, bar, title, search, infocenter);
   const refresh = () => {
