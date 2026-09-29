@@ -1142,3 +1142,28 @@ export function dimStyleFromRecordPairs(name: string, pairs: ReadonlyArray<reado
   const tolerance: DimTolerance = lim ? 'limits' : tol ? (Math.abs(r.tolPlus - r.tolMinus) < 1e-12 ? 'symmetrical' : 'deviation') : r.tolerance === 'basic' ? 'basic' : 'none';
   return { ...s, tolerance };
 }
+
+/** Every DIM* variable (plus the derived DIMTOL/DIMLIM/DIMSAH/DIMTIH/DIMTOH/DIMBLK) with its DXF value. */
+export function dimVarList(s: DimStyle): Array<{ name: string; value: number | string; description: string }> {
+  const extra: Array<[string, string]> = [
+    ['DIMBLK', 'Arrow block (both ends)'],
+    ['DIMSAH', 'Separate arrow blocks'],
+    ['DIMTIH', 'Text inside horizontal'],
+    ['DIMTOH', 'Text outside horizontal'],
+    ['DIMTOL', 'Generate tolerances'],
+    ['DIMLIM', 'Generate dimension limits'],
+  ];
+  const rows = [...DIM_VARIABLES.map((v) => ({ name: v.name, description: v.description })), ...extra.map(([name, description]) => ({ name, description }))];
+  return rows.map((r) => ({ ...r, value: dimVarValue(s, r.name) })).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** Variables whose values differ between two styles (DIMSTYLE Compare / Restore ~name). */
+export function diffDimStyles(a: DimStyle, b: DimStyle): Array<{ name: string; description: string; a: number | string; b: number | string }> {
+  const lb = new Map(dimVarList(b).map((r) => [r.name, r.value]));
+  return dimVarList(a)
+    .filter((r) => {
+      const other = lb.get(r.name);
+      return typeof r.value === 'number' && typeof other === 'number' ? Math.abs(r.value - other) > 1e-12 : r.value !== other;
+    })
+    .map((r) => ({ name: r.name, description: r.description, a: r.value, b: lb.get(r.name)! }));
+}
