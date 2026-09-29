@@ -246,7 +246,7 @@ export const RIBBON: RibbonTab[] = [
       {
         title: 'Cables/Jumpers/PLC I/O',
         buttons: [
-          B('Cable\nMarker', 'wiremulti', 'AECABLE', 'large', 'Cable Marker: assign wires to a cable with conductor numbers / colours (AECABLE)'),
+          B('Cable\nMarker', 'wiremulti', 'AECABLE', 'small', 'Cable Marker: assign wires to a cable with conductor numbers / colours (AECABLE)'),
           B('Cable\nSchedule', 'report', 'AECABLESCHEDULE', 'small', 'Cable schedule report (AECABLESCHEDULE)'),
           B('Jumper', 'loop', 'AEJUMPER', 'small', 'Jumper two terminals of a strip (AEJUMPER)'),
           B('Delete\nJumper', 'erase', 'AEJUMPERDEL', 'small', 'Remove the jumpers of a terminal (AEJUMPERDEL)'),
