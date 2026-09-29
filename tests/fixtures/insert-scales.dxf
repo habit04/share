@@ -1,0 +1,822 @@
+  0
+SECTION
+  2
+HEADER
+  9
+$ACADVER
+  1
+AC1018
+  9
+$HANDSEED
+  5
+FFFF
+  9
+$INSUNITS
+ 70
+1
+  9
+$CLAYER
+  8
+0
+  0
+ENDSEC
+  0
+SECTION
+  2
+TABLES
+  0
+TABLE
+  2
+LTYPE
+  5
+5
+330
+0
+100
+AcDbSymbolTable
+ 70
+1
+  0
+LTYPE
+  5
+14
+330
+5
+100
+AcDbSymbolTableRecord
+100
+AcDbLinetypeTableRecord
+  2
+Continuous
+ 70
+0
+  3
+Solid line
+ 72
+65
+ 73
+0
+ 40
+0
+  0
+ENDTAB
+  0
+TABLE
+  2
+LAYER
+  5
+2
+330
+0
+100
+AcDbSymbolTable
+ 70
+2
+  0
+LAYER
+  5
+201
+330
+2
+100
+AcDbSymbolTableRecord
+100
+AcDbLayerTableRecord
+  2
+0
+ 70
+0
+ 62
+7
+  6
+Continuous
+370
+-3
+  0
+LAYER
+  5
+202
+330
+2
+100
+AcDbSymbolTableRecord
+100
+AcDbLayerTableRecord
+  2
+SYMS
+ 70
+0
+ 62
+4
+  6
+Continuous
+370
+-3
+  0
+ENDTAB
+  0
+TABLE
+  2
+BLOCK_RECORD
+  5
+1
+330
+0
+100
+AcDbSymbolTable
+ 70
+3
+  0
+BLOCK_RECORD
+  5
+1F
+330
+1
+100
+AcDbSymbolTableRecord
+100
+AcDbBlockTableRecord
+  2
+*Model_Space
+  0
+BLOCK_RECORD
+  5
+1B
+330
+1
+100
+AcDbSymbolTableRecord
+100
+AcDbBlockTableRecord
+  2
+*Paper_Space
+  0
+BLOCK_RECORD
+  5
+40
+330
+1
+100
+AcDbSymbolTableRecord
+100
+AcDbBlockTableRecord
+  2
+ASYM
+  0
+ENDTAB
+  0
+ENDSEC
+  0
+SECTION
+  2
+BLOCKS
+  0
+BLOCK
+  5
+203
+330
+1F
+100
+AcDbEntity
+  8
+0
+100
+AcDbBlockBegin
+  2
+*Model_Space
+ 70
+0
+ 10
+0
+ 20
+0
+ 30
+0
+  3
+*Model_Space
+  1
+
+  0
+ENDBLK
+  5
+204
+330
+1F
+100
+AcDbEntity
+  8
+0
+100
+AcDbBlockEnd
+  0
+BLOCK
+  5
+205
+330
+1B
+100
+AcDbEntity
+  8
+0
+100
+AcDbBlockBegin
+  2
+*Paper_Space
+ 70
+0
+ 10
+0
+ 20
+0
+ 30
+0
+  3
+*Paper_Space
+  1
+
+  0
+ENDBLK
+  5
+206
+330
+1B
+100
+AcDbEntity
+  8
+0
+100
+AcDbBlockEnd
+  0
+BLOCK
+  5
+207
+330
+40
+100
+AcDbEntity
+  8
+0
+100
+AcDbBlockBegin
+  2
+ASYM
+ 70
+2
+ 10
+0
+ 20
+0
+ 30
+0
+  3
+ASYM
+  1
+
+  0
+LINE
+  5
+208
+330
+40
+100
+AcDbEntity
+  8
+0
+100
+AcDbLine
+ 10
+0
+ 20
+0
+ 30
+0
+ 11
+2
+ 21
+0
+ 31
+0
+  0
+LINE
+  5
+209
+330
+40
+100
+AcDbEntity
+  8
+0
+100
+AcDbLine
+ 10
+0
+ 20
+0
+ 30
+0
+ 11
+0
+ 21
+1
+ 31
+0
+  0
+LINE
+  5
+20A
+330
+40
+100
+AcDbEntity
+  8
+0
+100
+AcDbLine
+ 10
+2
+ 20
+0
+ 30
+0
+ 11
+2
+ 21
+0.25
+ 31
+0
+  0
+ATTDEF
+  5
+20B
+330
+40
+100
+AcDbEntity
+  8
+0
+100
+AcDbText
+ 10
+0.2
+ 20
+0.5
+ 30
+0
+ 40
+0.125
+  1
+X
+100
+AcDbAttributeDefinition
+  3
+Tag
+  2
+TAG1
+ 70
+0
+  0
+ENDBLK
+  5
+20C
+330
+40
+100
+AcDbEntity
+  8
+0
+100
+AcDbBlockEnd
+  0
+ENDSEC
+  0
+SECTION
+  2
+ENTITIES
+  0
+INSERT
+  5
+20D
+330
+1F
+100
+AcDbEntity
+  8
+SYMS
+100
+AcDbBlockReference
+ 66
+1
+  2
+ASYM
+ 10
+0
+ 20
+0
+ 30
+0
+  0
+ATTRIB
+  5
+20E
+330
+1F
+100
+AcDbEntity
+  8
+SYMS
+100
+AcDbText
+ 10
+0
+ 20
+0
+ 30
+0
+ 40
+0.125
+  1
+PLAIN
+100
+AcDbAttribute
+  2
+TAG1
+ 70
+0
+  0
+SEQEND
+  5
+20F
+330
+1F
+100
+AcDbEntity
+  8
+SYMS
+  0
+INSERT
+  5
+210
+330
+1F
+100
+AcDbEntity
+  8
+SYMS
+100
+AcDbBlockReference
+ 66
+1
+  2
+ASYM
+ 10
+10
+ 20
+0
+ 30
+0
+ 41
+-1
+ 42
+1
+ 43
+1
+  0
+ATTRIB
+  5
+211
+330
+1F
+100
+AcDbEntity
+  8
+SYMS
+100
+AcDbText
+ 10
+10
+ 20
+0
+ 30
+0
+ 40
+0.125
+  1
+MIRROR
+100
+AcDbAttribute
+  2
+TAG1
+ 70
+0
+  0
+SEQEND
+  5
+212
+330
+1F
+100
+AcDbEntity
+  8
+SYMS
+  0
+INSERT
+  5
+213
+330
+1F
+100
+AcDbEntity
+  8
+SYMS
+100
+AcDbBlockReference
+ 66
+1
+  2
+ASYM
+ 10
+20
+ 20
+0
+ 30
+0
+ 41
+2
+ 42
+0.5
+ 43
+1
+ 50
+30
+  0
+ATTRIB
+  5
+214
+330
+1F
+100
+AcDbEntity
+  8
+SYMS
+100
+AcDbText
+ 10
+20
+ 20
+0
+ 30
+0
+ 40
+0.125
+  1
+STRETCH
+100
+AcDbAttribute
+  2
+TAG1
+ 70
+0
+  0
+SEQEND
+  5
+215
+330
+1F
+100
+AcDbEntity
+  8
+SYMS
+  0
+INSERT
+  5
+216
+330
+1F
+100
+AcDbEntity
+  8
+SYMS
+100
+AcDbBlockReference
+ 66
+1
+  2
+ASYM
+ 10
+30
+ 20
+0
+ 30
+0
+ 41
+-1.5
+ 42
+3
+ 43
+1.5
+  0
+ATTRIB
+  5
+217
+330
+1F
+100
+AcDbEntity
+  8
+SYMS
+100
+AcDbText
+ 10
+30
+ 20
+0
+ 30
+0
+ 40
+0.125
+  1
+MIRSTRETCH
+100
+AcDbAttribute
+  2
+TAG1
+ 70
+0
+  0
+SEQEND
+  5
+218
+330
+1F
+100
+AcDbEntity
+  8
+SYMS
+  0
+INSERT
+  5
+219
+330
+1F
+100
+AcDbEntity
+  8
+SYMS
+100
+AcDbBlockReference
+ 66
+1
+  2
+ASYM
+ 10
+40
+ 20
+0
+ 30
+0
+ 41
+1
+ 42
+-1
+ 43
+1
+  0
+ATTRIB
+  5
+21A
+330
+1F
+100
+AcDbEntity
+  8
+SYMS
+100
+AcDbText
+ 10
+40
+ 20
+0
+ 30
+0
+ 40
+0.125
+  1
+FLIPY
+100
+AcDbAttribute
+  2
+TAG1
+ 70
+0
+  0
+SEQEND
+  5
+21B
+330
+1F
+100
+AcDbEntity
+  8
+SYMS
+  0
+INSERT
+  5
+21C
+330
+1F
+100
+AcDbEntity
+  8
+SYMS
+100
+AcDbBlockReference
+ 66
+1
+  2
+ASYM
+ 10
+50
+ 20
+0
+ 30
+0
+ 41
+-2
+ 42
+-2
+ 43
+2
+ 50
+90
+  0
+ATTRIB
+  5
+21D
+330
+1F
+100
+AcDbEntity
+  8
+SYMS
+100
+AcDbText
+ 10
+50
+ 20
+0
+ 30
+0
+ 40
+0.125
+  1
+BOTHNEG
+100
+AcDbAttribute
+  2
+TAG1
+ 70
+0
+  0
+SEQEND
+  5
+21E
+330
+1F
+100
+AcDbEntity
+  8
+SYMS
+  0
+ENDSEC
+  0
+SECTION
+  2
+OBJECTS
+  0
+DICTIONARY
+  5
+C
+330
+0
+100
+AcDbDictionary
+281
+1
+  3
+ACAD_GROUP
+350
+D
+  0
+DICTIONARY
+  5
+D
+330
+C
+100
+AcDbDictionary
+281
+1
+  0
+ENDSEC
+  0
+EOF

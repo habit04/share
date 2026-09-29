@@ -1,0 +1,574 @@
+  0
+SECTION
+  2
+HEADER
+  9
+$ACADVER
+  1
+AC1018
+  9
+$HANDSEED
+  5
+FFFF
+  9
+$INSUNITS
+ 70
+1
+  9
+$CLAYER
+  8
+0
+  0
+ENDSEC
+  0
+SECTION
+  2
+TABLES
+  0
+TABLE
+  2
+LTYPE
+  5
+5
+330
+0
+100
+AcDbSymbolTable
+ 70
+1
+  0
+LTYPE
+  5
+14
+330
+5
+100
+AcDbSymbolTableRecord
+100
+AcDbLinetypeTableRecord
+  2
+Continuous
+ 70
+0
+  3
+Solid line
+ 72
+65
+ 73
+0
+ 40
+0
+  0
+ENDTAB
+  0
+TABLE
+  2
+LAYER
+  5
+2
+330
+0
+100
+AcDbSymbolTable
+ 70
+3
+  0
+LAYER
+  5
+201
+330
+2
+100
+AcDbSymbolTableRecord
+100
+AcDbLayerTableRecord
+  2
+0
+ 70
+0
+ 62
+7
+  6
+Continuous
+370
+-3
+  0
+LAYER
+  5
+202
+330
+2
+100
+AcDbSymbolTableRecord
+100
+AcDbLayerTableRecord
+  2
+FILL
+ 70
+0
+ 62
+1
+  6
+Continuous
+370
+-3
+  0
+LAYER
+  5
+203
+330
+2
+100
+AcDbSymbolTableRecord
+100
+AcDbLayerTableRecord
+  2
+PATTERN
+ 70
+0
+ 62
+5
+  6
+Continuous
+370
+-3
+  0
+ENDTAB
+  0
+TABLE
+  2
+BLOCK_RECORD
+  5
+1
+330
+0
+100
+AcDbSymbolTable
+ 70
+2
+  0
+BLOCK_RECORD
+  5
+1F
+330
+1
+100
+AcDbSymbolTableRecord
+100
+AcDbBlockTableRecord
+  2
+*Model_Space
+  0
+BLOCK_RECORD
+  5
+1B
+330
+1
+100
+AcDbSymbolTableRecord
+100
+AcDbBlockTableRecord
+  2
+*Paper_Space
+  0
+ENDTAB
+  0
+ENDSEC
+  0
+SECTION
+  2
+BLOCKS
+  0
+BLOCK
+  5
+204
+330
+1F
+100
+AcDbEntity
+  8
+0
+100
+AcDbBlockBegin
+  2
+*Model_Space
+ 70
+0
+ 10
+0
+ 20
+0
+ 30
+0
+  3
+*Model_Space
+  1
+
+  0
+ENDBLK
+  5
+205
+330
+1F
+100
+AcDbEntity
+  8
+0
+100
+AcDbBlockEnd
+  0
+BLOCK
+  5
+206
+330
+1B
+100
+AcDbEntity
+  8
+0
+100
+AcDbBlockBegin
+  2
+*Paper_Space
+ 70
+0
+ 10
+0
+ 20
+0
+ 30
+0
+  3
+*Paper_Space
+  1
+
+  0
+ENDBLK
+  5
+207
+330
+1B
+100
+AcDbEntity
+  8
+0
+100
+AcDbBlockEnd
+  0
+ENDSEC
+  0
+SECTION
+  2
+ENTITIES
+  0
+HATCH
+  5
+208
+330
+1F
+100
+AcDbEntity
+  8
+FILL
+100
+AcDbHatch
+ 10
+0
+ 20
+0
+ 30
+0
+210
+0
+220
+0
+230
+1
+  2
+SOLID
+ 70
+1
+ 71
+0
+ 91
+1
+ 92
+3
+ 72
+0
+ 73
+1
+ 93
+4
+ 10
+0
+ 20
+0
+ 10
+4
+ 20
+0
+ 10
+4
+ 20
+3
+ 10
+0
+ 20
+3
+ 97
+0
+ 75
+1
+ 76
+1
+ 98
+1
+ 10
+2
+ 20
+1.5
+  0
+HATCH
+  5
+209
+330
+1F
+100
+AcDbEntity
+  8
+FILL
+100
+AcDbHatch
+ 10
+0
+ 20
+0
+ 30
+0
+210
+0
+220
+0
+230
+1
+  2
+SOLID
+ 70
+1
+ 71
+0
+ 91
+2
+ 92
+3
+ 72
+0
+ 73
+1
+ 93
+5
+ 10
+10
+ 20
+0
+ 10
+14
+ 20
+0
+ 10
+15
+ 20
+2
+ 10
+12
+ 20
+4
+ 10
+9
+ 20
+2
+ 97
+0
+ 92
+2
+ 72
+0
+ 73
+1
+ 93
+4
+ 10
+11
+ 20
+1
+ 10
+13
+ 20
+1
+ 10
+13
+ 20
+2
+ 10
+11
+ 20
+2
+ 97
+0
+ 75
+1
+ 76
+1
+ 98
+1
+ 10
+12
+ 20
+0.5
+  0
+HATCH
+  5
+20A
+330
+1F
+100
+AcDbEntity
+  8
+PATTERN
+100
+AcDbHatch
+ 10
+0
+ 20
+0
+ 30
+0
+210
+0
+220
+0
+230
+1
+  2
+ANSI31
+ 70
+0
+ 71
+0
+ 91
+1
+ 92
+1
+ 93
+4
+ 72
+1
+ 10
+20
+ 20
+0
+ 11
+22
+ 21
+0
+ 72
+2
+ 10
+22
+ 20
+1
+ 40
+1
+ 50
+270
+ 51
+90
+ 73
+1
+ 72
+1
+ 10
+22
+ 20
+2
+ 11
+20
+ 21
+2
+ 72
+1
+ 10
+20
+ 20
+2
+ 11
+20
+ 21
+0
+ 97
+0
+ 75
+1
+ 76
+1
+ 52
+0
+ 41
+1
+ 77
+0
+ 78
+1
+ 53
+45
+ 43
+0
+ 44
+0
+ 45
+-0.0883883476
+ 46
+0.0883883476
+ 79
+0
+ 98
+1
+ 10
+21
+ 20
+1
+  0
+ENDSEC
+  0
+SECTION
+  2
+OBJECTS
+  0
+DICTIONARY
+  5
+C
+330
+0
+100
+AcDbDictionary
+281
+1
+  3
+ACAD_GROUP
+350
+D
+  0
+DICTIONARY
+  5
+D
+330
+C
+100
+AcDbDictionary
+281
+1
+  0
+ENDSEC
+  0
+EOF
