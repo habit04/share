@@ -32,6 +32,9 @@ import {
   isSymbolGeometry,
   summarizeCheck,
   attributePrompt,
+  ATTRIBUTE_TEMPLATE_GROUPS,
+  TEMPLATE_ATTRIBUTES,
+  type ChecklistItem,
   type SymbolMeta,
   type SymbolKind,
   type SymbolOrientation,
@@ -730,6 +733,52 @@ export function checkErrorsDialog(title: string, messages: readonly CheckMessage
   });
 }
 
+/** Ticked / unticked checklist rows (palette panel and the Save confirmation). */
+function checklistEl(items: readonly ChecklistItem[], light = false): HTMLElement {
+  const box = document.createElement('div');
+  box.className = 'sb-checklist' + (light ? ' sb-checklist-light' : '');
+  box.setAttribute('role', 'list');
+  box.style.cssText = 'display:flex;flex-direction:column;gap:1px;padding:2px 6px 4px;font-size:11px;';
+  for (const it of items) {
+    const row = document.createElement('div');
+    row.setAttribute('role', 'listitem');
+    row.className = `sb-checklist-item ${it.ok ? 'ok' : it.level}`;
+    row.style.cssText = `display:flex;gap:6px;align-items:baseline;color:${it.ok ? (light ? '#1d6b2f' : '#8fd19e') : it.level === 'error' ? (light ? '#b3261e' : '#ff8a80') : light ? '#8a5a00' : '#ffcc66'};`;
+    const mark = document.createElement('span');
+    mark.textContent = it.ok ? '\u2713' : it.level === 'error' ? '\u2717' : '!';
+    mark.style.cssText = 'width:10px;font-weight:bold;text-align:center;';
+    mark.setAttribute('aria-hidden', 'true');
+    const label = document.createElement('span');
+    label.textContent = `${it.label}${it.detail ? ` (${it.detail})` : ''}`;
+    label.setAttribute('aria-label', `${it.ok ? 'OK' : it.level === 'error' ? 'Error' : 'Warning'}: ${it.label}`);
+    row.append(mark, label);
+    box.appendChild(row);
+  }
+  return box;
+}
+
+/** Pre-save checklist with unticked warning items: Save anyway / Cancel. */
+export function checklistDialog(name: string, items: readonly ChecklistItem[]): Promise<boolean> {
+  return new Promise((resolve) => {
+    const m = modal(`Save ${name}`, 460, 'light');
+    let done = false;
+    const finish = (v: boolean) => {
+      if (done) return;
+      done = true;
+      m.close();
+      resolve(v);
+    };
+    m.onClose(() => finish(false));
+    m.body.appendChild(hintEl('Some checklist items are not ticked. The symbol can still be saved:', 'dlg-note'));
+    m.body.appendChild(checklistEl(items, true));
+    const save = button('Save anyway', true);
+    const cancel = button('Cancel');
+    save.addEventListener('click', () => finish(true));
+    cancel.addEventListener('click', () => finish(false));
+    m.footer.append(save, cancel);
+  });
+}
+
 // ---------------------------------------------------------------- palette
 
 type SectionKey = keyof UserSettings['symbolBuilderCollapsed'];
@@ -745,6 +794,8 @@ export class SymbolBuilderPalette {
   private flashCheck = false;
   private renderQueued = 0;
   private inputCounter = 0;
+  /** Placed attribute whose settings (prompt, flags, text) are expanded in the Attributes table. */
+  private expandedAttr: string | null = null;
 
   constructor(
     private editor: Editor,
@@ -1044,24 +1095,92 @@ export class SymbolBuilderPalette {
       attrTable.className = 'sb-table';
       const head = document.createElement('div');
       head.className = 'sb-thead';
-      head.innerHTML = '<b>Tag</b><span class="sb-pos">Position</span><span class="sb-default">Default</span><span class="sb-th-actions"></span>';
+      head.innerHTML = '<b>Tag</b><span class="sb-default">Default</span><span class="sb-th-actions"></span>';
       attrTable.appendChild(head);
-      for (const t of placed) {
+      placed.forEach((t, index) => {
         const tag = t.text.trim().toUpperCase();
+        const props = meta.attrProps?.[tag] ?? {};
+        const prompt = props.prompt?.trim() || attributePrompt(tag, meta.kind);
+        const flags = [props.invisible && 'I', props.constant && 'C', props.verify && 'V', props.preset && 'P'].filter(Boolean).join('');
+        const open = this.expandedAttr === tag;
         const r = document.createElement('div');
-        r.className = 'sb-trow';
-        r.innerHTML = `<b>${esc(tag)}</b><span class="sb-pos" title="${esc(attributePrompt(tag, meta.kind))}; height ${t.height}, ${esc(t.align)}${t.rotation ? `, rotated ${Math.round((t.rotation * 180) / Math.PI)}°` : ''}">${t.position.x.toFixed(3)}, ${t.position.y.toFixed(3)}</span>`;
+        r.className = 'sb-trow sb-attr-row';
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'sb-btn sb-attr-toggle';
+        toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+        toggle.setAttribute('aria-label', `${open ? 'Hide' : 'Show'} the settings of ${tag}`);
+        toggle.title = `${open ? 'Hide' : 'Edit'} prompt, flags, text height and justification of ${tag}`;
+        toggle.innerHTML = `<span class="sb-section-arrow${open ? '' : ' collapsed'}">${icon('chevron')}</span><b>${esc(tag)}</b>${flags ? `<small class="sb-flags" title="Flags: ${esc([props.invisible && 'invisible', props.constant && 'constant', props.verify && 'verify', props.preset && 'preset'].filter(Boolean).join(', '))}"> ${esc(flags)}</small>` : ''}`;
+        toggle.style.cssText = 'display:flex;align-items:center;gap:2px;min-width:0;background:none;border:0;padding:0;color:inherit;cursor:pointer;';
+        toggle.addEventListener('click', () => {
+          this.expandedAttr = open ? null : tag;
+          this.scheduleRender();
+        });
+        r.title = `Prompt at insertion: ${prompt}; position ${t.position.x.toFixed(3)}, ${t.position.y.toFixed(3)}; height ${t.height}, ${t.align}${t.rotation ? `, rotated ${Math.round((t.rotation * 180) / Math.PI)}°` : ''}`;
+        toggle.style.flex = '0 0 auto';
         const def = this.input(meta.attrDefaults[tag] ?? '', (v) => ctl.setAttrDefault(tag, v), { placeholder: tag === 'TAG1' ? (meta.kind === 'plc' ? 'I:0.0' : 'PB?') : 'default', label: `Default value of ${tag}` });
         def.classList.add('sb-default');
         def.title = `Default value of ${tag} (what a new insert shows before it is edited)`;
-        r.append(def, this.smallButton('Move', `Pick a new position for ${tag}`, () => ctl.placeAttribute(tag)), this.removeButton(`Remove ${tag}`, () => ctl.removeEntity(t.id)));
+        const up = this.smallButton('↑', `Move ${tag} up (insertion prompts follow this order)`, () => ctl.moveAttribute(tag, -1));
+        up.disabled = index === 0;
+        const down = this.smallButton('↓', `Move ${tag} down (insertion prompts follow this order)`, () => ctl.moveAttribute(tag, 1));
+        down.disabled = index === placed.length - 1;
+        def.style.flex = '1 1 auto';
+        def.style.minWidth = '3em';
+        r.append(toggle, def, up, down, this.removeButton(`Remove ${tag}`, () => ctl.removeEntity(t.id)));
         this.hoverRow(r, t.id);
         attrTable.appendChild(r);
-      }
+        if (open) {
+          const d = document.createElement('div');
+          d.className = 'sb-attr-detail';
+          d.style.cssText = 'display:flex;flex-direction:column;gap:3px;padding:4px 4px 6px 18px;border-left:2px solid rgba(255,204,0,0.5);margin:0 0 4px 6px;';
+          d.appendChild(this.row('Prompt', this.input(props.prompt ?? '', (v) => ctl.setAttrProp(tag, { prompt: v.trim() }), { placeholder: attributePrompt(tag, meta.kind), label: `Prompt of ${tag}` }), 'Text asked for when the symbol is inserted (blank = the standard prompt)'));
+          const h = this.input(String(t.height), (v) => ctl.setAttrText(tag, { height: parseFloat(v) }), { label: `Text height of ${tag}` });
+          d.appendChild(this.row('Text height', h, 'Height of the attribute text (in)'));
+          const textWrap = document.createElement('div');
+          textWrap.className = 'sb-inline';
+          const just = this.select(
+            [
+              ['left', 'Left'],
+              ['center', 'Center'],
+              ['right', 'Right'],
+            ],
+            t.align,
+            (v) => ctl.setAttrText(tag, { align: v as TextEntity['align'] }),
+            `Justification of ${tag}`,
+          );
+          just.style.cssText = 'min-width:6.5em;width:auto;flex:0 0 auto;';
+          textWrap.append(just, this.smallButton('Move', `Pick a new position for ${tag}`, () => ctl.placeAttribute(tag)));
+          d.appendChild(this.row('Justify', textWrap, 'Justification of the attribute text; Move picks a new position'));
+          const flagsWrap = document.createElement('div');
+          flagsWrap.className = 'sb-inline sb-attr-flags';
+          flagsWrap.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px 10px;';
+          const flag = (key: 'invisible' | 'constant' | 'verify' | 'preset', label: string, hint: string) => {
+            const l = document.createElement('label');
+            l.style.cssText = 'display:inline-flex;align-items:center;gap:3px;cursor:pointer;';
+            l.title = hint;
+            const c = document.createElement('input');
+            c.type = 'checkbox';
+            c.checked = !!props[key];
+            c.setAttribute('aria-label', `${label}: ${hint}`);
+            c.addEventListener('change', () => ctl.setAttrProp(tag, { [key]: c.checked }));
+            l.append(c, document.createTextNode(label));
+            flagsWrap.appendChild(l);
+          };
+          flag('invisible', 'Invisible', 'Stored with the insert but not printed (ATTDEF flag 1)');
+          flag('constant', 'Constant', 'Fixed value: every insert carries the default and it is never prompted (flag 2)');
+          flag('verify', 'Verify', 'Confirm the value when the symbol is inserted (flag 4)');
+          flag('preset', 'Preset', 'Takes the default without prompting; can be edited later (flag 8)');
+          d.appendChild(this.row('Mode', flagsWrap, 'ATTDEF mode flags (DXF group 70)'));
+          attrTable.appendChild(d);
+        }
+      });
       if (placed.length === 0) attrTable.appendChild(this.note(meta.kind === 'terminal' ? 'No attributes yet: add TERM01.' : 'No attributes yet: add TAG1 and DESC1.'));
       const addRow = document.createElement('div');
       addRow.className = 'sb-addrow';
-      const remaining = PLACEABLE_ATTRIBUTES.filter((t) => !placedTags.has(t));
+      const offer = [...new Set<string>([...PLACEABLE_ATTRIBUTES, ...TEMPLATE_ATTRIBUTES])];
+      const remaining = offer.filter((t) => !placedTags.has(t));
       const addSel = this.select(remaining.length ? remaining.map((t): [string, string] => [t, t]) : [['', '(all placed)']], remaining[0] ?? '', () => {}, 'Attribute to add');
       addRow.append(
         addSel,
@@ -1069,6 +1188,22 @@ export class SymbolBuilderPalette {
         this.smallButton('Add', `Add at its default position for a ${vertical ? 'vertical' : 'horizontal'} symbol`, () => addSel.value && ctl.addAttribute(addSel.value)),
       );
       attrTable.appendChild(addRow);
+      // attribute templates quick-add
+      const tplRow = document.createElement('div');
+      tplRow.className = 'sb-addrow sb-templates';
+      tplRow.style.cssText = 'flex-wrap:wrap;gap:3px;';
+      const tplLabel = document.createElement('span');
+      tplLabel.className = 'sb-note';
+      tplLabel.textContent = 'Templates:';
+      tplLabel.style.margin = '0 2px 0 0';
+      tplRow.appendChild(tplLabel);
+      for (const g of ATTRIBUTE_TEMPLATE_GROUPS) {
+        const missing = g.tags.filter((t) => !placedTags.has(t));
+        const btn = this.smallButton(g.label, missing.length ? `Add ${missing.join(', ')}${g.invisible ? ' as invisible attributes' : ''}` : `${g.label}: all placed`, () => ctl.quickAdd(g.key));
+        btn.disabled = missing.length === 0;
+        tplRow.appendChild(btn);
+      }
+      attrTable.appendChild(tplRow);
       const convRow = document.createElement('div');
       convRow.className = 'sb-addrow';
       const selectedTexts = this.editor.entitiesSelected().filter((e) => e.type === 'text' && !isPlaceholder(e) && !isPinMarker(e)).length;
@@ -1077,7 +1212,7 @@ export class SymbolBuilderPalette {
       if (selectedTexts) conv.textContent = `Convert ${selectedTexts} selected text${selectedTexts === 1 ? '' : 's'} to attribute`;
       convRow.appendChild(conv);
       attrTable.appendChild(convRow);
-      attrTable.appendChild(this.note(`Placeholder text = attribute tag; edit height / justification / rotation with the Properties palette (Ctrl+1). DESC2 / DESC3, INST, LOC, MFG, CAT, ASSYCODE, RATING1-2 and WDTYPE=${esc(meta.kind === 'standalone' ? meta.family || 'DEV' : meta.kind === 'parent' ? 'COIL' : meta.kind === 'child' ? 'CONTACT' : meta.kind.toUpperCase())}${meta.kind === 'terminal' ? ', TAGSTRIP' : ''} are added as invisible attributes unless you place them.`));
+      attrTable.appendChild(this.note(`Rows are in block order: insertion prompts follow it (arrows reorder). Open a row for its prompt, invisible / constant / verify / preset flags, text height and justification. DESC2 / DESC3, INST, LOC, MFG, CAT, ASSYCODE, RATING1-2 and WDTYPE=${esc(meta.kind === 'standalone' ? meta.family || 'DEV' : meta.kind === 'parent' ? 'COIL' : meta.kind === 'child' ? 'CONTACT' : meta.kind.toUpperCase())}${meta.kind === 'terminal' ? ', TAGSTRIP' : ''} are added as invisible attributes unless you place them.`));
       sec.body.appendChild(attrTable);
       b.appendChild(sec.body);
     }
@@ -1172,9 +1307,20 @@ export class SymbolBuilderPalette {
       b.appendChild(sec.body);
     }
 
-    // ---- check area (fixed above the buttons)
+    // ---- check area (fixed above the buttons): the pre-save checklist, then the check summary
     {
       const c = this.checkEl;
+      const items = ctl.checklist();
+      const ticked = items.filter((i) => i.ok).length;
+      const head = document.createElement('div');
+      head.className = 'sb-checklist-head';
+      head.textContent = ticked === items.length ? `Checklist: all ${items.length} items ticked` : `Checklist: ${ticked} of ${items.length} ticked`;
+      head.title = items.map((i) => `${i.ok ? 'OK' : i.level === 'error' ? 'Error' : 'Warning'}: ${i.label}${i.detail ? ` (${i.detail})` : ''}`).join('\n');
+      head.style.cssText = `font-size:11px;font-weight:600;padding:4px 6px 2px;color:${ticked === items.length ? '#8fd19e' : 'inherit'};`;
+      c.appendChild(head);
+      // Only the unticked items are listed; the tooltip of the heading shows the whole list.
+      const open = items.filter((i) => !i.ok);
+      if (open.length) c.appendChild(checklistEl(open));
       c.classList.toggle('has-errors', summary.errors > 0);
       c.classList.toggle('has-warnings', summary.errors === 0 && summary.warnings > 0);
       const line = document.createElement('button');
@@ -1252,6 +1398,7 @@ export function createSymbolBuilderUi(editor: Editor, container: HTMLElement): S
     revealCheck: () => palette.revealCheck(),
     askRename: (oldName, newName) => renameChoiceDialog(oldName, newName),
     showErrors: (title, messages) => checkErrorsDialog(title, messages),
+    confirmChecklist: (name, items) => checklistDialog(name, items),
     openTextFile: (accept) => electricalUi(editor).openTextFile?.(accept) ?? Promise.resolve(null),
   };
 }

@@ -103,6 +103,42 @@ export interface SymbolMeta {
   orientation: SymbolOrientation;
   /** Attribute default values (MFG, CAT, DESC1, RATING1 ... and vendor-specific invisible attributes), keyed by tag. */
   attrDefaults: Record<string, string>;
+  /** Per-attribute settings of placed attributes (prompt text, ATTDEF flags), keyed by tag; absent = defaults. */
+  attrProps?: Record<string, AttrProps>;
+  /** Order of the placed attributes in the block (insertion prompts follow it); tags not listed keep drawing order after them. */
+  attrOrder?: string[];
+}
+
+/**
+ * Settings of one placed attribute, like the AutoCAD ATTDEF dialog: the prompt shown at
+ * insertion and the mode flags (DXF group 70: 1 invisible, 2 constant, 4 verify, 8 preset).
+ */
+export interface AttrProps {
+  prompt?: string;
+  invisible?: boolean;
+  /** Fixed value: every insert carries the default, it is never prompted. */
+  constant?: boolean;
+  /** Prompt twice / confirm the value at insertion. */
+  verify?: boolean;
+  /** Takes the default without prompting (can still be edited later). */
+  preset?: boolean;
+}
+
+/**
+ * Attribute definition with the Symbol Builder extras. `constant`, `verify` and `preset`
+ * are the remaining ATTDEF mode flags; `placeholder` marks an invisible attribute that was
+ * placed in the builder (it reopens as a placeholder instead of a data default).
+ */
+export type AttributeDefExt = AttributeDef & { readonly constant?: boolean; readonly verify?: boolean; readonly preset?: boolean; readonly placeholder?: boolean };
+
+/** ATTDEF mode flags (DXF group 70) of an attribute definition. */
+export function attdefFlags(a: AttributeDefExt): number {
+  return (a.invisible ? 1 : 0) | (a.constant ? 2 : 0) | (a.verify ? 4 : 0) | (a.preset ? 8 : 0);
+}
+
+/** Attribute flags from an ATTDEF group 70 value. */
+export function attdefFlagProps(flags: number): Pick<AttributeDefExt, 'invisible' | 'constant' | 'verify' | 'preset'> {
+  return { ...(flags & 1 ? { invisible: true } : {}), ...(flags & 2 ? { constant: true } : {}), ...(flags & 4 ? { verify: true } : {}), ...(flags & 8 ? { preset: true } : {}) };
 }
 
 /** Older sessions kept the pin defaults keyed by marker id; `open` migrates them into the marker texts. */
@@ -126,11 +162,33 @@ export function wdtypeFor(kind: SymbolKind, family: string): string {
 
 /** Attributes the palette offers for placement (visible text on the symbol). */
 export const PLACEABLE_ATTRIBUTES = ['TAG1', 'DESC1', 'DESC2', 'DESC3', 'TERM01', 'INST', 'LOC', 'MFG', 'CAT', 'RATING1'] as const;
+/** RATING1 ... RATING12. */
+export const RATING_ATTRIBUTES: readonly string[] = Array.from({ length: 12 }, (_, i) => `RATING${i + 1}`);
+
+export interface AttributeTemplateGroup {
+  key: string;
+  label: string;
+  tags: readonly string[];
+  /** Added as invisible attributes (data carried by the insert, not printed). */
+  invisible: boolean;
+}
+
+/** The "Attribute templates" quick-add groups: the AutoCAD Electrical attribute names a symbol usually carries. */
+export const ATTRIBUTE_TEMPLATE_GROUPS: readonly AttributeTemplateGroup[] = [
+  { key: 'tag', label: 'TAG1 + DESC1-3', tags: ['TAG1', 'DESC1', 'DESC2', 'DESC3'], invisible: false },
+  { key: 'location', label: 'INST / LOC', tags: ['INST', 'LOC'], invisible: false },
+  { key: 'catalog', label: 'MFG / CAT / ASSYCODE', tags: ['MFG', 'CAT', 'ASSYCODE'], invisible: true },
+  { key: 'terminals', label: 'TERM01 / TERM02', tags: ['TERM01', 'TERM02'], invisible: false },
+  { key: 'xref', label: 'XREF', tags: ['XREF'], invisible: false },
+  { key: 'ratings', label: 'RATING1-12', tags: RATING_ATTRIBUTES, invisible: true },
+];
+/** Every tag of the template groups, in group order. */
+export const TEMPLATE_ATTRIBUTES: readonly string[] = ATTRIBUTE_TEMPLATE_GROUPS.flatMap((g) => g.tags);
 /** Attributes acadeAttributes adds invisibly when they were not placed. */
 export const AUTOMATIC_ATTRIBUTES = [...DATA_ATTRIBUTES, 'TAGSTRIP'] as const;
 /** Invisible data attributes whose defaults the palette offers for editing (order of the table). */
 export const DEFAULT_EDITABLE_ATTRIBUTES = ['MFG', 'CAT', 'RATING1', 'INST', 'LOC', 'ASSYCODE'] as const;
-export const KNOWN_ATTRIBUTES: ReadonlySet<string> = new Set<string>([...PLACEABLE_ATTRIBUTES, ...AUTOMATIC_ATTRIBUTES, 'TAG1', 'DESC1']);
+export const KNOWN_ATTRIBUTES: ReadonlySet<string> = new Set<string>([...PLACEABLE_ATTRIBUTES, ...AUTOMATIC_ATTRIBUTES, ...TEMPLATE_ATTRIBUTES, 'TAG1', 'DESC1']);
 export const isKnownAttribute = (tag: string): boolean => KNOWN_ATTRIBUTES.has(tag.toUpperCase());
 
 const PIN_RE = /^X([1248])TERM(\d*)(?:=(.*))?$/i;
@@ -167,6 +225,10 @@ export function attributePrompt(tag: string, kind: SymbolKind = 'standalone'): s
       return 'Description line 3';
     case 'TERM01':
       return 'Terminal number';
+    case 'TERM02':
+      return 'Terminal number 2';
+    case 'XREF':
+      return 'Cross-reference';
     case 'INST':
       return 'Installation';
     case 'LOC':
@@ -183,8 +245,10 @@ export function attributePrompt(tag: string, kind: SymbolKind = 'standalone'): s
       return 'Rating 2';
     case 'TAGSTRIP':
       return 'Terminal strip';
-    default:
-      return tag;
+    default: {
+      const m = /^RATING(\d+)$/.exec(tag);
+      return m ? `Rating ${m[1]}` : tag;
+    }
   }
 }
 
@@ -326,13 +390,26 @@ export function defaultMeta(partial: Partial<SymbolMeta> & { name: string }): Sy
     name: partial.name.toUpperCase(),
   };
   m.attrDefaults = { ...m.attrDefaults };
+  if (m.attrProps) {
+    const props: Record<string, AttrProps> = {};
+    for (const [k, v] of Object.entries(m.attrProps)) if (v && Object.keys(v).length) props[k] = { ...v };
+    if (Object.keys(props).length) m.attrProps = props;
+    else delete m.attrProps;
+  } else delete m.attrProps;
+  if (m.attrOrder && m.attrOrder.length) m.attrOrder = [...m.attrOrder];
+  else delete m.attrOrder;
   delete (m as { pinDefaults?: unknown }).pinDefaults; // legacy field of older sessions
   return m;
 }
 
 /** The meta as stored in `DrawingState.meta` (plain data). */
 export function metaRecord(meta: SymbolMeta): Readonly<Record<string, unknown>> {
-  return { ...meta, attrDefaults: { ...meta.attrDefaults } };
+  return {
+    ...meta,
+    attrDefaults: { ...meta.attrDefaults },
+    ...(meta.attrProps ? { attrProps: Object.fromEntries(Object.entries(meta.attrProps).map(([k, v]) => [k, { ...v }])) } : {}),
+    ...(meta.attrOrder ? { attrOrder: [...meta.attrOrder] } : {}),
+  };
 }
 
 /** Read the symbol meta of an editing document (null for ordinary drawings). */
@@ -391,12 +468,24 @@ const attrRotation = (a: AttributeDef): number => (a as { rotation?: number }).r
 export function blockToSymbolState(block: BlockDef, meta?: Partial<SymbolMeta>): SymbolState {
   const shift = { x: -block.basePoint.x, y: -block.basePoint.y };
   const entities: Entity[] = block.entities.map((e) => ({ ...translateEntity(e, shift), id: newId() }));
-  for (const a of block.attributes) {
+  const kind = meta?.kind ?? kindFromBlock(block);
+  const attrProps: Record<string, AttrProps> = {};
+  for (const a of block.attributes as readonly AttributeDefExt[]) {
     const p = { x: a.position.x + shift.x, y: a.position.y + shift.y };
     if (isPinTag(a.tag)) entities.push(pinMarkerText(a.tag, p, a.default));
-    else if (!a.invisible) entities.push(text(SYMATTR_LAYER, p, a.tag.toUpperCase(), a.height, a.align, attrRotation(a)));
+    else if (!a.invisible || a.placeholder) {
+      const tag = a.tag.toUpperCase();
+      entities.push(text(SYMATTR_LAYER, p, tag, a.height, a.align, attrRotation(a)));
+      const props: AttrProps = {
+        ...(a.prompt && a.prompt !== attributePrompt(tag, kind) ? { prompt: a.prompt } : {}),
+        ...(a.invisible ? { invisible: true } : {}),
+        ...(a.constant ? { constant: true } : {}),
+        ...(a.verify ? { verify: true } : {}),
+        ...(a.preset ? { preset: true } : {}),
+      };
+      if (Object.keys(props).length) attrProps[tag] = props;
+    }
   }
-  const kind = meta?.kind ?? kindFromBlock(block);
   const contact = meta?.contact ?? (/_NC$/.test(block.name) ? 'NC' : /_NO$/.test(block.name) ? 'NO' : undefined);
   const wd = block.attributes.find((a) => a.tag === 'WDTYPE')?.default;
   const family = meta?.family ?? (wd && !/^(COIL|CONTACT|TERM|PLC)$/.test(wd) ? wd : tagPrefix(block.name));
@@ -409,6 +498,7 @@ export function blockToSymbolState(block: BlockDef, meta?: Partial<SymbolMeta>):
     kind,
     ...(kind === 'child' || kind === 'standalone' ? (contact ? { contact } : kind === 'child' ? { contact: 'NO' as const } : {}) : {}),
     attrDefaults: { ...harvestDefaults(block.attributes), ...meta?.attrDefaults },
+    ...(Object.keys(attrProps).length && !meta?.attrProps ? { attrProps } : {}),
   });
   return { state: { entities, layers: symbolLayers(), blocks: {}, currentLayer: '0', meta: metaRecord(m) }, meta: m };
 }
@@ -567,21 +657,126 @@ export function markerUpdates(state: DrawingState, pins: readonly CompiledPin[])
 }
 
 /** Attribute placeholders of the state as attribute definitions (visible), with the meta's defaults. */
-export function compilePlaceholders(state: DrawingState, meta: Pick<SymbolMeta, 'kind'> & Partial<Pick<SymbolMeta, 'attrDefaults'>>): AttributeDef[] {
-  const out: AttributeDef[] = [];
+/**
+ * The attribute placeholders of a state in block order: the tags listed in `attrOrder`
+ * first (in that order), then the others in drawing order; one per tag, pin tags skipped.
+ */
+export function orderedPlaceholders(state: DrawingState, meta: Partial<Pick<SymbolMeta, 'attrOrder'>> = {}): TextEntity[] {
   const seen = new Set<string>();
-  const defaults = meta.attrDefaults ?? {};
+  const list: TextEntity[] = [];
   for (const t of state.entities.filter(isPlaceholder)) {
     const tag = t.text.trim().toUpperCase();
     if (!tag || seen.has(tag) || isPinTag(tag)) continue;
     seen.add(tag);
+    list.push(t);
+  }
+  const order = (meta.attrOrder ?? []).map((t) => t.toUpperCase());
+  const rank = (t: TextEntity) => {
+    const i = order.indexOf(t.text.trim().toUpperCase());
+    return i < 0 ? order.length : i;
+  };
+  return list.map((t, i) => ({ t, i })).sort((a, b) => rank(a.t) - rank(b.t) || a.i - b.i).map((x) => x.t);
+}
+
+/** The placed tags in block order (the order the palette lists and insertion prompts follow). */
+export function attributeOrder(state: DrawingState, meta: Partial<Pick<SymbolMeta, 'attrOrder'>> = {}): string[] {
+  return orderedPlaceholders(state, meta).map((t) => t.text.trim().toUpperCase());
+}
+
+/** `order` with `tag` moved up (delta -1) or down (+1); unchanged at the ends or for an unknown tag. */
+export function moveInOrder(order: readonly string[], tag: string, delta: -1 | 1): string[] {
+  const out = [...order];
+  const i = out.indexOf(tag.toUpperCase());
+  const j = i + delta;
+  if (i < 0 || j < 0 || j >= out.length) return out;
+  [out[i], out[j]] = [out[j]!, out[i]!];
+  return out;
+}
+
+/** Attribute placeholders of the state as attribute definitions (block order), with the meta's defaults, prompts and flags. */
+export function compilePlaceholders(state: DrawingState, meta: Pick<SymbolMeta, 'kind'> & Partial<Pick<SymbolMeta, 'attrDefaults' | 'attrProps' | 'attrOrder'>>): AttributeDefExt[] {
+  const out: AttributeDefExt[] = [];
+  const defaults = meta.attrDefaults ?? {};
+  for (const t of orderedPlaceholders(state, meta)) {
+    const tag = t.text.trim().toUpperCase();
+    const props = meta.attrProps?.[tag] ?? {};
     const def = defaults[tag] ?? (tag === 'TAG1' && meta.kind === 'plc' ? 'I:0.0' : '');
-    const a: AttributeDef = { tag, prompt: attributePrompt(tag, meta.kind), default: def, position: t.position, height: t.height, align: t.align };
-    // Text rotation survives once AttributeDef carries a `rotation` field (see attrRotation); harmless extra property until then.
-    if (Math.abs(t.rotation) > 1e-9) (a as { rotation?: number }).rotation = t.rotation;
+    const a: AttributeDefExt = {
+      tag,
+      prompt: props.prompt?.trim() || attributePrompt(tag, meta.kind),
+      default: def,
+      position: t.position,
+      height: t.height,
+      align: t.align,
+      ...(props.invisible ? { invisible: true, placeholder: true } : {}),
+      ...(props.constant ? { constant: true } : {}),
+      ...(props.verify ? { verify: true } : {}),
+      ...(props.preset ? { preset: true } : {}),
+      ...(Math.abs(t.rotation) > 1e-9 ? { rotation: t.rotation } : {}),
+    };
     out.push(a);
   }
   return out;
+}
+
+/** One attribute prompted when a symbol is inserted. */
+export interface InsertionPrompt {
+  tag: string;
+  prompt: string;
+  default: string;
+  /** Ask for confirmation (ATTDEF verify flag). */
+  verify: boolean;
+  invisible: boolean;
+}
+
+/**
+ * The attributes to prompt for when a symbol is inserted, in block order: every non-pin
+ * attribute that is neither constant nor preset, with its prompt text (the tag when the
+ * prompt is empty). Invisible data attributes the builder added on its own (INST, WDTYPE ...)
+ * are left out unless they were placed; WDTYPE is never prompted.
+ */
+export function insertionPrompts(block: BlockDef): InsertionPrompt[] {
+  const out: InsertionPrompt[] = [];
+  for (const a of block.attributes as readonly AttributeDefExt[]) {
+    if (isPinTag(a.tag) || a.tag === 'WDTYPE' || a.constant || a.preset) continue;
+    if (a.invisible && !a.placeholder) continue;
+    out.push({ tag: a.tag, prompt: a.prompt?.trim() || a.tag, default: a.default, verify: !!a.verify, invisible: !!a.invisible });
+  }
+  return out;
+}
+
+/** Stacked default position of a template attribute that has no position of its own (quick-add). */
+export function templatePosition(tag: string, orientation: SymbolOrientation, slot: number): Point {
+  const known = ['TAG1', 'DESC1', 'DESC2', 'DESC3', 'TERM01'];
+  if (known.includes(tag)) return attributeDefaults(tag, orientation).position;
+  return orientation === 'V' ? { x: 0.45, y: -0.5 - slot * 0.1 } : { x: 0, y: -0.86 - slot * 0.1 };
+}
+
+/**
+ * Quick-add of an attribute template group: placeholders for the group's tags that are not
+ * placed yet (stacked under the symbol so they do not overlap), and the meta with the group's
+ * invisible flag and the new tags appended to the attribute order. Returns null when every
+ * tag of the group is already placed.
+ */
+export function quickAddAttributes(state: DrawingState, meta: SymbolMeta, groupKey: string): { entities: TextEntity[]; meta: SymbolMeta } | null {
+  const group = ATTRIBUTE_TEMPLATE_GROUPS.find((g) => g.key === groupKey);
+  if (!group) return null;
+  const placed = attributeOrder(state, meta);
+  const missing = group.tags.filter((t) => !placed.includes(t));
+  if (missing.length === 0) return null;
+  const orientation = meta.orientation ?? 'H';
+  const extraSlots = placed.filter((t) => !['TAG1', 'DESC1', 'DESC2', 'DESC3', 'TERM01'].includes(t)).length;
+  let slot = extraSlots;
+  const entities = missing.map((tag) => {
+    const d = attributeDefaults(tag, orientation);
+    const known = ['TAG1', 'DESC1', 'DESC2', 'DESC3', 'TERM01'].includes(tag);
+    const pos = templatePosition(tag, orientation, known ? 0 : slot++);
+    return text(SYMATTR_LAYER, pos, tag, d.height, d.align);
+  });
+  const attrProps = { ...(meta.attrProps ?? {}) };
+  if (group.invisible) for (const t of missing) attrProps[t] = { ...attrProps[t], invisible: true };
+  const next = defaultMeta({ ...meta, attrProps, attrOrder: [...placed, ...missing] });
+  return { entities, meta: next };
 }
 
 /**
@@ -604,7 +799,11 @@ export function symbolStateToBlock(state: DrawingState, meta: SymbolMeta): Block
     .map((a) => {
       const def = meta.attrDefaults[a.tag];
       const auto = a.tag === 'DESC2' || a.tag === 'DESC3';
-      return { ...a, ...(auto ? { invisible: true } : {}), ...(def !== undefined && a.tag !== 'WDTYPE' ? { default: def } : {}) };
+      // DESC2 / DESC3 are copied from DESC1: they must not inherit its prompt or builder flags.
+      const { placeholder: _p, constant: _c, verify: _v, preset: _s, ...plain } = a as AttributeDefExt;
+      void [_p, _c, _v, _s];
+      const prompt = auto ? attributePrompt(a.tag, meta.kind) : plain.prompt;
+      return { ...plain, prompt, ...(auto ? { invisible: true } : {}), ...(def !== undefined && a.tag !== 'WDTYPE' ? { default: def } : {}) };
     });
   const all = [...attrs, ...extra];
   const have = new Set(all.map((a) => a.tag));
@@ -904,6 +1103,8 @@ export interface CheckOptions {
   validName(name: string): boolean;
   /** Whether a parent / coil symbol of a family exists (child contacts need one to cross-reference). */
   hasParent?(family: string): boolean;
+  /** Whether a family (tag prefix) is known: used by a built-in symbol or a user symbol. */
+  knownFamily?(family: string): boolean;
 }
 
 const fmtPt = (p: Point) => `(${p.x.toFixed(3)}, ${p.y.toFixed(3)})`;
@@ -922,6 +1123,9 @@ export function checkSymbol(state: DrawingState, meta: SymbolMeta, opts: CheckOp
   if (meta.standard === 'JIC' && /^IEC_/.test(name)) out.push({ level: 'warning', text: 'The name starts with IEC_ but the standard is JIC; IEC symbols are listed under the IEC icon menu.' });
   if (meta.standard === 'IEC' && /^[HV][A-Z]{1,4}\d/.test(name) && !/^IEC_/.test(name)) out.push({ level: 'warning', text: 'The name looks like a JIC library name (H.. / V..) but the standard is IEC; consider an IEC_ prefix.' });
   if (!meta.family.trim()) out.push({ level: 'error', text: 'Set a family (tag prefix), e.g. PB, CR, LS.' });
+  else if (opts.knownFamily && !opts.knownFamily(meta.family.trim().toUpperCase())) {
+    out.push({ level: 'warning', text: `Family ${meta.family.trim().toUpperCase()} is not used by any library symbol; check the spelling (tags, reports and the catalog lookup group devices by family).` });
+  }
   if (meta.kind === 'child' && opts.hasParent && meta.family.trim() && !opts.hasParent(meta.family.trim().toUpperCase())) {
     out.push({ level: 'warning', text: `No parent / coil symbol of family ${meta.family.toUpperCase()} exists (built-in or user library); the contact will have nothing to cross-reference.` });
   }
@@ -960,6 +1164,11 @@ export function checkSymbol(state: DrawingState, meta: SymbolMeta, opts: CheckOp
     if (!tags.has('TERM01')) out.push({ level: 'error', text: 'A terminal needs a TERM01 attribute (palette: Attributes, pick TERM01, Add or Place).' });
   } else if (!tags.has('TAG1')) out.push({ level: 'error', text: 'Place a TAG1 attribute (palette: Attributes, pick TAG1, Add or Place) so the component can be tagged.' });
   if (!tags.has('DESC1') && meta.kind !== 'terminal') out.push({ level: 'warning', text: 'No DESC1 attribute: descriptions will not show on the drawing.' });
+  for (const a of placeholders) {
+    if (a.constant && !a.default.trim()) out.push({ level: 'warning', text: `${a.tag} is constant but has no default value: every insert would carry an empty ${a.tag}.` });
+    if (a.constant && (a.tag === 'TAG1' || a.tag === 'TERM01')) out.push({ level: 'warning', text: `${a.tag} is constant: every insert gets the same ${a.tag === 'TAG1' ? 'tag' : 'terminal number'} and tagging cannot change it.` });
+    if (a.invisible && (a.tag === 'TAG1' || (a.tag === 'TERM01' && meta.kind === 'terminal'))) out.push({ level: 'warning', text: `${a.tag} is invisible: the ${a.tag === 'TAG1' ? 'component tag' : 'terminal number'} will not print on the drawing.` });
+  }
   const tag1 = placeholders.find((a) => a.tag === 'TAG1');
   if (tag1 && b && tag1.position.x > b.min.x - 1e-6 && tag1.position.x < b.max.x + 1e-6 && tag1.position.y > b.min.y - 1e-6 && tag1.position.y < b.max.y + 1e-6 && Math.abs(tag1.position.x) < INLINE_HALF && Math.abs(tag1.position.y) < INLINE_HALF) {
     out.push({ level: 'warning', text: `TAG1 at ${fmtPt(tag1.position)} sits on the geometry inside the 0.75 in box; the tag text will print over the symbol.` });
@@ -973,6 +1182,54 @@ export function checkSymbol(state: DrawingState, meta: SymbolMeta, opts: CheckOp
   if (!out.some((m) => m.level === 'error' || m.level === 'warning')) out.unshift({ level: 'ok', text: `OK: ${geometry.length} object(s), ${pins.length} wire connection(s), ${placeholders.length} visible attribute(s).` });
   return out;
 }
+
+export interface ChecklistItem {
+  key: 'name' | 'pins' | 'overlap' | 'tag' | 'family' | 'desc' | 'attributes';
+  label: string;
+  ok: boolean;
+  /** How serious a failed item is: errors block the save, warnings ask before saving. */
+  level: 'error' | 'warning';
+  detail?: string;
+}
+
+/**
+ * The pre-save checklist shown next to Save: connection points, overlapping pins, the tag
+ * attribute (TAG1, or TERM01 for a terminal), a known family, a description attribute and
+ * consistent attribute flags, each ticked or not. Derived from `checkSymbol` data so the
+ * two never disagree.
+ */
+export function saveChecklist(state: DrawingState, meta: SymbolMeta, opts: CheckOptions): ChecklistItem[] {
+  const name = meta.name.trim().toUpperCase();
+  const nameOk = !!name && !/\s/.test(name) && opts.validName(name) && !opts.isBuiltin(name);
+  const pins = compilePins(state, meta);
+  const overlaps: string[] = [];
+  for (let i = 0; i < pins.length; i += 1) for (let j = i + 1; j < pins.length; j += 1) if (dist(pins[i]!.point, pins[j]!.point) < PIN_SNAP_TOL) overlaps.push(`${pins[i]!.tag} / ${pins[j]!.tag}`);
+  const placeholders = compilePlaceholders(state, meta);
+  const tags = new Set(placeholders.map((a) => a.tag));
+  const terminal = meta.kind === 'terminal';
+  const tagTag = terminal ? 'TERM01' : 'TAG1';
+  const fam = meta.family.trim().toUpperCase();
+  const famOk = !!fam && (!opts.knownFamily || opts.knownFamily(fam));
+  const badAttrs = placeholders.filter((a) => (a.constant && !a.default.trim()) || (a.constant && (a.tag === 'TAG1' || a.tag === 'TERM01')) || (a.invisible && a.tag === tagTag)).map((a) => a.tag);
+  const items: ChecklistItem[] = [
+    { key: 'name', label: 'Valid, unused block name', ok: nameOk, level: 'error', ...(nameOk ? {} : { detail: name ? `${name} cannot be used` : 'no name' }) },
+    { key: 'pins', label: 'Wire connection points', ok: pins.length > 0, level: 'error', detail: `${pins.length} connection${pins.length === 1 ? '' : 's'}` },
+    { key: 'overlap', label: 'No overlapping pins', ok: overlaps.length === 0, level: 'error', ...(overlaps.length ? { detail: overlaps.join(', ') } : {}) },
+    {
+      key: 'tag',
+      label: terminal ? 'TERM01 attribute (terminal number)' : meta.kind === 'parent' ? 'TAG1 attribute (parent symbol)' : 'TAG1 attribute',
+      ok: tags.has(tagTag),
+      level: 'error',
+    },
+    { key: 'family', label: 'Known family (tag prefix)', ok: famOk, level: fam ? 'warning' : 'error', detail: fam || 'none' },
+    { key: 'desc', label: 'DESC1 attribute', ok: terminal || tags.has('DESC1'), level: 'warning' },
+    { key: 'attributes', label: 'Attribute flags consistent', ok: badAttrs.length === 0, level: 'warning', ...(badAttrs.length ? { detail: badAttrs.join(', ') } : {}) },
+  ];
+  return items;
+}
+
+/** Failed checklist items that should be confirmed before saving (warnings only; errors block the save anyway). */
+export const checklistWarnings = (items: readonly ChecklistItem[]): ChecklistItem[] => items.filter((i) => !i.ok && i.level === 'warning');
 
 /** Counts of a check result for badges ("2 errors, 1 warning"). */
 export function summarizeCheck(msgs: readonly CheckMessage[]): { errors: number; warnings: number; text: string } {
