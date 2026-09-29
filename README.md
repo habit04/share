@@ -204,7 +204,11 @@ keywords shown in `[brackets]` are clickable.
 | AEAUDIT | AUDIT | Electrical Audit dialog with jump-to-error |
 | NEWSHEET | TEMPLATE | New drawing from an ANSI / ISO sheet template with title block |
 | OPENPROJECT, PROJECTADD, PROJECTSAVE | PROJECT | Project files (`*.jcadproj.json`) listing drawings, description lines and settings |
-| NEW, OPEN, SAVE, SAVEAS, PLOT, PRINT, RECENT | Ctrl+N / O / S / Shift+S / P / Shift+P | Files: DXF and DWG open, DXF save, PDF plot, print through the system dialog (the browser edition builds the PDF in the page and prints through the browser's dialog). NEW / OPEN work in file tabs |
+| NEW, OPEN, SAVE, SAVEAS, PLOT, PRINT, RECENT | Ctrl+N / O / S / Shift+S / P / Shift+P | Files: DXF and DWG open, DXF save, PDF plot (vector by default; the Model tab, the current layout or all layouts), print through the system dialog (the browser edition builds the PDF in the page and prints through the browser's dialog). NEW / OPEN work in file tabs |
+| LAYOUT [Copy/Delete/New/Template/Rename/Set/?], LAYOUTWIZARD, PAGESETUP | LO | Paper-space layouts: a sheet with its paper size, orientation, margins, plot scale and plot style; the wizard adds a sheet border and title block |
+| MODEL, TILEMODE, MSPACE, PSPACE | MS, PS | Model tab / layouts; work inside a floating viewport (MSPACE) or on the paper (PSPACE) |
+| MVIEW [ON/OFF/Fit/Lock], MVSETUP [Create/Scale viewports], VPSCALE | MV | Floating viewports: two corners or Fit, on / off, view lock, scale (1:4, 2:1, 0.5XP ...) |
+| CANNOSCALE, ANNOALLVISIBLE, OBJECTSCALE [ON/OFF/Toggle] | ANNOSCALE, ANNOTATIVE | Annotation scale; annotative text, dimensions, leaders and blocks keep their paper height at the annotation / viewport scale |
 | CLOSE, CLOSEALL, CLOSEALLOTHER, NEXTTAB, PREVTAB | Ctrl+W, Ctrl+Tab | Drawing tabs (several open documents) |
 | OPTIONS | OP | Options dialog: Display, Drafting, Selection, Files (autosave), Units — applied live |
 | DSETTINGS | DS, SE | Drafting Settings: Snap and Grid, Polar Tracking, Object Snap modes, Dynamic Input |
@@ -232,6 +236,14 @@ folder every 10 minutes (Options > Files); the Drawing Recovery Manager offers t
 A recovered drawing keeps its backup (and keeps refreshing it) until it is saved for real. A save
 only clears the "unsaved changes" flag for the exact revision that was written, so edits made
 while the save dialog was open stay flagged.
+
+**Layouts:** the tabs under the drawing (`Model | Layout1 | +`) switch between model space and the
+paper-space layouts; right-click a layout tab for New Layout, From Template, Delete, Rename, Move or
+Copy, Page Setup Manager and Plot. In a layout, double-click inside a viewport to work in it (MSPACE)
+and outside to return to the paper (PSPACE); the status bar's MODEL / PAPER button does the same, and
+its annotation-scale list sets CANNOSCALE (and, inside a viewport, the viewport scale). Zooming inside
+an unlocked viewport changes that viewport's view; with a locked viewport the paper zooms. Viewport
+frames move, stretch (grips), copy and erase like other objects. The View tab has a Layout panel.
 
 Mouse: wheel zooms at the cursor, middle-drag pans, double middle-click zooms extents.
 Click picks; drag left-to-right is a window selection (blue), right-to-left is crossing (green);
@@ -445,11 +457,20 @@ edit or delete it.
   to the original. Sample files from the LibreDWG test suite live in `fixtures/` and are used
   by the tests. Mirrored and stretched block references keep their X/Y scales (circles and
   arcs inside a stretched block become polylines).
-- **PDF** plotting and **printing** render the extents onto a chosen paper (Letter, Legal,
-  Tabloid 11 x 17, ANSI C/D/E, Arch C/D, ISO A4-A0, or a custom sheet fitted to the drawing)
-  with automatic or forced orientation, fit-to-paper or a fixed scale (1:1, 1:2, 1:4, 2:1)
-  and margins; the choices are remembered. Output is a raster image of the drawing (black
-  lines, hidden layers left out), which any printer or plotter accepts.
+- **Paper space** round-trips through DXF: `*Paper_Space` / `*Paper_SpaceN` blocks, VIEWPORT
+  entities (with their frozen layers), LAYOUT objects in the `ACAD_LAYOUT` dictionary (paper size,
+  margins, plot scale), `$CANNOSCALE` / `$ANNOALLVISIBLE` and `AcadAnnotative` XDATA on annotative
+  objects. Paper-space entities of other programs (group 67) are read into their layouts, so layout
+  tabs made in AutoCAD come in with their viewports; non-rectangular viewport clipping is not
+  supported, and a drawing always opens in the Model tab. Layers keep the no-plot flag (group 290).
+- **PDF** plotting and **printing**: the Model tab plots its extents onto a chosen paper (Letter,
+  Legal, Tabloid 11 x 17, ANSI C/D/E, Arch C/D, ISO A4-A0, or a custom sheet fitted to the drawing)
+  with automatic or forced orientation, fit-to-paper or a fixed scale (1:1, 1:2, 1:4, 2:1) and
+  margins; a layout plots its own page setup. The default **vector** PDF has real paths, hatches,
+  images, dashed linetypes and text (TrueType-style text as PDF text, stroke-font text as paths),
+  one page per sheet (the current tab, or every layout), a plot style (monochrome, grayscale,
+  colour, screening) and optional object lineweights; hidden, frozen and no-plot layers are left out. **Raster image** output (a picture of the sheet) is still
+  offered. PRINT sends the sheet (in a layout, the layout's sheet) to the system print dialog.
 - **CSV** export for every report.
 
 ## Layout of the source
@@ -478,7 +499,9 @@ Newer modules worth knowing: `src/core/dimension.ts` (dimension styles and DIM* 
 styles); `src/app/api.ts` and `plugins.ts` (plugin API and loader), `i18n.ts` with `locales/`;
 `src/electrical/project-tools.ts`, `cables.ts`, `plc-import.ts`, `report-templates.ts`,
 `titleblock-map.ts` and `panel-hardware.ts`; `src/tools/dimension.ts`, `panel.ts`,
-`drafting-annot.ts`; `src/ui/dimstyle.ts`.
+`drafting-annot.ts`; `src/ui/dimstyle.ts`. Layouts and vector PDF: `src/core/layouts.ts`,
+`src/io/dxf-layouts.ts`, `src/io/pdf-vector.ts`, `src/app/plot-vector.ts`, `src/render/layouts.ts`,
+`src/tools/layouts.ts` and `src/ui/layouts.ts`.
 
 ## License
 

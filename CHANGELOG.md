@@ -98,6 +98,23 @@ messages). The date of each version is the date of the commit that set that vers
   `PLUGINRELOAD`, `SCRIPTRUN`, `docs/PLUGIN-API.md` and three example plugins in
   `examples/plugins/`.
 - LIST shows spline, hatch, leader, table and image properties and the text style of TEXT / MTEXT.
+- Paper-space layouts: `Model | Layout1 | +` tabs under the drawing with a right-click menu (New
+  Layout, From Template, Delete, Rename, Move or Copy, Page Setup Manager, Plot); `LAYOUT`
+  (New / Copy / Delete / Rename / Set / ? / Template), `LAYOUTWIZARD`, `PAGESETUP`, `MODEL`,
+  `TILEMODE`, `MSPACE`, `PSPACE`; a Layout panel on the View tab.
+- Floating viewports: `MVIEW` (two corners, Fit, ON / OFF, Lock), `MVSETUP`, `VPSCALE`. Double-click
+  inside a viewport to work in it and outside to return to the paper; zooming inside an unlocked
+  viewport changes its view; viewport frames move, stretch, copy and erase like objects.
+- Annotation scale: `CANNOSCALE` (also a status-bar list), `ANNOALLVISIBLE` and `OBJECTSCALE`;
+  annotative text, dimensions, leaders and blocks keep their paper height. The status bar's MODEL
+  button shows PAPER in a layout and switches between the paper and the current viewport.
+- DXF paper space: `*Paper_Space` blocks, VIEWPORT entities, LAYOUT objects in `ACAD_LAYOUT`,
+  `$CANNOSCALE` / `$ANNOALLVISIBLE` and `AcadAnnotative` XDATA are written and read; layouts made in
+  AutoCAD are imported with their viewports. Non-rectangular viewport clipping is not supported.
+- Vector PDF plotting: real paths, text, hatches, images and dashed linetypes, one page per sheet
+  (the current tab or all layouts), plot style tables (monochrome, grayscale, colour, screening),
+  plotted lineweights, and hidden / frozen / no-plot layers left out. Layers have a no-plot flag
+  (DXF group 290).
 - CI: a UI click check (every command and clickable control of the built renderer), the
   screenshot scripts as gates and an Electron end-to-end test on Ubuntu and Windows.
 - Signing: the Windows build is signed through Azure Artifact Signing and the macOS build with a
@@ -115,6 +132,8 @@ messages). The date of each version is the date of the commit that set that vers
   desktop application is no longer needed to plot.
 - Browser edition: PRINT uses a hidden frame instead of a pop-up window, so no pop-up
   permission is needed and the page size matches the sheet.
+- PLOT writes a vector PDF by default; the Plot dialog's "PDF output" still offers a raster image.
+  In a layout the dialog uses the layout's page setup, and PRINT prints the layout's sheet.
 - Radius and diameter dimension text is horizontal unless the style asks for aligned text.
 - DIM* variable commands accept BYLAYER / BYBLOCK for the dimension colours.
 - The current dimension style read from a DXF is the header variables applied over the named

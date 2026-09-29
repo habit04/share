@@ -19,7 +19,7 @@ Contents
 6. [Electrical workflow](#6-electrical-workflow)
 7. [Symbol Builder and the user library](#7-symbol-builder-and-the-user-library)
 8. [Catalogs and catalog packs](#8-catalogs-and-catalog-packs)
-9. [Plotting and printing](#9-plotting-and-printing)
+9. [Layouts and plotting](#9-layouts-and-plotting)
 10. [Settings](#10-settings)
 11. [Files: DXF, DWG, projects, autosave](#11-files-dxf-dwg-projects-autosave)
 12. [Updates](#12-updates)
@@ -36,14 +36,16 @@ Download the installer for your system from the project's
 buttons on the website (<https://habit04.github.io/share/>). The file names look like
 `jcad-electrical-<version>-<os>-<arch>.<ext>`.
 
-The installers are not signed with a paid vendor certificate, so each operating system asks
-you once to confirm that you trust the download.
+The Windows installer is signed (publisher: Justin Rodriguez). The macOS and Linux builds are
+not signed with a paid certificate, so macOS asks you once to confirm that you trust the
+download.
 
 ### Windows
 
 1. Download the `.exe` installer.
-2. Run it. If Windows SmartScreen shows "Windows protected your PC", click
-   **More info**, then **Run anyway**.
+2. Run it. If Windows SmartScreen still shows "Windows protected your PC" (possible with older,
+   unsigned versions or while the signing certificate is new), click **More info**, then
+   **Run anyway**.
 3. Follow the installer. JCad Electrical appears in the Start menu.
 
 The Windows installer version updates itself (see [Updates](#12-updates)).
@@ -187,7 +189,7 @@ Help.
 | Import/Export Data | Open DXF / DWG, save as DXF |
 | Conversion Tools | Explode, Line to Wire |
 | Add-ins | Command List (Help), Report Problem |
-| View | Pan, zoom buttons, palettes (Project Manager, Properties, Layers), named views, units, limits, regen |
+| View | Pan, zoom buttons, palettes (Project Manager, Properties, Layers), named views, units, limits, regen; Layout (New Layout, From Template, Page Setup, Viewport, Lock Viewport, Model Space, Paper Space, Model Tab) |
 
 Hover a button to see its tooltip; every button runs a command you can also type.
 
@@ -219,13 +221,15 @@ auto-hidden with the pin button; the widths are remembered.
 ### Status bar
 
 From left to right: the cursor coordinates (click to cycle absolute / relative / off),
-**MODEL**, and toggle buttons for **Grid** (F7), **Snap** (F9), **Ortho** (F8), **Polar**
+**MODEL** (**PAPER** in a layout; click to switch between the paper and the current viewport), and
+toggle buttons for **Grid** (F7), **Snap** (F9), **Ortho** (F8), **Polar**
 (F10), **Object snap** (F3), **Object snap tracking** (F11), **Dynamic input** (F12),
 **Lineweight** display and **Quick Properties**. Right-click a button (or click its small
 arrow) for its settings: Snap Settings, Grid Settings (grid style dots / lines), Tracking
 Settings, Object Snap Settings, Dynamic Input Settings. Further items: the workspace switcher
 (Drafting & Annotation / Electrical & 2D Drafting), Units, Isolate / Hide Objects and End Object
-Isolation, clean screen (Ctrl+0), and the customization menu to show or hide status bar items.
+Isolation, clean screen (Ctrl+0), the annotation scale (CANNOSCALE; inside a viewport it also shows
+and sets the viewport scale), and the customization menu to show or hide status bar items.
 
 ### Mouse
 
@@ -1026,10 +1030,66 @@ packs.
 
 ---
 
-## 9. Plotting and printing
+## 9. Layouts and plotting
+
+### Layouts
+
+Besides model space, where you draw, a drawing has **layouts**: sheets of paper with a title block,
+notes and floating **viewports** that show model space at a scale. The tabs under the drawing area
+read `Model | Layout1 | +`. Click a tab to switch; **+** adds a layout; right-click a layout tab for
+New Layout, From Template..., Delete, Rename, Move or Copy (Move Left / Move Right / Create a Copy),
+Page Setup Manager... and Plot.... A drawing always opens in the Model tab.
+
+| Command | Aliases | What it does |
+| --- | --- | --- |
+| LAYOUT | LO | `[Copy/Delete/New/Template/Rename/Set/?]` layouts on the command line |
+| LAYOUTWIZARD | | New layout: name, paper, orientation, viewport scale, sheet border and title block |
+| PAGESETUP | | Page setup of the current layout |
+| MODEL / TILEMODE | | Model tab (`TILEMODE 1`) or the last layout (`TILEMODE 0`) |
+| MSPACE / PSPACE | MS / PS | Work inside a viewport / on the paper |
+| MVIEW | MV | Create viewports; `ON / OFF / Fit / Lock` |
+| MVSETUP | | `Create` a viewport or `Scale viewports` |
+| VPSCALE | | Scale of the current or selected viewports |
+| CANNOSCALE | ANNOSCALE | Annotation scale |
+| ANNOALLVISIBLE | | Show annotative objects at every viewport scale (1) or only at the annotation scale (0) |
+| OBJECTSCALE | ANNOTATIVE | Make selected text, dimensions, leaders and blocks annotative `[ON/OFF/Toggle]` |
+
+**Set up a sheet:**
+
+1. Run `LAYOUTWIZARD` (View > Layout > From Template, or right-click a layout tab > From Template...).
+   Enter a name, choose the paper size and orientation, the viewport scale (Scaled to fit or a
+   standard scale), and whether to add the sheet border and title block (with the drawing title and
+   number). Click **Finish**. `LAYOUT New` makes an empty layout instead.
+2. The first time a layout is shown it gets one viewport over the printable area, zoomed to the
+   model extents. To add more, run `MVIEW` (View > Layout > Viewport) and pick two corners, or press
+   Enter for `Fit` (the printable area).
+3. **Work in a viewport:** double-click inside it (or `MSPACE`). Drawing, snapping and editing now
+   happen in model space through that viewport; zooming and panning change the viewport's view.
+   Double-click outside the viewport (or `PSPACE`) to return to the paper.
+4. **Scale a viewport:** inside it, pick a scale from the status bar's scale list, or run `VPSCALE`
+   and type `1:4`, `2:1` or `0.5XP`. `MVIEW Lock` (View > Layout > Lock Viewport) locks the view:
+   zooming then zooms the paper instead.
+5. **Edit viewport frames** on the paper like other objects: move, stretch with grips, copy or
+   erase them. `MVIEW OFF` hides a viewport's contents without deleting it.
+6. **Page setup:** `PAGESETUP` (or right-click > Page Setup Manager...) sets the paper size,
+   orientation, plot scale, margins, the plot style table (monochrome.ctb, grayscale.ctb, acad.ctb
+   object colours, or screening with a percentage), **Plot object lineweights** and **Plot with plot
+   styles**.
+
+**Annotation scale.** Text, dimensions, leaders and blocks can be made annotative with `OBJECTSCALE`
+(Annotative ON). An annotative object keeps its paper height: in model space it is shown at 1 /
+CANNOSCALE, and in a viewport at 1 / the viewport's scale. Set the annotation scale with `CANNOSCALE
+1:4` or the status bar list. With `ANNOALLVISIBLE 0` annotative objects show only in viewports whose
+scale equals the annotation scale.
+
+Layouts, viewports and annotative objects are saved in the DXF file and read back; layouts made in
+AutoCAD come in with their viewports (non-rectangular viewport clipping is not supported).
+
+### Plotting and printing
 
 `PLOT` (PDF, Ctrl+P) and `PRINT` (PRINTDRAWING, Ctrl+Shift+P) open the same **Plot / Print**
-dialog:
+dialog. In a layout the paper, orientation, scale and margins come from the layout's page setup
+(**Page Setup...** opens it); in the Model tab you choose them here:
 
 - **Paper size**: Fit to drawing (custom sheet), Letter 8.5 x 11 in, Legal 8.5 x 14 in,
   Tabloid / Ledger 11 x 17 in (ANSI B), ANSI C 17 x 22 in, ANSI D 22 x 34 in, ANSI E
@@ -1043,9 +1103,20 @@ The dialog shows the resulting sheet and scale. **Plot to PDF** writes a PDF fil
 chosen sheet size; **Print…** opens the system print dialog, where you choose the printer and
 its paper (select the same paper size there). Your choices are remembered.
 
-Output is a raster image of the drawing: lines print black, hidden (off or frozen) layers are
-left out. If the current tab has nothing visible to plot, the dialog explains why and both
-buttons are disabled.
+**Output** options:
+
+- **PDF output**: **Vector (recommended)** writes real PDF paths for lines, arcs, hatches and dashed
+  linetypes, embeds images and writes text (text in a TrueType style becomes PDF text, stroke-font
+  text is drawn as paths), so the PDF stays sharp at any zoom; **Raster image** embeds a picture of
+  the sheet.
+- **What to plot**: the current tab (the Model tab or the current layout), or **All layouts** (one
+  page each, every layout with its own page setup).
+- **Plot style table**: monochrome (all black), grayscale, acad.ctb (object colours) or screening
+  (lighter ink, with a percentage); **Plot object lineweights**; **Plot with plot styles**.
+
+Hidden (off or frozen) layers and layers marked not to plot are left out. PRINT sends the sheet
+(in a layout, the layout's sheet) to the system print dialog. If the current tab has nothing
+visible to plot, the dialog explains why and both buttons are disabled.
 
 ---
 
