@@ -5,9 +5,15 @@ on:
     branches: ['**']
   pull_request:
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  # Unit / regression tests, type check and the renderer build.
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -20,8 +26,81 @@ jobs:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
       - run: npm run typecheck
       - run: npm test
+        env:
+          # tests/perf.test.ts budgets are 3x the development machine; allow shared runners 2x more.
+          JCAD_PERF_FACTOR: 2
       - run: npm run build
       - uses: actions/upload-artifact@v4
         with:
           name: renderer-dist
           path: dist
+
+  # The built renderer in headless Chromium: every command, every clickable control, and the
+  # visual-review screenshots, failing on page errors, console errors and "Unknown command".
+  ui:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+      - name: Install Chromium for Playwright
+        run: |
+          npx playwright install --with-deps chromium
+          echo "CHROMIUM_PATH=$(node -e "import('playwright').then((m) => console.log(m.chromium.executablePath()))")" >> "$GITHUB_ENV"
+      - run: npm run build
+      - run: node scripts/build-site.mjs
+      - name: UI click check (commands, ribbon, menus, status bar, palettes)
+        run: npm run ui-check
+      - name: UI click check detects planted faults
+        run: node scripts/ui-click-check.mjs --self-test
+      - name: Screenshot scripts (fail on PAGE ERROR / CONSOLE / failed checks)
+        run: node e2e/run-screenshots.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshots
+          path: screenshots/
+          if-no-files-found: warn
+
+  # The desktop app itself: Electron + preload + IPC, driven by Playwright (scripts/e2e-electron.mjs).
+  e2e-electron:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      # The Electron binary is needed here: no ELECTRON_SKIP_BINARY_DOWNLOAD.
+      - run: npm ci
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+      - run: npm run build
+      - name: Electron end-to-end (Linux, virtual display)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run e2e
+        env:
+          JCAD_E2E_OUT: e2e-output
+      - name: Electron end-to-end (Windows)
+        if: runner.os == 'Windows'
+        run: npm run e2e
+        env:
+          JCAD_E2E_OUT: e2e-output
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-electron-${{ matrix.os }}
+          path: e2e-output/
+          if-no-files-found: warn
