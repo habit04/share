@@ -13,6 +13,10 @@ import { tagPrefix } from './symbols';
 import { descriptionOf } from './attributes';
 import { isWire, isHorizontal, nearestReference } from './ladder';
 import { collectNets, netOfWireNumber, isWireNumber, symbolSpan } from './wires';
+import { terminalStripFootprint, terminalStripLength, stripTerminals, type TerminalStripFootprintOptions } from './panel-hardware';
+
+// Panel hardware (DIN rail, duct, enclosure, plate grid) and its BOM hook live in panel-hardware.ts.
+export { panelHardwareRows, panelHardwareReport, type PanelHardwareRow } from './panel-hardware';
 
 export interface FootprintSpec {
   family: string;
@@ -279,4 +283,32 @@ export function applyTerminalEdits(entities: readonly Entity[], rows: TerminalRo
     out.push({ ...e, attributes: { ...e.attributes, TERM01: r.number, TAGSTRIP: r.strip } });
   }
   return out;
+}
+
+// ------------------------------------------------------------ terminal strip footprint
+
+/** Strips of a terminal table, in table order. */
+export function terminalStrips(rows: readonly TerminalRow[]): string[] {
+  const out: string[] = [];
+  for (const r of rows) if (!out.includes(r.strip)) out.push(r.strip);
+  return out;
+}
+
+/**
+ * Panel footprint of a terminal strip built from the terminal strip table (the terminals of
+ * `strip` in table order, each number once). `jumpers` (terminal-number pairs) draws the
+ * jumper bars when jumper data exists.
+ */
+export function terminalStripFootprintFor(rows: readonly TerminalRow[], strip: string, jumpers?: Array<[string, string]>, opts: Omit<TerminalStripFootprintOptions, 'jumpers'> = {}): BlockDef {
+  return terminalStripFootprint(strip, stripTerminals(rows, strip), { ...opts, ...(jumpers ? { jumpers } : {}) });
+}
+
+/** Size of a footprint's body (the mounting rectangle, without balloon and texts): width along x, height along y, unrotated. */
+export function footprintSize(ins: InsertEntity): { width: number; height: number } {
+  if (ins.block.startsWith('WD_FP_TSTRIP_')) {
+    const n = (ins.attributes.P_TERMS ?? '').split(',').filter(Boolean).length;
+    return { width: terminalStripLength(n) * ins.scale, height: (42.5 / 25.4) * ins.scale };
+  }
+  const s = footprintSpec(ins.attributes.P_FAMILY || ins.block.replace(/^WD_FP_/, ''));
+  return { width: s.width * ins.scale, height: s.height * ins.scale };
 }
