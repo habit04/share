@@ -11,6 +11,10 @@ messages). The date of each version is the date of the commit that set that vers
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.4.0] - 2026-09-29
+
 ### Added
 
 - `LICENSE` with the full text of the GNU General Public License version 3, and
