@@ -16,6 +16,8 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "screenshot": "node scripts/screenshot.mjs",
+    "ui-check": "node scripts/ui-click-check.mjs",
+    "e2e": "node --experimental-strip-types scripts/e2e-electron.mjs",
     "dist": "npm run build && electron-builder",
     "dist:dir": "npm run build && electron-builder --dir"
   },
