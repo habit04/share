@@ -8,6 +8,7 @@ import type { BlockDef, Entity, AttributeDef } from '../core/entities';
 import type { SymbolCategory } from './symbols';
 import { tagPrefix } from './symbols';
 import { withAcadeAttributes } from './attributes';
+import { verticalSymbol, type VerticalSpec } from './symbol-kit';
 
 const HALF = 0.375;
 let n = 0;
@@ -150,3 +151,36 @@ export const IEC_CATEGORIES: SymbolCategory[] = [
 ];
 
 export const IEC_SYMBOLS: BlockDef[] = IEC_CATEGORIES.flatMap((c) => c.symbols);
+
+// Curated vertical variants (NAME_V) ---------------------------------------
+// Hand-drawn twins of the most used IEC symbols for vertical wires: connections
+// at (0, +-0.375), actuators to the left, TAG1 / DESC1-3 to the right; family,
+// WDTYPE and pin defaults come from the horizontal symbol.
+const vst = (b: number): Entity[] => [L(0, HALF, 0, b), L(0, -b, 0, -HALF)];
+/** The hinged blade of the horizontal set, turned onto the vertical wire (actuator side on the left). */
+const vblade = (): Entity => L(0, 0.15, -0.16, -0.12);
+const vstop = (): Entity => L(0, -0.15, -0.18, -0.15);
+const vbox = (): Entity => P([[-0.1, 0.15], [0.1, 0.15], [0.1, -0.15], [-0.1, -0.15]], true);
+const vpush = (): Entity[] => [L(-0.09, 0.02, -0.3, 0.02), L(-0.3, 0.12, -0.3, -0.08)];
+
+const IEC_VERTICAL_SPECS: Array<[string, VerticalSpec]> = [
+  ['IEC_S_PB_NO', { name: 'IEC_S_PB_NO_V', entities: [...vst(0.15), vblade(), ...vpush()] }],
+  ['IEC_S_PB_NC', { name: 'IEC_S_PB_NC_V', entities: [...vst(0.15), vblade(), vstop(), ...vpush()] }],
+  ['IEC_S_LIM_NO', { name: 'IEC_S_LIM_NO_V', entities: [...vst(0.15), vblade(), L(0, 0.15, -0.12, 0.2), L(-0.12, 0.2, -0.06, 0.26)] }],
+  ['IEC_K_COIL', { name: 'IEC_K_COIL_V', entities: [...vst(0.15), vbox()] }],
+  ['IEC_KM_COIL', { name: 'IEC_KM_COIL_V', entities: [...vst(0.15), vbox()] }],
+  ['IEC_K_NO', { name: 'IEC_K_NO_V', entities: [...vst(0.15), vblade()] }],
+  ['IEC_K_NC', { name: 'IEC_K_NC_V', entities: [...vst(0.15), vblade(), vstop()] }],
+  ['IEC_F_FUSE', { name: 'IEC_F_FUSE_V', entities: [...vst(0.2), P([[-0.06, 0.2], [0.06, 0.2], [0.06, -0.2], [-0.06, -0.2]], true), L(0, 0.25, 0, -0.25)] }],
+  ['IEC_Q_CB', { name: 'IEC_Q_CB_V', entities: [...vst(0.15), vblade(), L(0.05, 0.2, -0.05, 0.1), L(-0.05, 0.2, 0.05, 0.1)] }],
+  ['IEC_P_LAMP', { name: 'IEC_P_LAMP_V', entities: [...vst(0.125), C(0, 0, 0.125), L(-0.088, -0.088, 0.088, 0.088), L(-0.088, 0.088, 0.088, -0.088)] }],
+  ['IEC_X_TERM', { name: 'IEC_X_TERM_V', entities: [...vst(0.05), C(0, 0, 0.05)], attrX: 0.1 }],
+  ['IEC_M_3', { name: 'IEC_M_3_V', entities: [...vst(0.19), C(0, 0, 0.19), T(0, 0.01, 'M', 0.11), T(0, -0.12, '3~', 0.07)] }],
+];
+
+/** Curated vertical IEC symbols (IEC_S_PB_NO_V ...), resolved by the icon menu's Vertical orientation. */
+export const IEC_VERTICAL_SYMBOLS: BlockDef[] = IEC_VERTICAL_SPECS.map(([h, spec]) => {
+  const twin = IEC_SYMBOLS.find((s) => s.name === h);
+  if (!twin) throw new Error(`vertical twin ${spec.name}: no ${h}`);
+  return verticalSymbol(twin, tagPrefix(h), spec);
+});

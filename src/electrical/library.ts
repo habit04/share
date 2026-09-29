@@ -7,9 +7,9 @@
 import type { BlockDef, Entity } from '../core/entities';
 import type { DrawingState } from '../core/document';
 import { referencedBlocks } from '../tools/blocks';
-import { SYMBOL_CATEGORIES, ALL_SYMBOLS, WIRE_DOT } from './symbols';
+import { SYMBOL_CATEGORIES, ALL_SYMBOLS, WIRE_DOT, JIC_VERTICAL_SYMBOLS } from './symbols';
 import type { SymbolCategory } from './symbols';
-import { IEC_CATEGORIES, IEC_SYMBOLS } from './iec';
+import { IEC_CATEGORIES, IEC_SYMBOLS, IEC_VERTICAL_SYMBOLS } from './iec';
 import { JIC_CONTROL_CATEGORIES, JIC_CONTROL_SYMBOLS } from './symbols-jic-control';
 import { POWER_FLUID_CATEGORIES, POWER_FLUID_SYMBOLS } from './symbols-power-fluid';
 import { IEC_EXTENDED_CATEGORIES, IEC_EXTENDED_SYMBOLS } from './iec-extended';
@@ -31,8 +31,23 @@ export const LIBRARY_SYMBOLS: BlockDef[] = [
   ...IEC_EXTENDED_SYMBOLS,
 ];
 
-/** Blocks a drawing needs so any library symbol can be inserted (includes the junction dot). */
-export const LIBRARY_BLOCKS: BlockDef[] = [...LIBRARY_SYMBOLS, WIRE_DOT];
+/**
+ * Curated vertical twins of the most used symbols (VPB11_NO for HPB11_NO, IEC_K_NO_V for
+ * IEC_K_NO). They are not listed in the icon menu categories: the Insert Component
+ * Vertical orientation resolves them by name (`verticalVariantName`) and falls back to a
+ * generated (rotated) twin for symbols without a curated one.
+ */
+export const VERTICAL_SYMBOLS: BlockDef[] = [...JIC_VERTICAL_SYMBOLS, ...IEC_VERTICAL_SYMBOLS];
+
+/** Blocks a drawing needs so any library symbol can be inserted (includes the junction dot and the vertical twins). */
+export const LIBRARY_BLOCKS: BlockDef[] = [...LIBRARY_SYMBOLS, ...VERTICAL_SYMBOLS, WIRE_DOT];
+
+/** The curated vertical twin of a horizontal library symbol, if one ships. */
+export function curatedVerticalOf(name: string): BlockDef | undefined {
+  const n = name.toUpperCase();
+  const twin = /^H[A-Z0-9]/.test(n) && !n.startsWith('H_') ? `V${n.slice(1)}` : `${n}_V`;
+  return VERTICAL_SYMBOLS.find((s) => s.name === twin);
+}
 
 const byName = new Map<string, BlockDef>();
 for (const s of LIBRARY_BLOCKS) if (!byName.has(s.name)) byName.set(s.name, s);

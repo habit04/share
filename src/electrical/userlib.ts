@@ -163,11 +163,17 @@ function parseEntity(v: unknown, i: number): { entity: Entity } | { error: strin
   }
 }
 
-/** Validate one attribute definition from JSON (prompt / default / align get their defaults). */
+/**
+ * Validate one attribute definition from JSON (prompt / default / align get their defaults).
+ * Optional fields: `invisible`, `rotation`, and the Symbol Builder's ATTDEF extras
+ * `constant`, `verify`, `preset` and `placeholder` (see AttributeDefExt); files written
+ * before these existed simply do not carry them.
+ */
 function parseAttributeDef(v: unknown, i: number): { attribute: AttributeDef } | { error: string } {
   if (!isRecord(v)) return { error: `attribute ${i + 1} is not an object` };
   if (typeof v.tag !== 'string' || !v.tag.trim()) return { error: `attribute ${i + 1} has no tag` };
   if (!isPoint(v.position) || !isNum(v.height) || v.height <= 0) return { error: `attribute ${v.tag} needs a position and a positive height` };
+  const flag = (k: 'invisible' | 'constant' | 'verify' | 'preset' | 'placeholder') => (v[k] === true ? { [k]: true } : {});
   return {
     attribute: {
       tag: v.tag,
@@ -176,8 +182,13 @@ function parseAttributeDef(v: unknown, i: number): { attribute: AttributeDef } |
       position: v.position,
       height: v.height,
       align: isAlign(v.align) ? v.align : 'left',
-      ...(v.invisible === true ? { invisible: true } : {}),
-    },
+      ...flag('invisible'),
+      ...(isNum(v.rotation) && v.rotation !== 0 ? { rotation: v.rotation } : {}),
+      ...flag('constant'),
+      ...flag('verify'),
+      ...flag('preset'),
+      ...flag('placeholder'),
+    } as AttributeDef,
   };
 }
 

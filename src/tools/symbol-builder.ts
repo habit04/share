@@ -56,6 +56,14 @@ import {
   normalizeSymbolName,
   KNOWN_ATTRIBUTES,
   SYMATTR_LAYER,
+  orderedPlaceholders,
+  attributeOrder,
+  moveInOrder,
+  quickAddAttributes,
+  saveChecklist,
+  checklistWarnings,
+  type AttrProps,
+  type ChecklistItem,
   type SymbolMeta,
   type SymbolState,
   type PinDirection,
@@ -97,6 +105,8 @@ export interface SymbolBuilderUi {
   askRename?(oldName: string, newName: string): Promise<RenameChoice>;
   /** Show check errors in a dialog (failed save from the tab-close prompt). */
   showErrors?(title: string, messages: readonly CheckMessage[]): Promise<void>;
+  /** Pre-save checklist with unticked warning items: true saves anyway, false cancels. */
+  confirmChecklist?(name: string, items: readonly ChecklistItem[]): Promise<boolean>;
   openTextFile?(accept: string): Promise<{ path: string; text: string } | null>;
 }
 
@@ -240,6 +250,13 @@ export function symbolBuilderOf(editor: Editor): SymbolBuilder {
     registry.set(editor, sb);
   }
   return sb;
+}
+
+/** Whether a family (tag prefix) is used by a built-in symbol or a user symbol. */
+export function isKnownFamily(family: string): boolean {
+  const fam = family.toUpperCase();
+  if (userLibrary.all().some((s) => s.family === fam)) return true;
+  return LIBRARY_SYMBOLS.some((s) => tagPrefix(s.name) === fam);
 }
 
 /** Whether a parent / coil symbol of a family exists (built-in library or user library). */
@@ -551,7 +568,7 @@ export class SymbolBuilder {
     const ed = this.editor;
     const cur = this.meta;
     if (!cur) return;
-    const next: SymbolMeta = defaultMeta({ ...cur, ...patch, attrDefaults: patch.attrDefaults ?? cur.attrDefaults });
+    const next: SymbolMeta = defaultMeta({ ...cur, ...patch, attrDefaults: patch.attrDefaults ?? cur.attrDefaults, attrProps: 'attrProps' in patch ? patch.attrProps : cur.attrProps, attrOrder: 'attrOrder' in patch ? patch.attrOrder : cur.attrOrder });
     next.name = normalizeSymbolName(next.name.trim());
     next.family = next.family.trim().toUpperCase();
     if (next.kind === 'child' || next.kind === 'standalone') {
@@ -584,9 +601,56 @@ export class SymbolBuilder {
     if (next !== m.text) this.editor.doc.replaceEntities([{ ...m, text: next }]);
   }
 
-  /** Attribute placeholders currently in the document. */
+  /** Attribute placeholders currently in the document, in block order (see `attrOrder`). */
   placeholders(): TextEntity[] {
-    return this.editor.doc.entities.filter(isPlaceholder);
+    return orderedPlaceholders(this.editor.doc.snapshot, this.meta ?? {});
+  }
+
+  /** Change the prompt / ATTDEF flags of a placed attribute (undoable, stored in the meta). */
+  setAttrProp(tag: string, patch: AttrProps): void {
+    const cur = this.meta;
+    if (!cur) return;
+    const t = tag.toUpperCase();
+    const merged: AttrProps = { ...(cur.attrProps?.[t] ?? {}), ...patch };
+    for (const k of Object.keys(merged) as Array<keyof AttrProps>) if (merged[k] === undefined || merged[k] === false || merged[k] === '') delete merged[k];
+    const attrProps = { ...(cur.attrProps ?? {}) };
+    if (Object.keys(merged).length) attrProps[t] = merged;
+    else delete attrProps[t];
+    this.updateMeta({ attrProps });
+  }
+
+  /** Move a placed attribute up (-1) or down (+1) in the block order (insertion prompts follow it). */
+  moveAttribute(tag: string, delta: -1 | 1): void {
+    const cur = this.meta;
+    if (!cur) return;
+    const order = attributeOrder(this.editor.doc.snapshot, cur);
+    const next = moveInOrder(order, tag, delta);
+    if (next.join() !== order.join()) this.updateMeta({ attrOrder: next });
+  }
+
+  /** Text height / justification of a placed attribute (edits its placeholder text, undoable). */
+  setAttrText(tag: string, patch: { height?: number; align?: TextEntity['align'] }): void {
+    const t = this.placeholders().find((p) => p.text.trim().toUpperCase() === tag.toUpperCase());
+    if (!t) return;
+    const height = patch.height !== undefined && Number.isFinite(patch.height) && patch.height > 0 ? Math.min(2, patch.height) : t.height;
+    const align = patch.align ?? t.align;
+    if (height === t.height && align === t.align) return;
+    this.editor.doc.replaceEntities([{ ...t, height, align }]);
+  }
+
+  /** Attribute templates quick-add: place the group's missing attributes in one undoable step. */
+  quickAdd(groupKey: string): number {
+    const ed = this.editor;
+    const cur = this.meta;
+    if (!cur) return 0;
+    const r = quickAddAttributes(ed.doc.snapshot, cur, groupKey);
+    if (!r) {
+      ed.log('Every attribute of that template is already placed.');
+      return 0;
+    }
+    ed.doc.transact((st) => withMeta({ ...st, entities: [...st.entities, ...r.entities] }, r.meta));
+    ed.log(`Added ${r.entities.map((e) => e.text).join(', ')}.`);
+    return r.entities.length;
   }
   pinMarkers(): TextEntity[] {
     return this.editor.doc.entities.filter(isPinMarker);
@@ -739,8 +803,17 @@ export class SymbolBuilder {
       editingName: s.editing,
       validName: validBlockName,
       hasParent: hasParentSymbol,
+      knownFamily: isKnownFamily,
     });
     return this.lastCheck;
+  }
+
+  /** The pre-save checklist of the active symbol (palette panel and the Save confirmation). */
+  checklist(): ChecklistItem[] {
+    const s = this.active();
+    const meta = this.meta;
+    if (!s || !meta) return [];
+    return saveChecklist(this.editor.doc.snapshot, meta, { isBuiltin: isBuiltinSymbol, isUser: (n) => userLibrary.has(n), editingName: s.editing, validName: validBlockName, knownFamily: isKnownFamily });
   }
 
   /** First error of the last check (Save button tooltip), or null. */
@@ -765,6 +838,15 @@ export class SymbolBuilder {
       ed.log('Symbol not saved; fix the errors (the palette lists them).');
       ed.hooks.symbolBuilder?.revealCheck?.();
       return null;
+    }
+    const pending = checklistWarnings(this.checklist());
+    if (pending.length && ed.hooks.symbolBuilder?.confirmChecklist) {
+      const go = await ed.hooks.symbolBuilder.confirmChecklist(meta.name, this.checklist());
+      if (this.active() !== s) return null;
+      if (!go) {
+        ed.log('Save cancelled at the checklist.');
+        return null;
+      }
     }
     for (const m of msgs) if (m.level === 'warning') ed.log(`Symbol Builder warning: ${m.text}`);
     const block = symbolStateToBlock(ed.doc.snapshot, meta);

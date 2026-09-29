@@ -160,23 +160,24 @@ describe('vertical variant of a horizontal symbol', () => {
 describe('icon menu orientation', () => {
   it('normalises bare names and resolves V to a library twin or a generated block', () => {
     expect(symbolPick('HPB11_NO')).toEqual({ name: 'HPB11_NO', orientation: 'H' });
+    // HPX11_NO (proximity switch) has no curated vertical twin, so its V block is generated
     expect(symbolPick(null)).toBeNull();
     const d = new Drawing();
     d.ensureBlocks(ALL_SYMBOLS);
     const h = resolveSymbolPick(d, { name: 'HPB11_NO', orientation: 'H' })!;
     expect(h.def.name).toBe('HPB11_NO');
     expect(h.note).toBeNull();
-    const generated = resolveSymbolPick(d, { name: 'HPB11_NO', orientation: 'V' })!;
-    expect(generated.def.name).toBe('VPB11_NO');
+    const generated = resolveSymbolPick(d, { name: 'HPX11_NO', orientation: 'V' })!;
+    expect(generated.def.name).toBe('VPX11_NO');
     expect(generated.note).toMatch(/rotated -90/);
     // a vertical symbol picked as vertical is inserted as is
     d.ensureBlocks([verticalSwitch()]);
     expect(resolveSymbolPick(d, { name: 'USER_VLS_NO', orientation: 'V' })!.note).toBeNull();
     // once the drawing (or the library) has the twin, it is used instead of generating one
-    d.ensureBlocks([{ ...verticalVariant(findSymbol('HPB11_NO')!), description: 'Push button NO, vertical (library)' }]);
-    const twin = resolveSymbolPick(d, { name: 'HPB11_NO', orientation: 'V' })!;
-    expect(twin.def.description).toBe('Push button NO, vertical (library)');
-    expect(twin.note).toBe('Vertical: VPB11_NO inserted for HPB11_NO.');
+    d.ensureBlocks([{ ...verticalVariant(findSymbol('HPX11_NO')!), description: 'Proximity switch NO, vertical (library)' }]);
+    const twin = resolveSymbolPick(d, { name: 'HPX11_NO', orientation: 'V' })!;
+    expect(twin.def.description).toBe('Proximity switch NO, vertical (library)');
+    expect(twin.note).toBe('Vertical: VPX11_NO inserted for HPX11_NO.');
     expect(resolveSymbolPick(d, { name: 'NOPE', orientation: 'H' })).toBeNull();
   });
 
@@ -184,24 +185,24 @@ describe('icon menu orientation', () => {
     const d = new Drawing();
     d.addEntities([wire(1, 8, 9, 8), wire(4, 8, 4, 6), wireDot({ x: 4, y: 8 })]);
     const ctx = fakeContext(d);
-    ctx.ui.pickSymbol = async () => ({ name: 'HPB11_NO', orientation: 'V' });
-    ctx.ui.editComponent = async (init) => ({ tag: init.tag || 'PB1', desc: 'UP', mfg: '', cat: '' });
+    ctx.ui.pickSymbol = async () => ({ name: 'HPX11_NO', orientation: 'V' });
+    ctx.ui.editComponent = async (init) => ({ tag: init.tag || 'PRS1', desc: 'UP', mfg: '', cat: '' });
     const tool = new ComponentTool();
     tool.start(ctx);
     await tick();
-    expect(d.blocks.VPB11_NO).toBeDefined();
-    expect(ctx.logs.some((l) => l.includes('no VPB11_NO in the library') && l.includes('rotated -90'))).toBe(true);
+    expect(d.blocks.VPX11_NO).toBeDefined();
+    expect(ctx.logs.some((l) => l.includes('no VPX11_NO in the library') && l.includes('rotated -90'))).toBe(true);
     tool.onMove({ x: 4.02, y: 7 }, ctx);
     expect(ctx.preview[0]?.type === 'insert' && ctx.preview[0].position).toEqual({ x: 4, y: 7 });
     tool.onPoint({ x: 4.02, y: 7 }, ctx);
     await tick();
-    const placed = d.entities.find((e): e is InsertEntity => e.type === 'insert' && e.block === 'VPB11_NO');
+    const placed = d.entities.find((e): e is InsertEntity => e.type === 'insert' && e.block === 'VPX11_NO');
     expect(placed).toBeDefined();
     expect(placed!.position).toEqual({ x: 4, y: 7 });
     expect(placed!.rotation).toBe(0);
-    // the generated twin tags like its horizontal source (PB, not DEV)
-    expect(placed!.attributes.TAG1).toBe('PB1');
-    expect(tagPrefix('VPB11_NO')).toBe('PB');
+    // the generated twin tags like its horizontal source (PRS, not DEV)
+    expect(placed!.attributes.TAG1).toBe('PRS1');
+    expect(tagPrefix('VPX11_NO')).toBe('PRS');
     // the vertical wire is broken around the symbol, the tee dot stays
     expect(d.entities.filter((e) => e.type === 'line' && e.layer === 'WIRES' && Math.abs(e.a.x - 4) < 1e-9 && Math.abs(e.b.x - 4) < 1e-9)).toHaveLength(2);
     expect(staleDots(d.entities)).toEqual([]);
