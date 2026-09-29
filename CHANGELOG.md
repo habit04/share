@@ -21,6 +21,88 @@ messages). The date of each version is the date of the commit that set that vers
 - This changelog and a user manual (`docs/USER-MANUAL.md`).
 - Help > About shows "Licensed under the GNU GPL v3 · Third-party notices"; both links open
   the files on GitHub through the same allowlisted link handler as the other About links.
+- Drafting entities: `SPLINE` (fit points with start / end tangents and Close, or control
+  vertices with a degree), `HATCH` (internal point with boundary detection, selected closed
+  objects or a drawn boundary; ANSI31-38, NET, NET3, DOTS, LINE, BRICK and SOLID, scale, angle,
+  origin) and `HATCHEDIT`, `LEADER` / `QLEADER` and `MLEADER` (arrowhead, straight or spline
+  leader, landing, multi-line text), `TABLE` and `TABLEEDIT`, `FIELD` and `UPDATEFIELD` (Date,
+  CreateDate, SaveDate, PlotDate, Filename, Title, Subject, Author, Keywords, Comments,
+  LastSavedBy, Login). EXPLODE, LIST, grips, snaps and the Properties palette know the new types.
+- IMAGE entities and external references are read and written; the desktop app draws image
+  bitmaps (`.png`, `.jpg`, `.gif`, `.bmp`, `.webp` up to 50 MB) through a read-only bridge that
+  resolves relative paths against the drawing folder; xrefs draw as a named frame.
+- MTEXT format codes are drawn: colours, heights, width factor, oblique, bold / italic,
+  underline / overline / strike-through, stacked fractions and tolerances, paragraph alignment.
+- Dimension styles: arrowhead types (closed filled, closed blank, closed, open, oblique,
+  architectural tick, dot, small dot, blank dot, none; separate first / second arrows), text
+  placement (DIMTAD, DIMJUST, DIMTIH / DIMTOH), extension and dimension line suppression,
+  DIMDLE, fit options, DIMPOST prefix / suffix, rounding, measurement scale, zero suppression,
+  alternate units (after or below the primary value) and symmetrical, deviation, limits and
+  basic tolerances; named styles saved in the drawing.
+- `DIMSTYLE` opens the Dimension Style Manager (Set Current, New, Modify, Compare, Delete; the
+  style editor has Lines, Symbols and Arrows, Text, Fit, Primary Units, Alternate Units and
+  Tolerances tabs with a live preview); `-DIMSTYLE` (and DIMSTYLE with an option)
+  Save / Restore / STatus / Variables / Apply / ? on the command line. Every DIM* variable of the
+  style is a command.
+- `DIMBASELINE`, `DIMCONTINUE`, `DIMTEDIT` and `DIMEDIT`, and Annotate > Dimensions ribbon
+  buttons for Baseline, Continue, Text Edit, Dim Edit and Dim Style.
+- DXF: every named dimension style is written as a DIMSTYLE record and read back (arrowheads,
+  basic tolerances and alternate-unit placement in `JCAD_DIMSTYLE` XDATA; arrow blocks of other
+  programs' records are resolved from their handles); the current style's `$DIM*` header
+  variables include `$DIMBLK`, `$DIMBLK1`, `$DIMBLK2`, `$DIMSAH`, `$DIMTOL`, `$DIMLIM`, `$DIMTIH`,
+  `$DIMTOH` and `$DIMZIN`; DIMENSION groups 52 (oblique) and 53 (text rotation) round-trip.
+- DWG: the remaining DIM* header variables (arrows, tolerances, alternate units, text placement,
+  fit, colours, DIMPOST / DIMAPOST, DIMRND, DIMLFAC, DIMZIN ...) are applied to the current style.
+- Project-wide electrical tools: `AEXREFPROJECT`, `AERETAGPROJECT` (all tags or duplicates only),
+  `AEWIRENOPROJECT` (sheet-based or per-drawing start numbers). Open drawings change in their
+  tabs; closed drawings are listed for confirmation and saved as DXF, optionally with a `.bak`
+  copy. A problem list shows contacts without a parent and duplicate parents.
+- `AEFIXTAG` and a Fixed tag checkbox in Edit Component (`TAGFIXED`); retagging keeps fixed tags.
+- `AELOCVIEW` Location View: components by installation / location over the project with
+  jumpers, zoom-to, CSV and Put on Drawing.
+- `AEPLCIO` imports PLC I/O from a CSV / TSV spreadsheet (preview, modules, point descriptions,
+  optional device rungs) and `AEPLCIOEXPORT` writes the drawing's I/O points back to CSV.
+- Cables and jumpers: `AECABLE` (cable tag, type, conductor numbers or colours, `WD_CABLE`
+  markers with FROM / TO), `AECABLESCHEDULE` (Cable Schedule report), `AEJUMPER`, `AEJUMPERDEL`.
+- Report templates saved in the project file: `AEREPORTTEMPLATES` and `AEREPORTRUN <name>`
+  (columns and order, sort, filters, title, drawing or project scope, dialog / table / CSV
+  output).
+- Title block mapping in the project (`.wdt` format, Project Properties > Title Block Mapping
+  tab), `AETITLEBLOCKALL`, `AEWDTIMPORT` and `AEWDTEXPORT`.
+- The Project Manager shows installation / location codes and the cross-reference status per
+  drawing, and its context menu runs the project-wide commands. Project Properties is tabbed
+  (General, Description Lines, Title Block Mapping).
+- Panel hardware: `AEDINRAIL` (TS35 / TS32 / TS15), `AEWIREDUCT` (1x1 to 4x4 in with cover lines),
+  `AEPANEL` (standard or custom enclosure with mounting plate, hinges and door swing),
+  `AEPANELGRID`, `AEFOOTPRINTALIGN`, `AETERMFOOTPRINT` (terminal strip footprint from the terminal
+  table) and `AEPANELHW`; a Panel Hardware report (`AEREPORT panelhw`); ribbon panels for the
+  project-wide, cable / jumper / PLC I/O and panel layout commands.
+- 41 hand-drawn JIC vertical symbols (`VPB11_NO`, `VCR1`, `VTD1_NO`, `VXF1` ...) and 12 IEC
+  `NAME_V` symbols, used by the icon menu's Vertical choice.
+- Symbol Builder: an insertion prompt, invisible / constant / verify / preset flags, text height
+  and justification per attribute, reordering, attribute template buttons and a pre-save
+  checklist. Insert Component asks for the other attributes of user symbols in block order.
+- DXF: attribute definitions keep the constant, verify and preset flags.
+- Metric drawings: the WD_M `UNITS` value (or `$INSUNITS`) makes symbols, junction dots, ladders,
+  3-phase inserts, circuits, wire numbers and sheet templates scale by 25.4; `WDUNITS` and a
+  Drawing Units page in Drafting Settings switch a drawing, optionally rescaling it
+  (`docs/METRIC.md`).
+- DXF code pages: files are decoded by byte order mark, `$ACADVER` and `$DWGCODEPAGE` (desktop
+  and browser), `\U+` / `\M+` escapes are decoded, and the writer escapes non-ASCII text. STYLE
+  records round-trip and TEXT / MTEXT with a TrueType style are drawn in that font.
+- High-DPI drawing area: the canvas follows the device pixel ratio and redraws when it changes.
+- Localization: interface strings go through a translation table; Options > Display > Language
+  (System default, English, partial Spanish).
+- Plugins: the `jcad` plugin API (also `window.jcadApi`), plugins loaded from the `plugins`
+  folder in the app data folder after a one-time confirmation, `PLUGINS`, `PLUGINLOAD`,
+  `PLUGINRELOAD`, `SCRIPTRUN`, `docs/PLUGIN-API.md` and three example plugins in
+  `examples/plugins/`.
+- LIST shows spline, hatch, leader, table and image properties and the text style of TEXT / MTEXT.
+- CI: a UI click check (every command and clickable control of the built renderer), the
+  screenshot scripts as gates and an Electron end-to-end test on Ubuntu and Windows.
+- Signing: the Windows build is signed through Azure Artifact Signing and the macOS build with a
+  Developer ID and notarized when the corresponding repository secrets exist
+  (`docs/CODE-SIGNING.md`).
 
 ### Changed
 
@@ -33,6 +115,27 @@ messages). The date of each version is the date of the commit that set that vers
   desktop application is no longer needed to plot.
 - Browser edition: PRINT uses a hidden frame instead of a pop-up window, so no pop-up
   permission is needed and the page size matches the sheet.
+- Radius and diameter dimension text is horizontal unless the style asks for aligned text.
+- DIM* variable commands accept BYLAYER / BYBLOCK for the dimension colours.
+- The current dimension style read from a DXF is the header variables applied over the named
+  style of the same name (not the header variables alone).
+- Dimension lines, extension lines and text are drawn in their DIMCLRD / DIMCLRE / DIMCLRT
+  colours in the drawing area.
+- A cable conductor runs from device to device: FROM / TO are the device pins at the two ends
+  of the wire segment (rails show as L1 / L2), not the far ends of the whole net.
+- A selected solid hatch is drawn with a lighter fill so its boundary shows.
+- When a page's Content-Security-Policy blocks plugin code and no desktop bridge is available,
+  the plugin error says so.
+
+### Fixed
+
+- Hatch pattern definition lines stored in a DXF are used as saved (ISO scales, double
+  hatches) instead of being replaced by the built-in definition.
+- DXF text chunks keep their trailing spaces (a 250-character MTEXT chunk may end in one).
+- `$DIMTIH` / `$DIMTOH` in written DXF files match the style instead of always being 1.
+- Cable markers are no longer counted as components in reports.
+- DXF files opened in the browser edition are decoded by their code page.
+- Non-ASCII PDF titles are written as UTF-16, and the landing page's assets are cache-busted.
 
 ## [0.3.4] - 2026-09-28
 

@@ -32,7 +32,10 @@ tagged builds are attached to a GitHub Release. The Windows installer and app ar
 Artifact Signing (publisher: Justin Rodriguez); older unsigned versions, or a new certificate before it has
 built SmartScreen reputation, may still need "More info" then "Run anyway". macOS builds are not signed with an
 Apple certificate, so macOS asks once under System Settings > Privacy & Security > "Open Anyway" (they are
-ad-hoc signed so they are not reported as damaged).
+ad-hoc signed so they are not reported as damaged). When the repository has the five Apple secrets, the release
+workflow signs the macOS build with a Developer ID and notarizes it instead; without them the build
+stays ad-hoc signed. [docs/CODE-SIGNING.md](docs/CODE-SIGNING.md) walks through both platforms (accounts,
+secrets, costs, verification).
 
 Windows signing switches on only when the repository has all seven secrets `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_SIGNING_ENDPOINT`,
 `AZURE_SIGNING_ACCOUNT`, `AZURE_CERT_PROFILE` and `AZURE_PUBLISHER_NAME` (`scripts/azure-signing.mjs`
@@ -41,6 +44,10 @@ signed). `AZURE_PUBLISHER_NAME` must equal the certificate's subject name exactl
 rejects an update whose signer differs from it.
 
 The **[user manual](docs/USER-MANUAL.md)** covers installation, a first drawing, the interface and every command; see [CHANGELOG.md](CHANGELOG.md) for what changed in each release.
+Further documents: [docs/METRIC.md](docs/METRIC.md) (inch and millimetre drawings),
+[docs/PLUGIN-API.md](docs/PLUGIN-API.md) (plugins and scripts), [docs/CATALOG-PACKS.md](docs/CATALOG-PACKS.md)
+(signed catalog packs), [docs/CODE-SIGNING.md](docs/CODE-SIGNING.md) (installer signing),
+[LICENSE](LICENSE) and [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
 ### Website and browser edition
 
@@ -120,7 +127,18 @@ node scripts/screenshot-library.mjs   # every Insert Component category (screens
 node scripts/screenshot-symbol-builder.mjs   # Symbol Builder dialog, session + palette, user category
 npm run dist             # installers via electron-builder (win/mac/linux)
 node scripts/dwg2dxf.mjs in.dwg [out.dxf]   # command-line DWG -> DXF
+npm run build && npm run ui-check     # every command and clickable control of the built renderer (headless Chromium)
+npm run build && npm run e2e          # the Electron app itself (Linux without a display: xvfb-run -a npm run e2e)
 ```
+
+**CI** (`.github/workflows/ci.yml`) runs three jobs on every push and pull request: `test` (typecheck,
+unit tests, renderer build), `ui` (the UI click check - every registered command, ribbon button,
+application-menu entry, status-bar control, palette button and context-menu item, failing on page or
+console errors and unknown commands - its `--self-test`, and the screenshot scripts as gates through
+`e2e/run-screenshots.mjs`) and `e2e-electron` on Ubuntu and Windows (`scripts/e2e-electron.mjs`
+drives the real main process, preload bridge and IPC: opening DXF / DWG, recent files, plotting a PDF,
+IMAGE bitmaps, offline update checks, the Symbol Builder, About and the close prompt, with the native
+dialogs stubbed).
 
 Append `?demo` to the URL (or run the screenshot script) to load a sample motor-control ladder.
 
@@ -135,7 +153,12 @@ keywords shown in `[brackets]` are clickable.
 | --- | --- | --- |
 | LINE, PLINE [Arc/Close/Halfwidth/Length/Undo/Width], CIRCLE, ARC, RECTANG, TEXT | L, PL, C, A, REC, T | Draw |
 | ELLIPSE [Arc/Center], POINT, XLINE [Hor/Ver/Ang/Bisect/Offset], RAY, DONUT, POLYGON [Edge/Inscribed/Circumscribed], MTEXT [Height/Justify/Line spacing/Rotation/Width] | EL, PO, XL, DO, POL, MT | More entities (PDMODE / PDSIZE set the point marker) |
-| DIMLINEAR [Horizontal/Vertical/Rotated/Text], DIMALIGNED, DIMRADIUS, DIMDIAMETER, DIMANGULAR, DIMSTYLE [Save/Restore/STatus/Variables/Apply], DIMTXT, DIMASZ, DIMEXO, DIMEXE, DIMGAP, DIMCEN, DIMSCALE, DIMDEC, DIMADEC, DIMLUNIT | DLI, DAL, DRA, DDI, DAN, D | Dimensions (Standard and ISO-25 styles; Enter at the first prompt dimensions a picked object) |
+| SPLINE [Method/Knots/Degree; start/end Tangency, Close], HATCH [Properties/Select objects/draW boundary/Origin], HATCHEDIT [Disassociate/Style/Properties/Origin] | SPL, H, BH, HE | Splines through fit points or control vertices; hatches by internal point (boundary detection), selected closed objects or a drawn boundary, with the built-in patterns (ANSI31-38, NET, NET3, DOTS, LINE, BRICK; `?` lists them) or SOLID, scale, angle and origin |
+| LEADER [Annotation/Format/Undo], QLEADER, MLEADER [leader Landing first/Content first/Options] | LEAD, LE, MLD | Leaders and multileaders: arrowhead, straight or spline leader, landing and multi-line text |
+| TABLE [columns, data rows, Style/Width/Height], TABLEEDIT | TB | Tables (title, header and data rows); TABLEEDIT picks a cell and edits its text |
+| FIELD [Date/CreateDate/SaveDate/PlotDate/Filename/Title/Subject/Author/Keywords/Comments/LastSavedBy/Login], UPDATEFIELD | | Text with a field (`%<\AcVar Date \f "M/d/yyyy">%` ...), evaluated when shown and written back to DXF as the field code |
+| DIMLINEAR [Horizontal/Vertical/Rotated/Text], DIMALIGNED, DIMRADIUS, DIMDIAMETER, DIMANGULAR, DIMTXT, DIMASZ, DIMEXO, DIMEXE, DIMGAP, DIMCEN, DIMSCALE, DIMDEC, DIMADEC, DIMLUNIT | DLI, DAL, DRA, DDI, DAN | Dimensions (Standard and ISO-25 styles; Enter at the first prompt dimensions a picked object) |
+| DIMSTYLE (Dimension Style Manager) / -DIMSTYLE [Save/Restore/STatus/Variables/Apply/?], DIMBASELINE [Undo/Select], DIMCONTINUE [Undo/Select], DIMTEDIT [Left/Right/Center/Home/Angle], DIMEDIT [Home/New/Rotate/Oblique] | D, DST, DDIM, DBA, DCO, DIMTED, DED | Named dimension styles (arrowheads, text placement, fit, primary / alternate units, tolerances) with a live preview; baseline and continued dimensions; text and oblique edits. Every DIM* variable (DIMBLK, DIMBLK1/2, DIMSAH, DIMTAD, DIMJUST, DIMTIH/DIMTOH, DIMTOL/DIMLIM/DIMTP/DIMTM, DIMALT..., DIMPOST, DIMCLRD/E/T, DIMZIN ...) is also a command |
 | ERASE, MOVE, COPY, ROTATE, MIRROR, SCALE, TRIM, EXTEND, OFFSET, EXPLODE | E, M, CO, RO, MI, SC, TR, EX, O, X | Modify |
 | FILLET [Radius/Trim/Polyline/Multiple], CHAMFER [Distance/Angle/Trim/Multiple], ARRAY / ARRAYRECT / ARRAYPOLAR, STRETCH, BREAK [First point], JOIN, LENGTHEN [DElta/Percent/Total], ALIGN, MATCHPROP, CHPROP | F, CHA, AR, S, BR, J, LEN, AL, MA | More modify commands |
 | BLOCK, INSERT [Scale/Rotate, attribute prompts], PURGE [Blocks/LAyers/LTypes/All] | B, I, PU | Blocks |
@@ -150,23 +173,34 @@ keywords shown in `[brackets]` are clickable.
 | AEEDITCOMPONENT | AEEDIT | Edit an existing component (retagging a parent carries its contacts along) |
 | AECHILD | CHILD | Insert a child contact: pick the parent coil from a list, then the contact (the parent's own `_NO` / `_NC` twin and same-family user contacts first, then the built-in contact), data copied from the parent |
 | AECOMPONENT3 [block] | AEC3 | Insert a 3-pole device on a 3-wire bus (poles share the tag, POLE=1..3, TAG1 shown on pole 1 only, pins 1/2 - 3/4 - 5/6 or L1/T1 - L2/T2 - L3/T3 per pole, dashed link) |
-| AERETAG [S] | RETAG | Renumber all (or selected) tags in ladder order with the drawing's tag format |
+| AERETAG [Selection/Project/project Duplicates] | RETAG | Renumber all (or selected) tags in ladder order with the drawing's tag format; fixed tags are kept |
+| AEFIXTAG | FIXTAG | Toggle the fixed-tag flag (`TAGFIXED`) of the selected components (also a checkbox in Edit Component); RETAG leaves fixed tags alone |
 | AETOGGLENC, AESWAP, AEUPDATEBLOCK | TOGGLENC, SWAPBLOCK, UPDATEBLOCK | NO/NC variant in place; swap a symbol keeping its data; refresh block definitions from the library |
 | AECATALOG [family], AECATALOGLOAD | CATALOG, LOADCATALOG | Catalog Browser (built-in generic parts + user JSON catalog from the project settings + installed catalog packs, with a Source column) |
 | AEPACKS, AEPACKINSTALL, AEPACKLIST | PACKS, INSTALLPACK, PACKLIST | Catalog packs: install / remove signed manufacturer catalogs (`*.jcadpack.json`), show who they are licensed to and until when |
 | AESYMBUILDER [name] | SYMBUILDER, SYMBOLBUILDER, SYMEDIT | Symbol Builder: draw or harvest a schematic symbol in its own tab, place TAG1 / DESC1 / pins from the palette and save it to the user library (also New Symbol... / Edit... in the icon menu); AESYMSAVE, AESYMCHECK, AESYMVERTICAL, AESYMTWIN, AESYMTEXT2ATTR, AESYMRENAME, AESYMDELETE, AESYMLIBEXPORT / AESYMLIBIMPORT maintain the library |
-| AEWIRENO | WIRENO | Number every wire net by rung reference (100, 100A, ...); fixed numbers (layer WIREFIXED) are kept |
+| AEWIRENO [start / P / PD] | WIRENO | Number every wire net by rung reference (100, 100A, ...); fixed numbers (layer WIREFIXED) are kept; `P` / `PD` number the whole project |
 | AEEDITWIRENO, AECOPYWIRENO, AEWIRENOLEADER | EDITWIRENO, ... | Edit a wire number (fixed flag, above / below / in-line, find & replace); copy a number; move it with a leader |
 | AETRIMWIRE, AEWIREGAP, AEWIRELOOP | TRIMWIRE, WIREGAP, WIRELOOP | Remove a wire segment between breaks; gap or jump-over loop at crossings |
 | AESCOOT, AEALIGN [V/H], AEMULTIBUS | SCOOT, ALIGN, BUS | Slide a component / wire number along its wire; align with a reference; N-wire bus |
-| AEXREF | XREF | Coil / contact cross-references ("NO 101, 102 / NC 103" or a small table, sheet-aware format) |
+| AEXREF [Drawing/Project] | XREF | Coil / contact cross-references ("NO 101, 102 / NC 103" or a small table, sheet-aware format) |
+| AEXREFPROJECT, AERETAGPROJECT [All/Duplicates], AEWIRENOPROJECT [Sheet-based/Drawing start] | XREFPROJECT, RETAGPROJECT, WIRENOPROJECT | Project-wide cross-references, retag and wire numbers: open tabs change in memory (one undo step each), closed DXF drawings are listed for confirmation and saved (optionally with a `.bak` copy); problems (contacts without a parent, duplicate parents) open in a list |
+| AELOCVIEW | LOCVIEW, LOCATIONVIEW | Location View: components grouped by installation / location over the project, with jumpers, zoom-to, CSV and Put on Drawing |
+| AEPLCIO, AEPLCIOEXPORT | PLCIO, PLCIOEXPORT | PLC I/O from a CSV / TSV spreadsheet (Address, Description 1-3, Wire, Device, Module, Type; preview, optional device rungs), and the drawing's I/O points back to CSV |
+| AECABLE, AECABLESCHEDULE | CABLE, CABLESCHEDULE | Put picked wires into a cable (cable tag, type, conductor numbers or colours; `WD_CABLE` markers with FROM / TO); Cable Schedule report |
+| AEJUMPER, AEJUMPERDEL | JUMPER, JUMPERDEL | Jumper two terminals of a strip (stored in their `JUMPER` attributes) / remove a terminal's jumpers |
+| AEREPORTTEMPLATES, AEREPORTRUN [name] | REPORTTEMPLATES, REPORTRUN | Saved report formats in the project file: report, columns and order, sort, filters, title, drawing / project scope, output (dialog, table on the drawing, CSV) |
+| AETITLEBLOCKALL, AEWDTIMPORT, AEWDTEXPORT | TITLEBLOCKALL, WDTIMPORT, WDTEXPORT | Title blocks of every project drawing from the project's `.wdt`-style mapping (ATTRIBUTE = SOURCE); import / export the mapping |
 | AECIRCUIT | CIRCUITBUILDER | Circuit Builder: start/stop with seal-in, reversing starter, jog relay circuits placed on the ladder |
 | AEPLC | PLC | Parametric PLC I/O module |
 | AESOURCE, AEDEST | SOURCE, DEST | Source / destination signal arrows, linked by signal code; XREF shows sheet/rung |
 | AESCHEMATICLIST, AEFOOTPRINT, AEBALLOON, AENAMEPLATE | SCHEMATICLIST, ... | Panel layout: footprints from the schematic list (blocks WD_FP_* with P_TAG1 / P_ITEM), balloons, nameplates |
 | AETERMSTRIP, AETERMEDIT | TERMSTRIP, TERMEDIT | Panel terminal strip; Terminal Strip Editor (wire numbers / devices left and right) |
-| AEDRAWINGPROPS, AEPROJECTPROPS, AETITLEBLOCK | DWGPROPS, PROJPROPS, UPDATETITLEBLOCK | Drawing settings (WD_M block: sheet, tag / wire formats, IEC codes); project description lines and catalog; fill the title block |
-| AEREPORT [bom/components/wires/labels/plc/missing/terminals/strip/panel/audit] | REPORT, BOM | Reports: drawing or project-wide, CSV export, "Put on Drawing" table |
+| AEDINRAIL [Type/Part/Length], AEWIREDUCT [Size/Part/Length], AEPANEL, AEPANELGRID [Spacing/Enclosure] | DINRAIL, WIREDUCT / DUCT, AEENCLOSURE / ENCLOSURE, PLATEGRID | Panel hardware: TS35 / TS32 / TS15 DIN rails, 1x1 ... 4x4 in wire duct, standard or custom enclosures with mounting plate and door swing, plate layout grid |
+| AEFOOTPRINTALIGN [Even], AETERMFOOTPRINT, AEPANELHW | FOOTPRINTALIGN, TERMFOOTPRINT, PANELHARDWARE | Footprints onto a DIN rail with a gap or spread evenly; terminal strip footprint numbered from the terminal table (jumper bars included); hardware list with total lengths |
+| AEDRAWINGPROPS, AEPROJECTPROPS, AETITLEBLOCK [All drawings] | DWGPROPS, PROJPROPS, UPDATETITLEBLOCK | Drawing settings (WD_M block: sheet, tag / wire formats, IEC codes); project properties (General, Description Lines, Title Block Mapping tabs); fill the title block |
+| WDUNITS [IN/MM] [RESCALE/KEEP] | AEUNITS, DRAWINGUNITS | Inch or millimetre electrical drawing (symbols, dots, ladders and wire numbers scale by 25.4); see [docs/METRIC.md](docs/METRIC.md) |
+| AEREPORT [bom/components/wires/labels/plc/missing/terminals/strip/cables/panel/panelhw/audit] | REPORT, BOM | Reports: drawing or project-wide, CSV export, "Put on Drawing" table (panelhw = Panel Hardware) |
 | AEAUDIT | AUDIT | Electrical Audit dialog with jump-to-error |
 | NEWSHEET | TEMPLATE | New drawing from an ANSI / ISO sheet template with title block |
 | OPENPROJECT, PROJECTADD, PROJECTSAVE | PROJECT | Project files (`*.jcadproj.json`) listing drawings, description lines and settings |
@@ -182,6 +216,7 @@ keywords shown in `[brackets]` are clickable.
 | CHECKUPDATES | UPDATE | Check GitHub Releases for a newer version (Help > Check for Updates) |
 | COPYCLIP, CUTCLIP, PASTECLIP | Ctrl+C / X / V | In-application object clipboard |
 | AUTOSAVE | | Write autosave files now (a timer does this every N minutes; see Options > Files) |
+| PLUGINS [Unload/Forget], PLUGINLOAD [folder], PLUGINRELOAD [name], SCRIPTRUN | PLUGINLIST, LOADPLUGIN, JSRUN / RUNSCRIPT | JavaScript plugins from the app data `plugins` folder and one-off scripts against the plugin API; see [docs/PLUGIN-API.md](docs/PLUGIN-API.md) |
 
 **Command line:** an AutoComplete list opens as you type (prefix and mid-string matches, recently used
 first, with the description and aliases); Tab / arrows cycle, Enter or Space accepts. Right-click on the
@@ -208,6 +243,25 @@ bit 2 set. Dashed linetypes scale with LTSCALE and the zoom, like AutoCAD, and t
 the pattern would be finer than a few pixels. Dimension text uses the DIMLUNIT/DIMDEC format and
 the `%%c`, `%%d`, `%%p` control codes render as diameter, degree and plus/minus symbols.
 
+**Text, display and language:** TEXT and MTEXT whose text style names a TrueType / OpenType font
+(`.ttf`, `.ttc`, `.otf`) are drawn with that font through the system font stack; SHX styles keep the
+stroke font. MTEXT format codes are drawn: colour (`\C`, `\c`), height (`\H`), width factor (`\W`),
+oblique (`\Q`), bold / italic (`\f...|b1|i1`), underline / overline / strike-through (`\L \O \K`),
+stacked fractions and tolerances (`\S1/2;`, `\S+0.1^-0.2;`), paragraph alignment (`\pqc;`),
+`\P` breaks and `\U+XXXX` characters. The canvas follows the screen's device pixel ratio (and
+redraws when a window moves to another monitor), so lines and text stay sharp on high-DPI displays.
+**Options > Display > Language** switches the interface language ("System default" follows the operating system;
+English and a partial Spanish translation ship today); `src/app/i18n.ts` explains how to add a
+language.
+
+**Plugins and scripts:** JavaScript plugins (a folder with `plugin.json` and one main file in the
+`plugins` folder of the application data folder; `PLUGINS` prints the path) add commands and react to
+events through the `jcad` API, the same object the developer console has as `window.jcadApi`.
+`SCRIPTRUN` runs a one-off `.js` file against it. A plugin asks once before it first runs, its errors
+are caught and printed on the command line, and every change it makes is an undo step. The reference
+is [docs/PLUGIN-API.md](docs/PLUGIN-API.md); `examples/plugins/` holds `hello`, `numbered-labels` and
+`bom-summary`.
+
 ## AutoCAD Electrical-style data model
 
 Every symbol carries the ACADE attribute set: `TAG1`, `DESC1`-`DESC3`, and the invisible `INST`, `LOC`,
@@ -219,6 +273,35 @@ sequential numbering, wire number format and position, cross-reference format, I
 DXF carries everything. Contacts are children of their coil (same tag; `AECHILD` copies INST / LOC /
 DESC), multi-pole devices carry `POLE`, fixed wire numbers live on layer `WIREFIXED`, panel footprints
 are `WD_FP_<family>` blocks with `P_TAG1`, `P_ITEM`, `P_DESC1`-`2`, `P_MFG`, `P_CAT`, `P_INST`, `P_LOC`.
+
+Further data this release uses: a component whose tag must survive a retag has `TAGFIXED` = 1
+(`AEFIXTAG`, or Fixed tag in Edit Component). A conductor of a cable carries a `WD_CABLE` marker on
+layer `CABLES` with `CABLENO`, `CONDUCTOR`, `CABLETYPE`, `WIRENO` and `FROM` / `TO`
+(device tag:terminal); cable markers are not components. Terminal jumpers are ids in the `JUMPER`
+attribute of both terminals. Panel hardware is inserted as `WD_PNL_*` blocks with the invisible
+attributes `P_HW` (DINRAIL, DUCT, ENCLOSURE, PLATE), `P_TYPE` (rail type, duct or enclosure size),
+`P_LENGTH`, `P_MFG` / `P_CAT` and `P_DESC1`, which the Panel Hardware report (`AEREPORT panelhw`) and
+`AEPANELHW` total; the terminal strip footprint is a `WD_FP_TSTRIP_*` footprint with an item number.
+The WD_M block's `UNITS` value (`INCHES` / `MM`, falling back to `$INSUNITS`) makes a drawing metric:
+everything the electrical tools create from the inch library is scaled by 25.4
+([docs/METRIC.md](docs/METRIC.md)). Attribute definitions keep AutoCAD's invisible / constant / verify
+/ preset flags (ATTDEF group 70; constant attributes get no ATTRIB on inserts).
+
+**Project-wide tools.** The project file (`*.jcadproj.json`) also keeps the report templates and the
+title block mapping (the `.wdt` text format: `ATTRIBUTE = SOURCE` lines with the sources `LINE1`..,
+`PROJ`, `PROJDESC`, `DWGDESC`, `DWGNO`, `SHEET`, `SHEETMAX`, `DATE`, `REV`, `SEC`, `FILENAME`,
+`IEC_PROJ` / `IEC_INST` / `IEC_LOC`, `A|B` for the first non-empty value, `%SHEET% OF %SHEETMAX%`
+templates and `"literal"` text). Project-wide commands work on every drawing of the project: the
+active drawing and other open tabs change in memory (Undo works, SAVE writes them); closed drawings
+are read from disk, listed in a confirmation dialog and written back as DXF (with an optional `.bak`
+copy) only when confirmed. DWG drawings are read-only and skipped; the browser edition only updates
+drawings that are open in tabs. The Project Manager shows each drawing's installation / location codes
+and cross-reference status, and its context menu offers the project-wide commands.
+
+**Vertical symbols.** Besides the generated vertical twins, the library has 41 hand-drawn JIC
+vertical symbols (`VPB11_NO`, `VCR1`, `VTD1_NO`, `VXF1` ...) and 12 IEC `NAME_V` symbols that connect
+at y = +-0.375, with TAG1 / DESC1-3 to the right; the icon menu's Vertical choice uses them when they
+exist.
 
 The parts catalog (`src/electrical/catalog.json`) is a generic, invented set of parts per family; a
 project can name a user catalog JSON file (array of `{family, mfg, cat, desc, rating, type, assycode}`)
@@ -288,6 +371,15 @@ DESC3 stay invisible unless placed), registers the family as the block's tag pre
 coil / contact role, and redefines the block in open drawings that already use it. Editing a
 symbol that is already open switches to its tab instead of opening a second one.
 
+Each placed attribute also has an insertion **prompt**, **invisible / constant / verify / preset**
+flags, a text height and a justification, and the rows can be moved up and down: the block keeps
+that order and the insert dialog asks in it (Insert Component shows the prompts of user symbols that
+the standard fields do not cover as **Other attributes**; a verify attribute is confirmed on the first
+OK). **Templates** buttons add the missing TAG1 + DESC1-3, INST / LOC, MFG / CAT / ASSYCODE (invisible),
+TERM01 / TERM02, XREF or RATING1-12 (invisible) in one step. A **checklist** (valid unused name,
+connection points, no overlapping pins, known family, DESC1, consistent attribute flags ...) sits above
+the buttons; saving with unticked warnings asks for confirmation first.
+
 **Vertical symbols.** A symbol whose stubs end on the axis at y = +-0.375 (instead of x = +-0.375)
 is a vertical symbol: its connections are detected as top (`X2TERMnn`) / bottom (`X8TERMnn`) pins,
 AECOMPONENT snaps it to a vertical wire and breaks that wire around it (junction dots and trim keep
@@ -325,9 +417,31 @@ edit or delete it.
   trip. Wire junction dots are written as zero-hole donuts so they stay filled in other CAD
   programs. The writer emits the full table set (BLOCK_RECORD, LTYPE, STYLE, APPID, DIMSTYLE,
   VPORT, $HANDSEED, CLASSES, OBJECTS) that AutoCAD expects.
+  Also read and written: SPLINE (fit points or control vertices), HATCH (boundary loops, pattern
+  definition lines - the lines stored in the file win, so ISO and double hatches draw as saved -
+  solid fill), LEADER and MULTILEADER, tables (an ACAD_TABLE with cell data reads as a native table; a table
+  is written as an insert of an anonymous block that carries the cells in `JCAD_TABLE` XDATA, so other
+  programs show it and JCad reads it back as a table), IMAGE with IMAGEDEF (the desktop app loads `.png` / `.jpg` / `.gif` / `.bmp` /
+  `.webp` bitmaps up to 50 MB through a read-only bridge, resolving relative paths against the drawing
+  folder; the browser edition draws the frame and file name), external references (xref blocks are
+  kept as references and drawn as a named frame), MTEXT format codes (kept verbatim while the text is
+  unchanged) and fields in TEXT / MTEXT (evaluated on open, written back as field codes).
+  **Dimension styles:** every named style is a DIMSTYLE record (all DIM* group codes; arrowheads,
+  basic tolerances and alternate-unit placement in `JCAD_DIMSTYLE` XDATA on the record; records from
+  other programs name their arrow blocks by handle, which is resolved), the current style's `$DIM*`
+  header variables include `$DIMBLK` / `$DIMBLK1` / `$DIMBLK2`, `$DIMSAH`, `$DIMTOL`, `$DIMLIM`,
+  `$DIMTIH`, `$DIMTOH` and `$DIMZIN`, and DIMENSION groups 52 / 53 carry DIMEDIT oblique angles and
+  DIMTEDIT text rotation. DIMCLRD / DIMCLRE / DIMCLRT colour the dimension parts on screen.
+  **Encodings:** files before AutoCAD 2007 are decoded in their `$DWGCODEPAGE` code page (UTF-8 for
+  AC1021 and later, byte order marks honoured), `\U+XXXX` / `\M+nXXXX` escapes are decoded, and the
+  writer produces pure-ASCII AC1015 with `\U+XXXX` escapes so non-English text survives any code page;
+  the detected encoding is logged on open. STYLE table records (font file, TrueType family) round-trip
+  and TEXT / MTEXT keep their style name.
 - **DWG** (R14 - 2018) opens through LibreDWG, including dimensions, ellipses, points, MTEXT,
   construction lines, solids, polyline bulges, entity/layer linetypes and lineweights and the
-  header units / limits / dimension variables. The import is read-only; SAVE writes a DXF next
+  header units / limits / dimension variables (arrows, tolerances, alternate units, text placement,
+  fit, colours, DIMPOST / DIMAPOST, DIMRND, DIMLFAC, DIMZIN ...), splines, hatches, leaders,
+  multileaders, tables and images. The import is read-only; SAVE writes a DXF next
   to the original. Sample files from the LibreDWG test suite live in `fixtures/` and are used
   by the tests. Mirrored and stretched block references keep their X/Y scales (circles and
   arcs inside a stretched block become polylines).
@@ -354,8 +468,17 @@ src/electrical  symbol libraries (symbols.ts / symbols-jic-control.ts / symbols-
                 user library userlib.ts; symbol-kit.ts shared primitives; symbol-builder-core.ts symbol <-> block
                 conversions), ACADE attributes, WD_M settings, tags, catalog, xref,
                 wire tools, panel layout, circuits, audit, reports, sheet templates, dialog contract (ui.ts)
-scripts         DWG reader (Node / Electron main), dwg2dxf CLI, screenshot capture
+scripts         DWG reader (Node / Electron main), dwg2dxf CLI, screenshot capture, UI click check, Electron e2e
+examples        example plugins (hello, numbered-labels, bom-summary)
+docs            user manual, metric drawings, plugin API, catalog packs, code signing
 ```
+
+Newer modules worth knowing: `src/core/dimension.ts` (dimension styles and DIM* variables),
+`hatch.ts`, `spline.ts`, `table.ts`, `fields.ts`, `mtext.ts`; `src/io/encoding.ts` (code pages, text
+styles); `src/app/api.ts` and `plugins.ts` (plugin API and loader), `i18n.ts` with `locales/`;
+`src/electrical/project-tools.ts`, `cables.ts`, `plc-import.ts`, `report-templates.ts`,
+`titleblock-map.ts` and `panel-hardware.ts`; `src/tools/dimension.ts`, `panel.ts`,
+`drafting-annot.ts`; `src/ui/dimstyle.ts`.
 
 ## License
 

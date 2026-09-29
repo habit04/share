@@ -25,6 +25,7 @@ Contents
 12. [Updates](#12-updates)
 13. [Reporting problems and getting help](#13-reporting-problems-and-getting-help)
 14. [Keyboard shortcuts](#14-keyboard-shortcuts)
+15. [Plugins and scripts](#15-plugins-and-scripts)
 
 ---
 
@@ -177,12 +178,12 @@ Help.
 
 | Tab | What is on it |
 | --- | --- |
-| Home | Draw, Modify, Layers (layer drop-down with on / freeze / lock / colour, layer tools), Properties (colour, linetype, lineweight), View, Utilities, Draw More, Modify More, Block |
-| Annotate | Text (MTEXT, TEXT), Dimensions (linear, aligned, angular, radius, diameter, style), Markup (distance, area, list) |
-| Project | Project Manager, New Drawing, Open Project, Open, Save, Save As, Drawing Properties, Plot to PDF, Print, Add to Project, Save Project, Wire Numbers, Title Block, Project Properties, Load Catalog, Catalog Packs, Retag |
-| Schematic | Insert Wires / Wire Numbers, Insert Components (icon menu and one-click common symbols), Child Contact, 3 Phase, Catalog Browser, Circuit Builder, Symbol Builder, Edit Components, Edit Wires / Wire Numbers, Other Tools (cross-reference, PLC module, source / destination arrows, audit) |
-| Panel | Schematic List, Footprint, Balloon, Nameplate, Terminal Strip, Terminal Strip Editor, panel reports |
-| Reports | Bill of Material, Component Report, Wire From/To, Wire Labels, PLC I/O Address, Missing Catalog, Terminal Report, Terminal Strip, Panel Components, Electrical Audit, Audit Report |
+| Home | Draw (including Spline and Hatch), Modify, Layers (layer drop-down with on / freeze / lock / colour, layer tools), Properties (colour, linetype, lineweight), View, Utilities, Draw More, Modify More, Block |
+| Annotate | Text (MTEXT, TEXT, Multileader, Leader, Table, Edit Cell, Field, Update Fields), Dimensions (linear, aligned, angular, radius, diameter, Baseline, Continue, Text Edit, Dim Edit, Dim Style), Markup (distance, area, list, hatch, edit hatch) |
+| Project | Project Manager, New Drawing, Open Project, Open, Save, Save As, Drawing Properties, Plot to PDF, Print, Add to Project, Save Project, Wire Numbers, Title Block, Project Properties, Load Catalog, Catalog Packs, Retag; Project-Wide (Location View, Xref Project, Retag Project, Wire Nos Project, Report Templates, Title Blocks All) |
+| Schematic | Insert Wires / Wire Numbers, Insert Components (icon menu and one-click common symbols), Child Contact, 3 Phase, Catalog Browser, Circuit Builder, Symbol Builder, Edit Components, Edit Wires / Wire Numbers, Cables / Jumpers / PLC I/O (Cable Marker, Cable Schedule, Jumper, Delete Jumper, PLC I/O Import / Export), Other Tools (cross-reference, PLC module, source / destination arrows, audit) |
+| Panel | Schematic List, Footprint, Balloon, Nameplate, Terminal Strip, Terminal Strip Editor, Panel Layout (Enclosure, DIN Rail, Wire Duct, Plate Grid, Align Footprints, Terminal Strip FP, Panel Hardware), panel reports |
+| Reports | Bill of Material, Component Report, Wire From/To, Wire Labels, PLC I/O Address, Missing Catalog, Terminal Report, Terminal Strip, Panel Components, Panel Hardware, Electrical Audit, Audit Report |
 | Import/Export Data | Open DXF / DWG, save as DXF |
 | Conversion Tools | Explode, Line to Wire |
 | Add-ins | Command List (Help), Report Problem |
@@ -302,6 +303,113 @@ Help window (F1) lists every command with its description and is searchable.
 
 Text is drawn with a single-stroke Hershey font, which looks like classic CAD `txt` text.
 The control codes `%%c`, `%%d` and `%%p` give the diameter, degree and plus/minus symbols.
+Text whose text style names a TrueType or OpenType font (for example `arial.ttf` in a drawing
+from another program) is drawn in that font when the system has it. MTEXT read from a file
+keeps its formatting: colours, heights, width factor, oblique, bold / italic, underline /
+overline / strike-through, stacked fractions and tolerances and paragraph alignment.
+
+### Splines and hatches
+
+| Command | Aliases | Notes |
+| --- | --- | --- |
+| SPLINE | SPL | Spline through fit points, or by control vertices |
+| HATCH | H, BH, BHATCH, -HATCH | Hatch or fill closed areas |
+| HATCHEDIT | HE, -HATCHEDIT | Change a hatch's pattern, scale, angle, origin or style |
+
+**Draw a spline** (Home > Draw > Spline):
+
+1. Run `SPLINE`. The command line shows the current method (`Method=Fit`).
+2. At `Specify first point or [Method/Knots/Object]:` pick the first point. `Method` switches
+   between **Fit** (the curve passes through the points) and **CV** (control vertices; the
+   prompt then offers `Degree`, 3 by default).
+3. Keep picking at `Enter next point or [start Tangency/toLerance/Undo/Close]:`.
+   `start Tangency` (after the first point) and `end Tangency` (later) take a direction point;
+   giving the end tangent finishes the spline. `Undo` removes the last point, `Close` closes the
+   curve with a smooth joint.
+4. Press Enter to finish an open spline.
+
+Only chord-length knots and a fit tolerance of 0 are used; converting polylines (`Object`) is
+not supported.
+
+**Hatch an area** (Home > Draw > Hatch or Annotate > Markup > Hatch):
+
+1. Run `HATCH`. Optionally type `P` (Properties) first: `Enter a pattern name or
+   [?/Solid/User defined] <ANSI31>:` (`?` lists the patterns ANSI31-ANSI38, NET, NET3, DOTS,
+   LINE, BRICK), then the pattern scale and angle. The choice is remembered.
+2. At `Specify internal point or [Properties/Select objects/draW boundary/Origin]:` click inside
+   a closed area formed by lines, arcs, circles and polylines; the boundary is found for you and
+   previewed. Click more areas to add them.
+   - `Select objects` uses closed objects you select (open ones are ignored and counted).
+   - `draW boundary` lets you pick the corners of a boundary (Enter closes it).
+   - `Origin` sets the point the pattern starts from.
+3. Press Enter to create the hatch. A pattern that would be too dense to see is shown as a light
+   fill and the command line says so.
+
+`HATCHEDIT`: select the hatch, then `Enter hatch option [Disassociate/Style/Properties/Origin]
+<Properties>:`; Properties asks for the pattern, scale and angle again, Style for
+Ignore / Outer / Normal. Hatches from DXF and DWG files keep the pattern lines stored in the file
+(ISO scales, double hatches).
+
+### Leaders, tables and fields
+
+| Command | Aliases | Notes |
+| --- | --- | --- |
+| LEADER | LEAD | Leader line with arrowhead and annotation text |
+| QLEADER | LE | The same, started as a quick leader |
+| MLEADER | MLD | Multileader: arrowhead, landing and text |
+| TABLE | TB, -TABLE | Insert a table |
+| TABLEEDIT | | Edit the text of a table cell |
+| FIELD | | Text with a field (date, file name, drawing properties) |
+| UPDATEFIELD | | Re-evaluate the fields of selected objects |
+
+**Leader** (Annotate > Text > Leader):
+
+1. `LEADER`, pick the arrowhead point (`Specify leader start point:`), then one or more points.
+2. After the second point the prompt is `Specify next point or [Annotation/Format/Undo]
+   <Annotation>:`. `Format` offers `Spline / STraight / Arrow / None` (curved leader, straight
+   leader, arrowhead on or off).
+3. Press Enter for the annotation: type one line at `Enter first line of annotation text or
+   <options>:`, further lines at the next prompt, and an empty line to finish. A short
+   horizontal landing is added when the last segment is steep.
+
+**Multileader** (Annotate > Text > Multileader):
+
+1. `MLEADER`. At `Specify leader arrowhead location or [leader Landing first/Content first/Options]
+   <Options>:` pick the arrowhead (the other options change the order, or set the arrowhead size
+   and landing distance).
+2. Pick the landing location, then type the text lines (empty line to finish).
+
+**Table** (Annotate > Text > Table):
+
+1. `TABLE`. Enter the number of columns and of data rows.
+2. At `Specify insertion point or [Style/Width/Height]:` pick the top-left corner (`Width` sets
+   the column width, `Height` the data row height in lines). The table has a title row, a header
+   row and the data rows.
+3. `TABLEEDIT` (Annotate > Text > Edit Cell): pick a cell and type its text (Enter keeps it).
+
+**Field** (Annotate > Text > Field):
+
+1. `FIELD`. Choose the field: `Date`, `CreateDate`, `SaveDate`, `PlotDate`, `Filename`, `Title`,
+   `Subject`, `Author`, `Keywords`, `Comments`, `LastSavedBy` or `Login`.
+2. Date fields list numbered formats (`M/d/yyyy`, `yyyy-MM-dd`, ...); type a number or your own
+   format. `Filename` asks for `Name / NAME.Ext / Path / Folder`.
+3. Pick the start point of the text. The text shows the value and keeps the field code, so a
+   saved DXF carries the field. Values that cannot be evaluated show `####`, empty drawing
+   properties `----`.
+4. `UPDATEFIELD` (Update Fields) re-evaluates the fields in the selected objects.
+
+### Images and external references
+
+Drawings from other programs may contain raster images (IMAGE) and external references
+(xrefs). JCad Electrical keeps both and writes them back when you save:
+
+- **Images**: the desktop application loads the image file (`.png`, `.jpg`, `.jpeg`, `.gif`,
+  `.bmp`, `.webp`, up to 50 MB) from the stored path, relative to the drawing's folder, or from the
+  drawing's folder when the stored folder does not exist. The browser edition, or a missing file,
+  shows the image frame with its file name. `LIST` shows the path and the size in pixels and
+  drawing units.
+- **External references** are drawn as a dashed frame with the reference name; the referenced
+  file is not loaded.
 
 ### Modify
 
@@ -347,11 +455,74 @@ The control codes `%%c`, `%%d` and `%%p` give the diameter, degree and plus/minu
 | DIMRADIUS | DRA, DIMRAD |
 | DIMDIAMETER | DDI, DIMDIA |
 | DIMANGULAR | DAN, DIMANG |
-| DIMSTYLE | D, DST, -DIMSTYLE, DDIM (`Save/Restore/STatus/Variables/Apply/?`) |
+| DIMBASELINE | DBA, DIMBASE (`Undo/Select`) |
+| DIMCONTINUE | DCO, DIMCONT (`Undo/Select`) |
+| DIMTEDIT | DIMTED (`Left/Right/Center/Home/Angle`) |
+| DIMEDIT | DED, DIMED (`Home/New/Rotate/Oblique`) |
+| DIMSTYLE | D, DST, DDIM, DIMSTY (Dimension Style Manager) |
+| -DIMSTYLE | `Save/Restore/STatus/Variables/Apply/?` on the command line |
 
-Press Enter at the first prompt of DIMLINEAR / DIMALIGNED to dimension a picked object. The
-dimension variables `DIMTXT`, `DIMASZ`, `DIMEXO`, `DIMEXE`, `DIMGAP`, `DIMCEN`, `DIMSCALE`,
-`DIMDEC`, `DIMADEC` and `DIMLUNIT` can be typed as commands to see or set their values.
+Press Enter at the first prompt of DIMLINEAR / DIMALIGNED to dimension a picked object. Every
+dimension variable of the style can be typed as a command to see or set its value: `DIMTXT`,
+`DIMASZ`, `DIMEXO`, `DIMEXE`, `DIMGAP`, `DIMCEN`, `DIMSCALE`, `DIMDEC`, `DIMADEC`, `DIMLUNIT`, and
+`DIMBLK`, `DIMBLK1`, `DIMBLK2`, `DIMSAH`, `DIMTAD`, `DIMJUST`, `DIMTIH`, `DIMTOH`, `DIMSE1`, `DIMSE2`,
+`DIMSD1`, `DIMSD2`, `DIMDLE`, `DIMDLI`, `DIMCLRD`, `DIMCLRE`, `DIMCLRT` (a colour number, or BYLAYER /
+BYBLOCK for the dimension's own colour), `DIMATFIT`, `DIMTIX`, `DIMTOFL`, `DIMPOST`, `DIMRND`,
+`DIMLFAC`, `DIMZIN`, `DIMALT`, `DIMALTF`, `DIMALTD`, `DIMALTU`, `DIMAPOST`, `DIMTOL`, `DIMLIM`,
+`DIMTP`, `DIMTM`, `DIMTDEC` and `DIMTFAC`. For example `DIMBLK _ArchTick` gives architectural ticks,
+`DIMTAD 1` puts the text above the line.
+
+**Baseline and continued dimensions** (Annotate > Dimensions > Baseline / Continue):
+
+1. Draw a linear, aligned or angular dimension first (or be ready to select one).
+2. Run `DIMBASELINE` (or `DIMCONTINUE`). It starts from the last dimension you drew; if there is
+   none it asks `Select base dimension:` / `Select continued dimension:` (the extension line
+   nearest your pick is used).
+3. At `Specify a second extension line origin or [Undo/Select] <Select>:` pick the next point.
+   Baseline dimensions all start at the first extension line and step outwards by the baseline
+   spacing (`DIMDLI` x `DIMSCALE`); continued dimensions chain end to end on one line.
+   `Undo` removes the last one, `Select` (or Enter) picks another base.
+4. Press Esc, or Enter at the select prompt, to finish.
+
+**Edit dimension text** (Annotate > Dimensions > Text Edit / Dim Edit):
+
+- `DIMTEDIT`: select a dimension, then drag the text to a new place or choose `Left`, `Right` or
+  `Center` (linear and aligned dimensions), `Home` (back to the default position and angle) or
+  `Angle` (a fixed text angle).
+- `DIMEDIT`: `Enter type of dimension editing [Home/New/Rotate/Oblique] <Home>:`. `New` replaces the
+  text (`<>` stands for the measured value), `Rotate` sets the text angle, `Oblique` slants the
+  extension lines of linear and aligned dimensions (Enter for none); then select the dimensions.
+
+**Dimension styles** (Annotate > Dimensions > Dim Style, or `DIMSTYLE`):
+
+The **Dimension Style Manager** lists the drawing's named styles with a preview. **Set Current**
+makes the selected style the one new dimensions use; **New...** asks for a name and the style to
+start with; **Modify...** edits a style (dimensions that use it update); **Compare...** lists the
+variables in which two styles differ; **Delete** removes a style that no dimension uses (not
+Standard or the current style). The style editor has the tabs:
+
+- **Lines**: dimension line colour, extension past ticks, baseline spacing, suppression of either
+  half of the dimension line; extension line colour, offset from origin, extension beyond the
+  dimension line, suppression of either extension line.
+- **Symbols and Arrows**: first and second arrowhead (closed filled, closed blank, closed, open,
+  oblique, architectural tick, dot, small dot, blank dot, none), arrow size, centre mark size.
+- **Text**: height, colour, gap, vertical position (centred, above, outside, below), horizontal
+  position (centred, at extension line 1 or 2), alignment (horizontal, aligned with the dimension
+  line, ISO standard).
+- **Fit**: what moves outside the extension lines when space is short, text always inside,
+  dimension line drawn between the extension lines, overall scale.
+- **Primary Units**: unit format and precision, prefix / suffix, measurement scale factor,
+  round-off, leading / trailing zero suppression, angular precision.
+- **Alternate Units**: on / off, multiplier (25.4 for inches to millimetres), format, precision,
+  prefix / suffix, placement after or below the primary value.
+- **Tolerances**: none, symmetrical, deviation, limits or basic (boxed); upper and lower values,
+  precision and text height scale.
+
+`-DIMSTYLE` (or `DIMSTYLE` followed by an option) works on the command line: `Save` stores the
+current settings under a name, `Restore` makes a named style current (or pick a dimension to use
+its style), `STatus` lists the current values, `Variables` lists a style's values, `Apply`
+gives selected dimensions the current style, `?` lists the styles. Named styles are saved in the
+drawing (DIMSTYLE records in DXF) and come back from DXF and DWG files.
 
 ### Inquiry
 
@@ -488,13 +659,16 @@ corner. The rung references drive tag and wire numbers.
 
 The **icon menu** has a search box across all categories, a JIC / IEC switch and a
 **Horizontal / Vertical** choice. Vertical inserts the library's vertical twin of the symbol
-(or builds one) for use on vertical wires.
+(or builds one) for use on vertical wires. The library has hand-drawn vertical versions of the
+most used symbols (41 JIC symbols such as `VPB11_NO`, `VCR1`, `VTD1_NO`, and 12 IEC `NAME_V`
+symbols); other symbols get a rotated twin.
 
 The **Insert / Edit Component** dialog holds the component tag (with the list of tags already
 used in that family and a "next free tag" button), installation (INST), location (LOC),
 description lines 1-3, manufacturer (MFG), catalog (CAT), assembly code, rating and the pin
 numbers. **Catalog Lookup...** opens the Catalog Browser filtered to the component's family.
-Retagging a parent (coil) carries its child contacts along.
+Retagging a parent (coil) carries its child contacts along. In Edit Component, **Fixed tag**
+keeps the tag when components are retagged (the same flag `AEFIXTAG` sets).
 
 ### Wire numbers
 
@@ -513,7 +687,8 @@ With reference numbering, numbers follow the rung reference with letter suffixes
 `AEXREF` (XREF) updates the coil / contact cross-references: each coil lists its contacts by
 rung (for example `NO 101, 102 / NC 103`, or a small table when the drawing's cross-reference
 style is "table"), and each contact shows the rung of its coil. Run it again after moving or
-adding contacts.
+adding contacts. When the drawing belongs to a project, AEXREF works project-wide (see
+[Project-wide tools](#project-wide-tools)).
 
 ### Source and destination arrows
 
@@ -558,6 +733,41 @@ are detected.
 Footprints are blocks named `WD_FP_<family>` with attributes `P_TAG1`, `P_ITEM`,
 `P_DESC1`-`2`, `P_MFG`, `P_CAT`, `P_INST`, `P_LOC`, so panel reports can read them.
 
+### Panel hardware
+
+The **Panel > Panel Layout** panel draws the enclosure and the hardware inside it. The pieces are
+blocks whose invisible attributes carry the type, length and part number, so the Panel Hardware
+report can list them. Sizes are in inches.
+
+| Command | Aliases | What it does |
+| --- | --- | --- |
+| AEPANEL | AEENCLOSURE, ENCLOSURE | Enclosure outline with mounting plate, hinges and door swing |
+| AEPANELGRID | PLATEGRID, AEMOUNTGRID | Mounting plate with a layout grid |
+| AEDINRAIL | DINRAIL | DIN rail (TS35, TS32 or TS15) |
+| AEWIREDUCT | WIREDUCT, DUCT | Wire duct run with its cover lines |
+| AEFOOTPRINTALIGN | FOOTPRINTALIGN | Line footprints up on a DIN rail |
+| AETERMFOOTPRINT | TERMFOOTPRINT, AETERMSTRIPFP | Terminal strip footprint from the terminal table |
+| AEPANELHW | PANELHARDWARE | List the hardware with total lengths on the command line |
+
+1. **Enclosure.** `AEPANEL`: enter a size `H x W x D` from the list (16x12x6 up to 72x36x16) or
+   `Custom` and type your own, choose the door hinge side (`Left / Right / None`), and pick the
+   lower-left corner.
+2. **Plate grid.** `AEPANELGRID`: pick two corners of the mounting plate, or type `E`
+   (Enclosure) and pick an enclosure to use its plate; `Spacing` sets the grid spacing.
+3. **DIN rail.** `AEDINRAIL`: pick the start point (`Type` chooses TS35 / TS32 / TS15, `Part` a
+   part number), then the end point, or `Length` followed by a direction (`Horizontal /
+   Vertical` or a point).
+4. **Wire duct.** `AEWIREDUCT`: the same way; `Size` chooses 1x1, 1.5x2, 2x2, 2x3, 3x3 or 4x4.
+5. **Footprints on the rail.** Place footprints (AESCHEMATICLIST / AEFOOTPRINT), then
+   `AEFOOTPRINTALIGN`: select the footprints, select the rail and give the gap between them or
+   `Even` to spread them over the rail. The command line warns when they run past the rail.
+6. **Terminal strips.** `AETERMFOOTPRINT`: choose a strip, pick its location. The footprint has one
+   terminal per entry of the terminal table (jumpered terminals get jumper bars); placing a strip
+   again replaces its old footprint and keeps the item number.
+7. **Hardware list.** `AEPANELHW`, or the **Panel Hardware** report (`AEREPORT panelhw`, Reports >
+   Panel > Panel Hardware), lists rails, duct, enclosures and plates with quantities and total
+   lengths.
+
 ### Reports and audit
 
 `AEREPORT` (REPORT, BOM) opens the **Reports** dialog. Choose a report, the scope (this drawing
@@ -575,7 +785,9 @@ place the report as a table. You can also type the report name: `AEREPORT bom`,
 | `missing` | Missing Catalog Data |
 | `terminals` | Terminal Report |
 | `strip` | Terminal Strip |
+| `cables` | Cable Schedule |
 | `panel` | Panel Components |
+| `panelhw` | Panel Hardware |
 | `audit` | Electrical Audit |
 
 `AEAUDIT` (AUDIT, ELECTRICALAUDIT) opens the **Electrical Audit** dialog with every issue
@@ -591,8 +803,115 @@ fixing things.
 - A **project** (`*.jcadproj.json`) lists the drawings that belong together, the project
   description lines (PROJECT, CUSTOMER, JOB, DRAWN, CHECKED, APPROVED, ...), the user catalog
   file and default formats. Use `OPENPROJECT` (PROJECT), `PROJECTADD` (add the current
-  drawing), `PROJECTSAVE` and `AEPROJECTPROPS` (PROJECTPROPERTIES, PROJPROPS). Reports can
-  then run across every drawing of the project.
+  drawing), `PROJECTSAVE` and `AEPROJECTPROPS` (PROJECTPROPERTIES, PROJPROPS; tabs General,
+  Description Lines and Title Block Mapping). Reports can then run across every drawing of the
+  project.
+
+### Project-wide tools
+
+These commands work on every drawing of the open project (Project > Project-Wide, or right-click
+the project in the Project Manager):
+
+| Command | Aliases | What it does |
+| --- | --- | --- |
+| AEXREFPROJECT | XREFPROJECT, AEXREFP | Coil / contact cross-references across all drawings |
+| AERETAGPROJECT | RETAGPROJECT | Retag all components, or only duplicate and blank tags (`All / Duplicates`) |
+| AEWIRENOPROJECT | WIRENOPROJECT | Wire numbers unique across the project (`Sheet-based` start at sheet x 100, or each drawing's own start number) |
+| AETITLEBLOCKALL | TITLEBLOCKALL | Fill the title block of every drawing through the project's mapping |
+| AELOCVIEW | LOCVIEW, LOCATIONVIEW | Location View |
+| AEFIXTAG | FIXTAG | Fix or release the tags of selected components |
+
+How the changes are applied:
+
+1. The drawing in the current tab and drawings open in other tabs are changed in memory: each
+   gets one undo step and is marked changed (save it as usual).
+2. Closed drawings of the project are read from disk. When one of them would change, a dialog
+   lists every affected drawing with what changes; confirm to write the closed ones back as DXF,
+   optionally keeping a `.bak` copy of each. Cancel changes nothing.
+3. DWG drawings are read-only and are skipped; the command line lists skipped drawings. The
+   browser edition cannot read closed drawings, so open them in tabs first.
+
+After `AEXREFPROJECT` a **Cross-Reference Problems** list shows contacts without a parent and
+duplicate parents; double-click a row on the current drawing to zoom to it. The Project Manager
+shows each drawing's installation / location codes and cross-reference status.
+
+**Fixed tags.** `AEFIXTAG` (or the **Fixed tag** checkbox in Edit Component) sets `TAGFIXED` on the
+selected components; AERETAG and AERETAGPROJECT leave fixed tags alone. Run AEFIXTAG again to
+release them.
+
+**Location View** (`AELOCVIEW`): the components of the project grouped by installation and
+location, with type, description, catalog, jumpers, drawing, sheet and rung. Double-click a row
+of the current drawing to zoom to it; save the list as CSV or put it on the drawing as a table.
+
+### Cables and jumpers
+
+1. **Cable.** `AECABLE` (Schematic > Cables/Jumpers/PLC I/O > Cable Marker): pick the wires of the
+   cable in conductor order and press Enter. In the dialog enter the cable tag (`CABLENO`), cable
+   type, conductor identification (numbers or colours) and the first conductor number. Each wire
+   gets a `WD_CABLE` marker with its conductor, wire number and FROM / TO (the device pins at the
+   ends of that wire).
+2. **Cable Schedule.** `AECABLESCHEDULE` opens the Cable Schedule report (cables, conductors,
+   from / to, wire numbers).
+3. **Jumper.** `AEJUMPER`: pick the first terminal, then a second terminal of the same strip. Both
+   terminals record the jumper in their `JUMPER` attribute; keep picking pairs, Enter to finish.
+   `AEJUMPERDEL` removes the jumpers of a picked terminal.
+
+### PLC I/O from a spreadsheet
+
+1. Prepare a CSV or tab-separated file with one row per I/O point. Recognised column headers:
+   `Address` (required), `Description 1` / `Desc1` (and 2, 3), `Wire`, `Device` / `Tag`, `Module`
+   and `Type` (input / output). Without a header row the columns are read as Address,
+   Description 1-3, Wire number, Device tag. Inputs and outputs are told apart by the Type column
+   or the address (`I:`, `%I`, `X` ... / `O:`, `%Q`, `Y` ...).
+2. Run `AEPLCIO` (Schematic > PLC I/O Import) and pick the file. The import dialog previews the
+   points and the modules they form, and can add a rung with the device for each point.
+3. Click OK and pick the top-left corner. The modules are placed side by side with the point
+   descriptions filled in.
+4. `AEPLCIOEXPORT` writes the drawing's PLC I/O points to a CSV in the same format.
+
+### Report templates
+
+`AEREPORTTEMPLATES` (Project > Report Templates) saves report formats in the project file. For each
+template choose a name, the report, a title, the output (show in a dialog, place on the drawing as
+a table, or write a CSV file), project-wide or current drawing, the columns and their order, the
+sort columns and row filters (contains, equals, starts with, does not contain, is empty, is not
+empty). Run a template from the dialog, with `AEREPORTRUN <name>`, or with `AEREPORTRUN` alone to
+pick it from a list.
+
+### Title block mapping
+
+**Project Properties > Title Block Mapping** holds lines in the AutoCAD Electrical `.wdt` format,
+`ATTRIBUTE = SOURCE`:
+
+```
+BLOCK = WD_TITLEBLOCK
+CUSTOMER = LINE2
+TITLE = DWGDESC|PROJDESC
+SHEET = %SHEET% OF %SHEETMAX%
+REVBY = "JD"
+```
+
+Sources are the project description lines `LINE1`-`LINE12`, `PROJ`, `PROJDESC`, `DWGDESC`, `DWGNO`,
+`SHEET`, `SHEETMAX`, `DATE`, `REV`, `SEC`, `FILENAME` and `IEC_PROJ` / `IEC_INST` / `IEC_LOC`; `A|B`
+takes the first non-empty value, `%CODE%` fills a template and quotes give literal text. Leave it
+empty for the built-in mapping. `AETITLEBLOCK` applies it to the current drawing,
+`AETITLEBLOCKALL` to every drawing of the project; `AEWDTIMPORT` and `AEWDTEXPORT` read and write
+`.wdt` files.
+
+### Metric drawings
+
+A drawing can use inches (the default) or millimetres. In a metric drawing the symbols, junction
+dots, ladders, 3-phase inserts, circuits, wire numbers and sheet templates are scaled by 25.4 so
+they keep their real size.
+
+- **Drafting Settings > Drawing Units** (`DSETTINGS`, or the status bar's units menu): choose Inches
+  or Millimeters, tick **Rescale existing objects** to scale what is already drawn, and click
+  Apply to drawing.
+- Command line: `WDUNITS` shows the units; `WDUNITS MM` or `WDUNITS IN` switch, `WDUNITS MM RESCALE`
+  also scales the existing objects (aliases AEUNITS, DRAWINGUNITS).
+- A DXF saved in millimetres by another program opens as a metric drawing.
+
+[METRIC.md](METRIC.md) has the details.
 
 ---
 
@@ -632,6 +951,21 @@ has collapsible sections:
 - **Preview**: exactly what will be inserted;
 - a **Check** area listing problems (name, connections, duplicate or wrong-side pins, markers
   off a line end, TAG1 over the geometry, and more). Save is disabled while errors exist.
+
+**Attribute details.** Open an attribute row to set its **prompt** (the question asked when the
+symbol is inserted; blank = the standard prompt), its flags - **Invisible**, **Constant** (every
+insert carries the default and it is never asked), **Verify** (confirmed at insertion), **Preset**
+(takes the default without asking) - the text height and the justification, or **Move** it. The
+arrows move rows up and down: the saved block keeps this order and the insert dialog asks in it.
+The **Templates** buttons add missing attributes in one step: TAG1 + DESC1-3, INST / LOC, MFG / CAT /
+ASSYCODE (invisible), TERM01 / TERM02, XREF and RATING1-12 (invisible).
+
+**Checklist.** Above the buttons a checklist shows what is ticked (valid unused name, connection
+points, no overlapping pins, known family, DESC1, consistent attribute flags ...). Errors block
+saving; when warnings are unticked, Save asks you to confirm first.
+
+When you insert a user symbol, the Insert / Edit Component dialog shows the prompts it has beyond
+the standard fields under **Other attributes**.
 
 Buttons: **Make vertical** (opens the vertical variant), the **NO / NC twin**, **Save to
 Library** (Ctrl+S in a symbol tab), **Save and Insert** (saves, returns to the drawing and
@@ -723,7 +1057,9 @@ buttons are disabled.
 Cancel restores the previous values.
 
 - **Display**: ribbon colour scheme, model space background, crosshair colour and size,
-  whether the command window is shown, grid style and spacing.
+  whether the command window is shown, grid style and spacing, and the interface **Language**
+  (System default, English or Español; the Spanish translation is partial and untranslated
+  text stays English).
 - **Drafting**: AutoSnap marker colour and size, aperture size (object snap target box).
 - **Selection**: pickbox size, grip size, unselected and hover grip colours, selection effect,
   Quick Properties on selection, rollover tooltips.
@@ -741,6 +1077,11 @@ Cancel restores the previous values.
 - **Polar Tracking**: on / off, increment angle and additional angles.
 - **Object Snap**: on / off and the running modes, marker colour.
 - **Dynamic Input**: on / off.
+- **Drawing Units**: inches or millimetres for the drawing, with an optional rescale of the
+  existing objects (see [Metric drawings](#metric-drawings)).
+
+The drawing area follows the screen's pixel density, so lines and text stay sharp on high-DPI
+displays and when the window moves to another monitor.
 
 Settings are stored per user on this computer (in the browser edition, per browser).
 
@@ -756,13 +1097,20 @@ DXF (AutoCAD 2000 / AC1015) is JCad Electrical's native format. `SAVE` (QSAVE, C
 electrical data all round-trip, and the files open in other CAD programs. `OPEN` (Ctrl+O)
 reads DXF and DWG files into a new tab; `NEW` (QNEW, Ctrl+N) starts an empty drawing.
 
+Also kept in DXF: splines, hatches, leaders and multileaders, tables, images and external
+references, fields, MTEXT formatting, text styles (including TrueType fonts) and the named
+dimension styles with all their settings. Files written by programs before AutoCAD 2007 are
+read in the code page they name (`$DWGCODEPAGE`), newer ones as UTF-8; the command line reports
+the detected encoding. JCad Electrical writes AutoCAD 2000 DXF with any non-English characters
+escaped, so the text reads correctly whatever the code page of the program that opens it.
+
 ### DWG
 
 DWG files from release R14 up to 2018 open through **LibreDWG**. Supported: lines, arcs,
-circles, polylines (with bulges), text and MTEXT, blocks and attributes, dimensions,
-ellipses, points, construction lines, solids, hatches (as outlines or filled boundaries),
-tables, linetypes, lineweights and header units / limits. The command window lists anything
-that was skipped.
+circles, polylines (with bulges), text and MTEXT, blocks and attributes, dimensions (with the
+drawing's dimension variables), ellipses, points, construction lines, solids, splines, hatches,
+leaders and multileaders, tables, images, linetypes, lineweights and header units / limits. The
+command window lists anything that was skipped.
 
 DWG is **read-only**: JCad Electrical cannot write DWG files. When you save a drawing that
 was opened from a DWG, you are asked for a new file name and a DXF is written; the original
@@ -796,8 +1144,9 @@ The desktop application keeps its data in the application data folder:
 | macOS | `~/Library/Application Support/jcad-electrical` |
 | Linux | `~/.config/jcad-electrical` |
 
-It contains `autosave/`, `packs/` (catalog packs), `user-library.json` (your symbols) and
-`error.log` (crash log).
+It contains `autosave/`, `packs/` (catalog packs), `plugins/` (see
+[Plugins and scripts](#15-plugins-and-scripts)), `user-library.json` (your symbols) and
+`error.log` (crash log). The `PLUGINS` command prints the exact folder on your computer.
 
 ---
 
@@ -876,3 +1225,57 @@ donation page).
 | Delete | Erase the selection |
 
 On macOS, Cmd works wherever Ctrl is listed.
+
+---
+
+## 15. Plugins and scripts
+
+Plugins add commands to JCad Electrical and can read and change the open drawing. They are
+written in JavaScript against the `jcad` API; the full reference is
+[PLUGIN-API.md](PLUGIN-API.md).
+
+### Installing a plugin
+
+1. Type `PLUGINS`. It lists the loaded plugins and prints the plugins folder (inside the
+   application data folder; it is created the first time).
+2. Copy the plugin's folder (a `plugin.json` and one main `.js` file) into that folder.
+3. Type `PLUGINRELOAD` (or restart). The first time a plugin runs you are asked
+   **Load plugin ... ? Plugins run with full access to your drawings.** Your answer is remembered
+   until the plugin's code changes.
+4. The plugin's commands now appear in Help and command completion and run like built-in ones.
+
+In the browser edition, `PLUGINLOAD` opens a file picker: choose one `.js` file, or `plugin.json`
+together with its main file. Such plugins last until the page is closed.
+
+| Command | Aliases | What it does |
+| --- | --- | --- |
+| PLUGINS | PLUGINLIST | List plugins (version, status, commands, errors) and the folder; `PLUGINS Unload <name>`, `PLUGINS Forget [<name>]` (forget remembered answers) |
+| PLUGINLOAD | LOADPLUGIN | Load a plugin folder by name (desktop), or pick plugin files |
+| PLUGINRELOAD | | Reload one plugin by name, or all of them plus new folders |
+| SCRIPTRUN | JSRUN, RUNSCRIPT | Pick a `.js` file and run it once against the API |
+
+### What plugins can do
+
+- register commands with prompts for text, points and selections;
+- read and change entities, layers, blocks and the electrical data (components, wires,
+  attributes, cross-references), with every change an undo step (Ctrl+Z works);
+- show messages and dialogs, read a file you pick and save text files through the save dialog;
+- react to events (drawing changed, selection changed, command started / ended, drawing opened);
+- keep their own settings.
+
+Plugins cannot use Node.js, read files you did not pick or connect to other web sites. Errors in a
+plugin are printed on the command line as `[plugin-name] ...` and do not stop the program. Only
+install plugins from people you trust.
+
+### Examples
+
+The `examples/plugins/` folder of the source repository has three plugins to copy:
+
+- **hello**: `HELLO` (alias `HI`) prints how many objects are selected.
+- **numbered-labels**: `NUMLABEL` (alias `NLABEL`) asks for a prefix and a first number, then
+  places labels `M7`, `M8`, ... at the points you pick.
+- **bom-summary**: `BOMSUMMARY` (alias `BOMSUM`) counts the components by manufacturer and
+  catalog number, shows them in a table and offers **Save CSV...**.
+
+A script for `SCRIPTRUN` is a single `.js` file using the same API, for example to move every
+TEXT to a layer in one undo step. In the developer console the API is `window.jcadApi`.
