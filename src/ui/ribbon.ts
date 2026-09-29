@@ -44,8 +44,8 @@ export const RIBBON: RibbonTab[] = [
           B('Rectangle', 'rectangle', 'RECTANG', 'small'),
           B('Text', 'text', 'TEXT', 'small'),
           B('Distance', 'dist', 'DIST', 'small'),
-          B('Spline', 'arc', 'SPLINE', 'small', 'Spline through fit points (SPLINE)'),
-          B('Hatch', 'grid', 'HATCH', 'small', 'Hatch an area: pick an internal point or select closed objects (HATCH)'),
+          B('Spline', 'spline', 'SPLINE', 'small', 'Spline through fit points (SPLINE)'),
+          B('Hatch', 'hatch', 'HATCH', 'small', 'Hatch an area: pick an internal point or select closed objects (HATCH)'),
         ],
       },
       {
@@ -129,9 +129,9 @@ export const RIBBON: RibbonTab[] = [
           B('Single Line', 'text', 'TEXT', 'small'),
           B('Lineweight', 'lw', 'LWEIGHT', 'small'),
           B('Linetype', 'linetype', 'LINETYPE', 'small'),
-          B('Multileader', 'wireleader', 'MLEADER', 'small', 'Multileader: arrowhead, landing and text (MLEADER)'),
-          B('Leader', 'wireleader', 'LEADER', 'small', 'Leader with annotation text (LEADER)'),
-          B('Table', 'report', 'TABLE', 'small', 'Insert a table (TABLE)'),
+          B('Multileader', 'mleader', 'MLEADER', 'small', 'Multileader: arrowhead, landing and text (MLEADER)'),
+          B('Leader', 'mleader', 'LEADER', 'small', 'Leader with annotation text (LEADER)'),
+          B('Table', 'table', 'TABLE', 'small', 'Insert a table (TABLE)'),
           B('Edit Cell', 'edit', 'TABLEEDIT', 'small', 'Edit the text of a table cell (TABLEEDIT)'),
           B('Field', 'text', 'FIELD', 'small', 'Insert a field: date, file name, drawing properties (FIELD)'),
           B('Update\nFields', 'retag', 'UPDATEFIELD', 'small', 'Update fields in the selected objects (UPDATEFIELD)'),
@@ -151,7 +151,7 @@ export const RIBBON: RibbonTab[] = [
       },
       {
         title: 'Markup',
-        buttons: [B('Distance', 'dist', 'DIST', 'small'), B('Area', 'area', 'AREA', 'small'), B('List', 'props', 'LIST', 'small'), B('Hatch', 'grid', 'HATCH', 'small'), B('Edit Hatch', 'edit', 'HATCHEDIT', 'small', 'Change hatch pattern, scale or angle (HATCHEDIT)')],
+        buttons: [B('Distance', 'dist', 'DIST', 'small'), B('Area', 'area', 'AREA', 'small'), B('List', 'props', 'LIST', 'small'), B('Hatch', 'hatch', 'HATCH', 'small'), B('Edit Hatch', 'edit', 'HATCHEDIT', 'small', 'Change hatch pattern, scale or angle (HATCHEDIT)')],
       },
     ],
   },
@@ -169,6 +169,17 @@ export const RIBBON: RibbonTab[] = [
       {
         title: 'Project Data',
         buttons: [B('Title\nBlock', 'titleblock', 'AETITLEBLOCK'), B('Project\nProperties', 'settings', 'AEPROJECTPROPS', 'small'), B('Load\nCatalog', 'catalog', 'AECATALOGLOAD', 'small'), B('Catalog\nPacks', 'catalog', 'AEPACKS', 'small', 'Catalog packs: install or remove signed manufacturer catalogs  (AEPACKS)'), B('Retag', 'retag', 'AERETAG', 'small')],
+      },
+      {
+        title: 'Project-Wide',
+        buttons: [
+          B('Location\nView', 'tree', 'AELOCVIEW', 'large', 'Location View: components by installation / location code (AELOCVIEW)'),
+          B('Xref Project', 'swap', 'AEXREFPROJECT', 'small', 'Update coil / contact cross-references across all project drawings (AEXREFPROJECT)'),
+          B('Retag Project', 'retag', 'AERETAGPROJECT', 'small', 'Retag components project-wide; fixed tags are kept (AERETAGPROJECT)'),
+          B('Wire Nos Project', 'wireno', 'AEWIRENOPROJECT', 'small', 'Wire numbers project-wide, unique across drawings (AEWIRENOPROJECT)'),
+          B('Report\nTemplates', 'report', 'AEREPORTTEMPLATES', 'small', 'Create, edit and run report templates (AEREPORTTEMPLATES)'),
+          B('Title Blocks\nAll', 'titleblock', 'AETITLEBLOCKALL', 'small', 'Update the title blocks of all project drawings (AETITLEBLOCKALL)'),
+        ],
       },
     ],
   },
@@ -233,6 +244,17 @@ export const RIBBON: RibbonTab[] = [
         ],
       },
       {
+        title: 'Cables/Jumpers/PLC I/O',
+        buttons: [
+          B('Cable\nMarker', 'wiremulti', 'AECABLE', 'large', 'Cable Marker: assign wires to a cable with conductor numbers / colours (AECABLE)'),
+          B('Cable\nSchedule', 'report', 'AECABLESCHEDULE', 'small', 'Cable schedule report (AECABLESCHEDULE)'),
+          B('Jumper', 'loop', 'AEJUMPER', 'small', 'Jumper two terminals of a strip (AEJUMPER)'),
+          B('Delete\nJumper', 'erase', 'AEJUMPERDEL', 'small', 'Remove the jumpers of a terminal (AEJUMPERDEL)'),
+          B('PLC I/O\nImport', 'plc', 'AEPLCIO', 'small', 'PLC I/O Import: insert PLC modules from a CSV / TSV spreadsheet (AEPLCIO)'),
+          B('PLC I/O\nExport', 'saveas', 'AEPLCIOEXPORT', 'small', 'Export the PLC I/O points of the drawing to CSV (AEPLCIOEXPORT)'),
+        ],
+      },
+      {
         title: 'Other Tools',
         buttons: [
           B('Cross\nReference', 'swap', 'AEXREF'),
@@ -257,6 +279,18 @@ export const RIBBON: RibbonTab[] = [
       {
         title: 'Terminal Footprints',
         buttons: [B('Terminal\nStrip', 'strip', 'AETERMSTRIP'), B('Terminal', 'terminal', 'AECOMPONENT HT0001', 'small'), B('Editor', 'edit', 'AETERMEDIT', 'small')],
+      },
+      {
+        title: 'Panel Layout',
+        buttons: [
+          B('Enclosure', 'enclosure', 'AEPANEL', 'large', 'Enclosure outline with mounting plate and door swing (AEPANEL)'),
+          B('DIN Rail', 'dinrail', 'AEDINRAIL', 'small', 'DIN rail (TS35 / TS32 / TS15) (AEDINRAIL)'),
+          B('Wire Duct', 'wireduct', 'AEWIREDUCT', 'small', 'Wire duct run with its cover lines (AEWIREDUCT)'),
+          B('Plate Grid', 'grid', 'AEPANELGRID', 'small', 'Mounting plate with a layout grid (AEPANELGRID)'),
+          B('Align\nFootprints', 'align', 'AEFOOTPRINTALIGN', 'small', 'Align selected footprints on a DIN rail (AEFOOTPRINTALIGN)'),
+          B('Terminal\nStrip FP', 'strip', 'AETERMFOOTPRINT', 'small', 'Terminal strip footprint numbered from the terminal strip table (AETERMFOOTPRINT)'),
+          B('Panel\nHardware', 'report', 'AEPANELHW', 'small', 'List DIN rail, duct, enclosure and plate hardware with total lengths (AEPANELHW)'),
+        ],
       },
       { title: 'Other Tools', buttons: [B('Panel\nReports', 'report', 'AEREPORT panel'), B('Terminal\nReport', 'terminal', 'AEREPORT terminals', 'small'), B('Strip\nReport', 'strip', 'AEREPORT strip', 'small'), B('Audit', 'audit', 'AEAUDIT', 'small')] },
     ],
