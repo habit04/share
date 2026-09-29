@@ -159,7 +159,7 @@ describe('DXF round trip', () => {
     d.addEntities([{ id: 'i', layer: '0', color: 'ByLayer', type: 'insert', block: 'FLAGS', position: { x: 1, y: 1 }, scale: 1, rotation: 0, attributes: { PLAIN: 'p', HID: 'h', VER: 'v', PRE: 's' } }]);
     const text = writeDxf(d.snapshot);
     const back = readDxf(text);
-    const attrs = back.blocks.FLAGS!.attributes as ReadonlyArray<Record<string, unknown>>;
+    const attrs = back.blocks.FLAGS!.attributes as unknown as ReadonlyArray<Record<string, unknown>>;
     const flags = (tag: string) => {
       const a = attrs.find((x) => x.tag === tag)!;
       return ['invisible', 'constant', 'verify', 'preset'].filter((k) => a[k] === true);
@@ -181,7 +181,7 @@ describe('DXF round trip', () => {
     const ins = back.entities.find((e) => e.type === 'insert');
     expect(ins?.type === 'insert' && ins.attributes).toEqual({ PLAIN: 'p', HID: 'h', VER: 'v', PRE: 's' });
     // Written again, the flags stay.
-    const twice = readDxf(writeDxf(back)).blocks.FLAGS!.attributes as ReadonlyArray<Record<string, unknown>>;
+    const twice = readDxf(writeDxf(back)).blocks.FLAGS!.attributes as unknown as ReadonlyArray<Record<string, unknown>>;
     expect(twice.map((a) => [a.tag, !!a.constant, !!a.verify, !!a.preset])).toEqual([
       ['PLAIN', false, false, false],
       ['HID', false, false, false],
