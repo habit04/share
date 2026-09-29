@@ -44,6 +44,8 @@ export const RIBBON: RibbonTab[] = [
           B('Rectangle', 'rectangle', 'RECTANG', 'small'),
           B('Text', 'text', 'TEXT', 'small'),
           B('Distance', 'dist', 'DIST', 'small'),
+          B('Spline', 'arc', 'SPLINE', 'small', 'Spline through fit points (SPLINE)'),
+          B('Hatch', 'grid', 'HATCH', 'small', 'Hatch an area: pick an internal point or select closed objects (HATCH)'),
         ],
       },
       {
@@ -122,7 +124,18 @@ export const RIBBON: RibbonTab[] = [
     panels: [
       {
         title: 'Text',
-        buttons: [B('Multiline\nText', 'mtext', 'MTEXT'), B('Single Line', 'text', 'TEXT', 'small'), B('Lineweight', 'lw', 'LWEIGHT', 'small'), B('Linetype', 'linetype', 'LINETYPE', 'small')],
+        buttons: [
+          B('Multiline\nText', 'mtext', 'MTEXT'),
+          B('Single Line', 'text', 'TEXT', 'small'),
+          B('Lineweight', 'lw', 'LWEIGHT', 'small'),
+          B('Linetype', 'linetype', 'LINETYPE', 'small'),
+          B('Multileader', 'wireleader', 'MLEADER', 'small', 'Multileader: arrowhead, landing and text (MLEADER)'),
+          B('Leader', 'wireleader', 'LEADER', 'small', 'Leader with annotation text (LEADER)'),
+          B('Table', 'report', 'TABLE', 'small', 'Insert a table (TABLE)'),
+          B('Edit Cell', 'edit', 'TABLEEDIT', 'small', 'Edit the text of a table cell (TABLEEDIT)'),
+          B('Field', 'text', 'FIELD', 'small', 'Insert a field: date, file name, drawing properties (FIELD)'),
+          B('Update\nFields', 'retag', 'UPDATEFIELD', 'small', 'Update fields in the selected objects (UPDATEFIELD)'),
+        ],
       },
       {
         title: 'Dimensions',
@@ -138,7 +151,7 @@ export const RIBBON: RibbonTab[] = [
       },
       {
         title: 'Markup',
-        buttons: [B('Distance', 'dist', 'DIST', 'small'), B('Area', 'area', 'AREA', 'small'), B('List', 'props', 'LIST', 'small')],
+        buttons: [B('Distance', 'dist', 'DIST', 'small'), B('Area', 'area', 'AREA', 'small'), B('List', 'props', 'LIST', 'small'), B('Hatch', 'grid', 'HATCH', 'small'), B('Edit Hatch', 'edit', 'HATCHEDIT', 'small', 'Change hatch pattern, scale or angle (HATCHEDIT)')],
       },
     ],
   },

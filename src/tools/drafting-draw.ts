@@ -1,11 +1,12 @@
 /**
  * AutoCAD drawing commands beyond the basic set: PLINE (Arc/Width/Length/Close),
- * ELLIPSE, POINT, XLINE, RAY, DONUT, POLYGON, MTEXT.
+ * ELLIPSE, POINT, XLINE, RAY, DONUT, POLYGON, MTEXT, SPLINE.
  */
 import type { Point } from '../core/geometry';
 import * as g from '../core/geometry';
 import type { Entity, PolylineEntity, EllipseEntity, MTextEntity, MTextAttachment } from '../core/entities';
-import { newId, bulgeArc, bulgeFromSweep } from '../core/entities';
+import { newId, bulgeArc, bulgeFromSweep, splineThroughPoints, splineCurve } from '../core/entities';
+import { clampedUniformKnots } from '../core/spline';
 import { mtextExtents } from '../core/mtext';
 import { textWidth } from '../core/entities';
 import { pickEntity } from '../core/selection';
@@ -24,6 +25,7 @@ export const drawDefaults = {
   polygonSides: 4,
   textHeight: 0.125,
   mtextJustify: 1 as MTextAttachment,
+  splineMethod: 'FIT' as 'FIT' | 'CV',
 };
 
 // ------------------------------------------------------------------ PLINE
@@ -731,3 +733,115 @@ export function mtextTool(): Tool {
   });
 }
 
+// ------------------------------------------------------------------ SPLINE
+
+/**
+ * SPLINE: fit-point method (the curve passes through the points; Close joins the ends with a
+ * matching tangent) or control-vertex method (CV: clamped, degree 3 by default).
+ */
+export function splineTool(): Tool {
+  return scriptTool('SPLINE', function* (ctx) {
+    let method: 'FIT' | 'CV' = drawDefaults.splineMethod;
+    let degree = 3;
+    ctx.log(`Current settings: Method=${method === 'FIT' ? 'Fit' : 'CV'}   Knots=Chord`);
+    let first: Point | null = null;
+    for (;;) {
+      const kws = method === 'FIT' ? ['Method', 'Knots', 'Object'] : ['Method', 'Degree', 'Object'];
+      const r = yield* pointOrKeyword(`Specify first point or [${kws.join('/')}]:`, kws);
+      if (!r) return;
+      if ('point' in r) {
+        first = r.point;
+        break;
+      }
+      if ('text' in r) {
+        ctx.log(`Invalid option keyword: ${r.text}`);
+        continue;
+      }
+      if (r.keyword === 'METHOD') {
+        const m = yield* keyword(ctx, `Enter spline creation method [Fit/CV] <${method === 'FIT' ? 'Fit' : 'CV'}>:`, ['Fit', 'CV'], method === 'FIT' ? 'Fit' : 'CV');
+        if (m === 'FIT' || m === 'CV') method = m;
+        drawDefaults.splineMethod = method;
+        ctx.log(`Current settings: Method=${method === 'FIT' ? 'Fit' : 'CV'}   Knots=Chord`);
+      } else if (r.keyword === 'DEGREE') {
+        const d = yield* number(ctx, `Enter degree of spline <${degree}>:`, degree, { from: null, integer: true, min: 1 });
+        if (d && 'value' in d) degree = Math.min(10, d.value);
+      } else if (r.keyword === 'KNOTS') {
+        yield* keyword(ctx, 'Enter knot parameterization [Chord/Square root/Uniform] <Chord>:', ['Chord', 'Square root', 'Uniform'], 'Chord');
+        ctx.log('Chord parameterization is used.');
+      } else ctx.log('Converting polylines to splines is not supported; draw the spline through points.');
+    }
+    const pts: Point[] = [first];
+    let startTangent: Point | undefined;
+    let endTangent: Point | undefined;
+    const build = (list: readonly Point[], closed: boolean): Entity | null => {
+      if (list.length < 2) return null;
+      if (method === 'CV') {
+        const cps = closed ? [...list, list[0]!] : [...list];
+        const p = Math.min(degree, cps.length - 1);
+        return { ...base(ctx), type: 'spline', degree: p, knots: clampedUniformKnots(cps.length, p), controlPoints: cps, closed };
+      }
+      const s = splineThroughPoints(base(ctx), list, closed);
+      if (!s) return null;
+      if (closed || (!startTangent && !endTangent)) return s;
+      const withTan = { ...s, startTangent: startTangent ?? g.sub(list[1]!, list[0]!), endTangent: endTangent ?? g.sub(list[list.length - 1]!, list[list.length - 2]!) };
+      const c = splineCurve({ ...withTan, knots: [], controlPoints: [] });
+      return c ? { ...withTan, degree: c.degree, knots: c.knots, controlPoints: c.controlPoints } : s;
+    };
+    const commit = (closed: boolean) => {
+      const e = build(pts, closed);
+      if (e) ctx.doc.addEntities([e]);
+    };
+    for (;;) {
+      const kws: string[] = [];
+      if (method === 'FIT') kws.push(pts.length === 1 ? 'start Tangency' : 'end Tangency', 'toLerance');
+      if (pts.length > 1) kws.push('Undo');
+      if (pts.length > 2) kws.push('Close');
+      const last = pts[pts.length - 1]!;
+      const r = yield* pointOrKeyword(`Enter next point or [${kws.join('/')}]:`, kws, {
+        preview: (c) => {
+          const e = build([...pts, c], false);
+          return e ? [e] : [];
+        },
+        trackFrom: last,
+      });
+      if (!r) {
+        commit(false);
+        return;
+      }
+      if ('point' in r) {
+        if (!g.eq(last, r.point)) pts.push(r.point);
+        continue;
+      }
+      if ('text' in r) {
+        ctx.log(`Invalid option keyword: ${r.text}`);
+        continue;
+      }
+      switch (r.keyword) {
+        case 'UNDO':
+          if (pts.length > 1) pts.pop();
+          break;
+        case 'CLOSE':
+          commit(true);
+          return;
+        case 'START TANGENCY': {
+          const t = yield* point(ctx, 'Specify start tangent:', { trackFrom: pts[0]! });
+          if (t && !g.eq(t, pts[0]!)) startTangent = g.sub(t, pts[0]!);
+          break;
+        }
+        case 'END TANGENCY': {
+          const t = yield* point(ctx, 'Specify end tangent:', { trackFrom: last });
+          if (t && !g.eq(t, last)) {
+            endTangent = g.sub(t, last);
+            commit(false);
+            return;
+          }
+          break;
+        }
+        case 'TOLERANCE':
+          yield* number(ctx, 'Specify fit tolerance <0.0000>:', 0, { allowZero: true, from: null });
+          ctx.log('Fit tolerance 0: the spline passes through every fit point.');
+          break;
+      }
+    }
+  });
+}

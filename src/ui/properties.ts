@@ -1,5 +1,7 @@
 import type { Editor } from '../app/editor';
 import type { Entity } from '../core/entities';
+import { splinePoints, imageLabel } from '../core/entities';
+import { PATTERN_NAMES } from '../core/hatch';
 import { aciToCss, ACI_NAMES } from '../render/palette';
 import { icon } from './icons';
 
@@ -199,8 +201,73 @@ export class PropertiesPalette {
             b.appendChild(this.row(a.tag, this.input(e.attributes[a.tag] ?? a.default, (v) => patch({ attributes: { ...e.attributes, [a.tag]: v } }))));
           }
         }
+        if (block?.xref) b.appendChild(this.row('Xref path', block.xref.path || '(unknown)'));
         break;
       }
+      case 'mtext':
+        b.appendChild(this.row('Contents', this.input(e.text.replace(/\n/g, '\\P'), (v) => patch({ text: v.replace(/\\P/g, '\n') }))));
+        b.appendChild(this.row('Height', numInput(e.height, (n) => n > 0 && patch({ height: n }))));
+        b.appendChild(this.row('Width', numInput(e.width, (n) => n >= 0 && patch({ width: n }))));
+        if (e.field) b.appendChild(this.row('Field', e.field.value === e.text ? e.field.code : '(text edited)'));
+        break;
+      case 'spline': {
+        b.appendChild(this.row('Degree', String(e.degree)));
+        b.appendChild(this.row('Control vertices', String(e.controlPoints.length)));
+        b.appendChild(this.row('Fit points', String(e.fitPoints?.length ?? 0)));
+        b.appendChild(this.row('Closed', e.closed ? 'Yes' : 'No'));
+        const pts = splinePoints(e);
+        let len = 0;
+        for (let i = 1; i < pts.length; i += 1) len += Math.hypot(pts[i]!.x - pts[i - 1]!.x, pts[i]!.y - pts[i - 1]!.y);
+        b.appendChild(this.row('Length', num(len)));
+        break;
+      }
+      case 'hatch': {
+        b.appendChild(this.section('Pattern'));
+        const names = PATTERN_NAMES.includes(e.pattern) ? PATTERN_NAMES : [e.pattern, ...PATTERN_NAMES];
+        b.appendChild(
+          this.row(
+            'Pattern name',
+            this.select(
+              names.map((n): [string, string] => [n, n]),
+              e.solid ? 'SOLID' : e.pattern,
+              (v) => {
+                const { patternLines: _custom, ...rest } = e;
+                doc.replaceEntities([{ ...rest, pattern: v, solid: v === 'SOLID', patternType: 1 }]);
+              },
+            ),
+          ),
+        );
+        if (!e.solid) {
+          b.appendChild(this.row('Angle', numInput((e.angle * 180) / Math.PI, (n) => patch({ angle: (n * Math.PI) / 180 }))));
+          b.appendChild(this.row('Scale', numInput(e.scale, (n) => n > 0 && patch({ scale: n }))));
+        }
+        b.appendChild(this.row('Loops', String(e.loops.length)));
+        b.appendChild(this.row('Associative', e.associative ? 'Yes' : 'No'));
+        break;
+      }
+      case 'leader':
+        b.appendChild(this.row('Contents', this.input((e.text ?? '').replace(/\n/g, '\\P'), (v) => patch({ text: v.replace(/\\P/g, '\n'), raw: undefined }))));
+        b.appendChild(this.row('Text height', numInput(e.textHeight, (n) => n > 0 && patch({ textHeight: n }))));
+        b.appendChild(this.row('Arrow size', numInput(e.arrowSize, (n) => n >= 0 && patch({ arrowSize: n }))));
+        b.appendChild(this.row('Arrowhead', this.select([['1', 'Closed filled'], ['0', 'None']], e.arrow ? '1' : '0', (v) => patch({ arrow: v === '1' }))));
+        b.appendChild(this.row('Vertices', String(e.vertices.length)));
+        break;
+      case 'table':
+        b.appendChild(this.row('Rows', String(e.rowHeights.length)));
+        b.appendChild(this.row('Columns', String(e.columnWidths.length)));
+        b.appendChild(this.row('Width', num(e.columnWidths.reduce((a, c) => a + c, 0))));
+        b.appendChild(this.row('Height', num(e.rowHeights.reduce((a, c) => a + c, 0))));
+        b.appendChild(this.row('X', numInput(e.position.x, (n) => patch({ position: { x: n, y: e.position.y } }))));
+        b.appendChild(this.row('Y', numInput(e.position.y, (n) => patch({ position: { x: e.position.x, y: n } }))));
+        break;
+      case 'image':
+        b.appendChild(this.row('Name', imageLabel(e)));
+        b.appendChild(this.row('Path', e.path || '(unknown)'));
+        b.appendChild(this.row('Size (px)', `${e.size.x} x ${e.size.y}`));
+        b.appendChild(this.row('Width', num(Math.hypot(e.u.x, e.u.y) * e.size.x)));
+        b.appendChild(this.row('Height', num(Math.hypot(e.v.x, e.v.y) * e.size.y)));
+        b.appendChild(this.row('Clipped', e.clipOn ? 'Yes' : 'No'));
+        break;
     }
   }
 }
@@ -219,6 +286,16 @@ function kindName(e: Entity): string {
       return 'Text';
     case 'insert':
       return 'Block Reference';
+    case 'mtext':
+      return 'MText';
+    case 'hatch':
+      return 'Hatch';
+    case 'leader':
+      return e.kind === 'mleader' ? 'Multileader' : 'Leader';
+    case 'table':
+      return 'Table';
+    case 'image':
+      return 'Raster Image';
     default:
       return e.type.charAt(0).toUpperCase() + e.type.slice(1);
   }
