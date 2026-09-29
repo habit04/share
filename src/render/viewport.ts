@@ -426,7 +426,9 @@ export class Viewport {
     const box = this.settings.pickBox;
     ctx.save();
     ctx.lineWidth = hairline(this.dpr);
-    ctx.strokeStyle = this.settings.crosshairColor ?? '#ffffff';
+    const cross = this.settings.crosshairColor ?? '#ffffff';
+    // On the white layout sheet a white crosshair would vanish: draw it dark (Track E).
+    ctx.strokeStyle = this.layoutPainter && /^#f{3}(f{3})?$/i.test(cross) ? '#1e1e1e' : cross;
     if (mode !== 'select') {
       // crosshair; in a point prompt the lines meet at the cursor (no pickbox gap)
       const gap = mode === 'idle' ? box : 0;

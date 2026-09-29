@@ -30,6 +30,7 @@ import {
 import { Viewport } from '../src/render/viewport';
 import { LayoutController, initializeLayout } from '../src/tools/layouts';
 import type { Editor } from '../src/app/editor';
+import { referencedBlocks, unusedLayers } from '../src/tools/blocks';
 
 const line = (id: string, x = 0): Entity => ({ id, layer: '0', color: 'ByLayer', type: 'line', a: { x, y: 0 }, b: { x: x + 10, y: 5 } });
 const text = (id: string, h = 0.125): TextEntity => ({ id, layer: '0', color: 'ByLayer', type: 'text', position: { x: 1, y: 1 }, text: 'NOTE', height: h, rotation: 0, align: 'left' });
@@ -179,6 +180,21 @@ describe('paper-space editing through the Drawing', () => {
     expect(v.view.center).toEqual({ x: 5, y: 2.5 });
     expect(v.layer).toBe('VIEWPORTS');
     expect(s.layers.find((x) => x.name === 'VIEWPORTS')?.plot).toBe(false);
+  });
+});
+
+describe('layouts in drawing-wide bookkeeping', () => {
+  it('blocks and layers used only in paper space count as used (PURGE, save without unused library blocks)', () => {
+    const tb: InsertEntity = { id: 'tb', layer: 'BORDER', color: 'ByLayer', type: 'insert', block: 'WD_TITLEBLOCK', position: { x: 0, y: 0 }, rotation: 0, scale: 1, attributes: {} };
+    const st = withLayoutState();
+    const s: DrawingState = {
+      ...st,
+      layers: [...st.layers, { name: 'BORDER', color: 7, visible: true, locked: false, lineWeight: 0.5 }, { name: 'VIEWPORTS', color: 8, visible: true, locked: false, lineWeight: 0.25 }],
+      layouts: st.layouts!.map((l) => ({ ...l, entities: [...l.entities, tb] })),
+    };
+    expect(referencedBlocks(s).has('WD_TITLEBLOCK')).toBe(true);
+    expect(unusedLayers(s)).not.toContain('BORDER');
+    expect(unusedLayers(s)).not.toContain('VIEWPORTS');
   });
 });
 

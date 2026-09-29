@@ -866,7 +866,9 @@ export function setAnnotationScale(ed: Editor, name: string): boolean {
   }
   const label = /:/.test(name) ? name.replace(/\s+/g, '') : formatScale(k);
   ed.doc.setHeader({ cannoscale: label });
+  // Keep the (older) annotationScale setting in step with the drawing's CANNOSCALE.
   ed.settings = { ...ed.settings, annotationScale: label };
+  ed.persistSettings();
   const c = layoutController(ed);
   const act = activeViewport(ed.doc.snapshot);
   if (c.mode === 'viewport' && act && !act.viewport.view.locked && Math.abs(act.viewport.view.scale - k) > 1e-12) c.setViewportScale([act.viewport.id], k);

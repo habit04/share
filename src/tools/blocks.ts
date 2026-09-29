@@ -29,6 +29,8 @@ export function referencedBlocks(state: DrawingState): Set<string> {
     }
   };
   visit(state.entities);
+  // Paper-space entities of layouts (title blocks) count too (Track E).
+  for (const l of state.layouts ?? []) visit(l.entities);
   return used;
 }
 
@@ -37,6 +39,11 @@ export function unusedLayers(state: DrawingState): string[] {
   const used = new Set<string>(['0', state.currentLayer]);
   for (const e of state.entities) used.add(e.layer);
   for (const b of Object.values(state.blocks)) for (const e of b.entities) used.add(e.layer);
+  // Layout entities and viewport frames (Track E).
+  for (const l of state.layouts ?? []) {
+    for (const e of l.entities) used.add(e.layer);
+    for (const v of l.viewports) used.add(v.layer);
+  }
   return state.layers.map((l) => l.name).filter((n) => !used.has(n));
 }
 
