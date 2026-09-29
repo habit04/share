@@ -17,8 +17,9 @@ import { formatLength, LUNIT_NAMES, INSUNIT_NAMES, parseDistance, type LinearUni
 import type { Tool, ToolContext } from '../tools/types';
 import { scriptTool, point, pointOrKeyword, text, number, keyword, select, matchKeyword, dflt, type Step } from '../tools/script';
 import { dimLinearTool, dimAlignedTool, dimRadiusTool, dimDiameterTool, dimAngularTool } from '../tools/dimension';
-import { plineTool, ellipseTool, pointTool, xlineTool, rayTool, donutTool, polygonTool, mtextTool } from '../tools/drafting-draw';
-import { filletTool, chamferTool, arrayTool, arrayRectTool, arrayPolarTool, stretchTool, breakTool, joinTool, lengthenTool, alignTool, matchPropTool } from '../tools/drafting-modify';
+import { plineTool, ellipseTool, pointTool, xlineTool, rayTool, donutTool, polygonTool, mtextTool, splineTool } from '../tools/drafting-draw';
+import { filletTool, chamferTool, arrayTool, arrayRectTool, arrayPolarTool, stretchTool, breakTool, joinTool, lengthenTool, alignTool, matchPropTool, DraftingExplodeTool } from '../tools/drafting-modify';
+import { hatchTool, hatchEditTool, leaderTool, mleaderTool, tableTool, tableEditTool, fieldTool, updateFieldTool, updateFields, fieldContextFor } from '../tools/drafting-annot';
 import { blockTool, insertTool, referencedBlocks, unusedLayers, unusedLinetypes } from '../tools/blocks';
 import { distTool, idTool, areaTool, listTool } from '../tools/inquiry';
 import { selectTool, qselectTool, selectionKeyword, selectionHistory } from '../tools/select';
@@ -805,6 +806,17 @@ export function registerDraftingCommands(editor: Editor): void {
   reg('DONUT', ['DO', 'DOUGHNUT'], 'Filled ring', (ed) => ed.startTool(donutTool()));
   reg('POLYGON', ['POL'], 'Regular polygon [Edge / Inscribed / Circumscribed]', (ed) => ed.startTool(polygonTool()));
   reg('MTEXT', ['MT', '-MTEXT'], 'Multi-line text with word wrap', (ed) => ed.startTool(mtextTool()));
+  reg('SPLINE', ['SPL'], 'Spline through fit points or control vertices [Method/Close/Undo]', (ed) => ed.startTool(splineTool()));
+  reg('HATCH', ['H', 'BH', 'BHATCH', '-HATCH'], 'Hatch an area [internal point/Properties/Select objects/draW boundary/Origin]', (ed) => ed.startTool(hatchTool()));
+  reg('HATCHEDIT', ['HE', '-HATCHEDIT'], 'Change a hatch pattern, scale, angle or origin', (ed) => ed.startTool(hatchEditTool()));
+  reg('LEADER', ['LEAD'], 'Leader line with arrowhead and annotation text [Annotation/Format/Undo]', (ed) => ed.startTool(leaderTool()));
+  reg('QLEADER', ['LE'], 'Quick leader with annotation text', (ed) => ed.startTool(leaderTool('QLEADER')));
+  reg('MLEADER', ['MLD'], 'Multileader: arrowhead, landing and text', (ed) => ed.startTool(mleaderTool()));
+  reg('TABLE', ['TB', '-TABLE'], 'Insert a table [columns, data rows, Width/Height]', (ed) => ed.startTool(tableTool()));
+  reg('TABLEEDIT', [], 'Edit the text of a table cell', (ed) => ed.startTool(tableEditTool()));
+  reg('FIELD', [], 'Insert text with a field (Date, Filename, Author ...)', (ed) => ed.startTool(fieldTool()));
+  reg('UPDATEFIELD', [], 'Update the fields in the selected objects', (ed) => ed.startTool(updateFieldTool()));
+  reg('EXPLODE', ['X'], 'Explode blocks, polylines, splines, hatches, leaders and tables', (ed) => ed.startTool(new DraftingExplodeTool()));
   sysvar(reg, 'PDMODE', 'Point display mode (0-4, +32 circle, +64 square)', (ed) => ed.doc.header.pdmode, (ed, v) => ed.doc.setHeader({ pdmode: Math.max(0, Math.round(v)) }), { integer: true, allowZero: true });
   sysvar(reg, 'PDSIZE', 'Point display size (0 = 5% of view, <0 = percent of view)', (ed) => ed.doc.header.pdsize, (ed, v) => ed.doc.setHeader({ pdsize: v }), { allowZero: true, allowNegative: true });
 
@@ -931,6 +943,20 @@ export function registerDraftingCommands(editor: Editor): void {
     },
     { integer: true, allowZero: true },
   );
+
+  // FIELDEVAL: fields are evaluated when a drawing is opened (the file name is known then).
+  // Only right after a load (no history yet) and without adding an undo step.
+  editor.on('file', () => {
+    const doc = editor.doc;
+    if (!doc.filePath || doc.canUndo() || doc.canRedo()) return;
+    const { changed } = updateFields(doc.entities, fieldContextFor(doc));
+    if (!changed.length) return;
+    const map = new Map(changed.map((e) => [e.id, e]));
+    const dirty = doc.dirty;
+    doc.load({ ...doc.snapshot, entities: doc.entities.map((e) => map.get(e.id) ?? e) }, doc.filePath);
+    doc.dirty = dirty;
+    editor.render();
+  });
 
   // Selection keywords during any "Select objects:" prompt, and the Previous set.
   editor.selectionKeyword = (t: string, ids: Set<string>) => selectionKeyword(t, editor, ids);

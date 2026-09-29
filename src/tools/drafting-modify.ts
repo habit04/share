@@ -1,15 +1,16 @@
 /**
  * Modify commands: FILLET, CHAMFER, ARRAY (rectangular/polar), STRETCH, BREAK,
- * JOIN, LENGTHEN, ALIGN, MATCHPROP.
+ * JOIN, LENGTHEN, ALIGN, MATCHPROP, and EXPLODE for the drafting entity types.
  */
 import type { Point, Bounds } from '../core/geometry';
 import * as g from '../core/geometry';
 import type { Entity, LineEntity, ArcEntity, PolylineEntity } from '../core/entities';
-import { newId, translateEntity, rotateEntity, scaleEntityBy, arcEndpoints, bulgeFromSweep, polylineLength, entityBounds, polylineSegments } from '../core/entities';
+import { newId, translateEntity, rotateEntity, scaleEntityBy, arcEndpoints, bulgeFromSweep, polylineLength, entityBounds, polylineSegments, splineThroughPoints, explodeCompound } from '../core/entities';
 import { selectByBox } from '../core/selection';
 import type { Tool, ToolContext } from './types';
 import { scriptTool, point, pointOrKeyword, number, keyword, select, dflt, type Step } from './script';
 import { pickAt } from './dimension';
+import { ExplodeTool } from './edit';
 
 export const modifyDefaults = {
   filletRadius: 0.5,
@@ -412,6 +413,19 @@ export function stretchEntity(e: Entity, box: Bounds, d: Point): Entity {
         center: e.center ? mv(e.center) : e.center,
         textPosition: e.textPosition ? mv(e.textPosition) : e.textPosition,
       };
+    case 'spline':
+      if (e.fitPoints?.length) {
+        const fit = e.fitPoints.map(mv);
+        return splineThroughPoints(e, fit, e.closed) ?? { ...e, fitPoints: fit };
+      }
+      return { ...e, controlPoints: e.controlPoints.map(mv) };
+    case 'hatch':
+      return { ...e, loops: e.loops.map((l) => ({ ...l, points: l.points.map(mv) })) };
+    case 'leader':
+      return { ...e, vertices: e.vertices.map(mv), ...(e.textPosition ? { textPosition: mv(e.textPosition) } : {}) };
+    case 'table':
+    case 'image':
+      return inside(e.position) ? translateEntity(e, d) : e;
   }
 }
 
@@ -870,3 +884,46 @@ export function matchPropTool(): Tool {
   });
 }
 
+// ------------------------------------------------------------------ EXPLODE (drafting entities)
+
+/**
+ * EXPLODE with the drafting entity types: splines become polylines, hatches their pattern lines
+ * (solid fills their boundary fills), leaders and tables their lines and text. External
+ * references cannot be exploded. Everything else goes through the basic EXPLODE.
+ */
+export class DraftingExplodeTool extends ExplodeTool {
+  protected override begin(ctx: ToolContext): void {
+    const targets = this.entities(ctx);
+    const out: Entity[] = [];
+    const removed: string[] = [];
+    const handled = new Set<string>();
+    let xrefs = 0;
+    for (const e of targets) {
+      if (e.type === 'insert' && ctx.doc.lookupBlock(e.block)?.xref) {
+        xrefs += 1;
+        handled.add(e.id);
+        continue;
+      }
+      const parts = explodeCompound(e);
+      if (!parts) continue;
+      out.push(...parts);
+      removed.push(e.id);
+      handled.add(e.id);
+    }
+    if (xrefs) ctx.log(`${xrefs} was an external reference and could not be exploded.`);
+    if (removed.length) {
+      ctx.doc.replaceWith(removed, out);
+      ctx.log(`${removed.length} object(s) exploded.`);
+    }
+    const rest = this.ids.filter((id) => !handled.has(id));
+    if (rest.length === 0) {
+      if (!removed.length && !xrefs) ctx.log('Nothing to explode.');
+      ctx.selection = new Set(out.map((x) => x.id));
+      ctx.finish();
+      return;
+    }
+    this.ids = rest;
+    ctx.selection = new Set(rest);
+    super.begin(ctx);
+  }
+}

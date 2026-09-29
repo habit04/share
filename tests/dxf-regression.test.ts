@@ -3,7 +3,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { readDxf, writeDxf } from '../src/io/dxf';
 import { convertDwg, convertHatch } from '../src/io/dwg';
-import { entityBounds, insertTransform, type Entity, type InsertEntity, type PolylineEntity } from '../src/core/entities';
+import { entityBounds, insertTransform, type Entity, type InsertEntity, type PolylineEntity, type HatchEntity, type TableEntity } from '../src/core/entities';
 import type { DrawingState } from '../src/core/document';
 // @ts-expect-error plain JS helper shared with Electron main / CLI
 import { readDwgPayload } from '../scripts/dwg-reader.mjs';
@@ -18,21 +18,20 @@ const roundTrip = (s: DrawingState) => readDxf(writeDxf(s));
 
 describe('ACAD_TABLE (as AutoCAD emits it, with its anonymous *T block)', () => {
   const state = readDxf(fixture('acad-table.dxf'));
+  const tables = (s: DrawingState) => s.entities.filter((e): e is TableEntity => e.type === 'table');
 
-  it('imports the table as an insert of *T1 at the table insertion point', () => {
-    const tables = inserts(state);
-    expect(tables).toHaveLength(1);
-    const t = tables[0]!;
-    expect(t).toMatchObject({ block: '*T1', layer: 'TABLE', position: { x: 5, y: 8 }, rotation: 0, scale: 1 });
-    expect(state.blocks['*T1']).toBeDefined();
-    // 4 row lines + 3 column lines + 6 cell texts
-    const kinds = state.blocks['*T1']!.entities.map((e) => e.type);
-    expect(kinds.filter((k) => k === 'line')).toHaveLength(7);
-    expect(kinds.filter((k) => k === 'mtext')).toHaveLength(6);
+  it('imports the table as a native table at the table insertion point (cell data present)', () => {
+    expect(tables(state)).toHaveLength(1);
+    const t = tables(state)[0]!;
+    expect(t).toMatchObject({ layer: 'TABLE', position: { x: 5, y: 8 }, rotation: 0, rowHeights: [0.5, 0.5, 0.5], columnWidths: [2, 2] });
+    expect(t.cells.length).toBeGreaterThan(0);
+    // the helper *T block is not kept as a drawing block
+    expect(state.blocks['*T1']).toBeUndefined();
+    expect(inserts(state)).toHaveLength(0);
   });
 
   it('draws the grid down and to the right of the insertion point, inside the sheet border', () => {
-    const t = inserts(state)[0]!;
+    const t = tables(state)[0]!;
     const b = entityBounds(t, lookupOf(state))!;
     // 2 columns x 2 in, 3 rows x 0.5 in, top-left corner at (5, 8)
     expect(b.min.x).toBeCloseTo(5, 6);
@@ -45,24 +44,23 @@ describe('ACAD_TABLE (as AutoCAD emits it, with its anonymous *T block)', () => 
     expect(b.max.y).toBeLessThan(11);
   });
 
-  it('keeps the table through Save (DXF) and re-open, with the anonymous block flag', () => {
+  it('keeps the table through Save (DXF) and re-open, written as an anonymous block reference', () => {
     const text = writeDxf(state);
-    // BLOCK *T1 must be written with flag 1 (anonymous) or AutoCAD rejects the name.
+    // The table is written as an INSERT of an anonymous *U block (flag 1) that other readers can display.
     const lines = text.split(/\r\n/);
     let flags: number | null = null;
     for (let i = 0; i + 1 < lines.length; i += 2) {
       if (lines[i]!.trim() !== '0' || lines[i + 1] !== 'BLOCK') continue;
       const groups = new Map<string, string>();
       for (let j = i + 2; j + 1 < lines.length && lines[j]!.trim() !== '0'; j += 2) if (!groups.has(lines[j]!.trim())) groups.set(lines[j]!.trim(), lines[j + 1]!);
-      if (groups.get('2') === '*T1') flags = Number(groups.get('70'));
+      if (groups.get('2')?.startsWith('*U')) flags = Number(groups.get('70'));
     }
-    expect(flags, 'BLOCK *T1 with a flags group').not.toBeNull();
+    expect(flags, 'anonymous *U BLOCK with a flags group').not.toBeNull();
     expect(flags! & 1).toBe(1);
     const back = readDxf(text);
-    const t = inserts(back)[0]!;
-    expect(t).toMatchObject({ block: '*T1', position: { x: 5, y: 8 } });
-    expect(back.blocks['*T1']!.entities).toHaveLength(state.blocks['*T1']!.entities.length);
-    expect(entityBounds(t, lookupOf(back))).toEqual(entityBounds(inserts(state)[0]!, lookupOf(state)));
+    expect(tables(back)).toHaveLength(1);
+    expect(tables(back)[0]).toMatchObject({ position: { x: 5, y: 8 }, rowHeights: [0.5, 0.5, 0.5], columnWidths: [2, 2] });
+    expect(entityBounds(tables(back)[0]!, lookupOf(back))).toEqual(entityBounds(tables(state)[0]!, lookupOf(state)));
   });
 });
 
@@ -119,29 +117,28 @@ describe('HATCH', () => {
     expect(back.entities[0]).toMatchObject({ type: 'polyline', closed: true, filled: true });
   });
 
-  // KNOWN BUG (reported, not fixed here): writeDxf only writes a filled polyline as a fill when it has
-  // 3 or 4 vertices (SOLID); any other filled polyline - e.g. a DWG solid hatch with 5+ boundary
-  // vertices - is written as a plain LWPOLYLINE, so the fill is lost on Save. `it.fails` turns red
-  // once the writer keeps the fill (e.g. by writing a SOLID HATCH): then make it a normal `it`.
-  it.fails('DWG path: a filled boundary with more than 4 vertices keeps its fill through Save as DXF', () => {
+  it('DWG path: a filled boundary with more than 4 vertices keeps its fill through Save as DXF (as a SOLID hatch)', () => {
     const [outer] = convertHatch(pentagon);
     const back = roundTrip({ entities: [outer!], layers: [], blocks: {}, currentLayer: '0' });
-    expect(back.entities[0]).toMatchObject({ type: 'polyline', filled: true });
+    expect(back.entities).toHaveLength(1);
+    expect(back.entities[0]).toMatchObject({ type: 'hatch', solid: true, pattern: 'SOLID' });
+    expect((back.entities[0] as HatchEntity).loops[0]!.points).toHaveLength(5);
   });
 
-  // KNOWN BUG (reported, not fixed here): readDxf has no HATCH case, so hatches in DXF files
-  // (the desktop app opens DXF with readDxf) are silently dropped - the fixture imports 0 entities.
-  it.fails('DXF path: readDxf imports HATCH entities (SOLID filled, ANSI31 outlined)', () => {
-    const s = readDxf(fixture('hatch.dxf'));
-    const polys = s.entities.filter((e): e is PolylineEntity => e.type === 'polyline');
-    expect(polys.filter((p) => p.filled)).toHaveLength(2);
-    expect(polys.length).toBeGreaterThanOrEqual(4);
-  });
-
-  it('DXF path today: the HATCH fixture parses without throwing (entities are dropped, see above)', () => {
+  it('DXF path: readDxf imports HATCH entities (SOLID filled, ANSI31 pattern with an arc edge)', () => {
     const s = readDxf(fixture('hatch.dxf'));
     expect(s.layers.map((l) => l.name)).toEqual(expect.arrayContaining(['FILL', 'PATTERN']));
-    expect(s.entities.filter((e) => e.type !== 'polyline')).toEqual([]);
+    const hatches = s.entities.filter((e): e is HatchEntity => e.type === 'hatch');
+    expect(hatches).toHaveLength(3);
+    expect(hatches.filter((h) => h.solid)).toHaveLength(2);
+    const island = hatches.find((h) => h.loops.length === 2)!;
+    expect(island.layer).toBe('FILL');
+    const ansi = hatches.find((h) => !h.solid)!;
+    expect(ansi).toMatchObject({ pattern: 'ANSI31', layer: 'PATTERN' });
+    expect(ansi.loops[0]!.bulges!.some((b) => Math.abs(b - 1) < 1e-9)).toBe(true);
+    // and they survive Save / re-open
+    const back = roundTrip(s);
+    expect(back.entities.filter((e) => e.type === 'hatch')).toHaveLength(3);
   });
 });
 

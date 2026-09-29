@@ -2,10 +2,15 @@ import type { Point, Bounds } from './geometry';
 import * as g from './geometry';
 import { strokeTextWidth } from '../render/hershey';
 import { dimensionGeometry, type DimensionEntity } from './dimension';
-import { mtextLayout, type MTextEntity } from './mtext';
+import { mtextLayoutFull, type MTextEntity, type MTextAttachment } from './mtext';
+import { interpolateFitPoints, isValidNurbs, nurbsPoints, type NurbsCurve } from './spline';
+import { findPattern, loopPolygon, patternSegments, pointInLoops, worldPatternLines, type HatchLoop, type WorldPatternLine } from './hatch';
+import { tableGeometry, type TableEntity } from './table';
 
 export type { DimensionEntity, DimStyle, DimKind } from './dimension';
 export type { MTextEntity, MTextAttachment } from './mtext';
+export type { TableEntity, TableCell } from './table';
+export type { HatchLoop, WorldPatternLine } from './hatch';
 
 /** AutoCAD Color Index-like palette (subset), 'ByLayer' means inherit. */
 export type ColorSpec = 'ByLayer' | number;
@@ -20,6 +25,16 @@ export interface EntityBase {
   readonly lineWeight?: number;
   /** Linetype scale for this entity (CELTSCALE, DXF 48). */
   readonly ltscale?: number;
+  /** True colour 0xRRGGBB (DXF 420); overrides `color` for display when set. */
+  readonly trueColor?: number;
+}
+
+/** A field expression behind a text value (%<\AcVar Date>% ...): `value` is what the code evaluated to. */
+export interface FieldLink {
+  /** Text (or DXF MTEXT content) with the field expressions. */
+  readonly code: string;
+  /** The evaluated text; the link is stale once the entity's text no longer equals it. */
+  readonly value: string;
 }
 
 export interface LineEntity extends EntityBase {
@@ -67,6 +82,14 @@ export interface TextEntity extends EntityBase {
   readonly height: number;
   readonly rotation: number;
   readonly align: 'left' | 'center' | 'right';
+  /** Relative X scale (DXF 41, MTEXT \W). */
+  readonly widthFactor?: number;
+  /** Oblique angle in radians (DXF 51, MTEXT \Q). */
+  readonly oblique?: number;
+  /** Bold (MTEXT \f...|b1): drawn with a heavier stroke. */
+  readonly bold?: boolean;
+  /** Field expression the text was evaluated from. */
+  readonly field?: FieldLink;
 }
 
 export interface InsertEntity extends EntityBase {
@@ -121,6 +144,93 @@ export interface RayEntity extends EntityBase {
   readonly direction: Point;
 }
 
+/** NURBS curve (SPLINE). Control data wins; fit points alone are interpolated. */
+export interface SplineEntity extends EntityBase {
+  readonly type: 'spline';
+  readonly degree: number;
+  readonly knots: readonly number[];
+  readonly controlPoints: readonly Point[];
+  /** Rational weights (omitted = all 1). */
+  readonly weights?: readonly number[];
+  /** Fit points (SPLINE command / DXF 11): the curve passes through them. */
+  readonly fitPoints?: readonly Point[];
+  readonly closed: boolean;
+  /** DXF flag 2. */
+  readonly periodic?: boolean;
+  readonly startTangent?: Point;
+  readonly endTangent?: Point;
+}
+
+/** Area fill (HATCH): boundary loops filled solid or with a line pattern. */
+export interface HatchEntity extends EntityBase {
+  readonly type: 'hatch';
+  /** Pattern name (SOLID, ANSI31, NET ...). */
+  readonly pattern: string;
+  readonly solid: boolean;
+  /** Pattern angle, radians. */
+  readonly angle: number;
+  readonly scale: number;
+  /** Pattern origin (the point pattern lines are laid out from). Default 0,0. */
+  readonly origin?: Point;
+  /** Closed boundary loops (polyline form, bulges for arc edges); even-odd filled. */
+  readonly loops: readonly HatchLoop[];
+  /** World-space line families for a pattern not in the built-in table (from the DXF definition). */
+  readonly patternLines?: readonly WorldPatternLine[];
+  readonly associative?: boolean;
+  /** 0 normal, 1 outer, 2 ignore (DXF 75). */
+  readonly style?: number;
+  /** 0 user defined, 1 predefined, 2 custom (DXF 76). */
+  readonly patternType?: number;
+  readonly double?: boolean;
+}
+
+/** LEADER / MLEADER: a leader line with arrowhead, optional landing and attached text. */
+export interface LeaderEntity extends EntityBase {
+  readonly type: 'leader';
+  /** Leader path; the first vertex is the arrowhead tip. */
+  readonly vertices: readonly Point[];
+  readonly arrow: boolean;
+  readonly arrowSize: number;
+  /** Landing (dogleg) vector drawn from the last vertex. */
+  readonly dogleg?: Point;
+  /** Splined leader path. */
+  readonly spline?: boolean;
+  /** Further leader lines of a multileader (each starts at its own arrowhead). */
+  readonly extraPaths?: readonly (readonly Point[])[];
+  /** Attached text (plain paragraphs), its formatted source and placement. */
+  readonly text?: string;
+  readonly raw?: string;
+  readonly textPosition?: Point;
+  readonly textHeight: number;
+  readonly textAttachment?: MTextAttachment;
+  readonly textWidth?: number;
+  readonly textRotation?: number;
+  /** Where it came from (LEADER + MTEXT or MULTILEADER); written back as LEADER + MTEXT either way. */
+  readonly kind?: 'leader' | 'mleader';
+}
+
+/** Raster image reference (IMAGE + IMAGEDEF). Drawn as a frame with the file name unless a loader supplies the bitmap. */
+export interface ImageEntity extends EntityBase {
+  readonly type: 'image';
+  /** IMAGEDEF file name as stored in the drawing. */
+  readonly path: string;
+  /** Lower-left corner. */
+  readonly position: Point;
+  /** World vectors of one pixel along the image X and Y axes. */
+  readonly u: Point;
+  readonly v: Point;
+  /** Size in pixels. */
+  readonly size: { readonly x: number; readonly y: number };
+  /** Clip boundary in pixel coordinates (origin top-left, 2 points = rectangle). */
+  readonly clip?: readonly Point[];
+  readonly clipOn?: boolean;
+  /** DXF 70 display flags, 281-283 brightness / contrast / fade. */
+  readonly flags?: number;
+  readonly brightness?: number;
+  readonly contrast?: number;
+  readonly fade?: number;
+}
+
 export type Entity =
   | LineEntity
   | CircleEntity
@@ -133,7 +243,12 @@ export type Entity =
   | XlineEntity
   | RayEntity
   | MTextEntity
-  | DimensionEntity;
+  | DimensionEntity
+  | SplineEntity
+  | HatchEntity
+  | LeaderEntity
+  | TableEntity
+  | ImageEntity;
 
 export interface AttributeDef {
   readonly tag: string;
@@ -154,6 +269,8 @@ export interface BlockDef {
   readonly entities: readonly Entity[];
   readonly attributes: readonly AttributeDef[];
   readonly description?: string;
+  /** External reference (BLOCK flag 4; 8 = overlay): the referenced file's path (DXF group 1). */
+  readonly xref?: { readonly path: string; readonly overlay?: boolean };
 }
 
 export interface Layer {
@@ -207,7 +324,7 @@ export function textWidth(text: string, height: number): number {
 }
 
 export function textBounds(t: TextEntity): Bounds {
-  const w = textWidth(t.text, t.height);
+  const w = textWidth(t.text, t.height) * (t.widthFactor ?? 1);
   const ox = t.align === 'center' ? -w / 2 : t.align === 'right' ? -w : 0;
   const corners = [
     { x: ox, y: 0 },
@@ -369,14 +486,374 @@ export function dimensionParts(d: DimensionEntity): Entity[] {
   return parts;
 }
 
-const mtextCache = new WeakMap<MTextEntity, TextEntity[]>();
-/** Single-line text pieces that render an MTEXT (word wrapped). Cached per entity. */
-export function mtextParts(m: MTextEntity): TextEntity[] {
+const mtextCache = new WeakMap<MTextEntity, { texts: TextEntity[]; lines: LineEntity[] }>();
+function mtextRendered(m: MTextEntity): { texts: TextEntity[]; lines: LineEntity[] } {
   const hit = mtextCache.get(m);
   if (hit) return hit;
-  const parts = mtextLayout(m, textWidth) as TextEntity[];
-  mtextCache.set(m, parts);
-  return parts;
+  const lay = mtextLayoutFull(m, textWidth);
+  const lines: LineEntity[] = lay.strokes.map((st, i) => ({
+    id: `${m.id}:s${i}`,
+    layer: m.layer,
+    color: st.color ?? m.color,
+    ...(st.trueColor !== undefined ? { trueColor: st.trueColor } : m.trueColor !== undefined && st.color === undefined ? { trueColor: m.trueColor } : {}),
+    type: 'line',
+    a: st.a,
+    b: st.b,
+  }));
+  const entry = { texts: lay.texts, lines };
+  mtextCache.set(m, entry);
+  return entry;
+}
+/** Single-line text pieces that render an MTEXT (word wrapped, format codes applied). Cached per entity. */
+export function mtextParts(m: MTextEntity): TextEntity[] {
+  return mtextRendered(m).texts;
+}
+/** Underline / overline / strike-through / fraction-bar strokes of a formatted MTEXT. */
+export function mtextDecorations(m: MTextEntity): LineEntity[] {
+  return mtextRendered(m).lines;
+}
+
+// ------------------------------------------------------------------ spline
+
+/** The NURBS behind a spline: its control data, or an interpolation of its fit points. */
+export function splineCurve(e: SplineEntity): NurbsCurve | null {
+  const c: NurbsCurve = { degree: e.degree, knots: e.knots, controlPoints: e.controlPoints, ...(e.weights ? { weights: e.weights } : {}) };
+  if (isValidNurbs(c)) return c;
+  const fit = e.fitPoints ?? [];
+  if (fit.length < 2) return null;
+  let chord = 0;
+  for (let i = 1; i < fit.length; i += 1) chord += g.dist(fit[i - 1]!, fit[i]!);
+  const tan = (t: Point | undefined) => (t && g.len(t) > 1e-12 ? g.scale(g.normalize(t), chord) : undefined);
+  const st = tan(e.startTangent);
+  const et = tan(e.endTangent);
+  return interpolateFitPoints(fit, { closed: e.closed, ...(st && et ? { startTangent: st, endTangent: et } : {}) });
+}
+
+const splineCache = new WeakMap<SplineEntity, Point[]>();
+/** Tessellated spline (cached per entity). */
+export function splinePoints(e: SplineEntity): Point[] {
+  const hit = splineCache.get(e);
+  if (hit) return hit;
+  const c = splineCurve(e);
+  const pts = c ? nurbsPoints(c) : [...(e.fitPoints?.length ? e.fitPoints : e.controlPoints)];
+  splineCache.set(e, pts);
+  return pts;
+}
+
+/** A spline through fit points with its control data computed (what the SPLINE command creates). */
+export function splineThroughPoints(base: EntityBase, fit: readonly Point[], closed: boolean): SplineEntity | null {
+  const c = interpolateFitPoints(fit, { closed });
+  if (!c) return null;
+  return { ...base, type: 'spline', degree: c.degree, knots: c.knots, controlPoints: c.controlPoints, fitPoints: [...fit], closed };
+}
+
+// ------------------------------------------------------------------ hatch
+
+/** World line families of a hatch's pattern ([] for SOLID). */
+export function hatchPatternLines(h: HatchEntity): WorldPatternLine[] {
+  if (h.solid) return [];
+  // Lines from the file win (double hatches, custom and non-matching definitions).
+  if (h.patternLines?.length) return [...h.patternLines];
+  const pat = findPattern(h.pattern);
+  return pat && pat.lines.length ? worldPatternLines(pat, h.angle, h.scale, h.origin) : [];
+}
+
+export interface HatchGeometry {
+  /** Tessellated boundary loops. */
+  polys: Point[][];
+  /** Clipped pattern dashes (a dot is a zero-length segment). */
+  segments: Array<[Point, Point]>;
+  /** Too dense to draw line by line. */
+  dense: boolean;
+}
+
+const hatchCache = new WeakMap<HatchEntity, HatchGeometry>();
+export function hatchGeometry(h: HatchEntity): HatchGeometry {
+  const hit = hatchCache.get(h);
+  if (hit) return hit;
+  const polys = h.loops.map((l) => loopPolygon(l)).filter((p) => p.length >= 3);
+  const pat = h.solid ? { segments: [], dense: false } : patternSegments(polys, hatchPatternLines(h));
+  const geom = { polys, segments: pat.segments, dense: pat.dense };
+  hatchCache.set(h, geom);
+  return geom;
+}
+
+// ------------------------------------------------------------------ leader
+
+/** The main leader path including the landing (dogleg). */
+export function leaderPath(e: LeaderEntity): Point[] {
+  const pts = [...e.vertices];
+  if (e.dogleg && pts.length && g.len(e.dogleg) > 1e-12) pts.push(g.add(pts[pts.length - 1]!, e.dogleg));
+  return pts;
+}
+
+/** Default attachment for leader text: to the right of the landing reads from its left edge. */
+export function leaderTextAttachment(e: LeaderEntity): MTextAttachment {
+  if (e.textAttachment) return e.textAttachment;
+  const path = leaderPath(e);
+  const last = path[path.length - 1];
+  return last && e.textPosition && e.textPosition.x < last.x ? 3 : 1;
+}
+
+const leaderCache = new WeakMap<LeaderEntity, Entity[]>();
+/** Leader line(s), arrowhead(s) and the attached MTEXT. Cached per entity. */
+export function leaderParts(e: LeaderEntity): Entity[] {
+  const hit = leaderCache.get(e);
+  if (hit) return hit;
+  const style = { layer: e.layer, color: e.color, ...(e.trueColor !== undefined ? { trueColor: e.trueColor } : {}), linetype: e.linetype, lineWeight: e.lineWeight };
+  const out: Entity[] = [];
+  const paths: Point[][] = [leaderPath(e), ...(e.extraPaths ?? []).map((p) => [...p])];
+  paths.forEach((path, i) => {
+    if (path.length < 2) return;
+    let pts = path;
+    if (e.spline && i === 0 && e.vertices.length > 2) {
+      const c = interpolateFitPoints(e.vertices, {});
+      if (c) pts = [...nurbsPoints(c, 8), ...path.slice(e.vertices.length)];
+    }
+    out.push({ ...style, id: `${e.id}:l${i}`, type: 'polyline', points: pts, closed: false });
+    if (e.arrow && e.arrowSize > 0) {
+      const tip = pts[0]!;
+      const dir = g.normalize(g.sub(tip, pts[1]!));
+      if (g.len(dir) > 0) {
+        const back = g.sub(tip, g.scale(dir, e.arrowSize));
+        const n = { x: -dir.y, y: dir.x };
+        out.push({ ...style, id: `${e.id}:a${i}`, type: 'polyline', closed: true, filled: true, points: [tip, g.add(back, g.scale(n, e.arrowSize / 6)), g.sub(back, g.scale(n, e.arrowSize / 6))] });
+      }
+    }
+  });
+  if (e.text && e.textPosition) {
+    out.push({
+      ...style,
+      id: `${e.id}:t`,
+      type: 'mtext',
+      position: e.textPosition,
+      text: e.text,
+      ...(e.raw ? { raw: e.raw } : {}),
+      height: e.textHeight,
+      width: e.textWidth ?? 0,
+      rotation: e.textRotation ?? 0,
+      attachment: leaderTextAttachment(e),
+      lineSpacing: 1,
+    });
+  }
+  leaderCache.set(e, out);
+  return out;
+}
+
+// ------------------------------------------------------------------ table
+
+const tableCache = new WeakMap<TableEntity, Entity[]>();
+/** Border lines and cell MTEXTs of a table. Cached per entity. */
+export function tableParts(t: TableEntity): Entity[] {
+  const hit = tableCache.get(t);
+  if (hit) return hit;
+  const geo = tableGeometry(t);
+  const style = { layer: t.layer, color: t.color, ...(t.trueColor !== undefined ? { trueColor: t.trueColor } : {}), linetype: t.linetype, lineWeight: t.lineWeight };
+  const out: Entity[] = geo.lines.map(([a, b], i) => ({ ...style, id: `${t.id}:b${i}`, type: 'line' as const, a, b }));
+  out.push(...geo.texts);
+  tableCache.set(t, out);
+  return out;
+}
+
+// ------------------------------------------------------------------ image
+
+/** World corners of an image: lower-left, lower-right, upper-right, upper-left. */
+export function imageCorners(e: ImageEntity): Point[] {
+  const w = g.scale(e.u, e.size.x);
+  const h = g.scale(e.v, e.size.y);
+  return [e.position, g.add(e.position, w), g.add(g.add(e.position, w), h), g.add(e.position, h)];
+}
+
+/** Clip boundary in world space (pixel coordinates have their origin at the top-left pixel centre). */
+export function imageBoundary(e: ImageEntity): Point[] {
+  if (!e.clipOn || !e.clip || e.clip.length < 2) return imageCorners(e);
+  const origin = g.add(e.position, g.sub(g.scale(e.u, 0.5), g.scale(e.v, 0.5)));
+  const toWorld = (p: Point) => g.add(origin, g.add(g.scale(e.u, p.x), g.scale(e.v, e.size.y - p.y)));
+  if (e.clip.length === 2) {
+    const [a, b] = e.clip as [Point, Point];
+    return [toWorld(a), toWorld({ x: b.x, y: a.y }), toWorld(b), toWorld({ x: a.x, y: b.y })];
+  }
+  const pts = e.clip.map(toWorld);
+  return g.eq(pts[0]!, pts[pts.length - 1]!) ? pts.slice(0, -1) : pts;
+}
+
+/** File name shown in an image frame. */
+export const imageLabel = (e: ImageEntity): string => e.path.split(/[\\/]/).pop() || e.path || 'IMAGE';
+
+const imageCache = new WeakMap<ImageEntity, Entity[]>();
+/** Frame (clip boundary) and file-name label of an image. Cached per entity. */
+export function imageParts(e: ImageEntity): Entity[] {
+  const hit = imageCache.get(e);
+  if (hit) return hit;
+  const style = { layer: e.layer, color: e.color, ...(e.trueColor !== undefined ? { trueColor: e.trueColor } : {}), linetype: e.linetype, lineWeight: e.lineWeight };
+  const frame = imageBoundary(e);
+  const out: Entity[] = [{ ...style, id: `${e.id}:f`, type: 'polyline', points: frame, closed: true }];
+  const W = g.len(e.u) * e.size.x;
+  const H = g.len(e.v) * e.size.y;
+  const rot = Math.atan2(e.u.y, e.u.x);
+  const label = imageLabel(e);
+  let th = Math.min(H * 0.08, (W * 0.9) / Math.max(1, label.length * 0.9));
+  if (!(th > 0)) th = 0.1;
+  // Label in the lower-left corner of the frame (in the image's own orientation).
+  const ud = { x: Math.cos(rot), y: Math.sin(rot) };
+  const vd = g.normalize(e.v);
+  let corner = frame[0]!;
+  for (const q of frame) if (g.dot(q, vd) * 1e6 + g.dot(q, ud) < g.dot(corner, vd) * 1e6 + g.dot(corner, ud) - 1e-9) corner = q;
+  const at = g.add(corner, g.rotate({ x: th * 0.5, y: th * 0.5 }, rot));
+  out.push({ ...style, id: `${e.id}:n`, type: 'text', position: at, text: label, height: th, rotation: rot, align: 'left' });
+  imageCache.set(e, out);
+  return out;
+}
+
+// ------------------------------------------------------------------ xref placeholder
+
+/** Frame and name drawn for an external reference whose contents are not loaded. */
+function xrefPlaceholder(ins: InsertEntity, block: BlockDef, tf: (p: Point) => Point): Entity[] {
+  const h = 0.25;
+  const name = block.name;
+  const w = textWidth(name, h) + 2 * h;
+  const bp = block.basePoint;
+  const corners = [
+    { x: bp.x, y: bp.y },
+    { x: bp.x + w, y: bp.y },
+    { x: bp.x + w, y: bp.y + 3 * h },
+    { x: bp.x, y: bp.y + 3 * h },
+  ];
+  const k = Math.sqrt(ins.scale * (ins.scaleY ?? ins.scale));
+  return [
+    { id: `${ins.id}:xf`, layer: ins.layer, color: ins.color, linetype: 'DASHED', ltscale: 0.2 * k, type: 'polyline', points: corners.map(tf), closed: true },
+    { id: `${ins.id}:xn`, layer: ins.layer, color: ins.color, type: 'text', position: tf({ x: bp.x + h, y: bp.y + h }), text: name, height: h * k, rotation: ins.rotation, align: 'left' },
+  ];
+}
+
+// ------------------------------------------------------------------ transforms of the compound types
+
+interface Affine {
+  tf: (p: Point) => Point;
+  /** Linear part (for direction / size vectors). */
+  vec: (v: Point) => Point;
+  rotation: number;
+  kx: number;
+  ky: number;
+  mirrored: boolean;
+}
+
+type Compound = SplineEntity | HatchEntity | LeaderEntity | TableEntity | ImageEntity;
+
+/** Between a direction angle and its reverse, the one nearest `ref` (keeps text readable after a mirror). */
+function readableAngle(a: number, ref: number): number {
+  const diff = (x: number) => Math.abs(g.normAngle(x - ref + Math.PI) - Math.PI);
+  return normAngle(diff(a) <= diff(a + Math.PI) ? a : a + Math.PI);
+}
+
+function affineCompound(e: Compound, A: Affine): Entity {
+  const k = Math.sqrt(Math.abs(A.kx * A.ky));
+  const conformal = Math.abs(Math.abs(A.kx) - Math.abs(A.ky)) < 1e-12;
+  const dirAngle = (t: number) => {
+    const v = A.vec({ x: Math.cos(t), y: Math.sin(t) });
+    return Math.atan2(v.y, v.x);
+  };
+  switch (e.type) {
+    case 'spline':
+      return {
+        ...e,
+        controlPoints: e.controlPoints.map(A.tf),
+        ...(e.fitPoints ? { fitPoints: e.fitPoints.map(A.tf) } : {}),
+        ...(e.startTangent ? { startTangent: A.vec(e.startTangent) } : {}),
+        ...(e.endTangent ? { endTangent: A.vec(e.endTangent) } : {}),
+      };
+    case 'hatch': {
+      const loops = e.loops.map((l): HatchLoop => {
+        if (!conformal && l.bulges?.some((b) => Math.abs(b) > 1e-12)) return { points: loopPolygon(l).map(A.tf) };
+        return { points: l.points.map(A.tf), ...(l.bulges ? { bulges: A.mirrored ? l.bulges.map((b) => -b) : l.bulges } : {}) };
+      });
+      return {
+        ...e,
+        loops,
+        angle: normAngle(e.angle + A.rotation),
+        scale: e.scale * k,
+        origin: A.tf(e.origin ?? { x: 0, y: 0 }),
+        ...(e.patternLines ? { patternLines: e.patternLines.map((l) => ({ angle: dirAngle(l.angle), base: A.tf(l.base), offset: A.vec(l.offset), dashes: l.dashes.map((d) => d * k) })) } : {}),
+      };
+    }
+    case 'leader': {
+      const att = e.textAttachment;
+      const flip = (a: MTextAttachment): MTextAttachment => {
+        const col = (a - 1) % 3;
+        return (a - col + (col === 0 ? 2 : col === 2 ? 0 : 1)) as MTextAttachment;
+      };
+      const rot = e.textRotation ?? 0;
+      return {
+        ...e,
+        vertices: e.vertices.map(A.tf),
+        ...(e.dogleg ? { dogleg: A.vec(e.dogleg) } : {}),
+        ...(e.extraPaths ? { extraPaths: e.extraPaths.map((p) => p.map(A.tf)) } : {}),
+        ...(e.textPosition ? { textPosition: A.tf(e.textPosition) } : {}),
+        textHeight: e.textHeight * k,
+        arrowSize: e.arrowSize * k,
+        ...(e.textWidth !== undefined ? { textWidth: e.textWidth * k } : {}),
+        textRotation: A.mirrored ? readableAngle(dirAngle(rot), rot + A.rotation) : normAngle(rot + A.rotation),
+        ...(A.mirrored && att ? { textAttachment: flip(att) } : {}),
+      };
+    }
+    case 'table': {
+      const sx = Math.abs(A.kx);
+      const sy = Math.abs(A.ky);
+      const scaled: TableEntity = {
+        ...e,
+        rowHeights: e.rowHeights.map((h) => h * sy),
+        columnWidths: e.columnWidths.map((w) => w * sx),
+        textHeight: e.textHeight * k,
+        ...(e.margin !== undefined ? { margin: e.margin * k } : {}),
+        cells: e.cells.map((r) => r.map((c) => (c.height !== undefined ? { ...c, height: c.height * k } : c))),
+      };
+      if (!A.mirrored) return { ...scaled, position: A.tf(e.position), rotation: normAngle(dirAngle(e.rotation)) };
+      // Mirrored: the table stays readable; its top-left corner is wherever the mirrored box's top-left lands.
+      const rot = readableAngle(dirAngle(e.rotation), e.rotation + A.rotation);
+      const W = e.columnWidths.reduce((a, b) => a + b, 0) * sx;
+      const H = e.rowHeights.reduce((a, b) => a + b, 0) * sy;
+      const corners = [{ x: 0, y: 0 }, { x: W, y: 0 }, { x: W, y: -H }, { x: 0, y: -H }].map((c) => A.tf(g.add(e.position, g.rotate({ x: c.x / (sx || 1), y: c.y / (sy || 1) }, e.rotation))));
+      let best = corners[0]!;
+      let score = Infinity;
+      for (const c of corners) {
+        const l = g.rotate(c, -rot);
+        const sc = l.x - l.y;
+        if (sc < score) {
+          score = sc;
+          best = c;
+        }
+      }
+      return { ...scaled, position: best, rotation: rot };
+    }
+    case 'image':
+      return { ...e, position: A.tf(e.position), u: A.vec(e.u), v: A.vec(e.v) };
+  }
+}
+
+/** EXPLODE for the entity types that break into simpler ones; null when the type does not explode here. */
+export function explodeCompound(e: Entity): Entity[] | null {
+  const fresh = <T extends Entity>(x: T): T => ({ ...x, id: newId() });
+  switch (e.type) {
+    case 'spline': {
+      const pts = splinePoints(e);
+      if (pts.length < 2) return [];
+      const closed = e.closed && pts.length > 2 && g.eq(pts[0]!, pts[pts.length - 1]!, 1e-9);
+      const { id: _id, type: _t, degree: _d, knots: _k, controlPoints: _c, weights: _w, fitPoints: _f, closed: _cl, periodic: _p, startTangent: _s, endTangent: _e, ...style } = e;
+      return [{ ...style, id: newId(), type: 'polyline', points: closed ? pts.slice(0, -1) : pts, closed }];
+    }
+    case 'hatch': {
+      const geo = hatchGeometry(e);
+      const style = { layer: e.layer, color: e.color, ...(e.trueColor !== undefined ? { trueColor: e.trueColor } : {}), linetype: e.linetype, lineWeight: e.lineWeight };
+      if (e.solid) return geo.polys.map((points) => ({ ...style, id: newId(), type: 'polyline' as const, points, closed: true, filled: true }));
+      return geo.segments.filter(([a, b]) => !g.eq(a, b, 1e-12)).map(([a, b]) => ({ ...style, id: newId(), type: 'line' as const, a, b }));
+    }
+    case 'leader':
+      return leaderParts(e).map(fresh);
+    case 'table':
+      return tableParts(e).map(fresh);
+    default:
+      return null;
+  }
 }
 
 /** Transform a block-space point into world space for a given insert (mirror, scale X/Y, rotate, move). */
@@ -475,6 +952,12 @@ export function blockTransform(e: Entity, tf: (p: Point) => Point, rotation: num
         rotation: e.kind === 'linear' ? ang(e.rotation) : e.rotation + rotation,
         style: k === 1 ? e.style : { ...e.style, scale: e.style.scale * k },
       };
+    case 'spline':
+    case 'hatch':
+    case 'leader':
+    case 'table':
+    case 'image':
+      return affineCompound(e, { tf, vec, rotation, kx: sx, ky: sy, mirrored: mirror });
   }
 }
 
@@ -509,6 +992,7 @@ function explodeInsertUncached(ins: InsertEntity, lookup: BlockLookup, depth: nu
   const block = lookup(ins.block);
   if (!block || depth > 8) return [];
   const tf = insertTransform(ins, block);
+  if (block.xref && block.entities.length === 0) return xrefPlaceholder(ins, block, tf);
   const out: Entity[] = [];
   const similar = isSimilarInsert(ins);
   for (const e of block.entities) {
@@ -578,6 +1062,12 @@ export function similarityTransform(e: Entity, tf: (p: Point) => Point, rotation
         rotation: e.rotation + rotation,
         style: k === 1 ? e.style : { ...e.style, scale: e.style.scale * k },
       };
+    case 'spline':
+    case 'hatch':
+    case 'leader':
+    case 'table':
+    case 'image':
+      return affineCompound(e, { tf, vec: (v) => g.rotate(g.scale(v, k), rotation), rotation, kx: k, ky: k, mirrored: false });
   }
 }
 
@@ -623,6 +1113,7 @@ export function entityBounds(e: Entity, lookup: BlockLookup): Bounds | null {
     case 'mtext': {
       let b: Bounds | null = null;
       for (const t of mtextParts(e)) b = g.unionBounds(b, textBounds(t));
+      for (const l of mtextDecorations(e)) b = g.unionBounds(b, g.boundsOfPoints([l.a, l.b]));
       return b ?? { min: e.position, max: e.position };
     }
     case 'dimension': {
@@ -630,7 +1121,26 @@ export function entityBounds(e: Entity, lookup: BlockLookup): Bounds | null {
       for (const p of dimensionParts(e)) b = g.unionBounds(b, entityBounds(p, lookup));
       return b ?? g.boundsOfPoints([e.p1, e.p2]);
     }
+    case 'spline':
+      return g.boundsOfPoints(splinePoints(e));
+    case 'hatch': {
+      let b: Bounds | null = null;
+      for (const poly of hatchGeometry(e).polys) b = g.unionBounds(b, g.boundsOfPoints(poly));
+      return b;
+    }
+    case 'leader':
+    case 'table':
+    case 'image': {
+      let b: Bounds | null = null;
+      for (const p of compoundParts(e)) b = g.unionBounds(b, entityBounds(p, lookup));
+      return b;
+    }
   }
+}
+
+/** Primitive parts of a leader, table or image (for bounds, hit testing, snapping, drawing). */
+export function compoundParts(e: LeaderEntity | TableEntity | ImageEntity): Entity[] {
+  return e.type === 'leader' ? leaderParts(e) : e.type === 'table' ? tableParts(e) : imageParts(e);
 }
 
 /** Distance from point to entity outline (world units). */
@@ -684,11 +1194,34 @@ export function distanceToEntity(p: Point, e: Entity, lookup: BlockLookup): numb
     case 'mtext': {
       let best = Infinity;
       for (const t of mtextParts(e)) best = Math.min(best, distanceToEntity(p, t, lookup));
+      for (const l of mtextDecorations(e)) best = Math.min(best, g.distToSegment(p, l.a, l.b));
       return best;
     }
     case 'dimension': {
       let best = Infinity;
       for (const part of dimensionParts(e)) best = Math.min(best, distanceToEntity(p, part, lookup));
+      return best;
+    }
+    case 'spline': {
+      const pts = splinePoints(e);
+      let best = pts.length === 1 ? g.dist(p, pts[0]!) : Infinity;
+      for (let i = 0; i < pts.length - 1; i += 1) best = Math.min(best, g.distToSegment(p, pts[i]!, pts[i + 1]!));
+      return best;
+    }
+    case 'hatch': {
+      const geo = hatchGeometry(e);
+      if ((e.solid || geo.dense) && pointInLoops(p, geo.polys)) return 0;
+      let best = Infinity;
+      for (const poly of geo.polys) for (let i = 0; i < poly.length; i += 1) best = Math.min(best, g.distToSegment(p, poly[i]!, poly[(i + 1) % poly.length]!));
+      for (const [a, b] of geo.segments) best = Math.min(best, g.distToSegment(p, a, b));
+      return best;
+    }
+    case 'leader':
+    case 'table':
+    case 'image': {
+      if (e.type === 'image' && pointInPolygon(p, imageBoundary(e))) return 0;
+      let best = Infinity;
+      for (const part of compoundParts(e)) best = Math.min(best, distanceToEntity(p, part, lookup));
       return best;
     }
   }
@@ -771,6 +1304,14 @@ export function mirrorEntityAcross(e: Entity, a: Point, b: Point): Entity {
         textPosition: e.textPosition ? reflect(e.textPosition) : e.textPosition,
         rotation: e.kind === 'linear' ? reflectAngle(e.rotation) : e.rotation,
       };
+    case 'spline':
+    case 'hatch':
+    case 'leader':
+    case 'table':
+    case 'image': {
+      const rv = (v: Point): Point => g.sub(g.scale(d, 2 * g.dot(v, d)), v);
+      return affineCompound(e, { tf: reflect, vec: rv, rotation: 0, kx: 1, ky: 1, mirrored: true });
+    }
   }
 }
 
@@ -811,6 +1352,22 @@ export function gripPoints(e: Entity): Point[] {
       const textPos = dimensionParts(e).find((p): p is TextEntity => p.type === 'text')?.position ?? e.linePoint;
       return e.kind === 'angular' && e.center ? [e.p1, e.p2, e.linePoint, e.center, textPos] : [e.p1, e.p2, e.linePoint, textPos];
     }
+    case 'spline':
+      return [...(e.fitPoints?.length ? e.fitPoints : e.controlPoints)];
+    case 'hatch': {
+      const b = entityBounds(e, () => undefined);
+      return b ? [g.mid(b.min, b.max)] : [];
+    }
+    case 'leader': {
+      const pts = [...e.vertices];
+      if (e.dogleg) pts.push(g.add(e.vertices[e.vertices.length - 1] ?? { x: 0, y: 0 }, e.dogleg));
+      if (e.textPosition) pts.push(e.textPosition);
+      return pts;
+    }
+    case 'table':
+      return [e.position];
+    case 'image':
+      return imageCorners(e);
   }
 }
 
@@ -858,6 +1415,28 @@ export function moveGrip(e: Entity, index: number, p: Point): Entity | null {
       if (index === 2) return { ...e, linePoint: p, textPosition: undefined };
       if (e.kind === 'angular' && e.center && index === 3) return { ...e, center: p };
       return { ...e, textPosition: p };
+    }
+    case 'spline': {
+      if (e.fitPoints?.length) {
+        const fit = e.fitPoints.map((q, i) => (i === index ? p : q));
+        const rebuilt = splineThroughPoints(e, fit, e.closed);
+        return rebuilt ? { ...rebuilt, id: e.id } : { ...e, fitPoints: fit };
+      }
+      return { ...e, controlPoints: e.controlPoints.map((q, i) => (i === index ? p : q)) };
+    }
+    case 'leader': {
+      const nv = e.vertices.length;
+      if (index < nv) return { ...e, vertices: e.vertices.map((q, i) => (i === index ? p : q)) };
+      const doglegIndex = e.dogleg ? nv : -1;
+      if (index === doglegIndex && nv) return { ...e, dogleg: g.sub(p, e.vertices[nv - 1]!) };
+      if (e.textPosition) return translateEntity(e, g.sub(p, e.textPosition)) as LeaderEntity;
+      return e;
+    }
+    case 'hatch':
+    case 'table':
+    case 'image': {
+      const from = gripPoints(e)[index];
+      return from ? translateEntity(e, g.sub(p, from)) : e;
     }
   }
 }
@@ -939,6 +1518,29 @@ export function snapCandidates(e: Entity, lookup: BlockLookup): SnapCandidate[] 
       }
       return out;
     }
+    case 'spline': {
+      const pts = splinePoints(e);
+      if (!pts.length) return [];
+      if (e.closed) return [{ point: pts[0]!, kind: 'endpoint' }];
+      return [
+        { point: pts[0]!, kind: 'endpoint' },
+        { point: pts[pts.length - 1]!, kind: 'endpoint' },
+      ];
+    }
+    case 'hatch':
+      return [];
+    case 'leader': {
+      const out: SnapCandidate[] = leaderPath(e).map((q) => ({ point: q, kind: 'endpoint' as const }));
+      if (e.textPosition) out.push({ point: e.textPosition, kind: 'insertion' });
+      return out;
+    }
+    case 'table': {
+      const out: SnapCandidate[] = [{ point: e.position, kind: 'insertion' }];
+      for (const part of tableParts(e)) if (part.type === 'line') out.push({ point: part.a, kind: 'endpoint' }, { point: part.b, kind: 'endpoint' });
+      return out;
+    }
+    case 'image':
+      return [{ point: e.position, kind: 'insertion' }, ...imageCorners(e).map((q) => ({ point: q, kind: 'endpoint' as const }))];
   }
 }
 
@@ -980,6 +1582,20 @@ export function entitySegments(e: Entity, lookup: BlockLookup): Array<[Point, Po
       for (const part of dimensionParts(e)) out.push(...entitySegments(part, lookup));
       return out;
     }
+    case 'spline':
+      return pairs(splinePoints(e));
+    case 'hatch': {
+      const out: Array<[Point, Point]> = [];
+      for (const poly of hatchGeometry(e).polys) for (let i = 0; i < poly.length; i += 1) out.push([poly[i]!, poly[(i + 1) % poly.length]!]);
+      return out;
+    }
+    case 'leader':
+    case 'table':
+    case 'image': {
+      const out: Array<[Point, Point]> = [];
+      for (const part of compoundParts(e)) out.push(...entitySegments(part, lookup));
+      return out;
+    }
   }
 }
 
@@ -1016,5 +1632,15 @@ export function entityTypeName(e: Entity): string {
       return 'MTEXT';
     case 'dimension':
       return 'DIMENSION';
+    case 'spline':
+      return 'SPLINE';
+    case 'hatch':
+      return 'HATCH';
+    case 'leader':
+      return e.kind === 'mleader' ? 'MULTILEADER' : 'LEADER';
+    case 'table':
+      return 'ACAD_TABLE';
+    case 'image':
+      return 'IMAGE';
   }
 }

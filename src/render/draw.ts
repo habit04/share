@@ -1,5 +1,20 @@
-import type { Entity, BlockLookup, Layer, PolylineEntity, TextEntity, XlineEntity, RayEntity } from '../core/entities';
-import { explodeInsert, entityBounds, polylineSegments, dimensionParts, mtextParts, ellipseSweep, isFullEllipse } from '../core/entities';
+import type { Entity, BlockLookup, Layer, PolylineEntity, TextEntity, XlineEntity, RayEntity, HatchEntity, ImageEntity } from '../core/entities';
+import {
+  explodeInsert,
+  entityBounds,
+  polylineSegments,
+  dimensionParts,
+  mtextParts,
+  mtextDecorations,
+  ellipseSweep,
+  isFullEllipse,
+  splinePoints,
+  hatchGeometry,
+  leaderParts,
+  tableParts,
+  imageParts,
+  imageBoundary,
+} from '../core/entities';
 import type { Point, Bounds } from '../core/geometry';
 import * as g from '../core/geometry';
 import { aciToCss } from './palette';
@@ -20,9 +35,18 @@ export interface DrawStyle {
   alpha?: number;
   /** Layers turned off / frozen: sub-entities of blocks on these layers are skipped. */
   hidden?: ReadonlySet<string>;
+  /** Bitmap source for IMAGE entities (overrides renderSettings.imageLoader). */
+  imageLoader?: ImageLoader;
 }
 
+/** Loads the bitmap of an IMAGE entity's file (null when it cannot be read). */
+export type ImageLoader = (path: string) => Promise<ImageBitmap | null>;
+
+/** CSS colour of a 0xRRGGBB true colour. */
+export const trueColorCss = (c: number): string => `#${(c & 0xffffff).toString(16).padStart(6, '0')}`;
+
 export function resolveColor(e: Entity, layers: readonly Layer[]): string {
+  if (e.trueColor !== undefined) return trueColorCss(e.trueColor);
   if (e.color !== 'ByLayer') return aciToCss(e.color);
   const layer = layers.find((l) => l.name === e.layer);
   return aciToCss(layer?.color ?? 7);
@@ -35,12 +59,47 @@ export const lineweightDisplay = { enabled: false };
  * Drawing-wide render variables the viewport copies from the document header
  * before each frame: LTSCALE, PDMODE/PDSIZE and any drawing-defined linetypes.
  */
-export const renderSettings: { ltscale: number; pdmode: number; pdsize: number; linetypes: readonly Linetype[] } = {
+export const renderSettings: {
+  ltscale: number;
+  pdmode: number;
+  pdsize: number;
+  linetypes: readonly Linetype[];
+  /**
+   * Bitmap loader for IMAGE entities. Without one (the default, e.g. the Electron renderer
+   * cannot read arbitrary files) images draw as a frame with their file name.
+   */
+  imageLoader?: ImageLoader;
+  /** Called when a bitmap finished loading so the view can repaint. */
+  requestRedraw?: () => void;
+} = {
   ltscale: 1,
   pdmode: 0,
   pdsize: 0,
   linetypes: [],
 };
+
+const bitmaps = new Map<string, ImageBitmap | null | 'pending'>();
+
+/** The loaded bitmap for a path, starting the load on first use (null while pending or unavailable). */
+export function imageBitmap(path: string, loader: ImageLoader | undefined = renderSettings.imageLoader): ImageBitmap | null {
+  if (!loader || !path) return null;
+  const hit = bitmaps.get(path);
+  if (hit === 'pending') return null;
+  if (hit !== undefined) return hit;
+  bitmaps.set(path, 'pending');
+  loader(path)
+    .then((bmp) => {
+      bitmaps.set(path, bmp);
+      if (bmp) renderSettings.requestRedraw?.();
+    })
+    .catch(() => bitmaps.set(path, null));
+  return null;
+}
+
+/** Forget cached bitmaps (after the loader changes or files were edited). */
+export function clearImageCache(): void {
+  bitmaps.clear();
+}
 
 export function resolveLineWidth(e: Entity, layers: readonly Layer[], _tf: Transform): number {
   if (!lineweightDisplay.enabled) return 1;
@@ -131,9 +190,13 @@ function strokePolyline(ctx: CanvasRenderingContext2D, e: PolylineEntity, tf: Tr
 function drawText(ctx: CanvasRenderingContext2D, e: TextEntity, tf: Transform): void {
   const p = tf.toScreen(e.position);
   const px = e.height * tf.scale;
+  const wf = e.widthFactor && e.widthFactor > 0 ? e.widthFactor : 1;
+  const slant = e.oblique ? Math.tan(e.oblique) : 0;
+  // %%u / %%o / %%k toggles (underline, overline, strike) are not drawn on single-line text.
+  const text = e.text.includes('%%') ? e.text.replace(/%%[uUoOkK]/g, '') : e.text;
   if (px < 2.5) {
     // too small to read: draw a placeholder bar like AutoCAD's QTEXT
-    const w = e.text.length * px * 0.8;
+    const w = text.length * px * 0.8 * wf;
     const c = Math.cos(e.rotation);
     const sn = Math.sin(e.rotation);
     const off = e.align === 'center' ? -w / 2 : e.align === 'right' ? -w : 0;
@@ -144,25 +207,121 @@ function drawText(ctx: CanvasRenderingContext2D, e: TextEntity, tf: Transform): 
     return;
   }
   if (hasStrokeFont) {
+    const plain = wf === 1 && slant === 0;
+    const strokes = plain ? strokeText(text, e.position, e.height, e.rotation, e.align) : strokeText(text, { x: 0, y: 0 }, e.height, 0, e.align);
+    const c = Math.cos(e.rotation);
+    const sn = Math.sin(e.rotation);
+    const world = plain
+      ? (q: Point) => q
+      : (q: Point) => {
+          const lx = q.x * wf + q.y * slant;
+          return { x: e.position.x + lx * c - q.y * sn, y: e.position.y + lx * sn + q.y * c };
+        };
     ctx.beginPath();
-    for (const stroke of strokeText(e.text, e.position, e.height, e.rotation, e.align)) {
+    for (const stroke of strokes) {
       for (let i = 0; i < stroke.length; i += 1) {
-        const sp = tf.toScreen(stroke[i]!);
+        const sp = tf.toScreen(world(stroke[i]!));
         if (i === 0) ctx.moveTo(sp.x, sp.y);
         else ctx.lineTo(sp.x, sp.y);
       }
     }
-    ctx.stroke();
+    if (e.bold) {
+      ctx.save();
+      ctx.lineWidth += Math.max(1, px / 12);
+      ctx.stroke();
+      ctx.restore();
+    } else ctx.stroke();
     return;
   }
   ctx.save();
   ctx.translate(p.x, p.y);
   ctx.rotate(-e.rotation);
-  ctx.font = `${px}px "Cascadia Mono", "Consolas", "DejaVu Sans Mono", monospace`;
+  if (wf !== 1 || slant !== 0) ctx.transform(wf, 0, -slant, 1, 0, 0);
+  ctx.font = `${e.bold ? 'bold ' : ''}${px}px "Cascadia Mono", "Consolas", "DejaVu Sans Mono", monospace`;
   ctx.textBaseline = 'alphabetic';
   ctx.textAlign = e.align;
-  ctx.fillText(expandControlCodes(e.text), 0, 0);
+  ctx.fillText(expandControlCodes(text), 0, 0);
   ctx.restore();
+}
+
+/** Draw sub-entities in their own colours (formatted MTEXT runs, leader / table / image parts). */
+function drawParts(ctx: CanvasRenderingContext2D, parts: readonly Entity[], tf: Transform, layers: readonly Layer[], lookup: BlockLookup, style: DrawStyle): void {
+  for (const sub of parts) {
+    const subColor = style.strokeOverride ?? resolveColor(sub, layers);
+    ctx.strokeStyle = subColor;
+    ctx.fillStyle = subColor;
+    drawGeometry(ctx, sub, tf, layers, lookup, style);
+  }
+}
+
+function tracePoints(ctx: CanvasRenderingContext2D, pts: readonly Point[], tf: Transform, close: boolean): void {
+  pts.forEach((q, i) => {
+    const sp = tf.toScreen(q);
+    if (i === 0) ctx.moveTo(sp.x, sp.y);
+    else ctx.lineTo(sp.x, sp.y);
+  });
+  if (close) ctx.closePath();
+}
+
+function drawHatch(ctx: CanvasRenderingContext2D, e: HatchEntity, tf: Transform, style: DrawStyle): void {
+  const geo = hatchGeometry(e);
+  if (e.solid || geo.dense) {
+    ctx.beginPath();
+    for (const poly of geo.polys) tracePoints(ctx, poly, tf, true);
+    ctx.save();
+    if (geo.dense) ctx.globalAlpha *= 0.35;
+    // Selected: a lighter fill so the dashed boundary shows through.
+    else if (style.dashed) ctx.globalAlpha *= 0.55;
+    ctx.fill('evenodd');
+    ctx.restore();
+  } else {
+    ctx.save();
+    if (!style.dashed) ctx.setLineDash([]);
+    ctx.beginPath();
+    const dots: Point[] = [];
+    for (const [a, b] of geo.segments) {
+      const sa = tf.toScreen(a);
+      const sb = tf.toScreen(b);
+      if (Math.abs(sa.x - sb.x) < 0.5 && Math.abs(sa.y - sb.y) < 0.5) {
+        dots.push(sa);
+        continue;
+      }
+      ctx.moveTo(sa.x, sa.y);
+      ctx.lineTo(sb.x, sb.y);
+    }
+    ctx.stroke();
+    for (const d of dots) ctx.fillRect(Math.round(d.x) - 0.5, Math.round(d.y) - 0.5, 1.5, 1.5);
+    ctx.restore();
+  }
+  // Selected / hovered: show the boundary so a hatch is visibly picked.
+  if (style.dashed || style.lineWidthOverride) {
+    ctx.beginPath();
+    for (const poly of geo.polys) tracePoints(ctx, poly, tf, true);
+    ctx.stroke();
+  }
+}
+
+function drawImage(ctx: CanvasRenderingContext2D, e: ImageEntity, tf: Transform, layers: readonly Layer[], lookup: BlockLookup, style: DrawStyle): void {
+  const bmp = imageBitmap(e.path, style.imageLoader ?? renderSettings.imageLoader);
+  const parts = imageParts(e);
+  if (!bmp) {
+    drawParts(ctx, parts, tf, layers, lookup, style);
+    return;
+  }
+  ctx.save();
+  ctx.beginPath();
+  tracePoints(ctx, imageBoundary(e), tf, true);
+  ctx.clip();
+  const topLeft = g.add(e.position, g.scale(e.v, e.size.y));
+  const p0 = tf.toScreen(topLeft);
+  const px = g.sub(tf.toScreen(g.add(topLeft, e.u)), p0);
+  const py = g.sub(tf.toScreen(g.sub(topLeft, e.v)), p0);
+  ctx.transform(px.x, px.y, py.x, py.y, p0.x, p0.y);
+  if (e.fade) ctx.globalAlpha *= Math.max(0, 1 - e.fade / 100);
+  ctx.drawImage(bmp, 0, 0, e.size.x, e.size.y);
+  ctx.restore();
+  // Frame only (the file name is drawn when the bitmap is missing).
+  drawParts(ctx, parts.slice(0, 1), tf, layers, lookup, style);
 }
 
 /** PDMODE point marker. Size: PDSIZE > 0 absolute, 0 = 5% of view height, < 0 = percent of view height. */
@@ -301,11 +460,36 @@ function drawGeometry(
       ctx.stroke();
       break;
     }
-    case 'mtext':
-      for (const t of mtextParts(e)) drawText(ctx, t, tf);
+    case 'mtext': {
+      const pieces = mtextParts(e);
+      const lines = mtextDecorations(e);
+      if (lines.length === 0 && pieces.every((t) => t.color === e.color && t.trueColor === e.trueColor)) {
+        for (const t of pieces) drawText(ctx, t, tf);
+      } else drawParts(ctx, [...pieces, ...lines], tf, layers, lookup, style);
       break;
+    }
     case 'dimension':
       for (const part of dimensionParts(e)) drawGeometry(ctx, part, tf, layers, lookup, style);
+      break;
+    case 'spline': {
+      const pts = splinePoints(e);
+      if (pts.length < 2) break;
+      ctx.beginPath();
+      tracePoints(ctx, pts, tf, false);
+      ctx.stroke();
+      break;
+    }
+    case 'hatch':
+      drawHatch(ctx, e, tf, style);
+      break;
+    case 'leader':
+      drawParts(ctx, leaderParts(e), tf, layers, lookup, style);
+      break;
+    case 'table':
+      drawParts(ctx, tableParts(e), tf, layers, lookup, style);
+      break;
+    case 'image':
+      drawImage(ctx, e, tf, layers, lookup, style);
       break;
   }
 }
