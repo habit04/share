@@ -1,15 +1,31 @@
 /**
- * Dimensioning commands: DIMLINEAR, DIMALIGNED, DIMRADIUS, DIMDIAMETER, DIMANGULAR.
+ * Dimensioning commands: DIMLINEAR, DIMALIGNED, DIMRADIUS, DIMDIAMETER, DIMANGULAR,
+ * DIMBASELINE, DIMCONTINUE, DIMTEDIT, DIMEDIT and the named-style -DIMSTYLE.
  * Prompts follow AutoCAD; "<select object>" on Enter dimensions a picked line/arc/circle.
  */
 import type { Point } from '../core/geometry';
 import * as g from '../core/geometry';
 import type { Entity, DimensionEntity, DimKind } from '../core/entities';
-import { newId, arcEndpoints } from '../core/entities';
-import { dimensionText } from '../core/dimension';
+import { newId, arcEndpoints, textWidth } from '../core/entities';
+import type { Editor } from '../app/editor';
+import type { Drawing } from '../core/document';
+import {
+  dimensionText,
+  resolveDimStyle,
+  namedDimStyles,
+  findDimStyle,
+  withDimStyle,
+  dimStyleUsage,
+  dimVarList,
+  dimVarValue,
+  withDimVar,
+  diffDimStyles,
+  DIM_VARIABLES,
+  type DimStyle,
+} from '../core/dimension';
 import { pickEntity } from '../core/selection';
 import type { Tool, ToolContext } from './types';
-import { scriptTool, point, pointOrKeyword, text, number, type Step } from './script';
+import { scriptTool, point, pointOrKeyword, text, number, keyword, select, matchKeyword, type Step } from './script';
 
 export function pickAt(ctx: ToolContext, p: Point): Entity | null {
   const hidden = new Set(ctx.doc.layers.filter((l) => !l.visible).map((l) => l.name));
@@ -295,4 +311,441 @@ export function dimAngularTool(): Tool {
       else ctx.log(`Invalid option keyword: ${r.text}`);
     }
   });
+}
+
+// ------------------------------------------------------------------ DIMBASELINE / DIMCONTINUE
+
+const isChainable = (e: Entity | undefined | null): e is DimensionEntity =>
+  !!e && e.type === 'dimension' && (e.kind === 'linear' || e.kind === 'aligned' || e.kind === 'angular');
+
+/** The most recently created linear, aligned or angular dimension (DIMBASELINE / DIMCONTINUE start from it). */
+export function lastChainableDimension(doc: Drawing): DimensionEntity | null {
+  for (let i = doc.entities.length - 1; i >= 0; i -= 1) {
+    const e = doc.entities[i];
+    if (isChainable(e)) return e;
+  }
+  return null;
+}
+
+function linearAxes(d: DimensionEntity): { u: Point; n: Point } {
+  let u: Point;
+  if (d.kind === 'linear') u = { x: Math.cos(d.rotation), y: Math.sin(d.rotation) };
+  else u = g.len(g.sub(d.p2, d.p1)) < 1e-12 ? { x: 1, y: 0 } : g.normalize(g.sub(d.p2, d.p1));
+  return { u, n: { x: -u.y, y: u.x } };
+}
+
+/**
+ * The next dimension of a baseline or continued chain.
+ * `from` is the extension line origin of `base` the new dimension starts at
+ * (DIMBASELINE: the base dimension's first origin; DIMCONTINUE: its second), `p` the new second origin.
+ * Baseline dimension lines step away from the geometry by DIMDLI (× DIMSCALE);
+ * continued dimensions share the base's dimension line.
+ */
+export function chainDimension(base: DimensionEntity, mode: 'baseline' | 'continue', from: Point, p: Point, style: DimStyle = base.style, id = newId()): DimensionEntity {
+  const r = resolveDimStyle(style);
+  const spacing = r.baselineSpacing * (r.scale || 1);
+  const clean = { text: undefined, textPosition: undefined, textRotation: undefined };
+  if (base.kind === 'angular' && base.center) {
+    const c = base.center;
+    const radius = g.dist(c, base.linePoint);
+    const a0 = g.angleOf(c, from);
+    const a1 = g.angleOf(c, p);
+    const mid1 = a0 + g.normAngle(a1 - a0) / 2;
+    const mid2 = mid1 + Math.PI;
+    const baseAngle = g.angleOf(c, base.linePoint);
+    const bs = g.angleOf(c, base.p1);
+    const be = g.angleOf(c, base.p2);
+    const baseSweep = g.angleInSweep(baseAngle, bs, be) ? [bs, be] : [be, bs];
+    let mid: number;
+    if (mode === 'baseline') {
+      // The new angle encloses the base angle: its sweep contains the base's dimension arc.
+      mid = g.angleInSweep(baseAngle, a0, a1) === g.angleInSweep(mid1, a0, a1) ? mid1 : mid2;
+    } else {
+      // The continued angle lies beyond the base angle, not over it.
+      mid = g.angleInSweep(mid1, baseSweep[0]!, baseSweep[1]!) ? mid2 : mid1;
+    }
+    const rr = mode === 'baseline' ? radius + spacing : radius;
+    return { ...base, ...clean, id, style, p1: from, p2: p, linePoint: g.polar(c, mid, rr) };
+  }
+  const { n } = linearAxes(base);
+  const side = Math.sign(g.dot(g.sub(base.linePoint, from), n)) || 1;
+  const linePoint = mode === 'baseline' ? g.add(base.linePoint, g.scale(n, side * spacing)) : base.linePoint;
+  return { ...base, ...clean, id, style, p1: from, p2: p, linePoint };
+}
+
+function chainTool(mode: 'baseline' | 'continue'): Tool {
+  return scriptTool(mode === 'baseline' ? 'DIMBASELINE' : 'DIMCONTINUE', function* (ctx) {
+    let base: DimensionEntity | null = lastChainableDimension(ctx.doc);
+    let from: Point | null = null;
+    const pickBase = function* (): Step<boolean> {
+      for (;;) {
+        const q = yield* point(ctx, mode === 'baseline' ? 'Select base dimension:' : 'Select continued dimension:');
+        if (!q) return false;
+        const e = pickAt(ctx, q);
+        if (!isChainable(e)) {
+          ctx.log(e ? 'Dimension must be linear, ordinate, or angular.' : 'Nothing selected.');
+          continue;
+        }
+        base = e;
+        // The extension line nearest the pick becomes the base (baseline) or the continuation point.
+        from = g.dist(q, e.p1) <= g.dist(q, e.p2) ? e.p1 : e.p2;
+        return true;
+      }
+    };
+    if (!base) {
+      if (!(yield* pickBase())) return;
+    } else from = mode === 'baseline' ? base.p1 : base.p2;
+    const history: Array<{ id: string; base: DimensionEntity; from: Point }> = [];
+    for (;;) {
+      const b = base!;
+      const f = from!;
+      const build = (p: Point) => chainDimension(b, mode, f, p, ctx.doc.header.dimStyle, 'preview');
+      const r = yield* pointOrKeyword('Specify a second extension line origin or [Undo/Select] <Select>:', ['Undo', 'Select'], {
+        preview: (cur) => [build(cur)],
+        dyn: (cur) => [dimensionText(build(cur))],
+        trackFrom: f,
+      });
+      if (!r || ('keyword' in r && r.keyword === 'SELECT')) {
+        if (!(yield* pickBase())) return;
+        continue;
+      }
+      if ('keyword' in r && r.keyword === 'UNDO') {
+        const last = history.pop();
+        if (!last) {
+          ctx.log('Nothing to undo.');
+          continue;
+        }
+        ctx.doc.removeEntities([last.id]);
+        base = last.base;
+        from = last.from;
+        continue;
+      }
+      if (!('point' in r)) {
+        ctx.log(`Invalid option keyword: ${'text' in r ? r.text : r.keyword}`);
+        continue;
+      }
+      const dim = chainDimension(b, mode, f, r.point, ctx.doc.header.dimStyle);
+      ctx.doc.addEntities([dim]);
+      ctx.log(`Dimension text = ${dimensionText(dim)}`);
+      history.push({ id: dim.id, base: b, from: f });
+      base = dim;
+      from = mode === 'baseline' ? dim.p1 : dim.p2;
+    }
+  });
+}
+
+export const dimBaselineTool = (): Tool => chainTool('baseline');
+export const dimContinueTool = (): Tool => chainTool('continue');
+
+// ------------------------------------------------------------------ DIMTEDIT / DIMEDIT
+
+/** Ends of the dimension line of a linear/aligned dimension (where the extension lines meet it). */
+function dimLineEnds(d: DimensionEntity): [Point, Point] {
+  const { u } = linearAxes(d);
+  const project = (p: Point) => g.add(d.linePoint, g.scale(u, g.dot(g.sub(p, d.linePoint), u)));
+  return [project(d.p1), project(d.p2)];
+}
+
+/** DIMTEDIT Left / Right / Center: text position along the dimension line. */
+export function justifiedTextPosition(d: DimensionEntity, where: 'left' | 'right' | 'center'): Point | undefined {
+  if (d.kind !== 'linear' && d.kind !== 'aligned') return undefined;
+  const [a1, a2] = dimLineEnds(d);
+  if (where === 'center') return g.mid(a1, a2);
+  const s = resolveDimStyle(d.style);
+  const k = s.scale || 1;
+  const w = textWidth(dimensionText(d), s.textHeight * k);
+  // "Left" is the end further left (or lower, for a vertical dimension).
+  const leftFirst = Math.abs(a1.x - a2.x) > 1e-9 ? a1.x < a2.x : a1.y < a2.y;
+  const [start, end] = (where === 'left') === leftFirst ? [a1, a2] : [a2, a1];
+  const dir = g.normalize(g.sub(end, start));
+  return g.add(start, g.scale(dir, (s.arrowSize + s.textGap) * k + w / 2));
+}
+
+export function dimTeditTool(): Tool {
+  return scriptTool('DIMTEDIT', function* (ctx) {
+    let dim: DimensionEntity | null = null;
+    while (!dim) {
+      const p = yield* point(ctx, 'Select dimension:');
+      if (!p) return;
+      const e = pickAt(ctx, p);
+      if (e && e.type === 'dimension') dim = e;
+      else ctx.log(e ? 'Object selected is not a dimension.' : 'Nothing selected.');
+    }
+    const d = dim;
+    const r = yield* pointOrKeyword('Specify new location for dimension text or [Left/Right/Center/Home/Angle]:', ['Left', 'Right', 'Center', 'Home', 'Angle'], {
+      preview: (cur) => [{ ...d, id: 'preview', textPosition: cur }],
+      trackFrom: null,
+    });
+    if (!r) return;
+    let next: DimensionEntity | null = null;
+    if ('point' in r) next = { ...d, textPosition: r.point };
+    else if ('keyword' in r) {
+      switch (r.keyword) {
+        case 'LEFT':
+        case 'RIGHT':
+        case 'CENTER': {
+          const at = justifiedTextPosition(d, r.keyword.toLowerCase() as 'left' | 'right' | 'center');
+          if (!at) ctx.log('Left/Right/Center apply to linear and aligned dimensions.');
+          else next = { ...d, textPosition: at };
+          break;
+        }
+        case 'HOME':
+          next = { ...d, textPosition: undefined, textRotation: undefined };
+          break;
+        case 'ANGLE': {
+          const a = yield* number(ctx, 'Specify angle for dimension text:', null, { allowZero: true, allowNegative: true });
+          if (!a || !('value' in a)) return;
+          next = { ...d, textRotation: g.rad(a.value) };
+          break;
+        }
+      }
+    } else ctx.log(`Invalid option keyword: ${r.text}`);
+    if (next) ctx.doc.replaceEntities([next]);
+  });
+}
+
+/** DIMEDIT on a set of dimensions (pure, for the command and tests). */
+export function editDimensions(dims: readonly DimensionEntity[], op: { kind: 'home' } | { kind: 'new'; text: string } | { kind: 'rotate'; angle: number } | { kind: 'oblique'; angle: number | undefined }): DimensionEntity[] {
+  return dims.flatMap((d): DimensionEntity[] => {
+    switch (op.kind) {
+      case 'home':
+        return [{ ...d, textPosition: undefined, textRotation: undefined }];
+      case 'new':
+        // Empty text restores the measurement; "<>" keeps it inside the new text.
+        return [{ ...d, text: op.text === '' || op.text === '<>' ? undefined : op.text }];
+      case 'rotate':
+        return [{ ...d, textRotation: op.angle }];
+      case 'oblique':
+        return d.kind === 'linear' || d.kind === 'aligned' ? [{ ...d, oblique: op.angle }] : [];
+    }
+  });
+}
+
+export function dimEditTool(): Tool {
+  return scriptTool('DIMEDIT', function* (ctx) {
+    const kind = yield* keyword(ctx, 'Enter type of dimension editing [Home/New/Rotate/Oblique] <Home>:', ['Home', 'New', 'Rotate', 'Oblique'], 'Home');
+    if (!kind) return;
+    let op: Parameters<typeof editDimensions>[1];
+    const dimsOf = (ids: string[]) => {
+      const set = new Set(ids);
+      return ctx.doc.entities.filter((e): e is DimensionEntity => set.has(e.id) && e.type === 'dimension');
+    };
+    let ids: string[];
+    if (kind === 'NEW') {
+      const t = yield* text('Enter dimension text (<> = measurement) <<>>:', '<>', true);
+      if (t === null) return;
+      op = { kind: 'new', text: t };
+      ids = yield* select(ctx);
+    } else if (kind === 'ROTATE') {
+      const a = yield* number(ctx, 'Specify angle for dimension text:', null, { allowZero: true, allowNegative: true });
+      if (!a || !('value' in a)) return;
+      op = { kind: 'rotate', angle: g.rad(a.value) };
+      ids = yield* select(ctx);
+    } else if (kind === 'OBLIQUE') {
+      ids = yield* select(ctx);
+      const a = yield* number(ctx, 'Enter obliquing angle (press ENTER for none):', null, { allowZero: true, allowNegative: true });
+      op = { kind: 'oblique', angle: a && 'value' in a ? g.rad(a.value) : undefined };
+    } else {
+      op = { kind: 'home' };
+      ids = yield* select(ctx);
+    }
+    const dims = dimsOf(ids);
+    const edited = editDimensions(dims, op);
+    ctx.doc.replaceEntities(edited);
+    ctx.log(`${edited.length} dimension(s) edited.`);
+  });
+}
+
+// ------------------------------------------------------------------ -DIMSTYLE (named styles)
+
+function fmtVar(v: number | string): string {
+  return typeof v === 'number' ? (Number.isInteger(v) ? String(v) : v.toFixed(4)) : `"${v}"`;
+}
+
+function listVars(ctx: ToolContext, s: DimStyle): void {
+  ctx.log(`Dimension style: ${s.name}`);
+  for (const r of dimVarList(s)) ctx.log(`  ${r.name.padEnd(10)} ${fmtVar(r.value).padEnd(14)} ${r.description}`);
+}
+
+/** Make `style` current (header) without history, like AutoCAD system variables. */
+function setCurrent(doc: Drawing, style: DimStyle): void {
+  doc.setHeader({ dimStyle: style });
+}
+
+/**
+ * Command-line DIMSTYLE over the drawing's named styles (state.meta.dimStyles):
+ * [Save/Restore/STatus/Variables/Apply/?]. `Restore ~name` lists the differences to the current style.
+ */
+export function dimstyleCommandTool(arg?: string): Tool {
+  return scriptTool('-DIMSTYLE', function* (ctx) {
+    const doc = ctx.doc;
+    const kws = ['Save', 'Restore', 'STatus', 'Variables', 'Apply', '?'];
+    const parts = (arg ?? '').split(/\s+/).filter(Boolean);
+    let opt = parts[0] ? matchKeyword(parts[0], kws) : null;
+    if (!opt) {
+      ctx.log(`Current dimension style: ${doc.header.dimStyle.name}`);
+      opt = yield* keyword(ctx, 'Enter a dimension style option [Save/Restore/STatus/Variables/Apply/?] <Restore>:', kws, 'Restore');
+      if (!opt) return;
+    }
+    const current = doc.header.dimStyle;
+    const listNames = () => {
+      const names = namedDimStyles(doc.snapshot);
+      ctx.log('Named dimension styles:');
+      for (const s of names) ctx.log(`  ${s.name}${s.name.toUpperCase() === current.name.toUpperCase() ? '  (current)' : ''}  ${dimStyleUsage(doc.snapshot, s.name)} dimension(s)`);
+    };
+    const pickDimStyle = function* (): Step<DimStyle | null> {
+      for (;;) {
+        const p = yield* point(ctx, 'Select dimension:');
+        if (!p) return null;
+        const e = pickAt(ctx, p);
+        if (e && e.type === 'dimension') return e.style;
+        ctx.log(e ? 'Object selected is not a dimension.' : 'Nothing selected.');
+      }
+    };
+    switch (opt) {
+      case '?':
+        listNames();
+        return;
+      case 'STATUS':
+        listVars(ctx, current);
+        return;
+      case 'VARIABLES': {
+        const n = parts[1] ?? (yield* text('Enter a dimension style name, [?] or <select dimension>:', '', true));
+        if (n === null) return;
+        if (n.trim() === '?') return listNames();
+        const s = n.trim() ? findDimStyle(doc.snapshot, n) : yield* pickDimStyle();
+        if (!s) {
+          if (n.trim()) ctx.log(`Cannot find dimension style "${n.trim()}".`);
+          return;
+        }
+        listVars(ctx, s);
+        return;
+      }
+      case 'RESTORE': {
+        const n = parts[1] ?? (yield* text('Enter a dimension style name, [?] or <select dimension>:', '', true));
+        if (n === null) return;
+        const name = n.trim();
+        if (name === '?') return listNames();
+        if (name.startsWith('~')) {
+          const other = findDimStyle(doc.snapshot, name.slice(1));
+          if (!other) {
+            ctx.log(`Cannot find dimension style "${name.slice(1)}".`);
+            return;
+          }
+          const diff = diffDimStyles(current, other);
+          ctx.log(`Differences between ${other.name} and current settings:`);
+          if (diff.length === 0) ctx.log('  None');
+          for (const d of diff) ctx.log(`  ${d.name.padEnd(10)} ${fmtVar(d.b).padEnd(14)} ${fmtVar(d.a)}`);
+          return;
+        }
+        const s = name ? findDimStyle(doc.snapshot, name) : yield* pickDimStyle();
+        if (!s) {
+          if (name) ctx.log(`Cannot find dimension style "${name}".`);
+          return;
+        }
+        setCurrent(doc, s);
+        ctx.log(`Current dimension style: ${s.name}`);
+        return;
+      }
+      case 'SAVE': {
+        let n = parts[1] ?? (yield* text('Enter name for new dimension style or [?]:', null, true));
+        if (!n) return;
+        n = n.trim();
+        if (n === '?') return listNames();
+        if (!/^[^<>/\\":;?*|,=`]{1,255}$/.test(n)) {
+          ctx.log('Invalid dimension style name.');
+          return;
+        }
+        const existing = findDimStyle(doc.snapshot, n);
+        if (existing && existing.name.toUpperCase() !== current.name.toUpperCase()) {
+          const yes = yield* keyword(ctx, 'That name is already in use, redefine it? [Yes/No] <N>:', ['Yes', 'No'], 'No');
+          if (yes !== 'YES') return;
+        }
+        const saved: DimStyle = { ...current, name: existing?.name ?? n };
+        doc.transact((s) => withDimStyle(s, saved));
+        setCurrent(doc, saved);
+        ctx.log(`Dimension style "${saved.name}" saved and made current.`);
+        return;
+      }
+      case 'APPLY': {
+        const ids = yield* select(ctx);
+        const set = new Set(ids);
+        const dims = doc.entities.filter((e): e is DimensionEntity => set.has(e.id) && e.type === 'dimension');
+        doc.replaceEntities(dims.map((d) => ({ ...d, style: current })));
+        ctx.log(`${dims.length} dimension(s) updated to style ${current.name}.`);
+        return;
+      }
+    }
+  });
+}
+
+// ------------------------------------------------------------------ registration
+
+/** DIM* variables that do not have a command yet (the drafting set registers DIMTXT, DIMASZ ...). */
+const EXTRA_DIMVARS = [...DIM_VARIABLES.map((v) => ({ name: v.name, description: v.description })), { name: 'DIMBLK', description: 'Arrow block (both ends)' }, { name: 'DIMTOL', description: 'Generate tolerances (0/1)' }, { name: 'DIMLIM', description: 'Generate dimension limits (0/1)' }, { name: 'DIMTIH', description: 'Text inside horizontal (0/1)' }, { name: 'DIMTOH', description: 'Text outside horizontal (0/1)' }, { name: 'DIMSAH', description: 'Separate arrow blocks (0/1)' }];
+
+function dimVarCommand(editor: Editor, name: string, description: string): void {
+  const apply = (ed: Editor, raw: string) => {
+    let v = raw.trim().replace(/^"(.*)"$/, '$1');
+    const numeric = typeof dimVarValue(ed.doc.header.dimStyle, name) === 'number';
+    // Colours: BYBLOCK / BYLAYER mean "the dimension's own colour" (0).
+    if (numeric && /^by(block|layer)$/i.test(v)) v = '0';
+    if (numeric && !Number.isFinite(parseFloat(v))) {
+      ed.log(`Invalid value for ${name}.`);
+      return;
+    }
+    const next = withDimVar(ed.doc.header.dimStyle, name, numeric ? parseFloat(v) : v);
+    ed.doc.setHeader({ dimStyle: next });
+    ed.log(`${name} = ${fmtVar(dimVarValue(next, name))}`);
+    ed.render();
+  };
+  editor.register({
+    name,
+    aliases: [],
+    description,
+    startsTool: true,
+    run: (ed, arg) => {
+      if (arg !== undefined) {
+        apply(ed, arg);
+        return;
+      }
+      ed.startTool(
+        scriptTool(name, function* () {
+          const cur = dimVarValue(ed.doc.header.dimStyle, name);
+          const t = yield* text(`Enter new value for ${name} <${fmtVar(cur)}>:`, null, typeof cur === 'string');
+          if (t !== null && t.trim() !== '') apply(ed, t);
+        }),
+      );
+    },
+  });
+}
+
+/**
+ * DIMSTYLE (Dimension Style Manager dialog), -DIMSTYLE (named styles on the command line),
+ * DIMBASELINE, DIMCONTINUE, DIMTEDIT, DIMEDIT and the DIM* variables that have no command yet.
+ * Call after the drafting commands: Editor.register replaces an existing name / alias.
+ */
+export function registerDimStyleCommands(editor: Editor): void {
+  const reg = (name: string, aliases: string[], description: string, run: (ed: Editor, arg?: string) => void, startsTool = true) => editor.register({ name, aliases, description, run, startsTool });
+  reg(
+    'DIMSTYLE',
+    ['D', 'DST', 'DDIM', 'DIMSTY'],
+    'Dimension Style Manager (with an option: DIMSTYLE Save|Restore|STatus|Variables|Apply|? <name>)',
+    (ed, arg) => {
+      if ((arg && arg.trim()) || typeof document === 'undefined') {
+        ed.startTool(dimstyleCommandTool(arg));
+        return;
+      }
+      void import('../ui/dimstyle')
+        .then((m) => m.dimStyleManager(ed))
+        .catch((err: unknown) => ed.log(`Dimension Style Manager failed: ${(err as Error).message}`));
+    },
+    false,
+  );
+  reg('-DIMSTYLE', [], 'Dimension style on the command line [Save/Restore/STatus/Variables/Apply/?]', (ed, arg) => ed.startTool(dimstyleCommandTool(arg)));
+  reg('DIMBASELINE', ['DBA', 'DIMBASE'], 'Baseline dimension from the previous or a selected dimension', (ed) => ed.startTool(dimBaselineTool()));
+  reg('DIMCONTINUE', ['DCO', 'DIMCONT'], 'Continued dimension from the previous or a selected dimension', (ed) => ed.startTool(dimContinueTool()));
+  reg('DIMTEDIT', ['DIMTED'], 'Move or rotate dimension text [Left/Right/Center/Home/Angle]', (ed) => ed.startTool(dimTeditTool()));
+  reg('DIMEDIT', ['DED', 'DIMED'], 'Edit dimensions [Home/New/Rotate/Oblique]', (ed) => ed.startTool(dimEditTool()));
+  for (const v of EXTRA_DIMVARS) if (!editor.commands.has(v.name)) dimVarCommand(editor, v.name, v.description);
 }

@@ -1,0 +1,8 @@
+{
+  "name": "hello",
+  "version": "1.0.0",
+  "description": "Adds HELLO, which reports how many objects are selected.",
+  "author": "JCad Electrical contributors",
+  "main": "main.js",
+  "apiVersion": 1
+}

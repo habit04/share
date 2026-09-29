@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webFrame } = require('electron');
 
 contextBridge.exposeInMainWorld('jcad', {
   openDxf: () => ipcRenderer.invoke('open-dxf'),
@@ -24,6 +24,12 @@ contextBridge.exposeInMainWorld('jcad', {
   packsWrite: (name, text) => ipcRenderer.invoke('packs-write', name, text),
   packsRemove: (name) => ipcRenderer.invoke('packs-remove', name),
   pickPackFile: () => ipcRenderer.invoke('pick-pack-file'),
+  // Plugins: one folder per plugin in the app data folder (docs/PLUGIN-API.md)
+  pluginsDir: () => ipcRenderer.invoke('plugins-dir'),
+  pluginsList: () => ipcRenderer.invoke('plugins-list'),
+  pluginsRead: (folder) => ipcRenderer.invoke('plugins-read', folder),
+  /** Runs plugin code in the page after the user confirmed it; the page CSP has no 'unsafe-eval' for new Function. */
+  pluginsEval: (source) => webFrame.executeJavaScript(String(source)),
   // Native menu mirrors of renderer state
   setRecentFiles: (files) => ipcRenderer.send('set-recent-files', files),
   quit: () => ipcRenderer.send('app-quit'),

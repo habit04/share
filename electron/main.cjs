@@ -587,6 +587,71 @@ ipcMain.handle('user-library-write', async (_ev, json) => {
   await fs.rename(tmp, file);
 });
 
+// ------------------------------------------------------------------ plugins (app data folder / plugins)
+// One folder per plugin: plugins/<name>/plugin.json + the main .js it names (docs/PLUGIN-API.md).
+// The main process only lists and reads the files; the renderer asks the user and runs the code.
+const pluginsDir = () => path.join(stateDir(), 'plugins');
+const PLUGIN_FOLDER_RE = /^[A-Za-z0-9._-]{1,64}$/;
+const PLUGIN_MAIN_RE = /^[A-Za-z0-9._-]+\.js$/;
+const MAX_PLUGIN_MANIFEST = 64 * 1024;
+const MAX_PLUGIN_CODE = 2 * 1024 * 1024;
+function safePluginFolder(name) {
+  if (typeof name !== 'string' || name === '.' || name === '..' || !PLUGIN_FOLDER_RE.test(name)) throw new Error('Invalid plugin folder name');
+  return name;
+}
+async function readLimited(file, max) {
+  const st = await fs.stat(file);
+  if (!st.isFile()) throw new Error(`${path.basename(file)} is not a file`);
+  if (st.size > max) throw new Error(`${path.basename(file)} is larger than ${Math.round(max / 1024)} KB`);
+  return fs.readFile(file, 'utf8');
+}
+/** The folder is created on first use so users can find it (PLUGINS prints it). */
+ipcMain.handle('plugins-dir', async () => {
+  await fs.mkdir(pluginsDir(), { recursive: true });
+  return pluginsDir();
+});
+/** [{ folder, manifest (plugin.json text or null), error? }] for every sub-folder. */
+ipcMain.handle('plugins-list', async () => {
+  let dirents;
+  try {
+    dirents = await fs.readdir(pluginsDir(), { withFileTypes: true });
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return [];
+    throw err;
+  }
+  const out = [];
+  for (const d of dirents) {
+    if (!d.isDirectory() || !PLUGIN_FOLDER_RE.test(d.name) || d.name === '.' || d.name === '..') continue;
+    try {
+      out.push({ folder: d.name, manifest: await readLimited(path.join(pluginsDir(), d.name, 'plugin.json'), MAX_PLUGIN_MANIFEST) });
+    } catch (err) {
+      out.push({ folder: d.name, manifest: null, error: err && err.code === 'ENOENT' ? 'no plugin.json' : String((err && err.message) || err) });
+    }
+  }
+  return out.sort((a, b) => a.folder.localeCompare(b.folder));
+});
+/** { manifest, code, path } of one plugin folder, or null when it does not exist. */
+ipcMain.handle('plugins-read', async (_ev, folder) => {
+  const dir = path.join(pluginsDir(), safePluginFolder(folder));
+  let manifest;
+  try {
+    manifest = await readLimited(path.join(dir, 'plugin.json'), MAX_PLUGIN_MANIFEST);
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return null;
+    throw err;
+  }
+  let main = 'main.js';
+  try {
+    const m = JSON.parse(manifest);
+    if (m && m.main !== undefined) main = String(m.main);
+  } catch {
+    /* the renderer reports the bad JSON */
+  }
+  if (!PLUGIN_MAIN_RE.test(main)) throw new Error('plugin.json "main" must be a .js file in the plugin folder');
+  const file = path.join(dir, main);
+  return { manifest, code: await readLimited(file, MAX_PLUGIN_CODE), path: file };
+});
+
 // ------------------------------------------------------------------ catalog packs (app data folder / packs)
 // Signed manufacturer catalogs (*.jcadpack.json, see docs/CATALOG-PACKS.md). The renderer verifies the
 // signature; the main process only stores the files verbatim, one per pack, with atomic writes.

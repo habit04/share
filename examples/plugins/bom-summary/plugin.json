@@ -1,0 +1,8 @@
+{
+  "name": "bom-summary",
+  "version": "1.0.0",
+  "description": "BOMSUMMARY: counts the drawing's components by manufacturer and catalog number.",
+  "author": "JCad Electrical contributors",
+  "main": "main.js",
+  "apiVersion": 1
+}
