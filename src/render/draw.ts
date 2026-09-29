@@ -1,4 +1,4 @@
-import type { Entity, BlockLookup, Layer, PolylineEntity, TextEntity, XlineEntity, RayEntity, HatchEntity, ImageEntity } from '../core/entities';
+import type { Entity, BlockLookup, Layer, PolylineEntity, TextEntity, MTextEntity, XlineEntity, RayEntity, HatchEntity, ImageEntity } from '../core/entities';
 import {
   explodeInsert,
   entityBounds,
@@ -18,7 +18,8 @@ import {
 import type { Point, Bounds } from '../core/geometry';
 import * as g from '../core/geometry';
 import { aciToCss } from './palette';
-import { strokeText, hasStrokeFont, expandControlCodes } from './hershey';
+import { strokeText, hasStrokeFont, expandControlCodes, drawStyledText } from './hershey';
+import { textStyleOf, withTextStyle } from '../io/encoding';
 import { findLinetype, effectiveLinetype, dashArray, type Linetype } from '../core/linetypes';
 
 export interface Transform {
@@ -206,6 +207,8 @@ function drawText(ctx: CanvasRenderingContext2D, e: TextEntity, tf: Transform): 
     ctx.stroke();
     return;
   }
+  // TrueType / OpenType text styles draw with a canvas font stack (SHX and unknown styles fall through to the strokes).
+  if (drawStyledText(ctx, text === e.text ? e : { ...e, text }, tf)) return;
   if (hasStrokeFont) {
     const plain = wf === 1 && slant === 0;
     const strokes = plain ? strokeText(text, e.position, e.height, e.rotation, e.align) : strokeText(text, { x: 0, y: 0 }, e.height, 0, e.align);
@@ -242,6 +245,19 @@ function drawText(ctx: CanvasRenderingContext2D, e: TextEntity, tf: Transform): 
   ctx.textAlign = e.align;
   ctx.fillText(expandControlCodes(text), 0, 0);
   ctx.restore();
+}
+
+const styledParts = new WeakMap<MTextEntity, TextEntity[]>();
+/** The pieces of an MTEXT carrying the MTEXT's text style (formatted runs draw with a TrueType style too). */
+function styledMtextParts(e: MTextEntity): TextEntity[] {
+  const style = textStyleOf(e);
+  if (!style) return mtextParts(e);
+  let hit = styledParts.get(e);
+  if (!hit) {
+    hit = mtextParts(e).map((t) => withTextStyle(t, style));
+    styledParts.set(e, hit);
+  }
+  return hit;
 }
 
 /** Draw sub-entities in their own colours (formatted MTEXT runs, leader / table / image parts). */
@@ -461,7 +477,7 @@ function drawGeometry(
       break;
     }
     case 'mtext': {
-      const pieces = mtextParts(e);
+      const pieces = styledMtextParts(e);
       const lines = mtextDecorations(e);
       if (lines.length === 0 && pieces.every((t) => t.color === e.color && t.trueColor === e.trueColor)) {
         for (const t of pieces) drawText(ctx, t, tf);
