@@ -686,13 +686,15 @@ const EXTRA_DIMVARS = [...DIM_VARIABLES.map((v) => ({ name: v.name, description:
 
 function dimVarCommand(editor: Editor, name: string, description: string): void {
   const apply = (ed: Editor, raw: string) => {
-    const v = raw.trim().replace(/^"(.*)"$/, '$1');
-    const before = dimVarValue(ed.doc.header.dimStyle, name);
-    const next = withDimVar(ed.doc.header.dimStyle, name, typeof before === 'number' ? (v === '.' ? '' : v) : v);
-    if (typeof before === 'number' && !Number.isFinite(parseFloat(v))) {
+    let v = raw.trim().replace(/^"(.*)"$/, '$1');
+    const numeric = typeof dimVarValue(ed.doc.header.dimStyle, name) === 'number';
+    // Colours: BYBLOCK / BYLAYER mean "the dimension's own colour" (0).
+    if (numeric && /^by(block|layer)$/i.test(v)) v = '0';
+    if (numeric && !Number.isFinite(parseFloat(v))) {
       ed.log(`Invalid value for ${name}.`);
       return;
     }
+    const next = withDimVar(ed.doc.header.dimStyle, name, numeric ? parseFloat(v) : v);
     ed.doc.setHeader({ dimStyle: next });
     ed.log(`${name} = ${fmtVar(dimVarValue(next, name))}`);
     ed.render();

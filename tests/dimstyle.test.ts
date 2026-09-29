@@ -495,3 +495,29 @@ describe('radial text alignment', () => {
     expect(aligned.rotation).toBeCloseTo(Math.PI / 4);
   });
 });
+
+describe('DIM* variable commands on a real editor', () => {
+  it('sets DIMTAD, DIMBLK, DIMCLRT and DIMPOST from the command line; DIMSTYLE with an option stays on the command line', async () => {
+    const g = globalThis as Record<string, unknown>;
+    g.requestAnimationFrame = () => 1;
+    g.cancelAnimationFrame = () => {};
+    const { Editor } = await import('../src/app/editor');
+    const ed = new Editor({ getContext: () => ({}), getBoundingClientRect: () => ({ width: 800, height: 600, left: 0, top: 0 }) } as unknown as HTMLCanvasElement);
+    registerDimStyleCommands(ed);
+    ed.runCommand('DIMTAD 1');
+    ed.runCommand('DIMBLK _ArchTick');
+    ed.runCommand('DIMCLRT BYLAYER');
+    ed.runCommand('DIMPOST');
+    ed.submitInput('<> mm');
+    expect(ed.doc.header.dimStyle).toMatchObject({ textVertical: 'above', arrow: 'arch-tick', textColor: undefined, post: '<> mm' });
+    ed.runCommand('DIMTAD x');
+    expect(ed.history.at(-1)).toBe('Invalid value for DIMTAD.');
+    ed.runCommand('DIMSTYLE Save Arch');
+    expect(findDimStyle(ed.doc.snapshot, 'Arch')).toMatchObject({ arrow: 'arch-tick' });
+    ed.runCommand('DIMSTYLE Restore Standard');
+    expect(ed.doc.header.dimStyle.name).toBe('Standard');
+    ed.runCommand('DBA');
+    expect(ed.prompt).toBe('Select base dimension:');
+    ed.cancel();
+  });
+});
