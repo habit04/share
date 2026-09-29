@@ -40,6 +40,7 @@ import { DEFAULT_LAYERS, DEFAULT_HEADER } from '../core/document';
 import { STANDARD_LINETYPES, findLinetype, patternLength, type Linetype } from '../core/linetypes';
 import type { LinearUnits } from '../core/units';
 import * as g from '../core/geometry';
+import { attdefFlags, attdefFlagProps, type AttributeDefExt } from '../electrical/symbol-builder-core';
 import { decodeUnicodeEscapes, encodeDxfText, textStyleFromGroups, textStyleGroups, textStyleOf, textStylesForWrite, textStylesMeta, withTextStyle, type TextStyle } from './encoding';
 
 // ---------------------------------------------------------------- writing
@@ -564,7 +565,9 @@ function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonly<Recor
       break;
     case 'insert': {
       const block = blocks[e.block];
-      const hasAttribs = block ? block.attributes.length > 0 : false;
+      // Constant attributes (ATTDEF flag 2) have no ATTRIB on the insert: the definition's value shows.
+      const attribDefs = block ? (block.attributes as readonly AttributeDefExt[]).filter((a) => !a.constant) : [];
+      const hasAttribs = attribDefs.length > 0;
       writeEntityCommon(w, e, owner, 'INSERT', 'AcDbBlockReference');
       if (hasAttribs) w.pair(66, 1);
       w.pair(2, e.block);
@@ -580,7 +583,7 @@ function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonly<Recor
       if (e.rotation !== 0) w.pair(50, g.deg(e.rotation));
       if (hasAttribs && block) {
         const toWorld = insertTransform(e, block);
-        for (const a of block.attributes) {
+        for (const a of attribDefs) {
           const value = e.attributes[a.tag] ?? a.default;
           // Attribute position in world space
           const world = toWorld(a.position);
@@ -593,7 +596,7 @@ function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonly<Recor
           writeTextLike(w, world, a.height * Math.sqrt(e.scale * sy), value, e.rotation + (a.rotation ?? 0), e.mirror ? (a.align === 'left' ? 'right' : a.align === 'right' ? 'left' : a.align) : a.align);
           w.pair(100, 'AcDbAttribute');
           w.pair(2, a.tag);
-          w.pair(70, a.invisible || e.hiddenAttributes?.includes(a.tag) ? 1 : 0);
+          w.pair(70, attdefFlags(a) | (e.hiddenAttributes?.includes(a.tag) ? 1 : 0));
         }
         w.pair(0, 'SEQEND');
         w.pair(5, w.nextHandle());
@@ -923,7 +926,7 @@ export function writeDxf(state: DrawingState): string {
         w.pair(100, 'AcDbAttributeDefinition');
         w.pair(3, a.prompt);
         w.pair(2, a.tag);
-        w.pair(70, a.invisible ? 1 : 0);
+        w.pair(70, attdefFlags(a));
       }
     }, b.xref?.path ?? '');
   }
@@ -2159,7 +2162,7 @@ export function readDxf(text: string, opts: DxfReadOptions = {}): DrawingState {
           let m = k + 1;
           while (m < objs.length && objs[m]!.kind !== 'ENDBLK') m += 1;
           const inner = objs.slice(k + 1, m);
-          const attributes: AttributeDef[] = inner
+          const attributes: AttributeDefExt[] = inner
             .filter((x) => x.kind === 'ATTDEF')
             .map((x) => {
               const h = num(x, 72, 0);
@@ -2174,6 +2177,8 @@ export function readDxf(text: string, opts: DxfReadOptions = {}): DrawingState {
                 height: num(x, 40, 0.125),
                 align,
                 invisible: (Math.trunc(num(x, 70)) & 1) === 1,
+                // constant / verify / preset (bits 2, 4, 8)
+                ...attdefFlagProps(Math.trunc(num(x, 70))),
                 ...(Math.abs(rotation) > 1e-9 ? { rotation } : {}),
               };
             });

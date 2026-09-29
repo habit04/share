@@ -138,6 +138,14 @@ export const icons: Record<string, string> = {
   qselect: wrap('<rect x="3" y="4" width="10" height="10" stroke-dasharray="3 2"/><path class="ac" d="M15 15l6 6M12 12l3 3"/><circle cx="8" cy="9" r="2"/>'),
   zoomprev: wrap('<circle cx="10" cy="10" r="6"/><path d="M15 15l6 6"/><path class="ac" d="M12 8l-3 2 3 2"/>'),
   view: wrap('<rect x="3" y="5" width="18" height="14"/><path class="ac" d="M7 9h10M7 13h6"/><path d="M3 9h18"/>'),
+  // ---- annotation objects and panel hardware (original line art)
+  spline: wrap('<path d="M3 17c3-9 6-9 9-3s6 6 9-5"/><circle class="ac" cx="3" cy="17" r="1.4" fill="currentColor"/><circle class="ac" cx="12" cy="14" r="1.4" fill="currentColor"/><circle class="ac" cx="21" cy="9" r="1.4" fill="currentColor"/>'),
+  hatch: wrap('<rect x="4" y="4" width="16" height="16"/><path class="ac" d="M4 10l6-6M4 16l12-12M8 20l12-12M14 20l6-6"/>'),
+  mleader: wrap('<path d="M3 21l8-8h3"/><path class="ac" d="M3 21l1-3.5M3 21l3.5-1"/><path d="M14 9h7M14 13h7M14 17h4"/>'),
+  table: wrap('<rect x="3" y="4" width="18" height="16"/><path class="ac" d="M3 9h18"/><path d="M3 14.5h18M9 9v11M15 9v11"/>'),
+  dinrail: wrap('<path d="M2 9h20M2 15h20"/><path class="ac" d="M4 9v6M20 9v6"/><path d="M7 12h2M11 12h2M15 12h2"/>'),
+  wireduct: wrap('<rect x="3" y="7" width="18" height="10"/><path class="ac" d="M3 12h18"/><path d="M7 7v2M11 7v2M15 7v2M19 7v2M7 15v2M11 15v2M15 15v2M19 15v2"/>'),
+  enclosure: wrap('<rect x="4" y="3" width="16" height="18" rx="1"/><rect class="ac" x="7" y="6" width="10" height="12"/><path d="M4 7h-1M4 17h-1"/><circle cx="18.5" cy="12" r="0.8" fill="currentColor"/>'),
   units: wrap('<path d="M3 15h18M3 15V9M21 15V9"/><path class="ac" d="M7 15v-3M11 15v-4M15 15v-3"/>'),
 };
 

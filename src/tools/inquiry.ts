@@ -5,7 +5,9 @@
 import type { Point } from '../core/geometry';
 import * as g from '../core/geometry';
 import type { Entity } from '../core/entities';
-import { entityTypeName, polylineArea, polylineLength, ellipsePoints, ellipseSweep, isFullEllipse, arcEndpoints, entityBounds } from '../core/entities';
+import { entityTypeName, polylineArea, polylineLength, ellipsePoints, ellipseSweep, isFullEllipse, arcEndpoints, entityBounds, splinePoints } from '../core/entities';
+import { loopPolygon } from '../core/hatch';
+import { textStyleOf } from '../io/encoding';
 import { dimensionMeasurement, dimensionText } from '../core/dimension';
 import { mtextLines } from '../core/mtext';
 import { textWidth } from '../core/entities';
@@ -228,11 +230,11 @@ export function listEntity(e: Entity, doc: Drawing): string[] {
       break;
     }
     case 'text':
-      lines.push(`              Style = "Standard"  Annotative: No`, `                 Typeface = txt`, `              start point, ${P(e.position)}`, `                   height  ${f(e.height)}`, `                     text  ${e.text}`, `           rotation angle  ${formatAngle(e.rotation, 0)}`, `                    width  ${f(textWidth(e.text, e.height))}`, `            justification  ${e.align}`);
+      lines.push(`              Style = "${textStyleOf(e) ?? 'Standard'}"  Annotative: No`, `                 Typeface = txt`, `              start point, ${P(e.position)}`, `                   height  ${f(e.height)}`, `                     text  ${e.text}`, `           rotation angle  ${formatAngle(e.rotation, 0)}`, `                    width  ${f(textWidth(e.text, e.height))}`, `            justification  ${e.align}`);
       break;
     case 'mtext': {
       const ls = mtextLines(e, textWidth);
-      lines.push(`              Style = "Standard"  Annotative: No`, `                 location, ${P(e.position)}`, `                    width  ${f(e.width)}`, `                   height  ${f(e.height)}`, `               attachment  ${['', 'TopLeft', 'TopCenter', 'TopRight', 'MiddleLeft', 'MiddleCenter', 'MiddleRight', 'BottomLeft', 'BottomCenter', 'BottomRight'][e.attachment]}`, `           rotation angle  ${formatAngle(e.rotation, 0)}`, `             line spacing  ${e.lineSpacing.toFixed(4)}`);
+      lines.push(`              Style = "${textStyleOf(e) ?? 'Standard'}"  Annotative: No`, `                 location, ${P(e.position)}`, `                    width  ${f(e.width)}`, `                   height  ${f(e.height)}`, `               attachment  ${['', 'TopLeft', 'TopCenter', 'TopRight', 'MiddleLeft', 'MiddleCenter', 'MiddleRight', 'BottomLeft', 'BottomCenter', 'BottomRight'][e.attachment]}`, `           rotation angle  ${formatAngle(e.rotation, 0)}`, `             line spacing  ${e.lineSpacing.toFixed(4)}`);
       for (const l of ls) lines.push(`                 contents  ${l}`);
       break;
     }
@@ -260,6 +262,43 @@ export function listEntity(e: Entity, doc: Drawing): string[] {
       lines.push(`           default text: ${dimensionText({ ...e, text: undefined })}`);
       if (e.text) lines.push(`         dimension text: ${e.text}`);
       lines.push(`          measurement: ${e.kind === 'angular' ? formatAngle(dimensionMeasurement(e), 4) : f(dimensionMeasurement(e))}`);
+      break;
+    }
+    case 'spline': {
+      const fit = e.fitPoints?.length ?? 0;
+      lines.push(`                   ${e.closed ? 'Closed' : 'Open'}${e.periodic ? '  Periodic' : ''}`, `                   Degree  ${e.degree}`, `  Number of control points  ${e.controlPoints.length}`, `      Number of fit points  ${fit}`);
+      if (e.weights?.some((w) => Math.abs(w - 1) > 1e-12)) lines.push(`                 Rational`);
+      lines.push(`                   length  ${f(polylineLen(splinePoints(e)))}`);
+      break;
+    }
+    case 'hatch': {
+      const polys = e.loops.map((l) => loopPolygon(l)).filter((p) => p.length >= 3);
+      const outer = polys.reduce((best, p) => Math.max(best, Math.abs(polygonArea(p))), 0);
+      lines.push(`                  Pattern  ${e.solid ? 'SOLID' : e.pattern}`);
+      if (!e.solid) lines.push(`                    Angle  ${formatAngle(e.angle, 2)}`, `                    Scale  ${e.scale.toFixed(4)}`);
+      lines.push(`           Boundary loops  ${e.loops.length}`, `                Associative  ${e.associative ? 'Yes' : 'No'}`, `       Area of outer loop  ${f(outer)}`);
+      break;
+    }
+    case 'leader': {
+      lines.push(`                     Type  ${e.kind === 'mleader' ? 'Multileader' : 'Leader'}${e.spline ? ' (spline)' : ''}`, `       Number of vertices  ${e.vertices.length}`);
+      e.vertices.forEach((p) => lines.push(`                 at point  ${P(p)}`));
+      lines.push(`                Arrowhead  ${e.arrow ? `Closed filled, size ${f(e.arrowSize)}` : 'None'}`);
+      if (e.text) {
+        lines.push(`              Text height  ${f(e.textHeight)}`);
+        for (const l of e.text.split('\n')) lines.push(`                     text  ${l}`);
+      }
+      break;
+    }
+    case 'table': {
+      const rows = e.rowHeights.length;
+      const cols = e.columnWidths.length;
+      lines.push(`             insert point, ${P(e.position)}`, `               Table size  ${rows} rows x ${cols} columns`, `                    width  ${f(e.columnWidths.reduce((a, b) => a + b, 0))}`, `                   height  ${f(e.rowHeights.reduce((a, b) => a + b, 0))}`, `              Text height  ${f(e.textHeight)}`, `           rotation angle  ${formatAngle(e.rotation, 0)}`);
+      break;
+    }
+    case 'image': {
+      lines.push(`                     Path  ${e.path}`, `            insert point, ${P(e.position)}`, `        Image size (pixels)  ${e.size.x} x ${e.size.y}`, `        Image size (units)  ${f(g.len(e.u) * e.size.x)} x ${f(g.len(e.v) * e.size.y)}`);
+      if (e.clipOn && e.clip?.length) lines.push(`                  Clipped  ${e.clip.length === 2 ? 'rectangular' : `polygonal, ${e.clip.length} vertices`}`);
+      if (e.fade) lines.push(`                     Fade  ${e.fade}`);
       break;
     }
   }

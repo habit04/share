@@ -33,7 +33,9 @@ import {
 import { toggleVariant, isComponent, isChild, isTerminal } from '../electrical/families';
 import { CABLE_BLOCK, CABLE_LAYER, assignCable, nextCableTag, isCableMarker, addJumper, removeJumpers, jumperIds, withTerminalUpdates, type CableAssignment } from '../electrical/cables';
 import { LIBRARY_BLOCKS } from '../electrical/library';
-import { readWdSettings } from '../electrical/wdm';
+import { readWdSettings, drawingUnitScale } from '../electrical/wdm';
+import { isFixedTag, TAG_FIXED_ATTRIBUTE } from '../electrical/tags';
+import { withInsertAttributes } from '../electrical/attributes';
 import type { ElectricalUi } from '../electrical/ui';
 import { componentDialogInit, componentAttributes, lookupSymbol, symbolPick, resolveSymbolPick } from './electrical';
 
@@ -271,13 +273,15 @@ export class ThreePhaseComponentTool extends PickTool {
   }
   override onMove(p: Point, ctx: ToolContext): void {
     if (!this.block) return;
-    const wires = threePhaseWires(ctx.doc.entities, p);
-    ctx.setPreview(wires ? wires.map((w) => ({ id: newId(), type: 'insert', layer: 'SYMS', color: 'ByLayer', block: this.block!, position: { x: p.x, y: w.a.y }, rotation: 0, scale: 1, attributes: {} }) as Entity) : []);
+    const k = drawingUnitScale(ctx.doc);
+    const wires = threePhaseWires(ctx.doc.entities, p, 0.3 * k);
+    ctx.setPreview(wires ? wires.map((w) => ({ id: newId(), type: 'insert', layer: 'SYMS', color: 'ByLayer', block: this.block!, position: { x: p.x, y: w.a.y }, rotation: 0, scale: k, attributes: {} }) as Entity) : []);
     ctx.setDynText([wires ? '3 phase' : 'no 3-wire bus here']);
   }
   onPoint(p: Point, ctx: ToolContext): void {
     if (!this.block) return;
-    const wires = threePhaseWires(ctx.doc.entities, p);
+    const k = drawingUnitScale(ctx.doc);
+    const wires = threePhaseWires(ctx.doc.entities, p, 0.3 * k);
     if (!wires) {
       ctx.log('Pick a point on a bus of three horizontal wires.');
       return;
@@ -287,7 +291,7 @@ export class ThreePhaseComponentTool extends PickTool {
     void this.eui().editComponent(init).then((r) => {
       if (r) {
         const attrs = componentAttributes(r.attrs);
-        const edit = insertThreePole(ctx.doc.entities, this.block!, p.x, wires, attrs, ctx.doc.lookupBlock);
+        const edit = insertThreePole(ctx.doc.entities, this.block!, p.x, wires, attrs, ctx.doc.lookupBlock, k);
         if (!ctx.doc.layer('LINK')) ctx.doc.addLayer({ name: 'LINK', color: 8, visible: true, locked: false, lineWeight: 0.18 });
         applyWireEdit(ctx.doc, edit);
         ctx.log(`3-pole ${attrs.TAG1 ?? this.block} inserted.`);
@@ -466,8 +470,9 @@ export class SwapBlockTool extends PickTool {
       ctx.doc.ensureBlocks([def]);
       const replaced: InsertEntity = { ...e, block: def.name };
       // keep the wires broken correctly for the new symbol width
-      const lifted = liftFromWires(ctx.doc.entities, e, ctx.doc.lookupBlock).filter((x) => x.id !== e.id);
-      const after = breakForInsert([...lifted, replaced], replaced, ctx.doc.lookupBlock);
+      const k = drawingUnitScale(ctx.doc);
+      const lifted = liftFromWires(ctx.doc.entities, e, ctx.doc.lookupBlock, k).filter((x) => x.id !== e.id);
+      const after = breakForInsert([...lifted, replaced], replaced, ctx.doc.lookupBlock, k);
       ctx.doc.transact((s) => ({ ...s, entities: after }));
       ctx.log(`${e.attributes.TAG1 ?? e.block} swapped to ${def.name}.`);
       ctx.finish();
@@ -502,14 +507,23 @@ export class EditComponentTool extends PickTool {
         if (r) {
           const parent = r.parentId ? ctx.doc.entities.find((x): x is InsertEntity => x.id === r.parentId) : undefined;
           const attrs = componentAttributes(r.attrs, parent);
+          // Fixed tag checkbox: the same TAGFIXED attribute AEFIXTAG toggles (RETAG keeps fixed tags).
+          const fix = r.fixedTag;
+          if (fix === false) delete attrs[TAG_FIXED_ATTRIBUTE];
           const oldTag = e.attributes.TAG1;
           const updates: InsertEntity[] = [{ ...e, attributes: attrs }];
           // Retagging a parent carries its children along.
           if (oldTag && attrs.TAG1 && oldTag !== attrs.TAG1 && !isChild(e)) {
             for (const c of ctx.doc.entities) if (isChild(c) && c.attributes.TAG1 === oldTag) updates.push({ ...c, attributes: { ...c.attributes, TAG1: attrs.TAG1 } });
           }
-          ctx.doc.replaceEntities(updates);
-          ctx.log(`${attrs.TAG1 ?? attrs.TERM01 ?? e.block} updated${updates.length > 1 ? ` (${updates.length - 1} child contact(s) retagged)` : ''}.`);
+          const byId = new Map(updates.map((u) => [u.id, u]));
+          ctx.doc.transact((s) => {
+            const next = { ...s, entities: s.entities.map((x) => byId.get(x.id) ?? x) };
+            // withInsertAttributes also gives the block its TAGFIXED definition so the flag survives DXF.
+            return fix ? withInsertAttributes(next, new Map([[e.id, { [TAG_FIXED_ATTRIBUTE]: '1' }]])) : next;
+          });
+          const fixNote = fix !== undefined && fix !== isFixedTag(e) ? (fix ? ', tag fixed' : ', tag released') : '';
+          ctx.log(`${attrs.TAG1 ?? attrs.TERM01 ?? e.block} updated${updates.length > 1 ? ` (${updates.length - 1} child contact(s) retagged)` : ''}${fixNote}.`);
         }
         ctx.finish();
       });

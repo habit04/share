@@ -1,4 +1,8 @@
 import { describe, it, expect } from 'vitest';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { icons } from '../src/ui/icons';
+import '../src/ui/icons-ui';
 import { Drawing } from '../src/core/document';
 import { constrainDirection, defaultSnapSettings } from '../src/core/snap';
 import { RIBBON } from '../src/ui/ribbon';
@@ -48,5 +52,46 @@ describe('ribbon', () => {
     const byLabel = new Map(panel.panels.flatMap((p) => p.buttons).map((b) => [b.label.replace('\n', ' '), b.command]));
     expect(byLabel.get('Terminal Report')).toBe('AEREPORT terminals');
     expect(byLabel.get('Strip Report')).toBe('AEREPORT strip');
+  });
+});
+
+describe('ribbon commands', () => {
+  // Every ribbon button runs a registered command (by name or alias). The registrations are
+  // read from the sources so the check needs no DOM-backed Editor.
+  const registered = (() => {
+    const names = new Set<string>();
+    const files = ['src/main.ts', ...['src/app', 'src/tools'].flatMap((dir) => readdirSync(dir).filter((n) => n.endsWith('.ts')).map((n) => join(dir, n)))];
+    for (const f of files) {
+      const src = readFileSync(f, 'utf8');
+      for (const m of src.matchAll(/\breg\(\s*'([^']+)'\s*,\s*\[([^\]]*)\]/g)) {
+        names.add(m[1]!.toUpperCase());
+        for (const a of m[2]!.matchAll(/'([^']+)'/g)) names.add(a[1]!.toUpperCase());
+      }
+      for (const m of src.matchAll(/\bname:\s*'([A-Z0-9_\-+]+)'(?:\s*,\s*aliases:\s*\[([^\]]*)\])?/g)) {
+        names.add(m[1]!.toUpperCase());
+        for (const a of (m[2] ?? '').matchAll(/'([^']+)'/g)) names.add(a[1]!.toUpperCase());
+      }
+    }
+    return names;
+  })();
+  const buttons = RIBBON.flatMap((t) => t.panels.flatMap((p) => p.buttons.map((b) => ({ tab: t.name, ...b }))));
+
+  it('only has buttons whose command is registered', () => {
+    const missing = buttons.filter((b) => !registered.has(b.command.split(/\s+/)[0]!.toUpperCase())).map((b) => `${b.tab}: ${b.command}`);
+    expect(missing).toEqual([]);
+  });
+  it('only uses icons that exist', () => {
+    expect(buttons.filter((b) => !(b.icon in icons)).map((b) => `${b.tab}: ${b.icon}`)).toEqual([]);
+  });
+  it('reaches the project-wide, cable / jumper / PLC I/O and panel layout commands', () => {
+    const on = (tab: string) => new Set(buttons.filter((b) => b.tab === tab).map((b) => b.command));
+    for (const c of ['AELOCVIEW', 'AEXREFPROJECT', 'AERETAGPROJECT', 'AEWIRENOPROJECT', 'AEREPORTTEMPLATES', 'AETITLEBLOCKALL']) expect(on('Project').has(c), c).toBe(true);
+    for (const c of ['AECABLE', 'AECABLESCHEDULE', 'AEJUMPER', 'AEJUMPERDEL', 'AEPLCIO', 'AEPLCIOEXPORT']) expect(on('Schematic').has(c), c).toBe(true);
+    for (const c of ['AEDINRAIL', 'AEWIREDUCT', 'AEPANEL', 'AEPANELGRID', 'AEFOOTPRINTALIGN', 'AETERMFOOTPRINT', 'AEPANELHW']) expect(on('Panel').has(c), c).toBe(true);
+    for (const c of ['SPLINE', 'HATCH', 'MLEADER', 'TABLE', 'FIELD']) expect(on('Annotate').has(c) || on('Home').has(c), c).toBe(true);
+  });
+  it('draws splines, hatches, multileaders, tables and panel hardware with their own icons', () => {
+    const iconOf = (c: string) => buttons.find((b) => b.command === c)!.icon;
+    expect(['SPLINE', 'HATCH', 'MLEADER', 'TABLE', 'AEDINRAIL', 'AEWIREDUCT', 'AEPANEL'].map(iconOf)).toEqual(['spline', 'hatch', 'mleader', 'table', 'dinrail', 'wireduct', 'enclosure']);
   });
 });

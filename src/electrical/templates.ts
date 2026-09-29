@@ -3,7 +3,7 @@
  * like AutoCAD Electrical's ACAD_ELECTRICAL.dwt sheets. Units: inches.
  */
 import type { Entity, BlockDef, InsertEntity } from '../core/entities';
-import { newId } from '../core/entities';
+import { newId, scaleEntityBy } from '../core/entities';
 import type { DrawingState } from '../core/document';
 import { Drawing } from '../core/document';
 import { LIBRARY_BLOCKS } from './library';
@@ -57,8 +57,12 @@ export const TITLE_BLOCK: BlockDef = {
   ],
 };
 
-/** Build border + title block entities for a sheet size. */
-export function sheetEntities(size: SheetSize, fields: Partial<Record<string, string>> = {}): Entity[] {
+/**
+ * Build border + title block entities for a sheet size. `unitScale` is the drawing's
+ * units per inch (`drawingUnitScale(doc)`, 25.4 for a millimetre drawing): the sheet and
+ * its title block insert are scaled by it.
+ */
+export function sheetEntities(size: SheetSize, fields: Partial<Record<string, string>> = {}, unitScale = 1): Entity[] {
   const m = 0.5; // margin
   const out: Entity[] = [];
   const W = size.width;
@@ -97,15 +101,15 @@ export function sheetEntities(size: SheetSize, fields: Partial<Record<string, st
     attributes: Object.fromEntries(TITLE_BLOCK.attributes.map((a) => [a.tag, fields[a.tag] ?? a.default])),
   };
   out.push(tb);
-  return out;
+  return unitScale === 1 ? out : out.map((e) => scaleEntityBy(e, { x: 0, y: 0 }, unitScale));
 }
 
 /** A fresh drawing state from a template. */
-export function newFromTemplate(size: SheetSize, fields: Partial<Record<string, string>> = {}): DrawingState {
+export function newFromTemplate(size: SheetSize, fields: Partial<Record<string, string>> = {}, unitScale = 1): DrawingState {
   const d = new Drawing();
   d.ensureBlocks([...LIBRARY_BLOCKS, TITLE_BLOCK]);
   d.addLayer({ name: 'BORDER', color: 7, visible: true, locked: false, lineWeight: 0.5 });
-  d.addEntities(sheetEntities(size, fields));
+  d.addEntities(sheetEntities(size, fields, unitScale));
   return d.snapshot;
 }
 

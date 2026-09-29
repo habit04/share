@@ -12,7 +12,8 @@ import * as g from '../core/geometry';
 import type { Entity, LineEntity, InsertEntity, TextEntity, BlockLookup, ArcEntity, BlockDef } from '../core/entities';
 import { newId, entityBounds, textWidth, insertTransform, explodeInsert } from '../core/entities';
 import type { Drawing, DrawingState } from '../core/document';
-import { isWire, isHorizontal, isVertical, breakWire, breakVerticalWire, nearestReference, wireNumberText, WIRENO_HEIGHT } from './ladder';
+import { isWire, isHorizontal, isVertical, breakWire, breakVerticalWire, nearestReference, wireNumberText, ladderMetrics } from './ladder';
+import { drawingUnitScale } from './wdm';
 import { WIRE_DOT } from './symbols';
 import { connectionVector, pinAttributes, pinDir } from './attributes';
 
@@ -24,6 +25,12 @@ export interface WireEdit {
 }
 
 const EPS = 1e-6;
+/**
+ * Drawing units per library inch of a drawing's entities (25.4 when its WD_M block says
+ * UNITS=MM). The inch distances and tolerances below are multiplied by it; callers that
+ * hold the Drawing (and so its $INSUNITS) pass `drawingUnitScale(doc)` explicitly.
+ */
+const unitsOf = (entities: readonly Entity[]): number => drawingUnitScale({ entities });
 const same = (a: Point, b: Point, tol = 1e-4) => g.dist(a, b) < tol;
 
 /** How many wire ends meet at a point (a wire passing straight through counts twice). */
@@ -97,7 +104,7 @@ export function wireCrossings(entities: readonly Entity[], wire: LineEntity): Po
  * Insert a gap (or a jump-over loop) in a wire at each crossing with another
  * wire. The wire is cut around the crossing; a loop adds a semicircle.
  */
-export function insertWireGaps(entities: readonly Entity[], wire: LineEntity, style: 'gap' | 'loop', radius = 0.09): WireEdit {
+export function insertWireGaps(entities: readonly Entity[], wire: LineEntity, style: 'gap' | 'loop', radius = 0.09 * unitsOf(entities)): WireEdit {
   const crossings = wireCrossings(entities, wire);
   if (crossings.length === 0) return { remove: [], add: [] };
   let pieces: LineEntity[] = [wire];
@@ -197,12 +204,14 @@ export function connectsVertically(ins: InsertEntity, lookup: BlockLookup): bool
  * right edges on each connection level (or its top and bottom edges on each
  * connection column) are merged back into one wire.
  */
-export function liftFromWires(entities: readonly Entity[], ins: InsertEntity, lookup: BlockLookup): Entity[] {
+export function liftFromWires(entities: readonly Entity[], ins: InsertEntity, lookup: BlockLookup, unitScale = unitsOf(entities)): Entity[] {
   const b = symbolSpan(ins, lookup);
+  const near = 0.05 * unitScale;
+  const touch = 0.02 * unitScale;
   let out = [...entities];
   for (const y of connectionLevels(ins, lookup)) {
-    const left = out.find((e): e is LineEntity => isWire(e) && isHorizontal(e) && Math.abs(e.a.y - y) < 0.05 && Math.abs(Math.max(e.a.x, e.b.x) - b.min.x) < 0.02);
-    const right = out.find((e): e is LineEntity => isWire(e) && isHorizontal(e) && Math.abs(e.a.y - y) < 0.05 && Math.abs(Math.min(e.a.x, e.b.x) - b.max.x) < 0.02);
+    const left = out.find((e): e is LineEntity => isWire(e) && isHorizontal(e) && Math.abs(e.a.y - y) < near && Math.abs(Math.max(e.a.x, e.b.x) - b.min.x) < touch);
+    const right = out.find((e): e is LineEntity => isWire(e) && isHorizontal(e) && Math.abs(e.a.y - y) < near && Math.abs(Math.min(e.a.x, e.b.x) - b.max.x) < touch);
     if (!left && !right) continue;
     const x0 = left ? Math.min(left.a.x, left.b.x) : b.min.x;
     const x1 = right ? Math.max(right.a.x, right.b.x) : b.max.x;
@@ -212,8 +221,8 @@ export function liftFromWires(entities: readonly Entity[], ins: InsertEntity, lo
     out.push(merged);
   }
   for (const x of connectionColumns(ins, lookup)) {
-    const below = out.find((e): e is LineEntity => isWire(e) && isVertical(e) && Math.abs(e.a.x - x) < 0.05 && Math.abs(Math.max(e.a.y, e.b.y) - b.min.y) < 0.02);
-    const above = out.find((e): e is LineEntity => isWire(e) && isVertical(e) && Math.abs(e.a.x - x) < 0.05 && Math.abs(Math.min(e.a.y, e.b.y) - b.max.y) < 0.02);
+    const below = out.find((e): e is LineEntity => isWire(e) && isVertical(e) && Math.abs(e.a.x - x) < near && Math.abs(Math.max(e.a.y, e.b.y) - b.min.y) < touch);
+    const above = out.find((e): e is LineEntity => isWire(e) && isVertical(e) && Math.abs(e.a.x - x) < near && Math.abs(Math.min(e.a.y, e.b.y) - b.max.y) < touch);
     if (!below && !above) continue;
     const y0 = below ? Math.min(below.a.y, below.b.y) : b.min.y;
     const y1 = above ? Math.max(above.a.y, above.b.y) : b.max.y;
@@ -230,16 +239,17 @@ export function liftFromWires(entities: readonly Entity[], ins: InsertEntity, lo
  * connection levels, vertical wires on its connection columns (a vertical
  * symbol dropped on a vertical wire is trimmed around exactly like a horizontal one).
  */
-export function breakForInsert(entities: readonly Entity[], ins: InsertEntity, lookup: BlockLookup): Entity[] {
+export function breakForInsert(entities: readonly Entity[], ins: InsertEntity, lookup: BlockLookup, unitScale = unitsOf(entities)): Entity[] {
   const b = symbolSpan(ins, lookup);
+  const near = 0.05 * unitScale;
   let out = [...entities];
   for (const y of connectionLevels(ins, lookup)) {
-    const wire = out.find((e): e is LineEntity => isWire(e) && isHorizontal(e) && Math.abs(e.a.y - y) < 0.05 && Math.min(e.a.x, e.b.x) < b.max.x - 1e-6 && Math.max(e.a.x, e.b.x) > b.min.x + 1e-6);
+    const wire = out.find((e): e is LineEntity => isWire(e) && isHorizontal(e) && Math.abs(e.a.y - y) < near && Math.min(e.a.x, e.b.x) < b.max.x - 1e-6 && Math.max(e.a.x, e.b.x) > b.min.x + 1e-6);
     if (!wire) continue;
     out = out.filter((e) => e !== wire).concat(breakWire(wire, b.min.x, b.max.x));
   }
   for (const x of connectionColumns(ins, lookup)) {
-    const wire = out.find((e): e is LineEntity => isWire(e) && isVertical(e) && Math.abs(e.a.x - x) < 0.05 && Math.min(e.a.y, e.b.y) < b.max.y - 1e-6 && Math.max(e.a.y, e.b.y) > b.min.y + 1e-6);
+    const wire = out.find((e): e is LineEntity => isWire(e) && isVertical(e) && Math.abs(e.a.x - x) < near && Math.min(e.a.y, e.b.y) < b.max.y - 1e-6 && Math.max(e.a.y, e.b.y) > b.min.y + 1e-6);
     if (!wire) continue;
     out = out.filter((e) => e !== wire).concat(breakVerticalWire(wire, b.min.y, b.max.y));
   }
@@ -263,7 +273,8 @@ export function findOrientedWireAt(entities: readonly Entity[], p: Point, tol: n
 
 /** The x-extent a component may occupy on its wire (rail to rail) after lifting. */
 function wireExtentAt(entities: readonly Entity[], y: number, x: number): { x0: number; x1: number } | null {
-  const w = entities.find((e): e is LineEntity => isWire(e) && isHorizontal(e) && Math.abs(e.a.y - y) < 0.05 && Math.min(e.a.x, e.b.x) <= x + 1e-6 && Math.max(e.a.x, e.b.x) >= x - 1e-6);
+  const near = 0.05 * unitsOf(entities);
+  const w = entities.find((e): e is LineEntity => isWire(e) && isHorizontal(e) && Math.abs(e.a.y - y) < near && Math.min(e.a.x, e.b.x) <= x + 1e-6 && Math.max(e.a.x, e.b.x) >= x - 1e-6);
   return w ? { x0: Math.min(w.a.x, w.b.x), x1: Math.max(w.a.x, w.b.x) } : null;
 }
 
@@ -348,7 +359,7 @@ export function buildBus(a: Point, b: Point, s: BusSettings): LineEntity[] {
 // ------------------------------------------------------------ 3-phase
 
 /** The three horizontal bus wires nearest to a pick point (the picked one plus the two below at even spacing). */
-export function threePhaseWires(entities: readonly Entity[], p: Point, tol = 0.3): LineEntity[] | null {
+export function threePhaseWires(entities: readonly Entity[], p: Point, tol = 0.3 * unitsOf(entities)): LineEntity[] | null {
   const wires = entities.filter((e): e is LineEntity => isWire(e) && isHorizontal(e) && Math.min(e.a.x, e.b.x) <= p.x && Math.max(e.a.x, e.b.x) >= p.x);
   if (wires.length < 3) return null;
   wires.sort((a, b) => Math.abs(a.a.y - p.y) - Math.abs(b.a.y - p.y));
@@ -393,7 +404,7 @@ export function polePins(block: BlockDef | undefined, base: Readonly<Record<stri
  * poles 2 and 3 carry POLE=2/3 so reports count the device once, their TAG1
  * is hidden and their pins are offset per pole) joined by a dashed mechanical link.
  */
-export function insertThreePole(entities: readonly Entity[], block: string, x: number, wires: LineEntity[], attrs: Record<string, string>, lookup: BlockLookup): WireEdit & { inserts: InsertEntity[] } {
+export function insertThreePole(entities: readonly Entity[], block: string, x: number, wires: LineEntity[], attrs: Record<string, string>, lookup: BlockLookup, unitScale = unitsOf(entities)): WireEdit & { inserts: InsertEntity[] } {
   let current: Entity[] = [...entities];
   const inserts: InsertEntity[] = [];
   const def = lookup(block);
@@ -408,19 +419,20 @@ export function insertThreePole(entities: readonly Entity[], block: string, x: n
       block,
       position: { x, y: w.a.y },
       rotation: 0,
-      scale: 1,
+      scale: unitScale,
       attributes: { ...attrs, ...polePins(def, attrs, pole), POLE: String(pole) },
       ...(pole > 1 && showsTag ? { hiddenAttributes: ['TAG1'] } : {}),
     };
     inserts.push(ins);
-    current = breakForInsert([...current, ins], ins, lookup);
+    current = breakForInsert([...current, ins], ins, lookup, unitScale);
   });
   // dashed link between the poles (short dashes on the LINK layer)
   const top = wires[0]!.a.y;
   const bottom = wires[wires.length - 1]!.a.y;
-  const dash = 0.06;
-  for (let y = top - 0.2; y > bottom + 0.2; y -= dash * 2) {
-    current.push({ id: newId(), type: 'line', layer: 'LINK', color: 'ByLayer', a: { x, y }, b: { x, y: Math.max(y - dash, bottom + 0.2) } });
+  const dash = 0.06 * unitScale;
+  const clear = 0.2 * unitScale;
+  for (let y = top - clear; y > bottom + clear; y -= dash * 2) {
+    current.push({ id: newId(), type: 'line', layer: 'LINK', color: 'ByLayer', a: { x, y }, b: { x, y: Math.max(y - dash, bottom + clear) } });
   }
   return { ...diff(entities, current), inserts };
 }
@@ -437,10 +449,13 @@ export interface WireNet {
   x0: number;
   x1: number;
   wires: LineEntity[];
+  /** Drawing units per inch of the drawing the net was collected from (see `collectNets`); absent = 1. */
+  unitScale?: number;
 }
 
 /** Group horizontal wire pieces into nets: same y, gaps (component breaks) under 1.2 units. */
-export function collectNets(entities: readonly Entity[]): WireNet[] {
+export function collectNets(entities: readonly Entity[], unitScale = unitsOf(entities)): WireNet[] {
+  const maxGap = 1.2 * unitScale;
   const wires = entities.filter((e): e is LineEntity => isWire(e) && isHorizontal(e));
   const sorted = [...wires].sort((a, b) => b.a.y - a.a.y || Math.min(a.a.x, a.b.x) - Math.min(b.a.x, b.b.x));
   const nets: WireNet[] = [];
@@ -448,22 +463,23 @@ export function collectNets(entities: readonly Entity[]): WireNet[] {
     const last = nets[nets.length - 1];
     const wl = Math.min(w.a.x, w.b.x);
     const wr = Math.max(w.a.x, w.b.x);
-    if (last && Math.abs(last.y - w.a.y) < 1e-6 && wl - last.x1 < 1.2) {
+    if (last && Math.abs(last.y - w.a.y) < 1e-6 && wl - last.x1 < maxGap) {
       last.wires.push(w);
       last.x1 = Math.max(last.x1, wr);
       continue;
     }
-    nets.push({ y: w.a.y, x0: wl, x1: wr, wires: [w] });
+    nets.push({ y: w.a.y, x0: wl, x1: wr, wires: [w], ...(unitScale !== 1 ? { unitScale } : {}) });
   }
   return nets;
 }
 
 /** The net a wire-number text labels (nearest net vertically whose x-range covers the text). */
 export function netOfWireNumber(nets: WireNet[], t: TextEntity): WireNet | null {
+  const k = nets[0]?.unitScale ?? 1;
   let best: WireNet | null = null;
-  let bestD = 0.4;
+  let bestD = 0.4 * k;
   for (const n of nets) {
-    if (t.position.x < n.x0 - 0.5 || t.position.x > n.x1 + 0.5) continue;
+    if (t.position.x < n.x0 - 0.5 * k || t.position.x > n.x1 + 0.5 * k) continue;
     const d = Math.abs(n.y - t.position.y);
     if (d < bestD) {
       bestD = d;
@@ -474,10 +490,13 @@ export function netOfWireNumber(nets: WireNet[], t: TextEntity): WireNet | null 
 }
 
 /** Text position for a wire number relative to its net. */
-export function wireNumberPosition(net: WireNet, position: 'above' | 'below' | 'inline', x = net.x0 + 0.15): Point {
-  if (position === 'below') return { x, y: net.y - 0.05 - WIRENO_HEIGHT };
-  if (position === 'inline') return { x, y: net.y - WIRENO_HEIGHT / 2 };
-  return { x, y: net.y + 0.05 };
+export function wireNumberPosition(net: WireNet, position: 'above' | 'below' | 'inline', x?: number, height?: number): Point {
+  const m = ladderMetrics(net.unitScale ?? 1);
+  const h = height ?? m.wireNumberHeight;
+  const px = x ?? net.x0 + m.wireNumberInset;
+  if (position === 'below') return { x: px, y: net.y - m.wireNumberGap - h };
+  if (position === 'inline') return { x: px, y: net.y - h / 2 };
+  return { x: px, y: net.y + m.wireNumberGap };
 }
 
 export interface WireNumberOptions {
@@ -494,6 +513,8 @@ export interface WireNumberOptions {
   used?: Set<string>;
   /** Sheet value for %S in the format. */
   sheet?: string;
+  /** Drawing units per inch (25.4 in a millimetre drawing); default from the entities' WD_M block. */
+  unitScale?: number;
 }
 
 /** Fixed wire numbers of a drawing (layer WIREFIXED), which renumbering keeps. */
@@ -508,7 +529,9 @@ export function fixedWireNumbers(entities: readonly Entity[]): string[] {
 export function planWireNumbers(entities: readonly Entity[], o: WireNumberOptions = {}): TextEntity[] {
   const start = o.start ?? 100;
   const position = o.position ?? 'above';
-  const nets = collectNets(entities);
+  const unitScale = o.unitScale ?? unitsOf(entities);
+  const height = ladderMetrics(unitScale).wireNumberHeight;
+  const nets = collectNets(entities, unitScale);
   if (nets.length === 0) return [];
   const fixed = entities.filter((e): e is TextEntity => e.type === 'text' && e.layer === WIREFIXED_LAYER);
   const fixedNets = new Set<WireNet>();
@@ -542,7 +565,7 @@ export function planWireNumbers(entities: readonly Entity[], o: WireNumberOption
       } while (usedLabels.has(label));
     }
     usedLabels.add(label);
-    texts.push(wireNumberText(wireNumberPosition(net, position), label));
+    texts.push(wireNumberText(wireNumberPosition(net, position), label, WIRENO_LAYER, 'left', height));
   }
   return texts;
 }
@@ -567,8 +590,9 @@ export function withWireNumbers(s: DrawingState, texts: readonly Entity[]): Draw
  * (layer WIREFIXED) are kept and their nets are skipped.
  */
 export function assignWireNumbers(doc: Drawing, opts: WireNumberOptions | number = {}): number {
-  const o: WireNumberOptions = typeof opts === 'number' ? { start: opts } : opts;
-  if (collectNets(doc.entities).length === 0) return 0;
+  const given: WireNumberOptions = typeof opts === 'number' ? { start: opts } : opts;
+  const o: WireNumberOptions = { ...given, unitScale: given.unitScale ?? drawingUnitScale(doc) };
+  if (collectNets(doc.entities, o.unitScale).length === 0) return 0;
   const texts = planWireNumbers(doc.entities, o);
   doc.transact((s) => withWireNumbers(s, texts));
   return texts.length;
@@ -586,7 +610,8 @@ export function wireNumberState(entities: readonly Entity[], t: TextEntity): Wir
   let position: WireNumberEdit['position'] = 'above';
   if (net) {
     const d = t.position.y - net.y;
-    position = d > 0.02 ? 'above' : d < -WIRENO_HEIGHT / 2 - 0.02 ? 'below' : 'inline';
+    const tol = 0.02 * (net.unitScale ?? 1);
+    position = d > tol ? 'above' : d < -t.height / 2 - tol ? 'below' : 'inline';
   }
   return { label: t.text, fixed: t.layer === WIREFIXED_LAYER, position };
 }
@@ -599,25 +624,27 @@ export function applyWireNumberEdit(entities: readonly Entity[], t: TextEntity, 
   const nets = collectNets(entities);
   const net = netOfWireNumber(nets, t);
   const before = wireNumberState(entities, t);
+  const k = net?.unitScale ?? 1;
+  const pad = 0.05 * k;
   let current: Entity[] = [...entities];
   if (net && before.position === 'inline' && edit.position !== 'inline') {
     // close the gap: merge the pieces around the text
-    const w = textWidth(t.text, WIRENO_HEIGHT) + 0.1;
-    const left = current.find((e): e is LineEntity => isWire(e) && isHorizontal(e) && Math.abs(e.a.y - net.y) < 1e-6 && Math.abs(Math.max(e.a.x, e.b.x) - (t.position.x - 0.05)) < 0.02);
-    const right = current.find((e): e is LineEntity => isWire(e) && isHorizontal(e) && Math.abs(e.a.y - net.y) < 1e-6 && Math.abs(Math.min(e.a.x, e.b.x) - (t.position.x - 0.05 + w)) < 0.02);
+    const w = textWidth(t.text, t.height) + 2 * pad;
+    const left = current.find((e): e is LineEntity => isWire(e) && isHorizontal(e) && Math.abs(e.a.y - net.y) < 1e-6 && Math.abs(Math.max(e.a.x, e.b.x) - (t.position.x - pad)) < 0.02 * k);
+    const right = current.find((e): e is LineEntity => isWire(e) && isHorizontal(e) && Math.abs(e.a.y - net.y) < 1e-6 && Math.abs(Math.min(e.a.x, e.b.x) - (t.position.x - pad + w)) < 0.02 * k);
     if (left && right) {
       current = current.filter((e) => e !== left && e !== right);
       current.push({ ...left, id: newId(), a: { x: Math.min(left.a.x, left.b.x), y: net.y }, b: { x: Math.max(right.a.x, right.b.x), y: net.y } });
     }
   }
   const x = t.position.x;
-  const pos = net ? wireNumberPosition(net, edit.position, x) : t.position;
+  const pos = net ? wireNumberPosition(net, edit.position, x, t.height) : t.position;
   const moved: TextEntity = { ...t, id: newId(), text: edit.label, layer: edit.fixed ? WIREFIXED_LAYER : WIRENO_LAYER, position: pos };
   current = current.filter((e) => e.id !== t.id);
   if (net && edit.position === 'inline' && before.position !== 'inline') {
-    const w = textWidth(edit.label, WIRENO_HEIGHT) + 0.1;
+    const w = textWidth(edit.label, t.height) + 2 * pad;
     const wire = current.find((e): e is LineEntity => isWire(e) && isHorizontal(e) && Math.abs(e.a.y - net.y) < 1e-6 && Math.min(e.a.x, e.b.x) <= x && Math.max(e.a.x, e.b.x) >= x + w);
-    if (wire) current = current.filter((e) => e !== wire).concat(breakWire(wire, x - 0.05, x - 0.05 + w));
+    if (wire) current = current.filter((e) => e !== wire).concat(breakWire(wire, x - pad, x - pad + w));
   }
   current.push(moved);
   return diff(entities, current);
@@ -641,8 +668,9 @@ export function copyWireNumber(entities: readonly Entity[], source: TextEntity, 
   const nets = collectNets(entities);
   const net = nets.find((n) => n.wires.includes(targetWire)) ?? nets.find((n) => n.wires.some((w) => w.id === targetWire.id));
   if (!net) return null;
-  const x = Math.max(net.x0 + 0.15, Math.min(net.x1 - 0.5, Math.min(targetWire.a.x, targetWire.b.x) + 0.15));
-  return wireNumberText(wireNumberPosition(net, position, x), source.text, WIREFIXED_LAYER);
+  const m = ladderMetrics(net.unitScale ?? 1);
+  const x = Math.max(net.x0 + m.wireNumberInset, Math.min(net.x1 - 0.5 * (net.unitScale ?? 1), Math.min(targetWire.a.x, targetWire.b.x) + m.wireNumberInset));
+  return wireNumberText(wireNumberPosition(net, position, x, source.height), source.text, WIREFIXED_LAYER, 'left', source.height);
 }
 
 /** Move a wire number to a leader position: the text moves and a leader line points back at its wire. */
@@ -650,7 +678,8 @@ export function wireNumberLeader(entities: readonly Entity[], t: TextEntity, to:
   const net = netOfWireNumber(collectNets(entities), t);
   const anchor = net ? { x: Math.max(net.x0, Math.min(net.x1, t.position.x)), y: net.y } : t.position;
   const leader: LineEntity = { id: newId(), type: 'line', layer: t.layer, color: 'ByLayer', a: anchor, b: to };
-  const moved: TextEntity = { ...t, id: newId(), position: { x: to.x + 0.05, y: to.y + 0.03 }, align: 'left' };
+  const k = net?.unitScale ?? unitsOf(entities);
+  const moved: TextEntity = { ...t, id: newId(), position: { x: to.x + 0.05 * k, y: to.y + 0.03 * k }, align: 'left' };
   return { remove: [t.id], add: [leader, moved] };
 }
 

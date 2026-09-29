@@ -955,6 +955,11 @@ canvas#drawing {
   background: #f6f6f6;
   border: 1px solid #bdbdbd;
 }
+/* Insert Component: attributes with the verify flag, highlighted for a second look before OK. */
+.component-row input.verify {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
 .radio-row {
   display: flex;
   gap: 12px;

@@ -29,7 +29,7 @@ import {
 } from '../tools/electrical-wires';
 import { FootprintTool, BalloonTool, NameplateTool } from '../tools/panel';
 import { assignWireNumbers, DEFAULT_BUS } from '../electrical/wires';
-import { readWdSettings, writeWdSettings, WD_M_BLOCK, type WdSettings } from '../electrical/wdm';
+import { readWdSettings, writeWdSettings, WD_M_BLOCK, drawingUnitScale, type WdSettings } from '../electrical/wdm';
 import { retagDrawing, isFixedTag, TAG_FIXED_ATTRIBUTE } from '../electrical/tags';
 import { updateCrossReferences, parentCandidates, childBlockChoices, type ChildBlockOptions } from '../electrical/xref';
 import { LIBRARY_BLOCKS, findLibrarySymbol } from '../electrical/library';
@@ -445,7 +445,8 @@ export function registerElectricalCommands(editor: Editor): void {
         if (!o) return;
         const build = (origin: Point, doc: Drawing): Entity[] => {
           const rails = findRails(doc, origin);
-          const opts: CircuitOptions = { ...o, left: rails.left?.a.x ?? origin.x, right: rails.right?.a.x ?? origin.x + (o.right - o.left), top: origin.y, drawLadder: o.drawLadder || !(rails.left && rails.right) };
+          const unitScale = drawingUnitScale(doc);
+          const opts: CircuitOptions = { ...o, unitScale, left: rails.left?.a.x ?? origin.x, right: rails.right?.a.x ?? origin.x + (o.right - o.left) * unitScale, top: origin.y, drawLadder: o.drawLadder || !(rails.left && rails.right) };
           const refs = rungReferences(doc);
           if (refs.length >= 2) opts.spacing = Math.abs(refs[0]!.position.y - refs[1]!.position.y);
           const refOf = (y: number) => (opts.drawLadder ? String(o.firstReference + Math.round((opts.top - y) / opts.spacing)) : nearestReference(doc, { x: opts.left, y }));

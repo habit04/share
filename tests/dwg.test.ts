@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { convertDwg } from '../src/io/dwg';
+import { convertDwg, toImportPayload } from '../src/io/dwg';
 import { writeDxf, readDxf } from '../src/io/dxf';
 // @ts-expect-error plain JS helper shared with Electron main / CLI
-import { readDwgPayload } from '../scripts/dwg-reader.mjs';
+import { readDwgPayload, payloadFromDatabase } from '../scripts/dwg-reader.mjs';
 
 const fixtures = join(__dirname, '..', 'fixtures');
 const files = ['example_r14.dwg', 'example_2000.dwg', 'example_2004.dwg', 'example_2007.dwg', 'example_2010.dwg', 'example_2013.dwg', 'example_2018.dwg'];
@@ -67,4 +67,30 @@ describe('DWG import of drafting entities', () => {
     expect(back.entities.filter((e) => e.type === 'dimension').length).toBe(dims.length);
     expect(back.entities.some((e) => e.type === 'ellipse')).toBe(true);
   }, 60000);
+});
+
+describe('DWG payload of the desktop reader and the browser reader', () => {
+  // scripts/dwg-reader.mjs (Electron main, CLI) and toImportPayload (browser) build the same payload.
+  const db = {
+    header: { INSUNITS: 4 },
+    entities: [{ type: 'LINE' }],
+    tables: {
+      LAYER: { entries: [{ name: '0', colorIndex: 7, off: false, frozen: false, locked: false, lineweight: -3, lineType: 'Continuous', extra: 1 }] },
+      BLOCK_RECORD: { entries: [{ name: 'LOGO', basePoint: { x: 0, y: 0, z: 0 }, entities: [], description: 'x', handle: '1F', flags: 4, extra: 1 }] },
+    },
+    objects: { IMAGEDEF: [{ handle: 42, fileName: 'C:/img/logo.png', extra: 1 }] },
+  };
+  const keysDeep = (v: unknown): string[] => {
+    if (Array.isArray(v)) return v.flatMap((x, i) => keysDeep(x).map((k) => `${i}.${k}`));
+    if (v && typeof v === 'object') return Object.entries(v).flatMap(([k, x]) => [k, ...keysDeep(x).map((c) => `${k}.${c}`)]).sort();
+    return [];
+  };
+  it('carries the same keys and values (image definitions, block handles and flags included)', () => {
+    const node = payloadFromDatabase(db, 'R_2000');
+    const browser = toImportPayload(db as unknown as Parameters<typeof toImportPayload>[0], 'R_2000');
+    expect(keysDeep(node)).toEqual(keysDeep(browser));
+    expect(node).toEqual(browser);
+    expect(node.imageDefs).toEqual([{ handle: '42', fileName: 'C:/img/logo.png' }]);
+    expect(node.blocks[0]).toMatchObject({ handle: '1F', flags: 4 });
+  });
 });

@@ -3,6 +3,7 @@ import { readDxf, writeDxf } from '../src/io/dxf';
 import { textStylesOf, textStyleOf, textStyleFromGroups, isPlainStandard, STANDARD_TEXT_STYLE, withTextStyle } from '../src/io/encoding';
 import { textRenderer, drawStyledText, fontStack, fontWeight, canvasFont, setTextStyles, isTrueTypeStyle, CAP_HEIGHT_EM, type TextCanvas } from '../src/render/hershey';
 import type { TextEntity, MTextEntity } from '../src/core/entities';
+import { drawEntity } from '../src/render/draw';
 
 const style = (name: string, font: string, extra: string[] = []) => ['0', 'STYLE', '2', name, '70', '0', '40', '0', '41', '1', '50', '0', '71', '0', '42', '0.2', '3', font, '4', '', ...extra];
 
@@ -108,6 +109,56 @@ describe('TrueType text rendering hook', () => {
     expect(calls).toContain('scale 0.8 1');
     expect(calls).toContain('transform');
     expect(canvasFont({ kind: 'canvas', family: 'Arial', bold: true, italic: true, widthFactor: 1, oblique: 0 }, 7.16)).toBe('italic bold 10px Arial');
+    setTextStyles({});
+  });
+});
+
+describe('canvas drawing of styled text', () => {
+  /** A 2D context that records fillText calls with the font in effect and accepts every other call. */
+  const recorder = () => {
+    const fills: string[] = [];
+    let strokes = 0;
+    const state: Record<string, unknown> = { font: '', lineWidth: 1 };
+    const ctx = new Proxy(state, {
+      get: (t, k: string) => {
+        if (k in t) return t[k];
+        if (k === 'fillText') return (text: string) => fills.push(`${text} | ${String(t.font)}`);
+        if (k === 'stroke') return () => void (strokes += 1);
+        return () => {};
+      },
+      set: (t, k: string, v) => {
+        t[k] = v;
+        return true;
+      },
+    }) as unknown as CanvasRenderingContext2D;
+    return { ctx, fills, strokes: () => strokes };
+  };
+  const tf = { scale: 100, toScreen: (p: { x: number; y: number }) => ({ x: p.x * 100, y: 500 - p.y * 100 }) };
+  const styles = readDxf(DXF);
+
+  it('draws TEXT with a TrueType style in the canvas font and SHX styles with strokes', () => {
+    setTextStyles(textStylesOf(styles));
+    const t: TextEntity = { id: 't', layer: '0', color: 7, type: 'text', position: { x: 0, y: 0 }, text: 'Motor', height: 0.2, rotation: 0, align: 'left' };
+    const r = recorder();
+    drawEntity(r.ctx, withTextStyle(t, 'ARIAL'), tf, styles.layers, () => undefined);
+    expect(r.fills).toEqual([`Motor | ${Number((20 / CAP_HEIGHT_EM).toFixed(2))}px Arial, "Liberation Sans", Arimo, Helvetica, sans-serif`]);
+    const shx = recorder();
+    drawEntity(shx.ctx, withTextStyle(t, 'ROMANS'), tf, styles.layers, () => undefined);
+    expect(shx.fills).toEqual([]);
+    expect(shx.strokes()).toBeGreaterThan(0);
+    setTextStyles({});
+  });
+
+  it('applies the MTEXT style to formatted runs too', () => {
+    setTextStyles(textStylesOf(styles));
+    const m = withTextStyle<MTextEntity>(
+      { id: 'm', layer: '0', color: 7, type: 'mtext', position: { x: 0, y: 1 }, text: 'plain red', raw: 'plain {\\C1;red}', height: 0.2, rotation: 0, width: 0, attachment: 1, lineSpacing: 1 },
+      'ARIAL',
+    );
+    const r = recorder();
+    drawEntity(r.ctx, m, tf, styles.layers, () => undefined);
+    expect(r.fills.map((f) => f.split(' | ')[0])).toEqual(['plain', 'red']);
+    expect(r.fills.every((f) => f.includes('Arial'))).toBe(true);
     setTextStyles({});
   });
 });

@@ -651,6 +651,27 @@ ipcMain.handle('plugins-read', async (_ev, folder) => {
   const file = path.join(dir, main);
   return { manifest, code: await readLimited(file, MAX_PLUGIN_CODE), path: file };
 });
+// ------------------------------------------------------------------ raster images of IMAGE entities (read-image)
+// The renderer resolves IMAGEDEF paths against the drawing's folder and asks for absolute
+// paths of image files only; the bytes come back as a data URL (null when missing or too big).
+const IMAGE_TYPES = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.bmp': 'image/bmp', '.webp': 'image/webp' };
+const MAX_IMAGE_BYTES = 50 * 1024 * 1024;
+ipcMain.handle('read-image', async (_ev, file) => {
+  if (typeof file !== 'string' || file.length > 4096 || file.includes('\0') || !path.isAbsolute(file)) throw new Error('Invalid path');
+  const type = IMAGE_TYPES[path.extname(file).toLowerCase()];
+  if (!type) throw new Error('Not an image file');
+  let stat;
+  try {
+    stat = await fs.stat(file);
+  } catch (err) {
+    if (err && (err.code === 'ENOENT' || err.code === 'ENOTDIR')) return null;
+    throw err;
+  }
+  if (!stat.isFile() || stat.size > MAX_IMAGE_BYTES) return null;
+  const bytes = await fs.readFile(file);
+  return `data:${type};base64,${bytes.toString('base64')}`;
+});
+// ------------------------------------------------------------------ end of read-image
 
 // ------------------------------------------------------------------ catalog packs (app data folder / packs)
 // Signed manufacturer catalogs (*.jcadpack.json, see docs/CATALOG-PACKS.md). The renderer verifies the

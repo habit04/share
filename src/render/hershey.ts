@@ -246,12 +246,29 @@ export interface TextCanvas {
  */
 export function drawStyledText(
   ctx: TextCanvas,
-  e: { readonly position: { x: number; y: number }; readonly text: string; readonly height: number; readonly rotation: number; readonly align: 'left' | 'center' | 'right'; readonly style?: string },
+  e: {
+    readonly position: { x: number; y: number };
+    readonly text: string;
+    readonly height: number;
+    readonly rotation: number;
+    readonly align: 'left' | 'center' | 'right';
+    readonly style?: string;
+    /** The entity's own width factor / oblique (TEXT group 41 / 51, MTEXT \W / \Q) win over the style's when set. */
+    readonly widthFactor?: number;
+    readonly oblique?: number;
+    readonly bold?: boolean;
+  },
   tf: { toScreen(p: { x: number; y: number }): { x: number; y: number }; scale: number },
   styleName: string | undefined = textStyleOf(e),
 ): boolean {
-  const r = textRenderer(styleName);
-  if (r.kind !== 'canvas') return false;
+  const base = textRenderer(styleName);
+  if (base.kind !== 'canvas') return false;
+  const r = {
+    ...base,
+    ...(e.widthFactor !== undefined && e.widthFactor > 0 && e.widthFactor !== 1 ? { widthFactor: e.widthFactor } : {}),
+    ...(e.oblique ? { oblique: e.oblique } : {}),
+    ...(e.bold ? { bold: true } : {}),
+  };
   const p = tf.toScreen(e.position);
   ctx.save();
   ctx.translate(p.x, p.y);

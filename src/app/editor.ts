@@ -52,7 +52,8 @@ interface SelectionRequest {
 }
 
 export type OpenResult =
-  | { path: string; kind: 'dxf'; text: string }
+  /** `encoding`: the code page the DXF bytes were decoded from ($DWGCODEPAGE / BOM), when the desktop build detected one. */
+  | { path: string; kind: 'dxf'; text: string; encoding?: string }
   | { path: string; kind: 'dwg'; payload: DwgImportPayload; version?: string };
 
 /** Sheet size in inches (already oriented) plus Electron's named page size when there is one. */
@@ -744,14 +745,14 @@ export class Editor {
           this.emit('file');
           return;
         }
-        const state = readDxf(res.text);
+        const state = readDxf(res.text, { filePath: res.path });
         this.loadState(state, res.path);
-        this.log(`Opened ${res.path}: ${state.entities.length} entities, ${state.layers.length} layers, ${Object.keys(state.blocks).length} blocks.`);
+        this.log(`Opened ${res.path}: ${state.entities.length} entities, ${state.layers.length} layers, ${Object.keys(state.blocks).length} blocks.${res.encoding ? ` Encoding: ${res.encoding}.` : ''}`);
         return;
       }
       const res = await this.fileBridge.openDxf();
       if (!res) return;
-      const state = readDxf(res.text);
+      const state = readDxf(res.text, { filePath: res.path });
       this.loadState(state, res.path);
       this.log(`Opened ${res.path}: ${state.entities.length} entities, ${state.layers.length} layers, ${Object.keys(state.blocks).length} blocks.`);
     } catch (err) {
