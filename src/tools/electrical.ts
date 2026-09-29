@@ -7,9 +7,9 @@ import { LineTool } from './draw';
 import type { Tool, ToolContext, LadderSettings, SymbolPick } from './types';
 import { tagPrefix, registerTagPrefixes, WIRE_DOT } from '../electrical/symbols';
 import { LIBRARY_BLOCKS, findLibrarySymbol } from '../electrical/library';
-import { isWire, isHorizontal, wireTeeAt, findWireAt, breakWire, nearestReference, wireDot, hasDotAt } from '../electrical/ladder';
+import { isWire, isHorizontal, wireTeeAt, findWireAt, breakWire, nearestReference, wireDot, hasDotAt, ladderMetrics } from '../electrical/ladder';
 import { assignWireNumbers as assignWireNumbersImpl, breakForInsert, connectsVertically, findOrientedWireAt, type WireNumberOptions } from '../electrical/wires';
-import { readWdSettings, type WdSettings } from '../electrical/wdm';
+import { readWdSettings, drawingUnitScale, type WdSettings } from '../electrical/wdm';
 import { nextTag, usedTags, usedTagsOfFamily } from '../electrical/tags';
 import { pinAttributes, DATA_ATTRIBUTES, isVerticalBlock, verticalVariant, verticalVariantName } from '../electrical/attributes';
 import { isChildBlock, isCoilBlock, registerSymbolRole } from '../electrical/families';
@@ -62,6 +62,15 @@ export const DEFAULT_LADDER: LadderSettings = {
   drawRungs: false,
 };
 
+/**
+ * Ladder dialog defaults for a drawing: width and rung spacing from its WD_M
+ * settings (millimetre values in metric drawings, see docs/METRIC.md).
+ */
+export function ladderDefaultsFor(doc: Drawing): LadderSettings {
+  const wd = readWdSettings(doc);
+  return { ...DEFAULT_LADDER, width: wd.ladderWidth, spacing: wd.rungSpacing };
+}
+
 /** AEWIRE: like LINE, but always on WIRES layer and ortho-constrained; adds junction dots at tees. */
 export class WireTool extends LineTool {
   override readonly name = 'AEWIRE';
@@ -91,9 +100,10 @@ export class WireTool extends LineTool {
     }
     const tol = ctx.aperture() * 0.5;
     const adds: Entity[] = [];
+    const unitScale = drawingUnitScale(ctx.doc);
     const dotAt = (pt: Point) => {
       if (hasDotAt(ctx.doc, pt) || adds.some((d) => d.type === 'insert' && g.dist(d.position, pt) < 1e-6)) return;
-      adds.push(wireDot(pt));
+      adds.push(wireDot(pt, unitScale));
     };
     if (last) adds.push(this.makeSegment(ctx, last, q));
     // A wire that starts or ends in the middle of another wire is a tee.
@@ -137,11 +147,14 @@ export class WireTool extends LineTool {
 /** AELADDER: insert a ladder (two rails + rungs + reference numbers). */
 export class LadderTool implements Tool {
   readonly name = 'AELADDER';
-  private settings: LadderSettings = { ...DEFAULT_LADDER };
+  private settings: LadderSettings | null = null;
   private ready = false;
+  private unitScale = 1;
 
   start(ctx: ToolContext): void {
     this.ready = false;
+    this.unitScale = drawingUnitScale(ctx.doc);
+    this.settings ??= ladderDefaultsFor(ctx.doc);
     ctx.prompt('Insert Ladder...');
     void ctx.ui.ladderSettings(this.settings).then((s) => {
       if (!s) {
@@ -155,7 +168,8 @@ export class LadderTool implements Tool {
   }
 
   private build(ctx: ToolContext, origin: Point): Entity[] {
-    const s = this.settings;
+    const s = this.settings ?? DEFAULT_LADDER;
+    const m = ladderMetrics(this.unitScale);
     const out: Entity[] = [];
     const height = s.spacing * (s.rungs - 1);
     const left = origin.x;
@@ -165,7 +179,7 @@ export class LadderTool implements Tool {
     const rail = (x: number): Entity => ({ id: newId(), layer: 'WIRES', color: 'ByLayer', type: 'line', a: { x, y: top + s.spacing * 0.5 }, b: { x, y: bottom - s.spacing * 0.5 } });
     out.push(rail(left), rail(right));
     if (s.threePhase) {
-      out.push(rail(left - 0.5), rail(left - 1.0));
+      out.push(rail(left - m.phaseSpacing), rail(left - 2 * m.phaseSpacing));
     }
     for (let i = 0; i < s.rungs; i += 1) {
       const y = top - i * s.spacing;
@@ -175,9 +189,9 @@ export class LadderTool implements Tool {
         layer: 'MISC',
         color: 'ByLayer',
         type: 'text',
-        position: { x: left - 0.25 - (s.threePhase ? 1 : 0), y: y - 0.06 },
+        position: { x: left - m.referenceOffset - (s.threePhase ? 2 * m.phaseSpacing : 0), y: y - m.referenceDrop },
         text: ref,
-        height: 0.125,
+        height: m.referenceHeight,
         rotation: 0,
         align: 'right',
       };
@@ -191,7 +205,8 @@ export class LadderTool implements Tool {
   onPoint(p: Point, ctx: ToolContext): void {
     if (!this.ready) return;
     ctx.doc.addEntities(this.build(ctx, p));
-    ctx.log(`Ladder inserted: ${this.settings.rungs} rungs, width ${this.settings.width}.`);
+    const s = this.settings ?? DEFAULT_LADDER;
+    ctx.log(`Ladder inserted: ${s.rungs} rungs, width ${s.width}.`);
     ctx.finish();
   }
 
@@ -268,6 +283,8 @@ export class ComponentTool implements Tool {
   readonly name = 'AECOMPONENT';
   private block: string | null = null;
   private lastTarget: LineEntity | null = null;
+  /** Library symbols are drawn in inches: x 25.4 in metric drawings (WD_M UNITS / $INSUNITS). */
+  private unitScale = 1;
 
   constructor(
     private preset?: string,
@@ -279,6 +296,7 @@ export class ComponentTool implements Tool {
 
   start(ctx: ToolContext): void {
     ctx.doc.ensureBlocks(LIBRARY_BLOCKS);
+    this.unitScale = drawingUnitScale(ctx.doc);
     ctx.prompt('Select a symbol from the icon menu...');
     const choose: Promise<SymbolPick | string | null> = this.preset ? Promise.resolve(this.preset) : ctx.ui.pickSymbol();
     void choose.then((picked) => {
@@ -311,7 +329,7 @@ export class ComponentTool implements Tool {
       block: this.block!,
       position: pos,
       rotation: 0,
-      scale: 1,
+      scale: this.unitScale,
       attributes: attrs,
     };
   }

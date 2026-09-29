@@ -9,6 +9,15 @@ const DEV_URL = process.env.VITE_DEV_SERVER_URL;
 // ------------------------------------------------------------------ persisted main-process state
 /** Paths the user chose through our own dialogs (persisted so Recent Documents keep working). */
 const knownPaths = new Set();
+/**
+ * The same paths in Unicode NFC: macOS file systems hand out decomposed (NFD) names while
+ * project files and typed names are usually NFC, so "José.dxf" must match either way.
+ */
+const knownNormalized = new Set();
+const nfc = (p) => (typeof p === 'string' ? p.normalize('NFC') : p);
+function isKnownPath(p) {
+  return typeof p === 'string' && (knownPaths.has(p) || knownNormalized.has(nfc(p)));
+}
 let recentFiles = [];
 const stateDir = () => app.getPath('userData');
 const recentFile = () => path.join(stateDir(), 'recent.json');
@@ -18,13 +27,17 @@ const autosaveDir = () => path.join(stateDir(), 'autosave');
 function loadPersistedPaths() {
   try {
     const parsed = JSON.parse(fsSync.readFileSync(recentFile(), 'utf8'));
-    if (Array.isArray(parsed)) for (const p of parsed) if (typeof p === 'string') knownPaths.add(p);
+    if (Array.isArray(parsed)) for (const p of parsed) if (typeof p === 'string') {
+      knownPaths.add(p);
+      knownNormalized.add(nfc(p));
+    }
   } catch {
     /* first run */
   }
 }
 function rememberPath(p) {
   knownPaths.add(p);
+  knownNormalized.add(nfc(p));
   fs.mkdir(stateDir(), { recursive: true })
     .then(() => fs.writeFile(recentFile(), JSON.stringify([...knownPaths].slice(-200)), 'utf8'))
     .catch(() => {});
@@ -270,9 +283,26 @@ let dwgReader = null;
 function dwgReaderPath() {
   return path.join(__dirname, '..', 'scripts', 'dwg-reader.mjs').replace(/app\.asar([\\/])/, 'app.asar.unpacked$1');
 }
-async function readDwg(bytes) {
+/**
+ * Import the reader module. pathToFileURL percent-encodes spaces and non-ASCII
+ * characters, so an install folder such as "C:\Users\José\AppData\...\JCad Electrical" works.
+ */
+function loadReader() {
   if (!dwgReader) dwgReader = import(require('node:url').pathToFileURL(dwgReaderPath()).href);
-  const mod = await dwgReader;
+  return dwgReader;
+}
+/** Decode DXF bytes by $DWGCODEPAGE / $ACADVER / BOM (scripts/dwg-reader.mjs, twin of src/io/encoding.ts). */
+async function decodeDxf(bytes) {
+  try {
+    const mod = await loadReader();
+    return mod.decodeDxfBytes(bytes);
+  } catch {
+    dwgReader = null;
+    return { text: new TextDecoder('utf-8').decode(bytes), encoding: 'utf-8', reason: 'fallback' };
+  }
+}
+async function readDwg(bytes) {
+  const mod = await loadReader();
   try {
     return await mod.readDwgPayload(bytes, 'dwg');
   } catch (err) {
@@ -298,7 +328,7 @@ async function openDrawingFile(win, file) {
     });
     if (res.canceled || res.filePaths.length === 0) return null;
     file = res.filePaths[0];
-  } else if (!knownPaths.has(file)) {
+  } else if (!isKnownPath(file)) {
     // Only paths that came from our own dialogs / recent list may be opened by name.
     throw new Error('Unknown file path');
   }
@@ -309,9 +339,10 @@ async function openDrawingFile(win, file) {
     rememberPath(file);
     return { path: file, kind: 'dwg', payload, version };
   }
-  const text = await fs.readFile(file, 'utf8');
+  // Read bytes, not a UTF-8 string: pre-2007 DXF files are in the $DWGCODEPAGE code page.
+  const { text, encoding } = await decodeDxf(await fs.readFile(file));
   rememberPath(file);
-  return { path: file, kind: 'dxf', text };
+  return { path: file, kind: 'dxf', text, encoding };
 }
 
 ipcMain.handle('open-drawing', async (ev, file) => {
@@ -332,7 +363,7 @@ ipcMain.handle('open-project', async (ev, file) => {
     });
     if (res.canceled || res.filePaths.length === 0) return null;
     file = res.filePaths[0];
-  } else if (!knownPaths.has(file)) throw new Error('Unknown file path');
+  } else if (!isKnownPath(file)) throw new Error('Unknown file path');
   const text = await fs.readFile(file, 'utf8');
   let parsed;
   try {
@@ -443,7 +474,7 @@ ipcMain.handle('open-dxf', async (ev) => {
 
 ipcMain.handle('save-dxf', async (ev, existingPath, text, suggestName) => {
   const win = BrowserWindow.fromWebContents(ev.sender);
-  let target = typeof existingPath === 'string' && knownPaths.has(existingPath) ? existingPath : null;
+  let target = isKnownPath(existingPath) ? existingPath : null;
   if (!target) {
     const res = await dialog.showSaveDialog(win, {
       title: 'Save Drawing As',

@@ -9,6 +9,7 @@ import type { Entity, LineEntity, InsertEntity, TextEntity } from '../core/entit
 import { newId } from '../core/entities';
 import { WIRE_DOT } from './symbols';
 import type { Drawing } from '../core/document';
+import { drawingUnitScale, type UnitSource } from './wdm';
 
 /** Wires are lines on the WIRES layer (or any WIRES_* wire-type layer). */
 export function isWire(e: Entity): e is LineEntity {
@@ -88,8 +89,15 @@ export function breakVerticalWire(wire: LineEntity, y0: number, y1: number): Lin
   return out;
 }
 
-/** Nearest ladder rung reference number for a y position (based on MISC-layer numeric texts). */
-export function nearestReference(doc: { entities: readonly Entity[] }, p: Point): string | null {
+/** How far (in inches of library geometry) a point may sit from a rung reference's line. */
+export const REFERENCE_TOLERANCE = 0.6;
+
+/**
+ * Nearest ladder rung reference number for a y position (based on MISC-layer numeric texts).
+ * The tolerance follows the drawing units (0.6" = 15.24 mm in metric drawings).
+ */
+export function nearestReference(doc: UnitSource, p: Point): string | null {
+  const tol = REFERENCE_TOLERANCE * drawingUnitScale(doc);
   let best: string | null = null;
   let bestD = Infinity;
   for (const e of doc.entities) {
@@ -100,7 +108,7 @@ export function nearestReference(doc: { entities: readonly Entity[] }, p: Point)
       best = e.text;
     }
   }
-  return bestD < 0.6 ? best : null;
+  return bestD < tol ? best : null;
 }
 
 /** Ladder rung reference texts (MISC layer numbers), top to bottom. */
@@ -123,18 +131,48 @@ export function findRails(doc: Drawing, p: Point): { left: LineEntity | null; ri
   return { left, right };
 }
 
-/** Wire junction dot insert. */
-export function wireDot(p: Point): InsertEntity {
-  return { id: newId(), layer: 'WIRES', color: 'ByLayer', type: 'insert', block: WIRE_DOT.name, position: p, rotation: 0, scale: 1, attributes: {} };
+/** Wire junction dot insert (`unitScale` 25.4 in metric drawings, see drawingUnitScale). */
+export function wireDot(p: Point, unitScale = 1): InsertEntity {
+  return { id: newId(), layer: 'WIRES', color: 'ByLayer', type: 'insert', block: WIRE_DOT.name, position: p, rotation: 0, scale: unitScale, attributes: {} };
 }
 
 export function hasDotAt(doc: { entities: readonly Entity[] }, p: Point): boolean {
   return doc.entities.some((e) => e.type === 'insert' && e.block === WIRE_DOT.name && g.dist(e.position, p) < 1e-6);
 }
 
-/** Text height used for wire numbers. */
+/** Text height used for wire numbers (inches; multiply by the drawing's unit scale). */
 export const WIRENO_HEIGHT = 0.125;
 
-export function wireNumberText(pos: Point, label: string, layer = 'WIRENO', align: 'left' | 'center' | 'right' = 'left'): TextEntity {
-  return { id: newId(), type: 'text', layer, color: 'ByLayer', position: pos, text: label, height: WIRENO_HEIGHT, rotation: 0, align };
+/**
+ * Library distances of the ladder / wire-number layout, in inches. Metric
+ * drawings multiply them by 25.4 (`ladderMetrics(drawingUnitScale(doc))`).
+ */
+export const LADDER_METRICS_IN = {
+  /** Wire number text height. */
+  wireNumberHeight: WIRENO_HEIGHT,
+  /** Gap between a wire and the wire number above / below it. */
+  wireNumberGap: 0.05,
+  /** Wire number start from the left end of its wire. */
+  wireNumberInset: 0.15,
+  /** Rung reference text height. */
+  referenceHeight: 0.125,
+  /** Rung reference distance left of the left rail. */
+  referenceOffset: 0.25,
+  /** Rung reference baseline drop below the rung. */
+  referenceDrop: 0.06,
+  /** Distance between the phase rails of a 3-phase ladder. */
+  phaseSpacing: 0.5,
+} as const;
+
+export type LadderMetrics = { readonly [K in keyof typeof LADDER_METRICS_IN]: number };
+
+/** The ladder / wire-number distances in drawing units. */
+export function ladderMetrics(unitScale = 1): LadderMetrics {
+  const out = {} as Record<keyof typeof LADDER_METRICS_IN, number>;
+  for (const k of Object.keys(LADDER_METRICS_IN) as Array<keyof typeof LADDER_METRICS_IN>) out[k] = LADDER_METRICS_IN[k] * unitScale;
+  return out;
+}
+
+export function wireNumberText(pos: Point, label: string, layer = 'WIRENO', align: 'left' | 'center' | 'right' = 'left', height = WIRENO_HEIGHT): TextEntity {
+  return { id: newId(), type: 'text', layer, color: 'ByLayer', position: pos, text: label, height, rotation: 0, align };
 }

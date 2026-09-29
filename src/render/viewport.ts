@@ -5,6 +5,31 @@ import { gripPoints, entityBounds } from '../core/entities';
 import type { Drawing } from '../core/document';
 import type { SnapResult, TrackPath } from '../core/snap';
 import { drawEntity, renderSettings, type Transform } from './draw';
+import { setTextStyles } from './hershey';
+import { textStylesOf } from '../io/encoding';
+
+/**
+ * High-DPI helpers. The canvas backing store has devicePixelRatio device pixels
+ * per CSS pixel and every drawing call works in CSS pixels (render() sets the
+ * dpr transform), so line widths, text, the pickbox, the aperture and grips are
+ * the same CSS size on every monitor. A 1-CSS-px line is crisp when its centre
+ * sits on a device-pixel centre (odd device width) or boundary (even width).
+ */
+export function crisp(v: number, dpr: number, cssWidth = 1): number {
+  const w = Math.max(1, Math.round(cssWidth * dpr));
+  const d = v * dpr;
+  return (w % 2 === 1 ? Math.floor(d) + 0.5 : Math.round(d)) / dpr;
+}
+
+/** Width in CSS px of the thinnest crisp line: one CSS px, rounded to whole device pixels (1 at dpr 1 and 2). */
+export function hairline(dpr: number): number {
+  return Math.max(1, Math.round(dpr)) / dpr;
+}
+
+/** Backing-store size for a CSS size (whole device pixels, at least 1). */
+export function backingSize(cssWidth: number, cssHeight: number, dpr: number): { width: number; height: number } {
+  return { width: Math.max(1, Math.round(cssWidth * dpr)), height: Math.max(1, Math.round(cssHeight * dpr)) };
+}
 
 export interface ViewportOverlay {
   /** Entities being constructed (rubber band). */
@@ -73,21 +98,61 @@ export class Viewport {
    */
   underlay: ((ctx: CanvasRenderingContext2D, vp: Viewport) => void) | null = null;
   private raf = 0;
+  private lastOverlay: ViewportOverlay | null = null;
+  private dprQuery: { mq: MediaQueryList; handler: () => void } | null = null;
+  /** Called after a devicePixelRatio change (window moved to another monitor, browser zoom) resized the canvas. */
+  onDprChange: ((dpr: number) => void) | null = null;
 
   constructor(canvas: HTMLCanvasElement, private doc: Drawing) {
     this.canvas = canvas;
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error('2D canvas unsupported');
     this.ctx = ctx;
+    this.watchDevicePixelRatio();
   }
 
   resize(): void {
     const rect = this.canvas.getBoundingClientRect();
-    this.dpr = window.devicePixelRatio || 1;
+    this.dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
     this.width = Math.max(1, Math.floor(rect.width));
     this.height = Math.max(1, Math.floor(rect.height));
-    this.canvas.width = Math.floor(this.width * this.dpr);
-    this.canvas.height = Math.floor(this.height * this.dpr);
+    const size = backingSize(this.width, this.height, this.dpr);
+    if (this.canvas.width !== size.width) this.canvas.width = size.width;
+    if (this.canvas.height !== size.height) this.canvas.height = size.height;
+  }
+
+  /**
+   * A window dragged to a monitor with another scale factor keeps its CSS size, so
+   * neither 'resize' nor the ResizeObserver fires: listen for the resolution media
+   * query of the current ratio instead, and re-arm it for the new ratio each time.
+   */
+  private watchDevicePixelRatio(): void {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    const dpr = window.devicePixelRatio || 1;
+    const mq = window.matchMedia(`(resolution: ${dpr}dppx)`);
+    const handler = () => {
+      mq.removeEventListener('change', handler);
+      this.dprQuery = null;
+      this.resize();
+      if (this.lastOverlay) this.requestRender(this.lastOverlay);
+      this.onDprChange?.(this.dpr);
+      this.watchDevicePixelRatio();
+    };
+    mq.addEventListener('change', handler);
+    this.dprQuery = { mq, handler };
+  }
+
+  /** Stop listening for devicePixelRatio changes (a viewport that is thrown away). */
+  dispose(): void {
+    if (this.dprQuery) this.dprQuery.mq.removeEventListener('change', this.dprQuery.handler);
+    this.dprQuery = null;
+    if (this.raf) cancelAnimationFrame(this.raf);
+    this.raf = 0;
+  }
+
+  /** Crisp CSS-pixel coordinate for a line of `cssWidth` (see `crisp`). */
+  px(v: number, cssWidth = 1): number {
+    return crisp(v, this.dpr, cssWidth);
   }
 
   get transform(): Transform {
@@ -163,6 +228,7 @@ export class Viewport {
   }
 
   requestRender(overlay: ViewportOverlay): void {
+    this.lastOverlay = overlay;
     if (this.raf) cancelAnimationFrame(this.raf);
     this.raf = requestAnimationFrame(() => {
       this.raf = 0;
@@ -172,6 +238,7 @@ export class Viewport {
 
   render(ov: ViewportOverlay): void {
     const { ctx } = this;
+    this.lastOverlay = ov;
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     ctx.fillStyle = this.settings.background;
     ctx.fillRect(0, 0, this.width, this.height);
@@ -188,6 +255,7 @@ export class Viewport {
     renderSettings.pdmode = header.pdmode;
     renderSettings.pdsize = header.pdsize;
     renderSettings.linetypes = header.linetypes;
+    setTextStyles(textStylesOf(this.doc.snapshot));
 
     const tf = this.transform;
     const layers = this.doc.layers;
@@ -266,7 +334,7 @@ export class Viewport {
     const startX = Math.floor(vb.min.x / step) * step;
     const startY = Math.floor(vb.min.y / step) * step;
 
-    ctx.lineWidth = 1;
+    ctx.lineWidth = hairline(this.dpr);
     const isMajor = (v: number) => Math.abs(v / major - Math.round(v / major)) < 1e-6;
 
     if (this.settings.gridStyle === 'dots') {
@@ -281,13 +349,13 @@ export class Viewport {
     ctx.beginPath();
     for (let x = startX; x <= vb.max.x; x += step) {
       if (isMajor(x) || x < vb.min.x || this.settings.gridStyle === 'dots') continue;
-      const sx = Math.round(this.toScreen({ x, y: 0 }).x) + 0.5;
+      const sx = this.px(this.toScreen({ x, y: 0 }).x);
       ctx.moveTo(sx, top);
       ctx.lineTo(sx, bottom);
     }
     for (let y = startY; y <= vb.max.y; y += step) {
       if (isMajor(y) || y < vb.min.y || this.settings.gridStyle === 'dots') continue;
-      const sy = Math.round(this.toScreen({ x: 0, y }).y) + 0.5;
+      const sy = this.px(this.toScreen({ x: 0, y }).y);
       ctx.moveTo(left, sy);
       ctx.lineTo(right, sy);
     }
@@ -297,45 +365,45 @@ export class Viewport {
     ctx.beginPath();
     for (let x = Math.floor(vb.min.x / major) * major; x <= vb.max.x; x += major) {
       if (x < vb.min.x) continue;
-      const sx = Math.round(this.toScreen({ x, y: 0 }).x) + 0.5;
+      const sx = this.px(this.toScreen({ x, y: 0 }).x);
       ctx.moveTo(sx, top);
       ctx.lineTo(sx, bottom);
     }
     for (let y = Math.floor(vb.min.y / major) * major; y <= vb.max.y; y += major) {
       if (y < vb.min.y) continue;
-      const sy = Math.round(this.toScreen({ x: 0, y }).y) + 0.5;
+      const sy = this.px(this.toScreen({ x: 0, y }).y);
       ctx.moveTo(left, sy);
       ctx.lineTo(right, sy);
     }
     ctx.stroke();
     if (!this.settings.gridBeyondLimits) {
       ctx.strokeStyle = 'rgba(255,255,255,0.2)';
-      ctx.strokeRect(Math.round(left) + 0.5, Math.round(top) + 0.5, Math.round(right - left), Math.round(bottom - top));
+      ctx.strokeRect(this.px(left), this.px(top), Math.round(right - left), Math.round(bottom - top));
     }
 
     // Axes
     const o = this.toScreen({ x: 0, y: 0 });
     ctx.strokeStyle = 'rgba(200,60,60,0.3)';
     ctx.beginPath();
-    ctx.moveTo(0, Math.round(o.y) + 0.5);
-    ctx.lineTo(this.width, Math.round(o.y) + 0.5);
+    ctx.moveTo(0, this.px(o.y));
+    ctx.lineTo(this.width, this.px(o.y));
     ctx.stroke();
     ctx.strokeStyle = 'rgba(80,200,80,0.3)';
     ctx.beginPath();
-    ctx.moveTo(Math.round(o.x) + 0.5, 0);
-    ctx.lineTo(Math.round(o.x) + 0.5, this.height);
+    ctx.moveTo(this.px(o.x), 0);
+    ctx.lineTo(this.px(o.x), this.height);
     ctx.stroke();
   }
 
   private drawCrosshair(world: Point, dynText: string[], mode: ViewportOverlay['cursorMode']): void {
     const { ctx } = this;
     const s = this.toScreen(world);
-    const x = Math.round(s.x) + 0.5;
-    const y = Math.round(s.y) + 0.5;
+    const x = this.px(s.x);
+    const y = this.px(s.y);
     const half = (Math.max(this.width, this.height) * this.settings.crosshairSize) / 100;
     const box = this.settings.pickBox;
     ctx.save();
-    ctx.lineWidth = 1;
+    ctx.lineWidth = hairline(this.dpr);
     ctx.strokeStyle = this.settings.crosshairColor ?? '#ffffff';
     if (mode !== 'select') {
       // crosshair; in a point prompt the lines meet at the cursor (no pickbox gap)
@@ -361,7 +429,7 @@ export class Viewport {
         ctx.fillStyle = 'rgba(28, 32, 38, 0.92)';
         ctx.strokeStyle = 'rgba(160,160,160,0.7)';
         ctx.fillRect(x + 14, ty - 12, w, 17);
-        ctx.strokeRect(x + 14.5, ty - 11.5, w, 17);
+        ctx.strokeRect(this.px(x + 14), this.px(ty - 12), w, 17);
         ctx.fillStyle = '#e8e8e8';
         ctx.fillText(line, x + 19, ty);
         ty += 20;
@@ -377,9 +445,9 @@ export class Viewport {
     ctx.save();
     ctx.fillStyle = hot ? (this.settings.gripHoverColor ?? '#ff3d3d') : (this.settings.gripColor ?? '#1a3dff');
     ctx.strokeStyle = '#0b0b0b';
-    ctx.lineWidth = 1;
+    ctx.lineWidth = hairline(this.dpr);
     ctx.fillRect(Math.round(s.x) - h, Math.round(s.y) - h, h * 2, h * 2);
-    ctx.strokeRect(Math.round(s.x) - h + 0.5, Math.round(s.y) - h + 0.5, h * 2, h * 2);
+    ctx.strokeRect(this.px(Math.round(s.x) - h), this.px(Math.round(s.y) - h), h * 2, h * 2);
     ctx.restore();
   }
 
@@ -402,8 +470,8 @@ export class Viewport {
       ctx.setLineDash([5, 4]);
     }
     ctx.fillRect(x, y, w, h);
-    ctx.lineWidth = 1;
-    ctx.strokeRect(Math.round(x) + 0.5, Math.round(y) + 0.5, Math.round(w), Math.round(h));
+    ctx.lineWidth = hairline(this.dpr);
+    ctx.strokeRect(this.px(x), this.px(y), Math.round(w), Math.round(h));
     ctx.restore();
   }
 
