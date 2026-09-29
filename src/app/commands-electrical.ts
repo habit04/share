@@ -259,8 +259,13 @@ export function registerElectricalCommands(editor: Editor): void {
     ed.doc.transact((s) => {
       const blocks = { ...s.blocks };
       for (const b of lib) {
-        if (blocks[b.name] && blocks[b.name] !== b) {
-          blocks[b.name] = b;
+        const cur = blocks[b.name];
+        if (cur && cur !== b) {
+          // Keep attribute definitions this drawing added on top of the library symbol (XREF, JUMPER,
+          // TAGFIXED ...): the DXF writer only writes values whose block defines the tag.
+          const have = new Set(b.attributes.map((a) => a.tag));
+          const extra = cur.attributes.filter((a) => !have.has(a.tag));
+          blocks[b.name] = extra.length ? { ...b, attributes: [...b.attributes, ...extra] } : b;
           n += 1;
         }
       }

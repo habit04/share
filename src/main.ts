@@ -40,6 +40,7 @@ declare global {
       openDrawing(file?: string): Promise<import('./app/editor').OpenResult | null>;
       openProject(file?: string): Promise<{ path: string; text: string } | null>;
       saveText(suggestName: string, text: string, filterName: string, ext: string): Promise<string | null>;
+      backupFile?(file: string): Promise<string | null>;
       plotPdf(dataUrl: string, suggestName: string, landscape: boolean, sheet?: { width: number; height: number; electron?: string }): Promise<string | null>;
       printDrawing?(dataUrl: string, title: string, landscape: boolean, sheet?: { width: number; height: number; electron?: string }): Promise<boolean>;
       saveDxf(path: string | null, text: string, suggestName: string): Promise<string | null>;

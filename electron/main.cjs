@@ -396,6 +396,22 @@ ipcMain.handle('save-text', async (ev, suggestName, text, filterName, ext) => {
   return res.filePath;
 });
 
+/**
+ * Copy a drawing or project file to `<file>.bak` before a project-wide command rewrites it.
+ * Only files the renderer legitimately knows (DXF drawings and project files) are copied.
+ */
+ipcMain.handle('backup-file', async (ev, file) => {
+  if (typeof file !== 'string' || !/\.(dxf|jcadproj\.json)$/i.test(file)) return null;
+  try {
+    const target = `${file}.bak`;
+    await fs.copyFile(file, target);
+    return target;
+  } catch (err) {
+    logMainError('backup-file', err);
+    return null;
+  }
+});
+
 /** Plot: the renderer sends a PNG data URL of the sheet; we print it to PDF via a hidden window. */
 ipcMain.handle('plot-pdf', async (ev, dataUrl, suggestName, landscape, sheet) => {
   const win = BrowserWindow.fromWebContents(ev.sender);

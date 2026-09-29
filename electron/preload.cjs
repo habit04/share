@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('jcad', {
   openDrawing: (file) => ipcRenderer.invoke('open-drawing', file),
   openProject: (file) => ipcRenderer.invoke('open-project', file),
   saveText: (suggestName, text, filterName, ext) => ipcRenderer.invoke('save-text', suggestName, text, filterName, ext),
+  backupFile: (file) => ipcRenderer.invoke('backup-file', file),
   plotPdf: (dataUrl, suggestName, landscape, sheet) => ipcRenderer.invoke('plot-pdf', dataUrl, suggestName, landscape, sheet),
   printDrawing: (dataUrl, title, landscape, sheet) => ipcRenderer.invoke('print-drawing', dataUrl, title, landscape, sheet),
   saveDxf: (path, text, suggestName) => ipcRenderer.invoke('save-dxf', path, text, suggestName),

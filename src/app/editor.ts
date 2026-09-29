@@ -31,6 +31,7 @@ import { registerElectricalCommands } from './commands-electrical';
 import { registerDraftingCommands } from './commands-drafting';
 import { registerSymbolBuilderCommands, type SymbolBuilderUi } from '../tools/symbol-builder';
 import { registerUnitCommands } from '../electrical/wdm';
+import { registerPanelCommands } from '../tools/panel';
 import { trackFromPoints } from '../core/snap';
 
 export type EditorEvent = 'change' | 'selection' | 'tool' | 'view' | 'snap' | 'file' | 'log';
@@ -68,6 +69,8 @@ export interface FileBridge {
   saveDxf(path: string | null, text: string, suggestName: string): Promise<string | null>;
   openProject?(file?: string): Promise<{ path: string; text: string } | null>;
   saveText?(suggestName: string, text: string, filterName: string, ext: string): Promise<string | null>;
+  /** Desktop only: copy a drawing/project file to `<path>.bak` before it is rewritten; returns the copy's path. */
+  backupFile?(path: string): Promise<string | null>;
   plotPdf?(dataUrl: string, suggestName: string, landscape: boolean, sheet?: PlotSheet): Promise<string | null>;
   /** Print the rendered sheet through the system print dialog; resolves true when a job was sent. */
   printDrawing?(dataUrl: string, title: string, landscape: boolean, sheet?: PlotSheet): Promise<boolean>;
@@ -512,6 +515,7 @@ export class Editor {
     registerElectricalCommands(this);
     registerSymbolBuilderCommands(this);
     registerUnitCommands(this);
+    registerPanelCommands(this);
   }
 
   /** Hook for keywords typed at a "Select objects:" prompt (ALL / Last / Previous); returns true when handled. */
