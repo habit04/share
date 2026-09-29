@@ -4,13 +4,14 @@
 //
 //   node scripts/build-site.mjs            full build
 //   node scripts/build-site.mjs --no-app   landing page only (keeps an existing site-dist/app)
+import { createHash } from 'node:crypto';
 import { cp, mkdir, readFile, rm, writeFile, stat } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const out = join(root, 'site-dist');
+const out = process.env.JCAD_SITE_OUT || join(root, 'site-dist');
 const withApp = !process.argv.includes('--no-app');
 
 const about = JSON.parse(await readFile(join(root, 'src/app/about.json'), 'utf8'));
@@ -69,7 +70,15 @@ function render(html) {
 if (withApp) await rm(out, { recursive: true, force: true });
 await mkdir(out, { recursive: true });
 await cp(join(root, 'site'), out, { recursive: true });
-await writeFile(join(out, 'index.html'), render(await readFile(join(root, 'site/index.html'), 'utf8')));
+// Version query on the page's own stylesheet / script so a redeploy never pairs a new index.html
+// with a cached old site.css / site.js (GitHub Pages caches for ~10 minutes).
+const assetVersion = createHash('sha256')
+  .update(await readFile(join(root, 'site/site.css')))
+  .update(await readFile(join(root, 'site/site.js')))
+  .digest('hex')
+  .slice(0, 10);
+const withVersions = (html) => html.replace(/(href|src)="(site\.(?:css|js))"/g, (m, attr, file) => `${attr}="${file}?v=${assetVersion}"`);
+await writeFile(join(out, 'index.html'), withVersions(render(await readFile(join(root, 'site/index.html'), 'utf8'))));
 await writeFile(join(out, '.nojekyll'), '');
 
 // 2. Browser edition (vite build --mode site -> site-dist/app, base ./; see vite.config.ts).
@@ -77,7 +86,7 @@ if (withApp) {
   execFileSync(process.execPath, [join(root, 'node_modules/vite/bin/vite.js'), 'build', '--mode', 'site'], { cwd: root, stdio: 'inherit' });
 }
 
-for (const f of ['index.html', 'site.css', 'site.js', 'app/index.html']) {
+for (const f of withApp ? ['index.html', 'site.css', 'site.js', 'app/index.html'] : ['index.html', 'site.css', 'site.js']) {
   await stat(join(out, f)).catch(() => {
     throw new Error(`build-site: ${f} was not produced`);
   });

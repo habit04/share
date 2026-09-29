@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -74,12 +75,17 @@ describe('landing page (site/)', () => {
     }
   });
 
-  // GAP (reported): site.css and site.js are referenced by fixed names without a version query, so
-  // for up to GitHub Pages' 10-minute cache lifetime a visitor can combine a new index.html with the
-  // previous stylesheet / script. build-site.mjs could append ?v=<version or content hash>.
-  it.fails('versions the landing page stylesheet and script for cache-busting', () => {
-    expect(landing).toMatch(/href="site\.css\?v=[^"]+"/);
-    expect(landing).toMatch(/src="site\.js\?v=[^"]+"/);
+  it('versions the landing page stylesheet and script for cache-busting', () => {
+    // The build script (landing-page step only) writes the version query; the source stays plain.
+    const dir = mkdtempSync(join(tmpdir(), 'jcad-landing-'));
+    try {
+      execFileSync(process.execPath, [join(root, 'scripts/build-site.mjs'), '--no-app'], { cwd: root, env: { ...process.env, JCAD_SITE_OUT: dir }, stdio: 'pipe' });
+      const built = readFileSync(join(dir, 'index.html'), 'utf8');
+      expect(built).toMatch(/href="site\.css\?v=[a-f0-9]{10}"/);
+      expect(built).toMatch(/src="site\.js\?v=[a-f0-9]{10}"/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

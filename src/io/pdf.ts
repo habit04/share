@@ -28,6 +28,21 @@ function concat(parts: Uint8Array[]): Uint8Array {
   return out;
 }
 
+/** A PDF text string: plain ASCII in parentheses, anything else as UTF-16BE hex (PDF readers decode
+ *  parenthesised strings as PDFDocEncoding, so UTF-8 bytes would show garbled). */
+export function pdfString(text: string): string {
+  if (/^[\x20-\x7e]*$/.test(text)) return `(${text.replace(/[()\\]/g, '')})`;
+  let hex = 'FEFF';
+  for (const ch of text) {
+    const cp = ch.codePointAt(0)!;
+    if (cp > 0xffff) {
+      const v = cp - 0x10000;
+      hex += (0xd800 + (v >> 10)).toString(16).padStart(4, '0') + (0xdc00 + (v & 0x3ff)).toString(16).padStart(4, '0');
+    } else hex += cp.toString(16).padStart(4, '0');
+  }
+  return `<${hex.toUpperCase()}>`;
+}
+
 /** Build a single-page PDF (sheet size in inches) with the image scaled to the full page. */
 export function imagePdf(image: PdfImage, sheetInches: { width: number; height: number }, title = 'Drawing'): Uint8Array {
   const pw = +(sheetInches.width * 72).toFixed(2);
@@ -48,7 +63,7 @@ export function imagePdf(image: PdfImage, sheetInches: { width: number; height: 
     image.data,
     enc.encode('\nendstream'),
   ]);
-  const info = add(`<< /Title (${title.replace(/[()\\]/g, '')}) /Producer (JCad Electrical) >>`);
+  const info = add(`<< /Title ${pdfString(title)} /Producer (JCad Electrical) >>`);
   void catalog;
   void pages;
   void page;

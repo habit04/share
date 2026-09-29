@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { imagePdf, deflate, rgbaToRgb, dataUrlBytes } from '../src/io/pdf';
+import { pdfString, imagePdf, deflate, rgbaToRgb, dataUrlBytes } from '../src/io/pdf';
 
 const text = (b: Uint8Array) => new TextDecoder('latin1').decode(b);
 
@@ -32,5 +32,15 @@ describe('browser PDF writer', () => {
     const packed = await deflate(new Uint8Array(1000));
     if (packed) expect(packed.length).toBeLessThan(100);
     expect(dataUrlBytes('data:image/png;base64,AQID')).toEqual(new Uint8Array([1, 2, 3]));
+  });
+});
+
+describe('pdfString', () => {
+  it('keeps ASCII titles in parentheses and encodes others as UTF-16BE hex', () => {
+    expect(pdfString('Drawing (1)')).toBe('(Drawing 1)');
+    expect(pdfString('Schéma')).toBe('<FEFF0053006300680000E9006D0061>'.replace('0000E9', '00E9'));
+    expect(pdfString('😀')).toBe('<FEFFD83DDE00>');
+    const t = new TextDecoder('latin1').decode(imagePdf({ width: 1, height: 1, data: new Uint8Array(3), kind: 'rgb' }, { width: 1, height: 1 }, 'Größe'));
+    expect(t).toContain('/Title <FEFF0047007200F600DF0065>');
   });
 });
