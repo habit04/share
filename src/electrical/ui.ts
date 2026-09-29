@@ -14,6 +14,7 @@ import type { CircuitOptions } from './circuits';
 import type { AuditIssue } from './audit';
 import type { Report } from './reports';
 import type { Project, ProjectDrawing } from '../app/project';
+import type { InsertionPrompt } from './symbol-builder-core';
 
 export interface PinField {
   tag: string;
@@ -37,12 +38,21 @@ export interface ComponentDialogInit {
   parents?: ParentInfo[];
   /** Whether the symbol is a child contact (tag comes from the parent). */
   isChild: boolean;
+  /**
+   * User-library symbols: the attributes the standard fields do not cover, in block order
+   * (see `insertionPrompts`), shown as "Other attributes". `verify` ones are confirmed on OK.
+   */
+  prompts?: InsertionPrompt[];
+  /** Edit Component of a parent / stand-alone device: whether its tag is fixed (TAGFIXED); shows the Fixed tag checkbox. */
+  fixedTag?: boolean;
 }
 
 export interface ComponentDialogResult {
   attrs: Record<string, string>;
   /** Parent chosen for a child contact (its tag / data were copied into attrs). */
   parentId?: string;
+  /** The Fixed tag checkbox (only when the init had `fixedTag`). */
+  fixedTag?: boolean;
 }
 
 export interface PickItem {

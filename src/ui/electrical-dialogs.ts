@@ -233,6 +233,12 @@ export function componentDialog(editor: Editor, init: ComponentDialogInit, catal
     }
     const tag = mk('TAG1');
     left.appendChild(field('Component Tag', tag));
+    // Edit Component: the TAGFIXED flag AEFIXTAG toggles (RETAG / AERETAGPROJECT keep fixed tags).
+    const fixed = init.fixedTag !== undefined ? checkbox('Fixed tag (retag keeps it)', init.fixedTag) : null;
+    if (fixed) {
+      fixed.el.title = 'TAGFIXED: renumbering (AERETAG, AERETAGPROJECT) leaves this tag unchanged (AEFIXTAG toggles it for a selection)';
+      fixed.input.dataset.testid = 'fixed-tag';
+    }
     const tagRow = document.createElement('div');
     tagRow.className = 'form-inline';
     tagRow.style.marginTop = '0';
@@ -246,6 +252,7 @@ export function componentDialog(editor: Editor, init: ComponentDialogInit, catal
     nextBtn.addEventListener('click', () => (tag.value = init.nextTag));
     tagRow.append(usedSel, nextBtn);
     if (!init.isChild) left.appendChild(tagRow);
+    if (fixed) left.appendChild(fixed.el);
 
     // Right column: data grid
     const right = document.createElement('div');
@@ -276,6 +283,25 @@ export function componentDialog(editor: Editor, init: ComponentDialogInit, catal
     pinsGrid.style.marginTop = '8px';
     for (const p of init.pins) pinsGrid.appendChild(field(`Pin ${p.tag.slice(-2).replace(/^0/, '')} (${p.tag.slice(0, 2) === 'X1' ? 'left' : p.tag.slice(0, 2) === 'X4' ? 'right' : p.tag.slice(0, 2) === 'X2' ? 'top' : 'bottom'})`, mk(p.tag)));
     right.append(g1, gDesc, g2, catRow);
+    // User-library symbols: their own prompts (Symbol Builder), in block order.
+    const verifyInputs: HTMLInputElement[] = [];
+    const otherInputs = new Map<string, HTMLInputElement>();
+    if (init.prompts?.length) {
+      const h = document.createElement('div');
+      h.className = 'hint';
+      h.textContent = 'Other attributes:';
+      const gOther = grid(2);
+      gOther.style.marginTop = '4px';
+      for (const p of init.prompts) {
+        const i = textInput(init.attrs[p.tag] ?? p.default);
+        i.dataset.tag = p.tag;
+        i.title = `${p.tag}${p.invisible ? ' (invisible)' : ''}${p.verify ? ' - verify: confirmed when you press OK' : ''}`;
+        otherInputs.set(p.tag, i);
+        if (p.verify) verifyInputs.push(i);
+        gOther.appendChild(field(`${p.prompt}${p.verify ? ' (verify)' : ''}`, i));
+      }
+      right.append(h, gOther);
+    }
     if (init.pins.length) {
       const h = document.createElement('div');
       h.className = 'hint';
@@ -289,10 +315,25 @@ export function componentDialog(editor: Editor, init: ComponentDialogInit, catal
 
     const ok = button('OK', true);
     const cancel = button('Cancel');
+    // Verify attributes (ATTDEF flag 4): the first OK focuses them for a check, the next OK accepts.
+    let verified = verifyInputs.length === 0;
+    const verifyNote = document.createElement('div');
+    verifyNote.className = 'hint';
     ok.addEventListener('click', () => {
+      if (!verified) {
+        verified = true;
+        for (const i of verifyInputs) i.classList.add('verify');
+        verifyNote.textContent = `Verify ${verifyInputs.map((i) => i.dataset.tag).join(', ')}, then press OK again.`;
+        if (!verifyNote.isConnected) right.appendChild(verifyNote);
+        verifyInputs[0]!.focus();
+        verifyInputs[0]!.select();
+        return;
+      }
       const attrs: Record<string, string> = { ...init.attrs };
       for (const [k, i] of inputs) attrs[k] = i.value.trim().toUpperCase();
-      finish({ attrs, parentId });
+      // Other attributes keep the case they were typed in (free-text user attributes).
+      for (const [k, i] of otherInputs) attrs[k] = i.value.trim();
+      finish({ attrs, parentId, ...(fixed ? { fixedTag: fixed.input.checked } : {}) });
     });
     cancel.addEventListener('click', () => finish(null));
     m.footer.append(ok, cancel);

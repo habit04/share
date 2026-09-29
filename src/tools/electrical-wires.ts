@@ -34,6 +34,8 @@ import { toggleVariant, isComponent, isChild, isTerminal } from '../electrical/f
 import { CABLE_BLOCK, CABLE_LAYER, assignCable, nextCableTag, isCableMarker, addJumper, removeJumpers, jumperIds, withTerminalUpdates, type CableAssignment } from '../electrical/cables';
 import { LIBRARY_BLOCKS } from '../electrical/library';
 import { readWdSettings, drawingUnitScale } from '../electrical/wdm';
+import { isFixedTag, TAG_FIXED_ATTRIBUTE } from '../electrical/tags';
+import { withInsertAttributes } from '../electrical/attributes';
 import type { ElectricalUi } from '../electrical/ui';
 import { componentDialogInit, componentAttributes, lookupSymbol, symbolPick, resolveSymbolPick } from './electrical';
 
@@ -505,14 +507,23 @@ export class EditComponentTool extends PickTool {
         if (r) {
           const parent = r.parentId ? ctx.doc.entities.find((x): x is InsertEntity => x.id === r.parentId) : undefined;
           const attrs = componentAttributes(r.attrs, parent);
+          // Fixed tag checkbox: the same TAGFIXED attribute AEFIXTAG toggles (RETAG keeps fixed tags).
+          const fix = r.fixedTag;
+          if (fix === false) delete attrs[TAG_FIXED_ATTRIBUTE];
           const oldTag = e.attributes.TAG1;
           const updates: InsertEntity[] = [{ ...e, attributes: attrs }];
           // Retagging a parent carries its children along.
           if (oldTag && attrs.TAG1 && oldTag !== attrs.TAG1 && !isChild(e)) {
             for (const c of ctx.doc.entities) if (isChild(c) && c.attributes.TAG1 === oldTag) updates.push({ ...c, attributes: { ...c.attributes, TAG1: attrs.TAG1 } });
           }
-          ctx.doc.replaceEntities(updates);
-          ctx.log(`${attrs.TAG1 ?? attrs.TERM01 ?? e.block} updated${updates.length > 1 ? ` (${updates.length - 1} child contact(s) retagged)` : ''}.`);
+          const byId = new Map(updates.map((u) => [u.id, u]));
+          ctx.doc.transact((s) => {
+            const next = { ...s, entities: s.entities.map((x) => byId.get(x.id) ?? x) };
+            // withInsertAttributes also gives the block its TAGFIXED definition so the flag survives DXF.
+            return fix ? withInsertAttributes(next, new Map([[e.id, { [TAG_FIXED_ATTRIBUTE]: '1' }]])) : next;
+          });
+          const fixNote = fix !== undefined && fix !== isFixedTag(e) ? (fix ? ', tag fixed' : ', tag released') : '';
+          ctx.log(`${attrs.TAG1 ?? attrs.TERM01 ?? e.block} updated${updates.length > 1 ? ` (${updates.length - 1} child contact(s) retagged)` : ''}${fixNote}.`);
         }
         ctx.finish();
       });

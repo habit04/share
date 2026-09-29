@@ -10,7 +10,9 @@ import { LIBRARY_BLOCKS, findLibrarySymbol } from '../electrical/library';
 import { isWire, isHorizontal, wireTeeAt, findWireAt, breakWire, nearestReference, wireDot, hasDotAt, ladderMetrics } from '../electrical/ladder';
 import { assignWireNumbers as assignWireNumbersImpl, breakForInsert, connectsVertically, findOrientedWireAt, type WireNumberOptions } from '../electrical/wires';
 import { readWdSettings, drawingUnitScale, type WdSettings } from '../electrical/wdm';
-import { nextTag, usedTags, usedTagsOfFamily } from '../electrical/tags';
+import { nextTag, usedTags, usedTagsOfFamily, isFixedTag } from '../electrical/tags';
+import { insertionPrompts, type InsertionPrompt } from '../electrical/symbol-builder-core';
+import { userLibrary } from '../electrical/userlib';
 import { pinAttributes, DATA_ATTRIBUTES, isVerticalBlock, verticalVariant, verticalVariantName } from '../electrical/attributes';
 import { isChildBlock, isCoilBlock, registerSymbolRole } from '../electrical/families';
 import { parentCandidates, childAttributes } from '../electrical/xref';
@@ -240,6 +242,14 @@ export function uniqueTag(doc: Drawing, prefix: string, ref: string | null): str
 }
 
 /** Build the Insert/Edit Component dialog state for a block placed at a point (or an existing insert). */
+/** Attributes the Insert / Edit Component dialog has its own fields for (pins have theirs too). */
+export const COMPONENT_DIALOG_TAGS: ReadonlySet<string> = new Set(['TAG1', 'INST', 'LOC', 'DESC1', 'DESC2', 'DESC3', 'MFG', 'CAT', 'ASSYCODE', 'RATING1']);
+
+/** A symbol's insertion prompts (block order) the dialog's standard fields do not already ask for. */
+export function otherAttributePrompts(def: BlockDef): InsertionPrompt[] {
+  return insertionPrompts(def).filter((p) => !COMPONENT_DIALOG_TAGS.has(p.tag));
+}
+
 export function componentDialogInit(doc: Drawing, block: string, at: Point, existing?: InsertEntity, settings: WdSettings = readWdSettings(doc)): ComponentDialogInit {
   const def = doc.lookupBlock(block) ?? lookupSymbol(block);
   const family = tagPrefix(block);
@@ -254,6 +264,8 @@ export function componentDialogInit(doc: Drawing, block: string, at: Point, exis
   if (!existing && settings.iecLocation && !attrs.LOC) attrs.LOC = settings.iecLocation;
   const pins = def ? pinAttributes(def).map((a) => ({ tag: a.tag, label: a.prompt, value: attrs[a.tag] ?? a.default })) : [];
   for (const k of DATA_ATTRIBUTES) if (attrs[k] === undefined) attrs[k] = '';
+  // User-library symbols carry their own prompts (Symbol Builder): offer the ones not covered above.
+  const prompts = def && userLibrary.has(block) ? otherAttributePrompts(def) : [];
   return {
     block,
     blockDescription: def?.description ?? '',
@@ -265,6 +277,8 @@ export function componentDialogInit(doc: Drawing, block: string, at: Point, exis
     nextTag: suggested,
     parents: child ? parentCandidates(doc) : undefined,
     isChild: child,
+    ...(prompts.length ? { prompts } : {}),
+    ...(existing && !child ? { fixedTag: isFixedTag(existing) } : {}),
   };
 }
 
