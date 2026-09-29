@@ -348,9 +348,10 @@ function dimStyleFromHeader(headerVars: ReadonlyMap<string, Pair[]>, base: DimSt
 
 /**
  * A DIMSTYLE table record: its DIM* group codes through dimStyleFromRecordPairs, arrowheads
- * from JCAD_DIMSTYLE XDATA or, for other programs' files, the 342/343/344 block handles.
+ * from JCAD_DIMSTYLE XDATA or, for other programs' files, the 342/343/344 handles of arrow
+ * blocks, named by the BLOCK_RECORD table among `tables` (the TABLES section's objects).
  */
-function readDimStyleRecord(o: Obj, blockNames: ReadonlyMap<string, string>): DimStyle {
+function readDimStyleRecord(o: Obj, tables: readonly Obj[]): DimStyle {
   const end = o.groups.findIndex((p) => p.code === 1001);
   const own = end < 0 ? o.groups : o.groups.slice(0, end);
   const name = str(o, 2) || 'Standard';
@@ -363,8 +364,9 @@ function readDimStyleRecord(o: Obj, blockNames: ReadonlyMap<string, string>): Di
   const xd = xdata(o, DIMSTYLE_APP);
   if (xd) return applyDimStyleXdata(s, xd);
   const block = (code: number): string | undefined => {
-    const h = own.find((p) => p.code === code)?.value;
-    return h ? blockNames.get(h.toUpperCase()) : undefined;
+    const h = own.find((p) => p.code === code)?.value?.toUpperCase();
+    const rec = h ? tables.find((t) => t.kind === 'BLOCK_RECORD' && str(t, 5).toUpperCase() === h) : undefined;
+    return rec ? str(rec, 2) : undefined;
   };
   const sah = Number(own.find((p) => p.code === 173)?.value ?? 0) !== 0;
   const b1 = sah ? block(343) : block(342);
@@ -837,7 +839,8 @@ export function writeDxf(state: DrawingState): string {
   hv('$PDSIZE', 40, header.pdsize);
   hv('$TEXTSTYLE', 7, 'Standard');
   hv('$DIMSTYLE', 2, ds.name);
-  for (const [name, code, value] of dimHeaderVars(ds)) hv(`$${name}`, code, value);
+  for (const [name, code, value] of dimHeaderVars(ds)) if (name !== 'DIMLUNIT') hv(`$${name}`, code, value);
+  hv('$DIMLUNIT', 70, ds.lunit);
   w.pair(0, 'ENDSEC');
 
   // CLASSES: raster images need their class records.
@@ -2146,6 +2149,22 @@ function readEntities(objs: Obj[], ctx: ReadContext): Entity[] {
 }
 
 export function readDxf(text: string, opts: DxfReadOptions = {}): DrawingState {
+  const dimStyles = new Map<string, DimStyle>();
+  return withDimStylesMeta(readDxfState(text, opts, dimStyles), dimStyles);
+}
+
+/**
+ * Named dimension styles (the DIMSTYLE records read) into `meta.dimStyles`, keyed by name as
+ * core/dimension keeps them; a plain Standard record is implied and not stored.
+ */
+function withDimStylesMeta(state: DrawingState, dimStyles: ReadonlyMap<string, DimStyle>): DrawingState {
+  const named = [...dimStyles.values()].filter((d) => !(d.name.toUpperCase() === 'STANDARD' && diffDimStyles(d, STANDARD_DIMSTYLE).length === 0));
+  if (!named.length) return state;
+  return { ...state, meta: { ...(state.meta ?? {}), [DIMSTYLES_META_KEY]: Object.fromEntries(named.map((d) => [d.name, d])) } };
+}
+
+/** The reader proper; DIMSTYLE records are collected into `dimStyles`. */
+function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string, DimStyle>): DrawingState {
   const pairs = tokenize(decodeUnicodeEscapes(text));
   const textStyles: Record<string, TextStyle> = {};
   const layers: Layer[] = [];
@@ -2153,7 +2172,6 @@ export function readDxf(text: string, opts: DxfReadOptions = {}): DrawingState {
   let entities: Entity[] = [];
   let currentLayer = '0';
   const headerVars = new Map<string, Pair[]>();
-  const dimStyles = new Map<string, DimStyle>();
   const linetypes: Linetype[] = [];
   const views: NamedView[] = [];
   // Header DIM* variables define the current style; the DIMSTYLE table gives named styles.
@@ -2199,9 +2217,6 @@ export function readDxf(text: string, opts: DxfReadOptions = {}): DrawingState {
       } else if (name === 'OBJECTS') {
         for (const o of objs) if (o.kind === 'IMAGEDEF' && has(o, 5)) imageDefs.set(str(o, 5).toUpperCase(), str(o, 1));
       } else if (name === 'TABLES') {
-        // DIMSTYLE records may name arrow blocks by BLOCK_RECORD handle; that table comes later.
-        const blockRecordNames = new Map<string, string>();
-        for (const o of objs) if (o.kind === 'BLOCK_RECORD' && has(o, 5)) blockRecordNames.set(str(o, 5).toUpperCase(), str(o, 2));
         for (const o of objs) {
           if (o.kind === 'LAYER') {
             const name2 = str(o, 2);
@@ -2226,7 +2241,7 @@ export function readDxf(text: string, opts: DxfReadOptions = {}): DrawingState {
             if (std && std.pattern.length === pattern.length && std.pattern.every((v, k) => Math.abs(v - pattern[k]!) < 1e-9)) continue;
             linetypes.push({ name: ltName, description: str(o, 3), pattern });
           } else if (o.kind === 'DIMSTYLE') {
-            const ds = readDimStyleRecord(o, blockRecordNames);
+            const ds = readDimStyleRecord(o, objs);
             dimStyles.set(ds.name.toUpperCase(), ds);
           } else if (o.kind === 'STYLE') {
             const ts = textStyleFromGroups(o.groups);
@@ -2366,10 +2381,5 @@ export function readDxf(text: string, opts: DxfReadOptions = {}): DrawingState {
   };
 
   const styleMeta = textStylesMeta(textStyles);
-  // Named dimension styles (DIMSTYLE records) keyed by name, as core/dimension keeps them;
-  // a plain Standard record is implied and not stored.
-  const namedList = [...dimStyles.values()].filter((d) => !(d.name.toUpperCase() === 'STANDARD' && diffDimStyles(d, STANDARD_DIMSTYLE).length === 0));
-  const dimStyleMeta = namedList.length ? { [DIMSTYLES_META_KEY]: Object.fromEntries(namedList.map((d) => [d.name, d])) } : null;
-  const meta = styleMeta || dimStyleMeta ? { ...(styleMeta ?? {}), ...(dimStyleMeta ?? {}) } : null;
-  return { entities, layers, blocks, currentLayer, header, ...(meta ? { meta } : {}) };
+  return { entities, layers, blocks, currentLayer, header, ...(styleMeta ? { meta: styleMeta } : {}) };
 }
