@@ -214,7 +214,11 @@ export class Drawing {
   }
 
   /** Replace the whole document without recording history (open / new). */
+  /** Incremented by every `load` (open / new / tab switch), so views kept per document can be reset. */
+  loadCount = 0;
+
   load(state: DrawingState, filePath: string | null = null): void {
+    this.loadCount += 1;
     this.state = state;
     this.undoStack = [];
     this.redoStack = [];

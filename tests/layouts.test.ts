@@ -288,6 +288,20 @@ describe('layout controller (space switching, viewport zoom)', () => {
     expect(vp.scale).toBe(20);
     expect(vp.layoutPainter).toBeNull();
   });
+  it('views remembered per space are dropped when another document is loaded (tab switch, open)', () => {
+    const { ed, c, vp } = fakeEditor(new Drawing({ entities: [line('m1')] }).snapshot);
+    vp.center = { x: 100, y: 100 };
+    vp.scale = 3;
+    c.activate('Layout1');
+    // Another drawing arrives in its Layout1 (as a session switch does) ...
+    ed.doc.load({ ...withLayoutState([line('z', 500)]), space: { layout: 'Layout1' } });
+    ed.notify('file');
+    expect(vp.layoutPainter).not.toBeNull();
+    // ... and its Model tab does not get the first drawing's model view.
+    c.activate(null);
+    expect(vp.center).not.toEqual({ x: 100, y: 100 });
+    expect(vp.center.x).toBeCloseTo(505, 6);
+  });
   it('a locked viewport keeps its view: zooming inside it zooms the paper', () => {
     const st = withLayoutState();
     const locked = { ...st, layouts: st.layouts!.map((l) => ({ ...l, viewports: l.viewports.map((v) => ({ ...v, view: { ...v.view, locked: true } })) })) };

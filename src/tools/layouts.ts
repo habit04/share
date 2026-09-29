@@ -93,6 +93,8 @@ export class LayoutController {
   lastLayout = 'Layout1';
   ui: LayoutUi = {};
   private installed = false;
+  /** Drawing.loadCount seen last (a new count = another document). */
+  private loads = 0;
   private readonly painter = (ctx: CanvasRenderingContext2D, _vp: unknown, ov: Parameters<typeof paintLayout>[2]) =>
     paintLayout(ctx, this.ed.viewport, ov, { doc: this.ed.doc, paperView: () => this.currentPaperView() });
 
@@ -101,6 +103,7 @@ export class LayoutController {
   install(): void {
     if (this.installed) return;
     this.installed = true;
+    this.loads = this.ed.doc.loadCount;
     this.ed.doc.subscribe(() => this.sync());
     this.ed.on('file', () => this.resync());
     this.ed.on('view', () => this.reconcile());
@@ -178,6 +181,15 @@ export class LayoutController {
   /** React to a state change: a new space (tab click, undo, session switch) or edited viewports. */
   sync(): void {
     const next = this.space;
+    if (this.ed.doc.loadCount !== this.loads) {
+      // Another document (open, new, tab switch): its views are not ours; `resync` follows on 'file'.
+      this.loads = this.ed.doc.loadCount;
+      this.views.clear();
+      this.applied = next;
+      this.paperView = null;
+      this.updatePainter();
+      return;
+    }
     if (spaceKey(next) !== spaceKey(this.applied)) this.transition(this.applied, next);
     else if (next?.viewport) this.applyViewportToCanvas();
     this.updatePainter();
