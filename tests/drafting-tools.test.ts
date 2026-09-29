@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { Entity, LineEntity, PolylineEntity, ArcEntity, InsertEntity, MTextEntity, EllipseEntity } from '../src/core/entities';
-import { polylineArea, polylineVertices } from '../src/core/entities';
+import { polylineArea, polylineVertices, splineThroughPoints } from '../src/core/entities';
+import { newTable } from '../src/core/table';
 import { Drawing } from '../src/core/document';
 import { fakeContext, drive } from './fake-context';
 import { matchKeyword } from '../src/tools/script';
@@ -386,5 +387,34 @@ describe('inquiry', () => {
     }
     expect(listEntity(ents[0]!, d).some((l) => l.includes('Length = 5.0000'))).toBe(true);
     expect(listEntity(ents[9]!, d).some((l) => l.includes('default text: 2.0000'))).toBe(true);
+  });
+  it('LIST reports spline, hatch, leader, table and image properties', () => {
+    const d = new Drawing();
+    const has = (e: Entity, re: RegExp) => expect(listEntity(e, d).some((l) => re.test(l)), String(re)).toBe(true);
+    const spline = splineThroughPoints({ id: 's', ...props }, [{ x: 0, y: 0 }, { x: 2, y: 0 }, { x: 4, y: 0 }, { x: 6, y: 0 }], false)!;
+    has(spline, /Degree\s+3$/);
+    has(spline, /Number of fit points\s+4$/);
+    has(spline, /Number of control points\s+\d+$/);
+    has(spline, /length\s+6\.0000$/);
+    const hatch: Entity = {
+      id: 'h', ...props, type: 'hatch', pattern: 'ANSI31', solid: false, angle: Math.PI / 4, scale: 2,
+      loops: [{ points: [{ x: 0, y: 0 }, { x: 4, y: 0 }, { x: 4, y: 3 }, { x: 0, y: 3 }] }, { points: [{ x: 1, y: 1 }, { x: 2, y: 1 }, { x: 2, y: 2 }] }],
+    };
+    has(hatch, /Pattern\s+ANSI31$/);
+    has(hatch, /Angle\s+45/);
+    has(hatch, /Scale\s+2\.0000$/);
+    has(hatch, /Boundary loops\s+2$/);
+    has(hatch, /Area of outer loop\s+12\.0000$/);
+    const leader: Entity = { id: 'ld', ...props, type: 'leader', kind: 'mleader', vertices: [{ x: 0, y: 0 }, { x: 1, y: 1 }, { x: 2, y: 1 }], arrow: true, arrowSize: 0.18, text: 'MOTOR\nM1', textHeight: 0.18 };
+    has(leader, /Number of vertices\s+3$/);
+    has(leader, /Multileader/);
+    has(leader, /text\s+MOTOR$/);
+    has(leader, /text\s+M1$/);
+    const table = newTable({ id: 'tb', ...props }, { position: { x: 0, y: 0 }, columns: 3, dataRows: 4 });
+    has(table, new RegExp(`Table size\\s+${table.rowHeights.length} rows x 3 columns$`));
+    const image: Entity = { id: 'im', ...props, type: 'image', path: 'logo.png', position: { x: 0, y: 0 }, u: { x: 0.01, y: 0 }, v: { x: 0, y: 0.01 }, size: { x: 200, y: 100 } };
+    has(image, /Path\s+logo\.png$/);
+    has(image, /Image size \(pixels\)\s+200 x 100$/);
+    has(image, /Image size \(units\)\s+2\.0000 x 1\.0000$/);
   });
 });
