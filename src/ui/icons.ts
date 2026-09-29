@@ -113,6 +113,12 @@ export const icons: Record<string, string> = {
   dimradius: wrap('<circle cx="12" cy="12" r="8"/><path class="ac" d="M12 12l6-5"/><path d="M18 7l-3.4.6M18 7l-.6 3.4"/><circle cx="12" cy="12" r="1" fill="currentColor"/>'),
   dimdiameter: wrap('<circle cx="12" cy="12" r="8"/><path class="ac" d="M6 18L18 6"/><path d="M18 6l-3.4.6M18 6l-.6 3.4M6 18l3.4-.6M6 18l.6-3.4"/>'),
   dimangular: wrap('<path d="M4 20h16M4 20L16 6"/><path class="ac" d="M12 20a8 8 0 0 0-2.3-5.7"/><path d="M12 20l-3-1M12 20l-1-3"/>'),
+  // Baseline: two stacked dimension lines from one origin. Continue: two dimensions end to end.
+  dimbaseline: wrap('<path d="M4 4v16M12 10v10M20 4v16"/><path class="ac" d="M4 16h8"/><path d="M4 8h16"/><path d="M4 16l2-1.5M4 16l2 1.5M12 16l-2-1.5M12 16l-2 1.5M4 8l2-1.5M4 8l2 1.5M20 8l-2-1.5M20 8l-2 1.5"/>'),
+  dimcontinue: wrap('<path d="M3 8v10M12 8v10M21 8v10"/><path d="M3 14h9"/><path class="ac" d="M12 14h9"/><path d="M3 14l2-1.5M3 14l2 1.5M12 14l-2-1.5M12 14l-2 1.5M12 14l2-1.5M12 14l2 1.5M21 14l-2-1.5M21 14l-2 1.5"/>'),
+  dimtedit: wrap('<path d="M4 6v12M20 6v12M4 16h16"/><path class="ac" d="M9 7h6M12 7v5"/><path d="M16 10l2-2 2 2" stroke-width="1.2"/>'),
+  dimedit: wrap('<path d="M5 18L9 6M19 18l-4-12"/><path class="ac" d="M6 14h12"/><path d="M6 14l2-1.5M6 14l2 1.5M18 14l-2-1.5M18 14l-2 1.5"/>'),
+  dimstyle: wrap('<path d="M3 5v9M15 5v9M3 11h12"/><path d="M3 11l2-1.5M3 11l2 1.5M15 11l-2-1.5M15 11l-2 1.5"/><circle class="ac" cx="18" cy="18" r="3"/><path class="ac" d="M18 13.5v1.5M18 21v1.5M13.5 18h1.5M21 18h1.5"/>'),
   mtext: wrap('<path d="M4 5h16M4 10h16M4 15h10"/><path class="ac" d="M4 20h7"/>'),
   ellipse: wrap('<ellipse cx="12" cy="12" rx="9" ry="5.5"/><circle class="ac" cx="12" cy="12" r="1" fill="currentColor"/>'),
   point: wrap('<path d="M12 5v14M5 12h14"/><circle class="ac" cx="12" cy="12" r="2" fill="currentColor"/>'),

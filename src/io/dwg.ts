@@ -40,7 +40,7 @@ import type { DrawingState, DrawingHeader } from '../core/document';
 import { DEFAULT_LAYERS, DEFAULT_HEADER } from '../core/document';
 import type { Point } from '../core/geometry';
 import * as g from '../core/geometry';
-import { STANDARD_DIMSTYLE, type DimStyle } from '../core/dimension';
+import { STANDARD_DIMSTYLE, withDimVars, type DimStyle } from '../core/dimension';
 import { mtextFromDxf, hasFormatting } from '../core/mtext';
 import { LINEWEIGHTS } from '../core/linetypes';
 import type { LinearUnits } from '../core/units';
@@ -766,7 +766,7 @@ function readHeader(h: DwgImportPayload['header']): DrawingHeader {
   };
   const lunits = Math.trunc(num('LUNITS', 2));
   const dimlunit = Math.trunc(num('DIMLUNIT', 2));
-  const dimStyle: DimStyle = {
+  const basic: DimStyle = {
     name: typeof h.DIMSTYLE === 'string' && h.DIMSTYLE ? h.DIMSTYLE : 'Standard',
     textHeight: num('DIMTXT', STANDARD_DIMSTYLE.textHeight),
     arrowSize: num('DIMASZ', STANDARD_DIMSTYLE.arrowSize),
@@ -779,6 +779,14 @@ function readHeader(h: DwgImportPayload['header']): DrawingHeader {
     lunit: (dimlunit >= 1 && dimlunit <= 5 ? dimlunit : 2) as LinearUnits,
     angularDecimals: Math.max(0, Math.trunc(num('DIMADEC', 0))),
   };
+  // The rest of the DIM* variables (arrows, tolerances, alternate units, text placement, colours ...)
+  // when LibreDWG provides them. Colours may come as a number or as a { index } colour object.
+  const dimStyle = withDimVars(basic, (name) => {
+    const v = h[name];
+    if (typeof v === 'number' || typeof v === 'string') return v;
+    if (v && typeof v === 'object' && typeof (v as { index?: unknown }).index === 'number') return (v as { index: number }).index;
+    return undefined;
+  });
   return {
     ...DEFAULT_HEADER,
     units: {

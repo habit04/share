@@ -1041,7 +1041,7 @@ export function toleranceFlags(t: DimTolerance): { dimtol: number; dimlim: numbe
 
 /**
  * Value of a DIM* variable as DXF stores it (numbers, 0/1 flags, enum integers, colour numbers,
- * block names for DIMBLK1/2). DIMTOL/DIMLIM/DIMSAH/DIMTIH/DIMTOH are derived fields.
+ * block names for DIMBLK1/2). DIMTOL/DIMLIM/DIMSAH/DIMTIH/DIMTOH/DIMZIN are derived fields.
  */
 export function dimVarValue(s: DimStyle, name: string): number | string {
   const r = resolveDimStyle(s);
@@ -1052,6 +1052,7 @@ export function dimVarValue(s: DimStyle, name: string): number | string {
   if (up === 'DIMBLK') return arrowBlockName(r.arrow);
   if (up === 'DIMTIH') return r.textAlign === 'aligned' ? 0 : 1;
   if (up === 'DIMTOH') return r.textAlign === 'horizontal' ? 1 : 0;
+  if (up === 'DIMZIN') return (r.suppressLeadingZeros ? 4 : 0) | (r.suppressTrailingZeros ? 8 : 0);
   const v = DIM_VARIABLES.find((x) => x.name === up);
   if (!v) throw new Error(`Unknown dimension variable ${name}`);
   const val = (r as unknown as Record<string, unknown>)[v.key];
@@ -1090,6 +1091,8 @@ export function withDimVar(s: DimStyle, name: string, value: number | string): D
     return { ...s, textAlign: tih && toh ? 'horizontal' : !tih && !toh ? 'aligned' : 'iso' };
   }
   if (up === 'DIMSAH') return num ? s : { ...s, arrow2: undefined };
+  // DIMZIN: only the decimal bits (4 leading, 8 trailing) are used; the feet/inch bits 0-3 are ignored.
+  if (up === 'DIMZIN') return Number.isFinite(num) ? { ...s, suppressLeadingZeros: (Math.trunc(num) & 4) !== 0, suppressTrailingZeros: (Math.trunc(num) & 8) !== 0 } : s;
   const v = DIM_VARIABLES.find((x) => x.name === up);
   if (!v) return s;
   switch (v.kind) {
@@ -1122,7 +1125,7 @@ export function withDimVar(s: DimStyle, name: string, value: number | string): D
 export function dimStyleRecordPairs(s: DimStyle): Array<[number, number | string]> {
   const out: Array<[number, number | string]> = [];
   for (const v of DIM_VARIABLES) if (v.code !== undefined) out.push([v.code, dimVarValue(s, v.name)]);
-  out.push([71, dimVarValue(s, 'DIMTOL')], [72, dimVarValue(s, 'DIMLIM')], [73, dimVarValue(s, 'DIMTIH')], [74, dimVarValue(s, 'DIMTOH')], [173, dimVarValue(s, 'DIMSAH')]);
+  out.push([71, dimVarValue(s, 'DIMTOL')], [72, dimVarValue(s, 'DIMLIM')], [73, dimVarValue(s, 'DIMTIH')], [74, dimVarValue(s, 'DIMTOH')], [78, dimVarValue(s, 'DIMZIN')], [173, dimVarValue(s, 'DIMSAH')]);
   return out;
 }
 
@@ -1137,6 +1140,7 @@ export function dimStyleFromRecordPairs(name: string, pairs: ReadonlyArray<reado
     const toh = Number(byCode.get(74) ?? 1) !== 0;
     s = { ...s, textAlign: tih && toh ? 'horizontal' : !tih && !toh ? 'aligned' : 'iso' };
   }
+  if (byCode.has(78)) s = withDimVar(s, 'DIMZIN', byCode.get(78)!);
   const tol = Number(byCode.get(71) ?? 0);
   const lim = Number(byCode.get(72) ?? 0);
   const r = resolveDimStyle(s);
@@ -1144,7 +1148,48 @@ export function dimStyleFromRecordPairs(name: string, pairs: ReadonlyArray<reado
   return { ...s, tolerance };
 }
 
-/** Every DIM* variable (plus the derived DIMTOL/DIMLIM/DIMSAH/DIMTIH/DIMTOH/DIMBLK) with its DXF value. */
+/**
+ * Apply system-variable values (DXF header $DIM*, DWG header DIM*) over `base`. `get` returns a
+ * variable's value by name (DIMTXT ...) or undefined when the file does not carry it; values that
+ * do not fit the variable's kind are skipped. DIMBLK1/DIMBLK2 count only when DIMSAH is on,
+ * otherwise DIMBLK sets both arrows, as in AutoCAD.
+ */
+export function withDimVars(base: DimStyle, get: (name: string) => number | string | undefined): DimStyle {
+  let s: DimStyle = base;
+  const numeric = (name: string): number | undefined => {
+    const v = get(name);
+    const n = typeof v === 'number' ? v : typeof v === 'string' ? parseFloat(v) : NaN;
+    return Number.isFinite(n) ? n : undefined;
+  };
+  for (const v of DIM_VARIABLES) {
+    if (v.key === 'arrow' || v.key === 'arrow2') continue;
+    if (v.kind === 'string') {
+      const raw = get(v.name);
+      if (typeof raw === 'string') s = withDimVar(s, v.name, raw);
+      continue;
+    }
+    const n = numeric(v.name);
+    if (n !== undefined) s = withDimVar(s, v.name, n);
+  }
+  if (!s.scale) s = { ...s, scale: 1 };
+  for (const name of ['DIMZIN', 'DIMTIH', 'DIMTOH', 'DIMTOL', 'DIMLIM']) {
+    const n = numeric(name);
+    if (n !== undefined) s = withDimVar(s, name, n);
+  }
+  const block = (name: string): string | undefined => {
+    const v = get(name);
+    return typeof v === 'string' ? v : undefined;
+  };
+  const sah = numeric('DIMSAH');
+  if (sah) {
+    if (block('DIMBLK1') !== undefined) s = { ...s, arrow: arrowFromBlockName(block('DIMBLK1')!) };
+    if (block('DIMBLK2') !== undefined) s = { ...s, arrow2: arrowFromBlockName(block('DIMBLK2')!) };
+  } else if (block('DIMBLK') !== undefined) s = withDimVar(s, 'DIMBLK', block('DIMBLK')!);
+  else if (sah !== undefined) s = { ...s, arrow2: undefined };
+  return s;
+}
+
+/** Every DIM* variable (plus the derived DIMTOL/DIMLIM/DIMSAH/DIMTIH/DIMTOH/DIMBLK/DIMZIN) with its DXF value. */
 export function dimVarList(s: DimStyle): Array<{ name: string; value: number | string; description: string }> {
   const extra: Array<[string, string]> = [
     ['DIMBLK', 'Arrow block (both ends)'],
@@ -1153,6 +1198,7 @@ export function dimVarList(s: DimStyle): Array<{ name: string; value: number | s
     ['DIMTOH', 'Text outside horizontal'],
     ['DIMTOL', 'Generate tolerances'],
     ['DIMLIM', 'Generate dimension limits'],
+    ['DIMZIN', 'Zero suppression (4 leading, 8 trailing)'],
   ];
   const rows = [...DIM_VARIABLES.map((v) => ({ name: v.name, description: v.description })), ...extra.map(([name, description]) => ({ name, description }))];
   return rows.map((r) => ({ ...r, value: dimVarValue(s, r.name) })).sort((a, b) => a.name.localeCompare(b.name));

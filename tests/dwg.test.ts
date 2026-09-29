@@ -94,3 +94,87 @@ describe('DWG payload of the desktop reader and the browser reader', () => {
     expect(node.blocks[0]).toMatchObject({ handle: '1F', flags: 4 });
   });
 });
+
+describe('DWG header dimension variables', () => {
+  it('applies arrows, tolerances, alternate units, placement, colours and units from the header', () => {
+    const header = {
+      DIMSTYLE: 'Mech',
+      DIMTXT: 0.2,
+      DIMASZ: 0.15,
+      DIMSAH: 1,
+      DIMBLK: '',
+      DIMBLK1: '_OPEN',
+      DIMBLK2: '_DOT',
+      DIMTOL: 1,
+      DIMTP: 0.01,
+      DIMTM: 0.02,
+      DIMTDEC: 3,
+      DIMTFAC: 0.7,
+      DIMALT: 1,
+      DIMALTF: 25.4,
+      DIMALTD: 1,
+      DIMALTU: 2,
+      DIMAPOST: '[<> mm]',
+      DIMTAD: 1,
+      DIMJUST: 2,
+      DIMTIH: 1,
+      DIMTOH: 1,
+      DIMSE1: 1,
+      DIMSD2: 1,
+      DIMDLE: 0.05,
+      DIMDLI: 0.5,
+      DIMCLRD: { index: 1, rgb: 0 },
+      DIMCLRE: 3,
+      DIMCLRT: { index: 2 },
+      DIMATFIT: 1,
+      DIMTIX: 1,
+      DIMTOFL: 0,
+      DIMPOST: '<>"',
+      DIMRND: 0.25,
+      DIMLFAC: 2,
+      DIMZIN: 12,
+    };
+    const { state } = convertDwg({ header, entities: [], layers: [], blocks: [] });
+    const ds = state.header!.dimStyle;
+    expect(ds).toMatchObject({
+      name: 'Mech',
+      textHeight: 0.2,
+      arrowSize: 0.15,
+      arrow: 'open',
+      arrow2: 'dot',
+      tolerance: 'deviation',
+      tolPlus: 0.01,
+      tolMinus: 0.02,
+      tolDecimals: 3,
+      tolScale: 0.7,
+      altUnits: true,
+      altFactor: 25.4,
+      altDecimals: 1,
+      altLunit: 2,
+      altPost: '[<> mm]',
+      textVertical: 'above',
+      textJustify: 'ext2',
+      textAlign: 'horizontal',
+      suppressExt1: true,
+      suppressDimLine2: true,
+      dimLineExtend: 0.05,
+      baselineSpacing: 0.5,
+      dimLineColor: 1,
+      extLineColor: 3,
+      textColor: 2,
+      fit: 'arrows',
+      textInside: true,
+      dimLineInside: false,
+      post: '<>"',
+      round: 0.25,
+      linearFactor: 2,
+      suppressLeadingZeros: true,
+      suppressTrailingZeros: true,
+    });
+    // DIMSAH off: DIMBLK sets both ends; BYBLOCK colours (0) stay the dimension's own colour.
+    const plain = convertDwg({ header: { DIMSAH: 0, DIMBLK: '_ARCHTICK', DIMBLK1: '_OPEN', DIMCLRD: { index: 0 } }, entities: [], layers: [], blocks: [] }).state.header!.dimStyle;
+    expect(plain.arrow).toBe('arch-tick');
+    expect(plain.arrow2).toBeUndefined();
+    expect(plain.dimLineColor).toBeUndefined();
+  });
+});

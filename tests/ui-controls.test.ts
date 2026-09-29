@@ -90,6 +90,20 @@ describe('ribbon commands', () => {
     for (const c of ['AEDINRAIL', 'AEWIREDUCT', 'AEPANEL', 'AEPANELGRID', 'AEFOOTPRINTALIGN', 'AETERMFOOTPRINT', 'AEPANELHW']) expect(on('Panel').has(c), c).toBe(true);
     for (const c of ['SPLINE', 'HATCH', 'MLEADER', 'TABLE', 'FIELD']) expect(on('Annotate').has(c) || on('Home').has(c), c).toBe(true);
   });
+  it('reaches the dimension chain, edit and style commands from the Annotate tab', () => {
+    const dims = RIBBON.find((t) => t.name === 'Annotate')!.panels.find((p) => p.title === 'Dimensions')!;
+    const byCommand = new Map(dims.buttons.map((b) => [b.command, b]));
+    for (const [c, label, ic] of [
+      ['DIMBASELINE', 'Baseline', 'dimbaseline'],
+      ['DIMCONTINUE', 'Continue', 'dimcontinue'],
+      ['DIMTEDIT', 'Text Edit', 'dimtedit'],
+      ['DIMEDIT', 'Dim Edit', 'dimedit'],
+      ['DIMSTYLE', 'Dim Style', 'dimstyle'],
+    ] as const) {
+      expect(byCommand.get(c), c).toMatchObject({ label, icon: ic });
+      expect(registered.has(c), c).toBe(true);
+    }
+  });
   it('draws splines, hatches, multileaders, tables and panel hardware with their own icons', () => {
     const iconOf = (c: string) => buttons.find((b) => b.command === c)!.icon;
     expect(['SPLINE', 'HATCH', 'MLEADER', 'TABLE', 'AEDINRAIL', 'AEWIREDUCT', 'AEPANEL'].map(iconOf)).toEqual(['spline', 'hatch', 'mleader', 'table', 'dinrail', 'wireduct', 'enclosure']);

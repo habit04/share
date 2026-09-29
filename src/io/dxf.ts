@@ -30,7 +30,22 @@ import type {
   TextEntity,
 } from '../core/entities';
 import { newId, dimensionParts, textWidth, insertTransform, splineCurve, hatchPatternLines, leaderParts, leaderPath, tableParts } from '../core/entities';
-import { dimensionTextPoint, dimensionMeasurement, STANDARD_DIMSTYLE } from '../core/dimension';
+import {
+  dimensionTextPoint,
+  dimensionMeasurement,
+  STANDARD_DIMSTYLE,
+  DIM_VARIABLES,
+  DIMSTYLES_META_KEY,
+  namedDimStyles,
+  dimVarValue,
+  withDimVars,
+  dimStyleRecordPairs,
+  dimStyleFromRecordPairs,
+  arrowBlockName,
+  arrowFromBlockName,
+  resolveDimStyle,
+  diffDimStyles,
+} from '../core/dimension';
 import { mtextToDxf, mtextFromDxf, formattedSource, hasFormatting, type MTextAttachment } from '../core/mtext';
 import { findPattern, LoopBuilder, edgeArc, fitPatternToLines } from '../core/hatch';
 import { isValidNurbs, nurbsPoints, interpolateFitPoints } from '../core/spline';
@@ -223,6 +238,9 @@ function writeDimension(w: Writer, e: DimensionEntity, owner: string, blockName:
   w.pair(71, 5);
   w.pair(42, dimensionMeasurement(e));
   if (e.text !== undefined && e.text !== '') w.pair(1, e.text);
+  // 52 is listed under AcDbAlignedDimension in the DXF reference, but files carry it with these groups.
+  if (e.oblique !== undefined && (e.kind === 'linear' || e.kind === 'aligned')) w.pair(52, dimAngleDeg(e.oblique));
+  if (e.textRotation !== undefined) w.pair(53, dimAngleDeg(e.textRotation));
   w.pair(3, e.style.name);
   switch (e.kind) {
     case 'linear':
@@ -265,6 +283,115 @@ function writeDimension(w: Writer, e: DimensionEntity, owner: string, blockName:
   }
 }
 
+/**
+ * DIMENSION groups 53 (text rotation) and 52 (oblique angle) in degrees. Both are absolute
+ * angles, but readers take 0 to mean "not set" (default text orientation / perpendicular
+ * extension lines), so an explicit 0 is written as 360, which draws the same.
+ */
+function dimAngleDeg(rad: number): number {
+  const d = ((g.deg(rad) % 360) + 360) % 360;
+  return Math.abs(d) < 1e-9 || Math.abs(d - 360) < 1e-9 ? 360 : d;
+}
+
+// ---------------------------------------------------------------- dimension styles
+
+/**
+ * XDATA application on DIMSTYLE table records. Real DIMSTYLE records reference arrowhead
+ * blocks by BLOCK_RECORD handle (342 DIMBLK, 343 DIMBLK1, 344 DIMBLK2), which would need an
+ * arrow block definition per type; instead each record written here carries 1000-string
+ * name/value pairs under this application:
+ *   DIMBLK1 <block>, DIMBLK2 <block>  standard arrow block names ("." = closed filled)
+ *   TOLERANCE basic                   boxed basic dimensions (no DIM* variable of its own)
+ *   ALTPLACEMENT below                alternate units under the primary value
+ * Other programs ignore it. The current style's arrows also go to $DIMBLK / $DIMBLK1 /
+ * $DIMBLK2 / $DIMSAH in the header, and the reader resolves 342-344 handles of records
+ * written by other programs through the BLOCK_RECORD names.
+ */
+export const DIMSTYLE_APP = 'JCAD_DIMSTYLE';
+
+function dimStyleXdata(s: DimStyle): Array<[string, string]> {
+  const r = resolveDimStyle(s);
+  const block = (a: typeof r.arrow) => arrowBlockName(a) || '.';
+  const out: Array<[string, string]> = [
+    ['DIMBLK1', block(r.arrow)],
+    ['DIMBLK2', block(r.arrow2)],
+  ];
+  if (r.tolerance === 'basic') out.push(['TOLERANCE', 'basic']);
+  if (r.altPlacement === 'below') out.push(['ALTPLACEMENT', 'below']);
+  return out;
+}
+
+/** Apply JCAD_DIMSTYLE XDATA pairs (see DIMSTYLE_APP) to a style read from its record. */
+function applyDimStyleXdata(s: DimStyle, xd: readonly Pair[]): DimStyle {
+  let out = s;
+  const strs = xd.filter((p) => p.code === 1000).map((p) => p.value);
+  for (let k = 0; k + 1 < strs.length; k += 2) {
+    const key = strs[k]!.toUpperCase();
+    const value = strs[k + 1]!;
+    if (key === 'DIMBLK1') out = { ...out, arrow: arrowFromBlockName(value) };
+    else if (key === 'DIMBLK2') out = { ...out, arrow2: arrowFromBlockName(value) };
+    else if (key === 'TOLERANCE' && value === 'basic') out = { ...out, tolerance: 'basic' };
+    else if (key === 'ALTPLACEMENT' && (value === 'below' || value === 'after')) out = { ...out, altPlacement: value };
+  }
+  if (out.arrow2 !== undefined && out.arrow2 === (out.arrow ?? 'closed-filled')) out = { ...out, arrow2: undefined };
+  return out;
+}
+
+/** Styles for the DIMSTYLE table: the drawing's named styles plus any a dimension uses that is not named. */
+function dimStylesToWrite(state: DrawingState, entities: readonly Entity[] = state.entities): DimStyle[] {
+  const out = namedDimStyles(state);
+  const seen = new Set(out.map((s) => s.name.toUpperCase()));
+  for (const e of entities)
+    if (e.type === 'dimension' && !seen.has(e.style.name.toUpperCase())) {
+      seen.add(e.style.name.toUpperCase());
+      out.push(e.style);
+    }
+  return out;
+}
+
+/** Header $DIM* variables of the current style: [name, group code, value]. */
+function dimHeaderVars(s: DimStyle): Array<[string, number, number | string]> {
+  const out: Array<[string, number, number | string]> = [];
+  for (const v of DIM_VARIABLES) out.push([v.name, v.headerCode, dimVarValue(s, v.name)]);
+  out.push(['DIMBLK', 1, dimVarValue(s, 'DIMBLK')], ['DIMSAH', 70, dimVarValue(s, 'DIMSAH')], ['DIMTOL', 70, dimVarValue(s, 'DIMTOL')], ['DIMLIM', 70, dimVarValue(s, 'DIMLIM')], ['DIMTIH', 70, dimVarValue(s, 'DIMTIH')], ['DIMTOH', 70, dimVarValue(s, 'DIMTOH')], ['DIMZIN', 70, dimVarValue(s, 'DIMZIN')]);
+  return out;
+}
+
+/** The current style: header $DIM* variables applied over `base` (the named record of the same name, or Standard). */
+function dimStyleFromHeader(headerVars: ReadonlyMap<string, Pair[]>, base: DimStyle): DimStyle {
+  const val = (name: string): string | undefined => headerVars.get(`$${name}`)?.[0]?.value;
+  return withDimVars({ ...base, name: val('DIMSTYLE') || base.name }, val);
+}
+
+/**
+ * A DIMSTYLE table record: its DIM* group codes through dimStyleFromRecordPairs, arrowheads
+ * from JCAD_DIMSTYLE XDATA or, for other programs' files, the 342/343/344 handles of arrow
+ * blocks, named by the BLOCK_RECORD table among `tables` (the TABLES section's objects).
+ */
+function readDimStyleRecord(o: Obj, tables: readonly Obj[]): DimStyle {
+  const end = o.groups.findIndex((p) => p.code === 1001);
+  const own = end < 0 ? o.groups : o.groups.slice(0, end);
+  const name = str(o, 2) || 'Standard';
+  let s = dimStyleFromRecordPairs(
+    name,
+    own.map((p) => [p.code, p.value] as const),
+    STANDARD_DIMSTYLE,
+  );
+  if (s.scale === 0) s = { ...s, scale: 1 };
+  const xd = xdata(o, DIMSTYLE_APP);
+  if (xd) return applyDimStyleXdata(s, xd);
+  const block = (code: number): string | undefined => {
+    const h = own.find((p) => p.code === code)?.value?.toUpperCase();
+    const rec = h ? tables.find((t) => t.kind === 'BLOCK_RECORD' && str(t, 5).toUpperCase() === h) : undefined;
+    return rec ? str(rec, 2) : undefined;
+  };
+  const sah = Number(own.find((p) => p.code === 173)?.value ?? 0) !== 0;
+  const b1 = sah ? block(343) : block(342);
+  const b2 = sah ? block(344) : undefined;
+  if (b1 !== undefined) s = { ...s, arrow: arrowFromBlockName(b1) };
+  if (b2 !== undefined) s = { ...s, arrow2: arrowFromBlockName(b2) };
+  return s;
+}
 
 // ---------------------------------------------------------------- SPLINE / HATCH / LEADER / IMAGE / TABLE writers
 
@@ -738,18 +865,7 @@ export function writeDxf(state: DrawingState): string {
   hv('$PDSIZE', 40, header.pdsize);
   hv('$TEXTSTYLE', 7, 'Standard');
   hv('$DIMSTYLE', 2, ds.name);
-  hv('$DIMSCALE', 40, ds.scale);
-  hv('$DIMASZ', 40, ds.arrowSize);
-  hv('$DIMEXO', 40, ds.extOffset);
-  hv('$DIMEXE', 40, ds.extExtend);
-  hv('$DIMTXT', 40, ds.textHeight);
-  hv('$DIMCEN', 40, ds.centerMark);
-  hv('$DIMGAP', 40, ds.textGap);
-  hv('$DIMTAD', 70, 0);
-  hv('$DIMTIH', 70, 1);
-  hv('$DIMTOH', 70, 1);
-  hv('$DIMDEC', 70, ds.decimals);
-  hv('$DIMADEC', 70, ds.angularDecimals);
+  for (const [name, code, value] of dimHeaderVars(ds)) if (name !== 'DIMLUNIT') hv(`$${name}`, code, value);
   hv('$DIMLUNIT', 70, ds.lunit);
   writeLayoutHeader(hv, state);
   w.pair(0, 'ENDSEC');
@@ -867,33 +983,31 @@ export function writeDxf(state: DrawingState): string {
   });
   table('UCS', '7', 0, () => {});
   const annotative = allEntities.some((e) => e.annotative);
-  table('APPID', '9', (tableList.length ? 2 : 1) + (annotative ? 1 : 0), () => {
+  table('APPID', '9', (tableList.length ? 3 : 2) + (annotative ? 1 : 0), () => {
     record('APPID', '9', 'AcDbRegAppTableRecord', 'ACAD');
+    record('APPID', '9', 'AcDbRegAppTableRecord', DIMSTYLE_APP);
     if (tableList.length) record('APPID', '9', 'AcDbRegAppTableRecord', TABLE_APP);
     if (annotative) record('APPID', '9', 'AcDbRegAppTableRecord', ANNO_APP);
   });
-  table('DIMSTYLE', 'A', 1, () => {
+  // Dimensions on layouts count too, so their (unnamed) styles get a record.
+  const dimStyleList = dimStylesToWrite(state, allEntities);
+  table('DIMSTYLE', 'A', dimStyleList.length, () => {
     w.pair(100, 'AcDbDimStyleTable');
-    w.pair(0, 'DIMSTYLE');
-    w.pair(105, w.nextHandle());
-    w.pair(330, 'A');
-    w.pair(100, 'AcDbSymbolTableRecord');
-    w.pair(100, 'AcDbDimStyleTableRecord');
-    w.pair(2, ds.name);
-    w.pair(70, 0);
-    w.pair(40, ds.scale);
-    w.pair(41, ds.arrowSize);
-    w.pair(42, ds.extOffset);
-    w.pair(44, ds.extExtend);
-    w.pair(140, ds.textHeight);
-    w.pair(141, ds.centerMark);
-    w.pair(147, ds.textGap);
-    w.pair(73, 1);
-    w.pair(74, 1);
-    w.pair(77, 0);
-    w.pair(179, ds.angularDecimals);
-    w.pair(271, ds.decimals);
-    w.pair(277, ds.lunit);
+    for (const style of dimStyleList) {
+      w.pair(0, 'DIMSTYLE');
+      w.pair(105, w.nextHandle());
+      w.pair(330, 'A');
+      w.pair(100, 'AcDbSymbolTableRecord');
+      w.pair(100, 'AcDbDimStyleTableRecord');
+      w.pair(2, style.name);
+      w.pair(70, 0);
+      for (const [code, value] of dimStyleRecordPairs(style)) w.pair(code, value);
+      w.pair(1001, DIMSTYLE_APP);
+      for (const [k, v] of dimStyleXdata(style)) {
+        w.pair(1000, k);
+        w.pair(1000, v);
+      }
+    }
   });
   const layoutRecords = extraBlockRecords(layoutPlan);
   table('BLOCK_RECORD', '1', 2 + blockRecordHandles.size + layoutRecords.length, () => {
@@ -1143,7 +1257,11 @@ function readDimension(o: Obj, base: ReturnType<typeof commonProps>, style: DimS
   const userText = flags & 128 ? pt(o, 11) : undefined;
   const textRaw = str(o, 1);
   const text = textRaw && textRaw !== '<>' ? textRaw : undefined;
-  const common = { ...base, type: 'dimension' as const, text, textPosition: userText, style };
+  // Groups 53 (text rotation) and 52 (oblique), degrees; 0 means "not set".
+  const rot = num(o, 53);
+  const obl = num(o, 52);
+  const angles = { ...(Math.abs(rot) > 1e-9 ? { textRotation: g.rad(rot) } : {}), ...(Math.abs(obl) > 1e-9 && (type === 0 || type === 1) ? { oblique: g.rad(obl) } : {}) };
+  const common = { ...base, type: 'dimension' as const, text, textPosition: userText, ...angles, style };
   const subclasses = o.groups.filter((x) => x.code === 100).map((x) => x.value);
   switch (type) {
     case 0: {
@@ -2076,24 +2194,23 @@ function readEntities(objs: Obj[], ctx: ReadContext): Entity[] {
   return drop.size ? out.filter((_, k) => !drop.has(k)) : out;
 }
 
-function readDimStyleRecord(o: Obj, base: DimStyle): DimStyle {
-  const lunit = Math.trunc(num(o, 277, base.lunit));
-  return {
-    name: str(o, 2) || base.name,
-    scale: num(o, 40, base.scale) || 1,
-    arrowSize: num(o, 41, base.arrowSize),
-    extOffset: num(o, 42, base.extOffset),
-    extExtend: num(o, 44, base.extExtend),
-    textHeight: num(o, 140, base.textHeight),
-    centerMark: num(o, 141, base.centerMark),
-    textGap: num(o, 147, base.textGap),
-    angularDecimals: Math.max(0, Math.trunc(num(o, 179, base.angularDecimals))),
-    decimals: Math.trunc(num(o, 271, base.decimals)),
-    lunit: (lunit >= 1 && lunit <= 5 ? lunit : base.lunit) as LinearUnits,
-  };
+export function readDxf(text: string, opts: DxfReadOptions = {}): DrawingState {
+  const dimStyles = new Map<string, DimStyle>();
+  return withDimStylesMeta(readDxfState(text, opts, dimStyles), dimStyles);
 }
 
-export function readDxf(text: string, opts: DxfReadOptions = {}): DrawingState {
+/**
+ * Named dimension styles (the DIMSTYLE records read) into `meta.dimStyles`, keyed by name as
+ * core/dimension keeps them; a plain Standard record is implied and not stored.
+ */
+function withDimStylesMeta(state: DrawingState, dimStyles: ReadonlyMap<string, DimStyle>): DrawingState {
+  const named = [...dimStyles.values()].filter((d) => !(d.name.toUpperCase() === 'STANDARD' && diffDimStyles(d, STANDARD_DIMSTYLE).length === 0));
+  if (!named.length) return state;
+  return { ...state, meta: { ...(state.meta ?? {}), [DIMSTYLES_META_KEY]: Object.fromEntries(named.map((d) => [d.name, d])) } };
+}
+
+/** The reader proper; DIMSTYLE records are collected into `dimStyles`. */
+function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string, DimStyle>): DrawingState {
   const pairs = tokenize(decodeUnicodeEscapes(text));
   const textStyles: Record<string, TextStyle> = {};
   const layers: Layer[] = [];
@@ -2101,11 +2218,9 @@ export function readDxf(text: string, opts: DxfReadOptions = {}): DrawingState {
   let entities: Entity[] = [];
   let currentLayer = '0';
   const headerVars = new Map<string, Pair[]>();
-  const dimStyles = new Map<string, DimStyle>();
   const linetypes: Linetype[] = [];
   const views: NamedView[] = [];
   // Header DIM* variables define the current style; the DIMSTYLE table gives named styles.
-  let headerDimStyle: DimStyle = STANDARD_DIMSTYLE;
   const ctx: ReadContext = {
     dimStyles,
     dimStyle: STANDARD_DIMSTYLE,
@@ -2142,21 +2257,7 @@ export function readDxf(text: string, opts: DxfReadOptions = {}): DrawingState {
           const n = raw === undefined ? NaN : parseFloat(raw);
           return Number.isFinite(n) ? n : dflt;
         };
-        const lunit = Math.trunc(hnum('$DIMLUNIT', STANDARD_DIMSTYLE.lunit));
-        headerDimStyle = {
-          name: headerVars.get('$DIMSTYLE')?.[0]?.value || 'Standard',
-          scale: hnum('$DIMSCALE', 1) || 1,
-          arrowSize: hnum('$DIMASZ', STANDARD_DIMSTYLE.arrowSize),
-          extOffset: hnum('$DIMEXO', STANDARD_DIMSTYLE.extOffset),
-          extExtend: hnum('$DIMEXE', STANDARD_DIMSTYLE.extExtend),
-          textHeight: hnum('$DIMTXT', STANDARD_DIMSTYLE.textHeight),
-          centerMark: hnum('$DIMCEN', STANDARD_DIMSTYLE.centerMark),
-          textGap: hnum('$DIMGAP', STANDARD_DIMSTYLE.textGap),
-          decimals: Math.trunc(hnum('$DIMDEC', STANDARD_DIMSTYLE.decimals)),
-          angularDecimals: Math.max(0, Math.trunc(hnum('$DIMADEC', 0))),
-          lunit: (lunit >= 1 && lunit <= 5 ? lunit : 2) as LinearUnits,
-        };
-        ctx.dimStyle = headerDimStyle;
+        ctx.dimStyle = dimStyleFromHeader(headerVars, STANDARD_DIMSTYLE);
         const created = julianToDate(hnum('$TDCREATE', NaN));
         const saved = julianToDate(hnum('$TDUPDATE', NaN));
         ctx.fields = { ...(created ? { createDate: created } : {}), ...(saved ? { saveDate: saved } : {}), ...ctx.fields };
@@ -2190,7 +2291,7 @@ export function readDxf(text: string, opts: DxfReadOptions = {}): DrawingState {
             if (std && std.pattern.length === pattern.length && std.pattern.every((v, k) => Math.abs(v - pattern[k]!) < 1e-9)) continue;
             linetypes.push({ name: ltName, description: str(o, 3), pattern });
           } else if (o.kind === 'DIMSTYLE') {
-            const ds = readDimStyleRecord(o, STANDARD_DIMSTYLE);
+            const ds = readDimStyleRecord(o, objs);
             dimStyles.set(ds.name.toUpperCase(), ds);
           } else if (o.kind === 'STYLE') {
             const ts = textStyleFromGroups(o.groups);
@@ -2200,6 +2301,9 @@ export function readDxf(text: string, opts: DxfReadOptions = {}): DrawingState {
             if (vname) views.push({ name: vname, center: pt(o, 10), height: num(o, 40, 10) || 10 });
           }
         }
+        // The current style: header variables over the named record of the same name.
+        const current = dimStyles.get(String(headerVars.get('$DIMSTYLE')?.[0]?.value ?? 'Standard').toUpperCase());
+        if (current) ctx.dimStyle = dimStyleFromHeader(headerVars, current);
       } else if (name === 'BLOCKS') {
         let k = 0;
         while (k < objs.length) {
@@ -2308,7 +2412,6 @@ export function readDxf(text: string, opts: DxfReadOptions = {}): DrawingState {
   const lunits = Math.trunc(hnum('$LUNITS', DEFAULT_HEADER.units.lunits));
   const celweightRaw = Math.trunc(hnum('$CELWEIGHT', -1));
   const celtype = headerVars.get('$CELTYPE')?.[0]?.value || 'ByLayer';
-  const namedStyle = dimStyles.get(headerDimStyle.name.toUpperCase());
   const header: DrawingHeader = {
     units: {
       lunits: (lunits >= 1 && lunits <= 5 ? lunits : 2) as LinearUnits,
@@ -2320,8 +2423,8 @@ export function readDxf(text: string, opts: DxfReadOptions = {}): DrawingState {
     limits: { min: hpt('$LIMMIN', DEFAULT_HEADER.limits.min), max: hpt('$LIMMAX', DEFAULT_HEADER.limits.max) },
     pdmode: Math.trunc(hnum('$PDMODE', 0)),
     pdsize: hnum('$PDSIZE', 0),
-    // Header DIM* variables win when present (they describe the current style); otherwise the named record.
-    dimStyle: headerVars.has('$DIMTXT') ? headerDimStyle : namedStyle ?? headerDimStyle,
+    // Header DIM* variables over the named record of the current style.
+    dimStyle: ctx.dimStyle,
     linetypes,
     views,
     celtype: /^BYLAYER$/i.test(celtype) ? 'ByLayer' : celtype,
