@@ -152,7 +152,7 @@ describe('canvas drawing of styled text', () => {
   it('applies the MTEXT style to formatted runs too', () => {
     setTextStyles(textStylesOf(styles));
     const m = withTextStyle<MTextEntity>(
-      { id: 'm', layer: '0', color: 7, type: 'mtext', position: { x: 0, y: 1 }, text: 'plain red', raw: 'plain {\\C1;red}', height: 0.2, rotation: 0, width: 0, attachment: 1 },
+      { id: 'm', layer: '0', color: 7, type: 'mtext', position: { x: 0, y: 1 }, text: 'plain red', raw: 'plain {\\C1;red}', height: 0.2, rotation: 0, width: 0, attachment: 1, lineSpacing: 1 },
       'ARIAL',
     );
     const r = recorder();
