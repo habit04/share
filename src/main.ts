@@ -43,6 +43,8 @@ declare global {
       backupFile?(file: string): Promise<string | null>;
       plotPdf(dataUrl: string, suggestName: string, landscape: boolean, sheet?: { width: number; height: number; electron?: string }): Promise<string | null>;
       printDrawing?(dataUrl: string, title: string, landscape: boolean, sheet?: { width: number; height: number; electron?: string }): Promise<boolean>;
+      /** Track E: write vector PDF bytes (save-pdf IPC). */
+      savePdf?(bytes: Uint8Array, suggestName: string): Promise<string | null>;
       saveDxf(path: string | null, text: string, suggestName: string): Promise<string | null>;
       onMenuCommand(cb: (cmd: string) => void): void;
       onQueryDirty(cb: () => boolean): void;
@@ -189,6 +191,15 @@ function browserFileBridge(): FileBridge {
     // Browser: PLOT builds the PDF in the page and downloads it; PRINT uses the browser's print dialog.
     plotPdf: (dataUrl, suggestName, _landscape, sheet) => browserPlotPdf(dataUrl, suggestName, sheet ?? { width: 11, height: 8.5 }),
     printDrawing: (dataUrl, title, landscape, sheet) => browserPrint(dataUrl, title, landscape, sheet),
+    // Track E: vector PDF bytes download as a file.
+    savePdf: async (bytes, suggestName) => {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer], { type: 'application/pdf' }));
+      a.download = suggestName;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+      return suggestName;
+    },
   };
 }
 

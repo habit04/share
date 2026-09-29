@@ -288,3 +288,187 @@ export function parsePdfBasics(input: Uint8Array | ArrayBuffer): PdfBasics {
 
   return { version: header?.[1] ?? '', objects, startxref, startxrefValid, xref, trailer, root, size, pages, images, endsWithEof, errors };
 }
+
+// ---------------------------------------------------------------- content streams (vector plots)
+
+/** One content-stream operator with its operands (raw tokens: numbers, names, strings, arrays). */
+export interface PdfOp {
+  op: string;
+  args: string[];
+}
+
+export interface PdfContentSummary {
+  ops: PdfOp[];
+  /** Operator -> count. */
+  counts: Record<string, number>;
+  /** Path-construction and painting operators (m l c v y h re S s f F f* B B* b b* n). */
+  pathOps: number;
+  /** Distinct stroke (RG) and fill (rg) colours as "r g b". */
+  strokeColors: string[];
+  fillColors: string[];
+  /** Line widths set with `w`. */
+  widths: number[];
+  /** Dash arrays set with `d` (the array text, e.g. "[3.6 1.8]"). */
+  dashes: string[];
+  /** Strings shown with Tj. */
+  texts: string[];
+  /** Fonts selected with Tf (name without the slash). */
+  fonts: string[];
+  errors: string[];
+}
+
+const PATH_OPS = new Set(['m', 'l', 'c', 'v', 'y', 'h', 're', 'S', 's', 'f', 'F', 'f*', 'B', 'B*', 'b', 'b*', 'n']);
+
+/** Tokenize and summarise a (decompressed) content stream. */
+export function parseContentStream(content: string): PdfContentSummary {
+  const ops: PdfOp[] = [];
+  const errors: string[] = [];
+  let args: string[] = [];
+  let i = 0;
+  const s = content;
+  while (i < s.length) {
+    const ch = s[i]!;
+    if (/\s/.test(ch)) {
+      i += 1;
+      continue;
+    }
+    if (ch === '%') {
+      while (i < s.length && s[i] !== '\n' && s[i] !== '\r') i += 1;
+      continue;
+    }
+    if (ch === '(') {
+      let depth = 0;
+      let j = i;
+      for (; j < s.length; j += 1) {
+        if (s[j] === '\\') {
+          j += 1;
+          continue;
+        }
+        if (s[j] === '(') depth += 1;
+        else if (s[j] === ')') {
+          depth -= 1;
+          if (depth === 0) break;
+        }
+      }
+      if (j >= s.length) errors.push(`unterminated string at ${i}`);
+      args.push(s.slice(i, j + 1));
+      i = j + 1;
+      continue;
+    }
+    if (ch === '[') {
+      const j = s.indexOf(']', i);
+      if (j < 0) {
+        errors.push(`unterminated array at ${i}`);
+        break;
+      }
+      args.push(s.slice(i, j + 1));
+      i = j + 1;
+      continue;
+    }
+    if (ch === '<' && s[i + 1] !== '<') {
+      const j = s.indexOf('>', i);
+      args.push(s.slice(i, j + 1));
+      i = j + 1;
+      continue;
+    }
+    const m = /^\/[^\s()[\]<>/%]*|^[^\s()[\]<>/%]+/.exec(s.slice(i, i + 256));
+    if (!m) {
+      errors.push(`unexpected ${JSON.stringify(ch)} at ${i}`);
+      i += 1;
+      continue;
+    }
+    const tok = m[0];
+    i += tok.length;
+    if (tok.startsWith('/') || /^[-+]?(\d+\.?\d*|\.\d+)$/.test(tok) || tok === 'true' || tok === 'false' || tok === 'null') {
+      args.push(tok);
+      continue;
+    }
+    ops.push({ op: tok, args });
+    args = [];
+  }
+  if (args.length) errors.push(`${args.length} operand(s) without an operator at the end`);
+  const counts: Record<string, number> = {};
+  for (const o of ops) counts[o.op] = (counts[o.op] ?? 0) + 1;
+  const uniq = (xs: string[]) => [...new Set(xs)];
+  const unstring = (t: string) =>
+    t
+      .slice(1, -1)
+      .replace(/\\(\d{3})/g, (_x, oct: string) => String.fromCharCode(parseInt(oct, 8)))
+      .replace(/\\([()\\])/g, '$1');
+  // Operand counts of the operators a vector plot uses.
+  const arity: Record<string, number> = { m: 2, l: 2, c: 6, re: 4, w: 1, RG: 3, rg: 3, d: 2, cm: 6, Tf: 2, Tm: 6, Tj: 1, J: 1, j: 1, Do: 1, G: 1, g: 1 };
+  for (const o of ops) {
+    const want = arity[o.op];
+    if (want !== undefined && o.args.length !== want) errors.push(`${o.op} with ${o.args.length} operand(s) (expected ${want})`);
+    else if (want === undefined && o.args.length > 0 && !['q', 'Q', 'BT', 'ET'].includes(o.op) && !PATH_OPS.has(o.op)) errors.push(`unknown operator ${o.op}`);
+  }
+  let depth = 0;
+  for (const o of ops) {
+    if (o.op === 'q') depth += 1;
+    else if (o.op === 'Q') depth -= 1;
+    if (depth < 0) errors.push('Q without q');
+  }
+  if (depth > 0) errors.push(`${depth} unbalanced q`);
+  let inText = false;
+  for (const o of ops) {
+    if (o.op === 'BT') {
+      if (inText) errors.push('nested BT');
+      inText = true;
+    } else if (o.op === 'ET') {
+      if (!inText) errors.push('ET without BT');
+      inText = false;
+    } else if ((o.op === 'Tj' || o.op === 'Tf' || o.op === 'Tm') && !inText) errors.push(`${o.op} outside BT/ET`);
+  }
+  return {
+    ops,
+    counts,
+    pathOps: ops.filter((o) => PATH_OPS.has(o.op)).length,
+    strokeColors: uniq(ops.filter((o) => o.op === 'RG').map((o) => o.args.join(' '))),
+    fillColors: uniq(ops.filter((o) => o.op === 'rg').map((o) => o.args.join(' '))),
+    widths: uniq(ops.filter((o) => o.op === 'w').map((o) => o.args[0]!)).map(Number),
+    dashes: uniq(ops.filter((o) => o.op === 'd').map((o) => o.args[0]!)),
+    texts: ops.filter((o) => o.op === 'Tj').map((o) => unstring(o.args[0] ?? '()')),
+    fonts: uniq(ops.filter((o) => o.op === 'Tf').map((o) => (o.args[0] ?? '').replace(/^\//, ''))),
+    errors,
+  };
+}
+
+/**
+ * The content stream text of every page, decompressed with `inflate` when the stream is
+ * /FlateDecode (pass node:zlib inflateSync; the helper itself stays free of Node APIs).
+ */
+export function pageContents(info: PdfBasics, inflate: (bytes: Uint8Array) => Uint8Array): string[] {
+  const out: string[] = [];
+  for (const pg of info.pages) {
+    const page = info.objects.get(pg.num);
+    const refs = [...(dictValue(page?.dict ?? '', 'Contents') ?? '').matchAll(/(\d+)\s+\d+\s+R/g)].map((m) => Number(m[1]));
+    let text = '';
+    for (const r of refs) {
+      const o = info.objects.get(r);
+      if (!o?.stream) {
+        info.errors.push(`page ${pg.num}: contents ${r} has no stream`);
+        continue;
+      }
+      const filters: string[] = (dictValue(o.dict, 'Filter') ?? '').match(/\/[A-Za-z0-9]+/g) ?? [];
+      let data = o.stream;
+      if (filters.includes('/FlateDecode')) data = inflate(data);
+      else if (filters.length) info.errors.push(`page ${pg.num}: unsupported content filter ${filters.join(' ')}`);
+      text += latin1(data) + '\n';
+    }
+    out.push(text);
+  }
+  return out;
+}
+
+/** Fonts named in a page's resources (/F1 -> BaseFont). */
+export function pageFonts(info: PdfBasics, pageNum: number): Record<string, string> {
+  const page = info.objects.get(pageNum);
+  const res = dictValue(page?.dict ?? '', 'Resources') ?? '';
+  const fonts = dictValue(res, 'Font') ?? '';
+  const out: Record<string, string> = {};
+  for (const m of fonts.matchAll(/\/(\w+)\s+(\d+)\s+\d+\s+R/g)) {
+    const f = info.objects.get(Number(m[2]));
+    out[m[1]!] = (dictValue(f?.dict ?? '', 'BaseFont') ?? '').replace(/^\//, '');
+  }
+  return out;
+}

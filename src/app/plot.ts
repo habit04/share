@@ -44,6 +44,18 @@ export interface PlotOptions {
   scale: string;
   /** Margin on every side, inches. */
   margin: number;
+  // ---- Track E (app/plot-vector.ts): PDF output kind, what to plot and the plot style.
+  /** PDF output: real vector paths (default) or the rendered raster image. */
+  output?: 'vector' | 'raster';
+  /** The current tab (Model or the active layout) or every layout, one page each. */
+  what?: 'current' | 'layouts';
+  /** Plot style table: monochrome.ctb (default), grayscale, object colours, screening. */
+  style?: 'monochrome' | 'grayscale' | 'color' | 'screening';
+  screening?: number;
+  /** Plot object lineweights (default on). */
+  lineweights?: boolean;
+  /** Plot with plot styles (default on). */
+  usePlotStyles?: boolean;
 }
 
 export interface PageLayout {

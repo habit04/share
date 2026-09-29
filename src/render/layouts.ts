@@ -8,6 +8,7 @@ import type { Point, Bounds } from '../core/geometry';
 import * as g from '../core/geometry';
 import type { Entity } from '../core/entities';
 import { entityBounds } from '../core/entities';
+import type { PdfPageSpec, PdfDrawingContext, PdfPlotStyle } from '../io/pdf-vector';
 import type { Drawing } from '../core/document';
 import type { Viewport, ViewportOverlay } from './viewport';
 import { drawEntity, lineweightDisplay, annotationDisplay, colorDisplay, type Transform } from './draw';
@@ -173,5 +174,58 @@ export function paintLayout(ctx: CanvasRenderingContext2D, vp: Viewport, ov: Vie
     const act = layout.viewports.find((v) => v.id === spaceVp);
     annotationDisplay.factor = act ? 1 / act.view.scale : 1;
     annotationDisplay.hide = false;
+  }
+}
+
+// ---------------------------------------------------------------- raster sheets (PRINT, raster PDF of a layout)
+
+/**
+ * Render a plot page (io/pdf-vector.ts page spec: groups with their transform and clip) to a
+ * canvas at `dpi`, through the same draw pipeline as the screen. Used by PRINT of a layout and
+ * the "Raster image" PDF output; monochrome pages draw black.
+ */
+export function renderPageToCanvas(canvas: HTMLCanvasElement, page: PdfPageSpec, ctxInfo: PdfDrawingContext, style: PdfPlotStyle, dpi: number): void {
+  const s = dpi / 72;
+  const W = Math.max(1, Math.round(page.width * s));
+  const H = Math.max(1, Math.round(page.height * s));
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d')!;
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, W, H);
+  const mono = style.usePlotStyles && style.mode === 'monochrome';
+  const saved = { lw: { ...lineweightDisplay }, anno: { ...annotationDisplay }, paper: colorDisplay.paper };
+  lineweightDisplay.enabled = style.lineweights;
+  lineweightDisplay.pxPerMm = dpi / 25.4;
+  colorDisplay.paper = true;
+  try {
+    for (const grp of page.groups) {
+      const tf: Transform = { scale: grp.k * s, toScreen: (p) => ({ x: (grp.k * p.x + grp.e) * s, y: H - (grp.k * p.y + grp.f) * s }) };
+      ctx.save();
+      if (grp.clip) {
+        ctx.beginPath();
+        ctx.rect(grp.clip.x * s, H - (grp.clip.y + grp.clip.h) * s, grp.clip.w * s, grp.clip.h * s);
+        ctx.clip();
+      }
+      annotationDisplay.factor = grp.annoFactor;
+      annotationDisplay.hide = !!grp.hideAnnotative;
+      for (const e of grp.entities) {
+        if (grp.hidden.has(e.layer)) continue;
+        drawEntity(ctx, e, tf, ctxInfo.layers, ctxInfo.lookup, { hidden: grp.hidden, ...(mono ? { strokeOverride: '#000000' } : {}) });
+      }
+      ctx.restore();
+      for (const f of grp.frames ?? []) {
+        if (grp.hidden.has(f.layer)) continue;
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = Math.max(1, dpi / 100);
+        ctx.strokeRect(f.x * s, H - (f.y + f.h) * s, f.w * s, f.h * s);
+      }
+    }
+  } finally {
+    lineweightDisplay.enabled = saved.lw.enabled;
+    lineweightDisplay.pxPerMm = saved.lw.pxPerMm;
+    annotationDisplay.factor = saved.anno.factor;
+    annotationDisplay.hide = saved.anno.hide;
+    colorDisplay.paper = saved.paper;
   }
 }

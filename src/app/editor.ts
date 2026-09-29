@@ -36,6 +36,7 @@ import { trackFromPoints } from '../core/snap';
 // Track E: paper-space layouts (commands, controller, space switching).
 import { registerLayoutCommands } from '../tools/layouts';
 import type { SpaceRef } from '../core/layouts';
+import { plotLayoutsOrVector } from './plot-vector';
 
 export type EditorEvent = 'change' | 'selection' | 'tool' | 'view' | 'snap' | 'file' | 'log' | 'space';
 
@@ -77,6 +78,8 @@ export interface FileBridge {
   plotPdf?(dataUrl: string, suggestName: string, landscape: boolean, sheet?: PlotSheet): Promise<string | null>;
   /** Print the rendered sheet through the system print dialog; resolves true when a job was sent. */
   printDrawing?(dataUrl: string, title: string, landscape: boolean, sheet?: PlotSheet): Promise<boolean>;
+  /** Save finished PDF bytes (vector plot, app/plot-vector.ts); resolves the written path or null. */
+  savePdf?(bytes: Uint8Array, suggestName: string): Promise<string | null>;
 }
 
 /** Version compiled in from package.json (see vite.config.ts); 'dev' under plain vitest. */
@@ -903,6 +906,8 @@ export class Editor {
   private async plotOrPrint(mode: 'pdf' | 'print'): Promise<void> {
     const choice = await (this.hooks.plot?.(mode) ?? Promise.resolve({ options: this.plotOptions(), action: mode }));
     if (!choice) return;
+    // Track E: vector PDF (default output) and layout sheets; the raster Model-tab path below is unchanged.
+    if (await plotLayoutsOrVector(this, choice)) return;
     const img = await this.renderPlotImage(choice.options);
     if (!img) {
       this.log('Nothing to plot: this tab has no visible objects.');
