@@ -43,7 +43,17 @@ export async function readDwgPayload(bytes, kind = 'dwg') {
   // LibreDWG keeps per-version state in the module; reading files of different
   // versions in one instance can abort the WASM. Start fresh for the next read.
   void resetLibreDwg();
-  const payload = {
+  const payload = payloadFromDatabase(db, version);
+  return { payload, version };
+}
+
+/**
+ * The trimmed import payload of a converted LibreDWG database. Twin of
+ * `toImportPayload` in src/io/dwg.ts (the browser path); keep the two in step
+ * (tests/dwg.test.ts compares them).
+ */
+export function payloadFromDatabase(db, version = '') {
+  return {
     header: db.header ?? {},
     entities: db.entities ?? [],
     layers: (db.tables?.LAYER?.entries ?? []).map((x) => ({
@@ -60,10 +70,12 @@ export async function readDwgPayload(bytes, kind = 'dwg') {
       basePoint: b.basePoint,
       entities: b.entities ?? [],
       description: b.description,
+      handle: b.handle,
+      flags: b.flags,
     })),
     version,
+    imageDefs: (db.objects?.IMAGEDEF ?? []).map((d) => ({ handle: String(d.handle ?? ''), fileName: d.fileName ?? '' })),
   };
-  return { payload, version };
 }
 
 /** Forget the cached WebAssembly module (after an abort). */
