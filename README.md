@@ -28,9 +28,17 @@ trademarks are used.
 Ready-made installers are built by the **Build installers** GitHub Actions workflow
 (Actions tab, run it or push a `v*` tag): a Windows installer (`.exe`), macOS disk
 images (`.dmg`, Apple Silicon and Intel) and Linux `.AppImage` / `.deb` packages appear as workflow artifacts, and
-tagged builds are attached to a GitHub Release. The builds are not signed with a vendor certificate, so Windows SmartScreen asks for
-confirmation ("More info" then "Run anyway") and macOS asks once under System Settings >
-Privacy & Security > "Open Anyway" (macOS builds are ad-hoc signed so they are not reported as damaged).
+tagged builds are attached to a GitHub Release. The Windows installer and app are signed through Azure
+Artifact Signing (publisher: Justin Rodriguez); older unsigned versions, or a new certificate before it has
+built SmartScreen reputation, may still need "More info" then "Run anyway". macOS builds are not signed with an
+Apple certificate, so macOS asks once under System Settings > Privacy & Security > "Open Anyway" (they are
+ad-hoc signed so they are not reported as damaged).
+
+Windows signing switches on only when the repository has all seven secrets `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_SIGNING_ENDPOINT`,
+`AZURE_SIGNING_ACCOUNT`, `AZURE_CERT_PROFILE` and `AZURE_PUBLISHER_NAME` (`scripts/azure-signing.mjs`
+adds `win.azureSignOptions` on the Windows runner, and the workflow then checks every `.exe` is validly
+signed). `AZURE_PUBLISHER_NAME` must equal the certificate's subject name exactly, because the updater
+rejects an update whose signer differs from it.
 
 The **[user manual](docs/USER-MANUAL.md)** covers installation, a first drawing, the interface and every command; see [CHANGELOG.md](CHANGELOG.md) for what changed in each release.
 

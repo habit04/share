@@ -57,9 +57,36 @@ jobs:
             exit 1
           fi
       - run: npm run build
+      - name: Turn on Azure signing when its secrets are set
+        id: signing
+        if: runner.os == 'Windows'
+        run: node scripts/azure-signing.mjs
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_SIGNING_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          AZURE_SIGNING_ACCOUNT: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          AZURE_CERT_PROFILE: ${{ secrets.AZURE_CERT_PROFILE }}
+          AZURE_PUBLISHER_NAME: ${{ secrets.AZURE_PUBLISHER_NAME }}
       - run: npx electron-builder ${{ matrix.target }} --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          # Read by the TrustedSigning PowerShell module; empty on macOS and Linux.
+          AZURE_TENANT_ID: ${{ runner.os == 'Windows' && secrets.AZURE_TENANT_ID || '' }}
+          AZURE_CLIENT_ID: ${{ runner.os == 'Windows' && secrets.AZURE_CLIENT_ID || '' }}
+          AZURE_CLIENT_SECRET: ${{ runner.os == 'Windows' && secrets.AZURE_CLIENT_SECRET || '' }}
+      - name: Check the Windows signatures
+        if: steps.signing.outputs.enabled == 'true'
+        shell: pwsh
+        run: |
+          $bad = 0
+          foreach ($f in @(Get-ChildItem release/*.exe) + @(Get-ChildItem release/win-unpacked/*.exe)) {
+            $sig = Get-AuthenticodeSignature $f.FullName
+            Write-Host "$($f.Name): $($sig.Status) $($sig.SignerCertificate.Subject)"
+            if ($sig.Status -ne 'Valid') { $bad++ }
+          }
+          if ($bad) { Write-Error "$bad executable(s) are not validly signed"; exit 1 }
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
