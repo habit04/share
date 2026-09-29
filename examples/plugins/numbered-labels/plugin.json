@@ -1,0 +1,8 @@
+{
+  "name": "numbered-labels",
+  "version": "1.0.0",
+  "description": "NUMLABEL: places text labels with a prefix and incrementing numbers at picked points.",
+  "author": "JCad Electrical contributors",
+  "main": "main.js",
+  "apiVersion": 1
+}
