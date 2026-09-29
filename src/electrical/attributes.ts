@@ -8,6 +8,7 @@
  * X4 = right, X8 = bottom; the value is the pin number).
  */
 import type { AttributeDef, BlockDef, Entity, InsertEntity } from '../core/entities';
+import type { DrawingState } from '../core/document';
 import { similarityTransform, entityBounds } from '../core/entities';
 import type { Point } from '../core/geometry';
 import * as g from '../core/geometry';
@@ -234,4 +235,45 @@ export function instLoc(attrs: Readonly<Record<string, string>>): string {
   const inst = attrs.INST?.trim();
   const loc = attrs.LOC?.trim();
   return `${inst ? `+${inst}` : ''}${loc ? `-${loc}` : ''}`;
+}
+
+/**
+ * Add invisible attribute definitions for `tags` to a block of the drawing
+ * (when it lacks them), so values written into inserts that the symbol never
+ * defined (XREF, JUMPER, CABLE ...) are exported to DXF and read back. Pure:
+ * returns the same state when nothing is missing.
+ */
+export function withBlockAttributes(state: DrawingState, blockName: string, tags: readonly string[]): DrawingState {
+  const block = state.blocks[blockName];
+  if (!block) return state;
+  const have = new Set(block.attributes.map((a) => a.tag));
+  const missing = tags.filter((t) => !have.has(t));
+  if (missing.length === 0) return state;
+  const extra: AttributeDef[] = missing.map((tag, i) => ({ tag, prompt: tag, default: '', position: { x: 0, y: -0.5 - i * 0.1 }, height: 0.06, align: 'center', invisible: true }));
+  return { ...state, blocks: { ...state.blocks, [blockName]: { ...block, attributes: [...block.attributes, ...extra] } } };
+}
+
+/** Set attribute values on inserts (id -> values) and make sure their blocks define those tags. Pure. */
+export function withInsertAttributes(state: DrawingState, values: ReadonlyMap<string, Record<string, string>>): DrawingState {
+  if (values.size === 0) return state;
+  const blocks = new Map<string, Set<string>>();
+  let changed = false;
+  const entities = state.entities.map((e) => {
+    const a = e.type === 'insert' ? values.get(e.id) : undefined;
+    if (!a || e.type !== 'insert') return e;
+    const set = blocks.get(e.block) ?? new Set<string>();
+    Object.keys(a).forEach((k) => set.add(k));
+    blocks.set(e.block, set);
+    if (Object.entries(a).every(([k, v]) => (e.attributes[k] ?? '') === v)) return e;
+    changed = true;
+    const attrs: Record<string, string> = { ...e.attributes };
+    for (const [k, v] of Object.entries(a)) {
+      if (v === '' && !(k in e.attributes)) continue;
+      attrs[k] = v;
+    }
+    return { ...e, attributes: attrs };
+  });
+  let next: DrawingState = changed ? { ...state, entities } : state;
+  for (const [block, tags] of blocks) next = withBlockAttributes(next, block, [...tags]);
+  return next;
 }

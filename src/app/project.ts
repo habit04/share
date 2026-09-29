@@ -12,6 +12,10 @@ export interface ProjectDrawing {
   dwgno?: string;
   /** Section / sub-section like ACADE's project tree grouping. */
   section?: string;
+  /** Revision shown in the title block (REV). */
+  rev?: string;
+  /** Drawing date for the title block (DATE); empty = today. */
+  date?: string;
 }
 
 export interface ProjectSettings {
@@ -26,6 +30,20 @@ export interface ProjectSettings {
   standard?: 'JIC' | 'IEC';
 }
 
+/** Saved report configuration (see src/electrical/report-templates.ts); kept as plain JSON here. */
+export interface ProjectReportTemplate {
+  name: string;
+  /** Report key from REPORTS (bom, components, wires, cables ...). */
+  report: string;
+  title?: string;
+  /** Columns to output, in order (names of the report's columns); empty = all. */
+  columns?: string[];
+  sort?: Array<{ column: string; desc?: boolean }>;
+  filters?: Array<{ column: string; op: 'contains' | 'equals' | 'not' | 'empty' | 'notempty' | 'starts'; value?: string }>;
+  output?: 'view' | 'table' | 'csv';
+  projectWide?: boolean;
+}
+
 export interface Project {
   name: string;
   description?: string;
@@ -33,6 +51,13 @@ export interface Project {
   descriptions?: string[];
   settings?: ProjectSettings;
   drawings: ProjectDrawing[];
+  /** Saved report configurations run by AEREPORTRUN. */
+  reportTemplates?: ProjectReportTemplate[];
+  /**
+   * Title block attribute mapping in the AutoCAD Electrical .wdt text format
+   * ("ATTRIBUTE = SOURCE" per line, see src/electrical/titleblock-map.ts); empty = built-in mapping.
+   */
+  titleBlockMap?: string;
   /** Absolute path of the project file (not serialised). */
   path?: string;
 }
@@ -66,7 +91,9 @@ export function parseProject(text: string, path?: string): Project {
     settings: Object.values(settings).some((v) => v !== undefined) ? settings : undefined,
     drawings: raw.drawings
       .filter((d): d is ProjectDrawing => !!d && typeof d === 'object' && typeof (d as ProjectDrawing).file === 'string')
-      .map((d) => ({ file: d.file, description: str(d.description), sheet: str(d.sheet), dwgno: str(d.dwgno), section: str(d.section) })),
+      .map((d) => ({ file: d.file, description: str(d.description), sheet: str(d.sheet), dwgno: str(d.dwgno), section: str(d.section), rev: str(d.rev), date: str(d.date) })),
+    reportTemplates: Array.isArray(raw.reportTemplates) ? parseReportTemplates(raw.reportTemplates) : undefined,
+    titleBlockMap: str(raw.titleBlockMap),
     path,
   };
 }
@@ -78,12 +105,48 @@ export function serializeProject(p: Project): string {
     if (d.sheet) o.sheet = d.sheet;
     if (d.dwgno) o.dwgno = d.dwgno;
     if (d.section) o.section = d.section;
+    if (d.rev) o.rev = d.rev;
+    if (d.date) o.date = d.date;
     return o;
   });
   const out: Omit<Project, 'path'> = { name: p.name, description: p.description, drawings };
   if (p.descriptions && p.descriptions.some((d) => d)) out.descriptions = p.descriptions;
   if (p.settings && Object.values(p.settings).some((v) => v !== undefined && v !== '')) out.settings = p.settings;
+  if (p.reportTemplates && p.reportTemplates.length) out.reportTemplates = p.reportTemplates;
+  if (p.titleBlockMap && p.titleBlockMap.trim()) out.titleBlockMap = p.titleBlockMap;
   return JSON.stringify(out, null, 2) + '\n';
+}
+
+/** Report templates from untrusted JSON: keep well-formed entries, drop the rest. */
+export function parseReportTemplates(raw: unknown[]): ProjectReportTemplate[] {
+  const out: ProjectReportTemplate[] = [];
+  const strs = (v: unknown): string[] | undefined => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : undefined);
+  const ops = ['contains', 'equals', 'not', 'empty', 'notempty', 'starts'] as const;
+  for (const r of raw) {
+    if (!r || typeof r !== 'object') continue;
+    const o = r as Record<string, unknown>;
+    if (typeof o.name !== 'string' || !o.name.trim() || typeof o.report !== 'string') continue;
+    const t: ProjectReportTemplate = { name: o.name.trim(), report: o.report };
+    if (typeof o.title === 'string' && o.title) t.title = o.title;
+    const cols = strs(o.columns);
+    if (cols && cols.length) t.columns = cols;
+    if (Array.isArray(o.sort)) {
+      const sort = o.sort
+        .filter((x): x is { column: string; desc?: unknown } => !!x && typeof x === 'object' && typeof (x as { column?: unknown }).column === 'string')
+        .map((x) => (x.desc === true ? { column: x.column, desc: true } : { column: x.column }));
+      if (sort.length) t.sort = sort;
+    }
+    if (Array.isArray(o.filters)) {
+      const filters = o.filters
+        .filter((x): x is { column: string; op: string; value?: unknown } => !!x && typeof x === 'object' && typeof (x as { column?: unknown }).column === 'string' && (ops as readonly unknown[]).includes((x as { op?: unknown }).op))
+        .map((x) => ({ column: x.column, op: x.op as (typeof ops)[number], ...(typeof x.value === 'string' ? { value: x.value } : {}) }));
+      if (filters.length) t.filters = filters;
+    }
+    if (o.output === 'table' || o.output === 'csv' || o.output === 'view') t.output = o.output;
+    if (o.projectWide === true) t.projectWide = true;
+    out.push(t);
+  }
+  return out;
 }
 
 export function defaultProject(): Project {
@@ -130,6 +193,7 @@ export function titleBlockFields(project: Project, drawingIndex: number, drawing
   if (sheet) fields.SHEET = total ? `${sheet} OF ${total}` : sheet;
   const dwgno = d?.dwgno || drawingNumber || (d ? baseName(d.file).replace(/\.[^.]+$/, '') : '');
   if (dwgno) fields.DWGNO = dwgno;
-  fields.DATE = new Date().toISOString().slice(0, 10);
+  fields.DATE = d?.date || new Date().toISOString().slice(0, 10);
+  if (d?.rev) fields.REV = d.rev;
   return fields;
 }

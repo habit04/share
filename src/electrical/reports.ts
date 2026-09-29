@@ -17,11 +17,27 @@ import { collectNets, netOfWireNumber, isWireNumber, symbolSpan, type WireNet } 
 import { auditIssues } from './audit';
 import { panelRows, terminalStripTable } from './panel';
 import { WIRE_TYPES } from '../tools/plc';
+import { cableSchedule, jumperText } from './cables';
 
 export interface Report {
   title: string;
   columns: string[];
   rows: string[][];
+}
+
+/**
+ * Column configuration accepted by every report: the columns to keep, in
+ * the order given (names as in `Report.columns`, case-insensitive; unknown
+ * names are skipped). Empty / undefined keeps the report as built.
+ */
+export type ReportColumns = readonly string[] | undefined;
+
+/** Keep and reorder report columns (see ReportColumns). */
+export function withColumns(r: Report, columns: ReportColumns): Report {
+  if (!columns || columns.length === 0) return r;
+  const idx = columns.map((c) => r.columns.findIndex((k) => k.toLowerCase() === c.trim().toLowerCase())).filter((i) => i >= 0);
+  if (idx.length === 0) return r;
+  return { ...r, columns: idx.map((i) => r.columns[i]!), rows: r.rows.map((row) => idx.map((i) => row[i] ?? '')) };
 }
 
 /** Relay/contactor contacts belong to their coil's device and are not separate BOM items. */
@@ -30,7 +46,7 @@ export const isRelayContact = (block: string): boolean => isChildBlock(block);
 const loc = (e: InsertEntity) => `${e.position.x.toFixed(3)}, ${e.position.y.toFixed(3)}`;
 
 /** Component report: one row per inserted symbol with a tag (children listed with their parent tag). */
-export function componentReport(doc: Drawing): Report {
+export function componentReport(doc: Drawing, columns?: ReportColumns): Report {
   const rows: string[][] = [];
   for (const e of doc.entities) {
     if (!isComponent(e)) continue;
@@ -49,11 +65,11 @@ export function componentReport(doc: Drawing): Report {
     ]);
   }
   rows.sort((a, b) => a[0]!.localeCompare(b[0]!, undefined, { numeric: true }));
-  return { title: 'Component Report', columns: ['Tag', 'Description', 'Manufacturer', 'Catalog', 'Inst/Loc', 'Block', 'Symbol', 'Rung', 'Child', 'Location'], rows };
+  return withColumns({ title: 'Component Report', columns: ['Tag', 'Description', 'Manufacturer', 'Catalog', 'Inst/Loc', 'Block', 'Symbol', 'Rung', 'Child', 'Location'], rows }, columns);
 }
 
 /** Bill of material: parent devices grouped by manufacturer + catalog (or block when no catalog). */
-export function billOfMaterial(doc: Drawing): Report {
+export function billOfMaterial(doc: Drawing, columns?: ReportColumns): Report {
   const groups = new Map<string, { mfg: string; cat: string; desc: string; tags: string[] }>();
   for (const e of doc.entities) {
     if (!isComponent(e) || isChild(e) || isExtraPole(e)) continue;
@@ -70,7 +86,7 @@ export function billOfMaterial(doc: Drawing): Report {
   const rows = [...groups.values()]
     .sort((a, b) => a.cat.localeCompare(b.cat))
     .map((g, i) => [String(i + 1), String(g.tags.length), g.cat, g.mfg, g.desc, g.tags.filter(Boolean).join(', ')]);
-  return { title: 'Bill of Material', columns: ['Item', 'Qty', 'Catalog / Symbol', 'Manufacturer', 'Description', 'Tags'], rows };
+  return withColumns({ title: 'Bill of Material', columns: ['Item', 'Qty', 'Catalog / Symbol', 'Manufacturer', 'Description', 'Tags'], rows }, columns);
 }
 
 /** Devices whose stubs touch a net, in x order. */
@@ -111,7 +127,7 @@ function numberedNets(doc: Drawing): Array<{ label: TextEntity; net: WireNet }> 
 }
 
 /** Wire from/to: each numbered net with the components whose stubs touch it. */
-export function wireFromToReport(doc: Drawing): Report {
+export function wireFromToReport(doc: Drawing, columns?: ReportColumns): Report {
   const comps = doc.entities.filter((e): e is InsertEntity => isComponent(e));
   const rows: string[][] = [];
   for (const { label, net } of numberedNets(doc)) {
@@ -119,11 +135,11 @@ export function wireFromToReport(doc: Drawing): Report {
     rows.push([label.text, list[0] ?? '', list[1] ?? '', list.slice(2).join(', '), nearestReference(doc, label.position) ?? '', label.layer === 'WIREFIXED' ? 'fixed' : '']);
   }
   rows.sort((a, b) => a[0]!.localeCompare(b[0]!, undefined, { numeric: true }));
-  return { title: 'Wire From/To Report', columns: ['Wire No.', 'From', 'To', 'Also', 'Rung', 'Fixed'], rows };
+  return withColumns({ title: 'Wire From/To Report', columns: ['Wire No.', 'From', 'To', 'Also', 'Rung', 'Fixed'], rows }, columns);
 }
 
 /** Wire label report: one printable label per wire end with wire type, colour / gauge and length. */
-export function wireLabelReport(doc: Drawing): Report {
+export function wireLabelReport(doc: Drawing, columns?: ReportColumns): Report {
   const comps = doc.entities.filter((e): e is InsertEntity => isComponent(e));
   const rows: string[][] = [];
   for (const { label, net } of numberedNets(doc)) {
@@ -134,28 +150,32 @@ export function wireLabelReport(doc: Drawing): Report {
     rows.push([label.text, layer, type?.description ?? '', String(Math.max(2, list.length)), list.join(' - '), length.toFixed(2)]);
   }
   rows.sort((a, b) => a[0]!.localeCompare(b[0]!, undefined, { numeric: true }));
-  return { title: 'Wire Label Report', columns: ['Wire No.', 'Wire Type', 'Colour / Gauge', 'Labels', 'Connections', 'Length'], rows };
+  return withColumns({ title: 'Wire Label Report', columns: ['Wire No.', 'Wire Type', 'Colour / Gauge', 'Labels', 'Connections', 'Length'], rows }, columns);
 }
 
 /** Terminal report. */
-export function terminalReport(doc: Drawing): Report {
+export function terminalReport(doc: Drawing, columns?: ReportColumns): Report {
   const rows: string[][] = [];
   for (const e of doc.entities) {
     if (!isTerminal(e)) continue;
-    rows.push([e.attributes.TAGSTRIP ?? '', e.attributes.TERM01 ?? '', descriptionOf(e.attributes), nearestReference(doc, e.position) ?? '', loc(e)]);
+    rows.push([e.attributes.TAGSTRIP ?? '', e.attributes.TERM01 ?? '', descriptionOf(e.attributes), nearestReference(doc, e.position) ?? '', loc(e), jumperText(e, doc.entities)]);
   }
   rows.sort((a, b) => a[0]!.localeCompare(b[0]!, undefined, { numeric: true }) || a[1]!.localeCompare(b[1]!, undefined, { numeric: true }));
-  return { title: 'Terminal Report', columns: ['Strip', 'Terminal', 'Description', 'Rung', 'Location'], rows };
+  return withColumns({ title: 'Terminal Report', columns: ['Strip', 'Terminal', 'Description', 'Rung', 'Location', 'Jumper'], rows }, columns);
 }
 
 /** Terminal strip report: wire numbers and devices on both sides of each terminal. */
-export function terminalStripReport(doc: Drawing): Report {
-  const rows = terminalStripTable(doc.entities, doc.lookupBlock).map((r) => [r.strip, r.number, r.leftWire, r.leftDevice, r.rightWire, r.rightDevice, r.ref]);
-  return { title: 'Terminal Strip Report', columns: ['Strip', 'Terminal', 'Left Wire', 'Left Device', 'Right Wire', 'Right Device', 'Rung'], rows };
+export function terminalStripReport(doc: Drawing, columns?: ReportColumns): Report {
+  const jumper = (id: string) => {
+    const t = doc.entity(id);
+    return t && t.type === 'insert' ? jumperText(t, doc.entities) : '';
+  };
+  const rows = terminalStripTable(doc.entities, doc.lookupBlock).map((r) => [r.strip, r.number, r.leftWire, r.leftDevice, r.rightWire, r.rightDevice, r.ref, jumper(r.id)]);
+  return withColumns({ title: 'Terminal Strip Report', columns: ['Strip', 'Terminal', 'Left Wire', 'Left Device', 'Right Wire', 'Right Device', 'Rung', 'Jumper'], rows }, columns);
 }
 
 /** PLC I/O address report: module addresses (parametric modules) and PLC point symbols with the connected device. */
-export function plcIoReport(doc: Drawing): Report {
+export function plcIoReport(doc: Drawing, columns?: ReportColumns): Report {
   const rows: string[][] = [];
   const nets = collectNets(doc.entities);
   const labels = doc.entities.filter(isWireNumber).map((t) => ({ t, net: netOfWireNumber(nets, t) }));
@@ -185,7 +205,13 @@ export function plcIoReport(doc: Drawing): Report {
       const stubX = isInput ? x0 - 0.01 : x1 + 0.01;
       const net = netAt({ x: stubX, y });
       const devices = deviceOn(net);
-      rows.push([moduleTag, a.text, isInput ? 'Input' : 'Output', wireNo(net), devices.join(', '), devices.length ? descOf(devices[0]!) : '', nearestReference(doc, a.position) ?? '']);
+      // Point descriptions written by AEPLCIO sit under the stub outside the module box.
+      const pointDesc = doc.entities
+        .filter((e): e is TextEntity => e.type === 'text' && e.layer === 'DESC' && !inside(e.position) && e.position.y < y && e.position.y > y - 0.45 && (isInput ? e.position.x <= x0 && e.position.x >= x0 - 0.8 : e.position.x >= x1 && e.position.x <= x1 + 0.8))
+        .sort((p, q) => q.position.y - p.position.y)
+        .map((e) => e.text)
+        .join(' ');
+      rows.push([moduleTag, a.text, isInput ? 'Input' : 'Output', wireNo(net), devices.join(', '), pointDesc || (devices.length ? descOf(devices[0]!) : ''), nearestReference(doc, a.position) ?? '']);
     }
   }
   for (const e of doc.entities) {
@@ -197,11 +223,11 @@ export function plcIoReport(doc: Drawing): Report {
     rows.push(['', e.attributes.TAG1, isInput ? 'Input' : 'Output', wireNo(net), devices.join(', '), e.attributes.DESC1 || (devices.length ? descOf(devices[0]!) : ''), nearestReference(doc, e.position) ?? '']);
   }
   rows.sort((a, b) => a[0]!.localeCompare(b[0]!, undefined, { numeric: true }) || a[1]!.localeCompare(b[1]!, undefined, { numeric: true }));
-  return { title: 'PLC I/O Address Report', columns: ['Module', 'Address', 'I/O', 'Wire No.', 'Device', 'Description', 'Rung'], rows };
+  return withColumns({ title: 'PLC I/O Address Report', columns: ['Module', 'Address', 'I/O', 'Wire No.', 'Device', 'Description', 'Rung'], rows }, columns);
 }
 
 /** Parent devices that lack manufacturer or catalog data. */
-export function missingCatalogReport(doc: Drawing): Report {
+export function missingCatalogReport(doc: Drawing, columns?: ReportColumns): Report {
   const rows: string[][] = [];
   for (const e of doc.entities) {
     if (!isParentComponent(e) || /^(HGND|IEC_PE)/.test(e.block)) continue;
@@ -210,20 +236,26 @@ export function missingCatalogReport(doc: Drawing): Report {
     rows.push([e.attributes.TAG1 ?? '', descriptionOf(e.attributes), tagPrefix(e.block), e.block, missing.join(', '), nearestReference(doc, e.position) ?? '']);
   }
   rows.sort((a, b) => a[0]!.localeCompare(b[0]!, undefined, { numeric: true }));
-  return { title: 'Missing Catalog Data', columns: ['Tag', 'Description', 'Family', 'Block', 'Missing', 'Rung'], rows };
+  return withColumns({ title: 'Missing Catalog Data', columns: ['Tag', 'Description', 'Family', 'Block', 'Missing', 'Rung'], rows }, columns);
 }
 
 /** Panel footprints with item numbers. */
-export function panelReport(doc: Drawing): Report {
+export function panelReport(doc: Drawing, columns?: ReportColumns): Report {
   const rows = panelRows(doc.entities).map((r) => [r.item, r.tag, r.desc, r.mfg, r.cat, r.loc, r.block]);
-  return { title: 'Panel Component Report', columns: ['Item', 'Tag', 'Description', 'Manufacturer', 'Catalog', 'Inst/Loc', 'Footprint'], rows };
+  return withColumns({ title: 'Panel Component Report', columns: ['Item', 'Tag', 'Description', 'Manufacturer', 'Catalog', 'Inst/Loc', 'Footprint'], rows }, columns);
 }
 
 /** Electrical audit as a report (see audit.ts for the structured issues). */
-export function electricalAudit(doc: Drawing): Report {
+export function electricalAudit(doc: Drawing, columns?: ReportColumns): Report {
   const rows = auditIssues(doc).map((i) => [i.check, i.item, i.detail, i.severity]);
   if (rows.length === 0) rows.push(['OK', '', 'No problems found', '']);
-  return { title: 'Electrical Audit', columns: ['Check', 'Item', 'Detail', 'Severity'], rows };
+  return withColumns({ title: 'Electrical Audit', columns: ['Check', 'Item', 'Detail', 'Severity'], rows }, columns);
+}
+
+/** Cable schedule: one row per cable conductor with from / to terminals and wire numbers (see cables.ts). */
+export function cableScheduleReport(doc: Drawing, columns?: ReportColumns): Report {
+  const rows = cableSchedule(doc.entities, doc.lookupBlock).map((r) => [r.cable, r.type, String(r.conductors), r.conductor, r.wire, r.from, r.to, r.length, r.ref]);
+  return withColumns({ title: 'Cable Schedule', columns: ['Cable', 'Type', 'Conductors', 'Conductor', 'Wire No.', 'From', 'To', 'Length', 'Rung'], rows }, columns);
 }
 
 export function reportToCsv(r: Report): string {
@@ -245,6 +277,8 @@ export interface TableOptions {
   layer?: string;
   /** Maximum rows per column block; longer reports continue in a second block to the right. */
   maxRows?: number;
+  /** Draw jumper bars in a "Jumper" column (default on). */
+  jumperBars?: boolean;
 }
 
 /** Put a report on the drawing as a table of lines and text (origin = top-left). */
@@ -254,7 +288,7 @@ export function reportToEntities(r: Report, origin: Point, opts: TableOptions = 
   const layer = opts.layer ?? 'REPORT';
   const maxRows = Math.max(1, opts.maxRows ?? 40);
   const pad = h * 0.6;
-  const widths = r.columns.map((c, i) => Math.max(textWidth(c, h), ...r.rows.map((row) => textWidth(row[i] ?? '', h))) + pad * 2);
+  const widths = r.columns.map((c, i) => Math.max(textWidth(c, h), ...r.rows.map((row) => textWidth(row[i] ?? '', h))) + pad * 2 + (c === 'Jumper' && opts.jumperBars !== false ? h * 2 : 0));
   const total = widths.reduce((s, w) => s + w, 0);
   const out: Entity[] = [];
   const line = (a: Point, b: Point): LineEntity => ({ id: newId(), type: 'line', layer, color: 'ByLayer', a, b });
@@ -284,11 +318,27 @@ export function reportToEntities(r: Report, origin: Point, opts: TableOptions = 
     };
     cellText(r.columns, 0);
     rows.forEach((row, i) => cellText(row, i + 1));
+    // Terminal jumpers: a short bar in the Jumper column joining the rows of each jumper.
+    const jc = r.columns.findIndex((c) => c === 'Jumper');
+    if (jc >= 0 && opts.jumperBars !== false) {
+      const colLeft = left + widths.slice(0, jc).reduce((s, w) => s + w, 0);
+      const barX = colLeft + widths[jc]! - pad;
+      const byId = new Map<string, number[]>();
+      rows.forEach((row, i) => {
+        for (const m of (row[jc] ?? '').matchAll(/(J\d+)>/g)) byId.set(m[1]!, [...(byId.get(m[1]!) ?? []), i]);
+      });
+      for (const idx of byId.values()) {
+        if (idx.length < 2) continue;
+        const ys = idx.map((i) => top - (i + 1.5) * rh);
+        out.push(line({ x: barX, y: Math.max(...ys) }, { x: barX, y: Math.min(...ys) }));
+        for (const y of ys) out.push(line({ x: barX - pad * 0.8, y }, { x: barX, y }));
+      }
+    }
   }
   return out;
 }
 
-export const REPORTS: Array<{ key: string; name: string; build: (doc: Drawing) => Report; group: 'schematic' | 'panel' }> = [
+export const REPORTS: Array<{ key: string; name: string; build: (doc: Drawing, columns?: ReportColumns) => Report; group: 'schematic' | 'panel' }> = [
   { key: 'bom', name: 'Bill of Material', build: billOfMaterial, group: 'schematic' },
   { key: 'components', name: 'Component Report', build: componentReport, group: 'schematic' },
   { key: 'wires', name: 'Wire From/To', build: wireFromToReport, group: 'schematic' },
@@ -297,6 +347,7 @@ export const REPORTS: Array<{ key: string; name: string; build: (doc: Drawing) =
   { key: 'missing', name: 'Missing Catalog Data', build: missingCatalogReport, group: 'schematic' },
   { key: 'terminals', name: 'Terminal Report', build: terminalReport, group: 'panel' },
   { key: 'strip', name: 'Terminal Strip', build: terminalStripReport, group: 'panel' },
+  { key: 'cables', name: 'Cable Schedule', build: cableScheduleReport, group: 'panel' },
   { key: 'panel', name: 'Panel Components', build: panelReport, group: 'panel' },
   { key: 'audit', name: 'Electrical Audit', build: electricalAudit, group: 'schematic' },
 ];
