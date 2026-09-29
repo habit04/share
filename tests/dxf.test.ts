@@ -147,6 +147,50 @@ describe('DXF round trip', () => {
     expect(again.blocks.B!.attributes[0]!.invisible).toBe(true);
   });
 
+  it('round-trips the constant / verify / preset attribute flags (group 70 bits 2, 4, 8)', () => {
+    const d = new Drawing();
+    const at = (tag: string, flags: Record<string, boolean>) => ({ tag, prompt: tag, default: `${tag}-default`, position: { x: 0, y: 0 }, height: 0.1, align: 'left' as const, ...flags });
+    d.defineBlock({
+      name: 'FLAGS',
+      basePoint: { x: 0, y: 0 },
+      entities: [],
+      attributes: [at('PLAIN', {}), at('HID', { invisible: true }), at('CONST', { constant: true }), at('VER', { verify: true }), at('PRE', { preset: true, invisible: true })],
+    });
+    d.addEntities([{ id: 'i', layer: '0', color: 'ByLayer', type: 'insert', block: 'FLAGS', position: { x: 1, y: 1 }, scale: 1, rotation: 0, attributes: { PLAIN: 'p', HID: 'h', VER: 'v', PRE: 's' } }]);
+    const text = writeDxf(d.snapshot);
+    const back = readDxf(text);
+    const attrs = back.blocks.FLAGS!.attributes as ReadonlyArray<Record<string, unknown>>;
+    const flags = (tag: string) => {
+      const a = attrs.find((x) => x.tag === tag)!;
+      return ['invisible', 'constant', 'verify', 'preset'].filter((k) => a[k] === true);
+    };
+    expect(flags('PLAIN')).toEqual([]);
+    expect(flags('HID')).toEqual(['invisible']);
+    expect(flags('CONST')).toEqual(['constant']);
+    expect(flags('VER')).toEqual(['verify']);
+    expect(flags('PRE')).toEqual(['invisible', 'preset']);
+    // A constant attribute has no ATTRIB on the insert (its definition's value shows).
+    const lines = text.split(/\r?\n/).map((l) => l.trim());
+    const attribTags: string[] = [];
+    let inAttrib = false;
+    for (let i = 0; i + 1 < lines.length; i += 2) {
+      if (lines[i] === '0') inAttrib = lines[i + 1] === 'ATTRIB';
+      else if (inAttrib && lines[i] === '2') attribTags.push(lines[i + 1]!);
+    }
+    expect(attribTags).toEqual(['PLAIN', 'HID', 'VER', 'PRE']);
+    const ins = back.entities.find((e) => e.type === 'insert');
+    expect(ins?.type === 'insert' && ins.attributes).toEqual({ PLAIN: 'p', HID: 'h', VER: 'v', PRE: 's' });
+    // Written again, the flags stay.
+    const twice = readDxf(writeDxf(back)).blocks.FLAGS!.attributes as ReadonlyArray<Record<string, unknown>>;
+    expect(twice.map((a) => [a.tag, !!a.constant, !!a.verify, !!a.preset])).toEqual([
+      ['PLAIN', false, false, false],
+      ['HID', false, false, false],
+      ['CONST', true, false, false],
+      ['VER', false, true, false],
+      ['PRE', false, false, true],
+    ]);
+  });
+
   it('round-trips a filled wire dot as a donut', () => {
     const d = new Drawing();
     d.addEntities([{ id: 'dot', layer: 'WIRES', color: 'ByLayer', type: 'circle', center: { x: 3, y: 4 }, radius: 0.035, filled: true }]);
