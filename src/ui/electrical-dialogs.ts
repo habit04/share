@@ -723,7 +723,31 @@ export function projectPropertiesDialog(init: Project): Promise<Project | null> 
     def.addEventListener('click', () => (map.value = DEFAULT_WDT));
     mapBar.append(imp, exp, def);
     const name_ = name;
-    m.body.append(g, h, lines, dl, mapHead, map, mapBar);
+    map.style.height = '300px';
+    const pages: Array<[string, HTMLElement[]]> = [
+      ['General', [g, dl]],
+      ['Description Lines', [h, lines]],
+      ['Title Block Mapping', [mapHead, map, mapBar]],
+    ];
+    const tabs = document.createElement('div');
+    tabs.className = 'report-tabs';
+    const holders = pages.map(([label, els], i) => {
+      const page = document.createElement('div');
+      page.append(...els);
+      page.style.minHeight = '360px';
+      const b = document.createElement('button');
+      b.className = 'report-tab';
+      b.textContent = label;
+      b.addEventListener('click', () => show(i));
+      tabs.appendChild(b);
+      return { page, b };
+    });
+    const show = (i: number) => holders.forEach((x, k) => {
+      x.page.style.display = k === i ? '' : 'none';
+      x.b.classList.toggle('active', k === i);
+    });
+    show(0);
+    m.body.append(tabs, ...holders.map((x) => x.page));
     const ok = button('OK', true);
     const cancel = button('Cancel');
     ok.addEventListener('click', () => {

@@ -490,6 +490,12 @@ export function registerElectricalCommands(editor: Editor): void {
 
 // ------------------------------------------------------------ project-wide tools (AEXREF / AERETAG / AEWIRENO project, AELOCVIEW ...)
 
+/** Dialogs used by the project-wide commands (replaceable, e.g. by tests or another UI). */
+export const projectUi = {
+  confirmFiles: (title: string, intro: string, items: AffectedDrawing[], opts: { backupAvailable: boolean }): Promise<ConfirmFilesResult | null> => confirmFilesDialog(title, intro, items, opts),
+  showProblems: (editor: Editor, sheets: readonly LoadedSheet[], problems: XrefProblem[]): void => showXrefProblems(editor, sheets, problems),
+};
+
 /** A project drawing loaded for a project-wide command, with where it came from. */
 export interface LoadedSheet extends ProjectSheet {
   /** active = the drawing in the editor, session = another open tab, file = read from disk. */
@@ -576,7 +582,7 @@ export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[
   const bridge = editor.fileBridge as BackupBridge | null;
   let choice: ConfirmFilesResult = { files: false, backup: false };
   if (alwaysConfirm || items.some((i) => i.kind === 'file')) {
-    const r = await confirmFilesDialog(title, intro, items, { backupAvailable: !!bridge?.backupFile });
+    const r = await projectUi.confirmFiles(title, intro, items, { backupAvailable: !!bridge?.backupFile });
     if (!r) return null;
     choice = r;
   }
@@ -679,7 +685,7 @@ export async function runProjectXref(editor: Editor): Promise<void> {
   editor.hooks.projectChanged?.();
   const bad = problems.filter((p) => p.kind !== 'no-children');
   if (bad.length) editor.log(`${bad.filter((p) => p.kind === 'no-parent').length} contact(s) without a parent, ${bad.filter((p) => p.kind === 'duplicate-parent').length} duplicate parent(s).`);
-  if (r) showXrefProblems(editor, sheets, problems);
+  if (r) projectUi.showProblems(editor, sheets, problems);
 }
 
 /** Rebuild sheet records over new states (for a second pass such as cross-referencing after a retag). */

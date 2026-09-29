@@ -174,7 +174,7 @@ export interface PlcModuleOptions {
   rungs: boolean;
 }
 
-export const DEFAULT_PLC_IMPORT: PlcModuleOptions = { pointsPerModule: 16, spacing: 0.5, firstTag: 'PLC1', rungs: false };
+export const DEFAULT_PLC_IMPORT: PlcModuleOptions = { pointsPerModule: 16, spacing: 1, firstTag: 'PLC1', rungs: false };
 
 function tagSeq(first: string): () => string {
   const m = /^(.*?)(\d+)$/.exec(first);

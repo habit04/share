@@ -136,7 +136,9 @@ describe('cables', () => {
     expect(connectionAt(d.entities, d.lookupBlock, { x: 3.375, y: 8 })).toBe('PB100:4');
     expect(connectionAt(d.entities, d.lookupBlock, { x: 7.625, y: 8 })).toBe('CR100:A1');
     const ends = wireEnds(d.entities, d.lookupBlock, w1);
-    expect(ends).toEqual({ from: 'L1', to: 'L2' }); // the horizontal net runs rail to rail
+    expect(ends).toEqual({ from: 'PB100:4', to: 'X1:1' }); // the segment runs from the push button to the terminal
+    const first = d.entities.find((e): e is LineEntity => e.type === 'line' && e.a.y === 8 && Math.min(e.a.x, e.b.x) === 1)!;
+    expect(wireEnds(d.entities, d.lookupBlock, first)).toEqual({ from: 'L1', to: 'PB100:3' });
     expect(nextCableTag(d.entities)).toBe('W1');
     const r = assignCable(d.entities, d.lookupBlock, [w1, w2], { cable: 'W1', type: '3G1.5', scheme: 'iec', first: 1 });
     expect(r.add.map((m) => m.attributes.CONDUCTOR)).toEqual(['BN', 'BK']);

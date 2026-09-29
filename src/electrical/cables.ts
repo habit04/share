@@ -89,31 +89,22 @@ function netOf(entities: readonly Entity[], wire: LineEntity): WireNet | null {
 }
 
 /**
- * FROM / TO of a wire: the device connections at the far ends of its net
- * (horizontal nets run through components; a vertical wire uses its own ends).
- * Rails show as L1 / L2.
+ * FROM / TO of one wire segment (a cable conductor runs from device to
+ * device): the device pin at each end of the segment (left / top end first),
+ * a ladder rail at an end shows as L1 / L2, and an end in the middle of a
+ * wire (tee) or open end stays empty.
  */
 export function wireEnds(entities: readonly Entity[], lookup: BlockLookup, wire: LineEntity): { from: string; to: string } {
-  const net = isHorizontal(wire) ? netOf(entities, wire) : null;
-  const pieces = net ? net.wires : [wire];
-  const ends: Array<{ p: Point; name: string }> = [];
-  for (const w of pieces) {
-    for (const p of [w.a, w.b]) {
-      const c = connectionAt(entities, lookup, p);
-      if (c) ends.push({ p, name: c });
-    }
-  }
-  if (net) {
-    for (const r of entities) {
-      if (!isWire(r) || isHorizontal(r)) continue;
-      if (net.y < Math.min(r.a.y, r.b.y) - 1e-6 || net.y > Math.max(r.a.y, r.b.y) + 1e-6) continue;
-      if (Math.abs(r.a.x - net.x0) < 0.02) ends.push({ p: { x: net.x0, y: net.y }, name: 'L1' });
-      else if (Math.abs(r.a.x - net.x1) < 0.02) ends.push({ p: { x: net.x1, y: net.y }, name: 'L2' });
-    }
-  }
-  ends.sort((a, b) => a.p.x - b.p.x || b.p.y - a.p.y);
-  const uniq = ends.filter((e, i) => ends.findIndex((f) => f.name === e.name) === i);
-  return { from: uniq[0]?.name ?? '', to: uniq.length > 1 ? uniq[uniq.length - 1]!.name : '' };
+  const [p, q] = isHorizontal(wire) ? (wire.a.x <= wire.b.x ? [wire.a, wire.b] : [wire.b, wire.a]) : wire.a.y >= wire.b.y ? [wire.a, wire.b] : [wire.b, wire.a];
+  const rails = entities.filter((e): e is LineEntity => isWire(e) && !isHorizontal(e) && e.id !== wire.id);
+  const at = (pt: Point, side: 'L1' | 'L2'): string => {
+    const c = connectionAt(entities, lookup, pt);
+    if (c) return c;
+    if (!isHorizontal(wire)) return '';
+    const rail = rails.find((r) => Math.abs(r.a.x - pt.x) < 0.02 && pt.y >= Math.min(r.a.y, r.b.y) - 1e-6 && pt.y <= Math.max(r.a.y, r.b.y) + 1e-6);
+    return rail ? side : '';
+  };
+  return { from: at(p!, 'L1'), to: at(q!, 'L2') };
 }
 
 /** Wire number label of a wire (via its net), or ''. */
