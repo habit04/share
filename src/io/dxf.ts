@@ -32,7 +32,7 @@ import type {
 import { newId, dimensionParts, textWidth, insertTransform, splineCurve, hatchPatternLines, leaderParts, leaderPath, tableParts } from '../core/entities';
 import { dimensionTextPoint, dimensionMeasurement, STANDARD_DIMSTYLE } from '../core/dimension';
 import { mtextToDxf, mtextFromDxf, formattedSource, hasFormatting, type MTextAttachment } from '../core/mtext';
-import { findPattern, LoopBuilder, edgeArc } from '../core/hatch';
+import { findPattern, LoopBuilder, edgeArc, fitPatternToLines } from '../core/hatch';
 import { isValidNurbs, nurbsPoints, interpolateFitPoints } from '../core/spline';
 import { evaluateFields, hasFields, julianToDate, type FieldContext } from '../core/fields';
 import type { DrawingState, DrawingHeader, NamedView } from '../core/document';
@@ -1375,23 +1375,19 @@ function readHatch(o: Obj, base: ReturnType<typeof commonProps>): HatchEntity | 
     }
   }
   if (loops.length === 0) return null;
-  const known = findPattern(pattern);
   const isSolid = solid || /^SOLID$/i.test(pattern);
-  let origin: g.Point | undefined;
-  if (known && known.lines.length && lines.length) {
-    // The first definition line's base is the pattern origin plus the (rotated, scaled) .pat origin.
-    origin = g.sub(lines[0]!.base, g.rotate(g.scale(known.lines[0]!.origin, scale), angle));
-  }
+  // The definition lines in the file are authoritative (ISO scale, double hatches, custom patterns).
+  const fit = isSolid ? { angle, scale } : fitPatternToLines(findPattern(pattern), angle, scale, lines, dbl);
   return {
     ...base,
     type: 'hatch',
     pattern: isSolid ? 'SOLID' : pattern,
     solid: isSolid,
-    angle,
-    scale,
-    ...(origin && (Math.abs(origin.x) > 1e-12 || Math.abs(origin.y) > 1e-12) ? { origin } : {}),
+    angle: fit.angle,
+    scale: fit.scale,
+    ...(fit.origin ? { origin: fit.origin } : {}),
     loops,
-    ...(!isSolid && !(known && known.lines.length) && lines.length ? { patternLines: lines } : {}),
+    ...(fit.patternLines ? { patternLines: fit.patternLines } : {}),
     ...(associative ? { associative } : {}),
     ...(style ? { style } : {}),
     patternType,

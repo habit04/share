@@ -552,9 +552,10 @@ export function splineThroughPoints(base: EntityBase, fit: readonly Point[], clo
 /** World line families of a hatch's pattern ([] for SOLID). */
 export function hatchPatternLines(h: HatchEntity): WorldPatternLine[] {
   if (h.solid) return [];
+  // Lines from the file win (double hatches, custom and non-matching definitions).
+  if (h.patternLines?.length) return [...h.patternLines];
   const pat = findPattern(h.pattern);
-  if (pat && pat.lines.length) return worldPatternLines(pat, h.angle, h.scale, h.origin);
-  return h.patternLines ? [...h.patternLines] : [];
+  return pat && pat.lines.length ? worldPatternLines(pat, h.angle, h.scale, h.origin) : [];
 }
 
 export interface HatchGeometry {

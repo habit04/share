@@ -238,8 +238,14 @@ export class PropertiesPalette {
           ),
         );
         if (!e.solid) {
-          b.appendChild(this.row('Angle', numInput((e.angle * 180) / Math.PI, (n) => patch({ angle: (n * Math.PI) / 180 }))));
-          b.appendChild(this.row('Scale', numInput(e.scale, (n) => n > 0 && patch({ scale: n }))));
+          // Definition lines read from a file are regenerated from the pattern table once angle / scale change.
+          const known = PATTERN_NAMES.includes(e.pattern);
+          const setPattern = (p: { angle?: number; scale?: number }) => {
+            const { patternLines, ...rest } = e;
+            doc.replaceEntities([known ? { ...rest, ...p } : { ...rest, patternLines, ...p }]);
+          };
+          b.appendChild(this.row('Angle', numInput((e.angle * 180) / Math.PI, (n) => setPattern({ angle: (n * Math.PI) / 180 }))));
+          b.appendChild(this.row('Scale', numInput(e.scale, (n) => n > 0 && setPattern({ scale: n }))));
         }
         b.appendChild(this.row('Loops', String(e.loops.length)));
         b.appendChild(this.row('Associative', e.associative ? 'Yes' : 'No'));

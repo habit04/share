@@ -277,3 +277,34 @@ export function edgeArc(startDeg: number, endDeg: number, ccw: boolean): { a0: n
   if (sweep < 1e-9) sweep = 2 * Math.PI;
   return { a0, sweep: -sweep };
 }
+
+/**
+ * Reconcile a named pattern with the definition lines stored in a file. The file's lines win:
+ * an ISO drawing's ANSI31 is 25.4 times the imperial one at "scale 1", so the effective scale and
+ * angle are derived from the lines; double hatches or lines that do not match the table are kept
+ * as world-space lines.
+ */
+export function fitPatternToLines(
+  pattern: HatchPattern | undefined,
+  angle: number,
+  scale: number,
+  lines: readonly WorldPatternLine[],
+  double: boolean,
+): { angle: number; scale: number; origin?: Point; patternLines?: WorldPatternLine[] } {
+  if (!lines.length) return { angle, scale };
+  if (!pattern || !pattern.lines.length || double || lines.length !== pattern.lines.length) return { angle, scale, patternLines: [...lines] };
+  const t0 = pattern.lines[0]!;
+  const unit = g.len(t0.offset);
+  const eff = unit > 1e-12 ? g.len(lines[0]!.offset) / unit : scale;
+  const effAngle = g.normAngle(lines[0]!.angle - g.rad(t0.angle));
+  const origin = g.sub(lines[0]!.base, g.rotate(g.scale(t0.origin, eff), effAngle));
+  const expect = worldPatternLines(pattern, effAngle, eff, origin);
+  const same = expect.every((l, i) => {
+    const f = lines[i]!;
+    const da = Math.abs(Math.sin(l.angle - f.angle));
+    return da < 1e-6 && g.dist(l.offset, f.offset) < 1e-6 * Math.max(1, eff) && l.dashes.length === f.dashes.length && l.dashes.every((d, k) => Math.abs(d - f.dashes[k]!) < 1e-6 * Math.max(1, eff));
+  });
+  if (!same || !(eff > 0)) return { angle, scale, patternLines: [...lines] };
+  return { angle: effAngle, scale: eff, ...(g.len(origin) > 1e-12 ? { origin } : {}) };
+}
+

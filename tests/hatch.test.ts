@@ -153,6 +153,33 @@ describe('HATCH in DXF', () => {
   });
 });
 
+describe('HATCH pattern lines from files', () => {
+  const withLines = (name: string, scale: number, lines: string[]) =>
+    [
+      '0', 'SECTION', '2', 'ENTITIES',
+      '0', 'HATCH', '8', '0', '100', 'AcDbHatch', '2', name, '70', '0', '71', '0', '91', '1',
+      '92', '2', '72', '0', '73', '1', '93', '4', '10', '0', '20', '0', '10', '100', '20', '0', '10', '100', '20', '50', '10', '0', '20', '50', '97', '0',
+      '75', '0', '76', '1', '52', '0', '41', String(scale), '77', '0', ...lines, '98', '0',
+      '0', 'ENDSEC', '0', 'EOF',
+    ].join('\n');
+  it('an ISO drawing\'s ANSI31 (3.175 spacing at scale 1) keeps its real spacing', () => {
+    const h = readDxf(withLines('ANSI31', 1, ['78', '1', '53', '45', '43', '0', '44', '0', '45', '-2.2450640303', '46', '2.2450640303', '79', '0'])).entities[0] as HatchEntity;
+    expect(h.scale).toBeCloseTo(25.4, 6);
+    expect(h.patternLines).toBeUndefined();
+    const spacing = hatchGeometry(h).segments.length;
+    expect(spacing).toBeGreaterThan(30);
+    expect(spacing).toBeLessThan(60); // 150 units of diagonal extent / 3.175
+  });
+  it('double hatches keep the lines from the file', () => {
+    const h = readDxf(
+      withLines('LINE', 1, ['77', '1', '78', '2', '53', '0', '43', '0', '44', '0', '45', '0', '46', '10', '79', '0', '53', '90', '43', '0', '44', '0', '45', '-10', '46', '0', '79', '0']).replace('77\n0\n77\n1', '77\n1'),
+    ).entities[0] as HatchEntity;
+    expect(h.double).toBe(true);
+    expect(h.patternLines).toHaveLength(2);
+    expect(hatchPatternLines(h)).toHaveLength(2);
+  });
+});
+
 describe('HATCH from DWG', () => {
   const dwgHatch = (extra: Record<string, unknown>) => ({ type: 'HATCH', handle: 'H1', layer: 'FILL', colorIndex: 1, ...extra }) as never;
   it('converts to a real hatch entity with pattern, angle and scale', () => {

@@ -32,7 +32,7 @@ import type {
 } from '@mlightcad/libredwg-web';
 import { insertScales, insertScaleFields } from './dxf';
 import type { Entity, BlockDef, Layer, AttributeDef, ColorSpec, MTextAttachment, SplineEntity, HatchEntity, HatchLoop, LeaderEntity, ImageEntity, TableEntity, TableCell, FieldLink } from '../core/entities';
-import { findPattern, LoopBuilder, edgeArc } from '../core/hatch';
+import { findPattern, LoopBuilder, edgeArc, fitPatternToLines } from '../core/hatch';
 import { isValidNurbs, nurbsPoints, interpolateFitPoints } from '../core/spline';
 import { evaluateFields, hasFields } from '../core/fields';
 import { newId, entityBounds } from '../core/entities';
@@ -397,20 +397,18 @@ export function convertHatchEntity(e: DwgEntity): HatchEntity | null {
   const solid = Boolean(h.solidFill) || name === 'SOLID';
   const angle = angleRad(h.patternAngle);
   const scale = h.patternScale && h.patternScale > 0 ? h.patternScale : 1;
-  const known = findPattern(name);
   const defLines = (h.definitionLines ?? []).map((l) => ({ angle: angleRad(l.angle), base: p2(l.base), offset: p2(l.offset), dashes: [...(l.dashLengths ?? [])] }));
-  let origin: Point | undefined;
-  if (known && known.lines.length && defLines.length) origin = g.sub(defLines[0]!.base, g.rotate(g.scale(known.lines[0]!.origin, scale), angle));
+  const fit = solid ? { angle, scale } : fitPatternToLines(findPattern(name), angle, scale, defLines, Boolean(h.isDouble));
   return {
     ...baseProps(e),
     type: 'hatch',
     pattern: solid ? 'SOLID' : name,
     solid,
-    angle,
-    scale,
-    ...(origin && (Math.abs(origin.x) > 1e-12 || Math.abs(origin.y) > 1e-12) ? { origin } : {}),
+    angle: fit.angle,
+    scale: fit.scale,
+    ...(fit.origin ? { origin: fit.origin } : {}),
     loops,
-    ...(!solid && !(known && known.lines.length) && defLines.length ? { patternLines: defLines } : {}),
+    ...(fit.patternLines ? { patternLines: fit.patternLines } : {}),
     ...(h.associativity ? { associative: true } : {}),
     ...(h.hatchStyle ? { style: h.hatchStyle } : {}),
     ...(h.patternType !== undefined ? { patternType: h.patternType } : {}),

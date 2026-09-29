@@ -5,11 +5,11 @@
 import type { Point } from '../core/geometry';
 import * as g from '../core/geometry';
 import type { Entity, HatchEntity, LeaderEntity, TableEntity, TextEntity, MTextEntity, HatchLoop, MTextAttachment } from '../core/entities';
-import { newId, ellipsePoints, isFullEllipse, splinePoints, hatchGeometry, distanceToEntity } from '../core/entities';
+import { newId, ellipsePoints, isFullEllipse, splinePoints, hatchGeometry } from '../core/entities';
 import { HATCH_PATTERNS, findPattern, loopPolygon, pointInLoops, polygonArea } from '../core/hatch';
 import { newTable, cellAt, setCellText, TABLE_DEFAULTS } from '../core/table';
 import { mtextFromDxf, hasFormatting } from '../core/mtext';
-import { evaluateFields, hasFields, acVarField, ACVAR_FIELDS, type FieldContext } from '../core/fields';
+import { evaluateFields, acVarField, ACVAR_FIELDS, type FieldContext } from '../core/fields';
 import type { Drawing } from '../core/document';
 import type { Tool, ToolContext } from './types';
 import { scriptTool, point, pointOrKeyword, text, number, keyword, select, dflt, type Step } from './script';
@@ -537,22 +537,3 @@ export function updateFieldTool(): Tool {
     ctx.log(`${changed.length} field(s) updated.`);
   });
 }
-
-/** True when an entity holds field expressions (for listing / properties). */
-export const entityHasField = (e: Entity): boolean => (e.type === 'text' || e.type === 'mtext') && !!e.field && hasFields(e.field.code);
-
-/** Leader, hatch or table under a point (TABLEEDIT / grips helpers). */
-export function nearestOfType<T extends Entity['type']>(doc: Drawing, p: Point, type: T, tol: number): Extract<Entity, { type: T }> | null {
-  let best: Entity | null = null;
-  let bd = tol;
-  for (const e of doc.entities) {
-    if (e.type !== type) continue;
-    const d = distanceToEntity(p, e, doc.lookupBlock);
-    if (d <= bd) {
-      bd = d;
-      best = e;
-    }
-  }
-  return best as Extract<Entity, { type: T }> | null;
-}
-

@@ -270,6 +270,8 @@ function drawHatch(ctx: CanvasRenderingContext2D, e: HatchEntity, tf: Transform,
     for (const poly of geo.polys) tracePoints(ctx, poly, tf, true);
     ctx.save();
     if (geo.dense) ctx.globalAlpha *= 0.35;
+    // Selected: a lighter fill so the dashed boundary shows through.
+    else if (style.dashed) ctx.globalAlpha *= 0.55;
     ctx.fill('evenodd');
     ctx.restore();
   } else {
