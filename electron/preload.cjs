@@ -17,6 +17,8 @@ contextBridge.exposeInMainWorld('jcad', {
   // User symbol library (Symbol Builder): one JSON document in the app data folder
   userLibraryRead: () => ipcRenderer.invoke('user-library-read'),
   userLibraryWrite: (json) => ipcRenderer.invoke('user-library-write', json),
+  // Raster images of IMAGE entities: an absolute image file path -> data URL (null when unreadable)
+  readImage: (file) => ipcRenderer.invoke('read-image', file),
   // Catalog packs (signed manufacturer catalogs): one *.jcadpack.json per pack in the app data folder
   packsDir: () => ipcRenderer.invoke('packs-dir'),
   packsList: () => ipcRenderer.invoke('packs-list'),

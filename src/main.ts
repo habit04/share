@@ -32,6 +32,8 @@ import { symbolBuilderOf } from './tools/symbol-builder';
 import { userLibrary, bridgeUserLibraryStore, localUserLibraryStore, type UserLibraryBridge } from './electrical/userlib';
 import { packRegistry, bridgePackStore, localPackStore, type PacksBridge } from './electrical/packs';
 import { decodeDxfBytes } from './io/encoding';
+import { renderSettings, clearImageCache } from './render/draw';
+import { bridgeImageLoader } from './render/images';
 
 declare global {
   interface Window {
@@ -53,6 +55,8 @@ declare global {
       checkForUpdates?(): Promise<{ state: string; version?: string; message?: string }>;
       onUpdateStatus?(cb: (status: { state: string; version?: string; percent?: number; message?: string; manual?: boolean }) => void): void;
       platform: string;
+      /** Desktop only: an image file (absolute path) as a data URL, null when it cannot be read. */
+      readImage?(file: string): Promise<string | null>;
     } & Partial<AutosaveBridge> &
       Partial<UserLibraryBridge> &
       Partial<PacksBridge>;
@@ -513,6 +517,20 @@ function boot(): void {
     if (n) editor.log(`User symbol library: ${n} symbol(s) available in the icon menu (User: categories).`);
     if (userLibrary.lastError) editor.log(`User symbol library could not be read: ${userLibrary.lastError}`);
   });
+
+  // ------------------------------------------------------------ raster images (IMAGE entities; desktop only)
+  // The browser build cannot read image files: images stay a frame with their file name there.
+  if (bridge?.readImage) {
+    const readImage = bridge.readImage.bind(bridge);
+    const images = bridgeImageLoader({ readImage, drawingPath: () => editor.doc.filePath });
+    renderSettings.imageLoader = images;
+    renderSettings.requestRedraw = () => editor.render();
+    editor.on('file', () => {
+      // Relative image names resolve against the new drawing's folder.
+      images.clear();
+      clearImageCache();
+    });
+  }
 
   // ------------------------------------------------------------ catalog packs (signed manufacturer catalogs)
   packRegistry.setStore(bridge?.packsList && bridge.packsRead && bridge.packsWrite && bridge.packsRemove ? bridgePackStore(bridge as PacksBridge) : localPackStore(localStorage));

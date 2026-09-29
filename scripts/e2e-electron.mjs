@@ -9,12 +9,14 @@
 // writes, LibreDWG, printToPDF, the updater's version logic) is the shipping code.
 //
 // Checks: window + no page errors, window.jcad bridge, LINE with typed coordinates, ZOOM E (command
-// and native menu), OPEN of a DXF and a DWG through `open-drawing`, RECENT (open by remembered
+// and native menu), OPEN of a DXF and a DWG through `open-drawing`, IMAGE bitmaps through
+// `read-image` (relative to the drawing folder), RECENT (open by remembered
 // path), PLOT through `plot-pdf` to a tabloid landscape PDF (parsed: 1224 x 792 pt), the updater's
 // check path offline (up to date / newer release / network error), the Symbol Builder, the About
 // dialog, the unsaved-changes prompt on close, and no main-process error log.
 import { _electron as electron } from 'playwright';
-import { mkdtempSync, mkdirSync, readFileSync, existsSync, rmSync, statSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, existsSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { deflateSync, crc32 } from 'node:zlib';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parsePdfBasics } from '../tests/helpers/pdf.ts';
@@ -51,6 +53,26 @@ const bad = (what) => {
   console.error(`FAIL ${step}: ${what}`);
 };
 const check = (cond, what) => (cond ? ok(what) : bad(what));
+
+/** A solid-colour RGB PNG (w x h), written without any image library. */
+function solidPng(w, h, [r, g, b]) {
+  const chunk = (type, data) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    const body = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(body) >>> 0);
+    return Buffer.concat([len, body, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 2; // RGB
+  const row = Buffer.concat([Buffer.from([0]), Buffer.from(Array.from({ length: w }, () => [r, g, b]).flat())]);
+  const raw = Buffer.concat(Array.from({ length: h }, () => row));
+  return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
+}
 
 const hardTimeout = setTimeout(() => {
   console.error('e2e-electron: timed out after 8 minutes');
@@ -129,7 +151,7 @@ try {
     return j ? { keys: Object.keys(j).sort(), platform: j.platform } : null;
   });
   check(!!bridge, 'window.jcad bridge exists');
-  for (const k of ['openDrawing', 'openDxf', 'saveDxf', 'plotPdf', 'printDrawing', 'appInfo', 'checkForUpdates', 'onMenuCommand', 'onQueryDirty', 'autosaveWrite', 'userLibraryRead', 'packsList']) check(bridge?.keys.includes(k), `bridge exposes ${k}`);
+  for (const k of ['openDrawing', 'openDxf', 'saveDxf', 'plotPdf', 'printDrawing', 'appInfo', 'checkForUpdates', 'onMenuCommand', 'onQueryDirty', 'autosaveWrite', 'userLibraryRead', 'packsList', 'readImage']) check(bridge?.keys.includes(k), `bridge exposes ${k}`);
   check(bridge?.platform === process.platform, `bridge platform ${bridge?.platform}`);
   const info = await win.evaluate(() => window.jcad.appInfo());
   check(info.version === pkg.version && info.packaged === false && info.selfUpdate === false, `appInfo ${JSON.stringify(info)}`);
@@ -205,6 +227,44 @@ try {
     const n = Number(/: (\d+) entities/.exec(line)?.[1] ?? 0);
     check(line.startsWith('Imported DWG') && n > 10, `DWG opened through IPC + LibreDWG in the main process: ${line}`);
   } else ok('DWG fixture missing: skipped');
+
+  // ------------------------------------------------------------------ IMAGE bitmaps through read-image
+  step = 'IMAGE';
+  const imgDir = mkdtempSync(join(tmpdir(), 'jcad-e2e-img-'));
+  const pngPath = join(imgDir, 'logo.png');
+  writeFileSync(pngPath, solidPng(4, 4, [255, 0, 0]));
+  const dataUrl = await win.evaluate((p) => window.jcad.readImage(p), pngPath);
+  check(typeof dataUrl === 'string' && dataUrl.startsWith('data:image/png;base64,'), `read-image returns a PNG data URL (${String(dataUrl).slice(0, 30)})`);
+  const refused = await win.evaluate(async (paths) => {
+    const out = [];
+    for (const p of paths) out.push(await window.jcad.readImage(p).then(() => 'read', (e) => (/Invalid path|Not an image/.test(String(e)) ? 'refused' : String(e))));
+    return out;
+  }, ['logo.png', join(imgDir, 'notes.txt')]);
+  check(refused.join() === 'refused,refused', `read-image refuses relative paths and non-image files (${refused.join()})`);
+  check((await win.evaluate((p) => window.jcad.readImage(p), join(imgDir, 'missing.png'))) === null, 'read-image returns null for a missing file');
+  // A drawing in that folder with an IMAGE whose path is relative: the bitmap is drawn over the frame.
+  await win.evaluate((dwg) => {
+    const ed = window.editor;
+    const snap = ed.doc.snapshot;
+    const image = { id: 'img-e2e', layer: '0', color: 'ByLayer', type: 'image', path: 'logo.png', position: { x: 0, y: 0 }, u: { x: 2.5, y: 0 }, v: { x: 0, y: 2.5 }, size: { x: 4, y: 4 } };
+    ed.loadState({ ...snap, entities: [image] }, dwg);
+    ed.render();
+  }, join(imgDir, 'image-test.dxf'));
+  const centrePixel = () =>
+    win.evaluate(() => {
+      const c = document.getElementById('drawing');
+      window.editor.render();
+      const px = c.getContext('2d').getImageData(Math.round(c.width / 2), Math.round(c.height / 2), 1, 1).data;
+      return [px[0], px[1], px[2]];
+    });
+  let rgb = [0, 0, 0];
+  for (let i = 0; i < 40; i += 1) {
+    rgb = await centrePixel();
+    if (rgb[0] > 200 && rgb[1] < 60 && rgb[2] < 60) break;
+    await win.waitForTimeout(100);
+  }
+  check(rgb[0] > 200 && rgb[1] < 60 && rgb[2] < 60, `IMAGE with a relative path draws its bitmap (centre pixel ${rgb.join(',')})`);
+  rmSync(imgDir, { recursive: true, force: true });
 
   step = 'RECENT';
   await messages();
