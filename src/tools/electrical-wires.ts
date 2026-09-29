@@ -30,7 +30,8 @@ import {
   type BusSettings,
   type WireEdit,
 } from '../electrical/wires';
-import { toggleVariant, isComponent, isChild } from '../electrical/families';
+import { toggleVariant, isComponent, isChild, isTerminal } from '../electrical/families';
+import { CABLE_BLOCK, CABLE_LAYER, assignCable, nextCableTag, isCableMarker, addJumper, removeJumpers, jumperIds, withTerminalUpdates, type CableAssignment } from '../electrical/cables';
 import { LIBRARY_BLOCKS } from '../electrical/library';
 import { readWdSettings } from '../electrical/wdm';
 import type { ElectricalUi } from '../electrical/ui';
@@ -547,6 +548,118 @@ export class PlaceTool extends PickTool {
     ctx.doc.addEntities(this.build(p, ctx.doc));
     this.done?.(p, ctx);
     ctx.finish();
+  }
+}
+
+// ------------------------------------------------------------ cables / jumpers
+
+/**
+ * AECABLE: pick the wires of a cable (Enter when done), then the cable
+ * dialog assigns them conductors and places the cable markers.
+ */
+export class CableTool extends PickTool {
+  readonly name = 'AECABLE';
+  private wires: LineEntity[] = [];
+  constructor(private ask: (wires: number, init: CableAssignment, existing: string[]) => Promise<CableAssignment | null>) {
+    super();
+  }
+  start(ctx: ToolContext): void {
+    this.wires = [];
+    ctx.prompt('Select wires for the cable in conductor order (Enter when done):');
+  }
+  onPoint(p: Point, ctx: ToolContext): void {
+    const w = findAnyWireAt(ctx.doc, p, ctx.aperture() * 2);
+    if (!w) {
+      ctx.log('No wire at that point.');
+      return;
+    }
+    if (this.wires.some((x) => x.id === w.id)) {
+      ctx.log('Wire already picked.');
+      return;
+    }
+    this.wires.push(w);
+    ctx.setPreview(this.wires.map((x) => ({ ...x, id: `cab-${x.id}`, color: 2 })));
+    ctx.prompt(`${this.wires.length} wire(s) picked. Select next wire (Enter when done):`);
+  }
+  override onEnter(ctx: ToolContext): void {
+    ctx.setPreview([]);
+    if (this.wires.length === 0) {
+      ctx.finish();
+      return;
+    }
+    const existing = [...new Set(ctx.doc.entities.filter(isCableMarker).map((m) => m.attributes.CABLENO ?? '').filter(Boolean))].sort();
+    const init: CableAssignment = { cable: nextCableTag(ctx.doc.entities), type: '', scheme: 'numbers', first: 1 };
+    const wires = this.wires;
+    void this.ask(wires.length, init, existing).then((a) => {
+      if (!a) {
+        ctx.finish();
+        return;
+      }
+      ctx.doc.ensureBlocks([CABLE_BLOCK]);
+      if (!ctx.doc.layer(CABLE_LAYER)) ctx.doc.addLayer({ name: CABLE_LAYER, color: 6, visible: true, locked: false, lineWeight: 0.25 });
+      const r = assignCable(ctx.doc.entities, ctx.doc.lookupBlock, wires, a);
+      ctx.doc.replaceWith(r.remove, r.add);
+      ctx.log(`Cable ${a.cable}: ${r.add.length} conductor(s) ${r.add.map((m) => m.attributes.CONDUCTOR).join(', ')}.`);
+      ctx.finish();
+    });
+  }
+}
+
+const isTerminalInsert = (e: Entity): e is InsertEntity => isTerminal(e);
+
+/** AEJUMPER: pick two terminals of a strip; both get the jumper id in their JUMPER attribute. */
+export class JumperTool extends PickTool {
+  readonly name = 'AEJUMPER';
+  private first: InsertEntity | null = null;
+  start(ctx: ToolContext): void {
+    this.first = null;
+    ctx.prompt('Select first terminal for the jumper:');
+  }
+  onPoint(p: Point, ctx: ToolContext): void {
+    const t = pickAt(ctx.doc, p, ctx.aperture() * 3, isTerminalInsert);
+    if (!t) {
+      ctx.log('No terminal at that point.');
+      return;
+    }
+    if (!this.first) {
+      this.first = t;
+      ctx.selection = new Set([t.id]);
+      ctx.prompt(`Select second terminal on strip ${t.attributes.TAGSTRIP || 'TB1'} (jumper from ${t.attributes.TERM01 ?? '?'}):`);
+      return;
+    }
+    const first = this.first;
+    const r = addJumper(ctx.doc.entities, first, t);
+    if ('error' in r) {
+      ctx.log(r.error);
+      return;
+    }
+    ctx.doc.transact((s) => withTerminalUpdates(s, r.replace));
+    ctx.log(`Jumper ${r.id}: ${first.attributes.TAGSTRIP || 'TB1'} terminal ${first.attributes.TERM01 ?? '?'} to ${t.attributes.TERM01 ?? '?'}.`);
+    ctx.selection = new Set();
+    this.first = null;
+    ctx.prompt('Select first terminal for the next jumper (Enter to finish):');
+  }
+}
+
+/** AEJUMPERDEL: pick a terminal; its jumpers are removed from it and from the partner terminals. */
+export class RemoveJumperTool extends PickTool {
+  readonly name = 'AEJUMPERDEL';
+  start(ctx: ToolContext): void {
+    ctx.prompt('Select terminal to remove its jumpers from (Enter to finish):');
+  }
+  onPoint(p: Point, ctx: ToolContext): void {
+    const t = pickAt(ctx.doc, p, ctx.aperture() * 3, isTerminalInsert);
+    if (!t) {
+      ctx.log('No terminal at that point.');
+      return;
+    }
+    const rep = removeJumpers(ctx.doc.entities, t);
+    if (rep.length === 0) {
+      ctx.log(`Terminal ${t.attributes.TERM01 ?? '?'} has no jumpers.`);
+      return;
+    }
+    ctx.doc.replaceEntities(rep);
+    ctx.log(`${rep.length} terminal(s) updated; jumper(s) ${jumperIds(t).join(', ')} removed.`);
   }
 }
 

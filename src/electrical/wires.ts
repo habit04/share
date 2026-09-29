@@ -11,7 +11,7 @@ import type { Point } from '../core/geometry';
 import * as g from '../core/geometry';
 import type { Entity, LineEntity, InsertEntity, TextEntity, BlockLookup, ArcEntity, BlockDef } from '../core/entities';
 import { newId, entityBounds, textWidth, insertTransform, explodeInsert } from '../core/entities';
-import type { Drawing } from '../core/document';
+import type { Drawing, DrawingState } from '../core/document';
 import { isWire, isHorizontal, isVertical, breakWire, breakVerticalWire, nearestReference, wireNumberText, WIRENO_HEIGHT } from './ladder';
 import { WIRE_DOT } from './symbols';
 import { connectionVector, pinAttributes, pinDir } from './attributes';
@@ -483,35 +483,47 @@ export function wireNumberPosition(net: WireNet, position: 'above' | 'below' | '
 export interface WireNumberOptions {
   start?: number;
   position?: 'above' | 'below' | 'inline';
+  /** %N number, %S sheet. */
   format?: string;
+  /** Reference-based (rung number, the default when the drawing has ladder references) or sequential from `start`. */
+  mode?: 'reference' | 'sequential';
+  /**
+   * Labels already taken elsewhere (project-wide numbering). Numbers in this
+   * set are skipped and every label assigned here is added to it.
+   */
+  used?: Set<string>;
+  /** Sheet value for %S in the format. */
+  sheet?: string;
+}
+
+/** Fixed wire numbers of a drawing (layer WIREFIXED), which renumbering keeps. */
+export function fixedWireNumbers(entities: readonly Entity[]): string[] {
+  return entities.filter((e): e is TextEntity => e.type === 'text' && e.layer === WIREFIXED_LAYER).map((e) => e.text);
 }
 
 /**
- * AEWIRENO: number every horizontal wire net. Like AutoCAD Electrical, the
- * number is the nearest ladder rung reference; additional nets on the same
- * reference get a letter suffix (100, 100A, 100B ...). When no ladder
- * references exist, numbers run sequentially from `start`. Fixed wire numbers
- * (layer WIREFIXED) are kept and their nets are skipped.
+ * The wire number texts AEWIRENO would place (pure). Fixed numbers (layer
+ * WIREFIXED) are kept, their nets skipped and their labels reserved.
  */
-export function assignWireNumbers(doc: Drawing, opts: WireNumberOptions | number = {}): number {
-  const o: WireNumberOptions = typeof opts === 'number' ? { start: opts } : opts;
+export function planWireNumbers(entities: readonly Entity[], o: WireNumberOptions = {}): TextEntity[] {
   const start = o.start ?? 100;
   const position = o.position ?? 'above';
-  const nets = collectNets(doc.entities);
-  if (nets.length === 0) return 0;
-  const fixed = doc.entities.filter((e): e is TextEntity => e.type === 'text' && e.layer === WIREFIXED_LAYER);
+  const nets = collectNets(entities);
+  if (nets.length === 0) return [];
+  const fixed = entities.filter((e): e is TextEntity => e.type === 'text' && e.layer === WIREFIXED_LAYER);
   const fixedNets = new Set<WireNet>();
-  const usedLabels = new Set<string>();
+  const usedLabels = o.used ?? new Set<string>();
   for (const f of fixed) {
     usedLabels.add(f.text);
     const n = netOfWireNumber(nets, f);
     if (n) fixedNets.add(n);
   }
-  const hasRefs = doc.entities.some((e) => e.type === 'text' && e.layer === 'MISC' && /^\d+$/.test(e.text));
+  const doc = { entities };
+  const hasRefs = o.mode !== 'sequential' && entities.some((e) => e.type === 'text' && e.layer === 'MISC' && /^\d+$/.test(e.text));
   const used = new Map<string, number>();
-  const texts: Entity[] = [];
+  const texts: TextEntity[] = [];
   let seq = start;
-  const fmt = (n: string) => (o.format ?? '%N').replace(/%N/g, n);
+  const fmt = (n: string) => (o.format ?? '%N').replace(/%N/g, n).replace(/%S/g, o.sheet ?? '');
   for (const net of nets) {
     if (fixedNets.has(net)) continue;
     let label: string;
@@ -519,7 +531,7 @@ export function assignWireNumbers(doc: Drawing, opts: WireNumberOptions | number
     if (ref) {
       let n = used.get(ref) ?? 0;
       do {
-        label = fmt(n === 0 ? ref : `${ref}${String.fromCharCode(64 + n)}`);
+        label = fmt(n === 0 ? ref : `${ref}${letterSuffixOf(n)}`);
         n += 1;
       } while (usedLabels.has(label));
       used.set(ref, n);
@@ -532,10 +544,33 @@ export function assignWireNumbers(doc: Drawing, opts: WireNumberOptions | number
     usedLabels.add(label);
     texts.push(wireNumberText(wireNumberPosition(net, position), label));
   }
-  doc.transact((s) => ({
-    ...s,
-    entities: [...s.entities.filter((e) => !(e.type === 'text' && e.layer === WIRENO_LAYER) && !(e.type === 'line' && e.layer === WIRENO_LAYER)), ...texts],
-  }));
+  return texts;
+}
+
+/** 1 -> A, 26 -> Z, 27 -> AA. */
+function letterSuffixOf(n: number): string {
+  let s = '';
+  for (let k = n; k > 0; k = Math.floor((k - 1) / 26)) s = String.fromCharCode(65 + ((k - 1) % 26)) + s;
+  return s;
+}
+
+/** Replace the automatic wire numbers of a drawing state with `texts` (fixed numbers stay). Pure. */
+export function withWireNumbers(s: DrawingState, texts: readonly Entity[]): DrawingState {
+  return { ...s, entities: [...s.entities.filter((e) => !(e.type === 'text' && e.layer === WIRENO_LAYER) && !(e.type === 'line' && e.layer === WIRENO_LAYER)), ...texts] };
+}
+
+/**
+ * AEWIRENO: number every horizontal wire net. Like AutoCAD Electrical, the
+ * number is the nearest ladder rung reference; additional nets on the same
+ * reference get a letter suffix (100, 100A, 100B ...). When no ladder
+ * references exist, numbers run sequentially from `start`. Fixed wire numbers
+ * (layer WIREFIXED) are kept and their nets are skipped.
+ */
+export function assignWireNumbers(doc: Drawing, opts: WireNumberOptions | number = {}): number {
+  const o: WireNumberOptions = typeof opts === 'number' ? { start: opts } : opts;
+  if (collectNets(doc.entities).length === 0) return 0;
+  const texts = planWireNumbers(doc.entities, o);
+  doc.transact((s) => withWireNumbers(s, texts));
   return texts.length;
 }
 

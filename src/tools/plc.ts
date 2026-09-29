@@ -12,6 +12,17 @@ import { readWdSettings } from '../electrical/wdm';
 
 const fmt = (p: Point) => `${p.x.toFixed(4)}, ${p.y.toFixed(4)}`;
 
+/** One I/O point with its data (AEPLCIO spreadsheet import). */
+export interface PlcPoint {
+  address: string;
+  /** Description lines 1-3 shown under the wire stub. */
+  desc: string[];
+  /** Fixed wire number placed on the stub. */
+  wire?: string;
+  /** Device tag wired to the point (drawn on the rung when rungs are on). */
+  device?: string;
+}
+
 export interface PlcModuleSettings {
   tag: string;
   kind: 'input' | 'output';
@@ -20,6 +31,14 @@ export interface PlcModuleSettings {
   firstAddress: number;
   spacing: number;
   description: string;
+  /** Per-point data; when given it sets the addresses (and the point count). */
+  io?: PlcPoint[];
+  /** Draw a ladder rung per point with the device symbol on it. */
+  rungs?: boolean;
+  /** Rung length beyond the stub (default 3). */
+  rungLength?: number;
+  /** Block to insert for a device tag on a rung (null = rung without symbol, tag as text). */
+  deviceBlock?: (tag: string, kind: 'input' | 'output') => string | null;
 }
 
 export const DEFAULT_PLC: PlcModuleSettings = { tag: 'PLC1', kind: 'input', points: 8, addressPrefix: 'I:0/', firstAddress: 0, spacing: 1, description: 'DIGITAL INPUT MODULE' };
@@ -41,8 +60,18 @@ export function buildPlcModule(origin: Point, s: PlcModuleSettings): Entity[] {
   );
   for (let i = 0; i < s.points; i += 1) {
     const y = top - 0.5 - i * s.spacing;
-    const addr = `${s.addressPrefix}${s.firstAddress + i}`;
-    if (s.kind === 'input') {
+    const point = s.io?.[i];
+    const addr = point?.address ?? `${s.addressPrefix}${s.firstAddress + i}`;
+    if (point) out.push(...plcPointExtras(point, s, y, left, width));
+    const rung = !!(point?.device && s.rungs);
+    if (rung && s.kind === 'input') {
+      // The stub becomes part of the rung drawn by plcPointExtras.
+      out.push(text(left + 0.08, y - 0.04, addr, 0.08, 'left', 'TAGS'));
+      out.push(text(left + width - 0.08, y - 0.04, String(i), 0.07, 'right', 'TERMS'));
+    } else if (rung) {
+      out.push(text(left + width - 0.08, y - 0.04, addr, 0.08, 'right', 'TAGS'));
+      out.push(text(left + 0.08, y - 0.04, String(i), 0.07, 'left', 'TERMS'));
+    } else if (s.kind === 'input') {
       out.push(line(left - 0.75, y, left, y, 'WIRES'));
       out.push(text(left + 0.08, y - 0.04, addr, 0.08, 'left', 'TAGS'));
       out.push(text(left + width - 0.08, y - 0.04, String(i), 0.07, 'right', 'TERMS'));
@@ -52,6 +81,49 @@ export function buildPlcModule(origin: Point, s: PlcModuleSettings): Entity[] {
       out.push(text(left + 0.08, y - 0.04, String(i), 0.07, 'left', 'TERMS'));
     }
     if (i < s.points - 1) out.push(line(left, y - s.spacing / 2, left + width, y - s.spacing / 2, 'SYMS', 8));
+  }
+  return out;
+}
+
+/** Module settings with the point count taken from `io` when present. */
+export function normalizePlcSettings(s: PlcModuleSettings): PlcModuleSettings {
+  return s.io && s.io.length ? { ...s, points: s.io.length } : s;
+}
+
+/**
+ * Description lines, fixed wire number and (optionally) the rung with the
+ * device symbol of one I/O point. Descriptions sit under the stub outside
+ * the module box, the wire number above the stub.
+ */
+function plcPointExtras(p: PlcPoint, s: PlcModuleSettings, y: number, left: number, width: number): Entity[] {
+  const out: Entity[] = [];
+  const input = s.kind === 'input';
+  const edge = input ? left : left + width;
+  const dir = input ? -1 : 1;
+  const txt = (x: number, ty: number, t: string, h: number, align: 'left' | 'right', layer: string): TextEntity => ({ id: newId(), layer, color: 'ByLayer', type: 'text', position: { x, y: ty }, text: t, height: h, rotation: 0, align });
+  p.desc
+    .filter((d) => d.trim())
+    .slice(0, 3)
+    .forEach((d, k) => out.push(txt(edge + dir * 0.05, y - 0.13 - k * 0.1, d, 0.06, input ? 'right' : 'left', 'DESC')));
+  if (p.wire) out.push(txt(edge + dir * 0.7, y + 0.05, p.wire, 0.1, input ? 'left' : 'left', 'WIREFIXED'));
+  if (s.rungs && p.device) {
+    const len = s.rungLength ?? 3;
+    const far = edge + dir * (0.75 + len);
+    const cx = edge + dir * (0.75 + len / 2);
+    const block = s.deviceBlock?.(p.device, s.kind) ?? null;
+    const wire = (x1: number, x2: number): Entity => ({ id: newId(), layer: 'WIRES', color: 'ByLayer', type: 'line', a: { x: Math.min(x1, x2), y }, b: { x: Math.max(x1, x2), y } });
+    if (block) {
+      const half = 0.375;
+      out.push(wire(far, cx - dir * half), wire(cx + dir * half, edge));
+      const attrs: Record<string, string> = { TAG1: p.device };
+      p.desc.slice(0, 3).forEach((d, k) => {
+        if (d) attrs[`DESC${k + 1}`] = d;
+      });
+      out.push({ id: newId(), layer: 'SYMS', color: 'ByLayer', type: 'insert', block, position: { x: cx, y }, rotation: 0, scale: 1, attributes: attrs });
+    } else {
+      out.push(wire(far, edge));
+      out.push(txt(cx, y + 0.18, p.device, 0.1, 'left', 'TAGS'));
+    }
   }
   return out;
 }
@@ -76,13 +148,13 @@ export class PlcModuleTool implements Tool {
   }
   onPoint(p: Point, ctx: ToolContext): void {
     if (!this.ready) return;
-    ctx.doc.addEntities(buildPlcModule(p, this.settings));
+    ctx.doc.addEntities(buildPlcModule(p, normalizePlcSettings(this.settings)));
     ctx.log(`PLC module ${this.settings.tag} inserted with ${this.settings.points} ${this.settings.kind}s.`);
     ctx.finish();
   }
   onMove(p: Point, ctx: ToolContext): void {
     if (!this.ready) return;
-    ctx.setPreview(buildPlcModule(p, this.settings));
+    ctx.setPreview(buildPlcModule(p, normalizePlcSettings(this.settings)));
     ctx.setDynText([fmt(p)]);
   }
   onText(_t: string, _c: ToolContext): void {}

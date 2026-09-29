@@ -23,6 +23,11 @@ import { DATA_ATTRIBUTES } from '../electrical/attributes';
 import type { WdSettings } from '../electrical/wdm';
 import type { Project } from '../app/project';
 import { DESCRIPTION_LINES } from '../app/project';
+import { DEFAULT_WDT, parseWdt, formatWdt } from '../electrical/titleblock-map';
+import { locationViewReport, type LocationGroup, type LocationRow } from '../electrical/project-tools';
+import { plcRowsToCsv, type PlcImport, type PlcIoRow, type PlcModuleOptions } from '../electrical/plc-import';
+import { CONDUCTOR_SCHEMES, type CableAssignment } from '../electrical/cables';
+import { FILTER_OPS, describeTemplate, type ReportTemplate, type ReportFilter } from '../electrical/report-templates';
 import { findLibrarySymbol } from '../electrical/library';
 import { drawPreview } from '../render/draw';
 import { icon } from './icons';
@@ -571,12 +576,26 @@ export function terminalStripEditorDialog(rows: TerminalRow[]): Promise<Terminal
 
 // ---------------------------------------------------------------- Drawing Properties
 
-export function drawingPropertiesDialog(init: DrawingPropertiesInit): Promise<DrawingPropertiesResult | null> {
-  return dialog<DrawingPropertiesResult>(`Drawing Properties: ${init.fileName}`, 620, (m, finish) => {
+/** Drawing properties plus the project drawing entry's title block values (revision, date). */
+export interface DrawingPropertiesResultEx extends DrawingPropertiesResult {
+  rev?: string;
+  date?: string;
+}
+
+export function drawingPropertiesDialog(init: DrawingPropertiesInit): Promise<DrawingPropertiesResultEx | null> {
+  return dialog<DrawingPropertiesResultEx>(`Drawing Properties: ${init.fileName}`, 620, (m, finish) => {
     const s = init.settings;
     const sheet = textInput(init.drawing?.sheet ?? s.sheet);
     const desc = textInput(init.drawing?.description ?? s.drawingDescription);
     const dwgno = textInput(init.drawing?.dwgno ?? s.drawingNumber);
+    const rev = textInput(init.drawing?.rev ?? '');
+    const date = textInput(init.drawing?.date ?? '');
+    date.placeholder = '(today)';
+    if (!init.drawing) {
+      rev.disabled = true;
+      date.disabled = true;
+      rev.title = date.title = 'Revision and date are stored in the project drawing entry (add the drawing to a project first)';
+    }
     const standard = select([['JIC', 'JIC / NFPA (inch ladder)'], ['IEC', 'IEC 60617']], s.standard);
     const tagMode = select([['reference', 'Reference-based (PB101, PB101A)'], ['sequential', 'Sequential (PB1, PB2)']], s.tagMode);
     const tagFormat = textInput(s.tagFormat);
@@ -603,7 +622,7 @@ export function drawingPropertiesDialog(init: DrawingPropertiesInit): Promise<Dr
       g.append(...els);
       m.body.append(h, g);
     };
-    section('Sheet', field('Sheet number', sheet), field('Drawing number (DWGNO)', dwgno), field('Drawing description (TITLE)', desc), field('Symbol standard', standard));
+    section('Sheet', field('Sheet number', sheet), field('Drawing number (DWGNO)', dwgno), field('Drawing description (TITLE)', desc), field('Symbol standard', standard), field('Revision (REV)', rev), field('Date (DATE)', date));
     section('Component tags', field('Tag mode', tagMode), field('Tag format (%F family, %N number, %S sheet)', tagFormat), field('Sequential start', tagStart), field('Cross-reference format (%N rung, %S sheet)', xrefFormat), field('Cross-reference style', xrefStyle));
     section('Wire numbers', field('Wire number mode', wireMode), field('Wire number format', wireFormat), field('Sequential start', wireStart), field('Position', wirePos));
     section('IEC codes / ladder', field('Project code', iecProj), field('Installation (INST default)', iecInst), field('Location (LOC default)', iecLoc), field('Rung spacing', rung), field('Ladder width', width));
@@ -632,7 +651,7 @@ export function drawingPropertiesDialog(init: DrawingPropertiesInit): Promise<Dr
         rungSpacing: Math.max(0.1, num(rung, s.rungSpacing)),
         ladderWidth: Math.max(1, num(width, s.ladderWidth)),
       };
-      finish({ settings, description: settings.drawingDescription, sheet: settings.sheet, dwgno: settings.drawingNumber });
+      finish({ settings, description: settings.drawingDescription, sheet: settings.sheet, dwgno: settings.drawingNumber, rev: rev.value.trim().toUpperCase(), date: date.value.trim() });
     });
     cancel.addEventListener('click', () => finish(null));
     m.footer.append(ok, cancel);
@@ -646,7 +665,7 @@ export function drawingPropertiesDialog(init: DrawingPropertiesInit): Promise<Dr
 // ---------------------------------------------------------------- Project Properties
 
 export function projectPropertiesDialog(init: Project): Promise<Project | null> {
-  return dialog<Project>('Project Properties', 640, (m, finish) => {
+  return dialog<Project>('Project Properties', 680, (m, finish) => {
     const name = textInput(init.name);
     const desc = textInput(init.description ?? '');
     const catalogFile = textInput(init.settings?.catalogFile ?? '');
@@ -672,7 +691,63 @@ export function projectPropertiesDialog(init: Project): Promise<Project | null> 
     const dl = document.createElement('div');
     dl.className = 'hint';
     dl.textContent = `Drawings in project: ${init.drawings.length}${init.path ? ` — ${init.path}` : ' (unsaved)'}`;
-    m.body.append(g, h, lines, dl);
+    // Title block mapping (.wdt text): which project / drawing value goes into which title block attribute.
+    const mapHead = document.createElement('div');
+    mapHead.className = 'hint';
+    mapHead.textContent = 'Title block mapping (AutoCAD Electrical .wdt format, ATTRIBUTE = SOURCE). Sources: LINE1-LINE12, PROJ, PROJDESC, DWGDESC, DWGNO, SHEET, SHEETMAX, DATE, REV, SEC, FILENAME, IEC_PROJ/INST/LOC; A|B = first non-empty, %SHEET% OF %SHEETMAX% = template, "text" = literal. Empty = built-in mapping.';
+    const map = document.createElement('textarea');
+    map.className = 'input';
+    map.spellcheck = false;
+    map.style.cssText = 'width:100%;height:120px;font:12px var(--mono, monospace);padding:4px 6px;box-sizing:border-box;resize:vertical';
+    map.value = init.titleBlockMap ?? '';
+    map.placeholder = DEFAULT_WDT;
+    map.addEventListener('keydown', (ev) => ev.stopPropagation());
+    const mapBar = document.createElement('div');
+    mapBar.style.cssText = 'display:flex;gap:6px;margin-top:4px';
+    const imp = button('Import .wdt...');
+    imp.addEventListener('click', () => {
+      void browserOpenTextFile('.wdt,.txt').then((res) => {
+        if (!res) return;
+        const parsed = parseWdt(res.text);
+        map.value = formatWdt(parsed);
+      });
+    });
+    const exp = button('Export .wdt...');
+    exp.addEventListener('click', () => {
+      const text = map.value.trim() ? formatWdt(parseWdt(map.value)) : DEFAULT_WDT + '\n';
+      const name = `${(name_.value.trim() || 'project').replace(/[^A-Za-z0-9_-]+/g, '_')}.wdt`;
+      if (window.jcad?.saveText) void window.jcad.saveText(name, text, 'Title block mapping', 'wdt');
+      else browserDownloadText(name, text);
+    });
+    const def = button('Built-in mapping');
+    def.addEventListener('click', () => (map.value = DEFAULT_WDT));
+    mapBar.append(imp, exp, def);
+    const name_ = name;
+    map.style.height = '300px';
+    const pages: Array<[string, HTMLElement[]]> = [
+      ['General', [g, dl]],
+      ['Description Lines', [h, lines]],
+      ['Title Block Mapping', [mapHead, map, mapBar]],
+    ];
+    const tabs = document.createElement('div');
+    tabs.className = 'report-tabs';
+    const holders = pages.map(([label, els], i) => {
+      const page = document.createElement('div');
+      page.append(...els);
+      page.style.minHeight = '360px';
+      const b = document.createElement('button');
+      b.className = 'report-tab';
+      b.textContent = label;
+      b.addEventListener('click', () => show(i));
+      tabs.appendChild(b);
+      return { page, b };
+    });
+    const show = (i: number) => holders.forEach((x, k) => {
+      x.page.style.display = k === i ? '' : 'none';
+      x.b.classList.toggle('active', k === i);
+    });
+    show(0);
+    m.body.append(tabs, ...holders.map((x) => x.page));
     const ok = button('OK', true);
     const cancel = button('Cancel');
     ok.addEventListener('click', () => {
@@ -686,7 +761,7 @@ export function projectPropertiesDialog(init: Project): Promise<Project | null> 
         installation: inst.value.trim().toUpperCase() || undefined,
         location: loc.value.trim().toUpperCase() || undefined,
       };
-      finish({ ...init, name: name.value.trim() || init.name, description: desc.value.trim() || undefined, descriptions: lineInputs.map((i) => i.value.trim()), settings });
+      finish({ ...init, name: name.value.trim() || init.name, description: desc.value.trim() || undefined, descriptions: lineInputs.map((i) => i.value.trim()), settings, titleBlockMap: map.value.trim() ? map.value : undefined });
     });
     cancel.addEventListener('click', () => finish(null));
     m.footer.append(ok, cancel);
@@ -898,9 +973,570 @@ export function electricalReportsDialog(editor: Editor, opts: ReportsDialogOptio
   m.footer.append(exp, put, close);
 }
 
+// ---------------------------------------------------------------- project-wide tools
+
+function browserDownloadText(name: string, text: string): void {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+
+/** One drawing affected by a project-wide command. */
+export interface AffectedDrawing {
+  name: string;
+  /** 'open' = updated in its tab (undoable, not saved); 'file' = closed drawing written to disk. */
+  kind: 'open' | 'file';
+  detail: string;
+}
+
+export interface ConfirmFilesResult {
+  /** Also write the closed drawings. */
+  files: boolean;
+  /** Write a .bak copy of each closed drawing first. */
+  backup: boolean;
+}
+
+/**
+ * Confirmation for a project-wide change: lists the open drawings (updated
+ * in memory) and the closed drawing files that would be rewritten; the
+ * files are only written when the user keeps "Save the closed drawings" on.
+ */
+export function confirmFilesDialog(title: string, intro: string, items: AffectedDrawing[], opts: { backupAvailable: boolean }): Promise<ConfirmFilesResult | null> {
+  return dialog<ConfirmFilesResult>(title, 640, (m, finish) => {
+    const p = document.createElement('div');
+    p.style.marginBottom = '8px';
+    p.textContent = intro;
+    const { table: t, body } = table(['Drawing', 'Status', 'Changes']);
+    for (const it of items) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${esc(it.name)}</td><td>${it.kind === 'open' ? 'open (updated in its tab)' : 'closed file (saved to disk)'}</td><td>${esc(it.detail)}</td>`;
+      body.appendChild(tr);
+    }
+    if (items.length === 0) body.innerHTML = '<tr><td colspan="3">Nothing to change</td></tr>';
+    const nFiles = items.filter((i) => i.kind === 'file').length;
+    const files = checkbox(`Save the ${nFiles} closed drawing file(s) listed above`, nFiles > 0);
+    files.input.disabled = nFiles === 0;
+    const bak = checkbox('Write a .bak copy of each file first', opts.backupAvailable);
+    bak.input.disabled = !opts.backupAvailable || nFiles === 0;
+    if (!opts.backupAvailable) bak.el.title = 'The file bridge of this build cannot copy files; keep your own backup (or use version control) before saving.';
+    const hint = document.createElement('div');
+    hint.className = 'hint';
+    hint.textContent = 'Open drawings change in their tabs (Undo works, SAVE writes them). Closed drawings are read, updated and saved as DXF only when confirmed here.';
+    m.body.append(p, wrapScroll(t, 260), files.el, bak.el, hint);
+    const ok = button('Apply', true);
+    const cancel = button('Cancel');
+    ok.disabled = items.length === 0;
+    ok.addEventListener('click', () => finish({ files: files.input.checked && nFiles > 0, backup: bak.input.checked && opts.backupAvailable }));
+    cancel.addEventListener('click', () => finish(null));
+    m.footer.append(ok, cancel);
+  });
+}
+
+export interface ReportTableOptions {
+  hint?: string;
+  saveCsv?: (name: string, csv: string) => Promise<string | null>;
+  putOnDrawing?: (r: Report) => void;
+  /** Double-click / Go To on a row. */
+  onRow?: (rowIndex: number) => void;
+  width?: number;
+}
+
+/** Show any report in a table with CSV export, put-on-drawing and an optional row action. */
+export function reportTableDialog(editor: Editor, r: Report, o: ReportTableOptions = {}): void {
+  const m = modal(r.title, o.width ?? 860);
+  const { table: t, body } = table(r.columns);
+  let current = -1;
+  r.rows.forEach((row, i) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = row.map((c) => `<td>${esc(c)}</td>`).join('');
+    selectableRow(tr, () => (current = i), () => o.onRow?.(i));
+    body.appendChild(tr);
+  });
+  if (r.rows.length === 0) body.innerHTML = `<tr><td colspan="${Math.max(1, r.columns.length)}">No data</td></tr>`;
+  const status = document.createElement('div');
+  status.className = 'hint';
+  status.textContent = o.hint ?? `${r.rows.length} row(s)`;
+  m.body.append(wrapScroll(t, 400), status);
+  if (o.onRow) {
+    const go = button('Go To');
+    go.className += ' left';
+    go.addEventListener('click', () => current >= 0 && o.onRow!(current));
+    m.footer.append(go);
+  }
+  const csv = button('Save as CSV...');
+  csv.addEventListener('click', () => {
+    const name = `${r.title.replace(/[^A-Za-z0-9]+/g, '_')}.csv`;
+    const save = o.saveCsv ?? ((n: string, c: string) => editor.fileBridge?.saveText?.(n, c, 'CSV', 'csv') ?? Promise.resolve((browserDownloadText(n, c), n)));
+    void save(name, reportToCsv(r)).then((p) => p && editor.log(`Saved: ${p}`));
+  });
+  m.footer.append(csv);
+  if (o.putOnDrawing) {
+    const put = button('Put on Drawing');
+    put.addEventListener('click', () => {
+      m.close();
+      o.putOnDrawing!(r);
+    });
+    m.footer.append(put);
+  }
+  const close = button('Close', true);
+  close.addEventListener('click', () => m.close());
+  m.footer.append(close);
+}
+
+// ---------------------------------------------------------------- Location View
+
+export interface LocationViewOptions {
+  /** Sheet index of the drawing shown in the editor (rows there can be zoomed to), -1 = none. */
+  currentSheet: number;
+  zoomTo(row: LocationRow): void;
+  saveCsv(name: string, csv: string): Promise<string | null>;
+  putOnDrawing(r: Report): void;
+  /** Re-read the project (after edits). */
+  refresh?(): Promise<LocationGroup[]>;
+  scopeLabel: string;
+}
+
+/** AELOCVIEW: components grouped by installation / location with counts, a location filter, CSV and zoom-to. */
+export function locationViewDialog(editor: Editor, initial: LocationGroup[], o: LocationViewOptions): void {
+  const m = modal('Location View', 980);
+  let groups = initial;
+  let filter = '';
+  let showContacts = true;
+  let current: LocationRow | null = null;
+  const top = document.createElement('div');
+  top.style.cssText = 'display:flex;gap:12px;align-items:center;margin-bottom:8px';
+  const scope = document.createElement('span');
+  scope.className = 'hint';
+  scope.style.margin = '0';
+  scope.textContent = o.scopeLabel;
+  const filterSel = select([['', 'All locations']], '');
+  filterSel.style.width = '220px';
+  const contacts = checkbox('Show contacts and extra poles', true);
+  top.append(field('Location', filterSel), contacts.el, scope);
+  const split = document.createElement('div');
+  split.style.cssText = 'display:flex;gap:10px;align-items:stretch';
+  const tree = document.createElement('div');
+  tree.className = 'report-wrap';
+  tree.style.cssText = 'width:230px;flex:none;max-height:420px;font-size:12px';
+  const right = document.createElement('div');
+  right.style.cssText = 'flex:1;min-width:0';
+  const { table: t, body } = table(['Tag', 'Type', 'Description', 'Catalog', 'Jumpers', 'Drawing', 'Sheet', 'Rung']);
+  right.appendChild(wrapScroll(t, 420));
+  split.append(tree, right);
+  const status = document.createElement('div');
+  status.className = 'hint';
+  const renderTree = () => {
+    tree.innerHTML = '';
+    const total = groups.reduce((s, g) => s + g.devices, 0);
+    const mk = (label: string, count: number, value: string, indent = 0) => {
+      const d = document.createElement('div');
+      d.style.cssText = `padding:3px 6px 3px ${6 + indent * 14}px;cursor:pointer;display:flex;justify-content:space-between;gap:8px;${filter === value ? 'background:#cce4f7' : ''}`;
+      d.innerHTML = `<span>${esc(label)}</span><span style="color:#666">${count}</span>`;
+      d.addEventListener('click', () => {
+        filter = value;
+        filterSel.value = value;
+        render();
+      });
+      tree.appendChild(d);
+    };
+    mk('Project', total, '');
+    const insts = [...new Set(groups.map((g) => g.inst))];
+    for (const inst of insts) {
+      const gs = groups.filter((g) => g.inst === inst);
+      if (inst) mk(`+${inst}`, gs.reduce((s, g) => s + g.devices, 0), `+${inst}`, 1);
+      for (const g of gs) mk(inst && g.loc ? `-${g.loc}` : g.label, g.devices, g.label, inst ? 2 : 1);
+    }
+  };
+  const visible = (g: LocationGroup) => !filter || g.label === filter || (filter.startsWith('+') && !filter.includes('-', 1) && g.inst === filter.slice(1));
+  const render = () => {
+    filterSel.innerHTML = '';
+    const opts: Array<[string, string]> = [['', 'All locations']];
+    for (const inst of [...new Set(groups.filter((g) => g.inst).map((g) => g.inst))]) opts.push([`+${inst}`, `+${inst} (installation)`]);
+    for (const g of groups) opts.push([g.label, `${g.label} (${g.devices})`]);
+    for (const [v, l] of opts) {
+      const op = document.createElement('option');
+      op.value = v;
+      op.textContent = l;
+      if (v === filter) op.selected = true;
+      filterSel.appendChild(op);
+    }
+    renderTree();
+    body.innerHTML = '';
+    current = null;
+    let n = 0;
+    for (const g of groups) {
+      if (!visible(g)) continue;
+      const head = document.createElement('tr');
+      head.innerHTML = `<td colspan="8" style="background:#eef3f8;font-weight:600">${esc(g.label)} — ${g.devices} device(s)</td>`;
+      body.appendChild(head);
+      for (const r of g.rows) {
+        if (!showContacts && (r.kind === 'contact' || r.kind === 'pole')) continue;
+        n += 1;
+        const tr = document.createElement('tr');
+        const here = r.sheetIndex === o.currentSheet;
+        tr.innerHTML = [r.tag, r.kind, r.description, r.cat, r.jumpers, r.drawing, r.sheet, r.ref].map((c) => `<td>${esc(c)}</td>`).join('');
+        if (!here) tr.style.color = '#666';
+        tr.title = here ? 'Double-click to zoom to the component' : 'On another drawing (open it to zoom)';
+        selectableRow(tr, () => (current = r), () => here && o.zoomTo(r));
+        body.appendChild(tr);
+      }
+    }
+    if (n === 0) body.innerHTML = '<tr><td colspan="8">No components</td></tr>';
+    status.textContent = `${groups.length} location(s), ${groups.reduce((s, g) => s + g.devices, 0)} device(s); ${n} row(s) shown. Grey rows are on other drawings.`;
+  };
+  filterSel.addEventListener('change', () => {
+    filter = filterSel.value;
+    render();
+  });
+  contacts.input.addEventListener('change', () => {
+    showContacts = contacts.input.checked;
+    render();
+  });
+  render();
+  m.body.append(top, split, status);
+  const rows = () => {
+    const r = locationViewReport(groups.filter(visible));
+    return showContacts ? r : { ...r, rows: r.rows.filter((x) => x[3] !== 'contact' && x[3] !== 'pole') };
+  };
+  const zoom = button('Zoom To');
+  zoom.className += ' left';
+  zoom.addEventListener('click', () => {
+    if (current && current.sheetIndex === o.currentSheet) o.zoomTo(current);
+    else if (current) editor.log(`${current.tag} is on ${current.drawing}; open that drawing to zoom to it.`);
+  });
+  const csv = button('Save as CSV...');
+  csv.addEventListener('click', () => void o.saveCsv('Location_View.csv', reportToCsv(rows())).then((p) => p && editor.log(`Location View saved: ${p}`)));
+  const put = button('Put on Drawing');
+  put.addEventListener('click', () => {
+    m.close();
+    o.putOnDrawing(rows());
+  });
+  const buttons: HTMLButtonElement[] = [zoom];
+  if (o.refresh) {
+    const refresh = button('Refresh');
+    refresh.addEventListener('click', () => {
+      status.textContent = 'Reading the project...';
+      void o.refresh!().then((g) => {
+        groups = g;
+        render();
+      });
+    });
+    buttons.push(refresh);
+  }
+  const close = button('Close', true);
+  close.addEventListener('click', () => m.close());
+  m.footer.append(...buttons, csv, put, close);
+}
+
+// ---------------------------------------------------------------- PLC I/O import
+
+export interface PlcImportResult {
+  rows: PlcIoRow[];
+  options: PlcModuleOptions;
+}
+
+/** AEPLCIO preview: the parsed rows (editable descriptions), module grouping options, CSV export and Insert. */
+export function plcImportDialog(editor: Editor, parsed: PlcImport, init: PlcModuleOptions, saveCsv: (name: string, csv: string) => Promise<string | null>): Promise<PlcImportResult | null> {
+  return dialog<PlcImportResult>(`PLC I/O from Spreadsheet: ${parsed.rows.length} point(s)`, 980, (m, finish) => {
+    const rows = parsed.rows.map((r) => ({ ...r }));
+    const per = textInput(String(init.pointsPerModule), 'number');
+    const spacing = textInput(String(init.spacing), 'number');
+    const tag = textInput(init.firstTag);
+    const rungs = checkbox('Draw a ladder rung with the device symbol for each point that has a device tag', init.rungs);
+    const g = grid(3);
+    g.append(field('Points per module', per), field('Point spacing', spacing), field('First module tag', tag));
+    const { table: t, body } = table(['Line', 'Module', 'Address', 'I/O', 'Description 1', 'Description 2', 'Description 3', 'Wire No.', 'Device']);
+    const edit = (r: PlcIoRow, k: 'desc1' | 'desc2' | 'desc3' | 'wire' | 'device', w = 110) => {
+      const i = textInput(r[k]);
+      i.style.width = `${w}px`;
+      i.style.height = '20px';
+      i.addEventListener('input', () => (r[k] = i.value));
+      i.addEventListener('keydown', (ev) => ev.stopPropagation());
+      return i;
+    };
+    for (const r of rows) {
+      const tr = document.createElement('tr');
+      const cells: Array<string | HTMLElement> = [String(r.line), r.module, r.address, r.kind === 'output' ? 'Output' : 'Input', edit(r, 'desc1'), edit(r, 'desc2'), edit(r, 'desc3'), edit(r, 'wire', 60), edit(r, 'device', 70)];
+      for (const c of cells) {
+        const td = document.createElement('td');
+        if (typeof c === 'string') td.textContent = c;
+        else td.appendChild(c);
+        tr.appendChild(td);
+      }
+      body.appendChild(tr);
+    }
+    if (rows.length === 0) body.innerHTML = '<tr><td colspan="9">No I/O points found</td></tr>';
+    const cols = Object.entries(parsed.columns)
+      .map(([k, v]) => `${k}=col ${(v ?? 0) + 1}`)
+      .join(', ');
+    const hint = document.createElement('div');
+    hint.className = 'hint';
+    const inputs = rows.filter((r) => r.kind === 'input').length;
+    hint.textContent = `${inputs} input(s), ${rows.length - inputs} output(s). Columns: ${cols}.${parsed.warnings.length ? ` ${parsed.warnings.slice(0, 3).join(' ')}` : ''} Modules are grouped by the Module column (else by address prefix) and placed side by side.`;
+    m.body.append(g, rungs.el, wrapScroll(t, 360), hint);
+    const exp = button('Export CSV...');
+    exp.className += ' left';
+    exp.addEventListener('click', () => void saveCsv('PLC_IO.csv', plcRowsToCsv(rows)).then((p) => p && editor.log(`PLC I/O table saved: ${p}`)));
+    const ok = button('Insert Modules', true);
+    const cancel = button('Cancel');
+    ok.disabled = rows.length === 0;
+    ok.addEventListener('click', () =>
+      finish({
+        rows,
+        options: {
+          pointsPerModule: Math.max(1, Math.min(64, Math.round(parseFloat(per.value) || init.pointsPerModule))),
+          spacing: Math.max(0.25, parseFloat(spacing.value) || init.spacing),
+          firstTag: tag.value.trim().toUpperCase() || init.firstTag,
+          rungs: rungs.input.checked,
+        },
+      }),
+    );
+    cancel.addEventListener('click', () => finish(null));
+    m.footer.append(exp, ok, cancel);
+  });
+}
+
+// ---------------------------------------------------------------- Cable
+
+/** AECABLE: cable tag, type and conductor identification for the picked wires. */
+export function cableDialog(init: CableAssignment, wires: number, existing: string[]): Promise<CableAssignment | null> {
+  return dialog<CableAssignment>(`Assign ${wires} Wire(s) to a Cable`, 480, (m, finish) => {
+    const cable = textInput(init.cable);
+    const list = document.createElement('datalist');
+    list.id = `cable-list-${Date.now()}`;
+    for (const c of existing) {
+      const o = document.createElement('option');
+      o.value = c;
+      list.appendChild(o);
+    }
+    cable.setAttribute('list', list.id);
+    const type = textInput(init.type);
+    type.placeholder = 'e.g. 4G1.5 or 7C #16 AWG';
+    const scheme = select(CONDUCTOR_SCHEMES.map((s): [string, string] => [s.key, s.name]), init.scheme);
+    const first = textInput(String(init.first), 'number');
+    const g = grid(2);
+    g.append(field('Cable tag (CABLENO)', cable), field('Cable type', type), field('Conductor identification', scheme), field('First conductor number', first));
+    const hint = document.createElement('div');
+    hint.className = 'hint';
+    hint.textContent = 'Each picked wire gets a cable marker with the next free conductor in pick order; wires already in a cable are moved to this one. The Cable Schedule report (AEREPORT cables) lists the conductors with their from / to terminals.';
+    m.body.append(g, list, hint);
+    const ok = button('OK', true);
+    const cancel = button('Cancel');
+    ok.addEventListener('click', () => finish({ cable: cable.value.trim().toUpperCase() || init.cable, type: type.value.trim(), scheme: scheme.value, first: Math.max(0, Math.round(parseFloat(first.value) || init.first)) }));
+    cancel.addEventListener('click', () => finish(null));
+    m.footer.append(ok, cancel);
+    cable.focus();
+    cable.select();
+    m.root.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' && (ev.target as HTMLElement).tagName !== 'SELECT') ok.click();
+    });
+  });
+}
+
+// ---------------------------------------------------------------- Report templates
+
+export interface ReportTemplatesOptions {
+  templates: ReportTemplate[];
+  /** Columns of a report (built on the current drawing). */
+  columnsOf(key: string): string[];
+  run(t: ReportTemplate): void;
+  /** Save the edited template list into the project. */
+  save(list: ReportTemplate[]): void;
+  projectAvailable: boolean;
+}
+
+/** Create / edit / delete / run report templates (stored in the project file). */
+export function reportTemplatesDialog(o: ReportTemplatesOptions): void {
+  const m = modal('Report Templates', 900);
+  let list = o.templates.map((t) => ({ ...t }));
+  let cur: ReportTemplate = list[0] ? { ...list[0] } : { name: 'NEW REPORT', report: REPORTS[0]!.key, output: 'view' };
+  const split = document.createElement('div');
+  split.style.cssText = 'display:flex;gap:12px;align-items:flex-start';
+  const left = document.createElement('div');
+  left.className = 'report-wrap';
+  left.style.cssText = 'width:220px;flex:none;max-height:430px;font-size:12px';
+  const right = document.createElement('div');
+  right.style.cssText = 'flex:1;min-width:0';
+  split.append(left, right);
+  m.body.appendChild(split);
+  const status = document.createElement('div');
+  status.className = 'hint';
+  m.body.appendChild(status);
+  const renderList = () => {
+    left.innerHTML = '';
+    for (const t of list) {
+      const d = document.createElement('div');
+      d.style.cssText = `padding:4px 8px;cursor:pointer;${t.name === cur.name ? 'background:#cce4f7' : ''}`;
+      d.innerHTML = `<div>${esc(t.name)}</div><div style="color:#666;font-size:11px">${esc(describeTemplate(t))}</div>`;
+      d.addEventListener('click', () => {
+        cur = { ...t };
+        renderAll();
+      });
+      d.addEventListener('dblclick', () => o.run(t));
+      left.appendChild(d);
+    }
+    if (list.length === 0) left.innerHTML = '<div style="padding:6px;color:#666">No templates yet: fill in the form and click Save.</div>';
+  };
+  const renderForm = () => {
+    right.innerHTML = '';
+    const name = textInput(cur.name);
+    const title = textInput(cur.title ?? '');
+    title.placeholder = '(report title)';
+    const rep = select(REPORTS.map((r): [string, string] => [r.key, r.name]), cur.report);
+    const output = select([['view', 'Show in a dialog'], ['table', 'Place on the drawing as a table'], ['csv', 'Write a CSV file']], cur.output ?? 'view');
+    const scope = checkbox('Project-wide (all drawings)', !!cur.projectWide);
+    scope.input.disabled = !o.projectAvailable;
+    const g = grid(2);
+    g.append(field('Template name (AEREPORTRUN <name>)', name), field('Report', rep), field('Title', title), field('Output', output));
+    const cols = o.columnsOf(cur.report);
+    const allCols = cur.projectWide ? ['Drawing', ...cols] : cols;
+    // Columns: checkboxes in the chosen order, with up / down.
+    const chosen = (cur.columns?.length ? cur.columns.filter((c) => allCols.includes(c)) : [...allCols]).slice();
+    const colBox = document.createElement('div');
+    colBox.className = 'report-wrap';
+    colBox.style.cssText = 'max-height:170px;padding:4px;font-size:12px';
+    const renderCols = () => {
+      colBox.innerHTML = '';
+      const ordered = [...chosen, ...allCols.filter((c) => !chosen.includes(c))];
+      for (const c of ordered) {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;align-items:center;gap:6px';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = chosen.includes(c);
+        cb.addEventListener('change', () => {
+          if (cb.checked) chosen.push(c);
+          else chosen.splice(chosen.indexOf(c), 1);
+          renderCols();
+        });
+        const up = document.createElement('button');
+        up.className = 'btn';
+        up.textContent = '▲';
+        up.style.cssText = 'padding:0 5px;min-width:0;height:18px';
+        up.disabled = !cb.checked || chosen.indexOf(c) === 0;
+        up.addEventListener('click', () => {
+          const i = chosen.indexOf(c);
+          chosen.splice(i, 1);
+          chosen.splice(i - 1, 0, c);
+          renderCols();
+        });
+        const lbl = document.createElement('span');
+        lbl.textContent = c;
+        row.append(cb, up, lbl);
+        colBox.appendChild(row);
+      }
+    };
+    renderCols();
+    const sortCol = select([['', '(report order)'], ...allCols.map((c): [string, string] => [c, c])], cur.sort?.[0]?.column ?? '');
+    const sortDesc = checkbox('Descending', !!cur.sort?.[0]?.desc);
+    const sort2 = select([['', '(none)'], ...allCols.map((c): [string, string] => [c, c])], cur.sort?.[1]?.column ?? '');
+    const filters = (cur.filters ?? []).map((f) => ({ ...f }));
+    const fBox = document.createElement('div');
+    const renderFilters = () => {
+      fBox.innerHTML = '';
+      filters.forEach((f, i) => {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;gap:6px;margin-bottom:4px';
+        const c = select(allCols.map((x): [string, string] => [x, x]), f.column);
+        c.addEventListener('change', () => (f.column = c.value));
+        const op = select(FILTER_OPS.map((x): [string, string] => [x.op, x.label]), f.op);
+        op.addEventListener('change', () => (f.op = op.value as ReportFilter['op']));
+        const v = textInput(f.value ?? '');
+        v.addEventListener('input', () => (f.value = v.value));
+        const del = button('Remove');
+        del.addEventListener('click', () => {
+          filters.splice(i, 1);
+          renderFilters();
+        });
+        row.append(c, op, v, del);
+        fBox.appendChild(row);
+      });
+      const add = button('Add filter');
+      add.addEventListener('click', () => {
+        filters.push({ column: allCols[0] ?? '', op: 'contains', value: '' });
+        renderFilters();
+      });
+      fBox.appendChild(add);
+    };
+    renderFilters();
+    const sg = grid(3);
+    sg.append(field('Sort by', sortCol), field('Then by', sort2), sortDesc.el);
+    const colsHead = document.createElement('div');
+    colsHead.className = 'hint';
+    colsHead.textContent = 'Columns (checked ones are output, in this order):';
+    const fHead = document.createElement('div');
+    fHead.className = 'hint';
+    fHead.textContent = 'Filters (a row must pass all of them):';
+    right.append(g, scope.el, colsHead, colBox, sg, fHead, fBox);
+    const read = (): ReportTemplate => {
+      const sort: NonNullable<ReportTemplate['sort']> = [];
+      if (sortCol.value) sort.push({ column: sortCol.value, ...(sortDesc.input.checked ? { desc: true } : {}) });
+      if (sort2.value) sort.push({ column: sort2.value });
+      const t: ReportTemplate = { name: name.value.trim() || 'REPORT', report: rep.value };
+      if (title.value.trim()) t.title = title.value.trim();
+      if (chosen.length && chosen.length !== allCols.length) t.columns = [...chosen];
+      else if (chosen.length && chosen.some((c, i) => allCols[i] !== c)) t.columns = [...chosen];
+      if (sort.length) t.sort = sort;
+      const fl = filters.filter((f) => f.column);
+      if (fl.length) t.filters = fl;
+      if (output.value !== 'view') t.output = output.value as ReportTemplate['output'];
+      if (scope.input.checked) t.projectWide = true;
+      return t;
+    };
+    rep.addEventListener('change', () => {
+      cur = { ...read(), report: rep.value, columns: undefined, sort: undefined, filters: undefined };
+      renderForm();
+    });
+    scope.input.addEventListener('change', () => {
+      cur = { ...read(), projectWide: scope.input.checked || undefined, columns: undefined };
+      renderForm();
+    });
+    readForm = read;
+  };
+  let readForm: () => ReportTemplate = () => cur;
+  const renderAll = () => {
+    renderList();
+    renderForm();
+    status.textContent = `${list.length} template(s) in the project. PROJECTSAVE writes them to the project file.`;
+  };
+  renderAll();
+  const newBtn = button('New');
+  newBtn.className += ' left';
+  newBtn.addEventListener('click', () => {
+    cur = { name: `REPORT ${list.length + 1}`, report: cur.report, output: 'view' };
+    renderForm();
+  });
+  const save = button('Save');
+  save.addEventListener('click', () => {
+    const t = readForm();
+    list = [...list.filter((x) => x.name.toLowerCase() !== t.name.toLowerCase()), t].sort((a, b) => a.name.localeCompare(b.name));
+    cur = t;
+    o.save(list);
+    renderAll();
+  });
+  const del = button('Delete');
+  del.addEventListener('click', () => {
+    list = list.filter((x) => x.name.toLowerCase() !== cur.name.toLowerCase());
+    o.save(list);
+    cur = list[0] ? { ...list[0] } : { name: 'NEW REPORT', report: REPORTS[0]!.key, output: 'view' };
+    renderAll();
+  });
+  const run = button('Run', true);
+  run.addEventListener('click', () => {
+    const t = readForm();
+    m.close();
+    o.run(t);
+  });
+  const close = button('Close');
+  close.addEventListener('click', () => m.close());
+  m.footer.append(newBtn, save, del, run, close);
+}
+
 // ---------------------------------------------------------------- file picker (browser fallback)
 
-function browserOpenTextFile(accept: string): Promise<{ path: string; text: string } | null> {
+export function browserOpenTextFile(accept: string): Promise<{ path: string; text: string } | null> {
   return new Promise((resolve) => {
     const input = document.createElement('input');
     input.type = 'file';

@@ -5,13 +5,13 @@
  * coil. Parent/child links are by tag; children copy INST/LOC/DESC from the
  * parent when inserted (see childAttributes).
  */
-import type { Drawing } from '../core/document';
+import type { Drawing, DrawingState } from '../core/document';
 import type { Entity, InsertEntity, TextEntity, LineEntity } from '../core/entities';
 import { newId, textWidth } from '../core/entities';
 import { nearestReference } from './ladder';
 import { isCoil, isChild, isCoilBlock, isChildBlock, isParentComponent } from './families';
 import { readWdSettings, type WdSettings } from './wdm';
-import { descriptionOf } from './attributes';
+import { descriptionOf, withInsertAttributes } from './attributes';
 
 export { isCoil };
 export const isContact = isChild;
@@ -58,10 +58,18 @@ export function buildXref(doc: Drawing): XrefEntry[] {
   return [...map.values()].sort((a, b) => a.tag.localeCompare(b.tag, undefined, { numeric: true }));
 }
 
-/** Format one rung reference with the drawing's cross-reference format (%N rung, %S sheet). */
-export function formatXref(ref: string | null, s: Pick<WdSettings, 'xrefFormat' | 'sheet'>): string {
+/**
+ * Format one rung reference with the drawing's cross-reference format:
+ * %N rung, %S sheet, %D drawing number, %I / %L installation / location of the referenced component.
+ */
+export function formatXref(ref: string | null, s: Pick<WdSettings, 'xrefFormat' | 'sheet'> & { drawing?: string; inst?: string; loc?: string }): string {
   const r = ref ?? '?';
-  return s.xrefFormat.replace(/%N/g, r).replace(/%S/g, s.sheet);
+  return s.xrefFormat
+    .replace(/%N/g, r)
+    .replace(/%S/g, s.sheet)
+    .replace(/%D/g, s.drawing ?? '')
+    .replace(/%I/g, s.inst ?? '')
+    .replace(/%L/g, s.loc ?? '');
 }
 
 /** Compact contact reference line: "NO 101, 102 / NC 103". */
@@ -80,17 +88,31 @@ const ROW = 0.16;
 /** Entities of the small contact table drawn under a coil (lines + text on layer XREF). */
 export function contactTable(x: XrefEntry, s: Pick<WdSettings, 'xrefFormat' | 'sheet'>): Entity[] {
   if (!x.coil) return [];
-  const cx = x.coil.position.x;
-  const top = x.coil.position.y - 0.18;
-  const rows: Array<[string, string]> = [];
   const no = x.contacts.filter((c) => c.kind === 'NO').map((c) => formatXref(c.ref, s));
   const nc = x.contacts.filter((c) => c.kind === 'NC').map((c) => formatXref(c.ref, s));
+  return contactTableFromRefs(x.coil, no, nc);
+}
+
+/** One coil (or other parent) with its already formatted contact references, for xrefGraphics. */
+export interface XrefGraphicItem {
+  coil: InsertEntity | null;
+  no: string[];
+  nc: string[];
+  /** Child contacts with the text shown under them (the parent's reference, or "no coil"). */
+  contacts: Array<{ insert: InsertEntity; text: string }>;
+}
+
+/** Contact table entities from pre-formatted NO / NC reference lists (see contactTable). */
+export function contactTableFromRefs(coil: InsertEntity, no: string[], nc: string[]): Entity[] {
+  const cx = coil.position.x;
+  const top = coil.position.y - 0.18;
+  const rows: Array<[string, string]> = [];
   if (no.length) rows.push(['NO', no.join(', ')]);
   if (nc.length) rows.push(['NC', nc.join(', ')]);
   const out: Entity[] = [];
+  if (rows.length === 0) return out;
   const text = (px: number, py: number, t: string, align: 'left' | 'center' | 'right'): TextEntity => ({ id: newId(), type: 'text', layer: XREF_LAYER, color: 'ByLayer', position: { x: px, y: py }, text: t, height: H, rotation: 0, align });
   const line = (x1: number, y1: number, x2: number, y2: number): LineEntity => ({ id: newId(), type: 'line', layer: XREF_LAYER, color: 'ByLayer', a: { x: x1, y: y1 }, b: { x: x2, y: y2 } });
-  if (rows.length === 0) return out;
   const col1 = 0.3;
   const col2 = Math.max(0.5, ...rows.map((r) => textWidth(r[1], H) + 0.1));
   const w = col1 + col2;
@@ -106,6 +128,40 @@ export function contactTable(x: XrefEntry, s: Pick<WdSettings, 'xrefFormat' | 's
   return out;
 }
 
+/** XREF-layer entities for a set of items (compact text lines beside coils or a table, plus the parent reference under each contact). */
+export function xrefGraphics(items: readonly XrefGraphicItem[], style: WdSettings['xrefStyle']): Entity[] {
+  const out: Entity[] = [];
+  for (const x of items) {
+    if (x.coil && style === 'table') out.push(...contactTableFromRefs(x.coil, x.no, x.nc));
+    else if (x.coil && (x.no.length || x.nc.length)) {
+      // One reference per line to the right of the coil (ACADE places the contact list beside the coil).
+      const lines = [...x.no, ...x.nc.map((t) => `${t} NC`)];
+      lines.forEach((t, i) =>
+        out.push({ id: newId(), type: 'text', layer: XREF_LAYER, color: 'ByLayer', position: { x: x.coil!.position.x + 0.45, y: x.coil!.position.y - 0.03 - i * 0.12 }, text: t, height: H, rotation: 0, align: 'left' }),
+      );
+    }
+    for (const c of x.contacts) {
+      out.push({ id: newId(), type: 'text', layer: XREF_LAYER, color: 'ByLayer', position: { x: c.insert.position.x, y: c.insert.position.y - 0.28 }, text: c.text, height: H, rotation: 0, align: 'center' });
+    }
+  }
+  return out;
+}
+
+/** Attribute tags that hold cross-reference text on inserts (ACADE: XREF on children, XREFNO / XREFNC on parents). */
+export const XREF_ATTRIBUTES = ['XREF', 'XREFNO', 'XREFNC'] as const;
+
+/**
+ * Replace the XREF layer of a drawing state with `graphics`; with `attributes`
+ * (insert id -> values) also write XREF (children) / XREFNO + XREFNC (parents)
+ * into the inserts, adding invisible attribute definitions to their blocks so
+ * the values survive a DXF round trip.
+ */
+export function withXrefGraphics(s: DrawingState, graphics: Entity[], attributes?: ReadonlyMap<string, Record<string, string>>): DrawingState {
+  const entities = [...s.entities.filter((e) => e.layer !== XREF_LAYER), ...graphics];
+  const next: DrawingState = { ...s, layers: s.layers.some((l) => l.name === XREF_LAYER) ? s.layers : [...s.layers, { name: XREF_LAYER, color: 8, visible: true, locked: false, lineWeight: 0.25 }], entities };
+  return attributes ? withInsertAttributes(next, attributes) : next;
+}
+
 /**
  * Write cross-reference graphics (layer XREF): a contact table under each
  * coil and the coil's rung next to each contact. Existing XREF entities are
@@ -113,28 +169,14 @@ export function contactTable(x: XrefEntry, s: Pick<WdSettings, 'xrefFormat' | 's
  */
 export function updateCrossReferences(doc: Drawing, settings: Pick<WdSettings, 'xrefFormat' | 'sheet' | 'xrefStyle'> = readWdSettings(doc)): number {
   const xref = buildXref(doc);
-  const out: Entity[] = [];
-  for (const x of xref) {
-    if (x.coil && settings.xrefStyle === 'table') out.push(...contactTable(x, settings));
-    else if (x.coil && x.contacts.length) {
-      // One reference per line to the right of the coil (ACADE places the contact list beside the coil).
-      const no = x.contacts.filter((c) => c.kind === 'NO').map((c) => formatXref(c.ref, settings));
-      const nc = x.contacts.filter((c) => c.kind === 'NC').map((c) => `${formatXref(c.ref, settings)} NC`);
-      const lines = [...no, ...nc];
-      lines.forEach((t, i) =>
-        out.push({ id: newId(), type: 'text', layer: XREF_LAYER, color: 'ByLayer', position: { x: x.coil!.position.x + 0.45, y: x.coil!.position.y - 0.03 - i * 0.12 }, text: t, height: H, rotation: 0, align: 'left' }),
-      );
-    }
-    for (const c of x.contacts) {
-      const ref = x.coil ? formatXref(x.coilRef, settings) : 'no coil';
-      out.push({ id: newId(), type: 'text', layer: XREF_LAYER, color: 'ByLayer', position: { x: c.insert.position.x, y: c.insert.position.y - 0.28 }, text: ref, height: H, rotation: 0, align: 'center' });
-    }
-  }
-  doc.transact((s) => ({
-    ...s,
-    layers: s.layers.some((l) => l.name === XREF_LAYER) ? s.layers : [...s.layers, { name: XREF_LAYER, color: 8, visible: true, locked: false, lineWeight: 0.25 }],
-    entities: [...s.entities.filter((e) => e.layer !== XREF_LAYER), ...out],
+  const items: XrefGraphicItem[] = xref.map((x) => ({
+    coil: x.coil,
+    no: x.contacts.filter((c) => c.kind === 'NO').map((c) => formatXref(c.ref, settings)),
+    nc: x.contacts.filter((c) => c.kind === 'NC').map((c) => formatXref(c.ref, settings)),
+    contacts: x.contacts.map((c) => ({ insert: c.insert, text: x.coil ? formatXref(x.coilRef, settings) : 'no coil' })),
   }));
+  const graphics = xrefGraphics(items, settings.xrefStyle);
+  doc.transact((s) => withXrefGraphics(s, graphics));
   return xref.length;
 }
 

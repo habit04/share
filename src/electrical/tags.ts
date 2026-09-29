@@ -97,6 +97,14 @@ export function nextTagFor(doc: Drawing, block: string, at: { x: number; y: numb
   return nextTag(usedTags(doc), tagPrefix(block), nearestReference(doc, at), s);
 }
 
+/** Attribute that marks a fixed tag (kept by RETAG, like the "Fixed" option of ACADE's Edit Component). */
+export const TAG_FIXED_ATTRIBUTE = 'TAGFIXED';
+
+/** Whether a component's tag is fixed (TAGFIXED = 1 / Y / YES / TRUE). */
+export function isFixedTag(e: InsertEntity): boolean {
+  return /^(1|Y|YES|TRUE)$/i.test(e.attributes[TAG_FIXED_ATTRIBUTE]?.trim() ?? '');
+}
+
 export interface RetagResult {
   count: number;
   renamed: Map<string, string>;
@@ -108,10 +116,10 @@ export interface RetagResult {
  * extra poles that carried the old tag. One undo step.
  */
 export function retagDrawing(doc: Drawing, s: WdSettings, only?: Set<string>): RetagResult {
-  const parents = doc.entities.filter((e): e is InsertEntity => isParentComponent(e) && (!only || only.has(e.id)));
+  const parents = doc.entities.filter((e): e is InsertEntity => isParentComponent(e) && (!only || only.has(e.id)) && !isFixedTag(e));
   parents.sort((a, b) => b.position.y - a.position.y || a.position.x - b.position.x);
   const keep = new Set<string>();
-  if (only) for (const e of doc.entities) if (isParentComponent(e) && !only.has(e.id) && e.attributes.TAG1) keep.add(e.attributes.TAG1);
+  for (const e of doc.entities) if (isParentComponent(e) && ((only && !only.has(e.id)) || isFixedTag(e)) && e.attributes.TAG1) keep.add(e.attributes.TAG1);
   const used = new Set(keep);
   const renamed = new Map<string, string>();
   const newTags = new Map<string, string>();
