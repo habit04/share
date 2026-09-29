@@ -3,7 +3,7 @@ import type { Entity, LineEntity } from '../core/entities';
 import { newId } from '../core/entities';
 import { breakWire, assignWireNumbers, wireDot } from '../tools/electrical';
 import { WIRE_DOT } from '../electrical/symbols';
-import { writeWdSettings, DEFAULT_WD_SETTINGS } from '../electrical/wdm';
+import { writeWdSettings, DEFAULT_WD_SETTINGS, drawingUnitScale } from '../electrical/wdm';
 
 /** Catalog data for the demo devices (generic parts from the built-in catalog). */
 const CATALOG: Record<string, { MFG: string; CAT: string }> = {
@@ -75,7 +75,8 @@ export function seedDemoDrawing(editor: Editor): void {
   const branchY = top - 0.5;
   ents.push(wire(4.4, top, 4.4, branchY), wire(6.8, branchY, 6.8, top));
   rung(branchY, [['HCR1_NO', 6.1, 'CR100', '']], 4.4, 6.8);
-  ents.push(wireDot({ x: 4.4, y: top }), wireDot({ x: 6.8, y: top }));
+  const k = drawingUnitScale(editor.doc);
+  ents.push(wireDot({ x: 4.4, y: top }, k), wireDot({ x: 6.8, y: top }, k));
 
   // Rung 101: run light
   rung(top - 1, [

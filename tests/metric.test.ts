@@ -22,6 +22,12 @@ import {
 } from '../src/electrical/wdm';
 import { nearestReference, ladderMetrics, wireDot, wireNumberText, WIRENO_HEIGHT } from '../src/electrical/ladder';
 import { ComponentTool, LadderTool, WireTool, ladderDefaultsFor, DEFAULT_LADDER } from '../src/tools/electrical';
+import { assignWireNumbers, planWireNumbers, collectNets, wireNumberState } from '../src/electrical/wires';
+import { ThreePhaseComponentTool } from '../src/tools/electrical-wires';
+import { buildMotorCircuit, DEFAULT_CIRCUIT } from '../src/electrical/circuits';
+import { sheetEntities, SHEET_SIZES, TITLE_BLOCK } from '../src/electrical/templates';
+import { WIRE_DOT } from '../src/electrical/symbols';
+import type { ElectricalUi } from '../src/electrical/ui';
 import { fakeContext } from './fake-context';
 import type { Editor } from '../src/app/editor';
 
@@ -196,5 +202,80 @@ describe('metric symbol insertion and ladders', () => {
     expect(ladderMetrics(1).wireNumberGap).toBe(0.05);
     expect(wireNumberText({ x: 0, y: 0 }, '101', 'WIRENO', 'left', ladderMetrics(25.4).wireNumberHeight).height).toBeCloseTo(3.175);
     expect(wireNumberText({ x: 0, y: 0 }, '101').height).toBe(WIRENO_HEIGHT);
+  });
+});
+
+describe('metric wire numbers, 3-phase inserts, circuits and title blocks', () => {
+  /** A drawing whose WD_M block says UNITS=MM (no $INSUNITS needed). */
+  const wdmMetric = () => {
+    const d = new Drawing();
+    writeWdSettings(d, { ...DEFAULT_WD_SETTINGS, drawingUnits: 'mm' });
+    return d;
+  };
+
+  it('places wire numbers 25.4 x larger, with metric gap and inset (WD_M UNITS=MM)', () => {
+    const d = wdmMetric();
+    expect(drawingUnitScale(d)).toBe(25.4);
+    d.addEntities([wire(10, 200, 250, 200), wire(10, 150, 250, 150)]);
+    expect(assignWireNumbers(d, { start: 100, mode: 'sequential' })).toBe(2);
+    const nos = d.entities.filter((e): e is TextEntity => e.type === 'text' && e.layer === 'WIRENO').sort((a, b) => b.position.y - a.position.y);
+    expect(nos.map((t) => t.text)).toEqual(['100', '101']);
+    for (const t of nos) expect(t.height).toBeCloseTo(0.125 * 25.4);
+    expect(nos[0]!.position.x).toBeCloseTo(10 + 0.15 * 25.4);
+    expect(nos[0]!.position.y).toBeCloseTo(200 + 0.05 * 25.4);
+    // The pure planner reads the scale from the WD_M block of the entities too.
+    const planned = planWireNumbers(d.entities, { position: 'below', mode: 'sequential' });
+    expect(planned[0]!.height).toBeCloseTo(3.175);
+    expect(planned[0]!.position.y).toBeCloseTo(200 - 0.05 * 25.4 - 3.175);
+    // A 30 mm component break still belongs to one net (an inch drawing would split at 1.2).
+    const nets = collectNets([wire(0, 0, 40, 0), wire(70, 0, 120, 0), ...d.entities.filter((e) => e.type === 'insert')]);
+    expect(nets).toHaveLength(1);
+    // Edit dialog state reads the metric offsets back.
+    expect(wireNumberState(d.entities, nos[0]!).position).toBe('above');
+  });
+
+  it('keeps inch wire numbers unchanged', () => {
+    const d = new Drawing();
+    d.addEntities([wire(1, 5, 9, 5)]);
+    assignWireNumbers(d, { start: 100, mode: 'sequential' });
+    const t = d.entities.find((e): e is TextEntity => e.type === 'text')!;
+    expect(t.height).toBe(WIRENO_HEIGHT);
+    expect(t.position).toEqual({ x: 1.15, y: 5.05 });
+  });
+
+  it('inserts 3-phase poles at the drawing unit scale', async () => {
+    const d = metricDoc();
+    d.addEntities([wire(0, 200, 250, 200), wire(0, 187.3, 250, 187.3), wire(0, 174.6, 250, 174.6)]);
+    const ctx = fakeContext(d);
+    const ui = { editComponent: async () => ({ attrs: { TAG1: 'CB1', DESC1: '' } }) } as unknown as ElectricalUi;
+    const tool = new ThreePhaseComponentTool('HCB1', () => ui);
+    tool.start(ctx);
+    await tick();
+    tool.onPoint({ x: 100, y: 200 }, ctx);
+    await tick();
+    await tick();
+    const poles = d.entities.filter((e): e is InsertEntity => e.type === 'insert' && e.block === 'HCB1');
+    expect(poles).toHaveLength(3);
+    for (const p of poles) expect(p.scale).toBe(25.4);
+    // The wires are broken around the scaled symbol (an inch-sized gap would be < 1 mm).
+    const top = d.entities.filter((e): e is LineEntity => e.type === 'line' && e.layer === 'WIRES' && e.a.y === 200);
+    expect(top).toHaveLength(2);
+    const leftEnd = Math.min(...top.map((w) => Math.max(w.a.x, w.b.x)));
+    const rightStart = Math.max(...top.map((w) => Math.min(w.a.x, w.b.x)));
+    expect(rightStart - leftEnd).toBeGreaterThan(10);
+  });
+
+  it('builds circuits and title blocks at the drawing unit scale', () => {
+    const ents = buildMotorCircuit({ ...DEFAULT_CIRCUIT, left: 25, right: 250, top: 200, spacing: 25.4, drawLadder: true, unitScale: 25.4 }, () => 'X1');
+    const inserts = ents.filter((e): e is InsertEntity => e.type === 'insert');
+    expect(inserts.length).toBeGreaterThan(3);
+    for (const i of inserts) expect(i.scale).toBe(25.4);
+    expect(inserts.some((i) => i.block === WIRE_DOT.name)).toBe(true);
+    const refs = ents.filter((e): e is TextEntity => e.type === 'text');
+    expect(refs[0]!.height).toBeCloseTo(3.175);
+    const tb = sheetEntities(SHEET_SIZES[0]!, {}, 25.4).find((e): e is InsertEntity => e.type === 'insert' && e.block === TITLE_BLOCK.name)!;
+    expect(tb.scale).toBeCloseTo(25.4);
+    expect(tb.position.x).toBeCloseTo((11 - 0.5 - 6) * 25.4);
+    expect(sheetEntities(SHEET_SIZES[0]!).find((e): e is InsertEntity => e.type === 'insert')!.scale).toBe(1);
   });
 });

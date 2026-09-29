@@ -27,6 +27,8 @@ export interface CircuitOptions {
   /** Draw rails and rung references when inserting onto an empty area. */
   drawLadder: boolean;
   firstReference: number;
+  /** Drawing units per library inch (`drawingUnitScale(doc)`: 25.4 in a millimetre drawing); default 1. */
+  unitScale?: number;
 }
 
 export const CIRCUIT_KINDS: Array<{ kind: CircuitKind; name: string; rungs: number }> = [
@@ -68,15 +70,17 @@ export function buildMotorCircuit(o: CircuitOptions, tagger: (block: string, y: 
   const ents: Entity[] = [];
   const parents = new Map<string, InsertEntity>();
   const W = o.right - o.left;
+  const k = o.unitScale ?? 1;
+  const half = SYMBOL_HALF * k;
   const px = (f: number) => o.left + f * W;
   const wire = (x1: number, y1: number, x2: number, y2: number): LineEntity => ({ id: newId(), type: 'line', layer: 'WIRES', color: 'ByLayer', a: { x: x1, y: y1 }, b: { x: x2, y: y2 } });
-  const ins = (block: string, x: number, y: number, attrs: Record<string, string>): InsertEntity => ({ id: newId(), type: 'insert', layer: 'SYMS', color: 'ByLayer', block, position: { x, y }, rotation: 0, scale: 1, attributes: attrs });
+  const ins = (block: string, x: number, y: number, attrs: Record<string, string>): InsertEntity => ({ id: newId(), type: 'insert', layer: 'SYMS', color: 'ByLayer', block, position: { x, y }, rotation: 0, scale: k, attributes: attrs });
 
   const rung = (y: number, comps: Comp[], x0 = o.left, x1 = o.right): void => {
     let pieces: LineEntity[] = [wire(x0, y, x1, y)];
     for (const c of comps) {
       const target = pieces.find((p) => Math.min(p.a.x, p.b.x) <= c.x && Math.max(p.a.x, p.b.x) >= c.x);
-      if (target) pieces = pieces.filter((p) => p !== target).concat(breakWire(target, c.x - SYMBOL_HALF, c.x + SYMBOL_HALF));
+      if (target) pieces = pieces.filter((p) => p !== target).concat(breakWire(target, c.x - half, c.x + half));
       let attrs: Record<string, string>;
       if (c.parentKey) {
         const parent = parents.get(c.parentKey);
@@ -97,7 +101,7 @@ export function buildMotorCircuit(o: CircuitOptions, tagger: (block: string, y: 
     const by = y - o.spacing * 0.5;
     ents.push(wire(xa, y, xa, by), wire(xb, by, xb, y));
     rung(by, [comp], xa, xb);
-    ents.push(wireDot({ x: xa, y }), wireDot({ x: xb, y }));
+    ents.push(wireDot({ x: xa, y }, k), wireDot({ x: xb, y }, k));
   };
 
   const y0 = o.top;
@@ -106,7 +110,7 @@ export function buildMotorCircuit(o: CircuitOptions, tagger: (block: string, y: 
     const rungs = CIRCUIT_KINDS.find((k) => k.kind === o.kind)!.rungs;
     ents.push(wire(o.left, y0 + s * 0.5, o.left, y0 - s * (rungs - 1) - s * 0.5), wire(o.right, y0 + s * 0.5, o.right, y0 - s * (rungs - 1) - s * 0.5));
     for (let i = 0; i < rungs; i += 1) {
-      ents.push({ id: newId(), type: 'text', layer: 'MISC', color: 'ByLayer', position: { x: o.left - 0.25, y: y0 - i * s - 0.06 }, text: String(o.firstReference + i), height: 0.125, rotation: 0, align: 'right' });
+      ents.push({ id: newId(), type: 'text', layer: 'MISC', color: 'ByLayer', position: { x: o.left - 0.25 * k, y: y0 - i * s - 0.06 * k }, text: String(o.firstReference + i), height: 0.125 * k, rotation: 0, align: 'right' });
     }
   }
 

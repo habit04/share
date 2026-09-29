@@ -366,7 +366,7 @@ export class ComponentTool implements Tool {
 
     const place = (attrs: Record<string, string>) => {
       const ins = this.makeInsert(pos, attrs);
-      ctx.doc.transact((s) => ({ ...s, entities: breakForInsert([...s.entities, ins], ins, ctx.doc.lookupBlock) }));
+      ctx.doc.transact((s) => ({ ...s, entities: breakForInsert([...s.entities, ins], ins, ctx.doc.lookupBlock, drawingUnitScale(ctx.doc)) }));
       ctx.log(`Inserted ${this.block}${attrs.TAG1 ? ` as ${attrs.TAG1}` : ''}.`);
     };
 

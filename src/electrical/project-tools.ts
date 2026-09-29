@@ -12,7 +12,7 @@ import type { Drawing, DrawingState } from '../core/document';
 import type { Entity, InsertEntity, TextEntity } from '../core/entities';
 import type { Point } from '../core/geometry';
 import type { ProjectSettings } from '../app/project';
-import { readWdSettings, findWdM, type WdSettings } from './wdm';
+import { readWdSettings, findWdM, drawingUnitScale, type WdSettings } from './wdm';
 import { nearestReference } from './ladder';
 import { isCoil, isChild, isExtraPole, isParentComponent, isTerminal, isComponent } from './families';
 import { tagPrefix } from './symbols';
@@ -328,7 +328,7 @@ export function planProjectWireNumbers(sheets: readonly ProjectSheet[], o: Proje
   sheets.forEach((s, si) => {
     const n = parseInt(s.sheet, 10);
     const start = o.perSheet ? (Number.isFinite(n) ? n : si + 1) * (o.step ?? 100) : s.settings.wireStart;
-    out.set(si, planWireNumbers(s.doc.entities, { start, position: s.settings.wirePosition, format: s.settings.wireFormat, mode: s.settings.wireMode, sheet: s.sheet, used }));
+    out.set(si, planWireNumbers(s.doc.entities, { start, position: s.settings.wirePosition, format: s.settings.wireFormat, mode: s.settings.wireMode, sheet: s.sheet, used, unitScale: drawingUnitScale(s.doc) }));
   });
   return out;
 }
