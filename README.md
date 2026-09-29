@@ -32,6 +32,8 @@ tagged builds are attached to a GitHub Release. The builds are not signed with a
 confirmation ("More info" then "Run anyway") and macOS asks once under System Settings >
 Privacy & Security > "Open Anyway" (macOS builds are ad-hoc signed so they are not reported as damaged).
 
+The **[user manual](docs/USER-MANUAL.md)** covers installation, a first drawing, the interface and every command; see [CHANGELOG.md](CHANGELOG.md) for what changed in each release.
+
 ### Website and browser edition
 
 The public website, <https://habit04.github.io/share/>, is a landing page (download buttons filled
@@ -346,3 +348,19 @@ src/electrical  symbol libraries (symbols.ts / symbols-jic-control.ts / symbols-
                 wire tools, panel layout, circuits, audit, reports, sheet templates, dialog contract (ui.ts)
 scripts         DWG reader (Node / Electron main), dwg2dxf CLI, screenshot capture
 ```
+
+## License
+
+JCad Electrical is free software: you can redistribute it and/or modify it under the terms of
+the **GNU General Public License, version 3** (`GPL-3.0-only`) as published by the Free
+Software Foundation. It is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR
+PURPOSE. See [LICENSE](LICENSE) for the full text.
+
+The installers include Electron (MIT, with Chromium and its components) and the LibreDWG
+WebAssembly build (GPL-3.0); text is drawn with the public-domain Hershey fonts. The licences,
+copyright holders and required notices of every dependency are listed in
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). Help > About links to both files.
+
+JCad Electrical is an independent project and is not affiliated with or endorsed by Autodesk;
+"AutoCAD" is mentioned only as a compatibility reference.
