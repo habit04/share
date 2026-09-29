@@ -11,7 +11,8 @@
 // Checks: window + no page errors, window.jcad bridge, LINE with typed coordinates, ZOOM E (command
 // and native menu), OPEN of a DXF and a DWG through `open-drawing`, IMAGE bitmaps through
 // `read-image` (relative to the drawing folder), RECENT (open by remembered
-// path), PLOT through `plot-pdf` to a tabloid landscape PDF (parsed: 1224 x 792 pt), the updater's
+// path), PLOT to a tabloid landscape vector PDF through `save-pdf` (parsed: 1224 x 792 pt, content
+// stream paths) and as a raster image through `plot-pdf`, a layout tab plotted as a page, the updater's
 // check path offline (up to date / newer release / network error), the Symbol Builder, the About
 // dialog, the unsaved-changes prompt on close, and no main-process error log.
 import { _electron as electron } from 'playwright';
@@ -19,7 +20,8 @@ import { mkdtempSync, mkdirSync, readFileSync, existsSync, rmSync, statSync, wri
 import { deflateSync, crc32 } from 'node:zlib';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { parsePdfBasics } from '../tests/helpers/pdf.ts';
+import { inflateSync } from 'node:zlib';
+import { parsePdfBasics, pageContents, parseContentStream } from '../tests/helpers/pdf.ts';
 
 const repo = resolve(import.meta.dirname, '..');
 const pkg = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8'));
@@ -302,7 +304,7 @@ try {
   await waitLog(/^Plotted to /, h, 60_000).catch(() => bad('no "Plotted to" line'));
   log = await logSince(h);
   check(log.some((l) => l === `Plotted to ${pdfPath} (17.00 x 11.00 in).`), `renderer reports ${log.find((l) => l.startsWith('Plotted')) ?? '(nothing)'}`);
-  check((await messages()).includes('save:Plot to PDF'), 'the Save dialog was requested by plot-pdf');
+  check((await messages()).includes('save:Plot to PDF'), 'the Save dialog was requested by save-pdf');
   if (existsSync(pdfPath)) {
     const bytes = new Uint8Array(readFileSync(pdfPath));
     const pdf = parsePdfBasics(bytes);
@@ -310,8 +312,48 @@ try {
     check(pdf.pages.length === 1, `PDF has ${pdf.pages.length} page(s)`);
     const pg = pdf.pages[0];
     check(pg && Math.abs(pg.width - 1224) < 1 && Math.abs(pg.height - 792) < 1, `page is tabloid landscape 1224 x 792 pt (got ${pg ? `${pg.width} x ${pg.height}, MediaBox ${pg.mediaBox.join(' ')}, Rotate ${pg.rotate}` : 'none'})`);
-    check(pdf.images.length >= 1 && pdf.images.some((i) => i.width > 1000), `plot image embedded (${pdf.images.map((i) => `${i.width}x${i.height} ${i.filters.join('+')}`).join(', ')})`);
+    const content = parseContentStream(pageContents(pdf, (b) => new Uint8Array(inflateSync(b)))[0] ?? '');
+    check(content.errors.length === 0 && content.pathOps > 20 && pdf.images.length === 0, `vector content: ${content.pathOps} path operators, ${content.counts.S ?? 0} strokes, ${pdf.images.length} image(s)${content.errors.length ? `; ${content.errors.slice(0, 3).join('; ')}` : ''}`);
+    check(content.strokeColors.every((c) => c === '0 0 0'), `monochrome plot style: stroke colours ${content.strokeColors.join(' | ')}`);
   } else bad(`no PDF written at ${pdfPath}`);
+
+  // The raster output keeps Electron's printToPDF path (plot-pdf).
+  step = 'PLOT raster';
+  const rasterPath = join(outDir, 'plot-raster.pdf');
+  await app.evaluate((_e, p) => globalThis.__e2e.savePaths.push(p), rasterPath);
+  h = await historyLen();
+  await win.evaluate(() => window.editor.runCommand('PLOT'));
+  const dlg2 = win.locator('.modal', { hasText: 'Paper size' });
+  await dlg2.waitFor({ timeout: 10_000 });
+  await dlg2.locator('select').nth(3).selectOption('raster');
+  await dlg2.locator('button', { hasText: 'Plot to PDF' }).click();
+  await waitLog(/^Plotted to /, h, 60_000).catch(() => bad('no "Plotted to" line for the raster plot'));
+  check((await messages()).includes('save:Plot to PDF'), 'the Save dialog was requested by plot-pdf (raster)');
+  if (existsSync(rasterPath)) {
+    const pdf = parsePdfBasics(new Uint8Array(readFileSync(rasterPath)));
+    check(pdf.errors.length === 0 && pdf.images.some((i) => i.width > 1000), `raster PDF has the plot image (${pdf.images.map((i) => `${i.width}x${i.height}`).join(', ')})`);
+  } else bad(`no raster PDF written at ${rasterPath}`);
+
+  // A layout tab: Layout1 is initialised with a viewport and plots as its own sheet.
+  step = 'PLOT layout';
+  const layoutPdf = join(outDir, 'plot-layout.pdf');
+  await app.evaluate((_e, p) => globalThis.__e2e.savePaths.push(p), layoutPdf);
+  await win.locator('#layout-tabs .layout-tab', { hasText: 'Layout1' }).click();
+  check(await win.evaluate(() => window.editor.doc.space?.layout === 'Layout1' && window.editor.doc.layouts[0].viewports.length === 1), 'Layout1 tab activates paper space with one viewport');
+  h = await historyLen();
+  await win.evaluate(() => window.editor.runCommand('PLOT'));
+  const dlg3 = win.locator('.modal', { hasText: 'Page setup' });
+  await dlg3.waitFor({ timeout: 10_000 });
+  await dlg3.locator('button', { hasText: 'Plot to PDF' }).click();
+  await waitLog(/^Plotted to /, h, 60_000).catch(() => bad('no "Plotted to" line for the layout'));
+  check((await messages()).includes('save:Plot to PDF'), 'the Save dialog was requested for the layout plot');
+  if (existsSync(layoutPdf)) {
+    const pdf = parsePdfBasics(new Uint8Array(readFileSync(layoutPdf)));
+    const content = parseContentStream(pageContents(pdf, (b) => new Uint8Array(inflateSync(b)))[0] ?? '');
+    check(pdf.errors.length === 0 && pdf.pages.length === 1 && (content.counts.W ?? 0) >= 1 && content.pathOps > 20, `layout PDF: ${pdf.pages.map((p) => `${p.width} x ${p.height}`).join(', ')}, ${content.counts.W ?? 0} viewport clip(s), ${content.pathOps} path operators`);
+  } else bad(`no layout PDF written at ${layoutPdf}`);
+  await win.locator('#layout-tabs .layout-tab', { hasText: 'Model' }).click();
+  check(await win.evaluate(() => !window.editor.doc.space), 'Model tab is active again');
 
   // ------------------------------------------------------------------ updater check path, offline
   step = 'updates';

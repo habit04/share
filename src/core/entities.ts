@@ -27,6 +27,8 @@ export interface EntityBase {
   readonly ltscale?: number;
   /** True colour 0xRRGGBB (DXF 420); overrides `color` for display when set. */
   readonly trueColor?: number;
+  /** Annotative object (text, mtext, dimension, leader, insert): its paper size stays constant (see core/layouts.ts). */
+  readonly annotative?: boolean;
 }
 
 /** A field expression behind a text value (%<\AcVar Date>% ...): `value` is what the code evaluated to. */
@@ -283,6 +285,8 @@ export interface Layer {
   readonly linetype?: string;
   /** Frozen (LAYER Freeze) as opposed to merely off; both hide the layer. */
   readonly frozen?: boolean;
+  /** Plot flag (DXF 290): false = shown on screen but never plotted (like DEFPOINTS). */
+  readonly plot?: boolean;
 }
 
 let idCounter = 0;
@@ -1373,6 +1377,14 @@ export function gripPoints(e: Entity): Point[] {
 
 /** Move grip `index` of an entity to `p` (AutoCAD grip stretch semantics). */
 export function moveGrip(e: Entity, index: number, p: Point): Entity | null {
+  // Layout viewport frames (core/layouts.ts ViewportFrame) stretch as rectangles: the opposite corner stays.
+  if (e.type === 'polyline' && (e as { vport?: unknown }).vport && e.points.length === 4 && index >= 0 && index < 4) {
+    const o = e.points[(index + 2) % 4]!;
+    const lo = { x: Math.min(o.x, p.x), y: Math.min(o.y, p.y) };
+    const hi = { x: Math.max(o.x, p.x), y: Math.max(o.y, p.y) };
+    if (hi.x - lo.x < 1e-9 || hi.y - lo.y < 1e-9) return null;
+    return { ...e, points: [lo, { x: hi.x, y: lo.y }, hi, { x: lo.x, y: hi.y }] };
+  }
   switch (e.type) {
     case 'line':
       if (index === 0) return { ...e, a: p };

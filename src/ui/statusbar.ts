@@ -7,6 +7,10 @@ import { showMenu, type MenuItem } from './menu';
 import { OSNAP_LABELS } from './dsettings';
 import { updateSettings } from './options';
 import { t, onLocaleChange } from '../app/i18n';
+// Track E: MODEL / PAPER button and the annotation-scale dropdown follow the active space.
+import { STANDARD_SCALES } from '../core/layouts';
+import { layoutController, setAnnotationScale } from '../tools/layouts';
+import { spaceCaption, annotationScaleCaption, viewportScaleCaption } from './layouts';
 
 interface ToggleDef {
   key: string;
@@ -99,6 +103,7 @@ const TOGGLES: ToggleDef[] = [
 ];
 
 const RIGHT_ITEMS: Array<[string, () => string]> = [
+  ['annoscale', () => t('status.annoscale.name')],
   ['workspace', () => t('status.workspace.name')],
   ['units', () => t('status.units.name')],
   ['isolate', () => t('status.isolate.name')],
@@ -151,6 +156,7 @@ export class StatusBar {
   private wsEl: HTMLElement;
   private unitsEl: HTMLElement;
   private modelEl: HTMLElement;
+  private annoEl: HTMLElement;
   private isoEl: HTMLElement;
   private cleanEl: HTMLElement;
   private customizeEl: HTMLElement;
@@ -184,7 +190,13 @@ export class StatusBar {
 
     const model = document.createElement('button');
     model.className = 'status-btn on text';
-    model.addEventListener('click', () => this.editor.log(t('status.model.log')));
+    // Model tab: go to the last layout; in a layout: toggle paper space / the current viewport.
+    model.addEventListener('click', () => {
+      const c = layoutController(this.editor);
+      if (c.mode === 'model') this.editor.runCommand('TILEMODE 0');
+      else this.editor.runCommand(c.mode === 'paper' ? 'MSPACE' : 'PSPACE');
+      this.refresh();
+    });
     this.modelEl = model;
     this.el.appendChild(model);
     this.buttons.set('model', model);
@@ -223,8 +235,18 @@ export class StatusBar {
     spacer.className = 'status-spacer';
     this.el.appendChild(spacer);
 
-    // No annotation-scale control: there are no annotative objects, so a scale picker would change nothing.
-    // Text and dimension sizes are set directly (text height, DIMSCALE).
+    // Annotation scale (CANNOSCALE); in a floating viewport it also sets the viewport scale.
+    this.annoEl = document.createElement('div');
+    this.annoEl.className = 'status-text clickable status-annoscale';
+    this.annoEl.addEventListener('click', () =>
+      showMenu(
+        this.annoEl,
+        STANDARD_SCALES.map((sc): MenuItem => ({ label: sc, check: annotationScaleCaption(this.editor) === sc, run: () => (setAnnotationScale(this.editor, sc), this.refresh()) })),
+        { above: true, alignRight: true },
+      ),
+    );
+    this.el.appendChild(this.annoEl);
+    this.buttons.set('annoscale', this.annoEl);
 
     this.wsEl = document.createElement('div');
     this.wsEl.className = 'status-text clickable';
@@ -290,6 +312,7 @@ export class StatusBar {
     editor.on('snap', () => this.refresh());
     editor.on('tool', () => this.refresh());
     editor.on('file', () => this.refresh());
+    editor.on('space', () => this.refresh());
     this.refresh();
   }
 
@@ -341,7 +364,8 @@ export class StatusBar {
   /** Tooltips and captions in the current language (called on every refresh, so a language switch shows at once). */
   private applyLabels(): void {
     this.coordsEl.title = t('status.coords.title');
-    this.modelEl.textContent = t('status.model.label');
+    this.modelEl.textContent = spaceCaption(this.editor) === 'PAPER' ? t('status.paper.label') : t('status.model.label');
+    this.annoEl.title = t('status.annoscale.title');
     this.modelEl.title = t('status.model.title');
     for (const def of TOGGLES) {
       const b = this.toggleButtons.get(def.key);
@@ -368,6 +392,8 @@ export class StatusBar {
     ws.textContent = s.workspace === 'drafting' ? t('status.workspace.drafting') : t('status.workspace.electrical');
     this.wsEl.innerHTML = `${icon('settings')} ${ws.outerHTML}${icon('chevron')}`;
     this.unitsEl.textContent = `${unitTypeLabel(s.units)} · ${s.unitSuffix}`;
+    const vpScale = viewportScaleCaption(this.editor);
+    this.annoEl.innerHTML = `${vpScale ? `<span title="${t('status.vpscale.title')}">VP ${vpScale}</span> · ` : ''}<span>${icon('text')} ${annotationScaleCaption(this.editor)}</span>${icon('chevron')}`;
     this.refreshCoords();
   }
 }

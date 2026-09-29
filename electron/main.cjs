@@ -442,6 +442,21 @@ ipcMain.handle('plot-pdf', async (ev, dataUrl, suggestName, landscape, sheet) =>
   }
 });
 
+// Track E: vector PLOT output. The renderer builds the PDF (src/io/pdf-vector.ts); this only asks where to save it.
+ipcMain.handle('save-pdf', async (ev, bytes, suggestName) => {
+  const win = BrowserWindow.fromWebContents(ev.sender);
+  if (!(bytes instanceof Uint8Array) || bytes.length < 8 || bytes.length > 512 * 1024 * 1024) throw new Error('Invalid PDF payload');
+  if (Buffer.from(bytes.subarray(0, 5)).toString('latin1') !== '%PDF-') throw new Error('Invalid PDF payload');
+  const res = await dialog.showSaveDialog(win, {
+    title: 'Plot to PDF',
+    defaultPath: String(suggestName || 'Drawing1.pdf'),
+    filters: [{ name: 'PDF', extensions: ['pdf'] }],
+  });
+  if (res.canceled || !res.filePath) return null;
+  await fs.writeFile(res.filePath, Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+  return res.filePath;
+});
+
 const NAMED_PAGES = new Set(['A0', 'A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'Legal', 'Letter', 'Tabloid', 'Ledger']);
 /** Sheet dimensions in portrait inches (Electron applies `landscape` itself). */
 function sheetPortrait(sheet, landscape) {

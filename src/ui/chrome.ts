@@ -6,6 +6,7 @@ import { drawPreview } from '../render/draw';
 import { sessionTitle } from '../app/sessions';
 import { showMenu, type MenuItem } from './menu';
 import { symbolBuilderOf } from '../tools/symbol-builder';
+import { buildLayoutTabs as buildLayoutTabsImpl } from './layouts';
 
 /** Title bar with Quick Access Toolbar, InfoCenter search and the application-menu button. */
 export function buildTitleBar(editor: Editor, el: HTMLElement, onAppMenu?: (anchor: HTMLElement) => void): void {
@@ -186,14 +187,9 @@ export function buildFileTabs(editor: Editor, el: HTMLElement): void {
   refresh();
 }
 
-/**
- * Model tab under the canvas. Paper-space layouts do not exist yet, so there are no
- * Layout1 / Layout2 / "+" tabs to click: only the Model tab, which says so.
- */
+/** Model / layout tabs under the canvas (Track E: implemented in ui/layouts.ts). */
 export function buildLayoutTabs(editor: Editor, el: HTMLElement): void {
-  el.className = 'layout-tabs';
-  el.innerHTML = `<button class="layout-tab active" title="Model space (paper-space layouts are not supported yet)">Model</button>`;
-  el.querySelector('.layout-tab')!.addEventListener('click', () => editor.log('Only model space is available: paper-space layouts are not supported yet. Plot from model space with PLOT.'));
+  buildLayoutTabsImpl(editor, el);
 }
 
 /** Right-click context menu on the canvas (with Recent Input, Clipboard and Isolate flyouts). */
