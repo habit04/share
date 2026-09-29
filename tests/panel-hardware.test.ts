@@ -36,6 +36,7 @@ import {
 } from '../src/electrical/panel-hardware';
 import { panelHardwareRows as fromPanel, terminalStripTable, terminalStrips, terminalStripFootprintFor, footprintSize, makeFootprint, panelRows, footprintBlock } from '../src/electrical/panel';
 import { isComponent, isFootprint } from '../src/electrical/families';
+import { REPORTS, reportToCsv, reportToEntities } from '../src/electrical/reports';
 import { LIBRARY_BLOCKS } from '../src/electrical/library';
 
 const bounds = (b: BlockDef, filter: (e: Entity) => boolean = () => true) => {
@@ -181,6 +182,20 @@ describe('panel hardware rows (BOM hook)', () => {
     // hardware is not a footprint or a component: the panel component report is unchanged
     expect(panelRows(d.entities)).toEqual([]);
     expect(panelHardwareRows({ entities: [] })).toEqual([]);
+    // Registered with the other reports (Reports dialog tab, CSV, put on drawing, project-wide).
+    const entry = REPORTS.find((r) => r.key === 'panelhw')!;
+    expect(entry).toMatchObject({ name: 'Panel Hardware', group: 'panel' });
+    const built = entry.build(d);
+    expect(built).toEqual(rep);
+    expect(reportToCsv(built).split(/\r?\n/)[0]).toBe('Item,Type / Size,Description,Manufacturer,Catalog,Qty,Length (in),Length (mm)');
+    expect(entry.build(d, ['Type / Size', 'Qty']).rows[3]).toEqual(['TS35', '2']);
+    expect(reportToEntities(built, { x: 0, y: 0 }).some((e) => e.type === 'text' && e.text === 'NS35')).toBe(true);
+  });
+  it('treats cable markers and panel hardware as furniture, not components', () => {
+    const at = (block: string): InsertEntity => ({ id: newId(), layer: '0', color: 'ByLayer', type: 'insert', block, position: { x: 0, y: 0 }, rotation: 0, scale: 1, attributes: { TAG1: 'X' } });
+    expect(isComponent(at('WD_CABLE'))).toBe(false);
+    expect(isComponent(at('WD_PNL_DIN_TS35_L10'))).toBe(false);
+    expect(isComponent(at('HPB11_NO'))).toBe(true);
   });
 });
 

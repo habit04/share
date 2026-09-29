@@ -312,7 +312,7 @@ export const RIBBON: RibbonTab[] = [
       },
       {
         title: 'Panel',
-        buttons: [B('Reports', 'report', 'AEREPORT panel'), B('Terminal\nReport', 'terminal', 'AEREPORT terminals', 'small'), B('Terminal\nStrip', 'strip', 'AEREPORT strip', 'small'), B('Panel\nComponents', 'footprint', 'AEREPORT panel', 'small')],
+        buttons: [B('Reports', 'report', 'AEREPORT panel'), B('Terminal\nReport', 'terminal', 'AEREPORT terminals', 'small'), B('Terminal\nStrip', 'strip', 'AEREPORT strip', 'small'), B('Panel\nComponents', 'footprint', 'AEREPORT panel', 'small'), B('Panel\nHardware', 'dinrail', 'AEREPORT panelhw', 'small', 'Panel hardware report: DIN rail, duct, enclosure and plate with lengths (AEREPORT panelhw)')],
       },
       { title: 'Audit', buttons: [B('Electrical\nAudit', 'audit', 'AEAUDIT'), B('Audit\nReport', 'check', 'AEREPORT audit', 'small')] },
     ],

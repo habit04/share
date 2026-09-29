@@ -15,7 +15,7 @@ import { isComponent, isChild, isChildBlock, isExtraPole, isParentComponent, isT
 import { descriptionOf, instLoc } from './attributes';
 import { collectNets, netOfWireNumber, isWireNumber, symbolSpan, type WireNet } from './wires';
 import { auditIssues } from './audit';
-import { panelRows, terminalStripTable } from './panel';
+import { panelRows, terminalStripTable, panelHardwareReport } from './panel';
 import { WIRE_TYPES } from '../tools/plc';
 import { cableSchedule, jumperText } from './cables';
 
@@ -349,6 +349,7 @@ export const REPORTS: Array<{ key: string; name: string; build: (doc: Drawing, c
   { key: 'strip', name: 'Terminal Strip', build: terminalStripReport, group: 'panel' },
   { key: 'cables', name: 'Cable Schedule', build: cableScheduleReport, group: 'panel' },
   { key: 'panel', name: 'Panel Components', build: panelReport, group: 'panel' },
+  { key: 'panelhw', name: 'Panel Hardware', build: (doc, columns) => withColumns(panelHardwareReport(doc), columns), group: 'panel' },
   { key: 'audit', name: 'Electrical Audit', build: electricalAudit, group: 'schematic' },
 ];
 
