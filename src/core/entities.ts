@@ -27,6 +27,8 @@ export interface EntityBase {
   readonly ltscale?: number;
   /** True colour 0xRRGGBB (DXF 420); overrides `color` for display when set. */
   readonly trueColor?: number;
+  /** Annotative object (text, mtext, dimension, leader, insert): its paper size stays constant (see core/layouts.ts). */
+  readonly annotative?: boolean;
 }
 
 /** A field expression behind a text value (%<\AcVar Date>% ...): `value` is what the code evaluated to. */
@@ -283,6 +285,8 @@ export interface Layer {
   readonly linetype?: string;
   /** Frozen (LAYER Freeze) as opposed to merely off; both hide the layer. */
   readonly frozen?: boolean;
+  /** Plot flag (DXF 290): false = shown on screen but never plotted (like DEFPOINTS). */
+  readonly plot?: boolean;
 }
 
 let idCounter = 0;

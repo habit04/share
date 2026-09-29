@@ -7,6 +7,9 @@ import { STANDARD_DIMSTYLE } from './dimension';
 import type { Linetype } from './linetypes';
 import type { UnitSettings } from './units';
 import { DEFAULT_UNITS } from './units';
+// Paper-space layouts (Track E): the layout model and the paper-space entity projection.
+import type { Layout, SpaceRef } from './layouts';
+import { applyPaperEntities, layoutsOf, paperEntities, paperSpaceLayout, sheetBounds, withLayout } from './layouts';
 
 /** A named view (VIEW command): world centre and view height. */
 export interface NamedView {
@@ -34,6 +37,10 @@ export interface DrawingHeader {
   /** $CELTYPE / $CELWEIGHT: properties given to new entities ('ByLayer' / undefined = inherit). */
   readonly celtype: string;
   readonly celweight?: number;
+  /** $CANNOSCALE: annotation scale name ("1:4"); annotative objects show at 1 / scale in model space. */
+  readonly cannoscale?: string;
+  /** $ANNOALLVISIBLE (default on): off hides annotative objects in viewports whose scale is not CANNOSCALE. */
+  readonly annoAllVisible?: boolean;
 }
 
 export const DEFAULT_HEADER: DrawingHeader = {
@@ -61,6 +68,10 @@ export interface DrawingState {
    * them like geometry). Not written to DXF; absent for ordinary drawings.
    */
   readonly meta?: Readonly<Record<string, unknown>>;
+  /** Paper-space layouts (see core/layouts.ts); absent = the implicit Layout1. */
+  readonly layouts?: readonly Layout[];
+  /** Active space (CTAB / MSPACE): absent = the Model tab. */
+  readonly space?: SpaceRef;
 }
 
 export type DocListener = (doc: Drawing) => void;
@@ -99,11 +110,37 @@ export class Drawing {
       blocks: initial?.blocks ?? {},
       currentLayer: initial?.currentLayer ?? '0',
       ...(initial?.meta ? { meta: initial.meta } : {}),
+      ...(initial?.layouts ? { layouts: initial.layouts } : {}),
     };
   }
 
+  /** The entities being edited: model space, or the paper space of the active layout (layouts.ts paperEntities). */
   get entities(): readonly Entity[] {
-    return this.state.entities;
+    const lay = paperSpaceLayout(this.state);
+    return lay ? paperEntities(lay) : this.state.entities;
+  }
+  /** All layouts (the implicit Layout1 when the drawing has none). */
+  get layouts(): readonly Layout[] {
+    return layoutsOf(this.state);
+  }
+  /** Active space: undefined = Model tab. */
+  get space(): SpaceRef | undefined {
+    return this.state.space;
+  }
+  /** Switch space (Model / layout / floating viewport). Not undoable by itself, like the layout tabs. */
+  setSpace(space: SpaceRef | undefined, patch?: (s: DrawingState) => DrawingState): void {
+    const { space: _old, ...rest } = this.state;
+    let next: DrawingState = space ? { ...rest, space } : rest;
+    if (patch) next = patch(next);
+    this.state = next;
+    this.emit();
+  }
+  /** Change layout data without an undo step (viewport zoom / pan, layout initialisation). */
+  patchQuiet(fn: (s: DrawingState) => DrawingState, markDirty = true): void {
+    const next = fn(this.state);
+    if (next === this.state) return;
+    this.state = next;
+    if (markDirty) this.dirty = true;
   }
   get layers(): readonly Layer[] {
     return this.state.layers;
@@ -135,7 +172,7 @@ export class Drawing {
   }
 
   entity(id: string): Entity | undefined {
-    return this.state.entities.find((e) => e.id === id);
+    return this.entities.find((e) => e.id === id);
   }
 
   subscribe(fn: DocListener): () => void {
@@ -149,7 +186,7 @@ export class Drawing {
 
   /** Apply a state transition as one undoable step. */
   transact(fn: (s: DrawingState) => DrawingState): void {
-    const next = fn(this.state);
+    const next = this.project(fn);
     if (next === this.state) return;
     this.undoStack.push(this.state);
     if (this.undoStack.length > this.maxUndo) this.undoStack.shift();
@@ -157,6 +194,23 @@ export class Drawing {
     this.state = next;
     this.dirty = true;
     this.emit();
+  }
+
+  /**
+   * Run a transition; in paper space the function sees the layout's paper entities as
+   * `entities` and its result is folded back into the layout (model space stays untouched).
+   */
+  private project(fn: (s: DrawingState) => DrawingState): DrawingState {
+    const cur = this.state;
+    const lay = paperSpaceLayout(cur);
+    if (!lay) return fn(cur);
+    const view = { ...cur, entities: paperEntities(lay) };
+    const out = fn(view);
+    if (out === view) return cur;
+    const base: DrawingState = { ...out, entities: cur.entities };
+    if (out.entities === view.entities) return base;
+    const target = layoutsOf(base).find((l) => l.name === lay.name) ?? lay;
+    return withLayout(base, applyPaperEntities(target, out.entities));
   }
 
   /** Replace the whole document without recording history (open / new). */
@@ -310,10 +364,13 @@ export class Drawing {
   extents(): Bounds | null {
     let b: Bounds | null = null;
     const hidden = new Set(this.state.layers.filter((l) => !l.visible).map((l) => l.name));
-    for (const e of this.state.entities) {
+    for (const e of this.entities) {
       if (hidden.has(e.layer)) continue;
       b = unionBounds(b, entityBounds(e, this.lookupBlock));
     }
+    // Paper space: the sheet counts as part of the extents (ZOOM Extents shows the whole sheet).
+    const lay = paperSpaceLayout(this.state);
+    if (lay) b = unionBounds(b, sheetBounds(lay));
     return b;
   }
 }

@@ -438,9 +438,7 @@ function boot(): void {
     ribbon.refresh();
     ed.log(`Workspace: ${ws === 'drafting' ? 'Drafting & Annotation' : 'ACADE & 2D Drafting'}.`);
   });
-  reg('ANNOSCALE', ['CANNOSCALE'], 'Annotation scale (annotative objects are not supported yet)', (ed) =>
-    ed.log('Annotative scaling is not supported yet: set text heights directly and scale dimensions with DIMSCALE.'),
-  );
+  // ANNOSCALE / CANNOSCALE are registered by tools/layouts.ts (Track E: annotative scaling).
   reg('COPYCLIP', [], 'Copy selected objects to the clipboard (Ctrl+C)', () => clipboard.copy());
   reg('CUTCLIP', [], 'Cut selected objects to the clipboard (Ctrl+X)', () => clipboard.cut());
   reg('PASTECLIP', [], 'Paste objects from the clipboard at the cursor (Ctrl+V)', () => clipboard.paste());

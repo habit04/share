@@ -33,8 +33,11 @@ import { registerSymbolBuilderCommands, type SymbolBuilderUi } from '../tools/sy
 import { registerUnitCommands } from '../electrical/wdm';
 import { registerPanelCommands } from '../tools/panel';
 import { trackFromPoints } from '../core/snap';
+// Track E: paper-space layouts (commands, controller, space switching).
+import { registerLayoutCommands } from '../tools/layouts';
+import type { SpaceRef } from '../core/layouts';
 
-export type EditorEvent = 'change' | 'selection' | 'tool' | 'view' | 'snap' | 'file' | 'log';
+export type EditorEvent = 'change' | 'selection' | 'tool' | 'view' | 'snap' | 'file' | 'log' | 'space';
 
 export interface CommandDef {
   name: string;
@@ -123,6 +126,7 @@ export class Editor {
     snap: new Set(),
     file: new Set(),
     log: new Set(),
+    space: new Set(),
   };
   private selReq: SelectionRequest | null = null;
   private dragStart: Point | null = null; // screen
@@ -155,6 +159,12 @@ export class Editor {
   /** File name to suggest in Save As (set by DWG import). */
   suggestedName: string | null = null;
   private gripDrag: { entity: Entity; index: number; start: Point } | null = null;
+  /** Mouse hooks of the layout controller (tools/layouts.ts): viewport activation by (double-)click. */
+  layoutInput: { doubleClick?(screen: Point): boolean; mouseDown?(screen: Point): boolean; hoverBlocked?(screen: Point): boolean } = {};
+  /** Active space ('space' event): undefined = Model tab, else the layout and the MSPACE viewport. */
+  get activeSpace(): SpaceRef | undefined {
+    return this.doc.space;
+  }
 
   constructor(canvas: HTMLCanvasElement) {
     this.viewport = new Viewport(canvas, this.doc);
@@ -516,6 +526,7 @@ export class Editor {
     registerSymbolBuilderCommands(this);
     registerUnitCommands(this);
     registerPanelCommands(this);
+    registerLayoutCommands(this);
   }
 
   /** Hook for keywords typed at a "Select objects:" prompt (ALL / Last / Previous); returns true when handled. */
@@ -1004,6 +1015,8 @@ export class Editor {
       }
     } else if (this.tool) {
       this.tool.onMove(world, this.makeContext());
+    } else if (this.layoutInput.hoverBlocked?.(s)) {
+      this.overlay.hover = null;
     } else {
       // rollover highlight
       const hit = pickEntity(this.viewport.toWorld(s), this.doc.entities, this.doc.lookupBlock, this.pickAperture(), this.hiddenLayers(), this.lockedLayers());
@@ -1027,6 +1040,7 @@ export class Editor {
       return;
     }
     if (ev.button !== 0) return;
+    if (!this.selReq && this.layoutInput.mouseDown?.(s)) return;
     const { world } = this.resolveCursor(s);
     if (this.tool && !this.selReq) {
       this.acceptPoint(world);
@@ -1107,6 +1121,7 @@ export class Editor {
       return;
     }
     if (ev.button !== 0 || this.tool) return;
+    if (this.layoutInput.doubleClick?.(this.screenFromEvent(ev))) return;
     const raw = this.viewport.toWorld(this.screenFromEvent(ev));
     const hit = pickEntity(raw, this.doc.entities, this.doc.lookupBlock, this.pickAperture(), this.hiddenLayers(), this.lockedLayers());
     if (!hit) return;

@@ -4,7 +4,8 @@ import type { Entity } from '../core/entities';
 import { gripPoints, entityBounds } from '../core/entities';
 import type { Drawing } from '../core/document';
 import type { SnapResult, TrackPath } from '../core/snap';
-import { drawEntity, renderSettings, type Transform } from './draw';
+import { drawEntity, renderSettings, annotationDisplay, colorDisplay, type Transform } from './draw';
+import { cannoscaleValue } from '../core/layouts';
 import { setTextStyles } from './hershey';
 import { textStylesOf } from '../io/encoding';
 
@@ -97,6 +98,13 @@ export class Viewport {
    * (Symbol Builder guides). Not part of the document; null for normal drawings.
    */
   underlay: ((ctx: CanvasRenderingContext2D, vp: Viewport) => void) | null = null;
+  /**
+   * Paper-space layouts (Track E, render/layouts.ts): when set, it paints the sheet, the
+   * floating viewports and the paper-space entities instead of the grid and model space.
+   */
+  layoutPainter: ((ctx: CanvasRenderingContext2D, vp: Viewport, ov: ViewportOverlay) => void) | null = null;
+  /** Screen rectangle ZOOM Extents / Window fit into (the active floating viewport); null = the whole canvas. */
+  fitRect: { x: number; y: number; w: number; h: number } | null = null;
   private raf = 0;
   private lastOverlay: ViewportOverlay | null = null;
   private dprQuery: { mq: MediaQueryList; handler: () => void } | null = null;
@@ -222,9 +230,12 @@ export class Viewport {
     }
     const bw = Math.max(b.max.x - b.min.x, 1e-3);
     const bh = Math.max(b.max.y - b.min.y, 1e-3);
-    const s = Math.min(this.width / (bw * (1 + margin * 2)), this.height / (bh * (1 + margin * 2)));
+    const r = this.fitRect ?? { x: 0, y: 0, w: this.width, h: this.height };
+    const s = Math.min(r.w / (bw * (1 + margin * 2)), r.h / (bh * (1 + margin * 2)));
     this.scale = Math.min(1e6, Math.max(1e-4, s));
     this.center = { x: (b.min.x + b.max.x) / 2, y: (b.min.y + b.max.y) / 2 };
+    // Fitting into a sub-rectangle: shift so the bounds' centre lands on the rectangle's centre.
+    if (this.fitRect) this.center = { x: this.center.x - (r.x + r.w / 2 - this.width / 2) / this.scale, y: this.center.y + (r.y + r.h / 2 - this.height / 2) / this.scale };
   }
 
   requestRender(overlay: ViewportOverlay): void {
@@ -243,7 +254,7 @@ export class Viewport {
     ctx.fillStyle = this.settings.background;
     ctx.fillRect(0, 0, this.width, this.height);
 
-    if (this.settings.gridVisible) this.drawGrid();
+    if (this.settings.gridVisible && !this.layoutPainter) this.drawGrid();
     if (this.underlay) {
       ctx.save();
       this.underlay(ctx, this);
@@ -256,6 +267,10 @@ export class Viewport {
     renderSettings.pdsize = header.pdsize;
     renderSettings.linetypes = header.linetypes;
     setTextStyles(textStylesOf(this.doc.snapshot));
+    // Model tab: annotative objects at 1 / CANNOSCALE; a layout painter sets its own (Track E).
+    colorDisplay.paper = !!this.layoutPainter;
+    annotationDisplay.factor = 1 / cannoscaleValue(header.cannoscale);
+    annotationDisplay.hide = false;
 
     const tf = this.transform;
     const layers = this.doc.layers;
@@ -263,7 +278,12 @@ export class Viewport {
     const lookup = this.doc.lookupBlock;
     const viewBounds = this.visibleBounds();
 
-    for (const e of this.doc.entities) {
+    if (this.layoutPainter) {
+      ctx.save();
+      this.layoutPainter(ctx, this, ov);
+      ctx.restore();
+    }
+    for (const e of this.layoutPainter ? [] : this.doc.entities) {
       if (hidden.has(e.layer)) continue;
       const selected = ov.selection.has(e.id);
       const hovered = ov.hover === e.id && !selected;

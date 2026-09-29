@@ -20,6 +20,7 @@ import * as g from '../core/geometry';
 import { aciToCss } from './palette';
 import { strokeText, hasStrokeFont, expandControlCodes } from './hershey';
 import { findLinetype, effectiveLinetype, dashArray, type Linetype } from '../core/linetypes';
+import { annotativeEntity } from '../core/layouts';
 
 export interface Transform {
   toScreen(p: Point): Point;
@@ -45,15 +46,29 @@ export type ImageLoader = (path: string) => Promise<ImageBitmap | null>;
 /** CSS colour of a 0xRRGGBB true colour. */
 export const trueColorCss = (c: number): string => `#${(c & 0xffffff).toString(16).padStart(6, '0')}`;
 
+/** Drawing on white paper (layout views, Track E): ACI 7 shows black there, as in AutoCAD. */
+export const colorDisplay = { paper: false };
+const aciDisplay = (i: number): string => (colorDisplay.paper && i === 7 ? '#000000' : aciToCss(i));
+
 export function resolveColor(e: Entity, layers: readonly Layer[]): string {
   if (e.trueColor !== undefined) return trueColorCss(e.trueColor);
-  if (e.color !== 'ByLayer') return aciToCss(e.color);
+  if (e.color !== 'ByLayer') return aciDisplay(e.color);
   const layer = layers.find((l) => l.name === e.layer);
-  return aciToCss(layer?.color ?? 7);
+  return aciDisplay(layer?.color ?? 7);
 }
 
-/** LWDISPLAY: when off (AutoCAD default) everything draws 1 px; when on, widths are fixed pixels per mm. */
-export const lineweightDisplay = { enabled: false };
+/**
+ * LWDISPLAY: when off (AutoCAD default) everything draws 1 px; when on, widths are fixed pixels per mm.
+ * Layout views set `pxPerMm` so lineweights show at their size on the paper (render/layouts.ts).
+ */
+export const lineweightDisplay: { enabled: boolean; pxPerMm?: number } = { enabled: false };
+
+/**
+ * Annotative display (Track E, core/layouts.ts): factor applied to entities flagged `annotative`
+ * (1 / CANNOSCALE in model space, 1 / viewport scale in a layout viewport); `hide` drops them
+ * (ANNOALLVISIBLE off in a viewport whose scale is not the annotation scale).
+ */
+export const annotationDisplay: { factor: number; hide: boolean } = { factor: 1, hide: false };
 
 /**
  * Drawing-wide render variables the viewport copies from the document header
@@ -105,6 +120,7 @@ export function resolveLineWidth(e: Entity, layers: readonly Layer[], _tf: Trans
   if (!lineweightDisplay.enabled) return 1;
   const layer = layers.find((l) => l.name === e.layer);
   const mm = e.lineWeight !== undefined && e.lineWeight >= 0 ? e.lineWeight : (layer?.lineWeight ?? 0.25);
+  if (lineweightDisplay.pxPerMm) return Math.max(1, mm * lineweightDisplay.pxPerMm);
   return Math.max(1, Math.round((mm / 0.25) * 10) / 10);
 }
 
@@ -126,6 +142,11 @@ export function drawEntity(
   lookup: BlockLookup,
   style: DrawStyle = {},
 ): void {
+  // Annotative objects (Track E hook, see annotationDisplay).
+  if (e.annotative) {
+    if (annotationDisplay.hide) return;
+    if (annotationDisplay.factor !== 1) e = annotativeEntity(e, annotationDisplay.factor);
+  }
   const color = style.strokeOverride ?? resolveColor(e, layers);
   const width = style.lineWidthOverride ?? resolveLineWidth(e, layers, tf);
   ctx.save();
