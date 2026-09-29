@@ -34,7 +34,7 @@ export const FIELD_EMPTY = '----';
 /** The \AcVar names this module evaluates (FIELD command list). */
 export const ACVAR_FIELDS = ['Date', 'CreateDate', 'SaveDate', 'PlotDate', 'Filename', 'Title', 'Subject', 'Author', 'Keywords', 'Comments', 'LastSavedBy', 'Login'] as const;
 
-const FIELD_RE = /%<\\(Ac[A-Za-z]+)(?:\.[\d.]+)?\s+((?:(?!%<|>%)[\s\S])*?)>%/g;
+const FIELD_RE = /%<\\([A-Za-z_]+)(?:\.[\d.]+)?\s+((?:(?!%<|>%)[\s\S])*?)>%/g;
 
 /** True when the text holds at least one field expression. */
 export function hasFields(text: string): boolean {

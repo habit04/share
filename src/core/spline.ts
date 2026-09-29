@@ -101,14 +101,16 @@ export function nurbsPoint(c: NurbsCurve, u: number): Point {
  * Tessellate a curve: every non-empty knot span is sampled `perSpan` times
  * (degree-1 curves keep their control polygon).
  */
-export function nurbsPoints(c: NurbsCurve, perSpan = 12, maxPoints = 4000): Point[] {
+export function nurbsPoints(c: NurbsCurve, perSpan = 16, maxPoints = 4000): Point[] {
   if (!isValidNurbs(c)) return [...c.controlPoints];
   const n = c.controlPoints.length - 1;
   const p = c.degree;
   const U = c.knots;
   const spans: Array<[number, number]> = [];
   for (let i = p; i <= n; i += 1) if (U[i + 1]! - U[i]! > 1e-12) spans.push([U[i]!, U[i + 1]!]);
-  const steps = p === 1 ? 1 : Math.max(2, Math.min(perSpan, Math.floor(maxPoints / Math.max(1, spans.length))));
+  // At least ~64 samples over the whole curve, perSpan per span otherwise, within maxPoints.
+  const want = Math.max(perSpan, Math.ceil(64 / Math.max(1, spans.length)));
+  const steps = p === 1 ? 1 : Math.max(2, Math.min(want, Math.floor(maxPoints / Math.max(1, spans.length))));
   const out: Point[] = [];
   for (const [a, b] of spans) {
     for (let k = 0; k < steps; k += 1) out.push(nurbsPoint(c, a + ((b - a) * k) / steps));

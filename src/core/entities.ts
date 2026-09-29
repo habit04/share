@@ -693,7 +693,12 @@ export function imageParts(e: ImageEntity): Entity[] {
   const label = imageLabel(e);
   let th = Math.min(H * 0.08, (W * 0.9) / Math.max(1, label.length * 0.9));
   if (!(th > 0)) th = 0.1;
-  const at = g.add(frame[0]!, g.rotate({ x: th * 0.5, y: th * 0.5 }, rot));
+  // Label in the lower-left corner of the frame (in the image's own orientation).
+  const ud = { x: Math.cos(rot), y: Math.sin(rot) };
+  const vd = g.normalize(e.v);
+  let corner = frame[0]!;
+  for (const q of frame) if (g.dot(q, vd) * 1e6 + g.dot(q, ud) < g.dot(corner, vd) * 1e6 + g.dot(corner, ud) - 1e-9) corner = q;
+  const at = g.add(corner, g.rotate({ x: th * 0.5, y: th * 0.5 }, rot));
   out.push({ ...style, id: `${e.id}:n`, type: 'text', position: at, text: label, height: th, rotation: rot, align: 'left' });
   imageCache.set(e, out);
   return out;
@@ -1127,7 +1132,6 @@ export function entityBounds(e: Entity, lookup: BlockLookup): Bounds | null {
     case 'image': {
       let b: Bounds | null = null;
       for (const p of compoundParts(e)) b = g.unionBounds(b, entityBounds(p, lookup));
-      if (e.type === 'image') b = g.unionBounds(b, g.boundsOfPoints(imageCorners(e)));
       return b;
     }
   }

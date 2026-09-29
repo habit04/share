@@ -299,7 +299,7 @@ export function parseMText(raw: string, baseHeight: number): MTextParagraph[] {
         break;
       }
       case 'U': {
-        const m = /^\+([0-9A-Fa-f]{4,6})/.exec(raw.slice(i));
+        const m = /^\+([0-9A-Fa-f]{4})/.exec(raw.slice(i));
         if (m) {
           buf += String.fromCodePoint(parseInt(m[1]!, 16));
           i += m[0].length;

@@ -1021,7 +1021,9 @@ function tokenize(text: string): Pair[] {
   for (let i = 0; i + 1 < lines.length; i += 2) {
     const code = parseInt(lines[i]!.trim(), 10);
     if (Number.isNaN(code)) continue;
-    pairs.push({ code, value: lines[i + 1]!.replace(/\s+$/, '') });
+    // Text chunks (1 / 3, MLEADER 304) keep trailing spaces: a 250-character MTEXT chunk may end in one.
+    const raw = lines[i + 1]!;
+    pairs.push({ code, value: code === 1 || code === 3 || code === 304 ? raw : raw.replace(/\s+$/, '') });
   }
   return pairs;
 }
