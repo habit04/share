@@ -8,10 +8,23 @@ export interface AboutLink {
   label: string;
   url: string;
 }
+/** The program's own licence and the third-party notices, linked from Help > About. */
+export interface AboutLicense {
+  /** Display name, e.g. "GNU GPL v3". */
+  name: string;
+  /** SPDX identifier (matches the "license" field of package.json). */
+  spdx: string;
+  /** The LICENSE file in the repository. */
+  url: string;
+  noticesLabel: string;
+  /** THIRD-PARTY-NOTICES.md in the repository. */
+  noticesUrl: string;
+}
 export interface AboutInfo {
   author: { name: string; title: string; bio: string; location: string; links: AboutLink[] };
   donate: { cashtag: string; message: string };
   project: { homepage: string; issues: string; releases: string; license: string };
+  license: AboutLicense;
 }
 
 const info = raw as AboutInfo;
@@ -44,4 +57,36 @@ export function safeAboutUrl(url: string): string | null {
 
 export function authorLinks(): AboutLink[] {
   return info.author.links.filter((l) => l.label && safeAboutUrl(l.url));
+}
+
+/**
+ * The licence link and the third-party notices link for Help > About. Each is null when its URL
+ * is not an allowed https link (the licence name is then shown as plain text, the notices link
+ * is left out).
+ */
+export function licenseLinks(): { license: AboutLink | null; notices: AboutLink | null } {
+  const l = info.license;
+  const licenseUrl = safeAboutUrl(l.url);
+  const noticesUrl = safeAboutUrl(l.noticesUrl);
+  return {
+    license: licenseUrl ? { label: l.name, url: licenseUrl } : null,
+    notices: noticesUrl ? { label: l.noticesLabel || 'Third-party notices', url: noticesUrl } : null,
+  };
+}
+
+const HTML_ESCAPES: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+function escHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => HTML_ESCAPES[c]!);
+}
+
+/**
+ * "Licensed under the GNU GPL v3 · Third-party notices" as HTML for Help > About. The links carry
+ * their target in `data-about-url`; the dialog opens them through the same allowlisted path as the
+ * other About links (window.jcad.openExternal in the desktop app) instead of navigating the window.
+ */
+export function licenseLineHtml(): string {
+  const { license, notices } = licenseLinks();
+  const link = (l: AboutLink) => `<a href="${escHtml(l.url)}" data-about-url="${escHtml(l.url)}" rel="noopener">${escHtml(l.label)}</a>`;
+  const name = license ? link(license) : escHtml(info.license.name);
+  return `Licensed under the ${name}${notices ? ` · ${link(notices)}` : ''}`;
 }

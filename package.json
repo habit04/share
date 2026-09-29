@@ -3,6 +3,7 @@
   "version": "0.3.4",
   "description": "2D electrical schematic drafting application (desktop)",
   "author": "JCad Electrical contributors",
+  "license": "GPL-3.0-only",
   "private": true,
   "main": "electron/main.cjs",
   "type": "module",

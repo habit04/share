@@ -1,7 +1,7 @@
 import type { Editor, CommandDef } from '../app/editor';
 import { modal, button, tabbedDialog } from './dialogkit';
 import { esc } from './dom';
-import { aboutInfo, donateUrl, authorLinks, safeAboutUrl } from '../app/about';
+import { aboutInfo, donateUrl, authorLinks, safeAboutUrl, licenseLineHtml } from '../app/about';
 
 /** Version compiled into the renderer (package.json version via Vite define). */
 export const APP_VERSION_LABEL: string = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : 'dev';
@@ -116,7 +116,14 @@ export function helpDialog(editor: Editor, query = ''): void {
     <p class="help-update-row"></p>
     <div class="about-author"></div>
     <div class="about-donate"></div>
-    <p class="dlg-note about-license">${esc(ab.project.license)}</p>`;
+    <p class="dlg-note about-license">${licenseLineHtml()}</p>`;
+  for (const a of about.querySelectorAll<HTMLAnchorElement>('.about-license a[data-about-url]')) {
+    a.style.color = 'var(--accent)';
+    a.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      openLink(a.dataset.aboutUrl ?? '');
+    });
+  }
   const authorEl = about.querySelector('.about-author') as HTMLElement;
   if (ab.author.name || ab.author.bio) {
     const head = document.createElement('h4');

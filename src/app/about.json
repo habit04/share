@@ -24,5 +24,12 @@
     "issues": "https://github.com/habit04/share/issues",
     "releases": "https://github.com/habit04/share/releases",
     "license": "GPL-3.0 (LibreDWG is GPL-3.0; all artwork and symbol geometry are original)"
+  },
+  "license": {
+    "name": "GNU GPL v3",
+    "spdx": "GPL-3.0-only",
+    "url": "https://github.com/habit04/share/blob/claude/autocad-program-feasibility-53w7j7/LICENSE",
+    "noticesLabel": "Third-party notices",
+    "noticesUrl": "https://github.com/habit04/share/blob/claude/autocad-program-feasibility-53w7j7/THIRD-PARTY-NOTICES.md"
   }
 }
