@@ -31,6 +31,7 @@ import { createSymbolBuilderUi } from './ui/symbol-builder';
 import { symbolBuilderOf } from './tools/symbol-builder';
 import { userLibrary, bridgeUserLibraryStore, localUserLibraryStore, type UserLibraryBridge } from './electrical/userlib';
 import { packRegistry, bridgePackStore, localPackStore, type PacksBridge } from './electrical/packs';
+import { decodeDxfBytes } from './io/encoding';
 
 declare global {
   interface Window {
@@ -157,7 +158,7 @@ function browserFileBridge(): FileBridge {
   return {
     openDxf: async () => {
       const f = await pickBrowserFile('.dxf');
-      return f ? { path: f.name, text: await f.text() } : null;
+      return f ? { path: f.name, text: decodeDxfBytes(new Uint8Array(await f.arrayBuffer())).text } : null;
     },
     openDrawing: async () => {
       const f = await pickBrowserFile('.dxf,.dwg');
@@ -170,7 +171,7 @@ function browserFileBridge(): FileBridge {
           throw new Error(describeDwgError(err));
         }
       }
-      return { path: f.name, kind: 'dxf', text: await f.text() };
+      return { path: f.name, kind: 'dxf', text: decodeDxfBytes(new Uint8Array(await f.arrayBuffer())).text };
     },
     saveDxf: async (path, text, suggestName) => {
       const name = path ?? suggestName;
