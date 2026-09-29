@@ -29,8 +29,21 @@ export function registerSymbolRole(block: string, role: SymbolRole | undefined):
 /** The registered role of a block, if any. */
 export const symbolRole = (block: string): SymbolRole | undefined => roles.get(block);
 
-/** Role by the built-in name patterns (the star-delta / IEC_KM_MAIN3 children are in CHILD_RE). */
-const builtinRole = (block: string): SymbolRole | undefined => (CHILD_RE.test(block) ? 'child' : COIL_RE.test(block) && !/_N[OC]$/.test(block) ? 'coil' : undefined);
+/**
+ * Name of the horizontal symbol a vertical twin is drawn from: VCR1_NO -> HCR1_NO (JIC V* names),
+ * IEC_K_NO_V -> IEC_K_NO (the _V suffix); null for any other name.
+ */
+export function horizontalTwinName(block: string): string | null {
+  if (/^V[A-Z]/.test(block)) return `H${block.slice(1)}`;
+  if (/_V$/.test(block)) return block.slice(0, -2);
+  return null;
+}
+const patternRole = (block: string): SymbolRole | undefined => (CHILD_RE.test(block) ? 'child' : COIL_RE.test(block) && !/_N[OC]$/.test(block) ? 'coil' : undefined);
+/** Role by the built-in name patterns (the star-delta / IEC_KM_MAIN3 children are in CHILD_RE); vertical twins take their horizontal symbol's role. */
+const builtinRole = (block: string): SymbolRole | undefined => {
+  const h = horizontalTwinName(block);
+  return h ? (patternRole(h) ?? patternRole(block)) : patternRole(block);
+};
 /** Role carried by the insert itself (ACADE WDTYPE attribute), used when neither the library nor the name knows the block. */
 const wdtypeRole = (e: InsertEntity): SymbolRole | undefined => (e.attributes.WDTYPE === 'COIL' ? 'coil' : e.attributes.WDTYPE === 'CONTACT' ? 'child' : undefined);
 const insertRole = (e: InsertEntity): SymbolRole | undefined => roles.get(e.block) ?? builtinRole(e.block) ?? wdtypeRole(e);
@@ -119,5 +132,14 @@ export function toggleVariant(block: string, exists: (name: string) => boolean):
     HGS12_NO: 'HGS11_NC',
   };
   const candidate = explicit[block] ?? (block.endsWith('_NO') ? block.replace(/_NO$/, '_NC') : block.endsWith('_NC') ? block.replace(/_NC$/, '_NO') : null);
-  return candidate && exists(candidate) ? candidate : null;
+  if (candidate && exists(candidate)) return candidate;
+  // A vertical twin toggles to the vertical twin of its horizontal symbol's variant (VPB11_NO -> VPB12_NC).
+  if (/^V[A-Z]/.test(block)) {
+    const h = explicit[`H${block.slice(1)}`];
+    if (h && exists(`V${h.slice(1)}`)) return `V${h.slice(1)}`;
+  } else if (/_N[OC]_V$/.test(block)) {
+    const v = block.endsWith('_NO_V') ? block.replace(/_NO_V$/, '_NC_V') : block.replace(/_NC_V$/, '_NO_V');
+    if (v !== block && exists(v)) return v;
+  }
+  return null;
 }

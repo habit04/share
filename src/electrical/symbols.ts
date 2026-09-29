@@ -11,6 +11,7 @@ import { withAcadeAttributes } from './attributes';
 import { JIC_CONTROL_TAG_PREFIXES } from './symbols-jic-control';
 import { POWER_FLUID_TAG_PREFIXES } from './symbols-power-fluid';
 import { IEC_EXTENDED_TAG_PREFIXES } from './iec-extended';
+import { verticalSymbol, type VerticalSpec } from './symbol-kit';
 
 const HALF = 0.375; // half width of an inline symbol
 const GAP = 0.125; // half of the contact gap
@@ -523,6 +524,11 @@ export function unregisterTagPrefix(pattern: RegExp): void {
 /** Default component tag prefix by family (AutoCAD Electrical style e.g. PB, CR, LT). */
 export function tagPrefix(blockName: string): string {
   for (const [re, p] of extraPrefixes) if (re.test(blockName)) return p;
+  // Vertical JIC twins (VPB11_NO, VCR1 ...) share the family of their horizontal H* symbol.
+  if (/^V[A-Z]/.test(blockName)) {
+    const h = tagPrefix(`H${blockName.slice(1)}`);
+    if (h !== 'DEV') return h;
+  }
   const map: Array<[RegExp, string]> = [
     [/^HPB/, 'PB'],
     [/^HFT/, 'FTS'],
@@ -607,3 +613,117 @@ export const ALL_SYMBOLS: BlockDef[] = [...SYMBOL_CATEGORIES.flatMap((c) => c.sy
 export function findSymbol(name: string): BlockDef | undefined {
   return ALL_SYMBOLS.find((s) => s.name === name);
 }
+
+// Curated vertical variants ----------------------------------------------
+// Hand-drawn V* twins of the most used JIC symbols (AutoCAD Electrical ships
+// VPB11 next to HPB11 and so on). They connect at (0, +-0.375), draw the
+// actuator to the left of the wire and keep TAG1 / DESC1-3 to the right; the
+// pin defaults, family and WDTYPE are those of the horizontal twin. They are
+// not listed in the icon menu: the Vertical orientation radio picks them.
+const S = HALF;
+const G = GAP;
+/** Vertical wire stubs from the connection points to the body at y = +-b. */
+const vst = (b: number): Entity[] => [L(0, S, 0, b), L(0, -b, 0, -S)];
+/** Switch terminals (open circles) on the wire. */
+const vterm = (): Entity[] => [C(0, G, 0.03), C(0, -G, 0.03)];
+/** Relay contact plates across the wire. */
+const vplates = (): Entity[] => [L(-G, G, G, G), L(-G, -G, G, -G)];
+/** The NC diagonal through the plates. */
+const vslash = (): Entity => L(0.16, 0.175, -0.16, -0.175);
+/** Normally open switch blade: from the upper terminal down and to the left. */
+const vbladeNO = (): Entity => L(0, G, -0.13, -0.165);
+/** Normally closed switch blade: from the upper terminal under the lower one. */
+const vbladeNC = (): Entity => L(0, G, 0.08, -0.205);
+/** Pilot-light lens with the X. */
+const vlens = (): Entity[] => [C(0, 0, 0.125), L(-0.088, -0.088, 0.088, 0.088), L(-0.088, 0.088, 0.088, -0.088)];
+/** Timer arc: on-delay cup opening away from the contact, off-delay cup opening toward it. */
+const varcOn = (): Entity => A(-0.3, 0, 0.1, 270, 90);
+const varcOff = (): Entity => A(-0.2, 0, 0.1, 90, 270);
+
+const VERTICAL_SPECS: Array<[string, VerticalSpec]> = [
+  // push buttons
+  ['HPB11_NO', { name: 'VPB11_NO', entities: [...vst(G), ...vterm(), L(-0.09, 0.185, -0.09, -0.185), L(-0.09, 0, -0.2, 0), L(-0.2, 0.125, -0.2, -0.125)] }],
+  ['HPB12_NC', { name: 'VPB12_NC', entities: [...vst(G), ...vterm(), L(0.06, 0.185, 0.06, -0.185), L(0.06, 0, -0.2, 0), L(-0.2, 0.125, -0.2, -0.125)] }],
+  ['HPB13_NC', { name: 'VPB13_NC', entities: [...vst(G), ...vterm(), L(0.06, 0.185, 0.06, -0.185), L(0.06, 0, -0.16, 0), A(-0.16, 0, 0.12, 90, 270), L(-0.16, 0.12, -0.16, -0.12)] }],
+  // selector switches
+  ['HSS11', { name: 'VSS11', entities: [...vst(G), ...vterm(), L(0, G, -0.15, -0.105), L(-0.24, 0, -0.08, 0), L(-0.24, 0.06, -0.24, -0.06)] }],
+  [
+    'HSS12',
+    {
+      name: 'VSS12',
+      entities: [...vst(G), ...vterm(), C(-0.22, 0, 0.03), L(0, G, -0.1, -0.13), L(-0.32, 0, -0.25, 0), L(-0.32, 0.1, -0.32, -0.1), T(-0.24, 0.25, 'H', 0.06), T(-0.4, -0.03, 'O', 0.06), T(-0.24, -0.31, 'A', 0.06)],
+    },
+  ],
+  // limit switches
+  ['HLS11_NO', { name: 'VLS11_NO', entities: [...vst(G), ...vterm(), L(0, G, -0.14, -0.175), L(-0.14, -0.175, -0.22, -0.245)] }],
+  ['HLS12_NC', { name: 'VLS12_NC', entities: [...vst(G), ...vterm(), vbladeNC(), L(0.08, -0.205, -0.04, -0.305)] }],
+  // pressure / temperature / flow / level (float) switches
+  ['HPS11_NO', { name: 'VPS11_NO', entities: [...vst(G), ...vterm(), vbladeNO(), A(-0.22, -0.215, 0.06, 270, 90), L(-0.22, -0.155, -0.22, -0.275)] }],
+  ['HPS12_NC', { name: 'VPS12_NC', entities: [...vst(G), ...vterm(), vbladeNC(), A(0.18, -0.245, 0.06, 90, 270), L(0.18, -0.185, 0.18, -0.305)] }],
+  ['HTS11_NO', { name: 'VTS11_NO', entities: [...vst(G), ...vterm(), vbladeNO(), P([[-0.2, -0.145], [-0.2, -0.195], [-0.3, -0.195], [-0.3, -0.245], [-0.2, -0.245], [-0.2, -0.295]])] }],
+  ['HTS12_NC', { name: 'VTS12_NC', entities: [...vst(G), ...vterm(), vbladeNC(), P([[0.18, -0.175], [0.18, -0.225], [0.28, -0.225], [0.28, -0.275], [0.18, -0.275], [0.18, -0.325]])] }],
+  ['HFL11_NO', { name: 'VFL11_NO', entities: [...vst(G), ...vterm(), vbladeNO(), P([[-0.26, -0.105], [-0.2, -0.215], [-0.26, -0.325]]), L(-0.2, -0.215, -0.3, -0.215)] }],
+  ['HFL12_NC', { name: 'VFL12_NC', entities: [...vst(G), ...vterm(), vbladeNC(), P([[0.2, -0.135], [0.26, -0.245], [0.2, -0.355]]), L(0.26, -0.245, 0.16, -0.245)] }],
+  ['HFS11_NO', { name: 'VFS11_NO', entities: [...vst(G), ...vterm(), vbladeNO(), C(-0.2, -0.215, 0.06)] }],
+  ['HFS12_NC', { name: 'VFS12_NC', entities: [...vst(G), ...vterm(), vbladeNC(), C(0.16, -0.245, 0.06)] }],
+  // relay coils and contacts
+  ['HCR1', { name: 'VCR1', entities: [...vst(0.125), C(0, 0, 0.125)] }],
+  ['HCR1_NO', { name: 'VCR1_NO', entities: [...vst(G), ...vplates()] }],
+  ['HCR1_NC', { name: 'VCR1_NC', entities: [...vst(G), ...vplates(), vslash()] }],
+  // timers
+  ['HTD1', { name: 'VTD1', entities: [...vst(0.125), C(0, 0, 0.125), T(0, -0.035, 'TR', 0.08)] }],
+  ['HTD2', { name: 'VTD2', entities: [...vst(0.125), C(0, 0, 0.125), T(0, -0.035, 'TO', 0.08)] }],
+  ['HTD1_NO', { name: 'VTD1_NO', entities: [...vst(G), ...vplates(), varcOn()] }],
+  ['HTD1_NC', { name: 'VTD1_NC', entities: [...vst(G), ...vplates(), vslash(), varcOn()] }],
+  ['HTD2_NO', { name: 'VTD2_NO', entities: [...vst(G), ...vplates(), varcOff()] }],
+  ['HTD2_NC', { name: 'VTD2_NC', entities: [...vst(G), ...vplates(), vslash(), varcOff()] }],
+  // motor control
+  ['HKM1', { name: 'VKM1', entities: [...vst(0.125), C(0, 0, 0.125), T(0, -0.04, 'M', 0.09)] }],
+  ['HKM1_NO', { name: 'VKM1_NO', entities: [...vst(G), ...vplates(), T(-0.22, -0.035, 'M', 0.07)] }],
+  ['HKM1_NC', { name: 'VKM1_NC', entities: [...vst(G), ...vplates(), vslash(), T(-0.22, 0.04, 'M', 0.07)] }],
+  ['HOL1', { name: 'VOL1', entities: [...vst(0.12), P([[0, 0.12], [-0.1, 0.12], [-0.1, 0.04], [0.1, 0.04], [0.1, -0.04], [-0.1, -0.04], [-0.1, -0.12], [0, -0.12]])] }],
+  ['HOL1_NC', { name: 'VOL1_NC', entities: [...vst(G), ...vplates(), vslash(), T(-0.24, 0.04, 'OL', 0.06)] }],
+  ['HMO1', { name: 'VMO1', entities: [...vst(0.19), C(0, 0, 0.19), T(0, -0.06, 'M', 0.14)] }],
+  ['HMO2', { name: 'VMO2', entities: [...vst(0.19), C(0, 0, 0.19), T(0, -0.02, 'M', 0.11), T(0, -0.14, '1~', 0.06)] }],
+  ['HSOL1', { name: 'VSOL1', entities: [...vst(0.16), A(0, 0.08, 0.08, 90, 270), A(0, -0.08, 0.08, 90, 270)] }],
+  ['HSV1', { name: 'VSV1', entities: [...vst(0.16), A(0, 0.08, 0.08, 90, 270), A(0, -0.08, 0.08, 90, 270), L(0, 0, 0.14, 0), P([[0.14, 0.12], [0.14, -0.12], [0.28, 0.12], [0.28, -0.12]], true)] }],
+  // protection, disconnects
+  ['HFU1', { name: 'VFU1', entities: [...vst(0.15), P([[-0.06, 0.15], [0.06, 0.15], [0.06, -0.15], [-0.06, -0.15]], true), L(0, 0.15, 0, -0.15)] }],
+  ['HCB1', { name: 'VCB1', entities: [...vst(G), ...vterm(), A(0.05, 0, 0.135, 110, 250)] }],
+  ['HDS1', { name: 'VDS1', entities: [...vst(G), ...vterm(), L(0, G, -0.16, -0.165)] }],
+  // terminals, pilot lights
+  ['HT0001', { name: 'VT0001', entities: [...vst(0.05), C(0, 0, 0.05)], attrX: 0.1 }],
+  ['HLT1R', { name: 'VLT1R', entities: [...vst(0.125), ...vlens(), T(-0.22, 0.1, 'R', 0.07)] }],
+  ['HLT1G', { name: 'VLT1G', entities: [...vst(0.125), ...vlens(), T(-0.22, 0.1, 'G', 0.07)] }],
+  ['HLT1A', { name: 'VLT1A', entities: [...vst(0.125), ...vlens(), T(-0.22, 0.1, 'A', 0.07)] }],
+  // single-phase control transformer: primary H1-H2 on the wire through the base point, secondary X1-X2 on a second column
+  [
+    'HXF1',
+    {
+      name: 'VXF1',
+      entities: [
+        L(0, S, 0, 0.2),
+        ...[0.15, 0.05, -0.05, -0.15].map((y) => A(0, y, 0.05, 270, 90)),
+        L(0, -0.2, 0, -S),
+        L(0.105, 0.2, 0.105, -0.2),
+        L(0.145, 0.2, 0.145, -0.2),
+        L(0.25, S, 0.25, 0.2),
+        ...[0.15, 0.05, -0.05, -0.15].map((y) => A(0.25, y, 0.05, 90, 270)),
+        L(0.25, -0.2, 0.25, -S),
+      ],
+      pins: [
+        { x: 0, dir: 2, def: 'H1' },
+        { x: 0.25, dir: 2, def: 'X1' },
+        { x: 0, dir: 8, def: 'H2' },
+        { x: 0.25, dir: 8, def: 'X2' },
+      ],
+    },
+  ],
+];
+
+/** Curated vertical JIC symbols (VPB11_NO ...), resolved by the icon menu's Vertical orientation. */
+export const JIC_VERTICAL_SYMBOLS: BlockDef[] = VERTICAL_SPECS.map(([h, spec]) => {
+  const twin = findSymbol(h);
+  if (!twin) throw new Error(`vertical twin ${spec.name}: no ${h}`);
+  return verticalSymbol(twin, tagPrefix(h), spec);
+});

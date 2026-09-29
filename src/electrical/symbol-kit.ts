@@ -8,7 +8,7 @@
  */
 import type { BlockDef, Entity, AttributeDef } from '../core/entities';
 import type { Point } from '../core/geometry';
-import { withAcadeAttributes } from './attributes';
+import { withAcadeAttributes, acadeAttributes } from './attributes';
 
 export const HALF = 0.375; // half width of an inline symbol
 export const GAP = 0.125; // half of the contact gap
@@ -78,3 +78,86 @@ export interface SymbolCategory {
 }
 
 export const category = (name: string, symbols: BlockDef[]): SymbolCategory => ({ name, symbols });
+
+// ---------------------------------------------------------------- curated vertical variants
+
+/** A wire connection of a curated vertical symbol: top (2) or bottom (8) at column `x`. */
+export interface VerticalPin {
+  x: number;
+  dir: 2 | 8;
+  /** Default pin number; undefined takes the horizontal twin's pin default in pin order. */
+  def?: string;
+}
+
+export interface VerticalSpec {
+  /** Block name of the vertical variant (VPB11_NO for HPB11_NO, IEC_S_PB_NO_V for IEC_S_PB_NO). */
+  name: string;
+  /** Vertical geometry: wire stubs end at y = +-HALF on the connection columns, actuators drawn to the left. */
+  entities: Entity[];
+  /** Explicit connections (default: one on top and one at the bottom of x = 0). */
+  pins?: VerticalPin[];
+  /** x of the attribute column (default: right of the geometry + 0.1). */
+  attrX?: number;
+}
+
+/** Right-most x of the geometry (text estimated from its length). */
+export function geometryMaxX(entities: readonly Entity[]): number {
+  let max = 0;
+  for (const e of entities) {
+    if (e.type === 'line') max = Math.max(max, e.a.x, e.b.x);
+    else if (e.type === 'circle' || e.type === 'arc') max = Math.max(max, e.center.x + e.radius);
+    else if (e.type === 'polyline') for (const p of e.points) max = Math.max(max, p.x);
+    else if (e.type === 'text') max = Math.max(max, e.position.x + (e.text.length * e.height * 0.9) / 2);
+  }
+  return max;
+}
+
+const PIN_TAG = /^X[1248]TERM\d+$/;
+
+/**
+ * A curated vertical twin of a built-in horizontal symbol (the AutoCAD
+ * Electrical V* convention): hand-drawn geometry that connects at its top and
+ * bottom, TAG1 / DESC1-3 (or TERM01) left-justified to the right of the
+ * symbol, and the family (tag prefix), WDTYPE, data defaults and pin defaults
+ * of the horizontal twin, with the pins numbered top to bottom.
+ */
+export function verticalSymbol(horizontal: BlockDef, family: string, spec: VerticalSpec): BlockDef {
+  const x = spec.attrX ?? Math.max(0.15, Math.round((geometryMaxX(spec.entities) + 0.1) * 100) / 100);
+  const pinsH = horizontal.attributes.filter((a) => PIN_TAG.test(a.tag)).sort((a, b) => a.tag.slice(6).localeCompare(b.tag.slice(6)));
+  const pins = (spec.pins ?? [
+    { x: 0, dir: 2 as const },
+    { x: 0, dir: 8 as const },
+  ]).map((p) => ({ ...p, y: p.dir === 2 ? HALF : -HALF }));
+  pins.sort((a, b) => b.y - a.y || a.x - b.x);
+  const pinAttrs: AttributeDef[] = pins.map((p, i) => ({
+    tag: `X${p.dir}TERM${String(i + 1).padStart(2, '0')}`,
+    prompt: `Pin ${i + 1}`,
+    default: p.def ?? pinsH[i]?.default ?? String(i + 1),
+    position: { x: p.x, y: p.y },
+    height: 0.06,
+    align: 'center',
+    invisible: true,
+  }));
+  const rows: Record<string, number> = { TAG1: 0.06, DESC1: -0.12, TERM01: -0.04 };
+  const visible: AttributeDef[] = [];
+  for (const a of horizontal.attributes) {
+    const y = rows[a.tag];
+    if (y === undefined || a.invisible) continue;
+    const { rotation: _r, ...rest } = a;
+    void _r;
+    visible.push({ ...rest, position: { x, y }, align: 'left' });
+  }
+  // Data defaults of the twin (MFG, CAT, WDTYPE ...) are kept; DESC2 / DESC3 are rebuilt under DESC1.
+  const data = horizontal.attributes.filter((a) => a.invisible && !PIN_TAG.test(a.tag) && a.tag !== 'DESC2' && a.tag !== 'DESC3');
+  const wdtype = horizontal.attributes.find((a) => a.tag === 'WDTYPE')?.default;
+  const b: BlockDef = {
+    name: spec.name,
+    ...(horizontal.description ? { description: `${horizontal.description} (vertical)` } : {}),
+    basePoint: { x: 0, y: 0 },
+    entities: spec.entities,
+    attributes: [...visible, ...pinAttrs, ...data],
+  };
+  // The pins above are the connections (acadeAttributes would only detect the ones on x = 0).
+  const extra = acadeAttributes(b, family, wdtype || undefined).filter((a) => !PIN_TAG.test(a.tag));
+  return { ...b, attributes: [...b.attributes, ...extra] };
+}
