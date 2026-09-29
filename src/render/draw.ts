@@ -484,9 +484,21 @@ function drawGeometry(
       } else drawParts(ctx, [...pieces, ...lines], tf, layers, lookup, style);
       break;
     }
-    case 'dimension':
-      for (const part of dimensionParts(e)) drawGeometry(ctx, part, tf, layers, lookup, style);
+    case 'dimension': {
+      // DIMCLRD / DIMCLRE / DIMCLRT: parts drawn in a style colour get it; the rest keep the
+      // dimension's own colour (true colour included) already set on the context.
+      const ownStroke = ctx.strokeStyle;
+      const ownFill = ctx.fillStyle;
+      for (const part of dimensionParts(e)) {
+        const own = style.strokeOverride !== undefined || part.color === e.color;
+        ctx.strokeStyle = own ? ownStroke : resolveColor(part, layers);
+        ctx.fillStyle = own ? ownFill : ctx.strokeStyle;
+        drawGeometry(ctx, part, tf, layers, lookup, style);
+      }
+      ctx.strokeStyle = ownStroke;
+      ctx.fillStyle = ownFill;
       break;
+    }
     case 'spline': {
       const pts = splinePoints(e);
       if (pts.length < 2) break;

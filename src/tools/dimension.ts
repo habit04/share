@@ -682,7 +682,7 @@ export function dimstyleCommandTool(arg?: string): Tool {
 // ------------------------------------------------------------------ registration
 
 /** DIM* variables that do not have a command yet (the drafting set registers DIMTXT, DIMASZ ...). */
-const EXTRA_DIMVARS = [...DIM_VARIABLES.map((v) => ({ name: v.name, description: v.description })), { name: 'DIMBLK', description: 'Arrow block (both ends)' }, { name: 'DIMTOL', description: 'Generate tolerances (0/1)' }, { name: 'DIMLIM', description: 'Generate dimension limits (0/1)' }, { name: 'DIMTIH', description: 'Text inside horizontal (0/1)' }, { name: 'DIMTOH', description: 'Text outside horizontal (0/1)' }, { name: 'DIMSAH', description: 'Separate arrow blocks (0/1)' }];
+const EXTRA_DIMVARS = [...DIM_VARIABLES.map((v) => ({ name: v.name, description: v.description })), { name: 'DIMBLK', description: 'Arrow block (both ends)' }, { name: 'DIMTOL', description: 'Generate tolerances (0/1)' }, { name: 'DIMLIM', description: 'Generate dimension limits (0/1)' }, { name: 'DIMTIH', description: 'Text inside horizontal (0/1)' }, { name: 'DIMTOH', description: 'Text outside horizontal (0/1)' }, { name: 'DIMSAH', description: 'Separate arrow blocks (0/1)' }, { name: 'DIMZIN', description: 'Zero suppression (4 leading, 8 trailing)' }];
 
 function dimVarCommand(editor: Editor, name: string, description: string): void {
   const apply = (ed: Editor, raw: string) => {
