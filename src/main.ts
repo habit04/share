@@ -32,6 +32,9 @@ import { symbolBuilderOf } from './tools/symbol-builder';
 import { userLibrary, bridgeUserLibraryStore, localUserLibraryStore, type UserLibraryBridge } from './electrical/userlib';
 import { packRegistry, bridgePackStore, localPackStore, type PacksBridge } from './electrical/packs';
 import { decodeDxfBytes } from './io/encoding';
+import { installApi } from './app/api';
+import { loadPlugins, registerPluginCommands } from './app/plugins';
+import { registerDimStyleCommands } from './tools/dimension';
 
 declare global {
   interface Window {
@@ -320,6 +323,9 @@ function boot(): void {
     saveSettings(editor.settings);
   });
   registerLayerCommands(editor);
+  registerDimStyleCommands(editor);
+  installApi(editor);
+  registerPluginCommands(editor);
 
   // Multi-document: NEW / OPEN / NEWSHEET / RECENT work with file tabs.
   const origOpen = editor.commands.get('OPEN')!;
@@ -625,6 +631,7 @@ function boot(): void {
   // expose for automation / debugging
   (window as unknown as { editor: Editor; jacUi: unknown }).editor = editor;
   (window as unknown as { jacUi: unknown }).jacUi = { ribbon, cmd, qp, tp, pm, props, clipboard, autosaver, store };
+  void loadPlugins(editor);
 }
 
 boot();
