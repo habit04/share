@@ -183,7 +183,8 @@ export async function evaluatePlugin(code: string, api: JcadApi, name: string, b
     fn = new Function('jcad', src) as (jcad: JcadApi) => unknown;
   } catch (err) {
     // A syntax error is the plugin's; an EvalError means the page's CSP forbids eval.
-    if (!(err instanceof EvalError) || !bridge?.pluginsEval) throw err;
+    if (!(err instanceof EvalError)) throw err;
+    if (!bridge?.pluginsEval) throw new Error(`this page's Content-Security-Policy does not allow running plugin code and no desktop bridge is available (${err.message.trim()})`);
   }
   if (fn) return await fn.call(undefined, api);
   const slot = `s${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;

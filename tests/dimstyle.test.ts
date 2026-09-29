@@ -486,3 +486,12 @@ describe('registration and the dialog helpers', () => {
     expect(joinPost('Ø', '')).toBe('Ø<>');
   });
 });
+
+describe('radial text alignment', () => {
+  it('keeps radius text horizontal unless the style asks for aligned text', () => {
+    const r: DimensionEntity = { ...base, style: STANDARD_DIMSTYLE, kind: 'radius', p1: { x: 0, y: 0 }, p2: { x: 2, y: 2 }, linePoint: { x: 1, y: 1 }, rotation: 0 };
+    expect(texts(dimensionGeometry(r, textWidth))[0]!.rotation).toBe(0);
+    const aligned = texts(dimensionGeometry({ ...r, style: { ...STANDARD_DIMSTYLE, textAlign: 'aligned' } }, textWidth))[0]!;
+    expect(aligned.rotation).toBeCloseTo(Math.PI / 4);
+  });
+});

@@ -744,7 +744,8 @@ function radialParts(c: Ctx): void {
   const inside = g.dist(textAt, center) <= r - 1e-9;
   if (inside) {
     const from = d.kind === 'diameter' ? g.sub(center, g.scale(dir, r)) : center;
-    const rot = d.textRotation ?? (s.textAlign === 'aligned' ? readable(Math.atan2(dir.y, dir.x)) : 0);
+    // Radial text stays horizontal unless the style asks for aligned text explicitly (DIMTIH off).
+    const rot = d.textRotation ?? (d.style.textAlign === 'aligned' ? readable(Math.atan2(dir.y, dir.x)) : 0);
     drawBlock(c, block, textAt, rot);
     const ext = extents(block, rot, Math.atan2(dir.y, dir.x));
     const L = g.dist(from, q);
