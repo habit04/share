@@ -2,14 +2,39 @@
  * DXF (AC1015 / AutoCAD 2000) reader and writer.
  * Entities: LINE, CIRCLE, ARC, LWPOLYLINE (bulges, constant width), POLYLINE,
  * TEXT, MTEXT, INSERT (+ ATTRIB), ELLIPSE, POINT, XLINE, RAY, SOLID/TRACE,
- * DIMENSION (with its anonymous *D block). Tables: LAYER (linetype, lineweight,
+ * DIMENSION (with its anonymous *D block), SPLINE, HATCH (pattern definition lines),
+ * LEADER (+ its MTEXT) and MULTILEADER, IMAGE (+ IMAGEDEF), ACAD_TABLE (cell data) and
+ * external-reference blocks; fields in TEXT / MTEXT. Tables: LAYER (linetype, lineweight,
  * frozen/off/locked), LTYPE (dash patterns), VIEW, DIMSTYLE, BLOCK_RECORD.
  * Header: units, limits, LTSCALE, PDMODE/PDSIZE, DIM* variables, CELTYPE/CELWEIGHT.
  */
-import type { Entity, BlockDef, Layer, AttributeDef, ColorSpec, DimensionEntity, PolylineEntity, MTextEntity, DimStyle } from '../core/entities';
-import { newId, dimensionParts, textWidth, insertTransform } from '../core/entities';
+import type {
+  Entity,
+  BlockDef,
+  Layer,
+  AttributeDef,
+  ColorSpec,
+  DimensionEntity,
+  PolylineEntity,
+  MTextEntity,
+  DimStyle,
+  SplineEntity,
+  HatchEntity,
+  LeaderEntity,
+  ImageEntity,
+  TableEntity,
+  TableCell,
+  HatchLoop,
+  WorldPatternLine,
+  FieldLink,
+  TextEntity,
+} from '../core/entities';
+import { newId, dimensionParts, textWidth, insertTransform, splineCurve, hatchPatternLines, leaderParts, leaderPath, tableParts } from '../core/entities';
 import { dimensionTextPoint, dimensionMeasurement, STANDARD_DIMSTYLE } from '../core/dimension';
-import { mtextToDxf, mtextFromDxf, type MTextAttachment } from '../core/mtext';
+import { mtextToDxf, mtextFromDxf, formattedSource, hasFormatting, type MTextAttachment } from '../core/mtext';
+import { findPattern, LoopBuilder, edgeArc } from '../core/hatch';
+import { isValidNurbs, nurbsPoints, interpolateFitPoints } from '../core/spline';
+import { evaluateFields, hasFields, julianToDate, type FieldContext } from '../core/fields';
 import type { DrawingState, DrawingHeader, NamedView } from '../core/document';
 import { DEFAULT_LAYERS, DEFAULT_HEADER } from '../core/document';
 import { STANDARD_LINETYPES, findLinetype, patternLength, type Linetype } from '../core/linetypes';
@@ -56,6 +81,7 @@ function writeEntityCommon(w: Writer, e: Entity, owner: string, kind: string, su
   if (e.color !== 'ByLayer') w.pair(62, colorCode(e.color));
   if (e.ltscale !== undefined && e.ltscale !== 1) w.pair(48, e.ltscale);
   if (e.lineWeight !== undefined) w.pair(370, e.lineWeight < 0 ? Math.round(e.lineWeight) : Math.round(e.lineWeight * 100));
+  if (e.trueColor !== undefined) w.pair(420, e.trueColor & 0xffffff);
   w.pair(100, subclass);
 }
 
@@ -110,7 +136,8 @@ function writeMText(w: Writer, e: MTextEntity, owner: string): void {
   w.pair(41, e.width);
   w.pair(71, e.attachment);
   w.pair(72, 1);
-  const text = mtextToDxf(e.text);
+  // A live field writes its expression; otherwise the formatted source while it still matches the text.
+  const text = e.field && e.field.value === e.text ? e.field.code : formattedSource(e) ?? mtextToDxf(e.text);
   // Long strings go in 250-char chunks of code 3 followed by a final code 1.
   let rest = text;
   while (rest.length > 250) {
@@ -210,7 +237,211 @@ function writeDimension(w: Writer, e: DimensionEntity, owner: string, blockName:
   }
 }
 
-function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonly<Record<string, BlockDef>>, dimBlocks?: Map<string, string>): void {
+
+// ---------------------------------------------------------------- SPLINE / HATCH / LEADER / IMAGE / TABLE writers
+
+/** XDATA application name carrying a JCad table's data on its INSERT. */
+export const TABLE_APP = 'JCAD_TABLE';
+
+/** Handles and names the writer allocates before the entity pass (images, tables). */
+interface WriteExtras {
+  /** IMAGEDEF handle per image path. */
+  imageDefs: Map<string, string>;
+  /** IMAGEDEF_REACTOR handle per image entity, and the image's own handle once written. */
+  imageReactors: Map<ImageEntity, { reactor: string; image?: string; def: string }>;
+  /** Anonymous block that draws each table. */
+  tableBlocks: Map<TableEntity, string>;
+  /** DIMASZ × DIMSCALE of the header style (leaders store their arrow size as an override when it differs). */
+  arrowSize: number;
+}
+
+function writeSpline(w: Writer, e: SplineEntity, owner: string): void {
+  writeEntityCommon(w, e, owner, 'SPLINE', 'AcDbSpline');
+  const curve = splineCurve(e);
+  const cps = curve?.controlPoints ?? [];
+  const knots = curve?.knots ?? [];
+  const weights = curve?.weights;
+  const rational = !!weights && weights.some((v) => Math.abs(v - 1) > 1e-12);
+  w.pair(210, 0);
+  w.pair(220, 0);
+  w.pair(230, 1);
+  w.pair(70, (e.closed ? 1 : 0) | (e.periodic ? 2 : 0) | (rational ? 4 : 0) | 8);
+  w.pair(71, curve?.degree ?? e.degree);
+  w.pair(72, knots.length);
+  w.pair(73, cps.length);
+  w.pair(74, e.fitPoints?.length ?? 0);
+  w.pair(42, 0.0000001);
+  w.pair(43, 0.0000001);
+  w.pair(44, 0.0000000001);
+  if (e.startTangent) {
+    w.pair(12, e.startTangent.x);
+    w.pair(22, e.startTangent.y);
+    w.pair(32, 0);
+  }
+  if (e.endTangent) {
+    w.pair(13, e.endTangent.x);
+    w.pair(23, e.endTangent.y);
+    w.pair(33, 0);
+  }
+  for (const k of knots) w.pair(40, k);
+  if (rational) for (const v of weights!) w.pair(41, v);
+  for (const p of cps) {
+    w.pair(10, p.x);
+    w.pair(20, p.y);
+    w.pair(30, 0);
+  }
+  for (const p of e.fitPoints ?? []) {
+    w.pair(11, p.x);
+    w.pair(21, p.y);
+    w.pair(31, 0);
+  }
+}
+
+function writeHatch(w: Writer, e: HatchEntity, owner: string): void {
+  writeEntityCommon(w, e, owner, 'HATCH', 'AcDbHatch');
+  w.pair(10, 0);
+  w.pair(20, 0);
+  w.pair(30, 0);
+  w.pair(210, 0);
+  w.pair(220, 0);
+  w.pair(230, 1);
+  w.pair(2, e.solid ? 'SOLID' : e.pattern || 'ANSI31');
+  w.pair(70, e.solid ? 1 : 0);
+  w.pair(71, e.associative ? 1 : 0);
+  w.pair(91, e.loops.length);
+  e.loops.forEach((l, i) => {
+    const hasBulge = !!l.bulges && l.bulges.some((b) => Math.abs(b) > 1e-12);
+    w.pair(92, i === 0 ? 3 : 2);
+    w.pair(72, hasBulge ? 1 : 0);
+    w.pair(73, 1);
+    w.pair(93, l.points.length);
+    l.points.forEach((p, k) => {
+      w.pair(10, p.x);
+      w.pair(20, p.y);
+      if (hasBulge) w.pair(42, l.bulges![k] ?? 0);
+    });
+    w.pair(97, 0);
+  });
+  w.pair(75, e.style ?? 0);
+  const custom = !e.solid && !findPattern(e.pattern);
+  w.pair(76, e.solid ? 1 : e.patternType ?? (custom ? 2 : 1));
+  if (!e.solid) {
+    const lines = hatchPatternLines(e);
+    w.pair(52, g.deg(e.angle));
+    w.pair(41, e.scale);
+    w.pair(77, e.double ? 1 : 0);
+    w.pair(78, lines.length);
+    for (const l of lines) {
+      w.pair(53, g.deg(l.angle));
+      w.pair(43, l.base.x);
+      w.pair(44, l.base.y);
+      w.pair(45, l.offset.x);
+      w.pair(46, l.offset.y);
+      w.pair(79, l.dashes.length);
+      for (const d of l.dashes) w.pair(49, d);
+    }
+  }
+  w.pair(98, 0);
+}
+
+function writeLeader(w: Writer, e: LeaderEntity, owner: string, extras: WriteExtras): void {
+  // The annotation first, so the LEADER can point at its handle (340).
+  let textHandle: string | null = null;
+  if (e.text && e.textPosition) {
+    const m = leaderParts(e).find((p): p is MTextEntity => p.type === 'mtext');
+    if (m) {
+      writeMText(w, { ...m, id: e.id }, owner);
+      textHandle = w.lastHandle().toString(16).toUpperCase();
+    }
+  }
+  const paths: g.Point[][] = [leaderPath(e), ...(e.extraPaths ?? []).map((p) => [...p])];
+  paths.forEach((path, i) => {
+    if (path.length < 2) return;
+    writeEntityCommon(w, e, owner, 'LEADER', 'AcDbLeader');
+    w.pair(3, 'Standard');
+    w.pair(71, e.arrow ? 1 : 0);
+    w.pair(72, e.spline ? 1 : 0);
+    const withText = i === 0 && textHandle !== null;
+    w.pair(73, withText ? 0 : 3);
+    w.pair(74, 1);
+    w.pair(75, i === 0 && e.dogleg ? 1 : 0);
+    if (withText) {
+      w.pair(40, e.textHeight);
+      w.pair(41, e.textWidth ?? 0);
+    }
+    w.pair(76, path.length);
+    for (const p of path) {
+      w.pair(10, p.x);
+      w.pair(20, p.y);
+      w.pair(30, 0);
+    }
+    if (withText) w.pair(340, textHandle!);
+    w.pair(211, 1);
+    w.pair(221, 0);
+    w.pair(231, 0);
+    if (Math.abs(e.arrowSize - extras.arrowSize) > 1e-9) {
+      w.pair(1001, 'ACAD');
+      w.pair(1000, 'DSTYLE');
+      w.pair(1002, '{');
+      w.pair(1070, 41);
+      w.pair(1040, e.arrowSize);
+      w.pair(1002, '}');
+    }
+  });
+}
+
+function writeImage(w: Writer, e: ImageEntity, owner: string, extras: WriteExtras): void {
+  writeEntityCommon(w, e, owner, 'IMAGE', 'AcDbRasterImage');
+  const ref = extras.imageReactors.get(e);
+  if (ref) ref.image = w.lastHandle().toString(16).toUpperCase();
+  w.pair(90, 0);
+  w.pair(10, e.position.x);
+  w.pair(20, e.position.y);
+  w.pair(30, 0);
+  w.pair(11, e.u.x);
+  w.pair(21, e.u.y);
+  w.pair(31, 0);
+  w.pair(12, e.v.x);
+  w.pair(22, e.v.y);
+  w.pair(32, 0);
+  w.pair(13, e.size.x);
+  w.pair(23, e.size.y);
+  if (ref) w.pair(340, ref.def);
+  w.pair(70, e.flags ?? 7);
+  w.pair(280, e.clipOn ? 1 : 0);
+  w.pair(281, e.brightness ?? 50);
+  w.pair(282, e.contrast ?? 50);
+  w.pair(283, e.fade ?? 0);
+  if (ref) w.pair(360, ref.reactor);
+  const clip = e.clip && e.clip.length >= 2 ? e.clip : [{ x: -0.5, y: -0.5 }, { x: e.size.x - 0.5, y: e.size.y - 0.5 }];
+  w.pair(71, clip.length === 2 ? 1 : 2);
+  w.pair(91, clip.length);
+  for (const p of clip) {
+    w.pair(14, p.x);
+    w.pair(24, p.y);
+  }
+}
+
+/** Table metadata for the JCAD_TABLE xdata. */
+function tableMeta(t: TableEntity): string {
+  const json = JSON.stringify({ position: t.position, rotation: t.rotation, rowHeights: t.rowHeights, columnWidths: t.columnWidths, cells: t.cells, textHeight: t.textHeight, ...(t.margin !== undefined ? { margin: t.margin } : {}) });
+  // Keep the xdata strings 7-bit so the 255-byte group limit holds in any code page.
+  return json.replace(/[\u007f-\uffff]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+}
+
+/** A table is written as an INSERT of an anonymous block holding its lines and text, with the cell data as xdata. */
+function writeTableInsert(w: Writer, t: TableEntity, owner: string, block: string): void {
+  writeEntityCommon(w, t, owner, 'INSERT', 'AcDbBlockReference');
+  w.pair(2, block);
+  w.pair(10, 0);
+  w.pair(20, 0);
+  w.pair(30, 0);
+  w.pair(1001, TABLE_APP);
+  const meta = tableMeta(t);
+  for (let i = 0; i < meta.length; i += 250) w.pair(1000, meta.slice(i, i + 250));
+}
+
+function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonly<Record<string, BlockDef>>, dimBlocks?: Map<string, string>, extras?: WriteExtras): void {
   switch (e.type) {
     case 'line':
       writeEntityCommon(w, e, owner, 'LINE', 'AcDbLine');
@@ -257,8 +488,28 @@ function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonly<Recor
       break;
     case 'text': {
       writeEntityCommon(w, e, owner, 'TEXT', 'AcDbText');
-      writeTextLike(w, e.position, e.height, e.text, e.rotation, e.align);
+      writeTextLike(w, e.position, e.height, e.field && e.field.value === e.text ? e.field.code : e.text, e.rotation, e.align);
+      if (e.widthFactor !== undefined && Math.abs(e.widthFactor - 1) > 1e-12) w.pair(41, e.widthFactor);
+      if (e.oblique) w.pair(51, g.deg(e.oblique));
       w.pair(100, 'AcDbText');
+      break;
+    }
+    case 'spline':
+      writeSpline(w, e, owner);
+      break;
+    case 'hatch':
+      writeHatch(w, e, owner);
+      break;
+    case 'leader':
+      writeLeader(w, e, owner, extras ?? emptyExtras());
+      break;
+    case 'image':
+      writeImage(w, e, owner, extras ?? emptyExtras());
+      break;
+    case 'table': {
+      const name = extras?.tableBlocks.get(e);
+      if (name) writeTableInsert(w, e, owner, name);
+      else for (const part of tableParts(e)) writeEntity(w, part, owner, blocks, dimBlocks, extras);
       break;
     }
     case 'mtext':
@@ -344,6 +595,10 @@ function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonly<Recor
   }
 }
 
+function emptyExtras(): WriteExtras {
+  return { imageDefs: new Map(), imageReactors: new Map(), tableBlocks: new Map(), arrowSize: STANDARD_DIMSTYLE.arrowSize };
+}
+
 /** Linetype names referenced anywhere in the drawing (layers, entities, block entities). */
 function usedLinetypes(state: DrawingState): Linetype[] {
   const names = new Set<string>();
@@ -384,6 +639,32 @@ export function writeDxf(state: DrawingState): string {
     blockRecordHandles.set(name, w.nextHandle());
   });
   const linetypes = usedLinetypes(state);
+  // Images (IMAGEDEF + reactor per image) and tables (an anonymous block each) anywhere in the drawing.
+  const extras: WriteExtras = { ...emptyExtras(), arrowSize: ds.arrowSize * (ds.scale || 1) };
+  const allEntities: Entity[] = [...state.entities];
+  for (const b of blockList) allEntities.push(...b.entities);
+  let imageDict: string | null = null;
+  let anon = 0;
+  for (const e of allEntities) {
+    if (e.type === 'image') {
+      if (!imageDict) imageDict = w.nextHandle();
+      let def = extras.imageDefs.get(e.path);
+      if (!def) {
+        def = w.nextHandle();
+        extras.imageDefs.set(e.path, def);
+      }
+      extras.imageReactors.set(e, { reactor: w.nextHandle(), def });
+    } else if (e.type === 'table') {
+      let name = '';
+      do {
+        anon += 1;
+        name = `*U${anon}`;
+      } while (state.blocks[name] || blockRecordHandles.has(name));
+      extras.tableBlocks.set(e, name);
+      blockRecordHandles.set(name, w.nextHandle());
+    }
+  }
+  const tableList = [...extras.tableBlocks.entries()];
 
   // HEADER
   w.pair(0, 'SECTION');
@@ -431,9 +712,23 @@ export function writeDxf(state: DrawingState): string {
   hv('$DIMLUNIT', 70, ds.lunit);
   w.pair(0, 'ENDSEC');
 
-  // CLASSES (empty)
+  // CLASSES: raster images need their class records.
   w.pair(0, 'SECTION');
   w.pair(2, 'CLASSES');
+  if (imageDict) {
+    const cls = (name: string, cpp: string, flags: number, isEntity: boolean) => {
+      w.pair(0, 'CLASS');
+      w.pair(1, name);
+      w.pair(2, cpp);
+      w.pair(3, 'ISM');
+      w.pair(90, flags);
+      w.pair(280, 0);
+      w.pair(281, isEntity ? 1 : 0);
+    };
+    cls('IMAGE', 'AcDbRasterImage', 127, true);
+    cls('IMAGEDEF', 'AcDbRasterImageDef', 0, false);
+    cls('IMAGEDEF_REACTOR', 'AcDbRasterImageDefReactor', 1, false);
+  }
   w.pair(0, 'ENDSEC');
 
   // TABLES
@@ -529,8 +824,9 @@ export function writeDxf(state: DrawingState): string {
     }
   });
   table('UCS', '7', 0, () => {});
-  table('APPID', '9', 1, () => {
+  table('APPID', '9', tableList.length ? 2 : 1, () => {
     record('APPID', '9', 'AcDbRegAppTableRecord', 'ACAD');
+    if (tableList.length) record('APPID', '9', 'AcDbRegAppTableRecord', TABLE_APP);
   });
   table('DIMSTYLE', 'A', 1, () => {
     w.pair(100, 'AcDbDimStyleTable');
@@ -576,7 +872,7 @@ export function writeDxf(state: DrawingState): string {
   // BLOCKS
   w.pair(0, 'SECTION');
   w.pair(2, 'BLOCKS');
-  const blockShell = (owner: string, name: string, base: { x: number; y: number }, flags: number, description: string | undefined, body: () => void) => {
+  const blockShell = (owner: string, name: string, base: { x: number; y: number }, flags: number, description: string | undefined, body: () => void, path = '') => {
     w.pair(0, 'BLOCK');
     w.pair(5, w.nextHandle());
     w.pair(330, owner);
@@ -589,7 +885,7 @@ export function writeDxf(state: DrawingState): string {
     w.pair(20, base.y);
     w.pair(30, 0);
     w.pair(3, name);
-    w.pair(1, '');
+    w.pair(1, path);
     if (description) w.pair(4, description);
     body();
     w.pair(0, 'ENDBLK');
@@ -604,8 +900,9 @@ export function writeDxf(state: DrawingState): string {
   for (const b of blockList) {
     const owner = blockRecordHandles.get(b.name)!;
     // Anonymous blocks (*T tables, *U dynamic blocks) must carry flag 1 or AutoCAD rejects the name.
-    blockShell(owner, b.name, b.basePoint, (b.attributes.length > 0 ? 2 : 0) | (b.name.startsWith('*') ? 1 : 0), b.description, () => {
-      for (const e of b.entities) writeEntity(w, e, owner, state.blocks);
+    const xrefFlags = b.xref ? 4 | (b.xref.overlay ? 8 : 0) : 0;
+    blockShell(owner, b.name, b.basePoint, (b.attributes.length > 0 ? 2 : 0) | (b.name.startsWith('*') ? 1 : 0) | xrefFlags, b.description, () => {
+      for (const e of b.entities) writeEntity(w, e, owner, state.blocks, undefined, extras);
       for (const a of b.attributes) {
         w.pair(0, 'ATTDEF');
         w.pair(5, w.nextHandle());
@@ -619,6 +916,12 @@ export function writeDxf(state: DrawingState): string {
         w.pair(2, a.tag);
         w.pair(70, a.invisible ? 1 : 0);
       }
+    }, b.xref?.path ?? '');
+  }
+  for (const [t, name] of tableList) {
+    const owner = blockRecordHandles.get(name)!;
+    blockShell(owner, name, { x: 0, y: 0 }, 1, undefined, () => {
+      for (const part of tableParts(t)) writeEntity(w, part, owner, state.blocks, undefined, extras);
     });
   }
   for (const d of dimEntities) {
@@ -633,7 +936,7 @@ export function writeDxf(state: DrawingState): string {
   // ENTITIES
   w.pair(0, 'SECTION');
   w.pair(2, 'ENTITIES');
-  for (const e of state.entities) writeEntity(w, e, MODEL_SPACE, state.blocks, dimBlocks);
+  for (const e of state.entities) writeEntity(w, e, MODEL_SPACE, state.blocks, dimBlocks, extras);
   w.pair(0, 'ENDSEC');
 
   // OBJECTS: root dictionary with the mandatory ACAD_GROUP entry
@@ -646,11 +949,59 @@ export function writeDxf(state: DrawingState): string {
   w.pair(281, 1);
   w.pair(3, 'ACAD_GROUP');
   w.pair(350, 'D');
+  if (imageDict) {
+    w.pair(3, 'ACAD_IMAGE_DICT');
+    w.pair(350, imageDict);
+  }
   w.pair(0, 'DICTIONARY');
   w.pair(5, 'D');
   w.pair(330, 'C');
   w.pair(100, 'AcDbDictionary');
   w.pair(281, 1);
+  if (imageDict) {
+    w.pair(0, 'DICTIONARY');
+    w.pair(5, imageDict);
+    w.pair(330, 'C');
+    w.pair(100, 'AcDbDictionary');
+    w.pair(281, 1);
+    const used = new Set<string>();
+    for (const [path, def] of extras.imageDefs) {
+      const stem = (path.split(/[\\/]/).pop() || 'IMAGE').replace(/\.[^.]*$/, '') || 'IMAGE';
+      let key = stem;
+      for (let n = 2; used.has(key.toUpperCase()); n += 1) key = `${stem}_${n}`;
+      used.add(key.toUpperCase());
+      w.pair(3, key);
+      w.pair(350, def);
+    }
+    for (const [path, def] of extras.imageDefs) {
+      const users = [...extras.imageReactors.entries()].filter(([img]) => img.path === path);
+      const first = users[0]?.[0];
+      w.pair(0, 'IMAGEDEF');
+      w.pair(5, def);
+      w.pair(102, '{ACAD_REACTORS');
+      w.pair(330, imageDict);
+      for (const [, r] of users) w.pair(330, r.reactor);
+      w.pair(102, '}');
+      w.pair(330, imageDict);
+      w.pair(100, 'AcDbRasterImageDef');
+      w.pair(90, 0);
+      w.pair(1, path);
+      w.pair(10, first?.size.x ?? 1);
+      w.pair(20, first?.size.y ?? 1);
+      w.pair(11, 1);
+      w.pair(21, 1);
+      w.pair(280, 1);
+      w.pair(281, 0);
+    }
+    for (const [, r] of extras.imageReactors) {
+      w.pair(0, 'IMAGEDEF_REACTOR');
+      w.pair(5, r.reactor);
+      w.pair(330, r.image ?? '0');
+      w.pair(100, 'AcDbRasterImageDefReactor');
+      w.pair(90, 2);
+      w.pair(330, r.image ?? '0');
+    }
+  }
   w.pair(0, 'ENDSEC');
   w.pair(0, 'EOF');
   // The handle seed must exceed every handle used in the file.
@@ -705,7 +1056,7 @@ const str = (o: Obj, code: number, dflt = ''): string => o.groups.find((x) => x.
 const pt = (o: Obj, xCode: number, dflt: g.Point = { x: 0, y: 0 }): g.Point => (has(o, xCode) ? { x: num(o, xCode), y: num(o, xCode + 10) } : dflt);
 
 /** Entity properties common to every DXF entity (layer, colour, linetype, lineweight, ltscale). */
-function commonProps(o: Obj): { id: string; layer: string; color: ColorSpec; linetype?: string; lineWeight?: number; ltscale?: number } {
+function commonProps(o: Obj): { id: string; layer: string; color: ColorSpec; linetype?: string; lineWeight?: number; ltscale?: number; trueColor?: number } {
   const layer = str(o, 8, '0');
   const rawColor = o.groups.find((x) => x.code === 62);
   const color: ColorSpec = rawColor && parseInt(rawColor.value, 10) !== 256 ? parseInt(rawColor.value, 10) : 'ByLayer';
@@ -718,6 +1069,7 @@ function commonProps(o: Obj): { id: string; layer: string; color: ColorSpec; lin
     else if (lw === -2) base.lineWeight = -2;
   }
   if (has(o, 48) && num(o, 48) !== 1) base.ltscale = num(o, 48);
+  if (has(o, 420)) (base as { trueColor?: number }).trueColor = Math.trunc(num(o, 420)) & 0xffffff;
   return base;
 }
 
@@ -779,6 +1131,573 @@ function readDimension(o: Obj, base: ReturnType<typeof commonProps>, style: DimS
     default:
       return null;
   }
+}
+
+
+// ---------------------------------------------------------------- SPLINE / HATCH / LEADER / MLEADER / IMAGE / TABLE readers
+
+const int = (v: string | undefined, dflt = 0): number => {
+  const n = v === undefined ? NaN : parseInt(v, 10);
+  return Number.isNaN(n) ? dflt : n;
+};
+const flt = (v: string | undefined, dflt = 0): number => {
+  const n = v === undefined ? NaN : parseFloat(v);
+  return Number.isFinite(n) ? n : dflt;
+};
+
+/** Groups after a subclass marker (or all groups when it is missing). */
+function afterSubclass(o: Obj, subclass: string): Pair[] {
+  const i = o.groups.findIndex((x) => x.code === 100 && x.value === subclass);
+  return i >= 0 ? o.groups.slice(i + 1) : o.groups;
+}
+
+/** Points from repeated x/y group pairs (e.g. 10/20). */
+function pointList(gs: readonly Pair[], xCode: number): g.Point[] {
+  const out: g.Point[] = [];
+  let x: number | null = null;
+  for (const p of gs) {
+    if (p.code === xCode) x = parseFloat(p.value);
+    else if (p.code === xCode + 10 && x !== null) {
+      out.push({ x, y: parseFloat(p.value) });
+      x = null;
+    }
+  }
+  return out;
+}
+
+function readSpline(o: Obj, base: ReturnType<typeof commonProps>): SplineEntity | null {
+  const gs = afterSubclass(o, 'AcDbSpline');
+  const flags = Math.trunc(num(o, 70));
+  const degree = Math.max(1, Math.trunc(num(o, 71, 3)));
+  const knots = gs.filter((x) => x.code === 40).map((x) => parseFloat(x.value));
+  const weights = gs.filter((x) => x.code === 41).map((x) => parseFloat(x.value));
+  const controlPoints = pointList(gs, 10);
+  const fitPoints = pointList(gs, 11);
+  if (controlPoints.length < 2 && fitPoints.length < 2) return null;
+  const tangent = (code: number): g.Point | undefined => (gs.some((x) => x.code === code) ? { x: flt(gs.find((x) => x.code === code)?.value), y: flt(gs.find((x) => x.code === code + 10)?.value) } : undefined);
+  const st = tangent(12);
+  const et = tangent(13);
+  return {
+    ...base,
+    type: 'spline',
+    degree,
+    knots,
+    controlPoints,
+    ...(weights.length === controlPoints.length && weights.some((w) => Math.abs(w - 1) > 1e-12) ? { weights } : {}),
+    ...(fitPoints.length ? { fitPoints } : {}),
+    closed: (flags & 1) === 1,
+    ...((flags & 2) === 2 ? { periodic: true } : {}),
+    ...(st ? { startTangent: st } : {}),
+    ...(et ? { endTangent: et } : {}),
+  };
+}
+
+/** Sequential reader over a group list. */
+class Cursor {
+  i = 0;
+  constructor(readonly gs: readonly Pair[]) {}
+  get code(): number | undefined {
+    return this.gs[this.i]?.code;
+  }
+  take(code: number): string | undefined {
+    const p = this.gs[this.i];
+    if (p && p.code === code) {
+      this.i += 1;
+      return p.value;
+    }
+    return undefined;
+  }
+  /** Skip ahead to the next group with this code (within `limit` groups). */
+  seek(code: number, limit = 12): string | undefined {
+    for (let k = this.i; k < Math.min(this.gs.length, this.i + limit); k += 1) {
+      if (this.gs[k]!.code === code) {
+        this.i = k + 1;
+        return this.gs[k]!.value;
+      }
+    }
+    return undefined;
+  }
+  point(xCode: number): g.Point {
+    const x = flt(this.seek(xCode));
+    const y = flt(this.seek(xCode + 10, 3));
+    return { x, y };
+  }
+}
+
+function readHatchLoop(c: Cursor): HatchLoop | null {
+  const flags = int(c.seek(92, 4));
+  const b = new LoopBuilder();
+  if (flags & 2) {
+    const hasBulge = int(c.take(72)) !== 0;
+    c.take(73);
+    const n = int(c.seek(93, 3));
+    const pts: g.Point[] = [];
+    const bulges: number[] = [];
+    for (let k = 0; k < n && c.code !== undefined; k += 1) {
+      pts.push(c.point(10));
+      bulges.push(hasBulge && c.code === 42 ? flt(c.take(42)) : 0);
+    }
+    const nsrc = int(c.take(97));
+    for (let k = 0; k < nsrc; k += 1) c.take(330);
+    if (pts.length < 2) return null;
+    return { points: pts, ...(bulges.some((v) => Math.abs(v) > 1e-12) ? { bulges } : {}) };
+  }
+  const nEdges = int(c.seek(93, 3));
+  for (let k = 0; k < nEdges && c.code !== undefined; k += 1) {
+    const type = int(c.seek(72, 3));
+    if (type === 1) {
+      const a = c.point(10);
+      const e = c.point(11);
+      b.segment(a, e, 0);
+    } else if (type === 2) {
+      const center = c.point(10);
+      const r = flt(c.take(40));
+      const s = flt(c.take(50));
+      const e = flt(c.take(51));
+      const ccw = c.code === 73 ? int(c.take(73), 1) !== 0 : true;
+      const { a0, sweep } = edgeArc(s, e, ccw);
+      b.arc(center, r, a0, sweep);
+    } else if (type === 3) {
+      const center = c.point(10);
+      const major = c.point(11);
+      const ratio = flt(c.take(40), 1);
+      const s = flt(c.take(50));
+      const e = flt(c.take(51), 360);
+      const ccw = c.code === 73 ? int(c.take(73), 1) !== 0 : true;
+      const { a0, sweep } = edgeArc(s, e, ccw);
+      const minor = { x: -major.y * ratio, y: major.x * ratio };
+      const steps = Math.max(8, Math.ceil((Math.abs(sweep) / (2 * Math.PI)) * 64));
+      const pts: g.Point[] = [];
+      for (let i = 0; i <= steps; i += 1) {
+        const t = a0 + (sweep * i) / steps;
+        pts.push({ x: center.x + major.x * Math.cos(t) + minor.x * Math.sin(t), y: center.y + major.y * Math.cos(t) + minor.y * Math.sin(t) });
+      }
+      b.polyline(pts);
+    } else if (type === 4) {
+      const degree = int(c.take(94), 3);
+      const rational = int(c.take(73)) !== 0;
+      c.take(74);
+      const nk = int(c.take(95));
+      const nc = int(c.take(96));
+      const knots: number[] = [];
+      for (let i = 0; i < nk; i += 1) knots.push(flt(c.seek(40, 2)));
+      const cps: g.Point[] = [];
+      const weights: number[] = [];
+      for (let i = 0; i < nc; i += 1) {
+        cps.push(c.point(10));
+        if (rational && c.code === 42) weights.push(flt(c.take(42), 1));
+      }
+      const nf = c.code === 97 ? int(c.take(97)) : 0;
+      const fit: g.Point[] = [];
+      for (let i = 0; i < nf; i += 1) fit.push(c.point(11));
+      if (c.code === 12) c.point(12);
+      if (c.code === 13) c.point(13);
+      const curve = { degree, knots, controlPoints: cps, ...(weights.length === cps.length ? { weights } : {}) };
+      const pts = isValidNurbs(curve) ? nurbsPoints(curve, 8) : fit.length >= 2 ? nurbsPoints(interpolateFitPoints(fit) ?? curve, 8) : cps;
+      b.polyline(pts);
+    } else break;
+  }
+  const nsrc = int(c.seek(97, 2));
+  for (let k = 0; k < nsrc; k += 1) c.take(330);
+  return b.loop();
+}
+
+function readHatch(o: Obj, base: ReturnType<typeof commonProps>): HatchEntity | null {
+  const c = new Cursor(afterSubclass(o, 'AcDbHatch'));
+  let pattern = 'SOLID';
+  let solid = false;
+  let associative = false;
+  let style = 0;
+  let patternType = 1;
+  let angle = 0;
+  let scale = 1;
+  let dbl = false;
+  const loops: HatchLoop[] = [];
+  const lines: WorldPatternLine[] = [];
+  while (c.code !== undefined) {
+    const code = c.code;
+    const value = c.gs[c.i]!.value;
+    if (code === 91 && loops.length === 0) {
+      c.i += 1;
+      const n = int(value);
+      for (let k = 0; k < n && c.code !== undefined; k += 1) {
+        const l = readHatchLoop(c);
+        if (l) loops.push(l);
+      }
+      continue;
+    }
+    if (code === 78) {
+      c.i += 1;
+      const n = int(value);
+      for (let k = 0; k < n && c.code !== undefined; k += 1) {
+        const a = flt(c.seek(53, 3));
+        const bx = flt(c.take(43));
+        const by = flt(c.take(44));
+        const ox = flt(c.take(45));
+        const oy = flt(c.take(46));
+        const nd = int(c.take(79));
+        const dashes: number[] = [];
+        for (let d = 0; d < nd; d += 1) dashes.push(flt(c.take(49)));
+        lines.push({ angle: g.rad(a), base: { x: bx, y: by }, offset: { x: ox, y: oy }, dashes });
+      }
+      continue;
+    }
+    c.i += 1;
+    switch (code) {
+      case 2:
+        pattern = value.trim() || pattern;
+        break;
+      case 70:
+        solid = int(value) === 1;
+        break;
+      case 71:
+        associative = int(value) === 1;
+        break;
+      case 75:
+        style = int(value);
+        break;
+      case 76:
+        patternType = int(value);
+        break;
+      case 52:
+        angle = g.rad(flt(value));
+        break;
+      case 41:
+        scale = flt(value, 1) || 1;
+        break;
+      case 77:
+        dbl = int(value) === 1;
+        break;
+      default:
+        break;
+    }
+  }
+  if (loops.length === 0) return null;
+  const known = findPattern(pattern);
+  const isSolid = solid || /^SOLID$/i.test(pattern);
+  let origin: g.Point | undefined;
+  if (known && known.lines.length && lines.length) {
+    // The first definition line's base is the pattern origin plus the (rotated, scaled) .pat origin.
+    origin = g.sub(lines[0]!.base, g.rotate(g.scale(known.lines[0]!.origin, scale), angle));
+  }
+  return {
+    ...base,
+    type: 'hatch',
+    pattern: isSolid ? 'SOLID' : pattern,
+    solid: isSolid,
+    angle,
+    scale,
+    ...(origin && (Math.abs(origin.x) > 1e-12 || Math.abs(origin.y) > 1e-12) ? { origin } : {}),
+    loops,
+    ...(!isSolid && !(known && known.lines.length) && lines.length ? { patternLines: lines } : {}),
+    ...(associative ? { associative } : {}),
+    ...(style ? { style } : {}),
+    patternType,
+    ...(dbl ? { double: true } : {}),
+  };
+}
+
+/** XDATA of one application (1001 name) as its raw pairs. */
+function xdata(o: Obj, app: string): Pair[] | null {
+  const i = o.groups.findIndex((x) => x.code === 1001 && x.value === app);
+  if (i < 0) return null;
+  const out: Pair[] = [];
+  for (let k = i + 1; k < o.groups.length && o.groups[k]!.code !== 1001; k += 1) out.push(o.groups[k]!);
+  return out;
+}
+
+/** A dimension-variable override (ACAD DSTYLE xdata: 1070 code, 1040/1070 value). */
+function dstyleOverride(o: Obj, dimvarCode: number): number | undefined {
+  const xd = xdata(o, 'ACAD');
+  if (!xd) return undefined;
+  for (let k = 0; k + 1 < xd.length; k += 1) if (xd[k]!.code === 1070 && int(xd[k]!.value) === dimvarCode) return flt(xd[k + 1]!.value);
+  return undefined;
+}
+
+function readLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: ReadContext): LeaderEntity | null {
+  const gs = afterSubclass(o, 'AcDbLeader');
+  const vertices = pointList(gs, 10);
+  if (vertices.length < 2) return null;
+  const hook = int(gs.find((x) => x.code === 75)?.value) === 1;
+  let verts = vertices;
+  let dogleg: g.Point | undefined;
+  if (hook && verts.length >= 3) {
+    dogleg = g.sub(verts[verts.length - 1]!, verts[verts.length - 2]!);
+    verts = verts.slice(0, -1);
+  }
+  const ds = ctx.dimStyle;
+  const size = dstyleOverride(o, 41) ?? ds.arrowSize * (ds.scale || 1);
+  return {
+    ...base,
+    type: 'leader',
+    vertices: verts,
+    arrow: int(gs.find((x) => x.code === 71)?.value, 1) !== 0,
+    arrowSize: size,
+    ...(dogleg ? { dogleg } : {}),
+    ...(int(gs.find((x) => x.code === 72)?.value) === 1 ? { spline: true } : {}),
+    textHeight: flt(gs.find((x) => x.code === 40)?.value, ds.textHeight * (ds.scale || 1)) || ds.textHeight,
+    kind: 'leader',
+  };
+}
+
+/**
+ * MULTILEADER: leader lines, landing and MTEXT content from the CONTEXT_DATA section.
+ * Block content is not drawn (noted by the caller); missing parts degrade to what is present.
+ */
+function readMLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: ReadContext): LeaderEntity | null {
+  const gs = o.groups;
+  const paths: g.Point[][] = [];
+  let text = '';
+  let textPos: g.Point | undefined;
+  let textHeight: number | undefined;
+  let textWidth: number | undefined;
+  let textRotation = 0;
+  let textDir: g.Point | undefined;
+  let attachment: number | undefined;
+  let arrowSize: number | undefined;
+  let hasBlock = false;
+  let depth: string[] = [];
+  let lastLeaderPoint: g.Point | undefined;
+  let doglegVec: g.Point | undefined;
+  let doglegLen: number | undefined;
+  let line: g.Point[] | null = null;
+  const sectionLines: g.Point[][] = [];
+  let firstDogleg: g.Point | undefined;
+  let commonArrow: number | undefined;
+  let commonDogleg: number | undefined;
+  let lineType = 1;
+  const endSection = () => {
+    // A LEADER{} section: each of its lines runs arrow -> ... -> last leader point, then the landing.
+    for (const l of sectionLines) paths.push(lastLeaderPoint ? [...l, lastLeaderPoint] : l);
+    if (!firstDogleg && lastLeaderPoint && doglegVec && doglegLen) firstDogleg = g.scale(g.normalize(doglegVec), doglegLen);
+    sectionLines.length = 0;
+    lastLeaderPoint = undefined;
+    doglegVec = undefined;
+    doglegLen = undefined;
+  };
+  for (let k = 0; k < gs.length; k += 1) {
+    const p = gs[k]!;
+    const top = depth[depth.length - 1];
+    if (p.code === 300 && p.value.startsWith('CONTEXT_DATA')) {
+      depth.push('CONTEXT');
+      continue;
+    }
+    if (p.code === 301) {
+      depth = depth.filter((d) => d !== 'CONTEXT');
+      continue;
+    }
+    if (p.code === 302 && p.value.startsWith('LEADER{')) {
+      depth.push('LEADER');
+      continue;
+    }
+    if (p.code === 303) {
+      endSection();
+      depth.pop();
+      continue;
+    }
+    if (p.code === 304 && p.value.startsWith('LEADER_LINE{')) {
+      depth.push('LINE');
+      line = [];
+      continue;
+    }
+    if (p.code === 305) {
+      if (line && line.length) sectionLines.push(line);
+      line = null;
+      depth.pop();
+      continue;
+    }
+    const nextY = () => flt(gs[k + 1]?.code === p.code + 10 ? gs[k + 1]!.value : undefined);
+    if (top === 'LINE') {
+      if (p.code === 10) line?.push({ x: flt(p.value), y: nextY() });
+      continue;
+    }
+    if (top === 'LEADER') {
+      if (p.code === 10) lastLeaderPoint = { x: flt(p.value), y: nextY() };
+      else if (p.code === 11) doglegVec = { x: flt(p.value), y: nextY() };
+      else if (p.code === 40) doglegLen = flt(p.value);
+      continue;
+    }
+    if (top === 'CONTEXT') {
+      switch (p.code) {
+        case 41:
+          textHeight = flt(p.value);
+          break;
+        case 140:
+          arrowSize = flt(p.value);
+          break;
+        case 304:
+          text += p.value;
+          break;
+        case 12:
+          textPos = { x: flt(p.value), y: nextY() };
+          break;
+        case 13:
+          textDir = { x: flt(p.value), y: nextY() };
+          break;
+        case 42:
+          textRotation = flt(p.value);
+          break;
+        case 43:
+          textWidth = flt(p.value);
+          break;
+        case 171:
+          attachment = int(p.value);
+          break;
+        case 296:
+          hasBlock = int(p.value) !== 0;
+          break;
+        default:
+          break;
+      }
+      continue;
+    }
+    // Common MLeader data after the context section.
+    if (p.code === 170) lineType = int(p.value, 1);
+    else if (p.code === 42) commonArrow = flt(p.value);
+    else if (p.code === 41) commonDogleg = flt(p.value);
+  }
+  void hasBlock;
+  const main = paths.shift();
+  if (!main || main.length < 2) return null;
+  const ds = ctx.dimStyle;
+  const size = arrowSize ?? commonArrow ?? ds.arrowSize * (ds.scale || 1);
+  const dogleg = firstDogleg ?? undefined;
+  void commonDogleg;
+  const plain = text ? mtextFromDxf(text) : '';
+  const rot = textDir && (textDir.x !== 0 || textDir.y !== 0) ? Math.atan2(textDir.y, textDir.x) : textRotation;
+  return {
+    ...base,
+    type: 'leader',
+    vertices: main,
+    arrow: lineType !== 0,
+    arrowSize: size,
+    ...(dogleg && g.len(dogleg) > 1e-12 ? { dogleg } : {}),
+    ...(lineType === 2 ? { spline: true } : {}),
+    ...(paths.length ? { extraPaths: paths } : {}),
+    ...(plain ? { text: plain, ...(hasFormatting(text) ? { raw: text } : {}) } : {}),
+    ...(textPos && plain ? { textPosition: textPos } : {}),
+    textHeight: textHeight && textHeight > 0 ? textHeight : ds.textHeight,
+    ...(attachment && attachment >= 1 && attachment <= 9 ? { textAttachment: attachment as MTextAttachment } : {}),
+    ...(textWidth && textWidth > 0 ? { textWidth } : {}),
+    ...(Math.abs(rot) > 1e-12 ? { textRotation: rot } : {}),
+    kind: 'mleader',
+  };
+}
+
+function readImage(o: Obj, base: ReturnType<typeof commonProps>): ImageEntity {
+  const gs = afterSubclass(o, 'AcDbRasterImage');
+  const find = (code: number) => gs.find((x) => x.code === code)?.value;
+  const clipType = int(find(71), 1);
+  const clip = pointList(gs, 14);
+  return {
+    ...base,
+    type: 'image',
+    path: '',
+    position: pt(o, 10),
+    u: pt(o, 11, { x: 1, y: 0 }),
+    v: pt(o, 12, { x: 0, y: 1 }),
+    size: { x: flt(find(13), 1), y: flt(find(23), 1) },
+    ...(clip.length >= 2 ? { clip: clipType === 1 ? clip.slice(0, 2) : clip } : {}),
+    ...(int(find(280)) === 1 ? { clipOn: true } : {}),
+    flags: int(find(70), 7),
+    brightness: int(find(281), 50),
+    contrast: int(find(282), 50),
+    fade: int(find(283), 0),
+  };
+}
+
+/** ACAD_TABLE with legacy cell data (91/92 size, 141/142 sizes, 171.. per cell) -> native table. */
+function readTable(o: Obj, base: ReturnType<typeof commonProps>): TableEntity | null {
+  const gs = afterSubclass(o, 'AcDbTable');
+  const firstCell = gs.findIndex((x) => x.code === 171);
+  const head = firstCell >= 0 ? gs.slice(0, firstCell) : gs;
+  const rows = int(head.find((x) => x.code === 91)?.value);
+  const cols = int(head.find((x) => x.code === 92)?.value);
+  const rowHeights = head.filter((x) => x.code === 141).map((x) => flt(x.value));
+  const columnWidths = head.filter((x) => x.code === 142).map((x) => flt(x.value));
+  if (rows < 1 || cols < 1 || rowHeights.length !== rows || columnWidths.length !== cols || firstCell < 0) return null;
+  const chunks: Pair[][] = [];
+  let cur: Pair[] | null = null;
+  for (let k = firstCell; k < gs.length; k += 1) {
+    const p = gs[k]!;
+    if (p.code === 171) {
+      cur = [];
+      chunks.push(cur);
+    }
+    // Table-wide overrides follow the cell list.
+    if (p.code === 280 || p.code === 281) cur = null;
+    cur?.push(p);
+  }
+  if (chunks.length < rows * cols) return null;
+  let anyText = false;
+  const heights: number[] = [];
+  const cells: TableCell[][] = [];
+  for (let r = 0; r < rows; r += 1) {
+    const row: TableCell[] = [];
+    for (let c = 0; c < cols; c += 1) {
+      const cg = chunks[r * cols + c]!;
+      let text = cg.filter((x) => x.code === 2 || x.code === 3).map((x) => x.value).join('') + (cg.find((x) => x.code === 1)?.value ?? '');
+      if (!text) text = cg.find((x) => x.code === 302 && x.value)?.value ?? '';
+      const h = flt(cg.find((x) => x.code === 140)?.value);
+      const align = int(cg.find((x) => x.code === 170)?.value);
+      const spanC = int(cg.find((x) => x.code === 175)?.value, 1);
+      const spanR = int(cg.find((x) => x.code === 176)?.value, 1);
+      const plain = text ? mtextFromDxf(text) : '';
+      if (plain) anyText = true;
+      if (h > 0) heights.push(h);
+      row.push({
+        text: plain,
+        ...(plain && hasFormatting(text) ? { raw: text } : {}),
+        ...(h > 0 ? { height: h } : {}),
+        ...(align >= 1 && align <= 9 ? { attachment: align as MTextAttachment } : {}),
+        ...(spanC > 1 || spanR > 1 ? { span: { rows: Math.max(1, spanR), cols: Math.max(1, spanC) } } : {}),
+      });
+    }
+    cells.push(row);
+  }
+  if (!anyText) return null;
+  const dir = pt(o, 11, { x: 1, y: 0 });
+  heights.sort((a, b) => a - b);
+  return {
+    ...base,
+    type: 'table',
+    position: pt(o, 10),
+    rotation: Math.atan2(dir.y, dir.x),
+    rowHeights,
+    columnWidths,
+    cells,
+    textHeight: heights[Math.floor(heights.length / 2)] ?? 0.18,
+  };
+}
+
+/** A table JCad wrote as an INSERT of an anonymous block with its data in JCAD_TABLE xdata. */
+function readJcadTable(o: Obj, base: ReturnType<typeof commonProps>): TableEntity | null {
+  const xd = xdata(o, TABLE_APP);
+  if (!xd) return null;
+  try {
+    const meta = JSON.parse(xd.filter((x) => x.code === 1000).map((x) => x.value).join('')) as Partial<TableEntity>;
+    if (!meta.position || !Array.isArray(meta.rowHeights) || !Array.isArray(meta.columnWidths) || !Array.isArray(meta.cells)) return null;
+    return {
+      ...base,
+      type: 'table',
+      position: meta.position,
+      rotation: meta.rotation ?? 0,
+      rowHeights: meta.rowHeights,
+      columnWidths: meta.columnWidths,
+      cells: meta.cells,
+      textHeight: meta.textHeight ?? 0.18,
+      ...(meta.margin !== undefined ? { margin: meta.margin } : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Field expressions in TEXT: evaluate for display and keep the code. */
+function withTextField(text: string, ctx: ReadContext): { text: string; field?: FieldLink } {
+  if (!hasFields(text)) return { text };
+  const value = evaluateFields(text, ctx.fields);
+  return { text: value, field: { code: text, value } };
 }
 
 function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
@@ -845,7 +1764,19 @@ function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
       // Vertical justification: shift down to the baseline (1 bottom, 2 middle, 3 top).
       const drop = v === 2 ? height / 2 : v === 3 ? height : 0;
       if (drop) position = { x: position.x + Math.sin(rotation) * drop, y: position.y - Math.cos(rotation) * drop };
-      return { ...base, type: 'text', position, text: str(o, 1), height, rotation, align };
+      const wf = num(o, 41, 1);
+      const oblique = g.rad(num(o, 51, 0));
+      return {
+        ...base,
+        type: 'text',
+        position,
+        ...withTextField(str(o, 1), ctx),
+        height,
+        rotation,
+        align,
+        ...(wf > 0 && Math.abs(wf - 1) > 1e-9 ? { widthFactor: wf } : {}),
+        ...(Math.abs(oblique) > 1e-9 ? { oblique } : {}),
+      };
     }
     case 'MTEXT': {
       // MTEXT: 10/20 attachment corner, 71 attachment point (1..9), 11/21 direction vector, 50 rotation (radians)
@@ -853,16 +1784,22 @@ function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
       const hasDir = has(o, 11);
       const rotation = hasDir ? Math.atan2(num(o, 21), num(o, 11)) : num(o, 50);
       const height = num(o, 40, 0.125);
-      const raw = o.groups
+      const source = o.groups
         .filter((x) => x.code === 1 || x.code === 3)
         .map((x) => x.value)
         .join('');
+      // Fields are evaluated first; the expression is kept for saving.
+      const raw = hasFields(source) ? evaluateFields(source, ctx.fields) : source;
+      const plain = mtextFromDxf(raw);
+      const field: FieldLink | undefined = raw !== source ? { code: source, value: plain } : undefined;
       if (has(o, 41)) {
         return {
           ...base,
           type: 'mtext',
           position: { x: num(o, 10), y: num(o, 20) },
-          text: mtextFromDxf(raw),
+          text: plain,
+          ...(hasFormatting(raw) ? { raw } : {}),
+          ...(field ? { field } : {}),
           height,
           width: Math.max(0, num(o, 41)),
           rotation,
@@ -877,7 +1814,8 @@ function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
       const drop = row === 0 ? height : row === 1 ? height / 2 : 0;
       const corner = { x: num(o, 10), y: num(o, 20) };
       const position = { x: corner.x + Math.sin(rotation) * drop, y: corner.y - Math.cos(rotation) * drop };
-      return { ...base, type: 'text', position, text: mtextFromDxf(raw).replace(/\n/g, ' '), height, rotation, align };
+      const one = plain.replace(/\n/g, ' ');
+      return { ...base, type: 'text', position, text: one, ...(field ? { field: { code: source, value: one } } : {}), height, rotation, align };
     }
     case 'ELLIPSE': {
       const start = num(o, 41, 0);
@@ -900,13 +1838,40 @@ function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
       return { ...base, type: 'ray', base: pt(o, 10), direction: g.normalize(pt(o, 11, { x: 1, y: 0 })) };
     case 'DIMENSION':
       return readDimension(o, base, readDimStyleFromEntity(o, ctx.dimStyles, ctx.dimStyle));
+    case 'SPLINE':
+      return readSpline(o, base);
+    case 'HATCH':
+      return readHatch(o, base);
+    case 'LEADER':
+      return readLeader(o, base, ctx);
+    case 'MULTILEADER':
+    case 'MLEADER': {
+      const ml = readMLeader(o, base, ctx);
+      if (ml && o.groups.some((x) => x.code === 296 && x.value.trim() === '1')) ctx.notes?.push('MULTILEADER block content is not drawn; the leader and its text are kept.');
+      return ml;
+    }
+    case 'IMAGE': {
+      const im = readImage(o, base);
+      ctx.pendingImages?.set(im, str(o, 340).toUpperCase());
+      return im;
+    }
     case 'ACAD_TABLE': {
-      // A table draws through its anonymous *T block (group 2) at the insertion point (10/20).
+      // Cell data present: a native table. Otherwise it draws through its anonymous *T block (group 2).
       const block = str(o, 2);
+      const table = readTable(o, base);
+      if (table) {
+        if (block) ctx.consumedBlocks?.add(block);
+        return table;
+      }
       if (!block) return null;
       return { ...base, type: 'insert', block, position: { x: num(o, 10), y: num(o, 20) }, rotation: 0, scale: 1, attributes: {} };
     }
     case 'INSERT': {
+      const jt = readJcadTable(o, base);
+      if (jt) {
+        ctx.consumedBlocks?.add(str(o, 2));
+        return jt;
+      }
       const sx = num(o, 41, 1);
       const sy = num(o, 42, sx);
       return {
@@ -950,11 +1915,31 @@ interface ReadContext {
   dimStyle: DimStyle;
   /** Block definitions read so far (BLOCKS precedes ENTITIES), for per-insert attribute visibility. */
   blocks?: Record<string, BlockDef>;
+  /** Values for field expressions in TEXT / MTEXT. */
+  fields?: FieldContext;
+  /** IMAGE entities waiting for their IMAGEDEF (OBJECTS comes last), by IMAGEDEF handle. */
+  pendingImages?: Map<ImageEntity, string>;
+  /** Anonymous blocks replaced by native tables. */
+  consumedBlocks?: Set<string>;
+  /** Remarks about content that was simplified. */
+  notes?: string[];
+}
+
+export interface DxfReadOptions {
+  /** Path of the file being read (Filename fields). */
+  filePath?: string | null;
+  /** Extra values for field evaluation (drawing properties, current date ...). */
+  fieldContext?: FieldContext;
+  /** Receives remarks about content that was simplified. */
+  notes?: string[];
 }
 
 /** Parse a list of entity objects, folding ATTRIB/SEQEND into inserts and VERTEX into polylines. */
 function readEntities(objs: Obj[], ctx: ReadContext): Entity[] {
   const out: Entity[] = [];
+  // LEADER -> MTEXT associations (340), resolved after the pass.
+  const annotations = new Map<string, number>();
+  const leaders: Array<{ index: number; handle: string }> = [];
   let i = 0;
   while (i < objs.length) {
     const o = objs[i]!;
@@ -1000,10 +1985,37 @@ function readEntities(objs: Obj[], ctx: ReadContext): Entity[] {
       i = j;
       continue;
     }
+    if (e && (o.kind === 'MTEXT' || o.kind === 'TEXT') && has(o, 5)) annotations.set(str(o, 5).toUpperCase(), out.length);
+    if (e && e.type === 'leader' && o.kind === 'LEADER' && has(o, 340)) leaders.push({ index: out.length, handle: str(o, 340).toUpperCase() });
     if (e) out.push(e);
     i += 1;
   }
-  return out;
+  if (!leaders.length) return out;
+  const drop = new Set<number>();
+  for (const l of leaders) {
+    const at = annotations.get(l.handle);
+    const ann = at === undefined ? undefined : out[at];
+    const ld = out[l.index];
+    if (!ann || !ld || ld.type !== 'leader' || drop.has(at!)) continue;
+    if (ann.type === 'mtext') {
+      out[l.index] = {
+        ...ld,
+        text: ann.text,
+        ...(ann.raw ? { raw: ann.raw } : {}),
+        textPosition: ann.position,
+        textHeight: ann.height,
+        textAttachment: ann.attachment,
+        ...(ann.width > 0 ? { textWidth: ann.width } : {}),
+        ...(Math.abs(ann.rotation) > 1e-12 ? { textRotation: ann.rotation } : {}),
+      };
+      drop.add(at!);
+    } else if (ann.type === 'text') {
+      const t = ann as TextEntity;
+      out[l.index] = { ...ld, text: t.text, textPosition: t.position, textHeight: t.height, textAttachment: t.align === 'center' ? 8 : t.align === 'right' ? 9 : 7, ...(Math.abs(t.rotation) > 1e-12 ? { textRotation: t.rotation } : {}) };
+      drop.add(at!);
+    }
+  }
+  return drop.size ? out.filter((_, k) => !drop.has(k)) : out;
 }
 
 function readDimStyleRecord(o: Obj, base: DimStyle): DimStyle {
@@ -1023,7 +2035,7 @@ function readDimStyleRecord(o: Obj, base: DimStyle): DimStyle {
   };
 }
 
-export function readDxf(text: string): DrawingState {
+export function readDxf(text: string, opts: DxfReadOptions = {}): DrawingState {
   const pairs = tokenize(text);
   const layers: Layer[] = [];
   const blocks: Record<string, BlockDef> = {};
@@ -1035,7 +2047,16 @@ export function readDxf(text: string): DrawingState {
   const views: NamedView[] = [];
   // Header DIM* variables define the current style; the DIMSTYLE table gives named styles.
   let headerDimStyle: DimStyle = STANDARD_DIMSTYLE;
-  const ctx: ReadContext = { dimStyles, dimStyle: STANDARD_DIMSTYLE, blocks };
+  const ctx: ReadContext = {
+    dimStyles,
+    dimStyle: STANDARD_DIMSTYLE,
+    blocks,
+    fields: { ...opts.fieldContext, ...(opts.filePath !== undefined ? { filePath: opts.filePath } : {}) },
+    pendingImages: new Map(),
+    consumedBlocks: new Set(),
+    notes: opts.notes ?? [],
+  };
+  const imageDefs = new Map<string, string>();
 
   // find sections
   let i = 0;
@@ -1076,6 +2097,11 @@ export function readDxf(text: string): DrawingState {
           lunit: (lunit >= 1 && lunit <= 5 ? lunit : 2) as LinearUnits,
         };
         ctx.dimStyle = headerDimStyle;
+        const created = julianToDate(hnum('$TDCREATE', NaN));
+        const saved = julianToDate(hnum('$TDUPDATE', NaN));
+        ctx.fields = { ...(created ? { createDate: created } : {}), ...(saved ? { saveDate: saved } : {}), ...ctx.fields };
+      } else if (name === 'OBJECTS') {
+        for (const o of objs) if (o.kind === 'IMAGEDEF' && has(o, 5)) imageDefs.set(str(o, 5).toUpperCase(), str(o, 1));
       } else if (name === 'TABLES') {
         for (const o of objs) {
           if (o.kind === 'LAYER') {
@@ -1150,6 +2176,7 @@ export function readDxf(text: string): DrawingState {
               ),
               attributes,
               description: str(o, 4) || undefined,
+              ...((Math.trunc(num(o, 70)) & 4) === 4 ? { xref: { path: str(o, 1), ...((Math.trunc(num(o, 70)) & 8) === 8 ? { overlay: true } : {}) } } : {}),
             };
           }
           k = m + 1;
@@ -1159,6 +2186,28 @@ export function readDxf(text: string): DrawingState {
       }
       i = j + 1;
     } else i += 1;
+  }
+
+  // IMAGE paths come from the IMAGEDEF objects, read last.
+  if (ctx.pendingImages?.size) {
+    const resolve = (list: readonly Entity[]): Entity[] =>
+      list.map((e) => {
+        if (e.type !== 'image') return e;
+        const h = ctx.pendingImages!.get(e);
+        return h !== undefined ? { ...e, path: imageDefs.get(h) ?? e.path } : e;
+      });
+    entities = resolve(entities);
+    for (const [k, b] of Object.entries(blocks)) if (b.entities.some((e) => e.type === 'image')) blocks[k] = { ...b, entities: resolve(b.entities) };
+  }
+  // Anonymous blocks that drew a table now read as a native table are no longer needed.
+  if (ctx.consumedBlocks?.size) {
+    const used = new Set<string>();
+    const scanInserts = (list: readonly Entity[]) => {
+      for (const e of list) if (e.type === 'insert') used.add(e.block);
+    };
+    scanInserts(entities);
+    for (const b of Object.values(blocks)) scanInserts(b.entities);
+    for (const n of ctx.consumedBlocks) if (!used.has(n)) delete blocks[n];
   }
 
   const layerNames = new Set(layers.map((l) => l.name));

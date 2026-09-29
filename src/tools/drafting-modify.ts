@@ -5,7 +5,7 @@
 import type { Point, Bounds } from '../core/geometry';
 import * as g from '../core/geometry';
 import type { Entity, LineEntity, ArcEntity, PolylineEntity } from '../core/entities';
-import { newId, translateEntity, rotateEntity, scaleEntityBy, arcEndpoints, bulgeFromSweep, polylineLength, entityBounds, polylineSegments } from '../core/entities';
+import { newId, translateEntity, rotateEntity, scaleEntityBy, arcEndpoints, bulgeFromSweep, polylineLength, entityBounds, polylineSegments, splineThroughPoints } from '../core/entities';
 import { selectByBox } from '../core/selection';
 import type { Tool, ToolContext } from './types';
 import { scriptTool, point, pointOrKeyword, number, keyword, select, dflt, type Step } from './script';
@@ -412,6 +412,19 @@ export function stretchEntity(e: Entity, box: Bounds, d: Point): Entity {
         center: e.center ? mv(e.center) : e.center,
         textPosition: e.textPosition ? mv(e.textPosition) : e.textPosition,
       };
+    case 'spline':
+      if (e.fitPoints?.length) {
+        const fit = e.fitPoints.map(mv);
+        return splineThroughPoints(e, fit, e.closed) ?? { ...e, fitPoints: fit };
+      }
+      return { ...e, controlPoints: e.controlPoints.map(mv) };
+    case 'hatch':
+      return { ...e, loops: e.loops.map((l) => ({ ...l, points: l.points.map(mv) })) };
+    case 'leader':
+      return { ...e, vertices: e.vertices.map(mv), ...(e.textPosition ? { textPosition: mv(e.textPosition) } : {}) };
+    case 'table':
+    case 'image':
+      return inside(e.position) ? translateEntity(e, d) : e;
   }
 }
 
