@@ -1,3 +1,5 @@
+import { LANGUAGE_CODES, type LanguageSetting } from './i18n';
+
 /** Persisted user settings (localStorage in the renderer). */
 export interface OsnapModes {
   endpoint: boolean;
@@ -69,6 +71,9 @@ export interface UserSettings {
   annotationScale: string;
   commandWindowVisible: boolean;
   recentInput: string[];
+  // --- Options > Display > Language
+  /** UI language: 'auto' follows the system (navigator.languages), else a locale code (src/app/i18n.ts). */
+  language: LanguageSetting;
 }
 
 export const SETTINGS_KEY = 'jcad.settings.v2';
@@ -126,6 +131,7 @@ export const DEFAULT_SETTINGS: UserSettings = {
   annotationScale: '1:1',
   commandWindowVisible: true,
   recentInput: [],
+  language: 'auto',
 };
 
 const RANGES: Partial<Record<keyof UserSettings, [number, number]>> = {
@@ -194,6 +200,7 @@ const ENUMS: Partial<Record<keyof UserSettings, string[]>> = {
   coordDisplay: ['absolute', 'relative', 'off'],
   workspace: ['drafting', 'electrical'],
   annotationScale: ['1:1', '1:2', '1:4', '1:8', '1:16', '1:32', '2:1', '4:1', '8:1'],
+  language: ['auto', ...LANGUAGE_CODES],
 };
 
 /** Choose the current-version blob when present, else migrate the legacy one. */

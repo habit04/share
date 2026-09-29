@@ -37,6 +37,10 @@ jobs:
               release/*.deb
               release/latest*.yml
     runs-on: ${{ matrix.os }}
+    env:
+      # macOS Developer ID signing + notarization runs only when all five secrets exist (docs/CODE-SIGNING.md).
+      # Secrets cannot be tested in a step's `if:`, so the job computes a flag the steps read from env.
+      HAS_APPLE: ${{ secrets.CSC_LINK != '' && secrets.CSC_KEY_PASSWORD != '' && secrets.APPLE_ID != '' && secrets.APPLE_APP_SPECIFIC_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -70,6 +74,8 @@ jobs:
           AZURE_CERT_PROFILE: ${{ secrets.AZURE_CERT_PROFILE }}
           AZURE_PUBLISHER_NAME: ${{ secrets.AZURE_PUBLISHER_NAME }}
       - run: npx electron-builder ${{ matrix.target }} --publish never
+        # Unsigned path (unchanged): every OS without the Apple secrets. macOS gets the ad-hoc signature from scripts/afterPack.cjs.
+        if: ${{ runner.os != 'macOS' || env.HAS_APPLE != 'true' }}
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
           # Read by the TrustedSigning PowerShell module; empty on macOS and Linux.
@@ -87,6 +93,40 @@ jobs:
             if ($sig.Status -ne 'Valid') { $bad++ }
           }
           if ($bad) { Write-Error "$bad executable(s) are not validly signed"; exit 1 }
+      - name: Build, sign and notarize (macOS, Developer ID)
+        if: ${{ runner.os == 'macOS' && env.HAS_APPLE == 'true' }}
+        # package.json keeps hardenedRuntime false for the ad-hoc build; on this runner only, the signed build
+        # turns on the hardened runtime with build/entitlements.mac.plist. electron-builder then signs with the
+        # CSC_LINK certificate and notarizes (and staples) because APPLE_ID / _APP_SPECIFIC_PASSWORD / _TEAM_ID are set.
+        shell: bash
+        run: |
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            Object.assign(pkg.build.mac, { hardenedRuntime: true, gatekeeperAssess: false, entitlements: 'build/entitlements.mac.plist', entitlementsInherit: 'build/entitlements.mac.plist' });
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+          npx electron-builder ${{ matrix.target }} --publish never
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      - name: Verify the macOS signature and notarization ticket
+        if: ${{ runner.os == 'macOS' && env.HAS_APPLE == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          apps=(release/mac*/*.app)
+          if [ ${#apps[@]} -eq 0 ]; then echo "No .app bundle under release/"; exit 1; fi
+          for app in "${apps[@]}"; do
+            codesign --verify --deep --strict --verbose=2 "$app"
+            codesign -dv --verbose=4 "$app" 2>&1 | grep -E 'Authority=Developer ID Application|flags=.*runtime'
+            xcrun stapler validate "$app"
+            spctl --assess --type execute --verbose=4 "$app"
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}

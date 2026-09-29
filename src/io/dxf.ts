@@ -15,6 +15,7 @@ import { DEFAULT_LAYERS, DEFAULT_HEADER } from '../core/document';
 import { STANDARD_LINETYPES, findLinetype, patternLength, type Linetype } from '../core/linetypes';
 import type { LinearUnits } from '../core/units';
 import * as g from '../core/geometry';
+import { decodeUnicodeEscapes, encodeDxfText, textStyleFromGroups, textStyleGroups, textStyleOf, textStylesForWrite, textStylesMeta, withTextStyle, type TextStyle } from './encoding';
 
 // ---------------------------------------------------------------- writing
 
@@ -118,7 +119,7 @@ function writeMText(w: Writer, e: MTextEntity, owner: string): void {
     rest = rest.slice(250);
   }
   w.pair(1, rest);
-  w.pair(7, 'Standard');
+  w.pair(7, textStyleOf(e) ?? 'Standard');
   w.pair(11, Math.cos(e.rotation));
   w.pair(21, Math.sin(e.rotation));
   w.pair(31, 0);
@@ -258,6 +259,7 @@ function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonly<Recor
     case 'text': {
       writeEntityCommon(w, e, owner, 'TEXT', 'AcDbText');
       writeTextLike(w, e.position, e.height, e.text, e.rotation, e.align);
+      if (textStyleOf(e)) w.pair(7, textStyleOf(e)!);
       w.pair(100, 'AcDbText');
       break;
     }
@@ -399,6 +401,7 @@ export function writeDxf(state: DrawingState): string {
     w.pair(30, 0);
   };
   hv('$ACADVER', 1, 'AC1015');
+  hv('$DWGCODEPAGE', 3, 'ANSI_1252');
   hv('$HANDSEED', 5, 'HANDSEED_PLACEHOLDER');
   hv('$INSUNITS', 70, header.units.insunits);
   hv('$LUNITS', 70, header.units.lunits);
@@ -498,15 +501,12 @@ export function writeDxf(state: DrawingState): string {
       w.pair(390, 'F');
     }
   });
-  table('STYLE', '3', 1, () => {
-    record('STYLE', '3', 'AcDbTextStyleTableRecord', 'Standard');
-    w.pair(40, 0);
-    w.pair(41, 1);
-    w.pair(50, 0);
-    w.pair(71, 0);
-    w.pair(42, 0.2);
-    w.pair(3, 'txt');
-    w.pair(4, '');
+  const textStyles = textStylesForWrite(state);
+  table('STYLE', '3', textStyles.length, () => {
+    for (const ts of textStyles) {
+      record('STYLE', '3', 'AcDbTextStyleTableRecord', ts.name, ts.flags);
+      for (const [code, value] of textStyleGroups(ts)) w.pair(code, value);
+    }
   });
   table('VIEW', '6', header.views.length, () => {
     for (const v of header.views) {
@@ -654,7 +654,8 @@ export function writeDxf(state: DrawingState): string {
   w.pair(0, 'ENDSEC');
   w.pair(0, 'EOF');
   // The handle seed must exceed every handle used in the file.
-  return w.toString().replace('HANDSEED_PLACEHOLDER', (w.lastHandle() + 1).toString(16).toUpperCase());
+  // AC1015 is read in the $DWGCODEPAGE page: non-ASCII goes out as \U+XXXX escapes (see io/encoding.ts).
+  return encodeDxfText(w.toString().replace('HANDSEED_PLACEHOLDER', (w.lastHandle() + 1).toString(16).toUpperCase()), 'AC1015');
 }
 
 // ---------------------------------------------------------------- reading
@@ -981,7 +982,9 @@ function readEntities(objs: Obj[], ctx: ReadContext): Entity[] {
       i = j;
       continue;
     }
-    const e = readEntityObj(o, ctx);
+    const read = readEntityObj(o, ctx);
+    // TEXT / MTEXT keep their text style name (group 7) for the TrueType renderer and the writer.
+    const e = read && (read.type === 'text' || read.type === 'mtext') ? withTextStyle(read, str(o, 7)) : read;
     if (e && e.type === 'insert') {
       const attrs: Record<string, string> = {};
       const hidden: string[] = [];
@@ -1024,7 +1027,8 @@ function readDimStyleRecord(o: Obj, base: DimStyle): DimStyle {
 }
 
 export function readDxf(text: string): DrawingState {
-  const pairs = tokenize(text);
+  const pairs = tokenize(decodeUnicodeEscapes(text));
+  const textStyles: Record<string, TextStyle> = {};
   const layers: Layer[] = [];
   const blocks: Record<string, BlockDef> = {};
   let entities: Entity[] = [];
@@ -1103,6 +1107,9 @@ export function readDxf(text: string): DrawingState {
           } else if (o.kind === 'DIMSTYLE') {
             const ds = readDimStyleRecord(o, STANDARD_DIMSTYLE);
             dimStyles.set(ds.name.toUpperCase(), ds);
+          } else if (o.kind === 'STYLE') {
+            const ts = textStyleFromGroups(o.groups);
+            if (ts) textStyles[ts.name] = ts;
           } else if (o.kind === 'VIEW') {
             const vname = str(o, 2);
             if (vname) views.push({ name: vname, center: pt(o, 10), height: num(o, 40, 10) || 10 });
@@ -1210,5 +1217,6 @@ export function readDxf(text: string): DrawingState {
     celweight: celweightRaw >= 0 ? celweightRaw / 100 : undefined,
   };
 
-  return { entities, layers, blocks, currentLayer, header };
+  const styleMeta = textStylesMeta(textStyles);
+  return { entities, layers, blocks, currentLayer, header, ...(styleMeta ? { meta: styleMeta } : {}) };
 }
