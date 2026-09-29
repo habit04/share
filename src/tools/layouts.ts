@@ -125,17 +125,18 @@ export class LayoutController {
     return !s ? 'model' : s.viewport ? 'viewport' : 'paper';
   }
 
+  /** Paper view of what the canvas shows now (`applied` lags the document's space until `sync`). */
   currentPaperView(): PaperView {
-    if (this.mode === 'viewport' && this.paperView) return this.paperView;
+    if (this.applied?.viewport && this.paperView) return this.paperView;
     const vp = this.ed.viewport;
     return { center: { ...vp.center }, scale: vp.scale };
   }
 
   // ------------------------------------------------------------ space switching
   /** Show the Model tab (null) or a layout (paper space). */
-  activate(name: string | null): boolean {
+  activate(name: string | null, keepTool = false): boolean {
     const ed = this.ed;
-    if (ed.tool) ed.cancel();
+    if (ed.tool && !keepTool) ed.cancel();
     if (name === null) {
       if (!this.space) return true;
       ed.doc.setSpace(undefined);
@@ -598,7 +599,7 @@ function layoutTool(ed: Editor, arg?: string) {
         const made = c.createFromWizard({ name: n, paper: { ...paper, width: Math.min(paper.width, paper.height), height: Math.max(paper.width, paper.height) }, scale: 'fit', titleBlock: true });
         if (made) {
           ctx.log(`Layout "${made}" created from the ${size.name.trim()} sheet template.`);
-          c.activate(made);
+          c.activate(made, true);
         }
         return;
       }
@@ -622,8 +623,8 @@ function layoutTool(ed: Editor, arg?: string) {
       }
       case 'SET': {
         const n = argAt(1) ?? (yield* askName('Enter layout to make current', cur));
-        if (/^model$/i.test(n)) c.activate(null);
-        else c.activate(n);
+        if (/^model$/i.test(n)) c.activate(null, true);
+        else c.activate(n, true);
         return;
       }
     }

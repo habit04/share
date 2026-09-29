@@ -40,6 +40,8 @@ import { DEFAULT_LAYERS, DEFAULT_HEADER } from '../core/document';
 import { STANDARD_LINETYPES, findLinetype, patternLength, type Linetype } from '../core/linetypes';
 import type { LinearUnits } from '../core/units';
 import * as g from '../core/geometry';
+// Track E: paper space (layouts, VIEWPORT entities, LAYOUT objects) lives in dxf-layouts.ts.
+import { planLayouts, writeLayoutHeader, extraBlockRecords, layoutHandleOf, writeLayoutContent, writeLayoutObjects, LayoutReader } from './dxf-layouts';
 import { decodeUnicodeEscapes, encodeDxfText, textStyleFromGroups, textStyleGroups, textStyleOf, textStylesForWrite, textStylesMeta, withTextStyle, type TextStyle } from './encoding';
 
 // ---------------------------------------------------------------- writing
@@ -72,11 +74,26 @@ function colorCode(c: ColorSpec): number {
   return c === 'ByLayer' ? 256 : c;
 }
 
+/** Block-record handles of paper-space layouts while writeDxf runs: their entities get group 67 = 1 (Track E). */
+let paperOwners: ReadonlySet<string> = new Set();
+
+/** AcadAnnotative xdata: marks an annotative object (Track E; AutoCAD 2008+ reads it, older readers ignore it). */
+const ANNO_APP = 'AcadAnnotative';
+function writeAnnotativeXdata(w: Writer): void {
+  w.pair(1001, ANNO_APP);
+  w.pair(1000, 'AnnotativeData');
+  w.pair(1002, '{');
+  w.pair(1070, 1);
+  w.pair(1070, 1);
+  w.pair(1002, '}');
+}
+
 function writeEntityCommon(w: Writer, e: Entity, owner: string, kind: string, subclass: string): void {
   w.pair(0, kind);
   w.pair(5, w.nextHandle());
   w.pair(330, owner);
   w.pair(100, 'AcDbEntity');
+  if (paperOwners.has(owner)) w.pair(67, 1);
   w.pair(8, e.layer);
   if (e.linetype && e.linetype.toUpperCase() !== 'BYLAYER') w.pair(6, e.linetype);
   if (e.color !== 'ByLayer') w.pair(62, colorCode(e.color));
@@ -578,6 +595,7 @@ function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonly<Recor
         w.pair(43, e.scale);
       }
       if (e.rotation !== 0) w.pair(50, g.deg(e.rotation));
+      if (e.annotative) writeAnnotativeXdata(w);
       if (hasAttribs && block) {
         const toWorld = insertTransform(e, block);
         for (const a of block.attributes) {
@@ -604,6 +622,12 @@ function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonly<Recor
       break;
     }
   }
+}
+
+/** Write an entity, then its annotative xdata (inserts write theirs before the ATTRIBs). */
+function writeEntityAnno(w: Writer, e: Entity, owner: string, blocks: Readonly<Record<string, BlockDef>>, dimBlocks?: Map<string, string>, extras?: WriteExtras): void {
+  writeEntity(w, e, owner, blocks, dimBlocks, extras);
+  if (e.annotative && e.type !== 'insert') writeAnnotativeXdata(w);
 }
 
 function emptyExtras(): WriteExtras {
@@ -643,7 +667,9 @@ export function writeDxf(state: DrawingState): string {
   for (const b of blockList) blockRecordHandles.set(b.name, w.nextHandle());
   // Anonymous *D blocks that carry each dimension's picture.
   const dimBlocks = new Map<string, string>();
-  const dimEntities = state.entities.filter((e): e is DimensionEntity => e.type === 'dimension');
+  const layoutPlan = planLayouts(state, w, PAPER_SPACE);
+  paperOwners = layoutPlan.paperOwners;
+  const dimEntities = [...state.entities, ...layoutPlan.entities].filter((e): e is DimensionEntity => e.type === 'dimension');
   dimEntities.forEach((d, i) => {
     const name = `*D${i + 1}`;
     dimBlocks.set(d.id, name);
@@ -652,7 +678,7 @@ export function writeDxf(state: DrawingState): string {
   const linetypes = usedLinetypes(state);
   // Images (IMAGEDEF + reactor per image) and tables (an anonymous block each) anywhere in the drawing.
   const extras: WriteExtras = { ...emptyExtras(), arrowSize: ds.arrowSize * (ds.scale || 1) };
-  const allEntities: Entity[] = [...state.entities];
+  const allEntities: Entity[] = [...state.entities, ...layoutPlan.entities];
   for (const b of blockList) allEntities.push(...b.entities);
   let imageDict: string | null = null;
   let anon = 0;
@@ -722,6 +748,7 @@ export function writeDxf(state: DrawingState): string {
   hv('$DIMDEC', 70, ds.decimals);
   hv('$DIMADEC', 70, ds.angularDecimals);
   hv('$DIMLUNIT', 70, ds.lunit);
+  writeLayoutHeader(hv, state);
   w.pair(0, 'ENDSEC');
 
   // CLASSES: raster images need their class records.
@@ -796,12 +823,15 @@ export function writeDxf(state: DrawingState): string {
     ltRecord(STANDARD_LINETYPES[0]!);
     for (const lt of linetypes) ltRecord(lt);
   });
+  const layerHandles = new Map<string, string>();
   table('LAYER', '2', state.layers.length, () => {
     for (const l of state.layers) {
       record('LAYER', '2', 'AcDbLayerTableRecord', l.name, (l.locked ? 4 : 0) | (l.frozen ? 1 : 0));
+      layerHandles.set(l.name, w.lastHandle().toString(16).toUpperCase());
       w.pair(62, l.visible || l.frozen ? l.color : -l.color);
       w.pair(6, l.linetype && l.linetype.toUpperCase() !== 'BYLAYER' ? l.linetype : 'Continuous');
       w.pair(370, Math.round(l.lineWeight * 100));
+      if (l.plot === false) w.pair(290, 0);
       w.pair(390, 'F');
     }
   });
@@ -833,9 +863,11 @@ export function writeDxf(state: DrawingState): string {
     }
   });
   table('UCS', '7', 0, () => {});
-  table('APPID', '9', tableList.length ? 2 : 1, () => {
+  const annotative = allEntities.some((e) => e.annotative);
+  table('APPID', '9', (tableList.length ? 2 : 1) + (annotative ? 1 : 0), () => {
     record('APPID', '9', 'AcDbRegAppTableRecord', 'ACAD');
     if (tableList.length) record('APPID', '9', 'AcDbRegAppTableRecord', TABLE_APP);
+    if (annotative) record('APPID', '9', 'AcDbRegAppTableRecord', ANNO_APP);
   });
   table('DIMSTYLE', 'A', 1, () => {
     w.pair(100, 'AcDbDimStyleTable');
@@ -860,7 +892,8 @@ export function writeDxf(state: DrawingState): string {
     w.pair(271, ds.decimals);
     w.pair(277, ds.lunit);
   });
-  table('BLOCK_RECORD', '1', 2 + blockRecordHandles.size, () => {
+  const layoutRecords = extraBlockRecords(layoutPlan);
+  table('BLOCK_RECORD', '1', 2 + blockRecordHandles.size + layoutRecords.length, () => {
     const brec = (handle: string, name: string) => {
       w.pair(0, 'BLOCK_RECORD');
       w.pair(5, handle);
@@ -868,12 +901,15 @@ export function writeDxf(state: DrawingState): string {
       w.pair(100, 'AcDbSymbolTableRecord');
       w.pair(100, 'AcDbBlockTableRecord');
       w.pair(2, name);
+      const layoutHandle = layoutHandleOf(layoutPlan, handle, MODEL_SPACE);
+      if (layoutHandle) w.pair(340, layoutHandle);
       w.pair(70, 0);
       w.pair(280, 1);
       w.pair(281, 0);
     };
     brec(MODEL_SPACE, '*Model_Space');
     brec(PAPER_SPACE, '*Paper_Space');
+    for (const r of layoutRecords) brec(r.handle, r.name);
     for (const [name, handle] of blockRecordHandles) brec(handle, name);
   });
   w.pair(0, 'ENDSEC');
@@ -906,6 +942,9 @@ export function writeDxf(state: DrawingState): string {
   };
   blockShell(MODEL_SPACE, '*Model_Space', { x: 0, y: 0 }, 0, undefined, () => {});
   blockShell(PAPER_SPACE, '*Paper_Space', { x: 0, y: 0 }, 0, undefined, () => {});
+  // Layouts after the first keep their paper space in *Paper_Space0, *Paper_Space1 ...
+  const writePaperEntity = (e: Entity, owner: string) => writeEntityAnno(w, e, owner, state.blocks, dimBlocks, extras);
+  for (const r of layoutPlan.records.slice(1)) blockShell(r.blockRecord, r.blockName, { x: 0, y: 0 }, 0, undefined, () => writeLayoutContent(w, r, writePaperEntity, layerHandles));
   for (const b of blockList) {
     const owner = blockRecordHandles.get(b.name)!;
     // Anonymous blocks (*T tables, *U dynamic blocks) must carry flag 1 or AutoCAD rejects the name.
@@ -945,7 +984,9 @@ export function writeDxf(state: DrawingState): string {
   // ENTITIES
   w.pair(0, 'SECTION');
   w.pair(2, 'ENTITIES');
-  for (const e of state.entities) writeEntity(w, e, MODEL_SPACE, state.blocks, dimBlocks, extras);
+  for (const e of state.entities) writeEntityAnno(w, e, MODEL_SPACE, state.blocks, dimBlocks, extras);
+  // The first layout's paper space (VIEWPORTs + entities, group 67 = 1).
+  if (layoutPlan.records[0]) writeLayoutContent(w, layoutPlan.records[0], writePaperEntity, layerHandles);
   w.pair(0, 'ENDSEC');
 
   // OBJECTS: root dictionary with the mandatory ACAD_GROUP entry
@@ -958,6 +999,8 @@ export function writeDxf(state: DrawingState): string {
   w.pair(281, 1);
   w.pair(3, 'ACAD_GROUP');
   w.pair(350, 'D');
+  w.pair(3, 'ACAD_LAYOUT');
+  w.pair(350, layoutPlan.dictionary);
   if (imageDict) {
     w.pair(3, 'ACAD_IMAGE_DICT');
     w.pair(350, imageDict);
@@ -967,6 +1010,7 @@ export function writeDxf(state: DrawingState): string {
   w.pair(330, 'C');
   w.pair(100, 'AcDbDictionary');
   w.pair(281, 1);
+  writeLayoutObjects(w, layoutPlan, MODEL_SPACE, 'C');
   if (imageDict) {
     w.pair(0, 'DICTIONARY');
     w.pair(5, imageDict);
@@ -1976,7 +2020,8 @@ function readEntities(objs: Obj[], ctx: ReadContext): Entity[] {
     }
     const read = readEntityObj(o, ctx);
     // TEXT / MTEXT keep their text style name (group 7) for the TrueType renderer and the writer.
-    const e = read && (read.type === 'text' || read.type === 'mtext') ? withTextStyle(read, str(o, 7)) : read;
+    const styled = read && (read.type === 'text' || read.type === 'mtext') ? withTextStyle(read, str(o, 7)) : read;
+    const e = styled && xdata(o, ANNO_APP) ? ({ ...styled, annotative: true } as Entity) : styled;
     if (e && e.type === 'insert') {
       const attrs: Record<string, string> = {};
       const hidden: string[] = [];
@@ -2068,6 +2113,7 @@ export function readDxf(text: string, opts: DxfReadOptions = {}): DrawingState {
     notes: opts.notes ?? [],
   };
   const imageDefs = new Map<string, string>();
+  const layoutReader = new LayoutReader();
 
   // find sections
   let i = 0;
@@ -2113,7 +2159,9 @@ export function readDxf(text: string, opts: DxfReadOptions = {}): DrawingState {
         ctx.fields = { ...(created ? { createDate: created } : {}), ...(saved ? { saveDate: saved } : {}), ...ctx.fields };
       } else if (name === 'OBJECTS') {
         for (const o of objs) if (o.kind === 'IMAGEDEF' && has(o, 5)) imageDefs.set(str(o, 5).toUpperCase(), str(o, 1));
+        layoutReader.scanObjects(objs);
       } else if (name === 'TABLES') {
+        layoutReader.scanTables(objs);
         for (const o of objs) {
           if (o.kind === 'LAYER') {
             const name2 = str(o, 2);
@@ -2128,6 +2176,7 @@ export function readDxf(text: string, opts: DxfReadOptions = {}): DrawingState {
               frozen: (flags & 1) === 1 || undefined,
               locked: (flags & 4) === 4,
               lineWeight: num(o, 370, 25) / 100,
+              ...(has(o, 290) && num(o, 290) === 0 ? { plot: false } : {}),
               linetype: lt && lt.toUpperCase() !== 'CONTINUOUS' ? lt : undefined,
             });
           } else if (o.kind === 'LTYPE') {
@@ -2193,10 +2242,11 @@ export function readDxf(text: string, opts: DxfReadOptions = {}): DrawingState {
               ...((Math.trunc(num(o, 70)) & 4) === 4 ? { xref: { path: str(o, 1), ...((Math.trunc(num(o, 70)) & 8) === 8 ? { overlay: true } : {}) } } : {}),
             };
           }
+          else if (anonymousLayout) layoutReader.layoutBlock(bname, inner);
           k = m + 1;
         }
       } else if (name === 'ENTITIES') {
-        entities = readEntities(objs, ctx);
+        entities = readEntities(layoutReader.splitEntities(objs), ctx);
       }
       i = j + 1;
     } else i += 1;
@@ -2271,8 +2321,16 @@ export function readDxf(text: string, opts: DxfReadOptions = {}): DrawingState {
     views,
     celtype: /^BYLAYER$/i.test(celtype) ? 'ByLayer' : celtype,
     celweight: celweightRaw >= 0 ? celweightRaw / 100 : undefined,
+    ...(headerVars.get('$CANNOSCALE')?.[0]?.value ? { cannoscale: headerVars.get('$CANNOSCALE')![0]!.value } : {}),
+    ...(hnum('$ANNOALLVISIBLE', 1) === 0 ? { annoAllVisible: false } : {}),
   };
 
+  // Paper space: layouts with their entities and viewports (and the layers they use).
+  const layouts = layoutReader.build((objs) => readEntities(objs, ctx), { entities, header });
+  for (const l of layouts ?? []) {
+    for (const e of l.entities) ensure(e.layer);
+    for (const v of l.viewports) ensure(v.layer);
+  }
   const styleMeta = textStylesMeta(textStyles);
-  return { entities, layers, blocks, currentLayer, header, ...(styleMeta ? { meta: styleMeta } : {}) };
+  return { entities, layers, blocks, currentLayer, header, ...(styleMeta ? { meta: styleMeta } : {}), ...(layouts ? { layouts } : {}) };
 }
