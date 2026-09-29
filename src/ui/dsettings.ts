@@ -2,6 +2,9 @@ import type { Editor } from '../app/editor';
 import type { OsnapModes, UserSettings } from '../app/settings';
 import { updateSettings } from './options';
 import { modal, button, tabbedDialog, dlgRow, dlgGroup, dlgCheck, numberInput, selectInput, textField } from './dialogkit';
+import { t } from '../app/i18n';
+import { INSUNIT_NAMES } from '../core/units';
+import { drawingUnitsOf, drawingUnitScale, setDrawingUnits, MM_PER_INCH, type DrawingUnits } from '../electrical/wdm';
 
 export const OSNAP_LABELS: Array<[keyof OsnapModes, string, string]> = [
   ['endpoint', 'Endpoint', 'endpoint'],
@@ -40,7 +43,58 @@ export function markerGlyph(kind: string, color = '#3ff23f'): string {
   return `<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="${color}" stroke-width="1.6">${body}</svg>`;
 }
 
-/** DSETTINGS: Snap and Grid / Polar Tracking / Object Snap / Dynamic Input. */
+/**
+ * The Drawing Units page: inches or millimetres for the electrical symbols (WD_M UNITS and
+ * $INSUNITS together), with the offer to rescale what is already drawn. It changes the
+ * document (one undo step), so it applies with its own button rather than live.
+ */
+export function drawingUnitsPage(editor: Editor): HTMLElement {
+  const page = document.createElement('div');
+  let choice: DrawingUnits = drawingUnitsOf(editor.doc);
+  let rescale = editor.doc.entities.length > 0;
+  const info = document.createElement('div');
+  info.className = 'dlg-note';
+  const countNote = document.createElement('div');
+  countNote.className = 'dlg-note';
+  const objects = () => editor.doc.entities.filter((e) => !(e.type === 'insert' && e.block === 'WD_M')).length;
+  const refresh = () => {
+    const ins = editor.doc.header.units.insunits;
+    info.textContent = t('dsettings.units.current', { units: drawingUnitsOf(editor.doc) === 'mm' ? t('units.millimeters') : t('units.inches'), insunits: `${ins} (${INSUNIT_NAMES[ins] ?? '?'})`, scale: Number(drawingUnitScale(editor.doc).toFixed(4)) });
+    const same = choice === drawingUnitsOf(editor.doc);
+    countNote.textContent = same ? t('dsettings.units.noChange') : rescale ? t('dsettings.units.willScale', { count: objects(), factor: choice === 'mm' ? MM_PER_INCH : `1/${MM_PER_INCH}` }) : t('dsettings.units.keep');
+    apply.disabled = same;
+  };
+  const select = selectInput([['in', t('dsettings.units.inches')], ['mm', t('dsettings.units.mm')]], choice, (v) => {
+    choice = v === 'mm' ? 'mm' : 'in';
+    refresh();
+  });
+  const rescaleCheck = dlgCheck(t('dsettings.units.rescale'), rescale, (v) => {
+    rescale = v;
+    refresh();
+  });
+  const apply = button(t('dsettings.units.apply'));
+  apply.addEventListener('click', () => {
+    const r = setDrawingUnits(editor.doc, choice, { rescale });
+    editor.log(t('dsettings.units.done', { from: r.from, to: r.to, count: r.count }));
+    if (r.factor !== 1) editor.zoomExtents();
+    editor.render();
+    refresh();
+  });
+  page.append(
+    dlgGroup(t('dsettings.units.group'), [dlgRow(t('dsettings.units.label'), select), rescaleCheck, countNote, apply]),
+    dlgGroup(t('dsettings.units.status'), [info]),
+    (() => {
+      const n = document.createElement('div');
+      n.className = 'dlg-note';
+      n.textContent = t('dsettings.units.note');
+      return n;
+    })(),
+  );
+  refresh();
+  return page;
+}
+
+/** DSETTINGS: Snap and Grid / Polar Tracking / Object Snap / Dynamic Input / Drawing Units. */
 export function draftingSettingsDialog(editor: Editor, initialTab = 0): void {
   const before = { ...editor.settings };
   const m = modal('Drafting Settings', 600, 'dark');
@@ -182,7 +236,7 @@ export function draftingSettingsDialog(editor: Editor, initialTab = 0): void {
     })(),
   );
 
-  m.body.appendChild(tabbedDialog([['Snap and Grid', snapGrid], ['Polar Tracking', polar], ['Object Snap', osnap], ['Dynamic Input', dyn]], initialTab));
+  m.body.appendChild(tabbedDialog([['Snap and Grid', snapGrid], ['Polar Tracking', polar], ['Object Snap', osnap], ['Dynamic Input', dyn], [t('dsettings.units.tab'), drawingUnitsPage(editor)]], initialTab));
   const ok = button('OK', true);
   const cancel = button('Cancel');
   const opt = button('Options...');
