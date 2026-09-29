@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { Drawing, type DrawingState } from '../src/core/document';
 import type { Entity, TextEntity, InsertEntity, PolylineEntity } from '../src/core/entities';
-import { translateEntity } from '../src/core/entities';
+import { translateEntity, moveGrip } from '../src/core/entities';
 import {
   activeLayout,
   annotativeEntity,
@@ -131,6 +131,20 @@ describe('paper-space editing through the Drawing', () => {
     expect(v.view.center.x).toBeCloseTo(54, 12);
     // The model point at the old left edge still maps to the same paper point.
     expect(modelToPaper(v, paperToModel({ ...v, center: { x: 7, y: 5 }, view: { center: { x: 50, y: 40 }, scale: 0.25 } }, { x: 3, y: 5 })).x).toBeCloseTo(3, 9);
+  });
+  it('a corner grip stretches the frame as a rectangle (opposite corner fixed)', () => {
+    const d = new Drawing();
+    d.load(withLayoutState());
+    d.setSpace({ layout: 'Layout1' });
+    const frame = d.entity('v1')!;
+    // Corner 2 is the upper right (9,7); drag it to (11,8).
+    const moved = moveGrip(frame, 2, { x: 11, y: 8 })!;
+    expect((moved as PolylineEntity).points).toEqual([{ x: 1, y: 1 }, { x: 11, y: 1 }, { x: 11, y: 8 }, { x: 1, y: 8 }]);
+    d.replaceEntities([moved]);
+    const v = activeLayout(d.snapshot)!.viewports[0]!;
+    expect(v).toMatchObject({ center: { x: 6, y: 4.5 }, width: 10, height: 7 });
+    // The model point that was at the lower-left corner is still there.
+    expect(paperToModel(v, { x: 1, y: 1 }).x).toBeCloseTo(50 - 4 / 0.25, 9);
   });
   it('erasing a frame deletes the viewport, copying it adds one, exploding keeps the lines', () => {
     const d = new Drawing();

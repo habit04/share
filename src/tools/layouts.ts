@@ -250,6 +250,7 @@ export class LayoutController {
   private updatePainter(): void {
     const vp = this.ed.viewport;
     vp.layoutPainter = this.space ? this.painter : null;
+    vp.paperUcsIcon = !!this.space && !this.space.viewport;
     const act = activeViewport(this.ed.doc.snapshot);
     vp.fitRect = act && this.paperView ? viewportScreenRect(act.viewport, this.paperView, vp.width, vp.height) : null;
   }

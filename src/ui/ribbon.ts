@@ -305,6 +305,8 @@ export const RIBBON: RibbonTab[] = [
       { title: 'Palettes', buttons: [B('Project\nManager', 'project', 'TOGGLEPM'), B('Properties', 'props', 'PROPERTIES', 'small'), B('Layers', 'layers', 'LAYER', 'small')] },
       // ---- drafting parity panels
       { title: 'Views', buttons: [B('Previous', 'zoomprev', 'ZOOM P', 'small'), B('Zoom All', 'zoomext', 'ZOOM A', 'small'), B('Named\nViews', 'view', 'VIEW', 'small'), B('Units', 'units', 'UNITS', 'small'), B('Limits', 'grid', 'LIMITS', 'small'), B('Regen', 'redo', 'REGEN', 'small')] },
+      // ---- paper-space layouts (Track E, tools/layouts.ts)
+      { title: 'Layout', buttons: [B('New\nLayout', 'plus', 'LAYOUT N'), B('From\nTemplate', 'titleblock', 'LAYOUTWIZARD'), B('Page Setup', 'settings', 'PAGESETUP', 'small'), B('Viewport', 'view', 'MVIEW', 'small'), B('Lock Viewport', 'lock', 'MVIEW L', 'small'), B('Model Space', 'model', 'MSPACE', 'small'), B('Paper Space', 'rectangle', 'PSPACE', 'small'), B('Model Tab', 'house', 'MODEL', 'small')] },
     ],
   },
 ];

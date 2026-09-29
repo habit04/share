@@ -105,6 +105,8 @@ export class Viewport {
   layoutPainter: ((ctx: CanvasRenderingContext2D, vp: Viewport, ov: ViewportOverlay) => void) | null = null;
   /** Screen rectangle ZOOM Extents / Window fit into (the active floating viewport); null = the whole canvas. */
   fitRect: { x: number; y: number; w: number; h: number } | null = null;
+  /** Show the paper-space (triangle) UCS icon. */
+  paperUcsIcon = false;
   private raf = 0;
   private lastOverlay: ViewportOverlay | null = null;
   private dprQuery: { mq: MediaQueryList; handler: () => void } | null = null;
@@ -660,6 +662,24 @@ export class Viewport {
     const ox = 34;
     const oy = this.height - 34;
     const l = 42;
+    if (this.paperUcsIcon) {
+      // Paper space: AutoCAD's triangular UCS icon.
+      ctx.save();
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = '#c8c8c8';
+      ctx.fillStyle = '#c8c8c8';
+      ctx.font = '11px "Segoe UI", system-ui, sans-serif';
+      ctx.beginPath();
+      ctx.moveTo(ox, oy);
+      ctx.lineTo(ox + l, oy);
+      ctx.lineTo(ox, oy - l);
+      ctx.closePath();
+      ctx.stroke();
+      ctx.fillText('X', ox + l + 3, oy + 4);
+      ctx.fillText('Y', ox - 4, oy - l - 5);
+      ctx.restore();
+      return;
+    }
     ctx.save();
     ctx.lineWidth = 2;
     ctx.strokeStyle = '#c8c8c8';
