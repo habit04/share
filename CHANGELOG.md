@@ -11,7 +11,11 @@ messages). The date of each version is the date of the commit that set that vers
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- Download alerts: an hourly GitHub Actions workflow (`download-alerts.yml`, `scripts/download-alerts.mjs`)
+  compares the release download counters with the last run and comments on the "Download tracker"
+  issue when an installer was downloaded, so subscribers get a GitHub notification or e-mail.
 
 ## [0.4.0] - 2026-09-29
 

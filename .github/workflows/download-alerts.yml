@@ -1,0 +1,39 @@
+name: Download alerts
+
+# GitHub has no event for release downloads, so this polls the download counters of every
+# release asset once an hour and, when an installer was downloaded since the previous run,
+# comments on the "Download tracker" issue (label `download-tracker`). GitHub then notifies
+# everyone subscribed to that issue (web notification and/or e-mail, per their settings).
+#
+# - First run creates the issue with the current counts as the baseline (no alert for the past).
+# - Close the issue to pause the alerts, reopen it to resume.
+# - Scheduled workflows only run from the default branch and are switched off by GitHub after
+#   60 days without repository activity; run the workflow manually to re-enable it.
+
+on:
+  schedule:
+    - cron: '23 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: download-alerts
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: Compare download counters and comment on the tracker issue
+        run: node scripts/download-alerts.mjs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}

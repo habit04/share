@@ -43,6 +43,19 @@ adds `win.azureSignOptions` on the Windows runner, and the workflow then checks 
 signed). `AZURE_PUBLISHER_NAME` must equal the certificate's subject name exactly, because the updater
 rejects an update whose signer differs from it.
 
+### Download alerts
+
+GitHub does not send an event when someone downloads a release asset, so
+`.github/workflows/download-alerts.yml` polls the download counters of every release once an hour
+(`scripts/download-alerts.mjs`) and, when an installer was downloaded since the previous run, comments
+on the **Download tracker** issue (label `download-tracker`). GitHub then notifies everyone subscribed
+to that issue, by e-mail too when "Participating" or "Watching" e-mail notifications are on in
+<https://github.com/settings/notifications>. The first run creates the issue with the current counts as
+the baseline; its body keeps a per-release table and the last-seen counts. Close the issue to pause the
+alerts and reopen it to resume. Updater metadata (`latest*.yml`) and `.blockmap` files are not counted.
+GitHub disables scheduled workflows after 60 days without repository activity; running the workflow
+manually from the Actions tab re-enables it.
+
 The **[user manual](docs/USER-MANUAL.md)** covers installation, a first drawing, the interface and every command; see [CHANGELOG.md](CHANGELOG.md) for what changed in each release.
 Further documents: [docs/METRIC.md](docs/METRIC.md) (inch and millimetre drawings),
 [docs/PLUGIN-API.md](docs/PLUGIN-API.md) (plugins and scripts), [docs/CATALOG-PACKS.md](docs/CATALOG-PACKS.md)
