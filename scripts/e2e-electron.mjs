@@ -15,8 +15,13 @@
 // stream paths) and as a raster image through `plot-pdf`, a layout tab plotted as a page, the updater's
 // check path offline (up to date / newer release / network error), the Symbol Builder, the About
 // dialog, the unsaved-changes prompt on close, and no main-process error log.
+// File safety: old-style autosave files are migrated to permanent ids and offered by the Drawing
+// Recovery Manager (a double click opens a backup once, Discard All spares the opened one); saves
+// go through temp file + rename and keep <name>.bak; a failed save shows Retry / Save As... and
+// keeps the drawing modified and its backup; backup-file answers { ok, path } / { ok: false, error };
+// an unreadable recovery folder shows an error state; the close handshake waits for autosave.
 import { _electron as electron } from 'playwright';
-import { mkdtempSync, mkdirSync, readFileSync, existsSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, existsSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { deflateSync, crc32 } from 'node:zlib';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -39,6 +44,18 @@ const profile = mkdtempSync(join(tmpdir(), 'jcad-e2e-'));
 // JCAD_E2E_OUT keeps the plotted PDF in that folder (CI uploads it); otherwise a temporary folder is used and removed.
 const outDir = process.env.JCAD_E2E_OUT ? resolve(process.env.JCAD_E2E_OUT) : mkdtempSync(join(tmpdir(), 'jcad-e2e-out-'));
 mkdirSync(outDir, { recursive: true });
+// Autosave files in the old naming scheme (drawing title + a session number that restarted every
+// launch): the app must migrate them to permanent ids and offer them in the Recovery Manager.
+const autosaveDir = join(profile, 'autosave');
+const seedDxf = ['0', 'SECTION', '2', 'ENTITIES', '0', 'LINE', '8', '0', '10', '0', '20', '0', '11', '40', '21', '20', '0', 'LINE', '8', '0', '10', '40', '20', '0', '11', '0', '21', '20', '0', 'ENDSEC', '0', 'EOF', ''].join('\r\n');
+mkdirSync(autosaveDir, { recursive: true });
+writeFileSync(join(autosaveDir, 'Panel_A_1.sv.dxf'), seedDxf);
+writeFileSync(join(autosaveDir, 'Panel_A_1.sv.dxf.json'), JSON.stringify({ originalPath: null, title: 'Panel A.dxf', savedAt: Date.now() - 60_000 }));
+writeFileSync(join(autosaveDir, 'Drawing1_1.sv.dxf'), seedDxf);
+const readIndex = () => JSON.parse(readFileSync(join(autosaveDir, 'index.json'), 'utf8')).entries;
+const tmpLeftovers = (d) => readdirSync(d).filter((f) => f.endsWith('.tmp'));
+const ID_FILE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.sv\.dxf$/;
+
 const env = { ...process.env, ELECTRON_DISABLE_SECURITY_WARNINGS: '1' };
 delete env.VITE_DEV_SERVER_URL; // must load dist/, not a dev server
 delete env.ELECTRON_RUN_AS_NODE;
@@ -153,11 +170,49 @@ try {
     return j ? { keys: Object.keys(j).sort(), platform: j.platform } : null;
   });
   check(!!bridge, 'window.jcad bridge exists');
-  for (const k of ['openDrawing', 'openDxf', 'saveDxf', 'plotPdf', 'printDrawing', 'appInfo', 'checkForUpdates', 'onMenuCommand', 'onQueryDirty', 'autosaveWrite', 'userLibraryRead', 'packsList', 'readImage']) check(bridge?.keys.includes(k), `bridge exposes ${k}`);
+  for (const k of ['openDrawing', 'openDxf', 'saveDxf', 'plotPdf', 'printDrawing', 'appInfo', 'checkForUpdates', 'onMenuCommand', 'onQueryDirty', 'onFlushAutosave', 'backupFile', 'autosaveWrite', 'userLibraryRead', 'packsList', 'readImage']) check(bridge?.keys.includes(k), `bridge exposes ${k}`);
   check(bridge?.platform === process.platform, `bridge platform ${bridge?.platform}`);
   const info = await win.evaluate(() => window.jcad.appInfo());
   check(info.version === pkg.version && info.packaged === false && info.selfUpdate === false, `appInfo ${JSON.stringify(info)}`);
   check(await win.evaluate(() => typeof window.require === 'undefined' && typeof window.process === 'undefined'), 'renderer has no Node globals (contextIsolation, sandbox)');
+
+  // ------------------------------------------------------------------ Drawing Recovery Manager at start-up
+  step = 'recovery';
+  let panelBackup = null;
+  const recDlg = win.locator('.recovery-dialog .modal');
+  await recDlg.waitFor({ timeout: 15_000 }).then(
+    () => ok('the Drawing Recovery Manager opened at start-up'),
+    () => bad('no Drawing Recovery Manager for the seeded autosave files'),
+  );
+  {
+    const files = readdirSync(autosaveDir);
+    const index = readIndex();
+    const ids = files.filter((f) => ID_FILE.test(f));
+    check(ids.length === 2 && !files.some((f) => /^(Panel_A_1|Drawing1_1)\.sv\.dxf/.test(f)), `old autosave files renamed to permanent ids (${files.join(', ')})`);
+    check(ids.every((f) => index[f]) && Object.values(index).map((e) => e.title).sort().join() === 'Drawing1.dxf,Panel A.dxf', `index.json maps ids to titles (${JSON.stringify(index)})`);
+    panelBackup = ids.find((f) => index[f].title === 'Panel A.dxf') ?? null;
+  }
+  check((await win.locator('.recovery-dialog .recovery-row').count()) === 2, 'both backups are listed');
+  const hr = await historyLen();
+  const tabsRec = await win.evaluate(() => window.editor.sessions.count);
+  // A double click on Open must open the backup once.
+  await win.locator('.recovery-dialog .recovery-row', { hasText: 'Panel A.dxf' }).locator('button', { hasText: 'Open' }).dblclick();
+  await waitLog(/^Recovered Panel A\.dxf/, hr, 15_000).catch(() => bad('the backup was not opened'));
+  await win.waitForTimeout(500);
+  const recovered = (await logSince(hr)).filter((l) => l.startsWith('Recovered Panel A.dxf'));
+  check(recovered.length === 1 && (await win.evaluate(() => window.editor.sessions.count)) === tabsRec + 1, `double click opened the backup once (${recovered.length} time(s), ${await win.evaluate(() => window.editor.sessions.count)} tabs)`);
+  check(await win.evaluate((n) => window.jacUi.autosaver.owns(n), panelBackup), 'the opened drawing adopted its backup');
+  check((await win.locator('.recovery-dialog .recovery-row').count()) === 1, 'the opened backup is no longer listed');
+  await win.locator('.recovery-dialog button', { hasText: 'Discard All' }).click();
+  await recDlg.waitFor({ state: 'detached', timeout: 10_000 }).then(
+    () => ok('Discard All closed the Recovery Manager'),
+    () => bad('the Recovery Manager stayed open after Discard All'),
+  );
+  {
+    const files = readdirSync(autosaveDir).filter((f) => f.endsWith('.sv.dxf'));
+    check(files.length === 1 && files[0] === panelBackup && Object.keys(readIndex()).join() === panelBackup, `Discard All removed only the backup still listed (${files.join(', ')})`);
+  }
+  await win.evaluate(() => window.editor.sessions.switchTo(0));
 
   // ------------------------------------------------------------------ commands typed at the command line
   step = 'LINE';
@@ -428,6 +483,112 @@ try {
   check((await win.locator('#symbol-builder .sb-actions button').count()) > 0, 'Symbol Builder actions are present');
   if (process.env.JCAD_E2E_OUT) await win.screenshot({ path: join(outDir, `window-${process.platform}.png`) });
 
+  // ------------------------------------------------------------------ crash-safe saves, save errors, backups
+  step = 'save';
+  const saveDir = mkdtempSync(join(tmpdir(), 'jcad-e2e-save-'));
+  const good = join(saveDir, 'recovered.dxf');
+  const missingFolder = join(saveDir, 'no-such-folder', 'recovered.dxf');
+  // Work in the recovered drawing (it still writes to its adopted backup).
+  await win.evaluate((name) => {
+    const ed = window.editor;
+    const i = ed.sessions.all.findIndex((x) => window.jacUi.autosaver.nameFor(x.id) === name);
+    if (i >= 0) ed.sessions.switchTo(i);
+  }, panelBackup);
+  check(await win.evaluate((name) => window.jacUi.autosaver.nameFor(window.editor.sessions.current.id) === name, panelBackup), 'the recovered drawing is active');
+  h = await historyLen();
+  await win.evaluate(() => window.editor.runCommand('AUTOSAVE'));
+  await waitLog(/drawing\(s\) autosaved/, h, 15_000).catch(() => bad('AUTOSAVE did not finish'));
+  check(existsSync(join(autosaveDir, panelBackup)) && tmpLeftovers(autosaveDir).length === 0, 'AUTOSAVE refreshed the adopted backup without leaving temporary files');
+
+  // A save into a folder that does not exist fails: error dialog, still modified, backup kept.
+  await app.evaluate((_e, p) => globalThis.__e2e.savePaths.push(p), missingFolder);
+  h = await historyLen();
+  await win.evaluate(() => window.editor.runCommand('SAVEAS'));
+  const errDlg = win.locator('.save-error-dialog .modal');
+  await errDlg.waitFor({ timeout: 10_000 }).then(
+    () => ok('a failed save shows the Save Failed dialog'),
+    () => bad('no Save Failed dialog'),
+  );
+  const errText = (await errDlg.textContent()) ?? '';
+  check(/"recovered\.dxf" could not be saved: .*is not available/.test(errText) && /still marked as modified/.test(errText), `the dialog explains the failure (${errText.slice(0, 200)})`);
+  check(['Retry', 'Save As...', 'Cancel'].every((b) => errText.includes(b)), 'the dialog offers Retry, Save As... and Cancel');
+  check(await win.evaluate(() => window.editor.doc.dirty), 'the drawing is still modified after the failed save');
+  check(existsSync(join(autosaveDir, panelBackup)), 'the autosave backup is kept after the failed save');
+  check((await logSince(h)).some((l) => l.startsWith('Save failed: "recovered.dxf" could not be saved')), 'the command log names the failure');
+  // Retry (Save As again, same bad folder) fails again; then Save As... to a good place works.
+  await app.evaluate((_e, p) => globalThis.__e2e.savePaths.push(p), missingFolder);
+  await errDlg.locator('button', { hasText: 'Retry' }).click();
+  await win.waitForFunction(() => document.querySelectorAll('.save-error-dialog').length === 1, null, { timeout: 10_000 }).catch(() => {});
+  await errDlg.waitFor({ timeout: 10_000 });
+  check((await win.locator('.save-error-dialog').count()) === 1, 'Retry tried again and reported the failure again');
+  await app.evaluate((_e, p) => globalThis.__e2e.savePaths.push(p), good);
+  h = await historyLen();
+  await win.locator('.save-error-dialog button', { hasText: 'Save As...' }).click();
+  await waitLog(/^Saved /, h, 15_000).catch(() => bad('Save As... after the error did not save'));
+  check(existsSync(good) && !existsSync(`${good}.bak`) && tmpLeftovers(saveDir).length === 0, `Save As... wrote the drawing (${readdirSync(saveDir).join(', ')})`);
+  check(!(await win.evaluate(() => window.editor.doc.dirty)), 'the drawing is clean after the save');
+  let backupGone = false;
+  for (let i = 0; i < 100 && !backupGone; i += 1) {
+    backupGone = !existsSync(join(autosaveDir, panelBackup)) && !readIndex()[panelBackup];
+    if (!backupGone) await win.waitForTimeout(100);
+  }
+  check(backupGone && !existsSync(join(autosaveDir, panelBackup)) && !readIndex()[panelBackup], 'the saved revision removed its recovery backup');
+
+  // Saving again keeps the previous version as <name>.bak.
+  const firstContent = readFileSync(good, 'utf8');
+  await win.evaluate(() => window.editor.doc.addEntities([{ id: 'e2e-bak', type: 'line', layer: '0', color: 'ByLayer', a: { x: 0, y: 0 }, b: { x: 3, y: 4 } }]));
+  h = await historyLen();
+  await win.evaluate(() => window.editor.runCommand('SAVE'));
+  await waitLog(/^Saved /, h, 15_000).catch(() => bad('SAVE did not finish'));
+  check(existsSync(`${good}.bak`) && readFileSync(`${good}.bak`, 'utf8') === firstContent && readFileSync(good, 'utf8') !== firstContent, 'SAVE kept the previous version as recovered.dxf.bak');
+  check(tmpLeftovers(saveDir).length === 0, 'no temporary files next to the drawing');
+  check((await messages()).filter((m) => m.startsWith('save:')).length === 3, 'SAVE of a known file asked no dialog');
+
+  // backup-file: { ok, path } or { ok: false, error }, never a silent success.
+  const b1 = await win.evaluate((p) => window.jcad.backupFile(p), good);
+  check(b1 && b1.ok === true && b1.path === `${good}.bak` && readFileSync(`${good}.bak`, 'utf8') === readFileSync(good, 'utf8'), `backup-file copied the drawing (${JSON.stringify(b1)})`);
+  const b2 = await win.evaluate((p) => window.jcad.backupFile(p), join(saveDir, 'missing.dxf'));
+  check(b2 && b2.ok === false && /^The backup copy of "missing\.dxf" could not be made/.test(b2.error), `backup-file reports a missing file (${JSON.stringify(b2)})`);
+  const b3 = await win.evaluate(() => window.jcad.backupFile('relative.dxf'));
+  check(b3 && b3.ok === false && b3.code === 'EINVAL', `backup-file refuses relative paths (${JSON.stringify(b3)})`);
+
+  // An unreadable recovery folder is an error state, not "nothing to recover".
+  step = 'recovery error';
+  renameSync(autosaveDir, `${autosaveDir}-moved`);
+  writeFileSync(autosaveDir, 'not a folder');
+  await win.evaluate(() => window.editor.runCommand('DRAWINGRECOVERY'));
+  const recErr = win.locator('.recovery-error-state .modal');
+  await recErr.waitFor({ timeout: 10_000 }).then(
+    () => ok('an unreadable recovery folder shows an error'),
+    () => bad('no error state for an unreadable recovery folder'),
+  );
+  check(/The recovery folder could not be read/.test((await recErr.textContent()) ?? ''), 'the error names the recovery folder');
+  rmSync(autosaveDir, { force: true });
+  renameSync(`${autosaveDir}-moved`, autosaveDir);
+  h = await historyLen();
+  await recErr.locator('button', { hasText: 'Retry' }).click();
+  await waitLog(/no autosaved drawings to recover/, h, 10_000).then(
+    () => ok('Retry reads the folder again (only this session\'s own backups there: nothing to offer)'),
+    () => bad('Retry did not read the recovery folder again'),
+  );
+
+  // The close handshake: the renderer answers flush-autosave once no autosave is being written.
+  step = 'flush';
+  const flushed = await app.evaluate(({ BrowserWindow, ipcMain }) => new Promise((resolve) => {
+    const w = BrowserWindow.getAllWindows()[0];
+    const token = 'e2e-flush';
+    const on = (_ev, t) => {
+      if (t !== token) return;
+      ipcMain.removeListener('autosave-flushed', on);
+      resolve(true);
+    };
+    ipcMain.on('autosave-flushed', on);
+    w.webContents.send('flush-autosave', token);
+    setTimeout(() => resolve(false), 5000);
+  }));
+  check(flushed === true, 'the renderer answers the flush-autosave request');
+  rmSync(saveDir, { recursive: true, force: true });
+
   // ------------------------------------------------------------------ errors so far
   step = 'renderer errors';
   check(pageErrors.length === 0, `no page / console errors${pageErrors.length ? `: ${pageErrors.slice(0, 5).join(' | ')}` : ''}`);
@@ -457,6 +618,7 @@ try {
 }
 
 step = 'main process';
+check(!existsSync(autosaveDir) || tmpLeftovers(autosaveDir).length === 0, `no temporary files left in the autosave folder (${existsSync(autosaveDir) ? readdirSync(autosaveDir).join(', ') : 'none'})`);
 const errorLog = join(userData, 'error.log');
 check(!existsSync(errorLog), `no main-process error log${existsSync(errorLog) ? `: ${readFileSync(errorLog, 'utf8').slice(0, 2000)}` : ''}`);
 const mainErrors = mainLog.join('').split(/\r?\n/).filter((l) => /Uncaught|UnhandledPromiseRejection|TypeError|ReferenceError/.test(l));

@@ -11,6 +11,12 @@ import type { Point } from '../core/geometry';
 
 export interface DocumentSession {
   readonly id: number;
+  /**
+   * Permanent unique id of this open document (a UUID, generated once). Unlike `id`, which
+   * restarts at 1 every launch, it never repeats, so its autosave file can never overwrite an
+   * unrecovered backup from an earlier session (src/app/autosave.ts).
+   */
+  readonly docId: string;
   state: DrawingState;
   filePath: string | null;
   dirty: boolean;
@@ -40,6 +46,19 @@ interface HistoryAccess {
 }
 const historyOf = (doc: Drawing): HistoryAccess => doc as unknown as HistoryAccess;
 
+/** A random RFC 4122 version 4 UUID (crypto.randomUUID where available). */
+export function newDocumentId(): string {
+  const c = (globalThis as { crypto?: Crypto }).crypto;
+  if (c && typeof c.randomUUID === 'function') return c.randomUUID();
+  const b = new Uint8Array(16);
+  if (c && typeof c.getRandomValues === 'function') c.getRandomValues(b);
+  else for (let i = 0; i < 16; i += 1) b[i] = Math.floor(Math.random() * 256);
+  b[6] = (b[6]! & 0x0f) | 0x40;
+  b[8] = (b[8]! & 0x3f) | 0x80;
+  const h = [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+}
+
 export function sessionTitle(s: Pick<DocumentSession, 'filePath' | 'untitledName'>): string {
   if (!s.filePath) return s.untitledName;
   return s.filePath.split(/[\\/]/).pop() || s.untitledName;
@@ -61,6 +80,7 @@ export class SessionManager {
     this.untitledCounter += 1;
     return {
       id: this.nextId++,
+      docId: newDocumentId(),
       state,
       filePath,
       dirty: false,
@@ -79,6 +99,10 @@ export class SessionManager {
   }
   get active(): number {
     return this.activeIndex;
+  }
+  /** Id of the active session, without synchronising (safe inside 'file' listeners during a switch). */
+  get activeId(): number {
+    return this.list[this.activeIndex]!.id;
   }
   get count(): number {
     return this.list.length;
@@ -99,6 +123,9 @@ export class SessionManager {
 
   /** Capture the live document into the active session record. */
   sync(): void {
+    // While a session is being loaded into the editor the live document is half restored (just
+    // loaded: clean, no undo history); capturing it then would wipe the session's dirty flag.
+    if (this.restoring) return;
     const s = this.list[this.activeIndex];
     if (!s) return;
     const { doc, viewport } = this.host;
@@ -112,9 +139,16 @@ export class SessionManager {
     s.selection = new Set(this.host.selection);
   }
 
+  private restoring = false;
+
   private restore(s: DocumentSession): void {
     const { host } = this;
-    host.loadState(s.state, s.filePath);
+    this.restoring = true;
+    try {
+      host.loadState(s.state, s.filePath);
+    } finally {
+      this.restoring = false;
+    }
     const h = historyOf(host.doc);
     h.undoStack = [...s.undo];
     h.redoStack = [...s.redo];

@@ -21,6 +21,7 @@ import { gripPoints, moveGrip } from '../core/entities';
 import { parseProject, serializeProject, defaultProject, resolveDrawingPath, baseName, type Project } from './project';
 import { loadSettings, saveSettings, pushRecent, type UserSettings } from './settings';
 import { SessionManager, applySaveResult } from './sessions';
+import { describeFileError, type FileErrorInfo } from './file-errors';
 import type { ColorSpec } from '../core/entities';
 import { readDxf, writeDxf } from '../io/dxf';
 import { layoutPage, type PlotOptions } from './plot';
@@ -67,6 +68,12 @@ export interface PlotSheet {
   electron?: string;
 }
 
+/** Result of FileBridge.backupFile (electron/main.cjs `backup-file`). */
+export type BackupResult = { ok: true; path: string } | { ok: false; error: string; code?: string | null };
+
+/** What the user chose in the save error dialog (src/ui/save-error.ts). */
+export type SaveErrorChoice = 'retry' | 'saveas' | 'cancel';
+
 export interface FileBridge {
   openDxf(): Promise<{ path: string; text: string } | null>;
   /** Desktop only: open DXF or DWG (DWG parsed by LibreDWG in the main process). */
@@ -74,8 +81,11 @@ export interface FileBridge {
   saveDxf(path: string | null, text: string, suggestName: string): Promise<string | null>;
   openProject?(file?: string): Promise<{ path: string; text: string } | null>;
   saveText?(suggestName: string, text: string, filterName: string, ext: string): Promise<string | null>;
-  /** Desktop only: copy a drawing/project file to `<path>.bak` before it is rewritten; returns the copy's path. */
-  backupFile?(path: string): Promise<string | null>;
+  /**
+   * Desktop only: copy a drawing/project file to `<path>.bak` (crash-safe) before it is rewritten.
+   * Never throws: { ok: false, error } carries a message for the user when no complete copy was made.
+   */
+  backupFile?(path: string): Promise<BackupResult>;
   plotPdf?(dataUrl: string, suggestName: string, landscape: boolean, sheet?: PlotSheet): Promise<string | null>;
   /** Print the rendered sheet through the system print dialog; resolves true when a job was sent. */
   printDrawing?(dataUrl: string, title: string, landscape: boolean, sheet?: PlotSheet): Promise<boolean>;
@@ -155,6 +165,10 @@ export class Editor {
     symbolBuilder?: SymbolBuilderUi;
     /** Plot / Print dialog (paper, orientation, scale, margins and which output); null = cancelled. */
     plot?: (mode: 'pdf' | 'print') => Promise<{ options: PlotOptions; action: 'pdf' | 'print' } | null>;
+    /** A save failed: show why and offer Retry / Save As... / Cancel (src/ui/save-error.ts). */
+    saveError?: (info: FileErrorInfo, fileName: string, opts: { saveAs: boolean }) => Promise<SaveErrorChoice>;
+    /** A drawing save completed: revision `state` of session `sessionId` is on disk (autosave bookkeeping). */
+    drawingSaved?: (sessionId: number, state: DrawingState, path: string) => void;
   } = {};
   settings: UserSettings = loadSettings();
   project: Project = defaultProject();
@@ -774,24 +788,38 @@ export class Editor {
     }
   }
 
-  async saveFile(saveAs: boolean): Promise<void> {
+  /** Save the active drawing; resolves true when it was written. */
+  async saveFile(saveAs: boolean): Promise<boolean> {
     if (!this.fileBridge) {
       this.log('No file access in this environment.');
-      return;
+      return false;
     }
     // Remember exactly which document revision goes to disk: edits made while the file
     // dialog / write is pending (or in another tab) must stay flagged as unsaved.
     const sessionId = this.sessions.current.id;
     const savedState = this.doc.snapshot;
-    const text = writeDxf(withoutUnusedLibraryBlocks(savedState));
-    const path = await this.fileBridge.saveDxf(saveAs ? null : this.doc.filePath, text, this.suggestedName ?? this.fileName());
-    if (path) {
-      const outcome = applySaveResult(this.sessions, this, sessionId, savedState, path);
-      if (outcome === 'clean' && this.sessions.current.id === sessionId) this.suggestedName = null;
-      this.log(outcome === 'newer-edits' ? `Saved ${path} (edits made during the save are still unsaved).` : `Saved ${path}`);
-      this.rememberRecent(path);
-      this.emit('file');
+    const target = saveAs ? null : this.doc.filePath;
+    const fileName = this.fileName();
+    let path: string | null;
+    try {
+      const text = writeDxf(withoutUnusedLibraryBlocks(savedState));
+      path = await this.fileBridge.saveDxf(target, text, this.suggestedName ?? fileName);
+    } catch (err) {
+      // Nothing is marked as saved: the dirty flag and the autosave / recovery copy stay.
+      const info = describeFileError(err, { action: 'save', path: target });
+      this.log(`Save failed: ${info.message} The drawing is still marked as modified and its autosave copy is kept.`);
+      const choice = this.hooks.saveError ? await this.hooks.saveError(info, fileName, { saveAs: true }) : 'cancel';
+      if (choice === 'cancel' || this.sessions.current.id !== sessionId) return false;
+      return this.saveFile(choice === 'saveas' ? true : saveAs);
     }
+    if (!path) return false;
+    const outcome = applySaveResult(this.sessions, this, sessionId, savedState, path);
+    if (outcome === 'clean' && this.sessions.current.id === sessionId) this.suggestedName = null;
+    this.log(outcome === 'newer-edits' ? `Saved ${path} (edits made during the save are still unsaved).` : `Saved ${path}`);
+    this.rememberRecent(path);
+    this.hooks.drawingSaved?.(sessionId, savedState, path);
+    this.emit('file');
+    return true;
   }
 
   confirmDiscardPublic(): Promise<boolean> {
@@ -837,7 +865,16 @@ export class Editor {
       this.log('Projects need the desktop app.');
       return;
     }
-    const p = await this.fileBridge.saveText(this.project.path ?? `${this.project.name.replace(/\s+/g, '_')}.jcadproj.json`, serializeProject(this.project), 'JCad Electrical Project', 'json');
+    let p: string | null;
+    try {
+      p = await this.fileBridge.saveText(this.project.path ?? `${this.project.name.replace(/\s+/g, '_')}.jcadproj.json`, serializeProject(this.project), 'JCad Electrical Project', 'json');
+    } catch (err) {
+      const info = describeFileError(err, { action: 'save', path: this.project.path });
+      this.log(`Project save failed: ${info.message}`);
+      const choice = this.hooks.saveError ? await this.hooks.saveError(info, this.project.name, { saveAs: false }) : 'cancel';
+      if (choice !== 'cancel') return this.saveProject();
+      return;
+    }
     if (p) {
       this.project = { ...this.project, path: p };
       this.log(`Project saved: ${p}`);

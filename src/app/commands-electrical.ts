@@ -509,8 +509,8 @@ export interface LoadedSheet extends ProjectSheet {
   sessionId?: number;
 }
 
-/** Bridge extension a desktop build may provide for the .bak copy before project-wide saves (not in FileBridge yet). */
-type BackupBridge = FileBridge & { backupFile?(path: string): Promise<string | null> };
+/** The desktop bridge's .bak copy before project-wide saves (FileBridge.backupFile: { ok, path } or { ok: false, error }). */
+type BackupBridge = FileBridge;
 
 /** Only the desktop bridge reads project drawings by path (the browser bridge would show a file picker per drawing). */
 export function canReadProjectFiles(editor: Pick<Editor, 'fileBridge'>): boolean {

@@ -8,6 +8,8 @@ import { readDxf, writeDxf } from '../src/io/dxf';
 import { Drawing } from '../src/core/document';
 import { newId, type TextEntity, type MTextEntity } from '../src/core/entities';
 import { autosaveName } from '../src/app/autosave';
+import { newDocumentId } from '../src/app/sessions';
+import { createRequire } from 'node:module';
 
 /** A minimal DXF (header + one TEXT) with the text value given as raw bytes. */
 function dxfBytes(acadver: string, codepage: string | null, textBytes: number[], opts: { bom?: boolean } = {}): Uint8Array {
@@ -114,16 +116,17 @@ describe('DXF code pages', () => {
 
 describe('non-ASCII file names', () => {
   const mainSource = readFileSync('electron/main.cjs', 'utf8');
-  const autosaveRe = new RegExp(/function safeAutosaveName[\s\S]*?!\/(.+?)\/\.test\(name\)/.exec(mainSource)![1]!);
+  const { safeAutosaveName } = createRequire(import.meta.url)('../electron/autosave-store.cjs') as { safeAutosaveName: (n: string) => string };
 
-  it('autosave names from any title pass the main-process filter', () => {
-    for (const title of ['日本語の図面.dxf', 'Schéma moteur 3.dxf', 'Drawing1', 'a b/c\\d.dxf', 'ÆØÅ', '..\\..\\evil.dxf']) {
-      const name = autosaveName(title, 12);
-      expect(name).toMatch(autosaveRe);
-      expect(name).not.toMatch(/[\\/]|\.\./);
+  it('autosave names come from the document id, not the title, and pass the main-process filter', () => {
+    // Titles (any script, slashes, "..") no longer reach the file name at all.
+    for (let i = 0; i < 20; i += 1) {
+      const name = autosaveName(newDocumentId());
+      expect(safeAutosaveName(name)).toBe(name);
+      expect(name).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.sv\.dxf$/);
     }
-    expect(autosaveName('Schéma moteur 3.dxf', 1)).toBe('Sch_ma_moteur_3_1.sv.dxf');
-    expect(autosaveName('日本語.dxf', 2)).toBe('Drawing_2.sv.dxf');
+    expect(autosaveName('..\\..\\evil/日本語')).toBe('evil.sv.dxf');
+    expect(() => safeAutosaveName('../x.sv.dxf')).toThrow();
   });
 
   it('the main process reads DXF bytes and compares paths in NFC', () => {
