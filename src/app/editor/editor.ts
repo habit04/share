@@ -9,6 +9,7 @@
  *   prompter.ts    tools, the tool context, the command line and Enter
  *   selection.ts   LIST, picking into the selection or a selection request
  *   pointer.ts     mouse input: snapped cursor, picking, selection boxes, grips, pan, wheel zoom
+ *   keyboard.ts    keys
  *   view.ts        settings, drafting toggles, zoom extents
  *   documents.ts   new / open, tabs, import reports, the Save / Don't Save / Cancel question
  *   save.ts        drawing saves through the save queue
@@ -40,6 +41,7 @@ import * as prompter from './prompter';
 import * as view from './view';
 import * as select from './selection';
 import * as pointer from './pointer';
+import * as keyboard from './keyboard';
 import * as documents from './documents';
 import * as save from './save';
 import * as projects from './project';
@@ -417,76 +419,7 @@ export class Editor {
 
   // ------------------------------------------------------------- keyboard
   onKeyDown(ev: KeyboardEvent): boolean {
-    const key = ev.key;
-    if (key === 'Escape') {
-      this.cancel();
-      return true;
-    }
-    if (key === 'F3') {
-      this.toggle('osnap');
-      return true;
-    }
-    if (key === 'F7') {
-      this.toggle('grid');
-      return true;
-    }
-    if (key === 'F8') {
-      this.toggle('ortho');
-      return true;
-    }
-    if (key === 'F9') {
-      this.toggle('gridSnap');
-      return true;
-    }
-    if (key === 'F10') {
-      this.toggle('polar');
-      return true;
-    }
-    if (key === 'F11') {
-      this.toggle('otrack');
-      return true;
-    }
-    if (key === 'F12') {
-      this.toggle('dyn');
-      return true;
-    }
-    if (ev.ctrlKey || ev.metaKey) {
-      const k = key.toLowerCase();
-      if (k === 'z') {
-        if (!ev.shiftKey && this.tool && (this.tool.name === 'LINE' || this.tool.name === 'PLINE' || this.tool.name === 'AEWIRE')) {
-          this.tool.onText('U', prompter.makeContext(this, this.internals)); // stay in the command, undo the last segment
-          return true;
-        }
-        this.runCommand(ev.shiftKey ? 'REDO' : 'UNDO');
-        return true;
-      }
-      if (k === 'y') {
-        this.runCommand('REDO');
-        return true;
-      }
-      if (k === 's') {
-        this.runCommand(ev.shiftKey ? 'SAVEAS' : 'SAVE');
-        return true;
-      }
-      if (k === 'o') {
-        this.runCommand('OPEN');
-        return true;
-      }
-      if (k === 'n') {
-        this.runCommand('NEW');
-        return true;
-      }
-      if (k === 'a') {
-        this.runCommand('SELECTALL');
-        return true;
-      }
-      return false;
-    }
-    if (key === 'Delete' && !this.tool && this.selection.size > 0) {
-      this.runCommand('ERASE');
-      return true;
-    }
-    return false;
+    return keyboard.onKeyDown(this, this.internals, ev);
   }
 
   /** Current mouse position in world coordinates for the status bar. */
