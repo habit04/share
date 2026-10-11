@@ -18,7 +18,8 @@
 // File safety: old-style autosave files are migrated to permanent ids and offered by the Drawing
 // Recovery Manager (a double click opens a backup once, Discard All spares the opened one); saves
 // go through temp file + rename and keep <name>.bak; a failed save shows Retry / Save As... and
-// keeps the drawing modified and its backup; backup-file answers { ok, path } / { ok: false, error };
+// keeps the drawing modified and its backup; backup-file answers { ok, path } / { ok: false, error } and
+// refuses paths outside the main process allow-list;
 // an unreadable recovery folder shows an error state; the close handshake waits for autosave.
 import { _electron as electron } from 'playwright';
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, existsSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -547,8 +548,14 @@ try {
   // backup-file: { ok, path } or { ok: false, error }, never a silent success.
   const b1 = await win.evaluate((p) => window.jcad.backupFile(p), good);
   check(b1 && b1.ok === true && b1.path === `${good}.bak` && readFileSync(`${good}.bak`, 'utf8') === readFileSync(good, 'utf8'), `backup-file copied the drawing (${JSON.stringify(b1)})`);
-  const b2 = await win.evaluate((p) => window.jcad.backupFile(p), join(saveDir, 'missing.dxf'));
-  check(b2 && b2.ok === false && /^The backup copy of "missing\.dxf" could not be made/.test(b2.error), `backup-file reports a missing file (${JSON.stringify(b2)})`);
+  // A path the main process never handed out (no dialog, recent list or project named it) is refused like save-dxf refuses it.
+  const b2 = await win.evaluate((p) => window.jcad.backupFile(p), join(saveDir, 'stranger.dxf'));
+  check(b2 && b2.ok === false && b2.code === 'EINVAL' && /^The backup copy of "stranger\.dxf" could not be made: only drawings and project files opened or saved in this session/.test(b2.error), `backup-file refuses a path outside the allow-list (${JSON.stringify(b2)})`);
+  // A known path whose file is gone: a clear message, no .bak.
+  renameSync(good, `${good}.moved`);
+  const b2b = await win.evaluate((p) => window.jcad.backupFile(p), good);
+  renameSync(`${good}.moved`, good);
+  check(b2b && b2b.ok === false && b2b.code === 'ENOENT' && /^The backup copy of "recovered\.dxf" could not be made: .*is not available/.test(b2b.error), `backup-file reports a missing file (${JSON.stringify(b2b)})`);
   const b3 = await win.evaluate(() => window.jcad.backupFile('relative.dxf'));
   check(b3 && b3.ok === false && b3.code === 'EINVAL', `backup-file refuses relative paths (${JSON.stringify(b3)})`);
 

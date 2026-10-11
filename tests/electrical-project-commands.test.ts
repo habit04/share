@@ -34,6 +34,7 @@ function state(sheet: string, first: number, comps: InsertEntity[], withTitle = 
 interface Fake {
   editor: Editor;
   saved: Map<string, string>;
+  backupFails: Set<string>;
   backups: string[];
   logs: string[];
 }
@@ -48,6 +49,8 @@ function fakeEditor(): Fake {
   const closed = state('3', 300, [ins('HCR1_NC', 3, 8, { TAG1: 'CR100' }), ins('HPB11_NO', 6, 7, { TAG1: 'PB100' }), ins('HCR1_NO', 3, 7, { TAG1: 'CR999' })], true);
   const saved = new Map<string, string>();
   const backups: string[] = [];
+  /** Paths whose .bak copy fails (backupFile answers { ok: false }). */
+  const backupFails = new Set<string>();
   const logs: string[] = [];
   const project: Project = { name: 'P', path: '/p/p.jcadproj.json', descriptions: ['ACME'], drawings: [{ file: 'a.dxf', sheet: '1', rev: 'B' }, { file: 'b.dxf', sheet: '2' }, { file: 'c.dxf', sheet: '3', description: 'CONTROL' }] };
   const editor = {
@@ -64,14 +67,15 @@ function fakeEditor(): Fake {
       },
       backupFile: async (path: string) => {
         backups.push(path);
-        return `${path}.bak`;
+        if (backupFails.has(path)) return { ok: false as const, code: 'ENOSPC', error: `The backup copy of "${path.split('/').pop()}" could not be made: there is not enough free space on the disk.` };
+        return { ok: true as const, path: `${path}.bak` };
       },
     },
     fileName: () => 'a.dxf',
     log: (t: string) => logs.push(t),
     notify: () => {},
   } as unknown as Editor;
-  return { editor, saved, backups, logs };
+  return { editor, saved, backups, backupFails, logs };
 }
 
 const g = globalThis as { window?: unknown };
@@ -128,6 +132,19 @@ describe('project-wide command glue', () => {
     confirms = [];
     await runProjectXref(editor);
     expect(confirms).toHaveLength(0);
+  });
+  it('a closed drawing whose .bak copy fails is left untouched and listed as not updated', async () => {
+    const { editor, saved, backups, backupFails, logs } = fakeEditor();
+    backupFails.add('/p/c.dxf');
+    await runProjectXref(editor);
+    expect(backups).toEqual(['/p/c.dxf']);
+    expect(saved.has('/p/c.dxf')).toBe(false); // the user asked for a backup first: no copy, no rewrite
+    expect(logs.join('\n')).toMatch(/Not updated: c\.dxf \(The backup copy of "c\.dxf" could not be made: there is not enough free space/);
+    // Without the .bak option the file is written.
+    projectUi.confirmFiles = async () => ({ files: true, backup: false });
+    await runProjectXref(editor);
+    expect(saved.has('/p/c.dxf')).toBe(true);
+    expect(backups).toEqual(['/p/c.dxf']);
   });
   it('a cancelled confirmation changes nothing', async () => {
     const { editor, saved, logs } = fakeEditor();

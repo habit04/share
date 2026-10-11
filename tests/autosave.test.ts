@@ -289,6 +289,41 @@ describe('Autosaver: revisions, overlap and coordination', () => {
     expect(await a.runNow()).toBe(1);
   });
 
+  it('a write that fails on one interval does not stop the timer: the next interval writes it', async () => {
+    vi.useFakeTimers();
+    const { sessions, list, edit } = fakeSessions(1);
+    const fake = gatedStore();
+    const a = new Autosaver(sessions, fake.store, () => 1);
+    const errors: string[] = [];
+    a.onError = (title) => errors.push(title);
+    const saved: number[] = [];
+    a.onSaved = (n) => saved.push(n);
+    edit(0, 'work');
+    a.start();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fake.pending).toBe(1);
+    await fake.release(Object.assign(new Error('EIO: i/o error, write'), { code: 'EIO' }));
+    expect(errors).toEqual(['Drawing1.dxf']);
+    expect(a.backedUpState(1)).toBeUndefined();
+    expect(a.busy).toBe(false);
+    // Next tick: the same revision is still due and is written.
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fake.pending).toBe(1);
+    await fake.release();
+    expect(saved).toEqual([1]);
+    expect(a.backedUpState(1)).toBe(list[0]!.state);
+    expect(fake.files.get(autosaveName(list[0]!.docId))!.text).toContain('work');
+    // A failure inside the store that is not a rejection (throws synchronously) is caught too.
+    fake.store.write = () => {
+      throw new Error('EBUSY: resource busy or locked');
+    };
+    edit(0, 'more');
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(errors).toEqual(['Drawing1.dxf', 'Drawing1.dxf']);
+    expect(a.busy).toBe(false);
+    a.stop();
+  });
+
   it('a manual save marks the backup clean only for the revision that was saved', async () => {
     const { sessions, list, edit } = fakeSessions(1);
     const fake = gatedStore();

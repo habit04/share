@@ -24,7 +24,8 @@ export interface FileErrorInfo {
   detail: string;
 }
 
-const KIND_BY_CODE: Record<string, FileErrorKind> = {
+/** OS error code -> family (exported so tests can compare it with electron/file-errors.cjs). */
+export const KIND_BY_CODE: Record<string, FileErrorKind> = {
   ENOSPC: 'disk-full',
   EDQUOT: 'disk-full',
   EFBIG: 'disk-full',

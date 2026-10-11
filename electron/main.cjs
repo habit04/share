@@ -428,19 +428,22 @@ ipcMain.handle('save-text', async (ev, suggestName, text, filterName, ext) => {
     filters: [{ name: String(filterName || 'Text'), extensions: [String(ext || 'txt')] }],
   });
   if (res.canceled || !res.filePath) return null;
-  // Projects and exports: crash-safe, with the previous version kept as <name>.bak.
-  await atomicWriteFile(res.filePath, text, { backup: true });
+  // Crash-safe for every export; only a project file keeps its previous version as <name>.bak
+  // (a .bak next to a CSV or text export would only clutter the user's folder).
+  const isProject = /\.jcadproj\.json$/i.test(res.filePath) || String(filterName) === 'JCad Electrical Project';
+  await atomicWriteFile(res.filePath, text, { backup: isProject });
   rememberPath(res.filePath);
   return res.filePath;
 });
 
 /**
  * Copy a drawing or project file to `<file>.bak` before a project-wide command rewrites it.
- * Only DXF drawings and project files are copied, through a temporary file + fsync + rename
+ * Only DXF drawings and project files whose path is known (our dialogs, the recent list, an open
+ * project - the same rule as save-dxf) are copied, through a temporary file + fsync + rename
  * (electron/atomic-write.cjs backupFile). Resolves { ok: true, path } or { ok: false, code, error }
  * with a message for the user; it never throws and never reports success without a complete copy.
  */
-ipcMain.handle('backup-file', (_ev, file) => backupFile(file));
+ipcMain.handle('backup-file', (_ev, file) => backupFile(file, undefined, isKnownPath));
 
 /** Plot: the renderer sends a PNG data URL of the sheet; we print it to PDF via a hidden window. */
 ipcMain.handle('plot-pdf', async (ev, dataUrl, suggestName, landscape, sheet) => {

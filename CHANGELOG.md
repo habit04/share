@@ -27,7 +27,9 @@ messages). The date of each version is the date of the commit that set that vers
   leave a truncated file as the only copy.
 - The project-wide `.bak` copy (`backup-file`) goes through the same temporary file + rename and
   reports `{ ok: false, error }` with a clear message when no complete copy could be made, instead
-  of failing silently.
+  of failing silently; a closed drawing whose `.bak` copy failed is then left unchanged and listed
+  as not updated. Like `save-dxf`, it only accepts paths the main process handed out (its dialogs,
+  the recent list, an open project).
 - Autosave backups are named after a permanent per-document id instead of the drawing title and
   a session number that restarted every launch, so a new session can no longer overwrite a backup
   that was not recovered yet. `autosave/index.json` keeps the title, path and time of each backup;

@@ -128,6 +128,18 @@ function createAutosaveStore(dir, deps = {}) {
         changed = true;
       }
     }
+    // Files the index does not know (a truncated or deleted index.json): list them from the folder
+    // with the file time, so the index is complete again after start-up.
+    for (const name of present) {
+      if (entries[name] || !NAME_RE.test(name)) continue;
+      try {
+        const savedAt = (await fs.stat(path.join(dir, name))).mtimeMs;
+        entries[name] = cleanMeta({ savedAt }, ID_NAME_RE.test(name) ? 'Recovered drawing.dxf' : legacyTitle(name));
+        changed = true;
+      } catch {
+        /* removed meanwhile */
+      }
+    }
     if (changed) await saveIndex();
   }
 

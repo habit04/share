@@ -240,10 +240,15 @@ const BACKUP_RE = /\.(dxf|jcadproj\.json)$/i;
  * The backup-file IPC: copy a drawing or project file to `<file>.bak` through a temporary file +
  * fsync + rename. Resolves { ok: true, path } or { ok: false, code, error } (a message for the user);
  * it never throws and never reports success without a complete copy on disk.
+ * `allowed(file)` is the main process's path allow-list (the paths our own dialogs, the recent list
+ * and open projects produced): like save-dxf, the renderer cannot name an arbitrary file.
  */
-async function backupFile(file, copy = defaultWriter.copyFileAtomic) {
+async function backupFile(file, copy = defaultWriter.copyFileAtomic, allowed = () => true) {
   if (typeof file !== 'string' || !path.isAbsolute(file) || !BACKUP_RE.test(file)) {
     return { ok: false, code: 'EINVAL', error: 'Only DXF drawings and project files (absolute paths) can be backed up.' };
+  }
+  if (!allowed(file)) {
+    return { ok: false, code: 'EINVAL', error: `The backup copy of "${path.basename(file)}" could not be made: only drawings and project files opened or saved in this session can be backed up.` };
   }
   try {
     return { ok: true, path: await copy(file, `${file}.bak`) };

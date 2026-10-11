@@ -831,7 +831,8 @@ How the changes are applied:
    gets one undo step and is marked changed (save it as usual).
 2. Closed drawings of the project are read from disk. When one of them would change, a dialog
    lists every affected drawing with what changes; confirm to write the closed ones back as DXF,
-   optionally keeping a `.bak` copy of each. Cancel changes nothing.
+   optionally keeping a `.bak` copy of each (a drawing whose `.bak` copy cannot be made is left
+   unchanged and listed as not updated). Cancel changes nothing.
 3. DWG drawings are read-only and are skipped; the command line lists skipped drawings. The
    browser edition cannot read closed drawings, so open them in tabs first.
 
@@ -1225,8 +1226,8 @@ Drawings, projects, exports, plots, autosaves and the files in the application d
 written to a temporary file in the same folder first, flushed to disk, and only then renamed over
 the old file, so a crash, power cut or full disk during a save leaves the previous file intact.
 When you save over an existing drawing or project, its previous version is kept next to it as
-`<name>.bak` (for example `panel.dxf.bak`, one generation). To go back to it, rename it to
-`panel.dxf`.
+`<name>.bak` (for example `panel.dxf.bak`, one generation; other exports such as CSV reports get
+no `.bak`). To go back to it, rename it to `panel.dxf`.
 
 If a save fails, JCad Electrical tells you why in plain words (disk full, no permission or
 read-only, file locked by another program, folder or network drive not available, path too long)

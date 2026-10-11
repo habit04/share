@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, writeFileSync, readdirSync, existsSync, rmSy
 import * as fsp from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describeFileError, fileErrorCode, type FileAction } from '../src/app/file-errors';
+import { describeFileError, fileErrorCode, KIND_BY_CODE, type FileAction } from '../src/app/file-errors';
 
 const require = createRequire(import.meta.url);
 type WriteResult = { path: string; backup: string | null; method: 'rename' | 'copy' };
@@ -15,7 +15,7 @@ type Writer = {
 const atomic = require('../electron/atomic-write.cjs') as Writer & {
   createAtomicWriter(fs?: unknown, options?: { platform?: string; renameDelays?: number[]; hooks?: { beforeRename?: (tmp: string, dest: string) => unknown } }): Writer;
   createWriteQueue(): <T>(key: string, job: () => Promise<T>) => Promise<T>;
-  backupFile(file: unknown, copy?: (a: string, b: string) => Promise<string>): Promise<{ ok: true; path: string } | { ok: false; code: string | null; error: string }>;
+  backupFile(file: unknown, copy?: (a: string, b: string) => Promise<string>, allowed?: (file: string) => boolean): Promise<{ ok: true; path: string } | { ok: false; code: string | null; error: string }>;
   isTempName(name: string): boolean;
 };
 const cjsErrors = require('../electron/file-errors.cjs') as { describeFileError: typeof describeFileError; KIND_BY_CODE: Record<string, string> };
@@ -300,6 +300,20 @@ describe('backup-file (project-wide .bak copies)', () => {
     writeFileSync(join(dir, 'p.jcadproj.json'), '{}');
     expect(await atomic.backupFile(join(dir, 'p.jcadproj.json'))).toMatchObject({ ok: true });
   });
+  it('refuses paths outside the main process allow-list (same rule as save-dxf), touching nothing', async () => {
+    const known = join(dir, 'known.dxf');
+    const stranger = join(dir, 'stranger.dxf');
+    writeFileSync(known, 'K');
+    writeFileSync(stranger, 'S');
+    writeFileSync(`${stranger}.bak`, 'OLD');
+    const allowed = (f: string) => f === known;
+    expect(await atomic.backupFile(known, undefined, allowed)).toEqual({ ok: true, path: `${known}.bak` });
+    const r = await atomic.backupFile(stranger, undefined, allowed);
+    expect(r).toMatchObject({ ok: false, code: 'EINVAL' });
+    expect(!r.ok && r.error).toMatch(/^The backup copy of "stranger\.dxf" could not be made: only drawings and project files opened or saved in this session/);
+    expect(readFileSync(`${stranger}.bak`, 'utf8')).toBe('OLD');
+    expect(leftovers()).toEqual([]);
+  });
 });
 
 describe('file error messages', () => {
@@ -347,8 +361,10 @@ describe('file error messages', () => {
     expect(describeFileError(fsError('EBUSY'), { action: 'backup', path: '/a/b.dxf' }).message).toMatch(/^The backup copy of "b\.dxf" could not be made: the file is locked/);
   });
   it('the main-process twin produces identical messages', () => {
+    // Same code table on both sides (a code added to one file only would silently differ).
+    expect(cjsErrors.KIND_BY_CODE).toEqual(KIND_BY_CODE);
     const actions: FileAction[] = ['save', 'autosave', 'backup', 'read', 'list'];
-    const codes = [...Object.keys(cjsErrors.KIND_BY_CODE), 'EWHATEVER', ''];
+    const codes = [...new Set([...Object.keys(cjsErrors.KIND_BY_CODE), ...Object.keys(KIND_BY_CODE)]), 'EWHATEVER', ''];
     for (const code of codes)
       for (const action of actions)
         for (const path of [null, '/a/b/c.dxf', 'C:\\x\\y.dxf', 'plain.dxf']) {
@@ -430,6 +446,27 @@ describe('autosave store with permanent ids (electron/autosave-store.cjs)', () =
     expect(existsSync(join(d, '11111111-1111-4111-8111-111111111111.sv.dxf'))).toBe(true);
     denied = false;
     expect((await s.list()).length).toBe(1);
+  });
+
+  it('a truncated index.json does not break start-up: the backups are listed from the folder and the index is rebuilt', async () => {
+    const d = join(dir, 'autosave');
+    mkdirSync(d);
+    const a = '11111111-1111-4111-8111-111111111111.sv.dxf';
+    writeFileSync(join(d, a), 'AAA');
+    writeFileSync(join(d, 'index.json'), '{"version":1,"entries":{"11111111-1111-4111-8111-111111111111.sv.dxf":{"title":"a.d');
+    const s = createAutosaveStore(d, { uuid });
+    const list = await s.list();
+    expect(list.map((e) => e.name)).toEqual([a]);
+    expect(list[0]!.title).toBe('Recovered drawing.dxf');
+    expect(list[0]!.savedAt).toBeGreaterThan(0);
+    expect(await s.read(a)).toBe('AAA');
+    // The next write rewrites a valid index that lists every file.
+    const b = '22222222-2222-4222-8222-222222222222.sv.dxf';
+    await s.write(b, 'BBB', { title: 'b.dxf', originalPath: null, savedAt: 5 });
+    const index = JSON.parse(readFileSync(join(d, 'index.json'), 'utf8'));
+    expect(Object.keys(index.entries).sort()).toEqual([a, b].sort());
+    expect(index.entries[a].title).toBe('Recovered drawing.dxf');
+    expect((await createAutosaveStore(d, { uuid }).list()).map((e) => e.title).sort()).toEqual(['Recovered drawing.dxf', 'b.dxf']);
   });
 
   it('a missing folder simply means no backups', async () => {
