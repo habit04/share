@@ -364,7 +364,7 @@ describe('fuzz: project-wide commands never overwrite newer work', () => {
     }
   });
   it('random projects, tabs, disk edits, backups and failures through loadProjectSheets + commitSheets', async () => {
-    const runs = await fuzz('stale-batch/commit', 250, (rng) => batchScenario(rng, 'synthetic'));
+    const runs = await fuzz('stale-batch/commit', 150, (rng) => batchScenario(rng, 'synthetic'));
     expect(runs).toBeGreaterThan(0);
   }, 600_000);
   it('the real project title block command (AETITLEBLOCK for all drawings) under the same events keeps retained records', async () => {

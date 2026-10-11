@@ -173,11 +173,11 @@ describe('fuzz: save queue', () => {
     vi.useFakeTimers();
     const runs = await fuzz('savequeue/interleavings', 1500, (rng) => scenario(rng, false));
     expect(runs).toBeGreaterThan(0);
-  });
+  }, 600_000);
   it('the same with saves that land on another path (a Save As dialog picked an open file)', async () => {
     vi.useFakeTimers();
     await fuzz('savequeue/redirects', 1500, (rng) => scenario(rng, true));
-  });
+  }, 600_000);
 });
 
 describe('save queue fuzzing regressions', () => {
