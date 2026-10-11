@@ -1293,6 +1293,10 @@ instead of being lost silently: a layout's page setup (plot device, plot scale a
 the sheet size is taken from the layout limits), layers frozen in individual viewports, the
 fixed text height of a text style, and the text or shape elements of complex linetypes.
 
+Large DWG files (1 MB and up) show an **Opening Drawing** window with the file size, the elapsed
+time and a **Cancel** button while they are read; the program stays responsive, and Cancel (or Esc)
+stops the read and leaves the current drawing as it was.
+
 DWG is **read-only**: JCad Electrical cannot write DWG files. When you save a drawing that
 was opened from a DWG, you are asked for a new file name and a DXF is written; the original
 DWG is not changed. Most CAD programs, including AutoCAD, open DXF files and can save them
@@ -1394,7 +1398,10 @@ The desktop application keeps its data in the application data folder:
 
 It contains `autosave/` (drawing backups and their `index.json`), `packs/` (catalog packs),
 `plugins/` (see [Plugins and scripts](#15-plugins-and-scripts)), `user-library.json` (your
-symbols, with the previous version in `user-library.json.bak`) and `error.log` (crash log). The `PLUGINS` command prints the exact folder on your computer.
+symbols, with the previous version in `user-library.json.bak`), `error.log` (crash log) and
+`ipc-rejections.log` (requests the program refused, such as a file it was asked to read or write
+that you never chose; useful when reporting a problem). The `PLUGINS` command prints the exact
+folder on your computer.
 
 ---
 
@@ -1511,9 +1518,13 @@ together with its main file. Such plugins last until the page is closed.
 - react to events (drawing changed, selection changed, command started / ended, drawing opened);
 - keep their own settings.
 
-Plugins cannot use Node.js, read files you did not pick or connect to other web sites. Errors in a
-plugin are printed on the command line as `[plugin-name] ...` and do not stop the program. Only
-install plugins from people you trust.
+Plugins run inside the application window with the same rights as the program itself (the full
+list is in [PLUGIN-API.md](PLUGIN-API.md#capabilities)). They cannot use Node.js, connect to other
+web sites or open files anywhere on the computer: file access goes through the application, which
+only allows files you chose, images next to them and the application's own data folder. Errors in
+a plugin are printed on the command line as `[plugin-name] ...`, and a plugin that fails to load
+does not stop the others; but a plugin that loops forever or breaks the page can still freeze or
+break the program, so only install plugins from people you trust.
 
 ### Examples
 

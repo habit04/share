@@ -55,7 +55,7 @@ function reasonOf(err) {
 function fileError(err, file, op) {
   if (err && err.jcadFileError) return err;
   const code = (err && typeof err.code === 'string' && err.code) || 'UNKNOWN';
-  const out = new Error(`${code}: ${reasonOf(err)}, ${op} '${file}'`);
+  const out = /** @type {Error & { code?: string, path?: string, syscall?: string, cause?: unknown, jcadFileError?: boolean }} */ (new Error(`${code}: ${reasonOf(err)}, ${op} '${file}'`));
   out.code = code;
   out.path = file;
   out.syscall = op;
@@ -205,7 +205,7 @@ function createAtomicWriter(fs = fsp, options = {}) {
     try {
       const before = await existingStat(dest);
       if (before && before.isDirectory()) {
-        const e = new Error('illegal operation on a directory');
+        const e = /** @type {Error & { code?: string }} */ (new Error('illegal operation on a directory'));
         e.code = 'EISDIR';
         throw e;
       }
@@ -243,7 +243,7 @@ const BACKUP_RE = /\.(dxf|jcadproj\.json)$/i;
  * `allowed(file)` is the main process's path allow-list (the paths our own dialogs, the recent list
  * and open projects produced): like save-dxf, the renderer cannot name an arbitrary file.
  */
-async function backupFile(file, copy = defaultWriter.copyFileAtomic, allowed = () => true) {
+async function backupFile(file, copy = defaultWriter.copyFileAtomic, allowed = (/** @type {string} */ _file) => true) {
   if (typeof file !== 'string' || !path.isAbsolute(file) || !BACKUP_RE.test(file)) {
     return { ok: false, code: 'EINVAL', error: 'Only DXF drawings and project files (absolute paths) can be backed up.' };
   }

@@ -1,0 +1,8 @@
+{
+  "//": "Tolerances for scripts/screenshot-compare.mjs. threshold: pixelmatch colour distance per pixel (0-1, anti-aliased pixels are ignored). maxDiffRatio: share of pixels that may differ. masks: [x, y, width, height] rectangles left out. ignore: screenshots that are not compared (the two long landing-page captures repeat site-desktop.png and site-phone-top.png and their text is checked by scripts/screenshot-site.mjs).",
+  "default": { "threshold": 0.1, "maxDiffRatio": 0.001 },
+  "images": {
+    "symbol-builder-04-both-palettes-1366x768.png": { "//": "the rollover tooltip at the cursor shows one of two overlapping objects, depending on timing", "masks": [[680, 490, 170, 95]] }
+  },
+  "ignore": ["site-phone.png", "site-desktop-offline.png"]
+}

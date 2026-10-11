@@ -59,7 +59,11 @@ manually from the Actions tab re-enables it.
 The **[user manual](docs/USER-MANUAL.md)** covers installation, a first drawing, the interface and every command; see [CHANGELOG.md](CHANGELOG.md) for what changed in each release.
 Further documents: [docs/METRIC.md](docs/METRIC.md) (inch and millimetre drawings),
 [docs/PLUGIN-API.md](docs/PLUGIN-API.md) (plugins and scripts), [docs/CATALOG-PACKS.md](docs/CATALOG-PACKS.md)
-(signed catalog packs), [docs/CODE-SIGNING.md](docs/CODE-SIGNING.md) (installer signing),
+(signed catalog packs), [docs/SUPPORT-MATRIX.md](docs/SUPPORT-MATRIX.md) (which DXF / DWG entities and
+properties survive import and export), [docs/RELEASE.md](docs/RELEASE.md) (how a release is cut, verified
+and delivered; dependency review), [docs/CODE-SIGNING.md](docs/CODE-SIGNING.md) (installer signing),
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) (setting up, testing and packaging from source),
+[docs/PERFORMANCE.md](docs/PERFORMANCE.md) (measured performance),
 [LICENSE](LICENSE) and [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
 ### Website and browser edition
@@ -127,13 +131,18 @@ request form.
 
 ## Run from source
 
+Requires **Node.js 22** (`.nvmrc`; `npm ci` refuses other major versions). The full guide, with
+prerequisites per operating system, screenshots, end-to-end tests, packaging and how to verify a
+change, is [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+
 ```bash
-npm install
+npm ci
 npm run electron:dev     # Vite dev server + Electron with live reload
 npm start                # production build then Electron
 npm run dev              # renderer only, in a browser (http://localhost:5173/?demo)
 npm test                 # unit tests (includes DWG fixtures in ./fixtures)
-npm run typecheck
+npm run lint             # ESLint over src, tests, electron, scripts
+npm run typecheck:all    # renderer + tests, Electron main / preload (checkJs), scripts (checkJs)
 npm run build && npm run screenshot   # screenshots/*.png from headless Chromium
 node scripts/screenshot-drafting.mjs  # dimensions, linetypes, polyline arcs, arrays
 node scripts/screenshot-library.mjs   # every Insert Component category (screenshots/library/)
@@ -142,16 +151,24 @@ npm run dist             # installers via electron-builder (win/mac/linux)
 node scripts/dwg2dxf.mjs in.dwg [out.dxf]   # command-line DWG -> DXF
 npm run build && npm run ui-check     # every command and clickable control of the built renderer (headless Chromium)
 npm run build && npm run e2e          # the Electron app itself (Linux without a display: xvfb-run -a npm run e2e)
+node e2e/run-screenshots.mjs && npm run screenshot:compare   # screenshots against the approved baselines
+npm run screenshot:approve            # accept the current screenshots as the new baselines
+npm run e2e:packaged -- <app executable>   # the same end-to-end checks on a packaged build
+npm run bench:node && npm run bench   # interactive performance on a 50,000-entity drawing (docs/PERFORMANCE.md)
 ```
 
-**CI** (`.github/workflows/ci.yml`) runs three jobs on every push and pull request: `test` (typecheck,
-unit tests, renderer build), `ui` (the UI click check - every registered command, ribbon button,
-application-menu entry, status-bar control, palette button and context-menu item, failing on page or
-console errors and unknown commands - its `--self-test`, and the screenshot scripts as gates through
-`e2e/run-screenshots.mjs`) and `e2e-electron` on Ubuntu and Windows (`scripts/e2e-electron.mjs`
-drives the real main process, preload bridge and IPC: opening DXF / DWG, recent files, plotting a PDF,
-IMAGE bitmaps, offline update checks, the Symbol Builder, About and the close prompt, with the native
-dialogs stubbed).
+**CI** (`.github/workflows/ci.yml`) runs three jobs on every push and pull request: `test` (workflow
+validation, lint, type checks of the renderer, the Electron main process and the scripts, unit tests,
+the dense-drawing performance run, renderer build), `ui` (the UI click check - every registered command,
+ribbon button, application-menu entry, status-bar control, palette button and context-menu item,
+failing on page or console errors and unknown commands - its `--self-test`, the screenshot scripts as
+gates through `e2e/run-screenshots.mjs` and their comparison with the approved baselines in
+`screenshots/baseline/`) and `e2e-electron` on Ubuntu, Windows and macOS (`scripts/e2e-electron.mjs`
+drives the real main process, preload bridge and IPC: opening DXF / DWG with the progress dialog and
+Cancel, recent files, SAVEAS, AUTOSAVE, plotting a PDF, IMAGE bitmaps, the IPC guard, offline update
+checks, the Symbol Builder, About and the close prompt, with the native dialogs stubbed). Installers are
+published only after the same checks passed on the tagged commit and every installer was smoke-tested
+as a packaged application on its own OS ([docs/RELEASE.md](docs/RELEASE.md)).
 
 Append `?demo` to the URL (or run the screenshot script) to load a sample motor-control ladder.
 
@@ -430,6 +447,8 @@ edit or delete it.
 
 ## File formats
 
+The entity-by-entity table of what survives import and export is [docs/SUPPORT-MATRIX.md](docs/SUPPORT-MATRIX.md).
+
 - **DXF (AC1015 / AutoCAD 2000)** is the native save format: layers (linetype, lineweight,
   frozen/off/locked), blocks, attributes (including invisible ones), LINE / CIRCLE / ARC /
   LWPOLYLINE (bulges and constant width round-trip) / TEXT / MTEXT / INSERT / ELLIPSE / POINT /
@@ -502,9 +521,12 @@ src/electrical  symbol libraries (symbols.ts / symbols-jic-control.ts / symbols-
                 user library userlib.ts; symbol-kit.ts shared primitives; symbol-builder-core.ts symbol <-> block
                 conversions), ACADE attributes, WD_M settings, tags, catalog, xref,
                 wire tools, panel layout, circuits, audit, reports, sheet templates, dialog contract (ui.ts)
-scripts         DWG reader (Node / Electron main), dwg2dxf CLI, screenshot capture, UI click check, Electron e2e
+electron        main process (IPC handlers, menus), preload bridge, IPC guard, DWG worker host, updater
+scripts         DWG reader and worker (Node / Electron main), dwg2dxf CLI, screenshot capture and comparison, UI click
+                check, Electron e2e (development and packaged), packaged smoke test, benchmarks, workflow check
 examples        example plugins (hello, numbered-labels, bom-summary)
-docs            user manual, metric drawings, plugin API, catalog packs, code signing
+docs            user manual, metric drawings, plugin API, catalog packs, code signing, support matrix,
+                release process, development guide, performance
 ```
 
 Newer modules worth knowing: `src/core/dimension.ts` (dimension styles and DIM* variables),

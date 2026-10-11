@@ -1,5 +1,6 @@
 // Capture the Insert Component icon menu for every category of both standards (visual review of the symbol library).
 import { chromium } from 'playwright';
+import { SHOT_CONTEXT, pinDate } from './screenshot-env.mjs';
 import { createServer } from 'node:http';
 import { readFile, stat, mkdir } from 'node:fs/promises';
 import { join, extname } from 'node:path';
@@ -18,12 +19,13 @@ const server = createServer(async (req, res) => {
     res.end('not found');
   }
 });
-await new Promise((r) => server.listen(0, r));
-const port = server.address().port;
+await new Promise((r) => server.listen(0, () => r(undefined)));
+const port = /** @type {import('node:net').AddressInfo} */ (server.address()).port;
 await mkdir('screenshots/library', { recursive: true });
 
 const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || '/opt/pw-browsers/chromium' });
-const page = await browser.newPage({ viewport: { width: 1500, height: 940 }, deviceScaleFactor: 1 });
+const page = await browser.newPage({ ...SHOT_CONTEXT, viewport: { width: 1500, height: 940 }, deviceScaleFactor: 1 });
+await pinDate(page);
 page.on('pageerror', (e) => console.error('PAGE ERROR', e.message));
 page.on('console', (m) => { if (m.type() === 'error') console.error('CONSOLE', m.text()); });
 await page.goto(`http://localhost:${port}/?demo`);

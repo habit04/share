@@ -55,7 +55,6 @@ import type { UserSettings } from '../app/settings';
 
 // ---------------------------------------------------------------- small DOM helpers (light dialog look)
 
-let fieldCounter = 0;
 function field(label: string, input: HTMLElement, hint?: string): HTMLElement {
   const row = document.createElement('label');
   row.className = 'field';

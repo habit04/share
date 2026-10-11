@@ -2,6 +2,19 @@ import type { Point, Bounds } from './geometry';
 import * as g from './geometry';
 import type { Entity, BlockLookup } from './entities';
 import { distanceToEntity, entityBounds, entitySegments, pointInPolygon } from './entities';
+import { spatialIndexFor } from './spatial-index';
+
+/**
+ * The entities to test against `box`, in drawing order, with their bounds: every entity
+ * (linear scan), or the spatial index's candidates on a large drawing. Either way the caller
+ * applies the same exact test, so the result is identical.
+ */
+function candidates(entities: readonly Entity[], lookup: BlockLookup, box: Bounds): { order: ArrayLike<number> | null; bounds: (i: number) => Bounds | null } {
+  const idx = spatialIndexFor(entities, lookup);
+  if (!idx) return { order: null, bounds: (i) => entityBounds(entities[i]!, lookup) };
+  // A null order (the box covers the whole grid) scans everything, with the index's cached bounds.
+  return { order: idx.query(box), bounds: (i) => idx.bounds[i] ?? null };
+}
 
 /**
  * Pick a single entity within `aperture` of the point; closest wins. Among equally close
@@ -18,11 +31,14 @@ export function pickEntity(
 ): Entity | null {
   let best: Entity | null = null;
   let bestD = aperture;
+  const { order, bounds } = candidates(entities, lookup, { min: { x: p.x - aperture, y: p.y - aperture }, max: { x: p.x + aperture, y: p.y + aperture } });
+  const count = order ? order.length : entities.length;
   // iterate from top-most (last drawn) to bottom
-  for (let i = entities.length - 1; i >= 0; i -= 1) {
+  for (let k = count - 1; k >= 0; k -= 1) {
+    const i = order ? order[k]! : k;
     const e = entities[i]!;
     if (hiddenLayers.has(e.layer) || lockedLayers.has(e.layer)) continue;
-    const b = entityBounds(e, lookup);
+    const b = bounds(i);
     if (b && !g.pointInBounds(p, { min: g.sub(b.min, { x: aperture, y: aperture }), max: g.add(b.max, { x: aperture, y: aperture }) }))
       continue;
     const d = distanceToEntity(p, e, lookup);
@@ -48,9 +64,13 @@ export function selectByBox(
   lockedLayers: ReadonlySet<string> = new Set(),
 ): Entity[] {
   const out: Entity[] = [];
-  for (const e of entities) {
+  const { order, bounds } = candidates(entities, lookup, box);
+  const count = order ? order.length : entities.length;
+  for (let k = 0; k < count; k += 1) {
+    const i = order ? order[k]! : k;
+    const e = entities[i]!;
     if (hiddenLayers.has(e.layer) || lockedLayers.has(e.layer)) continue;
-    const b = entityBounds(e, lookup);
+    const b = bounds(i);
     if (!b) continue;
     if (mode === 'window') {
       if (g.boundsContains(box, b)) out.push(e);
@@ -93,9 +113,13 @@ export function selectByFence(
   if (fence.length < 2) return [];
   const fb = g.boundsOfPoints(fence)!;
   const out: Entity[] = [];
-  for (const e of entities) {
+  const { order, bounds } = candidates(entities, lookup, fb);
+  const count = order ? order.length : entities.length;
+  for (let k = 0; k < count; k += 1) {
+    const i = order ? order[k]! : k;
+    const e = entities[i]!;
     if (hiddenLayers.has(e.layer) || lockedLayers.has(e.layer)) continue;
-    const b = entityBounds(e, lookup);
+    const b = bounds(i);
     if (!b || !g.boundsIntersect(fb, b)) continue;
     const segs = e.type === 'text' || e.type === 'mtext' ? boundsEdges(b) : entitySegments(e, lookup);
     let hit = false;
@@ -138,9 +162,13 @@ export function selectByPolygon(
   const pb = g.boundsOfPoints(polygon)!;
   const edges: Array<[Point, Point]> = polygon.map((p, i) => [p, polygon[(i + 1) % polygon.length]!]);
   const out: Entity[] = [];
-  for (const e of entities) {
+  const { order, bounds } = candidates(entities, lookup, pb);
+  const count = order ? order.length : entities.length;
+  for (let k = 0; k < count; k += 1) {
+    const i = order ? order[k]! : k;
+    const e = entities[i]!;
     if (hiddenLayers.has(e.layer) || lockedLayers.has(e.layer)) continue;
-    const b = entityBounds(e, lookup);
+    const b = bounds(i);
     if (!b || !g.boundsIntersect(pb, b)) continue;
     const segs = e.type === 'text' || e.type === 'mtext' || e.type === 'point' ? boundsEdges(b) : entitySegments(e, lookup);
     if (segs.length === 0) continue;

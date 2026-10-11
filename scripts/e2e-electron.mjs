@@ -2,6 +2,15 @@
 // Playwright and drives the real main process, preload bridge and IPC.
 //
 //   npm run build && npm run e2e          (Linux without a display: xvfb-run -a npm run e2e)
+//   npm run e2e:packaged -- <executable>  the same checks against an installed / unpacked build
+//                                         (or JCAD_E2E_EXECUTABLE=<executable> npm run e2e)
+//
+// <executable> is the application binary of a packaged build: release/win-unpacked/JCad Electrical.exe
+// (or the folder the NSIS installer was run into), "JCad Electrical.app/Contents/MacOS/JCad Electrical"
+// inside the mounted disk image, or squashfs-root/jcad-electrical from `<AppImage> --appimage-extract`.
+// scripts/packaged-smoke.mjs finds it for each installer kind. A packaged build reports
+// app.isPackaged; on Windows it updates itself through electron-updater, so the offline update
+// checks (which stub the GitHub API) are skipped there.
 //
 // The native file dialogs cannot be answered by a test, and main.cjs has no path override, so the
 // test replaces dialog.showOpenDialog / showSaveDialog / showMessageBox(Sync) and net.fetch inside
@@ -18,7 +27,9 @@
 // dialog, a project opened with Windows-style relative entries (open by resolved path, Save As to another folder
 // with recalculated paths, Save / Cancel before opening another project), the Save All workflow on close (Cancel,
 // a failed save aborting the close, Save Selected writing a drawing and the project before the window closes, the
-// main process waiting for the answer), and no main-process error log.
+// main process waiting for the answer), SAVEAS to a DXF that reads back, AUTOSAVE writing a recovery copy, a large-DWG
+// progress dialog and its Cancel (the read runs in a worker thread), IPC from a foreign page being refused, and no
+// main-process error log.
 // File safety: old-style autosave files are migrated to permanent ids and offered by the Drawing
 // Recovery Manager (a double click opens a backup once, Discard All spares the opened one); saves
 // go through temp file + rename and keep <name>.bak; a failed save shows Retry / Save As... and
@@ -39,7 +50,19 @@ const fixtures = {
   dxf: join(repo, 'tests', 'fixtures', 'all-entities.dxf'),
   dwg: join(repo, 'fixtures', 'example_2000.dwg'),
 };
-if (!existsSync(join(repo, 'dist', 'index.html'))) {
+// --packaged <executable> (or JCAD_E2E_EXECUTABLE): drive an installed / unpacked application.
+const packagedArg = process.argv.indexOf('--packaged');
+const executable = packagedArg >= 0 ? process.argv[packagedArg + 1] : process.env.JCAD_E2E_EXECUTABLE || '';
+const packaged = Boolean(executable);
+if (packagedArg >= 0 && !executable) {
+  console.error('usage: node --experimental-strip-types scripts/e2e-electron.mjs --packaged <path to the application executable>');
+  process.exit(2);
+}
+if (packaged && !existsSync(executable)) {
+  console.error(`packaged executable not found: ${executable}`);
+  process.exit(2);
+}
+if (!packaged && !existsSync(join(repo, 'dist', 'index.html'))) {
   console.error('dist/index.html not found: run `npm run build` first.');
   process.exit(2);
 }
@@ -61,9 +84,13 @@ const readIndex = () => JSON.parse(readFileSync(join(autosaveDir, 'index.json'),
 const tmpLeftovers = (d) => readdirSync(d).filter((f) => f.endsWith('.tmp'));
 const ID_FILE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.sv\.dxf$/;
 
+/** @type {Record<string, string>} */
 const env = { ...process.env, ELECTRON_DISABLE_SECURITY_WARNINGS: '1' };
 delete env.VITE_DEV_SERVER_URL; // must load dist/, not a dev server
 delete env.ELECTRON_RUN_AS_NODE;
+// Every DWG gets the progress dialog, and each read is held 1.5 s so Cancel can be clicked in time.
+env.JCAD_OPEN_PROGRESS_BYTES = '1';
+env.JCAD_DWG_TEST_DELAY_MS = '1500';
 
 const results = [];
 const problems = [];
@@ -104,10 +131,11 @@ const hardTimeout = setTimeout(() => {
 }, 8 * 60 * 1000);
 
 // --user-data-dir moves app.getPath('userData') (checked below) on every platform.
-const args = ['.', `--user-data-dir=${profile}`];
+const args = packaged ? [`--user-data-dir=${profile}`] : ['.', `--user-data-dir=${profile}`];
 // GitHub's Ubuntu runners (and root in containers) cannot use Chromium's setuid sandbox.
 if (process.platform === 'linux') args.push('--no-sandbox');
-const app = await electron.launch({ args, cwd: repo, env, timeout: 60_000 });
+console.log(packaged ? `e2e-electron: packaged application ${executable}` : 'e2e-electron: development build (electron . on dist/)');
+const app = await electron.launch(packaged ? { executablePath: executable, args, env, timeout: 90_000 } : { args, cwd: repo, env, timeout: 60_000 });
 const mainLog = [];
 let userData = profile;
 app.process().stdout?.on('data', (d) => mainLog.push(String(d)));
@@ -133,22 +161,23 @@ try {
   await app.evaluate(({ dialog, net, shell }) => {
     const g = globalThis;
     g.__e2e = { openPaths: [], savePaths: [], messages: [], external: [], release: null, fetchError: null };
-    dialog.showOpenDialog = async (_win, opts) => {
+    const d = /** @type {any} */ (dialog);
+    d.showOpenDialog = async (_win, opts) => {
       const p = g.__e2e.openPaths.shift();
       g.__e2e.messages.push(`open:${opts && opts.title}`);
       return p ? { canceled: false, filePaths: [p] } : { canceled: true, filePaths: [] };
     };
-    dialog.showSaveDialog = async (_win, opts) => {
+    d.showSaveDialog = async (_win, opts) => {
       const p = g.__e2e.savePaths.shift();
       g.__e2e.messages.push(`save:${opts && opts.title}`);
       return p ? { canceled: false, filePath: p } : { canceled: true };
     };
-    dialog.showMessageBox = async (_win, opts) => {
+    d.showMessageBox = async (_win, opts) => {
       const o = opts || _win;
       g.__e2e.messages.push(`box:${o.title}|${o.message}`);
       return { response: typeof o.cancelId === 'number' ? o.cancelId : 1, checkboxChecked: false };
     };
-    dialog.showMessageBoxSync = (_win, opts) => {
+    d.showMessageBoxSync = (_win, opts) => {
       const o = opts || _win;
       g.__e2e.messages.push(`boxsync:${o.message}`);
       return 1; // "Don't Save"
@@ -175,10 +204,16 @@ try {
     return j ? { keys: Object.keys(j).sort(), platform: j.platform } : null;
   });
   check(!!bridge, 'window.jcad bridge exists');
-  for (const k of ['openDrawing', 'openDxf', 'saveDxf', 'plotPdf', 'printDrawing', 'appInfo', 'checkForUpdates', 'onMenuCommand', 'onCloseRequest', 'chooseProjectPath', 'saveProject', 'backupFile', 'autosaveWrite', 'userLibraryRead', 'packsList', 'readImage']) check(bridge?.keys.includes(k), `bridge exposes ${k}`);
-  check(bridge?.platform === process.platform, `bridge platform ${bridge?.platform}`);
   const info = await win.evaluate(() => window.jcad.appInfo());
-  check(info.version === pkg.version && info.packaged === false && info.selfUpdate === false, `appInfo ${JSON.stringify(info)}`);
+  // An installer of an older release (the manual "Packaged smoke test" workflow) lacks features
+  // added since; checks of those are skipped for it. JCAD_E2E_EXPECT_VERSION names its version.
+  const expectVersion = process.env.JCAD_E2E_EXPECT_VERSION || pkg.version;
+  const current = info.version === pkg.version;
+  const newKeys = ['onOpenProgress', 'cancelOpen', 'onCloseRequest', 'chooseProjectPath', 'saveProject'];
+  for (const k of ['openDrawing', 'openDxf', 'saveDxf', 'plotPdf', 'printDrawing', 'appInfo', 'checkForUpdates', 'onMenuCommand', 'backupFile', 'autosaveWrite', 'userLibraryRead', 'packsList', 'readImage', ...(current ? newKeys : [])]) check(bridge?.keys.includes(k), `bridge exposes ${k}`);
+  if (!current) ok(`release ${info.version} is older than these checks (${pkg.version}): progress / Cancel, image allow list and IPC guard checks skipped`);
+  check(bridge?.platform === process.platform, `bridge platform ${bridge?.platform}`);
+  check(info.version === expectVersion && info.packaged === packaged && (packaged || info.selfUpdate === false), `appInfo ${JSON.stringify(info)}`);
   check(await win.evaluate(() => typeof window.require === 'undefined' && typeof window.process === 'undefined'), 'renderer has no Node globals (contextIsolation, sandbox)');
 
   // ------------------------------------------------------------------ Drawing Recovery Manager at start-up
@@ -280,15 +315,59 @@ try {
 
   step = 'OPEN dwg';
   if (existsSync(fixtures.dwg)) {
+    // A second listener on the bridge records the progress events the dialog receives.
+    if (current)
+      await win.evaluate(() => {
+        const w = /** @type {any} */ (window);
+        w.__progress = [];
+        window.jcad.onOpenProgress((p) => {
+          w.__progress.push(`${p.state}:${p.name}:${p.cancellable}`);
+          if (p.state === 'start' && w.__cancelNext) window.jcad.cancelOpen(p.id).then((r) => (w.__cancelled = r));
+        });
+      });
     await app.evaluate((_e, p) => globalThis.__e2e.openPaths.push(p), fixtures.dwg);
     h = await historyLen();
     await win.evaluate(() => window.editor.runCommand('OPEN'));
+    if (current)
+      await win.waitForSelector('.modal-backdrop.open-progress', { timeout: 15_000 }).then(
+        async () => ok(`progress dialog shown while the DWG is read (${(await win.locator('.open-progress .modal-body').textContent())?.replace(/\s+/g, ' ').trim()})`),
+        () => bad('no progress dialog for the DWG read'),
+      );
     await waitLog(/^(Imported DWG|Failed to open)/, h, 90_000).catch(() => bad('no DWG import result logged'));
     log = await logSince(h);
     const line = log.find((l) => /Imported DWG|Failed/.test(l)) ?? '';
     const n = Number(/: (\d+) entities/.exec(line)?.[1] ?? 0);
-    check(line.startsWith('Imported DWG') && n > 10, `DWG opened through IPC + LibreDWG in the main process: ${line}`);
-  } else ok('DWG fixture missing: skipped');
+    check(line.startsWith('Imported DWG') && n > 10, `DWG opened through IPC + LibreDWG in the main-process worker: ${line}`);
+  }
+  if (existsSync(fixtures.dwg) && current) {
+    const progress = await win.evaluate(() => /** @type {any} */ (window).__progress.splice(0));
+    check(progress.join() === 'start:example_2000.dwg:true,end:example_2000.dwg:undefined', `open-progress events ${progress.join(' ')}`);
+    check((await win.locator('.modal-backdrop.open-progress').count()) === 0, 'progress dialog closed after the import');
+
+    step = 'OPEN dwg cancel';
+    await win.evaluate(() => (/** @type {any} */ (window).__cancelNext = true));
+    await app.evaluate((_e, p) => globalThis.__e2e.openPaths.push(p), fixtures.dwg);
+    h = await historyLen();
+    const entitiesBefore = await win.evaluate(() => window.editor.doc.entities.length);
+    await win.evaluate(() => window.editor.runCommand('OPEN'));
+    await waitLog(/^(Imported DWG|Failed to open)/, h, 90_000).catch(() => bad('no result logged for the cancelled DWG'));
+    log = await logSince(h);
+    check(log.some((l) => /^Failed to open drawing: .*Open cancelled/.test(l)) && log.some((l) => l === 'Opening example_2000.dwg was cancelled.'), `Cancel stops the read: ${log.filter((l) => /cancel|Failed|Imported/i.test(l)).join(' | ')}`);
+    check((await win.evaluate(() => window.editor.doc.entities.length)) === entitiesBefore, 'the cancelled read changed nothing');
+    await win.evaluate(() => (/** @type {any} */ (window).__cancelNext = false));
+    // The worker was terminated; the next read starts a fresh one.
+    await app.evaluate((_e, p) => globalThis.__e2e.openPaths.push(p), fixtures.dwg);
+    h = await historyLen();
+    await win.evaluate(() => window.editor.runCommand('OPEN'));
+    await waitLog(/^(Imported DWG|Failed to open)/, h, 90_000).catch(() => bad('no result after the cancelled read'));
+    log = await logSince(h);
+    check(log.some((l) => l.startsWith('Imported DWG')), `a DWG opens again after Cancel: ${log.filter((l) => /Imported|Failed/.test(l)).join(' | ')}`);
+    // A second successful open may show its own Import Report dialog on top of the first one's
+    // (the DXF / DWG import report): close it, so later steps find exactly the first dialog.
+    if ((await win.locator('.import-report-dialog').count()) > 1) await win.locator('.import-report-dialog .modal button', { hasText: 'Close' }).last().click();
+    await win.evaluate(() => /** @type {any} */ (window).__progress.splice(0));
+  }
+  if (!existsSync(fixtures.dwg)) ok('DWG fixture missing: skipped');
 
   // ------------------------------------------------------------------ Import Report dialog + Save warning
   step = 'import report';
@@ -357,6 +436,15 @@ try {
   const imgDir = mkdtempSync(join(tmpdir(), 'jcad-e2e-img-'));
   const pngPath = join(imgDir, 'logo.png');
   writeFileSync(pngPath, solidPng(4, 4, [255, 0, 0]));
+  // Images are read only next to files the user chose: before anything is saved in imgDir the read is refused.
+  if (current) {
+    const early = await win.evaluate((p) => window.jcad.readImage(p).then(() => 'read', (e) => String(e)), pngPath);
+    check(/Invalid path/.test(early), `read-image refuses an image in a folder the user never chose (${early})`);
+  }
+  await app.evaluate((_e, p) => globalThis.__e2e.savePaths.push(p), join(imgDir, 'image-test.dxf'));
+  const savedImgDrawing = await win.evaluate(() => window.jcad.saveDxf(null, '0\nEOF\n', 'image-test.dxf'));
+  check(savedImgDrawing === join(imgDir, 'image-test.dxf'), `a drawing saved in the image folder through the Save dialog (${savedImgDrawing})`);
+  await messages();
   const dataUrl = await win.evaluate((p) => window.jcad.readImage(p), pngPath);
   check(typeof dataUrl === 'string' && dataUrl.startsWith('data:image/png;base64,'), `read-image returns a PNG data URL (${String(dataUrl).slice(0, 30)})`);
   const refused = await win.evaluate(async (paths) => {
@@ -376,7 +464,7 @@ try {
   }, join(imgDir, 'image-test.dxf'));
   const centrePixel = () =>
     win.evaluate(() => {
-      const c = document.getElementById('drawing');
+      const c = /** @type {HTMLCanvasElement} */ (document.getElementById('drawing'));
       window.editor.render();
       const px = c.getContext('2d').getImageData(Math.round(c.width / 2), Math.round(c.height / 2), 1, 1).data;
       return [px[0], px[1], px[2]];
@@ -480,11 +568,15 @@ try {
 
   // ------------------------------------------------------------------ updater check path, offline
   step = 'updates';
+  // electron-updater (packaged Windows / AppImage) asks GitHub itself; only the API path can be stubbed.
+  const apiUpdates = !info.selfUpdate;
+  if (!apiUpdates) ok('self-updating build: offline update checks skipped (electron-updater talks to GitHub directly)');
+  if (apiUpdates) {
   await app.evaluate((_e, v) => {
     globalThis.__e2e.release = { tag_name: `v${v}`, html_url: 'https://github.com/habit04/share/releases/tag/v' + v, body: '', assets: [] };
-  }, pkg.version);
+  }, info.version);
   let r = await win.evaluate(() => window.jcad.checkForUpdates());
-  check(r.state === 'up-to-date' && r.version === pkg.version, `same version -> ${JSON.stringify(r)}`);
+  check(r.state === 'up-to-date' && r.version === info.version, `same version -> ${JSON.stringify(r)}`);
   let msgs = await messages();
   check(msgs.some((m) => m.startsWith('fetch:https://api.github.com/repos/')) && msgs.some((m) => m.includes('is up to date')), `asked the releases API and said "up to date" (${msgs.join(' ; ')})`);
   await app.evaluate(() => {
@@ -505,7 +597,8 @@ try {
   });
   await app.evaluate((_e, v) => {
     globalThis.__e2e.release = { tag_name: `v${v}`, html_url: 'https://github.com/habit04/share/releases/tag/v' + v, body: '', assets: [] };
-  }, pkg.version);
+  }, info.version);
+  }
   // The About dialog's button runs CHECKUPDATES in the renderer.
   step = 'About';
   h = await historyLen();
@@ -513,15 +606,17 @@ try {
   const about = win.locator('.modal', { hasText: 'Check for Updates' });
   await about.waitFor({ timeout: 10_000 });
   const aboutText = await about.textContent();
-  check(aboutText.includes('JCad Electrical') && aboutText.includes(pkg.version), 'About dialog shows the name and version');
+  check(aboutText.includes('JCad Electrical') && aboutText.includes(info.version), 'About dialog shows the name and version');
   await win.waitForFunction(() => /Version \d/.test(document.querySelector('.modal .help-update-row')?.textContent ?? ''), null, { timeout: 5000 }).then(
     () => ok('About dialog shows appInfo from the main process'),
     () => bad('About dialog never showed appInfo'),
   );
-  await about.locator('button', { hasText: 'Check for Updates' }).click();
-  await waitLog(/is up to date|Update check failed|Update available/, h, 15_000).catch(() => {});
-  log = await logSince(h);
-  check(log.some((l) => /JCad Electrical .* is up to date\./.test(l)), `About > Check for Updates -> "${log.filter((l) => /update/i.test(l)).join(' | ')}"`);
+  if (apiUpdates) {
+    await about.locator('button', { hasText: 'Check for Updates' }).click();
+    await waitLog(/is up to date|Update check failed|Update available/, h, 15_000).catch(() => {});
+    log = await logSince(h);
+    check(log.some((l) => /JCad Electrical .* is up to date\./.test(l)), `About > Check for Updates -> "${log.filter((l) => /update/i.test(l)).join(' | ')}"`);
+  }
   await messages();
   // Help > About from the native menu opens the same dialog.
   await app.evaluate(({ Menu }) => {
@@ -534,6 +629,70 @@ try {
   );
   await win.keyboard.press('Escape');
   await win.waitForTimeout(100);
+
+  // ------------------------------------------------------------------ SAVEAS writes a DXF that reads back
+  step = 'SAVEAS';
+  await win.keyboard.press('Escape');
+  const savedPath = join(outDir, 'saved-e2e.dxf');
+  rmSync(savedPath, { force: true });
+  await app.evaluate((_e, p) => globalThis.__e2e.savePaths.push(p), savedPath);
+  h = await historyLen();
+  const savedCount = await win.evaluate(() => window.editor.doc.entities.length);
+  await win.evaluate(() => window.editor.runCommand('SAVEAS'));
+  await waitLog(/^Saved /, h, 30_000).catch(() => bad('no "Saved" line'));
+  check((await messages()).some((m) => m.startsWith('save:')), 'SAVEAS asked for a file name through the Save dialog');
+  if (existsSync(savedPath)) {
+    const text = readFileSync(savedPath, 'utf8');
+    check(/^\s*0\r?\nSECTION/.test(text) && /\r?\nEOF\s*$/.test(text), `saved DXF is complete (${statSync(savedPath).size} bytes)`);
+    check(!(await win.evaluate(() => window.editor.doc.dirty)), 'the drawing is clean after SAVEAS');
+    // Read it back through the app (after closing its tab): same number of entities.
+    await win.evaluate((p) => {
+      const s = window.editor.sessions;
+      const i = s.indexOfPath(p);
+      if (i >= 0) s.close(i);
+    }, savedPath);
+    await app.evaluate((_e, p) => globalThis.__e2e.openPaths.push(p), savedPath);
+    h = await historyLen();
+    await win.evaluate(() => window.editor.runCommand('OPEN'));
+    await waitLog(/^(Opened|Failed to open)/, h, 30_000).catch(() => bad('the saved DXF did not reopen'));
+    log = await logSince(h);
+    check(log.some((l) => l.startsWith(`Opened ${savedPath}: ${savedCount} entities`)), `saved DXF reopens with ${savedCount} entities: ${log.filter((l) => /Opened|Failed/.test(l)).join(' | ')}`);
+  } else bad(`no DXF written at ${savedPath}`);
+
+  // ------------------------------------------------------------------ AUTOSAVE writes a recovery copy
+  step = 'AUTOSAVE';
+  await win.evaluate(() => window.editor.runCommand('LINE'));
+  for (const text of ['1,1', '4,4']) {
+    await input.fill(text);
+    await input.press('Enter');
+  }
+  await input.press('Enter');
+  h = await historyLen();
+  await win.evaluate(() => window.editor.runCommand('AUTOSAVE'));
+  await waitLog(/autosaved|Autosave/, h, 20_000).catch(() => bad('AUTOSAVE logged nothing'));
+  const autosaves = await win.evaluate(() => window.jcad.autosaveList());
+  check(Array.isArray(autosaves) && autosaves.length >= 1, `autosave entries for the Drawing Recovery Manager: ${JSON.stringify((autosaves ?? []).map((a) => a.name))}`);
+  const recoveryCopy = autosaves?.[0] ? await win.evaluate((n) => window.jcad.autosaveRead(n), autosaves[0].name) : null;
+  check(typeof recoveryCopy === 'string' && /SECTION/.test(recoveryCopy) && /EOF\s*$/.test(recoveryCopy), `recovery copy is a complete DXF (${recoveryCopy ? recoveryCopy.length : 0} characters)`);
+
+  // ------------------------------------------------------------------ IPC from anything but the application page is refused
+  step = 'IPC guard';
+  const foreign = !current ? 'skipped' : await app.evaluate(async ({ app: a, BrowserWindow }) => {
+    const sep = process.platform === 'win32' ? '\\' : '/';
+    const preload = [a.getAppPath(), 'electron', 'preload.cjs'].join(sep);
+    const w = new BrowserWindow({ show: false, webPreferences: { preload, sandbox: true, contextIsolation: true } });
+    try {
+      await w.loadURL('data:text/html;charset=utf-8,<p>foreign</p>');
+      return await w.webContents.executeJavaScript('window.jcad ? window.jcad.appInfo().then(() => "allowed", (e) => String(e)) : "no bridge"');
+    } finally {
+      w.destroy();
+    }
+  });
+  if (current) {
+    check(/Unauthorized IPC caller/.test(foreign), `a page other than the application cannot use the bridge (${foreign})`);
+    const rejectionLog = join(userData, 'ipc-rejections.log');
+    check(existsSync(rejectionLog) && /ipc app-info: sender is not the application window/.test(readFileSync(rejectionLog, 'utf8')), 'the refusal is logged in ipc-rejections.log');
+  }
 
   // ------------------------------------------------------------------ Symbol Builder
   step = 'Symbol Builder';
@@ -753,7 +912,8 @@ try {
   // Drawing1 and the project saved (in that order, each awaited), everything else discarded: the window closes.
   const savedDrawing = join(outDir, 'closed-drawing1.dxf');
   await app.evaluate((_e, p) => globalThis.__e2e.savePaths.push(p), savedDrawing);
-  const closed = app.waitForEvent('close', { timeout: 30_000 }).then(
+  // The page's 'close' (the window is gone): on macOS the application keeps running without windows.
+  const closed = win.waitForEvent('close', { timeout: 30_000 }).then(
     () => true,
     () => false,
   );
@@ -784,12 +944,18 @@ const errorLog = join(userData, 'error.log');
 check(!existsSync(errorLog), `no main-process error log${existsSync(errorLog) ? `: ${readFileSync(errorLog, 'utf8').slice(0, 2000)}` : ''}`);
 const mainErrors = mainLog.join('').split(/\r?\n/).filter((l) => /Uncaught|UnhandledPromiseRejection|TypeError|ReferenceError/.test(l));
 check(mainErrors.length === 0, `main process printed no JS errors${mainErrors.length ? `: ${mainErrors.slice(0, 5).join(' | ')}` : ''}`);
+// The IPC guard refused only what this test provoked (the foreign window, the images outside the
+// allowed folders): every legitimate flow (dialogs, plugins, packs, autosave, user library, updater,
+// read-image next to a chosen file) went through.
+const rejections = existsSync(join(userData, 'ipc-rejections.log')) ? readFileSync(join(userData, 'ipc-rejections.log'), 'utf8').split(/\r?\n/).filter(Boolean) : [];
+const unexpected = rejections.filter((l) => !/ipc app-info: sender is not the application window|read-image: (not next to a drawing the user opened|relative path|not an image file): |backup-file: not a file chosen by the user: .*stranger\.dxf/.test(l));
+check(unexpected.length === 0, `ipc-rejections.log holds only the provoked refusals (${rejections.length} line(s))${unexpected.length ? `: ${unexpected.slice(0, 5).join(' | ')}` : ''}`);
 
 rmSync(profile, { recursive: true, force: true });
 if (!process.env.JCAD_E2E_OUT) rmSync(outDir, { recursive: true, force: true });
 else console.log(`e2e-electron: output kept in ${outDir}`);
 
-console.log(`\ne2e-electron: ${results.length} checks passed, ${problems.length} failed (${process.platform} ${process.arch}, Electron ${pkg.devDependencies.electron})`);
+console.log(`\ne2e-electron: ${results.length} checks passed, ${problems.length} failed (${process.platform} ${process.arch}, ${packaged ? `packaged ${executable}` : `Electron ${pkg.devDependencies.electron}`})`);
 if (problems.length) {
   for (const p of problems) console.error(`  - ${p}`);
   process.exit(1);

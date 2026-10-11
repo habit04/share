@@ -11,6 +11,7 @@ import type { Point } from '../core/geometry';
 import * as g from '../core/geometry';
 import type { Entity, LineEntity, InsertEntity, TextEntity, BlockLookup, ArcEntity, BlockDef } from '../core/entities';
 import { newId, entityBounds, textWidth, insertTransform, explodeInsert } from '../core/entities';
+import { warmSpatialIndex } from '../core/spatial-index';
 import type { Drawing, DrawingState } from '../core/document';
 import { isWire, isHorizontal, isVertical, breakWire, breakVerticalWire, nearestReference, wireNumberText, ladderMetrics } from './ladder';
 import { drawingUnitScale } from './wdm';
@@ -42,6 +43,27 @@ export function wireDegree(entities: readonly Entity[], p: Point, tol = 1e-4): n
     else if (g.distToSegment(p, e.a, e.b) < tol) n += 2;
   }
   return n;
+}
+
+/**
+ * `wireDegree` for many points of one drawing (the audit asks for every wire end): the wires
+ * are bucketed once in a spatial index, so each query only looks at the wires near the point.
+ * Gives exactly the result of `wireDegree(entities, p, tol)`.
+ */
+export function wireDegreeCounter(entities: readonly Entity[]): (p: Point, tol?: number) => number {
+  const wires = entities.filter(isWire);
+  const idx = warmSpatialIndex(wires, () => undefined);
+  return (p, tol = 1e-4) => {
+    const near = idx?.query({ min: { x: p.x - tol, y: p.y - tol }, max: { x: p.x + tol, y: p.y + tol } });
+    if (!near) return wireDegree(wires, p, tol);
+    let n = 0;
+    for (const i of near) {
+      const e = wires[i]!;
+      if (same(e.a, p, tol) || same(e.b, p, tol)) n += 1;
+      else if (g.distToSegment(p, e.a, e.b) < tol) n += 2;
+    }
+    return n;
+  };
 }
 
 /** Junction dots that no longer sit on a tee (fewer than 3 wire ends). */

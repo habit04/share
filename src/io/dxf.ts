@@ -12,7 +12,6 @@ import type {
   Entity,
   BlockDef,
   Layer,
-  AttributeDef,
   ColorSpec,
   DimensionEntity,
   PolylineEntity,

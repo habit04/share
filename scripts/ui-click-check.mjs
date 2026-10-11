@@ -42,8 +42,8 @@ const server = createServer(async (req, res) => {
     res.end('not found');
   }
 });
-await new Promise((r) => server.listen(0, '127.0.0.1', r));
-const port = server.address().port;
+await new Promise((r) => server.listen(0, '127.0.0.1', () => r(undefined)));
+const port = /** @type {import('node:net').AddressInfo} */ (server.address()).port;
 
 // ------------------------------------------------------------------ failure bookkeeping
 const failures = [];
@@ -111,7 +111,7 @@ async function settle() {
     await page.waitForTimeout(20);
   }
   await page.evaluate((keep) => {
-    for (const b of document.querySelectorAll('.modal-backdrop .modal-close')) b.click();
+    for (const b of document.querySelectorAll('.modal-backdrop .modal-close')) /** @type {HTMLElement} */ (b).click();
     for (const m of document.querySelectorAll('.modal-backdrop, .context-menu, .appmenu')) m.remove();
     const ed = window.editor;
     if (ed.tool) ed.cancel();
@@ -291,7 +291,7 @@ async function exploreMenu(open, label) {
     await page.waitForTimeout(20);
     const item = page.locator('.context-menu.context-root > .context-item').nth(i);
     if ((await item.count()) === 0) break;
-    const [disabled, hasSub, text] = await item.evaluate((el) => [el.disabled || el.classList.contains('disabled'), el.classList.contains('has-sub'), el.textContent.trim()]);
+    const [disabled, hasSub, text] = await item.evaluate((el) => [/** @type {HTMLButtonElement} */ (el).disabled || el.classList.contains('disabled'), el.classList.contains('has-sub'), el.textContent.trim()]);
     if (disabled || SKIP_CLICK.test(text)) continue;
     current = `${label} > ${text}`;
     if (!hasSub) {
@@ -311,7 +311,7 @@ async function exploreMenu(open, label) {
       await page.waitForTimeout(30);
       const sub = page.locator('.context-menu.context-sub > .context-item').nth(j);
       if ((await sub.count()) === 0) break;
-      const [sd, sh, st] = await sub.evaluate((el) => [el.disabled || el.classList.contains('disabled'), el.classList.contains('has-sub'), el.textContent.trim()]);
+      const [sd, sh, st] = await sub.evaluate((el) => [/** @type {HTMLButtonElement} */ (el).disabled || el.classList.contains('disabled'), el.classList.contains('has-sub'), el.textContent.trim()]);
       if (sd || sh || SKIP_CLICK.test(st)) continue;
       current = `${label} > ${text} > ${st}`;
       await clickControl(sub);

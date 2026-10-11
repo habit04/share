@@ -23,8 +23,12 @@ const STARTUP_DELAY_MS = 8000;
 let autoUpdater = null;
 let checking = false;
 let downloaded = null; // version string once an update has been downloaded
+/** @type {(status: { state: string, version?: string, percent?: number, message?: string, manual?: boolean }) => void} */
 let statusSink = () => {};
-/** Asks the window whether it may close (unsaved-work prompt); set by main. */
+/**
+ * Asks the window whether it may close (unsaved-work prompt); set by main.
+ * @type {(win: Electron.BrowserWindow) => Promise<boolean>}
+ */
 let confirmRestart = async () => true;
 
 /** Whether electron-updater can replace this installation in place. */
@@ -150,7 +154,7 @@ async function checkViaUpdater(win, interactive) {
     await u.downloadUpdate();
   } catch (err) {
     // The user asked for this download: always tell them it failed.
-    const e = err instanceof Error ? err : new Error(String(err));
+    const e = /** @type {Error & { userEngaged?: boolean }} */ (err instanceof Error ? err : new Error(String(err)));
     e.userEngaged = true;
     throw e;
   }

@@ -45,7 +45,6 @@ import {
   directionAt,
   SYMATTR_LAYER,
   SYMPIN_LAYER,
-  type SymbolMeta,
   type SymbolState,
 } from '../src/electrical/symbol-builder-core';
 import { validBlockName } from '../src/tools/blocks';

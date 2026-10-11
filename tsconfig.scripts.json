@@ -1,0 +1,21 @@
+{
+  // Type check of the Node scripts (scripts/*.mjs, e2e/*.mjs): plain ES modules checked with
+  // checkJs. Nothing is emitted. `npm run typecheck:all` runs it.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["node", "vite/client"],
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "strict": true,
+    "noImplicitAny": false,
+    "strictNullChecks": false,
+    "useUnknownInCatchVariables": false,
+    "skipLibCheck": true
+  },
+  "include": ["scripts/*.mjs", "scripts/types/*.d.ts", "e2e/*.mjs"]
+}

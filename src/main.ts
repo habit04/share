@@ -44,6 +44,7 @@ import { loadPlugins, registerPluginCommands } from './app/plugins';
 import { registerDimStyleCommands } from './tools/dimension';
 import { renderSettings, clearImageCache } from './render/draw';
 import { bridgeImageLoader } from './render/images';
+import { installOpenProgress, type OpenProgressBridge } from './ui/open-progress';
 
 declare global {
   interface Window {
@@ -72,7 +73,8 @@ declare global {
       platform: string;
       /** Desktop only: an image file (absolute path) as a data URL, null when it cannot be read. */
       readImage?(file: string): Promise<string | null>;
-    } & Partial<AutosaveBridge> &
+    } & Partial<OpenProgressBridge> &
+      Partial<AutosaveBridge> &
       Partial<UserLibraryBridge> &
       Partial<PacksBridge>;
   }
@@ -543,6 +545,9 @@ function boot(): void {
     if (n) editor.log(`User symbol library: ${n} symbol(s) available in the icon menu (User: categories).`);
     if (userLibrary.lastError) editor.log(`User symbol library could not be read: ${userLibrary.lastError}`);
   });
+
+  // Large DWG files: progress dialog with Cancel while the main process reads them in a worker.
+  if (bridge?.onOpenProgress && bridge.cancelOpen) installOpenProgress(bridge as OpenProgressBridge, (t) => editor.log(t));
 
   // ------------------------------------------------------------ raster images (IMAGE entities; desktop only)
   // The browser build cannot read image files: images stay a frame with their file name there.

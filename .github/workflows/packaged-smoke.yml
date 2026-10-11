@@ -1,0 +1,77 @@
+name: Packaged smoke test (existing release)
+
+# Manual check of the installers attached to a published release: downloads them, installs /
+# mounts / extracts each one on its own OS and drives the packaged application end to end
+# (scripts/packaged-smoke.mjs). The release workflow runs the same test on every new build before
+# publishing; this one re-checks a release that is already out (for example after a runner image
+# or OS update). Test scripts and fixtures come from the branch the workflow is run from; checks
+# for features newer than the release are skipped (scripts/e2e-electron.mjs).
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag whose installers to test (e.g. v0.4.0)'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            patterns: '*.exe'
+          - os: macos-latest
+            patterns: '*.dmg'
+          - os: ubuntu-latest
+            patterns: '*.AppImage *.deb'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+      - name: Download the release's installers
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+          set -f # the patterns are for gh, not for the shell
+          mkdir -p installers
+          for p in ${{ matrix.patterns }}; do
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$p" --dir installers
+          done
+          ls -la installers
+      - name: Version the release reports
+        shell: bash
+        run: echo "JCAD_E2E_EXPECT_VERSION=${TAG#v}" >> "$GITHUB_ENV"
+        env:
+          TAG: ${{ github.event.inputs.tag }}
+      - name: Packaged smoke test (Linux, virtual display)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a node scripts/packaged-smoke.mjs installers
+        env:
+          JCAD_SMOKE_OUT: packaged-smoke-output
+      - name: Packaged smoke test (Windows, macOS)
+        if: runner.os != 'Linux'
+        run: node scripts/packaged-smoke.mjs installers
+        env:
+          JCAD_SMOKE_OUT: packaged-smoke-output
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: packaged-smoke-${{ github.event.inputs.tag }}-${{ matrix.os }}
+          path: packaged-smoke-output/
+          if-no-files-found: warn
