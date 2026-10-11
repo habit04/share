@@ -10,6 +10,7 @@ const fsSync = require('node:fs');
 const updater = require('../updater.cjs');
 const { windowStateFile, writeStateFile } = require('./app-data.cjs');
 const { buildMenu } = require('./menu.cjs');
+const { secureContents } = require('../web-security.cjs');
 
 /** @typedef {import('./context.cjs').MainContext} MainContext */
 
@@ -185,8 +186,8 @@ function createWindows(ctx, devUrl) {
     win.once('ready-to-show', () => win.show());
     installWindowStatePersistence(win);
     buildMenu(win);
-    win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-    win.webContents.on('will-navigate', (e) => e.preventDefault());
+    // No windows, navigation or <webview> (also applied to every contents by main.cjs, E-12).
+    secureContents(win.webContents);
     // Unsaved work: the renderer's Save All workflow decides; the close (and a quit) waits for it.
     let pendingClose = null;
     win.on('close', (e) => {

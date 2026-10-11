@@ -14,7 +14,7 @@
  *   updates.cjs       app info, external links, update checks and status
  *   handover.cjs      files handed over by the OS and by a second launch
  */
-const { app, BrowserWindow, ipcMain: rawIpcMain } = require('electron');
+const { app, BrowserWindow, session, ipcMain: rawIpcMain } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const fsSync = require('node:fs');
@@ -31,6 +31,7 @@ const { registerStoreIpc } = require('./main/ipc-stores.cjs');
 const { registerUpdatesIpc } = require('./main/updates.cjs');
 const { createHandover } = require('./main/handover.cjs');
 const { MAX_DRAWING_BYTES, readLimitedFile } = require('./resource-limits.cjs');
+const { installPermissionHandlers, installWebContentsGuards } = require('./web-security.cjs');
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL;
 
@@ -121,7 +122,13 @@ registerSecondInstance();
 // Main-process failures go to a log the user can send with a problem report.
 installCrashLogging();
 
+// Every web contents (the main window, the hidden plot / print windows) may not open windows,
+// navigate or attach a <webview>; no web permission is granted but clipboard writes of the
+// application page (electron/web-security.cjs, E-12).
+installWebContentsGuards(app);
+
 app.whenReady().then(() => {
+  installPermissionHandlers(session.defaultSession, () => (ctx.mainWindow && !ctx.mainWindow.isDestroyed() ? ctx.mainWindow.webContents : null));
   loadPersistedPaths();
   handOverFiles(drawingArgs(process.argv, process.cwd()));
   createWindow();
