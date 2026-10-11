@@ -1130,8 +1130,31 @@ try {
   check((await messages()).filter((m) => m.startsWith('save:')).length === 3, 'SAVE of a known file asked no dialog');
 
   // backup-file: { ok, path } or { ok: false, error }, never a silent success.
+  const sourceBeforeBackup = readFileSync(good);
   const b1 = await win.evaluate((p) => window.jcad.backupFile(p), good);
-  check(b1 && b1.ok === true && b1.path === `${good}.bak` && readFileSync(`${good}.bak`, 'utf8') === readFileSync(good, 'utf8'), `backup-file copied the drawing (${JSON.stringify(b1)})`);
+  let backupMatches = false;
+  /** @type {Record<string, unknown>} */
+  const backupDetails = { reply: b1, expectedPath: `${good}.bak` };
+  try {
+    if (!b1 || b1.ok !== true || typeof b1.path !== 'string') throw new Error('backup-file did not return a successful destination');
+    // The writer returns its pinned destination: Windows 8.3 names and macOS /var aliases
+    // can differ from the dialog's spelling while naming exactly the same backup file.
+    const expectedPath = realpathSync.native(`${good}.bak`);
+    const returnedPath = realpathSync.native(b1.path);
+    const expectedBytes = readFileSync(`${good}.bak`);
+    const returnedBytes = readFileSync(b1.path);
+    const sourceAfterBackup = readFileSync(good);
+    const sameDestination = expectedPath === returnedPath;
+    const regularFiles = lstatSync(`${good}.bak`).isFile() && lstatSync(b1.path).isFile();
+    const expectedBytesMatch = expectedBytes.equals(sourceBeforeBackup);
+    const returnedBytesMatch = returnedBytes.equals(sourceBeforeBackup);
+    const sourceUnchanged = sourceAfterBackup.equals(sourceBeforeBackup);
+    Object.assign(backupDetails, { expectedPath, returnedPath, sameDestination, regularFiles, sourceBytes: sourceBeforeBackup.length, expectedBytes: expectedBytes.length, returnedBytes: returnedBytes.length, expectedBytesMatch, returnedBytesMatch, sourceUnchanged });
+    backupMatches = sameDestination && regularFiles && expectedBytesMatch && returnedBytesMatch && sourceUnchanged;
+  } catch (error) {
+    backupDetails.error = String(error);
+  }
+  check(backupMatches, `backup-file copied the drawing (${JSON.stringify(backupDetails)})`);
   // A path the main process never handed out (no dialog, recent list or project named it) is refused like save-dxf refuses it.
   const b2 = await win.evaluate((p) => window.jcad.backupFile(p), join(saveDir, 'stranger.dxf'));
   check(b2 && b2.ok === false && b2.code === 'EINVAL' && /^The backup copy of "stranger\.dxf" could not be made: only drawings and project files you opened or saved yourself/.test(b2.error), `backup-file refuses a path outside the allow-list (${JSON.stringify(b2)})`);
