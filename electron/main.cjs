@@ -1,7 +1,8 @@
 /**
  * The Electron main process. It creates the IPC guard (electron/ipc-guard.cjs) and the path registry
  * (electron/path-registry.cjs) - the only way IPC handlers are registered and paths are granted -
- * and wires the modules under electron/main/ (module map: docs/DEVELOPMENT.md):
+ * and wires the modules under electron/main/ (module map: docs/DEVELOPMENT.md), which receive them
+ * in a shared context (electron/main/context.cjs):
  *
  *   app-data.cjs      state files in the app-data folder, crash-safe user-file writes, error.log
  */
@@ -23,7 +24,7 @@ const DEV_URL = process.env.VITE_DEV_SERVER_URL;
 // frame may use the bridge (electron/ipc-guard.cjs). Refusals go to <userData>/ipc-rejections.log.
 const rejections = createRejectionLog(() => app.getPath('userData'));
 const ipcMain = guardIpc(rawIpcMain, {
-  getWindow: () => mainWindow,
+  getWindow: () => ctx.mainWindow,
   isAppUrl: appUrlTest(path.join(__dirname, '..', 'dist', 'index.html'), DEV_URL),
   log: rejections,
 });
@@ -47,10 +48,18 @@ const PROJECT_FILE = /\.json$/i;
 const BACKUP_FILE = /\.(dxf|jcadproj\.json)$/i;
 /** The window that sent an IPC message (the guard has already checked it is the main window). */
 function senderWindow(/** @type {Electron.IpcMainInvokeEvent} */ ev) {
-  const win = BrowserWindow.fromWebContents(ev.sender) || mainWindow;
+  const win = BrowserWindow.fromWebContents(ev.sender) || ctx.mainWindow;
   if (!win) throw new Error('No application window');
   return win;
 }
+
+/**
+ * What the modules under electron/main/ share (electron/main/context.cjs): the guarded ipcMain
+ * and the path registry and policy above - the only way they register handlers and grant or
+ * check paths - and the main window.
+ * @type {import('./main/context.cjs').MainContext}
+ */
+const ctx = { ipcMain, rejections, registry, pathPolicy, senderWindow, mainWindow: null, openFilesReady: false };
 
 let recentFiles = [];
 function loadPersistedPaths() {
@@ -206,8 +215,6 @@ function buildMenu(win) {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
-/** @type {BrowserWindow | null} */
-let mainWindow = null;
 /** Set when electron-updater is about to quit and relaunch: the close veto must not run then. */
 let quittingForUpdate = false;
 require('electron').autoUpdater.on('before-quit-for-update', () => {
@@ -298,7 +305,7 @@ function requestClose(win, context) {
 // more edits) asks about unsaved work again instead of going straight through.
 const RESTART_APPROVAL_MS = 10_000;
 updater.onConfirmRestart(async (w) => {
-  const win = w && !w.isDestroyed() ? w : mainWindow;
+  const win = w && !w.isDestroyed() ? w : ctx.mainWindow;
   const ok = await requestClose(win, 'restart');
   if (ok && win) {
     closeApproved.add(win);
@@ -328,8 +335,8 @@ async function createWindow() {
       sandbox: true,
     },
   });
-  mainWindow = win;
-  openFilesReady = false; // a new page asks for the files waiting for it
+  ctx.mainWindow = win;
+  ctx.openFilesReady = false; // a new page asks for the files waiting for it
   if (b.maximized) win.maximize();
   win.once('ready-to-show', () => win.show());
   installWindowStatePersistence(win);
@@ -953,7 +960,7 @@ ipcMain.handle('open-external', async (_ev, url) => {
   return true;
 });
 ipcMain.handle('check-updates', (ev) => {
-  const win = BrowserWindow.fromWebContents(ev.sender) || mainWindow;
+  const win = BrowserWindow.fromWebContents(ev.sender) || ctx.mainWindow;
   return updater.checkForUpdates(win, { interactive: true });
 });
 updater.onStatus((status) => {
@@ -975,7 +982,6 @@ ipcMain.on('app-quit', (ev) => {
 // drawing in its own tab (pristine tab reused, an open tab shown) and a project as the current
 // project - asked for once it has loaded (take-open-files), pushed afterwards (open-files).
 const pendingOpenFiles = [];
-let openFilesReady = false;
 /** The files the OS may hand over: drawings and project files. */
 const HANDOVER_FILE = /\.(dxf|dwg)$|\.jcadproj\.json$/i;
 /**
@@ -1009,12 +1015,12 @@ function handOverFiles(files) {
     const k = pathKey(f);
     if (k !== null && /\.json$/i.test(f)) handedOverProjects.add(k);
   }
-  const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
-  if (openFilesReady && win) win.webContents.send('open-files', files);
+  const win = ctx.mainWindow && !ctx.mainWindow.isDestroyed() ? ctx.mainWindow : null;
+  if (ctx.openFilesReady && win) win.webContents.send('open-files', files);
   else pendingOpenFiles.push(...files);
 }
 ipcMain.handle('take-open-files', () => {
-  openFilesReady = true;
+  ctx.openFilesReady = true;
   return pendingOpenFiles.splice(0);
 });
 app.on('open-file', (ev, file) => {
@@ -1052,7 +1058,7 @@ if (!app.requestSingleInstanceLock()) {
 app.on('second-instance', (_ev, argv, workingDirectory) => {
   // A drawing handed to a second launch ("Open with", a double click) opens in this window.
   handOverFiles(drawingArgs(argv, workingDirectory));
-  const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : BrowserWindow.getAllWindows()[0];
+  const win = ctx.mainWindow && !ctx.mainWindow.isDestroyed() ? ctx.mainWindow : BrowserWindow.getAllWindows()[0];
   if (!win) return;
   if (win.isMinimized()) win.restore();
   win.show();
@@ -1066,7 +1072,7 @@ app.whenReady().then(() => {
   loadPersistedPaths();
   handOverFiles(drawingArgs(process.argv, process.cwd()));
   createWindow();
-  updater.scheduleStartupCheck(() => mainWindow);
+  updater.scheduleStartupCheck(() => ctx.mainWindow);
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
@@ -1075,6 +1081,6 @@ app.whenReady().then(() => {
 app.on('will-quit', () => dwgHost.dispose());
 
 app.on('window-all-closed', () => {
-  mainWindow = null;
+  ctx.mainWindow = null;
   if (process.platform !== 'darwin') app.quit();
 });
