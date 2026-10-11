@@ -199,6 +199,10 @@ async function verifyDownloaded() {
     u.autoInstallOnAppQuit = false;
     downloaded = null;
     downloadedUpdate = null;
+  } else {
+    // A download that passes (a retry after a failed one too) installs on quit again, as the
+    // "Update Ready" dialog says.
+    u.autoInstallOnAppQuit = true;
   }
   return why;
 }

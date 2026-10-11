@@ -92,3 +92,63 @@ describe('update verification (electron/update-verify.cjs, E-8)', () => {
     expect(nsis).toMatch(/publisherName == null\) \{\s*return null;/);
   });
 });
+
+describe('the updater after a failed verification (electron/updater.cjs with stand-ins)', () => {
+  it('a retried download that verifies installs on quit again, as the dialog says', async () => {
+    const realPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { ...realPlatform, value: 'linux' });
+    process.env.APPIMAGE = '/tmp/jcad.AppImage';
+    const tampered = join(dir, 'tampered-retry.exe');
+    writeFileSync(tampered, Buffer.from('MZ not the release bytes'));
+    const downloads = [tampered, installer];
+    const autoUpdater = {
+      autoDownload: true,
+      autoInstallOnAppQuit: true,
+      on: () => {},
+      checkForUpdates: async () => ({ updateInfo: info() }),
+      downloadUpdate: async () => [downloads.shift()!],
+      quitAndInstall: () => {
+        throw new Error('not in this test');
+      },
+    };
+    const boxes: string[] = [];
+    const electron = {
+      app: { isPackaged: true, getVersion: () => '0.4.1' },
+      dialog: {
+        showMessageBox: async (_w: unknown, o: { message: string; buttons?: string[] }) => {
+          boxes.push(o.message);
+          // "Download" in Update Available, "Later" in Update Ready, "Close" elsewhere.
+          const i = (o.buttons ?? []).findIndex((b) => b === 'Download' || b === 'Later' || b === 'Close');
+          return { response: Math.max(0, i) };
+        },
+      },
+      shell: { openExternal: async () => {} },
+      net: { fetch: async () => new Response('{}', { status: 404 }) },
+    };
+    const paths = { electron: require.resolve('electron'), updater: require.resolve('electron-updater'), mod: require.resolve('../electron/updater.cjs') };
+    const saved = { electron: require.cache[paths.electron], updater: require.cache[paths.updater] };
+    const fake = (file: string, exports: unknown) => ({ id: file, filename: file, loaded: true, exports }) as unknown as NodeJS.Module;
+    require.cache[paths.electron] = fake(paths.electron, electron);
+    require.cache[paths.updater] = fake(paths.updater, { autoUpdater });
+    delete require.cache[paths.mod];
+    try {
+      const updater = require(paths.mod) as { checkForUpdates(win: unknown, o?: { interactive?: boolean }): Promise<{ state: string; message?: string }> };
+      const first = await updater.checkForUpdates({}, { interactive: true });
+      expect(first.state).toBe('error');
+      expect(first.message).toMatch(/failed verification and will not be installed: the downloaded file does not match the SHA-512 checksum/);
+      expect(autoUpdater.autoInstallOnAppQuit).toBe(false);
+      const second = await updater.checkForUpdates({}, { interactive: true });
+      expect(second.state).toBe('downloaded');
+      expect(boxes).toContain('JCad Electrical 0.4.2 has been downloaded.'); // "...or it will be installed when you quit."
+      expect(autoUpdater.autoInstallOnAppQuit).toBe(true);
+    } finally {
+      for (const k of ['electron', 'updater'] as const) {
+        if (saved[k]) require.cache[paths[k]] = saved[k];
+        else delete require.cache[paths[k]];
+      }
+      delete require.cache[paths.mod];
+      Object.defineProperty(process, 'platform', realPlatform);
+      delete process.env.APPIMAGE;
+    }
+  });
+});
