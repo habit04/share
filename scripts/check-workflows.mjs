@@ -90,6 +90,17 @@ else {
     if (!publish) problems.push('release.yml: release does not publish with action-gh-release');
     else if (publish.with?.target_commitish !== '${{ needs.checks.outputs.sha }}') problems.push('release.yml: the release must target the tested commit');
   }
+  // A gate is only a gate when a failed dependency stops the dependants: no job may run on
+  // `always()` / `!cancelled()` / `failure()`, and no step of the checks job may continue on error.
+  for (const [id, job] of Object.entries(jobs)) {
+    if (/\b(always|cancelled|failure)\s*\(/.test(String(job?.if ?? ''))) problems.push(`release.yml: job ${id} runs even when a job it needs failed (if: ${job.if})`);
+    if (job && job['continue-on-error']) problems.push(`release.yml: job ${id} continues on error`);
+  }
+  for (const id of ['checks', 'packaged-smoke'])
+    (jobs[id]?.steps ?? []).forEach((s, i) => {
+      if (s && s['continue-on-error']) problems.push(`release.yml: job ${id} step ${i + 1} continues on error`);
+      if (s && /\b(always|failure)\s*\(/.test(String(s.if ?? '')) && typeof s.run === 'string') problems.push(`release.yml: job ${id} step ${i + 1} runs a command on always() / failure()`);
+    });
   // The signing steps stay in place (docs/CODE-SIGNING.md).
   const buildRuns = JSON.stringify(jobs.build ?? {});
   for (const marker of ['scripts/azure-signing.mjs', 'Get-AuthenticodeSignature', 'HAS_APPLE', 'xcrun stapler validate'])

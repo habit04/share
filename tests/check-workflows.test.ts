@@ -56,6 +56,13 @@ describe('workflow validation', () => {
     expect(r.out).toMatch(/must target the tested commit/);
   });
 
+  it('notices a release that runs on always(), and a checks step that continues on error', () => {
+    const r = check(withRelease((t) => t.replace(/ {4}if: startsWith\(github\.ref, 'refs\/tags\/v'\).*\n/, '    if: always()\n').replace('      - run: npm test\n', '      - run: npm test\n        continue-on-error: true\n')));
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/job release runs even when a job it needs failed/);
+    expect(r.out).toMatch(/job checks step \d+ continues on error/);
+  });
+
   it('notices a dropped signing step and a needs on an unknown job', () => {
     const r = check(withRelease((t) => t.replace('run: node scripts/azure-signing.mjs', 'run: echo skipped').replace('needs: [checks, build]\n    strategy', 'needs: [checks, bild]\n    strategy')));
     expect(r.code).toBe(1);

@@ -132,5 +132,14 @@ for (const f of actuals) {
   failed += 1;
 }
 console.log(lines.join('\n'));
-console.log(`\nscreenshot:compare: ${baselines.length - failed < 0 ? 0 : lines.filter((l) => l.startsWith('ok')).length} match, ${failed} failed${failed ? `; diff images in ${diffDir}` : ''}`);
+console.log(`\nscreenshot:compare: ${lines.filter((l) => l.startsWith('ok')).length} match, ${failed} failed${failed ? `; diff images in ${diffDir}` : ''}`);
+if (failed && process.env.GITHUB_ACTIONS) {
+  // A GitHub Actions annotation (shown on the run's summary page) that says what to do.
+  const names = lines.filter((l) => l.startsWith('FAIL')).map((l) => l.slice(5, l.indexOf(':'))).join(', ');
+  console.log(
+    `::error title=Screenshots differ from the approved baselines::${failed} screenshot(s) do not match screenshots/baseline/ (${names}). ` +
+      'Download the screenshot-diffs artifact (<name>.diff.png / .actual.png). If the change is intended, or the Playwright Chromium / fonts of the runner changed, ' +
+      'run the "Screenshot baselines" workflow on this branch (tick "commit") to re-approve them (docs/DEVELOPMENT.md, Screenshots).',
+  );
+}
 process.exit(failed ? 1 : 0);

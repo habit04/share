@@ -48,6 +48,7 @@ jobs:
           TAG: ${{ github.event.inputs.tag }}
         run: |
           set -euo pipefail
+          set -f # the patterns are for gh, not for the shell
           mkdir -p installers
           for p in ${{ matrix.patterns }}; do
             gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$p" --dir installers

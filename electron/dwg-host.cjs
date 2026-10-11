@@ -107,6 +107,10 @@ function createDwgHost({ scriptsDir }) {
   }
 
   let nextId = 1;
+  /** Ids of reads that have started (the worker may still be starting up). */
+  const active = new Set();
+  /** Reads cancelled while their worker was still starting: they fail as soon as it is ready. */
+  const cancelledEarly = new Set();
   return {
     /**
      * Parse DWG bytes. Resolves { payload, version }; rejects with OpenCancelledError after cancel(id).
@@ -114,28 +118,40 @@ function createDwgHost({ scriptsDir }) {
      * @param {number} [id]  caller's id for cancel(); one is made up when omitted
      */
     async read(bytes, id = nextId++) {
-      if (!workersUnavailable) {
-        let w;
-        try {
-          w = await startWorker();
-        } catch (err) {
-          workersUnavailable = true;
-          console.warn(`JCad: DWG worker unavailable, reading in the main process (${(err && err.message) || err})`);
+      active.add(id);
+      try {
+        if (!workersUnavailable) {
+          let w;
+          try {
+            w = await startWorker();
+          } catch (err) {
+            workersUnavailable = true;
+            console.warn(`JCad: DWG worker unavailable, reading in the main process (${(err && err.message) || err})`);
+          }
+          if (cancelledEarly.delete(id)) throw new OpenCancelledError();
+          if (w) {
+            const copy = new Uint8Array(bytes); // transferable copy; the caller keeps its buffer
+            return await new Promise((resolve, reject) => {
+              pending.set(id, { resolve, reject });
+              w.postMessage({ id, bytes: copy.buffer, kind: 'dwg' }, [copy.buffer]);
+            });
+          }
         }
-        if (w) {
-          const copy = new Uint8Array(bytes); // transferable copy; the caller keeps its buffer
-          return new Promise((resolve, reject) => {
-            pending.set(id, { resolve, reject });
-            w.postMessage({ id, bytes: copy.buffer, kind: 'dwg' }, [copy.buffer]);
-          });
-        }
+        return await readInProcess(bytes);
+      } finally {
+        active.delete(id);
+        cancelledEarly.delete(id);
       }
-      return readInProcess(bytes);
     },
     /** Cancel a read started with `id`. Returns whether it was running. */
     cancel(/** @type {number} */ id) {
       const p = pending.get(id);
-      if (!p) return false;
+      if (!p) {
+        // Not posted yet (the worker is still starting): the read fails once the worker is ready.
+        if (!active.has(id)) return false;
+        cancelledEarly.add(id);
+        return true;
+      }
       pending.delete(id);
       p.reject(new OpenCancelledError());
       // Other reads share the worker; they fail with "stopped unexpectedly" and can be retried.
