@@ -19,7 +19,7 @@
  *
  * Pure of DOM: the store is injected, so the module works under vitest.
  */
-import type { AttributeDef, BlockDef, Entity, InsertEntity } from '../core/entities';
+import { BYBLOCK, type AttributeDef, type BlockDef, type Entity, type InsertEntity } from '../core/entities';
 import type { DrawingState } from '../core/document';
 import { DEFAULT_LAYERS } from '../core/document';
 import { writeDxf } from '../io/dxf';
@@ -38,6 +38,14 @@ export interface UserSymbol {
   wdtype?: string;
   created: number;
   modified: number;
+  /**
+   * The geometry's colours follow the ByBlock rule of the built-in libraries (ByBlock on layer 0,
+   * so the block reference's colour recolours the symbol). Records written before this flag
+   * existed were drawn ByLayer on layer 0, which showed the reference's colour under the old
+   * colour rule: they are read with that geometry turned ByBlock, flagged in memory, and the
+   * file is rewritten only with the next change to the library.
+   */
+  byBlockColors?: true;
 }
 
 export const USER_LIBRARY_KEY = 'jcad.userlib.v1';
@@ -222,10 +230,12 @@ export function validateUserSymbol(v: unknown): UserSymbol {
     else attributes.push(r.attribute);
   }
   if (entities.length === 0 && attributes.length === 0) fail('has no geometry and no attributes');
+  // Records from before the ByBlock rule: layer-0 ByLayer geometry showed the reference's colour then.
+  const migrated = v.byBlockColors === true ? entities : entities.map((e) => (e.layer === '0' && e.color === 'ByLayer' ? ({ ...e, color: BYBLOCK } as Entity) : e));
   const block: BlockDef = {
     name,
     basePoint: b.basePoint as { x: number; y: number },
-    entities,
+    entities: migrated,
     attributes,
     ...(typeof b.description === 'string' ? { description: b.description } : {}),
   };
@@ -240,6 +250,7 @@ export function validateUserSymbol(v: unknown): UserSymbol {
     ...(wdtype ? { wdtype } : {}),
     created: typeof v.created === 'number' ? v.created : now,
     modified: typeof v.modified === 'number' ? v.modified : now,
+    byBlockColors: true,
   };
 }
 
@@ -497,6 +508,7 @@ export class UserLibrary {
       family: sym.family.trim().toUpperCase() || 'DEV',
       created: sym.created ?? prev?.created ?? now,
       modified: sym.modified ?? now,
+      byBlockColors: true,
     };
     if (wdtype) entry.wdtype = wdtype;
     else delete entry.wdtype;

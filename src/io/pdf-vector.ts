@@ -235,7 +235,9 @@ function hexRgb(css: string): [number, number, number] {
 
 /** Object colour on white paper: ACI 7 (white / black) plots black. */
 function objectRgb(color: number | 'ByLayer', trueColor: number | undefined, layer: Layer | undefined): [number, number, number] {
-  if (trueColor !== undefined) return [((trueColor >> 16) & 255) / 255, ((trueColor >> 8) & 255) / 255, (trueColor & 255) / 255];
+  const rgbOf = (c: number): [number, number, number] => [((c >> 16) & 255) / 255, ((c >> 8) & 255) / 255, (c & 255) / 255];
+  if (trueColor !== undefined) return rgbOf(trueColor);
+  if (color === 'ByLayer' && layer?.trueColor !== undefined) return rgbOf(layer.trueColor);
   const aci = color === 'ByLayer' ? (layer?.color ?? 7) : color;
   if (aci === 7 || aci === 0) return [0, 0, 0];
   return hexRgb(aciToCss(aci));
@@ -425,13 +427,9 @@ class PageWriter {
 
   private applyStyle(e: Entity, parent: InsertEntity | null): void {
     const layer = this.layer(e.layer);
-    let color = e.color;
-    let trueColor = e.trueColor;
-    if (color === 0 && parent) {
-      color = parent.color;
-      trueColor = parent.trueColor;
-    }
-    const rgb = plotColor(objectRgb(color, trueColor, color === 'ByLayer' && parent && e.layer === parent.layer ? this.layer(parent.layer) : layer), this.style);
+    // Block content arrives resolved from explodeInsert (core/entities.ts inheritedColor): ByBlock
+    // objects carry the reference's colour, or `colorLayer` (the reference's layer) when it is ByLayer.
+    const rgb = plotColor(objectRgb(e.color, e.trueColor, e.colorLayer !== undefined ? this.layer(e.colorLayer) : layer), this.style);
     this.setStroke(rgb);
     this.setFill(rgb);
     let mm = e.lineWeight;
@@ -461,7 +459,7 @@ class PageWriter {
   /** Sub-parts (dimension, leader, table, formatted MTEXT) keep the parent's colour unless they set their own. */
   private parts(parts: readonly Entity[], owner: Entity, parent: InsertEntity | null, view: Bounds | null): void {
     for (const p of parts) {
-      const styled = p.color === 'ByLayer' && p.trueColor === undefined ? ({ ...p, color: owner.color, trueColor: owner.trueColor, layer: owner.layer, lineWeight: p.lineWeight ?? owner.lineWeight } as Entity) : p;
+      const styled = p.color === 'ByLayer' && p.trueColor === undefined ? ({ ...p, color: owner.color, trueColor: owner.trueColor, layer: owner.layer, colorLayer: owner.colorLayer, lineWeight: p.lineWeight ?? owner.lineWeight } as Entity) : p;
       this.applyStyle(styled, parent);
       this.geometry(styled, parent, view);
     }

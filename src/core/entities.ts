@@ -12,8 +12,15 @@ export type { MTextEntity, MTextAttachment } from './mtext';
 export type { TableEntity, TableCell } from './table';
 export type { HatchLoop, WorldPatternLine } from './hatch';
 
-/** AutoCAD Color Index-like palette (subset), 'ByLayer' means inherit. */
+/**
+ * AutoCAD Color Index (1..255). 'ByLayer' (DXF 256) inherits the colour of the object's layer;
+ * 0 is ByBlock: inside a block the object takes the colour of the block reference (see
+ * `inheritedColor`), outside any block it shows in the foreground colour (ACI 7).
+ */
 export type ColorSpec = 'ByLayer' | number;
+
+/** DXF colour number 0: the object takes the colour of the block reference that shows it. */
+export const BYBLOCK = 0;
 
 export interface EntityBase {
   readonly id: string;
@@ -29,6 +36,13 @@ export interface EntityBase {
   readonly trueColor?: number;
   /** Annotative object (text, mtext, dimension, leader, insert): its paper size stays constant (see core/layouts.ts). */
   readonly annotative?: boolean;
+  /**
+   * Display only, set on exploded block content: the layer whose colour a 'ByLayer' colour
+   * resolves against instead of the object's own layer. A ByBlock object inside a ByLayer
+   * block reference shows the colour of the reference's layer while it stays on its own layer
+   * (for visibility). Never stored in drawings or written to files (see `bakeInheritedColor`).
+   */
+  readonly colorLayer?: string;
 }
 
 /** A field expression behind a text value (%<\AcVar Date>% ...): `value` is what the code evaluated to. */
@@ -287,6 +301,8 @@ export interface Layer {
   readonly frozen?: boolean;
   /** Plot flag (DXF 290): false = shown on screen but never plotted (like DEFPOINTS). */
   readonly plot?: boolean;
+  /** True colour 0xRRGGBB (DXF 420 on the LAYER record); shown instead of `color` when set. */
+  readonly trueColor?: number;
 }
 
 let idCounter = 0;
@@ -1075,12 +1091,37 @@ export function similarityTransform(e: Entity, tf: (p: Point) => Point, rotation
   }
 }
 
+/**
+ * The colour properties a block-definition object shows with inside block reference `ins`:
+ * - an explicit colour (ACI 1..255 or a true colour) is kept;
+ * - ByLayer resolves against the object's layer, where an object on layer "0" floats to the
+ *   reference's layer (the reference's own colour does not change it, as in AutoCAD);
+ * - ByBlock (0) takes the reference's colour: its ACI or true colour, or, when the reference is
+ *   ByLayer, the colour of the reference's layer (`colorLayer`); a ByBlock reference passes
+ *   ByBlock on to the next level up, so nested blocks resolve outwards.
+ */
+export function inheritedColor(e: EntityBase, ins: EntityBase): { color: ColorSpec; trueColor?: number; colorLayer?: string } {
+  if (e.trueColor !== undefined) return { color: e.color, trueColor: e.trueColor };
+  if (e.color !== BYBLOCK) return { color: e.color };
+  if (ins.trueColor !== undefined) return { color: ins.color, trueColor: ins.trueColor };
+  if (ins.color === 'ByLayer') return { color: 'ByLayer', colorLayer: ins.colorLayer ?? ins.layer };
+  return { color: ins.color };
+}
+
+/** Exploded block content made permanent (EXPLODE): a `colorLayer` becomes that layer's colour. */
+export function bakeInheritedColor<T extends Entity>(e: T, layers: readonly Layer[]): T {
+  if (e.colorLayer === undefined) return e;
+  const { colorLayer, ...rest } = e;
+  const layer = layers.find((l) => l.name === colorLayer);
+  return { ...rest, color: layer?.color ?? 7, ...(layer?.trueColor !== undefined ? { trueColor: layer.trueColor } : {}) } as T;
+}
+
 function transformEntity(e: Entity, tf: (p: Point) => Point, ins: InsertEntity, similar: boolean, lookup: BlockLookup, depth: number): Entity[] {
   // Entities on layer "0" inside a block inherit the insert's layer (AutoCAD behaviour).
   const lay = e.layer === '0' ? ins.layer : e.layer;
-  const col: ColorSpec = e.color === 'ByLayer' && e.layer === '0' ? ins.color : e.color;
   const lt = e.linetype && e.linetype.toUpperCase() === 'BYBLOCK' ? ins.linetype : e.linetype;
-  const styled = { ...e, layer: lay, color: col, linetype: lt } as Entity;
+  const { trueColor: _t, colorLayer: _c, ...plain } = e;
+  const styled = { ...plain, layer: lay, ...inheritedColor(e, ins), linetype: lt } as Entity;
   const moved = similar ? similarityTransform(styled, tf, ins.rotation, ins.scale) : blockTransform(styled, tf, ins.rotation, ins.scale, ins.scaleY ?? ins.scale, Boolean(ins.mirror));
   if (moved.type === 'insert') return explodeInsert(moved, lookup, depth);
   return [moved];

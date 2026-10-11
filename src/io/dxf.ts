@@ -59,6 +59,7 @@ import { attdefFlags, attdefFlagProps, type AttributeDefExt } from '../electrica
 // Track E: paper space (layouts, VIEWPORT entities, LAYOUT objects) lives in dxf-layouts.ts.
 import { planLayouts, writeLayoutHeader, extraBlockRecords, layoutHandleOf, writeLayoutContent, writeLayoutObjects, LayoutReader } from './dxf-layouts';
 import { decodeUnicodeEscapes, encodeDxfText, textStyleFromGroups, textStyleGroups, textStyleOf, textStylesForWrite, textStylesMeta, withTextStyle, type TextStyle } from './encoding';
+import { ImportReportBuilder, geometryProblem, rawEntitiesOf, withImportData, type RawDxfEntity } from './import-report';
 
 // ---------------------------------------------------------------- writing
 
@@ -773,6 +774,8 @@ function usedLinetypes(state: DrawingState): Linetype[] {
   };
   scan(state.entities);
   for (const b of Object.values(state.blocks)) scan(b.entities);
+  // Retained raw records name their linetype in group 6: it must exist in the LTYPE table.
+  for (const r of rawEntitiesOf(state)) for (const [code, value] of r.groups) if (code === 6 && value.trim()) names.add(value.trim().toUpperCase());
   const extra = state.header?.linetypes ?? [];
   const out: Linetype[] = [];
   for (const lt of extra) out.push(lt);
@@ -943,11 +946,16 @@ export function writeDxf(state: DrawingState): string {
     for (const lt of linetypes) ltRecord(lt);
   });
   const layerHandles = new Map<string, string>();
-  table('LAYER', '2', state.layers.length, () => {
-    for (const l of state.layers) {
+  // Layers of retained raw records that were deleted since: written so the records stay valid.
+  const rawRecords = rawEntitiesOf(state);
+  const layerList: Layer[] = [...state.layers];
+  for (const r of rawRecords) if (!layerList.some((l) => l.name === r.layer)) layerList.push({ name: r.layer, color: 7, visible: true, locked: false, lineWeight: 0.25 });
+  table('LAYER', '2', layerList.length, () => {
+    for (const l of layerList) {
       record('LAYER', '2', 'AcDbLayerTableRecord', l.name, (l.locked ? 4 : 0) | (l.frozen ? 1 : 0));
       layerHandles.set(l.name, w.lastHandle().toString(16).toUpperCase());
       w.pair(62, l.visible || l.frozen ? l.color : -l.color);
+      if (l.trueColor !== undefined) w.pair(420, l.trueColor & 0xffffff);
       w.pair(6, l.linetype && l.linetype.toUpperCase() !== 'BYLAYER' ? l.linetype : 'Continuous');
       w.pair(370, Math.round(l.lineWeight * 100));
       if (l.plot === false) w.pair(290, 0);
@@ -1104,6 +1112,13 @@ export function writeDxf(state: DrawingState): string {
   for (const e of state.entities) writeEntityAnno(w, e, MODEL_SPACE, state.blocks, dimBlocks, extras);
   // The first layout's paper space (VIEWPORTs + entities, group 67 = 1).
   if (layoutPlan.records[0]) writeLayoutContent(w, layoutPlan.records[0], writePaperEntity, layerHandles);
+  // Unknown model-space records kept from the source file, verbatim apart from a new handle and owner.
+  for (const r of rawRecords) {
+    w.pair(0, r.type);
+    w.pair(5, w.nextHandle());
+    w.pair(330, MODEL_SPACE);
+    for (const [code, value] of r.groups) w.pair(code, value);
+  }
   w.pair(0, 'ENDSEC');
 
   // OBJECTS: root dictionary with the mandatory ACAD_GROUP entry
@@ -1184,24 +1199,136 @@ export function writeDxf(state: DrawingState): string {
 interface Pair {
   code: number;
   value: string;
+  /** 1-based line of the group code in the file (reader diagnostics). */
+  line?: number;
 }
 
-function tokenize(text: string): Pair[] {
+/**
+ * A DXF file that cannot be read. `truncated` marks a file that ends early (no EOF, a group
+ * code without its value, an open section): `readDxf(text, { recover: true })` then opens what
+ * was readable, marking the drawing as recovered.
+ */
+export class DxfReadError extends Error {
+  constructor(
+    message: string,
+    /** 1-based line where the problem was found. */
+    readonly line: number,
+    readonly truncated = false,
+  ) {
+    super(message);
+    this.name = 'DxfReadError';
+  }
+}
+
+const shortText = (t: string): string => (t.length > 40 ? `${t.slice(0, 40)}...` : t);
+
+/** An optionally signed run of digits (a valid group code line, already trimmed). */
+function isIntegerText(t: string): boolean {
+  let i = t.charCodeAt(0) === 43 || t.charCodeAt(0) === 45 ? 1 : 0;
+  if (i >= t.length) return false;
+  for (; i < t.length; i += 1) {
+    const c = t.charCodeAt(i);
+    if (c < 48 || c > 57) return false;
+  }
+  return true;
+}
+
+/**
+ * Split DXF text into group pairs and check the file structure: every group code is an integer,
+ * every code has a value, SECTION / ENDSEC pairs balance and the file ends with EOF. A file that
+ * ends early throws a `truncated` DxfReadError unless `recover` is set; then the incomplete last
+ * object is left out, open sections are closed and `report.recovered` tells what happened.
+ */
+function tokenize(text: string, recover = false, report?: ImportReportBuilder): Pair[] {
+  if (text.startsWith('AutoCAD Binary DXF')) throw new DxfReadError('This is a binary DXF file. Save it as an ASCII DXF (DXFOUT, ASCII format) to open it.', 1);
   const lines = text.split(/\r\n|\r|\n/);
   const pairs: Pair[] = [];
-  for (let i = 0; i + 1 < lines.length; i += 2) {
-    const code = parseInt(lines[i]!.trim(), 10);
-    if (Number.isNaN(code)) continue;
+  let eof = false;
+  let i = 0;
+  /** A group code on the last line of a file that ends early, without its value (0 = a new object was starting). */
+  let danglingCode: number | null = null;
+  for (; i + 1 < lines.length; i += 2) {
+    const rawCode = lines[i]!.trim();
+    const code = parseInt(rawCode, 10);
+    if (Number.isNaN(code) || !isIntegerText(rawCode)) {
+      if (rawCode === '' && lines.slice(i).every((l) => l.trim() === '')) break; // trailing blank lines
+      throw new DxfReadError(`Line ${i + 1}: "${shortText(rawCode)}" is not a DXF group code (a whole number was expected). The file is damaged or is not a DXF file.`, i + 1);
+    }
     // Text chunks (1 / 3, MLEADER 304) keep trailing spaces: a 250-character MTEXT chunk may end in one.
     const raw = lines[i + 1]!;
-    pairs.push({ code, value: code === 1 || code === 3 || code === 304 ? raw : raw.replace(/\s+$/, '') });
+    const value = code === 1 || code === 3 || code === 304 ? raw : raw.replace(/\s+$/, '');
+    pairs.push({ code, value, line: i + 1 });
+    if (code === 0 && value.trim() === 'EOF') {
+      eof = true;
+      break;
+    }
   }
+  if (pairs.length === 0) throw new DxfReadError('The file is empty or is not a DXF file.', 1);
+  let truncatedAt: number | null = null;
+  if (!eof) {
+    let last = lines.length;
+    while (last > 0 && lines[last - 1]!.trim() === '') last -= 1;
+    truncatedAt = Math.max(1, last);
+    if (i < lines.length && i === last - 1 && isIntegerText(lines[i]!.trim())) danglingCode = parseInt(lines[i]!.trim(), 10);
+    // A last pair "0" + empty value is a new object that never got its type: the same boundary.
+    const tail = pairs[pairs.length - 1]!;
+    if (tail.code === 0 && tail.value.trim() === '') {
+      pairs.pop();
+      danglingCode = 0;
+    }
+  }
+  // Section structure.
+  let open: { name: string; line: number } | null = null;
+  for (let k = 0; k < pairs.length; k += 1) {
+    const p = pairs[k]!;
+    if (p.code !== 0) continue;
+    const v = p.value.trim();
+    if (v === 'SECTION') {
+      if (open) throw new DxfReadError(`Line ${p.line}: a new SECTION starts before section ${open.name} (line ${open.line}) is closed with ENDSEC. The file is damaged.`, p.line ?? 1);
+      open = { name: pairs[k + 1]?.code === 2 ? pairs[k + 1]!.value.trim() : '?', line: p.line ?? 1 };
+    } else if (v === 'ENDSEC') {
+      if (!open) throw new DxfReadError(`Line ${p.line}: ENDSEC without a matching SECTION. The file is damaged.`, p.line ?? 1);
+      open = null;
+    } else if (v === 'EOF') {
+      if (open) throw new DxfReadError(`Line ${p.line}: section ${open.name} (line ${open.line}) is not closed with ENDSEC before EOF. The file is damaged.`, p.line ?? 1);
+    } else if (!open) throw new DxfReadError(`Line ${p.line}: "${shortText(v)}" appears outside any SECTION. The file is damaged or is not a DXF file.`, p.line ?? 1);
+  }
+  if (truncatedAt === null) return pairs;
+  const message = `the file ends early at line ${truncatedAt} (no EOF marker${open ? `; section ${open.name} is not closed` : ''})`;
+  if (!recover) throw new DxfReadError(`The file ends early at line ${truncatedAt}: ${open ? `section ${open.name} (line ${open.line}) is not closed and ` : ''}the end-of-file marker is missing. The file is truncated or damaged.`, truncatedAt, true);
+  // Partial recovery: leave out the object the file ends in (it may be incomplete). The one
+  // cheap certainty: a file that ends with a lone "0" group code (the next object was about to
+  // start) was cut exactly at an object boundary, so the last object is complete and is kept.
+  let lastZero = pairs.length - 1;
+  while (lastZero >= 0 && pairs[lastZero]!.code !== 0) lastZero -= 1;
+  if (open && danglingCode !== 0 && lastZero >= 0 && !['ENDSEC', 'EOF'].includes(pairs[lastZero]!.value.trim())) {
+    const cut = pairs[lastZero]!;
+    const kind = cut.value.trim();
+    const groups = pairs.slice(lastZero + 1);
+    if (kind !== 'SECTION') {
+      report?.add({
+        type: kind,
+        action: 'dropped',
+        reason: 'incomplete: the file ends inside this object',
+        line: cut.line,
+        ...(groups.find((x) => x.code === 5) ? { handle: groups.find((x) => x.code === 5)!.value.trim() } : {}),
+        ...(groups.find((x) => x.code === 8) ? { layer: groups.find((x) => x.code === 8)!.value } : {}),
+      });
+    }
+    pairs.length = lastZero;
+    if (kind === 'SECTION') open = null;
+  }
+  if (open) pairs.push({ code: 0, value: 'ENDSEC', line: truncatedAt });
+  pairs.push({ code: 0, value: 'EOF', line: truncatedAt });
+  if (report) report.recovered = { line: truncatedAt, message };
   return pairs;
 }
 
 interface Obj {
   kind: string;
   groups: Pair[];
+  /** Line of the object's 0 group. */
+  line?: number;
 }
 
 /** Group pairs into objects starting at each code 0. */
@@ -1211,18 +1338,22 @@ function objects(pairs: Pair[], start: number, end: number): Obj[] {
   for (let i = start; i < end; i += 1) {
     const p = pairs[i]!;
     if (p.code === 0) {
-      cur = { kind: p.value, groups: [] };
+      cur = { kind: p.value, groups: [], line: p.line };
       out.push(cur);
     } else if (cur) cur.groups.push(p);
   }
   return out;
 }
 
+/** Real-valued group codes (points, distances, angles, scales): unreadable values there are invalid geometry. */
+const isRealCode = (code: number): boolean => (code >= 10 && code <= 59) || (code >= 110 && code <= 149) || (code >= 210 && code <= 239) || (code >= 1010 && code <= 1059);
 const num = (o: Obj, code: number, dflt = 0): number => {
   const p = o.groups.find((x) => x.code === code);
   if (!p) return dflt;
   const v = parseFloat(p.value);
-  return Number.isNaN(v) ? dflt : v;
+  if (!Number.isNaN(v)) return v;
+  // A coordinate that is not a number (NaN, garbage) must not silently become 0: the object is rejected.
+  return isRealCode(code) && p.value.trim() !== '' ? NaN : dflt;
 };
 const has = (o: Obj, code: number): boolean => o.groups.some((x) => x.code === code);
 const str = (o: Obj, code: number, dflt = ''): string => o.groups.find((x) => x.code === code)?.value ?? dflt;
@@ -2020,7 +2151,10 @@ function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
     case 'MULTILEADER':
     case 'MLEADER': {
       const ml = readMLeader(o, base, ctx);
-      if (ml && o.groups.some((x) => x.code === 296 && x.value.trim() === '1')) ctx.notes?.push('MULTILEADER block content is not drawn; the leader and its text are kept.');
+      if (ml && o.groups.some((x) => x.code === 296 && x.value.trim() === '1')) {
+        ctx.notes?.push('MULTILEADER block content is not drawn; the leader and its text are kept.');
+        reportObj(ctx, o, 'simplified', 'its block content is not kept; the leader and its text are');
+      }
       return ml;
     }
     case 'IMAGE': {
@@ -2096,6 +2230,12 @@ interface ReadContext {
   consumedBlocks?: Set<string>;
   /** Remarks about content that was simplified. */
   notes?: string[];
+  /** Import report: dropped / simplified / kept objects. */
+  report?: ImportReportBuilder;
+  /** Unknown model-space records kept as raw group codes. */
+  raw?: RawDxfEntity[];
+  /** Where the objects being read are (report text). */
+  where?: string;
 }
 
 export interface DxfReadOptions {
@@ -2105,11 +2245,139 @@ export interface DxfReadOptions {
   fieldContext?: FieldContext;
   /** Receives remarks about content that was simplified. */
   notes?: string[];
+  /**
+   * Open what is readable of a file that ends early (see DxfReadError.truncated): the drawing
+   * is marked as recovered in its import report.
+   */
+  recover?: boolean;
+}
+
+/** Entity types the reader converts (anything else is reported, or kept raw when safe). */
+const READ_KINDS = new Set(['LINE', 'CIRCLE', 'ARC', 'LWPOLYLINE', 'POLYLINE', 'SOLID', 'TRACE', 'TEXT', 'MTEXT', 'ELLIPSE', 'POINT', 'XLINE', 'RAY', 'DIMENSION', 'SPLINE', 'HATCH', 'LEADER', 'MULTILEADER', 'MLEADER', 'IMAGE', 'ACAD_TABLE', 'INSERT']);
+/** Records folded into the preceding entity (or block / layout structure). */
+const FOLLOWER_KINDS = new Set(['ATTRIB', 'VERTEX', 'SEQEND', 'ENDBLK', 'BLOCK', 'VIEWPORT']);
+/**
+ * Unknown entity types kept as raw records in model space: self-contained types that need no
+ * CLASSES entry, no other object and no handle reference, so writing them back cannot make the
+ * file unreadable. (Solids / regions only with their ACIS data inline, as in AC1015..AC1024.)
+ */
+const RAW_KEEP_KINDS = new Set(['3DFACE', '3DSOLID', 'REGION', 'BODY']);
+const UNSUPPORTED_REASONS: Record<string, string> = {
+  ATTDEF: 'attribute definitions outside a block definition are not supported',
+  WIPEOUT: 'wipeouts (masking areas) are not supported',
+  MLINE: 'multilines are not supported',
+  OLE2FRAME: 'embedded OLE objects are not supported',
+  OLEFRAME: 'embedded OLE objects are not supported',
+  TOLERANCE: 'geometric tolerance frames are not supported',
+  SHAPE: 'shapes (SHX shape references) are not supported',
+  ACAD_PROXY_ENTITY: 'proxy objects of other applications are not supported',
+  ARC_DIMENSION: 'arc-length dimensions are not supported',
+  ARCALIGNEDTEXT: 'arc-aligned text is not supported',
+  RTEXT: 'remote text is not supported',
+  HELIX: 'helixes are not supported',
+  MESH: 'meshes are not supported',
+  SURFACE: 'surfaces are not supported',
+  PDFUNDERLAY: 'PDF underlays are not supported',
+  DWFUNDERLAY: 'DWF underlays are not supported',
+  DGNUNDERLAY: 'DGN underlays are not supported',
+};
+/**
+ * Applications whose extended data is not reported when it is left out: the reader's own, and
+ * AutoCAD's internal ones (ACAD, ACAD_MATERIAL_MAPPER, AcadAnnotative ...) that carry no drawing content.
+ */
+const isQuietXdataApp = (app: string): boolean => app === DIMSTYLE_APP || app === TABLE_APP || /^acad/i.test(app);
+
+function reportObj(ctx: ReadContext, o: Obj, action: 'dropped' | 'simplified' | 'kept', reason: string): void {
+  if (!ctx.report) return;
+  const handle = str(o, 5);
+  ctx.report.add({ type: o.kind, action, reason, ...(handle ? { handle } : {}), layer: str(o, 8, '0'), ...(o.line ? { line: o.line } : {}), ...(ctx.where ? { where: ctx.where } : {}) });
+}
+
+/** Pointer groups that refer to other objects (dropped from raw records: those objects are not kept). */
+const isPointerCode = (code: number): boolean => code === 5 || code === 105 || (code >= 320 && code <= 369) || (code >= 390 && code <= 399) || (code >= 480 && code <= 481) || code === 67;
+
+/** A raw record of an unknown entity, or null when it cannot be kept safely. */
+function rawRecord(o: Obj): RawDxfEntity | null {
+  if (!RAW_KEEP_KINDS.has(o.kind)) return null;
+  // Newer files keep solid / region data in the ACDSDATA section (the object only points to it).
+  if (o.kind !== '3DFACE' && !o.groups.some((x) => x.code === 1 || x.code === 3)) return null;
+  const groups: Array<readonly [number, string]> = [];
+  let brace = 0;
+  for (const p of o.groups) {
+    if (p.code === 102) {
+      brace += p.value.trim().startsWith('{') ? 1 : p.value.trim() === '}' ? -1 : 0;
+      continue;
+    }
+    if (brace > 0) continue; // reactors / extension dictionary
+    if (p.code >= 1000) break; // extended data: its application is not registered on save
+    if (isPointerCode(p.code)) continue;
+    groups.push([p.code, p.value]);
+  }
+  const handle = str(o, 5);
+  return { type: o.kind, layer: str(o, 8, '0'), ...(handle ? { handle } : {}), groups };
+}
+
+/**
+ * DXF objects drawn in their own plane: extrusion (0,0,-1) is a mirror about the Y axis, as
+ * MIRROR leaves arcs, circles and polylines. Those are flipped into world coordinates; other
+ * entity types (or other extrusions) are reported as simplified (drawn flat).
+ */
+function applyExtrusion(o: Obj, e: Entity, ctx: ReadContext): Entity {
+  const nx = num(o, 210, 0);
+  const ny = num(o, 220, 0);
+  const nz = num(o, 230, 1);
+  if (Math.abs(nx) < 1e-9 && Math.abs(ny) < 1e-9 && nz > 0) return e;
+  const mirrored = Math.abs(nx) < 1e-9 && Math.abs(ny) < 1e-9 && nz < 0;
+  const flip = (q: g.Point): g.Point => ({ x: -q.x, y: q.y });
+  if (mirrored) {
+    switch (e.type) {
+      case 'circle':
+        return { ...e, center: flip(e.center) };
+      case 'arc':
+        return { ...e, center: flip(e.center), startAngle: Math.PI - e.endAngle, endAngle: Math.PI - e.startAngle };
+      case 'polyline':
+        // LWPOLYLINE / 2D POLYLINE vertices and SOLID / TRACE corners are in the object's plane.
+        return { ...e, points: e.points.map(flip), ...(e.bulges ? { bulges: e.bulges.map((b) => -b || 0) } : {}) };
+      case 'insert': {
+        // The insertion point, rotation and scales are in the object's plane: mirroring the plane
+        // flips the position, reverses the rotation and mirrors the block about its Y axis.
+        const { mirror: _m, ...rest } = e;
+        return { ...rest, position: flip(e.position), rotation: -e.rotation, ...(e.mirror ? {} : { mirror: true }) };
+      }
+      default:
+        break;
+    }
+  }
+  // Entities whose points DXF stores in world coordinates ignore the extrusion for 2D purposes.
+  if (o.kind === 'LINE' || o.kind === 'POINT' || o.kind === 'XLINE' || o.kind === 'RAY' || o.kind === 'SPLINE' || o.kind === 'ELLIPSE' || o.kind === 'MTEXT' || o.kind === 'LEADER' || o.kind === 'MULTILEADER' || o.kind === 'DIMENSION') return e;
+  reportObj(ctx, o, 'simplified', `drawn in a plane other than the XY plane (extrusion ${nx},${ny},${nz}): shown projected flat, possibly mirrored`);
+  return e;
 }
 
 /** Parse a list of entity objects, folding ATTRIB/SEQEND into inserts and VERTEX into polylines. */
-function readEntities(objs: Obj[], ctx: ReadContext): Entity[] {
+function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): Entity[] {
   const out: Entity[] = [];
+  /** A converted entity: validated (invalid geometry is rejected), extrusion applied, XDATA loss reported. */
+  const accept = (o: Obj, e: Entity | null): Entity | null => {
+    if (!e) return null;
+    let extrusion = false;
+    let xdataApps = false;
+    for (const p of o.groups) {
+      if (p.code === 210 || p.code === 220 || p.code === 230) extrusion = true;
+      else if (p.code === 1001) xdataApps = true;
+    }
+    const placed = extrusion ? applyExtrusion(o, e, ctx) : e;
+    const bad = geometryProblem(placed);
+    if (bad) {
+      reportObj(ctx, o, 'dropped', `invalid geometry: ${bad}`);
+      return null;
+    }
+    if (ctx.report && xdataApps) {
+      const apps = [...new Set(o.groups.filter((x) => x.code === 1001 && !isQuietXdataApp(x.value.trim())).map((x) => x.value.trim()))];
+      if (apps.length) reportObj(ctx, o, 'simplified', `extended data (XDATA) of ${apps.join(', ')} is not kept`);
+    }
+    return placed;
+  };
   // LEADER -> MTEXT associations (340), resolved after the pass.
   const annotations = new Map<string, number>();
   const leaders: Array<{ index: number; handle: string }> = [];
@@ -2119,7 +2387,8 @@ function readEntities(objs: Obj[], ctx: ReadContext): Entity[] {
     if (o.kind === 'POLYLINE') {
       const pts: g.Point[] = [];
       const bulges: number[] = [];
-      const closed = (num(o, 70) & 1) === 1;
+      const flags = Math.trunc(num(o, 70));
+      const closed = (flags & 1) === 1;
       let j = i + 1;
       while (j < objs.length && objs[j]!.kind === 'VERTEX') {
         pts.push({ x: num(objs[j]!, 10), y: num(objs[j]!, 20) });
@@ -2127,8 +2396,15 @@ function readEntities(objs: Obj[], ctx: ReadContext): Entity[] {
         j += 1;
       }
       if (j < objs.length && objs[j]!.kind === 'SEQEND') j += 1;
+      i = j;
+      if (flags & (16 | 64)) {
+        // Polygon / polyface meshes: their vertex list holds face records, not an outline.
+        reportObj(ctx, o, 'dropped', `${flags & 64 ? 'polyface' : 'polygon'} meshes are not supported`);
+        continue;
+      }
+      if (flags & 8) reportObj(ctx, o, 'simplified', '3D polyline: flattened to its XY projection');
       const width = num(o, 40, 0);
-      out.push({
+      const poly = accept(o, {
         ...commonProps(o),
         type: 'polyline',
         points: pts,
@@ -2136,13 +2412,43 @@ function readEntities(objs: Obj[], ctx: ReadContext): Entity[] {
         bulges: bulges.some((b) => Math.abs(b) > 1e-12) ? bulges : undefined,
         width: width > 0 ? width : undefined,
       });
-      i = j;
+      if (poly) out.push(poly);
       continue;
     }
     const read = readEntityObj(o, ctx);
+    if (!read) {
+      if (FOLLOWER_KINDS.has(o.kind)) {
+        // An ATTRIB / VERTEX / SEQEND without its owner: nothing to fold it into.
+        if (o.kind !== 'SEQEND') reportObj(ctx, o, 'dropped', `stray ${o.kind} record without the object it belongs to`);
+      } else if (READ_KINDS.has(o.kind)) {
+        reportObj(ctx, o, 'dropped', o.kind === 'DIMENSION' ? 'this dimension type (or its definition points) is not supported' : 'its data is incomplete or of a variant that is not supported');
+      } else {
+        const raw = keepRaw && ctx.raw ? rawRecord(o) : null;
+        if (raw) {
+          ctx.raw!.push(raw);
+          reportObj(ctx, o, 'kept', 'not shown or editable; kept as it was and written back on save (its extended data and links to other objects are not)');
+        } else {
+          const why = UNSUPPORTED_REASONS[o.kind] ?? `${o.kind} objects are not supported`;
+          const solidData = RAW_KEEP_KINDS.has(o.kind) && keepRaw ? ' (its data is stored outside the object in this file version, so it cannot be kept)' : RAW_KEEP_KINDS.has(o.kind) ? ' (kept only in model space)' : '';
+          reportObj(ctx, o, 'dropped', why + solidData);
+        }
+      }
+      i += 1;
+      continue;
+    }
+    if (read.type === 'insert' && o.kind === 'INSERT' && (num(o, 70, 1) > 1 || num(o, 71, 1) > 1)) {
+      reportObj(ctx, o, 'simplified', `MINSERT array of ${Math.trunc(num(o, 70, 1))} x ${Math.trunc(num(o, 71, 1))} copies: only the first copy is kept`);
+    }
     // TEXT / MTEXT keep their text style name (group 7) for the TrueType renderer and the writer.
     const styled = read && (read.type === 'text' || read.type === 'mtext') ? withTextStyle(read, str(o, 7)) : read;
-    const e = styled && xdata(o, ANNO_APP) ? ({ ...styled, annotative: true } as Entity) : styled;
+    const e = accept(o, styled && xdata(o, ANNO_APP) ? ({ ...styled, annotative: true } as Entity) : styled);
+    if (!e) {
+      // Rejected (invalid geometry): skip its ATTRIB / SEQEND followers too.
+      let j = i + 1;
+      while (j < objs.length && (objs[j]!.kind === 'ATTRIB' || objs[j]!.kind === 'SEQEND')) j += 1;
+      i = j;
+      continue;
+    }
     if (e && e.type === 'insert') {
       const attrs: Record<string, string> = {};
       const hidden: string[] = [];
@@ -2194,10 +2500,21 @@ function readEntities(objs: Obj[], ctx: ReadContext): Entity[] {
   return drop.size ? out.filter((_, k) => !drop.has(k)) : out;
 }
 
+/**
+ * Read a DXF file. Damaged files throw a DxfReadError (a file that ends early is `truncated`;
+ * pass `recover: true` to open what was readable). Objects that are dropped, simplified or
+ * kept without being shown are listed in the drawing's import report (`meta.importReport`,
+ * see io/import-report.ts); unknown model-space entities that can be kept safely are retained
+ * as raw records (`meta.dxfRawEntities`) and written back by writeDxf.
+ */
 export function readDxf(text: string, opts: DxfReadOptions = {}): DrawingState {
   const dimStyles = new Map<string, DimStyle>();
-  return withDimStylesMeta(readDxfState(text, opts, dimStyles), dimStyles);
+  const report = new ImportReportBuilder();
+  const raw: RawDxfEntity[] = [];
+  const state = withDimStylesMeta(readDxfState(text, opts, dimStyles, report, raw), dimStyles);
+  return withImportData(state, report.empty ? null : report.build('DXF', opts.filePath), raw);
 }
+
 
 /**
  * Named dimension styles (the DIMSTYLE records read) into `meta.dimStyles`, keyed by name as
@@ -2210,8 +2527,8 @@ function withDimStylesMeta(state: DrawingState, dimStyles: ReadonlyMap<string, D
 }
 
 /** The reader proper; DIMSTYLE records are collected into `dimStyles`. */
-function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string, DimStyle>): DrawingState {
-  const pairs = tokenize(decodeUnicodeEscapes(text));
+function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string, DimStyle>, report: ImportReportBuilder, raw: RawDxfEntity[]): DrawingState {
+  const pairs = tokenize(decodeUnicodeEscapes(text), opts.recover, report);
   const textStyles: Record<string, TextStyle> = {};
   const layers: Layer[] = [];
   const blocks: Record<string, BlockDef> = {};
@@ -2229,9 +2546,11 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
     pendingImages: new Map(),
     consumedBlocks: new Set(),
     notes: opts.notes ?? [],
+    report,
+    raw,
   };
   const imageDefs = new Map<string, string>();
-  const layoutReader = new LayoutReader();
+  const layoutReader = new LayoutReader(report);
 
   // find sections
   let i = 0;
@@ -2264,6 +2583,12 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
       } else if (name === 'OBJECTS') {
         for (const o of objs) if (o.kind === 'IMAGEDEF' && has(o, 5)) imageDefs.set(str(o, 5).toUpperCase(), str(o, 1));
         layoutReader.scanObjects(objs);
+        // Named object groups (GROUP command) are not modelled: the objects stay, the grouping goes.
+        for (const o of objs) {
+          if (o.kind !== 'GROUP') continue;
+          const desc = str(o, 300);
+          report.add({ type: 'GROUP', action: 'dropped', reason: `object group${desc ? ` "${desc}"` : ''} is not kept (its objects are)`, ...(has(o, 5) ? { handle: str(o, 5) } : {}), ...(o.line ? { line: o.line } : {}) });
+        }
       } else if (name === 'TABLES') {
         layoutReader.scanTables(objs);
         for (const o of objs) {
@@ -2273,13 +2598,16 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
             const c = Math.trunc(num(o, 62, 7));
             const flags = Math.trunc(num(o, 70));
             const lt = str(o, 6);
+            const tc = has(o, 420) ? Math.trunc(num(o, 420)) : NaN;
             layers.push({
+              ...(Number.isFinite(tc) ? { trueColor: tc & 0xffffff } : {}),
               name: name2,
               color: Math.abs(c) || 7,
               visible: c >= 0 && (flags & 1) === 0, // negative colour = off, flag 1 = frozen
               frozen: (flags & 1) === 1 || undefined,
               locked: (flags & 4) === 4,
-              lineWeight: num(o, 370, 25) / 100,
+              // 370: hundredths of a millimetre; -3 (Default) and the entity-only -1 / -2 mean the default 0.25 mm.
+              lineWeight: num(o, 370, 25) >= 0 ? num(o, 370, 25) / 100 : 0.25,
               ...(has(o, 290) && num(o, 290) === 0 ? { plot: false } : {}),
               linetype: lt && lt.toUpperCase() !== 'CONTINUOUS' ? lt : undefined,
             });
@@ -2339,6 +2667,7 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
           const anonymousLayout = /^\*(MODEL_SPACE|PAPER_SPACE)/i.test(bname);
           const dimensionPicture = /^\*D\d*$/i.test(bname);
           if (bname && !anonymousLayout && !dimensionPicture) {
+            ctx.where = `block "${bname}"`;
             blocks[bname] = {
               name: bname,
               basePoint: { x: num(o, 10), y: num(o, 20) },
@@ -2352,10 +2681,13 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
             };
           }
           else if (anonymousLayout) layoutReader.layoutBlock(bname, inner);
+          ctx.where = undefined;
           k = m + 1;
         }
       } else if (name === 'ENTITIES') {
-        entities = readEntities(layoutReader.splitEntities(objs), ctx);
+        ctx.where = 'model space';
+        entities = readEntities(layoutReader.splitEntities(objs), ctx, true);
+        ctx.where = undefined;
       }
       i = j + 1;
     } else i += 1;
@@ -2395,6 +2727,7 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
   ensure('0');
   for (const e of entities) ensure(e.layer);
   for (const b of Object.values(blocks)) for (const e of b.entities) ensure(e.layer);
+  for (const r of raw) ensure(r.layer);
   ensure(currentLayer);
 
   const hnum = (v: string, dflt: number) => {
@@ -2434,7 +2767,12 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
   };
 
   // Paper space: layouts with their entities and viewports (and the layers they use).
-  const layouts = layoutReader.build((objs) => readEntities(objs, ctx), { entities, header });
+  const layouts = layoutReader.build((objs, where) => {
+    ctx.where = where;
+    const list = readEntities(objs, ctx);
+    ctx.where = undefined;
+    return list;
+  }, { entities, header });
   for (const l of layouts ?? []) {
     for (const e of l.entities) ensure(e.layer);
     for (const v of l.viewports) ensure(v.layer);

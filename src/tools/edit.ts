@@ -5,7 +5,7 @@
 import type { Point } from '../core/geometry';
 import * as g from '../core/geometry';
 import type { Entity, LineEntity, PolylineEntity, ArcEntity, CircleEntity } from '../core/entities';
-import { newId, explodeInsert, entitySegments, arcPoints, mirrorEntityAcross, scaleEntityBy } from '../core/entities';
+import { newId, explodeInsert, bakeInheritedColor, entitySegments, arcPoints, mirrorEntityAcross, scaleEntityBy } from '../core/entities';
 import { pickEntity } from '../core/selection';
 import type { Tool, ToolContext } from './types';
 
@@ -593,7 +593,8 @@ export class ExplodeTool extends SelectionTool {
     const exploded = new Set<string>();
     for (const e of targets) {
       if (e.type === 'insert') {
-        out.push(...explodeInsert(e, ctx.doc.lookupBlock).map((x) => ({ ...x, id: newId() })));
+        // ByBlock content of a ByLayer reference keeps the colour it showed (bakeInheritedColor).
+        out.push(...explodeInsert(e, ctx.doc.lookupBlock).map((x) => bakeInheritedColor({ ...x, id: newId() }, ctx.doc.layers)));
         exploded.add(e.id);
       } else if (e.type === 'polyline') {
         out.push(...explodePolylineExcept(e, -1));

@@ -5,7 +5,7 @@
  * connect at x = ±HALF on y = 0. Every symbol carries the AutoCAD Electrical
  * attribute set (see attributes.ts) so exported DXF holds ACADE-style data.
  */
-import type { BlockDef, Entity, AttributeDef } from '../core/entities';
+import { BYBLOCK, type BlockDef, type Entity, type AttributeDef } from '../core/entities';
 import type { Point } from '../core/geometry';
 import { withAcadeAttributes } from './attributes';
 import { JIC_CONTROL_TAG_PREFIXES } from './symbols-jic-control';
@@ -18,7 +18,8 @@ const GAP = 0.125; // half of the contact gap
 
 let n = 0;
 const id = () => `sym${(n += 1)}`;
-const base = { layer: '0', color: 'ByLayer' as const };
+// ByBlock on layer 0: the symbol takes the colour of its block reference (see symbol-kit.ts).
+const base = { layer: '0', color: BYBLOCK };
 
 const L = (x1: number, y1: number, x2: number, y2: number): Entity => ({
   ...base,

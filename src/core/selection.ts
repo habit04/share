@@ -3,7 +3,11 @@ import * as g from './geometry';
 import type { Entity, BlockLookup } from './entities';
 import { distanceToEntity, entityBounds, entitySegments, pointInPolygon } from './entities';
 
-/** Pick a single entity within `aperture` of the point; closest wins. */
+/**
+ * Pick a single entity within `aperture` of the point; closest wins. Among equally close
+ * objects (overlapping or coincident geometry) the topmost one wins: the last drawn, highest in
+ * draw order, which is also the one the user sees. Hover highlight and every pick use this.
+ */
 export function pickEntity(
   p: Point,
   entities: readonly Entity[],
@@ -22,7 +26,8 @@ export function pickEntity(
     if (b && !g.pointInBounds(p, { min: g.sub(b.min, { x: aperture, y: aperture }), max: g.add(b.max, { x: aperture, y: aperture }) }))
       continue;
     const d = distanceToEntity(p, e, lookup);
-    if (d <= bestD) {
+    // Strictly closer only: a tie keeps the object found first, i.e. the higher one.
+    if (best ? d < bestD : d <= bestD) {
       bestD = d;
       best = e;
     }

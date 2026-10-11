@@ -107,7 +107,8 @@ describe('symbol builder conversion', () => {
     const { state, meta } = makeUserPushButton();
     const block = symbolStateToBlock(state, meta);
     expect(block.entities).toHaveLength(4);
-    expect(block.entities.every((e) => e.layer === '0' && e.color === 'ByLayer')).toBe(true);
+    // ByBlock like the built-in libraries: the block reference's colour recolours the symbol.
+    expect(block.entities.every((e) => e.layer === '0' && e.color === 0)).toBe(true);
     const t = byTag(block);
     expect(t.TAG1).toMatchObject({ prompt: 'Component tag', position: { x: 0, y: 0.3 } });
     expect(t.TAG1!.invisible).toBeFalsy();

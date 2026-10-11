@@ -36,7 +36,8 @@ describe('DWG import (LibreDWG wasm)', () => {
     const arc = state.entities.find((e) => e.type === 'arc');
     expect(arc).toBeDefined();
     if (arc?.type === 'arc') expect(arc.startAngle).toBeLessThan(2 * Math.PI + 1e-9); // radians, not degrees
-    expect(state.layers.find((l) => l.name === 'Tavolo 2')?.locked).toBe(true);
+    // Not locked: the DXF saved from the same drawing (fixtures/example_2000.dxf) has LAYER 70 = 0.
+    expect(state.layers.find((l) => l.name === 'Tavolo 2')?.locked).toBe(false);
     expect(state.layers.find((l) => l.name === 'Tavolo 2')?.color).toBe(2);
   }, 60000);
 });

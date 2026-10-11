@@ -32,7 +32,7 @@ import { assignWireNumbers, DEFAULT_BUS } from '../electrical/wires';
 import { readWdSettings, writeWdSettings, WD_M_BLOCK, drawingUnitScale, type WdSettings } from '../electrical/wdm';
 import { retagDrawing, isFixedTag, TAG_FIXED_ATTRIBUTE } from '../electrical/tags';
 import { updateCrossReferences, parentCandidates, childBlockChoices, type ChildBlockOptions } from '../electrical/xref';
-import { LIBRARY_BLOCKS, findLibrarySymbol } from '../electrical/library';
+import { LIBRARY_BLOCKS, findLibrarySymbol, withByBlockLibrarySymbols } from '../electrical/library';
 import { tagPrefix } from '../electrical/symbols';
 import { userLibrary } from '../electrical/userlib';
 import { setUserCatalog, parseCatalog, userCatalogSize, catalogFamilyFor } from '../electrical/catalog';
@@ -116,7 +116,7 @@ export async function projectDocuments(editor: Editor): Promise<Array<{ name: st
       if (!res) continue;
       const state = res.kind === 'dwg' ? convertDwg(res.payload).state : readDxf(res.text);
       const doc = new Drawing();
-      doc.load(state, path);
+      doc.load(withByBlockLibrarySymbols(state), path);
       doc.ensureBlocks(LIBRARY_BLOCKS);
       out.push({ name: baseName(path), doc });
     } catch (err) {
@@ -557,7 +557,7 @@ export async function loadProjectSheets(editor: Editor, opts: { files?: boolean 
         continue;
       }
       const doc = new Drawing();
-      doc.load(readDxf(res.text), path);
+      doc.load(withByBlockLibrarySymbols(readDxf(res.text)), path);
       doc.ensureBlocks(LIBRARY_BLOCKS);
       sheets.push({ ...makeSheet(doc, base), source: 'file' });
     } catch (err) {

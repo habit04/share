@@ -48,6 +48,42 @@ messages). The date of each version is the date of the commit that set that vers
 - Save errors explain the cause (disk full, permission or read-only, locked file, folder or network
   drive not available, path too long) and offer Retry, Save As... and Cancel; the drawing stays
   modified and its autosave backup is kept when a save fails.
+- Opening a DXF or DWG file reports everything it could not bring in unchanged: an Import
+  Report (counts per type, the first 50 objects with handle, layer, place and reason, Copy
+  Report; `IMPORTREPORT` shows it again) instead of silent loss. Saving over a source file that
+  held such content asks first and offers Save As.
+- Unknown DXF entities that can be kept safely (3D faces, and 3D solids / regions / bodies with
+  inline data) stay in the drawing and are written back verbatim on their layer at the end of
+  the entities on save, through undo and through project-wide rewrites.
+- Damaged DXF files are rejected with the line and the reason (non-numeric group codes,
+  unbalanced SECTION / ENDSEC, content outside sections) instead of opening half-read; a file
+  that ends early offers to open what was readable and is marked as recovered. Objects with
+  NaN / infinite coordinates, negative radii or fewer than two polyline vertices are left out
+  and listed instead of becoming geometry at the origin.
+- DXF layers with the Default lineweight (370 = -3) read as 0.25 mm instead of a negative width.
+- DXF arcs, circles, polylines and block references with extrusion (0,0,-1) (mirrored objects)
+  open in their true place instead of mirrored; other non-planar objects are reported.
+- DWG import keeps paper-space layouts with their entities and floating viewports, text styles,
+  named dimension styles (used by the dimensions that name them), custom linetype patterns,
+  true colours of objects and layers, ByBlock colours, the plot flag of layers, and 3D
+  polylines (flattened). DWG layers are no longer all imported as locked. What the DWG reader
+  cannot see (page setups, per-viewport frozen layers, fixed text heights) is listed in the
+  Import Report.
+- Block colours: ByBlock (0) is no longer confused with ByLayer (256). ByBlock content takes the
+  block reference's colour (or its layer's colour when the reference is ByLayer), nested blocks
+  resolve outwards, layer-0 ByLayer content shows the reference layer's colour, explicit colours
+  are untouched; the same on screen, in vector PDF plots and with EXPLODE.
+- Library symbols stay recolourable from their block reference under that rule: the built-in
+  JIC / IEC / vertical libraries and the Symbol Builder draw symbol geometry ByBlock on layer 0
+  (it was ByLayer). Symbols saved earlier are converted when a drawing or the user library is
+  loaded (the library file is rewritten only with the next change to it); blocks from other
+  programs are not touched.
+- Undo / Redo no longer revert settings that are documented as not undoable (drawing header
+  variables, the current layer, the active layout / viewport and viewport zoom, library blocks);
+  the rules per setting are in the user manual.
+- `new Drawing({...})` keeps the header, the active space and every other field it is given.
+- Clicking where overlapping objects are equally close selects (and highlights) the topmost one
+  instead of the one underneath.
 
 ## [0.4.0] - 2026-09-29
 

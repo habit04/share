@@ -51,10 +51,18 @@ export const trueColorCss = (c: number): string => `#${(c & 0xffffff).toString(1
 export const colorDisplay = { paper: false };
 const aciDisplay = (i: number): string => (colorDisplay.paper && i === 7 ? '#000000' : aciToCss(i));
 
+/**
+ * Display colour of an object: its true colour, its ACI, or (ByLayer) its layer's colour. Block
+ * content comes here already resolved by `explodeInsert` (ByBlock objects carry the reference's
+ * colour, or `colorLayer` when the reference is ByLayer); ByBlock left over at the top level
+ * shows in the foreground colour, as in AutoCAD.
+ */
 export function resolveColor(e: Entity, layers: readonly Layer[]): string {
   if (e.trueColor !== undefined) return trueColorCss(e.trueColor);
-  if (e.color !== 'ByLayer') return aciDisplay(e.color);
-  const layer = layers.find((l) => l.name === e.layer);
+  if (e.color !== 'ByLayer') return aciDisplay(e.color === 0 ? 7 : e.color);
+  const name = e.colorLayer ?? e.layer;
+  const layer = layers.find((l) => l.name === name);
+  if (layer?.trueColor !== undefined) return trueColorCss(layer.trueColor);
   return aciDisplay(layer?.color ?? 7);
 }
 

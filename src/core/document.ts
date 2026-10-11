@@ -104,14 +104,30 @@ export class Drawing {
   public currentColor: ColorSpec = 'ByLayer';
 
   constructor(initial?: Partial<DrawingState>) {
+    // Every supplied field is kept (header, space, meta, layouts and anything added later);
+    // only the four required ones get defaults.
+    const { entities, layers, blocks, currentLayer, ...rest } = initial ?? {};
+    const optional = Object.fromEntries(Object.entries(rest).filter(([, v]) => v !== undefined)) as Partial<DrawingState>;
     this.state = {
-      entities: initial?.entities ?? [],
-      layers: initial?.layers ?? DEFAULT_LAYERS.map((l) => ({ ...l })),
-      blocks: initial?.blocks ?? {},
-      currentLayer: initial?.currentLayer ?? '0',
-      ...(initial?.meta ? { meta: initial.meta } : {}),
-      ...(initial?.layouts ? { layouts: initial.layouts } : {}),
+      ...optional,
+      entities: entities ?? [],
+      layers: layers ?? DEFAULT_LAYERS.map((l) => ({ ...l })),
+      blocks: blocks ?? {},
+      currentLayer: currentLayer ?? '0',
     };
+  }
+
+  /**
+   * Settings outside the undo history (header variables, current layer, active space, layout
+   * view changes, library blocks): the change is applied to the current state AND to every state
+   * waiting on the undo / redo stacks, so a later Undo or Redo of a geometry edit neither reverts
+   * nor re-applies it. `fn` must be safe on any of those states (return the state unchanged when
+   * it does not apply).
+   */
+  private outsideHistory(fn: (s: DrawingState) => DrawingState): void {
+    this.state = fn(this.state);
+    this.undoStack = this.undoStack.map(fn);
+    this.redoStack = this.redoStack.map(fn);
   }
 
   /** The entities being edited: model space, or the paper space of the active layout (layouts.ts paperEntities). */
@@ -127,19 +143,40 @@ export class Drawing {
   get space(): SpaceRef | undefined {
     return this.state.space;
   }
-  /** Switch space (Model / layout / floating viewport). Not undoable by itself, like the layout tabs. */
+  /**
+   * Switch space (Model / layout / floating viewport). Not undoable, like the layout tabs: the
+   * active space survives Undo / Redo (states in which the layout or viewport does not exist
+   * fall back to its paper space or to the Model tab).
+   */
   setSpace(space: SpaceRef | undefined, patch?: (s: DrawingState) => DrawingState): void {
-    const { space: _old, ...rest } = this.state;
+    const apply = (s: DrawingState): DrawingState => {
+      const { space: _old, ...rest } = patch ? patch(s) : s;
+      if (!space) return rest;
+      const lay = layoutsOf(rest).find((l) => l.name === space.layout);
+      if (!lay) return rest;
+      if (space.viewport && !lay.viewports.some((v) => v.id === space.viewport)) return { ...rest, space: { layout: space.layout } };
+      return { ...rest, space };
+    };
+    const { space: _cur, ...rest } = this.state;
+    // The current state takes the space as asked (the layout may be the implicit Layout1).
     let next: DrawingState = space ? { ...rest, space } : rest;
     if (patch) next = patch(next);
     this.state = next;
+    this.undoStack = this.undoStack.map(apply);
+    this.redoStack = this.redoStack.map(apply);
     this.emit();
   }
-  /** Change layout data without an undo step (viewport zoom / pan, layout initialisation). */
+  /**
+   * Change layout data without an undo step (viewport zoom / pan, layout initialisation). Like
+   * every setting outside the history it survives Undo / Redo: `fn` is applied to the states on
+   * the undo / redo stacks too, so it must leave a state alone when it does not apply to it.
+   */
   patchQuiet(fn: (s: DrawingState) => DrawingState, markDirty = true): void {
     const next = fn(this.state);
     if (next === this.state) return;
     this.state = next;
+    this.undoStack = this.undoStack.map(fn);
+    this.redoStack = this.redoStack.map(fn);
     if (markDirty) this.dirty = true;
   }
   get layers(): readonly Layer[] {
@@ -158,9 +195,13 @@ export class Drawing {
     return this.state.header ?? DEFAULT_HEADER;
   }
 
-  /** Change header variables (UNITS, LIMITS, LTSCALE, DIMSTYLE, VIEW ...). Not undoable, like AutoCAD system variables. */
+  /**
+   * Change header variables (UNITS, LIMITS, LTSCALE, DIMSTYLE, VIEW ...). Not undoable, like
+   * AutoCAD system variables, and outside the history: Undo / Redo of other edits keep the
+   * patched values (header changes made inside a `transact` stay undoable as part of that step).
+   */
   setHeader(patch: Partial<DrawingHeader>): void {
-    this.state = { ...this.state, header: { ...this.header, ...patch } };
+    this.outsideHistory((s) => ({ ...s, header: { ...(s.header ?? DEFAULT_HEADER), ...patch } }));
     this.dirty = true;
     this.emit();
   }
@@ -315,8 +356,9 @@ export class Drawing {
 
   setCurrentLayer(name: string): void {
     if (!this.layer(name) || name === this.state.currentLayer) return;
-    // Layer change is not undoable in AutoCAD either; record without history.
-    this.state = { ...this.state, currentLayer: name };
+    // Not undoable (CLAYER is a setting): Undo / Redo keep it, except in states where the layer
+    // does not exist (an undone LAYER New), which keep their own current layer.
+    this.outsideHistory((s) => (s.currentLayer !== name && s.layers.some((l) => l.name === name) ? { ...s, currentLayer: name } : s));
     this.emit();
   }
 
@@ -354,13 +396,20 @@ export class Drawing {
     this.transact((s) => ({ ...s, layers: s.layers.filter((l) => !set.has(l.name)) }));
   }
 
-  /** Ensure blocks exist without creating undo entries (used by symbol library). */
+  /**
+   * Ensure blocks exist without creating undo entries (used by symbol library). Outside the
+   * history: an Undo never takes a library block away from a state that lacked it.
+   */
   ensureBlocks(blocks: readonly BlockDef[]): void {
     const missing = blocks.filter((b) => !this.state.blocks[b.name]);
     if (missing.length === 0) return;
-    const next = { ...this.state.blocks };
-    for (const b of missing) next[b.name] = b;
-    this.state = { ...this.state, blocks: next };
+    this.outsideHistory((s) => {
+      const add = missing.filter((b) => !s.blocks[b.name]);
+      if (add.length === 0) return s;
+      const next = { ...s.blocks };
+      for (const b of add) next[b.name] = b;
+      return { ...s, blocks: next };
+    });
     this.emit();
   }
 

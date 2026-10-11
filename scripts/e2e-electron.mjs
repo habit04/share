@@ -9,7 +9,8 @@
 // writes, LibreDWG, printToPDF, the updater's version logic) is the shipping code.
 //
 // Checks: window + no page errors, window.jcad bridge, LINE with typed coordinates, ZOOM E (command
-// and native menu), OPEN of a DXF and a DWG through `open-drawing`, IMAGE bitmaps through
+// and native menu), OPEN of a DXF and a DWG through `open-drawing`, the Import Report dialog (text,
+// Copy Report) and the Save warning over a source file with import losses (No = Save As), IMAGE bitmaps through
 // `read-image` (relative to the drawing folder), RECENT (open by remembered
 // path), PLOT to a tabloid landscape vector PDF through `save-pdf` (parsed: 1224 x 792 pt, content
 // stream paths) and as a raster image through `plot-pdf`, a layout tab plotted as a page, the updater's
@@ -285,6 +286,68 @@ try {
     const n = Number(/: (\d+) entities/.exec(line)?.[1] ?? 0);
     check(line.startsWith('Imported DWG') && n > 10, `DWG opened through IPC + LibreDWG in the main process: ${line}`);
   } else ok('DWG fixture missing: skipped');
+
+  // ------------------------------------------------------------------ Import Report dialog + Save warning
+  step = 'import report';
+  // The DWG above holds content the import cannot keep (wipeouts, a tolerance, a multiline...): the
+  // Import Report dialog opened after it. Check its text, Copy Report and Close.
+  // modal() puts the dialog's class on the backdrop; the dialog itself is its .modal child.
+  const dwgReport = win.locator('.import-report-dialog .modal', { hasText: 'DWG Import Report' });
+  if (existsSync(fixtures.dwg)) {
+    await dwgReport.waitFor({ timeout: 5000 }).then(
+      async () => {
+        const text = await dwgReport.innerText();
+        check(/object\(s\) dropped or simplified/.test(text) && /WIPEOUT/.test(text) && /layout "Layout1"/.test(text), 'DWG Import Report lists counts, objects and layouts');
+        const copy = dwgReport.locator('.modal-footer button').first(); // Copy Report (its label changes after the click)
+        await copy.click();
+        await copy.filter({ hasText: 'Copied' }).waitFor({ timeout: 3000 }).then(
+          () => ok('Copy Report copied the report text'),
+          async () => bad(`Copy Report did not report "Copied" (button: "${await copy.textContent()}", title: "${await copy.getAttribute('title')}")`),
+        );
+        await dwgReport.locator('button', { hasText: 'Close' }).click();
+        check((await win.locator('.import-report-dialog').count()) === 0, 'Import Report dialog closed');
+      },
+      () => bad('no Import Report dialog after opening a DWG with unsupported content'),
+    );
+  }
+  // A DXF with content JCad cannot keep: the report opens, and SAVE over the file asks (No = Save As).
+  const lossDir = mkdtempSync(join(tmpdir(), 'jcad-e2e-loss-'));
+  const lossDxf = join(lossDir, 'unsupported-content.dxf');
+  writeFileSync(lossDxf, readFileSync(join(repo, 'tests', 'fixtures', 'unsupported-content.dxf')));
+  await app.evaluate((_e, p) => globalThis.__e2e.openPaths.push(p), lossDxf);
+  h = await historyLen();
+  await win.evaluate(() => window.editor.runCommand('OPEN'));
+  await waitLog(/^(Opened|Failed to open)/, h).catch(() => bad('no open result logged'));
+  const dxfReport = win.locator('.import-report-dialog .modal', { hasText: 'DXF Import Report' });
+  await dxfReport.waitFor({ timeout: 5000 }).then(
+    async () => {
+      const text = await dxfReport.innerText();
+      check(/kept without being shown/.test(text) && /3DSOLID/.test(text) && /Saving over the original file removes the dropped content/.test(text), 'DXF Import Report explains kept records and the Save As advice');
+      await dxfReport.locator('button', { hasText: 'Close' }).click();
+    },
+    () => bad('no Import Report dialog after opening a DXF with unsupported content'),
+  );
+  await messages();
+  h = await historyLen();
+  await win.evaluate(() => window.editor.runCommand('SAVE'));
+  const warn = win.locator('.modal', { hasText: 'Save over the original file?' });
+  await warn.waitFor({ timeout: 5000 }).then(
+    async () => {
+      check(/object\(s\) JCad cannot keep .* Save As to keep the original/.test(await warn.innerText()), 'Save warning names the loss and Save As');
+      await warn.locator('button', { hasText: 'No' }).click();
+      await waitLog(/^Save As keeps the original file unchanged/, h).then(
+        () => ok('No switches to Save As'),
+        () => bad('No did not switch to Save As'),
+      );
+      await win.waitForFunction(() => !document.querySelector('.modal'), null, { timeout: 5000 }).catch(() => {});
+      await win.waitForTimeout(300);
+      const msgs = await messages();
+      check(msgs.some((m) => m.startsWith('save:')), `the Save As dialog was requested by the main process (${msgs.join(' | ')})`);
+      check(readFileSync(lossDxf, 'latin1') === readFileSync(join(repo, 'tests', 'fixtures', 'unsupported-content.dxf'), 'latin1'), 'the original file was not written');
+    },
+    () => bad('SAVE over a source file with import losses did not ask'),
+  );
+  rmSync(lossDir, { recursive: true, force: true });
 
   // ------------------------------------------------------------------ IMAGE bitmaps through read-image
   step = 'IMAGE';

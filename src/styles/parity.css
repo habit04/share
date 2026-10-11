@@ -1494,3 +1494,38 @@ p.recovery-error,
   color: #ffd98a;
   font-size: 12px;
 }
+
+/* ---------------------------------------------------------------- import report dialog */
+.import-report-counts,
+.import-report-notes {
+  margin: 6px 0;
+  padding-left: 18px;
+  font-size: 12px;
+}
+.import-report-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 240px;
+  overflow: auto;
+  font-size: 11px;
+}
+.import-report-row {
+  padding: 3px 6px;
+  background: #2e2e2e;
+  border-left: 3px solid #666;
+  overflow-wrap: anywhere;
+}
+.import-report-row.dropped {
+  border-left-color: #d9534f;
+}
+.import-report-row.simplified,
+.import-report-row.unsupported {
+  border-left-color: #e0a030;
+}
+.import-report-row.kept {
+  border-left-color: #4a90d9;
+}
+.import-report-row.more {
+  color: var(--text-muted);
+}

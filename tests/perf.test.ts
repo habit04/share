@@ -16,6 +16,12 @@ const FACTOR = Number(process.env.JCAD_PERF_FACTOR ?? '1') || 1;
  * Budgets in ms: the slowest measurement on the development container (best-of-N each, alone and
  * with the whole suite running in parallel), times 3, with a 50 ms floor. Measured: extents 12,
  * window 2, crossing 2.3, pick 3.8, snap 2.7, writeDxf 86, readDxf 121 ms.
+ *
+ * readDxf / writeDxf vary a lot with machine load (the whole suite runs in parallel): best of 2
+ * alone, readDxf took 100-250 ms and writeDxf 55-90 ms over ten runs on the same container,
+ * 570 / 205 ms under the full suite and 620 ms (writeDxf) with a build running beside the suite;
+ * a best-of-15 run alone gave 52-65 / 30 ms. The budgets below are about 3x the loaded figures,
+ * which still fails an accidental O(n^2) regression (10-100x).
  */
 const BUDGET = {
   extents: 50,
@@ -23,8 +29,8 @@ const BUDGET = {
   crossingSelect: 50,
   pick: 50,
   snap: 50,
-  writeDxf: 300,
-  readDxf: 400,
+  writeDxf: 900,
+  readDxf: 1500,
 };
 
 function time<T>(label: string, fn: () => T, runs = 3): { ms: number; value: T } {
