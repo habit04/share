@@ -303,6 +303,8 @@ export interface Layer {
   readonly plot?: boolean;
   /** True colour 0xRRGGBB (DXF 420 on the LAYER record); shown instead of `color` when set. */
   readonly trueColor?: number;
+  /** Xref-dependent LAYER flags (DXF 70 bits 16 and 32), kept from the source file. */
+  readonly xrefFlags?: number;
 }
 
 let idCounter = 0;

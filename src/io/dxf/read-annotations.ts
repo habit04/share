@@ -5,14 +5,44 @@
  */
 import type { Entity, DimStyle, LeaderEntity, ImageEntity, TableEntity, TableCell } from '../../core/entities';
 import { mtextFromDxf, hasFormatting, type MTextAttachment } from '../../core/mtext';
+import { dimStyleFromRecordPairs } from '../../core/dimension';
 import * as g from '../../core/geometry';
-import { TABLE_APP } from './codes';
+import { DIMSTYLE_APP, TABLE_APP } from './codes';
+import { applyDimStyleXdata } from './dimstyles';
 import { num, has, str, pt, int, flt, afterSubclass, pointList, xdata, type Pair, type Obj } from './groups';
 import type { commonProps, ReadContext } from './read-core';
 
-export function readDimStyleFromEntity(o: Obj, styles: Map<string, DimStyle>, fallback: DimStyle): DimStyle {
+/**
+ * A DIMENSION's style: its named style (group 3) with the dimension's own overrides applied -
+ * ACAD XDATA "DSTYLE" { 1070 code, value ... } as AutoCAD writes them (340 DIMTXSTY names a STYLE
+ * by handle) and JCAD_DIMSTYLE XDATA for arrowheads. Ported from PR #2
+ * (codex/electrical-review-fixes 2f89b0e).
+ */
+export function readDimStyleFromEntity(o: Obj, styles: Map<string, DimStyle>, fallback: DimStyle, textStyleHandles?: ReadonlyMap<string, string>): DimStyle {
   const name = str(o, 3);
-  return (name && styles.get(name.toUpperCase())) || fallback;
+  const style = (name && styles.get(name.toUpperCase())) || fallback;
+  const overrides = dstylePairs(o);
+  let result = overrides.length ? dimStyleFromRecordPairs(style.name, overrides, style) : style;
+  const overrideStyle = overrides.find(([code]) => code === 340)?.[1];
+  const resolvedStyle = overrideStyle ? textStyleHandles?.get(overrideStyle.toUpperCase()) : undefined;
+  if (resolvedStyle) result = { ...result, textStyle: resolvedStyle };
+  const arrowData = xdata(o, DIMSTYLE_APP);
+  return arrowData ? applyDimStyleXdata(result, arrowData) : result;
+}
+
+/** The [code, value] pairs of ACAD XDATA "DSTYLE" { 1070 code, 1000 / 1005 / 1040 / 1070 / 1071 value ... }. */
+export function dstylePairs(o: Obj): Array<readonly [number, string]> {
+  const xd = xdata(o, 'ACAD');
+  if (!xd) return [];
+  const start = xd.findIndex((p) => p.code === 1000 && p.value === 'DSTYLE');
+  if (start < 0 || xd[start + 1]?.code !== 1002 || xd[start + 1]?.value !== '{') return [];
+  const out: Array<readonly [number, string]> = [];
+  for (let k = start + 2; k + 1 < xd.length && xd[k]!.code !== 1002; k += 2) {
+    const key = xd[k]!;
+    const value = xd[k + 1]!;
+    if (key.code === 1070 && [1000, 1005, 1040, 1070, 1071].includes(value.code)) out.push([int(key.value), value.value]);
+  }
+  return out;
 }
 
 export function readDimension(o: Obj, base: ReturnType<typeof commonProps>, style: DimStyle): Entity | null {
@@ -76,6 +106,9 @@ export function readDimension(o: Obj, base: ReturnType<typeof commonProps>, styl
 
 /** A dimension-variable override (ACAD DSTYLE xdata: 1070 code, 1040/1070 value). */
 function dstyleOverride(o: Obj, dimvarCode: number): number | undefined {
+  const pair = dstylePairs(o).find(([code]) => code === dimvarCode);
+  if (pair) return flt(pair[1]);
+  // Files that leave out the DSTYLE { } framing: any 1070 code followed by its value.
   const xd = xdata(o, 'ACAD');
   if (!xd) return undefined;
   for (let k = 0; k + 1 < xd.length; k += 1) if (xd[k]!.code === 1070 && int(xd[k]!.value) === dimvarCode) return flt(xd[k + 1]!.value);

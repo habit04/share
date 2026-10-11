@@ -17,6 +17,11 @@ export interface UnitSettings {
 
 export const DEFAULT_UNITS: UnitSettings = { lunits: 2, luprec: 4, insunits: 1, auprec: 0 };
 
+/** CAD display precision is bounded even when callers supply damaged settings. */
+export function cadPrecision(value: number, fallback = 0): number {
+  return Number.isFinite(value) ? Math.max(0, Math.min(8, Math.trunc(value))) : fallback;
+}
+
 export const LUNIT_NAMES: Record<LinearUnits, string> = {
   1: 'Scientific',
   2: 'Decimal',
@@ -60,6 +65,7 @@ function toFraction(v: number, prec: number): [number, string] {
 
 /** Format a length in drawing units the way AutoCAD's LUNITS/LUPREC display it. */
 export function formatLength(value: number, units: Pick<UnitSettings, 'lunits' | 'luprec'> = DEFAULT_UNITS): string {
+  units = { ...units, luprec: cadPrecision(units.luprec, DEFAULT_UNITS.luprec) };
   const v = Math.abs(value);
   const sign = value < 0 ? '-' : '';
   switch (units.lunits) {
@@ -90,6 +96,7 @@ export function formatLength(value: number, units: Pick<UnitSettings, 'lunits' |
 
 /** Format an angle (radians) in decimal degrees. */
 export function formatAngle(rad: number, auprec = 0): string {
+  auprec = cadPrecision(auprec);
   let d = (rad * 180) / Math.PI;
   d = ((d % 360) + 360) % 360;
   const s = d.toFixed(auprec);
@@ -98,6 +105,7 @@ export function formatAngle(rad: number, auprec = 0): string {
 
 /** Format an area (square drawing units). */
 export function formatArea(value: number, units: Pick<UnitSettings, 'lunits' | 'luprec'> = DEFAULT_UNITS): string {
+  units = { ...units, luprec: cadPrecision(units.luprec, DEFAULT_UNITS.luprec) };
   if (units.lunits === 4 || units.lunits === 3) {
     const sqft = value / 144;
     return `${value.toFixed(units.luprec)} sq in (${sqft.toFixed(units.luprec)} sq ft)`;

@@ -22,7 +22,7 @@ export function dimStyleXdata(s: DimStyle): Array<[string, string]> {
 }
 
 /** Apply JCAD_DIMSTYLE XDATA pairs (see DIMSTYLE_APP) to a style read from its record. */
-function applyDimStyleXdata(s: DimStyle, xd: readonly Pair[]): DimStyle {
+export function applyDimStyleXdata(s: DimStyle, xd: readonly Pair[]): DimStyle {
   let out = s;
   const strs = xd.filter((p) => p.code === 1000).map((p) => p.value);
   for (let k = 0; k + 1 < strs.length; k += 2) {
@@ -77,6 +77,10 @@ export function readDimStyleRecord(o: Obj, tables: readonly Obj[]): DimStyle {
     own.map((p) => [p.code, p.value] as const),
     STANDARD_DIMSTYLE,
   );
+  // DIMTXSTY: the STYLE record whose handle group 340 names.
+  const textStyleHandle = own.find((p) => p.code === 340)?.value?.toUpperCase();
+  const textStyleRecord = textStyleHandle ? tables.find((t) => t.kind === 'STYLE' && str(t, 5).toUpperCase() === textStyleHandle) : undefined;
+  if (textStyleRecord) s = { ...s, textStyle: str(textStyleRecord, 2, 'Standard') };
   if (s.scale === 0) s = { ...s, scale: 1 };
   const xd = xdata(o, DIMSTYLE_APP);
   if (xd) return applyDimStyleXdata(s, xd);

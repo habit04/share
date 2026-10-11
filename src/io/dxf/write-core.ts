@@ -2,7 +2,7 @@
  * DXF writing basics: number formatting, the group-code writer with its handle counter, and the
  * groups entities start with (AcDbEntity common data, text placement, annotative XDATA).
  */
-import type { Entity, ColorSpec, ImageEntity, TableEntity } from '../../core/entities';
+import type { Entity, ColorSpec, ImageEntity, TableEntity, DimStyle } from '../../core/entities';
 import { STANDARD_DIMSTYLE } from '../../core/dimension';
 import * as g from '../../core/geometry';
 import { ANNO_APP } from './codes';
@@ -16,6 +16,10 @@ function fmt(n: number): string {
 export class Writer {
   private out: string[] = [];
   private handle = 0x100;
+  /** STYLE record handles by upper-case style name (DIMTXSTY, group 340, refers to them). */
+  readonly textStyleHandles = new Map<string, string>();
+  /** The DIMSTYLE records written, by upper-case name: a dimension writes what differs from its record (DSTYLE). */
+  readonly dimensionStyles = new Map<string, DimStyle>();
   pair(code: number, value: string | number): void {
     this.out.push(String(code), typeof value === 'number' ? fmt(value) : value);
   }

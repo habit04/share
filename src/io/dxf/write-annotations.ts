@@ -4,11 +4,12 @@
  * tables (an INSERT of an anonymous block with the cell data as XDATA).
  */
 import { textWidth, leaderParts, leaderPath, type DimensionEntity, type MTextEntity, type LeaderEntity, type ImageEntity, type TableEntity } from '../../core/entities';
-import { dimensionTextPoint, dimensionMeasurement } from '../../core/dimension';
+import { dimensionTextPoint, dimensionMeasurement, diffDimStyles, DIM_VARIABLES } from '../../core/dimension';
 import { mtextToDxf, formattedSource } from '../../core/mtext';
 import * as g from '../../core/geometry';
 import { textStyleOf } from '../encoding';
-import { DIM_TYPE, TABLE_APP } from './codes';
+import { DIM_TYPE, DIMSTYLE_APP, TABLE_APP } from './codes';
+import { dimStyleXdata } from './dimstyles';
 import { Writer, writeEntityCommon, type WriteExtras } from './write-core';
 
 export function writeMText(w: Writer, e: MTextEntity, owner: string): void {
@@ -45,8 +46,8 @@ function radialPoints(e: DimensionEntity): { q: g.Point; far: g.Point } {
 }
 
 export function writeDimension(w: Writer, e: DimensionEntity, owner: string, blockName: string): void {
+  // (No group 280: it is not part of an AC1015 DIMENSION, and AutoCAD's AUDIT reports it.)
   writeEntityCommon(w, e, owner, 'DIMENSION', 'AcDbDimension');
-  w.pair(280, 0);
   w.pair(2, blockName);
   let defpoint: g.Point;
   switch (e.kind) {
@@ -119,6 +120,47 @@ export function writeDimension(w: Writer, e: DimensionEntity, owner: string, blo
       w.pair(25, e.center?.y ?? 0);
       w.pair(35, 0);
       break;
+  }
+  writeDimStyleOverrides(w, e);
+}
+
+/** DIM* variables that dimStyleRecordPairs writes under codes of their own. */
+const DERIVED_DIMVAR_CODES: Readonly<Record<string, number>> = { DIMTOL: 71, DIMLIM: 72, DIMTIH: 73, DIMTOH: 74, DIMZIN: 78 };
+
+/**
+ * Per-dimension overrides of its named style, as AutoCAD writes them: ACAD XDATA
+ * "DSTYLE" { 1070 code, value ... } for the DIM* variables that differ from the DIMSTYLE record
+ * (1040 reals, 1070 integers, 1000 strings; 340 DIMTXSTY as a 1005 handle), and JCAD_DIMSTYLE
+ * XDATA for what DIMSTYLE records keep there (arrowheads, basic tolerance, alternate placement).
+ * Ported from PR #2 (codex/electrical-review-fixes 2f89b0e).
+ */
+function writeDimStyleOverrides(w: Writer, e: DimensionEntity): void {
+  const inherited = w.dimensionStyles.get(e.style.name.toUpperCase());
+  if (!inherited) return;
+  const differences = diffDimStyles(e.style, inherited).filter((v) => DIM_VARIABLES.some((def) => def.name === v.name && def.code !== undefined) || DERIVED_DIMVAR_CODES[v.name] !== undefined);
+  const textStyle = e.style.textStyle ?? 'Standard';
+  const textStyleDiffers = textStyle.toUpperCase() !== (inherited.textStyle ?? 'Standard').toUpperCase();
+  if (differences.length || textStyleDiffers) {
+    w.pair(1001, 'ACAD');
+    w.pair(1000, 'DSTYLE');
+    w.pair(1002, '{');
+    for (const change of differences) {
+      const def = DIM_VARIABLES.find((v) => v.name === change.name);
+      w.pair(1070, DERIVED_DIMVAR_CODES[change.name] ?? def!.code!);
+      w.pair(def?.kind === 'string' ? 1000 : def?.kind === 'number' && def.code !== 371 && def.code !== 372 ? 1040 : 1070, change.a);
+    }
+    if (textStyleDiffers) {
+      w.pair(1070, 340);
+      w.pair(1005, w.textStyleHandles.get(textStyle.toUpperCase()) ?? w.textStyleHandles.get('STANDARD') ?? '0');
+    }
+    w.pair(1002, '}');
+  }
+  if (e.style.arrow !== inherited.arrow || e.style.arrow2 !== inherited.arrow2 || e.style.altPlacement !== inherited.altPlacement || (e.style.tolerance === 'basic') !== (inherited.tolerance === 'basic')) {
+    w.pair(1001, DIMSTYLE_APP);
+    for (const [key, value] of dimStyleXdata(e.style)) {
+      w.pair(1000, key);
+      w.pair(1000, value);
+    }
   }
 }
 

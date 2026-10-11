@@ -11,7 +11,7 @@ import * as g from '../../core/geometry';
 import { attdefFlags } from '../../electrical/symbol-builder-core';
 // Track E: paper space (layouts, VIEWPORT entities, LAYOUT objects) lives in dxf-layouts.ts.
 import { planLayouts, writeLayoutHeader, extraBlockRecords, layoutHandleOf, writeLayoutContent, writeLayoutObjects } from '../dxf-layouts';
-import { encodeDxfText, textStyleGroups, textStylesForWrite } from '../encoding';
+import { encodeDxfText, textStyleGroups, textStyleOf, textStylesForWrite, STANDARD_TEXT_STYLE } from '../encoding';
 import { rawEntitiesOf } from '../import-report';
 import { ANNO_APP, DIMSTYLE_APP, TABLE_APP } from './codes';
 import { dimStyleXdata, dimStylesToWrite, dimHeaderVars } from './dimstyles';
@@ -43,6 +43,10 @@ function usedLinetypes(state: DrawingState): Linetype[] {
 
 export function writeDxf(state: DrawingState): string {
   const w = new Writer();
+  // ACAD_PLOTSTYLENAME: the dictionary layers point at (390) and its "Normal" entry (AutoCAD's
+  // AUDIT reports layers whose plot style handle names no object).
+  const plotStyleDictionary = w.nextHandle();
+  const normalPlotStyle = w.nextHandle();
   const MODEL_SPACE = '1F';
   const PAPER_SPACE = '1B';
   const header = state.header ?? DEFAULT_HEADER;
@@ -55,7 +59,9 @@ export function writeDxf(state: DrawingState): string {
   const dimBlocks = new Map<string, string>();
   const layoutPlan = planLayouts(state, w, PAPER_SPACE);
   setPaperOwners(layoutPlan.paperOwners);
-  const dimEntities = [...state.entities, ...layoutPlan.entities].filter((e): e is DimensionEntity => e.type === 'dimension');
+  // Dimensions inside block definitions get their picture block too (a DIMENSION naming no block
+  // is invalid).
+  const dimEntities = [...state.entities, ...layoutPlan.entities, ...blockList.flatMap((b) => b.entities)].filter((e): e is DimensionEntity => e.type === 'dimension');
   dimEntities.forEach((d, i) => {
     const name = `*D${i + 1}`;
     dimBlocks.set(d.id, name);
@@ -96,11 +102,11 @@ export function writeDxf(state: DrawingState): string {
     w.pair(9, name);
     w.pair(code, value);
   };
+  // 2D points: $LIMMIN / $LIMMAX have no Z (group 30) in AC1015.
   const hpt = (name: string, p: g.Point) => {
     w.pair(9, name);
     w.pair(10, p.x);
     w.pair(20, p.y);
-    w.pair(30, 0);
   };
   hv('$ACADVER', 1, 'AC1015');
   hv('$DWGCODEPAGE', 3, 'ANSI_1252');
@@ -126,10 +132,10 @@ export function writeDxf(state: DrawingState): string {
   writeLayoutHeader(hv, state);
   w.pair(0, 'ENDSEC');
 
-  // CLASSES: raster images need their class records.
+  // CLASSES: the plot style dictionary's object types, and raster images' when there are images.
   w.pair(0, 'SECTION');
   w.pair(2, 'CLASSES');
-  if (imageDict) {
+  {
     const cls = (name: string, cpp: string, flags: number, isEntity: boolean) => {
       w.pair(0, 'CLASS');
       w.pair(1, name);
@@ -139,9 +145,13 @@ export function writeDxf(state: DrawingState): string {
       w.pair(280, 0);
       w.pair(281, isEntity ? 1 : 0);
     };
-    cls('IMAGE', 'AcDbRasterImage', 127, true);
-    cls('IMAGEDEF', 'AcDbRasterImageDef', 0, false);
-    cls('IMAGEDEF_REACTOR', 'AcDbRasterImageDefReactor', 1, false);
+    cls('ACDBDICTIONARYWDFLT', 'AcDbDictionaryWithDefault', 0, false);
+    cls('ACDBPLACEHOLDER', 'AcDbPlaceHolder', 0, false);
+    if (imageDict) {
+      cls('IMAGE', 'AcDbRasterImage', 127, true);
+      cls('IMAGEDEF', 'AcDbRasterImageDef', 0, false);
+      cls('IMAGEDEF_REACTOR', 'AcDbRasterImageDefReactor', 1, false);
+    }
   }
   w.pair(0, 'ENDSEC');
 
@@ -205,20 +215,25 @@ export function writeDxf(state: DrawingState): string {
   for (const r of rawRecords) if (!layerList.some((l) => l.name === r.layer)) layerList.push({ name: r.layer, color: 7, visible: true, locked: false, lineWeight: 0.25 });
   table('LAYER', '2', layerList.length, () => {
     for (const l of layerList) {
-      record('LAYER', '2', 'AcDbLayerTableRecord', l.name, (l.locked ? 4 : 0) | (l.frozen ? 1 : 0));
+      // Flags 16 / 32 (xref-dependent, resolved) are kept from the source file.
+      record('LAYER', '2', 'AcDbLayerTableRecord', l.name, (l.locked ? 4 : 0) | (l.frozen ? 1 : 0) | ((l.xrefFlags ?? 0) & 48));
       layerHandles.set(l.name, w.lastHandle().toString(16).toUpperCase());
       w.pair(62, l.visible || l.frozen ? l.color : -l.color);
       if (l.trueColor !== undefined) w.pair(420, l.trueColor & 0xffffff);
       w.pair(6, l.linetype && l.linetype.toUpperCase() !== 'BYLAYER' ? l.linetype : 'Continuous');
       w.pair(370, Math.round(l.lineWeight * 100));
       if (l.plot === false) w.pair(290, 0);
-      w.pair(390, 'F');
+      w.pair(390, normalPlotStyle);
     }
   });
   const textStyles = textStylesForWrite(state);
+  // Every style a dimension (DIMTXSTY) or a text names needs a record, so its handle exists.
+  const requiredTextStyles = new Set([ds.textStyle, ...allEntities.map((e) => (e.type === 'dimension' ? e.style.textStyle : textStyleOf(e)))].filter((n): n is string => !!n));
+  for (const name of requiredTextStyles) if (!textStyles.some((t) => t.name.toUpperCase() === name.toUpperCase())) textStyles.push({ ...STANDARD_TEXT_STYLE, name });
   table('STYLE', '3', textStyles.length, () => {
     for (const ts of textStyles) {
       record('STYLE', '3', 'AcDbTextStyleTableRecord', ts.name, ts.flags);
+      w.textStyleHandles.set(ts.name.toUpperCase(), w.lastHandle().toString(16).toUpperCase());
       for (const [code, value] of textStyleGroups(ts)) w.pair(code, value);
     }
   });
@@ -252,6 +267,7 @@ export function writeDxf(state: DrawingState): string {
   });
   // Dimensions on layouts count too, so their (unnamed) styles get a record.
   const dimStyleList = dimStylesToWrite(state, allEntities);
+  for (const style of dimStyleList) w.dimensionStyles.set(style.name.toUpperCase(), style);
   table('DIMSTYLE', 'A', dimStyleList.length, () => {
     w.pair(100, 'AcDbDimStyleTable');
     for (const style of dimStyleList) {
@@ -263,6 +279,8 @@ export function writeDxf(state: DrawingState): string {
       w.pair(2, style.name);
       w.pair(70, 0);
       for (const [code, value] of dimStyleRecordPairs(style)) w.pair(code, value);
+      // DIMTXSTY: the handle of the STYLE record.
+      w.pair(340, w.textStyleHandles.get((style.textStyle ?? 'Standard').toUpperCase()) ?? w.textStyleHandles.get('STANDARD') ?? '0');
       w.pair(1001, DIMSTYLE_APP);
       for (const [k, v] of dimStyleXdata(style)) {
         w.pair(1000, k);
@@ -328,7 +346,7 @@ export function writeDxf(state: DrawingState): string {
     // Anonymous blocks (*T tables, *U dynamic blocks) must carry flag 1 or AutoCAD rejects the name.
     const xrefFlags = b.xref ? 4 | (b.xref.overlay ? 8 : 0) : 0;
     blockShell(owner, b.name, b.basePoint, (b.attributes.length > 0 ? 2 : 0) | (b.name.startsWith('*') ? 1 : 0) | xrefFlags, b.description, () => {
-      for (const e of b.entities) writeEntity(w, e, owner, state.blocks, undefined, extras);
+      for (const e of b.entities) writeEntityAnno(w, e, owner, state.blocks, dimBlocks, extras);
       for (const a of b.attributes) {
         w.pair(0, 'ATTDEF');
         w.pair(5, w.nextHandle());
@@ -386,6 +404,8 @@ export function writeDxf(state: DrawingState): string {
   w.pair(350, 'D');
   w.pair(3, 'ACAD_LAYOUT');
   w.pair(350, layoutPlan.dictionary);
+  w.pair(3, 'ACAD_PLOTSTYLENAME');
+  w.pair(350, plotStyleDictionary);
   if (imageDict) {
     w.pair(3, 'ACAD_IMAGE_DICT');
     w.pair(350, imageDict);
@@ -396,6 +416,18 @@ export function writeDxf(state: DrawingState): string {
   w.pair(100, 'AcDbDictionary');
   w.pair(281, 1);
   writeLayoutObjects(w, layoutPlan, MODEL_SPACE, 'C');
+  w.pair(0, 'ACDBDICTIONARYWDFLT');
+  w.pair(5, plotStyleDictionary);
+  w.pair(330, 'C');
+  w.pair(100, 'AcDbDictionary');
+  w.pair(281, 1);
+  w.pair(3, 'Normal');
+  w.pair(350, normalPlotStyle);
+  w.pair(100, 'AcDbDictionaryWithDefault');
+  w.pair(340, normalPlotStyle);
+  w.pair(0, 'ACDBPLACEHOLDER');
+  w.pair(5, normalPlotStyle);
+  w.pair(330, plotStyleDictionary);
   if (imageDict) {
     w.pair(0, 'DICTIONARY');
     w.pair(5, imageDict);

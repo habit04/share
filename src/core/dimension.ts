@@ -15,7 +15,7 @@ import type { Point } from './geometry';
 import * as g from './geometry';
 import type { EntityBase, LineEntity, PolylineEntity, TextEntity, ArcEntity, CircleEntity, ColorSpec } from './entities';
 import type { DrawingState } from './document';
-import { formatLength, formatAngle, type LinearUnits } from './units';
+import { formatLength, formatAngle, cadPrecision, type LinearUnits } from './units';
 
 export type DimKind = 'linear' | 'aligned' | 'radius' | 'diameter' | 'angular';
 
@@ -84,6 +84,9 @@ export interface DimStyle {
   /** DIMCLRD / DIMCLRE: dimension line and extension line colours (undefined = the dimension's colour). */
   readonly dimLineColor?: ColorSpec;
   readonly extLineColor?: ColorSpec;
+  /** DIMLWD / DIMLWE, millimetres or negative ByLayer/ByBlock/default values. */
+  readonly dimLineWeight?: number;
+  readonly extLineWeight?: number;
 
   // ---- Symbols and arrows -----------------------------------------------
   /** DIMBLK1 (DIMBLK): first arrowhead. */
@@ -97,6 +100,8 @@ export interface DimStyle {
   readonly textJustify?: DimTextJustify;
   /** DIMCLRT (undefined = the dimension's colour). */
   readonly textColor?: ColorSpec;
+  /** DIMTXSTY, resolved text style name. */
+  readonly textStyle?: string;
 
   // ---- Fit ----------------------------------------------------------------
   /** DIMATFIT */
@@ -116,6 +121,8 @@ export interface DimStyle {
   /** DIMZIN 4 / 8: suppress leading / trailing zeros of decimal numbers. */
   readonly suppressLeadingZeros?: boolean;
   readonly suppressTrailingZeros?: boolean;
+  /** DIMDSEP character code (46 = decimal point, 44 = comma). */
+  readonly decimalSeparator?: number;
 
   // ---- Alternate units ----------------------------------------------------
   /** DIMALT */
@@ -140,6 +147,8 @@ export interface DimStyle {
   readonly tolDecimals?: number;
   /** DIMTFAC: tolerance text height as a fraction of DIMTXT. */
   readonly tolScale?: number;
+  /** DIMTZIN decimal tolerance suppression bits, independent of DIMZIN. */
+  readonly toleranceZeroSuppression?: number;
 }
 
 /** Every option filled in. */
@@ -170,6 +179,10 @@ export const DIM_DEFAULTS = {
   linearFactor: 1,
   suppressLeadingZeros: false,
   suppressTrailingZeros: false,
+  decimalSeparator: 46,
+  textStyle: 'Standard',
+  dimLineWeight: -2,
+  extLineWeight: -2,
   altUnits: false,
   altFactor: 25.4,
   altDecimals: 2,
@@ -181,6 +194,7 @@ export const DIM_DEFAULTS = {
   tolMinus: 0,
   tolDecimals: 4,
   tolScale: 1,
+  toleranceZeroSuppression: 0,
 } as const;
 
 export const STANDARD_DIMSTYLE: DimStyle = {
@@ -221,6 +235,8 @@ export const ISO25_DIMSTYLE: DimStyle = {
 export function resolveDimStyle(s: DimStyle): ResolvedDimStyle {
   const out: Record<string, unknown> = { ...DIM_DEFAULTS };
   for (const [k, v] of Object.entries(s)) if (v !== undefined) out[k] = v;
+  for (const key of ['decimals', 'altDecimals', 'tolDecimals']) out[key] = cadPrecision(out[key] as number, key === 'altDecimals' ? 2 : 4);
+  out.angularDecimals = out.angularDecimals === -1 ? -1 : cadPrecision(out.angularDecimals as number);
   out.arrow2 = s.arrow2 ?? s.arrow ?? DIM_DEFAULTS.arrow;
   return out as ResolvedDimStyle;
 }
@@ -299,9 +315,10 @@ export function suppressZeros(text: string, leading: boolean, trailing: boolean)
 }
 
 /** Format a linear value with a unit format / precision and the style's zero suppression. */
-export function formatDimNumber(v: number, lunit: LinearUnits, decimals: number, s: Pick<ResolvedDimStyle, 'suppressLeadingZeros' | 'suppressTrailingZeros'>): string {
+export function formatDimNumber(v: number, lunit: LinearUnits, decimals: number, s: Pick<ResolvedDimStyle, 'suppressLeadingZeros' | 'suppressTrailingZeros'> & Pick<DimStyle, 'decimalSeparator'>): string {
   const t = formatLength(v, { lunits: lunit, luprec: decimals });
-  return lunit === 2 ? suppressZeros(t, s.suppressLeadingZeros, s.suppressTrailingZeros) : t;
+  const value = lunit === 2 ? suppressZeros(t, s.suppressLeadingZeros, s.suppressTrailingZeros) : t;
+  return s.decimalSeparator === 44 ? value.replace(/\./g, ',') : value;
 }
 
 /** DIMPOST / DIMAPOST: `<>` is replaced by the value, anything else is appended. */
@@ -312,7 +329,7 @@ export function applyPost(value: string, post: string): string {
 
 /** Tolerance number: signed ("+0.0100") or plain. */
 export function formatTolerance(v: number, s: ResolvedDimStyle, signed: boolean): string {
-  const t = formatDimNumber(Math.abs(v), 2, s.tolDecimals, s);
+  const t = formatDimNumber(Math.abs(v), 2, s.tolDecimals, { ...s, suppressLeadingZeros: (s.toleranceZeroSuppression & 4) !== 0, suppressTrailingZeros: (s.toleranceZeroSuppression & 8) !== 0 });
   if (!signed) return t;
   // AutoCAD shows a zero deviation without a sign.
   if (Math.abs(v) < 1e-12) return t;
@@ -338,7 +355,7 @@ function scaledValue(d: DimensionEntity, s: ResolvedDimStyle, raw: number): numb
 }
 
 function primaryString(d: DimensionEntity, s: ResolvedDimStyle, v: number): string {
-  if (d.kind === 'angular') return `${formatAngle(v, s.angularDecimals)}%%d`;
+  if (d.kind === 'angular') return `${formatAngle(v, s.angularDecimals === -1 ? s.decimals : s.angularDecimals)}%%d`;
   const prefix = d.kind === 'radius' ? 'R' : d.kind === 'diameter' ? '%%c' : '';
   return applyPost(prefix + formatDimNumber(v, s.lunit, s.decimals, s), s.post);
 }
@@ -346,7 +363,9 @@ function primaryString(d: DimensionEntity, s: ResolvedDimStyle, v: number): stri
 function altString(d: DimensionEntity, s: ResolvedDimStyle, v: number): string {
   if (!s.altUnits || d.kind === 'angular') return '';
   const a = formatDimNumber(v * (s.altFactor || 1), s.altLunit, s.altDecimals, s);
-  return s.altPost ? applyPost(a, s.altPost) : `[${a}]`;
+  if (s.altPost === '.') return `[${a}]`;
+  if (s.altPost.includes('<>')) return applyPost(a, s.altPost);
+  return `[${s.altPost.includes('[]') ? s.altPost.replace(/\[\]/g, a) : applyPost(a, s.altPost)}]`;
 }
 
 /** Split the dimension's text into main / stacked / alternate parts. */
@@ -422,7 +441,8 @@ type Role = 'dim' | 'ext' | 'text';
 function base(c: Ctx, suffix: string, role: Role = 'dim'): { id: string; layer: string; color: ColorSpec; linetype?: string; lineWeight?: number } {
   const d = c.d;
   const override = role === 'text' ? c.s.textColor : role === 'ext' ? c.s.extLineColor : c.s.dimLineColor;
-  return { id: `${d.id}:${suffix}`, layer: d.layer, color: override ?? d.color, linetype: d.linetype, lineWeight: d.lineWeight };
+  const weight = role === 'ext' ? c.s.extLineWeight : role === 'dim' ? c.s.dimLineWeight : -2;
+  return { id: `${d.id}:${suffix}`, layer: d.layer, color: override ?? d.color, linetype: d.linetype, lineWeight: weight === -2 ? d.lineWeight : weight };
 }
 
 function line(c: Ctx, a: Point, b: Point, role: Role = 'dim'): void {
@@ -494,7 +514,7 @@ function textEntity(c: Ctx, center: Point, str: string, h: number, rotation: num
   // `center` is the middle of the text line; the entity position is its baseline anchor.
   const pos = g.sub(center, g.scale(up, h / 2));
   c.texts += 1;
-  c.out.push({ ...base(c, c.texts === 1 ? 't' : `t${c.texts}`, 'text'), type: 'text', position: pos, text: str, height: h, rotation, align });
+  c.out.push({ ...base(c, c.texts === 1 ? 't' : `t${c.texts}`, 'text'), type: 'text', position: pos, text: str, height: h, rotation, align, ...(c.s.textStyle && c.s.textStyle !== 'Standard' ? { style: c.s.textStyle } : {}) });
 }
 
 interface Block {
@@ -989,6 +1009,11 @@ export const DIM_VARIABLES: readonly DimVar[] = [
   { name: 'DIMTDEC', key: 'tolDecimals', code: 272, headerCode: 70, description: 'Tolerance decimal places', kind: 'integer' },
   { name: 'DIMALTU', key: 'altLunit', code: 273, headerCode: 70, description: 'Alternate units format (1-5)', kind: 'integer' },
   { name: 'DIMLUNIT', key: 'lunit', code: 277, headerCode: 70, description: 'Linear unit format (1-5)', kind: 'integer' },
+  { name: 'DIMDSEP', key: 'decimalSeparator', code: 278, headerCode: 70, description: 'Decimal separator character code', kind: 'integer' },
+  { name: 'DIMTZIN', key: 'toleranceZeroSuppression', code: 284, headerCode: 70, description: 'Tolerance zero suppression', kind: 'integer' },
+  { name: 'DIMTXSTY', key: 'textStyle', headerCode: 7, description: 'Dimension text style', kind: 'string' },
+  { name: 'DIMLWD', key: 'dimLineWeight', code: 371, headerCode: 70, description: 'Dimension lineweight', kind: 'number' },
+  { name: 'DIMLWE', key: 'extLineWeight', code: 372, headerCode: 70, description: 'Extension lineweight', kind: 'number' },
   {
     name: 'DIMJUST',
     key: 'textJustify',
@@ -1053,6 +1078,7 @@ export function dimVarValue(s: DimStyle, name: string): number | string {
   if (up === 'DIMTIH') return r.textAlign === 'aligned' ? 0 : 1;
   if (up === 'DIMTOH') return r.textAlign === 'horizontal' ? 1 : 0;
   if (up === 'DIMZIN') return (r.suppressLeadingZeros ? 4 : 0) | (r.suppressTrailingZeros ? 8 : 0);
+  if (up === 'DIMLWD' || up === 'DIMLWE') { const w = up === 'DIMLWD' ? r.dimLineWeight : r.extLineWeight; return w < 0 ? w : Math.round(w * 100); }
   const v = DIM_VARIABLES.find((x) => x.name === up);
   if (!v) throw new Error(`Unknown dimension variable ${name}`);
   const val = (r as unknown as Record<string, unknown>)[v.key];
@@ -1073,7 +1099,9 @@ export function dimVarValue(s: DimStyle, name: string): number | string {
 /** Apply a DIM* variable value (as DXF stores it) to a style. Unknown names return the style unchanged. */
 export function withDimVar(s: DimStyle, name: string, value: number | string): DimStyle {
   const up = name.toUpperCase();
-  const num = typeof value === 'number' ? value : parseFloat(value);
+  const num = typeof value === 'number' ? value : Number(value);
+  const variable = DIM_VARIABLES.find((x) => x.name === up);
+  if (up !== 'DIMBLK' && variable?.kind !== 'string' && !Number.isFinite(num)) return s;
   const r = resolveDimStyle(s);
   if (up === 'DIMTOL') {
     const plusMinus = r.tolerance === 'symmetrical' || r.tolerance === 'deviation';
@@ -1093,12 +1121,15 @@ export function withDimVar(s: DimStyle, name: string, value: number | string): D
   if (up === 'DIMSAH') return num ? s : { ...s, arrow2: undefined };
   // DIMZIN: only the decimal bits (4 leading, 8 trailing) are used; the feet/inch bits 0-3 are ignored.
   if (up === 'DIMZIN') return Number.isFinite(num) ? { ...s, suppressLeadingZeros: (Math.trunc(num) & 4) !== 0, suppressTrailingZeros: (Math.trunc(num) & 8) !== 0 } : s;
-  const v = DIM_VARIABLES.find((x) => x.name === up);
+  if (up === 'DIMLWD' || up === 'DIMLWE') return Number.isFinite(num) ? { ...s, [up === 'DIMLWD' ? 'dimLineWeight' : 'extLineWeight']: num < 0 ? num : num / 100 } : s;
+  const v = variable;
   if (!v) return s;
   switch (v.kind) {
     case 'boolean':
       return { ...s, [v.key]: num !== 0 };
     case 'integer': {
+      if (v.key === 'angularDecimals') return { ...s, [v.key]: num === -1 ? -1 : cadPrecision(num) };
+      if (v.key === 'decimals' || v.key === 'altDecimals' || v.key === 'tolDecimals') return { ...s, [v.key]: cadPrecision(num) };
       let n = Math.max(0, Math.round(num));
       if (v.key === 'lunit' || v.key === 'altLunit') n = Math.max(1, Math.min(5, n));
       return { ...s, [v.key]: n };
@@ -1131,18 +1162,19 @@ export function dimStyleRecordPairs(s: DimStyle): Array<[number, number | string
 
 /** Read a style back from DIMSTYLE record pairs (the inverse of dimStyleRecordPairs). */
 export function dimStyleFromRecordPairs(name: string, pairs: ReadonlyArray<readonly [number, number | string]>, fallback: DimStyle = STANDARD_DIMSTYLE): DimStyle {
-  let s: DimStyle = { ...fallback, name };
+  let s: DimStyle = { ...fallback, name, toleranceZeroSuppression: fallback.toleranceZeroSuppression ?? 0 };
   const byCode = new Map<number, number | string>();
   for (const [c, v] of pairs) byCode.set(c, v);
   for (const v of DIM_VARIABLES) if (v.code !== undefined && byCode.has(v.code)) s = withDimVar(s, v.name, byCode.get(v.code)!);
   if (byCode.has(73) || byCode.has(74)) {
-    const tih = Number(byCode.get(73) ?? 1) !== 0;
-    const toh = Number(byCode.get(74) ?? 1) !== 0;
+    const tih = Number(byCode.get(73) ?? dimVarValue(s, 'DIMTIH')) !== 0;
+    const toh = Number(byCode.get(74) ?? dimVarValue(s, 'DIMTOH')) !== 0;
     s = { ...s, textAlign: tih && toh ? 'horizontal' : !tih && !toh ? 'aligned' : 'iso' };
   }
   if (byCode.has(78)) s = withDimVar(s, 'DIMZIN', byCode.get(78)!);
-  const tol = Number(byCode.get(71) ?? 0);
-  const lim = Number(byCode.get(72) ?? 0);
+  if (!byCode.has(71) && !byCode.has(72)) return s;
+  const tol = Number(byCode.get(71) ?? dimVarValue(s, 'DIMTOL'));
+  const lim = Number(byCode.get(72) ?? dimVarValue(s, 'DIMLIM'));
   const r = resolveDimStyle(s);
   const tolerance: DimTolerance = lim ? 'limits' : tol ? (Math.abs(r.tolPlus - r.tolMinus) < 1e-12 ? 'symmetrical' : 'deviation') : r.tolerance === 'basic' ? 'basic' : 'none';
   return { ...s, tolerance };
@@ -1158,7 +1190,7 @@ export function withDimVars(base: DimStyle, get: (name: string) => number | stri
   let s: DimStyle = base;
   const numeric = (name: string): number | undefined => {
     const v = get(name);
-    const n = typeof v === 'number' ? v : typeof v === 'string' ? parseFloat(v) : NaN;
+    const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : NaN;
     return Number.isFinite(n) ? n : undefined;
   };
   for (const v of DIM_VARIABLES) {

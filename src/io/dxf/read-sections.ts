@@ -123,6 +123,8 @@ export function readTablesSection(objs: Obj[], tables: TableRecords, dimStyles: 
         visible: c >= 0 && (flags & 1) === 0, // negative colour = off, flag 1 = frozen
         frozen: (flags & 1) === 1 || undefined,
         locked: (flags & 4) === 4,
+        // 16 / 32: xref-dependent / resolved, kept and written back.
+        ...(flags & 48 ? { xrefFlags: flags & 48 } : {}),
         // 370: hundredths of a millimetre; -3 (Default) and the entity-only -1 / -2 mean the default 0.25 mm.
         lineWeight: num(o, 370, 25) >= 0 ? num(o, 370, 25) / 100 : 0.25,
         ...(has(o, 290) && num(o, 290) === 0 ? { plot: false } : {}),
@@ -141,6 +143,7 @@ export function readTablesSection(objs: Obj[], tables: TableRecords, dimStyles: 
     } else if (o.kind === 'STYLE') {
       const ts = textStyleFromGroups(o.groups);
       if (ts) textStyles[ts.name] = ts;
+      if (ts && has(o, 5)) ctx.textStyleHandles?.set(str(o, 5).toUpperCase(), ts.name);
     } else if (o.kind === 'VIEW') {
       const vname = str(o, 2);
       if (vname) views.push({ name: vname, center: pt(o, 10), height: num(o, 40, 10) || 10 });

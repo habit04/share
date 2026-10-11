@@ -35,6 +35,8 @@ export interface ReadContext {
   fields?: FieldContext;
   /** IMAGE entities waiting for their IMAGEDEF (OBJECTS comes last), by IMAGEDEF handle. */
   pendingImages?: Map<ImageEntity, string>;
+  /** STYLE record names by upper-case handle (DIMTXSTY overrides name a style by handle). */
+  textStyleHandles?: Map<string, string>;
   /** Anonymous blocks replaced by native tables. */
   consumedBlocks?: Set<string>;
   /** Remarks about content that was simplified. */

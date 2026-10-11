@@ -16,7 +16,7 @@ import { decodeDxfBytes, textStyleOf, textStylesOf } from '../src/io/encoding';
 import { importReportOf } from '../src/io/import-report';
 import type { DrawingState } from '../src/core/document';
 import type { Entity, InsertEntity, DimensionEntity, MTextEntity, HatchEntity, PolylineEntity, SplineEntity, EllipseEntity, TableEntity, ImageEntity, TextEntity, LineEntity, CircleEntity, ArcEntity } from '../src/core/entities';
-import { explodeInsert, splineCurve } from '../src/core/entities';
+import { explodeInsert, splineCurve, dimensionParts } from '../src/core/entities';
 import { namedDimStyles, dimensionMeasurement, dimensionText, dimensionTextLayout } from '../src/core/dimension';
 import { parseMText, type MTextItem } from '../src/core/mtext';
 import { nurbsPoint, nurbsPoints } from '../src/core/spline';
@@ -342,11 +342,43 @@ describe('r2018-dimensions.dxf: named DIMSTYLEs with XDATA, DIMENSIONs with thei
     expect(f.written).not.toContain('ACAD_DSTYLE_');
   });
 
-  it.todo('ISO-25 keeps DIMDSEP 44 (group 278, decimal comma), so the aligned dimension reads "72,11" -- 278 is neither read nor written: it reads "72.11"');
-  it.todo('ISO-25 keeps DIMTXSTY (group 340 -> text style ISOCP) and writes it back -- not read: dimension text uses the Standard style');
-  it.todo('ARCH-TICK keeps DIMLWD 0.18 / DIMLWE 0.13 (groups 371 / 372) -- neither read nor written: dimension and extension lines take the dimension lineweight');
-  it.todo('MECH-TOL tolerances follow DIMTZIN (group 284, 0 here), so the diameter tolerance reads +0,10 / -0,05 -- 284 is not read: tolerances take DIMZIN 8 and read +0.1');
-  it.todo('the last linear dimension applies its DSTYLE overrides (ACAD XDATA: DIMTXT 5, DIMDEC 0) and keeps them on save -- ignored: it draws 2.5 high with ISO-25 and the overrides are not written');
+  // The reader gaps below were closed by porting PR #2 (codex/electrical-review-fixes 2f89b0e).
+  it('ISO-25 keeps DIMDSEP 44 (group 278, decimal comma): the aligned dimension reads "72,11"', () => {
+    for (const [, s] of both(f)) {
+      const d = ofType<DimensionEntity>(s.entities, 'dimension')[2]!;
+      expect(d.style.decimalSeparator).toBe(44);
+      expect(dimensionText(d)).toBe('72,11');
+    }
+    expect(group(records(f.written, 'DIMSTYLE').find((r) => group(r, 2) === 'ISO-25'), 278)).toBe('44');
+  });
+  it('ISO-25 keeps DIMTXSTY (group 340 -> text style ISOCP), draws its text in it and writes it back', () => {
+    for (const [, s] of both(f)) {
+      const d = ofType<DimensionEntity>(s.entities, 'dimension')[2]!;
+      expect(d.style.textStyle).toBe('ISOCP');
+      const texts = dimensionParts(d).filter((p) => p.type === 'text');
+      expect(texts.length).toBeGreaterThan(0);
+      expect(texts.every((p) => textStyleOf(p) === 'ISOCP')).toBe(true);
+    }
+    const isocp = records(f.written, 'STYLE').find((r) => group(r, 2) === 'ISOCP');
+    expect(group(records(f.written, 'DIMSTYLE').find((r) => group(r, 2) === 'ISO-25'), 340)).toBe(group(isocp, 5));
+  });
+  it('ARCH-TICK keeps DIMLWD 0.18 / DIMLWE 0.13 (groups 371 / 372) for its dimension and extension lines', () => {
+    for (const [, s] of both(f)) expect(namedDimStyles(s).find((d) => d.name === 'ARCH-TICK')).toMatchObject({ dimLineWeight: 0.18, extLineWeight: 0.13 });
+    const rec = records(f.written, 'DIMSTYLE').find((r) => group(r, 2) === 'ARCH-TICK');
+    expect([group(rec, 371), group(rec, 372)]).toEqual(['18', '13']);
+  });
+  it('MECH-TOL tolerances follow DIMTZIN (group 284, 0 here): the diameter tolerance reads +0,10 / -0,05', () => {
+    for (const [, s] of both(f)) {
+      const d = ofType<DimensionEntity>(s.entities, 'dimension')[4]!;
+      expect(d.style.toleranceZeroSuppression).toBe(0);
+      expect(dimensionTextLayout(d)).toMatchObject({ upper: '+0,10', lower: '-0,05' });
+    }
+  });
+  it('the last linear dimension applies its DSTYLE overrides (ACAD XDATA: DIMTXT 5, DIMDEC 0) and keeps them on save', () => {
+    for (const [, s] of both(f)) expect(ofType<DimensionEntity>(s.entities, 'dimension')[7]!.style).toMatchObject({ name: 'ISO-25', textHeight: 5, decimals: 0 });
+    const dims = records(f.written, 'DIMENSION');
+    expect(dims.filter((r) => r.some(([c, v]) => c === 1000 && v === 'DSTYLE'))).toHaveLength(1);
+  });
 });
 
 // ---------------------------------------------------------------- dimensions (R2000, inches)
@@ -426,7 +458,9 @@ describe('r2000-dimensions.dxf: inch drawing, DIMPOST and alternate units, text 
     expect([Number(group(rec, 15)), Number(group(rec, 25))]).toEqual([0, 4]);
   });
 
-  it.todo('DIMAPOST "[]mm" uses the AutoCAD "[]" placeholder: the aligned dimension reads 5.657" [143.7mm] -- the alternate value shows as "143.7[]mm" without brackets');
+  it('DIMAPOST "[]mm" uses the AutoCAD "[]" placeholder: the aligned dimension reads 5.657" [143.7mm]', () => {
+    for (const [, s] of both(f)) expect(dimensionText(ofType<DimensionEntity>(s.entities, 'dimension')[1]!)).toBe('5.657" [143.7mm]');
+  });
 });
 
 // ---------------------------------------------------------------- MTEXT (R2018)
@@ -644,7 +678,11 @@ describe('r2000-hatch-curves.dxf: HATCH (ANSI31 with bulges, SOLID with island),
     expect(group(hatch, 97)).toBe('0');
   });
 
-  it.todo('a hatch saved without its boundary link is written non-associative (71 = 0) -- it is written with 71 = 1 and no source boundary objects (97 = 0)');
+  it('a hatch saved without its boundary link is written non-associative (71 = 0) with the same loops', () => {
+    for (const h of records(f.written, 'HATCH')) expect(group(h, 71)).toBe('0');
+    expect(ofType<HatchEntity>(f.roundTripped.entities, 'hatch')[0]!.associative).toBeUndefined();
+    expect(ofType<HatchEntity>(f.roundTripped.entities, 'hatch')[0]!.loops).toEqual(ofType<HatchEntity>(f.imported.entities, 'hatch')[0]!.loops);
+  });
 });
 
 // ---------------------------------------------------------------- true colours, lineweights, linetypes
@@ -794,7 +832,10 @@ describe('r2000-nested-blocks-xref.dxf: nested INSERTs with ByBlock / ByLayer co
     expect(flags('TOPO')).toBe('12');
   });
 
-  it.todo('the xref-dependent layer SITE-PLAN|WALLS keeps its LAYER flags 16 + 32 on save -- written as an ordinary layer (flags 0) with the "|" name reserved for xref-dependent symbols');
+  it('the xref-dependent layer SITE-PLAN|WALLS keeps its LAYER flags 16 + 32 on save', () => {
+    for (const [, s] of both(f)) expect(layerOf(s, 'SITE-PLAN|WALLS')!.xrefFlags).toBe(48);
+    expect(group(records(f.written, 'LAYER').find((r) => group(r, 2) === 'SITE-PLAN|WALLS'), 70)).toBe('48');
+  });
 });
 
 // ---------------------------------------------------------------- ACAD_TABLE (R2018)

@@ -354,7 +354,7 @@ export function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
     case 'RAY':
       return { ...base, type: 'ray', base: pt(o, 10), direction: g.normalize(pt(o, 11, { x: 1, y: 0 })) };
     case 'DIMENSION':
-      return readDimension(o, base, readDimStyleFromEntity(o, ctx.dimStyles, ctx.dimStyle));
+      return readDimension(o, base, readDimStyleFromEntity(o, ctx.dimStyles, ctx.dimStyle, ctx.textStyleHandles));
     case 'SPLINE':
       return readSpline(o, base);
     case 'HATCH':
