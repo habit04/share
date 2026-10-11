@@ -69,24 +69,32 @@ export function importReportDialog(report: ImportReport, fileName: string): void
   copy.addEventListener('click', () => {
     const text = formatImportReport(report, fileName);
     const done = () => (copy.textContent = 'Copied');
-    if (navigator.clipboard?.writeText) void navigator.clipboard.writeText(text).then(done, () => fallbackCopy(text, done));
-    else fallbackCopy(text, done);
+    // The button says what happened: a copy that failed (no clipboard access) must not look like a success.
+    const failed = (reason: string) => {
+      copy.textContent = 'Copy failed';
+      copy.title = `The report could not be copied to the clipboard${reason ? `: ${reason}` : ''}.`;
+    };
+    if (navigator.clipboard?.writeText) void navigator.clipboard.writeText(text).then(done, (err: unknown) => fallbackCopy(text, done, () => failed(err instanceof Error ? err.message : String(err))));
+    else fallbackCopy(text, done, () => failed(''));
   });
   const close = button('Close', true);
   close.addEventListener('click', () => m.close());
   m.footer.append(copy, close);
 }
 
-function fallbackCopy(text: string, done: () => void): void {
+function fallbackCopy(text: string, done: () => void, failed: () => void): void {
   const ta = document.createElement('textarea');
   ta.value = text;
   ta.style.position = 'fixed';
   ta.style.opacity = '0';
   document.body.appendChild(ta);
   ta.select();
+  let ok = false;
   try {
-    if (document.execCommand('copy')) done();
+    ok = document.execCommand('copy');
   } finally {
     ta.remove();
   }
+  if (ok) done();
+  else failed();
 }

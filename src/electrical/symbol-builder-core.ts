@@ -27,7 +27,7 @@
  * vertical and the NO / NC sibling of a symbol.
  */
 import type { AttributeDef, BlockDef, Entity, Layer, LineEntity, TextEntity } from '../core/entities';
-import { newId, explodeInsert, translateEntity, scaleEntityBy, rotateEntity, entityBounds } from '../core/entities';
+import { BYBLOCK, newId, explodeInsert, translateEntity, scaleEntityBy, rotateEntity, entityBounds } from '../core/entities';
 import type { DrawingState } from '../core/document';
 import { DEFAULT_LAYERS } from '../core/document';
 import type { Point, Bounds } from '../core/geometry';
@@ -519,9 +519,13 @@ export interface CompiledPin {
   explicitDefault?: string;
 }
 
-/** Geometry entities of a symbol state normalised for a block: layer 0, ByLayer colour unless explicitly coloured, fresh ids. */
+/**
+ * Geometry entities of a symbol state normalised for a block: layer 0, fresh ids, and ByBlock
+ * colour unless explicitly coloured (like the built-in libraries, so the block reference's colour
+ * recolours the symbol; a ByLayer object would only ever show the reference layer's colour).
+ */
 export function symbolGeometry(state: DrawingState): Entity[] {
-  return state.entities.filter(isSymbolGeometry).map((e) => ({ ...e, id: newId(), layer: '0', color: typeof e.color === 'number' ? e.color : ('ByLayer' as const) }));
+  return state.entities.filter(isSymbolGeometry).map((e) => ({ ...e, id: newId(), layer: '0', color: typeof e.color === 'number' ? e.color : BYBLOCK }));
 }
 
 /** An endpoint of the symbol geometry and the direction the geometry leaves it (unit vector, or null). */
@@ -1080,7 +1084,7 @@ export function createTwin(sym: SymbolState): SymbolState {
     return copy;
   });
   if (hasContactGap(entities.filter(isSymbolGeometry))) {
-    if (to === 'NC' && !entities.some(isBladeLine)) entities.push({ id: newId(), layer: '0', color: 'ByLayer', type: 'line', a: { x: -GAP - 0.05, y: -0.16 }, b: { x: GAP + 0.05, y: 0.16 } });
+    if (to === 'NC' && !entities.some(isBladeLine)) entities.push({ id: newId(), layer: '0', color: BYBLOCK, type: 'line', a: { x: -GAP - 0.05, y: -0.16 }, b: { x: GAP + 0.05, y: 0.16 } });
     else if (to === 'NO') entities = entities.filter((e) => !isBladeLine(e));
   }
   return { state: { ...sym.state, entities, meta: metaRecord(meta) }, meta };

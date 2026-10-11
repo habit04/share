@@ -148,4 +148,25 @@ describe('objects in their own plane (extrusion 0,0,-1, as MIRROR leaves them)',
     expect(p.points).toEqual([{ x: -1, y: 0 }, { x: -2, y: 0 }]);
     expect(p.bulges).toEqual([-0.5, 0]);
   });
+  it('a mirrored block reference is placed, reversed and mirrored (not reported), and round-trips', () => {
+    const blocks = ['0', 'SECTION', '2', 'BLOCKS', '0', 'BLOCK', '8', '0', '2', 'B', '70', '0', '10', '0', '20', '0', '30', '0', '3', 'B', '0', 'LINE', '8', '0', '10', '0', '20', '0', '30', '0', '11', '1', '21', '0', '31', '0', '0', 'ENDBLK', '0', 'ENDSEC'].join('\n');
+    const ins = ['0', 'INSERT', '8', '0', '2', 'B', '10', '10', '20', '5', '30', '0', '41', '2', '42', '2', '43', '1', '50', '30', '210', '0', '220', '0', '230', '-1'].join('\n');
+    const s = readDxf(`${blocks}\n0\nSECTION\n2\nENTITIES\n${ins}\n0\nENDSEC\n0\nEOF\n`);
+    const check = (st: DrawingState) => {
+      const i = st.entities[0] as InsertEntity;
+      expect(i.position).toEqual({ x: -10, y: 5 });
+      close(i.rotation, -Math.PI / 6);
+      expect(i.mirror).toBe(true);
+      expect(i.scale).toBe(2);
+      // The block's line from (0,0) to (1,0): in the mirrored plane it runs from (-10,5) towards -x, turned by -30 degrees.
+      const line = explodeInsert(i, (n) => st.blocks[n])[0] as LineEntity;
+      close(line.a.x, -10);
+      close(line.a.y, 5);
+      close(line.b.x, -10 - 2 * Math.cos(Math.PI / 6));
+      close(line.b.y, 5 + 2 * Math.sin(Math.PI / 6));
+    };
+    check(s);
+    expect(importReportOf(s)).toBeUndefined();
+    check(readDxf(writeDxf(s)));
+  });
 });

@@ -32,8 +32,8 @@ messages). The date of each version is the date of the commit that set that vers
   NaN / infinite coordinates, negative radii or fewer than two polyline vertices are left out
   and listed instead of becoming geometry at the origin.
 - DXF layers with the Default lineweight (370 = -3) read as 0.25 mm instead of a negative width.
-- DXF arcs, circles and polylines with extrusion (0,0,-1) (mirrored objects) open in their true
-  place instead of mirrored; other non-planar objects are reported.
+- DXF arcs, circles, polylines and block references with extrusion (0,0,-1) (mirrored objects)
+  open in their true place instead of mirrored; other non-planar objects are reported.
 - DWG import keeps paper-space layouts with their entities and floating viewports, text styles,
   named dimension styles (used by the dimensions that name them), custom linetype patterns,
   true colours of objects and layers, ByBlock colours, the plot flag of layers, and 3D
@@ -44,6 +44,11 @@ messages). The date of each version is the date of the commit that set that vers
   block reference's colour (or its layer's colour when the reference is ByLayer), nested blocks
   resolve outwards, layer-0 ByLayer content shows the reference layer's colour, explicit colours
   are untouched; the same on screen, in vector PDF plots and with EXPLODE.
+- Library symbols stay recolourable from their block reference under that rule: the built-in
+  JIC / IEC / vertical libraries and the Symbol Builder draw symbol geometry ByBlock on layer 0
+  (it was ByLayer). Symbols saved earlier are converted when a drawing or the user library is
+  loaded (the library file is rewritten only with the next change to it); blocks from other
+  programs are not touched.
 - Undo / Redo no longer revert settings that are documented as not undoable (drawing header
   variables, the current layer, the active layout / viewport and viewport zoom, library blocks);
   the rules per setting are in the user manual.

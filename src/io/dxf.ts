@@ -1245,6 +1245,8 @@ function tokenize(text: string, recover = false, report?: ImportReportBuilder): 
   const pairs: Pair[] = [];
   let eof = false;
   let i = 0;
+  /** A group code on the last line of a file that ends early, without its value (0 = a new object was starting). */
+  let danglingCode: number | null = null;
   for (; i + 1 < lines.length; i += 2) {
     const rawCode = lines[i]!.trim();
     const code = parseInt(rawCode, 10);
@@ -1267,6 +1269,13 @@ function tokenize(text: string, recover = false, report?: ImportReportBuilder): 
     let last = lines.length;
     while (last > 0 && lines[last - 1]!.trim() === '') last -= 1;
     truncatedAt = Math.max(1, last);
+    if (i < lines.length && i === last - 1 && isIntegerText(lines[i]!.trim())) danglingCode = parseInt(lines[i]!.trim(), 10);
+    // A last pair "0" + empty value is a new object that never got its type: the same boundary.
+    const tail = pairs[pairs.length - 1]!;
+    if (tail.code === 0 && tail.value.trim() === '') {
+      pairs.pop();
+      danglingCode = 0;
+    }
   }
   // Section structure.
   let open: { name: string; line: number } | null = null;
@@ -1287,10 +1296,12 @@ function tokenize(text: string, recover = false, report?: ImportReportBuilder): 
   if (truncatedAt === null) return pairs;
   const message = `the file ends early at line ${truncatedAt} (no EOF marker${open ? `; section ${open.name} is not closed` : ''})`;
   if (!recover) throw new DxfReadError(`The file ends early at line ${truncatedAt}: ${open ? `section ${open.name} (line ${open.line}) is not closed and ` : ''}the end-of-file marker is missing. The file is truncated or damaged.`, truncatedAt, true);
-  // Partial recovery: leave out the object the file ends in (it may be incomplete).
+  // Partial recovery: leave out the object the file ends in (it may be incomplete). The one
+  // cheap certainty: a file that ends with a lone "0" group code (the next object was about to
+  // start) was cut exactly at an object boundary, so the last object is complete and is kept.
   let lastZero = pairs.length - 1;
   while (lastZero >= 0 && pairs[lastZero]!.code !== 0) lastZero -= 1;
-  if (open && lastZero >= 0 && !['ENDSEC', 'EOF'].includes(pairs[lastZero]!.value.trim())) {
+  if (open && danglingCode !== 0 && lastZero >= 0 && !['ENDSEC', 'EOF'].includes(pairs[lastZero]!.value.trim())) {
     const cut = pairs[lastZero]!;
     const kind = cut.value.trim();
     const groups = pairs.slice(lastZero + 1);
@@ -2327,6 +2338,12 @@ function applyExtrusion(o: Obj, e: Entity, ctx: ReadContext): Entity {
       case 'polyline':
         // LWPOLYLINE / 2D POLYLINE vertices and SOLID / TRACE corners are in the object's plane.
         return { ...e, points: e.points.map(flip), ...(e.bulges ? { bulges: e.bulges.map((b) => -b || 0) } : {}) };
+      case 'insert': {
+        // The insertion point, rotation and scales are in the object's plane: mirroring the plane
+        // flips the position, reverses the rotation and mirrors the block about its Y axis.
+        const { mirror: _m, ...rest } = e;
+        return { ...rest, position: flip(e.position), rotation: -e.rotation, ...(e.mirror ? {} : { mirror: true }) };
+      }
       default:
         break;
     }

@@ -104,6 +104,25 @@ describe('truncated DXF files and partial recovery', () => {
     expect(importReportOf(s)!.items).toEqual([]);
   });
 
+  it('a file cut exactly where the next object would start keeps every complete object', () => {
+    const dxf = (tail: string) => `0\nSECTION\n2\nENTITIES\n0\nLINE\n5\n10\n8\n0\n10\n0\n20\n0\n30\n0\n11\n1\n21\n1\n31\n0\n0\nCIRCLE\n5\n11\n8\n0\n10\n5\n20\n5\n30\n0\n40\n2${tail}`;
+    // A lone "0" group code (with or without its line break) is a new object that never got its type: the circle is complete.
+    for (const tail of ['\n0', '\n0\n', '\n0\n\n']) {
+      const s = readDxf(dxf(tail), { recover: true });
+      expect(s.entities.map((x) => x.type)).toEqual(['line', 'circle']);
+      expect(importReportOf(s)!.items).toEqual([]);
+      expect(importReportOf(s)!.recovered).toBeDefined();
+    }
+    // Any other lone group code belongs to the circle, which is then incomplete and left out.
+    const cut = readDxf(dxf('\n62'), { recover: true });
+    expect(cut.entities.map((x) => x.type)).toEqual(['line']);
+    expect(importReportOf(cut)!.items[0]).toMatchObject({ type: 'CIRCLE', handle: '11', action: 'dropped' });
+    // Without a lone code the last object may be incomplete and is left out (not knowable).
+    expect(readDxf(dxf(''), { recover: true }).entities.map((x) => x.type)).toEqual(['line']);
+    // Content after EOF is ignored, not truncation.
+    expect(readDxf(dxf('\n0\nENDSEC\n0\nEOF\n0'), {}).entities).toHaveLength(2);
+  });
+
   it('OPEN asks "open what was readable?" and honours the answer', async () => {
     const asked: string[] = [];
     const no = await readDxfForOpen(broken('truncated.dxf'), '/x/plant.dxf', async (_t, m) => (asked.push(m), false));

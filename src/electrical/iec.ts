@@ -4,7 +4,7 @@
  * 0.75 wide with stubs to ±0.375 (drawings in inches; scale for metric).
  * Every symbol carries the AutoCAD Electrical attribute set.
  */
-import type { BlockDef, Entity, AttributeDef } from '../core/entities';
+import { BYBLOCK, type BlockDef, type Entity, type AttributeDef } from '../core/entities';
 import type { SymbolCategory } from './symbols';
 import { tagPrefix } from './symbols';
 import { withAcadeAttributes } from './attributes';
@@ -13,7 +13,8 @@ import { verticalSymbol, type VerticalSpec } from './symbol-kit';
 const HALF = 0.375;
 let n = 0;
 const id = () => `iec${(n += 1)}`;
-const base = { layer: '0', color: 'ByLayer' as const };
+// ByBlock on layer 0: the symbol takes the colour of its block reference (see symbol-kit.ts).
+const base = { layer: '0', color: BYBLOCK };
 const L = (x1: number, y1: number, x2: number, y2: number): Entity => ({ ...base, id: id(), type: 'line', a: { x: x1, y: y1 }, b: { x: x2, y: y2 } });
 const C = (cx: number, cy: number, r: number): Entity => ({ ...base, id: id(), type: 'circle', center: { x: cx, y: cy }, radius: r });
 const A = (cx: number, cy: number, r: number, s: number, e: number): Entity => ({ ...base, id: id(), type: 'arc', center: { x: cx, y: cy }, radius: r, startAngle: (s * Math.PI) / 180, endAngle: (e * Math.PI) / 180 });

@@ -13,7 +13,7 @@ import { WireTool, LadderTool, ComponentTool, assignWireNumbers } from '../tools
 import { TrimTool, ExtendTool, OffsetTool, MirrorTool, ScaleTool, ExplodeTool, ZoomWindowTool, PanTool } from '../tools/edit';
 import { lineweightDisplay } from '../render/draw';
 import { WIRE_DOT } from '../electrical/symbols';
-import { LIBRARY_SYMBOLS, withoutUnusedLibraryBlocks } from '../electrical/library';
+import { LIBRARY_SYMBOLS, withoutUnusedLibraryBlocks, withByBlockLibrarySymbols } from '../electrical/library';
 import { updateCrossReferences } from '../electrical/xref';
 import { TITLE_BLOCK, newFromTemplate, SHEET_SIZES, type SheetSize } from '../electrical/templates';
 import { PlcModuleTool, SignalArrowTool, TerminalStripTool, DEFAULT_PLC, DEFAULT_STRIP, SOURCE_ARROW, DEST_ARROW, type PlcModuleSettings, type TerminalStripSettings } from '../tools/plc';
@@ -729,7 +729,8 @@ export class Editor {
   }
 
   loadState(state: DrawingState, path: string | null): void {
-    this.doc.load(state, path);
+    // Library symbols saved by earlier versions (ByLayer on layer 0) keep taking the reference's colour.
+    this.doc.load(withByBlockLibrarySymbols(state), path);
     this.doc.ensureBlocks([...LIBRARY_SYMBOLS, TITLE_BLOCK, SOURCE_ARROW, DEST_ARROW, WIRE_DOT]);
     this.selection.clear();
     this.zoomExtents();

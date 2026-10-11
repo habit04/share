@@ -295,7 +295,8 @@ describe('per-entity validation', () => {
       ),
     );
     const [text, insert, poly] = s.block.entities;
-    expect(text).toMatchObject({ type: 'text', rotation: 0, align: 'left', color: 'ByLayer' });
+    // A record without the byBlockColors flag predates the ByBlock rule: its layer-0 default colour reads as ByBlock (0).
+    expect(text).toMatchObject({ type: 'text', rotation: 0, align: 'left', color: 0 });
     expect(insert).toMatchObject({ type: 'insert', rotation: 0, scale: 1, attributes: {} });
     expect(poly).toMatchObject({ type: 'polyline', closed: false });
     expect(s.block.attributes[0]).toEqual({ tag: 'TAG1', prompt: '', default: '', position: { x: 0, y: 0 }, height: 0.1, align: 'left' });

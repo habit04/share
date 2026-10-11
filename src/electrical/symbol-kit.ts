@@ -6,7 +6,7 @@
  *
  * All geometry produced with these helpers is original artwork.
  */
-import type { BlockDef, Entity, AttributeDef } from '../core/entities';
+import { BYBLOCK, type BlockDef, type Entity, type AttributeDef } from '../core/entities';
 import type { Point } from '../core/geometry';
 import { withAcadeAttributes, acadeAttributes } from './attributes';
 
@@ -15,7 +15,12 @@ export const GAP = 0.125; // half of the contact gap
 
 let n = 0;
 const nextId = (prefix: string) => `${prefix}${(n += 1)}`;
-const base = { layer: '0', color: 'ByLayer' as const };
+/**
+ * Symbol geometry is ByBlock on layer 0: it shows the colour of the block reference (its layer's
+ * colour for a ByLayer reference), so an inserted symbol is recoloured from the reference. See
+ * `inheritedColor` in core/entities.ts and `withByBlockLibrarySymbols` in library.ts.
+ */
+const base = { layer: '0', color: BYBLOCK };
 
 /** Entity constructors. `prefix` keeps ids unique per library module. */
 export function primitives(prefix: string) {

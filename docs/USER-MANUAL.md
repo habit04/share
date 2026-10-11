@@ -608,8 +608,16 @@ the pattern would be finer than a few pixels.
 Nested blocks resolve from the inside out: a ByBlock block reference inside another block takes
 the outer reference's colour and passes it on. ByBlock objects outside any block show in the
 foreground colour (white on the dark background, black on paper). EXPLODE keeps the colour the
-objects showed. To recolour a symbol from its block reference, give the objects in the block
-the ByBlock colour.
+objects showed.
+
+The built-in symbol libraries and the Symbol Builder draw symbol geometry **ByBlock on layer 0**,
+so an inserted symbol shows the colour of its block reference: ByLayer (the default) gives the
+colour of the layer the symbol is on, and setting the reference's colour (Properties, CHPROP,
+COLOR before inserting) recolours the whole symbol. Symbols saved by earlier versions (ByLayer on
+layer 0) are converted when the drawing or the user library is loaded, so they keep behaving
+this way; the user library file itself is only rewritten with your next change to it. Blocks from
+other programs are left as they are: their layer-0 ByLayer content follows the reference's layer,
+as in AutoCAD, and only ByBlock content follows the reference's colour.
 
 ### Clipboard and screen
 
@@ -1195,8 +1203,8 @@ dimension styles with all their settings. Files written by programs before AutoC
 read in the code page they name (`$DWGCODEPAGE`), newer ones as UTF-8; the command line reports
 the detected encoding. JCad Electrical writes AutoCAD 2000 DXF with any non-English characters
 escaped, so the text reads correctly whatever the code page of the program that opens it.
-Arcs, circles and polylines drawn in a mirrored plane (extrusion 0,0,-1, as MIRROR leaves them)
-open in their true place.
+Arcs, circles, polylines and block references drawn in a mirrored plane (extrusion 0,0,-1, as
+MIRROR leaves them) open in their true place.
 
 ### Import report
 
@@ -1232,9 +1240,11 @@ before the next one starts, an `ENDSEC` without its `SECTION`, or content outsid
 A file that **ends early** (copied or downloaded only in part: no end-of-file marker, a group
 code without its value, an open section) offers partial recovery: "The file ends early at line
 N. Open what was readable?" **Yes** opens everything up to the damage; the last object before
-the end, which may be incomplete, is left out. The drawing opens as **recovered**: the Import
-Report shows what happened, the drawing is marked as changed, and `SAVE` over the damaged file
-asks first and suggests Save As.
+the end, which may be incomplete, is left out and listed in the Import Report, unless the file
+ends exactly where the next object would start (a lone `0` group code on the last line), in which
+case that object is complete and kept. The drawing opens as **recovered**: the Import Report
+shows what happened, the drawing is marked as changed, and `SAVE` over the damaged file asks
+first and suggests Save As.
 
 Objects with **invalid geometry** (coordinates that are not numbers or are infinite, a negative
 radius or text height, a polyline with fewer than two vertices) are left out one by one; the

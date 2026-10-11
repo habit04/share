@@ -4,7 +4,7 @@
  * this module instead of the individual libraries so every menu, palette,
  * document and report sees the same list.
  */
-import type { BlockDef, Entity } from '../core/entities';
+import { BYBLOCK, type BlockDef, type Entity } from '../core/entities';
 import type { DrawingState } from '../core/document';
 import { referencedBlocks } from '../tools/blocks';
 import { SYMBOL_CATEGORIES, ALL_SYMBOLS, WIRE_DOT, JIC_VERTICAL_SYMBOLS } from './symbols';
@@ -126,6 +126,26 @@ export function librarySummary(): { jic: number; iec: number; total: number; cat
 }
 
 const LIBRARY_NAMES = new Set(LIBRARY_BLOCKS.map((b) => b.name));
+
+/**
+ * Library symbol blocks of a drawing read from a file with their geometry under the ByBlock
+ * rule: layer-0 ByLayer objects of a block that is a built-in or user library symbol become
+ * ByBlock. Drawings saved before the symbol libraries used ByBlock carry the old definitions
+ * (ByLayer on layer 0), which took the block reference's colour under the old colour rule; under
+ * the AutoCAD rule only ByBlock does, so this keeps those symbols recolourable from their
+ * reference. Other blocks (title blocks, blocks from other programs) are left alone.
+ * Pure; the state is returned unchanged when nothing needs converting.
+ */
+export function withByBlockLibrarySymbols(state: DrawingState): DrawingState {
+  let blocks: Record<string, BlockDef> | null = null;
+  for (const [name, def] of Object.entries(state.blocks)) {
+    if (!LIBRARY_NAMES.has(name) && !userLibrary.has(name)) continue;
+    if (!def.entities.some((e) => e.layer === '0' && e.color === 'ByLayer')) continue;
+    blocks ??= { ...state.blocks };
+    blocks[name] = { ...def, entities: def.entities.map((e) => (e.layer === '0' && e.color === 'ByLayer' ? ({ ...e, color: BYBLOCK } as Entity) : e)) };
+  }
+  return blocks ? { ...state, blocks } : state;
+}
 
 /**
  * The state without library blocks (built-in or user) that nothing references. Used when
