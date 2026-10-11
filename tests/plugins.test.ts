@@ -69,6 +69,24 @@ describe('plugin manifests and sources', () => {
 });
 
 describe('PluginHost', () => {
+  // Security review E-10, ported from PR #2 (codex/electrical-review-fixes 2f89b0e).
+  it('does not remember plugin trust when cryptographic hashing is unavailable', async () => {
+    vi.stubGlobal('crypto', undefined);
+    try {
+      const storage = memoryStorage();
+      const confirm = vi.fn(async () => true);
+      const bridge = fakeBridge({ hello: example('hello') });
+      const hash = await codeHash(bridge.folders.hello!.code!);
+      expect(hash).toMatch(/^fnv-/);
+      storage.setItem(TRUST_KEY, JSON.stringify({ 'folder:/user/plugins/hello/main.js': { answer: 'yes', hash, at: 0 } }));
+      await new PluginHost(makeEditor(), { bridge, storage, confirm }).loadAll();
+      await new PluginHost(makeEditor(), { bridge, storage, confirm }).loadAll();
+      expect(confirm).toHaveBeenCalledTimes(2);
+      expect(JSON.parse(storage.getItem(TRUST_KEY) ?? '{}')).toEqual({});
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
   it('asks once per plugin, remembers the answer and asks again when the code changes', async () => {
     const ed = makeEditor();
     const storage = memoryStorage();

@@ -143,6 +143,10 @@ a JSON object keyed by `"<origin>:<path>"` (`folder:`, `file:` or `script:`) hol
 changes the user is asked again. A "no" is kept at start-up (the plugin is listed as
 *declined*); `PLUGINLOAD <folder>` asks again. `PLUGINS Forget` clears answers.
 
+Only a SHA-256 digest (64 hexadecimal digits) remembers an answer. Where WebCrypto is not
+available the code is hashed with FNV-1a, which is not collision-resistant: then the answer
+holds for that run only and is not saved, so the user is asked at every start.
+
 Plugin settings written with `jcad.settings.set('plugin:<key>', value)` live in
 `localStorage` under `jcad.plugins.settings.<plugin name>`.
 
@@ -155,6 +159,17 @@ cannot point outside its own folder (folder names are checked, and a folder or f
 symbolic link leading outside the plugins folder is refused).
 
 Only install plugins from people you trust, as you would any program.
+
+**Trust model (decision, security review E-10).** A plugin is trusted code: once the user
+answers *Load*, it runs in the application page with the same access as the application's own
+code - every open drawing, the user interface, `localStorage` (including the trust answers)
+and the desktop bridge with everything listed under [Capabilities](#capabilities). The prompt
+is the only gate; it is not a sandbox, and `pluginsEval` (the preload's
+`webFrame.executeJavaScript`) is as powerful as the plugin system itself. Signed plugins (a
+publisher key pinned in the application, like catalog packs) and isolated plugins (below) are
+out of scope for now; they would be an API version change. The main process still limits what
+any page script can do: no Node.js, file access only through the checked IPC channels, no
+network, no other windows.
 
 ## Capabilities
 
