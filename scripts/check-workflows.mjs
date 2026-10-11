@@ -153,6 +153,10 @@ else {
   const record = (jobs.build?.steps ?? []).findIndex((s) => /scripts\/release-provenance\.mjs build release\b/.test(String(s.run ?? '')) && s.env?.SOURCE_SHA === '${{ needs.checks.outputs.sha }}');
   const upload = (jobs.build?.steps ?? []).findIndex((s) => String(s.uses ?? '').startsWith('actions/upload-artifact'));
   if (record < 0 || upload <= record) problems.push('release.yml: record built SHA and checksums before uploading artifacts');
+  // A Mac too old for the release is not offered its download (electron/updater.cjs reads the
+  // minimum from latest-mac.yml): the macOS build writes it there before the record hashes the file.
+  const macMinimum = (jobs.build?.steps ?? []).findIndex((s) => /scripts\/mac-update-info\.mjs release\b/.test(String(s.run ?? '')));
+  if (macMinimum < 0 || macMinimum > record || !/runner\.os == 'macOS'/.test(String(jobs.build.steps[macMinimum].if ?? ''))) problems.push('release.yml: the macOS build must write the minimum macOS version into latest-mac.yml before recording checksums');
 }
 
 if (problems.length) {

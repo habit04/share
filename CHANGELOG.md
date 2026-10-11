@@ -11,6 +11,14 @@ messages). The date of each version is the date of the commit that set that vers
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- **macOS 13 Ventura or later is required.** On macOS 11 Big Sur or 12 Monterey do not install
+  this version (it does not start there): keep JCad Electrical 0.4.1, whose disk images stay on
+  https://github.com/habit04/share/releases/tag/v0.4.1. Version 0.4.1 offers this update on every
+  Mac; from this version on, a Mac older than a release needs is no longer offered its download
+  (the release's `latest-mac.yml` names the minimum macOS version).
+
 ### Security
 
 Findings of `docs/SECURITY-REVIEW.md` closed after 0.4.1 (the Status table there has the

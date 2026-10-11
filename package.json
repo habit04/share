@@ -80,6 +80,7 @@
         }
       ],
       "category": "public.app-category.graphics-design",
+      "minimumSystemVersion": "13.0",
       "hardenedRuntime": false,
       "icon": "build/icon.icns"
     },

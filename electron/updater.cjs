@@ -9,6 +9,9 @@
  *    only check: the GitHub Releases API is asked for the latest version and, if it
  *    is newer, the user is offered the download page. (macOS in-place updates need a
  *    Developer ID signed app; the ad-hoc signed builds cannot be swapped by Squirrel.)
+ *    On macOS the release's latest-mac.yml names the macOS version it needs
+ *    (minimumSystemVersion, from package.json build.mac.minimumSystemVersion): a Mac with
+ *    an older system is not offered a download it could not run.
  *
  * Authenticity (security review E-8): besides electron-updater's own checks, the downloaded
  * installer is verified again right after the download and just before it is installed
@@ -16,7 +19,7 @@
  * installation names a publisher, its signature. A failure installs nothing.
  */
 const { app, dialog, shell, net } = require('electron');
-const { parseVersion, compareVersions } = require('./version.cjs');
+const { parseVersion, compareVersions, minimumSystemVersionFrom, systemOlderThan } = require('./version.cjs');
 const { externalUrl } = require('./ipc-guard.cjs');
 const { publisherNamesFrom, updateInfoProblem, verifyDownloadedUpdate } = require('./update-verify.cjs');
 
@@ -89,6 +92,33 @@ function assetFor(release) {
   return safeUrl(hit ? hit.url : release.url);
 }
 
+/** Is `u` a file of this project's GitHub releases (https://github.com/<owner>/<repo>/releases/download/...)? */
+function isReleaseDownload(u) {
+  try {
+    const url = new URL(String(u));
+    return url.protocol === 'https:' && url.host === 'github.com' && !url.username && !url.password && url.pathname.startsWith(`/${OWNER}/${REPO}/releases/download/`);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The macOS version `release` needs: minimumSystemVersion of its latest-mac.yml, or null when the
+ * release has none (0.4.1 and earlier ran on macOS 11) or it cannot be read (then the download is
+ * offered as before).
+ */
+async function releaseMinimumMacOS(release) {
+  const meta = release.assets.find((a) => a.name === 'latest-mac.yml');
+  if (!meta || !isReleaseDownload(meta.url)) return null;
+  try {
+    const res = await net.fetch(meta.url, { headers: { 'User-Agent': `JCad-Electrical/${app.getVersion()}` } });
+    if (!res.ok) return null;
+    return minimumSystemVersionFrom((await res.text()).slice(0, 64 * 1024));
+  } catch {
+    return null;
+  }
+}
+
 async function checkViaApi(win, interactive) {
   const current = app.getVersion();
   const release = await fetchLatestRelease();
@@ -98,6 +128,29 @@ async function checkViaApi(win, interactive) {
       await dialog.showMessageBox(win, { type: 'info', title: 'Check for Updates', message: `JCad Electrical ${current} is up to date.`, detail: `Latest release: ${release.version}.` });
     }
     return { state: 'up-to-date', version: current };
+  }
+  // A release that needs a newer macOS than this Mac has is not offered: its disk image would
+  // install an application that does not start (0.4.2 needs macOS 13; 0.4.1 ran on macOS 11).
+  if (process.platform === 'darwin') {
+    const minimum = await releaseMinimumMacOS(release);
+    const system = typeof process.getSystemVersion === 'function' ? process.getSystemVersion() : '';
+    if (minimum && systemOlderThan(system, minimum)) {
+      const message = `JCad Electrical ${release.version} needs macOS ${minimum} or later; this Mac runs macOS ${system}, so ${current} stays the version for it.`;
+      statusSink({ state: 'unsupported', version: release.version, message });
+      if (interactive) {
+        const r = await dialog.showMessageBox(win, {
+          type: 'info',
+          title: 'Check for Updates',
+          message: `JCad Electrical ${release.version} needs macOS ${minimum} or later.`,
+          detail: `This Mac runs macOS ${system}. Keep using JCad Electrical ${current}: it stays available on the releases page. Updating macOS to ${minimum} or later makes the new version available.`,
+          buttons: ['Release Notes', 'Close'],
+          defaultId: 1,
+          cancelId: 1,
+        });
+        if (r.response === 0) await shell.openExternal(safeUrl(release.url));
+      }
+      return { state: 'unsupported', version: release.version, message };
+    }
   }
   statusSink({ state: 'available', version: release.version, manual: true });
   const r = await dialog.showMessageBox(win, {

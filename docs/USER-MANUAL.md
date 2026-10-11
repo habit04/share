@@ -54,7 +54,9 @@ The Windows installer version updates itself (see [Updates](#12-updates)).
 
 There are two disk images: `arm64` for Apple Silicon (M1 and later) and `x64` for Intel Macs.
 Choose the one that matches your Mac (Apple menu > About This Mac). JCad Electrical needs
-macOS 13 Ventura or later (versions up to 0.4.1 also ran on macOS 11 and 12).
+macOS 13 Ventura or later. On macOS 11 Big Sur or 12 Monterey use version 0.4.1 (its disk images
+stay on the 0.4.1 release page); 0.4.1 still offers newer versions, but they do not start on
+those systems, so do not replace it.
 
 1. Open the `.dmg` and drag **JCad Electrical** into Applications.
 2. Start it from Applications. The first time, macOS says it cannot verify the developer.
@@ -1482,7 +1484,9 @@ can also check any time with **Help > Check for Updates…** or the `CHECKUPDATE
   says why, nothing is installed, and you can download the new version from the releases
   page instead.
 - **macOS** and **Linux .deb**: you are told that a new version exists and offered the right
-  download; install it like the first time.
+  download; install it like the first time. A Mac whose macOS is older than a new version needs
+  is not offered it: the check says which macOS the new version needs, and the installed version
+  keeps working.
 
 **Help > Release Notes (GitHub)** opens the releases page; the [changelog](../CHANGELOG.md)
 lists the changes in every version.

@@ -82,7 +82,14 @@ make an unsigned Windows installer Authenticode signed or an ad-hoc macOS app no
   its SHA-512 (and on Windows its signature publisher) and installs it when the application
   restarts (the unsaved-work prompt runs first).
 - **macOS and Linux `.deb`** are told that a newer release exists and offered the matching
-  download; they are replaced by installing the new version over the old one.
+  download; they are replaced by installing the new version over the old one. On macOS the
+  updater first reads the release's `latest-mac.yml`: when its `minimumSystemVersion` (written by
+  the macOS build from `package.json` `build.mac.minimumSystemVersion`, which also sets the
+  application's `LSMinimumSystemVersion`; `scripts/mac-update-info.mjs`) is newer than the Mac's
+  system, the download is not offered (Check for Updates says which macOS is needed). Raising the
+  minimum is a breaking change for users: say so at the top of the release's CHANGELOG section,
+  which is what the update dialog of older versions shows first (its first 600 characters).
+  Copies up to 0.4.1 do not read the minimum; for them that note is the only warning.
 - Users only see a release once it is published (the `release` job is the last step), so a
   failed gate never reaches anyone.
 - Download counts are watched by the hourly **Download alerts** workflow (README).

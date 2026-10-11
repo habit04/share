@@ -123,4 +123,10 @@ describe('workflow validation', () => {
     expect(r.code).toBe(1);
     expect(r.out).toMatch(/macOS upload must include its installers, updater metadata and blockmaps/);
   });
+
+  it('rejects a macOS build that no longer writes the minimum macOS version into latest-mac.yml', () => {
+    const r = check(withRelease((t) => t.replace('run: node scripts/mac-update-info.mjs release', 'run: echo skipped')));
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/must write the minimum macOS version into latest-mac\.yml before recording checksums/);
+  });
 });

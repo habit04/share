@@ -234,6 +234,11 @@ jobs:
           for app in "${apps[@]}"; do
             codesign --verify --deep --strict --verbose=2 "$app"
           done
+      # macOS copies learn about a release from the GitHub API and read the macOS version it needs
+      # from latest-mac.yml (electron-builder writes LSMinimumSystemVersion into the app only).
+      - name: Record the minimum macOS version in latest-mac.yml
+        if: runner.os == 'macOS'
+        run: node scripts/mac-update-info.mjs release
       # Bind the bytes to the tested commit (scripts/release-provenance.mjs) before they leave the runner.
       - name: Record tested source, checksums and verified signing status
         shell: bash
