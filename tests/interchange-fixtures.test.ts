@@ -12,6 +12,8 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readDxf, writeDxf } from '../src/io/dxf';
+import { readTableStyle } from '../src/io/dxf/read-annotations';
+import type { Obj } from '../src/io/dxf/groups';
 import { decodeDxfBytes, textStyleOf, textStylesOf } from '../src/io/encoding';
 import { importReportOf } from '../src/io/import-report';
 import type { DrawingState } from '../src/core/document';
@@ -913,6 +915,49 @@ describe('r2018-table.dxf: ACAD_TABLE with cells, merged title, table style (AC1
       expect(t.cells[2]![0]).toMatchObject({ height: 2.5, attachment: 2 });
       // A cell's own override wins.
       expect(t.cells[3]![0]!.height).toBe(3);
+    }
+  });
+});
+
+/*
+ * The same TABLESTYLE reading against a table AutoCAD wrote (fixtures/example_2000.dxf, AC1015 from
+ * a later AutoCAD): its "Standard" style has the cell styles 4.5 top centre, 6 middle centre, 4.5
+ * middle centre, no version 280 before the title flag, margins 1.5; the table's title row is 11
+ * high and the others 9 (AutoCAD sizes a row 4/3 of its text height plus both margins), so the
+ * styles are data, title, header in that order.
+ */
+describe('fixtures/example_2000.dxf: an AutoCAD-written ACAD_TABLE takes its TABLESTYLE in AutoCAD order', () => {
+  const s = readDxf(decodeDxfBytes(readFileSync(join(import.meta.dirname, '..', 'fixtures', 'example_2000.dxf'))).text);
+  const t = ofType<TableEntity>(s.entities, 'table')[0]!;
+
+  it('title row 6 middle centre, header row 4.5 middle centre, data rows 4.5 top centre, margins 1.5', () => {
+    expect(t.rowHeights.slice(0, 3)).toEqual([11, 9, 9]);
+    expect(t.cells[0]![0]).toMatchObject({ text: 'test', height: 6, attachment: 5, span: { rows: 1, cols: 9 } });
+    expect(t.cells[1]![0]).toMatchObject({ text: 'test', height: 4.5, attachment: 5 });
+    expect(t.cells[2]![0]).toMatchObject({ text: 'xx', height: 4.5, attachment: 2 });
+    expect(t.margin).toBe(1.5);
+    expect(t.textHeight).toBe(4.5);
+    // Each style's text fits its row the way AutoCAD sized them.
+    for (const r of [0, 1, 2]) expect(t.rowHeights[r]).toBeCloseTo((t.cells[r]![0]!.height! * 4) / 3 + 2 * t.margin!, 6);
+  });
+
+  it('the title flag is the 280 after the margins, with or without the leading version 280', () => {
+    const style = (version: boolean, title: number, header: number): Obj => ({
+      kind: 'TABLESTYLE',
+      groups: [
+        { code: 100, value: 'AcDbTableStyle' },
+        ...(version ? [{ code: 280, value: '0' }] : []),
+        { code: 3, value: 'S' }, { code: 70, value: '0' }, { code: 71, value: '0' }, { code: 40, value: '1' }, { code: 41, value: '2' },
+        { code: 280, value: String(title) }, { code: 281, value: String(header) },
+        { code: 7, value: 'Standard' }, { code: 140, value: '2.5' }, { code: 170, value: '2' },
+        { code: 7, value: 'Standard' }, { code: 140, value: '5' }, { code: 170, value: '5' },
+        { code: 7, value: 'Standard' }, { code: 140, value: '3.5' }, { code: 170, value: '5' },
+      ],
+    });
+    for (const version of [false, true]) {
+      expect(readTableStyle(style(version, 1, 0))).toMatchObject({ titleSuppressed: true, headerSuppressed: false, marginX: 1, marginY: 2 });
+      expect(readTableStyle(style(version, 0, 1))).toMatchObject({ titleSuppressed: false, headerSuppressed: true });
+      expect(readTableStyle(style(version, 0, 0)).rows.map((r) => r.height)).toEqual([2.5, 5, 3.5]);
     }
   });
 });

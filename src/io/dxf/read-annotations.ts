@@ -310,8 +310,11 @@ export function readImage(o: Obj, base: ReturnType<typeof commonProps>): ImageEn
 /** ACAD_TABLE with legacy cell data (91/92 size, 141/142 sizes, 171.. per cell) -> native table. */
 /**
  * What JCad takes from a TABLESTYLE object: the cell margins, whether the title and header rows
- * are suppressed, and per cell style (data, header, title, in file order) the text height and
- * alignment. Ported from PR #2 (codex/electrical-review-fixes 2f89b0e).
+ * are suppressed, and per cell style the text height and alignment. Ported from PR #2
+ * (codex/electrical-review-fixes 2f89b0e), corrected against a table AutoCAD wrote
+ * (fixtures/example_2000.dxf): the cell styles come in the order data, title, header (the order of
+ * AutoCAD's row types 1, 2, 4), not data, header, title - its 11-unit title row fits the 6-unit
+ * text of the second style, the 9-unit header and data rows the 4.5-unit text of the other two.
  */
 export interface TableStyleData {
   marginX: number;
@@ -331,11 +334,15 @@ export function readTableStyle(o: Obj): TableStyleData {
     const cell = groups.slice(i, end);
     rows.push({ height: flt(cell.find((p) => p.code === 140)?.value, 0.18), attachment: int(cell.find((p) => p.code === 170)?.value, 5) });
   }
+  // The flags before the first cell style: newer files start the subclass with a version 280
+  // ahead of the description, AutoCAD 2000 files do not, so the title flag is the last 280 there.
+  const firstStyle = groups.findIndex((p) => p.code === 7);
+  const head = firstStyle < 0 ? groups : groups.slice(0, firstStyle);
   return {
-    marginX: flt(groups.find((p) => p.code === 40)?.value, 0.06),
-    marginY: flt(groups.find((p) => p.code === 41)?.value, 0.06),
-    titleSuppressed: int(groups.filter((p) => p.code === 280)[1]?.value) !== 0,
-    headerSuppressed: int(groups.find((p) => p.code === 281)?.value) !== 0,
+    marginX: flt(head.find((p) => p.code === 40)?.value, 0.06),
+    marginY: flt(head.find((p) => p.code === 41)?.value, 0.06),
+    titleSuppressed: int(head.filter((p) => p.code === 280).at(-1)?.value) !== 0,
+    headerSuppressed: int(head.find((p) => p.code === 281)?.value) !== 0,
     rows,
   };
 }
@@ -376,9 +383,10 @@ export function readTable(o: Obj, base: ReturnType<typeof commonProps>, style?: 
       const cg = chunks[r * cols + c]!;
       let text = cg.filter((x) => x.code === 2 || x.code === 3).map((x) => x.value).join('') + (cg.find((x) => x.code === 1)?.value ?? '');
       if (!text) text = cg.find((x) => x.code === 302 && x.value)?.value ?? '';
-      // The style's cell styles: title (row 0 unless suppressed), header (the next row unless suppressed), data.
+      // The style's cell styles (file order data, title, header): title for row 0 unless
+      // suppressed, header for the next row unless suppressed, data for the others.
       const headerRow = style?.titleSuppressed ? 0 : 1;
-      const rowStyle = style?.rows[r === 0 && !style.titleSuppressed ? 2 : r === headerRow && !style?.headerSuppressed ? 1 : 0];
+      const rowStyle = style?.rows[r === 0 && !style.titleSuppressed ? 1 : r === headerRow && !style?.headerSuppressed ? 2 : 0];
       const h = flt(cg.find((x) => x.code === 140)?.value, rowStyle?.height ?? 0);
       const align = int(cg.find((x) => x.code === 170)?.value, rowStyle?.attachment ?? 0);
       const spanC = int(cg.find((x) => x.code === 175)?.value, 1);
