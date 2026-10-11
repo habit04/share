@@ -60,6 +60,8 @@ The **[user manual](docs/USER-MANUAL.md)** covers installation, a first drawing,
 Further documents: [docs/METRIC.md](docs/METRIC.md) (inch and millimetre drawings),
 [docs/PLUGIN-API.md](docs/PLUGIN-API.md) (plugins and scripts), [docs/CATALOG-PACKS.md](docs/CATALOG-PACKS.md)
 (signed catalog packs), [docs/CODE-SIGNING.md](docs/CODE-SIGNING.md) (installer signing),
+[docs/QA-CHECKLIST.md](docs/QA-CHECKLIST.md) (manual release checks on real machines: installers, updates,
+printers, other CAD programs, displays, network drives, crash recovery, large files, accessibility),
 [LICENSE](LICENSE) and [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
 ### Website and browser edition
