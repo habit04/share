@@ -292,6 +292,13 @@ try {
     };
   });
   const messages = () => app.evaluate(() => globalThis.__e2e.messages.splice(0));
+  const releaseLatestUrl = 'https://api.github.com/repos/habit04/share/releases/latest';
+  // A packaged startup check may fetch in the background while an unrelated operation runs.
+  // Keep every other event unexpected, including all native dialogs and other fetch URLs.
+  const noDialogMessages = async () => {
+    const raw = await messages();
+    return { raw, unexpected: raw.filter((m) => m !== `fetch:${releaseLatestUrl}`) };
+  };
   const logSince = async (n) => win.evaluate((k) => window.editor.history.slice(k), n);
   const historyLen = () => win.evaluate(() => window.editor.history.length);
   const waitLog = (re, from, timeout = 30_000) =>
@@ -601,7 +608,8 @@ try {
   await waitLog(/^(Opened|Failed to open)/, h, 15_000).catch(() => bad('RECENT did not open anything'));
   log = await logSince(h);
   check(log.some((l) => l.startsWith(`Opened ${fixtures.dxf}: 25 entities`)) && !log.some((l) => /Failed to open|Unknown file path/.test(l)), `RECENT ${idx} reopened by path: ${log.filter((l) => /Open|Failed/.test(l)).join(' | ')}`);
-  check((await messages()).length === 0, 'no dialog was shown for RECENT');
+  const recentMessages = await noDialogMessages();
+  check(recentMessages.unexpected.length === 0, `no dialog was shown for RECENT (${JSON.stringify(recentMessages)})`);
   check(!log.some((l) => /in a new tab|in the tab it was opened from/.test(l)) && (await win.evaluate((p) => window.editor.doc.filePath === p, fixtures.dxf)), 'RECENT opened the file straight into its own, active tab');
   while ((await win.locator('.import-report-dialog').count()) > 0)
     await win.locator('.import-report-dialog .modal button', { hasText: 'Close' }).last().click();
@@ -874,11 +882,14 @@ try {
     const chosenBackup = await tryCall('backupFile', [outsideDxf]);
     check(chosenBackup.ok && chosenBackup.r && chosenBackup.r.ok === true && existsSync(`${outsideDxf}.bak`), `backup-file copies a drawing outside the folder of a project the user chose (${JSON.stringify(chosenBackup.r)})`);
     const chosenSave = await tryCall('saveDxf', [outsideDxf, tinyDxf.replace('ENDSEC', 'ENDSEC\n999\nchosen'), 'elsewhere.dxf', { backup: false }]);
-    check(chosenSave.ok && chosenSave.r === outsideDxf && (await messages()).length === 0 && /chosen/.test(readFileSync(outsideDxf, 'utf8')), `that drawing is saved by name without a dialog (${JSON.stringify(chosenSave)})`);
+    const chosenMessages = await noDialogMessages();
+    check(chosenSave.ok && chosenSave.r === outsideDxf && chosenMessages.unexpected.length === 0 && /chosen/.test(readFileSync(outsideDxf, 'utf8')), `that drawing is saved by name without a dialog (${JSON.stringify({ reply: chosenSave, messages: chosenMessages })})`);
     const climbSave = await tryCall('saveDxf', [climbDxf, tinyDxf.replace('ENDSEC', 'ENDSEC\n999\nclimb'), 'climb.dxf']);
-    check(climbSave.ok && climbSave.r === climbDxf && (await messages()).length === 0, `"sheet1.dxf/../../../climb.dxf" is resolved first: the drawing it names is writable, package.json spelled that way is not (${JSON.stringify(climbSave)})`);
+    const climbMessages = await noDialogMessages();
+    check(climbSave.ok && climbSave.r === climbDxf && climbMessages.unexpected.length === 0, `"sheet1.dxf/../../../climb.dxf" is resolved first: the drawing it names is writable, package.json spelled that way is not (${JSON.stringify({ reply: climbSave, messages: climbMessages })})`);
     const insideSave = await tryCall('saveDxf', [insideDxf, tinyDxf.replace('ENDSEC', 'ENDSEC\n999\ninside'), 'sheet1.dxf']);
-    check(insideSave.ok && insideSave.r === insideDxf && (await messages()).length === 0 && /inside/.test(readFileSync(insideDxf, 'utf8')), `a drawing inside the project folder is saved by name without a dialog (${JSON.stringify(insideSave)})`);
+    const insideMessages = await noDialogMessages();
+    check(insideSave.ok && insideSave.r === insideDxf && insideMessages.unexpected.length === 0 && /inside/.test(readFileSync(insideDxf, 'utf8')), `a drawing inside the project folder is saved by name without a dialog (${JSON.stringify({ reply: insideSave, messages: insideMessages })})`);
     const remote = await tryCall('openDrawing', ['\\\\e2e-no-such-host\\share\\remote.dxf']);
     check(!remote.ok && /Unknown file path/.test(remote.e), `a network drawing named by a local project is not registered (${remote.e})`);
     // A project opened only by name (a plugin, OPENPROJECT <path>): nothing beyond its folder.
@@ -994,8 +1005,39 @@ try {
     const saved = await win.evaluate((t) => window.jcad.saveDxf(null, t, 'linked.dxf').then((r) => ({ ok: true, r }), (e) => ({ ok: false, e: String(e) })), tinyDxf);
     await messages();
     check(saved.ok && saved.r === viaLink && existsSync(join(realFolder, 'linked.dxf')), `a drawing saved through a linked folder lands in the real folder (${JSON.stringify(saved)})`);
-    const again = await win.evaluate(([p, t]) => window.jcad.saveDxf(p, t, 'linked.dxf').then((r) => ({ ok: true, r }), (e) => ({ ok: false, e: String(e) })), [viaLink, tinyDxf.replace('ENDSEC', 'ENDSEC\n999\nagain')]);
-    check(again.ok && again.r === viaLink && (await messages()).length === 0 && /again/.test(readFileSync(join(realFolder, 'linked.dxf'), 'utf8')) && existsSync(join(realFolder, 'linked.dxf.bak')), `saved again by name through the linked folder, with its .bak (${JSON.stringify(again)})`);
+    // Reproduce the background-fetch race deterministically through the existing net.fetch
+    // double, after the first save's message drain. The old global-empty predicate always fails.
+    await app.evaluate(async ({ net }, url) => { await net.fetch(url); }, releaseLatestUrl);
+    const updatedDxf = tinyDxf.replace('ENDSEC', 'ENDSEC\n999\nagain');
+    const again = await win.evaluate(([p, t]) => window.jcad.saveDxf(p, t, 'linked.dxf').then((r) => ({ ok: true, r }), (e) => ({ ok: false, e: String(e) })), [viaLink, updatedDxf]);
+    const linkedMessages = await noDialogMessages();
+    /** @param {string} file @param {Buffer} expected */
+    const inspectLinkedFile = (file, expected) => {
+      /** @type {{ path: string, canonicalPath?: string, regularFile?: boolean, bytes?: number, bytesMatch?: boolean, error?: string }} */
+      const details = { path: file };
+      try {
+        details.canonicalPath = realpathSync.native(file);
+        details.regularFile = lstatSync(file).isFile();
+        const bytes = readFileSync(file);
+        details.bytes = bytes.length;
+        details.bytesMatch = bytes.equals(expected);
+      } catch (error) {
+        details.error = String(error);
+      }
+      return details;
+    };
+    const updatedBytes = Buffer.from(updatedDxf, 'utf8');
+    const priorBytes = Buffer.from(tinyDxf, 'utf8');
+    const realFile = inspectLinkedFile(join(realFolder, 'linked.dxf'), updatedBytes);
+    const linkedFile = inspectLinkedFile(viaLink, updatedBytes);
+    const returnedFile = inspectLinkedFile(typeof again.r === 'string' ? again.r : '', updatedBytes);
+    const realBackup = inspectLinkedFile(join(realFolder, 'linked.dxf.bak'), priorBytes);
+    const linkedBackup = inspectLinkedFile(`${viaLink}.bak`, priorBytes);
+    const canonicalIdentity = realFile.canonicalPath !== undefined && realFile.canonicalPath === linkedFile.canonicalPath && realFile.canonicalPath === returnedFile.canonicalPath && realBackup.canonicalPath !== undefined && realBackup.canonicalPath === linkedBackup.canonicalPath;
+    const filesMatch = [realFile, linkedFile, returnedFile, realBackup, linkedBackup].every((file) => file.regularFile && file.bytesMatch);
+    const temporaryFiles = tmpLeftovers(realFolder);
+    const backgroundFetchObserved = linkedMessages.raw.includes(`fetch:${releaseLatestUrl}`);
+    check(again.ok && again.r === viaLink && backgroundFetchObserved && linkedMessages.unexpected.length === 0 && canonicalIdentity && filesMatch && temporaryFiles.length === 0, `saved again by name through the linked folder, with its .bak (${JSON.stringify({ reply: again, messages: linkedMessages, backgroundFetchObserved, canonicalIdentity, filesMatch, expectedUpdatedBytes: updatedBytes.length, expectedPriorBytes: priorBytes.length, realFile, linkedFile, returnedFile, realBackup, linkedBackup, temporaryFiles })})`);
     writeFileSync(join(realFolder, 'logo.png'), solidPng(4, 4, [0, 255, 0]));
     const linkedImage = await win.evaluate((p) => window.jcad.readImage(p).then((r) => (typeof r === 'string' && r.startsWith('data:image/png;base64,') ? 'read' : String(r)), (e) => String(e)), join(linkedFolder, 'logo.png'));
     check(linkedImage === 'read', `an image next to a drawing known under a linked path is read (${linkedImage})`);
