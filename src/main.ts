@@ -695,6 +695,9 @@ function boot(): void {
       .then(async (ok) => {
         // Answer only after autosaves being written are complete (they are what recovers discarded work).
         if (ok) {
+          // Still modified after an allowed close = the user chose not to save the project (Discard All or
+          // unticked): its autosave goes, as with Don't Save (a failed save never gets here).
+          if (editor.projectDirty) await projectAutosaver.discard();
           await Promise.allSettled([projectAutosaver.flush(), autosaver.flush()]);
         }
         return ok;

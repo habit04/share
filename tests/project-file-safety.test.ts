@@ -489,6 +489,36 @@ describe('project dirty flag and protection', () => {
   });
 });
 
+describe('project autosave when the changes are discarded at close', () => {
+  it('discard() removes the autosave, a later flush does not write it back, the next change does', async () => {
+    const data = new Map<string, string>();
+    const storage: KeyValueStorage = {
+      getItem: (k) => data.get(k) ?? null,
+      setItem: (k, v) => void data.set(k, v),
+      removeItem: (k) => void data.delete(k),
+      key: (i) => [...data.keys()][i] ?? null,
+      get length() {
+        return data.size;
+      },
+    };
+    const store = localAutosaveStore(storage);
+    const { ed } = makeEditor();
+    const pa = new ProjectAutosaver(ed, store, () => true, 1);
+    ed.replaceProject({ name: 'Thrown Away', path: '/jobs/t.jcadproj.json', drawings: [] });
+    ed.updateProject({ ...ed.project, description: 'x' });
+    await pa.flush();
+    expect((await store.list()).map((e) => e.name)).toEqual([projectAutosaveName(ed.project)]);
+    await pa.discard();
+    await pa.flush(); // what the close workflow does afterwards
+    expect(await store.list()).toEqual([]);
+    expect(ed.projectDirty).toBe(true);
+    ed.updateProject({ ...ed.project, description: 'y' }); // the window stayed open (e.g. restart not done)
+    await new Promise((r) => setTimeout(r, 5));
+    await pa.flush();
+    expect((await store.list()).length).toBe(1);
+  });
+});
+
 describe('Save All when closing', () => {
   function closeSetup() {
     const disk = new Map<string, string>();

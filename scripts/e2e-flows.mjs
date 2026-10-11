@@ -1306,6 +1306,62 @@ scenario('handover', async () => {
   checkClean(ctx, 'handover');
 });
 
+// ------------------------------------------------------------------ Save All: a symbol that cannot be saved yet; Discard All and the next start
+scenario('discard', async () => {
+  step = 'discard: symbol not ready';
+  const profile = tempDir('profile');
+  const work = tempDir('work');
+  const a = join(work, 'a.dxf');
+  writeFileSync(a, readFileSync(fixtures.dxf));
+  const projFile = join(work, 'd.jcadproj.json');
+  writeProject(projFile, 'Discarded', ['a.dxf']);
+  let ctx = await launch(profile);
+  try {
+    await startSymbolBuilder(ctx);
+    void ctx.closeWindow();
+    await saveAllDlg(ctx).waitFor({ timeout: 10_000 });
+    await saveAllDlg(ctx).locator('.btn.primary').click();
+    const fail = ctx.modal('Nothing was closed');
+    const shown = await fail.waitFor({ timeout: 10_000 }).then(() => true, () => false);
+    const text = shown ? (await fail.innerText()).replace(/\s+/g, ' ') : '';
+    check(shown && /Symbol: .* could not be saved: \S/.test(text), `a symbol that cannot be saved yet aborts the close with the reason (${text.slice(0, 200)})`);
+    if (shown) await fail.locator('button', { hasText: 'OK' }).click();
+    await ctx.win.waitForTimeout(300);
+    check((await ctx.windowCount()) === 1, 'the window stays open');
+    flowsRun.push('Save All with a Symbol Builder tab that cannot be saved');
+
+    // Discard All with a modified drawing and project: the window closes; the autosaves stay as a safety net.
+    step = 'discard: Discard All';
+    await openDrawing(ctx, a);
+    await ctx.edit('discard');
+    await openProject(ctx, projFile);
+    await ctx.win.evaluate(() => window.editor.updateProject({ ...window.editor.project, description: 'discarded change' }));
+    void ctx.closeWindow();
+    await saveAllDlg(ctx).waitFor({ timeout: 10_000 });
+    await saveAllDlg(ctx).locator('button', { hasText: 'Discard All' }).click();
+    check((await Promise.race([ctx.exited, sleep(10_000).then(() => false)])) === true, 'Discard All closes the application');
+    check(Buffer.compare(readFileSync(a), readFileSync(fixtures.dxf)) === 0 && !existsSync(`${a}.bak`) && !JSON.parse(readFileSync(projFile, 'utf8')).description, 'nothing was written to the drawing or the project file');
+    check(!ctx.autosaveFiles().some((f) => f.endsWith('_jcadproj.sv.dxf')), `Discard All leaves no project autosave (${ctx.autosaveFiles().join(', ') || 'empty'})`);
+  } catch (err) {
+    bad(`unexpected: ${err && err.stack ? err.stack : err}`);
+  } finally {
+    await ctx.close();
+  }
+  checkClean(ctx, 'discard');
+  // The next start after Discard All.
+  ctx = await launch(profile);
+  try {
+    const proj = await ctx.modal('Unsaved changes to project Discarded').waitFor({ timeout: 8000 }).then(() => true, () => false);
+    if (proj) await ctx.modal('Unsaved changes to project Discarded').locator('button', { hasText: 'Discard' }).click();
+    const drm = await ctx.win.locator('.recovery-dialog .modal').waitFor({ timeout: 8000 }).then(() => true, () => false);
+    check(!proj, 'the next start does not offer the project changes discarded on purpose');
+    check(!drm, 'nor a drawing backup (none was written before the Discard All)');
+    flowsRun.push('Discard All, then the next start');
+  } finally {
+    await ctx.close();
+  }
+});
+
 // ================================================================== run
 for (const s of scenarios) {
   if (!want(s.name)) continue;
