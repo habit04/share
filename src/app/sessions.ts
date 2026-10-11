@@ -33,12 +33,6 @@ export interface SessionHost {
   render?(): void;
 }
 
-/** Undo history lives in private fields of Drawing; read/write them defensively so core stays untouched. */
-interface HistoryAccess {
-  undoStack?: DrawingState[];
-  redoStack?: DrawingState[];
-}
-const historyOf = (doc: Drawing): HistoryAccess => doc as unknown as HistoryAccess;
 
 export function sessionTitle(s: Pick<DocumentSession, 'filePath' | 'untitledName'>): string {
   if (!s.filePath) return s.untitledName;
@@ -102,12 +96,12 @@ export class SessionManager {
     const s = this.list[this.activeIndex];
     if (!s) return;
     const { doc, viewport } = this.host;
-    const h = historyOf(doc);
+    const h = doc.history();
     s.state = doc.snapshot;
     s.filePath = doc.filePath;
     s.dirty = doc.dirty;
-    s.undo = [...(h.undoStack ?? [])];
-    s.redo = [...(h.redoStack ?? [])];
+    s.undo = [...h.undo];
+    s.redo = [...h.redo];
     if (viewport) s.view = { center: { ...viewport.center }, scale: viewport.scale };
     s.selection = new Set(this.host.selection);
   }
@@ -115,9 +109,7 @@ export class SessionManager {
   private restore(s: DocumentSession): void {
     const { host } = this;
     host.loadState(s.state, s.filePath);
-    const h = historyOf(host.doc);
-    h.undoStack = [...s.undo];
-    h.redoStack = [...s.redo];
+    host.doc.restoreHistory({ undo: s.undo, redo: s.redo });
     host.doc.dirty = s.dirty;
     if (s.view && host.viewport) {
       host.viewport.center = { ...s.view.center };

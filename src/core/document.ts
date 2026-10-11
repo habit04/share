@@ -76,6 +76,15 @@ export interface DrawingState {
 
 export type DocListener = (doc: Drawing) => void;
 
+/**
+ * A document's undo / redo history: whole states, oldest first (the next undo restores the last
+ * entry of `undo`, the next redo the last entry of `redo`). States are immutable and shared.
+ */
+export interface DrawingHistory {
+  readonly undo: readonly DrawingState[];
+  readonly redo: readonly DrawingState[];
+}
+
 export const DEFAULT_LAYERS: Layer[] = [
   { name: '0', color: 7, visible: true, locked: false, lineWeight: 0.25 },
   { name: 'WIRES', color: 1, visible: true, locked: false, lineWeight: 0.35 },
@@ -225,6 +234,25 @@ export class Drawing {
     this.filePath = filePath;
     this.dirty = false;
     this.emit();
+  }
+
+  /** How many undo steps are kept (older ones are dropped). */
+  get undoLimit(): number {
+    return this.maxUndo;
+  }
+
+  /** A copy of the undo / redo history (drawing tabs park it while another tab is active). */
+  history(): DrawingHistory {
+    return { undo: [...this.undoStack], redo: [...this.redoStack] };
+  }
+
+  /**
+   * Replace the undo / redo history, typically right after `load` when a parked drawing tab
+   * becomes active again. Neither the current state nor the dirty flag changes.
+   */
+  restoreHistory(history: DrawingHistory): void {
+    this.undoStack = [...history.undo];
+    this.redoStack = [...history.redo];
   }
 
   canUndo(): boolean {

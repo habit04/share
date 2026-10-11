@@ -18,7 +18,6 @@ import type { Editor } from '../app/editor';
 import type { Point } from '../core/geometry';
 import { roundTo } from '../core/geometry';
 import type { BlockDef, Entity, TextEntity } from '../core/entities';
-import type { DrawingState } from '../core/document';
 import type { Viewport } from '../render/viewport';
 import type { Tool, ToolContext } from './types';
 import { validBlockName } from './blocks';
@@ -38,7 +37,6 @@ import {
   markerUpdates,
   placeholderEntity,
   pinMarkerEntity,
-  isPlaceholder,
   isPinMarker,
   suggestSymbolName,
   resolveBasePoint,
@@ -49,7 +47,6 @@ import {
   withMeta,
   markerTag,
   markerText,
-  markerDefault,
   verticalVariant,
   createTwin,
   applyRenameChoice,
@@ -381,9 +378,9 @@ export class SymbolBuilder {
   /**
    * Rewrite pin marker labels that disagree with the compiled pins (after MIRROR,
    * ROTATE, a removed pin ...). The labels are derived data, so they are updated in
-   * place without an undo step (both history stacks stay untouched, like
-   * app/sessions.ts reaches the history); after an undo the restored state is
-   * renumbered again the same way.
+   * place without an undo step (Drawing.patchQuiet: both history stacks stay
+   * untouched and the dirty flag is left alone); after an undo the restored
+   * state is renumbered again the same way.
    */
   private renumberMarkers(): void {
     const ed = this.editor;
@@ -392,11 +389,8 @@ export class SymbolBuilder {
     const updates = markerUpdates(ed.doc.snapshot, compilePins(ed.doc.snapshot, meta));
     if (updates.length === 0) return;
     const map = new Map(updates.map((u) => [u.id, u as Entity]));
-    const priv = ed.doc as unknown as { state?: DrawingState };
-    if (priv.state && priv.state === ed.doc.snapshot) {
-      priv.state = { ...priv.state, entities: priv.state.entities.map((e) => map.get(e.id) ?? e) };
-      ed.render();
-    } else ed.doc.replaceEntities(updates);
+    ed.doc.patchQuiet((s) => ({ ...s, entities: s.entities.map((e) => map.get(e.id) ?? e) }), false);
+    ed.render();
   }
 
   // ------------------------------------------------------------- start
