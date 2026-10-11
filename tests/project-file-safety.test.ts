@@ -12,7 +12,7 @@ import { newId } from '../src/core/entities';
 import { writeDxf } from '../src/io/dxf';
 import { SaveQueue, captureRevision } from '../src/app/savequeue';
 import { parseProject, resolveDrawingPath, resolveProjectPath } from '../src/app/project';
-import { collectUnsaved, runCloseWorkflow, type CloseDecision, type UnsavedItem } from '../src/app/closeflow';
+import { closeDrawingTab, collectUnsaved, runCloseWorkflow, type CloseDecision, type UnsavedItem } from '../src/app/closeflow';
 import { ProjectAutosaver, drawingAutosaves, offerProjectRecovery, projectAutosaveName, isProjectAutosave } from '../src/app/project-autosave';
 import { localAutosaveStore, type KeyValueStorage } from '../src/app/autosave';
 
@@ -587,5 +587,32 @@ describe('save / close fuzzing regressions (tests/fuzz-save-close.test.ts)', () 
     expect(ok).toBe(true);
     expect(asked).toEqual([1, 1]); // asked again about the late edit, then discarded explicitly
     expect(settled).toBe(2);
+  });
+  it('CLOSE closes the tab it asked about, also when another tab closed while the question was shown', async () => {
+    const { ed } = makeEditor();
+    ed.loadState(new Drawing().snapshot, '/w/opening.dxf'); // stands in for a tab whose open fails meanwhile
+    ed.sessions.add(new Drawing().snapshot, '/w/b.dxf');
+    ed.doc.addEntities([text('B EDIT')]);
+    const bId = ed.sessions.current.id;
+    ed.sessions.add(new Drawing().snapshot, '/w/c.dxf');
+    ed.doc.addEntities([text('C EDIT')]);
+    const cId = ed.sessions.current.id;
+    ed.switchSession(1);
+    const discarded: number[] = [];
+    const asked: string[] = [];
+    const ok = await closeDrawingTab(ed.sessions, 1, {
+      confirmDiscard: async (title) => {
+        asked.push(title);
+        ed.sessions.close(0); // the failed open closes its tab while the question is up
+        return true;
+      },
+      discardBackup: (id) => discarded.push(id),
+    });
+    expect(ok).toBe(true);
+    expect(asked).toEqual(['b.dxf']);
+    expect(discarded).toEqual([bId]);
+    expect(ed.sessions.indexOfId(bId)).toBe(-1);
+    expect(ed.sessions.indexOfId(cId)).toBeGreaterThanOrEqual(0); // c.dxf and its edits are still open
+    expect(ed.sessions.all.find((s) => s.id === cId)!.dirty).toBe(true);
   });
 });

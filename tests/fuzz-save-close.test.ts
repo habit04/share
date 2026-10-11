@@ -12,7 +12,7 @@
  *    a backup) can be recovered from the next launch's store, and a modified project that had been
  *    autosaved is offered by project recovery;
  *  - an approved close leaves nothing unsaved that the user did not choose to discard;
- *  - no two autosave writes (or a write and a remove) of one backup overlap.
+ *  - nothing (a second write, a remove) starts while an autosave write of the same backup is on its way.
  */
 import { describe, it, expect, vi, beforeAll, afterEach } from 'vitest';
 import { createRequire } from 'node:module';
@@ -23,11 +23,11 @@ import { newId } from '../src/core/entities';
 import { writeDxf } from '../src/io/dxf';
 import { withoutUnusedLibraryBlocks } from '../src/electrical/library';
 import { Autosaver, type AutosaveStore, type AutosaveEntry, type AutosaveMeta } from '../src/app/autosave';
-import { ProjectAutosaver, drawingAutosaves, offerProjectRecovery, isProjectAutosave } from '../src/app/project-autosave';
-import { runCloseWorkflow, type CloseDecision, type UnsavedItem } from '../src/app/closeflow';
+import { ProjectAutosaver, drawingAutosaves, offerProjectRecovery, isProjectAutosave, parseProjectAutosave } from '../src/app/project-autosave';
+import { closeDrawingTab, runCloseWorkflow, type CloseDecision, type UnsavedItem } from '../src/app/closeflow';
 import { serializeProject } from '../src/app/project';
 import { pathKey } from '../src/app/paths';
-import { Rng, fuzz, check } from './helpers/fuzz';
+import { Rng, fuzz, check, fuzzTimeout } from './helpers/fuzz';
 import { MemFs } from './helpers/memfs';
 
 const require = createRequire(import.meta.url);
@@ -50,6 +50,9 @@ const text = (t: string): Entity => ({ id: newId(), layer: '0', color: 'ByLayer'
 const dxfOf = (s: DrawingState) => writeDxf(withoutUnusedLibraryBlocks(s));
 const DIR = '/appdata/autosave';
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/** How often each invariant actually had something to check (printed by the property). */
+const coverage = { drawingRecoveries: 0, projectRecoveries: 0, discardKeeps: 0 };
 
 interface Options {
   /** Model electron/main.cjs writeUserFile (one write per file, arrival order); false = the code before it. */
@@ -154,9 +157,14 @@ async function scenario(rng: Rng, opts: Options): Promise<{ closed: boolean; cra
   const sent = new Map<string, string[]>();
   const busy = new Map<string, string>();
   const projectWritesDone: Array<{ at: number; name: string }> = [];
+  /** Project texts sent to the autosave store, in order; index where the current modified period began. */
+  const projectTexts: string[] = [];
+  let projectTextsAtDirty = 0;
   const guard = async <T>(name: string, what: string, fn: () => Promise<T>): Promise<T> => {
     const other = busy.get(name);
-    if (other && (what === 'write' || other === 'write')) fail(`overlapping autosave ${other} and ${what} of ${name}`);
+    // Nothing may start while a write of the same backup is on its way. (A write after a remove is
+    // fine: requests reach the store in order and it handles one backup's requests one at a time.)
+    if (other === 'write') fail(`overlapping autosave ${other} and ${what} of ${name}`);
     busy.set(name, what);
     try {
       return await fn();
@@ -167,6 +175,10 @@ async function scenario(rng: Rng, opts: Options): Promise<{ closed: boolean; cra
   const raw: AutosaveStore = {
     write: (n: string, t: string, m: AutosaveMeta) => {
       sent.set(n, [...(sent.get(n) ?? []), t]);
+      if (isProjectAutosave(n)) {
+        const p = parseProjectAutosave(t);
+        if (p) projectTexts.push(serializeProject(p));
+      }
       return guard(n, 'write', () => ipc(() => main.write(n, t, m))).then(() => {
         if (isProjectAutosave(n)) projectWritesDone.push({ at: Date.now(), name: n });
       });
@@ -191,11 +203,14 @@ async function scenario(rng: Rng, opts: Options): Promise<{ closed: boolean; cra
   editor.on('file', () => {
     if (!editor.doc.dirty && editor.doc.filePath) void autosaver.markSaved(editor.sessions.activeId, editor.doc.snapshot);
   });
-  const projectAutosaver = new ProjectAutosaver(editor, raw, () => true, 1500);
+  const projectAutosaver = new ProjectAutosaver(editor, raw, () => true, rng.int(50, 400)); // (1500 ms in the app: shorter, so runs reach it)
   projectAutosaver.onError = () => {};
   let projectDirtySince: number | null = null;
   editor.on('project', () => {
-    if (editor.projectDirty && projectDirtySince === null) projectDirtySince = Date.now();
+    if (editor.projectDirty && projectDirtySince === null) {
+      projectDirtySince = Date.now();
+      projectTextsAtDirty = projectTexts.length;
+    }
     if (!editor.projectDirty) projectDirtySince = null;
   });
   // A drawing recovered from an earlier launch's backup (src/ui/recovery.ts openRecovered).
@@ -227,6 +242,7 @@ async function scenario(rng: Rng, opts: Options): Promise<{ closed: boolean; cra
   };
   // ------------------------------------------------------------ random operations
   let closing: Promise<boolean> | null = null;
+  const closeChecks: Promise<void>[] = [];
   let closed = false;
   let decision: CloseDecision | null = null;
   let asked: readonly UnsavedItem[] = [];
@@ -269,18 +285,14 @@ async function scenario(rng: Rng, opts: Options): Promise<{ closed: boolean; cra
     } else if (op === 'newTab') editor.sessions.add();
     else if (op === 'closeTab') {
       // src/main.ts closeTab (runs on its own; the loop goes on while its question is open)
-      const i = rng.int(0, editor.sessions.count - 1);
-      const id = editor.sessions.all[i]!.id;
-      const dirty = editor.sessions.isDirty(i);
-      void (async () => {
-        const discard = !dirty || (await dialog(() => rng.bool()));
-        const k = editor.sessions.indexOfId(id);
-        if (discard && k >= 0 && !crashed) {
+      void closeDrawingTab(editor.sessions, rng.int(0, editor.sessions.count - 1), {
+        confirmDiscard: () => dialog(() => rng.bool()),
+        discardBackup: (id) => {
+          if (crashed) return;
           void autosaver.discardFor(id);
-          editor.sessions.close(k);
           recovered.delete(id);
-        }
-      })();
+        },
+      });
     } else if (op === 'projectEdit') {
       edits += 1;
       editor.updateProject({ ...editor.project, descriptions: [`D${edits}`] });
@@ -331,6 +343,19 @@ async function scenario(rng: Rng, opts: Options): Promise<{ closed: boolean; cra
             if (editor.sessions.isDirty(i) && !discarded(`s${s.id}`)) fail(`close approved with unsaved drawing ${editor.sessions.titleOf(i)} (session ${s.id}, last answer ${d ? d.action : 'none'}, asked ${asked.map((x) => x.key).join(',')})`);
           });
           if (editor.projectDirty && !discarded('project')) fail(`close approved with the project unsaved (${d ? d.action : 'no question'})`);
+          // Discarded work keeps its backups (they are what recovers it): nothing that was autosaved, or
+          // opened from a backup, loses that backup because the user chose Discard.
+          const keep = editor.sessions.all
+            .map((s, i) => ({ s, i, name: autosaver.nameFor(s.id) }))
+            .filter(({ s, i, name }) => editor.sessions.isDirty(i) && name && (autosaver.backedUpState(s.id) !== undefined || recovered.get(s.id) === name));
+          if (keep.length) {
+            coverage.discardKeeps += keep.length;
+            closeChecks.push(
+              main.list().then((entries) => {
+                for (const k of keep) if (!entries.some((e) => e.name === k.name)) fail(`close with Discard deleted the backup ${k.name} of a modified drawing`);
+              }),
+            );
+          }
           return ok;
         });
     }
@@ -366,19 +391,22 @@ async function scenario(rng: Rng, opts: Options): Promise<{ closed: boolean; cra
         fail(`session ${s.id} was modified and autosaved, but its backup ${name} is gone after the crash`);
         continue;
       }
+      coverage.drawingRecoveries += 1;
       const t = await store2.read(name);
       const texts = sent.get(name) ?? [];
       const from = s.backedUp ? texts.lastIndexOf(dxfOf(s.backedUp)) : 0;
       if (t === null || from < 0 || !texts.slice(from).includes(t)) fail(`session ${s.id}: the backup ${name} holds an older or foreign revision after the crash`);
     }
     if (projectDirty && since !== null && projectWritesDone.some((w) => w.at >= since && w.at <= crashTime)) {
+      coverage.projectRecoveries += 1;
       const got: string[] = [];
-      await offerProjectRecovery({ projectDirty: false, replaceProject: (p) => got.push(p.name), log: () => {} }, store2, async () => 'later');
-      const entries = (await store2.list()).filter((e) => isProjectAutosave(e.name));
-      if (entries.length === 0) fail('the project was modified and autosaved, but no project autosave survives the crash');
+      await offerProjectRecovery({ projectDirty: false, replaceProject: (p) => got.push(serializeProject(p)), log: () => {} }, store2, async () => 'open');
+      if (got.length !== 1) fail('the project was modified and autosaved, but project recovery offers nothing after the crash');
+      else if (!projectTexts.slice(projectTextsAtDirty).includes(got[0]!)) fail('project recovery offers a revision from before the project became modified');
     }
   } else {
     await vi.runAllTimersAsync();
+    await Promise.all(closeChecks);
     if (!closed) checkClean('at rest');
   }
   check(violations.length === 0, () => `${[...new Set(violations)].join('; ')}\n  trace: ${trace.join(' ')}`);
@@ -395,7 +423,7 @@ describe('fuzz: autosave, Save, Save As, Save All and crashes together', () => {
       if (r.closed) closed += 1;
       if (r.crashed) crashed += 1;
     });
-    console.log(`save-close/editor: ${runs} runs, ${closed} approved closes, ${crashed} crashes`);
+    console.log(`save-close/editor: ${runs} runs, ${closed} approved closes, ${crashed} crashes; checked ${coverage.drawingRecoveries} drawing recoveries, ${coverage.projectRecoveries} project recoveries, ${coverage.discardKeeps} backups kept on Discard`);
     expect(runs).toBeGreaterThan(0);
-  }, 600_000);
+  }, fuzzTimeout());
 });

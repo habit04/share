@@ -10,7 +10,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { RecoveryActions } from '../src/app/recovery-actions';
 import type { AutosaveEntry } from '../src/app/autosave';
-import { Rng, fuzz, check } from './helpers/fuzz';
+import { Rng, fuzz, check, fuzzTimeout } from './helpers/fuzz';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -95,5 +95,5 @@ describe('fuzz: Drawing Recovery Manager actions', () => {
     console.log(`recovery-actions: ${runs} runs, ${totals.opened} backups opened, ${totals.removed} removed`);
     expect(runs).toBeGreaterThan(0);
     if (!process.env.FUZZ_SEED) expect(totals.opened).toBeGreaterThan(100);
-  }, 600_000);
+  }, fuzzTimeout());
 });

@@ -18,7 +18,7 @@ import { loadProjectSheets, commitSheets, projectUi, runTitleBlocksAll, type She
 import { newFromTemplate, SHEET_SIZES } from '../src/electrical/templates';
 import { captureRevision, saveQueue } from '../src/app/savequeue';
 import { pathKey, samePath, setPathPlatform } from '../src/app/paths';
-import { Rng, fuzz, check } from './helpers/fuzz';
+import { Rng, fuzz, check, fuzzTimeout } from './helpers/fuzz';
 
 const g = globalThis as { window?: unknown };
 const orig = { ...projectUi };
@@ -366,11 +366,11 @@ describe('fuzz: project-wide commands never overwrite newer work', () => {
   it('random projects, tabs, disk edits, backups and failures through loadProjectSheets + commitSheets', async () => {
     const runs = await fuzz('stale-batch/commit', 150, (rng) => batchScenario(rng, 'synthetic'));
     expect(runs).toBeGreaterThan(0);
-  }, 600_000);
+  }, fuzzTimeout());
   it('the real project title block command (AETITLEBLOCK for all drawings) under the same events keeps retained records', async () => {
     commandWrites = 0;
     // Each run reads and writes several 2 MB sheets: few runs by default (FUZZ_RUNS=20 for a soak).
     await fuzz('stale-batch/titleblocks', 3, (rng) => batchScenario(rng, 'titleblocks'));
     if (!process.env.FUZZ_SEED) expect(commandWrites).toBeGreaterThan(0); // the property exercised real writes
-  }, 600_000);
+  }, fuzzTimeout());
 });

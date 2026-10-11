@@ -8,7 +8,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { SaveQueue, type QueuedResult } from '../src/app/savequeue';
 import { pathKey, setPathPlatform } from '../src/app/paths';
-import { Rng, fuzz, check } from './helpers/fuzz';
+import { Rng, fuzz, check, fuzzTimeout } from './helpers/fuzz';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -173,11 +173,11 @@ describe('fuzz: save queue', () => {
     vi.useFakeTimers();
     const runs = await fuzz('savequeue/interleavings', 1500, (rng) => scenario(rng, false));
     expect(runs).toBeGreaterThan(0);
-  }, 600_000);
+  }, fuzzTimeout());
   it('the same with saves that land on another path (a Save As dialog picked an open file)', async () => {
     vi.useFakeTimers();
     await fuzz('savequeue/redirects', 1500, (rng) => scenario(rng, true));
-  }, 600_000);
+  }, fuzzTimeout());
 });
 
 describe('save queue fuzzing regressions', () => {

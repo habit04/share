@@ -114,3 +114,8 @@ export async function fuzz(name: string, runs: number, body: (rng: Rng, seed: nu
 export function check(cond: unknown, msg: string | (() => string)): asserts cond {
   if (!cond) throw new Error(typeof msg === 'string' ? msg : msg());
 }
+
+/** Test timeout for a fuzz property: 10 minutes, times FUZZ_RUNS (soaks run longer). */
+export function fuzzTimeout(ms = 600_000): number {
+  return ms * Math.max(1, Number(env.FUZZ_RUNS) || 1);
+}
