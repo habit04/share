@@ -59,8 +59,8 @@ pull request, with workflow links tied to its exact source commit.
 | 47 | Require committed fixtures; missing test data must fail rather than quietly skip coverage. | Implemented manifest and pretest gate. Optional private fixtures and platform-specific checks remain conditional. Dense performance tests require `JCAD_BENCH=1` and are mandatory in CI/release. `scripts/check-fixtures.mjs`, `tests/fixtures/manifest.json`. |
 | 48 | Bound screenshot output and parse complete streams; chunk boundaries must not hide browser errors. | Implemented UTF-8 stream decoder, separate bounded tails and exact shared allowances. `e2e/output-scanner.mjs`, `tests/screenshot-output.test.ts`. |
 | 49 | Validate exports in an independent CAD implementation; self-round-trip tests can share the same bugs. | Implemented optional licensed AutoCAD Core Console harness. Seven committed fixture exports and a generated nested-dimension/override case passed AutoCAD 2027 AUDIT with zero errors and normalized entity type/count checks. No vendor drawings are committed. |
-| 50 | Release exactly the checked source and complete installer set; artifacts must match the tested commit. | Implemented source-SHA checks, five expected installer names, byte hashes and GitHub-signed build attestation before publication. Cross-platform execution remains a CI validation requirement. `scripts/release-provenance.mjs`, `.github/workflows/release.yml`. |
-| 51 | Report actual signing status; ad-hoc/unsigned builds must not be presented as publisher-signed releases. | Implemented configured signature/notarization verification and explicit provenance/release-note status. Azure publisher configuration passes the installed builder's schema and reaches its generated updater configuration. Local Windows builds are unsigned; the configured CI signing service still needs a successful build and signature verification before a signed artifact is claimed. `scripts/azure-signing.mjs`, `tests/azure-signing.test.ts`, `docs/CODE-SIGNING.md`. |
+| 50 | Release exactly the checked source and complete installer set; artifacts must match the tested commit. | Implemented source-SHA checks and byte hashes for all five installers, updater feeds and external blockmaps. Aggregate verification checks the actual uploaded files even in build-only runs; publication additionally requires packaged execution and GitHub-signed build attestation. Builder diagnostics are excluded from public manifests. `scripts/release-provenance.mjs`, `.github/workflows/release.yml`. |
+| 51 | Report actual signing status; ad-hoc/unsigned builds must not be presented as publisher-signed releases. | Implemented configured signature/notarization verification and explicit provenance/release-note status. Azure publisher configuration passes the installed builder's schema and reaches its generated updater configuration. CI successfully signed and verified the Windows application and installer against the configured publisher. macOS builds currently have verified ad-hoc seals, without Developer ID or notarization. `scripts/azure-signing.mjs`, `tests/azure-signing.test.ts`, `docs/CODE-SIGNING.md`. |
 | 52 | Update documentation to match the implementation; outdated compatibility, security and update claims mislead users. | Implemented support/security/QA/performance/development/release/signing/manual/notices updates, including the remaining limits. |
 | 53 | Extract focused infrastructure; isolated responsibilities are easier to test without risky wholesale rewrites. | Implemented separate origin, resource-limit, update-policy, DWG worker, geometry-budget, fixture, scanner, benchmark and provenance modules. The updated default branch's `src/app/editor/`, `src/io/dxf/` and `electron/main/` splits are retained with the safety fixes and module-boundary regressions. Existing editor behavior remains covered by end-to-end tests. |
 
@@ -84,7 +84,7 @@ reader behavior; no Autodesk source files, drawings or licensed program content 
 
 ## Validation and remaining limits
 
-Local code validation includes 1,388 passing unit tests (10 conditional skips), TypeScript checks
+Local code validation includes 1,403 passing unit tests (10 conditional skips), TypeScript checks
 for app/Electron/scripts and ESLint. The dangerous hatch cases run in isolated child processes
 with a three-second deadline and 96 MiB JavaScript heap cap; they cover invalid tokens, every
 declared HATCH collection, missing records, huge finite angles, derived coordinate overflow and
@@ -117,8 +117,10 @@ end-to-end check waits for its required controls to finish rendering.
 Windows short/long image paths and macOS's protected system aliases have targeted regressions.
 Normal CI runs Node 22/24 checks, screenshot/performance checks and all 207 desktop checks plus
 preference restarts on Windows, macOS and Linux. A build-only dispatch additionally builds all
-five installers and runs installed/extracted applications on their respective platforms. Empty
-tag input disables publication. The pull request records the latest exact-commit workflow results.
+five installers and runs installed/extracted applications on their respective platforms. It also
+verifies the complete uploaded installer, updater-feed and blockmap set against source-bound
+hashes, even when the tag is empty and publication is disabled. The pull request records the
+latest exact-commit workflow results.
 
 Before a release is considered verified, its exact final commit must pass the configured CI
 gates and every platform installer must be installed/extracted and exercised on its own OS.

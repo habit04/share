@@ -3,6 +3,7 @@ name: Build installers
 # Release pipeline (docs/RELEASE.md):
 #   checks          the full test gate on the exact commit being released
 #   build           installers for Windows, macOS and Linux from that same commit (needs: checks)
+#   verify-artifacts all uploaded public assets checked together, including build-only dispatches
 #   packaged-smoke  each installer installed / extracted on its own OS and driven end to end
 #   release         publishes the installers, only after all of the above passed, and only when
 #                   the release tag points at the commit the checks ran on; the release notes are
@@ -97,7 +98,7 @@ jobs:
             artifact: JCad-Electrical-Windows
             glob: |
               release/*.exe
-              release/*.exe.blockmap
+              release/*.blockmap
               release/latest*.yml
               release/JCad-Electrical-*-provenance.json
           - os: macos-latest
@@ -106,6 +107,7 @@ jobs:
             artifact: JCad-Electrical-macOS
             glob: |
               release/*.dmg
+              release/*.blockmap
               release/latest*.yml
               release/JCad-Electrical-*-provenance.json
           - os: ubuntu-latest
@@ -115,6 +117,7 @@ jobs:
             glob: |
               release/*.AppImage
               release/*.deb
+              release/*.blockmap
               release/latest*.yml
               release/JCad-Electrical-*-provenance.json
     runs-on: ${{ matrix.os }}
@@ -251,6 +254,35 @@ jobs:
           path: ${{ matrix.glob }}
           if-no-files-found: error
 
+  # This gate also runs when workflow_dispatch has an empty tag: missing metadata or blockmaps
+  # must fail a build-only rehearsal, before publication is enabled.
+  verify-artifacts:
+    needs: [checks, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.checks.outputs.sha }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: JCad-Electrical-*
+      - name: Verify all uploaded assets against the tested source SHA
+        env:
+          SOURCE_SHA: ${{ needs.checks.outputs.sha }}
+        run: node scripts/release-provenance.mjs verify artifacts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verified-release-provenance
+          path: |
+            artifacts/release-provenance.json
+            artifacts/SHA256SUMS.txt
+          if-no-files-found: error
+
   # Install (Windows: NSIS silently), mount (macOS: hdiutil) or extract (Linux: AppImage, deb) the
   # installers just built and run the end-to-end checks against the packaged application
   # (scripts/packaged-smoke.mjs -> scripts/e2e-electron.mjs --packaged).
@@ -304,7 +336,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '')
-    needs: [checks, build, packaged-smoke]
+    needs: [checks, build, packaged-smoke, verify-artifacts]
     runs-on: ubuntu-latest
     permissions:
       contents: write

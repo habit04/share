@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { cpSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import yaml from 'js-yaml';
 
 // scripts/check-workflows.mjs: the real workflows pass, and the release gates it guards are
 // noticed when someone removes them.
@@ -50,7 +51,7 @@ describe('workflow validation', () => {
   });
 
   it('notices a release that no longer waits for the packaged smoke test or checks the tag', () => {
-    const r = check(withRelease((t) => t.replace('needs: [checks, build, packaged-smoke]', 'needs: [checks, build]').replace('target_commitish: ${{ needs.checks.outputs.sha }}', 'target_commitish: ${{ github.sha }}')));
+    const r = check(withRelease((t) => t.replace('needs: [checks, build, packaged-smoke, verify-artifacts]', 'needs: [checks, build]').replace('target_commitish: ${{ needs.checks.outputs.sha }}', 'target_commitish: ${{ github.sha }}')));
     expect(r.code).toBe(1);
     expect(r.out).toMatch(/release must need packaged-smoke/);
     expect(r.out).toMatch(/must target the tested commit/);
@@ -110,5 +111,43 @@ describe('workflow validation', () => {
     const r = check(withRelease((t) => t.replace('# The application comes from the installer; stock Electron seeds the legacy origin test profile.\n      - run: npm ci\n        env:\n', '# The application comes from the installer; stock Electron seeds the legacy origin test profile.\n      - run: npm ci\n        env:\n          ELECTRON_SKIP_BINARY_DOWNLOAD: 1\n')));
     expect(r.code).toBe(1);
     expect(r.out).toMatch(/needs the stock Electron binary for legacy seeding/);
+  });
+
+  it('keeps publication disabled for empty-tag dispatches while aggregate verification is unconditional', () => {
+    const workflow = yaml.load(readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')) as {
+      on: { workflow_dispatch: { inputs: { tag: { default: string } } } };
+      jobs: Record<string, { if?: string; needs?: string[]; steps: { if?: string; run?: string }[] }>;
+    };
+    expect(workflow.on.workflow_dispatch.inputs.tag.default).toBe('');
+    expect(workflow.jobs.release?.if).toBe("startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '')");
+    expect(workflow.jobs['verify-artifacts']?.if).toBeUndefined();
+    expect(workflow.jobs['verify-artifacts']?.steps.every((step) => step.if === undefined)).toBe(true);
+    expect(workflow.jobs.release?.needs).toContain('verify-artifacts');
+  });
+
+  it('rejects aggregate verification hidden behind the publication tag guard', () => {
+    const r = check(withRelease((t) => t.replace('  verify-artifacts:\n', "  verify-artifacts:\n    if: github.event.inputs.tag != ''\n")));
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/verify-artifacts must also run for empty-tag build-only dispatches/);
+  });
+
+  it('rejects publication that no longer depends on aggregate verification', () => {
+    const r = check(withRelease((t) => t.replace('needs: [checks, build, packaged-smoke, verify-artifacts]', 'needs: [checks, build, packaged-smoke]')));
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/release must need verify-artifacts/);
+  });
+
+  it('rejects aggregate verification without downloaded assets, tested source binding or failure propagation', () => {
+    const r = check(withRelease((t) => t.replace('  verify-artifacts:\n    needs: [checks, build]', '  verify-artifacts:\n    needs: [checks]').replace('      - name: Verify all uploaded assets against the tested source SHA\n        env:\n          SOURCE_SHA: ${{ needs.checks.outputs.sha }}\n        run: node scripts/release-provenance.mjs verify artifacts', '      - name: Verify all uploaded assets against the tested source SHA\n        continue-on-error: true\n        env:\n          SOURCE_SHA: ${{ github.sha }}\n        run: node scripts/release-provenance.mjs verify artifacts').replace('pattern: JCad-Electrical-*', 'pattern: JCad-Electrical-Windows')));
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/verify-artifacts must need build/);
+    expect(r.out).toMatch(/verify-artifacts must download all platform assets and verify them against the tested source SHA/);
+    expect(r.out).toMatch(/job verify-artifacts step \d+ continues on error/);
+  });
+
+  it('rejects dropping actual macOS DMG blockmaps or updater metadata from the upload', () => {
+    const r = check(withRelease((t) => t.replace('release/*.dmg\n              release/*.blockmap\n              release/latest*.yml', 'release/*.dmg')));
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/macOS upload must include updater metadata and blockmaps/);
   });
 });

@@ -7,10 +7,22 @@ import { pathToFileURL } from 'node:url';
 
 const PLATFORMS = ['Windows', 'macOS', 'Linux'];
 const SIGNING = { Windows: ['unsigned', 'authenticode-verified'], macOS: ['ad-hoc', 'developer-id-notarized'], Linux: ['unsigned'] };
-const ASSET = /\.(?:exe|dmg|AppImage|deb|blockmap|yml)$/;
+const ASSET = /\.(?:exe|dmg|AppImage|deb|blockmap)$/;
+// Match the public upload contract: builder-debug.yml and builder-effective-config.yaml
+// are diagnostics; only updater feeds (latest*.yml) accompany the installers/blockmaps.
+const isReleaseAsset = (file) => ASSET.test(basename(file)) || /^latest.*\.yml$/.test(basename(file));
 export function expectedInstallers(version, platform) {
   const prefix = `jcad-electrical-${version}-`;
   return { Windows: [`${prefix}win-x64.exe`], macOS: [`${prefix}mac-arm64.dmg`, `${prefix}mac-x64.dmg`], Linux: [`${prefix}linux-x86_64.AppImage`, `${prefix}linux-amd64.deb`] }[platform];
+}
+function expectedUpdateAssets(version, platform) {
+  // This repository uses GitHub without a channel override. The installed builder keeps
+  // latest for that provider even when the application version has an alpha/beta suffix;
+  // tests exercise its actual publish configuration and generated feeds for those versions.
+  const feeds = { Windows: 'latest.yml', macOS: 'latest-mac.yml', Linux: 'latest-linux.yml' };
+  // NSIS and DMG targets emit separate blockmaps. AppImage embeds its blockmap.
+  const blockmaps = platform === 'Linux' ? [] : expectedInstallers(version, platform).map((name) => `${name}.blockmap`);
+  return [feeds[platform], ...blockmaps];
 }
 async function digest(file) {
   const hash = createHash('sha256');
@@ -23,9 +35,10 @@ function validateIdentity(platform, version, sha, signing) {
 }
 export async function writeBuildProvenance(dir, platform, version, sha, signing) {
   validateIdentity(platform, version, sha, signing);
-  const names = readdirSync(dir).filter((name) => ASSET.test(name)).sort();
+  const names = readdirSync(dir).filter(isReleaseAsset).sort();
   const expected = expectedInstallers(version, platform);
   for (const name of expected) if (!names.includes(name)) throw new Error(`missing ${platform} installer: ${name}`);
+  for (const name of expectedUpdateAssets(version, platform)) if (!names.includes(name)) throw new Error(`missing ${platform} update asset: ${name}`);
   for (const name of names.filter((name) => /\.(?:exe|dmg|AppImage|deb)$/.test(name))) if (!expected.includes(name)) throw new Error(`unexpected installer: ${name}`);
   const artifacts = [];
   for (const name of names) {
@@ -60,7 +73,7 @@ export async function verifyReleaseProvenance(dir, version, sha) {
     if (!Array.isArray(record.artifacts) || !record.artifacts.length) throw new Error(`empty provenance artifacts: ${file}`);
     const names = new Set();
     for (const artifact of record.artifacts) {
-      if (typeof artifact.name !== 'string' || basename(artifact.name) !== artifact.name || !ASSET.test(artifact.name) || names.has(artifact.name)) throw new Error('invalid or duplicate artifact name');
+      if (typeof artifact.name !== 'string' || basename(artifact.name) !== artifact.name || !isReleaseAsset(artifact.name) || names.has(artifact.name)) throw new Error('invalid or duplicate artifact name');
       names.add(artifact.name);
       if (/\.(?:exe|dmg|AppImage|deb)$/.test(artifact.name) && !expectedInstallers(version, record.platform).includes(artifact.name)) throw new Error(`unexpected ${record.platform} installer: ${artifact.name}`);
       const matches = files.filter((candidate) => basename(candidate) === artifact.name);
@@ -71,10 +84,11 @@ export async function verifyReleaseProvenance(dir, version, sha) {
       covered.add(actual);
     }
     for (const name of expectedInstallers(version, record.platform)) if (!names.has(name)) throw new Error(`missing ${record.platform} installer: ${name}`);
+    for (const name of expectedUpdateAssets(version, record.platform)) if (!names.has(name)) throw new Error(`missing ${record.platform} update asset: ${name}`);
     records.push(record);
   }
   for (const platform of PLATFORMS) if (!seen.has(platform)) throw new Error(`missing platform provenance: ${platform}`);
-  for (const file of files.filter((file) => ASSET.test(file))) if (!covered.has(file)) throw new Error(`artifact has no provenance: ${basename(file)}`);
+  for (const file of files.filter(isReleaseAsset)) if (!covered.has(file)) throw new Error(`artifact has no provenance: ${basename(file)}`);
   records.sort((a, b) => PLATFORMS.indexOf(a.platform) - PLATFORMS.indexOf(b.platform));
   const aggregate = { schemaVersion: 1, version, sourceSha: sha, builds: records };
   writeFileSync(join(dir, 'release-provenance.json'), `${JSON.stringify(aggregate, null, 2)}\n`);

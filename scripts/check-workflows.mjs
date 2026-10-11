@@ -7,7 +7,7 @@
 //
 //   npm run check:workflows        exit 1 with a list of problems
 import { readFileSync, readdirSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join, resolve, matchesGlob } from 'node:path';
 import yaml from 'js-yaml';
 
 const dir = resolve(process.argv[2] || join(import.meta.dirname, '..', '.github', 'workflows'));
@@ -82,15 +82,26 @@ else {
   }
   if (!needsOf('build').includes('checks')) problems.push('release.yml: build must need checks');
   const checkoutRef = (id) => (jobs[id]?.steps ?? []).find((s) => String(s.uses ?? '').startsWith('actions/checkout'))?.with?.ref;
-  for (const id of ['build', 'packaged-smoke', 'release'])
+  for (const id of ['build', 'verify-artifacts', 'packaged-smoke', 'release'])
     if (jobs[id] && checkoutRef(id) !== '${{ needs.checks.outputs.sha }}') problems.push(`release.yml: job ${id} must check out the tested commit (needs.checks.outputs.sha)`);
   if (!jobs['packaged-smoke']) problems.push('release.yml: no "packaged-smoke" job');
   else if (!runs('packaged-smoke').includes('scripts/packaged-smoke.mjs')) problems.push('release.yml: packaged-smoke does not run scripts/packaged-smoke.mjs');
   const smokeInstall = (jobs['packaged-smoke']?.steps ?? []).find((s) => String(s.run ?? '').trim() === 'npm ci');
   if (String(smokeInstall?.env?.ELECTRON_SKIP_BINARY_DOWNLOAD) === '1') problems.push('release.yml: packaged origin migration needs the stock Electron binary for legacy seeding');
+  if (!jobs['verify-artifacts']) problems.push('release.yml: no "verify-artifacts" job');
+  else {
+    const gate = jobs['verify-artifacts'];
+    for (const n of ['checks', 'build']) if (!needsOf('verify-artifacts').includes(n)) problems.push(`release.yml: verify-artifacts must need ${n}`);
+    if (gate.if) problems.push('release.yml: verify-artifacts must also run for empty-tag build-only dispatches');
+    const steps = gate.steps ?? [];
+    const download = steps.findIndex((s) => String(s.uses ?? '').startsWith('actions/download-artifact') && s.with?.path === 'artifacts' && s.with?.pattern === 'JCad-Electrical-*');
+    const verify = steps.findIndex((s) => /scripts\/release-provenance\.mjs verify artifacts\b/.test(String(s.run ?? '')) && s.env?.SOURCE_SHA === '${{ needs.checks.outputs.sha }}');
+    if (download < 0 || verify <= download) problems.push('release.yml: verify-artifacts must download all platform assets and verify them against the tested source SHA');
+    for (const s of [steps[download], steps[verify]]) if (s?.if) problems.push('release.yml: aggregate artifact download and verification must not be conditionally skipped');
+  }
   if (!jobs.release) problems.push('release.yml: no "release" job');
   else {
-    for (const n of ['checks', 'build', 'packaged-smoke']) if (!needsOf('release').includes(n)) problems.push(`release.yml: release must need ${n}`);
+    for (const n of ['checks', 'build', 'packaged-smoke', 'verify-artifacts']) if (!needsOf('release').includes(n)) problems.push(`release.yml: release must need ${n}`);
     if (!runs('release').includes('needs.checks.outputs.sha') && !(jobs.release.steps ?? []).some((s) => JSON.stringify(s.env ?? {}).includes('needs.checks.outputs.sha')))
       problems.push('release.yml: release does not verify the tag against the tested commit');
     if (!/git fetch\b[^\n]*--prune-tags\b/.test(runs('release'))) problems.push('release.yml: release must prune remotely deleted tags before verifying the tested commit');
@@ -119,7 +130,7 @@ else {
     if (/\b(always|cancelled|failure)\s*\(/.test(String(job?.if ?? ''))) problems.push(`release.yml: job ${id} runs even when a job it needs failed (if: ${job.if})`);
     if (job && job['continue-on-error']) problems.push(`release.yml: job ${id} continues on error`);
   }
-  for (const id of ['checks', 'build', 'packaged-smoke', 'release'])
+  for (const id of ['checks', 'build', 'verify-artifacts', 'packaged-smoke', 'release'])
     (jobs[id]?.steps ?? []).forEach((s, i) => {
       if (s && s['continue-on-error']) problems.push(`release.yml: job ${id} step ${i + 1} continues on error`);
       if (s && /\b(always|failure)\s*\(/.test(String(s.if ?? '')) && typeof s.run === 'string') problems.push(`release.yml: job ${id} step ${i + 1} runs a command on always() / failure()`);
@@ -133,6 +144,11 @@ else {
     problems.push('release.yml: Windows signature verification must match the configured updater publisher');
   const platforms = jobs.build?.strategy?.matrix?.include ?? [];
   for (const platform of ['Windows', 'macOS', 'Linux']) if (!platforms.some((entry) => entry.platform === platform && String(entry.glob ?? '').includes('provenance.json'))) problems.push(`release.yml: missing ${platform} artifacts/provenance`);
+  for (const platform of ['Windows', 'macOS', 'Linux']) {
+    const globs = String(platforms.find((entry) => entry.platform === platform)?.glob ?? '').trim().split(/\r?\n/).map((pattern) => pattern.trim());
+    const updates = { Windows: ['latest.yml', 'installer.exe.blockmap'], macOS: ['latest-mac.yml', 'installer.dmg.blockmap'], Linux: ['latest-linux.yml', 'installer.AppImage.blockmap'] }[platform];
+    if (!updates.every((name) => globs.some((pattern) => matchesGlob(`release/${name}`, pattern)))) problems.push(`release.yml: ${platform} upload must include updater metadata and blockmaps`);
+  }
   const record = (jobs.build?.steps ?? []).findIndex((s) => /scripts\/release-provenance\.mjs build release\b/.test(String(s.run ?? '')) && s.env?.SOURCE_SHA === '${{ needs.checks.outputs.sha }}');
   const upload = (jobs.build?.steps ?? []).findIndex((s) => String(s.uses ?? '').startsWith('actions/upload-artifact'));
   if (record < 0 || upload <= record) problems.push('release.yml: record built SHA and checksums before uploading artifacts');

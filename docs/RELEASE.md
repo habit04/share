@@ -13,8 +13,8 @@ accounts and secrets in [CODE-SIGNING.md](CODE-SIGNING.md).
      the release notes: `npm run release-notes -- vX.Y.Z` shows them as the release page will).
    - Make sure CI is green on the branch (`ci.yml`: test, ui, e2e on Ubuntu / Windows / macOS).
    - Optional dress rehearsal: run **Build installers** from the Actions tab on the branch with an
-     empty tag. It runs every gate below and builds and smoke-tests the installers without
-     publishing.
+     empty tag. It runs the source, build, aggregate artifact and packaged smoke gates without
+     publishing. Tag checks, release notes and signed attestation run when publication is enabled.
 2. **Tag the exact commit** and push the tag:
 
    ```bash
@@ -29,9 +29,10 @@ accounts and secrets in [CODE-SIGNING.md](CODE-SIGNING.md).
    | Job | Runs on | What it does | Blocks |
    | --- | --- | --- | --- |
    | `checks` | ubuntu-latest, Node 22 / 24 | On the tagged commit: workflow validation, lint, `typecheck:all`, mandatory-fixture unit tests, dense Node performance, renderer and website builds, UI checks, screenshot scripts and approved baseline comparison, asserted browser performance, Electron end-to-end and legacy preference migration. Outputs the tested commit SHA. | everything below |
-   | `build` | Windows, macOS, Linux | Checks out **that SHA**, checks tag/version, builds all five installers, signs when configured and verifies the final signatures or macOS ad-hoc seal. Records platform, version, built SHA, signing result and artifact SHA-256 hashes in each platform provenance file. | packaged-smoke, release |
+   | `build` | Windows, macOS, Linux | Checks out **that SHA**, checks tag/version when publishing, builds all five installers, signs when configured and verifies the final signatures or macOS ad-hoc seal. Requires the updater feeds and external blockmaps and records platform, version, built SHA, signing result and every public artifact's SHA-256 hash. Builder diagnostic YAML is excluded. | verify-artifacts, packaged-smoke, release |
+   | `verify-artifacts` | ubuntu-latest | Downloads the actual uploaded platform artifacts and requires all five installers, three updater feeds and Windows/macOS external blockmaps, with matching source/version, sizes and hashes. Writes aggregate provenance/checksums. Also runs for an empty-tag build-only dispatch. | release |
    | `packaged-smoke` | Windows, macOS, Linux | Installs the NSIS installer silently, mounts each disk image (the x64 one under Rosetta) and extracts the AppImage and the `.deb`, then runs the headless DWG probe, end-to-end checks and two-launch secure-origin preference migration against each **packaged** application. Writes results per installer (`scripts/packaged-smoke.mjs`). | release |
-   | `release` | ubuntu-latest | Verifies tag/tested SHA, requires all three platform records and five expected installers, verifies source/version and every artifact hash, writes aggregate provenance/checksums and adds actual signing results to the CHANGELOG notes. GitHub signs the complete verified artifact set with `actions/attest@v4`; publication follows all gates. | - |
+   | `release` | ubuntu-latest | Verifies tag/tested SHA, downloads and verifies the complete public asset set again, writes aggregate provenance/checksums and adds actual signing results to the CHANGELOG notes. GitHub signs the complete verified artifact set with `actions/attest@v4`; publication follows all gates. | - |
 
    `npm run check:workflows` (run in CI and in `checks`) fails if any of these gates is removed.
 4. **After publishing**: download one installer per platform from the release page and start
@@ -68,11 +69,12 @@ output includes `origin-migration.log`, per-installer `packaged-smoke-result.jso
 Signing never changes the build itself: without secrets the workflow produces the same
 unsigned (Windows, Linux) or ad-hoc signed (macOS) installers as before.
 
-`scripts/release-provenance.mjs` rejects missing or extra installers, duplicate platform records,
-changed bytes, and any record with a different source SHA or version. Linux artifact architectures
+`scripts/release-provenance.mjs` rejects missing installers, updater feeds or required external
+blockmaps, extra installers, duplicate platform records, changed bytes, and any record with a
+different source SHA or version. The AppImage's blockmap is embedded. Linux artifact architectures
 are `x86_64` for AppImage and `amd64` for deb, as electron-builder names them. Each build validates
-its checked-out `HEAD` against the checks job's SHA before recording hashes. The release validates
-again after downloading the artifacts. Signing labels describe checks that passed in CI:
+its checked-out `HEAD` against the checks job's SHA before recording hashes. Build-only and
+publication jobs validate again after downloading the artifacts. Signing labels describe checks that passed in CI:
 `unsigned`, `authenticode-verified`, `ad-hoc`, or `developer-id-notarized`.
 
 The [GitHub attestation action](https://github.com/actions/attest) signs with an OIDC-issued
