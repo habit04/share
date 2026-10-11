@@ -7,6 +7,7 @@
  *   internals.ts   the private working state those modules share, the fallback UI
  *   commands.ts    the built-in commands
  *   prompter.ts    tools, the tool context, the command line and Enter
+ *   selection.ts   LIST, picking into the selection or a selection request
  *   view.ts        settings, drafting toggles, zoom extents
  *   documents.ts   new / open, tabs, import reports, the Save / Don't Save / Cancel question
  *   save.ts        drawing saves through the save queue
@@ -41,6 +42,7 @@ import { createInternals, fallbackUi, type EditorInternals } from './internals';
 import { registerBuiltinCommands } from './commands';
 import * as prompter from './prompter';
 import * as view from './view';
+import * as select from './selection';
 import * as documents from './documents';
 import * as save from './save';
 import * as projects from './project';
@@ -189,7 +191,6 @@ export class Editor {
   }
 
   // ------------------------------------------------------------- tool context
-
   startTool(tool: Tool): void {
     prompter.startTool(this, this.internals, tool);
   }
@@ -255,37 +256,10 @@ export class Editor {
   }
 
   listSelection(): void {
-    if (this.selection.size === 0) {
-      this.log('Nothing selected.');
-      return;
-    }
-    for (const e of this.doc.entities) {
-      if (!this.selection.has(e.id)) continue;
-      switch (e.type) {
-        case 'line':
-          this.log(`  LINE  Layer: "${e.layer}"  from (${e.a.x.toFixed(4)}, ${e.a.y.toFixed(4)}) to (${e.b.x.toFixed(4)}, ${e.b.y.toFixed(4)})  Length: ${g.dist(e.a, e.b).toFixed(4)}`);
-          break;
-        case 'circle':
-          this.log(`  CIRCLE  Layer: "${e.layer}"  center (${e.center.x.toFixed(4)}, ${e.center.y.toFixed(4)})  radius ${e.radius.toFixed(4)}`);
-          break;
-        case 'arc':
-          this.log(`  ARC  Layer: "${e.layer}"  center (${e.center.x.toFixed(4)}, ${e.center.y.toFixed(4)})  radius ${e.radius.toFixed(4)}`);
-          break;
-        case 'polyline':
-          this.log(`  LWPOLYLINE  Layer: "${e.layer}"  ${e.points.length} vertices${e.closed ? ' (closed)' : ''}`);
-          break;
-        case 'text':
-          this.log(`  TEXT  Layer: "${e.layer}"  "${e.text}"  height ${e.height}`);
-          break;
-        case 'insert':
-          this.log(`  INSERT  Layer: "${e.layer}"  block "${e.block}"  ${Object.entries(e.attributes).map(([k, v]) => `${k}="${v}"`).join(' ')}`);
-          break;
-      }
-    }
+    select.listSelection(this);
   }
 
   // ------------------------------------------------------------- files
-
   newDrawing(): void {
     documents.newDrawing(this);
   }
@@ -412,13 +386,6 @@ export class Editor {
   }
 
   // ------------------------------------------------------------- mouse
-  private hiddenLayers(): Set<string> {
-    return new Set(this.doc.layers.filter((l) => !l.visible).map((l) => l.name));
-  }
-  private lockedLayers(): Set<string> {
-    return new Set(this.doc.layers.filter((l) => l.locked).map((l) => l.name));
-  }
-
   screenFromEvent(ev: MouseEvent): Point {
     const r = this.viewport.canvas.getBoundingClientRect();
     return { x: ev.clientX - r.left, y: ev.clientY - r.top };
@@ -431,7 +398,7 @@ export class Editor {
     const aperture = (this.settings.apertureSize / 2 + 2) * this.viewport.worldPerPixel();
     const wantSnap = (this.tool !== null || this.internals.gripDrag !== null) && !this.internals.selReq;
     const snap = wantSnap
-      ? findObjectSnap(raw, this.doc.entities, this.doc.lookupBlock, this.snap, aperture, this.overlay.trackFrom, this.hiddenLayers())
+      ? findObjectSnap(raw, this.doc.entities, this.doc.lookupBlock, this.snap, aperture, this.overlay.trackFrom, select.hiddenLayers(this))
       : null;
     this.overlay.trackPaths = undefined;
     if (snap) {
@@ -490,16 +457,12 @@ export class Editor {
       this.overlay.hover = null;
     } else {
       // rollover highlight
-      const hit = pickEntity(this.viewport.toWorld(s), this.doc.entities, this.doc.lookupBlock, this.pickAperture(), this.hiddenLayers(), this.lockedLayers());
+      const hit = pickEntity(this.viewport.toWorld(s), this.doc.entities, this.doc.lookupBlock, select.pickAperture(this), select.hiddenLayers(this), select.lockedLayers(this));
       this.overlay.hover = hit?.id ?? null;
       this.overlay.dynText = [];
     }
     this.render();
     this.emit('view');
-  }
-
-  private pickAperture(): number {
-    return this.viewport.settings.pickBox * this.viewport.worldPerPixel();
   }
 
   onMouseDown(ev: MouseEvent): void {
@@ -535,9 +498,9 @@ export class Editor {
         }
       }
     }
-    const hit = pickEntity(raw, this.doc.entities, this.doc.lookupBlock, this.pickAperture(), this.hiddenLayers(), this.lockedLayers());
+    const hit = pickEntity(raw, this.doc.entities, this.doc.lookupBlock, select.pickAperture(this), select.hiddenLayers(this), select.lockedLayers(this));
     if (hit) {
-      this.toggleSelect([hit.id], ev.shiftKey);
+      select.toggleSelect(this, this.internals, [hit.id], ev.shiftKey);
       return;
     }
     this.internals.dragStart = s;
@@ -570,8 +533,8 @@ export class Editor {
       if (this.overlay.selectionBox) {
         const box = this.overlay.selectionBox;
         const bounds = g.boundsOfPoints([box.a, box.b])!;
-        const found = selectByBox(bounds, box.mode, this.doc.entities, this.doc.lookupBlock, this.hiddenLayers(), this.lockedLayers());
-        this.toggleSelect(found.map((e) => e.id), ev.shiftKey);
+        const found = selectByBox(bounds, box.mode, this.doc.entities, this.doc.lookupBlock, select.hiddenLayers(this), select.lockedLayers(this));
+        select.toggleSelect(this, this.internals, found.map((e) => e.id), ev.shiftKey);
       } else if (g.dist(s, this.internals.dragStart) <= 3 && !this.internals.selReq && !ev.shiftKey) {
         // click on empty space clears selection
         if (this.selection.size > 0) {
@@ -594,7 +557,7 @@ export class Editor {
     if (ev.button !== 0 || this.tool) return;
     if (this.layoutInput.doubleClick?.(this.screenFromEvent(ev))) return;
     const raw = this.viewport.toWorld(this.screenFromEvent(ev));
-    const hit = pickEntity(raw, this.doc.entities, this.doc.lookupBlock, this.pickAperture(), this.hiddenLayers(), this.lockedLayers());
+    const hit = pickEntity(raw, this.doc.entities, this.doc.lookupBlock, select.pickAperture(this), select.hiddenLayers(this), select.lockedLayers(this));
     if (!hit) return;
     const ui = this.ui ?? fallbackUi;
     if (hit.type === 'text') {
@@ -626,20 +589,6 @@ export class Editor {
     } else {
       this.hooks.properties?.();
     }
-  }
-
-  private toggleSelect(ids: string[], remove: boolean): void {
-    const target = this.internals.selReq ? this.internals.selReq.ids : this.selection;
-    for (const id of ids) {
-      if (remove) target.delete(id);
-      else target.add(id);
-    }
-    if (this.internals.selReq) {
-      this.selection = new Set(this.internals.selReq.ids);
-      this.log(`${ids.length} found, ${this.internals.selReq.ids.size} total`);
-    }
-    this.emit('selection');
-    this.render();
   }
 
   onWheel(ev: WheelEvent): void {
@@ -746,7 +695,7 @@ export class Editor {
   }
 
   entitiesSelected(): Entity[] {
-    return this.doc.entities.filter((e) => this.selection.has(e.id));
+    return select.entitiesSelected(this);
   }
 }
 
