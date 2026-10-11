@@ -14,6 +14,7 @@ const guard = require('../electron/ipc-guard.cjs') as {
   createPathPolicy: (d: unknown) => {
     known: (p: unknown, what: string) => string | null;
     imageProblem: (p: unknown) => string | null;
+    imagePath: (p: string) => Promise<string>;
     rememberImages: (drawing: string, names: string[]) => void;
     insideRoot: (root: string, file: string, what: string) => Promise<string>;
   };
@@ -159,6 +160,30 @@ describe('file path allow lists (electron/ipc-guard.cjs)', () => {
         linked = false; // no permission to create links (some Windows set-ups)
       }
       if (linked) await expect(policy.insideRoot(plugins, join(plugins, 'evil', 'secret.txt'), 'plugins-read')).rejects.toThrow('Invalid path');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not authorize neighboring images from a project or catalog path', () => {
+    const known = new Set([abs('project', 'job.jcadproj.json'), abs('catalog', 'parts.json')]);
+    const restricted = guard.createPathPolicy({ isKnownPath: (p: string) => known.has(p), knownPaths: () => known, log: { reject: () => {} } });
+    expect(restricted.imageProblem(abs('project', 'secret.png'))).toMatch(/not next to a drawing/);
+    expect(restricted.imageProblem(abs('catalog', 'secret.png'))).toMatch(/not next to a drawing/);
+  });
+
+  it('rechecks the actual image location after following a junction', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'jcad-image-guard-'));
+    if (!root.startsWith(join(tmpdir(), 'jcad-image-guard-'))) throw new Error('Unexpected test folder');
+    try {
+      const drawings = join(root, 'drawings'), privateDir = join(root, 'private');
+      mkdirSync(drawings); mkdirSync(privateDir);
+      writeFileSync(join(drawings, 'safe.png'), 'safe'); writeFileSync(join(privateDir, 'secret.png'), 'secret');
+      symlinkSync(privateDir, join(drawings, 'linked'), 'junction');
+      const known = new Set([join(drawings, 'sheet.dxf')]);
+      const restricted = guard.createPathPolicy({ isKnownPath: (p: string) => known.has(p), knownPaths: () => known, log: { reject: () => {} } });
+      await expect(restricted.imagePath(join(drawings, 'safe.png'))).resolves.toBe(join(drawings, 'safe.png'));
+      await expect(restricted.imagePath(join(drawings, 'linked', 'secret.png'))).rejects.toThrow();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

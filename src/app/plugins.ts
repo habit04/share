@@ -26,6 +26,7 @@ import type { Editor } from './editor';
 import { API_VERSION, createApi, pickTextFile, type ApiHandle, type JcadApi } from './api';
 import { modal, button } from '../ui/dialogkit';
 import { esc } from '../ui/dom';
+import { ensureFileLimit, MAX_PLUGIN_FILE_BYTES, MAX_PROJECT_FILE_BYTES } from '../io/file-limits';
 
 export interface PluginManifest {
   /** Letters, digits, dot, dash, underscore (1-64). */
@@ -268,10 +269,10 @@ function defaultConfirm(editor: Editor): (name: string, path: string) => Promise
 async function defaultPick(accept: string, multiple: boolean): Promise<Array<{ name: string; text: string }>> {
   if (typeof document === 'undefined') return [];
   if (!multiple) {
-    const f = await pickTextFile(accept);
+    const f = await pickTextFile(accept, MAX_PLUGIN_FILE_BYTES);
     return f ? [f] : [];
   }
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = accept;
@@ -280,6 +281,10 @@ async function defaultPick(accept: string, multiple: boolean): Promise<Array<{ n
     input.addEventListener('change', () => {
       const list = [...(input.files ?? [])];
       input.remove();
+      try {
+        if (list.length > 64 || list.reduce((sum, file) => sum + file.size, 0) > MAX_PROJECT_FILE_BYTES) throw new Error('Select at most 64 plugin files totaling no more than 8 MiB.');
+        for (const file of list) ensureFileLimit(file, /\.json$/i.test(file.name) ? 64 * 1024 : MAX_PLUGIN_FILE_BYTES);
+      } catch (error) { reject(error); return; }
       void Promise.all(list.map(async (f) => ({ name: f.name, text: await f.text() }))).then(resolve, () => resolve([]));
     });
     input.addEventListener('cancel', () => {
@@ -402,9 +407,11 @@ export class PluginHost {
     const all = readTrust(this.storage);
     const key = trustKey(src);
     const hit = all[key];
-    if (hit && hit.hash === hash && (hit.answer === 'yes' || !reask)) return hit.answer === 'yes';
+    const strongHash = /^[0-9a-f]{64}$/.test(hash);
+    if (strongHash && hit && hit.hash === hash && (hit.answer === 'yes' || !reask)) return hit.answer === 'yes';
     const yes = await this.confirmFn(src.manifest.name, src.path);
-    all[key] = { answer: yes ? 'yes' : 'no', hash, at: Date.now() };
+    if (strongHash) all[key] = { answer: yes ? 'yes' : 'no', hash, at: Date.now() };
+    else delete all[key];
     writeTrust(this.storage, all);
     return yes;
   }

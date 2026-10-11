@@ -1,0 +1,109 @@
+# Electrical review remediation — October 11, 2026
+
+Baseline: `5dfd8c22a86d7ce681c9e5870a1f1128059dcae1` of `habit04/share`.
+Work is isolated on `codex/electrical-review-fixes`; the original checkout is preserved.
+The table tracks the 53 follow-up recommendations. “Implemented” describes the code and
+local validation, not a claim that every platform installer has already passed CI.
+
+| # | Recommendation and reason | Result and evidence |
+| --- | --- | --- |
+| 1 | Keep failed replacement writes atomic; copying over the destination can truncate the only good file. | Implemented: rename retries fail without destructive copy fallback. `electron/atomic-write.cjs`, `tests/file-safety.test.ts`. |
+| 2 | Order project saves and check revisions; a late save must not clear newer edits or replace another project. | Implemented: save chain, project generation/revision guards, and snapshot capture. `src/app/editor.ts`, `tests/project-file-safety.test.ts`. |
+| 3 | Give each project recovery copy a unique owner; same-name/untitled projects can otherwise overwrite unrelated backups. | Implemented: UUID ownership per project generation; only explicit recovery adopts an existing backup. `src/app/project-autosave.ts`, `tests/cross-track-integrity.test.ts`. |
+| 4 | Warn when Save As resolves to the original lossy import; choosing that same path can still destroy unsupported data. | Implemented: compare the actual chosen path and recheck session/revision/report after dialogs. `src/app/import-open.ts`, `src/app/editor.ts`, `tests/import-open-editor.test.ts`. |
+| 5 | Warn before batch rewriting closed imported drawings; their loss reports must not disappear because no tab is open. | Implemented: retain source path and ask before rewriting lossy DXF sources. `src/app/commands-electrical.ts`, `tests/project-batch-safety.test.ts`. |
+| 6 | Invalidate nested block caches; changing a descendant definition must update bounds, selection and rendering. | Implemented: dependency identities include reachable nested definitions and missing definitions. `src/core/entities.ts`, `src/core/spatial-index.ts`, `tests/block-dependencies.test.ts`. |
+| 7 | Resolve IMAGE definitions in layouts; paper-space images otherwise retain empty paths. | Implemented for model and paper entities. `src/io/dxf.ts`, `tests/interchange-fixtures.test.ts`. |
+| 8 | Report actual import losses; a successful parser does not mean every source feature survives. | Implemented: font approximations, metadata, per-vertex widths, hatch association, columns and reader limits produce structured warnings. `src/io/dxf.ts`, `src/io/dwg.ts`, `docs/SUPPORT-MATRIX.md`. |
+| 9 | Capture all batch snapshots before awaiting dialogs/I/O; mid-operation edits or undo must not be silently overwritten. | Implemented: immutable snapshots plus monotonic session revisions, including edit-then-undo. Save completions also check content generations before changing a replacement drawing's path or recovery copy. `src/app/commands-electrical.ts`, `src/app/sessions.ts`, `tests/project-batch-safety.test.ts`. |
+| 10 | Recover gracefully when project backups cannot be listed/read; drawing recovery should still open. | Implemented: Retry/Later, preserved backups and independent drawing recovery startup. `src/app/project-autosave.ts`, `src/main.ts`, `src/ui/filedialogs.ts`. |
+| 11 | Bound cleanup during close; an unavailable recovery store must not leave the application waiting forever. | Implemented: bounded project discard and recovery drain. Close decisions capture pre-dialog state/revision/generation; changed work prompts again or aborts tab close before removing backups. `src/main.ts`, `src/app/closeflow.ts`, `tests/feedback-fixes.test.ts`, `tests/project-file-safety.test.ts`. |
+| 12 | Preserve DIMDSEP; decimal-comma dimensions must not switch separators. | Implemented and active fixture regression. `src/core/dimension.ts`, `src/io/dxf.ts`, `tests/interchange-fixtures.test.ts`. |
+| 13 | Resolve DIMTXSTY handles; a text style handle is not a style name. | Implemented: STYLE lookup for named and per-entity dimension styles. Font appearance remains a stroke-font approximation. `src/io/dxf.ts`, `src/core/dimension.ts`. |
+| 14 | Preserve DIMLWD/DIMLWE; dimension and extension lineweights affect plots. | Implemented import/export and dimension geometry styling. `src/core/dimension.ts`, `src/io/dxf.ts`, active fixture assertions. |
+| 15 | Apply DIMTZIN separately; tolerance zero suppression differs from the main measurement. | Implemented independent suppression and regression assertions. `src/core/dimension.ts`, `tests/interchange-fixtures.test.ts`. |
+| 16 | Preserve supported ACAD DSTYLE overrides; individual dimensions may differ from their named style. | Implemented: supported override variables applied and exported; unknown groups are reported. `src/io/dxf.ts`, `tests/interchange-fixtures.test.ts`. |
+| 17 | Substitute DIMAPOST `[]`; otherwise alternate units can render as literal placeholders. | Implemented with alternate-unit placement regression checks. `src/core/dimension.ts`, `tests/dimstyle.test.ts`. |
+| 18 | Retain MTEXT columns; column width/gutter/heights and explicit breaks otherwise disappear. | Partly implemented: column data, scaling and explicit breaks survive JCad round trips. Automatic flow is approximated; AC1015 external readers see one MTEXT column while JCad restores `JCAD_MTEXT_COLUMNS` data. These limits are reported. `src/core/mtext.ts`, `tests/mtext-transform.test.ts`, `docs/SUPPORT-MATRIX.md`. |
+| 19 | Write a truthful hatch association flag; retained geometry must not claim missing boundary links. | Implemented: non-associative flag 71 = 0 with a warning that source links are lost. `src/io/dxf.ts`, active fixture regression. |
+| 20 | Keep xref-dependent layer flags; removing dependency flags changes interoperability metadata. | Implemented: bits 16/32 retained through DXF export. `src/core/entities.ts`, `src/io/dxf.ts`, active fixture regression. |
+| 21 | Resolve TABLESTYLE data; style handles alone cannot restore table text/margins. | Implemented exposed text heights, margins and colors with round-trip assertions. Unsupported style features remain documented. `src/io/dxf.ts`, `tests/interchange-fixtures.test.ts`. |
+| 22 | Parse complete numeric tokens; `12junk`, NaN and infinity must not become plausible coordinates. | Implemented finite whole-token parsing and bounded diagnostics. `src/io/dxf.ts`, `tests/dxf-validation.test.ts`. |
+| 23 | Preserve DWG viewport/layout data exposed by the reader; defaults can change clipping, rotation and plotted pages. | Partly implemented: exposed scale, frozen layers and page settings survive. Viewport twist is displayed untwisted and clipping is omitted, with explicit loss warnings. Unavailable native data cannot be reconstructed. `src/io/dwg.ts`, `scripts/dwg-reader.mjs`, `tests/dwg-fidelity.test.ts`. |
+| 24 | Retain or report omitted metadata; silent XDATA/object loss can damage electrical drawings. | Reporting implemented: explicit DXF omissions and conservative DWG reader-limit warnings, including estimated table positions. Arbitrary external application metadata is not preserved. `src/io/dxf.ts`, `src/io/dwg.ts`, `docs/SUPPORT-MATRIX.md`. |
+| 25 | Use a supported Electron/toolchain and remove known dependency vulnerabilities. | Implemented: Electron 44.7.0, Vitest 5, supported Node engines and scoped `@electron/get` proxy dependency override. Complete local npm audit reports zero vulnerabilities. `package.json`, `package-lock.json`. |
+| 26 | Gate self-updates on authenticity; unsigned downloads must not be silently installed. | Implemented: packaged Windows needs trusted publisher configuration; unsigned Windows and Linux/macOS offer manual downloads. Signed verification depends on release credentials. `electron/update-policy.cjs`, `electron/updater.cjs`. |
+| 27 | Reject linked write destinations and parent swaps; symlinks/junctions can redirect writes or backups. | Implemented path/identity rechecks and exclusive temp creation. Real Windows junction tests pass. Portable Node APIs leave a final-check/rename race, documented in `docs/SECURITY-REVIEW.md`. |
+| 28 | Restrict image permissions to actual drawing authority; unrelated JSON or redirected links must not grant file access. | Implemented real-target revalidation and drawing-folder/network restrictions. `electron/ipc-guard.cjs`, `tests/ipc-guard.test.ts`. |
+| 29 | Bound DXF parsing and source allocations; malformed or huge inputs must fail predictably. | Implemented linear tokenization, source/record/string bounds, browser file-size checks and bounded desktop reads. Recovery/plugin/catalog/library reads share byte caps; writes check UTF-8 bytes against matching read limits. `src/io/dxf.ts`, `src/io/file-limits.ts`, `electron/resource-limits.cjs`, `electron/autosave-store.cjs`. |
+| 30 | Bound desktop DWG worker work; corrupt inputs must not hang the main process. | Implemented size/start/parse deadlines, cancellation, worker cleanup and JavaScript heap limits; no main-thread fallback. WASM/native memory is not strictly capped. `electron/dwg-host.cjs`, `tests/dwg-host-limits.test.ts`. |
+| 31 | Bound expanded geometry; small nested blocks can multiply into millions of points. | Implemented weighted primitive/text/attribute work, 100,000 units per insert and 1,000,000 per imported drawing. Validation occurs before replacing sessions. `src/core/geometry-budget.ts`, `tests/block-dependencies.test.ts`. |
+| 32 | Persist plugin trust only with a cryptographic digest; weak hashes must not approve replacement code. | Implemented: SHA-256 only for persistent trust; weak fallback approval lasts the current run. `src/app/plugins.ts`, `tests/plugins.test.ts`. |
+| 33 | Isolate plugins if untrusted third-party code is to be supported; renderer execution is full application authority. | Conditional recommendation remains outstanding: plugins are explicitly trusted code, with confirmation and documented full renderer/bridge access. No claim of capability isolation or safe untrusted plugins. `docs/PLUGIN-API.md`, `docs/SECURITY-REVIEW.md`. |
+| 34 | Deny unsolicited Electron permissions/popups; file content should not grant browser capabilities. | Implemented default deny, main-window sanitized clipboard exception, navigation/window-open denial. `electron/main.cjs`, packaged end-to-end checks. |
+| 35 | Harden renderer origin/CSP/package fuses; broad file-origin and injected runtime behavior are unnecessary. | Implemented secure `jcad://app` assets, CSP and ASAR/Node/file-privilege fuses. Legacy preferences migrate in a temporary controlled sandboxed window. Packaged two-launch migration passes. CLI inspect remains enabled for packaged Playwright validation. |
+| 36 | Ignore renderer `userChosen` claims; only native choices should authorize external project drawings. | Implemented one-shot native dialog/OS/Recent authorization. Forged claims are refused in packaged end-to-end tests. `electron/main.cjs`, `scripts/e2e-electron.mjs`. |
+| 37 | Redact problem reports by default; local paths, drawing names and command history can reveal private work. | Implemented redaction plus explicit opt-in for history/errors/private details. `src/app/diagnostics.ts`, `src/ui/report.ts`, `tests/diagnostics.test.ts`. |
+| 38 | Check pack keys as own properties; inherited object properties are not trusted signing keys. | Implemented own-property lookup before signature verification. `src/electrical/packs.ts`. |
+| 39 | Bound print page dimensions; huge/nonfinite sheets can allocate excessive memory. | Implemented positive finite dimensions up to 200 inches. `electron/resource-limits.cjs`, `tests/resource-limits.test.ts`. |
+| 40 | Move browser DWG parsing off the UI thread; slow/corrupt files should remain cancellable. | Implemented a fresh worker per read, transferable bytes, 128 MiB/60 s limits, abort and teardown. `src/io/dwg-worker-client.ts`, `tests/dwg-worker-client.test.ts`. |
+| 41 | Reuse unchanged drawing renders during cursor motion; redrawing dense geometry each frame wastes work. | Implemented bounded scene cache with state/view/style/selection/hover invalidation; async images and custom painters bypass caching. `src/render/viewport.ts`, `tests/viewport-cache.test.ts`. |
+| 42 | Warm spatial indexes after load/edit; the first hover should not pay every indexing cost. | Implemented scheduled warmup and disposal, keyed by entity/block state. `src/render/viewport.ts`, `src/core/spatial-index.ts`. |
+| 43 | Avoid repeated report scans; repeated reference/device lookups can become quadratic. | Implemented sorted ladder reference finder and shared connectivity maps. `src/electrical/ladder.ts`, `src/electrical/reports.ts`, `tests/reference-finder.test.ts`. |
+| 44 | Enforce browser and release performance budgets; measurements alone do not prevent regressions. | Implemented asserted browser/dense Node budgets in CI and release gates. Local Node/browser checks pass. `scripts/bench-budgets.mjs`, `.github/workflows/ci.yml`, `.github/workflows/release.yml`. |
+| 45 | State supported Node versions; incompatible runtimes should fail clearly before release tooling runs. | Implemented supported Node 22/24 ranges, `.nvmrc` and CI matrices. `package.json`, `docs/DEVELOPMENT.md`. |
+| 46 | Turn deferred fidelity work into regressions; TODOs cannot detect a broken implementation. | All 11 interchange TODOs replaced with active behavioral assertions; new safety/parser/worker/geometry regressions added. `tests/interchange-fixtures.test.ts` and related suites. |
+| 47 | Require committed fixtures; missing test data must fail rather than quietly skip coverage. | Implemented manifest and pretest gate. Optional private fixtures and platform-specific checks remain conditional. Dense performance tests require `JCAD_BENCH=1` and are mandatory in CI/release. `scripts/check-fixtures.mjs`, `tests/fixtures/manifest.json`. |
+| 48 | Bound screenshot output and parse complete streams; chunk boundaries must not hide browser errors. | Implemented UTF-8 stream decoder, separate bounded tails and exact shared allowances. `e2e/output-scanner.mjs`, `tests/screenshot-output.test.ts`. |
+| 49 | Validate exports in an independent CAD implementation; self-round-trip tests can share the same bugs. | Implemented optional licensed AutoCAD Core Console harness. Seven committed fixture exports and a generated nested-dimension/override case passed AutoCAD 2027 AUDIT with zero errors and normalized entity type/count checks. No vendor drawings are committed. |
+| 50 | Release exactly the checked source and complete installer set; artifacts must match the tested commit. | Implemented source-SHA checks, five expected installer names, byte hashes and GitHub-signed build attestation before publication. Cross-platform execution remains a CI validation requirement. `scripts/release-provenance.mjs`, `.github/workflows/release.yml`. |
+| 51 | Report actual signing status; ad-hoc/unsigned builds must not be presented as publisher-signed releases. | Implemented configured signature/notarization verification and explicit provenance/release-note status. Local Windows artifact is unsigned; real signing requires owner-provided CI credentials. `docs/CODE-SIGNING.md`. |
+| 52 | Update documentation to match the implementation; outdated compatibility, security and update claims mislead users. | Implemented support/security/QA/performance/development/release/signing/manual/notices updates, including the remaining limits. |
+| 53 | Extract focused infrastructure; isolated responsibilities are easier to test without risky wholesale rewrites. | Implemented separate origin, resource-limit, update-policy, DWG worker, geometry-budget, fixture, scanner, benchmark and provenance modules. Existing editor behavior remains covered by end-to-end tests. |
+
+## Independent CAD validation
+
+`npm run check:autocad` uses a locally installed licensed AutoCAD Core Console, exports copies of
+committed fixtures to a fresh temporary folder, runs `AUDIT` without repair, normalizes the DXF,
+then compares reimported model/paper entity types and counts. Each process has a deadline and a
+bounded log. It never overwrites source drawings. The validated fixtures cover dimensions,
+hatches/curves, a LibreDWG sample DXF, layouts/title blocks, MTEXT and tables.
+
+AutoCAD 2027 (`X.60.0.0`) found zero audit errors in all eight final exports, including a generated
+nested block containing a dimension with tolerance overrides. This check exposed
+and helped fix invalid 3D LIMITS header groups, an unsupported AC1015 DIMENSION group and missing
+plot-style dictionary references. Entity counts and AUDIT acceptance do not prove visual or
+semantic identity for every CAD feature. In particular, automatic MTEXT column flow, external
+fonts and arbitrary electrical application metadata retain the limits in the support matrix.
+
+A copied installed AutoCAD Electrical IEC tutorial drawing was also read locally to compare
+reader behavior; no Autodesk source files, drawings or licensed program content are distributed.
+
+## Validation and remaining limits
+
+Local validation includes 1,343 passing unit tests (10 conditional skips), seven passing dense
+performance tests, TypeScript checks for app/Electron/scripts, ESLint, fixture/workflow validators,
+a complete dependency audit with zero vulnerabilities, browser interaction/performance checks,
+Windows packaging and the real packaged application's file/plot/recovery/permission flows.
+The final desktop source run using Electron 44.7.0 passed all 206 end-to-end checks.
+The secure-origin migration is tested over two real packaged launches, including Unicode
+preferences and preservation of a value changed after migration.
+
+The workstation's Windows Application Control blocked the latest unsigned executable after
+it was rebuilt. Windows packaging succeeded; final packaged execution needs a machine that
+accepts the unsigned development build, or a properly signed release. The existing installed
+Electron runtime remains usable for final desktop testing. No Windows security policy was changed.
+
+The committed screenshot baselines target Linux and its fonts. A local Windows comparison
+against those baselines failed as expected; a separate build of the baseline commit using the
+same Windows browser matched all 38 schematic/drafting captures at the existing visual comparator's
+threshold. An exact RGBA comparison found four pixels differing by at most 3/255 per channel,
+with no layout or content differences.
+The browser interaction gate passed 607 command runs and 796 clicks. CI must still compare the
+final source against the committed Linux baselines on its configured Chromium runner.
+
+Before a release is considered verified, its exact final commit must pass the configured CI
+gates and every platform installer must be installed/extracted and exercised on its own OS.
+This Windows workstation cannot locally verify macOS notarization or Linux/macOS execution.
+No publisher certificates or credentials were invented. Plugin isolation, full automatic MTEXT
+column flow, arbitrary metadata preservation and strict native/WASM memory caps are not claimed.

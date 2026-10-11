@@ -175,6 +175,7 @@ function appUrlTest(indexFile, devUrl) {
     if (typeof url !== 'string') return false;
     try {
       const u = new URL(url);
+      if (u.protocol === 'jcad:') return u.hostname === 'app' && !u.port && !u.username && !u.password && u.pathname === '/index.html';
       if (u.protocol === 'file:') {
         u.search = '';
         u.hash = '';
@@ -303,10 +304,21 @@ function createPathPolicy({ isKnownPath, isWritablePath = isKnownPath, knownPath
       if (host === null ? referencedImages.has(target) : referencedNetwork.has(netKey(s))) return null;
       // Next to a known file on the same kind of location: local next to local, a share only next to a file on that server.
       for (const k of knownPaths()) {
-        if (networkHost(k) !== host) continue;
+        if (!/\.(dxf|dwg)$/i.test(k) || networkHost(k) !== host) continue;
         if (inside(norm(path.dirname(k)), target)) return null;
       }
       return host === null ? 'not next to a drawing the user opened' : 'network path not next to a file the user opened on that server';
+    },
+    /** Resolve the actual image target before granting access; links cannot extend the scope. */
+    async imagePath(file) {
+      const bad = this.imageProblem(file);
+      if (bad) throw new Error(bad);
+      const fs = require('node:fs/promises');
+      const actual = await fs.realpath(file);
+      if (networkHost(actual) !== networkHost(file)) throw new Error('Image link changes the network location');
+      const actualBad = this.imageProblem(actual);
+      if (actualBad) throw new Error('Image resolves outside the permitted drawing folders');
+      return actual;
     },
     /**
      * Remember the image files a drawing references (absolute, or relative to its folder). A

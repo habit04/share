@@ -2,7 +2,7 @@
  * Crash and fault fuzzing of the recovery store (electron/autosave-store.cjs) and of crash-safe
  * writes (electron/atomic-write.cjs) over an in-memory file system (tests/helpers/memfs.ts):
  * a crash at any file system call, injected failures (EIO, ENOSPC, EPERM / EBUSY renames that
- * end in the copy fallback), then a new launch. Seeds are logged; replay with FUZZ_SEED.
+ * fail safely after rename retries), then a new launch. Seeds are logged; replay with FUZZ_SEED.
  */
 import { describe, it, expect } from 'vitest';
 import { createRequire } from 'node:module';
@@ -202,11 +202,13 @@ async function userFileScenario(rng: Rng): Promise<void> {
   if (oldBak !== undefined) fs.put(`${file}.bak`, oldBak);
   const writer = createAtomicWriter(fs, { platform: rng.pick(['linux', 'win32']), renameDelays: [0, 0, 0] });
   const next = payload('new', rng);
-  fs.crashAt = rng.int(1, 40);
+  // Include the path-identity checks, backup creation, and final rename, plus successful runs.
+  fs.crashAt = rng.bool(0.75) ? rng.int(1, 200) : Infinity;
   const renameFails = rng.bool(0.4);
-  fs.inject = (op, path) => {
+  const ioFailureAt = rng.bool(0.3) ? rng.int(1, 200) : Infinity;
+  fs.inject = (op, path, step) => {
     if (op === 'rename' && renameFails && rng.bool(0.8)) return fsError(rng.pick(['EPERM', 'EBUSY', 'EXDEV']), 'rename', path);
-    if (rng.bool(0.05)) return fsError('EIO', op, path);
+    if (step === ioFailureAt) return fsError('EIO', op, path);
     return null;
   };
   let resolved = false;
@@ -217,20 +219,16 @@ async function userFileScenario(rng: Rng): Promise<void> {
     () => {},
   );
   const crashed = fs.crashed;
+  const trace = [...fs.trace];
   fs.restart();
   const now = fs.get(file);
   const bak = fs.get(`${file}.bak`);
-  const ctx = () => `crash ${crashed}, rename fails ${renameFails}; trace ${fs.trace.length}; file ${JSON.stringify(now?.slice(0, 20))}, bak ${JSON.stringify(bak?.slice(0, 20))}`;
+  const ctx = () => `crash ${crashed}, rename fails ${renameFails}; trace ${trace.join('; ')}; file ${JSON.stringify(now?.slice(0, 20))}, bak ${JSON.stringify(bak?.slice(0, 20))}`;
   if (resolved) check(now === next, () => `write resolved but the file holds ${JSON.stringify(now)} (${ctx()})`);
-  // The drawing is the old or the new version - or, when the copy fallback was interrupted, the .bak holds the old one.
-  // (A new file interrupted in the copy fallback can be cut short: there was nothing to lose.)
-  if (exists) check(now === next || now === old || bak === old, () => `drawing damaged and no complete .bak of it (${ctx()})`);
-  else check(now === undefined || now === next || (renameFails && next.startsWith(now)), () => `new file holds a foreign text (${ctx()})`);
-  // The .bak is the earlier .bak or the old drawing. It can only be cut short when its own copy fallback
-  // (rename refused) was interrupted - and then the drawing itself was not touched yet.
-  if (bak !== undefined && bak !== oldBak && bak !== old) {
-    check(renameFails && now === old, () => `partial .bak ${JSON.stringify(bak.slice(0, 30))} while the drawing changed (${ctx()})`);
-  }
+  // User destinations and completed backups are always whole; partial data may exist only in temps.
+  if (exists) check(now === next || now === old, () => `drawing destination was damaged (${ctx()})`);
+  else check(now === undefined || now === next, () => `new file holds partial or foreign text (${ctx()})`);
+  check(bak === undefined || bak === oldBak || bak === old, () => `backup destination was damaged (${ctx()})`);
 }
 
 describe('fuzz: crash-safe user file writes', () => {

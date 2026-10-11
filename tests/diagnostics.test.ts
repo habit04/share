@@ -26,7 +26,7 @@ describe('problem reports', () => {
   });
   it('writes a complete plain-text report with the full stack of recent errors', () => {
     const r = reportText(base);
-    for (const s of ['Wire numbers skip rung 103', 'Version: 0.3.0', 'win32 x64', 'Drawing: Drawing1.dxf', 'Every rung numbered.', 'at x.ts:1']) expect(r).toContain(s);
+    for (const s of ['Wire numbers skip rung 103', 'Version: 0.3.0', 'win32 x64', 'Drawing: [drawing name omitted]', 'Every rung numbered.', 'at x.ts:1']) expect(r).toContain(s);
   });
   it('prefills the GitHub issue form and keeps the URL short', () => {
     const u = new URL(issueUrl(base));
@@ -38,6 +38,14 @@ describe('problem reports', () => {
     const huge = { ...base, errors: Array.from({ length: 60 }, (_, i) => ({ time: 0, kind: 'error' as const, message: 'x'.repeat(1500) + i })) };
     expect(issueUrl(huge).length).toBeLessThan(9000);
     expect(new URL(issueUrl(huge)).searchParams.get('diagnostics')).toContain('truncated');
+  });
+  it('redacts local paths before sharing and preserves them only with explicit opt-in', () => {
+    const privateInput = { ...base, history: ['OPEN C:\\Customers\\Confidential\\panel.dxf', 'OPEN /home/justin/customer/panel.dxf'], errors: [] };
+    const url = issueUrl(privateInput);
+    expect(url).not.toContain('Confidential');
+    expect(url).not.toContain('customer');
+    expect(reportText(privateInput)).not.toContain('Drawing1.dxf');
+    expect(diagnosticsText({ ...privateInput, includePrivateDetails: true })).toContain('Confidential');
   });
   it('falls back to the first line of the description as the title', () => {
     expect(new URL(issueUrl({ ...base, title: '' })).searchParams.get('title')).toBe('[Bug] Ran AEWIRENO; rung 103 got no number.');

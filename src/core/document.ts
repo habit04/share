@@ -10,6 +10,7 @@ import { DEFAULT_UNITS } from './units';
 // Paper-space layouts (Track E): the layout model and the paper-space entity projection.
 import type { Layout, SpaceRef } from './layouts';
 import { applyPaperEntities, layoutsOf, paperEntities, paperSpaceLayout, sheetBounds, withLayout } from './layouts';
+import { validateGeometryBudget } from './geometry-budget';
 
 /** A named view (VIEW command): world centre and view height. */
 export interface NamedView {
@@ -107,6 +108,9 @@ export class Drawing {
   private redoStack: DrawingState[] = [];
   private listeners = new Set<DocListener>();
   private readonly maxUndo = 200;
+  private mutationRevision = 0;
+  /** Monotonic across edits, undo, redo and loads, even when the same snapshot returns. */
+  get revision(): number { return this.mutationRevision; }
   public filePath: string | null = null;
   public dirty = false;
   /** Current colour for new objects (CECOLOR; Home > Properties colour combo). 'ByLayer' leaves new objects alone. */
@@ -124,6 +128,7 @@ export class Drawing {
       blocks: blocks ?? {},
       currentLayer: currentLayer ?? '0',
     };
+    validateGeometryBudget(this.state);
   }
 
   /**
@@ -184,6 +189,7 @@ export class Drawing {
     const next = fn(this.state);
     if (next === this.state) return;
     this.state = next;
+    this.mutationRevision += 1;
     this.undoStack = this.undoStack.map(fn);
     this.redoStack = this.redoStack.map(fn);
     if (markDirty) this.dirty = true;
@@ -231,6 +237,7 @@ export class Drawing {
   }
 
   private emit(): void {
+    this.mutationRevision += 1;
     for (const l of this.listeners) l(this);
   }
 
@@ -268,6 +275,7 @@ export class Drawing {
   loadCount = 0;
 
   load(state: DrawingState, filePath: string | null = null): void {
+    validateGeometryBudget(state);
     this.loadCount += 1;
     this.state = state;
     this.undoStack = [];

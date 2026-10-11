@@ -9,6 +9,7 @@
 //
 // JCAD_FLOWS=close,open (comma-separated scenario names) runs only those scenarios.
 import { _electron as electron } from 'playwright';
+import { applicationWindow } from './electron-window.mjs';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { execFileSync, spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
@@ -124,7 +125,7 @@ async function launch(profile, { recover = true, extraArgs = [] } = {}) {
   const mainLog = [];
   app.process().stdout?.on('data', (d) => mainLog.push(String(d)));
   app.process().stderr?.on('data', (d) => mainLog.push(String(d)));
-  const win = await app.firstWindow({ timeout: 60_000 });
+  const win = await applicationWindow(app);
   const pageErrors = [];
   win.on('pageerror', (e) => pageErrors.push(`PAGE ERROR ${e.message}`));
   win.on('console', (m) => {
@@ -897,7 +898,7 @@ scenario('project-wide', async () => {
   const ctx = await launch(tempDir('profile'));
   try {
     // A sheet with a title block and the demo ladder (components, wires), saved six times.
-    await ctx.app.evaluate(({ BrowserWindow }, f) => BrowserWindow.getAllWindows()[0].loadFile(f, { query: { demo: '1', norecover: '1' } }), join(repo, 'dist', 'index.html'));
+    await ctx.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].loadURL('jcad://app/index.html?demo=1&norecover=1'));
     await ctx.win.waitForFunction(() => !!window.editor && window.editor.doc.entities.length > 20, null, { timeout: 30_000 });
     const demo = await ctx.win.evaluate(() => ({ entities: window.editor.doc.entities, blocks: Object.values(window.editor.doc.snapshot.blocks) }));
     await ctx.run('NEWSHEET');

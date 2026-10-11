@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { writeDxf, readDxf, DIMSTYLE_APP } from '../src/io/dxf';
 import { DEFAULT_HEADER, type DrawingState } from '../src/core/document';
 import type { DimensionEntity } from '../src/core/entities';
-import { STANDARD_DIMSTYLE, ISO25_DIMSTYLE, namedDimStyles, resolveDimStyle, withDimStyle, dimVarList, dimVarValue, type DimStyle } from '../src/core/dimension';
+import { STANDARD_DIMSTYLE, ISO25_DIMSTYLE, namedDimStyles, resolveDimStyle, withDimStyle, dimVarList, dimVarValue, dimensionText, type DimStyle } from '../src/core/dimension';
+import { importReportOf } from '../src/io/import-report';
 
 const layers = [{ name: '0', color: 7, visible: true, locked: false, lineWeight: 0.25 }];
 
@@ -78,8 +79,61 @@ function drawing(): DrawingState {
 const byName = (list: DimStyle[], name: string) => list.find((s) => s.name === name)!;
 
 describe('dimension styles in DXF', () => {
+  it('reports unsupported native dimension style/header semantics and extra ACAD XDATA', () => {
+    const text = ['0', 'SECTION', '2', 'HEADER', '9', '$DIMAUNIT', '70', '3', '0', 'ENDSEC', '0', 'SECTION', '2', 'TABLES', '0', 'DIMSTYLE', '105', 'A1', '2', 'Radians', '275', '3', '0', 'ENDSEC', '0', 'EOF'].join('\n');
+    const report = importReportOf(readDxf(text))!;
+    expect(report.items).toContainEqual(expect.objectContaining({ type: 'HEADER', action: 'simplified', reason: expect.stringContaining('$DIMAUNIT') }));
+    expect(report.items).toContainEqual(expect.objectContaining({ type: 'DIMSTYLE', action: 'simplified', reason: expect.stringContaining('DIMAUNIT') }));
+    const named = { ...STANDARD_DIMSTYLE, name: 'Overrides' };
+    const state = withDimStyle({ entities: [dim('d', { ...named, decimals: 2 })], layers, blocks: {}, currentLayer: '0' }, named, false);
+    const out = writeDxf(state).replace('1001\r\nACAD\r\n1000\r\nDSTYLE', '1001\r\nACAD\r\n1000\r\nOTHER_METADATA\r\n1000\r\nDSTYLE');
+    expect(importReportOf(readDxf(out))?.items).toContainEqual(expect.objectContaining({ type: 'DIMENSION', reason: expect.stringContaining('XDATA) of ACAD') }));
+  });
+
+  it('keeps per-entity numeric, text-style and arrow overrides without changing its named style', () => {
+    let src = drawing();
+    const named = src.entities[0] as DimensionEntity;
+    const effective: DimStyle = { ...named.style, textHeight: 1.5, decimals: 0, dimLineWeight: 0.35, extLineWeight: 0.13, textStyle: 'NOTES', arrow: 'closed-blank', altPlacement: 'below' };
+    src = { ...src, entities: [{ ...named, style: effective }] };
+    const back = readDxf(writeDxf(src));
+    expect((back.entities[0] as DimensionEntity).style).toMatchObject(effective);
+    expect(byName(namedDimStyles(back), named.style.name).textHeight).toBe(named.style.textHeight);
+  });
+
+  it('round-trips per-entity tolerance flags and partial text-orientation flags', () => {
+    const base = { ...STANDARD_DIMSTYLE, name: 'Tolerance-base' };
+    const variants: DimStyle[] = [
+      { ...base, tolerance: 'symmetrical', tolPlus: 0.1, tolMinus: 0.1, textAlign: 'horizontal' },
+      { ...base, tolerance: 'limits', tolPlus: 0.2, tolMinus: 0.1, textAlign: 'iso' },
+    ];
+    const entities = variants.map((style, i) => dim(`override-${i}`, style));
+    const src = withDimStyle({ entities, layers, blocks: {}, currentLayer: '0' }, base, false);
+    const out = writeDxf(src);
+    const back = readDxf(out);
+    for (let i = 0; i < entities.length; i += 1) {
+      const restored = back.entities[i] as DimensionEntity;
+      expect(resolveDimStyle(restored.style)).toEqual(resolveDimStyle(variants[i]!));
+      expect(dimensionText(restored)).toEqual(dimensionText(entities[i]!));
+    }
+    expect(resolveDimStyle(byName(namedDimStyles(back), base.name)).tolerance).toBe('none');
+    expect(importReportOf(back)?.items.some((item) => item.reason.includes('DSTYLE override'))).toBeFalsy();
+  });
+
+  it('assigns anonymous picture blocks to dimensions nested inside block definitions', () => {
+    const src = drawing();
+    const nested = dim('nested-d', OPEN_TOL);
+    const state: DrawingState = { ...src, entities: [], blocks: { NESTED: { name: 'NESTED', basePoint: { x: 0, y: 0 }, attributes: [], entities: [nested] } } };
+    const out = writeDxf(state);
+    expect(out).not.toContain('\r\n2\r\n*D0\r\n');
+    expect(out).toContain('\r\n3\r\n*D1\r\n');
+    expect(readDxf(out).blocks.NESTED!.entities[0]).toMatchObject({ type: 'dimension', style: { name: 'Mech-Open' } });
+  });
+
   it('writes one DIMSTYLE record per named style with the arrow XDATA', () => {
     const out = writeDxf(drawing());
+    const dimensions = out.split('\r\n0\r\nDIMENSION\r\n').slice(1).map((record) => record.split('\r\n0\r\n')[0]!);
+    expect(dimensions).toHaveLength(3);
+    for (const record of dimensions) expect(record).not.toContain('\r\n280\r\n'); // introduced after AC1015
     const records = out.match(/\r\n0\r\nDIMSTYLE\r\n/g) ?? [];
     expect(records.length).toBe(4); // Standard + three named styles
     expect(out).toContain(`1001\r\n${DIMSTYLE_APP}\r\n1000\r\nDIMBLK1\r\n1000\r\n_OPEN\r\n1000\r\nDIMBLK2\r\n1000\r\n_DOT\r\n`);

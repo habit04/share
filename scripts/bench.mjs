@@ -17,6 +17,7 @@ import { chromium } from 'playwright';
 import { createServer } from 'node:http';
 import { readFile, stat, mkdir, writeFile } from 'node:fs/promises';
 import { join, extname, resolve } from 'node:path';
+import { checkBrowserBudgets, BROWSER_BUDGETS } from './bench-budgets.mjs';
 
 const root = join(process.cwd(), 'dist');
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml' };
@@ -158,4 +159,11 @@ if (process.env.JCAD_BENCH_OUT) {
   await writeFile(join(dir, 'bench.json'), JSON.stringify({ ...result, chromium: browser.version(), platform: `${process.platform} ${process.arch}`, at: new Date().toISOString() }, null, 2));
 }
 for (const e of errors) console.error(e);
+if (process.env.JCAD_BENCH_ASSERT === '1') {
+  const factor = Number(process.env.JCAD_PERF_FACTOR ?? 1);
+  const failures = checkBrowserBudgets(result, factor);
+  errors.push(...failures);
+  for (const failure of failures) console.error(`FAIL browser performance: ${failure}`);
+  console.log(`bench budgets: ${failures.length ? 'FAILED' : 'OK'} (factor ${factor}; ${JSON.stringify(BROWSER_BUDGETS)})`);
+}
 process.exit(errors.length ? 1 : 0);

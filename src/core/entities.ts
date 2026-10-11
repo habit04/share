@@ -2,7 +2,7 @@ import type { Point, Bounds } from './geometry';
 import * as g from './geometry';
 import { strokeTextWidth } from '../render/hershey';
 import { dimensionGeometry, type DimensionEntity } from './dimension';
-import { mtextLayoutFull, type MTextEntity, type MTextAttachment } from './mtext';
+import { mtextLayoutFull, type MTextEntity, type MTextAttachment, type MTextColumns } from './mtext';
 import { interpolateFitPoints, isValidNurbs, nurbsPoints, type NurbsCurve } from './spline';
 import { findPattern, loopPolygon, patternSegments, pointInLoops, worldPatternLines, type HatchLoop, type WorldPatternLine } from './hatch';
 import { tableGeometry, type TableEntity } from './table';
@@ -303,6 +303,8 @@ export interface Layer {
   readonly plot?: boolean;
   /** True colour 0xRRGGBB (DXF 420 on the LAYER record); shown instead of `color` when set. */
   readonly trueColor?: number;
+  /** Xref-dependent LAYER flags (DXF 70 bits 16 and 32). */
+  readonly xrefFlags?: number;
 }
 
 let idCounter = 0;
@@ -921,6 +923,11 @@ function sampledPolyline(e: CircleEntity | ArcEntity, tf: (p: Point) => Point): 
  * rotation, translation). Text stays readable (position moves, glyphs are not mirrored),
  * arcs keep their visible sweep, and circles / arcs under a non-uniform scale become polylines.
  */
+function scaledMTextColumns(columns: MTextColumns | undefined, scale: number): MTextColumns | undefined {
+  if (!columns || scale === 1) return columns;
+  return { ...columns, width: columns.width * scale, gutter: columns.gutter * scale, heights: columns.heights.map((height) => height * scale) };
+}
+
 export function blockTransform(e: Entity, tf: (p: Point) => Point, rotation: number, sx: number, sy: number, mirror: boolean): Entity {
   const uniform = Math.abs(sx - sy) < 1e-12;
   const k = Math.sqrt(Math.abs(sx * sy));
@@ -942,7 +949,7 @@ export function blockTransform(e: Entity, tf: (p: Point) => Point, rotation: num
     case 'text':
       return { ...e, position: tf(e.position), height: e.height * k, rotation: e.rotation + rotation, align: mirror ? flipAlign(e.align) : e.align };
     case 'mtext':
-      return { ...e, position: tf(e.position), height: e.height * k, width: e.width * k, rotation: e.rotation + rotation };
+      return { ...e, position: tf(e.position), height: e.height * k, width: e.width * k, rotation: e.rotation + rotation, columns: scaledMTextColumns(e.columns, k) };
     case 'insert':
       return {
         ...e,
@@ -981,8 +988,87 @@ export function blockTransform(e: Entity, tf: (p: Point) => Point, rotation: num
   }
 }
 
+const workCache = new WeakMap<Entity, number>();
+/** Coordinate and text work copied or rendered by each instance of an immutable entity. */
+export function entityGeometryWork(entity: Entity): number {
+  const hit = workCache.get(entity);
+  if (hit !== undefined) return hit;
+  let work = 1;
+  switch (entity.type) {
+    case 'polyline':
+      work += entity.points.length * (entity.bulges?.some((value) => Math.abs(value) > 1e-12) ? 32 : 1);
+      break;
+    case 'spline':
+      work += entity.controlPoints.length + entity.knots.length + (entity.weights?.length ?? 0) + (entity.fitPoints?.length ?? 0);
+      break;
+    case 'hatch':
+      for (const loop of entity.loops) work += loop.points.length * (loop.bulges?.some((value) => Math.abs(value) > 1e-12) ? 32 : 1);
+      for (const line of entity.patternLines ?? []) work += 1 + line.dashes.length;
+      break;
+    case 'leader':
+      work += entity.vertices.length + (entity.text?.length ?? 0) + (entity.raw?.length ?? 0);
+      for (const path of entity.extraPaths ?? []) work += path.length;
+      break;
+    case 'text':
+      work += entity.text.length;
+      break;
+    case 'mtext':
+      work += entity.text.length + (entity.raw?.length ?? 0) + (entity.columns?.heights.length ?? 0);
+      break;
+    case 'insert':
+      for (const value of Object.values(entity.attributes)) work += value.length;
+      break;
+    case 'table':
+      work += entity.rowHeights.length + entity.columnWidths.length + entity.rowHeights.length * entity.columnWidths.length;
+      for (const row of entity.cells) for (const cell of row) work += 1 + cell.text.length + (cell.raw?.length ?? 0);
+      break;
+    case 'dimension':
+      work += entity.text?.length ?? 0;
+      break;
+    case 'image':
+      work += (entity.clip?.length ?? 0) + entity.path.length;
+      break;
+  }
+  workCache.set(entity, work);
+  return work;
+}
+
+const dependencyDepths = new WeakMap<Map<string, BlockDef | undefined>, Map<string, number>>();
+/** Definitions used within rendering's depth limit, including currently missing nested blocks. */
+export function collectBlockDependencies(name: string, lookup: BlockLookup, deps = new Map<string, BlockDef | undefined>()): Map<string, BlockDef | undefined> {
+  const pending = [{ name, depth: 0 }];
+  const depths = dependencyDepths.get(deps) ?? new Map<string, number>();
+  dependencyDepths.set(deps, depths);
+  let examined = 0;
+  while (pending.length) {
+    const current = pending.pop()!;
+    if (current.depth > 8 || (depths.get(current.name) ?? Infinity) <= current.depth) continue;
+    depths.set(current.name, current.depth);
+    const block = lookup(current.name);
+    deps.set(current.name, block);
+    if (!block) continue;
+    if (block.xref && !block.entities.length) continue; // only the fixed placeholder is rendered
+    for (const attribute of block.attributes) examined += 1 + attribute.default.length;
+    for (const entity of block.entities) {
+      examined += entityGeometryWork(entity);
+      if (examined > MAX_BLOCK_EXPANSION_WORK) throw new Error('Block definitions exceed the safe geometry budget.');
+      if (entity.type === 'insert') pending.push({ name: entity.block, depth: current.depth + 1 });
+    }
+    if (examined > MAX_BLOCK_EXPANSION_WORK) throw new Error('Block definitions exceed the safe geometry budget.');
+  }
+  return deps;
+}
+
+export const MAX_BLOCK_EXPANSION_WORK = 100_000;
+interface ExpansionBudget { remaining: number }
+function spendExpansion(budget: ExpansionBudget, work = 1): void {
+  budget.remaining -= work;
+  if (budget.remaining < 0) throw new Error('Block expansion exceeds the safe geometry budget.');
+}
+
 interface InsertCache {
   block: BlockDef;
+  dependencies: ReadonlyMap<string, BlockDef | undefined>;
   exploded: Entity[];
   bounds: Bounds | null;
 }
@@ -993,11 +1079,12 @@ function cachedInsert(ins: InsertEntity, lookup: BlockLookup): InsertCache | nul
   const block = lookup(ins.block);
   if (!block) return null;
   const hit = insertCache.get(ins);
-  if (hit && hit.block === block) return hit;
-  const exploded = explodeInsertUncached(ins, lookup, 0);
+  if (hit && hit.block === block && [...hit.dependencies].every(([name, definition]) => lookup(name) === definition)) return hit;
+  const dependencies = collectBlockDependencies(ins.block, lookup);
+  const exploded = explodeInsertUncached(ins, lookup, 0, { remaining: MAX_BLOCK_EXPANSION_WORK - entityGeometryWork(ins) });
   let bounds: Bounds | null = null;
   for (const sub of exploded) bounds = g.unionBounds(bounds, entityBounds(sub, lookup));
-  const entry = { block, exploded, bounds: bounds ?? g.boundsOfPoints([ins.position]) };
+  const entry = { block, dependencies, exploded, bounds: bounds ?? g.boundsOfPoints([ins.position]) };
   insertCache.set(ins, entry);
   return entry;
 }
@@ -1005,21 +1092,26 @@ function cachedInsert(ins: InsertEntity, lookup: BlockLookup): InsertCache | nul
 /** Expand an insert into world-space entities (recursively). Cached per insert. */
 export function explodeInsert(ins: InsertEntity, lookup: BlockLookup, depth = 0): Entity[] {
   if (depth === 0) return cachedInsert(ins, lookup)?.exploded ?? [];
-  return explodeInsertUncached(ins, lookup, depth);
+  return explodeInsertUncached(ins, lookup, depth, { remaining: MAX_BLOCK_EXPANSION_WORK - entityGeometryWork(ins) });
 }
 
-function explodeInsertUncached(ins: InsertEntity, lookup: BlockLookup, depth: number): Entity[] {
+function explodeInsertUncached(ins: InsertEntity, lookup: BlockLookup, depth: number, budget: ExpansionBudget): Entity[] {
   const block = lookup(ins.block);
   if (!block || depth > 8) return [];
   const tf = insertTransform(ins, block);
-  if (block.xref && block.entities.length === 0) return xrefPlaceholder(ins, block, tf);
+  if (block.xref && block.entities.length === 0) {
+    spendExpansion(budget, 2);
+    return xrefPlaceholder(ins, block, tf);
+  }
   const out: Entity[] = [];
   const similar = isSimilarInsert(ins);
   for (const e of block.entities) {
-    out.push(...transformEntity(e, tf, ins, similar, lookup, depth + 1));
+    spendExpansion(budget, entityGeometryWork(e));
+    for (const part of transformEntity(e, tf, ins, similar, lookup, depth + 1, budget)) out.push(part);
   }
   // Attribute text
   for (const a of block.attributes) {
+    spendExpansion(budget, 1 + a.default.length);
     if (a.invisible || ins.hiddenAttributes?.includes(a.tag)) continue;
     const value = ins.attributes[a.tag] ?? a.default;
     if (!value) continue;
@@ -1070,7 +1162,7 @@ export function similarityTransform(e: Entity, tf: (p: Point) => Point, rotation
     case 'ray':
       return { ...e, base: tf(e.base), direction: g.rotate(e.direction, rotation) };
     case 'mtext':
-      return { ...e, position: tf(e.position), height: e.height * k, width: e.width * k, rotation: e.rotation + rotation };
+      return { ...e, position: tf(e.position), height: e.height * k, width: e.width * k, rotation: e.rotation + rotation, columns: scaledMTextColumns(e.columns, k) };
     case 'dimension':
       return {
         ...e,
@@ -1116,14 +1208,14 @@ export function bakeInheritedColor<T extends Entity>(e: T, layers: readonly Laye
   return { ...rest, color: layer?.color ?? 7, ...(layer?.trueColor !== undefined ? { trueColor: layer.trueColor } : {}) } as T;
 }
 
-function transformEntity(e: Entity, tf: (p: Point) => Point, ins: InsertEntity, similar: boolean, lookup: BlockLookup, depth: number): Entity[] {
+function transformEntity(e: Entity, tf: (p: Point) => Point, ins: InsertEntity, similar: boolean, lookup: BlockLookup, depth: number, budget: ExpansionBudget): Entity[] {
   // Entities on layer "0" inside a block inherit the insert's layer (AutoCAD behaviour).
   const lay = e.layer === '0' ? ins.layer : e.layer;
   const lt = e.linetype && e.linetype.toUpperCase() === 'BYBLOCK' ? ins.linetype : e.linetype;
   const { trueColor: _t, colorLayer: _c, ...plain } = e;
   const styled = { ...plain, layer: lay, ...inheritedColor(e, ins), linetype: lt } as Entity;
   const moved = similar ? similarityTransform(styled, tf, ins.rotation, ins.scale) : blockTransform(styled, tf, ins.rotation, ins.scale, ins.scaleY ?? ins.scale, Boolean(ins.mirror));
-  if (moved.type === 'insert') return explodeInsert(moved, lookup, depth);
+  if (moved.type === 'insert') return explodeInsertUncached(moved, lookup, depth, budget);
   return [moved];
 }
 

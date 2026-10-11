@@ -39,6 +39,7 @@ if (enabled) {
   const pkg = JSON.parse(readFileSync(file, 'utf8'));
   pkg.build.win = {
     ...pkg.build.win,
+    publisherName: env('AZURE_PUBLISHER_NAME'),
     azureSignOptions: {
       publisherName: env('AZURE_PUBLISHER_NAME'),
       endpoint: env('AZURE_SIGNING_ENDPOINT'),

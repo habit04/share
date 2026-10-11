@@ -2,10 +2,9 @@
  * Application updates from GitHub Releases.
  *
  * Two paths:
- *  - Windows (NSIS installer) and Linux AppImage builds update in place through
- *    electron-updater: the release carries latest.yml / latest-linux.yml written by
- *    electron-builder, the new installer is downloaded and applied on restart.
- *  - macOS, Linux .deb, development runs and anything electron-updater cannot handle
+ *  - Windows NSIS installations with a configured trusted publisher update through
+ *    electron-updater, which verifies the downloaded installer's signature.
+ *  - Unsigned Windows, Linux, macOS, development runs and other installations
  *    only check: the GitHub Releases API is asked for the latest version and, if it
  *    is newer, the user is offered the download page. (macOS in-place updates need a
  *    Developer ID signed app; the ad-hoc signed builds cannot be swapped by Squirrel.)
@@ -13,6 +12,7 @@
 const { app, dialog, shell, net } = require('electron');
 const { parseVersion, compareVersions } = require('./version.cjs');
 const { externalUrl } = require('./ipc-guard.cjs');
+const { installationHasTrustedPublisher } = require('./update-policy.cjs');
 
 const OWNER = 'habit04';
 const REPO = 'share';
@@ -35,8 +35,9 @@ let confirmRestart = async () => true;
 /** Whether electron-updater can replace this installation in place. */
 function canSelfUpdate() {
   if (!app.isPackaged) return false;
-  if (process.platform === 'win32') return !process.env.PORTABLE_EXECUTABLE_DIR;
-  if (process.platform === 'linux') return Boolean(process.env.APPIMAGE);
+  if (process.platform === 'win32') return !process.env.PORTABLE_EXECUTABLE_DIR && installationHasTrustedPublisher(process.resourcesPath);
+  // Until release metadata has an independently trusted signature, Linux uses manual downloads.
+  if (process.platform === 'linux') return false;
   return false; // macOS: ad-hoc signed builds cannot be swapped by Squirrel.Mac
 }
 

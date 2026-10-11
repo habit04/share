@@ -8,6 +8,8 @@
  */
 import type { DrawingState } from '../core/document';
 import type { Entity } from '../core/entities';
+import { mtextFormattingProblem } from '../core/mtext';
+import { samePath } from '../app/paths';
 
 /**
  * - dropped: not imported; it is lost when the drawing is saved.
@@ -144,8 +146,30 @@ export function geometryProblem(e: Entity): string | null {
     case 'polyline':
       return e.points.length < 2 ? `a polyline needs at least 2 vertices (it has ${e.points.length})` : null;
     case 'text':
-    case 'mtext':
       return e.height < 0 ? `negative text height ${e.height}` : null;
+    case 'mtext': {
+      if (e.raw) {
+        const format = mtextFormattingProblem(e.raw, e.height);
+        if (format) return format;
+      }
+      return e.height < 0 ? `negative text height ${e.height}` : null;
+    }
+    case 'leader':
+      return e.raw ? mtextFormattingProblem(e.raw, e.textHeight ?? 1) ?? null : null;
+    case 'table':
+      if (!Array.isArray(e.cells)) return 'table cells must be an array';
+      for (const row of e.cells) {
+        if (!Array.isArray(row)) return 'table cell rows must be arrays';
+        for (const cell of row) {
+          if (!cell || typeof cell !== 'object' || typeof cell.text !== 'string') return 'table cells must contain text';
+          if (cell.raw) {
+            if (typeof cell.raw !== 'string') return 'table formatting source must be text';
+            const format = mtextFormattingProblem(cell.raw, cell.height ?? e.textHeight);
+            if (format) return format;
+          }
+        }
+      }
+      return null;
     default:
       return null;
   }
@@ -227,11 +251,6 @@ export function saveOverwriteWarning(state: DrawingState, path: string | null): 
   const n = lossCount(r);
   if (n === 0) return null;
   return `${baseName(path)} contained ${n} object(s) JCad cannot keep (see the import report). Saving over it removes them from the file. Use Save As to keep the original. Save over it anyway?`;
-}
-
-function samePath(a: string, b: string): boolean {
-  const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+/g, '/');
-  return norm(a) === norm(b) || norm(a).toLowerCase() === norm(b).toLowerCase();
 }
 
 function baseName(p: string): string {

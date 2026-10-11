@@ -429,7 +429,8 @@ async function scenario(rng: Rng, opts: Options): Promise<{ closed: boolean; cra
 
 describe('fuzz: autosave, Save, Save As, Save All and crashes together', () => {
   it('a drawing is clean only when on disk, autosaved work survives crashes, close keeps what was not discarded', async () => {
-    vi.useFakeTimers();
+    // Rendering is stubbed; only file-operation clocks participate in this property.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
     let closed = 0;
     let crashed = 0;
     const runs = await fuzz('save-close/editor', 200, async (rng) => {

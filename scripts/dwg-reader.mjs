@@ -28,23 +28,27 @@ async function lib() {
  * @returns {Promise<{payload: object, version: string}>}
  */
 export async function readDwgPayload(bytes, kind = 'dwg') {
+  if (bytes.byteLength > 128 * 1024 * 1024) throw new Error('DWG input exceeds the 128 MiB safety limit.');
   const l = await lib();
   const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
   const ptr = l.dwg_read_data(ab, kind === 'dxf' ? 1 : 0);
   if (!ptr) throw new Error('LibreDWG could not read this file (unsupported version or corrupt data).');
-  let version = '';
   try {
-    version = l.dwg_get_version_type(ptr)?.type ?? '';
-  } catch {
-    /* ignore */
+    let version = '';
+    try {
+      version = l.dwg_get_version_type(ptr)?.type ?? '';
+    } catch { /* the file can still be converted without a version label */ }
+    const db = l.convert(ptr);
+    const payload = payloadFromDatabase(db, version);
+    return { payload, version };
+  } finally {
+    // A conversion error must release native memory just like a successful read.
+    try { l.dwg_free(ptr); }
+    finally {
+      // LibreDWG keeps version state in the module; isolate the next read even after failure.
+      void resetLibreDwg();
+    }
   }
-  const db = l.convert(ptr);
-  l.dwg_free(ptr);
-  // LibreDWG keeps per-version state in the module; reading files of different
-  // versions in one instance can abort the WASM. Start fresh for the next read.
-  void resetLibreDwg();
-  const payload = payloadFromDatabase(db, version);
-  return { payload, version };
 }
 
 /**
@@ -58,6 +62,7 @@ export function payloadFromDatabase(db, version = '') {
     entities: db.entities ?? [],
     layers: (db.tables?.LAYER?.entries ?? []).map((x) => ({
       name: x.name,
+      ...(x.handle ? { handle: String(x.handle) } : {}),
       colorIndex: x.colorIndex,
       color: x.color,
       standardFlag: x.standardFlag,
@@ -80,6 +85,7 @@ export function payloadFromDatabase(db, version = '') {
     imageDefs: (db.objects?.IMAGEDEF ?? []).map((d) => ({ handle: String(d.handle ?? ''), fileName: d.fileName ?? '' })),
     styles: (db.tables?.STYLE?.entries ?? []).map((t) => ({
       name: t.name,
+      ...(t.handle ? { handle: String(t.handle) } : {}),
       standardFlag: t.standardFlag,
       fixedTextHeight: t.fixedTextHeight,
       widthFactor: t.widthFactor,
@@ -95,7 +101,8 @@ export function payloadFromDatabase(db, version = '') {
       standardFlag: t.standardFlag,
       pattern: (t.pattern ?? []).map((x) => ({ elementLength: x.elementLength, elementTypeFlag: x.elementTypeFlag })),
     })),
-    layouts: (db.objects?.LAYOUT ?? []).map((l) => ({ name: l.layoutName, tabOrder: l.tabOrder, blockHandle: String(l.paperSpaceTableId ?? ''), minLimit: l.minLimit, maxLimit: l.maxLimit })),
+    layouts: (db.objects?.LAYOUT ?? []).map((l) => ({ name: l.layoutName, tabOrder: l.tabOrder, blockHandle: String(l.paperSpaceTableId ?? ''), minLimit: l.minLimit, maxLimit: l.maxLimit, ...(l.paperWidth !== undefined ? { plotSettings: l } : {}) })),
+    omittedObjectTypes: Object.fromEntries(Object.entries(db.objects ?? {}).filter(([kind]) => !['LAYOUT', 'IMAGEDEF', 'IMAGEDEF_REACTOR'].includes(kind)).map(([kind, values]) => [kind, Array.isArray(values) ? values.length : 1])),
   };
 }
 

@@ -16,7 +16,7 @@ import { newId } from '../src/core/entities';
 import { readDxf, writeDxf } from '../src/io/dxf';
 import { importReportOf, rawEntitiesOf } from '../src/io/import-report';
 import { Autosaver, autosaveName, localAutosaveStore, type AutosaveStore, type KeyValueStorage } from '../src/app/autosave';
-import { ProjectAutosaver, drawingAutosaves, offerProjectRecovery, projectAutosaveName, isProjectAutosave } from '../src/app/project-autosave';
+import { ProjectAutosaver, drawingAutosaves, offerProjectRecovery, isProjectAutosave } from '../src/app/project-autosave';
 import { parseProject, resolveDrawingPath, type Project } from '../src/app/project';
 import { runCloseWorkflow, saveSymbolForClose, settleBeforeClose, closeErrorText, type CloseDecision, type UnsavedItem } from '../src/app/closeflow';
 import { SessionManager } from '../src/app/sessions';
@@ -152,18 +152,18 @@ describe('project and drawing autosaves across a crash (main-process store)', ()
     ed.updateProject({ ...ed.project, description: 'changed' });
     await pa.flush();
     expect(await autosaver.runNow()).toBe(1);
-    const first = projectAutosaveName(ed.project);
+    const first = (await store1.list()).find((e) => isProjectAutosave(e.name))!.name;
     expect((await store1.list()).map((e) => e.name).sort()).toEqual([autosaveName(ed.sessions.current.docId), first].sort());
 
     // Save As into another folder: the project is saved (its autosave goes), the drawing backup stays.
     expect(await ed.saveProject(true)).toBe(true);
     await pa.flush();
     expect((await store1.list()).map((e) => e.name)).toEqual([autosaveName(ed.sessions.current.docId)]);
-    // More project changes: autosaved under the name of the new location.
+    // More changes use this generation's ownership UUID; the payload carries the new location.
     ed.updateProject({ ...ed.project, descriptions: ['ACME'] });
     await pa.flush();
-    const second = projectAutosaveName(ed.project);
-    expect(second).not.toBe(first);
+    const second = (await store1.list()).find((e) => isProjectAutosave(e.name))!.name;
+    expect(second).toBe(first);
     expect((await store1.list()).filter((e) => isProjectAutosave(e.name)).map((e) => e.name)).toEqual([second]);
 
     // Crash: the next start reads the same folder through a new store.

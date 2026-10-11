@@ -71,12 +71,23 @@ export interface ReportInput {
   errors: readonly DiagnosticEntry[];
   drawingName?: string;
   extra?: readonly string[];
+  /** Explicit opt-in to local paths and drawing names in shared reports. */
+  includePrivateDetails?: boolean;
 }
 
 const iso = (t: number) => new Date(t).toISOString().replace('T', ' ').slice(0, 19);
 
+/** Remove common local absolute paths from shared diagnostics. */
+export function redactLocalPaths(text: string): string {
+  return text
+    .replace(/file:\/\/\/[^\r\n"'<>]*/gi, '[local path]')
+    .replace(/[A-Za-z]:[\\/][^\r\n"'<>]*/g, '[local path]')
+    .replace(/\\\\[^\\\s"'<>]+[\\/][^\r\n"'<>]*/g, '[local path]')
+    .replace(/\/(?:Users|home|tmp|var|mnt|Volumes)\/[^\r\n"'<>]*/g, '[local path]');
+}
+
 /** The diagnostics block (history + errors) shared by the issue body and the saved report. */
-export function diagnosticsText(input: Pick<ReportInput, 'history' | 'errors' | 'extra'>, maxHistory = 40): string {
+export function diagnosticsText(input: Pick<ReportInput, 'history' | 'errors' | 'extra' | 'includePrivateDetails'>, maxHistory = 40): string {
   const lines: string[] = [];
   if (input.extra && input.extra.length) lines.push(...input.extra, '');
   lines.push(`Command history (last ${Math.min(maxHistory, input.history.length)}):`);
@@ -84,7 +95,8 @@ export function diagnosticsText(input: Pick<ReportInput, 'history' | 'errors' | 
   lines.push('', `Captured errors (${input.errors.length}):`);
   if (input.errors.length === 0) lines.push('  none');
   for (const e of input.errors.slice(-15)) lines.push(`  [${iso(e.time)}] ${e.kind}: ${e.message.split('\n')[0]}`);
-  return lines.join('\n');
+  const text = lines.join('\n');
+  return input.includePrivateDetails ? text : redactLocalPaths(text);
 }
 
 /** Full plain-text report (for Copy / Save / e-mail). */
@@ -95,7 +107,7 @@ export function reportText(input: ReportInput): string {
     `Title: ${input.title || '(none)'}`,
     `Version: ${input.version}  Platform: ${input.platform} ${input.arch}`,
     `Date: ${iso(Date.now())}`,
-    input.drawingName ? `Drawing: ${input.drawingName}` : '',
+    input.drawingName ? `Drawing: ${input.includePrivateDetails ? input.drawingName : '[drawing name omitted]'}` : '',
     '',
     'What happened',
     '-------------',
@@ -115,7 +127,8 @@ export function reportText(input: ReportInput): string {
     '',
   ];
   for (const e of input.errors.slice(-5)) if (e.message.includes('\n')) body.push(`--- ${e.kind} @ ${iso(e.time)} ---`, e.message, '');
-  return body.filter((l) => l !== undefined).join('\n');
+  const text = body.filter((l) => l !== undefined).join('\n');
+  return input.includePrivateDetails ? text : redactLocalPaths(text);
 }
 
 const REPO_ISSUES = 'https://github.com/habit04/share/issues/new';

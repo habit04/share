@@ -43,6 +43,19 @@ const example = (name: string) => ({
 });
 
 describe('plugin manifests and sources', () => {
+  it('checks every browser manifest name before reading its contents', async () => {
+    const host = new PluginHost(makeEditor(), { storage: null, confirm: async () => false });
+    try {
+      for (const name of ['plugin.json', 'Plugin.JSON', 'custom-manifest.json']) {
+        const read = vi.fn(async () => '{}');
+        const events = new Map<string, () => void>();
+        const input = { files: [{ name, size: 64 * 1024 + 1, text: read }], style: {}, remove() {}, addEventListener(event: string, callback: () => void) { events.set(event, callback); }, click() { events.get('change')?.(); } };
+        vi.stubGlobal('document', { createElement: () => input, body: { appendChild() {} } });
+        await expect(host.pickFiles('.js,.json', true)).rejects.toThrow(/file limit/);
+        expect(read).not.toHaveBeenCalled();
+      }
+    } finally { vi.unstubAllGlobals(); }
+  });
   it('validates plugin.json', () => {
     expect(parseManifest(manifest('ok'))).toMatchObject({ name: 'ok', main: 'main.js', apiVersion: 1, version: '1.0.0' });
     expect(parseManifest('{}', 'folder-name').name).toBe('folder-name');
@@ -69,6 +82,19 @@ describe('plugin manifests and sources', () => {
 });
 
 describe('PluginHost', () => {
+  it('does not remember plugin trust when cryptographic hashing is unavailable', async () => {
+    vi.stubGlobal('crypto', undefined);
+    try {
+      const storage = memoryStorage(), confirm = vi.fn(async () => true);
+      const bridge = fakeBridge({ hello: example('hello') });
+      const hash = await codeHash(bridge.folders.hello!.code!);
+      storage.setItem(TRUST_KEY, JSON.stringify({ 'folder:/user/plugins/hello/main.js': { answer: 'yes', hash, at: 0 } }));
+      await new PluginHost(makeEditor(), { bridge, storage, confirm }).loadAll();
+      await new PluginHost(makeEditor(), { bridge, storage, confirm }).loadAll();
+      expect(confirm).toHaveBeenCalledTimes(2);
+      expect(JSON.parse(storage.getItem(TRUST_KEY) ?? '{}')).toEqual({});
+    } finally { vi.unstubAllGlobals(); }
+  });
   it('asks once per plugin, remembers the answer and asks again when the code changes', async () => {
     const ed = makeEditor();
     const storage = memoryStorage();

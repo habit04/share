@@ -36,7 +36,7 @@ export interface CloseDeps {
   settle?(): Promise<void>;
 }
 
-type CloseEditor = Pick<Editor, 'sessions' | 'project' | 'projectDirty' | 'saveFile' | 'saveProject' | 'switchSession' | 'lastFileError' | 'log'>;
+type CloseEditor = Pick<Editor, 'sessions' | 'project' | 'projectState' | 'projectDirty' | 'saveFile' | 'saveProject' | 'switchSession' | 'lastFileError' | 'log'>;
 
 /** Everything that has unsaved changes, drawings first (tab order), then symbols, then the project. */
 export function collectUnsaved(editor: CloseEditor, isSymbol: (sessionId: number) => boolean): UnsavedItem[] {
@@ -77,10 +77,21 @@ const MAX_ROUNDS = 3;
  * that keep changing for more than MAX_ROUNDS answers stop the close with a message.
  */
 export async function runCloseWorkflow(editor: CloseEditor, deps: CloseDeps, isSymbol: (sessionId: number) => boolean): Promise<boolean> {
+  type Revision = readonly [state: unknown, generation: number, revision: number] | undefined;
   /** Item key -> the revision the user decided about (saved, or chose not to save). */
-  const decided = new Map<string, unknown>();
-  const revisionOf = (it: UnsavedItem): unknown => (it.kind === 'project' ? editor.project : editor.sessions.all.find((s) => s.id === it.sessionId)?.state);
-  const open = () => collectUnsaved(editor, isSymbol).filter((it) => !decided.has(it.key) || decided.get(it.key) !== revisionOf(it));
+  const decided = new Map<string, Revision>();
+  const revisionOf = (it: UnsavedItem): Revision => {
+    if (it.kind === 'project') {
+      const p = editor.projectState;
+      return [editor.project, p.generation, p.revision];
+    }
+    const s = editor.sessions.all.find((s) => s.id === it.sessionId);
+    return s && [s.state, s.contentGeneration, s.revision];
+  };
+  // Parked drawings can also have their immutable state replaced directly (Symbol Builder).
+  // State identity catches that path; the counters catch edit-and-undo and same-state reloads.
+  const sameRevision = (a: Revision, b: Revision): boolean => a === b || !!a && !!b && a.every((value, i) => value === b[i]);
+  const open = () => collectUnsaved(editor, isSymbol).filter((it) => !decided.has(it.key) || !sameRevision(decided.get(it.key), revisionOf(it)));
   for (let round = 1; ; round += 1) {
     let items = open();
     if (items.length === 0) {
@@ -94,14 +105,15 @@ export async function runCloseWorkflow(editor: CloseEditor, deps: CloseDeps, isS
       await deps.showError(titles, 'it changed again while the other items were being saved; save it yourself, then close again');
       return false;
     }
+    const shown = new Map(items.map((it) => [it.key, revisionOf(it)]));
     const decision = await deps.ask(items);
     if (decision.action === 'cancel') {
       editor.log('Close cancelled.');
       return false;
     }
-    // The answer covers the revisions shown in the dialog (taken now, before any save runs): a drawing
-    // edited while another item is being saved is asked about again.
-    for (const it of items) decided.set(it.key, revisionOf(it));
+    // The answer covers the revisions captured before the dialog opened. Changes during the
+    // dialog or another item's save must be reviewed again.
+    for (const it of items) decided.set(it.key, shown.get(it.key));
     if (decision.action === 'discard') continue;
     for (const it of items) {
       if (!decision.keys.has(it.key)) continue;
@@ -178,15 +190,23 @@ async function saveItem(editor: CloseEditor, deps: CloseDeps, it: UnsavedItem): 
 export async function closeDrawingTab(
   sessions: Pick<Editor['sessions'], 'all' | 'isDirty' | 'titleOf' | 'indexOfId' | 'close'>,
   i: number,
-  deps: { confirmDiscard(title: string): Promise<boolean>; discardBackup(sessionId: number): void },
+  deps: { confirmDiscard(title: string): Promise<boolean>; discardBackup(sessionId: number): void; changed?(title: string): void },
 ): Promise<boolean> {
   const s = sessions.all[i];
   if (!s) return false;
   const id = s.id;
+  const revision = s.revision;
+  const state = s.state;
+  const generation = s.contentGeneration;
   if (sessions.isDirty(i) && !(await deps.confirmDiscard(sessions.titleOf(i)))) return false;
   const now = sessions.indexOfId(id);
   if (now < 0) return true; // closed meanwhile
-  deps.discardBackup(id);
+  const current = sessions.all[now];
+  if (current !== s || current.revision !== revision || current.state !== state || current.contentGeneration !== generation) {
+    deps.changed?.(sessions.titleOf(now));
+    return false;
+  }
   sessions.close(now);
+  deps.discardBackup(id);
   return true;
 }

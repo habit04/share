@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { convertDwg, toImportPayload } from '../src/io/dwg';
 import { writeDxf, readDxf } from '../src/io/dxf';
@@ -12,7 +12,7 @@ const files = ['example_r14.dwg', 'example_2000.dwg', 'example_2004.dwg', 'examp
 describe('DWG import (LibreDWG wasm)', () => {
   for (const f of files) {
     const path = join(fixtures, f);
-    it.skipIf(!existsSync(path))(`converts ${f}`, async () => {
+    it(`converts ${f}`, async () => {
       const { payload } = await readDwgPayload(readFileSync(path), 'dwg');
       const { state } = convertDwg(payload);
       expect(state.entities.length).toBeGreaterThan(10);
@@ -27,7 +27,7 @@ describe('DWG import (LibreDWG wasm)', () => {
     }, 60000);
   }
 
-  it.skipIf(!existsSync(join(fixtures, 'example_2000.dwg')))('keeps text, arcs and layers from example_2000.dwg', async () => {
+  it('keeps text, arcs and layers from example_2000.dwg', async () => {
     const { payload, version } = await readDwgPayload(readFileSync(join(fixtures, 'example_2000.dwg')), 'dwg');
     expect(version).toContain('2000');
     const { state } = convertDwg(payload);
@@ -43,7 +43,7 @@ describe('DWG import (LibreDWG wasm)', () => {
 });
 
 describe('DWG import of drafting entities', () => {
-  it.skipIf(!existsSync(join(fixtures, 'example_2000.dwg')))('converts dimensions, ellipse, point, mtext, xline and ray with bulges kept', async () => {
+  it('converts dimensions, ellipse, point, mtext, xline and ray with bulges kept', async () => {
     const { payload } = await readDwgPayload(readFileSync(join(fixtures, 'example_2000.dwg')), 'dwg');
     const { state, skipped } = convertDwg(payload);
     const types = new Set(state.entities.map((e) => e.type));

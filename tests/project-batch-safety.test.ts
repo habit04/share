@@ -5,6 +5,8 @@
  * equal names in different folders), and an older write never replaces a newer one.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { Drawing, type DrawingState } from '../src/core/document';
 import type { Entity, InsertEntity } from '../src/core/entities';
 import { newId } from '../src/core/entities';
@@ -109,6 +111,7 @@ beforeEach(() => {
     noBackupAsked.push({ name, path, error });
     return continueWithoutBackup;
   };
+  projectUi.confirmLoss = async () => false;
   projectUi.showProblems = () => {};
 });
 afterEach(() => {
@@ -184,6 +187,33 @@ describe('damaged closed drawings', () => {
 });
 
 describe('changes apply only to the revision they were calculated from', () => {
+  it('captures open sheets before an earlier closed-sheet read can edit or replace them', async () => {
+    const f = fake({ ...base, drawings: ['c.dxf', 'a.dxf', 'b.dxf'], files: { '/p/c.dxf': closed() } });
+    const before = f.editor.doc.snapshot;
+    const read = f.editor.fileBridge!.openDrawing!;
+    f.editor.fileBridge!.openDrawing = async (path) => {
+      f.editor.doc.addEntities([note('EDIT DURING READ')]);
+      return read(path);
+    };
+    const { sheets } = await loadProjectSheets(f.editor);
+    const index = sheets.findIndex((s) => s.name === 'a.dxf');
+    expect(sheets[index]!.base).toBe(before);
+    expect(sheets[index]!.doc.entities.some((e) => e.type === 'text' && e.text === 'EDIT DURING READ')).toBe(false);
+    const result = await commitSheets(f.editor, sheets, new Map([[index, { state: sheets[index]!.doc.snapshot, detail: 'update' }]]), 'T', 'I');
+    expect(result!.open).toBe(0);
+    expect(result!.conflicts).toEqual(['a.dxf (edited while the command ran)']);
+  });
+
+  it('edit followed by Undo to the captured state still invalidates the batch revision', async () => {
+    const f = fake({ ...base, drawings: ['a.dxf'], files: {} });
+    const { sheets } = await loadProjectSheets(f.editor);
+    f.editor.doc.addEntities([note('TEMP')]);
+    f.editor.doc.undo();
+    expect(f.editor.doc.snapshot).toBe(sheets[0]!.base);
+    const result = await commitSheets(f.editor, sheets, new Map([[0, { state: sheets[0]!.doc.snapshot, detail: 'update' }]]), 'T', 'I');
+    expect(result!.open).toBe(0);
+    expect(result!.conflicts).toEqual(['a.dxf (edited while the command ran)']);
+  });
   it('an open tab edited while the command waits is reported and left alone', async () => {
     const f = fake({ ...base, files: { '/p/c.dxf': closed() } });
     onConfirm = () => {
@@ -253,6 +283,27 @@ describe('changes apply only to the revision they were calculated from', () => {
     expect(aSession.state.entities.some((e) => e.type === 'text' && e.text === 'XREF')).toBe(true);
     expect(f.editor.doc.filePath).toBe('/p/b.dxf');
     expect(f.editor.doc.entities.some((e) => e.type === 'text' && e.text === 'XREF')).toBe(false);
+  });
+});
+
+describe('closed drawings with import losses', () => {
+  it('requires an explicit loss warning answer before rewriting the source', async () => {
+    const f = fake({ ...base, files: { '/p/c.dxf': closed() } });
+    const original = readFileSync(join(__dirname, 'fixtures', 'unsupported-content.dxf'), 'latin1');
+    f.disk.set('/p/c.dxf', original);
+    const { sheets } = await loadProjectSheets(f.editor);
+    const index = sheets.findIndex((s) => s.source === 'file');
+    const asked: string[] = [];
+    projectUi.confirmLoss = async (_title, message) => { asked.push(message); return false; };
+    const changes = new Map([[index, { state: sheets[index]!.doc.snapshot, detail: 'update' }]]);
+    const declined = await commitSheets(f.editor, sheets, changes, 'T', 'I');
+    expect(asked[0]).toMatch(/contained \d+ object\(s\).*removes them/);
+    expect(declined!.notSaved).toEqual(['c.dxf']);
+    expect(f.writes).toEqual([]);
+    expect(f.disk.get('/p/c.dxf')).toBe(original);
+    projectUi.confirmLoss = async () => true;
+    const accepted = await commitSheets(f.editor, sheets, changes, 'T', 'I');
+    expect(accepted!.written).toBe(1);
   });
 });
 

@@ -24,6 +24,38 @@ function makeHost(): SessionHost & { loads: number } {
 }
 
 describe('document sessions', () => {
+  it('detects edit and undo back to the same snapshot while tab restoration keeps its revision', () => {
+    const host = makeHost(), sessions = new SessionManager(host);
+    const original = sessions.current.state, before = sessions.current.revision;
+    host.doc.addEntities([line('temporary')]); host.doc.undo();
+    expect(sessions.current.state).toBe(original);
+    expect(sessions.current.revision).toBeGreaterThan(before);
+    const revision = sessions.current.revision;
+    sessions.add(); sessions.switchTo(0);
+    expect(sessions.current.revision).toBe(revision);
+    host.doc.patchQuiet((state) => ({ ...state, meta: { quiet: true } }));
+    expect(sessions.current.revision).toBeGreaterThan(revision);
+  });
+  it('tracks content replacements separately from edits, switching and recovered tabs', () => {
+    const host = makeHost(), sessions = new SessionManager(host);
+    const session = sessions.current, original = session.contentGeneration;
+    host.doc.addEntities([line('edit')]);
+    expect(sessions.current.contentGeneration).toBe(original);
+    sessions.add(new Drawing().snapshot, '/recovered.dxf', true);
+    const recovered = sessions.current, recoveredGeneration = recovered.contentGeneration;
+    sessions.switchTo(0); sessions.switchTo(1);
+    expect(sessions.current.contentGeneration).toBe(recoveredGeneration);
+    expect(sessions.current.dirty).toBe(true);
+    sessions.loadInto(recovered.id, new Drawing().snapshot, '/replacement.dxf');
+    expect(sessions.current.contentGeneration).toBeGreaterThan(recoveredGeneration);
+    const loadedGeneration = sessions.current.contentGeneration;
+    sessions.switchTo(0);
+    sessions.loadInto(recovered.id, new Drawing().snapshot, '/background.dxf');
+    expect(sessions.all[1]!.contentGeneration).toBeGreaterThan(loadedGeneration);
+    const backgroundGeneration = sessions.all[1]!.contentGeneration;
+    sessions.switchTo(1);
+    expect(sessions.current.contentGeneration).toBe(backgroundGeneration);
+  });
   it('starts with one untitled session and names new ones sequentially', () => {
     const host = makeHost();
     const sm = new SessionManager(host);

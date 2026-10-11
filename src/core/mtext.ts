@@ -14,6 +14,15 @@ import type { ColorSpec, EntityBase, TextEntity, FieldLink } from './entities';
 
 /** 1 TL, 2 TC, 3 TR, 4 ML, 5 MC, 6 MR, 7 BL, 8 BC, 9 BR */
 export type MTextAttachment = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
+export interface MTextColumns {
+  readonly type: 1 | 2;
+  readonly count: number;
+  readonly width: number;
+  readonly gutter: number;
+  readonly autoHeight: boolean;
+  readonly reversed: boolean;
+  readonly heights: readonly number[];
+}
 
 export interface MTextEntity extends EntityBase {
   readonly type: 'mtext';
@@ -32,6 +41,7 @@ export interface MTextEntity extends EntityBase {
   readonly raw?: string;
   /** Field expression the text was evaluated from (%<\AcVar Date>% ...). */
   readonly field?: FieldLink;
+  readonly columns?: MTextColumns;
 }
 
 export type Measure = (text: string, height: number) => number;
@@ -100,6 +110,8 @@ export type MTextItem = { kind: 'text'; text: string; style: MTextStyle } | { ki
 
 export interface MTextParagraph {
   align?: 'left' | 'center' | 'right' | 'justify';
+  /** An actual, unescaped column break in the formatted stream. */
+  columnBreakBefore?: boolean;
   items: MTextItem[];
 }
 
@@ -112,8 +124,17 @@ function readUntilSemicolon(s: string, i: number): { value: string; next: number
 }
 
 /** Parse MTEXT content with format codes into paragraphs of styled runs. */
-export function parseMText(raw: string, baseHeight: number): MTextParagraph[] {
+export function parseMText(raw: string, baseHeight: number, problem?: (message: string) => void): MTextParagraph[] {
   const paras: MTextParagraph[] = [{ items: [] }];
+  // Leave headroom for text length, width, line spacing and rotated-coordinate arithmetic.
+  // Values at this scale cannot represent a useful CAD annotation.
+  const maxFormatValue = 1e100;
+  const safeValue = (value: number, name: string): boolean => {
+    if (Number.isFinite(value) && Math.abs(value) <= maxFormatValue) return true;
+    problem?.(`${name} exceeds the safe MTEXT formatting range`);
+    return false;
+  };
+  if (!safeValue(baseHeight, 'text height')) baseHeight = 1;
   const base: MTextStyle = { height: baseHeight, widthFactor: 1, oblique: 0, underline: false, overline: false, strike: false, bold: false, italic: false };
   let style = base;
   const stack: MTextStyle[] = [];
@@ -131,13 +152,14 @@ export function parseMText(raw: string, baseHeight: number): MTextParagraph[] {
     flush();
     style = { ...style, ...patch };
   };
-  const newPara = () => {
+  const newPara = (columnBreakBefore = false) => {
     flush();
     const align = cur().align;
-    paras.push(align ? { items: [], align } : { items: [] });
+    paras.push({ items: [], ...(align ? { align } : {}), ...(columnBreakBefore ? { columnBreakBefore: true } : {}) });
   };
   const num = (v: string) => {
-    const n = parseFloat(v);
+    const value = v.trim().replace(/x$/i, '');
+    const n = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(value) ? Number(value) : NaN;
     return Number.isFinite(n) ? n : null;
   };
   let i = 0;
@@ -198,9 +220,11 @@ export function parseMText(raw: string, baseHeight: number): MTextParagraph[] {
     i += 2;
     switch (code) {
       case 'P':
-      case 'N':
       case 'X':
         newPara();
+        break;
+      case 'N':
+        newPara(true);
         break;
       case '~':
         buf += NBSP;
@@ -230,7 +254,9 @@ export function parseMText(raw: string, baseHeight: number): MTextParagraph[] {
         i = r.next;
         const rel = /x$/i.test(r.value.trim());
         const n = num(r.value);
-        if (n !== null && n > 0) set({ height: rel ? style.height * n : n });
+        const height = n === null ? NaN : rel ? style.height * n : n;
+        if (n !== null && n > 0 && safeValue(height, 'inline text height')) set({ height });
+        else if (n === null || n <= 0) problem?.('inline text height must be a complete positive number');
         break;
       }
       case 'W': {
@@ -238,14 +264,17 @@ export function parseMText(raw: string, baseHeight: number): MTextParagraph[] {
         i = r.next;
         const rel = /x$/i.test(r.value.trim());
         const n = num(r.value);
-        if (n !== null && n > 0) set({ widthFactor: rel ? style.widthFactor * n : n });
+        const widthFactor = n === null ? NaN : rel ? style.widthFactor * n : n;
+        if (n !== null && n > 0 && safeValue(widthFactor, 'inline width factor')) set({ widthFactor });
+        else if (n === null || n <= 0) problem?.('inline width factor must be a complete positive number');
         break;
       }
       case 'Q': {
         const r = readUntilSemicolon(raw, i);
         i = r.next;
         const n = num(r.value);
-        if (n !== null) set({ oblique: g.rad(n) });
+        if (n !== null && safeValue(n, 'inline oblique angle')) set({ oblique: g.rad(n) });
+        else if (n === null) problem?.('inline oblique angle must be a complete number');
         break;
       }
       case 'f':
@@ -329,15 +358,23 @@ export function parseMText(raw: string, baseHeight: number): MTextParagraph[] {
       }
       default: {
         // Unknown code: drop it together with its argument when one follows (\Xvalue;).
-        const semi = raw.indexOf(';', i);
-        const nextBreak = raw.slice(i).search(/[\s\\{}]/);
-        if (semi >= 0 && (nextBreak < 0 || semi < i + nextBreak)) i = semi + 1;
+        // Stop at the next delimiter instead of repeatedly searching the entire remaining source.
+        let end = i;
+        while (end < raw.length && !/[\s\\{};]/.test(raw[end]!)) end += 1;
+        if (raw[end] === ';') i = end + 1;
         break;
       }
     }
   }
   flush();
   return paras;
+}
+
+/** Why inline formatting cannot safely be laid out; converters report it with source context. */
+export function mtextFormattingProblem(raw: string, baseHeight: number): string | undefined {
+  let first: string | undefined;
+  parseMText(raw, baseHeight, (message) => { first ??= message; });
+  return first;
 }
 
 /** Plain text of parsed paragraphs (stacks become "top/bottom"). */
@@ -395,7 +432,36 @@ export function mtextLayout(m: MTextEntity, measure: Measure): TextEntity[] {
 
 /** Full layout: text pieces plus decoration strokes. */
 export function mtextLayoutFull(m: MTextEntity, measure: Measure): MTextLayout {
+  const result = layoutMText(m, measure);
+  // Layout may also be called directly by plugins. Invalid derived coordinates must never
+  // escape into Canvas/PDF/bounds even when that caller bypasses import validation.
+  const finitePoint = (p: Point) => Number.isFinite(p.x) && Number.isFinite(p.y);
+  return {
+    texts: result.texts.filter((t) => finitePoint(t.position) && Number.isFinite(t.height) && Number.isFinite(t.rotation) && Number.isFinite(t.widthFactor ?? 1) && Number.isFinite(t.oblique ?? 0)),
+    strokes: result.strokes.filter((s) => finitePoint(s.a) && finitePoint(s.b)),
+  };
+}
+
+function layoutMText(m: MTextEntity, measure: Measure): MTextLayout {
   const src = formattedSource(m);
+  if (m.columns && m.columns.count > 1) {
+    const c = m.columns;
+    const { columns: _columns, ...single } = m;
+    const pieces: MTextParagraph[][] = [[]];
+    for (const paragraph of parseMText(src ?? mtextToDxf(m.text), m.height)) {
+      if (paragraph.columnBreakBefore && pieces.length < c.count) pieces.push([]);
+      pieces[pieces.length - 1]!.push(paragraph);
+    }
+    const totalWidth = c.count * c.width + (c.count - 1) * c.gutter;
+    const col = (m.attachment - 1) % 3;
+    const left = col === 0 ? 0 : col === 1 ? -totalWidth / 2 : -totalWidth;
+    const layouts = pieces.map((paragraphs, i) => {
+      const index = c.reversed ? c.count - 1 - i : i;
+      const x = left + index * (c.width + c.gutter) + (col === 1 ? c.width / 2 : col === 2 ? c.width : 0);
+      return formattedLayout({ ...single, id: `${m.id}:col${i}`, position: g.add(m.position, g.rotate({ x, y: 0 }, m.rotation)), width: c.width }, paragraphs, measure);
+    });
+    return { texts: layouts.flatMap((l) => l.texts), strokes: layouts.flatMap((l) => l.strokes) };
+  }
   if (src !== null) return formattedLayout(m, parseMText(src, m.height), measure);
   const { height: H, lines } = mtextExtents(m, measure);
   const lineH = m.height * LINE_SPACING * (m.lineSpacing || 1);

@@ -22,6 +22,8 @@
  */
 import { execFileSync } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 export const TRACKER_TITLE = 'Download tracker';
 export const TRACKER_LABEL = 'download-tracker';
@@ -279,7 +281,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   return { action: 'alert', changes, issue: issue.number };
 }
 
-const invokedDirectly = process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href;
+const invokedDirectly = process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
 if (invokedDirectly) {
   main().catch((e) => {
     console.error(e.message || e);

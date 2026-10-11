@@ -28,8 +28,8 @@ for (const [label, s] of [
   ['after a round trip', roundTripped],
 ] as const) {
   describe(`interchange reference file ${label}`, () => {
-    it('has no import losses', () => {
-      expect(importReportOf(s)).toBeUndefined();
+    it('reports the stroke-font rendering limitation while preserving all source geometry', () => {
+      expect(importReportOf(s)?.items).toEqual([expect.objectContaining({ type: 'STYLE', action: 'unsupported', reason: expect.stringContaining('stroke font') })]);
     });
 
     it('header: units, current layer, linetype scale, current dimension style', () => {

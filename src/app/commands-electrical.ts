@@ -7,7 +7,9 @@
 import { backupOutcome, type Editor } from './editor';
 import type { Point } from '../core/geometry';
 import type { Entity, InsertEntity } from '../core/entities';
-import { Drawing, type DrawingState } from '../core/document';
+import { Drawing, type DrawingState, type DrawingHistory } from '../core/document';
+import type { DocumentSession } from './sessions';
+import { confirmSaveOver } from './import-open';
 import { ComponentTool, componentDialogInit, componentAttributes, lookupSymbol } from '../tools/electrical';
 import {
   TrimWireTool,
@@ -91,6 +93,7 @@ import {
 } from '../ui/electrical-dialogs';
 import { isComponent } from '../electrical/families';
 import { backupFailedDialog } from '../ui/filedialogs';
+import { confirmDialog } from '../ui/dialogs';
 
 /** The dialog set: whatever main.ts installed on `hooks.electrical`, else the built-in dialogs (created lazily). */
 export function electricalUi(editor: Editor): ElectricalUi {
@@ -533,6 +536,7 @@ export const projectUi = {
   confirmFiles: (title: string, intro: string, items: AffectedDrawing[], opts: { backupAvailable: boolean }): Promise<ConfirmFilesResult | null> => confirmFilesDialog(title, intro, items, opts),
   /** The .bak copy of `file` failed: true = write it anyway ("Continue Without Backup"), false = skip this drawing. */
   confirmNoBackup: (name: string, path: string, error: string): Promise<boolean> => backupFailedDialog(name, path, error),
+  confirmLoss: (title: string, warning: string): Promise<boolean> => confirmDialog(title, warning),
   showProblems: (editor: Editor, sheets: readonly LoadedSheet[], problems: XrefProblem[]): void => showXrefProblems(editor, sheets, problems),
 };
 
@@ -543,6 +547,11 @@ export interface LoadedSheet extends ProjectSheet {
   sessionId?: number;
   /** Open drawings: the document state the changes were calculated from (compared before applying). */
   base?: DrawingState;
+  /** The open session and its immutable history snapshot captured before any file read. */
+  session?: DocumentSession;
+  sessionRevision?: number;
+  history?: DrawingHistory;
+  projectState?: { generation: number; revision: number };
   /** Closed files: hash of the file text that was read (compared with the file on disk before writing). */
   baseHash?: string;
   /** Save-queue revision captured when the drawing was read (an older write never replaces a newer one). */
@@ -562,8 +571,10 @@ export function canReadProjectFiles(editor: Pick<Editor, 'fileBridge'>): boolean
  */
 export async function loadProjectSheets(editor: Editor, opts: { files?: boolean } = {}): Promise<{ sheets: LoadedSheet[]; skipped: string[] }> {
   const project = editor.project;
-  const sessions = editor.sessions.all;
+  const sessions = editor.sessions.all.map((s) => ({ session: s, id: s.id, filePath: s.filePath, state: s.state, history: { undo: [...s.undo], redo: [...s.redo] }, sessionRevision: s.revision, revision: captureRevision() }));
   const activeId = editor.sessions.current.id;
+  const projectState = editor.projectState;
+  const active = sessions.find((s) => s.id === activeId)!;
   const sheets: LoadedSheet[] = [];
   const skipped: string[] = [];
   // Drawings are identified by full path; equal file names in different folders get their folder added.
@@ -581,14 +592,9 @@ export async function loadProjectSheets(editor: Editor, opts: { files?: boolean 
     const d = project.drawings[i]!;
     const path = paths[i]!;
     const base = { name: names[i] || baseName(path), path, index: i, entrySheet: d.sheet, projectSettings: project.settings };
-    if (samePath(editor.doc.filePath, path)) {
-      const state = editor.doc.snapshot;
-      sheets.push({ ...makeSheet(copyOf(state, editor.doc.filePath), base), source: 'active', sessionId: activeId, base: state, revision: captureRevision() });
-      continue;
-    }
-    const s = sessions.find((x) => x.id !== activeId && samePath(x.filePath, path));
+    const s = sessions.find((x) => samePath(x.filePath, path));
     if (s) {
-      sheets.push({ ...makeSheet(copyOf(s.state, s.filePath), base), source: 'session', sessionId: s.id, base: s.state, revision: captureRevision() });
+      sheets.push({ ...makeSheet(copyOf(s.state, s.filePath), base), source: s.id === activeId ? 'active' : 'session', sessionId: s.id, session: s.session, sessionRevision: s.sessionRevision, base: s.state, history: s.history, revision: s.revision, projectState });
       continue;
     }
     if (opts.files === false || !canReadProjectFiles(editor)) {
@@ -608,16 +614,15 @@ export async function loadProjectSheets(editor: Editor, opts: { files?: boolean 
       }
       const doc = new Drawing();
       // A damaged file is not rewritten from a partial read: it is skipped (closedReadError says why).
-      doc.load(withByBlockLibrarySymbols(readDxf(res.text)), path);
+      doc.load(withByBlockLibrarySymbols(readDxf(res.text, { filePath: path })), path);
       doc.ensureBlocks(LIBRARY_BLOCKS);
-      sheets.push({ ...makeSheet(doc, base), source: 'file', baseHash: contentHash(res.text), revision });
+      sheets.push({ ...makeSheet(doc, base), source: 'file', baseHash: contentHash(res.text), revision, projectState });
     } catch (err) {
       skipped.push(`${base.name} (${closedReadError(err, path)})`);
     }
   }
   if (project.drawings.length === 0) {
-    const state = editor.doc.snapshot;
-    sheets.push({ ...makeSheet(copyOf(state, editor.doc.filePath), { name: editor.fileName(), path: editor.doc.filePath, index: -1, projectSettings: project.settings }), source: 'active', sessionId: activeId, base: state, revision: captureRevision() });
+    sheets.push({ ...makeSheet(copyOf(active.state, active.filePath), { name: editor.fileName(), path: active.filePath, index: -1, projectSettings: project.settings }), source: 'active', sessionId: activeId, session: active.session, sessionRevision: active.sessionRevision, base: active.state, history: active.history, revision: active.revision, projectState });
   }
   return { sheets, skipped };
 }
@@ -667,9 +672,27 @@ export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[
   const failed: string[] = [];
   const conflicts: string[] = [];
   const notSaved: string[] = [];
+  const projectChanged = (sh: LoadedSheet) => !!sh.projectState &&
+    (editor.projectState.generation !== sh.projectState.generation || editor.projectState.revision !== sh.projectState.revision);
+  const historyMatches = (sh: LoadedSheet, s: DocumentSession) => !sh.history ||
+    (sh.history.undo.length === s.undo.length && sh.history.undo.every((state, at) => state === s.undo[at]) &&
+     sh.history.redo.length === s.redo.length && sh.history.redo.every((state, at) => state === s.redo[at]));
   for (const [i, c] of changes) {
     const sh = sheets[i]!;
+    if (projectChanged(sh)) {
+      conflicts.push(`${sh.name} (project changed while the command ran)`);
+      continue;
+    }
     if (sh.source !== 'file') {
+      const current = editor.sessions.all.find((s) => s.id === sh.sessionId);
+      if (!current || (sh.session && current !== sh.session)) {
+        failed.push(`${sh.name} (tab closed or replaced)`);
+        continue;
+      }
+      if ((sh.base && current.state !== sh.base) || (sh.sessionRevision !== undefined && current.revision !== sh.sessionRevision) || !historyMatches(sh, current) || !samePath(current.filePath, sh.path)) {
+        conflicts.push(`${sh.name} (edited while the command ran)`);
+        continue;
+      }
       if (editor.sessions.current.id === sh.sessionId) {
         if (sh.base && editor.doc.snapshot !== sh.base) {
           conflicts.push(`${sh.name} (edited while the command ran)`);
@@ -696,6 +719,7 @@ export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[
       s.redo = [];
       s.state = withSpaceOf(c.state, sh.base);
       s.dirty = true;
+      s.revision += 1;
       open += 1;
       continue;
     }
@@ -706,12 +730,14 @@ export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[
     const path = sh.path;
     /** Why the file is no longer the revision the change was calculated from (null = it still is). */
     const changedSince = async (): Promise<string | null> => {
+      if (projectChanged(sh)) return 'project changed while the command ran';
       if (editor.sessions.indexOfPath(path) >= 0) return 'opened in a tab while the command ran';
       if (sh.baseHash !== undefined && bridge.openDrawing) {
         const now = await bridge.openDrawing(path);
         if (!now || now.kind !== 'dxf' || contentHash(now.text) !== sh.baseHash) return 'changed on disk since it was read';
         // Opened in a tab while the file was being read.
         if (editor.sessions.indexOfPath(path) >= 0) return 'opened in a tab while the command ran';
+        if (projectChanged(sh)) return 'project changed while the command ran';
       }
       return null;
     };
@@ -721,6 +747,11 @@ export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[
       const early = await changedSince();
       if (early) {
         conflicts.push(`${sh.name} (${early})`);
+        continue;
+      }
+      const allowed = await confirmSaveOver(sh.doc.snapshot, path, projectUi.confirmLoss, sh, () => !projectChanged(sh) && editor.sessions.indexOfPath(path) < 0);
+      if (allowed !== 'save') {
+        notSaved.push(sh.name);
         continue;
       }
       if (choice.backup && bridge.backupFile) {

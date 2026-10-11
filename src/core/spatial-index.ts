@@ -13,7 +13,7 @@
  */
 import type { Bounds } from './geometry';
 import type { BlockDef, BlockLookup, Entity } from './entities';
-import { entityBounds } from './entities';
+import { collectBlockDependencies, entityBounds } from './entities';
 
 /** Arrays shorter than this are scanned linearly. */
 export const SPATIAL_INDEX_MIN_ENTITIES = 2000;
@@ -76,7 +76,7 @@ function build(entities: readonly Entity[], lookup: BlockLookup): GridIndex {
   let m = 0;
   for (let i = 0; i < n; i += 1) {
     const e = entities[i]!;
-    if (e.type === 'insert' && !blockDeps.has(e.block)) blockDeps.set(e.block, lookup(e.block));
+    if (e.type === 'insert') collectBlockDependencies(e.block, lookup, blockDeps);
     if ((e.type === 'circle' || e.type === 'arc') && e.radius > maxArcRadius) maxArcRadius = e.radius;
     const b = boundsOf(e, lookup);
     bounds[i] = b;

@@ -45,7 +45,7 @@ import {
   resolveDimStyle,
   diffDimStyles,
 } from '../core/dimension';
-import { mtextToDxf, mtextFromDxf, formattedSource, hasFormatting, type MTextAttachment } from '../core/mtext';
+import { mtextToDxf, mtextFromDxf, formattedSource, hasFormatting, type MTextAttachment, type MTextColumns } from '../core/mtext';
 import { findPattern, LoopBuilder, edgeArc, fitPatternToLines } from '../core/hatch';
 import { isValidNurbs, nurbsPoints, interpolateFitPoints } from '../core/spline';
 import { evaluateFields, hasFields, julianToDate, type FieldContext } from '../core/fields';
@@ -58,7 +58,7 @@ import { attdefFlags, attdefFlagProps, type AttributeDefExt } from '../electrica
 // Track E: paper space (layouts, VIEWPORT entities, LAYOUT objects) lives in dxf-layouts.ts.
 import { isScaleName } from '../core/layouts';
 import { planLayouts, writeLayoutHeader, extraBlockRecords, layoutHandleOf, writeLayoutContent, writeLayoutObjects, LayoutReader } from './dxf-layouts';
-import { decodeUnicodeEscapes, encodeDxfText, textStyleFromGroups, textStyleGroups, textStyleOf, textStylesForWrite, textStylesMeta, withTextStyle, type TextStyle } from './encoding';
+import { decodeUnicodeEscapes, encodeDxfText, textStyleFromGroups, textStyleGroups, textStyleOf, textStylesForWrite, textStylesMeta, withTextStyle, STANDARD_TEXT_STYLE, type TextStyle } from './encoding';
 import { ImportReportBuilder, geometryProblem, rawEntitiesOf, withImportData, type RawDxfEntity } from './import-report';
 
 // ---------------------------------------------------------------- writing
@@ -72,6 +72,8 @@ function fmt(n: number): string {
 class Writer {
   private out: string[] = [];
   private handle = 0x100;
+  readonly textStyleHandles = new Map<string, string>();
+  readonly dimensionStyles = new Map<string, DimStyle>();
   pair(code: number, value: string | number): void {
     this.out.push(String(code), typeof value === 'number' ? fmt(value) : value);
   }
@@ -96,6 +98,7 @@ let paperOwners: ReadonlySet<string> = new Set();
 
 /** AcadAnnotative xdata: marks an annotative object (Track E; AutoCAD 2008+ reads it, older readers ignore it). */
 const ANNO_APP = 'AcadAnnotative';
+const MTEXT_COLUMNS_APP = 'JCAD_MTEXT_COLUMNS';
 function writeAnnotativeXdata(w: Writer): void {
   w.pair(1001, ANNO_APP);
   w.pair(1000, 'AnnotativeData');
@@ -195,6 +198,11 @@ function writeMText(w: Writer, e: MTextEntity, owner: string): void {
   w.pair(31, 0);
   w.pair(73, 1);
   w.pair(44, e.lineSpacing || 1);
+  if (e.columns) {
+    w.pair(1001, MTEXT_COLUMNS_APP);
+    const metadata = JSON.stringify(e.columns);
+    for (let offset = 0; offset < metadata.length; offset += 250) w.pair(1000, metadata.slice(offset, offset + 250));
+  }
 }
 
 const DIM_TYPE: Record<DimensionEntity['kind'], number> = { linear: 0, aligned: 1, angular: 5, diameter: 3, radius: 4 };
@@ -208,7 +216,6 @@ function radialPoints(e: DimensionEntity): { q: g.Point; far: g.Point } {
 
 function writeDimension(w: Writer, e: DimensionEntity, owner: string, blockName: string): void {
   writeEntityCommon(w, e, owner, 'DIMENSION', 'AcDbDimension');
-  w.pair(280, 0);
   w.pair(2, blockName);
   let defpoint: g.Point;
   switch (e.kind) {
@@ -281,6 +288,28 @@ function writeDimension(w: Writer, e: DimensionEntity, owner: string, blockName:
       w.pair(25, e.center?.y ?? 0);
       w.pair(35, 0);
       break;
+  }
+  const inherited = w.dimensionStyles.get(e.style.name.toUpperCase());
+  if (inherited) {
+    const derivedCodes: Readonly<Record<string, number>> = { DIMTOL: 71, DIMLIM: 72, DIMTIH: 73, DIMTOH: 74, DIMZIN: 78 };
+    const differences = diffDimStyles(e.style, inherited).filter((v) => DIM_VARIABLES.some((def) => def.name === v.name && def.code !== undefined) || derivedCodes[v.name] !== undefined);
+    if (differences.length || (e.style.textStyle ?? 'Standard') !== (inherited.textStyle ?? 'Standard')) {
+      w.pair(1001, 'ACAD'); w.pair(1000, 'DSTYLE'); w.pair(1002, '{');
+      for (const change of differences) {
+        const def = DIM_VARIABLES.find((v) => v.name === change.name);
+        w.pair(1070, derivedCodes[change.name] ?? def!.code!);
+        w.pair(def?.kind === 'string' ? 1000 : def?.kind === 'number' && ![371, 372].includes(def.code ?? 0) ? 1040 : 1070, change.a);
+      }
+      if ((e.style.textStyle ?? 'Standard') !== (inherited.textStyle ?? 'Standard')) {
+        w.pair(1070, 340);
+        w.pair(1005, w.textStyleHandles.get((e.style.textStyle ?? 'Standard').toUpperCase()) ?? w.textStyleHandles.get('STANDARD')!);
+      }
+      w.pair(1002, '}');
+    }
+    if (e.style.arrow !== inherited.arrow || e.style.arrow2 !== inherited.arrow2 || e.style.altPlacement !== inherited.altPlacement || (e.style.tolerance === 'basic') !== (inherited.tolerance === 'basic')) {
+      w.pair(1001, DIMSTYLE_APP);
+      for (const [key, value] of dimStyleXdata(e.style)) { w.pair(1000, key); w.pair(1000, value); }
+    }
   }
 }
 
@@ -378,6 +407,9 @@ function readDimStyleRecord(o: Obj, tables: readonly Obj[]): DimStyle {
     own.map((p) => [p.code, p.value] as const),
     STANDARD_DIMSTYLE,
   );
+  const textStyleHandle = own.find((p) => p.code === 340)?.value?.toUpperCase();
+  const textStyleRecord = textStyleHandle ? tables.find((t) => t.kind === 'STYLE' && str(t, 5).toUpperCase() === textStyleHandle) : undefined;
+  if (textStyleRecord) s = { ...s, textStyle: str(textStyleRecord, 2, 'Standard') };
   if (s.scale === 0) s = { ...s, scale: 1 };
   const xd = xdata(o, DIMSTYLE_APP);
   if (xd) return applyDimStyleXdata(s, xd);
@@ -463,7 +495,8 @@ function writeHatch(w: Writer, e: HatchEntity, owner: string): void {
   w.pair(230, 1);
   w.pair(2, e.solid ? 'SOLID' : e.pattern || 'ANSI31');
   w.pair(70, e.solid ? 1 : 0);
-  w.pair(71, e.associative ? 1 : 0);
+  // Boundary handles are not retained: a bare associative flag makes AutoCAD AUDIT repair the hatch.
+  w.pair(71, 0);
   w.pair(91, e.loops.length);
   e.loops.forEach((l, i) => {
     const hasBulge = !!l.bulges && l.bulges.some((b) => Math.abs(b) > 1e-12);
@@ -790,6 +823,8 @@ function usedLinetypes(state: DrawingState): Linetype[] {
 
 export function writeDxf(state: DrawingState): string {
   const w = new Writer();
+  const plotStyleDictionary = w.nextHandle();
+  const normalPlotStyle = w.nextHandle();
   const MODEL_SPACE = '1F';
   const PAPER_SPACE = '1B';
   const header = state.header ?? DEFAULT_HEADER;
@@ -802,7 +837,7 @@ export function writeDxf(state: DrawingState): string {
   const dimBlocks = new Map<string, string>();
   const layoutPlan = planLayouts(state, w, PAPER_SPACE);
   paperOwners = layoutPlan.paperOwners;
-  const dimEntities = [...state.entities, ...layoutPlan.entities].filter((e): e is DimensionEntity => e.type === 'dimension');
+  const dimEntities = [...state.entities, ...layoutPlan.entities, ...blockList.flatMap((b) => b.entities)].filter((e): e is DimensionEntity => e.type === 'dimension');
   dimEntities.forEach((d, i) => {
     const name = `*D${i + 1}`;
     dimBlocks.set(d.id, name);
@@ -847,7 +882,6 @@ export function writeDxf(state: DrawingState): string {
     w.pair(9, name);
     w.pair(10, p.x);
     w.pair(20, p.y);
-    w.pair(30, 0);
   };
   hv('$ACADVER', 1, 'AC1015');
   hv('$DWGCODEPAGE', 3, 'ANSI_1252');
@@ -876,7 +910,7 @@ export function writeDxf(state: DrawingState): string {
   // CLASSES: raster images need their class records.
   w.pair(0, 'SECTION');
   w.pair(2, 'CLASSES');
-  if (imageDict) {
+  {
     const cls = (name: string, cpp: string, flags: number, isEntity: boolean) => {
       w.pair(0, 'CLASS');
       w.pair(1, name);
@@ -886,9 +920,13 @@ export function writeDxf(state: DrawingState): string {
       w.pair(280, 0);
       w.pair(281, isEntity ? 1 : 0);
     };
-    cls('IMAGE', 'AcDbRasterImage', 127, true);
-    cls('IMAGEDEF', 'AcDbRasterImageDef', 0, false);
-    cls('IMAGEDEF_REACTOR', 'AcDbRasterImageDefReactor', 1, false);
+    cls('ACDBDICTIONARYWDFLT', 'AcDbDictionaryWithDefault', 0, false);
+    cls('ACDBPLACEHOLDER', 'AcDbPlaceHolder', 0, false);
+    if (imageDict) {
+      cls('IMAGE', 'AcDbRasterImage', 127, true);
+      cls('IMAGEDEF', 'AcDbRasterImageDef', 0, false);
+      cls('IMAGEDEF_REACTOR', 'AcDbRasterImageDefReactor', 1, false);
+    }
   }
   w.pair(0, 'ENDSEC');
 
@@ -952,20 +990,23 @@ export function writeDxf(state: DrawingState): string {
   for (const r of rawRecords) if (!layerList.some((l) => l.name === r.layer)) layerList.push({ name: r.layer, color: 7, visible: true, locked: false, lineWeight: 0.25 });
   table('LAYER', '2', layerList.length, () => {
     for (const l of layerList) {
-      record('LAYER', '2', 'AcDbLayerTableRecord', l.name, (l.locked ? 4 : 0) | (l.frozen ? 1 : 0));
+      record('LAYER', '2', 'AcDbLayerTableRecord', l.name, (l.locked ? 4 : 0) | (l.frozen ? 1 : 0) | ((l.xrefFlags ?? 0) & 48));
       layerHandles.set(l.name, w.lastHandle().toString(16).toUpperCase());
       w.pair(62, l.visible || l.frozen ? l.color : -l.color);
       if (l.trueColor !== undefined) w.pair(420, l.trueColor & 0xffffff);
       w.pair(6, l.linetype && l.linetype.toUpperCase() !== 'BYLAYER' ? l.linetype : 'Continuous');
       w.pair(370, Math.round(l.lineWeight * 100));
       if (l.plot === false) w.pair(290, 0);
-      w.pair(390, 'F');
+      w.pair(390, normalPlotStyle);
     }
   });
   const textStyles = textStylesForWrite(state);
+  const requiredTextStyles = new Set([ds.textStyle, ...allEntities.map((e) => e.type === 'dimension' ? e.style.textStyle : textStyleOf(e))].filter((n): n is string => !!n));
+  for (const name of requiredTextStyles) if (!textStyles.some((s) => s.name.toUpperCase() === name.toUpperCase())) textStyles.push({ ...STANDARD_TEXT_STYLE, name });
   table('STYLE', '3', textStyles.length, () => {
     for (const ts of textStyles) {
       record('STYLE', '3', 'AcDbTextStyleTableRecord', ts.name, ts.flags);
+      w.textStyleHandles.set(ts.name.toUpperCase(), w.lastHandle().toString(16).toUpperCase());
       for (const [code, value] of textStyleGroups(ts)) w.pair(code, value);
     }
   });
@@ -991,14 +1032,17 @@ export function writeDxf(state: DrawingState): string {
   });
   table('UCS', '7', 0, () => {});
   const annotative = allEntities.some((e) => e.annotative);
-  table('APPID', '9', (tableList.length ? 3 : 2) + (annotative ? 1 : 0), () => {
+  const columnMtext = allEntities.some((e) => e.type === 'mtext' && e.columns);
+  table('APPID', '9', (tableList.length ? 3 : 2) + (annotative ? 1 : 0) + (columnMtext ? 1 : 0), () => {
     record('APPID', '9', 'AcDbRegAppTableRecord', 'ACAD');
     record('APPID', '9', 'AcDbRegAppTableRecord', DIMSTYLE_APP);
     if (tableList.length) record('APPID', '9', 'AcDbRegAppTableRecord', TABLE_APP);
     if (annotative) record('APPID', '9', 'AcDbRegAppTableRecord', ANNO_APP);
+    if (columnMtext) record('APPID', '9', 'AcDbRegAppTableRecord', MTEXT_COLUMNS_APP);
   });
   // Dimensions on layouts count too, so their (unnamed) styles get a record.
   const dimStyleList = dimStylesToWrite(state, allEntities);
+  for (const style of dimStyleList) w.dimensionStyles.set(style.name.toUpperCase(), style);
   table('DIMSTYLE', 'A', dimStyleList.length, () => {
     w.pair(100, 'AcDbDimStyleTable');
     for (const style of dimStyleList) {
@@ -1010,6 +1054,7 @@ export function writeDxf(state: DrawingState): string {
       w.pair(2, style.name);
       w.pair(70, 0);
       for (const [code, value] of dimStyleRecordPairs(style)) w.pair(code, value);
+      w.pair(340, w.textStyleHandles.get((style.textStyle ?? 'Standard').toUpperCase()) ?? w.textStyleHandles.get('STANDARD')!);
       w.pair(1001, DIMSTYLE_APP);
       for (const [k, v] of dimStyleXdata(style)) {
         w.pair(1000, k);
@@ -1075,7 +1120,7 @@ export function writeDxf(state: DrawingState): string {
     // Anonymous blocks (*T tables, *U dynamic blocks) must carry flag 1 or AutoCAD rejects the name.
     const xrefFlags = b.xref ? 4 | (b.xref.overlay ? 8 : 0) : 0;
     blockShell(owner, b.name, b.basePoint, (b.attributes.length > 0 ? 2 : 0) | (b.name.startsWith('*') ? 1 : 0) | xrefFlags, b.description, () => {
-      for (const e of b.entities) writeEntity(w, e, owner, state.blocks, undefined, extras);
+      for (const e of b.entities) writeEntityAnno(w, e, owner, state.blocks, dimBlocks, extras);
       for (const a of b.attributes) {
         w.pair(0, 'ATTDEF');
         w.pair(5, w.nextHandle());
@@ -1133,6 +1178,8 @@ export function writeDxf(state: DrawingState): string {
   w.pair(350, 'D');
   w.pair(3, 'ACAD_LAYOUT');
   w.pair(350, layoutPlan.dictionary);
+  w.pair(3, 'ACAD_PLOTSTYLENAME');
+  w.pair(350, plotStyleDictionary);
   if (imageDict) {
     w.pair(3, 'ACAD_IMAGE_DICT');
     w.pair(350, imageDict);
@@ -1143,6 +1190,18 @@ export function writeDxf(state: DrawingState): string {
   w.pair(100, 'AcDbDictionary');
   w.pair(281, 1);
   writeLayoutObjects(w, layoutPlan, MODEL_SPACE, 'C');
+  w.pair(0, 'ACDBDICTIONARYWDFLT');
+  w.pair(5, plotStyleDictionary);
+  w.pair(330, 'C');
+  w.pair(100, 'AcDbDictionary');
+  w.pair(281, 1);
+  w.pair(3, 'Normal');
+  w.pair(350, normalPlotStyle);
+  w.pair(100, 'AcDbDictionaryWithDefault');
+  w.pair(340, normalPlotStyle);
+  w.pair(0, 'ACDBPLACEHOLDER');
+  w.pair(5, normalPlotStyle);
+  w.pair(330, plotStyleDictionary);
   if (imageDict) {
     w.pair(0, 'DICTIONARY');
     w.pair(5, imageDict);
@@ -1230,7 +1289,7 @@ function isIntegerText(t: string): boolean {
     const c = t.charCodeAt(i);
     if (c < 48 || c > 57) return false;
   }
-  return true;
+  return Number.isSafeInteger(Number(t));
 }
 
 /**
@@ -1239,24 +1298,40 @@ function isIntegerText(t: string): boolean {
  * ends early throws a `truncated` DxfReadError unless `recover` is set; then the incomplete last
  * object is left out, open sections are closed and `report.recovered` tells what happened.
  */
-function tokenize(text: string, recover = false, report?: ImportReportBuilder): Pair[] {
+function tokenize(text: string, recover = false, report?: ImportReportBuilder, limits: DxfReadOptions = {}): Pair[] {
   if (text.startsWith('AutoCAD Binary DXF')) throw new DxfReadError('This is a binary DXF file. Save it as an ASCII DXF (DXFOUT, ASCII format) to open it.', 1);
+  if (text.length > (limits.maxSourceLength ?? 128 * 1024 * 1024)) throw new DxfReadError('DXF exceeds the source text size limit.', 1);
+  // Check before split(): many tiny lines or one enormous string must not allocate an unbounded array.
+  let lineLength = 0, lineCount = 1;
+  const maxLines = 2 * (limits.maxPairs ?? 2_000_000) + 2;
+  for (let offset = 0; offset < text.length; offset += 1) {
+    const ch = text.charCodeAt(offset);
+    if (ch === 10 || ch === 13) {
+      if (ch === 13 && text.charCodeAt(offset + 1) === 10) offset += 1;
+      lineLength = 0;
+      if (++lineCount > maxLines) throw new DxfReadError(`Line ${lineCount}: DXF exceeds the group pair limit.`, lineCount);
+    } else if (++lineLength > (limits.maxStringLength ?? 1024 * 1024)) throw new DxfReadError(`Line ${lineCount}: DXF value exceeds the string length limit.`, lineCount);
+  }
   const lines = text.split(/\r\n|\r|\n/);
   const pairs: Pair[] = [];
   let eof = false;
   let i = 0;
   /** A group code on the last line of a file that ends early, without its value (0 = a new object was starting). */
   let danglingCode: number | null = null;
+  let records = 0;
   for (; i + 1 < lines.length; i += 2) {
     const rawCode = lines[i]!.trim();
-    const code = parseInt(rawCode, 10);
-    if (Number.isNaN(code) || !isIntegerText(rawCode)) {
+    const code = Number(rawCode);
+    if (!isIntegerText(rawCode) || code < 0 || code > 1071) {
       if (rawCode === '' && lines.slice(i).every((l) => l.trim() === '')) break; // trailing blank lines
       throw new DxfReadError(`Line ${i + 1}: "${shortText(rawCode)}" is not a DXF group code (a whole number was expected). The file is damaged or is not a DXF file.`, i + 1);
     }
     // Text chunks (1 / 3, MLEADER 304) keep trailing spaces: a 250-character MTEXT chunk may end in one.
     const raw = lines[i + 1]!;
-    const value = code === 1 || code === 3 || code === 304 ? raw : raw.replace(/\s+$/, '');
+    if (raw.length > (limits.maxStringLength ?? 1024 * 1024)) throw new DxfReadError(`Line ${i + 2}: DXF value exceeds the string length limit.`, i + 2);
+    if (pairs.length >= (limits.maxPairs ?? 2_000_000)) throw new DxfReadError(`Line ${i + 1}: DXF exceeds the group pair limit.`, i + 1);
+    if (code === 0 && ++records > (limits.maxRecords ?? 250_000)) throw new DxfReadError(`Line ${i + 1}: DXF exceeds the record limit.`, i + 1);
+    const value = code === 1 || code === 3 || code === 304 ? raw : raw.trimEnd();
     pairs.push({ code, value, line: i + 1 });
     if (code === 0 && value.trim() === 'EOF') {
       eof = true;
@@ -1269,7 +1344,7 @@ function tokenize(text: string, recover = false, report?: ImportReportBuilder): 
     let last = lines.length;
     while (last > 0 && lines[last - 1]!.trim() === '') last -= 1;
     truncatedAt = Math.max(1, last);
-    if (i < lines.length && i === last - 1 && isIntegerText(lines[i]!.trim())) danglingCode = parseInt(lines[i]!.trim(), 10);
+    if (i < lines.length && i === last - 1 && isIntegerText(lines[i]!.trim())) danglingCode = Number(lines[i]!.trim());
     // A last pair "0" + empty value is a new object that never got its type: the same boundary.
     const tail = pairs[pairs.length - 1]!;
     if (tail.code === 0 && tail.value.trim() === '') {
@@ -1347,10 +1422,18 @@ function objects(pairs: Pair[], start: number, end: number): Obj[] {
 
 /** Real-valued group codes (points, distances, angles, scales): unreadable values there are invalid geometry. */
 const isRealCode = (code: number): boolean => (code >= 10 && code <= 59) || (code >= 110 && code <= 149) || (code >= 210 && code <= 239) || (code >= 1010 && code <= 1059);
+const isIntCode = (code: number): boolean => (code >= 60 && code <= 99) || (code >= 160 && code <= 179) || (code >= 270 && code <= 299) || (code >= 370 && code <= 389) || (code >= 400 && code <= 409) || (code >= 420 && code <= 429) || (code >= 440 && code <= 459) || (code >= 1060 && code <= 1071);
+const isRealText = (value: string): boolean => /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(value.trim());
+const PRECISION_CODES: Readonly<Record<number, string>> = { 171: 'DIMALTD', 179: 'DIMADEC', 271: 'DIMDEC', 272: 'DIMTDEC' };
+const PRECISION_NAMES = new Set(['DIMDEC', 'DIMADEC', 'DIMALTD', 'DIMTDEC', 'LUPREC', 'AUPREC']);
+const invalidPrecision = (name: string, value: string): boolean => !isIntegerText(value.trim()) || Number(value) < (name === 'DIMADEC' ? -1 : 0) || Number(value) > 8;
+const precisionRequirement = (name: string): string => `an integer from ${name === 'DIMADEC' ? -1 : 0} to 8`;
+const UNSUPPORTED_DIM_CODES: Readonly<Record<number, string>> = { 49: 'DIMFXL', 79: 'DIMAZIN', 145: 'DIMTVP', 148: 'DIMALTRND', 175: 'DIMSOXD', 274: 'DIMALTTD', 275: 'DIMAUNIT', 276: 'DIMFRAC', 279: 'DIMTMOVE', 283: 'DIMTOLJ', 285: 'DIMALTZ', 286: 'DIMALTTZ', 288: 'DIMUPT', 290: 'DIMFXLON', 341: 'DIMLDRBLK' };
+const SUPPORTED_DIM_NAMES = new Set([...DIM_VARIABLES.map((v) => v.name), 'DIMSTYLE', 'DIMTOL', 'DIMLIM', 'DIMTIH', 'DIMTOH', 'DIMZIN', 'DIMSAH', 'DIMBLK']);
 const num = (o: Obj, code: number, dflt = 0): number => {
   const p = o.groups.find((x) => x.code === code);
   if (!p) return dflt;
-  const v = parseFloat(p.value);
+  const v = isRealText(p.value) ? Number(p.value) : NaN;
   if (!Number.isNaN(v)) return v;
   // A coordinate that is not a number (NaN, garbage) must not silently become 0: the object is rejected.
   return isRealCode(code) && p.value.trim() !== '' ? NaN : dflt;
@@ -1363,7 +1446,7 @@ const pt = (o: Obj, xCode: number, dflt: g.Point = { x: 0, y: 0 }): g.Point => (
 function commonProps(o: Obj): { id: string; layer: string; color: ColorSpec; linetype?: string; lineWeight?: number; ltscale?: number; trueColor?: number } {
   const layer = str(o, 8, '0');
   const rawColor = o.groups.find((x) => x.code === 62);
-  const color: ColorSpec = rawColor && parseInt(rawColor.value, 10) !== 256 ? parseInt(rawColor.value, 10) : 'ByLayer';
+  const color: ColorSpec = rawColor && Number(rawColor.value) !== 256 ? Number(rawColor.value) : 'ByLayer';
   const base: { id: string; layer: string; color: ColorSpec; linetype?: string; lineWeight?: number; ltscale?: number } = { id: newId(), layer, color };
   const lt = str(o, 6);
   if (lt && lt.toUpperCase() !== 'BYLAYER') base.linetype = lt;
@@ -1377,9 +1460,16 @@ function commonProps(o: Obj): { id: string; layer: string; color: ColorSpec; lin
   return base;
 }
 
-function readDimStyleFromEntity(o: Obj, styles: Map<string, DimStyle>, fallback: DimStyle): DimStyle {
+function readDimStyleFromEntity(o: Obj, styles: Map<string, DimStyle>, fallback: DimStyle, textStyleHandles?: Map<string, string>): DimStyle {
   const name = str(o, 3);
-  return (name && styles.get(name.toUpperCase())) || fallback;
+  const style = (name && styles.get(name.toUpperCase())) || fallback;
+  const overrides = dstylePairs(o);
+  let result = overrides.length ? dimStyleFromRecordPairs(style.name, overrides, style) : style;
+  const overrideStyle = overrides.find(([code]) => code === 340)?.[1];
+  const resolvedStyle = overrideStyle ? textStyleHandles?.get(overrideStyle.toUpperCase()) : undefined;
+  if (resolvedStyle) result = { ...result, textStyle: resolvedStyle };
+  const arrowData = xdata(o, DIMSTYLE_APP);
+  return arrowData ? applyDimStyleXdata(result, arrowData) : result;
 }
 
 function readDimension(o: Obj, base: ReturnType<typeof commonProps>, style: DimStyle): Entity | null {
@@ -1445,11 +1535,11 @@ function readDimension(o: Obj, base: ReturnType<typeof commonProps>, style: DimS
 // ---------------------------------------------------------------- SPLINE / HATCH / LEADER / MLEADER / IMAGE / TABLE readers
 
 const int = (v: string | undefined, dflt = 0): number => {
-  const n = v === undefined ? NaN : parseInt(v, 10);
+  const n = v === undefined ? NaN : Number(v);
   return Number.isNaN(n) ? dflt : n;
 };
 const flt = (v: string | undefined, dflt = 0): number => {
-  const n = v === undefined ? NaN : parseFloat(v);
+  const n = v === undefined ? NaN : Number(v);
   return Number.isFinite(n) ? n : dflt;
 };
 
@@ -1464,9 +1554,9 @@ function pointList(gs: readonly Pair[], xCode: number): g.Point[] {
   const out: g.Point[] = [];
   let x: number | null = null;
   for (const p of gs) {
-    if (p.code === xCode) x = parseFloat(p.value);
+    if (p.code === xCode) x = Number(p.value);
     else if (p.code === xCode + 10 && x !== null) {
-      out.push({ x, y: parseFloat(p.value) });
+      out.push({ x, y: Number(p.value) });
       x = null;
     }
   }
@@ -1477,8 +1567,8 @@ function readSpline(o: Obj, base: ReturnType<typeof commonProps>): SplineEntity 
   const gs = afterSubclass(o, 'AcDbSpline');
   const flags = Math.trunc(num(o, 70));
   const degree = Math.max(1, Math.trunc(num(o, 71, 3)));
-  const knots = gs.filter((x) => x.code === 40).map((x) => parseFloat(x.value));
-  const weights = gs.filter((x) => x.code === 41).map((x) => parseFloat(x.value));
+  const knots = gs.filter((x) => x.code === 40).map((x) => Number(x.value));
+  const weights = gs.filter((x) => x.code === 41).map((x) => Number(x.value));
   const controlPoints = pointList(gs, 10);
   const fitPoints = pointList(gs, 11);
   if (controlPoints.length < 2 && fitPoints.length < 2) return null;
@@ -1712,10 +1802,28 @@ function xdata(o: Obj, app: string): Pair[] | null {
 
 /** A dimension-variable override (ACAD DSTYLE xdata: 1070 code, 1040/1070 value). */
 function dstyleOverride(o: Obj, dimvarCode: number): number | undefined {
+  const value = dstylePairs(o).find(([code]) => code === dimvarCode)?.[1];
+  return value === undefined ? undefined : flt(String(value));
+}
+function dstylePairs(o: Obj): Array<readonly [number, string]> {
   const xd = xdata(o, 'ACAD');
-  if (!xd) return undefined;
-  for (let k = 0; k + 1 < xd.length; k += 1) if (xd[k]!.code === 1070 && int(xd[k]!.value) === dimvarCode) return flt(xd[k + 1]!.value);
-  return undefined;
+  if (!xd) return [];
+  const start = xd.findIndex((p) => p.code === 1000 && p.value === 'DSTYLE');
+  if (start < 0 || xd[start + 1]?.code !== 1002 || xd[start + 1]?.value !== '{') return [];
+  const out: Array<readonly [number, string]> = [];
+  for (let k = start + 2; k + 1 < xd.length && xd[k]!.code !== 1002; k += 2) {
+    const key = xd[k]!, value = xd[k + 1]!;
+    if (key.code === 1070 && [1000, 1005, 1040, 1070, 1071].includes(value.code)) out.push([int(key.value), value.value]);
+  }
+  return out;
+}
+
+function hasUnconsumedAcadXdata(o: Obj): boolean {
+  const xd = xdata(o, 'ACAD');
+  if (!xd) return false;
+  const start = xd.findIndex((p) => p.code === 1000 && p.value === 'DSTYLE');
+  const end = xd.findIndex((p, i) => i > start + 1 && p.code === 1002 && p.value === '}');
+  return start < 0 || end < 0 || !dstylePairs(o).length || xd.slice(0, start).length > 0 || xd.slice(end + 1).length > 0;
 }
 
 function readLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: ReadContext): LeaderEntity | null {
@@ -1910,8 +2018,46 @@ function readImage(o: Obj, base: ReturnType<typeof commonProps>): ImageEntity {
   };
 }
 
+function readMTextColumns(o: Obj): MTextColumns | undefined {
+  const own = xdata(o, MTEXT_COLUMNS_APP);
+  if (own) {
+    try {
+      const c = JSON.parse(own.filter((p) => p.code === 1000).map((p) => p.value).join('')) as MTextColumns;
+      if ((c.type === 1 || c.type === 2) && Number.isInteger(c.count) && c.count > 0 && c.count <= 256 && Number.isFinite(c.width) && c.width > 0 && Number.isFinite(c.gutter) && c.gutter >= 0 && Array.isArray(c.heights) && c.heights.length <= 256 && c.heights.every((h) => Number.isFinite(h) && h >= 0)) return c;
+    } catch { /* native groups below */ }
+  }
+  const embedded = o.groups.findIndex((p) => p.code === 101 && p.value === 'Embedded Object');
+  const nativeStart = o.groups.findIndex((p) => p.code === 75);
+  const groups = embedded < 0 ? o.groups.slice(Math.max(0, nativeStart)) : o.groups.slice(embedded + 1);
+  const code = (native: number, modern: number) => groups.find((p) => p.code === (embedded < 0 ? native : modern))?.value;
+  const type = int(code(75, 71));
+  const count = int(code(76, 72));
+  const width = flt(code(48, 44));
+  if ((type !== 1 && type !== 2) || count < 1 || count > 256 || !(width > 0)) return undefined;
+  const heights = embedded >= 0 ? groups.filter((p) => p.code === 46).map((p) => flt(p.value)) : groups.filter((p) => p.code === 50).slice(1).map((p) => flt(p.value));
+  return { type, count, width, gutter: Math.max(0, flt(code(49, 45))), autoHeight: int(code(79, 74)) !== 0, reversed: int(code(78, 73)) !== 0, heights: heights.slice(0, count) };
+}
+
+interface TableStyleData {
+  marginX: number;
+  marginY: number;
+  titleSuppressed: boolean;
+  headerSuppressed: boolean;
+  rows: Array<{ height: number; attachment: number }>;
+}
+function readTableStyle(o: Obj): TableStyleData {
+  const groups = afterSubclass(o, 'AcDbTableStyle');
+  const rows: TableStyleData['rows'] = [];
+  for (let i = 0; i < groups.length; i += 1) if (groups[i]!.code === 7) {
+    let end = i + 1; while (end < groups.length && groups[end]!.code !== 7) end += 1;
+    const cell = groups.slice(i, end);
+    rows.push({ height: flt(cell.find((p) => p.code === 140)?.value, 0.18), attachment: int(cell.find((p) => p.code === 170)?.value, 5) });
+  }
+  return { marginX: flt(groups.find((p) => p.code === 40)?.value, 0.06), marginY: flt(groups.find((p) => p.code === 41)?.value, 0.06), titleSuppressed: int(groups.filter((p) => p.code === 280)[1]?.value) !== 0, headerSuppressed: int(groups.find((p) => p.code === 281)?.value) !== 0, rows };
+}
+
 /** ACAD_TABLE with legacy cell data (91/92 size, 141/142 sizes, 171.. per cell) -> native table. */
-function readTable(o: Obj, base: ReturnType<typeof commonProps>): TableEntity | null {
+function readTable(o: Obj, base: ReturnType<typeof commonProps>, style?: TableStyleData): TableEntity | null {
   const gs = afterSubclass(o, 'AcDbTable');
   const firstCell = gs.findIndex((x) => x.code === 171);
   const head = firstCell >= 0 ? gs.slice(0, firstCell) : gs;
@@ -1942,8 +2088,9 @@ function readTable(o: Obj, base: ReturnType<typeof commonProps>): TableEntity | 
       const cg = chunks[r * cols + c]!;
       let text = cg.filter((x) => x.code === 2 || x.code === 3).map((x) => x.value).join('') + (cg.find((x) => x.code === 1)?.value ?? '');
       if (!text) text = cg.find((x) => x.code === 302 && x.value)?.value ?? '';
-      const h = flt(cg.find((x) => x.code === 140)?.value);
-      const align = int(cg.find((x) => x.code === 170)?.value);
+      const rowStyle = style?.rows[r === 0 && !style.titleSuppressed ? 2 : r === (style?.titleSuppressed ? 0 : 1) && !style?.headerSuppressed ? 1 : 0];
+      const h = flt(cg.find((x) => x.code === 140)?.value, rowStyle?.height ?? 0);
+      const align = int(cg.find((x) => x.code === 170)?.value, rowStyle?.attachment ?? 0);
       const spanC = int(cg.find((x) => x.code === 175)?.value, 1);
       const spanR = int(cg.find((x) => x.code === 176)?.value, 1);
       const plain = text ? mtextFromDxf(text) : '';
@@ -1970,7 +2117,8 @@ function readTable(o: Obj, base: ReturnType<typeof commonProps>): TableEntity | 
     rowHeights,
     columnWidths,
     cells,
-    textHeight: heights[Math.floor(heights.length / 2)] ?? 0.18,
+    textHeight: style?.rows[0]?.height ?? heights[Math.floor(heights.length / 2)] ?? 0.18,
+    ...(style ? { margin: Math.max(style.marginX, style.marginY) } : {}),
   };
 }
 
@@ -2025,12 +2173,12 @@ function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
       const bulges: number[] = [];
       let x: number | null = null;
       for (const p of o.groups) {
-        if (p.code === 10) x = parseFloat(p.value);
+        if (p.code === 10) x = Number(p.value);
         else if (p.code === 20 && x !== null) {
-          pts.push({ x, y: parseFloat(p.value) });
+          pts.push({ x, y: Number(p.value) });
           bulges.push(0);
           x = null;
-        } else if (p.code === 42 && bulges.length) bulges[bulges.length - 1] = parseFloat(p.value);
+        } else if (p.code === 42 && bulges.length) bulges[bulges.length - 1] = Number(p.value);
       }
       const closed = (num(o, 70) & 1) === 1;
       const width = num(o, 43, 0);
@@ -2083,11 +2231,16 @@ function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
       };
     }
     case 'MTEXT': {
+      const columns = readMTextColumns(o);
+      const embedded = o.groups.findIndex((p) => p.code === 101 && p.value === 'Embedded Object');
+      const nativeStart = embedded < 0 ? o.groups.findIndex((p) => p.code === 75) : -1;
+      const mainEnd = embedded >= 0 ? embedded : nativeStart >= 0 ? nativeStart : o.groups.length;
+      const main: Obj = { ...o, groups: o.groups.slice(0, mainEnd) };
       // MTEXT: 10/20 attachment corner, 71 attachment point (1..9), 11/21 direction vector, 50 rotation (radians)
-      const ap = Math.max(1, Math.min(9, Math.trunc(num(o, 71, 1)))) as MTextAttachment;
-      const hasDir = has(o, 11);
-      const rotation = hasDir ? Math.atan2(num(o, 21), num(o, 11)) : num(o, 50);
-      const height = num(o, 40, 0.125);
+      const ap = Math.max(1, Math.min(9, Math.trunc(num(main, 71, 1)))) as MTextAttachment;
+      const hasDir = has(main, 11);
+      const rotation = hasDir ? Math.atan2(num(main, 21), num(main, 11)) : num(main, 50);
+      const height = num(main, 40, 0.125);
       const source = o.groups
         .filter((x) => x.code === 1 || x.code === 3)
         .map((x) => x.value)
@@ -2096,19 +2249,20 @@ function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
       const raw = hasFields(source) ? evaluateFields(source, ctx.fields) : source;
       const plain = mtextFromDxf(raw);
       const field: FieldLink | undefined = raw !== source ? { code: source, value: plain } : undefined;
-      if (has(o, 41)) {
+      if (has(main, 41) || columns) {
         return {
           ...base,
           type: 'mtext',
-          position: { x: num(o, 10), y: num(o, 20) },
+          position: { x: num(main, 10), y: num(main, 20) },
           text: plain,
           ...(hasFormatting(raw) ? { raw } : {}),
           ...(field ? { field } : {}),
           height,
-          width: Math.max(0, num(o, 41)),
+          width: Math.max(0, num(main, 41)),
           rotation,
           attachment: ap,
-          lineSpacing: num(o, 44, 1) || 1,
+          lineSpacing: num(main, 44, 1) || 1,
+          ...(columns ? { columns } : {}),
         };
       }
       // Minimal MTEXT without a reference width: keep it as single-line TEXT.
@@ -2116,7 +2270,7 @@ function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
       const row = Math.floor((ap - 1) / 3);
       const align: 'left' | 'center' | 'right' = col === 1 ? 'center' : col === 2 ? 'right' : 'left';
       const drop = row === 0 ? height : row === 1 ? height / 2 : 0;
-      const corner = { x: num(o, 10), y: num(o, 20) };
+      const corner = { x: num(main, 10), y: num(main, 20) };
       const position = { x: corner.x + Math.sin(rotation) * drop, y: corner.y - Math.cos(rotation) * drop };
       const one = plain.replace(/\n/g, ' ');
       return { ...base, type: 'text', position, text: one, ...(field ? { field: { code: source, value: one } } : {}), height, rotation, align };
@@ -2141,7 +2295,7 @@ function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
     case 'RAY':
       return { ...base, type: 'ray', base: pt(o, 10), direction: g.normalize(pt(o, 11, { x: 1, y: 0 })) };
     case 'DIMENSION':
-      return readDimension(o, base, readDimStyleFromEntity(o, ctx.dimStyles, ctx.dimStyle));
+      return readDimension(o, base, readDimStyleFromEntity(o, ctx.dimStyles, ctx.dimStyle, ctx.textStyleHandles));
     case 'SPLINE':
       return readSpline(o, base);
     case 'HATCH':
@@ -2159,13 +2313,13 @@ function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
     }
     case 'IMAGE': {
       const im = readImage(o, base);
-      ctx.pendingImages?.set(im, str(o, 340).toUpperCase());
+      ctx.pendingImages?.set(im.id, str(o, 340).toUpperCase());
       return im;
     }
     case 'ACAD_TABLE': {
       // Cell data present: a native table. Otherwise it draws through its anonymous *T block (group 2).
       const block = str(o, 2);
-      const table = readTable(o, base);
+      const table = readTable(o, base, ctx.tableStyles?.get(str(o, 342).toUpperCase()));
       if (table) {
         if (block) ctx.consumedBlocks?.add(block);
         return table;
@@ -2225,7 +2379,9 @@ interface ReadContext {
   /** Values for field expressions in TEXT / MTEXT. */
   fields?: FieldContext;
   /** IMAGE entities waiting for their IMAGEDEF (OBJECTS comes last), by IMAGEDEF handle. */
-  pendingImages?: Map<ImageEntity, string>;
+  pendingImages?: Map<string, string>;
+  tableStyles?: Map<string, TableStyleData>;
+  textStyleHandles?: Map<string, string>;
   /** Anonymous blocks replaced by native tables. */
   consumedBlocks?: Set<string>;
   /** Remarks about content that was simplified. */
@@ -2239,6 +2395,11 @@ interface ReadContext {
 }
 
 export interface DxfReadOptions {
+  /** Allocation budgets; callers may lower them for untrusted or constrained imports. */
+  maxSourceLength?: number;
+  maxStringLength?: number;
+  maxPairs?: number;
+  maxRecords?: number;
   /** Path of the file being read (Filename fields). */
   filePath?: string | null;
   /** Extra values for field evaluation (drawing properties, current date ...). */
@@ -2285,7 +2446,7 @@ const UNSUPPORTED_REASONS: Record<string, string> = {
  * Applications whose extended data is not reported when it is left out: the reader's own, and
  * AutoCAD's internal ones (ACAD, ACAD_MATERIAL_MAPPER, AcadAnnotative ...) that carry no drawing content.
  */
-const isQuietXdataApp = (app: string): boolean => app === DIMSTYLE_APP || app === TABLE_APP || /^acad/i.test(app);
+const isQuietXdataApp = (app: string): boolean => app === DIMSTYLE_APP || app === TABLE_APP || app === MTEXT_COLUMNS_APP || app === ANNO_APP;
 
 function reportObj(ctx: ReadContext, o: Obj, action: 'dropped' | 'simplified' | 'kept', reason: string): void {
   if (!ctx.report) return;
@@ -2360,6 +2521,7 @@ function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): Entity[] 
   /** A converted entity: validated (invalid geometry is rejected), extrusion applied, XDATA loss reported. */
   const accept = (o: Obj, e: Entity | null): Entity | null => {
     if (!e) return null;
+    const invalid = o.groups.find((p) => (isRealCode(p.code) && (!isRealText(p.value) || !Number.isFinite(Number(p.value)))) || (isIntCode(p.code) && !isIntegerText(p.value.trim())));
     let extrusion = false;
     let xdataApps = false;
     for (const p of o.groups) {
@@ -2369,11 +2531,35 @@ function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): Entity[] 
     const placed = extrusion ? applyExtrusion(o, e, ctx) : e;
     const bad = geometryProblem(placed);
     if (bad) {
-      reportObj(ctx, o, 'dropped', `invalid geometry: ${bad}`);
+      reportObj(ctx, o, 'dropped', `invalid geometry: ${bad}${invalid ? ` (group ${invalid.code}, value line ${(invalid.line ?? 1) + 1}: "${shortText(invalid.value)}")` : ''}`);
       return null;
     }
+    if (invalid) {
+      reportObj(ctx, o, 'dropped', `invalid numeric group ${invalid.code} at line ${(invalid.line ?? 1) + 1}: "${shortText(invalid.value)}" must be a complete ${isIntCode(invalid.code) ? 'integer' : 'number'}`);
+      return null;
+    }
+    const badPrecision = o.kind === 'DIMENSION' ? dstylePairs(o).find(([code, value]) => PRECISION_CODES[code] && invalidPrecision(PRECISION_CODES[code]!, value)) : undefined;
+    if (badPrecision) {
+      const name = PRECISION_CODES[badPrecision[0]]!;
+      reportObj(ctx, o, 'dropped', `invalid DSTYLE ${name} precision "${shortText(badPrecision[1])}": expected ${precisionRequirement(name)}`);
+      return null;
+    }
+    if (e.type === 'hatch' && e.associative) reportObj(ctx, o, 'simplified', 'associative hatch boundary links are not kept; its boundary geometry is kept and saved non-associative');
+    if (o.kind === 'ACAD_TABLE') reportObj(ctx, o, 'simplified', 'table cells, sizes and supported style defaults are kept; native table editing, formulas, style font names, advanced borders and fills are not modeled, and export uses an INSERT picture with JCAD_TABLE data');
+    if (o.kind === 'HATCH' && num(o, 450) === 1) reportObj(ctx, o, 'simplified', 'gradient hatch settings are not kept; boundary geometry and the solid/pattern fill are retained');
+    if (e.type === 'mtext' && e.columns) reportObj(ctx, o, 'simplified', `column definitions are kept in JCAD_MTEXT_COLUMNS on AutoCAD 2000 export; other CAD programs show one column${e.columns.type === 2 || !formattedSource(e)?.includes('\\N') ? '; automatic column flow is approximated in JCad' : ''}`);
+    if (o.kind === 'LWPOLYLINE' && (has(o, 40) || has(o, 41))) reportObj(ctx, o, 'simplified', 'per-vertex polyline widths are not kept; its centerline and constant width are kept');
+    if (has(o, 39) && num(o, 39) !== 0) reportObj(ctx, o, 'simplified', 'nonzero thickness is not kept in the 2D drawing');
+    if (has(o, 440) || has(o, 430)) reportObj(ctx, o, 'simplified', 'transparency and color-book names are not kept; RGB/ACI color is kept');
+    // IMAGE's IMAGEDEF reactor is reconstructed on export; other object links are unmodeled.
+    const unmodeledLinks = o.kind === 'IMAGE' ? o.groups.some((p) => p.code === 102 && p.value !== '{ACAD_REACTORS' && p.value !== '}') : has(o, 102) || has(o, 360);
+    if (unmodeledLinks) reportObj(ctx, o, 'simplified', 'reactor/extension-dictionary links are not kept; supported drawing geometry is kept');
+    if (o.kind === 'MTEXT' && num(o, 90) !== 0) reportObj(ctx, o, 'simplified', 'MTEXT background fill is not kept');
     if (ctx.report && xdataApps) {
-      const apps = [...new Set(o.groups.filter((x) => x.code === 1001 && !isQuietXdataApp(x.value.trim())).map((x) => x.value.trim()))];
+      const consumedDstyle = o.kind === 'DIMENSION' || o.kind === 'LEADER';
+      const unsupportedOverrides = o.kind === 'DIMENSION' ? dstylePairs(o).filter(([code]) => ![71, 72, 73, 74, 78, 340].includes(code) && !DIM_VARIABLES.some((v) => v.code === code)) : o.kind === 'LEADER' ? dstylePairs(o).filter(([code]) => code !== 41) : [];
+      if (unsupportedOverrides.length) reportObj(ctx, o, 'simplified', `DSTYLE override groups ${unsupportedOverrides.map(([code]) => code).join(', ')} are not modeled or written back`);
+      const apps = [...new Set(o.groups.filter((x) => x.code === 1001 && !isQuietXdataApp(x.value.trim()) && !(x.value.trim() === 'ACAD' && consumedDstyle && !hasUnconsumedAcadXdata(o))).map((x) => x.value.trim()))];
       if (apps.length) reportObj(ctx, o, 'simplified', `extended data (XDATA) of ${apps.join(', ')} is not kept`);
     }
     return placed;
@@ -2390,6 +2576,7 @@ function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): Entity[] 
       const flags = Math.trunc(num(o, 70));
       const closed = (flags & 1) === 1;
       let j = i + 1;
+      const vertexStart = j;
       while (j < objs.length && objs[j]!.kind === 'VERTEX') {
         pts.push({ x: num(objs[j]!, 10), y: num(objs[j]!, 20) });
         bulges.push(num(objs[j]!, 42, 0));
@@ -2404,7 +2591,8 @@ function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): Entity[] 
       }
       if (flags & 8) reportObj(ctx, o, 'simplified', '3D polyline: flattened to its XY projection');
       const width = num(o, 40, 0);
-      const poly = accept(o, {
+      const vertexGroups = objs.slice(vertexStart, j).filter((child) => child.kind === 'VERTEX').flatMap((child) => child.groups);
+      const poly = accept({ ...o, groups: [...o.groups, ...vertexGroups] }, {
         ...commonProps(o),
         type: 'polyline',
         points: pts,
@@ -2528,7 +2716,8 @@ function withDimStylesMeta(state: DrawingState, dimStyles: ReadonlyMap<string, D
 
 /** The reader proper; DIMSTYLE records are collected into `dimStyles`. */
 function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string, DimStyle>, report: ImportReportBuilder, raw: RawDxfEntity[]): DrawingState {
-  const pairs = tokenize(decodeUnicodeEscapes(text), opts.recover, report);
+  if (text.length > (opts.maxSourceLength ?? 128 * 1024 * 1024)) throw new DxfReadError('DXF exceeds the source text size limit.', 1);
+  const pairs = tokenize(decodeUnicodeEscapes(text), opts.recover, report, opts);
   const textStyles: Record<string, TextStyle> = {};
   const layers: Layer[] = [];
   const blocks: Record<string, BlockDef> = {};
@@ -2544,6 +2733,8 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
     blocks,
     fields: { ...opts.fieldContext, ...(opts.filePath !== undefined ? { filePath: opts.filePath } : {}) },
     pendingImages: new Map(),
+    tableStyles: new Map(),
+    textStyleHandles: new Map(),
     consumedBlocks: new Set(),
     notes: opts.notes ?? [],
     report,
@@ -2551,6 +2742,8 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
   };
   const imageDefs = new Map<string, string>();
   const layoutReader = new LayoutReader(report);
+  // Definitions in OBJECTS can follow the tables they style in ENTITIES/BLOCKS.
+  for (const o of objects(pairs, 0, pairs.length)) if (o.kind === 'TABLESTYLE' && has(o, 5)) ctx.tableStyles!.set(str(o, 5).toUpperCase(), readTableStyle(o));
 
   // find sections
   let i = 0;
@@ -2570,10 +2763,18 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
             headerVars.set(q.value, cur);
           } else cur?.push(q);
         }
+        for (const [variable, groups] of headerVars) {
+          const invalid = groups.find((q) => isRealCode(q.code) ? !isRealText(q.value) || !Number.isFinite(Number(q.value)) : isIntCode(q.code) && !isIntegerText(q.value.trim()));
+          if (invalid) throw new DxfReadError(`Line ${(invalid.line ?? 1) + 1}: ${variable} group ${invalid.code} contains an invalid number "${shortText(invalid.value)}".`, (invalid.line ?? 1) + 1);
+          const value = groups[0];
+          const name = variable.replace(/^\$/, '');
+          if (value && PRECISION_NAMES.has(name) && invalidPrecision(name, value.value)) throw new DxfReadError(`Line ${(value.line ?? 1) + 1}: ${variable} precision "${shortText(value.value)}" must be ${precisionRequirement(name)}.`, (value.line ?? 1) + 1);
+          if (value && name.startsWith('DIM') && !SUPPORTED_DIM_NAMES.has(name) && value.value !== '' && Number(value.value) !== 0) report.add({ type: 'HEADER', action: 'simplified', reason: `${variable} is not modeled or written back; supported dimension variables are kept`, line: value.line });
+        }
         currentLayer = headerVars.get('$CLAYER')?.[0]?.value ?? '0';
         const hnum = (v: string, dflt: number) => {
           const raw = headerVars.get(v)?.[0]?.value;
-          const n = raw === undefined ? NaN : parseFloat(raw);
+          const n = raw === undefined ? NaN : Number(raw);
           return Number.isFinite(n) ? n : dflt;
         };
         ctx.dimStyle = dimStyleFromHeader(headerVars, STANDARD_DIMSTYLE);
@@ -2585,13 +2786,20 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
         layoutReader.scanObjects(objs);
         // Named object groups (GROUP command) are not modelled: the objects stay, the grouping goes.
         for (const o of objs) {
-          if (o.kind !== 'GROUP') continue;
+          if (o.kind !== 'GROUP') {
+            if (!['SECTION', 'DICTIONARY', 'ACDBDICTIONARYWDFLT', 'ACDBPLACEHOLDER', 'LAYOUT', 'IMAGEDEF', 'IMAGEDEF_REACTOR', 'TABLESTYLE'].includes(o.kind)) report.add({ type: o.kind, action: 'dropped', reason: 'object metadata is not modeled or written back; linked drawing geometry is kept when supported', ...(has(o, 5) ? { handle: str(o, 5) } : {}), ...(o.line ? { line: o.line } : {}) });
+            continue;
+          }
           const desc = str(o, 300);
           report.add({ type: 'GROUP', action: 'dropped', reason: `object group${desc ? ` "${desc}"` : ''} is not kept (its objects are)`, ...(has(o, 5) ? { handle: str(o, 5) } : {}), ...(o.line ? { line: o.line } : {}) });
         }
       } else if (name === 'TABLES') {
         layoutReader.scanTables(objs);
         for (const o of objs) {
+          const invalid = o.groups.find((p) => isRealCode(p.code) ? !isRealText(p.value) || !Number.isFinite(Number(p.value)) : isIntCode(p.code) && !isIntegerText(p.value.trim()));
+          if (invalid) { report.add({ type: o.kind, action: 'dropped', reason: `invalid numeric group ${invalid.code} at line ${(invalid.line ?? 1) + 1}: "${shortText(invalid.value)}"`, line: o.line }); continue; }
+          const badPrecision = o.kind === 'DIMSTYLE' ? o.groups.find((p) => PRECISION_CODES[p.code] && invalidPrecision(PRECISION_CODES[p.code]!, p.value)) : undefined;
+          if (badPrecision) { const name = PRECISION_CODES[badPrecision.code]!; report.add({ type: o.kind, action: 'dropped', reason: `invalid ${name} precision at line ${(badPrecision.line ?? 1) + 1}: "${shortText(badPrecision.value)}" must be ${precisionRequirement(name)}`, line: o.line }); continue; }
           if (o.kind === 'LAYER') {
             const name2 = str(o, 2);
             if (!name2) continue;
@@ -2606,24 +2814,34 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
               visible: c >= 0 && (flags & 1) === 0, // negative colour = off, flag 1 = frozen
               frozen: (flags & 1) === 1 || undefined,
               locked: (flags & 4) === 4,
+              ...(flags & 48 ? { xrefFlags: flags & 48 } : {}),
               // 370: hundredths of a millimetre; -3 (Default) and the entity-only -1 / -2 mean the default 0.25 mm.
               lineWeight: num(o, 370, 25) >= 0 ? num(o, 370, 25) / 100 : 0.25,
               ...(has(o, 290) && num(o, 290) === 0 ? { plot: false } : {}),
               linetype: lt && lt.toUpperCase() !== 'CONTINUOUS' ? lt : undefined,
             });
+            const apps = o.groups.filter((q) => q.code === 1001 && !isQuietXdataApp(q.value)).map((q) => q.value);
+            if (apps.length || has(o, 440)) report.add({ type: 'LAYER', action: 'simplified', reason: `layer transparency/extended metadata${apps.length ? ` (${[...new Set(apps)].join(', ')})` : ''} is not kept`, ...(o.line ? { line: o.line } : {}) });
           } else if (o.kind === 'LTYPE') {
             const ltName = str(o, 2);
             if (!ltName || /^(BYLAYER|BYBLOCK|CONTINUOUS)$/i.test(ltName)) continue;
-            const pattern = o.groups.filter((x) => x.code === 49).map((x) => parseFloat(x.value)).filter((v) => Number.isFinite(v));
+            const pattern = o.groups.filter((x) => x.code === 49).map((x) => Number(x.value)).filter((v) => Number.isFinite(v));
             const std = findLinetype(ltName);
+            if (o.groups.some((p) => p.code === 74 && (int(p.value) & 6) !== 0)) report.add({ type: 'LTYPE', action: 'simplified', reason: `complex linetype "${ltName}": embedded text/shapes are not kept; dash pattern is kept`, ...(o.line ? { line: o.line } : {}) });
             if (std && std.pattern.length === pattern.length && std.pattern.every((v, k) => Math.abs(v - pattern[k]!) < 1e-9)) continue;
             linetypes.push({ name: ltName, description: str(o, 3), pattern });
           } else if (o.kind === 'DIMSTYLE') {
             const ds = readDimStyleRecord(o, objs);
             dimStyles.set(ds.name.toUpperCase(), ds);
+            const unsupported = o.groups.filter((p) => UNSUPPORTED_DIM_CODES[p.code] && Number(p.value) !== 0).map((p) => UNSUPPORTED_DIM_CODES[p.code]);
+            if (unsupported.length) report.add({ type: 'DIMSTYLE', action: 'simplified', reason: `${[...new Set(unsupported)].join(', ')} settings are not modeled or written back; supported style variables are kept`, ...(o.line ? { line: o.line } : {}) });
+            const apps = o.groups.filter((p) => p.code === 1001 && !isQuietXdataApp(p.value)).map((p) => p.value);
+            if (apps.length) report.add({ type: 'DIMSTYLE', action: 'simplified', reason: `extended style data (XDATA) of ${[...new Set(apps)].join(', ')} is not kept`, ...(o.line ? { line: o.line } : {}) });
           } else if (o.kind === 'STYLE') {
             const ts = textStyleFromGroups(o.groups);
             if (ts) textStyles[ts.name] = ts;
+            if (ts && has(o, 5)) ctx.textStyleHandles!.set(str(o, 5).toUpperCase(), ts.name);
+            if (ts && ((ts.font && !/^txt(?:\.shx)?$/i.test(ts.font)) || ts.bigFont || ts.family)) report.add({ type: 'STYLE', action: 'unsupported', reason: `font "${ts.family || ts.font}" of style "${ts.name}" is kept for export; JCad's stroke font approximates its appearance and metrics (font files are not embedded)`, ...(o.line ? { line: o.line } : {}) });
           } else if (o.kind === 'VIEW') {
             const vname = str(o, 2);
             if (vname) views.push({ name: vname, center: pt(o, 10), height: num(o, 40, 10) || 10 });
@@ -2693,17 +2911,6 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
     } else i += 1;
   }
 
-  // IMAGE paths come from the IMAGEDEF objects, read last.
-  if (ctx.pendingImages?.size) {
-    const resolve = (list: readonly Entity[]): Entity[] =>
-      list.map((e) => {
-        if (e.type !== 'image') return e;
-        const h = ctx.pendingImages!.get(e);
-        return h !== undefined ? { ...e, path: imageDefs.get(h) ?? e.path } : e;
-      });
-    entities = resolve(entities);
-    for (const [k, b] of Object.entries(blocks)) if (b.entities.some((e) => e.type === 'image')) blocks[k] = { ...b, entities: resolve(b.entities) };
-  }
   // Anonymous blocks that drew a table now read as a native table are no longer needed.
   if (ctx.consumedBlocks?.size) {
     const used = new Set<string>();
@@ -2732,7 +2939,7 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
 
   const hnum = (v: string, dflt: number) => {
     const raw = headerVars.get(v)?.[0]?.value;
-    const n = raw === undefined ? NaN : parseFloat(raw);
+    const n = raw === undefined ? NaN : Number(raw);
     return Number.isFinite(n) ? n : dflt;
   };
   const hpt = (v: string, dflt: g.Point): g.Point => {
@@ -2740,7 +2947,7 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
     if (!grp) return dflt;
     const x = grp.find((q) => q.code === 10);
     const y = grp.find((q) => q.code === 20);
-    return x && y ? { x: parseFloat(x.value), y: parseFloat(y.value) } : dflt;
+    return x && y ? { x: Number(x.value), y: Number(y.value) } : dflt;
   };
   const lunits = Math.trunc(hnum('$LUNITS', DEFAULT_HEADER.units.lunits));
   const celweightRaw = Math.trunc(hnum('$CELWEIGHT', -1));
@@ -2768,15 +2975,34 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
   };
 
   // Paper space: layouts with their entities and viewports (and the layers they use).
-  const layouts = layoutReader.build((objs, where) => {
+  let layouts = layoutReader.build((objs, where) => {
     ctx.where = where;
     const list = readEntities(objs, ctx);
     ctx.where = undefined;
     return list;
   }, { entities, header });
+  // Resolve after every space has been read, by stable id (extrusion transforms may copy an entity).
+  if (ctx.pendingImages?.size) {
+    const resolve = (list: readonly Entity[]): Entity[] => list.map((e) => {
+      if (e.type !== 'image') return e;
+      const handle = ctx.pendingImages!.get(e.id);
+      const path = handle ? imageDefs.get(handle) : undefined;
+      if (!path) report.add({ type: 'IMAGE', action: 'simplified', layer: e.layer, reason: `IMAGEDEF ${handle || '(missing)'} has no file path; only the image frame is kept` });
+      return path !== undefined ? { ...e, path } : e;
+    });
+    entities = resolve(entities);
+    for (const [key, block] of Object.entries(blocks)) blocks[key] = { ...block, entities: resolve(block.entities) };
+    layouts = layouts?.map((l) => ({ ...l, entities: resolve(l.entities) }));
+  }
   for (const l of layouts ?? []) {
     for (const e of l.entities) ensure(e.layer);
     for (const v of l.viewports) ensure(v.layer);
+  }
+  const styleNames = new Set(['STANDARD', ...Object.keys(textStyles).map((name) => name.toUpperCase())]);
+  const referencedStyles = [...entities, ...Object.values(blocks).flatMap((b) => b.entities), ...(layouts ?? []).flatMap((l) => l.entities)];
+  for (const entity of referencedStyles) {
+    const name = entity.type === 'dimension' ? entity.style.textStyle : textStyleOf(entity);
+    if (name && !styleNames.has(name.toUpperCase())) { report.add({ type: 'STYLE', action: 'unsupported', reason: `referenced text style "${name}" has no STYLE definition; its name is kept with a default stroke-font substitute`, layer: entity.layer }); styleNames.add(name.toUpperCase()); }
   }
   const styleMeta = textStylesMeta(textStyles);
   return { entities, layers, blocks, currentLayer, header, ...(styleMeta ? { meta: styleMeta } : {}), ...(layouts ? { layouts } : {}) };

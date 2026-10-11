@@ -26,11 +26,11 @@ describe('save marks only the saved revision clean', () => {
     h.doc.addEntities([line('a', 0, 0, 1, 0)]);
     const saved = h.doc.snapshot; // the revision handed to the file writer
     h.doc.addEntities([line('b', 0, 1, 1, 1)]); // edit while the dialog / write is pending
-    expect(applySaveResult(sessions, h, sessions.current.id, saved, '/tmp/x.dxf')).toBe('newer-edits');
+    expect(applySaveResult(sessions, h, sessions.current.id, saved, '/tmp/x.dxf', sessions.current.contentGeneration)).toBe('newer-edits');
     expect(h.doc.dirty).toBe(true);
     expect(h.doc.filePath).toBe('/tmp/x.dxf');
     // Saving the current revision clears it.
-    expect(applySaveResult(sessions, h, sessions.current.id, h.doc.snapshot, '/tmp/x.dxf')).toBe('clean');
+    expect(applySaveResult(sessions, h, sessions.current.id, h.doc.snapshot, '/tmp/x.dxf', sessions.current.contentGeneration)).toBe('clean');
     expect(h.doc.dirty).toBe(false);
   });
   it('applies the result to the right tab when the user switched tabs meanwhile', () => {
@@ -38,15 +38,26 @@ describe('save marks only the saved revision clean', () => {
     const sessions = new SessionManager(h);
     h.doc.addEntities([line('a', 0, 0, 1, 0)]);
     const firstId = sessions.current.id;
+    const generation = sessions.current.contentGeneration;
     const saved = h.doc.snapshot;
     sessions.add(); // new tab becomes active (and is clean)
     h.doc.addEntities([line('c', 0, 0, 2, 0)]);
-    expect(applySaveResult(sessions, h, firstId, saved, '/tmp/first.dxf')).toBe('clean');
+    expect(applySaveResult(sessions, h, firstId, saved, '/tmp/first.dxf', generation)).toBe('clean');
     expect(h.doc.dirty).toBe(true); // the active (other) tab is untouched
     const first = sessions.all.find((s) => s.id === firstId)!;
     expect(first.dirty).toBe(false);
     expect(first.filePath).toBe('/tmp/first.dxf');
-    expect(applySaveResult(sessions, h, 999, saved, '/tmp/gone.dxf')).toBe('closed');
+    expect(applySaveResult(sessions, h, 999, saved, '/tmp/gone.dxf', 0)).toBe('closed');
+  });
+  it('does not bind a replacement drawing to the file saved by its predecessor', () => {
+    const h = host(), sessions = new SessionManager(h);
+    h.doc.load(new Drawing({ entities: [line('a', 0, 0, 1, 0)] }).snapshot, '/tmp/a.dxf');
+    const session = sessions.current, saved = session.state, generation = session.contentGeneration;
+    h.doc.load(new Drawing({ entities: [line('b', 2, 0, 3, 0)] }).snapshot, '/tmp/b.dxf');
+    expect(applySaveResult(sessions, h, session.id, saved, '/tmp/a.dxf', generation)).toBe('replaced');
+    expect(h.doc.filePath).toBe('/tmp/b.dxf');
+    expect(h.doc.entities.map((e) => e.id)).toEqual(['b']);
+    expect(h.doc.dirty).toBe(false);
   });
 });
 

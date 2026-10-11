@@ -391,6 +391,7 @@ export function pngPixels(buf) {
  * @param {Buffer} b
  */
 export function sameIcon(name, a, b) {
+  if (name.endsWith('.svg')) return a.toString('utf8').replace(/\r\n/g, '\n') === b.toString('utf8').replace(/\r\n/g, '\n');
   if (name.endsWith('.png')) return pngPixels(a).equals(pngPixels(b));
   if (name.endsWith('.ico') || name.endsWith('.icns')) {
     const pngs = (/** @type {Buffer} */ buf) => {

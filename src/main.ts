@@ -29,7 +29,7 @@ import { describeFileError } from './app/file-errors';
 import { exportFailed } from './app/file-error-text';
 import { importReportDialog } from './ui/import-report';
 import { closeDrawingTab, runCloseWorkflow, saveSymbolForClose, settleBeforeClose } from './app/closeflow';
-import { saveAllDialog, saveFailedDialog, projectRecoveryDialog } from './ui/filedialogs';
+import { saveAllDialog, saveFailedDialog, projectRecoveryDialog, projectRecoveryReadFailedDialog } from './ui/filedialogs';
 import { ProjectAutosaver, drawingAutosaves, offerProjectRecovery } from './app/project-autosave';
 import { showAppMenu } from './ui/appmenu';
 import { EntityClipboard } from './ui/clipboard';
@@ -39,6 +39,7 @@ import { symbolBuilderOf } from './tools/symbol-builder';
 import { userLibrary, bridgeUserLibraryStore, localUserLibraryStore, type UserLibraryBridge } from './electrical/userlib';
 import { packRegistry, bridgePackStore, localPackStore, type PacksBridge } from './electrical/packs';
 import { decodeDxfBytes } from './io/encoding';
+import { ensureFileLimit, MAX_DRAWING_FILE_BYTES } from './io/file-limits';
 import { installApi } from './app/api';
 import { loadPlugins, registerPluginCommands } from './app/plugins';
 import { registerDimStyleCommands } from './tools/dimension';
@@ -181,23 +182,27 @@ async function browserPlotPdf(dataUrl: string, suggestName: string, sheet: { wid
 }
 
 function browserFileBridge(): FileBridge {
+  const drawingBytes = (file: File) => {
+    ensureFileLimit(file, MAX_DRAWING_FILE_BYTES);
+    return file.arrayBuffer();
+  };
   return {
     openDxf: async () => {
       const f = await pickBrowserFile('.dxf');
-      return f ? { path: f.name, text: decodeDxfBytes(new Uint8Array(await f.arrayBuffer())).text } : null;
+      return f ? { path: f.name, text: decodeDxfBytes(new Uint8Array(await drawingBytes(f))).text } : null;
     },
     openDrawing: async () => {
       const f = await pickBrowserFile('.dxf,.dwg');
       if (!f) return null;
       if (drawingKindOf(f.name) === 'dwg') {
         try {
-          const { payload, version } = await readDwgInBrowser(await f.arrayBuffer());
+          const { payload, version } = await readDwgInBrowser(await drawingBytes(f));
           return { path: f.name, kind: 'dwg', payload, version };
         } catch (err) {
           throw new Error(describeDwgError(err));
         }
       }
-      return { path: f.name, kind: 'dxf', text: decodeDxfBytes(new Uint8Array(await f.arrayBuffer())).text };
+      return { path: f.name, kind: 'dxf', text: decodeDxfBytes(new Uint8Array(await drawingBytes(f))).text };
     },
     saveDxf: async (path, text, suggestName) => {
       const name = path ?? suggestName;
@@ -389,6 +394,7 @@ function boot(): void {
     return closeDrawingTab(editor.sessions, i, {
       confirmDiscard: (title) => confirmDialog('Unsaved changes', `${title} has unsaved changes. Discard them?`),
       discardBackup: (id) => void autosaver.discardFor(id),
+      changed: (title) => editor.log(`Close cancelled: ${title} changed while the discard question was open. Close it again to review those changes.`),
     });
   };
   reg('CLOSE', [], 'Close the current drawing tab', (ed) => void closeTab(ed.sessions.active));
@@ -703,9 +709,19 @@ function boot(): void {
       (id) => sb.sessions.has(id),
     )
       .then(async (ok) => {
+        const projectBeforeCleanup = editor.projectState;
+        const drawingsBeforeCleanup = editor.sessions.all.map((s) => ({ id: s.id, revision: s.revision }));
         // Still modified after an allowed close = the user chose not to save the project (Discard All or
         // unticked): its autosave goes, as with Don't Save (a failed save never gets here).
-        if (ok && editor.projectDirty) await projectAutosaver.discard();
+        if (ok && editor.projectDirty && !(await settleBeforeClose([projectAutosaver.discard()]))) {
+          editor.log('Project autosave cleanup is still pending; the remaining recovery copy is kept.');
+        }
+        if (ok && (editor.projectState.generation !== projectBeforeCleanup.generation || editor.projectState.revision !== projectBeforeCleanup.revision ||
+            editor.sessions.all.length !== drawingsBeforeCleanup.length || editor.sessions.all.some((s, i) => s.id !== drawingsBeforeCleanup[i]?.id || s.revision !== drawingsBeforeCleanup[i]?.revision))) {
+          projectAutosaver.schedule();
+          editor.log('Closing cancelled because work changed during autosave cleanup. Close again to review those changes.');
+          return false;
+        }
         return ok;
       })
       .finally(() => {
@@ -722,9 +738,14 @@ function boot(): void {
   cmd.focus();
   if (!new URLSearchParams(location.search).has('norecover')) {
     void (async () => {
-      await offerProjectRecovery(editor, autosaveStore, projectRecoveryDialog, projectAutosaver);
-      await recoveryDialog(editor, store, autosaver);
-    })();
+      try {
+        await offerProjectRecovery(editor, autosaveStore, projectRecoveryDialog, projectAutosaver, projectRecoveryReadFailedDialog);
+      } catch (err) {
+        editor.log(`Project recovery failed: ${err instanceof Error ? err.message : String(err)}. Recovery copies are kept.`);
+      } finally {
+        await recoveryDialog(editor, store, autosaver);
+      }
+    })().catch((err) => editor.log(`Drawing recovery failed: ${err instanceof Error ? err.message : String(err)}.`));
   }
   // Files handed over by the OS ("Open with", a double click, a second launch): one after another,
   // each drawing in its own tab, a project file (.jcadproj.json) as the current project.

@@ -32,6 +32,7 @@ import { parsePointInput, isPlainNumber } from './input';
 import { convertDwg, type DwgImportPayload } from '../io/dwg';
 import type { ImportReport } from '../io/import-report';
 import { readDxfForOpen, reportNeedsAttention, importReportLog, confirmSaveOver, importReportOf } from './import-open';
+import { saveOverwriteWarning } from '../io/import-report';
 import type { ElectricalUi } from '../electrical/ui';
 import { registerElectricalCommands } from './commands-electrical';
 import { registerDraftingCommands } from './commands-drafting';
@@ -94,9 +95,9 @@ export interface FileBridge {
    */
   chooseDrawingPath?(suggestName: string): Promise<string | null>;
   /**
-   * Read a project file: through the Open Project dialog without `file`, else by name. `userChosen`:
-   * the user picked it (Recent Documents); its drawings outside the project folder may then be
-   * written too (electron/path-registry.cjs). `textOnly`: the dialog reads a JSON file for its text.
+   * Read a project file: through the Open Project dialog without `file`, else by name. `userChosen`
+   * is a compatibility hint only; the main process controls authorization from native choices.
+   * `textOnly`: the dialog reads a JSON file for its text.
    */
   openProject?(file?: string, opts?: { userChosen?: boolean; textOnly?: boolean }): Promise<{ path: string; text: string } | null>;
   saveText?(suggestName: string, text: string, filterName: string, ext: string): Promise<string | null>;
@@ -237,6 +238,8 @@ export class Editor {
   private projectRev = 0;
   /** Bumped when another project is opened or created: saves bind to the project that started them. */
   private projectGen = 0;
+  /** Latest completed save in this generation, including saves to different destinations. */
+  private projectSavedRevision = 0;
   /** Message of the last failed save / open (for the close workflow's error report). */
   lastFileError: string | null = null;
   /**
@@ -986,15 +989,13 @@ export class Editor {
       this.log('No file access in this environment.');
       return false;
     }
-    // Saving over a source file that held content JCad could not keep (or a recovered file) asks first.
-    if (!saveAs && this.doc.filePath && (await confirmSaveOver(this.doc.snapshot, this.doc.filePath, (t, m) => (this.ui ?? fallbackUi).confirm(t, m))) === 'save-as') {
-      this.log('Save As keeps the original file unchanged.');
-      return this.saveFile(true);
-    }
     const bridge = this.fileBridge;
     // Remember exactly which document revision goes to disk: edits made while the file
     // dialog / write is pending (or in another tab) must stay flagged as unsaved.
-    const sessionId = this.sessions.current.id;
+    const session = this.sessions.current;
+    const sessionId = session.id;
+    const sessionRevision = session.revision;
+    const contentGeneration = session.contentGeneration;
     const savedState = this.doc.snapshot;
     const revision = captureRevision();
     let target = saveAs ? null : this.doc.filePath;
@@ -1010,7 +1011,21 @@ export class Editor {
         if (!target) return false;
       }
       if (target) {
-        const r = await saveQueue.run(target, revision, () => bridge.saveDxf(target, text, suggest));
+        const stillCurrent = () => this.sessions.all.some((s) => s === session && s.state === savedState && s.revision === sessionRevision);
+        const needsReview = !!saveOverwriteWarning(savedState, target);
+        const permitted = await confirmSaveOver(savedState, target, (t, m) => (this.ui ?? fallbackUi).confirm(t, m), session, stillCurrent);
+        if (needsReview && !stillCurrent()) {
+          this.lastFileError = 'the drawing changed or closed while its save destination or loss warning was open';
+          this.log(`Not saved: ${this.lastFileError}. Save again to review the current drawing.`);
+          return false;
+        }
+        if (permitted === 'save-as') {
+          this.log('Save As keeps the original file unchanged.');
+          // Repeatedly choosing the source in Save As must keep requiring permission.
+          if (!bridge.chooseDrawingPath && saveAs) return false;
+          return this.saveFile(true);
+        }
+        const r = await saveQueue.run(target, revision, () => !needsReview || stillCurrent() ? bridge.saveDxf(target, text, suggest) : Promise.resolve(null));
         if (r.status === 'stale') {
           this.lastFileError = `a newer version of ${target} was saved meanwhile`;
           return false;
@@ -1038,7 +1053,12 @@ export class Editor {
       return true;
     }
     this.savedRevisions.set(sessionId, revision);
-    const outcome = applySaveResult(this.sessions, this, sessionId, savedState, path);
+    const outcome = applySaveResult(this.sessions, this, sessionId, savedState, path, contentGeneration);
+    if (outcome === 'replaced') {
+      this.log(`Saved ${path} (another drawing replaced this tab while saving; it keeps its current file).`);
+      this.rememberRecent(path);
+      return true;
+    }
     if (outcome === 'clean' && this.sessions.current.id === sessionId) this.suggestedName = null;
     this.log(outcome === 'newer-edits' ? `Saved ${path} (edits made during the save are still unsaved).` : `Saved ${path}`);
     this.rememberRecent(path);
@@ -1090,8 +1110,8 @@ export class Editor {
   }
 
   /**
-   * OPENPROJECT: the Open Project dialog, or the project file `file` by name. `userChosen`: the user
-   * picked `file` (Recent Documents, an OS hand-over), not a plugin or a typed path.
+   * OPENPROJECT: the Open Project dialog, or the project file `file` by name. `userChosen` is a
+   * legacy bridge hint; native main-process choices determine write access.
    */
   async openProject(file?: string, opts: { userChosen?: boolean } = {}): Promise<boolean> {
     if (!this.fileBridge?.openProject) {
@@ -1212,6 +1232,12 @@ export class Editor {
       this.log(`Project ${snapshot.name} saved: ${written.path} (another project is open now; it is unchanged).`);
       return true;
     }
+    if (this.projectSavedRevision > revision) {
+      this.log(`Project ${snapshot.name} saved: ${written.path} (a newer save completed meanwhile; the current project keeps that destination).`);
+      this.rememberRecent(written.path);
+      return true;
+    }
+    this.projectSavedRevision = revision;
     if (this.projectRev === rev) {
       this.project = written.project;
       this.projectDirty = false;
@@ -1219,6 +1245,7 @@ export class Editor {
     } else {
       // Edits made while the file was written stay (unsaved), re-expressed for the new location.
       this.project = rebaseProject(this.project, written.path);
+      this.projectDirty = true;
       this.log(`Project saved: ${written.path} (changes made during the save are still unsaved).`);
     }
     this.rememberRecent(written.path);

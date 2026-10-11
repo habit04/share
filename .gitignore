@@ -1,3 +1,4 @@
+.codex-local/
 node_modules/
 dist/
 release/

@@ -11,6 +11,7 @@ afterEach(() => setPathPlatform(null));
 
 describe('path normalisation', () => {
   it('normalises Windows paths: separators, dot segments, drive letter, UNC shares', () => {
+    setPathPlatform('linux');
     expect(normalizePath('c:/Jobs//Line1/./dwg/../A.dxf')).toBe('C:\\Jobs\\Line1\\A.dxf');
     expect(normalizePath('C:\\Jobs\\Line1\\..\\..\\..\\A.dxf')).toBe('C:\\A.dxf'); // never above the root
     expect(normalizePath('\\\\server\\share\\proj\\..\\a.dxf')).toBe('\\\\server\\share\\a.dxf');
@@ -30,6 +31,7 @@ describe('path normalisation', () => {
   });
   it('on Windows, relative and forward-slash paths are Windows paths too', () => {
     setPathPlatform('win32');
+    expect(normalizePath('//server/share/proj/a.dxf')).toBe('\\\\server\\share\\proj\\a.dxf');
     expect(normalizePath('dwg/sub/../A.dxf')).toBe('dwg\\A.dxf');
     expect(samePath('dwg\\A.dxf', 'DWG/a.dxf')).toBe(true);
     setPathPlatform('linux');

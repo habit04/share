@@ -43,6 +43,7 @@
 // written and for the backup removal of a drawing it saved, and a crash after the project was autosaved
 // (the next start offers Project Recovery, and the Drawing Recovery Manager lists drawings only).
 import { _electron as electron } from 'playwright';
+import { applicationWindow } from './electron-window.mjs';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, existsSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { deflateSync, crc32 } from 'node:zlib';
@@ -151,7 +152,7 @@ firstProcess.stderr?.on('data', (d) => mainLog.push(String(d)));
 
 try {
   step = 'window';
-  const win = await app.firstWindow({ timeout: 60_000 });
+  const win = await applicationWindow(app);
   const pageErrors = [];
   win.on('pageerror', (e) => pageErrors.push(`PAGE ERROR ${e.message}`));
   win.on('console', (m) => {
@@ -171,7 +172,7 @@ try {
   };
   check(samePath(userData, profile), `private profile in use (${userData})`);
   const loadedFile = await win.evaluate(() => location.protocol + location.pathname.replace(/^.*\//, '/'));
-  check(loadedFile === 'file:/index.html', `renderer loaded from dist/index.html (${loadedFile})`);
+  check(loadedFile === 'jcad:/index.html', `renderer loaded from its secure bundled origin (${loadedFile})`);
 
   // Main-process test doubles (see the header comment).
   await app.evaluate(({ dialog, net, shell }) => {
@@ -328,6 +329,10 @@ try {
   check(opened.tabs === tabs0 + 1 && opened.path === fixtures.dxf, `opened in a new tab (${opened.tabs} tabs, ${opened.path})`);
   check(['dimension', 'ellipse', 'insert', 'mtext', 'polyline', 'ray', 'xline'].every((t) => opened.types.includes(t)), `entity kinds ${opened.types.join(',')}`);
   check((await messages()).includes('open:Open Drawing'), 'the Open dialog was requested by the main process');
+  // The committed DXF can now report font/metadata approximations. Finish that import's
+  // dialog before exercising another file; each later assertion concerns its own report.
+  while ((await win.locator('.import-report-dialog').count()) > 0)
+    await win.locator('.import-report-dialog .modal button', { hasText: 'Close' }).last().click();
 
   step = 'OPEN dwg';
   if (existsSync(fixtures.dwg)) {
@@ -359,6 +364,7 @@ try {
     const progress = await win.evaluate(() => /** @type {any} */ (window).__progress.splice(0));
     check(progress.join() === 'start:example_2000.dwg:true,end:example_2000.dwg:undefined', `open-progress events ${progress.join(' ')}`);
     check((await win.locator('.modal-backdrop.open-progress').count()) === 0, 'progress dialog closed after the import');
+    await win.locator('.import-report-dialog .modal button', { hasText: 'Close' }).last().click();
 
     step = 'OPEN dwg cancel';
     await win.evaluate(() => (/** @type {any} */ (window).__cancelNext = true));
@@ -378,9 +384,6 @@ try {
     await waitLog(/^(Imported DWG|Failed to open)/, h, 90_000).catch(() => bad('no result after the cancelled read'));
     log = await logSince(h);
     check(log.some((l) => l.startsWith('Imported DWG')), `a DWG opens again after Cancel: ${log.filter((l) => /Imported|Failed/.test(l)).join(' | ')}`);
-    // A second successful open may show its own Import Report dialog on top of the first one's
-    // (the DXF / DWG import report): close it, so later steps find exactly the first dialog.
-    if ((await win.locator('.import-report-dialog').count()) > 1) await win.locator('.import-report-dialog .modal button', { hasText: 'Close' }).last().click();
     await win.evaluate(() => /** @type {any} */ (window).__progress.splice(0));
   }
   if (!existsSync(fixtures.dwg)) ok('DWG fixture missing: skipped');
@@ -395,13 +398,15 @@ try {
     await dwgReport.waitFor({ timeout: 5000 }).then(
       async () => {
         const text = await dwgReport.innerText();
-        check(/object\(s\) dropped or simplified/.test(text) && /WIPEOUT/.test(text) && /layout "Layout1"/.test(text), 'DWG Import Report lists counts, objects and layouts');
+        check(/object\(s\) dropped or simplified/.test(text) && /WIPEOUT/.test(text), 'DWG Import Report lists counts and objects');
         const copy = dwgReport.locator('.modal-footer button').first(); // Copy Report (its label changes after the click)
         await copy.click();
         await copy.filter({ hasText: 'Copied' }).waitFor({ timeout: 3000 }).then(
           () => ok('Copy Report copied the report text'),
           async () => bad(`Copy Report did not report "Copied" (button: "${await copy.textContent()}", title: "${await copy.getAttribute('title')}")`),
         );
+        const copied = await app.evaluate(({ clipboard }) => clipboard.readText());
+        check(/WIPEOUT/.test(copied) && /layout "Layout1"/.test(copied), 'copied DWG report includes objects and layouts beyond the dialog item limit');
         await dwgReport.locator('button', { hasText: 'Close' }).click();
         check((await win.locator('.import-report-dialog').count()) === 0, 'Import Report dialog closed');
       },
@@ -513,6 +518,8 @@ try {
   check(log.some((l) => l.startsWith(`Opened ${fixtures.dxf}: 25 entities`)) && !log.some((l) => /Failed to open|Unknown file path/.test(l)), `RECENT ${idx} reopened by path: ${log.filter((l) => /Open|Failed/.test(l)).join(' | ')}`);
   check((await messages()).length === 0, 'no dialog was shown for RECENT');
   check(!log.some((l) => /in a new tab|in the tab it was opened from/.test(l)) && (await win.evaluate((p) => window.editor.doc.filePath === p, fixtures.dxf)), 'RECENT opened the file straight into its own, active tab');
+  while ((await win.locator('.import-report-dialog').count()) > 0)
+    await win.locator('.import-report-dialog .modal button', { hasText: 'Close' }).last().click();
 
   // ------------------------------------------------------------------ PLOT through plot-pdf
   step = 'PLOT';
@@ -799,10 +806,14 @@ try {
     check(byNameSave.ok && byNameSave.r === null && asked.includes('save:Save Drawing As') && readFileSync(outsideB, 'utf8') === tinyDxf, `such a drawing is saved only through the Save As dialog (cancelled here: ${JSON.stringify(byNameSave.r)}, ${asked.join(' ; ')})`);
     const readBack = await tryCall('openDrawing', [outsideB]);
     check(readBack.ok && readBack.r && readBack.r.kind === 'dxf', 'that drawing can still be opened (read) by name');
-    // The same project picked from Recent Documents counts as chosen by the user.
+    // A renderer's claimed Recent Documents click cannot elevate project permissions.
     const fromRecent = await tryCall('openProject', [byNameProject, { userChosen: true }]);
     const recentBackup = await tryCall('backupFile', [outsideB]);
-    check(fromRecent.ok && recentBackup.ok && recentBackup.r && recentBackup.r.ok === true && existsSync(`${outsideB}.bak`), `opened from Recent Documents, its drawing outside the folder is writable (${JSON.stringify(recentBackup.r)})`);
+    check(fromRecent.ok && recentBackup.ok && recentBackup.r && recentBackup.r.ok === false && !existsSync(`${outsideB}.bak`), `a renderer's userChosen claim grants no write access outside the project folder (${JSON.stringify(recentBackup.r)})`);
+    await app.evaluate((_e, p) => globalThis.__e2e.openPaths.push(p), byNameProject);
+    const nativeChoice = await tryCall('openProject', []);
+    const nativeBackup = await tryCall('backupFile', [outsideB]);
+    check(nativeChoice.ok && nativeBackup.ok && nativeBackup.r?.ok === true && existsSync(`${outsideB}.bak`), 'a real native project choice authorizes its listed drawings');
     // ...but only for a project file the user chose: the catalog file (readable only) grants nothing, flag or not.
     const catalogAsProject = await tryCall('openProject', [outsideJson, { userChosen: true }]);
     const catalogDrawing = await tryCall('openDrawing', [catalogListed]);
@@ -1007,6 +1018,8 @@ try {
     const line = log.find((l) => /^(Opened|Failed)/.test(l)) ?? '';
     const want = i === 0 ? join(projDir, 'proj', 'dwg', 'a.dxf') : join(projDir, 'proj', 'b.dxf');
     check(line.startsWith(`Opened ${want}:`), `project drawing ${i} opened by its resolved path: ${line}`);
+    while ((await win.locator('.import-report-dialog').count()) > 0)
+      await win.locator('.import-report-dialog .modal button', { hasText: 'Close' }).last().click();
   }
   // A project change marks the project modified; Save As into another folder keeps the entries pointing at the same files.
   await win.evaluate(() => window.editor.updateProject({ ...window.editor.project, descriptions: ['E2E CUSTOMER'] }));
@@ -1176,7 +1189,8 @@ try {
     () => bad('no "close stopped" message after Cancel in the Save Failed question'),
   );
   await win.waitForTimeout(300);
-  check((await windowCount()) === 1 && (await win.locator('.modal').count()) === 0, 'the window is open with no dialog left after Cancel');
+  const remainingDialogTitles = await win.locator('.modal .modal-title').allTextContents();
+  check((await windowCount()) === 1 && remainingDialogTitles.length === 0, `the window is open with no dialog left after Cancel${remainingDialogTitles.length ? ` (${remainingDialogTitles.join(' | ')})` : ''}`);
   check(await win.evaluate(() => window.editor.sessions.all.some((s, i) => window.editor.sessions.titleOf(i) === 'Drawing1.dxf' && s.dirty)), 'Drawing1 is still modified');
 
   // Drawing1 and the project saved (in that order, each awaited), everything else discarded: the window closes.
@@ -1273,7 +1287,7 @@ const launch = async () => {
       a.process().stdout?.on('data', (d) => mainLog.push(String(d)));
       a.process().stderr?.on('data', (d) => mainLog.push(String(d)));
       try {
-        const w = await a.firstWindow({ timeout: 60_000 });
+        const w = await applicationWindow(a);
         await w.waitForFunction(() => !!window.editor, null, { timeout: 30_000 });
         if (attempt > 1) console.warn(`e2e-electron: the instance started at attempt ${attempt} (the previous one held the lock for about ${attempt - 1} s)`);
         return { a, w };

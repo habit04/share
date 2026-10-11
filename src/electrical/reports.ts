@@ -9,7 +9,7 @@ import type { Point } from '../core/geometry';
 import type { Drawing } from '../core/document';
 import type { Entity, InsertEntity, LineEntity, TextEntity } from '../core/entities';
 import { newId, textWidth } from '../core/entities';
-import { isWire, isHorizontal, nearestReference } from './ladder';
+import { isWire, isHorizontal, referenceFinder } from './ladder';
 import { tagPrefix, WIRE_DOT } from './symbols';
 import { isComponent, isChild, isChildBlock, isExtraPole, isParentComponent, isTerminal } from './families';
 import { descriptionOf, instLoc } from './attributes';
@@ -47,6 +47,7 @@ const loc = (e: InsertEntity) => `${e.position.x.toFixed(3)}, ${e.position.y.toF
 
 /** Component report: one row per inserted symbol with a tag (children listed with their parent tag). */
 export function componentReport(doc: Drawing, columns?: ReportColumns): Report {
+  const reference = referenceFinder(doc);
   const rows: string[][] = [];
   for (const e of doc.entities) {
     if (!isComponent(e)) continue;
@@ -59,7 +60,7 @@ export function componentReport(doc: Drawing, columns?: ReportColumns): Report {
       instLoc(e.attributes),
       e.block,
       block?.description ?? '',
-      nearestReference(doc, e.position) ?? '',
+      reference( e.position) ?? '',
       isChild(e) ? 'child' : isExtraPole(e) ? `pole ${e.attributes.POLE}` : '',
       loc(e),
     ]);
@@ -90,7 +91,7 @@ export function billOfMaterial(doc: Drawing, columns?: ReportColumns): Report {
 }
 
 /** Devices whose stubs touch a net, in x order. */
-function devicesOnNet(doc: Drawing, net: WireNet, comps: InsertEntity[]): string[] {
+function devicesOnNet(doc: Drawing, net: WireNet, comps: InsertEntity[], rails = wireRails(doc)): string[] {
   const found: Array<{ x: number; tag: string }> = [];
   for (const c of comps) {
     const b = symbolSpan(c, doc.lookupBlock);
@@ -104,7 +105,6 @@ function devicesOnNet(doc: Drawing, net: WireNet, comps: InsertEntity[]): string
       }
     }
   }
-  const rails = doc.entities.filter((e): e is LineEntity => isWire(e) && !isHorizontal(e));
   for (const r of rails) {
     const y0 = Math.min(r.a.y, r.b.y);
     const y1 = Math.max(r.a.y, r.b.y);
@@ -113,6 +113,10 @@ function devicesOnNet(doc: Drawing, net: WireNet, comps: InsertEntity[]): string
     else if (Math.abs(r.a.x - net.x1) < 0.02) found.push({ x: net.x1, tag: 'L2' });
   }
   return found.sort((a, b) => a.x - b.x).map((f) => f.tag);
+}
+
+function wireRails(doc: Drawing): LineEntity[] {
+  return doc.entities.filter((e): e is LineEntity => isWire(e) && !isHorizontal(e));
 }
 
 function numberedNets(doc: Drawing): Array<{ label: TextEntity; net: WireNet }> {
@@ -128,11 +132,13 @@ function numberedNets(doc: Drawing): Array<{ label: TextEntity; net: WireNet }> 
 
 /** Wire from/to: each numbered net with the components whose stubs touch it. */
 export function wireFromToReport(doc: Drawing, columns?: ReportColumns): Report {
+  const reference = referenceFinder(doc);
   const comps = doc.entities.filter((e): e is InsertEntity => isComponent(e));
+  const rails = wireRails(doc);
   const rows: string[][] = [];
   for (const { label, net } of numberedNets(doc)) {
-    const list = devicesOnNet(doc, net, comps);
-    rows.push([label.text, list[0] ?? '', list[1] ?? '', list.slice(2).join(', '), nearestReference(doc, label.position) ?? '', label.layer === 'WIREFIXED' ? 'fixed' : '']);
+    const list = devicesOnNet(doc, net, comps, rails);
+    rows.push([label.text, list[0] ?? '', list[1] ?? '', list.slice(2).join(', '), reference( label.position) ?? '', label.layer === 'WIREFIXED' ? 'fixed' : '']);
   }
   rows.sort((a, b) => a[0]!.localeCompare(b[0]!, undefined, { numeric: true }));
   return withColumns({ title: 'Wire From/To Report', columns: ['Wire No.', 'From', 'To', 'Also', 'Rung', 'Fixed'], rows }, columns);
@@ -141,12 +147,13 @@ export function wireFromToReport(doc: Drawing, columns?: ReportColumns): Report 
 /** Wire label report: one printable label per wire end with wire type, colour / gauge and length. */
 export function wireLabelReport(doc: Drawing, columns?: ReportColumns): Report {
   const comps = doc.entities.filter((e): e is InsertEntity => isComponent(e));
+  const rails = wireRails(doc);
   const rows: string[][] = [];
   for (const { label, net } of numberedNets(doc)) {
     const layer = net.wires[0]!.layer;
     const type = WIRE_TYPES.find((t) => t.layer === layer);
     const length = net.wires.reduce((s, w) => s + Math.abs(w.a.x - w.b.x), 0);
-    const list = devicesOnNet(doc, net, comps);
+    const list = devicesOnNet(doc, net, comps, rails);
     rows.push([label.text, layer, type?.description ?? '', String(Math.max(2, list.length)), list.join(' - '), length.toFixed(2)]);
   }
   rows.sort((a, b) => a[0]!.localeCompare(b[0]!, undefined, { numeric: true }));
@@ -155,10 +162,11 @@ export function wireLabelReport(doc: Drawing, columns?: ReportColumns): Report {
 
 /** Terminal report. */
 export function terminalReport(doc: Drawing, columns?: ReportColumns): Report {
+  const reference = referenceFinder(doc);
   const rows: string[][] = [];
   for (const e of doc.entities) {
     if (!isTerminal(e)) continue;
-    rows.push([e.attributes.TAGSTRIP ?? '', e.attributes.TERM01 ?? '', descriptionOf(e.attributes), nearestReference(doc, e.position) ?? '', loc(e), jumperText(e, doc.entities)]);
+    rows.push([e.attributes.TAGSTRIP ?? '', e.attributes.TERM01 ?? '', descriptionOf(e.attributes), reference( e.position) ?? '', loc(e), jumperText(e, doc.entities)]);
   }
   rows.sort((a, b) => a[0]!.localeCompare(b[0]!, undefined, { numeric: true }) || a[1]!.localeCompare(b[1]!, undefined, { numeric: true }));
   return withColumns({ title: 'Terminal Report', columns: ['Strip', 'Terminal', 'Description', 'Rung', 'Location', 'Jumper'], rows }, columns);
@@ -176,13 +184,15 @@ export function terminalStripReport(doc: Drawing, columns?: ReportColumns): Repo
 
 /** PLC I/O address report: module addresses (parametric modules) and PLC point symbols with the connected device. */
 export function plcIoReport(doc: Drawing, columns?: ReportColumns): Report {
+  const reference = referenceFinder(doc);
   const rows: string[][] = [];
   const nets = collectNets(doc.entities);
   const labels = doc.entities.filter(isWireNumber).map((t) => ({ t, net: netOfWireNumber(nets, t) }));
   const comps = doc.entities.filter((e): e is InsertEntity => isComponent(e) && !/PLC/.test(e.block));
+  const rails = wireRails(doc);
   const netAt = (p: Point) => nets.find((n) => Math.abs(n.y - p.y) < 0.05 && p.x >= n.x0 - 0.02 && p.x <= n.x1 + 0.02) ?? null;
   const wireNo = (net: WireNet | null) => labels.find((l) => l.net === net)?.t.text ?? '';
-  const deviceOn = (net: WireNet | null) => (net ? devicesOnNet(doc, net, comps).filter((d) => d !== 'L1' && d !== 'L2') : []);
+  const deviceOn = (net: WireNet | null) => (net ? devicesOnNet(doc, net, comps, rails).filter((d) => d !== 'L1' && d !== 'L2') : []);
   const descOf = (tag: string) => doc.entities.find((e): e is InsertEntity => e.type === 'insert' && e.attributes.TAG1 === tag && !!e.attributes.DESC1)?.attributes.DESC1 ?? '';
   // Parametric modules: a closed SYMS box with a TAGS text above it (module tag) and address texts inside.
   const boxes = doc.entities.filter((e) => e.type === 'polyline' && e.layer === 'SYMS' && e.closed && e.points.length === 4);
@@ -211,7 +221,7 @@ export function plcIoReport(doc: Drawing, columns?: ReportColumns): Report {
         .sort((p, q) => q.position.y - p.position.y)
         .map((e) => e.text)
         .join(' ');
-      rows.push([moduleTag, a.text, isInput ? 'Input' : 'Output', wireNo(net), devices.join(', '), pointDesc || (devices.length ? descOf(devices[0]!) : ''), nearestReference(doc, a.position) ?? '']);
+      rows.push([moduleTag, a.text, isInput ? 'Input' : 'Output', wireNo(net), devices.join(', '), pointDesc || (devices.length ? descOf(devices[0]!) : ''), reference( a.position) ?? '']);
     }
   }
   for (const e of doc.entities) {
@@ -220,7 +230,7 @@ export function plcIoReport(doc: Drawing, columns?: ReportColumns): Report {
     const isInput = /I$|_I$|AI$/.test(e.block);
     const net = netAt({ x: isInput ? b.min.x - 0.01 : b.max.x + 0.01, y: e.position.y });
     const devices = deviceOn(net);
-    rows.push(['', e.attributes.TAG1, isInput ? 'Input' : 'Output', wireNo(net), devices.join(', '), e.attributes.DESC1 || (devices.length ? descOf(devices[0]!) : ''), nearestReference(doc, e.position) ?? '']);
+    rows.push(['', e.attributes.TAG1, isInput ? 'Input' : 'Output', wireNo(net), devices.join(', '), e.attributes.DESC1 || (devices.length ? descOf(devices[0]!) : ''), reference( e.position) ?? '']);
   }
   rows.sort((a, b) => a[0]!.localeCompare(b[0]!, undefined, { numeric: true }) || a[1]!.localeCompare(b[1]!, undefined, { numeric: true }));
   return withColumns({ title: 'PLC I/O Address Report', columns: ['Module', 'Address', 'I/O', 'Wire No.', 'Device', 'Description', 'Rung'], rows }, columns);
@@ -228,12 +238,13 @@ export function plcIoReport(doc: Drawing, columns?: ReportColumns): Report {
 
 /** Parent devices that lack manufacturer or catalog data. */
 export function missingCatalogReport(doc: Drawing, columns?: ReportColumns): Report {
+  const reference = referenceFinder(doc);
   const rows: string[][] = [];
   for (const e of doc.entities) {
     if (!isParentComponent(e) || /^(HGND|IEC_PE)/.test(e.block)) continue;
     const missing = [!e.attributes.MFG && 'MFG', !e.attributes.CAT && 'CAT'].filter(Boolean) as string[];
     if (missing.length === 0) continue;
-    rows.push([e.attributes.TAG1 ?? '', descriptionOf(e.attributes), tagPrefix(e.block), e.block, missing.join(', '), nearestReference(doc, e.position) ?? '']);
+    rows.push([e.attributes.TAG1 ?? '', descriptionOf(e.attributes), tagPrefix(e.block), e.block, missing.join(', '), reference( e.position) ?? '']);
   }
   rows.sort((a, b) => a[0]!.localeCompare(b[0]!, undefined, { numeric: true }));
   return withColumns({ title: 'Missing Catalog Data', columns: ['Tag', 'Description', 'Family', 'Block', 'Missing', 'Rung'], rows }, columns);

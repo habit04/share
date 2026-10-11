@@ -2,7 +2,8 @@
 // operating system, then run the end-to-end checks of scripts/e2e-electron.mjs against the packaged
 // application (start-up, open the committed DXF and DWG fixtures, SAVEAS, AUTOSAVE / recovery copy,
 // vector PDF through save-pdf, large-DWG progress and Cancel, IPC guard, clean close, no error log)
-// plus the headless `--probe-dwg` reader of the packaged build.
+// plus the headless `--probe-dwg` reader and, from 0.4.1, the two-launch secure-origin
+// preference migration of the packaged build.
 //
 //   node scripts/packaged-smoke.mjs <folder with installers>   (default: release/)
 //
@@ -17,9 +18,10 @@
 // JCAD_SMOKE_OUT (default packaged-smoke-output/) receives one folder of e2e output per installer.
 // Exits non-zero when no installer was found or any check failed.
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
+import { needsPackagedOrigin, processResult } from './packaged-smoke-policy.mjs';
 
 const repo = resolve(import.meta.dirname, '..');
 const dir = resolve(process.argv[2] || join(repo, 'release'));
@@ -27,6 +29,8 @@ const outRoot = resolve(process.env.JCAD_SMOKE_OUT || join(repo, 'packaged-smoke
 mkdirSync(outRoot, { recursive: true });
 const product = 'JCad Electrical';
 const executableName = 'jcad-electrical'; // package.json "name": the Linux binary
+const expectedVersion = process.env.JCAD_E2E_EXPECT_VERSION || JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')).version;
+const originRequired = needsPackagedOrigin(expectedVersion);
 
 /** Every file below `root` (depth-limited), for the installer search. */
 function walk(root, depth = 3) {
@@ -45,7 +49,7 @@ function walk(root, depth = 3) {
 /** Run a command; throw with its output when it fails. */
 function run(cmd, args, opts = {}) {
   console.log(`$ ${cmd} ${args.map((a) => (/\s/.test(a) ? JSON.stringify(a) : a)).join(' ')}`);
-  const r = spawnSync(cmd, args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, ...opts });
+  const r = spawnSync(cmd, args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, windowsHide: true, timeout: 180_000, ...opts });
   if (r.status !== 0) throw new Error(`${cmd} exited with ${r.status}${r.error ? ` (${r.error.message})` : ''}\n${(r.stdout || '').slice(-2000)}\n${(r.stderr || '').slice(-2000)}`);
   return r.stdout || '';
 }
@@ -53,7 +57,7 @@ function run(cmd, args, opts = {}) {
 /** Wait until a file exists (NSIS returns before the files are all in place on slow disks). */
 function waitFor(file, ms = 60_000) {
   const until = Date.now() + ms;
-  while (!existsSync(file) && Date.now() < until) spawnSync(process.execPath, ['-e', 'setTimeout(() => {}, 500)']);
+  while (!existsSync(file) && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
   return existsSync(file);
 }
 
@@ -81,7 +85,7 @@ if (process.platform === 'win32') {
   const dmgs = files.filter((f) => /\.dmg$/i.test(f));
   const native = process.arch === 'arm64' ? 'arm64' : 'x64';
   // Native first; the other architecture only when this Mac can run it (Rosetta on Apple silicon).
-  const rosetta = native === 'arm64' && spawnSync('/usr/bin/arch', ['-x86_64', '/usr/bin/true']).status === 0;
+  const rosetta = native === 'arm64' && spawnSync('/usr/bin/arch', ['-x86_64', '/usr/bin/true'], { timeout: 15_000, windowsHide: true }).status === 0;
   for (const dmg of dmgs.sort((a, b) => Number(b.includes(native)) - Number(a.includes(native)))) {
     const isNative = basename(dmg).includes(native) || !/(arm64|x64)/.test(basename(dmg));
     if (!isNative && !rosetta) {
@@ -123,36 +127,62 @@ if (targets.length === 0) {
 }
 
 const summary = [];
+const results = [];
 let failed = 0;
 for (const t of targets) {
   console.log(`\n=== ${t.label}: ${t.executable}`);
+  const out = join(outRoot, t.label.replace(/[^A-Za-z0-9._-]+/g, '-'));
+  mkdirSync(out, { recursive: true });
   if (!existsSync(t.executable)) {
     summary.push(`FAIL ${t.label}: executable missing (${t.executable})`);
+    const result = { label: t.label, expectedVersion, ok: false, probe: { ok: false, result: 'not run: executable missing', output: '' }, e2e: 'not run: executable missing', origin: { required: originRequired, result: 'not run: executable missing' } };
+    results.push(result);
+    writeFileSync(join(out, 'packaged-smoke-result.json'), `${JSON.stringify(result, null, 2)}\n`);
     failed += 1;
     continue;
   }
   // 1. The headless DWG probe: LibreDWG (worker thread, unpacked from the asar) in the packaged layout.
   const probeArgs = ['--probe-dwg', join(repo, 'fixtures', 'example_2000.dwg')];
   if (process.platform === 'linux') probeArgs.push('--no-sandbox');
-  const probe = spawnSync(t.executable, probeArgs, { encoding: 'utf8', timeout: 120_000 });
+  const probe = spawnSync(t.executable, probeArgs, { encoding: 'utf8', timeout: 120_000, windowsHide: true, maxBuffer: 2 * 1024 * 1024 });
   const probeLine = `${probe.stdout || ''}`.split(/\r?\n/).find((l) => l.startsWith('PROBE_')) ?? `(no output; exit ${probe.status}${probe.error ? `, ${probe.error.message}` : ''})`;
   const probeOk = probe.status === 0 && /^PROBE_OK \S+ entities=\d+/.test(probeLine);
   console.log(`${probeOk ? 'ok  ' : 'FAIL'} --probe-dwg: ${probeLine}`);
   // 2. The end-to-end checks against the packaged application.
-  const out = join(outRoot, t.label.replace(/[^A-Za-z0-9._-]+/g, '-'));
   const e2e = spawnSync(process.execPath, ['--experimental-strip-types', join(repo, 'scripts', 'e2e-electron.mjs'), '--packaged', t.executable], {
     stdio: 'inherit',
     env: { ...process.env, JCAD_E2E_OUT: out },
     timeout: 15 * 60 * 1000,
+    windowsHide: true,
   });
-  const ok = probeOk && e2e.status === 0;
+  // 3. Seed only legacy storage with stock Electron, then launch the installed build twice.
+  // Older published releases used file:// and intentionally predate this migration.
+  const origin = originRequired ? spawnSync(process.execPath, [join(repo, 'scripts', 'e2e-origin.mjs'), '--packaged', t.executable], {
+    encoding: 'utf8',
+    timeout: 4 * 60 * 1000,
+    maxBuffer: 2 * 1024 * 1024,
+    windowsHide: true,
+    env: { ...process.env },
+  }) : null;
+  const originResult = origin ? processResult(origin) : `skipped: ${expectedVersion} predates secure-origin migration`;
+  if (origin) {
+    const output = `${origin.stdout || ''}${origin.stderr || ''}`;
+    process.stdout.write(output);
+    writeFileSync(join(out, 'origin-migration.log'), output);
+  }
+  const ok = probeOk && e2e.status === 0 && (!originRequired || origin?.status === 0);
   if (!ok) failed += 1;
-  summary.push(`${ok ? 'ok  ' : 'FAIL'} ${t.label}: probe ${probeOk ? 'ok' : 'failed'}, e2e exit ${e2e.status}`);
+  const result = { label: t.label, expectedVersion, ok, probe: { ok: probeOk, result: processResult(probe), output: probeLine }, e2e: processResult(e2e), origin: { required: originRequired, result: originResult } };
+  results.push(result);
+  writeFileSync(join(out, 'packaged-smoke-result.json'), `${JSON.stringify(result, null, 2)}\n`);
+  summary.push(`${ok ? 'ok  ' : 'FAIL'} ${t.label}: probe ${probeOk ? 'ok' : 'failed'}, e2e ${processResult(e2e)}, origin ${originResult}`);
 }
 console.log(`\npackaged-smoke (${process.platform} ${process.arch}):\n${summary.join('\n')}`);
+writeFileSync(join(outRoot, 'packaged-smoke-results.json'), `${JSON.stringify({ platform: process.platform, arch: process.arch, expectedVersion, results, failed }, null, 2)}\n`);
 // The extracted / installed copies are large; keep them only when asked (JCAD_SMOKE_KEEP=1).
 if (!process.env.JCAD_SMOKE_KEEP) {
   try {
+    if (!resolve(tmp).startsWith(join(resolve(tmpdir()), 'jcad-smoke-'))) throw new Error('Unexpected packaged smoke temporary path');
     rmSync(tmp, { recursive: true, force: true, maxRetries: 3 });
   } catch {
     console.log(`(could not remove ${tmp})`);

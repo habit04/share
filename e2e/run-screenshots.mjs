@@ -9,6 +9,7 @@
 import { spawn } from 'node:child_process';
 import { mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { createOutputGate } from './output-scanner.mjs';
 
 const ALL = [
   { name: 'screenshot', needs: 'dist' },
@@ -19,38 +20,35 @@ const ALL = [
   // exactly one "Failed to load resource" console error for it.
   { name: 'screenshot-site', needs: 'site-dist', allow: [{ re: /^CONSOLE Failed to load resource: net::ERR_FAILED$/, max: 1 }] },
 ];
-const BAD = [/^PAGE ERROR\b/, /^CONSOLE\b/, /^FAIL\b/, /Unknown command/, /\bcheck\(s\) failed\b/];
 
 const wanted = process.argv.slice(2);
+if (wanted.some((name) => !ALL.some((script) => script.name === name))) throw new Error(`Unknown screenshot script: ${wanted.join(', ')}`);
 const scripts = wanted.length ? ALL.filter((s) => wanted.includes(s.name)) : ALL;
 mkdirSync('screenshots', { recursive: true });
 
 function run(script) {
   return new Promise((resolve) => {
     const problems = [];
-    const allowed = new Map();
+    const gate = createOutputGate(script.allow);
+    const stdout = gate.scanner();
+    const stderr = gate.scanner();
     const child = spawn(process.execPath, [join('scripts', `${script.name}.mjs`)], { stdio: ['ignore', 'pipe', 'pipe'], env: process.env });
-    const scan = (chunk, stream) => {
+    const scan = (chunk, stream, scanner) => {
       stream.write(chunk);
-      for (const line of chunk.toString().split(/\r?\n/)) {
-        if (!BAD.some((re) => re.test(line))) continue;
-        const allow = (script.allow ?? []).find((a) => a.re.test(line));
-        if (allow) {
-          const n = (allowed.get(allow) ?? 0) + 1;
-          allowed.set(allow, n);
-          if (n <= allow.max) continue;
-        }
-        problems.push(line);
-      }
+      scanner.write(chunk);
     };
-    child.stdout.on('data', (c) => scan(c, process.stdout));
-    child.stderr.on('data', (c) => scan(c, process.stderr));
+    child.stdout.on('data', (c) => scan(c, process.stdout, stdout));
+    child.stderr.on('data', (c) => scan(c, process.stderr, stderr));
+    child.on('error', (error) => problems.push(`spawn failed: ${error.message}`));
     const timer = setTimeout(() => {
       problems.push('timed out after 10 minutes');
       child.kill('SIGKILL');
     }, 10 * 60 * 1000);
     child.on('close', (code) => {
       clearTimeout(timer);
+      stdout.end();
+      stderr.end();
+      problems.push(...gate.problems());
       if (code !== 0) problems.push(`exit code ${code}`);
       resolve(problems);
     });

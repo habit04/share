@@ -7,7 +7,7 @@ import globals from 'globals';
 
 export default tseslint.config(
   {
-    ignores: ['node_modules/**', 'dist/**', 'dist-node/**', 'release/**', 'site-dist/**', 'screenshots/**', 'e2e-output/**', 'packaged-smoke-output/**', '.claude/**', 'src/render/fonts/**'],
+    ignores: ['node_modules/**', 'dist/**', 'dist-node/**', 'release/**', 'site-dist/**', 'screenshots/**', 'e2e-output/**', 'packaged-smoke-output/**', '.claude/**', '.codex-local/**', 'src/render/fonts/**'],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,

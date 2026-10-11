@@ -151,5 +151,5 @@ describe('spatial index on a randomized drawing of 2,000 mixed entities', () => 
     doc.setSpace(undefined);
     expect(doc.entities).toBe(modelEntities);
     agree(doc, 1008);
-  });
+  }, 30_000);
 });

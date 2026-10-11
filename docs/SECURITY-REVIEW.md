@@ -1,7 +1,7 @@
 # JCad Electrical: security review of the Electron shell and file parsers
 
-Date: 2026-10-11. Read-only review: no application code was changed, and nothing was built or run
-except a few Node one-liners that time a regular expression or simulate a path check.
+Date: 2026-10-11. The original read-only findings are preserved below; the current remediation
+status and practical limits are listed in [Status](#status-after-the-2026-10-11-remediation).
 
 ## Scope
 
@@ -23,7 +23,7 @@ before R4 was merged; what has been fixed since is listed under [Status](#status
 4. A local unprivileged user who can write to a folder the victim opens drawings from (a shared
    project folder on a multi-user workstation or a network share), but not to the victim's home.
 
-## Summary
+## Original review summary
 
 | Severity | Count | Findings |
 | --- | --- | --- |
@@ -35,32 +35,43 @@ before R4 was merged; what has been fixed since is listed under [Status](#status
 
 Fix order: E-1, E-2, then E-3 / E-14, then E-4.
 
-## Status
+## Status after the 2026-10-11 remediation
 
-"Fixed" means fixed in the merge of R4 onto the R1 + R3 + R2 tree (the IPC guard comes with R4
-itself; the other fixes are one commit on top, each with unit and end-to-end tests). Everything
-marked "open" is scheduled separately.
+The findings below preserve the original review and its historical commit/line references.
+This table describes the current implementation. A local audit of the updated complete dependency
+lockfile reported zero vulnerabilities; signed release credentials and macOS/Linux installer
+execution still require the corresponding machines and CI secrets.
 
-| Finding | Severity | Status |
+| Finding | Severity | Current status |
 | --- | --- | --- |
-| E-1 write allow list extended by file content | High | Fixed: readable and writable paths are separate (`electron/path-registry.cjs`). A project's entries are resolved (`..` collapsed) before they are checked; only `.dxf` / `.dwg` drawings can become writable, Windows stream names, device paths and network paths on another server than the project are ignored, and the catalog file is readable only. Maintainer's decision for 0.4.1: the drawings of a project the user chose (Open Project dialog, OS hand-over, Recent Documents for a project file the user chose or saved before) are writable wherever they are; for a project opened only by name (plugin API, `OPENPROJECT <path>`) only those inside its folder, the others readable only; a readable-only JSON file (the catalog) grants nothing. `save-dxf` writes `.dxf` only (other types refused and logged; a readable-only drawing goes through Save As on that file), `save-project` `.json` only, `backup-file` `.dxf` / `.jcadproj.json`, all through R1's atomic writer, so `package.json` and other non-drawing files are never writable through project content. Write access persists in `recent.json`. Residual risk: "Recent Documents" is the renderer's claim (`open-project` `userChosen`), honoured only for a project file already writable, so script in the page that rewrites such a project file can make `.dxf` files elsewhere writable (not other file types). |
-| E-2 Electron 33 out of support | High | Open |
-| E-3 `$CANNOSCALE` HTML injection | Medium | Fixed: the reader keeps only plain scale names (no `<`, `>`, `&`, control characters, at most 64 characters) and the status bar escapes the value. |
-| E-4 IMAGE path handling | Medium | Fixed for network paths: R4's containment rule is in place and `read-image` refuses `\server\share` / `//server/share` paths unless a known file on that server is next to them or a drawing on that server names them. The "next to any known file" rule itself is unchanged. |
-| E-5 writes follow symbolic links | Medium | Open |
-| E-6 ReDoS in the DXF tokenizer | Medium | Open |
-| E-7 DWG parser placement / limits | Medium | Open (R4's worker thread is merged; no resource limits or size cap yet) |
-| E-8 update authenticity | Medium | Open |
-| E-9 `open-external` allow-list escape | Low | Fixed: the URL is parsed and compared by scheme, host and path after `..` resolution; user info, ports and encoded separators are refused (`externalUrl` in `electron/ipc-guard.cjs`, also used by the updater). |
-| E-10 plugin trust model | Low | Open |
-| E-11 no IPC sender check | Low | Fixed by merging R4's `guardIpc`: every channel, including R1's and R2's, checks its caller. |
-| E-12 no permission handlers | Low | Open |
-| E-13 no expansion budget for nested blocks | Low | Open |
-| E-14 `modal()` title is raw HTML | Low | Fixed: the three `modal()` implementations set the title as text; callers no longer escape it themselves. |
-| E-15 renderer hardening gaps | Low | Open |
-| E-16 problem report pre-fills local paths | Info | Open |
-| E-17 pack key lookup on a plain object | Info | Open |
-| E-18 unbounded plot page size | Info | Open |
+| E-1 renderer can extend file write grants | High | Fixed: the main process records native dialog, OS hand-over and native Recent project selection. Renderer `userChosen` claims are ignored. Project content can grant drawings outside its folder only through that native selection; catalog JSON remains read-only. Write channels restrict extensions. |
+| E-2 unsupported Electron | High | Updated to Electron 44.7.0; full dependency audit after compatible tooling updates and the scoped proxy override reports zero vulnerabilities. |
+| E-3 annotation scale HTML injection | Medium | Fixed: plain scale names and escaped display. |
+| E-4 IMAGE path handling | Medium | Hardened: folder access comes from opened drawings rather than arbitrary known files; actual link targets are revalidated; network references cannot change servers. Explicit image references in opened drawings remain allowed. |
+| E-5 writes follow links | Medium | Hardened: atomic writes reject symlink/junction destinations and linked parent folders; pin and recheck parent identities before renames. Node lacks portable descriptor-relative rename, so a hostile process can still race the final check. |
+| E-6 DXF tokenizer ReDoS | Medium | Fixed: bounded source text and linear line parsing; malformed group codes fail with bounded diagnostics. |
+| E-7 DWG parser limits | Medium | Fixed within stated limits: desktop and browser parse in cancellable workers, input capped at 128 MiB and parsing at 60 s; no main-thread fallback. Desktop JavaScript old-generation heap is capped at 512 MiB. WebAssembly linear memory is not capped by that heap setting. |
+| E-8 update authenticity | Medium | Fixed policy: in-place updates require trusted packaged Windows publisher configuration. Unsigned Windows and all Linux/macOS builds offer manual downloads. CI verifies configured signatures and records actual status. |
+| E-9 external URL allowlist escape | Low | Fixed: parsed scheme, host and path checks reject user information, ports, encoded separators and traversal. |
+| E-10 plugin trust model | Low | Persisted trust requires a 64-hex SHA-256 digest; weak fallback approval lasts only the current run. Plugins remain explicitly trusted code with full renderer access, not capability-isolated extensions. |
+| E-11 IPC caller identity | Low | Fixed: every registered channel checks main window, top frame and application URL. |
+| E-12 permissions | Low | Fixed: default deny, except sanitized clipboard writes from the main application contents. Navigation and popups are denied for main/print contents. |
+| E-13 nested block expansion | Low | Fixed: at most 100,000 work units per insert and 1,000,000 per imported drawing, including layouts and definitions. |
+| E-14 modal title HTML | Low | Fixed: title text is assigned as text. |
+| E-15 renderer hardening | Low | Secure `jcad://app/index.html` origin, tighter CSP and packaging fuses. Run-as-Node, NODE_OPTIONS and extra file protocol privileges are disabled; ASAR-only loading and integrity validation are enabled. The packaged menu hides DevTools; CLI inspect remains enabled for packaged Playwright checks. |
+| E-16 report privacy | Info | Fixed: paths/drawing names are redacted by default; history, captured errors and private details are unchecked until the user opts in. |
+| E-17 inherited pack key lookup | Info | Fixed: own-property key lookup before Ed25519 verification. |
+| E-18 oversized paper | Info | Fixed: print dimensions must be positive, finite and at most 200 inches. |
+
+The production renderer has sandbox, context isolation and web security enabled. A controlled,
+hidden window reads legacy file-origin preferences once, using constant CSP-restricted HTML,
+without application scripts, plugins or preload; the helper temporarily disables web security to
+read the old storage after the file-privilege fuse is disabled. It refuses navigation and popups
+and is destroyed before the application starts. Failure does not execute the old application.
+
+Drawing reads are capped at 128 MiB, project JSON at 8 MiB and image files at 50 MiB. These are
+input bounds, not a guarantee of maximum native/WASM memory use. Trusted plugins retain renderer
+and exposed bridge authority; capability isolation would be a separate product/API change.
 
 ---
 

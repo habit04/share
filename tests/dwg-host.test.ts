@@ -1,6 +1,6 @@
 import { describe, it, expect, afterAll } from 'vitest';
 import { createRequire } from 'node:module';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 // @ts-expect-error plain JS helper shared with Electron main / CLI
 import { readDwgPayload } from '../scripts/dwg-reader.mjs';
@@ -35,7 +35,7 @@ afterAll(() => {
   for (const h of hosts) h.dispose();
 });
 
-describe.skipIf(!existsSync(fixture))('DWG worker host (electron/dwg-host.cjs)', () => {
+describe('DWG worker host (electron/dwg-host.cjs)', () => {
   it('the worker returns the same payload as the in-process reader', async () => {
     const bytes = new Uint8Array(readFileSync(fixture));
     const h = host();

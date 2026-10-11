@@ -8,6 +8,11 @@ unsigned builds as before (macOS keeps the ad-hoc signature from
 `scripts/afterPack.cjs`). No secret, certificate or key is stored in the
 repository.
 
+Release notes use the signing result recorded after the build's verification steps, rather than
+assuming credentials were available. Every platform also publishes a source-SHA/checksum record,
+and the release attaches GitHub's signed provenance bundle. That attestation is separate from
+Authenticode, Developer ID and notarization; it does not replace any of them.
+
 | Platform | Service | Secrets (Settings → Secrets and variables → Actions) | Switch |
 | --- | --- | --- | --- |
 | Windows | Azure Artifact Signing (formerly Trusted Signing) | `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_SIGNING_ENDPOINT`, `AZURE_SIGNING_ACCOUNT`, `AZURE_CERT_PROFILE`, `AZURE_PUBLISHER_NAME` | `scripts/azure-signing.mjs` (all seven set) |
@@ -64,8 +69,8 @@ publisher identity rather than on one certificate.
    days, not minutes.
 3. **Certificate profile**: *Certificate profiles* → Create → *Public Trust*,
    linked to the completed validation. Note the profile **name**. The profile's
-   subject (the validated publisher name, e.g. `CN=Example Controls LLC, ...`)
-   must match `AZURE_PUBLISHER_NAME` exactly.
+   subject's common name (the validated publisher name, e.g. `Example Controls LLC`, without
+   the `CN=` prefix or other subject fields) must match `AZURE_PUBLISHER_NAME` exactly.
 4. **Service principal**: Microsoft Entra ID → App registrations → New
    registration (e.g. `jcad-release-signing`). Under *Certificates & secrets*
    create a client secret. Note the **Directory (tenant) ID**, the
@@ -85,7 +90,7 @@ publisher identity rather than on one certificate.
 | `AZURE_SIGNING_ENDPOINT` | region endpoint, e.g. `https://eus.codesigning.azure.net/` | `win.azureSignOptions.endpoint` |
 | `AZURE_SIGNING_ACCOUNT` | signing account name | `win.azureSignOptions.codeSigningAccountName` |
 | `AZURE_CERT_PROFILE` | certificate profile name | `win.azureSignOptions.certificateProfileName` |
-| `AZURE_PUBLISHER_NAME` | the profile's subject / validated publisher | `win.azureSignOptions.publisherName` |
+| `AZURE_PUBLISHER_NAME` | the profile subject's common name / validated publisher | `win.azureSignOptions.publisherName` and `win.publisherName` |
 
 ### How the build uses them
 
@@ -94,10 +99,14 @@ are present it adds `build.win.azureSignOptions` (endpoint, account, profile,
 publisher) to the runner's copy of `package.json`; otherwise it leaves the file
 alone and the build stays unsigned. The workflow passes the three login values
 to electron-builder on Windows only, and when signing is on it fails the job if
-any produced `.exe` is not validly signed. electron-builder (26.x) signs the app
+any produced `.exe` is not validly signed by that exact publisher common name. electron-builder (26.x) signs the app
 executable, the uninstaller and the NSIS installer through the Artifact Signing
 client (it installs the `TrustedSigning` PowerShell module on demand). The
 committed `package.json` never contains signing settings.
+
+The script sets `build.win.publisherName` as well as Azure's publisher setting. The packaged
+`app-update.yml` must contain a trusted publisher before the application enables an in-place
+Windows update. Unsigned Windows and all Linux builds offer manual downloads.
 
 An equivalent alternative, if electron-builder's built-in support ever gets in
 the way, is to build unsigned and sign the output with the
@@ -192,6 +201,11 @@ xcrun stapler validate "/Applications/JCad Electrical.app"
 ```
 
 ## Costs and timelines
+
+The ad-hoc hook runs before electron-builder flips fuses. `resetAdHocDarwinSignature: true`
+reseals the bundle after those binary changes, then a configured Developer ID signature runs
+afterward. CI checks the final ad-hoc seal on unsigned macOS builds and checks Developer ID,
+hardened runtime, stapling and Gatekeeper assessment on configured signed builds.
 
 Prices change; check the vendors' pages before budgeting. At the time of writing:
 

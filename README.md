@@ -28,11 +28,10 @@ trademarks are used.
 Ready-made installers are built by the **Build installers** GitHub Actions workflow
 (Actions tab, run it or push a `v*` tag): a Windows installer (`.exe`), macOS disk
 images (`.dmg`, Apple Silicon and Intel) and Linux `.AppImage` / `.deb` packages appear as workflow artifacts, and
-tagged builds are attached to a GitHub Release. The Windows installer and app are signed through Azure
-Artifact Signing (publisher: Justin Rodriguez); older unsigned versions, or a new certificate before it has
-built SmartScreen reputation, may still need "More info" then "Run anyway". macOS builds are not signed with an
-Apple certificate, so macOS asks once under System Settings > Privacy & Security > "Open Anyway" (they are
-ad-hoc signed so they are not reported as damaged). When the repository has the five Apple secrets, the release
+tagged builds are attached to a GitHub Release. Windows signing requires configured Azure credentials;
+otherwise the installer is unsigned. Inspect the specific release's signing results and provenance assets.
+SmartScreen can warn for unsigned builds or a new signing publisher. macOS ad-hoc builds need confirmation
+under System Settings > Privacy & Security > "Open Anyway". When the repository has the five Apple secrets, the release
 workflow signs the macOS build with a Developer ID and notarizes it instead; without them the build
 stays ad-hoc signed. [docs/CODE-SIGNING.md](docs/CODE-SIGNING.md) walks through both platforms (accounts,
 secrets, costs, verification).
@@ -104,12 +103,11 @@ The application checks GitHub Releases for a newer version a few seconds after i
 and on **Help > Check for Updates…** (command `CHECKUPDATES`, alias `UPDATE`). Help > About
 shows the installed version.
 
-- **Windows installer and Linux AppImage** update in place: the new build is downloaded
+- **Windows installer with trusted signing publisher configuration** updates in place: the new build is downloaded
   (electron-updater reads the `latest*.yml` metadata that electron-builder attaches to each
   release) and installed when the application restarts.
-- **macOS and Linux .deb** are told when a newer release exists and offered the matching
-  download (in-place replacement on macOS needs a Developer ID signed app, which the ad-hoc
-  signed builds are not).
+- **Unsigned Windows, macOS and all Linux builds** are told when a newer release exists and offered
+  the matching download for manual installation.
 
 Update metadata is only written when the `publish` block in `package.json` is present;
 `release.yml` uploads the `.yml` and `.blockmap` files next to the installers.

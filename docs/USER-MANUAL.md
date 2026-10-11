@@ -36,9 +36,10 @@ Download the installer for your system from the project's
 buttons on the website (<https://habit04.github.io/share/>). The file names look like
 `jcad-electrical-<version>-<os>-<arch>.<ext>`.
 
-The Windows installer is signed (publisher: Justin Rodriguez). The macOS and Linux builds are
-not signed with a paid certificate, so macOS asks you once to confirm that you trust the
-download.
+Signing depends on the release's configured credentials. Windows is unsigned unless the release
+verified its Authenticode signatures; macOS is ad-hoc signed unless Developer ID signing and
+notarization were configured and verified. The release notes and `release-provenance.json`, when
+published, state the actual status. Linux packages are unsigned.
 
 ### Windows
 
@@ -48,7 +49,8 @@ download.
    **Run anyway**.
 3. Follow the installer. JCad Electrical appears in the Start menu.
 
-The Windows installer version updates itself (see [Updates](#12-updates)).
+Signed Windows installations with trusted publisher configuration can update in place; unsigned
+installations offer a manual download (see [Updates](#12-updates)).
 
 ### macOS
 
@@ -62,14 +64,14 @@ Choose the one that matches your Mac (Apple menu > About This Mac).
    JCad Electrical and click **Open Anyway**, then confirm with your password.
 4. From now on the app starts normally.
 
-The macOS builds are ad-hoc signed so macOS does not report them as "damaged"; they are not
-notarized, which is why step 3 is needed once.
+Ad-hoc macOS builds need step 3. A verified Developer ID and notarized build ordinarily opens
+after the normal downloaded-app confirmation; check the specific release's recorded status.
 
 ### Linux
 
 Two packages are offered:
 
-- **AppImage** (runs on most distributions, updates itself):
+- **AppImage** (runs on most distributions; updates by manual replacement):
 
   ```bash
   chmod +x jcad-electrical-*.AppImage
@@ -1448,10 +1450,10 @@ A few seconds after start-up JCad Electrical checks GitHub Releases for a newer 
 can also check any time with **Help > Check for Updates…** or the `CHECKUPDATES` command
 (UPDATE, CHECKFORUPDATES). Help > About shows the installed version.
 
-- **Windows installer** and **Linux AppImage**: the update is downloaded when you agree and
+- **Windows installer with trusted publisher configuration**: the update is downloaded when you agree and
   installed when the program restarts. Unsaved drawings are handled by the usual
   save prompt before the restart.
-- **macOS** and **Linux .deb**: you are told that a new version exists and offered the right
+- **Unsigned Windows, macOS and all Linux builds**: you are told that a new version exists and offered the right
   download; install it like the first time.
 
 **Help > Release Notes (GitHub)** opens the releases page; the [changelog](../CHANGELOG.md)
@@ -1466,7 +1468,8 @@ lists the changes in every version.
   shortcuts directly.
 - **Report a Problem** (`REPORTBUG`, BUGREPORT, REPORTPROBLEM; Help menu, ribbon Add-ins):
   describe the summary, what happened and the steps to reproduce. The report adds the
-  version, platform, recent commands and any errors the program caught. Then choose **Open
+  version and platform. Command history, captured errors and private details are optional and
+  unchecked by default; local paths and drawing names are redacted. Then choose **Open
   GitHub Issue** (a prefilled issue in your browser), **Copy Report**, or **Save Report…** (a
   text file, optionally with the current drawing as DXF, for e-mail). Nothing is sent
   automatically.

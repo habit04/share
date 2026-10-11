@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, dialog, ipcMain: rawIpcMain, screen } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain: rawIpcMain, screen, session, protocol, net } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const fsSync = require('node:fs');
@@ -8,8 +8,15 @@ const { createAutosaveStore, safeAutosaveName } = require('./autosave-store.cjs'
 const { guardIpc, appUrlTest, createRejectionLog, createPathPolicy, dxfImageNames, externalUrl } = require('./ipc-guard.cjs');
 const { createPathRegistry, pathKey } = require('./path-registry.cjs');
 const { createDwgHost, progressThreshold } = require('./dwg-host.cjs');
+const { MAX_DRAWING_BYTES, MAX_PROJECT_BYTES, validateTextSize, validatePaperDimensions, readLimitedFile } = require('./resource-limits.cjs');
+const { APP_URL, installAssetHandler, legacyStorage } = require('./renderer-origin.cjs');
+
+protocol.registerSchemesAsPrivileged([{ scheme: 'jcad', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL;
+/** @type {Record<string, string> | null} */
+let rendererStorage = null;
+let startingMainWindow = true;
 
 // Every IPC listener checks its caller: only the application page in the main window's top
 // frame may use the bridge (electron/ipc-guard.cjs). Refusals go to <userData>/ipc-rejections.log.
@@ -120,7 +127,11 @@ function buildMenu(win) {
   const send = (cmd) => () => win.webContents.send('menu-command', cmd);
   /** @type {Electron.MenuItemConstructorOptions[]} */
   const recentSub = recentFiles.length
-    ? [...recentFiles.map((f, i) => ({ label: `${i + 1}. ${path.basename(f)}`, toolTip: f, click: send(`RECENT ${i + 1}`) })), { type: 'separator' }, { label: 'Clear Recent', click: send('CLEARRECENT') }]
+    ? [...recentFiles.map((f, i) => ({ label: `${i + 1}. ${path.basename(f)}`, toolTip: f, click: () => {
+      const key = pathKey(f);
+      if (key && PROJECT_FILE.test(f) && registry.isWritable(f)) handedOverProjects.add(key);
+      win.webContents.send('menu-command', `RECENT ${i + 1}`);
+    } })), { type: 'separator' }, { label: 'Clear Recent', click: send('CLEARRECENT') }]
     : [{ label: '(empty)', enabled: false }];
   /** @type {Electron.MenuItemConstructorOptions[]} */
   const template = [
@@ -182,7 +193,7 @@ function buildMenu(win) {
         { label: 'Command Window (Ctrl+9)', click: send('COMMANDLINE') },
         { label: 'Clean Screen (Ctrl+0)', click: send('CLEANSCREEN') },
         { type: 'separator' },
-        { role: 'toggleDevTools' },
+        ...(app.isPackaged ? [] : [/** @type {import('electron').MenuItemConstructorOptions} */ ({ role: 'toggleDevTools' })]),
         { role: 'togglefullscreen' },
       ],
     },
@@ -327,7 +338,16 @@ updater.onConfirmRestart(async (w) => {
   return ok;
 });
 
+/** Apply navigation restrictions to main and print contents. */
+function secureContents(contents) {
+  contents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  contents.on('will-navigate', (event) => event.preventDefault());
+}
 async function createWindow() {
+  session.defaultSession.setPermissionRequestHandler((contents, permission, callback) =>
+    callback(contents === mainWindow?.webContents && permission === 'clipboard-sanitized-write'));
+  session.defaultSession.setPermissionCheckHandler((contents, permission) =>
+    contents === mainWindow?.webContents && permission === 'clipboard-sanitized-write');
   const b = initialBounds();
   const win = new BrowserWindow({
     x: b.x,
@@ -352,8 +372,7 @@ async function createWindow() {
   win.once('ready-to-show', () => win.show());
   installWindowStatePersistence(win);
   buildMenu(win);
-  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-  win.webContents.on('will-navigate', (e) => e.preventDefault());
+  secureContents(win.webContents);
   // Unsaved work: the renderer's Save All workflow decides; the close (and a quit) waits for it.
   let pendingClose = null;
   win.on('close', (e) => {
@@ -375,7 +394,7 @@ async function createWindow() {
   if (DEV_URL) {
     await win.loadURL(DEV_URL);
   } else {
-    await win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
+    await win.loadURL(APP_URL);
   }
 }
 
@@ -440,13 +459,13 @@ async function openDrawingFile(win, file) {
     const twin = file.replace(/\.dwg$/i, '.dxf');
     if (registry.isWritable(file)) registry.grant(twin);
     else registry.grantRead(twin);
-    const bytes = await fs.readFile(file);
+    const bytes = await readLimitedFile(fs, file, MAX_DRAWING_BYTES);
     const { payload, version } = await readDwgWithProgress(win, file, bytes);
     pathPolicy.rememberImages(file, (payload.imageDefs || []).map((d) => d && d.fileName));
     return { path: file, kind: 'dwg', payload, version };
   }
   // Read bytes, not a UTF-8 string: pre-2007 DXF files are in the $DWGCODEPAGE code page.
-  const { text, encoding } = await decodeDxf(await fs.readFile(file));
+  const { text, encoding } = await decodeDxf(await readLimitedFile(fs, file, MAX_DRAWING_BYTES));
   pathPolicy.rememberImages(file, dxfImageNames(text));
   return { path: file, kind: 'dxf', text, encoding };
 }
@@ -483,10 +502,9 @@ ipcMain.handle('open-drawing', async (ev, file) => {
 /**
  * Read a project file (or, by name, a project's catalog file) and register the project's drawings
  * and catalog file (electron/path-registry.cjs registerProject). A project the user chose - in
- * this dialog, handed over by the OS, or from Recent Documents (`opts.userChosen`, accepted only
- * for a project file the user chose or saved to before) - makes the drawings it lists writable
+ * this dialog, handed over by the OS, or from the native Recent menu - makes the drawings it lists writable
  * wherever they are; one opened only by name (a plugin, OPENPROJECT with a path) only those inside
- * its folder. `opts.textOnly`: the dialog reads a JSON file for its text (a catalog file), and
+ * its folder. A renderer's `opts.userChosen` claim grants no permission. `opts.textOnly` reads a JSON file for its text, and
  * nothing it lists is registered.
  */
 ipcMain.handle('open-project', async (ev, file, opts) => {
@@ -510,10 +528,10 @@ ipcMain.handle('open-project', async (ev, file, opts) => {
       throw new Error('Unknown file path');
     }
   }
-  const text = await fs.readFile(file, 'utf8');
+  const text = await readLimitedFile(fs, file, MAX_PROJECT_BYTES, 'utf8');
   let parsed;
   try {
-    parsed = JSON.parse(text);
+    parsed = JSON.parse(String(text));
   } catch {
     throw new Error('Not a valid project file');
   }
@@ -521,7 +539,8 @@ ipcMain.handle('open-project', async (ev, file, opts) => {
   // Only a project file the user may write registers what it lists: a file that is readable only
   // (a project's catalog file, read through this channel) grants nothing.
   const writable = registry.isWritable(file);
-  const userChosen = chosen || takeHandedOverProject(file) || (o.userChosen === true && writable);
+  const handedOver = takeHandedOverProject(file);
+  const userChosen = chosen || handedOver;
   if (writable && o.textOnly !== true) registry.registerProject(file, parsed, { userChosen });
   return { path: file, text };
 });
@@ -539,6 +558,7 @@ ipcMain.handle('save-text', async (ev, suggestName, text, filterName, ext) => {
   // Crash-safe for every export; only a project file keeps its previous version as <name>.bak
   // (a .bak next to a CSV or text export would only clutter the user's folder).
   const isProject = /\.jcadproj\.json$/i.test(res.filePath) || String(filterName) === 'JCad Electrical Project';
+  if (isProject) validateTextSize(text, MAX_PROJECT_BYTES, 'project');
   await writeUserFile(res.filePath, text, { backup: isProject });
   registry.grant(res.filePath);
   return res.filePath;
@@ -611,7 +631,7 @@ ipcMain.handle('choose-drawing-path', async (ev, suggestName) => {
  * recent list): a .json file the user may write (a catalog file named by a project may not be).
  */
 ipcMain.handle('save-project', async (_ev, file, text) => {
-  if (typeof text !== 'string' || text.length > 64 * 1024 * 1024) throw new Error('Invalid project payload');
+  validateTextSize(text, MAX_PROJECT_BYTES, 'project');
   if (!pathPolicy.writable(file, 'save-project', PROJECT_FILE)) throw new Error('Unknown project path');
   // Temporary file + fsync + rename, previous version kept as <name>.bak (electron/atomic-write.cjs).
   await writeUserFile(file, text, { backup: true });
@@ -640,6 +660,7 @@ ipcMain.handle('plot-pdf', async (ev, dataUrl, suggestName, landscape, sheet) =>
   });
   if (res.canceled || !res.filePath) return null;
   const hidden = new BrowserWindow({ show: false, webPreferences: { sandbox: true, contextIsolation: true } });
+  secureContents(hidden.webContents);
   try {
     // Keep the navigation URL tiny and inject the (possibly multi-megabyte) image afterwards.
     const html = '<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;background:#fff;height:100%}img{width:100%;height:100%;object-fit:contain;display:block}@page{margin:0}</style></head><body><img id="p"></body></html>';
@@ -648,7 +669,7 @@ ipcMain.handle('plot-pdf', async (ev, dataUrl, suggestName, landscape, sheet) =>
     // printToPDF takes a named size or {width, height} in INCHES (print() uses microns).
     const pdf = await hidden.webContents.printToPDF({
       printBackground: true,
-      margins: { marginType: 'none' },
+      margins: { top: 0, bottom: 0, left: 0, right: 0 },
       landscape: Boolean(landscape),
       pageSize: pdfPageSize(sheet, landscape),
     });
@@ -677,6 +698,7 @@ ipcMain.handle('save-pdf', async (ev, bytes, suggestName) => {
 const NAMED_PAGES = new Set(['A0', 'A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'Legal', 'Letter', 'Tabloid', 'Ledger']);
 /** Sheet dimensions in portrait inches (Electron applies `landscape` itself). */
 function sheetPortrait(sheet, landscape) {
+  validatePaperDimensions(sheet);
   const w = sheet && Number.isFinite(sheet.width) && sheet.width > 0 ? sheet.width : landscape ? 11 : 8.5;
   const h = sheet && Number.isFinite(sheet.height) && sheet.height > 0 ? sheet.height : landscape ? 8.5 : 11;
   return w > h ? { width: h, height: w } : { width: w, height: h };
@@ -698,6 +720,7 @@ ipcMain.handle('print-drawing', async (ev, dataUrl, title, landscape, sheet) => 
   const win = BrowserWindow.fromWebContents(ev.sender);
   if (typeof dataUrl !== 'string' || !/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(dataUrl)) throw new Error('Invalid image');
   const hidden = new BrowserWindow({ show: false, parent: win || undefined, webPreferences: { sandbox: true, contextIsolation: true } });
+  secureContents(hidden.webContents);
   try {
     const html = `<!doctype html><html><head><meta charset="utf-8"><title>${String(title || 'Drawing').replace(/[<>&]/g, '')}</title><style>html,body{margin:0;background:#fff;height:100%}img{width:100%;height:100%;object-fit:contain;display:block}@page{margin:0;size:${landscape ? 'landscape' : 'portrait'}}</style></head><body><img id="p"></body></html>`;
     await hidden.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
@@ -729,7 +752,7 @@ ipcMain.handle('open-dxf', async (ev) => {
  */
 ipcMain.handle('save-dxf', async (ev, existingPath, text, suggestName, opts) => {
   const win = senderWindow(ev);
-  if (typeof text !== 'string') throw new Error('Invalid DXF payload');
+  validateTextSize(text, MAX_DRAWING_BYTES, 'DXF');
   let target = existingPath == null ? null : pathPolicy.writable(existingPath, 'save-dxf', DXF_FILE);
   let defaultPath = String(suggestName || 'Drawing1.dxf');
   if (!target && typeof existingPath === 'string' && !pathPolicy.shapeProblem(existingPath)) {
@@ -769,17 +792,18 @@ ipcMain.handle('autosave-remove', (_ev, name) => autosave().remove(safeAutosaveN
 
 // ------------------------------------------------------------------ user symbol library (app data folder)
 const userLibraryFile = () => path.join(stateDir(), 'user-library.json');
+const MAX_LIBRARY_BYTES = 64 * 1024 * 1024;
 /** Only a missing file means "no library yet"; any other failure (EBUSY, EPERM, EIO) is reported so the renderer refuses to overwrite. */
 ipcMain.handle('user-library-read', async () => {
   try {
-    return await fs.readFile(userLibraryFile(), 'utf8');
+    return String(await readLimitedFile(fs, userLibraryFile(), MAX_LIBRARY_BYTES, 'utf8'));
   } catch (err) {
     if (err && err.code === 'ENOENT') return null;
     throw err;
   }
 });
 ipcMain.handle('user-library-write', async (_ev, json) => {
-  if (typeof json !== 'string' || json.length > 64 * 1024 * 1024) throw new Error('Invalid payload');
+  validateTextSize(json, MAX_LIBRARY_BYTES, 'library');
   await fs.mkdir(stateDir(), { recursive: true });
   const file = userLibraryFile();
   // Write to a temporary file and fsync it so a crash or power loss mid-write cannot leave an
@@ -800,10 +824,7 @@ function safePluginFolder(name) {
   return name;
 }
 async function readLimited(file, max) {
-  const st = await fs.stat(file);
-  if (!st.isFile()) throw new Error(`${path.basename(file)} is not a file`);
-  if (st.size > max) throw new Error(`${path.basename(file)} is larger than ${Math.round(max / 1024)} KB`);
-  return fs.readFile(file, 'utf8');
+  return String(await readLimitedFile(fs, file, max, 'utf8'));
 }
 /** The folder is created on first use so users can find it (PLUGINS prints it). */
 ipcMain.handle('plugins-dir', async () => {
@@ -823,7 +844,8 @@ ipcMain.handle('plugins-list', async () => {
   for (const d of dirents) {
     if (!d.isDirectory() || !PLUGIN_FOLDER_RE.test(d.name) || d.name === '.' || d.name === '..') continue;
     try {
-      out.push({ folder: d.name, manifest: await readLimited(path.join(pluginsDir(), d.name, 'plugin.json'), MAX_PLUGIN_MANIFEST) });
+      const manifest = await pathPolicy.insideRoot(pluginsDir(), path.join(pluginsDir(), d.name, 'plugin.json'), 'plugins-list');
+      out.push({ folder: d.name, manifest: await readLimited(manifest, MAX_PLUGIN_MANIFEST) });
     } catch (err) {
       out.push({ folder: d.name, manifest: null, error: err && err.code === 'ENOENT' ? 'no plugin.json' : String((err && err.message) || err) });
     }
@@ -871,13 +893,14 @@ ipcMain.handle('read-image', async (_ev, file) => {
   }
   let stat;
   try {
+    file = await pathPolicy.imagePath(file);
     stat = await fs.stat(file);
   } catch (err) {
     if (err && (err.code === 'ENOENT' || err.code === 'ENOTDIR')) return null;
     throw err;
   }
   if (!stat.isFile() || stat.size > MAX_IMAGE_BYTES) return null;
-  const bytes = await fs.readFile(file);
+  const bytes = await readLimitedFile(fs, file, MAX_IMAGE_BYTES);
   return `data:${type};base64,${bytes.toString('base64')}`;
 });
 // ------------------------------------------------------------------ end of read-image
@@ -905,9 +928,7 @@ ipcMain.handle('packs-read', async (_ev, name) => {
   const file = path.join(packsDir(), safePackName(name));
   try {
     await pathPolicy.insideRoot(packsDir(), file, 'packs-read');
-    const st = await fs.stat(file);
-    if (st.size > MAX_PACK_BYTES) throw new Error(`Pack file is larger than ${MAX_PACK_BYTES / (1024 * 1024)} MB`);
-    return await fs.readFile(file, 'utf8');
+    return String(await readLimitedFile(fs, file, MAX_PACK_BYTES, 'utf8'));
   } catch (err) {
     if (err && err.code === 'ENOENT') return null;
     throw err;
@@ -915,7 +936,7 @@ ipcMain.handle('packs-read', async (_ev, name) => {
 });
 ipcMain.handle('packs-write', async (_ev, name, text) => {
   const file = path.join(packsDir(), safePackName(name));
-  if (typeof text !== 'string' || text.length > MAX_PACK_BYTES) throw new Error('Invalid pack payload');
+  validateTextSize(text, MAX_PACK_BYTES, 'pack');
   await fs.mkdir(packsDir(), { recursive: true });
   // Same discipline as the user library: write + fsync a temporary file, then rename over the target.
   await enqueueWrite(file, () => atomicWriteFile(file, text));
@@ -936,9 +957,7 @@ ipcMain.handle('pick-pack-file', async (ev) => {
   });
   if (res.canceled || res.filePaths.length === 0) return null;
   const file = res.filePaths[0];
-  const st = await fs.stat(file);
-  if (st.size > MAX_PACK_BYTES) throw new Error(`Pack file is larger than ${MAX_PACK_BYTES / (1024 * 1024)} MB`);
-  return { name: path.basename(file), text: await fs.readFile(file, 'utf8') };
+  return { name: path.basename(file), text: String(await readLimitedFile(fs, file, MAX_PACK_BYTES, 'utf8')) };
 });
 
 /** The renderer keeps the Recent Documents list; we mirror it into the native File > Open Recent menu. */
@@ -997,7 +1016,8 @@ let openFilesReady = false;
 /** The files the OS may hand over: drawings and project files. */
 const HANDOVER_FILE = /\.(dxf|dwg)$|\.jcadproj\.json$/i;
 /**
- * Project files handed over and not opened yet (pathKey): the user chose them, so open-project
+ * Project files chosen through OS hand-over or the native Recent menu and not opened yet (pathKey):
+ * the user chose them, so open-project
  * registers what they list like a project chosen in the dialog, without relying on the renderer.
  */
 const handedOverProjects = new Set();
@@ -1046,7 +1066,7 @@ if (probeIndex >= 0) {
   void app.whenReady().then(async () => {
     try {
       const file = process.argv[probeIndex + 1];
-      const { payload, version } = await readDwg(await fs.readFile(file));
+      const { payload, version } = await readDwg(await readLimitedFile(fs, file, MAX_DRAWING_BYTES));
       dwgHost.dispose();
       process.stdout.write(`PROBE_OK ${version} entities=${payload.entities.length} blocks=${payload.blocks.length}\n`);
       app.exit(0);
@@ -1093,19 +1113,32 @@ process.on('unhandledRejection', (err) => logMainError('unhandledRejection', err
 app.on('render-process-gone', (_ev, _wc, details) => logMainError('render-process-gone', new Error(`${details.reason} (exit code ${details.exitCode})`)));
 app.on('child-process-gone', (_ev, details) => logMainError('child-process-gone', new Error(`${details.type} ${details.reason}`)));
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  installAssetHandler({ protocol, net, root: path.join(__dirname, '..', 'dist') });
+  if (!DEV_URL && !fsSync.existsSync(path.join(stateDir(), 'renderer-origin-migrated'))) {
+    try { rendererStorage = fsSync.existsSync(path.join(stateDir(), 'Local Storage', 'leveldb')) ? await legacyStorage({ BrowserWindow, protocol, indexFile: path.join(__dirname, '..', 'dist', 'index.html') }) : {}; }
+    catch (error) { logMainError('renderer preference migration', error); }
+  }
   loadPersistedPaths();
   handOverFiles(drawingArgs(process.argv, process.cwd()));
-  createWindow();
+  await createWindow();
+  startingMainWindow = false;
   updater.scheduleStartupCheck(() => mainWindow);
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 });
 
+ipcMain.on('renderer-storage-migration', (event) => { event.returnValue = rendererStorage; });
+ipcMain.on('renderer-storage-migrated', () => {
+  rendererStorage = null;
+  void writeStateFile(path.join(stateDir(), 'renderer-origin-migrated'), '1', 'renderer origin migration');
+});
+
 app.on('will-quit', () => dwgHost.dispose());
 
 app.on('window-all-closed', () => {
+  if (startingMainWindow) return; // The temporary preference-migration window has just closed.
   mainWindow = null;
   if (process.platform !== 'darwin') app.quit();
 });

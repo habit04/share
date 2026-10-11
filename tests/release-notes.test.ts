@@ -42,6 +42,9 @@ describe('release notes from CHANGELOG.md', () => {
     expect(n).toContain('jcad-electrical-0.3.0-mac-arm64.dmg');
     expect(n).toContain('https://habit04.github.io/share/');
     expect(n).toContain('https://github.com/habit04/share/blob/v0.3.0/CHANGELOG.md');
+    expect(n).toContain('Signing varies by release');
+    expect(n).toContain('unsigned Windows and all Linux/macOS builds use manual installation');
+    expect(n).not.toContain('macOS builds are not notarized');
   });
 
   it('produces the notes of the current version from the real changelog, and the 0.4.0 notes kept in docs/releases', () => {
@@ -53,6 +56,6 @@ describe('release notes from CHANGELOG.md', () => {
     expect(n).toContain('### Fixed');
     expect(n).not.toMatch(/^## \[/m);
     // docs/releases/v0.4.0.md is exactly what the script makes for v0.4.0 (pasted into that release).
-    expect(readFileSync(new URL('../docs/releases/v0.4.0.md', import.meta.url), 'utf8')).toBe(releaseNotes(real, 'v0.4.0'));
+    expect(readFileSync(new URL('../docs/releases/v0.4.0.md', import.meta.url), 'utf8').replace(/\r\n/g, '\n')).toBe(releaseNotes(real, 'v0.4.0'));
   });
 });

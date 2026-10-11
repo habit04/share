@@ -13,9 +13,8 @@
 //
 // Windows: virus scanners, search indexers and sync clients briefly open files without
 // FILE_SHARE_DELETE, which makes rename fail with EPERM / EACCES / EBUSY. The rename is retried a few
-// times with a short back-off; if it still fails (or a file system reports EXDEV), the temporary file
-// is copied over the destination instead. That last fallback is not atomic, which is why the .bak
-// copy is made first: an interrupted fallback can never destroy the only copy.
+// times with a short back-off. If replacement still fails, the write fails and leaves the original
+// and any completed backup intact. A direct copy over the destination could truncate the only copy.
 //
 // Failures are re-thrown as `CODE: reason, '<destination>'` errors that keep `.code`, so the renderer
 // (src/app/file-errors.ts) can show which file failed instead of the temporary name.
@@ -27,7 +26,6 @@ const fsp = require('node:fs/promises');
 const { describeFileError } = require('./file-errors.cjs');
 
 const RENAME_RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
-const FALLBACK_CODES = new Set(['EPERM', 'EACCES', 'EBUSY', 'EXDEV']);
 const RENAME_DELAYS_MS = [15, 40, 90, 200];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -89,8 +87,9 @@ function createAtomicWriter(fs = fsp, options = {}) {
   const delays = options.renameDelays || RENAME_DELAYS_MS;
   const hooks = options.hooks || {};
 
-  async function removeQuietly(p) {
+  async function removeQuietly(p, check) {
     try {
+      if (check) await check(p);
       await fs.rm(p, { force: true });
     } catch {
       /* best effort */
@@ -110,8 +109,9 @@ function createAtomicWriter(fs = fsp, options = {}) {
     }
   }
 
-  async function writeAndSync(file, data, encoding) {
+  async function writeAndSync(file, data, encoding, created) {
     const fh = await fs.open(file, 'wx');
+    created();
     try {
       if (typeof data === 'string') await fh.writeFile(data, encoding || 'utf8');
       else await fh.writeFile(data);
@@ -121,11 +121,12 @@ function createAtomicWriter(fs = fsp, options = {}) {
     }
   }
 
-  /** Rename with retries for transient Windows sharing violations; copy over as the last resort. */
-  async function replace(tmp, dest) {
+  /** Rename with retries for transient Windows sharing violations; never truncate the destination. */
+  async function replace(tmp, dest, check) {
     let lastErr = null;
     for (let attempt = 0; attempt <= delays.length; attempt += 1) {
       try {
+        if (check) await check(tmp);
         await fs.rename(tmp, dest);
         return 'rename';
       } catch (err) {
@@ -136,35 +137,53 @@ function createAtomicWriter(fs = fsp, options = {}) {
         await sleep(delays[attempt]);
       }
     }
-    if (!lastErr || !FALLBACK_CODES.has(lastErr.code)) throw lastErr;
-    // Copy the finished temporary file over the destination (non-atomic; the caller made the .bak).
-    await fs.copyFile(tmp, dest);
-    const fh = await fs.open(dest, 'r+');
-    try {
-      await fh.sync();
-    } finally {
-      await fh.close();
-    }
-    await removeQuietly(tmp);
-    return 'copy';
+    throw lastErr;
   }
 
   async function existingStat(file) {
     try {
-      return await fs.stat(file);
+      return await fs.lstat(file);
     } catch (err) {
       if (err && (err.code === 'ENOENT' || err.code === 'ENOTDIR')) return null;
       throw err;
     }
   }
 
-  /** Follow a symbolic link so the link keeps pointing at the (updated) target. */
-  async function resolveTarget(file) {
-    try {
-      return await fs.realpath(file);
-    } catch {
-      return file;
+  function unsafePath(file) {
+    return Object.assign(new Error('symbolic links, junctions, or changed parent folders cannot be written'), { code: 'ELOOP', path: file });
+  }
+
+  /**
+   * Pin the existing parent chain and reject links (including Windows junctions). Rechecked before
+   * each rename and after creating the temp file. Node has no portable renameat/openat API, so a
+   * hostile process can still race the final check and rename; these checks bound that practical
+   * TOCTOU window without following a link or falling back to a destructive copy.
+   */
+  async function guardPath(file) {
+    const parents = [];
+    let dir = path.dirname(file);
+    while (true) {
+      const stat = await existingStat(dir);
+      if (!stat) throw Object.assign(new Error('no such file or directory'), { code: 'ENOENT', path: dir });
+      if (!stat.isDirectory() || stat.isSymbolicLink()) throw unsafePath(dir);
+      parents.push({ dir, real: await fs.realpath(dir), dev: stat.dev, ino: stat.ino });
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
     }
+    const check = async (tmp) => {
+      for (const pin of parents) {
+        const stat = await existingStat(pin.dir);
+        if (!stat || !stat.isDirectory() || stat.isSymbolicLink() || await fs.realpath(pin.dir) !== pin.real ||
+            (pin.ino !== undefined && (stat.ino !== pin.ino || stat.dev !== pin.dev))) throw unsafePath(pin.dir);
+      }
+      for (const p of [file, tmp].filter(Boolean)) {
+        const stat = await existingStat(p);
+        if (stat && stat.isSymbolicLink()) throw unsafePath(p);
+      }
+    };
+    await check();
+    return check;
   }
 
   /**
@@ -173,19 +192,31 @@ function createAtomicWriter(fs = fsp, options = {}) {
    */
   async function copyFileAtomic(src, dest) {
     const tmp = tempNameFor(dest);
+    let created = false;
+    let check;
     try {
-      await fs.copyFile(src, tmp);
+      check = await guardPath(dest);
+      const source = await existingStat(src);
+      if (source && source.isSymbolicLink()) throw unsafePath(src);
+      created = true;
+      try {
+        await fs.copyFile(src, tmp, (fs.constants || fsp.constants).COPYFILE_EXCL);
+      } catch (err) {
+        if (err && err.code === 'EEXIST') created = false;
+        throw err;
+      }
+      await check(tmp);
       const fh = await fs.open(tmp, 'r+');
       try {
         await fh.sync();
       } finally {
         await fh.close();
       }
-      await replace(tmp, dest);
+      await replace(tmp, dest, check);
       await syncDir(path.dirname(dest));
       return dest;
     } catch (err) {
-      await removeQuietly(tmp);
+      if (created) await removeQuietly(tmp, check);
       throw fileError(err, err && err.code === 'ENOENT' && err.path === src ? src : dest, 'copy');
     }
   }
@@ -194,15 +225,17 @@ function createAtomicWriter(fs = fsp, options = {}) {
    * Write `data` (string or bytes) to `file` crash-safely.
    * opts.backup: keep the previous content as `<file>.bak` (one generation).
    * opts.encoding: string encoding (default utf8).
-   * Resolves { path, backup (path or null), method ('rename' | 'copy') }.
+   * Resolves { path, backup (path or null), method ('rename') }.
    */
   async function atomicWriteFile(file, data, opts = {}) {
     if (typeof file !== 'string' || !file) throw new Error('Invalid path');
-    const dest = await resolveTarget(file);
+    const dest = file;
     const tmp = tempNameFor(dest);
     let backup = null;
     let tmpCreated = false;
+    let check;
     try {
+      check = await guardPath(dest);
       const before = await existingStat(dest);
       if (before && before.isDirectory()) {
         const e = /** @type {Error & { code?: string }} */ (new Error('illegal operation on a directory'));
@@ -212,20 +245,20 @@ function createAtomicWriter(fs = fsp, options = {}) {
       // rename() would replace a read-only file without complaint on POSIX: refuse like a plain
       // write would, so marking a drawing read-only still protects it.
       if (before) await fs.access(dest, (fs.constants || fsp.constants).W_OK);
-      tmpCreated = true;
-      await writeAndSync(tmp, data, opts.encoding);
+      await writeAndSync(tmp, data, opts.encoding, () => { tmpCreated = true; });
+      await check(tmp);
       if (before && platform !== 'win32') {
         // Keep the permission bits of the file being replaced (the temp file got the umask default).
         await fs.chmod(tmp, before.mode & 0o7777).catch(() => {});
       }
       if (before && opts.backup) backup = await copyFileAtomic(dest, `${dest}.bak`);
       if (hooks.beforeRename) await hooks.beforeRename(tmp, dest);
-      const method = await replace(tmp, dest);
+      const method = await replace(tmp, dest, check);
       tmpCreated = false;
       await syncDir(path.dirname(dest));
       return { path: dest, backup, method };
     } catch (err) {
-      if (tmpCreated) await removeQuietly(tmp);
+      if (tmpCreated) await removeQuietly(tmp, check);
       throw fileError(err, dest, 'write');
     }
   }

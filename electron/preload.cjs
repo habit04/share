@@ -1,9 +1,25 @@
 const { contextBridge, ipcRenderer, webFrame } = require('electron');
 
+// Populate the new secure origin before the renderer reads its settings. Existing values win.
+try {
+  if (globalThis.location.protocol === 'jcad:' && !localStorage.getItem('jcad-origin-migrated')) {
+    const values = ipcRenderer.sendSync('renderer-storage-migration');
+    if (values && typeof values === 'object') {
+      for (const [key, value] of Object.entries(values)) {
+        if (typeof value === 'string' && localStorage.getItem(key) === null) localStorage.setItem(key, value);
+      }
+      localStorage.setItem('jcad-origin-migrated', '1');
+    }
+  }
+  if (globalThis.location.protocol === 'jcad:' && localStorage.getItem('jcad-origin-migrated')) {
+    ipcRenderer.send('renderer-storage-migrated');
+  }
+} catch { /* Keep the application usable and retry migration on the next start. */ }
+
 contextBridge.exposeInMainWorld('jcad', {
   openDxf: () => ipcRenderer.invoke('open-dxf'),
   openDrawing: (file) => ipcRenderer.invoke('open-drawing', file),
-  // opts.userChosen: the user picked this project (Recent Documents); opts.textOnly: read a JSON file for its text
+  // Project access is authorized in the main process; opts.textOnly reads JSON without granting its entries.
   openProject: (file, opts) => ipcRenderer.invoke('open-project', file, opts && typeof opts === 'object' ? { userChosen: opts.userChosen === true, textOnly: opts.textOnly === true } : undefined),
   saveText: (suggestName, text, filterName, ext) => ipcRenderer.invoke('save-text', suggestName, text, filterName, ext),
   // Project Save As: pick the destination first (the renderer rebases relative paths), then write it.

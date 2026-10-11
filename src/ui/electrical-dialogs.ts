@@ -23,6 +23,7 @@ import { DATA_ATTRIBUTES } from '../electrical/attributes';
 import type { WdSettings } from '../electrical/wdm';
 import type { Project } from '../app/project';
 import { DESCRIPTION_LINES } from '../app/project';
+import { ensureFileLimit, MAX_PROJECT_FILE_BYTES } from '../io/file-limits';
 import { DEFAULT_WDT, parseWdt, formatWdt } from '../electrical/titleblock-map';
 import { locationViewReport, type LocationGroup, type LocationRow } from '../electrical/project-tools';
 import { plcRowsToCsv, type PlcImport, type PlcIoRow, type PlcModuleOptions } from '../electrical/plc-import';
@@ -1591,14 +1592,17 @@ export function reportTemplatesDialog(o: ReportTemplatesOptions): void {
 // ---------------------------------------------------------------- file picker (browser fallback)
 
 export function browserOpenTextFile(accept: string): Promise<{ path: string; text: string } | null> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = accept;
     input.addEventListener('change', async () => {
       const f = input.files?.[0];
       if (!f) return resolve(null);
-      resolve({ path: f.name, text: await f.text() });
+      try {
+        ensureFileLimit(f, MAX_PROJECT_FILE_BYTES);
+        resolve({ path: f.name, text: await f.text() });
+      } catch (error) { reject(error); }
     });
     input.addEventListener('cancel', () => resolve(null));
     input.click();

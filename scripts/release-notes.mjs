@@ -49,9 +49,9 @@ export function releaseNotes(changelog, version, repo = 'habit04/share') {
     '---',
     '',
     `**Downloads:** Windows \`jcad-electrical-${v}-win-x64.exe\` · macOS \`jcad-electrical-${v}-mac-arm64.dmg\` (Apple Silicon) / \`jcad-electrical-${v}-mac-x64.dmg\` (Intel) · Linux \`.AppImage\` / \`.deb\`.`,
-    'Installed copies learn about this release on their own: the Windows installer and the AppImage update in place; macOS and `.deb` installs offer the download.',
+    'Installed copies offer the release download. Windows builds configured with a trusted signing publisher can update in place after confirmation; unsigned Windows and all Linux/macOS builds use manual installation.',
     '',
-    'First launch: Windows SmartScreen may say "Windows protected your PC" (More info > Run anyway); macOS builds are not notarized and open once through System Settings > Privacy & Security > Open Anyway.',
+    'Signing varies by release: Windows is unsigned unless Authenticode was configured and verified; macOS is ad-hoc signed unless Developer ID signing and notarization were configured and verified. When published, inspect `release-provenance.json` and its signed attestation for the verified status. SmartScreen may warn for unsigned Windows builds; ad-hoc macOS builds need System Settings > Privacy & Security > Open Anyway.',
     `Website and browser edition: https://${owner}.github.io/${name}/ · Full history: https://github.com/${repo}/blob/v${v}/CHANGELOG.md`,
   ];
   return `${body}\n${footer.join('\n')}\n`;

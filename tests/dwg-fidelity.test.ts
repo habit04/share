@@ -6,7 +6,7 @@
  * is listed in the import report as "not supported yet".
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { convertDwg, toImportPayload, type DwgImportPayload } from '../src/io/dwg';
 import { readDxf, writeDxf } from '../src/io/dxf';
@@ -14,18 +14,17 @@ import { importReportOf } from '../src/io/import-report';
 import { explodeInsert, type InsertEntity, type DimensionEntity } from '../src/core/entities';
 import { resolveColor, trueColorCss } from '../src/render/draw';
 import { aciToCss } from '../src/render/palette';
-import { namedDimStyles } from '../src/core/dimension';
+import { namedDimStyles, dimensionText } from '../src/core/dimension';
 import { textStylesOf } from '../src/io/encoding';
 import type { DrawingState } from '../src/core/document';
 // @ts-expect-error plain JS helper shared with Electron main / CLI
 import { readDwgPayload, payloadFromDatabase } from '../scripts/dwg-reader.mjs';
 
 const fixtures = join(__dirname, '..', 'fixtures');
-const has = (f: string) => existsSync(join(fixtures, f));
 const dwg = async (f: string) => convertDwg((await readDwgPayload(readFileSync(join(fixtures, f)), 'dwg')).payload, f);
 
 describe('DWG fixtures against their DXF equivalent', () => {
-  it.skipIf(!has('example_2000.dwg') || !has('example_2000.dxf'))('layouts, dimension styles and layers match the DXF saved from the same drawing', async () => {
+  it('layouts, dimension styles and layers match the DXF saved from the same drawing', async () => {
     const { state } = await dwg('example_2000.dwg');
     const dxf = readDxf(readFileSync(join(fixtures, 'example_2000.dxf'), 'latin1'));
     const layouts = (s: DrawingState) => s.layouts?.map((l) => ({ name: l.name, paper: l.paper.id, units: l.paper.units, orientation: l.paper.orientation, viewports: l.viewports.length, entities: l.entities.length }));
@@ -43,7 +42,7 @@ describe('DWG fixtures against their DXF equivalent', () => {
   }, 60000);
 
   for (const f of ['example_r14.dwg', 'example_2018.dwg']) {
-    it.skipIf(!has(f))(`${f}: layouts from the LAYOUT objects, the paper from their limits, the rest reported`, async () => {
+    it(`${f}: layouts from the LAYOUT objects, the paper from their limits, the rest reported`, async () => {
       const { state, report } = await dwg(f);
       expect(state.layouts?.map((l) => [l.name, l.paper.id, l.pristine])).toEqual([
         ['Layout1', 'letter', true],
@@ -54,7 +53,7 @@ describe('DWG fixtures against their DXF equivalent', () => {
       expect(report?.counts.LAYOUT).toEqual({ unsupported: 2 });
       expect(report?.items.find((i) => i.type === 'LAYOUT')?.reason).toMatch(/page setup .* not exposed by the DWG reader/);
       expect(report?.counts.WIPEOUT).toEqual({ dropped: 2 });
-      expect(report?.counts.POLYLINE3D).toEqual({ simplified: 1 });
+      expect(report?.items.filter((i) => i.type === 'POLYLINE3D').some((i) => i.reason.includes('XY projection'))).toBe(true);
       expect(importReportOf(state)).toBe(report);
       // and the layouts survive our DXF writer / reader
       expect(readDxf(writeDxf(state)).layouts?.map((l) => l.name)).toEqual(['Layout1', 'Layout2']);
@@ -230,6 +229,59 @@ describe('DWG payload properties', () => {
 });
 
 describe('DWG payload twins carry the table data', () => {
+  it('bounds malformed DWG precision settings and reports the normalization', () => {
+    const p = payload();
+    p.header = { ...p.header, DIMDEC: 9999, DIMADEC: Infinity, DIMALTD: 9999, DIMTDEC: 9999, LUPREC: 9999, AUPREC: 9999 };
+    const result = convertDwg(p);
+    expect(result.state.header!.units).toMatchObject({ luprec: 8, auprec: 8 });
+    expect(result.report?.items).toContainEqual(expect.objectContaining({ type: 'HEADER', reason: expect.stringContaining('DIMDEC precision') }));
+    const dimension = result.state.entities.find((e): e is DimensionEntity => e.type === 'dimension')!;
+    expect(() => dimensionText({ ...dimension, style: result.state.header!.dimStyle })).not.toThrow();
+  });
+
+  it('rejects unsafe inline MTEXT factors with entity context', () => {
+    const p = payload();
+    p.entities = [{ type: 'MTEXT', handle: 'F2', layer: 'NOTES', text: '\\W1e60x;\\W1e60x;BAD', textHeight: 1, rectWidth: 10, attachmentPoint: 1, insertionPoint: { x: 0, y: 0, z: 0 } }] as unknown as DwgImportPayload['entities'];
+    const result = convertDwg(p);
+    expect(result.state.entities).toHaveLength(0);
+    expect(result.report?.items).toContainEqual(expect.objectContaining({ type: 'MTEXT', handle: 'F2', layer: 'NOTES', where: 'model space', action: 'dropped', reason: expect.stringContaining('MTEXT formatting') }));
+  });
+
+  it('preserves exposed frozen layer handles and reports clipping/twist losses', () => {
+    const p = payload();
+    p.layers[0]!.handle = 'A1';
+    const vp = p.blocks.find((b) => b.name === '*Paper_Space')!.entities.find((e) => e.handle === '201')! as unknown as Record<string, unknown>;
+    vp.frozenLayerIds = ['A1'];
+    vp.viewTwistAngle = 0.25;
+    const result = convertDwg(p);
+    expect(result.state.layouts![0]!.viewports[0]!.frozenLayers).toEqual(['0']);
+    expect(result.report?.items).toContainEqual(expect.objectContaining({ type: 'VIEWPORT', action: 'simplified', reason: expect.stringContaining('twisted view') }));
+    expect(result.report?.items.some((i) => i.type === 'VIEWPORT' && i.reason.includes('show every layer'))).toBe(false);
+    expect(readDxf(writeDxf(result.state)).layouts![0]!.viewports[0]!.frozenLayers).toEqual(['0']);
+  });
+
+  it('preserves exposed page settings and records unsupported device/style data', () => {
+    const p = payload();
+    p.layouts!.find((l) => l.name === 'Wiring')!.plotSettings = { paperWidth: 297, paperHeight: 420, plotPaperUnit: 1, plotRotation: 1, marginLeft: 5, marginBottom: 6, marginRight: 7, marginTop: 8, printScaleNominator: 1, printScaleDenominator: 2, configName: 'MyPlotter.pc3', currentStyleSheet: 'custom.ctb' };
+    const result = convertDwg(p);
+    expect(result.state.layouts![0]).toMatchObject({ paper: { id: 'a3', orientation: 'landscape' }, margins: { left: 5, bottom: 6, right: 7, top: 8 }, plotScale: '1:2' });
+    expect(result.report?.items).toContainEqual(expect.objectContaining({ type: 'LAYOUT', reason: expect.stringContaining('plot device and external plot style') }));
+  });
+
+  it('bounds DWG record counts, strings and nested metadata', () => {
+    expect(() => convertDwg({ ...payload(), entities: Array(250_001).fill({ type: 'LINE' }) })).toThrow(/record limit/);
+    expect(() => convertDwg({ ...payload(), header: { NOTE: 'x'.repeat(1_048_577) } })).toThrow(/string length limit/);
+    let nested: unknown = 'x';
+    for (let i = 0; i < 66; i += 1) nested = { child: nested };
+    expect(() => convertDwg({ ...payload(), header: { NOTE: nested } })).toThrow(/nesting/);
+  });
+
+  it('reports omitted object metadata and conservative XDATA reader limits', () => {
+    const result = convertDwg({ ...payload(), omittedObjectTypes: { XRECORD: 4, FIELD: 2 } });
+    expect(result.report?.items).toContainEqual(expect.objectContaining({ type: 'XRECORD', action: 'dropped', reason: expect.stringContaining('4 object metadata') }));
+    expect(result.report?.items).toContainEqual(expect.objectContaining({ type: 'XDATA', action: 'unsupported', reason: expect.stringContaining('cannot be guaranteed') }));
+  });
+
   it('the desktop and the browser reader build the same payload with styles, dimension styles, linetypes and layouts', () => {
     const db = {
       header: {},
@@ -247,7 +299,7 @@ describe('DWG payload twins carry the table data', () => {
     const browser = toImportPayload(db as unknown as Parameters<typeof toImportPayload>[0], 'R_2018');
     expect(node).toEqual(browser);
     expect(node.layers[0]).toMatchObject({ color: 0x123456, standardFlag: 16, plotFlag: 1 });
-    expect(node.styles).toEqual([{ name: 'NOTES', standardFlag: 0, fixedTextHeight: 0, widthFactor: 0.8, obliqueAngle: 0.1, textGenerationFlag: 0, font: 'romans.shx', bigFont: '' }]);
+    expect(node.styles).toEqual([{ name: 'NOTES', handle: '40', standardFlag: 0, fixedTextHeight: 0, widthFactor: 0.8, obliqueAngle: 0.1, textGenerationFlag: 0, font: 'romans.shx', bigFont: '' }]);
     expect(node.linetypes[0].pattern).toEqual([{ elementLength: 12, elementTypeFlag: 0 }, { elementLength: -3, elementTypeFlag: 0 }]);
     expect(node.layouts).toEqual([{ name: 'Layout1', tabOrder: 1, blockHandle: '50', minLimit: { x: 0, y: 0 }, maxLimit: { x: 10, y: 5 } }]);
     expect(node.dimStyles[0]).toMatchObject({ name: 'MECH', DIMTXT: 3.5 });

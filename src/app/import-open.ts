@@ -45,19 +45,24 @@ export function importReportLog(r: ImportReport): string[] {
   return out;
 }
 
-/** Source files whose loss warning the user already answered (Save over them anyway). */
-const acknowledged = new Set<string>();
+/** Approval belongs to this import report and caller session, never just to a file name. */
+const acknowledged = new WeakMap<ImportReport, Set<unknown>>();
 
 /**
  * Before Save writes to `path`: 'save' to go ahead, 'save-as' when the user chose to keep the
  * original (the caller switches to Save As). Asks once per file and session.
  */
-export async function confirmSaveOver(state: DrawingState, path: string | null, confirm: Confirm): Promise<'save' | 'save-as'> {
+export async function confirmSaveOver(state: DrawingState, path: string | null, confirm: Confirm, scope: unknown = state, current: () => boolean = () => true): Promise<'save' | 'save-as'> {
   const warning = saveOverwriteWarning(state, path);
-  if (!warning || !path || acknowledged.has(path)) return 'save';
+  const report = importReportOf(state);
+  if (!warning || !path || !report || acknowledged.get(report)?.has(scope)) return 'save';
   const ok = await confirm('Save over the original file?', `${warning}\n\nYes saves over it; No opens Save As.`);
   if (!ok) return 'save-as';
-  acknowledged.add(path);
+  if (current()) {
+    const approvals = acknowledged.get(report) ?? new Set<unknown>();
+    approvals.add(scope);
+    acknowledged.set(report, approvals);
+  }
   return 'save';
 }
 

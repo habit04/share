@@ -143,6 +143,11 @@ a JSON object keyed by `"<origin>:<path>"` (`folder:`, `file:` or `script:`) hol
 changes the user is asked again. A "no" is kept at start-up (the plugin is listed as
 *declined*); `PLUGINLOAD <folder>` asks again. `PLUGINS Forget` clears answers.
 
+Only a 64-hex SHA-256 digest can persist approval. If WebCrypto is unavailable, approval is
+requested for that run and is not saved. The desktop's secure `jcad://app` origin provides
+WebCrypto without giving plugins Node integration. Plugins still have full renderer and bridge
+access after approval; the trust prompt does not create a capability sandbox.
+
 Plugin settings written with `jcad.settings.set('plugin:<key>', value)` live in
 `localStorage` under `jcad.plugins.settings.<plugin name>`.
 

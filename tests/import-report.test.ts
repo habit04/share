@@ -89,7 +89,8 @@ describe('import report of unsupported DXF content', () => {
   });
 
   it('a clean file has no report, a file with only kept content is not flagged for attention', () => {
-    expect(importReportOf(readDxf(fixture('all-entities.dxf')))).toBeUndefined();
+    expect(importReportOf(readDxf(writeDxf(new Drawing().snapshot)))).toBeUndefined();
+    expect(importReportOf(readDxf(fixture('all-entities.dxf')))?.items).toEqual([expect.objectContaining({ type: 'ACAD_TABLE', action: 'simplified' })]);
     const keptOnly = readDxf(writeDxf(state));
     const r = importReportOf(keptOnly)!;
     expect(lossCount(r)).toBe(0);
@@ -97,6 +98,13 @@ describe('import report of unsupported DXF content', () => {
     expect(reportNeedsAttention(r)).toBe(false);
     expect(reportNeedsAttention(report)).toBe(true);
     expect(importReportLog(report).join('\n')).toMatch(/10 object\(s\) dropped or simplified, 2 kept/);
+  });
+  it('reports malformed table cell metadata without throwing during format validation', () => {
+    const metadata = JSON.stringify({ position: { x: 0, y: 0 }, rowHeights: [1], columnWidths: [1], cells: [[null]], textHeight: 1 });
+    const source = ['0', 'SECTION', '2', 'ENTITIES', '0', 'INSERT', '5', 'BAD', '8', 'TABLES', '1001', 'JCAD_TABLE', '1000', metadata, '0', 'ENDSEC', '0', 'EOF'].join('\n');
+    const result = readDxf(source);
+    expect(result.entities).toEqual([]);
+    expect(importReportOf(result)?.items).toContainEqual(expect.objectContaining({ type: 'INSERT', handle: 'BAD', layer: 'TABLES', action: 'dropped', reason: expect.stringContaining('table cells must contain text') }));
   });
 });
 
@@ -224,6 +232,7 @@ describe('Save over the source file', () => {
     expect(w).toMatch(/Save As/);
     expect(saveOverwriteWarning(state, '/drawings/copy.dxf')).toBeNull();
     expect(saveOverwriteWarning(state, null)).toBeNull();
+    expect(saveOverwriteWarning(state, SOURCE.replace('plant.dxf', './folder/../plant.dxf'))).not.toBeNull();
     expect(saveOverwriteWarning(readDxf(writeDxf(state)), SOURCE)).toBeNull(); // nothing lost (kept records only)
   });
 

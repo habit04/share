@@ -7,6 +7,8 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ImportReport } from '../src/io/import-report';
+import { Drawing } from '../src/core/document';
+import { writeDxf } from '../src/io/dxf';
 
 const text = (p: string) => readFileSync(join(__dirname, 'fixtures', p), 'latin1');
 
@@ -44,6 +46,39 @@ async function makeEditor(files: Record<string, string>, answers: boolean[]) {
 }
 
 describe('import report in the editor', () => {
+  it('SAVEAS choosing the original source still warns; a changed or replaced session cannot use its answer', async () => {
+    const f = await makeEditor({ '/d/saveas-source.dxf': text('unsupported-content.dxf') }, [true]);
+    await f.ed.openFile('/d/saveas-source.dxf');
+    f.ed.fileBridge!.chooseDrawingPath = async () => '/d/saveas-source.dxf';
+    f.ed.ui!.confirm = async (title, message) => {
+      f.asked.push({ title, message });
+      // An external command replaces the document while the loss warning is pending.
+      f.ed.newDrawing();
+      return true;
+    };
+    expect(await f.ed.saveFile(true)).toBe(false);
+    expect(f.asked).toHaveLength(1);
+    expect(f.saves).toEqual([]);
+    expect(f.ed.lastFileError).toMatch(/changed or closed/);
+  });
+
+  it('a newly imported report at the same source asks again', async () => {
+    const f = await makeEditor({ '/d/repeated-source.dxf': text('unsupported-content.dxf') }, [true, true]);
+    await f.ed.openFile('/d/repeated-source.dxf');
+    expect(await f.ed.saveFile(false)).toBe(true);
+    await f.ed.openFile('/d/repeated-source.dxf');
+    expect(await f.ed.saveFile(false)).toBe(true);
+    expect(f.asked).toHaveLength(2);
+  });
+
+  it('explicit SAVEAS selecting the source asks before writing', async () => {
+    const f = await makeEditor({ '/d/explicit-source.dxf': text('unsupported-content.dxf') }, [true]);
+    await f.ed.openFile('/d/explicit-source.dxf');
+    f.ed.fileBridge!.chooseDrawingPath = async () => '/d/explicit-source.dxf';
+    expect(await f.ed.saveFile(true)).toBe(true);
+    expect(f.asked).toHaveLength(1);
+    expect(f.saves.map((s) => s.path)).toEqual(['/d/explicit-source.dxf']);
+  });
   it('OPEN shows the report dialog when content was lost; SAVE over the source asks, No goes to Save As', async () => {
     const { ed, logs, asked, saves, reports } = await makeEditor({ '/d/plant.dxf': text('unsupported-content.dxf') }, [false]);
     await ed.openFile('/d/plant.dxf');
@@ -84,8 +119,9 @@ describe('import report in the editor', () => {
   }, 30000);
 
   it('a clean file opens without a dialog and saves without asking', async () => {
-    const { ed, asked, reports, saves } = await makeEditor({ '/d/ok.dxf': text('interchange-reference.dxf') }, []);
+    const { ed, asked, reports, saves, logs } = await makeEditor({ '/d/ok.dxf': writeDxf(new Drawing().snapshot) }, []);
     await ed.openFile('/d/ok.dxf');
+    expect(ed.doc.filePath, logs.join('\n')).toBe('/d/ok.dxf');
     expect(reports).toHaveLength(0);
     await ed.saveFile(false);
     expect(asked).toHaveLength(0);

@@ -16,9 +16,9 @@ import { decodeDxfBytes, textStyleOf, textStylesOf } from '../src/io/encoding';
 import { importReportOf } from '../src/io/import-report';
 import type { DrawingState } from '../src/core/document';
 import type { Entity, InsertEntity, DimensionEntity, MTextEntity, HatchEntity, PolylineEntity, SplineEntity, EllipseEntity, TableEntity, ImageEntity, TextEntity, LineEntity, CircleEntity, ArcEntity } from '../src/core/entities';
-import { explodeInsert, splineCurve } from '../src/core/entities';
+import { explodeInsert, splineCurve, dimensionParts } from '../src/core/entities';
 import { namedDimStyles, dimensionMeasurement, dimensionText, dimensionTextLayout } from '../src/core/dimension';
-import { parseMText, type MTextItem } from '../src/core/mtext';
+import { parseMText, mtextLayout, type MTextItem } from '../src/core/mtext';
 import { nurbsPoint, nurbsPoints } from '../src/core/spline';
 import { loopPolygon, pointInLoops } from '../src/core/hatch';
 import { tableGeometry } from '../src/core/table';
@@ -95,7 +95,7 @@ describe('r2000-layouts-titleblock.dxf: layouts, paper-space viewports, title bl
     const [a3, detail] = s.layouts ?? [];
 
     it('has no import losses; units, layers, linetype and text style', () => {
-      expect(importReportOf(s)).toBeUndefined();
+      expect(importReportOf(s)?.items).toContainEqual(expect.objectContaining({ type: 'STYLE', action: 'unsupported', reason: expect.stringContaining('stroke font') }));
       expect(s.header?.units).toMatchObject({ insunits: 4, lunits: 2, luprec: 1 });
       expect(layerOf(s, '0')).toMatchObject({ color: 7, lineWeight: 0.25 });
       expect(layerOf(s, 'TITLE')).toMatchObject({ color: 7, lineWeight: 0.5 });
@@ -327,9 +327,9 @@ describe('r2018-dimensions.dxf: named DIMSTYLEs with XDATA, DIMENSIONs with thei
 
   it('lost as the matrix says: the ordinate dimension is dropped and listed in the import report', () => {
     const report = importReportOf(f.imported)!;
-    expect(report.items.map((i) => [i.type, i.action, i.handle])).toEqual([['DIMENSION', 'dropped', '127']]);
+    expect(report.items.filter((i) => i.action === 'dropped').map((i) => [i.type, i.action, i.handle])).toEqual([['DIMENSION', 'dropped', '127']]);
     expect(f.written).not.toContain('AcDbOrdinateDimension');
-    expect(importReportOf(f.roundTripped)).toBeUndefined();
+    expect(importReportOf(f.roundTripped)?.items.every((i) => i.action === 'unsupported')).toBe(true);
   });
 
   it('lost as the matrix says: arrowheads go to JCAD_DIMSTYLE XDATA (no DIMBLK handles); 2-line angular is written as 3-point; ACAD_DSTYLE_* XDATA is dropped', () => {
@@ -342,11 +342,35 @@ describe('r2018-dimensions.dxf: named DIMSTYLEs with XDATA, DIMENSIONs with thei
     expect(f.written).not.toContain('ACAD_DSTYLE_');
   });
 
-  it.todo('ISO-25 keeps DIMDSEP 44 (group 278, decimal comma), so the aligned dimension reads "72,11" -- 278 is neither read nor written: it reads "72.11"');
-  it.todo('ISO-25 keeps DIMTXSTY (group 340 -> text style ISOCP) and writes it back -- not read: dimension text uses the Standard style');
-  it.todo('ARCH-TICK keeps DIMLWD 0.18 / DIMLWE 0.13 (groups 371 / 372) -- neither read nor written: dimension and extension lines take the dimension lineweight');
-  it.todo('MECH-TOL tolerances follow DIMTZIN (group 284, 0 here), so the diameter tolerance reads +0,10 / -0,05 -- 284 is not read: tolerances take DIMZIN 8 and read +0.1');
-  it.todo('the last linear dimension applies its DSTYLE overrides (ACAD XDATA: DIMTXT 5, DIMDEC 0) and keeps them on save -- ignored: it draws 2.5 high with ISO-25 and the overrides are not written');
+  it('DIMDSEP decimal comma survives and formats measurements', () => {
+    for (const [, s] of both(f)) {
+      const d = ofType<DimensionEntity>(s.entities, 'dimension')[2]!;
+      expect(d.style.decimalSeparator).toBe(44);
+      expect(dimensionText(d)).toBe('72,11');
+    }
+  });
+  it('DIMTXSTY resolves the STYLE handle and survives export', () => {
+    for (const [, s] of both(f)) {
+      const d = ofType<DimensionEntity>(s.entities, 'dimension')[2]!;
+      expect(d.style.textStyle).toBe('ISOCP');
+      const texts = dimensionParts(d).filter((p) => p.type === 'text');
+      expect(texts.every((p) => textStyleOf(p) === 'ISOCP')).toBe(true);
+    }
+  });
+  it('DIMLWD and DIMLWE survive as millimetre lineweight overrides', () => {
+    for (const [, s] of both(f)) expect(namedDimStyles(s).find((d) => d.name === 'ARCH-TICK')).toMatchObject({ dimLineWeight: 0.18, extLineWeight: 0.13 });
+  });
+  it('DIMTZIN suppresses tolerance zeros independently of DIMZIN', () => {
+    for (const [, s] of both(f)) {
+      const d = ofType<DimensionEntity>(s.entities, 'dimension')[4]!;
+      expect(d.style.toleranceZeroSuppression).toBe(0);
+      expect(dimensionTextLayout(d)).toMatchObject({ upper: '+0,10', lower: '-0,05' });
+    }
+  });
+  it('per-entity DSTYLE overrides keep the named style and survive export', () => {
+    for (const [, s] of both(f)) expect(ofType<DimensionEntity>(s.entities, 'dimension')[7]!.style).toMatchObject({ name: 'ISO-25', textHeight: 5, decimals: 0 });
+    expect(f.written).toContain('DSTYLE');
+  });
 });
 
 // ---------------------------------------------------------------- dimensions (R2000, inches)
@@ -426,7 +450,9 @@ describe('r2000-dimensions.dxf: inch drawing, DIMPOST and alternate units, text 
     expect([Number(group(rec, 15)), Number(group(rec, 25))]).toEqual([0, 4]);
   });
 
-  it.todo('DIMAPOST "[]mm" uses the AutoCAD "[]" placeholder: the aligned dimension reads 5.657" [143.7mm] -- the alternate value shows as "143.7[]mm" without brackets');
+  it('DIMAPOST [] substitutes alternate measurements inside their brackets', () => {
+    for (const [, s] of both(f)) expect(dimensionText(ofType<DimensionEntity>(s.entities, 'dimension')[1]!)).toBe('5.657" [143.7mm]');
+  });
 });
 
 // ---------------------------------------------------------------- MTEXT (R2018)
@@ -449,8 +475,8 @@ describe('r2018-mtext.dxf: MTEXT formatting codes, stacked fractions, columns, l
   describe.each(both(f))('%s', (_label, s) => {
     const m = ofType<MTextEntity>(s.entities, 'mtext');
 
-    it('five MTEXT entities, no import losses', () => {
-      expect(importReportOf(s)).toBeUndefined();
+    it('five MTEXT entities with font and external column display limitations reported', () => {
+      expect(importReportOf(s)?.items).toContainEqual(expect.objectContaining({ type: 'MTEXT', reason: expect.stringContaining('column definitions') }));
       expect(m).toHaveLength(5);
     });
 
@@ -509,7 +535,15 @@ describe('r2018-mtext.dxf: MTEXT formatting codes, stacked fractions, columns, l
     expect(f.written).toContain('\\U+00D825 \\U+00B10,1');
   });
 
-  it.todo('MTEXT static columns (R2018 embedded object: 2 columns 60 wide, gutter 5) are kept -- not read: the text flows in one column and is saved without the column definition');
+  it('MTEXT static columns survive and explicit column breaks render in separate columns', () => {
+    for (const [, s] of both(f)) {
+      const m = ofType<MTextEntity>(s.entities, 'mtext')[2]!;
+      expect(m.columns).toMatchObject({ type: 1, count: 2, width: 60, gutter: 5, heights: [20, 20] });
+      const parts = mtextLayout(m, (t, h) => t.length * h * 0.1);
+      const origins = [...new Set(parts.filter((t) => t.text === 'COLUMN').map((t) => t.position.x))];
+      expect(origins[1]! - origins[0]!).toBeCloseTo(65);
+    }
+  });
 });
 
 // ---------------------------------------------------------------- HATCH, LWPOLYLINE, SPLINE, ELLIPSE
@@ -530,8 +564,13 @@ describe('r2000-hatch-curves.dxf: HATCH (ANSI31 with bulges, SOLID with island),
     const splines = ofType<SplineEntity>(s.entities, 'spline');
     const ellipses = ofType<EllipseEntity>(s.entities, 'ellipse');
 
-    it('no import losses; entity order kept', () => {
-      expect(importReportOf(s)).toBeUndefined();
+    it('entity order kept; source boundary/vertex-width losses are reported', () => {
+      if (s === f.imported) {
+        expect(importReportOf(s)?.items).toContainEqual(expect.objectContaining({ type: 'HATCH', reason: expect.stringContaining('boundary links') }));
+        expect(importReportOf(s)?.items).toContainEqual(expect.objectContaining({ type: 'LWPOLYLINE', reason: expect.stringContaining('per-vertex polyline widths') }));
+        expect(importReportOf(s)?.items).toContainEqual(expect.objectContaining({ type: 'LWPOLYLINE', reason: expect.stringContaining('reactor/extension-dictionary links') }));
+      }
+      else expect(importReportOf(s)).toBeUndefined();
       expect(s.entities.map((e) => e.type)).toEqual(['polyline', 'hatch', 'hatch', 'polyline', 'circle', 'hatch', 'polyline', 'polyline', 'spline', 'spline', 'ellipse', 'ellipse']);
     });
 
@@ -644,7 +683,11 @@ describe('r2000-hatch-curves.dxf: HATCH (ANSI31 with bulges, SOLID with island),
     expect(group(hatch, 97)).toBe('0');
   });
 
-  it.todo('a hatch saved without its boundary link is written non-associative (71 = 0) -- it is written with 71 = 1 and no source boundary objects (97 = 0)');
+  it('a hatch without boundary links is saved non-associative with identical loops', () => {
+    expect(group(records(f.written, 'HATCH')[0], 71)).toBe('0');
+    expect(ofType<HatchEntity>(f.roundTripped.entities, 'hatch')[0]!.associative).toBeUndefined();
+    expect(ofType<HatchEntity>(f.roundTripped.entities, 'hatch')[0]!.loops).toEqual(ofType<HatchEntity>(f.imported.entities, 'hatch')[0]!.loops);
+  });
 });
 
 // ---------------------------------------------------------------- true colours, lineweights, linetypes
@@ -661,7 +704,7 @@ describe('r2018-truecolor-linetypes.dxf: true colours, colour book, transparency
 
   describe.each(both(f))('%s', (_label, s) => {
     it('layers: true colour with the nearest ACI, lineweights, linetypes, off / frozen / locked / no-plot', () => {
-      expect(importReportOf(s)).toBeUndefined();
+      expect(importReportOf(s)?.items.some((i) => i.type === 'STYLE')).toBe(true);
       expect(layerOf(s, '0')).toMatchObject({ color: 7, lineWeight: 0.25 });
       expect(layerOf(s, 'PANEL-TC')).toMatchObject({ color: 5, trueColor: 0x3399ff, lineWeight: 0.5 });
       expect(layerOf(s, 'WIRE-RED')).toMatchObject({ color: 1, trueColor: 0xc80000, lineWeight: 0.35, linetype: 'GAS_LINE' });
@@ -794,7 +837,10 @@ describe('r2000-nested-blocks-xref.dxf: nested INSERTs with ByBlock / ByLayer co
     expect(flags('TOPO')).toBe('12');
   });
 
-  it.todo('the xref-dependent layer SITE-PLAN|WALLS keeps its LAYER flags 16 + 32 on save -- written as an ordinary layer (flags 0) with the "|" name reserved for xref-dependent symbols');
+  it('xref-dependent LAYER flags 16 and 32 survive export', () => {
+    for (const [, s] of both(f)) expect(layerOf(s, 'SITE-PLAN|WALLS')!.xrefFlags).toBe(48);
+    expect(group(records(f.written, 'LAYER').find((r) => group(r, 2) === 'SITE-PLAN|WALLS'), 70)).toBe('48');
+  });
 });
 
 // ---------------------------------------------------------------- ACAD_TABLE (R2018)
@@ -812,7 +858,7 @@ describe('r2018-table.dxf: ACAD_TABLE with cells, merged title, table style (AC1
     const t = ofType<TableEntity>(s.entities, 'table')[0]!;
 
     it('one native table: insertion point, direction, row heights, column widths', () => {
-      expect(importReportOf(s)).toBeUndefined();
+      expect(importReportOf(s)?.items.every((i) => (i.type === 'STYLE' && i.action === 'unsupported') || (i.type === 'ACAD_TABLE' && i.reason.includes('native table editing')))).toBe(true);
       expect(s.entities).toHaveLength(1);
       expect(t).toMatchObject({ layer: 'TABLES', rotation: 0, rowHeights: [9, 7, 7, 7], columnWidths: [40, 25, 25] });
       closePt(t.position, 10, 200);
@@ -849,7 +895,17 @@ describe('r2018-table.dxf: ACAD_TABLE with cells, merged title, table style (AC1
     expect(group(insert, 2)).toMatch(/^\*U\d+$/);
   });
 
-  it.todo('cells without an override take the TABLESTYLE text height, alignment and margins (title 5, header 3.5, data 2.5 top centre, margins 1.5) -- the TABLESTYLE is not read: they get the median override (3), middle centre and 0.06 margins');
+  it('TABLESTYLE provides title/header/data cell defaults while cell overrides win', () => {
+    for (const [, s] of both(f)) {
+      const t = ofType<TableEntity>(s.entities, 'table')[0]!;
+      expect(t.margin).toBe(1.5);
+      expect(t.textHeight).toBe(2.5);
+      expect(t.cells[0]![0]).toMatchObject({ height: 5, attachment: 5 });
+      expect(t.cells[1]![0]).toMatchObject({ height: 3.5, attachment: 5 });
+      expect(t.cells[2]![0]).toMatchObject({ height: 2.5, attachment: 2 });
+      expect(t.cells[3]![0]!.height).toBe(3);
+    }
+  });
 });
 
 // ---------------------------------------------------------------- IMAGE, inch drawing (R2018)
@@ -870,7 +926,8 @@ describe('r2018-image-inches.dxf: IMAGE + IMAGEDEF in model and paper space, $IN
     const layout = s.layouts?.[0];
 
     it('inch units with architectural format, limits and linetype scale', () => {
-      expect(importReportOf(s)).toBeUndefined();
+      if (s === f.imported) expect(importReportOf(s)?.items).toContainEqual(expect.objectContaining({ type: 'RASTERVARIABLES', action: 'dropped' }));
+      else expect(importReportOf(s)).toBeUndefined();
       expect(s.header?.units).toEqual({ insunits: 1, lunits: 4, luprec: 4, auprec: 0 });
       expect(formatLength(30.5, s.header!.units)).toBe('2\'-6 1/2"');
       expect(s.header?.limits.max).toEqual({ x: 432, y: 288 });
@@ -929,5 +986,7 @@ describe('r2018-image-inches.dxf: IMAGE + IMAGEDEF in model and paper space, $IN
     });
   });
 
-  it.todo('the paper-space IMAGE keeps its IMAGEDEF file name C:\\Standards\\jcad-logo.tif -- layout entities are read after IMAGEDEF paths are resolved, so its path is empty and is saved empty');
+  it('paper-space IMAGE resolves its late IMAGEDEF path before export', () => {
+    for (const [, s] of both(f)) expect(ofType<ImageEntity>(s.layouts![0]!.entities, 'image')[0]!.path).toBe('C:\\Standards\\jcad-logo.tif');
+  });
 });
