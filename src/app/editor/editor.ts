@@ -183,6 +183,13 @@ export class Editor {
     this.viewport.requestRender(this.overlay);
   }
 
+  /** Highlight an object the way the cursor's rollover does (null: none), e.g. for the palette row under the cursor. */
+  setHover(id: string | null): void {
+    if (this.overlay.hover === id) return;
+    this.overlay.hover = id;
+    this.render();
+  }
+
   resize(): void {
     this.viewport.resize();
     this.render();

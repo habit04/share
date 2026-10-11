@@ -859,11 +859,7 @@ export class SymbolBuilderPalette {
 
   // ---- DOM helpers
   private setHover(id: string | null): void {
-    const ov = (this.editor as unknown as { overlay?: { hover: string | null } }).overlay;
-    if (!ov) return;
-    if (ov.hover === id) return;
-    ov.hover = id;
-    this.editor.render();
+    this.editor.setHover(id);
   }
   private hoverRow(row: HTMLElement, id: string): void {
     row.addEventListener('mouseenter', () => this.setHover(id));
