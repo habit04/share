@@ -213,4 +213,15 @@ describe('save queue fuzzing regressions', () => {
       expect(handler(name), name).not.toMatch(/await atomicWriteFile\(/);
     }
   });
+  it('Save As asks for the file first (choose-drawing-path) and writes nothing itself; the preload exposes it', () => {
+    const src = readFileSync(new URL('../electron/main.cjs', import.meta.url), 'utf8');
+    const start = src.indexOf("ipcMain.handle('choose-drawing-path'");
+    expect(start).toBeGreaterThan(0);
+    const body = src.slice(start, src.indexOf('ipcMain.handle(', start + 10));
+    expect(body).toMatch(/showSaveDialog/);
+    expect(body).toMatch(/rememberPath\(res\.filePath\)/);
+    expect(body).not.toMatch(/writeUserFile|atomicWriteFile/);
+    const preload = readFileSync(new URL('../electron/preload.cjs', import.meta.url), 'utf8');
+    expect(preload).toMatch(/chooseDrawingPath: \(suggestName\) => ipcRenderer\.invoke\('choose-drawing-path'/);
+  });
 });

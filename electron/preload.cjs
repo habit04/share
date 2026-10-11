@@ -14,6 +14,8 @@ contextBridge.exposeInMainWorld('jcad', {
   // Vector PLOT: the renderer's PDF bytes, saved through a Save dialog in the main process.
   savePdf: (bytes, suggestName) => ipcRenderer.invoke('save-pdf', bytes, suggestName),
   saveDxf: (path, text, suggestName) => ipcRenderer.invoke('save-dxf', path, text, suggestName),
+  // Drawing Save As: pick the destination first, then write it with saveDxf (in save-queue order).
+  chooseDrawingPath: (suggestName) => ipcRenderer.invoke('choose-drawing-path', String(suggestName || '')),
   // Autosave / Drawing Recovery (files live in the app data folder)
   autosaveWrite: (name, text, meta) => ipcRenderer.invoke('autosave-write', name, text, meta),
   autosaveList: () => ipcRenderer.invoke('autosave-list'),

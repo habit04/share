@@ -82,6 +82,11 @@ export interface FileBridge {
   /** Desktop only: open DXF or DWG (DWG parsed by LibreDWG in the main process). */
   openDrawing?(file?: string): Promise<OpenResult | null>;
   saveDxf(path: string | null, text: string, suggestName: string): Promise<string | null>;
+  /**
+   * Desktop only: ask where to save a drawing (Save As); the path is not written yet. With it, a
+   * Save As is written through the per-file save queue like every other save of that file.
+   */
+  chooseDrawingPath?(suggestName: string): Promise<string | null>;
   openProject?(file?: string): Promise<{ path: string; text: string } | null>;
   saveText?(suggestName: string, text: string, filterName: string, ext: string): Promise<string | null>;
   /**
@@ -920,13 +925,18 @@ export class Editor {
     const sessionId = this.sessions.current.id;
     const savedState = this.doc.snapshot;
     const revision = captureRevision();
-    const target = saveAs ? null : this.doc.filePath;
+    let target = saveAs ? null : this.doc.filePath;
     const fileName = this.fileName();
     const suggest = this.suggestedName ?? fileName;
     this.lastFileError = null;
     let path: string | null;
     try {
       const text = writeDxf(withoutUnusedLibraryBlocks(savedState));
+      // Save As picks the file first and then queues the write behind any save of that file still on its way.
+      if (!target && bridge.chooseDrawingPath) {
+        target = await bridge.chooseDrawingPath(suggest);
+        if (!target) return false;
+      }
       if (target) {
         const r = await saveQueue.run(target, revision, () => bridge.saveDxf(target, text, suggest));
         if (r.status === 'stale') {

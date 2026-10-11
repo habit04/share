@@ -491,6 +491,23 @@ ipcMain.handle('choose-project-path', async (ev, suggestName) => {
   return file;
 });
 
+/**
+ * Drawing Save As: ask where to save; the path becomes writable by save-dxf but nothing is written yet.
+ * The renderer then writes it through its per-file save queue (src/app/savequeue.ts), so a Save As
+ * onto a file with an older save still on its way is ordered after that save instead of racing it.
+ */
+ipcMain.handle('choose-drawing-path', async (ev, suggestName) => {
+  const win = BrowserWindow.fromWebContents(ev.sender);
+  const res = await dialog.showSaveDialog(win, {
+    title: 'Save Drawing As',
+    defaultPath: String(suggestName || 'Drawing1.dxf'),
+    filters: [{ name: 'DXF Drawing', extensions: ['dxf'] }],
+  });
+  if (res.canceled || !res.filePath) return null;
+  rememberPath(res.filePath);
+  return res.filePath;
+});
+
 /** Write the project file to a path that came from our own dialogs (Open Project / Save Project As / recent list). */
 ipcMain.handle('save-project', async (_ev, file, text) => {
   if (typeof text !== 'string' || text.length > 64 * 1024 * 1024) throw new Error('Invalid project payload');

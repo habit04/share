@@ -9,7 +9,7 @@ import type { Editor as EditorType, FileBridge, OpenResult } from '../src/app/ed
 import { Drawing, type DrawingState } from '../src/core/document';
 import type { Entity } from '../src/core/entities';
 import { newId } from '../src/core/entities';
-import { writeDxf } from '../src/io/dxf';
+import { writeDxf, readDxf as readDxfState } from '../src/io/dxf';
 import { SaveQueue, captureRevision } from '../src/app/savequeue';
 import { parseProject, resolveDrawingPath, resolveProjectPath } from '../src/app/project';
 import { closeDrawingTab, collectUnsaved, runCloseWorkflow, type CloseDecision, type UnsavedItem } from '../src/app/closeflow';
@@ -614,5 +614,41 @@ describe('save / close fuzzing regressions (tests/fuzz-save-close.test.ts)', () 
     expect(ed.sessions.indexOfId(bId)).toBe(-1);
     expect(ed.sessions.indexOfId(cId)).toBeGreaterThanOrEqual(0); // c.dxf and its edits are still open
     expect(ed.sessions.all.find((s) => s.id === cId)!.dirty).toBe(true);
+  });
+  it('a Save As onto the file a queued save is about to write is written after it (seed 1596464263)', async () => {
+    // The main process writes requests in arrival order (electron/main.cjs writeUserFile); here every
+    // write waits until the test releases it, in the order the requests arrived.
+    const disk = new Map<string, string>();
+    const inFlight: Array<{ path: string; text: string; go: () => void }> = [];
+    const { ed } = makeEditor({
+      saveDxf: async (p, t) => {
+        const path = p ?? '/w/x.dxf';
+        await new Promise<void>((go) => inFlight.push({ path, text: t, go }));
+        disk.set(path, t);
+        return path;
+      },
+      chooseDrawingPath: async () => '/w/x.dxf',
+    });
+    const release = async () => {
+      for (let i = 0; i < 20 && inFlight.length === 0; i += 1) await tick();
+      inFlight.shift()!.go();
+      await tick();
+    };
+    ed.loadState(new Drawing().snapshot, '/w/x.dxf');
+    ed.doc.addEntities([text('A')]);
+    const s1 = ed.saveFile(false); // a slow save (Save All while closing, or Ctrl+S)
+    await tick();
+    ed.doc.addEntities([text('B')]);
+    const s2 = ed.saveFile(false); // queued behind it
+    await tick();
+    ed.doc.addEntities([text('C')]);
+    const s3 = ed.saveFile(true); // Save As, the same file chosen in the dialog
+    await release();
+    await release();
+    await release();
+    expect(await Promise.all([s1, s2, s3])).toEqual([true, true, true]);
+    expect(ed.doc.dirty).toBe(false);
+    const onDisk = texts(readDxfState(disk.get('/w/x.dxf')!));
+    expect(onDisk).toEqual(['A', 'B', 'C']); // the newest revision, which the drawing shows as saved
   });
 });

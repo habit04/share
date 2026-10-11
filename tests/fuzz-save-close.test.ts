@@ -57,6 +57,8 @@ const coverage = { drawingRecoveries: 0, projectRecoveries: 0, discardKeeps: 0 }
 interface Options {
   /** Model electron/main.cjs writeUserFile (one write per file, arrival order); false = the code before it. */
   mainWriteOrder: boolean;
+  /** The bridge has chooseDrawingPath (Save As queued like any save); false = Save As written by save-dxf's dialog. */
+  chooseDrawingPath: boolean;
 }
 
 async function scenario(rng: Rng, opts: Options): Promise<{ closed: boolean; crashed: boolean }> {
@@ -116,6 +118,18 @@ async function scenario(rng: Rng, opts: Options): Promise<{ closed: boolean; cra
       trace.push(`[t${Date.now() % 100000} landed ${target} ${lab}]`);
       return target;
     },
+    // Save As picks the file first (electron/main.cjs choose-drawing-path); the write then goes through the save queue.
+    chooseDrawingPath: opts.chooseDrawingPath
+      ? async (suggest) => {
+          modal += 1;
+          await sleep(rng.int(0, 3));
+          const own = editor.doc.filePath;
+          const base = suggest.replace(/^(alt-)+/, '').replace(/[\\/]/g, '_');
+          const p = await dialog(() => (rng.bool(0.1) ? null : own && own.split('/').pop() === suggest && rng.bool(0.5) ? own : rng.pick([`/d/${base}`, `/d/alt-${base}`])), true);
+          if (p) known.add(pathKey(p));
+          return p;
+        }
+      : undefined,
     chooseProjectPath: async () => {
       const p = await dialog(() => (rng.bool(0.1) ? null : `/d/project-${rng.int(0, 1)}.jcadproj.json`));
       if (p) known.add(pathKey(p));
@@ -419,7 +433,7 @@ describe('fuzz: autosave, Save, Save As, Save All and crashes together', () => {
     let closed = 0;
     let crashed = 0;
     const runs = await fuzz('save-close/editor', 200, async (rng) => {
-      const r = await scenario(rng, { mainWriteOrder: process.env.FUZZ_NO_MAIN_ORDER ? false : true });
+      const r = await scenario(rng, { mainWriteOrder: !process.env.FUZZ_NO_MAIN_ORDER, chooseDrawingPath: !process.env.FUZZ_NO_CHOOSE_PATH });
       if (r.closed) closed += 1;
       if (r.crashed) crashed += 1;
     });
