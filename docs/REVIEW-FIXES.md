@@ -41,7 +41,7 @@ local validation, not a claim that every platform installer has already passed C
 | 32 | Persist plugin trust only with a cryptographic digest; weak hashes must not approve replacement code. | Implemented: SHA-256 only for persistent trust; weak fallback approval lasts the current run. `src/app/plugins.ts`, `tests/plugins.test.ts`. |
 | 33 | Isolate plugins if untrusted third-party code is to be supported; renderer execution is full application authority. | Conditional recommendation remains outstanding: plugins are explicitly trusted code, with confirmation and documented full renderer/bridge access. No claim of capability isolation or safe untrusted plugins. `docs/PLUGIN-API.md`, `docs/SECURITY-REVIEW.md`. |
 | 34 | Deny unsolicited Electron permissions/popups; file content should not grant browser capabilities. | Implemented default deny, main-window sanitized clipboard exception, navigation/window-open denial. `electron/main.cjs`, packaged end-to-end checks. |
-| 35 | Harden renderer origin/CSP/package fuses; broad file-origin and injected runtime behavior are unnecessary. | Implemented secure `jcad://app` assets, CSP and ASAR/Node/file-privilege fuses. Legacy preferences migrate in a temporary controlled sandboxed window. Packaged two-launch migration passes. CLI inspect remains enabled for packaged Playwright validation. |
+| 35 | Harden renderer origin/CSP/package fuses; broad file-origin and injected runtime behavior are unnecessary. | Implemented secure `jcad://app` assets, CSP and ASAR/Node/file-privilege fuses. Legacy preferences migrate in a temporary controlled sandboxed window. DOM storage is explicitly flushed before marking migration complete and before an approved window closes. Two-launch restart checks cover changed preferences; final platform validation is gated in CI. CLI inspect remains enabled for packaged Playwright validation. |
 | 36 | Ignore renderer `userChosen` claims; only native choices should authorize external project drawings. | Implemented one-shot native dialog/OS/Recent authorization. Forged claims are refused in packaged end-to-end tests. `electron/main.cjs`, `scripts/e2e-electron.mjs`. |
 | 37 | Redact problem reports by default; local paths, drawing names and command history can reveal private work. | Implemented redaction plus explicit opt-in for history/errors/private details. `src/app/diagnostics.ts`, `src/ui/report.ts`, `tests/diagnostics.test.ts`. |
 | 38 | Check pack keys as own properties; inherited object properties are not trusted signing keys. | Implemented own-property lookup before signature verification. `src/electrical/packs.ts`. |
@@ -110,6 +110,11 @@ The Linux screenshot comparison passed 47 of 48 images. Visual review of the rem
 image confirmed unchanged drawing geometry and updated import-warning text; only that
 baseline was replaced, with new assertions for those warnings and no tolerance changes.
 The revised final commit must pass a fresh CI run before those platforms are considered verified.
+The follow-up CI run passed all 48 screenshots and all 207 desktop checks on each OS, but
+macOS's separate preference restart check exposed a DOM storage persistence race. Storage
+flushes now happen in the shipping migration/close paths; the test still immediately restarts
+without a test-only persistence delay. Build-only preflight also exposed a Symbol Builder
+readiness assertion that must wait for its actions, rather than only the palette shell.
 
 Before a release is considered verified, its exact final commit must pass the configured CI
 gates and every platform installer must be installed/extracted and exercised on its own OS.

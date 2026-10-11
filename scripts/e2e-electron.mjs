@@ -939,7 +939,12 @@ try {
     () => bad('Symbol Builder palette did not appear'),
   );
   check((await win.evaluate(() => window.editor.sessions.count)) === tabsBefore + 1, 'Symbol Builder opened its own tab');
-  check((await win.locator('#symbol-builder .sb-actions button').count()) > 0, 'Symbol Builder actions are present');
+  // show() reveals the palette before its requestAnimationFrame render adds the actions.
+  const symbolActionsReady = await win.waitForFunction(() => document.querySelectorAll('#symbol-builder .sb-actions button').length > 0, null, { timeout: 10_000 }).then(
+    () => true,
+    () => false,
+  );
+  check(symbolActionsReady, 'Symbol Builder actions are present');
   if (process.env.JCAD_E2E_OUT) await win.screenshot({ path: join(outDir, `window-${process.platform}.png`) });
 
   // ------------------------------------------------------------------ crash-safe saves, save errors, backups

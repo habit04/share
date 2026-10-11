@@ -376,7 +376,11 @@ async function createWindow() {
   // Unsaved work: the renderer's Save All workflow decides; the close (and a quit) waits for it.
   let pendingClose = null;
   win.on('close', (e) => {
-    if (closeApproved.has(win) || quittingForUpdate || win.webContents.isDestroyed()) return;
+    if (win.webContents.isDestroyed()) return;
+    if (closeApproved.has(win) || quittingForUpdate) {
+      flushRendererPreferences(win.webContents);
+      return;
+    }
     e.preventDefault();
     if (pendingClose) return; // the dialog is already up
     pendingClose = requestClose(win, quitRequested ? 'quit' : 'close').then((ok) => {
@@ -1108,6 +1112,16 @@ function logMainError(kind, err) {
     /* nothing else we can do */
   }
 }
+/** Flush queued DOM storage while its renderer still exists; Electron exposes no durability acknowledgement. @param {Electron.WebContents} contents */
+function flushRendererPreferences(contents) {
+  try {
+    contents.session.flushStorageData();
+    return true;
+  } catch (err) {
+    logMainError('renderer preference persistence', err);
+    return false;
+  }
+}
 process.on('uncaughtException', (err) => logMainError('uncaughtException', err));
 process.on('unhandledRejection', (err) => logMainError('unhandledRejection', err));
 app.on('render-process-gone', (_ev, _wc, details) => logMainError('render-process-gone', new Error(`${details.reason} (exit code ${details.exitCode})`)));
@@ -1130,7 +1144,8 @@ app.whenReady().then(async () => {
 });
 
 ipcMain.on('renderer-storage-migration', (event) => { event.returnValue = rendererStorage; });
-ipcMain.on('renderer-storage-migrated', () => {
+ipcMain.on('renderer-storage-migrated', (event) => {
+  if (rendererStorage === null || !flushRendererPreferences(event.sender)) return;
   rendererStorage = null;
   void writeStateFile(path.join(stateDir(), 'renderer-origin-migrated'), '1', 'renderer origin migration');
 });

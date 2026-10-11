@@ -1,7 +1,7 @@
 // Verify the one-time file-origin preference migration with the real Electron runtime.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, existsSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
@@ -27,6 +27,7 @@ app.whenReady().then(async()=>{
   const w=new BrowserWindow({show:false,webPreferences:{nodeIntegration:false,contextIsolation:true,sandbox:true}});
   await w.loadFile(${JSON.stringify(index)});
   await w.webContents.executeJavaScript("localStorage.setItem('jcad-origin-test','legacy preference Δ 雷');");
+  w.webContents.session.flushStorageData();
   w.destroy(); app.quit();
 }).catch(e=>{console.error(e);app.exit(1)});`);
 
@@ -56,6 +57,19 @@ try {
         secure: isSecureContext && Boolean(crypto.subtle),
         bridge: Boolean(window.jcad),
       }));
+      const storage = await app.evaluate(({ app: main, session }) => ({
+        userData: main.getPath('userData'), sessionData: main.getPath('sessionData'),
+        storagePath: session.defaultSession.storagePath, persistent: session.defaultSession.isPersistent(),
+      }));
+      const privatePath = realpathSync.native(profile);
+      console.log(`Origin storage launch ${launch + 1}: ${JSON.stringify({
+        ...result, persistent: storage.persistent,
+        privateUserData: realpathSync.native(storage.userData) === privatePath,
+        privateSessionData: realpathSync.native(storage.sessionData) === privatePath,
+        privateStorage: storage.storagePath && realpathSync.native(storage.storagePath) === privatePath,
+        migrationMarker: existsSync(join(profile, 'renderer-origin-migrated')),
+      })}`);
+      assert.equal(storage.persistent, true, 'The default session must persist renderer preferences.');
       assert.equal(result.url, 'jcad://app/index.html');
       assert.equal(result.preference, launch === 0 ? 'legacy preference Δ 雷' : 'new preference');
       assert.equal(result.migrated, '1');
