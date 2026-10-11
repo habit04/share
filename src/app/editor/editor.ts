@@ -7,6 +7,7 @@
  *   internals.ts   the private working state those modules share, the fallback UI
  *   commands.ts    the built-in commands
  *   view.ts        settings, drafting toggles, zoom extents
+ *   documents.ts   new / open, tabs, import reports, the Save / Don't Save / Cancel question
  *   plotting.ts    PLOT / PRINT
  */
 import type { Point } from '../../core/geometry';
@@ -20,50 +21,31 @@ import { Viewport, type ViewportOverlay } from '../../render/viewport';
 import type { Tool, ToolContext } from '../../tools/types';
 import { PanTool } from '../../tools/edit';
 import { WIRE_DOT } from '../../electrical/symbols';
-import { LIBRARY_SYMBOLS, withoutUnusedLibraryBlocks, withByBlockLibrarySymbols } from '../../electrical/library';
+import { LIBRARY_SYMBOLS, withoutUnusedLibraryBlocks } from '../../electrical/library';
 import { TITLE_BLOCK } from '../../electrical/templates';
 import { SOURCE_ARROW, DEST_ARROW } from '../../tools/plc';
 import { gripPoints, moveGrip } from '../../core/entities';
 import { parseProject, serializeProject, defaultProject, resolveDrawingPath, baseName, projectDrawingIndex, projectEntryFor, rebaseProject, type Project } from '../project';
-import { isAbsolutePath } from '../paths';
 import { captureRevision, saveQueue } from '../savequeue';
-import { loadSettings, saveSettings, pushRecent, type UserSettings } from '../settings';
+import { loadSettings, type UserSettings } from '../settings';
 import { SessionManager, applySaveResult } from '../sessions';
 import { describeFileError } from '../file-errors';
 import type { ColorSpec } from '../../core/entities';
 import { writeDxf } from '../../io/dxf';
 import type { PlotOptions } from '../plot';
 import { parsePointInput, isPlainNumber } from '../input';
-import { convertDwg } from '../../io/dwg';
-import { readDxfForOpen, reportNeedsAttention, importReportLog, confirmSaveOver, importReportOf } from '../import-open';
+import { confirmSaveOver } from '../import-open';
 import { trackFromPoints } from '../../core/snap';
 import type { SpaceRef } from '../../core/layouts';
 import type { EditorEvent, CommandDef, FileBridge, EditorHooks } from './types';
 import { createInternals, fallbackUi, type EditorInternals } from './internals';
 import { registerBuiltinCommands } from './commands';
 import * as view from './view';
+import * as documents from './documents';
 import * as plotting from './plotting';
-
-/**
- * Why an open failed: file errors in plain words ("... could not be read: the folder is not
- * available"), anything else (a damaged DXF, an unknown path) with its own message.
- */
-function openErrorText(err: unknown, path?: string | null): string {
-  const info = describeFileError(err, { action: 'read', path: path ?? null });
-  return info.kind !== 'unknown' ? info.message : info.detail;
-}
 
 /** Version compiled in from package.json (see vite.config.ts); 'dev' under plain vitest. */
 const VERSION: string = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : 'dev';
-
-/** Where an opened drawing went (Editor.deliverOpened) and what the log says about it. */
-type OpenedWhere = 'active' | 'background' | 'new-tab' | 'new-background-tab';
-const OPENED_WHERE: Record<OpenedWhere, string> = {
-  active: '',
-  background: ' (in the tab it was opened from)',
-  'new-tab': ' (in a new tab: the tab it was opened from changed meanwhile)',
-  'new-background-tab': ' (in a new tab in the background: the tab it was opened from changed meanwhile)',
-};
 
 export class Editor {
   readonly doc = new Drawing();
@@ -322,12 +304,6 @@ export class Editor {
     view.persistSettings(this);
   }
 
-  private rememberRecent(path: string): void {
-    this.settings = { ...this.settings, recentFiles: pushRecent(this.settings.recentFiles, path) };
-    saveSettings(this.settings);
-    this.emit('file');
-  }
-
   /** Whether typed input should be treated as literal text (TEXT command content). */
   acceptsFreeText(): boolean {
     return this.tool?.acceptsFreeText?.() ?? false;
@@ -480,44 +456,17 @@ export class Editor {
   }
 
   // ------------------------------------------------------------- files
-  private async confirmDiscard(): Promise<boolean> {
-    if (!this.doc.dirty) return true;
-    const ui = this.ui ?? fallbackUi;
-    if (ui.saveChanges) {
-      const r = await ui.saveChanges(this.fileName());
-      if (r === 'cancel') return false;
-      if (r === 'save') return (await this.saveFile(false)) && !this.doc.dirty;
-      return true;
-    }
-    return ui.confirm('Unsaved changes', `${this.fileName()} has unsaved changes. Discard them?`);
-  }
 
   newDrawing(): void {
-    void this.confirmDiscard().then((ok) => {
-      if (ok) this.newDrawingNow();
-    });
+    documents.newDrawing(this);
   }
 
   newDrawingNow(): void {
-    const fresh = new Drawing();
-    this.doc.load(fresh.snapshot, null);
-    this.doc.ensureBlocks([...LIBRARY_SYMBOLS, TITLE_BLOCK, SOURCE_ARROW, DEST_ARROW, WIRE_DOT]);
-    this.selection.clear();
-    this.viewport.zoomToBounds(null);
-    this.log('New drawing.');
-    this.emit('file');
-    this.emit('selection');
-    this.render();
+    documents.newDrawingNow(this);
   }
 
   loadState(state: DrawingState, path: string | null): void {
-    // Library symbols saved by earlier versions (ByLayer on layer 0) keep taking the reference's colour.
-    this.doc.load(withByBlockLibrarySymbols(state), path);
-    this.doc.ensureBlocks([...LIBRARY_SYMBOLS, TITLE_BLOCK, SOURCE_ARROW, DEST_ARROW, WIRE_DOT]);
-    this.selection.clear();
-    this.zoomExtents();
-    this.emit('file');
-    this.emit('selection');
+    documents.loadState(this, state, path);
   }
 
   /**
@@ -525,68 +474,8 @@ export class Editor {
    * file was loading, the drawing still lands in that tab (in the background); when that tab
    * was closed or edited meanwhile, it opens in a new tab instead of replacing anything.
    */
-  async openFile(file?: string): Promise<boolean> {
-    if (!this.fileBridge) {
-      this.log('No file access in this environment.');
-      return false;
-    }
-    if (!(await this.confirmDiscard())) return false;
-    const target = this.sessions.current;
-    const targetId = target.id;
-    const before = target.state;
-    try {
-      if (this.fileBridge.openDrawing) {
-        this.log(file ? `Opening ${file} ...` : 'Opening ...');
-        const res = await this.fileBridge.openDrawing(file);
-        if (!res) return false;
-        if (res.kind === 'dxf' && this.showAlreadyOpen(res.path, targetId, before)) return true;
-        if (res.kind === 'dwg') {
-          const { state, skipped, notes } = convertDwg(res.payload, res.path);
-          // DWG is read-only for us: keep the file untitled so SAVE asks where to write the DXF copy.
-          const where = this.deliverOpened(targetId, before, state, null, true);
-          this.rememberRecent(res.path);
-          if (where === 'active' || where === 'new-tab') this.suggestedName = res.path.replace(/\.dwg$/i, '.dxf').split(/[\\/]/).pop() ?? null;
-          const skippedText = Object.keys(skipped).length
-            ? ` Skipped unsupported: ${Object.entries(skipped).map(([k, v]) => `${k}×${v}`).join(', ')}.`
-            : '';
-          this.log(`Imported DWG ${res.path} (${res.version || 'unknown version'}): ${state.entities.length} entities, ${state.layers.length} layers, ${Object.keys(state.blocks).length} blocks.${skippedText}`);
-          for (const n of notes) this.log(`DWG import: ${n}`);
-          this.log('DWG import is read-only; use SAVE to write a DXF copy next to the original.');
-          this.emit('file');
-          this.showOpenedReport(where, state, res.path);
-          return true;
-        }
-        const state = await this.readDxfText(res.text, res.path);
-        if (!state) {
-          this.log(`Not opened: ${res.path} is damaged.`);
-          return false;
-        }
-        // The same file may have finished opening in another tab while this one was read (RECENT twice).
-        if (this.showAlreadyOpen(res.path, targetId, before)) return true;
-        // A recovered (truncated) file opens modified: Save As keeps it under a new name.
-        const where = this.deliverOpened(targetId, before, state, res.path, !!importReportOf(state)?.recovered);
-        this.rememberRecent(res.path);
-        this.log(`Opened ${res.path}: ${state.entities.length} entities, ${state.layers.length} layers, ${Object.keys(state.blocks).length} blocks.${res.encoding ? ` Encoding: ${res.encoding}.` : ''}${OPENED_WHERE[where]}`);
-        this.showOpenedReport(where, state, res.path);
-        return true;
-      }
-      const res = await this.fileBridge.openDxf();
-      if (!res) return false;
-      const state = await this.readDxfText(res.text, res.path);
-      if (!state) {
-        this.log(`Not opened: ${res.path} is damaged.`);
-        return false;
-      }
-      if (this.showAlreadyOpen(res.path, targetId, before)) return true;
-      const where = this.deliverOpened(targetId, before, state, res.path, !!importReportOf(state)?.recovered);
-      this.log(`Opened ${res.path}: ${state.entities.length} entities, ${state.layers.length} layers, ${Object.keys(state.blocks).length} blocks.`);
-      this.showOpenedReport(where, state, res.path);
-      return true;
-    } catch (err) {
-      this.lastFileError = openErrorText(err, file);
-      this.log(`Failed to open drawing: ${this.lastFileError}`);
-      return false;
-    }
+  openFile(file?: string): Promise<boolean> {
+    return documents.openFile(this, file);
   }
 
   /**
@@ -594,13 +483,7 @@ export class Editor {
    * the report dialog. `state` / `name` default to the active drawing.
    */
   showImportReport(force: boolean, state: DrawingState = this.doc.snapshot, name: string = this.fileName()): void {
-    const r = importReportOf(state);
-    if (!r) {
-      if (force) this.log('This drawing has no import report: nothing was dropped or simplified when it was opened.');
-      return;
-    }
-    for (const line of importReportLog(r)) this.log(line);
-    if (force || reportNeedsAttention(r)) this.hooks.importReport?.(r, name);
+    documents.showImportReport(this, force, state, name);
   }
 
   /**
@@ -608,68 +491,7 @@ export class Editor {
    * asks whether to open what was readable (marked as recovered); null = declined.
    */
   readDxfText(text: string, path: string | null): Promise<DrawingState | null> {
-    return readDxfForOpen(text, path, (t, m) => (this.ui ?? fallbackUi).confirm(t, m));
-  }
-
-  /** The import report of a drawing just opened, also when it went to a background tab (see deliverOpened). */
-  private showOpenedReport(where: OpenedWhere, state: DrawingState, path: string): void {
-    if (where === 'background' || where === 'new-background-tab') this.showImportReport(false, state, path.split(/[\\/]/).pop() ?? path);
-    else this.showImportReport(false);
-  }
-
-  /**
-   * The file picked in the Open dialog (or a second RECENT click) is already open in a tab: show
-   * that tab instead of a second copy, whose saves would overwrite each other. Re-opening the file
-   * into the very tab that holds it, unchanged since the open started, is a reload and goes ahead.
-   */
-  private showAlreadyOpen(path: string, targetId: number, before: DrawingState): boolean {
-    // The browser build only knows file names (two "a.dxf" from different folders are different files).
-    if (!isAbsolutePath(path)) return false;
-    const k = this.sessions.indexOfPath(path);
-    if (k < 0) return false;
-    const s = this.sessions.all[k]!;
-    if (s.id === targetId && s.state === before) return false;
-    // Only move the user when they are still looking at the tab the open was started from.
-    if (this.sessions.current.id === targetId) this.sessions.switchTo(k);
-    this.rememberRecent(path);
-    this.log(`${path} is already open (tab ${k + 1}: ${this.sessions.titleOf(k)}).`);
-    return true;
-  }
-
-  /**
-   * Put an opened drawing into tab `targetId` (see openFile); returns where it went. A new tab is
-   * only brought to the front when the user is still on the tab the open started from: someone
-   * working in another tab meanwhile keeps working there (no command or click lands in the new one).
-   */
-  private deliverOpened(targetId: number, before: DrawingState, state: DrawingState, path: string | null, dirty: boolean): OpenedWhere {
-    const cur = this.sessions.current;
-    if (cur.id === targetId && cur.state === before) {
-      this.loadState(state, path);
-      this.doc.dirty = dirty;
-      return 'active';
-    }
-    const i = this.sessions.indexOfId(targetId);
-    const s = i >= 0 ? this.sessions.all[i] : undefined;
-    if (s && s.state === before) {
-      const d = new Drawing();
-      // Same preparation as loadState: older library symbols keep taking the reference's colour.
-      d.load(withByBlockLibrarySymbols(state), path);
-      d.ensureBlocks([...LIBRARY_SYMBOLS, TITLE_BLOCK, SOURCE_ARROW, DEST_ARROW, WIRE_DOT]);
-      this.sessions.loadInto(targetId, d.snapshot, path, dirty);
-      this.emit('file');
-      return 'background';
-    }
-    if (cur.id !== targetId) {
-      const d = new Drawing();
-      d.load(withByBlockLibrarySymbols(state), path);
-      d.ensureBlocks([...LIBRARY_SYMBOLS, TITLE_BLOCK, SOURCE_ARROW, DEST_ARROW, WIRE_DOT]);
-      this.sessions.addInBackground(d.snapshot, path, dirty);
-      this.emit('file');
-      return 'new-background-tab';
-    }
-    this.sessions.add(state, path, dirty);
-    this.doc.dirty = dirty;
-    return 'new-tab';
+    return documents.readDxfText(this, text, path);
   }
 
   /**
@@ -730,21 +552,21 @@ export class Editor {
       // A newer revision of this drawing was saved while this (slower) save ran, possibly to another
       // file: the drawing stays bound to that newer save - its file and its clean / modified state.
       this.log(`Saved ${path} (an older revision: the drawing was saved again meanwhile and keeps that file).`);
-      this.rememberRecent(path);
+      documents.rememberRecent(this, path);
       return true;
     }
     this.internals.savedRevisions.set(sessionId, revision);
     const outcome = applySaveResult(this.sessions, this, sessionId, savedState, path);
     if (outcome === 'clean' && this.sessions.current.id === sessionId) this.suggestedName = null;
     this.log(outcome === 'newer-edits' ? `Saved ${path} (edits made during the save are still unsaved).` : `Saved ${path}`);
-    this.rememberRecent(path);
+    documents.rememberRecent(this, path);
     this.hooks.drawingSaved?.(sessionId, savedState, path);
     this.emit('file');
     return true;
   }
 
   confirmDiscardPublic(): Promise<boolean> {
-    return this.confirmDiscard();
+    return documents.confirmDiscard(this);
   }
 
   /** Generation (another project opened / created) and revision (any change) of the project data. */
@@ -803,11 +625,11 @@ export class Editor {
       if (this.projectDirty && this.internals.projectRev !== answered && !(await this.confirmDiscardProject())) return false;
       this.replaceProject(parseProject(res.text, res.path));
       this.log(`Project ${this.project.name}: ${this.project.drawings.length} drawing(s).`);
-      this.rememberRecent(res.path);
+      documents.rememberRecent(this, res.path);
       this.emit('file');
       return true;
     } catch (err) {
-      this.lastFileError = openErrorText(err, file);
+      this.lastFileError = documents.openErrorText(err, file);
       this.log(`Failed to open project: ${this.lastFileError}`);
       return false;
     }
@@ -917,7 +739,7 @@ export class Editor {
       this.project = rebaseProject(this.project, written.path);
       this.log(`Project saved: ${written.path} (changes made during the save are still unsaved).`);
     }
-    this.rememberRecent(written.path);
+    documents.rememberRecent(this, written.path);
     this.hooks.projectChanged?.();
     this.emit('project');
     return true;
@@ -950,8 +772,7 @@ export class Editor {
   }
 
   fileName(): string {
-    if (!this.doc.filePath) return this.sessions.untitledName;
-    return this.doc.filePath.split(/[\\/]/).pop() ?? 'Drawing1.dxf';
+    return documents.fileName(this);
   }
 
   // ------------------------------------------------------------- mouse
