@@ -8,6 +8,7 @@ import { describe, it, expect } from 'vitest';
 import { createRequire } from 'node:module';
 import { existsSync, readFileSync } from 'node:fs';
 import { buildAll, pngPixels, sameIcon, ICO_SIZES, PNG_SIZES } from '../scripts/make-icons.mjs';
+import { mainProcessSource } from './helpers/main-process';
 
 const require = createRequire(import.meta.url);
 const root = new URL('../', import.meta.url);
@@ -115,7 +116,7 @@ describe('electron-builder configuration', () => {
   });
 
   it('the main process accepts what the associations hand over (command line, second launch, macOS open-file)', () => {
-    const main = read('electron/main.cjs');
+    const main = mainProcessSource();
     const m = /const HANDOVER_FILE = (\/.+\/i);/.exec(main);
     expect(m).not.toBeNull();
     const re = new Function(`return ${m![1]}`)() as RegExp;

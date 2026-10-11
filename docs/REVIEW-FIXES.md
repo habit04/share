@@ -2,6 +2,8 @@
 
 Baseline: `5dfd8c22a86d7ce681c9e5870a1f1128059dcae1` of `habit04/share`.
 Work is isolated on `codex/electrical-review-fixes`; the original checkout is preserved.
+The default branch's module refactor through `648e063f6dd8ee424162418faa47c96cce041583`
+is retained, with fixes carried into the split editor, DXF and Electron modules.
 The table tracks the 53 follow-up recommendations. “Implemented” describes the code and
 behavioral checks. Installer execution and signing results are reported separately in the
 pull request, with workflow links tied to its exact source commit.
@@ -9,9 +11,9 @@ pull request, with workflow links tied to its exact source commit.
 | # | Recommendation and reason | Result and evidence |
 | --- | --- | --- |
 | 1 | Keep failed replacement writes atomic; copying over the destination can truncate the only good file. | Implemented: rename retries fail without destructive copy fallback. `electron/atomic-write.cjs`, `tests/file-safety.test.ts`. |
-| 2 | Order project saves and check revisions; a late save must not clear newer edits or replace another project. | Implemented: save chain, project generation/revision guards, and snapshot capture. `src/app/editor.ts`, `tests/project-file-safety.test.ts`. |
+| 2 | Order project saves and check revisions; a late save must not clear newer edits or replace another project. | Implemented: save chain, project generation/revision guards, and snapshot capture. `src/app/editor/project.ts`, `src/app/editor/save.ts`, `tests/project-file-safety.test.ts`. |
 | 3 | Give each project recovery copy a unique owner; same-name/untitled projects can otherwise overwrite unrelated backups. | Implemented: UUID ownership per project generation; only explicit recovery adopts an existing backup. `src/app/project-autosave.ts`, `tests/cross-track-integrity.test.ts`. |
-| 4 | Warn when Save As resolves to the original lossy import; choosing that same path can still destroy unsupported data. | Implemented: compare the actual chosen path and recheck session/revision/report after dialogs. `src/app/import-open.ts`, `src/app/editor.ts`, `tests/import-open-editor.test.ts`. |
+| 4 | Warn when Save As resolves to the original lossy import; choosing that same path can still destroy unsupported data. | Implemented: compare the actual chosen path and recheck session/revision/report after dialogs. `src/app/import-open.ts`, `src/app/editor/save.ts`, `tests/import-open-editor.test.ts`. |
 | 5 | Warn before batch rewriting closed imported drawings; their loss reports must not disappear because no tab is open. | Implemented: retain source path and ask before rewriting lossy DXF sources. `src/app/commands-electrical.ts`, `tests/project-batch-safety.test.ts`. |
 | 6 | Invalidate nested block caches; changing a descendant definition must update bounds, selection and rendering. | Implemented: dependency identities include reachable nested definitions and missing definitions. `src/core/entities.ts`, `src/core/spatial-index.ts`, `tests/block-dependencies.test.ts`. |
 | 7 | Resolve IMAGE definitions in layouts; paper-space images otherwise retain empty paths. | Implemented for model and paper entities. `src/io/dxf.ts`, `tests/interchange-fixtures.test.ts`. |
@@ -43,7 +45,7 @@ pull request, with workflow links tied to its exact source commit.
 | 33 | Isolate plugins if untrusted third-party code is to be supported; renderer execution is full application authority. | Conditional recommendation remains outstanding: plugins are explicitly trusted code, with confirmation and documented full renderer/bridge access. No claim of capability isolation or safe untrusted plugins. `docs/PLUGIN-API.md`, `docs/SECURITY-REVIEW.md`. |
 | 34 | Deny unsolicited Electron permissions/popups; file content should not grant browser capabilities. | Implemented default deny, main-window sanitized clipboard exception, navigation/window-open denial. `electron/main.cjs`, packaged end-to-end checks. |
 | 35 | Harden renderer origin/CSP/package fuses; broad file-origin and injected runtime behavior are unnecessary. | Implemented secure `jcad://app` assets, CSP and ASAR/Node/file-privilege fuses. Legacy preferences migrate in a temporary controlled sandboxed window. DOM storage is explicitly flushed before marking migration complete and before an approved window closes. Two-launch restart checks cover changed preferences; final platform validation is gated in CI. CLI inspect remains enabled for packaged Playwright validation. |
-| 36 | Ignore renderer `userChosen` claims; only native choices should authorize external project drawings. | Implemented one-shot native dialog/OS/Recent authorization. Forged claims are refused in packaged end-to-end tests. `electron/main.cjs`, `scripts/e2e-electron.mjs`. |
+| 36 | Ignore renderer `userChosen` claims; only native choices should authorize external project drawings. | Implemented one-shot native dialog/OS/Recent authorization. Forged claims are refused in packaged end-to-end tests. `electron/main/ipc-drawings.cjs`, `electron/main/handover.cjs`, `scripts/e2e-electron.mjs`. |
 | 37 | Redact problem reports by default; local paths, drawing names and command history can reveal private work. | Implemented redaction plus explicit opt-in for history/errors/private details. `src/app/diagnostics.ts`, `src/ui/report.ts`, `tests/diagnostics.test.ts`. |
 | 38 | Check pack keys as own properties; inherited object properties are not trusted signing keys. | Implemented own-property lookup before signature verification. `src/electrical/packs.ts`. |
 | 39 | Bound print page dimensions; huge/nonfinite sheets can allocate excessive memory. | Implemented positive finite dimensions up to 200 inches. `electron/resource-limits.cjs`, `tests/resource-limits.test.ts`. |
@@ -60,7 +62,7 @@ pull request, with workflow links tied to its exact source commit.
 | 50 | Release exactly the checked source and complete installer set; artifacts must match the tested commit. | Implemented source-SHA checks, five expected installer names, byte hashes and GitHub-signed build attestation before publication. Cross-platform execution remains a CI validation requirement. `scripts/release-provenance.mjs`, `.github/workflows/release.yml`. |
 | 51 | Report actual signing status; ad-hoc/unsigned builds must not be presented as publisher-signed releases. | Implemented configured signature/notarization verification and explicit provenance/release-note status. Azure publisher configuration passes the installed builder's schema and reaches its generated updater configuration. Local Windows builds are unsigned; the configured CI signing service still needs a successful build and signature verification before a signed artifact is claimed. `scripts/azure-signing.mjs`, `tests/azure-signing.test.ts`, `docs/CODE-SIGNING.md`. |
 | 52 | Update documentation to match the implementation; outdated compatibility, security and update claims mislead users. | Implemented support/security/QA/performance/development/release/signing/manual/notices updates, including the remaining limits. |
-| 53 | Extract focused infrastructure; isolated responsibilities are easier to test without risky wholesale rewrites. | Implemented separate origin, resource-limit, update-policy, DWG worker, geometry-budget, fixture, scanner, benchmark and provenance modules. Existing editor behavior remains covered by end-to-end tests. |
+| 53 | Extract focused infrastructure; isolated responsibilities are easier to test without risky wholesale rewrites. | Implemented separate origin, resource-limit, update-policy, DWG worker, geometry-budget, fixture, scanner, benchmark and provenance modules. The updated default branch's `src/app/editor/`, `src/io/dxf/` and `electron/main/` splits are retained with the safety fixes and module-boundary regressions. Existing editor behavior remains covered by end-to-end tests. |
 
 ## Independent CAD validation
 
@@ -82,7 +84,7 @@ reader behavior; no Autodesk source files, drawings or licensed program content 
 
 ## Validation and remaining limits
 
-Local code validation includes 1,378 passing unit tests (10 conditional skips), TypeScript checks
+Local code validation includes 1,388 passing unit tests (10 conditional skips), TypeScript checks
 for app/Electron/scripts and ESLint. The dangerous hatch cases run in isolated child processes
 with a three-second deadline and 96 MiB JavaScript heap cap; they cover invalid tokens, every
 declared HATCH collection, missing records, huge finite angles, derived coordinate overflow and

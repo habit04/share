@@ -11,7 +11,22 @@ messages). The date of each version is the date of the commit that set that vers
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- Maintainability (reliability review item 26), with no change in behaviour: the three largest
+  source files are split by responsibility, and every existing import keeps working through the
+  original file. `src/io/dxf.ts` (2783 lines) re-exports the DXF reader and writer from
+  `src/io/dxf/` (tokenizer, shared codecs, one module per side for the core, the entity codecs and
+  the sections); `src/app/editor.ts` (1685 lines) re-exports the `Editor` from `src/app/editor/`,
+  whose class delegates to one module per responsibility (commands, prompter, selection, pointer,
+  keyboard, view, documents and tabs, saves, project, plot); `electron/main.cjs` (1111 lines) wires
+  the modules under `electron/main/` (app-data files, window and close workflow, menu, DWG reading,
+  IPC for drawings, plot, stores and updates, files handed over by the OS) and stays the only place
+  that creates the IPC guard and the path registry. The module map is in `docs/DEVELOPMENT.md`.
+- Module boundaries: the drafting commands and the Symbol Builder palette no longer cast the
+  Editor to reach its private members (`notify` and the new `setHover` instead); tests keep the
+  Drawing's undo history (also in `scripts/`, `e2e/` and `electron/`), the Editor's private members
+  and Electron's own `ipcMain` behind their supported APIs.
 
 ## [0.4.1] - 2026-10-11
 

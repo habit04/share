@@ -547,7 +547,7 @@ scenario('close', async () => {
         await saveAllDlg(ctx).waitFor({ timeout: 10_000 });
         await saveAllDlg(ctx).locator('button', { hasText: 'Discard All' }).click();
         check((await pending) === true, 'Discard All: the restart may go ahead');
-        // The approval lapses after RESTART_APPROVAL_MS (10 s, electron/main.cjs).
+        // The approval lapses after RESTART_APPROVAL_MS (10 s, electron/main/window.cjs).
         await ctx.win.waitForTimeout(10_500);
         await ctx.closeWindow();
         const askedAgain = await saveAllDlg(ctx).waitFor({ timeout: 5000 }).then(() => true, () => false);

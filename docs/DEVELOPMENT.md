@@ -9,7 +9,7 @@ Contents: [Prerequisites](#prerequisites) · [Install](#install) · [Run](#run) 
 [Checks](#checks) · [Tests](#unit-and-regression-tests) · [Screenshots](#screenshots) ·
 [End-to-end](#end-to-end-tests) · [Performance](#performance) · [Packaging](#packaging) ·
 [Signing and release](#signing-and-release) · [Verifying a change](#verifying-a-change-end-to-end) ·
-[Layout of the tooling](#layout-of-the-tooling)
+[Layout of the tooling](#layout-of-the-tooling) · [Module map](#module-map)
 
 ## Prerequisites
 
@@ -241,3 +241,117 @@ installer and smoke-tests each one on its own OS without publishing anything.
 | `.github/workflows/release.yml` | gated installer builds and releases |
 | `.github/workflows/packaged-smoke.yml` | manual smoke test of an existing release's installers |
 | `.github/workflows/screenshot-baselines.yml` | manual regeneration of the screenshot baselines |
+
+## Module map
+
+Source files over 600 lines (measured on 0.4.1, `wc -l`), with the responsibilities each one
+holds. The three largest were split along those lines (reliability review item 26, below); the
+others keep one responsibility each or are tables of data and stay as they are for now.
+
+| File | Lines | Responsibilities |
+| --- | ---: | --- |
+| `src/io/dxf.ts` | 2783 | split into `src/io/dxf/` (below); 19 lines now |
+| `src/core/entities.ts` | 1699 | entity types, ids, bounds, grips and transforms, block / insert expansion, parts of dimensions, leaders and tables |
+| `src/app/editor.ts` | 1685 | split into `src/app/editor/` (below); 7 lines now |
+| `src/ui/electrical-dialogs.ts` | 1636 | the AutoCAD Electrical-style dialogs (component, catalog, terminal strip, properties, wire numbers) |
+| `scripts/e2e-flows.mjs` | 1430 | multi-launch end-to-end flows (close / quit matrix, recovery, save errors) |
+| `scripts/e2e-electron.mjs` | 1421 | single-launch Electron end-to-end checks |
+| `src/ui/symbol-builder.ts` | 1403 | Symbol Builder dialogs and palette |
+| `src/io/dwg.ts` | 1305 | LibreDWG database to `DrawingState` conversion |
+| `src/electrical/symbol-builder-core.ts` | 1280 | Symbol Builder conversions (pure) |
+| `src/core/dimension.ts` | 1216 | dimension styles, DIM* variables and dimension geometry |
+| `electron/main.cjs` | 1111 | split into `electron/main/` (below); 138 lines now |
+| `src/app/commands-electrical.ts` | 1105 | electrical commands (component data, catalog, wires, panel, project, reports) |
+| `src/tools/symbol-builder.ts` | 1042 | Symbol Builder controller and commands |
+| `src/app/commands-drafting.ts` | 987 | drafting commands on top of the Editor's basic set |
+| `tests/interchange-fixtures.test.ts` | 933 | interchange fixture tests (one file per fixture set) |
+| `src/tools/drafting-modify.ts` | 929 | FILLET, CHAMFER, ARRAY, STRETCH, BREAK, JOIN, LENGTHEN, ALIGN, MATCHPROP |
+| `src/tools/layouts.ts` | 894 | layout commands and the layout controller |
+| `src/electrical/symbols-power-fluid.ts` | 878 | symbol library data (power, PLC, fluid power) |
+| `src/io/pdf-vector.ts` | 848 | vector PDF plotting |
+| `src/tools/drafting-draw.ts` | 847 | PLINE, ELLIPSE, POINT, XLINE, RAY, DONUT, POLYGON, MTEXT, SPLINE |
+| `src/ui/dimstyle.ts` | 838 | Dimension Style Manager |
+| `src/app/api.ts` | 828 | the plugin / scripting API (`jcad`) |
+| `src/ui/dialogs.ts` | 827 | general dialogs (symbol picker, layers, reports, templates) |
+| `tests/project-file-safety.test.ts` | 822 | project file safety tests |
+| `src/electrical/symbols-jic-control.ts` | 777 | symbol library data (JIC control) |
+| `src/tools/dimension.ts` | 751 | dimensioning commands |
+| `src/main.ts` | 748 | renderer start-up: browser file bridge, UI construction, wiring of hooks and UI commands |
+| `src/electrical/iec-extended.ts` | 732 | symbol library data (IEC) |
+| `src/electrical/symbols.ts` | 730 | built-in JIC symbol library |
+| `src/electrical/wires.ts` | 726 | pure wire editing operations |
+| `src/render/viewport.ts` | 722 | canvas viewport: view transform, zoom / pan, rendering |
+| `src/app/plugins.ts` | 692 | plugin loading |
+| `src/tools/electrical-wires.ts` | 680 | interactive wire and component editing tools |
+| `src/tools/edit.ts` | 669 | TRIM, EXTEND, OFFSET, MIRROR, SCALE, EXPLODE, ZOOM Window |
+| `tests/cross-track-integrity.test.ts` | 620 | cross-feature integrity tests |
+
+The splits moved code without changing what it does: every public import path keeps working
+(`src/io/dxf.ts`, `src/app/editor.ts` and `electron/main.cjs` are the entry points), the
+interchange fixtures round-trip byte for byte, and the screenshots match their baselines.
+
+**`src/io/dxf/`** - `src/io/dxf.ts` re-exports `readDxf`, `writeDxf`, `DxfReadError`,
+`DxfReadOptions`, `insertScales`, `insertScaleFields`, `DIMSTYLE_APP` and `TABLE_APP` from:
+
+| File | Lines | Responsibility |
+| --- | ---: | --- |
+| `codes.ts` | 35 | shared tables: XDATA application names, DIMENSION type numbers, group-code classes |
+| `groups.ts` | 238 | the tokenizer (structure checks, recovery of a truncated file), `DxfReadError`, objects and group accessors |
+| `dimstyles.ts` | 94 | DIMSTYLE records and header `$DIM*` variables, both directions |
+| `writer.ts` | 448 | `writeDxf`: HEADER, CLASSES, TABLES, BLOCKS, ENTITIES and OBJECTS in file order |
+| `write-core.ts` | 99 | the group-code writer, number format, the groups every entity starts with |
+| `write-entities.ts` | 300 | `writeEntity` and the geometry codecs |
+| `write-annotations.ts` | 230 | MTEXT, DIMENSION, LEADER, IMAGE and table codecs |
+| `reader.ts` | 161 | `readDxf`: the section walk, then IMAGE paths, tables read from anonymous blocks, layers in use, paper space |
+| `read-sections.ts` | 230 | one reader per section: HEADER (and the drawing header), TABLES, BLOCKS, ENTITIES, OBJECTS |
+| `read-pass.ts` | 253 | the entity pass: followers folded, extrusion, unknown records reported or kept raw, LEADER -> MTEXT |
+| `read-core.ts` | 54 | the read context, the properties every entity starts with, the import-report entry |
+| `read-entities.ts` | 431 | `readEntityObj` and the geometry codecs (with TEXT / MTEXT fields and INSERT scales) |
+| `read-annotations.ts` | 362 | DIMENSION, LEADER, MULTILEADER, IMAGE, ACAD_TABLE and JCad table codecs |
+
+**`src/app/editor/`** - `src/app/editor.ts` re-exports the `Editor`, its types, `backupOutcome`
+and `applyGrip`. The class (`editor.ts`) holds the state and every public member; each method
+delegates to the module for its responsibility, passing the editor and, where needed, its
+private working state (`internals.ts`). Public methods are still called through the instance,
+so the plugin API's wrapper of `runCommand` and replaced `log` functions see every call.
+
+| File | Lines | Responsibility |
+| --- | ---: | --- |
+| `editor.ts` | 440 | the `Editor`: state, events (`on`, `notify`), log and prompt, rendering, and the public methods |
+| `types.ts` | 121 | events, command definitions, `FileBridge`, open results, `EditorHooks` |
+| `internals.ts` | 62 | the private working state the modules share (overlay, selection request, drag, grips, tracking, save and project counters), the fallback UI |
+| `commands.ts` | 172 | the built-in commands and the registration of the other command sets |
+| `prompter.ts` | 217 | tools and the tool context, the command line, typed points and distances, Enter |
+| `selection.ts` | 69 | LIST, objects into the selection or a selection request, pickable layers |
+| `pointer.ts` | 250 | mouse input: snapped / tracked cursor, rollover, picking and selection boxes, grips, pan, wheel zoom |
+| `keyboard.ts` | 80 | keys |
+| `view.ts` | 60 | settings, drafting toggles, zoom extents |
+| `documents.ts` | 227 | new / open into the right tab, files already open, import reports, Save / Don't Save / Cancel |
+| `save.ts` | 81 | drawing saves through the save queue |
+| `project.ts` | 179 | the project data, its counters and its file |
+| `plotting.ts` | 93 | PLOT / PRINT |
+
+**`electron/main/`** - `electron/main.cjs` stays the entry: it creates the IPC guard
+(`electron/ipc-guard.cjs`), the rejection log, the path registry (`electron/path-registry.cjs`)
+and the path policy - still the only way handlers are registered and paths are granted - and
+hands them to the modules in one context (`context.cjs`). No module requires Electron's own
+`ipcMain`; `tests/main-process-boundaries.test.ts` checks that across the files.
+
+| File | Lines | Responsibility |
+| --- | ---: | --- |
+| `context.cjs` | 17 | the `MainContext` the modules share (guarded `ipcMain`, registry, policy, main window) |
+| `app-data.cjs` | 58 | state files in the app-data folder, crash-safe user-file writes, `error.log` and crash logging |
+| `window.cjs` | 224 | the main window: bounds, the close / quit / update-restart workflow, `app-quit` |
+| `menu.cjs` | 137 | the native menu and File > Open Recent |
+| `dwg.cjs` | 76 | DXF decoding, DWG reading in a worker with progress and cancel |
+| `ipc-drawings.cjs` | 292 | open / save drawings and projects, Save As paths, backups, IMAGE files |
+| `ipc-plot.cjs` | 99 | plot to PDF, vector PDF, print |
+| `ipc-stores.cjs` | 178 | autosave, user library, plugins, catalog packs |
+| `updates.cjs` | 45 | app info, external links, update checks and status |
+| `handover.cjs` | 86 | files handed over by the OS and by a second launch |
+
+**Boundaries the tests hold.** The undo history is private to `src/core/document.ts` (use
+`Drawing.history()` / `restoreHistory()`; `tests/history-api.test.ts` scans `src/`, `tests/`,
+`scripts/`, `e2e/` and `electron/`); the Editor's private members stay inside `src/app/editor/`
+(use `notify`, `setHover` ...; `tests/editor-boundaries.test.ts`); Electron's own `ipcMain` is
+touched only by the guard in `electron/main.cjs` (`tests/main-process-boundaries.test.ts`).

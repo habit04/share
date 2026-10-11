@@ -945,7 +945,7 @@ describe('save / close fuzzing regressions (tests/fuzz-save-close.test.ts)', () 
     expect(changed).toHaveLength(1);
   });
   it('a Save As onto the file a queued save is about to write is written after it (seed 1596464263)', async () => {
-    // The main process writes requests in arrival order (electron/main.cjs writeUserFile); here every
+    // The main process writes requests in arrival order (electron/main/app-data.cjs writeUserFile); here every
     // write waits until the test releases it, in the order the requests arrived.
     const disk = new Map<string, string>();
     const inFlight: Array<{ path: string; text: string; go: () => void }> = [];

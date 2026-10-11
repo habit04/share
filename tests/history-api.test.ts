@@ -52,22 +52,24 @@ describe('Drawing history API', () => {
   });
 });
 
-/** Every .ts file below a folder. */
-function tsFiles(dir: string): string[] {
+/** Every source file (.ts, .mjs, .cjs, .js) below a folder. */
+function sourceFiles(dir: string): string[] {
   const out: string[] = [];
   for (const name of readdirSync(dir)) {
     const p = join(dir, name);
-    if (statSync(p).isDirectory()) out.push(...tsFiles(p));
-    else if (p.endsWith('.ts')) out.push(p);
+    if (statSync(p).isDirectory()) out.push(...sourceFiles(p));
+    else if (/\.(ts|mjs|cjs|js)$/.test(p)) out.push(p);
   }
   return out;
 }
 
 describe('module boundary: the undo history is private to src/core/document.ts', () => {
-  it('no other source or test file reaches its private fields', () => {
+  it('no other source, test or script file reaches its private fields', () => {
     const root = join(import.meta.dirname, '..');
     const offenders: string[] = [];
-    for (const file of [...tsFiles(join(root, 'src')), ...tsFiles(join(root, 'tests'))]) {
+    const files = ['src', 'tests', 'scripts', 'e2e', 'electron'].flatMap((d) => sourceFiles(join(root, d)));
+    expect(files.length).toBeGreaterThan(100);
+    for (const file of files) {
       const rel = relative(root, file).replace(/\\/g, '/');
       if (rel === 'src/core/document.ts' || rel === 'tests/history-api.test.ts') continue;
       const text = readFileSync(file, 'utf8');

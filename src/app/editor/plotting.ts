@@ -1,0 +1,93 @@
+/**
+ * PLOT and PRINT: the Plot / Print dialog, layout sheets and the vector PDF (app/plot-vector.ts),
+ * and the raster sheet of the Model tab for the PDF writer or the system print dialog.
+ * The Editor's public methods delegate here (their documentation is on the Editor).
+ */
+import type { Point } from '../../core/geometry';
+import { layoutPage, type PlotOptions } from '../plot';
+import { fileErrorText } from '../file-error-text';
+import { plotLayoutsOrVector } from '../plot-vector';
+import type { Editor } from './editor';
+
+export async function renderPlotImage(ed: Editor, opts: PlotOptions): Promise<{ dataUrl: string; landscape: boolean; sheet: { width: number; height: number }; electron?: string; reducedToFit: boolean } | null> {
+  const b = ed.doc.extents();
+  if (!b) return null;
+  const w = b.max.x - b.min.x;
+  const h = b.max.y - b.min.y;
+  const lay = layoutPage(w, h, opts);
+  const dpi = 150;
+  const pw = Math.ceil(lay.sheet.width * dpi);
+  const ph = Math.ceil(lay.sheet.height * dpi);
+  const canvas = document.createElement('canvas');
+  // Cap the bitmap (E-size at 150 dpi is 6600 x 5100); scale the dpi down for anything larger.
+  const shrink = Math.min(1, 12000 / pw, 12000 / ph);
+  canvas.width = Math.round(pw * shrink);
+  canvas.height = Math.round(ph * shrink);
+  const px = dpi * shrink; // pixels per inch on the bitmap
+  const k = lay.scale * px; // pixels per drawing unit
+  const ctx = canvas.getContext('2d')!;
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  const ox = lay.origin.x * px;
+  const oy = lay.origin.y * px;
+  const tf = { scale: k, toScreen: (p: Point) => ({ x: ox + (p.x - b.min.x) * k, y: oy + (b.max.y - p.y) * k }) };
+  const { drawEntity } = await import('../../render/draw');
+  const hidden = new Set(ed.doc.layers.filter((l) => !l.visible).map((l) => l.name));
+  for (const e of ed.doc.entities) {
+    if (hidden.has(e.layer)) continue;
+    drawEntity(ctx, e, tf, ed.doc.layers, ed.doc.lookupBlock, { strokeOverride: '#000000', lineWidthOverride: Math.max(1, Math.round(px / 100)), hidden });
+  }
+  return { dataUrl: canvas.toDataURL('image/png'), landscape: lay.landscape, sheet: lay.sheet, electron: lay.electron, reducedToFit: lay.reducedToFit };
+}
+
+export function plotOptions(ed: Editor): PlotOptions {
+  const s = ed.settings;
+  return { paper: s.plotPaper, orientation: s.plotOrientation, scale: s.plotScale, margin: s.plotMargin };
+}
+
+export async function plot(ed: Editor): Promise<void> {
+  await plotOrPrint(ed, 'pdf').catch((err: unknown) => plotFailed(ed, err));
+}
+
+export async function print(ed: Editor): Promise<void> {
+  await plotOrPrint(ed, 'print').catch((err: unknown) => plotFailed(ed, err));
+}
+
+/** A PDF that could not be written (disk full, locked file ...) is reported like a failed save. */
+export function plotFailed(ed: Editor, err: unknown): void {
+  ed.log(`Plot failed: ${fileErrorText(err, { action: 'save' })}`);
+}
+
+export async function plotOrPrint(ed: Editor, mode: 'pdf' | 'print'): Promise<void> {
+  const choice = await (ed.hooks.plot?.(mode) ?? Promise.resolve({ options: plotOptions(ed), action: mode }));
+  if (!choice) return;
+  // Track E: vector PDF (default output) and layout sheets; the raster Model-tab path below is unchanged.
+  if (await plotLayoutsOrVector(ed, choice)) return;
+  const img = await ed.renderPlotImage(choice.options);
+  if (!img) {
+    ed.log('Nothing to plot: this tab has no visible objects.');
+    return;
+  }
+  if (img.reducedToFit) ed.log('The chosen scale did not fit the paper; the drawing was scaled down to fit.');
+  const sheet = { ...img.sheet, electron: img.electron };
+  const base = ed.fileName().replace(/\.[^.]+$/, '');
+  if (choice.action === 'pdf') {
+    if (!ed.fileBridge?.plotPdf) {
+      ed.log('Plotting is not available here.');
+      return;
+    }
+    const out = await ed.fileBridge.plotPdf(img.dataUrl, `${base}.pdf`, img.landscape, sheet);
+    if (out) ed.log(`Plotted to ${out} (${img.sheet.width.toFixed(2)} x ${img.sheet.height.toFixed(2)} in).`);
+    return;
+  }
+  if (!ed.fileBridge?.printDrawing) {
+    ed.log('Printing is not available here.');
+    return;
+  }
+  try {
+    const ok = await ed.fileBridge.printDrawing(img.dataUrl, base, img.landscape, sheet);
+    ed.log(ok ? 'Sent to the print dialog.' : 'Print cancelled.');
+  } catch (err) {
+    ed.log(`Print failed: ${(err as Error).message}`);
+  }
+}
