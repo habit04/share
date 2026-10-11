@@ -634,7 +634,14 @@ try {
     check(log.some((l) => /JCad Electrical .* is up to date\./.test(l)), `About > Check for Updates -> "${log.filter((l) => /update/i.test(l)).join(' | ')}"`);
   }
   await messages();
-  // Help > About from the native menu opens the same dialog.
+  // Help > About from the native menu opens the same dialog. The dialog opened by ABOUT above is
+  // closed first (Check for Updates closes it on the API path; on self-updating builds it is still
+  // up), so that the menu is seen to open one, not found to have added a second one.
+  if (await win.locator('.modal').count()) {
+    await win.keyboard.press('Escape');
+    await win.locator('.modal').first().waitFor({ state: 'detached', timeout: 5000 }).catch(() => {});
+  }
+  check((await win.locator('.modal').count()) === 0, 'the About dialog closed before the menu test');
   await app.evaluate(({ Menu }) => {
     const help = Menu.getApplicationMenu().items.find((i) => i.label === 'Help');
     help.submenu.items.find((i) => /^About JCad Electrical/.test(i.label)).click();
