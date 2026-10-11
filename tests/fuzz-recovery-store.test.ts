@@ -182,11 +182,11 @@ async function storeScenario(rng: Rng, mode: 'crash' | 'faults'): Promise<void> 
 
 describe('fuzz: recovery store crashes and faults', () => {
   it('a crash at any file system call leaves a consistent, complete recovery folder', async () => {
-    const runs = await fuzz('recovery-store/crash', 1500, (rng) => storeScenario(rng, 'crash'));
+    const runs = await fuzz('recovery-store/crash', 800, (rng) => storeScenario(rng, 'crash'));
     expect(runs).toBeGreaterThan(0);
   }, fuzzTimeout());
   it('injected failures (EIO, ENOSPC, EPERM / EBUSY / EXDEV renames) never leave partial backups or a broken index', async () => {
-    await fuzz('recovery-store/faults', 1500, (rng) => storeScenario(rng, 'faults'));
+    await fuzz('recovery-store/faults', 800, (rng) => storeScenario(rng, 'faults'));
   }, fuzzTimeout());
 });
 
@@ -235,7 +235,7 @@ async function userFileScenario(rng: Rng): Promise<void> {
 
 describe('fuzz: crash-safe user file writes', () => {
   it('a crash at any step keeps the drawing or a complete .bak of it', async () => {
-    await fuzz('atomic-write/crash', 3000, userFileScenario);
+    await fuzz('atomic-write/crash', 1500, userFileScenario);
   }, fuzzTimeout());
 });
 

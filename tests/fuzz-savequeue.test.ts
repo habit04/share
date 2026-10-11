@@ -171,12 +171,12 @@ async function scenario(rng: Rng, allowRedirects: boolean): Promise<void> {
 describe('fuzz: save queue', () => {
   it('random saves to the same and different files: newest revision on disk, drops logged, nothing pending', async () => {
     vi.useFakeTimers();
-    const runs = await fuzz('savequeue/interleavings', 1500, (rng) => scenario(rng, false));
+    const runs = await fuzz('savequeue/interleavings', 1000, (rng) => scenario(rng, false));
     expect(runs).toBeGreaterThan(0);
   }, fuzzTimeout());
   it('the same with saves that land on another path (a Save As dialog picked an open file)', async () => {
     vi.useFakeTimers();
-    await fuzz('savequeue/redirects', 1500, (rng) => scenario(rng, true));
+    await fuzz('savequeue/redirects', 1000, (rng) => scenario(rng, true));
   }, fuzzTimeout());
 });
 

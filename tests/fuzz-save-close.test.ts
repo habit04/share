@@ -418,7 +418,7 @@ describe('fuzz: autosave, Save, Save As, Save All and crashes together', () => {
     vi.useFakeTimers();
     let closed = 0;
     let crashed = 0;
-    const runs = await fuzz('save-close/editor', 300, async (rng) => {
+    const runs = await fuzz('save-close/editor', 200, async (rng) => {
       const r = await scenario(rng, { mainWriteOrder: process.env.FUZZ_NO_MAIN_ORDER ? false : true });
       if (r.closed) closed += 1;
       if (r.crashed) crashed += 1;

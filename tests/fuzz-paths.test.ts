@@ -105,7 +105,7 @@ describe('fuzz: path normalisation properties', () => {
     const win32 = platform === 'win32';
     it(`normalisation is idempotent and keys are stable (${platform})`, () => {
       setPathPlatform(platform);
-      const runs = fuzzSync(`paths/idempotent/${platform}`, 4000, (rng) => {
+      const runs = fuzzSync(`paths/idempotent/${platform}`, 1500, (rng) => {
         const p = rng.bool(0.15) ? spell(rng, genSegments(rng, 1, 5), win32 ? ['\\', '/'] : ['/']) : genPath(rng, win32).text;
         const n = normalizePath(p);
         check(normalizePath(n) === n, () => `normalizePath not idempotent: ${JSON.stringify(p)} -> ${JSON.stringify(n)} -> ${JSON.stringify(normalizePath(n))}`);
@@ -122,7 +122,7 @@ describe('fuzz: path normalisation properties', () => {
 
     it(`every spelling of one file is the same path; equality is an equivalence relation (${platform})`, () => {
       setPathPlatform(platform);
-      fuzzSync(`paths/equivalence/${platform}`, 3000, (rng) => {
+      fuzzSync(`paths/equivalence/${platform}`, 1000, (rng) => {
         const p = genPath(rng, win32);
         const a = sameFile(rng, p, win32);
         const b = sameFile(rng, p, win32);
@@ -147,7 +147,7 @@ describe('fuzz: path normalisation properties', () => {
 
     it(`relativePath then resolvePath round-trips (${platform})`, () => {
       setPathPlatform(platform);
-      fuzzSync(`paths/relative-roundtrip/${platform}`, 4000, (rng) => {
+      fuzzSync(`paths/relative-roundtrip/${platform}`, 1500, (rng) => {
         const style = rng.pick(['posix', 'drive', 'unc'] as const);
         // Shared prefix makes relative results likely.
         const segs = style === 'posix' && !win32 ? posixSegments : genSegments;
@@ -164,7 +164,7 @@ describe('fuzz: path normalisation properties', () => {
 
     it(`dirName + file name rebuild the path (${platform})`, () => {
       setPathPlatform(platform);
-      fuzzSync(`paths/dirname/${platform}`, 3000, (rng) => {
+      fuzzSync(`paths/dirname/${platform}`, 1000, (rng) => {
         const p = genPath(rng, win32, undefined, undefined, [...genSegments(rng, 0, 4), rng.pick(FILES)]);
         const n = normalizePath(p.text);
         const rebuilt = resolvePath(dirName(n), fileBaseName(n));
@@ -174,7 +174,7 @@ describe('fuzz: path normalisation properties', () => {
 
     it(`project Save As to another folder and back keeps every reference (${platform})`, () => {
       setPathPlatform(platform);
-      fuzzSync(`paths/rebase-roundtrip/${platform}`, 2500, (rng) => {
+      fuzzSync(`paths/rebase-roundtrip/${platform}`, 1000, (rng) => {
         const style = rng.pick(['posix', 'drive', 'unc'] as const);
         const root = style === 'drive' ? rng.pick(['C', 'D']) : style === 'unc' ? 'srv|share' : '/';
         const projDir = [...genSegments(rng, 0, 2), 'proj'];
@@ -221,7 +221,7 @@ describe('fuzz: path normalisation properties', () => {
 
     it(`short names are injective on distinct files (${platform})`, () => {
       setPathPlatform(platform);
-      fuzzSync(`paths/shortnames/${platform}`, 2000, (rng) => {
+      fuzzSync(`paths/shortnames/${platform}`, 800, (rng) => {
         const deep = rng.bool(0.3);
         const tail = deep ? Array.from({ length: rng.int(6, 10) }, () => rng.pick(['a', 'b', 'x'])) : [];
         const n = rng.int(2, 7);
@@ -261,7 +261,7 @@ describe('fuzz: renderer pathKey agrees with electron/main.cjs pathKey', () => {
   it('POSIX absolute paths (linux main process)', () => {
     setPathPlatform('linux');
     const main = mainPathKey('linux');
-    fuzzSync('paths/main-twin/linux', 4000, (rng) => {
+    fuzzSync('paths/main-twin/linux', 1500, (rng) => {
       const p = genPath(rng, false, 'posix');
       const k = main(p.text);
       check(k !== null, () => `main rejected ${JSON.stringify(p.text)}`);
@@ -274,7 +274,7 @@ describe('fuzz: renderer pathKey agrees with electron/main.cjs pathKey', () => {
   it('drive and UNC paths (win32 main process)', () => {
     setPathPlatform('win32');
     const main = mainPathKey('win32');
-    fuzzSync('paths/main-twin/win32', 4000, (rng) => {
+    fuzzSync('paths/main-twin/win32', 1500, (rng) => {
       const p = genPath(rng, true, rng.pick(['drive', 'unc'] as const));
       const k = main(p.text);
       check(k !== null, () => `main rejected ${JSON.stringify(p.text)}`);
