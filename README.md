@@ -159,7 +159,7 @@ npm run e2e:packaged -- <app executable>   # the same end-to-end checks on a pac
 npm run bench:node && npm run bench   # interactive performance on a 50,000-entity drawing (docs/PERFORMANCE.md)
 npm run build && npm run e2e:flows    # multi-launch flows: close / quit matrix, crash + recovery, open, project-wide commands, save errors
 npm run icons                         # redraw the application icon (build/icon.*, build/icons/, public/favicon.svg, site/img/icon.svg)
-npm run release-notes -- v0.4.1       # the GitHub release body for a tag, from CHANGELOG.md
+npm run release-notes -- v0.4.2       # the GitHub release body for a tag, from CHANGELOG.md
 ```
 
 **CI** (`.github/workflows/ci.yml`) runs three jobs on every push and pull request: `test` (workflow
@@ -303,7 +303,8 @@ language.
 
 **Plugins and scripts:** JavaScript plugins (a folder with `plugin.json` and one main file in the
 `plugins` folder of the application data folder; `PLUGINS` prints the path) add commands and react to
-events through the `jcad` API, the same object the developer console has as `window.jcadApi`.
+events through the `jcad` API, the same object the developer console has as `window.jcadApi` (browser
+edition and development builds; installed builds have no developer tools).
 `SCRIPTRUN` runs a one-off `.js` file against it. A plugin asks once before it first runs, its errors
 are caught and printed on the command line, and every change it makes is an undo step. The reference
 is [docs/PLUGIN-API.md](docs/PLUGIN-API.md); `examples/plugins/` holds `hello`, `numbered-labels` and

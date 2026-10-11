@@ -2,7 +2,8 @@
 
 JCad Electrical can be extended with JavaScript: **plugins** add commands and react to
 events, **scripts** (SCRIPTRUN) are one-off programs run against the open drawing, and the
-same API is available in the developer console as `window.jcadApi`.
+same API is available in the developer console as `window.jcadApi` (in the browser edition and
+in development builds; installed builds have no developer tools).
 
 - API version: **1** (`jcad.apiVersion`). Additions keep the version; an incompatible
   change bumps it, and a plugin that declares a newer `apiVersion` than the app provides is
@@ -164,6 +165,17 @@ cannot point outside its own folder (folder names are checked, and a folder or f
 symbolic link leading outside the plugins folder is refused).
 
 Only install plugins from people you trust, as you would any program.
+
+**Trust model (decision, security review E-10).** A plugin is trusted code: once the user
+answers *Load*, it runs in the application page with the same access as the application's own
+code - every open drawing, the user interface, `localStorage` (including the trust answers)
+and the desktop bridge with everything listed under [Capabilities](#capabilities). The prompt
+is the only gate; it is not a sandbox, and `pluginsEval` (the preload's
+`webFrame.executeJavaScript`) is as powerful as the plugin system itself. Signed plugins (a
+publisher key pinned in the application, like catalog packs) and isolated plugins (below) are
+out of scope for now; they would be an API version change. The main process still limits what
+any page script can do: no Node.js, file access only through the checked IPC channels, no
+network, no other windows.
 
 ## Capabilities
 
@@ -351,4 +363,5 @@ jcad.ui.log(`${texts.length} text(s) moved to NOTES.`);
 ```
 
 In the developer console the same object is `window.jcadApi`
-(`jcadApi.document.entities().length`).
+(`jcadApi.document.entities().length`); the installed application has no developer tools, so
+this is for the browser edition and development builds (`npm run electron:dev`).

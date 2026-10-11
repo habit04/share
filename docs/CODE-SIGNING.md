@@ -13,6 +13,11 @@ assuming credentials were available. Every platform also publishes a source-SHA/
 and the release attaches GitHub's signed provenance bundle. That attestation is separate from
 Authenticode, Developer ID and notarization; it does not replace any of them.
 
+The release notes state the signing result each build's verification steps recorded, rather than
+assuming the credentials were there; every platform also publishes a source-SHA / checksum
+record, and the release attaches GitHub's signed provenance bundle (docs/RELEASE.md). That
+attestation is separate from Authenticode, Developer ID and notarization and replaces none of them.
+
 | Platform | Service | Secrets (Settings → Secrets and variables → Actions) | Switch |
 | --- | --- | --- | --- |
 | Windows | Azure Artifact Signing (formerly Trusted Signing) | `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_SIGNING_ENDPOINT`, `AZURE_SIGNING_ACCOUNT`, `AZURE_CERT_PROFILE`, `AZURE_PUBLISHER_NAME` | `scripts/azure-signing.mjs` (all seven set) |
@@ -70,7 +75,8 @@ publisher identity rather than on one certificate.
 3. **Certificate profile**: *Certificate profiles* → Create → *Public Trust*,
    linked to the completed validation. Note the profile **name**. The profile's
    subject's common name (the validated publisher name, e.g. `Example Controls LLC`, without
-   the `CN=` prefix or other subject fields) must match `AZURE_PUBLISHER_NAME` exactly.
+   the `CN=` prefix or other subject fields) must match `AZURE_PUBLISHER_NAME` exactly: the
+   workflow compares it with the signer's common name, and the updater with the installer's.
 4. **Service principal**: Microsoft Entra ID → App registrations → New
    registration (e.g. `jcad-release-signing`). Under *Certificates & secrets*
    create a client secret. Note the **Directory (tenant) ID**, the
@@ -138,8 +144,11 @@ runtime**, and **notarized** by Apple (with the ticket stapled).
 1. Membership in the **Apple Developer Program** (individual or organization;
    organizations need a D-U-N-S number). Only the Account Holder can create
    Developer ID certificates.
-2. A Mac with Xcode or the command-line tools, once, to create the certificate
-   and export it (the CI runner does the rest).
+2. A matching certificate/private-key pair exported as a password-protected `.p12`.
+   Keychain Access on a Mac provides the usual creation/export flow below. A Windows-generated
+   RSA CSR and compatible PKCS#12 export also work; keep the CSR's private key, include the
+   Developer ID intermediate certificate, and verify the pair before uploading it. The CI Mac
+   runner performs signing, notarization and final platform checks.
 
 ### One-time setup
 
@@ -162,7 +171,7 @@ runtime**, and **notarized** by Apple (with the ticket stapled).
 
 | Secret | Value |
 | --- | --- |
-| `CSC_LINK` | the base64 text of the `.p12` (electron-builder also accepts an `https://` URL) |
+| `CSC_LINK` | the base64 text of the `.p12` (an `https://` URL of the file also works) |
 | `CSC_KEY_PASSWORD` | the `.p12` export password |
 | `APPLE_ID` | the Apple Account e-mail used for notarization |
 | `APPLE_APP_SPECIFIC_PASSWORD` | the app-specific password from step 3 |
@@ -179,12 +188,16 @@ When `HAS_APPLE` is true the macOS job skips the unsigned step and runs
    `scripts/mac-signing-config.mjs` checks the required secret names before applying this
    configuration. The committed `package.json` keeps `hardenedRuntime: false`, which is what
    the ad-hoc signed build needs.
-2. electron-builder imports `CSC_LINK` into a temporary keychain, signs the
-   `.app` (both arm64 and x64) with the Developer ID identity (the ad-hoc
-   `afterPack` hook steps aside because `CSC_LINK` is set), submits it to Apple's
-   notary service with `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` /
-   `APPLE_TEAM_ID` (`@electron/notarize`, `notarytool`), waits, and staples the
-   ticket before building the DMGs.
+2. The step imports `CSC_LINK` into a temporary keychain belonging to this job, with Apple's
+   Developer ID intermediate certificates, and fails unless it holds a valid
+   *Developer ID Application* identity. Private-key partition permissions use the keychain's
+   password; the PKCS#12 export password is used only to import the signing package.
+   electron-builder then signs the `.app` (both arm64 and x64) with that identity
+   (`CSC_KEYCHAIN`, `CSC_NAME` = its SHA-1; the ad-hoc `afterPack` hook steps
+   aside because `CSC_NAME` is set), submits it to Apple's notary service with
+   `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_TEAM_ID`
+   (`@electron/notarize`, `notarytool`), waits, and staples the ticket before
+   building the DMGs. The keychain is deleted when the step ends.
 3. *Verify the macOS signature and notarization ticket* runs
    `codesign --verify --deep --strict`, checks for the Developer ID authority
    and the `runtime` flag, `xcrun stapler validate` and `spctl --assess` on each
@@ -208,12 +221,13 @@ codesign -dv --verbose=4 "/Applications/JCad Electrical.app"                    
 xcrun stapler validate "/Applications/JCad Electrical.app"
 ```
 
-## Costs and timelines
+The Electron fuses (package.json `build.electronFuses`, security review E-15) are flipped by
+electron-builder after the `afterPack` hook's ad-hoc signature; `resetAdHocDarwinSignature: true`
+seals the bundle ad hoc again, and a configured Developer ID signature runs after that. CI checks
+the final ad-hoc seal on unsigned macOS builds, and Developer ID, hardened runtime, stapling and
+Gatekeeper assessment on signed ones.
 
-The ad-hoc hook runs before electron-builder flips fuses. `resetAdHocDarwinSignature: true`
-reseals the bundle after those binary changes, then a configured Developer ID signature runs
-afterward. CI checks the final ad-hoc seal on unsigned macOS builds and checks Developer ID,
-hardened runtime, stapling and Gatekeeper assessment on configured signed builds.
+## Costs and timelines
 
 Prices change; check the vendors' pages before budgeting. At the time of writing:
 

@@ -35,7 +35,7 @@ describe('recovery store byte limits', () => {
   it('rejects an oversized recovery copy before reading, keeps it listed and retries after repair', async () => {
     const { fs, sizes, store } = fixture();
     sizes.set(`${DIR}/${NAME}`, MAX_DRAWING_BYTES + 1);
-    await expect(store.read(NAME)).rejects.toThrow(/size limit/);
+    await expect(store.read(NAME)).rejects.toThrow(new RegExp(`${NAME.replace(/\./g, '\\.')} is larger than 128 MB`));
     expect(fs.trace.some((entry) => entry.includes('fh.read'))).toBe(false);
     expect(fs.trace.some((entry) => entry.includes('fh.close'))).toBe(true);
     expect(fs.get(`${DIR}/${NAME}`)).toBe('original recovery');
@@ -48,7 +48,7 @@ describe('recovery store byte limits', () => {
     const { fs, sizes, store } = fixture();
     const index = fs.get(`${DIR}/index.json`);
     sizes.set(`${DIR}/index.json`, MAX_METADATA_BYTES + 1);
-    await expect(store.list()).rejects.toThrow(/size limit/);
+    await expect(store.list()).rejects.toThrow(/index\.json is larger than 8 MB/);
     expect(fs.get(`${DIR}/index.json`)).toBe(index);
     expect(fs.get(`${DIR}/${NAME}`)).toBe('original recovery');
     expect(fs.trace.some((entry) => entry.includes('fh.read'))).toBe(false);
@@ -63,7 +63,7 @@ describe('recovery store byte limits', () => {
     fs.put(`${DIR}/${legacy}.json`, '{"title":"Panel"}');
     sizes.set(`${DIR}/${legacy}.json`, MAX_METADATA_BYTES + 1);
     const store = createAutosaveStore(DIR, { fs, uuid: () => '22222222-2222-4222-8222-222222222222' });
-    await expect(store.list()).rejects.toThrow(/size limit/);
+    await expect(store.list()).rejects.toThrow(/Panel_1\.sv\.dxf\.json is larger than 8 MB/);
     expect(fs.get(`${DIR}/${legacy}`)).toBe('legacy recovery');
     expect(fs.get(`${DIR}/${legacy}.json`)).toBe('{"title":"Panel"}');
     sizes.clear();

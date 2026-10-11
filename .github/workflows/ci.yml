@@ -130,6 +130,9 @@ jobs:
       - run: npm ci
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+      # Electron 44's package fetches its binary on first use, not at install; fetch it here
+      # (checked against the package's checksums) so a slow download cannot eat the launch timeout.
+      - run: node node_modules/electron/install.js
       - run: npm run build
       - name: Electron end-to-end (Linux, virtual display)
         if: runner.os == 'Linux'

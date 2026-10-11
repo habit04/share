@@ -7,7 +7,7 @@
  * never written to a file: re-opening a saved drawing produces a fresh report.
  */
 import type { DrawingState } from '../core/document';
-import type { Entity } from '../core/entities';
+import { expansionReport, MAX_INSERT_EXPANSION, MAX_BLOCK_EXPANSION_WORK, type BlockDef, type Entity } from '../core/entities';
 import { mtextFormattingProblem } from '../core/mtext';
 import { samePath } from '../app/paths';
 
@@ -97,6 +97,23 @@ export class ImportReportBuilder {
       ...(this.recovered ? { recovered: this.recovered } : {}),
     };
   }
+}
+
+/**
+ * Report how the drawing's blocks expand (security review E-13): blocks that insert themselves
+ * (the repeated reference is not drawn), blocks one reference to which expands to more than
+ * MAX_INSERT_EXPANSION objects, and a drawing whose references add up to more than that. These
+ * counts retain definitions without allocating expansions; Drawing acceptance enforces the
+ * stricter work budgets. The blocks are kept and saved as they are, so the items are `kept`:
+ * they are listed, but neither open the report dialog nor ask before saving over the file.
+ */
+export function reportBlockExpansion(report: ImportReportBuilder, blocks: Readonly<Record<string, BlockDef>>, topLevel: readonly Entity[]): void {
+  const r = expansionReport(blocks, topLevel);
+  const cap = MAX_INSERT_EXPANSION.toLocaleString('en-US');
+  const workCap = MAX_BLOCK_EXPANSION_WORK.toLocaleString('en-US');
+  for (const name of r.cyclic) report.add({ type: 'BLOCK', action: 'kept', reason: `block "${name}" inserts itself (directly or through other blocks): the repeated reference is not drawn` });
+  for (const name of r.oversized) report.add({ type: 'BLOCK', action: 'kept', reason: `block "${name}" expands to more than ${cap} objects through its nested blocks: its definition is kept, but drawing acceptance rejects references exceeding the ${workCap}-work geometry budget` });
+  if (r.total > MAX_INSERT_EXPANSION) report.note(`The block references of this drawing expand to ${r.total > MAX_INSERT_EXPANSION * 999 ? 'billions of' : `about ${r.total.toLocaleString('en-US')}`} objects (more than ${cap}); drawing acceptance enforces the per-reference and whole-drawing geometry budgets before rendering.`);
 }
 
 /** Whether a value holds a non-finite number anywhere (deep). Fast path: no allocation. */

@@ -15,7 +15,7 @@ import type { ReadContext } from './read-core';
 import { mtextFromDxf, hasFormatting } from '../../core/mtext';
 import type { MTextAttachment, MTextColumns } from '../../core/mtext';
 
-export function readDimStyleFromEntity(o: Obj, styles: Map<string, DimStyle>, fallback: DimStyle, textStyleHandles?: Map<string, string>): DimStyle {
+export function readDimStyleFromEntity(o: Obj, styles: Map<string, DimStyle>, fallback: DimStyle, textStyleHandles?: ReadonlyMap<string, string>): DimStyle {
   const name = str(o, 3);
   const style = (name && styles.get(name.toUpperCase())) || fallback;
   const overrides = dstylePairs(o);
@@ -305,24 +305,40 @@ export function readImage(o: Obj, base: ReturnType<typeof commonProps>): ImageEn
   };
 }
 
+/**
+ * MTEXT columns: JCad's own JCAD_MTEXT_COLUMNS XDATA, else AutoCAD's (the R2018 "Embedded
+ * Object" groups 71-74 / 44-46, or the native groups 75-79 / 48-50). Ported from PR #2
+ * (codex/electrical-review-fixes 2f89b0e).
+ */
 export function readMTextColumns(o: Obj): MTextColumns | undefined {
   const own = xdata(o, MTEXT_COLUMNS_APP);
   if (own) {
     try {
       const c = JSON.parse(own.filter((p) => p.code === 1000).map((p) => p.value).join('')) as MTextColumns;
       if ((c.type === 1 || c.type === 2) && Number.isInteger(c.count) && c.count > 0 && c.count <= 256 && Number.isFinite(c.width) && c.width > 0 && Number.isFinite(c.gutter) && c.gutter >= 0 && Array.isArray(c.heights) && c.heights.length <= 256 && c.heights.every((h) => Number.isFinite(h) && h >= 0)) return c;
-    } catch { /* native groups below */ }
+    } catch {
+      /* the native groups below */
+    }
   }
   const embedded = o.groups.findIndex((p) => p.code === 101 && p.value === 'Embedded Object');
   const nativeStart = o.groups.findIndex((p) => p.code === 75);
   const groups = embedded < 0 ? o.groups.slice(Math.max(0, nativeStart)) : o.groups.slice(embedded + 1);
   const code = (native: number, modern: number) => groups.find((p) => p.code === (embedded < 0 ? native : modern))?.value;
+  // Embedded object (R2018): 71 type, 72 count, 44 width, 45 gutter, 73 auto height, 74 reversed
+  // flow, 46 heights; the native groups: 75 type, 76 count, 48 / 49, 79 auto height, 78 reversed.
   const type = int(code(75, 71));
-  const count = int(code(76, 72));
+  let count = int(code(76, 72));
   const width = flt(code(48, 44));
-  if ((type !== 1 && type !== 2) || count < 1 || count > 256 || !(width > 0)) return undefined;
+  const gutter = Math.max(0, flt(code(49, 45)));
   const heights = embedded >= 0 ? groups.filter((p) => p.code === 46).map((p) => flt(p.value)) : groups.filter((p) => p.code === 50).slice(1).map((p) => flt(p.value));
-  return { type, count, width, gutter: Math.max(0, flt(code(49, 45))), autoHeight: int(code(79, 74)) !== 0, reversed: int(code(78, 73)) !== 0, heights: heights.slice(0, count) };
+  // Dynamic columns with auto height (AutoCAD's default for new columns) are saved with a count of
+  // 0: the number follows from the total width (42) the columns and gutters take.
+  if (count === 0 && embedded >= 0 && width > 0) {
+    const total = flt(code(42, 42));
+    count = heights.length > 0 ? heights.length : total > 0 ? Math.round((total + gutter) / (width + gutter)) : 0;
+  }
+  if ((type !== 1 && type !== 2) || count < 1 || count > 256 || !(width > 0)) return undefined;
+  return { type, count, width, gutter, autoHeight: int(code(79, 73)) !== 0, reversed: int(code(78, 74)) !== 0, heights: heights.slice(0, count) };
 }
 
 export interface TableStyleData {
@@ -336,12 +352,24 @@ export interface TableStyleData {
 export function readTableStyle(o: Obj): TableStyleData {
   const groups = afterSubclass(o, 'AcDbTableStyle');
   const rows: TableStyleData['rows'] = [];
-  for (let i = 0; i < groups.length; i += 1) if (groups[i]!.code === 7) {
-    let end = i + 1; while (end < groups.length && groups[end]!.code !== 7) end += 1;
+  for (let i = 0; i < groups.length; i += 1) {
+    if (groups[i]!.code !== 7) continue;
+    let end = i + 1;
+    while (end < groups.length && groups[end]!.code !== 7) end += 1;
     const cell = groups.slice(i, end);
     rows.push({ height: flt(cell.find((p) => p.code === 140)?.value, 0.18), attachment: int(cell.find((p) => p.code === 170)?.value, 5) });
   }
-  return { marginX: flt(groups.find((p) => p.code === 40)?.value, 0.06), marginY: flt(groups.find((p) => p.code === 41)?.value, 0.06), titleSuppressed: int(groups.filter((p) => p.code === 280)[1]?.value) !== 0, headerSuppressed: int(groups.find((p) => p.code === 281)?.value) !== 0, rows };
+  // The flags before the first cell style: newer files start the subclass with a version 280
+  // ahead of the description, AutoCAD 2000 files do not, so the title flag is the last 280 there.
+  const firstStyle = groups.findIndex((p) => p.code === 7);
+  const head = firstStyle < 0 ? groups : groups.slice(0, firstStyle);
+  return {
+    marginX: flt(head.find((p) => p.code === 40)?.value, 0.06),
+    marginY: flt(head.find((p) => p.code === 41)?.value, 0.06),
+    titleSuppressed: int(head.filter((p) => p.code === 280).at(-1)?.value) !== 0,
+    headerSuppressed: int(head.find((p) => p.code === 281)?.value) !== 0,
+    rows,
+  };
 }
 
 /** ACAD_TABLE with legacy cell data (91/92 size, 141/142 sizes, 171.. per cell) -> native table. */
@@ -376,7 +404,10 @@ export function readTable(o: Obj, base: ReturnType<typeof commonProps>, style?: 
       const cg = chunks[r * cols + c]!;
       let text = cg.filter((x) => x.code === 2 || x.code === 3).map((x) => x.value).join('') + (cg.find((x) => x.code === 1)?.value ?? '');
       if (!text) text = cg.find((x) => x.code === 302 && x.value)?.value ?? '';
-      const rowStyle = style?.rows[r === 0 && !style.titleSuppressed ? 2 : r === (style?.titleSuppressed ? 0 : 1) && !style?.headerSuppressed ? 1 : 0];
+      // The style's cell styles (file order data, title, header): title for row 0 unless
+      // suppressed, header for the next row unless suppressed, data for the others.
+      const headerRow = style?.titleSuppressed ? 0 : 1;
+      const rowStyle = style?.rows[r === 0 && !style.titleSuppressed ? 1 : r === headerRow && !style?.headerSuppressed ? 2 : 0];
       const h = flt(cg.find((x) => x.code === 140)?.value, rowStyle?.height ?? 0);
       const align = int(cg.find((x) => x.code === 170)?.value, rowStyle?.attachment ?? 0);
       const spanC = int(cg.find((x) => x.code === 175)?.value, 1);

@@ -17,7 +17,6 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 
 const repo = resolve(import.meta.dirname, '..');
-const pkg = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8'));
 if (!existsSync(join(repo, 'dist', 'index.html'))) {
   console.error('dist/index.html not found: run `npm run build` first.');
   process.exit(2);
@@ -115,13 +114,16 @@ const sameBytes = (a, b) => Buffer.compare(readFileSync(a), readFileSync(b)) ===
  *   openPaths / savePaths   answers of the Open / Save dialogs (empty = cancelled)
  *   boxAnswers / syncAnswers responses of showMessageBox / showMessageBoxSync (empty = cancel)
  *   faults                  [{ prefix, code, op }] fs/promises calls on paths under `prefix` throw `code`
- *   slowReads               [{ path, ms }] readFile of that path waits first (a slow open)
+ *   slowReads               [{ path, ms }] reading that path (readFile, or open for reading) waits first (a slow open)
  */
+/** The Electron runtime actually started (the summary names it, not the package.json range). */
+let runtime;
 async function launch(profile, { recover = true, extraArgs = [] } = {}) {
   const args = ['.', `--user-data-dir=${profile}`];
   if (process.platform === 'linux') args.push('--no-sandbox');
   args.push(...extraArgs);
   const app = await electron.launch({ args, cwd: repo, env, timeout: 60_000 });
+  runtime ??= await app.evaluate(() => process.versions.electron).catch(() => undefined);
   const mainLog = [];
   app.process().stdout?.on('data', (d) => mainLog.push(String(d)));
   app.process().stderr?.on('data', (d) => mainLog.push(String(d)));
@@ -168,7 +170,10 @@ async function launch(profile, { recover = true, extraArgs = [] } = {}) {
       const real = fsp[op].bind(fsp);
       fsp[op] = async (...a) => {
         const p = String(a[0]);
-        if (op === 'readFile') {
+        // Drawings are read through one handle (readLimitedFile: open + read, flags O_RDONLY |
+        // O_NONBLOCK), small files with readFile.
+        const forReading = a[1] === undefined || a[1] === 'r' || (typeof a[1] === 'number' && (a[1] & 3) === 0);
+        if (op === 'readFile' || (op === 'open' && forReading)) {
           const slow = g.__e2e.slowReads.find((s) => s.path === p);
           if (slow) await new Promise((r) => setTimeout(r, slow.ms));
         }
@@ -1425,7 +1430,7 @@ for (const s of scenarios) {
 }
 clearTimeout(hardTimeout);
 runCleanups();
-console.log(`\ne2e-flows: ${flowsRun.length} flows driven, ${results.length} checks passed, ${problems.length} failed (${process.platform} ${process.arch}, Electron ${pkg.devDependencies.electron})`);
+console.log(`\ne2e-flows: ${flowsRun.length} flows driven, ${results.length} checks passed, ${problems.length} failed (${process.platform} ${process.arch}, Electron ${runtime ?? 'not started'})`);
 if (problems.length) {
   for (const p of problems) console.error(`  - ${p}`);
   process.exit(1);

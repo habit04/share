@@ -78,6 +78,12 @@ else {
     const projectBench = (jobs.checks.steps ?? []).find((s) => String(s.run ?? '').trim() === 'npm run bench:project');
     if (!projectBench || String(projectBench.env?.JCAD_BENCH_ASSERT) !== '1') problems.push('release.yml: filesystem project performance budgets must be asserted');
   }
+  for (const id of ['checks', 'test-build', 'packaged-smoke']) {
+    const steps = jobs[id]?.steps ?? [];
+    const fetchElectron = steps.findIndex((s) => /node node_modules\/electron\/install\.js/.test(String(s.run ?? '')));
+    const launches = steps.findIndex((s) => /npm run e2e\b|scripts\/packaged-smoke\.mjs/.test(String(s.run ?? '')));
+    if (fetchElectron < 0 || launches < 0 || fetchElectron >= launches) problems.push(`release.yml: job ${id} must fetch the Electron binary before test launches`);
+  }
   for (const id of Object.keys(jobs)) {
     if (id === 'checks') continue;
     if (!needsOf(id).includes('checks') && !needsOf(id).some((n) => needsOf(n).includes('checks'))) problems.push(`release.yml: job ${id} does not depend on the checks job`);
@@ -110,6 +116,7 @@ else {
   if (!jobs.release) problems.push('release.yml: no "release" job');
   else {
     for (const n of ['checks', 'test-build', 'build', 'packaged-smoke', 'verify-artifacts']) if (!needsOf('release').includes(n)) problems.push(`release.yml: release must need ${n}`);
+    if (jobs.release.if !== "startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '')") problems.push('release.yml: publication must remain disabled for empty-tag build-only dispatches');
     if (!runs('release').includes('needs.checks.outputs.sha') && !(jobs.release.steps ?? []).some((s) => JSON.stringify(s.env ?? {}).includes('needs.checks.outputs.sha')))
       problems.push('release.yml: release does not verify the tag against the tested commit');
     if (!/git fetch\b[^\n]*--prune-tags\b/.test(runs('release'))) problems.push('release.yml: release must prune remotely deleted tags before verifying the tested commit');
@@ -147,6 +154,14 @@ else {
   const buildRuns = JSON.stringify(jobs.build ?? {});
   for (const marker of ['scripts/azure-signing.mjs', 'Get-AuthenticodeSignature', 'HAS_APPLE', 'xcrun stapler validate'])
     if (!buildRuns.includes(marker)) problems.push(`release.yml: the build job lost its signing step (${marker})`);
+  const macSigning = (jobs.build?.steps ?? []).find((s) => String(s.run ?? '').includes('scripts/mac-signing-config.mjs'));
+  for (const marker of ['security create-keychain', 'security import', 'security set-key-partition-list -S apple-tool:,apple: -s -k "$kc_password"', 'trap cleanup_signing EXIT', 'security delete-keychain', 'env -u CSC_LINK -u CSC_KEY_PASSWORD CSC_KEYCHAIN="$keychain" CSC_NAME="$identity"']) {
+    if (!String(macSigning?.run ?? '').includes(marker)) problems.push(`release.yml: macOS signing must use an isolated temporary keychain (${marker})`);
+  }
+  const macVerification = (jobs.build?.steps ?? []).find((s) => String(s.run ?? '').includes('xcrun stapler validate'));
+  for (const marker of ['codesign --verify --deep --strict', 'Authority=Developer ID Application', 'TeamIdentifier=$APPLE_TEAM_ID', 'flags=.*runtime', 'spctl --assess --type execute', 'codesign --verify --strict']) {
+    if (!String(macVerification?.run ?? '').includes(marker)) problems.push(`release.yml: verify macOS publisher identity, runtime, notarization and DMG signatures (${marker})`);
+  }
   const windowsSignature = (jobs.build?.steps ?? []).find((s) => String(s.run ?? '').includes('Get-AuthenticodeSignature'));
   if (windowsSignature?.env?.AZURE_PUBLISHER_NAME !== '${{ secrets.AZURE_PUBLISHER_NAME }}' || !String(windowsSignature?.run ?? '').includes('GetNameInfo') || !String(windowsSignature?.run ?? '').includes('[System.StringComparison]::Ordinal'))
     problems.push('release.yml: Windows signature verification must match the configured updater publisher');
@@ -154,12 +169,14 @@ else {
   for (const platform of ['Windows', 'macOS', 'Linux']) if (!platforms.some((entry) => entry.platform === platform && String(entry.glob ?? '').includes('provenance.json'))) problems.push(`release.yml: missing ${platform} artifacts/provenance`);
   for (const platform of ['Windows', 'macOS', 'Linux']) {
     const globs = String(platforms.find((entry) => entry.platform === platform)?.glob ?? '').trim().split(/\r?\n/).map((pattern) => pattern.trim());
-    const updates = { Windows: ['latest.yml', 'installer.exe.blockmap'], macOS: ['latest-mac.yml', 'installer.dmg.blockmap'], Linux: ['latest-linux.yml', 'installer.AppImage.blockmap'] }[platform];
-    if (!updates.every((name) => globs.some((pattern) => matchesGlob(`release/${name}`, pattern)))) problems.push(`release.yml: ${platform} upload must include updater metadata and blockmaps`);
+    const wanted = { Windows: ['latest.yml', 'installer.exe', 'installer.exe.blockmap'], macOS: ['latest-mac.yml', 'installer.dmg', 'installer.dmg.blockmap'], Linux: ['latest-linux.yml', 'installer.AppImage', 'installer.deb'] }[platform];
+    if (!wanted.every((name) => globs.some((pattern) => matchesGlob(`release/${name}`, pattern)))) problems.push(`release.yml: ${platform} upload must include its installers, updater metadata and blockmaps`);
   }
   const record = (jobs.build?.steps ?? []).findIndex((s) => /scripts\/release-provenance\.mjs build release\b/.test(String(s.run ?? '')) && s.env?.SOURCE_SHA === '${{ needs.checks.outputs.sha }}');
   const upload = (jobs.build?.steps ?? []).findIndex((s) => String(s.uses ?? '').startsWith('actions/upload-artifact'));
   if (record < 0 || upload <= record) problems.push('release.yml: record built SHA and checksums before uploading artifacts');
+  const macMinimum = (jobs.build?.steps ?? []).findIndex((s) => /scripts\/mac-update-info\.mjs release\b/.test(String(s.run ?? '')));
+  if (macMinimum < 0 || macMinimum > record || !/runner\.os == 'macOS'/.test(String(jobs.build.steps[macMinimum].if ?? ''))) problems.push('release.yml: the macOS build must write the minimum macOS version into latest-mac.yml before recording checksums');
 }
 
 if (problems.length) {

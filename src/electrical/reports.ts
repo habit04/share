@@ -60,7 +60,7 @@ export function componentReport(doc: Drawing, columns?: ReportColumns): Report {
       instLoc(e.attributes),
       e.block,
       block?.description ?? '',
-      reference( e.position) ?? '',
+      reference(e.position) ?? '',
       isChild(e) ? 'child' : isExtraPole(e) ? `pole ${e.attributes.POLE}` : '',
       loc(e),
     ]);
@@ -138,7 +138,7 @@ export function wireFromToReport(doc: Drawing, columns?: ReportColumns): Report 
   const rows: string[][] = [];
   for (const { label, net } of numberedNets(doc)) {
     const list = devicesOnNet(doc, net, comps, rails);
-    rows.push([label.text, list[0] ?? '', list[1] ?? '', list.slice(2).join(', '), reference( label.position) ?? '', label.layer === 'WIREFIXED' ? 'fixed' : '']);
+    rows.push([label.text, list[0] ?? '', list[1] ?? '', list.slice(2).join(', '), reference(label.position) ?? '', label.layer === 'WIREFIXED' ? 'fixed' : '']);
   }
   rows.sort((a, b) => a[0]!.localeCompare(b[0]!, undefined, { numeric: true }));
   return withColumns({ title: 'Wire From/To Report', columns: ['Wire No.', 'From', 'To', 'Also', 'Rung', 'Fixed'], rows }, columns);
@@ -166,7 +166,7 @@ export function terminalReport(doc: Drawing, columns?: ReportColumns): Report {
   const rows: string[][] = [];
   for (const e of doc.entities) {
     if (!isTerminal(e)) continue;
-    rows.push([e.attributes.TAGSTRIP ?? '', e.attributes.TERM01 ?? '', descriptionOf(e.attributes), reference( e.position) ?? '', loc(e), jumperText(e, doc.entities)]);
+    rows.push([e.attributes.TAGSTRIP ?? '', e.attributes.TERM01 ?? '', descriptionOf(e.attributes), reference(e.position) ?? '', loc(e), jumperText(e, doc.entities)]);
   }
   rows.sort((a, b) => a[0]!.localeCompare(b[0]!, undefined, { numeric: true }) || a[1]!.localeCompare(b[1]!, undefined, { numeric: true }));
   return withColumns({ title: 'Terminal Report', columns: ['Strip', 'Terminal', 'Description', 'Rung', 'Location', 'Jumper'], rows }, columns);
@@ -221,7 +221,7 @@ export function plcIoReport(doc: Drawing, columns?: ReportColumns): Report {
         .sort((p, q) => q.position.y - p.position.y)
         .map((e) => e.text)
         .join(' ');
-      rows.push([moduleTag, a.text, isInput ? 'Input' : 'Output', wireNo(net), devices.join(', '), pointDesc || (devices.length ? descOf(devices[0]!) : ''), reference( a.position) ?? '']);
+      rows.push([moduleTag, a.text, isInput ? 'Input' : 'Output', wireNo(net), devices.join(', '), pointDesc || (devices.length ? descOf(devices[0]!) : ''), reference(a.position) ?? '']);
     }
   }
   for (const e of doc.entities) {
@@ -230,7 +230,7 @@ export function plcIoReport(doc: Drawing, columns?: ReportColumns): Report {
     const isInput = /I$|_I$|AI$/.test(e.block);
     const net = netAt({ x: isInput ? b.min.x - 0.01 : b.max.x + 0.01, y: e.position.y });
     const devices = deviceOn(net);
-    rows.push(['', e.attributes.TAG1, isInput ? 'Input' : 'Output', wireNo(net), devices.join(', '), e.attributes.DESC1 || (devices.length ? descOf(devices[0]!) : ''), reference( e.position) ?? '']);
+    rows.push(['', e.attributes.TAG1, isInput ? 'Input' : 'Output', wireNo(net), devices.join(', '), e.attributes.DESC1 || (devices.length ? descOf(devices[0]!) : ''), reference(e.position) ?? '']);
   }
   rows.sort((a, b) => a[0]!.localeCompare(b[0]!, undefined, { numeric: true }) || a[1]!.localeCompare(b[1]!, undefined, { numeric: true }));
   return withColumns({ title: 'PLC I/O Address Report', columns: ['Module', 'Address', 'I/O', 'Wire No.', 'Device', 'Description', 'Rung'], rows }, columns);
@@ -244,7 +244,7 @@ export function missingCatalogReport(doc: Drawing, columns?: ReportColumns): Rep
     if (!isParentComponent(e) || /^(HGND|IEC_PE)/.test(e.block)) continue;
     const missing = [!e.attributes.MFG && 'MFG', !e.attributes.CAT && 'CAT'].filter(Boolean) as string[];
     if (missing.length === 0) continue;
-    rows.push([e.attributes.TAG1 ?? '', descriptionOf(e.attributes), tagPrefix(e.block), e.block, missing.join(', '), reference( e.position) ?? '']);
+    rows.push([e.attributes.TAG1 ?? '', descriptionOf(e.attributes), tagPrefix(e.block), e.block, missing.join(', '), reference(e.position) ?? '']);
   }
   rows.sort((a, b) => a[0]!.localeCompare(b[0]!, undefined, { numeric: true }));
   return withColumns({ title: 'Missing Catalog Data', columns: ['Tag', 'Description', 'Family', 'Block', 'Missing', 'Rung'], rows }, columns);

@@ -46,6 +46,8 @@ function usedLinetypes(state: DrawingState): Linetype[] {
 
 export function writeDxf(state: DrawingState): string {
   const w = new Writer();
+  // ACAD_PLOTSTYLENAME: the dictionary layers point at (390) and its "Normal" entry (AutoCAD's
+  // AUDIT reports layers whose plot style handle names no object).
   const plotStyleDictionary = w.nextHandle();
   const normalPlotStyle = w.nextHandle();
   const MODEL_SPACE = '1F';
@@ -60,6 +62,8 @@ export function writeDxf(state: DrawingState): string {
   const dimBlocks = new Map<string, string>();
   const layoutPlan = planLayouts(state, w, PAPER_SPACE);
   setPaperOwners(layoutPlan.paperOwners);
+  // Dimensions inside block definitions get their picture block too (a DIMENSION naming no block
+  // is invalid).
   const dimEntities = [...state.entities, ...layoutPlan.entities, ...blockList.flatMap((b) => b.entities)].filter((e): e is DimensionEntity => e.type === 'dimension');
   dimEntities.forEach((d, i) => {
     const name = `*D${i + 1}`;
@@ -101,6 +105,7 @@ export function writeDxf(state: DrawingState): string {
     w.pair(9, name);
     w.pair(code, value);
   };
+  // 2D points: $LIMMIN / $LIMMAX have no Z (group 30) in AC1015.
   const hpt = (name: string, p: g.Point) => {
     w.pair(9, name);
     w.pair(10, p.x);
@@ -130,7 +135,7 @@ export function writeDxf(state: DrawingState): string {
   writeLayoutHeader(hv, state);
   w.pair(0, 'ENDSEC');
 
-  // CLASSES: raster images need their class records.
+  // CLASSES: the plot style dictionary's object types, and raster images' when there are images.
   w.pair(0, 'SECTION');
   w.pair(2, 'CLASSES');
   {
@@ -213,6 +218,7 @@ export function writeDxf(state: DrawingState): string {
   for (const r of rawRecords) if (!layerList.some((l) => l.name === r.layer)) layerList.push({ name: r.layer, color: 7, visible: true, locked: false, lineWeight: 0.25 });
   table('LAYER', '2', layerList.length, () => {
     for (const l of layerList) {
+      // Flags 16 / 32 (xref-dependent, resolved) are kept from the source file.
       record('LAYER', '2', 'AcDbLayerTableRecord', l.name, (l.locked ? 4 : 0) | (l.frozen ? 1 : 0) | ((l.xrefFlags ?? 0) & 48));
       layerHandles.set(l.name, w.lastHandle().toString(16).toUpperCase());
       w.pair(62, l.visible || l.frozen ? l.color : -l.color);

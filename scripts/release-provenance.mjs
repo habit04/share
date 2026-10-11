@@ -11,12 +11,12 @@ const SIGNING = { Windows: ['unsigned', 'authenticode-verified'], macOS: ['ad-ho
 const ASSET = /\.(?:exe|dmg|AppImage|deb|blockmap)$/;
 // Match the public upload contract: builder-debug.yml and builder-effective-config.yaml
 // are diagnostics; only updater feeds (latest*.yml) accompany the installers/blockmaps.
-const isReleaseAsset = (file) => ASSET.test(basename(file)) || /^latest.*\.yml$/.test(basename(file));
+export const isReleaseAsset = (file) => ASSET.test(basename(file)) || /^latest.*\.yml$/.test(basename(file));
 export function expectedInstallers(version, platform) {
   const prefix = `jcad-electrical-${version}-`;
   return { Windows: [`${prefix}win-x64.exe`], macOS: [`${prefix}mac-arm64.dmg`, `${prefix}mac-x64.dmg`], Linux: [`${prefix}linux-x86_64.AppImage`, `${prefix}linux-amd64.deb`] }[platform];
 }
-function expectedUpdateAssets(version, platform) {
+export function expectedUpdateAssets(version, platform) {
   // This repository uses GitHub without a channel override. The installed builder keeps
   // latest for that provider even when the application version has an alpha/beta suffix;
   // tests exercise its actual publish configuration and generated feeds for those versions.

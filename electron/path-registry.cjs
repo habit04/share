@@ -21,6 +21,12 @@
  * The catalog file is always readable only. Access the user granted through a dialog is never
  * reduced by file content. Both lists are persisted in recent.json, so Recent Documents keep
  * working after a restart.
+ *
+ * Symbolic links (security review E-5): a write goes through electron/atomic-write.cjs, which
+ * refuses to follow a link out of the folder the write is allowed in. That folder is the file's
+ * own, except for a drawing that a project opened only by name made writable because it is inside
+ * the project's folder: there it is the project's folder (`writeRoot`), so a linked sub-folder of
+ * the project cannot lead the write elsewhere. The user choosing the file in a dialog lifts that.
  */
 const path = require('node:path');
 
@@ -87,6 +93,8 @@ function createPathRegistry({ onChange } = {}) {
   const readable = new Map();
   /** @type {Set<string>} keys of the writable paths (all of them readable too) */
   const writable = new Set();
+  /** @type {Map<string, string>} key -> the folder writes must stay in (a by-name project's folder) */
+  const roots = new Map();
 
   /**
    * @param {unknown} p
@@ -126,10 +134,22 @@ function createPathRegistry({ onChange } = {}) {
       return readable.values();
     },
     /**
+     * The folder a write of this path must stay in after symbolic links are resolved
+     * (electron/atomic-write.cjs `root`), or null for the file's own folder.
+     * @param {unknown} p
+     * @returns {string | null}
+     */
+    writeRoot(p) {
+      const k = pathKey(p);
+      return k === null ? null : (roots.get(k) ?? null);
+    },
+    /**
      * A file the user chose in one of our dialogs, or saved to: readable and writable.
      * @param {unknown} p
      */
     grant(p) {
+      const k = pathKey(p);
+      if (k !== null && roots.delete(k) && onChange) onChange();
       return add(p, true, true);
     },
     /**
@@ -139,6 +159,24 @@ function createPathRegistry({ onChange } = {}) {
      */
     grantRead(p) {
       return add(p, false, true);
+    },
+    /**
+     * A derived drawing (the DXF sibling of an opened DWG) inherits its source's authority.
+     * Keep an existing native grant, and preserve a by-name project's write confinement.
+     * @param {unknown} p
+     * @param {unknown} source
+     */
+    grantDerived(p, source) {
+      const key = pathKey(p);
+      const sourceKey = pathKey(source);
+      if (key === null || sourceKey === null || !readable.has(sourceKey)) return false;
+      const write = writable.has(sourceKey);
+      if (write) {
+        const root = roots.get(sourceKey);
+        if (!root) roots.delete(key);
+        else if (!writable.has(key)) roots.set(key, root);
+      }
+      return add(p, write, true);
     },
     /**
      * Register what an opened project file lists. Relative entries resolve against the project
@@ -181,6 +219,15 @@ function createPathRegistry({ onChange } = {}) {
         if (!p) continue;
         if (!DRAWING_RE.test(p)) out.ignored.push(p);
         else if (anywhere || isInside(dir, p)) {
+          // Writable because it is inside the folder of a project opened by name: writes stay
+          // inside that folder (a path already writable keeps the access it had). The root is
+          // recorded before add(), whose onChange writes recent.json: set afterwards, the last
+          // drawing's root was missing there and the drawing was unconfined after a restart.
+          const k = pathKey(p);
+          if (k !== null) {
+            if (!anywhere && !writable.has(k)) roots.set(k, path.resolve(dir));
+            else if (anywhere) roots.delete(k);
+          }
           if (add(p, true, true)) out.writable.push(p);
         } else if (add(p, false, true)) out.readOnly.push(p);
       }
@@ -195,7 +242,11 @@ function createPathRegistry({ onChange } = {}) {
     serialize() {
       const w = [...readable].filter(([k]) => writable.has(k));
       const r = [...readable].filter(([k]) => !writable.has(k));
-      return JSON.stringify({ version: 2, writable: newest(w, MAX_WRITABLE), readOnly: newest(r, MAX_READ_ONLY) });
+      const kept = w.slice(-MAX_WRITABLE);
+      /** @type {Record<string, string>} */
+      const writeRoots = {};
+      for (const [k, p] of kept) if (roots.has(k)) writeRoots[p] = /** @type {string} */ (roots.get(k));
+      return JSON.stringify({ version: 2, writable: newest(w, MAX_WRITABLE), readOnly: newest(r, MAX_READ_ONLY), ...(Object.keys(writeRoots).length ? { writeRoots } : {}) });
     },
     /**
      * Restore the lists from recent.json. The plain array written by 0.4 and earlier made every
@@ -217,6 +268,13 @@ function createPathRegistry({ onChange } = {}) {
       if (!parsed || typeof parsed !== 'object') return;
       if (Array.isArray(parsed.readOnly)) for (const p of parsed.readOnly) if (typeof p === 'string') add(p, false, false);
       if (Array.isArray(parsed.writable)) for (const p of parsed.writable) if (typeof p === 'string') add(p, true, false);
+      const wr = parsed.writeRoots;
+      if (wr && typeof wr === 'object' && !Array.isArray(wr)) {
+        for (const [p, root] of Object.entries(wr)) {
+          const k = pathKey(p);
+          if (k !== null && writable.has(k) && typeof root === 'string' && pathKey(root) !== null) roots.set(k, path.resolve(root));
+        }
+      }
     },
   };
 }

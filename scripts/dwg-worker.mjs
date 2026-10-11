@@ -3,17 +3,20 @@
  *
  * LibreDWG (WebAssembly) parses synchronously; in the main process a large file would stall the
  * event loop and with it every IPC reply, menu and window event. Here it runs on its own thread,
- * and the main process can cancel a read by terminating the worker.
+ * and the main process can cancel a read by terminating the worker. Its limits (input size, heap,
+ * WebAssembly memory, time) are described in electron/dwg-host.cjs.
  *
  * Protocol: the worker posts { ready: true } once the reader module is loaded; then for each
  * { id, bytes: ArrayBuffer, kind } it posts { id, ok: true, payload, version } or
  * { id, ok: false, message }.
  */
 import { parentPort } from 'node:worker_threads';
-import { readDwgPayload, resetLibreDwg } from './dwg-reader.mjs';
+import { readDwgPayload, resetLibreDwg, capWasmMemory } from './dwg-reader.mjs';
 
 if (!parentPort) throw new Error('scripts/dwg-worker.mjs must run as a worker thread');
 const port = parentPort;
+/** LibreDWG's WebAssembly memory may grow to 2 GiB here (it starts at 1 GiB), not to 4 GiB (E-7). */
+capWasmMemory(2 * 1024 * 1024 * 1024);
 /** Test hook (scripts/e2e-electron.mjs): hold every read this long so Cancel can be exercised. */
 const testDelayMs = Math.min(Number(process.env.JCAD_DWG_TEST_DELAY_MS) || 0, 60_000);
 

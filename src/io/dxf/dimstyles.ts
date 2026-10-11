@@ -78,6 +78,7 @@ export function readDimStyleRecord(o: Obj, tables: readonly Obj[]): DimStyle {
     own.map((p) => [p.code, p.value] as const),
     STANDARD_DIMSTYLE,
   );
+  // DIMTXSTY: the STYLE record whose handle group 340 names.
   const textStyleHandle = own.find((p) => p.code === 340)?.value?.toUpperCase();
   const textStyleRecord = textStyleHandle ? tables.find((t) => t.kind === 'STYLE' && str(t, 5).toUpperCase() === textStyleHandle) : undefined;
   if (textStyleRecord) s = { ...s, textStyle: str(textStyleRecord, 2, 'Standard') };

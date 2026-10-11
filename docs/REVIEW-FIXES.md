@@ -60,7 +60,7 @@ pull request, with workflow links tied to its exact source commit.
 | 48 | Bound screenshot output and parse complete streams; chunk boundaries must not hide browser errors. | Implemented UTF-8 stream decoder, separate bounded tails and exact shared allowances. `e2e/output-scanner.mjs`, `tests/screenshot-output.test.ts`. |
 | 49 | Validate exports in an independent CAD implementation; self-round-trip tests can share the same bugs. | Implemented optional licensed AutoCAD Core Console harness. Seven committed fixture exports and a generated nested-dimension/override case passed AutoCAD 2027 AUDIT with zero errors and normalized entity type/count checks. No vendor drawings are committed. |
 | 50 | Release exactly the checked source and complete installer set; artifacts must match the tested commit. | Implemented source-SHA checks and byte hashes for all five installers, updater feeds and external blockmaps. Aggregate verification checks the actual uploaded files even in build-only runs; publication additionally requires packaged execution and GitHub-signed build attestation. Builder diagnostics are excluded from public manifests. `scripts/release-provenance.mjs`, `.github/workflows/release.yml`. |
-| 51 | Report actual signing status; ad-hoc/unsigned builds must not be presented as publisher-signed releases. | Implemented configured signature/notarization verification and explicit provenance/release-note status. Azure publisher configuration passes the installed builder's schema and reaches its generated updater configuration. CI successfully signed and verified the Windows application and installer against the configured publisher. macOS builds currently have verified ad-hoc seals, without Developer ID or notarization. `scripts/azure-signing.mjs`, `tests/azure-signing.test.ts`, `docs/CODE-SIGNING.md`. |
+| 51 | Report actual signing status; ad-hoc/unsigned builds must not be presented as publisher-signed releases. | Implemented configured signature/notarization verification and explicit provenance/release-note status. Azure publisher configuration passes the installed builder's schema and reaches its generated updater configuration. CI successfully signed and verified the Windows application and installer against the configured publisher. Both Mac architectures passed Developer ID, hardened runtime, notarization, stapling, Gatekeeper and signed-installer probes on prior head `d0ff078`; the integrated head requires fresh exact-commit validation. `scripts/azure-signing.mjs`, `tests/azure-signing.test.ts`, `docs/CODE-SIGNING.md`. |
 | 52 | Update documentation to match the implementation; outdated compatibility, security and update claims mislead users. | Implemented support/security/QA/performance/development/release/signing/manual/notices updates, including the remaining limits. |
 | 53 | Extract focused infrastructure; isolated responsibilities are easier to test without risky wholesale rewrites. | Implemented separate origin, resource-limit, update-policy, DWG worker, geometry-budget, fixture, scanner, benchmark and provenance modules. The updated default branch's `src/app/editor/`, `src/io/dxf/` and `electron/main/` splits are retained with the safety fixes and module-boundary regressions. Existing editor behavior remains covered by end-to-end tests. |
 
@@ -73,13 +73,13 @@ refer to the subsequent quickest-to-longest list, rather than the 53-row baselin
 | --- | --- | --- |
 | 1 | Accurate font warnings and geometry-protection documentation | DXF/DWG share `src/io/font-warning.ts`; renderer-aware warnings distinguish installed fonts, SHX substitution and approximate bounds/wrapping. `tests/font-import-warning.test.ts`. |
 | 2 | Shared spline sample plan | Work guard and sampler consume `splineSamplePlan`, including rounded fractional requests, nonempty knot spans and integer caps. `src/core/spline.ts`, `tests/spline-sampling.test.ts`. |
-| 3 | Developer ID signing and notarization | Configuration validates required credential names and publication requires signing. Actual Apple identity/notarization is still pending a certificate/private-key pair and Actions secrets; an ad-hoc seal does not complete this item. `scripts/mac-signing-config.mjs`, `docs/CODE-SIGNING.md`. |
+| 3 | Developer ID signing and notarization | Configured credentials and fail-closed publication requirements are implemented. [Signed build #27, attempt 2](https://github.com/habit04/share/actions/runs/38170557628) passed on prior head `d0ff078`, including both Mac architectures' identity, hardened runtime, notarization, stapling, Gatekeeper, DMG signatures and shipping probes. The integrated head must pass a new signed build. `scripts/mac-signing-config.mjs`, `docs/CODE-SIGNING.md`. |
 | 4 | Preserve source $AUNITS, $CELTSCALE and $TEXTSTYLE | Valid DXF and exposed DWG values survive export; absent values retain legacy defaults. New-entity inheritance and alternative angle display formats remain outside this preservation change. `tests/interchange-header-settings.test.ts`. |
 | 5 | Edit-time geometry budgets and safe caching | Candidate edits, loads, undo/history, libraries and active/background/closed-sheet batches validate before mutation/write. Accepted plain-data snapshots are sealed; API errors propagate and UI budget refusals are reported. `tests/geometry-budget-edits.test.ts`, `tests/project-batch-safety.test.ts`, `tests/sessions.test.ts`. |
 | 6 | Disable production command-line debugging | Shipping fuse disables inspection, with argument refusal and separate unpublished test-ASAR coverage. Binary fuse/provenance checks and fixed shipping startup/save/restart probes are release gates. Current-head installer execution is reported separately in the pull request. |
 | 7 | First-use geometry and project I/O measurements | Browser profiling measures state acceptance, first geometry and first render before warmup. Filesystem profiling reads 20 sheets and runs all reports with asserted workloads/timing limits. OS disk cache may be warm. `scripts/bench.mjs`, `scripts/bench-project.mjs`, `docs/PERFORMANCE.md`. |
 
-The completed local follow-up passed 1,483 unit tests (11 conditional skips), all three
+The local follow-up on prior head `d0ff078` passed 1,483 unit tests (11 conditional skips), all three
 TypeScript configurations, full ESLint, fixture/workflow checks, eight dense benchmarks,
 207 desktop source checks and browser interaction checks (607 command runs, 796 clicks).
 Final browser and filesystem profiling passed their factor-1 budgets. Fixed startup probes
@@ -92,6 +92,20 @@ URL override. Release regressions verify dependency-free aggregate provenance ch
 temporary-profile cleanup after early smoke-test failures.
 
 ## Independent CAD validation
+
+The integration with default-branch commit `ff227f4` retains version 0.4.2, linked-folder
+compatibility, updater verification, global window guards and CAD improvements alongside the
+earlier remediation. Saves through aliases of the same physical destination share a queue,
+reserve in invocation order and reject an alias retargeted while queued. Derived project DWG
+exports retain their source write root. Updates install only through explicit Restart Now,
+after the unsaved-work check and a fresh checksum/publisher verification.
+
+Final local integration validation passed 1,614 unit tests (26 conditional skips), all three
+TypeScript configurations, 214 Windows desktop checks, preference migration over two immediate
+restarts, and browser interaction checks (607 command runs, 796 clicks). Eight dense Node checks
+and eight AutoCAD export/AUDIT/reimport checks passed. Exact-commit CI and installer evidence is
+recorded in [PR #2](https://github.com/habit04/share/pull/2); local execution does not substitute
+for the cross-platform signed installer gates.
 
 `npm run check:autocad` uses a locally installed licensed AutoCAD Core Console, exports copies of
 committed fixtures to a fresh temporary folder, runs `AUDIT` without repair, normalizes the DXF,
@@ -121,7 +135,7 @@ use the installed builder's schema and updater configuration without calling Azu
 
 Seven dense performance tests, fixture/workflow validators, a complete dependency audit with
 zero vulnerabilities, browser interaction/performance checks and Windows packaging also passed.
-The desktop source suite has 207 end-to-end checks. Preference migration is tested over two
+That earlier desktop source suite had 207 end-to-end checks. Preference migration is tested over two
 immediate launches, including Unicode values and preservation of a value changed after migration.
 The shipping app flushes renderer storage before acknowledging migration and before an approved
 close. Test cleanup has a deadline and only terminates its own Electron process.
@@ -142,7 +156,7 @@ content assertions cover those warnings, and no visual tolerances were widened. 
 end-to-end check waits for its required controls to finish rendering.
 
 Windows short/long image paths and macOS's protected system aliases have targeted regressions.
-Normal CI runs Node 22/24 checks, screenshot/performance checks and all 207 desktop checks plus
+Normal CI runs Node 22/24 checks, screenshot/performance checks and the complete desktop suite plus
 preference restarts on Windows, macOS and Linux. A build-only dispatch additionally builds all
 five installers and runs installed/extracted applications on their respective platforms. It also
 verifies the complete uploaded installer, updater-feed and blockmap set against source-bound

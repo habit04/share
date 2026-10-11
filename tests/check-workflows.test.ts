@@ -148,7 +148,7 @@ describe('workflow validation', () => {
   it('rejects dropping actual macOS DMG blockmaps or updater metadata from the upload', () => {
     const r = check(withRelease((t) => t.replace('release/*.dmg\n              release/*.blockmap\n              release/latest*.yml', 'release/*.dmg')));
     expect(r.code).toBe(1);
-    expect(r.out).toMatch(/macOS upload must include updater metadata and blockmaps/);
+    expect(r.out).toMatch(/macOS upload must include its installers, updater metadata and blockmaps/);
   });
   it('rejects bypassing the dedicated test-build gate or allowing legacy inspection smoke for shipping', () => {
     const r = check(withRelease((t) => t.replace('needs: [checks, test-build]\n    strategy', 'needs: [checks]\n    strategy').replace('JCAD_SMOKE_REQUIRE_SHIPPING: 1', 'JCAD_SMOKE_REQUIRE_SHIPPING: 0')));
@@ -160,5 +160,30 @@ describe('workflow validation', () => {
     const r = check(withRelease((t) => t.replace("REQUIRE_PUBLISHER_SIGNING: ${{ startsWith(github.ref, 'refs/tags/v') || github.event.inputs.tag != '' || github.event.inputs.require_signing == 'true' }}", 'REQUIRE_PUBLISHER_SIGNING: false')));
     expect(r.code).toBe(1);
     expect(r.out).toMatch(/publication and required-signing rehearsals must fail closed/);
+  });
+  it('rejects missing macOS updater version metadata before checksums', () => {
+    const r = check(withRelease((t) => t.replace('run: node scripts/mac-update-info.mjs release', 'run: echo skipped')));
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/minimum macOS version into latest-mac\.yml before recording checksums/);
+  });
+  it.each(['checks', 'test-build', 'packaged-smoke'])('fetches stock Electron outside %s launch deadlines', (job) => {
+    const r = check(withRelease((text) => {
+      const workflow = yaml.load(text) as { jobs: Record<string, { steps: { run?: string }[] }> };
+      workflow.jobs[job]!.steps = workflow.jobs[job]!.steps.filter((step) => step.run !== 'node node_modules/electron/install.js');
+      return yaml.dump(workflow);
+    }));
+    expect(r.code).toBe(1);
+    expect(r.out).toContain(`job ${job} must fetch the Electron binary before test launches`);
+  });
+  it('rejects importing the Apple identity without its temporary keychain cleanup or correct partition password', () => {
+    const r = check(withRelease((t) => t.replace('trap cleanup_signing EXIT', 'true').replace('-s -k "$kc_password"', '-s -k "$CSC_KEY_PASSWORD"')));
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/macOS signing must use an isolated temporary keychain/);
+  });
+  it('requires the Mac Team ID and signed DMG checks and keeps empty-tag publication disabled', () => {
+    const r = check(withRelease((t) => t.replaceAll('TeamIdentifier=$APPLE_TEAM_ID', 'IgnoredTeam').replace('codesign --verify --strict --verbose=2 "$image"', 'true').replace("if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '')", 'if: true')));
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/verify macOS publisher identity/);
+    expect(r.out).toMatch(/publication must remain disabled for empty-tag/);
   });
 });

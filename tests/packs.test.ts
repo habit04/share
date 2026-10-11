@@ -139,6 +139,13 @@ describe('parsePack / verifyPack', () => {
     expect(unknown.reason).toMatch(/signed with key "someone-else"/);
     expect(unknown.keyId).toBe('someone-else');
   });
+  it('key ids are looked up as own properties only (__proto__, constructor, toString are no keys) (E-17)', async () => {
+    for (const keyId of ['__proto__', 'constructor', 'toString', 'hasOwnProperty', 'valueOf']) {
+      const v = await verifyPack(parsePack(signWith(body(), OTHER.privateKey, keyId)), PUB.keys, NOW);
+      expect(v.ok, keyId).toBe(false);
+      expect(v.reason, keyId).toMatch(new RegExp(`signed with key "${keyId}", which this version of JCad does not know`));
+    }
+  });
   it('refuses unsigned, malformed and non-catalog packs at parse time', () => {
     expect(() => parsePack(JSON.stringify(body()))).toThrow(/Unsigned pack/);
     expect(() => parsePack('not json')).toThrow(/Not a JSON file/);

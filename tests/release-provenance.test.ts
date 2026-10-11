@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, readdirSync, copyFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, readdirSync, copyFileSync, symlinkSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, matchesGlob } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import yaml from 'js-yaml';
 import { createRequire } from 'node:module';
 import { assertFusePolicy, platformExecutables } from '../scripts/electron-fuse-policy.mjs';
-import { expectedInstallers, writeBuildProvenance, verifyReleaseProvenance, signingSummary } from '../scripts/release-provenance.mjs';
+import { expectedInstallers, expectedUpdateAssets, isReleaseAsset, writeBuildProvenance, verifyReleaseProvenance, signingSummary } from '../scripts/release-provenance.mjs';
 const sha = 'a'.repeat(40);
 const require = createRequire(import.meta.url);
 const { getAppUpdatePublishConfiguration } = require('app-builder-lib/out/publish/PublishManager.js');
@@ -27,12 +29,20 @@ async function prepared(run: (dir: string) => Promise<void>) {
       const out = join(dir, platform); mkdirSync(out);
       for (const name of expectedInstallers('0.4.1', platform)) writeFileSync(join(out, name), `installer ${name}`);
       for (const name of updateAssets[platform]!) writeFileSync(join(out, name), `update ${name}`);
+      writeFileSync(join(out, 'builder-debug.yml'), 'diagnostics, not a release asset');
       await writeBuildProvenance(out, platform, '0.4.1', sha, platform === 'macOS' ? 'ad-hoc' : 'unsigned', shippingFuses(platform));
     }
     await run(dir);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
 describe('release artifact provenance', () => {
+  it('exports the same installer, feed and blockmap contract for callers without diagnostic YAML', () => {
+    for (const platform of ['Windows', 'macOS', 'Linux']) expect(expectedUpdateAssets('0.4.1', platform)).toEqual(updateAssets[platform]);
+    expect(isReleaseAsset('builder-debug.yml')).toBe(false);
+    expect(isReleaseAsset('builder-effective-config.yaml')).toBe(false);
+    expect(isReleaseAsset('latest-mac.yml')).toBe(true);
+    expect(isReleaseAsset('jcad-electrical-0.4.1-mac-arm64.dmg.blockmap')).toBe(true);
+  });
   it.each(['0.4.1', '0.4.2-alpha.1', '0.4.2-beta.1'])('accepts the installed builder GitHub updater feeds for %s', async (version) => {
     const dir = mkdtempSync(join(tmpdir(), 'jcad-builder-updates-'));
     try {
@@ -75,6 +85,19 @@ describe('release artifact provenance', () => {
     expect(signingSummary(record)).toContain('Windows: unsigned.');
     expect(signingSummary(record)).toContain('macOS: ad-hoc signature verified; no publisher identity or notarization.');
     expect(readFileSync(join(dir, 'SHA256SUMS.txt'), 'utf8').trim().split('\n')).toHaveLength(11);
+    expect(readFileSync(join(dir, 'SHA256SUMS.txt'), 'utf8')).not.toContain('builder-debug');
+  }));
+  it('verifies the aggregate on a clean consumer with no npm dependencies', async () => prepared(async (dir) => {
+    const consumer = join(dir, 'consumer'); mkdirSync(consumer);
+    for (const name of ['release-provenance.mjs', 'electron-fuse-evidence.mjs']) copyFileSync(new URL(`../scripts/${name}`, import.meta.url), join(consumer, name));
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', "const m = await import(process.argv[1]); await m.verifyReleaseProvenance(process.argv[2], '0.4.1', 'a'.repeat(40));", pathToFileURL(join(consumer, 'release-provenance.mjs')).href, dir], { cwd: consumer, encoding:'utf8', windowsHide:true, timeout:10_000 });
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(readFileSync(join(dir, 'release-provenance.json'), 'utf8')).sourceSha).toBe(sha);
+  }));
+  it('rejects linked directories before collecting release bytes', async () => prepared(async (dir) => {
+    symlinkSync(join(dir, 'Windows'), join(dir, 'linked-output'), process.platform === 'win32' ? 'junction' : 'dir');
+    await expect(verifyReleaseProvenance(dir, '0.4.1', sha)).rejects.toThrow(/symlink in release artifacts/);
   }));
   it('keeps emitted provenance identical to the real workflow public upload contract', async () => prepared(async (dir) => {
     const workflow = yaml.load(readFileSync(join(import.meta.dirname, '../.github/workflows/release.yml'), 'utf8')) as {

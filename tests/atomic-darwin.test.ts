@@ -7,7 +7,7 @@ import { Rng } from './helpers/fuzz';
 
 const require = createRequire(import.meta.url);
 type Writer = {
-  atomicWriteFile(file: string, data: string, opts?: { backup?: boolean }): Promise<{ path: string; backup: string | null }>;
+  atomicWriteFile(file: string, data: string, opts?: { backup?: boolean; root?: string }): Promise<{ path: string; backup: string | null }>;
   copyFileAtomic(src: string, dest: string): Promise<string>;
 };
 type Atomic = { createAtomicWriter(fs: unknown, options: { platform: string; hooks?: { beforeRename(tmp: string): void } }): Writer };
@@ -66,7 +66,7 @@ function darwinFs() {
   return { fs, mem, links, roots };
 }
 
-describe('protected macOS system aliases in atomic writes', () => {
+describe('pinned macOS system aliases in atomic writes', () => {
   for (const alias of ['var', 'tmp', 'etc']) {
     it(`writes and backs up through /${alias}, preserving complete previous content`, async () => {
       const { fs, mem } = darwinFs();
@@ -74,7 +74,7 @@ describe('protected macOS system aliases in atomic writes', () => {
       mem.put(`/private/${alias}/drawing.dxf`, 'ORIGINAL');
       mem.put('/private/source.dxf', 'SOURCE');
       const writer = atomic.createAtomicWriter(fs, { platform: 'darwin' });
-      expect(await writer.atomicWriteFile(file, 'NEW', { backup: true })).toMatchObject({ path: file, backup: `${file}.bak` });
+      expect(await writer.atomicWriteFile(file, 'NEW', { backup: true })).toMatchObject({ path: `/private${file}`, backup: `/private${file}.bak` });
       expect(mem.get(`/private/${alias}/drawing.dxf`)).toBe('NEW');
       expect(mem.get(`/private/${alias}/drawing.dxf.bak`)).toBe('ORIGINAL');
       await writer.copyFileAtomic('/private/source.dxf', `/${alias}/copy.dxf.bak`);
@@ -83,32 +83,31 @@ describe('protected macOS system aliases in atomic writes', () => {
     });
   }
 
-  it('does not permit these aliases on another platform', async () => {
+  it('supports stable linked folders on another platform too', async () => {
     const { fs, mem } = darwinFs();
-    await expect(atomic.createAtomicWriter(fs, { platform: 'linux' }).atomicWriteFile('/var/drawing.dxf', 'NEW')).rejects.toMatchObject({ code: 'ELOOP' });
-    expect(mem.files.size).toBe(0);
+    await atomic.createAtomicWriter(fs, { platform: 'linux' }).atomicWriteFile('/var/drawing.dxf', 'NEW');
+    expect(mem.get('/private/var/drawing.dxf')).toBe('NEW');
   });
 
-  for (const changed of ['owner', 'target', 'private permissions', 'target owner']) {
-    it(`rejects a system alias with changed ${changed}`, async () => {
+  for (const changed of ['owner', 'private permissions', 'target owner']) {
+    it(`pins a preexisting linked folder with different ${changed}`, async () => {
       const { fs, mem, links, roots } = darwinFs();
       mem.put('/private/var/drawing.dxf', 'ORIGINAL');
       mem.dirs.add('/outside');
       if (changed === 'owner') links.get('/var')!.uid = 1000;
-      if (changed === 'target') links.get('/var')!.target = '/outside';
       if (changed === 'private permissions') roots.get('/private')!.mode = 0o40777;
       if (changed === 'target owner') roots.get('/private/var')!.uid = 1000;
-      await expect(atomic.createAtomicWriter(fs, { platform: 'darwin' }).atomicWriteFile('/var/drawing.dxf', 'NEW')).rejects.toMatchObject({ code: 'ELOOP' });
-      expect(mem.get('/private/var/drawing.dxf')).toBe('ORIGINAL');
+      await atomic.createAtomicWriter(fs, { platform: 'darwin' }).atomicWriteFile('/var/drawing.dxf', 'NEW');
+      expect(mem.get('/private/var/drawing.dxf')).toBe('NEW');
       expect(mem.get('/outside/drawing.dxf')).toBeUndefined();
     });
   }
 
-  it('still rejects arbitrary links below an allowed alias, even when owned by root', async () => {
+  it('rejects links below an alias that escape the declared project root, even when owned by root', async () => {
     const { fs, mem, links } = darwinFs();
     links.set('/private/var/user-link', { target: '/outside', uid: 0, ino: 20 });
     mem.dirs.add('/outside');
-    await expect(atomic.createAtomicWriter(fs, { platform: 'darwin' }).atomicWriteFile('/var/user-link/drawing.dxf', 'NEW')).rejects.toMatchObject({ code: 'ELOOP' });
+    await expect(atomic.createAtomicWriter(fs, { platform: 'darwin' }).atomicWriteFile('/var/user-link/drawing.dxf', 'NEW', { root: '/var' })).rejects.toMatchObject({ code: 'ELOOP' });
     expect(mem.files.size).toBe(0);
   });
 

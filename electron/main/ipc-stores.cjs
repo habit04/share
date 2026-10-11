@@ -8,7 +8,7 @@ const fs = require('node:fs/promises');
 const { atomicWriteFile } = require('../atomic-write.cjs');
 const { createAutosaveStore, safeAutosaveName } = require('../autosave-store.cjs');
 const { stateDir, autosaveDir, enqueueWrite } = require('./app-data.cjs');
-const { validateTextSize, readLimitedFile } = require('../resource-limits.cjs');
+const { readLimitedFile, validateTextSize } = require('../resource-limits.cjs');
 
 /** @typedef {import('./context.cjs').MainContext} MainContext */
 
@@ -34,7 +34,7 @@ function registerStoreIpc(ctx) {
   /** Only a missing file means "no library yet"; any other failure (EBUSY, EPERM, EIO) is reported so the renderer refuses to overwrite. */
   ipcMain.handle('user-library-read', async () => {
     try {
-      return String(await readLimitedFile(fs, userLibraryFile(), MAX_LIBRARY_BYTES, 'utf8'));
+      return /** @type {string} */ (await readLimitedFile(fs, userLibraryFile(), MAX_LIBRARY_BYTES, 'utf8'));
     } catch (err) {
       if (err && err.code === 'ENOENT') return null;
       throw err;
@@ -61,8 +61,9 @@ function registerStoreIpc(ctx) {
     if (typeof name !== 'string' || name === '.' || name === '..' || !PLUGIN_FOLDER_RE.test(name)) throw new Error('Invalid plugin folder name');
     return name;
   }
+  /** A plugin file of at most `max` bytes, read through one handle (electron/resource-limits.cjs). */
   async function readLimited(file, max) {
-    return String(await readLimitedFile(fs, file, max, 'utf8'));
+    return /** @type {string} */ (await readLimitedFile(fs, file, max, 'utf8'));
   }
   /** The folder is created on first use so users can find it (PLUGINS prints it). */
   ipcMain.handle('plugins-dir', async () => {
@@ -138,7 +139,7 @@ function registerStoreIpc(ctx) {
     const file = path.join(packsDir(), safePackName(name));
     try {
       await pathPolicy.insideRoot(packsDir(), file, 'packs-read');
-      return String(await readLimitedFile(fs, file, MAX_PACK_BYTES, 'utf8'));
+      return /** @type {string} */ (await readLimitedFile(fs, file, MAX_PACK_BYTES, 'utf8'));
     } catch (err) {
       if (err && err.code === 'ENOENT') return null;
       throw err;
@@ -167,7 +168,7 @@ function registerStoreIpc(ctx) {
     });
     if (res.canceled || res.filePaths.length === 0) return null;
     const file = res.filePaths[0];
-    return { name: path.basename(file), text: String(await readLimitedFile(fs, file, MAX_PACK_BYTES, 'utf8')) };
+    return { name: path.basename(file), text: /** @type {string} */ (await readLimitedFile(fs, file, MAX_PACK_BYTES, 'utf8')) };
   });
 }
 

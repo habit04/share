@@ -19,7 +19,7 @@ Contents: [Prerequisites](#prerequisites) · [Install](#install) · [Run](#run) 
 | npm | the version bundled with the supported Node release | | | |
 | Git | any recent | Git for Windows (Git Bash runs the shell snippets below) | Xcode command-line tools | distribution package |
 | Native build tools | not needed (no native modules) | | | |
-| For `npm run e2e` | the Electron binary that `npm ci` downloads | | | a display: `xvfb-run` (package `xvfb`) on a server or in a container |
+| For `npm run e2e` | the Electron binary: the `electron` package fetches it the first time it is started (or run `node node_modules/electron/install.js` after `npm ci`) | | | a display: `xvfb-run` (package `xvfb`) on a server or in a container |
 | For screenshots / UI check / bench | a Chromium for Playwright (below) | | | `npx playwright install --with-deps chromium` installs Chromium and its system libraries and fonts |
 | For packaging | | NSIS is bundled by electron-builder | Xcode command-line tools (`codesign`, `hdiutil`) | `dpkg-deb` comes with Debian / Ubuntu; AppImage needs nothing extra |
 
@@ -37,12 +37,14 @@ the Playwright Chromium and fonts used by CI ([Screenshots](#screenshots)).
 ```bash
 git clone https://github.com/habit04/share.git
 cd share
-npm ci                      # exact versions from package-lock.json; downloads the Electron binary
+npm ci                      # exact versions from package-lock.json
+node node_modules/electron/install.js   # the Electron binary (otherwise fetched on the first start)
 ```
 
 Optional environment variables for `npm ci`:
 
-- `ELECTRON_SKIP_BINARY_DOWNLOAD=1` when you only work on the renderer (no `npm run e2e` / `npm start`).
+- `ELECTRON_SKIP_BINARY_DOWNLOAD=1` is no longer needed: since Electron 44 the package downloads its
+  binary only when Electron is first started (`npm start`, `npm run e2e`), not during `npm ci`.
 - `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1` always (the Playwright package is used, its browsers are
   installed separately when needed).
 
@@ -241,6 +243,9 @@ installer and smoke-tests each one on its own OS without publishing anything.
 | `scripts/e2e-electron.mjs`, `scripts/test-build-e2e.mjs` | Full source and unpublished test-ASAR Playwright suites |
 | `scripts/packaged-smoke.mjs`, `scripts/shipping-runtime-smoke.mjs`, `scripts/electron-fuse-policy.mjs` | Actual shipping installer extraction, fuse checks and bounded startup/save/restart probes |
 | `scripts/bench.mjs`, `tests/perf*.test.ts`, `tests/spatial-index.test.ts` | performance |
+| `scripts/electron-fuses.mjs` | read-only compatibility helpers for shipping fuse validation |
+| `scripts/release-provenance.mjs` | release provenance records and their verification |
+| `scripts/mac-update-info.mjs` | writes the minimum macOS version into `latest-mac.yml` |
 | `scripts/check-workflows.mjs` | workflow validation |
 | `scripts/check-fixtures.mjs`, `tests/fixtures/manifest.json` | mandatory committed regression inputs |
 | `e2e/output-scanner.mjs` | bounded screenshot output scanning |
@@ -358,6 +363,13 @@ hands them to the modules in one context (`context.cjs`). No module requires Ele
 | `ipc-stores.cjs` | 178 | autosave, user library, plugins, catalog packs |
 | `updates.cjs` | 45 | app info, external links, update checks and status |
 | `handover.cjs` | 86 | files handed over by the OS and by a second launch |
+
+Shared by those modules, in `electron/`: `atomic-write.cjs` (temp file + rename, symbolic links
+refused, folder pinned), `path-registry.cjs` and `ipc-guard.cjs` (what may be read or written,
+who may call), `resource-limits.cjs` (size-checked reads, write payload and sheet size limits),
+`dwg-host.cjs` (the DWG worker with its memory and time limits), `web-security.cjs` (permission
+handlers and web contents guards), `updater.cjs` and `update-verify.cjs` (update checks and the
+verification of a downloaded installer), `file-errors.cjs` (plain-language file errors).
 
 **Boundaries the tests hold.** The undo history is private to `src/core/document.ts` (use
 `Drawing.history()` / `restoreHistory()`; `tests/history-api.test.ts` scans `src/`, `tests/`,

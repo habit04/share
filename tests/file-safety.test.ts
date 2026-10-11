@@ -1,24 +1,27 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createRequire } from 'node:module';
-import { mkdtempSync, readFileSync, writeFileSync, readdirSync, existsSync, rmSync, symlinkSync, statSync, chmodSync, mkdirSync, lstatSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, readdirSync, existsSync, rmSync, symlinkSync, statSync, chmodSync, mkdirSync, lstatSync, realpathSync, renameSync } from 'node:fs';
+import crypto from 'node:crypto';
 import * as fsp from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { describeFileError, fileErrorCode, KIND_BY_CODE, type FileAction } from '../src/app/file-errors';
 import { exportErrorText, exportFailed } from '../src/app/file-error-text';
 import { projectAutosaveName, projectAutosaveText, parseProjectAutosave, isProjectAutosave } from '../src/app/project-autosave';
 
 const require = createRequire(import.meta.url);
-type WriteResult = { path: string; backup: string | null; method: 'rename' | 'copy' };
+type WriteResult = { path: string; backup: string | null; method: 'rename' };
 type Writer = {
-  atomicWriteFile(file: string, data: string | Uint8Array, opts?: { backup?: boolean; encoding?: string }): Promise<WriteResult>;
-  copyFileAtomic(src: string, dest: string): Promise<string>;
+  atomicWriteFile(file: string, data: string | Uint8Array, opts?: { backup?: boolean; encoding?: string; root?: string }): Promise<WriteResult>;
+  copyFileAtomic(src: string, dest: string, opts?: { root?: string }): Promise<string>;
 };
 const atomic = require('../electron/atomic-write.cjs') as Writer & {
-  createAtomicWriter(fs?: unknown, options?: { platform?: string; renameDelays?: number[]; hooks?: { beforeRename?: (tmp: string, dest: string) => unknown } }): Writer;
+  createAtomicWriter(fs?: unknown, options?: { platform?: string; renameDelays?: number[]; hooks?: { beforeRename?: (tmp: string, dest: string) => unknown }; realpathFallback?: ((p: string) => Promise<string>) | null }): Writer;
+  isInsideFolder(dir: string, child: string, platform?: string): boolean;
   createWriteQueue(): <T>(key: string, job: () => Promise<T>) => Promise<T>;
   backupFile(file: unknown, copy?: (a: string, b: string) => Promise<string>, allowed?: (file: string) => boolean): Promise<{ ok: true; path: string } | { ok: false; code: string | null; error: string }>;
   isTempName(name: string): boolean;
+  tempNameFor(file: string): string;
 };
 const cjsErrors = require('../electron/file-errors.cjs') as { describeFileError: typeof describeFileError; KIND_BY_CODE: Record<string, string> };
 type Entry = { name: string; title: string; originalPath: string | null; savedAt: number };
@@ -195,7 +198,7 @@ describe('atomic writes (electron/atomic-write.cjs)', () => {
     expect(leftovers()).toEqual([]);
   });
 
-  it.skipIf(process.platform === 'win32')('rejects a symbolic-link destination and retains the target', async () => {
+  it.skipIf(process.platform === 'win32')('refuses a symbolic-link destination, even to a file in the same folder, and keeps the target (E-5)', async () => {
     const real = join(dir, 'real.dxf');
     writeFileSync(real, 'v1');
     chmodSync(real, 0o640);
@@ -206,6 +209,16 @@ describe('atomic writes (electron/atomic-write.cjs)', () => {
     expect(readFileSync(real, 'utf8')).toBe('v1');
     expect(statSync(real).mode & 0o777).toBe(0o640);
     expect(existsSync(`${real}.bak`)).toBe(false);
+    expect(leftovers()).toEqual([]);
+  });
+
+  it.skipIf(process.platform === 'win32')('keeps permission bits of the file it replaces', async () => {
+    const f = join(dir, 'mode.dxf');
+    writeFileSync(f, 'v1');
+    chmodSync(f, 0o640);
+    await atomic.atomicWriteFile(f, 'v2', { backup: true });
+    expect(readFileSync(f, 'utf8')).toBe('v2');
+    expect(statSync(f).mode & 0o777).toBe(0o640);
   });
 
   it('refuses to replace a read-only file (rename alone would ignore the flag on POSIX)', async () => {
@@ -241,16 +254,25 @@ describe('atomic writes (electron/atomic-write.cjs)', () => {
     expect(leftovers()).toEqual([]);
   });
 
-  it('rejects a linked parent folder for writes and backup destinations', async () => {
+  it('pins a linked parent folder for chosen writes and backup destinations, and enforces a project root', async () => {
     const real = join(dir, 'real');
     const link = join(dir, 'link');
     mkdirSync(real);
     symlinkSync(real, link, 'junction');
     const source = join(dir, 'source.dxf');
     writeFileSync(source, 'SOURCE');
-    await expect(atomic.atomicWriteFile(join(link, 'drawing.dxf'), 'NEW')).rejects.toMatchObject({ code: 'ELOOP' });
-    await expect(atomic.copyFileAtomic(source, join(link, 'copy.dxf.bak'))).rejects.toMatchObject({ code: 'ELOOP' });
-    expect(readdirSync(real)).toEqual([]);
+    await atomic.atomicWriteFile(join(link, 'drawing.dxf'), 'NEW');
+    await atomic.copyFileAtomic(source, join(link, 'copy.dxf.bak'));
+    expect(readFileSync(join(real, 'drawing.dxf'), 'utf8')).toBe('NEW');
+    expect(readFileSync(join(real, 'copy.dxf.bak'), 'utf8')).toBe('SOURCE');
+    const confined = join(dir, 'confined');
+    mkdirSync(confined);
+    const escaped = join(confined, 'linked');
+    symlinkSync(real, escaped, 'junction');
+    await expect(atomic.atomicWriteFile(join(escaped, 'drawing.dxf'), 'ESCAPE', { root: confined })).rejects.toMatchObject({ code: 'ELOOP' });
+    await expect(atomic.copyFileAtomic(source, join(escaped, 'copy.dxf.bak'), { root: confined })).rejects.toMatchObject({ code: 'ELOOP' });
+    expect(readFileSync(join(real, 'drawing.dxf'), 'utf8')).toBe('NEW');
+    expect(readFileSync(join(real, 'copy.dxf.bak'), 'utf8')).toBe('SOURCE');
   });
 
   it('detects a parent swapped after the temp write and does not clean up through the replacement junction', async () => {
@@ -272,6 +294,32 @@ describe('atomic writes (electron/atomic-write.cjs)', () => {
     expect(readFileSync(join(old, 'drawing.dxf'), 'utf8')).toBe('ORIGINAL');
     expect(readFileSync(trap, 'utf8')).toBe('UNRELATED FILE');
     expect(existsSync(join(outside, 'drawing.dxf'))).toBe(false);
+  });
+
+  it('a backup destination parent swapped after copy cannot redirect rename or cleanup', async () => {
+    const folder = join(dir, 'backups');
+    const moved = join(dir, 'old-backups');
+    const outside = join(dir, 'other-backups');
+    mkdirSync(folder);
+    mkdirSync(outside);
+    const source = join(dir, 'source.dxf');
+    const dest = join(folder, 'source.dxf.bak');
+    writeFileSync(source, 'SOURCE');
+    let trap = '';
+    const writer = atomic.createAtomicWriter(faultyFs({
+      copyFile: async (from: string, tmp: string, flags: number) => {
+        await fsp.copyFile(from, tmp, flags);
+        renameSync(folder, moved);
+        symlinkSync(outside, folder, 'junction');
+        trap = join(outside, basename(tmp));
+        writeFileSync(trap, 'UNRELATED');
+      },
+    }));
+    await expect(writer.copyFileAtomic(source, dest)).rejects.toMatchObject({ code: 'ELOOP' });
+    expect(readFileSync(source, 'utf8')).toBe('SOURCE');
+    expect(readFileSync(trap, 'utf8')).toBe('UNRELATED');
+    expect(existsSync(join(outside, 'source.dxf.bak'))).toBe(false);
+    expect(readdirSync(moved)).toHaveLength(1); // the complete copy is retained safely
   });
 
   it('a missing folder is reported as ENOENT for the destination', async () => {
@@ -297,6 +345,264 @@ describe('atomic writes (electron/atomic-write.cjs)', () => {
     );
     expect(order).toEqual([1, 2, 3, 4, 5]);
     expect(readFileSync(f, 'utf8')).toBe('5');
+  });
+});
+
+// Security review E-5: a save never writes through a symbolic link, so a local user who can write a
+// shared folder cannot plant `out.dxf -> ~/.profile` and have the victim's next save, its .bak copy
+// or a project-wide backup overwrite (or copy out) a file elsewhere. Linked folders on the way are
+// normal (macOS /var, Silverblue /home, junctions): the folder is pinned to its resolved path and
+// checked again before the rename. Real links, on POSIX.
+describe.skipIf(process.platform === 'win32')('symbolic links (security review E-5)', () => {
+  /** A folder outside `dir` holding the victim's file. */
+  let outside = '';
+  let victim = '';
+  beforeEach(() => {
+    outside = mkdtempSync(join(tmpdir(), 'jcad-outside-'));
+    victim = join(outside, 'profile');
+    writeFileSync(victim, 'VICTIM');
+  });
+  afterEach(() => {
+    rmSync(outside, { recursive: true, force: true });
+  });
+  const refused = async (p: Promise<unknown>) => {
+    const err = (await p.catch((e: unknown) => e)) as NodeJS.ErrnoException;
+    expect(err).toBeInstanceOf(Error);
+    expect(err.code).toBe('ELOOP');
+    return err;
+  };
+
+  it('refuses to write through a link to a file outside the folder, and changes nothing', async () => {
+    const link = join(dir, 'out.dxf');
+    symlinkSync(victim, link);
+    const err = await refused(atomic.atomicWriteFile(link, 'ATTACKER CHOSEN', { backup: true }));
+    expect(err.message).toContain(`'${link}'`);
+    expect(readFileSync(victim, 'utf8')).toBe('VICTIM');
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(existsSync(`${link}.bak`)).toBe(false);
+    expect(existsSync(`${victim}.bak`)).toBe(false);
+    expect(leftovers()).toEqual([]);
+    expect(leftovers(outside)).toEqual([]);
+    const info = describeFileError(err);
+    expect(info.kind).toBe('link');
+    expect(info.message).toBe(`"out.dxf" could not be saved: the file is a symbolic link (shortcut), or a linked folder on its path leads outside "${dir}". Saving does not follow such links, so no other file can be overwritten through them. Use Save As to save under another name, or open the file the link points to.`);
+    expect(cjsErrors.describeFileError(err)).toEqual(info);
+  });
+
+  it('a relative link and a chain of links are resolved before the check', async () => {
+    const hop = join(dir, 'hop.dxf');
+    symlinkSync(victim, hop);
+    const link = join(dir, 'out.dxf');
+    symlinkSync('hop.dxf', link); // inside the folder, but the next hop leaves it
+    await refused(atomic.atomicWriteFile(link, 'X'));
+    const up = join(dir, 'up.dxf');
+    symlinkSync(join('..', basename(outside), 'profile'), up);
+    await refused(atomic.atomicWriteFile(up, 'X'));
+    expect(readFileSync(victim, 'utf8')).toBe('VICTIM');
+  });
+
+  it('refuses a broken link and a loop of links', async () => {
+    const broken = join(dir, 'broken.dxf');
+    symlinkSync(join(outside, 'not-yet.dxf'), broken);
+    await refused(atomic.atomicWriteFile(broken, 'X'));
+    expect(existsSync(join(outside, 'not-yet.dxf'))).toBe(false);
+    const a = join(dir, 'a.dxf');
+    const b = join(dir, 'b.dxf');
+    symlinkSync(b, a);
+    symlinkSync(a, b);
+    await refused(atomic.atomicWriteFile(a, 'X'));
+    expect(lstatSync(a).isSymbolicLink()).toBe(true);
+  });
+
+  it('a link to a file in a sub-folder is refused too (the sub-folder may not be writable by whoever planted the link)', async () => {
+    mkdirSync(join(dir, 'rev'));
+    const real = join(dir, 'rev', 'panel-r3.dxf');
+    writeFileSync(real, 'R3');
+    const link = join(dir, 'panel.dxf');
+    symlinkSync(join('rev', 'panel-r3.dxf'), link);
+    await refused(atomic.atomicWriteFile(link, 'R4', { backup: true }));
+    expect(readFileSync(real, 'utf8')).toBe('R3');
+    expect(existsSync(`${real}.bak`)).toBe(false);
+  });
+
+  it('a drawing in a folder reached through a linked folder (macOS /var, Silverblue /home, junctions) saves normally', async () => {
+    const realFolder = join(outside, 'projects');
+    mkdirSync(realFolder);
+    const linked = join(dir, 'projects');
+    symlinkSync(realFolder, linked);
+    const f = join(linked, 'panel.dxf');
+    const r = await atomic.atomicWriteFile(f, 'V1', { backup: true });
+    expect(r.path).toBe(join(realpathSync(realFolder), 'panel.dxf'));
+    await atomic.atomicWriteFile(f, 'V2', { backup: true });
+    expect(readFileSync(join(realFolder, 'panel.dxf'), 'utf8')).toBe('V2');
+    expect(readFileSync(join(realFolder, 'panel.dxf.bak'), 'utf8')).toBe('V1');
+    expect(lstatSync(linked).isSymbolicLink()).toBe(true);
+    // A linked ancestor of the folder too, and the project's folder itself reached through a link.
+    const deeper = join(linked, 'sheets');
+    mkdirSync(deeper);
+    await atomic.atomicWriteFile(join(deeper, 'a.dxf'), 'A', { root: linked });
+    expect(readFileSync(join(realFolder, 'sheets', 'a.dxf'), 'utf8')).toBe('A');
+    expect(await atomic.backupFile(join(linked, 'panel.dxf'))).toMatchObject({ ok: true });
+    expect(readFileSync(join(realFolder, 'panel.dxf.bak'), 'utf8')).toBe('V2');
+  });
+
+  it('a folder swapped for a link after the temporary file was written is refused, touching nothing through it', async () => {
+    const folder = join(dir, 'work');
+    const moved = join(dir, 'old-work');
+    mkdirSync(folder);
+    const f = join(folder, 'drawing.dxf');
+    writeFileSync(f, 'ORIGINAL');
+    let trap = '';
+    const w = atomic.createAtomicWriter(fsp, {
+      hooks: {
+        beforeRename: async (tmp: string) => {
+          renameSync(folder, moved);
+          symlinkSync(outside, folder);
+          trap = join(outside, basename(tmp)); // a file of the temporary file's name where the link leads
+          writeFileSync(trap, 'UNRELATED FILE');
+        },
+      },
+    });
+    await refused(w.atomicWriteFile(f, 'NEW', { backup: true }));
+    expect(readFileSync(join(moved, 'drawing.dxf'), 'utf8')).toBe('ORIGINAL');
+    expect(readFileSync(trap, 'utf8')).toBe('UNRELATED FILE');
+    expect(existsSync(join(outside, 'drawing.dxf'))).toBe(false);
+    expect(readFileSync(victim, 'utf8')).toBe('VICTIM');
+  });
+
+  it('with a root (a project opened by name), a linked sub-folder may not lead outside it', async () => {
+    const project = join(dir, 'job');
+    mkdirSync(project);
+    symlinkSync(outside, join(project, 'sheets'));
+    const viaLink = join(project, 'sheets', 'profile.dxf');
+    await refused(atomic.atomicWriteFile(viaLink, 'X', { root: project }));
+    expect(existsSync(join(outside, 'profile.dxf'))).toBe(false);
+    // The same path without a root (a drawing the user chose) is in a linked folder: that is normal.
+    await atomic.atomicWriteFile(viaLink, 'CHOSEN');
+    expect(readFileSync(join(outside, 'profile.dxf'), 'utf8')).toBe('CHOSEN');
+    // A real sub-folder of the project is fine.
+    mkdirSync(join(project, 'real'));
+    await atomic.atomicWriteFile(join(project, 'real', 'a.dxf'), 'A', { root: project });
+    expect(readFileSync(join(project, 'real', 'a.dxf'), 'utf8')).toBe('A');
+  });
+
+  it('a linked .bak destination refuses the save and leaves both files intact', async () => {
+    const f = join(dir, 'panel.dxf');
+    writeFileSync(f, 'V1');
+    symlinkSync(victim, `${f}.bak`);
+    await refused(atomic.atomicWriteFile(f, 'V2', { backup: true }));
+    expect(readFileSync(f, 'utf8')).toBe('V1');
+    expect(lstatSync(`${f}.bak`).isSymbolicLink()).toBe(true);
+    expect(readFileSync(victim, 'utf8')).toBe('VICTIM');
+  });
+
+  it('a link planted at the temporary file name is not written through (exclusive create)', async () => {
+    const f = join(dir, 'panel.dxf');
+    writeFileSync(f, 'V1');
+    const spy = vi.spyOn(crypto, 'randomBytes').mockImplementation((() => Buffer.alloc(6)) as unknown as typeof crypto.randomBytes);
+    try {
+      const predicted = atomic.tempNameFor(f);
+      symlinkSync(victim, predicted);
+      const err = (await atomic.atomicWriteFile(f, 'V2', { backup: true }).catch((e: unknown) => e)) as NodeJS.ErrnoException;
+      expect(err.code).toBe('EEXIST');
+      expect(readFileSync(victim, 'utf8')).toBe('VICTIM');
+      expect(readFileSync(f, 'utf8')).toBe('V1');
+      expect(lstatSync(predicted).isSymbolicLink()).toBe(true); // not ours: left alone
+      rmSync(predicted);
+      // The .bak copy's temporary file too (copyFile with COPYFILE_EXCL).
+      const predictedBak = atomic.tempNameFor(`${f}.bak`);
+      symlinkSync(victim, predictedBak);
+      const err2 = (await atomic.copyFileAtomic(f, `${f}.bak`).catch((e: unknown) => e)) as NodeJS.ErrnoException;
+      expect(err2.code).toBe('EEXIST');
+      expect(readFileSync(victim, 'utf8')).toBe('VICTIM');
+      expect(lstatSync(predictedBak).isSymbolicLink()).toBe(true);
+      expect(existsSync(`${f}.bak`)).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('a destination changed to a link before replacement fails without a destructive copy', async () => {
+    const f = join(dir, 'panel.dxf');
+    writeFileSync(f, 'V1');
+    const w = atomic.createAtomicWriter(
+      faultyFs({
+        rename: async () => {
+          throw fsError('EXDEV', 'cross-device link not permitted, rename');
+        },
+      }),
+      {
+        renameDelays: [],
+        hooks: {
+          beforeRename: (_tmp: string, dest: string) => {
+            rmSync(dest);
+            symlinkSync(victim, dest); // swapped in between the check and the replace
+          },
+        },
+      },
+    );
+    const err = (await w.atomicWriteFile(f, 'V2').catch((e: unknown) => e)) as NodeJS.ErrnoException;
+    expect(err.code).toBe('ELOOP');
+    expect(readFileSync(victim, 'utf8')).toBe('VICTIM');
+    expect(leftovers()).toHaveLength(1); // cleanup also refuses the changed destination
+  });
+
+  it('backup-file does not copy a file a link leads to from outside the folder', async () => {
+    const link = join(dir, 'sheet1.dxf');
+    symlinkSync(victim, link);
+    const r = await atomic.backupFile(link);
+    expect(r).toMatchObject({ ok: false, code: 'ELOOP' });
+    expect(!r.ok && r.error).toMatch(/^The backup copy of "sheet1\.dxf" could not be made: the file is a symbolic link \(shortcut\)/);
+    expect(existsSync(`${link}.bak`)).toBe(false);
+    // With the project's folder as the root, a linked sub-folder is refused too.
+    const project = join(dir, 'job');
+    mkdirSync(project);
+    symlinkSync(outside, join(project, 'sheets'));
+    writeFileSync(join(outside, 'a.dxf'), 'SECRET');
+    await expect(atomic.copyFileAtomic(join(project, 'sheets', 'a.dxf'), join(project, 'sheets', 'a.dxf.bak'), { root: project })).rejects.toMatchObject({ code: 'ELOOP' });
+    expect(existsSync(join(outside, 'a.dxf.bak'))).toBe(false);
+  });
+
+  it('a volume whose native realpath fails (Windows RAM disks, some network and virtual drives) still saves, and links are still refused', async () => {
+    // GetFinalPathNameByHandle fails there with ERROR_INVALID_FUNCTION, which libuv reports as
+    // EISDIR. 0.4.1 then wrote to the path as given; the link checks must not turn that into a
+    // refusal of every save, so the links are resolved one component at a time instead.
+    const native = vi.fn(async () => {
+      throw fsError('EISDIR', 'illegal operation on a directory, realpath');
+    });
+    const byLinks = vi.fn(async (p: string) => realpathSync(p));
+    const w = atomic.createAtomicWriter(faultyFs({ realpath: native }), { realpathFallback: byLinks });
+    const realFolder = join(outside, 'projects');
+    mkdirSync(realFolder);
+    symlinkSync(realFolder, join(dir, 'projects'));
+    const f = join(dir, 'projects', 'panel.dxf');
+    const r = await w.atomicWriteFile(f, 'V1', { backup: true });
+    expect(r.path).toBe(join(realpathSync(realFolder), 'panel.dxf'));
+    await w.atomicWriteFile(f, 'V2', { backup: true });
+    expect(readFileSync(join(realFolder, 'panel.dxf'), 'utf8')).toBe('V2');
+    expect(readFileSync(join(realFolder, 'panel.dxf.bak'), 'utf8')).toBe('V1');
+    expect(native).toHaveBeenCalled();
+    expect(byLinks).toHaveBeenCalled();
+    // A destination that is a link is refused all the same, and so is a linked folder outside a root.
+    const link = join(dir, 'out.dxf');
+    symlinkSync(victim, link);
+    await refused(w.atomicWriteFile(link, 'X'));
+    await refused(w.atomicWriteFile(f, 'X', { root: dir }));
+    expect(readFileSync(victim, 'utf8')).toBe('VICTIM');
+    // Without a fallback the error stands (an injected file system gets none by default).
+    const strict = atomic.createAtomicWriter(faultyFs({ realpath: native }));
+    await expect(strict.atomicWriteFile(join(dir, 'x.dxf'), 'X')).rejects.toMatchObject({ code: 'EISDIR' });
+    // The writer for the real file system falls back to Node's link-by-link fs.realpath.
+    expect(readFileSync(join(import.meta.dirname, '..', 'electron', 'atomic-write.cjs'), 'utf8')).toMatch(/fs === fsp \? promisify\(realpathByLinks\) : null/);
+  });
+
+  it('isInsideFolder compares resolved folders, case-folded on Windows and macOS', () => {
+    expect(atomic.isInsideFolder('/a/b', '/a/b')).toBe(true);
+    expect(atomic.isInsideFolder('/a/b', '/a/b/c/d.dxf')).toBe(true);
+    expect(atomic.isInsideFolder('/a/b', '/a/bc/d.dxf')).toBe(false);
+    expect(atomic.isInsideFolder('/a/b', '/a/b/../c.dxf')).toBe(false);
+    expect(atomic.isInsideFolder('/a/B', '/a/b/c.dxf', 'darwin')).toBe(true);
+    expect(atomic.isInsideFolder('/a/B', '/a/b/c.dxf', 'linux')).toBe(false);
   });
 });
 

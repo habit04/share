@@ -22,21 +22,26 @@ machine, so ranges are given. Shared CI runners are slower; compare runs on the 
 
 Both the normal CI and release checks run the dense Node benchmark and the browser benchmark.
 Browser budgets in `scripts/bench-budgets.mjs`, in milliseconds before `JCAD_PERF_FACTOR`, are:
-load 500, warm render at extents 50, warm zoomed render 25, median hover 8, median window selection
-50. CI uses factor 2. Invalid measurements, a workload other than 50,000 entities, or a selection
+load 500, full redraw at extents 400, full redraw zoomed in 100, cached-scene redraw 8, median
+hover 8, median window selection 50. The full-redraw measurements discard the cached bitmap
+before each draw; cached-scene redraw measures its reuse separately. The gate also rejects a
+full-redraw result less than five times the cached result (with a 0.2 ms floor), so an accidentally
+cached benchmark cannot pass as a full redraw. CI uses factor 2. Invalid measurements, a workload
+other than 50,000 entities, or a selection
 that selected nothing also fail. First-use budgets are separately enforced: state acceptance
 2,000 ms, geometry construction 2,000 ms, first render 1,000 ms, and their complete first-view
 path 3,000 ms. The project filesystem benchmark requires 20 files, 21 loaded documents (including
 the active drawing), 12,000 component rows and consistent phase totals, with a 15,000 ms total
 budget. Both sets scale by `JCAD_PERF_FACTOR`; missing or invalid measurements fail.
 
-On 2026-10-11, Windows x64 / Chromium 154 measured: load 16.2 ms, warm render 5.6 ms at extents
-and 5.8 ms zoomed, median hover 0.1 ms, median selection 5.0 ms (1,693 entities). The asserted
-budgets passed. These local measurements do not replace the Linux CI browser/font baseline.
+On 2026-10-11, the earlier benchmark on Windows x64 / Chromium 154 measured: load 16.2 ms,
+cached renders 5.6 ms at extents and 5.8 ms zoomed, median hover 0.1 ms, median selection 5.0 ms
+(1,693 entities). These renders reused the bitmap and do not measure the full redraw now checked
+separately. These local measurements do not replace the Linux CI browser/font baseline.
 
 After the edit-budget follow-up on the same date, Windows x64 / Chromium 154 measured first
 state acceptance 96.7 ms, first geometry 69.5 ms, first render 356.2 ms and complete first view
-522.7 ms. Warm load was 31.6 ms, renders 7.1 / 8.0 ms, hover 0.1 ms and selection 11.7 ms.
+522.7 ms. Warm load was 31.6 ms, cached renders 7.1 / 8.0 ms, hover 0.1 ms and selection 11.7 ms.
 The filesystem project benchmark read 15,861,240 bytes in 54.2 ms, spent 756.2 ms parsing and
 preparing states, and 2,553.4 ms on all reports: 3,363.7 ms total. All factor-1 budgets passed.
 These are local measurements with the workload and cache conditions described above.
@@ -127,10 +132,13 @@ window event. It now runs in a worker thread (`scripts/dwg-worker.mjs`, managed 
   (`src/ui/open-progress.ts`); Cancel terminates the worker and the open fails with
   "Open cancelled", leaving the current drawing untouched; the next DWG starts a fresh worker;
 - a worker startup failure fails the open; there is no main-process parser fallback;
-- both desktop and browser readers refuse inputs over 128 MiB and terminate parsing after 60 s;
-  desktop workers cap the JavaScript old-generation heap at 512 MiB, while the browser uses a
-  dedicated worker that can be terminated on abort. The JavaScript heap cap does **not** cap
-  WebAssembly linear memory, so it is not an OS-level memory sandbox;
+- both desktop and browser readers refuse inputs over 128 MiB. The browser terminates parsing
+  after 60 s. Desktop parsing allows 60 s plus one second per input MiB, up to 188 s for accepted
+  files, with a separate 15 s startup deadline. Desktop workers limit V8 old/young generations
+  to 2,048/64 MiB and the stack to 8 MiB. A per-memory JavaScript growth guard limits the shipped
+  WebAssembly allocator to 2 GiB; it does not cap total process memory or intercept allocations
+  and growth performed directly by WebAssembly instructions. Browser workers have no explicit
+  heap or WebAssembly memory cap. These are workload guards, not an OS-level memory sandbox;
 - the end-to-end test covers the dialog, the progress events and Cancel; `--probe-dwg` checks the
   worker inside each packaged build.
 

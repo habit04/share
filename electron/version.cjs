@@ -42,4 +42,35 @@ function compareVersions(a, b) {
   return comparePre(pa.pre, pb.pre);
 }
 
-module.exports = { parseVersion, compareVersions };
+/**
+ * The operating system version a release needs, from its update metadata (latest-mac.yml:
+ * `minimumSystemVersion: '13.0'`, written by scripts/mac-update-info.mjs from package.json
+ * build.mac.minimumSystemVersion); null when the metadata names none.
+ * @param {string} text
+ * @returns {string | null}
+ */
+function minimumSystemVersionFrom(text) {
+  const m = /^minimumSystemVersion:[ \t]*(['"]?)(\d{1,3}(?:\.\d{1,4}){0,2})\1[ \t]*$/m.exec(String(text || ''));
+  return m ? m[2] : null;
+}
+
+/**
+ * Is the operating system `system` ("12.7.4", process.getSystemVersion()) older than `minimum`
+ * ("13.0")? Dotted numbers compare part by part, a missing part counts as 0; false when either
+ * is not such a number (nothing is withheld on a version that cannot be read).
+ * @param {string} system
+ * @param {string | null} minimum
+ */
+function systemOlderThan(system, minimum) {
+  const parts = (/** @type {unknown} */ v) => (/^\d+(?:\.\d+)*$/.test(String(v ?? '').trim()) ? String(v).trim().split('.').map(Number) : null);
+  const a = parts(system);
+  const b = parts(minimum);
+  if (!a || !b) return false;
+  for (let i = 0; i < Math.max(a.length, b.length); i += 1) {
+    const d = (a[i] ?? 0) - (b[i] ?? 0);
+    if (d !== 0) return d < 0;
+  }
+  return false;
+}
+
+module.exports = { parseVersion, compareVersions, minimumSystemVersionFrom, systemOlderThan };

@@ -305,7 +305,7 @@ export interface Layer {
   readonly plot?: boolean;
   /** True colour 0xRRGGBB (DXF 420 on the LAYER record); shown instead of `color` when set. */
   readonly trueColor?: number;
-  /** Xref-dependent LAYER flags (DXF 70 bits 16 and 32). */
+  /** Xref-dependent LAYER flags (DXF 70 bits 16 and 32), kept from the source file. */
   readonly xrefFlags?: number;
 }
 
@@ -925,8 +925,9 @@ function sampledPolyline(e: CircleEntity | ArcEntity, tf: (p: Point) => Point): 
  * rotation, translation). Text stays readable (position moves, glyphs are not mirrored),
  * arcs keep their visible sweep, and circles / arcs under a non-uniform scale become polylines.
  */
-function scaledMTextColumns(columns: MTextColumns | undefined, scale: number): MTextColumns | undefined {
-  if (!columns || scale === 1) return columns;
+/** MTEXT columns under a uniform scale (their width, gutter and heights scale with the text). */
+function scaledMTextColumns(columns: MTextColumns, scale: number): MTextColumns {
+  if (scale === 1) return columns;
   return { ...columns, width: columns.width * scale, gutter: columns.gutter * scale, heights: columns.heights.map((height) => height * scale) };
 }
 
@@ -951,7 +952,7 @@ export function blockTransform(e: Entity, tf: (p: Point) => Point, rotation: num
     case 'text':
       return { ...e, position: tf(e.position), height: e.height * k, rotation: e.rotation + rotation, align: mirror ? flipAlign(e.align) : e.align };
     case 'mtext':
-      return { ...e, position: tf(e.position), height: e.height * k, width: e.width * k, rotation: e.rotation + rotation, columns: scaledMTextColumns(e.columns, k) };
+      return { ...e, position: tf(e.position), height: e.height * k, width: e.width * k, rotation: e.rotation + rotation, ...(e.columns ? { columns: scaledMTextColumns(e.columns, k) } : {}) };
     case 'insert':
       return {
         ...e,
@@ -990,6 +991,15 @@ export function blockTransform(e: Entity, tf: (p: Point) => Point, rotation: num
   }
 }
 
+/**
+ * At most this many objects come out of one block reference, nested references included
+ * (security review E-13; JCad 3D's DXF reader has the same 2,000,000-object cap). Blocks that
+ * each insert the previous one many times stay within the nesting depth while multiplying into
+ * billions of objects; the expansion stops at the cap instead of exhausting memory. The nested
+ * references an expansion follows are limited to the same number: a fan-out whose innermost
+ * blocks are empty, missing or below the nesting depth draws nothing but would otherwise be
+ * walked billions of times. Readers report such blocks (expansionReport).
+ */
 const workCache = new WeakMap<Entity, number>();
 /** Coordinate and text work copied or rendered by each instance of an immutable entity. */
 export function entityGeometryWork(entity: Entity): number {
@@ -1063,7 +1073,27 @@ export function collectBlockDependencies(name: string, lookup: BlockLookup, deps
 }
 
 export const MAX_BLOCK_EXPANSION_WORK = 100_000;
-interface ExpansionBudget { remaining: number }
+
+export const MAX_INSERT_EXPANSION = 2_000_000;
+/** Nesting levels drawn below a reference (deeper references are not expanded). */
+const MAX_INSERT_DEPTH = 8;
+
+/** One expansion: objects it may still produce, the chain of blocks being expanded. */
+interface ExpansionBudget {
+  remaining: number;
+  left: number;
+  /** References it may still follow (the top one included). */
+  visits: number;
+  readonly chain: string[];
+  /** Every block name looked up within the depth limit and the definition it had (undefined: missing). */
+  readonly deps: Map<string, BlockDef | undefined>;
+  /** Stopped at MAX_INSERT_EXPANSION objects or followed references. */
+  truncated: boolean;
+  /** A block inserts itself (directly or through others): the repeated reference was skipped. */
+  cyclic: boolean;
+}
+const newBudget = (maxObjects = MAX_INSERT_EXPANSION): ExpansionBudget => ({ remaining: MAX_BLOCK_EXPANSION_WORK, left: maxObjects, visits: maxObjects, chain: [], deps: new Map(), truncated: false, cyclic: false });
+
 function spendExpansion(budget: ExpansionBudget, work = 1): void {
   budget.remaining -= work;
   if (budget.remaining < 0) throw new GeometryBudgetError('Block expansion exceeds the safe geometry budget.');
@@ -1071,9 +1101,16 @@ function spendExpansion(budget: ExpansionBudget, work = 1): void {
 
 interface InsertCache {
   block: BlockDef;
-  dependencies: ReadonlyMap<string, BlockDef | undefined>;
+  /**
+   * The definitions the expansion used, nested ones included (and names that were missing): the
+   * entry is stale as soon as one of them resolves differently (a nested block redefined, removed,
+   * added or restored by undo).
+   */
+  deps: ReadonlyMap<string, BlockDef | undefined>;
   exploded: Entity[];
   bounds: Bounds | null;
+  /** The expansion was cut short (the cap, or a block that inserts itself). */
+  limited: boolean;
 }
 /** Only accepted immutable inserts and definitions qualify for identity caching. */
 const insertCache = new WeakMap<InsertEntity, InsertCache>();
@@ -1083,35 +1120,99 @@ function cachedInsert(ins: InsertEntity, lookup: BlockLookup): InsertCache | nul
   if (!block) return null;
   const immutable = isImmutableData(ins);
   const hit = immutable ? insertCache.get(ins) : undefined;
-  if (hit && hit.block === block && [...hit.dependencies].every(([name, definition]) => lookup(name) === definition)) return hit;
-  const dependencies = collectBlockDependencies(ins.block, lookup);
-  const exploded = explodeInsertUncached(ins, lookup, 0, { remaining: MAX_BLOCK_EXPANSION_WORK - entityGeometryWork(ins) });
+  if (hit && hit.block === block && depsCurrent(hit.deps, lookup)) return hit;
+  const budget = newBudget();
+  const exploded: Entity[] = [];
+  explodeInto(exploded, ins, lookup, 0, budget);
   let bounds: Bounds | null = null;
   for (const sub of exploded) bounds = g.unionBounds(bounds, entityBounds(sub, lookup));
-  const entry = { block, dependencies, exploded, bounds: bounds ?? g.boundsOfPoints([ins.position]) };
-  if (immutable && [...dependencies.values()].every((definition) => !definition || isImmutableData(definition))) insertCache.set(ins, entry);
+  const entry = { block, deps: budget.deps, exploded, bounds: bounds ?? g.boundsOfPoints([ins.position]), limited: budget.truncated || budget.cyclic };
+  if (immutable && [...budget.deps.values()].every((definition) => !definition || isImmutableData(definition))) insertCache.set(ins, entry);
   return entry;
 }
 
-/** Expand an insert into world-space entities (recursively). Immutable inputs are cached. */
-export function explodeInsert(ins: InsertEntity, lookup: BlockLookup, depth = 0): Entity[] {
-  if (depth === 0) return cachedInsert(ins, lookup)?.exploded ?? [];
-  return explodeInsertUncached(ins, lookup, depth, { remaining: MAX_BLOCK_EXPANSION_WORK - entityGeometryWork(ins) });
+/** Does every recorded block name still resolve to the same definition? */
+function depsCurrent(deps: ReadonlyMap<string, BlockDef | undefined>, lookup: BlockLookup): boolean {
+  for (const [name, def] of deps) if (lookup(name) !== def) return false;
+  return true;
 }
 
-function explodeInsertUncached(ins: InsertEntity, lookup: BlockLookup, depth: number, budget: ExpansionBudget): Entity[] {
+/**
+ * The block definitions one reference depends on (the ones its expansion used, nested blocks and
+ * missing names included), for caches keyed on them (core/spatial-index.ts).
+ */
+export function insertDependencies(ins: InsertEntity, lookup: BlockLookup): ReadonlyMap<string, BlockDef | undefined> {
+  return cachedInsert(ins, lookup)?.deps ?? new Map([[ins.block, undefined]]);
+}
+
+/**
+ * Expand an insert into world-space entities (recursively, at most MAX_INSERT_EXPANSION objects;
+ * a block that inserts itself is expanded once). Cached per insert.
+ */
+export function explodeInsert(ins: InsertEntity, lookup: BlockLookup, depth = 0): Entity[] {
+  if (depth === 0) return cachedInsert(ins, lookup)?.exploded ?? [];
+  const out: Entity[] = [];
+  explodeInto(out, ins, lookup, depth, newBudget());
+  return out;
+}
+
+/**
+ * Expand an insert (uncached) into at most `maxObjects` objects and tell whether it was cut short
+ * (`truncated`: the limit; `cyclic`: a block inserts itself, its repeated reference skipped).
+ */
+export function expandInsert(ins: InsertEntity, lookup: BlockLookup, maxObjects = MAX_INSERT_EXPANSION): { entities: Entity[]; truncated: boolean; cyclic: boolean } {
+  const budget = newBudget(maxObjects);
+  const entities: Entity[] = [];
+  explodeInto(entities, ins, lookup, 0, budget);
+  return { entities, truncated: budget.truncated, cyclic: budget.cyclic };
+}
+
+/**
+ * Was the expansion of this reference cut short: more than MAX_INSERT_EXPANSION objects, or a
+ * block that inserts itself? EXPLODE refuses such a reference (it would lose content).
+ */
+export function insertExpansionLimited(ins: InsertEntity, lookup: BlockLookup): boolean {
+  return cachedInsert(ins, lookup)?.limited ?? false;
+}
+
+/** Append the expansion of `ins` to `out` (no spread: nested results may be large). */
+function explodeInto(out: Entity[], ins: InsertEntity, lookup: BlockLookup, depth: number, budget: ExpansionBudget): void {
+  // Every reference followed costs one visit, also one that draws nothing (an empty or missing
+  // block, or one below the nesting depth): the walk itself is bounded, not only its output.
+  if (budget.visits <= 0) {
+    budget.truncated = true;
+    return;
+  }
+  budget.visits -= 1;
+  if (depth === 0) spendExpansion(budget, entityGeometryWork(ins));
+  if (depth > MAX_INSERT_DEPTH) return;
   const block = lookup(ins.block);
-  if (!block || depth > 8) return [];
+  budget.deps.set(ins.block, block);
+  if (!block) return;
+  if (budget.chain.includes(ins.block)) {
+    budget.cyclic = true;
+    return;
+  }
   const tf = insertTransform(ins, block);
   if (block.xref && block.entities.length === 0) {
     spendExpansion(budget, 2);
-    return xrefPlaceholder(ins, block, tf);
+    for (const e of xrefPlaceholder(ins, block, tf)) {
+      if (budget.left <= 0) { budget.truncated = true; break; }
+      out.push(e);
+      budget.left -= 1;
+    }
+
+    return;
   }
-  const out: Entity[] = [];
+  budget.chain.push(ins.block);
   const similar = isSimilarInsert(ins);
   for (const e of block.entities) {
+    if (budget.left <= 0) {
+      budget.truncated = true;
+      break;
+    }
     spendExpansion(budget, entityGeometryWork(e));
-    for (const part of transformEntity(e, tf, ins, similar, lookup, depth + 1, budget)) out.push(part);
+    transformInto(out, e, tf, ins, similar, lookup, depth + 1, budget);
   }
   // Attribute text
   for (const a of block.attributes) {
@@ -1119,6 +1220,11 @@ function explodeInsertUncached(ins: InsertEntity, lookup: BlockLookup, depth: nu
     if (a.invisible || ins.hiddenAttributes?.includes(a.tag)) continue;
     const value = ins.attributes[a.tag] ?? a.default;
     if (!value) continue;
+    if (budget.left <= 0) {
+      budget.truncated = true;
+      break;
+    }
+    budget.left -= 1;
     out.push({
       type: 'text',
       id: `${ins.id}:${a.tag}`,
@@ -1131,7 +1237,72 @@ function explodeInsertUncached(ins: InsertEntity, lookup: BlockLookup, depth: nu
       align: ins.mirror ? flipAlign(a.align) : a.align,
     });
   }
-  return out;
+  budget.chain.pop();
+}
+
+/** What the readers report about block expansion (expansionReport). */
+export interface ExpansionReport {
+  /** Blocks that insert themselves, directly or through other blocks. */
+  readonly cyclic: readonly string[];
+  /** Blocks one reference to which expands to more than MAX_INSERT_EXPANSION objects (or follows more references). */
+  readonly oversized: readonly string[];
+  /** Objects the references of `topLevel` expand to (saturates above MAX_INSERT_EXPANSION * 1000). */
+  readonly total: number;
+}
+
+/**
+ * How the blocks of a drawing expand, without expanding them: the objects one reference to each
+ * block produces (nested blocks counted through, saturating), the blocks that insert themselves,
+ * and the total for the references in `topLevel` (model space and layouts). Nested references are
+ * counted down to MAX_INSERT_DEPTH levels, as they are drawn (explodeInto), one count per block and
+ * level: the recursion is never deeper than that, so a chain of thousands of blocks that each
+ * insert the next cannot overflow the stack, and the work is linear in the size of the block table.
+ */
+export function expansionReport(blocks: Readonly<Record<string, BlockDef>>, topLevel: readonly Entity[]): ExpansionReport {
+  const CAP = MAX_INSERT_EXPANSION + 1;
+  /** Objects a reference produces and references it follows (itself included), as explodeInto counts them. */
+  interface Count {
+    objects: number;
+    visits: number;
+  }
+  const one: Count = { objects: 0, visits: 1 };
+  /** size[depth]: the count of a reference at that nesting depth, per block name. */
+  const size = Array.from({ length: MAX_INSERT_DEPTH + 1 }, () => new Map<string, Count>());
+  const onStack = new Set<string>();
+  const cyclic = new Set<string>();
+  const sizeOf = (name: string, depth: number): Count => {
+    if (depth > MAX_INSERT_DEPTH) return one;
+    const memo = size[depth]!;
+    const known = memo.get(name);
+    if (known !== undefined) return known;
+    const block = blocks[name];
+    if (!block) return one;
+    if (onStack.has(name)) {
+      cyclic.add(name);
+      return one;
+    }
+    if (block.xref && block.entities.length === 0) return { objects: 2, visits: 1 };
+    onStack.add(name);
+    let objects = 0;
+    let visits = 1;
+    for (const e of block.entities) {
+      if (e.type === 'insert') {
+        const c = sizeOf(e.block, depth + 1);
+        objects += c.objects;
+        visits += c.visits;
+      } else objects += 1;
+      if (objects >= CAP || visits >= CAP) break;
+    }
+    const count = { objects: Math.min(CAP, objects + block.attributes.filter((a) => !a.invisible).length), visits: Math.min(CAP, visits) };
+    onStack.delete(name);
+    memo.set(name, count);
+    return count;
+  };
+  for (const name of Object.keys(blocks)) sizeOf(name, 0);
+  let total = 0;
+  for (const e of topLevel) if (e.type === 'insert') total = Math.min(CAP * 1000, total + sizeOf(e.block, 0).objects);
+  const oversized = [...size[0]!].filter(([, c]) => c.objects >= CAP || c.visits > MAX_INSERT_EXPANSION).map(([name]) => name);
+  return { cyclic: [...cyclic].sort(), oversized: oversized.sort(), total };
 }
 
 /** Attribute text lives on the conventional AutoCAD Electrical layers. */
@@ -1166,7 +1337,7 @@ export function similarityTransform(e: Entity, tf: (p: Point) => Point, rotation
     case 'ray':
       return { ...e, base: tf(e.base), direction: g.rotate(e.direction, rotation) };
     case 'mtext':
-      return { ...e, position: tf(e.position), height: e.height * k, width: e.width * k, rotation: e.rotation + rotation, columns: scaledMTextColumns(e.columns, k) };
+      return { ...e, position: tf(e.position), height: e.height * k, width: e.width * k, rotation: e.rotation + rotation, ...(e.columns ? { columns: scaledMTextColumns(e.columns, k) } : {}) };
     case 'dimension':
       return {
         ...e,
@@ -1212,15 +1383,19 @@ export function bakeInheritedColor<T extends Entity>(e: T, layers: readonly Laye
   return { ...rest, color: layer?.color ?? 7, ...(layer?.trueColor !== undefined ? { trueColor: layer.trueColor } : {}) } as T;
 }
 
-function transformEntity(e: Entity, tf: (p: Point) => Point, ins: InsertEntity, similar: boolean, lookup: BlockLookup, depth: number, budget: ExpansionBudget): Entity[] {
+function transformInto(out: Entity[], e: Entity, tf: (p: Point) => Point, ins: InsertEntity, similar: boolean, lookup: BlockLookup, depth: number, budget: ExpansionBudget): void {
   // Entities on layer "0" inside a block inherit the insert's layer (AutoCAD behaviour).
   const lay = e.layer === '0' ? ins.layer : e.layer;
   const lt = e.linetype && e.linetype.toUpperCase() === 'BYBLOCK' ? ins.linetype : e.linetype;
   const { trueColor: _t, colorLayer: _c, ...plain } = e;
   const styled = { ...plain, layer: lay, ...inheritedColor(e, ins), linetype: lt } as Entity;
   const moved = similar ? similarityTransform(styled, tf, ins.rotation, ins.scale) : blockTransform(styled, tf, ins.rotation, ins.scale, ins.scaleY ?? ins.scale, Boolean(ins.mirror));
-  if (moved.type === 'insert') return explodeInsertUncached(moved, lookup, depth, budget);
-  return [moved];
+  if (moved.type === 'insert') {
+    explodeInto(out, moved, lookup, depth, budget);
+    return;
+  }
+  budget.left -= 1;
+  out.push(moved);
 }
 
 export function entityBounds(e: Entity, lookup: BlockLookup): Bounds | null {

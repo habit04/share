@@ -429,8 +429,9 @@ async function scenario(rng: Rng, opts: Options): Promise<{ closed: boolean; cra
 
 describe('fuzz: autosave, Save, Save As, Save All and crashes together', () => {
   it('a drawing is clean only when on disk, autosaved work survives crashes, close keeps what was not discarded', async () => {
-    // Rendering is stubbed; only file-operation clocks participate in this property.
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+    // The timers Vitest 2 faked by default. Newer Vitest also fakes requestAnimationFrame, which
+    // would let the editor's viewport draw on the stub canvas; this property is about file clocks.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setImmediate', 'clearImmediate', 'setInterval', 'clearInterval', 'Date'] });
     let closed = 0;
     let crashed = 0;
     const runs = await fuzz('save-close/editor', 200, async (rng) => {

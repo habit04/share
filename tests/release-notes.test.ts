@@ -47,15 +47,19 @@ describe('release notes from CHANGELOG.md', () => {
     expect(n).not.toContain('macOS builds are not notarized');
   });
 
-  it('produces the notes of the current version from the real changelog, and the 0.4.0 notes kept in docs/releases', () => {
+  it('produces the notes of the current version from the real changelog, and the notes kept in docs/releases', () => {
     const real = readFileSync(new URL('../CHANGELOG.md', import.meta.url), 'utf8');
     const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string };
     // The release workflow runs with --strict: the version being released has its own section.
-    expect(sectionFor(real, pkg.version)).not.toBeNull();
+    const section = sectionFor(real, pkg.version);
+    expect(section).not.toBeNull();
     const n = releaseNotes(real, `v${pkg.version}`);
-    expect(n).toContain('### Fixed');
+    expect(n.startsWith(`${section}\n`)).toBe(true);
+    expect(n).toMatch(/^### /m);
     expect(n).not.toMatch(/^## \[/m);
-    // docs/releases/v0.4.0.md is exactly what the script makes for v0.4.0 (pasted into that release).
-    expect(readFileSync(new URL('../docs/releases/v0.4.0.md', import.meta.url), 'utf8').replace(/\r\n/g, '\n')).toBe(releaseNotes(real, 'v0.4.0'));
+    // Keep both published release-note snapshots exact, including on Windows checkouts.
+    for (const tag of ['v0.4.0', 'v0.4.2']) {
+      expect(readFileSync(new URL(`../docs/releases/${tag}.md`, import.meta.url), 'utf8').replace(/\r\n/g, '\n')).toBe(releaseNotes(real, tag));
+    }
   });
 });

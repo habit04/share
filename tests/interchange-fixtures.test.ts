@@ -12,6 +12,8 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readDxf, writeDxf } from '../src/io/dxf';
+import { readTableStyle } from '../src/io/dxf/read-annotations';
+import type { Obj } from '../src/io/dxf/groups';
 import { decodeDxfBytes, textStyleOf, textStylesOf } from '../src/io/encoding';
 import { importReportOf } from '../src/io/import-report';
 import type { DrawingState } from '../src/core/document';
@@ -190,7 +192,8 @@ describe('r2000-layouts-titleblock.dxf: layouts, paper-space viewports, title bl
  * Survives: the current style from $DIMSTYLE + header $DIM*; named styles with their DIM* values,
  * arrowheads named by DIMBLK / DIMBLK1 / DIMBLK2 handles (DIMSAH), tolerances, DIM colours; the
  * arrowhead blocks; linear (with DIMTEDIT 53 and DIMEDIT 52), aligned, radius, diameter (text
- * override, moved text), angular 2-line and 3-point with their definition points and styles.
+ * override, moved text), angular 2-line and 3-point with their definition points and styles;
+ * DIMDSEP, DIMTXSTY, DIMLWD / DIMLWE, DIMTZIN and per-dimension DSTYLE overrides.
  * Lost (matrix): ordinate dimensions (dropped, reported); arrowheads written in JCAD_DIMSTYLE
  * XDATA rather than as handles; 2-line angular written as 3-point; other XDATA (ACAD_DSTYLE_*).
  */
@@ -342,34 +345,42 @@ describe('r2018-dimensions.dxf: named DIMSTYLEs with XDATA, DIMENSIONs with thei
     expect(f.written).not.toContain('ACAD_DSTYLE_');
   });
 
-  it('DIMDSEP decimal comma survives and formats measurements', () => {
+  // The reader gaps below were closed by porting PR #2 (codex/electrical-review-fixes 2f89b0e).
+  it('ISO-25 keeps DIMDSEP 44 (group 278, decimal comma): the aligned dimension reads "72,11"', () => {
     for (const [, s] of both(f)) {
       const d = ofType<DimensionEntity>(s.entities, 'dimension')[2]!;
       expect(d.style.decimalSeparator).toBe(44);
       expect(dimensionText(d)).toBe('72,11');
     }
+    expect(group(records(f.written, 'DIMSTYLE').find((r) => group(r, 2) === 'ISO-25'), 278)).toBe('44');
   });
-  it('DIMTXSTY resolves the STYLE handle and survives export', () => {
+  it('ISO-25 keeps DIMTXSTY (group 340 -> text style ISOCP), draws its text in it and writes it back', () => {
     for (const [, s] of both(f)) {
       const d = ofType<DimensionEntity>(s.entities, 'dimension')[2]!;
       expect(d.style.textStyle).toBe('ISOCP');
       const texts = dimensionParts(d).filter((p) => p.type === 'text');
+      expect(texts.length).toBeGreaterThan(0);
       expect(texts.every((p) => textStyleOf(p) === 'ISOCP')).toBe(true);
     }
+    const isocp = records(f.written, 'STYLE').find((r) => group(r, 2) === 'ISOCP');
+    expect(group(records(f.written, 'DIMSTYLE').find((r) => group(r, 2) === 'ISO-25'), 340)).toBe(group(isocp, 5));
   });
-  it('DIMLWD and DIMLWE survive as millimetre lineweight overrides', () => {
+  it('ARCH-TICK keeps DIMLWD 0.18 / DIMLWE 0.13 (groups 371 / 372) for its dimension and extension lines', () => {
     for (const [, s] of both(f)) expect(namedDimStyles(s).find((d) => d.name === 'ARCH-TICK')).toMatchObject({ dimLineWeight: 0.18, extLineWeight: 0.13 });
+    const rec = records(f.written, 'DIMSTYLE').find((r) => group(r, 2) === 'ARCH-TICK');
+    expect([group(rec, 371), group(rec, 372)]).toEqual(['18', '13']);
   });
-  it('DIMTZIN suppresses tolerance zeros independently of DIMZIN', () => {
+  it('MECH-TOL tolerances follow DIMTZIN (group 284, 0 here): the diameter tolerance reads +0,10 / -0,05', () => {
     for (const [, s] of both(f)) {
       const d = ofType<DimensionEntity>(s.entities, 'dimension')[4]!;
       expect(d.style.toleranceZeroSuppression).toBe(0);
       expect(dimensionTextLayout(d)).toMatchObject({ upper: '+0,10', lower: '-0,05' });
     }
   });
-  it('per-entity DSTYLE overrides keep the named style and survive export', () => {
+  it('the last linear dimension applies its DSTYLE overrides (ACAD XDATA: DIMTXT 5, DIMDEC 0) and keeps them on save', () => {
     for (const [, s] of both(f)) expect(ofType<DimensionEntity>(s.entities, 'dimension')[7]!.style).toMatchObject({ name: 'ISO-25', textHeight: 5, decimals: 0 });
-    expect(f.written).toContain('DSTYLE');
+    const dims = records(f.written, 'DIMENSION');
+    expect(dims.filter((r) => r.some(([c, v]) => c === 1000 && v === 'DSTYLE'))).toHaveLength(1);
   });
 });
 
@@ -450,7 +461,7 @@ describe('r2000-dimensions.dxf: inch drawing, DIMPOST and alternate units, text 
     expect([Number(group(rec, 15)), Number(group(rec, 25))]).toEqual([0, 4]);
   });
 
-  it('DIMAPOST [] substitutes alternate measurements inside their brackets', () => {
+  it('DIMAPOST "[]mm" uses the AutoCAD "[]" placeholder: the aligned dimension reads 5.657" [143.7mm]', () => {
     for (const [, s] of both(f)) expect(dimensionText(ofType<DimensionEntity>(s.entities, 'dimension')[1]!)).toBe('5.657" [143.7mm]');
   });
 });
@@ -460,7 +471,8 @@ describe('r2000-dimensions.dxf: inch drawing, DIMPOST and alternate units, text 
 /*
  * Survives: plain text of every paragraph; the formatted source (raw) verbatim, which keeps \f,
  * \C, \H, \L / \O, \p, \W, \Q, \T and stacks for display; a 250-character group 3 chunk plus
- * group 1; rotation by direction vector, attachment, line spacing, colour, style; UTF-8 text.
+ * group 1; rotation by direction vector, attachment, line spacing, colour, style; UTF-8 text;
+ * static columns (written as JCAD_MTEXT_COLUMNS XDATA).
  * Lost (matrix, "Fonts and text": the writer produces pure ASCII with \U+XXXX escapes): the
  * UTF-8 bytes become escapes in the saved AC1015 file (the text itself survives).
  */
@@ -535,7 +547,7 @@ describe('r2018-mtext.dxf: MTEXT formatting codes, stacked fractions, columns, l
     expect(f.written).toContain('\\U+00D825 \\U+00B10,1');
   });
 
-  it('MTEXT static columns survive and explicit column breaks render in separate columns', () => {
+  it('MTEXT static columns (R2018 embedded object: 2 columns 60 wide, gutter 5) are kept, and each column is laid out at its offset', () => {
     for (const [, s] of both(f)) {
       const m = ofType<MTextEntity>(s.entities, 'mtext')[2]!;
       expect(m.columns).toMatchObject({ type: 1, count: 2, width: 60, gutter: 5, heights: [20, 20] });
@@ -543,6 +555,47 @@ describe('r2018-mtext.dxf: MTEXT formatting codes, stacked fractions, columns, l
       const origins = [...new Set(parts.filter((t) => t.text === 'COLUMN').map((t) => t.position.x))];
       expect(origins[1]! - origins[0]!).toBeCloseTo(65);
     }
+    // Written as JCad XDATA (AC1015 has no MTEXT columns), with its APPID.
+    expect(f.written).toContain('\r\n1001\r\nJCAD_MTEXT_COLUMNS\r\n');
+    expect(records(f.written, 'APPID').map((r) => group(r, 2))).toContain('JCAD_MTEXT_COLUMNS');
+  });
+});
+
+/*
+ * MTEXT columns in the R2018 embedded object, the three kinds AutoCAD writes (group layout as the
+ * independent ezdxf library reads and writes it): 71 type, 72 count, 44 width, 45 gutter, 73 auto
+ * height, 74 reversed flow, 46 heights. Dynamic columns with auto height - AutoCAD's default for new
+ * columns - are saved with a count of 0, taken from the total width (42).
+ */
+describe('MTEXT columns in the R2018 embedded object: static, dynamic auto height, dynamic manual height, reversed flow', () => {
+  const mtext = (y: number, embedded: Array<[number, string | number]>) =>
+    [[0, 'MTEXT'], [8, '0'], [100, 'AcDbMText'], [10, 0], [20, y], [40, 2.5], [41, 40], [46, 20], [71, 1], [1, 'ONE\\NTWO\\NTHREE'], [101, 'Embedded Object'], [70, 1], [10, 1], [20, 0], [11, 0], [21, y], [40, 40], [41, 20], ...embedded];
+  const dxf = [
+    [0, 'SECTION'], [2, 'ENTITIES'],
+    ...mtext(0, [[42, 170], [43, 30], [71, 1], [72, 3], [44, 50], [45, 10], [73, 0], [74, 0]]),
+    ...mtext(100, [[42, 130], [43, 20], [71, 2], [72, 0], [44, 40], [45, 5], [73, 1], [74, 0]]),
+    ...mtext(200, [[42, 130], [43, 20], [71, 2], [72, 3], [44, 40], [45, 5], [73, 0], [74, 0], [46, 20], [46, 15], [46, 10]]),
+    ...mtext(300, [[42, 130], [43, 20], [71, 1], [72, 3], [44, 40], [45, 5], [73, 0], [74, 1]]),
+    [0, 'ENDSEC'], [0, 'EOF'],
+  ].map(([c, v]) => `${c}\n${v}`).join('\n');
+
+  it('keeps each kind, its auto-height and reversed-flow flags, also after a round trip', () => {
+    const read = readDxf(dxf);
+    for (const s of [read, readDxf(writeDxf(read))]) {
+      const cols = ofType<MTextEntity>(s.entities, 'mtext').map((m) => m.columns);
+      expect(cols).toEqual([
+        { type: 1, count: 3, width: 50, gutter: 10, autoHeight: false, reversed: false, heights: [] },
+        { type: 2, count: 3, width: 40, gutter: 5, autoHeight: true, reversed: false, heights: [] },
+        { type: 2, count: 3, width: 40, gutter: 5, autoHeight: false, reversed: false, heights: [20, 15, 10] },
+        { type: 1, count: 3, width: 40, gutter: 5, autoHeight: false, reversed: true, heights: [] },
+      ]);
+    }
+    // Auto height does not reverse the columns: the first one stays on the left.
+    const auto = ofType<MTextEntity>(read.entities, 'mtext')[1]!;
+    const xs = (m: MTextEntity, word: string) => mtextLayout(m, (t, h) => t.length * h * 0.6).find((t) => t.text === word)!.position.x;
+    expect(xs(auto, 'ONE')).toBeLessThan(xs(auto, 'THREE'));
+    const reversed = ofType<MTextEntity>(read.entities, 'mtext')[3]!;
+    expect(xs(reversed, 'ONE')).toBeGreaterThan(xs(reversed, 'THREE'));
   });
 });
 
@@ -683,8 +736,8 @@ describe('r2000-hatch-curves.dxf: HATCH (ANSI31 with bulges, SOLID with island),
     expect(group(hatch, 97)).toBe('0');
   });
 
-  it('a hatch without boundary links is saved non-associative with identical loops', () => {
-    expect(group(records(f.written, 'HATCH')[0], 71)).toBe('0');
+  it('a hatch saved without its boundary link is written non-associative (71 = 0) with the same loops', () => {
+    for (const h of records(f.written, 'HATCH')) expect(group(h, 71)).toBe('0');
     expect(ofType<HatchEntity>(f.roundTripped.entities, 'hatch')[0]!.associative).toBeUndefined();
     expect(ofType<HatchEntity>(f.roundTripped.entities, 'hatch')[0]!.loops).toEqual(ofType<HatchEntity>(f.imported.entities, 'hatch')[0]!.loops);
   });
@@ -837,7 +890,7 @@ describe('r2000-nested-blocks-xref.dxf: nested INSERTs with ByBlock / ByLayer co
     expect(flags('TOPO')).toBe('12');
   });
 
-  it('xref-dependent LAYER flags 16 and 32 survive export', () => {
+  it('the xref-dependent layer SITE-PLAN|WALLS keeps its LAYER flags 16 + 32 on save', () => {
     for (const [, s] of both(f)) expect(layerOf(s, 'SITE-PLAN|WALLS')!.xrefFlags).toBe(48);
     expect(group(records(f.written, 'LAYER').find((r) => group(r, 2) === 'SITE-PLAN|WALLS'), 70)).toBe('48');
   });
@@ -847,8 +900,8 @@ describe('r2000-nested-blocks-xref.dxf: nested INSERTs with ByBlock / ByLayer co
 
 /*
  * Survives: one native table (position, direction, row heights, column widths); cell text, the
- * merged title, formatted cell text, per-cell height and alignment overrides; the *T1 picture is
- * not kept as a block. Lost (matrix: "as INSERT + XDATA"): the table is written as an INSERT of an
+ * merged title, formatted cell text, per-cell height and alignment overrides, the TABLESTYLE's
+ * text heights, alignment and margins for the other cells; the *T1 picture is not kept as a block. Lost (matrix: "as INSERT + XDATA"): the table is written as an INSERT of an
  * anonymous block carrying the cells in JCAD_TABLE XDATA, not as ACAD_TABLE.
  */
 describe('r2018-table.dxf: ACAD_TABLE with cells, merged title, table style (AC1032)', () => {
@@ -895,7 +948,7 @@ describe('r2018-table.dxf: ACAD_TABLE with cells, merged title, table style (AC1
     expect(group(insert, 2)).toMatch(/^\*U\d+$/);
   });
 
-  it('TABLESTYLE provides title/header/data cell defaults while cell overrides win', () => {
+  it('cells without an override take the TABLESTYLE text height, alignment and margins (title 5, header 3.5, data 2.5 top centre, margins 1.5)', () => {
     for (const [, s] of both(f)) {
       const t = ofType<TableEntity>(s.entities, 'table')[0]!;
       expect(t.margin).toBe(1.5);
@@ -903,7 +956,78 @@ describe('r2018-table.dxf: ACAD_TABLE with cells, merged title, table style (AC1
       expect(t.cells[0]![0]).toMatchObject({ height: 5, attachment: 5 });
       expect(t.cells[1]![0]).toMatchObject({ height: 3.5, attachment: 5 });
       expect(t.cells[2]![0]).toMatchObject({ height: 2.5, attachment: 2 });
+      // A cell's own override wins.
       expect(t.cells[3]![0]!.height).toBe(3);
+    }
+  });
+});
+
+/*
+ * The same TABLESTYLE reading against a table AutoCAD wrote (fixtures/example_2000.dxf, AC1015 from
+ * a later AutoCAD): its "Standard" style has the cell styles 4.5 top centre, 6 middle centre, 4.5
+ * middle centre, no version 280 before the title flag, margins 1.5; the table's title row is 11
+ * high and the others 9 (AutoCAD sizes a row 4/3 of its text height plus both margins), so the
+ * styles are data, title, header in that order.
+ */
+describe('fixtures/example_2000.dxf: an AutoCAD-written ACAD_TABLE takes its TABLESTYLE in AutoCAD order', () => {
+  const s = readDxf(decodeDxfBytes(readFileSync(join(import.meta.dirname, '..', 'fixtures', 'example_2000.dxf'))).text);
+  const t = ofType<TableEntity>(s.entities, 'table')[0]!;
+
+  it('title row 6 middle centre, header row 4.5 middle centre, data rows 4.5 top centre, margins 1.5', () => {
+    expect(t.rowHeights.slice(0, 3)).toEqual([11, 9, 9]);
+    expect(t.cells[0]![0]).toMatchObject({ text: 'test', height: 6, attachment: 5, span: { rows: 1, cols: 9 } });
+    expect(t.cells[1]![0]).toMatchObject({ text: 'test', height: 4.5, attachment: 5 });
+    expect(t.cells[2]![0]).toMatchObject({ text: 'xx', height: 4.5, attachment: 2 });
+    expect(t.margin).toBe(1.5);
+    expect(t.textHeight).toBe(4.5);
+    // Each style's text fits its row the way AutoCAD sized them.
+    for (const r of [0, 1, 2]) expect(t.rowHeights[r]).toBeCloseTo((t.cells[r]![0]!.height! * 4) / 3 + 2 * t.margin!, 6);
+  });
+
+  it('the title flag is the 280 after the margins, with or without the leading version 280', () => {
+    const style = (version: boolean, title: number, header: number): Obj => ({
+      kind: 'TABLESTYLE',
+      groups: [
+        { code: 100, value: 'AcDbTableStyle' },
+        ...(version ? [{ code: 280, value: '0' }] : []),
+        { code: 3, value: 'S' }, { code: 70, value: '0' }, { code: 71, value: '0' }, { code: 40, value: '1' }, { code: 41, value: '2' },
+        { code: 280, value: String(title) }, { code: 281, value: String(header) },
+        { code: 7, value: 'Standard' }, { code: 140, value: '2.5' }, { code: 170, value: '2' },
+        { code: 7, value: 'Standard' }, { code: 140, value: '5' }, { code: 170, value: '5' },
+        { code: 7, value: 'Standard' }, { code: 140, value: '3.5' }, { code: 170, value: '5' },
+      ],
+    });
+    for (const version of [false, true]) {
+      expect(readTableStyle(style(version, 1, 0))).toMatchObject({ titleSuppressed: true, headerSuppressed: false, marginX: 1, marginY: 2 });
+      expect(readTableStyle(style(version, 0, 1))).toMatchObject({ titleSuppressed: false, headerSuppressed: true });
+      expect(readTableStyle(style(version, 0, 0)).rows.map((r) => r.height)).toEqual([2.5, 5, 3.5]);
+    }
+  });
+});
+
+/*
+ * write -> read -> write keeps everything the first write wrote, the fields this release added to
+ * the reader and writer (DIMDSEP, DIMTXSTY, DIMLWD / DIMLWE, DIMTZIN, DSTYLE overrides, xref layer
+ * flags, table styles, paper-space IMAGE names, MTEXT columns, 2D limits, plot style dictionary)
+ * among them: the second write differs from the first at most in the last digits of computed
+ * coordinates (10 decimals), and the third equals the second.
+ */
+describe('every committed DXF fixture: write -> read -> write reaches a fixed point', () => {
+  const root = join(import.meta.dirname, '..');
+  const manifest = JSON.parse(readFileSync(join(root, 'tests', 'fixtures', 'manifest.json'), 'utf8')) as { files: string[] };
+  const files = manifest.files.filter((f) => f.endsWith('.dxf') && !f.includes('/broken/'));
+  it.each(files)('%s', (file) => {
+    const w1 = writeDxf(readDxf(decodeDxfBytes(readFileSync(join(root, file))).text));
+    const w2 = writeDxf(readDxf(w1));
+    expect(writeDxf(readDxf(w2))).toBe(w2);
+    const a = w1.split('\r\n');
+    const b = w2.split('\r\n');
+    expect(b).toHaveLength(a.length);
+    for (let i = 0; i < a.length; i += 1) {
+      if (a[i] === b[i]) continue;
+      const x = Number(a[i]);
+      const y = Number(b[i]);
+      expect(Number.isFinite(x) && Number.isFinite(y) && Math.abs(x - y) <= 1e-9 * Math.max(1, Math.abs(x)), `${file} line ${i + 1}: ${a[i]} -> ${b[i]}`).toBe(true);
     }
   });
 });
@@ -915,7 +1039,7 @@ describe('r2018-table.dxf: ACAD_TABLE with cells, merged title, table style (AC1
  * its IMAGEDEF (relative), insertion point, pixel vectors (rotation, scale), size, rectangular and
  * polygonal clips with the clip flag, display flags, brightness / contrast / fade; an inch layout
  * (plot paper units 0, rotated to landscape) with millimetre margins converted, a locked viewport
- * at 1/4" = 1'-0", and a paper-space image's placement.
+ * at 1/4" = 1'-0", and a paper-space image's placement and file name.
  * Lost: nothing the matrix lists.
  */
 describe('r2018-image-inches.dxf: IMAGE + IMAGEDEF in model and paper space, $INSUNITS 1 (AC1032)', () => {
@@ -986,7 +1110,8 @@ describe('r2018-image-inches.dxf: IMAGE + IMAGEDEF in model and paper space, $IN
     });
   });
 
-  it('paper-space IMAGE resolves its late IMAGEDEF path before export', () => {
+  it('the paper-space IMAGE keeps its IMAGEDEF file name C:\\Standards\\jcad-logo.tif and saves it', () => {
     for (const [, s] of both(f)) expect(ofType<ImageEntity>(s.layouts![0]!.entities, 'image')[0]!.path).toBe('C:\\Standards\\jcad-logo.tif');
+    expect(records(f.written, 'IMAGEDEF').map((r) => group(r, 1))).toContain('C:\\Standards\\jcad-logo.tif');
   });
 });

@@ -5,7 +5,7 @@
 import type { Point } from '../core/geometry';
 import * as g from '../core/geometry';
 import type { Entity, LineEntity, PolylineEntity, ArcEntity, CircleEntity } from '../core/entities';
-import { newId, explodeInsert, bakeInheritedColor, entitySegments, arcPoints, mirrorEntityAcross, scaleEntityBy } from '../core/entities';
+import { newId, explodeInsert, insertExpansionLimited, MAX_INSERT_EXPANSION, bakeInheritedColor, entitySegments, arcPoints, mirrorEntityAcross, scaleEntityBy } from '../core/entities';
 import { pickEntity } from '../core/selection';
 import type { Tool, ToolContext } from './types';
 
@@ -591,10 +591,17 @@ export class ExplodeTool extends SelectionTool {
     const targets = this.entities(ctx);
     const out: Entity[] = [];
     const exploded = new Set<string>();
+    let refused = 0;
     for (const e of targets) {
       if (e.type === 'insert') {
+        // A reference whose expansion was cut short (more than MAX_INSERT_EXPANSION objects, or a
+        // block that inserts itself) would lose content: it stays a reference.
+        if (insertExpansionLimited(e, ctx.doc.lookupBlock)) {
+          refused += 1;
+          continue;
+        }
         // ByBlock content of a ByLayer reference keeps the colour it showed (bakeInheritedColor).
-        out.push(...explodeInsert(e, ctx.doc.lookupBlock).map((x) => bakeInheritedColor({ ...x, id: newId() }, ctx.doc.layers)));
+        for (const x of explodeInsert(e, ctx.doc.lookupBlock)) out.push(bakeInheritedColor({ ...x, id: newId() }, ctx.doc.layers));
         exploded.add(e.id);
       } else if (e.type === 'polyline') {
         out.push(...explodePolylineExcept(e, -1));
@@ -602,6 +609,7 @@ export class ExplodeTool extends SelectionTool {
       }
     }
     const n = exploded.size;
+    if (refused) ctx.log(`${refused} block reference(s) not exploded: the block inserts itself or expands to more than ${MAX_INSERT_EXPANSION.toLocaleString('en-US')} objects.`);
     if (n === 0) {
       ctx.log('Nothing to explode.');
       ctx.finish();

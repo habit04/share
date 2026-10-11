@@ -71,19 +71,25 @@ export interface ReportInput {
   errors: readonly DiagnosticEntry[];
   drawingName?: string;
   extra?: readonly string[];
-  /** Explicit opt-in to local paths and drawing names in shared reports. */
+  /** Explicit opt-in to local paths and drawing names in the report (default: left out). */
   includePrivateDetails?: boolean;
 }
 
 const iso = (t: number) => new Date(t).toISOString().replace('T', ' ').slice(0, 19);
 
-/** Remove common local absolute paths from shared diagnostics. */
+/**
+ * Local file paths in report text, replaced by "[local path]" (security review E-16: a problem
+ * report goes to a public GitHub issue; folder and user names reveal private work): file:// URLs,
+ * Windows drive paths (not the "s:/" of "https://"), network paths, and absolute POSIX paths under
+ * the usual top-level folders of user files. A path runs to the end of the line or a quote. One
+ * pass per pattern, no nested repetition: linear in the text.
+ */
 export function redactLocalPaths(text: string): string {
   return text
     .replace(/file:\/\/\/[^\r\n"'<>]*/gi, '[local path]')
-    .replace(/[A-Za-z]:[\\/][^\r\n"'<>]*/g, '[local path]')
-    .replace(/\\\\[^\\\s"'<>]+[\\/][^\r\n"'<>]*/g, '[local path]')
-    .replace(/\/(?:Users|home|tmp|var|mnt|Volumes)\/[^\r\n"'<>]*/g, '[local path]');
+    .replace(/(?<![\w/\\])[A-Za-z]:[\\/][^\r\n"'<>]*/g, '[local path]')
+    .replace(/(?<![\w/\\])\\\\[^\\\s"'<>]+[\\/][^\r\n"'<>]*/g, '[local path]')
+    .replace(/(?<![\w.:/-])\/(?:Users|home|root|tmp|var|private|mnt|media|Volumes|opt|srv|data|run|net|Network)\/[^\r\n"'<>]*/g, '[local path]');
 }
 
 /** The diagnostics block (history + errors) shared by the issue body and the saved report. */

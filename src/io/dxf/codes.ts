@@ -9,7 +9,7 @@ import { DIM_VARIABLES } from '../../core/dimension';
 /** AcadAnnotative xdata: marks an annotative object (Track E; AutoCAD 2008+ reads it, older readers ignore it). */
 export const ANNO_APP = 'AcadAnnotative';
 
-export const MTEXT_COLUMNS_APP = 'JCAD_MTEXT_COLUMNS';
+
 
 export const DIM_TYPE: Record<DimensionEntity['kind'], number> = { linear: 0, aligned: 1, angular: 5, diameter: 3, radius: 4 };
 
@@ -33,6 +33,12 @@ export const DIMSTYLE_APP = 'JCAD_DIMSTYLE';
 
 /** XDATA application name carrying a JCad table's data on its INSERT. */
 export const TABLE_APP = 'JCAD_TABLE';
+
+/**
+ * XDATA application name carrying an MTEXT's column definition (JSON in 1000 chunks): AC1015 has
+ * no MTEXT columns, so JCad keeps them here and other programs show one column.
+ */
+export const MTEXT_COLUMNS_APP = 'JCAD_MTEXT_COLUMNS';
 
 /** Real-valued group codes (points, distances, angles, scales): unreadable values there are invalid geometry. */
 export const isRealCode = (code: number): boolean => (code >= 10 && code <= 59) || (code >= 110 && code <= 149) || (code >= 210 && code <= 239) || (code >= 1010 && code <= 1059);

@@ -13,22 +13,37 @@
 //
 // Windows: virus scanners, search indexers and sync clients briefly open files without
 // FILE_SHARE_DELETE, which makes rename fail with EPERM / EACCES / EBUSY. The rename is retried a few
-// times with a short back-off. If replacement still fails, the write fails and leaves the original
-// and any completed backup intact. A direct copy over the destination could truncate the only copy.
+// times with a short back-off. A failed rename fails the save, leaving the original and any
+// completed backup intact. A direct copy could truncate the only complete copy.
 //
 // Failures are re-thrown as `CODE: reason, '<destination>'` errors that keep `.code`, so the renderer
 // (src/app/file-errors.ts) can show which file failed instead of the temporary name.
+//
+// Symbolic links (security review E-5). A save never writes through a link: a destination that is
+// itself a symbolic link (or a junction) is refused with ELOOP - what an O_NOFOLLOW open gives -
+// and the renderer says so, so a local user who can write a shared folder cannot plant
+// `out.dxf -> ~/.profile` (or a link to another file in a sub-folder) and have the next save
+// overwrite that file. Linked folders on the way are normal (macOS /var -> /private/var, Fedora
+// Silverblue /home -> /var/home, Windows junctions and 8.3 names): the folder is resolved once and
+// the write goes to that resolved folder ("pinned"); just before the temporary file replaces the
+// destination the folder is resolved again, and a folder swapped for a link in between is refused
+// without touching anything through it. With `root` (the project's folder, for a drawing that a
+// project opened only by name lists) the resolved folder must also be inside the resolved `root`,
+// so a linked sub-folder cannot lead such a write out of the project. The temporary files are
+// created exclusively (O_EXCL / COPYFILE_EXCL, never through a link of that name). Destinations,
+// backups and temporary names are rechecked before use; linked file destinations are refused.
+// Node has no portable openat/renameat API: a hostile local process can still race a final check.
 'use strict';
 
 const path = require('node:path');
 const crypto = require('node:crypto');
 const fsp = require('node:fs/promises');
+const { constants: fsConstants, realpath: realpathByLinks } = require('node:fs');
+const { promisify } = require('node:util');
 const { describeFileError } = require('./file-errors.cjs');
 
 const RENAME_RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
 const RENAME_DELAYS_MS = [15, 40, 90, 200];
-// macOS exposes these system directories through fixed, root-owned aliases.
-const DARWIN_ALIASES = new Map([['/var', '/private/var'], ['/tmp', '/private/tmp'], ['/etc', '/private/etc']]);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -64,6 +79,40 @@ function fileError(err, file, op) {
   return out;
 }
 
+/**
+ * Identity of a resolved path for the containment test: case-folded where the file system usually
+ * is case-insensitive (Windows, macOS), Unicode NFC.
+ * @param {string} p
+ * @param {string} platform
+ */
+function foldPath(p, platform) {
+  const r = path.resolve(p).normalize('NFC');
+  return platform === 'win32' || platform === 'darwin' ? r.toLowerCase() : r;
+}
+
+/**
+ * Is `child` the folder `dir` or inside it? Both are resolved paths (links already followed).
+ * @param {string} dir
+ * @param {string} child
+ * @param {string} [platform]
+ */
+function isInsideFolder(dir, child, platform = process.platform) {
+  const rel = path.relative(foldPath(dir, platform), foldPath(child, platform));
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
+}
+
+/**
+ * The refusal of a write through a symbolic link (E-5): ELOOP, the code an O_NOFOLLOW open gives
+ * for a link, so src/app/file-errors.ts explains it.
+ * @param {string} file  the path as the caller named it
+ */
+function linkError(file) {
+  const e = /** @type {Error & { code?: string, path?: string }} */ (new Error(`ELOOP: symbolic link not followed, write '${file}'`));
+  e.code = 'ELOOP';
+  e.path = file;
+  return e;
+}
+
 /** Per-file promise chain: writes to the same file run one after another, in call order. */
 function createWriteQueue() {
   const tails = new Map();
@@ -80,14 +129,42 @@ function createWriteQueue() {
 }
 
 /**
+ * Resolve physical destinations concurrently, then reserve their write queues in invocation
+ * order. Reservation does not await the write itself: unrelated files still write concurrently.
+ * A failed resolution or write cannot poison later reservations.
+ */
+function createCanonicalWriteQueue(resolveKey = defaultWriter.canonicalWriteKey) {
+  const enqueue = createWriteQueue();
+  let admission = Promise.resolve();
+  return function enqueueCanonical(file, job) {
+    // Handle early rejection even while an earlier destination is still being resolved.
+    const resolved = Promise.resolve().then(() => resolveKey(file)).then(
+      (key) => ({ key, error: null, ok: true }),
+      (error) => ({ key: null, error, ok: false }),
+    );
+    const reserved = admission.then(async () => {
+      const result = await resolved;
+      if (!result.ok) throw result.error;
+      return { run: enqueue(result.key, () => job(result.key)) };
+    });
+    admission = reserved.then(() => undefined, () => undefined);
+    return reserved.then(({ run }) => run);
+  };
+}
+
+/**
  * Build the writer around an fs/promises-compatible object (tests inject failures through it).
  * `hooks.beforeRename(tmp, dest)` runs after the temporary file is complete and before it replaces
  * the destination; tests throw from it to simulate a crash at the worst moment.
+ * `realpathFallback(p)`: resolves `p` when fs.realpath fails for another reason than a missing
+ * path (default: Node's link-by-link fs.realpath with the real file system, none with an injected one).
  */
 function createAtomicWriter(fs = fsp, options = {}) {
   const platform = options.platform || process.platform;
   const delays = options.renameDelays || RENAME_DELAYS_MS;
   const hooks = options.hooks || {};
+  /** @type {((p: string) => Promise<string>) | null} */
+  const realpathFallback = options.realpathFallback !== undefined ? options.realpathFallback : fs === fsp ? promisify(realpathByLinks) : null;
 
   async function removeQuietly(p, check) {
     try {
@@ -111,9 +188,13 @@ function createAtomicWriter(fs = fsp, options = {}) {
     }
   }
 
+  /**
+   * Create `file` exclusively (O_EXCL: never through a link of that name), write and fsync it.
+   * `created.yes` is set once the file exists, so a failure removes only a file we created.
+   */
   async function writeAndSync(file, data, encoding, created) {
     const fh = await fs.open(file, 'wx');
-    created();
+    created.yes = true;
     try {
       if (typeof data === 'string') await fh.writeFile(data, encoding || 'utf8');
       else await fh.writeFile(data);
@@ -123,7 +204,7 @@ function createAtomicWriter(fs = fsp, options = {}) {
     }
   }
 
-  /** Rename with retries for transient Windows sharing violations; never truncate the destination. */
+  /** Rename with retries for sharing violations; never truncate the destination. */
   async function replace(tmp, dest, check) {
     let lastErr = null;
     for (let attempt = 0; attempt <= delays.length; attempt += 1) {
@@ -151,84 +232,127 @@ function createAtomicWriter(fs = fsp, options = {}) {
     }
   }
 
-  function unsafePath(file) {
-    return Object.assign(new Error('symbolic links, junctions, or changed parent folders cannot be written'), { code: 'ELOOP', path: file });
-  }
-
-  /** A fixed macOS system alias, never a user-created link or a link to another destination. */
-  async function darwinAliasTarget(dir, stat) {
-    const target = platform === 'darwin' && DARWIN_ALIASES.get(dir);
-    if (!target || stat.uid !== 0 || path.posix.resolve('/', await fs.readlink(dir)) !== target) return undefined;
-    // The alias entry and /private must be protected from replacement by ordinary users.
-    for (const protectedDir of ['/', '/private']) {
-      const parent = await existingStat(protectedDir);
-      if (!parent || !parent.isDirectory() || parent.isSymbolicLink() || parent.uid !== 0 || (parent.mode & 0o022)) return undefined;
+  async function lstatOrNull(file) {
+    try {
+      return await fs.lstat(file);
+    } catch (err) {
+      if (err && (err.code === 'ENOENT' || err.code === 'ENOTDIR')) return null;
+      throw err;
     }
-    const destination = await existingStat(target);
-    if (!destination || !destination.isDirectory() || destination.isSymbolicLink() || destination.uid !== 0 || await fs.realpath(dir) !== target) return undefined;
-    return target;
   }
 
   /**
-   * Pin the existing parent chain and reject links (including Windows junctions), except macOS's
-   * protected /var, /tmp and /etc aliases. Both the alias and its /private target chain are pinned.
-   * Rechecked before
-   * each rename and after creating the temp file. Node has no portable renameat/openat API, so a
-   * hostile process can still race the final check and rename; these checks bound that practical
-   * TOCTOU window without following a link or falling back to a destructive copy.
+   * The resolved path, or null when it does not exist (yet). fs/promises' realpath is the native
+   * one: on Windows it asks the volume for the final path (GetFinalPathNameByHandle), which RAM
+   * disks and some network, virtual and FUSE drives cannot answer (EISDIR, EPERM or UNKNOWN). 0.4.1
+   * then wrote to the path as given; refusing would make every save on such a drive fail, so the
+   * links are resolved one component at a time instead (lstat + readlink), and the checks hold.
    */
-  async function guardPath(file) {
+  async function realpathOrNull(p) {
+    try {
+      return await fs.realpath(p);
+    } catch (err) {
+      const code = err && err.code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') return null;
+      if (!realpathFallback || code === 'ELOOP') throw err;
+      try {
+        return await realpathFallback(p);
+      } catch (again) {
+        if (again && (again.code === 'ENOENT' || again.code === 'ENOTDIR')) return null;
+        throw err;
+      }
+    }
+  }
+
+  /**
+   * Where a write of `file` lands (E-5): its folder resolved ("pinned") and the file name, or an
+   * ELOOP error when the file is a symbolic link, or when its resolved folder is outside the
+   * resolved `root`. A folder that does not exist is left to the write itself (ENOENT).
+   * @param {string} file
+   * @param {string | undefined} root
+   * @returns {Promise<{ dest: string, dir: string | null }>}  dir: the pinned folder (null when missing)
+   */
+  async function confinedTarget(file, root) {
+    const realDir = await realpathOrNull(path.dirname(file));
+    if (realDir === null) return { dest: file, dir: null };
+    if (root) {
+      const realRoot = (await realpathOrNull(root)) ?? path.resolve(root);
+      if (!isInsideFolder(realRoot, realDir, platform)) throw linkError(file);
+    }
+    const dest = path.join(realDir, path.basename(file));
+    const st = await lstatOrNull(dest);
+    if (st && st.isSymbolicLink()) throw linkError(file);
+    return { dest, dir: realDir };
+  }
+
+  /** The same destination resolution as a write, used only for main-process queue identity. */
+  async function canonicalWriteKey(file) {
+    if (typeof file !== 'string' || !file) throw new Error('Invalid path');
+    try {
+      return foldPath((await confinedTarget(file, undefined)).dest, platform);
+    } catch (err) {
+      throw fileError(err, file, 'write');
+    }
+  }
+
+  /**
+   * Pin both the requested and canonical parent chains. Existing linked folders are compatible,
+   * but replacing any component, retargeting a link, or introducing a link after capture fails.
+   * Recheck before each use and rename, including cleanup, so it cannot delete through a swap.
+   */
+  async function guardPath(file, root) {
+    const { dest, dir } = await confinedTarget(file, root);
+    if (dir === null) throw Object.assign(new Error('no such file or directory'), { code: 'ENOENT', path: path.dirname(file) });
     const parents = [];
     const visited = new Set();
-    const pinParents = async (start) => {
-      let dir = start;
-      while (!visited.has(dir)) {
-        const stat = await existingStat(dir);
-        if (!stat) throw Object.assign(new Error('no such file or directory'), { code: 'ENOENT', path: dir });
-        const alias = stat.isSymbolicLink() ? await darwinAliasTarget(dir, stat) : undefined;
-        if (!alias && (!stat.isDirectory() || stat.isSymbolicLink())) throw unsafePath(dir);
-        parents.push({ dir, real: await fs.realpath(dir), dev: stat.dev, ino: stat.ino, alias });
-        visited.add(dir);
-        if (alias) await pinParents(alias);
-        const parent = path.dirname(dir);
-        if (parent === dir) break;
-        dir = parent;
+    const capture = async (start) => {
+      let folder = start;
+      while (!visited.has(folder)) {
+        const stat = await lstatOrNull(folder);
+        if (!stat || (!stat.isDirectory() && !stat.isSymbolicLink())) throw linkError(file);
+        const real = await realpathOrNull(folder);
+        if (!real) throw linkError(file);
+        parents.push({ folder, real, linked: stat.isSymbolicLink(), dev: stat.dev, ino: stat.ino });
+        visited.add(folder);
+        const parent = path.dirname(folder);
+        if (parent === folder) break;
+        folder = parent;
       }
     };
-    await pinParents(path.dirname(file));
+    await capture(path.dirname(file));
+    await capture(dir);
+    if (root) await capture(path.resolve(root));
     const check = async (tmp) => {
       for (const pin of parents) {
-        const stat = await existingStat(pin.dir);
-        const alias = stat?.isSymbolicLink() ? await darwinAliasTarget(pin.dir, stat) : undefined;
-        if (!stat || alias !== pin.alias || (!alias && (!stat.isDirectory() || stat.isSymbolicLink())) || await fs.realpath(pin.dir) !== pin.real ||
-            (pin.ino !== undefined && (stat.ino !== pin.ino || stat.dev !== pin.dev))) throw unsafePath(pin.dir);
+        const stat = await lstatOrNull(pin.folder);
+        if (!stat || stat.isSymbolicLink() !== pin.linked || (!pin.linked && !stat.isDirectory()) ||
+            await realpathOrNull(pin.folder) !== pin.real ||
+            (pin.ino !== undefined && (stat.ino !== pin.ino || stat.dev !== pin.dev))) throw linkError(file);
       }
-      for (const p of [file, tmp].filter(Boolean)) {
-        const stat = await existingStat(p);
-        if (stat && stat.isSymbolicLink()) throw unsafePath(p);
+      for (const candidate of [dest, tmp].filter(Boolean)) {
+        const stat = await lstatOrNull(candidate);
+        if (stat && stat.isSymbolicLink()) throw linkError(file);
       }
     };
     await check();
-    return check;
+    return { dest, check };
   }
 
   /**
-   * Copy `src` to `dest` through a temporary file + rename (used for `.bak` copies and the
-   * backup-file IPC). Returns `dest`.
+   * Copy `from` to `dest` through a temporary file + rename. The temporary file is created
+   * exclusively, and the supplied guard checks the source, destination and temp name before
+   * use. Linked destinations and changed folders fail without a direct copy. Errors name
+   * `src` or `dest`.
    */
-  async function copyFileAtomic(src, dest) {
+  async function copyThroughTemp(src, from, dest, check) {
     const tmp = tempNameFor(dest);
-    let created = false;
-    let check;
+    let exists = false;
     try {
-      check = await guardPath(dest);
-      const source = await existingStat(src);
-      if (source && source.isSymbolicLink()) throw unsafePath(src);
-      created = true;
+      await check();
       try {
-        await fs.copyFile(src, tmp, (fs.constants || fsp.constants).COPYFILE_EXCL);
+        await fs.copyFile(from, tmp, fsConstants.COPYFILE_EXCL);
       } catch (err) {
-        if (err && err.code === 'EEXIST') created = false;
+        exists = !!err && err.code === 'EEXIST'; // a file (or link) of that name is not ours
         throw err;
       }
       await check(tmp);
@@ -242,8 +366,33 @@ function createAtomicWriter(fs = fsp, options = {}) {
       await syncDir(path.dirname(dest));
       return dest;
     } catch (err) {
-      if (created) await removeQuietly(tmp, check);
-      throw fileError(err, err && err.code === 'ENOENT' && err.path === src ? src : dest, 'copy');
+      if (!exists) await removeQuietly(tmp, check);
+      throw fileError(err, err && err.code === 'ENOENT' && (err.path === from || err.path === src) ? src : dest, 'copy');
+    }
+  }
+
+  /**
+   * Copy `src` to `dest` through a temporary file + rename (used for `.bak` copies and the
+   * backup-file IPC). Returns `dest`. Like a write (E-5), `src` must not be a symbolic link, and
+   * with `opts.root` both folders must resolve inside that folder: a backup must not copy a file
+   * from elsewhere into the folder or write outside it.
+   * @param {string} src
+   * @param {string} dest
+   * @param {{ root?: string }} [opts]
+   */
+  async function copyFileAtomic(src, dest, opts = {}) {
+    let source;
+    try {
+      source = await guardPath(src, opts.root);
+    } catch (err) {
+      throw fileError(err, src, 'copy');
+    }
+    try {
+      const target = await guardPath(dest, opts.root);
+      const check = async (tmp) => { await source.check(); await target.check(tmp); };
+      return await copyThroughTemp(src, source.dest, target.dest, check);
+    } catch (err) {
+      throw fileError(err, dest, 'copy');
     }
   }
 
@@ -251,17 +400,24 @@ function createAtomicWriter(fs = fsp, options = {}) {
    * Write `data` (string or bytes) to `file` crash-safely.
    * opts.backup: keep the previous content as `<file>.bak` (one generation).
    * opts.encoding: string encoding (default utf8).
-   * Resolves { path, backup (path or null), method ('rename') }.
+   * opts.root: a folder the file's resolved folder must be inside (a project's folder); see the
+   *   module comment (E-5). A destination that is a symbolic link is refused with ELOOP.
+   * Resolves { path (the file written, in its resolved folder), backup (path or null), method ('rename') }.
    */
   async function atomicWriteFile(file, data, opts = {}) {
     if (typeof file !== 'string' || !file) throw new Error('Invalid path');
-    const dest = file;
-    const tmp = tempNameFor(dest);
     let backup = null;
-    let tmpCreated = false;
+    let tmp = '';
+    const tmpCreated = { yes: false };
     let check;
     try {
-      check = await guardPath(dest);
+      const target = await guardPath(file, opts.root);
+      const dest = target.dest;
+      check = target.check;
+      // A queued alias may have been retargeted while it waited. Never write a different
+      // destination from the queue reservation; it could race that destination's other saves.
+      if (opts.expectedDestination && foldPath(dest, platform) !== opts.expectedDestination) throw linkError(file);
+      tmp = tempNameFor(dest);
       const before = await existingStat(dest);
       if (before && before.isDirectory()) {
         const e = /** @type {Error & { code?: string }} */ (new Error('illegal operation on a directory'));
@@ -271,25 +427,25 @@ function createAtomicWriter(fs = fsp, options = {}) {
       // rename() would replace a read-only file without complaint on POSIX: refuse like a plain
       // write would, so marking a drawing read-only still protects it.
       if (before) await fs.access(dest, (fs.constants || fsp.constants).W_OK);
-      await writeAndSync(tmp, data, opts.encoding, () => { tmpCreated = true; });
+      await writeAndSync(tmp, data, opts.encoding, tmpCreated);
       await check(tmp);
       if (before && platform !== 'win32') {
         // Keep the permission bits of the file being replaced (the temp file got the umask default).
         await fs.chmod(tmp, before.mode & 0o7777).catch(() => {});
       }
-      if (before && opts.backup) backup = await copyFileAtomic(dest, `${dest}.bak`);
+      if (before && opts.backup) backup = await copyFileAtomic(dest, `${dest}.bak`, opts);
       if (hooks.beforeRename) await hooks.beforeRename(tmp, dest);
       const method = await replace(tmp, dest, check);
-      tmpCreated = false;
+      tmpCreated.yes = false;
       await syncDir(path.dirname(dest));
       return { path: dest, backup, method };
     } catch (err) {
-      if (tmpCreated) await removeQuietly(tmp, check);
-      throw fileError(err, dest, 'write');
+      if (tmpCreated.yes) await removeQuietly(tmp, check);
+      throw fileError(err, file, 'write');
     }
   }
 
-  return { atomicWriteFile, copyFileAtomic, replace };
+  return { atomicWriteFile, copyFileAtomic, replace, canonicalWriteKey };
 }
 
 const defaultWriter = createAtomicWriter();
@@ -319,8 +475,10 @@ async function backupFile(file, copy = defaultWriter.copyFileAtomic, allowed = (
 
 module.exports = {
   backupFile,
+  isInsideFolder,
   createAtomicWriter,
   createWriteQueue,
+  createCanonicalWriteQueue,
   atomicWriteFile: defaultWriter.atomicWriteFile,
   copyFileAtomic: defaultWriter.copyFileAtomic,
   fileError,

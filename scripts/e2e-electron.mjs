@@ -31,7 +31,9 @@
 // progress dialog and its Cancel (the read runs in a worker thread), IPC from a foreign page being refused, the file
 // access rules (a project cannot make files outside its folder writable, save-dxf writes .dxf only, no network images
 // for a local drawing, links checked after normalisation, file text in the status bar and dialog titles shown as
-// text), and no main-process error log.
+// text), saves and images through a linked folder (a drawing saved twice by name under a symlinked or junctioned
+// folder, an image next to a drawing known under the linked path, a save onto a symbolic link refused with ELOOP and
+// the file it points at unchanged), denied web permissions and blocked pop-ups, and no main-process error log.
 // File safety: old-style autosave files are migrated to permanent ids and offered by the Drawing
 // Recovery Manager (a double click opens a backup once, Discard All spares the opened one); saves
 // go through temp file + rename and keep <name>.bak; a failed save shows Retry / Save As... and
@@ -46,12 +48,38 @@ import { _electron as electron } from 'playwright';
 import { applicationWindow } from './electron-window.mjs';
 import { verifyExecutableFuses } from './electron-fuse-policy.mjs';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, existsSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, existsSync, lstatSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { deflateSync, crc32 } from 'node:zlib';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { inflateSync } from 'node:zlib';
 import { parsePdfBasics, pageContents, parseContentStream } from '../tests/helpers/pdf.ts';
+/**
+ * Where each image of a page's content is drawn: the unit square through the transformation
+ * current at its `Do` (q / Q / cm tracked), as a box in page points.
+ * @param {{ op: string, args: string[] }[]} ops
+ */
+function imageBoxes(ops) {
+  /** @param {number[]} m @param {number[]} n  m then n (PDF: CTM' = m x CTM) */
+  const mul = (m, n) => [m[0] * n[0] + m[1] * n[2], m[0] * n[1] + m[1] * n[3], m[2] * n[0] + m[3] * n[2], m[2] * n[1] + m[3] * n[3], m[4] * n[0] + m[5] * n[2] + n[4], m[4] * n[1] + m[5] * n[3] + n[5]];
+  let ctm = [1, 0, 0, 1, 0, 0];
+  /** @type {number[][]} */
+  const stack = [];
+  const boxes = [];
+  for (const o of ops) {
+    if (o.op === 'q') stack.push(ctm);
+    else if (o.op === 'Q') ctm = stack.pop() ?? [1, 0, 0, 1, 0, 0];
+    else if (o.op === 'cm' && o.args.length === 6) ctm = mul(o.args.map(Number), ctm);
+    else if (o.op === 'Do') {
+      const pts = [[0, 0], [1, 0], [0, 1], [1, 1]].map(([x, y]) => [ctm[0] * x + ctm[2] * y + ctm[4], ctm[1] * x + ctm[3] * y + ctm[5]]);
+      const xs = pts.map((p) => p[0]);
+      const ys = pts.map((p) => p[1]);
+      boxes.push({ x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) });
+    }
+  }
+  return boxes;
+}
+
 
 const repo = resolve(import.meta.dirname, '..');
 const pkg = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8'));
@@ -200,6 +228,8 @@ const app = await electron.launch(packaged ? { executablePath: executable, args,
 const mainLog = [];
 let userData = profile;
 const firstProcess = app.process(); // kept: app.process() is unavailable once the application closed
+/** The Electron runtime actually started (the summary line names it, not the package.json range). */
+const runtime = await app.evaluate(() => process.versions.electron).catch(() => 'unknown');
 firstProcess.stdout?.on('data', (d) => mainLog.push(String(d)));
 firstProcess.stderr?.on('data', (d) => mainLog.push(String(d)));
 
@@ -621,6 +651,16 @@ try {
   if (existsSync(rasterPath)) {
     const pdf = parsePdfBasics(new Uint8Array(readFileSync(rasterPath)));
     check(pdf.errors.length === 0 && pdf.images.some((i) => i.width > 1000), `raster PDF has the plot image (${pdf.images.map((i) => `${i.width}x${i.height}`).join(', ')})`);
+    // printToPDF's margins (Electron 44 takes top/bottom/left/right; Electron 33 ignored the
+    // marginType it was given and the page's @page { margin: 0 } decided): the sheet image fills
+    // the whole tabloid page either way, with no margin.
+    const pg = pdf.pages[0];
+    const boxes = imageBoxes(parseContentStream(pageContents(pdf, (b) => new Uint8Array(inflateSync(b)))[0] ?? '').ops);
+    const box = boxes[0];
+    check(
+      pg && Math.abs(pg.width - 1224) < 1 && Math.abs(pg.height - 792) < 1 && boxes.length === 1 && box && Math.abs(box.x0) < 1 && Math.abs(box.y0) < 1 && Math.abs(box.x1 - pg.width) < 1 && Math.abs(box.y1 - pg.height) < 1,
+      `raster PDF: tabloid landscape page, image placed edge to edge (page ${pg ? `${pg.width} x ${pg.height}` : 'none'}, image ${boxes.map((b) => [b.x0, b.y0, b.x1, b.y1].map((v) => v.toFixed(1)).join(' ')).join(' | ')})`,
+    );
   } else bad(`no raster PDF written at ${rasterPath}`);
 
   // A layout tab: Layout1 is initialised with a viewport and plots as its own sheet.
@@ -935,6 +975,75 @@ try {
     });
     check(titles.a.markup === 0 && titles.a.text.startsWith('<img') && titles.b.markup === 0 && titles.b.text.startsWith('<img') && !titles.xss, `dialog titles with markup show as text (plugin dialog "${titles.a.text.slice(0, 30)}", confirm "${titles.b.text.slice(0, 30)}"; ${titles.left} dialog(s) left open)`);
     rmSync(accDir, { recursive: true, force: true });
+  }
+
+  // ------------------------------------------------------------------ symbolic links (security review E-5)
+  // A save through a linked folder works (macOS /var, Silverblue /home, junctions); an image next to a
+  // drawing known under the linked path is read; a destination that is itself a link is refused and
+  // the file it points at stays as it was.
+  step = 'links';
+  if (current) {
+    const linkRoot = mkdtempSync(join(tmpdir(), 'jcad-e2e-links-'));
+    const realFolder = join(linkRoot, 'real');
+    const linkedFolder = join(linkRoot, 'linked');
+    mkdirSync(realFolder);
+    symlinkSync(realFolder, linkedFolder, process.platform === 'win32' ? 'junction' : 'dir');
+    const tinyDxf = ['0', 'SECTION', '2', 'ENTITIES', '0', 'ENDSEC', '0', 'EOF', ''].join('\n');
+    const viaLink = join(linkedFolder, 'linked.dxf');
+    await app.evaluate((_e, p) => globalThis.__e2e.savePaths.push(p), viaLink);
+    const saved = await win.evaluate((t) => window.jcad.saveDxf(null, t, 'linked.dxf').then((r) => ({ ok: true, r }), (e) => ({ ok: false, e: String(e) })), tinyDxf);
+    await messages();
+    check(saved.ok && saved.r === viaLink && existsSync(join(realFolder, 'linked.dxf')), `a drawing saved through a linked folder lands in the real folder (${JSON.stringify(saved)})`);
+    const again = await win.evaluate(([p, t]) => window.jcad.saveDxf(p, t, 'linked.dxf').then((r) => ({ ok: true, r }), (e) => ({ ok: false, e: String(e) })), [viaLink, tinyDxf.replace('ENDSEC', 'ENDSEC\n999\nagain')]);
+    check(again.ok && again.r === viaLink && (await messages()).length === 0 && /again/.test(readFileSync(join(realFolder, 'linked.dxf'), 'utf8')) && existsSync(join(realFolder, 'linked.dxf.bak')), `saved again by name through the linked folder, with its .bak (${JSON.stringify(again)})`);
+    writeFileSync(join(realFolder, 'logo.png'), solidPng(4, 4, [0, 255, 0]));
+    const linkedImage = await win.evaluate((p) => window.jcad.readImage(p).then((r) => (typeof r === 'string' && r.startsWith('data:image/png;base64,') ? 'read' : String(r)), (e) => String(e)), join(linkedFolder, 'logo.png'));
+    check(linkedImage === 'read', `an image next to a drawing known under a linked path is read (${linkedImage})`);
+    let fileLinks = true;
+    const victim = join(linkRoot, 'victim.txt');
+    writeFileSync(victim, 'VICTIM');
+    const trap = join(realFolder, 'trap.dxf');
+    try {
+      symlinkSync(victim, trap, 'file');
+    } catch {
+      fileLinks = false; // Windows without the privilege to create file links
+    }
+    if (fileLinks) {
+      await app.evaluate((_e, p) => globalThis.__e2e.savePaths.push(p), trap);
+      const trapped = await win.evaluate((t) => window.jcad.saveDxf(null, t, 'trap.dxf').then((r) => ({ ok: true, r }), (e) => ({ ok: false, e: String(e) })), tinyDxf);
+      await messages();
+      check(!trapped.ok && /ELOOP/.test(trapped.e) && readFileSync(victim, 'utf8') === 'VICTIM' && lstatSync(trap).isSymbolicLink(), `a save onto a symbolic link is refused (ELOOP) and the file it points at is unchanged (${JSON.stringify(trapped).slice(0, 160)})`);
+    } else ok('file symbolic links cannot be created here: the refused-link save is checked by the unit tests');
+    rmSync(linkRoot, { recursive: true, force: true });
+  }
+
+  // ------------------------------------------------------------------ web permissions (security review E-12)
+  step = 'permissions';
+  if (current) {
+    const perms = await win.evaluate(async () => {
+      const q = async (/** @type {string} */ name) => {
+        try {
+          return (await navigator.permissions.query(/** @type {PermissionDescriptor} */ ({ name }))).state;
+        } catch (e) {
+          return `error ${String(e)}`;
+        }
+      };
+      const notification = typeof Notification === 'undefined' ? 'none' : await Notification.requestPermission();
+      const media = await navigator.mediaDevices.getUserMedia({ audio: true }).then(
+        () => 'granted',
+        (e) => /** @type {Error} */ (e).name,
+      );
+      const popup = window.open('https://example.com/', '_blank');
+      return { geolocation: await q('geolocation'), camera: await q('camera'), notification, media, popup: popup === null ? 'blocked' : 'opened' };
+    });
+    check(perms.geolocation === 'denied' && perms.camera === 'denied' && perms.notification === 'denied' && perms.media !== 'granted' && perms.popup === 'blocked', `web permissions are denied and pop-ups blocked (${JSON.stringify(perms)})`);
+    // The one permission the page keeps: writing the clipboard (Copy Full File Path, the report
+    // copy buttons use navigator.clipboard.writeText).
+    const token = `jcad-e2e-clipboard-${Date.now()}`;
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.isVisible())?.focus());
+    const wrote = await win.evaluate(async (t) => navigator.clipboard.writeText(t).then(() => 'ok', (e) => `${e && e.name}: ${e && e.message}`), token);
+    const pasted = await app.evaluate(({ clipboard }) => clipboard.readText());
+    check(wrote === 'ok' && pasted === token, `clipboard writes from the page still work (writeText: ${wrote}; clipboard holds ${JSON.stringify(pasted.slice(0, 40))})`);
   }
 
   // ------------------------------------------------------------------ Symbol Builder
@@ -1478,5 +1587,5 @@ else console.log(`e2e-electron: output kept in ${outDir}`);
 // stdout / stderr are asynchronous pipes on some platforms, so the last lines are flushed first.
 const flush = (/** @type {NodeJS.WriteStream} */ stream, /** @type {string} */ text) => new Promise((resolve) => stream.write(text, () => resolve(undefined)));
 if (problems.length) await flush(process.stderr, problems.map((p) => `  - ${p}`).join('\n') + '\n');
-await flush(process.stdout, `\ne2e-electron: ${results.length} checks passed, ${problems.length} failed (${process.platform} ${process.arch}, ${packaged ? `packaged ${executable}` : `Electron ${pkg.devDependencies.electron}`})\n`);
+await flush(process.stdout, `\ne2e-electron: ${results.length} checks passed, ${problems.length} failed (${process.platform} ${process.arch}, ${packaged ? `packaged ${executable}` : `Electron ${runtime}`})\n`);
 process.exit(problems.length ? 1 : 0);

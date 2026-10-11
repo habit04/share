@@ -21,13 +21,13 @@ describe('bounded file reads and plot dimensions', () => {
   };
   it('rejects oversized input before reading and always closes the handle', async () => {
     const r = reader(101, 'abc');
-    await expect(readLimitedFile(r.fs, 'drawing.dxf', 100)).rejects.toThrow(/size limit/);
+    await expect(readLimitedFile(r.fs, 'drawing.dxf', 100)).rejects.toThrow(/drawing\.dxf is larger than/);
     expect(r.handle.read).not.toHaveBeenCalled();
     expect(r.handle.close).toHaveBeenCalledOnce();
   });
   it('detects a file that grows after stat instead of silently truncating it', async () => {
     const r = reader(3, 'abcd');
-    await expect(readLimitedFile(r.fs, 'drawing.dxf', 100)).rejects.toThrow(/File changed/);
+    await expect(readLimitedFile(r.fs, 'drawing.dxf', 100)).rejects.toThrow(/drawing\.dxf changed while it was read/);
     expect(r.handle.close).toHaveBeenCalledOnce();
   });
   it('reads an input at the exact byte boundary', async () => {

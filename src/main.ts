@@ -440,6 +440,7 @@ function boot(): void {
       .then((r) => {
         if (r.state === 'up-to-date') ed.log(`JCad Electrical ${r.version ?? ''} is up to date.`);
         else if (r.state === 'available') ed.log(`Update available: JCad Electrical ${r.version ?? ''}.`);
+        else if (r.state === 'unsupported') ed.log(`No update for this computer: JCad Electrical ${r.version ?? ''} needs a newer operating system.`);
         else if (r.state === 'downloaded') ed.log(`Update ${r.version ?? ''} downloaded; it installs when the application restarts.`);
         else if (r.state === 'busy') ed.log('An update check is already running.');
         else if (r.state === 'error') ed.log(`Update check failed: ${r.message ?? 'unknown error'}`);
@@ -449,6 +450,7 @@ function boot(): void {
   let lastProgressStep = -1;
   window.jcad?.onUpdateStatus?.((s) => {
     if (s.state === 'available') editor.log(`A newer JCad Electrical (${s.version ?? ''}) is available${s.manual ? ' on the releases page' : ''}.`);
+    else if (s.state === 'unsupported' && s.message) editor.log(s.message);
     else if (s.state === 'downloading' && s.percent !== undefined) {
       const step = Math.floor(s.percent / 25);
       if (step !== lastProgressStep) {

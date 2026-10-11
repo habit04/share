@@ -48,6 +48,9 @@ text for the 0.4.0 release page (`npm run release-notes -- v0.4.0`). The manual 
 workflow writes it for you: Actions > Release notes > **Run workflow**, tag `v0.4.0`; it renders the
 tag's `CHANGELOG.md` section with the same script and updates the release description (the
 installers stay as they are). Pasting it by hand (**Edit**, paste, **Update release**) works too.
+`docs/releases/v0.4.2.md` keeps the 0.4.2 notes as they were cut
+(`node scripts/release-notes.mjs v0.4.2 --strict --out docs/releases/v0.4.2.md`), the same text the
+release workflow publishes; `tests/release-notes.test.ts` checks both files against `CHANGELOG.md`.
 
 The manual **Packaged smoke test (existing release)** workflow re-runs the packaged checks
 against the installers attached to any published release (for example after a runner image or
@@ -64,8 +67,8 @@ output includes `origin-migration.log`, per-installer `packaged-smoke-result.jso
 | Windows | `jcad-electrical-<v>-win-x64.exe` and the installed `JCad Electrical.exe` | Authenticode through Azure Artifact Signing when the seven `AZURE_*` secrets are set (publisher common name = `AZURE_PUBLISHER_NAME`); the workflow fails if any `.exe` lacks a valid signature from that exact publisher | PowerShell: `Get-AuthenticodeSignature .\jcad-electrical-<v>-win-x64.exe` shows `Valid` and the publisher; or `signtool verify /pa /v <file>`; or file Properties > Digital Signatures |
 | macOS | `jcad-electrical-<v>-mac-arm64.dmg`, `...-mac-x64.dmg` | Developer ID + hardened runtime + notarization (stapled) when the five Apple secrets are set; otherwise an **ad-hoc** signature (`scripts/afterPack.cjs`), which keeps the bundle intact but is not an identity | `codesign --verify --deep --strict --verbose=2 "/Applications/JCad Electrical.app"`; `spctl --assess --type execute --verbose=4 "/Applications/JCad Electrical.app"` (Developer ID builds: "accepted, source=Notarized Developer ID"); `xcrun stapler validate "/Applications/JCad Electrical.app"` |
 | Linux | `.AppImage`, `.deb` | not signed | compare the checksum below |
-| All | `latest.yml`, `latest-mac.yml`, `latest-linux.yml` | written by electron-builder; electron-updater checks downloads against them (and, on Windows, the publisher name) | each installer's `sha512` (base64) is listed there: `openssl dgst -sha512 -binary <file> \| base64` must print the same value |
-| All | `release-provenance.json`, platform records, `SHA256SUMS.txt`, installers and metadata | GitHub/Sigstore attestation of the complete verified release artifact set; separate from OS code signing | `gh attestation verify <download> --repo habit04/share --bundle release-provenance.sigstore.json` |
+| All | `latest.yml`, `latest-mac.yml`, `latest-linux.yml` | written by electron-builder; electron-updater checks downloads against them (and, on Windows, the publisher name), and the application checks the downloaded installer again before installing it (`electron/update-verify.cjs`) | each installer's `sha512` (base64) is listed there: `openssl dgst -sha512 -binary <file> \| base64` must print the same value |
+| All | `release-provenance.json`, the platform records, `SHA256SUMS.txt`, installers and metadata | GitHub / Sigstore attestation of the complete verified artifact set (from the release after 0.4.1); separate from OS code signing | `gh attestation verify <download> --repo habit04/share --bundle release-provenance.sigstore.json`; `sha256sum -c SHA256SUMS.txt` |
 
 An empty-tag build-only rehearsal may produce unsigned Windows or ad-hoc macOS installers when
 credentials are absent. `require_signing` makes even a rehearsal require those credentials.
@@ -93,10 +96,15 @@ Older releases can lack provenance assets. Verify the specific release's publish
   after start-up and on **Help > Check for Updates…** (`CHECKUPDATES`).
 - **Windows (NSIS) with a trusted publisher configured** updates in place through electron-updater:
   it reads `latest.yml`, downloads after consent, checks SHA-512 and the signature publisher,
-  and installs when the application
-  restarts (the unsaved-work prompt runs first).
+  and installs only through **Restart Now**, after the unsaved-work prompt and a fresh
+  checksum/publisher verification. Ordinary quitting does not install an update; **Later**
+  leaves it available through Check for Updates.
 - **Unsigned Windows, macOS and all Linux builds** are told that a newer release exists and offered the matching
-  download; they are replaced by installing the new version over the old one.
+  download; they are replaced by installing the new version over the old one. On macOS the
+  release's `latest-mac.yml` declares `minimumSystemVersion`, written from `package.json` by
+  `scripts/mac-update-info.mjs`. A Mac below that minimum is told the requirement and is not
+  offered the incompatible installer. Keep the minimum-version warning at the start of release
+  notes because versions through 0.4.1 cannot enforce this metadata check.
 - Users only see a release once it is published (the `release` job is the last step), so a
   failed gate never reaches anyone.
 - Download counts are watched by the hourly **Download alerts** workflow (README).

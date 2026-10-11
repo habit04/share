@@ -2,8 +2,8 @@
 
 What JCad Electrical reads from DXF and DWG files, what it writes back, and what is lost on the
 way. JCad is a 2D program: it works in the drawing plane and keeps 2D geometry. DXF is the native
-format (written as AutoCAD 2000, `AC1015`); DWG is **read-only** (LibreDWG, versions R14 to 2018),
-and SAVE after opening a DWG writes a DXF next to it.
+format (written as AutoCAD 2000, `AC1015`); DWG is **read-only** (LibreDWG, versions R14 to 2018,
+files up to 128 MiB), and SAVE after opening a DWG writes a DXF next to it.
 
 Legend: **yes** = kept; **partly** = kept with the limits in the last column; **no** = not read or
 not written (the object is dropped; on DWG import the dropped types are counted in the "Skipped
@@ -121,3 +121,17 @@ Electrical, so it survives a round trip through other programs that keep blocks 
 - Writing DWG.
 - 3D geometry and 3D views (only the XY projection of 2D-capable entities is read).
 - Parametric constraints, dynamic-block actions, sheet sets, data links, digital signatures.
+
+## Platforms
+
+The desktop application runs on the Electron 44 runtime (44.7.0), whose platform support it
+follows:
+
+| System | Installer | Minimum |
+| --- | --- | --- |
+| Windows | `.exe` (NSIS), x64 | Windows 10 |
+| macOS | `.dmg`, Apple Silicon (`arm64`) and Intel (`x64`) | macOS 13 Ventura (releases up to 0.4.1, on Electron 33, ran on macOS 11 Big Sur and 12 Monterey) |
+| Linux | `.AppImage`, `.deb`, x64 | a distribution release still supported by both its maker and Chromium |
+
+The browser edition on the website does not use Electron and is not affected by these minimums
+(its automated checks run in Chromium).

@@ -4,13 +4,14 @@
  * renderer's Save All workflow (src/app/closeflow.ts); a renderer that does not answer gets a
  * native Close Without Saving / Cancel question.
  */
-const { app, BrowserWindow, dialog, screen, session } = require('electron');
+const { app, BrowserWindow, dialog, screen } = require('electron');
 const path = require('node:path');
 const fsSync = require('node:fs');
 const updater = require('../updater.cjs');
 const { windowStateFile, writeStateFile, flushRendererPreferences } = require('./app-data.cjs');
 const { APP_URL } = require('../renderer-origin.cjs');
 const { buildMenu } = require('./menu.cjs');
+const { secureContents } = require('../web-security.cjs');
 
 /** @typedef {import('./context.cjs').MainContext} MainContext */
 
@@ -51,12 +52,6 @@ function initialBounds() {
   const wa = display.workArea;
   const visible = b.x + b.width > wa.x + 40 && b.x < wa.x + wa.width - 40 && b.y + b.height > wa.y + 40 && b.y < wa.y + wa.height - 40;
   return visible ? { x: b.x, y: b.y, width: Math.max(1000, b.width), height: Math.max(640, b.height), maximized: Boolean(st.maximized) } : { ...def, maximized: Boolean(st.maximized) };
-}
-
-/** Apply navigation restrictions to main and print contents. */
-function secureContents(contents) {
-  contents.setWindowOpenHandler(() => ({ action: 'deny' }));
-  contents.on('will-navigate', (event) => event.preventDefault());
 }
 
 /**
@@ -168,10 +163,6 @@ function createWindows(ctx, devUrl, allowInspection = !app.isPackaged) {
   });
 
   async function createWindow() {
-    session.defaultSession.setPermissionRequestHandler((contents, permission, callback) =>
-      callback(contents === ctx.mainWindow?.webContents && permission === 'clipboard-sanitized-write'));
-    session.defaultSession.setPermissionCheckHandler((contents, permission) =>
-      contents === ctx.mainWindow?.webContents && permission === 'clipboard-sanitized-write');
     const b = initialBounds();
     const win = new BrowserWindow({
       x: b.x,

@@ -158,7 +158,7 @@ export function parseManifest(text: string, fallbackName?: string): PluginManife
   };
 }
 
-/** SHA-256 (hex) of the code; FNV-1a when WebCrypto is unavailable. */
+/** SHA-256 (hex) of the code; FNV-1a ("fnv-...") when WebCrypto is unavailable, which never remembers trust. */
 export async function codeHash(code: string): Promise<string> {
   const subtle = globalThis.crypto?.subtle;
   if (subtle) {
@@ -407,6 +407,8 @@ export class PluginHost {
     const all = readTrust(this.storage);
     const key = trustKey(src);
     const hit = all[key];
+    // Only a SHA-256 digest remembers an answer (security review E-10): with the FNV-1a fallback
+    // (no WebCrypto) a changed plugin could keep a remembered "yes", so it is asked every run.
     const strongHash = /^[0-9a-f]{64}$/.test(hash);
     if (strongHash && hit && hit.hash === hash && (hit.answer === 'yes' || !reask)) return hit.answer === 'yes';
     const yes = await this.confirmFn(src.manifest.name, src.path);

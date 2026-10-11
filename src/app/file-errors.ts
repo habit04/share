@@ -9,7 +9,7 @@
  * tests/file-safety.test.ts checks that both produce identical messages.
  */
 
-export type FileErrorKind = 'disk-full' | 'permission' | 'read-only' | 'locked' | 'unavailable' | 'too-long' | 'is-folder' | 'io' | 'unknown';
+export type FileErrorKind = 'disk-full' | 'permission' | 'read-only' | 'locked' | 'unavailable' | 'too-long' | 'is-folder' | 'link' | 'io' | 'unknown';
 export type FileAction = 'save' | 'autosave' | 'backup' | 'read' | 'list';
 
 export interface FileErrorInfo {
@@ -53,13 +53,14 @@ export const KIND_BY_CODE: Record<string, FileErrorKind> = {
   ESTALE: 'unavailable',
   ENAMETOOLONG: 'too-long',
   EISDIR: 'is-folder',
+  ELOOP: 'link',
   EIO: 'io',
   EMFILE: 'io',
   ENFILE: 'io',
 };
 
 /** Error codes that are not in KIND_BY_CODE but still name a file system failure in IPC error text. */
-const OTHER_FS_CODES = new Set(['EINVAL', 'EEXIST', 'ENOTEMPTY', 'EXDEV', 'ELOOP', 'EMLINK', 'ENOTSUP', 'EOPNOTSUPP', 'ECANCELED', 'EPIPE', 'ENOSYS', 'EBADF']);
+const OTHER_FS_CODES = new Set(['EINVAL', 'EEXIST', 'ENOTEMPTY', 'EXDEV', 'EMLINK', 'ENOTSUP', 'EOPNOTSUPP', 'ECANCELED', 'EPIPE', 'ENOSYS', 'EBADF']);
 
 /**
  * The OS error code of an error object or IPC error text. In text only known codes count: a
@@ -132,6 +133,12 @@ function reason(kind: FileErrorKind, dir: string | null, writing: boolean, readi
       return 'the path is too long. Choose a shorter folder or file name.';
     case 'is-folder':
       return 'a folder with that name is in the way. Choose another file name.';
+    case 'link':
+      // A write refused because the file is a symbolic link, or a linked folder leads out of the
+      // project's folder (electron/atomic-write.cjs).
+      return writing
+        ? `the file is a symbolic link (shortcut), or a linked folder on its path leads outside ${where}. Saving does not follow such links, so no other file can be overwritten through them. Use Save As to save under another name, or open the file the link points to.`
+        : 'the path contains a loop of symbolic links.';
     case 'io':
       return 'the disk reported an input/output error. The drive may be failing, full of open files, or was removed.';
     default:

@@ -52,6 +52,9 @@ jobs:
       - run: npm ci
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+      # Electron 44's package fetches its binary on first use, not at install (as in ci.yml): fetch
+      # it here so the download does not happen inside the end-to-end run's launch timeout.
+      - run: node node_modules/electron/install.js
       - name: Install Chromium for Playwright
         run: |
           npx playwright install --with-deps chromium
@@ -121,6 +124,8 @@ jobs:
       - run: npm run dist:test
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Fetch the legacy-seeding Electron binary before test launches
+        run: node node_modules/electron/install.js
       - name: Dedicated test-build Electron suite (Linux)
         if: runner.os == 'Linux'
         run: xvfb-run -a npm run e2e:test-build
@@ -233,6 +238,7 @@ jobs:
           AZURE_TENANT_ID: ${{ runner.os == 'Windows' && secrets.AZURE_TENANT_ID || '' }}
           AZURE_CLIENT_ID: ${{ runner.os == 'Windows' && secrets.AZURE_CLIENT_ID || '' }}
           AZURE_CLIENT_SECRET: ${{ runner.os == 'Windows' && secrets.AZURE_CLIENT_SECRET || '' }}
+      # Valid, and from the publisher the updater compares downloads against (app-update.yml publisherName).
       - name: Check the Windows signatures
         if: steps.signing.outputs.enabled == 'true'
         shell: pwsh
@@ -254,12 +260,54 @@ jobs:
       - name: Build, sign and notarize (macOS, Developer ID)
         if: ${{ runner.os == 'macOS' && env.HAS_APPLE == 'true' }}
         # package.json keeps hardenedRuntime false for the ad-hoc build; on this runner only, the signed build
-        # turns on the hardened runtime with build/entitlements.mac.plist. electron-builder then signs with the
-        # CSC_LINK certificate and notarizes (and staples) because APPLE_ID / _APP_SPECIFIC_PASSWORD / _TEAM_ID are set.
+        # turns on the hardened runtime with build/entitlements.mac.plist. The CSC_LINK certificate goes into a
+        # private, temporary keychain, using that keychain's own password for its partition list.
+        # electron-builder then signs with that identity (CSC_KEYCHAIN,
+        # CSC_NAME = its SHA-1; the ad-hoc afterPack hook steps aside because CSC_NAME is set) and notarizes (and
+        # staples) because APPLE_ID / _APP_SPECIFIC_PASSWORD / _TEAM_ID are set.
         shell: bash
         run: |
+          set -euo pipefail
+          umask 077
           node scripts/mac-signing-config.mjs
-          npx electron-builder ${{ matrix.target }} --publish never
+          scratch="$(mktemp -d "$RUNNER_TEMP/jcad-signing.XXXXXX")"
+          keychain="$scratch/signing.keychain-db"
+          cert="$scratch/signing.p12"
+          kc_password="$(openssl rand -base64 32)"
+          original_keychains=()
+          while IFS= read -r item; do
+            original_keychains+=("$item")
+          done < <(security list-keychains -d user | sed 's/^[[:space:]]*"//; s/"[[:space:]]*$//')
+          cleanup_signing() {
+            rm -f "$cert" "$scratch/DeveloperIDG2CA.cer" "$scratch/DeveloperIDCA.cer"
+            security list-keychains -d user -s "${original_keychains[@]}" 2> /dev/null || true
+            security delete-keychain "$keychain" 2> /dev/null || true
+            rmdir "$scratch" 2> /dev/null || true
+          }
+          trap cleanup_signing EXIT
+          case "$CSC_LINK" in
+            https://*) curl -fsSL --retry 3 -o "$cert" "$CSC_LINK" ;;
+            *) node -e "require('fs').writeFileSync(process.argv[1], Buffer.from(process.env.CSC_LINK, 'base64'))" "$cert" ;;
+          esac
+          security create-keychain -p "$kc_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$kc_password" "$keychain"
+          security import "$cert" -k "$keychain" -P "$CSC_KEY_PASSWORD" -T /usr/bin/codesign -T /usr/bin/productbuild
+          rm -f "$cert"
+          # Apple's Developer ID intermediates, so either issuing chain can be built.
+          for ca in DeveloperIDG2CA DeveloperIDCA; do
+            curl -fsSL --retry 3 -o "$scratch/$ca.cer" "https://www.apple.com/certificateauthority/$ca.cer"
+            security import "$scratch/$ca.cer" -k "$keychain" || true
+          done
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$kc_password" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" "${original_keychains[@]}"
+          identity="$(security find-identity -v -p codesigning "$keychain" | awk '/"Developer ID Application: / { print $2; exit }')"
+          if [ -z "$identity" ]; then
+            echo "::error::CSC_LINK holds no valid Developer ID Application identity"
+            exit 1
+          fi
+          echo "Developer ID signing identity: $identity"
+          env -u CSC_LINK -u CSC_KEY_PASSWORD CSC_KEYCHAIN="$keychain" CSC_NAME="$identity" npx electron-builder ${{ matrix.target }} --publish never
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
@@ -304,6 +352,9 @@ jobs:
           for app in "${apps[@]}"; do
             codesign --verify --deep --strict --verbose=2 "$app"
           done
+      - name: Record the minimum macOS version in latest-mac.yml
+        if: runner.os == 'macOS'
+        run: node scripts/mac-update-info.mjs release
       - name: Record tested source, checksums and verified signing status
         shell: bash
         env:
@@ -354,8 +405,8 @@ jobs:
           if-no-files-found: error
 
   # Install (Windows: NSIS silently), mount (macOS: hdiutil) or extract (Linux: AppImage, deb) the
-  # installers just built and run the end-to-end checks against the packaged application
-  # (scripts/packaged-smoke.mjs -> scripts/e2e-electron.mjs --packaged).
+  # installers just built retain their signed shipping fuses. Fixed runtime/save/restart probes
+  # run without inspection; the broader Playwright suite belongs to the separate test ASAR.
   packaged-smoke:
     needs: [checks, build]
     strategy:
@@ -387,6 +438,8 @@ jobs:
         with:
           name: ${{ matrix.artifact }}
           path: installers
+      - name: Fetch the legacy-seeding Electron binary before shipping probes
+        run: node node_modules/electron/install.js
       - name: Packaged smoke test (Linux, virtual display)
         if: runner.os == 'Linux'
         run: xvfb-run -a node scripts/packaged-smoke.mjs installers

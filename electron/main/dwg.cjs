@@ -1,7 +1,7 @@
 /**
  * Reading drawing files: DXF bytes decoded by their code page, DWG files parsed by LibreDWG in a
- * worker thread (electron/dwg-host.cjs), with the renderer's progress dialog and Cancel for
- * large files.
+ * worker thread (electron/dwg-host.cjs: input, memory and time limits), with the renderer's
+ * progress dialog and Cancel for large files.
  */
 const path = require('node:path');
 const { createDwgHost, progressThreshold } = require('../dwg-host.cjs');
@@ -37,7 +37,7 @@ async function decodeDxf(bytes) {
     return { text: new TextDecoder('utf-8').decode(bytes), encoding: 'utf-8', reason: 'fallback' };
   }
 }
-/** Parse DWG bytes off the main thread (the worker restarts after a WebAssembly abort). */
+/** Parse DWG bytes off the main thread, within the host's limits (the worker restarts after a WebAssembly abort). */
 async function readDwg(bytes, id) {
   return dwgHost.read(bytes, id);
 }

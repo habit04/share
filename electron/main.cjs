@@ -14,7 +14,7 @@
  *   updates.cjs       app info, external links, update checks and status
  *   handover.cjs      files handed over by the OS and by a second launch
  */
-const { app, BrowserWindow, ipcMain: rawIpcMain, protocol, net } = require('electron');
+const { app, BrowserWindow, session, ipcMain: rawIpcMain, protocol, net } = require('electron');
 const { rejectsProductionDebugging } = require('./inspection-policy.cjs');
 const path = require('node:path');
 const fs = require('node:fs/promises');
@@ -49,6 +49,7 @@ catch (error) {
   return;
 }
 if (probePhase) setTimeout(() => { process.stdout.write('SHIPPING_PROBE_FAIL startup timed out\n'); app.exit(1); }, 60_000);
+const { installPermissionHandlers, installWebContentsGuards } = require('./web-security.cjs');
 
 const { MAX_DRAWING_BYTES, readLimitedFile } = require('./resource-limits.cjs');
 const { installAssetHandler, legacyStorage } = require('./renderer-origin.cjs');
@@ -121,7 +122,7 @@ if (probeIndex >= 0) {
   void app.whenReady().then(async () => {
     try {
       const file = process.argv[probeIndex + 1];
-      const { payload, version } = await readDwg(await readLimitedFile(fs, file, MAX_DRAWING_BYTES));
+      const { payload, version } = await readDwg(/** @type {Buffer} */ (await readLimitedFile(fs, file, MAX_DRAWING_BYTES)));
       dwgHost.dispose();
       process.stdout.write(`PROBE_OK ${version} entities=${payload.entities.length} blocks=${payload.blocks.length}\n`);
       app.exit(0);
@@ -147,7 +148,11 @@ registerSecondInstance();
 // Main-process failures go to a log the user can send with a problem report.
 installCrashLogging();
 
+// Protect every contents, including temporary migration and plot windows.
+installWebContentsGuards(app);
+
 app.whenReady().then(async () => {
+  installPermissionHandlers(session.defaultSession, () => (ctx.mainWindow && !ctx.mainWindow.isDestroyed() ? ctx.mainWindow.webContents : null));
   installAssetHandler({ protocol, net, root: path.join(__dirname, '..', 'dist') });
   if (!DEV_URL && !fsSync.existsSync(path.join(stateDir(), 'renderer-origin-migrated'))) {
     try { rendererStorage = fsSync.existsSync(path.join(stateDir(), 'Local Storage', 'leveldb')) ? await legacyStorage({ BrowserWindow, protocol, indexFile: path.join(__dirname, '..', 'dist', 'index.html') }) : {}; }

@@ -8,11 +8,20 @@
  *    only check: the GitHub Releases API is asked for the latest version and, if it
  *    is newer, the user is offered the download page. (macOS in-place updates need a
  *    Developer ID signed app; the ad-hoc signed builds cannot be swapped by Squirrel.)
+ *    On macOS the release's latest-mac.yml names the macOS version it needs
+ *    (minimumSystemVersion, from package.json build.mac.minimumSystemVersion): a Mac with
+ *    an older system is not offered a download it could not run.
+ *
+ * Authenticity (security review E-8): besides electron-updater's own checks, the downloaded
+ * installer is verified again right after the download and just before it is installed
+ * (electron/update-verify.cjs): its SHA-512 against the release metadata and, on Windows when the
+ * installation names a publisher, its signature. A failure installs nothing.
  */
 const { app, dialog, shell, net } = require('electron');
-const { parseVersion, compareVersions } = require('./version.cjs');
+const { parseVersion, compareVersions, minimumSystemVersionFrom, systemOlderThan } = require('./version.cjs');
 const { externalUrl } = require('./ipc-guard.cjs');
 const { installationHasTrustedPublisher } = require('./update-policy.cjs');
+const { publisherNamesFrom, updateInfoProblem, verifyDownloadedUpdate } = require('./update-verify.cjs');
 
 const OWNER = 'habit04';
 const REPO = 'share';
@@ -24,6 +33,8 @@ const STARTUP_DELAY_MS = 8000;
 let autoUpdater = null;
 let checking = false;
 let downloaded = null; // version string once an update has been downloaded
+/** @type {{ files: string[], info: any } | null} what downloadUpdate() gave for `downloaded` */
+let downloadedUpdate = null;
 /** @type {(status: { state: string, version?: string, percent?: number, message?: string, manual?: boolean }) => void} */
 let statusSink = () => {};
 /**
@@ -47,7 +58,8 @@ function getAutoUpdater() {
   const mod = require('electron-updater');
   autoUpdater = mod.autoUpdater;
   autoUpdater.autoDownload = false;
-  autoUpdater.autoInstallOnAppQuit = true;
+  // Ordinary quit does not run our final checksum/publisher recheck or close workflow.
+  autoUpdater.autoInstallOnAppQuit = false;
   autoUpdater.allowPrerelease = false;
   autoUpdater.logger = null;
   autoUpdater.on('download-progress', (p) => statusSink({ state: 'downloading', percent: Math.round(p.percent || 0) }));
@@ -82,6 +94,33 @@ function assetFor(release) {
   return safeUrl(hit ? hit.url : release.url);
 }
 
+/** Is `u` a file of this project's GitHub releases (https://github.com/<owner>/<repo>/releases/download/...)? */
+function isReleaseDownload(u) {
+  try {
+    const url = new URL(String(u));
+    return url.protocol === 'https:' && url.host === 'github.com' && !url.username && !url.password && url.pathname.startsWith(`/${OWNER}/${REPO}/releases/download/`);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The macOS version `release` needs: minimumSystemVersion of its latest-mac.yml, or null when the
+ * release has none (0.4.1 and earlier ran on macOS 11) or it cannot be read (then the download is
+ * offered as before).
+ */
+async function releaseMinimumMacOS(release) {
+  const meta = release.assets.find((a) => a.name === 'latest-mac.yml');
+  if (!meta || !isReleaseDownload(meta.url)) return null;
+  try {
+    const res = await net.fetch(meta.url, { headers: { 'User-Agent': `JCad-Electrical/${app.getVersion()}` } });
+    if (!res.ok) return null;
+    return minimumSystemVersionFrom((await res.text()).slice(0, 64 * 1024));
+  } catch {
+    return null;
+  }
+}
+
 async function checkViaApi(win, interactive) {
   const current = app.getVersion();
   const release = await fetchLatestRelease();
@@ -91,6 +130,29 @@ async function checkViaApi(win, interactive) {
       await dialog.showMessageBox(win, { type: 'info', title: 'Check for Updates', message: `JCad Electrical ${current} is up to date.`, detail: `Latest release: ${release.version}.` });
     }
     return { state: 'up-to-date', version: current };
+  }
+  // A release that needs a newer macOS than this Mac has is not offered: its disk image would
+  // install an application that does not start (0.4.2 needs macOS 13; 0.4.1 ran on macOS 11).
+  if (process.platform === 'darwin') {
+    const minimum = await releaseMinimumMacOS(release);
+    const system = typeof process.getSystemVersion === 'function' ? process.getSystemVersion() : '';
+    if (minimum && systemOlderThan(system, minimum)) {
+      const message = `JCad Electrical ${release.version} needs macOS ${minimum} or later; this Mac runs macOS ${system}, so ${current} stays the version for it.`;
+      statusSink({ state: 'unsupported', version: release.version, message });
+      if (interactive) {
+        const r = await dialog.showMessageBox(win, {
+          type: 'info',
+          title: 'Check for Updates',
+          message: `JCad Electrical ${release.version} needs macOS ${minimum} or later.`,
+          detail: `This Mac runs macOS ${system}. Keep using JCad Electrical ${current}: it stays available on the releases page. Updating macOS to ${minimum} or later makes the new version available.`,
+          buttons: ['Release Notes', 'Close'],
+          defaultId: 1,
+          cancelId: 1,
+        });
+        if (r.response === 0) await shell.openExternal(safeUrl(release.url));
+      }
+      return { state: 'unsupported', version: release.version, message };
+    }
   }
   statusSink({ state: 'available', version: release.version, manual: true });
   const r = await dialog.showMessageBox(win, {
@@ -110,19 +172,61 @@ async function checkViaApi(win, interactive) {
   return { state: 'available', version: release.version };
 }
 
+/** Publisher names in the installation's app-update.yml (Windows; [] for an unsigned build). */
+function installedPublisherNames() {
+  if (process.platform !== 'win32') return [];
+  try {
+    return publisherNamesFrom(require('node:fs').readFileSync(require('node:path').join(process.resourcesPath, 'app-update.yml'), 'utf8'));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Verify the downloaded update (electron/update-verify.cjs). On failure nothing is installed:
+ * the on-quit install is switched off and the download forgotten. Resolves the reason or null.
+ */
+async function verifyDownloaded() {
+  const u = getAutoUpdater();
+  u.autoInstallOnAppQuit = false;
+  const d = downloadedUpdate;
+  const why = d
+    ? await verifyDownloadedUpdate({
+        files: d.files,
+        info: d.info,
+        publisherNames: installedPublisherNames(),
+        verifySignature: typeof u.verifyUpdateCodeSignature === 'function' ? (names, file) => u.verifyUpdateCodeSignature(names, file) : null,
+      })
+    : 'no downloaded update';
+  if (why) {
+    u.autoInstallOnAppQuit = false;
+    downloaded = null;
+    downloadedUpdate = null;
+  }
+  return why;
+}
+
 /** Offer to restart into the downloaded update; the unsaved-work prompt runs first. */
 async function offerRestart(win, version) {
   const r = await dialog.showMessageBox(win, {
     type: 'info',
     title: 'Update Ready',
     message: `JCad Electrical ${version} has been downloaded.`,
-    detail: 'Restart now to install it, or it will be installed when you quit.',
+    detail: 'Restart now to install it, or choose Check for Updates when you are ready. Quitting normally does not install it.',
     buttons: ['Restart Now', 'Later'],
     defaultId: 0,
     cancelId: 1,
   });
   if (r.response !== 0) return;
-  if (await confirmRestart(win)) getAutoUpdater().quitAndInstall(false, true);
+  if (!(await confirmRestart(win))) return;
+  // Verified again right before it runs (E-8).
+  const why = await verifyDownloaded();
+  if (why) {
+    statusSink({ state: 'error', message: `The update was not installed: ${why}.` });
+    await dialog.showMessageBox(win, { type: 'warning', title: 'Update Not Installed', message: 'The downloaded update failed verification and was not installed.', detail: `${why}.\n\nYou can download the new version from the releases page.` });
+    return;
+  }
+  getAutoUpdater().quitAndInstall(false, true);
 }
 
 async function checkViaUpdater(win, interactive) {
@@ -139,6 +243,10 @@ async function checkViaUpdater(win, interactive) {
     if (interactive) await dialog.showMessageBox(win, { type: 'info', title: 'Check for Updates', message: `JCad Electrical ${current} is up to date.` });
     return { state: 'up-to-date', version: current };
   }
+  // Every file of the release metadata must carry a SHA-512 (E-8); otherwise the plain check
+  // (download page) is offered instead.
+  const metaProblem = updateInfoProblem(info);
+  if (metaProblem) throw new Error(`The update cannot be verified: ${metaProblem}.`);
   statusSink({ state: 'available', version: info.version });
   const notes = typeof info.releaseNotes === 'string' ? info.releaseNotes.replace(/<[^>]+>/g, '').trim() : '';
   const r = await dialog.showMessageBox(win, {
@@ -152,15 +260,25 @@ async function checkViaUpdater(win, interactive) {
   });
   if (r.response !== 0) return { state: 'available', version: info.version };
   statusSink({ state: 'downloading', percent: 0 });
+  /** @type {string[]} */
+  let files;
   try {
-    await u.downloadUpdate();
+    files = await u.downloadUpdate();
   } catch (err) {
     // The user asked for this download: always tell them it failed.
     const e = /** @type {Error & { userEngaged?: boolean }} */ (err instanceof Error ? err : new Error(String(err)));
     e.userEngaged = true;
     throw e;
   }
+  downloadedUpdate = { files: Array.isArray(files) ? files : [], info };
   downloaded = info.version;
+  // Verified right after the download too, so the on-quit install never runs an unverified file.
+  const why = await verifyDownloaded();
+  if (why) {
+    const e = /** @type {Error & { userEngaged?: boolean }} */ (new Error(`The downloaded update failed verification and will not be installed: ${why}.`));
+    e.userEngaged = true;
+    throw e;
+  }
   statusSink({ state: 'downloaded', version: info.version });
   await offerRestart(win, info.version);
   return { state: 'downloaded', version: info.version };

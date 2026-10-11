@@ -101,7 +101,8 @@ function writeHatch(w: Writer, e: HatchEntity, owner: string): void {
   w.pair(230, 1);
   w.pair(2, e.solid ? 'SOLID' : e.pattern || 'ANSI31');
   w.pair(70, e.solid ? 1 : 0);
-  // Boundary handles are not retained: a bare associative flag makes AutoCAD AUDIT repair the hatch.
+  // Non-associative: the links to boundary objects are not kept (97 = 0), and a bare associative
+  // flag makes AutoCAD's AUDIT repair the hatch.
   w.pair(71, 0);
   w.pair(91, e.loops.length);
   e.loops.forEach((l, i) => {

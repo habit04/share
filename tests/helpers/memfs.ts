@@ -109,7 +109,15 @@ export class MemFs {
     return { isDirectory: () => false, isFile: () => true, isSymbolicLink: () => false, mode: f.mode, mtimeMs: f.mtimeMs, size: f.data.length };
   }
 
-  async lstat(file: string): ReturnType<MemFs['stat']> { return this.stat(file); }
+  /** No symbolic links here; count lstat independently for failure injection. */
+  async lstat(file: string): ReturnType<MemFs['stat']> {
+    file = normalize(file);
+    if ((await this.enter('lstat', file)) === 'crash') throw new CrashError();
+    if (this.dirs.has(file)) return { isDirectory: () => true, isFile: () => false, isSymbolicLink: () => false, mode: 0o40755, mtimeMs: this.clock, size: 0 };
+    const f = this.files.get(file);
+    if (!f) throw this.noent('lstat', file);
+    return { isDirectory: () => false, isFile: () => true, isSymbolicLink: () => false, mode: f.mode, mtimeMs: f.mtimeMs, size: Buffer.byteLength(f.data, 'utf8') };
+  }
 
   async access(file: string, _mode?: number): Promise<void> {
     file = normalize(file);
@@ -155,7 +163,7 @@ export class MemFs {
       throw new CrashError();
     }
     if (!f) throw this.noent('copyfile', src);
-    if (flags & this.constants.COPYFILE_EXCL && this.files.has(dest)) throw fsError('EEXIST', 'copyfile', dest);
+    if ((flags & this.constants.COPYFILE_EXCL) && (this.files.has(dest) || this.dirs.has(dest))) throw fsError('EEXIST', 'copyfile', dest);
     if (!this.parentExists(dest)) throw this.noent('copyfile', dest);
     this.files.set(dest, { data: f.data, mode: f.mode, mtimeMs: this.tick(), dirty: true });
   }
@@ -170,7 +178,7 @@ export class MemFs {
     return this.rm(file);
   }
 
-  async open(file: string, flags: string): Promise<{ stat(): Promise<{ size: number; isFile(): boolean }>; read(buffer: Uint8Array, offset: number, length: number, position: number | null): Promise<{ bytesRead: number }>; writeFile(data: string | Uint8Array, enc?: unknown): Promise<void>; sync(): Promise<void>; close(): Promise<void> }> {
+  async open(file: string, flags: string | number): Promise<{ stat(): Promise<{ size: number; isFile(): boolean }>; read(buffer: Uint8Array, offset: number, length: number, position: number | null): Promise<{ bytesRead: number }>; writeFile(data: string | Uint8Array, enc?: unknown): Promise<void>; sync(): Promise<void>; close(): Promise<void> }> {
     file = normalize(file);
     if ((await this.enter(`open(${flags})`, file)) === 'crash') throw new CrashError();
     if (flags === 'wx') {

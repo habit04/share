@@ -161,12 +161,12 @@ The JavaScript code of the `hershey` package is MIT-licensed (text below).
 
 ## Electron and Chromium
 
-Every installer contains the Electron runtime (version 33.4.11). Electron is MIT-licensed
+Every installer contains the Electron runtime (version 44.7.0). Electron is MIT-licensed
 (text below). Electron is built on Chromium, Node.js, V8 and many other open-source
 components under their own licences (BSD-3-Clause, MIT, Apache-2.0, LGPL-2.1 for FFmpeg,
 and others). Electron distributes their notices in the file **`LICENSES.chromium.html`**,
 which accompanies the Electron runtime and is included in every Electron release archive at
-<https://github.com/electron/electron/releases/tag/v33.4.11>. Node.js licence:
+<https://github.com/electron/electron/releases/tag/v44.7.0>. Node.js licence:
 <https://github.com/nodejs/node/blob/main/LICENSE>.
 
 ## Licence texts
@@ -971,7 +971,7 @@ will be liable to anyone for any damages related to this
 software or this license, under any kind of legal claim.***
 ```
 
-### electron 33.4.11
+### electron 44.7.0
 
 MIT - Copyright (c) Electron contributors; Copyright (c) 2013-2020 GitHub Inc. - <https://github.com/electron/electron>
 

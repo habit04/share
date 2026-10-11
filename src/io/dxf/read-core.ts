@@ -37,10 +37,15 @@ export interface ReadContext {
   blocks?: Record<string, BlockDef>;
   /** Values for field expressions in TEXT / MTEXT. */
   fields?: FieldContext;
-  /** IMAGE entities waiting for their IMAGEDEF (OBJECTS comes last), by IMAGEDEF handle. */
+  /**
+   * IMAGE entities waiting for their IMAGEDEF (OBJECTS comes last): entity id -> IMAGEDEF handle.
+   * By id, because placing an entity (extrusion) may copy it.
+   */
   pendingImages?: Map<string, string>;
-  tableStyles?: Map<string, TableStyleData>;
+  /** STYLE record names by upper-case handle (DIMTXSTY overrides name a style by handle). */
   textStyleHandles?: Map<string, string>;
+  /** TABLESTYLE objects by upper-case handle (OBJECTS comes last; ACAD_TABLE group 342 names one). */
+  tableStyles?: Map<string, TableStyleData>;
   /** Anonymous blocks replaced by native tables. */
   consumedBlocks?: Set<string>;
   /** Remarks about content that was simplified. */

@@ -1,12 +1,12 @@
 /**
  * readDxf: a DXF file into a drawing. The sections are read in file order (HEADER, TABLES,
- * BLOCKS, ENTITIES, OBJECTS); IMAGE paths, tables read from anonymous blocks, the layers every
- * entity refers to, the header and paper space (io/dxf-layouts.ts) are settled at the end.
+ * BLOCKS, ENTITIES, OBJECTS); tables read from anonymous blocks, the layers every entity refers
+ * to, the header, paper space (io/dxf-layouts.ts) and then the IMAGE paths are settled at the end.
  */
 import type { FieldContext } from '../../core/fields';
 import type { DrawingState, NamedView } from '../../core/document';
 import type { DimStyle, Layer, BlockDef, Entity } from '../../core/entities';
-import { ImportReportBuilder, withImportData } from '../import-report';
+import { ImportReportBuilder, reportBlockExpansion, withImportData } from '../import-report';
 import type { RawDxfEntity } from '../import-report';
 import { diffDimStyles, STANDARD_DIMSTYLE, DIMSTYLES_META_KEY } from '../../core/dimension';
 import { DxfReadError, tokenize, objects, has, str } from './groups';
@@ -16,7 +16,7 @@ import type { Pair } from './groups';
 import type { Linetype } from '../../core/linetypes';
 import type { ReadContext } from './read-core';
 import { LayoutReader } from '../dxf-layouts';
-import { readTableStyle } from './read-annotations';
+import { readTableStyle, type TableStyleData } from './read-annotations';
 import { readHeaderSection, readObjectsSection, readTablesSection, readBlocksSection, readEntitiesSection, drawingHeader } from './read-sections';
 import { DEFAULT_LAYERS } from '../../core/document';
 import { readEntities } from './read-pass';
@@ -65,6 +65,22 @@ function withDimStylesMeta(state: DrawingState, dimStyles: ReadonlyMap<string, D
   return { ...state, meta: { ...(state.meta ?? {}), [DIMSTYLES_META_KEY]: Object.fromEntries(named.map((d) => [d.name, d])) } };
 }
 
+/**
+ * The TABLESTYLE objects of the OBJECTS section, by upper-case handle: they come after the tables
+ * that use them, so they are read first.
+ */
+function tableStylesOf(pairs: readonly Pair[]): Map<string, TableStyleData> {
+  const out = new Map<string, TableStyleData>();
+  for (let i = 0; i + 1 < pairs.length; i += 1) {
+    if (pairs[i]!.code !== 0 || pairs[i]!.value !== 'SECTION' || pairs[i + 1]!.value !== 'OBJECTS') continue;
+    let j = i + 2;
+    while (j < pairs.length && !(pairs[j]!.code === 0 && pairs[j]!.value === 'ENDSEC')) j += 1;
+    for (const o of objects(pairs as Pair[], i + 2, j)) if (o.kind === 'TABLESTYLE' && has(o, 5)) out.set(str(o, 5).toUpperCase(), readTableStyle(o));
+    i = j;
+  }
+  return out;
+}
+
 /** The reader proper; DIMSTYLE records are collected into `dimStyles`. */
 function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string, DimStyle>, report: ImportReportBuilder, raw: RawDxfEntity[]): DrawingState {
   if (text.length > (opts.maxSourceLength ?? 128 * 1024 * 1024)) throw new DxfReadError('DXF exceeds the source text size limit.', 1);
@@ -84,8 +100,8 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
     blocks,
     fields: { ...opts.fieldContext, ...(opts.filePath !== undefined ? { filePath: opts.filePath } : {}) },
     pendingImages: new Map(),
-    tableStyles: new Map(),
     textStyleHandles: new Map(),
+    tableStyles: tableStylesOf(pairs),
     consumedBlocks: new Set(),
     notes: opts.notes ?? [],
     report,
@@ -93,8 +109,6 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
   };
   const imageDefs = new Map<string, string>();
   const layoutReader = new LayoutReader(report);
-  // Definitions in OBJECTS can follow the tables they style in ENTITIES/BLOCKS.
-  for (const o of objects(pairs, 0, pairs.length)) if (o.kind === 'TABLESTYLE' && has(o, 5)) ctx.tableStyles!.set(str(o, 5).toUpperCase(), readTableStyle(o));
 
   // find sections
   let i = 0;
@@ -172,6 +186,7 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
     for (const e of l.entities) ensure(e.layer);
     for (const v of l.viewports) ensure(v.layer);
   }
+  reportBlockExpansion(report, blocks, [...entities, ...(layouts ?? []).flatMap((l) => l.entities)]);
   const styleNames = new Set(['STANDARD', ...Object.keys(textStyles).map((name) => name.toUpperCase())]);
   const referencedStyles = [...entities, ...Object.values(blocks).flatMap((b) => b.entities), ...(layouts ?? []).flatMap((l) => l.entities)];
   for (const entity of referencedStyles) {

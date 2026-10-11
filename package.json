@@ -1,6 +1,6 @@
 {
   "name": "jcad-electrical",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "2D electrical schematic drafting application (desktop)",
   "author": "JCad Electrical contributors",
   "license": "GPL-3.0-only",
@@ -87,6 +87,7 @@
         }
       ],
       "category": "public.app-category.graphics-design",
+      "minimumSystemVersion": "13.0",
       "hardenedRuntime": false,
       "icon": "build/icon.icns"
     },

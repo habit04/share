@@ -55,7 +55,10 @@ installations offer a manual download (see [Updates](#12-updates)).
 ### macOS
 
 There are two disk images: `arm64` for Apple Silicon (M1 and later) and `x64` for Intel Macs.
-Choose the one that matches your Mac (Apple menu > About This Mac).
+Choose the one that matches your Mac (Apple menu > About This Mac). JCad Electrical needs
+macOS 13 Ventura or later. On macOS 11 Big Sur or 12 Monterey use version 0.4.1 (its disk images
+stay on the 0.4.1 release page); 0.4.1 still offers newer versions, but they do not start on
+those systems, so do not replace it.
 
 1. Open the `.dmg` and drag **JCad Electrical** into Applications.
 2. Start it from Applications. The first time, macOS says it cannot verify the developer.
@@ -1250,8 +1253,13 @@ there a project file is opened with "Open with" > JCad Electrical (or **Open Pro
 Linux desktops also open it with a double-click.
 
 Also kept in DXF: splines, hatches, leaders and multileaders, tables, images and external
-references, fields, MTEXT formatting, text styles (including TrueType fonts) and the named
-dimension styles with all their settings. Files written by programs before AutoCAD 2007 are
+references, fields, MTEXT formatting and MTEXT columns, text styles (including TrueType fonts),
+the named dimension styles with all their settings (decimal separator, text style,
+lineweights, tolerance zero suppression included) and the changes a single dimension makes to
+its style. Tables take the text heights, alignment and margins of their table style, and images
+in layouts keep their file. AutoCAD 2000 DXF has no MTEXT columns: JCad Electrical stores them
+as its own extended data, which it reads back while other programs show one column. Files
+written by programs before AutoCAD 2007 are
 read in the code page they name (`$DWGCODEPAGE`), newer ones as UTF-8; the command line reports
 the detected encoding. JCad Electrical writes AutoCAD 2000 DXF with any non-English characters
 escaped, so the text reads correctly whatever the code page of the program that opens it.
@@ -1277,6 +1285,12 @@ space, a layout, a block) and the reason; **Copy Report** copies the complete li
   exactly as they were and are written back, on their layer, at the end of the drawing's
   entities when you save (also when a project-wide command rewrites the file). Their links to
   other objects and their extended data are not kept.
+- **Kept** (blocks): a block whose references would expand, through the blocks nested in it, to
+  more than 2,000,000 objects, and a block that inserts itself (directly or through other
+  blocks). The block is kept and saved unchanged; each reference draws only its first 2,000,000
+  objects (a self-reference is not drawn again), and `EXPLODE` leaves such a reference as it is.
+  When all the references of a drawing together expand to more than that, the report adds a
+  note that drawing and selecting may be slow.
 
 **Saving over the original.** When the file you opened contained content JCad Electrical
 cannot keep, `SAVE` asks before writing over it: **Yes** saves over the original (the dropped
@@ -1317,14 +1331,21 @@ limits. Also brought in: paper-space **layouts** with their entities and floatin
 **ByBlock** colours (so block content takes the block reference's colour), and the layers'
 lock, freeze and plot settings.
 
-What the DWG reader cannot see is listed in the Import Report as **not supported yet**
-instead of being lost silently: a layout's page setup (plot device, plot scale and plot style;
-the sheet size is taken from the layout limits), layers frozen in individual viewports, the
-fixed text height of a text style, and the text or shape elements of complex linetypes.
+The Import Report lists missing data and approximations, including incomplete layout page
+setups, unresolved viewport layer references, font substitutions, and unsupported text or shape
+elements in complex linetypes. Exposed text-style properties and viewport frozen-layer handles
+are retained when available. The [support matrix](SUPPORT-MATRIX.md) describes the remaining losses.
 
 Large DWG files (1 MB and up) show an **Opening Drawing** window with the file size, the elapsed
 time and a **Cancel** button while they are read; the program stays responsive, and Cancel (or Esc)
 stops the read and leaves the current drawing as it was.
+
+DWG files are read in a separate reader with workload limits: files over **128 MiB** are refused.
+A desktop read is stopped after 60 seconds plus one second per input MiB (at most 188 seconds
+for an accepted file); the browser edition allows 60 seconds. Desktop readers also limit their
+JavaScript heap and the shipped WebAssembly allocator's memory growth. These guards do not cap
+all memory used by the process. A refused or cancelled open reports the reason and leaves the
+current drawing as it was. DXF files and projects have size limits too (128 MiB and 8 MiB).
 
 DWG is **read-only**: JCad Electrical cannot write DWG files. When you save a drawing that
 was opened from a DWG, you are asked for a new file name and a DXF is written; the original
@@ -1413,9 +1434,16 @@ When you save over an existing drawing or project, its previous version is kept 
 `<name>.bak` (for example `panel.dxf.bak`, one generation; other exports such as CSV reports get
 no `.bak`). To go back to it, rename it to `panel.dxf`.
 
+**Links are not followed.** A file that is a symbolic link (a shortcut created with `ln -s` or
+`mklink`) is never saved over: the save fails with "the file is a symbolic link (shortcut) ...",
+so a link someone placed in a shared folder cannot make you overwrite another file. Use
+**Save As** to save under another name, or open the file the link points to. Folders reached
+through a link or a junction save normally; for a project opened by name (a plugin, or
+`OPENPROJECT <path>`) a linked folder must not lead outside the project's folder.
+
 If a save fails, JCad Electrical tells you why in plain words (disk full, no permission or
-read-only, file locked by another program, folder or network drive not available, path too long)
-and offers **Retry**, **Save As...** (choose another place) or **Cancel**. The drawing stays
+read-only, file locked by another program, folder or network drive not available, path too long,
+a symbolic link) and offers **Retry**, **Save As...** (choose another place) or **Cancel**. The drawing stays
 marked as modified and its autosave backup is kept, so nothing is lost while you sort it out.
 
 Unsaved project changes are autosaved in the same folder a moment after each change and removed
@@ -1451,10 +1479,17 @@ can also check any time with **Help > Check for Updates…** or the `CHECKUPDATE
 (UPDATE, CHECKFORUPDATES). Help > About shows the installed version.
 
 - **Windows installer with trusted publisher configuration**: the update is downloaded when you agree and
-  installed when the program restarts. Unsaved drawings are handled by the usual
-  save prompt before the restart.
-- **Unsigned Windows, macOS and all Linux builds**: you are told that a new version exists and offered the right
-  download; install it like the first time.
+  installed when you choose **Restart Now**. Choosing **Later** or quitting normally leaves it
+  uninstalled; use **Check for Updates** when you are ready. Unsaved drawings are handled by the usual
+  save prompt before the restart. Before installing, JCad Electrical checks the downloaded
+  file against the checksum published with the release (and, for a signed Windows
+  installation, the publisher's signature). If the check fails, **Update Not Installed**
+  says why, nothing is installed, and you can download the new version from the releases
+  page instead.
+- **Unsigned Windows**, **macOS** and **all Linux builds**: you are told that a new version exists and offered the right
+  download; install it like the first time. A Mac whose macOS is older than a new version needs
+  is not offered it: the check says which macOS the new version needs, and the installed version
+  keeps working.
 
 **Help > Release Notes (GitHub)** opens the releases page; the [changelog](../CHANGELOG.md)
 lists the changes in every version.
@@ -1577,4 +1612,6 @@ The `examples/plugins/` folder of the source repository has three plugins to cop
   catalog number, shows them in a table and offers **Save CSV...**.
 
 A script for `SCRIPTRUN` is a single `.js` file using the same API, for example to move every
-TEXT to a layer in one undo step. In the developer console the API is `window.jcadApi`.
+TEXT to a layer in one undo step. In the developer console the API is `window.jcadApi` (the
+browser edition's console, or a development build's: the installed application has no
+developer tools).

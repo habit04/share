@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { Drawing, DEFAULT_LAYERS } from '../src/core/document';
-import { collectBlockDependencies, entityBounds, explodeInsert, type BlockDef, type Entity, type InsertEntity } from '../src/core/entities';
+import { collectBlockDependencies, entityBounds, explodeInsert, insertDependencies, type BlockDef, type Entity, type InsertEntity } from '../src/core/entities';
 import { SessionManager } from '../src/app/sessions';
 import { warmSpatialIndex, spatialIndexSettings } from '../src/core/spatial-index';
 import { pickEntity } from '../src/core/selection';
@@ -69,6 +69,7 @@ describe('transitive block cache dependencies', () => {
     const defs: Record<string, BlockDef> = { OUTER: block('OUTER', [insert('LATER')]) };
     const ins = insert('OUTER'), lookup = (name: string) => defs[name];
     expect(explodeInsert(ins, lookup)).toEqual([]);
+    expect(insertDependencies(ins, lookup)).toEqual(new Map([['OUTER', defs.OUTER], ['LATER', undefined]]));
     defs.LATER = block('LATER', [line(10)]);
     expect(entityBounds(ins, lookup)?.min.x).toBe(10);
   });
@@ -118,6 +119,12 @@ describe('transitive block cache dependencies', () => {
     expect(() => warmSpatialIndex(doc.entities, doc.lookupBlock)).not.toThrow();
     const dependencies = collectBlockDependencies('B0', doc.lookupBlock);
     expect(dependencies.has('B10')).toBe(false);
+    const used = insertDependencies(doc.entities[0] as InsertEntity, doc.lookupBlock);
+    expect(used.has('B8')).toBe(true);
+    expect(used.has('B9')).toBe(false);
+    expect(used.has('B10')).toBe(false);
+    const shallower: Record<string, BlockDef> = { ...definitions, B10: block('B10', [line(100)]) };
+    expect(insertDependencies(insert('B8'), (name) => shallower[name]).get('B10')).toBe(shallower.B10);
   });
 
   it('tracks a nested block at a shallower depth when it is also a separate root insert', () => {
