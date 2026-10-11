@@ -47,7 +47,7 @@ import {
 } from '../core/dimension';
 import { mtextToDxf, mtextFromDxf, formattedSource, hasFormatting, type MTextAttachment, type MTextColumns } from '../core/mtext';
 import { findPattern, LoopBuilder, edgeArc, fitPatternToLines } from '../core/hatch';
-import { isValidNurbs, nurbsPoints, interpolateFitPoints } from '../core/spline';
+import { isValidNurbs, nurbsPoints, interpolateFitPoints, splineWorkProblem, SplineWorkLimitError } from '../core/spline';
 import { evaluateFields, hasFields, julianToDate, type FieldContext } from '../core/fields';
 import type { DrawingState, DrawingHeader, NamedView } from '../core/document';
 import { DEFAULT_LAYERS, DEFAULT_HEADER } from '../core/document';
@@ -1535,8 +1535,7 @@ function readDimension(o: Obj, base: ReturnType<typeof commonProps>, style: DimS
 // ---------------------------------------------------------------- SPLINE / HATCH / LEADER / MLEADER / IMAGE / TABLE readers
 
 const int = (v: string | undefined, dflt = 0): number => {
-  const n = v === undefined ? NaN : Number(v);
-  return Number.isNaN(n) ? dflt : n;
+  return v !== undefined && isIntegerText(v.trim()) ? Number(v) : dflt;
 };
 const flt = (v: string | undefined, dflt = 0): number => {
   const n = v === undefined ? NaN : Number(v);
@@ -1575,6 +1574,8 @@ function readSpline(o: Obj, base: ReturnType<typeof commonProps>): SplineEntity 
   const tangent = (code: number): g.Point | undefined => (gs.some((x) => x.code === code) ? { x: flt(gs.find((x) => x.code === code)?.value), y: flt(gs.find((x) => x.code === code + 10)?.value) } : undefined);
   const st = tangent(12);
   const et = tangent(13);
+  const workProblem = splineWorkProblem({ degree, knots, controlPoints }, fitPoints.length, { closed: (flags & 1) === 1, startTangent: st, endTangent: et });
+  if (workProblem) throw new SplineWorkLimitError(workProblem);
   return {
     ...base,
     type: 'spline',
@@ -1591,6 +1592,7 @@ function readSpline(o: Obj, base: ReturnType<typeof commonProps>): SplineEntity 
 }
 
 /** Sequential reader over a group list. */
+class HatchReadError extends Error {}
 class Cursor {
   i = 0;
   constructor(readonly gs: readonly Pair[]) {}
@@ -1616,33 +1618,51 @@ class Cursor {
     return undefined;
   }
   point(xCode: number): g.Point {
-    const x = flt(this.seek(xCode));
-    const y = flt(this.seek(xCode + 10, 3));
+    const x = flt(this.required(this.seek(xCode), xCode));
+    const y = flt(this.required(this.seek(xCode + 10, 3), xCode + 10));
     return { x, y };
+  }
+  required(value: string | undefined, code: number): string {
+    if (value === undefined) throw new HatchReadError(`missing group ${code} in declared hatch data`);
+    return value;
+  }
+  /** Declared collections cannot exceed the records still available to describe them. */
+  count(value: string | undefined, code: number, groupsPerItem = 1): number {
+    if (value === undefined) return 0;
+    const pair = this.gs[this.i - 1];
+    const location = pair?.line ? ` at value line ${pair.line + 1}` : '';
+    if (!isIntegerText(value.trim()) || Number(value) < 0) throw new HatchReadError(`invalid hatch count group ${code}${location}: "${shortText(value)}" must be a nonnegative safe integer`);
+    const n = Number(value);
+    const available = Math.floor((this.gs.length - this.i) / groupsPerItem);
+    if (n > available) throw new HatchReadError(`hatch count group ${code}${location} declares ${n} items, but only ${available} can fit in the remaining group records`);
+    return n;
+  }
+  sourceHandles(value: string | undefined): void {
+    const n = this.count(value, 97);
+    for (let k = 0; k < n; k += 1) this.required(this.take(330), 330);
   }
 }
 
 function readHatchLoop(c: Cursor): HatchLoop | null {
-  const flags = int(c.seek(92, 4));
+  const flags = int(c.required(c.seek(92, 4), 92));
   const b = new LoopBuilder();
   if (flags & 2) {
     const hasBulge = int(c.take(72)) !== 0;
     c.take(73);
-    const n = int(c.seek(93, 3));
+    const n = c.count(c.required(c.seek(93, 3), 93), 93, 2);
     const pts: g.Point[] = [];
     const bulges: number[] = [];
-    for (let k = 0; k < n && c.code !== undefined; k += 1) {
+    for (let k = 0; k < n; k += 1) {
       pts.push(c.point(10));
       bulges.push(hasBulge && c.code === 42 ? flt(c.take(42)) : 0);
     }
-    const nsrc = int(c.take(97));
-    for (let k = 0; k < nsrc; k += 1) c.take(330);
+    c.sourceHandles(c.take(97));
     if (pts.length < 2) return null;
     return { points: pts, ...(bulges.some((v) => Math.abs(v) > 1e-12) ? { bulges } : {}) };
   }
-  const nEdges = int(c.seek(93, 3));
-  for (let k = 0; k < nEdges && c.code !== undefined; k += 1) {
-    const type = int(c.seek(72, 3));
+  const nEdges = c.count(c.required(c.seek(93, 3), 93), 93);
+  for (let k = 0; k < nEdges; k += 1) {
+    const type = int(c.required(c.seek(72, 3), 72));
     if (type === 1) {
       const a = c.point(10);
       const e = c.point(11);
@@ -1675,28 +1695,29 @@ function readHatchLoop(c: Cursor): HatchLoop | null {
       const degree = int(c.take(94), 3);
       const rational = int(c.take(73)) !== 0;
       c.take(74);
-      const nk = int(c.take(95));
-      const nc = int(c.take(96));
+      const nk = c.count(c.required(c.take(95), 95), 95);
+      const nc = c.count(c.required(c.take(96), 96), 96, 2);
       const knots: number[] = [];
-      for (let i = 0; i < nk; i += 1) knots.push(flt(c.seek(40, 2)));
+      for (let i = 0; i < nk; i += 1) knots.push(flt(c.required(c.seek(40, 2), 40)));
       const cps: g.Point[] = [];
       const weights: number[] = [];
       for (let i = 0; i < nc; i += 1) {
         cps.push(c.point(10));
         if (rational && c.code === 42) weights.push(flt(c.take(42), 1));
       }
-      const nf = c.code === 97 ? int(c.take(97)) : 0;
+      const nf = c.code === 97 ? c.count(c.take(97), 97, 2) : 0;
       const fit: g.Point[] = [];
       for (let i = 0; i < nf; i += 1) fit.push(c.point(11));
       if (c.code === 12) c.point(12);
       if (c.code === 13) c.point(13);
       const curve = { degree, knots, controlPoints: cps, ...(weights.length === cps.length ? { weights } : {}) };
+      const workProblem = splineWorkProblem(curve, fit.length, {}, 8);
+      if (workProblem) throw new HatchReadError(workProblem);
       const pts = isValidNurbs(curve) ? nurbsPoints(curve, 8) : fit.length >= 2 ? nurbsPoints(interpolateFitPoints(fit) ?? curve, 8) : cps;
       b.polyline(pts);
-    } else break;
+    } else throw new HatchReadError(`unsupported hatch edge type ${type}`);
   }
-  const nsrc = int(c.seek(97, 2));
-  for (let k = 0; k < nsrc; k += 1) c.take(330);
+  c.sourceHandles(c.seek(97, 2));
   return b.loop();
 }
 
@@ -1717,8 +1738,8 @@ function readHatch(o: Obj, base: ReturnType<typeof commonProps>): HatchEntity | 
     const value = c.gs[c.i]!.value;
     if (code === 91 && loops.length === 0) {
       c.i += 1;
-      const n = int(value);
-      for (let k = 0; k < n && c.code !== undefined; k += 1) {
+      const n = c.count(value, 91);
+      for (let k = 0; k < n; k += 1) {
         const l = readHatchLoop(c);
         if (l) loops.push(l);
       }
@@ -1726,16 +1747,16 @@ function readHatch(o: Obj, base: ReturnType<typeof commonProps>): HatchEntity | 
     }
     if (code === 78) {
       c.i += 1;
-      const n = int(value);
-      for (let k = 0; k < n && c.code !== undefined; k += 1) {
-        const a = flt(c.seek(53, 3));
+      const n = c.count(value, 78);
+      for (let k = 0; k < n; k += 1) {
+        const a = flt(c.required(c.seek(53, 3), 53));
         const bx = flt(c.take(43));
         const by = flt(c.take(44));
         const ox = flt(c.take(45));
         const oy = flt(c.take(46));
-        const nd = int(c.take(79));
+        const nd = c.count(c.required(c.take(79), 79), 79);
         const dashes: number[] = [];
-        for (let d = 0; d < nd; d += 1) dashes.push(flt(c.take(49)));
+        for (let d = 0; d < nd; d += 1) dashes.push(flt(c.required(c.take(49), 49)));
         lines.push({ angle: g.rad(a), base: { x: bx, y: by }, offset: { x: ox, y: oy }, dashes });
       }
       continue;
@@ -2603,7 +2624,25 @@ function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): Entity[] 
       if (poly) out.push(poly);
       continue;
     }
-    const read = readEntityObj(o, ctx);
+    // HATCH readers use declared counts and tessellate curves before accept() sees the
+    // result. Reject bad numeric tokens before those loops or geometry calculations.
+    if (o.kind === 'HATCH') {
+      const invalid = o.groups.find((p) => (isRealCode(p.code) && (!isRealText(p.value) || !Number.isFinite(Number(p.value)))) || (isIntCode(p.code) && !isIntegerText(p.value.trim())));
+      if (invalid) {
+        reportObj(ctx, o, 'dropped', `invalid numeric group ${invalid.code}, value line ${(invalid.line ?? 1) + 1}: "${shortText(invalid.value)}" must be a complete finite ${isIntCode(invalid.code) ? 'safe integer' : 'number'}`);
+        i += 1;
+        continue;
+      }
+    }
+    let read: Entity | null;
+    try {
+      read = readEntityObj(o, ctx);
+    } catch (err) {
+      if (!(err instanceof HatchReadError) && !(err instanceof SplineWorkLimitError)) throw err;
+      reportObj(ctx, o, 'dropped', err instanceof SplineWorkLimitError ? err.message : `invalid hatch data: ${err.message}`);
+      i += 1;
+      continue;
+    }
     if (!read) {
       if (FOLLOWER_KINDS.has(o.kind)) {
         // An ATTRIB / VERTEX / SEQEND without its owner: nothing to fold it into.

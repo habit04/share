@@ -39,7 +39,7 @@ import { paperFromSize, unitsOfHost, uniformMargins, newViewportId, type Layout,
 import { textStylesMeta, type TextStyle } from './encoding';
 import { ImportReportBuilder, geometryProblem, withImportData, type ImportReport } from './import-report';
 import { findPattern, LoopBuilder, edgeArc, fitPatternToLines } from '../core/hatch';
-import { isValidNurbs, nurbsPoints, interpolateFitPoints } from '../core/spline';
+import { isValidNurbs, nurbsPoints, interpolateFitPoints, splineWorkProblem, SplineWorkLimitError } from '../core/spline';
 import { evaluateFields, hasFields } from '../core/fields';
 import { newId, entityBounds } from '../core/entities';
 import type { DrawingState, DrawingHeader } from '../core/document';
@@ -280,17 +280,40 @@ interface DwgHatchLike {
   boundaryPaths?: DwgHatchPath[];
 }
 
-const deg2rad = (d: number) => (d * Math.PI) / 180;
+const deg2rad = (d: number) => d * (Math.PI / 180);
+
+const MAX_HATCH_EDGE_SAMPLES = 64;
+class HatchGeometryError extends Error {}
+const finiteHatchPoint = (pt: Point): Point => {
+  if (!Number.isFinite(pt.x) || !Number.isFinite(pt.y)) throw new HatchGeometryError('non-finite coordinate derived from hatch boundary data');
+  return pt;
+};
+/** Reduce endpoints individually before subtraction; large finite angles cannot overflow a sweep. */
+function hatchEdgeArc(edge: DwgHatchEdge & { isCCW?: number | boolean }): { a0: number; sweep: number } {
+  const start = angleRad(edge.startAngle);
+  const end = angleRad(edge.endAngle ?? 2 * Math.PI);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) throw new HatchGeometryError('non-finite hatch boundary angle');
+  const ccw = edge.isCCW ?? edge.isCounterClockwise;
+  return edgeArc(g.deg(g.normAngle(start)), g.deg(g.normAngle(end)), ccw === undefined ? true : Boolean(ccw));
+}
+const hatchEdgeSamples = (sweep: number, minimum: number, perTurn: number): number => Math.max(minimum, Math.min(MAX_HATCH_EDGE_SAMPLES, Math.ceil(Math.abs(sweep) / (2 * Math.PI) * perTurn)));
+function checkHatchArc(center: Point, radius: number): void {
+  finiteHatchPoint(center);
+  if (!Number.isFinite(radius) || radius < 0) throw new HatchGeometryError('invalid hatch boundary radius');
+  finiteHatchPoint({ x: center.x + radius, y: center.y + radius });
+  finiteHatchPoint({ x: center.x - radius, y: center.y - radius });
+}
 
 /** Points of one hatch boundary path (polyline paths keep their bulges; edge paths are sampled). */
 function hatchPathGeometry(path: DwgHatchPath): { points: Point[]; bulges?: number[] } | null {
   if (path.vertices && path.vertices.length >= 2) {
-    const points = path.vertices.map((v) => p2(v));
+    const points = path.vertices.map((v) => finiteHatchPoint(p2(v)));
     const bulges = path.vertices.map((v) => v.bulge ?? 0);
     return { points, bulges: bulges.some((b) => Math.abs(b) > 1e-12) ? bulges : undefined };
   }
   const points: Point[] = [];
   const push = (pt: Point) => {
+    finiteHatchPoint(pt);
     const last = points[points.length - 1];
     if (!last || !g.eq(last, pt)) points.push(pt);
   };
@@ -302,17 +325,11 @@ function hatchPathGeometry(path: DwgHatchPath): { points: Point[]; bulges?: numb
         break;
       case 2: {
         if (!ed.center || ed.radius === undefined) break;
-        // Angles come in degrees in DXF-style payloads; radians are unlikely to exceed 2*pi.
-        const toRad = (v: number) => (Math.abs(v) > 2 * Math.PI + 1e-6 ? deg2rad(v) : v);
-        let s0 = toRad(ed.startAngle ?? 0);
-        let e0 = toRad(ed.endAngle ?? 2 * Math.PI);
-        const ccw = ed.isCounterClockwise === undefined ? true : Boolean(ed.isCounterClockwise);
-        if (!ccw) [s0, e0] = [-s0, -e0];
-        let sweep = e0 - s0;
-        if (sweep <= 1e-9) sweep += 2 * Math.PI;
-        const n = Math.max(4, Math.ceil((sweep / (2 * Math.PI)) * 32));
+        checkHatchArc(ed.center, ed.radius);
+        const { a0, sweep } = hatchEdgeArc(ed);
+        const n = hatchEdgeSamples(sweep, 4, 32);
         for (let i = 0; i <= n; i += 1) {
-          const t = s0 + (sweep * i) / n;
+          const t = a0 + (sweep * i) / n;
           push({ x: ed.center.x + ed.radius * Math.cos(t), y: ed.center.y + ed.radius * Math.sin(t) });
         }
         break;
@@ -320,14 +337,11 @@ function hatchPathGeometry(path: DwgHatchPath): { points: Point[]; bulges?: numb
       case 3: {
         if (!ed.center || !ed.majorAxis) break;
         const ratio = ed.minorAxisRatio ?? 1;
-        const s0 = ed.startAngle ?? 0;
-        const e0 = ed.endAngle ?? 2 * Math.PI;
-        let sweep = e0 - s0;
-        if (sweep <= 1e-9) sweep += 2 * Math.PI;
-        const n = Math.max(8, Math.ceil((sweep / (2 * Math.PI)) * 48));
-        const minor = { x: -ed.majorAxis.y * ratio, y: ed.majorAxis.x * ratio };
+        const { a0, sweep } = hatchEdgeArc(ed);
+        const n = hatchEdgeSamples(sweep, 8, 48);
+        const minor = finiteHatchPoint({ x: -ed.majorAxis.y * ratio, y: ed.majorAxis.x * ratio });
         for (let i = 0; i <= n; i += 1) {
-          const t = s0 + (sweep * i) / n;
+          const t = a0 + (sweep * i) / n;
           push({ x: ed.center.x + ed.majorAxis.x * Math.cos(t) + minor.x * Math.sin(t), y: ed.center.y + ed.majorAxis.y * Math.cos(t) + minor.y * Math.sin(t) });
         }
         break;
@@ -376,6 +390,8 @@ function convertSpline(s: DwgSplineEntity, base: Base): SplineEntity | null {
   const tan = (t: { x: number; y: number } | undefined) => (t && (t.x !== 0 || t.y !== 0) ? p2(t) : undefined);
   const st = tan(s.startTangent);
   const et = tan(s.endTangent);
+  const workProblem = splineWorkProblem({ degree: Math.max(1, s.degree || 3), knots: s.knots ?? [], controlPoints: cps }, fit.length, { closed: ((s.flag ?? 0) & 1) === 1, startTangent: st, endTangent: et });
+  if (workProblem) throw new SplineWorkLimitError(workProblem);
   return {
     ...base,
     type: 'spline',
@@ -408,7 +424,7 @@ interface DwgHatchEdgeAny extends DwgHatchEdge {
 
 function hatchLoopFromPath(path: DwgHatchPath): HatchLoop | null {
   if (path.vertices && path.vertices.length >= 2) {
-    const points = path.vertices.map((v) => p2(v));
+    const points = path.vertices.map((v) => finiteHatchPoint(p2(v)));
     const bulges = path.vertices.map((v) => v.bulge ?? 0);
     return { points, ...(bulges.some((b) => Math.abs(b) > 1e-12) ? { bulges } : {}) };
   }
@@ -418,11 +434,12 @@ function hatchLoopFromPath(path: DwgHatchPath): HatchLoop | null {
     const ccw = ccwRaw === undefined ? true : Boolean(ccwRaw);
     switch (raw.type) {
       case 1:
-        if (raw.start && raw.end) b.segment(p2(raw.start), p2(raw.end), 0);
+        if (raw.start && raw.end) b.segment(finiteHatchPoint(p2(raw.start)), finiteHatchPoint(p2(raw.end)), 0);
         break;
       case 2: {
         if (!raw.center || raw.radius === undefined) break;
-        const { a0, sweep } = edgeArc(g.deg(angleRad(raw.startAngle)), g.deg(angleRad(raw.endAngle ?? 2 * Math.PI)), ccw);
+        checkHatchArc(raw.center, raw.radius);
+        const { a0, sweep } = hatchEdgeArc({ ...raw, isCCW: ccw });
         b.arc(p2(raw.center), raw.radius, a0, sweep);
         break;
       }
@@ -430,13 +447,13 @@ function hatchLoopFromPath(path: DwgHatchPath): HatchLoop | null {
         const major = raw.majorAxis ?? raw.end;
         if (!raw.center || !major) break;
         const ratio = raw.minorAxisRatio ?? raw.lengthOfMinorAxis ?? 1;
-        const { a0, sweep } = edgeArc(g.deg(angleRad(raw.startAngle)), g.deg(angleRad(raw.endAngle ?? 2 * Math.PI)), ccw);
-        const minor = { x: -major.y * ratio, y: major.x * ratio };
-        const steps = Math.max(8, Math.ceil((Math.abs(sweep) / (2 * Math.PI)) * 64));
+        const { a0, sweep } = hatchEdgeArc({ ...raw, isCCW: ccw });
+        const minor = finiteHatchPoint({ x: -major.y * ratio, y: major.x * ratio });
+        const steps = hatchEdgeSamples(sweep, 8, 64);
         const pts: Point[] = [];
         for (let i = 0; i <= steps; i += 1) {
           const t = a0 + (sweep * i) / steps;
-          pts.push({ x: raw.center.x + major.x * Math.cos(t) + minor.x * Math.sin(t), y: raw.center.y + major.y * Math.cos(t) + minor.y * Math.sin(t) });
+          pts.push(finiteHatchPoint({ x: raw.center.x + major.x * Math.cos(t) + minor.x * Math.sin(t), y: raw.center.y + major.y * Math.cos(t) + minor.y * Math.sin(t) }));
         }
         b.polyline(pts);
         break;
@@ -445,8 +462,10 @@ function hatchLoopFromPath(path: DwgHatchPath): HatchLoop | null {
         const cps = (raw.controlPoints ?? []).map((q) => p2(q));
         const fit = (raw.fitDatum?.length ? raw.fitDatum : raw.fitPoints ?? []).map((q) => p2(q));
         const curve = { degree: raw.degree ?? 3, knots: raw.knots ?? [], controlPoints: cps };
+        const workProblem = splineWorkProblem(curve, fit.length, {}, 8);
+        if (workProblem) throw new SplineWorkLimitError(workProblem);
         const pts = isValidNurbs(curve) ? nurbsPoints(curve, 8) : fit.length >= 2 ? nurbsPoints(interpolateFitPoints(fit) ?? curve, 8) : cps;
-        b.polyline(pts);
+        b.polyline(pts.map(finiteHatchPoint));
         break;
       }
       default:
@@ -1115,7 +1134,14 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
    */
   const convertChecked = (e: DwgEntity, where: string, blockDefs: Record<string, BlockDef> | undefined, extras: ConvertExtras): Entity | null => {
     const previousNotes = extras.notes.length;
-    const c = convertEntity(e, blockIndex, header.dimStyle, blockDefs, extras);
+    let c: Entity | null;
+    try {
+      c = convertEntity(e, blockIndex, header.dimStyle, blockDefs, extras);
+    } catch (err) {
+      if (!(err instanceof SplineWorkLimitError)) throw err;
+      skip(e, where, err.message);
+      return null;
+    }
     if (!c) {
       skip(e, where, e.type === 'DIMENSION' ? 'this dimension type is not supported (ordinate dimensions, or unreadable definition points)' : DWG_CONVERTED_TYPES.has(e.type) ? 'its data is incomplete or of a variant that is not supported' : undefined);
       return null;
@@ -1163,19 +1189,27 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
     return { annotations, imageDefs, notes: [], consumed: new Set(annotations.values()), dimStyles };
   };
   /** HATCH: a real hatch entity; outline polylines when the boundary cannot be rebuilt. */
-  const hatchOf = (e: DwgEntity, where: string): Entity[] => {
+  const hatchOf = (e: DwgEntity, where: string): { parts: Entity[]; reason?: string } => {
     try {
       const h = convertHatchEntity(e);
       if (h && !geometryProblem(h)) {
         if (h.associative) report.add({ type: 'HATCH', action: 'simplified', handle: String(e.handle ?? ''), where, reason: 'associative boundary links are not kept; hatch geometry is kept and saved non-associative' });
-        return [h];
+        return { parts: [h] };
       }
-    } catch {
+    } catch (err) {
+      if (err instanceof HatchGeometryError) return { parts: [], reason: `invalid geometry: ${err.message}` };
+      if (err instanceof SplineWorkLimitError) return { parts: [], reason: err.message };
       /* fall back to outlines */
     }
-    const parts = convertHatch(e);
+    let parts: Entity[];
+    try {
+      parts = convertHatch(e);
+    } catch (err) {
+      if (err instanceof HatchGeometryError) return { parts: [], reason: `invalid geometry: ${err.message}` };
+      throw err;
+    }
     if (parts.length) { noteSet.add('HATCH: some hatch boundaries could not be rebuilt and were imported as outlines.'); report.add({ type: 'HATCH', action: 'simplified', handle: String(e.handle ?? ''), where, reason: 'some hatch boundaries could not be rebuilt; imported as outlines' }); }
-    return parts.filter((part) => !geometryProblem(part));
+    return { parts: parts.filter((part) => !geometryProblem(part)) };
   };
 
   const blocks: Record<string, BlockDef> = {};
@@ -1191,9 +1225,9 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
         continue;
       }
       if (e.type === 'HATCH') {
-        const parts = hatchOf(e, `block "${b.name}"`);
+        const { parts, reason } = hatchOf(e, `block "${b.name}"`);
         if (parts.length) entities.push(...parts);
-        else skip(e, `block "${b.name}"`, 'the hatch boundary could not be read');
+        else skip(e, `block "${b.name}"`, reason ?? 'the hatch boundary could not be read');
         continue;
       }
       const c = convertChecked(e, `block "${b.name}"`, undefined, bx);
@@ -1243,9 +1277,9 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
     if (e.type === 'ATTDEF' || e.type === 'VIEWPORT' || e.type === 'ATTRIB') continue; // ATTRIBs are folded into their INSERTs
     if (mx.consumed.has(e)) continue; // a LEADER's MTEXT, merged into the leader
     if (e.type === 'HATCH') {
-      const parts = hatchOf(e, 'model space');
+      const { parts, reason } = hatchOf(e, 'model space');
       if (parts.length) entities.push(...parts);
-      else skip(e, 'model space', 'the hatch boundary could not be read');
+      else skip(e, 'model space', reason ?? 'the hatch boundary could not be read');
       continue;
     }
     if (e.type === 'ACAD_TABLE') {

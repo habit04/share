@@ -15,6 +15,29 @@ export interface NurbsCurve {
   readonly weights?: readonly number[];
 }
 
+// Basis evaluation is quadratic in degree; fit interpolation allocates a dense matrix
+// and solves two cubic systems. Bound the calculated work before either allocation.
+const MAX_SPLINE_BASIS_WORK = 2_000_000;
+const MAX_SPLINE_MATRIX_DIMENSION = 128;
+export class SplineWorkLimitError extends Error {}
+
+/** Resource check shared by imports and the curve evaluators they later use. */
+export function splineWorkProblem(c: NurbsCurve, fitCount = 0, opts: InterpolationOptions = {}, perSpan = 16, maxPoints = 4000): string | undefined {
+  if (isValidNurbs(c)) {
+    const n = c.controlPoints.length - 1;
+    let spans = 0;
+    for (let i = c.degree; i <= n; i += 1) if (c.knots[i + 1]! - c.knots[i]! > 1e-12) spans += 1;
+    const want = Math.max(perSpan, Math.ceil(64 / Math.max(1, spans)));
+    const steps = c.degree === 1 ? 1 : Math.max(2, Math.min(want, Math.floor(maxPoints / Math.max(1, spans))));
+    const samples = spans * steps + 1;
+    if (samples * (c.degree + 1) ** 2 > MAX_SPLINE_BASIS_WORK) return `spline tessellation exceeds the supported work limit (degree ${c.degree}, ${samples} samples)`;
+  } else if (fitCount >= 2) {
+    const dimension = fitCount + (opts.closed ? 1 : 0) + (opts.closed || (opts.startTangent && opts.endTangent) ? 2 : 0);
+    if (dimension > MAX_SPLINE_MATRIX_DIMENSION) return `spline fit interpolation exceeds the supported work limit (${dimension} matrix rows; maximum ${MAX_SPLINE_MATRIX_DIMENSION})`;
+  }
+  return undefined;
+}
+
 /** True when the knot vector matches the control points and degree (m + 1 = n + p + 2). */
 export function isValidNurbs(c: NurbsCurve): boolean {
   const n = c.controlPoints.length;
@@ -103,6 +126,8 @@ export function nurbsPoint(c: NurbsCurve, u: number): Point {
  */
 export function nurbsPoints(c: NurbsCurve, perSpan = 16, maxPoints = 4000): Point[] {
   if (!isValidNurbs(c)) return [...c.controlPoints];
+  // Imports reject this case with context; direct callers get the existing polygon fallback.
+  if (splineWorkProblem(c, 0, {}, perSpan, maxPoints)) return [...c.controlPoints];
   const n = c.controlPoints.length - 1;
   const p = c.degree;
   const U = c.knots;
@@ -195,6 +220,7 @@ export interface InterpolationOptions {
  */
 export function interpolateFitPoints(fit: readonly Point[], opts: InterpolationOptions = {}): NurbsCurve | null {
   let Q = dedupe(fit);
+  if (splineWorkProblem({ degree: 0, knots: [], controlPoints: [] }, Q.length, opts)) return null;
   const closed = Boolean(opts.closed) && Q.length >= 3;
   if (closed) {
     if (g.eq(Q[0]!, Q[Q.length - 1]!, 1e-9)) Q = Q.slice(0, -1);

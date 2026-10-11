@@ -1172,7 +1172,9 @@ export function dimStyleFromRecordPairs(name: string, pairs: ReadonlyArray<reado
     s = { ...s, textAlign: tih && toh ? 'horizontal' : !tih && !toh ? 'aligned' : 'iso' };
   }
   if (byCode.has(78)) s = withDimVar(s, 'DIMZIN', byCode.get(78)!);
-  if (!byCode.has(71) && !byCode.has(72)) return s;
+  // DIMTOL also distinguishes symmetrical/deviation display through the effective
+  // DIMTP/DIMTM values, so numeric-only overrides can change that display mode.
+  if (![71, 72, 47, 48].some((code) => byCode.has(code))) return s;
   const tol = Number(byCode.get(71) ?? dimVarValue(s, 'DIMTOL'));
   const lim = Number(byCode.get(72) ?? dimVarValue(s, 'DIMLIM'));
   const r = resolveDimStyle(s);

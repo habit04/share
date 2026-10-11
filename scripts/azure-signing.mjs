@@ -17,8 +17,19 @@
  * Writes `enabled=true|false` to $GITHUB_OUTPUT when present.
  */
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+/**
+ * Builder 26 derives app-update.yml's publisherName from azureSignOptions. A publisherName
+ * directly under win is obsolete and rejected by its Windows configuration schema.
+ * @param {import('app-builder-lib').WindowsConfiguration & { publisherName?: unknown }} win
+ * @param {import('app-builder-lib').WindowsAzureSigningConfiguration} signing
+ */
+export function configureWindowsAzureSigning(win, signing) {
+  const { publisherName: _obsolete, ...current } = win;
+  return { ...current, azureSignOptions: signing };
+}
 
 const REQUIRED = [
   'AZURE_TENANT_ID',
@@ -30,27 +41,27 @@ const REQUIRED = [
   'AZURE_PUBLISHER_NAME',
 ];
 
-const env = (name) => (process.env[name] ?? '').trim();
-const missing = REQUIRED.filter((name) => !env(name));
-const enabled = missing.length === 0;
+function main() {
+  const env = (name) => (process.env[name] ?? '').trim();
+  const missing = REQUIRED.filter((name) => !env(name));
+  const enabled = missing.length === 0;
 
-if (enabled) {
-  const file = join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json');
-  const pkg = JSON.parse(readFileSync(file, 'utf8'));
-  pkg.build.win = {
-    ...pkg.build.win,
-    publisherName: env('AZURE_PUBLISHER_NAME'),
-    azureSignOptions: {
+  if (enabled) {
+    const file = join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json');
+    const pkg = JSON.parse(readFileSync(file, 'utf8'));
+    pkg.build.win = configureWindowsAzureSigning(pkg.build.win, {
       publisherName: env('AZURE_PUBLISHER_NAME'),
       endpoint: env('AZURE_SIGNING_ENDPOINT'),
       codeSigningAccountName: env('AZURE_SIGNING_ACCOUNT'),
       certificateProfileName: env('AZURE_CERT_PROFILE'),
-    },
-  };
-  writeFileSync(file, `${JSON.stringify(pkg, null, 2)}\n`);
-  console.log(`Azure signing enabled: account ${env('AZURE_SIGNING_ACCOUNT')}, profile ${env('AZURE_CERT_PROFILE')}.`);
-} else {
-  console.log(`Azure signing skipped, the Windows build stays unsigned. Missing secrets: ${missing.join(', ')}.`);
+    });
+    writeFileSync(file, `${JSON.stringify(pkg, null, 2)}\n`);
+    console.log(`Azure signing enabled: account ${env('AZURE_SIGNING_ACCOUNT')}, profile ${env('AZURE_CERT_PROFILE')}.`);
+  } else {
+    console.log(`Azure signing skipped, the Windows build stays unsigned. Missing secrets: ${missing.join(', ')}.`);
+  }
+
+  if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `enabled=${enabled}\n`);
 }
 
-if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `enabled=${enabled}\n`);
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) main();

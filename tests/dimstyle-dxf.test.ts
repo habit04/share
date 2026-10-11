@@ -119,6 +119,25 @@ describe('dimension styles in DXF', () => {
     expect(importReportOf(back)?.items.some((item) => item.reason.includes('DSTYLE override'))).toBeFalsy();
   });
 
+  it.each([
+    ['symmetrical', 0.01, 'deviation', 0.02],
+    ['deviation', 0.02, 'symmetrical', 0.01],
+  ] as const)('round-trips numeric-only overrides with inherited %s tolerance display', (inheritedMode, inheritedMinus, effectiveMode, effectiveMinus) => {
+    const named: DimStyle = { ...STANDARD_DIMSTYLE, name: 'Numeric-tolerance', tolerance: inheritedMode, tolPlus: 0.01, tolMinus: inheritedMinus, tolDecimals: 2 };
+    const effective: DimStyle = { ...named, tolerance: effectiveMode, tolMinus: effectiveMinus };
+    const entity = dim('numeric-override', effective);
+    const source = withDimStyle({ entities: [entity], layers, blocks: {}, currentLayer: '0' }, named, false);
+    const out = writeDxf(source);
+    expect(out).toContain('1070\r\n48\r\n1040\r\n');
+    expect(out).not.toContain('1070\r\n71\r\n');
+    expect(out).not.toContain('1070\r\n72\r\n');
+    const restored = readDxf(out);
+    const restoredEntity = restored.entities[0] as DimensionEntity;
+    expect(resolveDimStyle(restoredEntity.style)).toEqual(resolveDimStyle(effective));
+    expect(dimensionText(restoredEntity)).toBe(dimensionText(entity));
+    expect(resolveDimStyle(byName(namedDimStyles(restored), named.name))).toEqual(resolveDimStyle(named));
+  });
+
   it('assigns anonymous picture blocks to dimensions nested inside block definitions', () => {
     const src = drawing();
     const nested = dim('nested-d', OPEN_TOL);

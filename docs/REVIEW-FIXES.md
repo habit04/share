@@ -3,7 +3,8 @@
 Baseline: `5dfd8c22a86d7ce681c9e5870a1f1128059dcae1` of `habit04/share`.
 Work is isolated on `codex/electrical-review-fixes`; the original checkout is preserved.
 The table tracks the 53 follow-up recommendations. “Implemented” describes the code and
-local validation, not a claim that every platform installer has already passed CI.
+behavioral checks. Installer execution and signing results are reported separately in the
+pull request, with workflow links tied to its exact source commit.
 
 | # | Recommendation and reason | Result and evidence |
 | --- | --- | --- |
@@ -22,22 +23,22 @@ local validation, not a claim that every platform installer has already passed C
 | 13 | Resolve DIMTXSTY handles; a text style handle is not a style name. | Implemented: STYLE lookup for named and per-entity dimension styles. Font appearance remains a stroke-font approximation. `src/io/dxf.ts`, `src/core/dimension.ts`. |
 | 14 | Preserve DIMLWD/DIMLWE; dimension and extension lineweights affect plots. | Implemented import/export and dimension geometry styling. `src/core/dimension.ts`, `src/io/dxf.ts`, active fixture assertions. |
 | 15 | Apply DIMTZIN separately; tolerance zero suppression differs from the main measurement. | Implemented independent suppression and regression assertions. `src/core/dimension.ts`, `tests/interchange-fixtures.test.ts`. |
-| 16 | Preserve supported ACAD DSTYLE overrides; individual dimensions may differ from their named style. | Implemented: supported override variables applied and exported; unknown groups are reported. `src/io/dxf.ts`, `tests/interchange-fixtures.test.ts`. |
+| 16 | Preserve supported ACAD DSTYLE overrides; individual dimensions may differ from their named style. | Implemented: supported override variables applied and exported; numeric-only tolerance overrides recompute symmetrical/deviation display from inherited flags. Unknown groups are reported. `src/io/dxf.ts`, `src/core/dimension.ts`, `tests/dimstyle-dxf.test.ts`, `tests/interchange-fixtures.test.ts`. |
 | 17 | Substitute DIMAPOST `[]`; otherwise alternate units can render as literal placeholders. | Implemented with alternate-unit placement regression checks. `src/core/dimension.ts`, `tests/dimstyle.test.ts`. |
 | 18 | Retain MTEXT columns; column width/gutter/heights and explicit breaks otherwise disappear. | Partly implemented: column data, scaling and explicit breaks survive JCad round trips. Automatic flow is approximated; AC1015 external readers see one MTEXT column while JCad restores `JCAD_MTEXT_COLUMNS` data. These limits are reported. `src/core/mtext.ts`, `tests/mtext-transform.test.ts`, `docs/SUPPORT-MATRIX.md`. |
 | 19 | Write a truthful hatch association flag; retained geometry must not claim missing boundary links. | Implemented: non-associative flag 71 = 0 with a warning that source links are lost. `src/io/dxf.ts`, active fixture regression. |
 | 20 | Keep xref-dependent layer flags; removing dependency flags changes interoperability metadata. | Implemented: bits 16/32 retained through DXF export. `src/core/entities.ts`, `src/io/dxf.ts`, active fixture regression. |
 | 21 | Resolve TABLESTYLE data; style handles alone cannot restore table text/margins. | Implemented exposed text heights, margins and colors with round-trip assertions. Unsupported style features remain documented. `src/io/dxf.ts`, `tests/interchange-fixtures.test.ts`. |
-| 22 | Parse complete numeric tokens; `12junk`, NaN and infinity must not become plausible coordinates. | Implemented finite whole-token parsing and bounded diagnostics. `src/io/dxf.ts`, `tests/dxf-validation.test.ts`. |
+| 22 | Parse complete numeric tokens; `12junk`, NaN and infinity must not become plausible coordinates. | Implemented finite whole-token parsing and safe-integer count parsing before HATCH readers enter loops or tessellate geometry. `src/io/dxf.ts`, `tests/dxf-validation.test.ts`, `tests/interchange-hatch-limits.test.ts`. |
 | 23 | Preserve DWG viewport/layout data exposed by the reader; defaults can change clipping, rotation and plotted pages. | Partly implemented: exposed scale, frozen layers and page settings survive. Viewport twist is displayed untwisted and clipping is omitted, with explicit loss warnings. Unavailable native data cannot be reconstructed. `src/io/dwg.ts`, `scripts/dwg-reader.mjs`, `tests/dwg-fidelity.test.ts`. |
 | 24 | Retain or report omitted metadata; silent XDATA/object loss can damage electrical drawings. | Reporting implemented: explicit DXF omissions and conservative DWG reader-limit warnings, including estimated table positions. Arbitrary external application metadata is not preserved. `src/io/dxf.ts`, `src/io/dwg.ts`, `docs/SUPPORT-MATRIX.md`. |
 | 25 | Use a supported Electron/toolchain and remove known dependency vulnerabilities. | Implemented: Electron 44.7.0, Vitest 5, supported Node engines and scoped `@electron/get` proxy dependency override. Complete local npm audit reports zero vulnerabilities. `package.json`, `package-lock.json`. |
 | 26 | Gate self-updates on authenticity; unsigned downloads must not be silently installed. | Implemented: packaged Windows needs trusted publisher configuration; unsigned Windows and Linux/macOS offer manual downloads. Signed verification depends on release credentials. `electron/update-policy.cjs`, `electron/updater.cjs`. |
 | 27 | Reject linked write destinations and parent swaps; symlinks/junctions can redirect writes or backups. | Implemented path/identity rechecks and exclusive temp creation. Real Windows junction tests pass. macOS's fixed root-owned `/var`, `/tmp` and `/etc` aliases are accepted with pinned alias/target checks; arbitrary links remain refused. Portable Node APIs leave a final-check/rename race, documented in `docs/SECURITY-REVIEW.md`. |
 | 28 | Restrict image permissions to actual drawing authority; unrelated JSON or redirected links must not grant file access. | Implemented real-target revalidation against canonical drawing folders, including equivalent Windows short/long names, with network-host restrictions and link-escape checks. `electron/ipc-guard.cjs`, `tests/ipc-guard.test.ts`. |
-| 29 | Bound DXF parsing and source allocations; malformed or huge inputs must fail predictably. | Implemented linear tokenization, source/record/string bounds, browser file-size checks and bounded desktop reads. Recovery/plugin/catalog/library reads share byte caps; writes check UTF-8 bytes against matching read limits. `src/io/dxf.ts`, `src/io/file-limits.ts`, `electron/resource-limits.cjs`, `electron/autosave-store.cjs`. |
+| 29 | Bound DXF parsing and source allocations; malformed or huge inputs must fail predictably. | Implemented linear tokenization, source/record/string bounds, browser file-size checks and bounded desktop reads. All HATCH collection counts are limited by remaining records, and missing structural groups stop parsing. HATCH and standalone SPLINE reject more than 2,000,000 calculated basis-work units or 128 fit-interpolation matrix rows before expensive evaluation/allocation. Recovery/plugin/catalog/library reads share byte caps; writes check UTF-8 bytes against matching read limits. `src/io/dxf.ts`, `src/core/spline.ts`, `tests/interchange-hatch-limits.test.ts`, `electron/resource-limits.cjs`, `electron/autosave-store.cjs`. |
 | 30 | Bound desktop DWG worker work; corrupt inputs must not hang the main process. | Implemented size/start/parse deadlines, cancellation, worker cleanup and JavaScript heap limits; no main-thread fallback. WASM/native memory is not strictly capped. `electron/dwg-host.cjs`, `tests/dwg-host-limits.test.ts`. |
-| 31 | Bound expanded geometry; small nested blocks can multiply into millions of points. | Implemented weighted primitive/text/attribute work, 100,000 units per insert and 1,000,000 per imported drawing. Validation occurs before replacing sessions. `src/core/geometry-budget.ts`, `tests/block-dependencies.test.ts`. |
+| 31 | Bound expanded geometry; small nested blocks can multiply into millions of points. | Implemented weighted primitive/text/attribute work, 100,000 units per insert and 1,000,000 per imported drawing. DWG hatch arc/ellipse sweeps are normalized before subtraction, sampled at most 64 times per edge, and derived coordinate overflow is dropped with a source warning. Validation occurs before replacing sessions. `src/core/geometry-budget.ts`, `src/io/dwg.ts`, `tests/block-dependencies.test.ts`, `tests/interchange-hatch-limits.test.ts`. |
 | 32 | Persist plugin trust only with a cryptographic digest; weak hashes must not approve replacement code. | Implemented: SHA-256 only for persistent trust; weak fallback approval lasts the current run. `src/app/plugins.ts`, `tests/plugins.test.ts`. |
 | 33 | Isolate plugins if untrusted third-party code is to be supported; renderer execution is full application authority. | Conditional recommendation remains outstanding: plugins are explicitly trusted code, with confirmation and documented full renderer/bridge access. No claim of capability isolation or safe untrusted plugins. `docs/PLUGIN-API.md`, `docs/SECURITY-REVIEW.md`. |
 | 34 | Deny unsolicited Electron permissions/popups; file content should not grant browser capabilities. | Implemented default deny, main-window sanitized clipboard exception, navigation/window-open denial. `electron/main.cjs`, packaged end-to-end checks. |
@@ -57,7 +58,7 @@ local validation, not a claim that every platform installer has already passed C
 | 48 | Bound screenshot output and parse complete streams; chunk boundaries must not hide browser errors. | Implemented UTF-8 stream decoder, separate bounded tails and exact shared allowances. `e2e/output-scanner.mjs`, `tests/screenshot-output.test.ts`. |
 | 49 | Validate exports in an independent CAD implementation; self-round-trip tests can share the same bugs. | Implemented optional licensed AutoCAD Core Console harness. Seven committed fixture exports and a generated nested-dimension/override case passed AutoCAD 2027 AUDIT with zero errors and normalized entity type/count checks. No vendor drawings are committed. |
 | 50 | Release exactly the checked source and complete installer set; artifacts must match the tested commit. | Implemented source-SHA checks, five expected installer names, byte hashes and GitHub-signed build attestation before publication. Cross-platform execution remains a CI validation requirement. `scripts/release-provenance.mjs`, `.github/workflows/release.yml`. |
-| 51 | Report actual signing status; ad-hoc/unsigned builds must not be presented as publisher-signed releases. | Implemented configured signature/notarization verification and explicit provenance/release-note status. Local Windows artifact is unsigned; real signing requires owner-provided CI credentials. `docs/CODE-SIGNING.md`. |
+| 51 | Report actual signing status; ad-hoc/unsigned builds must not be presented as publisher-signed releases. | Implemented configured signature/notarization verification and explicit provenance/release-note status. Azure publisher configuration passes the installed builder's schema and reaches its generated updater configuration. Local Windows builds are unsigned; the configured CI signing service still needs a successful build and signature verification before a signed artifact is claimed. `scripts/azure-signing.mjs`, `tests/azure-signing.test.ts`, `docs/CODE-SIGNING.md`. |
 | 52 | Update documentation to match the implementation; outdated compatibility, security and update claims mislead users. | Implemented support/security/QA/performance/development/release/signing/manual/notices updates, including the remaining limits. |
 | 53 | Extract focused infrastructure; isolated responsibilities are easier to test without risky wholesale rewrites. | Implemented separate origin, resource-limit, update-policy, DWG worker, geometry-budget, fixture, scanner, benchmark and provenance modules. Existing editor behavior remains covered by end-to-end tests. |
 
@@ -81,43 +82,46 @@ reader behavior; no Autodesk source files, drawings or licensed program content 
 
 ## Validation and remaining limits
 
-Local validation includes 1,362 passing unit tests (10 conditional skips), seven passing dense
-performance tests, TypeScript checks for app/Electron/scripts, ESLint, fixture/workflow validators,
-a complete dependency audit with zero vulnerabilities, browser interaction/performance checks,
-Windows packaging and the real packaged application's file/plot/recovery/permission flows.
-The final desktop source run using Electron 44.7.0 passed all 207 end-to-end checks.
-The secure-origin migration is tested over two real packaged launches, including Unicode
-preferences and preservation of a value changed after migration.
+Local code validation includes 1,378 passing unit tests (10 conditional skips), TypeScript checks
+for app/Electron/scripts and ESLint. The dangerous hatch cases run in isolated child processes
+with a three-second deadline and 96 MiB JavaScript heap cap; they cover invalid tokens, every
+declared HATCH collection, missing records, huge finite angles, derived coordinate overflow and
+high-degree/dense-fit spline work.
+Supported dimensions also have numeric-only override round-trip regressions. The signing tests
+use the installed builder's schema and updater configuration without calling Azure.
 
-The workstation's Windows Application Control blocked the latest unsigned executable after
-it was rebuilt. Windows packaging succeeded; final packaged execution needs a machine that
-accepts the unsigned development build, or a properly signed release. The existing installed
-Electron runtime remains usable for final desktop testing. No Windows security policy was changed.
+Seven dense performance tests, fixture/workflow validators, a complete dependency audit with
+zero vulnerabilities, browser interaction/performance checks and Windows packaging also passed.
+The desktop source suite has 207 end-to-end checks. Preference migration is tested over two
+immediate launches, including Unicode values and preservation of a value changed after migration.
+The shipping app flushes renderer storage before acknowledging migration and before an approved
+close. Test cleanup has a deadline and only terminates its own Electron process.
+
+The workstation's Windows Application Control blocks the rebuilt unsigned executable. The
+existing installed Electron runtime remains usable for desktop source testing. Final packaged
+execution is a separate CI gate on each platform. No Windows security policy was changed.
 
 The committed screenshot baselines target Linux and its fonts. A local Windows comparison
 against those baselines failed as expected; a separate build of the baseline commit using the
 same Windows browser matched all 38 schematic/drafting captures at the existing visual comparator's
 threshold. An exact RGBA comparison found four pixels differing by at most 3/255 per channel,
 with no layout or content differences.
-The browser interaction gate passed 607 command runs and 796 clicks. CI must still compare the
-final source against the committed Linux baselines on its configured Chromium runner.
+The browser interaction gate passed 607 command runs and 796 clicks. CI compares all 48
+committed Linux screenshots on its configured Chromium runner. One DWG baseline changed after
+visual review confirmed unchanged drawing geometry and updated import-warning text; new
+content assertions cover those warnings, and no visual tolerances were widened. Symbol Builder's
+end-to-end check waits for its required controls to finish rendering.
 
-The first CI run passed both Node 22/24 jobs and Linux desktop/migration checks. Its Windows
-image check exposed short/long path aliases; its macOS save check exposed the system `/var`
-alias. Both received targeted fixes and regressions. Test cleanup now exits its own Electron
-instance with a deadline so a failed step cannot leave an unattended dirty-document dialog.
-The Linux screenshot comparison passed 47 of 48 images. Visual review of the remaining DWG
-image confirmed unchanged drawing geometry and updated import-warning text; only that
-baseline was replaced, with new assertions for those warnings and no tolerance changes.
-The revised final commit must pass a fresh CI run before those platforms are considered verified.
-The follow-up CI run passed all 48 screenshots and all 207 desktop checks on each OS, but
-macOS's separate preference restart check exposed a DOM storage persistence race. Storage
-flushes now happen in the shipping migration/close paths; the test still immediately restarts
-without a test-only persistence delay. Build-only preflight also exposed a Symbol Builder
-readiness assertion that must wait for its actions, rather than only the palette shell.
+Windows short/long image paths and macOS's protected system aliases have targeted regressions.
+Normal CI runs Node 22/24 checks, screenshot/performance checks and all 207 desktop checks plus
+preference restarts on Windows, macOS and Linux. A build-only dispatch additionally builds all
+five installers and runs installed/extracted applications on their respective platforms. Empty
+tag input disables publication. The pull request records the latest exact-commit workflow results.
 
 Before a release is considered verified, its exact final commit must pass the configured CI
 gates and every platform installer must be installed/extracted and exercised on its own OS.
 This Windows workstation cannot locally verify macOS notarization or Linux/macOS execution.
-No publisher certificates or credentials were invented. Plugin isolation, full automatic MTEXT
-column flow, arbitrary metadata preservation and strict native/WASM memory caps are not claimed.
+CI verifies the final macOS ad-hoc seal or configured Developer ID/notarization status and the
+configured Windows publisher signature. No publisher certificates or credentials were invented.
+Plugin isolation, full automatic MTEXT column flow, arbitrary metadata preservation and strict
+native/WASM memory caps are not claimed.

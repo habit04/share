@@ -90,7 +90,7 @@ publisher identity rather than on one certificate.
 | `AZURE_SIGNING_ENDPOINT` | region endpoint, e.g. `https://eus.codesigning.azure.net/` | `win.azureSignOptions.endpoint` |
 | `AZURE_SIGNING_ACCOUNT` | signing account name | `win.azureSignOptions.codeSigningAccountName` |
 | `AZURE_CERT_PROFILE` | certificate profile name | `win.azureSignOptions.certificateProfileName` |
-| `AZURE_PUBLISHER_NAME` | the profile subject's common name / validated publisher | `win.azureSignOptions.publisherName` and `win.publisherName` |
+| `AZURE_PUBLISHER_NAME` | the profile subject's common name / validated publisher | `win.azureSignOptions.publisherName`; builder derives the updater's publisher list |
 
 ### How the build uses them
 
@@ -104,7 +104,10 @@ executable, the uninstaller and the NSIS installer through the Artifact Signing
 client (it installs the `TrustedSigning` PowerShell module on demand). The
 committed `package.json` never contains signing settings.
 
-The script sets `build.win.publisherName` as well as Azure's publisher setting. The packaged
+The script sets `build.win.azureSignOptions.publisherName`. Builder 26 derives the packaged
+`app-update.yml` publisher list from that Azure setting; its Windows schema rejects the obsolete
+top-level `build.win.publisherName`. Regression tests validate the installed builder's schema
+and generated updater configuration without contacting the signing service. The packaged
 `app-update.yml` must contain a trusted publisher before the application enables an in-place
 Windows update. Unsigned Windows and all Linux builds offer manual downloads.
 
