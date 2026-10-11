@@ -339,6 +339,492 @@ scenario('project-recovery', async () => {
   checkClean(ctx, 'project recovery');
 });
 
+// ------------------------------------------------------------------ close / quit matrix
+const SMALL_DXF = ['0', 'SECTION', '2', 'ENTITIES', '0', 'LINE', '8', '0', '10', '0', '20', '0', '11', '40', '21', '20', '0', 'ENDSEC', '0', 'EOF', ''].join('\r\n');
+/**
+ * How the application is asked to close. Each returns a promise that settles when the trigger
+ * itself is done (the restart trigger resolves the main process's answer: may it restart?).
+ */
+const TRIGGERS = {
+  'window close': (ctx) => ctx.closeWindow(),
+  'File > Exit (app menu)': async (ctx) => {
+    await ctx.win.locator('.app-logo').click();
+    await ctx.win.locator('.appmenu-footer button', { hasText: 'Exit JCad Electrical' }).click();
+  },
+  'File > Quit (native menu)': (ctx) => ctx.app.evaluate(({ Menu }) => void Menu.getApplicationMenu().items[0].submenu.items.find((i) => i.role === 'quit').click()),
+  'Ctrl+Q': (ctx) =>
+    ctx.app.evaluate(({ BrowserWindow }) => {
+      const wc = BrowserWindow.getAllWindows()[0].webContents;
+      wc.sendInputEvent({ type: 'keyDown', keyCode: 'Q', modifiers: ['control'] });
+      wc.sendInputEvent({ type: 'keyUp', keyCode: 'Q', modifiers: ['control'] });
+    }),
+  'app-quit IPC': (ctx) => ctx.win.evaluate(() => window.jcad.quit()),
+  'updater restart': (ctx) =>
+    ctx.app.evaluate(async ({ BrowserWindow, app }, mainFile) => {
+      const updater = process.getBuiltinModule('node:module').createRequire(mainFile)('./updater.cjs');
+      const ok = await updater.confirmRestart(BrowserWindow.getAllWindows()[0]);
+      // electron-updater's quitAndInstall: app.quit() once the installer is started.
+      if (ok && globalThis.__e2e.restartQuits !== false) setImmediate(() => app.quit());
+      return ok;
+    }, join(repo, 'electron', 'main.cjs')).catch(() => 'gone'),
+};
+
+/** Slow autosave writes in the renderer (the store the Autosaver uses), `ms` per drawing. */
+const slowAutosave = (ctx, ms) =>
+  ctx.win.evaluate((d) => {
+    const a = window.jacUi.autosaver;
+    const real = a.store;
+    a.store = { ...real, write: async (n, t, m) => { await new Promise((r) => setTimeout(r, d)); return real.write(n, t, m); } };
+  }, ms);
+
+async function openDrawing(ctx, file) {
+  await ctx.pushOpen(file);
+  const h = await ctx.h();
+  await ctx.run('OPEN');
+  if (!(await ctx.waitLog(/^(Opened|Imported DWG|Failed to open|Not opened)/, h, 60_000))) bad(`OPEN ${file} logged nothing`);
+  return ctx.logSince(h);
+}
+
+async function startSymbolBuilder(ctx) {
+  await ctx.run('AESYMBUILDER');
+  const start = ctx.win.locator('.modal').last();
+  await start.waitFor({ timeout: 10_000 });
+  await start.locator('.btn.primary').last().click();
+  await ctx.win.waitForFunction(() => !document.getElementById('symbol-builder').classList.contains('hidden'), null, { timeout: 10_000 }).catch(() => bad('Symbol Builder did not open'));
+}
+
+const saveAllDlg = (ctx) => ctx.win.locator('.modal', { hasText: 'item(s) have unsaved changes' });
+async function tick(ctx, keep) {
+  const rows = saveAllDlg(ctx).locator('.save-all-row');
+  for (let i = 0; i < (await rows.count()); i += 1) {
+    const title = (await rows.nth(i).locator('b').textContent()) ?? '';
+    const box = rows.nth(i).locator('input[type=checkbox]');
+    if (keep.some((k) => title.includes(k))) await box.check();
+    else await box.uncheck();
+  }
+}
+
+scenario('close', async () => {
+  const onlyTriggers = (process.env.JCAD_TRIGGERS ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+  for (const [name, trigger] of Object.entries(TRIGGERS)) {
+    if (onlyTriggers.length && !onlyTriggers.some((x) => name.toLowerCase().includes(x.toLowerCase()))) continue;
+    // ---- clean: closes (or may restart) at once, without any question
+    step = `close [${name}] clean`;
+    {
+      const ctx = await launch(tempDir('profile'));
+      try {
+        const r = await trigger(ctx);
+        if (name === 'updater restart') check(r === true || r === 'gone', `nothing unsaved: the restart is allowed at once (${r})`);
+        const exited = await Promise.race([ctx.exited, sleep(10_000).then(() => false)]);
+        check(exited === true, 'nothing unsaved: the application closed without a question');
+        flowsRun.push(`${name}: clean`);
+      } catch (err) {
+        bad(`unexpected: ${err && err.stack ? err.stack : err}`);
+      } finally {
+        await ctx.close();
+      }
+      checkClean(ctx, `${name} clean`);
+    }
+
+    // ---- everything unsaved: two drawings, the project, a Symbol Builder tab; slow autosave; one save fails
+    step = `close [${name}] unsaved`;
+    const profile = tempDir('profile');
+    const work = tempDir('work');
+    const full = tempDir('full');
+    const realEnospc = makeFullDisk(full);
+    const a = join(work, 'a.dxf');
+    const b = join(full, 'b.dxf');
+    const bSaved = join(work, 'b-saved.dxf');
+    writeFileSync(a, readFileSync(fixtures.dxf));
+    writeFileSync(b, SMALL_DXF);
+    const aBytes = readFileSync(a);
+    const projFile = join(work, 'close.jcadproj.json');
+    writeProject(projFile, 'Close Test', ['a.dxf']);
+    const ctx = await launch(profile);
+    try {
+      if (!realEnospc) await ctx.setFaults([{ prefix: full + '/', code: 'ENOSPC', op: 'open' }]);
+      await openDrawing(ctx, a);
+      await ctx.edit('a');
+      await openDrawing(ctx, b);
+      await ctx.edit('b');
+      await openProject(ctx, projFile);
+      await ctx.win.evaluate(() => window.editor.updateProject({ ...window.editor.project, description: 'close matrix' }));
+      await startSymbolBuilder(ctx);
+      const tabs = await ctx.tabs();
+      check(tabs.filter((t) => t.dirty).length === 3 && (await ctx.projectState()).dirty, `unsaved: ${tabs.map((t) => `${t.title}${t.dirty ? '*' : ''}`).join(', ')} + project`);
+      await ctx.messages();
+
+      // 1. The dialog lists everything; the main process waits past its 5 s fallback; a second request shows no second dialog; Cancel.
+      let pending = trigger(ctx);
+      await saveAllDlg(ctx).waitFor({ timeout: 10_000 });
+      const rows = (await saveAllDlg(ctx).locator('.save-all-row').allInnerTexts()).map((t) => t.trim());
+      check(rows.length === 4 && /a\.dxf/.test(rows[0]) && /b\.dxf/.test(rows[1]) && /Symbol/.test(rows[2]) && /Close Test.*Project/.test(rows[3]), `one Save All dialog lists drawings, symbol tab and project in order: ${rows.join(' | ')}`);
+      const intro = (await saveAllDlg(ctx).locator('p').first().textContent()) ?? '';
+      check(name === 'updater restart' ? /restarting to install the update/.test(intro) : /closing JCad Electrical/.test(intro), `the question names what happens: "${intro}"`);
+      if (name === 'window close' || name === 'updater restart' || name === 'Ctrl+Q') {
+        await ctx.win.waitForTimeout(6000);
+        const msgs = await ctx.messages();
+        check((await ctx.windowCount()) === 1 && !msgs.some((m) => m.startsWith('boxsync:')), `the window waits past 5 s for the answer, no "not responding" fallback${msgs.length ? ` (${msgs.join(' ; ')})` : ''}`);
+      }
+      void TRIGGERS['window close'](ctx);
+      await ctx.win.waitForTimeout(400);
+      check((await ctx.win.locator('.save-all-list').count()) === 1, 'a second close request while the dialog is open shows no second dialog');
+      await saveAllDlg(ctx).locator('button', { hasText: 'Cancel' }).click();
+      const r1 = await Promise.race([pending, sleep(5000).then(() => 'pending')]);
+      if (name === 'updater restart') check(r1 === false, `Cancel: no restart (${r1})`);
+      await ctx.win.waitForTimeout(300);
+      check((await ctx.windowCount()) === 1 && (await ctx.tabs()).filter((t) => t.dirty).length === 3 && (await ctx.projectState()).dirty, 'Cancel: the window stays open, everything still modified');
+
+      // 2. An autosave is being written (slowly) when the close is answered; b.dxf cannot be saved (disk full).
+      await slowAutosave(ctx, 1500);
+      void ctx.run('AUTOSAVE');
+      await ctx.win.waitForTimeout(200);
+      check(await ctx.win.evaluate(() => window.jacUi.autosaver.busy), 'an autosave is in flight');
+      pending = trigger(ctx);
+      await saveAllDlg(ctx).waitFor({ timeout: 10_000 });
+      await tick(ctx, ['a.dxf', 'b.dxf', 'Close Test']);
+      check((await saveAllDlg(ctx).locator('.btn.primary').textContent()) === 'Save Selected', 'unticking the symbol: Save Selected');
+      await saveAllDlg(ctx).locator('.btn.primary').click();
+      const errDlg = ctx.win.locator('.save-error-dialog .modal');
+      const errShown = await errDlg.waitFor({ timeout: 15_000 }).then(() => true, () => false);
+      check(errShown, 'the failed save of b.dxf shows the Save Failed dialog (Retry / Save As... / Cancel)');
+      if (errShown) {
+        const text = await errDlg.innerText();
+        check(/"b\.dxf" could not be saved: .*(free space|disk is full|no space)/i.test(text), `it names the file and the cause: ${text.split('\n').slice(0, 3).join(' / ')}`);
+        await errDlg.locator('button', { hasText: 'Cancel' }).click();
+      }
+      // The close workflow then says the close was aborted (one more dialog, after the user's own Cancel).
+      await ctx.win.waitForTimeout(500);
+      const after = await ctx.win.locator('.modal').allInnerTexts();
+      const extra = after.filter((t) => /could not be saved/.test(t));
+      check(extra.length === 1 && /b\.dxf could not be saved: there is not enough free space/.test(extra[0]) && !/"b\.dxf" could not be saved/.test(extra[0]), `one follow-up notice that the close was aborted, naming the cause once (${extra.map((t) => t.replace(/\s+/g, ' ').slice(0, 140)).join(' || ')})`);
+      for (let i = 0; i < 3 && (await ctx.win.locator('.modal button', { hasText: 'OK' }).count()); i += 1) await ctx.win.locator('.modal button', { hasText: 'OK' }).first().click();
+      const r2 = await Promise.race([pending, sleep(15_000).then(() => 'pending')]);
+      if (name === 'updater restart') check(r2 === false, `a failed save: no restart (${r2})`);
+      await ctx.win.waitForTimeout(300);
+      const t2 = await ctx.tabs();
+      const aTab = t2.find((t) => t.path === a);
+      const bTab = t2.find((t) => t.path === b);
+      check((await ctx.windowCount()) === 1, 'a failed save keeps the window open');
+      check(aTab && !aTab.dirty && bTab && bTab.dirty && (await ctx.projectState()).dirty && t2.some((t) => /Symbol/.test(t.title) && t.dirty), `a.dxf saved, b.dxf / project / symbol still modified (${t2.map((t) => `${t.title}${t.dirty ? '*' : ''}`).join(', ')}, project ${(await ctx.projectState()).dirty ? 'modified' : 'saved'})`);
+      check(existsSync(`${a}.bak`) && Buffer.compare(readFileSync(`${a}.bak`), aBytes) === 0, 'a.dxf.bak holds the original bytes');
+      check(Buffer.compare(readFileSync(b), Buffer.from(SMALL_DXF)) === 0, 'b.dxf is unchanged on disk');
+      await ctx.win.evaluate(() => window.jacUi.autosaver.flush());
+      const idx = Object.values(ctx.autosaveIndex());
+      check(idx.some((e) => e.originalPath === b), `b.dxf keeps its autosave backup (${idx.map((e) => e.title).join(', ')})`);
+      check(!(await ctx.messages()).some((m) => m.startsWith('boxsync:')), 'no "not responding" fallback while the autosave was written');
+
+      if (name === 'updater restart') {
+        // 2b. Restart approved (Discard All) but the installer never quits the app: a later close asks again.
+        await ctx.app.evaluate(() => void (globalThis.__e2e.restartQuits = false));
+        pending = trigger(ctx);
+        await saveAllDlg(ctx).waitFor({ timeout: 10_000 });
+        await saveAllDlg(ctx).locator('button', { hasText: 'Discard All' }).click();
+        check((await pending) === true, 'Discard All: the restart may go ahead');
+        await ctx.win.waitForTimeout(5500);
+        await ctx.closeWindow();
+        const askedAgain = await saveAllDlg(ctx).waitFor({ timeout: 5000 }).then(() => true, () => false);
+        check(askedAgain && (await ctx.windowCount()) === 1, 'the restart did not happen: closing the window later asks about the unsaved work again');
+        if (askedAgain) await saveAllDlg(ctx).locator('button', { hasText: 'Cancel' }).click();
+        await ctx.app.evaluate(() => void (globalThis.__e2e.restartQuits = true));
+        flowsRun.push('updater restart approved without a quit, then window close');
+      }
+      // 3. Again: b.dxf fails, Save As... puts it elsewhere; the symbol is discarded; the project is saved; the window closes.
+      pending = trigger(ctx);
+      await saveAllDlg(ctx).waitFor({ timeout: 10_000 });
+      const rows3 = (await saveAllDlg(ctx).locator('.save-all-row').allInnerTexts()).map((t) => t.trim());
+      check(rows3.length === 3 && !rows3.some((r) => /a\.dxf/.test(r)), `the saved drawing is no longer listed: ${rows3.join(' | ')}`);
+      await tick(ctx, ['b.dxf', 'Close Test']);
+      await ctx.pushSave(bSaved);
+      await saveAllDlg(ctx).locator('.btn.primary').click();
+      if (await errDlg.waitFor({ timeout: 15_000 }).then(() => true, () => false)) await errDlg.locator('button', { hasText: 'Save As...' }).click();
+      else bad('no Save Failed dialog on the second attempt');
+      const exited = await Promise.race([ctx.exited, sleep(20_000).then(() => false)]);
+      check(exited === true, 'after Save As... and the project save the application closed');
+      check(existsSync(bSaved) && /flow-b|LINE/.test(readFileSync(bSaved, 'utf8')), 'b.dxf was written to the Save As path');
+      check(JSON.parse(readFileSync(projFile, 'utf8')).description === 'close matrix', 'the project file was saved before the close');
+      check(ctx.autosaveFiles().length === 0, `no drawing backups left for saved work (${ctx.autosaveFiles().join(', ')})`);
+      flowsRun.push(`${name}: two drawings + project + symbol, slow autosave, a failing save (cancel, error, Save As)`);
+    } catch (err) {
+      bad(`unexpected: ${err && err.stack ? err.stack : err}`);
+    } finally {
+      await ctx.close();
+    }
+    checkClean(ctx, `${name} unsaved`);
+  }
+});
+
+// ------------------------------------------------------------------ crashed and hung renderer
+scenario('renderer', async () => {
+  // A crashed renderer has nothing left to save: the window closes; the autosave stays for recovery.
+  step = 'renderer: crashed';
+  const profile = tempDir('profile');
+  let ctx = await launch(profile);
+  try {
+    await ctx.edit('crash');
+    const h = await ctx.h();
+    await ctx.run('AUTOSAVE');
+    await ctx.waitLog(/drawing\(s\) autosaved/, h);
+    await ctx.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.forcefullyCrashRenderer());
+    await sleep(500);
+    await ctx.closeWindow();
+    const exited = await Promise.race([ctx.exited, sleep(10_000).then(() => false)]);
+    check(exited === true, 'a crashed renderer: the window closes without waiting for an answer');
+    check(ctx.autosaveFiles().length === 1, `its autosave is kept for the Drawing Recovery Manager (${ctx.autosaveFiles().join(', ')})`);
+    flowsRun.push('crashed renderer + window close');
+  } catch (err) {
+    bad(`unexpected: ${err && err.stack ? err.stack : err}`);
+  } finally {
+    await ctx.close();
+  }
+  // The next start offers that backup.
+  ctx = await launch(profile);
+  try {
+    const rec = ctx.win.locator('.recovery-dialog .modal');
+    check(await rec.waitFor({ timeout: 10_000 }).then(() => true, () => false), 'the next start offers the backup of the crashed session');
+  } finally {
+    await ctx.close();
+  }
+
+  // A hung renderer (no acknowledgement within 5 s): the native question; Cancel keeps the window, and
+  // the Save All dialog that the page shows once it responds again is answered for real.
+  step = 'renderer: hung';
+  ctx = await launch(tempDir('profile'));
+  try {
+    await ctx.edit('hung');
+    void ctx.win.evaluate(() => {
+      const t = Date.now();
+      while (Date.now() - t < 8000) {
+        /* busy */
+      }
+    }).catch(() => {});
+    await sleep(300);
+    await ctx.closeWindow();
+    await sleep(6000);
+    let msgs = await ctx.messages();
+    check(msgs.some((m) => m === 'boxsync:JCad Electrical is not responding.'), `after 5 s without an answer the native "not responding" question appears (${msgs.join(' ; ')})`);
+    check((await ctx.windowCount()) === 1, 'Cancel keeps the window open');
+    // The page responds again and shows the Save All question it was sent.
+    const late = await saveAllDlg(ctx).waitFor({ timeout: 10_000 }).then(() => true, () => false);
+    if (late) {
+      await saveAllDlg(ctx).locator('button', { hasText: 'Discard All' }).click();
+      const exited = await Promise.race([ctx.exited, sleep(5000).then(() => false)]);
+      check(exited === true, 'answering the late Save All dialog (Discard All) closes the window');
+    } else ok('no late Save All dialog after the native Cancel');
+    flowsRun.push('hung renderer: native fallback Cancel, late answer');
+  } catch (err) {
+    bad(`unexpected: ${err && err.stack ? err.stack : err}`);
+  } finally {
+    await ctx.close();
+  }
+  // Close Without Saving from the native question closes at once.
+  ctx = await launch(tempDir('profile'));
+  try {
+    await ctx.edit('hung2');
+    await ctx.pushSync(0);
+    void ctx.win.evaluate(() => {
+      const t = Date.now();
+      while (Date.now() - t < 9000) {
+        /* busy */
+      }
+    }).catch(() => {});
+    await sleep(300);
+    await ctx.closeWindow();
+    const exited = await Promise.race([ctx.exited, sleep(12_000).then(() => false)]);
+    check(exited === true, 'hung renderer: "Close Without Saving" closes the window');
+    flowsRun.push('hung renderer: Close Without Saving');
+  } catch (err) {
+    bad(`unexpected: ${err && err.stack ? err.stack : err}`);
+  } finally {
+    await ctx.close();
+  }
+});
+
+// ------------------------------------------------------------------ open flows
+scenario('open', async () => {
+  step = 'open';
+  const work = tempDir('open');
+  const files = {};
+  for (const n of ['a', 'b', 'c', 'same']) {
+    files[n] = join(work, `${n}.dxf`);
+    writeFileSync(files[n], readFileSync(fixtures.dxf));
+  }
+  const damaged = join(work, 'damaged.dxf');
+  writeFileSync(damaged, readFileSync(join(repo, 'tests', 'fixtures', 'broken', 'bad-groupcode.dxf')));
+  const truncated = join(work, 'truncated.dxf');
+  writeFileSync(truncated, readFileSync(fixtures.truncated));
+  const ctx = await launch(tempDir('profile'));
+  try {
+    // ---- a slow open finishes in the tab it was started from while the user works in another tab
+    step = 'open: slow open, switch tabs';
+    await ctx.edit('x');
+    const xId = (await ctx.tabs())[0].id;
+    await ctx.setSlowReads([{ path: files.a, ms: 2500 }]);
+    await ctx.pushOpen(files.a);
+    let h = await ctx.h();
+    await ctx.run('OPEN');
+    await ctx.win.waitForTimeout(400);
+    let t = await ctx.tabs();
+    check(t.length === 2 && (await ctx.active()) === 1, `OPEN made a new tab for the file (${t.length} tabs)`);
+    await ctx.win.evaluate(() => window.editor.sessions.switchTo(0));
+    await ctx.edit('x2');
+    await ctx.waitLog(/^Opened /, h, 15_000);
+    t = await ctx.tabs();
+    const aTab = t.find((x) => x.path === files.a);
+    check(t.length === 2 && aTab && aTab.n === 25 && !aTab.dirty && (await ctx.active()) === 0 && t[0].id === xId && t[0].dirty, `the slow open landed in its own tab in the background (${t.map((x) => `${x.title}:${x.n}${x.dirty ? '*' : ''}`).join(', ')}; active ${await ctx.active()})`);
+    check((await ctx.logSince(h)).some((l) => /in the tab it was opened from/.test(l)), 'the log says it opened in the tab it was started from');
+    flowsRun.push('slow OPEN + switch tabs');
+
+    // ---- OPEN while a slow open is pending, then switch tabs: both files open, once each
+    step = 'open: two opens';
+    await ctx.setSlowReads([{ path: files.b, ms: 2500 }]);
+    await ctx.pushOpen(files.b, files.c);
+    h = await ctx.h();
+    await ctx.run('OPEN');
+    await ctx.win.waitForTimeout(300);
+    await ctx.run('OPEN');
+    await ctx.win.waitForTimeout(300);
+    await ctx.win.evaluate(() => window.editor.sessions.switchTo(0));
+    await ctx.win.waitForFunction((k) => window.editor.history.slice(k).filter((l) => /^Opened /.test(l)).length >= 2, h, { timeout: 15_000 }).catch(() => bad('the two opens did not both finish'));
+    t = await ctx.tabs();
+    const count = (p) => t.filter((x) => x.path === p).length;
+    check(count(files.b) === 1 && count(files.c) === 1 && t.length === 4 && t.every((x) => x.path || x.dirty), `b.dxf and c.dxf are each open once, no empty tab left (${t.map((x) => x.title).join(', ')})`);
+    check((await ctx.active()) === 0, 'the tab the user switched to stays active');
+    flowsRun.push('OPEN while a slow open is pending + switch tabs');
+
+    // ---- the same file opened twice: one tab
+    step = 'open: same file twice';
+    await ctx.setSlowReads([]);
+    await openDrawing(ctx, files.same);
+    await ctx.win.evaluate(() => window.editor.sessions.switchTo(0));
+    await ctx.pushOpen(files.same);
+    h = await ctx.h();
+    await ctx.run('OPEN');
+    await ctx.win.waitForTimeout(1500);
+    t = await ctx.tabs();
+    check(t.filter((x) => x.path === files.same).length === 1, `opening a file that is already open does not open a second copy (${t.map((x) => x.title).join(', ')})`);
+    check(t[await ctx.active()].path === files.same, 'its tab is shown');
+    // Two RECENT requests in a row (double click) for a file that is not open yet.
+    await ctx.win.evaluate((p) => {
+      const s = window.editor.sessions;
+      s.close(s.indexOfPath(p));
+    }, files.same);
+    await ctx.setSlowReads([{ path: files.same, ms: 800 }]);
+    const ri = (await ctx.win.evaluate(() => window.editor.settings.recentFiles)).indexOf(files.same) + 1;
+    await ctx.run(`RECENT ${ri}`);
+    await ctx.run(`RECENT ${ri}`);
+    await ctx.win.waitForTimeout(2500);
+    t = await ctx.tabs();
+    check(t.filter((x) => x.path === files.same).length === 1, `RECENT twice while the file loads: one tab (${t.map((x) => x.title).join(', ')})`);
+    await ctx.setSlowReads([]);
+    flowsRun.push('the same file opened twice (OPEN, RECENT x2)');
+
+    // ---- failed opens and the recent list
+    step = 'open: failures and RECENT';
+    const before = await ctx.win.evaluate(() => window.editor.settings.recentFiles.slice());
+    const tabsBefore = (await ctx.tabs()).length;
+    await ctx.pushOpen(damaged);
+    h = await ctx.h();
+    await ctx.run('OPEN');
+    await ctx.waitLog(/^(Failed to open|Opened|Not opened)/, h);
+    let log = await ctx.logSince(h);
+    check(log.some((l) => /^Failed to open drawing: /.test(l)), `a damaged file is reported: ${log.find((l) => /Failed|Opened/.test(l))}`);
+    await ctx.win.waitForTimeout(300);
+    check((await ctx.tabs()).length === tabsBefore, 'no tab is left behind by the failed open');
+    let recent = await ctx.win.evaluate(() => window.editor.settings.recentFiles.slice());
+    check(!recent.includes(damaged), `a file that failed to open is not added to Recent Documents (${recent.slice(0, 3).join(', ')})`);
+    // Declining the partial recovery of a truncated file.
+    await ctx.pushOpen(truncated);
+    h = await ctx.h();
+    await ctx.run('OPEN');
+    const ask = ctx.modal('Open what was readable?');
+    if (await ask.waitFor({ timeout: 10_000 }).then(() => true, () => false)) await ask.locator('button', { hasText: 'No' }).click();
+    else bad('no partial-recovery question for a truncated file');
+    await ctx.waitLog(/^Not opened/, h);
+    recent = await ctx.win.evaluate(() => window.editor.settings.recentFiles.slice());
+    check(!recent.includes(truncated), 'a truncated file whose recovery was declined is not added to Recent Documents');
+    // A remembered file that was deleted: RECENT reports it.
+    rmSync(files.c === undefined ? '' : join(work, 'gone.dxf'), { force: true });
+    writeFileSync(join(work, 'gone.dxf'), readFileSync(fixtures.dxf));
+    await openDrawing(ctx, join(work, 'gone.dxf'));
+    await ctx.win.evaluate((p) => {
+      const s = window.editor.sessions;
+      s.close(s.indexOfPath(p));
+    }, join(work, 'gone.dxf'));
+    rmSync(join(work, 'gone.dxf'));
+    const gi = (await ctx.win.evaluate(() => window.editor.settings.recentFiles)).indexOf(join(work, 'gone.dxf')) + 1;
+    h = await ctx.h();
+    const nTabs = (await ctx.tabs()).length;
+    await ctx.run(`RECENT ${gi}`);
+    await ctx.waitLog(/^(Failed to open|Opened)/, h);
+    log = await ctx.logSince(h);
+    check(log.some((l) => /^Failed to open drawing: "gone\.dxf" could not be read: the file is no longer in /.test(l)), `RECENT of a deleted file says so: ${log.find((l) => /Failed/.test(l))}`);
+    await ctx.win.waitForTimeout(300);
+    check((await ctx.tabs()).length === nTabs, 'and leaves no empty tab');
+    void before;
+    flowsRun.push('failed opens (damaged, declined recovery, deleted RECENT entry)');
+
+    // ---- a truncated DXF finishing in a background tab: recovery prompt, report, recovered flag
+    step = 'open: truncated in background';
+    await ctx.setSlowReads([{ path: truncated, ms: 2000 }]);
+    await ctx.pushOpen(truncated);
+    h = await ctx.h();
+    await ctx.run('OPEN');
+    await ctx.win.waitForTimeout(300);
+    const newTab = await ctx.active();
+    await ctx.win.evaluate(() => window.editor.sessions.switchTo(0));
+    const ask2 = ctx.modal('Open what was readable?');
+    if (await ask2.waitFor({ timeout: 10_000 }).then(() => true, () => false)) await ask2.locator('button', { hasText: 'Yes' }).click();
+    else bad('no partial-recovery question for the background open');
+    await ctx.waitLog(/^Opened /, h);
+    const rep = ctx.win.locator('.import-report-dialog .modal');
+    const repShown = await rep.waitFor({ timeout: 5000 }).then(() => true, () => false);
+    check(repShown && /RECOVERED|recovered|ends early/i.test(await rep.innerText()), 'the import report (recovered) is shown although the drawing opened in a background tab');
+    if (repShown) await rep.locator('button', { hasText: 'Close' }).click();
+    t = await ctx.tabs();
+    const tr = t.find((x) => x.path === truncated);
+    check(tr && tr.dirty && (await ctx.active()) === 0 && t.indexOf(tr) === newTab, `the recovered drawing is in its own tab, marked modified (${t.map((x) => `${x.title}${x.dirty ? '*' : ''}`).join(', ')})`);
+    check((await ctx.logSince(h)).some((l) => /^RECOVERED drawing/.test(l)), 'the log marks it RECOVERED');
+    await ctx.setSlowReads([]);
+    // SAVE over the recovered file asks first (No = Save As).
+    await ctx.win.evaluate((i) => window.editor.sessions.switchTo(i), t.indexOf(tr));
+    const tBytes = readFileSync(truncated);
+    await ctx.run('SAVE');
+    const over = ctx.modal('Save over the original file?');
+    if (await over.waitFor({ timeout: 5000 }).then(() => true, () => false)) {
+      await over.locator('button', { hasText: 'No' }).click();
+      await ctx.win.waitForTimeout(500);
+    } else bad('SAVE over a recovered file did not ask');
+    check(Buffer.compare(readFileSync(truncated), tBytes) === 0, 'the truncated original was not overwritten');
+    flowsRun.push('truncated DXF in a background tab (recovery, report, recovered flag, Save warning)');
+
+    // ---- DWG: import report, then PLOT
+    step = 'open: DWG + PLOT';
+    if (existsSync(fixtures.dwg)) {
+      const log2 = await openDrawing(ctx, fixtures.dwg);
+      check(log2.some((l) => /^Imported DWG/.test(l)), `DWG imported: ${log2.find((l) => /Imported|Failed/.test(l))}`);
+      const dwgRep = ctx.win.locator('.import-report-dialog .modal', { hasText: 'DWG Import Report' });
+      if (await dwgRep.waitFor({ timeout: 5000 }).then(() => true, () => false)) await dwgRep.locator('button', { hasText: 'Close' }).click();
+      else bad('no DWG import report');
+      const pdf = join(work, 'dwg-plot.pdf');
+      await ctx.pushSave(pdf);
+      h = await ctx.h();
+      await ctx.run('PLOT');
+      const dlg = ctx.modal('Paper size');
+      await dlg.waitFor({ timeout: 10_000 });
+      await dlg.locator('button', { hasText: 'Plot to PDF' }).click();
+      await ctx.waitLog(/^Plotted to /, h, 60_000);
+      check(existsSync(pdf) && readFileSync(pdf).subarray(0, 5).toString() === '%PDF-' && statSync(pdf).size > 1000, `the DWG plotted to PDF (${existsSync(pdf) ? statSync(pdf).size : 0} bytes)`);
+      flowsRun.push('DWG with import report, then PLOT');
+    }
+  } catch (err) {
+    bad(`unexpected: ${err && err.stack ? err.stack : err}`);
+  } finally {
+    await ctx.close();
+  }
+  checkClean(ctx, 'open flows');
+});
+
 // ================================================================== run
 for (const s of scenarios) {
   if (!want(s.name)) continue;

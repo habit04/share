@@ -227,6 +227,8 @@ let closeSeq = 0;
  * failed. There is no timeout while the renderer is alive (the user may take a while in the
  * dialog); a renderer that crashed has nothing left to save, and one that does not acknowledge
  * the request within a few seconds (hung) gets a native Close Without Saving / Cancel question.
+ * After Cancel there, a page that was only busy still shows the Save All dialog it was sent once it
+ * responds again; that late answer is not ignored: when it allows the close, the window closes.
  */
 function requestClose(win, context) {
   return new Promise((resolve) => {
@@ -252,10 +254,18 @@ function requestClose(win, context) {
     const onAck = (ev, rid) => {
       if (ev.sender === wc && rid === id) acked = true;
     };
+    /** The native question was answered Cancel while the page was busy: its own answer may still come. */
+    let late = false;
     const onResponse = (ev, rid, ok) => {
-      if (ev.sender === wc && rid === id) finish(ok === true);
+      if (ev.sender !== wc || rid !== id) return;
+      if (!late) return finish(ok === true);
+      cleanup();
+      if (ok === true && !win.isDestroyed()) {
+        closeApproved.add(win);
+        win.close();
+      }
     };
-    const onGone = () => finish(true);
+    const onGone = () => (late ? cleanup() : finish(true));
     ipcMain.on('close-ack', onAck);
     ipcMain.on('close-response', onResponse);
     wc.once('render-process-gone', onGone);
@@ -271,15 +281,29 @@ function requestClose(win, context) {
         message: 'JCad Electrical is not responding.',
         detail: 'Unsaved changes cannot be saved now. Autosave copies of modified drawings stay available in the Drawing Recovery Manager.',
       });
-      finish(r === 0);
+      if (r === 0) return finish(true);
+      // Cancel: the close is off for now, but keep listening for this request's answer (see above).
+      settled = true;
+      late = true;
+      clearTimeout(timer);
+      ipcMain.removeListener('close-ack', onAck);
+      resolve(false);
     }, 5000);
   });
 }
 // Restart to install an update: the same Save All workflow first; the restart's own window close then goes through.
+// quitAndInstall closes the window right away (app.quit on the next tick); when it does not (the installer
+// could not be started), the approval lapses so a later close asks about unsaved work again.
+const RESTART_APPROVAL_MS = 5000;
 updater.onConfirmRestart(async (w) => {
   const win = w && !w.isDestroyed() ? w : mainWindow;
   const ok = await requestClose(win, 'restart');
-  if (ok && win) closeApproved.add(win);
+  if (ok && win) {
+    closeApproved.add(win);
+    setTimeout(() => {
+      if (!win.isDestroyed()) closeApproved.delete(win);
+    }, RESTART_APPROVAL_MS);
+  }
   return ok;
 });
 
