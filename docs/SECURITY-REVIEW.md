@@ -56,7 +56,7 @@ execution still require the corresponding machines and CI secrets.
 | E-10 plugin trust model | Low | Persisted trust requires a 64-hex SHA-256 digest; weak fallback approval lasts only the current run. Plugins remain explicitly trusted code with full renderer access, not capability-isolated extensions. |
 | E-11 IPC caller identity | Low | Fixed: every registered channel checks main window, top frame and application URL. |
 | E-12 permissions | Low | Fixed: default deny, except sanitized clipboard writes from the main application contents. Navigation and popups are denied for main/print contents. |
-| E-13 nested block expansion | Low | Fixed: at most 100,000 work units per insert and 1,000,000 per imported drawing, including layouts and definitions. |
+| E-13 nested block expansion | Low | Fixed: at most 100,000 work units per insert, 1,000,000 total expanded model/layout units and a separate 1,000,000-unit limit for block definitions. |
 | E-14 modal title HTML | Low | Fixed: title text is assigned as text. |
 | E-15 renderer hardening | Low | Secure `jcad://app/index.html` origin, tighter CSP and packaging fuses. Run-as-Node, NODE_OPTIONS and extra file protocol privileges are disabled; ASAR-only loading and integrity validation are enabled. The packaged menu hides DevTools; CLI inspect remains enabled for packaged Playwright checks. |
 | E-16 report privacy | Info | Fixed: paths/drawing names are redacted by default; history, captured errors and private details are unchecked until the user opts in. |
