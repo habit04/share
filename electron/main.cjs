@@ -550,6 +550,26 @@ ipcMain.handle('choose-project-path', async (ev, suggestName) => {
 });
 
 /**
+/**
+ * Drawing Save As: ask where to save; the path becomes writable by save-dxf (a .dxf file: a name
+ * typed without the extension gets it) but nothing is written yet. The renderer then writes it
+ * through its per-file save queue (src/app/savequeue.ts), so a Save As onto a file with an older
+ * save still on its way is ordered after that save instead of racing it.
+ */
+ipcMain.handle('choose-drawing-path', async (ev, suggestName) => {
+  const win = senderWindow(ev);
+  const res = await dialog.showSaveDialog(win, {
+    title: 'Save Drawing As',
+    defaultPath: String(suggestName || 'Drawing1.dxf'),
+    filters: [{ name: 'DXF Drawing (AutoCAD 2000)', extensions: ['dxf'] }],
+  });
+  if (res.canceled || !res.filePath) return null;
+  const file = DXF_FILE.test(res.filePath) ? res.filePath : `${res.filePath}.dxf`;
+  registry.grant(file);
+  return file;
+});
+
+/**
  * Write the project file to a path that came from our own dialogs (Open Project / Save Project As /
  * recent list): a .json file the user may write (a catalog file named by a project may not be).
  */

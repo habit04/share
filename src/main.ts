@@ -28,7 +28,7 @@ import { saveErrorDialog } from './ui/save-error';
 import { describeFileError } from './app/file-errors';
 import { exportFailed } from './app/file-error-text';
 import { importReportDialog } from './ui/import-report';
-import { runCloseWorkflow, saveSymbolForClose, settleBeforeClose } from './app/closeflow';
+import { closeDrawingTab, runCloseWorkflow, saveSymbolForClose, settleBeforeClose } from './app/closeflow';
 import { saveAllDialog, saveFailedDialog, projectRecoveryDialog } from './ui/filedialogs';
 import { ProjectAutosaver, drawingAutosaves, offerProjectRecovery } from './app/project-autosave';
 import { showAppMenu } from './ui/appmenu';
@@ -59,6 +59,7 @@ declare global {
       /** Track E: write vector PDF bytes (save-pdf IPC). */
       savePdf?(bytes: Uint8Array, suggestName: string): Promise<string | null>;
       saveDxf(path: string | null, text: string, suggestName: string, opts?: { backup?: boolean }): Promise<string | null>;
+      chooseDrawingPath?(suggestName: string): Promise<string | null>;
       onMenuCommand(cb: (cmd: string) => void): void;
       /** Close / quit / restart: the main process waits for the Save All workflow's answer (true = close). */
       onCloseRequest?(cb: (context: 'close' | 'quit' | 'restart') => Promise<boolean>): void;
@@ -384,13 +385,10 @@ function boot(): void {
   const closeTab = async (i: number): Promise<boolean> => {
     // Symbol Builder tabs save to the user library instead of a file.
     if (symbolBuilderOf(editor).isSymbolSession(i)) return symbolBuilderOf(editor).closeSession(i);
-    if (editor.sessions.isDirty(i)) {
-      const ok = await confirmDialog('Unsaved changes', `${editor.sessions.titleOf(i)} has unsaved changes. Discard them?`);
-      if (!ok) return false;
-    }
-    void autosaver.discardFor(editor.sessions.all[i]!.id);
-    editor.sessions.close(i);
-    return true;
+    return closeDrawingTab(editor.sessions, i, {
+      confirmDiscard: (title) => confirmDialog('Unsaved changes', `${title} has unsaved changes. Discard them?`),
+      discardBackup: (id) => void autosaver.discardFor(id),
+    });
   };
   reg('CLOSE', [], 'Close the current drawing tab', (ed) => void closeTab(ed.sessions.active));
   reg('CLOSEALL', [], 'Close all drawing tabs', async (ed) => {

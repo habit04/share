@@ -15,6 +15,8 @@ contextBridge.exposeInMainWorld('jcad', {
   savePdf: (bytes, suggestName) => ipcRenderer.invoke('save-pdf', bytes, suggestName),
   // opts.backup === false: no <name>.bak copy (a project-wide command made its own, or the user declined one)
   saveDxf: (path, text, suggestName, opts) => ipcRenderer.invoke('save-dxf', path, text, suggestName, opts && opts.backup === false ? { backup: false } : undefined),
+  // Drawing Save As: pick the destination first, then write it with saveDxf (in save-queue order).
+  chooseDrawingPath: (suggestName) => ipcRenderer.invoke('choose-drawing-path', String(suggestName || '')),
   // Progress of a large DWG read (the main process parses it in a worker thread) and its Cancel button
   onOpenProgress: (cb) => {
     ipcRenderer.on('open-progress', (_ev, p) => cb(p));

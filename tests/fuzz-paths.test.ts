@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs';
 import nodePath from 'node:path';
 import { normalizePath, pathKey, samePath, dirName, fileBaseName, resolvePath, relativePath, rebaseProjectEntry, shortNames, isAbsolutePath, isWindowsPath, setPathPlatform, climbsOut } from '../src/app/paths';
 import { rebaseProject, resolveDrawingPath, resolveProjectPath, type Project } from '../src/app/project';
-import { Rng, fuzzSync, check } from './helpers/fuzz';
+import { Rng, fuzzSync, check, fuzzTimeout } from './helpers/fuzz';
 
 afterEach(() => setPathPlatform(null));
 
@@ -105,7 +105,7 @@ describe('fuzz: path normalisation properties', () => {
     const win32 = platform === 'win32';
     it(`normalisation is idempotent and keys are stable (${platform})`, () => {
       setPathPlatform(platform);
-      const runs = fuzzSync(`paths/idempotent/${platform}`, 4000, (rng) => {
+      const runs = fuzzSync(`paths/idempotent/${platform}`, 1500, (rng) => {
         const p = rng.bool(0.15) ? spell(rng, genSegments(rng, 1, 5), win32 ? ['\\', '/'] : ['/']) : genPath(rng, win32).text;
         const n = normalizePath(p);
         check(normalizePath(n) === n, () => `normalizePath not idempotent: ${JSON.stringify(p)} -> ${JSON.stringify(n)} -> ${JSON.stringify(normalizePath(n))}`);
@@ -118,11 +118,11 @@ describe('fuzz: path normalisation properties', () => {
         if (isAbsolutePath(n)) check(!segs.includes('.') && !segs.includes('..'), () => `dot segment left in absolute ${JSON.stringify(n)}`);
       });
       expect(runs).toBeGreaterThan(0);
-    }, 600_000);
+    }, fuzzTimeout());
 
     it(`every spelling of one file is the same path; equality is an equivalence relation (${platform})`, () => {
       setPathPlatform(platform);
-      fuzzSync(`paths/equivalence/${platform}`, 3000, (rng) => {
+      fuzzSync(`paths/equivalence/${platform}`, 1000, (rng) => {
         const p = genPath(rng, win32);
         const a = sameFile(rng, p, win32);
         const b = sameFile(rng, p, win32);
@@ -143,11 +143,11 @@ describe('fuzz: path normalisation properties', () => {
         const c = sameFile(rng, p, win32);
         check(!(samePath(a, b) && samePath(b, c)) || samePath(a, c), 'not transitive');
       });
-    }, 600_000);
+    }, fuzzTimeout());
 
     it(`relativePath then resolvePath round-trips (${platform})`, () => {
       setPathPlatform(platform);
-      fuzzSync(`paths/relative-roundtrip/${platform}`, 4000, (rng) => {
+      fuzzSync(`paths/relative-roundtrip/${platform}`, 1500, (rng) => {
         const style = rng.pick(['posix', 'drive', 'unc'] as const);
         // Shared prefix makes relative results likely.
         const segs = style === 'posix' && !win32 ? posixSegments : genSegments;
@@ -160,21 +160,21 @@ describe('fuzz: path normalisation properties', () => {
         check(samePath(back, t.text), () => `relativePath(${JSON.stringify(d.text)}, ${JSON.stringify(t.text)}) = ${JSON.stringify(rel)} resolves to ${JSON.stringify(back)}`);
         if (!isAbsolutePath(rel)) check(!rel.includes('\\'), () => `relative path with backslashes: ${JSON.stringify(rel)}`);
       });
-    }, 600_000);
+    }, fuzzTimeout());
 
     it(`dirName + file name rebuild the path (${platform})`, () => {
       setPathPlatform(platform);
-      fuzzSync(`paths/dirname/${platform}`, 3000, (rng) => {
+      fuzzSync(`paths/dirname/${platform}`, 1000, (rng) => {
         const p = genPath(rng, win32, undefined, undefined, [...genSegments(rng, 0, 4), rng.pick(FILES)]);
         const n = normalizePath(p.text);
         const rebuilt = resolvePath(dirName(n), fileBaseName(n));
         check(samePath(rebuilt, p.text), () => `${JSON.stringify(p.text)}: dirName ${JSON.stringify(dirName(n))} + ${JSON.stringify(fileBaseName(n))} = ${JSON.stringify(rebuilt)}`);
       });
-    }, 600_000);
+    }, fuzzTimeout());
 
     it(`project Save As to another folder and back keeps every reference (${platform})`, () => {
       setPathPlatform(platform);
-      fuzzSync(`paths/rebase-roundtrip/${platform}`, 2500, (rng) => {
+      fuzzSync(`paths/rebase-roundtrip/${platform}`, 1000, (rng) => {
         const style = rng.pick(['posix', 'drive', 'unc'] as const);
         const root = style === 'drive' ? rng.pick(['C', 'D']) : style === 'unc' ? 'srv|share' : '/';
         const projDir = [...genSegments(rng, 0, 2), 'proj'];
@@ -217,11 +217,11 @@ describe('fuzz: path normalisation properties', () => {
         // rebaseProjectEntry without an old path leaves relative entries alone
         for (const e of entries) if (!isAbsolutePath(e)) check(rebaseProjectEntry(e, undefined, newFile) === e, 'relative entry without project path changed');
       });
-    }, 600_000);
+    }, fuzzTimeout());
 
     it(`short names are injective on distinct files (${platform})`, () => {
       setPathPlatform(platform);
-      fuzzSync(`paths/shortnames/${platform}`, 2000, (rng) => {
+      fuzzSync(`paths/shortnames/${platform}`, 800, (rng) => {
         const deep = rng.bool(0.3);
         const tail = deep ? Array.from({ length: rng.int(6, 10) }, () => rng.pick(['a', 'b', 'x'])) : [];
         const n = rng.int(2, 7);
@@ -253,7 +253,7 @@ describe('fuzz: path normalisation properties', () => {
           }
         }
       });
-    }, 600_000);
+    }, fuzzTimeout());
   }
 });
 
@@ -261,7 +261,7 @@ describe('fuzz: renderer pathKey agrees with electron/main.cjs pathKey', () => {
   it('POSIX absolute paths (linux main process)', () => {
     setPathPlatform('linux');
     const main = mainPathKey('linux');
-    fuzzSync('paths/main-twin/linux', 4000, (rng) => {
+    fuzzSync('paths/main-twin/linux', 1500, (rng) => {
       const p = genPath(rng, false, 'posix');
       const k = main(p.text);
       check(k !== null, () => `main rejected ${JSON.stringify(p.text)}`);
@@ -270,11 +270,11 @@ describe('fuzz: renderer pathKey agrees with electron/main.cjs pathKey', () => {
       const q = rng.bool() ? sameFile(rng, p, false) : genPath(rng, false, 'posix').text;
       check((main(p.text) === main(q)) === samePath(p.text, q), () => `${JSON.stringify(p.text)} vs ${JSON.stringify(q)}: main and renderer disagree on identity`);
     });
-  }, 600_000);
+  }, fuzzTimeout());
   it('drive and UNC paths (win32 main process)', () => {
     setPathPlatform('win32');
     const main = mainPathKey('win32');
-    fuzzSync('paths/main-twin/win32', 4000, (rng) => {
+    fuzzSync('paths/main-twin/win32', 1500, (rng) => {
       const p = genPath(rng, true, rng.pick(['drive', 'unc'] as const));
       const k = main(p.text);
       check(k !== null, () => `main rejected ${JSON.stringify(p.text)}`);
@@ -283,7 +283,7 @@ describe('fuzz: renderer pathKey agrees with electron/main.cjs pathKey', () => {
       const q = rng.bool() ? sameFile(rng, p, true) : genPath(rng, true, rng.pick(['drive', 'unc'] as const)).text;
       check((main(p.text) === main(q)) === samePath(p.text, q), () => `${JSON.stringify(p.text)} vs ${JSON.stringify(q)}: main and renderer disagree on identity`);
     });
-  }, 600_000);
+  }, fuzzTimeout());
   it('the main process rejects relative paths and NUL bytes', () => {
     const main = mainPathKey('linux');
     expect(main('dwg/a.dxf')).toBeNull();

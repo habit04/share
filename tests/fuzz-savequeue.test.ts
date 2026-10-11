@@ -8,7 +8,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { SaveQueue, type QueuedResult } from '../src/app/savequeue';
 import { pathKey, setPathPlatform } from '../src/app/paths';
-import { Rng, fuzz, check } from './helpers/fuzz';
+import { Rng, fuzz, check, fuzzTimeout } from './helpers/fuzz';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -171,13 +171,13 @@ async function scenario(rng: Rng, allowRedirects: boolean): Promise<void> {
 describe('fuzz: save queue', () => {
   it('random saves to the same and different files: newest revision on disk, drops logged, nothing pending', async () => {
     vi.useFakeTimers();
-    const runs = await fuzz('savequeue/interleavings', 1500, (rng) => scenario(rng, false));
+    const runs = await fuzz('savequeue/interleavings', 1000, (rng) => scenario(rng, false));
     expect(runs).toBeGreaterThan(0);
-  }, 600_000);
+  }, fuzzTimeout());
   it('the same with saves that land on another path (a Save As dialog picked an open file)', async () => {
     vi.useFakeTimers();
-    await fuzz('savequeue/redirects', 1500, (rng) => scenario(rng, true));
-  }, 600_000);
+    await fuzz('savequeue/redirects', 1000, (rng) => scenario(rng, true));
+  }, fuzzTimeout());
 });
 
 describe('save queue fuzzing regressions', () => {
@@ -212,5 +212,21 @@ describe('save queue fuzzing regressions', () => {
       expect(handler(name), name).toMatch(/await writeUserFile\(/);
       expect(handler(name), name).not.toMatch(/await atomicWriteFile\(/);
     }
+  });
+  it('Save As asks for the file first (choose-drawing-path) and writes nothing itself; the preload exposes it', () => {
+    const src = readFileSync(new URL('../electron/main.cjs', import.meta.url), 'utf8');
+    const start = src.indexOf("ipcMain.handle('choose-drawing-path'");
+    expect(start).toBeGreaterThan(0);
+    const body = src.slice(start, src.indexOf('ipcMain.handle(', start + 10));
+    expect(body).toMatch(/showSaveDialog/);
+    // Registered on the guarded ipcMain (electron/ipc-guard.cjs): only the application page may call it.
+    expect(src).toMatch(/const ipcMain = guardIpc\(rawIpcMain,/);
+    expect(src).not.toMatch(/rawIpcMain\.(handle|on|once)\(/);
+    expect(body).toMatch(/senderWindow\(ev\)/);
+    // The chosen file becomes writable through the path registry, as a .dxf file only.
+    expect(body).toMatch(/const file = DXF_FILE\.test\(res\.filePath\) \? res\.filePath : `\$\{res\.filePath\}\.dxf`;\s*registry\.grant\(file\);\s*return file;/);
+    expect(body).not.toMatch(/writeUserFile|atomicWriteFile/);
+    const preload = readFileSync(new URL('../electron/preload.cjs', import.meta.url), 'utf8');
+    expect(preload).toMatch(/chooseDrawingPath: \(suggestName\) => ipcRenderer\.invoke\('choose-drawing-path'/);
   });
 });

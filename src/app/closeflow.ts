@@ -169,3 +169,24 @@ async function saveItem(editor: CloseEditor, deps: CloseDeps, it: UnsavedItem): 
   if (now >= 0 && editor.sessions.isDirty(now)) return 'the drawing changed while it was being saved';
   return null;
 }
+
+/**
+ * CLOSE for drawing tab `i`: ask about unsaved changes, then close that same tab - found again by
+ * its id, because tabs may be opened or closed while the question is shown (a background open that
+ * failed closes its tab) and the index may then name another drawing. Resolves true when closed.
+ */
+export async function closeDrawingTab(
+  sessions: Pick<Editor['sessions'], 'all' | 'isDirty' | 'titleOf' | 'indexOfId' | 'close'>,
+  i: number,
+  deps: { confirmDiscard(title: string): Promise<boolean>; discardBackup(sessionId: number): void },
+): Promise<boolean> {
+  const s = sessions.all[i];
+  if (!s) return false;
+  const id = s.id;
+  if (sessions.isDirty(i) && !(await deps.confirmDiscard(sessions.titleOf(i)))) return false;
+  const now = sessions.indexOfId(id);
+  if (now < 0) return true; // closed meanwhile
+  deps.discardBackup(id);
+  sessions.close(now);
+  return true;
+}

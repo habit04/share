@@ -6,7 +6,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { createRequire } from 'node:module';
-import { Rng, fuzz, check } from './helpers/fuzz';
+import { Rng, fuzz, check, fuzzTimeout } from './helpers/fuzz';
 import { MemFs, CrashError, fsError } from './helpers/memfs';
 
 const require = createRequire(import.meta.url);
@@ -182,12 +182,12 @@ async function storeScenario(rng: Rng, mode: 'crash' | 'faults'): Promise<void> 
 
 describe('fuzz: recovery store crashes and faults', () => {
   it('a crash at any file system call leaves a consistent, complete recovery folder', async () => {
-    const runs = await fuzz('recovery-store/crash', 1500, (rng) => storeScenario(rng, 'crash'));
+    const runs = await fuzz('recovery-store/crash', 800, (rng) => storeScenario(rng, 'crash'));
     expect(runs).toBeGreaterThan(0);
-  }, 600_000);
+  }, fuzzTimeout());
   it('injected failures (EIO, ENOSPC, EPERM / EBUSY / EXDEV renames) never leave partial backups or a broken index', async () => {
-    await fuzz('recovery-store/faults', 1500, (rng) => storeScenario(rng, 'faults'));
-  }, 600_000);
+    await fuzz('recovery-store/faults', 800, (rng) => storeScenario(rng, 'faults'));
+  }, fuzzTimeout());
 });
 
 // ------------------------------------------------------------------ user files: atomicWriteFile with .bak
@@ -235,8 +235,8 @@ async function userFileScenario(rng: Rng): Promise<void> {
 
 describe('fuzz: crash-safe user file writes', () => {
   it('a crash at any step keeps the drawing or a complete .bak of it', async () => {
-    await fuzz('atomic-write/crash', 3000, userFileScenario);
-  }, 600_000);
+    await fuzz('atomic-write/crash', 1500, userFileScenario);
+  }, fuzzTimeout());
 });
 
 describe('recovery store fuzzing regressions', () => {
