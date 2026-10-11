@@ -6,6 +6,7 @@
  *   types.ts       events, command definitions, the file bridge, the UI hooks
  *   internals.ts   the private working state those modules share, the fallback UI
  *   commands.ts    the built-in commands
+ *   view.ts        settings, drafting toggles, zoom extents
  */
 import type { Point } from '../../core/geometry';
 import * as g from '../../core/geometry';
@@ -17,7 +18,6 @@ import { pickEntity, selectByBox } from '../../core/selection';
 import { Viewport, type ViewportOverlay } from '../../render/viewport';
 import type { Tool, ToolContext } from '../../tools/types';
 import { PanTool } from '../../tools/edit';
-import { lineweightDisplay } from '../../render/draw';
 import { WIRE_DOT } from '../../electrical/symbols';
 import { LIBRARY_SYMBOLS, withoutUnusedLibraryBlocks, withByBlockLibrarySymbols } from '../../electrical/library';
 import { TITLE_BLOCK } from '../../electrical/templates';
@@ -42,6 +42,7 @@ import { plotLayoutsOrVector } from '../plot-vector';
 import type { EditorEvent, CommandDef, FileBridge, EditorHooks } from './types';
 import { createInternals, fallbackUi, type EditorInternals } from './internals';
 import { registerBuiltinCommands } from './commands';
+import * as view from './view';
 
 /**
  * Why an open failed: file errors in plain words ("... could not be read: the folder is not
@@ -314,30 +315,11 @@ export class Editor {
   }
 
   applySettings(): void {
-    const st = this.settings;
-    this.viewport.settings.gridVisible = st.gridVisible;
-    this.viewport.settings.crosshairSize = st.crosshairSize;
-    this.snap.gridSnap = st.gridSnap;
-    this.snap.ortho = st.ortho;
-    this.snap.polar = st.polar;
-    this.snap.osnap = st.osnap;
-    this.dynamicInput = st.dynamicInput;
-    lineweightDisplay.enabled = st.lineweightDisplay;
+    view.applySettings(this);
   }
 
   persistSettings(): void {
-    this.settings = {
-      ...this.settings,
-      gridVisible: this.viewport.settings.gridVisible,
-      crosshairSize: this.viewport.settings.crosshairSize,
-      gridSnap: this.snap.gridSnap,
-      ortho: this.snap.ortho,
-      polar: this.snap.polar,
-      osnap: this.snap.osnap,
-      dynamicInput: this.dynamicInput,
-      lineweightDisplay: lineweightDisplay.enabled,
-    };
-    saveSettings(this.settings);
+    view.persistSettings(this);
   }
 
   private rememberRecent(path: string): void {
@@ -460,28 +442,11 @@ export class Editor {
   dynamicInput = true;
 
   toggle(name: 'grid' | 'gridSnap' | 'ortho' | 'polar' | 'osnap' | 'otrack' | 'lw' | 'dyn'): void {
-    if (name === 'grid') this.viewport.settings.gridVisible = !this.viewport.settings.gridVisible;
-    else if (name === 'lw') lineweightDisplay.enabled = !lineweightDisplay.enabled;
-    else if (name === 'dyn') this.dynamicInput = !this.dynamicInput;
-    else if (name === 'ortho') {
-      this.snap.ortho = !this.snap.ortho;
-      if (this.snap.ortho) this.snap.polar = false;
-    } else if (name === 'polar') {
-      this.snap.polar = !this.snap.polar;
-      if (this.snap.polar) this.snap.ortho = false;
-    } else this.snap[name] = !this.snap[name];
-    const state =
-      name === 'grid' ? this.viewport.settings.gridVisible : name === 'lw' ? lineweightDisplay.enabled : name === 'dyn' ? this.dynamicInput : this.snap[name];
-    this.log(`<${name.toUpperCase()} ${state ? 'on' : 'off'}>`);
-    this.persistSettings();
-    this.emit('snap');
-    this.render();
+    view.toggle(this, name);
   }
 
   zoomExtents(): void {
-    this.viewport.zoomToBounds(this.doc.extents());
-    this.render();
-    this.emit('view');
+    view.zoomExtents(this);
   }
 
   listSelection(): void {
