@@ -625,7 +625,7 @@ check(mainErrors.length === 0, `main process printed no JS errors${mainErrors.le
 // allowed folders): every legitimate flow (dialogs, plugins, packs, autosave, user library, updater,
 // read-image next to a chosen file) went through.
 const rejections = existsSync(join(userData, 'ipc-rejections.log')) ? readFileSync(join(userData, 'ipc-rejections.log'), 'utf8').split(/\r?\n/).filter(Boolean) : [];
-const unexpected = rejections.filter((l) => !/ipc app-info: sender is not the application window|read-image: (not next to a drawing the user opened|relative path|not an image file): /.test(l));
+const unexpected = rejections.filter((l) => !/ipc app-info: sender is not the application window|read-image: (not next to a drawing the user opened|relative path|not an image file): |backup-file: not a file chosen by the user: .*stranger\.dxf/.test(l));
 check(unexpected.length === 0, `ipc-rejections.log holds only the provoked refusals (${rejections.length} line(s))${unexpected.length ? `: ${unexpected.slice(0, 5).join(' | ')}` : ''}`);
 
 rmSync(profile, { recursive: true, force: true });
