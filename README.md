@@ -142,6 +142,7 @@ npm run dist             # installers via electron-builder (win/mac/linux)
 node scripts/dwg2dxf.mjs in.dwg [out.dxf]   # command-line DWG -> DXF
 npm run build && npm run ui-check     # every command and clickable control of the built renderer (headless Chromium)
 npm run build && npm run e2e          # the Electron app itself (Linux without a display: xvfb-run -a npm run e2e)
+npm run build && npm run e2e:flows    # multi-launch flows: close / quit matrix, crash + recovery, open, project-wide commands, save errors
 ```
 
 **CI** (`.github/workflows/ci.yml`) runs three jobs on every push and pull request: `test` (typecheck,

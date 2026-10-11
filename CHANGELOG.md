@@ -113,6 +113,23 @@ messages). The date of each version is the date of the commit that set that vers
 - `new Drawing({...})` keeps the header, the active space and every other field it is given.
 - Clicking where overlapping objects are equally close selects (and highlights) the topmost one
   instead of the one underneath.
+- Project Recovery works after a crash: the start-up migration of 0.4.0 autosave names renamed
+  the project autosave too, so the recovered project was never offered and its file showed up in
+  the Drawing Recovery Manager as a drawing.
+- "Open with JCad Electrical" and drawings handed to a second launch (or, on macOS, opened from
+  the Finder) open in their own tab; they were ignored.
+- A file picked in the Open dialog that is already open, or `RECENT` clicked twice while the file
+  loads, shows its tab instead of opening a second copy whose saves would overwrite each other. An
+  open that lands in a new tab while you work in another tab stays in the background. Files that
+  fail to open are no longer added to Recent Documents, and a missing file is reported in plain words.
+- Closing: after Cancel in the "not responding" question, the Save All dialog the page shows once it
+  responds again is honoured; a restart for an update that does not happen no longer leaves the
+  window closing without the unsaved-work question; Discard All removes the project autosave (the
+  next start no longer offers the discarded changes); the close notice names a failed item's cause once.
+- Project-wide commands: **Continue Without Backup** now writes the drawing when its `.bak` cannot
+  be written (a folder or locked file in the way made the write fail again), and a truncated closed
+  drawing is listed as damaged ("OPEN it to recover") instead of as a file error. Failed CSV, report
+  and `.wdt` exports name the file and folder chosen in the Save dialog.
 
 ## [0.4.0] - 2026-09-29
 

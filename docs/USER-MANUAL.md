@@ -876,7 +876,10 @@ How the changes are applied:
    optionally keeping a `.bak` copy of each. Cancel changes nothing.
    If the `.bak` copy of a drawing cannot be written, that drawing is **not** saved: a dialog
    names the file and the error and offers **Skip** (the default) or **Continue Without Backup**
-   for that file only. Skipped drawings are listed on the command line.
+   for that file only (it is then written without any `.bak`, also when something is in the way of
+   the `.bak` file). Skipped drawings are listed on the command line. A closed drawing that is
+   damaged (for example truncated) is listed as damaged and never rewritten; `OPEN` it to recover
+   what is readable.
 3. DWG drawings are read-only and are skipped; the command line lists skipped drawings. The
    browser edition cannot read closed drawings, so open them in tabs first.
 
@@ -1218,7 +1221,10 @@ the compatibility reference). `SAVE` (QSAVE, Ctrl+S) and
 `SAVEAS` (Ctrl+Shift+S) write DXF. Layers, linetypes, lineweights, blocks, attributes
 (including invisible ones), dimensions, text, polylines with arcs and widths, and the
 electrical data all round-trip, and the files open in other CAD programs. `OPEN` (Ctrl+O)
-reads DXF and DWG files into a new tab; `NEW` (QNEW, Ctrl+N) starts an empty drawing.
+reads DXF and DWG files into a new tab; `NEW` (QNEW, Ctrl+N) starts an empty drawing. A file
+that is already open is shown in its tab instead of being opened twice. Drawings opened from the
+operating system ("Open with JCad Electrical", a file dropped on the program icon, or given on the
+command line) open the same way, each in its own tab, also when JCad Electrical is already running.
 
 Also kept in DXF: splines, hatches, leaders and multileaders, tables, images and external
 references, fields, MTEXT formatting, text styles (including TrueType fonts) and the named
@@ -1378,7 +1384,8 @@ and offers **Retry**, **Save As...** (choose another place) or **Cancel**. The d
 marked as modified and its autosave backup is kept, so nothing is lost while you sort it out.
 
 Unsaved project changes are autosaved in the same folder a moment after each change and removed
-when you save the project or discard the changes. At the next start **Project Recovery** offers
+when you save the project or discard the changes (Don't Save, or Discard All / an unticked
+project when you close JCad Electrical). At the next start **Project Recovery** offers
 them: **Open Recovered Project** (it opens as modified; `PROJECTSAVE` keeps it), **Discard**, or
 **Later**.
 
