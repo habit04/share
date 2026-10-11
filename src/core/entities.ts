@@ -2,7 +2,7 @@ import type { Point, Bounds } from './geometry';
 import * as g from './geometry';
 import { strokeTextWidth } from '../render/hershey';
 import { dimensionGeometry, type DimensionEntity } from './dimension';
-import { mtextLayoutFull, type MTextEntity, type MTextAttachment } from './mtext';
+import { mtextLayoutFull, type MTextEntity, type MTextAttachment, type MTextColumns } from './mtext';
 import { interpolateFitPoints, isValidNurbs, nurbsPoints, type NurbsCurve } from './spline';
 import { findPattern, loopPolygon, patternSegments, pointInLoops, worldPatternLines, type HatchLoop, type WorldPatternLine } from './hatch';
 import { tableGeometry, type TableEntity } from './table';
@@ -923,6 +923,12 @@ function sampledPolyline(e: CircleEntity | ArcEntity, tf: (p: Point) => Point): 
  * rotation, translation). Text stays readable (position moves, glyphs are not mirrored),
  * arcs keep their visible sweep, and circles / arcs under a non-uniform scale become polylines.
  */
+/** MTEXT columns under a uniform scale (their width, gutter and heights scale with the text). */
+function scaledMTextColumns(columns: MTextColumns, scale: number): MTextColumns {
+  if (scale === 1) return columns;
+  return { ...columns, width: columns.width * scale, gutter: columns.gutter * scale, heights: columns.heights.map((height) => height * scale) };
+}
+
 export function blockTransform(e: Entity, tf: (p: Point) => Point, rotation: number, sx: number, sy: number, mirror: boolean): Entity {
   const uniform = Math.abs(sx - sy) < 1e-12;
   const k = Math.sqrt(Math.abs(sx * sy));
@@ -944,7 +950,7 @@ export function blockTransform(e: Entity, tf: (p: Point) => Point, rotation: num
     case 'text':
       return { ...e, position: tf(e.position), height: e.height * k, rotation: e.rotation + rotation, align: mirror ? flipAlign(e.align) : e.align };
     case 'mtext':
-      return { ...e, position: tf(e.position), height: e.height * k, width: e.width * k, rotation: e.rotation + rotation };
+      return { ...e, position: tf(e.position), height: e.height * k, width: e.width * k, rotation: e.rotation + rotation, ...(e.columns ? { columns: scaledMTextColumns(e.columns, k) } : {}) };
     case 'insert':
       return {
         ...e,
@@ -1216,7 +1222,7 @@ export function similarityTransform(e: Entity, tf: (p: Point) => Point, rotation
     case 'ray':
       return { ...e, base: tf(e.base), direction: g.rotate(e.direction, rotation) };
     case 'mtext':
-      return { ...e, position: tf(e.position), height: e.height * k, width: e.width * k, rotation: e.rotation + rotation };
+      return { ...e, position: tf(e.position), height: e.height * k, width: e.width * k, rotation: e.rotation + rotation, ...(e.columns ? { columns: scaledMTextColumns(e.columns, k) } : {}) };
     case 'dimension':
       return {
         ...e,

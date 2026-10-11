@@ -8,7 +8,7 @@ import { dimensionTextPoint, dimensionMeasurement, diffDimStyles, DIM_VARIABLES 
 import { mtextToDxf, formattedSource } from '../../core/mtext';
 import * as g from '../../core/geometry';
 import { textStyleOf } from '../encoding';
-import { DIM_TYPE, DIMSTYLE_APP, TABLE_APP } from './codes';
+import { DIM_TYPE, DIMSTYLE_APP, MTEXT_COLUMNS_APP, TABLE_APP } from './codes';
 import { dimStyleXdata } from './dimstyles';
 import { Writer, writeEntityCommon, type WriteExtras } from './write-core';
 
@@ -36,6 +36,12 @@ export function writeMText(w: Writer, e: MTextEntity, owner: string): void {
   w.pair(31, 0);
   w.pair(73, 1);
   w.pair(44, e.lineSpacing || 1);
+  // AC1015 has no MTEXT columns: JCad keeps the definition as XDATA (other programs show one column).
+  if (e.columns) {
+    w.pair(1001, MTEXT_COLUMNS_APP);
+    const metadata = JSON.stringify(e.columns);
+    for (let offset = 0; offset < metadata.length; offset += 250) w.pair(1000, metadata.slice(offset, offset + 250));
+  }
 }
 
 function radialPoints(e: DimensionEntity): { q: g.Point; far: g.Point } {

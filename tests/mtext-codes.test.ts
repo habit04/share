@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { MTextEntity, TextEntity } from '../src/core/entities';
 import { mtextParts, mtextDecorations, entityBounds, textWidth } from '../src/core/entities';
-import { parseMText, mtextFromDxf, mtextLayoutFull, formattedSource, hasFormatting, type MTextItem } from '../src/core/mtext';
+import { parseMText, mtextFromDxf, mtextLayoutFull, mtextFormattingProblem, formattedSource, hasFormatting, type MTextItem } from '../src/core/mtext';
 import { readDxf, writeDxf } from '../src/io/dxf';
 import { Drawing } from '../src/core/document';
 
@@ -74,6 +74,20 @@ describe('MTEXT format codes (parser)', () => {
     expect(hasFormatting('plain\\Ptext')).toBe(false);
     expect(hasFormatting('{\\C1;x}')).toBe(true);
   });
+  // Ported from PR #2 (codex/electrical-review-fixes 2f89b0e).
+  it('detects malformed and overflowing derived format values without emitting them', () => {
+    for (const raw of ['\\H1e308x;\\H1e308x;BAD', '\\W1e60x;\\W1e60x;BAD', '\\H2oops;BAD', '\\Q1e308;BAD']) {
+      expect(mtextFormattingProblem(raw, 1)).toBeDefined();
+      const runs = texts(raw);
+      expect(runs.every((run) => Number.isFinite(run.style.height) && Number.isFinite(run.style.widthFactor) && Number.isFinite(run.style.oblique))).toBe(true);
+    }
+    expect(mtextFormattingProblem('\\H2.5;\\W0.5x;valid', 1)).toBeUndefined();
+  });
+  it('consumes a long sequence of unknown escapes in linear time (no rescanning of the source)', () => {
+    const t = performance.now();
+    expect(mtextFromDxf('\\Z'.repeat(100_000) + 'kept')).toBe('kept');
+    expect(performance.now() - t).toBeLessThan(2000);
+  });
 });
 
 describe('MTEXT formatted layout', () => {
@@ -117,6 +131,26 @@ describe('MTEXT formatted layout', () => {
     expect(formattedSource(edited)).toBeNull();
     expect(mtextParts(edited)[0]!.text).toBe('changed');
     expect(entityBounds(m, () => undefined)).not.toBeNull();
+  });
+});
+
+describe('MTEXT columns (layout)', () => {
+  // Ported from PR #2 (codex/electrical-review-fixes 2f89b0e).
+  const columns = { type: 1 as const, count: 2, width: 10, gutter: 2, autoHeight: false, reversed: false, heights: [5, 5] };
+  it('distinguishes column breaks from literal escaped backslashes', () => {
+    const parts = mtextLayoutFull(mt('\\\\N literal', { columns }), (t, h) => t.length * h).texts;
+    expect(parts.map((p) => p.text)).toEqual(['\\N', 'literal']);
+    expect(parts.every((p) => p.position.x < 12)).toBe(true);
+  });
+  it('carries style and scope state across columns and keeps excess break content', () => {
+    const parts = mtextLayoutFull(mt('{\\C1;\\LRED\\NRED}\\NPLAIN', { columns }), (t, h) => t.length * h);
+    expect(parts.texts.map((p) => [p.text, p.color, p.position.x])).toEqual([['RED', 1, 0], ['RED', 1, 12], ['PLAIN', 'ByLayer', 12]]);
+    expect(parts.strokes).toHaveLength(2);
+  });
+  it('keeps invalid derived positions out of layout when called without import validation', () => {
+    const layout = mtextLayoutFull(mt('a\\Pb', { height: 1e308, attachment: 9, lineSpacing: 1e308, position: { x: 1e308, y: 1e308 } }), (t, h) => t.length * h);
+    expect(layout.texts.every((t) => Number.isFinite(t.position.x) && Number.isFinite(t.position.y) && Number.isFinite(t.height))).toBe(true);
+    expect(layout.strokes.every((s) => [s.a.x, s.a.y, s.b.x, s.b.y].every(Number.isFinite))).toBe(true);
   });
 });
 

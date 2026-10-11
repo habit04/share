@@ -5,12 +5,13 @@
  * read-annotations.ts.
  */
 import type { Entity, SplineEntity, HatchEntity, HatchLoop, WorldPatternLine, FieldLink } from '../../core/entities';
-import { mtextFromDxf, hasFormatting, type MTextAttachment } from '../../core/mtext';
+import { mtextFromDxf, hasFormatting, type MTextAttachment, type MTextColumns } from '../../core/mtext';
 import { findPattern, LoopBuilder, edgeArc, fitPatternToLines } from '../../core/hatch';
 import { isValidNurbs, nurbsPoints, interpolateFitPoints } from '../../core/spline';
 import { evaluateFields, hasFields } from '../../core/fields';
 import * as g from '../../core/geometry';
-import { num, has, str, pt, int, flt, afterSubclass, pointList, Cursor, type Obj } from './groups';
+import { num, has, str, pt, int, flt, afterSubclass, pointList, Cursor, xdata, type Obj } from './groups';
+import { MTEXT_COLUMNS_APP } from './codes';
 import { commonProps, reportObj, type ReadContext } from './read-core';
 import { readDimStyleFromEntity, readDimension, readLeader, readMLeader, readImage, readTable, readJcadTable } from './read-annotations';
 
@@ -210,6 +211,33 @@ function readHatch(o: Obj, base: ReturnType<typeof commonProps>): HatchEntity | 
   };
 }
 
+/**
+ * MTEXT columns: JCad's own JCAD_MTEXT_COLUMNS XDATA, else AutoCAD's (the R2018 "Embedded
+ * Object" groups 71-74 / 44-46, or the native groups 75-79 / 48-50). Ported from PR #2
+ * (codex/electrical-review-fixes 2f89b0e).
+ */
+function readMTextColumns(o: Obj): MTextColumns | undefined {
+  const own = xdata(o, MTEXT_COLUMNS_APP);
+  if (own) {
+    try {
+      const c = JSON.parse(own.filter((p) => p.code === 1000).map((p) => p.value).join('')) as MTextColumns;
+      if ((c.type === 1 || c.type === 2) && Number.isInteger(c.count) && c.count > 0 && c.count <= 256 && Number.isFinite(c.width) && c.width > 0 && Number.isFinite(c.gutter) && c.gutter >= 0 && Array.isArray(c.heights) && c.heights.length <= 256 && c.heights.every((h) => Number.isFinite(h) && h >= 0)) return c;
+    } catch {
+      /* the native groups below */
+    }
+  }
+  const embedded = o.groups.findIndex((p) => p.code === 101 && p.value === 'Embedded Object');
+  const nativeStart = o.groups.findIndex((p) => p.code === 75);
+  const groups = embedded < 0 ? o.groups.slice(Math.max(0, nativeStart)) : o.groups.slice(embedded + 1);
+  const code = (native: number, modern: number) => groups.find((p) => p.code === (embedded < 0 ? native : modern))?.value;
+  const type = int(code(75, 71));
+  const count = int(code(76, 72));
+  const width = flt(code(48, 44));
+  if ((type !== 1 && type !== 2) || count < 1 || count > 256 || !(width > 0)) return undefined;
+  const heights = embedded >= 0 ? groups.filter((p) => p.code === 46).map((p) => flt(p.value)) : groups.filter((p) => p.code === 50).slice(1).map((p) => flt(p.value));
+  return { type, count, width, gutter: Math.max(0, flt(code(49, 45))), autoHeight: int(code(79, 74)) !== 0, reversed: int(code(78, 73)) !== 0, heights: heights.slice(0, count) };
+}
+
 /** Field expressions in TEXT: evaluate for display and keep the code. */
 function withTextField(text: string, ctx: ReadContext): { text: string; field?: FieldLink } {
   if (!hasFields(text)) return { text };
@@ -296,11 +324,18 @@ export function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
       };
     }
     case 'MTEXT': {
+      // Column definitions follow the MTEXT's own groups (R2018 "Embedded Object", or the
+      // native 75.. groups): the main properties are read from the groups before them.
+      const columns = readMTextColumns(o);
+      const embedded = o.groups.findIndex((p) => p.code === 101 && p.value === 'Embedded Object');
+      const nativeStart = embedded < 0 ? o.groups.findIndex((p) => p.code === 75) : -1;
+      const mainEnd = embedded >= 0 ? embedded : nativeStart >= 0 ? nativeStart : o.groups.length;
+      const main: Obj = { ...o, groups: o.groups.slice(0, mainEnd) };
       // MTEXT: 10/20 attachment corner, 71 attachment point (1..9), 11/21 direction vector, 50 rotation (radians)
-      const ap = Math.max(1, Math.min(9, Math.trunc(num(o, 71, 1)))) as MTextAttachment;
-      const hasDir = has(o, 11);
-      const rotation = hasDir ? Math.atan2(num(o, 21), num(o, 11)) : num(o, 50);
-      const height = num(o, 40, 0.125);
+      const ap = Math.max(1, Math.min(9, Math.trunc(num(main, 71, 1)))) as MTextAttachment;
+      const hasDir = has(main, 11);
+      const rotation = hasDir ? Math.atan2(num(main, 21), num(main, 11)) : num(main, 50);
+      const height = num(main, 40, 0.125);
       const source = o.groups
         .filter((x) => x.code === 1 || x.code === 3)
         .map((x) => x.value)
@@ -309,19 +344,20 @@ export function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
       const raw = hasFields(source) ? evaluateFields(source, ctx.fields) : source;
       const plain = mtextFromDxf(raw);
       const field: FieldLink | undefined = raw !== source ? { code: source, value: plain } : undefined;
-      if (has(o, 41)) {
+      if (has(main, 41) || columns) {
         return {
           ...base,
           type: 'mtext',
-          position: { x: num(o, 10), y: num(o, 20) },
+          position: { x: num(main, 10), y: num(main, 20) },
           text: plain,
           ...(hasFormatting(raw) ? { raw } : {}),
           ...(field ? { field } : {}),
           height,
-          width: Math.max(0, num(o, 41)),
+          width: Math.max(0, num(main, 41)),
           rotation,
           attachment: ap,
-          lineSpacing: num(o, 44, 1) || 1,
+          lineSpacing: num(main, 44, 1) || 1,
+          ...(columns ? { columns } : {}),
         };
       }
       // Minimal MTEXT without a reference width: keep it as single-line TEXT.
@@ -329,7 +365,7 @@ export function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
       const row = Math.floor((ap - 1) / 3);
       const align: 'left' | 'center' | 'right' = col === 1 ? 'center' : col === 2 ? 'right' : 'left';
       const drop = row === 0 ? height : row === 1 ? height / 2 : 0;
-      const corner = { x: num(o, 10), y: num(o, 20) };
+      const corner = { x: num(main, 10), y: num(main, 20) };
       const position = { x: corner.x + Math.sin(rotation) * drop, y: corner.y - Math.cos(rotation) * drop };
       const one = plain.replace(/\n/g, ' ');
       return { ...base, type: 'text', position, text: one, ...(field ? { field: { code: source, value: one } } : {}), height, rotation, align };

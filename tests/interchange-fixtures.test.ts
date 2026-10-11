@@ -18,7 +18,7 @@ import type { DrawingState } from '../src/core/document';
 import type { Entity, InsertEntity, DimensionEntity, MTextEntity, HatchEntity, PolylineEntity, SplineEntity, EllipseEntity, TableEntity, ImageEntity, TextEntity, LineEntity, CircleEntity, ArcEntity } from '../src/core/entities';
 import { explodeInsert, splineCurve, dimensionParts } from '../src/core/entities';
 import { namedDimStyles, dimensionMeasurement, dimensionText, dimensionTextLayout } from '../src/core/dimension';
-import { parseMText, type MTextItem } from '../src/core/mtext';
+import { parseMText, mtextLayout, type MTextItem } from '../src/core/mtext';
 import { nurbsPoint, nurbsPoints } from '../src/core/spline';
 import { loopPolygon, pointInLoops } from '../src/core/hatch';
 import { tableGeometry } from '../src/core/table';
@@ -543,7 +543,18 @@ describe('r2018-mtext.dxf: MTEXT formatting codes, stacked fractions, columns, l
     expect(f.written).toContain('\\U+00D825 \\U+00B10,1');
   });
 
-  it.todo('MTEXT static columns (R2018 embedded object: 2 columns 60 wide, gutter 5) are kept -- not read: the text flows in one column and is saved without the column definition');
+  it('MTEXT static columns (R2018 embedded object: 2 columns 60 wide, gutter 5) are kept, and each column is laid out at its offset', () => {
+    for (const [, s] of both(f)) {
+      const m = ofType<MTextEntity>(s.entities, 'mtext')[2]!;
+      expect(m.columns).toMatchObject({ type: 1, count: 2, width: 60, gutter: 5, heights: [20, 20] });
+      const parts = mtextLayout(m, (t, h) => t.length * h * 0.1);
+      const origins = [...new Set(parts.filter((t) => t.text === 'COLUMN').map((t) => t.position.x))];
+      expect(origins[1]! - origins[0]!).toBeCloseTo(65);
+    }
+    // Written as JCad XDATA (AC1015 has no MTEXT columns), with its APPID.
+    expect(f.written).toContain('\r\n1001\r\nJCAD_MTEXT_COLUMNS\r\n');
+    expect(records(f.written, 'APPID').map((r) => group(r, 2))).toContain('JCAD_MTEXT_COLUMNS');
+  });
 });
 
 // ---------------------------------------------------------------- HATCH, LWPOLYLINE, SPLINE, ELLIPSE

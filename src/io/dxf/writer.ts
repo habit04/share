@@ -13,7 +13,7 @@ import { attdefFlags } from '../../electrical/symbol-builder-core';
 import { planLayouts, writeLayoutHeader, extraBlockRecords, layoutHandleOf, writeLayoutContent, writeLayoutObjects } from '../dxf-layouts';
 import { encodeDxfText, textStyleGroups, textStyleOf, textStylesForWrite, STANDARD_TEXT_STYLE } from '../encoding';
 import { rawEntitiesOf } from '../import-report';
-import { ANNO_APP, DIMSTYLE_APP, TABLE_APP } from './codes';
+import { ANNO_APP, DIMSTYLE_APP, MTEXT_COLUMNS_APP, TABLE_APP } from './codes';
 import { dimStyleXdata, dimStylesToWrite, dimHeaderVars } from './dimstyles';
 import { Writer, setPaperOwners, writeTextLike, emptyExtras, type WriteExtras } from './write-core';
 import { writeEntity, writeEntityAnno } from './write-entities';
@@ -259,11 +259,13 @@ export function writeDxf(state: DrawingState): string {
   });
   table('UCS', '7', 0, () => {});
   const annotative = allEntities.some((e) => e.annotative);
-  table('APPID', '9', (tableList.length ? 3 : 2) + (annotative ? 1 : 0), () => {
+  const columnMtext = allEntities.some((e) => e.type === 'mtext' && e.columns);
+  table('APPID', '9', (tableList.length ? 3 : 2) + (annotative ? 1 : 0) + (columnMtext ? 1 : 0), () => {
     record('APPID', '9', 'AcDbRegAppTableRecord', 'ACAD');
     record('APPID', '9', 'AcDbRegAppTableRecord', DIMSTYLE_APP);
     if (tableList.length) record('APPID', '9', 'AcDbRegAppTableRecord', TABLE_APP);
     if (annotative) record('APPID', '9', 'AcDbRegAppTableRecord', ANNO_APP);
+    if (columnMtext) record('APPID', '9', 'AcDbRegAppTableRecord', MTEXT_COLUMNS_APP);
   });
   // Dimensions on layouts count too, so their (unnamed) styles get a record.
   const dimStyleList = dimStylesToWrite(state, allEntities);

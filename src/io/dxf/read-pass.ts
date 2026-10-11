@@ -8,7 +8,7 @@ import type { Entity, TextEntity } from '../../core/entities';
 import * as g from '../../core/geometry';
 import { withTextStyle } from '../encoding';
 import { geometryProblem, type RawDxfEntity } from '../import-report';
-import { ANNO_APP, DIMSTYLE_APP, TABLE_APP, isPointerCode } from './codes';
+import { ANNO_APP, DIMSTYLE_APP, MTEXT_COLUMNS_APP, TABLE_APP, isPointerCode } from './codes';
 import { num, has, str, xdata, type Obj } from './groups';
 import { commonProps, reportObj, type ReadContext } from './read-core';
 import { readEntityObj } from './read-entities';
@@ -46,7 +46,7 @@ const UNSUPPORTED_REASONS: Record<string, string> = {
  * Applications whose extended data is not reported when it is left out: the reader's own, and
  * AutoCAD's internal ones (ACAD, ACAD_MATERIAL_MAPPER, AcadAnnotative ...) that carry no drawing content.
  */
-const isQuietXdataApp = (app: string): boolean => app === DIMSTYLE_APP || app === TABLE_APP || /^acad/i.test(app);
+const isQuietXdataApp = (app: string): boolean => app === DIMSTYLE_APP || app === TABLE_APP || app === MTEXT_COLUMNS_APP || /^acad/i.test(app);
 
 /** A raw record of an unknown entity, or null when it cannot be kept safely. */
 function rawRecord(o: Obj): RawDxfEntity | null {
