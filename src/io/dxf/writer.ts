@@ -1,0 +1,448 @@
+/**
+ * writeDxf: an AC1015 (AutoCAD 2000) DXF file from a drawing. Handles are allocated in file
+ * order, so the sections are written in sequence: HEADER, CLASSES, TABLES, BLOCKS, ENTITIES and
+ * OBJECTS (paper space comes from io/dxf-layouts.ts).
+ */
+import { dimensionParts, tableParts, type Entity, type Layer, type DimensionEntity } from '../../core/entities';
+import { dimStyleRecordPairs } from '../../core/dimension';
+import { DEFAULT_HEADER, type DrawingState } from '../../core/document';
+import { STANDARD_LINETYPES, findLinetype, patternLength, type Linetype } from '../../core/linetypes';
+import * as g from '../../core/geometry';
+import { attdefFlags } from '../../electrical/symbol-builder-core';
+// Track E: paper space (layouts, VIEWPORT entities, LAYOUT objects) lives in dxf-layouts.ts.
+import { planLayouts, writeLayoutHeader, extraBlockRecords, layoutHandleOf, writeLayoutContent, writeLayoutObjects } from '../dxf-layouts';
+import { encodeDxfText, textStyleGroups, textStylesForWrite } from '../encoding';
+import { rawEntitiesOf } from '../import-report';
+import { ANNO_APP, DIMSTYLE_APP, TABLE_APP } from './codes';
+import { dimStyleXdata, dimStylesToWrite, dimHeaderVars } from './dimstyles';
+import { Writer, setPaperOwners, writeTextLike, emptyExtras, type WriteExtras } from './write-core';
+import { writeEntity, writeEntityAnno } from './write-entities';
+
+/** Linetype names referenced anywhere in the drawing (layers, entities, block entities). */
+function usedLinetypes(state: DrawingState): Linetype[] {
+  const names = new Set<string>();
+  for (const l of state.layers) if (l.linetype) names.add(l.linetype.toUpperCase());
+  const scan = (list: readonly Entity[]) => {
+    for (const e of list) if (e.linetype) names.add(e.linetype.toUpperCase());
+  };
+  scan(state.entities);
+  for (const b of Object.values(state.blocks)) scan(b.entities);
+  // Retained raw records name their linetype in group 6: it must exist in the LTYPE table.
+  for (const r of rawEntitiesOf(state)) for (const [code, value] of r.groups) if (code === 6 && value.trim()) names.add(value.trim().toUpperCase());
+  const extra = state.header?.linetypes ?? [];
+  const out: Linetype[] = [];
+  for (const lt of extra) out.push(lt);
+  for (const n of names) {
+    if (n === 'BYLAYER' || n === 'BYBLOCK' || n === 'CONTINUOUS') continue;
+    if (out.some((l) => l.name.toUpperCase() === n)) continue;
+    const std = findLinetype(n);
+    out.push(std ?? { name: n, description: '', pattern: [] });
+  }
+  return out;
+}
+
+export function writeDxf(state: DrawingState): string {
+  const w = new Writer();
+  const MODEL_SPACE = '1F';
+  const PAPER_SPACE = '1B';
+  const header = state.header ?? DEFAULT_HEADER;
+  const ds = header.dimStyle;
+  const blockList = Object.values(state.blocks);
+  // Pre-assign a BLOCK_RECORD handle per block; block entities use it as their owner (330).
+  const blockRecordHandles = new Map<string, string>();
+  for (const b of blockList) blockRecordHandles.set(b.name, w.nextHandle());
+  // Anonymous *D blocks that carry each dimension's picture.
+  const dimBlocks = new Map<string, string>();
+  const layoutPlan = planLayouts(state, w, PAPER_SPACE);
+  setPaperOwners(layoutPlan.paperOwners);
+  const dimEntities = [...state.entities, ...layoutPlan.entities].filter((e): e is DimensionEntity => e.type === 'dimension');
+  dimEntities.forEach((d, i) => {
+    const name = `*D${i + 1}`;
+    dimBlocks.set(d.id, name);
+    blockRecordHandles.set(name, w.nextHandle());
+  });
+  const linetypes = usedLinetypes(state);
+  // Images (IMAGEDEF + reactor per image) and tables (an anonymous block each) anywhere in the drawing.
+  const extras: WriteExtras = { ...emptyExtras(), arrowSize: ds.arrowSize * (ds.scale || 1) };
+  const allEntities: Entity[] = [...state.entities, ...layoutPlan.entities];
+  for (const b of blockList) allEntities.push(...b.entities);
+  let imageDict: string | null = null;
+  let anon = 0;
+  for (const e of allEntities) {
+    if (e.type === 'image') {
+      if (!imageDict) imageDict = w.nextHandle();
+      let def = extras.imageDefs.get(e.path);
+      if (!def) {
+        def = w.nextHandle();
+        extras.imageDefs.set(e.path, def);
+      }
+      extras.imageReactors.set(e, { reactor: w.nextHandle(), def });
+    } else if (e.type === 'table') {
+      let name = '';
+      do {
+        anon += 1;
+        name = `*U${anon}`;
+      } while (state.blocks[name] || blockRecordHandles.has(name));
+      extras.tableBlocks.set(e, name);
+      blockRecordHandles.set(name, w.nextHandle());
+    }
+  }
+  const tableList = [...extras.tableBlocks.entries()];
+
+  // HEADER
+  w.pair(0, 'SECTION');
+  w.pair(2, 'HEADER');
+  const hv = (name: string, code: number, value: string | number) => {
+    w.pair(9, name);
+    w.pair(code, value);
+  };
+  const hpt = (name: string, p: g.Point) => {
+    w.pair(9, name);
+    w.pair(10, p.x);
+    w.pair(20, p.y);
+    w.pair(30, 0);
+  };
+  hv('$ACADVER', 1, 'AC1015');
+  hv('$DWGCODEPAGE', 3, 'ANSI_1252');
+  hv('$HANDSEED', 5, 'HANDSEED_PLACEHOLDER');
+  hv('$INSUNITS', 70, header.units.insunits);
+  hv('$LUNITS', 70, header.units.lunits);
+  hv('$LUPREC', 70, header.units.luprec);
+  hv('$AUNITS', 70, 0);
+  hv('$AUPREC', 70, header.units.auprec);
+  hv('$CLAYER', 8, state.currentLayer);
+  hv('$CELTYPE', 6, header.celtype || 'ByLayer');
+  hv('$CELWEIGHT', 370, header.celweight === undefined ? -1 : Math.round(header.celweight * 100));
+  hv('$LTSCALE', 40, header.ltscale);
+  hv('$CELTSCALE', 40, 1);
+  hpt('$LIMMIN', header.limits.min);
+  hpt('$LIMMAX', header.limits.max);
+  hv('$PDMODE', 70, header.pdmode);
+  hv('$PDSIZE', 40, header.pdsize);
+  hv('$TEXTSTYLE', 7, 'Standard');
+  hv('$DIMSTYLE', 2, ds.name);
+  for (const [name, code, value] of dimHeaderVars(ds)) if (name !== 'DIMLUNIT') hv(`$${name}`, code, value);
+  hv('$DIMLUNIT', 70, ds.lunit);
+  writeLayoutHeader(hv, state);
+  w.pair(0, 'ENDSEC');
+
+  // CLASSES: raster images need their class records.
+  w.pair(0, 'SECTION');
+  w.pair(2, 'CLASSES');
+  if (imageDict) {
+    const cls = (name: string, cpp: string, flags: number, isEntity: boolean) => {
+      w.pair(0, 'CLASS');
+      w.pair(1, name);
+      w.pair(2, cpp);
+      w.pair(3, 'ISM');
+      w.pair(90, flags);
+      w.pair(280, 0);
+      w.pair(281, isEntity ? 1 : 0);
+    };
+    cls('IMAGE', 'AcDbRasterImage', 127, true);
+    cls('IMAGEDEF', 'AcDbRasterImageDef', 0, false);
+    cls('IMAGEDEF_REACTOR', 'AcDbRasterImageDefReactor', 1, false);
+  }
+  w.pair(0, 'ENDSEC');
+
+  // TABLES
+  w.pair(0, 'SECTION');
+  w.pair(2, 'TABLES');
+
+  const table = (name: string, handle: string, count: number, body: () => void) => {
+    w.pair(0, 'TABLE');
+    w.pair(2, name);
+    w.pair(5, handle);
+    w.pair(330, '0');
+    w.pair(100, 'AcDbSymbolTable');
+    w.pair(70, count);
+    body();
+    w.pair(0, 'ENDTAB');
+  };
+  const record = (kind: string, owner: string, subclass: string, name: string, flags = 0) => {
+    w.pair(0, kind);
+    w.pair(5, w.nextHandle());
+    w.pair(330, owner);
+    w.pair(100, 'AcDbSymbolTableRecord');
+    w.pair(100, subclass);
+    w.pair(2, name);
+    w.pair(70, flags);
+  };
+
+  table('VPORT', '8', 1, () => {
+    record('VPORT', '8', 'AcDbViewportTableRecord', '*Active');
+    w.pair(10, 0);
+    w.pair(20, 0);
+    w.pair(11, 1);
+    w.pair(21, 1);
+    w.pair(12, (header.limits.min.x + header.limits.max.x) / 2);
+    w.pair(22, (header.limits.min.y + header.limits.max.y) / 2);
+    w.pair(40, header.limits.max.y - header.limits.min.y);
+    w.pair(41, 1.6);
+    w.pair(72, 1000);
+  });
+  table('LTYPE', '5', 3 + linetypes.length, () => {
+    const ltRecord = (lt: Linetype) => {
+      record('LTYPE', '5', 'AcDbLinetypeTableRecord', lt.name);
+      w.pair(3, lt.description);
+      w.pair(72, 65);
+      w.pair(73, lt.pattern.length);
+      w.pair(40, patternLength(lt.pattern));
+      for (const seg of lt.pattern) {
+        w.pair(49, seg);
+        w.pair(74, 0);
+      }
+    };
+    ltRecord({ name: 'ByBlock', description: '', pattern: [] });
+    ltRecord({ name: 'ByLayer', description: '', pattern: [] });
+    ltRecord(STANDARD_LINETYPES[0]!);
+    for (const lt of linetypes) ltRecord(lt);
+  });
+  const layerHandles = new Map<string, string>();
+  // Layers of retained raw records that were deleted since: written so the records stay valid.
+  const rawRecords = rawEntitiesOf(state);
+  const layerList: Layer[] = [...state.layers];
+  for (const r of rawRecords) if (!layerList.some((l) => l.name === r.layer)) layerList.push({ name: r.layer, color: 7, visible: true, locked: false, lineWeight: 0.25 });
+  table('LAYER', '2', layerList.length, () => {
+    for (const l of layerList) {
+      record('LAYER', '2', 'AcDbLayerTableRecord', l.name, (l.locked ? 4 : 0) | (l.frozen ? 1 : 0));
+      layerHandles.set(l.name, w.lastHandle().toString(16).toUpperCase());
+      w.pair(62, l.visible || l.frozen ? l.color : -l.color);
+      if (l.trueColor !== undefined) w.pair(420, l.trueColor & 0xffffff);
+      w.pair(6, l.linetype && l.linetype.toUpperCase() !== 'BYLAYER' ? l.linetype : 'Continuous');
+      w.pair(370, Math.round(l.lineWeight * 100));
+      if (l.plot === false) w.pair(290, 0);
+      w.pair(390, 'F');
+    }
+  });
+  const textStyles = textStylesForWrite(state);
+  table('STYLE', '3', textStyles.length, () => {
+    for (const ts of textStyles) {
+      record('STYLE', '3', 'AcDbTextStyleTableRecord', ts.name, ts.flags);
+      for (const [code, value] of textStyleGroups(ts)) w.pair(code, value);
+    }
+  });
+  table('VIEW', '6', header.views.length, () => {
+    for (const v of header.views) {
+      record('VIEW', '6', 'AcDbViewTableRecord', v.name);
+      w.pair(40, v.height);
+      w.pair(10, v.center.x);
+      w.pair(20, v.center.y);
+      w.pair(41, v.height * 1.5);
+      w.pair(11, 0);
+      w.pair(21, 0);
+      w.pair(31, 1);
+      w.pair(12, 0);
+      w.pair(22, 0);
+      w.pair(32, 0);
+      w.pair(42, 50);
+      w.pair(43, 0);
+      w.pair(44, 0);
+      w.pair(50, 0);
+      w.pair(71, 0);
+    }
+  });
+  table('UCS', '7', 0, () => {});
+  const annotative = allEntities.some((e) => e.annotative);
+  table('APPID', '9', (tableList.length ? 3 : 2) + (annotative ? 1 : 0), () => {
+    record('APPID', '9', 'AcDbRegAppTableRecord', 'ACAD');
+    record('APPID', '9', 'AcDbRegAppTableRecord', DIMSTYLE_APP);
+    if (tableList.length) record('APPID', '9', 'AcDbRegAppTableRecord', TABLE_APP);
+    if (annotative) record('APPID', '9', 'AcDbRegAppTableRecord', ANNO_APP);
+  });
+  // Dimensions on layouts count too, so their (unnamed) styles get a record.
+  const dimStyleList = dimStylesToWrite(state, allEntities);
+  table('DIMSTYLE', 'A', dimStyleList.length, () => {
+    w.pair(100, 'AcDbDimStyleTable');
+    for (const style of dimStyleList) {
+      w.pair(0, 'DIMSTYLE');
+      w.pair(105, w.nextHandle());
+      w.pair(330, 'A');
+      w.pair(100, 'AcDbSymbolTableRecord');
+      w.pair(100, 'AcDbDimStyleTableRecord');
+      w.pair(2, style.name);
+      w.pair(70, 0);
+      for (const [code, value] of dimStyleRecordPairs(style)) w.pair(code, value);
+      w.pair(1001, DIMSTYLE_APP);
+      for (const [k, v] of dimStyleXdata(style)) {
+        w.pair(1000, k);
+        w.pair(1000, v);
+      }
+    }
+  });
+  const layoutRecords = extraBlockRecords(layoutPlan);
+  table('BLOCK_RECORD', '1', 2 + blockRecordHandles.size + layoutRecords.length, () => {
+    const brec = (handle: string, name: string) => {
+      w.pair(0, 'BLOCK_RECORD');
+      w.pair(5, handle);
+      w.pair(330, '1');
+      w.pair(100, 'AcDbSymbolTableRecord');
+      w.pair(100, 'AcDbBlockTableRecord');
+      w.pair(2, name);
+      const layoutHandle = layoutHandleOf(layoutPlan, handle, MODEL_SPACE);
+      if (layoutHandle) w.pair(340, layoutHandle);
+      w.pair(70, 0);
+      w.pair(280, 1);
+      w.pair(281, 0);
+    };
+    brec(MODEL_SPACE, '*Model_Space');
+    brec(PAPER_SPACE, '*Paper_Space');
+    for (const r of layoutRecords) brec(r.handle, r.name);
+    for (const [name, handle] of blockRecordHandles) brec(handle, name);
+  });
+  w.pair(0, 'ENDSEC');
+
+  // BLOCKS
+  w.pair(0, 'SECTION');
+  w.pair(2, 'BLOCKS');
+  const blockShell = (owner: string, name: string, base: { x: number; y: number }, flags: number, description: string | undefined, body: () => void, path = '') => {
+    w.pair(0, 'BLOCK');
+    w.pair(5, w.nextHandle());
+    w.pair(330, owner);
+    w.pair(100, 'AcDbEntity');
+    w.pair(8, '0');
+    w.pair(100, 'AcDbBlockBegin');
+    w.pair(2, name);
+    w.pair(70, flags);
+    w.pair(10, base.x);
+    w.pair(20, base.y);
+    w.pair(30, 0);
+    w.pair(3, name);
+    w.pair(1, path);
+    if (description) w.pair(4, description);
+    body();
+    w.pair(0, 'ENDBLK');
+    w.pair(5, w.nextHandle());
+    w.pair(330, owner);
+    w.pair(100, 'AcDbEntity');
+    w.pair(8, '0');
+    w.pair(100, 'AcDbBlockEnd');
+  };
+  blockShell(MODEL_SPACE, '*Model_Space', { x: 0, y: 0 }, 0, undefined, () => {});
+  blockShell(PAPER_SPACE, '*Paper_Space', { x: 0, y: 0 }, 0, undefined, () => {});
+  // Layouts after the first keep their paper space in *Paper_Space0, *Paper_Space1 ...
+  const writePaperEntity = (e: Entity, owner: string) => writeEntityAnno(w, e, owner, state.blocks, dimBlocks, extras);
+  for (const r of layoutPlan.records.slice(1)) blockShell(r.blockRecord, r.blockName, { x: 0, y: 0 }, 0, undefined, () => writeLayoutContent(w, r, writePaperEntity, layerHandles));
+  for (const b of blockList) {
+    const owner = blockRecordHandles.get(b.name)!;
+    // Anonymous blocks (*T tables, *U dynamic blocks) must carry flag 1 or AutoCAD rejects the name.
+    const xrefFlags = b.xref ? 4 | (b.xref.overlay ? 8 : 0) : 0;
+    blockShell(owner, b.name, b.basePoint, (b.attributes.length > 0 ? 2 : 0) | (b.name.startsWith('*') ? 1 : 0) | xrefFlags, b.description, () => {
+      for (const e of b.entities) writeEntity(w, e, owner, state.blocks, undefined, extras);
+      for (const a of b.attributes) {
+        w.pair(0, 'ATTDEF');
+        w.pair(5, w.nextHandle());
+        w.pair(330, owner);
+        w.pair(100, 'AcDbEntity');
+        w.pair(8, '0');
+        w.pair(100, 'AcDbText');
+        writeTextLike(w, a.position, a.height, a.default, a.rotation ?? 0, a.align);
+        w.pair(100, 'AcDbAttributeDefinition');
+        w.pair(3, a.prompt);
+        w.pair(2, a.tag);
+        w.pair(70, attdefFlags(a));
+      }
+    }, b.xref?.path ?? '');
+  }
+  for (const [t, name] of tableList) {
+    const owner = blockRecordHandles.get(name)!;
+    blockShell(owner, name, { x: 0, y: 0 }, 1, undefined, () => {
+      for (const part of tableParts(t)) writeEntity(w, part, owner, state.blocks, undefined, extras);
+    });
+  }
+  for (const d of dimEntities) {
+    const name = dimBlocks.get(d.id)!;
+    const owner = blockRecordHandles.get(name)!;
+    blockShell(owner, name, { x: 0, y: 0 }, 1, undefined, () => {
+      for (const part of dimensionParts(d)) writeEntity(w, { ...part, color: part.color === 'ByLayer' ? 0 : part.color } as Entity, owner, state.blocks);
+    });
+  }
+  w.pair(0, 'ENDSEC');
+
+  // ENTITIES
+  w.pair(0, 'SECTION');
+  w.pair(2, 'ENTITIES');
+  for (const e of state.entities) writeEntityAnno(w, e, MODEL_SPACE, state.blocks, dimBlocks, extras);
+  // The first layout's paper space (VIEWPORTs + entities, group 67 = 1).
+  if (layoutPlan.records[0]) writeLayoutContent(w, layoutPlan.records[0], writePaperEntity, layerHandles);
+  // Unknown model-space records kept from the source file, verbatim apart from a new handle and owner.
+  for (const r of rawRecords) {
+    w.pair(0, r.type);
+    w.pair(5, w.nextHandle());
+    w.pair(330, MODEL_SPACE);
+    for (const [code, value] of r.groups) w.pair(code, value);
+  }
+  w.pair(0, 'ENDSEC');
+
+  // OBJECTS: root dictionary with the mandatory ACAD_GROUP entry
+  w.pair(0, 'SECTION');
+  w.pair(2, 'OBJECTS');
+  w.pair(0, 'DICTIONARY');
+  w.pair(5, 'C');
+  w.pair(330, '0');
+  w.pair(100, 'AcDbDictionary');
+  w.pair(281, 1);
+  w.pair(3, 'ACAD_GROUP');
+  w.pair(350, 'D');
+  w.pair(3, 'ACAD_LAYOUT');
+  w.pair(350, layoutPlan.dictionary);
+  if (imageDict) {
+    w.pair(3, 'ACAD_IMAGE_DICT');
+    w.pair(350, imageDict);
+  }
+  w.pair(0, 'DICTIONARY');
+  w.pair(5, 'D');
+  w.pair(330, 'C');
+  w.pair(100, 'AcDbDictionary');
+  w.pair(281, 1);
+  writeLayoutObjects(w, layoutPlan, MODEL_SPACE, 'C');
+  if (imageDict) {
+    w.pair(0, 'DICTIONARY');
+    w.pair(5, imageDict);
+    w.pair(330, 'C');
+    w.pair(100, 'AcDbDictionary');
+    w.pair(281, 1);
+    const used = new Set<string>();
+    for (const [path, def] of extras.imageDefs) {
+      const stem = (path.split(/[\\/]/).pop() || 'IMAGE').replace(/\.[^.]*$/, '') || 'IMAGE';
+      let key = stem;
+      for (let n = 2; used.has(key.toUpperCase()); n += 1) key = `${stem}_${n}`;
+      used.add(key.toUpperCase());
+      w.pair(3, key);
+      w.pair(350, def);
+    }
+    for (const [path, def] of extras.imageDefs) {
+      const users = [...extras.imageReactors.entries()].filter(([img]) => img.path === path);
+      const first = users[0]?.[0];
+      w.pair(0, 'IMAGEDEF');
+      w.pair(5, def);
+      w.pair(102, '{ACAD_REACTORS');
+      w.pair(330, imageDict);
+      for (const [, r] of users) w.pair(330, r.reactor);
+      w.pair(102, '}');
+      w.pair(330, imageDict);
+      w.pair(100, 'AcDbRasterImageDef');
+      w.pair(90, 0);
+      w.pair(1, path);
+      w.pair(10, first?.size.x ?? 1);
+      w.pair(20, first?.size.y ?? 1);
+      w.pair(11, 1);
+      w.pair(21, 1);
+      w.pair(280, 1);
+      w.pair(281, 0);
+    }
+    for (const [, r] of extras.imageReactors) {
+      w.pair(0, 'IMAGEDEF_REACTOR');
+      w.pair(5, r.reactor);
+      w.pair(330, r.image ?? '0');
+      w.pair(100, 'AcDbRasterImageDefReactor');
+      w.pair(90, 2);
+      w.pair(330, r.image ?? '0');
+    }
+  }
+  w.pair(0, 'ENDSEC');
+  w.pair(0, 'EOF');
+  // The handle seed must exceed every handle used in the file.
+  // AC1015 is read in the $DWGCODEPAGE page: non-ASCII goes out as \U+XXXX escapes (see io/encoding.ts).
+  return encodeDxfText(w.toString().replace('HANDSEED_PLACEHOLDER', (w.lastHandle() + 1).toString(16).toUpperCase()), 'AC1015');
+}
