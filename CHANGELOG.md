@@ -11,6 +11,10 @@ messages). The date of each version is the date of the commit that set that vers
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.4.1] - 2026-10-11
+
 ### Added
 
 - Download alerts: an hourly GitHub Actions workflow (`download-alerts.yml`, `scripts/download-alerts.mjs`)
@@ -568,7 +572,9 @@ First release.
 
 - Renamed the application to JCad Electrical.
 
-[Unreleased]: https://github.com/habit04/share/compare/v0.3.4...HEAD
+[Unreleased]: https://github.com/habit04/share/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/habit04/share/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/habit04/share/compare/v0.3.4...v0.4.0
 [0.3.4]: https://github.com/habit04/share/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/habit04/share/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/habit04/share/compare/v0.3.1...v0.3.2
