@@ -1,0 +1,30 @@
+# Writes (or rewrites) the notes of an existing GitHub release from its CHANGELOG.md section, with
+# scripts/release-notes.mjs, the same script the release pipeline uses. Run it by hand from the
+# Actions tab for a release page that is empty or out of date (the v0.4.0 page was published empty).
+name: Release notes
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag of an existing release whose notes to write from CHANGELOG.md (for example v0.4.0)'
+        required: true
+permissions:
+  contents: write
+jobs:
+  notes:
+    name: Write the release notes from CHANGELOG.md
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+      - name: Render the notes for the tag
+        env:
+          TAG: ${{ github.event.inputs.tag }}
+        run: node scripts/release-notes.mjs "$TAG" --strict --out release-notes.md
+      - name: Update the release page
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag }}
+        run: gh release edit "$TAG" --notes-file release-notes.md

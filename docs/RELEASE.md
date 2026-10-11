@@ -42,8 +42,10 @@ accounts and secrets in [CODE-SIGNING.md](CODE-SIGNING.md).
    version. Never move or re-use a published tag; the updater compares versions, not tags.
 
 Releases up to 0.4.0 were published with an empty description. `docs/releases/v0.4.0.md` is the
-text for the 0.4.0 release page (`npm run release-notes -- v0.4.0`): open the release on GitHub,
-**Edit**, paste it as the description and **Update release** (the installers stay as they are).
+text for the 0.4.0 release page (`npm run release-notes -- v0.4.0`). The manual **Release notes**
+workflow writes it for you: Actions > Release notes > **Run workflow**, tag `v0.4.0`; it renders the
+tag's `CHANGELOG.md` section with the same script and updates the release description (the
+installers stay as they are). Pasting it by hand (**Edit**, paste, **Update release**) works too.
 
 The manual **Packaged smoke test (existing release)** workflow re-runs the packaged checks
 against the installers attached to any published release (for example after a runner image or
