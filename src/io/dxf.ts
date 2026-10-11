@@ -8,60 +8,27 @@
  * frozen/off/locked), LTYPE (dash patterns), VIEW, DIMSTYLE, BLOCK_RECORD.
  * Header: units, limits, LTSCALE, PDMODE/PDSIZE, DIM* variables, CELTYPE/CELWEIGHT.
  */
-import type {
-  Entity,
-  BlockDef,
-  Layer,
-  ColorSpec,
-  DimensionEntity,
-  PolylineEntity,
-  MTextEntity,
-  DimStyle,
-  SplineEntity,
-  HatchEntity,
-  LeaderEntity,
-  ImageEntity,
-  TableEntity,
-  TableCell,
-  HatchLoop,
-  WorldPatternLine,
-  FieldLink,
-  TextEntity,
-} from '../core/entities';
-import { newId, dimensionParts, textWidth, insertTransform, splineCurve, hatchPatternLines, leaderParts, leaderPath, tableParts } from '../core/entities';
-import {
-  dimensionTextPoint,
-  dimensionMeasurement,
-  STANDARD_DIMSTYLE,
-  DIM_VARIABLES,
-  DIMSTYLES_META_KEY,
-  namedDimStyles,
-  dimVarValue,
-  withDimVars,
-  dimStyleRecordPairs,
-  dimStyleFromRecordPairs,
-  arrowBlockName,
-  arrowFromBlockName,
-  resolveDimStyle,
-  diffDimStyles,
-} from '../core/dimension';
+import { newId, dimensionParts, textWidth, insertTransform, splineCurve, hatchPatternLines, leaderParts, leaderPath, tableParts, type Entity, type BlockDef, type Layer, type ColorSpec, type DimensionEntity, type PolylineEntity, type MTextEntity, type DimStyle, type SplineEntity, type HatchEntity, type LeaderEntity, type ImageEntity, type TableEntity, type TableCell, type HatchLoop, type WorldPatternLine, type FieldLink, type TextEntity } from '../core/entities';
+import { dimensionTextPoint, dimensionMeasurement, STANDARD_DIMSTYLE, DIMSTYLES_META_KEY, dimStyleRecordPairs, diffDimStyles } from '../core/dimension';
 import { mtextToDxf, mtextFromDxf, formattedSource, hasFormatting, type MTextAttachment } from '../core/mtext';
 import { findPattern, LoopBuilder, edgeArc, fitPatternToLines } from '../core/hatch';
 import { isValidNurbs, nurbsPoints, interpolateFitPoints } from '../core/spline';
 import { evaluateFields, hasFields, julianToDate, type FieldContext } from '../core/fields';
-import type { DrawingState, DrawingHeader, NamedView } from '../core/document';
-import { DEFAULT_LAYERS, DEFAULT_HEADER } from '../core/document';
+import { DEFAULT_LAYERS, DEFAULT_HEADER, type DrawingState, type DrawingHeader, type NamedView } from '../core/document';
 import { STANDARD_LINETYPES, findLinetype, patternLength, type Linetype } from '../core/linetypes';
 import type { LinearUnits } from '../core/units';
 import * as g from '../core/geometry';
 import { attdefFlags, attdefFlagProps, type AttributeDefExt } from '../electrical/symbol-builder-core';
-// Track E: paper space (layouts, VIEWPORT entities, LAYOUT objects) lives in dxf-layouts.ts.
 import { isScaleName } from '../core/layouts';
+// Track E: paper space (layouts, VIEWPORT entities, LAYOUT objects) lives in dxf-layouts.ts.
 import { planLayouts, writeLayoutHeader, extraBlockRecords, layoutHandleOf, writeLayoutContent, writeLayoutObjects, LayoutReader } from './dxf-layouts';
 import { decodeUnicodeEscapes, encodeDxfText, textStyleFromGroups, textStyleGroups, textStyleOf, textStylesForWrite, textStylesMeta, withTextStyle, type TextStyle } from './encoding';
 import { ImportReportBuilder, geometryProblem, rawEntitiesOf, withImportData, type RawDxfEntity } from './import-report';
-
-// ---------------------------------------------------------------- writing
+import { ANNO_APP, DIM_TYPE, DIMSTYLE_APP, TABLE_APP, isPointerCode } from './dxf/codes';
+import { tokenize, objects, num, has, str, pt, int, flt, afterSubclass, pointList, Cursor, xdata, type Pair, type Obj } from './dxf/groups';
+import { dimStyleXdata, dimStylesToWrite, dimHeaderVars, dimStyleFromHeader, readDimStyleRecord } from './dxf/dimstyles';
+export { DIMSTYLE_APP, TABLE_APP } from './dxf/codes';
+export { DxfReadError } from './dxf/groups';
 
 function fmt(n: number): string {
   if (!Number.isFinite(n)) return '0';
@@ -94,8 +61,6 @@ function colorCode(c: ColorSpec): number {
 /** Block-record handles of paper-space layouts while writeDxf runs: their entities get group 67 = 1 (Track E). */
 let paperOwners: ReadonlySet<string> = new Set();
 
-/** AcadAnnotative xdata: marks an annotative object (Track E; AutoCAD 2008+ reads it, older readers ignore it). */
-const ANNO_APP = 'AcadAnnotative';
 function writeAnnotativeXdata(w: Writer): void {
   w.pair(1001, ANNO_APP);
   w.pair(1000, 'AnnotativeData');
@@ -197,8 +162,6 @@ function writeMText(w: Writer, e: MTextEntity, owner: string): void {
   w.pair(44, e.lineSpacing || 1);
 }
 
-const DIM_TYPE: Record<DimensionEntity['kind'], number> = { linear: 0, aligned: 1, angular: 5, diameter: 3, radius: 4 };
-
 function radialPoints(e: DimensionEntity): { q: g.Point; far: g.Point } {
   const r = g.dist(e.p1, e.p2);
   const toLoc = g.sub(e.linePoint, e.p1);
@@ -293,111 +256,6 @@ function dimAngleDeg(rad: number): number {
   const d = ((g.deg(rad) % 360) + 360) % 360;
   return Math.abs(d) < 1e-9 || Math.abs(d - 360) < 1e-9 ? 360 : d;
 }
-
-// ---------------------------------------------------------------- dimension styles
-
-/**
- * XDATA application on DIMSTYLE table records. Real DIMSTYLE records reference arrowhead
- * blocks by BLOCK_RECORD handle (342 DIMBLK, 343 DIMBLK1, 344 DIMBLK2), which would need an
- * arrow block definition per type; instead each record written here carries 1000-string
- * name/value pairs under this application:
- *   DIMBLK1 <block>, DIMBLK2 <block>  standard arrow block names ("." = closed filled)
- *   TOLERANCE basic                   boxed basic dimensions (no DIM* variable of its own)
- *   ALTPLACEMENT below                alternate units under the primary value
- * Other programs ignore it. The current style's arrows also go to $DIMBLK / $DIMBLK1 /
- * $DIMBLK2 / $DIMSAH in the header, and the reader resolves 342-344 handles of records
- * written by other programs through the BLOCK_RECORD names.
- */
-export const DIMSTYLE_APP = 'JCAD_DIMSTYLE';
-
-function dimStyleXdata(s: DimStyle): Array<[string, string]> {
-  const r = resolveDimStyle(s);
-  const block = (a: typeof r.arrow) => arrowBlockName(a) || '.';
-  const out: Array<[string, string]> = [
-    ['DIMBLK1', block(r.arrow)],
-    ['DIMBLK2', block(r.arrow2)],
-  ];
-  if (r.tolerance === 'basic') out.push(['TOLERANCE', 'basic']);
-  if (r.altPlacement === 'below') out.push(['ALTPLACEMENT', 'below']);
-  return out;
-}
-
-/** Apply JCAD_DIMSTYLE XDATA pairs (see DIMSTYLE_APP) to a style read from its record. */
-function applyDimStyleXdata(s: DimStyle, xd: readonly Pair[]): DimStyle {
-  let out = s;
-  const strs = xd.filter((p) => p.code === 1000).map((p) => p.value);
-  for (let k = 0; k + 1 < strs.length; k += 2) {
-    const key = strs[k]!.toUpperCase();
-    const value = strs[k + 1]!;
-    if (key === 'DIMBLK1') out = { ...out, arrow: arrowFromBlockName(value) };
-    else if (key === 'DIMBLK2') out = { ...out, arrow2: arrowFromBlockName(value) };
-    else if (key === 'TOLERANCE' && value === 'basic') out = { ...out, tolerance: 'basic' };
-    else if (key === 'ALTPLACEMENT' && (value === 'below' || value === 'after')) out = { ...out, altPlacement: value };
-  }
-  if (out.arrow2 !== undefined && out.arrow2 === (out.arrow ?? 'closed-filled')) out = { ...out, arrow2: undefined };
-  return out;
-}
-
-/** Styles for the DIMSTYLE table: the drawing's named styles plus any a dimension uses that is not named. */
-function dimStylesToWrite(state: DrawingState, entities: readonly Entity[] = state.entities): DimStyle[] {
-  const out = namedDimStyles(state);
-  const seen = new Set(out.map((s) => s.name.toUpperCase()));
-  for (const e of entities)
-    if (e.type === 'dimension' && !seen.has(e.style.name.toUpperCase())) {
-      seen.add(e.style.name.toUpperCase());
-      out.push(e.style);
-    }
-  return out;
-}
-
-/** Header $DIM* variables of the current style: [name, group code, value]. */
-function dimHeaderVars(s: DimStyle): Array<[string, number, number | string]> {
-  const out: Array<[string, number, number | string]> = [];
-  for (const v of DIM_VARIABLES) out.push([v.name, v.headerCode, dimVarValue(s, v.name)]);
-  out.push(['DIMBLK', 1, dimVarValue(s, 'DIMBLK')], ['DIMSAH', 70, dimVarValue(s, 'DIMSAH')], ['DIMTOL', 70, dimVarValue(s, 'DIMTOL')], ['DIMLIM', 70, dimVarValue(s, 'DIMLIM')], ['DIMTIH', 70, dimVarValue(s, 'DIMTIH')], ['DIMTOH', 70, dimVarValue(s, 'DIMTOH')], ['DIMZIN', 70, dimVarValue(s, 'DIMZIN')]);
-  return out;
-}
-
-/** The current style: header $DIM* variables applied over `base` (the named record of the same name, or Standard). */
-function dimStyleFromHeader(headerVars: ReadonlyMap<string, Pair[]>, base: DimStyle): DimStyle {
-  const val = (name: string): string | undefined => headerVars.get(`$${name}`)?.[0]?.value;
-  return withDimVars({ ...base, name: val('DIMSTYLE') || base.name }, val);
-}
-
-/**
- * A DIMSTYLE table record: its DIM* group codes through dimStyleFromRecordPairs, arrowheads
- * from JCAD_DIMSTYLE XDATA or, for other programs' files, the 342/343/344 handles of arrow
- * blocks, named by the BLOCK_RECORD table among `tables` (the TABLES section's objects).
- */
-function readDimStyleRecord(o: Obj, tables: readonly Obj[]): DimStyle {
-  const end = o.groups.findIndex((p) => p.code === 1001);
-  const own = end < 0 ? o.groups : o.groups.slice(0, end);
-  const name = str(o, 2) || 'Standard';
-  let s = dimStyleFromRecordPairs(
-    name,
-    own.map((p) => [p.code, p.value] as const),
-    STANDARD_DIMSTYLE,
-  );
-  if (s.scale === 0) s = { ...s, scale: 1 };
-  const xd = xdata(o, DIMSTYLE_APP);
-  if (xd) return applyDimStyleXdata(s, xd);
-  const block = (code: number): string | undefined => {
-    const h = own.find((p) => p.code === code)?.value?.toUpperCase();
-    const rec = h ? tables.find((t) => t.kind === 'BLOCK_RECORD' && str(t, 5).toUpperCase() === h) : undefined;
-    return rec ? str(rec, 2) : undefined;
-  };
-  const sah = Number(own.find((p) => p.code === 173)?.value ?? 0) !== 0;
-  const b1 = sah ? block(343) : block(342);
-  const b2 = sah ? block(344) : undefined;
-  if (b1 !== undefined) s = { ...s, arrow: arrowFromBlockName(b1) };
-  if (b2 !== undefined) s = { ...s, arrow2: arrowFromBlockName(b2) };
-  return s;
-}
-
-// ---------------------------------------------------------------- SPLINE / HATCH / LEADER / IMAGE / TABLE writers
-
-/** XDATA application name carrying a JCad table's data on its INSERT. */
-export const TABLE_APP = 'JCAD_TABLE';
 
 /** Handles and names the writer allocates before the entity pass (images, tables). */
 interface WriteExtras {
@@ -1194,171 +1052,6 @@ export function writeDxf(state: DrawingState): string {
   return encodeDxfText(w.toString().replace('HANDSEED_PLACEHOLDER', (w.lastHandle() + 1).toString(16).toUpperCase()), 'AC1015');
 }
 
-// ---------------------------------------------------------------- reading
-
-interface Pair {
-  code: number;
-  value: string;
-  /** 1-based line of the group code in the file (reader diagnostics). */
-  line?: number;
-}
-
-/**
- * A DXF file that cannot be read. `truncated` marks a file that ends early (no EOF, a group
- * code without its value, an open section): `readDxf(text, { recover: true })` then opens what
- * was readable, marking the drawing as recovered.
- */
-export class DxfReadError extends Error {
-  constructor(
-    message: string,
-    /** 1-based line where the problem was found. */
-    readonly line: number,
-    readonly truncated = false,
-  ) {
-    super(message);
-    this.name = 'DxfReadError';
-  }
-}
-
-const shortText = (t: string): string => (t.length > 40 ? `${t.slice(0, 40)}...` : t);
-
-/** An optionally signed run of digits (a valid group code line, already trimmed). */
-function isIntegerText(t: string): boolean {
-  let i = t.charCodeAt(0) === 43 || t.charCodeAt(0) === 45 ? 1 : 0;
-  if (i >= t.length) return false;
-  for (; i < t.length; i += 1) {
-    const c = t.charCodeAt(i);
-    if (c < 48 || c > 57) return false;
-  }
-  return true;
-}
-
-/**
- * Split DXF text into group pairs and check the file structure: every group code is an integer,
- * every code has a value, SECTION / ENDSEC pairs balance and the file ends with EOF. A file that
- * ends early throws a `truncated` DxfReadError unless `recover` is set; then the incomplete last
- * object is left out, open sections are closed and `report.recovered` tells what happened.
- */
-function tokenize(text: string, recover = false, report?: ImportReportBuilder): Pair[] {
-  if (text.startsWith('AutoCAD Binary DXF')) throw new DxfReadError('This is a binary DXF file. Save it as an ASCII DXF (DXFOUT, ASCII format) to open it.', 1);
-  const lines = text.split(/\r\n|\r|\n/);
-  const pairs: Pair[] = [];
-  let eof = false;
-  let i = 0;
-  /** A group code on the last line of a file that ends early, without its value (0 = a new object was starting). */
-  let danglingCode: number | null = null;
-  for (; i + 1 < lines.length; i += 2) {
-    const rawCode = lines[i]!.trim();
-    const code = parseInt(rawCode, 10);
-    if (Number.isNaN(code) || !isIntegerText(rawCode)) {
-      if (rawCode === '' && lines.slice(i).every((l) => l.trim() === '')) break; // trailing blank lines
-      throw new DxfReadError(`Line ${i + 1}: "${shortText(rawCode)}" is not a DXF group code (a whole number was expected). The file is damaged or is not a DXF file.`, i + 1);
-    }
-    // Text chunks (1 / 3, MLEADER 304) keep trailing spaces: a 250-character MTEXT chunk may end in one.
-    const raw = lines[i + 1]!;
-    const value = code === 1 || code === 3 || code === 304 ? raw : raw.replace(/\s+$/, '');
-    pairs.push({ code, value, line: i + 1 });
-    if (code === 0 && value.trim() === 'EOF') {
-      eof = true;
-      break;
-    }
-  }
-  if (pairs.length === 0) throw new DxfReadError('The file is empty or is not a DXF file.', 1);
-  let truncatedAt: number | null = null;
-  if (!eof) {
-    let last = lines.length;
-    while (last > 0 && lines[last - 1]!.trim() === '') last -= 1;
-    truncatedAt = Math.max(1, last);
-    if (i < lines.length && i === last - 1 && isIntegerText(lines[i]!.trim())) danglingCode = parseInt(lines[i]!.trim(), 10);
-    // A last pair "0" + empty value is a new object that never got its type: the same boundary.
-    const tail = pairs[pairs.length - 1]!;
-    if (tail.code === 0 && tail.value.trim() === '') {
-      pairs.pop();
-      danglingCode = 0;
-    }
-  }
-  // Section structure.
-  let open: { name: string; line: number } | null = null;
-  for (let k = 0; k < pairs.length; k += 1) {
-    const p = pairs[k]!;
-    if (p.code !== 0) continue;
-    const v = p.value.trim();
-    if (v === 'SECTION') {
-      if (open) throw new DxfReadError(`Line ${p.line}: a new SECTION starts before section ${open.name} (line ${open.line}) is closed with ENDSEC. The file is damaged.`, p.line ?? 1);
-      open = { name: pairs[k + 1]?.code === 2 ? pairs[k + 1]!.value.trim() : '?', line: p.line ?? 1 };
-    } else if (v === 'ENDSEC') {
-      if (!open) throw new DxfReadError(`Line ${p.line}: ENDSEC without a matching SECTION. The file is damaged.`, p.line ?? 1);
-      open = null;
-    } else if (v === 'EOF') {
-      if (open) throw new DxfReadError(`Line ${p.line}: section ${open.name} (line ${open.line}) is not closed with ENDSEC before EOF. The file is damaged.`, p.line ?? 1);
-    } else if (!open) throw new DxfReadError(`Line ${p.line}: "${shortText(v)}" appears outside any SECTION. The file is damaged or is not a DXF file.`, p.line ?? 1);
-  }
-  if (truncatedAt === null) return pairs;
-  const message = `the file ends early at line ${truncatedAt} (no EOF marker${open ? `; section ${open.name} is not closed` : ''})`;
-  if (!recover) throw new DxfReadError(`The file ends early at line ${truncatedAt}: ${open ? `section ${open.name} (line ${open.line}) is not closed and ` : ''}the end-of-file marker is missing. The file is truncated or damaged.`, truncatedAt, true);
-  // Partial recovery: leave out the object the file ends in (it may be incomplete). The one
-  // cheap certainty: a file that ends with a lone "0" group code (the next object was about to
-  // start) was cut exactly at an object boundary, so the last object is complete and is kept.
-  let lastZero = pairs.length - 1;
-  while (lastZero >= 0 && pairs[lastZero]!.code !== 0) lastZero -= 1;
-  if (open && danglingCode !== 0 && lastZero >= 0 && !['ENDSEC', 'EOF'].includes(pairs[lastZero]!.value.trim())) {
-    const cut = pairs[lastZero]!;
-    const kind = cut.value.trim();
-    const groups = pairs.slice(lastZero + 1);
-    if (kind !== 'SECTION') {
-      report?.add({
-        type: kind,
-        action: 'dropped',
-        reason: 'incomplete: the file ends inside this object',
-        line: cut.line,
-        ...(groups.find((x) => x.code === 5) ? { handle: groups.find((x) => x.code === 5)!.value.trim() } : {}),
-        ...(groups.find((x) => x.code === 8) ? { layer: groups.find((x) => x.code === 8)!.value } : {}),
-      });
-    }
-    pairs.length = lastZero;
-    if (kind === 'SECTION') open = null;
-  }
-  if (open) pairs.push({ code: 0, value: 'ENDSEC', line: truncatedAt });
-  pairs.push({ code: 0, value: 'EOF', line: truncatedAt });
-  if (report) report.recovered = { line: truncatedAt, message };
-  return pairs;
-}
-
-interface Obj {
-  kind: string;
-  groups: Pair[];
-  /** Line of the object's 0 group. */
-  line?: number;
-}
-
-/** Group pairs into objects starting at each code 0. */
-function objects(pairs: Pair[], start: number, end: number): Obj[] {
-  const out: Obj[] = [];
-  let cur: Obj | null = null;
-  for (let i = start; i < end; i += 1) {
-    const p = pairs[i]!;
-    if (p.code === 0) {
-      cur = { kind: p.value, groups: [], line: p.line };
-      out.push(cur);
-    } else if (cur) cur.groups.push(p);
-  }
-  return out;
-}
-
-/** Real-valued group codes (points, distances, angles, scales): unreadable values there are invalid geometry. */
-const isRealCode = (code: number): boolean => (code >= 10 && code <= 59) || (code >= 110 && code <= 149) || (code >= 210 && code <= 239) || (code >= 1010 && code <= 1059);
-const num = (o: Obj, code: number, dflt = 0): number => {
-  const p = o.groups.find((x) => x.code === code);
-  if (!p) return dflt;
-  const v = parseFloat(p.value);
-  if (!Number.isNaN(v)) return v;
-  // A coordinate that is not a number (NaN, garbage) must not silently become 0: the object is rejected.
-  return isRealCode(code) && p.value.trim() !== '' ? NaN : dflt;
-};
-const has = (o: Obj, code: number): boolean => o.groups.some((x) => x.code === code);
-const str = (o: Obj, code: number, dflt = ''): string => o.groups.find((x) => x.code === code)?.value ?? dflt;
-const pt = (o: Obj, xCode: number, dflt: g.Point = { x: 0, y: 0 }): g.Point => (has(o, xCode) ? { x: num(o, xCode), y: num(o, xCode + 10) } : dflt);
-
 /** Entity properties common to every DXF entity (layer, colour, linetype, lineweight, ltscale). */
 function commonProps(o: Obj): { id: string; layer: string; color: ColorSpec; linetype?: string; lineWeight?: number; ltscale?: number; trueColor?: number } {
   const layer = str(o, 8, '0');
@@ -1441,38 +1134,6 @@ function readDimension(o: Obj, base: ReturnType<typeof commonProps>, style: DimS
   }
 }
 
-
-// ---------------------------------------------------------------- SPLINE / HATCH / LEADER / MLEADER / IMAGE / TABLE readers
-
-const int = (v: string | undefined, dflt = 0): number => {
-  const n = v === undefined ? NaN : parseInt(v, 10);
-  return Number.isNaN(n) ? dflt : n;
-};
-const flt = (v: string | undefined, dflt = 0): number => {
-  const n = v === undefined ? NaN : parseFloat(v);
-  return Number.isFinite(n) ? n : dflt;
-};
-
-/** Groups after a subclass marker (or all groups when it is missing). */
-function afterSubclass(o: Obj, subclass: string): Pair[] {
-  const i = o.groups.findIndex((x) => x.code === 100 && x.value === subclass);
-  return i >= 0 ? o.groups.slice(i + 1) : o.groups;
-}
-
-/** Points from repeated x/y group pairs (e.g. 10/20). */
-function pointList(gs: readonly Pair[], xCode: number): g.Point[] {
-  const out: g.Point[] = [];
-  let x: number | null = null;
-  for (const p of gs) {
-    if (p.code === xCode) x = parseFloat(p.value);
-    else if (p.code === xCode + 10 && x !== null) {
-      out.push({ x, y: parseFloat(p.value) });
-      x = null;
-    }
-  }
-  return out;
-}
-
 function readSpline(o: Obj, base: ReturnType<typeof commonProps>): SplineEntity | null {
   const gs = afterSubclass(o, 'AcDbSpline');
   const flags = Math.trunc(num(o, 70));
@@ -1498,38 +1159,6 @@ function readSpline(o: Obj, base: ReturnType<typeof commonProps>): SplineEntity 
     ...(st ? { startTangent: st } : {}),
     ...(et ? { endTangent: et } : {}),
   };
-}
-
-/** Sequential reader over a group list. */
-class Cursor {
-  i = 0;
-  constructor(readonly gs: readonly Pair[]) {}
-  get code(): number | undefined {
-    return this.gs[this.i]?.code;
-  }
-  take(code: number): string | undefined {
-    const p = this.gs[this.i];
-    if (p && p.code === code) {
-      this.i += 1;
-      return p.value;
-    }
-    return undefined;
-  }
-  /** Skip ahead to the next group with this code (within `limit` groups). */
-  seek(code: number, limit = 12): string | undefined {
-    for (let k = this.i; k < Math.min(this.gs.length, this.i + limit); k += 1) {
-      if (this.gs[k]!.code === code) {
-        this.i = k + 1;
-        return this.gs[k]!.value;
-      }
-    }
-    return undefined;
-  }
-  point(xCode: number): g.Point {
-    const x = flt(this.seek(xCode));
-    const y = flt(this.seek(xCode + 10, 3));
-    return { x, y };
-  }
 }
 
 function readHatchLoop(c: Cursor): HatchLoop | null {
@@ -1699,15 +1328,6 @@ function readHatch(o: Obj, base: ReturnType<typeof commonProps>): HatchEntity | 
     patternType,
     ...(dbl ? { double: true } : {}),
   };
-}
-
-/** XDATA of one application (1001 name) as its raw pairs. */
-function xdata(o: Obj, app: string): Pair[] | null {
-  const i = o.groups.findIndex((x) => x.code === 1001 && x.value === app);
-  if (i < 0) return null;
-  const out: Pair[] = [];
-  for (let k = i + 1; k < o.groups.length && o.groups[k]!.code !== 1001; k += 1) out.push(o.groups[k]!);
-  return out;
 }
 
 /** A dimension-variable override (ACAD DSTYLE xdata: 1070 code, 1040/1070 value). */
@@ -2293,9 +1913,6 @@ function reportObj(ctx: ReadContext, o: Obj, action: 'dropped' | 'simplified' | 
   ctx.report.add({ type: o.kind, action, reason, ...(handle ? { handle } : {}), layer: str(o, 8, '0'), ...(o.line ? { line: o.line } : {}), ...(ctx.where ? { where: ctx.where } : {}) });
 }
 
-/** Pointer groups that refer to other objects (dropped from raw records: those objects are not kept). */
-const isPointerCode = (code: number): boolean => code === 5 || code === 105 || (code >= 320 && code <= 369) || (code >= 390 && code <= 399) || (code >= 480 && code <= 481) || code === 67;
-
 /** A raw record of an unknown entity, or null when it cannot be kept safely. */
 function rawRecord(o: Obj): RawDxfEntity | null {
   if (!RAW_KEEP_KINDS.has(o.kind)) return null;
@@ -2514,7 +2131,6 @@ export function readDxf(text: string, opts: DxfReadOptions = {}): DrawingState {
   const state = withDimStylesMeta(readDxfState(text, opts, dimStyles, report, raw), dimStyles);
   return withImportData(state, report.empty ? null : report.build('DXF', opts.filePath), raw);
 }
-
 
 /**
  * Named dimension styles (the DIMSTYLE records read) into `meta.dimStyles`, keyed by name as
