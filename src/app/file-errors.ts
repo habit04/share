@@ -134,9 +134,10 @@ function reason(kind: FileErrorKind, dir: string | null, writing: boolean, readi
     case 'is-folder':
       return 'a folder with that name is in the way. Choose another file name.';
     case 'link':
-      // A write refused because a symbolic link leads out of the folder (electron/atomic-write.cjs).
+      // A write refused because the file is a symbolic link, or a linked folder leads out of the
+      // project's folder (electron/atomic-write.cjs).
       return writing
-        ? `the file (or a folder on its path) is a symbolic link that leads outside ${where}. Links like this are not followed when saving, so a file elsewhere cannot be overwritten through them. Use Save As to choose the file itself or another name.`
+        ? `the file is a symbolic link (shortcut), or a linked folder on its path leads outside ${where}. Saving does not follow such links, so no other file can be overwritten through them. Use Save As to save under another name, or open the file the link points to.`
         : 'the path contains a loop of symbolic links.';
     case 'io':
       return 'the disk reported an input/output error. The drive may be failing, full of open files, or was removed.';

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createRequire } from 'node:module';
-import { mkdtempSync, readFileSync, writeFileSync, readdirSync, existsSync, rmSync, symlinkSync, statSync, chmodSync, mkdirSync, lstatSync, realpathSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, readdirSync, existsSync, rmSync, symlinkSync, statSync, chmodSync, mkdirSync, lstatSync, realpathSync, renameSync } from 'node:fs';
 import crypto from 'node:crypto';
 import * as fsp from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -199,17 +199,27 @@ describe('atomic writes (electron/atomic-write.cjs)', () => {
     expect(leftovers()).toEqual([]);
   });
 
-  it.skipIf(process.platform === 'win32')('keeps permission bits and writes through a symbolic link to a file in the same folder', async () => {
+  it.skipIf(process.platform === 'win32')('refuses a symbolic-link destination, even to a file in the same folder, and keeps the target (E-5)', async () => {
     const real = join(dir, 'real.dxf');
     writeFileSync(real, 'v1');
     chmodSync(real, 0o640);
     const link = join(dir, 'link.dxf');
     symlinkSync(real, link);
-    await atomic.atomicWriteFile(link, 'v2', { backup: true });
+    await expect(atomic.atomicWriteFile(link, 'v2', { backup: true })).rejects.toMatchObject({ code: 'ELOOP' });
     expect(lstatSync(link).isSymbolicLink()).toBe(true);
-    expect(readFileSync(real, 'utf8')).toBe('v2');
+    expect(readFileSync(real, 'utf8')).toBe('v1');
     expect(statSync(real).mode & 0o777).toBe(0o640);
-    expect(readFileSync(`${real}.bak`, 'utf8')).toBe('v1');
+    expect(existsSync(`${real}.bak`)).toBe(false);
+    expect(leftovers()).toEqual([]);
+  });
+
+  it.skipIf(process.platform === 'win32')('keeps permission bits of the file it replaces', async () => {
+    const f = join(dir, 'mode.dxf');
+    writeFileSync(f, 'v1');
+    chmodSync(f, 0o640);
+    await atomic.atomicWriteFile(f, 'v2', { backup: true });
+    expect(readFileSync(f, 'utf8')).toBe('v2');
+    expect(statSync(f).mode & 0o777).toBe(0o640);
   });
 
   it('refuses to replace a read-only file (rename alone would ignore the flag on POSIX)', async () => {
@@ -262,10 +272,11 @@ describe('atomic writes (electron/atomic-write.cjs)', () => {
   });
 });
 
-// Security review E-5: a write never follows a symbolic link out of the folder it is allowed in
-// (the file's own folder, or the folder of a project opened by name), so a local user who can
-// write a shared folder cannot plant `out.dxf -> ~/.profile` and have the victim's next save, its
-// .bak copy or a project-wide backup overwrite (or copy out) a file elsewhere. Real links, on POSIX.
+// Security review E-5: a save never writes through a symbolic link, so a local user who can write a
+// shared folder cannot plant `out.dxf -> ~/.profile` and have the victim's next save, its .bak copy
+// or a project-wide backup overwrite (or copy out) a file elsewhere. Linked folders on the way are
+// normal (macOS /var, Silverblue /home, junctions): the folder is pinned to its resolved path and
+// checked again before the rename. Real links, on POSIX.
 describe.skipIf(process.platform === 'win32')('symbolic links (security review E-5)', () => {
   /** A folder outside `dir` holding the victim's file. */
   let outside = '';
@@ -298,7 +309,7 @@ describe.skipIf(process.platform === 'win32')('symbolic links (security review E
     expect(leftovers(outside)).toEqual([]);
     const info = describeFileError(err);
     expect(info.kind).toBe('link');
-    expect(info.message).toBe(`"out.dxf" could not be saved: the file (or a folder on its path) is a symbolic link that leads outside "${dir}". Links like this are not followed when saving, so a file elsewhere cannot be overwritten through them. Use Save As to choose the file itself or another name.`);
+    expect(info.message).toBe(`"out.dxf" could not be saved: the file is a symbolic link (shortcut), or a linked folder on its path leads outside "${dir}". Saving does not follow such links, so no other file can be overwritten through them. Use Save As to save under another name, or open the file the link points to.`);
     expect(cjsErrors.describeFileError(err)).toEqual(info);
   });
 
@@ -327,17 +338,60 @@ describe.skipIf(process.platform === 'win32')('symbolic links (security review E
     expect(lstatSync(a).isSymbolicLink()).toBe(true);
   });
 
-  it('a link into a sub-folder of the same folder is still written through', async () => {
+  it('a link to a file in a sub-folder is refused too (the sub-folder may not be writable by whoever planted the link)', async () => {
     mkdirSync(join(dir, 'rev'));
     const real = join(dir, 'rev', 'panel-r3.dxf');
     writeFileSync(real, 'R3');
     const link = join(dir, 'panel.dxf');
     symlinkSync(join('rev', 'panel-r3.dxf'), link);
-    const r = await atomic.atomicWriteFile(link, 'R4', { backup: true });
-    expect(r.path).toBe(realpathSync(real));
-    expect(readFileSync(real, 'utf8')).toBe('R4');
-    expect(readFileSync(`${real}.bak`, 'utf8')).toBe('R3');
-    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    await refused(atomic.atomicWriteFile(link, 'R4', { backup: true }));
+    expect(readFileSync(real, 'utf8')).toBe('R3');
+    expect(existsSync(`${real}.bak`)).toBe(false);
+  });
+
+  it('a drawing in a folder reached through a linked folder (macOS /var, Silverblue /home, junctions) saves normally', async () => {
+    const realFolder = join(outside, 'projects');
+    mkdirSync(realFolder);
+    const linked = join(dir, 'projects');
+    symlinkSync(realFolder, linked);
+    const f = join(linked, 'panel.dxf');
+    const r = await atomic.atomicWriteFile(f, 'V1', { backup: true });
+    expect(r.path).toBe(join(realpathSync(realFolder), 'panel.dxf'));
+    await atomic.atomicWriteFile(f, 'V2', { backup: true });
+    expect(readFileSync(join(realFolder, 'panel.dxf'), 'utf8')).toBe('V2');
+    expect(readFileSync(join(realFolder, 'panel.dxf.bak'), 'utf8')).toBe('V1');
+    expect(lstatSync(linked).isSymbolicLink()).toBe(true);
+    // A linked ancestor of the folder too, and the project's folder itself reached through a link.
+    const deeper = join(linked, 'sheets');
+    mkdirSync(deeper);
+    await atomic.atomicWriteFile(join(deeper, 'a.dxf'), 'A', { root: linked });
+    expect(readFileSync(join(realFolder, 'sheets', 'a.dxf'), 'utf8')).toBe('A');
+    expect(await atomic.backupFile(join(linked, 'panel.dxf'))).toMatchObject({ ok: true });
+    expect(readFileSync(join(realFolder, 'panel.dxf.bak'), 'utf8')).toBe('V2');
+  });
+
+  it('a folder swapped for a link after the temporary file was written is refused, touching nothing through it', async () => {
+    const folder = join(dir, 'work');
+    const moved = join(dir, 'old-work');
+    mkdirSync(folder);
+    const f = join(folder, 'drawing.dxf');
+    writeFileSync(f, 'ORIGINAL');
+    let trap = '';
+    const w = atomic.createAtomicWriter(fsp, {
+      hooks: {
+        beforeRename: async (tmp: string) => {
+          renameSync(folder, moved);
+          symlinkSync(outside, folder);
+          trap = join(outside, basename(tmp)); // a file of the temporary file's name where the link leads
+          writeFileSync(trap, 'UNRELATED FILE');
+        },
+      },
+    });
+    await refused(w.atomicWriteFile(f, 'NEW', { backup: true }));
+    expect(readFileSync(join(moved, 'drawing.dxf'), 'utf8')).toBe('ORIGINAL');
+    expect(readFileSync(trap, 'utf8')).toBe('UNRELATED FILE');
+    expect(existsSync(join(outside, 'drawing.dxf'))).toBe(false);
+    expect(readFileSync(victim, 'utf8')).toBe('VICTIM');
   });
 
   it('with a root (a project opened by name), a linked sub-folder may not lead outside it', async () => {
@@ -347,7 +401,7 @@ describe.skipIf(process.platform === 'win32')('symbolic links (security review E
     const viaLink = join(project, 'sheets', 'profile.dxf');
     await refused(atomic.atomicWriteFile(viaLink, 'X', { root: project }));
     expect(existsSync(join(outside, 'profile.dxf'))).toBe(false);
-    // The same path with its own folder as the root (a drawing the user chose) is the user's choice.
+    // The same path without a root (a drawing the user chose) is in a linked folder: that is normal.
     await atomic.atomicWriteFile(viaLink, 'CHOSEN');
     expect(readFileSync(join(outside, 'profile.dxf'), 'utf8')).toBe('CHOSEN');
     // A real sub-folder of the project is fine.
@@ -423,7 +477,7 @@ describe.skipIf(process.platform === 'win32')('symbolic links (security review E
     symlinkSync(victim, link);
     const r = await atomic.backupFile(link);
     expect(r).toMatchObject({ ok: false, code: 'ELOOP' });
-    expect(!r.ok && r.error).toMatch(/^The backup copy of "sheet1\.dxf" could not be made: the file \(or a folder on its path\) is a symbolic link that leads outside/);
+    expect(!r.ok && r.error).toMatch(/^The backup copy of "sheet1\.dxf" could not be made: the file is a symbolic link \(shortcut\)/);
     expect(existsSync(`${link}.bak`)).toBe(false);
     // With the project's folder as the root, a linked sub-folder is refused too.
     const project = join(dir, 'job');

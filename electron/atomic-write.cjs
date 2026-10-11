@@ -20,18 +20,20 @@
 // Failures are re-thrown as `CODE: reason, '<destination>'` errors that keep `.code`, so the renderer
 // (src/app/file-errors.ts) can show which file failed instead of the temporary name.
 //
-// Symbolic links (security review E-5). A write never lands outside the folder it was allowed in:
-// `root`, by default the folder of the file as the caller names it (the folder the user chose in a
-// dialog), or the project's folder for a drawing that a project opened only by name lists. After
-// every link is resolved, the folder holding the file must still be inside `root`, and a file that
-// is itself a link is written through (the link keeps pointing at the updated file, as before)
-// only when its target is inside `root` too; otherwise the write is refused with ELOOP - what
-// O_NOFOLLOW gives - and the renderer says the file is a link that leads elsewhere. A broken link
-// is refused the same way. The temporary files are created with O_EXCL (never through a link),
-// and the `.bak` copy is renamed into place, which replaces a link of that name instead of writing
-// through it; the non-atomic copy fallback refuses a destination that has become a link. So a
-// local user who can write a shared folder cannot plant `out.dxf -> ~/.profile` and have the next
-// save (or its backup) overwrite the victim's file.
+// Symbolic links (security review E-5). A save never writes through a link: a destination that is
+// itself a symbolic link (or a junction) is refused with ELOOP - what an O_NOFOLLOW open gives -
+// and the renderer says so, so a local user who can write a shared folder cannot plant
+// `out.dxf -> ~/.profile` (or a link to another file in a sub-folder) and have the next save
+// overwrite that file. Linked folders on the way are normal (macOS /var -> /private/var, Fedora
+// Silverblue /home -> /var/home, Windows junctions and 8.3 names): the folder is resolved once and
+// the write goes to that resolved folder ("pinned"); just before the temporary file replaces the
+// destination the folder is resolved again, and a folder swapped for a link in between is refused
+// without touching anything through it. With `root` (the project's folder, for a drawing that a
+// project opened only by name lists) the resolved folder must also be inside the resolved `root`,
+// so a linked sub-folder cannot lead such a write out of the project. The temporary files are
+// created exclusively (O_EXCL / COPYFILE_EXCL, never through a link of that name), the `.bak` copy
+// is renamed into place (replacing a link of that name instead of writing through it), and the
+// non-atomic copy fallback refuses a destination that has become a link.
 'use strict';
 
 const path = require('node:path');
@@ -101,12 +103,12 @@ function isInsideFolder(dir, child, platform = process.platform) {
 }
 
 /**
- * The refusal of a write that a symbolic link would take out of its folder (E-5): ELOOP, the code
- * an O_NOFOLLOW open gives for a link, so src/app/file-errors.ts explains it.
+ * The refusal of a write through a symbolic link (E-5): ELOOP, the code an O_NOFOLLOW open gives
+ * for a link, so src/app/file-errors.ts explains it.
  * @param {string} file  the path as the caller named it
  */
 function linkError(file) {
-  const e = /** @type {Error & { code?: string, path?: string }} */ (new Error(`ELOOP: symbolic link leads outside the folder it was saved in, write '${file}'`));
+  const e = /** @type {Error & { code?: string, path?: string }} */ (new Error(`ELOOP: symbolic link not followed, write '${file}'`));
   e.code = 'ELOOP';
   e.path = file;
   return e;
@@ -234,32 +236,31 @@ function createAtomicWriter(fs = fsp, options = {}) {
   }
 
   /**
-   * Where a write of `file` lands, with symbolic links resolved, or an ELOOP error when a link
-   * leads outside `root` (default: the folder of `file`). The folder holding the file must resolve
-   * inside `root`; a file that is a link is followed only to a target inside `root` (a broken
-   * link is refused). A folder that does not exist is left to the write itself (ENOENT).
+   * Where a write of `file` lands (E-5): its folder resolved ("pinned") and the file name, or an
+   * ELOOP error when the file is a symbolic link, or when its resolved folder is outside the
+   * resolved `root`. A folder that does not exist is left to the write itself (ENOENT).
    * @param {string} file
    * @param {string | undefined} root
-   * @returns {Promise<{ dest: string, link: boolean }>}
+   * @returns {Promise<{ dest: string, dir: string | null }>}  dir: the pinned folder (null when missing)
    */
   async function confinedTarget(file, root) {
-    const dir = path.dirname(file);
-    const realDir = await realpathOrNull(dir);
-    if (realDir === null) return { dest: file, link: false };
-    const realRoot = root ? ((await realpathOrNull(root)) ?? path.resolve(root)) : realDir;
-    if (!isInsideFolder(realRoot, realDir, platform)) throw linkError(file);
-    const candidate = path.join(realDir, path.basename(file));
-    const st = await lstatOrNull(candidate);
-    if (!st || !st.isSymbolicLink()) return { dest: candidate, link: false };
-    // A link: keep it pointing at the updated file, but only inside the allowed folder.
-    let target;
-    try {
-      target = await fs.realpath(candidate);
-    } catch {
-      throw linkError(file); // broken, or a loop of links
+    const realDir = await realpathOrNull(path.dirname(file));
+    if (realDir === null) return { dest: file, dir: null };
+    if (root) {
+      const realRoot = (await realpathOrNull(root)) ?? path.resolve(root);
+      if (!isInsideFolder(realRoot, realDir, platform)) throw linkError(file);
     }
-    if (!isInsideFolder(realRoot, target, platform)) throw linkError(file);
-    return { dest: target, link: true };
+    const dest = path.join(realDir, path.basename(file));
+    const st = await lstatOrNull(dest);
+    if (st && st.isSymbolicLink()) throw linkError(file);
+    return { dest, dir: realDir };
+  }
+
+  /** The pinned folder still resolves to itself (not swapped for a link since it was resolved). */
+  async function assertPinned(file, dir) {
+    if (dir === null) return;
+    const now = await realpathOrNull(dir);
+    if (now === null || foldPath(now, platform) !== foldPath(dir, platform)) throw linkError(file);
   }
 
   /**
@@ -294,9 +295,9 @@ function createAtomicWriter(fs = fsp, options = {}) {
 
   /**
    * Copy `src` to `dest` through a temporary file + rename (used for `.bak` copies and the
-   * backup-file IPC). Returns `dest`. `src` may be a symbolic link only to a file inside
-   * `opts.root` (default: its own folder), like a write (E-5): a backup must not copy a file from
-   * elsewhere into the folder.
+   * backup-file IPC). Returns `dest`. Like a write (E-5), `src` must not be a symbolic link, and
+   * with `opts.root` its folder must resolve inside that folder: a backup must not copy a file
+   * from elsewhere into the folder.
    * @param {string} src
    * @param {string} dest
    * @param {{ root?: string }} [opts]
@@ -315,9 +316,9 @@ function createAtomicWriter(fs = fsp, options = {}) {
    * Write `data` (string or bytes) to `file` crash-safely.
    * opts.backup: keep the previous content as `<file>.bak` (one generation).
    * opts.encoding: string encoding (default utf8).
-   * opts.root: the folder the write must stay in after symbolic links are resolved (default: the
-   *   folder of `file`); see the module comment (E-5).
-   * Resolves { path (the file written, links resolved), backup (path or null), method ('rename' | 'copy') }.
+   * opts.root: a folder the file's resolved folder must be inside (a project's folder); see the
+   *   module comment (E-5). A destination that is a symbolic link is refused with ELOOP.
+   * Resolves { path (the file written, in its resolved folder), backup (path or null), method ('rename' | 'copy') }.
    */
   async function atomicWriteFile(file, data, opts = {}) {
     if (typeof file !== 'string' || !file) throw new Error('Invalid path');
@@ -325,7 +326,7 @@ function createAtomicWriter(fs = fsp, options = {}) {
     let tmp = '';
     const tmpCreated = { yes: false };
     try {
-      const { dest } = await confinedTarget(file, opts.root);
+      const { dest, dir } = await confinedTarget(file, opts.root);
       tmp = tempNameFor(dest);
       const before = await existingStat(dest);
       if (before && before.isDirectory()) {
@@ -343,6 +344,14 @@ function createAtomicWriter(fs = fsp, options = {}) {
       }
       if (before && opts.backup) backup = await copyThroughTemp(dest, dest, `${dest}.bak`);
       if (hooks.beforeRename) await hooks.beforeRename(tmp, dest);
+      try {
+        await assertPinned(file, dir);
+      } catch (err) {
+        // The folder now leads elsewhere: the temporary file is not reachable by its name any more,
+        // and removing that name would remove a file there. Leave it.
+        tmpCreated.yes = false;
+        throw err;
+      }
       const method = await replace(tmp, dest);
       tmpCreated.yes = false;
       await syncDir(path.dirname(dest));
