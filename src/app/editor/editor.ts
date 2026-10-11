@@ -9,6 +9,7 @@
  *   view.ts        settings, drafting toggles, zoom extents
  *   documents.ts   new / open, tabs, import reports, the Save / Don't Save / Cancel question
  *   save.ts        drawing saves through the save queue
+ *   project.ts     the project and its file
  *   plotting.ts    PLOT / PRINT
  */
 import type { Point } from '../../core/geometry';
@@ -26,11 +27,10 @@ import { LIBRARY_SYMBOLS } from '../../electrical/library';
 import { TITLE_BLOCK } from '../../electrical/templates';
 import { SOURCE_ARROW, DEST_ARROW } from '../../tools/plc';
 import { gripPoints, moveGrip } from '../../core/entities';
-import { parseProject, serializeProject, defaultProject, resolveDrawingPath, baseName, projectDrawingIndex, projectEntryFor, rebaseProject, type Project } from '../project';
-import { captureRevision, saveQueue } from '../savequeue';
+import { defaultProject, type Project } from '../project';
+import { saveQueue } from '../savequeue';
 import { loadSettings, type UserSettings } from '../settings';
 import { SessionManager } from '../sessions';
-import { describeFileError } from '../file-errors';
 import type { ColorSpec } from '../../core/entities';
 import type { PlotOptions } from '../plot';
 import { parsePointInput, isPlainNumber } from '../input';
@@ -42,6 +42,7 @@ import { registerBuiltinCommands } from './commands';
 import * as view from './view';
 import * as documents from './documents';
 import * as save from './save';
+import * as projects from './project';
 import * as plotting from './plotting';
 
 /** Version compiled in from package.json (see vite.config.ts); 'dev' under plain vitest. */
@@ -509,101 +510,39 @@ export class Editor {
 
   /** Generation (another project opened / created) and revision (any change) of the project data. */
   get projectState(): { generation: number; revision: number } {
-    return { generation: this.internals.projectGen, revision: this.internals.projectRev };
+    return projects.projectState(this.internals);
   }
 
   /** Apply a user change to the project data: it becomes modified (PROJECTSAVE writes it). */
   updateProject(next: Project): void {
-    this.project = next;
-    this.internals.projectRev += 1;
-    this.projectDirty = true;
-    this.hooks.projectChanged?.();
-    this.emit('project');
+    projects.updateProject(this, this.internals, next);
   }
 
   /** Make `p` the current project (opened, created or recovered). */
   replaceProject(p: Project, dirty = false): void {
-    this.project = p;
-    this.internals.projectGen += 1;
-    this.internals.projectRev += 1;
-    this.projectDirty = dirty;
-    this.hooks.projectChanged?.();
-    this.emit('project');
+    projects.replaceProject(this, this.internals, p, dirty);
   }
 
   /** Save / Don't Save / Cancel for the project's own unsaved changes; resolves true when it may be replaced. */
-  async confirmDiscardProject(): Promise<boolean> {
-    if (!this.projectDirty) return true;
-    const ui = this.ui ?? fallbackUi;
-    const label = `project ${this.project.name}`;
-    if (ui.saveChanges) {
-      const r = await ui.saveChanges(label);
-      if (r === 'cancel') return false;
-      if (r === 'save') return (await this.saveProject()) && !this.projectDirty;
-      return true;
-    }
-    return ui.confirm('Unsaved project changes', `The ${label} has unsaved changes. Discard them?`);
+  confirmDiscardProject(): Promise<boolean> {
+    return projects.confirmDiscardProject(this);
   }
 
   /**
    * OPENPROJECT: the Open Project dialog, or the project file `file` by name. `userChosen`: the user
    * picked `file` (Recent Documents, an OS hand-over), not a plugin or a typed path.
    */
-  async openProject(file?: string, opts: { userChosen?: boolean } = {}): Promise<boolean> {
-    if (!this.fileBridge?.openProject) {
-      this.log('Projects need the desktop app.');
-      return false;
-    }
-    if (!(await this.confirmDiscardProject())) return false;
-    const answered = this.internals.projectRev;
-    try {
-      const res = await this.fileBridge.openProject(file, file && opts.userChosen ? { userChosen: true } : undefined);
-      if (!res) return false;
-      // Changes made to the project while the Open dialog was up get their own question.
-      if (this.projectDirty && this.internals.projectRev !== answered && !(await this.confirmDiscardProject())) return false;
-      this.replaceProject(parseProject(res.text, res.path));
-      this.log(`Project ${this.project.name}: ${this.project.drawings.length} drawing(s).`);
-      documents.rememberRecent(this, res.path);
-      this.emit('file');
-      return true;
-    } catch (err) {
-      this.lastFileError = documents.openErrorText(err, file);
-      this.log(`Failed to open project: ${this.lastFileError}`);
-      return false;
-    }
+  openProject(file?: string, opts: { userChosen?: boolean } = {}): Promise<boolean> {
+    return projects.openProject(this, this.internals, file, opts);
   }
 
   /** NEWPROJECT: an empty, untitled project (after Save / Don't Save / Cancel for the current one). */
-  async newProjectCommand(name?: string): Promise<boolean> {
-    if (!(await this.confirmDiscardProject())) return false;
-    const answered = this.internals.projectRev;
-    let n = name?.trim();
-    if (!n) {
-      const typed = await (this.ui ?? fallbackUi).textInput('New Project', 'Project name:', 'Project1');
-      if (typed === null) return false;
-      n = typed.trim() || 'Project1';
-    }
-    // The project may have been changed again while the name was asked for.
-    if (this.projectDirty && this.internals.projectRev !== answered && !(await this.confirmDiscardProject())) return false;
-    this.replaceProject({ name: n, drawings: [] });
-    this.log(`New project ${n}. Add drawings with PROJECTADD and write the project file with PROJECTSAVE.`);
-    this.emit('file');
-    return true;
+  newProjectCommand(name?: string): Promise<boolean> {
+    return projects.newProjectCommand(this, this.internals, name);
   }
 
   addCurrentToProject(): void {
-    if (!this.doc.filePath) {
-      this.log('Save the drawing first, then add it to the project.');
-      return;
-    }
-    if (projectDrawingIndex(this.project, this.doc.filePath) >= 0) {
-      this.log('Drawing is already in the project.');
-      return;
-    }
-    const file = projectEntryFor(this.project, this.doc.filePath);
-    this.updateProject({ ...this.project, drawings: [...this.project.drawings, { file }] });
-    this.log(`Added ${baseName(file)} to project ${this.project.name}. Use PROJECTSAVE to write the project file.`);
-    this.emit('file');
+    projects.addCurrentToProject(this);
   }
 
   /**
@@ -612,82 +551,13 @@ export class Editor {
    * that started the save (not to one opened meanwhile); edits made during the save stay unsaved.
    * Resolves true when the file was written.
    */
-  async saveProject(saveAs = false): Promise<boolean> {
-    const bridge = this.fileBridge;
-    const direct = !!(bridge?.saveProject && bridge.chooseProjectPath);
-    if (!bridge || (!direct && !bridge.saveText)) {
-      this.log('Projects need the desktop app.');
-      return false;
-    }
-    const gen = this.internals.projectGen;
-    const rev = this.internals.projectRev;
-    const snapshot = this.project;
-    const revision = captureRevision();
-    const suggest = snapshot.path ?? `${snapshot.name.replace(/\s+/g, '_')}.jcadproj.json`;
-    this.lastFileError = null;
-    let written: { path: string; project: Project };
-    try {
-      if (direct) {
-        let dest = !saveAs && snapshot.path ? snapshot.path : await bridge.chooseProjectPath!(suggest);
-        if (!dest) return false;
-        const write = (to: string) => saveQueue.run(to, revision, () => bridge.saveProject!(to, serializeProject(rebaseProject(snapshot, to))));
-        let r;
-        try {
-          r = await write(dest);
-        } catch (err) {
-          // A path the main process does not know (a recovered project from another session): ask where to save.
-          if (!/Unknown project path/.test((err as Error).message) || saveAs) throw err;
-          dest = await bridge.chooseProjectPath!(suggest);
-          if (!dest) return false;
-          r = await write(dest);
-        }
-        const out = rebaseProject(snapshot, dest);
-        if (r.status === 'stale') {
-          this.lastFileError = `a newer version of ${dest} was saved meanwhile`;
-          return false;
-        }
-        if (!r.value) return false;
-        written = { path: r.value, project: r.value === dest ? out : rebaseProject(snapshot, r.value) };
-      } else {
-        // Older bridge / browser: the save dialog (or a download) picks the name; entries are written as they are.
-        const p = await bridge.saveText!(suggest, serializeProject(snapshot), 'JCad Electrical Project', 'json');
-        if (!p) return false;
-        saveQueue.markCompleted(p, revision);
-        written = { path: p, project: { ...snapshot, path: p } };
-      }
-    } catch (err) {
-      // Nothing is marked as saved; the project stays modified (and autosaved). Retry / Save As... come from the save error dialog.
-      const info = describeFileError(err, { action: 'save', path: snapshot.path });
-      this.lastFileError = info.message;
-      this.log(`Project not saved: ${info.message}`);
-      const choice = this.hooks.saveError ? await this.hooks.saveError(info, snapshot.name, { saveAs: true }) : 'cancel';
-      if (choice === 'cancel' || this.internals.projectGen !== gen) return false;
-      return this.saveProject(choice === 'saveas' ? true : saveAs);
-    }
-    if (this.internals.projectGen !== gen) {
-      this.log(`Project ${snapshot.name} saved: ${written.path} (another project is open now; it is unchanged).`);
-      return true;
-    }
-    if (this.internals.projectRev === rev) {
-      this.project = written.project;
-      this.projectDirty = false;
-      this.log(`Project saved: ${written.path}`);
-    } else {
-      // Edits made while the file was written stay (unsaved), re-expressed for the new location.
-      this.project = rebaseProject(this.project, written.path);
-      this.log(`Project saved: ${written.path} (changes made during the save are still unsaved).`);
-    }
-    documents.rememberRecent(this, written.path);
-    this.hooks.projectChanged?.();
-    this.emit('project');
-    return true;
+  saveProject(saveAs = false): Promise<boolean> {
+    return projects.saveProject(this, this.internals, saveAs);
   }
 
   /** Open a drawing that belongs to the project (by index or path). */
   openProjectDrawing(index: number): void {
-    const d = this.project.drawings[index];
-    if (!d) return;
-    void this.openFile(resolveDrawingPath(this.project, d));
+    projects.openProjectDrawing(this, index);
   }
 
   /** Render the drawing extents to a white sheet and hand it to the main process as PDF. */
