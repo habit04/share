@@ -39,7 +39,8 @@
 const path = require('node:path');
 const crypto = require('node:crypto');
 const fsp = require('node:fs/promises');
-const { constants: fsConstants } = require('node:fs');
+const { constants: fsConstants, realpath: realpathByLinks } = require('node:fs');
+const { promisify } = require('node:util');
 const { describeFileError } = require('./file-errors.cjs');
 
 const RENAME_RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
@@ -133,11 +134,15 @@ function createWriteQueue() {
  * Build the writer around an fs/promises-compatible object (tests inject failures through it).
  * `hooks.beforeRename(tmp, dest)` runs after the temporary file is complete and before it replaces
  * the destination; tests throw from it to simulate a crash at the worst moment.
+ * `realpathFallback(p)`: resolves `p` when fs.realpath fails for another reason than a missing
+ * path (default: Node's link-by-link fs.realpath with the real file system, none with an injected one).
  */
 function createAtomicWriter(fs = fsp, options = {}) {
   const platform = options.platform || process.platform;
   const delays = options.renameDelays || RENAME_DELAYS_MS;
   const hooks = options.hooks || {};
+  /** @type {((p: string) => Promise<string>) | null} */
+  const realpathFallback = options.realpathFallback !== undefined ? options.realpathFallback : fs === fsp ? promisify(realpathByLinks) : null;
 
   async function removeQuietly(p) {
     try {
@@ -225,13 +230,26 @@ function createAtomicWriter(fs = fsp, options = {}) {
     }
   }
 
-  /** The resolved path, or null when it does not exist (yet). */
+  /**
+   * The resolved path, or null when it does not exist (yet). fs/promises' realpath is the native
+   * one: on Windows it asks the volume for the final path (GetFinalPathNameByHandle), which RAM
+   * disks and some network, virtual and FUSE drives cannot answer (EISDIR, EPERM or UNKNOWN). 0.4.1
+   * then wrote to the path as given; refusing would make every save on such a drive fail, so the
+   * links are resolved one component at a time instead (lstat + readlink), and the checks hold.
+   */
   async function realpathOrNull(p) {
     try {
       return await fs.realpath(p);
     } catch (err) {
-      if (err && (err.code === 'ENOENT' || err.code === 'ENOTDIR')) return null;
-      throw err;
+      const code = err && err.code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') return null;
+      if (!realpathFallback || code === 'ELOOP') throw err;
+      try {
+        return await realpathFallback(p);
+      } catch (again) {
+        if (again && (again.code === 'ENOENT' || again.code === 'ENOTDIR')) return null;
+        throw err;
+      }
     }
   }
 

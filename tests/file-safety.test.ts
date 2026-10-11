@@ -16,7 +16,7 @@ type Writer = {
   copyFileAtomic(src: string, dest: string, opts?: { root?: string }): Promise<string>;
 };
 const atomic = require('../electron/atomic-write.cjs') as Writer & {
-  createAtomicWriter(fs?: unknown, options?: { platform?: string; renameDelays?: number[]; hooks?: { beforeRename?: (tmp: string, dest: string) => unknown } }): Writer;
+  createAtomicWriter(fs?: unknown, options?: { platform?: string; renameDelays?: number[]; hooks?: { beforeRename?: (tmp: string, dest: string) => unknown }; realpathFallback?: ((p: string) => Promise<string>) | null }): Writer;
   isInsideFolder(dir: string, child: string, platform?: string): boolean;
   createWriteQueue(): <T>(key: string, job: () => Promise<T>) => Promise<T>;
   backupFile(file: unknown, copy?: (a: string, b: string) => Promise<string>, allowed?: (file: string) => boolean): Promise<{ ok: true; path: string } | { ok: false; code: string | null; error: string }>;
@@ -486,6 +486,39 @@ describe.skipIf(process.platform === 'win32')('symbolic links (security review E
     writeFileSync(join(outside, 'a.dxf'), 'SECRET');
     await expect(atomic.copyFileAtomic(join(project, 'sheets', 'a.dxf'), join(project, 'sheets', 'a.dxf.bak'), { root: project })).rejects.toMatchObject({ code: 'ELOOP' });
     expect(existsSync(join(outside, 'a.dxf.bak'))).toBe(false);
+  });
+
+  it('a volume whose native realpath fails (Windows RAM disks, some network and virtual drives) still saves, and links are still refused', async () => {
+    // GetFinalPathNameByHandle fails there with ERROR_INVALID_FUNCTION, which libuv reports as
+    // EISDIR. 0.4.1 then wrote to the path as given; the link checks must not turn that into a
+    // refusal of every save, so the links are resolved one component at a time instead.
+    const native = vi.fn(async () => {
+      throw fsError('EISDIR', 'illegal operation on a directory, realpath');
+    });
+    const byLinks = vi.fn(async (p: string) => realpathSync(p));
+    const w = atomic.createAtomicWriter(faultyFs({ realpath: native }), { realpathFallback: byLinks });
+    const realFolder = join(outside, 'projects');
+    mkdirSync(realFolder);
+    symlinkSync(realFolder, join(dir, 'projects'));
+    const f = join(dir, 'projects', 'panel.dxf');
+    const r = await w.atomicWriteFile(f, 'V1', { backup: true });
+    expect(r.path).toBe(join(realpathSync(realFolder), 'panel.dxf'));
+    await w.atomicWriteFile(f, 'V2', { backup: true });
+    expect(readFileSync(join(realFolder, 'panel.dxf'), 'utf8')).toBe('V2');
+    expect(readFileSync(join(realFolder, 'panel.dxf.bak'), 'utf8')).toBe('V1');
+    expect(native).toHaveBeenCalled();
+    expect(byLinks).toHaveBeenCalled();
+    // A destination that is a link is refused all the same, and so is a linked folder outside a root.
+    const link = join(dir, 'out.dxf');
+    symlinkSync(victim, link);
+    await refused(w.atomicWriteFile(link, 'X'));
+    await refused(w.atomicWriteFile(f, 'X', { root: dir }));
+    expect(readFileSync(victim, 'utf8')).toBe('VICTIM');
+    // Without a fallback the error stands (an injected file system gets none by default).
+    const strict = atomic.createAtomicWriter(faultyFs({ realpath: native }));
+    await expect(strict.atomicWriteFile(join(dir, 'x.dxf'), 'X')).rejects.toMatchObject({ code: 'EISDIR' });
+    // The writer for the real file system falls back to Node's link-by-link fs.realpath.
+    expect(readFileSync(join(import.meta.dirname, '..', 'electron', 'atomic-write.cjs'), 'utf8')).toMatch(/fs === fsp \? promisify\(realpathByLinks\) : null/);
   });
 
   it('isInsideFolder compares resolved folders, case-folded on Windows and macOS', () => {
