@@ -636,6 +636,8 @@ export interface CommitResult {
   failed: string[];
   /** Drawings skipped because they changed after the command read them (edited tab, file changed on disk). */
   conflicts: string[];
+  /** Closed drawings left unchanged because the user chose not to save closed files. */
+  notSaved: string[];
 }
 
 /**
@@ -651,7 +653,7 @@ export interface CommitResult {
  */
 export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[], changes: ReadonlyMap<number, SheetChange>, title: string, intro: string, alwaysConfirm = false): Promise<CommitResult | null> {
   const items: AffectedDrawing[] = [...changes].map(([i, c]) => ({ name: sheets[i]!.name, kind: sheets[i]!.source === 'file' ? 'file' : 'open', detail: c.detail }));
-  if (items.length === 0) return { open: 0, written: 0, failed: [], conflicts: [] };
+  if (items.length === 0) return { open: 0, written: 0, failed: [], conflicts: [], notSaved: [] };
   const bridge = editor.fileBridge;
   let choice: ConfirmFilesResult = { files: false, backup: false };
   if (alwaysConfirm || items.some((i) => i.kind === 'file')) {
@@ -663,6 +665,7 @@ export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[
   let written = 0;
   const failed: string[] = [];
   const conflicts: string[] = [];
+  const notSaved: string[] = [];
   for (const [i, c] of changes) {
     const sh = sheets[i]!;
     if (sh.source !== 'file') {
@@ -695,20 +698,29 @@ export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[
       open += 1;
       continue;
     }
-    if (!choice.files || !sh.path || !bridge) continue;
+    if (!choice.files || !sh.path || !bridge) {
+      notSaved.push(sh.name);
+      continue;
+    }
     const path = sh.path;
-    try {
-      // The file must still be what the change was calculated from.
-      if (editor.sessions.indexOfPath(path) >= 0) {
-        conflicts.push(`${sh.name} (opened in a tab while the command ran)`);
-        continue;
-      }
+    /** Why the file is no longer the revision the change was calculated from (null = it still is). */
+    const changedSince = async (): Promise<string | null> => {
+      if (editor.sessions.indexOfPath(path) >= 0) return 'opened in a tab while the command ran';
       if (sh.baseHash !== undefined && bridge.openDrawing) {
         const now = await bridge.openDrawing(path);
-        if (!now || now.kind !== 'dxf' || contentHash(now.text) !== sh.baseHash) {
-          conflicts.push(`${sh.name} (changed on disk since it was read)`);
-          continue;
-        }
+        if (!now || now.kind !== 'dxf' || contentHash(now.text) !== sh.baseHash) return 'changed on disk since it was read';
+        // Opened in a tab while the file was being read.
+        if (editor.sessions.indexOfPath(path) >= 0) return 'opened in a tab while the command ran';
+      }
+      return null;
+    };
+    try {
+      // The file must still be what the change was calculated from (checked again right before the
+      // write: the backup and its question take time, and the file can change or open meanwhile).
+      const early = await changedSince();
+      if (early) {
+        conflicts.push(`${sh.name} (${early})`);
+        continue;
       }
       if (choice.backup && bridge.backupFile) {
         const b = backupOutcome(await bridge.backupFile(path).catch((err: unknown) => ({ ok: false, error: err instanceof Error ? err.message : String(err) })));
@@ -722,8 +734,13 @@ export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[
         }
       }
       const text = writeDxf(withoutUnusedLibraryBlocks(c.state));
-      const r = await saveQueue.run(path, sh.revision ?? captureRevision(), () => bridge.saveDxf(path, text, sh.name));
+      let late: string | null = null;
+      const r = await saveQueue.run(path, sh.revision ?? captureRevision(), async () => {
+        late = await changedSince();
+        return late ? null : bridge.saveDxf(path, text, sh.name);
+      });
       if (r.status === 'stale') conflicts.push(`${sh.name} (a newer version was saved meanwhile)`);
+      else if (late) conflicts.push(`${sh.name} (${late})`);
       else if (r.value) written += 1;
       else failed.push(sh.name);
     } catch (err) {
@@ -731,7 +748,7 @@ export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[
     }
   }
   if (open) editor.notify('file');
-  return { open, written, failed, conflicts };
+  return { open, written, failed, conflicts, notSaved };
 }
 
 /** A state calculated from the model-space copy, put back into the layout tab the drawing showed. */
@@ -748,6 +765,7 @@ function logCommit(editor: Editor, what: string, r: CommitResult | null, skipped
   editor.log(`${what}: ${r.open} open drawing(s) updated${r.written ? `, ${r.written} closed drawing file(s) saved` : ''}.`);
   if (r.failed.length) editor.log(`Not updated: ${r.failed.join(', ')}.`);
   if (r.conflicts.length) editor.log(`Not updated because they changed while the command ran (run it again): ${r.conflicts.join(', ')}.`);
+  if (r.notSaved.length) editor.log(`Not updated (closed drawing files were not saved, as chosen): ${r.notSaved.join(', ')}.`);
   if (skipped.length) editor.log(`Skipped: ${skipped.join(', ')}${canReadProjectFiles(editor) ? '' : ' (open them in tabs, or use the desktop app to update closed drawings)'}.`);
 }
 

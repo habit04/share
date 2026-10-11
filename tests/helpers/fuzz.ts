@@ -76,6 +76,7 @@ export class FuzzFailure extends Error {
     readonly failure: unknown,
   ) {
     super(`[fuzz] property "${property}" failed for seed ${seed} (replay: FUZZ_SEED=${seed}): ${failure instanceof Error ? failure.message : String(failure)}`);
+    if (failure instanceof Error && failure.stack) this.stack = `${this.message}\n--- failure ---\n${failure.stack}`;
   }
 }
 
@@ -86,6 +87,7 @@ export function fuzzSync(name: string, runs: number, body: (rng: Rng, seed: numb
     try {
       body(new Rng(seed), seed);
     } catch (err) {
+      if (env.FUZZ_SEED) console.error(err);
       throw new FuzzFailure(name, seed, err);
     }
   }
@@ -100,6 +102,7 @@ export async function fuzz(name: string, runs: number, body: (rng: Rng, seed: nu
     try {
       await body(new Rng(seed), seed);
     } catch (err) {
+      if (env.FUZZ_SEED) console.error(err);
       throw new FuzzFailure(name, seed, err);
     }
   }

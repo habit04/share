@@ -200,7 +200,7 @@ describe('project-wide command glue', () => {
     const { sheets } = await loadProjectSheets(editor, { files: false });
     const next = { ...sheets[0]!.doc.snapshot, entities: [] };
     const r = await commitSheets(editor, sheets, new Map([[0, { state: next, detail: 'x' }]]), 'T', 'I');
-    expect(r).toEqual({ open: 1, written: 0, failed: [], conflicts: [] });
+    expect(r).toEqual({ open: 1, written: 0, failed: [], conflicts: [], notSaved: [] });
     expect(confirms).toHaveLength(0);
     expect(editor.doc.entities).toHaveLength(0);
   });
