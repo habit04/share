@@ -305,7 +305,8 @@ language.
 
 **Plugins and scripts:** JavaScript plugins (a folder with `plugin.json` and one main file in the
 `plugins` folder of the application data folder; `PLUGINS` prints the path) add commands and react to
-events through the `jcad` API, the same object the developer console has as `window.jcadApi`.
+events through the `jcad` API, the same object the developer console has as `window.jcadApi` (browser
+edition and development builds; installed builds have no developer tools).
 `SCRIPTRUN` runs a one-off `.js` file against it. A plugin asks once before it first runs, its errors
 are caught and printed on the command line, and every change it makes is an undo step. The reference
 is [docs/PLUGIN-API.md](docs/PLUGIN-API.md); `examples/plugins/` holds `hello`, `numbered-labels` and

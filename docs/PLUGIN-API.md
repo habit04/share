@@ -2,7 +2,8 @@
 
 JCad Electrical can be extended with JavaScript: **plugins** add commands and react to
 events, **scripts** (SCRIPTRUN) are one-off programs run against the open drawing, and the
-same API is available in the developer console as `window.jcadApi`.
+same API is available in the developer console as `window.jcadApi` (in the browser edition and
+in development builds; installed builds have no developer tools).
 
 - API version: **1** (`jcad.apiVersion`). Additions keep the version; an incompatible
   change bumps it, and a plugin that declares a newer `apiVersion` than the app provides is
@@ -357,4 +358,5 @@ jcad.ui.log(`${texts.length} text(s) moved to NOTES.`);
 ```
 
 In the developer console the same object is `window.jcadApi`
-(`jcadApi.document.entities().length`).
+(`jcadApi.document.entities().length`); the installed application has no developer tools, so
+this is for the browser edition and development builds (`npm run electron:dev`).

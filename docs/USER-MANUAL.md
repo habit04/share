@@ -1249,8 +1249,13 @@ there a project file is opened with "Open with" > JCad Electrical (or **Open Pro
 Linux desktops also open it with a double-click.
 
 Also kept in DXF: splines, hatches, leaders and multileaders, tables, images and external
-references, fields, MTEXT formatting, text styles (including TrueType fonts) and the named
-dimension styles with all their settings. Files written by programs before AutoCAD 2007 are
+references, fields, MTEXT formatting and MTEXT columns, text styles (including TrueType fonts),
+the named dimension styles with all their settings (decimal separator, text style,
+lineweights, tolerance zero suppression included) and the changes a single dimension makes to
+its style. Tables take the text heights, alignment and margins of their table style, and images
+in layouts keep their file. AutoCAD 2000 DXF has no MTEXT columns: JCad Electrical stores them
+as its own extended data, which it reads back while other programs show one column. Files
+written by programs before AutoCAD 2007 are
 read in the code page they name (`$DWGCODEPAGE`), newer ones as UTF-8; the command line reports
 the detected encoding. JCad Electrical writes AutoCAD 2000 DXF with any non-English characters
 escaped, so the text reads correctly whatever the code page of the program that opens it.
@@ -1276,6 +1281,12 @@ space, a layout, a block) and the reason; **Copy Report** copies the complete li
   exactly as they were and are written back, on their layer, at the end of the drawing's
   entities when you save (also when a project-wide command rewrites the file). Their links to
   other objects and their extended data are not kept.
+- **Kept** (blocks): a block whose references would expand, through the blocks nested in it, to
+  more than 2,000,000 objects, and a block that inserts itself (directly or through other
+  blocks). The block is kept and saved unchanged; each reference draws only its first 2,000,000
+  objects (a self-reference is not drawn again), and `EXPLODE` leaves such a reference as it is.
+  When all the references of a drawing together expand to more than that, the report adds a
+  note that drawing and selecting may be slow.
 
 **Saving over the original.** When the file you opened contained content JCad Electrical
 cannot keep, `SAVE` asks before writing over it: **Yes** saves over the original (the dropped
@@ -1324,6 +1335,13 @@ fixed text height of a text style, and the text or shape elements of complex lin
 Large DWG files (1 MB and up) show an **Opening Drawing** window with the file size, the elapsed
 time and a **Cancel** button while they are read; the program stays responsive, and Cancel (or Esc)
 stops the read and leaves the current drawing as it was.
+
+DWG files are read in a separate reader with fixed limits, so a damaged or hostile file cannot
+take the program down: files over **512 MB** are refused, the reader may use about 2 GB of
+memory, and a read is stopped after 60 seconds plus one second per MB of the file (at most
+10 minutes). The open then fails with a message ("... took longer than ... and was stopped",
+"The DWG reader ran out of its memory limit") and the current drawing stays as it was. DXF files
+and projects have size limits too (512 MB and 64 MB).
 
 DWG is **read-only**: JCad Electrical cannot write DWG files. When you save a drawing that
 was opened from a DWG, you are asked for a new file name and a DXF is written; the original
@@ -1412,9 +1430,16 @@ When you save over an existing drawing or project, its previous version is kept 
 `<name>.bak` (for example `panel.dxf.bak`, one generation; other exports such as CSV reports get
 no `.bak`). To go back to it, rename it to `panel.dxf`.
 
+**Links are not followed.** A file that is a symbolic link (a shortcut created with `ln -s` or
+`mklink`) is never saved over: the save fails with "the file is a symbolic link (shortcut) ...",
+so a link someone placed in a shared folder cannot make you overwrite another file. Use
+**Save As** to save under another name, or open the file the link points to. Folders reached
+through a link or a junction save normally; for a project opened by name (a plugin, or
+`OPENPROJECT <path>`) a linked folder must not lead outside the project's folder.
+
 If a save fails, JCad Electrical tells you why in plain words (disk full, no permission or
-read-only, file locked by another program, folder or network drive not available, path too long)
-and offers **Retry**, **Save As...** (choose another place) or **Cancel**. The drawing stays
+read-only, file locked by another program, folder or network drive not available, path too long,
+a symbolic link) and offers **Retry**, **Save As...** (choose another place) or **Cancel**. The drawing stays
 marked as modified and its autosave backup is kept, so nothing is lost while you sort it out.
 
 Unsaved project changes are autosaved in the same folder a moment after each change and removed
@@ -1451,7 +1476,11 @@ can also check any time with **Help > Check for Updates…** or the `CHECKUPDATE
 
 - **Windows installer** and **Linux AppImage**: the update is downloaded when you agree and
   installed when the program restarts. Unsaved drawings are handled by the usual
-  save prompt before the restart.
+  save prompt before the restart. Before installing, JCad Electrical checks the downloaded
+  file against the checksum published with the release (and, for a signed Windows
+  installation, the publisher's signature). If the check fails, **Update Not Installed**
+  says why, nothing is installed, and you can download the new version from the releases
+  page instead.
 - **macOS** and **Linux .deb**: you are told that a new version exists and offered the right
   download; install it like the first time.
 
@@ -1467,7 +1496,9 @@ lists the changes in every version.
   shortcuts directly.
 - **Report a Problem** (`REPORTBUG`, BUGREPORT, REPORTPROBLEM; Help menu, ribbon Add-ins):
   describe the summary, what happened and the steps to reproduce. The report adds the
-  version, platform, recent commands and any errors the program caught. Then choose **Open
+  version, platform, recent commands and any errors the program caught. Local file paths in
+  them become `[local path]` and the drawing name is left out, unless you tick **Include local
+  file paths and the drawing name**. Then choose **Open
   GitHub Issue** (a prefilled issue in your browser), **Copy Report**, or **Save Report…** (a
   text file, optionally with the current drawing as DXF, for e-mail). Nothing is sent
   automatically.
@@ -1575,4 +1606,6 @@ The `examples/plugins/` folder of the source repository has three plugins to cop
   catalog number, shows them in a table and offers **Save CSV...**.
 
 A script for `SCRIPTRUN` is a single `.js` file using the same API, for example to move every
-TEXT to a layer in one undo step. In the developer console the API is `window.jcadApi`.
+TEXT to a layer in one undo step. In the developer console the API is `window.jcadApi` (the
+browser edition's console, or a development build's: the installed application has no
+developer tools).

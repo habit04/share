@@ -2,8 +2,8 @@
 
 What JCad Electrical reads from DXF and DWG files, what it writes back, and what is lost on the
 way. JCad is a 2D program: it works in the drawing plane and keeps 2D geometry. DXF is the native
-format (written as AutoCAD 2000, `AC1015`); DWG is **read-only** (LibreDWG, versions R14 to 2018),
-and SAVE after opening a DWG writes a DXF next to it.
+format (written as AutoCAD 2000, `AC1015`); DWG is **read-only** (LibreDWG, versions R14 to 2018,
+files up to 512 MB), and SAVE after opening a DWG writes a DXF next to it.
 
 Legend: **yes** = kept; **partly** = kept with the limits in the last column; **no** = not read or
 not written (the object is dropped; on DWG import the dropped types are counted in the "Skipped
@@ -23,7 +23,7 @@ the fixtures in `fixtures/` and `tests/fixtures/`.
 | SOLID, TRACE | yes | yes (SOLID) | SOLID | Read as a filled closed polyline; written back as SOLID (three or four corners) or, with more corners, as a solid HATCH. |
 | TEXT | yes | yes | yes | Style name, height, width factor, oblique angle, rotation, horizontal alignment (left / center / right) and fields are kept. Vertical justification (bottom / middle / top) is converted to the equivalent baseline position, so the justification mode itself is not written back; fit and aligned text keep their first point only. |
 | MTEXT | yes | yes | yes | Format codes are kept verbatim while the text is unchanged and evaluated for display. *Verified by fixtures:* `interchange/r2018-mtext.dxf` (`\P \f \F \C \H \L \O \p \W \Q \T`, stacks, group 3 chunks, UTF-8, R2018 static columns). Columns (static and dynamic: count, width, gutter, heights, `\N` breaks) are kept and drawn column by column; dynamic columns flow approximately. AutoCAD 2000 DXF has no MTEXT columns, so JCad writes them as `JCAD_MTEXT_COLUMNS` XDATA: JCad reads them back, other programs show one column. |
-| INSERT (block reference) | yes | yes | yes | Mirrored and non-uniform X / Y scales round-trip. Arrays (MINSERT rows / columns) and dynamic-block parameters are not kept (the block is inserted once). *Verified by fixtures:* `interchange/r2000-nested-blocks-xref.dxf` (three nesting levels). |
+| INSERT (block reference) | yes | yes | yes | Mirrored and non-uniform X / Y scales round-trip. Arrays (MINSERT rows / columns) and dynamic-block parameters are not kept (the block is inserted once). One reference draws at most 2,000,000 objects through its nested blocks (8 levels deep), and a block that inserts itself is drawn once; such blocks are kept, saved unchanged and listed in the Import Report. *Verified by fixtures:* `interchange/r2000-nested-blocks-xref.dxf` (three nesting levels). |
 | ATTDEF, ATTRIB | yes | yes | yes | Tag, prompt, default and value, invisible flag, constant attributes, position, height and justification. *Verified by fixtures:* `interchange/r2000-layouts-titleblock.dxf` (paper-space title block, an ATTRIB hidden on one insert). |
 | ELLIPSE | yes | yes | yes | Full and elliptical arcs. *Verified by fixtures:* `interchange/r2000-hatch-curves.dxf`. |
 | POINT | yes | yes | yes | PDMODE / PDSIZE come from the header. |

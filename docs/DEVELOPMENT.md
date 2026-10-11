@@ -212,8 +212,12 @@ installer and smoke-tests each one on its own OS without publishing anything.
 | `eslint.config.js` | lint rules (no formatting rules) |
 | `tsconfig.json`, `tsconfig.electron.json`, `tsconfig.scripts.json` | type checks |
 | `scripts/screenshot*.mjs`, `scripts/screenshot-env.mjs`, `scripts/screenshot-compare.mjs`, `screenshots/baseline/` | visual review and approved baselines |
-| `scripts/e2e-electron.mjs`, `scripts/packaged-smoke.mjs` | Electron end-to-end, development and packaged |
-| `scripts/bench.mjs`, `tests/perf*.test.ts`, `tests/spatial-index.test.ts` | performance |
+| `scripts/e2e-electron.mjs`, `scripts/e2e-flows.mjs`, `scripts/packaged-smoke.mjs` | Electron end-to-end, development and packaged |
+| `scripts/electron-fuses.mjs` | the Electron fuses the installers ship with (checked by the packaged smoke test) |
+| `e2e/output-scanner.mjs` | line-by-line failure scan of the screenshot runs' output |
+| `scripts/bench.mjs`, `scripts/bench-budgets.mjs`, `tests/perf*.test.ts`, `tests/spatial-index.test.ts` | performance and its asserted budgets |
+| `scripts/check-fixtures.mjs`, `tests/fixtures/manifest.json` | committed test fixtures (run before `npm test`) |
+| `scripts/release-provenance.mjs` | release provenance records and their verification |
 | `scripts/check-workflows.mjs` | workflow validation |
 | `.github/workflows/ci.yml` | every push and pull request |
 | `.github/workflows/release.yml` | gated installer builds and releases |
@@ -327,6 +331,13 @@ hands them to the modules in one context (`context.cjs`). No module requires Ele
 | `ipc-stores.cjs` | 178 | autosave, user library, plugins, catalog packs |
 | `updates.cjs` | 45 | app info, external links, update checks and status |
 | `handover.cjs` | 86 | files handed over by the OS and by a second launch |
+
+Shared by those modules, in `electron/`: `atomic-write.cjs` (temp file + rename, symbolic links
+refused, folder pinned), `path-registry.cjs` and `ipc-guard.cjs` (what may be read or written,
+who may call), `resource-limits.cjs` (size-checked reads, write payload and sheet size limits),
+`dwg-host.cjs` (the DWG worker with its memory and time limits), `web-security.cjs` (permission
+handlers and web contents guards), `updater.cjs` and `update-verify.cjs` (update checks and the
+verification of a downloaded installer), `file-errors.cjs` (plain-language file errors).
 
 **Boundaries the tests hold.** The undo history is private to `src/core/document.ts` (use
 `Drawing.history()` / `restoreHistory()`; `tests/history-api.test.ts` scans `src/`, `tests/`,
