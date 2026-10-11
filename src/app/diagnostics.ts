@@ -89,7 +89,7 @@ export function redactLocalPaths(text: string): string {
     .replace(/file:\/\/\/[^\r\n"'<>]*/gi, '[local path]')
     .replace(/(?<![\w/\\])[A-Za-z]:[\\/][^\r\n"'<>]*/g, '[local path]')
     .replace(/(?<![\w/\\])\\\\[^\\\s"'<>]+[\\/][^\r\n"'<>]*/g, '[local path]')
-    .replace(/(?<![\w.:/-])\/(?:Users|home|root|tmp|var|private|mnt|media|Volumes|opt|srv|data)\/[^\r\n"'<>]*/g, '[local path]');
+    .replace(/(?<![\w.:/-])\/(?:Users|home|root|tmp|var|private|mnt|media|Volumes|opt|srv|data|run|net|Network)\/[^\r\n"'<>]*/g, '[local path]');
 }
 
 /** The diagnostics block (history + errors) shared by the issue body and the saved report. */

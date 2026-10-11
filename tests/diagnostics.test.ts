@@ -55,6 +55,11 @@ describe('problem reports', () => {
     expect(redactLocalPaths('file:///C:/jobs/a.dxf and D:/b.dxf')).toBe('[local path]');
     expect(redactLocalPaths('at "C:\\x\\y.dxf" and /tmp/z.dxf')).toBe('at "[local path]" and [local path]');
   });
+  it('removable media and network mounts carry the user name too (Linux /run/media/<user>, GNOME /run/user/<id>/gvfs, macOS /Network)', () => {
+    expect(redactLocalPaths('Opened /run/media/bob/USB/plant.dxf')).toBe('Opened [local path]');
+    expect(redactLocalPaths("save '/run/user/1000/gvfs/smb-share:server=nas,share=jobs/a.dxf'")).toBe("save '[local path]'");
+    expect(redactLocalPaths('/net/fileserver/jobs/a.dxf and /Network/Servers/nas/a.dxf')).toBe('[local path]');
+  });
   it('redaction is linear in the text', () => {
     const t = performance.now();
     redactLocalPaths(`${'\\\\a'.repeat(200_000)} ${'C:'.repeat(200_000)} ${'/home'.repeat(200_000)}`);
