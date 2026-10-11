@@ -31,6 +31,7 @@
     "bench": "node scripts/bench.mjs",
     "bench:node": "cross-env JCAD_BENCH=1 vitest run tests/perf-dense.test.ts",
     "check:workflows": "node scripts/check-workflows.mjs",
+    "e2e:flows": "node scripts/e2e-flows.mjs",
     "dist": "npm run build && electron-builder",
     "dist:dir": "npm run build && electron-builder --dir"
   },

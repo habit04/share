@@ -103,7 +103,7 @@ function lead(action: FileAction, name: string | null): string {
   }
 }
 
-function reason(kind: FileErrorKind, dir: string | null, writing: boolean): string {
+function reason(kind: FileErrorKind, dir: string | null, writing: boolean, reading = false): string {
   const where = dir ? `"${dir}"` : 'the folder';
   switch (kind) {
     case 'disk-full':
@@ -117,6 +117,8 @@ function reason(kind: FileErrorKind, dir: string | null, writing: boolean): stri
     case 'locked':
       return 'the file is locked by another program (open elsewhere, or being synced or virus-scanned). Close it there and try again.';
     case 'unavailable':
+      // Reading a file: the file itself is usually what is missing, not its folder.
+      if (reading && dir) return `the file is no longer in ${where}, or that folder is not available. It may have been moved or deleted, or the network or removable drive is disconnected.`;
       return `${where} is not available. It may have been moved or deleted, or the network or removable drive is disconnected.`;
     case 'too-long':
       return 'the path is too long. Choose a shorter folder or file name.';
@@ -138,7 +140,7 @@ export function describeFileError(err: unknown, opts: { action?: FileAction; pat
   const detail = rawText(err);
   const name = path ? baseName(path) : null;
   const dir = path ? dirName(path) || null : null;
-  const why = reason(kind, action === 'list' ? path : dir, action !== 'read' && action !== 'list');
+  const why = reason(kind, action === 'list' ? path : dir, action !== 'read' && action !== 'list', action === 'read');
   const message = why ? `${lead(action, action === 'list' ? null : name)}: ${why}` : `${lead(action, action === 'list' ? null : name)}: ${detail}`;
   return { code, kind, path, message, detail };
 }

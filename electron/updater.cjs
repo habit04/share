@@ -229,4 +229,6 @@ module.exports = {
   onConfirmRestart(fn) {
     confirmRestart = typeof fn === 'function' ? fn : async () => true;
   },
+  /** The check "Restart Now" runs before quitAndInstall (main's Save All workflow); end-to-end tests drive it. */
+  confirmRestart: (win) => confirmRestart(win),
 };

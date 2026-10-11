@@ -24,6 +24,12 @@ const NAME_RE = /^[A-Za-z0-9_-]{1,60}\.sv\.dxf$/;
 const LEGACY_NAME_RE = /^[A-Za-z0-9_-]{1,60}_\d+\.sv\.dxf$/;
 /** The project autosave (twin of SUFFIX in src/app/project-autosave.ts): keeps its name across launches. */
 const PROJECT_SUFFIX = '_jcadproj.sv.dxf';
+/**
+ * The project's own autosave (src/app/project-autosave.ts: "<name>_<path hash>_jcadproj.sv.dxf").
+ * It is a current-scheme name, not an old drawing backup: renaming it to an id would hide it from
+ * Project Recovery and list its JSON in the Drawing Recovery Manager as if it were a drawing.
+ */
+const PROJECT_NAME_RE = /_jcadproj\.sv\.dxf$/;
 
 /** A drawing backup in the 0.4.0 naming scheme (renamed to a permanent id on first use). */
 function isLegacyName(name) {
@@ -238,4 +244,4 @@ function createAutosaveStore(dir, deps = {}) {
   };
 }
 
-module.exports = { createAutosaveStore, safeAutosaveName, isLegacyName, ID_NAME_RE, legacyTitle };
+module.exports = { createAutosaveStore, safeAutosaveName, isLegacyName, ID_NAME_RE, PROJECT_NAME_RE, legacyTitle };

@@ -605,7 +605,7 @@ describe('opening a file that is gone', () => {
     ed.settings = { ...ed.settings, recentFiles: ['/w/gone.dxf', '/w/other.dxf'] };
     ed.doc.addEntities([text('KEEP')]);
     await ed.sessions.openInTab('/w/gone.dxf', (f) => ed.openFile(f));
-    expect(ed.history.at(-1)).toBe('Failed to open drawing: "gone.dxf" could not be read: "/w" is not available. It may have been moved or deleted, or the network or removable drive is disconnected.');
+    expect(ed.history.at(-1)).toBe('Failed to open drawing: "gone.dxf" could not be read: the file is no longer in "/w", or that folder is not available. It may have been moved or deleted, or the network or removable drive is disconnected.');
     expect(ed.lastFileError).toMatch(/could not be read/);
     expect(ed.settings.recentFiles).toEqual(['/w/gone.dxf', '/w/other.dxf']);
     expect(ed.sessions.count).toBe(1);

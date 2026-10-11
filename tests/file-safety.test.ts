@@ -5,6 +5,7 @@ import * as fsp from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describeFileError, fileErrorCode, KIND_BY_CODE, type FileAction } from '../src/app/file-errors';
+import { projectAutosaveName, projectAutosaveText, parseProjectAutosave, isProjectAutosave } from '../src/app/project-autosave';
 
 const require = createRequire(import.meta.url);
 type WriteResult = { path: string; backup: string | null; method: 'rename' | 'copy' };
@@ -426,6 +427,31 @@ describe('autosave store with permanent ids (electron/autosave-store.cjs)', () =
     await s.write(`${uuid()}.sv.dxf`, 'NEW SESSION', { title: 'Drawing1.dxf', savedAt: 5000 });
     expect(await s.read(untitled.name)).toBe('UNTITLED');
     expect((await createAutosaveStore(d, { uuid }).list()).length).toBe(3);
+  });
+
+  it('keeps the project autosave under its own name (Project Recovery finds it at the next start)', async () => {
+    const d = join(dir, 'autosave');
+    mkdirSync(d);
+    const project = { name: 'Plant', path: '/jobs/plant.jcadproj.json', drawings: [{ file: 'a.dxf' }] };
+    const name = projectAutosaveName(project);
+    const { PROJECT_NAME_RE } = require('../electron/autosave-store.cjs') as { PROJECT_NAME_RE: RegExp };
+    expect(PROJECT_NAME_RE.test(name)).toBe(true);
+    // Written in one launch ...
+    const first = createAutosaveStore(d, { uuid });
+    await first.write(name, projectAutosaveText(project), { originalPath: project.path, title: 'Project Plant', savedAt: 3000 });
+    writeFileSync(join(d, 'Drawing1_4.sv.dxf'), 'OLD DRAWING');
+    // ... read by the next one (which migrates real old drawing backups only).
+    const next = createAutosaveStore(d, { uuid });
+    const list = await next.list();
+    expect(list.map((e) => e.name)).toContain(name);
+    expect(list.find((e) => e.name === name)).toMatchObject({ title: 'Project Plant', originalPath: project.path, savedAt: 3000 });
+    expect(next.migrated.map(([from]) => from)).toEqual(['Drawing1_4.sv.dxf']);
+    expect(parseProjectAutosave((await next.read(name))!)?.name).toBe('Plant');
+    // Without its index entry (a truncated index.json) it is still listed under its own name.
+    rmSync(join(d, 'index.json'));
+    const third = createAutosaveStore(d, { uuid });
+    expect((await third.list()).find((e) => e.name === name)?.title).toBe('Recovered project');
+    expect(isProjectAutosave(name)).toBe(true);
   });
 
   it('an unreadable folder is an error, not an empty list (and a retry works once it is fixed)', async () => {

@@ -125,6 +125,15 @@ function openErrorText(err: unknown, path?: string | null): string {
 /** Version compiled in from package.json (see vite.config.ts); 'dev' under plain vitest. */
 const VERSION: string = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : 'dev';
 
+/** Where an opened drawing went (Editor.deliverOpened) and what the log says about it. */
+type OpenedWhere = 'active' | 'background' | 'new-tab' | 'new-background-tab';
+const OPENED_WHERE: Record<OpenedWhere, string> = {
+  active: '',
+  background: ' (in the tab it was opened from)',
+  'new-tab': ' (in a new tab: the tab it was opened from changed meanwhile)',
+  'new-background-tab': ' (in a new tab in the background: the tab it was opened from changed meanwhile)',
+};
+
 export class Editor {
   readonly doc = new Drawing();
   // ---- UI/workflow extensions (file tabs, Properties panel) — logic lives in app/sessions.ts / src/ui.
@@ -810,12 +819,13 @@ export class Editor {
         this.log(file ? `Opening ${file} ...` : 'Opening ...');
         const res = await this.fileBridge.openDrawing(file);
         if (!res) return false;
-        this.rememberRecent(res.path);
+        if (res.kind === 'dxf' && this.showAlreadyOpen(res.path, targetId, before)) return true;
         if (res.kind === 'dwg') {
           const { state, skipped, notes } = convertDwg(res.payload, res.path);
           // DWG is read-only for us: keep the file untitled so SAVE asks where to write the DXF copy.
           const where = this.deliverOpened(targetId, before, state, null, true);
-          if (where !== 'background') this.suggestedName = res.path.replace(/\.dwg$/i, '.dxf').split(/[\\/]/).pop() ?? null;
+          this.rememberRecent(res.path);
+          if (where === 'active' || where === 'new-tab') this.suggestedName = res.path.replace(/\.dwg$/i, '.dxf').split(/[\\/]/).pop() ?? null;
           const skippedText = Object.keys(skipped).length
             ? ` Skipped unsupported: ${Object.entries(skipped).map(([k, v]) => `${k}×${v}`).join(', ')}.`
             : '';
@@ -831,9 +841,12 @@ export class Editor {
           this.log(`Not opened: ${res.path} is damaged.`);
           return false;
         }
+        // The same file may have finished opening in another tab while this one was read (RECENT twice).
+        if (this.showAlreadyOpen(res.path, targetId, before)) return true;
         // A recovered (truncated) file opens modified: Save As keeps it under a new name.
         const where = this.deliverOpened(targetId, before, state, res.path, !!importReportOf(state)?.recovered);
-        this.log(`Opened ${res.path}: ${state.entities.length} entities, ${state.layers.length} layers, ${Object.keys(state.blocks).length} blocks.${res.encoding ? ` Encoding: ${res.encoding}.` : ''}${where === 'background' ? ' (in the tab it was opened from)' : where === 'new-tab' ? ' (in a new tab: the tab it was opened from changed meanwhile)' : ''}`);
+        this.rememberRecent(res.path);
+        this.log(`Opened ${res.path}: ${state.entities.length} entities, ${state.layers.length} layers, ${Object.keys(state.blocks).length} blocks.${res.encoding ? ` Encoding: ${res.encoding}.` : ''}${OPENED_WHERE[where]}`);
         this.showOpenedReport(where, state, res.path);
         return true;
       }
@@ -844,6 +857,7 @@ export class Editor {
         this.log(`Not opened: ${res.path} is damaged.`);
         return false;
       }
+      if (this.showAlreadyOpen(res.path, targetId, before)) return true;
       const where = this.deliverOpened(targetId, before, state, res.path, !!importReportOf(state)?.recovered);
       this.log(`Opened ${res.path}: ${state.entities.length} entities, ${state.layers.length} layers, ${Object.keys(state.blocks).length} blocks.`);
       this.showOpenedReport(where, state, res.path);
@@ -878,13 +892,34 @@ export class Editor {
   }
 
   /** The import report of a drawing just opened, also when it went to a background tab (see deliverOpened). */
-  private showOpenedReport(where: 'active' | 'background' | 'new-tab', state: DrawingState, path: string): void {
-    if (where === 'background') this.showImportReport(false, state, path.split(/[\\/]/).pop() ?? path);
+  private showOpenedReport(where: OpenedWhere, state: DrawingState, path: string): void {
+    if (where === 'background' || where === 'new-background-tab') this.showImportReport(false, state, path.split(/[\\/]/).pop() ?? path);
     else this.showImportReport(false);
   }
 
-  /** Put an opened drawing into tab `targetId` (see openFile); returns where it went. */
-  private deliverOpened(targetId: number, before: DrawingState, state: DrawingState, path: string | null, dirty: boolean): 'active' | 'background' | 'new-tab' {
+  /**
+   * The file picked in the Open dialog (or a second RECENT click) is already open in a tab: show
+   * that tab instead of a second copy, whose saves would overwrite each other. Re-opening the file
+   * into the very tab that holds it, unchanged since the open started, is a reload and goes ahead.
+   */
+  private showAlreadyOpen(path: string, targetId: number, before: DrawingState): boolean {
+    const k = this.sessions.indexOfPath(path);
+    if (k < 0) return false;
+    const s = this.sessions.all[k]!;
+    if (s.id === targetId && s.state === before) return false;
+    // Only move the user when they are still looking at the tab the open was started from.
+    if (this.sessions.current.id === targetId) this.sessions.switchTo(k);
+    this.rememberRecent(path);
+    this.log(`${path} is already open (tab ${k + 1}: ${this.sessions.titleOf(k)}).`);
+    return true;
+  }
+
+  /**
+   * Put an opened drawing into tab `targetId` (see openFile); returns where it went. A new tab is
+   * only brought to the front when the user is still on the tab the open started from: someone
+   * working in another tab meanwhile keeps working there (no command or click lands in the new one).
+   */
+  private deliverOpened(targetId: number, before: DrawingState, state: DrawingState, path: string | null, dirty: boolean): OpenedWhere {
     const cur = this.sessions.current;
     if (cur.id === targetId && cur.state === before) {
       this.loadState(state, path);
@@ -901,6 +936,14 @@ export class Editor {
       this.sessions.loadInto(targetId, d.snapshot, path, dirty);
       this.emit('file');
       return 'background';
+    }
+    if (cur.id !== targetId) {
+      const d = new Drawing();
+      d.load(withByBlockLibrarySymbols(state), path);
+      d.ensureBlocks([...LIBRARY_SYMBOLS, TITLE_BLOCK, SOURCE_ARROW, DEST_ARROW, WIRE_DOT]);
+      this.sessions.addInBackground(d.snapshot, path, dirty);
+      this.emit('file');
+      return 'new-background-tab';
     }
     this.sessions.add(state, path, dirty);
     this.doc.dirty = dirty;
