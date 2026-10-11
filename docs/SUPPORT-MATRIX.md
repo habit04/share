@@ -69,10 +69,13 @@ the fixtures in `fixtures/` and `tests/fixtures/`.
 
 ## Fonts and text
 
-All text is drawn with a single-stroke vector font (Hershey Roman Simplex, `src/render/fonts/rowmans.jhf`)
-whatever font the style names, so line breaks and widths can differ slightly from the original
+TrueType/OpenType styles render on screen through installed CSS font families and fallback stacks.
+SHX and unknown styles use a single-stroke vector font (Hershey Roman Simplex,
+`src/render/fonts/rowmans.jhf`). Geometry bounds and MTEXT wrapping still use stroke-font
+measurements, so spacing and line breaks can differ from the displayed font and the original CAD
 program. The style's font file / TrueType family is kept and written back. In vector PDF output,
-TrueType-style text becomes PDF text and stroke-font text becomes paths. Text in pre-2007 DXF
+WinAnsi-compatible TrueType-style text uses Helvetica or Helvetica-Bold; other text falls back to
+stroke paths. Exact font embedding and SHX rendering are not implemented. Text in pre-2007 DXF
 files is decoded from `$DWGCODEPAGE`; the writer produces pure ASCII with `\U+XXXX` escapes, so
 non-English text survives any code page.
 Non-default font metrics and absent STYLE definitions are disclosed in import reports; font
