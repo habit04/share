@@ -7,6 +7,7 @@
  *   internals.ts   the private working state those modules share, the fallback UI
  *   commands.ts    the built-in commands
  *   view.ts        settings, drafting toggles, zoom extents
+ *   plotting.ts    PLOT / PRINT
  */
 import type { Point } from '../../core/geometry';
 import * as g from '../../core/geometry';
@@ -29,20 +30,19 @@ import { captureRevision, saveQueue } from '../savequeue';
 import { loadSettings, saveSettings, pushRecent, type UserSettings } from '../settings';
 import { SessionManager, applySaveResult } from '../sessions';
 import { describeFileError } from '../file-errors';
-import { fileErrorText } from '../file-error-text';
 import type { ColorSpec } from '../../core/entities';
 import { writeDxf } from '../../io/dxf';
-import { layoutPage, type PlotOptions } from '../plot';
+import type { PlotOptions } from '../plot';
 import { parsePointInput, isPlainNumber } from '../input';
 import { convertDwg } from '../../io/dwg';
 import { readDxfForOpen, reportNeedsAttention, importReportLog, confirmSaveOver, importReportOf } from '../import-open';
 import { trackFromPoints } from '../../core/snap';
 import type { SpaceRef } from '../../core/layouts';
-import { plotLayoutsOrVector } from '../plot-vector';
 import type { EditorEvent, CommandDef, FileBridge, EditorHooks } from './types';
 import { createInternals, fallbackUi, type EditorInternals } from './internals';
 import { registerBuiltinCommands } from './commands';
 import * as view from './view';
+import * as plotting from './plotting';
 
 /**
  * Why an open failed: file errors in plain words ("... could not be read: the folder is not
@@ -935,89 +935,18 @@ export class Editor {
    * Render the drawing extents onto the chosen paper (white sheet, black lines, hidden
    * layers left out) for plotting / printing. The image has exactly the sheet's proportions.
    */
-  async renderPlotImage(opts: PlotOptions): Promise<{ dataUrl: string; landscape: boolean; sheet: { width: number; height: number }; electron?: string; reducedToFit: boolean } | null> {
-    const b = this.doc.extents();
-    if (!b) return null;
-    const w = b.max.x - b.min.x;
-    const h = b.max.y - b.min.y;
-    const lay = layoutPage(w, h, opts);
-    const dpi = 150;
-    const pw = Math.ceil(lay.sheet.width * dpi);
-    const ph = Math.ceil(lay.sheet.height * dpi);
-    const canvas = document.createElement('canvas');
-    // Cap the bitmap (E-size at 150 dpi is 6600 x 5100); scale the dpi down for anything larger.
-    const shrink = Math.min(1, 12000 / pw, 12000 / ph);
-    canvas.width = Math.round(pw * shrink);
-    canvas.height = Math.round(ph * shrink);
-    const px = dpi * shrink; // pixels per inch on the bitmap
-    const k = lay.scale * px; // pixels per drawing unit
-    const ctx = canvas.getContext('2d')!;
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    const ox = lay.origin.x * px;
-    const oy = lay.origin.y * px;
-    const tf = { scale: k, toScreen: (p: Point) => ({ x: ox + (p.x - b.min.x) * k, y: oy + (b.max.y - p.y) * k }) };
-    const { drawEntity } = await import('../../render/draw');
-    const hidden = new Set(this.doc.layers.filter((l) => !l.visible).map((l) => l.name));
-    for (const e of this.doc.entities) {
-      if (hidden.has(e.layer)) continue;
-      drawEntity(ctx, e, tf, this.doc.layers, this.doc.lookupBlock, { strokeOverride: '#000000', lineWidthOverride: Math.max(1, Math.round(px / 100)), hidden });
-    }
-    return { dataUrl: canvas.toDataURL('image/png'), landscape: lay.landscape, sheet: lay.sheet, electron: lay.electron, reducedToFit: lay.reducedToFit };
-  }
-
-  private plotOptions(): PlotOptions {
-    const s = this.settings;
-    return { paper: s.plotPaper, orientation: s.plotOrientation, scale: s.plotScale, margin: s.plotMargin };
+  renderPlotImage(opts: PlotOptions): Promise<{ dataUrl: string; landscape: boolean; sheet: { width: number; height: number }; electron?: string; reducedToFit: boolean } | null> {
+    return plotting.renderPlotImage(this, opts);
   }
 
   /** PLOT: open the Plot / Print dialog (default: PDF) and run the chosen output. */
-  async plot(): Promise<void> {
-    await this.plotOrPrint('pdf').catch((err: unknown) => this.plotFailed(err));
+  plot(): Promise<void> {
+    return plotting.plot(this);
   }
 
   /** PRINT: open the Plot / Print dialog (default: printer) and run the chosen output. */
-  async print(): Promise<void> {
-    await this.plotOrPrint('print').catch((err: unknown) => this.plotFailed(err));
-  }
-
-  /** A PDF that could not be written (disk full, locked file ...) is reported like a failed save. */
-  private plotFailed(err: unknown): void {
-    this.log(`Plot failed: ${fileErrorText(err, { action: 'save' })}`);
-  }
-
-  private async plotOrPrint(mode: 'pdf' | 'print'): Promise<void> {
-    const choice = await (this.hooks.plot?.(mode) ?? Promise.resolve({ options: this.plotOptions(), action: mode }));
-    if (!choice) return;
-    // Track E: vector PDF (default output) and layout sheets; the raster Model-tab path below is unchanged.
-    if (await plotLayoutsOrVector(this, choice)) return;
-    const img = await this.renderPlotImage(choice.options);
-    if (!img) {
-      this.log('Nothing to plot: this tab has no visible objects.');
-      return;
-    }
-    if (img.reducedToFit) this.log('The chosen scale did not fit the paper; the drawing was scaled down to fit.');
-    const sheet = { ...img.sheet, electron: img.electron };
-    const base = this.fileName().replace(/\.[^.]+$/, '');
-    if (choice.action === 'pdf') {
-      if (!this.fileBridge?.plotPdf) {
-        this.log('Plotting is not available here.');
-        return;
-      }
-      const out = await this.fileBridge.plotPdf(img.dataUrl, `${base}.pdf`, img.landscape, sheet);
-      if (out) this.log(`Plotted to ${out} (${img.sheet.width.toFixed(2)} x ${img.sheet.height.toFixed(2)} in).`);
-      return;
-    }
-    if (!this.fileBridge?.printDrawing) {
-      this.log('Printing is not available here.');
-      return;
-    }
-    try {
-      const ok = await this.fileBridge.printDrawing(img.dataUrl, base, img.landscape, sheet);
-      this.log(ok ? 'Sent to the print dialog.' : 'Print cancelled.');
-    } catch (err) {
-      this.log(`Print failed: ${(err as Error).message}`);
-    }
+  print(): Promise<void> {
+    return plotting.print(this);
   }
 
   fileName(): string {
