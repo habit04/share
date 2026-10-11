@@ -43,6 +43,16 @@ messages). The date of each version is the date of the commit that set that vers
   `docs/RELEASE.md` (cutting, verifying and delivering a release; dependency review checklist) and
   `docs/SECURITY-REVIEW.md` (security review of the desktop shell and file readers, with the status
   of each finding).
+- Application icon: a relay contact on the JCad blue tile, for the installers and the installed
+  application (Start menu, dock, desktop entry), the application page and the website
+  (`scripts/make-icons.mjs`, `npm run icons`, generated as SVG, PNG, `.ico` and `.icns`; a unit test
+  re-renders it and compares). The 0.4.0 installers used Electron's default icon.
+- File associations: the installers register JCad Electrical for `.dxf` drawings and
+  `.jcadproj.json` projects, and a project file handed over by the operating system (a
+  double-click, "Open with", a second launch) opens as the current project.
+- Release notes: the GitHub release body is the tag's section of this changelog plus download notes
+  (`scripts/release-notes.mjs`, used by `release.yml`, which stops when the tag has no section);
+  `docs/releases/v0.4.0.md` holds the notes for the 0.4.0 release page.
 
 ### Changed
 
@@ -66,8 +76,9 @@ messages). The date of each version is the date of the commit that set that vers
 - Every IPC handler checks its caller: only the application page in the main window's top frame
   may use the bridge; other senders are refused and logged in `<app data>/ipc-rejections.log`.
 - File paths from the renderer go through one policy: open / save / back up by name only for files
-  the user chose; `read-image` only for images next to such a file or named by an opened drawing;
-  plugin and catalog-pack files must stay inside their folders after symbolic links are resolved.
+  the user chose and the drawings of a project (see the project entry under Fixed); `read-image`
+  only for images next to such a file or named by an opened drawing; plugin and catalog-pack files
+  must stay inside their folders after symbolic links are resolved.
 
 ### Fixed
 
@@ -87,8 +98,10 @@ messages). The date of each version is the date of the commit that set that vers
   main process waits for the answer instead of closing after three seconds, and Save no longer
   saved only the active drawing. A Symbol Builder tab counts as saved once the user library file is
   written, and drawings changed by the saves themselves (a symbol save updates the drawings that
-  use it) are asked about again. The drawing and project autosaves being written, and the removal
-  of the backups of drawings just saved, finish before the window closes (a few seconds at most).
+  use it) are asked about again, as is anything you change while Save All is still saving (the
+  window stays usable meanwhile): Save All may then ask a second time instead of closing without a
+  question. The drawing and project autosaves being written, and the removal of the backups of
+  drawings just saved, finish before the window closes (a few seconds at most).
 - File paths are normalised in one place (`src/app/paths.ts`): separators, `.` / `..`, Unicode,
   case-insensitive comparison for Windows paths. Projects, tabs ("is this drawing already open"),
   recent files and the main process's allowed-path list use it, and drawings with the same file
@@ -98,7 +111,9 @@ messages). The date of each version is the date of the commit that set that vers
 - A slow open finishes in the tab that started it even if you switch tabs meanwhile (or opens in
   a new tab if that tab was edited); `RECENT` no longer replaced the active drawing when the file
   took a moment to load. Saves to the same file are queued, and an older save never overwrites a
-  newer one.
+  newer one: `SAVEAS` asks for the file name first and then waits for a save of that file still on
+  its way, and a slower, older save of a drawing no longer moves the drawing back to its file or
+  marks it as saved while the file holds the older version.
 - Saves are crash-safe: drawings (`SAVE`, `SAVEAS`, project-wide updates), projects and other
   exports, plotted PDFs, autosaves, the user symbol library, catalog packs, the recent list and the
   window state are written to a temporary file in the same folder, flushed to disk and renamed over
@@ -170,9 +185,13 @@ messages). The date of each version is the date of the commit that set that vers
 - `new Drawing({...})` keeps the header, the active space and every other field it is given.
 - Clicking where overlapping objects are equally close selects (and highlights) the topmost one
   instead of the one underneath.
-- A project file can no longer give the program permission to overwrite files outside its own
-  folder: drawings it lists outside the project folder, and its catalog file, can be opened but are
-  saved (by `SAVE` or a project-wide command) only after you confirm them in the Save As dialog.
+- A project file can no longer give the program permission to overwrite anything but drawings: of
+  the files a project lists, only `.dxf` / `.dwg` drawings (checked after `..` in the path is
+  resolved) can be written by `SAVE` and the project-wide commands, never its catalog file or any
+  other file type, and drawings on a network share only when the project is on that same server.
+  Drawings outside the project's folder are written when you opened the project yourself (Open
+  Project, a double-click or "Open with", Recent Documents); for a project opened only by its path
+  (a plugin, `OPENPROJECT <path>`) they are saved only after you confirm them in the Save As dialog.
   Saving a drawing writes only `.dxf` files and saving a project only `.json` project files.
 - Text from drawing files and plugins is always shown as text: the annotation scale name in the
   status bar and the titles of dialogs (file, layout, symbol and plugin names). An annotation
@@ -183,6 +202,9 @@ messages). The date of each version is the date of the commit that set that vers
   normalised, so they can only lead to this project's GitHub pages or the donation page.
 - "Open with JCad Electrical" and drawings handed to a second launch (or, on macOS, opened from
   the Finder) open in their own tab; they were ignored.
+- `CLOSE` closes the tab it asked about: when another tab closed while its "Discard changes?"
+  question was shown (a background open that failed), it could close a different drawing, with its
+  unsaved changes and backup, without asking.
 - A file picked in the Open dialog that is already open, or `RECENT` clicked twice while the file
   loads, shows its tab instead of opening a second copy whose saves would overwrite each other. An
   open that lands in a new tab while you work in another tab stays in the background. Files that
@@ -193,8 +215,10 @@ messages). The date of each version is the date of the commit that set that vers
   next start no longer offers the discarded changes).
 - Project-wide commands: **Continue Without Backup** now writes the drawing when its `.bak` cannot
   be written (a folder or locked file in the way made the write fail again), and a truncated closed
-  drawing is listed as damaged ("OPEN it to recover") instead of as a file error. Failed CSV, report
-  and `.wdt` exports name the file and folder chosen in the Save dialog.
+  drawing is listed as damaged ("OPEN it to recover") instead of as a file error. Closed drawings
+  left unchanged because you unticked saving closed files are listed on the command line ("Not
+  updated (closed drawing files were not saved, as chosen): ...") instead of being left out of the
+  summary. Failed CSV, report and `.wdt` exports name the file and folder chosen in the Save dialog.
 
 ## [0.4.0] - 2026-09-29
 

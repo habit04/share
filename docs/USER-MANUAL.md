@@ -854,12 +854,17 @@ fixing things.
   different folders are two separate project drawings; the Project Manager, tabs and project-wide
   lists then add the folder to the name, for example `a.dxf (line1)` and `a.dxf (line2)`. On
   Windows, upper / lower case and `\` or `/` in paths do not matter.
-- A project file only lists files; it cannot give the program permission to overwrite files
-  outside its own folder. Drawings the project lists **outside** the project file's folder (and
-  its catalog file) open normally, but the first time one of them is saved - with `SAVE` or by a
-  project-wide command - the **Save As** dialog opens on that file so you confirm it; drawings you
-  opened or saved yourself through a file dialog are saved directly, wherever they are. Drawings on
-  a network share named by a project that is not on that same server are ignored.
+- Which files a project may have written for you: when **you** open the project - through
+  **Open Project**, by double-clicking it or using "Open with" in your file manager, or from
+  Recent Documents - every `.dxf` / `.dwg` drawing it lists can be saved by `SAVE` and the
+  project-wide commands, wherever it is. A project opened only by its path (by a plugin or by
+  typing `OPENPROJECT <path>`) may have written only the drawings inside its own folder; a drawing
+  it lists elsewhere opens normally, but the first time it is saved the **Save As** dialog opens on
+  that file so you confirm it. In every case the project's catalog file is never written, entries
+  of other file types (a `.json`, `.exe` or any other file) are ignored, `..` in a path is resolved
+  before the file type is checked, and drawings on a network share are ignored unless the project
+  file is on that same server. Drawings you opened or saved yourself through a file dialog are
+  always saved directly.
 
 ### Project-wide tools
 
@@ -881,15 +886,17 @@ How the changes are applied:
    gets one undo step and is marked changed (save it as usual).
 2. Closed drawings of the project are read from disk. When one of them would change, a dialog
    lists every affected drawing with what changes; confirm to write the closed ones back as DXF,
-   optionally keeping a `.bak` copy of each. Cancel changes nothing.
+   optionally keeping a `.bak` copy of each. Cancel changes nothing. If you untick saving the
+   closed drawing files, only the open drawings change and the command line lists the closed ones
+   as "Not updated (closed drawing files were not saved, as chosen)".
    If the `.bak` copy of a drawing cannot be written, that drawing is **not** saved: a dialog
    names the file and the error and offers **Skip** (the default) or **Continue Without Backup**
    for that file only (it is then written without any `.bak`, also when something is in the way of
    the `.bak` file). Skipped drawings are listed on the command line. A closed drawing that is
    damaged (for example truncated) is listed as damaged and never rewritten; `OPEN` it to recover
-   what is readable. A drawing outside the project's folder that you have not opened or saved
-   yourself gets no `.bak` copy and is written only after you confirm it in the Save As dialog
-   (see above).
+   what is readable. When the project was opened only by its path (not by you, see above), a
+   drawing outside its folder that you have not opened or saved yourself gets no `.bak` copy and
+   is written only after you confirm it in the Save As dialog.
 3. DWG drawings are read-only and are skipped; the command line lists skipped drawings. The
    browser edition cannot read closed drawings, so open them in tabs first.
 4. Changes are only applied to the drawing they were calculated from. When you edit an open
@@ -1232,8 +1239,13 @@ the compatibility reference). `SAVE` (QSAVE, Ctrl+S) and
 electrical data all round-trip, and the files open in other CAD programs. `OPEN` (Ctrl+O)
 reads DXF and DWG files into a new tab; `NEW` (QNEW, Ctrl+N) starts an empty drawing. A file
 that is already open is shown in its tab instead of being opened twice. Drawings opened from the
-operating system ("Open with JCad Electrical", a file dropped on the program icon, or given on the
-command line) open the same way, each in its own tab, also when JCad Electrical is already running.
+operating system (a double-click on a `.dxf` file, "Open with JCad Electrical", a file dropped on
+the program icon, or given on the command line) open the same way, each in its own tab, also when
+JCad Electrical is already running. A project file (`.jcadproj.json`) handed over the same way
+becomes the current project, as with **Open Project**. The installers register JCad Electrical for
+`.dxf` and `.jcadproj.json` files; Windows and macOS classify files by their last extension, so
+there a project file is opened with "Open with" > JCad Electrical (or **Open Project**), while
+Linux desktops also open it with a double-click.
 
 Also kept in DXF: splines, hatches, leaders and multileaders, tables, images and external
 references, fields, MTEXT formatting, text styles (including TrueType fonts) and the named
@@ -1352,7 +1364,8 @@ however its path was spelled (on Windows `C:\Jobs\A.dxf` and `c:/jobs/a.dxf` are
 A drawing that is still loading when you switch to another tab opens in the tab it was started
 from (in the background). If you typed into that tab meanwhile, the drawing opens in a new tab
 instead. Saves of the same file are written one after another, so an older save can never
-overwrite a newer one.
+overwrite a newer one; `SAVEAS` asks for the file name first and then waits for a save of that
+file that is still on its way.
 
 **Closing the application.** When you close the window, quit (File > Exit, Cmd+Q) or restart to
 install an update, one **Save Changes** dialog lists everything that is not saved: every modified
@@ -1360,9 +1373,11 @@ drawing tab, every Symbol Builder tab with unsaved edits and the project. **Save
 one after another (an untitled drawing asks for a file name); untick items to discard them (the
 button then reads **Save Selected**); **Discard All** closes without saving; **Cancel** keeps
 everything open. If one item cannot be saved, nothing is closed and the error names the item.
-When saving one item changes another (saving a symbol updates the open drawings that use it), the
-dialog asks again for those. Discarded drawings and the discarded project keep their autosave
-copies, so they are offered again at the next start.
+The window stays usable while the items are saved. When saving one item changes another (saving a
+symbol updates the open drawings that use it), or you change a drawing or the project while Save
+All is still saving, the dialog asks again about those before the window closes. Discarded
+drawings keep their autosave copies, so the Drawing Recovery Manager offers them again at the next
+start; the changes of a discarded project are dropped (its autosave is removed).
 
 ### Autosave and recovery
 
