@@ -4,6 +4,7 @@
  * lives in a module next to it, which its methods delegate to (module map: docs/DEVELOPMENT.md):
  *
  *   types.ts       events, command definitions, the file bridge, the UI hooks
+ *   internals.ts   the private working state those modules share, the fallback UI
  */
 import type { Point } from '../../core/geometry';
 import * as g from '../../core/geometry';
@@ -13,7 +14,7 @@ import type { DrawingState } from '../../core/document';
 import { defaultSnapSettings, findObjectSnap, constrainDirection, snapToGrid, type SnapResult, type SnapSettings } from '../../core/snap';
 import { pickEntity, selectByBox } from '../../core/selection';
 import { Viewport, type ViewportOverlay } from '../../render/viewport';
-import type { Tool, ToolContext, LadderSettings } from '../../tools/types';
+import type { Tool, ToolContext } from '../../tools/types';
 import { LineTool, PolylineTool, CircleTool, ArcTool, RectangleTool, TextTool } from '../../tools/draw';
 import { EraseTool, MoveTool, CopyTool, RotateTool, DistTool } from '../../tools/modify';
 import { WireTool, LadderTool, ComponentTool, assignWireNumbers } from '../../tools/electrical';
@@ -48,7 +49,8 @@ import { trackFromPoints } from '../../core/snap';
 import { registerLayoutCommands } from '../../tools/layouts';
 import type { SpaceRef } from '../../core/layouts';
 import { plotLayoutsOrVector } from '../plot-vector';
-import type { EditorEvent, CommandDef, SelectionRequest, FileBridge, EditorHooks } from './types';
+import type { EditorEvent, CommandDef, FileBridge, EditorHooks } from './types';
+import { createInternals, fallbackUi, type EditorInternals } from './internals';
 
 /**
  * Why an open failed: file errors in plain words ("... could not be read: the folder is not
@@ -118,12 +120,8 @@ export class Editor {
     space: new Set(),
     project: new Set(),
   };
-  private selReq: SelectionRequest | null = null;
-  private dragStart: Point | null = null; // screen
-  private dragWorld: Point | null = null;
-  private panning = false;
-  private lastMouse: Point = { x: 0, y: 0 };
-  private cursorWorld: Point | null = null;
+  /** The private working state the editor's modules share (internals.ts). */
+  private readonly internals: EditorInternals = createInternals(this.overlay);
   ui: ToolContext['ui'] | null = null;
   fileBridge: FileBridge | null = null;
   /** Extra UI hooks provided by main.ts. */
@@ -135,10 +133,6 @@ export class Editor {
    * has changes that are not in the project file yet. Separate from the drawings' dirty flags.
    */
   projectDirty = false;
-  /** Bumped by every project change (updateProject) and by open / new. */
-  private projectRev = 0;
-  /** Bumped when another project is opened or created: saves bind to the project that started them. */
-  private projectGen = 0;
   /** Message of the last failed save / open (for the close workflow's error report). */
   lastFileError: string | null = null;
   /**
@@ -147,13 +141,10 @@ export class Editor {
    * drawings outside the project folder).
    */
   apiCommandDepth = 0;
-  /** Session id -> save-queue revision of the newest save of that drawing that completed. */
-  private savedRevisions = new Map<number, number>();
   /** Layer new wires go on (AEWIRETYPE). */
   wireLayer = 'WIRES';
   /** File name to suggest in Save As (set by DWG import). */
   suggestedName: string | null = null;
-  private gripDrag: { entity: Entity; index: number; start: Point } | null = null;
   /** Mouse hooks of the layout controller (tools/layouts.ts): viewport activation by (double-)click. */
   layoutInput: { doubleClick?(screen: Point): boolean; mouseDown?(screen: Point): boolean; hoverBlocked?(screen: Point): boolean } = {};
   /** Active space ('space' event): undefined = Model tab, else the layout and the MSPACE viewport. */
@@ -259,7 +250,7 @@ export class Editor {
       runCommand: (name) => ed.runCommand(name),
       ui: ed.ui ?? fallbackUi,
       requestSelection: (prompt, onDone) => {
-        ed.selReq = { prompt, onDone, ids: new Set() };
+        ed.internals.selReq = { prompt, onDone, ids: new Set() };
         ed.updateCursorMode();
         ed.setPrompt(prompt);
       },
@@ -281,7 +272,7 @@ export class Editor {
   finishTool(): void {
     this.tool = null;
     this.toolName = '';
-    this.selReq = null;
+    this.internals.selReq = null;
     this.clearOverlay();
     this.updateCursorMode();
     this.setPrompt('Type a command');
@@ -290,8 +281,8 @@ export class Editor {
   }
 
   cancel(): void {
-    if (this.gripDrag) {
-      this.gripDrag = null;
+    if (this.internals.gripDrag) {
+      this.internals.gripDrag = null;
       this.overlay.ghost = [];
       this.overlay.trackFrom = null;
       this.updateCursorMode();
@@ -305,8 +296,8 @@ export class Editor {
       this.finishTool();
       return;
     }
-    if (this.selReq) {
-      this.selReq = null;
+    if (this.internals.selReq) {
+      this.internals.selReq = null;
       this.finishTool();
       return;
     }
@@ -323,12 +314,12 @@ export class Editor {
     this.overlay.trackFrom = null;
     this.overlay.acquired = undefined;
     this.overlay.trackPaths = undefined;
-    this.acquired = [];
+    this.internals.acquired = [];
     this.overlay.dynText = [];
     this.overlay.selectionBox = null;
     this.overlay.hover = null;
-    this.dragStart = null;
-    this.dragWorld = null;
+    this.internals.dragStart = null;
+    this.internals.dragWorld = null;
   }
 
   applySettings(): void {
@@ -370,7 +361,7 @@ export class Editor {
   }
 
   private updateCursorMode(): void {
-    this.overlay.cursorMode = this.selReq ? 'select' : this.tool ? 'point' : 'idle';
+    this.overlay.cursorMode = this.internals.selReq ? 'select' : this.tool ? 'point' : 'idle';
   }
 
   // ------------------------------------------------------------- commands
@@ -562,14 +553,14 @@ export class Editor {
       return;
     }
     this.log(`${this.prompt} ${text}`);
-    if (this.selReq) {
-      const handled = this.selectionKeyword ? this.selectionKeyword(text, this.selReq.ids) : false;
+    if (this.internals.selReq) {
+      const handled = this.selectionKeyword ? this.selectionKeyword(text, this.internals.selReq.ids) : false;
       if (handled || text.toUpperCase() === 'ALL') {
-        if (!handled) for (const e of this.doc.entities) this.selReq.ids.add(e.id);
-        this.selection = new Set(this.selReq.ids);
+        if (!handled) for (const e of this.doc.entities) this.internals.selReq.ids.add(e.id);
+        this.selection = new Set(this.internals.selReq.ids);
         this.emit('selection');
         this.render();
-        this.log(`${this.selReq.ids.size} found`);
+        this.log(`${this.internals.selReq.ids.size} found`);
       } else this.log('Expects a point or Window/Last/Crossing/BOX/ALL/Fence/WPolygon/CPolygon/Add/Remove/Previous/Undo');
       return;
     }
@@ -584,9 +575,9 @@ export class Editor {
         return;
       }
       const num = parseFloat(text);
-      if (this.tool.acceptsDistance && isPlainNumber(text) && Number.isFinite(num) && this.overlay.trackFrom && this.cursorWorld) {
+      if (this.tool.acceptsDistance && isPlainNumber(text) && Number.isFinite(num) && this.overlay.trackFrom && this.internals.cursorWorld) {
         // direct distance entry along the cursor direction
-        const dir = constrainDirection(this.overlay.trackFrom, this.cursorWorld, this.snap);
+        const dir = constrainDirection(this.overlay.trackFrom, this.internals.cursorWorld, this.snap);
         const ang = g.angleOf(this.overlay.trackFrom, dir);
         this.acceptPoint(g.polar(this.overlay.trackFrom, ang, num));
         return;
@@ -598,9 +589,9 @@ export class Editor {
   }
 
   pressEnter(): void {
-    if (this.selReq) {
-      const req = this.selReq;
-      this.selReq = null;
+    if (this.internals.selReq) {
+      const req = this.internals.selReq;
+      this.internals.selReq = null;
       this.updateCursorMode();
       const ids = [...req.ids];
       this.setPrompt('');
@@ -621,7 +612,7 @@ export class Editor {
 
   private acceptPoint(p: Point): void {
     this.lastPoint = p;
-    this.acquired = [];
+    this.internals.acquired = [];
     this.overlay.acquired = undefined;
     this.overlay.trackPaths = undefined;
     this.tool?.onPoint(p, this.makeContext());
@@ -932,14 +923,14 @@ export class Editor {
       return this.saveFile(choice === 'saveas' ? true : saveAs);
     }
     if (!path) return false;
-    if ((this.savedRevisions.get(sessionId) ?? 0) > revision) {
+    if ((this.internals.savedRevisions.get(sessionId) ?? 0) > revision) {
       // A newer revision of this drawing was saved while this (slower) save ran, possibly to another
       // file: the drawing stays bound to that newer save - its file and its clean / modified state.
       this.log(`Saved ${path} (an older revision: the drawing was saved again meanwhile and keeps that file).`);
       this.rememberRecent(path);
       return true;
     }
-    this.savedRevisions.set(sessionId, revision);
+    this.internals.savedRevisions.set(sessionId, revision);
     const outcome = applySaveResult(this.sessions, this, sessionId, savedState, path);
     if (outcome === 'clean' && this.sessions.current.id === sessionId) this.suggestedName = null;
     this.log(outcome === 'newer-edits' ? `Saved ${path} (edits made during the save are still unsaved).` : `Saved ${path}`);
@@ -955,13 +946,13 @@ export class Editor {
 
   /** Generation (another project opened / created) and revision (any change) of the project data. */
   get projectState(): { generation: number; revision: number } {
-    return { generation: this.projectGen, revision: this.projectRev };
+    return { generation: this.internals.projectGen, revision: this.internals.projectRev };
   }
 
   /** Apply a user change to the project data: it becomes modified (PROJECTSAVE writes it). */
   updateProject(next: Project): void {
     this.project = next;
-    this.projectRev += 1;
+    this.internals.projectRev += 1;
     this.projectDirty = true;
     this.hooks.projectChanged?.();
     this.emit('project');
@@ -970,8 +961,8 @@ export class Editor {
   /** Make `p` the current project (opened, created or recovered). */
   replaceProject(p: Project, dirty = false): void {
     this.project = p;
-    this.projectGen += 1;
-    this.projectRev += 1;
+    this.internals.projectGen += 1;
+    this.internals.projectRev += 1;
     this.projectDirty = dirty;
     this.hooks.projectChanged?.();
     this.emit('project');
@@ -1001,12 +992,12 @@ export class Editor {
       return false;
     }
     if (!(await this.confirmDiscardProject())) return false;
-    const answered = this.projectRev;
+    const answered = this.internals.projectRev;
     try {
       const res = await this.fileBridge.openProject(file, file && opts.userChosen ? { userChosen: true } : undefined);
       if (!res) return false;
       // Changes made to the project while the Open dialog was up get their own question.
-      if (this.projectDirty && this.projectRev !== answered && !(await this.confirmDiscardProject())) return false;
+      if (this.projectDirty && this.internals.projectRev !== answered && !(await this.confirmDiscardProject())) return false;
       this.replaceProject(parseProject(res.text, res.path));
       this.log(`Project ${this.project.name}: ${this.project.drawings.length} drawing(s).`);
       this.rememberRecent(res.path);
@@ -1022,7 +1013,7 @@ export class Editor {
   /** NEWPROJECT: an empty, untitled project (after Save / Don't Save / Cancel for the current one). */
   async newProjectCommand(name?: string): Promise<boolean> {
     if (!(await this.confirmDiscardProject())) return false;
-    const answered = this.projectRev;
+    const answered = this.internals.projectRev;
     let n = name?.trim();
     if (!n) {
       const typed = await (this.ui ?? fallbackUi).textInput('New Project', 'Project name:', 'Project1');
@@ -1030,7 +1021,7 @@ export class Editor {
       n = typed.trim() || 'Project1';
     }
     // The project may have been changed again while the name was asked for.
-    if (this.projectDirty && this.projectRev !== answered && !(await this.confirmDiscardProject())) return false;
+    if (this.projectDirty && this.internals.projectRev !== answered && !(await this.confirmDiscardProject())) return false;
     this.replaceProject({ name: n, drawings: [] });
     this.log(`New project ${n}. Add drawings with PROJECTADD and write the project file with PROJECTSAVE.`);
     this.emit('file');
@@ -1065,8 +1056,8 @@ export class Editor {
       this.log('Projects need the desktop app.');
       return false;
     }
-    const gen = this.projectGen;
-    const rev = this.projectRev;
+    const gen = this.internals.projectGen;
+    const rev = this.internals.projectRev;
     const snapshot = this.project;
     const revision = captureRevision();
     const suggest = snapshot.path ?? `${snapshot.name.replace(/\s+/g, '_')}.jcadproj.json`;
@@ -1107,14 +1098,14 @@ export class Editor {
       this.lastFileError = info.message;
       this.log(`Project not saved: ${info.message}`);
       const choice = this.hooks.saveError ? await this.hooks.saveError(info, snapshot.name, { saveAs: true }) : 'cancel';
-      if (choice === 'cancel' || this.projectGen !== gen) return false;
+      if (choice === 'cancel' || this.internals.projectGen !== gen) return false;
       return this.saveProject(choice === 'saveas' ? true : saveAs);
     }
-    if (this.projectGen !== gen) {
+    if (this.internals.projectGen !== gen) {
       this.log(`Project ${snapshot.name} saved: ${written.path} (another project is open now; it is unchanged).`);
       return true;
     }
-    if (this.projectRev === rev) {
+    if (this.internals.projectRev === rev) {
       this.project = written.project;
       this.projectDirty = false;
       this.log(`Project saved: ${written.path}`);
@@ -1249,7 +1240,7 @@ export class Editor {
     const raw = this.viewport.toWorld(screen);
     // Object snap target box: Options > Drafting > Aperture Size (px, full box; default 10 -> 7 px reach).
     const aperture = (this.settings.apertureSize / 2 + 2) * this.viewport.worldPerPixel();
-    const wantSnap = (this.tool !== null || this.gripDrag !== null) && !this.selReq;
+    const wantSnap = (this.tool !== null || this.internals.gripDrag !== null) && !this.internals.selReq;
     const snap = wantSnap
       ? findObjectSnap(raw, this.doc.entities, this.doc.lookupBlock, this.snap, aperture, this.overlay.trackFrom, this.hiddenLayers())
       : null;
@@ -1257,14 +1248,14 @@ export class Editor {
     if (snap) {
       // Object snap tracking acquires the points the cursor pauses on (the last two).
       if (this.snap.otrack && wantSnap && snap.kind !== 'perpendicular' && snap.kind !== 'nearest') {
-        if (!this.acquired.some((q) => g.eq(q, snap.point, 1e-9))) this.acquired = [...this.acquired.slice(-1), snap.point];
-        this.overlay.acquired = this.acquired;
+        if (!this.internals.acquired.some((q) => g.eq(q, snap.point, 1e-9))) this.internals.acquired = [...this.internals.acquired.slice(-1), snap.point];
+        this.overlay.acquired = this.internals.acquired;
       }
       return { world: snap.point, snap };
     }
     let p = raw;
     if (this.snap.otrack && wantSnap) {
-      const bases = this.overlay.trackFrom ? [...this.acquired, this.overlay.trackFrom] : this.acquired;
+      const bases = this.overlay.trackFrom ? [...this.internals.acquired, this.overlay.trackFrom] : this.internals.acquired;
       const tr = trackFromPoints(raw, bases, this.snap, aperture);
       if (tr) {
         this.overlay.trackPaths = tr.paths;
@@ -1276,36 +1267,33 @@ export class Editor {
     return { world: p, snap: null };
   }
 
-  /** Points acquired for object snap tracking; cleared whenever a point is accepted. */
-  private acquired: Point[] = [];
-
   onMouseMove(ev: MouseEvent): void {
     const s = this.screenFromEvent(ev);
-    if (this.panning) {
-      this.viewport.panByPixels(s.x - this.lastMouse.x, s.y - this.lastMouse.y);
-      this.lastMouse = s;
+    if (this.internals.panning) {
+      this.viewport.panByPixels(s.x - this.internals.lastMouse.x, s.y - this.internals.lastMouse.y);
+      this.internals.lastMouse = s;
       this.render();
       this.emit('view');
       return;
     }
-    this.lastMouse = s;
+    this.internals.lastMouse = s;
     const { world, snap } = this.resolveCursor(s);
-    this.cursorWorld = world;
+    this.internals.cursorWorld = world;
     this.overlay.cursor = world;
     this.overlay.snap = snap;
 
-    if (this.gripDrag) {
-      const moved = applyGrip(this.gripDrag.entity, this.gripDrag.index, world);
+    if (this.internals.gripDrag) {
+      const moved = applyGrip(this.internals.gripDrag.entity, this.internals.gripDrag.index, world);
       this.overlay.ghost = moved ? [moved] : [];
-      this.overlay.dynText = [`${g.dist(this.gripDrag.start, world).toFixed(4)}`];
+      this.overlay.dynText = [`${g.dist(this.internals.gripDrag.start, world).toFixed(4)}`];
       this.render();
       this.emit('view');
       return;
     }
-    if (this.dragStart && this.dragWorld) {
+    if (this.internals.dragStart && this.internals.dragWorld) {
       const raw = this.viewport.toWorld(s);
-      if (g.dist(this.dragStart, s) > 3) {
-        this.overlay.selectionBox = { a: this.dragWorld, b: raw, mode: s.x >= this.dragStart.x ? 'window' : 'crossing' };
+      if (g.dist(this.internals.dragStart, s) > 3) {
+        this.overlay.selectionBox = { a: this.internals.dragWorld, b: raw, mode: s.x >= this.internals.dragStart.x ? 'window' : 'crossing' };
       }
     } else if (this.tool) {
       this.tool.onMove(world, this.makeContext());
@@ -1327,29 +1315,29 @@ export class Editor {
 
   onMouseDown(ev: MouseEvent): void {
     const s = this.screenFromEvent(ev);
-    this.lastMouse = s;
-    if (ev.button === 1 || (ev.button === 0 && this.tool instanceof PanTool && !this.selReq)) {
+    this.internals.lastMouse = s;
+    if (ev.button === 1 || (ev.button === 0 && this.tool instanceof PanTool && !this.internals.selReq)) {
       ev.preventDefault();
-      this.panning = true;
+      this.internals.panning = true;
       return;
     }
     if (ev.button !== 0) return;
-    if (!this.selReq && this.layoutInput.mouseDown?.(s)) return;
+    if (!this.internals.selReq && this.layoutInput.mouseDown?.(s)) return;
     const { world } = this.resolveCursor(s);
-    if (this.tool && !this.selReq) {
+    if (this.tool && !this.internals.selReq) {
       this.acceptPoint(world);
       return;
     }
     // Selection (default tool or selection request)
     const raw = this.viewport.toWorld(s);
     // Grip editing: press on a grip of a selected entity to stretch it.
-    if (!this.selReq && this.selection.size > 0) {
+    if (!this.internals.selReq && this.selection.size > 0) {
       const gripTol = 6 * this.viewport.worldPerPixel();
       for (const e of this.doc.entities) {
         if (!this.selection.has(e.id)) continue;
         const idx = gripPoints(e).findIndex((gp) => g.dist(gp, raw) <= gripTol);
         if (idx >= 0) {
-          this.gripDrag = { entity: e, index: idx, start: raw };
+          this.internals.gripDrag = { entity: e, index: idx, start: raw };
           this.overlay.trackFrom = gripPoints(e)[idx]!;
           this.setPrompt('** STRETCH **  Specify stretch point:');
           this.overlay.cursorMode = 'point';
@@ -1363,22 +1351,22 @@ export class Editor {
       this.toggleSelect([hit.id], ev.shiftKey);
       return;
     }
-    this.dragStart = s;
-    this.dragWorld = raw;
+    this.internals.dragStart = s;
+    this.internals.dragWorld = raw;
   }
 
   onMouseUp(ev: MouseEvent): void {
-    if (ev.button === 1 || (ev.button === 0 && this.panning)) {
-      this.panning = false;
+    if (ev.button === 1 || (ev.button === 0 && this.internals.panning)) {
+      this.internals.panning = false;
       return;
     }
     if (ev.button !== 0) return;
-    if (this.gripDrag) {
+    if (this.internals.gripDrag) {
       const s = this.screenFromEvent(ev);
       const { world } = this.resolveCursor(s);
-      const original = gripPoints(this.gripDrag.entity)[this.gripDrag.index];
-      const moved = original && g.dist(original, world) > 1e-9 ? applyGrip(this.gripDrag.entity, this.gripDrag.index, world) : null;
-      this.gripDrag = null;
+      const original = gripPoints(this.internals.gripDrag.entity)[this.internals.gripDrag.index];
+      const moved = original && g.dist(original, world) > 1e-9 ? applyGrip(this.internals.gripDrag.entity, this.internals.gripDrag.index, world) : null;
+      this.internals.gripDrag = null;
       this.overlay.ghost = [];
       this.overlay.trackFrom = null;
       this.overlay.dynText = [];
@@ -1388,22 +1376,22 @@ export class Editor {
       this.render();
       return;
     }
-    if (this.dragStart && this.dragWorld) {
+    if (this.internals.dragStart && this.internals.dragWorld) {
       const s = this.screenFromEvent(ev);
       if (this.overlay.selectionBox) {
         const box = this.overlay.selectionBox;
         const bounds = g.boundsOfPoints([box.a, box.b])!;
         const found = selectByBox(bounds, box.mode, this.doc.entities, this.doc.lookupBlock, this.hiddenLayers(), this.lockedLayers());
         this.toggleSelect(found.map((e) => e.id), ev.shiftKey);
-      } else if (g.dist(s, this.dragStart) <= 3 && !this.selReq && !ev.shiftKey) {
+      } else if (g.dist(s, this.internals.dragStart) <= 3 && !this.internals.selReq && !ev.shiftKey) {
         // click on empty space clears selection
         if (this.selection.size > 0) {
           this.selection.clear();
           this.emit('selection');
         }
       }
-      this.dragStart = null;
-      this.dragWorld = null;
+      this.internals.dragStart = null;
+      this.internals.dragWorld = null;
       this.overlay.selectionBox = null;
       this.render();
     }
@@ -1452,14 +1440,14 @@ export class Editor {
   }
 
   private toggleSelect(ids: string[], remove: boolean): void {
-    const target = this.selReq ? this.selReq.ids : this.selection;
+    const target = this.internals.selReq ? this.internals.selReq.ids : this.selection;
     for (const id of ids) {
       if (remove) target.delete(id);
       else target.add(id);
     }
-    if (this.selReq) {
-      this.selection = new Set(this.selReq.ids);
-      this.log(`${ids.length} found, ${this.selReq.ids.size} total`);
+    if (this.internals.selReq) {
+      this.selection = new Set(this.internals.selReq.ids);
+      this.log(`${ids.length} found, ${this.internals.selReq.ids.size} total`);
     }
     this.emit('selection');
     this.render();
@@ -1565,21 +1553,13 @@ export class Editor {
 
   /** Current mouse position in world coordinates for the status bar. */
   cursorPosition(): Point | null {
-    return this.cursorWorld;
+    return this.internals.cursorWorld;
   }
 
   entitiesSelected(): Entity[] {
     return this.doc.entities.filter((e) => this.selection.has(e.id));
   }
 }
-
-const fallbackUi: ToolContext['ui'] = {
-  pickSymbol: async () => null,
-  editComponent: async (init) => ({ tag: init.tag, desc: init.desc, mfg: init.mfg ?? '', cat: init.cat ?? '' }),
-  ladderSettings: async (init: LadderSettings) => init,
-  textInput: async (_t, _l, init) => init,
-  confirm: async () => true,
-};
 
 /** Move grip `index` of an entity to `p` (AutoCAD grip stretch semantics). */
 export function applyGrip(e: Entity, index: number, p: Point): Entity | null {
