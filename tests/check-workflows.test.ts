@@ -50,7 +50,7 @@ describe('workflow validation', () => {
   });
 
   it('notices a release that no longer waits for the packaged smoke test or checks the tag', () => {
-    const r = check(withRelease((t) => t.replace('needs: [checks, build, packaged-smoke]', 'needs: [checks, build]').replace('target_commitish: ${{ needs.checks.outputs.sha }}', 'target_commitish: ${{ github.sha }}')));
+    const r = check(withRelease((t) => t.replace('needs: [checks, build, packaged-smoke, verify-artifacts]', 'needs: [checks, build]').replace('target_commitish: ${{ needs.checks.outputs.sha }}', 'target_commitish: ${{ github.sha }}')));
     expect(r.code).toBe(1);
     expect(r.out).toMatch(/release must need packaged-smoke/);
     expect(r.out).toMatch(/must target the tested commit/);
@@ -103,5 +103,24 @@ describe('workflow validation', () => {
     const r = check(withRelease((t) => t.replace('--prune --prune-tags ', '')));
     expect(r.code).toBe(1);
     expect(r.out).toMatch(/must prune remotely deleted tags/);
+  });
+
+  it('rejects aggregate verification hidden behind the publication tag guard, or dropped from the release', () => {
+    let r = check(withRelease((t) => t.replace('  verify-artifacts:\n', "  verify-artifacts:\n    if: github.event.inputs.tag != ''\n")));
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/verify-artifacts must also run for empty-tag build-only dispatches/);
+    r = check(withRelease((t) => t.replace('needs: [checks, build, packaged-smoke, verify-artifacts]', 'needs: [checks, build, packaged-smoke]')));
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/release must need verify-artifacts/);
+    r = check(withRelease((t) => t.replace('  verify-artifacts:\n    needs: [checks, build]', '  verify-artifacts:\n    needs: [checks]').replace('pattern: JCad-Electrical-*\n      - name: Verify all uploaded', 'pattern: JCad-Electrical-Windows\n      - name: Verify all uploaded')));
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/verify-artifacts must need build/);
+    expect(r.out).toMatch(/verify-artifacts must download all platform assets/);
+  });
+
+  it('rejects an upload that leaves out the macOS DMG blockmaps (recorded by the build, then missing in the release)', () => {
+    const r = check(withRelease((t) => t.replace('release/*.dmg\n              release/*.blockmap\n', 'release/*.dmg\n')));
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/macOS upload must include its installers, updater metadata and blockmaps/);
   });
 });
