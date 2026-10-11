@@ -22,7 +22,6 @@ import { isWire } from '../electrical/ladder';
 import { updateCrossReferences } from '../electrical/xref';
 import { withInsertAttributes } from '../electrical/attributes';
 import { modal, button } from '../ui/dialogkit';
-import { esc } from '../ui/dom';
 
 export const API_VERSION = 1;
 const APP_VERSION: string = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : 'dev';
@@ -402,7 +401,7 @@ function openDialog(editor: Editor, options: string | DialogOptions): Promise<st
     return Promise.resolve(null);
   }
   return new Promise((resolve) => {
-    const m = modal(esc(o.title ?? 'Plugin'), o.width ?? 480, 'dark');
+    const m = modal(o.title ?? 'Plugin', o.width ?? 480, 'dark');
     let done = false;
     const close = (result: string | null = null) => {
       if (done) return;

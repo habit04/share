@@ -52,7 +52,9 @@ function modal(title: string, width = 520, theme: 'light' | 'dark' = 'light'): M
   dlg.style.width = `${width}px`;
   const head = document.createElement('div');
   head.className = 'modal-title';
-  head.innerHTML = `<span>${esc(title)}</span><button class="modal-close" title="Close">${icon('close')}</button>`;
+  // The title is text (report titles, file names): never parsed as markup.
+  head.innerHTML = `<span></span><button class="modal-close" title="Close">${icon('close')}</button>`;
+  head.querySelector('span')!.textContent = title;
   const body = document.createElement('div');
   body.className = 'modal-body';
   const footer = document.createElement('div');

@@ -5,7 +5,8 @@ const fsSync = require('node:fs');
 const updater = require('./updater.cjs');
 const { atomicWriteFile, backupFile, createWriteQueue } = require('./atomic-write.cjs');
 const { createAutosaveStore, safeAutosaveName } = require('./autosave-store.cjs');
-const { guardIpc, appUrlTest, createRejectionLog, createPathPolicy, dxfImageNames } = require('./ipc-guard.cjs');
+const { guardIpc, appUrlTest, createRejectionLog, createPathPolicy, dxfImageNames, externalUrl } = require('./ipc-guard.cjs');
+const { createPathRegistry } = require('./path-registry.cjs');
 const { createDwgHost, progressThreshold } = require('./dwg-host.cjs');
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL;
@@ -18,8 +19,23 @@ const ipcMain = guardIpc(rawIpcMain, {
   isAppUrl: appUrlTest(path.join(__dirname, '..', 'dist', 'index.html'), DEV_URL),
   log: rejections,
 });
-/** Path rules shared by every file IPC (known paths, image locations, folders we own). */
-const pathPolicy = createPathPolicy({ isKnownPath, knownPaths: () => knownPaths, log: rejections });
+/**
+ * The paths the renderer may name: readable (open by name) and writable (save over / back up by
+ * name), persisted in recent.json (electron/path-registry.cjs). File content (a project's
+ * drawing list and catalog file) never makes a file outside the project's folder writable.
+ */
+const registry = createPathRegistry({ onChange: () => void writeStateFile(recentFile(), registry.serialize(), 'recent.json') });
+/** Path rules shared by every file IPC (readable / writable paths, image locations, folders we own). */
+const pathPolicy = createPathPolicy({
+  isKnownPath: (p) => registry.isKnown(p),
+  isWritablePath: (p) => registry.isWritable(p),
+  knownPaths: () => registry.paths(),
+  log: rejections,
+});
+/** What each write channel accepts (besides being writable): save-dxf, save-project, backup-file. */
+const DXF_FILE = /\.dxf$/i;
+const PROJECT_FILE = /\.json$/i;
+const BACKUP_FILE = /\.(dxf|jcadproj\.json)$/i;
 /** The window that sent an IPC message (the guard has already checked it is the main window). */
 function senderWindow(/** @type {Electron.IpcMainInvokeEvent} */ ev) {
   const win = BrowserWindow.fromWebContents(ev.sender) || mainWindow;
@@ -28,24 +44,6 @@ function senderWindow(/** @type {Electron.IpcMainInvokeEvent} */ ev) {
 }
 
 // ------------------------------------------------------------------ persisted main-process state
-/** Paths the user chose through our own dialogs (persisted so Recent Documents keep working). */
-const knownPaths = new Set();
-/**
- * Identity key of a path, the twin of src/app/paths.ts pathKey: absolute only, "." / ".." and
- * separators resolved, Unicode NFC (macOS hands out decomposed names while project files and
- * typed names are usually composed, so "José.dxf" matches either way), case-folded on Windows.
- * A relative path or one with a NUL byte has no key and is never "known".
- */
-function pathKey(p) {
-  if (typeof p !== 'string' || !p || p.length > 4096 || p.includes('\0') || !path.isAbsolute(p)) return null;
-  const k = path.resolve(p).normalize('NFC');
-  return process.platform === 'win32' ? k.toLowerCase() : k;
-}
-const knownKeys = new Set();
-function isKnownPath(p) {
-  const k = pathKey(p);
-  return k !== null && knownKeys.has(k);
-}
 let recentFiles = [];
 const stateDir = () => app.getPath('userData');
 const recentFile = () => path.join(stateDir(), 'recent.json');
@@ -63,23 +61,10 @@ function writeStateFile(file, text, what) {
 
 function loadPersistedPaths() {
   try {
-    const parsed = JSON.parse(fsSync.readFileSync(recentFile(), 'utf8'));
-    if (Array.isArray(parsed)) for (const p of parsed) if (typeof p === 'string') {
-      const k = pathKey(p);
-      if (k === null) continue;
-      knownPaths.add(p);
-      knownKeys.add(k);
-    }
+    registry.restore(fsSync.readFileSync(recentFile(), 'utf8'));
   } catch {
     /* first run */
   }
-}
-function rememberPath(p) {
-  const k = pathKey(p);
-  if (k === null) return;
-  knownPaths.add(p);
-  knownKeys.add(k);
-  void writeStateFile(recentFile(), JSON.stringify([...knownPaths].slice(-200)), 'recent.json');
 }
 
 function readWindowState() {
@@ -387,8 +372,13 @@ async function readDwg(bytes, id) {
   return dwgHost.read(bytes, id);
 }
 
-/** Open a DXF or DWG. Returns { path, kind: 'dxf', text } or { path, kind: 'dwg', payload, version } or null. */
+/**
+ * Open a DXF or DWG. Returns { path, kind: 'dxf', text } or { path, kind: 'dwg', payload, version } or null.
+ * A file chosen in the dialog becomes readable and writable by name; opening a known file by name
+ * (Recent Documents, a project's drawing) reads it and leaves its access as it was.
+ */
 async function openDrawingFile(win, file) {
+  const chosen = !file;
   if (!file) {
     const res = await dialog.showOpenDialog(win, {
       title: 'Open Drawing',
@@ -406,17 +396,19 @@ async function openDrawingFile(win, file) {
     // Only paths that came from our own dialogs / recent list may be opened by name.
     throw new Error('Unknown file path');
   }
+  if (chosen) registry.grant(file);
   if (file.toLowerCase().endsWith('.dwg')) {
-    rememberPath(file.replace(/\.dwg$/i, '.dxf'));
+    // The DXF copy next to a DWG gets the DWG's access (DWG itself is never written).
+    const twin = file.replace(/\.dwg$/i, '.dxf');
+    if (registry.isWritable(file)) registry.grant(twin);
+    else registry.grantRead(twin);
     const bytes = await fs.readFile(file);
     const { payload, version } = await readDwgWithProgress(win, file, bytes);
-    rememberPath(file);
     pathPolicy.rememberImages(file, (payload.imageDefs || []).map((d) => d && d.fileName));
     return { path: file, kind: 'dwg', payload, version };
   }
   // Read bytes, not a UTF-8 string: pre-2007 DXF files are in the $DWGCODEPAGE code page.
   const { text, encoding } = await decodeDxf(await fs.readFile(file));
-  rememberPath(file);
   pathPolicy.rememberImages(file, dxfImageNames(text));
   return { path: file, kind: 'dxf', text, encoding };
 }
@@ -450,10 +442,15 @@ ipcMain.handle('open-drawing', async (ev, file) => {
   return openDrawingFile(win, file);
 });
 
-/** Read a project file and register its drawings as openable paths. */
+/**
+ * Read a project file (or, by name, a project's catalog file) and register the project's drawings
+ * and catalog file (electron/path-registry.cjs registerProject: drawings inside the project's
+ * folder become writable, everything else it names readable only).
+ */
 ipcMain.handle('open-project', async (ev, file) => {
   const win = senderWindow(ev);
   if (file !== undefined && typeof file !== 'string') throw new Error('Invalid path');
+  const chosen = !file;
   if (!file) {
     const res = await dialog.showOpenDialog(win, {
       title: 'Open Project',
@@ -462,7 +459,13 @@ ipcMain.handle('open-project', async (ev, file) => {
     });
     if (res.canceled || res.filePaths.length === 0) return null;
     file = res.filePaths[0];
-  } else if (!pathPolicy.known(file, 'open-project')) throw new Error('Unknown file path');
+  } else {
+    if (!pathPolicy.known(file, 'open-project')) throw new Error('Unknown file path');
+    if (!PROJECT_FILE.test(file)) {
+      rejections.reject('open-project', `wrong file type: ${file.slice(0, 300)}`);
+      throw new Error('Unknown file path');
+    }
+  }
   const text = await fs.readFile(file, 'utf8');
   let parsed;
   try {
@@ -470,24 +473,10 @@ ipcMain.handle('open-project', async (ev, file) => {
   } catch {
     throw new Error('Not a valid project file');
   }
-  rememberPath(file);
-  // The project's drawings (and its catalog file) become openable by path. Relative entries resolve
-  // against the project folder exactly like src/app/paths.ts resolveFromFile (backslashes written on
-  // Windows are separators here too); only drawing / JSON file types are registered.
-  const dir = path.dirname(file);
-  const entryPath = (f) => {
-    if (typeof f !== 'string' || !f || f.includes('\0')) return null;
-    const p = process.platform === 'win32' ? f : f.replace(/\\/g, '/');
-    return path.isAbsolute(p) ? path.resolve(p) : path.resolve(dir, p);
-  };
-  if (parsed && Array.isArray(parsed.drawings)) {
-    for (const d of parsed.drawings) {
-      const p = d && entryPath(d.file);
-      if (p && /\.(dxf|dwg)$/i.test(p)) rememberPath(p);
-    }
-  }
-  const catalog = parsed && parsed.settings && entryPath(parsed.settings.catalogFile);
-  if (catalog && /\.json$/i.test(catalog)) rememberPath(catalog);
+  if (chosen) registry.grant(file);
+  // Only a project file the user may write registers what it lists: a file that is readable only
+  // (a project's catalog file, read through this channel) grants nothing.
+  if (registry.isWritable(file)) registry.registerProject(file, parsed);
   return { path: file, text };
 });
 
@@ -505,7 +494,7 @@ ipcMain.handle('save-text', async (ev, suggestName, text, filterName, ext) => {
   // (a .bak next to a CSV or text export would only clutter the user's folder).
   const isProject = /\.jcadproj\.json$/i.test(res.filePath) || String(filterName) === 'JCad Electrical Project';
   await atomicWriteFile(res.filePath, text, { backup: isProject });
-  rememberPath(res.filePath);
+  registry.grant(res.filePath);
   return res.filePath;
 });
 
@@ -519,29 +508,32 @@ ipcMain.handle('choose-project-path', async (ev, suggestName) => {
   });
   if (res.canceled || !res.filePath) return null;
   const file = /\.json$/i.test(res.filePath) ? res.filePath : `${res.filePath}.jcadproj.json`;
-  rememberPath(file);
+  registry.grant(file);
   return file;
 });
 
-/** Write the project file to a path that came from our own dialogs (Open Project / Save Project As / recent list). */
+/**
+ * Write the project file to a path that came from our own dialogs (Open Project / Save Project As /
+ * recent list): a .json file the user may write (a catalog file named by a project may not be).
+ */
 ipcMain.handle('save-project', async (_ev, file, text) => {
   if (typeof text !== 'string' || text.length > 64 * 1024 * 1024) throw new Error('Invalid project payload');
-  if (typeof file !== 'string' || !/\.json$/i.test(file) || !pathPolicy.known(file, 'save-project')) throw new Error('Unknown project path');
+  if (!pathPolicy.writable(file, 'save-project', PROJECT_FILE)) throw new Error('Unknown project path');
   // Temporary file + fsync + rename, previous version kept as <name>.bak (electron/atomic-write.cjs).
   await atomicWriteFile(file, text, { backup: true });
-  rememberPath(file);
   return file;
 });
 
 /**
  * Copy a drawing or project file to `<file>.bak` before a project-wide command rewrites it.
- * Only DXF drawings and project files whose path is known (our dialogs, the recent list, an open
- * project - the same rule as save-dxf; the shared path policy, which logs refusals in
- * ipc-rejections.log) are copied, through a temporary file + fsync + rename
- * (electron/atomic-write.cjs backupFile). Resolves { ok: true, path } or { ok: false, code, error }
- * with a message for the user; it never throws and never reports success without a complete copy.
+ * Only DXF drawings and *.jcadproj.json project files the renderer may write by name (our
+ * dialogs, the recent list, the drawings inside an open project's folder - the same rule as
+ * save-dxf; the shared path policy logs refusals in ipc-rejections.log) are copied, through a
+ * temporary file + fsync + rename (electron/atomic-write.cjs backupFile). Resolves
+ * { ok: true, path } or { ok: false, code, error } with a message for the user; it never throws
+ * and never reports success without a complete copy.
  */
-ipcMain.handle('backup-file', (_ev, file) => backupFile(file, undefined, (p) => pathPolicy.known(p, 'backup-file') !== null));
+ipcMain.handle('backup-file', (_ev, file) => backupFile(file, undefined, (p) => pathPolicy.writable(p, 'backup-file', BACKUP_FILE) !== null));
 
 /** Plot: the renderer sends a PNG data URL of the sheet; we print it to PDF via a hidden window. */
 ipcMain.handle('plot-pdf', async (ev, dataUrl, suggestName, landscape, sheet) => {
@@ -634,23 +626,34 @@ ipcMain.handle('open-dxf', async (ev) => {
   return r && r.kind === 'dxf' ? { path: r.path, text: r.text } : null;
 });
 
+/**
+ * Save a drawing as DXF. By name (`existingPath`) only over a .dxf file the renderer may write
+ * (electron/path-registry.cjs); another file type is refused (and logged). A drawing that may only
+ * be read (a project's drawing outside the project's folder) or an unknown path goes through the
+ * Save As dialog instead - opened on that drawing when it is readable, so the user confirms it.
+ */
 ipcMain.handle('save-dxf', async (ev, existingPath, text, suggestName) => {
   const win = senderWindow(ev);
-  let target = existingPath == null ? null : pathPolicy.known(existingPath, 'save-dxf');
+  if (typeof text !== 'string') throw new Error('Invalid DXF payload');
+  let target = existingPath == null ? null : pathPolicy.writable(existingPath, 'save-dxf', DXF_FILE);
+  let defaultPath = String(suggestName || 'Drawing1.dxf');
+  if (!target && typeof existingPath === 'string' && !pathPolicy.shapeProblem(existingPath)) {
+    if (!DXF_FILE.test(existingPath)) throw new Error('Invalid path');
+    if (registry.isKnown(existingPath)) defaultPath = existingPath;
+  }
   if (!target) {
     const res = await dialog.showSaveDialog(win, {
       title: 'Save Drawing As',
-      defaultPath: suggestName || 'Drawing1.dxf',
+      defaultPath,
       filters: [{ name: 'DXF Drawing (AutoCAD 2000)', extensions: ['dxf'] }],
     });
     if (res.canceled || !res.filePath) return null;
     target = res.filePath;
   }
-  if (typeof text !== 'string') throw new Error('Invalid DXF payload');
   // Temporary file + fsync + rename, previous version kept as <name>.dxf.bak (electron/atomic-write.cjs).
   // A failure is thrown as "CODE: reason, write '<target>'"; the renderer maps it to a message.
   await atomicWriteFile(target, text, { backup: true });
-  rememberPath(target);
+  registry.grant(target);
   return target;
 });
 
@@ -857,11 +860,16 @@ ipcMain.handle('app-info', () => ({
   selfUpdate: updater.canSelfUpdate(),
   releases: updater.RELEASES_PAGE,
 }));
-/** Links the renderer may open: this project's GitHub pages and the Cash App donation page. */
+/**
+ * Links the renderer may open: this project's GitHub pages and the Cash App donation page, compared
+ * after the URL is parsed (electron/ipc-guard.cjs externalUrl); the normalised URL is opened.
+ */
 ipcMain.handle('open-external', async (_ev, url) => {
-  const u = String(url || '');
-  const allowed = /^https:\/\/github\.com\/habit04\/share(\/|$)/.test(u) || /^https:\/\/cash\.app\/\$[A-Za-z][A-Za-z0-9_-]{0,19}$/.test(u);
-  if (!allowed || u.length > 16000) return false;
+  const u = externalUrl(url);
+  if (!u) {
+    rejections.reject('open-external', `not an allowed link: ${String(url).slice(0, 300)}`);
+    return false;
+  }
   await require('electron').shell.openExternal(u);
   return true;
 });

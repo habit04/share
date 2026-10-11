@@ -31,7 +31,9 @@ export function modal(
   dlg.setAttribute('aria-labelledby', titleId);
   const head = document.createElement('div');
   head.className = 'modal-title';
-  head.innerHTML = `<span id="${titleId}">${title}</span><button class="modal-close" title="Close" aria-label="Close">${icon('close')}</button>`;
+  // The title is text (it may name a file, a layout or a plugin): never parsed as markup.
+  head.innerHTML = `<span id="${titleId}"></span><button class="modal-close" title="Close" aria-label="Close">${icon('close')}</button>`;
+  head.querySelector('span')!.textContent = title;
   const body = document.createElement('div');
   body.className = 'modal-body';
   const footer = document.createElement('div');

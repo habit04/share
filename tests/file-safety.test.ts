@@ -310,7 +310,7 @@ describe('backup-file (project-wide .bak copies)', () => {
     expect(await atomic.backupFile(known, undefined, allowed)).toEqual({ ok: true, path: `${known}.bak` });
     const r = await atomic.backupFile(stranger, undefined, allowed);
     expect(r).toMatchObject({ ok: false, code: 'EINVAL' });
-    expect(!r.ok && r.error).toMatch(/^The backup copy of "stranger\.dxf" could not be made: only drawings and project files opened or saved in this session/);
+    expect(!r.ok && r.error).toMatch(/^The backup copy of "stranger\.dxf" could not be made: only drawings and project files you opened or saved yourself/);
     expect(readFileSync(`${stranger}.bak`, 'utf8')).toBe('OLD');
     expect(leftovers()).toEqual([]);
   });

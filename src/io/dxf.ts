@@ -56,6 +56,7 @@ import type { LinearUnits } from '../core/units';
 import * as g from '../core/geometry';
 import { attdefFlags, attdefFlagProps, type AttributeDefExt } from '../electrical/symbol-builder-core';
 // Track E: paper space (layouts, VIEWPORT entities, LAYOUT objects) lives in dxf-layouts.ts.
+import { isScaleName } from '../core/layouts';
 import { planLayouts, writeLayoutHeader, extraBlockRecords, layoutHandleOf, writeLayoutContent, writeLayoutObjects, LayoutReader } from './dxf-layouts';
 import { decodeUnicodeEscapes, encodeDxfText, textStyleFromGroups, textStyleGroups, textStyleOf, textStylesForWrite, textStylesMeta, withTextStyle, type TextStyle } from './encoding';
 import { ImportReportBuilder, geometryProblem, rawEntitiesOf, withImportData, type RawDxfEntity } from './import-report';
@@ -2761,7 +2762,8 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
     views,
     celtype: /^BYLAYER$/i.test(celtype) ? 'ByLayer' : celtype,
     celweight: celweightRaw >= 0 ? celweightRaw / 100 : undefined,
-    ...(headerVars.get('$CANNOSCALE')?.[0]?.value ? { cannoscale: headerVars.get('$CANNOSCALE')![0]!.value } : {}),
+    // A scale name ("1:4", "1/8\" = 1'-0\""): printable, short and without markup characters, or it is ignored.
+    ...(isScaleName(headerVars.get('$CANNOSCALE')?.[0]?.value) ? { cannoscale: headerVars.get('$CANNOSCALE')![0]!.value } : {}),
     ...(hnum('$ANNOALLVISIBLE', 1) === 0 ? { annoAllVisible: false } : {}),
   };
 

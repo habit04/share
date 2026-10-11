@@ -162,6 +162,17 @@ messages). The date of each version is the date of the commit that set that vers
 - `new Drawing({...})` keeps the header, the active space and every other field it is given.
 - Clicking where overlapping objects are equally close selects (and highlights) the topmost one
   instead of the one underneath.
+- A project file can no longer give the program permission to overwrite files outside its own
+  folder: drawings it lists outside the project folder, and its catalog file, can be opened but are
+  saved (by `SAVE` or a project-wide command) only after you confirm them in the Save As dialog.
+  Saving a drawing writes only `.dxf` files and saving a project only `.json` project files.
+- Text from drawing files and plugins is always shown as text: the annotation scale name in the
+  status bar and the titles of dialogs (file, layout, symbol and plugin names). An annotation
+  scale in a DXF header that is not a plain scale name is ignored.
+- Opening a drawing no longer makes the program connect to another computer to load its images:
+  images on a network share are loaded only for drawings opened from that same server.
+- Links opened in your browser (About, Report a Problem, updates) are checked after the address is
+  normalised, so they can only lead to this project's GitHub pages or the donation page.
 
 ## [0.4.0] - 2026-09-29
 

@@ -1,5 +1,6 @@
 import type { Editor } from '../app/editor';
 import { icon } from './icons';
+import { esc } from './dom';
 import './icons-ui';
 import { lineweightDisplay } from '../render/draw';
 import { formatCoordinate, saveSettings, type UserSettings } from '../app/settings';
@@ -393,7 +394,8 @@ export class StatusBar {
     this.wsEl.innerHTML = `${icon('settings')} ${ws.outerHTML}${icon('chevron')}`;
     this.unitsEl.textContent = `${unitTypeLabel(s.units)} · ${s.unitSuffix}`;
     const vpScale = viewportScaleCaption(this.editor);
-    this.annoEl.innerHTML = `${vpScale ? `<span title="${t('status.vpscale.title')}">VP ${vpScale}</span> · ` : ''}<span>${icon('text')} ${annotationScaleCaption(this.editor)}</span>${icon('chevron')}`;
+    // The scale name comes from the drawing file: text only, never markup.
+    this.annoEl.innerHTML = `${vpScale ? `<span title="${esc(t('status.vpscale.title'))}">VP ${esc(vpScale)}</span> · ` : ''}<span>${icon('text')} ${esc(annotationScaleCaption(this.editor))}</span>${icon('chevron')}`;
     this.refreshCoords();
   }
 }

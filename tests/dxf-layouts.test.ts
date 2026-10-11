@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { readDxf, writeDxf } from '../src/io/dxf';
 import { Drawing, type DrawingState } from '../src/core/document';
 import type { Entity, TextEntity, InsertEntity } from '../src/core/entities';
-import { defaultLayout, paperFor, sheetSize, VIEWPORT_LAYER, type Layout } from '../src/core/layouts';
+import { defaultLayout, paperFor, sheetSize, isScaleName, VIEWPORT_LAYER, type Layout } from '../src/core/layouts';
 import { TITLE_BLOCK } from '../src/electrical/templates';
 
 const fixture = (name: string) => readFileSync(join(__dirname, 'fixtures', name), 'latin1');
@@ -180,5 +180,22 @@ describe('DXF layouts: AutoCAD file', () => {
     expect(ex.layouts!.map((l) => l.name)).toEqual(['Layout1', 'Layout2']);
     expect(ex.layouts![0]!.paper).toMatchObject({ id: 'letter', units: 'mm', orientation: 'landscape' });
     expect(ex.layouts![0]!.pristine).toBe(true);
+  });
+});
+
+describe('$CANNOSCALE from a file is a scale name, never markup', () => {
+  const withScale = (name: string) => ['0', 'SECTION', '2', 'HEADER', '9', '$ACADVER', '1', 'AC1015', '9', '$CANNOSCALE', '2', name, '0', 'ENDSEC', '0', 'SECTION', '2', 'ENTITIES', '0', 'ENDSEC', '0', 'EOF', ''].join('\n');
+  it('keeps ordinary scale names, including feet and inches', () => {
+    expect(readDxf(withScale('1:4')).header?.cannoscale).toBe('1:4');
+    expect(readDxf(withScale('1/8" = 1\'-0"')).header?.cannoscale).toBe('1/8" = 1\'-0"');
+  });
+  it('ignores a value with markup characters or of absurd length (the status bar would show it)', () => {
+    expect(readDxf(withScale('<img src=x onerror=alert(1)>')).header?.cannoscale).toBeUndefined();
+    expect(readDxf(withScale('1:2 & more')).header?.cannoscale).toBeUndefined();
+    expect(readDxf(withScale('1'.repeat(65))).header?.cannoscale).toBeUndefined();
+    expect(isScaleName('1:1')).toBe(true);
+    expect(isScaleName('a\u0007b')).toBe(false);
+    expect(isScaleName('   ')).toBe(false);
+    expect(isScaleName(undefined)).toBe(false);
   });
 });

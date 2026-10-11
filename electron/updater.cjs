@@ -12,6 +12,7 @@
  */
 const { app, dialog, shell, net } = require('electron');
 const { parseVersion, compareVersions } = require('./version.cjs');
+const { externalUrl } = require('./ipc-guard.cjs');
 
 const OWNER = 'habit04';
 const REPO = 'share';
@@ -63,9 +64,9 @@ async function fetchLatestRelease() {
   return { version, url: String(json.html_url || RELEASES_PAGE), notes: String(json.body || ''), assets };
 }
 
-/** Only links into this project's GitHub repository are ever opened. */
+/** Only links into this project's GitHub repository are ever opened (parsed and compared, electron/ipc-guard.cjs externalUrl). */
 function safeUrl(u) {
-  return /^https:\/\/github\.com\/habit04\/share\//.test(String(u || '')) ? String(u) : RELEASES_PAGE;
+  return externalUrl(u, { cashApp: false }) ?? RELEASES_PAGE;
 }
 
 /** The download that fits this machine, or the release page. */

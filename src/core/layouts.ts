@@ -516,6 +516,14 @@ export function annotativeEntity(e: Entity, f: number): Entity {
   }
 }
 
+/**
+ * Is this a usable annotation scale name ("1:4", "1/8\" = 1'-0\"")? Printable, at most 64
+ * characters, no markup characters (< > &): a $CANNOSCALE from a file that is not is ignored.
+ */
+export function isScaleName(name: unknown): name is string {
+  return typeof name === 'string' && /^[^\x00-\x1f\x7f<>&]{1,64}$/.test(name) && name.trim() !== '';
+}
+
 /** CANNOSCALE as paper units per model unit (header name like "1:4"; default 1). */
 export function cannoscaleValue(name: string | undefined): number {
   return (name && parseScale(name)) || 1;

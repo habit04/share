@@ -4,7 +4,6 @@
  * dialog and the Layout Wizard. The commands and the space switching live in tools/layouts.ts.
  */
 import type { Editor } from '../app/editor';
-import { esc } from './dom';
 import { icon } from './icons';
 import { showMenu, type MenuItem } from './menu';
 import { modal, button, dlgRow, dlgGroup, dlgCheck, numberInput, selectInput, textField } from './dialogkit';
@@ -148,7 +147,7 @@ export function pageSetupDialog(editor: Editor, name: string): void {
   const c = layoutController(editor);
   const lay = findLayout(editor.doc.snapshot, name);
   if (!lay) return;
-  const m = modal(`Page Setup - ${esc(lay.name)}`, 560, 'dark');
+  const m = modal(`Page Setup - ${lay.name}`, 560, 'dark');
   m.root.querySelector('.modal')?.classList.add('page-setup');
   let paper: LayoutPaper = lay.paper;
   let plotScale = lay.plotScale;

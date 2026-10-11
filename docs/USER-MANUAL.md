@@ -409,8 +409,10 @@ Drawings from other programs may contain raster images (IMAGE) and external refe
 
 - **Images**: the desktop application loads the image file (`.png`, `.jpg`, `.jpeg`, `.gif`,
   `.bmp`, `.webp`, up to 50 MB) from the stored path, relative to the drawing's folder, or from the
-  drawing's folder when the stored folder does not exist. The browser edition, or a missing file,
-  shows the image frame with its file name. `LIST` shows the path and the size in pixels and
+  drawing's folder when the stored folder does not exist. Images on a network share
+  (`\\server\share\...`) are loaded only for a drawing opened from that same server, so opening a
+  drawing never makes the program connect to another computer. The browser edition, or a missing
+  or refused file, shows the image frame with its file name. `LIST` shows the path and the size in pixels and
   drawing units.
 - **External references** are drawn as a dashed frame with the reference name; the referenced
   file is not loaded.
@@ -852,6 +854,12 @@ fixing things.
   different folders are two separate project drawings; the Project Manager, tabs and project-wide
   lists then add the folder to the name, for example `a.dxf (line1)` and `a.dxf (line2)`. On
   Windows, upper / lower case and `\` or `/` in paths do not matter.
+- A project file only lists files; it cannot give the program permission to overwrite files
+  outside its own folder. Drawings the project lists **outside** the project file's folder (and
+  its catalog file) open normally, but the first time one of them is saved - with `SAVE` or by a
+  project-wide command - the **Save As** dialog opens on that file so you confirm it; drawings you
+  opened or saved yourself through a file dialog are saved directly, wherever they are. Drawings on
+  a network share named by a project that is not on that same server are ignored.
 
 ### Project-wide tools
 
@@ -876,7 +884,9 @@ How the changes are applied:
    optionally keeping a `.bak` copy of each. Cancel changes nothing.
    If the `.bak` copy of a drawing cannot be written, that drawing is **not** saved: a dialog
    names the file and the error and offers **Skip** (the default) or **Continue Without Backup**
-   for that file only. Skipped drawings are listed on the command line.
+   for that file only. Skipped drawings are listed on the command line. A drawing outside the
+   project's folder that you have not opened or saved yourself gets no `.bak` copy and is written
+   only after you confirm it in the Save As dialog (see above).
 3. DWG drawings are read-only and are skipped; the command line lists skipped drawings. The
    browser edition cannot read closed drawings, so open them in tabs first.
 

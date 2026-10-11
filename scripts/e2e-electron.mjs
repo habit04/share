@@ -28,8 +28,10 @@
 // with recalculated paths, Save / Cancel before opening another project), the Save All workflow on close (Cancel,
 // a failed save aborting the close, Save Selected writing a drawing and the project before the window closes, the
 // main process waiting for the answer), SAVEAS to a DXF that reads back, AUTOSAVE writing a recovery copy, a large-DWG
-// progress dialog and its Cancel (the read runs in a worker thread), IPC from a foreign page being refused, and no
-// main-process error log.
+// progress dialog and its Cancel (the read runs in a worker thread), IPC from a foreign page being refused, the file
+// access rules (a project cannot make files outside its folder writable, save-dxf writes .dxf only, no network images
+// for a local drawing, links checked after normalisation, file text in the status bar and dialog titles shown as
+// text), and no main-process error log.
 // File safety: old-style autosave files are migrated to permanent ids and offered by the Drawing
 // Recovery Manager (a double click opens a backup once, Discard All spares the opened one); saves
 // go through temp file + rename and keep <name>.bak; a failed save shows Retry / Save As... and
@@ -694,6 +696,113 @@ try {
     check(existsSync(rejectionLog) && /ipc app-info: sender is not the application window/.test(readFileSync(rejectionLog, 'utf8')), 'the refusal is logged in ipc-rejections.log');
   }
 
+  // ------------------------------------------------------------------ file access: read / write split, network paths, links, markup
+  step = 'file access';
+  if (current) {
+    const accDir = mkdtempSync(join(tmpdir(), 'jcad-e2e-acc-'));
+    const jobDir = join(accDir, 'jobs', 'a');
+    mkdirSync(jobDir, { recursive: true });
+    const tinyDxf = ['0', 'SECTION', '2', 'ENTITIES', '0', 'ENDSEC', '0', 'EOF', ''].join('\n');
+    const outsideJson = join(accDir, 'package.json'); // "../../package.json" seen from the project folder
+    const outsideDxf = join(accDir, 'elsewhere.dxf');
+    const insideDxf = join(jobDir, 'sheet1.dxf');
+    writeFileSync(outsideJson, '{"name":"not-a-project"}');
+    writeFileSync(outsideDxf, tinyDxf);
+    writeFileSync(insideDxf, tinyDxf);
+    const accProject = join(jobDir, 'listing.jcadproj.json');
+    const projectText = JSON.stringify({
+      name: 'Access',
+      drawings: [{ file: 'sheet1.dxf' }, { file: '../../package.json' }, { file: '../../elsewhere.dxf' }, { file: '\\\\e2e-no-such-host\\share\\remote.dxf' }],
+      settings: { catalogFile: '../../package.json' },
+    });
+    writeFileSync(accProject, projectText);
+    // Opened through the (stubbed) Open Project dialog, straight on the bridge: the editor's own project is untouched.
+    await app.evaluate((_e, p) => globalThis.__e2e.openPaths.push(p), accProject);
+    const opened = await win.evaluate(() => window.jcad.openProject().then((r) => (r ? r.path : null)));
+    check(opened === accProject, `a project listing ../../package.json, a drawing outside its folder and a network drawing opened (${opened})`);
+    await messages();
+    const tryCall = (fn, args) => win.evaluate(([f, a]) => window.jcad[f](...a).then((r) => ({ ok: true, r }), (e) => ({ ok: false, e: String(e) })), [fn, args]);
+    const asProject = await tryCall('saveProject', [outsideJson, '{"name":"overwritten"}']);
+    check(!asProject.ok && /Unknown project path/.test(asProject.e) && readFileSync(outsideJson, 'utf8') === '{"name":"not-a-project"}', `a catalog file named by the project (../../package.json) is not writable by save-project (${asProject.e})`);
+    const asDxf = await tryCall('saveDxf', [outsideJson, '0\nEOF\n', 'x.dxf']);
+    check(!asDxf.ok && /Invalid path/.test(asDxf.e) && readFileSync(outsideJson, 'utf8') === '{"name":"not-a-project"}', `save-dxf refuses a .json file (${asDxf.e})`);
+    const overProject = await tryCall('saveDxf', [accProject, '0\nEOF\n', 'x.dxf']);
+    check(!overProject.ok && /Invalid path/.test(overProject.e) && readFileSync(accProject, 'utf8') === projectText, `save-dxf refuses the writable project file itself: wrong file type (${overProject.e})`);
+    const readOnlyBackup = await tryCall('backupFile', [outsideDxf]);
+    check(readOnlyBackup.ok && readOnlyBackup.r && readOnlyBackup.r.ok === false && !existsSync(`${outsideDxf}.bak`), `backup-file refuses a drawing outside the project folder (${JSON.stringify(readOnlyBackup.r)})`);
+    const readOnlySave = await tryCall('saveDxf', [outsideDxf, '0\nEOF\n', 'elsewhere.dxf']);
+    const asked = await messages();
+    check(readOnlySave.ok && readOnlySave.r === null && asked.includes('save:Save Drawing As') && readFileSync(outsideDxf, 'utf8') === tinyDxf, `a drawing outside the project folder is saved only through the Save As dialog (cancelled here: ${JSON.stringify(readOnlySave.r)}, ${asked.join(' ; ')})`);
+    const readBack = await tryCall('openDrawing', [outsideDxf]);
+    check(readBack.ok && readBack.r && readBack.r.kind === 'dxf', 'that drawing can still be opened (read) by name');
+    const insideSave = await tryCall('saveDxf', [insideDxf, tinyDxf.replace('ENDSEC', 'ENDSEC\n999\ninside'), 'sheet1.dxf']);
+    check(insideSave.ok && insideSave.r === insideDxf && (await messages()).length === 0 && /inside/.test(readFileSync(insideDxf, 'utf8')), `a drawing inside the project folder is saved by name without a dialog (${JSON.stringify(insideSave)})`);
+    const remote = await tryCall('openDrawing', ['\\\\e2e-no-such-host\\share\\remote.dxf']);
+    check(!remote.ok && /Unknown file path/.test(remote.e), `a network drawing named by a local project is not registered (${remote.e})`);
+    // Images on a network share are never read for a drawing elsewhere: no connection, no sign-in prompt.
+    const netImages = await win.evaluate(async (paths) => {
+      const out = [];
+      for (const p of paths) out.push(await window.jcad.readImage(p).then(() => 'read', (e) => (/Invalid path/.test(String(e)) ? 'refused' : String(e))));
+      return out;
+    }, ['\\\\e2e-no-such-host\\share\\logo.png', '//e2e-no-such-host/share/logo.png']);
+    check(netImages.join() === 'refused,refused', `read-image refuses \\\\server\\share and //server/share paths (${netImages.join()})`);
+    const imgDxf = join(jobDir, 'net-image.dxf');
+    writeFileSync(imgDxf, ['0', 'SECTION', '2', 'OBJECTS', '0', 'IMAGEDEF', '5', '1A', '1', '\\\\e2e-no-such-host\\share\\stamp.png', '0', 'IMAGEDEF', '5', '1B', '1', '//e2e-no-such-host/share/mark.png', '0', 'ENDSEC', '0', 'EOF', ''].join('\n'));
+    await app.evaluate((_e, p) => globalThis.__e2e.openPaths.push(p), imgDxf);
+    await win.evaluate(() => window.jcad.openDrawing());
+    await messages();
+    const named = await win.evaluate(async (paths) => {
+      const out = [];
+      for (const p of paths) out.push(await window.jcad.readImage(p).then(() => 'read', (e) => (/Invalid path/.test(String(e)) ? 'refused' : String(e))));
+      return out;
+    }, ['\\\\e2e-no-such-host\\share\\stamp.png', '//e2e-no-such-host/share/mark.png']);
+    check(named.join() === 'refused,refused', `network images named by a local drawing's IMAGEDEF are refused (${named.join()})`);
+    // Links: parsed and compared after "..", so the repository prefix cannot be escaped.
+    const links = await win.evaluate(async (urls) => {
+      const out = [];
+      for (const u of urls) out.push(await window.jcad.openExternal(u));
+      return out;
+    }, ['https://github.com/habit04/share/../../login/oauth/authorize?client_id=x', 'https://github.com/habit04/share/%2e%2e/%2e%2e/settings', 'https://github.com@example.com/habit04/share/', 'https://github.com/habit04/share/releases']);
+    const opened2 = await app.evaluate(() => globalThis.__e2e.external.splice(0));
+    check(links.join() === 'false,false,false,true' && opened2.length === 1 && opened2[0] === 'https://github.com/habit04/share/releases', `open-external refuses "..", encoded ".." and user-info links, opens the repository page (${links.join()} -> ${opened2.join(' ')})`);
+    // Text from files is shown as text: a scale name from a DXF header and a dialog title with markup.
+    const anno = await win.evaluate(async () => {
+      const ed = window.editor;
+      const before = ed.doc.header.cannoscale;
+      const dirty = ed.doc.dirty;
+      ed.doc.setHeader({ cannoscale: '<img src=x onerror="window.__e2eXss=1">1:2' });
+      ed.notify('file');
+      await new Promise((r) => setTimeout(r, 50));
+      const el = document.querySelector('.status-annoscale');
+      const out = { imgs: el ? el.querySelectorAll('img').length : -1, text: el ? el.textContent : '' };
+      ed.doc.setHeader({ cannoscale: before });
+      ed.doc.dirty = dirty;
+      ed.notify('file');
+      return { ...out, xss: /** @type {any} */ (window).__e2eXss === 1 };
+    });
+    check(anno.imgs === 0 && anno.text.includes('<img src=x') && !anno.xss, `an annotation scale name with markup shows as text in the status bar (${anno.imgs} img, "${anno.text.trim().slice(0, 50)}")`);
+    const titles = await win.evaluate(async () => {
+      const evil = '<img src=x onerror="window.__e2eXss=2">Plot <b>Title</b>';
+      const read = () => {
+        const dlg = [...document.querySelectorAll('.modal')].pop();
+        const span = dlg && dlg.querySelector('.modal-title span');
+        return { markup: dlg ? dlg.querySelectorAll('.modal-title img, .modal-title b').length : -1, text: span ? span.textContent : '', dlg };
+      };
+      void (/** @type {any} */ (window).jcadApi.ui.alert('body', evil));
+      await new Promise((r) => setTimeout(r, 100));
+      const a = read();
+      /** @type {HTMLElement | null | undefined} */ (a.dlg?.querySelector('.modal-footer button'))?.click();
+      void window.editor.ui.confirm(evil, 'body');
+      await new Promise((r) => setTimeout(r, 100));
+      const b = read();
+      /** @type {HTMLElement | null | undefined} */ (b.dlg?.querySelector('.modal-footer button:last-child'))?.click();
+      await new Promise((r) => setTimeout(r, 100));
+      return { a: { markup: a.markup, text: a.text }, b: { markup: b.markup, text: b.text }, xss: /** @type {any} */ (window).__e2eXss === 2, left: document.querySelectorAll('.modal').length };
+    });
+    check(titles.a.markup === 0 && titles.a.text.startsWith('<img') && titles.b.markup === 0 && titles.b.text.startsWith('<img') && !titles.xss, `dialog titles with markup show as text (plugin dialog "${titles.a.text.slice(0, 30)}", confirm "${titles.b.text.slice(0, 30)}"; ${titles.left} dialog(s) left open)`);
+    rmSync(accDir, { recursive: true, force: true });
+  }
+
   // ------------------------------------------------------------------ Symbol Builder
   step = 'Symbol Builder';
   const tabsBefore = await win.evaluate(() => window.editor.sessions.count);
@@ -776,7 +885,7 @@ try {
   check(b1 && b1.ok === true && b1.path === `${good}.bak` && readFileSync(`${good}.bak`, 'utf8') === readFileSync(good, 'utf8'), `backup-file copied the drawing (${JSON.stringify(b1)})`);
   // A path the main process never handed out (no dialog, recent list or project named it) is refused like save-dxf refuses it.
   const b2 = await win.evaluate((p) => window.jcad.backupFile(p), join(saveDir, 'stranger.dxf'));
-  check(b2 && b2.ok === false && b2.code === 'EINVAL' && /^The backup copy of "stranger\.dxf" could not be made: only drawings and project files opened or saved in this session/.test(b2.error), `backup-file refuses a path outside the allow-list (${JSON.stringify(b2)})`);
+  check(b2 && b2.ok === false && b2.code === 'EINVAL' && /^The backup copy of "stranger\.dxf" could not be made: only drawings and project files you opened or saved yourself/.test(b2.error), `backup-file refuses a path outside the allow-list (${JSON.stringify(b2)})`);
   // A known path whose file is gone: a clear message, no .bak.
   renameSync(good, `${good}.moved`);
   const b2b = await win.evaluate((p) => window.jcad.backupFile(p), good);
@@ -945,10 +1054,20 @@ check(!existsSync(errorLog), `no main-process error log${existsSync(errorLog) ? 
 const mainErrors = mainLog.join('').split(/\r?\n/).filter((l) => /Uncaught|UnhandledPromiseRejection|TypeError|ReferenceError/.test(l));
 check(mainErrors.length === 0, `main process printed no JS errors${mainErrors.length ? `: ${mainErrors.slice(0, 5).join(' | ')}` : ''}`);
 // The IPC guard refused only what this test provoked (the foreign window, the images outside the
-// allowed folders): every legitimate flow (dialogs, plugins, packs, autosave, user library, updater,
-// read-image next to a chosen file) went through.
+// allowed folders, the writes and links of the "file access" step): every legitimate flow (dialogs,
+// plugins, packs, autosave, user library, updater, read-image next to a chosen file) went through.
+const provoked = [
+  /ipc app-info: sender is not the application window/,
+  /read-image: (not next to a drawing the user opened|relative path|not an image file|network path not next to a file the user opened on that server|device path): /,
+  /backup-file: not a file chosen by the user: .*stranger\.dxf/,
+  /save-project: read-only \(named by a project file, not chosen by the user\): .*package\.json/,
+  /save-dxf: wrong file type: .*(package\.json|listing\.jcadproj\.json)/,
+  /(backup-file|save-dxf): read-only \(named by a project file, not chosen by the user\): .*elsewhere\.dxf/,
+  /open-drawing: (relative path|not a file chosen by the user): .*e2e-no-such-host/,
+  /open-external: not an allowed link: /,
+];
 const rejections = existsSync(join(userData, 'ipc-rejections.log')) ? readFileSync(join(userData, 'ipc-rejections.log'), 'utf8').split(/\r?\n/).filter(Boolean) : [];
-const unexpected = rejections.filter((l) => !/ipc app-info: sender is not the application window|read-image: (not next to a drawing the user opened|relative path|not an image file): |backup-file: not a file chosen by the user: .*stranger\.dxf/.test(l));
+const unexpected = rejections.filter((l) => !provoked.some((re) => re.test(l)));
 check(unexpected.length === 0, `ipc-rejections.log holds only the provoked refusals (${rejections.length} line(s))${unexpected.length ? `: ${unexpected.slice(0, 5).join(' | ')}` : ''}`);
 
 rmSync(profile, { recursive: true, force: true });

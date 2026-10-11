@@ -244,7 +244,7 @@ export function editDimStyleDialog(title: string, initial: DimStyle): Promise<Di
   installCss();
   return new Promise((resolve) => {
     let draft: DimStyle = { ...initial };
-    const m = modal(esc(title), 900, 'dark');
+    const m = modal(title, 900, 'dark');
     let done = false;
     const finish = (v: DimStyle | null) => {
       if (done) return;
@@ -570,7 +570,7 @@ function newStyleDialog(styles: readonly DimStyle[], startWith: DimStyle): Promi
 
 function messageDialog(title: string, message: string, buttons: string[] = ['OK']): Promise<string | null> {
   return new Promise((resolve) => {
-    const m = modal(esc(title), 420, 'dark');
+    const m = modal(title, 420, 'dark');
     let done = false;
     const finish = (v: string | null) => {
       if (done) return;

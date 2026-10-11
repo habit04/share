@@ -24,7 +24,9 @@ function modal(title: string, width = 520, theme: 'light' | 'dark' = 'light'): {
   dlg.style.width = `${width}px`;
   const head = document.createElement('div');
   head.className = 'modal-title';
-  head.innerHTML = `<span>${title}</span><button class="modal-close" title="Close">${icon('close')}</button>`;
+  // The title is text (it may name a file or a symbol): never parsed as markup.
+  head.innerHTML = `<span></span><button class="modal-close" title="Close">${icon('close')}</button>`;
+  head.querySelector('span')!.textContent = title;
   const body = document.createElement('div');
   body.className = 'modal-body';
   const footer = document.createElement('div');
