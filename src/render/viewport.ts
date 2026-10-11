@@ -4,10 +4,11 @@ import type { Entity } from '../core/entities';
 import { gripPoints, entityBounds } from '../core/entities';
 import type { Drawing } from '../core/document';
 import type { SnapResult, TrackPath } from '../core/snap';
-import { drawEntity, renderSettings, annotationDisplay, colorDisplay, type Transform } from './draw';
+import { drawEntity, renderSettings, annotationDisplay, colorDisplay, lineweightDisplay, type Transform } from './draw';
 import { cannoscaleValue } from '../core/layouts';
 import { setTextStyles } from './hershey';
 import { textStylesOf } from '../io/encoding';
+import { warmSpatialIndex } from '../core/spatial-index';
 
 /**
  * High-DPI helpers. The canvas backing store has devicePixelRatio device pixels
@@ -113,6 +114,46 @@ export class Viewport {
   /** Called after a devicePixelRatio change (window moved to another monitor, browser zoom) resized the canvas. */
   onDprChange: ((dpr: number) => void) | null = null;
 
+  private baseScene: { state: Drawing['snapshot']; key: string; canvas: HTMLCanvasElement } | null = null;
+  private imageState: Drawing['snapshot'] | null = null;
+  private sceneHasImages = false;
+  private warmTimer: ReturnType<typeof setTimeout> | null = null;
+  private warmedEntities: Drawing['entities'] | null = null;
+  private warmedBlocks: Drawing['blocks'] | null = null;
+
+  private sceneKey(ov: ViewportOverlay): string | null {
+    if (this.layoutPainter || this.underlay || this.doc.entities.length < 200 || this.canvas.width * this.canvas.height > 16_000_000) return null;
+    const state = this.doc.snapshot;
+    if (this.imageState !== state) {
+      this.imageState = state;
+      this.sceneHasImages = state.entities.some((e) => e.type === 'image') || Object.values(state.blocks).some((b) => b.entities.some((e) => e.type === 'image'));
+    }
+    // Images repaint asynchronously when their bitmaps arrive.
+    if (this.sceneHasImages) return null;
+    // Set order is stable during cursor motion; a different order only causes a safe cache miss.
+    // Avoid sorting large selections on every frame, while still detecting in-place Set edits.
+    return JSON.stringify([this.width, this.height, this.dpr, this.scale, this.center.x, this.center.y, this.settings, lineweightDisplay, [...ov.selection], ov.hover]);
+  }
+
+  private rememberScene(key: string): void {
+    const canvas = this.baseScene?.canvas ?? this.canvas.ownerDocument?.createElement('canvas');
+    if (!canvas) return;
+    canvas.width = this.canvas.width; canvas.height = this.canvas.height;
+    const context = canvas.getContext('2d');
+    if (!context) return;
+    context.drawImage(this.canvas, 0, 0);
+    this.baseScene = { state: this.doc.snapshot, key, canvas };
+  }
+
+  private queueSpatialWarmup(): void {
+    if (this.warmTimer || this.warmedEntities === this.doc.entities && this.warmedBlocks === this.doc.blocks) return;
+    this.warmTimer = setTimeout(() => {
+      this.warmTimer = null;
+      this.warmedEntities = this.doc.entities; this.warmedBlocks = this.doc.blocks;
+      warmSpatialIndex(this.doc.entities, this.doc.lookupBlock);
+    }, 50);
+  }
+
   constructor(canvas: HTMLCanvasElement, private doc: Drawing) {
     this.canvas = canvas;
     const ctx = canvas.getContext('2d');
@@ -156,6 +197,10 @@ export class Viewport {
   dispose(): void {
     if (this.dprQuery) this.dprQuery.mq.removeEventListener('change', this.dprQuery.handler);
     this.dprQuery = null;
+    if (this.warmTimer) clearTimeout(this.warmTimer);
+    this.warmTimer = null;
+    if (this.baseScene) { this.baseScene.canvas.width = 1; this.baseScene.canvas.height = 1; }
+    this.baseScene = null;
     if (this.raf) cancelAnimationFrame(this.raf);
     this.raf = 0;
   }
@@ -242,6 +287,7 @@ export class Viewport {
 
   requestRender(overlay: ViewportOverlay): void {
     this.lastOverlay = overlay;
+    this.queueSpatialWarmup();
     if (this.raf) cancelAnimationFrame(this.raf);
     this.raf = requestAnimationFrame(() => {
       this.raf = 0;
@@ -253,15 +299,18 @@ export class Viewport {
     const { ctx } = this;
     this.lastOverlay = ov;
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-    ctx.fillStyle = this.settings.background;
-    ctx.fillRect(0, 0, this.width, this.height);
-
-    if (this.settings.gridVisible && !this.layoutPainter) this.drawGrid();
-    if (this.underlay) {
-      ctx.save();
-      this.underlay(ctx, this);
-      ctx.restore();
-    }
+    const key = this.sceneKey(ov);
+    const cached = key && this.baseScene?.state === this.doc.snapshot && this.baseScene.key === key ? this.baseScene : null;
+    if (!cached) {
+      ctx.fillStyle = this.settings.background;
+      ctx.fillRect(0, 0, this.width, this.height);
+      if (this.settings.gridVisible && !this.layoutPainter) this.drawGrid();
+      if (this.underlay) {
+        ctx.save();
+        this.underlay(ctx, this);
+        ctx.restore();
+      }
+    } else ctx.drawImage(cached.canvas, 0, 0, this.width, this.height);
 
     const header = this.doc.header;
     renderSettings.ltscale = header.ltscale;
@@ -280,29 +329,32 @@ export class Viewport {
     const lookup = this.doc.lookupBlock;
     const viewBounds = this.visibleBounds();
 
-    if (this.layoutPainter) {
-      ctx.save();
-      this.layoutPainter(ctx, this, ov);
-      ctx.restore();
-    }
-    for (const e of this.layoutPainter ? [] : this.doc.entities) {
-      if (hidden.has(e.layer)) continue;
-      const selected = ov.selection.has(e.id);
-      const hovered = ov.hover === e.id && !selected;
-      // Cull anything whose bounds miss the view (bounds are cached for compound entities).
-      if (e.type === 'line') {
-        if (!segmentMayIntersect(e.a, e.b, viewBounds)) continue;
-      } else if (e.type !== 'xline' && e.type !== 'ray') {
-        const b = entityBounds(e, lookup);
-        if (b && !g.boundsIntersect(b, viewBounds)) continue;
+    if (!cached) {
+      if (this.layoutPainter) {
+        ctx.save();
+        this.layoutPainter(ctx, this, ov);
+        ctx.restore();
       }
-      if (selected) {
-        drawEntity(ctx, e, tf, layers, lookup, { dashed: this.settings.selectionEffect !== 'solid', lineWidthOverride: this.settings.selectionEffect === 'solid' ? 2.5 : undefined, alpha: 0.95, hidden });
-      } else if (hovered) {
-        drawEntity(ctx, e, tf, layers, lookup, { lineWidthOverride: 2, alpha: 0.95, hidden });
-      } else {
-        drawEntity(ctx, e, tf, layers, lookup, { hidden });
+      for (const e of this.layoutPainter ? [] : this.doc.entities) {
+        if (hidden.has(e.layer)) continue;
+        const selected = ov.selection.has(e.id);
+        const hovered = ov.hover === e.id && !selected;
+        // Cull anything whose bounds miss the view (bounds are cached for compound entities).
+        if (e.type === 'line') {
+          if (!segmentMayIntersect(e.a, e.b, viewBounds)) continue;
+        } else if (e.type !== 'xline' && e.type !== 'ray') {
+          const b = entityBounds(e, lookup);
+          if (b && !g.boundsIntersect(b, viewBounds)) continue;
+        }
+        if (selected) {
+          drawEntity(ctx, e, tf, layers, lookup, { dashed: this.settings.selectionEffect !== 'solid', lineWidthOverride: this.settings.selectionEffect === 'solid' ? 2.5 : undefined, alpha: 0.95, hidden });
+        } else if (hovered) {
+          drawEntity(ctx, e, tf, layers, lookup, { lineWidthOverride: 2, alpha: 0.95, hidden });
+        } else {
+          drawEntity(ctx, e, tf, layers, lookup, { hidden });
+        }
       }
+      if (key) this.rememberScene(key);
     }
 
     // Grips for selected
