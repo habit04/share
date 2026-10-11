@@ -16,6 +16,56 @@ messages). The date of each version is the date of the commit that set that vers
 - Download alerts: an hourly GitHub Actions workflow (`download-alerts.yml`, `scripts/download-alerts.mjs`)
   compares the release download counters with the last run and comments on the "Download tracker"
   issue when an installer was downloaded, so subscribers get a GitHub notification or e-mail.
+- Release gates: `release.yml` runs a `checks` job (workflow validation, lint, all type checks, unit
+  tests, build, UI click check, screenshot comparison, Electron end-to-end) on the exact release
+  commit; the installers are built from that commit only after it passed, every installer is then
+  installed or extracted on its own OS and smoke-tested as a packaged application (`packaged-smoke`
+  job, `scripts/packaged-smoke.mjs`: NSIS silent install, `.dmg` via `hdiutil` on macOS for the
+  first time, AppImage and `.deb` extraction), and the release is published only when the tag
+  still points at the tested commit. The signing steps are unchanged.
+- `scripts/e2e-electron.mjs --packaged <executable>` (`npm run e2e:packaged`) runs the end-to-end
+  checks against an installed application; new checks for SAVEAS, AUTOSAVE / recovery copies, the
+  large-DWG progress dialog and Cancel, and the IPC guard. CI runs the end-to-end test on macOS too.
+- Manual workflows: **Packaged smoke test (existing release)** for the installers of a published
+  release, and **Screenshot baselines** to regenerate the approved screenshots on the CI browser.
+- Approved screenshots: `screenshots/baseline/` with `npm run screenshot:compare` (pixelmatch with a
+  per-image tolerance, masks and diff images uploaded by CI) and `npm run screenshot:approve`;
+  screenshot pages run with a fixed time zone, locale and calendar date.
+- Development setup: Node 22 declared in `package.json` `engines`, `.nvmrc` / `.node-version`, and
+  `engine-strict` in `.npmrc`; `docs/DEVELOPMENT.md`.
+- Static checks: ESLint flat config with typescript-eslint for `src/`, `tests/`, `electron/`,
+  `scripts/` (`npm run lint`), `tsconfig.electron.json` and `tsconfig.scripts.json` (checkJs) with
+  `npm run typecheck:all`, and `npm run check:workflows` (js-yaml); all run in CI.
+- Performance: `tests/perf-dense.test.ts` (`npm run bench:node`: 50,000-entity drawing with and
+  without the spatial index, 20-drawing project reports) and `scripts/bench.mjs` (`npm run bench`:
+  rendering, hover and window selection in Chromium); numbers in `docs/PERFORMANCE.md`.
+- Documentation: `docs/SUPPORT-MATRIX.md` (what survives DXF / DWG import and export) and
+  `docs/RELEASE.md` (cutting, verifying and delivering a release; dependency review checklist).
+
+### Changed
+
+- Hit testing, window / crossing / fence / polygon selection and the object-snap search use a
+  spatial index (`src/core/spatial-index.ts`) on drawings of 2,000 entities or more, with exactly
+  the same results: picking on a 50,000-entity drawing went from 15-40 ms to under 0.02 ms.
+- The Electrical Audit counts wire ends through the same index and computes symbol outlines
+  once: the project-wide reports over 20 dense sheets went from about 147 s to 5-10 s, with
+  identical output.
+- DWG files are parsed in a worker thread in the main process instead of on its event loop; files of
+  1 MB or more show a progress dialog with Cancel.
+- The plugin loader reports a plugin whose load throws, never settles (30 s) or whose trust prompt
+  fails, marks it failed and loads the next one; uncaught errors from a plugin's timers or promises
+  are reported with its name. `docs/PLUGIN-API.md` now says plainly that plugins run in the
+  application page with its globals, lists their capabilities and the isolation options considered.
+- Drawing has a supported undo-history API (`history()`, `restoreHistory()`, `undoLimit`); the
+  drawing tabs, the Symbol Builder and tests no longer reach into its private fields.
+
+### Security
+
+- Every IPC handler checks its caller: only the application page in the main window's top frame
+  may use the bridge; other senders are refused and logged in `<app data>/ipc-rejections.log`.
+- File paths from the renderer go through one policy: open / save / back up by name only for files
+  the user chose; `read-image` only for images next to such a file or named by an opened drawing;
+  plugin and catalog-pack files must stay inside their folders after symbolic links are resolved.
 
 ## [0.4.0] - 2026-09-29
 
