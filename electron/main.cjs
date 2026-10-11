@@ -283,10 +283,19 @@ function requestClose(win, context) {
   });
 }
 // Restart to install an update: the same Save All workflow first; the restart's own window close then goes through.
+// electron-updater's quitAndInstall closes the window right away, but when the installer cannot be
+// started it does nothing (and throws nothing). The approval therefore lapses: a later close (after
+// more edits) asks about unsaved work again instead of going straight through.
+const RESTART_APPROVAL_MS = 10_000;
 updater.onConfirmRestart(async (w) => {
   const win = w && !w.isDestroyed() ? w : mainWindow;
   const ok = await requestClose(win, 'restart');
-  if (ok && win) closeApproved.add(win);
+  if (ok && win) {
+    closeApproved.add(win);
+    setTimeout(() => {
+      if (!win.isDestroyed()) closeApproved.delete(win);
+    }, RESTART_APPROVAL_MS);
+  }
   return ok;
 });
 

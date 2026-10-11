@@ -23,6 +23,7 @@ import type { Tool, ToolContext } from './types';
 import { validBlockName } from './blocks';
 import { isBuiltinSymbol, isLibrarySymbol, findLibrarySymbol, LIBRARY_SYMBOLS } from '../electrical/library';
 import { userLibrary, symbolToDxf, type UserSymbol } from '../electrical/userlib';
+import { exportFailed } from '../app/file-error-text';
 import { NON_COMPONENT_RE, isCoilBlock } from '../electrical/families';
 import { tagPrefix } from '../electrical/symbols';
 import { showRibbonTab } from '../ui/ribbon';
@@ -900,7 +901,7 @@ export class SymbolBuilder {
     }
     void ed.fileBridge.saveDxf(null, symbolToDxf(block), `${block.name}.dxf`).then((p) => {
       if (p) ed.log(`Symbol ${block.name} exported to ${p} (block definition + one insert at the origin).`);
-    });
+    }, exportFailed((t) => ed.log(t), `${block.name}.dxf`));
   }
 
   /** Close the active symbol tab; prompts Save / Don't Save / Cancel when dirty unless forced. */
@@ -999,7 +1000,7 @@ export function registerSymbolBuilderCommands(editor: Editor): void {
     if (ed.fileBridge?.saveText) {
       void ed.fileBridge.saveText(file, json, 'JCad symbol library', 'json').then((p) => {
         if (p) ed.log(`${what} exported to ${p}.`);
-      });
+      }, exportFailed((t) => ed.log(t), file));
     } else if (downloadText(file, json)) ed.log(`${what} exported: ${file} downloaded by the browser.`);
     else ed.log('Exporting needs the desktop app or a browser.');
   });

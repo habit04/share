@@ -5,7 +5,7 @@
  */
 import { modal, button } from './dialogkit';
 import { esc } from './dom';
-import type { UnsavedItem, CloseDecision } from '../app/closeflow';
+import { closeErrorText, type UnsavedItem, type CloseDecision } from '../app/closeflow';
 
 const KIND_LABEL: Record<UnsavedItem['kind'], string> = { drawing: 'Drawing', symbol: 'Symbol (user library)', project: 'Project' };
 
@@ -69,7 +69,7 @@ export function saveFailedDialog(title: string, error: string): Promise<void> {
     const m = modal('Save Failed', 480);
     m.onClose(() => resolve());
     const p = document.createElement('p');
-    p.textContent = `${title} could not be saved: ${error}`;
+    p.textContent = closeErrorText(title, error);
     const hint = document.createElement('div');
     hint.className = 'hint';
     hint.textContent = 'Nothing was closed. Items saved before this one stay saved; save the rest yourself or close again.';

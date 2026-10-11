@@ -15,6 +15,7 @@ import { applyGrip } from '../src/app/editor';
 import { writeDxf, readDxf } from '../src/io/dxf';
 import { SessionManager, type SessionHost } from '../src/app/sessions';
 import { Autosaver, type AutosaveStore } from '../src/app/autosave';
+import { collectUnsaved } from '../src/app/closeflow';
 
 const ins = (block: string, x: number, y: number, attrs: Record<string, string>): Entity => ({ id: newId(), layer: 'SYMS', color: 'ByLayer', type: 'insert', block, position: { x, y }, rotation: 0, scale: 1, attributes: attrs });
 const ref = (y: number, t: string): Entity => ({ id: newId(), layer: 'MISC', color: 'ByLayer', type: 'text', position: { x: 0.75, y: y - 0.06 }, text: t, height: 0.125, rotation: 0, align: 'right' });
@@ -181,9 +182,11 @@ describe('symbol tabs: dirty prompt and autosave', () => {
     // tab 2 is a symbol session (the Symbol Builder registers its id), opened dirty like SymbolBuilder.open does
     const symbolTab = sm.add(undefined, null, true);
     const symbolId = sm.all[symbolTab]!.id;
-    expect(sm.anyDirty()).toBe(true); // onQueryDirty -> sessions.anyDirty(): closing the app prompts for the symbol
+    // Closing the app runs the Save All workflow (app/closeflow.ts): the symbol tab is listed as a symbol.
+    const unsaved = () => collectUnsaved({ sessions: sm, projectDirty: false, project: { name: 'P', drawings: [] } } as unknown as Parameters<typeof collectUnsaved>[0], (id) => id === symbolId);
+    expect(unsaved().map((i) => i.kind)).toEqual(['symbol']);
     sm.switchTo(0);
-    expect(sm.anyDirty()).toBe(true);
+    expect(unsaved().map((i) => `${i.kind}:${i.sessionId}`)).toEqual([`symbol:${symbolId}`]);
     const written: string[] = [];
     const store: AutosaveStore = {
       async write(name) {

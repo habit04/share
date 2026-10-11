@@ -11,6 +11,7 @@ import { diagnosticEntries, issueUrl, reportText, ISSUES_PAGE, type ReportInput 
 import { APP_VERSION_LABEL } from './help';
 import { writeDxf } from '../io/dxf';
 import { withoutUnusedLibraryBlocks } from '../electrical/library';
+import { exportFailed } from '../app/file-error-text';
 
 interface AppInfo {
   version: string;
@@ -173,13 +174,24 @@ export function reportProblemDialog(editor: Editor, kind: 'bug' | 'feedback' = '
         status.textContent = 'Report downloaded.';
         return;
       }
-      const p = await bridge.saveText(`${base}.txt`, reportText(input()), 'Problem report', 'txt');
+      // A failed write is shown in the dialog and logged (not lost as an unhandled rejection).
+      let error = '';
+      const failed = (name: string) =>
+        exportFailed((t) => {
+          error = t;
+          status.textContent = t;
+          editor.log(t);
+        }, name);
+      const reportName = `${base}.txt`;
+      const p = await bridge.saveText(reportName, reportText(input()), 'Problem report', 'txt').catch(failed(reportName));
       if (!p) return;
       let msg = `Report saved to ${p}.`;
       if (dwgBox.checked) {
         const dxf = writeDxf(withoutUnusedLibraryBlocks(editor.doc.snapshot));
-        const d = await bridge.saveText(`${base}-${editor.fileName().replace(/\.(dxf|dwg)$/i, '')}.dxf`, dxf, 'DXF Drawing', 'dxf');
+        const dxfName = `${base}-${editor.fileName().replace(/\.(dxf|dwg)$/i, '')}.dxf`;
+        const d = await bridge.saveText(dxfName, dxf, 'DXF Drawing', 'dxf').catch(failed(dxfName));
         if (d) msg += ` Drawing saved to ${d}.`;
+        else if (error) msg += ` ${error}`;
       }
       msg += ' E-mail both files or attach them to a GitHub issue.';
       status.textContent = msg;

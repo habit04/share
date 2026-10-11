@@ -83,7 +83,10 @@ messages). The date of each version is the date of the commit that set that vers
   every modified drawing tab, Symbol Builder tab and the project (Save All / Discard All / Cancel,
   per-item choice); items are saved one after another and a failure keeps the window open. The
   main process waits for the answer instead of closing after three seconds, and Save no longer
-  saved only the active drawing. The drawing and project autosaves finish before the window closes.
+  saved only the active drawing. A Symbol Builder tab counts as saved once the user library file is
+  written, and drawings changed by the saves themselves (a symbol save updates the drawings that
+  use it) are asked about again. The drawing and project autosaves being written, and the removal
+  of the backups of drawings just saved, finish before the window closes (a few seconds at most).
 - File paths are normalised in one place (`src/app/paths.ts`): separators, `.` / `..`, Unicode,
   case-insensitive comparison for Windows paths. Projects, tabs ("is this drawing already open"),
   recent files and the main process's allowed-path list use it, and drawings with the same file
@@ -106,7 +109,8 @@ messages). The date of each version is the date of the commit that set that vers
 - Autosave backups are named after a permanent per-document id instead of the drawing title and
   a session number that restarted every launch, so a new session can no longer overwrite a backup
   that was not recovered yet. `autosave/index.json` keeps the title, path and time of each backup;
-  backups from 0.4.0 are migrated on the first start.
+  backups from 0.4.0 are migrated on the first start (the project's autosave keeps its own name, so
+  Project Recovery finds it after a crash).
 - Autosave records exactly the revision it wrote: edits made while a backup is being written are no
   longer treated as backed up. Autosave runs never overlap (a request during a run queues one more),
   and Save, Close and quitting wait for a write in flight. A completed save removes the backup only
@@ -119,9 +123,11 @@ messages). The date of each version is the date of the commit that set that vers
   action runs. An unreadable recovery folder shows an error with Retry instead of an empty list.
   `DRAWINGRECOVERY` (`DRM`) opens the manager at any time.
 - Save errors explain the cause (disk full, permission or read-only, locked file, folder or network
-  drive not available, path too long) for every save: drawings, the project, project-wide updates
-  and CSV / report exports are reported on the command line instead of being lost as an unhandled
-  error. `SAVE`, `SAVEAS`, `PROJECTSAVE` and `PROJECTSAVEAS` offer Retry, Save As... and Cancel; the
+  drive not available, path too long) for every save: drawings, the project, project-wide updates,
+  CSV / report / `.wdt` / symbol library exports, plotted PDFs and the problem report are reported
+  on the command line (and in the dialog that started them) instead of being lost as an unhandled
+  error. A drawing that cannot be opened because its file or folder is gone is described the same
+  way. `SAVE`, `SAVEAS`, `PROJECTSAVE` and `PROJECTSAVEAS` offer Retry, Save As... and Cancel; the
   drawing or project stays modified and its autosave backup is kept when a save fails.
 - Opening a DXF or DWG file reports everything it could not bring in unchanged: an Import
   Report (counts per type, the first 50 objects with handle, layer, place and reason, Copy
@@ -135,9 +141,9 @@ messages). The date of each version is the date of the commit that set that vers
   unbalanced SECTION / ENDSEC, content outside sections) instead of opening half-read; a file
   that ends early offers to open what was readable and is marked as recovered. The same applies to
   a backup opened from the Drawing Recovery Manager; project-wide reports read such a closed drawing
-  as far as it goes and say so on the command line, and project-wide updates leave it unchanged. Objects with
-  NaN / infinite coordinates, negative radii or fewer than two polyline vertices are left out
-  and listed instead of becoming geometry at the origin.
+  as far as it goes and say so on the command line, and project-wide updates leave it unchanged.
+  Objects with NaN / infinite coordinates, negative radii or fewer than two polyline vertices are
+  left out and listed instead of becoming geometry at the origin.
 - DXF layers with the Default lineweight (370 = -3) read as 0.25 mm instead of a negative width.
 - DXF arcs, circles, polylines and block references with extrusion (0,0,-1) (mirrored objects)
   open in their true place instead of mirrored; other non-planar objects are reported.

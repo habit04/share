@@ -38,6 +38,10 @@
 // keeps the drawing modified and its backup; backup-file answers { ok, path } / { ok: false, error } and
 // refuses paths outside the main process allow-list;
 // an unreadable recovery folder shows an error state.
+// Across the tracks: a damaged DXF that finishes opening in a background tab (recovered there, its
+// report named after it, autosaved under its permanent id), the close waiting for an autosave being
+// written and for the backup removal of a drawing it saved, and a crash after the project was autosaved
+// (the next start offers Project Recovery, and the Drawing Recovery Manager lists drawings only).
 import { _electron as electron } from 'playwright';
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, existsSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { deflateSync, crc32 } from 'node:zlib';
@@ -952,6 +956,9 @@ try {
   const savedProject = existsSync(projectCopy) ? JSON.parse(readFileSync(projectCopy, 'utf8')) : null;
   check(JSON.stringify(savedProject?.drawings.map((d) => d.file)) === JSON.stringify(['../proj/dwg/a.dxf', '../proj/b.dxf']), `relative paths recalculated for the new folder: ${JSON.stringify(savedProject?.drawings)}`);
   check(await win.evaluate((p) => window.editor.project.path === p && !window.editor.projectDirty, projectCopy), 'the project now lives at the new path, unmodified');
+  // The backup channel uses the same path identity: a project drawing named with "." / ".." segments is known.
+  const bProj = await win.evaluate((p) => window.jcad.backupFile(p), `${projDir}/proj/./dwg/../b.dxf`);
+  check(bProj && bProj.ok === true && existsSync(join(projDir, 'proj', 'b.dxf.bak')), `backup-file accepts another spelling of a project drawing (${JSON.stringify(bProj)})`);
   // Opening another project while this one has unsaved changes asks first; Cancel keeps it.
   await win.evaluate(() => window.editor.updateProject({ ...window.editor.project, description: 'pending' }));
   await win.evaluate(() => window.editor.runCommand('OPENPROJECT'));
@@ -964,6 +971,66 @@ try {
   await win.waitForTimeout(200);
   check((await messages()).every((m) => m !== 'open:Open Project'), 'Cancel: no Open dialog was shown');
   check(await win.evaluate(() => window.editor.project.description === 'pending' && window.editor.projectDirty), 'Cancel: the modified project stays open');
+
+  // ------------------------------------------------------------------ a damaged drawing finishing its open in a background tab
+  step = 'background open';
+  const bgDir = mkdtempSync(join(tmpdir(), 'jcad-e2e-bg-'));
+  const cutShort = join(bgDir, 'cut-short.dxf');
+  writeFileSync(cutShort, readFileSync(fixtures.dxf, 'latin1').replace(/\r?\n\s*0\r?\nEOF\s*$/, '\r\n'), 'latin1');
+  // open-drawing answers slowly (the real handler, delayed): the user goes back to the first tab meanwhile.
+  await app.evaluate(({ ipcMain }) => {
+    // Electron keeps invoke handlers in a private map; the test reaches for it to wrap the real handler.
+    const orig = /** @type {any} */ (ipcMain)._invokeHandlers.get('open-drawing');
+    globalThis.__e2e.origOpen = orig;
+    ipcMain.removeHandler('open-drawing');
+    ipcMain.handle('open-drawing', async (ev, f) => {
+      await new Promise((r) => setTimeout(r, 1500));
+      return orig(ev, f);
+    });
+  });
+  await win.evaluate(() => window.editor.sessions.switchTo(0));
+  const firstTab = await win.evaluate(() => ({ id: window.editor.sessions.current.id, dirty: window.editor.doc.dirty, path: window.editor.doc.filePath }));
+  await app.evaluate((_e, p) => globalThis.__e2e.openPaths.push(p), cutShort);
+  h = await historyLen();
+  await win.evaluate(() => window.editor.runCommand('OPEN'));
+  await win.waitForTimeout(150);
+  await win.evaluate(() => window.editor.sessions.switchTo(0));
+  const damaged = win.locator('.modal', { hasText: 'Damaged drawing file' });
+  await damaged.waitFor({ timeout: 15_000 }).then(
+    async () => {
+      check(/end-of-file marker is missing/.test((await damaged.textContent()) ?? ''), 'a file that ends early asks whether to open what was readable');
+      await damaged.locator('button', { hasText: 'Yes' }).click();
+    },
+    () => bad('no damaged-file question for a file without its end-of-file marker'),
+  );
+  await waitLog(/^(Opened|Failed to open|Not opened)/, h, 15_000).catch(() => bad('the background open logged nothing'));
+  log = await logSince(h);
+  check(log.some((l) => l.startsWith(`Opened ${cutShort}:`) && l.endsWith('(in the tab it was opened from)')), `the drawing landed in the tab that started the open: ${log.filter((l) => /Opened|Failed/.test(l)).join(' | ')}`);
+  const recoveredReport = win.locator('.import-report-dialog .modal', { hasText: 'Recovered Drawing' });
+  await recoveredReport.waitFor({ timeout: 5000 }).then(
+    async () => {
+      check(/cut-short\.dxf is damaged/.test((await recoveredReport.textContent()) ?? ''), 'the report names the background drawing, not the active one');
+      await recoveredReport.locator('button', { hasText: 'Close' }).click();
+    },
+    () => bad('no import report for the drawing recovered in the background'),
+  );
+  const bg = await win.evaluate((p) => {
+    const ed = window.editor;
+    const s = ed.sessions.all.find((x) => x.filePath === p);
+    return s ? { id: s.id, dirty: s.dirty, recovered: !!s.state.meta?.importReport?.recovered, active: ed.sessions.current.id, activeDirty: ed.doc.dirty, activePath: ed.doc.filePath } : null;
+  }, cutShort);
+  check(!!bg && bg.dirty && bg.recovered, `the background tab is recovered and modified (${JSON.stringify(bg)})`);
+  check(!!bg && bg.active === firstTab.id && bg.activeDirty === firstTab.dirty && bg.activePath === firstTab.path, 'the tab the user switched to is unchanged');
+  h = await historyLen();
+  await win.evaluate(() => window.editor.runCommand('AUTOSAVE'));
+  await waitLog(/drawing\(s\) autosaved/, h, 15_000).catch(() => bad('AUTOSAVE did not finish'));
+  const bgBackup = await win.evaluate((id) => window.jacUi.autosaver.nameFor(id) ?? null, bg?.id);
+  const bgEntry = bgBackup ? readIndex()[bgBackup] : null;
+  check(!!bgBackup && ID_FILE.test(bgBackup) && bgEntry?.title === 'cut-short.dxf' && bgEntry?.originalPath === cutShort, `the background drawing is autosaved under its permanent id (${bgBackup}: ${JSON.stringify(bgEntry)})`);
+  await app.evaluate(({ ipcMain }) => {
+    ipcMain.removeHandler('open-drawing');
+    ipcMain.handle('open-drawing', globalThis.__e2e.origOpen);
+  });
 
   // ------------------------------------------------------------------ errors so far
   step = 'renderer errors';
@@ -1018,9 +1085,63 @@ try {
   check((await windowCount()) === 1, 'the window is still open after the failed save');
   check((await messages()).includes('save:Save Drawing As'), 'the Save As dialog was requested for the untitled drawing');
 
+  // A write error while closing: first the Save Failed question for that drawing (Retry / Save As... /
+  // Cancel), then why the close stopped. A second close request meanwhile stacks nothing; Cancel keeps
+  // the window open and the drawing modified, and the next close asks again.
+  await app.evaluate((_e, p) => globalThis.__e2e.savePaths.push(p), join(outDir, 'no-such-folder', 'drawing1.dxf'));
+  await requestWindowClose();
+  await saveAll.waitFor({ timeout: 10_000 });
+  await tickOnly(['Drawing1.dxf']);
+  await saveAll.locator('.btn.primary').click();
+  const closeErr = win.locator('.save-error-dialog .modal');
+  await closeErr.waitFor({ timeout: 10_000 }).then(
+    async () => check(/"drawing1\.dxf" could not be saved: .*is not available/.test((await closeErr.textContent()) ?? ''), 'a write error while closing shows the Save Failed question first'),
+    () => bad('no Save Failed question for a write error while closing'),
+  );
+  await requestWindowClose();
+  await win.waitForTimeout(600);
+  check((await win.locator('.modal', { hasText: 'Save them before closing' }).count()) === 0 && (await windowCount()) === 1, 'another close request while the question is up shows no second Save All dialog');
+  await closeErr.locator('button', { hasText: 'Cancel' }).click();
+  const stopped = win.locator('.modal', { hasText: 'Nothing was closed' });
+  await stopped.waitFor({ timeout: 10_000 }).then(
+    async () => {
+      const why = (await stopped.locator('.modal-body p').first().textContent()) ?? '';
+      check(/^"drawing1\.dxf" could not be saved: .*is not available/.test(why) && !/could not be saved.*could not be saved/.test(why), `then the close stops with the same reason, said once ("${why.slice(0, 80)}")`);
+      await stopped.locator('button', { hasText: 'OK' }).click();
+    },
+    () => bad('no "close stopped" message after Cancel in the Save Failed question'),
+  );
+  await win.waitForTimeout(300);
+  check((await windowCount()) === 1 && (await win.locator('.modal').count()) === 0, 'the window is open with no dialog left after Cancel');
+  check(await win.evaluate(() => window.editor.sessions.all.some((s, i) => window.editor.sessions.titleOf(i) === 'Drawing1.dxf' && s.dirty)), 'Drawing1 is still modified');
+
   // Drawing1 and the project saved (in that order, each awaited), everything else discarded: the window closes.
   const savedDrawing = join(outDir, 'closed-drawing1.dxf');
   await app.evaluate((_e, p) => globalThis.__e2e.savePaths.push(p), savedDrawing);
+  // An autosave is being written when the close starts, and saving Drawing1 removes its backup: both are
+  // made slow (the real handlers, delayed) and must finish before the window goes away.
+  const drawing1Backup = await win.evaluate(() => {
+    const s = window.editor.sessions.all.find((x) => window.editor.sessions.titleOf(window.editor.sessions.all.indexOf(x)) === 'Drawing1.dxf');
+    return s ? (window.jacUi.autosaver.nameFor(s.id) ?? null) : null;
+  });
+  check(!!drawing1Backup && !!readIndex()[drawing1Backup], `Drawing1 has an autosave backup before the close (${drawing1Backup})`);
+  await app.evaluate(({ ipcMain }) => {
+    for (const [ch, ms] of /** @type {Array<[string, number]>} */ ([['autosave-write', 1200], ['autosave-remove', 600]])) {
+      const orig = /** @type {any} */ (ipcMain)._invokeHandlers.get(ch);
+      ipcMain.removeHandler(ch);
+      ipcMain.handle(ch, async (ev, ...a) => {
+        await new Promise((r) => setTimeout(r, ms));
+        return orig(ev, ...a);
+      });
+    }
+  });
+  await win.evaluate((p) => {
+    const ed = window.editor;
+    const i = ed.sessions.all.findIndex((x) => x.filePath === p);
+    ed.sessions.switchTo(i);
+    ed.doc.addEntities([{ id: 'e2e-in-flight', type: 'text', layer: '0', color: 'ByLayer', position: { x: 1, y: 1 }, text: 'E2E IN FLIGHT', height: 0.2, rotation: 0, align: 'left' }]);
+    ed.runCommand('AUTOSAVE');
+  }, cutShort);
   // The page's 'close' (the window is gone): on macOS the application keeps running without windows.
   const closed = win.waitForEvent('close', { timeout: 30_000 }).then(
     () => true,
@@ -1035,7 +1156,10 @@ try {
   check(existsSync(savedDrawing) && /\nLINE\r?\n/.test(readFileSync(savedDrawing, 'utf8')), `Drawing1 was written before the close (${savedDrawing})`);
   const finalProject = existsSync(projectCopy) ? JSON.parse(readFileSync(projectCopy, 'utf8')) : null;
   check(finalProject?.description === 'unsaved e2e change', `the project was saved to ${projectCopy} before the close`);
+  check(!existsSync(join(autosaveDir, drawing1Backup ?? 'none')) && !readIndex()[drawing1Backup ?? 'none'], 'the backup of the drawing saved while closing was removed before the window went away');
+  check(bgBackup && readFileSync(join(autosaveDir, bgBackup), 'latin1').includes('E2E IN FLIGHT') && readIndex()[bgBackup]?.title === 'cut-short.dxf', 'the autosave written during the close finished (the discarded drawing stays recoverable)');
   rmSync(projDir, { recursive: true, force: true });
+  rmSync(bgDir, { recursive: true, force: true });
 } catch (err) {
   bad(`unexpected: ${err && err.stack ? err.stack : err}`);
 } finally {
@@ -1045,6 +1169,94 @@ try {
     /* already closed */
   }
   clearTimeout(hardTimeout);
+}
+
+// ------------------------------------------------------------------ crash and relaunch: Project Recovery and Drawing Recovery
+// A second start makes the project modified (it is autosaved) and is then killed; the third start must
+// offer the project in Project Recovery (its autosave keeps its name) and only drawings in the Drawing
+// Recovery Manager.
+step = 'crash recovery';
+const relaunchTimeout = setTimeout(() => {
+  console.error('e2e-electron: crash recovery timed out after 3 minutes');
+  process.exit(1);
+}, 3 * 60 * 1000);
+const launch = async () => {
+  const a = await electron.launch(packaged ? { executablePath: executable, args, env, timeout: 90_000 } : { args, cwd: repo, env, timeout: 60_000 });
+  a.process().stdout?.on('data', (d) => mainLog.push(String(d)));
+  a.process().stderr?.on('data', (d) => mainLog.push(String(d)));
+  const w = await a.firstWindow({ timeout: 60_000 });
+  await w.waitForFunction(() => !!window.editor, null, { timeout: 30_000 });
+  return { a, w };
+};
+const projectBackups = () => readdirSync(autosaveDir).filter((f) => f.endsWith('_jcadproj.sv.dxf'));
+const recoveryRows = async (w) => (await w.locator('.recovery-dialog .recovery-row').allTextContents()).map((t) => t.trim());
+let second = null;
+let third = null;
+try {
+  second = await launch();
+  const rec2 = second.w.locator('.recovery-dialog .modal');
+  await rec2.waitFor({ timeout: 15_000 }).then(
+    async () => {
+      const rows = await recoveryRows(second.w);
+      check(rows.some((r) => r.includes('cut-short.dxf')), `the drawing discarded when closing is offered at the next start (${rows.length} row(s))`);
+      await rec2.locator('button', { hasText: 'Close' }).click();
+    },
+    () => bad('no Drawing Recovery Manager for the backups kept when closing'),
+  );
+  await second.w.evaluate(() => {
+    const ed = window.editor;
+    ed.replaceProject({ name: 'Crash Test', drawings: [] });
+    ed.updateProject({ ...ed.project, description: 'not saved before the crash' });
+  });
+  let found = [];
+  for (let i = 0; i < 100 && found.length === 0; i += 1) {
+    found = projectBackups();
+    if (!found.length) await second.w.waitForTimeout(100);
+  }
+  check(found.length === 1, `the modified project was autosaved (${found.join(', ') || readdirSync(autosaveDir).join(', ')})`);
+  const exited = new Promise((r) => second.a.process().once('exit', r));
+  second.a.process().kill('SIGKILL');
+  await exited;
+  second = null;
+
+  third = await launch();
+  const pr = third.w.locator('.modal', { hasText: 'Project Recovery' });
+  await pr.waitFor({ timeout: 15_000 }).then(
+    async () => {
+      check(/Crash Test/.test((await pr.textContent()) ?? ''), 'Project Recovery names the project');
+      await pr.locator('button', { hasText: 'Open Recovered Project' }).click();
+    },
+    () => bad(`no Project Recovery after the crash (autosave folder: ${readdirSync(autosaveDir).join(', ')})`),
+  );
+  await third.w.waitForFunction(() => window.editor.project.name === 'Crash Test', null, { timeout: 5000 }).catch(() => {});
+  check(await third.w.evaluate(() => window.editor.project.name === 'Crash Test' && window.editor.projectDirty && window.editor.project.description === 'not saved before the crash'), 'the recovered project opened as modified, with its unsaved changes');
+  const rec3 = third.w.locator('.recovery-dialog .modal');
+  await rec3.waitFor({ timeout: 15_000 }).then(
+    async () => {
+      const rows = await recoveryRows(third.w);
+      check(rows.length > 0 && !rows.some((r) => /jcadproj|Crash Test|project/i.test(r)), `the Drawing Recovery Manager lists drawings only (${rows.map((r) => r.slice(0, 40)).join(' | ')})`);
+      await rec3.locator('button', { hasText: 'Close' }).click();
+    },
+    () => bad('no Drawing Recovery Manager after the crash'),
+  );
+  check(JSON.stringify(projectBackups()) === JSON.stringify(found), `the project autosave kept its name across the starts (${projectBackups().join(', ')})`);
+  // The page's 'close' (the window is gone): on macOS the application keeps running without windows.
+  const closed3 = third.w.waitForEvent('close', { timeout: 30_000 }).then(
+    () => true,
+    () => false,
+  );
+  await third.a.evaluate(({ BrowserWindow }) => void BrowserWindow.getAllWindows()[0].close());
+  const sa3 = third.w.locator('.modal', { hasText: 'Save them before closing' });
+  await sa3.waitFor({ timeout: 10_000 });
+  check((await sa3.locator('.save-all-row').allTextContents()).some((t) => /Crash Test.*Project/.test(t)), 'the recovered project is listed when closing');
+  await sa3.locator('button', { hasText: 'Discard All' }).click();
+  check(await closed3, 'Discard All closed the window');
+  third = null;
+} catch (err) {
+  bad(`unexpected: ${err && err.stack ? err.stack : err}`);
+} finally {
+  for (const x of [second, third]) if (x) await x.a.close().catch(() => {});
+  clearTimeout(relaunchTimeout);
 }
 
 step = 'main process';
