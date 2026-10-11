@@ -187,6 +187,16 @@ describe('lines, text placement and colours', () => {
 });
 
 describe('dimension text: units, tolerances and alternate units', () => {
+  it('bounds direct style precision and supports DIMADEC=-1 inheritance (PR #2)', () => {
+    for (const precision of [9999, -100, Infinity, NaN]) {
+      const style = { ...STANDARD_DIMSTYLE, decimals: precision, tolDecimals: precision, altDecimals: precision, angularDecimals: precision, altUnits: true, tolerance: 'symmetrical' as const, tolPlus: 0.1, tolMinus: 0.1 };
+      expect(() => dimensionText(linear(style))).not.toThrow();
+      expect(() => dimensionText({ ...linear(style), kind: 'angular', center: { x: 0, y: 0 }, p1: { x: 1, y: 0 }, p2: { x: 0, y: 1 } })).not.toThrow();
+    }
+    const angular = { ...linear({ ...STANDARD_DIMSTYLE, decimals: 3, angularDecimals: -1 }), kind: 'angular' as const, center: { x: 0, y: 0 }, p1: { x: 1, y: 0 }, p2: { x: 0, y: 1 } };
+    expect(dimensionText(angular)).toBe('90.000%%d');
+    expect(withDimVar(STANDARD_DIMSTYLE, 'DIMADEC', -1).angularDecimals).toBe(-1);
+  });
   it('formats DIMPOST, DIMRND, DIMLFAC and zero suppression', () => {
     expect(applyPost('4.00', ' mm')).toBe('4.00 mm');
     expect(applyPost('4.00', 'L=<> TYP')).toBe('L=4.00 TYP');

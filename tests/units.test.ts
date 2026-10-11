@@ -3,6 +3,15 @@ import { formatLength, formatAngle, parseDistance, insunitsFactor, formatArea } 
 import { STANDARD_LINETYPES, findLinetype, dashArray, effectiveLinetype, patternLength, nearestLineweight } from '../src/core/linetypes';
 
 describe('units formatting', () => {
+  it('bounds damaged direct-call precision before fixed or exponential formatting (PR #2)', () => {
+    for (const precision of [9999, -100, Infinity, NaN]) {
+      expect(() => formatLength(1.25, { lunits: 1, luprec: precision })).not.toThrow();
+      expect(() => formatLength(1.25, { lunits: 2, luprec: precision })).not.toThrow();
+      expect(() => formatAngle(1, precision)).not.toThrow();
+      expect(() => formatArea(1.25, { lunits: 3, luprec: precision })).not.toThrow();
+    }
+    expect(formatLength(1.25, { lunits: 2, luprec: 9999 })).toBe('1.25000000');
+  });
   it('formats decimal with LUPREC digits', () => {
     expect(formatLength(2, { lunits: 2, luprec: 4 })).toBe('2.0000');
     expect(formatLength(-1.23456, { lunits: 2, luprec: 2 })).toBe('-1.23');
