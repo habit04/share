@@ -51,6 +51,17 @@ contextBridge.exposeInMainWorld('jcad', {
       ipcRenderer.send('dirty-state', dirty);
     });
   },
+  /** Before the window closes the main process asks the renderer to finish an autosave in flight. */
+  onFlushAutosave: (cb) => {
+    ipcRenderer.on('flush-autosave', async (_ev, token) => {
+      try {
+        await cb();
+      } catch {
+        /* the close must not hang on an autosave error */
+      }
+      ipcRenderer.send('autosave-flushed', token);
+    });
+  },
   // Updates (GitHub Releases)
   appInfo: () => ipcRenderer.invoke('app-info'),
   /** Open a link in the system browser; only this project's GitHub pages are allowed. */
