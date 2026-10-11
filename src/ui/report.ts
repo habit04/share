@@ -63,7 +63,7 @@ export function reportProblemDialog(editor: Editor, kind: 'bug' | 'feedback' = '
   intro.className = 'dlg-note';
   intro.textContent =
     kind === 'bug'
-      ? 'Describe what went wrong. The report includes the version, platform, your recent commands and any captured errors. Drawings are only attached when you tick the box.'
+      ? 'Describe what went wrong. The report includes the version, platform, your recent commands and any captured errors. Local file paths and the drawing name are left out unless you tick the box. Drawings are only attached when you tick the box.'
       : 'Tell us what is missing or what would make JCad Electrical better for your work.';
   m.body.appendChild(intro);
 
@@ -85,6 +85,8 @@ export function reportProblemDialog(editor: Editor, kind: 'bug' | 'feedback' = '
   const errBox = document.createElement('input');
   errBox.type = 'checkbox';
   errBox.checked = true;
+  const privateBox = document.createElement('input');
+  privateBox.type = 'checkbox';
   const dwgBox = document.createElement('input');
   dwgBox.type = 'checkbox';
   const errs = diagnosticEntries();
@@ -96,6 +98,7 @@ export function reportProblemDialog(editor: Editor, kind: 'bug' | 'feedback' = '
   };
   optRow(histBox, `Include the last ${Math.min(40, editor.history.length)} command-line entries`);
   optRow(errBox, `Include captured errors (${errs.length})`);
+  optRow(privateBox, 'Include local file paths and the drawing name');
   optRow(dwgBox, `Attach the current drawing as DXF when saving the report (${esc(editor.fileName())})`);
   m.body.appendChild(opts);
 
@@ -119,6 +122,7 @@ export function reportProblemDialog(editor: Editor, kind: 'bug' | 'feedback' = '
     history: histBox.checked ? editor.history : [],
     errors: errBox.checked ? errs : [],
     drawingName: editor.fileName(),
+    includePrivateDetails: privateBox.checked,
     extra: [`Symbol standard: ${editor.settings.symbolStandard}`, `Open drawings: ${editor.sessions.all.length}`],
   });
   const refresh = () => {
@@ -128,7 +132,7 @@ export function reportProblemDialog(editor: Editor, kind: 'bug' | 'feedback' = '
     info = i;
     refresh();
   });
-  for (const el of [title, happened, expected, steps, histBox, errBox]) el.addEventListener('input', refresh);
+  for (const el of [title, happened, expected, steps, histBox, errBox, privateBox]) el.addEventListener('input', refresh);
   refresh();
 
   const canSend = () => {
