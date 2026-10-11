@@ -117,7 +117,11 @@ Nothing yet.
   took a moment to load. Saves to the same file are queued, and an older save never overwrites a
   newer one: `SAVEAS` asks for the file name first and then waits for a save of that file still on
   its way, and a slower, older save of a drawing no longer moves the drawing back to its file or
-  marks it as saved while the file holds the older version.
+  marks it as saved while the file holds the older version. A drawing name typed without `.dxf` in
+  the Save As dialog (or a project name typed without `.json` in Save Project As) gets the extension,
+  and when a file of that completed name already exists, Save As asks before replacing it (Windows
+  and macOS complete the name in the dialog itself and ask there; the Linux file dialog asks only
+  about the name as typed).
 - Saves are crash-safe: drawings (`SAVE`, `SAVEAS`, project-wide updates), projects and other
   exports, plotted PDFs, autosaves, the user symbol library, catalog packs, the recent list and the
   window state are written to a temporary file in the same folder, flushed to disk and renamed over

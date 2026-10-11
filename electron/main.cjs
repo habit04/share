@@ -544,7 +544,33 @@ ipcMain.handle('save-text', async (ev, suggestName, text, filterName, ext) => {
   return res.filePath;
 });
 
-/** Project Save As: ask where to save; the path becomes writable by save-project but nothing is written yet. */
+/**
+ * The file a Save dialog's answer names once the channel's extension is appended to a name typed
+ * without one (.dxf for drawings, .jcadproj.json for projects). The Windows and macOS dialogs
+ * complete the name themselves and ask there before a file is replaced; the Linux (GTK) dialog asks
+ * only about the name as typed, so when the completed name already exists, the question is asked
+ * here. Resolves the completed path, or null when the user keeps that file.
+ */
+async function completeSavePath(win, chosen, type, ext) {
+  const file = type.test(chosen) ? chosen : `${chosen}${ext}`;
+  if (file === chosen) return file;
+  const exists = await fs.access(file).then(() => true, () => false);
+  if (!exists) return file;
+  const r = await dialog.showMessageBox(win, {
+    type: 'question',
+    buttons: ['Replace', 'Cancel'],
+    defaultId: 1,
+    cancelId: 1,
+    message: `${path.basename(file)} already exists. Replace it?`,
+    detail: `The name you typed was completed to ${file}. Replace keeps the previous version as ${path.basename(file)}.bak.`,
+  });
+  return r.response === 0 ? file : null;
+}
+
+/**
+ * Project Save As: ask where to save; the path becomes writable by save-project but nothing is written
+ * yet. A name typed without .json gets .jcadproj.json (and is asked about when that file exists).
+ */
 ipcMain.handle('choose-project-path', async (ev, suggestName) => {
   const win = senderWindow(ev);
   const res = await dialog.showSaveDialog(win, {
@@ -553,15 +579,16 @@ ipcMain.handle('choose-project-path', async (ev, suggestName) => {
     filters: [{ name: 'JCad Electrical Project', extensions: ['json'] }],
   });
   if (res.canceled || !res.filePath) return null;
-  const file = /\.json$/i.test(res.filePath) ? res.filePath : `${res.filePath}.jcadproj.json`;
+  const file = await completeSavePath(win, res.filePath, PROJECT_FILE, '.jcadproj.json');
+  if (!file) return null;
   registry.grant(file);
   return file;
 });
 
 /**
-/**
  * Drawing Save As: ask where to save; the path becomes writable by save-dxf (a .dxf file: a name
- * typed without the extension gets it) but nothing is written yet. The renderer then writes it
+ * typed without the extension gets it, and is asked about when that file already exists -
+ * completeSavePath) but nothing is written yet. The renderer then writes it
  * through its per-file save queue (src/app/savequeue.ts), so a Save As onto a file with an older
  * save still on its way is ordered after that save instead of racing it.
  */
@@ -573,7 +600,8 @@ ipcMain.handle('choose-drawing-path', async (ev, suggestName) => {
     filters: [{ name: 'DXF Drawing (AutoCAD 2000)', extensions: ['dxf'] }],
   });
   if (res.canceled || !res.filePath) return null;
-  const file = DXF_FILE.test(res.filePath) ? res.filePath : `${res.filePath}.dxf`;
+  const file = await completeSavePath(win, res.filePath, DXF_FILE, '.dxf');
+  if (!file) return null;
   registry.grant(file);
   return file;
 });
@@ -696,7 +724,8 @@ ipcMain.handle('open-dxf', async (ev) => {
  * Save a drawing as DXF. By name (`existingPath`) only over a .dxf file the renderer may write
  * (electron/path-registry.cjs); another file type is refused (and logged). A drawing that may only
  * be read (a drawing outside the folder of a project opened only by name) or an unknown path goes through the
- * Save As dialog instead - opened on that drawing when it is readable, so the user confirms it.
+ * Save As dialog instead - opened on that drawing when it is readable, so the user confirms it. A name
+ * typed there without .dxf gets it, like choose-drawing-path (completeSavePath).
  */
 ipcMain.handle('save-dxf', async (ev, existingPath, text, suggestName, opts) => {
   const win = senderWindow(ev);
@@ -714,7 +743,8 @@ ipcMain.handle('save-dxf', async (ev, existingPath, text, suggestName, opts) => 
       filters: [{ name: 'DXF Drawing (AutoCAD 2000)', extensions: ['dxf'] }],
     });
     if (res.canceled || !res.filePath) return null;
-    target = res.filePath;
+    target = await completeSavePath(win, res.filePath, DXF_FILE, '.dxf');
+    if (!target) return null;
   }
   // Temporary file + fsync + rename, previous version kept as <name>.dxf.bak (electron/atomic-write.cjs)
   // unless the renderer says no (a project-wide command made the .bak itself or was told to write without one).

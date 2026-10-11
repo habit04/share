@@ -1365,7 +1365,8 @@ A drawing that is still loading when you switch to another tab opens in the tab 
 from (in the background). If you typed into that tab meanwhile, the drawing opens in a new tab
 instead. Saves of the same file are written one after another, so an older save can never
 overwrite a newer one; `SAVEAS` asks for the file name first and then waits for a save of that
-file that is still on its way.
+file that is still on its way. A name typed without `.dxf` gets it; when a file of that completed name
+already exists, Save As asks before replacing it.
 
 **Closing the application.** When you close the window, quit (File > Exit, Cmd+Q) or restart to
 install an update, one **Save Changes** dialog lists everything that is not saved: every modified

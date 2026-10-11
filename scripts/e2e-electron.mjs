@@ -664,6 +664,22 @@ try {
     log = await logSince(h);
     check(log.some((l) => l.startsWith(`Opened ${savedPath}: ${savedCount} entities`)), `saved DXF reopens with ${savedCount} entities: ${log.filter((l) => /Opened|Failed/.test(l)).join(' | ')}`);
   } else bad(`no DXF written at ${savedPath}`);
+  // A name typed without ".dxf" is completed by the main process; when that file already exists, Save As asks
+  // before replacing it (the Linux file dialog confirms only the name as typed). The stubbed question answers Cancel.
+  if (current && existsSync(savedPath)) {
+    const before = readFileSync(savedPath, 'utf8');
+    await messages();
+    await app.evaluate((_e, p) => globalThis.__e2e.savePaths.push(p), savedPath.replace(/\.dxf$/, ''));
+    await win.evaluate(() => window.editor.runCommand('SAVEAS'));
+    const asked = [];
+    for (let i = 0; i < 100 && !asked.some((m) => m.startsWith('box:')); i += 1) {
+      await win.waitForTimeout(100);
+      asked.push(...(await messages()));
+    }
+    check(asked.some((m) => m.startsWith('save:')) && asked.some((m) => /^box:.*saved-e2e\.dxf already exists/.test(m)), `SAVEAS to "saved-e2e" (no extension) completed the name and asked before replacing saved-e2e.dxf (${asked.join(' ; ')})`);
+    await win.waitForTimeout(300);
+    check(readFileSync(savedPath, 'utf8') === before && !existsSync(savedPath.replace(/\.dxf$/, '')), 'Cancel in that question left saved-e2e.dxf unchanged and wrote no extension-less file');
+  }
 
   // ------------------------------------------------------------------ AUTOSAVE writes a recovery copy
   step = 'AUTOSAVE';

@@ -223,8 +223,18 @@ describe('save queue fuzzing regressions', () => {
     expect(src).toMatch(/const ipcMain = guardIpc\(rawIpcMain,/);
     expect(src).not.toMatch(/rawIpcMain\.(handle|on|once)\(/);
     expect(body).toMatch(/senderWindow\(ev\)/);
-    // The chosen file becomes writable through the path registry, as a .dxf file only.
-    expect(body).toMatch(/const file = DXF_FILE\.test\(res\.filePath\) \? res\.filePath : `\$\{res\.filePath\}\.dxf`;\s*registry\.grant\(file\);\s*return file;/);
+    // The chosen file becomes writable through the path registry, as a .dxf file only; a name typed without
+    // the extension is completed (and asked about when that file exists) before anything is granted.
+    expect(body).toMatch(/const file = await completeSavePath\(win, res\.filePath, DXF_FILE, '\.dxf'\);\s*if \(!file\) return null;\s*registry\.grant\(file\);\s*return file;/);
+    const helper = src.slice(src.indexOf('async function completeSavePath('), src.indexOf('ipcMain.handle(', src.indexOf('async function completeSavePath(')));
+    expect(helper).toMatch(/const file = type\.test\(chosen\) \? chosen : `\$\{chosen\}\$\{ext\}`;/);
+    expect(helper).toMatch(/dialog\.showMessageBox\(win,[\s\S]*buttons: \['Replace', 'Cancel'\][\s\S]*cancelId: 1/);
+    expect(helper).toMatch(/return r\.response === 0 \? file : null;/);
+    // save-dxf's own Save As dialog and Save Project As complete the name the same way.
+    const saveDxf = src.slice(src.indexOf("ipcMain.handle('save-dxf'"), src.indexOf('ipcMain.handle(', src.indexOf("ipcMain.handle('save-dxf'") + 10));
+    expect(saveDxf).toMatch(/target = await completeSavePath\(win, res\.filePath, DXF_FILE, '\.dxf'\);\s*if \(!target\) return null;/);
+    const project = src.slice(src.indexOf("ipcMain.handle('choose-project-path'"), src.indexOf('ipcMain.handle(', src.indexOf("ipcMain.handle('choose-project-path'") + 10));
+    expect(project).toMatch(/const file = await completeSavePath\(win, res\.filePath, PROJECT_FILE, '\.jcadproj\.json'\);\s*if \(!file\) return null;\s*registry\.grant\(file\);/);
     expect(body).not.toMatch(/writeUserFile|atomicWriteFile/);
     const preload = readFileSync(new URL('../electron/preload.cjs', import.meta.url), 'utf8');
     expect(preload).toMatch(/chooseDrawingPath: \(suggestName\) => ipcRenderer\.invoke\('choose-drawing-path'/);
