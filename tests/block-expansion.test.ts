@@ -76,8 +76,50 @@ describe('block expansion budget (core/entities.ts, E-13)', () => {
     const r = expansionReport(blocks, [insertOf('B5', 'top1'), insertOf('B5', 'top2'), insertOf('SELF', 'top3')]);
     expect(performance.now() - t).toBeLessThan(1000);
     expect(r.cyclic).toEqual(['SELF']);
+    // B9's lines are nine levels down, below the drawn depth: a reference to it draws nothing, but
+    // reaching that depth means following 10^9 references, so it is over the cap as well.
     expect(r.oversized).toEqual(['B6', 'B7', 'B8', 'B9']);
     expect(r.total).toBe(2_000_001);
+  });
+
+  it('the references followed are limited too: a fan-out that draws nothing does not run for hours', () => {
+    // E0 is empty (or missing, or below the nesting depth); Ek = 20 references to E(k-1): one
+    // reference to E8 walks 20^8 = 2.56e10 references and draws nothing. Without a limit on the
+    // walk this took hours (22 s already at 9 references per block); the object cap never applied.
+    for (const leaf of ['empty', 'missing', 'deep'] as const) {
+      const blocks: Record<string, BlockDef> = leaf === 'empty' ? { E0: block('E0', []) } : leaf === 'deep' ? { E0: block('E0', [insertOf('F', 'f')]), F: block('F', [line('f')]) } : {};
+      for (let k = 1; k <= 8; k += 1) blocks[`E${k}`] = block(`E${k}`, Array.from({ length: 20 }, (_, i) => insertOf(`E${k - 1}`, `e${k}-${i}`, i)));
+      const lookup = (n: string) => blocks[n];
+      const t = performance.now();
+      const r = expandInsert(insertOf('E8'), lookup);
+      expect(performance.now() - t, leaf).toBeLessThan(10_000);
+      expect(r, leaf).toMatchObject({ truncated: true, cyclic: false });
+      expect(r.entities, leaf).toHaveLength(0);
+      const ins = insertOf('E8', `top-${leaf}`);
+      expect(explodeInsert(ins, lookup)).toHaveLength(0);
+      expect(insertExpansionLimited(ins, lookup)).toBe(true);
+      expect(entityBounds(ins, lookup)).toEqual({ min: { x: 0, y: 0 }, max: { x: 0, y: 0 } });
+      const report = expansionReport(blocks, [ins]);
+      expect(report.oversized, leaf).toContain('E8');
+      expect(report.total).toBe(0);
+    }
+    // Within the limits nothing changes: 20^4 references, 160,000 lines.
+    const ok: Record<string, BlockDef> = { L0: block('L0', [line('a')]) };
+    for (let k = 1; k <= 4; k += 1) ok[`L${k}`] = block(`L${k}`, Array.from({ length: 20 }, (_, i) => insertOf(`L${k - 1}`, `l${k}-${i}`, i)));
+    expect(expandInsert(insertOf('L4'), (n) => ok[n])).toMatchObject({ truncated: false, cyclic: false });
+    expect(expansionReport(ok, []).oversized).toEqual([]);
+  }, 60_000);
+
+  it('a chain of 50,000 blocks that each insert the next is counted without deep recursion (no stack overflow)', () => {
+    const chain: Record<string, BlockDef> = {};
+    const n = 50_000;
+    for (let k = 0; k < n; k += 1) chain[`C${k}`] = block(`C${k}`, k + 1 < n ? [line(`c${k}`), insertOf(`C${k + 1}`, `ic${k}`, 1)] : [line(`c${k}`)]);
+    const t = performance.now();
+    const r = expansionReport(chain, [insertOf('C0', 'top')]);
+    expect(performance.now() - t).toBeLessThan(5000);
+    // A reference draws its own line and those of the eight blocks nested below it.
+    expect(r).toEqual({ cyclic: [], oversized: [], total: 9 });
+    expect(explodeInsert(insertOf('C0', 'top2'), (name) => chain[name])).toHaveLength(9);
   });
 });
 
@@ -119,6 +161,23 @@ describe('readers report the expansion and keep the blocks (E-13)', () => {
     expect(back.blocks.B8!.entities).toHaveLength(10);
     expect(back.blocks.SELF!.entities.map((e) => e.type)).toEqual(['line', 'insert']);
   });
+
+  it('a DXF whose 20,000 blocks each insert the next opens, reports nothing and saves (the report used to overflow the stack)', () => {
+    const g: string[] = ['0', 'SECTION', '2', 'BLOCKS'];
+    const n = 20_000;
+    for (let k = 0; k < n; k += 1) {
+      g.push('0', 'BLOCK', '8', '0', '2', `C${k}`, '70', '0', '10', '0', '20', '0', '0', 'LINE', '8', '0', '10', '0', '20', '0', '11', '1', '21', '0');
+      if (k + 1 < n) g.push('0', 'INSERT', '8', '0', '2', `C${k + 1}`, '10', '1', '20', '0');
+      g.push('0', 'ENDBLK');
+    }
+    g.push('0', 'ENDSEC', '0', 'SECTION', '2', 'ENTITIES', '0', 'INSERT', '8', '0', '2', 'C0', '10', '0', '20', '0', '0', 'ENDSEC', '0', 'EOF', '');
+    const s = readDxf(g.join('\n'));
+    expect(Object.keys(s.blocks)).toHaveLength(n);
+    expect(importReportOf(s)).toBeUndefined();
+    const ins = s.entities[0] as InsertEntity;
+    expect(entityBounds(ins, (name) => s.blocks[name])).toEqual({ min: { x: 0, y: 0 }, max: { x: 9, y: 0 } });
+    expect(Object.keys(readDxf(writeDxf(s)).blocks)).toHaveLength(n);
+  }, 60_000);
 
   it('EXPLODE leaves a reference whose expansion was cut short, and explodes the others', () => {
     const blocks = { ...fanOut(1), SELF: block('SELF', [line('s'), insertOf('SELF', 'is')]) };

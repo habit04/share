@@ -993,8 +993,10 @@ export function blockTransform(e: Entity, tf: (p: Point) => Point, rotation: num
  * At most this many objects come out of one block reference, nested references included
  * (security review E-13; JCad 3D's DXF reader has the same 2,000,000-object cap). Blocks that
  * each insert the previous one many times stay within the nesting depth while multiplying into
- * billions of objects; the expansion stops at the cap instead of exhausting memory. Readers report
- * such blocks (expansionReport).
+ * billions of objects; the expansion stops at the cap instead of exhausting memory. The nested
+ * references an expansion follows are limited to the same number: a fan-out whose innermost
+ * blocks are empty, missing or below the nesting depth draws nothing but would otherwise be
+ * walked billions of times. Readers report such blocks (expansionReport).
  */
 export const MAX_INSERT_EXPANSION = 2_000_000;
 /** Nesting levels drawn below a reference (deeper references are not expanded). */
@@ -1003,15 +1005,17 @@ const MAX_INSERT_DEPTH = 8;
 /** One expansion: objects it may still produce, the chain of blocks being expanded. */
 interface ExpansionBudget {
   left: number;
+  /** References it may still follow (the top one included). */
+  visits: number;
   readonly chain: string[];
   /** Every block name looked up within the depth limit and the definition it had (undefined: missing). */
   readonly deps: Map<string, BlockDef | undefined>;
-  /** Stopped at MAX_INSERT_EXPANSION. */
+  /** Stopped at MAX_INSERT_EXPANSION objects or followed references. */
   truncated: boolean;
   /** A block inserts itself (directly or through others): the repeated reference was skipped. */
   cyclic: boolean;
 }
-const newBudget = (maxObjects = MAX_INSERT_EXPANSION): ExpansionBudget => ({ left: maxObjects, chain: [], deps: new Map(), truncated: false, cyclic: false });
+const newBudget = (maxObjects = MAX_INSERT_EXPANSION): ExpansionBudget => ({ left: maxObjects, visits: maxObjects, chain: [], deps: new Map(), truncated: false, cyclic: false });
 
 interface InsertCache {
   block: BlockDef;
@@ -1090,6 +1094,13 @@ export function insertExpansionLimited(ins: InsertEntity, lookup: BlockLookup): 
 
 /** Append the expansion of `ins` to `out` (no spread: nested results may be large). */
 function explodeInto(out: Entity[], ins: InsertEntity, lookup: BlockLookup, depth: number, budget: ExpansionBudget): void {
+  // Every reference followed costs one visit, also one that draws nothing (an empty or missing
+  // block, or one below the nesting depth): the walk itself is bounded, not only its output.
+  if (budget.visits <= 0) {
+    budget.truncated = true;
+    return;
+  }
+  budget.visits -= 1;
   if (depth > MAX_INSERT_DEPTH) return;
   const block = lookup(ins.block);
   budget.deps.set(ins.block, block);
@@ -1142,7 +1153,7 @@ function explodeInto(out: Entity[], ins: InsertEntity, lookup: BlockLookup, dept
 export interface ExpansionReport {
   /** Blocks that insert themselves, directly or through other blocks. */
   readonly cyclic: readonly string[];
-  /** Blocks one reference to which expands to more than MAX_INSERT_EXPANSION objects. */
+  /** Blocks one reference to which expands to more than MAX_INSERT_EXPANSION objects (or follows more references). */
   readonly oversized: readonly string[];
   /** Objects the references of `topLevel` expand to (saturates above MAX_INSERT_EXPANSION * 1000). */
   readonly total: number;
@@ -1151,42 +1162,55 @@ export interface ExpansionReport {
 /**
  * How the blocks of a drawing expand, without expanding them: the objects one reference to each
  * block produces (nested blocks counted through, saturating), the blocks that insert themselves,
- * and the total for the references in `topLevel` (model space and layouts). Linear in the size
- * of the block table.
+ * and the total for the references in `topLevel` (model space and layouts). Nested references are
+ * counted down to MAX_INSERT_DEPTH levels, as they are drawn (explodeInto), one count per block and
+ * level: the recursion is never deeper than that, so a chain of thousands of blocks that each
+ * insert the next cannot overflow the stack, and the work is linear in the size of the block table.
  */
 export function expansionReport(blocks: Readonly<Record<string, BlockDef>>, topLevel: readonly Entity[]): ExpansionReport {
   const CAP = MAX_INSERT_EXPANSION + 1;
-  const size = new Map<string, number>();
+  /** Objects a reference produces and references it follows (itself included), as explodeInto counts them. */
+  interface Count {
+    objects: number;
+    visits: number;
+  }
+  const one: Count = { objects: 0, visits: 1 };
+  /** size[depth]: the count of a reference at that nesting depth, per block name. */
+  const size = Array.from({ length: MAX_INSERT_DEPTH + 1 }, () => new Map<string, Count>());
   const onStack = new Set<string>();
   const cyclic = new Set<string>();
-  const sizeOf = (name: string): number => {
-    const known = size.get(name);
+  const sizeOf = (name: string, depth: number): Count => {
+    if (depth > MAX_INSERT_DEPTH) return one;
+    const memo = size[depth]!;
+    const known = memo.get(name);
     if (known !== undefined) return known;
     const block = blocks[name];
-    if (!block) return 0;
+    if (!block) return one;
     if (onStack.has(name)) {
       cyclic.add(name);
-      return 0;
+      return one;
     }
-    if (block.xref && block.entities.length === 0) return 2;
+    if (block.xref && block.entities.length === 0) return { objects: 2, visits: 1 };
     onStack.add(name);
-    let n = 0;
+    let objects = 0;
+    let visits = 1;
     for (const e of block.entities) {
-      n += e.type === 'insert' ? sizeOf(e.block) : 1;
-      if (n >= CAP) {
-        n = CAP;
-        break;
-      }
+      if (e.type === 'insert') {
+        const c = sizeOf(e.block, depth + 1);
+        objects += c.objects;
+        visits += c.visits;
+      } else objects += 1;
+      if (objects >= CAP || visits >= CAP) break;
     }
-    n = Math.min(CAP, n + block.attributes.filter((a) => !a.invisible).length);
+    const count = { objects: Math.min(CAP, objects + block.attributes.filter((a) => !a.invisible).length), visits: Math.min(CAP, visits) };
     onStack.delete(name);
-    size.set(name, n);
-    return n;
+    memo.set(name, count);
+    return count;
   };
-  for (const name of Object.keys(blocks)) sizeOf(name);
+  for (const name of Object.keys(blocks)) sizeOf(name, 0);
   let total = 0;
-  for (const e of topLevel) if (e.type === 'insert') total = Math.min(CAP * 1000, total + sizeOf(e.block));
-  const oversized = [...size].filter(([, n]) => n >= CAP).map(([name]) => name);
+  for (const e of topLevel) if (e.type === 'insert') total = Math.min(CAP * 1000, total + sizeOf(e.block, 0).objects);
+  const oversized = [...size[0]!].filter(([, c]) => c.objects >= CAP || c.visits > MAX_INSERT_EXPANSION).map(([name]) => name);
   return { cyclic: [...cyclic].sort(), oversized: oversized.sort(), total };
 }
 
