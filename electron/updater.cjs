@@ -161,7 +161,7 @@ async function checkViaApi(win, interactive) {
     message: `JCad Electrical ${release.version} is available (you have ${current}).`,
     detail:
       (process.platform === 'darwin'
-        ? 'Download the new disk image, drag the app to Applications to replace this one, then open it once through System Settings > Privacy & Security > Open Anyway.'
+        ? 'Download the new disk image and drag the app to Applications to replace this one. If macOS blocks the first launch, allow it once in System Settings > Privacy & Security.'
         : 'Download and install the new package over this one; your settings and drawings are kept.') + (release.notes ? `\n\n${release.notes.slice(0, 600)}` : ''),
     buttons: ['Download', 'Release Notes', 'Later'],
     defaultId: 0,
