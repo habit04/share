@@ -4,7 +4,7 @@
  * the title block and project-wide settings (catalog file, tag formats,
  * IEC codes). Paths are stored relative to the project file.
  */
-import { dirName, fileBaseName, isAbsolutePath, normalizePath, rebaseProjectEntry, relativePath, resolveFromFile, samePath } from './paths';
+import { climbsOut, dirName, fileBaseName, isAbsolutePath, normalizePath, rebaseProjectEntry, relativePath, resolveFromFile, samePath } from './paths';
 
 export interface ProjectDrawing {
   file: string;
@@ -181,7 +181,7 @@ export function projectDrawingIndex(project: Project, filePath: string | null): 
 export function projectEntryFor(project: Project, filePath: string): string {
   if (!project.path) return normalizePath(filePath);
   const rel = relativePath(dirName(project.path), filePath);
-  return isAbsolutePath(rel) || rel.startsWith('..') ? normalizePath(filePath) : rel;
+  return isAbsolutePath(rel) || climbsOut(rel) ? normalizePath(filePath) : rel;
 }
 
 /**

@@ -168,6 +168,11 @@ export function relativePath(dir: string, target: string): string {
   return rel || '.';
 }
 
+/** A relative path that leaves its folder ("..", "../x"; not a folder named "..." or "..old"). */
+export function climbsOut(rel: string): boolean {
+  return rel.split(/[\\/]/)[0] === '..';
+}
+
 /**
  * A project entry re-expressed for a project file that moves from `oldProjectFile` to
  * `newProjectFile`, so it still names the same file. Entries that were absolute stay absolute
@@ -179,7 +184,7 @@ export function rebaseProjectEntry(file: string, oldProjectFile: string | null |
   const abs = wasAbsolute ? normalizePath(file) : resolveFromFile(oldProjectFile, file);
   const rel = relativePath(dirName(newProjectFile), abs);
   if (isAbsolutePath(rel)) return rel;
-  if (wasAbsolute && rel.startsWith('..')) return abs;
+  if (wasAbsolute && climbsOut(rel)) return abs;
   return rel;
 }
 
