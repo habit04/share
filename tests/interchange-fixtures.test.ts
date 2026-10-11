@@ -1000,6 +1000,33 @@ describe('fixtures/example_2000.dxf: an AutoCAD-written ACAD_TABLE takes its TAB
   });
 });
 
+/*
+ * write -> read -> write keeps everything the first write wrote, the fields this release added to
+ * the reader and writer (DIMDSEP, DIMTXSTY, DIMLWD / DIMLWE, DIMTZIN, DSTYLE overrides, xref layer
+ * flags, table styles, paper-space IMAGE names, MTEXT columns, 2D limits, plot style dictionary)
+ * among them: the second write differs from the first at most in the last digits of computed
+ * coordinates (10 decimals), and the third equals the second.
+ */
+describe('every committed DXF fixture: write -> read -> write reaches a fixed point', () => {
+  const root = join(import.meta.dirname, '..');
+  const manifest = JSON.parse(readFileSync(join(root, 'tests', 'fixtures', 'manifest.json'), 'utf8')) as { files: string[] };
+  const files = manifest.files.filter((f) => f.endsWith('.dxf') && !f.includes('/broken/'));
+  it.each(files)('%s', (file) => {
+    const w1 = writeDxf(readDxf(decodeDxfBytes(readFileSync(join(root, file))).text));
+    const w2 = writeDxf(readDxf(w1));
+    expect(writeDxf(readDxf(w2))).toBe(w2);
+    const a = w1.split('\r\n');
+    const b = w2.split('\r\n');
+    expect(b).toHaveLength(a.length);
+    for (let i = 0; i < a.length; i += 1) {
+      if (a[i] === b[i]) continue;
+      const x = Number(a[i]);
+      const y = Number(b[i]);
+      expect(Number.isFinite(x) && Number.isFinite(y) && Math.abs(x - y) <= 1e-9 * Math.max(1, Math.abs(x)), `${file} line ${i + 1}: ${a[i]} -> ${b[i]}`).toBe(true);
+    }
+  });
+});
+
 // ---------------------------------------------------------------- IMAGE, inch drawing (R2018)
 
 /*
