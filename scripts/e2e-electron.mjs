@@ -31,7 +31,9 @@
 // progress dialog and its Cancel (the read runs in a worker thread), IPC from a foreign page being refused, the file
 // access rules (a project cannot make files outside its folder writable, save-dxf writes .dxf only, no network images
 // for a local drawing, links checked after normalisation, file text in the status bar and dialog titles shown as
-// text), and no main-process error log.
+// text), saves and images through a linked folder (a drawing saved twice by name under a symlinked or junctioned
+// folder, an image next to a drawing known under the linked path, a save onto a symbolic link refused with ELOOP and
+// the file it points at unchanged), denied web permissions and blocked pop-ups, and no main-process error log.
 // File safety: old-style autosave files are migrated to permanent ids and offered by the Drawing
 // Recovery Manager (a double click opens a backup once, Discard All spares the opened one); saves
 // go through temp file + rename and keep <name>.bak; a failed save shows Retry / Save As... and
@@ -44,7 +46,7 @@
 // (the next start offers Project Recovery, and the Drawing Recovery Manager lists drawings only).
 import { _electron as electron } from 'playwright';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, existsSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, existsSync, lstatSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { deflateSync, crc32 } from 'node:zlib';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -869,6 +871,68 @@ try {
     });
     check(titles.a.markup === 0 && titles.a.text.startsWith('<img') && titles.b.markup === 0 && titles.b.text.startsWith('<img') && !titles.xss, `dialog titles with markup show as text (plugin dialog "${titles.a.text.slice(0, 30)}", confirm "${titles.b.text.slice(0, 30)}"; ${titles.left} dialog(s) left open)`);
     rmSync(accDir, { recursive: true, force: true });
+  }
+
+  // ------------------------------------------------------------------ symbolic links (security review E-5)
+  // A save through a linked folder works (macOS /var, Silverblue /home, junctions); an image next to a
+  // drawing known under the linked path is read; a destination that is itself a link is refused and
+  // the file it points at stays as it was.
+  step = 'links';
+  if (current) {
+    const linkRoot = mkdtempSync(join(tmpdir(), 'jcad-e2e-links-'));
+    const realFolder = join(linkRoot, 'real');
+    const linkedFolder = join(linkRoot, 'linked');
+    mkdirSync(realFolder);
+    symlinkSync(realFolder, linkedFolder, process.platform === 'win32' ? 'junction' : 'dir');
+    const tinyDxf = ['0', 'SECTION', '2', 'ENTITIES', '0', 'ENDSEC', '0', 'EOF', ''].join('\n');
+    const viaLink = join(linkedFolder, 'linked.dxf');
+    await app.evaluate((_e, p) => globalThis.__e2e.savePaths.push(p), viaLink);
+    const saved = await win.evaluate((t) => window.jcad.saveDxf(null, t, 'linked.dxf').then((r) => ({ ok: true, r }), (e) => ({ ok: false, e: String(e) })), tinyDxf);
+    await messages();
+    check(saved.ok && saved.r === viaLink && existsSync(join(realFolder, 'linked.dxf')), `a drawing saved through a linked folder lands in the real folder (${JSON.stringify(saved)})`);
+    const again = await win.evaluate(([p, t]) => window.jcad.saveDxf(p, t, 'linked.dxf').then((r) => ({ ok: true, r }), (e) => ({ ok: false, e: String(e) })), [viaLink, tinyDxf.replace('ENDSEC', 'ENDSEC\n999\nagain')]);
+    check(again.ok && again.r === viaLink && (await messages()).length === 0 && /again/.test(readFileSync(join(realFolder, 'linked.dxf'), 'utf8')) && existsSync(join(realFolder, 'linked.dxf.bak')), `saved again by name through the linked folder, with its .bak (${JSON.stringify(again)})`);
+    writeFileSync(join(realFolder, 'logo.png'), solidPng(4, 4, [0, 255, 0]));
+    const linkedImage = await win.evaluate((p) => window.jcad.readImage(p).then((r) => (typeof r === 'string' && r.startsWith('data:image/png;base64,') ? 'read' : String(r)), (e) => String(e)), join(linkedFolder, 'logo.png'));
+    check(linkedImage === 'read', `an image next to a drawing known under a linked path is read (${linkedImage})`);
+    let fileLinks = true;
+    const victim = join(linkRoot, 'victim.txt');
+    writeFileSync(victim, 'VICTIM');
+    const trap = join(realFolder, 'trap.dxf');
+    try {
+      symlinkSync(victim, trap, 'file');
+    } catch {
+      fileLinks = false; // Windows without the privilege to create file links
+    }
+    if (fileLinks) {
+      await app.evaluate((_e, p) => globalThis.__e2e.savePaths.push(p), trap);
+      const trapped = await win.evaluate((t) => window.jcad.saveDxf(null, t, 'trap.dxf').then((r) => ({ ok: true, r }), (e) => ({ ok: false, e: String(e) })), tinyDxf);
+      await messages();
+      check(!trapped.ok && /ELOOP/.test(trapped.e) && readFileSync(victim, 'utf8') === 'VICTIM' && lstatSync(trap).isSymbolicLink(), `a save onto a symbolic link is refused (ELOOP) and the file it points at is unchanged (${JSON.stringify(trapped).slice(0, 160)})`);
+    } else ok('file symbolic links cannot be created here: the refused-link save is checked by the unit tests');
+    rmSync(linkRoot, { recursive: true, force: true });
+  }
+
+  // ------------------------------------------------------------------ web permissions (security review E-12)
+  step = 'permissions';
+  if (current) {
+    const perms = await win.evaluate(async () => {
+      const q = async (/** @type {string} */ name) => {
+        try {
+          return (await navigator.permissions.query(/** @type {PermissionDescriptor} */ ({ name }))).state;
+        } catch (e) {
+          return `error ${String(e)}`;
+        }
+      };
+      const notification = typeof Notification === 'undefined' ? 'none' : await Notification.requestPermission();
+      const media = await navigator.mediaDevices.getUserMedia({ audio: true }).then(
+        () => 'granted',
+        (e) => /** @type {Error} */ (e).name,
+      );
+      const popup = window.open('https://example.com/', '_blank');
+      return { geolocation: await q('geolocation'), camera: await q('camera'), notification, media, popup: popup === null ? 'blocked' : 'opened' };
+    });
+    check(perms.geolocation === 'denied' && perms.camera === 'denied' && perms.notification === 'denied' && perms.media !== 'granted' && perms.popup === 'blocked', `web permissions are denied and pop-ups blocked (${JSON.stringify(perms)})`);
   }
 
   // ------------------------------------------------------------------ Symbol Builder
