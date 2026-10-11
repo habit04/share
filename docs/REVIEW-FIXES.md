@@ -33,8 +33,8 @@ local validation, not a claim that every platform installer has already passed C
 | 24 | Retain or report omitted metadata; silent XDATA/object loss can damage electrical drawings. | Reporting implemented: explicit DXF omissions and conservative DWG reader-limit warnings, including estimated table positions. Arbitrary external application metadata is not preserved. `src/io/dxf.ts`, `src/io/dwg.ts`, `docs/SUPPORT-MATRIX.md`. |
 | 25 | Use a supported Electron/toolchain and remove known dependency vulnerabilities. | Implemented: Electron 44.7.0, Vitest 5, supported Node engines and scoped `@electron/get` proxy dependency override. Complete local npm audit reports zero vulnerabilities. `package.json`, `package-lock.json`. |
 | 26 | Gate self-updates on authenticity; unsigned downloads must not be silently installed. | Implemented: packaged Windows needs trusted publisher configuration; unsigned Windows and Linux/macOS offer manual downloads. Signed verification depends on release credentials. `electron/update-policy.cjs`, `electron/updater.cjs`. |
-| 27 | Reject linked write destinations and parent swaps; symlinks/junctions can redirect writes or backups. | Implemented path/identity rechecks and exclusive temp creation. Real Windows junction tests pass. Portable Node APIs leave a final-check/rename race, documented in `docs/SECURITY-REVIEW.md`. |
-| 28 | Restrict image permissions to actual drawing authority; unrelated JSON or redirected links must not grant file access. | Implemented real-target revalidation and drawing-folder/network restrictions. `electron/ipc-guard.cjs`, `tests/ipc-guard.test.ts`. |
+| 27 | Reject linked write destinations and parent swaps; symlinks/junctions can redirect writes or backups. | Implemented path/identity rechecks and exclusive temp creation. Real Windows junction tests pass. macOS's fixed root-owned `/var`, `/tmp` and `/etc` aliases are accepted with pinned alias/target checks; arbitrary links remain refused. Portable Node APIs leave a final-check/rename race, documented in `docs/SECURITY-REVIEW.md`. |
+| 28 | Restrict image permissions to actual drawing authority; unrelated JSON or redirected links must not grant file access. | Implemented real-target revalidation against canonical drawing folders, including equivalent Windows short/long names, with network-host restrictions and link-escape checks. `electron/ipc-guard.cjs`, `tests/ipc-guard.test.ts`. |
 | 29 | Bound DXF parsing and source allocations; malformed or huge inputs must fail predictably. | Implemented linear tokenization, source/record/string bounds, browser file-size checks and bounded desktop reads. Recovery/plugin/catalog/library reads share byte caps; writes check UTF-8 bytes against matching read limits. `src/io/dxf.ts`, `src/io/file-limits.ts`, `electron/resource-limits.cjs`, `electron/autosave-store.cjs`. |
 | 30 | Bound desktop DWG worker work; corrupt inputs must not hang the main process. | Implemented size/start/parse deadlines, cancellation, worker cleanup and JavaScript heap limits; no main-thread fallback. WASM/native memory is not strictly capped. `electron/dwg-host.cjs`, `tests/dwg-host-limits.test.ts`. |
 | 31 | Bound expanded geometry; small nested blocks can multiply into millions of points. | Implemented weighted primitive/text/attribute work, 100,000 units per insert and 1,000,000 per imported drawing. Validation occurs before replacing sessions. `src/core/geometry-budget.ts`, `tests/block-dependencies.test.ts`. |
@@ -81,11 +81,11 @@ reader behavior; no Autodesk source files, drawings or licensed program content 
 
 ## Validation and remaining limits
 
-Local validation includes 1,343 passing unit tests (10 conditional skips), seven passing dense
+Local validation includes 1,362 passing unit tests (10 conditional skips), seven passing dense
 performance tests, TypeScript checks for app/Electron/scripts, ESLint, fixture/workflow validators,
 a complete dependency audit with zero vulnerabilities, browser interaction/performance checks,
 Windows packaging and the real packaged application's file/plot/recovery/permission flows.
-The final desktop source run using Electron 44.7.0 passed all 206 end-to-end checks.
+The final desktop source run using Electron 44.7.0 passed all 207 end-to-end checks.
 The secure-origin migration is tested over two real packaged launches, including Unicode
 preferences and preservation of a value changed after migration.
 
@@ -101,6 +101,15 @@ threshold. An exact RGBA comparison found four pixels differing by at most 3/255
 with no layout or content differences.
 The browser interaction gate passed 607 command runs and 796 clicks. CI must still compare the
 final source against the committed Linux baselines on its configured Chromium runner.
+
+The first CI run passed both Node 22/24 jobs and Linux desktop/migration checks. Its Windows
+image check exposed short/long path aliases; its macOS save check exposed the system `/var`
+alias. Both received targeted fixes and regressions. Test cleanup now exits its own Electron
+instance with a deadline so a failed step cannot leave an unattended dirty-document dialog.
+The Linux screenshot comparison passed 47 of 48 images. Visual review of the remaining DWG
+image confirmed unchanged drawing geometry and updated import-warning text; only that
+baseline was replaced, with new assertions for those warnings and no tolerance changes.
+The revised final commit must pass a fresh CI run before those platforms are considered verified.
 
 Before a release is considered verified, its exact final commit must pass the configured CI
 gates and every platform installer must be installed/extracted and exercised on its own OS.

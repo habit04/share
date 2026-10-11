@@ -113,6 +113,48 @@ const bad = (what) => {
 };
 const check = (cond, what) => (cond ? ok(what) : bad(what));
 
+/**
+ * Test cleanup runs after the window-close assertions. Explicitly exit here so a failed step
+ * cannot leave a dirty-document confirmation waiting for input and hide the original failure.
+ * Only the Electron process created by this harness is eligible for forced termination.
+ * @param {import('playwright').ElectronApplication} application
+ * @param {import('node:child_process').ChildProcess | null | undefined} [child]
+ */
+async function closeTestApplication(application, child) {
+  if (!child) {
+    try { child = application.process(); } catch { return; }
+  }
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  let timer;
+  try {
+    await Promise.race([
+      application.evaluate(({ app: main }) => main.exit(0)).catch(() => {}),
+      new Promise((done) => { timer = setTimeout(done, 5_000); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+  if (await waitForExit(child, 5_000)) return;
+  console.warn('e2e-electron: terminating its own unresponsive test instance during cleanup');
+  if (process.platform === 'win32' && child.pid) {
+    spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', timeout: 5_000, windowsHide: true });
+  } else child.kill('SIGKILL');
+  if (!(await waitForExit(child, 5_000))) throw new Error('The test Electron process did not exit during bounded cleanup.');
+}
+
+/**
+ * @param {import('node:child_process').ChildProcess | null | undefined} child
+ * @param {number} ms
+ */
+function waitForExit(child, ms) {
+  return new Promise((done) => {
+    if (!child || child.exitCode !== null || child.signalCode !== null) return done(true);
+    const onExit = () => { clearTimeout(timer); done(true); };
+    const timer = setTimeout(() => { child.removeListener('exit', onExit); done(false); }, ms);
+    child.once('exit', onExit);
+  });
+}
+
 /** A solid-colour RGB PNG (w x h), written without any image library. */
 function solidPng(w, h, [r, g, b]) {
   const chunk = (type, data) => {
@@ -468,6 +510,8 @@ try {
   await messages();
   const dataUrl = await win.evaluate((p) => window.jcad.readImage(p), pngPath);
   check(typeof dataUrl === 'string' && dataUrl.startsWith('data:image/png;base64,'), `read-image returns a PNG data URL (${String(dataUrl).slice(0, 30)})`);
+  const canonicalPng = realpathSync.native(pngPath);
+  check((await win.evaluate((p) => window.jcad.readImage(p), canonicalPng)) === dataUrl, 'read-image authorizes the canonical spelling of the native chosen drawing folder');
   const refused = await win.evaluate(async (paths) => {
     const out = [];
     for (const p of paths) out.push(await window.jcad.readImage(p).then(() => 'read', (e) => (/Invalid path|Not an image/.test(String(e)) ? 'refused' : String(e))));
@@ -1242,9 +1286,9 @@ try {
   bad(`unexpected: ${err && err.stack ? err.stack : err}`);
 } finally {
   try {
-    await app.close();
-  } catch {
-    /* already closed */
+    await closeTestApplication(app, firstProcess);
+  } catch (err) {
+    bad(`cleanup: ${err}`);
   }
   clearTimeout(hardTimeout);
 }
@@ -1258,20 +1302,6 @@ const relaunchTimeout = setTimeout(() => {
   console.error('e2e-electron: crash recovery timed out after 3 minutes');
   process.exit(1);
 }, 3 * 60 * 1000);
-/**
- * Resolves when a child process is gone (true), or after `ms` (false).
- * @param {import('node:child_process').ChildProcess | null | undefined} p
- * @param {number} ms
- */
-const waitForExit = (p, ms) =>
-  new Promise((resolve) => {
-    if (!p || p.exitCode !== null || p.signalCode !== null) return resolve(true);
-    const t = setTimeout(() => resolve(false), ms);
-    p.once('exit', () => {
-      clearTimeout(t);
-      resolve(true);
-    });
-  });
 const lostTheLock = (err) => /has been closed|Target closed/i.test(String(err && err.message ? err.message : err));
 // A start right after the previous instance went away can lose the single-instance lock to that
 // instance while it still shuts down (on Windows the helper processes of a killed instance linger
@@ -1293,7 +1323,7 @@ const launch = async () => {
         return { a, w };
       } catch (err) {
         if (!(attempt < 30 && lostTheLock(err))) throw err;
-        await a.close().catch(() => {});
+        await closeTestApplication(a);
       }
     }
     await new Promise((r) => setTimeout(r, 1000));
@@ -1331,9 +1361,9 @@ try {
   // keep the profile and the single-instance lock busy), so the whole tree goes, as a crash would.
   const crashed = second.a.process();
   const exited = waitForExit(crashed, 30_000);
-  if (process.platform === 'win32') spawnSync('taskkill', ['/PID', String(crashed.pid), '/T', '/F'], { stdio: 'ignore' });
+  if (process.platform === 'win32') spawnSync('taskkill', ['/PID', String(crashed.pid), '/T', '/F'], { stdio: 'ignore', timeout: 5_000, windowsHide: true });
   else crashed.kill('SIGKILL');
-  await exited;
+  if (!(await exited)) throw new Error('The test instance did not exit after the simulated crash; retaining it for bounded cleanup.');
   second = null;
 
   third = await launch();
@@ -1373,8 +1403,7 @@ try {
 } catch (err) {
   bad(`unexpected: ${err && err.stack ? err.stack : err}`);
 } finally {
-  // Closing an instance that already quit (Windows, Linux) must not hang the script either.
-  for (const x of [second, third]) if (x) await Promise.race([x.a.close().catch(() => {}), new Promise((r) => setTimeout(r, 15_000))]);
+  for (const x of [second, third]) if (x) await closeTestApplication(x.a).catch((err) => bad(`cleanup: ${err}`));
   clearTimeout(relaunchTimeout);
 }
 
@@ -1390,6 +1419,7 @@ check(mainErrors.length === 0, `main process printed no JS errors${mainErrors.le
 const provoked = [
   /ipc app-info: sender is not the application window/,
   /read-image: (not next to a drawing the user opened|relative path|not an image file|network path not next to a file the user opened on that server|device path): /,
+  /read-image: Image resolves outside the permitted drawing folders: .*jcad-e2e-img-[^\\/]+[\\/]logo\.png$/,
   /backup-file: not a file chosen by the user: .*stranger\.dxf/,
   /save-project: read-only \(named by a project file, not chosen by the user\): .*package\.json/,
   /save-dxf: wrong file type: .*(package\.json|listing\.jcadproj\.json)/,

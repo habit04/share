@@ -191,6 +191,9 @@ function appUrlTest(indexFile, devUrl) {
 
 const IMAGE_EXT = /\.(png|jpe?g|gif|bmp|webp)$/i;
 
+/** Policy denials are distinct from filesystem failures when resolving an image. @param {string} message */
+const imagePathError = (message) => Object.assign(new Error(message), { code: 'ERR_IMAGE_PATH' });
+
 /**
  * Path rules shared by the file IPC handlers.
  * @param {{ isKnownPath: (p: string) => boolean, isWritablePath?: (p: string) => boolean, knownPaths: () => Iterable<string>, log: RejectionLogger }} deps
@@ -223,6 +226,19 @@ function createPathPolicy({ isKnownPath, isWritablePath = isKnownPath, knownPath
     if (!path.isAbsolute(p)) return 'relative path';
     return null;
   }
+
+  /** @param {unknown} p */
+  function imageShapeProblem(p) {
+    const bad = shapeProblem(p);
+    if (bad) return bad;
+    const s = /** @type {string} */ (p);
+    if (!IMAGE_EXT.test(s)) return 'not an image file';
+    if (networkHost(s) === '') return 'device path';
+    return null;
+  }
+
+  /** @param {string} p */
+  const isReferencedImage = (p) => networkHost(p) === null ? referencedImages.has(norm(p)) : referencedNetwork.has(netKey(p));
 
   /** Is `child` the folder `dir` or inside it? */
   const inside = (/** @type {string} */ dir, /** @type {string} */ child) => {
@@ -294,14 +310,12 @@ function createPathPolicy({ isKnownPath, isWritablePath = isKnownPath, knownPath
      * @returns {string | null} why it is refused, or null
      */
     imageProblem(p) {
-      const bad = shapeProblem(p);
+      const bad = imageShapeProblem(p);
       if (bad) return bad;
       const s = /** @type {string} */ (p);
-      if (!IMAGE_EXT.test(s)) return 'not an image file';
       const host = networkHost(s);
-      if (host === '') return 'device path';
       const target = norm(s);
-      if (host === null ? referencedImages.has(target) : referencedNetwork.has(netKey(s))) return null;
+      if (isReferencedImage(s)) return null;
       // Next to a known file on the same kind of location: local next to local, a share only next to a file on that server.
       for (const k of knownPaths()) {
         if (!/\.(dxf|dwg)$/i.test(k) || networkHost(k) !== host) continue;
@@ -311,14 +325,36 @@ function createPathPolicy({ isKnownPath, isWritablePath = isKnownPath, knownPath
     },
     /** Resolve the actual image target before granting access; links cannot extend the scope. */
     async imagePath(file) {
+      const shapeBad = imageShapeProblem(file);
+      if (shapeBad) throw imagePathError(shapeBad);
+      const host = networkHost(file);
       const bad = this.imageProblem(file);
-      if (bad) throw new Error(bad);
+      // A canonical spelling can differ from the registered spelling (Windows 8.3 names,
+      // or a drawing folder the user opened through a junction). Only resolve network
+      // paths when a drawing on that server already grants access to its location.
+      const dirs = [];
+      for (const k of knownPaths()) {
+        if (/\.(dxf|dwg)$/i.test(k) && networkHost(k) === host) dirs.push(path.dirname(k));
+      }
+      if (bad && dirs.length === 0) throw imagePathError(bad);
       const fs = require('node:fs/promises');
       const actual = await fs.realpath(file);
-      if (networkHost(actual) !== networkHost(file)) throw new Error('Image link changes the network location');
-      const actualBad = this.imageProblem(actual);
-      if (actualBad) throw new Error('Image resolves outside the permitted drawing folders');
-      return actual;
+      if (networkHost(actual) !== host) throw imagePathError('Image link changes the network location');
+      if (!imageShapeProblem(actual)) {
+        if (isReferencedImage(actual)) return actual;
+        const target = norm(actual);
+        for (const dir of new Set(dirs)) {
+          let realDir;
+          try {
+            realDir = await fs.realpath(dir);
+          } catch (err) {
+            if (err && (err.code === 'ENOENT' || err.code === 'ENOTDIR')) continue;
+            throw err;
+          }
+          if (networkHost(realDir) === host && inside(norm(realDir), target)) return actual;
+        }
+      }
+      throw imagePathError('Image resolves outside the permitted drawing folders');
     },
     /**
      * Remember the image files a drawing references (absolute, or relative to its folder). A

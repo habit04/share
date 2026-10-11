@@ -27,6 +27,8 @@ const { describeFileError } = require('./file-errors.cjs');
 
 const RENAME_RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
 const RENAME_DELAYS_MS = [15, 40, 90, 200];
+// macOS exposes these system directories through fixed, root-owned aliases.
+const DARWIN_ALIASES = new Map([['/var', '/private/var'], ['/tmp', '/private/tmp'], ['/etc', '/private/etc']]);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -153,28 +155,52 @@ function createAtomicWriter(fs = fsp, options = {}) {
     return Object.assign(new Error('symbolic links, junctions, or changed parent folders cannot be written'), { code: 'ELOOP', path: file });
   }
 
+  /** A fixed macOS system alias, never a user-created link or a link to another destination. */
+  async function darwinAliasTarget(dir, stat) {
+    const target = platform === 'darwin' && DARWIN_ALIASES.get(dir);
+    if (!target || stat.uid !== 0 || path.posix.resolve('/', await fs.readlink(dir)) !== target) return undefined;
+    // The alias entry and /private must be protected from replacement by ordinary users.
+    for (const protectedDir of ['/', '/private']) {
+      const parent = await existingStat(protectedDir);
+      if (!parent || !parent.isDirectory() || parent.isSymbolicLink() || parent.uid !== 0 || (parent.mode & 0o022)) return undefined;
+    }
+    const destination = await existingStat(target);
+    if (!destination || !destination.isDirectory() || destination.isSymbolicLink() || destination.uid !== 0 || await fs.realpath(dir) !== target) return undefined;
+    return target;
+  }
+
   /**
-   * Pin the existing parent chain and reject links (including Windows junctions). Rechecked before
+   * Pin the existing parent chain and reject links (including Windows junctions), except macOS's
+   * protected /var, /tmp and /etc aliases. Both the alias and its /private target chain are pinned.
+   * Rechecked before
    * each rename and after creating the temp file. Node has no portable renameat/openat API, so a
    * hostile process can still race the final check and rename; these checks bound that practical
    * TOCTOU window without following a link or falling back to a destructive copy.
    */
   async function guardPath(file) {
     const parents = [];
-    let dir = path.dirname(file);
-    while (true) {
-      const stat = await existingStat(dir);
-      if (!stat) throw Object.assign(new Error('no such file or directory'), { code: 'ENOENT', path: dir });
-      if (!stat.isDirectory() || stat.isSymbolicLink()) throw unsafePath(dir);
-      parents.push({ dir, real: await fs.realpath(dir), dev: stat.dev, ino: stat.ino });
-      const parent = path.dirname(dir);
-      if (parent === dir) break;
-      dir = parent;
-    }
+    const visited = new Set();
+    const pinParents = async (start) => {
+      let dir = start;
+      while (!visited.has(dir)) {
+        const stat = await existingStat(dir);
+        if (!stat) throw Object.assign(new Error('no such file or directory'), { code: 'ENOENT', path: dir });
+        const alias = stat.isSymbolicLink() ? await darwinAliasTarget(dir, stat) : undefined;
+        if (!alias && (!stat.isDirectory() || stat.isSymbolicLink())) throw unsafePath(dir);
+        parents.push({ dir, real: await fs.realpath(dir), dev: stat.dev, ino: stat.ino, alias });
+        visited.add(dir);
+        if (alias) await pinParents(alias);
+        const parent = path.dirname(dir);
+        if (parent === dir) break;
+        dir = parent;
+      }
+    };
+    await pinParents(path.dirname(file));
     const check = async (tmp) => {
       for (const pin of parents) {
         const stat = await existingStat(pin.dir);
-        if (!stat || !stat.isDirectory() || stat.isSymbolicLink() || await fs.realpath(pin.dir) !== pin.real ||
+        const alias = stat?.isSymbolicLink() ? await darwinAliasTarget(pin.dir, stat) : undefined;
+        if (!stat || alias !== pin.alias || (!alias && (!stat.isDirectory() || stat.isSymbolicLink())) || await fs.realpath(pin.dir) !== pin.real ||
             (pin.ino !== undefined && (stat.ino !== pin.ino || stat.dev !== pin.dev))) throw unsafePath(pin.dir);
       }
       for (const p of [file, tmp].filter(Boolean)) {

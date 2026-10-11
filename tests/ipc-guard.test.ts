@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { createRequire } from 'node:module';
-import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, win32 } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 // electron/ipc-guard.cjs is plain CommonJS for the main process (type-checked by tsconfig.electron.json).
@@ -24,6 +24,29 @@ const guard = require('../electron/ipc-guard.cjs') as {
 
 const posix = process.platform !== 'win32';
 const abs = (...p: string[]) => (posix ? `/${p.join('/')}` : `C:\\${p.join('\\')}`);
+
+/** Exercise the real policy with Windows paths even when the test host uses another platform. */
+function windowsImagePolicy(known: string[], canonical: Record<string, string | Error>) {
+  const calls: string[] = [];
+  const key = (p: string) => win32.normalize(p).toLowerCase();
+  const targets = new Map(Object.entries(canonical).map(([p, actual]) => [key(p), actual]));
+  const module = { exports: {} as typeof guard };
+  const load = new Function('require', 'module', 'process', readFileSync(new URL('../electron/ipc-guard.cjs', import.meta.url), 'utf8'));
+  load((id: string) => {
+    if (id === 'node:path') return win32;
+    if (id === './path-registry.cjs') return require('../electron/path-registry.cjs');
+    if (id === 'node:fs/promises') return { realpath: async (p: string) => {
+      calls.push(p);
+      const actual = targets.get(key(p));
+      if (!actual) throw Object.assign(new Error('No such file'), { code: 'ENOENT' });
+      if (actual instanceof Error) throw actual;
+      return actual;
+    } };
+    return require(id);
+  }, module, { platform: 'win32' });
+  const paths = new Set(known);
+  return { calls, policy: module.exports.createPathPolicy({ isKnownPath: (p: string) => paths.has(p), knownPaths: () => paths, log: { reject: () => {} } }) };
+}
 
 /** A minimal stand-in for Electron's main window and its main frame. */
 function fakeWindow(url: string) {
@@ -187,6 +210,78 @@ describe('file path allow lists (electron/ipc-guard.cjs)', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it('authorizes equivalent short and long Windows drawing folders', async () => {
+    const short = 'C:\\Users\\RUNNER~1\\job', long = 'C:\\Users\\runneradmin\\job';
+    const shortImage = win32.join(short, 'safe.png'), longImage = win32.join(long, 'safe.png');
+    const canonical = { [short]: long, [long]: long, [shortImage]: longImage, [longImage]: longImage };
+    for (const dir of [short, long]) {
+      const { policy } = windowsImagePolicy([win32.join(dir, 'sheet.dxf')], canonical);
+      await expect(policy.imagePath(shortImage)).resolves.toBe(longImage);
+      await expect(policy.imagePath(longImage)).resolves.toBe(longImage);
+    }
+  });
+
+  it('keeps a chosen lexical drawing root when its directory is a junction', async () => {
+    const chosen = 'C:\\Drawings Link', actual = 'D:\\Drawings';
+    const image = win32.join(chosen, 'img', 'safe.png'), actualImage = win32.join(actual, 'img', 'safe.png');
+    const { policy } = windowsImagePolicy(['C:\\Missing\\old.dxf', win32.join(chosen, 'sheet.dwg')], { [chosen]: actual, [image]: actualImage });
+    await expect(policy.imagePath(image)).resolves.toBe(actualImage);
+    expect(policy.known(win32.join(chosen, 'sheet.dwg'), 'open-dwg')).toBe(win32.join(chosen, 'sheet.dwg'));
+    expect(policy.known(win32.join(actual, 'sheet.dwg'), 'open-dwg')).toBeNull();
+  });
+
+  it('rejects image links and sibling prefixes outside a canonical drawing root', async () => {
+    const short = 'C:\\Users\\RUNNER~1\\job', long = 'C:\\Users\\runneradmin\\job';
+    const linked = win32.join(short, 'linked', 'secret.png'), neighbor = win32.join(short, 'neighbor.png');
+    const { policy } = windowsImagePolicy([win32.join(short, 'sheet.dxf')], {
+      [short]: long,
+      [linked]: 'C:\\Private\\secret.png',
+      [neighbor]: `${long}-private\\secret.png`,
+    });
+    for (const image of [linked, neighbor]) await expect(policy.imagePath(image)).rejects.toMatchObject({ code: 'ERR_IMAGE_PATH', message: 'Image resolves outside the permitted drawing folders' });
+  });
+
+  it('canonicalizes UNC folder aliases only on an already authorized server', async () => {
+    const short = '\\\\fileserver\\share\\RUNNER~1\\job', long = '\\\\fileserver\\share\\runneradmin\\job';
+    const shortImage = win32.join(short, 'safe.png'), longImage = win32.join(long, 'safe.png');
+    const { policy, calls } = windowsImagePolicy([win32.join(short, 'sheet.dxf')], { [short]: long, [shortImage]: longImage, [longImage]: longImage });
+    await expect(policy.imagePath(shortImage)).resolves.toBe(longImage);
+    await expect(policy.imagePath(longImage)).resolves.toBe(longImage);
+    calls.length = 0;
+    await expect(policy.imagePath('\\\\otherserver\\share\\runneradmin\\job\\safe.png')).rejects.toMatchObject({ code: 'ERR_IMAGE_PATH', message: expect.stringContaining('network path') });
+    await expect(policy.imagePath('\\\\?\\C:\\safe.png')).rejects.toMatchObject({ code: 'ERR_IMAGE_PATH', message: 'device path' });
+    expect(calls).toEqual([]);
+  });
+
+  it('rejects links that move images between network hosts or from local paths to UNC', async () => {
+    for (const dir of ['C:\\Drawings', '\\\\fileserver\\share\\Drawings']) {
+      const image = win32.join(dir, 'linked.png');
+      const { policy } = windowsImagePolicy([win32.join(dir, 'sheet.dxf')], { [dir]: dir, [image]: '\\\\otherserver\\share\\secret.png' });
+      await expect(policy.imagePath(image)).rejects.toMatchObject({ code: 'ERR_IMAGE_PATH', message: 'Image link changes the network location' });
+    }
+  });
+
+  it('tags image shape and authorization denials without filesystem access', async () => {
+    const { policy, calls } = windowsImagePolicy([], {});
+    for (const image of ['relative.png', 'C:\\Private\\notes.txt', 'C:\\Private\\bad\0.png', 'C:\\Private\\secret.png']) {
+      await expect(policy.imagePath(image)).rejects.toMatchObject({ code: 'ERR_IMAGE_PATH' });
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it('preserves image realpath missing-file and I/O failures unchanged', async () => {
+    const dir = 'C:\\Drawings', image = win32.join(dir, 'safe.png');
+    for (const code of ['ENOENT', 'EIO']) {
+      const failure = Object.assign(new Error(`Image realpath failed: ${code}`), { code });
+      const { policy } = windowsImagePolicy([win32.join(dir, 'sheet.dxf')], { [dir]: dir, [image]: failure });
+      await expect(policy.imagePath(image)).rejects.toBe(failure);
+      expect(failure.code).toBe(code);
+    }
+    const directoryFailure = Object.assign(new Error('Directory realpath failed'), { code: 'EIO' });
+    const { policy } = windowsImagePolicy([win32.join(dir, 'sheet.dxf')], { [dir]: directoryFailure, [image]: image });
+    await expect(policy.imagePath(image)).rejects.toBe(directoryFailure);
   });
 
   it('dxfImageNames(): IMAGEDEF file names from DXF text', () => {

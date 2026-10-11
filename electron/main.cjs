@@ -885,18 +885,18 @@ ipcMain.handle('read-image', async (_ev, file) => {
   if (pathPolicy.shapeProblem(file)) throw new Error('Invalid path');
   const type = IMAGE_TYPES[path.extname(file).toLowerCase()];
   if (!type) throw new Error('Not an image file');
-  // Only images next to a file the user chose, or named by a drawing the user opened.
-  const refused = pathPolicy.imageProblem(file);
-  if (refused) {
-    rejections.reject('read-image', `${refused}: ${String(file).slice(0, 300)}`);
-    throw new Error('Invalid path');
-  }
+  // Resolve through the canonical policy once: Windows short names and macOS system aliases
+  // may differ from the spelling registered by the native drawing dialog.
   let stat;
   try {
     file = await pathPolicy.imagePath(file);
     stat = await fs.stat(file);
   } catch (err) {
     if (err && (err.code === 'ENOENT' || err.code === 'ENOTDIR')) return null;
+    if (err && err.code === 'ERR_IMAGE_PATH') {
+      rejections.reject('read-image', `${err.message}: ${String(file).slice(0, 300)}`);
+      throw new Error('Invalid path');
+    }
     throw err;
   }
   if (!stat.isFile() || stat.size > MAX_IMAGE_BYTES) return null;
