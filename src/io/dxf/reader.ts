@@ -1,7 +1,7 @@
 /**
  * readDxf: a DXF file into a drawing. The sections are read in file order (HEADER, TABLES,
- * BLOCKS, ENTITIES, OBJECTS); IMAGE paths, tables read from anonymous blocks, the layers every
- * entity refers to, the header and paper space (io/dxf-layouts.ts) are settled at the end.
+ * BLOCKS, ENTITIES, OBJECTS); tables read from anonymous blocks, the layers every entity refers
+ * to, the header, paper space (io/dxf-layouts.ts) and then the IMAGE paths are settled at the end.
  */
 import type { Entity, BlockDef, Layer, DimStyle } from '../../core/entities';
 import { STANDARD_DIMSTYLE, DIMSTYLES_META_KEY, diffDimStyles } from '../../core/dimension';
@@ -125,17 +125,6 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
     } else i += 1;
   }
 
-  // IMAGE paths come from the IMAGEDEF objects, read last.
-  if (ctx.pendingImages?.size) {
-    const resolve = (list: readonly Entity[]): Entity[] =>
-      list.map((e) => {
-        if (e.type !== 'image') return e;
-        const h = ctx.pendingImages!.get(e);
-        return h !== undefined ? { ...e, path: imageDefs.get(h) ?? e.path } : e;
-      });
-    entities = resolve(entities);
-    for (const [k, b] of Object.entries(blocks)) if (b.entities.some((e) => e.type === 'image')) blocks[k] = { ...b, entities: resolve(b.entities) };
-  }
   // Anonymous blocks that drew a table now read as a native table are no longer needed.
   if (ctx.consumedBlocks?.size) {
     const used = new Set<string>();
@@ -165,12 +154,25 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
   const header = drawingHeader(headerVars, ctx.dimStyle, linetypes, views);
 
   // Paper space: layouts with their entities and viewports (and the layers they use).
-  const layouts = layoutReader.build((objs, where) => {
+  let layouts = layoutReader.build((objs, where) => {
     ctx.where = where;
     const list = readEntities(objs, ctx);
     ctx.where = undefined;
     return list;
   }, { entities, header });
+  // IMAGE paths come from the IMAGEDEF objects, read last: resolved once every space is read,
+  // paper space included (ported from PR #2, codex/electrical-review-fixes 2f89b0e).
+  if (ctx.pendingImages?.size) {
+    const resolve = (list: readonly Entity[]): Entity[] =>
+      list.map((e) => {
+        if (e.type !== 'image') return e;
+        const h = ctx.pendingImages!.get(e.id);
+        return h !== undefined ? { ...e, path: imageDefs.get(h) ?? e.path } : e;
+      });
+    entities = resolve(entities);
+    for (const [k, b] of Object.entries(blocks)) if (b.entities.some((e) => e.type === 'image')) blocks[k] = { ...b, entities: resolve(b.entities) };
+    layouts = layouts?.map((l) => (l.entities.some((e) => e.type === 'image') ? { ...l, entities: resolve(l.entities) } : l));
+  }
   for (const l of layouts ?? []) {
     for (const e of l.entities) ensure(e.layer);
     for (const v of l.viewports) ensure(v.layer);

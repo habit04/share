@@ -372,7 +372,7 @@ export function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
     }
     case 'IMAGE': {
       const im = readImage(o, base);
-      ctx.pendingImages?.set(im, str(o, 340).toUpperCase());
+      ctx.pendingImages?.set(im.id, str(o, 340).toUpperCase());
       return im;
     }
     case 'ACAD_TABLE': {

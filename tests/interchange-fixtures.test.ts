@@ -981,5 +981,8 @@ describe('r2018-image-inches.dxf: IMAGE + IMAGEDEF in model and paper space, $IN
     });
   });
 
-  it.todo('the paper-space IMAGE keeps its IMAGEDEF file name C:\\Standards\\jcad-logo.tif -- layout entities are read after IMAGEDEF paths are resolved, so its path is empty and is saved empty');
+  it('the paper-space IMAGE keeps its IMAGEDEF file name C:\\Standards\\jcad-logo.tif and saves it', () => {
+    for (const [, s] of both(f)) expect(ofType<ImageEntity>(s.layouts![0]!.entities, 'image')[0]!.path).toBe('C:\\Standards\\jcad-logo.tif');
+    expect(records(f.written, 'IMAGEDEF').map((r) => group(r, 1))).toContain('C:\\Standards\\jcad-logo.tif');
+  });
 });
