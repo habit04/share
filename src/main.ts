@@ -57,7 +57,7 @@ declare global {
       printDrawing?(dataUrl: string, title: string, landscape: boolean, sheet?: { width: number; height: number; electron?: string }): Promise<boolean>;
       /** Track E: write vector PDF bytes (save-pdf IPC). */
       savePdf?(bytes: Uint8Array, suggestName: string): Promise<string | null>;
-      saveDxf(path: string | null, text: string, suggestName: string): Promise<string | null>;
+      saveDxf(path: string | null, text: string, suggestName: string, opts?: { backup?: boolean }): Promise<string | null>;
       onMenuCommand(cb: (cmd: string) => void): void;
       /** Close / quit / restart: the main process waits for the Save All workflow's answer (true = close). */
       onCloseRequest?(cb: (context: 'close' | 'quit' | 'restart') => Promise<boolean>): void;

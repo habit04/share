@@ -147,8 +147,9 @@ function readClosedDxfForReport(editor: Editor, text: string, path: string): Dra
 
 /** Why a closed project drawing could not be read: file errors in plain words, damaged DXF with the reader's message. */
 function closedReadError(err: unknown, path: string): string {
-  if (fileErrorCode(err)) return fileErrorText(err, { action: 'read', path });
   if (err instanceof DxfReadError && err.truncated) return `damaged, not changed: ${err.message} OPEN it to recover what is readable`;
+  if (err instanceof DxfReadError) return `damaged, not changed: ${err.message}`;
+  if (fileErrorCode(err)) return fileErrorText(err, { action: 'read', path });
   return err instanceof Error ? err.message : String(err);
 }
 
@@ -722,7 +723,9 @@ export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[
         }
       }
       const text = writeDxf(withoutUnusedLibraryBlocks(c.state));
-      const r = await saveQueue.run(path, sh.revision ?? captureRevision(), () => bridge.saveDxf(path, text, sh.name));
+      // The .bak was made above (or the user chose to write without one): the write itself makes no second copy,
+      // so "Continue Without Backup" also works when the .bak path cannot be written.
+      const r = await saveQueue.run(path, sh.revision ?? captureRevision(), () => bridge.saveDxf(path, text, sh.name, { backup: false }));
       if (r.status === 'stale') conflicts.push(`${sh.name} (a newer version was saved meanwhile)`);
       else if (r.value) written += 1;
       else failed.push(sh.name);

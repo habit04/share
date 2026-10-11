@@ -35,12 +35,18 @@ const KIND_BY_CODE = {
   ENFILE: 'io',
 };
 
+/** Error codes that are not in KIND_BY_CODE but still name a file system failure in error text. */
+const OTHER_FS_CODES = new Set(['EINVAL', 'EEXIST', 'ENOTEMPTY', 'EXDEV', 'ELOOP', 'EMLINK', 'ENOTSUP', 'EOPNOTSUPP', 'ECANCELED', 'EPIPE', 'ENOSYS', 'EBADF']);
+
+/** The OS error code of an error object or error text (in text only known codes count, see the twin). */
 function fileErrorCode(err) {
   const own = err && typeof err === 'object' ? err.code : undefined;
   if (typeof own === 'string' && /^E[A-Z0-9]+$/.test(own)) return own;
   const text = err instanceof Error ? err.message : String(err == null ? '' : err);
-  const m = /\b(E[A-Z][A-Z0-9]+)\b(?=:|\s*\(|,|$)/.exec(text);
-  return m ? m[1] : null;
+  for (const m of text.matchAll(/\b(E[A-Z][A-Z0-9]+)\b(?=:|\s*\(|,|$)/g)) {
+    if (KIND_BY_CODE[m[1]] || OTHER_FS_CODES.has(m[1])) return m[1];
+  }
+  return null;
 }
 
 function pathFromError(err) {

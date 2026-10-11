@@ -614,7 +614,7 @@ ipcMain.handle('open-dxf', async (ev) => {
   return r && r.kind === 'dxf' ? { path: r.path, text: r.text } : null;
 });
 
-ipcMain.handle('save-dxf', async (ev, existingPath, text, suggestName) => {
+ipcMain.handle('save-dxf', async (ev, existingPath, text, suggestName, opts) => {
   const win = BrowserWindow.fromWebContents(ev.sender);
   let target = isKnownPath(existingPath) ? existingPath : null;
   if (!target) {
@@ -627,9 +627,10 @@ ipcMain.handle('save-dxf', async (ev, existingPath, text, suggestName) => {
     target = res.filePath;
   }
   if (typeof text !== 'string') throw new Error('Invalid DXF payload');
-  // Temporary file + fsync + rename, previous version kept as <name>.dxf.bak (electron/atomic-write.cjs).
+  // Temporary file + fsync + rename, previous version kept as <name>.dxf.bak (electron/atomic-write.cjs)
+  // unless the renderer says no (a project-wide command made the .bak itself or was told to write without one).
   // A failure is thrown as "CODE: reason, write '<target>'"; the renderer maps it to a message.
-  await atomicWriteFile(target, text, { backup: true });
+  await atomicWriteFile(target, text, { backup: !(opts && opts.backup === false) });
   rememberPath(target);
   return target;
 });

@@ -825,6 +825,182 @@ scenario('open', async () => {
   checkClean(ctx, 'open flows');
 });
 
+// ------------------------------------------------------------------ project-wide commands on a real project folder
+/** A 3DSOLID record (kept raw by the DXF reader and written back) with a marker in its data. */
+const RAW_MARKER = 'FLOWS-RAW-RECORD-7Q';
+const rawSolid = (eol) => ['0', '3DSOLID', '8', 'SOLIDS', '100', 'AcDbEntity', '100', 'AcDbModelerGeometry', '70', '1', '1', RAW_MARKER, ''].join(eol);
+function injectRaw(file) {
+  const text = readFileSync(file, 'latin1');
+  const eol = text.includes('\r\n') ? '\r\n' : '\n';
+  const out = text.replace(new RegExp(`(${eol}ENTITIES${eol})`), `$1${rawSolid(eol)}`);
+  if (out === text) throw new Error(`no ENTITIES section in ${file}`);
+  writeFileSync(file, out, 'latin1');
+}
+
+/** Answer the project-wide confirmation (closed files + .bak), optionally doing something while it is open. */
+async function confirmFiles(ctx, { files = true, backup = true, whileOpen } = {}) {
+  const dlg = ctx.win.locator('.modal', { hasText: 'closed drawing file(s) listed above' });
+  if (!(await dlg.waitFor({ timeout: 30_000 }).then(() => true, () => false))) {
+    bad('no confirmation dialog for the project-wide change');
+    return null;
+  }
+  const text = await dlg.innerText();
+  const boxes = dlg.locator('input[type=checkbox]');
+  if (files) await boxes.nth(0).check();
+  else await boxes.nth(0).uncheck();
+  if (backup) await boxes.nth(1).check();
+  else await boxes.nth(1).uncheck();
+  if (whileOpen) await whileOpen();
+  await dlg.locator('button', { hasText: 'Apply' }).click();
+  return text;
+}
+
+scenario('project-wide', async () => {
+  step = 'project-wide: setup';
+  const root = tempDir('pw');
+  const dir = join(root, 'line');
+  mkdirSync(dir);
+  const names = ['s1-open', 's2-truncated', 's3-edited', 's4-nobak', 's5-raw', 's6-plain'];
+  const file = (n) => join(dir, `${n}.dxf`);
+  const projFile = join(dir, 'line.jcadproj.json');
+  const ctx = await launch(tempDir('profile'));
+  try {
+    // A sheet with a title block and the demo ladder (components, wires), saved six times.
+    await ctx.app.evaluate(({ BrowserWindow }, f) => BrowserWindow.getAllWindows()[0].loadFile(f, { query: { demo: '1', norecover: '1' } }), join(repo, 'dist', 'index.html'));
+    await ctx.win.waitForFunction(() => !!window.editor && window.editor.doc.entities.length > 20, null, { timeout: 30_000 });
+    const demo = await ctx.win.evaluate(() => ({ entities: window.editor.doc.entities, blocks: Object.values(window.editor.doc.snapshot.blocks) }));
+    await ctx.run('NEWSHEET');
+    const tpl = ctx.modal('New Drawing from Template');
+    await tpl.waitFor({ timeout: 10_000 });
+    await tpl.locator('button', { hasText: 'OK' }).click();
+    await ctx.win.waitForTimeout(300);
+    await ctx.win.evaluate((d) => {
+      const doc = window.editor.doc;
+      doc.ensureBlocks(d.blocks);
+      doc.addEntities(d.entities.map((e, i) => ({ ...e, id: `demo-${i}` })));
+    }, demo);
+    for (const n of names) await saveAs(ctx, file(n));
+    // Every drawing in the project; then close all tabs but s1 (open, in its layout tab).
+    writeProject(projFile, 'Line', names.map((n) => `${n}.dxf`), { descriptions: ['FLOWS CUSTOMER', 'FLOWS PLANT'] });
+    await openProject(ctx, projFile);
+    await ctx.win.evaluate((keep) => {
+      const s = window.editor.sessions;
+      for (let i = s.count - 1; i >= 0; i -= 1) if (s.all[i].filePath !== keep) s.close(i);
+    }, file('s1-open'));
+    await openDrawing(ctx, file('s1-open'));
+    const layoutTab = ctx.win.locator('#layout-tabs .layout-tab', { hasText: 'Layout1' });
+    const inLayout = (await layoutTab.count()) > 0;
+    if (inLayout) await layoutTab.click();
+    check((await ctx.tabs()).length === 1 && (await ctx.win.evaluate(() => !!window.editor.doc.space)) === inLayout, `s1 is the only open tab${inLayout ? ', showing Layout1' : ''}`);
+    // The special cases on disk.
+    const t2 = readFileSync(file('s2-truncated'));
+    writeFileSync(file('s2-truncated'), t2.subarray(0, Math.floor(t2.length * 0.6)));
+    mkdirSync(`${file('s4-nobak')}.bak`); // a folder where the .bak copy should go
+    injectRaw(file('s5-raw'));
+    const original = Object.fromEntries(names.map((n) => [n, readFileSync(file(n))]));
+    const editedOnDisk = Buffer.from(readFileSync(fixtures.dxf));
+    const s1Before = await ctx.win.evaluate(() => window.editor.doc.snapshot.entities.filter((e) => e.type === 'insert').map((e) => e.attributes.TAG1 ?? '').join(','));
+
+    // ---- AERETAGPROJECT: file edited on disk during the confirmation, .bak failure -> Skip
+    step = 'project-wide: AERETAGPROJECT';
+    let h = await ctx.h();
+    await ctx.run('AERETAGPROJECT A');
+    const intro = await confirmFiles(ctx, { whileOpen: async () => writeFileSync(file('s3-edited'), editedOnDisk) });
+    check(intro && /s5-raw\.dxf/.test(intro) && !/s2-truncated/.test(intro), `the confirmation lists the drawings to change (not the damaged one)`);
+    const bakDlg = ctx.modal('Backup Failed');
+    const bakShown = await bakDlg.waitFor({ timeout: 20_000 }).then(() => true, () => false);
+    check(bakShown && /s4-nobak\.dxf/.test(await bakDlg.innerText()), `a failed .bak copy asks per file: ${bakShown ? (await bakDlg.innerText()).replace(/\s+/g, ' ').slice(0, 160) : 'no dialog'}`);
+    if (bakShown) await bakDlg.locator('button', { hasText: 'Skip' }).click();
+    await ctx.waitLog(/^RETAG project .*: \d+ open drawing\(s\) updated/, h, 30_000);
+    await ctx.win.waitForTimeout(500);
+    let log = await ctx.logSince(h);
+    const summary = log.filter((l) => /^(RETAG project|Not updated|Skipped|Not updated because)/.test(l));
+    console.log(`     summary: ${summary.join(' / ')}`);
+    check(log.some((l) => /^RETAG project .*: 1 open drawing\(s\) updated, 2 closed drawing file\(s\) saved\./.test(l)), 'summary: 1 open drawing updated, 2 closed files saved (s5, s6)');
+    check(log.some((l) => /^Not updated: s4-nobak\.dxf \(backup failed: .*not written\)/.test(l)), 'summary: s4 not updated, its backup failed');
+    check(log.some((l) => /^Not updated because they changed while the command ran .*s3-edited\.dxf \(changed on disk since it was read\)/.test(l)), 'summary: s3 changed on disk, left alone');
+    check(log.some((l) => /^Skipped: .*s2-truncated\.dxf \(damaged, not changed/.test(l)), 'summary: s2 damaged, skipped');
+    check(sameBytes(file('s2-truncated'), file('s2-truncated')) && Buffer.compare(readFileSync(file('s2-truncated')), original['s2-truncated']) === 0 && !existsSync(`${file('s2-truncated')}.bak`), 'the truncated drawing is byte-for-byte unchanged, no .bak');
+    check(Buffer.compare(readFileSync(file('s3-edited')), editedOnDisk) === 0, 'the drawing edited on disk keeps the outside edit byte-for-byte');
+    check(Buffer.compare(readFileSync(file('s4-nobak')), original['s4-nobak']) === 0, 'the drawing whose .bak failed is byte-for-byte unchanged');
+    for (const n of ['s5-raw', 's6-plain']) {
+      check(Buffer.compare(readFileSync(file(n)), original[n]) !== 0 && existsSync(`${file(n)}.bak`) && Buffer.compare(readFileSync(`${file(n)}.bak`), original[n]) === 0, `${n}.dxf rewritten, its .bak holds the original bytes`);
+    }
+    check(readFileSync(file('s5-raw'), 'latin1').includes(RAW_MARKER), 'the retained raw record (3DSOLID) survived the project-wide rewrite');
+    check(readdirSync(dir).every((f) => !f.endsWith('.tmp')), 'no temporary files left in the project folder');
+    const s1 = await ctx.win.evaluate(() => ({ dirty: window.editor.doc.dirty, space: !!window.editor.doc.space, tags: window.editor.doc.snapshot.entities.filter((e) => e.type === 'insert').map((e) => e.attributes.TAG1 ?? '').join(',') }));
+    check(s1.dirty && s1.space === inLayout && s1.tags !== s1Before && Buffer.compare(readFileSync(file('s1-open')), original['s1-open']) === 0, `the open tab was updated in memory (modified, still in its ${inLayout ? 'layout' : 'model'} tab), its file untouched`);
+    await ctx.win.evaluate(() => window.editor.runCommand('UNDO'));
+    check(await ctx.win.evaluate((t) => window.editor.doc.snapshot.entities.filter((e) => e.type === 'insert').map((e) => e.attributes.TAG1 ?? '').join(',') === t, s1Before), 'one UNDO in the open tab takes the retag back');
+    flowsRun.push('AERETAGPROJECT: truncated, edited on disk, .bak blocked (Skip), raw records, open layout tab');
+
+    // ---- AEWIRENOPROJECT: Continue Without Backup writes s4 (without a .bak)
+    step = 'project-wide: AEWIRENOPROJECT';
+    writeFileSync(file('s3-edited'), original['s3-edited']); // back to a project drawing
+    h = await ctx.h();
+    await ctx.run('AEWIRENOPROJECT S');
+    await confirmFiles(ctx);
+    if (await bakDlg.waitFor({ timeout: 20_000 }).then(() => true, () => false)) await bakDlg.locator('button', { hasText: 'Continue Without Backup' }).click();
+    else bad('no Backup Failed dialog for s4');
+    await ctx.waitLog(/^Wire numbers project-wide .*open drawing\(s\) updated/, h, 30_000);
+    await ctx.win.waitForTimeout(500);
+    log = await ctx.logSince(h);
+    console.log(`     summary: ${log.filter((l) => /^(Wire numbers|Not updated|Skipped|s4-nobak)/.test(l)).join(' / ')}`);
+    check(log.some((l) => /^s4-nobak\.dxf: backup failed .*written without a backup as chosen/.test(l)), 'Continue Without Backup is logged');
+    check(Buffer.compare(readFileSync(file('s4-nobak')), original['s4-nobak']) !== 0 && statSync(`${file('s4-nobak')}.bak`).isDirectory(), 's4 written without a backup (the folder in the way is untouched)');
+    check(Buffer.compare(readFileSync(file('s2-truncated')), original['s2-truncated']) === 0, 'the truncated drawing is still unchanged');
+    check(readFileSync(file('s5-raw'), 'latin1').includes(RAW_MARKER), 'the raw record survived a second rewrite');
+    flowsRun.push('AEWIRENOPROJECT: Continue Without Backup');
+
+    // ---- AETITLEBLOCKALL and AEXREFPROJECT: summaries; closed files not saved when unticked
+    step = 'project-wide: AETITLEBLOCKALL';
+    const snap = Object.fromEntries(names.map((n) => [n, readFileSync(file(n))]));
+    h = await ctx.h();
+    await ctx.run('AETITLEBLOCKALL');
+    await confirmFiles(ctx, { files: false });
+    await ctx.waitLog(/^Title blocks: /, h, 30_000);
+    log = await ctx.logSince(h);
+    console.log(`     summary: ${log.filter((l) => /^(Title blocks|Not updated|Skipped|\d+ drawing)/.test(l)).join(' / ')}`);
+    check(names.every((n) => Buffer.compare(readFileSync(file(n)), snap[n]) === 0), 'closed files unticked: no file on disk changed');
+    check(log.some((l) => /^Title blocks: 1 open drawing\(s\) updated\.$/.test(l)), `the summary does not claim saved files (${log.find((l) => /^Title blocks/.test(l))})`);
+    step = 'project-wide: AEXREFPROJECT';
+    h = await ctx.h();
+    await ctx.run('AEXREFPROJECT');
+    const xr = await ctx.win.locator('.modal', { hasText: 'closed drawing file(s) listed above' }).waitFor({ timeout: 15_000 }).then(() => true, () => false);
+    if (xr) await confirmFiles(ctx);
+    await ctx.waitLog(/^(Cross-references|Project cross-references|AEXREF|.*cross-referenc)/i, h, 30_000);
+    await ctx.win.waitForTimeout(800);
+    for (let i = 0; i < 3 && (await ctx.win.locator('.modal').count()); i += 1) await ctx.win.keyboard.press('Escape');
+    log = await ctx.logSince(h);
+    console.log(`     summary: ${log.filter((l) => !/^Command/.test(l)).slice(0, 6).join(' / ')}`);
+    check(Buffer.compare(readFileSync(file('s2-truncated')), original['s2-truncated']) === 0, 'AEXREFPROJECT leaves the truncated drawing alone');
+    flowsRun.push('AETITLEBLOCKALL (closed files unticked), AEXREFPROJECT');
+
+    // ---- AEUPDATEBLOCK (active drawing) and a project-wide report to CSV
+    step = 'project-wide: AEUPDATEBLOCK + report';
+    h = await ctx.h();
+    await ctx.run('AEUPDATEBLOCK');
+    await ctx.win.waitForTimeout(500);
+    check((await ctx.logSince(h)).some((l) => /block/i.test(l) && !/Unknown command/.test(l)), `AEUPDATEBLOCK ran: ${(await ctx.logSince(h)).slice(-1)}`);
+    await ctx.win.evaluate(() => window.editor.updateProject({ ...window.editor.project, reportTemplates: [{ name: 'FLOWBOM', report: 'bom', output: 'csv', projectWide: true }] }));
+    const csv = join(root, 'bom.csv');
+    await ctx.pushSave(csv);
+    h = await ctx.h();
+    await ctx.run('AEREPORTRUN FLOWBOM');
+    await ctx.waitLog(/^Report template FLOWBOM: \d+ row/, h, 30_000);
+    log = await ctx.logSince(h);
+    check(existsSync(csv) && readFileSync(csv, 'utf8').split('\n').length > 3, `the project-wide BOM was written to CSV (${existsSync(csv) ? readFileSync(csv, 'utf8').split('\n').length : 0} lines)`);
+    check(log.some((l) => /s2-truncated\.dxf is damaged .*the report uses what was readable/.test(l)), 'the report says it used the readable part of the truncated drawing');
+    check(Buffer.compare(readFileSync(file('s2-truncated')), original['s2-truncated']) === 0, 'reports never write the drawings');
+    flowsRun.push('AEUPDATEBLOCK, AEREPORTRUN project-wide CSV');
+  } catch (err) {
+    bad(`unexpected: ${err && err.stack ? err.stack : err}`);
+  } finally {
+    await ctx.close();
+  }
+  checkClean(ctx, 'project-wide commands');
+});
+
 // ================================================================== run
 for (const s of scenarios) {
   if (!want(s.name)) continue;

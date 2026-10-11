@@ -13,7 +13,8 @@ contextBridge.exposeInMainWorld('jcad', {
   printDrawing: (dataUrl, title, landscape, sheet) => ipcRenderer.invoke('print-drawing', dataUrl, title, landscape, sheet),
   // Vector PLOT: the renderer's PDF bytes, saved through a Save dialog in the main process.
   savePdf: (bytes, suggestName) => ipcRenderer.invoke('save-pdf', bytes, suggestName),
-  saveDxf: (path, text, suggestName) => ipcRenderer.invoke('save-dxf', path, text, suggestName),
+  // opts.backup === false: no <name>.bak copy (a project-wide command made its own, or the user declined one)
+  saveDxf: (path, text, suggestName, opts) => ipcRenderer.invoke('save-dxf', path, text, suggestName, opts && opts.backup === false ? { backup: false } : undefined),
   // Autosave / Drawing Recovery (files live in the app data folder)
   autosaveWrite: (name, text, meta) => ipcRenderer.invoke('autosave-write', name, text, meta),
   autosaveList: () => ipcRenderer.invoke('autosave-list'),

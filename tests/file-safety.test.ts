@@ -327,6 +327,15 @@ describe('file error messages', () => {
     expect(info.message).toBe('"panel.dxf" could not be saved: there is not enough free space on the disk. Free some space or choose another drive.');
     expect(info.detail).toBe("ENOSPC: no space left on device, write 'C:\\work\\panel.dxf'");
   });
+  it('a damaged drawing\'s own message is not mistaken for a file error code (both twins)', () => {
+    const dxf = new Error('The file ends early at line 14170: section ENTITIES (line 12539) is not closed and the end-of-file marker is missing.');
+    expect(fileErrorCode(dxf)).toBeNull();
+    expect(cjsErrors.describeFileError(dxf, { action: 'read', path: '/p/a.dxf' }).code).toBeNull();
+    expect(fileErrorCode(new Error('stray ENDSEC, line 40'))).toBeNull();
+    // Real codes in IPC text still count, also after such a word.
+    expect(fileErrorCode(new Error("Error invoking remote method 'open-drawing': Error: EACCES: permission denied, open '/p/ENTITIES (1).dxf'"))).toBe('EACCES');
+    expect(fileErrorCode(new Error('EEXIST: file already exists'))).toBe('EEXIST');
+  });
   it('maps each family of errors to a clear message', () => {
     const p = '/home/u/jobs/panel.dxf';
     const cases: Array<[string, string, RegExp]> = [
