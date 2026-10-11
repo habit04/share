@@ -1354,11 +1354,13 @@ try {
   check((await sa3.locator('.save-all-row').allTextContents()).some((t) => /Crash Test.*Project/.test(t)), 'the recovered project is listed when closing');
   await sa3.locator('button', { hasText: 'Discard All' }).click();
   check(await closed3, 'Discard All closed the window');
-  third = null;
+  // `third` stays set: on macOS the application keeps running without windows and would keep this
+  // script (connected to it) alive after the summary; the finally block below closes it.
 } catch (err) {
   bad(`unexpected: ${err && err.stack ? err.stack : err}`);
 } finally {
-  for (const x of [second, third]) if (x) await x.a.close().catch(() => {});
+  // Closing an instance that already quit (Windows, Linux) must not hang the script either.
+  for (const x of [second, third]) if (x) await Promise.race([x.a.close().catch(() => {}), new Promise((r) => setTimeout(r, 15_000))]);
   clearTimeout(relaunchTimeout);
 }
 
@@ -1410,8 +1412,10 @@ await removeTemp(profile);
 if (!process.env.JCAD_E2E_OUT) await removeTemp(outDir);
 else console.log(`e2e-electron: output kept in ${outDir}`);
 
-console.log(`\ne2e-electron: ${results.length} checks passed, ${problems.length} failed (${process.platform} ${process.arch}, ${packaged ? `packaged ${executable}` : `Electron ${pkg.devDependencies.electron}`})`);
-if (problems.length) {
-  for (const p of problems) console.error(`  - ${p}`);
-  process.exit(1);
-}
+// Exit explicitly: a connection to an application that is still running (macOS keeps running without
+// windows) would otherwise keep this process alive after a fully passed run, until the job's timeout.
+// stdout / stderr are asynchronous pipes on some platforms, so the last lines are flushed first.
+const flush = (/** @type {NodeJS.WriteStream} */ stream, /** @type {string} */ text) => new Promise((resolve) => stream.write(text, () => resolve(undefined)));
+if (problems.length) await flush(process.stderr, problems.map((p) => `  - ${p}`).join('\n') + '\n');
+await flush(process.stdout, `\ne2e-electron: ${results.length} checks passed, ${problems.length} failed (${process.platform} ${process.arch}, ${packaged ? `packaged ${executable}` : `Electron ${pkg.devDependencies.electron}`})\n`);
+process.exit(problems.length ? 1 : 0);
