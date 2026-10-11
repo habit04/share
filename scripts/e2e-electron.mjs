@@ -302,6 +302,9 @@ try {
     await waitLog(/^(Imported DWG|Failed to open)/, h, 90_000).catch(() => bad('no result after the cancelled read'));
     log = await logSince(h);
     check(log.some((l) => l.startsWith('Imported DWG')), `a DWG opens again after Cancel: ${log.filter((l) => /Imported|Failed/.test(l)).join(' | ')}`);
+    // A second successful open may show its own Import Report dialog on top of the first one's
+    // (the DXF / DWG import report): close it, so later steps find exactly the first dialog.
+    if ((await win.locator('.import-report-dialog').count()) > 1) await win.locator('.import-report-dialog .modal button', { hasText: 'Close' }).last().click();
     await win.evaluate(() => /** @type {any} */ (window).__progress.splice(0));
   }
   if (!existsSync(fixtures.dwg)) ok('DWG fixture missing: skipped');

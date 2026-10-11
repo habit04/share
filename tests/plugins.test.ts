@@ -16,14 +16,6 @@ beforeAll(async () => {
 const canvas = () => ({ getContext: () => ({}), getBoundingClientRect: () => ({ width: 800, height: 600, left: 0, top: 0 }), width: 0, height: 0 }) as unknown as HTMLCanvasElement;
 const makeEditor = () => new Editor(canvas());
 const tick = () => new Promise((r) => setTimeout(r, 0));
-/** Wait until `cond()` holds (plugin loading awaits WebCrypto, which can take several ticks on a busy machine). */
-async function until(cond: () => boolean, ms = 5000): Promise<void> {
-  const end = Date.now() + ms;
-  while (!cond()) {
-    if (Date.now() > end) throw new Error('condition not met in time');
-    await new Promise((r) => setTimeout(r, 5));
-  }
-}
 
 function memoryStorage(): StorageLike & { data: Map<string, string> } {
   const data = new Map<string, string>();
@@ -169,7 +161,7 @@ describe('PluginHost', () => {
     expect(ed.commands.has('NEVER')).toBe(false);
     expect(ed.commands.has('GOODCMD') && ed.commands.has('GOOD2')).toBe(true);
     ed.runCommand('GOODCMD');
-    await until(() => ed.history.includes('good ran'));
+    await vi.waitFor(() => expect(ed.history).toContain('good ran'));
   });
 
   it('names the plugin behind an uncaught error from its stack', () => {
@@ -296,11 +288,9 @@ describe('plugin commands', () => {
     const picks: Array<Array<{ name: string; text: string }>> = [[{ name: 'hello.js', text: example('hello').code }], [{ name: 's.js', text: "jcad.ui.log('script ran')" }]];
     pluginHost(ed, { bridge: fakeBridge({}), storage: memoryStorage(), confirm: async () => true, pickFiles: async () => picks.shift() ?? [] });
     ed.runCommand('PLUGINLOAD');
-    await until(() => ed.commands.has('HELLO'));
-    expect(ed.commands.has('HELLO')).toBe(true);
+    await vi.waitFor(() => expect(ed.commands.has('HELLO')).toBe(true));
     ed.runCommand('SCRIPTRUN');
-    await until(() => ed.history.includes('script ran'));
-    expect(ed.history).toContain('script ran');
+    await vi.waitFor(() => expect(ed.history).toContain('script ran'));
     ed.runCommand('PLUGINS');
     await tick();
     expect(ed.history).toContain('Plugins folder: /user/plugins');
