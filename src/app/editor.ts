@@ -23,6 +23,7 @@ import { captureRevision, saveQueue } from './savequeue';
 import { loadSettings, saveSettings, pushRecent, type UserSettings } from './settings';
 import { SessionManager, applySaveResult } from './sessions';
 import { describeFileError, type FileErrorInfo } from './file-errors';
+import { fileErrorText } from './file-error-text';
 import type { ColorSpec } from '../core/entities';
 import { writeDxf } from '../io/dxf';
 import { layoutPage, type PlotOptions } from './plot';
@@ -110,6 +111,15 @@ export function backupOutcome(r: BackupResult | LegacyBackupResult): { ok: boole
   if (typeof r === 'string') return r ? { ok: true } : { ok: false, error: failed };
   if (r === true) return { ok: true };
   return { ok: false, error: failed };
+}
+
+/**
+ * Why an open failed: file errors in plain words ("... could not be read: the folder is not
+ * available"), anything else (a damaged DXF, an unknown path) with its own message.
+ */
+function openErrorText(err: unknown, path?: string | null): string {
+  const info = describeFileError(err, { action: 'read', path: path ?? null });
+  return info.kind !== 'unknown' ? info.message : info.detail;
 }
 
 /** Version compiled in from package.json (see vite.config.ts); 'dev' under plain vitest. */
@@ -839,8 +849,8 @@ export class Editor {
       this.showOpenedReport(where, state, res.path);
       return true;
     } catch (err) {
-      this.lastFileError = (err as Error).message;
-      this.log(`Failed to open drawing: ${(err as Error).message}`);
+      this.lastFileError = openErrorText(err, file);
+      this.log(`Failed to open drawing: ${this.lastFileError}`);
       return false;
     }
   }
@@ -1015,8 +1025,8 @@ export class Editor {
       this.emit('file');
       return true;
     } catch (err) {
-      this.lastFileError = (err as Error).message;
-      this.log(`Failed to open project: ${(err as Error).message}`);
+      this.lastFileError = openErrorText(err, file);
+      this.log(`Failed to open project: ${this.lastFileError}`);
       return false;
     }
   }
@@ -1181,12 +1191,17 @@ export class Editor {
 
   /** PLOT: open the Plot / Print dialog (default: PDF) and run the chosen output. */
   async plot(): Promise<void> {
-    await this.plotOrPrint('pdf');
+    await this.plotOrPrint('pdf').catch((err: unknown) => this.plotFailed(err));
   }
 
   /** PRINT: open the Plot / Print dialog (default: printer) and run the chosen output. */
   async print(): Promise<void> {
-    await this.plotOrPrint('print');
+    await this.plotOrPrint('print').catch((err: unknown) => this.plotFailed(err));
+  }
+
+  /** A PDF that could not be written (disk full, locked file ...) is reported like a failed save. */
+  private plotFailed(err: unknown): void {
+    this.log(`Plot failed: ${fileErrorText(err, { action: 'save' })}`);
   }
 
   private async plotOrPrint(mode: 'pdf' | 'print'): Promise<void> {

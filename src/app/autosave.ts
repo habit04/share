@@ -132,6 +132,8 @@ export class Autosaver {
   private names = new Map<number, string>();
   private inflight: Promise<number> | null = null;
   private queued: Promise<number> | null = null;
+  /** markSaved / discardFor calls still running (their callers do not wait for them). */
+  private pending = new Set<Promise<unknown>>();
   onSaved: ((count: number) => void) | null = null;
   /** Called once per failed write (storage full, disk error); the drawing is retried next tick. */
   onError: ((title: string, err: unknown) => void) | null = null;
@@ -189,6 +191,23 @@ export class Autosaver {
         /* runs report their own errors */
       }
     }
+  }
+
+  /**
+   * Wait until no autosave is being written and every backup removal asked for (markSaved after a
+   * save, discardFor after a close) has finished. The close workflow calls this before the window
+   * goes away, so a drawing saved just before closing does not leave its backup behind.
+   */
+  async idle(): Promise<void> {
+    await this.flush();
+    while (this.pending.size) await Promise.allSettled([...this.pending]);
+  }
+
+  private track<T>(p: Promise<T>): Promise<T> {
+    this.pending.add(p);
+    const done = () => this.pending.delete(p);
+    p.then(done, done);
+    return p;
   }
 
   private startRun(): Promise<number> {
@@ -249,7 +268,11 @@ export class Autosaver {
    * meanwhile the backup is kept (and refreshed by the next run), so newer edits are never
    * treated as safe.
    */
-  async markSaved(sessionId: number, savedState: DrawingState): Promise<'removed' | 'kept' | 'none'> {
+  markSaved(sessionId: number, savedState: DrawingState): Promise<'removed' | 'kept' | 'none'> {
+    return this.track(this.markSavedNow(sessionId, savedState));
+  }
+
+  private async markSavedNow(sessionId: number, savedState: DrawingState): Promise<'removed' | 'kept' | 'none'> {
     await this.flush();
     const s = this.sessions.all.find((x) => x.id === sessionId);
     if (s && (s.dirty || s.state !== savedState)) return 'kept';
@@ -265,7 +288,11 @@ export class Autosaver {
    * autosave in flight first, so that write cannot re-create the file afterwards.
    * Resolves false when the file could not be removed (reported through onError).
    */
-  async discardFor(sessionId: number): Promise<boolean> {
+  discardFor(sessionId: number): Promise<boolean> {
+    return this.track(this.discardNow(sessionId));
+  }
+
+  private async discardNow(sessionId: number): Promise<boolean> {
     await this.flush();
     const name = this.names.get(sessionId);
     this.backedUp.delete(sessionId);

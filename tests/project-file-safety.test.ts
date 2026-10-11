@@ -446,13 +446,15 @@ describe('Save All when closing', () => {
     ed.replaceProject({ name: 'P', drawings: [] }, true);
     return { ed, disk, order, symbolId, saveAs };
   }
-  const deps = (decision: (items: readonly UnsavedItem[]) => CloseDecision, log: string[] = []) => ({
+  const deps = (decision: (items: readonly UnsavedItem[]) => CloseDecision, log: string[] = [], ed?: EditorType) => ({
     ask: async (items: readonly UnsavedItem[]) => {
       log.push(items.map((i) => `${i.kind}:${i.title}`).join(', '));
       return decision(items);
     },
     saveSymbol: async () => {
       log.push('symbol saved');
+      // Like SymbolBuilder.save: the (active) symbol tab is no longer modified.
+      if (ed) ed.doc.dirty = false;
       return null;
     },
     showError: async (title: string, error: string) => {
@@ -474,13 +476,14 @@ describe('Save All when closing', () => {
   it('Save All saves one item after another, each awaited', async () => {
     const { ed, symbolId, order, disk } = closeSetup();
     const log: string[] = [];
-    const ok = await runCloseWorkflow(ed, deps((items) => ({ action: 'save', keys: new Set(items.map((i) => i.key)) }), log), (id) => id === symbolId);
+    const ok = await runCloseWorkflow(ed, deps((items) => ({ action: 'save', keys: new Set(items.map((i) => i.key)) }), log, ed), (id) => id === symbolId);
     expect(ok).toBe(true);
     expect(order).toEqual(['dxf:/w/a.dxf', 'dxf:/w/untitled.dxf', 'project:/w/p.jcadproj.json']);
     expect(log).toContain('symbol saved');
     expect(disk.get('/w/a.dxf')).toContain('A');
-    expect(ed.sessions.anyDirty()).toBe(true); // only the symbol stand-in (its saver is faked)
+    expect(ed.sessions.anyDirty()).toBe(false);
     expect(ed.projectDirty).toBe(false);
+    expect(log.filter((l) => l !== 'symbol saved')).toHaveLength(1); // asked once: nothing changed while saving
   });
   it('per-item choice: unticked items are not saved', async () => {
     const { ed, symbolId, order } = closeSetup();

@@ -706,7 +706,8 @@ export function drawingPropertiesDialog(init: DrawingPropertiesInit): Promise<Dr
 
 // ---------------------------------------------------------------- Project Properties
 
-export function projectPropertiesDialog(init: Project): Promise<Project | null> {
+/** `log` receives the outcome of Export .wdt... (saved path, or why it was not saved). */
+export function projectPropertiesDialog(init: Project, log: (text: string) => void = () => {}): Promise<Project | null> {
   return dialog<Project>('Project Properties', 680, (m, finish) => {
     const name = textInput(init.name);
     const desc = textInput(init.description ?? '');
@@ -755,15 +756,24 @@ export function projectPropertiesDialog(init: Project): Promise<Project | null> 
       });
     });
     const exp = button('Export .wdt...');
+    const expStatus = document.createElement('span');
+    expStatus.className = 'hint';
+    expStatus.style.alignSelf = 'center';
+    const report = (text: string) => {
+      expStatus.textContent = text;
+      log(text);
+    };
     exp.addEventListener('click', () => {
       const text = map.value.trim() ? formatWdt(parseWdt(map.value)) : DEFAULT_WDT + '\n';
       const name = `${(name_.value.trim() || 'project').replace(/[^A-Za-z0-9_-]+/g, '_')}.wdt`;
-      if (window.jcad?.saveText) void window.jcad.saveText(name, text, 'Title block mapping', 'wdt');
+      expStatus.textContent = '';
+      // A failed write (disk full, locked file ...) is shown here and logged, not lost as an unhandled rejection.
+      if (window.jcad?.saveText) void window.jcad.saveText(name, text, 'Title block mapping', 'wdt').then((p) => p && report(`Title block mapping saved: ${p}`), exportFailed(report, name));
       else browserDownloadText(name, text);
     });
     const def = button('Built-in mapping');
     def.addEventListener('click', () => (map.value = DEFAULT_WDT));
-    mapBar.append(imp, exp, def);
+    mapBar.append(imp, exp, def, expStatus);
     const name_ = name;
     map.style.height = '300px';
     const pages: Array<[string, HTMLElement[]]> = [
@@ -1602,7 +1612,7 @@ export function createElectricalDialogs(editor: Editor): ElectricalUi {
     schematicList: (rows) => schematicListDialog(rows),
     terminalStripEditor: (rows) => terminalStripEditorDialog(rows),
     drawingProperties: (init) => drawingPropertiesDialog(init),
-    projectProperties: (init) => projectPropertiesDialog(init),
+    projectProperties: (init) => projectPropertiesDialog(init, (t) => editor.log(t)),
     wireNumberEdit: (init) => wireNumberDialog(init),
     busSettings: (init) => busDialog(init),
     circuitBuilder: (init) => circuitBuilderDialog(init),

@@ -9,7 +9,10 @@ import type { AutosaveEntry, AutosaveStore } from './autosave';
 import { parseProject, serializeProject, type Project } from './project';
 import { contentHash } from './savequeue';
 
-/** Drawing autosaves end in "_<session id>.sv.dxf"; project autosaves in this suffix. */
+/**
+ * Drawing autosaves are "<document id>.sv.dxf"; project autosaves end in this suffix, which the
+ * main process's store (electron/autosave-store.cjs PROJECT_SUFFIX) never renames or migrates.
+ */
 const SUFFIX = '_jcadproj.sv.dxf';
 
 export function projectAutosaveName(p: Pick<Project, 'name' | 'path'>): string {

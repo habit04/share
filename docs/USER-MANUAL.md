@@ -879,7 +879,6 @@ How the changes are applied:
    for that file only. Skipped drawings are listed on the command line.
 3. DWG drawings are read-only and are skipped; the command line lists skipped drawings. The
    browser edition cannot read closed drawings, so open them in tabs first.
-
 4. Changes are only applied to the drawing they were calculated from. When you edit an open
    drawing while the command runs (for example while its confirmation dialog is up), when a
    closed drawing changes on disk or is opened in a tab in the meantime, or when a newer save of
@@ -1341,6 +1340,9 @@ drawing tab, every Symbol Builder tab with unsaved edits and the project. **Save
 one after another (an untitled drawing asks for a file name); untick items to discard them (the
 button then reads **Save Selected**); **Discard All** closes without saving; **Cancel** keeps
 everything open. If one item cannot be saved, nothing is closed and the error names the item.
+When saving one item changes another (saving a symbol updates the open drawings that use it), the
+dialog asks again for those. Discarded drawings and the discarded project keep their autosave
+copies, so they are offered again at the next start.
 
 ### Autosave and recovery
 
@@ -1358,8 +1360,9 @@ disabled, so a double click opens a backup only once.
   first time the new version starts.
 - A backup is written only for changes it actually contains: edits you make while an autosave is
   being written are picked up by the next one. Saving a drawing removes its backup only if you did
-  not change the drawing again after that save. Closing the window waits for an autosave that is
-  being written.
+  not change the drawing again after that save. Closing the window waits (a few seconds at most)
+  for an autosave that is being written and for the backups of drawings saved while closing to be
+  removed.
 - If the autosave folder cannot be read, the Recovery Manager says so (with **Retry**) instead of
   showing an empty list; nothing in the folder is changed.
 
@@ -1378,9 +1381,10 @@ and offers **Retry**, **Save As...** (choose another place) or **Cancel**. The d
 marked as modified and its autosave backup is kept, so nothing is lost while you sort it out.
 
 Unsaved project changes are autosaved in the same folder a moment after each change and removed
-when you save the project or discard the changes. At the next start **Project Recovery** offers
-them: **Open Recovered Project** (it opens as modified; `PROJECTSAVE` keeps it), **Discard**, or
-**Later**.
+when you save the project, or answer **Don't Save** before opening or creating another project.
+When JCad Electrical closes without saving them (Discard All, or a crash), **Project Recovery**
+offers them at the next start: **Open Recovered Project** (it opens as modified; `PROJECTSAVE`
+keeps it), **Discard**, or **Later**. The Drawing Recovery Manager lists drawings only.
 
 ### Where files are kept
 

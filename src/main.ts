@@ -28,7 +28,7 @@ import { saveErrorDialog } from './ui/save-error';
 import { describeFileError } from './app/file-errors';
 import { exportFailed } from './app/file-error-text';
 import { importReportDialog } from './ui/import-report';
-import { runCloseWorkflow } from './app/closeflow';
+import { runCloseWorkflow, saveSymbolForClose, settleBeforeClose } from './app/closeflow';
 import { saveAllDialog, saveFailedDialog, projectRecoveryDialog } from './ui/filedialogs';
 import { ProjectAutosaver, drawingAutosaves, offerProjectRecovery } from './app/project-autosave';
 import { showAppMenu } from './ui/appmenu';
@@ -684,15 +684,16 @@ function boot(): void {
       editor,
       {
         ask: (items) => saveAllDialog(items, context),
-        saveSymbol: async () => ((await sb.save()) ? null : (sb.firstError() ?? 'the symbol was not saved')),
+        saveSymbol: () => saveSymbolForClose(sb, userLibrary),
         showError: (title, error) => saveFailedDialog(title, error),
       },
       (id) => sb.sessions.has(id),
     )
       .then(async (ok) => {
-        // Answer only after autosaves being written are complete (they are what recovers discarded work).
-        if (ok) {
-          await Promise.allSettled([projectAutosaver.flush(), autosaver.flush()]);
+        // Answer only after autosaves being written are complete (they are what recovers discarded
+        // work) and the backups of drawings saved just now are removed; a hung write is not waited for.
+        if (ok && !(await settleBeforeClose([projectAutosaver.flush(), autosaver.idle()]))) {
+          editor.log('Closing without waiting longer for an autosave that is still being written.');
         }
         return ok;
       })
