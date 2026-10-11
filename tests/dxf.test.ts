@@ -4,7 +4,7 @@ import { Drawing } from '../src/core/document';
 import type { Entity } from '../src/core/entities';
 import { polylineVertices } from '../src/core/entities';
 import { ALL_SYMBOLS, findSymbol } from '../src/electrical/symbols';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 function sample(): Drawing {
@@ -207,7 +207,7 @@ describe('DXF round trip', () => {
   });
 
   const fixture = join(__dirname, '..', 'fixtures', 'example_2000.dxf');
-  it.skipIf(!existsSync(fixture))('reads the LibreDWG example_2000.dxf fixture', () => {
+  it('reads the LibreDWG example_2000.dxf fixture', () => {
     const s = readDxf(readFileSync(fixture, 'utf8'));
     expect(s.entities.length).toBeGreaterThan(30);
     expect(s.layers.length).toBeGreaterThanOrEqual(5);
