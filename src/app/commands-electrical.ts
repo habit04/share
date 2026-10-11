@@ -4,7 +4,7 @@
  * and the audit. Registered at the end of Editor.registerCommands; dialogs
  * come from `editor.hooks.electrical` (default: src/ui/electrical-dialogs.ts).
  */
-import type { Editor, FileBridge } from './editor';
+import type { Editor } from './editor';
 import type { Point } from '../core/geometry';
 import type { Entity, InsertEntity } from '../core/entities';
 import { Drawing, type DrawingState } from '../core/document';
@@ -509,9 +509,6 @@ export interface LoadedSheet extends ProjectSheet {
   sessionId?: number;
 }
 
-/** Bridge extension a desktop build may provide for the .bak copy before project-wide saves (not in FileBridge yet). */
-type BackupBridge = FileBridge & { backupFile?(path: string): Promise<string | null> };
-
 /** Only the desktop bridge reads project drawings by path (the browser bridge would show a file picker per drawing). */
 export function canReadProjectFiles(editor: Pick<Editor, 'fileBridge'>): boolean {
   return !!editor.fileBridge?.openDrawing && typeof window !== 'undefined' && !!window.jcad;
@@ -585,7 +582,7 @@ export interface SheetChange {
 export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[], changes: ReadonlyMap<number, SheetChange>, title: string, intro: string, alwaysConfirm = false): Promise<{ open: number; written: number; failed: string[] } | null> {
   const items: AffectedDrawing[] = [...changes].map(([i, c]) => ({ name: sheets[i]!.name, kind: sheets[i]!.source === 'file' ? 'file' : 'open', detail: c.detail }));
   if (items.length === 0) return { open: 0, written: 0, failed: [] };
-  const bridge = editor.fileBridge as BackupBridge | null;
+  const bridge = editor.fileBridge;
   let choice: ConfirmFilesResult = { files: false, backup: false };
   if (alwaysConfirm || items.some((i) => i.kind === 'file')) {
     const r = await projectUi.confirmFiles(title, intro, items, { backupAvailable: !!bridge?.backupFile });
@@ -617,7 +614,14 @@ export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[
     }
     if (!choice.files || !sh.path || !bridge) continue;
     try {
-      if (choice.backup && bridge.backupFile) await bridge.backupFile(sh.path);
+      if (choice.backup && bridge.backupFile) {
+        // The user asked for a .bak first: without a complete copy the file is left as it is.
+        const b = await bridge.backupFile(sh.path);
+        if (!b.ok) {
+          failed.push(`${sh.name} (${b.error})`);
+          continue;
+        }
+      }
       const out = await bridge.saveDxf(sh.path, writeDxf(withoutUnusedLibraryBlocks(c.state)), sh.name);
       if (out) written += 1;
       else failed.push(sh.name);

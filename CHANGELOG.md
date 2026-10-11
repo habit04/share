@@ -17,6 +17,38 @@ messages). The date of each version is the date of the commit that set that vers
   compares the release download counters with the last run and comments on the "Download tracker"
   issue when an installer was downloaded, so subscribers get a GitHub notification or e-mail.
 
+### Fixed
+
+- Saves are crash-safe: drawings (`SAVE`, `SAVEAS`, project-wide updates), projects and other
+  exports, plotted PDFs, autosaves, the user symbol library, catalog packs, the recent list and the
+  window state are written to a temporary file in the same folder, flushed to disk and renamed over
+  the destination (with retries and a copy fallback when Windows briefly locks the file). Saving over
+  a drawing or project keeps the previous version as `<name>.bak`. An interrupted save can no longer
+  leave a truncated file as the only copy.
+- The project-wide `.bak` copy (`backup-file`) goes through the same temporary file + rename and
+  reports `{ ok: false, error }` with a clear message when no complete copy could be made, instead
+  of failing silently; a closed drawing whose `.bak` copy failed is then left unchanged and listed
+  as not updated. Like `save-dxf`, it only accepts paths the main process handed out (its dialogs,
+  the recent list, an open project).
+- Autosave backups are named after a permanent per-document id instead of the drawing title and
+  a session number that restarted every launch, so a new session can no longer overwrite a backup
+  that was not recovered yet. `autosave/index.json` keeps the title, path and time of each backup;
+  backups from 0.4.0 are migrated on the first start.
+- Autosave records exactly the revision it wrote: edits made while a backup is being written are no
+  longer treated as backed up. Autosave runs never overlap (a request during a run queues one more),
+  and Save, Close and quitting wait for a write in flight. A completed save removes the backup only
+  when the drawing was not changed again after that save.
+- Switching drawing tabs no longer clears the target drawing's "modified" flag and undo history (the
+  file tabs read the session list while the tab was being loaded), which also made a drawing opened
+  from the Recovery Manager look saved and could delete its backup.
+- Drawing Recovery Manager: Discard All deletes only the backups still listed (never one opened in
+  this session), a double click opens a backup only once, and the buttons are disabled while an
+  action runs. An unreadable recovery folder shows an error with Retry instead of an empty list.
+  `DRAWINGRECOVERY` (`DRM`) opens the manager at any time.
+- Save errors explain the cause (disk full, permission or read-only, locked file, folder or network
+  drive not available, path too long) and offer Retry, Save As... and Cancel; the drawing stays
+  modified and its autosave backup is kept when a save fails.
+
 ## [0.4.0] - 2026-09-29
 
 ### Added

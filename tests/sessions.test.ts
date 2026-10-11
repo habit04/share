@@ -107,6 +107,30 @@ describe('document sessions', () => {
     expect(sm.titleOf(0)).toBe('Drawing1.dxf');
   });
 
+  it('a listener that reads the session list while a tab is loading cannot wipe its dirty flag or undo history', () => {
+    // The file tabs refresh on the 'file' event that Editor.loadState emits, and read
+    // sessions.all (which syncs the live document) - in the middle of the switch.
+    const host = makeHost();
+    let sm!: SessionManager;
+    const load = host.loadState.bind(host);
+    host.loadState = (state, path) => {
+      load(state, path);
+      void sm.all;
+    };
+    sm = new SessionManager(host);
+    host.doc.addEntities([line('a')]);
+    host.doc.addEntities([line('b')]);
+    sm.add();
+    sm.switchTo(0);
+    expect(host.doc.dirty).toBe(true);
+    expect(sm.isDirty(0)).toBe(true);
+    expect(host.doc.canUndo()).toBe(true);
+    expect(host.doc.undo()).toBe(true);
+    expect(host.doc.entities.map((e) => e.id)).toEqual(['a']);
+    sm.switchTo(1);
+    expect(sm.anyDirty()).toBe(true);
+  });
+
   it('openInTab reuses a pristine tab, switches to an already-open file and drops a cancelled tab', async () => {
     const host = makeHost();
     const sm = new SessionManager(host);

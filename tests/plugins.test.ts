@@ -254,17 +254,14 @@ describe('plugin commands', () => {
     for (const n of ['PLUGINS', 'PLUGINLOAD', 'PLUGINRELOAD', 'SCRIPTRUN']) expect(ed.commands.has(n)).toBe(true);
     const picks: Array<Array<{ name: string; text: string }>> = [[{ name: 'hello.js', text: example('hello').code }], [{ name: 's.js', text: "jcad.ui.log('script ran')" }]];
     pluginHost(ed, { bridge: fakeBridge({}), storage: memoryStorage(), confirm: async () => true, pickFiles: async () => picks.shift() ?? [] });
+    // The commands run asynchronously (file pick, SHA-256 through WebCrypto, confirmation); wait
+    // for their effect instead of counting timer ticks, which came up short on a loaded machine.
     ed.runCommand('PLUGINLOAD');
-    await tick();
-    await tick();
-    expect(ed.commands.has('HELLO')).toBe(true);
+    await vi.waitFor(() => expect(ed.commands.has('HELLO')).toBe(true));
     ed.runCommand('SCRIPTRUN');
-    await tick();
-    await tick();
-    expect(ed.history).toContain('script ran');
+    await vi.waitFor(() => expect(ed.history).toContain('script ran'));
     ed.runCommand('PLUGINS');
-    await tick();
-    expect(ed.history).toContain('Plugins folder: /user/plugins');
+    await vi.waitFor(() => expect(ed.history).toContain('Plugins folder: /user/plugins'));
     expect(ed.history.some((l) => /hello\s+-\s+loaded\s+hello\.js\s+\[HELLO\]/.test(l))).toBe(true);
     ed.runCommand('PLUGINS Unload hello');
     expect(ed.commands.has('HELLO')).toBe(false);

@@ -23,7 +23,9 @@ import { installDiagnostics } from './app/diagnostics';
 import { drawingKindOf, readDwgInBrowser, describeDwgError } from './io/dwg-browser';
 import { donateUrl } from './app/about';
 import { Autosaver, bridgeAutosaveStore, localAutosaveStore, type AutosaveBridge } from './app/autosave';
-import { recoveryDialog } from './ui/recovery';
+import { recoveryDialog, NOTHING_TO_RECOVER } from './ui/recovery';
+import { saveErrorDialog } from './ui/save-error';
+import { describeFileError } from './app/file-errors';
 import { showAppMenu } from './ui/appmenu';
 import { EntityClipboard } from './ui/clipboard';
 import { closeMenus } from './ui/menu';
@@ -45,7 +47,7 @@ declare global {
       openDrawing(file?: string): Promise<import('./app/editor').OpenResult | null>;
       openProject(file?: string): Promise<{ path: string; text: string } | null>;
       saveText(suggestName: string, text: string, filterName: string, ext: string): Promise<string | null>;
-      backupFile?(file: string): Promise<string | null>;
+      backupFile?(file: string): Promise<import('./app/editor').BackupResult>;
       plotPdf(dataUrl: string, suggestName: string, landscape: boolean, sheet?: { width: number; height: number; electron?: string }): Promise<string | null>;
       printDrawing?(dataUrl: string, title: string, landscape: boolean, sheet?: { width: number; height: number; electron?: string }): Promise<boolean>;
       /** Track E: write vector PDF bytes (save-pdf IPC). */
@@ -53,6 +55,8 @@ declare global {
       saveDxf(path: string | null, text: string, suggestName: string): Promise<string | null>;
       onMenuCommand(cb: (cmd: string) => void): void;
       onQueryDirty(cb: () => boolean): void;
+      /** Before the window closes: the main process waits until `cb` (Autosaver.flush) resolves. */
+      onFlushAutosave?(cb: () => Promise<void>): void;
       setRecentFiles?(files: string[]): void;
       quit?(): void;
       appInfo?(): Promise<{ version: string; platform: string; arch: string; packaged: boolean; selfUpdate: boolean; releases: string }>;
@@ -559,12 +563,25 @@ function boot(): void {
   const store = bridge?.autosaveWrite && bridge.autosaveList && bridge.autosaveRead && bridge.autosaveRemove ? bridgeAutosaveStore(bridge as AutosaveBridge) : localAutosaveStore(localStorage);
   const autosaver = new Autosaver(editor.sessions, store, () => editor.settings.autosaveMinutes, (id) => symbolBuilderOf(editor).sessions.has(id));
   autosaver.onSaved = (n) => editor.log(`Autosave: ${n} drawing(s) written.`);
-  autosaver.onError = (title, err) => editor.log(`Autosave of ${title} failed: ${err instanceof Error ? err.message : String(err)} (will retry).`);
+  autosaver.onError = (title, err) => editor.log(`${describeFileError(err, { action: 'autosave', path: title }).message} (Autosave will retry.)`);
   autosaver.start();
   editor.on('snap', () => autosaver.restart()); // settings changed (interval may differ)
+  // A completed save removes the backup only if that exact revision is still the drawing's state.
+  editor.hooks.drawingSaved = (sessionId, state) => void autosaver.markSaved(sessionId, state);
+  editor.hooks.saveError = (info, fileName, opts) => saveErrorDialog(info, fileName, opts);
   editor.on('file', () => {
-    if (!editor.doc.dirty && editor.doc.filePath) void autosaver.discardFor(editor.sessions.current.id);
+    // Other ways a drawing becomes clean (project-wide writes, tab switches): same revision check.
+    // This runs inside tab switches too, so it reads the live document instead of syncing the
+    // session list (markSaved compares with the session only after it has settled).
+    if (!editor.doc.dirty && editor.doc.filePath) void autosaver.markSaved(editor.sessions.activeId, editor.doc.snapshot);
     window.jcad?.setRecentFiles?.(editor.settings.recentFiles);
+  });
+  // Closing the window / quitting waits for an autosave that is being written.
+  window.jcad?.onFlushAutosave?.(() => autosaver.flush());
+  reg('DRAWINGRECOVERY', ['DRM'], 'Drawing Recovery Manager: autosaved drawings that were not saved', (ed) => {
+    void recoveryDialog(ed, store, autosaver).then((r) => {
+      if (r === 'empty') ed.log(NOTHING_TO_RECOVER);
+    });
   });
   window.jcad?.setRecentFiles?.(editor.settings.recentFiles);
 

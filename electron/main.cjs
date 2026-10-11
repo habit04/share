@@ -3,6 +3,8 @@ const path = require('node:path');
 const fs = require('node:fs/promises');
 const fsSync = require('node:fs');
 const updater = require('./updater.cjs');
+const { atomicWriteFile, backupFile, createWriteQueue } = require('./atomic-write.cjs');
+const { createAutosaveStore, safeAutosaveName } = require('./autosave-store.cjs');
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL;
 
@@ -23,6 +25,15 @@ const stateDir = () => app.getPath('userData');
 const recentFile = () => path.join(stateDir(), 'recent.json');
 const windowStateFile = () => path.join(stateDir(), 'window-state.json');
 const autosaveDir = () => path.join(stateDir(), 'autosave');
+/** Writes of the same app-data file (recent list, window state) run one at a time, in call order. */
+const enqueueWrite = createWriteQueue();
+/** Crash-safe write of a small app-data file; failures are logged, never shown (the app keeps working). */
+function writeStateFile(file, text, what) {
+  return enqueueWrite(file, async () => {
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await atomicWriteFile(file, text);
+  }).catch((err) => logMainError(what, err));
+}
 
 function loadPersistedPaths() {
   try {
@@ -38,9 +49,7 @@ function loadPersistedPaths() {
 function rememberPath(p) {
   knownPaths.add(p);
   knownNormalized.add(nfc(p));
-  fs.mkdir(stateDir(), { recursive: true })
-    .then(() => fs.writeFile(recentFile(), JSON.stringify([...knownPaths].slice(-200)), 'utf8'))
-    .catch(() => {});
+  void writeStateFile(recentFile(), JSON.stringify([...knownPaths].slice(-200)), 'recent.json');
 }
 
 function readWindowState() {
@@ -55,9 +64,7 @@ function installWindowStatePersistence(win) {
   const save = () => {
     if (win.isDestroyed()) return;
     const state = { bounds: win.getNormalBounds(), maximized: win.isMaximized() };
-    fs.mkdir(stateDir(), { recursive: true })
-      .then(() => fs.writeFile(windowStateFile(), JSON.stringify(state), 'utf8'))
-      .catch(() => {});
+    void writeStateFile(windowStateFile(), JSON.stringify(state), 'window-state.json');
   };
   const debounced = () => {
     clearTimeout(timer);
@@ -232,7 +239,35 @@ function confirmClose(win) {
     }, 3000);
   });
 }
-updater.onConfirmRestart((win) => confirmClose(win));
+
+/**
+ * Let the renderer finish an autosave that is being written (src/app/autosave.ts Autosaver.flush)
+ * before the window goes away. Resolves false when the renderer does not answer in time.
+ */
+function flushRendererAutosave(win, timeoutMs = 4000) {
+  return new Promise((resolve) => {
+    if (win.isDestroyed() || win.webContents.isDestroyed() || win.webContents.isCrashed()) return resolve(false);
+    const token = `${Date.now()}-${Math.random()}`;
+    let timer = null;
+    const onDone = (ev, t) => {
+      if (ev.sender !== win.webContents || t !== token) return;
+      ipcMain.removeListener('autosave-flushed', onDone);
+      clearTimeout(timer);
+      resolve(true);
+    };
+    ipcMain.on('autosave-flushed', onDone);
+    timer = setTimeout(() => {
+      ipcMain.removeListener('autosave-flushed', onDone);
+      resolve(false);
+    }, timeoutMs);
+    win.webContents.send('flush-autosave', token);
+  });
+}
+updater.onConfirmRestart(async (win) => {
+  const ok = await confirmClose(win);
+  if (ok) await flushRendererAutosave(win);
+  return ok;
+});
 
 async function createWindow() {
   const b = initialBounds();
@@ -265,10 +300,12 @@ async function createWindow() {
   win.on('close', (e) => {
     if (allowClose || quittingForUpdate || win.webContents.isDestroyed()) return;
     e.preventDefault();
-    void confirmClose(win).then((ok) => {
+    void confirmClose(win).then(async (ok) => {
       if (!ok) return;
+      // An autosave being written must finish first (it is a temp file until renamed).
+      await flushRendererAutosave(win);
       allowClose = true;
-      win.close();
+      if (!win.isDestroyed()) win.close();
     });
   });
   if (DEV_URL) {
@@ -391,26 +428,22 @@ ipcMain.handle('save-text', async (ev, suggestName, text, filterName, ext) => {
     filters: [{ name: String(filterName || 'Text'), extensions: [String(ext || 'txt')] }],
   });
   if (res.canceled || !res.filePath) return null;
-  await fs.writeFile(res.filePath, text, 'utf8');
+  // Crash-safe for every export; only a project file keeps its previous version as <name>.bak
+  // (a .bak next to a CSV or text export would only clutter the user's folder).
+  const isProject = /\.jcadproj\.json$/i.test(res.filePath) || String(filterName) === 'JCad Electrical Project';
+  await atomicWriteFile(res.filePath, text, { backup: isProject });
   rememberPath(res.filePath);
   return res.filePath;
 });
 
 /**
  * Copy a drawing or project file to `<file>.bak` before a project-wide command rewrites it.
- * Only files the renderer legitimately knows (DXF drawings and project files) are copied.
+ * Only DXF drawings and project files whose path is known (our dialogs, the recent list, an open
+ * project - the same rule as save-dxf) are copied, through a temporary file + fsync + rename
+ * (electron/atomic-write.cjs backupFile). Resolves { ok: true, path } or { ok: false, code, error }
+ * with a message for the user; it never throws and never reports success without a complete copy.
  */
-ipcMain.handle('backup-file', async (ev, file) => {
-  if (typeof file !== 'string' || !/\.(dxf|jcadproj\.json)$/i.test(file)) return null;
-  try {
-    const target = `${file}.bak`;
-    await fs.copyFile(file, target);
-    return target;
-  } catch (err) {
-    logMainError('backup-file', err);
-    return null;
-  }
-});
+ipcMain.handle('backup-file', (_ev, file) => backupFile(file, undefined, isKnownPath));
 
 /** Plot: the renderer sends a PNG data URL of the sheet; we print it to PDF via a hidden window. */
 ipcMain.handle('plot-pdf', async (ev, dataUrl, suggestName, landscape, sheet) => {
@@ -435,7 +468,7 @@ ipcMain.handle('plot-pdf', async (ev, dataUrl, suggestName, landscape, sheet) =>
       landscape: Boolean(landscape),
       pageSize: pdfPageSize(sheet, landscape),
     });
-    await fs.writeFile(res.filePath, pdf);
+    await atomicWriteFile(res.filePath, pdf);
     return res.filePath;
   } finally {
     hidden.destroy();
@@ -453,7 +486,7 @@ ipcMain.handle('save-pdf', async (ev, bytes, suggestName) => {
     filters: [{ name: 'PDF', extensions: ['pdf'] }],
   });
   if (res.canceled || !res.filePath) return null;
-  await fs.writeFile(res.filePath, Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+  await atomicWriteFile(res.filePath, Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
   return res.filePath;
 });
 
@@ -516,58 +549,25 @@ ipcMain.handle('save-dxf', async (ev, existingPath, text, suggestName) => {
     target = res.filePath;
   }
   if (typeof text !== 'string') throw new Error('Invalid DXF payload');
-  await fs.writeFile(target, text, 'utf8');
+  // Temporary file + fsync + rename, previous version kept as <name>.dxf.bak (electron/atomic-write.cjs).
+  // A failure is thrown as "CODE: reason, write '<target>'"; the renderer maps it to a message.
+  await atomicWriteFile(target, text, { backup: true });
   rememberPath(target);
   return target;
 });
 
 // ------------------------------------------------------------------ autosave (app data folder)
-/** Autosave names are generated by the renderer but restricted to a safe charset and our folder. */
-function safeAutosaveName(name) {
-  if (typeof name !== 'string' || !/^[A-Za-z0-9_-]{1,60}\.sv\.dxf$/.test(name)) throw new Error('Invalid autosave name');
-  return name;
-}
-ipcMain.handle('autosave-write', async (_ev, name, text, meta) => {
-  const n = safeAutosaveName(name);
-  if (typeof text !== 'string') throw new Error('Invalid payload');
-  await fs.mkdir(autosaveDir(), { recursive: true });
-  const m = meta && typeof meta === 'object' ? meta : {};
-  const clean = { originalPath: typeof m.originalPath === 'string' ? m.originalPath : null, title: String(m.title || n), savedAt: Number(m.savedAt) || Date.now() };
-  await fs.writeFile(path.join(autosaveDir(), n), text, 'utf8');
-  await fs.writeFile(path.join(autosaveDir(), n + '.json'), JSON.stringify(clean), 'utf8');
-});
-ipcMain.handle('autosave-list', async () => {
-  try {
-    const files = await fs.readdir(autosaveDir());
-    const out = [];
-    for (const f of files) {
-      if (!f.endsWith('.sv.dxf')) continue;
-      let meta = { originalPath: null, title: f, savedAt: 0 };
-      try {
-        meta = { ...meta, ...JSON.parse(await fs.readFile(path.join(autosaveDir(), f + '.json'), 'utf8')) };
-      } catch {
-        /* no sidecar */
-      }
-      if (!meta.savedAt) meta.savedAt = (await fs.stat(path.join(autosaveDir(), f))).mtimeMs;
-      out.push({ name: f, ...meta });
-    }
-    return out.sort((a, b) => b.savedAt - a.savedAt);
-  } catch {
-    return [];
-  }
-});
-ipcMain.handle('autosave-read', async (_ev, name) => {
-  try {
-    return await fs.readFile(path.join(autosaveDir(), safeAutosaveName(name)), 'utf8');
-  } catch {
-    return null;
-  }
-});
-ipcMain.handle('autosave-remove', async (_ev, name) => {
-  const n = safeAutosaveName(name);
-  await fs.rm(path.join(autosaveDir(), n), { force: true });
-  await fs.rm(path.join(autosaveDir(), n + '.json'), { force: true });
-});
+// <document id>.sv.dxf files plus index.json, written crash-safely (electron/autosave-store.cjs).
+let autosaveStore = null;
+const autosave = () => {
+  if (!autosaveStore || autosaveStore.dir !== autosaveDir()) autosaveStore = createAutosaveStore(autosaveDir());
+  return autosaveStore;
+};
+ipcMain.handle('autosave-write', (_ev, name, text, meta) => autosave().write(safeAutosaveName(name), text, meta));
+/** Rejects when the folder exists but cannot be read: the Recovery Manager shows that instead of "no backups". */
+ipcMain.handle('autosave-list', () => autosave().list());
+ipcMain.handle('autosave-read', (_ev, name) => autosave().read(safeAutosaveName(name)));
+ipcMain.handle('autosave-remove', (_ev, name) => autosave().remove(safeAutosaveName(name)));
 
 // ------------------------------------------------------------------ user symbol library (app data folder)
 const userLibraryFile = () => path.join(stateDir(), 'user-library.json');
@@ -586,20 +586,7 @@ ipcMain.handle('user-library-write', async (_ev, json) => {
   const file = userLibraryFile();
   // Write to a temporary file and fsync it so a crash or power loss mid-write cannot leave an
   // empty or truncated library, keep the previous file as one .bak, then rename atomically.
-  const tmp = file + '.tmp';
-  const fh = await fs.open(tmp, 'w');
-  try {
-    await fh.writeFile(json, 'utf8');
-    await fh.sync();
-  } finally {
-    await fh.close();
-  }
-  try {
-    await fs.copyFile(file, file + '.bak');
-  } catch (err) {
-    if (!err || err.code !== 'ENOENT') throw err; // first write: nothing to back up
-  }
-  await fs.rename(tmp, file);
+  await enqueueWrite(file, () => atomicWriteFile(file, json, { backup: true }));
 });
 
 // ------------------------------------------------------------------ plugins (app data folder / plugins)
@@ -723,15 +710,7 @@ ipcMain.handle('packs-write', async (_ev, name, text) => {
   if (typeof text !== 'string' || text.length > MAX_PACK_BYTES) throw new Error('Invalid pack payload');
   await fs.mkdir(packsDir(), { recursive: true });
   // Same discipline as the user library: write + fsync a temporary file, then rename over the target.
-  const tmp = file + '.tmp';
-  const fh = await fs.open(tmp, 'w');
-  try {
-    await fh.writeFile(text, 'utf8');
-    await fh.sync();
-  } finally {
-    await fh.close();
-  }
-  await fs.rename(tmp, file);
+  await enqueueWrite(file, () => atomicWriteFile(file, text));
 });
 ipcMain.handle('packs-remove', async (_ev, name) => {
   await fs.rm(path.join(packsDir(), safePackName(name)), { force: true });

@@ -831,7 +831,8 @@ How the changes are applied:
    gets one undo step and is marked changed (save it as usual).
 2. Closed drawings of the project are read from disk. When one of them would change, a dialog
    lists every affected drawing with what changes; confirm to write the closed ones back as DXF,
-   optionally keeping a `.bak` copy of each. Cancel changes nothing.
+   optionally keeping a `.bak` copy of each (a drawing whose `.bak` copy cannot be made is left
+   unchanged and listed as not updated). Cancel changes nothing.
 3. DWG drawings are read-only and are skipped; the command line lists skipped drawings. The
    browser edition cannot read closed drawings, so open them in tabs first.
 
@@ -1202,8 +1203,36 @@ them. `CLEARRECENT` (File > Open Recent > Clear Recent) empties the list.
 
 Every changed drawing is written to the autosave folder every 10 minutes (change it in Options
 > Files; `AUTOSAVE` writes now). If JCad Electrical closes without saving, the **Drawing
-Recovery Manager** offers the backups at the next start: **Open** a drawing (it opens as an
-unsaved copy and the backup is kept until you save it) or **Discard** it.
+Recovery Manager** offers the backups at the next start (or any time with `DRAWINGRECOVERY`,
+alias `DRM`): **Open** a drawing (it opens as an unsaved copy and the backup is kept until you
+save it) or **Discard** it. **Discard All** deletes only the backups still listed; a drawing you
+opened from the list keeps its backup until you save it. While an action runs the buttons are
+disabled, so a double click opens a backup only once.
+
+- Each open drawing has its own permanent backup name (a random id), so a new session never
+  overwrites a backup you have not recovered yet. `autosave/index.json` lists the title, original
+  path and time of each backup. Backups from 0.4.0 and earlier are renamed to this scheme the
+  first time the new version starts.
+- A backup is written only for changes it actually contains: edits you make while an autosave is
+  being written are picked up by the next one. Saving a drawing removes its backup only if you did
+  not change the drawing again after that save. Closing the window waits for an autosave that is
+  being written.
+- If the autosave folder cannot be read, the Recovery Manager says so (with **Retry**) instead of
+  showing an empty list; nothing in the folder is changed.
+
+### Safe saving
+
+Drawings, projects, exports, plots, autosaves and the files in the application data folder are
+written to a temporary file in the same folder first, flushed to disk, and only then renamed over
+the old file, so a crash, power cut or full disk during a save leaves the previous file intact.
+When you save over an existing drawing or project, its previous version is kept next to it as
+`<name>.bak` (for example `panel.dxf.bak`, one generation; other exports such as CSV reports get
+no `.bak`). To go back to it, rename it to `panel.dxf`.
+
+If a save fails, JCad Electrical tells you why in plain words (disk full, no permission or
+read-only, file locked by another program, folder or network drive not available, path too long)
+and offers **Retry**, **Save As...** (choose another place) or **Cancel**. The drawing stays
+marked as modified and its autosave backup is kept, so nothing is lost while you sort it out.
 
 ### Where files are kept
 
@@ -1215,9 +1244,9 @@ The desktop application keeps its data in the application data folder:
 | macOS | `~/Library/Application Support/jcad-electrical` |
 | Linux | `~/.config/jcad-electrical` |
 
-It contains `autosave/`, `packs/` (catalog packs), `plugins/` (see
-[Plugins and scripts](#15-plugins-and-scripts)), `user-library.json` (your symbols) and
-`error.log` (crash log). The `PLUGINS` command prints the exact folder on your computer.
+It contains `autosave/` (drawing backups and their `index.json`), `packs/` (catalog packs),
+`plugins/` (see [Plugins and scripts](#15-plugins-and-scripts)), `user-library.json` (your
+symbols, with the previous version in `user-library.json.bak`) and `error.log` (crash log). The `PLUGINS` command prints the exact folder on your computer.
 
 ---
 
