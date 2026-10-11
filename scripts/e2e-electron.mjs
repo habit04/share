@@ -148,6 +148,8 @@ const app = await electron.launch(packaged ? { executablePath: executable, args,
 const mainLog = [];
 let userData = profile;
 const firstProcess = app.process(); // kept: app.process() is unavailable once the application closed
+/** The Electron runtime actually started (the summary line names it, not the package.json range). */
+const runtime = await app.evaluate(() => process.versions.electron).catch(() => 'unknown');
 firstProcess.stdout?.on('data', (d) => mainLog.push(String(d)));
 firstProcess.stderr?.on('data', (d) => mainLog.push(String(d)));
 
@@ -1481,5 +1483,5 @@ else console.log(`e2e-electron: output kept in ${outDir}`);
 // stdout / stderr are asynchronous pipes on some platforms, so the last lines are flushed first.
 const flush = (/** @type {NodeJS.WriteStream} */ stream, /** @type {string} */ text) => new Promise((resolve) => stream.write(text, () => resolve(undefined)));
 if (problems.length) await flush(process.stderr, problems.map((p) => `  - ${p}`).join('\n') + '\n');
-await flush(process.stdout, `\ne2e-electron: ${results.length} checks passed, ${problems.length} failed (${process.platform} ${process.arch}, ${packaged ? `packaged ${executable}` : `Electron ${pkg.devDependencies.electron}`})\n`);
+await flush(process.stdout, `\ne2e-electron: ${results.length} checks passed, ${problems.length} failed (${process.platform} ${process.arch}, ${packaged ? `packaged ${executable}` : `Electron ${runtime}`})\n`);
 process.exit(problems.length ? 1 : 0);
