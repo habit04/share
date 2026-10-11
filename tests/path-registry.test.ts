@@ -225,6 +225,27 @@ describe('readable / writable paths (electron/path-registry.cjs)', () => {
     expect(d.writeRoot(cover)).toBeNull();
   });
 
+  it('recent.json as written on each change carries the write root of every confined drawing, the last one too', () => {
+    const snapshots: string[] = [];
+    const registry: Registry = reg.createPathRegistry({ onChange: () => snapshots.push(registry.serialize()) });
+    const folder = abs('work', 'jobs', 'a');
+    const s1 = abs('work', 'jobs', 'a', 'sheets', 's1.dxf');
+    const s2 = abs('work', 'jobs', 'a', 'sheets', 's2.dxf');
+    registry.registerProject(project, { drawings: [{ file: 'sheets/s1.dxf' }, { file: 'sheets/s2.dxf' }] });
+    // What onChange wrote last is what a restart reads (the queue writes the newest snapshot).
+    const restarted = reg.createPathRegistry();
+    restarted.restore(snapshots[snapshots.length - 1]!);
+    expect(restarted.isWritable(s2)).toBe(true);
+    expect(restarted.writeRoot(s1)).toBe(folder);
+    expect(restarted.writeRoot(s2)).toBe(folder);
+    // Opening the project as chosen lifts the roots in the persisted state too.
+    registry.registerProject(project, { drawings: [{ file: 'sheets/s1.dxf' }, { file: 'sheets/s2.dxf' }] }, { userChosen: true });
+    const again = reg.createPathRegistry();
+    again.restore(snapshots[snapshots.length - 1]!);
+    expect(again.writeRoot(s1)).toBeNull();
+    expect(again.writeRoot(s2)).toBeNull();
+  });
+
   it('save-dxf (by name) and backup-file hand the write root to the atomic writer; a confined save does not lift it', () => {
     const save = ipcHandlerSource('save-dxf');
     expect(save).toMatch(/const root = \(target && registry\.writeRoot\(target\)\) \?\? undefined;/);

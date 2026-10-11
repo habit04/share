@@ -202,14 +202,15 @@ function createPathRegistry({ onChange } = {}) {
         if (!DRAWING_RE.test(p)) out.ignored.push(p);
         else if (anywhere || isInside(dir, p)) {
           // Writable because it is inside the folder of a project opened by name: writes stay
-          // inside that folder (a path already writable keeps the access it had).
+          // inside that folder (a path already writable keeps the access it had). The root is
+          // recorded before add(), whose onChange writes recent.json: set afterwards, the last
+          // drawing's root was missing there and the drawing was unconfined after a restart.
           const k = pathKey(p);
-          const confine = !anywhere && k !== null && !writable.has(k);
-          if (add(p, true, true)) {
-            out.writable.push(p);
-            if (confine) roots.set(/** @type {string} */ (k), path.resolve(dir));
-            else if (anywhere && k !== null) roots.delete(k);
+          if (k !== null) {
+            if (!anywhere && !writable.has(k)) roots.set(k, path.resolve(dir));
+            else if (anywhere) roots.delete(k);
           }
+          if (add(p, true, true)) out.writable.push(p);
         } else if (add(p, false, true)) out.readOnly.push(p);
       }
       const catalog = entry(project && project.settings && project.settings.catalogFile);
