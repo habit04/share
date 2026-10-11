@@ -190,7 +190,8 @@ describe('r2000-layouts-titleblock.dxf: layouts, paper-space viewports, title bl
  * Survives: the current style from $DIMSTYLE + header $DIM*; named styles with their DIM* values,
  * arrowheads named by DIMBLK / DIMBLK1 / DIMBLK2 handles (DIMSAH), tolerances, DIM colours; the
  * arrowhead blocks; linear (with DIMTEDIT 53 and DIMEDIT 52), aligned, radius, diameter (text
- * override, moved text), angular 2-line and 3-point with their definition points and styles.
+ * override, moved text), angular 2-line and 3-point with their definition points and styles;
+ * DIMDSEP, DIMTXSTY, DIMLWD / DIMLWE, DIMTZIN and per-dimension DSTYLE overrides.
  * Lost (matrix): ordinate dimensions (dropped, reported); arrowheads written in JCAD_DIMSTYLE
  * XDATA rather than as handles; 2-line angular written as 3-point; other XDATA (ACAD_DSTYLE_*).
  */
@@ -468,7 +469,8 @@ describe('r2000-dimensions.dxf: inch drawing, DIMPOST and alternate units, text 
 /*
  * Survives: plain text of every paragraph; the formatted source (raw) verbatim, which keeps \f,
  * \C, \H, \L / \O, \p, \W, \Q, \T and stacks for display; a 250-character group 3 chunk plus
- * group 1; rotation by direction vector, attachment, line spacing, colour, style; UTF-8 text.
+ * group 1; rotation by direction vector, attachment, line spacing, colour, style; UTF-8 text;
+ * static columns (written as JCAD_MTEXT_COLUMNS XDATA).
  * Lost (matrix, "Fonts and text": the writer produces pure ASCII with \U+XXXX escapes): the
  * UTF-8 bytes become escapes in the saved AC1015 file (the text itself survives).
  */
@@ -853,8 +855,8 @@ describe('r2000-nested-blocks-xref.dxf: nested INSERTs with ByBlock / ByLayer co
 
 /*
  * Survives: one native table (position, direction, row heights, column widths); cell text, the
- * merged title, formatted cell text, per-cell height and alignment overrides; the *T1 picture is
- * not kept as a block. Lost (matrix: "as INSERT + XDATA"): the table is written as an INSERT of an
+ * merged title, formatted cell text, per-cell height and alignment overrides, the TABLESTYLE's
+ * text heights, alignment and margins for the other cells; the *T1 picture is not kept as a block. Lost (matrix: "as INSERT + XDATA"): the table is written as an INSERT of an
  * anonymous block carrying the cells in JCAD_TABLE XDATA, not as ACAD_TABLE.
  */
 describe('r2018-table.dxf: ACAD_TABLE with cells, merged title, table style (AC1032)', () => {
@@ -922,7 +924,7 @@ describe('r2018-table.dxf: ACAD_TABLE with cells, merged title, table style (AC1
  * its IMAGEDEF (relative), insertion point, pixel vectors (rotation, scale), size, rectangular and
  * polygonal clips with the clip flag, display flags, brightness / contrast / fade; an inch layout
  * (plot paper units 0, rotated to landscape) with millimetre margins converted, a locked viewport
- * at 1/4" = 1'-0", and a paper-space image's placement.
+ * at 1/4" = 1'-0", and a paper-space image's placement and file name.
  * Lost: nothing the matrix lists.
  */
 describe('r2018-image-inches.dxf: IMAGE + IMAGEDEF in model and paper space, $INSUNITS 1 (AC1032)', () => {
