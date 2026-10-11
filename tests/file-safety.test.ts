@@ -5,6 +5,7 @@ import * as fsp from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describeFileError, fileErrorCode, KIND_BY_CODE, type FileAction } from '../src/app/file-errors';
+import { exportErrorText, exportFailed } from '../src/app/file-error-text';
 import { projectAutosaveName, projectAutosaveText, parseProjectAutosave, isProjectAutosave } from '../src/app/project-autosave';
 
 const require = createRequire(import.meta.url);
@@ -326,6 +327,15 @@ describe('file error messages', () => {
     expect(info).toMatchObject({ code: 'ENOSPC', kind: 'disk-full', path: 'C:\\work\\panel.dxf' });
     expect(info.message).toBe('"panel.dxf" could not be saved: there is not enough free space on the disk. Free some space or choose another drive.');
     expect(info.detail).toBe("ENOSPC: no space left on device, write 'C:\\work\\panel.dxf'");
+  });
+  it('an export error names the file picked in the Save dialog once (not the suggested name twice)', () => {
+    const e = new Error("Error invoking remote method 'save-text': Error: ENOSPC: no space left on device, write '/mnt/usb/bom-final.csv'");
+    expect(exportErrorText(e, 'Bill_of_Materials.csv')).toBe('"bom-final.csv" could not be saved: there is not enough free space on the disk. Free some space or choose another drive.');
+    const lines: string[] = [];
+    exportFailed((t) => lines.push(t), 'Plant.wdt')(new Error("EACCES: permission denied, open '/jobs/locked/Plant.wdt'"));
+    expect(lines).toEqual(['Export not saved: "Plant.wdt" could not be saved: you do not have permission to write to "/jobs/locked", or the file is read-only or open in another program. Choose another folder or check the file\'s permissions.']);
+    // Without a path in the error the suggested name is used.
+    expect(exportErrorText(new Error('EBUSY: resource busy'), 'a.csv')).toMatch(/^"a\.csv" could not be saved: the file is locked/);
   });
   it('a damaged drawing\'s own message is not mistaken for a file error code (both twins)', () => {
     const dxf = new Error('The file ends early at line 14170: section ENTITIES (line 12539) is not closed and the end-of-file marker is missing.');

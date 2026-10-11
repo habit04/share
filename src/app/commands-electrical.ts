@@ -69,7 +69,7 @@ import { findRails, nearestReference, rungReferences } from '../electrical/ladde
 import { projectDrawingIndex, projectEntryFor, resolveDrawingPath, resolveProjectPath, baseName } from './project';
 import { samePath, shortNames } from './paths';
 import { captureRevision, contentHash, saveQueue } from './savequeue';
-import { fileErrorText, exportFailed } from './file-error-text';
+import { fileErrorText, exportFailed, exportErrorText } from './file-error-text';
 import { fileErrorCode } from './file-errors';
 import { readDxf, writeDxf, DxfReadError } from '../io/dxf';
 import { convertDwg } from '../io/dwg';
@@ -166,7 +166,7 @@ async function saveCsv(editor: Editor, name: string, csv: string): Promise<strin
       return await editor.fileBridge.saveText(name, csv, 'CSV', 'csv');
     } catch (err) {
       // A write error is reported on the command line instead of being lost as an unhandled rejection.
-      editor.log(`${name} not saved: ${fileErrorText(err, { action: 'save', path: name })}`);
+      editor.log(`Export not saved: ${exportErrorText(err, name)}`);
       return null;
     }
   }

@@ -1001,6 +1001,254 @@ scenario('project-wide', async () => {
   checkClean(ctx, 'project-wide commands');
 });
 
+// ------------------------------------------------------------------ project flows: prompts, Save As into other folders
+scenario('project', async () => {
+  step = 'project: setup';
+  const root = tempDir('proj');
+  const other = tempDir('other');
+  const dir = join(root, 'proj');
+  for (const d of [join(dir, 'dwg'), join(root, 'shared'), join(root, 'proj2'), join(dir, 'sub'), join(root, 'locked')]) mkdirSync(d, { recursive: true });
+  const abs = {
+    a: join(dir, 'dwg', 'a.dxf'),
+    b: join(dir, 'b.dxf'),
+    c: join(root, 'shared', 'c.dxf'),
+    d: join(other, 'd.dxf'),
+    catalog: join(dir, 'catalog.json'),
+  };
+  for (const k of ['a', 'b', 'c', 'd']) writeFileSync(abs[k], readFileSync(fixtures.dxf));
+  writeFileSync(abs.catalog, '{"parts":[]}');
+  const projFile = join(dir, 'p.jcadproj.json');
+  writeProject(projFile, 'Moves', ['dwg/a.dxf', 'b.dxf', '../shared/c.dxf', abs.d], { settings: { catalogFile: 'catalog.json' } });
+  const lockedProj = join(root, 'locked', 'l.jcadproj.json');
+  writeProject(lockedProj, 'Locked', ['../proj/b.dxf']);
+  const lockedCode = makeReadOnly(join(root, 'locked'));
+  const ctx = await launch(tempDir('profile'));
+  const projAutosaves = () => ctx.autosaveFiles().filter((f) => f.endsWith('_jcadproj.sv.dxf'));
+  const waitFor = async (cond, ms = 4000) => {
+    for (let i = 0; i < ms / 100; i += 1) {
+      if (await cond()) return true;
+      await sleep(100);
+    }
+    return cond();
+  };
+  try {
+    // ---- a project whose folder is read-only: Save fails; the prompts keep the project and its autosave
+    step = 'project: save errors and prompts';
+    await openProject(ctx, lockedProj);
+    await ctx.win.evaluate(() => window.editor.updateProject({ ...window.editor.project, description: 'locked change' }));
+    check(await waitFor(() => projAutosaves().length === 1), 'the modified project is autosaved');
+    if (lockedCode) {
+      let h = await ctx.h();
+      await ctx.run('PROJECTSAVE');
+      const err = ctx.win.locator('.save-error-dialog .modal');
+      check(await err.waitFor({ timeout: 10_000 }).then(() => true, () => false), `PROJECTSAVE into a read-only folder (${lockedCode}) shows Save Failed`);
+      const text = await err.innerText().catch(() => '');
+      check(/"l\.jcadproj\.json" could not be saved: you do not have permission/.test(text) && ['Retry', 'Save As...', 'Cancel'].every((b) => text.includes(b)), `the error explains it and offers Retry / Save As... / Cancel (${text.split('\n').slice(0, 3).join(' / ')})`);
+      await err.locator('button', { hasText: 'Retry' }).click();
+      check(await ctx.win.locator('.save-error-dialog .modal').waitFor({ timeout: 10_000 }).then(() => true, () => false), 'Retry tries again and fails again');
+      await ctx.win.locator('.save-error-dialog button', { hasText: 'Cancel' }).click();
+      await ctx.win.waitForTimeout(300);
+      check((await ctx.projectState()).dirty && projAutosaves().length === 1, 'Cancel: the project stays modified and keeps its autosave');
+      check((await ctx.logSince(h)).some((l) => /^Project not saved: "l\.jcadproj\.json" could not be saved/.test(l)), 'the command line names the failure');
+      // NEWPROJECT -> Save -> the save fails -> Cancel: nothing is replaced.
+      h = await ctx.h();
+      await ctx.run('NEWPROJECT');
+      const ask = ctx.modal('Save changes to project Locked?');
+      check(await ask.waitFor({ timeout: 10_000 }).then(() => true, () => false), 'NEWPROJECT with a modified project asks Save / Don\'t Save / Cancel');
+      await ask.locator('button', { hasText: /^Save$/ }).click();
+      if (await err.waitFor({ timeout: 10_000 }).then(() => true, () => false)) await err.locator('button', { hasText: 'Cancel' }).click();
+      else bad('no Save Failed dialog for the save before NEWPROJECT');
+      await ctx.win.waitForTimeout(400);
+      check((await ctx.win.locator('.modal', { hasText: 'Project name' }).count()) === 0 && (await ctx.projectState()).name === 'Locked' && (await ctx.projectState()).dirty, 'the failed save keeps the project (no new project, still modified)');
+      // Save As... from the error dialog moves the project to a writable folder (entries rebased).
+      const moved = join(root, 'l-moved.jcadproj.json');
+      await ctx.pushSave(moved);
+      await ctx.run('PROJECTSAVE');
+      await err.waitFor({ timeout: 10_000 });
+      await err.locator('button', { hasText: 'Save As...' }).click();
+      await ctx.waitLog(/^Project saved: /, h, 10_000);
+      const saved = existsSync(moved) ? JSON.parse(readFileSync(moved, 'utf8')) : null;
+      check(saved?.description === 'locked change' && saved?.drawings?.[0]?.file === 'proj/b.dxf', `Save As... wrote the project with its entry rebased (${JSON.stringify(saved?.drawings)})`);
+      check(await waitFor(() => projAutosaves().length === 0), 'the project autosave is removed once saved');
+    } else ok('read-only folders cannot be made here: project save errors skipped');
+    flowsRun.push('PROJECTSAVE into a read-only folder: Retry, Cancel, NEWPROJECT -> Save fails, Save As...');
+
+    // ---- OPENPROJECT / NEWPROJECT: Save and Don't Save
+    step = 'project: OPENPROJECT / NEWPROJECT';
+    await ctx.win.evaluate(() => window.editor.updateProject({ ...window.editor.project, description: 'discard me' }));
+    check(await waitFor(() => projAutosaves().length === 1), 'a new change is autosaved again');
+    await ctx.pushOpen(projFile);
+    let h = await ctx.h();
+    await ctx.run('OPENPROJECT');
+    let ask = ctx.modal('Save changes to project');
+    await ask.waitFor({ timeout: 10_000 });
+    await ask.locator('button', { hasText: "Don't Save" }).click();
+    await ctx.waitLog(/^Project Moves: 4 drawing\(s\)/, h);
+    check(!(await ctx.projectState()).dirty && (await ctx.projectState()).name === 'Moves', "Don't Save: the other project opens, unmodified");
+    check(await waitFor(() => projAutosaves().length === 0), "Don't Save: the discarded changes' autosave is removed");
+    await ctx.win.evaluate(() => window.editor.updateProject({ ...window.editor.project, description: 'keep me' }));
+    h = await ctx.h();
+    await ctx.run('NEWPROJECT');
+    ask = ctx.modal('Save changes to project Moves?');
+    await ask.waitFor({ timeout: 10_000 });
+    await ask.locator('button', { hasText: /^Save$/ }).click();
+    const name = ctx.modal('Project name');
+    if (await name.waitFor({ timeout: 10_000 }).then(() => true, () => false)) {
+      await name.locator('input').fill('Fresh');
+      await name.locator('button', { hasText: 'OK' }).click();
+    } else bad('no project name question');
+    await ctx.waitLog(/^New project Fresh/, h);
+    check(JSON.parse(readFileSync(projFile, 'utf8')).description === 'keep me', 'Save: the project was written before the new one started');
+    check((await ctx.projectState()).name === 'Fresh' && !(await ctx.projectState()).dirty, 'NEWPROJECT made an empty, unmodified project');
+    flowsRun.push("OPENPROJECT Don't Save, NEWPROJECT Save");
+
+    // ---- PROJECTSAVEAS into a sibling, the parent and a subfolder; every drawing still resolves
+    step = 'project: PROJECTSAVEAS';
+    await openProject(ctx, projFile);
+    const targets = [join(root, 'proj2', 'sibling.jcadproj.json'), join(root, 'parent.jcadproj.json'), join(dir, 'sub', 'child.jcadproj.json')];
+    for (const t of targets) {
+      await ctx.pushSave(t);
+      h = await ctx.h();
+      await ctx.run('PROJECTSAVEAS');
+      await ctx.waitLog(/^(Project saved|Project not saved)/, h);
+      const j = existsSync(t) ? JSON.parse(readFileSync(t, 'utf8')) : { drawings: [] };
+      const resolved = j.drawings.map((d) => resolve(dirname(t), d.file));
+      check(JSON.stringify(resolved) === JSON.stringify([abs.a, abs.b, abs.c, abs.d]), `${basename(dirname(t))}/${basename(t)}: entries ${JSON.stringify(j.drawings.map((d) => d.file))} resolve to the same files`);
+      check(resolve(dirname(t), j.settings?.catalogFile ?? '') === abs.catalog, `${basename(t)}: catalog entry ${j.settings?.catalogFile} still names catalog.json`);
+      check(j.drawings[3].file === abs.d, `${basename(t)}: the drawing outside the project tree stays absolute`);
+    }
+    check(JSON.parse(readFileSync(projFile, 'utf8')).drawings.map((d) => d.file).join() === `dwg/a.dxf,b.dxf,../shared/c.dxf,${abs.d}`, 'the original project file is unchanged');
+    flowsRun.push('PROJECTSAVEAS sibling / parent / subfolder');
+  } catch (err) {
+    bad(`unexpected: ${err && err.stack ? err.stack : err}`);
+  } finally {
+    await ctx.close();
+  }
+  checkClean(ctx, 'project flows');
+
+  // A new launch opens each saved-as project and every drawing from the project tree.
+  step = 'project: reopen after relaunch';
+  const ctx2 = await launch(tempDir('profile'));
+  try {
+    for (const t of [join(root, 'proj2', 'sibling.jcadproj.json'), join(root, 'parent.jcadproj.json'), join(dir, 'sub', 'child.jcadproj.json')]) {
+      await openProject(ctx2, t);
+      const opened = [];
+      for (let i = 0; i < 4; i += 1) {
+        const h = await ctx2.h();
+        await ctx2.win.locator(`.project-tree [data-index="${i}"]`).dispatchEvent('dblclick');
+        await ctx2.waitLog(/^(Opened|Failed to open|.* is already open)/, h, 15_000);
+        opened.push(((await ctx2.logSince(h)).find((l) => /^(Opened|Failed|.* is already open)/.test(l)) ?? '').replace(/:.*$/, ''));
+      }
+      check(opened.join('|') === [abs.a, abs.b, abs.c, abs.d].map((p) => `Opened ${p}`).join('|'), `${basename(t)}: every drawing opens from the project tree (${opened.join(' | ')})`);
+      await ctx2.win.evaluate(() => {
+        const s = window.editor.sessions;
+        for (let i = s.count - 1; i >= 0; i -= 1) s.close(i);
+      });
+    }
+    flowsRun.push('relaunch: reopen the saved-as projects and every drawing');
+  } catch (err) {
+    bad(`unexpected: ${err && err.stack ? err.stack : err}`);
+  } finally {
+    await ctx2.close();
+  }
+  checkClean(ctx2, 'project reopen');
+});
+
+// ------------------------------------------------------------------ save errors: drawings, exports
+scenario('save-errors', async () => {
+  step = 'save errors: setup';
+  const root = tempDir('err');
+  const ro = join(root, 'readonly');
+  const full = join(root, 'full');
+  mkdirSync(ro);
+  mkdirSync(full);
+  const drawing = join(ro, 'panel.dxf');
+  writeFileSync(drawing, readFileSync(fixtures.dxf));
+  const roCode = makeReadOnly(ro);
+  const realFull = makeFullDisk(full);
+  const ctx = await launch(tempDir('profile'));
+  try {
+    if (!realFull) await ctx.setFaults([{ prefix: full + '/', code: 'ENOSPC', op: 'open' }]);
+    await openDrawing(ctx, drawing);
+    await ctx.edit('err');
+    let h = await ctx.h();
+    await ctx.run('AUTOSAVE');
+    await ctx.waitLog(/drawing\(s\) autosaved/, h);
+    const backups = ctx.autosaveFiles();
+    // ---- SAVE into a read-only folder
+    step = 'save errors: SAVE read-only';
+    if (roCode) {
+      const before = readFileSync(drawing);
+      h = await ctx.h();
+      await ctx.run('SAVE');
+      const err = ctx.win.locator('.save-error-dialog .modal');
+      check(await err.waitFor({ timeout: 10_000 }).then(() => true, () => false), `SAVE in a read-only folder (${roCode}) shows Save Failed`);
+      const text = await err.innerText().catch(() => '');
+      check(/"panel\.dxf" could not be saved: you do not have permission to write to/.test(text), `the cause is named: ${text.split('\n')[2] ?? text.slice(0, 120)}`);
+      await err.locator('button', { hasText: 'Retry' }).click();
+      await ctx.win.locator('.save-error-dialog .modal').waitFor({ timeout: 10_000 });
+      await ctx.win.locator('.save-error-dialog button', { hasText: 'Cancel' }).click();
+      await ctx.win.waitForTimeout(300);
+      check(await ctx.win.evaluate(() => window.editor.doc.dirty), 'Cancel: the drawing stays modified');
+      check(JSON.stringify(ctx.autosaveFiles()) === JSON.stringify(backups) && backups.length === 1, 'Cancel: its autosave backup is kept');
+      check(Buffer.compare(readFileSync(drawing), before) === 0 && readdirSync(ro).length === 1, 'the file and folder are untouched (no .bak, no temporary file)');
+      // Save As... to a full disk fails too (ENOSPC), then to a good place works.
+      await ctx.pushSave(join(full, 'panel.dxf'));
+      await ctx.run('SAVE');
+      await err.waitFor({ timeout: 10_000 });
+      await ctx.win.locator('.save-error-dialog button', { hasText: 'Save As...' }).click();
+      check(await ctx.win.locator('.save-error-dialog .modal', { hasText: 'free space' }).waitFor({ timeout: 10_000 }).then(() => true, () => false), 'Save As... onto a full disk: Save Failed names the free space');
+      const good = join(root, 'panel-saved.dxf');
+      await ctx.pushSave(good);
+      h = await ctx.h();
+      await ctx.win.locator('.save-error-dialog button', { hasText: 'Save As...' }).click();
+      await ctx.waitLog(/^Saved /, h);
+      check(existsSync(good) && !(await ctx.win.evaluate(() => window.editor.doc.dirty)), 'the second Save As... saved the drawing, now unmodified');
+      check(await (async () => {
+        for (let i = 0; i < 40; i += 1) {
+          if (ctx.autosaveFiles().length === 0) return true;
+          await sleep(100);
+        }
+        return false;
+      })(), 'the saved drawing\'s autosave backup is removed');
+      check(readdirSync(full).length === 0 || readdirSync(full).every((f) => f === 'lost+found'), `nothing left on the full disk (${readdirSync(full).join(', ')})`);
+    } else ok('read-only folders cannot be made here: drawing save errors skipped');
+    flowsRun.push('SAVE read-only: Retry, Cancel, Save As... full disk, Save As... good');
+
+    // ---- CSV and .wdt exports
+    step = 'save errors: exports';
+    if (realFull) {
+      // Fill the small disk so even a short CSV does not fit.
+      try {
+        for (let i = 0; i < 64; i += 1) writeFileSync(join(full, `filler-${i}`), Buffer.alloc(1024, 32));
+      } catch {
+        /* full */
+      }
+    }
+    await ctx.pushSave(join(full, 'bom.csv'));
+    h = await ctx.h();
+    await ctx.run('AEREPORTCSV bom');
+    await ctx.waitLog(/not saved|Report saved/, h);
+    let log = await ctx.logSince(h);
+    check(log.some((l) => /^Export not saved: "bom\.csv" could not be saved: there is not enough free space/.test(l)), `a CSV export onto a full disk is reported, naming the picked file once: ${log.find((l) => /not saved|Report saved/.test(l))}`);
+    if (roCode) {
+      await ctx.pushSave(join(ro, 'map.wdt'));
+      h = await ctx.h();
+      await ctx.run('AEWDTEXPORT');
+      await ctx.waitLog(/not saved|mapping saved/, h);
+      log = await ctx.logSince(h);
+      check(log.some((l) => /^Export not saved: "map\.wdt" could not be saved: you do not have permission to write to ".*readonly"/.test(l)), `a .wdt export into a read-only folder is reported with its folder: ${log.find((l) => /not saved|mapping saved/.test(l))}`);
+    }
+    check(readdirSync(root).every((f) => !f.endsWith('.tmp')) && readdirSync(full).every((f) => !f.endsWith('.tmp')) && !existsSync(join(full, 'bom.csv')), 'no temporary or partial files left behind by the failed exports');
+    flowsRun.push('CSV export full disk, .wdt export read-only');
+  } catch (err) {
+    bad(`unexpected: ${err && err.stack ? err.stack : err}`);
+  } finally {
+    await ctx.close();
+  }
+  checkClean(ctx, 'save errors');
+});
+
 // ================================================================== run
 for (const s of scenarios) {
   if (!want(s.name)) continue;
