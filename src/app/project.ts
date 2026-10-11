@@ -4,6 +4,8 @@
  * the title block and project-wide settings (catalog file, tag formats,
  * IEC codes). Paths are stored relative to the project file.
  */
+import { dirName, fileBaseName, isAbsolutePath, normalizePath, rebaseProjectEntry, relativePath, resolveFromFile, samePath } from './paths';
+
 export interface ProjectDrawing {
   file: string;
   description?: string;
@@ -153,25 +155,45 @@ export function defaultProject(): Project {
   return { name: 'Sample Project', drawings: [] };
 }
 
-/** Resolve a drawing (or any project-relative) path against the project file directory. */
+/** Resolve a drawing (or any project-relative) path against the project file directory (normalised). */
 export function resolveDrawingPath(project: Project, d: ProjectDrawing): string {
   return resolveProjectPath(project, d.file);
 }
 
 export function resolveProjectPath(project: Project, file: string): string {
-  if (!project.path || /^([a-zA-Z]:[\\/]|\/)/.test(file)) return file;
-  const dir = project.path.replace(/[\\/][^\\/]*$/, '');
-  return `${dir}/${file}`;
+  return resolveFromFile(project.path, file);
 }
 
 export function baseName(path: string): string {
-  return path.split(/[\\/]/).pop() ?? path;
+  return fileBaseName(path);
 }
 
-/** Index of the drawing in the project, matched by resolved path or file name. */
+/**
+ * Index of the drawing in the project, matched by normalised full path (case-insensitive for
+ * Windows paths). A file with the same name in another folder is a different drawing.
+ */
 export function projectDrawingIndex(project: Project, filePath: string | null): number {
   if (!filePath) return -1;
-  return project.drawings.findIndex((d) => resolveDrawingPath(project, d) === filePath || d.file === filePath || baseName(d.file) === baseName(filePath));
+  return project.drawings.findIndex((d) => samePath(resolveDrawingPath(project, d), filePath));
+}
+
+/** Project entry path for a drawing file: relative to the project folder when it lies below it. */
+export function projectEntryFor(project: Project, filePath: string): string {
+  if (!project.path) return normalizePath(filePath);
+  const rel = relativePath(dirName(project.path), filePath);
+  return isAbsolutePath(rel) || rel.startsWith('..') ? normalizePath(filePath) : rel;
+}
+
+/**
+ * The project as it must be written to `newPath`: relative drawing and catalog paths are
+ * recalculated so they still point at the same files when the project file moves to another folder.
+ */
+export function rebaseProject(p: Project, newPath: string): Project {
+  const old = p.path;
+  if (old && samePath(old, newPath)) return { ...p, path: newPath };
+  const drawings = p.drawings.map((d) => ({ ...d, file: rebaseProjectEntry(d.file, old, newPath) }));
+  const settings = p.settings?.catalogFile ? { ...p.settings, catalogFile: rebaseProjectEntry(p.settings.catalogFile, old, newPath) } : p.settings;
+  return { ...p, drawings, settings, path: newPath };
 }
 
 /**

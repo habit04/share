@@ -834,10 +834,24 @@ fixing things.
   drawing properties.
 - A **project** (`*.jcadproj.json`) lists the drawings that belong together, the project
   description lines (PROJECT, CUSTOMER, JOB, DRAWN, CHECKED, APPROVED, ...), the user catalog
-  file and default formats. Use `OPENPROJECT` (PROJECT), `PROJECTADD` (add the current
-  drawing), `PROJECTSAVE` and `AEPROJECTPROPS` (PROJECTPROPERTIES, PROJPROPS; tabs General,
-  Description Lines and Title Block Mapping). Reports can then run across every drawing of the
-  project.
+  file and default formats. Use `OPENPROJECT` (PROJECT), `NEWPROJECT`, `PROJECTADD` (add the
+  current drawing), `PROJECTSAVE`, `PROJECTSAVEAS` and `AEPROJECTPROPS` (PROJECTPROPERTIES,
+  PROJPROPS; tabs General, Description Lines and Title Block Mapping). Reports can then run
+  across every drawing of the project.
+- The project has its own **modified** state, separate from the drawings: changing project
+  properties, the drawing list, the catalog file, report templates or the title block mapping
+  marks it (the Project Manager shows `*` after the project name) until `PROJECTSAVE`.
+  `OPENPROJECT`, `NEWPROJECT` and closing the application ask **Save / Don't Save / Cancel**
+  first. While the project is modified it is also autosaved (see
+  [Autosave and recovery](#autosave-and-recovery)).
+- Drawing paths in the project file are stored relative to the project file's folder (with `/`,
+  so a project opens on Windows, macOS and Linux). `PROJECTSAVEAS` into another folder
+  recalculates them so they still point at the same drawings and catalog file (`../plant/a.dxf`);
+  a drawing on another drive keeps its full path.
+- Drawings are identified by their full path, so two drawings with the same file name in
+  different folders are two separate project drawings; the Project Manager, tabs and project-wide
+  lists then add the folder to the name, for example `a.dxf (line1)` and `a.dxf (line2)`. On
+  Windows, upper / lower case and `\` or `/` in paths do not matter.
 
 ### Project-wide tools
 
@@ -859,10 +873,18 @@ How the changes are applied:
    gets one undo step and is marked changed (save it as usual).
 2. Closed drawings of the project are read from disk. When one of them would change, a dialog
    lists every affected drawing with what changes; confirm to write the closed ones back as DXF,
-   optionally keeping a `.bak` copy of each (a drawing whose `.bak` copy cannot be made is left
-   unchanged and listed as not updated). Cancel changes nothing.
+   optionally keeping a `.bak` copy of each. Cancel changes nothing.
+   If the `.bak` copy of a drawing cannot be written, that drawing is **not** saved: a dialog
+   names the file and the error and offers **Skip** (the default) or **Continue Without Backup**
+   for that file only. Skipped drawings are listed on the command line.
 3. DWG drawings are read-only and are skipped; the command line lists skipped drawings. The
    browser edition cannot read closed drawings, so open them in tabs first.
+
+4. Changes are only applied to the drawing they were calculated from. When you edit an open
+   drawing while the command runs (for example while its confirmation dialog is up), when a
+   closed drawing changes on disk or is opened in a tab in the meantime, or when a newer save of
+   the file has already been written, that drawing is left alone and listed as "changed while the
+   command ran"; run the command again to include it.
 
 After `AEXREFPROJECT` a **Cross-Reference Problems** list shows contacts without a parent and
 duplicate parents; double-click a row on the current drawing to zoom to it. The Project Manager
@@ -1245,7 +1267,10 @@ the end, which may be incomplete, is left out and listed in the Import Report, u
 ends exactly where the next object would start (a lone `0` group code on the last line), in which
 case that object is complete and kept. The drawing opens as **recovered**: the Import Report
 shows what happened, the drawing is marked as changed, and `SAVE` over the damaged file asks
-first and suggests Save As.
+first and suggests Save As. An autosave backup opened from the Drawing Recovery Manager is read
+the same way. Project-wide reports read a damaged closed drawing as far as it goes and say so on
+the command line; project-wide updates (cross-references, retag, wire numbers, title blocks)
+leave it unchanged and list it, so open it yourself to recover it.
 
 Objects with **invalid geometry** (coordinates that are not numbers or are infinite, a negative
 radius or text height, a polyline with fewer than two vertices) are left out one by one; the
@@ -1297,12 +1322,25 @@ Inside LINE, PLINE and AEWIRE, Ctrl+Z undoes the last segment of the command in 
 ### Recent files
 
 `RECENT` opens a recent file by number; the application menu and File > Open Recent list
-them. `CLEARRECENT` (File > Open Recent > Clear Recent) empties the list.
+them. `CLEARRECENT` (File > Open Recent > Clear Recent) empties the list. A file is listed once,
+however its path was spelled (on Windows `C:\Jobs\A.dxf` and `c:/jobs/a.dxf` are the same file).
 
 ### Tabs
 
 `CLOSE` (Ctrl+W, Ctrl+F4), `CLOSEALL`, `CLOSEALLOTHER`, `NEXTTAB` (Ctrl+Tab), `PREVTAB`
 (Ctrl+Shift+Tab). Closing a changed drawing asks Save / Don't Save / Cancel.
+
+A drawing that is still loading when you switch to another tab opens in the tab it was started
+from (in the background). If you typed into that tab meanwhile, the drawing opens in a new tab
+instead. Saves of the same file are written one after another, so an older save can never
+overwrite a newer one.
+
+**Closing the application.** When you close the window, quit (File > Exit, Cmd+Q) or restart to
+install an update, one **Save Changes** dialog lists everything that is not saved: every modified
+drawing tab, every Symbol Builder tab with unsaved edits and the project. **Save All** saves them
+one after another (an untitled drawing asks for a file name); untick items to discard them (the
+button then reads **Save Selected**); **Discard All** closes without saving; **Cancel** keeps
+everything open. If one item cannot be saved, nothing is closed and the error names the item.
 
 ### Autosave and recovery
 
@@ -1338,6 +1376,11 @@ If a save fails, JCad Electrical tells you why in plain words (disk full, no per
 read-only, file locked by another program, folder or network drive not available, path too long)
 and offers **Retry**, **Save As...** (choose another place) or **Cancel**. The drawing stays
 marked as modified and its autosave backup is kept, so nothing is lost while you sort it out.
+
+Unsaved project changes are autosaved in the same folder a moment after each change and removed
+when you save the project or discard the changes. At the next start **Project Recovery** offers
+them: **Open Recovered Project** (it opens as modified; `PROJECTSAVE` keeps it), **Discard**, or
+**Later**.
 
 ### Where files are kept
 

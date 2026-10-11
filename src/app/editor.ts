@@ -18,12 +18,13 @@ import { updateCrossReferences } from '../electrical/xref';
 import { TITLE_BLOCK, newFromTemplate, SHEET_SIZES, type SheetSize } from '../electrical/templates';
 import { PlcModuleTool, SignalArrowTool, TerminalStripTool, DEFAULT_PLC, DEFAULT_STRIP, SOURCE_ARROW, DEST_ARROW, type PlcModuleSettings, type TerminalStripSettings } from '../tools/plc';
 import { gripPoints, moveGrip } from '../core/entities';
-import { parseProject, serializeProject, defaultProject, resolveDrawingPath, baseName, type Project } from './project';
+import { parseProject, serializeProject, defaultProject, resolveDrawingPath, baseName, projectDrawingIndex, projectEntryFor, rebaseProject, type Project } from './project';
+import { captureRevision, saveQueue } from './savequeue';
 import { loadSettings, saveSettings, pushRecent, type UserSettings } from './settings';
 import { SessionManager, applySaveResult } from './sessions';
 import { describeFileError, type FileErrorInfo } from './file-errors';
 import type { ColorSpec } from '../core/entities';
-import { readDxf, writeDxf } from '../io/dxf';
+import { writeDxf } from '../io/dxf';
 import { layoutPage, type PlotOptions } from './plot';
 import { parsePointInput, isPlainNumber } from './input';
 import { convertDwg, type DwgImportPayload } from '../io/dwg';
@@ -41,7 +42,7 @@ import { registerLayoutCommands } from '../tools/layouts';
 import type { SpaceRef } from '../core/layouts';
 import { plotLayoutsOrVector } from './plot-vector';
 
-export type EditorEvent = 'change' | 'selection' | 'tool' | 'view' | 'snap' | 'file' | 'log' | 'space';
+export type EditorEvent = 'change' | 'selection' | 'tool' | 'view' | 'snap' | 'file' | 'log' | 'space' | 'project';
 
 export interface CommandDef {
   name: string;
@@ -84,15 +85,31 @@ export interface FileBridge {
   openProject?(file?: string): Promise<{ path: string; text: string } | null>;
   saveText?(suggestName: string, text: string, filterName: string, ext: string): Promise<string | null>;
   /**
-   * Desktop only: copy a drawing/project file to `<path>.bak` (crash-safe) before it is rewritten.
-   * Never throws: { ok: false, error } carries a message for the user when no complete copy was made.
+   * Desktop only: copy a drawing/project file to `<path>.bak` before it is rewritten. Answers
+   * `{ ok, path }` / `{ ok: false, error }`; older builds answered the copy's path (or null on failure).
    */
-  backupFile?(path: string): Promise<BackupResult>;
+  backupFile?(path: string): Promise<BackupResult | LegacyBackupResult>;
+  /** Desktop only: ask where to save the project (Save As); the path is not written yet. */
+  chooseProjectPath?(suggestName: string): Promise<string | null>;
+  /** Desktop only: write the project file to a path chosen before (no dialog); returns the path written. */
+  saveProject?(path: string, text: string): Promise<string | null>;
   plotPdf?(dataUrl: string, suggestName: string, landscape: boolean, sheet?: PlotSheet): Promise<string | null>;
   /** Print the rendered sheet through the system print dialog; resolves true when a job was sent. */
   printDrawing?(dataUrl: string, title: string, landscape: boolean, sheet?: PlotSheet): Promise<boolean>;
   /** Save finished PDF bytes (vector plot, app/plot-vector.ts); resolves the written path or null. */
   savePdf?(bytes: Uint8Array, suggestName: string): Promise<string | null>;
+}
+
+/** What older desktop builds answered from `backup-file`: the .bak path, or null / false on failure. */
+export type LegacyBackupResult = string | boolean | null | undefined;
+
+/** Did a backup succeed? Accepts `{ ok, path }` / `{ ok: false, error }` and the older answers. */
+export function backupOutcome(r: BackupResult | LegacyBackupResult): { ok: boolean; error?: string } {
+  const failed = 'the backup copy could not be written';
+  if (r && typeof r === 'object') return r.ok === true ? { ok: true } : { ok: false, error: typeof r.error === 'string' && r.error ? r.error : failed };
+  if (typeof r === 'string') return r ? { ok: true } : { ok: false, error: failed };
+  if (r === true) return { ok: true };
+  return { ok: false, error: failed };
 }
 
 /** Version compiled in from package.json (see vite.config.ts); 'dev' under plain vitest. */
@@ -143,6 +160,7 @@ export class Editor {
     file: new Set(),
     log: new Set(),
     space: new Set(),
+    project: new Set(),
   };
   private selReq: SelectionRequest | null = null;
   private dragStart: Point | null = null; // screen
@@ -176,6 +194,17 @@ export class Editor {
   } = {};
   settings: UserSettings = loadSettings();
   project: Project = defaultProject();
+  /**
+   * The project data (properties, drawing list, catalog, report templates, title-block map)
+   * has changes that are not in the project file yet. Separate from the drawings' dirty flags.
+   */
+  projectDirty = false;
+  /** Bumped by every project change (updateProject) and by open / new. */
+  private projectRev = 0;
+  /** Bumped when another project is opened or created: saves bind to the project that started them. */
+  private projectGen = 0;
+  /** Message of the last failed save / open (for the close workflow's error report). */
+  lastFileError: string | null = null;
   /** Layer new wires go on (AEWIRETYPE). */
   wireLayer = 'WIRES';
   /** File name to suggest in Save As (set by DWG import). */
@@ -205,6 +234,7 @@ export class Editor {
       this.render();
     });
     this.registerCommands();
+    saveQueue.log = (t) => this.log(t);
     this.log(`JCad Electrical ${VERSION} — type a command (LINE, AEWIRE, AELADDER, AECOMPONENT ...) or HELP.`);
   }
 
@@ -534,8 +564,10 @@ export class Editor {
       });
     });
     reg('OPENPROJECT', ['PROJECT'], 'Open a project file', (ed, arg) => void ed.openProject(arg));
+    reg('NEWPROJECT', [], 'Start a new, empty project (asks to save changes to the current project first)', (ed, arg) => void ed.newProjectCommand(arg));
     reg('PROJECTADD', [], 'Add the current drawing to the project', (ed) => ed.addCurrentToProject());
     reg('PROJECTSAVE', [], 'Save the project file', (ed) => void ed.saveProject());
+    reg('PROJECTSAVEAS', [], 'Save the project file under a new name or folder (drawing paths keep pointing at the same files)', (ed) => void ed.saveProject(true));
     reg('PLOT', ['PDF'], 'Plot the drawing to PDF', (ed) => void ed.plot());
     reg('PRINT', ['PRINTDRAWING'], 'Print the drawing (system print dialog)', (ed) => void ed.print());
     reg('RECENT', [], 'Open a recent file by index', (ed, arg) => {
@@ -715,10 +747,7 @@ export class Editor {
     if (ui.saveChanges) {
       const r = await ui.saveChanges(this.fileName());
       if (r === 'cancel') return false;
-      if (r === 'save') {
-        await this.saveFile(false);
-        return !this.doc.dirty;
-      }
+      if (r === 'save') return (await this.saveFile(false)) && !this.doc.dirty;
       return true;
     }
     return ui.confirm('Unsaved changes', `${this.fileName()} has unsaved changes. Discard them?`);
@@ -752,24 +781,31 @@ export class Editor {
     this.emit('selection');
   }
 
-  async openFile(file?: string): Promise<void> {
+  /**
+   * Open a drawing into the tab that started the open. When the user switched tabs while the
+   * file was loading, the drawing still lands in that tab (in the background); when that tab
+   * was closed or edited meanwhile, it opens in a new tab instead of replacing anything.
+   */
+  async openFile(file?: string): Promise<boolean> {
     if (!this.fileBridge) {
       this.log('No file access in this environment.');
-      return;
+      return false;
     }
-    if (!(await this.confirmDiscard())) return;
+    if (!(await this.confirmDiscard())) return false;
+    const target = this.sessions.current;
+    const targetId = target.id;
+    const before = target.state;
     try {
       if (this.fileBridge.openDrawing) {
         this.log(file ? `Opening ${file} ...` : 'Opening ...');
         const res = await this.fileBridge.openDrawing(file);
-        if (!res) return;
+        if (!res) return false;
         this.rememberRecent(res.path);
         if (res.kind === 'dwg') {
           const { state, skipped, notes } = convertDwg(res.payload, res.path);
           // DWG is read-only for us: keep the file untitled so SAVE asks where to write the DXF copy.
-          this.loadState(state, null);
-          this.doc.dirty = true;
-          this.suggestedName = res.path.replace(/\.dwg$/i, '.dxf').split(/[\\/]/).pop() ?? null;
+          const where = this.deliverOpened(targetId, before, state, null, true);
+          if (where !== 'background') this.suggestedName = res.path.replace(/\.dwg$/i, '.dxf').split(/[\\/]/).pop() ?? null;
           const skippedText = Object.keys(skipped).length
             ? ` Skipped unsupported: ${Object.entries(skipped).map(([k, v]) => `${k}×${v}`).join(', ')}.`
             : '';
@@ -777,51 +813,95 @@ export class Editor {
           for (const n of notes) this.log(`DWG import: ${n}`);
           this.log('DWG import is read-only; use SAVE to write a DXF copy next to the original.');
           this.emit('file');
-          this.showImportReport(false);
-          return;
+          this.showOpenedReport(where, state, res.path);
+          return true;
         }
-        const state = await readDxfForOpen(res.text, res.path, (t, m) => (this.ui ?? fallbackUi).confirm(t, m));
+        const state = await this.readDxfText(res.text, res.path);
         if (!state) {
           this.log(`Not opened: ${res.path} is damaged.`);
-          return;
+          return false;
         }
-        this.loadState(state, res.path);
-        if (importReportOf(state)?.recovered) this.doc.dirty = true;
-        this.log(`Opened ${res.path}: ${state.entities.length} entities, ${state.layers.length} layers, ${Object.keys(state.blocks).length} blocks.${res.encoding ? ` Encoding: ${res.encoding}.` : ''}`);
-        this.showImportReport(false);
-        return;
+        // A recovered (truncated) file opens modified: Save As keeps it under a new name.
+        const where = this.deliverOpened(targetId, before, state, res.path, !!importReportOf(state)?.recovered);
+        this.log(`Opened ${res.path}: ${state.entities.length} entities, ${state.layers.length} layers, ${Object.keys(state.blocks).length} blocks.${res.encoding ? ` Encoding: ${res.encoding}.` : ''}${where === 'background' ? ' (in the tab it was opened from)' : where === 'new-tab' ? ' (in a new tab: the tab it was opened from changed meanwhile)' : ''}`);
+        this.showOpenedReport(where, state, res.path);
+        return true;
       }
       const res = await this.fileBridge.openDxf();
-      if (!res) return;
-      const state = await readDxfForOpen(res.text, res.path, (t, m) => (this.ui ?? fallbackUi).confirm(t, m));
+      if (!res) return false;
+      const state = await this.readDxfText(res.text, res.path);
       if (!state) {
         this.log(`Not opened: ${res.path} is damaged.`);
-        return;
+        return false;
       }
-      this.loadState(state, res.path);
-      if (importReportOf(state)?.recovered) this.doc.dirty = true;
+      const where = this.deliverOpened(targetId, before, state, res.path, !!importReportOf(state)?.recovered);
       this.log(`Opened ${res.path}: ${state.entities.length} entities, ${state.layers.length} layers, ${Object.keys(state.blocks).length} blocks.`);
-      this.showImportReport(false);
+      this.showOpenedReport(where, state, res.path);
+      return true;
     } catch (err) {
+      this.lastFileError = (err as Error).message;
       this.log(`Failed to open drawing: ${(err as Error).message}`);
+      return false;
     }
   }
 
   /**
    * Log the drawing's import report and, when content was lost (or `force`, IMPORTREPORT), show
-   * the report dialog.
+   * the report dialog. `state` / `name` default to the active drawing.
    */
-  showImportReport(force: boolean): void {
-    const r = importReportOf(this.doc.snapshot);
+  showImportReport(force: boolean, state: DrawingState = this.doc.snapshot, name: string = this.fileName()): void {
+    const r = importReportOf(state);
     if (!r) {
       if (force) this.log('This drawing has no import report: nothing was dropped or simplified when it was opened.');
       return;
     }
     for (const line of importReportLog(r)) this.log(line);
-    if (force || reportNeedsAttention(r)) this.hooks.importReport?.(r, this.fileName());
+    if (force || reportNeedsAttention(r)) this.hooks.importReport?.(r, name);
   }
 
-  /** Save the active drawing; resolves true when it was written. */
+  /**
+   * Read DXF text the way OPEN does (see import-open.ts readDxfForOpen): a file that ends early
+   * asks whether to open what was readable (marked as recovered); null = declined.
+   */
+  readDxfText(text: string, path: string | null): Promise<DrawingState | null> {
+    return readDxfForOpen(text, path, (t, m) => (this.ui ?? fallbackUi).confirm(t, m));
+  }
+
+  /** The import report of a drawing just opened, also when it went to a background tab (see deliverOpened). */
+  private showOpenedReport(where: 'active' | 'background' | 'new-tab', state: DrawingState, path: string): void {
+    if (where === 'background') this.showImportReport(false, state, path.split(/[\\/]/).pop() ?? path);
+    else this.showImportReport(false);
+  }
+
+  /** Put an opened drawing into tab `targetId` (see openFile); returns where it went. */
+  private deliverOpened(targetId: number, before: DrawingState, state: DrawingState, path: string | null, dirty: boolean): 'active' | 'background' | 'new-tab' {
+    const cur = this.sessions.current;
+    if (cur.id === targetId && cur.state === before) {
+      this.loadState(state, path);
+      this.doc.dirty = dirty;
+      return 'active';
+    }
+    const i = this.sessions.indexOfId(targetId);
+    const s = i >= 0 ? this.sessions.all[i] : undefined;
+    if (s && s.state === before) {
+      const d = new Drawing();
+      // Same preparation as loadState: older library symbols keep taking the reference's colour.
+      d.load(withByBlockLibrarySymbols(state), path);
+      d.ensureBlocks([...LIBRARY_SYMBOLS, TITLE_BLOCK, SOURCE_ARROW, DEST_ARROW, WIRE_DOT]);
+      this.sessions.loadInto(targetId, d.snapshot, path, dirty);
+      this.emit('file');
+      return 'background';
+    }
+    this.sessions.add(state, path, dirty);
+    this.doc.dirty = dirty;
+    return 'new-tab';
+  }
+
+  /**
+   * Save the active drawing. Writes to the same file are queued in order, and a save whose
+   * snapshot is older than one already written to that file is dropped (see savequeue.ts).
+   * Resolves true when the file was written.
+   */
   async saveFile(saveAs: boolean): Promise<boolean> {
     if (!this.fileBridge) {
       this.log('No file access in this environment.');
@@ -832,19 +912,34 @@ export class Editor {
       this.log('Save As keeps the original file unchanged.');
       return this.saveFile(true);
     }
+    const bridge = this.fileBridge;
     // Remember exactly which document revision goes to disk: edits made while the file
     // dialog / write is pending (or in another tab) must stay flagged as unsaved.
     const sessionId = this.sessions.current.id;
     const savedState = this.doc.snapshot;
+    const revision = captureRevision();
     const target = saveAs ? null : this.doc.filePath;
     const fileName = this.fileName();
+    const suggest = this.suggestedName ?? fileName;
+    this.lastFileError = null;
     let path: string | null;
     try {
       const text = writeDxf(withoutUnusedLibraryBlocks(savedState));
-      path = await this.fileBridge.saveDxf(target, text, this.suggestedName ?? fileName);
+      if (target) {
+        const r = await saveQueue.run(target, revision, () => bridge.saveDxf(target, text, suggest));
+        if (r.status === 'stale') {
+          this.lastFileError = `a newer version of ${target} was saved meanwhile`;
+          return false;
+        }
+        path = r.value;
+      } else {
+        path = await bridge.saveDxf(null, text, suggest);
+        if (path) saveQueue.markCompleted(path, revision);
+      }
     } catch (err) {
       // Nothing is marked as saved: the dirty flag and the autosave / recovery copy stay.
       const info = describeFileError(err, { action: 'save', path: target });
+      this.lastFileError = info.message;
       this.log(`Save failed: ${info.message} The drawing is still marked as modified and its autosave copy is kept.`);
       const choice = this.hooks.saveError ? await this.hooks.saveError(info, fileName, { saveAs: true }) : 'cancel';
       if (choice === 'cancel' || this.sessions.current.id !== sessionId) return false;
@@ -864,22 +959,84 @@ export class Editor {
     return this.confirmDiscard();
   }
 
-  async openProject(file?: string): Promise<void> {
+  /** Generation (another project opened / created) and revision (any change) of the project data. */
+  get projectState(): { generation: number; revision: number } {
+    return { generation: this.projectGen, revision: this.projectRev };
+  }
+
+  /** Apply a user change to the project data: it becomes modified (PROJECTSAVE writes it). */
+  updateProject(next: Project): void {
+    this.project = next;
+    this.projectRev += 1;
+    this.projectDirty = true;
+    this.hooks.projectChanged?.();
+    this.emit('project');
+  }
+
+  /** Make `p` the current project (opened, created or recovered). */
+  replaceProject(p: Project, dirty = false): void {
+    this.project = p;
+    this.projectGen += 1;
+    this.projectRev += 1;
+    this.projectDirty = dirty;
+    this.hooks.projectChanged?.();
+    this.emit('project');
+  }
+
+  /** Save / Don't Save / Cancel for the project's own unsaved changes; resolves true when it may be replaced. */
+  async confirmDiscardProject(): Promise<boolean> {
+    if (!this.projectDirty) return true;
+    const ui = this.ui ?? fallbackUi;
+    const label = `project ${this.project.name}`;
+    if (ui.saveChanges) {
+      const r = await ui.saveChanges(label);
+      if (r === 'cancel') return false;
+      if (r === 'save') return (await this.saveProject()) && !this.projectDirty;
+      return true;
+    }
+    return ui.confirm('Unsaved project changes', `The ${label} has unsaved changes. Discard them?`);
+  }
+
+  async openProject(file?: string): Promise<boolean> {
     if (!this.fileBridge?.openProject) {
       this.log('Projects need the desktop app.');
-      return;
+      return false;
     }
+    if (!(await this.confirmDiscardProject())) return false;
+    const answered = this.projectRev;
     try {
       const res = await this.fileBridge.openProject(file);
-      if (!res) return;
-      this.project = parseProject(res.text, res.path);
+      if (!res) return false;
+      // Changes made to the project while the Open dialog was up get their own question.
+      if (this.projectDirty && this.projectRev !== answered && !(await this.confirmDiscardProject())) return false;
+      this.replaceProject(parseProject(res.text, res.path));
       this.log(`Project ${this.project.name}: ${this.project.drawings.length} drawing(s).`);
       this.rememberRecent(res.path);
-      this.hooks.projectChanged?.();
       this.emit('file');
+      return true;
     } catch (err) {
+      this.lastFileError = (err as Error).message;
       this.log(`Failed to open project: ${(err as Error).message}`);
+      return false;
     }
+  }
+
+  /** NEWPROJECT: an empty, untitled project (after Save / Don't Save / Cancel for the current one). */
+  async newProjectCommand(name?: string): Promise<boolean> {
+    if (!(await this.confirmDiscardProject())) return false;
+    const answered = this.projectRev;
+    let n = name?.trim();
+    if (!n) {
+      const typed = await (this.ui ?? fallbackUi).textInput('New Project', 'Project name:', 'Project1');
+      if (typed === null) return false;
+      n = typed.trim() || 'Project1';
+    }
+    // The project may have been changed again while the name was asked for.
+    if (this.projectDirty && this.projectRev !== answered && !(await this.confirmDiscardProject())) return false;
+    this.replaceProject({ name: n, drawings: [] });
+    this.log(`New project ${n}. Add drawings with PROJECTADD and write the project file with PROJECTSAVE.`);
+    this.emit('file');
+    return true;
   }
 
   addCurrentToProject(): void {
@@ -887,38 +1044,91 @@ export class Editor {
       this.log('Save the drawing first, then add it to the project.');
       return;
     }
-    const file = this.project.path ? relativeTo(this.project.path, this.doc.filePath) : this.doc.filePath;
-    if (this.project.drawings.some((d) => d.file === file)) {
+    if (projectDrawingIndex(this.project, this.doc.filePath) >= 0) {
       this.log('Drawing is already in the project.');
       return;
     }
-    this.project = { ...this.project, drawings: [...this.project.drawings, { file }] };
-    this.hooks.projectChanged?.();
+    const file = projectEntryFor(this.project, this.doc.filePath);
+    this.updateProject({ ...this.project, drawings: [...this.project.drawings, { file }] });
     this.log(`Added ${baseName(file)} to project ${this.project.name}. Use PROJECTSAVE to write the project file.`);
     this.emit('file');
   }
 
-  async saveProject(): Promise<void> {
-    if (!this.fileBridge?.saveText) {
+  /**
+   * PROJECTSAVE / PROJECTSAVEAS. Saving into another folder recalculates the relative drawing
+   * and catalog paths so they still name the same files. The result is applied to the project
+   * that started the save (not to one opened meanwhile); edits made during the save stay unsaved.
+   * Resolves true when the file was written.
+   */
+  async saveProject(saveAs = false): Promise<boolean> {
+    const bridge = this.fileBridge;
+    const direct = !!(bridge?.saveProject && bridge.chooseProjectPath);
+    if (!bridge || (!direct && !bridge.saveText)) {
       this.log('Projects need the desktop app.');
-      return;
+      return false;
     }
-    let p: string | null;
+    const gen = this.projectGen;
+    const rev = this.projectRev;
+    const snapshot = this.project;
+    const revision = captureRevision();
+    const suggest = snapshot.path ?? `${snapshot.name.replace(/\s+/g, '_')}.jcadproj.json`;
+    this.lastFileError = null;
+    let written: { path: string; project: Project };
     try {
-      p = await this.fileBridge.saveText(this.project.path ?? `${this.project.name.replace(/\s+/g, '_')}.jcadproj.json`, serializeProject(this.project), 'JCad Electrical Project', 'json');
+      if (direct) {
+        let dest = !saveAs && snapshot.path ? snapshot.path : await bridge.chooseProjectPath!(suggest);
+        if (!dest) return false;
+        const write = (to: string) => saveQueue.run(to, revision, () => bridge.saveProject!(to, serializeProject(rebaseProject(snapshot, to))));
+        let r;
+        try {
+          r = await write(dest);
+        } catch (err) {
+          // A path the main process does not know (a recovered project from another session): ask where to save.
+          if (!/Unknown project path/.test((err as Error).message) || saveAs) throw err;
+          dest = await bridge.chooseProjectPath!(suggest);
+          if (!dest) return false;
+          r = await write(dest);
+        }
+        const out = rebaseProject(snapshot, dest);
+        if (r.status === 'stale') {
+          this.lastFileError = `a newer version of ${dest} was saved meanwhile`;
+          return false;
+        }
+        if (!r.value) return false;
+        written = { path: r.value, project: r.value === dest ? out : rebaseProject(snapshot, r.value) };
+      } else {
+        // Older bridge / browser: the save dialog (or a download) picks the name; entries are written as they are.
+        const p = await bridge.saveText!(suggest, serializeProject(snapshot), 'JCad Electrical Project', 'json');
+        if (!p) return false;
+        saveQueue.markCompleted(p, revision);
+        written = { path: p, project: { ...snapshot, path: p } };
+      }
     } catch (err) {
-      const info = describeFileError(err, { action: 'save', path: this.project.path });
-      this.log(`Project save failed: ${info.message}`);
-      const choice = this.hooks.saveError ? await this.hooks.saveError(info, this.project.name, { saveAs: false }) : 'cancel';
-      if (choice !== 'cancel') return this.saveProject();
-      return;
+      // Nothing is marked as saved; the project stays modified (and autosaved). Retry / Save As... come from the save error dialog.
+      const info = describeFileError(err, { action: 'save', path: snapshot.path });
+      this.lastFileError = info.message;
+      this.log(`Project not saved: ${info.message}`);
+      const choice = this.hooks.saveError ? await this.hooks.saveError(info, snapshot.name, { saveAs: true }) : 'cancel';
+      if (choice === 'cancel' || this.projectGen !== gen) return false;
+      return this.saveProject(choice === 'saveas' ? true : saveAs);
     }
-    if (p) {
-      this.project = { ...this.project, path: p };
-      this.log(`Project saved: ${p}`);
-      this.rememberRecent(p);
-      this.hooks.projectChanged?.();
+    if (this.projectGen !== gen) {
+      this.log(`Project ${snapshot.name} saved: ${written.path} (another project is open now; it is unchanged).`);
+      return true;
     }
+    if (this.projectRev === rev) {
+      this.project = written.project;
+      this.projectDirty = false;
+      this.log(`Project saved: ${written.path}`);
+    } else {
+      // Edits made while the file was written stay (unsaved), re-expressed for the new location.
+      this.project = rebaseProject(this.project, written.path);
+      this.log(`Project saved: ${written.path} (changes made during the save are still unsaved).`);
+    }
+    this.rememberRecent(written.path);
+    this.hooks.projectChanged?.();
+    this.emit('project');
+    return true;
   }
 
   /** Open a drawing that belongs to the project (by index or path). */
@@ -1371,10 +1581,4 @@ const fallbackUi: ToolContext['ui'] = {
 /** Move grip `index` of an entity to `p` (AutoCAD grip stretch semantics). */
 export function applyGrip(e: Entity, index: number, p: Point): Entity | null {
   return moveGrip(e, index, p);
-}
-
-function relativeTo(projectPath: string, file: string): string {
-  const dir = projectPath.replace(/[\\/][^\\/]*$/, '');
-  if (file.startsWith(dir + '/') || file.startsWith(dir + '\\')) return file.slice(dir.length + 1);
-  return file;
 }

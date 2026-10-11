@@ -15,13 +15,16 @@
 // path), PLOT to a tabloid landscape vector PDF through `save-pdf` (parsed: 1224 x 792 pt, content
 // stream paths) and as a raster image through `plot-pdf`, a layout tab plotted as a page, the updater's
 // check path offline (up to date / newer release / network error), the Symbol Builder, the About
-// dialog, the unsaved-changes prompt on close, and no main-process error log.
+// dialog, a project opened with Windows-style relative entries (open by resolved path, Save As to another folder
+// with recalculated paths, Save / Cancel before opening another project), the Save All workflow on close (Cancel,
+// a failed save aborting the close, Save Selected writing a drawing and the project before the window closes, the
+// main process waiting for the answer), and no main-process error log.
 // File safety: old-style autosave files are migrated to permanent ids and offered by the Drawing
 // Recovery Manager (a double click opens a backup once, Discard All spares the opened one); saves
 // go through temp file + rename and keep <name>.bak; a failed save shows Retry / Save As... and
 // keeps the drawing modified and its backup; backup-file answers { ok, path } / { ok: false, error } and
 // refuses paths outside the main process allow-list;
-// an unreadable recovery folder shows an error state; the close handshake waits for autosave.
+// an unreadable recovery folder shows an error state.
 import { _electron as electron } from 'playwright';
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, existsSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { deflateSync, crc32 } from 'node:zlib';
@@ -172,7 +175,7 @@ try {
     return j ? { keys: Object.keys(j).sort(), platform: j.platform } : null;
   });
   check(!!bridge, 'window.jcad bridge exists');
-  for (const k of ['openDrawing', 'openDxf', 'saveDxf', 'plotPdf', 'printDrawing', 'appInfo', 'checkForUpdates', 'onMenuCommand', 'onQueryDirty', 'onFlushAutosave', 'backupFile', 'autosaveWrite', 'userLibraryRead', 'packsList', 'readImage']) check(bridge?.keys.includes(k), `bridge exposes ${k}`);
+  for (const k of ['openDrawing', 'openDxf', 'saveDxf', 'plotPdf', 'printDrawing', 'appInfo', 'checkForUpdates', 'onMenuCommand', 'onCloseRequest', 'chooseProjectPath', 'saveProject', 'backupFile', 'autosaveWrite', 'userLibraryRead', 'packsList', 'readImage']) check(bridge?.keys.includes(k), `bridge exposes ${k}`);
   check(bridge?.platform === process.platform, `bridge platform ${bridge?.platform}`);
   const info = await win.evaluate(() => window.jcad.appInfo());
   check(info.version === pkg.version && info.packaged === false && info.selfUpdate === false, `appInfo ${JSON.stringify(info)}`);
@@ -405,6 +408,7 @@ try {
   log = await logSince(h);
   check(log.some((l) => l.startsWith(`Opened ${fixtures.dxf}: 25 entities`)) && !log.some((l) => /Failed to open|Unknown file path/.test(l)), `RECENT ${idx} reopened by path: ${log.filter((l) => /Open|Failed/.test(l)).join(' | ')}`);
   check((await messages()).length === 0, 'no dialog was shown for RECENT');
+  check(!log.some((l) => /in a new tab|in the tab it was opened from/.test(l)) && (await win.evaluate((p) => window.editor.doc.filePath === p, fixtures.dxf)), 'RECENT opened the file straight into its own, active tab');
 
   // ------------------------------------------------------------------ PLOT through plot-pdf
   step = 'PLOT';
@@ -642,22 +646,56 @@ try {
     () => bad('Retry did not read the recovery folder again'),
   );
 
-  // The close handshake: the renderer answers flush-autosave once no autosave is being written.
-  step = 'flush';
-  const flushed = await app.evaluate(({ BrowserWindow, ipcMain }) => new Promise((resolve) => {
-    const w = BrowserWindow.getAllWindows()[0];
-    const token = 'e2e-flush';
-    const on = (_ev, t) => {
-      if (t !== token) return;
-      ipcMain.removeListener('autosave-flushed', on);
-      resolve(true);
-    };
-    ipcMain.on('autosave-flushed', on);
-    w.webContents.send('flush-autosave', token);
-    setTimeout(() => resolve(false), 5000);
-  }));
-  check(flushed === true, 'the renderer answers the flush-autosave request');
   rmSync(saveDir, { recursive: true, force: true });
+  // ------------------------------------------------------------------ project: paths, Save As, dirty flag
+  step = 'project';
+  const projDir = mkdtempSync(join(tmpdir(), 'jcad-e2e-proj-'));
+  mkdirSync(join(projDir, 'proj', 'dwg'), { recursive: true });
+  mkdirSync(join(projDir, 'archive'), { recursive: true });
+  writeFileSync(join(projDir, 'proj', 'dwg', 'a.dxf'), readFileSync(fixtures.dxf));
+  writeFileSync(join(projDir, 'proj', 'b.dxf'), readFileSync(fixtures.dxf));
+  const projFile = join(projDir, 'proj', 'line.jcadproj.json');
+  // Entries as a project written on Windows ("dwg\a.dxf") and with a "." segment: main.cjs registers them
+  // and the renderer resolves them (src/app/paths.ts) to the same paths.
+  writeFileSync(projFile, JSON.stringify({ name: 'E2E Line', drawings: [{ file: 'dwg\\a.dxf' }, { file: './b.dxf' }] }));
+  await app.evaluate((_e, p) => globalThis.__e2e.openPaths.push(p), projFile);
+  h = await historyLen();
+  await win.evaluate(() => window.editor.runCommand('OPENPROJECT'));
+  await waitLog(/^(Project E2E Line|Failed to open project)/, h).catch(() => bad('no project open result logged'));
+  check(await win.evaluate(() => window.editor.project.name === 'E2E Line' && window.editor.project.drawings.length === 2 && !window.editor.projectDirty), 'OPENPROJECT loaded the project, unmodified');
+  for (const i of [0, 1]) {
+    h = await historyLen();
+    await win.locator(`.project-tree [data-index="${i}"]`).dispatchEvent('dblclick');
+    await waitLog(/^(Opened|Failed to open)/, h, 15_000).catch(() => bad(`project drawing ${i} did not open`));
+    log = await logSince(h);
+    const line = log.find((l) => /^(Opened|Failed)/.test(l)) ?? '';
+    const want = i === 0 ? join(projDir, 'proj', 'dwg', 'a.dxf') : join(projDir, 'proj', 'b.dxf');
+    check(line.startsWith(`Opened ${want}:`), `project drawing ${i} opened by its resolved path: ${line}`);
+  }
+  // A project change marks the project modified; Save As into another folder keeps the entries pointing at the same files.
+  await win.evaluate(() => window.editor.updateProject({ ...window.editor.project, descriptions: ['E2E CUSTOMER'] }));
+  check(await win.evaluate(() => window.editor.projectDirty), 'a project property change marks the project modified');
+  const projectCopy = join(projDir, 'archive', 'line2.jcadproj.json');
+  await app.evaluate((_e, p) => globalThis.__e2e.savePaths.push(p), projectCopy);
+  h = await historyLen();
+  await win.evaluate(() => window.editor.runCommand('PROJECTSAVEAS'));
+  await waitLog(/^(Project saved|Project not saved)/, h).catch(() => bad('PROJECTSAVEAS logged nothing'));
+  check((await messages()).includes('save:Save Project As'), 'PROJECTSAVEAS asked where to save');
+  const savedProject = existsSync(projectCopy) ? JSON.parse(readFileSync(projectCopy, 'utf8')) : null;
+  check(JSON.stringify(savedProject?.drawings.map((d) => d.file)) === JSON.stringify(['../proj/dwg/a.dxf', '../proj/b.dxf']), `relative paths recalculated for the new folder: ${JSON.stringify(savedProject?.drawings)}`);
+  check(await win.evaluate((p) => window.editor.project.path === p && !window.editor.projectDirty, projectCopy), 'the project now lives at the new path, unmodified');
+  // Opening another project while this one has unsaved changes asks first; Cancel keeps it.
+  await win.evaluate(() => window.editor.updateProject({ ...window.editor.project, description: 'pending' }));
+  await win.evaluate(() => window.editor.runCommand('OPENPROJECT'));
+  const ask = win.locator('.modal', { hasText: 'Save changes to project E2E Line?' });
+  await ask.waitFor({ timeout: 10_000 }).then(
+    () => ok('OPENPROJECT with a modified project asks Save / Don\'t Save / Cancel'),
+    () => bad('no save-changes question before opening another project'),
+  );
+  await ask.locator('button', { hasText: 'Cancel' }).click();
+  await win.waitForTimeout(200);
+  check((await messages()).every((m) => m !== 'open:Open Project'), 'Cancel: no Open dialog was shown');
+  check(await win.evaluate(() => window.editor.project.description === 'pending' && window.editor.projectDirty), 'Cancel: the modified project stays open');
 
   // ------------------------------------------------------------------ errors so far
   step = 'renderer errors';
@@ -665,17 +703,70 @@ try {
   const unknown = (await win.evaluate(() => window.editor.history)).filter((l) => /Unknown command|TypeError|ReferenceError/.test(l));
   check(unknown.length === 0, `command history is clean${unknown.length ? `: ${unknown.join(' | ')}` : ''}`);
 
-  // ------------------------------------------------------------------ close with unsaved work
+  // ------------------------------------------------------------------ close: Save All workflow
   step = 'close';
-  check(await win.evaluate(() => window.editor.sessions.anyDirty()), 'the drawing has unsaved changes (LINE)');
-  const closed = app.waitForEvent('close', { timeout: 20_000 }).then(
+  await win.evaluate(() => window.editor.updateProject({ ...window.editor.project, description: 'unsaved e2e change' }));
+  const unsaved = await win.evaluate(() => ({ drawings: window.editor.sessions.all.filter((s) => s.dirty).length, project: window.editor.projectDirty }));
+  check(unsaved.drawings >= 2 && unsaved.project, `unsaved work before closing: ${unsaved.drawings} modified tab(s) (LINE drawing, Symbol Builder ...), project modified ${unsaved.project}`);
+  const windowCount = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length);
+  const requestWindowClose = () => app.evaluate(({ BrowserWindow }) => void BrowserWindow.getAllWindows()[0].close());
+  const saveAll = win.locator('.modal', { hasText: 'Save them before closing' });
+  await messages();
+  await requestWindowClose();
+  await saveAll.waitFor({ timeout: 10_000 });
+  const listed = await saveAll.locator('.save-all-row').allTextContents();
+  check(listed.some((t) => /Drawing1\.dxf/.test(t)) && listed.some((t) => /Symbol/.test(t)) && listed.some((t) => /E2E Line.*Project/.test(t)), `one Save All dialog lists the drawings, the symbol tab and the project: ${listed.map((t) => t.trim()).join(' | ')}`);
+  // The main process waits for the renderer's answer: longer than its "not responding" fallback, no close.
+  await win.waitForTimeout(6000);
+  const waited = await messages();
+  check((await windowCount()) === 1 && !waited.some((m) => m.startsWith('boxsync:')), `the window stays open while the dialog waits (no premature close, no native fallback)${waited.length ? `: ${waited.join(' ; ')}` : ''}`);
+  await saveAll.locator('button', { hasText: 'Cancel' }).click();
+  await win.waitForTimeout(300);
+  check((await windowCount()) === 1, 'Cancel keeps the window open');
+
+  // Only Drawing1 ticked and its Save As dialog cancelled: the close is aborted and the failure named.
+  const tickOnly = async (keep) => {
+    const rows = saveAll.locator('.save-all-row');
+    for (let i = 0; i < (await rows.count()); i += 1) {
+      const title = (await rows.nth(i).locator('b').textContent()) ?? '';
+      const box = rows.nth(i).locator('input[type=checkbox]');
+      if (keep.includes(title)) await box.check();
+      else await box.uncheck();
+    }
+  };
+  await requestWindowClose();
+  await saveAll.waitFor({ timeout: 10_000 });
+  await tickOnly(['Drawing1.dxf']);
+  check((await saveAll.locator('.btn.primary').textContent()) === 'Save Selected', 'unticking items turns Save All into Save Selected');
+  await saveAll.locator('.btn.primary').click();
+  const failed = win.locator('.modal', { hasText: 'could not be saved' });
+  await failed.waitFor({ timeout: 10_000 }).then(
+    async () => ok(`a failed save aborts the close: "${(await failed.locator('.modal-body p').first().textContent())?.trim()}"`),
+    () => bad('no Save Failed dialog after the cancelled Save As'),
+  );
+  check(/Drawing1\.dxf/.test((await failed.textContent()) ?? ''), 'the error names the drawing');
+  await failed.locator('button', { hasText: 'OK' }).click();
+  await win.waitForTimeout(300);
+  check((await windowCount()) === 1, 'the window is still open after the failed save');
+  check((await messages()).includes('save:Save Drawing As'), 'the Save As dialog was requested for the untitled drawing');
+
+  // Drawing1 and the project saved (in that order, each awaited), everything else discarded: the window closes.
+  const savedDrawing = join(outDir, 'closed-drawing1.dxf');
+  await app.evaluate((_e, p) => globalThis.__e2e.savePaths.push(p), savedDrawing);
+  const closed = app.waitForEvent('close', { timeout: 30_000 }).then(
     () => true,
     () => false,
   );
-  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close());
+  await requestWindowClose();
+  await saveAll.waitFor({ timeout: 10_000 });
+  await tickOnly(['Drawing1.dxf', 'E2E Line']);
+  await saveAll.locator('.btn.primary').click();
   const didClose = await closed;
-  const closeMsgs = didClose ? [] : await messages();
-  check(didClose, `window closed after the unsaved-changes prompt ("Don't Save")${closeMsgs.length ? ` ${closeMsgs.join(' ; ')}` : ''}`);
+  check(didClose, 'the window closed after Save Selected');
+  check(existsSync(savedDrawing) && /\nLINE\r?\n/.test(readFileSync(savedDrawing, 'utf8')), `Drawing1 was written before the close (${savedDrawing})`);
+  const finalProject = existsSync(projectCopy) ? JSON.parse(readFileSync(projectCopy, 'utf8')) : null;
+  check(finalProject?.description === 'unsaved e2e change', `the project was saved to ${projectCopy} before the close`);
+  rmSync(projDir, { recursive: true, force: true });
 } catch (err) {
   bad(`unexpected: ${err && err.stack ? err.stack : err}`);
 } finally {

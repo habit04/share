@@ -14,7 +14,7 @@ import { writeDxf, readDxf } from '../src/io/dxf';
 import { SessionManager } from '../src/app/sessions';
 import type { Editor } from '../src/app/editor';
 import type { Project } from '../src/app/project';
-import { loadProjectSheets, commitSheets, runProjectXref, runProjectRetag, runProjectWireNumbers, runTitleBlocksAll, projectUi, plcDeviceBlock, buildPlcModules } from '../src/app/commands-electrical';
+import { loadProjectSheets, projectDocuments, commitSheets, runProjectXref, runProjectRetag, runProjectWireNumbers, runTitleBlocksAll, projectUi, plcDeviceBlock, buildPlcModules } from '../src/app/commands-electrical';
 import { newFromTemplate, SHEET_SIZES, TITLE_BLOCK } from '../src/electrical/templates';
 import { modulesFromRows, parsePlcIo } from '../src/electrical/plc-import';
 
@@ -91,6 +91,7 @@ beforeEach(() => {
     return { files: true, backup: opts.backupAvailable };
   };
   projectUi.showProblems = () => {};
+  projectUi.confirmNoBackup = async () => false; // Skip (the dialog's default)
 });
 afterEach(() => {
   delete g.window;
@@ -139,13 +140,27 @@ describe('project-wide command glue', () => {
     await runProjectXref(editor);
     expect(backups).toEqual(['/p/c.dxf']);
     expect(saved.has('/p/c.dxf')).toBe(false); // the user asked for a backup first: no copy, no rewrite
-    expect(logs.join('\n')).toMatch(/Not updated: c\.dxf \(The backup copy of "c\.dxf" could not be made: there is not enough free space/);
+    expect(logs.join('\n')).toMatch(/Not updated: c\.dxf \(backup failed: The backup copy of "c\.dxf" could not be made: there is not enough free space/);
     // Without the .bak option the file is written.
     projectUi.confirmFiles = async () => ({ files: true, backup: false });
     await runProjectXref(editor);
     expect(saved.has('/p/c.dxf')).toBe(true);
     expect(backups).toEqual(['/p/c.dxf']);
   });
+  it('a damaged (truncated) closed drawing is not rewritten, and reports use what was readable', async () => {
+    const { editor, saved, logs } = fakeEditor();
+    // The file ends without its end-of-file marker: OPEN would offer to recover it.
+    const full = (await editor.fileBridge!.openDrawing!('/p/c.dxf'))!;
+    saved.set('/p/c.dxf', (full as { text: string }).text.replace(/\r?\n0\r?\nEOF\s*$/, '\r\n'));
+    const { sheets, skipped } = await loadProjectSheets(editor);
+    expect(sheets.map((s) => s.name)).toEqual(['a.dxf', 'b.dxf']);
+    expect(skipped).toEqual([expect.stringMatching(/^c\.dxf \(damaged, not changed: .*end-of-file marker is missing.* OPEN it to recover/)]);
+    const docs = await projectDocuments(editor);
+    expect(docs.map((d) => d.name)).toEqual(['a.dxf', 'b.dxf', 'c.dxf']);
+    expect(docs[2]!.doc.snapshot.entities.length).toBeGreaterThan(0);
+    expect(logs.join('\n')).toMatch(/c\.dxf is damaged \(.*\); the report uses what was readable/);
+  });
+
   it('a cancelled confirmation changes nothing', async () => {
     const { editor, saved, logs } = fakeEditor();
     projectUi.confirmFiles = async () => null;
@@ -185,7 +200,7 @@ describe('project-wide command glue', () => {
     const { sheets } = await loadProjectSheets(editor, { files: false });
     const next = { ...sheets[0]!.doc.snapshot, entities: [] };
     const r = await commitSheets(editor, sheets, new Map([[0, { state: next, detail: 'x' }]]), 'T', 'I');
-    expect(r).toEqual({ open: 1, written: 0, failed: [] });
+    expect(r).toEqual({ open: 1, written: 0, failed: [], conflicts: [] });
     expect(confirms).toHaveLength(0);
     expect(editor.doc.entities).toHaveLength(0);
   });

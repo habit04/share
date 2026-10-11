@@ -1,4 +1,5 @@
 import { LANGUAGE_CODES, type LanguageSetting } from './i18n';
+import { samePath } from './paths';
 
 /** Persisted user settings (localStorage in the renderer). */
 export interface OsnapModes {
@@ -239,8 +240,9 @@ export function saveSettings(s: UserSettings): void {
   }
 }
 
+/** Most recent first; the same file under another spelling (case on Windows, "..", separators) is listed once. */
 export function pushRecent(list: string[], file: string, max = 9): string[] {
-  return [file, ...list.filter((f) => f !== file)].slice(0, max);
+  return [file, ...list.filter((f) => !samePath(f, file))].slice(0, max);
 }
 
 /** Format a coordinate pair for the status bar according to the unit settings. */

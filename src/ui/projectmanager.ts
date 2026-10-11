@@ -2,6 +2,7 @@ import type { Editor } from '../app/editor';
 import { icon } from './icons';
 import { esc } from './dom';
 import { baseName, resolveDrawingPath } from '../app/project';
+import { samePath, shortNames } from '../app/paths';
 import { showMenu, type MenuItem } from './menu';
 import { projectStatus, type SheetStatus } from '../electrical/project-tools';
 
@@ -13,6 +14,17 @@ export function sheetStatusText(st: SheetStatus | undefined): string {
   if (codes.length) parts.push(codes.slice(0, 4).join(' ') + (codes.length > 4 ? ' ...' : ''));
   if (st.xrefIssues !== undefined) parts.push(st.xrefIssues ? `xref: ${st.xrefIssues} issue(s)` : 'xref OK');
   return parts.join(' · ');
+}
+
+/** Status of the drawing at `path` from the last project-wide run (paths compared normalised). */
+export function statusForPath(path: string | null, fallbackName?: string): SheetStatus | undefined {
+  if (path) {
+    const direct = projectStatus.get(path);
+    if (direct) return direct;
+    for (const [k, v] of projectStatus) if (samePath(k, path)) return v;
+    return undefined;
+  }
+  return fallbackName ? projectStatus.get(fallbackName) : undefined;
 }
 
 /** Left-docked Project Manager palette (project tree + details pane). */
@@ -70,6 +82,7 @@ export class ProjectManager {
     this.el.append(strip, body);
 
     editor.on('file', () => this.render());
+    editor.on('project', () => this.render());
     editor.on('change', () => this.renderDetails());
     editor.on('selection', () => this.renderDetails());
     this.render();
@@ -87,15 +100,18 @@ export class ProjectManager {
     const name = this.editor.fileName();
     const project = this.editor.project;
     const current = this.editor.doc.filePath;
-    this.el.querySelector('.pm-project-name')!.textContent = project.name;
-    const rows: string[] = [`<div class="tree-node open"><span class="tree-twisty">▾</span>${icon('project')}<span>${esc(project.name)}</span></div>`];
+    this.el.querySelector('.pm-project-name')!.textContent = `${project.name}${this.editor.projectDirty ? '*' : ''}`;
+    const rows: string[] = [`<div class="tree-node open" title="${esc(project.path ?? 'Project not saved yet (PROJECTSAVE)')}${this.editor.projectDirty ? '\nModified: PROJECTSAVE writes the changes' : ''}"><span class="tree-twisty">▾</span>${icon('project')}<span>${esc(project.name)}${this.editor.projectDirty ? '*' : ''}</span></div>`];
     let currentListed = false;
+    // Drawings are told apart by full path: equal file names in different folders show their folder.
+    const resolvedAll = project.drawings.map((d) => resolveDrawingPath(project, d));
+    const labels = shortNames(resolvedAll);
     project.drawings.forEach((d, i) => {
-      const label = baseName(d.file);
-      const resolved = resolveDrawingPath(project, d);
-      const isCurrent = current !== null && (resolved === current || d.file === current);
+      const resolved = resolvedAll[i]!;
+      const label = labels[i] || baseName(d.file);
+      const isCurrent = samePath(resolved, current);
       if (isCurrent) currentListed = true;
-      const st = projectStatus.get(resolved) ?? projectStatus.get(label);
+      const st = statusForPath(resolved);
       const status = sheetStatusText(st);
       const warn = st?.xrefIssues ? ' style="color:#d08000"' : '';
       rows.push(
@@ -159,7 +175,7 @@ export class ProjectManager {
 
   private statusDetails(): string {
     const path = this.editor.doc.filePath;
-    const st = (path && projectStatus.get(path)) || projectStatus.get(this.editor.fileName());
+    const st = statusForPath(path, this.editor.fileName());
     if (!st) return '';
     const rows: string[] = [];
     if (st.inst.length) rows.push(`<div class="kv"><span>Installation</span><span>${esc(st.inst.join(', '))}</span></div>`);

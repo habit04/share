@@ -5,6 +5,9 @@ contextBridge.exposeInMainWorld('jcad', {
   openDrawing: (file) => ipcRenderer.invoke('open-drawing', file),
   openProject: (file) => ipcRenderer.invoke('open-project', file),
   saveText: (suggestName, text, filterName, ext) => ipcRenderer.invoke('save-text', suggestName, text, filterName, ext),
+  // Project Save As: pick the destination first (the renderer rebases relative paths), then write it.
+  chooseProjectPath: (suggestName) => ipcRenderer.invoke('choose-project-path', String(suggestName || '')),
+  saveProject: (file, text) => ipcRenderer.invoke('save-project', file, text),
   backupFile: (file) => ipcRenderer.invoke('backup-file', file),
   plotPdf: (dataUrl, suggestName, landscape, sheet) => ipcRenderer.invoke('plot-pdf', dataUrl, suggestName, landscape, sheet),
   printDrawing: (dataUrl, title, landscape, sheet) => ipcRenderer.invoke('print-drawing', dataUrl, title, landscape, sheet),
@@ -40,26 +43,21 @@ contextBridge.exposeInMainWorld('jcad', {
   onMenuCommand: (cb) => {
     ipcRenderer.on('menu-command', (_ev, cmd) => cb(String(cmd)));
   },
-  onQueryDirty: (cb) => {
-    ipcRenderer.on('query-dirty', () => {
-      let dirty = false;
+  /**
+   * Close / quit / restart: the main process sends 'close-request' and waits for the Save All
+   * workflow. The request is acknowledged at once (so a hung page can be told apart from a user
+   * who is still answering the dialog); the answer is true only when the window may close.
+   */
+  onCloseRequest: (cb) => {
+    ipcRenderer.on('close-request', async (_ev, id, context) => {
+      ipcRenderer.send('close-ack', id);
+      let ok = false;
       try {
-        dirty = Boolean(cb());
+        ok = (await cb(context === 'quit' || context === 'restart' ? context : 'close')) === true;
       } catch {
-        dirty = false;
+        ok = false;
       }
-      ipcRenderer.send('dirty-state', dirty);
-    });
-  },
-  /** Before the window closes the main process asks the renderer to finish an autosave in flight. */
-  onFlushAutosave: (cb) => {
-    ipcRenderer.on('flush-autosave', async (_ev, token) => {
-      try {
-        await cb();
-      } catch {
-        /* the close must not hang on an autosave error */
-      }
-      ipcRenderer.send('autosave-flushed', token);
+      ipcRenderer.send('close-response', id, ok);
     });
   },
   // Updates (GitHub Releases)

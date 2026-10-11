@@ -2,7 +2,6 @@ import type { Editor } from '../app/editor';
 import type { AutosaveEntry, AutosaveStore, Autosaver } from '../app/autosave';
 import { RecoveryActions } from '../app/recovery-actions';
 import { describeFileError } from '../app/file-errors';
-import { readDxf } from '../io/dxf';
 import { modal, button } from './dialogkit';
 import { icon } from './icons';
 import './icons-ui';
@@ -37,14 +36,17 @@ export async function recoveryDialog(editor: Editor, store: AutosaveStore, autos
   const actions = new RecoveryActions(entries, {
     read: (name) => store.read(name),
     remove: (name) => store.remove(name),
-    openRecovered: (e, text) => {
-      const state = readDxf(text);
+    openRecovered: async (e, text) => {
+      // Read like OPEN: a backup that ends early offers to open what was readable (marked as recovered).
+      const state = await editor.readDxfText(text, e.originalPath);
+      if (!state) throw new Error(`The backup of ${e.title} is damaged and was not opened.`);
       const idx = editor.sessions.add(state, e.originalPath, true);
       editor.zoomExtents();
       // The backup stays on disk (and keeps being refreshed) until this drawing is saved.
       const session = editor.sessions.all[idx];
       if (session) autosaver?.adopt(session.id, e.name);
       editor.log(`Recovered ${e.title} from autosave (${state.entities.length} entities). Use SAVE to keep it; the backup is kept until then.`);
+      editor.showImportReport(false);
     },
   });
   const discardAll = button('Discard All');

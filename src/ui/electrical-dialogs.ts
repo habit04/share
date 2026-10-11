@@ -32,6 +32,7 @@ import { findLibrarySymbol } from '../electrical/library';
 import { drawPreview } from '../render/draw';
 import { icon } from './icons';
 import { esc } from './dom';
+import { exportFailed } from '../app/file-error-text';
 
 // ---------------------------------------------------------------- helpers (same look as dialogs.ts)
 
@@ -941,7 +942,7 @@ export function auditDialog(editor: Editor, issues: AuditIssue[], onJump: (issue
   csv.addEventListener('click', () => {
     const r: Report = { title: 'Electrical Audit', columns: ['Severity', 'Check', 'Item', 'Detail'], rows: list.map((i) => [i.severity, i.check, i.item, i.detail]) };
     const text = reportToCsv(r);
-    const save = editor.fileBridge?.saveText?.('Electrical_Audit.csv', text, 'CSV', 'csv');
+    const save = editor.fileBridge?.saveText?.('Electrical_Audit.csv', text, 'CSV', 'csv').catch(exportFailed((t) => editor.log(t), 'Electrical_Audit.csv'));
     if (save) void save.then((p) => p && editor.log(`Audit saved: ${p}`));
   });
   const close = button('Close', true);
@@ -1109,7 +1110,7 @@ export function reportTableDialog(editor: Editor, r: Report, o: ReportTableOptio
   const csv = button('Save as CSV...');
   csv.addEventListener('click', () => {
     const name = `${r.title.replace(/[^A-Za-z0-9]+/g, '_')}.csv`;
-    const save = o.saveCsv ?? ((n: string, c: string) => editor.fileBridge?.saveText?.(n, c, 'CSV', 'csv') ?? Promise.resolve((browserDownloadText(n, c), n)));
+    const save = o.saveCsv ?? ((n: string, c: string) => editor.fileBridge?.saveText?.(n, c, 'CSV', 'csv').catch(exportFailed((t) => editor.log(t), n)) ?? Promise.resolve((browserDownloadText(n, c), n)));
     void save(name, reportToCsv(r)).then((p) => p && editor.log(`Saved: ${p}`));
   });
   m.footer.append(csv);

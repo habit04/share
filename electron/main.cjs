@@ -12,13 +12,20 @@ const DEV_URL = process.env.VITE_DEV_SERVER_URL;
 /** Paths the user chose through our own dialogs (persisted so Recent Documents keep working). */
 const knownPaths = new Set();
 /**
- * The same paths in Unicode NFC: macOS file systems hand out decomposed (NFD) names while
- * project files and typed names are usually NFC, so "José.dxf" must match either way.
+ * Identity key of a path, the twin of src/app/paths.ts pathKey: absolute only, "." / ".." and
+ * separators resolved, Unicode NFC (macOS hands out decomposed names while project files and
+ * typed names are usually composed, so "José.dxf" matches either way), case-folded on Windows.
+ * A relative path or one with a NUL byte has no key and is never "known".
  */
-const knownNormalized = new Set();
-const nfc = (p) => (typeof p === 'string' ? p.normalize('NFC') : p);
+function pathKey(p) {
+  if (typeof p !== 'string' || !p || p.length > 4096 || p.includes('\0') || !path.isAbsolute(p)) return null;
+  const k = path.resolve(p).normalize('NFC');
+  return process.platform === 'win32' ? k.toLowerCase() : k;
+}
+const knownKeys = new Set();
 function isKnownPath(p) {
-  return typeof p === 'string' && (knownPaths.has(p) || knownNormalized.has(nfc(p)));
+  const k = pathKey(p);
+  return k !== null && knownKeys.has(k);
 }
 let recentFiles = [];
 const stateDir = () => app.getPath('userData');
@@ -39,16 +46,20 @@ function loadPersistedPaths() {
   try {
     const parsed = JSON.parse(fsSync.readFileSync(recentFile(), 'utf8'));
     if (Array.isArray(parsed)) for (const p of parsed) if (typeof p === 'string') {
+      const k = pathKey(p);
+      if (k === null) continue;
       knownPaths.add(p);
-      knownNormalized.add(nfc(p));
+      knownKeys.add(k);
     }
   } catch {
     /* first run */
   }
 }
 function rememberPath(p) {
+  const k = pathKey(p);
+  if (k === null) return;
   knownPaths.add(p);
-  knownNormalized.add(nfc(p));
+  knownKeys.add(k);
   void writeStateFile(recentFile(), JSON.stringify([...knownPaths].slice(-200)), 'recent.json');
 }
 
@@ -201,71 +212,74 @@ let quittingForUpdate = false;
 require('electron').autoUpdater.on('before-quit-for-update', () => {
   quittingForUpdate = true;
 });
+/** app.quit() was requested (menu Quit, Cmd+Q, File > Exit): the close question says so, and macOS quits after the close. */
+let quitRequested = false;
+app.on('before-quit', () => {
+  quitRequested = true;
+});
+/** Windows whose unsaved work was dealt with (saved or discarded): their next close goes through. */
+const closeApproved = new WeakSet();
 
+let closeSeq = 0;
 /**
- * May the window close now? Resolves false when the user cancels or chooses Save (the
- * SAVE command runs and the user closes again afterwards). Also used before an update restart.
+ * Ask the renderer to run its Save All workflow (src/app/closeflow.ts) and wait for the answer:
+ * true = everything chosen was saved (or discarded), close now; false = cancelled or a save
+ * failed. There is no timeout while the renderer is alive (the user may take a while in the
+ * dialog); a renderer that crashed has nothing left to save, and one that does not acknowledge
+ * the request within a few seconds (hung) gets a native Close Without Saving / Cancel question.
  */
-function confirmClose(win) {
+function requestClose(win, context) {
   return new Promise((resolve) => {
-    if (win.isDestroyed() || win.webContents.isDestroyed()) return resolve(true);
+    if (!win || win.isDestroyed() || win.webContents.isDestroyed() || win.webContents.isCrashed()) return resolve(true);
+    const wc = win.webContents;
+    const id = (closeSeq += 1);
+    let acked = false;
     let settled = false;
+    let timer = null;
+    const cleanup = () => {
+      ipcMain.removeListener('close-ack', onAck);
+      ipcMain.removeListener('close-response', onResponse);
+      wc.removeListener('render-process-gone', onGone);
+      wc.removeListener('destroyed', onGone);
+      clearTimeout(timer);
+    };
     const finish = (v) => {
       if (settled) return;
       settled = true;
+      cleanup();
       resolve(v);
     };
-    const onState = (_ev, dirty) => {
-      if (!dirty) return finish(true);
+    const onAck = (ev, rid) => {
+      if (ev.sender === wc && rid === id) acked = true;
+    };
+    const onResponse = (ev, rid, ok) => {
+      if (ev.sender === wc && rid === id) finish(ok === true);
+    };
+    const onGone = () => finish(true);
+    ipcMain.on('close-ack', onAck);
+    ipcMain.on('close-response', onResponse);
+    wc.once('render-process-gone', onGone);
+    wc.once('destroyed', onGone);
+    wc.send('close-request', id, context);
+    timer = setTimeout(() => {
+      if (settled || acked) return;
       const r = dialog.showMessageBoxSync(win, {
         type: 'warning',
-        buttons: ['Save', "Don't Save", 'Cancel'],
-        defaultId: 0,
-        cancelId: 2,
-        message: 'Save changes to the drawing before closing?',
-        detail: 'Autosave copies of modified drawings are kept for the Drawing Recovery Manager.',
+        buttons: ['Close Without Saving', 'Cancel'],
+        defaultId: 1,
+        cancelId: 1,
+        message: 'JCad Electrical is not responding.',
+        detail: 'Unsaved changes cannot be saved now. Autosave copies of modified drawings stay available in the Drawing Recovery Manager.',
       });
-      if (r === 1) return finish(true);
-      if (r === 0) win.webContents.send('menu-command', 'SAVE');
-      finish(false);
-    };
-    ipcMain.once('dirty-state', onState);
-    win.webContents.send('query-dirty');
-    // If the renderer never answers (e.g. crashed), close anyway.
-    setTimeout(() => {
-      if (settled) return;
-      ipcMain.removeListener('dirty-state', onState);
-      finish(true);
-    }, 3000);
+      finish(r === 0);
+    }, 5000);
   });
 }
-
-/**
- * Let the renderer finish an autosave that is being written (src/app/autosave.ts Autosaver.flush)
- * before the window goes away. Resolves false when the renderer does not answer in time.
- */
-function flushRendererAutosave(win, timeoutMs = 4000) {
-  return new Promise((resolve) => {
-    if (win.isDestroyed() || win.webContents.isDestroyed() || win.webContents.isCrashed()) return resolve(false);
-    const token = `${Date.now()}-${Math.random()}`;
-    let timer = null;
-    const onDone = (ev, t) => {
-      if (ev.sender !== win.webContents || t !== token) return;
-      ipcMain.removeListener('autosave-flushed', onDone);
-      clearTimeout(timer);
-      resolve(true);
-    };
-    ipcMain.on('autosave-flushed', onDone);
-    timer = setTimeout(() => {
-      ipcMain.removeListener('autosave-flushed', onDone);
-      resolve(false);
-    }, timeoutMs);
-    win.webContents.send('flush-autosave', token);
-  });
-}
-updater.onConfirmRestart(async (win) => {
-  const ok = await confirmClose(win);
-  if (ok) await flushRendererAutosave(win);
+// Restart to install an update: the same Save All workflow first; the restart's own window close then goes through.
+updater.onConfirmRestart(async (w) => {
+  const win = w && !w.isDestroyed() ? w : mainWindow;
+  const ok = await requestClose(win, 'restart');
+  if (ok && win) closeApproved.add(win);
   return ok;
 });
 
@@ -295,17 +309,22 @@ async function createWindow() {
   buildMenu(win);
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', (e) => e.preventDefault());
-  // Ask the renderer whether there is unsaved work before closing.
-  let allowClose = false;
+  // Unsaved work: the renderer's Save All workflow decides; the close (and a quit) waits for it.
+  let pendingClose = null;
   win.on('close', (e) => {
-    if (allowClose || quittingForUpdate || win.webContents.isDestroyed()) return;
+    if (closeApproved.has(win) || quittingForUpdate || win.webContents.isDestroyed()) return;
     e.preventDefault();
-    void confirmClose(win).then(async (ok) => {
-      if (!ok) return;
-      // An autosave being written must finish first (it is a temp file until renamed).
-      await flushRendererAutosave(win);
-      allowClose = true;
-      if (!win.isDestroyed()) win.close();
+    if (pendingClose) return; // the dialog is already up
+    pendingClose = requestClose(win, quitRequested ? 'quit' : 'close').then((ok) => {
+      pendingClose = null;
+      if (!ok) {
+        quitRequested = false;
+        return;
+      }
+      const quit = quitRequested;
+      closeApproved.add(win);
+      win.close();
+      if (quit && process.platform === 'darwin') app.quit();
     });
   });
   if (DEV_URL) {
@@ -409,12 +428,23 @@ ipcMain.handle('open-project', async (ev, file) => {
     throw new Error('Not a valid project file');
   }
   rememberPath(file);
+  // The project's drawings (and its catalog file) become openable by path. Relative entries resolve
+  // against the project folder exactly like src/app/paths.ts resolveFromFile (backslashes written on
+  // Windows are separators here too); only drawing / JSON file types are registered.
   const dir = path.dirname(file);
+  const entryPath = (f) => {
+    if (typeof f !== 'string' || !f || f.includes('\0')) return null;
+    const p = process.platform === 'win32' ? f : f.replace(/\\/g, '/');
+    return path.isAbsolute(p) ? path.resolve(p) : path.resolve(dir, p);
+  };
   if (parsed && Array.isArray(parsed.drawings)) {
     for (const d of parsed.drawings) {
-      if (d && typeof d.file === 'string') rememberPath(path.isAbsolute(d.file) ? d.file : path.join(dir, d.file));
+      const p = d && entryPath(d.file);
+      if (p && /\.(dxf|dwg)$/i.test(p)) rememberPath(p);
     }
   }
+  const catalog = parsed && parsed.settings && entryPath(parsed.settings.catalogFile);
+  if (catalog && /\.json$/i.test(catalog)) rememberPath(catalog);
   return { path: file, text };
 });
 
@@ -434,6 +464,30 @@ ipcMain.handle('save-text', async (ev, suggestName, text, filterName, ext) => {
   await atomicWriteFile(res.filePath, text, { backup: isProject });
   rememberPath(res.filePath);
   return res.filePath;
+});
+
+/** Project Save As: ask where to save; the path becomes writable by save-project but nothing is written yet. */
+ipcMain.handle('choose-project-path', async (ev, suggestName) => {
+  const win = BrowserWindow.fromWebContents(ev.sender);
+  const res = await dialog.showSaveDialog(win, {
+    title: 'Save Project As',
+    defaultPath: String(suggestName || 'Project.jcadproj.json'),
+    filters: [{ name: 'JCad Electrical Project', extensions: ['json'] }],
+  });
+  if (res.canceled || !res.filePath) return null;
+  const file = /\.json$/i.test(res.filePath) ? res.filePath : `${res.filePath}.jcadproj.json`;
+  rememberPath(file);
+  return file;
+});
+
+/** Write the project file to a path that came from our own dialogs (Open Project / Save Project As / recent list). */
+ipcMain.handle('save-project', async (_ev, file, text) => {
+  if (typeof text !== 'string' || text.length > 64 * 1024 * 1024) throw new Error('Invalid project payload');
+  if (typeof file !== 'string' || !/\.json$/i.test(file) || !isKnownPath(file)) throw new Error('Unknown project path');
+  // Temporary file + fsync + rename, previous version kept as <name>.bak (electron/atomic-write.cjs).
+  await atomicWriteFile(file, text, { backup: true });
+  rememberPath(file);
+  return file;
 });
 
 /**
@@ -767,7 +821,9 @@ updater.onStatus((status) => {
 
 ipcMain.on('app-quit', (ev) => {
   const win = BrowserWindow.fromWebContents(ev.sender);
-  if (win) win.close();
+  if (!win) return;
+  quitRequested = true;
+  win.close();
 });
 
 // Headless probe used by packaging smoke tests:  jcad --probe-dwg <file.dwg>

@@ -19,6 +19,31 @@ messages). The date of each version is the date of the commit that set that vers
 
 ### Fixed
 
+- Project-wide commands (AEXREFPROJECT, AERETAGPROJECT, AEWIRENOPROJECT, AETITLEBLOCKALL) no
+  longer overwrite a drawing whose requested `.bak` copy failed: the drawing is skipped and listed,
+  unless you choose **Continue Without Backup** in a dialog that names the file.
+- Project-wide commands apply their changes only to the drawing revision they were calculated
+  from: a tab edited while the command ran, a closed drawing that changed on disk or was opened in
+  a tab meanwhile, or a file saved again in between is reported as a conflict and left alone.
+  Switching tabs while closed drawings load no longer mixes up the current drawing.
+- The project has its own modified flag (properties, drawing list, catalog file, report templates,
+  title block mapping), an autosave with **Project Recovery** at the next start, and
+  Save / Don't Save / Cancel before `OPENPROJECT`, the new `NEWPROJECT` and closing.
+- Closing the window, quitting and restarting for an update show one **Save Changes** dialog for
+  every modified drawing tab, Symbol Builder tab and the project (Save All / Discard All / Cancel,
+  per-item choice); items are saved one after another and a failure keeps the window open. The
+  main process waits for the answer instead of closing after three seconds, and Save no longer
+  saved only the active drawing. The drawing and project autosaves finish before the window closes.
+- File paths are normalised in one place (`src/app/paths.ts`): separators, `.` / `..`, Unicode,
+  case-insensitive comparison for Windows paths. Projects, tabs ("is this drawing already open"),
+  recent files and the main process's allowed-path list use it, and drawings with the same file
+  name in different folders are no longer confused (they show their folder, e.g. `a.dxf (line1)`).
+- `PROJECTSAVEAS` (new) into another folder recalculates relative drawing and catalog paths so they
+  still point at the same files; `PROJECTSAVE` writes to the project's own file without a dialog.
+- A slow open finishes in the tab that started it even if you switch tabs meanwhile (or opens in
+  a new tab if that tab was edited); `RECENT` no longer replaced the active drawing when the file
+  took a moment to load. Saves to the same file are queued, and an older save never overwrites a
+  newer one.
 - Saves are crash-safe: drawings (`SAVE`, `SAVEAS`, project-wide updates), projects and other
   exports, plotted PDFs, autosaves, the user symbol library, catalog packs, the recent list and the
   window state are written to a temporary file in the same folder, flushed to disk and renamed over
@@ -27,8 +52,7 @@ messages). The date of each version is the date of the commit that set that vers
   leave a truncated file as the only copy.
 - The project-wide `.bak` copy (`backup-file`) goes through the same temporary file + rename and
   reports `{ ok: false, error }` with a clear message when no complete copy could be made, instead
-  of failing silently; a closed drawing whose `.bak` copy failed is then left unchanged and listed
-  as not updated. Like `save-dxf`, it only accepts paths the main process handed out (its dialogs,
+  of failing silently (what happens to that drawing is described above). Like `save-dxf`, it only accepts paths the main process handed out (its dialogs,
   the recent list, an open project).
 - Autosave backups are named after a permanent per-document id instead of the drawing title and
   a session number that restarted every launch, so a new session can no longer overwrite a backup
@@ -46,18 +70,23 @@ messages). The date of each version is the date of the commit that set that vers
   action runs. An unreadable recovery folder shows an error with Retry instead of an empty list.
   `DRAWINGRECOVERY` (`DRM`) opens the manager at any time.
 - Save errors explain the cause (disk full, permission or read-only, locked file, folder or network
-  drive not available, path too long) and offer Retry, Save As... and Cancel; the drawing stays
-  modified and its autosave backup is kept when a save fails.
+  drive not available, path too long) for every save: drawings, the project, project-wide updates
+  and CSV / report exports are reported on the command line instead of being lost as an unhandled
+  error. `SAVE`, `SAVEAS`, `PROJECTSAVE` and `PROJECTSAVEAS` offer Retry, Save As... and Cancel; the
+  drawing or project stays modified and its autosave backup is kept when a save fails.
 - Opening a DXF or DWG file reports everything it could not bring in unchanged: an Import
   Report (counts per type, the first 50 objects with handle, layer, place and reason, Copy
-  Report; `IMPORTREPORT` shows it again) instead of silent loss. Saving over a source file that
+  Report; `IMPORTREPORT` shows it again) instead of silent loss, also when the drawing finished
+  opening in a background tab. Saving over a source file that
   held such content asks first and offers Save As.
 - Unknown DXF entities that can be kept safely (3D faces, and 3D solids / regions / bodies with
   inline data) stay in the drawing and are written back verbatim on their layer at the end of
   the entities on save, through undo and through project-wide rewrites.
 - Damaged DXF files are rejected with the line and the reason (non-numeric group codes,
   unbalanced SECTION / ENDSEC, content outside sections) instead of opening half-read; a file
-  that ends early offers to open what was readable and is marked as recovered. Objects with
+  that ends early offers to open what was readable and is marked as recovered. The same applies to
+  a backup opened from the Drawing Recovery Manager; project-wide reports read such a closed drawing
+  as far as it goes and say so on the command line, and project-wide updates leave it unchanged. Objects with
   NaN / infinite coordinates, negative radii or fewer than two polyline vertices are left out
   and listed instead of becoming geometry at the origin.
 - DXF layers with the Default lineweight (370 = -3) read as 0.25 mm instead of a negative width.
