@@ -9,6 +9,7 @@ import { readFileSync } from 'node:fs';
 import { SaveQueue, type QueuedResult } from '../src/app/savequeue';
 import { pathKey, setPathPlatform } from '../src/app/paths';
 import { Rng, fuzz, check, fuzzTimeout } from './helpers/fuzz';
+import { mainProcessSource, ipcHandlerSource } from './helpers/main-process';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -200,21 +201,18 @@ describe('save queue fuzzing regressions', () => {
     expect(wrote).toBe(true);
     expect(logs).toEqual([]);
   });
-  it('the main process writes one user file at a time, in arrival order (electron/main.cjs writeUserFile)', () => {
-    const src = readFileSync(new URL('../electron/main.cjs', import.meta.url), 'utf8');
+  it('the main process writes one user file at a time, in arrival order (electron/main writeUserFile)', () => {
+    // electron/main.cjs and the modules it wires (electron/main/*.cjs).
+    const src = mainProcessSource();
     expect(src).toMatch(/function writeUserFile\(file, data, opts\) \{\s*return enqueueWrite\(pathKey\(file\) \?\? file, \(\) => atomicWriteFile\(file, data, opts\)\);/);
-    const handler = (name: string) => {
-      const start = src.indexOf(`ipcMain.handle('${name}'`);
-      const next = src.indexOf('ipcMain.handle(', start + 10);
-      return src.slice(start, next < 0 ? undefined : next);
-    };
+    const handler = ipcHandlerSource;
     for (const name of ['save-dxf', 'save-project', 'save-text', 'save-pdf']) {
       expect(handler(name), name).toMatch(/await writeUserFile\(/);
       expect(handler(name), name).not.toMatch(/await atomicWriteFile\(/);
     }
   });
   it('Save As asks for the file first (choose-drawing-path) and writes nothing itself; the preload exposes it', () => {
-    const src = readFileSync(new URL('../electron/main.cjs', import.meta.url), 'utf8');
+    const src = mainProcessSource();
     const start = src.indexOf("ipcMain.handle('choose-drawing-path'");
     expect(start).toBeGreaterThan(0);
     const body = src.slice(start, src.indexOf('ipcMain.handle(', start + 10));

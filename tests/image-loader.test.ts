@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { imageCandidates, isAbsolutePath, dataUrlToBlob, bridgeImageLoader } from '../src/render/images';
+import { mainProcessSource } from './helpers/main-process';
 
 // IMAGE bitmaps in the desktop app: path resolution against the drawing folder, the
 // data-URL bridge (electron/main.cjs `read-image`) and the per-path bitmap cache.
@@ -74,7 +75,7 @@ describe('bridge image loader', () => {
 });
 
 describe('read-image IPC', () => {
-  const main = readFileSync('electron/main.cjs', 'utf8');
+  const main = mainProcessSource();
   const preload = readFileSync('electron/preload.cjs', 'utf8');
   it('is exposed through the preload bridge', () => {
     expect(preload).toContain("readImage: (file) => ipcRenderer.invoke('read-image', file)");

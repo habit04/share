@@ -10,6 +10,7 @@ import { newId, type TextEntity, type MTextEntity } from '../src/core/entities';
 import { autosaveName } from '../src/app/autosave';
 import { newDocumentId } from '../src/app/sessions';
 import { createRequire } from 'node:module';
+import { mainProcessSource } from './helpers/main-process';
 
 /** A minimal DXF (header + one TEXT) with the text value given as raw bytes. */
 function dxfBytes(acadver: string, codepage: string | null, textBytes: number[], opts: { bom?: boolean } = {}): Uint8Array {
@@ -115,7 +116,7 @@ describe('DXF code pages', () => {
 });
 
 describe('non-ASCII file names', () => {
-  const mainSource = readFileSync('electron/main.cjs', 'utf8');
+  const mainSource = mainProcessSource();
   const { safeAutosaveName } = createRequire(import.meta.url)('../electron/autosave-store.cjs') as { safeAutosaveName: (n: string) => string };
 
   it('autosave names come from the document id, not the title, and pass the main-process filter', () => {

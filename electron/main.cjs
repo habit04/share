@@ -1,13 +1,21 @@
+/**
+ * The Electron main process. It creates the IPC guard (electron/ipc-guard.cjs) and the path registry
+ * (electron/path-registry.cjs) - the only way IPC handlers are registered and paths are granted -
+ * and wires the modules under electron/main/ (module map: docs/DEVELOPMENT.md):
+ *
+ *   app-data.cjs      state files in the app-data folder, crash-safe user-file writes, error.log
+ */
 const { app, BrowserWindow, Menu, dialog, ipcMain: rawIpcMain, screen } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const fsSync = require('node:fs');
 const updater = require('./updater.cjs');
-const { atomicWriteFile, backupFile, createWriteQueue } = require('./atomic-write.cjs');
+const { atomicWriteFile, backupFile } = require('./atomic-write.cjs');
 const { createAutosaveStore, safeAutosaveName } = require('./autosave-store.cjs');
 const { guardIpc, appUrlTest, createRejectionLog, createPathPolicy, dxfImageNames, externalUrl } = require('./ipc-guard.cjs');
 const { createPathRegistry, pathKey } = require('./path-registry.cjs');
 const { createDwgHost, progressThreshold } = require('./dwg-host.cjs');
+const { stateDir, recentFile, windowStateFile, autosaveDir, enqueueWrite, writeStateFile, writeUserFile, installCrashLogging } = require('./main/app-data.cjs');
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL;
 
@@ -44,33 +52,7 @@ function senderWindow(/** @type {Electron.IpcMainInvokeEvent} */ ev) {
   return win;
 }
 
-// ------------------------------------------------------------------ persisted main-process state
 let recentFiles = [];
-const stateDir = () => app.getPath('userData');
-const recentFile = () => path.join(stateDir(), 'recent.json');
-const windowStateFile = () => path.join(stateDir(), 'window-state.json');
-const autosaveDir = () => path.join(stateDir(), 'autosave');
-/** Writes of the same app-data file (recent list, window state) run one at a time, in call order. */
-const enqueueWrite = createWriteQueue();
-/** Crash-safe write of a small app-data file; failures are logged, never shown (the app keeps working). */
-function writeStateFile(file, text, what) {
-  return enqueueWrite(file, async () => {
-    await fs.mkdir(path.dirname(file), { recursive: true });
-    await atomicWriteFile(file, text);
-  }).catch((err) => logMainError(what, err));
-}
-/**
- * Crash-safe write of a user file (drawing, project, export). Writes of one file run one at a time,
- * in the order the requests arrived, keyed by pathKey so "C:\Jobs\A.dxf" and "c:/jobs/a.DXF" share
- * a queue. The renderer orders the saves of one file by revision (src/app/savequeue.ts), but a
- * Save As (and a save whose path needed the dialog) only learns its file here: without this queue
- * a slower Save of the same file that started earlier could land after it and replace the newer
- * content while the drawing is shown as saved.
- */
-function writeUserFile(file, data, opts) {
-  return enqueueWrite(pathKey(file) ?? file, () => atomicWriteFile(file, data, opts));
-}
-
 function loadPersistedPaths() {
   try {
     registry.restore(fsSync.readFileSync(recentFile(), 'utf8'));
@@ -1078,20 +1060,7 @@ app.on('second-instance', (_ev, argv, workingDirectory) => {
 });
 
 // Main-process failures go to a log the user can send with a problem report.
-const errorLog = () => path.join(stateDir(), 'error.log');
-function logMainError(kind, err) {
-  const line = `[${new Date().toISOString()}] ${kind}: ${err && err.stack ? err.stack : String(err)}\n`;
-  try {
-    fsSync.mkdirSync(stateDir(), { recursive: true });
-    fsSync.appendFileSync(errorLog(), line);
-  } catch {
-    /* nothing else we can do */
-  }
-}
-process.on('uncaughtException', (err) => logMainError('uncaughtException', err));
-process.on('unhandledRejection', (err) => logMainError('unhandledRejection', err));
-app.on('render-process-gone', (_ev, _wc, details) => logMainError('render-process-gone', new Error(`${details.reason} (exit code ${details.exitCode})`)));
-app.on('child-process-gone', (_ev, details) => logMainError('child-process-gone', new Error(`${details.type} ${details.reason}`)));
+installCrashLogging();
 
 app.whenReady().then(() => {
   loadPersistedPaths();
