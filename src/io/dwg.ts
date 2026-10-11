@@ -37,7 +37,7 @@ import { DIMSTYLES_META_KEY, diffDimStyles } from '../core/dimension';
 import { findLinetype, type Linetype } from '../core/linetypes';
 import { paperFromSize, unitsOfHost, uniformMargins, newViewportId, type Layout, type LayoutViewport } from '../core/layouts';
 import { textStylesMeta, type TextStyle } from './encoding';
-import { ImportReportBuilder, geometryProblem, withImportData, type ImportReport } from './import-report';
+import { ImportReportBuilder, geometryProblem, reportBlockExpansion, withImportData, type ImportReport } from './import-report';
 import { findPattern, LoopBuilder, edgeArc, fitPatternToLines } from '../core/hatch';
 import { isValidNurbs, nurbsPoints, interpolateFitPoints } from '../core/spline';
 import { evaluateFields, hasFields } from '../core/fields';
@@ -1292,6 +1292,8 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
     for (const e of l.entities) ensure(e.layer);
     for (const v of l.viewports) ensure(v.layer);
   }
+  // Blocks that insert themselves or multiply into millions of objects (E-13).
+  reportBlockExpansion(report, blocks, [...entities, ...(layouts ?? []).flatMap((l) => l.entities)]);
 
   notes.push(...noteSet);
   for (const [type, n] of Object.entries(skipped)) notes.push(`${type}: ${n} object(s) of this type are not supported and were skipped.`);

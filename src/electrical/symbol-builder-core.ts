@@ -894,7 +894,7 @@ export function boundsOfEntities(entities: readonly Entity[], lookup: (name: str
 export function explodeAll(entities: readonly Entity[], lookup: (name: string) => BlockDef | undefined): Entity[] {
   const out: Entity[] = [];
   for (const e of entities) {
-    if (e.type === 'insert') out.push(...explodeInsert(e, lookup, 1).map(({ colorLayer: _display, ...x }) => ({ ...x, id: newId() }) as Entity));
+    if (e.type === 'insert') for (const { colorLayer: _display, ...x } of explodeInsert(e, lookup, 1)) out.push({ ...x, id: newId() } as Entity);
     else out.push({ ...e, id: newId() });
   }
   return out;

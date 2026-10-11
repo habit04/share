@@ -11,7 +11,7 @@ import type { Linetype } from '../../core/linetypes';
 // Track E: paper space (layouts, VIEWPORT entities, LAYOUT objects) lives in dxf-layouts.ts.
 import { LayoutReader } from '../dxf-layouts';
 import { decodeUnicodeEscapes, textStylesMeta, type TextStyle } from '../encoding';
-import { ImportReportBuilder, withImportData, type RawDxfEntity } from '../import-report';
+import { ImportReportBuilder, reportBlockExpansion, withImportData, type RawDxfEntity } from '../import-report';
 import { tokenize, objects, type Pair } from './groups';
 import type { ReadContext } from './read-core';
 import { readEntities } from './read-pass';
@@ -156,6 +156,8 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
     for (const e of l.entities) ensure(e.layer);
     for (const v of l.viewports) ensure(v.layer);
   }
+  // Blocks that insert themselves or multiply into millions of objects (E-13).
+  reportBlockExpansion(report, blocks, [...entities, ...(layouts ?? []).flatMap((l) => l.entities)]);
   const styleMeta = textStylesMeta(textStyles);
   return { entities, layers, blocks, currentLayer, header, ...(styleMeta ? { meta: styleMeta } : {}), ...(layouts ? { layouts } : {}) };
 }
