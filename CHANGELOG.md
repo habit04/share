@@ -13,6 +13,14 @@ messages). The date of each version is the date of the commit that set that vers
 
 ### Changed
 
+- Shipping installers disable Electron command-line inspection and reject debugging arguments.
+  Full packaged Playwright coverage uses a separate unpublished test ASAR; shipping installers
+  verify binary fuses and run bounded save/restart and preference-migration probes.
+- Release publication requires configured Windows publisher and Apple Developer ID/notarization
+  credentials. Empty-tag rehearsal builds can still run without them and report their actual status.
+- Performance gates measure first state acceptance, first geometry preparation and first render
+  before warmup, plus filesystem reads/parsing and all reports for a reproducible 20-sheet project.
+
 - Maintainability (reliability review item 26), with no change in behaviour: the three largest
   source files are split by responsibility, and every existing import keeps working through the
   original file. `src/io/dxf.ts` (2783 lines) re-exports the DXF reader and writer from
@@ -27,6 +35,17 @@ messages). The date of each version is the date of the commit that set that vers
   Editor to reach its private members (`notify` and the new `setHover` instead); tests keep the
   Drawing's undo history (also in `scripts/`, `e2e/` and `electron/`), the Editor's private members
   and Electron's own `ipcMain` behind their supported APIs.
+
+### Fixed
+
+- Geometry budgets now cover edits, history restoration, library changes and background project
+  tabs. Accepted snapshots are sealed before cache reuse; rejected changes preserve document and
+  history state. UI commands report budget refusals and API callers receive the error.
+- Spline work guards and tessellation share one integer sample plan, including fractional sampling
+  requests, so the guard counts the same work the sampler performs.
+- DXF and exposed DWG headers retain $AUNITS, $CELTSCALE and $TEXTSTYLE source values on export.
+- Font import warnings distinguish installed TrueType/OpenType rendering from SHX stroke-font
+  substitution and disclose the shared approximation used for bounds and text wrapping.
 
 ## [0.4.1] - 2026-10-11
 

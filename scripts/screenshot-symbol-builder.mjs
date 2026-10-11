@@ -50,7 +50,7 @@ async function run(viewport, suffix) {
   await page.evaluate(() => localStorage.removeItem('jcad.userlib.v1'));
 
   // 1. Start dialog, "Copy of a library symbol" with HPB11_NO found through the search box.
-  await page.evaluate(() => window.editor.runCommand('AESYMBUILDER'));
+  await page.evaluate(() => void window.editor.runCommand('AESYMBUILDER'));
   await page.waitForTimeout(250);
   const dialog = page.locator('.modal').first();
   await dialog.locator('input[name=sb-source][value=library]').check();
@@ -116,10 +116,10 @@ async function run(viewport, suffix) {
 
   if (suffix) {
     // Laptop size with the Properties palette docked as well: legend must stay clear of the ViewCube.
-    await page.evaluate(() => window.editor.runCommand('PROPERTIES'));
+    await page.evaluate(() => void window.editor.runCommand('PROPERTIES'));
     await page.waitForTimeout(200);
     await page.screenshot({ path: `screenshots/symbol-builder-04-both-palettes${suffix}.png` });
-    await page.evaluate(() => window.editor.runCommand('PROPERTIES'));
+    await page.evaluate(() => void window.editor.runCommand('PROPERTIES'));
     await page.waitForTimeout(100);
   }
 
@@ -148,7 +148,7 @@ async function run(viewport, suffix) {
   await page.evaluate(() => window.editor.switchSession(0));
   await page.waitForTimeout(200);
   if (!suffix) {
-    await page.evaluate(() => window.editor.runCommand('AECOMPONENT'));
+    await page.evaluate(() => void window.editor.runCommand('AECOMPONENT'));
     await page.waitForTimeout(300);
     const cats = page.locator('.iconmenu-cat');
     const n = await cats.count();

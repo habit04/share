@@ -112,7 +112,7 @@ app.on('console', (m) => { if (m.type() === 'error') console.error('CONSOLE', m.
 const shot = (name) => app.screenshot({ path: name });
 
 async function openFixture(name) {
-  const [chooser] = await Promise.all([app.waitForEvent('filechooser'), app.evaluate(() => window.editor.runCommand('OPEN'))]);
+  const [chooser] = await Promise.all([app.waitForEvent('filechooser'), app.evaluate(() => void window.editor.runCommand('OPEN'))]);
   await chooser.setFiles(join(process.cwd(), 'fixtures', name));
   await app.waitForFunction(() => window.editor.doc.entities.length > 0 || /Failed to open/.test(document.querySelector('#command-window')?.textContent ?? ''), null, { timeout: 90000 });
   return app.evaluate(() => window.editor.doc.entities.length);
@@ -179,7 +179,7 @@ if (withImages) {
   await app.waitForTimeout(150);
   await shot('site/img/schematic.png');
 
-  await app.evaluate(() => window.editor.runCommand('AECOMPONENT'));
+  await app.evaluate(() => void window.editor.runCommand('AECOMPONENT'));
   await app.waitForTimeout(300);
   await shot('site/img/icon-menu.png');
   await closeDialogs();
@@ -194,7 +194,7 @@ if (withImages) {
   await closeDialogs();
 
   // Symbol Builder: copy of HPB11_NO from the library, then the editing tab with the palette.
-  await app.evaluate(() => window.editor.runCommand('AESYMBUILDER'));
+  await app.evaluate(() => void window.editor.runCommand('AESYMBUILDER'));
   await app.waitForTimeout(250);
   const dialog = app.locator('.modal').first();
   await dialog.locator('input[name=sb-source][value=library]').check();
@@ -222,7 +222,7 @@ if (withImages) {
   await app.waitForTimeout(250);
   await app.click('.modal .btn.primary >> nth=-1');
   await app.waitForTimeout(250);
-  await app.evaluate(() => window.editor.runCommand('AEPLC'));
+  await app.evaluate(() => void window.editor.runCommand('AEPLC'));
   await app.waitForTimeout(200);
   await app.click('.modal .btn.primary >> nth=-1');
   await app.waitForTimeout(100);

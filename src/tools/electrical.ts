@@ -153,12 +153,12 @@ export class LadderTool implements Tool {
   private ready = false;
   private unitScale = 1;
 
-  start(ctx: ToolContext): void {
+  start(ctx: ToolContext): Promise<void> {
     this.ready = false;
     this.unitScale = drawingUnitScale(ctx.doc);
     this.settings ??= ladderDefaultsFor(ctx.doc);
     ctx.prompt('Insert Ladder...');
-    void ctx.ui.ladderSettings(this.settings).then((s) => {
+    return ctx.ui.ladderSettings(this.settings).then((s) => {
       if (!s) {
         ctx.finish();
         return;
@@ -308,12 +308,12 @@ export class ComponentTool implements Tool {
     private parentId?: string,
   ) {}
 
-  start(ctx: ToolContext): void {
+  start(ctx: ToolContext): Promise<void> {
     ctx.doc.ensureBlocks(LIBRARY_BLOCKS);
     this.unitScale = drawingUnitScale(ctx.doc);
     ctx.prompt('Select a symbol from the icon menu...');
     const choose: Promise<SymbolPick | string | null> = this.preset ? Promise.resolve(this.preset) : ctx.ui.pickSymbol();
-    void choose.then((picked) => {
+    return choose.then((picked) => {
       const pick = symbolPick(picked);
       const r = pick ? resolveSymbolPick(ctx.doc, pick) : null;
       if (!pick || !r) {
@@ -368,7 +368,7 @@ export class ComponentTool implements Tool {
     ctx.setDynText([wire ? 'On wire' : fmt(pos)]);
   }
 
-  onPoint(p: Point, ctx: ToolContext): void {
+  onPoint(p: Point, ctx: ToolContext): void | Promise<void> {
     if (!this.block) return;
     const block = this.definition(ctx);
     if (!block) return;
@@ -397,15 +397,14 @@ export class ComponentTool implements Tool {
       // Terminals: number them with the plain text prompt (next free number of the strip).
       const nums = ctx.doc.entities.filter((e) => e.type === 'insert' && e.attributes.TERM01).map((e) => parseInt((e as InsertEntity).attributes.TERM01!, 10)).filter(Number.isFinite);
       const next = String((nums.length ? Math.max(...nums) : 0) + 1);
-      void ctx.ui.textInput('Terminal', 'Terminal number', next).then((v) => {
+      return ctx.ui.textInput('Terminal', 'Terminal number', next).then((v) => {
         if (v !== null) place({ ...init.attrs, TERM01: v.trim() });
         ctx.finish();
       });
-      return;
     }
     const eui = this.eui?.();
     if (eui) {
-      void eui.editComponent(init).then((r) => {
+      return eui.editComponent(init).then((r) => {
         if (r) {
           const pid = r.parentId ?? this.parentId;
           const parent = pid ? ctx.doc.entities.find((e): e is InsertEntity => e.id === pid) : undefined;
@@ -413,9 +412,8 @@ export class ComponentTool implements Tool {
         }
         ctx.finish();
       });
-      return;
     }
-    void ctx.ui.editComponent({ tag: init.attrs.TAG1 ?? '', desc: '', block: this.block }).then((r) => {
+    return ctx.ui.editComponent({ tag: init.attrs.TAG1 ?? '', desc: '', block: this.block }).then((r) => {
       if (r) place(componentAttributes({ ...init.attrs, TAG1: r.tag, DESC1: r.desc, MFG: r.mfg, CAT: r.cat }));
       ctx.finish();
     });

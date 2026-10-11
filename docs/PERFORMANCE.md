@@ -9,7 +9,8 @@ change, and what is still slow.
 | --- | --- | --- |
 | `npm test` (`tests/perf.test.ts`) | Node (vitest), every CI run | Extents, selection, pick, snap, DXF write / read on a 6,500-entity schematic, with budgets about 3x the development machine (`JCAD_PERF_FACTOR` scales them). |
 | `npm run bench:node` (`tests/perf-dense.test.ts`, `JCAD_BENCH=1`) | Node, a separate CI step (alone, so it neither disturbs nor is disturbed by other tests) | A **dense drawing of 50,000 entities** (38,000 wires, 8,000 symbol inserts, 4,000 labels on a 200 x 150 sheet): spatial-index build and rebuild, pick, window / crossing / fence / polygon selection and object snap, each **with the index off (linear scan) and on**; and a **project of 20 drawings** (3,900 entities and 600 tagged components each, read from DXF text) running all twelve project-wide reports. Budgets: a frame (16 ms) for pick, snap and window / crossing selection. |
-| `npm run build && npm run bench` (`scripts/bench.mjs`) | Headless Chromium on the built renderer; CI `ui` and release checks assert budgets with `JCAD_BENCH_ASSERT=1`; JSON in the artifact | The same 50,000-entity drawing in the real editor: `loadState` + ZOOM E, warm redraw at extents and zoomed in (with a 1-pixel read-back), hover (`Editor.onMouseMove`: rollover pick + overlay) and a window-selection drag (`onMouseDown / Move / Up`). |
+| `npm run build && npm run bench` (`scripts/bench.mjs`) | Headless Chromium on the built renderer; CI `ui` and release checks assert budgets with `JCAD_BENCH_ASSERT=1`; JSON in the artifact | The same 50,000-entity drawing in the real editor: first state acceptance, first extents/geometry construction and first render before idle warmup, then warmed load/ZOOM E, redraw, hover and selection. Cold render includes a 1-pixel read-back. These phases exclude file I/O and parsing. |
+| `npm run bench:project` (`scripts/bench-project.mjs`) | Node, CI and release checks | Writes 20 synthetic DXF sheets to temporary files, reads them through the normal project path, measures disk reads separately from parsing/state preparation, and runs all twelve reports. JSON records workload, bytes and per-report timings. Newly written files can be in the OS cache; this does not measure a physical cold disk. |
 | `tests/spatial-index.test.ts` | every `npm test` | Correctness: the index gives exactly the linear scan's results (same entities, order and tie-breaks) for pick, all selection modes and snapping, including stray far-away objects, construction lines, hidden and locked layers, and a redefined block. |
 | `tests/spatial-index-random.test.ts` | every `npm test` | Property-style check on a randomized drawing of 2,000 mixed entities (lines, circles, arcs, text, polylines, inserts; hidden and locked layers): 200 random queries of every kind agree with the linear scan, and keep agreeing after replace, add, remove, undo, redo, a block redefinition and a layout switch. |
 
@@ -23,12 +24,27 @@ Both the normal CI and release checks run the dense Node benchmark and the brows
 Browser budgets in `scripts/bench-budgets.mjs`, in milliseconds before `JCAD_PERF_FACTOR`, are:
 load 500, warm render at extents 50, warm zoomed render 25, median hover 8, median window selection
 50. CI uses factor 2. Invalid measurements, a workload other than 50,000 entities, or a selection
-that selected nothing also fail. The cold draw and first geometry construction remain separate
-costs; these browser render budgets measure a warmed editor.
+that selected nothing also fail. First-use budgets are separately enforced: state acceptance
+2,000 ms, geometry construction 2,000 ms, first render 1,000 ms, and their complete first-view
+path 3,000 ms. The project filesystem benchmark requires 20 files, 21 loaded documents (including
+the active drawing), 12,000 component rows and consistent phase totals, with a 15,000 ms total
+budget. Both sets scale by `JCAD_PERF_FACTOR`; missing or invalid measurements fail.
 
 On 2026-10-11, Windows x64 / Chromium 154 measured: load 16.2 ms, warm render 5.6 ms at extents
 and 5.8 ms zoomed, median hover 0.1 ms, median selection 5.0 ms (1,693 entities). The asserted
 budgets passed. These local measurements do not replace the Linux CI browser/font baseline.
+
+After the edit-budget follow-up on the same date, Windows x64 / Chromium 154 measured first
+state acceptance 96.7 ms, first geometry 69.5 ms, first render 356.2 ms and complete first view
+522.7 ms. Warm load was 31.6 ms, renders 7.1 / 8.0 ms, hover 0.1 ms and selection 11.7 ms.
+The filesystem project benchmark read 15,861,240 bytes in 54.2 ms, spent 756.2 ms parsing and
+preparing states, and 2,553.4 ms on all reports: 3,363.7 ms total. All factor-1 budgets passed.
+These are local measurements with the workload and cache conditions described above.
+
+The eight dense Node checks include editing: the slowest measured single edit on 50,000 entities
+was 16.2 ms, and a settings-only change across 30 undo states took 0.3 ms. Immutable, already
+validated geometry can reuse budget calculations; new entities or block definitions are checked
+before acceptance. Rejected candidates leave the existing document/history intact.
 
 The viewport now caches the static drawing and redraws the cursor and overlay separately. The
 editor prepares large spatial indexes in idle slices capped at 50 ms. Component/report lookups

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, matchesGlob } from 'node:path';
 import yaml from 'js-yaml';
 import { createRequire } from 'node:module';
+import { assertFusePolicy, platformExecutables } from '../scripts/electron-fuse-policy.mjs';
 import { expectedInstallers, writeBuildProvenance, verifyReleaseProvenance, signingSummary } from '../scripts/release-provenance.mjs';
 const sha = 'a'.repeat(40);
 const require = createRequire(import.meta.url);
@@ -13,6 +14,7 @@ const { AppInfo } = require('app-builder-lib/out/appInfo.js');
 const { Platform } = require('app-builder-lib');
 const { Arch } = require('builder-util');
 const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+const shippingFuses = (platform: string) => platformExecutables(platform).map((path) => ({ path, policy:assertFusePolicy({ version:'1', 0:48, 2:48, 3:48, 4:49, 5:49, 7:48 }) }));
 const updateAssets: Record<string, string[]> = {
   Windows: ['latest.yml', 'jcad-electrical-0.4.1-win-x64.exe.blockmap'],
   macOS: ['latest-mac.yml', 'jcad-electrical-0.4.1-mac-arm64.dmg.blockmap', 'jcad-electrical-0.4.1-mac-x64.dmg.blockmap'],
@@ -25,7 +27,7 @@ async function prepared(run: (dir: string) => Promise<void>) {
       const out = join(dir, platform); mkdirSync(out);
       for (const name of expectedInstallers('0.4.1', platform)) writeFileSync(join(out, name), `installer ${name}`);
       for (const name of updateAssets[platform]!) writeFileSync(join(out, name), `update ${name}`);
-      await writeBuildProvenance(out, platform, '0.4.1', sha, platform === 'macOS' ? 'ad-hoc' : 'unsigned');
+      await writeBuildProvenance(out, platform, '0.4.1', sha, platform === 'macOS' ? 'ad-hoc' : 'unsigned', shippingFuses(platform));
     }
     await run(dir);
   } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -62,7 +64,7 @@ describe('release artifact provenance', () => {
         const metadata = yaml.load(readFileSync(join(out, feed), 'utf8')) as { version: string; files: { url: string }[] };
         expect(metadata.version).toBe(version);
         expect(metadata.files.map((file) => file.url).sort()).toEqual(expectedInstallers(version, platform).sort());
-        await writeBuildProvenance(out, platform, version, sha, platform === 'macOS' ? 'ad-hoc' : 'unsigned');
+        await writeBuildProvenance(out, platform, version, sha, platform === 'macOS' ? 'ad-hoc' : 'unsigned', shippingFuses(platform));
       }
       await expect(verifyReleaseProvenance(dir, version, sha)).resolves.toMatchObject({ version, sourceSha: sha });
     } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -86,7 +88,7 @@ describe('release artifact provenance', () => {
       const feed = updateAssets[entry.platform]!.find((name) => name.endsWith('.yml'))!;
       const installers = expectedInstallers('0.4.1', entry.platform);
       writeFileSync(join(out, feed), yaml.dump({ version: '0.4.1', files: installers.map((url) => ({ url, size: readFileSync(join(out, url)).length })), path: installers[0] }));
-      const record = await writeBuildProvenance(out, entry.platform, '0.4.1', sha, entry.platform === 'macOS' ? 'ad-hoc' : 'unsigned');
+      const record = await writeBuildProvenance(out, entry.platform, '0.4.1', sha, entry.platform === 'macOS' ? 'ad-hoc' : 'unsigned', shippingFuses(entry.platform));
       const patterns = entry.glob.trim().split(/\r?\n/).map((pattern) => pattern.trim());
       const uploaded = readdirSync(out).filter((name) => patterns.some((pattern) => matchesGlob(`release/${name}`, pattern)));
       const publicFiles = [...installers, ...updateAssets[entry.platform]!].sort();
@@ -104,7 +106,7 @@ describe('release artifact provenance', () => {
   it.each(Object.entries(updateAssets).flatMap(([platform, names]) => names.map((name) => [platform, name])))('requires %s update asset %s before recording or verifying', async (platform, name) => prepared(async (dir) => {
     const out = join(dir, platform!);
     rmSync(join(out, name!));
-    await expect(writeBuildProvenance(out, platform!, '0.4.1', sha, platform === 'macOS' ? 'ad-hoc' : 'unsigned')).rejects.toThrow(/missing .* update asset/);
+    await expect(writeBuildProvenance(out, platform!, '0.4.1', sha, platform === 'macOS' ? 'ad-hoc' : 'unsigned', shippingFuses(platform!))).rejects.toThrow(/missing .* update asset/);
     // Even a record deliberately edited to omit the missing output cannot claim a complete release.
     const manifest = join(out, `JCad-Electrical-${platform}-provenance.json`);
     const record = JSON.parse(readFileSync(manifest, 'utf8'));
@@ -130,5 +132,14 @@ describe('release artifact provenance', () => {
     record.artifacts.push({ ...record.artifacts[0], name: 'unexpected.deb' });
     writeFileSync(file, JSON.stringify(record));
     await expect(verifyReleaseProvenance(dir, '0.4.1', sha)).rejects.toThrow(/unexpected Linux installer/);
+  }));
+  it('rejects inspection-enabled or absent shipping fuse evidence in the aggregate', async () => prepared(async (dir) => {
+    const file = join(dir, 'Windows/JCad-Electrical-Windows-provenance.json');
+    const record = JSON.parse(readFileSync(file, 'utf8'));
+    record.executableFuses[0].policy.EnableNodeCliInspectArguments = true;
+    writeFileSync(file, JSON.stringify(record));
+    await expect(verifyReleaseProvenance(dir, '0.4.1', sha)).rejects.toThrow(/Unsafe or test-build fuse evidence/);
+    delete record.executableFuses; writeFileSync(file, JSON.stringify(record));
+    await expect(verifyReleaseProvenance(dir, '0.4.1', sha)).rejects.toThrow(/Missing shipping executable fuse evidence/);
   }));
 });

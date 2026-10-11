@@ -54,16 +54,17 @@ export function makeContext(ed: Editor, st: EditorInternals): ToolContext {
   };
 }
 
-export function startTool(ed: Editor, st: EditorInternals, tool: Tool): void {
+export function startTool(ed: Editor, st: EditorInternals, tool: Tool): void | Promise<void> {
   if (ed.tool) ed.tool.onCancel(makeContext(ed, st));
   clearOverlay(ed, st);
   ed.tool = tool;
   ed.toolName = tool.name;
   ed.lastCommand = tool.name;
-  tool.start(makeContext(ed, st));
+  const result = tool.start(makeContext(ed, st));
   updateCursorMode(ed, st);
   ed.notify('tool');
   ed.render();
+  return result;
 }
 
 export function finishTool(ed: Editor, st: EditorInternals): void {
@@ -127,7 +128,7 @@ export function updateCursorMode(ed: Editor, st: EditorInternals): void {
   st.overlay.cursorMode = st.selReq ? 'select' : ed.tool ? 'point' : 'idle';
 }
 
-export function runCommand(ed: Editor, input: string): void {
+export function runCommand(ed: Editor, input: string): void | Promise<void> {
   const text = input.trim();
   if (!text) return;
   const [name, ...rest] = text.split(/\s+/);
@@ -140,11 +141,12 @@ export function runCommand(ed: Editor, input: string): void {
   ed.lastCommand = def.name;
   ed.lastCommandLine = text;
   if (!def.startsTool) ed.log(`Command: ${def.name}`);
-  def.run(ed, rest.join(' ') || undefined);
+  const result = def.run(ed, rest.join(' ') || undefined);
   ed.notify('tool');
+  return result;
 }
 
-export function submitInput(ed: Editor, st: EditorInternals, raw: string): void {
+export function submitInput(ed: Editor, st: EditorInternals, raw: string): unknown {
   const text = raw.trim();
   if (text.length === 0) {
     ed.pressEnter();
@@ -164,41 +166,35 @@ export function submitInput(ed: Editor, st: EditorInternals, raw: string): void 
   }
   if (ed.tool) {
     if (ed.acceptsFreeText()) {
-      ed.tool.onText(raw, makeContext(ed, st));
-      return;
+      return ed.tool.onText(raw, makeContext(ed, st));
     }
     const p = ed.parsePoint(text);
     if (p) {
-      acceptPoint(ed, st, p);
-      return;
+      return acceptPoint(ed, st, p);
     }
     const num = parseFloat(text);
     if (ed.tool.acceptsDistance && isPlainNumber(text) && Number.isFinite(num) && st.overlay.trackFrom && st.cursorWorld) {
       // direct distance entry along the cursor direction
       const dir = constrainDirection(st.overlay.trackFrom, st.cursorWorld, ed.snap);
       const ang = g.angleOf(st.overlay.trackFrom, dir);
-      acceptPoint(ed, st, g.polar(st.overlay.trackFrom, ang, num));
-      return;
+      return acceptPoint(ed, st, g.polar(st.overlay.trackFrom, ang, num));
     }
-    ed.tool.onText(text, makeContext(ed, st));
-    return;
+    return ed.tool.onText(text, makeContext(ed, st));
   }
   ed.runCommand(text);
 }
 
-export function pressEnter(ed: Editor, st: EditorInternals): void {
+export function pressEnter(ed: Editor, st: EditorInternals): unknown {
   if (st.selReq) {
     const req = st.selReq;
     st.selReq = null;
     updateCursorMode(ed, st);
     const ids = [...req.ids];
     ed.setPrompt('');
-    req.onDone(ids);
-    return;
+    return req.onDone(ids);
   }
   if (ed.tool) {
-    ed.tool.onEnter(makeContext(ed, st));
-    return;
+    return ed.tool.onEnter(makeContext(ed, st));
   }
   if (ed.lastCommandLine) ed.runCommand(ed.lastCommandLine);
 }
@@ -207,11 +203,12 @@ export function parsePoint(ed: Editor, text: string): Point | null {
   return parsePointInput(text, ed.lastPoint ?? { x: 0, y: 0 });
 }
 
-export function acceptPoint(ed: Editor, st: EditorInternals, p: Point): void {
+export function acceptPoint(ed: Editor, st: EditorInternals, p: Point): unknown {
   ed.lastPoint = p;
   st.acquired = [];
   st.overlay.acquired = undefined;
   st.overlay.trackPaths = undefined;
-  ed.tool?.onPoint(p, makeContext(ed, st));
+  const result = ed.tool?.onPoint(p, makeContext(ed, st));
   ed.notify('tool');
+  return result;
 }

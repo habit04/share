@@ -52,7 +52,7 @@ export function resolveCursor(ed: Editor, st: EditorInternals, screen: Point): {
   return { world: p, snap: null };
 }
 
-export function onMouseMove(ed: Editor, st: EditorInternals, ev: MouseEvent): void {
+export function onMouseMove(ed: Editor, st: EditorInternals, ev: MouseEvent): unknown {
   const s = ed.screenFromEvent(ev);
   if (st.panning) {
     ed.viewport.panByPixels(s.x - st.lastMouse.x, s.y - st.lastMouse.y);
@@ -66,6 +66,7 @@ export function onMouseMove(ed: Editor, st: EditorInternals, ev: MouseEvent): vo
   st.cursorWorld = world;
   st.overlay.cursor = world;
   st.overlay.snap = snap;
+  let result: unknown;
 
   if (st.gripDrag) {
     const moved = applyGrip(st.gripDrag.entity, st.gripDrag.index, world);
@@ -81,7 +82,7 @@ export function onMouseMove(ed: Editor, st: EditorInternals, ev: MouseEvent): vo
       st.overlay.selectionBox = { a: st.dragWorld, b: raw, mode: s.x >= st.dragStart.x ? 'window' : 'crossing' };
     }
   } else if (ed.tool) {
-    ed.tool.onMove(world, makeContext(ed, st));
+    result = ed.tool.onMove(world, makeContext(ed, st));
   } else if (ed.layoutInput.hoverBlocked?.(s)) {
     st.overlay.hover = null;
   } else {
@@ -92,9 +93,10 @@ export function onMouseMove(ed: Editor, st: EditorInternals, ev: MouseEvent): vo
   }
   ed.render();
   ed.notify('view');
+  return result;
 }
 
-export function onMouseDown(ed: Editor, st: EditorInternals, ev: MouseEvent): void {
+export function onMouseDown(ed: Editor, st: EditorInternals, ev: MouseEvent): unknown {
   const s = ed.screenFromEvent(ev);
   st.lastMouse = s;
   if (ev.button === 1 || (ev.button === 0 && ed.tool instanceof PanTool && !st.selReq)) {
@@ -106,8 +108,7 @@ export function onMouseDown(ed: Editor, st: EditorInternals, ev: MouseEvent): vo
   if (!st.selReq && ed.layoutInput.mouseDown?.(s)) return;
   const { world } = resolveCursor(ed, st, s);
   if (ed.tool && !st.selReq) {
-    acceptPoint(ed, st, world);
-    return;
+    return acceptPoint(ed, st, world);
   }
   // Selection (default tool or selection request)
   const raw = ed.viewport.toWorld(s);
@@ -178,7 +179,7 @@ export function onMouseUp(ed: Editor, st: EditorInternals, ev: MouseEvent): void
   }
 }
 
-export function onDoubleClick(ed: Editor, ev: MouseEvent): void {
+export function onDoubleClick(ed: Editor, ev: MouseEvent): void | Promise<void> {
   if (ev.button === 1) {
     ed.zoomExtents();
     return;
@@ -190,7 +191,7 @@ export function onDoubleClick(ed: Editor, ev: MouseEvent): void {
   if (!hit) return;
   const ui = ed.ui ?? fallbackUi;
   if (hit.type === 'text') {
-    void ui.textInput('Edit Text', 'Contents', hit.text).then((v) => {
+    return ui.textInput('Edit Text', 'Contents', hit.text).then((v) => {
       if (v !== null && v !== hit.text) ed.doc.replaceEntities([{ ...hit, text: v }]);
     });
   } else if (hit.type === 'insert' && (hit.attributes.TAG1 !== undefined || hit.attributes.TERM01 !== undefined)) {
@@ -201,7 +202,7 @@ export function onDoubleClick(ed: Editor, ev: MouseEvent): void {
       ed.runCommand('AEEDITCOMPONENT');
       return;
     }
-    void ui
+    return ui
       .editComponent({ tag: hit.attributes.TAG1 ?? hit.attributes.TERM01 ?? '', desc: hit.attributes.DESC1 ?? '', block: hit.block, mfg: hit.attributes.MFG, cat: hit.attributes.CAT })
       .then((r) => {
         if (!r) return;

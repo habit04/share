@@ -6,6 +6,8 @@ import { mtextLayoutFull, type MTextEntity, type MTextAttachment, type MTextColu
 import { interpolateFitPoints, isValidNurbs, nurbsPoints, type NurbsCurve } from './spline';
 import { findPattern, loopPolygon, patternSegments, pointInLoops, worldPatternLines, type HatchLoop, type WorldPatternLine } from './hatch';
 import { tableGeometry, type TableEntity } from './table';
+import { isImmutableData } from './immutable-data';
+import { GeometryBudgetError } from './geometry-budget-error';
 
 export type { DimensionEntity, DimStyle, DimKind } from './dimension';
 export type { MTextEntity, MTextAttachment } from './mtext';
@@ -991,7 +993,8 @@ export function blockTransform(e: Entity, tf: (p: Point) => Point, rotation: num
 const workCache = new WeakMap<Entity, number>();
 /** Coordinate and text work copied or rendered by each instance of an immutable entity. */
 export function entityGeometryWork(entity: Entity): number {
-  const hit = workCache.get(entity);
+  const immutable = isImmutableData(entity);
+  const hit = immutable ? workCache.get(entity) : undefined;
   if (hit !== undefined) return hit;
   let work = 1;
   switch (entity.type) {
@@ -1029,7 +1032,7 @@ export function entityGeometryWork(entity: Entity): number {
       work += (entity.clip?.length ?? 0) + entity.path.length;
       break;
   }
-  workCache.set(entity, work);
+  if (immutable) workCache.set(entity, work);
   return work;
 }
 
@@ -1051,10 +1054,10 @@ export function collectBlockDependencies(name: string, lookup: BlockLookup, deps
     for (const attribute of block.attributes) examined += 1 + attribute.default.length;
     for (const entity of block.entities) {
       examined += entityGeometryWork(entity);
-      if (examined > MAX_BLOCK_EXPANSION_WORK) throw new Error('Block definitions exceed the safe geometry budget.');
+      if (examined > MAX_BLOCK_EXPANSION_WORK) throw new GeometryBudgetError('Block definitions exceed the safe geometry budget.');
       if (entity.type === 'insert') pending.push({ name: entity.block, depth: current.depth + 1 });
     }
-    if (examined > MAX_BLOCK_EXPANSION_WORK) throw new Error('Block definitions exceed the safe geometry budget.');
+    if (examined > MAX_BLOCK_EXPANSION_WORK) throw new GeometryBudgetError('Block definitions exceed the safe geometry budget.');
   }
   return deps;
 }
@@ -1063,7 +1066,7 @@ export const MAX_BLOCK_EXPANSION_WORK = 100_000;
 interface ExpansionBudget { remaining: number }
 function spendExpansion(budget: ExpansionBudget, work = 1): void {
   budget.remaining -= work;
-  if (budget.remaining < 0) throw new Error('Block expansion exceeds the safe geometry budget.');
+  if (budget.remaining < 0) throw new GeometryBudgetError('Block expansion exceeds the safe geometry budget.');
 }
 
 interface InsertCache {
@@ -1072,24 +1075,25 @@ interface InsertCache {
   exploded: Entity[];
   bounds: Bounds | null;
 }
-/** Entities are immutable, so an insert's exploded geometry can be cached by identity. */
+/** Only accepted immutable inserts and definitions qualify for identity caching. */
 const insertCache = new WeakMap<InsertEntity, InsertCache>();
 
 function cachedInsert(ins: InsertEntity, lookup: BlockLookup): InsertCache | null {
   const block = lookup(ins.block);
   if (!block) return null;
-  const hit = insertCache.get(ins);
+  const immutable = isImmutableData(ins);
+  const hit = immutable ? insertCache.get(ins) : undefined;
   if (hit && hit.block === block && [...hit.dependencies].every(([name, definition]) => lookup(name) === definition)) return hit;
   const dependencies = collectBlockDependencies(ins.block, lookup);
   const exploded = explodeInsertUncached(ins, lookup, 0, { remaining: MAX_BLOCK_EXPANSION_WORK - entityGeometryWork(ins) });
   let bounds: Bounds | null = null;
   for (const sub of exploded) bounds = g.unionBounds(bounds, entityBounds(sub, lookup));
   const entry = { block, dependencies, exploded, bounds: bounds ?? g.boundsOfPoints([ins.position]) };
-  insertCache.set(ins, entry);
+  if (immutable && [...dependencies.values()].every((definition) => !definition || isImmutableData(definition))) insertCache.set(ins, entry);
   return entry;
 }
 
-/** Expand an insert into world-space entities (recursively). Cached per insert. */
+/** Expand an insert into world-space entities (recursively). Immutable inputs are cached. */
 export function explodeInsert(ins: InsertEntity, lookup: BlockLookup, depth = 0): Entity[] {
   if (depth === 0) return cachedInsert(ins, lookup)?.exploded ?? [];
   return explodeInsertUncached(ins, lookup, depth, { remaining: MAX_BLOCK_EXPANSION_WORK - entityGeometryWork(ins) });

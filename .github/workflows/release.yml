@@ -16,6 +16,11 @@ on:
         description: 'Release tag to create (leave empty to only build artifacts)'
         required: false
         default: ''
+      require_signing:
+        description: 'Require Windows publisher signing and macOS Developer ID/notarization (fails if credentials are missing)'
+        type: boolean
+        required: false
+        default: false
   push:
     tags: ['v*']
 
@@ -62,6 +67,12 @@ jobs:
         run: npm run bench:node
         env:
           JCAD_PERF_FACTOR: 2
+      - name: Filesystem project read, parse and report profiling
+        run: npm run bench:project
+        env:
+          JCAD_BENCH_ASSERT: 1
+          JCAD_PERF_FACTOR: 2
+          JCAD_BENCH_OUT: screenshots/bench
       - run: node scripts/build-site.mjs
       - run: npm run ui-check
       - run: node e2e/run-screenshots.mjs
@@ -86,8 +97,49 @@ jobs:
             screenshots/diff/
           if-no-files-found: ignore
 
-  build:
+  # ASAR test build: only its inspection fuse and metadata differ from shipping.
+  # It remains unpublished and outside the release output/upload contract.
+  test-build:
     needs: checks
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.checks.outputs.sha }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+      - run: npm run dist:test
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Dedicated test-build Electron suite (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run e2e:test-build
+        env:
+          JCAD_E2E_OUT: test-build-output
+      - name: Dedicated test-build Electron suite (Windows, macOS)
+        if: runner.os != 'Linux'
+        run: npm run e2e:test-build
+        env:
+          JCAD_E2E_OUT: test-build-output
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-build-checks-${{ matrix.os }}
+          path: test-build-output/
+          if-no-files-found: warn
+
+  build:
+    needs: [checks, test-build]
     strategy:
       fail-fast: false
       matrix:
@@ -122,6 +174,9 @@ jobs:
               release/JCad-Electrical-*-provenance.json
     runs-on: ${{ matrix.os }}
     env:
+      # Publication always requires publisher identity. Unsigned/ad-hoc build-only rehearsals
+      # remain explicit; require_signing also makes a build-only run fail closed.
+      REQUIRE_PUBLISHER_SIGNING: ${{ startsWith(github.ref, 'refs/tags/v') || github.event.inputs.tag != '' || github.event.inputs.require_signing == 'true' }}
       # macOS Developer ID signing + notarization runs only when all five secrets exist (docs/CODE-SIGNING.md).
       # Secrets cannot be tested in a step's `if:`, so the job computes a flag the steps read from env.
       HAS_APPLE: ${{ secrets.CSC_LINK != '' && secrets.CSC_KEY_PASSWORD != '' && secrets.APPLE_ID != '' && secrets.APPLE_APP_SPECIFIC_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' }}
@@ -148,6 +203,15 @@ jobs:
             exit 1
           fi
       - run: npm run build
+      - name: Require macOS signing inputs when requested
+        if: runner.os == 'macOS'
+        run: node scripts/check-apple-signing.mjs
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       - name: Turn on Azure signing when its secrets are set
         id: signing
         if: runner.os == 'Windows'
@@ -194,12 +258,7 @@ jobs:
         # CSC_LINK certificate and notarizes (and staples) because APPLE_ID / _APP_SPECIFIC_PASSWORD / _TEAM_ID are set.
         shell: bash
         run: |
-          node -e "
-            const fs = require('fs');
-            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-            Object.assign(pkg.build.mac, { hardenedRuntime: true, gatekeeperAssess: false, entitlements: 'build/entitlements.mac.plist', entitlementsInherit: 'build/entitlements.mac.plist' });
-            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
-          "
+          node scripts/mac-signing-config.mjs
           npx electron-builder ${{ matrix.target }} --publish never
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
@@ -210,6 +269,8 @@ jobs:
       - name: Verify the macOS signature and notarization ticket
         if: ${{ runner.os == 'macOS' && env.HAS_APPLE == 'true' }}
         shell: bash
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -219,9 +280,18 @@ jobs:
             codesign --verify --deep --strict --verbose=2 "$app"
             signature="$(codesign -dv --verbose=4 "$app" 2>&1)"
             echo "$signature" | grep 'Authority=Developer ID Application'
+            echo "$signature" | grep -Fx "TeamIdentifier=$APPLE_TEAM_ID"
             echo "$signature" | grep -E 'flags=.*runtime'
             xcrun stapler validate "$app"
             spctl --assess --type execute --verbose=4 "$app"
+          done
+          images=(release/*.dmg)
+          if [ ${#images[@]} -eq 0 ]; then echo "No disk image under release/"; exit 1; fi
+          for image in "${images[@]}"; do
+            codesign --verify --strict --verbose=2 "$image"
+            signature="$(codesign -dv --verbose=4 "$image" 2>&1)"
+            echo "$signature" | grep 'Authority=Developer ID Application'
+            echo "$signature" | grep -Fx "TeamIdentifier=$APPLE_TEAM_ID"
           done
       - name: Verify the macOS ad-hoc seal after fuse changes
         if: ${{ runner.os == 'macOS' && env.HAS_APPLE != 'true' }}
@@ -322,11 +392,13 @@ jobs:
         run: xvfb-run -a node scripts/packaged-smoke.mjs installers
         env:
           JCAD_SMOKE_OUT: packaged-smoke-output
+          JCAD_SMOKE_REQUIRE_SHIPPING: 1
       - name: Packaged smoke test (Windows, macOS)
         if: runner.os != 'Linux'
         run: node scripts/packaged-smoke.mjs installers
         env:
           JCAD_SMOKE_OUT: packaged-smoke-output
+          JCAD_SMOKE_REQUIRE_SHIPPING: 1
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -336,7 +408,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '')
-    needs: [checks, build, packaged-smoke, verify-artifacts]
+    needs: [checks, test-build, build, packaged-smoke, verify-artifacts]
     runs-on: ubuntu-latest
     permissions:
       contents: write

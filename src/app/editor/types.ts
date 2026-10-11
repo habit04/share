@@ -19,7 +19,7 @@ export interface CommandDef {
   name: string;
   aliases: string[];
   description: string;
-  run: (editor: Editor, arg?: string) => void;
+  run: (editor: Editor, arg?: string) => void | Promise<void>;
   /** The command starts a Tool (which logs "Command: NAME" itself). */
   startsTool?: boolean;
 }

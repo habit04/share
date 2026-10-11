@@ -15,9 +15,18 @@
  *   handover.cjs      files handed over by the OS and by a second launch
  */
 const { app, BrowserWindow, ipcMain: rawIpcMain, protocol, net } = require('electron');
+const { rejectsProductionDebugging } = require('./inspection-policy.cjs');
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const fsSync = require('node:fs');
+const testBuild = JSON.parse(fsSync.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')).jcadTestBuild === true;
+const debugArgs = [...process.argv, ...['remote-debugging-port', 'remote-debugging-pipe'].filter((name) => app.commandLine.hasSwitch(name)).map((name) => `--${name}`)];
+if (rejectsProductionDebugging(app.isPackaged, testBuild, debugArgs)) {
+  process.stdout.write('SHIPPING_DEBUG_DISABLED\n');
+  app.exit(2);
+  // @ts-expect-error TS1108: CommonJS modules may return at the top level.
+  return;
+}
 const updater = require('./updater.cjs');
 const { guardIpc, appUrlTest, createRejectionLog, createPathPolicy } = require('./ipc-guard.cjs');
 const { createPathRegistry } = require('./path-registry.cjs');
@@ -30,13 +39,23 @@ const { registerPlotIpc } = require('./main/ipc-plot.cjs');
 const { registerStoreIpc } = require('./main/ipc-stores.cjs');
 const { registerUpdatesIpc } = require('./main/updates.cjs');
 const { createHandover } = require('./main/handover.cjs');
+const { runShippingProbe, shippingProbePhase } = require('./main/shipping-probe.cjs');
+let probePhase = null;
+try { probePhase = shippingProbePhase(process.argv); }
+catch (error) {
+  process.stdout.write(`SHIPPING_PROBE_FAIL ${error && error.message}\n`);
+  app.exit(2);
+  // @ts-expect-error TS1108: CommonJS modules may return at the top level.
+  return;
+}
+if (probePhase) setTimeout(() => { process.stdout.write('SHIPPING_PROBE_FAIL startup timed out\n'); app.exit(1); }, 60_000);
 
 const { MAX_DRAWING_BYTES, readLimitedFile } = require('./resource-limits.cjs');
 const { installAssetHandler, legacyStorage } = require('./renderer-origin.cjs');
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'jcad', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 
-const DEV_URL = process.env.VITE_DEV_SERVER_URL;
+const DEV_URL = require('./inspection-policy.cjs').developmentServerUrl(app.isPackaged, process.env.VITE_DEV_SERVER_URL);
 /** @type {Record<string, string> | null} */
 let rendererStorage = null;
 let startingMainWindow = true;
@@ -87,7 +106,7 @@ function loadPersistedPaths() {
 }
 
 // ------------------------------------------------------------------ the modules (electron/main/)
-const { createWindow } = createWindows(ctx, DEV_URL);
+const { createWindow } = createWindows(ctx, DEV_URL, !app.isPackaged || testBuild);
 registerDwgIpc(ctx);
 const { takeHandedOverProject, handOverFiles, drawingArgs, registerSecondInstance } = createHandover(ctx);
 registerDrawingIpc(ctx, { takeHandedOverProject });
@@ -138,6 +157,10 @@ app.whenReady().then(async () => {
   handOverFiles(drawingArgs(process.argv, process.cwd()));
   await createWindow();
   startingMainWindow = false;
+  if (probePhase) {
+    await runShippingProbe(ctx, probePhase, testBuild);
+    return;
+  }
   updater.scheduleStartupCheck(() => ctx.mainWindow);
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

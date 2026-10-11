@@ -74,6 +74,7 @@ none of their code is part of what is distributed.
 | Package | Version | Licence | Copyright | Role | Link |
 | --- | --- | --- | --- | --- | --- |
 | electron | 44.7.0 | MIT | Copyright (c) Electron contributors; Copyright (c) 2013-2020 GitHub Inc. | Runtime shipped inside every installer (see below). | <https://github.com/electron/electron> |
+| @electron/fuses | 1.8.0 | MIT | Copyright (c) 2020 Electron Maintainers. | Build and test tool for setting and verifying the packaged Electron fuse policy. | <https://github.com/electron/fuses> |
 | electron-builder | 26.17.0 | MIT | Copyright (c) 2015 Loopline Systems | Build tool; its NSIS installer stub is part of the Windows installer. | <https://github.com/electron-userland/electron-builder> |
 | vite | 6.4.3 | MIT | Copyright (c) 2019-present, VoidZero Inc. and Vite contributors | Build tool; small Vite runtime helpers (module preload) end up in the renderer bundle. | <https://github.com/vitejs/vite> |
 | typescript | 5.9.3 | Apache-2.0 | Copyright (c) Microsoft Corporation | Compiler only. | <https://github.com/microsoft/TypeScript> |

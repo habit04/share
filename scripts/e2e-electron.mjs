@@ -44,6 +44,7 @@
 // (the next start offers Project Recovery, and the Drawing Recovery Manager lists drawings only).
 import { _electron as electron } from 'playwright';
 import { applicationWindow } from './electron-window.mjs';
+import { verifyExecutableFuses } from './electron-fuse-policy.mjs';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, existsSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { deflateSync, crc32 } from 'node:zlib';
@@ -69,6 +70,16 @@ if (packagedArg >= 0 && !executable) {
 if (packaged && !existsSync(executable)) {
   console.error(`packaged executable not found: ${executable}`);
   process.exit(2);
+}
+if (packaged) {
+  // Source/legacy builds or the dedicated test ASAR may be driven with inspection.
+  // Exact shipping executables have independent fixed probes and cannot use this driver.
+  try {
+    await verifyExecutableFuses(executable, 'shipping');
+    throw new Error('Shipping inspection is disabled. Use scripts/shipping-runtime-smoke.mjs for that executable, or npm run e2e:test-build for the dedicated test build.');
+  } catch (error) {
+    if (String(error.message).includes('Shipping inspection is disabled.')) throw error;
+  }
 }
 if (!packaged && !existsSync(join(repo, 'dist', 'index.html'))) {
   console.error('dist/index.html not found: run `npm run build` first.');
@@ -330,7 +341,7 @@ try {
   step = 'ZOOM';
   // ZOOM runs as a tool (it logs no "Command:" line): check the view instead.
   const viewOf = () => win.evaluate(() => JSON.stringify({ c: window.editor.viewport.center, s: window.editor.viewport.scale }));
-  await win.evaluate(() => window.editor.runCommand('ZOOM I'));
+  await win.evaluate(() => void window.editor.runCommand('ZOOM I'));
   const view0 = await viewOf();
   await input.fill('ZOOM E');
   await input.press('Enter');
@@ -346,7 +357,7 @@ try {
   });
   check(ext.tl.x >= -1 && ext.tl.y >= -1 && ext.br.x <= ext.w + 1 && ext.br.y <= ext.h + 1, `drawing extents fit the canvas after ZOOM E (${JSON.stringify(ext)})`);
   // The native menu sends commands over IPC ('menu-command').
-  await win.evaluate(() => window.editor.runCommand('ZOOM I'));
+  await win.evaluate(() => void window.editor.runCommand('ZOOM I'));
   check((await viewOf()) !== viewE, 'ZOOM I zoomed in');
   await app.evaluate(({ Menu }) => {
     const view = Menu.getApplicationMenu().items.find((i) => i.label === 'View');
@@ -363,7 +374,7 @@ try {
   await app.evaluate((_e, p) => globalThis.__e2e.openPaths.push(p), fixtures.dxf);
   h = await historyLen();
   const tabs0 = await win.evaluate(() => window.editor.sessions.count);
-  await win.evaluate(() => window.editor.runCommand('OPEN'));
+  await win.evaluate(() => void window.editor.runCommand('OPEN'));
   await waitLog(/^(Opened|Failed to open)/, h).catch(() => bad('no open result logged'));
   let log = await logSince(h);
   check(log.some((l) => l.startsWith(`Opened ${fixtures.dxf}: 25 entities`)), `DXF opened through IPC: ${log.filter((l) => /Opened|Failed/.test(l)).join(' | ')}`);
@@ -390,7 +401,7 @@ try {
       });
     await app.evaluate((_e, p) => globalThis.__e2e.openPaths.push(p), fixtures.dwg);
     h = await historyLen();
-    await win.evaluate(() => window.editor.runCommand('OPEN'));
+    await win.evaluate(() => void window.editor.runCommand('OPEN'));
     if (current)
       await win.waitForSelector('.modal-backdrop.open-progress', { timeout: 15_000 }).then(
         async () => ok(`progress dialog shown while the DWG is read (${(await win.locator('.open-progress .modal-body').textContent())?.replace(/\s+/g, ' ').trim()})`),
@@ -413,7 +424,7 @@ try {
     await app.evaluate((_e, p) => globalThis.__e2e.openPaths.push(p), fixtures.dwg);
     h = await historyLen();
     const entitiesBefore = await win.evaluate(() => window.editor.doc.entities.length);
-    await win.evaluate(() => window.editor.runCommand('OPEN'));
+    await win.evaluate(() => void window.editor.runCommand('OPEN'));
     await waitLog(/^(Imported DWG|Failed to open)/, h, 90_000).catch(() => bad('no result logged for the cancelled DWG'));
     log = await logSince(h);
     check(log.some((l) => /^Failed to open drawing: .*Open cancelled/.test(l)) && log.some((l) => l === 'Opening example_2000.dwg was cancelled.'), `Cancel stops the read: ${log.filter((l) => /cancel|Failed|Imported/i.test(l)).join(' | ')}`);
@@ -422,7 +433,7 @@ try {
     // The worker was terminated; the next read starts a fresh one.
     await app.evaluate((_e, p) => globalThis.__e2e.openPaths.push(p), fixtures.dwg);
     h = await historyLen();
-    await win.evaluate(() => window.editor.runCommand('OPEN'));
+    await win.evaluate(() => void window.editor.runCommand('OPEN'));
     await waitLog(/^(Imported DWG|Failed to open)/, h, 90_000).catch(() => bad('no result after the cancelled read'));
     log = await logSince(h);
     check(log.some((l) => l.startsWith('Imported DWG')), `a DWG opens again after Cancel: ${log.filter((l) => /Imported|Failed/.test(l)).join(' | ')}`);
@@ -461,7 +472,7 @@ try {
   writeFileSync(lossDxf, readFileSync(join(repo, 'tests', 'fixtures', 'unsupported-content.dxf')));
   await app.evaluate((_e, p) => globalThis.__e2e.openPaths.push(p), lossDxf);
   h = await historyLen();
-  await win.evaluate(() => window.editor.runCommand('OPEN'));
+  await win.evaluate(() => void window.editor.runCommand('OPEN'));
   await waitLog(/^(Opened|Failed to open)/, h).catch(() => bad('no open result logged'));
   const dxfReport = win.locator('.import-report-dialog .modal', { hasText: 'DXF Import Report' });
   await dxfReport.waitFor({ timeout: 5000 }).then(
@@ -474,7 +485,7 @@ try {
   );
   await messages();
   h = await historyLen();
-  await win.evaluate(() => window.editor.runCommand('SAVE'));
+  await win.evaluate(() => void window.editor.runCommand('SAVE'));
   const warn = win.locator('.modal', { hasText: 'Save over the original file?' });
   await warn.waitFor({ timeout: 5000 }).then(
     async () => {
@@ -556,7 +567,7 @@ try {
   const recent = await win.evaluate(() => window.editor.settings.recentFiles.slice(0, 3));
   check(recent.includes(fixtures.dxf), `recent files list the DXF (${recent.join(', ')})`);
   const idx = recent.indexOf(fixtures.dxf) + 1;
-  await win.evaluate((i) => window.editor.runCommand(`RECENT ${i}`), idx);
+  await win.evaluate((i) => void window.editor.runCommand(`RECENT ${i}`), idx);
   await waitLog(/^(Opened|Failed to open)/, h, 15_000).catch(() => bad('RECENT did not open anything'));
   log = await logSince(h);
   check(log.some((l) => l.startsWith(`Opened ${fixtures.dxf}: 25 entities`)) && !log.some((l) => /Failed to open|Unknown file path/.test(l)), `RECENT ${idx} reopened by path: ${log.filter((l) => /Open|Failed/.test(l)).join(' | ')}`);
@@ -570,7 +581,7 @@ try {
   const pdfPath = join(outDir, 'plot-tabloid.pdf');
   await app.evaluate((_e, p) => globalThis.__e2e.savePaths.push(p), pdfPath);
   h = await historyLen();
-  await win.evaluate(() => window.editor.runCommand('PLOT'));
+  await win.evaluate(() => void window.editor.runCommand('PLOT'));
   const dlg = win.locator('.modal', { hasText: 'Paper size' });
   await dlg.waitFor({ timeout: 10_000 });
   const selects = dlg.locator('select');
@@ -600,7 +611,7 @@ try {
   const rasterPath = join(outDir, 'plot-raster.pdf');
   await app.evaluate((_e, p) => globalThis.__e2e.savePaths.push(p), rasterPath);
   h = await historyLen();
-  await win.evaluate(() => window.editor.runCommand('PLOT'));
+  await win.evaluate(() => void window.editor.runCommand('PLOT'));
   const dlg2 = win.locator('.modal', { hasText: 'Paper size' });
   await dlg2.waitFor({ timeout: 10_000 });
   await dlg2.locator('select').nth(3).selectOption('raster');
@@ -619,7 +630,7 @@ try {
   await win.locator('#layout-tabs .layout-tab', { hasText: 'Layout1' }).click();
   check(await win.evaluate(() => window.editor.doc.space?.layout === 'Layout1' && window.editor.doc.layouts[0].viewports.length === 1), 'Layout1 tab activates paper space with one viewport');
   h = await historyLen();
-  await win.evaluate(() => window.editor.runCommand('PLOT'));
+  await win.evaluate(() => void window.editor.runCommand('PLOT'));
   const dlg3 = win.locator('.modal', { hasText: 'Page setup' });
   await dlg3.waitFor({ timeout: 10_000 });
   await dlg3.locator('button', { hasText: 'Plot to PDF' }).click();
@@ -669,7 +680,7 @@ try {
   // The About dialog's button runs CHECKUPDATES in the renderer.
   step = 'About';
   h = await historyLen();
-  await win.evaluate(() => window.editor.runCommand('ABOUT'));
+  await win.evaluate(() => void window.editor.runCommand('ABOUT'));
   const about = win.locator('.modal', { hasText: 'Check for Updates' });
   await about.waitFor({ timeout: 10_000 });
   const aboutText = await about.textContent();
@@ -712,7 +723,7 @@ try {
   await app.evaluate((_e, p) => globalThis.__e2e.savePaths.push(p), savedPath);
   h = await historyLen();
   const savedCount = await win.evaluate(() => window.editor.doc.entities.length);
-  await win.evaluate(() => window.editor.runCommand('SAVEAS'));
+  await win.evaluate(() => void window.editor.runCommand('SAVEAS'));
   await waitLog(/^Saved /, h, 30_000).catch(() => bad('no "Saved" line'));
   check((await messages()).some((m) => m.startsWith('save:')), 'SAVEAS asked for a file name through the Save dialog');
   if (existsSync(savedPath)) {
@@ -727,7 +738,7 @@ try {
     }, savedPath);
     await app.evaluate((_e, p) => globalThis.__e2e.openPaths.push(p), savedPath);
     h = await historyLen();
-    await win.evaluate(() => window.editor.runCommand('OPEN'));
+    await win.evaluate(() => void window.editor.runCommand('OPEN'));
     await waitLog(/^(Opened|Failed to open)/, h, 30_000).catch(() => bad('the saved DXF did not reopen'));
     log = await logSince(h);
     check(log.some((l) => l.startsWith(`Opened ${savedPath}: ${savedCount} entities`)), `saved DXF reopens with ${savedCount} entities: ${log.filter((l) => /Opened|Failed/.test(l)).join(' | ')}`);
@@ -738,7 +749,7 @@ try {
     const before = readFileSync(savedPath, 'utf8');
     await messages();
     await app.evaluate((_e, p) => globalThis.__e2e.savePaths.push(p), savedPath.replace(/\.dxf$/, ''));
-    await win.evaluate(() => window.editor.runCommand('SAVEAS'));
+    await win.evaluate(() => void window.editor.runCommand('SAVEAS'));
     const asked = [];
     for (let i = 0; i < 100 && !asked.some((m) => m.startsWith('box:')); i += 1) {
       await win.waitForTimeout(100);
@@ -751,14 +762,14 @@ try {
 
   // ------------------------------------------------------------------ AUTOSAVE writes a recovery copy
   step = 'AUTOSAVE';
-  await win.evaluate(() => window.editor.runCommand('LINE'));
+  await win.evaluate(() => void window.editor.runCommand('LINE'));
   for (const text of ['1,1', '4,4']) {
     await input.fill(text);
     await input.press('Enter');
   }
   await input.press('Enter');
   h = await historyLen();
-  await win.evaluate(() => window.editor.runCommand('AUTOSAVE'));
+  await win.evaluate(() => void window.editor.runCommand('AUTOSAVE'));
   await waitLog(/autosaved|Autosave/, h, 20_000).catch(() => bad('AUTOSAVE logged nothing'));
   const autosaves = await win.evaluate(() => window.jcad.autosaveList());
   check(Array.isArray(autosaves) && autosaves.length >= 1, `autosave entries for the Drawing Recovery Manager: ${JSON.stringify((autosaves ?? []).map((a) => a.name))}`);
@@ -929,7 +940,8 @@ try {
   // ------------------------------------------------------------------ Symbol Builder
   step = 'Symbol Builder';
   const tabsBefore = await win.evaluate(() => window.editor.sessions.count);
-  await win.evaluate(() => window.editor.runCommand('AESYMBUILDER'));
+  // Dispatch as a human command entry; the next steps complete the pending dialog.
+  await win.evaluate(() => void window.editor.runCommand('AESYMBUILDER'));
   const start = win.locator('.modal').last();
   await start.waitFor({ timeout: 10_000 });
   check(/Symbol Builder/i.test(await start.textContent()), 'AESYMBUILDER shows the start dialog');
@@ -960,14 +972,14 @@ try {
   }, panelBackup);
   check(await win.evaluate((name) => window.jacUi.autosaver.nameFor(window.editor.sessions.current.id) === name, panelBackup), 'the recovered drawing is active');
   h = await historyLen();
-  await win.evaluate(() => window.editor.runCommand('AUTOSAVE'));
+  await win.evaluate(() => void window.editor.runCommand('AUTOSAVE'));
   await waitLog(/drawing\(s\) autosaved/, h, 15_000).catch(() => bad('AUTOSAVE did not finish'));
   check(existsSync(join(autosaveDir, panelBackup)) && tmpLeftovers(autosaveDir).length === 0, 'AUTOSAVE refreshed the adopted backup without leaving temporary files');
 
   // A save into a folder that does not exist fails: error dialog, still modified, backup kept.
   await app.evaluate((_e, p) => globalThis.__e2e.savePaths.push(p), missingFolder);
   h = await historyLen();
-  await win.evaluate(() => window.editor.runCommand('SAVEAS'));
+  await win.evaluate(() => void window.editor.runCommand('SAVEAS'));
   const errDlg = win.locator('.save-error-dialog .modal');
   await errDlg.waitFor({ timeout: 10_000 }).then(
     () => ok('a failed save shows the Save Failed dialog'),
@@ -1002,7 +1014,7 @@ try {
   const firstContent = readFileSync(good, 'utf8');
   await win.evaluate(() => window.editor.doc.addEntities([{ id: 'e2e-bak', type: 'line', layer: '0', color: 'ByLayer', a: { x: 0, y: 0 }, b: { x: 3, y: 4 } }]));
   h = await historyLen();
-  await win.evaluate(() => window.editor.runCommand('SAVE'));
+  await win.evaluate(() => void window.editor.runCommand('SAVE'));
   await waitLog(/^Saved /, h, 15_000).catch(() => bad('SAVE did not finish'));
   check(existsSync(`${good}.bak`) && readFileSync(`${good}.bak`, 'utf8') === firstContent && readFileSync(good, 'utf8') !== firstContent, 'SAVE kept the previous version as recovered.dxf.bak');
   check(tmpLeftovers(saveDir).length === 0, 'no temporary files next to the drawing');
@@ -1026,7 +1038,7 @@ try {
   step = 'recovery error';
   renameSync(autosaveDir, `${autosaveDir}-moved`);
   writeFileSync(autosaveDir, 'not a folder');
-  await win.evaluate(() => window.editor.runCommand('DRAWINGRECOVERY'));
+  await win.evaluate(() => void window.editor.runCommand('DRAWINGRECOVERY'));
   const recErr = win.locator('.recovery-error-state .modal');
   await recErr.waitFor({ timeout: 10_000 }).then(
     () => ok('an unreadable recovery folder shows an error'),
@@ -1056,7 +1068,7 @@ try {
   writeFileSync(projFile, JSON.stringify({ name: 'E2E Line', drawings: [{ file: 'dwg\\a.dxf' }, { file: './b.dxf' }] }));
   await app.evaluate((_e, p) => globalThis.__e2e.openPaths.push(p), projFile);
   h = await historyLen();
-  await win.evaluate(() => window.editor.runCommand('OPENPROJECT'));
+  await win.evaluate(() => void window.editor.runCommand('OPENPROJECT'));
   await waitLog(/^(Project E2E Line|Failed to open project)/, h).catch(() => bad('no project open result logged'));
   check(await win.evaluate(() => window.editor.project.name === 'E2E Line' && window.editor.project.drawings.length === 2 && !window.editor.projectDirty), 'OPENPROJECT loaded the project, unmodified');
   for (const i of [0, 1]) {
@@ -1076,7 +1088,7 @@ try {
   const projectCopy = join(projDir, 'archive', 'line2.jcadproj.json');
   await app.evaluate((_e, p) => globalThis.__e2e.savePaths.push(p), projectCopy);
   h = await historyLen();
-  await win.evaluate(() => window.editor.runCommand('PROJECTSAVEAS'));
+  await win.evaluate(() => void window.editor.runCommand('PROJECTSAVEAS'));
   await waitLog(/^(Project saved|Project not saved)/, h).catch(() => bad('PROJECTSAVEAS logged nothing'));
   check((await messages()).includes('save:Save Project As'), 'PROJECTSAVEAS asked where to save');
   const savedProject = existsSync(projectCopy) ? JSON.parse(readFileSync(projectCopy, 'utf8')) : null;
@@ -1087,7 +1099,7 @@ try {
   check(bProj && bProj.ok === true && existsSync(join(projDir, 'proj', 'b.dxf.bak')), `backup-file accepts another spelling of a project drawing (${JSON.stringify(bProj)})`);
   // Opening another project while this one has unsaved changes asks first; Cancel keeps it.
   await win.evaluate(() => window.editor.updateProject({ ...window.editor.project, description: 'pending' }));
-  await win.evaluate(() => window.editor.runCommand('OPENPROJECT'));
+  await win.evaluate(() => void window.editor.runCommand('OPENPROJECT'));
   const ask = win.locator('.modal', { hasText: 'Save changes to project E2E Line?' });
   await ask.waitFor({ timeout: 10_000 }).then(
     () => ok('OPENPROJECT with a modified project asks Save / Don\'t Save / Cancel'),
@@ -1118,7 +1130,7 @@ try {
   const firstTab = await win.evaluate(() => ({ id: window.editor.sessions.current.id, dirty: window.editor.doc.dirty, path: window.editor.doc.filePath }));
   await app.evaluate((_e, p) => globalThis.__e2e.openPaths.push(p), cutShort);
   h = await historyLen();
-  await win.evaluate(() => window.editor.runCommand('OPEN'));
+  await win.evaluate(() => void window.editor.runCommand('OPEN'));
   await win.waitForTimeout(150);
   await win.evaluate(() => window.editor.sessions.switchTo(0));
   const damaged = win.locator('.modal', { hasText: 'Damaged drawing file' });
@@ -1148,7 +1160,7 @@ try {
   check(!!bg && bg.dirty && bg.recovered, `the background tab is recovered and modified (${JSON.stringify(bg)})`);
   check(!!bg && bg.active === firstTab.id && bg.activeDirty === firstTab.dirty && bg.activePath === firstTab.path, 'the tab the user switched to is unchanged');
   h = await historyLen();
-  await win.evaluate(() => window.editor.runCommand('AUTOSAVE'));
+  await win.evaluate(() => void window.editor.runCommand('AUTOSAVE'));
   await waitLog(/drawing\(s\) autosaved/, h, 15_000).catch(() => bad('AUTOSAVE did not finish'));
   const bgBackup = await win.evaluate((id) => window.jacUi.autosaver.nameFor(id) ?? null, bg?.id);
   const bgEntry = bgBackup ? readIndex()[bgBackup] : null;

@@ -19,6 +19,7 @@
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { assertRequiredSigning } from './signing-policy.mjs';
 
 /**
  * Builder 26 derives app-update.yml's publisherName from azureSignOptions. A publisherName
@@ -43,6 +44,7 @@ const REQUIRED = [
 
 function main() {
   const env = (name) => (process.env[name] ?? '').trim();
+  assertRequiredSigning('Windows', process.env.REQUIRE_PUBLISHER_SIGNING === 'true', process.env);
   const missing = REQUIRED.filter((name) => !env(name));
   const enabled = missing.length === 0;
 

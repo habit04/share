@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { entityBounds, distanceToEntity, explodeInsert, translateEntity, rotateEntity, gripPoints } from '../src/core/entities';
 import type { Entity, BlockDef, InsertEntity, ArcEntity } from '../src/core/entities';
 import { findSymbol, ALL_SYMBOLS } from '../src/electrical/symbols';
+import { Drawing } from '../src/core/document';
 
 const lookup = (name: string): BlockDef | undefined => findSymbol(name);
 
@@ -92,14 +93,17 @@ describe('entities', () => {
     expect(parts2.length).toBe(0);
   });
 
-  it('explodeInsert is cached per insert and refreshes when the block changes', () => {
+  it('explodeInsert is cached for accepted immutable inputs and refreshes when the block changes', () => {
     const ins: InsertEntity = { id: 'c', layer: 'SYMS', color: 'ByLayer', type: 'insert', block: 'HCR1', position: { x: 0, y: 0 }, rotation: 0, scale: 1, attributes: {} };
-    const first = explodeInsert(ins, lookup);
-    expect(explodeInsert(ins, lookup)).toBe(first);
+    const doc = new Drawing({ entities: [ins], blocks: { HCR1: findSymbol('HCR1')! } });
+    const first = explodeInsert(ins, doc.lookupBlock);
+    expect(explodeInsert(ins, doc.lookupBlock)).toBe(first);
     const other: BlockDef = { ...findSymbol('HCR1')!, entities: [] };
-    const second = explodeInsert(ins, () => other);
+    doc.defineBlock(other);
+    const second = explodeInsert(ins, doc.lookupBlock);
     expect(second).not.toBe(first);
     expect(second).toHaveLength(0);
+    expect(explodeInsert(ins, doc.lookupBlock)).toBe(second);
   });
 
   it('invisible attributes are not exploded into text', () => {

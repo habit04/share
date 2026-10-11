@@ -37,6 +37,7 @@ import { DIMSTYLES_META_KEY, DIM_VARIABLES, diffDimStyles, dimStyleFromRecordPai
 import { findLinetype, type Linetype } from '../core/linetypes';
 import { paperFromSize, unitsOfHost, uniformMargins, newViewportId, type Layout, type LayoutViewport } from '../core/layouts';
 import { textStylesMeta, type TextStyle } from './encoding';
+import { fontImportWarning } from './font-warning';
 import { ImportReportBuilder, geometryProblem, withImportData, type ImportReport } from './import-report';
 import { findPattern, LoopBuilder, edgeArc, fitPatternToLines } from '../core/hatch';
 import { isValidNurbs, nurbsPoints, interpolateFitPoints, splineWorkProblem, SplineWorkLimitError } from '../core/spline';
@@ -891,7 +892,8 @@ function convertStyles(styles: readonly DwgPayloadStyle[], report: ImportReportB
       generation: t.textGenerationFlag ?? 0,
     };
     if (!t.fixedTextHeight) fixedHeights += 1;
-    if ((t.font && !/^txt(?:\.shx)?$/i.test(t.font)) || t.bigFont) report.add({ type: 'STYLE', action: 'unsupported', reason: `font "${t.font}" of style "${t.name}" is kept for export; JCad's stroke font approximates its appearance and metrics (font files are not embedded)` });
+    const fontWarning = fontImportWarning(out[t.name]!);
+    if (fontWarning) report.add({ type: 'STYLE', action: 'unsupported', reason: fontWarning });
   }
   // LibreDWG does not decode a style's fixed text height (it always reports 0).
   if (fixedHeights && styles.some((t) => t.name && !/^standard$/i.test(t.name))) {
@@ -1070,8 +1072,11 @@ function readHeader(h: DwgImportPayload['header']): DrawingHeader {
       luprec: cadPrecision(num('LUPREC', 4), 4),
       insunits: Math.trunc(num('INSUNITS', 1)),
       auprec: cadPrecision(num('AUPREC', 0)),
+      ...(typeof h.AUNITS === 'number' && Number.isFinite(h.AUNITS) ? { aunits: h.AUNITS } : {}),
     },
     ltscale: num('LTSCALE', 1) || 1,
+    ...(typeof h.CELTSCALE === 'number' && Number.isFinite(h.CELTSCALE) ? { celtscale: h.CELTSCALE } : {}),
+    ...(typeof h.TEXTSTYLE === 'string' && h.TEXTSTYLE ? { textStyle: h.TEXTSTYLE } : {}),
     limits: { min: pt('LIMMIN', DEFAULT_HEADER.limits.min), max: pt('LIMMAX', DEFAULT_HEADER.limits.max) },
     pdmode: Math.trunc(num('PDMODE', 0)),
     pdsize: num('PDSIZE', 0),

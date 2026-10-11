@@ -13,7 +13,7 @@ accounts and secrets in [CODE-SIGNING.md](CODE-SIGNING.md).
      the release notes: `npm run release-notes -- vX.Y.Z` shows them as the release page will).
    - Make sure CI is green on the branch (`ci.yml`: test, ui, e2e on Ubuntu / Windows / macOS).
    - Optional dress rehearsal: run **Build installers** from the Actions tab on the branch with an
-     empty tag. It runs the source, build, aggregate artifact and packaged smoke gates without
+     empty tag. It runs the source, test-ASAR, build, aggregate artifact and shipping smoke gates without
      publishing. Tag checks, release notes and signed attestation run when publication is enabled.
 2. **Tag the exact commit** and push the tag:
 
@@ -29,9 +29,10 @@ accounts and secrets in [CODE-SIGNING.md](CODE-SIGNING.md).
    | Job | Runs on | What it does | Blocks |
    | --- | --- | --- | --- |
    | `checks` | ubuntu-latest, Node 22 / 24 | On the tagged commit: workflow validation, lint, `typecheck:all`, mandatory-fixture unit tests, dense Node performance, renderer and website builds, UI checks, screenshot scripts and approved baseline comparison, asserted browser performance, Electron end-to-end and legacy preference migration. Outputs the tested commit SHA. | everything below |
-   | `build` | Windows, macOS, Linux | Checks out **that SHA**, checks tag/version when publishing, builds all five installers, signs when configured and verifies the final signatures or macOS ad-hoc seal. Requires the updater feeds and external blockmaps and records platform, version, built SHA, signing result and every public artifact's SHA-256 hash. Builder diagnostic YAML is excluded. | verify-artifacts, packaged-smoke, release |
+   | `test-build` | Windows, macOS, Linux | Builds a separate unpublished inspection-enabled ASAR and runs the full packaged Playwright suite and preference restart checks. Checks its test fuse policy. Its metadata, output folder and artifact naming keep it separate from shipping uploads. | release |
+   | `build` | Windows, macOS, Linux | Checks out **that SHA**, checks tag/version when publishing, builds all five installers with inspection disabled, verifies binary fuses, signs when configured and verifies final signatures or the macOS ad-hoc seal. Publication requires Windows and Apple credentials. Requires updater feeds/blockmaps and records source, signing/fuse results and artifact hashes. Builder diagnostic YAML and test builds are excluded. | verify-artifacts, packaged-smoke, release |
    | `verify-artifacts` | ubuntu-latest | Downloads the actual uploaded platform artifacts and requires all five installers, three updater feeds and Windows/macOS external blockmaps, with matching source/version, sizes and hashes. Writes aggregate provenance/checksums. Also runs for an empty-tag build-only dispatch. | release |
-   | `packaged-smoke` | Windows, macOS, Linux | Installs the NSIS installer silently, mounts each disk image (the x64 one under Rosetta) and extracts the AppImage and the `.deb`, then runs the headless DWG probe, end-to-end checks and two-launch secure-origin preference migration against each **packaged** application. Writes results per installer (`scripts/packaged-smoke.mjs`). | release |
+   | `packaged-smoke` | Windows, macOS, Linux | Installs NSIS, mounts each disk image (x64 under Rosetta) and extracts AppImage/deb. Checks exact shipping fuses, DWG reading and bounded first-launch/save/reopen probes, including secure-origin preference migration and preservation. Confirms debugging arguments are refused. Writes results per installer (`scripts/packaged-smoke.mjs`). | release |
    | `release` | ubuntu-latest | Verifies tag/tested SHA, downloads and verifies the complete public asset set again, writes aggregate provenance/checksums and adds actual signing results to the CHANGELOG notes. GitHub signs the complete verified artifact set with `actions/attest@v4`; publication follows all gates. | - |
 
    `npm run check:workflows` (run in CI and in `checks`) fails if any of these gates is removed.
@@ -66,8 +67,11 @@ output includes `origin-migration.log`, per-installer `packaged-smoke-result.jso
 | All | `latest.yml`, `latest-mac.yml`, `latest-linux.yml` | written by electron-builder; electron-updater checks downloads against them (and, on Windows, the publisher name) | each installer's `sha512` (base64) is listed there: `openssl dgst -sha512 -binary <file> \| base64` must print the same value |
 | All | `release-provenance.json`, platform records, `SHA256SUMS.txt`, installers and metadata | GitHub/Sigstore attestation of the complete verified release artifact set; separate from OS code signing | `gh attestation verify <download> --repo habit04/share --bundle release-provenance.sigstore.json` |
 
-Signing never changes the build itself: without secrets the workflow produces the same
-unsigned (Windows, Linux) or ad-hoc signed (macOS) installers as before.
+An empty-tag build-only rehearsal may produce unsigned Windows or ad-hoc macOS installers when
+credentials are absent. `require_signing` makes even a rehearsal require those credentials.
+Publishing always requires configured Windows publisher and Apple Developer ID/notarization
+credentials; missing secrets fail before installers are built. Linux remains unsigned. Actual
+signature and notarization verification must pass; secret presence alone does not prove signing.
 
 `scripts/release-provenance.mjs` rejects missing installers, updater feeds or required external
 blockmaps, extra installers, duplicate platform records, changed bytes, and any record with a

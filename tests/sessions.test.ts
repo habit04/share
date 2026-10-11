@@ -24,6 +24,23 @@ function makeHost(): SessionHost & { loads: number } {
 }
 
 describe('document sessions', () => {
+  it('seals borrowed background snapshots when accepting and replacing a parked tab', () => {
+    const host = makeHost();
+    const sessions = new SessionManager(host);
+    const entities = [line('borrowed')];
+    const state = { ...host.doc.snapshot, entities };
+    const index = sessions.addInBackground(state, '/background.dxf');
+    const session = sessions.all[index]!;
+    expect(session.state).toBe(state);
+    expect(() => entities.push(line('mutation'))).toThrow(TypeError);
+    const replacement = { ...host.doc.snapshot, entities: [line('replacement')] };
+    sessions.loadInto(session.id, replacement, '/replacement.dxf');
+    expect(session.state).toBe(replacement);
+    expect(() => replacement.entities.pop()).toThrow(TypeError);
+    expect(sessions.switchTo(index)).toBe(true);
+    expect(host.doc.entities.map((entity) => entity.id)).toEqual(['replacement']);
+  });
+
   it('detects edit and undo back to the same snapshot while tab restoration keeps its revision', () => {
     const host = makeHost(), sessions = new SessionManager(host);
     const original = sessions.current.state, before = sessions.current.revision;

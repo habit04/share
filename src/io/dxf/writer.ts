@@ -112,18 +112,18 @@ export function writeDxf(state: DrawingState): string {
   hv('$INSUNITS', 70, header.units.insunits);
   hv('$LUNITS', 70, header.units.lunits);
   hv('$LUPREC', 70, header.units.luprec);
-  hv('$AUNITS', 70, 0);
+  hv('$AUNITS', 70, header.units.aunits ?? 0);
   hv('$AUPREC', 70, header.units.auprec);
   hv('$CLAYER', 8, state.currentLayer);
   hv('$CELTYPE', 6, header.celtype || 'ByLayer');
   hv('$CELWEIGHT', 370, header.celweight === undefined ? -1 : Math.round(header.celweight * 100));
   hv('$LTSCALE', 40, header.ltscale);
-  hv('$CELTSCALE', 40, 1);
+  hv('$CELTSCALE', 40, header.celtscale ?? 1);
   hpt('$LIMMIN', header.limits.min);
   hpt('$LIMMAX', header.limits.max);
   hv('$PDMODE', 70, header.pdmode);
   hv('$PDSIZE', 40, header.pdsize);
-  hv('$TEXTSTYLE', 7, 'Standard');
+  hv('$TEXTSTYLE', 7, encodeDxfText(header.textStyle || 'Standard'));
   hv('$DIMSTYLE', 2, ds.name);
   for (const [name, code, value] of dimHeaderVars(ds)) if (name !== 'DIMLUNIT') hv(`$${name}`, code, value);
   hv('$DIMLUNIT', 70, ds.lunit);
@@ -224,11 +224,11 @@ export function writeDxf(state: DrawingState): string {
     }
   });
   const textStyles = textStylesForWrite(state);
-  const requiredTextStyles = new Set([ds.textStyle, ...allEntities.map((e) => e.type === 'dimension' ? e.style.textStyle : textStyleOf(e))].filter((n): n is string => !!n));
+  const requiredTextStyles = new Set([header.textStyle, ds.textStyle, ...allEntities.map((e) => e.type === 'dimension' ? e.style.textStyle : textStyleOf(e))].filter((n): n is string => !!n));
   for (const name of requiredTextStyles) if (!textStyles.some((s) => s.name.toUpperCase() === name.toUpperCase())) textStyles.push({ ...STANDARD_TEXT_STYLE, name });
   table('STYLE', '3', textStyles.length, () => {
     for (const ts of textStyles) {
-      record('STYLE', '3', 'AcDbTextStyleTableRecord', ts.name, ts.flags);
+      record('STYLE', '3', 'AcDbTextStyleTableRecord', encodeDxfText(ts.name), ts.flags);
       w.textStyleHandles.set(ts.name.toUpperCase(), w.lastHandle().toString(16).toUpperCase());
       for (const [code, value] of textStyleGroups(ts)) w.pair(code, value);
     }

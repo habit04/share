@@ -1,9 +1,9 @@
 // Smoke test of the installers electron-builder produced: install or extract each one for this
-// operating system, then run the end-to-end checks of scripts/e2e-electron.mjs against the packaged
-// application (start-up, open the committed DXF and DWG fixtures, SAVEAS, AUTOSAVE / recovery copy,
-// vector PDF through save-pdf, large-DWG progress and Cancel, IPC guard, clean close, no error log)
-// plus the headless `--probe-dwg` reader and, from 0.4.1, the two-launch secure-origin
-// preference migration of the packaged build.
+// operating system. Shipping builds must pass their actual binary fuse policy, headless DWG
+// reader, and fixed startup/DXF save/backup/reopen/private-storage/migration/clean-exit probes
+// without any inspection transport. The broader Playwright suite runs on source Electron and
+// a dedicated unpublished test ASAR, whose inspection fuse is deliberately enabled.
+// Older published inspection-enabled installers retain their explicitly labelled legacy E2E path.
 //
 //   node scripts/packaged-smoke.mjs <folder with installers>   (default: release/)
 //
@@ -18,10 +18,11 @@
 // JCAD_SMOKE_OUT (default packaged-smoke-output/) receives one folder of e2e output per installer.
 // Exits non-zero when no installer was found or any check failed.
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { needsPackagedOrigin, processResult } from './packaged-smoke-policy.mjs';
+import { verifyExecutableFuses } from './electron-fuse-policy.mjs';
 
 const repo = resolve(import.meta.dirname, '..');
 const dir = resolve(process.argv[2] || join(repo, 'release'));
@@ -64,8 +65,18 @@ function waitFor(file, ms = 60_000) {
 /** @type {Array<{ label: string, executable: string }>} */
 const targets = [];
 const files = walk(dir);
-const tmp = mkdtempSync(join(tmpdir(), 'jcad-smoke-'));
+const scratchParent = realpathSync.native(tmpdir());
+const tmp = mkdtempSync(join(scratchParent, 'jcad-smoke-'));
+function cleanScratch() {
+  if (process.env.JCAD_SMOKE_KEEP) return;
+  try {
+    const checked = realpathSync.native(tmp);
+    if (dirname(checked) !== scratchParent || !basename(checked).startsWith('jcad-smoke-')) throw new Error('Unexpected packaged smoke temporary path');
+    rmSync(checked, { recursive:true, force:true, maxRetries:3 });
+  } catch (error) { console.warn(`Could not remove smoke temporary directory: ${error.message}`); }
+}
 
+try {
 if (process.platform === 'win32') {
   for (const exe of files.filter((f) => /\.exe$/i.test(f) && !/[\\/]win-unpacked[\\/]/i.test(f) && !/uninstall/i.test(basename(f)))) {
     const target = join(tmp, basename(exe, '.exe').replace(/[^A-Za-z0-9._-]/g, '-'));
@@ -121,10 +132,7 @@ if (process.platform === 'win32') {
   }
 }
 
-if (targets.length === 0) {
-  console.error(`packaged-smoke: no installer for ${process.platform} in ${dir}`);
-  process.exit(1);
-}
+if (targets.length === 0) throw new Error(`packaged-smoke: no installer for ${process.platform} in ${dir}`);
 
 const summary = [];
 const results = [];
@@ -148,6 +156,23 @@ for (const t of targets) {
   const probeLine = `${probe.stdout || ''}`.split(/\r?\n/).find((l) => l.startsWith('PROBE_')) ?? `(no output; exit ${probe.status}${probe.error ? `, ${probe.error.message}` : ''})`;
   const probeOk = probe.status === 0 && /^PROBE_OK \S+ entities=\d+/.test(probeLine);
   console.log(`${probeOk ? 'ok  ' : 'FAIL'} --probe-dwg: ${probeLine}`);
+  // The current release gate requires disabled inspection. Older published builds
+  // remain testable through the legacy driver; they are explicitly reported as legacy.
+  let shipping = false;
+  try { await verifyExecutableFuses(t.executable, 'shipping'); shipping = true; }
+  catch (error) { if (process.env.JCAD_SMOKE_REQUIRE_SHIPPING === '1') throw error; }
+  if (shipping) {
+    const runtime = spawnSync(process.execPath, [join(repo, 'scripts', 'shipping-runtime-smoke.mjs'), t.executable], {
+      stdio:'inherit', env:{ ...process.env, JCAD_E2E_OUT:out }, timeout:4 * 60 * 1000, windowsHide:true,
+    });
+    const ok = probeOk && runtime.status === 0;
+    if (!ok) failed += 1;
+    const result = { label:t.label, expectedVersion, mode:'shipping-no-inspection', ok, probe:{ ok:probeOk, result:processResult(probe), output:probeLine }, shippingRuntime:processResult(runtime) };
+    results.push(result);
+    writeFileSync(join(out, 'packaged-smoke-result.json'), `${JSON.stringify(result, null, 2)}\n`);
+    summary.push(`${ok ? 'ok  ' : 'FAIL'} ${t.label}: shipping fuses, DWG probe and fixed runtime/restart probes ${processResult(runtime)}`);
+    continue;
+  }
   // 2. The end-to-end checks against the packaged application.
   const e2e = spawnSync(process.execPath, ['--experimental-strip-types', join(repo, 'scripts', 'e2e-electron.mjs'), '--packaged', t.executable], {
     stdio: 'inherit',
@@ -172,20 +197,12 @@ for (const t of targets) {
   }
   const ok = probeOk && e2e.status === 0 && (!originRequired || origin?.status === 0);
   if (!ok) failed += 1;
-  const result = { label: t.label, expectedVersion, ok, probe: { ok: probeOk, result: processResult(probe), output: probeLine }, e2e: processResult(e2e), origin: { required: originRequired, result: originResult } };
+  const result = { label: t.label, expectedVersion, mode:'legacy-inspection-enabled', ok, probe: { ok: probeOk, result: processResult(probe), output: probeLine }, e2e: processResult(e2e), origin: { required: originRequired, result: originResult } };
   results.push(result);
   writeFileSync(join(out, 'packaged-smoke-result.json'), `${JSON.stringify(result, null, 2)}\n`);
   summary.push(`${ok ? 'ok  ' : 'FAIL'} ${t.label}: probe ${probeOk ? 'ok' : 'failed'}, e2e ${processResult(e2e)}, origin ${originResult}`);
 }
 console.log(`\npackaged-smoke (${process.platform} ${process.arch}):\n${summary.join('\n')}`);
 writeFileSync(join(outRoot, 'packaged-smoke-results.json'), `${JSON.stringify({ platform: process.platform, arch: process.arch, expectedVersion, results, failed }, null, 2)}\n`);
-// The extracted / installed copies are large; keep them only when asked (JCAD_SMOKE_KEEP=1).
-if (!process.env.JCAD_SMOKE_KEEP) {
-  try {
-    if (!resolve(tmp).startsWith(join(resolve(tmpdir()), 'jcad-smoke-'))) throw new Error('Unexpected packaged smoke temporary path');
-    rmSync(tmp, { recursive: true, force: true, maxRetries: 3 });
-  } catch {
-    console.log(`(could not remove ${tmp})`);
-  }
-}
-process.exit(failed ? 1 : 0);
+process.exitCode = failed ? 1 : 0;
+} finally { cleanScratch(); }

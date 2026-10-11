@@ -211,8 +211,8 @@ export class MultiBusTool extends PickTool {
   ) {
     super();
   }
-  start(ctx: ToolContext): void {
-    void this.ask(this.init).then((s) => {
+  start(ctx: ToolContext): Promise<void> {
+    return this.ask(this.init).then((s) => {
       if (!s) {
         ctx.finish();
         return;
@@ -255,10 +255,10 @@ export class ThreePhaseComponentTool extends PickTool {
   ) {
     super();
   }
-  start(ctx: ToolContext): void {
+  start(ctx: ToolContext): Promise<void> {
     ctx.doc.ensureBlocks(LIBRARY_BLOCKS);
     const choose = this.preset ? Promise.resolve(this.preset) : ctx.ui.pickSymbol();
-    void choose.then((picked) => {
+    return choose.then((picked) => {
       // Poles sit in horizontal phase wires: the orientation radio is ignored here.
       const pick = symbolPick(picked);
       const def = pick ? ctx.doc.lookupBlock(pick.name) ?? lookupSymbol(pick.name) : undefined;
@@ -278,7 +278,7 @@ export class ThreePhaseComponentTool extends PickTool {
     ctx.setPreview(wires ? wires.map((w) => ({ id: newId(), type: 'insert', layer: 'SYMS', color: 'ByLayer', block: this.block!, position: { x: p.x, y: w.a.y }, rotation: 0, scale: k, attributes: {} }) as Entity) : []);
     ctx.setDynText([wires ? '3 phase' : 'no 3-wire bus here']);
   }
-  onPoint(p: Point, ctx: ToolContext): void {
+  onPoint(p: Point, ctx: ToolContext): void | Promise<void> {
     if (!this.block) return;
     const k = drawingUnitScale(ctx.doc);
     const wires = threePhaseWires(ctx.doc.entities, p, 0.3 * k);
@@ -288,7 +288,7 @@ export class ThreePhaseComponentTool extends PickTool {
     }
     ctx.setPreview([]);
     const init = componentDialogInit(ctx.doc, this.block, { x: p.x, y: wires[0]!.a.y });
-    void this.eui().editComponent(init).then((r) => {
+    return this.eui().editComponent(init).then((r) => {
       if (r) {
         const attrs = componentAttributes(r.attrs);
         const edit = insertThreePole(ctx.doc.entities, this.block!, p.x, wires, attrs, ctx.doc.lookupBlock, k);
@@ -307,15 +307,15 @@ export class WireNumberEditTool extends PickTool {
   constructor(private eui: () => ElectricalUi) {
     super();
   }
-  start(ctx: ToolContext): void {
+  start(ctx: ToolContext): void | Promise<void> {
     const sel = [...ctx.selection].map((id) => ctx.doc.entity(id)).find((e): e is TextEntity => !!e && isWireNumber(e));
-    if (sel) this.edit(sel, ctx);
+    if (sel) return this.edit(sel, ctx);
     else ctx.prompt('Select wire number to edit:');
   }
-  private edit(t: TextEntity, ctx: ToolContext): void {
+  private edit(t: TextEntity, ctx: ToolContext): Promise<void> {
     const state = wireNumberState(ctx.doc.entities, t);
     const all = [...new Set(ctx.doc.entities.filter(isWireNumber).map((e) => e.text))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-    void this.eui()
+    return this.eui()
       .wireNumberEdit({ ...state, all })
       .then((r) => {
         if (r) {
@@ -330,13 +330,13 @@ export class WireNumberEditTool extends PickTool {
         ctx.finish();
       });
   }
-  onPoint(p: Point, ctx: ToolContext): void {
+  onPoint(p: Point, ctx: ToolContext): void | Promise<void> {
     const t = pickAt(ctx.doc, p, ctx.aperture() * 2, isWireNumber);
     if (!t) {
       ctx.log('Select a wire number.');
       return;
     }
-    this.edit(t, ctx);
+    return this.edit(t, ctx);
   }
 }
 
@@ -452,13 +452,13 @@ export class ToggleNcTool extends PickTool {
 /** AESWAP: replace a component's block with another symbol, keeping tag, data and position. */
 export class SwapBlockTool extends PickTool {
   readonly name = 'AESWAP';
-  start(ctx: ToolContext): void {
+  start(ctx: ToolContext): void | Promise<void> {
     const sel = [...ctx.selection].map((id) => ctx.doc.entity(id)).find((e): e is InsertEntity => !!e && isInsertComponent(e));
-    if (sel) this.swap(sel, ctx);
+    if (sel) return this.swap(sel, ctx);
     else ctx.prompt('Select component to swap:');
   }
-  private swap(e: InsertEntity, ctx: ToolContext): void {
-    void ctx.ui.pickSymbol().then((picked) => {
+  private swap(e: InsertEntity, ctx: ToolContext): Promise<void> {
+    return ctx.ui.pickSymbol().then((picked) => {
       const pick = symbolPick(picked);
       const r = pick ? resolveSymbolPick(ctx.doc, pick) : null;
       if (!r) {
@@ -478,13 +478,13 @@ export class SwapBlockTool extends PickTool {
       ctx.finish();
     });
   }
-  onPoint(p: Point, ctx: ToolContext): void {
+  onPoint(p: Point, ctx: ToolContext): void | Promise<void> {
     const e = pickAt(ctx.doc, p, ctx.aperture() * 2, isInsertComponent);
     if (!e) {
       ctx.log('Select a component.');
       return;
     }
-    this.swap(e, ctx);
+    return this.swap(e, ctx);
   }
 }
 
@@ -494,14 +494,14 @@ export class EditComponentTool extends PickTool {
   constructor(private eui: () => ElectricalUi) {
     super();
   }
-  start(ctx: ToolContext): void {
+  start(ctx: ToolContext): void | Promise<void> {
     const sel = [...ctx.selection].map((id) => ctx.doc.entity(id)).find((e): e is InsertEntity => !!e && isInsertComponent(e));
-    if (sel) this.edit(sel, ctx);
+    if (sel) return this.edit(sel, ctx);
     else ctx.prompt('Select component to edit:');
   }
-  private edit(e: InsertEntity, ctx: ToolContext): void {
+  private edit(e: InsertEntity, ctx: ToolContext): Promise<void> {
     const init = componentDialogInit(ctx.doc, e.block, e.position, e, readWdSettings(ctx.doc));
-    void this.eui()
+    return this.eui()
       .editComponent(init)
       .then((r) => {
         if (r) {
@@ -528,13 +528,13 @@ export class EditComponentTool extends PickTool {
         ctx.finish();
       });
   }
-  onPoint(p: Point, ctx: ToolContext): void {
+  onPoint(p: Point, ctx: ToolContext): void | Promise<void> {
     const e = pickAt(ctx.doc, p, ctx.aperture() * 2, isInsertComponent);
     if (!e) {
       ctx.log('Select a component.');
       return;
     }
-    this.edit(e, ctx);
+    return this.edit(e, ctx);
   }
 }
 
@@ -595,7 +595,7 @@ export class CableTool extends PickTool {
     ctx.setPreview(this.wires.map((x) => ({ ...x, id: `cab-${x.id}`, color: 2 })));
     ctx.prompt(`${this.wires.length} wire(s) picked. Select next wire (Enter when done):`);
   }
-  override onEnter(ctx: ToolContext): void {
+  override onEnter(ctx: ToolContext): void | Promise<void> {
     ctx.setPreview([]);
     if (this.wires.length === 0) {
       ctx.finish();
@@ -604,7 +604,7 @@ export class CableTool extends PickTool {
     const existing = [...new Set(ctx.doc.entities.filter(isCableMarker).map((m) => m.attributes.CABLENO ?? '').filter(Boolean))].sort();
     const init: CableAssignment = { cable: nextCableTag(ctx.doc.entities), type: '', scheme: 'numbers', first: 1 };
     const wires = this.wires;
-    void this.ask(wires.length, init, existing).then((a) => {
+    return this.ask(wires.length, init, existing).then((a) => {
       if (!a) {
         ctx.finish();
         return;

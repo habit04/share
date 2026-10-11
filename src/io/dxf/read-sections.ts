@@ -16,6 +16,7 @@ import type { DimStyle, BlockDef, Entity, Layer } from '../../core/entities';
 import { LayoutReader } from '../dxf-layouts';
 import { findLinetype } from '../../core/linetypes';
 import { textStyleFromGroups } from '../encoding';
+import { fontImportWarning } from '../font-warning';
 import type { AttributeDefExt } from '../../electrical/symbol-builder-core';
 import * as g from '../../core/geometry';
 import { attdefFlagProps } from '../../electrical/symbol-builder-core';
@@ -108,7 +109,8 @@ export function readTablesSection(objs: Obj[], tables: TableRecords, dimStyles: 
       const ts = textStyleFromGroups(o.groups);
       if (ts) textStyles[ts.name] = ts;
       if (ts && has(o, 5)) ctx.textStyleHandles!.set(str(o, 5).toUpperCase(), ts.name);
-      if (ts && ((ts.font && !/^txt(?:\.shx)?$/i.test(ts.font)) || ts.bigFont || ts.family)) report.add({ type: 'STYLE', action: 'unsupported', reason: `font "${ts.family || ts.font}" of style "${ts.name}" is kept for export; JCad's stroke font approximates its appearance and metrics (font files are not embedded)`, ...(o.line ? { line: o.line } : {}) });
+      const fontWarning = ts && fontImportWarning(ts);
+      if (fontWarning) report.add({ type: 'STYLE', action: 'unsupported', reason: fontWarning, ...(o.line ? { line: o.line } : {}) });
     } else if (o.kind === 'VIEW') {
       const vname = str(o, 2);
       if (vname) views.push({ name: vname, center: pt(o, 10), height: num(o, 40, 10) || 10 });
@@ -216,8 +218,11 @@ export function drawingHeader(headerVars: ReadonlyMap<string, Pair[]>, dimStyle:
       luprec: Math.max(0, Math.trunc(hnum('$LUPREC', DEFAULT_HEADER.units.luprec))),
       insunits: Math.trunc(hnum('$INSUNITS', DEFAULT_HEADER.units.insunits)),
       auprec: Math.max(0, Math.trunc(hnum('$AUPREC', 0))),
+      ...(headerVars.has('$AUNITS') ? { aunits: hnum('$AUNITS', 0) } : {}),
     },
     ltscale: hnum('$LTSCALE', 1) || 1,
+    ...(headerVars.has('$CELTSCALE') ? { celtscale: hnum('$CELTSCALE', 1) } : {}),
+    ...(headerVars.has('$TEXTSTYLE') ? { textStyle: headerVars.get('$TEXTSTYLE')?.[0]?.value || 'Standard' } : {}),
     limits: { min: hpt('$LIMMIN', DEFAULT_HEADER.limits.min), max: hpt('$LIMMAX', DEFAULT_HEADER.limits.max) },
     pdmode: Math.trunc(hnum('$PDMODE', 0)),
     pdsize: hnum('$PDSIZE', 0),

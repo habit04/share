@@ -9,7 +9,7 @@
 import { Drawing, type DrawingState } from '../core/document';
 import type { Point } from '../core/geometry';
 import { fileBaseName, samePath, shortNames } from './paths';
-import { validateGeometryBudget } from '../core/geometry-budget';
+import { prepareDrawingState, validateGeometryBudget } from '../core/geometry-budget';
 
 export interface DocumentSession {
   readonly id: number;
@@ -81,7 +81,7 @@ export class SessionManager {
   }
 
   private make(state: DrawingState, filePath: string | null): DocumentSession {
-    validateGeometryBudget(state);
+    prepareDrawingState(state);
     this.untitledCounter += 1;
     return {
       id: this.nextId++,
@@ -280,7 +280,7 @@ export class SessionManager {
   loadInto(id: number, state: DrawingState, filePath: string | null, dirty = false): boolean {
     const i = this.indexOfId(id);
     if (i < 0) return false;
-    validateGeometryBudget(state);
+    prepareDrawingState(state);
     if (i === this.activeIndex) {
       this.host.loadState(state, filePath);
       this.host.doc.dirty = dirty;

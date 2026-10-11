@@ -10,6 +10,10 @@ same API is available in the developer console as `window.jcadApi`.
 - Everything the API hands out is a **frozen copy**. To change the drawing you pass entities
   back through `document.add / replace / remove` or group changes with `document.transact`;
   every change is an undo step like any command (Ctrl+Z works).
+- Accepted drawing snapshots are also sealed at runtime. Build replacement objects instead of
+  mutating objects retained by the drawing. Geometry budgets apply to edits and project batches:
+  an oversized candidate throws before it changes document state, undo history or dirty status.
+  `commands.run` returns an asynchronous command's promise, so scripts can await a rejection.
 - Errors thrown by plugin code (while loading, in a command, in an event listener, in a
   rejected promise, in a timer or other callback whose stack points into the plugin) are
   caught and printed on the command line as `[plugin-name] ...`, and one plugin that fails to

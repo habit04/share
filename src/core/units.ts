@@ -13,6 +13,8 @@ export interface UnitSettings {
   readonly insunits: number;
   /** $AUPREC angular precision (decimal degrees). */
   readonly auprec: number;
+  /** $AUNITS: 0 decimal degrees, 1 DMS, 2 grads, 3 radians, 4 surveyor units. */
+  readonly aunits?: number;
 }
 
 export const DEFAULT_UNITS: UnitSettings = { lunits: 2, luprec: 4, insunits: 1, auprec: 0 };

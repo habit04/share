@@ -48,7 +48,8 @@ describe('viewport static scene caching', () => {
     vp.underlay = vi.fn(); vp.render(ov); vp.render(ov);
     expect(vp.underlay).toHaveBeenCalledTimes(2);
     vp.underlay = null;
-    doc.transact((s) => ({ ...s, blocks: { ...s.blocks, IMAGE_BLOCK: { name: 'IMAGE_BLOCK', basePoint: { x: 0, y: 0 }, entities: [{ type: 'image' } as Entity], attributes: [] } } }));
+    const image: Entity = { id: 'image', type: 'image', layer: '0', color: 'ByLayer', path: 'example.png', position: { x: 0, y: 0 }, u: { x: 1, y: 0 }, v: { x: 0, y: 1 }, size: { x: 1, y: 1 } };
+    doc.transact((s) => ({ ...s, blocks: { ...s.blocks, IMAGE_BLOCK: { name: 'IMAGE_BLOCK', basePoint: { x: 0, y: 0 }, entities: [image], attributes: [] } } }));
     vp.render(ov); vp.render(ov);
     expect(drawEntity).toHaveBeenCalledTimes(1000);
     vp.dispose();

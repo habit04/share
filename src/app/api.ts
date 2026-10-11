@@ -77,7 +77,8 @@ export interface JcadApi {
   };
   readonly commands: {
     register(cmd: PluginCommand): () => void;
-    run(name: string, arg?: string): void;
+    /** Returns the command's promise when it has asynchronous work. */
+    run(name: string, arg?: string): void | Promise<void>;
     list(): CommandInfo[];
   };
   readonly document: {
@@ -332,8 +333,7 @@ function hubOf(editor: Editor): Hub {
     const name = input.trim().split(/\s+/)[0]?.toUpperCase();
     const def = name ? editor.commands.get(name) : undefined;
     if (!def) {
-      original(input);
-      return;
+      return original(input);
     }
     if (hub.active) {
       const n = hub.active.name;
@@ -343,7 +343,7 @@ function hubOf(editor: Editor): Hub {
     emit('commandStarted', def.name);
     const before = editor.tool;
     try {
-      original(input);
+      return original(input);
     } finally {
       if (editor.tool && editor.tool !== before) hub.active = { name: def.name, tool: editor.tool };
       else emit('commandEnded', def.name);
@@ -540,7 +540,7 @@ export function createApi(editor: Editor, owner: string): ApiHandle {
       // A command a plugin runs is not the user's choice (RECENT opens a project by name then).
       editor.apiCommandDepth += 1;
       try {
-        editor.runCommand(arg !== undefined && arg !== '' ? `${n} ${arg}` : n);
+        return editor.runCommand(arg !== undefined && arg !== '' ? `${n} ${arg}` : n);
       } finally {
         editor.apiCommandDepth -= 1;
       }

@@ -19,6 +19,7 @@ import type { Project } from '../src/app/project';
 import { loadProjectSheets, commitSheets, runProjectXref, runTitleBlocksAll, projectUi } from '../src/app/commands-electrical';
 import { captureRevision, saveQueue } from '../src/app/savequeue';
 import { newFromTemplate, SHEET_SIZES } from '../src/electrical/templates';
+import { defaultLayout } from '../src/core/layouts';
 
 const ins = (block: string, x: number, y: number, attrs: Record<string, string>): InsertEntity => ({ id: newId(), layer: 'SYMS', color: 'ByLayer', type: 'insert', block, position: { x, y }, rotation: 0, scale: 1, attributes: attrs });
 const ref = (y: number, t: string): Entity => ({ id: newId(), layer: 'MISC', color: 'ByLayer', type: 'text', position: { x: 0.75, y: y - 0.06 }, text: t, height: 0.125, rotation: 0, align: 'right' });
@@ -121,6 +122,52 @@ afterEach(() => {
 
 const closed = () => sheetState('3', 300, [ins('HCR1_NC', 3, 8, { TAG1: 'CR100' })]);
 const base = { projectPath: '/p/p.jcadproj.json', drawings: ['a.dxf', 'b.dxf', 'c.dxf'], activePath: '/p/a.dxf', tabPath: '/p/b.dxf' };
+
+describe('geometry budgets are checked before project batch changes', () => {
+  it.each(['active', 'session', 'file'] as const)('rejects an excessive %s candidate before changing any drawing, history, active space or file', async (source) => {
+    const f = fake({ ...base, files: { '/p/c.dxf': closed() } });
+    f.editor.doc.transact((state) => ({ ...state, layouts: [defaultLayout('L1')], space: { layout: 'L1' } }));
+    f.editor.doc.addEntities([note('paper note')]);
+    const { sheets } = await loadProjectSheets(f.editor);
+    const before = f.editor.doc.snapshot;
+    const history = f.editor.doc.history();
+    const revision = f.editor.doc.revision;
+    const tabs = () => f.editor.sessions.all.map((session) => ({ state: session.state, undo: [...session.undo], redo: [...session.redo], dirty: session.dirty, revision: session.revision }));
+    const beforeTabs = tabs();
+    const beforeDisk = [...f.disk];
+    let confirmations = 0;
+    onConfirm = () => { confirmations += 1; };
+    const active = sheets.findIndex((sheet) => sheet.source === 'active');
+    const target = sheets.findIndex((sheet) => sheet.source === source);
+    const changes = new Map([[active, { state: { ...sheets[active]!.doc.snapshot, entities: [...sheets[active]!.doc.entities, note('valid update')] }, detail: 'valid' }]]);
+    changes.set(target, { state: { ...sheets[target]!.doc.snapshot, entities: [note('X'.repeat(1_000_000))] }, detail: 'excessive' });
+    await expect(commitSheets(f.editor, sheets, changes, 'Budget test', 'test', true)).rejects.toThrow(/safe geometry budget/);
+    expect(f.editor.doc.snapshot).toBe(before);
+    expect(f.editor.doc.history()).toEqual(history);
+    expect(f.editor.doc.revision).toBe(revision);
+    expect(f.editor.doc.space).toEqual({ layout: 'L1' });
+    expect(tabs()).toEqual(beforeTabs);
+    expect([...f.disk]).toEqual(beforeDisk);
+    expect(confirmations).toBe(0);
+    expect(f.backups).toEqual([]);
+    expect(f.writes).toEqual([]);
+  });
+
+  it('seals accepted background batch geometry before retaining it and permits its undo', async () => {
+    const f = fake({ ...base, files: { '/p/c.dxf': closed() } });
+    const { sheets } = await loadProjectSheets(f.editor);
+    const target = sheets.findIndex((sheet) => sheet.source === 'session');
+    const previous = f.editor.sessions.all[1]!.state;
+    const borrowed = { ...sheets[target]!.doc.snapshot, entities: [note('valid background update')] };
+    const result = await commitSheets(f.editor, sheets, new Map([[target, { state: borrowed, detail: 'valid' }]]), 'Budget test', 'test');
+    expect(result?.open).toBe(1);
+    expect(f.editor.sessions.all[1]!.state).toBe(borrowed);
+    expect(() => borrowed.entities.push(note('borrowed mutation'))).toThrow(TypeError);
+    f.editor.sessions.switchTo(1);
+    expect(f.editor.doc.undo()).toBe(true);
+    expect(f.editor.doc.snapshot).toBe(previous);
+  });
+});
 
 describe('failed backups stop the write', () => {
   it('reads every backup answer shape', () => {

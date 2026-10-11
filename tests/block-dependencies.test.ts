@@ -5,12 +5,51 @@ import { SessionManager } from '../src/app/sessions';
 import { warmSpatialIndex, spatialIndexSettings } from '../src/core/spatial-index';
 import { pickEntity } from '../src/core/selection';
 import { validateGeometryBudget } from '../src/core/geometry-budget';
+import { sealImmutableData } from '../src/core/immutable-data';
 
 const insert = (block: string, id = block): InsertEntity => ({ id, type: 'insert', block, layer: '0', color: 'ByLayer', position: { x: 0, y: 0 }, scale: 1, rotation: 0, attributes: {} });
 const line = (x: number): Entity => ({ id: 'line', type: 'line', layer: '0', color: 'ByLayer', a: { x, y: 0 }, b: { x: x + 1, y: 0 } });
 const block = (name: string, entities: Entity[]): BlockDef => ({ name, entities, basePoint: { x: 0, y: 0 }, attributes: [] });
 afterEach(() => { spatialIndexSettings.minEntities = 2000; });
 describe('transitive block cache dependencies', () => {
+  it('rechecks direct mutable block definitions after a prior expansion on the same identity', () => {
+    const ins = insert('B');
+    const entities = [line(0)];
+    const definition = block('B', entities);
+    const lookup = () => definition;
+    expect(explodeInsert(ins, lookup)).toHaveLength(1);
+    const heavy: Entity = { id: 'heavy', type: 'text', layer: '0', color: 'ByLayer', position: { x: 0, y: 0 }, text: 'X'.repeat(1_000_000), height: 1, rotation: 0, align: 'left' };
+    entities.push(heavy);
+    expect(() => explodeInsert(ins, lookup)).toThrow(/geometry budget/);
+    expect(() => entityBounds(ins, lookup)).toThrow(/geometry budget/);
+    expect(Object.isFrozen(ins)).toBe(false);
+    expect(Object.isFrozen(definition)).toBe(false);
+  });
+
+  it('requires every reachable definition to be immutable before caching a sealed insert', () => {
+    const ins = sealImmutableData(insert('OUTER'));
+    const outer = sealImmutableData(block('OUTER', [insert('INNER')]));
+    const entities = [line(0)];
+    const inner = block('INNER', entities);
+    const lookup = (name: string) => name === 'OUTER' ? outer : inner;
+    expect(explodeInsert(ins, lookup)).toHaveLength(1);
+    const heavy: Entity = { id: 'heavy', type: 'text', layer: '0', color: 'ByLayer', position: { x: 0, y: 0 }, text: 'X'.repeat(1_000_000), height: 1, rotation: 0, align: 'left' };
+    entities.push(heavy);
+    expect(() => explodeInsert(ins, lookup)).toThrow(/geometry budget/);
+    expect(() => entityBounds(ins, lookup)).toThrow(/geometry budget/);
+  });
+
+  it('recomputes a mutable insert even when its block definition is immutable', () => {
+    const definition = sealImmutableData(block('B', [line(0)]));
+    const ins = insert('B');
+    const lookup = () => definition;
+    expect(entityBounds(ins, lookup)?.min.x).toBe(0);
+    (ins.position as { x: number }).x = 100;
+    expect(entityBounds(ins, lookup)?.min.x).toBe(100);
+    (ins.attributes as Record<string, string>).TAG1 = 'X'.repeat(100_000);
+    expect(() => explodeInsert(ins, lookup)).toThrow(/geometry budget/);
+  });
+
   it('refreshes insert geometry and spatial selection after nested redefine, removal and undo', () => {
     spatialIndexSettings.minEntities = 1;
     const ins = insert('OUTER');

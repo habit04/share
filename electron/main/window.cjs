@@ -64,7 +64,7 @@ function secureContents(contents) {
  * @param {MainContext} ctx
  * @param {string | undefined} devUrl  the Vite dev server (VITE_DEV_SERVER_URL); the built page when unset
  */
-function createWindows(ctx, devUrl) {
+function createWindows(ctx, devUrl, allowInspection = !app.isPackaged) {
   const { ipcMain } = ctx;
   /** Set when electron-updater is about to quit and relaunch: the close veto must not run then. */
   let quittingForUpdate = false;
@@ -188,6 +188,7 @@ function createWindows(ctx, devUrl) {
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
+        devTools: allowInspection,
       },
     });
     ctx.mainWindow = win;

@@ -45,13 +45,13 @@ describe('workflow validation', () => {
   });
 
   it('notices a build that no longer waits for the checks', () => {
-    const r = check(withRelease((t) => t.replace('  build:\n    needs: checks\n', '  build:\n')));
+    const r = check(withRelease((t) => t.replace('  build:\n    needs: [checks, test-build]\n', '  build:\n')));
     expect(r.code).toBe(1);
     expect(r.out).toMatch(/build must need checks/);
   });
 
   it('notices a release that no longer waits for the packaged smoke test or checks the tag', () => {
-    const r = check(withRelease((t) => t.replace('needs: [checks, build, packaged-smoke, verify-artifacts]', 'needs: [checks, build]').replace('target_commitish: ${{ needs.checks.outputs.sha }}', 'target_commitish: ${{ github.sha }}')));
+    const r = check(withRelease((t) => t.replace('needs: [checks, test-build, build, packaged-smoke, verify-artifacts]', 'needs: [checks, build]').replace('target_commitish: ${{ needs.checks.outputs.sha }}', 'target_commitish: ${{ github.sha }}')));
     expect(r.code).toBe(1);
     expect(r.out).toMatch(/release must need packaged-smoke/);
     expect(r.out).toMatch(/must target the tested commit/);
@@ -77,7 +77,7 @@ describe('workflow validation', () => {
     expect(r.out).toMatch(/needs unknown job bild/);
   });
   it('rejects missing performance budgets and a lost supported Node version', () => {
-    const r = check(withRelease((t) => t.replace('node: [22, 24]', 'node: [22]').replace('JCAD_BENCH_ASSERT: 1', 'JCAD_BENCH_ASSERT: 0').replace('run: npm run bench:node', 'run: echo skipped')));
+    const r = check(withRelease((t) => t.replace('node: [22, 24]', 'node: [22]').replaceAll('JCAD_BENCH_ASSERT: 1', 'JCAD_BENCH_ASSERT: 0').replace('run: npm run bench:node', 'run: echo skipped')));
     expect(r.code).toBe(1);
     expect(r.out).toMatch(/both Node 22 and 24/);
     expect(r.out).toMatch(/performance budgets must be asserted/);
@@ -132,7 +132,7 @@ describe('workflow validation', () => {
   });
 
   it('rejects publication that no longer depends on aggregate verification', () => {
-    const r = check(withRelease((t) => t.replace('needs: [checks, build, packaged-smoke, verify-artifacts]', 'needs: [checks, build, packaged-smoke]')));
+    const r = check(withRelease((t) => t.replace('needs: [checks, test-build, build, packaged-smoke, verify-artifacts]', 'needs: [checks, test-build, build, packaged-smoke]')));
     expect(r.code).toBe(1);
     expect(r.out).toMatch(/release must need verify-artifacts/);
   });
@@ -149,5 +149,16 @@ describe('workflow validation', () => {
     const r = check(withRelease((t) => t.replace('release/*.dmg\n              release/*.blockmap\n              release/latest*.yml', 'release/*.dmg')));
     expect(r.code).toBe(1);
     expect(r.out).toMatch(/macOS upload must include updater metadata and blockmaps/);
+  });
+  it('rejects bypassing the dedicated test-build gate or allowing legacy inspection smoke for shipping', () => {
+    const r = check(withRelease((t) => t.replace('needs: [checks, test-build]\n    strategy', 'needs: [checks]\n    strategy').replace('JCAD_SMOKE_REQUIRE_SHIPPING: 1', 'JCAD_SMOKE_REQUIRE_SHIPPING: 0')));
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/shipping builds must wait for the dedicated inspection-enabled test-build suite/);
+    expect(r.out).toMatch(/shipping smoke must require disabled inspection fuses/);
+  });
+  it('rejects losing the fail-closed publication signing requirement', () => {
+    const r = check(withRelease((t) => t.replace("REQUIRE_PUBLISHER_SIGNING: ${{ startsWith(github.ref, 'refs/tags/v') || github.event.inputs.tag != '' || github.event.inputs.require_signing == 'true' }}", 'REQUIRE_PUBLISHER_SIGNING: false')));
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/publication and required-signing rehearsals must fail closed/);
   });
 });

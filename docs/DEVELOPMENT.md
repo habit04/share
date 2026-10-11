@@ -150,21 +150,24 @@ npm run e2e:origin                           # real two-launch legacy preference
 
 `scripts/e2e-electron.mjs` launches Electron on `dist/` with Playwright and drives the real main
 process, preload bridge and IPC (native dialogs are replaced inside the main process; see the
-file header for the full list of checks). The same script tests a **packaged** application:
+file header for the full list of checks). Full packaged Playwright coverage uses a dedicated,
+unpublished ASAR build with inspection enabled and `jcadTestBuild` metadata:
 
 ```bash
-npm run e2e:packaged -- "release/win-unpacked/JCad Electrical.exe"
-xvfb-run -a npm run e2e:packaged -- release/linux-unpacked/jcad-electrical
+npx electron-builder --dir --config scripts/electron-test-build.cjs --publish never
+node scripts/test-build-e2e.mjs
 node scripts/packaged-smoke.mjs release/     # installs / mounts / extracts every installer in release/ for this OS
 ```
 
 `scripts/packaged-smoke.mjs` runs the NSIS installer silently (`/S /D=<temp folder>`), mounts a
 disk image with `hdiutil attach` and copies the `.app` out, or extracts an AppImage
 (`--appimage-extract`) or a `.deb` (`dpkg-deb -x`); then it runs the headless DWG probe
-(`--probe-dwg`) and the end-to-end checks against the packaged executable. Version 0.4.1 and
-later also run `e2e-origin.mjs --packaged <executable>` twice to verify legacy preference
-migration and preservation of values at the secure origin. This needs the stock Electron binary
-for isolated legacy-profile seeding; do not skip its download when preparing packaged smoke tests.
+(`--probe-dwg`). Current shipping binaries disable inspection, so the script verifies their actual
+binary fuses and runs bounded fixed startup probes for packaged metadata, saving/reopening a
+fixture and two-launch secure-origin preference migration. The probes accept only enumerated
+operations in an owned temporary profile, with no arbitrary script argument. Older releases with
+inspection enabled retain the legacy Playwright path; release CI requires the hardened shipping
+path. Stock Electron seeds the isolated legacy profile; do not skip its download for these checks.
 Each target writes its migration log and JSON result below `packaged-smoke-output/`.
 
 ## Performance
@@ -172,6 +175,7 @@ Each target writes its migration log and JSON result below `packaged-smoke-outpu
 ```bash
 npm run bench:node                  # pick / select / snap on 50,000 entities, with and without the spatial index; 20-drawing project reports
 npm run build && npm run bench      # rendering, hover and window selection in headless Chromium
+JCAD_BENCH_ASSERT=1 npm run bench:project  # filesystem reads, preparation and twelve project reports
 JCAD_BENCH_ASSERT=1 JCAD_PERF_FACTOR=2 npm run bench  # enforce browser budgets (CI / release)
 ```
 
@@ -186,16 +190,19 @@ npm run dist                # installers for this OS (electron-builder; see pack
 
 electron-builder only builds installers for the OS it runs on (macOS disk images need macOS).
 The release workflow builds all three on GitHub's runners; locally, `npm run dist:dir` plus
-`npm run e2e:packaged` is the quickest way to test a packaged build.
+`node scripts/shipping-runtime-smoke.mjs <packaged-executable>` checks the hardened shipping
+build. The full Playwright suite uses `release-test/`; that build is excluded from shipping uploads.
 
 ## Signing and release
 
-- Signing is optional per platform and switches on from repository secrets; see
+- Local and build-only rehearsal signing switches on from repository secrets; publication
+  requires Windows publisher and Apple signing/notarization credentials. See
   [CODE-SIGNING.md](CODE-SIGNING.md). Local builds are unsigned (macOS: ad-hoc signed by
   `scripts/afterPack.cjs`).
 - Packaging flips Electron fuses after `afterPack`, then signs. The fuse reset option reseals
-  the macOS ad-hoc app after mutation; release CI verifies that final seal. The CLI inspect fuse
-  remains enabled so packaged Playwright tests can connect.
+  the macOS ad-hoc app after mutation; release CI verifies that final seal. Shipping disables the
+  CLI inspect fuse. The separate test ASAR enables inspection for full Playwright checks, and
+  fixed probes exercise the actual shipping binaries without enabling debugging.
 - Releases are cut by pushing a `v<version>` tag (or running **Build installers** with a tag);
   the pipeline, its gates and how to verify a published build are in [RELEASE.md](RELEASE.md).
 
@@ -215,6 +222,7 @@ npm run build:site && node e2e/run-screenshots.mjs && npm run screenshot:compare
 xvfb-run -a npm run e2e             # (Windows / macOS: npm run e2e)
 xvfb-run -a npm run e2e:origin      # (Windows / macOS: npm run e2e:origin)
 npm run bench:node                  # when selection, snapping, reports or geometry changed
+JCAD_BENCH_ASSERT=1 npm run bench:project  # filesystem project preparation and reports
 ```
 
 Then push the branch: CI runs the same steps (`ci.yml`: `test`, `ui` and `e2e-electron` on
@@ -230,7 +238,8 @@ installer and smoke-tests each one on its own OS without publishing anything.
 | `eslint.config.js` | lint rules (no formatting rules) |
 | `tsconfig.json`, `tsconfig.electron.json`, `tsconfig.scripts.json` | type checks |
 | `scripts/screenshot*.mjs`, `scripts/screenshot-env.mjs`, `scripts/screenshot-compare.mjs`, `screenshots/baseline/` | visual review and approved baselines |
-| `scripts/e2e-electron.mjs`, `scripts/packaged-smoke.mjs` | Electron end-to-end, development and packaged |
+| `scripts/e2e-electron.mjs`, `scripts/test-build-e2e.mjs` | Full source and unpublished test-ASAR Playwright suites |
+| `scripts/packaged-smoke.mjs`, `scripts/shipping-runtime-smoke.mjs`, `scripts/electron-fuse-policy.mjs` | Actual shipping installer extraction, fuse checks and bounded startup/save/restart probes |
 | `scripts/bench.mjs`, `tests/perf*.test.ts`, `tests/spatial-index.test.ts` | performance |
 | `scripts/check-workflows.mjs` | workflow validation |
 | `scripts/check-fixtures.mjs`, `tests/fixtures/manifest.json` | mandatory committed regression inputs |

@@ -928,7 +928,7 @@ describe('r2018-image-inches.dxf: IMAGE + IMAGEDEF in model and paper space, $IN
     it('inch units with architectural format, limits and linetype scale', () => {
       if (s === f.imported) expect(importReportOf(s)?.items).toContainEqual(expect.objectContaining({ type: 'RASTERVARIABLES', action: 'dropped' }));
       else expect(importReportOf(s)).toBeUndefined();
-      expect(s.header?.units).toEqual({ insunits: 1, lunits: 4, luprec: 4, auprec: 0 });
+      expect(s.header?.units).toEqual({ insunits: 1, lunits: 4, luprec: 4, auprec: 0, aunits: 0 });
       expect(formatLength(30.5, s.header!.units)).toBe('2\'-6 1/2"');
       expect(s.header?.limits.max).toEqual({ x: 432, y: 288 });
       expect(s.header?.ltscale).toBe(12);

@@ -23,7 +23,7 @@ import { bigDrawing } from './helpers/big-drawing';
 const BENCH = !!process.env.JCAD_BENCH;
 
 const FACTOR = Number(process.env.JCAD_PERF_FACTOR ?? '1') || 1;
-const BUDGET = { pick: 16, snap: 16, windowSelect: 16, crossingSelect: 16, indexBuild: 1500, indexRebuild: 250, projectReports: 15000 };
+const BUDGET = { pick: 16, snap: 16, windowSelect: 16, crossingSelect: 16, indexBuild: 1500, indexRebuild: 250, edit: 250, quietHistory: 250, projectReports: 15000 };
 
 function best<T>(fn: () => T, runs = 5): { ms: number; value: T } {
   let ms = Infinity;
@@ -61,6 +61,26 @@ describe.skipIf(!BENCH)('dense drawing: 50,000 entities', () => {
 
   it('has 50,000 entities', () => {
     expect(ents.length).toBe(50_000);
+  });
+
+  it('validates dense edits and quiet history changes within interactive budgets', () => {
+    const edited = new Drawing(state);
+    let slowest = 0;
+    for (let index = 0; index < 30; index += 1) {
+      const entity = edited.entities[index]!;
+      const started = performance.now();
+      edited.replaceEntities([{ ...entity, color: index % 7 + 1 } as Entity]);
+      slowest = Math.max(slowest, performance.now() - started);
+    }
+    const started = performance.now();
+    edited.setHeader({ ltscale: 2 });
+    const quiet = performance.now() - started;
+    console.log(`perf geometry edit (50k)     maximum ${slowest.toFixed(1)} ms; quiet history ${quiet.toFixed(1)} ms`);
+    expect(slowest).toBeLessThan(BUDGET.edit * FACTOR);
+    expect(quiet).toBeLessThan(BUDGET.quietHistory * FACTOR);
+    expect(edited.history().undo).toHaveLength(30);
+    expect(edited.undo()).toBe(true);
+    expect(edited.header.ltscale).toBe(2);
   });
 
   it('builds the spatial index within budget', () => {

@@ -4,6 +4,7 @@ import { createReadStream, readdirSync, readFileSync, lstatSync, writeFileSync, 
 import { execFileSync } from 'node:child_process';
 import { basename, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { validateFuseEvidence } from './electron-fuse-evidence.mjs';
 
 const PLATFORMS = ['Windows', 'macOS', 'Linux'];
 const SIGNING = { Windows: ['unsigned', 'authenticode-verified'], macOS: ['ad-hoc', 'developer-id-notarized'], Linux: ['unsigned'] };
@@ -33,13 +34,14 @@ function validateIdentity(platform, version, sha, signing) {
   if (!PLATFORMS.includes(platform) || !SIGNING[platform].includes(signing)) throw new Error(`invalid platform/signing status: ${platform}/${signing}`);
   if (!/^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(version) || !/^[0-9a-f]{40}$/.test(sha)) throw new Error('invalid release version or source SHA');
 }
-export async function writeBuildProvenance(dir, platform, version, sha, signing) {
+export async function writeBuildProvenance(dir, platform, version, sha, signing, executableFuses) {
   validateIdentity(platform, version, sha, signing);
   const names = readdirSync(dir).filter(isReleaseAsset).sort();
   const expected = expectedInstallers(version, platform);
   for (const name of expected) if (!names.includes(name)) throw new Error(`missing ${platform} installer: ${name}`);
   for (const name of expectedUpdateAssets(version, platform)) if (!names.includes(name)) throw new Error(`missing ${platform} update asset: ${name}`);
   for (const name of names.filter((name) => /\.(?:exe|dmg|AppImage|deb)$/.test(name))) if (!expected.includes(name)) throw new Error(`unexpected installer: ${name}`);
+  validateFuseEvidence(platform, executableFuses);
   const artifacts = [];
   for (const name of names) {
     const file = join(dir, name);
@@ -47,7 +49,7 @@ export async function writeBuildProvenance(dir, platform, version, sha, signing)
     if (!info.isFile() || info.size === 0) throw new Error(`empty or non-file artifact: ${name}`);
     artifacts.push({ name, bytes: info.size, sha256: await digest(file) });
   }
-  const record = { schemaVersion: 1, platform, version, sourceSha: sha, signing, artifacts };
+  const record = { schemaVersion: 1, platform, version, sourceSha: sha, signing, executableFuses, artifacts };
   writeFileSync(join(dir, `JCad-Electrical-${platform}-provenance.json`), `${JSON.stringify(record, null, 2)}\n`);
   return record;
 }
@@ -69,6 +71,7 @@ export async function verifyReleaseProvenance(dir, version, sha) {
     if (record.schemaVersion !== 1 || record.version !== version || record.sourceSha !== sha) throw new Error(`provenance does not match tested source/version: ${file}`);
     if (basename(file) !== `JCad-Electrical-${record.platform}-provenance.json`) throw new Error('platform provenance filename does not match its record');
     if (seen.has(record.platform)) throw new Error(`duplicate platform provenance: ${record.platform}`);
+    validateFuseEvidence(record.platform, record.executableFuses);
     seen.add(record.platform);
     if (!Array.isArray(record.artifacts) || !record.artifacts.length) throw new Error(`empty provenance artifacts: ${file}`);
     const names = new Set();
@@ -106,7 +109,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     const builtSha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
     const expectedSha = process.env.SOURCE_SHA;
     if (!expectedSha || builtSha !== expectedSha) throw new Error('checked out HEAD does not match SOURCE_SHA from release checks');
-    if (mode === 'build') await writeBuildProvenance(resolve(dir), platform, pkg.version, expectedSha, signing);
+    if (mode === 'build') {
+      const { verifyPlatformFuses } = await import('./electron-fuse-policy.mjs');
+      await writeBuildProvenance(resolve(dir), platform, pkg.version, expectedSha, signing, await verifyPlatformFuses(resolve(dir), platform));
+    }
     else if (mode === 'verify') {
       const record = await verifyReleaseProvenance(resolve(dir), pkg.version, expectedSha);
       if (platform === '--notes' && signing) appendFileSync(resolve(signing), signingSummary(record));
