@@ -34,22 +34,22 @@ unsupported" line on the command line). Sources: `src/io/dxf.ts`, `src/io/dxf-la
 | MULTILEADER / MLEADER | yes | yes | as LEADER + MTEXT | Leader lines, landing and text are kept; block content is not drawn (a note says so on open). Written back as a LEADER with MTEXT, not as a MULTILEADER. |
 | IMAGE (+ IMAGEDEF) | yes | yes | yes | The bitmap file is referenced by path (absolute or relative to the drawing); the clip boundary, brightness, contrast and fade are written. The desktop app draws `.png` / `.jpg` / `.gif` / `.bmp` / `.webp` up to 50 MB; other formats (and every bitmap in the browser edition) show as a frame with the file name. |
 | ACAD_TABLE | yes (with cell data) | yes | as INSERT + XDATA | A table is written as an insert of an anonymous block (other programs show its picture) carrying the cells in `JCAD_TABLE` XDATA, which JCad reads back as a table. Other programs see a block, not an editable table. |
-| VIEWPORT (paper space) | yes | no | yes | Rectangular viewports with their frozen layers; non-rectangular clipping is not supported. DWG import keeps model space only. |
+| VIEWPORT (paper space) | yes | yes | yes | Rectangular viewports with their frozen layers (DXF); non-rectangular clipping is not supported. DWG import reads the layouts' viewports, but layers frozen per viewport (VPLAYER) are not exposed by the DWG reader, so such viewports show every layer (the import report says so). |
 | External references (xref blocks) | yes | yes | yes | Kept as references and drawn as a named frame; the referenced file is not loaded. |
-| WIPEOUT, 3DFACE, 3DSOLID, REGION, BODY, MESH, MLINE, TOLERANCE, OLE2FRAME, SURFACE, LIGHT, UNDERLAY (PDF / DGN / DWF) | no | no | no | Dropped. DWG import lists them as skipped. |
+| WIPEOUT, 3DFACE, 3DSOLID, REGION, BODY, MESH, MLINE, TOLERANCE, OLE2FRAME, SURFACE, LIGHT, UNDERLAY (PDF / DGN / DWF) | kept (DXF) | no | as read | Not drawn or edited. The import report (IMPORTREPORT) lists every such object: unknown ENTITIES records of a DXF are kept with the drawing and written back as they were on save; what cannot be kept is dropped, and saving over the original file asks first (Save As keeps the original). DWG import counts them as skipped. |
 
 ## Drawing-level data
 
 | Item | DXF read | DWG read | DXF write | Known losses |
 | --- | --- | --- | --- | --- |
-| Layers | yes | yes | yes | Colour (ACI), linetype, lineweight, on / off, frozen, locked, no-plot (DXF). Layer true colours and transparency are not read. |
+| Layers | yes | yes | yes | Colour (ACI), linetype, lineweight, on / off, frozen, locked, no-plot (DXF), true colour (group 420 in DXF; a DWG layer with colour index 256 carries its RGB). Layer transparency is not read. |
 | Linetypes (LTYPE) | yes | yes | yes | Dash patterns (group 49). Text or shapes embedded in complex linetypes are not drawn; only the dashes are. |
 | Text styles (STYLE) | yes | yes | yes | Name, font file / TrueType family, big font, height, width factor, oblique, flags. |
 | Dimension styles (DIMSTYLE) | yes | yes | yes | Every DIM* group code; arrowheads, tolerances and alternate-unit placement in `JCAD_DIMSTYLE` XDATA; arrow blocks of other programs resolved by handle. |
 | Blocks and attributes | yes | yes | yes | Nested blocks, base point, description. Unused library blocks are left out on save. |
 | Named views (VIEW) | yes | no | yes | |
 | Header variables | partly | partly | partly | Kept: $INSUNITS, $LUNITS / $LUPREC, $AUNITS / $AUPREC, $LIMMIN / $LIMMAX, $LTSCALE, $CELTSCALE, $CELTYPE, $CELWEIGHT, $CLAYER, $TEXTSTYLE, $PDMODE / $PDSIZE, $DIMSTYLE and the current style's $DIM* variables, $CANNOSCALE, $ANNOALLVISIBLE, $TDCREATE / $TDUPDATE; $DWGCODEPAGE is used to decode older files. DWG import reads units, limits and the dimension variables. Every other header variable is dropped. |
-| Layouts (paper space) | yes | no | yes | `*Paper_Space` blocks, LAYOUT objects in `ACAD_LAYOUT` (paper size, margins, plot scale). A drawing always opens in the Model tab. Plot style tables (CTB / STB) are not read. |
+| Layouts (paper space) | yes | yes | yes | `*Paper_Space` blocks, LAYOUT objects in `ACAD_LAYOUT` (paper size, margins, plot scale); from DWG the LAYOUT objects and their paper-space blocks (a lone, untouched Layout1 is not kept). A drawing always opens in the Model tab. Plot style tables (CTB / STB) are not read. |
 | Annotative objects | yes | no | yes | `AcadAnnotative` XDATA; one annotation scale per object. |
 | Fields | yes | partly | yes | Evaluated on open, written back as field codes; DWG keeps most fields in FIELD objects, which are read as their last displayed value. |
 | Groups, object data, other XDATA / XRECORDs | no | no | no | Only the XDATA applications listed above are read; everything else is dropped. |
@@ -61,8 +61,8 @@ unsupported" line on the command line). Sources: `src/io/dxf.ts`, `src/io/dxf-la
 | --- | --- | --- | --- |
 | ACI index colours 1-255 | yes | yes | Displayed with the standard AutoCAD palette (`src/render/palette.ts`); 7 is white on the dark background and black on paper. |
 | ByLayer | yes | yes | |
-| ByBlock (0) | yes | yes | Kept as colour 0 and written back, but not resolved to the insert's colour when drawn. Entities on layer 0 with colour ByLayer inside a block do take the insert's layer and colour (AutoCAD behaviour). |
-| True colour (group 420) | yes | yes | On entities; not on layers. |
+| ByBlock (0) | yes | yes | Kept as colour 0 and written back; when drawn, block content with ByBlock takes the reference's colour (or the reference's layer colour when the reference is ByLayer); ByBlock left on a top-level entity draws as the layer colour. Entities on layer 0 with colour ByLayer inside a block take the insert's layer and colour (AutoCAD behaviour). |
+| True colour (group 420) | yes | yes | On entities and layers. |
 | Colour books, transparency (group 440) | no | no | Shown in the nearest ACI colour / opaque. |
 
 ## Fonts and text

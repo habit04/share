@@ -549,8 +549,8 @@ try {
   await waitLog(/autosaved|Autosave/, h, 20_000).catch(() => bad('AUTOSAVE logged nothing'));
   const autosaves = await win.evaluate(() => window.jcad.autosaveList());
   check(Array.isArray(autosaves) && autosaves.length >= 1, `autosave entries for the Drawing Recovery Manager: ${JSON.stringify((autosaves ?? []).map((a) => a.name))}`);
-  const recovered = autosaves?.[0] ? await win.evaluate((n) => window.jcad.autosaveRead(n), autosaves[0].name) : null;
-  check(typeof recovered === 'string' && /SECTION/.test(recovered) && /EOF\s*$/.test(recovered), `recovery copy is a complete DXF (${recovered ? recovered.length : 0} characters)`);
+  const recoveryCopy = autosaves?.[0] ? await win.evaluate((n) => window.jcad.autosaveRead(n), autosaves[0].name) : null;
+  check(typeof recoveryCopy === 'string' && /SECTION/.test(recoveryCopy) && /EOF\s*$/.test(recoveryCopy), `recovery copy is a complete DXF (${recoveryCopy ? recoveryCopy.length : 0} characters)`);
 
   // ------------------------------------------------------------------ IPC from anything but the application page is refused
   step = 'IPC guard';

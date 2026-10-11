@@ -21,11 +21,14 @@ export default tseslint.config(
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrors: 'none', ignoreRestSiblings: true }],
       // Control characters in regular expressions are deliberate (DXF / PDF / MTEXT parsing).
       'no-control-regex': 'off',
-      'prefer-const': ['error', { destructuring: 'all' }],
+      // A `let` that a callback reads before the single assignment (`let sm; host.onLoad = () => sm.x; sm = make()`) stays a let.
+      'prefer-const': ['error', { destructuring: 'all', ignoreReadBeforeAssign: true }],
       // Byte order marks and no-break spaces in regular expressions and strings are deliberate.
       'no-irregular-whitespace': ['error', { skipStrings: true, skipRegExps: true, skipTemplates: true, skipComments: true }],
       // `const ed = this` for callbacks that need the editor next to their own `this` is the house style.
       '@typescript-eslint/no-this-alias': 'off',
+      // `const crypto = require('node:crypto')` in the main process shadows the browser-style global on purpose.
+      'no-redeclare': ['error', { builtinGlobals: false }],
     },
   },
   {
