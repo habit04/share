@@ -2,7 +2,8 @@
 // every file parses as YAML (js-yaml), has `on` and `jobs`, every job has `runs-on` and steps that
 // `uses` or `run` something, every `needs` names a job of the same workflow, and the release
 // pipeline keeps its gates (docs/RELEASE.md): installers are built only after the checks passed,
-// from the checked commit, smoke-tested as packaged applications, and published last.
+// from the checked commit, smoke-tested as packaged applications, and published last, with the
+// tag's CHANGELOG.md section as the release notes.
 //
 //   npm run check:workflows        exit 1 with a list of problems
 import { readFileSync, readdirSync } from 'node:fs';
@@ -88,7 +89,13 @@ else {
       problems.push('release.yml: release does not verify the tag against the tested commit');
     const publish = (jobs.release.steps ?? []).find((s) => String(s.uses ?? '').startsWith('softprops/action-gh-release'));
     if (!publish) problems.push('release.yml: release does not publish with action-gh-release');
-    else if (publish.with?.target_commitish !== '${{ needs.checks.outputs.sha }}') problems.push('release.yml: the release must target the tested commit');
+    else {
+      if (publish.with?.target_commitish !== '${{ needs.checks.outputs.sha }}') problems.push('release.yml: the release must target the tested commit');
+      // The release body comes from CHANGELOG.md (an empty release page is what 0.4.0 got).
+      const notes = (jobs.release.steps ?? []).findIndex((s) => /scripts\/release-notes\.mjs\b.*--out release-notes\.md/.test(String(s.run ?? '')));
+      if (notes < 0 || publish.with?.body_path !== 'release-notes.md') problems.push('release.yml: the release notes must come from CHANGELOG.md (scripts/release-notes.mjs --out release-notes.md, body_path: release-notes.md)');
+      else if (notes > (jobs.release.steps ?? []).indexOf(publish)) problems.push('release.yml: the release notes are written after the release is published');
+    }
   }
   // A gate is only a gate when a failed dependency stops the dependants: no job may run on
   // `always()` / `!cancelled()` / `failure()`, and no step of the checks job may continue on error.

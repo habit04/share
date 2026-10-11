@@ -63,6 +63,12 @@ describe('workflow validation', () => {
     expect(r.out).toMatch(/job checks step \d+ continues on error/);
   });
 
+  it('notices a release published without its CHANGELOG.md notes', () => {
+    const r = check(withRelease((t) => t.replace('          body_path: release-notes.md\n', '')));
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/release notes must come from CHANGELOG\.md/);
+  });
+
   it('notices a dropped signing step and a needs on an unknown job', () => {
     const r = check(withRelease((t) => t.replace('run: node scripts/azure-signing.mjs', 'run: echo skipped').replace('needs: [checks, build]\n    strategy', 'needs: [checks, bild]\n    strategy')));
     expect(r.code).toBe(1);

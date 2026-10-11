@@ -76,7 +76,8 @@ npm run build:site          # landing page + browser edition into site-dist/
 | `npm run typecheck:electron` | `tsc` with `checkJs` on `electron/*.cjs` and `scripts/*.cjs` (`tsconfig.electron.json`): the main process, preload, updater and packaging hook, typed through JSDoc and Electron's own type definitions. Nothing is emitted; the files ship as written. |
 | `npm run typecheck:scripts` | `tsc` with `checkJs` on `scripts/*.mjs` and `e2e/*.mjs` (`tsconfig.scripts.json`; page globals the scripts reach are declared in `scripts/types/page-globals.d.ts`; `strictNullChecks` is off there because the test drivers deliberately let a missing element throw). |
 | `npm run typecheck:all` | All three. |
-| `npm run check:workflows` | Parses every `.github/workflows/*.yml` with js-yaml and checks its structure, plus the release gates (checks before builds, packaged smoke test before publishing, tag verified against the tested commit, signing steps present). |
+| `npm run check:workflows` | Parses every `.github/workflows/*.yml` with js-yaml and checks its structure, plus the release gates (checks before builds, packaged smoke test before publishing, tag verified against the tested commit, signing steps present, release notes from `CHANGELOG.md`). |
+| `node scripts/make-icons.mjs --check` | The committed application icons (`build/icon.*`, `build/icons/`, `public/favicon.svg`, `site/img/icon.svg`) match a fresh render of `scripts/make-icons.mjs` (also covered by `tests/packaging.test.ts`); `npm run icons` redraws them. |
 
 ## Unit and regression tests
 

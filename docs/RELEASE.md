@@ -9,7 +9,8 @@ accounts and secrets in [CODE-SIGNING.md](CODE-SIGNING.md).
 
 1. **Prepare on the release branch.**
    - Bump `"version"` in `package.json` (and `package-lock.json`: `npm version <x.y.z> --no-git-tag-version`).
-   - Move the `[Unreleased]` entries of `CHANGELOG.md` under `## [x.y.z] - <date>`.
+   - Move the `[Unreleased]` entries of `CHANGELOG.md` under `## [x.y.z] - <date>` (they become
+     the release notes: `npm run release-notes -- vX.Y.Z` shows them as the release page will).
    - Make sure CI is green on the branch (`ci.yml`: test, ui, e2e on Ubuntu / Windows / macOS).
    - Optional dress rehearsal: run **Build installers** from the Actions tab on the branch with an
      empty tag. It runs every gate below and builds and smoke-tests the installers without
@@ -30,7 +31,7 @@ accounts and secrets in [CODE-SIGNING.md](CODE-SIGNING.md).
    | `checks` | ubuntu-latest | On the tagged commit: workflow validation, lint, `typecheck:all`, unit tests, renderer build, website build, UI click check, screenshot scripts and **comparison with the approved baselines**, Electron end-to-end. Outputs the commit SHA it tested. | everything below |
    | `build` | Windows, macOS, Linux | Checks out **that SHA**, checks that the tag equals `v` + `package.json` version, builds the installers (NSIS `.exe`, `.dmg` arm64 + x64, `.AppImage` + `.deb`), signs them when the secrets exist and verifies the signatures. | packaged-smoke, release |
    | `packaged-smoke` | Windows, macOS, Linux | Installs the NSIS installer silently, mounts each disk image (the x64 one under Rosetta) and extracts the AppImage and the `.deb`, then runs the headless DWG probe and the end-to-end checks against each **packaged** application: start-up, open a DXF and a DWG fixture, large-DWG progress and Cancel, save, autosave / recovery copy, vector PDF, IPC guard, clean close, no error log (`scripts/packaged-smoke.mjs`). | release |
-   | `release` | ubuntu-latest | Verifies that the tag points at the SHA the checks ran on (a tag moved after the push, or an existing tag elsewhere for a manual run, stops it), then publishes the GitHub Release with the installers, `latest*.yml` and `.blockmap` files, targeting that SHA. | - |
+   | `release` | ubuntu-latest | Verifies that the tag points at the SHA the checks ran on (a tag moved after the push, or an existing tag elsewhere for a manual run, stops it), writes the release notes from the tag's `CHANGELOG.md` section (`scripts/release-notes.mjs --strict`: no section, no release), then publishes the GitHub Release with those notes, the installers, `latest*.yml` and `.blockmap` files, targeting that SHA. | - |
 
    `npm run check:workflows` (run in CI and in `checks`) fails if any of these gates is removed.
 4. **After publishing**: download one installer per platform from the release page and start
@@ -39,6 +40,10 @@ accounts and secrets in [CODE-SIGNING.md](CODE-SIGNING.md).
 5. If something is wrong after publishing: mark the release as a pre-release or delete it (the
    updater only follows the latest non-prerelease release), fix, and release a new patch
    version. Never move or re-use a published tag; the updater compares versions, not tags.
+
+Releases up to 0.4.0 were published with an empty description. `docs/releases/v0.4.0.md` is the
+text for the 0.4.0 release page (`npm run release-notes -- v0.4.0`): open the release on GitHub,
+**Edit**, paste it as the description and **Update release** (the installers stay as they are).
 
 The manual **Packaged smoke test (existing release)** workflow re-runs the packaged checks
 against the installers attached to any published release (for example after a runner image or

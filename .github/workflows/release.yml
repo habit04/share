@@ -5,7 +5,8 @@ name: Build installers
 #   build           installers for Windows, macOS and Linux from that same commit (needs: checks)
 #   packaged-smoke  each installer installed / extracted on its own OS and driven end to end
 #   release         publishes the installers, only after all of the above passed, and only when
-#                   the release tag points at the commit the checks ran on
+#                   the release tag points at the commit the checks ran on; the release notes are
+#                   the tag's CHANGELOG.md section (scripts/release-notes.mjs)
 
 on:
   workflow_dispatch:
@@ -282,6 +283,12 @@ jobs:
           else
             echo "Tag $TAG does not exist yet; it will be created at the tested commit $TESTED."
           fi
+      # The release body is the version's CHANGELOG.md section plus the download notes; a tag
+      # without its own section stops the release (scripts/release-notes.mjs --strict).
+      - name: Release notes from CHANGELOG.md
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: node scripts/release-notes.mjs "$TAG" --strict --out release-notes.md
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -291,4 +298,5 @@ jobs:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           target_commitish: ${{ needs.checks.outputs.sha }}
           name: JCad Electrical ${{ github.event.inputs.tag || github.ref_name }}
+          body_path: release-notes.md
           files: artifacts/**/*
