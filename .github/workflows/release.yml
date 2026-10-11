@@ -53,10 +53,20 @@ jobs:
         env:
           JCAD_PERF_FACTOR: 2
       - run: npm run build
+      - name: Dense drawing and project performance gate
+        run: npm run bench:node
+        env:
+          JCAD_PERF_FACTOR: 2
       - run: node scripts/build-site.mjs
       - run: npm run ui-check
       - run: node e2e/run-screenshots.mjs
       - run: npm run screenshot:compare
+      - name: Browser interactive performance gate
+        run: npm run bench
+        env:
+          JCAD_BENCH_ASSERT: 1
+          JCAD_PERF_FACTOR: 2
+          JCAD_BENCH_OUT: screenshots/bench
       - name: Electron end-to-end (virtual display)
         run: xvfb-run -a npm run e2e
         env:

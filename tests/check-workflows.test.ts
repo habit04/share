@@ -22,7 +22,7 @@ function withRelease(edit: (text: string) => string): string {
   const dir = mkdtempSync(join(scratch, 'w-'));
   cpSync(join(root, '.github', 'workflows'), dir, { recursive: true });
   const file = join(dir, 'release.yml');
-  const before = readFileSync(file, 'utf8');
+  const before = readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
   const after = edit(before);
   expect(after).not.toBe(before);
   writeFileSync(file, after);
@@ -74,5 +74,12 @@ describe('workflow validation', () => {
     expect(r.code).toBe(1);
     expect(r.out).toMatch(/lost its signing step \(scripts\/azure-signing\.mjs\)/);
     expect(r.out).toMatch(/needs unknown job bild/);
+  });
+  // Performance gates, ported from PR #2 (codex/electrical-review-fixes 2f89b0e).
+  it('rejects missing performance budgets', () => {
+    const r = check(withRelease((t) => t.replace('JCAD_BENCH_ASSERT: 1', 'JCAD_BENCH_ASSERT: 0').replace('run: npm run bench:node', 'run: echo skipped')));
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/performance budgets must be asserted/);
+    expect(r.out).toMatch(/does not run "npm run bench:node"/);
   });
 });

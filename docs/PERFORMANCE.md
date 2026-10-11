@@ -9,13 +9,28 @@ change, and what is still slow.
 | --- | --- | --- |
 | `npm test` (`tests/perf.test.ts`) | Node (vitest), every CI run | Extents, selection, pick, snap, DXF write / read on a 6,500-entity schematic, with budgets about 3x the development machine (`JCAD_PERF_FACTOR` scales them). |
 | `npm run bench:node` (`tests/perf-dense.test.ts`, `JCAD_BENCH=1`) | Node, a separate CI step (alone, so it neither disturbs nor is disturbed by other tests) | A **dense drawing of 50,000 entities** (38,000 wires, 8,000 symbol inserts, 4,000 labels on a 200 x 150 sheet): spatial-index build and rebuild, pick, window / crossing / fence / polygon selection and object snap, each **with the index off (linear scan) and on**; and a **project of 20 drawings** (3,900 entities and 600 tagged components each, read from DXF text) running all twelve project-wide reports. Budgets: a frame (16 ms) for pick, snap and window / crossing selection. |
-| `npm run build && npm run bench` (`scripts/bench.mjs`) | Headless Chromium on the built renderer; CI `ui` job (informational, `screenshots/bench/bench.json` in the artifact) | The same 50,000-entity drawing in the real editor: `loadState` + ZOOM E, a full redraw at extents and zoomed in (with a 1-pixel read-back so the canvas has finished drawing), hover (`Editor.onMouseMove`: rollover pick + overlay) and a window-selection drag (`onMouseDown / Move / Up`). |
+| `npm run build && npm run bench` (`scripts/bench.mjs`) | Headless Chromium on the built renderer; the CI `ui` job and the release checks assert the budgets below (`JCAD_BENCH_ASSERT=1`, factor 2; `screenshots/bench/bench.json` in the artifact) | The same 50,000-entity drawing in the real editor: `loadState` + ZOOM E, a full redraw at extents and zoomed in (with a 1-pixel read-back so the canvas has finished drawing), hover (`Editor.onMouseMove`: rollover pick + overlay) and a window-selection drag (`onMouseDown / Move / Up`). |
 | `tests/spatial-index.test.ts` | every `npm test` | Correctness: the index gives exactly the linear scan's results (same entities, order and tie-breaks) for pick, all selection modes and snapping, including stray far-away objects, construction lines, hidden and locked layers, and a redefined block. |
 | `tests/spatial-index-random.test.ts` | every `npm test` | Property-style check on a randomized drawing of 2,000 mixed entities (lines, circles, arcs, text, polylines, inserts; hidden and locked layers): 200 random queries of every kind agree with the linear scan, and keep agreeing after replace, add, remove, undo, redo, a block redefinition and a layout switch. |
 
 Timings below are from the development container (Linux x64, Node 22.22, shared CPU), best of
 several runs unless noted; repeated runs varied by up to 2x because other work shared the
 machine, so ranges are given. Shared CI runners are slower; compare runs on the same machine.
+
+## Performance gates
+
+CI and the release checks run the dense Node benchmark (`npm run bench:node`) and assert the
+browser benchmark's budgets (`scripts/bench-budgets.mjs`, milliseconds before
+`JCAD_PERF_FACTOR`, which CI sets to 2): load 500, warm render at extents 50, warm zoomed render
+25, median hover 8, median window selection 50. A workload other than 50,000 entities, a window
+selection that selects nothing or a measurement that is not a number fails too. (Budgets and
+gates ported from PR #2, codex/electrical-review-fixes 2f89b0e.)
+
+Since then, drawings of 200 entities or more keep a bitmap of the drawn scene, so frames that only
+move the cursor, crosshair or snap marker copy it instead of redrawing every entity; the spatial
+index of the current entities is built 50 ms after a render request instead of on the first
+hover; and the component, wire from/to, wire label and PLC I/O reports find rung references
+through a sorted index built once per report instead of a scan per row.
 
 ## Hit testing and selection on 50,000 entities (Node)
 
@@ -102,15 +117,14 @@ drawing (`convertDwg`) still runs in the renderer after the read; it was not mea
 
 ## Known slow spots (follow-ups)
 
-- **Full redraw of a dense drawing** (160-230 ms for 50,000 entities at extents) is the largest
-  remaining cost: every entity is stroked as its own path. Batching consecutive entities of the
-  same colour, linetype and width into one path, and caching a bitmap of the drawing while only
-  the overlay changes (hover, crosshair), would cut both; both need the screenshot baselines
-  re-approved because antialiasing at overlaps changes slightly.
+- **Full redraw of a dense drawing** (160-230 ms for 50,000 entities at extents) is still the
+  largest cost when the drawing or the view changes: every entity is stroked as its own path.
+  Cursor-only frames reuse the scene bitmap now; batching consecutive entities of the same colour,
+  linetype and width into one path remains a follow-up (it needs the screenshot baselines
+  re-approved because antialiasing at overlaps changes slightly).
 - **Index build on a freshly opened 50,000-entity drawing** costs 340-590 ms the first time
-  (mostly exploding the 8,000 inserts, which the first redraw needs anyway). Building it right
-  after `loadState` (or in idle time) would move that out of the first mouse move.
-- **Component and Missing Catalog reports** look up each component's rung reference and the
-  drawing's unit scale by scanning every entity (`nearestReference`, `drawingUnitScale` in
-  `src/electrical/`), O(components x entities) per sheet: about 1-3 s over the 20 dense
-  benchmark sheets, negligible on ordinary schematics.
+  (mostly exploding the 8,000 inserts, which the first redraw needs anyway); it now runs 50 ms
+  after the first render request instead of on the first mouse move.
+- **Missing Catalog report**: the drawing's unit scale is still found by scanning every entity
+  (`drawingUnitScale` in `src/electrical/`); the rung references of the other reports use a
+  sorted index now.

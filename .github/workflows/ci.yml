@@ -76,10 +76,12 @@ jobs:
         run: node e2e/run-screenshots.mjs
       - name: Screenshots match the approved baselines
         run: npm run screenshot:compare
-      - name: Interactive rendering benchmark (50,000 entities; informational)
+      - name: Interactive rendering performance gate (50,000 entities)
         run: npm run bench
         env:
           JCAD_BENCH_OUT: screenshots/bench
+          JCAD_BENCH_ASSERT: 1
+          JCAD_PERF_FACTOR: 2
       - uses: actions/upload-artifact@v4
         if: always()
         with:

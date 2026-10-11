@@ -68,9 +68,11 @@ else {
   const runs = (id) => (jobs[id]?.steps ?? []).map((s) => String(s.run ?? '')).join('\n');
   if (!jobs.checks) problems.push('release.yml: no "checks" job');
   else {
-    for (const cmd of ['npm run lint', 'npm run typecheck:all', 'npm test', 'npm run build', 'npm run ui-check', 'npm run screenshot:compare', 'npm run e2e'])
+    for (const cmd of ['npm run lint', 'npm run typecheck:all', 'npm test', 'npm run build', 'npm run ui-check', 'npm run screenshot:compare', 'npm run e2e', 'npm run bench:node'])
       if (!runs('checks').includes(cmd)) problems.push(`release.yml: the checks job does not run "${cmd}"`);
     if (!jobs.checks.outputs?.sha) problems.push('release.yml: the checks job does not output the tested commit (sha)');
+    const browserBench = (jobs.checks.steps ?? []).find((s) => /\bnpm run bench\s*$/.test(String(s.run ?? '')));
+    if (!browserBench || String(browserBench.env?.JCAD_BENCH_ASSERT) !== '1') problems.push('release.yml: browser performance budgets must be asserted');
   }
   for (const id of Object.keys(jobs)) {
     if (id === 'checks') continue;
