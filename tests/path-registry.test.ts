@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createRequire } from 'node:module';
+import { ipcHandlerSource } from './helpers/main-process';
 
 // electron/path-registry.cjs and ipc-guard.cjs are plain CommonJS for the main process
 // (type-checked by tsconfig.electron.json).
@@ -13,6 +14,7 @@ type Registry = {
   registerProject(file: string, project: unknown, opts?: { userChosen?: boolean }): { writable: string[]; readOnly: string[]; ignored: string[] };
   serialize(): string;
   restore(text: string): void;
+  writeRoot(p: unknown): string | null;
 };
 const reg = require('../electron/path-registry.cjs') as {
   createPathRegistry: (o?: { onChange?: () => void }) => Registry;
@@ -190,6 +192,44 @@ describe('readable / writable paths (electron/path-registry.cjs)', () => {
     registry.grant(cover);
     registry.registerProject(project, { drawings: [{ file: '../shared/cover.dxf' }] });
     expect(registry.isWritable(cover)).toBe(true);
+  });
+
+  it('writes of drawings a project opened by name made writable stay in its folder (writeRoot, E-5), also after a restart', () => {
+    const { registry } = setup();
+    const folder = abs('work', 'jobs', 'a');
+    const s1 = abs('work', 'jobs', 'a', 'sheets', 's1.dxf');
+    const cover = abs('work', 'jobs', 'shared', 'cover.dxf');
+    const mine = abs('work', 'jobs', 'a', 'mine.dxf');
+    registry.grant(mine); // chosen in a dialog first: never confined by file content
+    registry.registerProject(project, { drawings: [{ file: 'sheets/s1.dxf' }, { file: '../shared/cover.dxf' }, { file: 'mine.dxf' }] });
+    expect(registry.writeRoot(s1)).toBe(folder);
+    expect(registry.writeRoot(cover)).toBeNull(); // readable only
+    expect(registry.writeRoot(mine)).toBeNull();
+    const b = reg.createPathRegistry();
+    b.restore(registry.serialize());
+    expect(b.isWritable(s1)).toBe(true);
+    expect(b.writeRoot(s1)).toBe(folder);
+    // Opening the project through a dialog (the user chose it) or choosing the drawing lifts it.
+    b.registerProject(project, { drawings: [{ file: 'sheets/s1.dxf' }] }, { userChosen: true });
+    expect(b.writeRoot(s1)).toBeNull();
+    registry.grant(s1);
+    expect(registry.writeRoot(s1)).toBeNull();
+    // A chosen project's drawings are written in their own folders.
+    const c = reg.createPathRegistry();
+    c.registerProject(project, { drawings: [{ file: 'sheets/s1.dxf' }] }, { userChosen: true });
+    expect(c.writeRoot(s1)).toBeNull();
+    // Garbage in recent.json is ignored.
+    const d = reg.createPathRegistry();
+    d.restore(JSON.stringify({ version: 2, writable: [s1], writeRoots: { [s1]: 42, [cover]: folder, relative: 'x' } }));
+    expect(d.writeRoot(s1)).toBeNull();
+    expect(d.writeRoot(cover)).toBeNull();
+  });
+
+  it('save-dxf (by name) and backup-file hand the write root to the atomic writer; a confined save does not lift it', () => {
+    const save = ipcHandlerSource('save-dxf');
+    expect(save).toMatch(/const root = \(target && registry\.writeRoot\(target\)\) \?\? undefined;/);
+    expect(save).toMatch(/await writeUserFile\(target, text, \{ backup: [^}]*, root \}\);\s*\/\/[^\n]*\n\s*if \(!root\) registry\.grant\(target\);/);
+    expect(ipcHandlerSource('backup-file')).toMatch(/\(src, dest\) => copyFileAtomic\(src, dest, \{ root: registry\.writeRoot\(src\) \?\? undefined \}\)/);
   });
 
   it('write channels: each accepts its own file type and only writable paths, refusals are logged', () => {

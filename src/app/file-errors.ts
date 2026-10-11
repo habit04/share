@@ -9,7 +9,7 @@
  * tests/file-safety.test.ts checks that both produce identical messages.
  */
 
-export type FileErrorKind = 'disk-full' | 'permission' | 'read-only' | 'locked' | 'unavailable' | 'too-long' | 'is-folder' | 'io' | 'unknown';
+export type FileErrorKind = 'disk-full' | 'permission' | 'read-only' | 'locked' | 'unavailable' | 'too-long' | 'is-folder' | 'link' | 'io' | 'unknown';
 export type FileAction = 'save' | 'autosave' | 'backup' | 'read' | 'list';
 
 export interface FileErrorInfo {
@@ -53,13 +53,14 @@ export const KIND_BY_CODE: Record<string, FileErrorKind> = {
   ESTALE: 'unavailable',
   ENAMETOOLONG: 'too-long',
   EISDIR: 'is-folder',
+  ELOOP: 'link',
   EIO: 'io',
   EMFILE: 'io',
   ENFILE: 'io',
 };
 
 /** Error codes that are not in KIND_BY_CODE but still name a file system failure in IPC error text. */
-const OTHER_FS_CODES = new Set(['EINVAL', 'EEXIST', 'ENOTEMPTY', 'EXDEV', 'ELOOP', 'EMLINK', 'ENOTSUP', 'EOPNOTSUPP', 'ECANCELED', 'EPIPE', 'ENOSYS', 'EBADF']);
+const OTHER_FS_CODES = new Set(['EINVAL', 'EEXIST', 'ENOTEMPTY', 'EXDEV', 'EMLINK', 'ENOTSUP', 'EOPNOTSUPP', 'ECANCELED', 'EPIPE', 'ENOSYS', 'EBADF']);
 
 /**
  * The OS error code of an error object or IPC error text. In text only known codes count: a
@@ -132,6 +133,11 @@ function reason(kind: FileErrorKind, dir: string | null, writing: boolean, readi
       return 'the path is too long. Choose a shorter folder or file name.';
     case 'is-folder':
       return 'a folder with that name is in the way. Choose another file name.';
+    case 'link':
+      // A write refused because a symbolic link leads out of the folder (electron/atomic-write.cjs).
+      return writing
+        ? `the file (or a folder on its path) is a symbolic link that leads outside ${where}. Links like this are not followed when saving, so a file elsewhere cannot be overwritten through them. Use Save As to choose the file itself or another name.`
+        : 'the path contains a loop of symbolic links.';
     case 'io':
       return 'the disk reported an input/output error. The drive may be failing, full of open files, or was removed.';
     default:

@@ -6,7 +6,7 @@
 const { dialog } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs/promises');
-const { backupFile } = require('../atomic-write.cjs');
+const { backupFile, copyFileAtomic } = require('../atomic-write.cjs');
 const { dxfImageNames } = require('../ipc-guard.cjs');
 const { writeUserFile } = require('./app-data.cjs');
 const { decodeDxf, readDwgWithProgress } = require('./dwg.cjs');
@@ -218,7 +218,14 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
    * { ok: true, path } or { ok: false, code, error } with a message for the user; it never throws
    * and never reports success without a complete copy.
    */
-  ipcMain.handle('backup-file', (_ev, file) => backupFile(file, undefined, (p) => pathPolicy.writable(p, 'backup-file', BACKUP_FILE) !== null));
+  ipcMain.handle('backup-file', (_ev, file) =>
+    backupFile(
+      file,
+      // A drawing a project opened by name made writable is copied only from inside the project's folder (E-5).
+      (src, dest) => copyFileAtomic(src, dest, { root: registry.writeRoot(src) ?? undefined }),
+      (p) => pathPolicy.writable(p, 'backup-file', BACKUP_FILE) !== null,
+    ),
+  );
 
   ipcMain.handle('open-dxf', async (ev) => {
     const win = senderWindow(ev);
@@ -237,6 +244,8 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
     const win = senderWindow(ev);
     if (typeof text !== 'string') throw new Error('Invalid DXF payload');
     let target = existingPath == null ? null : pathPolicy.writable(existingPath, 'save-dxf', DXF_FILE);
+    // Saved by name: a drawing a project opened by name made writable stays inside the project's folder.
+    const root = (target && registry.writeRoot(target)) ?? undefined;
     let defaultPath = String(suggestName || 'Drawing1.dxf');
     if (!target && typeof existingPath === 'string' && !pathPolicy.shapeProblem(existingPath)) {
       if (!DXF_FILE.test(existingPath)) throw new Error('Invalid path');
@@ -254,9 +263,12 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
     }
     // Temporary file + fsync + rename, previous version kept as <name>.dxf.bak (electron/atomic-write.cjs)
     // unless the renderer says no (a project-wide command made the .bak itself or was told to write without one).
+    // A symbolic link that leads out of the file's folder (or, for a drawing a project opened by
+    // name made writable, out of the project's folder) is refused with ELOOP (E-5).
     // A failure is thrown as "CODE: reason, write '<target>'"; the renderer maps it to a message.
-    await writeUserFile(target, text, { backup: !(opts && opts.backup === false) });
-    registry.grant(target);
+    await writeUserFile(target, text, { backup: !(opts && opts.backup === false), root });
+    // (A confined drawing is writable already; granting it would lift the confinement.)
+    if (!root) registry.grant(target);
     return target;
   });
 

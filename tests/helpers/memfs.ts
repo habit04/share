@@ -104,6 +104,15 @@ export class MemFs {
     return { isDirectory: () => false, isFile: () => true, mode: f.mode, mtimeMs: f.mtimeMs, size: f.data.length };
   }
 
+  /** No symbolic links here: lstat is stat. */
+  async lstat(file: string): Promise<{ isDirectory(): boolean; isFile(): boolean; isSymbolicLink(): boolean; mode: number; mtimeMs: number; size: number }> {
+    if ((await this.enter('lstat', file)) === 'crash') throw new CrashError();
+    if (this.dirs.has(file)) return { isDirectory: () => true, isFile: () => false, isSymbolicLink: () => false, mode: 0o40755, mtimeMs: this.clock, size: 0 };
+    const f = this.files.get(file);
+    if (!f) throw this.noent('lstat', file);
+    return { isDirectory: () => false, isFile: () => true, isSymbolicLink: () => false, mode: f.mode, mtimeMs: f.mtimeMs, size: f.data.length };
+  }
+
   async access(file: string, _mode?: number): Promise<void> {
     if ((await this.enter('access', file)) === 'crash') throw new CrashError();
     if (!this.files.has(file) && !this.dirs.has(file)) throw this.noent('access', file);
@@ -132,7 +141,8 @@ export class MemFs {
     this.files.set(to, f); // one atomic directory update
   }
 
-  async copyFile(src: string, dest: string): Promise<void> {
+  /** `mode` 1 = COPYFILE_EXCL: fail when `dest` exists. */
+  async copyFile(src: string, dest: string, mode = 0): Promise<void> {
     const r = await this.enter('copyFile', `${src} -> ${dest}`);
     const f = this.files.get(src);
     if (r === 'crash') {
@@ -142,6 +152,7 @@ export class MemFs {
     }
     if (!f) throw this.noent('copyfile', src);
     if (!this.parentExists(dest)) throw this.noent('copyfile', dest);
+    if (mode & 1 && (this.files.has(dest) || this.dirs.has(dest))) throw fsError('EEXIST', 'copyfile', dest);
     this.files.set(dest, { data: f.data, mode: f.mode, mtimeMs: this.tick(), dirty: true });
   }
 
