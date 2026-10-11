@@ -1,5 +1,6 @@
 // Launch the built renderer in headless Chromium and capture screenshots for visual review.
 import { chromium } from 'playwright';
+import { SHOT_CONTEXT, pinDate } from './screenshot-env.mjs';
 import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
 import { join, extname } from 'node:path';
@@ -18,11 +19,12 @@ const server = createServer(async (req, res) => {
     res.end('not found');
   }
 });
-await new Promise((r) => server.listen(0, r));
-const port = server.address().port;
+await new Promise((r) => server.listen(0, () => r(undefined)));
+const port = /** @type {import('node:net').AddressInfo} */ (server.address()).port;
 
 const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || '/opt/pw-browsers/chromium' });
-const page = await browser.newPage({ viewport: { width: 1500, height: 940 }, deviceScaleFactor: 1 });
+const page = await browser.newPage({ ...SHOT_CONTEXT, viewport: { width: 1500, height: 940 }, deviceScaleFactor: 1 });
+await pinDate(page);
 page.on('pageerror', (e) => console.error('PAGE ERROR', e.message));
 page.on('console', (m) => { if (m.type() === 'error') console.error('CONSOLE', m.text()); });
 const shot = (name) => page.screenshot({ path: `screenshots/${name}.png` });
@@ -125,7 +127,7 @@ await page.keyboard.press('Tab');
 await page.waitForTimeout(100);
 await shot('10-autocomplete');
 await page.keyboard.press('Escape');
-await page.evaluate(() => (document.querySelector('.command-input').value = ''));
+await page.evaluate(() => (/** @type {HTMLInputElement} */ (document.querySelector('.command-input')).value = ''));
 
 // 11. Options dialog (Display tab)
 await page.evaluate(() => window.editor.runCommand('OPTIONS'));
@@ -349,7 +351,7 @@ await page.waitForTimeout(200);
 await page.evaluate(() => window.editor.runCommand('AECIRCUIT'));
 await page.waitForTimeout(250);
 await page.evaluate(() => {
-  const sel = document.querySelector('.modal select');
+  const sel = /** @type {HTMLSelectElement} */ (document.querySelector('.modal select'));
   sel.value = 'reversing';
   sel.dispatchEvent(new Event('change'));
 });
@@ -364,7 +366,7 @@ await page.evaluate(() => {
 });
 await page.waitForTimeout(200);
 await page.evaluate(() => {
-  const sel = document.querySelectorAll('.modal select')[0];
+  const sel = /** @type {HTMLSelectElement} */ (document.querySelectorAll('.modal select')[0]);
   sel.value = 'horizontal';
   sel.dispatchEvent(new Event('change'));
 });

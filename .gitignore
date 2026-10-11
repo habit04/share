@@ -17,3 +17,8 @@ site-dist/
 screenshots/cable-import.png
 screenshots/reactor-import.png
 screenshots/plot-*.png
+screenshots/diff/
+screenshots/bench/
+e2e-output/
+packaged-smoke-output/
+bench-output/

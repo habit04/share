@@ -5,6 +5,7 @@
 //   node scripts/screenshot-site.mjs --images  also (re)capture the landing-page pictures into site/img/
 //                                              (and site-dist/img/) from the browser edition, 1500x940
 import { chromium } from 'playwright';
+import { SHOT_CONTEXT, pinDate } from './screenshot-env.mjs';
 import { createServer } from 'node:http';
 import { readFile, stat, mkdir, copyFile } from 'node:fs/promises';
 import { join, extname } from 'node:path';
@@ -32,8 +33,8 @@ const server = createServer(async (req, res) => {
     res.end('not found');
   }
 });
-await new Promise((r) => server.listen(0, r));
-const port = server.address().port;
+await new Promise((r) => server.listen(0, () => r(undefined)));
+const port = /** @type {import('node:net').AddressInfo} */ (server.address()).port;
 const base = `http://localhost:${port}`;
 await mkdir('screenshots', { recursive: true });
 
@@ -59,8 +60,14 @@ const check = (ok, what) => {
   if (!ok) failures += 1;
 };
 
+/**
+ * @param {{ width: number, height: number }} viewport
+ * @param {string} name
+ * @param {{ online: boolean, userAgent?: string, phone?: boolean }} [opts]
+ */
 async function landingPage(viewport, name, { online, userAgent, phone } = { online: true }) {
-  const ctx = await browser.newContext({ viewport, deviceScaleFactor: 1, userAgent });
+  const ctx = await browser.newContext({ ...SHOT_CONTEXT, viewport, deviceScaleFactor: 1, userAgent });
+  await pinDate(ctx);
   const page = await ctx.newPage();
   page.on('pageerror', (e) => console.error('PAGE ERROR', e.message));
   page.on('console', (m) => { if (m.type() === 'error') console.error('CONSOLE', m.text()); });
@@ -68,7 +75,7 @@ async function landingPage(viewport, name, { online, userAgent, phone } = { onli
   await page.goto(`${base}/`);
   await page.waitForTimeout(600);
   // Headless Chromium never fetches the lazily loaded gallery pictures for a full-page capture, so load them all.
-  await page.evaluate(() => document.querySelectorAll('img[loading="lazy"]').forEach((i) => { i.loading = 'eager'; }));
+  await page.evaluate(() => document.querySelectorAll('img[loading="lazy"]').forEach((i) => { /** @type {HTMLImageElement} */ (i).loading = 'eager'; }));
   await page.waitForFunction(() => [...document.images].every((i) => i.complete), null, { timeout: 15000 });
   const broken = await page.evaluate(() => [...document.images].filter((i) => i.getAttribute('src') && i.naturalWidth === 0).map((i) => i.getAttribute('src')));
   check(broken.length === 0, `${name}: all pictures load${broken.length ? ` (missing: ${broken.join(', ')})` : ''}`);
@@ -98,7 +105,8 @@ async function landingPage(viewport, name, { online, userAgent, phone } = { onli
 }
 
 // ---------------------------------------------------------------- browser edition: open a DWG in the page
-const app = await browser.newPage({ viewport: { width: 1500, height: 940 }, deviceScaleFactor: 1 });
+const app = await browser.newPage({ ...SHOT_CONTEXT, viewport: { width: 1500, height: 940 }, deviceScaleFactor: 1 });
+await pinDate(app);
 app.on('pageerror', (e) => console.error('PAGE ERROR', e.message));
 app.on('console', (m) => { if (m.type() === 'error') console.error('CONSOLE', m.text()); });
 const shot = (name) => app.screenshot({ path: name });

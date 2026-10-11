@@ -2,6 +2,7 @@
 // HPB11_NO (with the docked palette), the vertical variant, the icon menu showing the saved user
 // symbol, and the same session at 1366x768 (laptop) with the Properties palette docked as well.
 import { chromium } from 'playwright';
+import { SHOT_CONTEXT, pinDate } from './screenshot-env.mjs';
 import { createServer } from 'node:http';
 import { readFile, stat, mkdir } from 'node:fs/promises';
 import { join, extname } from 'node:path';
@@ -20,8 +21,8 @@ const server = createServer(async (req, res) => {
     res.end('not found');
   }
 });
-await new Promise((r) => server.listen(0, r));
-const port = server.address().port;
+await new Promise((r) => server.listen(0, () => r(undefined)));
+const port = /** @type {import('node:net').AddressInfo} */ (server.address()).port;
 await mkdir('screenshots', { recursive: true });
 
 const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || '/opt/pw-browsers/chromium' });
@@ -39,7 +40,8 @@ async function clickButton(page, label) {
 }
 
 async function run(viewport, suffix) {
-  const page = await browser.newPage({ viewport, deviceScaleFactor: 1 });
+  const page = await browser.newPage({ ...SHOT_CONTEXT, viewport, deviceScaleFactor: 1 });
+  await pinDate(page);
   page.on('pageerror', (e) => console.error('PAGE ERROR', e.message));
   page.on('console', (m) => { if (m.type() === 'error') console.error('CONSOLE', m.text()); });
   await page.goto(`http://localhost:${port}/?demo&norecover`);
