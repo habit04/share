@@ -181,3 +181,22 @@ describe('bounded reads and writes in the main process (electron/resource-limits
     expect(src).toMatch(/validateTextSize\(text, MAX_DRAWING_BYTES, 'DXF'\)/);
   });
 });
+
+describe('plot and print sheet sizes (security review E-18)', () => {
+  const { validatePaperDimensions, MAX_PAPER_INCHES } = require('../electron/resource-limits.cjs') as { validatePaperDimensions(sheet: unknown): void; MAX_PAPER_INCHES: number };
+  it('accepts finite positive sizes up to 200 inches, refuses everything else', () => {
+    expect(MAX_PAPER_INCHES).toBe(200);
+    for (const sheet of [undefined, null, {}, { width: 8.5, height: 11 }, { width: 46.8, height: 33.1 }, { width: 200, height: 0.5 }, { electron: 'A4' }]) expect(() => validatePaperDimensions(sheet), JSON.stringify(sheet)).not.toThrow();
+    for (const width of [Infinity, -Infinity, NaN, -1, 0, 200.01, 1e9, '10', null]) expect(() => validatePaperDimensions({ width, height: 11 }), String(width)).toThrow(/Paper dimensions must be between 0 and 200 inches/);
+  });
+  it('plot-pdf and print-drawing check the sheet before anything else', () => {
+    const plot = require('node:fs').readFileSync(join(import.meta.dirname, '..', 'electron', 'main', 'ipc-plot.cjs'), 'utf8') as string;
+    for (const channel of ['plot-pdf', 'print-drawing']) {
+      const body = plot.slice(plot.indexOf(`ipcMain.handle('${channel}'`));
+      const check = body.indexOf('validatePaperDimensions(sheet);');
+      expect(check, channel).toBeGreaterThan(0);
+      expect(check, channel).toBeLessThan(body.indexOf('new BrowserWindow('));
+      if (channel === 'plot-pdf') expect(check).toBeLessThan(body.indexOf('showSaveDialog'));
+    }
+  });
+});

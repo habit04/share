@@ -4,6 +4,7 @@
  */
 const { BrowserWindow, dialog } = require('electron');
 const { writeUserFile } = require('./app-data.cjs');
+const { validatePaperDimensions } = require('../resource-limits.cjs');
 
 /** @typedef {import('./context.cjs').MainContext} MainContext */
 
@@ -14,6 +15,7 @@ function registerPlotIpc(ctx) {
   ipcMain.handle('plot-pdf', async (ev, dataUrl, suggestName, landscape, sheet) => {
     const win = senderWindow(ev);
     if (typeof dataUrl !== 'string' || !/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(dataUrl)) throw new Error('Invalid image');
+    validatePaperDimensions(sheet); // before the dialog: at most 200 inches a side (E-18)
     const res = await dialog.showSaveDialog(win, {
       title: 'Plot to PDF',
       defaultPath: String(suggestName || 'Drawing1.pdf'),
@@ -56,8 +58,12 @@ function registerPlotIpc(ctx) {
   });
 
   const NAMED_PAGES = new Set(['A0', 'A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'Legal', 'Letter', 'Tabloid', 'Ledger']);
-  /** Sheet dimensions in portrait inches (Electron applies `landscape` itself). */
+  /**
+   * Sheet dimensions in portrait inches (Electron applies `landscape` itself). Sizes from the
+   * renderer must be finite, positive and at most 200 inches (security review E-18).
+   */
   function sheetPortrait(sheet, landscape) {
+    validatePaperDimensions(sheet);
     const w = sheet && Number.isFinite(sheet.width) && sheet.width > 0 ? sheet.width : landscape ? 11 : 8.5;
     const h = sheet && Number.isFinite(sheet.height) && sheet.height > 0 ? sheet.height : landscape ? 8.5 : 11;
     return w > h ? { width: h, height: w } : { width: w, height: h };
@@ -78,6 +84,7 @@ function registerPlotIpc(ctx) {
   ipcMain.handle('print-drawing', async (ev, dataUrl, title, landscape, sheet) => {
     const win = BrowserWindow.fromWebContents(ev.sender);
     if (typeof dataUrl !== 'string' || !/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(dataUrl)) throw new Error('Invalid image');
+    validatePaperDimensions(sheet); // at most 200 inches a side (E-18)
     const hidden = new BrowserWindow({ show: false, parent: win || undefined, webPreferences: { sandbox: true, contextIsolation: true } });
     try {
       const html = `<!doctype html><html><head><meta charset="utf-8"><title>${String(title || 'Drawing').replace(/[<>&]/g, '')}</title><style>html,body{margin:0;background:#fff;height:100%}img{width:100%;height:100%;object-fit:contain;display:block}@page{margin:0;size:${landscape ? 'landscape' : 'portrait'}}</style></head><body><img id="p"></body></html>`;

@@ -202,7 +202,8 @@ export async function verifyPack(pack: PackDocument, keys: Readonly<Record<strin
   const sig = pack.signature;
   if (!sig) return { ...base, ok: false, reason: 'Unsigned pack: only packs signed by the publisher can be installed' };
   if (sig.alg !== 'ed25519') return { ...base, ok: false, keyId: sig.keyId, reason: `Unsupported signature algorithm "${sig.alg}" (this version knows ed25519)` };
-  const pub = keys[sig.keyId];
+  // Own properties only: "__proto__", "constructor" or "toString" are not keys (security review E-17).
+  const pub = Object.prototype.hasOwnProperty.call(keys, sig.keyId) ? keys[sig.keyId] : undefined;
   if (!pub) return { ...base, ok: false, keyId: sig.keyId, reason: `The pack was signed with key "${sig.keyId}", which this version of JCad does not know (known: ${Object.keys(keys).join(', ') || 'none'}). Update the app or ask the publisher for a pack signed with a current key.` };
   let ok = false;
   try {
