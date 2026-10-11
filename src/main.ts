@@ -686,16 +686,14 @@ function boot(): void {
         ask: (items) => saveAllDialog(items, context),
         saveSymbol: async () => ((await sb.save()) ? null : (sb.firstError() ?? 'the symbol was not saved')),
         showError: (title, error) => saveFailedDialog(title, error),
+        // Answer only after autosaves being written are complete (they are what recovers discarded work);
+        // anything edited meanwhile is asked about again.
+        settle: async () => {
+          await Promise.allSettled([projectAutosaver.flush(), autosaver.flush()]);
+        },
       },
       (id) => sb.sessions.has(id),
     )
-      .then(async (ok) => {
-        // Answer only after autosaves being written are complete (they are what recovers discarded work).
-        if (ok) {
-          await Promise.allSettled([projectAutosaver.flush(), autosaver.flush()]);
-        }
-        return ok;
-      })
       .finally(() => {
         closing = null;
       });

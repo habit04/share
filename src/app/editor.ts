@@ -205,6 +205,8 @@ export class Editor {
   private projectGen = 0;
   /** Message of the last failed save / open (for the close workflow's error report). */
   lastFileError: string | null = null;
+  /** Session id -> save-queue revision of the newest save of that drawing that completed. */
+  private savedRevisions = new Map<number, number>();
   /** Layer new wires go on (AEWIRETYPE). */
   wireLayer = 'WIRES';
   /** File name to suggest in Save As (set by DWG import). */
@@ -946,6 +948,14 @@ export class Editor {
       return this.saveFile(choice === 'saveas' ? true : saveAs);
     }
     if (!path) return false;
+    if ((this.savedRevisions.get(sessionId) ?? 0) > revision) {
+      // A newer revision of this drawing was saved while this (slower) save ran, possibly to another
+      // file: the drawing stays bound to that newer save - its file and its clean / modified state.
+      this.log(`Saved ${path} (an older revision: the drawing was saved again meanwhile and keeps that file).`);
+      this.rememberRecent(path);
+      return true;
+    }
+    this.savedRevisions.set(sessionId, revision);
     const outcome = applySaveResult(this.sessions, this, sessionId, savedState, path);
     if (outcome === 'clean' && this.sessions.current.id === sessionId) this.suggestedName = null;
     this.log(outcome === 'newer-edits' ? `Saved ${path} (edits made during the save are still unsaved).` : `Saved ${path}`);

@@ -26,6 +26,11 @@ export interface CloseDeps {
   saveSymbol(sessionId: number): Promise<string | null>;
   /** Tell the user which item failed and why (the close is aborted afterwards). */
   showError(title: string, error: string): Promise<void>;
+  /**
+   * Runs once everything listed was saved or discarded, before the close is approved (src/main.ts:
+   * wait for the autosaves being written). Work changed meanwhile is asked about again.
+   */
+  settle?(): Promise<void>;
 }
 
 type CloseEditor = Pick<Editor, 'sessions' | 'project' | 'projectDirty' | 'saveFile' | 'saveProject' | 'switchSession' | 'lastFileError' | 'log'>;
@@ -49,26 +54,43 @@ export function collectUnsaved(editor: CloseEditor, isSymbol: (sessionId: number
 /**
  * Run the close workflow; resolves true when the application may close (everything chosen was
  * saved, or the user discarded), false when the user cancelled or a save failed.
+ *
+ * The application stays usable while the chosen items are saved (and while `settle` waits), so a
+ * drawing or the project can be changed again meanwhile. The close is only approved once every
+ * unsaved revision was decided about: anything changed after the user's answer (or not listed in
+ * it) is asked about again instead of being lost with the window.
  */
 export async function runCloseWorkflow(editor: CloseEditor, deps: CloseDeps, isSymbol: (sessionId: number) => boolean): Promise<boolean> {
-  const items = collectUnsaved(editor, isSymbol);
-  if (items.length === 0) return true;
-  const decision = await deps.ask(items);
-  if (decision.action === 'cancel') {
-    editor.log('Close cancelled.');
-    return false;
-  }
-  if (decision.action === 'discard') return true;
-  for (const it of items) {
-    if (!decision.keys.has(it.key)) continue;
-    const error = await saveItem(editor, deps, it);
-    if (error) {
-      editor.log(`Close cancelled: ${it.title} could not be saved (${error}).`);
-      await deps.showError(it.title, error);
+  /** Item key -> the revision the user decided about (saved, or chose not to save). */
+  const decided = new Map<string, unknown>();
+  const revisionOf = (it: UnsavedItem): unknown => (it.kind === 'project' ? editor.project : editor.sessions.all.find((s) => s.id === it.sessionId)?.state);
+  const open = () => collectUnsaved(editor, isSymbol).filter((it) => !decided.has(it.key) || decided.get(it.key) !== revisionOf(it));
+  for (;;) {
+    let items = open();
+    if (items.length === 0) {
+      await deps.settle?.();
+      items = open();
+      if (items.length === 0) return true;
+    }
+    const decision = await deps.ask(items);
+    if (decision.action === 'cancel') {
+      editor.log('Close cancelled.');
       return false;
     }
+    // The answer covers the revisions shown in the dialog (taken now, before any save runs): a drawing
+    // edited while another item is being saved is asked about again.
+    for (const it of items) decided.set(it.key, revisionOf(it));
+    if (decision.action === 'discard') continue;
+    for (const it of items) {
+      if (!decision.keys.has(it.key)) continue;
+      const error = await saveItem(editor, deps, it);
+      if (error) {
+        editor.log(`Close cancelled: ${it.title} could not be saved (${error}).`);
+        await deps.showError(it.title, error);
+        return false;
+      }
+    }
   }
-  return true;
 }
 
 /** Save one item; resolves null on success, else the reason. */
