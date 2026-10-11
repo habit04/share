@@ -133,8 +133,11 @@ export function dirName(p: string): string {
 export function resolvePath(dir: string, file: string): string {
   if (isAbsolutePath(file) || !dir) return normalizePath(file);
   const base = parse(dir);
-  const rel = file.replace(/[\\/]+/g, base.windows ? '\\' : '/');
-  return normalizePath(format(base) + (base.windows ? '\\' : '/') + rel);
+  const sep = base.windows ? '\\' : '/';
+  const rel = file.replace(/[\\/]+/g, sep).replace(/^[\\/]+/, '');
+  const head = format(base);
+  // Never join with a doubled separator: on Windows "//x" would turn a "/" root into a UNC share.
+  return normalizePath(head.endsWith(sep) ? head + rel : head + sep + rel);
 }
 
 /** Resolve a project-relative path against the folder of the project file. */
@@ -157,8 +160,11 @@ export function relativePath(dir: string, target: string): string {
   let i = 0;
   while (i < d.segments.length && i < t.segments.length && fold(d.segments[i]!) === fold(t.segments[i]!)) i += 1;
   if (i === 0 && d.segments.length > 0) return normalizePath(target);
+  const down = t.segments.slice(i);
+  // A POSIX file name may contain a backslash; a relative entry would read it as a separator.
+  if (!d.windows && down.some((s) => s.includes('\\'))) return normalizePath(target);
   const up = d.segments.slice(i).map(() => '..');
-  const rel = [...up, ...t.segments.slice(i)].join('/');
+  const rel = [...up, ...down].join('/');
   return rel || '.';
 }
 
@@ -179,28 +185,34 @@ export function rebaseProjectEntry(file: string, oldProjectFile: string | null |
 
 /** Short names for a list of paths: the file name, plus parent folders only where names collide. */
 export function shortNames(paths: ReadonlyArray<string | null>, fallback: ReadonlyArray<string> = []): string[] {
-  const names = paths.map((p, i) => (p ? fileBaseName(p) : (fallback[i] ?? '')));
-  const parts = paths.map((p) => (p ? normalizePath(p).split(/[\\/]/).filter(Boolean) : []));
+  // Names come from the normalised (NFC) path: "José.dxf" typed and "Jose\u0301.dxf" from macOS look alike.
+  const norm = paths.map((p) => (p ? normalizePath(p) : null));
+  const names = norm.map((p, i) => (p ? fileBaseName(p) : (fallback[i] ?? '')));
+  const parts = norm.map((p) => (p ? p.split(/[\\/]/).filter(Boolean) : []));
   const out = [...names];
-  for (let depth = 1; depth < 8; depth += 1) {
+  /** Groups of entries that read alike but name different files. */
+  const clashes = (fold: (s: string) => string): number[][] => {
     const groups = new Map<string, number[]>();
     out.forEach((n, i) => {
       if (!paths[i]) return;
-      const k = n.toLowerCase();
+      const k = fold(n);
       groups.set(k, [...(groups.get(k) ?? []), i]);
     });
-    let clash = false;
-    for (const idx of groups.values()) {
-      if (idx.length < 2) continue;
-      if (new Set(idx.map((i) => pathKey(paths[i]!))).size < 2) continue; // the same file twice
-      clash = true;
+    return [...groups.values()].filter((idx) => idx.length > 1 && new Set(idx.map((i) => pathKey(paths[i]!))).size > 1);
+  };
+  const maxDepth = Math.max(0, ...parts.map((s) => s.length));
+  for (let depth = 1; depth <= maxDepth; depth += 1) {
+    const groups = clashes((s) => s.toLowerCase());
+    if (groups.length === 0) break;
+    for (const idx of groups) {
       for (const i of idx) {
         const segs = parts[i]!;
         const folder = segs.slice(Math.max(0, segs.length - 1 - depth), segs.length - 1).join('/');
         out[i] = folder ? `${names[i]} (${folder})` : names[i]!;
       }
     }
-    if (!clash) break;
   }
+  // Still alike with every folder shown ("/srv/share/a.dxf" and "\\srv\share\a.dxf"): the full path.
+  for (const idx of clashes((s) => s)) for (const i of idx) out[i] = norm[i]!;
   return out;
 }
