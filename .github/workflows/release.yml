@@ -1,5 +1,12 @@
 name: Build installers
 
+# Release pipeline (docs/RELEASE.md):
+#   checks          the full test gate on the exact commit being released
+#   build           installers for Windows, macOS and Linux from that same commit (needs: checks)
+#   packaged-smoke  each installer installed / extracted on its own OS and driven end to end
+#   release         publishes the installers, only after all of the above passed, and only when
+#                   the release tag points at the commit the checks ran on
+
 on:
   workflow_dispatch:
     inputs:
@@ -11,7 +18,59 @@ on:
     tags: ['v*']
 
 jobs:
+  checks:
+    name: Checks on the release commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: The commit under test
+        id: commit
+        shell: bash
+        run: |
+          sha="$(git rev-parse HEAD)"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Release checks run on $sha (${{ github.ref }})"
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      # The Electron binary is needed for the end-to-end run.
+      - run: npm ci
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+      - name: Install Chromium for Playwright
+        run: |
+          npx playwright install --with-deps chromium
+          echo "CHROMIUM_PATH=$(node -e "import('playwright').then((m) => console.log(m.chromium.executablePath()))")" >> "$GITHUB_ENV"
+      - run: npm run check:workflows
+      - run: npm run lint
+      - run: npm run typecheck:all
+      - run: npm test
+        env:
+          JCAD_PERF_FACTOR: 2
+      - run: npm run build
+      - run: node scripts/build-site.mjs
+      - run: npm run ui-check
+      - run: node e2e/run-screenshots.mjs
+      - run: npm run screenshot:compare
+      - name: Electron end-to-end (virtual display)
+        run: xvfb-run -a npm run e2e
+        env:
+          JCAD_E2E_OUT: e2e-output
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: release-checks-output
+          path: |
+            e2e-output/
+            screenshots/diff/
+          if-no-files-found: ignore
+
   build:
+    needs: checks
     strategy:
       fail-fast: false
       matrix:
@@ -42,10 +101,13 @@ jobs:
       # Secrets cannot be tested in a step's `if:`, so the job computes a flag the steps read from env.
       HAS_APPLE: ${{ secrets.CSC_LINK != '' && secrets.CSC_KEY_PASSWORD != '' && secrets.APPLE_ID != '' && secrets.APPLE_APP_SPECIFIC_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' }}
     steps:
+      # Exactly the commit the checks passed on.
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.checks.outputs.sha }}
       - uses: actions/setup-node@v5
         with:
-          node-version: 22
+          node-version-file: .nvmrc
           cache: npm
       - run: npm ci
         env:
@@ -133,19 +195,100 @@ jobs:
           path: ${{ matrix.glob }}
           if-no-files-found: error
 
+  # Install (Windows: NSIS silently), mount (macOS: hdiutil) or extract (Linux: AppImage, deb) the
+  # installers just built and run the end-to-end checks against the packaged application
+  # (scripts/packaged-smoke.mjs -> scripts/e2e-electron.mjs --packaged).
+  packaged-smoke:
+    needs: [checks, build]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: JCad-Electrical-Windows
+          - os: macos-latest
+            artifact: JCad-Electrical-macOS
+          - os: ubuntu-latest
+            artifact: JCad-Electrical-Linux
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      # The test scripts and fixtures of the same commit.
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.checks.outputs.sha }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      # Only Playwright and the test helpers are needed: the application comes from the installer.
+      - run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: installers
+      - name: Packaged smoke test (Linux, virtual display)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a node scripts/packaged-smoke.mjs installers
+        env:
+          JCAD_SMOKE_OUT: packaged-smoke-output
+      - name: Packaged smoke test (Windows, macOS)
+        if: runner.os != 'Linux'
+        run: node scripts/packaged-smoke.mjs installers
+        env:
+          JCAD_SMOKE_OUT: packaged-smoke-output
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: packaged-smoke-${{ matrix.os }}
+          path: packaged-smoke-output/
+          if-no-files-found: warn
+
   release:
     if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '')
-    needs: build
+    needs: [checks, build, packaged-smoke]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.checks.outputs.sha }}
+          fetch-depth: 0
+      # Publish only what was tested: the tag must point at the commit the checks ran on (a pushed
+      # tag that moved since, or an existing tag elsewhere for a manual run, stops the release).
+      - name: Verify the tag points at the tested commit
+        shell: bash
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          TESTED: ${{ needs.checks.outputs.sha }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          git fetch --force --tags origin
+          if git rev-parse -q --verify "refs/tags/$TAG" > /dev/null; then
+            tagged="$(git rev-parse "refs/tags/$TAG^{commit}")"
+            if [ "$tagged" != "$TESTED" ]; then
+              echo "::error::Tag $TAG points at $tagged, but the checks and installers are from $TESTED."
+              exit 1
+            fi
+            echo "Tag $TAG points at the tested commit $TESTED."
+          elif [ "$EVENT" = "push" ]; then
+            echo "::error::Tag $TAG no longer exists on the remote."
+            exit 1
+          else
+            echo "Tag $TAG does not exist yet; it will be created at the tested commit $TESTED."
+          fi
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+          pattern: JCad-Electrical-*
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          target_commitish: ${{ github.sha }}
+          target_commitish: ${{ needs.checks.outputs.sha }}
           name: JCad Electrical ${{ github.event.inputs.tag || github.ref_name }}
           files: artifacts/**/*

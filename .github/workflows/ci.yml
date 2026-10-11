@@ -10,24 +10,33 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Unit / regression tests, type check and the renderer build.
+  # Lint, type checks (renderer, Electron main/preload, scripts), unit / regression tests, the
+  # dense-drawing performance run and the renderer build.
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
-          node-version: 22
+          node-version-file: .nvmrc
           cache: npm
       - run: npm ci
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: 1
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
-      - run: npm run typecheck
+      - name: Workflow files are valid YAML with the expected structure
+        run: npm run check:workflows
+      - run: npm run lint
+      - name: Type check (renderer + tests, Electron main / preload, scripts)
+        run: npm run typecheck:all
       - run: npm test
         env:
           # tests/perf.test.ts budgets are 3x the development machine; allow shared runners 2x more.
+          JCAD_PERF_FACTOR: 2
+      - name: Interactive performance on a 50,000-entity drawing and a 20-drawing project (alone, so timings are not disturbed)
+        run: npm run bench:node
+        env:
           JCAD_PERF_FACTOR: 2
       - run: npm run build
       - uses: actions/upload-artifact@v4
@@ -36,20 +45,23 @@ jobs:
           path: dist
 
   # The built renderer in headless Chromium: every command, every clickable control, and the
-  # visual-review screenshots, failing on page errors, console errors and "Unknown command".
+  # visual-review screenshots, failing on page errors, console errors and "Unknown command", and on
+  # any screenshot that no longer matches its approved baseline (screenshots/baseline/).
   ui:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
-          node-version: 22
+          node-version-file: .nvmrc
           cache: npm
       - run: npm ci
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: 1
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+      # The Chromium build pinned by package-lock.json (Playwright) and its fonts: the screenshot
+      # baselines are approved against exactly this browser on this runner image.
       - name: Install Chromium for Playwright
         run: |
           npx playwright install --with-deps chromium
@@ -62,26 +74,40 @@ jobs:
         run: node scripts/ui-click-check.mjs --self-test
       - name: Screenshot scripts (fail on PAGE ERROR / CONSOLE / failed checks)
         run: node e2e/run-screenshots.mjs
+      - name: Screenshots match the approved baselines
+        run: npm run screenshot:compare
+      - name: Interactive rendering benchmark (50,000 entities; informational)
+        run: npm run bench
+        env:
+          JCAD_BENCH_OUT: screenshots/bench
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: screenshots
-          path: screenshots/
+          path: |
+            screenshots/
+            !screenshots/baseline/
           if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: screenshot-diffs
+          path: screenshots/diff/
+          if-no-files-found: ignore
 
   # The desktop app itself: Electron + preload + IPC, driven by Playwright (scripts/e2e-electron.mjs).
   e2e-electron:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
-          node-version: 22
+          node-version-file: .nvmrc
           cache: npm
       # The Electron binary is needed here: no ELECTRON_SKIP_BINARY_DOWNLOAD.
       - run: npm ci
@@ -93,8 +119,8 @@ jobs:
         run: xvfb-run -a npm run e2e
         env:
           JCAD_E2E_OUT: e2e-output
-      - name: Electron end-to-end (Windows)
-        if: runner.os == 'Windows'
+      - name: Electron end-to-end (Windows, macOS)
+        if: runner.os != 'Linux'
         run: npm run e2e
         env:
           JCAD_E2E_OUT: e2e-output

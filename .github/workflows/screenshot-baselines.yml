@@ -1,0 +1,61 @@
+name: Screenshot baselines
+
+# Regenerates the approved screenshots (screenshots/baseline/) on the same runner image and
+# Playwright Chromium the `ui` job of CI compares against, after an intended visual change or a
+# browser update. Run it on the branch with the change; with "commit" ticked it commits the new
+# baselines to that branch, otherwise download them from the artifact and commit them yourself
+# (docs/DEVELOPMENT.md, "Screenshots").
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: 'Commit the new baselines to this branch'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  approve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+      - name: Install Chromium for Playwright
+        run: |
+          npx playwright install --with-deps chromium
+          echo "CHROMIUM_PATH=$(node -e "import('playwright').then((m) => console.log(m.chromium.executablePath()))")" >> "$GITHUB_ENV"
+      - run: npm run build
+      - run: node scripts/build-site.mjs
+      - run: node e2e/run-screenshots.mjs
+      - name: Compare with the current baselines (for the log)
+        run: npm run screenshot:compare || true
+      - run: npm run screenshot:approve -- --prune
+      - uses: actions/upload-artifact@v4
+        with:
+          name: screenshot-baselines
+          path: screenshots/baseline/
+      - name: Commit the new baselines
+        if: ${{ github.event.inputs.commit == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add screenshots/baseline
+          if git diff --cached --quiet; then
+            echo "Baselines unchanged."
+            exit 0
+          fi
+          git commit -m "Update screenshot baselines (Playwright Chromium on ubuntu-latest)"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
