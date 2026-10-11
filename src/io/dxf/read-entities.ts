@@ -230,12 +230,21 @@ function readMTextColumns(o: Obj): MTextColumns | undefined {
   const nativeStart = o.groups.findIndex((p) => p.code === 75);
   const groups = embedded < 0 ? o.groups.slice(Math.max(0, nativeStart)) : o.groups.slice(embedded + 1);
   const code = (native: number, modern: number) => groups.find((p) => p.code === (embedded < 0 ? native : modern))?.value;
+  // Embedded object (R2018): 71 type, 72 count, 44 width, 45 gutter, 73 auto height, 74 reversed
+  // flow, 46 heights; the native groups: 75 type, 76 count, 48 / 49, 79 auto height, 78 reversed.
   const type = int(code(75, 71));
-  const count = int(code(76, 72));
+  let count = int(code(76, 72));
   const width = flt(code(48, 44));
-  if ((type !== 1 && type !== 2) || count < 1 || count > 256 || !(width > 0)) return undefined;
+  const gutter = Math.max(0, flt(code(49, 45)));
   const heights = embedded >= 0 ? groups.filter((p) => p.code === 46).map((p) => flt(p.value)) : groups.filter((p) => p.code === 50).slice(1).map((p) => flt(p.value));
-  return { type, count, width, gutter: Math.max(0, flt(code(49, 45))), autoHeight: int(code(79, 74)) !== 0, reversed: int(code(78, 73)) !== 0, heights: heights.slice(0, count) };
+  // Dynamic columns with auto height (AutoCAD's default for new columns) are saved with a count of
+  // 0: the number follows from the total width (42) the columns and gutters take.
+  if (count === 0 && embedded >= 0 && width > 0) {
+    const total = flt(code(42, 42));
+    count = heights.length > 0 ? heights.length : total > 0 ? Math.round((total + gutter) / (width + gutter)) : 0;
+  }
+  if ((type !== 1 && type !== 2) || count < 1 || count > 256 || !(width > 0)) return undefined;
+  return { type, count, width, gutter, autoHeight: int(code(79, 73)) !== 0, reversed: int(code(78, 74)) !== 0, heights: heights.slice(0, count) };
 }
 
 /** Field expressions in TEXT: evaluate for display and keep the code. */

@@ -561,6 +561,44 @@ describe('r2018-mtext.dxf: MTEXT formatting codes, stacked fractions, columns, l
   });
 });
 
+/*
+ * MTEXT columns in the R2018 embedded object, the three kinds AutoCAD writes (group layout as the
+ * independent ezdxf library reads and writes it): 71 type, 72 count, 44 width, 45 gutter, 73 auto
+ * height, 74 reversed flow, 46 heights. Dynamic columns with auto height - AutoCAD's default for new
+ * columns - are saved with a count of 0, taken from the total width (42).
+ */
+describe('MTEXT columns in the R2018 embedded object: static, dynamic auto height, dynamic manual height, reversed flow', () => {
+  const mtext = (y: number, embedded: Array<[number, string | number]>) =>
+    [[0, 'MTEXT'], [8, '0'], [100, 'AcDbMText'], [10, 0], [20, y], [40, 2.5], [41, 40], [46, 20], [71, 1], [1, 'ONE\\NTWO\\NTHREE'], [101, 'Embedded Object'], [70, 1], [10, 1], [20, 0], [11, 0], [21, y], [40, 40], [41, 20], ...embedded];
+  const dxf = [
+    [0, 'SECTION'], [2, 'ENTITIES'],
+    ...mtext(0, [[42, 170], [43, 30], [71, 1], [72, 3], [44, 50], [45, 10], [73, 0], [74, 0]]),
+    ...mtext(100, [[42, 130], [43, 20], [71, 2], [72, 0], [44, 40], [45, 5], [73, 1], [74, 0]]),
+    ...mtext(200, [[42, 130], [43, 20], [71, 2], [72, 3], [44, 40], [45, 5], [73, 0], [74, 0], [46, 20], [46, 15], [46, 10]]),
+    ...mtext(300, [[42, 130], [43, 20], [71, 1], [72, 3], [44, 40], [45, 5], [73, 0], [74, 1]]),
+    [0, 'ENDSEC'], [0, 'EOF'],
+  ].map(([c, v]) => `${c}\n${v}`).join('\n');
+
+  it('keeps each kind, its auto-height and reversed-flow flags, also after a round trip', () => {
+    const read = readDxf(dxf);
+    for (const s of [read, readDxf(writeDxf(read))]) {
+      const cols = ofType<MTextEntity>(s.entities, 'mtext').map((m) => m.columns);
+      expect(cols).toEqual([
+        { type: 1, count: 3, width: 50, gutter: 10, autoHeight: false, reversed: false, heights: [] },
+        { type: 2, count: 3, width: 40, gutter: 5, autoHeight: true, reversed: false, heights: [] },
+        { type: 2, count: 3, width: 40, gutter: 5, autoHeight: false, reversed: false, heights: [20, 15, 10] },
+        { type: 1, count: 3, width: 40, gutter: 5, autoHeight: false, reversed: true, heights: [] },
+      ]);
+    }
+    // Auto height does not reverse the columns: the first one stays on the left.
+    const auto = ofType<MTextEntity>(read.entities, 'mtext')[1]!;
+    const xs = (m: MTextEntity, word: string) => mtextLayout(m, (t, h) => t.length * h * 0.6).find((t) => t.text === word)!.position.x;
+    expect(xs(auto, 'ONE')).toBeLessThan(xs(auto, 'THREE'));
+    const reversed = ofType<MTextEntity>(read.entities, 'mtext')[3]!;
+    expect(xs(reversed, 'ONE')).toBeGreaterThan(xs(reversed, 'THREE'));
+  });
+});
+
 // ---------------------------------------------------------------- HATCH, LWPOLYLINE, SPLINE, ELLIPSE
 
 /*
