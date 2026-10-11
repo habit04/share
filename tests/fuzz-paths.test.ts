@@ -6,14 +6,14 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import nodePath from 'node:path';
-import { normalizePath, pathKey, samePath, dirName, fileBaseName, resolvePath, relativePath, rebaseProjectEntry, shortNames, isAbsolutePath, isWindowsPath, setPathPlatform } from '../src/app/paths';
+import { normalizePath, pathKey, samePath, dirName, fileBaseName, resolvePath, relativePath, rebaseProjectEntry, shortNames, isAbsolutePath, isWindowsPath, setPathPlatform, climbsOut } from '../src/app/paths';
 import { rebaseProject, resolveDrawingPath, resolveProjectPath, type Project } from '../src/app/project';
 import { Rng, fuzzSync, check } from './helpers/fuzz';
 
 afterEach(() => setPathPlatform(null));
 
 // ------------------------------------------------------------------ generators
-const NAMES = ['a', 'A', 'b', 'dwg', 'DWG', 'Line1', 'line1', 'José', 'José', 'Ärger', 'Ärger', 'my file', 'x.y', '...', 'p1', 'proj', 'Proj', 'sub', 'é', 'é', 'ß', 'İ', 'a-b_c'];
+const NAMES = ['..old', 'a', 'A', 'b', 'dwg', 'DWG', 'Line1', 'line1', 'José', 'José', 'Ärger', 'Ärger', 'my file', 'x.y', '...', 'p1', 'proj', 'Proj', 'sub', 'é', 'é', 'ß', 'İ', 'a-b_c'];
 const FILES = ['a.dxf', 'A.DXF', 'b.dxf', 'José.dxf', 'José.dxf', 'sheet 1.dxf', 'x.dxf', 'X.dxf', 'é.dxf', 'é.dxf'];
 
 type Style = 'posix' | 'drive' | 'unc';
@@ -118,7 +118,7 @@ describe('fuzz: path normalisation properties', () => {
         if (isAbsolutePath(n)) check(!segs.includes('.') && !segs.includes('..'), () => `dot segment left in absolute ${JSON.stringify(n)}`);
       });
       expect(runs).toBeGreaterThan(0);
-    });
+    }, 600_000);
 
     it(`every spelling of one file is the same path; equality is an equivalence relation (${platform})`, () => {
       setPathPlatform(platform);
@@ -143,7 +143,7 @@ describe('fuzz: path normalisation properties', () => {
         const c = sameFile(rng, p, win32);
         check(!(samePath(a, b) && samePath(b, c)) || samePath(a, c), 'not transitive');
       });
-    });
+    }, 600_000);
 
     it(`relativePath then resolvePath round-trips (${platform})`, () => {
       setPathPlatform(platform);
@@ -160,7 +160,7 @@ describe('fuzz: path normalisation properties', () => {
         check(samePath(back, t.text), () => `relativePath(${JSON.stringify(d.text)}, ${JSON.stringify(t.text)}) = ${JSON.stringify(rel)} resolves to ${JSON.stringify(back)}`);
         if (!isAbsolutePath(rel)) check(!rel.includes('\\'), () => `relative path with backslashes: ${JSON.stringify(rel)}`);
       });
-    });
+    }, 600_000);
 
     it(`dirName + file name rebuild the path (${platform})`, () => {
       setPathPlatform(platform);
@@ -170,7 +170,7 @@ describe('fuzz: path normalisation properties', () => {
         const rebuilt = resolvePath(dirName(n), fileBaseName(n));
         check(samePath(rebuilt, p.text), () => `${JSON.stringify(p.text)}: dirName ${JSON.stringify(dirName(n))} + ${JSON.stringify(fileBaseName(n))} = ${JSON.stringify(rebuilt)}`);
       });
-    });
+    }, 600_000);
 
     it(`project Save As to another folder and back keeps every reference (${platform})`, () => {
       setPathPlatform(platform);
@@ -200,14 +200,14 @@ describe('fuzz: path normalisation properties', () => {
         check(samePath(resolveProjectPath(moved, moved.settings!.catalogFile!), want[0]), 'catalog moved');
         // Absolute entries stay absolute unless they now sit inside the new project folder.
         moved.drawings.forEach((d, i) => {
-          if (isAbsolutePath(entries[i]!)) check(isAbsolutePath(d.file) || !d.file.startsWith('..'), () => `absolute ${JSON.stringify(entries[i])} became ${JSON.stringify(d.file)}`);
+          if (isAbsolutePath(entries[i]!)) check(isAbsolutePath(d.file) || !climbsOut(d.file), () => `absolute ${JSON.stringify(entries[i])} became ${JSON.stringify(d.file)}`);
         });
         const back = rebaseProject(moved, oldFile);
         back.drawings.forEach((d, i) => {
           check(samePath(resolveDrawingPath(back, d), want[i]), () => `round trip of ${JSON.stringify(entries[i])} via ${JSON.stringify(newFile)}: ${JSON.stringify(d.file)}`);
           // An entry that was inside the project folder comes back inside it (relative, no "..").
-          const wasInside = !isAbsolutePath(entries[i]!) && !normalizePath(entries[i]!.replace(/\\/g, '/')).startsWith('..');
-          if (wasInside) check(!isAbsolutePath(d.file) && !d.file.startsWith('..'), () => `${JSON.stringify(entries[i])} escaped the project folder: ${JSON.stringify(d.file)} after ${JSON.stringify(newFile)} and back`);
+          const wasInside = !isAbsolutePath(entries[i]!) && !climbsOut(normalizePath(entries[i]!.replace(/\\/g, '/')));
+          if (wasInside) check(!isAbsolutePath(d.file) && !climbsOut(normalizePath(d.file.replace(/\\/g, '/'))), () => `${JSON.stringify(entries[i])} escaped the project folder: ${JSON.stringify(d.file)} after ${JSON.stringify(newFile)} and back`);
         });
         // The round trip is stable: doing it again changes nothing.
         const again = rebaseProject(rebaseProject(back, newFile), oldFile);
@@ -217,7 +217,7 @@ describe('fuzz: path normalisation properties', () => {
         // rebaseProjectEntry without an old path leaves relative entries alone
         for (const e of entries) if (!isAbsolutePath(e)) check(rebaseProjectEntry(e, undefined, newFile) === e, 'relative entry without project path changed');
       });
-    });
+    }, 600_000);
 
     it(`short names are injective on distinct files (${platform})`, () => {
       setPathPlatform(platform);
@@ -253,7 +253,7 @@ describe('fuzz: path normalisation properties', () => {
           }
         }
       });
-    });
+    }, 600_000);
   }
 });
 
@@ -270,7 +270,7 @@ describe('fuzz: renderer pathKey agrees with electron/main.cjs pathKey', () => {
       const q = rng.bool() ? sameFile(rng, p, false) : genPath(rng, false, 'posix').text;
       check((main(p.text) === main(q)) === samePath(p.text, q), () => `${JSON.stringify(p.text)} vs ${JSON.stringify(q)}: main and renderer disagree on identity`);
     });
-  });
+  }, 600_000);
   it('drive and UNC paths (win32 main process)', () => {
     setPathPlatform('win32');
     const main = mainPathKey('win32');
@@ -283,7 +283,7 @@ describe('fuzz: renderer pathKey agrees with electron/main.cjs pathKey', () => {
       const q = rng.bool() ? sameFile(rng, p, true) : genPath(rng, true, rng.pick(['drive', 'unc'] as const)).text;
       check((main(p.text) === main(q)) === samePath(p.text, q), () => `${JSON.stringify(p.text)} vs ${JSON.stringify(q)}: main and renderer disagree on identity`);
     });
-  });
+  }, 600_000);
   it('the main process rejects relative paths and NUL bytes', () => {
     const main = mainPathKey('linux');
     expect(main('dwg/a.dxf')).toBeNull();

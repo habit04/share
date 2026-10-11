@@ -619,3 +619,88 @@ describe('Save All when closing', () => {
     expect(ed.history.at(-1)!.match(/could not be saved/g)).toHaveLength(1);
   });
 });
+
+describe('save / close fuzzing regressions (tests/fuzz-save-close.test.ts)', () => {
+  it('an older Save As finishing after a newer save does not re-point the drawing to its file (seed 65794426)', async () => {
+    const disk = new Map<string, string>();
+    const slow = deferred<void>();
+    const dialogs = ['/net/slow.dxf', '/local/fast.dxf'];
+    const { ed } = makeEditor({
+      saveDxf: async (p, t) => {
+        const path = p ?? dialogs.shift()!;
+        if (path === '/net/slow.dxf') await slow.promise; // a network drive
+        disk.set(path, t);
+        return path;
+      },
+    });
+    const first = ed.saveFile(true); // untitled: Save As, picks the slow network path
+    await tick();
+    ed.doc.addEntities([text('NEWER')]);
+    expect(await ed.saveFile(true)).toBe(true); // Save As again, a local path, done first
+    expect(ed.doc.filePath).toBe('/local/fast.dxf');
+    expect(ed.doc.dirty).toBe(false);
+    slow.resolve();
+    expect(await first).toBe(true); // the older revision did reach its file ...
+    expect(disk.get('/net/slow.dxf')).not.toContain('NEWER');
+    // ... but the drawing stays bound to the newer save: its file holds exactly what is shown as saved.
+    expect(ed.doc.filePath).toBe('/local/fast.dxf');
+    expect(ed.doc.dirty).toBe(false);
+    expect(disk.get('/local/fast.dxf')).toContain('NEWER');
+  });
+  it('a drawing edited while Save All saves another item is asked about again (seed 1967257802)', async () => {
+    const { ed } = makeEditor({ saveDxf: async (p) => p ?? '/w/b.dxf', chooseProjectPath: async () => '/w/p.jcadproj.json', saveProject: async (p) => {
+      await tick();
+      ed.doc.addEntities([text('TYPED DURING THE PROJECT SAVE')]); // the window is still usable
+      return p;
+    } });
+    ed.loadState(new Drawing().snapshot, '/w/a.dxf');
+    ed.doc.addEntities([text('A')]);
+    ed.replaceProject({ name: 'P', drawings: [] }, true);
+    const asked: string[][] = [];
+    const answers: CloseDecision[] = [];
+    const ok = await runCloseWorkflow(
+      ed,
+      {
+        ask: async (items) => {
+          asked.push(items.map((i) => i.key));
+          const d: CloseDecision = asked.length === 1 ? { action: 'save', keys: new Set(items.map((i) => i.key)) } : { action: 'cancel' };
+          answers.push(d);
+          return d;
+        },
+        saveSymbol: async () => null,
+        showError: async () => {},
+      },
+      () => false,
+    );
+    expect(asked).toHaveLength(2);
+    expect(asked[1]).toEqual([`s${ed.sessions.current.id}`]); // only the drawing changed again
+    expect(ok).toBe(false); // the user cancelled the second question: nothing is lost
+    expect(ed.doc.dirty).toBe(true);
+  });
+  it('work changed while the close waits for autosaves is asked about; unchanged discarded work is not', async () => {
+    const { ed } = makeEditor();
+    ed.loadState(new Drawing().snapshot, '/w/a.dxf');
+    ed.doc.addEntities([text('A')]);
+    const asked: number[] = [];
+    let settled = 0;
+    const ok = await runCloseWorkflow(
+      ed,
+      {
+        ask: async (items) => {
+          asked.push(items.length);
+          return { action: 'discard' };
+        },
+        saveSymbol: async () => null,
+        showError: async () => {},
+        settle: async () => {
+          settled += 1;
+          if (settled === 1) ed.doc.addEntities([text('LATE')]); // edited while the autosaves are flushed
+        },
+      },
+      () => false,
+    );
+    expect(ok).toBe(true);
+    expect(asked).toEqual([1, 1]); // asked again about the late edit, then discarded explicitly
+    expect(settled).toBe(2);
+  });
+});

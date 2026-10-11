@@ -29,6 +29,11 @@ export interface CloseDeps {
   saveSymbol(sessionId: number): Promise<string | null>;
   /** Tell the user which item failed and why (the close is aborted afterwards). */
   showError(title: string, error: string): Promise<void>;
+  /**
+   * Runs once everything listed was saved or discarded, before the close is approved (src/main.ts:
+   * wait for the autosaves being written). Work changed meanwhile is asked about again.
+   */
+  settle?(): Promise<void>;
 }
 
 type CloseEditor = Pick<Editor, 'sessions' | 'project' | 'projectDirty' | 'saveFile' | 'saveProject' | 'switchSession' | 'lastFileError' | 'log'>;
@@ -65,14 +70,24 @@ const MAX_ROUNDS = 3;
  * saved, or the user discarded), false when the user cancelled or a save failed.
  *
  * Saving one item can change another: a Symbol Builder save redefines the block in every open
- * drawing that uses it. Whatever is unsaved after the saves (and was not unticked) is asked about
- * again, so the window never closes over changes the user has not seen in the list.
+ * drawing that uses it. The application also stays usable while the chosen items are saved (and
+ * while `settle` waits), so a drawing or the project can be changed again meanwhile. The close is
+ * only approved once every unsaved revision was decided about: anything changed after the user's
+ * answer (or not listed in it) is asked about again instead of being lost with the window. Items
+ * that keep changing for more than MAX_ROUNDS answers stop the close with a message.
  */
 export async function runCloseWorkflow(editor: CloseEditor, deps: CloseDeps, isSymbol: (sessionId: number) => boolean): Promise<boolean> {
-  const discarded = new Set<string>();
+  /** Item key -> the revision the user decided about (saved, or chose not to save). */
+  const decided = new Map<string, unknown>();
+  const revisionOf = (it: UnsavedItem): unknown => (it.kind === 'project' ? editor.project : editor.sessions.all.find((s) => s.id === it.sessionId)?.state);
+  const open = () => collectUnsaved(editor, isSymbol).filter((it) => !decided.has(it.key) || decided.get(it.key) !== revisionOf(it));
   for (let round = 1; ; round += 1) {
-    const items = collectUnsaved(editor, isSymbol).filter((it) => !discarded.has(it.key));
-    if (items.length === 0) return true;
+    let items = open();
+    if (items.length === 0) {
+      await deps.settle?.();
+      items = open();
+      if (items.length === 0) return true;
+    }
     if (round > MAX_ROUNDS) {
       const titles = items.map((it) => it.title).join(', ');
       editor.log(`Close cancelled: ${titles} changed again while saving.`);
@@ -84,12 +99,12 @@ export async function runCloseWorkflow(editor: CloseEditor, deps: CloseDeps, isS
       editor.log('Close cancelled.');
       return false;
     }
-    if (decision.action === 'discard') return true;
+    // The answer covers the revisions shown in the dialog (taken now, before any save runs): a drawing
+    // edited while another item is being saved is asked about again.
+    for (const it of items) decided.set(it.key, revisionOf(it));
+    if (decision.action === 'discard') continue;
     for (const it of items) {
-      if (!decision.keys.has(it.key)) {
-        discarded.add(it.key);
-        continue;
-      }
+      if (!decision.keys.has(it.key)) continue;
       const error = await saveItem(editor, deps, it);
       if (error) {
         editor.log(`Close cancelled. ${closeErrorText(it.title, error)}`);

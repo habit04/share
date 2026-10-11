@@ -694,18 +694,19 @@ function boot(): void {
         ask: (items) => saveAllDialog(items, context),
         saveSymbol: () => saveSymbolForClose(sb, userLibrary),
         showError: (title, error) => saveFailedDialog(title, error),
+        // Answer only after autosaves being written are complete (they are what recovers discarded work)
+        // and the backups of drawings saved just now are removed, but a hung write is not waited for;
+        // anything edited meanwhile is asked about again.
+        settle: async () => {
+          if (!(await settleBeforeClose([projectAutosaver.flush(), autosaver.idle()]))) editor.log('Closing without waiting longer for an autosave that is still being written.');
+        },
       },
       (id) => sb.sessions.has(id),
     )
       .then(async (ok) => {
-        // Answer only after autosaves being written are complete (they are what recovers discarded
-        // work) and the backups of drawings saved just now are removed; a hung write is not waited for.
-        if (ok) {
-          // Still modified after an allowed close = the user chose not to save the project (Discard All or
-          // unticked): its autosave goes, as with Don't Save (a failed save never gets here).
-          if (editor.projectDirty) await projectAutosaver.discard();
-          if (!(await settleBeforeClose([projectAutosaver.flush(), autosaver.idle()]))) editor.log('Closing without waiting longer for an autosave that is still being written.');
-        }
+        // Still modified after an allowed close = the user chose not to save the project (Discard All or
+        // unticked): its autosave goes, as with Don't Save (a failed save never gets here).
+        if (ok && editor.projectDirty) await projectAutosaver.discard();
         return ok;
       })
       .finally(() => {

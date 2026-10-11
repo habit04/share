@@ -145,4 +145,16 @@ describe('path fuzzing regressions (tests/fuzz-paths.test.ts seeds)', () => {
     // Alike up to the root: the full paths tell them apart.
     expect(shortNames(['/srv/share/a.dxf', '\\\\srv\\share\\a.dxf'])).toEqual(['/srv/share/a.dxf', '\\\\srv\\share\\a.dxf']);
   });
+  it('a folder named "..old" or "..." inside the project is not "outside": its drawings stay relative (soak seed 2840713671)', () => {
+    setPathPlatform('linux');
+    const p = { name: 'P', path: '/jobs/p/p.jcadproj.json', drawings: [] };
+    expect(projectEntryFor(p, '/jobs/p/..old/a.dxf')).toBe('..old/a.dxf');
+    expect(projectEntryFor(p, '/jobs/p/.../a.dxf')).toBe('.../a.dxf');
+    expect(projectEntryFor(p, '/jobs/other/a.dxf')).toBe('/jobs/other/a.dxf');
+    expect(rebaseProjectEntry('/jobs/p/..old/x.dxf', '/elsewhere/q.json', '/jobs/p/p.jcadproj.json')).toBe('..old/x.dxf');
+    expect(rebaseProjectEntry('/jobs/x.dxf', '/elsewhere/q.json', '/jobs/p/p.jcadproj.json')).toBe('/jobs/x.dxf');
+    // ... so moving the whole project folder keeps them working
+    const moved = { ...p, path: '/archive/p/p.jcadproj.json', drawings: [{ file: projectEntryFor(p, '/jobs/p/..old/a.dxf') }] };
+    expect(resolveDrawingPath(moved, moved.drawings[0]!)).toBe('/archive/p/..old/a.dxf');
+  });
 });
