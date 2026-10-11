@@ -1282,8 +1282,10 @@ const rejections = existsSync(join(userData, 'ipc-rejections.log')) ? readFileSy
 const unexpected = rejections.filter((l) => !provoked.some((re) => re.test(l)));
 check(unexpected.length === 0, `ipc-rejections.log holds only the provoked refusals (${rejections.length} line(s))${unexpected.length ? `: ${unexpected.slice(0, 5).join(' | ')}` : ''}`);
 
-rmSync(profile, { recursive: true, force: true });
-if (!process.env.JCAD_E2E_OUT) rmSync(outDir, { recursive: true, force: true });
+// Helper processes of a killed or just-closed instance (crash recovery step) may still write into the
+// profile for a moment: retry instead of failing the run after every check passed.
+rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+if (!process.env.JCAD_E2E_OUT) rmSync(outDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 else console.log(`e2e-electron: output kept in ${outDir}`);
 
 console.log(`\ne2e-electron: ${results.length} checks passed, ${problems.length} failed (${process.platform} ${process.arch}, ${packaged ? `packaged ${executable}` : `Electron ${pkg.devDependencies.electron}`})`);
