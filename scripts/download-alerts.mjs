@@ -165,7 +165,7 @@ function makeApi(repo, token) {
       });
       const text = await res.text();
       if (!res.ok) {
-        const err = new Error(`${method} ${path} -> ${res.status}: ${text.slice(0, 300)}`);
+        const err = /** @type {Error & { status?: number }} */ (new Error(`${method} ${path} -> ${res.status}: ${text.slice(0, 300)}`));
         err.status = res.status;
         throw err;
       }
@@ -177,7 +177,7 @@ function makeApi(repo, token) {
       const out = execFileSync('gh', args, { input: body ? JSON.stringify(body) : undefined, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
       return out.trim() ? JSON.parse(out) : null;
     } catch (e) {
-      const err = new Error(`${method} ${path} failed: ${(e.stderr || e.message || '').toString().slice(0, 300)}`);
+      const err = /** @type {Error & { status?: number }} */ (new Error(`${method} ${path} failed: ${(e.stderr || e.message || '').toString().slice(0, 300)}`));
       err.status = /HTTP (\d{3})/.exec(String(e.stderr || ''))?.[1] ? Number(/HTTP (\d{3})/.exec(String(e.stderr))[1]) : undefined;
       throw err;
     }

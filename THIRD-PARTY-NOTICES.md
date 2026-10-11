@@ -82,6 +82,14 @@ none of their code is part of what is distributed.
 | concurrently | 9.2.4 | MIT | Copyright (c) 2015 Kimmo Brunfeldt | Development script runner only. | <https://github.com/open-cli-tools/concurrently> |
 | cross-env | 7.0.3 | MIT | Copyright (c) 2017 Kent C. Dodds | Development script runner only. | <https://github.com/kentcdodds/cross-env> |
 | wait-on | 8.0.5 | MIT | Copyright (c) 2015 Jeff Barczewski | Development script runner only. | <https://github.com/jeffbski/wait-on> |
+| eslint | 9.39.5 | MIT | Copyright OpenJS Foundation and other contributors | Lint only (`npm run lint`). | <https://github.com/eslint/eslint> |
+| @eslint/js | 9.39.5 | MIT | Copyright OpenJS Foundation and other contributors | Lint rule set only. | <https://github.com/eslint/eslint> |
+| typescript-eslint | 8.71.1 | MIT | Copyright (c) 2019 typescript-eslint and other contributors | Lint (TypeScript parser and rules) only. | <https://github.com/typescript-eslint/typescript-eslint> |
+| globals | 16.5.0 | MIT | Copyright (c) Sindre Sorhus | Lint configuration only. | <https://github.com/sindresorhus/globals> |
+| pngjs | 7.0.0 | MIT | Copyright (c) 2015 Luke Page & Original Contributors | Screenshot comparison only (`scripts/screenshot-compare.mjs`). | <https://github.com/pngjs/pngjs> |
+| pixelmatch | 7.2.0 | ISC | Copyright (c) 2025, Mapbox | Screenshot comparison only. | <https://github.com/mapbox/pixelmatch> |
+| js-yaml (as a development dependency) | 4.3.2 | MIT | Copyright (C) 2011-2015 by Vitaly Puzrin | Workflow validation (`scripts/check-workflows.mjs`); the same package ships at run time through electron-updater (above). | <https://github.com/nodeca/js-yaml> |
+| @types/pngjs, @types/js-yaml | 6.0.5, 4.0.9 | MIT | Copyright (c) Microsoft Corporation | Type definitions only. | <https://github.com/DefinitelyTyped/DefinitelyTyped> |
 
 ### Other material in the repository
 

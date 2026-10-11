@@ -227,7 +227,7 @@ function viewTool(ed: Editor, arg?: string): Tool {
     const kws = ['?', 'Delete', 'Orthographic', 'Restore', 'Save', 'Window'];
     const parts = (arg ?? '').split(/\s+/).filter(Boolean);
     let opt = parts[0] ? matchKeyword(parts[0], kws) : null;
-    let name = parts[1];
+    const name = parts[1];
     if (!opt) {
       opt = yield* keyword(ctx, 'Enter an option [?/Delete/Orthographic/Restore/Save/Window]:', kws);
       if (!opt) return;

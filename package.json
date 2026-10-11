@@ -7,6 +7,9 @@
   "private": true,
   "main": "electron/main.cjs",
   "type": "module",
+  "engines": {
+    "node": ">=22.6.0 <23"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit -p tsconfig.json && vite build",
@@ -15,9 +18,19 @@
     "electron:dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .\"",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json",
+    "typecheck:electron": "tsc -p tsconfig.electron.json",
+    "typecheck:scripts": "tsc -p tsconfig.scripts.json",
+    "typecheck:all": "npm run typecheck && npm run typecheck:electron && npm run typecheck:scripts",
+    "lint": "eslint --max-warnings=0 .",
     "screenshot": "node scripts/screenshot.mjs",
+    "screenshot:compare": "node scripts/screenshot-compare.mjs",
+    "screenshot:approve": "node scripts/screenshot-compare.mjs --approve",
     "ui-check": "node scripts/ui-click-check.mjs",
     "e2e": "node --experimental-strip-types scripts/e2e-electron.mjs",
+    "e2e:packaged": "node --experimental-strip-types scripts/e2e-electron.mjs --packaged",
+    "bench": "node scripts/bench.mjs",
+    "bench:node": "cross-env JCAD_BENCH=1 vitest run tests/perf-dense.test.ts",
+    "check:workflows": "node scripts/check-workflows.mjs",
     "dist": "npm run build && electron-builder",
     "dist:dir": "npm run build && electron-builder --dir"
   },
@@ -31,6 +44,7 @@
       "dist/**",
       "electron/**",
       "scripts/dwg-reader.mjs",
+      "scripts/dwg-worker.mjs",
       "package.json"
     ],
     "asarUnpack": [
@@ -74,13 +88,22 @@
     "afterPack": "scripts/afterPack.cjs"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.10.0",
+    "@types/pngjs": "^6.0.5",
     "concurrently": "^9.1.0",
     "cross-env": "^7.0.3",
     "electron": "^33.2.0",
     "electron-builder": "^26.15.3",
+    "eslint": "^9.39.5",
+    "globals": "^16.5.0",
+    "js-yaml": "^4.3.2",
+    "pixelmatch": "^7.2.0",
     "playwright": "^1.49.0",
+    "pngjs": "^7.0.0",
     "typescript": "^5.7.2",
+    "typescript-eslint": "^8.71.1",
     "vite": "^6.0.3",
     "vitest": "^2.1.8",
     "wait-on": "^8.0.1"

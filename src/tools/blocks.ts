@@ -7,7 +7,7 @@ import * as g from '../core/geometry';
 import type { Entity, BlockDef, InsertEntity } from '../core/entities';
 import { newId } from '../core/entities';
 import type { DrawingState } from '../core/document';
-import type { Tool, ToolContext } from './types';
+import type { Tool } from './types';
 import { scriptTool, point, pointOrKeyword, text, number, keyword, select, dflt } from './script';
 
 export const blockDefaults = { lastInserted: '' };

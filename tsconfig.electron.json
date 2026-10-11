@@ -1,0 +1,19 @@
+{
+  // Type check of the Electron main process, preload and packaging hooks (plain CommonJS with
+  // JSDoc). Nothing is emitted: the files ship as they are. `npm run typecheck:all` runs it.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "node16",
+    "moduleResolution": "node16",
+    "lib": ["ES2022", "DOM"],
+    "types": ["node"],
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "strict": true,
+    "noImplicitAny": false,
+    "useUnknownInCatchVariables": false,
+    "skipLibCheck": true
+  },
+  "include": ["electron/*.cjs", "scripts/*.cjs"]
+}
