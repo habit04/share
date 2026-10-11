@@ -71,6 +71,11 @@ else {
     for (const cmd of ['npm run lint', 'npm run typecheck:all', 'npm test', 'npm run build', 'npm run ui-check', 'npm run screenshot:compare', 'npm run e2e', 'npm run bench:node'])
       if (!runs('checks').includes(cmd)) problems.push(`release.yml: the checks job does not run "${cmd}"`);
     if (!jobs.checks.outputs?.sha) problems.push('release.yml: the checks job does not output the tested commit (sha)');
+    // Electron 44 downloads its binary on first use; the end-to-end run must not pay for it inside its launch timeout.
+    const steps = jobs.checks.steps ?? [];
+    const fetchElectron = steps.findIndex((s) => /node node_modules\/electron\/install\.js/.test(String(s.run ?? '')));
+    const e2e = steps.findIndex((s) => /npm run e2e\b/.test(String(s.run ?? '')));
+    if (fetchElectron < 0 || fetchElectron > e2e) problems.push('release.yml: the checks job must fetch the Electron binary (node node_modules/electron/install.js) before the end-to-end run');
     const browserBench = (jobs.checks.steps ?? []).find((s) => /\bnpm run bench\s*$/.test(String(s.run ?? '')));
     if (!browserBench || String(browserBench.env?.JCAD_BENCH_ASSERT) !== '1') problems.push('release.yml: browser performance budgets must be asserted');
   }

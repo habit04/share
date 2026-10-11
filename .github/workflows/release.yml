@@ -45,6 +45,9 @@ jobs:
       - run: npm ci
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+      # Electron 44's package fetches its binary on first use, not at install (as in ci.yml): fetch
+      # it here so the download does not happen inside the end-to-end run's launch timeout.
+      - run: node node_modules/electron/install.js
       - name: Install Chromium for Playwright
         run: |
           npx playwright install --with-deps chromium

@@ -129,4 +129,10 @@ describe('workflow validation', () => {
     expect(r.code).toBe(1);
     expect(r.out).toMatch(/must write the minimum macOS version into latest-mac\.yml before recording checksums/);
   });
+
+  it('rejects release checks that leave the Electron binary download to the end-to-end launch', () => {
+    const r = check(withRelease((t) => t.replace('      - run: node node_modules/electron/install.js\n', '')));
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/must fetch the Electron binary/);
+  });
 });
