@@ -10,7 +10,8 @@
 // JCAD_FLOWS=close,open (comma-separated scenario names) runs only those scenarios.
 import { _electron as electron } from 'playwright';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 
@@ -101,9 +102,10 @@ const sameBytes = (a, b) => Buffer.compare(readFileSync(a), readFileSync(b)) ===
  *   faults                  [{ prefix, code, op }] fs/promises calls on paths under `prefix` throw `code`
  *   slowReads               [{ path, ms }] readFile of that path waits first (a slow open)
  */
-async function launch(profile, { recover = true } = {}) {
+async function launch(profile, { recover = true, extraArgs = [] } = {}) {
   const args = ['.', `--user-data-dir=${profile}`];
   if (process.platform === 'linux') args.push('--no-sandbox');
+  args.push(...extraArgs);
   const app = await electron.launch({ args, cwd: repo, env, timeout: 60_000 });
   const mainLog = [];
   app.process().stdout?.on('data', (d) => mainLog.push(String(d)));
@@ -1247,6 +1249,61 @@ scenario('save-errors', async () => {
     await ctx.close();
   }
   checkClean(ctx, 'save errors');
+});
+
+// ------------------------------------------------------------------ drawings handed over by the OS (command line, second launch)
+/** Start a second instance with `args` (it hands them to the running one and exits); resolves its exit code. */
+function secondInstance(profile, args, cwd) {
+  const electronPath = createRequire(import.meta.url)('electron');
+  const a = [repo, `--user-data-dir=${profile}`];
+  if (process.platform === 'linux') a.push('--no-sandbox');
+  return new Promise((res) => {
+    const p = spawn(electronPath, [...a, ...args], { cwd, env, stdio: 'ignore' });
+    const t = setTimeout(() => {
+      p.kill('SIGKILL');
+      res('timeout');
+    }, 30_000);
+    p.on('exit', (code) => {
+      clearTimeout(t);
+      res(code);
+    });
+  });
+}
+
+scenario('handover', async () => {
+  step = 'handover';
+  const dir = tempDir('handover');
+  const a = join(dir, 'first.dxf');
+  const b = join(dir, 'second.dxf');
+  writeFileSync(a, readFileSync(fixtures.dxf));
+  writeFileSync(b, readFileSync(fixtures.dxf));
+  const profile = tempDir('profile');
+  const ctx = await launch(profile, { extraArgs: [a] });
+  try {
+    await ctx.win.waitForFunction((p) => window.editor.sessions.all.some((s) => s.filePath === p), a, { timeout: 15_000 }).catch(() => {});
+    let t = await ctx.tabs();
+    check(t.length === 1 && t[0].path === a && t[0].n === 25, `a drawing on the command line opens at start, in the first tab (${t.map((x) => x.title).join(', ')})`);
+    // Work in another tab, then a second launch hands over another drawing (relative to its folder).
+    await ctx.win.evaluate(() => window.editor.sessions.add());
+    await ctx.edit('work');
+    const code = await secondInstance(profile, ['second.dxf'], dir);
+    check(code === 0, `the second launch hands over and exits (${code})`);
+    await ctx.win.waitForFunction((p) => window.editor.sessions.all.some((s) => s.filePath === p), b, { timeout: 15_000 }).catch(() => {});
+    t = await ctx.tabs();
+    check(t.length === 3 && t[2].path === b && (await ctx.active()) === 2 && t[1].dirty && !t[1].path, `it opens in a new tab, the work tab untouched (${t.map((x) => `${x.title}${x.dirty ? '*' : ''}`).join(', ')}; active ${await ctx.active()})`);
+    // The same drawing again: its tab is shown, no second copy; a missing file is ignored.
+    await secondInstance(profile, [a, join(dir, 'missing.dxf'), join(dir, 'notes.txt')], dir);
+    await ctx.win.waitForTimeout(1500);
+    t = await ctx.tabs();
+    check(t.length === 3 && (await ctx.active()) === 0, `a drawing already open is shown in its tab (${t.map((x) => x.title).join(', ')}; active ${await ctx.active()})`);
+    check(!(await ctx.logSince(0)).some((l) => /Failed to open|Unknown file path/.test(l)), 'no error for the handed-over files');
+    flowsRun.push('drawing on the command line, second launch with a relative path, the same drawing again');
+  } catch (err) {
+    bad(`unexpected: ${err && err.stack ? err.stack : err}`);
+  } finally {
+    await ctx.close();
+  }
+  checkClean(ctx, 'handover');
 });
 
 // ================================================================== run

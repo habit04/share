@@ -65,6 +65,9 @@ declare global {
       saveProject?(path: string, text: string): Promise<string | null>;
       setRecentFiles?(files: string[]): void;
       quit?(): void;
+      /** Drawings handed over by the OS before the page loaded / afterwards (open each in its tab). */
+      takeOpenFiles?(): Promise<string[]>;
+      onOpenFiles?(cb: (files: string[]) => void): void;
       appInfo?(): Promise<{ version: string; platform: string; arch: string; packaged: boolean; selfUpdate: boolean; releases: string }>;
       openExternal?(url: string): Promise<boolean>;
       checkForUpdates?(): Promise<{ state: string; version?: string; message?: string }>;
@@ -714,6 +717,15 @@ function boot(): void {
       await recoveryDialog(editor, store, autosaver);
     })();
   }
+  // Drawings handed over by the OS ("Open with", a second launch): one after another, each in its own tab.
+  let handOver: Promise<void> = Promise.resolve();
+  const openHandedOver = (files: string[]): void => {
+    handOver = handOver.then(async () => {
+      for (const f of files) await editor.sessions.openInTab(f, (x) => editor.openFile(x));
+    });
+  };
+  window.jcad?.onOpenFiles?.(openHandedOver);
+  void window.jcad?.takeOpenFiles?.().then(openHandedOver, () => {});
   // expose for automation / debugging
   (window as unknown as { editor: Editor; jacUi: unknown }).editor = editor;
   (window as unknown as { jacUi: unknown }).jacUi = { ribbon, cmd, qp, tp, pm, props, clipboard, autosaver, store, autosaveStore, projectAutosaver };

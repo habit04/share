@@ -41,6 +41,11 @@ contextBridge.exposeInMainWorld('jcad', {
   // Native menu mirrors of renderer state
   setRecentFiles: (files) => ipcRenderer.send('set-recent-files', files),
   quit: () => ipcRenderer.send('app-quit'),
+  // Drawings handed over by the OS (command line of this or a second launch, macOS open-file)
+  takeOpenFiles: () => ipcRenderer.invoke('take-open-files'),
+  onOpenFiles: (cb) => {
+    ipcRenderer.on('open-files', (_ev, files) => cb(Array.isArray(files) ? files.filter((f) => typeof f === 'string') : []));
+  },
   onMenuCommand: (cb) => {
     ipcRenderer.on('menu-command', (_ev, cmd) => cb(String(cmd)));
   },

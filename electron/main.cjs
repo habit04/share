@@ -327,6 +327,7 @@ async function createWindow() {
     },
   });
   mainWindow = win;
+  openFilesReady = false; // a new page asks for the files waiting for it
   if (b.maximized) win.maximize();
   win.once('ready-to-show', () => win.show());
   installWindowStatePersistence(win);
@@ -851,6 +852,43 @@ ipcMain.on('app-quit', (ev) => {
   win.close();
 });
 
+// ------------------------------------------------------------------ drawings handed over by the OS
+// "Open with JCad Electrical", a drawing dropped on the program icon or a second launch with a file:
+// the paths arrive on the command line (or as macOS open-file events). They become openable by path
+// (the user named them) and the renderer opens each in its own tab (pristine tab reused, an open tab
+// shown) - asked for once it has loaded (take-open-files), pushed afterwards (open-files).
+const pendingOpenFiles = [];
+let openFilesReady = false;
+/** Existing .dxf / .dwg files among command-line arguments (relative ones against `cwd`). */
+function drawingArgs(argv, cwd) {
+  const out = [];
+  for (const a of Array.isArray(argv) ? argv.slice(1) : []) {
+    if (typeof a !== 'string' || a.startsWith('-') || a.includes('\0') || !/\.(dxf|dwg)$/i.test(a)) continue;
+    const p = path.resolve(typeof cwd === 'string' && cwd ? cwd : process.cwd(), a);
+    try {
+      if (fsSync.statSync(p).isFile()) out.push(p);
+    } catch {
+      /* not a file: ignored */
+    }
+  }
+  return out;
+}
+function handOverFiles(files) {
+  if (!files.length) return;
+  for (const f of files) rememberPath(f);
+  const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+  if (openFilesReady && win) win.webContents.send('open-files', files);
+  else pendingOpenFiles.push(...files);
+}
+ipcMain.handle('take-open-files', () => {
+  openFilesReady = true;
+  return pendingOpenFiles.splice(0);
+});
+app.on('open-file', (ev, file) => {
+  ev.preventDefault();
+  if (typeof file === 'string' && /\.(dxf|dwg)$/i.test(file)) handOverFiles([file]);
+});
+
 // Headless probe used by packaging smoke tests:  jcad --probe-dwg <file.dwg>
 const probeIndex = process.argv.indexOf('--probe-dwg');
 if (probeIndex >= 0) {
@@ -875,7 +913,9 @@ if (!app.requestSingleInstanceLock()) {
   app.quit();
   return;
 }
-app.on('second-instance', () => {
+app.on('second-instance', (_ev, argv, workingDirectory) => {
+  // A drawing handed to a second launch ("Open with", a double click) opens in this window.
+  handOverFiles(drawingArgs(argv, workingDirectory));
   const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : BrowserWindow.getAllWindows()[0];
   if (!win) return;
   if (win.isMinimized()) win.restore();
@@ -901,6 +941,7 @@ app.on('child-process-gone', (_ev, details) => logMainError('child-process-gone'
 
 app.whenReady().then(() => {
   loadPersistedPaths();
+  handOverFiles(drawingArgs(process.argv, process.cwd()));
   createWindow();
   updater.scheduleStartupCheck(() => mainWindow);
   app.on('activate', () => {
