@@ -72,7 +72,9 @@ page.on('pageerror', (e) => fail('PAGE ERROR', e.stack || e.message));
 page.on('console', (m) => {
   if (m.type() === 'error') fail('CONSOLE', m.text());
 });
-page.on('dialog', (d) => void d.dismiss().catch(() => {}));
+// The "leave site? changes you made may not be saved" prompt (drawings changed by the sweep stay
+// modified across tab switches) is accepted so the fresh page below can load; other dialogs are dismissed.
+page.on('dialog', (d) => void (d.type() === 'beforeunload' ? d.accept() : d.dismiss()).catch(() => {}));
 page.on('download', (d) => void d.cancel().catch(() => {}));
 
 await page.goto(`http://127.0.0.1:${port}/?demo`);

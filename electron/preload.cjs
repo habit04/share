@@ -5,6 +5,9 @@ contextBridge.exposeInMainWorld('jcad', {
   openDrawing: (file) => ipcRenderer.invoke('open-drawing', file),
   openProject: (file) => ipcRenderer.invoke('open-project', file),
   saveText: (suggestName, text, filterName, ext) => ipcRenderer.invoke('save-text', suggestName, text, filterName, ext),
+  // Project Save As: pick the destination first (the renderer rebases relative paths), then write it.
+  chooseProjectPath: (suggestName) => ipcRenderer.invoke('choose-project-path', String(suggestName || '')),
+  saveProject: (file, text) => ipcRenderer.invoke('save-project', file, text),
   backupFile: (file) => ipcRenderer.invoke('backup-file', file),
   plotPdf: (dataUrl, suggestName, landscape, sheet) => ipcRenderer.invoke('plot-pdf', dataUrl, suggestName, landscape, sheet),
   printDrawing: (dataUrl, title, landscape, sheet) => ipcRenderer.invoke('print-drawing', dataUrl, title, landscape, sheet),
@@ -49,6 +52,23 @@ contextBridge.exposeInMainWorld('jcad', {
         dirty = false;
       }
       ipcRenderer.send('dirty-state', dirty);
+    });
+  },
+  /**
+   * Close / quit / restart: the main process sends 'close-request' and waits for the Save All
+   * workflow. The request is acknowledged at once (so a hung page can be told apart from a user
+   * who is still answering the dialog); the answer is true only when the window may close.
+   */
+  onCloseRequest: (cb) => {
+    ipcRenderer.on('close-request', async (_ev, id, context) => {
+      ipcRenderer.send('close-ack', id);
+      let ok = false;
+      try {
+        ok = (await cb(context === 'quit' || context === 'restart' ? context : 'close')) === true;
+      } catch {
+        ok = false;
+      }
+      ipcRenderer.send('close-response', id, ok);
     });
   },
   // Updates (GitHub Releases)

@@ -24,6 +24,9 @@ import { drawingKindOf, readDwgInBrowser, describeDwgError } from './io/dwg-brow
 import { donateUrl } from './app/about';
 import { Autosaver, bridgeAutosaveStore, localAutosaveStore, type AutosaveBridge } from './app/autosave';
 import { recoveryDialog } from './ui/recovery';
+import { runCloseWorkflow } from './app/closeflow';
+import { saveAllDialog, saveFailedDialog, projectRecoveryDialog } from './ui/filedialogs';
+import { ProjectAutosaver, drawingAutosaves, offerProjectRecovery } from './app/project-autosave';
 import { showAppMenu } from './ui/appmenu';
 import { EntityClipboard } from './ui/clipboard';
 import { closeMenus } from './ui/menu';
@@ -53,6 +56,10 @@ declare global {
       saveDxf(path: string | null, text: string, suggestName: string): Promise<string | null>;
       onMenuCommand(cb: (cmd: string) => void): void;
       onQueryDirty(cb: () => boolean): void;
+      /** Close / quit / restart: the main process waits for the Save All workflow's answer (true = close). */
+      onCloseRequest?(cb: (context: 'close' | 'quit' | 'restart') => Promise<boolean>): void;
+      chooseProjectPath?(suggestName: string): Promise<string | null>;
+      saveProject?(path: string, text: string): Promise<string | null>;
       setRecentFiles?(files: string[]): void;
       quit?(): void;
       appInfo?(): Promise<{ version: string; platform: string; arch: string; packaged: boolean; selfUpdate: boolean; releases: string }>;
@@ -343,7 +350,6 @@ function boot(): void {
   registerPluginCommands(editor);
 
   // Multi-document: NEW / OPEN / NEWSHEET / RECENT work with file tabs.
-  const origOpen = editor.commands.get('OPEN')!;
   const origNewSheet = editor.commands.get('NEWSHEET')!;
   reg('NEW', ['QNEW'], 'New drawing (opens a new file tab)', (ed) => {
     ed.sessions.add();
@@ -359,7 +365,8 @@ function boot(): void {
     const f = ed.settings.recentFiles[i];
     if (!f) return ed.settings.recentFiles.forEach((r, k) => ed.log(`  ${k + 1}. ${r}`));
     if (f.endsWith('.json')) void ed.openProject(f);
-    else void ed.sessions.openInTab(f, (x) => origOpen.run(ed, x) as unknown as Promise<void>);
+    // Await the open itself: the tab made for it must not be dropped as "cancelled" while the file still loads.
+    else void ed.sessions.openInTab(f, (x) => ed.openFile(x));
   });
   reg('CLEARRECENT', [], 'Clear the recent file list (File > Open Recent > Clear Recent)', (ed) => {
     updateSettings(ed, { recentFiles: [] });
@@ -562,6 +569,9 @@ function boot(): void {
   autosaver.onError = (title, err) => editor.log(`Autosave of ${title} failed: ${err instanceof Error ? err.message : String(err)} (will retry).`);
   autosaver.start();
   editor.on('snap', () => autosaver.restart()); // settings changed (interval may differ)
+  // The project's own unsaved changes are autosaved next to the drawings (removed once saved / discarded).
+  const projectAutosaver = new ProjectAutosaver(editor, store, () => editor.settings.autosaveMinutes > 0);
+  projectAutosaver.onError = (err) => editor.log(`Autosave of the project failed: ${err instanceof Error ? err.message : String(err)}.`);
   editor.on('file', () => {
     if (!editor.doc.dirty && editor.doc.filePath) void autosaver.discardFor(editor.sessions.current.id);
     window.jcad?.setRecentFiles?.(editor.settings.recentFiles);
@@ -642,22 +652,56 @@ function boot(): void {
   window.jcad?.onMenuCommand((c) => editor.runCommand(c));
   // Unsaved-work guard: the browser prompt, and the Electron close handler asks via this flag.
   window.addEventListener('beforeunload', (ev) => {
+    // (The browser build cannot reopen projects, so only drawings count here; the desktop app asks through Save All.)
     if (editor.sessions.anyDirty() && !window.jcad) {
       ev.preventDefault();
       ev.returnValue = '';
     }
   });
-  window.jcad?.onQueryDirty(() => editor.sessions.anyDirty());
+  window.jcad?.onQueryDirty(() => editor.sessions.anyDirty() || editor.projectDirty);
+  // Save All on close / quit / restart: every modified drawing, Symbol Builder tab and the project.
+  let closing: Promise<boolean> | null = null;
+  const closeWorkflow = (context: 'close' | 'quit' | 'restart'): Promise<boolean> => {
+    if (closing) return closing;
+    const sb = symbolBuilderOf(editor);
+    closing = runCloseWorkflow(
+      editor,
+      {
+        ask: (items) => saveAllDialog(items, context),
+        saveSymbol: async () => ((await sb.save()) ? null : (sb.firstError() ?? 'the symbol was not saved')),
+        showError: (title, error) => saveFailedDialog(title, error),
+      },
+      (id) => sb.sessions.has(id),
+    )
+      .then(async (ok) => {
+        // Answer only after autosaves being written are complete (they are what recovers discarded work).
+        if (ok) {
+          await Promise.allSettled([projectAutosaver.flush(), (autosaver as { flush?: () => Promise<unknown> }).flush?.()]);
+        }
+        return ok;
+      })
+      .finally(() => {
+        closing = null;
+      });
+    return closing;
+  };
+  window.jcad?.onCloseRequest?.(closeWorkflow);
+  (window as unknown as { jcadCloseWorkflow: typeof closeWorkflow }).jcadCloseWorkflow = closeWorkflow;
 
   if (new URLSearchParams(location.search).has('demo')) {
     seedDemoDrawing(editor);
   }
   editor.zoomExtents();
   cmd.focus();
-  if (!new URLSearchParams(location.search).has('norecover')) void recoveryDialog(editor, store, autosaver);
+  if (!new URLSearchParams(location.search).has('norecover')) {
+    void (async () => {
+      await offerProjectRecovery(editor, store, projectRecoveryDialog, projectAutosaver);
+      await recoveryDialog(editor, drawingAutosaves(store), autosaver);
+    })();
+  }
   // expose for automation / debugging
   (window as unknown as { editor: Editor; jacUi: unknown }).editor = editor;
-  (window as unknown as { jacUi: unknown }).jacUi = { ribbon, cmd, qp, tp, pm, props, clipboard, autosaver, store };
+  (window as unknown as { jacUi: unknown }).jacUi = { ribbon, cmd, qp, tp, pm, props, clipboard, autosaver, store, projectAutosaver };
   void loadPlugins(editor);
 }
 

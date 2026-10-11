@@ -11,6 +11,34 @@ messages). The date of each version is the date of the commit that set that vers
 
 ## [Unreleased]
 
+### Fixed
+
+- Project-wide commands (AEXREFPROJECT, AERETAGPROJECT, AEWIRENOPROJECT, AETITLEBLOCKALL) no
+  longer overwrite a drawing whose requested `.bak` copy failed: the drawing is skipped and listed,
+  unless you choose **Continue Without Backup** in a dialog that names the file.
+- Project-wide commands apply their changes only to the drawing revision they were calculated
+  from: a tab edited while the command ran, a closed drawing that changed on disk or was opened in
+  a tab meanwhile, or a file saved again in between is reported as a conflict and left alone.
+  Switching tabs while closed drawings load no longer mixes up the current drawing.
+- The project has its own modified flag (properties, drawing list, catalog file, report templates,
+  title block mapping), an autosave with **Project Recovery** at the next start, and
+  Save / Don't Save / Cancel before `OPENPROJECT`, the new `NEWPROJECT` and closing.
+- Closing the window, quitting and restarting for an update show one **Save Changes** dialog for
+  every modified drawing tab, Symbol Builder tab and the project (Save All / Discard All / Cancel,
+  per-item choice); items are saved one after another and a failure keeps the window open. The
+  main process waits for the answer instead of closing after three seconds, and Save no longer
+  saved only the active drawing.
+- File paths are normalised in one place (`src/app/paths.ts`): separators, `.` / `..`, Unicode,
+  case-insensitive comparison for Windows paths. Projects, tabs ("is this drawing already open"),
+  recent files and the main process's allowed-path list use it, and drawings with the same file
+  name in different folders are no longer confused (they show their folder, e.g. `a.dxf (line1)`).
+- `PROJECTSAVEAS` (new) into another folder recalculates relative drawing and catalog paths so they
+  still point at the same files; `PROJECTSAVE` writes to the project's own file without a dialog.
+- A slow open finishes in the tab that started it even if you switch tabs meanwhile (or opens in
+  a new tab if that tab was edited); `RECENT` no longer replaced the active drawing when the file
+  took a moment to load. Saves to the same file are queued, and an older save never overwrites a
+  newer one. A failed save is reported instead of being lost as an unhandled error.
+
 ### Added
 
 - Download alerts: an hourly GitHub Actions workflow (`download-alerts.yml`, `scripts/download-alerts.mjs`)

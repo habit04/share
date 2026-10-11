@@ -8,6 +8,7 @@
  */
 import { Drawing, type DrawingState } from '../core/document';
 import type { Point } from '../core/geometry';
+import { fileBaseName, samePath, shortNames } from './paths';
 
 export interface DocumentSession {
   readonly id: number;
@@ -42,7 +43,7 @@ const historyOf = (doc: Drawing): HistoryAccess => doc as unknown as HistoryAcce
 
 export function sessionTitle(s: Pick<DocumentSession, 'filePath' | 'untitledName'>): string {
   if (!s.filePath) return s.untitledName;
-  return s.filePath.split(/[\\/]/).pop() || s.untitledName;
+  return fileBaseName(s.filePath) || s.untitledName;
 }
 
 export class SessionManager {
@@ -92,13 +93,28 @@ export class SessionManager {
     return this.list[this.activeIndex]?.untitledName ?? 'Drawing1.dxf';
   }
 
+  /**
+   * Tab title: the file name, plus the parent folder when another open tab has a file with
+   * the same name in a different folder ("a.dxf (line1)" / "a.dxf (line2)").
+   */
   titleOf(i: number): string {
     const s = i === this.activeIndex ? this.current : this.list[i];
-    return s ? sessionTitle(s) : '';
+    if (!s) return '';
+    const name = sessionTitle(s);
+    if (!s.filePath || !this.list.some((x) => x !== s && x.filePath && !samePath(x.filePath, s.filePath) && sessionTitle(x).toLowerCase() === name.toLowerCase())) return name;
+    return shortNames(this.list.map((x) => x.filePath), this.list.map((x) => x.untitledName))[i] ?? name;
+  }
+
+  /** Index of the session with this id (-1 when it was closed). */
+  indexOfId(id: number): number {
+    return this.list.findIndex((s) => s.id === id);
   }
 
   /** Capture the live document into the active session record. */
   sync(): void {
+    // While a session is being loaded into the editor the live document is half restored (just
+    // loaded: clean, no undo history); capturing it then would wipe the session's dirty flag.
+    if (this.restoring) return;
     const s = this.list[this.activeIndex];
     if (!s) return;
     const { doc, viewport } = this.host;
@@ -112,9 +128,16 @@ export class SessionManager {
     s.selection = new Set(this.host.selection);
   }
 
+  private restoring = false;
+
   private restore(s: DocumentSession): void {
     const { host } = this;
-    host.loadState(s.state, s.filePath);
+    this.restoring = true;
+    try {
+      host.loadState(s.state, s.filePath);
+    } finally {
+      this.restoring = false;
+    }
     const h = historyOf(host.doc);
     h.undoStack = [...s.undo];
     h.redoStack = [...s.redo];
@@ -191,9 +214,34 @@ export class SessionManager {
     return this.list.some((s) => s.dirty);
   }
 
+  /** Tab showing this file (normalised full-path comparison, case-insensitive for Windows paths). */
   indexOfPath(path: string): number {
     this.sync();
-    return this.list.findIndex((s) => s.filePath === path);
+    return this.list.findIndex((s) => samePath(s.filePath, path));
+  }
+
+  /**
+   * Put a freshly opened document into session `id` without activating it (an open that
+   * finished after the user switched to another tab). Returns false when the tab is gone.
+   */
+  loadInto(id: number, state: DrawingState, filePath: string | null, dirty = false): boolean {
+    const i = this.indexOfId(id);
+    if (i < 0) return false;
+    if (i === this.activeIndex) {
+      this.host.loadState(state, filePath);
+      this.host.doc.dirty = dirty;
+      return true;
+    }
+    const s = this.list[i]!;
+    s.state = state;
+    s.filePath = filePath;
+    s.dirty = dirty;
+    s.undo = [];
+    s.redo = [];
+    s.view = null;
+    s.selection = new Set();
+    this.onChange?.();
+    return true;
   }
 
   /** A blank, untouched drawing (reused instead of opening a new tab, like AutoCAD's Drawing1). */
@@ -206,7 +254,7 @@ export class SessionManager {
    * Open a file in its own tab: reuse the pristine current tab, switch to an already-open
    * tab, otherwise add a new tab and run `open` in it; a cancelled dialog closes the tab again.
    */
-  async openInTab(file: string | undefined, open: (file?: string) => Promise<void>): Promise<void> {
+  async openInTab(file: string | undefined, open: (file?: string) => Promise<unknown>): Promise<void> {
     if (file) {
       const k = this.indexOfPath(file);
       if (k >= 0) {
@@ -214,11 +262,17 @@ export class SessionManager {
         return;
       }
     }
-    const from = this.activeIndex;
-    const reuse = this.isPristine(from);
-    const idx = reuse ? from : this.add();
+    const fromId = this.current.id;
+    const reuse = this.isPristine(this.activeIndex);
+    const idx = reuse ? this.activeIndex : this.add();
+    const id = this.list[idx]!.id;
     await open(file);
-    if (!reuse && this.isPristine(idx)) this.close(idx, from);
+    // Tabs may have been switched, opened or closed while the file was loading: find ours by id.
+    const now = this.indexOfId(id);
+    if (!reuse && now >= 0 && this.isPristine(now)) {
+      const back = this.indexOfId(fromId);
+      this.close(now, now === this.activeIndex && back >= 0 ? back : undefined);
+    }
   }
 }
 

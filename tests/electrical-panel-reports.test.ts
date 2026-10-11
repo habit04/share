@@ -277,7 +277,8 @@ describe('project and title block', () => {
     expect(again.settings?.catalogFile).toBe('parts.json');
     expect(again.descriptions).toEqual(['ACME PLANT', 'CUSTOMER X']);
     expect(projectDrawingIndex(p, '/proj/002.dxf')).toBe(1);
-    expect(projectDrawingIndex(p, '/elsewhere/002.dxf')).toBe(1);
+    // A file with the same name in another folder is a different drawing (identified by full path).
+    expect(projectDrawingIndex(p, '/elsewhere/002.dxf')).toBe(-1);
     expect(projectDrawingIndex(p, null)).toBe(-1);
   });
   it('fills title block fields from project + drawing and writes them into the sheet', () => {

@@ -4,7 +4,7 @@
  * and the audit. Registered at the end of Editor.registerCommands; dialogs
  * come from `editor.hooks.electrical` (default: src/ui/electrical-dialogs.ts).
  */
-import type { Editor, FileBridge } from './editor';
+import { backupOutcome, type Editor } from './editor';
 import type { Point } from '../core/geometry';
 import type { Entity, InsertEntity } from '../core/entities';
 import { Drawing, type DrawingState } from '../core/document';
@@ -66,7 +66,9 @@ import { projectMapping, titleBlockSources, applyTitleBlockMapping, mappedValues
 import { buildPlcModule, normalizePlcSettings, type PlcModuleSettings } from '../tools/plc';
 import { WIRENO_LAYER } from '../electrical/wires';
 import { findRails, nearestReference, rungReferences } from '../electrical/ladder';
-import { projectDrawingIndex, resolveDrawingPath, resolveProjectPath, baseName } from './project';
+import { projectDrawingIndex, projectEntryFor, resolveDrawingPath, resolveProjectPath, baseName } from './project';
+import { samePath, shortNames } from './paths';
+import { captureRevision, contentHash, saveQueue } from './savequeue';
 import { readDxf, writeDxf } from '../io/dxf';
 import { convertDwg } from '../io/dwg';
 import type { ElectricalUi } from '../electrical/ui';
@@ -86,6 +88,7 @@ import {
   type DrawingPropertiesResultEx,
 } from '../ui/electrical-dialogs';
 import { isComponent } from '../electrical/families';
+import { backupFailedDialog } from '../ui/filedialogs';
 
 /** The dialog set: whatever main.ts installed on `hooks.electrical`, else the built-in dialogs (created lazily). */
 export function electricalUi(editor: Editor): ElectricalUi {
@@ -102,9 +105,9 @@ export async function projectDocuments(editor: Editor): Promise<Array<{ name: st
   const activeId = editor.sessions.current.id;
   for (const d of editor.project.drawings) {
     const path = resolveDrawingPath(editor.project, d);
-    if (path === editor.doc.filePath) continue;
+    if (samePath(path, editor.doc.filePath)) continue;
     // Drawings open in another tab are reported from memory (unsaved edits included).
-    const open = sessions.find((x) => x.id !== activeId && x.filePath === path);
+    const open = sessions.find((x) => x.id !== activeId && samePath(x.filePath, path));
     if (open) {
       const doc = new Drawing();
       doc.load(open.state, path);
@@ -294,8 +297,7 @@ export function registerElectricalCommands(editor: Editor): void {
       if (!res) return;
       try {
         setUserCatalog(parseCatalog(res.text));
-        ed.project = { ...ed.project, settings: { ...ed.project.settings, catalogFile: res.path } };
-        ed.hooks.projectChanged?.();
+        ed.updateProject({ ...ed.project, settings: { ...ed.project.settings, catalogFile: projectEntryFor(ed.project, res.path) } });
         ed.log(`User catalog loaded: ${userCatalogSize()} part(s). Path stored in the project settings (PROJECTSAVE to keep it).`);
       } catch (err) {
         ed.log(`Catalog not loaded: ${(err as Error).message}`);
@@ -401,8 +403,7 @@ export function registerElectricalCommands(editor: Editor): void {
         if (idx >= 0) {
           const x = r as DrawingPropertiesResultEx;
           const drawings = ed.project.drawings.map((d, i) => (i === idx ? { ...d, description: r.description || undefined, sheet: r.sheet || undefined, dwgno: r.dwgno || undefined, rev: x.rev === undefined ? d.rev : x.rev || undefined, date: x.date === undefined ? d.date : x.date || undefined } : d));
-          ed.project = { ...ed.project, drawings };
-          ed.hooks.projectChanged?.();
+          ed.updateProject({ ...ed.project, drawings });
         }
         ed.log('Drawing properties saved in the WD_M settings block.');
       });
@@ -412,8 +413,7 @@ export function registerElectricalCommands(editor: Editor): void {
       .projectProperties(ed.project)
       .then((p) => {
         if (!p) return;
-        ed.project = { ...p, path: ed.project.path };
-        ed.hooks.projectChanged?.();
+        ed.updateProject({ ...p, path: ed.project.path });
         ed.log('Project properties updated (PROJECTSAVE writes them to the project file).');
         void loadProjectCatalog(ed);
       });
@@ -499,6 +499,8 @@ export function registerElectricalCommands(editor: Editor): void {
 /** Dialogs used by the project-wide commands (replaceable, e.g. by tests or another UI). */
 export const projectUi = {
   confirmFiles: (title: string, intro: string, items: AffectedDrawing[], opts: { backupAvailable: boolean }): Promise<ConfirmFilesResult | null> => confirmFilesDialog(title, intro, items, opts),
+  /** The .bak copy of `file` failed: true = write it anyway ("Continue Without Backup"), false = skip this drawing. */
+  confirmNoBackup: (name: string, path: string, error: string): Promise<boolean> => backupFailedDialog(name, path, error),
   showProblems: (editor: Editor, sheets: readonly LoadedSheet[], problems: XrefProblem[]): void => showXrefProblems(editor, sheets, problems),
 };
 
@@ -507,10 +509,13 @@ export interface LoadedSheet extends ProjectSheet {
   /** active = the drawing in the editor, session = another open tab, file = read from disk. */
   source: 'active' | 'session' | 'file';
   sessionId?: number;
+  /** Open drawings: the document state the changes were calculated from (compared before applying). */
+  base?: DrawingState;
+  /** Closed files: hash of the file text that was read (compared with the file on disk before writing). */
+  baseHash?: string;
+  /** Save-queue revision captured when the drawing was read (an older write never replaces a newer one). */
+  revision?: number;
 }
-
-/** Bridge extension a desktop build may provide for the .bak copy before project-wide saves (not in FileBridge yet). */
-type BackupBridge = FileBridge & { backupFile?(path: string): Promise<string | null> };
 
 /** Only the desktop bridge reads project drawings by path (the browser bridge would show a file picker per drawing). */
 export function canReadProjectFiles(editor: Pick<Editor, 'fileBridge'>): boolean {
@@ -529,20 +534,29 @@ export async function loadProjectSheets(editor: Editor, opts: { files?: boolean 
   const activeId = editor.sessions.current.id;
   const sheets: LoadedSheet[] = [];
   const skipped: string[] = [];
-  const isEntry = (file: string | null, i: number, path: string) => !!file && (file === path || projectDrawingIndex(project, file) === i);
+  // Drawings are identified by full path; equal file names in different folders get their folder added.
+  const paths = project.drawings.map((d) => resolveDrawingPath(project, d));
+  const names = shortNames(paths);
+  // A detached copy of an open drawing: switching tabs while files load must not change what is calculated.
+  // The copy is in model space (a layout tab would hand the calculations the paper entities).
+  const copyOf = (state: DrawingState, path: string | null) => {
+    const doc = new Drawing();
+    const { space: _space, ...model } = state;
+    doc.load(model, path);
+    return doc;
+  };
   for (let i = 0; i < project.drawings.length; i += 1) {
     const d = project.drawings[i]!;
-    const path = resolveDrawingPath(project, d);
-    const base = { name: baseName(path), path, index: i, entrySheet: d.sheet, projectSettings: project.settings };
-    if (isEntry(editor.doc.filePath, i, path)) {
-      sheets.push({ ...makeSheet(editor.doc, base), source: 'active', sessionId: activeId });
+    const path = paths[i]!;
+    const base = { name: names[i] || baseName(path), path, index: i, entrySheet: d.sheet, projectSettings: project.settings };
+    if (samePath(editor.doc.filePath, path)) {
+      const state = editor.doc.snapshot;
+      sheets.push({ ...makeSheet(copyOf(state, editor.doc.filePath), base), source: 'active', sessionId: activeId, base: state, revision: captureRevision() });
       continue;
     }
-    const s = sessions.find((x) => x.id !== activeId && isEntry(x.filePath, i, path));
+    const s = sessions.find((x) => x.id !== activeId && samePath(x.filePath, path));
     if (s) {
-      const doc = new Drawing();
-      doc.load(s.state, s.filePath);
-      sheets.push({ ...makeSheet(doc, base), source: 'session', sessionId: s.id });
+      sheets.push({ ...makeSheet(copyOf(s.state, s.filePath), base), source: 'session', sessionId: s.id, base: s.state, revision: captureRevision() });
       continue;
     }
     if (opts.files === false || !canReadProjectFiles(editor)) {
@@ -550,6 +564,7 @@ export async function loadProjectSheets(editor: Editor, opts: { files?: boolean 
       continue;
     }
     try {
+      const revision = captureRevision();
       const res = await editor.fileBridge!.openDrawing!(path);
       if (!res) {
         skipped.push(base.name);
@@ -562,12 +577,15 @@ export async function loadProjectSheets(editor: Editor, opts: { files?: boolean 
       const doc = new Drawing();
       doc.load(readDxf(res.text), path);
       doc.ensureBlocks(LIBRARY_BLOCKS);
-      sheets.push({ ...makeSheet(doc, base), source: 'file' });
+      sheets.push({ ...makeSheet(doc, base), source: 'file', baseHash: contentHash(res.text), revision });
     } catch (err) {
       skipped.push(`${base.name} (${(err as Error).message})`);
     }
   }
-  if (project.drawings.length === 0) sheets.push({ ...makeSheet(editor.doc, { name: editor.fileName(), path: editor.doc.filePath, index: -1, projectSettings: project.settings }), source: 'active', sessionId: activeId });
+  if (project.drawings.length === 0) {
+    const state = editor.doc.snapshot;
+    sheets.push({ ...makeSheet(copyOf(state, editor.doc.filePath), { name: editor.fileName(), path: editor.doc.filePath, index: -1, projectSettings: project.settings }), source: 'active', sessionId: activeId, base: state, revision: captureRevision() });
+  }
   return { sheets, skipped };
 }
 
@@ -576,16 +594,33 @@ export interface SheetChange {
   detail: string;
 }
 
+/** Outcome of commitSheets: what was applied, what failed and which drawings changed underneath the command. */
+export interface CommitResult {
+  /** Open drawings updated in their tabs. */
+  open: number;
+  /** Closed drawing files written. */
+  written: number;
+  /** Drawings not updated because of an error (failed backup, write error, closed tab). */
+  failed: string[];
+  /** Drawings skipped because they changed after the command read them (edited tab, file changed on disk). */
+  conflicts: string[];
+}
+
 /**
  * Apply new states to project sheets. Open drawings change in their tabs
  * (one undo step each); closed drawings are written as DXF through the
  * bridge only after the user confirms the list (with an optional .bak copy
  * when the bridge supports it). Returns null when cancelled.
+ *
+ * A change is only applied to the revision it was calculated from: a tab edited while the
+ * command ran, or a file that changed on disk (or was opened in a tab) since it was read, is
+ * reported as a conflict and left alone. When a requested .bak copy fails, that drawing is not
+ * written unless the user chooses "Continue Without Backup" for it.
  */
-export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[], changes: ReadonlyMap<number, SheetChange>, title: string, intro: string, alwaysConfirm = false): Promise<{ open: number; written: number; failed: string[] } | null> {
+export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[], changes: ReadonlyMap<number, SheetChange>, title: string, intro: string, alwaysConfirm = false): Promise<CommitResult | null> {
   const items: AffectedDrawing[] = [...changes].map(([i, c]) => ({ name: sheets[i]!.name, kind: sheets[i]!.source === 'file' ? 'file' : 'open', detail: c.detail }));
-  if (items.length === 0) return { open: 0, written: 0, failed: [] };
-  const bridge = editor.fileBridge as BackupBridge | null;
+  if (items.length === 0) return { open: 0, written: 0, failed: [], conflicts: [] };
+  const bridge = editor.fileBridge;
   let choice: ConfirmFilesResult = { files: false, backup: false };
   if (alwaysConfirm || items.some((i) => i.kind === 'file')) {
     const r = await projectUi.confirmFiles(title, intro, items, { backupAvailable: !!bridge?.backupFile });
@@ -595,11 +630,20 @@ export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[
   let open = 0;
   let written = 0;
   const failed: string[] = [];
+  const conflicts: string[] = [];
   for (const [i, c] of changes) {
     const sh = sheets[i]!;
     if (sh.source !== 'file') {
       if (editor.sessions.current.id === sh.sessionId) {
-        editor.doc.transact(() => c.state);
+        if (sh.base && editor.doc.snapshot !== sh.base) {
+          conflicts.push(`${sh.name} (edited while the command ran)`);
+          continue;
+        }
+        // In a layout tab, transact() maps the change onto the paper entities: apply it in model
+        // space (the new state carries the active space of the state it was calculated from).
+        const next = withSpaceOf(c.state, sh.base);
+        if (editor.doc.space) editor.doc.setSpace(undefined);
+        editor.doc.transact(() => next);
         open += 1;
         continue;
       }
@@ -608,34 +652,70 @@ export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[
         failed.push(`${sh.name} (tab closed)`);
         continue;
       }
+      if (sh.base && s.state !== sh.base) {
+        conflicts.push(`${sh.name} (edited while the command ran)`);
+        continue;
+      }
       s.undo.push(s.state);
       s.redo = [];
-      s.state = c.state;
+      s.state = withSpaceOf(c.state, sh.base);
       s.dirty = true;
       open += 1;
       continue;
     }
     if (!choice.files || !sh.path || !bridge) continue;
+    const path = sh.path;
     try {
-      if (choice.backup && bridge.backupFile) await bridge.backupFile(sh.path);
-      const out = await bridge.saveDxf(sh.path, writeDxf(withoutUnusedLibraryBlocks(c.state)), sh.name);
-      if (out) written += 1;
+      // The file must still be what the change was calculated from.
+      if (editor.sessions.indexOfPath(path) >= 0) {
+        conflicts.push(`${sh.name} (opened in a tab while the command ran)`);
+        continue;
+      }
+      if (sh.baseHash !== undefined && bridge.openDrawing) {
+        const now = await bridge.openDrawing(path);
+        if (!now || now.kind !== 'dxf' || contentHash(now.text) !== sh.baseHash) {
+          conflicts.push(`${sh.name} (changed on disk since it was read)`);
+          continue;
+        }
+      }
+      if (choice.backup && bridge.backupFile) {
+        const b = backupOutcome(await bridge.backupFile(path).catch((err: unknown) => ({ ok: false, error: err instanceof Error ? err.message : String(err) })));
+        if (!b.ok) {
+          const go = await projectUi.confirmNoBackup(sh.name, path, b.error ?? 'unknown error');
+          if (!go) {
+            failed.push(`${sh.name} (backup failed: ${b.error}; not written)`);
+            continue;
+          }
+          editor.log(`${sh.name}: backup failed (${b.error}); written without a backup as chosen.`);
+        }
+      }
+      const text = writeDxf(withoutUnusedLibraryBlocks(c.state));
+      const r = await saveQueue.run(path, sh.revision ?? captureRevision(), () => bridge.saveDxf(path, text, sh.name));
+      if (r.status === 'stale') conflicts.push(`${sh.name} (a newer version was saved meanwhile)`);
+      else if (r.value) written += 1;
       else failed.push(sh.name);
     } catch (err) {
       failed.push(`${sh.name} (${(err as Error).message})`);
     }
   }
   if (open) editor.notify('file');
-  return { open, written, failed };
+  return { open, written, failed, conflicts };
 }
 
-function logCommit(editor: Editor, what: string, r: { open: number; written: number; failed: string[] } | null, skipped: string[]): void {
+/** A state calculated from the model-space copy, put back into the layout tab the drawing showed. */
+function withSpaceOf(state: DrawingState, base: DrawingState | undefined): DrawingState {
+  if (!base?.space || state.space) return state;
+  return { ...state, space: base.space };
+}
+
+function logCommit(editor: Editor, what: string, r: CommitResult | null, skipped: string[]): void {
   if (!r) {
     editor.log(`${what}: cancelled, nothing changed.`);
     return;
   }
   editor.log(`${what}: ${r.open} open drawing(s) updated${r.written ? `, ${r.written} closed drawing file(s) saved` : ''}.`);
   if (r.failed.length) editor.log(`Not updated: ${r.failed.join(', ')}.`);
+  if (r.conflicts.length) editor.log(`Not updated because they changed while the command ran (run it again): ${r.conflicts.join(', ')}.`);
   if (skipped.length) editor.log(`Skipped: ${skipped.join(', ')}${canReadProjectFiles(editor) ? '' : ' (open them in tabs, or use the desktop app to update closed drawings)'}.`);
 }
 
@@ -929,8 +1009,7 @@ function registerProjectCommands(editor: Editor): void {
       columnsOf: (key) => (REPORTS.find((r) => r.key === key) ?? REPORTS[0]!).build(ed.doc).columns,
       run: (t) => void runReportTemplate(ed, t),
       save: (list) => {
-        ed.project = { ...ed.project, reportTemplates: list.length ? list : undefined };
-        ed.hooks.projectChanged?.();
+        ed.updateProject({ ...ed.project, reportTemplates: list.length ? list : undefined });
       },
       projectAvailable: ed.project.drawings.length > 0,
     });
@@ -945,8 +1024,7 @@ function registerProjectCommands(editor: Editor): void {
         ed.log(`${baseName(f.path)}: no ATTRIBUTE = SOURCE lines found.`);
         return;
       }
-      ed.project = { ...ed.project, titleBlockMap: formatWdt(m) };
-      ed.hooks.projectChanged?.();
+      ed.updateProject({ ...ed.project, titleBlockMap: formatWdt(m) });
       ed.log(`Title block mapping imported: ${m.entries.length} attribute(s)${m.blocks.length ? ` for ${m.blocks.join(', ')}` : ''} (PROJECTSAVE keeps it).`);
     });
   });
