@@ -7,9 +7,10 @@ and SAVE after opening a DWG writes a DXF next to it.
 
 Legend: **yes** = kept; **partly** = kept with the limits in the last column; **no** = not read or
 not written (the object is dropped; on DWG import the dropped types are counted in the "Skipped
-unsupported" line on the command line). Sources: `src/io/dxf.ts`, `src/io/dxf-layouts.ts`,
-`src/io/dwg.ts`, `scripts/dwg-reader.mjs`; round trips are covered by `tests/dxf*.test.ts`,
-`tests/dwg*.test.ts` and the fixtures in `fixtures/` and `tests/fixtures/`.
+unsupported" line on the command line). Sources: `src/io/dxf/` (the reader is `reader.ts` and
+`read-*.ts`, the writer `writer.ts` and `write-*.ts`), `src/io/dxf-layouts.ts`, `src/io/dwg.ts`,
+`scripts/dwg-reader.mjs`; round trips are covered by `tests/dxf*.test.ts`, `tests/dwg*.test.ts` and
+the fixtures in `fixtures/` and `tests/fixtures/`.
 
 ## Entities
 

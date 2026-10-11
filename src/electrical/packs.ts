@@ -17,7 +17,7 @@
  *
  * Persistence mirrors the user library: installed packs are copied unchanged into
  * `userData/packs/` through the `packsList/packsRead/packsWrite/packsRemove` bridge
- * (atomic writes in electron/main.cjs), or into one localStorage entry
+ * (atomic writes in electron/main/ipc-stores.cjs), or into one localStorage entry
  * (`jcad.packs.v1`) in a browser. The file is stored verbatim so its signature keeps
  * verifying on every start. Pure of DOM: the store and the clock are injected so
  * the module works under vitest.
@@ -28,7 +28,7 @@ import builtinKeys from './pack-keys.json';
 export const PACK_FORMAT = 'jcad-pack/1';
 export const PACKS_KEY = 'jcad.packs.v1';
 export const MAX_PACK_BYTES = 20 * 1024 * 1024;
-/** File names the store accepts (also enforced by electron/main.cjs). */
+/** File names the store accepts (also enforced by electron/main/ipc-stores.cjs). */
 export const PACK_FILE_RE = /^[A-Za-z0-9._-]+\.jcadpack\.json$/;
 export const PACK_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 

@@ -10,7 +10,7 @@
  * hidden / frozen / no-plot layers are left out, ByLayer and ByBlock are resolved.
  *
  * Pure module: `plotPages` turns a drawing into page specs, `vectorPdf` writes them. The
- * editor supplies image bitmaps and saves the bytes (src/app/editor.ts plotOrPrint).
+ * editor supplies image bitmaps and saves the bytes (src/app/editor/plotting.ts plotOrPrint).
  */
 import type { Entity, Layer, BlockLookup, TextEntity, PolylineEntity, InsertEntity, ImageEntity, HatchEntity, EllipseEntity } from '../core/entities';
 import {

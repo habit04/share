@@ -30,7 +30,7 @@ describe('about / donate configuration', () => {
 
 describe('about / license', () => {
   const REPO_BLOB = 'https://github.com/habit04/share/blob/claude/autocad-program-feasibility-53w7j7/';
-  // The same rule electron/main.cjs applies in its open-external handler.
+  // The same rule the main process applies in its open-external handler (electron/main/updates.cjs).
   const electronAllows = (u: string) => /^https:\/\/github\.com\/habit04\/share(\/|$)/.test(u);
 
   it('names the GNU GPL v3 and matches package.json', () => {

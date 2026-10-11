@@ -2,7 +2,7 @@
  * Race fuzzing of R1 + R2 together over a real Editor: random sequences of edits, autosave ticks,
  * Save / Save As, tab switches, new / closed tabs, project edits and saves, Save All close requests
  * (Save All, a subset, Discard All, Cancel) and crashes, under fake timers. The drawing files go
- * through a fake main process (dialogs, per-file write order like electron/main.cjs writeUserFile,
+ * through a fake main process (dialogs, per-file write order like electron/main/app-data.cjs writeUserFile,
  * failures); autosaves go through the real electron/autosave-store.cjs + atomic-write.cjs over an
  * in-memory file system behind an ordered IPC channel. Seeds are logged; replay with FUZZ_SEED.
  *
@@ -55,7 +55,7 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const coverage = { drawingRecoveries: 0, projectRecoveries: 0, discardKeeps: 0 };
 
 interface Options {
-  /** Model electron/main.cjs writeUserFile (one write per file, arrival order); false = the code before it. */
+  /** Model electron/main/app-data.cjs writeUserFile (one write per file, arrival order); false = the code before it. */
   mainWriteOrder: boolean;
   /** The bridge has chooseDrawingPath (Save As queued like any save); false = Save As written by save-dxf's dialog. */
   chooseDrawingPath: boolean;
@@ -118,7 +118,7 @@ async function scenario(rng: Rng, opts: Options): Promise<{ closed: boolean; cra
       trace.push(`[t${Date.now() % 100000} landed ${target} ${lab}]`);
       return target;
     },
-    // Save As picks the file first (electron/main.cjs choose-drawing-path); the write then goes through the save queue.
+    // Save As picks the file first (electron/main/ipc-drawings.cjs choose-drawing-path); the write then goes through the save queue.
     chooseDrawingPath: opts.chooseDrawingPath
       ? async (suggest) => {
           modal += 1;

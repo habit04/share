@@ -216,9 +216,9 @@ customer's pack needs.
   `PackRegistry` (install / remove / load, merge into the catalog via `setPackCatalog`), the
   bridge / localStorage / memory stores.
 - `src/electrical/pack-keys.json`: trusted publisher keys (`keyId -> base64 raw 32-byte key`).
-- `electron/main.cjs` (`packs-*`, `pick-pack-file`) and `electron/preload.cjs`: file storage in
-  `userData/packs/` with name validation, a 20 MB limit and atomic writes; the main process never
-  parses a pack.
+- `electron/main/ipc-stores.cjs` (`packs-*`, `pick-pack-file`) and `electron/preload.cjs`: file
+  storage in `userData/packs/` with name validation, a 20 MB limit and atomic writes; the main
+  process never parses a pack.
 - `scripts/pack-sign.mjs`: the CLI; its `canonicalJson` must stay identical to the library's
   (`tests/packs.test.ts` verifies the fixtures it produced against the library).
 - `fixtures/packs/`: `sample-catalog.csv` / `.json`, `sample-signed` (valid until 2027-09-28),

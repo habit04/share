@@ -36,7 +36,7 @@ interface Op {
 }
 
 /**
- * The main process side of a save (electron/main.cjs writeUserFile): writes of one file run one
+ * The main process side of a save (electron/main/app-data.cjs writeUserFile): writes of one file run one
  * at a time in arrival order. `serialize: false` models the code before that queue existed.
  */
 function mainWriter(serialize: boolean) {

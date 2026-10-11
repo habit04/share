@@ -4,7 +4,7 @@ import { imageCandidates, isAbsolutePath, dataUrlToBlob, bridgeImageLoader } fro
 import { mainProcessSource } from './helpers/main-process';
 
 // IMAGE bitmaps in the desktop app: path resolution against the drawing folder, the
-// data-URL bridge (electron/main.cjs `read-image`) and the per-path bitmap cache.
+// data-URL bridge (`read-image`, electron/main/ipc-drawings.cjs) and the per-path bitmap cache.
 
 describe('image path resolution', () => {
   it('knows absolute POSIX, drive and UNC paths', () => {

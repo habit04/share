@@ -42,7 +42,7 @@ export interface PlotSheet {
   electron?: string;
 }
 
-/** Result of FileBridge.backupFile (electron/main.cjs `backup-file`). */
+/** Result of FileBridge.backupFile (`backup-file`, electron/main/ipc-drawings.cjs). */
 export type BackupResult = { ok: true; path: string } | { ok: false; error: string; code?: string | null };
 
 /** What the user chose in the save error dialog (src/ui/save-error.ts). */
