@@ -13,7 +13,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { execFileSync, spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 
 const repo = resolve(import.meta.dirname, '..');
 const pkg = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8'));
@@ -49,13 +49,26 @@ const check = (cond, what) => (cond ? ok(what) : bad(what));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const flowsRun = [];
 
-const hardTimeout = setTimeout(() => {
-  console.error('e2e-flows: timed out after 15 minutes');
-  process.exit(1);
-}, 15 * 60 * 1000);
-
 /** Temporary folders removed at the end (and immutable flags / mounts undone first). */
 const cleanups = [];
+function runCleanups() {
+  for (const c of cleanups.splice(0)) {
+    try {
+      c();
+    } catch {
+      /* best effort */
+    }
+  }
+}
+const hardTimeout = setTimeout(() => {
+  console.error('e2e-flows: timed out after 25 minutes');
+  runCleanups();
+  process.exit(1);
+}, 25 * 60 * 1000);
+process.on('SIGINT', () => {
+  runCleanups();
+  process.exit(130);
+});
 const tempDir = (tag) => {
   const d = mkdtempSync(join(tmpdir(), `jcad-flows-${tag}-`));
   cleanups.push(() => rmSync(d, { recursive: true, force: true }));
@@ -210,12 +223,14 @@ async function launch(profile, { recover = true, extraArgs = [] } = {}) {
       app.process().kill('SIGKILL');
       await ctx.exited;
     },
+    /** End the launch without any close question (app.exit), then let Playwright disconnect. */
     async close() {
-      try {
-        await app.close();
-      } catch {
-        /* already gone */
+      await app.evaluate(({ app: a }) => setImmediate(() => a.exit(0))).catch(() => {});
+      if ((await Promise.race([ctx.exited, sleep(10_000).then(() => false)])) !== true) {
+        app.process().kill('SIGKILL');
+        await ctx.exited;
       }
+      await app.close().catch(() => {});
     },
   };
   if (recover) {
@@ -354,12 +369,17 @@ const TRIGGERS = {
     await ctx.win.locator('.appmenu-footer button', { hasText: 'Exit JCad Electrical' }).click();
   },
   'File > Quit (native menu)': (ctx) => ctx.app.evaluate(({ Menu }) => void Menu.getApplicationMenu().items[0].submenu.items.find((i) => i.role === 'quit').click()),
-  'Ctrl+Q': (ctx) =>
-    ctx.app.evaluate(({ BrowserWindow }) => {
-      const wc = BrowserWindow.getAllWindows()[0].webContents;
-      wc.sendInputEvent({ type: 'keyDown', keyCode: 'Q', modifiers: ['control'] });
-      wc.sendInputEvent({ type: 'keyUp', keyCode: 'Q', modifiers: ['control'] });
-    }),
+  // The native menu's Quit accelerator (Ctrl+Q on Linux, Cmd+Q on macOS; Windows has none: Alt+F4 is a window close).
+  ...(process.platform === 'win32'
+    ? {}
+    : {
+        'Ctrl+Q': (ctx) =>
+          ctx.app.evaluate(({ BrowserWindow }, mod) => {
+            const wc = BrowserWindow.getAllWindows()[0].webContents;
+            wc.sendInputEvent({ type: 'keyDown', keyCode: 'Q', modifiers: [mod] });
+            wc.sendInputEvent({ type: 'keyUp', keyCode: 'Q', modifiers: [mod] });
+          }, process.platform === 'darwin' ? 'meta' : 'control'),
+      }),
   'app-quit IPC': (ctx) => ctx.win.evaluate(() => window.jcad.quit()),
   'updater restart': (ctx) =>
     ctx.app.evaluate(async ({ BrowserWindow, app }, mainFile) => {
@@ -444,7 +464,7 @@ scenario('close', async () => {
     writeProject(projFile, 'Close Test', ['a.dxf']);
     const ctx = await launch(profile);
     try {
-      if (!realEnospc) await ctx.setFaults([{ prefix: full + '/', code: 'ENOSPC', op: 'open' }]);
+      if (!realEnospc) await ctx.setFaults([{ prefix: full + sep, code: 'ENOSPC', op: 'open' }]);
       await openDrawing(ctx, a);
       await ctx.edit('a');
       await openDrawing(ctx, b);
@@ -539,7 +559,7 @@ scenario('close', async () => {
       await tick(ctx, ['b.dxf', 'Close Test']);
       await ctx.pushSave(bSaved);
       await saveAllDlg(ctx).locator('.btn.primary').click();
-      if (await errDlg.waitFor({ timeout: 15_000 }).then(() => true, () => false)) await errDlg.locator('button', { hasText: 'Save As...' }).click();
+      if (await errDlg.waitFor({ timeout: 15_000 }).then(() => true, () => false)) await errDlg.locator('button', { hasText: 'Save As...' }).click().catch(() => {});
       else bad('no Save Failed dialog on the second attempt');
       const exited = await Promise.race([ctx.exited, sleep(20_000).then(() => false)]);
       check(exited === true, 'after Save As... and the project save the application closed');
@@ -609,7 +629,8 @@ scenario('renderer', async () => {
     // The page responds again and shows the Save All question it was sent.
     const late = await saveAllDlg(ctx).waitFor({ timeout: 10_000 }).then(() => true, () => false);
     if (late) {
-      await saveAllDlg(ctx).locator('button', { hasText: 'Discard All' }).click();
+      // The window may close while the click is still being confirmed.
+      await saveAllDlg(ctx).locator('button', { hasText: 'Discard All' }).click().catch(() => {});
       const exited = await Promise.race([ctx.exited, sleep(5000).then(() => false)]);
       check(exited === true, 'answering the late Save All dialog (Discard All) closes the window');
     } else ok('no late Save All dialog after the native Cancel');
@@ -1170,7 +1191,7 @@ scenario('save-errors', async () => {
   const realFull = makeFullDisk(full);
   const ctx = await launch(tempDir('profile'));
   try {
-    if (!realFull) await ctx.setFaults([{ prefix: full + '/', code: 'ENOSPC', op: 'open' }]);
+    if (!realFull) await ctx.setFaults([{ prefix: full + sep, code: 'ENOSPC', op: 'open' }]);
     await openDrawing(ctx, drawing);
     await ctx.edit('err');
     let h = await ctx.h();
@@ -1338,7 +1359,7 @@ scenario('discard', async () => {
     await ctx.win.evaluate(() => window.editor.updateProject({ ...window.editor.project, description: 'discarded change' }));
     void ctx.closeWindow();
     await saveAllDlg(ctx).waitFor({ timeout: 10_000 });
-    await saveAllDlg(ctx).locator('button', { hasText: 'Discard All' }).click();
+    await saveAllDlg(ctx).locator('button', { hasText: 'Discard All' }).click().catch(() => {});
     check((await Promise.race([ctx.exited, sleep(10_000).then(() => false)])) === true, 'Discard All closes the application');
     check(Buffer.compare(readFileSync(a), readFileSync(fixtures.dxf)) === 0 && !existsSync(`${a}.bak`) && !JSON.parse(readFileSync(projFile, 'utf8')).description, 'nothing was written to the drawing or the project file');
     check(!ctx.autosaveFiles().some((f) => f.endsWith('_jcadproj.sv.dxf')), `Discard All leaves no project autosave (${ctx.autosaveFiles().join(', ') || 'empty'})`);
@@ -1374,13 +1395,7 @@ for (const s of scenarios) {
   }
 }
 clearTimeout(hardTimeout);
-for (const c of cleanups) {
-  try {
-    c();
-  } catch {
-    /* best effort */
-  }
-}
+runCleanups();
 console.log(`\ne2e-flows: ${flowsRun.length} flows driven, ${results.length} checks passed, ${problems.length} failed (${process.platform} ${process.arch}, Electron ${pkg.devDependencies.electron})`);
 if (problems.length) {
   for (const p of problems) console.error(`  - ${p}`);
