@@ -64,6 +64,8 @@ properties survive import and export), [docs/RELEASE.md](docs/RELEASE.md) (how a
 and delivered; dependency review), [docs/CODE-SIGNING.md](docs/CODE-SIGNING.md) (installer signing),
 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) (setting up, testing and packaging from source),
 [docs/PERFORMANCE.md](docs/PERFORMANCE.md) (measured performance),
+[docs/SECURITY-REVIEW.md](docs/SECURITY-REVIEW.md) (security review of the desktop shell and file readers, with the
+status of each finding),
 [LICENSE](LICENSE) and [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
 ### Website and browser edition
@@ -526,7 +528,7 @@ scripts         DWG reader and worker (Node / Electron main), dwg2dxf CLI, scree
                 check, Electron e2e (development and packaged), packaged smoke test, benchmarks, workflow check
 examples        example plugins (hello, numbered-labels, bom-summary)
 docs            user manual, metric drawings, plugin API, catalog packs, code signing, support matrix,
-                release process, development guide, performance
+                release process, development guide, performance, security review
 ```
 
 Newer modules worth knowing: `src/core/dimension.ts` (dimension styles and DIM* variables),

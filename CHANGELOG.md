@@ -39,8 +39,10 @@ messages). The date of each version is the date of the commit that set that vers
 - Performance: `tests/perf-dense.test.ts` (`npm run bench:node`: 50,000-entity drawing with and
   without the spatial index, 20-drawing project reports) and `scripts/bench.mjs` (`npm run bench`:
   rendering, hover and window selection in Chromium); numbers in `docs/PERFORMANCE.md`.
-- Documentation: `docs/SUPPORT-MATRIX.md` (what survives DXF / DWG import and export) and
-  `docs/RELEASE.md` (cutting, verifying and delivering a release; dependency review checklist).
+- Documentation: `docs/SUPPORT-MATRIX.md` (what survives DXF / DWG import and export),
+  `docs/RELEASE.md` (cutting, verifying and delivering a release; dependency review checklist) and
+  `docs/SECURITY-REVIEW.md` (security review of the desktop shell and file readers, with the status
+  of each finding).
 
 ### Changed
 
