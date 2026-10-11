@@ -3,4 +3,5 @@
  * types and helpers goes through here.
  */
 export { backupOutcome, type EditorEvent, type CommandDef, type OpenResult, type PlotSheet, type BackupResult, type SaveErrorChoice, type FileBridge, type LegacyBackupResult } from './editor/types';
-export { Editor, applyGrip } from './editor/editor';
+export { Editor } from './editor/editor';
+export { applyGrip } from './editor/pointer';

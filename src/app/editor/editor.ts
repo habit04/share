@@ -8,6 +8,7 @@
  *   commands.ts    the built-in commands
  *   prompter.ts    tools, the tool context, the command line and Enter
  *   selection.ts   LIST, picking into the selection or a selection request
+ *   pointer.ts     mouse input: snapped cursor, picking, selection boxes, grips, pan, wheel zoom
  *   view.ts        settings, drafting toggles, zoom extents
  *   documents.ts   new / open, tabs, import reports, the Save / Don't Save / Cancel question
  *   save.ts        drawing saves through the save queue
@@ -15,34 +16,30 @@
  *   plotting.ts    PLOT / PRINT
  */
 import type { Point } from '../../core/geometry';
-import * as g from '../../core/geometry';
 import type { Entity } from '../../core/entities';
 import { Drawing } from '../../core/document';
 import type { DrawingState } from '../../core/document';
-import { defaultSnapSettings, findObjectSnap, constrainDirection, snapToGrid, type SnapResult, type SnapSettings } from '../../core/snap';
-import { pickEntity, selectByBox } from '../../core/selection';
+import { defaultSnapSettings, type SnapSettings } from '../../core/snap';
 import { Viewport, type ViewportOverlay } from '../../render/viewport';
 import type { Tool, ToolContext } from '../../tools/types';
-import { PanTool } from '../../tools/edit';
 import { WIRE_DOT } from '../../electrical/symbols';
 import { LIBRARY_SYMBOLS } from '../../electrical/library';
 import { TITLE_BLOCK } from '../../electrical/templates';
 import { SOURCE_ARROW, DEST_ARROW } from '../../tools/plc';
-import { gripPoints, moveGrip } from '../../core/entities';
 import { defaultProject, type Project } from '../project';
 import { saveQueue } from '../savequeue';
 import { loadSettings, type UserSettings } from '../settings';
 import { SessionManager } from '../sessions';
 import type { ColorSpec } from '../../core/entities';
 import type { PlotOptions } from '../plot';
-import { trackFromPoints } from '../../core/snap';
 import type { SpaceRef } from '../../core/layouts';
 import type { EditorEvent, CommandDef, FileBridge, EditorHooks } from './types';
-import { createInternals, fallbackUi, type EditorInternals } from './internals';
+import { createInternals, type EditorInternals } from './internals';
 import { registerBuiltinCommands } from './commands';
 import * as prompter from './prompter';
 import * as view from './view';
 import * as select from './selection';
+import * as pointer from './pointer';
 import * as documents from './documents';
 import * as save from './save';
 import * as projects from './project';
@@ -387,232 +384,35 @@ export class Editor {
 
   // ------------------------------------------------------------- mouse
   screenFromEvent(ev: MouseEvent): Point {
-    const r = this.viewport.canvas.getBoundingClientRect();
-    return { x: ev.clientX - r.left, y: ev.clientY - r.top };
-  }
-
-  /** Compute the effective (snapped/constrained) world point for the cursor. */
-  private resolveCursor(screen: Point): { world: Point; snap: SnapResult | null } {
-    const raw = this.viewport.toWorld(screen);
-    // Object snap target box: Options > Drafting > Aperture Size (px, full box; default 10 -> 7 px reach).
-    const aperture = (this.settings.apertureSize / 2 + 2) * this.viewport.worldPerPixel();
-    const wantSnap = (this.tool !== null || this.internals.gripDrag !== null) && !this.internals.selReq;
-    const snap = wantSnap
-      ? findObjectSnap(raw, this.doc.entities, this.doc.lookupBlock, this.snap, aperture, this.overlay.trackFrom, select.hiddenLayers(this))
-      : null;
-    this.overlay.trackPaths = undefined;
-    if (snap) {
-      // Object snap tracking acquires the points the cursor pauses on (the last two).
-      if (this.snap.otrack && wantSnap && snap.kind !== 'perpendicular' && snap.kind !== 'nearest') {
-        if (!this.internals.acquired.some((q) => g.eq(q, snap.point, 1e-9))) this.internals.acquired = [...this.internals.acquired.slice(-1), snap.point];
-        this.overlay.acquired = this.internals.acquired;
-      }
-      return { world: snap.point, snap };
-    }
-    let p = raw;
-    if (this.snap.otrack && wantSnap) {
-      const bases = this.overlay.trackFrom ? [...this.internals.acquired, this.overlay.trackFrom] : this.internals.acquired;
-      const tr = trackFromPoints(raw, bases, this.snap, aperture);
-      if (tr) {
-        this.overlay.trackPaths = tr.paths;
-        return { world: tr.point, snap: { point: tr.point, kind: 'tracking' } };
-      }
-    }
-    if (this.overlay.trackFrom) p = constrainDirection(this.overlay.trackFrom, p, this.snap);
-    p = snapToGrid(p, this.snap);
-    return { world: p, snap: null };
+    return pointer.screenFromEvent(this, ev);
   }
 
   onMouseMove(ev: MouseEvent): void {
-    const s = this.screenFromEvent(ev);
-    if (this.internals.panning) {
-      this.viewport.panByPixels(s.x - this.internals.lastMouse.x, s.y - this.internals.lastMouse.y);
-      this.internals.lastMouse = s;
-      this.render();
-      this.emit('view');
-      return;
-    }
-    this.internals.lastMouse = s;
-    const { world, snap } = this.resolveCursor(s);
-    this.internals.cursorWorld = world;
-    this.overlay.cursor = world;
-    this.overlay.snap = snap;
-
-    if (this.internals.gripDrag) {
-      const moved = applyGrip(this.internals.gripDrag.entity, this.internals.gripDrag.index, world);
-      this.overlay.ghost = moved ? [moved] : [];
-      this.overlay.dynText = [`${g.dist(this.internals.gripDrag.start, world).toFixed(4)}`];
-      this.render();
-      this.emit('view');
-      return;
-    }
-    if (this.internals.dragStart && this.internals.dragWorld) {
-      const raw = this.viewport.toWorld(s);
-      if (g.dist(this.internals.dragStart, s) > 3) {
-        this.overlay.selectionBox = { a: this.internals.dragWorld, b: raw, mode: s.x >= this.internals.dragStart.x ? 'window' : 'crossing' };
-      }
-    } else if (this.tool) {
-      this.tool.onMove(world, prompter.makeContext(this, this.internals));
-    } else if (this.layoutInput.hoverBlocked?.(s)) {
-      this.overlay.hover = null;
-    } else {
-      // rollover highlight
-      const hit = pickEntity(this.viewport.toWorld(s), this.doc.entities, this.doc.lookupBlock, select.pickAperture(this), select.hiddenLayers(this), select.lockedLayers(this));
-      this.overlay.hover = hit?.id ?? null;
-      this.overlay.dynText = [];
-    }
-    this.render();
-    this.emit('view');
+    pointer.onMouseMove(this, this.internals, ev);
   }
 
   onMouseDown(ev: MouseEvent): void {
-    const s = this.screenFromEvent(ev);
-    this.internals.lastMouse = s;
-    if (ev.button === 1 || (ev.button === 0 && this.tool instanceof PanTool && !this.internals.selReq)) {
-      ev.preventDefault();
-      this.internals.panning = true;
-      return;
-    }
-    if (ev.button !== 0) return;
-    if (!this.internals.selReq && this.layoutInput.mouseDown?.(s)) return;
-    const { world } = this.resolveCursor(s);
-    if (this.tool && !this.internals.selReq) {
-      prompter.acceptPoint(this, this.internals, world);
-      return;
-    }
-    // Selection (default tool or selection request)
-    const raw = this.viewport.toWorld(s);
-    // Grip editing: press on a grip of a selected entity to stretch it.
-    if (!this.internals.selReq && this.selection.size > 0) {
-      const gripTol = 6 * this.viewport.worldPerPixel();
-      for (const e of this.doc.entities) {
-        if (!this.selection.has(e.id)) continue;
-        const idx = gripPoints(e).findIndex((gp) => g.dist(gp, raw) <= gripTol);
-        if (idx >= 0) {
-          this.internals.gripDrag = { entity: e, index: idx, start: raw };
-          this.overlay.trackFrom = gripPoints(e)[idx]!;
-          this.setPrompt('** STRETCH **  Specify stretch point:');
-          this.overlay.cursorMode = 'point';
-          this.render();
-          return;
-        }
-      }
-    }
-    const hit = pickEntity(raw, this.doc.entities, this.doc.lookupBlock, select.pickAperture(this), select.hiddenLayers(this), select.lockedLayers(this));
-    if (hit) {
-      select.toggleSelect(this, this.internals, [hit.id], ev.shiftKey);
-      return;
-    }
-    this.internals.dragStart = s;
-    this.internals.dragWorld = raw;
+    pointer.onMouseDown(this, this.internals, ev);
   }
 
   onMouseUp(ev: MouseEvent): void {
-    if (ev.button === 1 || (ev.button === 0 && this.internals.panning)) {
-      this.internals.panning = false;
-      return;
-    }
-    if (ev.button !== 0) return;
-    if (this.internals.gripDrag) {
-      const s = this.screenFromEvent(ev);
-      const { world } = this.resolveCursor(s);
-      const original = gripPoints(this.internals.gripDrag.entity)[this.internals.gripDrag.index];
-      const moved = original && g.dist(original, world) > 1e-9 ? applyGrip(this.internals.gripDrag.entity, this.internals.gripDrag.index, world) : null;
-      this.internals.gripDrag = null;
-      this.overlay.ghost = [];
-      this.overlay.trackFrom = null;
-      this.overlay.dynText = [];
-      prompter.updateCursorMode(this, this.internals);
-      this.setPrompt('Type a command');
-      if (moved) this.doc.replaceEntities([moved]);
-      this.render();
-      return;
-    }
-    if (this.internals.dragStart && this.internals.dragWorld) {
-      const s = this.screenFromEvent(ev);
-      if (this.overlay.selectionBox) {
-        const box = this.overlay.selectionBox;
-        const bounds = g.boundsOfPoints([box.a, box.b])!;
-        const found = selectByBox(bounds, box.mode, this.doc.entities, this.doc.lookupBlock, select.hiddenLayers(this), select.lockedLayers(this));
-        select.toggleSelect(this, this.internals, found.map((e) => e.id), ev.shiftKey);
-      } else if (g.dist(s, this.internals.dragStart) <= 3 && !this.internals.selReq && !ev.shiftKey) {
-        // click on empty space clears selection
-        if (this.selection.size > 0) {
-          this.selection.clear();
-          this.emit('selection');
-        }
-      }
-      this.internals.dragStart = null;
-      this.internals.dragWorld = null;
-      this.overlay.selectionBox = null;
-      this.render();
-    }
+    pointer.onMouseUp(this, this.internals, ev);
   }
 
   onDoubleClick(ev: MouseEvent): void {
-    if (ev.button === 1) {
-      this.zoomExtents();
-      return;
-    }
-    if (ev.button !== 0 || this.tool) return;
-    if (this.layoutInput.doubleClick?.(this.screenFromEvent(ev))) return;
-    const raw = this.viewport.toWorld(this.screenFromEvent(ev));
-    const hit = pickEntity(raw, this.doc.entities, this.doc.lookupBlock, select.pickAperture(this), select.hiddenLayers(this), select.lockedLayers(this));
-    if (!hit) return;
-    const ui = this.ui ?? fallbackUi;
-    if (hit.type === 'text') {
-      void ui.textInput('Edit Text', 'Contents', hit.text).then((v) => {
-        if (v !== null && v !== hit.text) this.doc.replaceEntities([{ ...hit, text: v }]);
-      });
-    } else if (hit.type === 'insert' && (hit.attributes.TAG1 !== undefined || hit.attributes.TERM01 !== undefined)) {
-      if (this.commands.has('AEEDITCOMPONENT')) {
-        // The AutoCAD Electrical-style dialog edits the full data set of the picked component.
-        this.selection = new Set([hit.id]);
-        this.emit('selection');
-        this.runCommand('AEEDITCOMPONENT');
-        return;
-      }
-      void ui
-        .editComponent({ tag: hit.attributes.TAG1 ?? hit.attributes.TERM01 ?? '', desc: hit.attributes.DESC1 ?? '', block: hit.block, mfg: hit.attributes.MFG, cat: hit.attributes.CAT })
-        .then((r) => {
-          if (!r) return;
-          const attrs = { ...hit.attributes };
-          if (hit.attributes.TAG1 !== undefined) attrs.TAG1 = r.tag;
-          if (hit.attributes.TERM01 !== undefined) attrs.TERM01 = r.tag;
-          attrs.DESC1 = r.desc;
-          if (r.mfg) attrs.MFG = r.mfg;
-          else delete attrs.MFG;
-          if (r.cat) attrs.CAT = r.cat;
-          else delete attrs.CAT;
-          this.doc.replaceEntities([{ ...hit, attributes: attrs }]);
-        });
-    } else {
-      this.hooks.properties?.();
-    }
+    pointer.onDoubleClick(this, ev);
   }
 
   onWheel(ev: WheelEvent): void {
-    ev.preventDefault();
-    const s = this.screenFromEvent(ev);
-    const factor = ev.deltaY < 0 ? 1.15 : 1 / 1.15;
-    this.viewport.zoomAt(s, factor);
-    // keep cursor overlay consistent
-    const { world, snap } = this.resolveCursor(s);
-    this.overlay.cursor = world;
-    this.overlay.snap = snap;
-    this.render();
-    this.emit('view');
+    pointer.onWheel(this, this.internals, ev);
   }
 
   onMouseLeave(): void {
-    this.overlay.cursor = null;
-    this.overlay.snap = null;
-    this.overlay.hover = null;
-    this.render();
+    pointer.onMouseLeave(this, this.internals);
   }
 
   onContextMenu(ev: MouseEvent): void {
-    ev.preventDefault();
+    pointer.onContextMenu(ev);
   }
 
   // ------------------------------------------------------------- keyboard
@@ -697,9 +497,4 @@ export class Editor {
   entitiesSelected(): Entity[] {
     return select.entitiesSelected(this);
   }
-}
-
-/** Move grip `index` of an entity to `p` (AutoCAD grip stretch semantics). */
-export function applyGrip(e: Entity, index: number, p: Point): Entity | null {
-  return moveGrip(e, index, p);
 }
