@@ -10,7 +10,8 @@ import { createRequire } from 'node:module';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
+import * as fsp from 'node:fs/promises';
 // @ts-expect-error plain JS helper shared with Electron main / CLI
 import { readDwgPayload, capWasmMemory, MAX_DWG_BYTES } from '../scripts/dwg-reader.mjs';
 import { mainProcessSource } from './helpers/main-process';
@@ -167,6 +168,27 @@ describe('bounded reads and writes in the main process (electron/resource-limits
   it('reads a file at exactly the limit, as bytes or text', async () => {
     expect(await readLimitedFile(reader(3, 'abc').fs, 'd.dxf', 3, 'utf8')).toBe('abc');
     expect(Buffer.isBuffer(await readLimitedFile(reader(3, 'abc').fs, 'd.dxf', 3))).toBe(true);
+  });
+  it.skipIf(process.platform === 'win32')('a FIFO under a drawing name is refused at once instead of waiting for a writer for ever', async () => {
+    // Before: open() for reading blocked until something wrote to the pipe, holding one of the
+    // four libuv threads, and the process could not exit while it waited.
+    const dir = mkdtempSync(join(tmpdir(), 'jcad-fifo-'));
+    try {
+      const fifo = join(dir, 'drawing.dxf');
+      execFileSync('mkfifo', [fifo]);
+      const t = performance.now();
+      const outcome = await Promise.race([
+        readLimitedFile(fsp, fifo, 100).then(() => 'read', (e: NodeJS.ErrnoException) => e.code ?? e.message),
+        new Promise((resolve) => setTimeout(() => resolve('still waiting'), 3000)),
+      ]);
+      expect(outcome).toBe('EISDIR');
+      expect(performance.now() - t).toBeLessThan(3000);
+      // Regular files read as before.
+      writeFileSync(join(dir, 'ok.dxf'), 'abc');
+      expect(await readLimitedFile(fsp, join(dir, 'ok.dxf'), 3, 'utf8')).toBe('abc');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
   it('write payloads are measured in UTF-8 bytes, like reads', () => {
     expect(() => validateTextSize('雷Δ', 4, 'project')).toThrow(/project payload/);

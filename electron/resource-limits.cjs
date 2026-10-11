@@ -14,6 +14,15 @@
 'use strict';
 
 const path = require('node:path');
+const { constants } = require('node:fs');
+
+/**
+ * Read-only, and non-blocking where the system has it: opening a FIFO (named pipe) for reading
+ * otherwise waits for a writer - for ever, in one of libuv's four threads, and the process cannot
+ * even exit while it waits. A FIFO planted under a drawing's name then fails the size check's
+ * "not a file" at once. Regular files ignore the flag.
+ */
+const READ_FLAGS = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0);
 
 const MAX_DRAWING_BYTES = 512 * 1024 * 1024;
 const MAX_PROJECT_BYTES = 64 * 1024 * 1024;
@@ -52,14 +61,14 @@ function validatePaperDimensions(sheet) {
 
 /**
  * Read a regular file of at most `maxBytes` through one handle.
- * @param {{ open: (file: string, flags: string) => Promise<any> }} fs  fs/promises (injected by tests)
+ * @param {{ open: (file: string, flags: number) => Promise<any> }} fs  fs/promises (injected by tests)
  * @param {string} file
  * @param {number} maxBytes
  * @param {BufferEncoding} [encoding]  return a string in this encoding instead of bytes
  * @returns {Promise<Buffer | string>}
  */
 async function readLimitedFile(fs, file, maxBytes, encoding) {
-  const handle = await fs.open(file, 'r');
+  const handle = await fs.open(file, READ_FLAGS);
   try {
     const stat = await handle.stat();
     if (!stat.isFile()) throw Object.assign(new Error(`EISDIR: not a file, read '${file}'`), { code: 'EISDIR' });

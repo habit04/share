@@ -169,8 +169,10 @@ async function launch(profile, { recover = true, extraArgs = [] } = {}) {
       const real = fsp[op].bind(fsp);
       fsp[op] = async (...a) => {
         const p = String(a[0]);
-        // Drawings are read through one handle (readLimitedFile: open + read), small files with readFile.
-        if (op === 'readFile' || (op === 'open' && (a[1] === undefined || a[1] === 'r'))) {
+        // Drawings are read through one handle (readLimitedFile: open + read, flags O_RDONLY |
+        // O_NONBLOCK), small files with readFile.
+        const forReading = a[1] === undefined || a[1] === 'r' || (typeof a[1] === 'number' && (a[1] & 3) === 0);
+        if (op === 'readFile' || (op === 'open' && forReading)) {
           const slow = g.__e2e.slowReads.find((s) => s.path === p);
           if (slow) await new Promise((r) => setTimeout(r, slow.ms));
         }
