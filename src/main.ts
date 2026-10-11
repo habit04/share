@@ -51,7 +51,7 @@ declare global {
     jcad?: {
       openDxf(): Promise<{ path: string; text: string } | null>;
       openDrawing(file?: string): Promise<import('./app/editor').OpenResult | null>;
-      openProject(file?: string): Promise<{ path: string; text: string } | null>;
+      openProject(file?: string, opts?: { userChosen?: boolean; textOnly?: boolean }): Promise<{ path: string; text: string } | null>;
       saveText(suggestName: string, text: string, filterName: string, ext: string): Promise<string | null>;
       backupFile?(file: string): Promise<import('./app/editor').BackupResult>;
       plotPdf(dataUrl: string, suggestName: string, landscape: boolean, sheet?: { width: number; height: number; electron?: string }): Promise<string | null>;
@@ -373,7 +373,8 @@ function boot(): void {
     const i = parseInt(arg ?? '1', 10) - 1;
     const f = ed.settings.recentFiles[i];
     if (!f) return ed.settings.recentFiles.forEach((r, k) => ed.log(`  ${k + 1}. ${r}`));
-    if (f.endsWith('.json')) void ed.openProject(f);
+    // Picked from Recent Documents by the user (a plugin running RECENT through its API opens it by name).
+    if (f.endsWith('.json')) void ed.openProject(f, { userChosen: ed.apiCommandDepth === 0 });
     // Await the open itself: the tab made for it must not be dropped as "cancelled" while the file still loads.
     else void ed.sessions.openInTab(f, (x) => ed.openFile(x));
   });
@@ -725,11 +726,15 @@ function boot(): void {
       await recoveryDialog(editor, store, autosaver);
     })();
   }
-  // Drawings handed over by the OS ("Open with", a second launch): one after another, each in its own tab.
+  // Files handed over by the OS ("Open with", a double click, a second launch): one after another,
+  // each drawing in its own tab, a project file (.jcadproj.json) as the current project.
   let handOver: Promise<void> = Promise.resolve();
   const openHandedOver = (files: string[]): void => {
     handOver = handOver.then(async () => {
-      for (const f of files) await editor.sessions.openInTab(f, (x) => editor.openFile(x));
+      for (const f of files) {
+        if (/\.json$/i.test(f)) await editor.openProject(f, { userChosen: true });
+        else await editor.sessions.openInTab(f, (x) => editor.openFile(x));
+      }
     });
   };
   window.jcad?.onOpenFiles?.(openHandedOver);

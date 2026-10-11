@@ -535,7 +535,13 @@ export function createApi(editor: Editor, owner: string): ApiHandle {
     run(name, arg) {
       guard();
       const n = String(name).trim();
-      editor.runCommand(arg !== undefined && arg !== '' ? `${n} ${arg}` : n);
+      // A command a plugin runs is not the user's choice (RECENT opens a project by name then).
+      editor.apiCommandDepth += 1;
+      try {
+        editor.runCommand(arg !== undefined && arg !== '' ? `${n} ${arg}` : n);
+      } finally {
+        editor.apiCommandDepth -= 1;
+      }
     },
     list() {
       const seen = new Set<CommandDef>();

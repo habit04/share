@@ -248,7 +248,7 @@ async function backupFile(file, copy = defaultWriter.copyFileAtomic, allowed = (
     return { ok: false, code: 'EINVAL', error: 'Only DXF drawings and project files (absolute paths) can be backed up.' };
   }
   if (!allowed(file)) {
-    return { ok: false, code: 'EINVAL', error: `The backup copy of "${path.basename(file)}" could not be made: only drawings and project files you opened or saved yourself, and the drawings inside an open project's folder, can be backed up.` };
+    return { ok: false, code: 'EINVAL', error: `The backup copy of "${path.basename(file)}" could not be made: only drawings and project files you opened or saved yourself, and the drawings listed by a project you opened, can be backed up.` };
   }
   try {
     return { ok: true, path: await copy(file, `${file}.bak`) };

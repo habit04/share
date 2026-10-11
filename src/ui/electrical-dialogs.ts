@@ -1624,7 +1624,7 @@ export function createElectricalDialogs(editor: Editor): ElectricalUi {
       // Desktop: the project file dialog reads any JSON file; browser: a file input.
       if (editor.fileBridge?.openProject && window.jcad) {
         try {
-          return await editor.fileBridge.openProject();
+          return await editor.fileBridge.openProject(undefined, { textOnly: true });
         } catch {
           return null;
         }

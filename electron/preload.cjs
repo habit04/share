@@ -3,7 +3,8 @@ const { contextBridge, ipcRenderer, webFrame } = require('electron');
 contextBridge.exposeInMainWorld('jcad', {
   openDxf: () => ipcRenderer.invoke('open-dxf'),
   openDrawing: (file) => ipcRenderer.invoke('open-drawing', file),
-  openProject: (file) => ipcRenderer.invoke('open-project', file),
+  // opts.userChosen: the user picked this project (Recent Documents); opts.textOnly: read a JSON file for its text
+  openProject: (file, opts) => ipcRenderer.invoke('open-project', file, opts && typeof opts === 'object' ? { userChosen: opts.userChosen === true, textOnly: opts.textOnly === true } : undefined),
   saveText: (suggestName, text, filterName, ext) => ipcRenderer.invoke('save-text', suggestName, text, filterName, ext),
   // Project Save As: pick the destination first (the renderer rebases relative paths), then write it.
   chooseProjectPath: (suggestName) => ipcRenderer.invoke('choose-project-path', String(suggestName || '')),

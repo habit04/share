@@ -93,7 +93,12 @@ export interface FileBridge {
    * Save As is written through the per-file save queue like every other save of that file.
    */
   chooseDrawingPath?(suggestName: string): Promise<string | null>;
-  openProject?(file?: string): Promise<{ path: string; text: string } | null>;
+  /**
+   * Read a project file: through the Open Project dialog without `file`, else by name. `userChosen`:
+   * the user picked it (Recent Documents); its drawings outside the project folder may then be
+   * written too (electron/path-registry.cjs). `textOnly`: the dialog reads a JSON file for its text.
+   */
+  openProject?(file?: string, opts?: { userChosen?: boolean; textOnly?: boolean }): Promise<{ path: string; text: string } | null>;
   saveText?(suggestName: string, text: string, filterName: string, ext: string): Promise<string | null>;
   /**
    * Desktop only: copy a drawing/project file to `<path>.bak` before it is rewritten. Answers
@@ -234,6 +239,12 @@ export class Editor {
   private projectGen = 0;
   /** Message of the last failed save / open (for the close workflow's error report). */
   lastFileError: string | null = null;
+  /**
+   * More than 0 while a plugin starts a command through the plugin API (`jcad.commands.run`): a
+   * project that command opens is opened by name, not chosen by the user (no write access to its
+   * drawings outside the project folder).
+   */
+  apiCommandDepth = 0;
   /** Session id -> save-queue revision of the newest save of that drawing that completed. */
   private savedRevisions = new Map<number, number>();
   /** Layer new wires go on (AEWIRETYPE). */
@@ -604,7 +615,8 @@ export class Editor {
     reg('RECENT', [], 'Open a recent file by index', (ed, arg) => {
       const i = parseInt(arg ?? '1', 10) - 1;
       const f = ed.settings.recentFiles[i];
-      if (f) void ed.openFile(f);
+      if (f && f.endsWith('.json')) void ed.openProject(f, { userChosen: ed.apiCommandDepth === 0 });
+      else if (f) void ed.openFile(f);
       else ed.settings.recentFiles.forEach((r, k) => ed.log(`  ${k + 1}. ${r}`));
     });
     registerDraftingCommands(this);
@@ -1077,7 +1089,11 @@ export class Editor {
     return ui.confirm('Unsaved project changes', `The ${label} has unsaved changes. Discard them?`);
   }
 
-  async openProject(file?: string): Promise<boolean> {
+  /**
+   * OPENPROJECT: the Open Project dialog, or the project file `file` by name. `userChosen`: the user
+   * picked `file` (Recent Documents, an OS hand-over), not a plugin or a typed path.
+   */
+  async openProject(file?: string, opts: { userChosen?: boolean } = {}): Promise<boolean> {
     if (!this.fileBridge?.openProject) {
       this.log('Projects need the desktop app.');
       return false;
@@ -1085,7 +1101,7 @@ export class Editor {
     if (!(await this.confirmDiscardProject())) return false;
     const answered = this.projectRev;
     try {
-      const res = await this.fileBridge.openProject(file);
+      const res = await this.fileBridge.openProject(file, file && opts.userChosen ? { userChosen: true } : undefined);
       if (!res) return false;
       // Changes made to the project while the Open dialog was up get their own question.
       if (this.projectDirty && this.projectRev !== answered && !(await this.confirmDiscardProject())) return false;

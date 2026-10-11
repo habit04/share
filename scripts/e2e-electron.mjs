@@ -708,41 +708,72 @@ try {
     mkdirSync(jobDir, { recursive: true });
     const tinyDxf = ['0', 'SECTION', '2', 'ENTITIES', '0', 'ENDSEC', '0', 'EOF', ''].join('\n');
     const outsideJson = join(accDir, 'package.json'); // "../../package.json" seen from the project folder
+    // Readable only (the catalog file); it lists a drawing itself, which must never be registered.
+    const outsideJsonText = '{"name":"not-a-project","drawings":[{"file":"elsewhere-c.dxf"}]}';
     const outsideDxf = join(accDir, 'elsewhere.dxf');
+    const climbDxf = join(accDir, 'climb.dxf'); // "sheet1.dxf/../../../climb.dxf"
+    const catalogListed = join(accDir, 'elsewhere-c.dxf');
     const insideDxf = join(jobDir, 'sheet1.dxf');
-    writeFileSync(outsideJson, '{"name":"not-a-project"}');
-    writeFileSync(outsideDxf, tinyDxf);
-    writeFileSync(insideDxf, tinyDxf);
+    writeFileSync(outsideJson, outsideJsonText);
+    for (const f of [outsideDxf, climbDxf, catalogListed, insideDxf]) writeFileSync(f, tinyDxf);
     const accProject = join(jobDir, 'listing.jcadproj.json');
     const projectText = JSON.stringify({
       name: 'Access',
-      drawings: [{ file: 'sheet1.dxf' }, { file: '../../package.json' }, { file: '../../elsewhere.dxf' }, { file: '\\\\e2e-no-such-host\\share\\remote.dxf' }],
+      drawings: [{ file: 'sheet1.dxf' }, { file: '../../package.json' }, { file: 'sheet1.dxf/../../../package.json' }, { file: '../../elsewhere.dxf' }, { file: 'sheet1.dxf/../../../climb.dxf' }, { file: '\\\\e2e-no-such-host\\share\\remote.dxf' }],
       settings: { catalogFile: '../../package.json' },
     });
     writeFileSync(accProject, projectText);
     // Opened through the (stubbed) Open Project dialog, straight on the bridge: the editor's own project is untouched.
     await app.evaluate((_e, p) => globalThis.__e2e.openPaths.push(p), accProject);
     const opened = await win.evaluate(() => window.jcad.openProject().then((r) => (r ? r.path : null)));
-    check(opened === accProject, `a project listing ../../package.json, a drawing outside its folder and a network drawing opened (${opened})`);
+    check(opened === accProject, `a project listing ../../package.json, drawings outside its folder and a network drawing opened through the dialog (${opened})`);
     await messages();
     const tryCall = (fn, args) => win.evaluate(([f, a]) => window.jcad[f](...a).then((r) => ({ ok: true, r }), (e) => ({ ok: false, e: String(e) })), [fn, args]);
     const asProject = await tryCall('saveProject', [outsideJson, '{"name":"overwritten"}']);
-    check(!asProject.ok && /Unknown project path/.test(asProject.e) && readFileSync(outsideJson, 'utf8') === '{"name":"not-a-project"}', `a catalog file named by the project (../../package.json) is not writable by save-project (${asProject.e})`);
+    check(!asProject.ok && /Unknown project path/.test(asProject.e) && readFileSync(outsideJson, 'utf8') === outsideJsonText, `a catalog file named by the project (../../package.json) is not writable by save-project (${asProject.e})`);
     const asDxf = await tryCall('saveDxf', [outsideJson, '0\nEOF\n', 'x.dxf']);
-    check(!asDxf.ok && /Invalid path/.test(asDxf.e) && readFileSync(outsideJson, 'utf8') === '{"name":"not-a-project"}', `save-dxf refuses a .json file (${asDxf.e})`);
+    check(!asDxf.ok && /Invalid path/.test(asDxf.e) && readFileSync(outsideJson, 'utf8') === outsideJsonText, `save-dxf refuses a .json file (${asDxf.e})`);
     const overProject = await tryCall('saveDxf', [accProject, '0\nEOF\n', 'x.dxf']);
     check(!overProject.ok && /Invalid path/.test(overProject.e) && readFileSync(accProject, 'utf8') === projectText, `save-dxf refuses the writable project file itself: wrong file type (${overProject.e})`);
-    const readOnlyBackup = await tryCall('backupFile', [outsideDxf]);
-    check(readOnlyBackup.ok && readOnlyBackup.r && readOnlyBackup.r.ok === false && !existsSync(`${outsideDxf}.bak`), `backup-file refuses a drawing outside the project folder (${JSON.stringify(readOnlyBackup.r)})`);
-    const readOnlySave = await tryCall('saveDxf', [outsideDxf, '0\nEOF\n', 'elsewhere.dxf']);
-    const asked = await messages();
-    check(readOnlySave.ok && readOnlySave.r === null && asked.includes('save:Save Drawing As') && readFileSync(outsideDxf, 'utf8') === tinyDxf, `a drawing outside the project folder is saved only through the Save As dialog (cancelled here: ${JSON.stringify(readOnlySave.r)}, ${asked.join(' ; ')})`);
-    const readBack = await tryCall('openDrawing', [outsideDxf]);
-    check(readBack.ok && readBack.r && readBack.r.kind === 'dxf', 'that drawing can still be opened (read) by name');
+    // A project the user chose: the drawings it lists are written by project-wide commands wherever they are.
+    const chosenBackup = await tryCall('backupFile', [outsideDxf]);
+    check(chosenBackup.ok && chosenBackup.r && chosenBackup.r.ok === true && existsSync(`${outsideDxf}.bak`), `backup-file copies a drawing outside the folder of a project the user chose (${JSON.stringify(chosenBackup.r)})`);
+    const chosenSave = await tryCall('saveDxf', [outsideDxf, tinyDxf.replace('ENDSEC', 'ENDSEC\n999\nchosen'), 'elsewhere.dxf', { backup: false }]);
+    check(chosenSave.ok && chosenSave.r === outsideDxf && (await messages()).length === 0 && /chosen/.test(readFileSync(outsideDxf, 'utf8')), `that drawing is saved by name without a dialog (${JSON.stringify(chosenSave)})`);
+    const climbSave = await tryCall('saveDxf', [climbDxf, tinyDxf.replace('ENDSEC', 'ENDSEC\n999\nclimb'), 'climb.dxf']);
+    check(climbSave.ok && climbSave.r === climbDxf && (await messages()).length === 0, `"sheet1.dxf/../../../climb.dxf" is resolved first: the drawing it names is writable, package.json spelled that way is not (${JSON.stringify(climbSave)})`);
     const insideSave = await tryCall('saveDxf', [insideDxf, tinyDxf.replace('ENDSEC', 'ENDSEC\n999\ninside'), 'sheet1.dxf']);
     check(insideSave.ok && insideSave.r === insideDxf && (await messages()).length === 0 && /inside/.test(readFileSync(insideDxf, 'utf8')), `a drawing inside the project folder is saved by name without a dialog (${JSON.stringify(insideSave)})`);
     const remote = await tryCall('openDrawing', ['\\\\e2e-no-such-host\\share\\remote.dxf']);
     check(!remote.ok && /Unknown file path/.test(remote.e), `a network drawing named by a local project is not registered (${remote.e})`);
+    // A project opened only by name (a plugin, OPENPROJECT <path>): nothing beyond its folder.
+    const byNameDir = join(accDir, 'jobs', 'b');
+    mkdirSync(byNameDir, { recursive: true });
+    const byNameProject = join(byNameDir, 'by-name.jcadproj.json');
+    const outsideB = join(accDir, 'elsewhere-b.dxf');
+    writeFileSync(outsideB, tinyDxf);
+    writeFileSync(byNameProject, JSON.stringify({ name: 'By name', drawings: [{ file: '../../elsewhere-b.dxf' }] }));
+    // The project file itself was picked once (Save Project As dialog), so it may be opened by name.
+    await app.evaluate((_e, p) => globalThis.__e2e.savePaths.push(p), byNameProject);
+    check((await win.evaluate(() => window.jcad.chooseProjectPath('by-name.jcadproj.json'))) === byNameProject, 'a second project file picked in the Save Project As dialog');
+    await messages();
+    const byName = await tryCall('openProject', [byNameProject]);
+    check(byName.ok && byName.r && byName.r.path === byNameProject, `that project opened by name (${JSON.stringify(byName.ok ? byName.r.path : byName.e)})`);
+    const byNameBackup = await tryCall('backupFile', [outsideB]);
+    check(byNameBackup.ok && byNameBackup.r && byNameBackup.r.ok === false && !existsSync(`${outsideB}.bak`), `backup-file refuses a drawing outside the folder of a project opened only by name (${JSON.stringify(byNameBackup.r)})`);
+    const byNameSave = await tryCall('saveDxf', [outsideB, '0\nEOF\n', 'elsewhere-b.dxf']);
+    const asked = await messages();
+    check(byNameSave.ok && byNameSave.r === null && asked.includes('save:Save Drawing As') && readFileSync(outsideB, 'utf8') === tinyDxf, `such a drawing is saved only through the Save As dialog (cancelled here: ${JSON.stringify(byNameSave.r)}, ${asked.join(' ; ')})`);
+    const readBack = await tryCall('openDrawing', [outsideB]);
+    check(readBack.ok && readBack.r && readBack.r.kind === 'dxf', 'that drawing can still be opened (read) by name');
+    // The same project picked from Recent Documents counts as chosen by the user.
+    const fromRecent = await tryCall('openProject', [byNameProject, { userChosen: true }]);
+    const recentBackup = await tryCall('backupFile', [outsideB]);
+    check(fromRecent.ok && recentBackup.ok && recentBackup.r && recentBackup.r.ok === true && existsSync(`${outsideB}.bak`), `opened from Recent Documents, its drawing outside the folder is writable (${JSON.stringify(recentBackup.r)})`);
+    // ...but only for a project file the user chose: the catalog file (readable only) grants nothing, flag or not.
+    const catalogAsProject = await tryCall('openProject', [outsideJson, { userChosen: true }]);
+    const catalogDrawing = await tryCall('openDrawing', [catalogListed]);
+    check(catalogAsProject.ok && !catalogDrawing.ok && /Unknown file path/.test(catalogDrawing.e), `a readable-only JSON file opened "from Recent Documents" registers nothing it lists (${catalogDrawing.e})`);
     // Images on a network share are never read for a drawing elsewhere: no connection, no sign-in prompt.
     const netImages = await win.evaluate(async (paths) => {
       const out = [];
@@ -1274,18 +1305,37 @@ const provoked = [
   /backup-file: not a file chosen by the user: .*stranger\.dxf/,
   /save-project: read-only \(named by a project file, not chosen by the user\): .*package\.json/,
   /save-dxf: wrong file type: .*(package\.json|listing\.jcadproj\.json)/,
-  /(backup-file|save-dxf): read-only \(named by a project file, not chosen by the user\): .*elsewhere\.dxf/,
-  /open-drawing: (relative path|not a file chosen by the user): .*e2e-no-such-host/,
+  /(backup-file|save-dxf): read-only \(named by a project file, not chosen by the user\): .*elsewhere-b\.dxf/,
+  /open-drawing: (relative path|not a file chosen by the user): .*(e2e-no-such-host|elsewhere-c\.dxf)/,
   /open-external: not an allowed link: /,
 ];
 const rejections = existsSync(join(userData, 'ipc-rejections.log')) ? readFileSync(join(userData, 'ipc-rejections.log'), 'utf8').split(/\r?\n/).filter(Boolean) : [];
 const unexpected = rejections.filter((l) => !provoked.some((re) => re.test(l)));
 check(unexpected.length === 0, `ipc-rejections.log holds only the provoked refusals (${rejections.length} line(s))${unexpected.length ? `: ${unexpected.slice(0, 5).join(' | ')}` : ''}`);
 
-// Helper processes of a killed or just-closed instance (crash recovery step) may still write into the
-// profile for a moment: retry instead of failing the run after every check passed.
-rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
-if (!process.env.JCAD_E2E_OUT) rmSync(outDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+/**
+ * Remove a temporary folder. Helper processes of a killed or just-closed instance (crash recovery
+ * step) may still write into the profile (Chromium's disk cache) for a while after rmSync emptied
+ * it: the whole removal is retried for up to 15 s, then left to the system's temporary-file cleanup
+ * with a warning - a leftover temporary folder is not a test failure.
+ * @param {string} dir
+ */
+async function removeTemp(dir) {
+  for (let i = 0; ; i += 1) {
+    try {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 2, retryDelay: 100 });
+      return;
+    } catch (err) {
+      if (i >= 30) {
+        console.warn(`e2e-electron: ${dir} not removed (${err && err.code}): a helper process still writes into it`);
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  }
+}
+await removeTemp(profile);
+if (!process.env.JCAD_E2E_OUT) await removeTemp(outDir);
 else console.log(`e2e-electron: output kept in ${outDir}`);
 
 console.log(`\ne2e-electron: ${results.length} checks passed, ${problems.length} failed (${process.platform} ${process.arch}, ${packaged ? `packaged ${executable}` : `Electron ${pkg.devDependencies.electron}`})`);

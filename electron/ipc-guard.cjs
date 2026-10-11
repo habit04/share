@@ -231,8 +231,8 @@ function createPathPolicy({ isKnownPath, isWritablePath = isKnownPath, knownPath
 
   /**
    * Why the renderer may not write this path by name, or null when it may: the shape checks,
-   * the channel's file type, then the write list (files the user chose, drawings inside an opened
-   * project's folder).
+   * the channel's file type, then the write list (files the user chose, drawings listed by an opened
+   * project: electron/path-registry.cjs).
    * @param {unknown} p
    * @param {RegExp} type  the file names this channel writes (e.g. /\.dxf$/i)
    * @returns {string | null}

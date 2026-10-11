@@ -10,7 +10,7 @@ type Registry = {
   paths(): Iterable<string>;
   grant(p: unknown): boolean;
   grantRead(p: unknown): boolean;
-  registerProject(file: string, project: unknown): { writable: string[]; readOnly: string[]; ignored: string[] };
+  registerProject(file: string, project: unknown, opts?: { userChosen?: boolean }): { writable: string[]; readOnly: string[]; ignored: string[] };
   serialize(): string;
   restore(text: string): void;
 };
@@ -18,6 +18,7 @@ const reg = require('../electron/path-registry.cjs') as {
   createPathRegistry: (o?: { onChange?: () => void }) => Registry;
   networkHost: (p: unknown) => string | null;
   isInside: (dir: string, child: string) => boolean;
+  streamName: (p: string) => boolean;
 };
 const guard = require('../electron/ipc-guard.cjs') as {
   createPathPolicy: (d: unknown) => { writable: (p: unknown, what: string, type: RegExp) => string | null; known: (p: unknown, what: string) => string | null };
@@ -44,9 +45,9 @@ function setup() {
 describe('readable / writable paths (electron/path-registry.cjs)', () => {
   const project = abs('work', 'jobs', 'a', 'plant.jcadproj.json');
 
-  it('file content cannot make a path outside the project folder writable', () => {
+  it('a project opened only by name: file content cannot make a path outside the project folder writable', () => {
     const { registry } = setup();
-    registry.grant(project); // chosen in the Open Project dialog
+    registry.grant(project); // chosen in a dialog once, opened by name now (a plugin, OPENPROJECT <path>)
     const r = registry.registerProject(project, {
       drawings: [
         { file: 'sheets/s1.dxf' },
@@ -76,6 +77,111 @@ describe('readable / writable paths (electron/path-registry.cjs)', () => {
     expect(r.ignored).toEqual(expect.arrayContaining(['\\\\attacker\\share\\x.dxf', '//attacker/share/y.dxf']));
     expect(registry.isKnown('//attacker/share/y.dxf')).toBe(false);
     expect(registry.isKnown(abs('work', 'jobs', 'a', 'notes.txt'))).toBe(false);
+  });
+
+  // The maintainer's rule for 0.4.1: a project the user chose (Open Project dialog, OS hand-over,
+  // Recent Documents) may have its drawings written wherever they are; nothing else changes.
+  const chosenEntries = () => ({
+    drawings: [
+      { file: 'sheets/s1.dxf' },
+      { file: '../shared/cover.dxf' },
+      { file: abs('elsewhere', 'plant', 'p1.dwg') },
+      { file: 'sheets/../../../../../outside.DXF' },
+      { file: '../../package.json' },
+      { file: 'sheets/s1.dxf/../../../package.json' },
+      { file: 'sheets/../package.json' },
+      { file: 'notes.txt' },
+      { file: 'run.dxf.exe' },
+      { file: 'sheet.dxf ' },
+      { file: '\\\\attacker\\share\\x.dxf' },
+      { file: '//attacker/share/y.dxf' },
+      { file: '\\\\?\\C:\\jobs\\device.dxf' },
+      { file: '\\\\.\\pipe\\p.dxf' },
+      { file: 'nul\u0000.dxf' },
+      { file: 42 },
+    ],
+    settings: { catalogFile: '../../package.json' },
+  });
+
+  it('a project the user chose: its .dxf / .dwg drawings are writable wherever they are, nothing else', () => {
+    const { registry, policy, log } = setup();
+    registry.grant(project);
+    const r = registry.registerProject(project, chosenEntries(), { userChosen: true });
+    const outsideDxf = abs('work', 'jobs', 'shared', 'cover.dxf');
+    const otherTree = abs('elsewhere', 'plant', 'p1.dwg');
+    const climbed = abs('outside.DXF');
+    for (const p of [abs('work', 'jobs', 'a', 'sheets', 's1.dxf'), outsideDxf, otherTree, climbed]) {
+      expect(registry.isWritable(p), p).toBe(true);
+      expect(r.writable).toContain(p);
+    }
+    // ".." is resolved before the type check: none of the package.json spellings is writable (or a drawing).
+    const pkg = abs('work', 'package.json');
+    expect(registry.isWritable(pkg)).toBe(false);
+    expect(registry.isWritable(abs('work', 'jobs', 'a', 'package.json'))).toBe(false);
+    expect(registry.isKnown(abs('work', 'jobs', 'a', 'package.json'))).toBe(false);
+    // The catalog file stays readable only.
+    expect(registry.isKnown(pkg)).toBe(true);
+    expect(r.readOnly).toEqual([pkg]);
+    expect(policy.writable(pkg, 'save-project', PROJECT)).toBeNull();
+    expect(log.pop()).toMatch(/^save-project: read-only .*package\.json$/);
+    // Other types, network paths on another server, device paths and NUL bytes are not registered.
+    expect(registry.isKnown(abs('work', 'jobs', 'a', 'notes.txt'))).toBe(false);
+    expect(registry.isKnown(abs('work', 'jobs', 'a', 'run.dxf.exe'))).toBe(false);
+    expect(registry.isKnown(abs('work', 'jobs', 'a', 'sheet.dxf '))).toBe(false);
+    expect(registry.isKnown('//attacker/share/y.dxf')).toBe(false);
+    expect(registry.isKnown('\\\\attacker\\share\\x.dxf')).toBe(false);
+    expect(r.ignored).toEqual(expect.arrayContaining(['\\\\attacker\\share\\x.dxf', '//attacker/share/y.dxf', '\\\\?\\C:\\jobs\\device.dxf', '\\\\.\\pipe\\p.dxf']));
+    expect(r.writable).toHaveLength(4);
+    // The write channels keep their own file types: a writable .dwg is not written by save-dxf.
+    expect(policy.writable(otherTree, 'save-dxf', DXF)).toBeNull();
+    expect(log.pop()).toMatch(/^save-dxf: wrong file type/);
+    expect(policy.writable(outsideDxf, 'save-dxf', DXF)).toBe(outsideDxf);
+    expect(policy.writable(outsideDxf, 'backup-file', BACKUP)).toBe(outsideDxf);
+  });
+
+  it('the same project opened only by name grants nothing beyond its folder', () => {
+    const { registry } = setup();
+    registry.grant(project);
+    const r = registry.registerProject(project, chosenEntries());
+    expect(r.writable).toEqual([abs('work', 'jobs', 'a', 'sheets', 's1.dxf')]);
+    for (const p of [abs('work', 'jobs', 'shared', 'cover.dxf'), abs('elsewhere', 'plant', 'p1.dwg'), abs('outside.DXF')]) {
+      expect(registry.isKnown(p), p).toBe(true);
+      expect(registry.isWritable(p), p).toBe(false);
+    }
+    // userChosen must be exactly true (a truthy string from a renderer does not count).
+    const again = setup().registry;
+    again.registerProject(project, chosenEntries(), { userChosen: 'yes' as unknown as boolean });
+    expect(again.isWritable(abs('work', 'jobs', 'shared', 'cover.dxf'))).toBe(false);
+  });
+
+  it('a chosen project on a network share: drawings on that server or on local disks, not on another server', () => {
+    const { registry } = setup();
+    const share = '\\\\fileserver\\jobs\\plant\\p.jcadproj.json';
+    const r = registry.registerProject(share, { drawings: [{ file: '\\\\fileserver\\archive\\old.dxf' }, { file: '//FileServer/archive/old2.dxf' }, { file: '\\\\other\\jobs\\x.dxf' }, { file: abs('local', 'l.dxf') }] }, { userChosen: true });
+    expect(r.ignored).toEqual(['\\\\other\\jobs\\x.dxf']);
+    expect(registry.isWritable(abs('local', 'l.dxf'))).toBe(true);
+    expect(registry.isKnown('\\\\other\\jobs\\x.dxf')).toBe(false);
+    if (!posix) {
+      expect(registry.isWritable('\\\\fileserver\\archive\\old.dxf')).toBe(true);
+      expect(registry.isWritable('\\\\fileserver\\archive\\old2.dxf')).toBe(true);
+    }
+  });
+
+  it.runIf(!posix)('Windows: a stream name after a drawing extension is not a drawing ("package.json:x.dxf")', () => {
+    const { registry } = setup();
+    const r = registry.registerProject(project, { drawings: [{ file: 'package.json:x.dxf' }, { file: 'C:\\work\\package.json:x.dxf' }] }, { userChosen: true });
+    expect(r.writable).toEqual([]);
+    expect(reg.streamName('C:\\work\\package.json:x.dxf')).toBe(true);
+    expect(reg.streamName('C:\\work\\a.dxf')).toBe(false);
+  });
+
+  it('the write access of a chosen project persists in recent.json (Recent Documents after a restart)', () => {
+    const a = reg.createPathRegistry();
+    a.grant(project);
+    a.registerProject(project, { drawings: [{ file: '../shared/cover.dxf' }] }, { userChosen: true });
+    const b = reg.createPathRegistry();
+    b.restore(a.serialize());
+    expect(b.isWritable(abs('work', 'jobs', 'shared', 'cover.dxf'))).toBe(true);
   });
 
   it('a file the user chose in a dialog keeps its write access when a project names it', () => {

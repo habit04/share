@@ -146,7 +146,7 @@ export class ProjectManager {
     this.treeEl.querySelectorAll<HTMLElement>('[data-recent]').forEach((n) =>
       n.addEventListener('dblclick', () => {
         const f = this.editor.settings.recentFiles[parseInt(n.dataset.recent!, 10)];
-        if (f) void (f.endsWith('.json') ? this.editor.openProject(f) : openInTab(f));
+        if (f) void (f.endsWith('.json') ? this.editor.openProject(f, { userChosen: true }) : openInTab(f));
       }),
     );
     this.treeEl.querySelector('[data-reports]')?.addEventListener('dblclick', () => this.editor.runCommand('AEREPORT bom'));

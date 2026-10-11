@@ -22,7 +22,8 @@ const ipcMain = guardIpc(rawIpcMain, {
 /**
  * The paths the renderer may name: readable (open by name) and writable (save over / back up by
  * name), persisted in recent.json (electron/path-registry.cjs). File content (a project's
- * drawing list and catalog file) never makes a file outside the project's folder writable.
+ * drawing list) makes only .dxf / .dwg drawings writable - outside the project's folder only for a
+ * project the user chose (dialog, OS hand-over, Recent Documents) - and the catalog file never.
  */
 const registry = createPathRegistry({ onChange: () => void writeStateFile(recentFile(), registry.serialize(), 'recent.json') });
 /** Path rules shared by every file IPC (readable / writable paths, image locations, folders we own). */
@@ -481,12 +482,18 @@ ipcMain.handle('open-drawing', async (ev, file) => {
 
 /**
  * Read a project file (or, by name, a project's catalog file) and register the project's drawings
- * and catalog file (electron/path-registry.cjs registerProject: drawings inside the project's
- * folder become writable, everything else it names readable only).
+ * and catalog file (electron/path-registry.cjs registerProject). A project the user chose - in
+ * this dialog, handed over by the OS, or from Recent Documents (`opts.userChosen`, accepted only
+ * for a project file the user chose or saved to before) - makes the drawings it lists writable
+ * wherever they are; one opened only by name (a plugin, OPENPROJECT with a path) only those inside
+ * its folder. `opts.textOnly`: the dialog reads a JSON file for its text (a catalog file), and
+ * nothing it lists is registered.
  */
-ipcMain.handle('open-project', async (ev, file) => {
+ipcMain.handle('open-project', async (ev, file, opts) => {
   const win = senderWindow(ev);
-  if (file !== undefined && typeof file !== 'string') throw new Error('Invalid path');
+  if (file !== undefined && file !== null && typeof file !== 'string') throw new Error('Invalid path');
+  const o = opts && typeof opts === 'object' ? opts : {};
+  file = file || undefined;
   const chosen = !file;
   if (!file) {
     const res = await dialog.showOpenDialog(win, {
@@ -513,7 +520,9 @@ ipcMain.handle('open-project', async (ev, file) => {
   if (chosen) registry.grant(file);
   // Only a project file the user may write registers what it lists: a file that is readable only
   // (a project's catalog file, read through this channel) grants nothing.
-  if (registry.isWritable(file)) registry.registerProject(file, parsed);
+  const writable = registry.isWritable(file);
+  const userChosen = chosen || takeHandedOverProject(file) || (o.userChosen === true && writable);
+  if (writable && o.textOnly !== true) registry.registerProject(file, parsed, { userChosen });
   return { path: file, text };
 });
 
@@ -584,7 +593,7 @@ ipcMain.handle('save-project', async (_ev, file, text) => {
 /**
  * Copy a drawing or project file to `<file>.bak` before a project-wide command rewrites it.
  * Only DXF drawings and *.jcadproj.json project files the renderer may write by name (our
- * dialogs, the recent list, the drawings inside an open project's folder - the same rule as
+ * dialogs, the recent list, the drawings an opened project lists - the same rule as
  * save-dxf; the shared path policy logs refusals in ipc-rejections.log) are copied, through a
  * temporary file + fsync + rename (electron/atomic-write.cjs backupFile). Resolves
  * { ok: true, path } or { ok: false, code, error } with a message for the user; it never throws
@@ -686,7 +695,7 @@ ipcMain.handle('open-dxf', async (ev) => {
 /**
  * Save a drawing as DXF. By name (`existingPath`) only over a .dxf file the renderer may write
  * (electron/path-registry.cjs); another file type is refused (and logged). A drawing that may only
- * be read (a project's drawing outside the project's folder) or an unknown path goes through the
+ * be read (a drawing outside the folder of a project opened only by name) or an unknown path goes through the
  * Save As dialog instead - opened on that drawing when it is readable, so the user confirms it.
  */
 ipcMain.handle('save-dxf', async (ev, existingPath, text, suggestName, opts) => {
@@ -946,18 +955,31 @@ ipcMain.on('app-quit', (ev) => {
   win.close();
 });
 
-// ------------------------------------------------------------------ drawings handed over by the OS
-// "Open with JCad Electrical", a drawing dropped on the program icon or a second launch with a file:
-// the paths arrive on the command line (or as macOS open-file events). They become openable (and
-// writable) by path (the user named them) and the renderer opens each in its own tab (pristine tab reused, an open tab
-// shown) - asked for once it has loaded (take-open-files), pushed afterwards (open-files).
+// ------------------------------------------------------------------ files handed over by the OS
+// "Open with JCad Electrical", a double click on a .dxf / .dwg / .jcadproj.json file (the installers
+// register these types: package.json build.fileAssociations), a file dropped on the program icon or
+// a second launch with a file: the paths arrive on the command line (or as macOS open-file events).
+// They become openable (and writable) by path (the user named them) and the renderer opens each
+// drawing in its own tab (pristine tab reused, an open tab shown) and a project as the current
+// project - asked for once it has loaded (take-open-files), pushed afterwards (open-files).
 const pendingOpenFiles = [];
 let openFilesReady = false;
-/** Existing .dxf / .dwg files among command-line arguments (relative ones against `cwd`). */
+/** The files the OS may hand over: drawings and project files. */
+const HANDOVER_FILE = /\.(dxf|dwg)$|\.jcadproj\.json$/i;
+/**
+ * Project files handed over and not opened yet (pathKey): the user chose them, so open-project
+ * registers what they list like a project chosen in the dialog, without relying on the renderer.
+ */
+const handedOverProjects = new Set();
+function takeHandedOverProject(file) {
+  const k = pathKey(file);
+  return k !== null && handedOverProjects.delete(k);
+}
+/** Existing drawing and project files among command-line arguments (relative ones against `cwd`). */
 function drawingArgs(argv, cwd) {
   const out = [];
   for (const a of Array.isArray(argv) ? argv.slice(1) : []) {
-    if (typeof a !== 'string' || a.startsWith('-') || a.includes('\0') || !/\.(dxf|dwg)$/i.test(a)) continue;
+    if (typeof a !== 'string' || a.startsWith('-') || a.includes('\0') || !HANDOVER_FILE.test(a)) continue;
     const p = path.resolve(typeof cwd === 'string' && cwd ? cwd : process.cwd(), a);
     try {
       if (fsSync.statSync(p).isFile()) out.push(p);
@@ -970,7 +992,11 @@ function drawingArgs(argv, cwd) {
 function handOverFiles(files) {
   if (!files.length) return;
   // The user handed these over (Open with, a double click): readable and writable like a dialog's choice.
-  for (const f of files) registry.grant(f);
+  for (const f of files) {
+    registry.grant(f);
+    const k = pathKey(f);
+    if (k !== null && /\.json$/i.test(f)) handedOverProjects.add(k);
+  }
   const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
   if (openFilesReady && win) win.webContents.send('open-files', files);
   else pendingOpenFiles.push(...files);
@@ -981,7 +1007,7 @@ ipcMain.handle('take-open-files', () => {
 });
 app.on('open-file', (ev, file) => {
   ev.preventDefault();
-  if (typeof file === 'string' && /\.(dxf|dwg)$/i.test(file)) handOverFiles([file]);
+  if (typeof file === 'string' && HANDOVER_FILE.test(file)) handOverFiles([file]);
 });
 
 // Headless probe used by packaging smoke tests:  jcad --probe-dwg <file.dwg>

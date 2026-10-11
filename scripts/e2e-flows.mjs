@@ -1326,7 +1326,26 @@ scenario('handover', async () => {
     t = await ctx.tabs();
     check(t.length === 3 && (await ctx.active()) === 0, `a drawing already open is shown in its tab (${t.map((x) => x.title).join(', ')}; active ${await ctx.active()})`);
     check(!(await ctx.logSince(0)).some((l) => /Failed to open|Unknown file path/.test(l)), 'no error for the handed-over files');
-    flowsRun.push('drawing on the command line, second launch with a relative path, the same drawing again');
+    // A project file (.jcadproj.json, registered by the installers) handed over: it becomes the current
+    // project, chosen by the user, so the drawing it lists outside its folder may be written.
+    const projDir = join(dir, 'proj');
+    mkdirSync(projDir, { recursive: true });
+    const projFile = join(projDir, 'handed.jcadproj.json');
+    const outside = join(dir, 'outside.dxf');
+    writeFileSync(outside, readFileSync(fixtures.dxf));
+    writeFileSync(projFile, JSON.stringify({ name: 'Handed Over', drawings: [{ file: 'inside.dxf' }, { file: '../outside.dxf' }] }));
+    writeFileSync(join(projDir, 'inside.dxf'), readFileSync(fixtures.dxf));
+    writeFileSync(join(dir, 'other.json'), '{"drawings":[{"file":"outside.dxf"}]}');
+    const pcode = await secondInstance(profile, [join('proj', 'handed.jcadproj.json'), 'other.json'], dir);
+    check(pcode === 0, `the second launch hands over a project file and exits (${pcode})`);
+    await ctx.win.waitForFunction((p) => window.editor.project.path === p, projFile, { timeout: 15_000 }).catch(() => {});
+    const ps = await ctx.projectState();
+    check(ps.path === projFile && ps.name === 'Handed Over' && ps.drawings.length === 2 && !ps.dirty, `the handed-over project is the current project (${JSON.stringify(ps)})`);
+    const bak = await ctx.win.evaluate((f) => window.jcad.backupFile(f), outside);
+    check(bak && bak.ok === true && existsSync(`${outside}.bak`), `a drawing it lists outside its folder is writable (handed over = chosen by the user: ${JSON.stringify(bak)})`);
+    t = await ctx.tabs();
+    check(t.length === 3, `the project opened no tab and other.json was ignored (${t.map((x) => x.title).join(', ')})`);
+    flowsRun.push('drawing on the command line, second launch with a relative path, the same drawing again, a project file handed over');
   } catch (err) {
     bad(`unexpected: ${err && err.stack ? err.stack : err}`);
   } finally {

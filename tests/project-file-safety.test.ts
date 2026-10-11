@@ -15,6 +15,7 @@ import { parseProject, resolveDrawingPath, resolveProjectPath } from '../src/app
 import { closeDrawingTab, collectUnsaved, runCloseWorkflow, type CloseDecision, type UnsavedItem } from '../src/app/closeflow';
 import { ProjectAutosaver, drawingAutosaves, offerProjectRecovery, projectAutosaveName, isProjectAutosave } from '../src/app/project-autosave';
 import { localAutosaveStore, type KeyValueStorage } from '../src/app/autosave';
+import { createApi } from '../src/app/api';
 
 let Editor: typeof EditorType;
 beforeAll(async () => {
@@ -493,6 +494,51 @@ describe('project dirty flag and protection', () => {
     expect(await ed.saveProject()).toBe(true);
     await pa.flush();
     expect(await store.list()).toEqual([]);
+  });
+});
+
+describe('who chose the project (write access to its drawings outside its folder, electron/path-registry.cjs)', () => {
+  const file = '/jobs/p/p.jcadproj.json';
+  const projectText = JSON.stringify({ name: 'P', drawings: [{ file: '../shared/a.dxf' }] });
+  function recording() {
+    const calls: Array<{ file: string | undefined; opts: unknown }> = [];
+    const { ed } = makeEditor({
+      openProject: async (f?: string, opts?: unknown) => {
+        calls.push({ file: f, opts });
+        return { path: f ?? file, text: projectText };
+      },
+    });
+    ed.settings = { ...ed.settings, recentFiles: [file, '/jobs/p/a.dxf'] };
+    return { ed, calls };
+  }
+
+  it('RECENT (Recent Documents) counts as the user choosing the project; OPENPROJECT with a path does not', async () => {
+    const { ed, calls } = recording();
+    ed.runCommand('RECENT 1');
+    await tick();
+    expect(calls.at(-1)).toEqual({ file, opts: { userChosen: true } });
+    ed.runCommand(`OPENPROJECT ${file}`);
+    await tick();
+    expect(calls.at(-1)).toEqual({ file, opts: undefined });
+    // The dialog itself (no file) decides in the main process.
+    expect(await ed.openProject()).toBe(true);
+    expect(calls.at(-1)).toEqual({ file: undefined, opts: undefined });
+    // A caller cannot attach the flag to the dialog either.
+    await ed.openProject(undefined, { userChosen: true });
+    expect(calls.at(-1)).toEqual({ file: undefined, opts: undefined });
+  });
+
+  it('a plugin running RECENT through the plugin API opens the project by name', async () => {
+    const { ed, calls } = recording();
+    const { api } = createApi(ed, 'test');
+    api.commands.run('RECENT', '1');
+    await tick();
+    expect(calls.at(-1)).toEqual({ file, opts: undefined });
+    expect(ed.apiCommandDepth).toBe(0);
+    // The user's own RECENT afterwards counts again.
+    ed.runCommand('RECENT 1');
+    await tick();
+    expect(calls.at(-1)).toEqual({ file, opts: { userChosen: true } });
   });
 });
 

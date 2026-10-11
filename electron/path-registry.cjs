@@ -3,17 +3,24 @@
  *
  * - Readable ("known"): may be opened by name. Files the user chose in our dialogs or saved to,
  *   the Recent Documents list, and the drawings and catalog file of an opened project.
- * - Writable: may be saved over or backed up by name. Files the user chose in a dialog or saved
- *   to, and the drawings an opened project lists inside its own folder.
+ * - Writable: may be saved over or backed up by name. Files the user chose in a dialog, handed
+ *   over through the OS or saved to, and the drawings an opened project lists (see below).
  *
- * File content never grants write access outside the project's folder: a project's drawing
- * entries that are absolute or lead out of its folder with "..", and its catalog file, are
- * readable only; entries of other file types are ignored; and a network path (\\server\share\...,
- * //server/share/...) is ignored unless the project itself is on that server, so opening a file
- * never makes the program contact another computer. Access the user granted through a dialog is
- * never reduced by file content.
+ * A project's drawing entries are resolved to absolute paths first (relative ones against the
+ * project's folder, "." / ".." collapsed) and only then checked; entries of other file types
+ * than .dxf / .dwg (so never package.json or another .json), Windows stream names
+ * ("file.json:x.dxf"), device paths (\\?\..., \\.\...) and network paths (\\server\share\...,
+ * //server/share/...) on another server than the project are ignored, so opening a file never
+ * makes the program contact another computer. What remains is writable:
  *
- * Both lists are persisted in recent.json, so Recent Documents keep working after a restart.
+ * - for a project the user chose (its Open Project dialog, an OS hand-over, or Recent Documents
+ *   for a project file the user chose earlier): wherever the drawing lives;
+ * - for a project opened only by name (a plugin, a script, the OPENPROJECT command with a path):
+ *   inside the project's folder only; drawings outside it are readable only.
+ *
+ * The catalog file is always readable only. Access the user granted through a dialog is never
+ * reduced by file content. Both lists are persisted in recent.json, so Recent Documents keep
+ * working after a restart.
  */
 const path = require('node:path');
 
@@ -51,6 +58,15 @@ function networkHost(p) {
   if (/^[\\/]{2}[?.](?:[\\/]|$)/.test(p)) return '';
   const m = /^[\\/]{2}([^\\/]+)/.exec(p);
   return m ? m[1].toLowerCase() : '';
+}
+
+/**
+ * A Windows stream name ("C:\\jobs\\package.json:x.dxf" writes a stream of package.json) or
+ * another ":" after the drive. Other systems allow ":" in file names.
+ * @param {string} p  an absolute path
+ */
+function streamName(p) {
+  return process.platform === 'win32' && p.replace(/^[A-Za-z]:/, '').includes(':');
 }
 
 /**
@@ -127,35 +143,44 @@ function createPathRegistry({ onChange } = {}) {
     /**
      * Register what an opened project file lists. Relative entries resolve against the project
      * folder like src/app/paths.ts resolveFromFile (backslashes written on Windows are separators
-     * here too). Drawings (.dxf / .dwg) inside the project's folder become readable and writable,
-     * those outside it readable only; the catalog file (.json) is readable only; other file types
-     * and network paths on another server are ignored.
+     * here too); the checks below apply to the resolved absolute path. Drawings (.dxf / .dwg)
+     * become readable and writable - inside the project's folder always, elsewhere only when the
+     * user chose the project (`userChosen`; outside the folder they are readable only otherwise);
+     * the catalog file (.json) is readable only; other file types, stream names, device paths and
+     * network paths on another server than the project are ignored.
      * @param {string} projectFile
      * @param {any} project  the parsed project JSON
+     * @param {{ userChosen?: boolean }} [opts]  userChosen: opened through a dialog, an OS
+     *   hand-over or Recent Documents (not only by name)
      * @returns {{ writable: string[], readOnly: string[], ignored: string[] }}
      */
-    registerProject(projectFile, project) {
+    registerProject(projectFile, project, opts = {}) {
       /** @type {{ writable: string[], readOnly: string[], ignored: string[] }} */
       const out = { writable: [], readOnly: [], ignored: [] };
       const dir = path.dirname(projectFile);
       const projectHost = networkHost(projectFile);
+      const anywhere = !!(opts && opts.userChosen === true);
       /** @param {unknown} f */
       const entry = (f) => {
         if (typeof f !== 'string' || !f || f.length > MAX_PATH || f.includes('\0')) return null;
-        const host = networkHost(f);
-        if (host !== null && (host === '' || host !== projectHost)) {
+        const p = process.platform === 'win32' ? f : f.replace(/\\/g, '/');
+        const abs = path.isAbsolute(p) ? path.resolve(p) : path.resolve(dir, p);
+        // As written (\\server\share\... and //server/share/... on every system), else as resolved (a
+        // relative entry of a project on a share is on that server).
+        const written = networkHost(f);
+        const host = written === null ? networkHost(abs) : written;
+        if ((host !== null && (host === '' || host !== projectHost)) || streamName(abs)) {
           out.ignored.push(f);
           return null;
         }
-        const p = process.platform === 'win32' ? f : f.replace(/\\/g, '/');
-        return path.isAbsolute(p) ? path.resolve(p) : path.resolve(dir, p);
+        return abs;
       };
       const drawings = project && Array.isArray(project.drawings) ? project.drawings : [];
       for (const d of drawings) {
         const p = entry(d && d.file);
         if (!p) continue;
         if (!DRAWING_RE.test(p)) out.ignored.push(p);
-        else if (isInside(dir, p)) {
+        else if (anywhere || isInside(dir, p)) {
           if (add(p, true, true)) out.writable.push(p);
         } else if (add(p, false, true)) out.readOnly.push(p);
       }
@@ -196,4 +221,4 @@ function createPathRegistry({ onChange } = {}) {
   };
 }
 
-module.exports = { createPathRegistry, pathKey, networkHost, isInside };
+module.exports = { createPathRegistry, pathKey, networkHost, isInside, streamName };
