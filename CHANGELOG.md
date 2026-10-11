@@ -32,21 +32,26 @@ decisions and tests). Several are ported and adapted from the draft pull request
 - Saves do not follow symbolic links (E-5): a drawing, project or backup whose file is a
   symbolic link is not saved over (the message suggests Save As), the temporary file is created
   exclusively, and the folder is checked again just before the rename. Folders reached through a
-  link or junction save normally; a project opened by name keeps its drawings' saves inside its
-  folder.
+  link or junction save normally, also on drives that cannot report a file's final path (RAM
+  disks, some network and virtual drives); a project opened by name keeps its drawings' saves
+  inside its folder, also after a restart.
 - DXF text is parsed in linear time (E-6): trailing spaces, field expressions and unknown MTEXT
   escapes no longer take quadratic time on crafted input.
 - DWG reader limits (E-7): 512 MB per file, about 2 GB of memory (worker heap and WebAssembly
   memory), 60 s plus 1 s per MB to read; DWG files are never parsed in the main process. Drawing,
-  project, image and pack reads in the main process are size-checked on one file handle.
+  project, image and pack reads in the main process are size-checked on one file handle, and a
+  named pipe under a file's name is refused at once instead of blocking the read (and the exit).
 - Updates (E-8): the downloaded installer is checked again by the application (SHA-512 from the
   release metadata, and the publisher signature of a signed Windows installation) right after the
-  download and just before it is installed; a failed check installs nothing.
+  download and just before it is installed; a failed check installs nothing (a later download
+  that passes installs on quit again).
 - Web permissions are denied (E-12) except clipboard writes from the application page, and
   every window (also the hidden plot and print windows) refuses pop-ups, navigation and
   `<webview>`.
-- Block references expand to at most 2,000,000 objects each and a block that inserts itself is
-  expanded once (E-13); the Import Report lists such blocks as kept, and nothing is refused.
+- Block references expand to at most 2,000,000 objects each, following at most 2,000,000 nested
+  references, and a block that inserts itself is expanded once (E-13); the Import Report lists
+  such blocks as kept, and nothing is refused. A drawing with many references to such a block can
+  still use up the window's memory (`docs/SECURITY-REVIEW.md`, E-13).
 - Renderer hardening (E-15): stricter Content-Security-Policy (`base-uri`, `object-src`,
   `frame-src`, `form-action`), developer tools only in development builds, and Electron fuses in
   the installers (no `ELECTRON_RUN_AS_NODE`, no `NODE_OPTIONS`, no `--inspect`, app code only
@@ -71,13 +76,17 @@ decisions and tests). Several are ported and adapted from the draft pull request
   their picture block, non-associative hatches.
 - Release provenance: each build records the commit, version, signing status and the SHA-256 of
   every installer; the release job verifies them against the tested commit, publishes
-  `release-provenance.json` and `SHA256SUMS.txt`, and has GitHub attest the artifact set.
-- Performance budgets for loading, rendering, hovering and window selection on the
-  50,000-entity drawing, asserted in CI and in the release checks (`scripts/bench-budgets.mjs`).
+  `release-provenance.json` and `SHA256SUMS.txt`, and has GitHub attest the artifact set. The
+  uploaded set (installers, their blockmaps and the update feeds) is verified in every run of the
+  release workflow, a rehearsal without a tag included.
+- Performance budgets for loading, a full redraw (at extents and zoomed in), the cursor-only
+  frame, hovering and window selection on the 50,000-entity drawing, asserted in CI and in the
+  release checks (`scripts/bench-budgets.mjs`).
 - `tests/fixtures/manifest.json` with `npm run check:fixtures` (run before `npm test`): a missing
   committed fixture fails the tests instead of skipping them.
 - End-to-end checks: saving through a linked folder, an image next to a drawing known by a
-  linked path, a refused symbolic-link destination, denied web permissions (209 checks).
+  linked path, a refused symbolic-link destination, denied web permissions with clipboard writes
+  still allowed, the raster PLOT placed edge to edge (211 checks).
 
 ### Changed
 

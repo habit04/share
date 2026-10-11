@@ -218,6 +218,7 @@ installer and smoke-tests each one on its own OS without publishing anything.
 | `scripts/bench.mjs`, `scripts/bench-budgets.mjs`, `tests/perf*.test.ts`, `tests/spatial-index.test.ts` | performance and its asserted budgets |
 | `scripts/check-fixtures.mjs`, `tests/fixtures/manifest.json` | committed test fixtures (run before `npm test`) |
 | `scripts/release-provenance.mjs` | release provenance records and their verification |
+| `scripts/mac-update-info.mjs` | writes the minimum macOS version (`build.mac.minimumSystemVersion`) into the release's `latest-mac.yml` |
 | `scripts/check-workflows.mjs` | workflow validation |
 | `.github/workflows/ci.yml` | every push and pull request |
 | `.github/workflows/release.yml` | gated installer builds and releases |
