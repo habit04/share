@@ -152,7 +152,7 @@ runtime**, and **notarized** by Apple (with the ticket stapled).
 
 | Secret | Value |
 | --- | --- |
-| `CSC_LINK` | the base64 text of the `.p12` (electron-builder also accepts an `https://` URL) |
+| `CSC_LINK` | the base64 text of the `.p12` (an `https://` URL of the file also works) |
 | `CSC_KEY_PASSWORD` | the `.p12` export password |
 | `APPLE_ID` | the Apple Account e-mail used for notarization |
 | `APPLE_APP_SPECIFIC_PASSWORD` | the app-specific password from step 3 |
@@ -168,12 +168,17 @@ When `HAS_APPLE` is true the macOS job skips the unsigned step and runs
    `entitlements` and `entitlementsInherit` = `build/entitlements.mac.plist`.
    The committed `package.json` keeps `hardenedRuntime: false`, which is what
    the ad-hoc signed build needs.
-2. electron-builder imports `CSC_LINK` into a temporary keychain, signs the
-   `.app` (both arm64 and x64) with the Developer ID identity (the ad-hoc
-   `afterPack` hook steps aside because `CSC_LINK` is set), submits it to Apple's
-   notary service with `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` /
-   `APPLE_TEAM_ID` (`@electron/notarize`, `notarytool`), waits, and staples the
-   ticket before building the DMGs.
+2. The step imports `CSC_LINK` into a keychain of the job's own, with Apple's
+   Developer ID intermediate certificates, and fails unless it holds a valid
+   *Developer ID Application* identity. (electron-builder 26's own import passes
+   the certificate's password as the keychain password to
+   `security set-key-partition-list`, which the macOS 26 runners refuse.)
+   electron-builder then signs the `.app` (both arm64 and x64) with that identity
+   (`CSC_KEYCHAIN`, `CSC_NAME` = its SHA-1; the ad-hoc `afterPack` hook steps
+   aside because `CSC_NAME` is set), submits it to Apple's notary service with
+   `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_TEAM_ID`
+   (`@electron/notarize`, `notarytool`), waits, and staples the ticket before
+   building the DMGs. The keychain is deleted when the step ends.
 3. *Verify the macOS signature and notarization ticket* runs
    `codesign --verify --deep --strict`, checks for the Developer ID authority
    and the `runtime` flag, `xcrun stapler validate` and `spctl --assess` on each

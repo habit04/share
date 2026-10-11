@@ -191,8 +191,12 @@ jobs:
       - name: Build, sign and notarize (macOS, Developer ID)
         if: ${{ runner.os == 'macOS' && env.HAS_APPLE == 'true' }}
         # package.json keeps hardenedRuntime false for the ad-hoc build; on this runner only, the signed build
-        # turns on the hardened runtime with build/entitlements.mac.plist. electron-builder then signs with the
-        # CSC_LINK certificate and notarizes (and staples) because APPLE_ID / _APP_SPECIFIC_PASSWORD / _TEAM_ID are set.
+        # turns on the hardened runtime with build/entitlements.mac.plist. The CSC_LINK certificate goes into a
+        # keychain of this job's own: electron-builder 26's import gives set-key-partition-list the certificate's
+        # password instead of its keychain's, which the macOS 26 runner refuses ("SecKeychainUnlock: The user name
+        # or passphrase you entered is not correct"). electron-builder then signs with that identity (CSC_KEYCHAIN,
+        # CSC_NAME = its SHA-1; the ad-hoc afterPack hook steps aside because CSC_NAME is set) and notarizes (and
+        # staples) because APPLE_ID / _APP_SPECIFIC_PASSWORD / _TEAM_ID are set.
         shell: bash
         run: |
           node -e "
@@ -201,7 +205,34 @@ jobs:
             Object.assign(pkg.build.mac, { hardenedRuntime: true, gatekeeperAssess: false, entitlements: 'build/entitlements.mac.plist', entitlementsInherit: 'build/entitlements.mac.plist' });
             fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
           "
-          npx electron-builder ${{ matrix.target }} --publish never
+          keychain="$RUNNER_TEMP/jcad-signing.keychain-db"
+          cert="$RUNNER_TEMP/jcad-signing.p12"
+          kc_password="$(openssl rand -base64 32)"
+          trap 'rm -f "$cert"; security delete-keychain "$keychain" 2> /dev/null || true' EXIT
+          case "$CSC_LINK" in
+            https://*) curl -fsSL --retry 3 -o "$cert" "$CSC_LINK" ;;
+            *) node -e "require('fs').writeFileSync(process.argv[1], Buffer.from(process.env.CSC_LINK, 'base64'))" "$cert" ;;
+          esac
+          security create-keychain -p "$kc_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$kc_password" "$keychain"
+          security import "$cert" -k "$keychain" -P "$CSC_KEY_PASSWORD" -T /usr/bin/codesign -T /usr/bin/productbuild
+          rm -f "$cert"
+          # Apple's Developer ID intermediates, so the identity is valid whichever one issued it.
+          for ca in DeveloperIDG2CA DeveloperIDCA; do
+            curl -fsSL --retry 3 -o "$RUNNER_TEMP/$ca.cer" "https://www.apple.com/certificateauthority/$ca.cer"
+            security import "$RUNNER_TEMP/$ca.cer" -k "$keychain" || true
+          done
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$kc_password" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          identity="$(security find-identity -v -p codesigning "$keychain" | awk '/"Developer ID Application: / { print $2; exit }')"
+          if [ -z "$identity" ]; then
+            security find-identity -v -p codesigning "$keychain"
+            echo "::error::CSC_LINK holds no valid Developer ID Application identity"
+            exit 1
+          fi
+          echo "Signing identity: $(security find-identity -v -p codesigning "$keychain" | grep "$identity" | sed 's/^ *[0-9]*) //')"
+          env -u CSC_LINK -u CSC_KEY_PASSWORD CSC_KEYCHAIN="$keychain" CSC_NAME="$identity" npx electron-builder ${{ matrix.target }} --publish never
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
