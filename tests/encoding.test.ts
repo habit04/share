@@ -131,7 +131,8 @@ describe('non-ASCII file names', () => {
   });
 
   it('the main process reads DXF bytes and compares paths in NFC', () => {
-    expect(mainSource).toMatch(/decodeDxf\(await fs\.readFile\(file\)\)/);
+    // Bytes, at most 512 MB, read through one handle (electron/resource-limits.cjs).
+    expect(mainSource).toMatch(/decodeDxf\(\/\*\* @type \{Buffer\} \*\/ \(await readLimitedFile\(fs, file, MAX_DRAWING_BYTES\)\)\)/);
     expect(mainSource).not.toMatch(/const text = await fs\.readFile\(file, 'utf8'\);\s*rememberPath\(file\);\s*return \{ path: file, kind: 'dxf'/);
     expect('Jose\u0301.dxf'.normalize('NFC')).toBe('José.dxf'.normalize('NFC'));
     // The reader module URL survives spaces and non-ASCII install folders.

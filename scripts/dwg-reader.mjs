@@ -22,29 +22,59 @@ async function lib() {
   return libPromise;
 }
 
+/** The largest DWG the reader accepts (electron/resource-limits.cjs MAX_DRAWING_BYTES). */
+export const MAX_DWG_BYTES = 512 * 1024 * 1024;
+
 /**
  * @param {Uint8Array|Buffer} bytes DWG or DXF file content
  * @param {'dwg'|'dxf'} kind
  * @returns {Promise<{payload: object, version: string}>}
  */
 export async function readDwgPayload(bytes, kind = 'dwg') {
+  if (bytes.byteLength > MAX_DWG_BYTES) throw new Error(`The DWG file is larger than the supported ${MAX_DWG_BYTES / (1024 * 1024)} MB.`);
   const l = await lib();
   const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
   const ptr = l.dwg_read_data(ab, kind === 'dxf' ? 1 : 0);
   if (!ptr) throw new Error('LibreDWG could not read this file (unsupported version or corrupt data).');
-  let version = '';
   try {
-    version = l.dwg_get_version_type(ptr)?.type ?? '';
-  } catch {
-    /* ignore */
+    let version = '';
+    try {
+      version = l.dwg_get_version_type(ptr)?.type ?? '';
+    } catch {
+      /* the file can still be converted without a version label */
+    }
+    const db = l.convert(ptr);
+    return { payload: payloadFromDatabase(db, version), version };
+  } finally {
+    // A failed conversion releases the native memory like a successful one (ported from PR #2,
+    // codex/electrical-review-fixes 2f89b0e). LibreDWG keeps per-version state in the module;
+    // reading files of different versions in one instance can abort the WASM: start fresh.
+    try {
+      l.dwg_free(ptr);
+    } finally {
+      void resetLibreDwg();
+    }
   }
-  const db = l.convert(ptr);
-  l.dwg_free(ptr);
-  // LibreDWG keeps per-version state in the module; reading files of different
-  // versions in one instance can abort the WASM. Start fresh for the next read.
-  void resetLibreDwg();
-  const payload = payloadFromDatabase(db, version);
-  return { payload, version };
+}
+
+/**
+ * Refuse to grow any WebAssembly memory of this thread beyond `maxBytes` (security review E-7).
+ * LibreDWG's memory starts at 1 GiB and may grow to the wasm32 maximum of 4 GiB; the DWG worker
+ * (scripts/dwg-worker.mjs) caps it, so a crafted file cannot make one read take all the memory of
+ * the machine. A refused growth makes the allocation inside LibreDWG fail, and the read with it.
+ * Returns a function that removes the cap.
+ * @param {number} maxBytes
+ */
+export function capWasmMemory(maxBytes) {
+  const proto = WebAssembly.Memory.prototype;
+  const grow = proto.grow;
+  proto.grow = function cappedGrow(/** @type {number} */ pages) {
+    if (this.buffer.byteLength + pages * 65536 > maxBytes) throw new RangeError(`WebAssembly memory limit of ${Math.round(maxBytes / (1024 * 1024))} MB reached`);
+    return grow.call(this, pages);
+  };
+  return () => {
+    proto.grow = grow;
+  };
 }
 
 /**

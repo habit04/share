@@ -30,6 +30,7 @@ const { registerPlotIpc } = require('./main/ipc-plot.cjs');
 const { registerStoreIpc } = require('./main/ipc-stores.cjs');
 const { registerUpdatesIpc } = require('./main/updates.cjs');
 const { createHandover } = require('./main/handover.cjs');
+const { MAX_DRAWING_BYTES, readLimitedFile } = require('./resource-limits.cjs');
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL;
 
@@ -94,7 +95,7 @@ if (probeIndex >= 0) {
   void app.whenReady().then(async () => {
     try {
       const file = process.argv[probeIndex + 1];
-      const { payload, version } = await readDwg(await fs.readFile(file));
+      const { payload, version } = await readDwg(/** @type {Buffer} */ (await readLimitedFile(fs, file, MAX_DRAWING_BYTES)));
       dwgHost.dispose();
       process.stdout.write(`PROBE_OK ${version} entities=${payload.entities.length} blocks=${payload.blocks.length}\n`);
       app.exit(0);

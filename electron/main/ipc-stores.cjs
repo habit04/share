@@ -8,6 +8,7 @@ const fs = require('node:fs/promises');
 const { atomicWriteFile } = require('../atomic-write.cjs');
 const { createAutosaveStore, safeAutosaveName } = require('../autosave-store.cjs');
 const { stateDir, autosaveDir, enqueueWrite } = require('./app-data.cjs');
+const { readLimitedFile, validateTextSize } = require('../resource-limits.cjs');
 
 /** @typedef {import('./context.cjs').MainContext} MainContext */
 
@@ -29,17 +30,18 @@ function registerStoreIpc(ctx) {
 
   // ------------------------------------------------------------------ user symbol library (app data folder)
   const userLibraryFile = () => path.join(stateDir(), 'user-library.json');
+  const MAX_LIBRARY_BYTES = 64 * 1024 * 1024;
   /** Only a missing file means "no library yet"; any other failure (EBUSY, EPERM, EIO) is reported so the renderer refuses to overwrite. */
   ipcMain.handle('user-library-read', async () => {
     try {
-      return await fs.readFile(userLibraryFile(), 'utf8');
+      return /** @type {string} */ (await readLimitedFile(fs, userLibraryFile(), MAX_LIBRARY_BYTES, 'utf8'));
     } catch (err) {
       if (err && err.code === 'ENOENT') return null;
       throw err;
     }
   });
   ipcMain.handle('user-library-write', async (_ev, json) => {
-    if (typeof json !== 'string' || json.length > 64 * 1024 * 1024) throw new Error('Invalid payload');
+    validateTextSize(json, MAX_LIBRARY_BYTES, 'library');
     await fs.mkdir(stateDir(), { recursive: true });
     const file = userLibraryFile();
     // Write to a temporary file and fsync it so a crash or power loss mid-write cannot leave an
@@ -59,11 +61,9 @@ function registerStoreIpc(ctx) {
     if (typeof name !== 'string' || name === '.' || name === '..' || !PLUGIN_FOLDER_RE.test(name)) throw new Error('Invalid plugin folder name');
     return name;
   }
+  /** A plugin file of at most `max` bytes, read through one handle (electron/resource-limits.cjs). */
   async function readLimited(file, max) {
-    const st = await fs.stat(file);
-    if (!st.isFile()) throw new Error(`${path.basename(file)} is not a file`);
-    if (st.size > max) throw new Error(`${path.basename(file)} is larger than ${Math.round(max / 1024)} KB`);
-    return fs.readFile(file, 'utf8');
+    return /** @type {string} */ (await readLimitedFile(fs, file, max, 'utf8'));
   }
   /** The folder is created on first use so users can find it (PLUGINS prints it). */
   ipcMain.handle('plugins-dir', async () => {
@@ -138,9 +138,7 @@ function registerStoreIpc(ctx) {
     const file = path.join(packsDir(), safePackName(name));
     try {
       await pathPolicy.insideRoot(packsDir(), file, 'packs-read');
-      const st = await fs.stat(file);
-      if (st.size > MAX_PACK_BYTES) throw new Error(`Pack file is larger than ${MAX_PACK_BYTES / (1024 * 1024)} MB`);
-      return await fs.readFile(file, 'utf8');
+      return /** @type {string} */ (await readLimitedFile(fs, file, MAX_PACK_BYTES, 'utf8'));
     } catch (err) {
       if (err && err.code === 'ENOENT') return null;
       throw err;
@@ -148,7 +146,7 @@ function registerStoreIpc(ctx) {
   });
   ipcMain.handle('packs-write', async (_ev, name, text) => {
     const file = path.join(packsDir(), safePackName(name));
-    if (typeof text !== 'string' || text.length > MAX_PACK_BYTES) throw new Error('Invalid pack payload');
+    validateTextSize(text, MAX_PACK_BYTES, 'pack');
     await fs.mkdir(packsDir(), { recursive: true });
     // Same discipline as the user library: write + fsync a temporary file, then rename over the target.
     await enqueueWrite(file, () => atomicWriteFile(file, text));
@@ -169,9 +167,7 @@ function registerStoreIpc(ctx) {
     });
     if (res.canceled || res.filePaths.length === 0) return null;
     const file = res.filePaths[0];
-    const st = await fs.stat(file);
-    if (st.size > MAX_PACK_BYTES) throw new Error(`Pack file is larger than ${MAX_PACK_BYTES / (1024 * 1024)} MB`);
-    return { name: path.basename(file), text: await fs.readFile(file, 'utf8') };
+    return { name: path.basename(file), text: /** @type {string} */ (await readLimitedFile(fs, file, MAX_PACK_BYTES, 'utf8')) };
   });
 }
 

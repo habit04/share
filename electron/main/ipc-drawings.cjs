@@ -10,6 +10,7 @@ const { backupFile, copyFileAtomic } = require('../atomic-write.cjs');
 const { dxfImageNames } = require('../ipc-guard.cjs');
 const { writeUserFile } = require('./app-data.cjs');
 const { decodeDxf, readDwgWithProgress } = require('./dwg.cjs');
+const { MAX_DRAWING_BYTES, MAX_PROJECT_BYTES, readLimitedFile, validateTextSize } = require('../resource-limits.cjs');
 
 /** @typedef {import('./context.cjs').MainContext} MainContext */
 
@@ -54,13 +55,14 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
       const twin = file.replace(/\.dwg$/i, '.dxf');
       if (registry.isWritable(file)) registry.grant(twin);
       else registry.grantRead(twin);
-      const bytes = await fs.readFile(file);
+      // At most 512 MB, read through one handle (electron/resource-limits.cjs, E-7).
+      const bytes = /** @type {Buffer} */ (await readLimitedFile(fs, file, MAX_DRAWING_BYTES));
       const { payload, version } = await readDwgWithProgress(win, file, bytes);
       pathPolicy.rememberImages(file, (payload.imageDefs || []).map((d) => d && d.fileName));
       return { path: file, kind: 'dwg', payload, version };
     }
     // Read bytes, not a UTF-8 string: pre-2007 DXF files are in the $DWGCODEPAGE code page.
-    const { text, encoding } = await decodeDxf(await fs.readFile(file));
+    const { text, encoding } = await decodeDxf(/** @type {Buffer} */ (await readLimitedFile(fs, file, MAX_DRAWING_BYTES)));
     pathPolicy.rememberImages(file, dxfImageNames(text));
     return { path: file, kind: 'dxf', text, encoding };
   }
@@ -101,7 +103,7 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
         throw new Error('Unknown file path');
       }
     }
-    const text = await fs.readFile(file, 'utf8');
+    const text = /** @type {string} */ (await readLimitedFile(fs, file, MAX_PROJECT_BYTES, 'utf8'));
     let parsed;
     try {
       parsed = JSON.parse(text);
@@ -130,6 +132,7 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
     // Crash-safe for every export; only a project file keeps its previous version as <name>.bak
     // (a .bak next to a CSV or text export would only clutter the user's folder).
     const isProject = /\.jcadproj\.json$/i.test(res.filePath) || String(filterName) === 'JCad Electrical Project';
+    if (isProject) validateTextSize(text, MAX_PROJECT_BYTES, 'project');
     await writeUserFile(res.filePath, text, { backup: isProject });
     registry.grant(res.filePath);
     return res.filePath;
@@ -202,7 +205,7 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
    * recent list): a .json file the user may write (a catalog file named by a project may not be).
    */
   ipcMain.handle('save-project', async (_ev, file, text) => {
-    if (typeof text !== 'string' || text.length > 64 * 1024 * 1024) throw new Error('Invalid project payload');
+    validateTextSize(text, MAX_PROJECT_BYTES, 'project');
     if (!pathPolicy.writable(file, 'save-project', PROJECT_FILE)) throw new Error('Unknown project path');
     // Temporary file + fsync + rename, previous version kept as <name>.bak (electron/atomic-write.cjs).
     await writeUserFile(file, text, { backup: true });
@@ -242,7 +245,7 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
    */
   ipcMain.handle('save-dxf', async (ev, existingPath, text, suggestName, opts) => {
     const win = senderWindow(ev);
-    if (typeof text !== 'string') throw new Error('Invalid DXF payload');
+    validateTextSize(text, MAX_DRAWING_BYTES, 'DXF');
     let target = existingPath == null ? null : pathPolicy.writable(existingPath, 'save-dxf', DXF_FILE);
     // Saved by name: a drawing a project opened by name made writable stays inside the project's folder.
     const root = (target && registry.writeRoot(target)) ?? undefined;
@@ -295,7 +298,7 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
       throw err;
     }
     if (!stat.isFile() || stat.size > MAX_IMAGE_BYTES) return null;
-    const bytes = await fs.readFile(file);
+    const bytes = /** @type {Buffer} */ (await readLimitedFile(fs, file, MAX_IMAGE_BYTES));
     return `data:${type};base64,${bytes.toString('base64')}`;
   });
   // ------------------------------------------------------------------ end of read-image
