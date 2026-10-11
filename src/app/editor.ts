@@ -82,7 +82,11 @@ export interface FileBridge {
   openDxf(): Promise<{ path: string; text: string } | null>;
   /** Desktop only: open DXF or DWG (DWG parsed by LibreDWG in the main process). */
   openDrawing?(file?: string): Promise<OpenResult | null>;
-  saveDxf(path: string | null, text: string, suggestName: string): Promise<string | null>;
+  /**
+   * Write a drawing. The desktop app keeps the previous file as `<path>.bak`; `opts.backup: false`
+   * skips that copy (a project-wide command made its own, or the user chose to write without one).
+   */
+  saveDxf(path: string | null, text: string, suggestName: string, opts?: { backup?: boolean }): Promise<string | null>;
   openProject?(file?: string): Promise<{ path: string; text: string } | null>;
   saveText?(suggestName: string, text: string, filterName: string, ext: string): Promise<string | null>;
   /**

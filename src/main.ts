@@ -58,7 +58,7 @@ declare global {
       printDrawing?(dataUrl: string, title: string, landscape: boolean, sheet?: { width: number; height: number; electron?: string }): Promise<boolean>;
       /** Track E: write vector PDF bytes (save-pdf IPC). */
       savePdf?(bytes: Uint8Array, suggestName: string): Promise<string | null>;
-      saveDxf(path: string | null, text: string, suggestName: string): Promise<string | null>;
+      saveDxf(path: string | null, text: string, suggestName: string, opts?: { backup?: boolean }): Promise<string | null>;
       onMenuCommand(cb: (cmd: string) => void): void;
       /** Close / quit / restart: the main process waits for the Save All workflow's answer (true = close). */
       onCloseRequest?(cb: (context: 'close' | 'quit' | 'restart') => Promise<boolean>): void;
@@ -66,6 +66,9 @@ declare global {
       saveProject?(path: string, text: string): Promise<string | null>;
       setRecentFiles?(files: string[]): void;
       quit?(): void;
+      /** Drawings handed over by the OS before the page loaded / afterwards (open each in its tab). */
+      takeOpenFiles?(): Promise<string[]>;
+      onOpenFiles?(cb: (files: string[]) => void): void;
       appInfo?(): Promise<{ version: string; platform: string; arch: string; packaged: boolean; selfUpdate: boolean; releases: string }>;
       openExternal?(url: string): Promise<boolean>;
       checkForUpdates?(): Promise<{ state: string; version?: string; message?: string }>;
@@ -697,8 +700,11 @@ function boot(): void {
       .then(async (ok) => {
         // Answer only after autosaves being written are complete (they are what recovers discarded
         // work) and the backups of drawings saved just now are removed; a hung write is not waited for.
-        if (ok && !(await settleBeforeClose([projectAutosaver.flush(), autosaver.idle()]))) {
-          editor.log('Closing without waiting longer for an autosave that is still being written.');
+        if (ok) {
+          // Still modified after an allowed close = the user chose not to save the project (Discard All or
+          // unticked): its autosave goes, as with Don't Save (a failed save never gets here).
+          if (editor.projectDirty) await projectAutosaver.discard();
+          if (!(await settleBeforeClose([projectAutosaver.flush(), autosaver.idle()]))) editor.log('Closing without waiting longer for an autosave that is still being written.');
         }
         return ok;
       })
@@ -720,6 +726,15 @@ function boot(): void {
       await recoveryDialog(editor, store, autosaver);
     })();
   }
+  // Drawings handed over by the OS ("Open with", a second launch): one after another, each in its own tab.
+  let handOver: Promise<void> = Promise.resolve();
+  const openHandedOver = (files: string[]): void => {
+    handOver = handOver.then(async () => {
+      for (const f of files) await editor.sessions.openInTab(f, (x) => editor.openFile(x));
+    });
+  };
+  window.jcad?.onOpenFiles?.(openHandedOver);
+  void window.jcad?.takeOpenFiles?.().then(openHandedOver, () => {});
   // expose for automation / debugging
   (window as unknown as { editor: Editor; jacUi: unknown }).editor = editor;
   (window as unknown as { jacUi: unknown }).jacUi = { ribbon, cmd, qp, tp, pm, props, clipboard, autosaver, store, autosaveStore, projectAutosaver };

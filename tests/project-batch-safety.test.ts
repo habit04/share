@@ -52,6 +52,8 @@ function fake(o: Opts) {
   }
   const disk = new Map<string, string>(Object.entries(o.files).map(([k, v]) => [k, writeDxf(v)]));
   const writes: string[] = [];
+  /** The options of each saveDxf call (a project-wide write never asks the main process for a second .bak). */
+  const writeOpts: Array<{ backup?: boolean } | undefined> = [];
   const backups: string[] = [];
   const reads: string[] = [];
   const logs: string[] = [];
@@ -69,9 +71,10 @@ function fake(o: Opts) {
         if (text === undefined) throw new Error(`ENOENT ${path}`);
         return { path, kind: 'dxf' as const, text };
       },
-      saveDxf: async (path: string | null, text: string) => {
+      saveDxf: async (path: string | null, text: string, _name?: string, opts?: { backup?: boolean }) => {
         if (!path) return null;
         writes.push(path);
+        writeOpts.push(opts);
         disk.set(path, text);
         return path;
       },
@@ -84,7 +87,7 @@ function fake(o: Opts) {
     log: (t: string) => logs.push(t),
     notify: () => {},
   } as unknown as Editor;
-  return { editor, disk, writes, backups, reads, logs };
+  return { editor, disk, writes, writeOpts, backups, reads, logs };
 }
 
 const g = globalThis as { window?: unknown };
@@ -155,12 +158,28 @@ describe('failed backups stop the write', () => {
     await runProjectXref(f.editor);
     expect(f.writes).toEqual(['/p/c.dxf']);
     expect(f.logs.join('\n')).toMatch(/c\.dxf: backup failed \(disk full\); written without a backup as chosen/);
+    // The write itself must not try the .bak again (a folder or locked file in the way would fail it).
+    expect(f.writeOpts).toEqual([{ backup: false }]);
   });
   it('a successful backup ({ ok: true } or the old string answer) writes as before', async () => {
     const f = fake({ ...base, files: { '/p/c.dxf': closed() }, backup: async (p) => `${p}.bak` });
     await runProjectXref(f.editor);
     expect(noBackupAsked).toEqual([]);
     expect(f.writes).toEqual(['/p/c.dxf']);
+  });
+});
+
+describe('damaged closed drawings', () => {
+  it('a truncated closed drawing is skipped as damaged (not reported as a file error) and never written', async () => {
+    const f = fake({ ...base, files: { '/p/c.dxf': closed() } });
+    const whole = f.disk.get('/p/c.dxf')!;
+    f.disk.set('/p/c.dxf', whole.slice(0, Math.floor(whole.length * 0.6)));
+    const { skipped } = await loadProjectSheets(f.editor);
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0]).toMatch(/^c\.dxf \(damaged, not changed: The file ends early/);
+    expect(skipped[0]).toMatch(/OPEN it to recover what is readable\)$/);
+    await runProjectXref(f.editor);
+    expect(f.writes).not.toContain('/p/c.dxf');
   });
 });
 

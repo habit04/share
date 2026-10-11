@@ -62,6 +62,8 @@ export class ProjectAutosaver {
   private written: string | null = null;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private chain: Promise<void> = Promise.resolve();
+  /** Set by discard(): the current changes were thrown away on purpose; the next change autosaves again. */
+  private discarded = false;
   onError: ((err: unknown) => void) | null = null;
 
   constructor(
@@ -75,6 +77,7 @@ export class ProjectAutosaver {
 
   /** Write (or remove) the project autosave shortly after a change. */
   schedule(): void {
+    this.discarded = false;
     if (this.timer) clearTimeout(this.timer);
     this.timer = setTimeout(() => {
       this.timer = null;
@@ -90,7 +93,7 @@ export class ProjectAutosaver {
 
   private async sync(): Promise<void> {
     const { project, projectDirty } = this.host;
-    if (projectDirty && this.enabled()) {
+    if (projectDirty && this.enabled() && !this.discarded) {
       const name = projectAutosaveName(project);
       await this.store.write(name, projectAutosaveText(project), { originalPath: project.path ?? null, title: `Project ${project.name}`, savedAt: Date.now() });
       if (this.written && this.written !== name) await this.store.remove(this.written);
@@ -102,6 +105,25 @@ export class ProjectAutosaver {
       this.written = null;
       await this.store.remove(n);
     }
+  }
+
+  /**
+   * The user discarded the project's changes without opening another project (Discard All or an
+   * unticked project when the application closes): remove its autosave instead of writing one, so
+   * the next start does not offer what was thrown away on purpose.
+   */
+  discard(): Promise<void> {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+    this.discarded = true;
+    this.chain = this.chain
+      .then(async () => {
+        const names = new Set([this.written, projectAutosaveName(this.host.project)].filter((n): n is string => !!n));
+        this.written = null;
+        for (const n of names) await this.store.remove(n);
+      })
+      .catch((err) => this.onError?.(err));
+    return this.chain;
   }
 
   /** Continue writing to (and later remove) the autosave a recovered project came from. */

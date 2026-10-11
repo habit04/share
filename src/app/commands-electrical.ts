@@ -69,7 +69,7 @@ import { findRails, nearestReference, rungReferences } from '../electrical/ladde
 import { projectDrawingIndex, projectEntryFor, resolveDrawingPath, resolveProjectPath, baseName } from './project';
 import { samePath, shortNames } from './paths';
 import { captureRevision, contentHash, saveQueue } from './savequeue';
-import { fileErrorText, exportFailed } from './file-error-text';
+import { fileErrorText, exportFailed, exportErrorText } from './file-error-text';
 import { fileErrorCode } from './file-errors';
 import { readDxf, writeDxf, DxfReadError } from '../io/dxf';
 import { convertDwg } from '../io/dwg';
@@ -147,8 +147,9 @@ function readClosedDxfForReport(editor: Editor, text: string, path: string): Dra
 
 /** Why a closed project drawing could not be read: file errors in plain words, damaged DXF with the reader's message. */
 function closedReadError(err: unknown, path: string): string {
-  if (fileErrorCode(err)) return fileErrorText(err, { action: 'read', path });
   if (err instanceof DxfReadError && err.truncated) return `damaged, not changed: ${err.message} OPEN it to recover what is readable`;
+  if (err instanceof DxfReadError) return `damaged, not changed: ${err.message}`;
+  if (fileErrorCode(err)) return fileErrorText(err, { action: 'read', path });
   return err instanceof Error ? err.message : String(err);
 }
 
@@ -165,7 +166,7 @@ async function saveCsv(editor: Editor, name: string, csv: string): Promise<strin
       return await editor.fileBridge.saveText(name, csv, 'CSV', 'csv');
     } catch (err) {
       // A write error is reported on the command line instead of being lost as an unhandled rejection.
-      editor.log(`${name} not saved: ${fileErrorText(err, { action: 'save', path: name })}`);
+      editor.log(`Export not saved: ${exportErrorText(err, name)}`);
       return null;
     }
   }
@@ -734,10 +735,12 @@ export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[
         }
       }
       const text = writeDxf(withoutUnusedLibraryBlocks(c.state));
+      // The .bak was made above (or the user chose to write without one): the write itself makes no second copy,
+      // so "Continue Without Backup" also works when the .bak path cannot be written.
       let late: string | null = null;
       const r = await saveQueue.run(path, sh.revision ?? captureRevision(), async () => {
         late = await changedSince();
-        return late ? null : bridge.saveDxf(path, text, sh.name);
+        return late ? null : bridge.saveDxf(path, text, sh.name, { backup: false });
       });
       if (r.status === 'stale') conflicts.push(`${sh.name} (a newer version was saved meanwhile)`);
       else if (late) conflicts.push(`${sh.name} (${late})`);

@@ -215,7 +215,7 @@ try {
   // added since; checks of those are skipped for it. JCAD_E2E_EXPECT_VERSION names its version.
   const expectVersion = process.env.JCAD_E2E_EXPECT_VERSION || pkg.version;
   const current = info.version === pkg.version;
-  const newKeys = ['onOpenProgress', 'cancelOpen', 'onCloseRequest', 'chooseProjectPath', 'saveProject'];
+  const newKeys = ['onOpenProgress', 'cancelOpen', 'onCloseRequest', 'chooseProjectPath', 'saveProject', 'takeOpenFiles', 'onOpenFiles'];
   for (const k of ['openDrawing', 'openDxf', 'saveDxf', 'plotPdf', 'printDrawing', 'appInfo', 'checkForUpdates', 'onMenuCommand', 'backupFile', 'autosaveWrite', 'userLibraryRead', 'packsList', 'readImage', ...(current ? newKeys : [])]) check(bridge?.keys.includes(k), `bridge exposes ${k}`);
   if (!current) ok(`release ${info.version} is older than these checks (${pkg.version}): progress / Cancel, image allow list and IPC guard checks skipped`);
   check(bridge?.platform === process.platform, `bridge platform ${bridge?.platform}`);

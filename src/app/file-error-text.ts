@@ -15,12 +15,21 @@ export function fileErrorText(err: unknown, ctx: FileErrorContext = { action: 's
 }
 
 /**
+ * Why an export (CSV, report, .wdt) was not saved, naming the file and folder the user picked in
+ * the Save dialog (the error carries that path; `name` is only the suggested name).
+ */
+export function exportErrorText(err: unknown, name: string): string {
+  const info = describeFileError(err, { action: 'save' });
+  return info.path ? info.message : fileErrorText(err, { action: 'save', path: name });
+}
+
+/**
  * Catch handler for a text export (CSV, report, .wdt): logs why `name` was not saved and resolves
  * null, instead of leaving an unhandled rejection.
  */
 export function exportFailed(log: (text: string) => void, name: string): (err: unknown) => null {
   return (err) => {
-    log(`${name} not saved: ${fileErrorText(err, { action: 'save', path: name })}`);
+    log(`Export not saved: ${exportErrorText(err, name)}`);
     return null;
   };
 }

@@ -13,7 +13,8 @@ contextBridge.exposeInMainWorld('jcad', {
   printDrawing: (dataUrl, title, landscape, sheet) => ipcRenderer.invoke('print-drawing', dataUrl, title, landscape, sheet),
   // Vector PLOT: the renderer's PDF bytes, saved through a Save dialog in the main process.
   savePdf: (bytes, suggestName) => ipcRenderer.invoke('save-pdf', bytes, suggestName),
-  saveDxf: (path, text, suggestName) => ipcRenderer.invoke('save-dxf', path, text, suggestName),
+  // opts.backup === false: no <name>.bak copy (a project-wide command made its own, or the user declined one)
+  saveDxf: (path, text, suggestName, opts) => ipcRenderer.invoke('save-dxf', path, text, suggestName, opts && opts.backup === false ? { backup: false } : undefined),
   // Progress of a large DWG read (the main process parses it in a worker thread) and its Cancel button
   onOpenProgress: (cb) => {
     ipcRenderer.on('open-progress', (_ev, p) => cb(p));
@@ -45,6 +46,11 @@ contextBridge.exposeInMainWorld('jcad', {
   // Native menu mirrors of renderer state
   setRecentFiles: (files) => ipcRenderer.send('set-recent-files', files),
   quit: () => ipcRenderer.send('app-quit'),
+  // Drawings handed over by the OS (command line of this or a second launch, macOS open-file)
+  takeOpenFiles: () => ipcRenderer.invoke('take-open-files'),
+  onOpenFiles: (cb) => {
+    ipcRenderer.on('open-files', (_ev, files) => cb(Array.isArray(files) ? files.filter((f) => typeof f === 'string') : []));
+  },
   onMenuCommand: (cb) => {
     ipcRenderer.on('menu-command', (_ev, cmd) => cb(String(cmd)));
   },
