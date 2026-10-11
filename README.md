@@ -62,6 +62,8 @@ Further documents: [docs/METRIC.md](docs/METRIC.md) (inch and millimetre drawing
 (signed catalog packs), [docs/SUPPORT-MATRIX.md](docs/SUPPORT-MATRIX.md) (which DXF / DWG entities and
 properties survive import and export), [docs/RELEASE.md](docs/RELEASE.md) (how a release is cut, verified
 and delivered; dependency review), [docs/CODE-SIGNING.md](docs/CODE-SIGNING.md) (installer signing),
+[docs/QA-CHECKLIST.md](docs/QA-CHECKLIST.md) (manual release checks on real machines: installers, updates,
+printers, other CAD programs, displays, network drives, crash recovery, large files, accessibility),
 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) (setting up, testing and packaging from source),
 [docs/PERFORMANCE.md](docs/PERFORMANCE.md) (measured performance),
 [docs/SECURITY-REVIEW.md](docs/SECURITY-REVIEW.md) (security review of the desktop shell and file readers, with the
