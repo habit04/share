@@ -996,15 +996,23 @@ const MAX_INSERT_DEPTH = 8;
 interface ExpansionBudget {
   left: number;
   readonly chain: string[];
+  /** Every block name looked up within the depth limit and the definition it had (undefined: missing). */
+  readonly deps: Map<string, BlockDef | undefined>;
   /** Stopped at MAX_INSERT_EXPANSION. */
   truncated: boolean;
   /** A block inserts itself (directly or through others): the repeated reference was skipped. */
   cyclic: boolean;
 }
-const newBudget = (maxObjects = MAX_INSERT_EXPANSION): ExpansionBudget => ({ left: maxObjects, chain: [], truncated: false, cyclic: false });
+const newBudget = (maxObjects = MAX_INSERT_EXPANSION): ExpansionBudget => ({ left: maxObjects, chain: [], deps: new Map(), truncated: false, cyclic: false });
 
 interface InsertCache {
   block: BlockDef;
+  /**
+   * The definitions the expansion used, nested ones included (and names that were missing): the
+   * entry is stale as soon as one of them resolves differently (a nested block redefined, removed,
+   * added or restored by undo).
+   */
+  deps: ReadonlyMap<string, BlockDef | undefined>;
   exploded: Entity[];
   bounds: Bounds | null;
   /** The expansion was cut short (the cap, or a block that inserts itself). */
@@ -1017,15 +1025,29 @@ function cachedInsert(ins: InsertEntity, lookup: BlockLookup): InsertCache | nul
   const block = lookup(ins.block);
   if (!block) return null;
   const hit = insertCache.get(ins);
-  if (hit && hit.block === block) return hit;
+  if (hit && hit.block === block && depsCurrent(hit.deps, lookup)) return hit;
   const budget = newBudget();
   const exploded: Entity[] = [];
   explodeInto(exploded, ins, lookup, 0, budget);
   let bounds: Bounds | null = null;
   for (const sub of exploded) bounds = g.unionBounds(bounds, entityBounds(sub, lookup));
-  const entry = { block, exploded, bounds: bounds ?? g.boundsOfPoints([ins.position]), limited: budget.truncated || budget.cyclic };
+  const entry = { block, deps: budget.deps, exploded, bounds: bounds ?? g.boundsOfPoints([ins.position]), limited: budget.truncated || budget.cyclic };
   insertCache.set(ins, entry);
   return entry;
+}
+
+/** Does every recorded block name still resolve to the same definition? */
+function depsCurrent(deps: ReadonlyMap<string, BlockDef | undefined>, lookup: BlockLookup): boolean {
+  for (const [name, def] of deps) if (lookup(name) !== def) return false;
+  return true;
+}
+
+/**
+ * The block definitions one reference depends on (the ones its expansion used, nested blocks and
+ * missing names included), for caches keyed on them (core/spatial-index.ts).
+ */
+export function insertDependencies(ins: InsertEntity, lookup: BlockLookup): ReadonlyMap<string, BlockDef | undefined> {
+  return cachedInsert(ins, lookup)?.deps ?? new Map([[ins.block, undefined]]);
 }
 
 /**
@@ -1060,8 +1082,10 @@ export function insertExpansionLimited(ins: InsertEntity, lookup: BlockLookup): 
 
 /** Append the expansion of `ins` to `out` (no spread: nested results may be large). */
 function explodeInto(out: Entity[], ins: InsertEntity, lookup: BlockLookup, depth: number, budget: ExpansionBudget): void {
+  if (depth > MAX_INSERT_DEPTH) return;
   const block = lookup(ins.block);
-  if (!block || depth > MAX_INSERT_DEPTH) return;
+  budget.deps.set(ins.block, block);
+  if (!block) return;
   if (budget.chain.includes(ins.block)) {
     budget.cyclic = true;
     return;
