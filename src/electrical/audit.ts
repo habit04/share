@@ -8,7 +8,7 @@ import type { Entity, InsertEntity, LineEntity } from '../core/entities';
 import type { Drawing } from '../core/document';
 import { isWire, isHorizontal, isVertical, nearestReference } from './ladder';
 import { isParentComponent, isChild, isTerminal, isCoil, isExtraPole } from './families';
-import { collectNets, netOfWireNumber, isWireNumber, wireDegree, WIRENO_LAYER, connectionLevels, symbolSpan } from './wires';
+import { collectNets, netOfWireNumber, isWireNumber, wireDegreeCounter, WIRENO_LAYER, connectionLevels, symbolSpan } from './wires';
 import { WIRE_DOT } from './symbols';
 
 export interface AuditIssue {
@@ -85,11 +85,12 @@ export function auditIssues(doc: Drawing): AuditIssue[] {
     if (prev && prev !== n) out.push({ check: 'Duplicate wire number', item: t.text, detail: `also used on the wire at y = ${prev.y.toFixed(3)}`, severity: 'error', entityId: t.id, position: t.position });
     else seenLabel.set(t.text, n);
   }
-  // wire geometry
+  // wire geometry (spans and wire ends are computed once: the checks below ask for every wire end)
   const comps = ents.filter((e): e is InsertEntity => e.type === 'insert' && e.block !== WIRE_DOT.name);
+  const spans = comps.map((c) => symbolSpan(c, lookup));
+  const wireDegree = wireDegreeCounter(ents);
   const touchesComponent = (p: Point): boolean => {
-    for (const c of comps) {
-      const b = symbolSpan(c, lookup);
+    for (const b of spans) {
       if (p.x >= b.min.x - 0.02 && p.x <= b.max.x + 0.02 && p.y >= b.min.y - 0.02 && p.y <= b.max.y + 0.02) return true;
     }
     return false;
@@ -103,20 +104,21 @@ export function auditIssues(doc: Drawing): AuditIssue[] {
     if (!isHorizontal(w) && !isVertical(w)) out.push({ check: 'Non-orthogonal wire', item: w.layer, detail: `from ${fmt(w.a)} to ${fmt(w.b)}`, severity: 'warning', entityId: w.id, position: w.a });
     if (isVertical(w)) continue; // rails end in free space by design
     for (const p of [w.a, w.b]) {
-      if (wireDegree(ents, p) >= 2 || touchesComponent(p)) continue;
+      if (wireDegree(p) >= 2 || touchesComponent(p)) continue;
       out.push({ check: 'Dangling wire', item: w.layer, detail: `open end at ${fmt(p)}`, severity: 'warning', entityId: w.id, position: p });
     }
   }
   // stale / missing junction dots
   for (const e of ents) {
-    if (e.type === 'insert' && e.block === WIRE_DOT.name && wireDegree(ents, e.position) < 3) out.push({ check: 'Stale junction dot', item: 'WDDOT', detail: `dot without a tee at ${fmt(e.position)}`, severity: 'warning', entityId: e.id, position: e.position });
+    if (e.type === 'insert' && e.block === WIRE_DOT.name && wireDegree(e.position) < 3) out.push({ check: 'Stale junction dot', item: 'WDDOT', detail: `dot without a tee at ${fmt(e.position)}`, severity: 'warning', entityId: e.id, position: e.position });
   }
   // components off wire
+  const horizontalWires = ents.filter((w): w is LineEntity => isWire(w) && isHorizontal(w));
   for (const p of parents) {
     if (isTerminal(p) || /^(HGND|IEC_PE|HPLC|IEC_PLC)/.test(p.block)) continue;
     const b = symbolSpan(p, lookup);
     const levels = connectionLevels(p, lookup);
-    const connected = levels.some((y) => ents.some((w): w is LineEntity => isWire(w) && isHorizontal(w) && Math.abs(w.a.y - y) < 0.05 && (Math.abs(Math.max(w.a.x, w.b.x) - b.min.x) < 0.02 || Math.abs(Math.min(w.a.x, w.b.x) - b.max.x) < 0.02)));
+    const connected = levels.some((y) => horizontalWires.some((w) => Math.abs(w.a.y - y) < 0.05 && (Math.abs(Math.max(w.a.x, w.b.x) - b.min.x) < 0.02 || Math.abs(Math.min(w.a.x, w.b.x) - b.max.x) < 0.02)));
     if (!connected) out.push({ check: 'Component not on a wire', item: p.attributes.TAG1!, detail: `${p.block} at ${fmt(p.position)}`, severity: 'warning', entityId: p.id, position: p.position });
   }
   // data
@@ -130,7 +132,11 @@ export function auditIssues(doc: Drawing): AuditIssue[] {
     if (isTerminal(e) && !e.attributes.TERM01) out.push({ check: 'Terminal without number', item: e.block, detail: `at ${fmt(e.position)}`, severity: 'warning', entityId: e.id, position: e.position });
   }
   const order = { error: 0, warning: 1 };
-  return out.sort((a, b) => order[a.severity] - order[b.severity] || a.check.localeCompare(b.check) || a.item.localeCompare(b.item, undefined, { numeric: true }));
+  // Same ordering as localeCompare (default, and { numeric: true } for items), with the collators
+  // created once instead of on every comparison.
+  const text = new Intl.Collator();
+  const numeric = new Intl.Collator(undefined, { numeric: true });
+  return out.sort((a, b) => order[a.severity] - order[b.severity] || text.compare(a.check, b.check) || numeric.compare(a.item, b.item));
 }
 
 /** Summary counts for the status line of the audit dialog. */

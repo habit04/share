@@ -2,6 +2,7 @@ import type { Point } from './geometry';
 import * as g from './geometry';
 import type { Entity, BlockLookup, SnapCandidate } from './entities';
 import { snapCandidates, entitySegments, entityBounds } from './entities';
+import { spatialIndexFor } from './spatial-index';
 
 export type SnapKind = SnapCandidate['kind'] | 'intersection' | 'perpendicular' | 'tangent' | 'grid' | 'nearest' | 'extension' | 'tracking';
 
@@ -140,9 +141,16 @@ export function findObjectSnap(
     min: { x: cursor.x - aperture, y: cursor.y - aperture },
     max: { x: cursor.x + aperture, y: cursor.y + aperture },
   };
-  for (const e of entities) {
+  // Large drawings: only the spatial index's candidates (the box grows by the largest circle /
+  // arc radius, the padding below), in drawing order, so `near` is exactly what the scan finds.
+  const idx = spatialIndexFor(entities, lookup);
+  const order = idx ? idx.query({ min: { x: box.min.x - idx.maxArcRadius, y: box.min.y - idx.maxArcRadius }, max: { x: box.max.x + idx.maxArcRadius, y: box.max.y + idx.maxArcRadius } }) : null;
+  const count = order ? order.length : entities.length;
+  for (let k = 0; k < count; k += 1) {
+    const i = order ? order[k]! : k;
+    const e = entities[i]!;
     if (hiddenLayers.has(e.layer)) continue;
-    const b = entityBounds(e, lookup);
+    const b = idx ? (idx.bounds[i] ?? null) : entityBounds(e, lookup);
     if (!b) continue;
     // generous bounds check (circle centers can be far from outline)
     const pad = e.type === 'circle' || e.type === 'arc' ? e.radius : 0;
