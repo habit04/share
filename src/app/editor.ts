@@ -19,6 +19,7 @@ import { TITLE_BLOCK, newFromTemplate, SHEET_SIZES, type SheetSize } from '../el
 import { PlcModuleTool, SignalArrowTool, TerminalStripTool, DEFAULT_PLC, DEFAULT_STRIP, SOURCE_ARROW, DEST_ARROW, type PlcModuleSettings, type TerminalStripSettings } from '../tools/plc';
 import { gripPoints, moveGrip } from '../core/entities';
 import { parseProject, serializeProject, defaultProject, resolveDrawingPath, baseName, projectDrawingIndex, projectEntryFor, rebaseProject, type Project } from './project';
+import { isAbsolutePath } from './paths';
 import { captureRevision, saveQueue } from './savequeue';
 import { loadSettings, saveSettings, pushRecent, type UserSettings } from './settings';
 import { SessionManager, applySaveResult } from './sessions';
@@ -909,6 +910,8 @@ export class Editor {
    * into the very tab that holds it, unchanged since the open started, is a reload and goes ahead.
    */
   private showAlreadyOpen(path: string, targetId: number, before: DrawingState): boolean {
+    // The browser build only knows file names (two "a.dxf" from different folders are different files).
+    if (!isAbsolutePath(path)) return false;
     const k = this.sessions.indexOfPath(path);
     if (k < 0) return false;
     const s = this.sessions.all[k]!;

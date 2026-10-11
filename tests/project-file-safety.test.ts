@@ -275,6 +275,13 @@ describe('opens bind to the tab that started them', () => {
     expect(texts(ed.doc.snapshot)).toEqual(['A', 'UNSAVED IN A']);
     expect(ed.history.join('\n')).toMatch(/already open/);
   });
+  it('the browser build (file names only) still opens two files with the same name', async () => {
+    const { ed } = makeEditor({ openDrawing: async () => ({ path: 'a.dxf', kind: 'dxf', text: dxfWith('A') }) });
+    await ed.sessions.openInTab(undefined, (f) => ed.openFile(f));
+    ed.doc.addEntities([text('EDIT')]);
+    await ed.sessions.openInTab(undefined, (f) => ed.openFile(f));
+    expect(ed.sessions.count).toBe(2);
+  });
   it('RECENT twice while the file loads opens it once', async () => {
     const reads: Array<ReturnType<typeof deferred<OpenResult | null>>> = [];
     const { ed } = makeEditor({

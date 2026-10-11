@@ -181,6 +181,20 @@ messages). The date of each version is the date of the commit that set that vers
   images on a network share are loaded only for drawings opened from that same server.
 - Links opened in your browser (About, Report a Problem, updates) are checked after the address is
   normalised, so they can only lead to this project's GitHub pages or the donation page.
+- "Open with JCad Electrical" and drawings handed to a second launch (or, on macOS, opened from
+  the Finder) open in their own tab; they were ignored.
+- A file picked in the Open dialog that is already open, or `RECENT` clicked twice while the file
+  loads, shows its tab instead of opening a second copy whose saves would overwrite each other. An
+  open that lands in a new tab while you work in another tab stays in the background. Files that
+  fail to open are no longer added to Recent Documents.
+- Closing: after Cancel in the "not responding" question, the Save All dialog the page shows once it
+  responds again is honoured; a restart for an update that does not happen no longer leaves the
+  window closing without the unsaved-work question; Discard All removes the project autosave (the
+  next start no longer offers the discarded changes).
+- Project-wide commands: **Continue Without Backup** now writes the drawing when its `.bak` cannot
+  be written (a folder or locked file in the way made the write fail again), and a truncated closed
+  drawing is listed as damaged ("OPEN it to recover") instead of as a file error. Failed CSV, report
+  and `.wdt` exports name the file and folder chosen in the Save dialog.
 
 ## [0.4.0] - 2026-09-29
 
