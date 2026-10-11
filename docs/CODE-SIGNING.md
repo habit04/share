@@ -8,6 +8,11 @@ unsigned builds as before (macOS keeps the ad-hoc signature from
 `scripts/afterPack.cjs`). No secret, certificate or key is stored in the
 repository.
 
+The release notes state the signing result each build's verification steps recorded, rather than
+assuming the credentials were there; every platform also publishes a source-SHA / checksum
+record, and the release attaches GitHub's signed provenance bundle (docs/RELEASE.md). That
+attestation is separate from Authenticode, Developer ID and notarization and replaces none of them.
+
 | Platform | Service | Secrets (Settings → Secrets and variables → Actions) | Switch |
 | --- | --- | --- | --- |
 | Windows | Azure Artifact Signing (formerly Trusted Signing) | `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_SIGNING_ENDPOINT`, `AZURE_SIGNING_ACCOUNT`, `AZURE_CERT_PROFILE`, `AZURE_PUBLISHER_NAME` | `scripts/azure-signing.mjs` (all seven set) |
@@ -64,8 +69,9 @@ publisher identity rather than on one certificate.
    days, not minutes.
 3. **Certificate profile**: *Certificate profiles* → Create → *Public Trust*,
    linked to the completed validation. Note the profile **name**. The profile's
-   subject (the validated publisher name, e.g. `CN=Example Controls LLC, ...`)
-   must match `AZURE_PUBLISHER_NAME` exactly.
+   subject's common name (the validated publisher name, e.g. `Example Controls LLC`, without
+   the `CN=` prefix or other subject fields) must match `AZURE_PUBLISHER_NAME` exactly: the
+   workflow compares it with the signer's common name, and the updater with the installer's.
 4. **Service principal**: Microsoft Entra ID → App registrations → New
    registration (e.g. `jcad-release-signing`). Under *Certificates & secrets*
    create a client secret. Note the **Directory (tenant) ID**, the
@@ -85,7 +91,7 @@ publisher identity rather than on one certificate.
 | `AZURE_SIGNING_ENDPOINT` | region endpoint, e.g. `https://eus.codesigning.azure.net/` | `win.azureSignOptions.endpoint` |
 | `AZURE_SIGNING_ACCOUNT` | signing account name | `win.azureSignOptions.codeSigningAccountName` |
 | `AZURE_CERT_PROFILE` | certificate profile name | `win.azureSignOptions.certificateProfileName` |
-| `AZURE_PUBLISHER_NAME` | the profile's subject / validated publisher | `win.azureSignOptions.publisherName` |
+| `AZURE_PUBLISHER_NAME` | the profile subject's common name / validated publisher | `win.azureSignOptions.publisherName` |
 
 ### How the build uses them
 
@@ -94,7 +100,7 @@ are present it adds `build.win.azureSignOptions` (endpoint, account, profile,
 publisher) to the runner's copy of `package.json`; otherwise it leaves the file
 alone and the build stays unsigned. The workflow passes the three login values
 to electron-builder on Windows only, and when signing is on it fails the job if
-any produced `.exe` is not validly signed. electron-builder (26.x) signs the app
+any produced `.exe` is not validly signed by exactly that publisher common name. electron-builder (26.x) signs the app
 executable, the uninstaller and the NSIS installer through the Artifact Signing
 client (it installs the `TrustedSigning` PowerShell module on demand). The
 committed `package.json` never contains signing settings.
@@ -190,6 +196,12 @@ spctl --assess --type execute --verbose=4 "/Applications/JCad Electrical.app"   
 codesign -dv --verbose=4 "/Applications/JCad Electrical.app"                     # Authority=Developer ID Application: …
 xcrun stapler validate "/Applications/JCad Electrical.app"
 ```
+
+The Electron fuses (package.json `build.electronFuses`, security review E-15) are flipped by
+electron-builder after the `afterPack` hook's ad-hoc signature; `resetAdHocDarwinSignature: true`
+seals the bundle ad hoc again, and a configured Developer ID signature runs after that. CI checks
+the final ad-hoc seal on unsigned macOS builds, and Developer ID, hardened runtime, stapling and
+Gatekeeper assessment on signed ones.
 
 ## Costs and timelines
 

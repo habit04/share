@@ -82,4 +82,26 @@ describe('workflow validation', () => {
     expect(r.out).toMatch(/performance budgets must be asserted/);
     expect(r.out).toMatch(/does not run "npm run bench:node"/);
   });
+  // Release provenance, ported from PR #2 (codex/electrical-review-fixes 2f89b0e).
+  it('rejects publication without source-bound artifact validation or signed provenance', () => {
+    const r = check(withRelease((t) => t.replace('run: node scripts/release-provenance.mjs verify artifacts', 'run: echo skipped').replace('uses: actions/attest@v4', 'uses: actions/download-artifact@v4')));
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/verify all artifacts and sign provenance before publishing/);
+  });
+  it('rejects missing platform provenance and build steps that continue on error', () => {
+    const r = check(withRelease((t) => t.replace('platform: macOS', 'platform: missing').replace('run: node scripts/azure-signing.mjs', 'run: node scripts/azure-signing.mjs\n        continue-on-error: true')));
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/missing macOS artifacts\/provenance/);
+    expect(r.out).toMatch(/job build step \d+ continues on error/);
+  });
+  it('rejects Windows signature checks that omit the trusted publisher comparison', () => {
+    const r = check(withRelease((t) => t.replace('GetNameInfo', 'IgnoredPublisherName')));
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/Windows signature verification must match the configured updater publisher/);
+  });
+  it('rejects tag verification that can retain a remotely deleted tag', () => {
+    const r = check(withRelease((t) => t.replace('--prune --prune-tags ', '')));
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/must prune remotely deleted tags/);
+  });
 });

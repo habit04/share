@@ -87,25 +87,31 @@ jobs:
       matrix:
         include:
           - os: windows-latest
+            platform: Windows
             target: --win nsis
             artifact: JCad-Electrical-Windows
             glob: |
               release/*.exe
               release/*.exe.blockmap
               release/latest*.yml
+              release/JCad-Electrical-*-provenance.json
           - os: macos-latest
+            platform: macOS
             target: --mac dmg --arm64 --x64
             artifact: JCad-Electrical-macOS
             glob: |
               release/*.dmg
               release/latest*.yml
+              release/JCad-Electrical-*-provenance.json
           - os: ubuntu-latest
+            platform: Linux
             target: --linux AppImage deb
             artifact: JCad-Electrical-Linux
             glob: |
               release/*.AppImage
               release/*.deb
               release/latest*.yml
+              release/JCad-Electrical-*-provenance.json
     runs-on: ${{ matrix.os }}
     env:
       # macOS Developer ID signing + notarization runs only when all five secrets exist (docs/CODE-SIGNING.md).
@@ -155,17 +161,25 @@ jobs:
           AZURE_TENANT_ID: ${{ runner.os == 'Windows' && secrets.AZURE_TENANT_ID || '' }}
           AZURE_CLIENT_ID: ${{ runner.os == 'Windows' && secrets.AZURE_CLIENT_ID || '' }}
           AZURE_CLIENT_SECRET: ${{ runner.os == 'Windows' && secrets.AZURE_CLIENT_SECRET || '' }}
+      # Valid, and from the publisher the updater compares downloads against (app-update.yml publisherName).
       - name: Check the Windows signatures
         if: steps.signing.outputs.enabled == 'true'
         shell: pwsh
+        env:
+          AZURE_PUBLISHER_NAME: ${{ secrets.AZURE_PUBLISHER_NAME }}
         run: |
           $bad = 0
-          foreach ($f in @(Get-ChildItem release/*.exe) + @(Get-ChildItem release/win-unpacked/*.exe)) {
+          $expectedPublisher = $env:AZURE_PUBLISHER_NAME.Trim()
+          $installers = @(Get-ChildItem release/*.exe -File)
+          $applications = @(Get-ChildItem release/win-unpacked/*.exe -File)
+          if (!$expectedPublisher -or !$installers.Count -or !$applications.Count) { Write-Error 'Missing trusted publisher or executables to verify'; exit 1 }
+          foreach ($f in $installers + $applications) {
             $sig = Get-AuthenticodeSignature $f.FullName
             Write-Host "$($f.Name): $($sig.Status) $($sig.SignerCertificate.Subject)"
-            if ($sig.Status -ne 'Valid') { $bad++ }
+            $publisher = if ($sig.SignerCertificate) { $sig.SignerCertificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false) } else { '' }
+            if ($sig.Status -ne 'Valid' -or ![string]::Equals($publisher, $expectedPublisher, [System.StringComparison]::Ordinal)) { $bad++ }
           }
-          if ($bad) { Write-Error "$bad executable(s) are not validly signed"; exit 1 }
+          if ($bad) { Write-Error "$bad executable(s) lack a valid signature from the configured updater publisher"; exit 1 }
       - name: Build, sign and notarize (macOS, Developer ID)
         if: ${{ runner.os == 'macOS' && env.HAS_APPLE == 'true' }}
         # package.json keeps hardenedRuntime false for the ad-hoc build; on this runner only, the signed build
@@ -196,10 +210,40 @@ jobs:
           if [ ${#apps[@]} -eq 0 ]; then echo "No .app bundle under release/"; exit 1; fi
           for app in "${apps[@]}"; do
             codesign --verify --deep --strict --verbose=2 "$app"
-            codesign -dv --verbose=4 "$app" 2>&1 | grep -E 'Authority=Developer ID Application|flags=.*runtime'
+            signature="$(codesign -dv --verbose=4 "$app" 2>&1)"
+            echo "$signature" | grep 'Authority=Developer ID Application'
+            echo "$signature" | grep -E 'flags=.*runtime'
             xcrun stapler validate "$app"
             spctl --assess --type execute --verbose=4 "$app"
           done
+      # The Electron fuses are flipped after afterPack's ad-hoc signature; electron-builder signs
+      # the bundle ad hoc again (resetAdHocDarwinSignature): the seal must hold.
+      - name: Verify the macOS ad-hoc seal after the fuse changes
+        if: ${{ runner.os == 'macOS' && env.HAS_APPLE != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          apps=(release/mac*/*.app)
+          if [ ${#apps[@]} -eq 0 ]; then echo "No .app bundle under release/"; exit 1; fi
+          for app in "${apps[@]}"; do
+            codesign --verify --deep --strict --verbose=2 "$app"
+          done
+      # Bind the bytes to the tested commit (scripts/release-provenance.mjs) before they leave the runner.
+      - name: Record tested source, checksums and verified signing status
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ needs.checks.outputs.sha }}
+          PLATFORM: ${{ matrix.platform }}
+          WINDOWS_SIGNED: ${{ steps.signing.outputs.enabled }}
+        run: |
+          status=unsigned
+          if [ "$PLATFORM" = Windows ] && [ "$WINDOWS_SIGNED" = true ]; then status=authenticode-verified; fi
+          if [ "$PLATFORM" = macOS ]; then
+            status=ad-hoc
+            if [ "$HAS_APPLE" = true ]; then status=developer-id-notarized; fi
+          fi
+          node scripts/release-provenance.mjs build release "$PLATFORM" "$status"
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
@@ -264,11 +308,17 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     steps:
       - uses: actions/checkout@v5
         with:
           ref: ${{ needs.checks.outputs.sha }}
           fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
       # Publish only what was tested: the tag must point at the commit the checks ran on (a pushed
       # tag that moved since, or an existing tag elsewhere for a manual run, stops the release).
       - name: Verify the tag points at the tested commit
@@ -279,7 +329,7 @@ jobs:
           EVENT: ${{ github.event_name }}
         run: |
           set -euo pipefail
-          git fetch --force --tags origin
+          git fetch --force --prune --prune-tags --tags origin
           if git rev-parse -q --verify "refs/tags/$TAG" > /dev/null; then
             tagged="$(git rev-parse "refs/tags/$TAG^{commit}")"
             if [ "$tagged" != "$TESTED" ]; then
@@ -303,6 +353,21 @@ jobs:
         with:
           path: artifacts
           pattern: JCad-Electrical-*
+      # Every platform's provenance matches the tested commit and the bytes downloaded; the
+      # signing status of each build goes into the release notes.
+      - name: Verify every platform artifact against the tested source SHA
+        env:
+          SOURCE_SHA: ${{ needs.checks.outputs.sha }}
+        run: node scripts/release-provenance.mjs verify artifacts --notes release-notes.md
+      - name: Sign provenance for the complete verified release
+        id: provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: artifacts/**/*
+      - name: Include the signed attestation bundle in the release
+        env:
+          BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+        run: cp "$BUNDLE" artifacts/release-provenance.sigstore.json
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
@@ -310,3 +375,4 @@ jobs:
           name: JCad Electrical ${{ github.event.inputs.tag || github.ref_name }}
           body_path: release-notes.md
           files: artifacts/**/*
+          fail_on_unmatched_files: true
