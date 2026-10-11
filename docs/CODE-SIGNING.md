@@ -4,19 +4,23 @@ JCad Electrical's release workflow (`.github/workflows/release.yml`) builds the
 Windows, macOS and Linux installers on GitHub-hosted runners. Publication requires both
 Windows publisher and Apple Developer ID/notarization credentials, then verifies the resulting
 signatures. Empty-tag build-only rehearsals may run unsigned or ad-hoc when secrets are absent;
-the `require_signing` input can require signing for those runs too. macOS rehearsals retain the
+the `require_signing` input can require signing for those runs too. macOS rehearsals without Apple credentials retain the
 ad-hoc signature from `scripts/afterPack.cjs`. No secret, certificate or key is stored in the
 repository. `scripts/check-apple-signing.mjs` reports only missing credential names, never values.
 
-Release notes use the signing result recorded after the build's verification steps, rather than
-assuming credentials were available. Every platform also publishes a source-SHA/checksum record,
-and the release attaches GitHub's signed provenance bundle. That attestation is separate from
-Authenticode, Developer ID and notarization; it does not replace any of them.
+The repository's Windows and Apple credentials have been configured, and a signed build-only
+run verified both platforms on prior PR head `d0ff078`. Each new release must pass those checks
+on its own tested commit; configured secrets alone do not prove signing. Linux packages are
+not signed. The macOS builds of releases up to 0.4.1 were ad-hoc signed.
 
 The release notes state the signing result each build's verification steps recorded, rather than
-assuming the credentials were there; every platform also publishes a source-SHA / checksum
-record, and the release attaches GitHub's signed provenance bundle (docs/RELEASE.md). That
-attestation is separate from Authenticode, Developer ID and notarization and replaces none of them.
+assuming the credentials were there (the **Verified build** list), and the footer's macOS
+first-launch sentence follows the macOS build's record as well: notarized builds open after the
+usual downloaded-from-the-internet confirmation, ad-hoc builds once through Privacy & Security >
+Open Anyway (`scripts/release-notes.mjs --provenance`). Every platform also publishes a
+source-SHA / checksum record, and the release attaches GitHub's signed provenance bundle
+(docs/RELEASE.md). That attestation is separate from Authenticode, Developer ID and notarization
+and replaces none of them.
 
 | Platform | Service | Secrets (Settings → Secrets and variables → Actions) | Switch |
 | --- | --- | --- | --- |
@@ -192,16 +196,20 @@ When `HAS_APPLE` is true the macOS job skips the unsigned step and runs
    Developer ID intermediate certificates, and fails unless it holds a valid
    *Developer ID Application* identity. Private-key partition permissions use the keychain's
    password; the PKCS#12 export password is used only to import the signing package.
-   electron-builder then signs the `.app` (both arm64 and x64) with that identity
-   (`CSC_KEYCHAIN`, `CSC_NAME` = its SHA-1; the ad-hoc `afterPack` hook steps
-   aside because `CSC_NAME` is set), submits it to Apple's notary service with
+   electron-builder then runs without `CSC_LINK` / `CSC_KEY_PASSWORD` (so it does
+   not import the certificate a second time) and signs the `.app` (both arm64 and
+   x64) with that identity (`CSC_KEYCHAIN`, `CSC_NAME` = its SHA-1; the ad-hoc
+   `afterPack` hook steps aside because `CSC_NAME` is set), submits it to Apple's notary service with
    `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_TEAM_ID`
    (`@electron/notarize`, `notarytool`), waits, and staples the ticket before
    building the DMGs. The keychain is deleted when the step ends.
 3. *Verify the macOS signature and notarization ticket* runs
    `codesign --verify --deep --strict`, checks for the Developer ID authority
-   and the `runtime` flag, `xcrun stapler validate` and `spctl --assess` on each
-   `.app`, and fails the job otherwise.
+   and configured Team ID, the `runtime` flag, `xcrun stapler validate` and `spctl --assess` on each
+   `.app`. It also verifies each DMG's signature and Team ID, and fails the job on a mismatch.
+4. The build records the signing status `developer-id-notarized` in
+   `JCad-Electrical-macOS-provenance.json` (`ad-hoc` without the secrets); the
+   release job writes the notes' macOS sentence and **Verified build** line from it.
 
 `build/entitlements.mac.plist` grants only what Electron needs under the
 hardened runtime: `allow-jit` and `allow-unsigned-executable-memory` (V8 and

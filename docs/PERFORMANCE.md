@@ -52,7 +52,8 @@ validated geometry can reuse budget calculations; new entities or block definiti
 before acceptance. Rejected candidates leave the existing document/history intact.
 
 The viewport now caches the static drawing and redraws the cursor and overlay separately. The
-editor prepares large spatial indexes in idle slices capped at 50 ms. Component/report lookups
+editor defers spatial-index warmup by 50 ms, then builds the index synchronously; that delay is
+not a limit on how long the build can take. Component/report lookups
 cache the ladder/reference index and net rail data per immutable drawing state. Cache invalidation
 and block dependency tests cover edits, undo/redo, redefinition and layout switches.
 

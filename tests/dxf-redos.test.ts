@@ -170,4 +170,3 @@ describe('on every committed DXF fixture the linear scanners give what the expre
     if (file === 'fixtures/example_2000.dxf') expect(seen.length).toBeGreaterThan(0);
   });
 });
-

@@ -93,14 +93,14 @@ temporary-profile cleanup after early smoke-test failures.
 
 ## Independent CAD validation
 
-The integration with default-branch commit `ff227f4` retains version 0.4.2, linked-folder
+The integration with default-branch commit `9a3e8dc` retains version 0.4.2, linked-folder
 compatibility, updater verification, global window guards and CAD improvements alongside the
 earlier remediation. Saves through aliases of the same physical destination share a queue,
 reserve in invocation order and reject an alias retargeted while queued. Derived project DWG
 exports retain their source write root. Updates install only through explicit Restart Now,
 after the unsaved-work check and a fresh checksum/publisher verification.
 
-Final local integration validation passed 1,614 unit tests (26 conditional skips), all three
+Final local integration validation passed 1,622 unit tests (26 conditional skips), all three
 TypeScript configurations, 214 Windows desktop checks, preference migration over two immediate
 restarts, and browser interaction checks (607 command runs, 796 clicks). Eight dense Node checks
 and eight AutoCAD export/AUDIT/reimport checks passed. Exact-commit CI and installer evidence is

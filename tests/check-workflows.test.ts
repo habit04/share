@@ -88,6 +88,37 @@ describe('workflow validation', () => {
     expect(r.code).toBe(1);
     expect(r.out).toMatch(/verify all artifacts and sign provenance before publishing/);
   });
+  it('rejects generating release notes before artifact verification', () => {
+    const r = check(withRelease((text) => {
+      const workflow = yaml.load(text) as { jobs: { release: { steps: { run?: string }[] } } };
+      const steps = workflow.jobs.release.steps;
+      const verify = steps.findIndex((step) => step.run?.includes('scripts/release-provenance.mjs verify artifacts'));
+      const notes = steps.findIndex((step) => step.run?.includes('scripts/release-notes.mjs'));
+      [steps[verify], steps[notes]] = [steps[notes]!, steps[verify]!];
+      return yaml.dump(workflow);
+    }));
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/release notes must consume the verified aggregate after source-bound artifact verification/);
+  });
+  it.each([
+    ['a raw macOS record', '--provenance artifacts/release-provenance.json', '--provenance artifacts/JCad-Electrical-macOS/JCad-Electrical-macOS-provenance.json'],
+    ['an unverified artifact folder', '--provenance artifacts/release-provenance.json', '--provenance artifacts'],
+    ['a missing changelog section', '"$TAG" --strict --provenance artifacts/release-provenance.json', '"$TAG" --provenance artifacts/release-provenance.json'],
+  ])('rejects release notes rendered from %s', (_label, before, after) => {
+    const r = check(withRelease((text) => text.replace(before, after)));
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/release notes must consume the verified aggregate after source-bound artifact verification/);
+  });
+  it('rejects appending a second signing summary during artifact verification', () => {
+    const r = check(withRelease((text) => text.replace('run: node scripts/release-provenance.mjs verify artifacts\n      # A tag', 'run: node scripts/release-provenance.mjs verify artifacts --notes release-notes.md\n      # A tag')));
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/render the verified signing summary once, from the aggregate/);
+  });
+  it('rejects conditionally skipping status-aware release notes', () => {
+    const r = check(withRelease((text) => text.replace('      - name: Release notes from CHANGELOG.md and verified provenance\n', '      - name: Release notes from CHANGELOG.md and verified provenance\n        if: false\n')));
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/release notes.*must not be conditionally skipped/);
+  });
   it('rejects missing platform provenance and build steps that continue on error', () => {
     const r = check(withRelease((t) => t.replace('platform: macOS', 'platform: missing').replace('run: node scripts/azure-signing.mjs', 'run: node scripts/azure-signing.mjs\n        continue-on-error: true')));
     expect(r.code).toBe(1);

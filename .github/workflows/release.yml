@@ -7,7 +7,8 @@ name: Build installers
 #   packaged-smoke  each installer installed / extracted on its own OS and driven end to end
 #   release         publishes the installers, only after all of the above passed, and only when
 #                   the release tag points at the commit the checks ran on; the release notes are
-#                   the tag's CHANGELOG.md section (scripts/release-notes.mjs)
+#                   the tag's CHANGELOG.md section (scripts/release-notes.mjs) and the verified
+#                   signing status of each build
 
 on:
   workflow_dispatch:
@@ -500,20 +501,22 @@ jobs:
           else
             echo "Tag $TAG does not exist yet; it will be created at the tested commit $TESTED."
           fi
-      # The release body is the version's CHANGELOG.md section plus the download notes; a tag
-      # without its own section stops the release (scripts/release-notes.mjs --strict).
-      - name: Release notes from CHANGELOG.md
-        env:
-          TAG: ${{ github.event.inputs.tag || github.ref_name }}
-        run: node scripts/release-notes.mjs "$TAG" --strict --out release-notes.md
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
           pattern: JCad-Electrical-*
+      # Verify every platform's source SHA, shipping fuses and downloaded bytes before the
+      # release notes consume the resulting aggregate signing record.
       - name: Verify every platform artifact against the tested source SHA
         env:
           SOURCE_SHA: ${{ needs.checks.outputs.sha }}
-        run: node scripts/release-provenance.mjs verify artifacts --notes release-notes.md
+        run: node scripts/release-provenance.mjs verify artifacts
+      # A tag without its own CHANGELOG.md section stops publication. The macOS first-launch
+      # sentence and the single Verified build list come from the verified aggregate.
+      - name: Release notes from CHANGELOG.md and verified provenance
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: node scripts/release-notes.mjs "$TAG" --strict --provenance artifacts/release-provenance.json --out release-notes.md
       - name: Sign provenance for the complete verified release
         id: provenance
         uses: actions/attest@v4

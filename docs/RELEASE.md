@@ -10,7 +10,8 @@ accounts and secrets in [CODE-SIGNING.md](CODE-SIGNING.md).
 1. **Prepare on the release branch.**
    - Bump `"version"` in `package.json` (and `package-lock.json`: `npm version <x.y.z> --no-git-tag-version`).
    - Move the `[Unreleased]` entries of `CHANGELOG.md` under `## [x.y.z] - <date>` (they become
-     the release notes: `npm run release-notes -- vX.Y.Z` shows them as the release page will).
+     the release notes: `npm run release-notes -- vX.Y.Z --mac-signing developer-id-notarized`
+     shows them as the release page will, without the **Verified build** list the release job adds).
    - Make sure CI is green on the branch (`ci.yml`: test, ui, e2e on Ubuntu / Windows / macOS).
    - Optional dress rehearsal: run **Build installers** from the Actions tab on the branch with an
      empty tag. It runs the source, test-ASAR, build, aggregate artifact and shipping smoke gates without
@@ -29,11 +30,11 @@ accounts and secrets in [CODE-SIGNING.md](CODE-SIGNING.md).
    | Job | Runs on | What it does | Blocks |
    | --- | --- | --- | --- |
    | `checks` | ubuntu-latest, Node 22 / 24 | On the tagged commit: workflow validation, lint, `typecheck:all`, mandatory-fixture unit tests, dense Node performance, renderer and website builds, UI checks, screenshot scripts and approved baseline comparison, asserted browser performance, Electron end-to-end and legacy preference migration. Outputs the tested commit SHA. | everything below |
-   | `test-build` | Windows, macOS, Linux | Builds a separate unpublished inspection-enabled ASAR and runs the full packaged Playwright suite and preference restart checks. Checks its test fuse policy. Its metadata, output folder and artifact naming keep it separate from shipping uploads. | release |
+   | `test-build` | Windows, macOS, Linux | Builds a separate unpublished inspection-enabled ASAR and runs the full packaged Playwright suite and preference restart checks. Checks its test fuse policy. Its metadata, output folder and artifact naming keep it separate from shipping uploads. | build, release |
    | `build` | Windows, macOS, Linux | Checks out **that SHA**, checks tag/version when publishing, builds all five installers with inspection disabled, verifies binary fuses, signs when configured and verifies final signatures or the macOS ad-hoc seal. Publication requires Windows and Apple credentials. Requires updater feeds/blockmaps and records source, signing/fuse results and artifact hashes. Builder diagnostic YAML and test builds are excluded. | verify-artifacts, packaged-smoke, release |
    | `verify-artifacts` | ubuntu-latest | Downloads the actual uploaded platform artifacts and requires all five installers, three updater feeds and Windows/macOS external blockmaps, with matching source/version, sizes and hashes. Writes aggregate provenance/checksums. Also runs for an empty-tag build-only dispatch. | release |
    | `packaged-smoke` | Windows, macOS, Linux | Installs NSIS, mounts each disk image (x64 under Rosetta) and extracts AppImage/deb. Checks exact shipping fuses, DWG reading and bounded first-launch/save/reopen probes, including secure-origin preference migration and preservation. Confirms debugging arguments are refused. Writes results per installer (`scripts/packaged-smoke.mjs`). | release |
-   | `release` | ubuntu-latest | Verifies tag/tested SHA, downloads and verifies the complete public asset set again, writes aggregate provenance/checksums and adds actual signing results to the CHANGELOG notes. GitHub signs the complete verified artifact set with `actions/attest@v4`; publication follows all gates. | - |
+   | `release` | ubuntu-latest | Verifies tag/tested SHA, downloads and verifies the complete public asset set again, renders the CHANGELOG notes and macOS first-launch footer from verified signing provenance (`scripts/release-notes.mjs --strict --provenance artifacts`), and writes aggregate provenance/checksums and the **Verified build** list. GitHub signs the complete verified artifact set with `actions/attest@v4`; publication follows all gates and targets the tested SHA. | - |
 
    `npm run check:workflows` (run in CI and in `checks`) fails if any of these gates is removed.
 4. **After publishing**: download one installer per platform from the release page and start
@@ -44,13 +45,16 @@ accounts and secrets in [CODE-SIGNING.md](CODE-SIGNING.md).
    version. Never move or re-use a published tag; the updater compares versions, not tags.
 
 Releases up to 0.4.0 were published with an empty description. `docs/releases/v0.4.0.md` is the
-text for the 0.4.0 release page (`npm run release-notes -- v0.4.0`). The manual **Release notes**
-workflow writes it for you: Actions > Release notes > **Run workflow**, tag `v0.4.0`; it renders the
-tag's `CHANGELOG.md` section with the same script and updates the release description (the
-installers stay as they are). Pasting it by hand (**Edit**, paste, **Update release**) works too.
-`docs/releases/v0.4.2.md` keeps the 0.4.2 notes as they were cut
-(`node scripts/release-notes.mjs v0.4.2 --strict --out docs/releases/v0.4.2.md`), the same text the
-release workflow publishes; `tests/release-notes.test.ts` checks both files against `CHANGELOG.md`.
+text for the 0.4.0 release page (`npm run release-notes -- v0.4.0 --mac-signing ad-hoc`). The manual
+**Release notes** workflow writes it for you: Actions > Release notes > **Run workflow**, tag `v0.4.0`;
+it renders the tag's `CHANGELOG.md` section with the same script and updates the release description
+(the installers stay as they are). For a release that published `release-provenance.json` (0.4.2 on)
+it renders the footer's macOS sentence and the **Verified build** list from that record, so a
+rewritten page keeps them; older releases get a neutral macOS sentence. Pasting by hand (**Edit**,
+paste, **Update release**) works too. `docs/releases/v0.4.2.md` keeps the 0.4.2 notes
+(`node scripts/release-notes.mjs v0.4.2 --strict --mac-signing developer-id-notarized --out docs/releases/v0.4.2.md`),
+the text the release workflow publishes before the **Verified build** list;
+`tests/release-notes.test.ts` checks both files against `CHANGELOG.md`.
 
 The manual **Packaged smoke test (existing release)** workflow re-runs the packaged checks
 against the installers attached to any published release (for example after a runner image or
@@ -65,7 +69,7 @@ output includes `origin-migration.log`, per-installer `packaged-smoke-result.jso
 | Platform | Artifact | Signature | Verify |
 | --- | --- | --- | --- |
 | Windows | `jcad-electrical-<v>-win-x64.exe` and the installed `JCad Electrical.exe` | Authenticode through Azure Artifact Signing when the seven `AZURE_*` secrets are set (publisher common name = `AZURE_PUBLISHER_NAME`); the workflow fails if any `.exe` lacks a valid signature from that exact publisher | PowerShell: `Get-AuthenticodeSignature .\jcad-electrical-<v>-win-x64.exe` shows `Valid` and the publisher; or `signtool verify /pa /v <file>`; or file Properties > Digital Signatures |
-| macOS | `jcad-electrical-<v>-mac-arm64.dmg`, `...-mac-x64.dmg` | Developer ID + hardened runtime + notarization (stapled) when the five Apple secrets are set; otherwise an **ad-hoc** signature (`scripts/afterPack.cjs`), which keeps the bundle intact but is not an identity | `codesign --verify --deep --strict --verbose=2 "/Applications/JCad Electrical.app"`; `spctl --assess --type execute --verbose=4 "/Applications/JCad Electrical.app"` (Developer ID builds: "accepted, source=Notarized Developer ID"); `xcrun stapler validate "/Applications/JCad Electrical.app"` |
+| macOS | `jcad-electrical-<v>-mac-arm64.dmg`, `...-mac-x64.dmg` | Developer ID + hardened runtime + notarization (stapled) when the five Apple secrets are set; required for publication from this pipeline. Empty-tag rehearsals without credentials and with `require_signing` disabled use an **ad-hoc** signature (`scripts/afterPack.cjs`), which keeps the bundle intact but is not an identity | `codesign --verify --deep --strict --verbose=2 "/Applications/JCad Electrical.app"`; `spctl --assess --type execute --verbose=4 "/Applications/JCad Electrical.app"` (Developer ID builds: "accepted, source=Notarized Developer ID"); `xcrun stapler validate "/Applications/JCad Electrical.app"` |
 | Linux | `.AppImage`, `.deb` | not signed | compare the checksum below |
 | All | `latest.yml`, `latest-mac.yml`, `latest-linux.yml` | written by electron-builder; electron-updater checks downloads against them (and, on Windows, the publisher name), and the application checks the downloaded installer again before installing it (`electron/update-verify.cjs`) | each installer's `sha512` (base64) is listed there: `openssl dgst -sha512 -binary <file> \| base64` must print the same value |
 | All | `release-provenance.json`, the platform records, `SHA256SUMS.txt`, installers and metadata | GitHub / Sigstore attestation of the complete verified artifact set (from the release after 0.4.1); separate from OS code signing | `gh attestation verify <download> --repo habit04/share --bundle release-provenance.sigstore.json`; `sha256sum -c SHA256SUMS.txt` |

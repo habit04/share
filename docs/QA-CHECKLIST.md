@@ -123,18 +123,21 @@ internet" mark; a copy from a USB stick or network share skips SmartScreen.
 ## 2. macOS (Apple Silicon and Intel)
 
 Download the DMG with Safari or Chrome so it carries the quarantine flag (`xattr -l` on the file
-shows `com.apple.quarantine`). Without the five Apple secrets the build is ad-hoc signed and needs
-the one-time **Open Anyway**; with them it is Developer ID signed and notarized and opens after a
-single confirmation. Check which kind the release is ([section 13](#13-release-sign-off-github-release-page)).
+shows `com.apple.quarantine`). Publication from this pipeline requires verified Developer ID
+signatures, hardened runtime and notarization, and ordinarily opens after the downloaded-app
+confirmation. Older ad-hoc releases and empty-tag rehearsals built without Apple credentials
+need the one-time **Open Anyway**. The release notes' **Verified build** list records the
+signing checks that passed for that build
+([section 13](#13-release-sign-off-github-release-page)); a release meant to be notarized that
+says "ad-hoc" is not ready.
 
 ### Must pass before release
 
 - [ ] Apple Silicon Mac: `jcad-electrical-X.Y.Z-mac-arm64.dmg`; Intel Mac: `jcad-electrical-X.Y.Z-mac-x64.dmg` → each DMG opens and shows **JCad Electrical** and an Applications link.
-- [ ] Drag the app to Applications, eject the DMG, start it from Applications (ad-hoc build) → macOS 15: "“JCad Electrical” Not Opened. Apple could not verify “JCad Electrical” is free of malware…" with **Done** / Move to Trash; macOS 13–14: "cannot be opened because Apple cannot check it for malicious software" (or "…the developer cannot be verified"). Click Done / OK.
-- [ ] The first-open message never says **"is damaged and can't be opened"** (that means the ad-hoc signature is missing).
-- [ ] System Settings > Privacy & Security > Security → a line about JCad Electrical being blocked with **Open Anyway**; click it, confirm **Open Anyway** again, enter the password or use Touch ID → the app starts.
+- [ ] Drag the app to Applications, eject the DMG, start it from Applications (Developer ID build) → the first start shows only "“JCad Electrical” is an app downloaded from the Internet. Are you sure you want to open it?" with **Open**; no Privacy & Security step. Click Open → the app starts.
+- [ ] The first-open message never says **"is damaged and can't be opened"** (on an ad-hoc build that means the ad-hoc signature is missing).
+- [ ] Ad-hoc build only (no Apple secrets): the first start says, on macOS 15, "“JCad Electrical” Not Opened. Apple could not verify “JCad Electrical” is free of malware…" with **Done** / Move to Trash; on macOS 13–14 "cannot be opened because Apple cannot check it for malicious software" (or "…the developer cannot be verified"). Click Done / OK; then System Settings > Privacy & Security > Security → a line about JCad Electrical being blocked with **Open Anyway**; click it, confirm **Open Anyway** again, enter the password or use Touch ID → the app starts.
 - [ ] Quit and start again → it starts directly, no prompt.
-- [ ] Developer ID build (when signed): the first start shows only "“JCad Electrical” is an app downloaded from the Internet. Are you sure you want to open it?" with **Open**; no Privacy & Security step.
 - [ ] Apple Silicon: Activity Monitor > CPU, column **Kind** → "Apple" for the arm64 build (not "Intel").
 - [ ] First launch → main window with ribbon, command line and model space; menu bar shows a **JCad Electrical** app menu with About and Quit.
 - [ ] Cmd+N, Cmd+O, Cmd+S, Cmd+Shift+S, Cmd+P, Cmd+Z, Cmd+Y → same as the Ctrl shortcuts in the manual.
@@ -198,11 +201,11 @@ Windows, `~/.cache/jcad-electrical-updater/pending/` on Linux).
 - [ ] Windows: **Download** → the command line logs "Downloading update: 0%" … "75%", then "Update Ready: JCad Electrical X.Y.Z has been downloaded." with **Restart Now** / Later.
 - [ ] Windows: **Restart Now** with an unsaved drawing open → the Save / Don't Save / Cancel prompt comes first; Cancel keeps the app running and nothing is installed.
 - [ ] Windows: **Restart Now** after saving → the app closes, the installer runs without SmartScreen or UAC, the app restarts by itself; Help > About shows X.Y.Z.
-- [ ] Windows: **Later** in "Update Ready", then quit normally → the next start runs X.Y.Z (installed on quit).
+- [ ] Windows: on a version with the explicit-restart policy, **Later** in "Update Ready", then quit normally → the next start still runs A.B.C. **Check for Updates** offers **Restart Now**; installation runs only after confirmation, the unsaved-work prompt and checksum/publisher re-verification. Record older versions' differing quit behavior separately.
 - [ ] Windows: no error "New version X.Y.Z is not signed by the application owner" (signer of the new build must equal the old build's publisher).
 - [ ] AppImage: Download opens the matching release asset; replace the executable manually and verify X.Y.Z after restart. No in-place update is offered.
 - [ ] macOS: "Update Available" with **Download** / Release Notes / Later and the text "Download the new disk image, drag the app to Applications to replace this one, then open it once through System Settings > Privacy & Security > Open Anyway." → **Download** opens the DMG for this Mac's architecture (arm64 or x64) in the browser.
-- [ ] macOS: replace the app in Applications with the new one → Open Anyway is asked once more (ad-hoc builds), then About shows X.Y.Z.
+- [ ] macOS: replace the app in Applications with the new one → a Developer ID build opens after the downloaded-from-the-internet confirmation at most (an ad-hoc build asks for Open Anyway once more), then About shows X.Y.Z.
 - [ ] .deb: "Update Available" with "Download and install the new package over this one; your settings and drawings are kept." → **Download** opens the `.deb` download; `sudo apt install ./…` upgrades.
 - [ ] After every update: recent files, Options, window position, the user symbol library and catalog packs are unchanged; an autosave backup made before the update is still offered by the Drawing Recovery Manager.
 - [ ] Help > Check for Updates on the new version → "JCad Electrical X.Y.Z is up to date."
@@ -462,15 +465,15 @@ these sizes for comparison: `.exe` 82 MB, arm64 `.dmg` 101 MB, x64 `.dmg` 108 MB
 - [ ] Tag `vX.Y.Z` equals `package.json` `version` and the `## [X.Y.Z] - date` heading in CHANGELOG.md; `[Unreleased]` is empty or only holds later work.
 - [ ] Actions > **Build installers** run for the tag → all jobs green (Windows, macOS, Linux build and release).
 - [ ] Release title "JCad Electrical vX.Y.Z"; not a draft, not a pre-release; marked **Latest**.
-- [ ] All five installers are present: Windows x64 NSIS, macOS arm64 and x64 DMGs, Linux x86_64 AppImage and amd64 deb. Metadata/blockmaps produced by the builder are included, together with three platform provenance records, `release-provenance.json`, `SHA256SUMS.txt` and `release-provenance.sigstore.json`.
+- [ ] Exactly these 17 assets (0.4.2 on): `jcad-electrical-X.Y.Z-win-x64.exe`, `jcad-electrical-X.Y.Z-win-x64.exe.blockmap`, `jcad-electrical-X.Y.Z-mac-arm64.dmg`, `jcad-electrical-X.Y.Z-mac-arm64.dmg.blockmap`, `jcad-electrical-X.Y.Z-mac-x64.dmg`, `jcad-electrical-X.Y.Z-mac-x64.dmg.blockmap`, `jcad-electrical-X.Y.Z-linux-x86_64.AppImage`, `jcad-electrical-X.Y.Z-linux-amd64.deb`, `latest.yml`, `latest-mac.yml`, `latest-linux.yml`, `JCad-Electrical-Windows-provenance.json`, `JCad-Electrical-macOS-provenance.json`, `JCad-Electrical-Linux-provenance.json`, `release-provenance.json`, `release-provenance.sigstore.json`, `SHA256SUMS.txt`.
 - [ ] Asset sizes within about 15 % of the previous release (a much smaller file usually means something was left out).
 - [ ] `latest.yml` (open it in the browser) → `version: X.Y.Z`; `path` and `files[0].url` are `jcad-electrical-X.Y.Z-win-x64.exe`; `size` equals the asset size; `releaseDate` is today.
 - [ ] `latest.yml` `sha512` equals the downloaded `.exe` ([Appendix A](#appendix-a-verification-commands)); the same for `latest-linux.yml` and the AppImage.
 - [ ] `latest-mac.yml` → `version: X.Y.Z` and the DMG names of this release.
-- [ ] Windows signature status agrees with provenance: a configured signed release has Status `Valid` for installer and installed executable and the expected publisher; an unsigned release is described as unsigned.
-- [ ] macOS: `codesign --verify --deep --strict --verbose=2 "/Applications/JCad Electrical.app"` passes; `codesign -dv` shows `Signature=adhoc` (ad-hoc build) or `Authority=Developer ID Application: …` plus `xcrun stapler validate` "The validate action worked!" (signed build). Write down which kind it is.
+- [ ] Windows signatures agree with provenance: installer and installed executable have Status `Valid`, the configured publisher (Justin Rodriguez) and a valid timestamp. Publication requires `authenticode-verified`; older unsigned releases and build-only rehearsals must be described as unsigned.
+- [ ] macOS: `codesign --verify --deep --strict --verbose=2 "/Applications/JCad Electrical.app"` passes; `codesign -dv` shows `Authority=Developer ID Application: …`, the configured Team ID and the `runtime` flag. `xcrun stapler validate` says "The validate action worked!" and `spctl --assess --type execute --verbose=4` reports "accepted, source=Notarized Developer ID". Each DMG's signature also verifies with that Team ID. Publication requires `developer-id-notarized`; `Signature=adhoc` is allowed only for older releases or build-only rehearsals and must match their notes/provenance.
 - [ ] Linux: `dpkg-deb -I jcad-electrical-X.Y.Z-linux-amd64.deb` → Package `jcad-electrical`, Version `X.Y.Z`.
-- [ ] Release notes contain the X.Y.Z CHANGELOG section, the exact tested source SHA and the signing status recorded from the verified platform builds.
+- [ ] Release notes contain the X.Y.Z CHANGELOG section first (upgrade notes at the top: older update dialogs show the first 600 characters), then the download footer with first-launch instructions matching the macOS build's verified signing record, then the **Verified build** list with the exact tested source SHA and each platform's signing result. A Developer ID footer requires no Open Anyway step. The **Release notes** workflow preserves the signing instructions and **Verified build** list when rewriting a release that has provenance.
 - [ ] One fresh install per platform and a supported signed-Windows update (or manual replacement on the other builds) succeed using the published assets.
 - [ ] Verify `release-provenance.json` and each downloaded installer with `gh attestation verify <file> --repo habit04/share --bundle release-provenance.sigstore.json`; their SHA-256 values also match `SHA256SUMS.txt`.
 - [ ] Website <https://habit04.github.io/share/> → download buttons point at the X.Y.Z files (allow up to 30 minutes for caches).

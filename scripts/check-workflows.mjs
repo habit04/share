@@ -129,14 +129,17 @@ else {
       if (notes < 0 || publish.with?.body_path !== 'release-notes.md') problems.push('release.yml: the release notes must come from CHANGELOG.md (scripts/release-notes.mjs --out release-notes.md, body_path: release-notes.md)');
       else if (notes > (jobs.release.steps ?? []).indexOf(publish)) problems.push('release.yml: the release notes are written after the release is published');
       const steps = jobs.release.steps ?? [];
+      const download = steps.findIndex((s) => String(s.uses ?? '').startsWith('actions/download-artifact') && s.with?.path === 'artifacts' && s.with?.pattern === 'JCad-Electrical-*');
       const verify = steps.findIndex((s) => /scripts\/release-provenance\.mjs verify artifacts\b/.test(String(s.run ?? '')) && s.env?.SOURCE_SHA === '${{ needs.checks.outputs.sha }}');
       const attest = steps.findIndex((s) => String(s.uses ?? '').startsWith('actions/attest@') && s.with?.['subject-path'] === 'artifacts/**/*');
       if (verify < 0 || attest <= verify || attest >= steps.indexOf(publish)) problems.push('release.yml: verify all artifacts and sign provenance before publishing');
-      if (!String(steps[verify]?.run ?? '').includes('--notes release-notes.md')) problems.push('release.yml: release notes must state verified artifact signing status');
+      if (download < 0 || verify <= download || notes <= verify || !/--provenance artifacts\/release-provenance\.json\b/.test(String(steps[notes]?.run ?? '')) || !/--strict\b/.test(String(steps[notes]?.run ?? '')))
+        problems.push('release.yml: release notes must consume the verified aggregate after source-bound artifact verification');
+      if (/--notes\b/.test(String(steps[verify]?.run ?? ''))) problems.push('release.yml: render the verified signing summary once, from the aggregate');
       for (const permission of ['id-token', 'attestations', 'artifact-metadata']) if (jobs.release.permissions?.[permission] !== 'write') problems.push(`release.yml: missing ${permission} permission for signed provenance`);
       if (!steps.some((s) => String(s.run ?? '').includes('artifacts/release-provenance.sigstore.json'))) problems.push('release.yml: publish the signed provenance bundle');
       if (publish.with?.fail_on_unmatched_files !== true) problems.push('release.yml: publishing must fail on unmatched artifact files');
-      for (const s of [steps[verify], steps[attest], publish]) if (s?.if) problems.push('release.yml: artifact verification, attestation and publication must not be conditionally skipped');
+      for (const s of [steps[download], steps[verify], steps[notes], steps[attest], publish]) if (s && s.if !== undefined) problems.push('release.yml: artifact download, verification, release notes, attestation and publication must not be conditionally skipped');
     }
   }
   // A gate is only a gate when a failed dependency stops the dependants: no job may run on

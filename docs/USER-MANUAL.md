@@ -36,10 +36,11 @@ Download the installer for your system from the project's
 buttons on the website (<https://habit04.github.io/share/>). The file names look like
 `jcad-electrical-<version>-<os>-<arch>.<ext>`.
 
-Signing depends on the release's configured credentials. Windows is unsigned unless the release
-verified its Authenticode signatures; macOS is ad-hoc signed unless Developer ID signing and
-notarization were configured and verified. The release notes and `release-provenance.json`, when
-published, state the actual status. Linux packages are unsigned.
+The release pipeline for 0.4.2 and later requires verified Windows Authenticode signatures from
+the configured publisher (Justin Rodriguez) and verified Apple Developer ID signatures and
+notarization for macOS. Older releases and empty-tag build rehearsals may be unsigned on Windows
+or ad-hoc signed on macOS. The release notes and `release-provenance.json`, when published,
+state the actual status. Linux packages are unsigned.
 
 ### Windows
 
@@ -61,14 +62,16 @@ stay on the 0.4.1 release page); 0.4.1 still offers newer versions, but they do 
 those systems, so do not replace it.
 
 1. Open the `.dmg` and drag **JCad Electrical** into Applications.
-2. Start it from Applications. The first time, macOS says it cannot verify the developer.
-   Click **Done** (or **Cancel**).
-3. Open **System Settings > Privacy & Security**, scroll down to the message about
-   JCad Electrical and click **Open Anyway**, then confirm with your password.
-4. From now on the app starts normally.
+2. Start it from Applications. The first time, macOS asks whether you want to open an app
+   downloaded from the internet. Click **Open**.
+3. From now on the app starts normally.
 
-Ad-hoc macOS builds need step 3. A verified Developer ID and notarized build ordinarily opens
-after the normal downloaded-app confirmation; check the specific release's recorded status.
+Versions up to 0.4.1 and ad-hoc build rehearsals are not notarized. Their ad-hoc seal keeps the
+bundle intact, but the first time you start one, macOS says it cannot verify the developer:
+click **Done** (or **Cancel**), open **System Settings > Privacy & Security**, scroll down to the
+message about JCad Electrical, click **Open Anyway** and confirm with your password. A verified
+Developer ID and notarized build ordinarily opens after the normal downloaded-app confirmation;
+check the specific release's recorded status.
 
 ### Linux
 
@@ -1287,10 +1290,13 @@ space, a layout, a block) and the reason; **Copy Report** copies the complete li
   other objects and their extended data are not kept.
 - **Kept** (blocks): a block whose references would expand, through the blocks nested in it, to
   more than 2,000,000 objects, and a block that inserts itself (directly or through other
-  blocks). The block is kept and saved unchanged; each reference draws only its first 2,000,000
-  objects (a self-reference is not drawn again), and `EXPLODE` leaves such a reference as it is.
-  When all the references of a drawing together expand to more than that, the report adds a
-  note that drawing and selecting may be slow.
+  blocks). The reader retains their definitions. Before a drawing opens or an edit is accepted,
+  geometry validation rejects any active reference exceeding 100,000 work units, model/layout
+  expansion exceeding 1,000,000 units, or block definitions exceeding a separate 1,000,000 units.
+  An excessive drawing is refused before rendering; it is not opened with a partial expansion.
+  Accepted cyclic references skip the repeated self-reference, and `EXPLODE` leaves them as
+  references so their content is preserved. Unused block definitions can remain when they fit
+  the separate definition budget. The report notes large potential expansion and these guards.
 
 **Saving over the original.** When the file you opened contained content JCad Electrical
 cannot keep, `SAVE` asks before writing over it: **Yes** saves over the original (the dropped
