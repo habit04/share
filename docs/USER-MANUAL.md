@@ -568,6 +568,11 @@ drawing (DIMSTYLE records in DXF) and come back from DXF and DWG files.
 
 `ALL`, `L` (Last) and `P` (Previous) also work at any "Select objects:" prompt.
 
+When you click where several objects are equally close (overlapping or coincident lines, a
+wire drawn over a symbol line), the **topmost** one is picked: the one drawn last, which is the
+one you see. Hover highlighting and every "Select object:" prompt follow the same rule; an object
+that is strictly closer to the cursor still wins even when it lies underneath.
+
 ### Layers, linetypes, lineweights, colour
 
 | Command | Aliases | Notes |
@@ -590,6 +595,21 @@ drawing (DIMSTYLE records in DXF) and come back from DXF and DWG files.
 Available linetypes: Continuous, DASHED, HIDDEN, CENTER, PHANTOM, DOT, DASHDOT, DIVIDE,
 BORDER and their 2x variants. Dashed lines scale with LTSCALE and the zoom and turn solid when
 the pattern would be finer than a few pixels.
+
+**Colours inside blocks** follow the AutoCAD rules, on screen, in PDF plots and in printing:
+
+| Object inside the block | Shows |
+| --- | --- |
+| An explicit colour (1-255 or a true colour) | That colour, always |
+| ByLayer, on its own layer | The colour of its layer |
+| ByLayer, on layer 0 | The colour of the layer the block reference is on (layer-0 objects "float" to the reference's layer); the reference's own colour does not change it |
+| ByBlock (colour 0) | The block reference's colour; when the reference is ByLayer, the colour of the reference's layer |
+
+Nested blocks resolve from the inside out: a ByBlock block reference inside another block takes
+the outer reference's colour and passes it on. ByBlock objects outside any block show in the
+foreground colour (white on the dark background, black on paper). EXPLODE keeps the colour the
+objects showed. To recolour a symbol from its block reference, give the objects in the block
+the ByBlock colour.
 
 ### Clipboard and screen
 
@@ -1162,7 +1182,8 @@ Settings are stored per user on this computer (in the browser edition, per brows
 
 ### DXF
 
-DXF (AutoCAD 2000 / AC1015) is JCad Electrical's native format. `SAVE` (QSAVE, Ctrl+S) and
+DXF (AutoCAD 2000 / AC1015) is JCad Electrical's native format (AutoCAD is named here only as
+the compatibility reference). `SAVE` (QSAVE, Ctrl+S) and
 `SAVEAS` (Ctrl+Shift+S) write DXF. Layers, linetypes, lineweights, blocks, attributes
 (including invisible ones), dimensions, text, polylines with arcs and widths, and the
 electrical data all round-trip, and the files open in other CAD programs. `OPEN` (Ctrl+O)
@@ -1174,19 +1195,93 @@ dimension styles with all their settings. Files written by programs before AutoC
 read in the code page they name (`$DWGCODEPAGE`), newer ones as UTF-8; the command line reports
 the detected encoding. JCad Electrical writes AutoCAD 2000 DXF with any non-English characters
 escaped, so the text reads correctly whatever the code page of the program that opens it.
+Arcs, circles and polylines drawn in a mirrored plane (extrusion 0,0,-1, as MIRROR leaves them)
+open in their true place.
+
+### Import report
+
+Opening a DXF or DWG file lists everything that could not be brought in unchanged: the
+command line shows a summary, and when something was **dropped** or **simplified** (or a
+property is **not supported yet** by the DWG reader) the **Import Report** dialog opens. It
+gives the count per object type and the first 50 objects with their handle, layer, place (model
+space, a layout, a block) and the reason; **Copy Report** copies the complete list as text.
+`IMPORTREPORT` shows it again.
+
+- **Dropped**: not imported (for example wipeouts, multilines, polyface meshes, attribute
+  definitions outside a block, object groups, objects with invalid geometry).
+- **Simplified**: imported with some of its data left out (a MINSERT array keeps its first copy,
+  a multileader its leader and text, extended data of other applications is not kept, a 3D
+  polyline is flattened, a viewport loses its clipping boundary).
+- **Kept (not shown)**: 3D faces, and 3D solids, regions and bodies with their data stored in
+  the object (DXF files up to AutoCAD 2010) cannot be shown or edited, but stay in the drawing
+  exactly as they were and are written back, on their layer, at the end of the drawing's
+  entities when you save (also when a project-wide command rewrites the file). Their links to
+  other objects and their extended data are not kept.
+
+**Saving over the original.** When the file you opened contained content JCad Electrical
+cannot keep, `SAVE` asks before writing over it: **Yes** saves over the original (the dropped
+content is then gone from that file), **No** opens Save As so you keep the original. You are
+asked once per file.
+
+### Damaged DXF files
+
+A DXF file that is not valid is not opened, and the message says what is wrong and on which
+line: a line where a group code (a whole number) is expected, a section that is not closed
+before the next one starts, an `ENDSEC` without its `SECTION`, or content outside a section.
+
+A file that **ends early** (copied or downloaded only in part: no end-of-file marker, a group
+code without its value, an open section) offers partial recovery: "The file ends early at line
+N. Open what was readable?" **Yes** opens everything up to the damage; the last object before
+the end, which may be incomplete, is left out. The drawing opens as **recovered**: the Import
+Report shows what happened, the drawing is marked as changed, and `SAVE` over the damaged file
+asks first and suggests Save As.
+
+Objects with **invalid geometry** (coordinates that are not numbers or are infinite, a negative
+radius or text height, a polyline with fewer than two vertices) are left out one by one; the
+rest of the drawing opens and the Import Report lists each of them.
 
 ### DWG
 
 DWG files from release R14 up to 2018 open through **LibreDWG**. Supported: lines, arcs,
-circles, polylines (with bulges), text and MTEXT, blocks and attributes, dimensions (with the
-drawing's dimension variables), ellipses, points, construction lines, solids, splines, hatches,
-leaders and multileaders, tables, images, linetypes, lineweights and header units / limits. The
-command window lists anything that was skipped.
+circles, polylines (with bulges; 3D polylines flattened), text and MTEXT, blocks and attributes,
+dimensions (each with its named dimension style), ellipses, points, construction lines, solids,
+splines, hatches, leaders and multileaders, tables, images, lineweights and header units /
+limits. Also brought in: paper-space **layouts** with their entities and floating
+**viewports** (position, size, scale, display lock, on / off), **text styles**, named
+**dimension styles**, custom **linetype** patterns, **true colours** of objects and layers,
+**ByBlock** colours (so block content takes the block reference's colour), and the layers'
+lock, freeze and plot settings.
+
+What the DWG reader cannot see is listed in the Import Report as **not supported yet**
+instead of being lost silently: a layout's page setup (plot device, plot scale and plot style;
+the sheet size is taken from the layout limits), layers frozen in individual viewports, the
+fixed text height of a text style, and the text or shape elements of complex linetypes.
 
 DWG is **read-only**: JCad Electrical cannot write DWG files. When you save a drawing that
 was opened from a DWG, you are asked for a new file name and a DXF is written; the original
 DWG is not changed. Most CAD programs, including AutoCAD, open DXF files and can save them
 back as DWG if you need one.
+
+### What Undo covers
+
+Undo (`U`, Ctrl+Z) and Redo (Ctrl+Y) step through **edits of the drawing**: objects, layers
+(create, delete, colour, linetype, on / off, freeze, lock), blocks, layouts and their viewports,
+dimension styles, and the Symbol Builder's symbol data. Header changes made by a command as part
+of such an edit are undone with it.
+
+These **settings are not undoable**, as in AutoCAD, and they **survive Undo and Redo** of
+other edits (undoing a line you drew before changing them does not change them back):
+
+| Setting | Rule |
+| --- | --- |
+| Drawing settings: UNITS, LIMITS, LTSCALE, PDMODE / PDSIZE, CELTYPE / CELWEIGHT, the current dimension style, CANNOSCALE, named views | Not undoable; kept by Undo / Redo |
+| Current layer (CLAYER, the layer list) | Not undoable; kept by Undo / Redo, except when Undo removes that layer (an undone LAYER New): then the layer that was current before is current again |
+| Current colour (CECOLOR) | Not undoable; not part of the drawing history |
+| Model / layout tab, the active viewport, zoom and pan inside a viewport, a layout's first-time viewport | Not undoable; kept by Undo / Redo |
+| View (ZOOM, PAN), grid, snap, ortho, polar, object snap and the other status-bar toggles | Not undoable; not part of the drawing at all |
+| Library symbol blocks loaded into the drawing | Not undoable; Undo never takes them away |
+
+Inside LINE, PLINE and AEWIRE, Ctrl+Z undoes the last segment of the command in progress.
 
 ### Recent files
 

@@ -26,6 +26,8 @@ import { readDxf, writeDxf } from '../io/dxf';
 import { layoutPage, type PlotOptions } from './plot';
 import { parsePointInput, isPlainNumber } from './input';
 import { convertDwg, type DwgImportPayload } from '../io/dwg';
+import type { ImportReport } from '../io/import-report';
+import { readDxfForOpen, reportNeedsAttention, importReportLog, confirmSaveOver, importReportOf } from './import-open';
 import type { ElectricalUi } from '../electrical/ui';
 import { registerElectricalCommands } from './commands-electrical';
 import { registerDraftingCommands } from './commands-drafting';
@@ -155,6 +157,8 @@ export class Editor {
     symbolBuilder?: SymbolBuilderUi;
     /** Plot / Print dialog (paper, orientation, scale, margins and which output); null = cancelled. */
     plot?: (mode: 'pdf' | 'print') => Promise<{ options: PlotOptions; action: 'pdf' | 'print' } | null>;
+    /** Import report dialog (src/ui/import-report.ts): shown after OPEN when content was lost, and by IMPORTREPORT. */
+    importReport?: (report: ImportReport, fileName: string) => void;
   } = {};
   settings: UserSettings = loadSettings();
   project: Project = defaultProject();
@@ -466,6 +470,7 @@ export class Editor {
     reg('OPEN', [], 'Open a DXF or DWG drawing', (ed, arg) => void ed.openFile(arg));
     reg('SAVE', ['QSAVE'], 'Save drawing (DXF)', (ed) => void ed.saveFile(false));
     reg('SAVEAS', [], 'Save drawing as (DXF)', (ed) => void ed.saveFile(true));
+    reg('IMPORTREPORT', [], 'Show what opening this drawing dropped, simplified or kept without showing', (ed) => ed.showImportReport(true));
     reg('LIST', ['LI'], 'List selected objects', (ed) => ed.listSelection());
     reg('HELP', ['?'], 'List commands', (ed) => {
       const seen = new Set<CommandDef>();
@@ -745,7 +750,7 @@ export class Editor {
         if (!res) return;
         this.rememberRecent(res.path);
         if (res.kind === 'dwg') {
-          const { state, skipped, notes } = convertDwg(res.payload);
+          const { state, skipped, notes } = convertDwg(res.payload, res.path);
           // DWG is read-only for us: keep the file untitled so SAVE asks where to write the DXF copy.
           this.loadState(state, null);
           this.doc.dirty = true;
@@ -757,27 +762,59 @@ export class Editor {
           for (const n of notes) this.log(`DWG import: ${n}`);
           this.log('DWG import is read-only; use SAVE to write a DXF copy next to the original.');
           this.emit('file');
+          this.showImportReport(false);
           return;
         }
-        const state = readDxf(res.text, { filePath: res.path });
+        const state = await readDxfForOpen(res.text, res.path, (t, m) => (this.ui ?? fallbackUi).confirm(t, m));
+        if (!state) {
+          this.log(`Not opened: ${res.path} is damaged.`);
+          return;
+        }
         this.loadState(state, res.path);
+        if (importReportOf(state)?.recovered) this.doc.dirty = true;
         this.log(`Opened ${res.path}: ${state.entities.length} entities, ${state.layers.length} layers, ${Object.keys(state.blocks).length} blocks.${res.encoding ? ` Encoding: ${res.encoding}.` : ''}`);
+        this.showImportReport(false);
         return;
       }
       const res = await this.fileBridge.openDxf();
       if (!res) return;
-      const state = readDxf(res.text, { filePath: res.path });
+      const state = await readDxfForOpen(res.text, res.path, (t, m) => (this.ui ?? fallbackUi).confirm(t, m));
+      if (!state) {
+        this.log(`Not opened: ${res.path} is damaged.`);
+        return;
+      }
       this.loadState(state, res.path);
+      if (importReportOf(state)?.recovered) this.doc.dirty = true;
       this.log(`Opened ${res.path}: ${state.entities.length} entities, ${state.layers.length} layers, ${Object.keys(state.blocks).length} blocks.`);
+      this.showImportReport(false);
     } catch (err) {
       this.log(`Failed to open drawing: ${(err as Error).message}`);
     }
+  }
+
+  /**
+   * Log the drawing's import report and, when content was lost (or `force`, IMPORTREPORT), show
+   * the report dialog.
+   */
+  showImportReport(force: boolean): void {
+    const r = importReportOf(this.doc.snapshot);
+    if (!r) {
+      if (force) this.log('This drawing has no import report: nothing was dropped or simplified when it was opened.');
+      return;
+    }
+    for (const line of importReportLog(r)) this.log(line);
+    if (force || reportNeedsAttention(r)) this.hooks.importReport?.(r, this.fileName());
   }
 
   async saveFile(saveAs: boolean): Promise<void> {
     if (!this.fileBridge) {
       this.log('No file access in this environment.');
       return;
+    }
+    // Saving over a source file that held content JCad could not keep (or a recovered file) asks first.
+    if (!saveAs && this.doc.filePath && (await confirmSaveOver(this.doc.snapshot, this.doc.filePath, (t, m) => (this.ui ?? fallbackUi).confirm(t, m))) === 'save-as') {
+      this.log('Save As keeps the original file unchanged.');
+      return this.saveFile(true);
     }
     // Remember exactly which document revision goes to disk: edits made while the file
     // dialog / write is pending (or in another tab) must stay flagged as unsaved.

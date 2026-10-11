@@ -24,6 +24,7 @@ import { drawingKindOf, readDwgInBrowser, describeDwgError } from './io/dwg-brow
 import { donateUrl } from './app/about';
 import { Autosaver, bridgeAutosaveStore, localAutosaveStore, type AutosaveBridge } from './app/autosave';
 import { recoveryDialog } from './ui/recovery';
+import { importReportDialog } from './ui/import-report';
 import { showAppMenu } from './ui/appmenu';
 import { EntityClipboard } from './ui/clipboard';
 import { closeMenus } from './ui/menu';
@@ -479,6 +480,7 @@ function boot(): void {
     },
     projectChanged: () => pm.refresh(),
     symbolBuilder: createSymbolBuilderUi(editor, document.getElementById('symbol-builder')!),
+    importReport: (report, fileName) => importReportDialog(report, fileName),
   };
 
   // ------------------------------------------------------------ chrome

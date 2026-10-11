@@ -59,6 +59,9 @@ export function payloadFromDatabase(db, version = '') {
     layers: (db.tables?.LAYER?.entries ?? []).map((x) => ({
       name: x.name,
       colorIndex: x.colorIndex,
+      color: x.color,
+      standardFlag: x.standardFlag,
+      plotFlag: x.plotFlag,
       off: x.off,
       frozen: x.frozen,
       locked: x.locked,
@@ -75,6 +78,24 @@ export function payloadFromDatabase(db, version = '') {
     })),
     version,
     imageDefs: (db.objects?.IMAGEDEF ?? []).map((d) => ({ handle: String(d.handle ?? ''), fileName: d.fileName ?? '' })),
+    styles: (db.tables?.STYLE?.entries ?? []).map((t) => ({
+      name: t.name,
+      standardFlag: t.standardFlag,
+      fixedTextHeight: t.fixedTextHeight,
+      widthFactor: t.widthFactor,
+      obliqueAngle: t.obliqueAngle,
+      textGenerationFlag: t.textGenerationFlag,
+      font: t.font,
+      bigFont: t.bigFont,
+    })),
+    dimStyles: (db.tables?.DIMSTYLE?.entries ?? []).map((d) => ({ ...d, name: d.name })),
+    linetypes: (db.tables?.LTYPE?.entries ?? []).map((t) => ({
+      name: t.name,
+      description: t.description,
+      standardFlag: t.standardFlag,
+      pattern: (t.pattern ?? []).map((x) => ({ elementLength: x.elementLength, elementTypeFlag: x.elementTypeFlag })),
+    })),
+    layouts: (db.objects?.LAYOUT ?? []).map((l) => ({ name: l.layoutName, tabOrder: l.tabOrder, blockHandle: String(l.paperSpaceTableId ?? ''), minLimit: l.minLimit, maxLimit: l.maxLimit })),
   };
 }
 

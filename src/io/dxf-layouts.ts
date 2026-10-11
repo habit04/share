@@ -32,6 +32,7 @@ import {
   type PaperUnits,
   type PlotStyleMode,
 } from '../core/layouts';
+import type { ImportReportBuilder } from './import-report';
 
 export interface DxfSink {
   pair(code: number, value: string | number): void;
@@ -45,6 +46,7 @@ interface Pair {
 interface Obj {
   kind: string;
   groups: Pair[];
+  line?: number;
 }
 
 const MM = 25.4;
@@ -334,8 +336,16 @@ const before = (o: Obj, subclass: string): Obj => {
   return { kind: o.kind, groups: i >= 0 ? o.groups.slice(0, i) : o.groups };
 };
 
+/** VIEWPORT 90 flag: clipped by a non-rectangular boundary (group 340). */
+const VP_NONRECT_CLIP = 65536;
+
+/** Reads the entities of a layout; `where` names the layout for the import report. */
+export type LayoutEntityReader = (objs: Obj[], where: string) => Entity[];
+
 /** Collects paper-space data while io/dxf.ts walks the sections, then builds the layouts. */
 export class LayoutReader {
+  /** `report` receives viewports that are dropped or simplified. */
+  constructor(private readonly report?: ImportReportBuilder) {}
   private recordNames = new Map<string, string>();
   private layerNames = new Map<string, string>();
   private blocks = new Map<string, Obj[]>();
@@ -375,7 +385,7 @@ export class LayoutReader {
   }
 
   /** Build the layouts; `readEntities` is the DXF reader's entity parser. Undefined = only an untouched Layout1. */
-  build(readEntities: (objs: Obj[]) => Entity[], host: LayoutHost): Layout[] | undefined {
+  build(readEntities: LayoutEntityReader, host: LayoutHost): Layout[] | undefined {
     const units = unitsOfHost(host);
     const out: Array<{ layout: Layout; tab: number }> = [];
     for (const lo of this.layoutObjs) {
@@ -399,7 +409,7 @@ export class LayoutReader {
     return layouts;
   }
 
-  private layoutFrom(ps: Obj, name: string, objs: Obj[], readEntities: (objs: Obj[]) => Entity[], fallbackUnits: PaperUnits): Layout {
+  private layoutFrom(ps: Obj, name: string, objs: Obj[], readEntities: LayoutEntityReader, fallbackUnits: PaperUnits): Layout {
     const units: PaperUnits = num(ps, 72, fallbackUnits === 'mm' ? 1 : 0) === 1 ? 'mm' : 'in';
     const rotation = Math.trunc(num(ps, 73, 0)) & 3;
     const w = num(ps, 44, 0);
@@ -441,7 +451,7 @@ export class LayoutReader {
     return lay.entities.length === 0 && lay.viewports.length === 0 ? { ...lay, pristine: true } : lay;
   }
 
-  private withContent(base: Layout, objs: Obj[], readEntities: (objs: Obj[]) => Entity[], offset: Point): Layout {
+  private withContent(base: Layout, objs: Obj[], readEntities: LayoutEntityReader, offset: Point): Layout {
     const vps = objs.filter((o) => o.kind === 'VIEWPORT');
     const rest = objs.filter((o) => o.kind !== 'VIEWPORT');
     // The overall paper-space viewport has id 1 (else: the first VIEWPORT in the list).
@@ -453,8 +463,19 @@ export class LayoutReader {
       const width = num(v, 40, 0);
       const height = num(v, 41, 0);
       const viewHeight = num(v, 45, 0);
-      if (!(width > 0 && height > 0 && viewHeight > 0)) continue;
+      const where = `layout "${base.name}"`;
+      const handle = str(o, 5);
+      const item = { type: 'VIEWPORT', layer: str(o, 8, '0'), where, ...(handle ? { handle } : {}), ...(o.line ? { line: o.line } : {}) };
+      if (!(width > 0 && height > 0 && viewHeight > 0)) {
+        this.report?.add({ ...item, action: 'dropped', reason: 'invalid viewport size or view height' });
+        continue;
+      }
       const flags = Math.trunc(num(v, 90, 0));
+      if (flags & VP_NONRECT_CLIP || v.groups.some((x) => x.code === 340 && x.value.trim() !== '' && x.value.trim() !== '0')) {
+        this.report?.add({ ...item, action: 'simplified', reason: 'its clipping boundary is not kept: the viewport shows its whole rectangle' });
+      }
+      const twist = num(v, 51, 0);
+      if (Math.abs(twist) > 1e-9) this.report?.add({ ...item, action: 'simplified', reason: 'its twisted view (DVIEW TWist) is shown untwisted' });
       const status = Math.trunc(num(v, 68, 1));
       const frozen = v.groups.filter((x) => x.code === 331).map((x) => this.layerNames.get(x.value.toUpperCase())).filter((x): x is string => !!x);
       viewports.push({
@@ -468,7 +489,7 @@ export class LayoutReader {
         ...(frozen.length ? { frozenLayers: frozen } : {}),
       });
     }
-    const read = readEntities(rest);
+    const read = readEntities(rest, `layout "${base.name}"`);
     const entities = offset.x || offset.y ? read.map((e) => translateEntity(e, offset)) : read;
     return { ...base, entities, viewports };
   }

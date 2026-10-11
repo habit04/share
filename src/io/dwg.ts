@@ -32,6 +32,12 @@ import type {
 } from '@mlightcad/libredwg-web';
 import { insertScales, insertScaleFields } from './dxf';
 import type { Entity, BlockDef, Layer, AttributeDef, ColorSpec, MTextAttachment, SplineEntity, HatchEntity, HatchLoop, LeaderEntity, ImageEntity, TableEntity, TableCell, FieldLink } from '../core/entities';
+import { translateEntity } from '../core/entities';
+import { DIMSTYLES_META_KEY, diffDimStyles } from '../core/dimension';
+import { findLinetype, type Linetype } from '../core/linetypes';
+import { paperFromSize, unitsOfHost, uniformMargins, newViewportId, type Layout, type LayoutViewport } from '../core/layouts';
+import { textStylesMeta, type TextStyle } from './encoding';
+import { ImportReportBuilder, geometryProblem, withImportData, type ImportReport } from './import-report';
 import { findPattern, LoopBuilder, edgeArc, fitPatternToLines } from '../core/hatch';
 import { isValidNurbs, nurbsPoints, interpolateFitPoints } from '../core/spline';
 import { evaluateFields, hasFields } from '../core/fields';
@@ -49,11 +55,46 @@ import type { LinearUnits } from '../core/units';
 export interface DwgImportPayload {
   header: { CLAYER?: unknown; INSUNITS?: unknown } & Record<string, unknown>;
   entities: DwgEntity[];
-  layers: Array<{ name: string; colorIndex: number; off: boolean; frozen: boolean; locked: boolean; lineweight: number; lineType?: string }>;
+  /** `color` is the layer's RGB (meaningful when colorIndex is 256: a true-colour layer). */
+  layers: Array<{ name: string; colorIndex: number; color?: number; off: boolean; frozen: boolean; locked: boolean; lineweight: number; lineType?: string; standardFlag?: number; plotFlag?: number }>;
   blocks: Array<Pick<DwgBlockRecordTableEntry, 'name' | 'basePoint' | 'entities' | 'description'> & { handle?: string; flags?: number }>;
   version?: string;
   /** IMAGEDEF objects (handle -> file name) so IMAGE entities know their file. Optional: older readers omit it. */
   imageDefs?: Array<{ handle: string; fileName: string }>;
+  /** STYLE table (text styles). Optional (older readers omit the table data below). */
+  styles?: DwgPayloadStyle[];
+  /** DIMSTYLE table: records with the DIM* variables by name (as the header has them). */
+  dimStyles?: Array<Record<string, unknown> & { name: string }>;
+  /** LTYPE table: dash patterns. */
+  linetypes?: DwgPayloadLinetype[];
+  /** LAYOUT objects: name, tab order, the BLOCK_RECORD of their paper space, paper limits. */
+  layouts?: DwgPayloadLayout[];
+}
+
+export interface DwgPayloadStyle {
+  name: string;
+  standardFlag?: number;
+  fixedTextHeight?: number;
+  widthFactor?: number;
+  /** Radians (DWG). */
+  obliqueAngle?: number;
+  textGenerationFlag?: number;
+  font?: string;
+  bigFont?: string;
+}
+export interface DwgPayloadLinetype {
+  name: string;
+  description?: string;
+  standardFlag?: number;
+  pattern?: Array<{ elementLength: number; elementTypeFlag?: number }>;
+}
+export interface DwgPayloadLayout {
+  name: string;
+  tabOrder: number;
+  /** Handle of the layout's *Paper_Space BLOCK_RECORD. */
+  blockHandle: string;
+  minLimit?: { x: number; y: number };
+  maxLimit?: { x: number; y: number };
 }
 
 /** Trim a full DwgDatabase down to the payload (drops thumbnails, dictionaries, classes). */
@@ -64,6 +105,9 @@ export function toImportPayload(db: DwgDatabase, version?: string): DwgImportPay
     layers: (db.tables?.LAYER?.entries ?? []).map((l) => ({
       name: l.name,
       colorIndex: l.colorIndex,
+      color: l.color,
+      standardFlag: l.standardFlag,
+      plotFlag: l.plotFlag,
       off: l.off,
       frozen: l.frozen,
       locked: l.locked,
@@ -80,15 +124,39 @@ export function toImportPayload(db: DwgDatabase, version?: string): DwgImportPay
     })),
     version,
     imageDefs: (db.objects?.IMAGEDEF ?? []).map((d) => ({ handle: String(d.handle ?? ''), fileName: d.fileName ?? '' })),
+    styles: (db.tables?.STYLE?.entries ?? []).map((t) => ({
+      name: t.name,
+      standardFlag: t.standardFlag,
+      fixedTextHeight: t.fixedTextHeight,
+      widthFactor: t.widthFactor,
+      obliqueAngle: t.obliqueAngle,
+      textGenerationFlag: t.textGenerationFlag,
+      font: t.font,
+      bigFont: t.bigFont,
+    })),
+    dimStyles: (db.tables?.DIMSTYLE?.entries ?? []).map((d) => ({ ...(d as unknown as Record<string, unknown>), name: d.name })),
+    linetypes: (db.tables?.LTYPE?.entries ?? []).map((t) => ({
+      name: t.name,
+      description: t.description,
+      standardFlag: t.standardFlag,
+      pattern: (t.pattern ?? []).map((x) => ({ elementLength: x.elementLength, elementTypeFlag: x.elementTypeFlag })),
+    })),
+    layouts: (db.objects?.LAYOUT ?? []).map((l) => ({ name: l.layoutName, tabOrder: l.tabOrder, blockHandle: String(l.paperSpaceTableId ?? ''), minLimit: l.minLimit, maxLimit: l.maxLimit })),
   };
 }
 
 const p2 = (p: { x: number; y: number } | undefined): Point => ({ x: p?.x ?? 0, y: p?.y ?? 0 });
 
+/** DWG colour: 256 / absent = ByLayer, 0 = ByBlock (kept: block content takes the reference's colour), 1..255 ACI. */
 function color(e: DwgEntity): ColorSpec {
   const c = e.colorIndex;
-  if (c === undefined || c === 256 || c === 0) return 'ByLayer';
+  if (c === undefined || c === 256 || c < 0 || c > 256) return 'ByLayer';
   return c;
+}
+
+/** True colour (RGB) of an entity: LibreDWG sets `color` only for true-colour (method 0xC2) objects. */
+function trueColorOf(e: { color?: number }): number | undefined {
+  return typeof e.color === 'number' && Number.isFinite(e.color) ? e.color & 0xffffff : undefined;
 }
 
 /** DWG lineweight enum: 0..23 index the standard table, 29 ByLayer, 30 ByBlock, 31 Default. */
@@ -97,8 +165,10 @@ function lineweightMm(code: number | undefined): number | undefined {
   return LINEWEIGHTS[code];
 }
 
-function baseProps(e: DwgEntity): { id: string; layer: string; color: ColorSpec; linetype?: string; lineWeight?: number; ltscale?: number } {
-  const out: { id: string; layer: string; color: ColorSpec; linetype?: string; lineWeight?: number; ltscale?: number } = { id: newId(), layer: e.layer || '0', color: color(e) };
+function baseProps(e: DwgEntity): { id: string; layer: string; color: ColorSpec; linetype?: string; lineWeight?: number; ltscale?: number; trueColor?: number } {
+  const out: { id: string; layer: string; color: ColorSpec; linetype?: string; lineWeight?: number; ltscale?: number; trueColor?: number } = { id: newId(), layer: e.layer || '0', color: color(e) };
+  const tc = trueColorOf(e);
+  if (tc !== undefined) out.trueColor = tc;
   if (e.lineType && !/^bylayer$/i.test(e.lineType)) out.linetype = e.lineType;
   const lw = lineweightMm(e.lineweight);
   if (lw !== undefined) out.lineWeight = lw;
@@ -572,6 +642,8 @@ interface ConvertExtras {
   annotations: ReadonlyMap<string, DwgEntity>;
   imageDefs: ReadonlyMap<string, string>;
   notes: string[];
+  /** Named dimension styles by upper-case name (DIMSTYLE table). */
+  dimStyles?: ReadonlyMap<string, DimStyle>;
 }
 
 function convertEntity(e: DwgEntity, blockIndex: Map<string, string>, dimStyle: DimStyle = STANDARD_DIMSTYLE, blocks?: Record<string, BlockDef>, extras?: ConvertExtras): Entity | null {
@@ -625,6 +697,13 @@ function convertEntity(e: DwgEntity, blockIndex: Map<string, string>, dimStyle: 
       const pts = verts.map((v) => p2(v));
       const bulges = verts.map((v) => v.bulge || 0);
       return { ...base, type: 'polyline', points: pts, closed, bulges: bulges.some((b) => Math.abs(b) > 1e-12) ? bulges : undefined };
+    }
+    case 'POLYLINE3D': {
+      // Flattened to its XY projection (reported as simplified by the caller).
+      const pl = e as unknown as { flag?: number; vertices?: Array<{ x: number; y: number }> };
+      const verts = pl.vertices ?? [];
+      if (verts.length === 0) return null;
+      return { ...base, type: 'polyline', points: verts.map((v) => p2(v)), closed: ((pl.flag ?? 0) & 1) === 1 };
     }
     case 'TEXT': {
       const t = e as DwgTextEntity;
@@ -693,8 +772,10 @@ function convertEntity(e: DwgEntity, blockIndex: Map<string, string>, dimStyle: 
       const points = g.eq(c3, c4) ? [c1, c2, c3] : [c1, c2, c4, c3];
       return { ...base, type: 'polyline', points, closed: true, filled: true };
     }
-    case 'DIMENSION':
-      return convertDimension(e as DwgDimensionEntity, base, dimStyle);
+    case 'DIMENSION': {
+      const named = (e as { styleName?: string }).styleName;
+      return convertDimension(e as DwgDimensionEntity, base, (named && extras?.dimStyles?.get(named.toUpperCase())) || dimStyle);
+    }
     case 'INSERT': {
       const i = e as DwgInsertEntity;
       const attrs: Record<string, string> = {};
@@ -751,23 +832,160 @@ export interface DwgImportResult {
   skipped: Record<string, number>;
   /** Human-readable remarks about approximations made during the import. */
   notes: string[];
+  /** The import report (also attached to `state.meta.importReport`); null when nothing was lost. */
+  report: ImportReport | null;
 }
 
-/** Convert a LibreDWG database payload into a DrawingState. */
-/** Header variables LibreDWG exposes (numbers, strings, points). */
-function readHeader(h: DwgImportPayload['header']): DrawingHeader {
+/** Text styles of the STYLE table (oblique radians -> degrees; shape-file entries skipped). */
+function convertStyles(styles: readonly DwgPayloadStyle[], report: ImportReportBuilder): Record<string, TextStyle> {
+  const out: Record<string, TextStyle> = {};
+  let fixedHeights = 0;
+  for (const t of styles) {
+    if (!t.name || ((t.standardFlag ?? 0) & 1) === 1) continue;
+    const oblique = typeof t.obliqueAngle === 'number' && Number.isFinite(t.obliqueAngle) ? (t.obliqueAngle * 180) / Math.PI : 0;
+    out[t.name] = {
+      name: t.name,
+      font: t.font ?? '',
+      bigFont: t.bigFont ?? '',
+      flags: (t.standardFlag ?? 0) & 4,
+      height: t.fixedTextHeight && t.fixedTextHeight > 0 ? t.fixedTextHeight : 0,
+      widthFactor: t.widthFactor && t.widthFactor > 0 ? t.widthFactor : 1,
+      oblique: Math.abs(oblique) < 1e-9 ? 0 : oblique,
+      generation: t.textGenerationFlag ?? 0,
+    };
+    if (!t.fixedTextHeight) fixedHeights += 1;
+  }
+  // LibreDWG does not decode a style's fixed text height (it always reports 0).
+  if (fixedHeights && styles.some((t) => t.name && !/^standard$/i.test(t.name))) {
+    report.add({ type: 'STYLE', action: 'unsupported', reason: `fixed text heights of ${fixedHeights} text style(s) are not exposed by the DWG reader (text keeps its own height)` });
+  }
+  return out;
+}
+
+/** Linetypes of the LTYPE table beyond the standard set (same rules as the DXF reader). */
+function convertLinetypes(list: readonly DwgPayloadLinetype[], report: ImportReportBuilder): Linetype[] {
+  const out: Linetype[] = [];
+  for (const lt of list) {
+    if (!lt.name || /^(BYLAYER|BYBLOCK|CONTINUOUS)$/i.test(lt.name)) continue;
+    const elements = lt.pattern ?? [];
+    const pattern = elements.map((x) => x.elementLength).filter((v) => Number.isFinite(v));
+    if (elements.some((x) => ((x.elementTypeFlag ?? 0) & 6) !== 0)) {
+      report.add({ type: 'LTYPE', action: 'simplified', reason: `linetype ${lt.name}: its embedded text / shape elements are not kept (the dashes are)` });
+    }
+    const std = findLinetype(lt.name);
+    if (std && std.pattern.length === pattern.length && std.pattern.every((v, k) => Math.abs(v - pattern[k]!) < 1e-9)) continue;
+    out.push({ name: lt.name, description: lt.description ?? '', pattern });
+  }
+  return out;
+}
+
+/** Entity types convertEntity handles (a null result for these means an unsupported variant). */
+const DWG_CONVERTED_TYPES = new Set(['SPLINE', 'LEADER', 'MULTILEADER', 'IMAGE', 'LINE', 'CIRCLE', 'ARC', 'LWPOLYLINE', 'POLYLINE2D', 'POLYLINE3D', 'TEXT', 'MTEXT', 'ELLIPSE', 'POINT', 'XLINE', 'RAY', 'SOLID', 'DIMENSION', 'INSERT']);
+
+/** DWG viewport status bits (VIEWPORT 90): display locked, viewport off. */
+const DWG_VP_LOCKED = 16384;
+const DWG_VP_OFF = 131072;
+
+/**
+ * Paper-space layouts from the LAYOUT objects and their *Paper_Space blocks. LibreDWG does not
+ * expose the page setup: the sheet is taken from the layout limits (paper-space drawing units,
+ * the limits' lower-left corner being the sheet corner) and the plot settings are defaults.
+ */
+function convertLayouts(
+  payload: DwgImportPayload,
+  convert: (e: DwgEntity, where: string) => Entity | null,
+  host: { entities: readonly Entity[]; header: DrawingHeader },
+  report: ImportReportBuilder,
+): Layout[] | undefined {
+  const units = unitsOfHost(host);
+  const out: Array<{ layout: Layout; tab: number }> = [];
+  let floating = 0;
+  for (const lo of payload.layouts ?? []) {
+    if (!lo.name || /^model$/i.test(lo.name)) continue;
+    const block = payload.blocks.find((b) => b.handle && String(b.handle).toUpperCase() === lo.blockHandle.toUpperCase());
+    if (block && /^\*MODEL_SPACE$/i.test(block.name ?? '')) continue;
+    const min = lo.minLimit ?? { x: 0, y: 0 };
+    const max = lo.maxLimit ?? { x: 0, y: 0 };
+    const w = max.x - min.x;
+    const h = max.y - min.y;
+    const valid = Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0;
+    const orientation = valid && w < h ? 'portrait' : 'landscape';
+    // The limits are in paper units, which the DWG reader does not tell: the drawing units first,
+    // the other unit when only that one gives a known sheet (an R14 drawing has no INSUNITS).
+    const other = units === 'mm' ? 'in' : 'mm';
+    const guess = valid ? paperFromSize(w, h, units, orientation) : null;
+    const alt = guess && guess.id === 'custom' ? paperFromSize(w, h, other, orientation) : null;
+    const paper = guess ? (alt && alt.id !== 'custom' ? alt : guess) : { id: units === 'mm' ? 'a3' : 'tabloid', width: units === 'mm' ? 297 : 11, height: units === 'mm' ? 420 : 17, units, orientation: 'landscape' as const };
+    const vps = (block?.entities ?? []).filter((e) => e.type === 'VIEWPORT') as Array<DwgEntity & { viewportId?: number }>;
+    // The overall paper-space viewport has id 1 (else: the first VIEWPORT, as the DXF reader does).
+    const overall = vps.find((v) => v.viewportId === 1) ?? vps[0];
+    // AutoCAD paper space has its origin at the printable-area corner: the limits start at -margin.
+    const margin = valid ? Math.max(0, Math.min(-min.x, -min.y)) : units === 'mm' ? 6.35 : 0.25;
+    const offset = valid ? { x: -min.x, y: -min.y } : { x: margin, y: margin };
+    const where = `layout "${lo.name}"`;
+    const entities: Entity[] = [];
+    const viewports: LayoutViewport[] = [];
+    for (const e of block?.entities ?? []) {
+      if (e.type === 'ATTRIB' || e.type === 'ATTDEF') continue;
+      if (e.type === 'VIEWPORT') {
+        const v = e as DwgEntity & { viewportId?: number; viewportCenter?: { x: number; y: number }; width?: number; height?: number; displayCenter?: { x: number; y: number }; viewHeight?: number; statusBitFlags?: number; clippingBoundaryId?: string; viewTwistAngle?: number };
+        if (e === overall) continue; // the overall paper-space viewport
+        const vw = v.width ?? 0;
+        const vh = v.height ?? 0;
+        const viewHeight = v.viewHeight ?? 0;
+        const item = { type: 'VIEWPORT', layer: e.layer || '0', where, ...(e.handle ? { handle: String(e.handle) } : {}) };
+        if (!(vw > 0 && vh > 0 && viewHeight > 0)) {
+          report.add({ ...item, action: 'dropped', reason: 'invalid viewport size or view height' });
+          continue;
+        }
+        if (v.clippingBoundaryId && v.clippingBoundaryId !== '0') report.add({ ...item, action: 'simplified', reason: 'its clipping boundary is not kept: the viewport shows its whole rectangle' });
+        if (v.viewTwistAngle && Math.abs(v.viewTwistAngle) > 1e-9) report.add({ ...item, action: 'simplified', reason: 'its twisted view is shown untwisted' });
+        const flags = v.statusBitFlags ?? 0;
+        floating += 1;
+        viewports.push({
+          id: newViewportId(),
+          center: { x: (v.viewportCenter?.x ?? 0) + offset.x, y: (v.viewportCenter?.y ?? 0) + offset.y },
+          width: vw,
+          height: vh,
+          view: { center: p2(v.displayCenter), scale: vh / viewHeight, ...(flags & DWG_VP_LOCKED ? { locked: true } : {}) },
+          layer: e.layer || '0',
+          on: !(flags & DWG_VP_OFF),
+        });
+        continue;
+      }
+      const c = convert(e, where);
+      if (c) entities.push(offset.x || offset.y ? translateEntity(c, offset) : c);
+    }
+    const layout: Layout = {
+      name: lo.name,
+      paper,
+      plotScale: '1:1',
+      margins: uniformMargins(margin),
+      entities,
+      viewports,
+      plotStyle: 'monochrome',
+      ...(entities.length === 0 && viewports.length === 0 ? { pristine: true } : {}),
+    };
+    out.push({ layout, tab: lo.tabOrder ?? out.length + 1 });
+    report.add({ type: 'LAYOUT', action: 'unsupported', where, reason: 'page setup (plot device, plot scale, plot style) is not exposed by the DWG reader: the paper size is taken from the layout limits' });
+  }
+  if (floating) report.add({ type: 'VIEWPORT', action: 'unsupported', reason: `layers frozen in individual viewports (VPLAYER) are not exposed by the DWG reader: ${floating} viewport(s) show every layer` });
+  out.sort((a, b) => a.tab - b.tab);
+  const layouts = out.map((o) => o.layout);
+  if (layouts.length === 0) return undefined;
+  if (layouts.length === 1 && layouts[0]!.pristine && /^layout1$/i.test(layouts[0]!.name)) return undefined;
+  return layouts;
+}
+
+/** A dimension style from DIM* variables (header variables or a DIMSTYLE record, same names). */
+function dimStyleFromVars(h: Record<string, unknown>, name: string): DimStyle {
   const num = (k: string, d: number): number => {
     const v = h[k];
     return typeof v === 'number' && Number.isFinite(v) ? v : d;
   };
-  const pt = (k: string, d: Point): Point => {
-    const v = h[k] as { x?: number; y?: number } | undefined;
-    return v && typeof v.x === 'number' && typeof v.y === 'number' ? { x: v.x, y: v.y } : d;
-  };
-  const lunits = Math.trunc(num('LUNITS', 2));
   const dimlunit = Math.trunc(num('DIMLUNIT', 2));
   const basic: DimStyle = {
-    name: typeof h.DIMSTYLE === 'string' && h.DIMSTYLE ? h.DIMSTYLE : 'Standard',
+    name,
     textHeight: num('DIMTXT', STANDARD_DIMSTYLE.textHeight),
     arrowSize: num('DIMASZ', STANDARD_DIMSTYLE.arrowSize),
     extOffset: num('DIMEXO', STANDARD_DIMSTYLE.extOffset),
@@ -781,12 +999,26 @@ function readHeader(h: DwgImportPayload['header']): DrawingHeader {
   };
   // The rest of the DIM* variables (arrows, tolerances, alternate units, text placement, colours ...)
   // when LibreDWG provides them. Colours may come as a number or as a { index } colour object.
-  const dimStyle = withDimVars(basic, (name) => {
-    const v = h[name];
+  return withDimVars(basic, (key) => {
+    const v = h[key];
     if (typeof v === 'number' || typeof v === 'string') return v;
     if (v && typeof v === 'object' && typeof (v as { index?: unknown }).index === 'number') return (v as { index: number }).index;
     return undefined;
   });
+}
+
+/** Header variables LibreDWG exposes (numbers, strings, points). */
+function readHeader(h: DwgImportPayload['header']): DrawingHeader {
+  const num = (k: string, d: number): number => {
+    const v = h[k];
+    return typeof v === 'number' && Number.isFinite(v) ? v : d;
+  };
+  const pt = (k: string, d: Point): Point => {
+    const v = h[k] as { x?: number; y?: number } | undefined;
+    return v && typeof v.x === 'number' && typeof v.y === 'number' ? { x: v.x, y: v.y } : d;
+  };
+  const lunits = Math.trunc(num('LUNITS', 2));
+  const dimStyle = dimStyleFromVars(h, typeof h.DIMSTYLE === 'string' && h.DIMSTYLE ? h.DIMSTYLE : 'Standard');
   return {
     ...DEFAULT_HEADER,
     units: {
@@ -804,10 +1036,40 @@ function readHeader(h: DwgImportPayload['header']): DrawingHeader {
   };
 }
 
-export function convertDwg(payload: DwgImportPayload): DwgImportResult {
+export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null): DwgImportResult {
   const skipped: Record<string, number> = {};
   const notes: string[] = [];
-  const header = readHeader(payload.header ?? {});
+  const report = new ImportReportBuilder();
+  const baseHeader = readHeader(payload.header ?? {});
+  const linetypes = convertLinetypes(payload.linetypes ?? [], report);
+  const header: DrawingHeader = linetypes.length ? { ...baseHeader, linetypes } : baseHeader;
+  // Named dimension styles: the DIMSTYLE records; the current one is the header's DIM* variables.
+  const dimStyles = new Map<string, DimStyle>();
+  for (const d of payload.dimStyles ?? []) if (d.name) dimStyles.set(d.name.toUpperCase(), dimStyleFromVars(d, d.name));
+  if (dimStyles.has(header.dimStyle.name.toUpperCase())) dimStyles.set(header.dimStyle.name.toUpperCase(), header.dimStyle);
+  /** An entity the converter could not use: counted and listed in the import report. */
+  const skip = (e: DwgEntity, where: string, reason?: string) => {
+    skipped[e.type] = (skipped[e.type] ?? 0) + 1;
+    report.add({ type: e.type, action: 'dropped', reason: reason ?? `${e.type} objects are not supported`, ...(e.handle ? { handle: String(e.handle) } : {}), layer: e.layer || '0', where });
+  };
+  /**
+   * Convert one entity and check it like a DXF one (non-finite coordinates, negative radii ...);
+   * anything not converted is counted and listed in the report.
+   */
+  const convertChecked = (e: DwgEntity, where: string, blockDefs: Record<string, BlockDef> | undefined, extras: ConvertExtras): Entity | null => {
+    const c = convertEntity(e, blockIndex, header.dimStyle, blockDefs, extras);
+    if (!c) {
+      skip(e, where, e.type === 'DIMENSION' ? 'this dimension type is not supported (ordinate dimensions, or unreadable definition points)' : DWG_CONVERTED_TYPES.has(e.type) ? 'its data is incomplete or of a variant that is not supported' : undefined);
+      return null;
+    }
+    const bad = geometryProblem(c);
+    if (!bad) {
+      if (e.type === 'POLYLINE3D') report.add({ type: e.type, action: 'simplified', reason: '3D polyline: flattened to its XY projection', ...(e.handle ? { handle: String(e.handle) } : {}), layer: e.layer || '0', where });
+      return c;
+    }
+    skip(e, where, `invalid geometry: ${bad}`);
+    return null;
+  };
   const isLayout = (name: string) => /^\*(MODEL_SPACE|PAPER_SPACE)/i.test(name);
   // Anonymous blocks (*U12 ...) hold dynamic-block and array geometry; keep them under a legal name.
   const publicName = (name: string) => (name.startsWith('*') ? `ANON_${name.slice(1).replace(/[^A-Za-z0-9_]/g, '_')}` : name);
@@ -834,7 +1096,7 @@ export function convertDwg(payload: DwgImportPayload): DwgImportResult {
   const noteSet = new Set<string>();
   const extrasFor = (list: readonly DwgEntity[]): ConvertExtras & { consumed: Set<DwgEntity> } => {
     const annotations = annotationsOf(list);
-    return { annotations, imageDefs, notes: [], consumed: new Set(annotations.values()) };
+    return { annotations, imageDefs, notes: [], consumed: new Set(annotations.values()), dimStyles };
   };
   /** HATCH: a real hatch entity; outline polylines when the boundary cannot be rebuilt. */
   const hatchOf = (e: DwgEntity): Entity[] => {
@@ -864,12 +1126,11 @@ export function convertDwg(payload: DwgImportPayload): DwgImportResult {
       if (e.type === 'HATCH') {
         const parts = hatchOf(e);
         if (parts.length) entities.push(...parts);
-        else skipped[e.type] = (skipped[e.type] ?? 0) + 1;
+        else skip(e, `block "${b.name}"`, 'the hatch boundary could not be read');
         continue;
       }
-      const c = convertEntity(e, blockIndex, header.dimStyle, undefined, bx);
+      const c = convertChecked(e, `block "${b.name}"`, undefined, bx);
       if (c) entities.push(c);
-      else skipped[e.type] = (skipped[e.type] ?? 0) + 1;
     }
     for (const n of bx.notes) noteSet.add(n);
     const name = publicName(b.name);
@@ -916,7 +1177,7 @@ export function convertDwg(payload: DwgImportPayload): DwgImportResult {
     if (e.type === 'HATCH') {
       const parts = hatchOf(e);
       if (parts.length) entities.push(...parts);
-      else skipped[e.type] = (skipped[e.type] ?? 0) + 1;
+      else skip(e, 'model space', 'the hatch boundary could not be read');
       continue;
     }
     if (e.type === 'ACAD_TABLE') {
@@ -935,12 +1196,11 @@ export function convertDwg(payload: DwgImportPayload): DwgImportResult {
       }
       const ins = tableInsert(e);
       if (ins) entities.push(ins);
-      else skipped[e.type] = (skipped[e.type] ?? 0) + 1;
+      else skip(e, 'model space', 'the table data and its block could not be read');
       continue;
     }
-    const c = convertEntity(e, blockIndex, header.dimStyle, blocks, mx);
+    const c = convertChecked(e, 'model space', blocks, mx);
     if (c) entities.push(c);
-    else skipped[e.type] = (skipped[e.type] ?? 0) + 1;
   }
   for (const n of mx.notes) noteSet.add(n);
 
@@ -986,13 +1246,21 @@ export function convertDwg(payload: DwgImportPayload): DwgImportResult {
     }
   }
 
+  // The DWG reader's own `locked` is unreliable (reported for every layer); bit 4 of the layer flags
+  // is the lock in every DWG version (R14: 64 + 4 + 1, R2000+: 16 + 4 + 1 for a frozen locked layer).
+  // Plot flags exist from R2000 on: an R14 file reports 0 for every layer.
+  const plotFlags = payload.layers.some((l) => l.plotFlag === 1);
   const layers: Layer[] = payload.layers
     .filter((l) => l.name)
     .map((l) => ({
+      ...(plotFlags && l.plotFlag === 0 ? { plot: false } : {}),
       name: l.name,
-      color: Math.abs(l.colorIndex) || 7,
+      // colorIndex 256 marks a true-colour layer (its RGB in `color`); 7 is the ACI shown by older readers.
+      color: Math.abs(l.colorIndex) >= 1 && Math.abs(l.colorIndex) <= 255 ? Math.abs(l.colorIndex) : 7,
+      ...(l.colorIndex === 256 && typeof l.color === 'number' ? { trueColor: l.color & 0xffffff } : {}),
       visible: !l.off && !l.frozen,
-      locked: !!l.locked,
+      ...(l.frozen ? { frozen: true } : {}),
+      locked: typeof l.standardFlag === 'number' ? (l.standardFlag & 4) !== 0 : !!l.locked,
       lineWeight: lineweightMm(l.lineweight) ?? 0.25,
       linetype: l.lineType && !/^(continuous|bylayer)$/i.test(l.lineType) ? l.lineType : undefined,
     }));
@@ -1013,7 +1281,25 @@ export function convertDwg(payload: DwgImportPayload): DwgImportResult {
     layers.find((l) => l.name.toUpperCase().replace(/\s+/g, '_') === rawClayer.toUpperCase().replace(/\s+/g, '_'))?.name ??
     '0';
 
+  // Paper space: layouts with their entities and viewports.
+  const layouts = convertLayouts(
+    payload,
+    (e, where) => convertChecked(e, where, blocks, mx),
+    { entities, header },
+    report,
+  );
+  for (const l of layouts ?? []) {
+    for (const e of l.entities) ensure(e.layer);
+    for (const v of l.viewports) ensure(v.layer);
+  }
+
   notes.push(...noteSet);
   for (const [type, n] of Object.entries(skipped)) notes.push(`${type}: ${n} object(s) of this type are not supported and were skipped.`);
-  return { state: { entities, layers, blocks, currentLayer, header }, skipped, notes };
+  for (const n of noteSet) report.note(n);
+  const styleMeta = textStylesMeta(convertStyles(payload.styles ?? [], report));
+  const named = [...dimStyles.values()].filter((d) => !(d.name.toUpperCase() === 'STANDARD' && diffDimStyles(d, STANDARD_DIMSTYLE).length === 0));
+  const meta: Record<string, unknown> = { ...(styleMeta ?? {}), ...(named.length ? { [DIMSTYLES_META_KEY]: Object.fromEntries(named.map((d) => [d.name, d])) } : {}) };
+  const base: DrawingState = { entities, layers, blocks, currentLayer, header, ...(Object.keys(meta).length ? { meta } : {}), ...(layouts ? { layouts } : {}) };
+  const built = report.empty ? null : report.build('DWG', sourcePath);
+  return { state: withImportData(base, built), skipped, notes, report: built };
 }
