@@ -6,6 +6,7 @@
  *   types.ts       events, command definitions, the file bridge, the UI hooks
  *   internals.ts   the private working state those modules share, the fallback UI
  *   commands.ts    the built-in commands
+ *   prompter.ts    tools, the tool context, the command line and Enter
  *   view.ts        settings, drafting toggles, zoom extents
  *   documents.ts   new / open, tabs, import reports, the Save / Don't Save / Cancel question
  *   save.ts        drawing saves through the save queue
@@ -33,12 +34,12 @@ import { loadSettings, type UserSettings } from '../settings';
 import { SessionManager } from '../sessions';
 import type { ColorSpec } from '../../core/entities';
 import type { PlotOptions } from '../plot';
-import { parsePointInput, isPlainNumber } from '../input';
 import { trackFromPoints } from '../../core/snap';
 import type { SpaceRef } from '../../core/layouts';
 import type { EditorEvent, CommandDef, FileBridge, EditorHooks } from './types';
 import { createInternals, fallbackUi, type EditorInternals } from './internals';
 import { registerBuiltinCommands } from './commands';
+import * as prompter from './prompter';
 import * as view from './view';
 import * as documents from './documents';
 import * as save from './save';
@@ -188,113 +189,17 @@ export class Editor {
   }
 
   // ------------------------------------------------------------- tool context
-  private makeContext(): ToolContext {
-    const ed = this;
-    return {
-      doc: ed.doc,
-      snap: ed.snap,
-      get selection() {
-        return ed.selection;
-      },
-      set selection(v: Set<string>) {
-        ed.selection = v;
-        ed.emit('selection');
-        ed.render();
-      },
-      aperture: () => (ed.viewport.settings.pickBox + 2) * ed.viewport.worldPerPixel(),
-      prompt: (t) => ed.setPrompt(t),
-      log: (t) => ed.log(t),
-      setPreview: (e) => {
-        ed.overlay.preview = e;
-        ed.render();
-      },
-      setGhost: (e) => {
-        ed.overlay.ghost = e;
-        ed.render();
-      },
-      setTrackFrom: (p) => {
-        ed.overlay.trackFrom = p;
-        if (p) ed.lastPoint = p;
-        ed.render();
-      },
-      setDynText: (lines) => {
-        ed.overlay.dynText = ed.dynamicInput ? lines : [];
-        ed.render();
-      },
-      finish: () => ed.finishTool(),
-      runCommand: (name) => ed.runCommand(name),
-      ui: ed.ui ?? fallbackUi,
-      requestSelection: (prompt, onDone) => {
-        ed.internals.selReq = { prompt, onDone, ids: new Set() };
-        ed.updateCursorMode();
-        ed.setPrompt(prompt);
-      },
-    };
-  }
 
   startTool(tool: Tool): void {
-    if (this.tool) this.tool.onCancel(this.makeContext());
-    this.clearOverlay();
-    this.tool = tool;
-    this.toolName = tool.name;
-    this.lastCommand = tool.name;
-    tool.start(this.makeContext());
-    this.updateCursorMode();
-    this.emit('tool');
-    this.render();
+    prompter.startTool(this, this.internals, tool);
   }
 
   finishTool(): void {
-    this.tool = null;
-    this.toolName = '';
-    this.internals.selReq = null;
-    this.clearOverlay();
-    this.updateCursorMode();
-    this.setPrompt('Type a command');
-    this.emit('tool');
-    this.render();
+    prompter.finishTool(this, this.internals);
   }
 
   cancel(): void {
-    if (this.internals.gripDrag) {
-      this.internals.gripDrag = null;
-      this.overlay.ghost = [];
-      this.overlay.trackFrom = null;
-      this.updateCursorMode();
-      this.setPrompt('Type a command');
-      this.render();
-      return;
-    }
-    if (this.tool) {
-      this.log('*Cancel*');
-      this.tool.onCancel(this.makeContext());
-      this.finishTool();
-      return;
-    }
-    if (this.internals.selReq) {
-      this.internals.selReq = null;
-      this.finishTool();
-      return;
-    }
-    if (this.selection.size > 0) {
-      this.selection.clear();
-      this.emit('selection');
-      this.render();
-    }
-  }
-
-  private clearOverlay(): void {
-    this.overlay.preview = [];
-    this.overlay.ghost = [];
-    this.overlay.trackFrom = null;
-    this.overlay.acquired = undefined;
-    this.overlay.trackPaths = undefined;
-    this.internals.acquired = [];
-    this.overlay.dynText = [];
-    this.overlay.selectionBox = null;
-    this.overlay.hover = null;
-    this.internals.dragStart = null;
-    this.internals.dragWorld = null;
+    prompter.cancel(this, this.internals);
   }
 
   applySettings(): void {
@@ -307,11 +212,7 @@ export class Editor {
 
   /** Whether typed input should be treated as literal text (TEXT command content). */
   acceptsFreeText(): boolean {
-    return this.tool?.acceptsFreeText?.() ?? false;
-  }
-
-  private updateCursorMode(): void {
-    this.overlay.cursorMode = this.internals.selReq ? 'select' : this.tool ? 'point' : 'idle';
+    return prompter.acceptsFreeText(this);
   }
 
   // ------------------------------------------------------------- commands
@@ -326,94 +227,21 @@ export class Editor {
   layerDialogRequested: (() => void) | null = null;
 
   runCommand(input: string): void {
-    const text = input.trim();
-    if (!text) return;
-    const [name, ...rest] = text.split(/\s+/);
-    const def = this.commands.get(name!.toUpperCase());
-    if (!def) {
-      this.log(`Unknown command "${name}". Press F1 for help.`);
-      return;
-    }
-    if (this.tool) this.cancel();
-    this.lastCommand = def.name;
-    this.lastCommandLine = text;
-    if (!def.startsTool) this.log(`Command: ${def.name}`);
-    def.run(this, rest.join(' ') || undefined);
-    this.emit('tool');
+    prompter.runCommand(this, input);
   }
 
   /** Handle text typed at the command line. */
   submitInput(raw: string): void {
-    const text = raw.trim();
-    if (text.length === 0) {
-      this.pressEnter();
-      return;
-    }
-    this.log(`${this.prompt} ${text}`);
-    if (this.internals.selReq) {
-      const handled = this.selectionKeyword ? this.selectionKeyword(text, this.internals.selReq.ids) : false;
-      if (handled || text.toUpperCase() === 'ALL') {
-        if (!handled) for (const e of this.doc.entities) this.internals.selReq.ids.add(e.id);
-        this.selection = new Set(this.internals.selReq.ids);
-        this.emit('selection');
-        this.render();
-        this.log(`${this.internals.selReq.ids.size} found`);
-      } else this.log('Expects a point or Window/Last/Crossing/BOX/ALL/Fence/WPolygon/CPolygon/Add/Remove/Previous/Undo');
-      return;
-    }
-    if (this.tool) {
-      if (this.acceptsFreeText()) {
-        this.tool.onText(raw, this.makeContext());
-        return;
-      }
-      const p = this.parsePoint(text);
-      if (p) {
-        this.acceptPoint(p);
-        return;
-      }
-      const num = parseFloat(text);
-      if (this.tool.acceptsDistance && isPlainNumber(text) && Number.isFinite(num) && this.overlay.trackFrom && this.internals.cursorWorld) {
-        // direct distance entry along the cursor direction
-        const dir = constrainDirection(this.overlay.trackFrom, this.internals.cursorWorld, this.snap);
-        const ang = g.angleOf(this.overlay.trackFrom, dir);
-        this.acceptPoint(g.polar(this.overlay.trackFrom, ang, num));
-        return;
-      }
-      this.tool.onText(text, this.makeContext());
-      return;
-    }
-    this.runCommand(text);
+    prompter.submitInput(this, this.internals, raw);
   }
 
   pressEnter(): void {
-    if (this.internals.selReq) {
-      const req = this.internals.selReq;
-      this.internals.selReq = null;
-      this.updateCursorMode();
-      const ids = [...req.ids];
-      this.setPrompt('');
-      req.onDone(ids);
-      return;
-    }
-    if (this.tool) {
-      this.tool.onEnter(this.makeContext());
-      return;
-    }
-    if (this.lastCommandLine) this.runCommand(this.lastCommandLine);
+    prompter.pressEnter(this, this.internals);
   }
 
   /** Parse absolute "x,y", relative "@dx,dy" and polar "@d<a" input. */
   parsePoint(text: string): Point | null {
-    return parsePointInput(text, this.lastPoint ?? { x: 0, y: 0 });
-  }
-
-  private acceptPoint(p: Point): void {
-    this.lastPoint = p;
-    this.internals.acquired = [];
-    this.overlay.acquired = undefined;
-    this.overlay.trackPaths = undefined;
-    this.tool?.onPoint(p, this.makeContext());
-    this.emit('tool');
+    return prompter.parsePoint(this, text);
   }
 
   dynamicInput = true;
@@ -657,7 +485,7 @@ export class Editor {
         this.overlay.selectionBox = { a: this.internals.dragWorld, b: raw, mode: s.x >= this.internals.dragStart.x ? 'window' : 'crossing' };
       }
     } else if (this.tool) {
-      this.tool.onMove(world, this.makeContext());
+      this.tool.onMove(world, prompter.makeContext(this, this.internals));
     } else if (this.layoutInput.hoverBlocked?.(s)) {
       this.overlay.hover = null;
     } else {
@@ -686,7 +514,7 @@ export class Editor {
     if (!this.internals.selReq && this.layoutInput.mouseDown?.(s)) return;
     const { world } = this.resolveCursor(s);
     if (this.tool && !this.internals.selReq) {
-      this.acceptPoint(world);
+      prompter.acceptPoint(this, this.internals, world);
       return;
     }
     // Selection (default tool or selection request)
@@ -731,7 +559,7 @@ export class Editor {
       this.overlay.ghost = [];
       this.overlay.trackFrom = null;
       this.overlay.dynText = [];
-      this.updateCursorMode();
+      prompter.updateCursorMode(this, this.internals);
       this.setPrompt('Type a command');
       if (moved) this.doc.replaceEntities([moved]);
       this.render();
@@ -877,7 +705,7 @@ export class Editor {
       const k = key.toLowerCase();
       if (k === 'z') {
         if (!ev.shiftKey && this.tool && (this.tool.name === 'LINE' || this.tool.name === 'PLINE' || this.tool.name === 'AEWIRE')) {
-          this.tool.onText('U', this.makeContext()); // stay in the command, undo the last segment
+          this.tool.onText('U', prompter.makeContext(this, this.internals)); // stay in the command, undo the last segment
           return true;
         }
         this.runCommand(ev.shiftKey ? 'REDO' : 'UNDO');
