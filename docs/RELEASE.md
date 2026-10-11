@@ -53,8 +53,9 @@ it renders the footer's macOS sentence and the **Verified build** list from that
 rewritten page keeps them; older releases get a neutral macOS sentence. Pasting by hand (**Edit**,
 paste, **Update release**) works too. `docs/releases/v0.4.2.md` keeps the 0.4.2 notes
 (`node scripts/release-notes.mjs v0.4.2 --strict --mac-signing developer-id-notarized --out docs/releases/v0.4.2.md`),
-the text the release workflow publishes before the **Verified build** list;
-`tests/release-notes.test.ts` checks both files against `CHANGELOG.md`.
+the text the release workflow publishes before the **Verified build** list.
+`docs/releases/v0.4.3.md` keeps the new release's notes, generated with the same command for v0.4.3;
+`tests/release-notes.test.ts` checks all three snapshots against `CHANGELOG.md`.
 
 The manual **Packaged smoke test (existing release)** workflow re-runs the packaged checks
 against the installers attached to any published release (for example after a runner image or

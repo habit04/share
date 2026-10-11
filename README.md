@@ -32,7 +32,7 @@ tagged builds are attached to a GitHub Release only after all release gates pass
 Azure signing credentials for Windows and Apple Developer ID/notarization credentials for macOS;
 missing credentials fail the release. The workflow verifies the Windows installer and app against the
 configured publisher (Justin Rodriguez), and both macOS architectures' Developer ID, hardened runtime,
-notarization and Gatekeeper checks. macOS 0.4.2 requires macOS 13 Ventura or later. Verified notarized
+notarization and Gatekeeper checks. macOS 0.4.2 and later require macOS 13 Ventura or later. Verified notarized
 builds ordinarily open after the normal downloaded-app confirmation.
 
 An empty-tag build-only rehearsal with `require_signing` disabled may produce unsigned Windows or
@@ -168,7 +168,7 @@ npm run e2e:packaged -- <app executable>   # the same end-to-end checks on a pac
 npm run bench:node && npm run bench   # interactive performance on a 50,000-entity drawing (docs/PERFORMANCE.md)
 npm run build && npm run e2e:flows    # multi-launch flows: close / quit matrix, crash + recovery, open, project-wide commands, save errors
 npm run icons                         # redraw the application icon (build/icon.*, build/icons/, public/favicon.svg, site/img/icon.svg)
-npm run release-notes -- v0.4.2       # the GitHub release body for a tag, from CHANGELOG.md
+npm run release-notes -- v0.4.3       # the GitHub release body for a tag, from CHANGELOG.md
 ```
 
 **CI** (`.github/workflows/ci.yml`) runs three jobs on every push and pull request: `test` (workflow

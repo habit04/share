@@ -101,10 +101,10 @@ describe('release notes from CHANGELOG.md', () => {
     expect(n).toMatch(/^### /m);
     expect(n).not.toMatch(/^## \[/m);
     // docs/releases/v0.4.0.md is exactly what the script makes for v0.4.0 (pasted into that release;
-    // its macOS builds were ad-hoc signed), docs/releases/v0.4.2.md what it makes for v0.4.2, whose
-    // macOS builds are Developer ID signed and notarized (the release page adds the Verified build list).
+    // its macOS builds were ad-hoc signed). The newer snapshots use the Developer ID/notarized
+    // publication policy (the release page adds the actual Verified build list after its gates).
     // Normalize checkout line endings while keeping both snapshots otherwise exact.
-    const signing = { 'v0.4.0': 'ad-hoc', 'v0.4.2': 'developer-id-notarized' };
+    const signing = { 'v0.4.0': 'ad-hoc', 'v0.4.2': 'developer-id-notarized', 'v0.4.3': 'developer-id-notarized' };
     for (const [tag, macSigning] of Object.entries(signing)) {
       expect(readFileSync(new URL(`../docs/releases/${tag}.md`, import.meta.url), 'utf8').replace(/\r\n/g, '\n')).toBe(releaseNotes(real, tag, undefined, { macSigning }));
     }
@@ -112,5 +112,9 @@ describe('release notes from CHANGELOG.md', () => {
     const v042 = releaseNotes(real, 'v0.4.2', undefined, { macSigning: 'developer-id-notarized' });
     expect(v042.startsWith('### Upgrade notes\n')).toBe(true);
     expect(v042).not.toContain('Open Anyway');
+    const current = releaseNotes(real, `v${pkg.version}`, undefined, { macSigning: 'developer-id-notarized' });
+    expect(current.startsWith('### Upgrade notes\n')).toBe(true);
+    expect(current).toContain(`jcad-electrical-${pkg.version}-win-x64.exe`);
+    expect(current).not.toContain('Open Anyway');
   });
 });

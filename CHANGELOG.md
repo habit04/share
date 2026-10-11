@@ -11,9 +11,70 @@ messages). The date of each version is the date of the commit that set that vers
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.4.3] - 2026-10-11
+
+### Upgrade notes
+
+- **macOS 13 Ventura or later remains required.** Macs on macOS 11 or 12 should keep 0.4.1.
+- **After installing 0.4.3**, signed Windows NSIS updates install only after **Restart Now**.
+  Choosing **Later** and quitting normally does not install an update. macOS and Linux use
+  manual downloads; older installed versions retain their own update behaviour.
+- Drawings (DXF/DWG) are limited to **128 MiB** and project JSON files to **8 MiB**. Files and
+  expanded geometry exceeding the supported limits are refused with an explanation.
+
+### Fixed
+
+- Saves and backups through linked folders, junctions and native path aliases identify the same
+  destination. Writes to that destination run in invocation order; changing an alias while a
+  write is queued refuses the write. Project-derived DXF paths keep their folder restrictions.
+- Geometry budgets cover imports, edits, undo/redo, library changes and active or background
+  project sheets before changing state or writing a batch. Rejected changes preserve the
+  drawing and history; immutable accepted snapshots keep nested-block caches safe to reuse.
+- Malformed DXF numeric tokens and HATCH collection counts cannot become plausible geometry
+  or unbounded parsing loops. DXF/DWG HATCH and SPLINE work is checked before expensive
+  tessellation or fit interpolation; the guard and sampler share the same integer sample plan.
+- DXF exports retain imported `$AUNITS`, `$CELTSCALE` and `$TEXTSTYLE` values. Import reports
+  disclose unsupported metadata and dimension settings, SHX font substitution, installed font
+  rendering, and approximate text bounds/wrapping and MTEXT column flow.
+- Native file choices and OS hand-over control project write grants. Image reads resolve real
+  paths without extending access through a link outside permitted drawing folders.
+
+### Security
+
+- The renderer uses the secure bundled `jcad://app/index.html` origin, enabling Web Crypto.
+  A bounded one-time migration carries legacy file-origin preferences over without running old
+  application or plugin code. Production ignores development-server overrides.
+- Drawing and project reads/writes have matching byte limits; recovery, library, plugin and
+  catalog data are bounded too. Browser DWG parsing runs in a disposable worker with a 60-second
+  deadline and cancellation; desktop DWG parsing remains in its bounded worker.
+- Plugin trust is remembered only for a SHA-256 digest. Problem reports omit local paths and
+  drawing names unless explicitly included. Trusted plugins still have full renderer access.
+
 ### Changed
 
-- macOS: the update dialog no longer asks for Open Anyway, which notarized builds do not need.
+- macOS update instructions describe manual DMG replacement and direct only blocked first
+  launches to Privacy & Security; notarized builds ordinarily use the normal downloaded-app
+  confirmation.
+- Shipping binaries retain disabled command-line inspection throughout validation, with ASAR
+  integrity checks and debugging-argument refusal. Full packaged Playwright tests use a separate
+  unpublished test ASAR; exact shipping installers run independent save/restart, preference
+  migration and DWG probes on each platform, including both macOS architectures.
+- Publication requires verified Windows publisher signing and macOS Developer ID/notarization.
+  Source-bound provenance includes shipping fuse evidence and every installer, updater feed and
+  external blockmap. Aggregate verification also runs in build-only rehearsals; release notes
+  use the verified signing status and the complete published set receives a GitHub attestation.
+- Performance gates measure cold state acceptance, first geometry preparation and first render,
+  actual full redraws versus cached cursor frames, and filesystem reads, parsing and reports for
+  a reproducible 20-sheet project. Node.js 22.20+ and 24.12+ are supported within those majors.
+
+### Known limitations
+
+- DXF/DWG interchange remains limited to the documented support matrix. The regression exports
+  were checked with AutoCAD 2027 AUDIT and normalized entity counts, which does not certify
+  arbitrary drawings or complete CAD compatibility. Automatic MTEXT column flow remains
+  approximate; native/WASM total memory is not strictly capped.
 
 ## [0.4.2] - 2026-10-11
 
@@ -707,7 +768,8 @@ First release.
 
 - Renamed the application to JCad Electrical.
 
-[Unreleased]: https://github.com/habit04/share/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/habit04/share/compare/v0.4.3...HEAD
+[0.4.3]: https://github.com/habit04/share/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/habit04/share/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/habit04/share/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/habit04/share/compare/v0.3.4...v0.4.0
