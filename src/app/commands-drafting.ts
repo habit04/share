@@ -26,11 +26,6 @@ import { selectTool, qselectTool, selectionKeyword, selectionHistory } from '../
 
 type Reg = (name: string, aliases: string[], description: string, run: (ed: Editor, arg?: string) => void, startsTool?: boolean) => void;
 
-/** Editor.emit is private; view changes made here still need to notify the status bar. */
-function emitView(ed: Editor): void {
-  (ed as unknown as { emit(ev: 'view'): void }).emit('view');
-}
-
 // ------------------------------------------------------------------ helpers
 
 /** AutoCAD wildcard (* ? ,) name matching. */
@@ -92,7 +87,7 @@ function zoomTool(ed: Editor, arg?: string): Tool {
     const vp = ed.viewport;
     const after = () => {
       ed.render();
-      emitView(ed);
+      ed.notify('view');
     };
     const kws = ['All', 'Center', 'Extents', 'Previous', 'Scale', 'Window', 'OBject', 'In', 'Out', 'Dynamic'];
     const applyScale = (t: string): boolean => {
@@ -274,7 +269,7 @@ function viewTool(ed: Editor, arg?: string): Tool {
         vp.center = v.center;
         vp.viewHeight = v.height;
         ed.render();
-        emitView(ed);
+        ed.notify('view');
         return;
       }
       case 'DELETE': {
