@@ -8,10 +8,18 @@ unsigned builds as before (macOS keeps the ad-hoc signature from
 `scripts/afterPack.cjs`). No secret, certificate or key is stored in the
 repository.
 
+Current state: the repository has both sets of secrets, so releases from 0.4.2 on are
+Authenticode signed on Windows and Developer ID signed, hardened and notarized on macOS; the
+Linux packages are not signed. The macOS builds of releases up to 0.4.1 were ad-hoc signed.
+
 The release notes state the signing result each build's verification steps recorded, rather than
-assuming the credentials were there; every platform also publishes a source-SHA / checksum
-record, and the release attaches GitHub's signed provenance bundle (docs/RELEASE.md). That
-attestation is separate from Authenticode, Developer ID and notarization and replaces none of them.
+assuming the credentials were there (the **Verified build** list), and the footer's macOS
+first-launch sentence follows the macOS build's record as well: notarized builds open after the
+usual downloaded-from-the-internet confirmation, ad-hoc builds once through Privacy & Security >
+Open Anyway (`scripts/release-notes.mjs --provenance`). Every platform also publishes a
+source-SHA / checksum record, and the release attaches GitHub's signed provenance bundle
+(docs/RELEASE.md). That attestation is separate from Authenticode, Developer ID and notarization
+and replaces none of them.
 
 | Platform | Service | Secrets (Settings → Secrets and variables → Actions) | Switch |
 | --- | --- | --- | --- |
@@ -173,9 +181,10 @@ When `HAS_APPLE` is true the macOS job skips the unsigned step and runs
    *Developer ID Application* identity. (electron-builder 26's own import passes
    the certificate's password as the keychain password to
    `security set-key-partition-list`, which the macOS 26 runners refuse.)
-   electron-builder then signs the `.app` (both arm64 and x64) with that identity
-   (`CSC_KEYCHAIN`, `CSC_NAME` = its SHA-1; the ad-hoc `afterPack` hook steps
-   aside because `CSC_NAME` is set), submits it to Apple's notary service with
+   electron-builder then runs without `CSC_LINK` / `CSC_KEY_PASSWORD` (so it does
+   not import the certificate a second time) and signs the `.app` (both arm64 and
+   x64) with that identity (`CSC_KEYCHAIN`, `CSC_NAME` = its SHA-1; the ad-hoc
+   `afterPack` hook steps aside because `CSC_NAME` is set), submits it to Apple's notary service with
    `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_TEAM_ID`
    (`@electron/notarize`, `notarytool`), waits, and staples the ticket before
    building the DMGs. The keychain is deleted when the step ends.
@@ -183,6 +192,9 @@ When `HAS_APPLE` is true the macOS job skips the unsigned step and runs
    `codesign --verify --deep --strict`, checks for the Developer ID authority
    and the `runtime` flag, `xcrun stapler validate` and `spctl --assess` on each
    `.app`, and fails the job otherwise.
+4. The build records the signing status `developer-id-notarized` in
+   `JCad-Electrical-macOS-provenance.json` (`ad-hoc` without the secrets); the
+   release job writes the notes' macOS sentence and **Verified build** line from it.
 
 `build/entitlements.mac.plist` grants only what Electron needs under the
 hardened runtime: `allow-jit` and `allow-unsigned-executable-memory` (V8 and

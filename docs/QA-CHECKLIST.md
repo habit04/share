@@ -111,18 +111,20 @@ internet" mark; a copy from a USB stick or network share skips SmartScreen.
 ## 2. macOS (Apple Silicon and Intel)
 
 Download the DMG with Safari or Chrome so it carries the quarantine flag (`xattr -l` on the file
-shows `com.apple.quarantine`). Without the five Apple secrets the build is ad-hoc signed and needs
-the one-time **Open Anyway**; with them it is Developer ID signed and notarized and opens after a
-single confirmation. Check which kind the release is ([section 13](#13-release-sign-off-github-release-page)).
+shows `com.apple.quarantine`). Releases from 0.4.2 on are Developer ID signed, hardened and
+notarized (the release workflow has the five Apple secrets) and open after a single confirmation;
+a build made without the secrets is ad-hoc signed and needs the one-time **Open Anyway**. The
+release notes' **Verified build** list says which kind the release is
+([section 13](#13-release-sign-off-github-release-page)); a release meant to be notarized that
+says "ad-hoc" is not ready.
 
 ### Must pass before release
 
 - [ ] Apple Silicon Mac: `jcad-electrical-X.Y.Z-mac-arm64.dmg`; Intel Mac: `jcad-electrical-X.Y.Z-mac-x64.dmg` → each DMG opens and shows **JCad Electrical** and an Applications link.
-- [ ] Drag the app to Applications, eject the DMG, start it from Applications (ad-hoc build) → macOS 15: "“JCad Electrical” Not Opened. Apple could not verify “JCad Electrical” is free of malware…" with **Done** / Move to Trash; macOS 13–14: "cannot be opened because Apple cannot check it for malicious software" (or "…the developer cannot be verified"). Click Done / OK.
-- [ ] The first-open message never says **"is damaged and can't be opened"** (that means the ad-hoc signature is missing).
-- [ ] System Settings > Privacy & Security > Security → a line about JCad Electrical being blocked with **Open Anyway**; click it, confirm **Open Anyway** again, enter the password or use Touch ID → the app starts.
+- [ ] Drag the app to Applications, eject the DMG, start it from Applications (Developer ID build) → the first start shows only "“JCad Electrical” is an app downloaded from the Internet. Are you sure you want to open it?" with **Open**; no Privacy & Security step. Click Open → the app starts.
+- [ ] The first-open message never says **"is damaged and can't be opened"** (on an ad-hoc build that means the ad-hoc signature is missing).
+- [ ] Ad-hoc build only (no Apple secrets): the first start says, on macOS 15, "“JCad Electrical” Not Opened. Apple could not verify “JCad Electrical” is free of malware…" with **Done** / Move to Trash; on macOS 13–14 "cannot be opened because Apple cannot check it for malicious software" (or "…the developer cannot be verified"). Click Done / OK; then System Settings > Privacy & Security > Security → a line about JCad Electrical being blocked with **Open Anyway**; click it, confirm **Open Anyway** again, enter the password or use Touch ID → the app starts.
 - [ ] Quit and start again → it starts directly, no prompt.
-- [ ] Developer ID build (when signed): the first start shows only "“JCad Electrical” is an app downloaded from the Internet. Are you sure you want to open it?" with **Open**; no Privacy & Security step.
 - [ ] Apple Silicon: Activity Monitor > CPU, column **Kind** → "Apple" for the arm64 build (not "Intel").
 - [ ] First launch → main window with ribbon, command line and model space; menu bar shows a **JCad Electrical** app menu with About and Quit.
 - [ ] Cmd+N, Cmd+O, Cmd+S, Cmd+Shift+S, Cmd+P, Cmd+Z, Cmd+Y → same as the Ctrl shortcuts in the manual.
@@ -187,7 +189,7 @@ Windows, `~/.cache/jcad-electrical-updater/pending/` on Linux).
 - [ ] Windows: no error "New version X.Y.Z is not signed by the application owner" (signer of the new build must equal the old build's publisher).
 - [ ] AppImage: same dialogs → after Restart Now the app runs X.Y.Z; note the AppImage file name afterwards (record whether it was renamed to the new version).
 - [ ] macOS: "Update Available" with **Download** / Release Notes / Later and the text "Download the new disk image, drag the app to Applications to replace this one, then open it once through System Settings > Privacy & Security > Open Anyway." → **Download** opens the DMG for this Mac's architecture (arm64 or x64) in the browser.
-- [ ] macOS: replace the app in Applications with the new one → Open Anyway is asked once more (ad-hoc builds), then About shows X.Y.Z.
+- [ ] macOS: replace the app in Applications with the new one → a Developer ID build opens after the downloaded-from-the-internet confirmation at most (an ad-hoc build asks for Open Anyway once more), then About shows X.Y.Z.
 - [ ] .deb: "Update Available" with "Download and install the new package over this one; your settings and drawings are kept." → **Download** opens the `.deb` download; `sudo apt install ./…` upgrades.
 - [ ] After every update: recent files, Options, window position, the user symbol library and catalog packs are unchanged; an autosave backup made before the update is still offered by the Drawing Recovery Manager.
 - [ ] Help > Check for Updates on the new version → "JCad Electrical X.Y.Z is up to date."
@@ -447,15 +449,15 @@ these sizes for comparison: `.exe` 82 MB, arm64 `.dmg` 101 MB, x64 `.dmg` 108 MB
 - [ ] Tag `vX.Y.Z` equals `package.json` `version` and the `## [X.Y.Z] - date` heading in CHANGELOG.md; `[Unreleased]` is empty or only holds later work.
 - [ ] Actions > **Build installers** run for the tag → all jobs green (Windows, macOS, Linux build and release).
 - [ ] Release title "JCad Electrical vX.Y.Z"; not a draft, not a pre-release; marked **Latest**.
-- [ ] Exactly these 9 assets: `jcad-electrical-X.Y.Z-win-x64.exe`, `jcad-electrical-X.Y.Z-win-x64.exe.blockmap`, `jcad-electrical-X.Y.Z-mac-arm64.dmg`, `jcad-electrical-X.Y.Z-mac-x64.dmg`, `jcad-electrical-X.Y.Z-linux-x86_64.AppImage`, `jcad-electrical-X.Y.Z-linux-amd64.deb`, `latest.yml`, `latest-mac.yml`, `latest-linux.yml`.
+- [ ] Exactly these 17 assets (0.4.2 on): `jcad-electrical-X.Y.Z-win-x64.exe`, `jcad-electrical-X.Y.Z-win-x64.exe.blockmap`, `jcad-electrical-X.Y.Z-mac-arm64.dmg`, `jcad-electrical-X.Y.Z-mac-arm64.dmg.blockmap`, `jcad-electrical-X.Y.Z-mac-x64.dmg`, `jcad-electrical-X.Y.Z-mac-x64.dmg.blockmap`, `jcad-electrical-X.Y.Z-linux-x86_64.AppImage`, `jcad-electrical-X.Y.Z-linux-amd64.deb`, `latest.yml`, `latest-mac.yml`, `latest-linux.yml`, `JCad-Electrical-Windows-provenance.json`, `JCad-Electrical-macOS-provenance.json`, `JCad-Electrical-Linux-provenance.json`, `release-provenance.json`, `release-provenance.sigstore.json`, `SHA256SUMS.txt`.
 - [ ] Asset sizes within about 15 % of the previous release (a much smaller file usually means something was left out).
 - [ ] `latest.yml` (open it in the browser) → `version: X.Y.Z`; `path` and `files[0].url` are `jcad-electrical-X.Y.Z-win-x64.exe`; `size` equals the asset size; `releaseDate` is today.
 - [ ] `latest.yml` `sha512` equals the downloaded `.exe` ([Appendix A](#appendix-a-verification-commands)); the same for `latest-linux.yml` and the AppImage.
 - [ ] `latest-mac.yml` → `version: X.Y.Z` and the DMG names of this release.
 - [ ] Windows signature (Properties > Digital Signatures or `Get-AuthenticodeSignature`) → Status `Valid`, signer **Justin Rodriguez**, timestamped; the installed `JCad Electrical.exe` is signed too.
-- [ ] macOS: `codesign --verify --deep --strict --verbose=2 "/Applications/JCad Electrical.app"` passes; `codesign -dv` shows `Signature=adhoc` (ad-hoc build) or `Authority=Developer ID Application: …` plus `xcrun stapler validate` "The validate action worked!" (signed build). Write down which kind it is.
+- [ ] macOS: `codesign --verify --deep --strict --verbose=2 "/Applications/JCad Electrical.app"` passes; `codesign -dv` shows `Authority=Developer ID Application: …` and `flags=0x10000(runtime)`, `xcrun stapler validate` says "The validate action worked!" and `spctl --assess --type execute --verbose=4` "accepted, source=Notarized Developer ID" (signed build, every release from 0.4.2 on); `Signature=adhoc` means the build was made without the Apple secrets. Write down which kind it is; it must match the release notes.
 - [ ] Linux: `dpkg-deb -I jcad-electrical-X.Y.Z-linux-amd64.deb` → Package `jcad-electrical`, Version `X.Y.Z`.
-- [ ] Release notes (the release body) → filled with the CHANGELOG section of X.Y.Z (the workflow publishes no body; v0.4.0 went out empty, and the update dialog shows these notes).
+- [ ] Release notes (the release body) → the CHANGELOG section of X.Y.Z first (upgrade notes at the top: the update dialog of older versions shows the first 600 characters), then the download footer, whose First launch line matches the macOS build (Developer ID: "signed with a Developer ID and notarized by Apple", no Open Anyway; ad-hoc: Open Anyway), then the **Verified build** list with each platform's signing result (macOS: "Developer ID signature, hardened runtime and notarization verified"). v0.4.0 went out empty; the **Release notes** workflow rewrites a release body and keeps that list.
 - [ ] One fresh install per platform from the published assets (sections 1–3) and one update from the previous release on Windows and AppImage (section 4) done on the published files, not CI artifacts.
 - [ ] Website <https://habit04.github.io/share/> → download buttons point at the X.Y.Z files (allow up to 30 minutes for caches).
 

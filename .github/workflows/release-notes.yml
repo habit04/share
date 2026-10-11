@@ -1,6 +1,10 @@
 # Writes (or rewrites) the notes of an existing GitHub release from its CHANGELOG.md section, with
 # scripts/release-notes.mjs, the same script the release pipeline uses. Run it by hand from the
 # Actions tab for a release page that is empty or out of date (the v0.4.0 page was published empty).
+# A release that published release-provenance.json (0.4.2 on) keeps what the release job wrote from
+# it: the footer's macOS sentence follows the recorded macOS signing (notarized or ad-hoc), and the
+# "Verified build" list is written again from that record. Older releases get the neutral macOS
+# sentence and no such list.
 name: Release notes
 on:
   workflow_dispatch:
@@ -21,8 +25,17 @@ jobs:
           node-version-file: .nvmrc
       - name: Render the notes for the tag
         env:
+          GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event.inputs.tag }}
-        run: node scripts/release-notes.mjs "$TAG" --strict --out release-notes.md
+        run: |
+          assets="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
+          if grep -qx 'release-provenance.json' <<< "$assets"; then
+            gh release download "$TAG" --pattern release-provenance.json --dir provenance
+            node scripts/release-notes.mjs "$TAG" --strict --provenance provenance/release-provenance.json --out release-notes.md
+          else
+            echo "$TAG has no release-provenance.json: neutral macOS sentence, no Verified build list."
+            node scripts/release-notes.mjs "$TAG" --strict --out release-notes.md
+          fi
       - name: Update the release page
         env:
           GH_TOKEN: ${{ github.token }}

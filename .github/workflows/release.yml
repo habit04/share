@@ -9,7 +9,8 @@ name: Build installers
 #   packaged-smoke  each installer installed / extracted on its own OS and driven end to end
 #   release         publishes the installers, only after all of the above passed, and only when
 #                   the release tag points at the commit the checks ran on; the release notes are
-#                   the tag's CHANGELOG.md section (scripts/release-notes.mjs)
+#                   the tag's CHANGELOG.md section (scripts/release-notes.mjs) and the verified
+#                   signing status of each build
 
 on:
   workflow_dispatch:
@@ -417,18 +418,20 @@ jobs:
           else
             echo "Tag $TAG does not exist yet; it will be created at the tested commit $TESTED."
           fi
-      # The release body is the version's CHANGELOG.md section plus the download notes; a tag
-      # without its own section stops the release (scripts/release-notes.mjs --strict).
-      - name: Release notes from CHANGELOG.md
-        env:
-          TAG: ${{ github.event.inputs.tag || github.ref_name }}
-        run: node scripts/release-notes.mjs "$TAG" --strict --out release-notes.md
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
           pattern: JCad-Electrical-*
+      # The release body is the version's CHANGELOG.md section plus the download notes; a tag
+      # without its own section stops the release (scripts/release-notes.mjs --strict). The notes'
+      # macOS first-launch sentence follows the signing status the macOS build recorded
+      # (notarized, or ad-hoc with Open Anyway); the verification below checks that record.
+      - name: Release notes from CHANGELOG.md
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: node scripts/release-notes.mjs "$TAG" --strict --provenance artifacts --out release-notes.md
       # Every platform's provenance matches the tested commit and the bytes downloaded; the
-      # signing status of each build goes into the release notes.
+      # signing status of each build goes into the release notes (the "Verified build" list).
       - name: Verify every platform artifact against the tested source SHA
         env:
           SOURCE_SHA: ${{ needs.checks.outputs.sha }}

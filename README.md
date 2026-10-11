@@ -30,12 +30,13 @@ Ready-made installers are built by the **Build installers** GitHub Actions workf
 images (`.dmg`, Apple Silicon and Intel) and Linux `.AppImage` / `.deb` packages appear as workflow artifacts, and
 tagged builds are attached to a GitHub Release. The Windows installer and app are signed through Azure
 Artifact Signing (publisher: Justin Rodriguez); older unsigned versions, or a new certificate before it has
-built SmartScreen reputation, may still need "More info" then "Run anyway". macOS builds are not signed with an
-Apple certificate, so macOS asks once under System Settings > Privacy & Security > "Open Anyway" (they are
-ad-hoc signed so they are not reported as damaged). When the repository has the five Apple secrets, the release
-workflow signs the macOS build with a Developer ID and notarizes it instead; without them the build
-stays ad-hoc signed. [docs/CODE-SIGNING.md](docs/CODE-SIGNING.md) walks through both platforms (accounts,
-secrets, costs, verification).
+built SmartScreen reputation, may still need "More info" then "Run anyway". The macOS disk images (macOS 13
+Ventura or later) are signed with a Developer ID, built with the hardened runtime and notarized by Apple from
+0.4.2 on, so macOS only asks once whether to open an app downloaded from the internet. Versions up to 0.4.1,
+and any build made without the five Apple secrets, are ad-hoc signed instead (not reported as damaged, but
+opened once through System Settings > Privacy & Security > "Open Anyway"). Each release's notes list the
+signing every build passed in CI. [docs/CODE-SIGNING.md](docs/CODE-SIGNING.md) walks through both platforms
+(accounts, secrets, costs, verification).
 
 Windows signing switches on only when the repository has all seven secrets `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_SIGNING_ENDPOINT`,
 `AZURE_SIGNING_ACCOUNT`, `AZURE_CERT_PROFILE` and `AZURE_PUBLISHER_NAME` (`scripts/azure-signing.mjs`
@@ -108,8 +109,8 @@ shows the installed version.
   (electron-updater reads the `latest*.yml` metadata that electron-builder attaches to each
   release) and installed when the application restarts.
 - **macOS and Linux .deb** are told when a newer release exists and offered the matching
-  download (in-place replacement on macOS needs a Developer ID signed app, which the ad-hoc
-  signed builds are not).
+  download (in-place replacement on macOS would also need Squirrel.Mac's zip update target,
+  which the builds do not produce; the disk image is installed over the old app).
 
 Update metadata is only written when the `publish` block in `package.json` is present;
 `release.yml` uploads the `.yml` and `.blockmap` files next to the installers.

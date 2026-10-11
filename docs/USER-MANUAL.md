@@ -36,9 +36,9 @@ Download the installer for your system from the project's
 buttons on the website (<https://habit04.github.io/share/>). The file names look like
 `jcad-electrical-<version>-<os>-<arch>.<ext>`.
 
-The Windows installer is signed (publisher: Justin Rodriguez). The macOS and Linux builds are
-not signed with a paid certificate, so macOS asks you once to confirm that you trust the
-download.
+The Windows installer is signed (publisher: Justin Rodriguez). The macOS disk images are signed
+with an Apple Developer ID and notarized by Apple (from version 0.4.2 on). The Linux packages are
+not signed.
 
 ### Windows
 
@@ -59,14 +59,15 @@ stay on the 0.4.1 release page); 0.4.1 still offers newer versions, but they do 
 those systems, so do not replace it.
 
 1. Open the `.dmg` and drag **JCad Electrical** into Applications.
-2. Start it from Applications. The first time, macOS says it cannot verify the developer.
-   Click **Done** (or **Cancel**).
-3. Open **System Settings > Privacy & Security**, scroll down to the message about
-   JCad Electrical and click **Open Anyway**, then confirm with your password.
-4. From now on the app starts normally.
+2. Start it from Applications. The first time, macOS asks whether you want to open an app
+   downloaded from the internet. Click **Open**.
+3. From now on the app starts normally.
 
-The macOS builds are ad-hoc signed so macOS does not report them as "damaged"; they are not
-notarized, which is why step 3 is needed once.
+Versions up to 0.4.1 are not notarized (they are ad-hoc signed, so macOS does not report them as
+"damaged"). The first time you start one of them, macOS says it cannot verify the developer:
+click **Done** (or **Cancel**), open **System Settings > Privacy & Security**, scroll down to the
+message about JCad Electrical, click **Open Anyway** and confirm with your password. The release
+notes of each version say how its macOS build is signed.
 
 ### Linux
 
