@@ -21,10 +21,14 @@ machine, so ranges are given. Shared CI runners are slower; compare runs on the 
 
 CI and the release checks run the dense Node benchmark (`npm run bench:node`) and assert the
 browser benchmark's budgets (`scripts/bench-budgets.mjs`, milliseconds before
-`JCAD_PERF_FACTOR`, which CI sets to 2): load 500, warm render at extents 50, warm zoomed render
-25, median hover 8, median window selection 50. A workload other than 50,000 entities, a window
-selection that selects nothing or a measurement that is not a number fails too. (Budgets and
-gates ported from PR #2, codex/electrical-review-fixes 2f89b0e.)
+`JCAD_PERF_FACTOR`, which CI sets to 2): load 500, full redraw at extents 400, full redraw zoomed
+in 100, the cursor-only frame (the scene copy below) 8, median hover 8, median window selection
+50. A workload other than 50,000 entities, a window selection that selects nothing, a "redraw" no
+slower than the scene copy, or a measurement that is not a number fails too. (Gates ported from
+PR #2, codex/electrical-review-fixes 2f89b0e. Its render budgets, 50 and 25, were met only because
+the benchmark repeated an unchanged frame, which the scene cache answers with a bitmap copy in
+0.5 ms; `scripts/bench.mjs` now drops that copy before each timed redraw, and the budgets are
+about twice the measured redraws: 160 - 230 ms and 26 - 40 ms here.)
 
 Since then, drawings of 200 entities or more keep a bitmap of the drawn scene, so frames that only
 move the cursor, crosshair or snap marker copy it instead of redrawing every entity; the spatial

@@ -106,16 +106,25 @@ const result = await page.evaluate(async () => {
   ov.selection = ed.selection;
   ed.viewport.render(ov); // first draw pays for the geometry caches
   flush();
-  out.renderExtents = await best(() => {
+  // A full redraw: drawings of 200 entities or more keep the drawn scene and copy it when only the
+  // cursor moves (render/viewport.ts), so the copy is dropped before each timed frame - else these
+  // budgets would time a bitmap copy (0.5 ms) and miss any slowdown of drawing the entities.
+  const vp = /** @type {any} */ (ed.viewport);
+  const redraw = () => {
+    vp.baseScene = null;
+    ed.viewport.render(ov);
+    flush();
+  };
+  out.renderExtents = await best(redraw, 5);
+  // The frame a cursor move draws on an unchanged view (the scene copy), informational.
+  ed.viewport.render(ov);
+  out.renderCached = await best(() => {
     ed.viewport.render(ov);
     flush();
   }, 5);
   const view = { c: { ...ed.viewport.center }, s: ed.viewport.scale };
   ed.viewport.scale *= 4;
-  out.renderZoomed = await best(() => {
-    ed.viewport.render(ov);
-    flush();
-  }, 5);
+  out.renderZoomed = await best(redraw, 5);
   ed.viewport.center = view.c;
   ed.viewport.scale = view.s;
 
@@ -149,8 +158,9 @@ server.close();
 const fmt = (ms) => `${ms.toFixed(1).padStart(8)} ms`;
 console.log(`bench: ${result.entities} entities (Chromium ${browser.version()}, ${process.platform} ${process.arch})`);
 console.log(`  load (loadState + ZOOM E)  ${fmt(result.load)}`);
-console.log(`  render, whole drawing      ${fmt(result.renderExtents)}`);
-console.log(`  render, zoomed 4x          ${fmt(result.renderZoomed)}`);
+console.log(`  redraw, whole drawing      ${fmt(result.renderExtents)}`);
+console.log(`  redraw, zoomed 4x          ${fmt(result.renderZoomed)}`);
+console.log(`  cursor frame (scene copy)  ${fmt(result.renderCached)}`);
 console.log(`  hover (pick + overlay)     ${fmt(result.hover)}   (median of 60 moves)`);
 console.log(`  window select              ${fmt(result.windowSelect)}   (median of 11 drags, ${result.selected} selected)`);
 if (process.env.JCAD_BENCH_OUT) {
