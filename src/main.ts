@@ -55,7 +55,6 @@ declare global {
       savePdf?(bytes: Uint8Array, suggestName: string): Promise<string | null>;
       saveDxf(path: string | null, text: string, suggestName: string): Promise<string | null>;
       onMenuCommand(cb: (cmd: string) => void): void;
-      onQueryDirty(cb: () => boolean): void;
       /** Close / quit / restart: the main process waits for the Save All workflow's answer (true = close). */
       onCloseRequest?(cb: (context: 'close' | 'quit' | 'restart') => Promise<boolean>): void;
       chooseProjectPath?(suggestName: string): Promise<string | null>;
@@ -563,14 +562,16 @@ function boot(): void {
   });
 
   // ------------------------------------------------------------ autosave + recovery
-  const store = bridge?.autosaveWrite && bridge.autosaveList && bridge.autosaveRead && bridge.autosaveRemove ? bridgeAutosaveStore(bridge as AutosaveBridge) : localAutosaveStore(localStorage);
+  const autosaveStore = bridge?.autosaveWrite && bridge.autosaveList && bridge.autosaveRead && bridge.autosaveRemove ? bridgeAutosaveStore(bridge as AutosaveBridge) : localAutosaveStore(localStorage);
+  // The project's autosave lives in the same store; drawings (autosaver, Drawing Recovery Manager) see only drawing autosaves.
+  const store = drawingAutosaves(autosaveStore);
   const autosaver = new Autosaver(editor.sessions, store, () => editor.settings.autosaveMinutes, (id) => symbolBuilderOf(editor).sessions.has(id));
   autosaver.onSaved = (n) => editor.log(`Autosave: ${n} drawing(s) written.`);
   autosaver.onError = (title, err) => editor.log(`Autosave of ${title} failed: ${err instanceof Error ? err.message : String(err)} (will retry).`);
   autosaver.start();
   editor.on('snap', () => autosaver.restart()); // settings changed (interval may differ)
   // The project's own unsaved changes are autosaved next to the drawings (removed once saved / discarded).
-  const projectAutosaver = new ProjectAutosaver(editor, store, () => editor.settings.autosaveMinutes > 0);
+  const projectAutosaver = new ProjectAutosaver(editor, autosaveStore, () => editor.settings.autosaveMinutes > 0);
   projectAutosaver.onError = (err) => editor.log(`Autosave of the project failed: ${err instanceof Error ? err.message : String(err)}.`);
   editor.on('file', () => {
     if (!editor.doc.dirty && editor.doc.filePath) void autosaver.discardFor(editor.sessions.current.id);
@@ -650,7 +651,7 @@ function boot(): void {
   editor.resize();
 
   window.jcad?.onMenuCommand((c) => editor.runCommand(c));
-  // Unsaved-work guard: the browser prompt, and the Electron close handler asks via this flag.
+  // Unsaved-work guard of the browser build (the desktop app asks through the Save All workflow below).
   window.addEventListener('beforeunload', (ev) => {
     // (The browser build cannot reopen projects, so only drawings count here; the desktop app asks through Save All.)
     if (editor.sessions.anyDirty() && !window.jcad) {
@@ -658,7 +659,6 @@ function boot(): void {
       ev.returnValue = '';
     }
   });
-  window.jcad?.onQueryDirty(() => editor.sessions.anyDirty() || editor.projectDirty);
   // Save All on close / quit / restart: every modified drawing, Symbol Builder tab and the project.
   let closing: Promise<boolean> | null = null;
   const closeWorkflow = (context: 'close' | 'quit' | 'restart'): Promise<boolean> => {
@@ -686,7 +686,6 @@ function boot(): void {
     return closing;
   };
   window.jcad?.onCloseRequest?.(closeWorkflow);
-  (window as unknown as { jcadCloseWorkflow: typeof closeWorkflow }).jcadCloseWorkflow = closeWorkflow;
 
   if (new URLSearchParams(location.search).has('demo')) {
     seedDemoDrawing(editor);
@@ -695,13 +694,13 @@ function boot(): void {
   cmd.focus();
   if (!new URLSearchParams(location.search).has('norecover')) {
     void (async () => {
-      await offerProjectRecovery(editor, store, projectRecoveryDialog, projectAutosaver);
-      await recoveryDialog(editor, drawingAutosaves(store), autosaver);
+      await offerProjectRecovery(editor, autosaveStore, projectRecoveryDialog, projectAutosaver);
+      await recoveryDialog(editor, store, autosaver);
     })();
   }
   // expose for automation / debugging
   (window as unknown as { editor: Editor; jacUi: unknown }).editor = editor;
-  (window as unknown as { jacUi: unknown }).jacUi = { ribbon, cmd, qp, tp, pm, props, clipboard, autosaver, store, projectAutosaver };
+  (window as unknown as { jacUi: unknown }).jacUi = { ribbon, cmd, qp, tp, pm, props, clipboard, autosaver, store, autosaveStore, projectAutosaver };
   void loadPlugins(editor);
 }
 

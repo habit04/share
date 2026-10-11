@@ -130,14 +130,39 @@ describe('save queue', () => {
     expect(await s2).toBe(true);
     expect(ed.doc.dirty).toBe(false);
   });
+  it('a save that finishes after a switch to another tab is applied to the tab that started it', async () => {
+    const d = deferred<string | null>();
+    const writes: Array<string | null> = [];
+    const { ed } = makeEditor({ saveDxf: async (p) => { writes.push(p); return d.promise; } });
+    const a = new Drawing();
+    a.addEntities([text('A1')]);
+    ed.loadState(a.snapshot, '/w/a.dxf');
+    ed.doc.addEntities([text('A2')]);
+    const idA = ed.sessions.current.id;
+    const saving = ed.saveFile(false);
+    await tick();
+    expect(writes).toEqual(['/w/a.dxf']);
+    ed.sessions.add();
+    ed.doc.addEntities([text('B1')]);
+    const idB = ed.sessions.current.id;
+    d.resolve('/w/a.dxf');
+    expect(await saving).toBe(true);
+    const sa = ed.sessions.all.find((s) => s.id === idA)!;
+    const sb = ed.sessions.all.find((s) => s.id === idB)!;
+    expect([sa.dirty, sa.filePath]).toEqual([false, '/w/a.dxf']);
+    expect([sb.dirty, sb.filePath]).toEqual([true, null]);
+    expect(texts(ed.doc.snapshot)).toEqual(['B1']);
+    expect(ed.sessions.current.id).toBe(idB);
+  });
   it('a failed save reports the error and returns false', async () => {
     const { ed } = makeEditor({ saveDxf: async () => Promise.reject(new Error('EACCES: permission denied')) });
     ed.loadState(new Drawing().snapshot, '/w/ro.dxf');
     ed.doc.addEntities([text('X')]);
     expect(await ed.saveFile(false)).toBe(false);
-    expect(ed.lastFileError).toMatch(/EACCES/);
+    // The raw error, or (desktop build) the user message made from it: both name the permission problem.
+    expect(ed.lastFileError).toMatch(/permission/i);
     expect(ed.doc.dirty).toBe(true);
-    expect(ed.history.join('\n')).toMatch(/Save failed: EACCES/);
+    expect(ed.history.join('\n')).toMatch(/Save failed: .*permission/i);
   });
 });
 
@@ -476,6 +501,6 @@ describe('Save All when closing', () => {
     ed.fileBridge!.saveDxf = async () => Promise.reject(new Error('ENOSPC: no space left on device'));
     const log2: string[] = [];
     expect(await runCloseWorkflow(ed, deps((items) => ({ action: 'save', keys: new Set(items.map((i) => i.key)) }), log2), (id) => id === symbolId)).toBe(false);
-    expect(log2.at(-1)).toMatch(/^error:Drawing2\.dxf:ENOSPC/);
+    expect(log2.at(-1)).toMatch(/^error:Drawing2\.dxf:.*space/);
   });
 });

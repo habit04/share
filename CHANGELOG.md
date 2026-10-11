@@ -37,7 +37,8 @@ messages). The date of each version is the date of the commit that set that vers
 - A slow open finishes in the tab that started it even if you switch tabs meanwhile (or opens in
   a new tab if that tab was edited); `RECENT` no longer replaced the active drawing when the file
   took a moment to load. Saves to the same file are queued, and an older save never overwrites a
-  newer one. A failed save is reported instead of being lost as an unhandled error.
+  newer one. A failed save (drawing, project or CSV export) is reported on the command line instead
+  of being lost as an unhandled error.
 
 ### Added
 

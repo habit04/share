@@ -216,7 +216,7 @@ keywords shown in `[brackets]` are clickable.
 | AEREPORT [bom/components/wires/labels/plc/missing/terminals/strip/cables/panel/panelhw/audit] | REPORT, BOM | Reports: drawing or project-wide, CSV export, "Put on Drawing" table (panelhw = Panel Hardware) |
 | AEAUDIT | AUDIT | Electrical Audit dialog with jump-to-error |
 | NEWSHEET | TEMPLATE | New drawing from an ANSI / ISO sheet template with title block |
-| OPENPROJECT, PROJECTADD, PROJECTSAVE | PROJECT | Project files (`*.jcadproj.json`) listing drawings, description lines and settings |
+| OPENPROJECT, NEWPROJECT, PROJECTADD, PROJECTSAVE, PROJECTSAVEAS | PROJECT | Project files (`*.jcadproj.json`) listing drawings, description lines and settings |
 | NEW, OPEN, SAVE, SAVEAS, PLOT, PRINT, RECENT | Ctrl+N / O / S / Shift+S / P / Shift+P | Files: DXF and DWG open, DXF save, PDF plot (vector by default; the Model tab, the current layout or all layouts), print through the system dialog (the browser edition builds the PDF in the page and prints through the browser's dialog). NEW / OPEN work in file tabs |
 | LAYOUT [Copy/Delete/New/Template/Rename/Set/?], LAYOUTWIZARD, PAGESETUP | LO | Paper-space layouts: a sheet with its paper size, orientation, margins, plot scale and plot style; the wizard adds a sheet border and title block |
 | MODEL, TILEMODE, MSPACE, PSPACE | MS, PS | Model tab / layouts; work inside a floating viewport (MSPACE) or on the paper (PSPACE) |

@@ -268,3 +268,26 @@ describe('drawings are identified by full path', () => {
     expect(tb(f.editor.doc.snapshot)).toBe('1 OF 2');
   });
 });
+
+describe('a drawing shown in a layout tab', () => {
+  it('gets the change in model space and keeps its layout tab', async () => {
+    const f = fake({ ...base, drawings: ['a.dxf'], files: {} });
+    const doc = f.editor.doc;
+    const layoutName = doc.layouts[0]!.name;
+    doc.setSpace({ layout: layoutName });
+    const modelCount = doc.snapshot.entities.length;
+    const paperCount = doc.entities.length;
+    const { sheets } = await loadProjectSheets(f.editor, { files: false });
+    // Calculations see model space, not the paper entities of the layout.
+    expect(sheets[0]!.doc.snapshot.space).toBeUndefined();
+    expect(sheets[0]!.doc.entities).toHaveLength(modelCount);
+    const changes = new Map([[0, { state: { ...sheets[0]!.doc.snapshot, entities: [...sheets[0]!.doc.snapshot.entities, note('ADDED')] }, detail: 'add' }]]);
+    const r = await commitSheets(f.editor, sheets, changes, 'T', 'I');
+    expect(r!.open).toBe(1);
+    expect(doc.space?.layout).toBe(layoutName);
+    expect(doc.snapshot.entities).toHaveLength(modelCount + 1);
+    expect(doc.snapshot.entities.some((e) => e.type === 'text' && e.text === 'ADDED')).toBe(true);
+    expect(doc.entities).toHaveLength(paperCount); // the paper space is untouched
+    expect(doc.dirty).toBe(true);
+  });
+});

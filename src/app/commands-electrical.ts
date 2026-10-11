@@ -69,6 +69,7 @@ import { findRails, nearestReference, rungReferences } from '../electrical/ladde
 import { projectDrawingIndex, projectEntryFor, resolveDrawingPath, resolveProjectPath, baseName } from './project';
 import { samePath, shortNames } from './paths';
 import { captureRevision, contentHash, saveQueue } from './savequeue';
+import { fileErrorText } from './file-error-text';
 import { readDxf, writeDxf } from '../io/dxf';
 import { convertDwg } from '../io/dwg';
 import type { ElectricalUi } from '../electrical/ui';
@@ -137,7 +138,15 @@ async function buildReport(editor: Editor, key: string, projectWide: boolean): P
 }
 
 async function saveCsv(editor: Editor, name: string, csv: string): Promise<string | null> {
-  if (editor.fileBridge?.saveText) return editor.fileBridge.saveText(name, csv, 'CSV', 'csv');
+  if (editor.fileBridge?.saveText) {
+    try {
+      return await editor.fileBridge.saveText(name, csv, 'CSV', 'csv');
+    } catch (err) {
+      // A write error is reported on the command line instead of being lost as an unhandled rejection.
+      editor.log(`${name} not saved: ${fileErrorText(err, { action: 'save', path: name })}`);
+      return null;
+    }
+  }
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
   a.download = name;
@@ -695,7 +704,7 @@ export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[
       else if (r.value) written += 1;
       else failed.push(sh.name);
     } catch (err) {
-      failed.push(`${sh.name} (${(err as Error).message})`);
+      failed.push(`${sh.name} (${fileErrorText(err, { action: 'save', path })})`);
     }
   }
   if (open) editor.notify('file');

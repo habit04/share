@@ -156,7 +156,7 @@ try {
     return j ? { keys: Object.keys(j).sort(), platform: j.platform } : null;
   });
   check(!!bridge, 'window.jcad bridge exists');
-  for (const k of ['openDrawing', 'openDxf', 'saveDxf', 'plotPdf', 'printDrawing', 'appInfo', 'checkForUpdates', 'onMenuCommand', 'onQueryDirty', 'autosaveWrite', 'userLibraryRead', 'packsList', 'readImage']) check(bridge?.keys.includes(k), `bridge exposes ${k}`);
+  for (const k of ['openDrawing', 'openDxf', 'saveDxf', 'plotPdf', 'printDrawing', 'appInfo', 'checkForUpdates', 'onMenuCommand', 'onCloseRequest', 'chooseProjectPath', 'saveProject', 'backupFile', 'autosaveWrite', 'userLibraryRead', 'packsList', 'readImage']) check(bridge?.keys.includes(k), `bridge exposes ${k}`);
   check(bridge?.platform === process.platform, `bridge platform ${bridge?.platform}`);
   const info = await win.evaluate(() => window.jcad.appInfo());
   check(info.version === pkg.version && info.packaged === false && info.selfUpdate === false, `appInfo ${JSON.stringify(info)}`);

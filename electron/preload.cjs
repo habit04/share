@@ -43,17 +43,6 @@ contextBridge.exposeInMainWorld('jcad', {
   onMenuCommand: (cb) => {
     ipcRenderer.on('menu-command', (_ev, cmd) => cb(String(cmd)));
   },
-  onQueryDirty: (cb) => {
-    ipcRenderer.on('query-dirty', () => {
-      let dirty = false;
-      try {
-        dirty = Boolean(cb());
-      } catch {
-        dirty = false;
-      }
-      ipcRenderer.send('dirty-state', dirty);
-    });
-  },
   /**
    * Close / quit / restart: the main process sends 'close-request' and waits for the Save All
    * workflow. The request is acknowledged at once (so a hung page can be told apart from a user

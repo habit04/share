@@ -20,6 +20,7 @@ import { PlcModuleTool, SignalArrowTool, TerminalStripTool, DEFAULT_PLC, DEFAULT
 import { gripPoints, moveGrip } from '../core/entities';
 import { parseProject, serializeProject, defaultProject, resolveDrawingPath, baseName, projectDrawingIndex, projectEntryFor, rebaseProject, type Project } from './project';
 import { captureRevision, saveQueue } from './savequeue';
+import { fileErrorText } from './file-error-text';
 import { loadSettings, saveSettings, pushRecent, type UserSettings } from './settings';
 import { SessionManager, applySaveResult } from './sessions';
 import type { ColorSpec } from '../core/entities';
@@ -876,8 +877,10 @@ export class Editor {
         if (path) saveQueue.markCompleted(path, revision);
       }
     } catch (err) {
-      this.lastFileError = (err as Error).message;
-      this.log(`Save failed: ${(err as Error).message}`);
+      // Nothing is marked as saved: the dirty flag (and the autosave copy) stay.
+      const message = fileErrorText(err, { action: 'save', path: target });
+      this.lastFileError = message;
+      this.log(`Save failed: ${message}`);
       return false;
     }
     if (!path) return false;
@@ -1038,8 +1041,10 @@ export class Editor {
         written = { path: p, project: { ...snapshot, path: p } };
       }
     } catch (err) {
-      this.lastFileError = (err as Error).message;
-      this.log(`Project not saved: ${(err as Error).message}`);
+      // Nothing is marked as saved; the project stays modified (and autosaved).
+      const message = fileErrorText(err, { action: 'save', path: snapshot.path });
+      this.lastFileError = message;
+      this.log(`Project not saved: ${message}`);
       return false;
     }
     if (this.projectGen !== gen) {
