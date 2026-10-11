@@ -63,8 +63,10 @@ export async function runCloseWorkflow(editor: CloseEditor, deps: CloseDeps, isS
     if (!decision.keys.has(it.key)) continue;
     const error = await saveItem(editor, deps, it);
     if (error) {
-      editor.log(`Close cancelled: ${it.title} could not be saved (${error}).`);
-      await deps.showError(it.title, error);
+      // File errors arrive as a whole sentence ('"b.dxf" could not be saved: <cause>'): keep the cause only.
+      const reason = error.replace(/^(?:"[^"]*"|The drawing) could not be saved:\s*/, '');
+      editor.log(`Close cancelled: ${it.title} could not be saved (${reason}).`);
+      await deps.showError(it.title, reason);
       return false;
     }
   }

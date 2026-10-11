@@ -220,6 +220,32 @@ describe('opens bind to the tab that started them', () => {
     expect(ed.sessions.all[2]!.filePath).toBe('/w/b.dxf');
     expect(ed.history.join('\n')).toMatch(/in a new tab/);
   });
+  it('an open whose tab was used meanwhile goes to a new tab in the background when the user works elsewhere', async () => {
+    const slow = deferred<OpenResult | null>();
+    const { ed } = makeEditor({ openDrawing: (f) => (f === '/w/b.dxf' ? slow.promise : Promise.resolve({ path: f!, kind: 'dxf', text: dxfWith('C') })) });
+    ed.doc.addEntities([text('WORK')]);
+    const first = ed.sessions.openInTab('/w/b.dxf', (f) => ed.openFile(f));
+    await tick();
+    await ed.sessions.openInTab('/w/c.dxf', (f) => ed.openFile(f)); // reuses the pristine tab made for b.dxf
+    ed.switchSession(0); // back to work
+    ed.doc.addEntities([text('MORE WORK')]);
+    slow.resolve({ path: '/w/b.dxf', kind: 'dxf', text: dxfWith('B') });
+    await first;
+    expect(ed.sessions.all.map((s) => s.filePath)).toEqual([null, '/w/c.dxf', '/w/b.dxf']);
+    expect(ed.sessions.active).toBe(0);
+    expect(texts(ed.doc.snapshot)).toEqual(['WORK', 'MORE WORK']);
+    expect(ed.doc.dirty).toBe(true);
+    expect(ed.sessions.all[2]!.dirty).toBe(false);
+    expect(ed.history.join('\n')).toMatch(/in a new tab in the background/);
+    ed.switchSession(2);
+    expect(texts(ed.doc.snapshot)).toEqual(['B']);
+  });
+  it('a missing file is reported in plain words', async () => {
+    const { ed } = makeEditor({ openDrawing: async () => Promise.reject(new Error("Error invoking remote method 'open-drawing': Error: ENOENT: no such file or directory, open '/w/gone.dxf'")) });
+    await ed.sessions.openInTab('/w/gone.dxf', (f) => ed.openFile(f));
+    expect(ed.history.at(-1)).toMatch(/^Failed to open drawing: "gone\.dxf" could not be read: the file is no longer in "\/w", or that folder is not available/);
+    expect(ed.history.at(-1)).not.toMatch(/invoking remote method/);
+  });
   it('a file already open under another spelling switches to its tab (Windows paths)', async () => {
     let opened = 0;
     const { ed } = makeEditor({
@@ -234,6 +260,54 @@ describe('opens bind to the tab that started them', () => {
     expect(opened).toBe(1);
     expect(ed.sessions.count).toBe(2);
     expect(ed.sessions.active).toBe(0);
+  });
+  it('a file picked in the Open dialog that is already open shows its tab instead of a second copy', async () => {
+    const { ed } = makeEditor({ openDrawing: async (f) => ({ path: f ?? '/w/a.dxf', kind: 'dxf', text: dxfWith('A') }) });
+    await ed.sessions.openInTab('/w/a.dxf', (f) => ed.openFile(f));
+    ed.doc.addEntities([text('UNSAVED IN A')]);
+    ed.sessions.add();
+    ed.doc.addEntities([text('OTHER')]);
+    // OPEN without a path: the dialog answers /w/a.dxf.
+    await ed.sessions.openInTab(undefined, (f) => ed.openFile(f));
+    expect(ed.sessions.all.filter((s) => s.filePath === '/w/a.dxf')).toHaveLength(1);
+    expect(ed.sessions.count).toBe(2);
+    expect(ed.sessions.active).toBe(0);
+    expect(texts(ed.doc.snapshot)).toEqual(['A', 'UNSAVED IN A']);
+    expect(ed.history.join('\n')).toMatch(/already open/);
+  });
+  it('RECENT twice while the file loads opens it once', async () => {
+    const reads: Array<ReturnType<typeof deferred<OpenResult | null>>> = [];
+    const { ed } = makeEditor({
+      openDrawing: () => {
+        const d = deferred<OpenResult | null>();
+        reads.push(d);
+        return d.promise;
+      },
+    });
+    ed.doc.addEntities([text('WORK')]);
+    const first = ed.sessions.openInTab('/w/b.dxf', (f) => ed.openFile(f));
+    await tick();
+    const second = ed.sessions.openInTab('/w/b.dxf', (f) => ed.openFile(f));
+    await tick();
+    for (const r of reads) r.resolve({ path: '/w/b.dxf', kind: 'dxf', text: dxfWith('B') });
+    await Promise.all([first, second]);
+    expect(ed.sessions.all.filter((s) => s.filePath === '/w/b.dxf')).toHaveLength(1);
+    expect(ed.sessions.count).toBe(2);
+  });
+  it('re-opening the file into the tab that holds it (a reload) still replaces it', async () => {
+    const { ed } = makeEditor({ openDrawing: async (f) => ({ path: f!, kind: 'dxf', text: dxfWith('FROM DISK') }) });
+    ed.loadState(new Drawing().snapshot, '/w/a.dxf');
+    await ed.openFile('/w/a.dxf');
+    expect(texts(ed.doc.snapshot)).toEqual(['FROM DISK']);
+    expect(ed.sessions.count).toBe(1);
+  });
+  it('a file that fails to open is not added to the recent list', async () => {
+    const { ed } = makeEditor({ openDrawing: async (f) => ({ path: f!, kind: 'dxf', text: '0\nSECTION\n2\nENTITIES\n0\nLINE\n8\n0\n1O\n0.0\n0\nENDSEC\n0\nEOF\n' }) });
+    const before = ed.settings.recentFiles.slice();
+    await ed.sessions.openInTab('/w/broken.dxf', (f) => ed.openFile(f));
+    expect(ed.history.join('\n')).toMatch(/Failed to open drawing/);
+    expect(ed.settings.recentFiles).toEqual(before);
+    expect(ed.sessions.count).toBe(1);
   });
   it('tabs with equal file names in different folders show their folder', async () => {
     const { ed } = makeEditor({ openDrawing: async (f) => ({ path: f!, kind: 'dxf', text: dxfWith('A') }) });
@@ -502,5 +576,12 @@ describe('Save All when closing', () => {
     const log2: string[] = [];
     expect(await runCloseWorkflow(ed, deps((items) => ({ action: 'save', keys: new Set(items.map((i) => i.key)) }), log2), (id) => id === symbolId)).toBe(false);
     expect(log2.at(-1)).toMatch(/^error:Drawing2\.dxf:.*space/);
+    // ... once: "a.dxf could not be saved: there is not enough free space", not the file name twice
+    ed.switchSession(0);
+    ed.doc.addEntities([text('A2')]);
+    const log3: string[] = [];
+    expect(await runCloseWorkflow(ed, deps((items) => ({ action: 'save', keys: new Set(items.map((i) => i.key)) }), log3), (id) => id === symbolId)).toBe(false);
+    expect(log3.at(-1)).toMatch(/^error:a\.dxf:there is not enough free space/);
+    expect(ed.history.at(-1)).toMatch(/^Close cancelled: a\.dxf could not be saved \(there is not enough free space/);
   });
 });

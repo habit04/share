@@ -204,6 +204,16 @@ export class SessionManager {
     return this.activeIndex;
   }
 
+  /** Open a new tab without switching to it (an open that finished while the user works in another tab). Returns its index. */
+  addInBackground(state: DrawingState, filePath: string | null = null, dirty = false): number {
+    this.sync();
+    const s = this.make(state, filePath);
+    s.dirty = dirty;
+    this.list.push(s);
+    this.onChange?.();
+    return this.list.length - 1;
+  }
+
   /** Close tab `i` (the caller has already confirmed discarding changes). */
   close(i: number, next?: number): void {
     if (i < 0 || i >= this.list.length) return;
