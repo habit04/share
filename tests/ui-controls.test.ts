@@ -60,7 +60,7 @@ describe('ribbon commands', () => {
   // read from the sources so the check needs no DOM-backed Editor.
   const registered = (() => {
     const names = new Set<string>();
-    const files = ['src/main.ts', ...['src/app', 'src/tools'].flatMap((dir) => readdirSync(dir).filter((n) => n.endsWith('.ts')).map((n) => join(dir, n)))];
+    const files = ['src/main.ts', ...['src/app', 'src/app/editor', 'src/tools'].flatMap((dir) => readdirSync(dir).filter((n) => n.endsWith('.ts')).map((n) => join(dir, n)))];
     for (const f of files) {
       const src = readFileSync(f, 'utf8');
       for (const m of src.matchAll(/\breg\(\s*'([^']+)'\s*,\s*\[([^\]]*)\]/g)) {
