@@ -37,8 +37,8 @@ export class SaveQueue {
   /**
    * Run `write` after every earlier write to `path` has settled. When a newer revision has
    * completed for the path in the meantime, `write` is not called and the result is 'stale'.
-   * `write` may return the path it actually wrote (a dialog may have chosen another one);
-   * strings are recorded as completed too.
+   * `write` may return the path it actually wrote (a dialog may have chosen another one); then
+   * that path, not `path`, is recorded as completed.
    */
   run<T>(path: string, revision: number, write: () => Promise<T>): Promise<QueuedResult<T>> {
     const k = pathKey(path);
@@ -63,8 +63,10 @@ export class SaveQueue {
     }
     const value = await write();
     if (value !== null && value !== undefined && (value as unknown) !== false) {
-      this.completed.set(k, Math.max(this.completed.get(k) ?? 0, revision));
-      if (typeof value === 'string' && pathKey(value) !== k) this.markCompleted(value, revision);
+      // A returned path is the file actually written (a dialog may have picked another one): only
+      // that file holds this revision; the requested one is unchanged.
+      if (typeof value === 'string') this.markCompleted(value, revision);
+      else this.completed.set(k, Math.max(this.completed.get(k) ?? 0, revision));
     }
     return { status: 'written', value };
   }
