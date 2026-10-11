@@ -6,7 +6,10 @@
  * expressions gave (checked against them on random text) in bounded time on 10 MB inputs.
  */
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { tokenize } from '../src/io/dxf/groups';
+import { decodeDxfBytes } from '../src/io/encoding';
 import { readDxf } from '../src/io/dxf';
 import { evaluateFields, replaceFields, splitArgs } from '../src/core/fields';
 
@@ -103,3 +106,54 @@ describe('field expressions in linear time (E-6)', () => {
     expect(replaceFields('%<\\AcExpr (%<\\AcVar Date>%)>%', (k) => `<${k}>`)).toBe('%<\\AcExpr (<AcVar>)>%');
   });
 });
+
+describe('on every committed DXF fixture the linear scanners give what the expressions gave (E-6)', () => {
+  const root = join(import.meta.dirname, '..');
+  const manifest = JSON.parse(readFileSync(join(root, 'tests', 'fixtures', 'manifest.json'), 'utf8')) as { files: string[] };
+  const fixtures = manifest.files.filter((f) => f.endsWith('.dxf'));
+  // The expressions the scanners replace, as they were before E-6.
+  const FIELD_RE = /%<\\([A-Za-z_]+)(?:\.[\d.]+)?\s+((?:(?!%<|>%)[\s\S])*?)>%/g;
+  const regexReplace = (text: string, fn: (kind: string, args: string) => string) => text.replace(FIELD_RE, (_m, kind: string, args: string) => fn(kind, args));
+  const regexSplit = (args: string) => {
+    const m = /^(.*?)\s*\\f\s*"([^"]*)"\s*$/.exec(args.trim());
+    return m ? { name: m[1]!.trim(), format: m[2]! } : { name: args.trim(), format: null };
+  };
+
+  it('covers every DXF of the fixture manifest, the AutoCAD-written one with field expressions among them', () => {
+    expect(fixtures.length).toBeGreaterThanOrEqual(20);
+    expect(fixtures).toContain('fixtures/example_2000.dxf');
+  });
+
+  it.each(fixtures)('%s', (file) => {
+    const text = decodeDxfBytes(readFileSync(join(root, file))).text;
+    const lines = text.split(/\r\n|\r|\n/);
+    // Tokenizer: each value as the old /\s+$/ trim left it (text chunks 1 / 3 / 304 untrimmed).
+    let pairs: ReturnType<typeof tokenize> = [];
+    try {
+      pairs = tokenize(text, true);
+    } catch {
+      pairs = []; // a broken fixture the recovering tokenizer still refuses: the lines below still run
+    }
+    // (Pairs the recovering tokenizer adds to close a broken file have no line of their own.)
+    const fromFile = pairs.filter((p) => p.line !== undefined && p.line < lines.length && Number(lines[p.line - 1]!.trim()) === p.code && !(p.line === lines.length - 1 && lines[p.line] === ''));
+    if (!file.includes('/broken/')) expect(fromFile.length).toBeGreaterThan(0);
+    // The two trims agree on every line, also of files the tokenizer refuses.
+    for (const line of lines) expect(line.trimEnd()).toBe(line.replace(/\s+$/, ''));
+    for (const p of fromFile) {
+      const raw = lines[p.line!]!;
+      expect(p.value, `${file}:${p.line! + 1}`).toBe(p.code === 1 || p.code === 3 || p.code === 304 ? raw : raw.replace(/\s+$/, ''));
+    }
+    // Field expressions: every line and the whole text (expressions may span chunks), and the
+    // "name \f "format"" split of every expression found.
+    const seen: string[] = [];
+    const fn = (kind: string, args: string) => {
+      seen.push(args);
+      return `[${kind}|${args}]`;
+    };
+    for (const line of lines) expect(replaceFields(line, fn)).toBe(regexReplace(line, (k, a) => `[${k}|${a}]`));
+    expect(replaceFields(text, fn)).toBe(regexReplace(text, (k, a) => `[${k}|${a}]`));
+    for (const args of seen) expect(splitArgs(args), JSON.stringify(args)).toEqual(regexSplit(args));
+    if (file === 'fixtures/example_2000.dxf') expect(seen.length).toBeGreaterThan(0);
+  });
+});
+
