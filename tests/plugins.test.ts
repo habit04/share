@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Editor as EditorType } from '../src/app/editor';
 import type { InsertEntity, TextEntity } from '../src/core/entities';
-import { PluginHost, TRUST_KEY, parseManifest, sourceFromFiles, codeHash, evaluatePlugin, registerPluginCommands, pluginHost, loadPlugins, type PluginsBridge, type StorageLike } from '../src/app/plugins';
+import { PluginHost, TRUST_KEY, parseManifest, sourceFromFiles, codeHash, evaluatePlugin, registerPluginCommands, pluginHost, loadPlugins, pluginNameFromStack, type PluginsBridge, type StorageLike } from '../src/app/plugins';
 import { createApi } from '../src/app/api';
 
 let Editor: typeof EditorType;
@@ -16,6 +16,14 @@ beforeAll(async () => {
 const canvas = () => ({ getContext: () => ({}), getBoundingClientRect: () => ({ width: 800, height: 600, left: 0, top: 0 }), width: 0, height: 0 }) as unknown as HTMLCanvasElement;
 const makeEditor = () => new Editor(canvas());
 const tick = () => new Promise((r) => setTimeout(r, 0));
+/** Wait until `cond()` holds (plugin loading awaits WebCrypto, which can take several ticks on a busy machine). */
+async function until(cond: () => boolean, ms = 5000): Promise<void> {
+  const end = Date.now() + ms;
+  while (!cond()) {
+    if (Date.now() > end) throw new Error('condition not met in time');
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
 
 function memoryStorage(): StorageLike & { data: Map<string, string> } {
   const data = new Map<string, string>();
@@ -138,6 +146,39 @@ describe('PluginHost', () => {
     expect(ed.history).toContain('Plugin folder nomanifest: no plugin.json.');
   });
 
+  it('one bad plugin does not stop the others: throws, hangs, or its trust check fails', async () => {
+    const ed = makeEditor();
+    const bridge = fakeBridge({
+      a_throws: { manifest: manifest('a_throws'), code: "throw new Error('boom');" },
+      b_hangs: { manifest: manifest('b_hangs'), code: "jcad.commands.register({ name: 'HANGCMD', run() {} });\nreturn new Promise(() => {});" },
+      c_good: { manifest: manifest('c_good'), code: "jcad.commands.register({ name: 'GOODCMD', run() { jcad.ui.log('good ran'); } });" },
+      d_confirm: { manifest: manifest('d_confirm'), code: "jcad.commands.register({ name: 'NEVER', run() {} });" },
+      e_good: { manifest: manifest('e_good'), code: "jcad.commands.register({ name: 'GOOD2', run() {} });" },
+    });
+    const confirm = async (name: string) => {
+      if (name === 'd_confirm') throw new Error('dialog failed');
+      return true;
+    };
+    const host = new PluginHost(ed, { bridge, storage: memoryStorage(), confirm, loadTimeoutMs: 100 });
+    const out = await host.loadAll();
+    expect(out.map((p) => `${p.name}:${p.status}`)).toEqual(['a_throws:error', 'b_hangs:error', 'c_good:loaded', 'd_confirm:error', 'e_good:loaded']);
+    expect(host.get('b_hangs')!.error).toMatch(/did not finish within/);
+    expect(host.get('d_confirm')!.error).toMatch(/could not confirm the plugin \(dialog failed\)/);
+    // The hanging plugin keeps nothing it registered; the good ones work.
+    expect(ed.commands.has('HANGCMD')).toBe(false);
+    expect(ed.commands.has('NEVER')).toBe(false);
+    expect(ed.commands.has('GOODCMD') && ed.commands.has('GOOD2')).toBe(true);
+    ed.runCommand('GOODCMD');
+    await until(() => ed.history.includes('good ran'));
+  });
+
+  it('names the plugin behind an uncaught error from its stack', () => {
+    expect(pluginNameFromStack('Error: x\n    at tick (jcad-plugins/numbered-labels.js:12:5)')).toBe('numbered-labels');
+    expect(pluginNameFromStack('at eval (jcad-plugins/script%3Abad.js.js:3:7)')).toBe('script:bad.js');
+    expect(pluginNameFromStack('at main (file:///app/dist/assets/index.js:1:1)')).toBeNull();
+    expect(pluginNameFromStack(undefined)).toBeNull();
+  });
+
   it('reloads a plugin from disk: old commands go, onUnload runs, new code runs', async () => {
     const ed = makeEditor();
     const bridge = fakeBridge({
@@ -255,12 +296,10 @@ describe('plugin commands', () => {
     const picks: Array<Array<{ name: string; text: string }>> = [[{ name: 'hello.js', text: example('hello').code }], [{ name: 's.js', text: "jcad.ui.log('script ran')" }]];
     pluginHost(ed, { bridge: fakeBridge({}), storage: memoryStorage(), confirm: async () => true, pickFiles: async () => picks.shift() ?? [] });
     ed.runCommand('PLUGINLOAD');
-    await tick();
-    await tick();
+    await until(() => ed.commands.has('HELLO'));
     expect(ed.commands.has('HELLO')).toBe(true);
     ed.runCommand('SCRIPTRUN');
-    await tick();
-    await tick();
+    await until(() => ed.history.includes('script ran'));
     expect(ed.history).toContain('script ran');
     ed.runCommand('PLUGINS');
     await tick();

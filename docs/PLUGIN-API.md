@@ -11,11 +11,16 @@ same API is available in the developer console as `window.jcadApi`.
   back through `document.add / replace / remove` or group changes with `document.transact`;
   every change is an undo step like any command (Ctrl+Z works).
 - Errors thrown by plugin code (while loading, in a command, in an event listener, in a
-  rejected promise) are caught and printed on the command line as `[plugin-name] ...`. A
-  plugin cannot crash the editor.
+  rejected promise, in a timer or other callback whose stack points into the plugin) are
+  caught and printed on the command line as `[plugin-name] ...`, and one plugin that fails to
+  load does not stop the others from loading. This is error reporting, not isolation: plugins
+  run in the application page itself (see [Security](#security)), so a plugin that loops
+  forever, exhausts memory or deliberately breaks the page's globals can still freeze or break
+  the editor.
 
 Contents: [Quick start](#quick-start) · [Packaging](#packaging-a-plugin) ·
 [Lifecycle](#lifecycle) · [Commands](#commands) · [Security](#security) ·
+[Capabilities](#capabilities) · [Isolation options](#isolation-options-for-the-future) ·
 [API reference](#api-reference) · [Entities](#entity-objects) · [Examples](#examples)
 
 ## Quick start
@@ -84,8 +89,9 @@ Plugins loaded this way last until the page is closed.
 1. **Start-up.** Every folder in `<app data>/plugins` with a `plugin.json` is loaded, in
    folder-name order. A plugin not trusted yet asks first (see [Security](#security)).
 2. **Load.** The main file runs with `jcad`. Register commands and event listeners here.
-   If it returns a promise, loading waits for it. If it throws (or the promise rejects),
-   everything the plugin registered so far is removed and PLUGINS shows the error.
+   If it returns a promise, loading waits for it (up to 30 seconds). If it throws, the
+   promise rejects or it does not settle in time, everything the plugin registered so far is
+   removed, PLUGINS shows the error, and the next plugin loads as usual.
 3. **Running.** Commands you registered appear in HELP and command completion and run like
    built-in ones (Enter repeats them). Async `run` functions are fine.
 4. **Unload / reload.** `PLUGINRELOAD [name]` reads the folder again and reloads it;
@@ -106,11 +112,26 @@ Plugins loaded this way last until the page is closed.
 
 ## Security
 
-Plugins run inside the application window with the same rights as the application's own
-code: they can read and change every open drawing, save files through the save dialog and
-show dialogs. They **cannot** use Node.js, read arbitrary files (only files the user picks
-with `files.readText`) or reach other web sites (the window's Content-Security-Policy
-allows connections to the application only).
+Plugins execute **in the application page**, the same JavaScript realm as the editor's own
+code, with access to every global of that page: `window`, the DOM, `localStorage`, the
+running editor (`window.editor`, `window.jcadApi`) and the desktop bridge (`window.jcad`).
+The `jcad` object handed to a plugin is the supported, versioned way in; nothing stops a
+plugin from reaching past it. Treat a plugin like any program you install: it has the
+application's rights. What that means in practice is listed under
+[Capabilities](#capabilities).
+
+What a plugin **cannot** do, because the page itself cannot:
+
+- use Node.js (`require`, `process`, the file system): the window is a sandboxed renderer with
+  context isolation;
+- read or write arbitrary files: every file access goes through the main process, which only
+  serves the paths listed under [Capabilities](#capabilities) and checks every request
+  (absolute path, no NUL byte, inside the allowed folders, symbolic links resolved);
+- talk to other web sites: the page's Content-Security-Policy (`default-src 'self'`) allows
+  connections to the application only;
+- use the bridge from another window or frame: the main process accepts IPC only from the
+  application page in the main window's top frame (`electron/ipc-guard.cjs`) and logs refusals
+  in `<app data>/ipc-rejections.log`.
 
 Before a plugin (or script) runs the first time the user is asked:
 
@@ -130,9 +151,45 @@ Content-Security-Policy does not allow that (no `'unsafe-eval'`), so there the c
 handed to the preload bridge (`pluginsEval`, Electron `webFrame.executeJavaScript`) and runs
 in the page with the same single `jcad` argument. The main process only lists and reads
 plugin folders (`plugins-list`, `plugins-read`, `plugins-dir`); names are checked so a plugin
-cannot point outside its own folder.
+cannot point outside its own folder (folder names are checked, and a folder or file that is a
+symbolic link leading outside the plugins folder is refused).
 
 Only install plugins from people you trust, as you would any program.
+
+## Capabilities
+
+A loaded plugin (or SCRIPTRUN script) can:
+
+| Area | Through the `jcad` API | Directly, as code in the page |
+| --- | --- | --- |
+| Drawings | Read every entity, layer, block and header of the active drawing; add, replace and remove entities (undoable); run any command. | Reach `window.editor`: every open tab, the undo history, settings, the viewport. |
+| User interface | Command-line prompts, point and object picks, message boxes, modal dialogs. | Change or overlay any part of the page's DOM. |
+| Files the user picks | `files.readText` (a file the user chooses in the picker). | The bridge's save dialogs (`window.jcad.saveDxf`, `saveText`, `savePdf`): the user picks the target. |
+| Files the user already opened | None. | Save over a drawing or project the user opened or saved through the dialogs (`saveDxf`), copy it to `.bak` (`backupFile`), reopen it by path (`openDrawing`). |
+| Images | None. | Read image files (`.png`, `.jpg`, `.gif`, `.bmp`, `.webp`) in the folder or sub-folders of a file the user chose, or named by a drawing the user opened (`readImage`). |
+| Application data folder | `settings.get / set` for its own keys. | Read and write autosave copies, the user symbol library, catalog packs and the other plugins' code (`autosave*`, `userLibrary*`, `packs*`, `pluginsRead`); read and change `localStorage`, including the trust answers under `jcad.plugins.trusted`. |
+| Links | None. | Open this project's GitHub pages and the donation page in the system browser (`openExternal`). |
+| Application | None. | Ask to quit (`quit`), check for updates. |
+
+Not available at all: Node.js, other files or folders, network access, other processes.
+
+## Isolation options for the future
+
+Plugins share the page today because that keeps the API synchronous and simple (a plugin
+can read the drawing and draw previews without message round trips). Stronger isolation is
+possible and would be an API version change:
+
+- **Web Worker per plugin.** The plugin runs in a worker with no DOM and no `window.jcad`;
+  the `jcad` API becomes asynchronous messages that the page validates. A runaway plugin can
+  be terminated without touching the editor. Prompts and dialogs would be described as data
+  and rendered by the page.
+- **Sandboxed iframe or a separate `BrowserView`** with its own (empty) preload, for plugins
+  that need their own UI; the page talks to it with `postMessage` only.
+- **Permissions in `plugin.json`** (for example `"permissions": ["document.write", "files.read"]`),
+  shown in the trust prompt and enforced by the API host, so a report plugin cannot edit and a
+  drawing tool cannot read files.
+- **Signed plugins**, using the same Ed25519 scheme as catalog packs (docs/CATALOG-PACKS.md),
+  so a changed plugin is detected by signature rather than only by its hash.
 
 ## API reference
 
@@ -221,7 +278,8 @@ Listeners should be quick; they run synchronously after the change.
 | `get('plugin:<key>')` / `set('plugin:<key>', value)` | Your plugin's own settings (any JSON value), kept per plugin. |
 | `keys()` | The readable keys. |
 
-Anything else throws, so a plugin cannot change file lists, window layout or security answers.
+Anything else throws, so `jcad.settings` cannot change file lists, window layout or security
+answers (code in the page can still reach `localStorage` directly; see [Capabilities](#capabilities)).
 
 ### `jcad.files`
 

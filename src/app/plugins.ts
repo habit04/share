@@ -15,8 +15,12 @@
  * localStorage under `jcad.plugins.trusted`, keyed by where the plugin came from and the
  * SHA-256 of its code, so a changed plugin is asked about again.
  *
- * A plugin that throws while loading (or later, in a command or event listener) is reported
- * on the command line with its name; the editor carries on.
+ * Plugins run in the application page (see docs/PLUGIN-API.md, "Security"): they are isolated
+ * from each other only as far as errors go. A plugin that throws while loading, whose load
+ * promise rejects, that does not finish loading within `loadTimeoutMs`, or whose trust check
+ * fails is reported on the command line with its name and marked as failed; loading carries on
+ * with the next plugin. Errors later on (commands, event listeners, rejected promises, timers
+ * and other callbacks whose stack points into the plugin's code) are reported the same way.
  */
 import type { Editor } from './editor';
 import { API_VERSION, createApi, pickTextFile, type ApiHandle, type JcadApi } from './api';
@@ -84,6 +88,41 @@ export interface PluginHostOptions {
   evaluate?(code: string, api: JcadApi, name: string): Promise<unknown>;
   /** File picker for PLUGINLOAD / SCRIPTRUN (default: an <input type=file>). */
   pickFiles?(accept: string, multiple: boolean): Promise<Array<{ name: string; text: string }>>;
+  /** How long a plugin's load may take before it is marked failed and the next one loads (default 30 s). */
+  loadTimeoutMs?: number;
+}
+
+/** Default limit for a plugin's load (its top-level code and the promise it returns). */
+export const PLUGIN_LOAD_TIMEOUT_MS = 30_000;
+
+/** Plugin name from a stack trace or script URL that points into plugin code (`jcad-plugins/<name>.js`). */
+export function pluginNameFromStack(text: string | undefined | null): string | null {
+  // Greedy up to the last ".js" before the line number: the encoded name may itself end in ".js".
+  const m = /jcad-plugins\/([^/\s:)]+)\.js/.exec(String(text ?? ''));
+  if (!m) return null;
+  try {
+    return decodeURIComponent(m[1]!);
+  } catch {
+    return m[1]!;
+  }
+}
+
+/** Resolve `p`, or reject after `ms` with a message naming the plugin. */
+function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  if (!(ms > 0) || !Number.isFinite(ms)) return p;
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`${what} did not finish within ${Math.round(ms / 1000)} s`)), ms);
+    p.then(
+      (v) => {
+        clearTimeout(t);
+        resolve(v);
+      },
+      (e: unknown) => {
+        clearTimeout(t);
+        reject(e);
+      },
+    );
+  });
 }
 
 export const TRUST_KEY = 'jcad.plugins.trusted';
@@ -270,12 +309,38 @@ export function sourceFromFiles(files: ReadonlyArray<{ name: string; text: strin
 
 // ------------------------------------------------------------------ host
 
+/** The most recent PluginHost of each editor (the one uncaught plugin errors are reported to). */
+const currentHost = new WeakMap<Editor, PluginHost>();
+
+/**
+ * Errors that escape a plugin's own callbacks (a timer, a DOM listener, an unhandled promise)
+ * reach the window. When the stack points into plugin code (`jcad-plugins/<name>.js`) they are
+ * reported with the plugin's name, like errors in its commands, instead of surfacing as anonymous
+ * page errors. Installed once per editor.
+ */
+function watchUncaught(editor: Editor): void {
+  if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return;
+  window.addEventListener('error', (ev: ErrorEvent) => {
+    const name = pluginNameFromStack(ev.filename) ?? pluginNameFromStack((ev.error as Error | undefined)?.stack);
+    if (!name) return;
+    ev.preventDefault();
+    currentHost.get(editor)?.reportUncaught(name, ev.error ?? ev.message);
+  });
+  window.addEventListener('unhandledrejection', (ev: PromiseRejectionEvent) => {
+    const name = pluginNameFromStack((ev.reason as Error | undefined)?.stack);
+    if (!name) return;
+    ev.preventDefault();
+    currentHost.get(editor)?.reportUncaught(name, ev.reason);
+  });
+}
+
 export class PluginHost {
   private readonly entries = new Map<string, { info: LoadedPlugin; handle: ApiHandle | null; source: PluginSource }>();
   private readonly bridge: PluginsBridge | null;
   private readonly confirmFn: (name: string, path: string) => Promise<boolean>;
   private readonly storage: StorageLike | null;
   private readonly evaluateFn: (code: string, api: JcadApi, name: string) => Promise<unknown>;
+  private readonly loadTimeoutMs: number;
   readonly pickFiles: (accept: string, multiple: boolean) => Promise<Array<{ name: string; text: string }>>;
 
   constructor(
@@ -287,6 +352,10 @@ export class PluginHost {
     this.storage = opts.storage === undefined ? (typeof localStorage !== 'undefined' ? localStorage : null) : opts.storage;
     this.evaluateFn = opts.evaluate ?? ((code, api, name) => evaluatePlugin(code, api, name, this.bridge));
     this.pickFiles = opts.pickFiles ?? defaultPick;
+    this.loadTimeoutMs = opts.loadTimeoutMs ?? PLUGIN_LOAD_TIMEOUT_MS;
+    const first = !currentHost.has(editor);
+    currentHost.set(editor, this);
+    if (first) watchUncaught(editor);
   }
 
   get hasFolder(): boolean {
@@ -316,6 +385,15 @@ export class PluginHost {
     if (!api) return [];
     for (const c of api.commands.list()) if (c.plugin === name) out.add(c.name);
     return [...out].sort();
+  }
+
+  /** Report an error raised outside the plugin's API callbacks (see watchUncaught). */
+  reportUncaught(name: string, err: unknown): void {
+    const message = err instanceof Error ? err.message : String(err);
+    this.editor.log(`[${name}] ${message}`);
+    const e = this.entries.get(name.toUpperCase());
+    if (e && e.info.status === 'loaded') e.info.error = message;
+    if (typeof console !== 'undefined') console.warn(`[jcad plugin ${name}]`, err);
   }
 
   /** Is this code trusted? Asks when unknown or changed; `ask` = false never asks (declined stays declined). */
@@ -377,7 +455,17 @@ export class PluginHost {
       this.replace(key, { info, handle: null, source: src });
       return info;
     }
-    if (!(await this.trusted(src, reask))) {
+    let trusted: boolean;
+    try {
+      trusted = await this.trusted(src, reask);
+    } catch (err) {
+      info.status = 'error';
+      info.error = `could not confirm the plugin (${err instanceof Error ? err.message : String(err)})`;
+      this.editor.log(`Plugin ${name}: ${info.error}.`);
+      this.replace(key, { info, handle: null, source: src });
+      return info;
+    }
+    if (!trusted) {
       this.editor.log(`Plugin ${name} not loaded (not trusted). PLUGINLOAD${src.folder ? ` ${src.folder}` : ''} asks again.`);
       this.replace(key, { info, handle: null, source: src });
       return info;
@@ -385,7 +473,8 @@ export class PluginHost {
     const handle = createApi(this.editor, name);
     this.replace(key, { info, handle, source: src });
     try {
-      await this.evaluateFn(src.code, handle.api, name);
+      // A load that never settles must not hold up the other plugins.
+      await withTimeout(Promise.resolve(this.evaluateFn(src.code, handle.api, name)), this.loadTimeoutMs, 'loading');
       info.status = 'loaded';
       const cmds = this.commandsOf(name);
       this.editor.log(`Plugin ${name}${info.version ? ` ${info.version}` : ''} loaded${cmds.length ? `: ${cmds.join(', ')}` : ''}.`);
@@ -443,7 +532,7 @@ export class PluginHost {
       try {
         out.push(await this.load(await this.readFolder(f.folder)));
       } catch (err) {
-        this.editor.log(`Plugin folder ${f.folder}: ${(err as Error).message}.`);
+        this.editor.log(`Plugin folder ${f.folder}: ${err instanceof Error ? err.message : String(err)}.`);
       }
     }
     return out;
@@ -466,14 +555,21 @@ export class PluginHost {
       }
     }
     if (!name && this.bridge) {
-      // New folders that appeared since start-up.
+      // New folders that appeared since start-up; one bad folder does not stop the others.
+      let folders: Array<{ folder: string; manifest: string | null; error?: string }> = [];
       try {
-        for (const f of await this.bridge.pluginsList()) {
-          const known = [...this.entries.values()].some((e) => e.source.folder === f.folder);
-          if (!known && f.manifest !== null && !f.error) out.push(await this.load(await this.readFolder(f.folder)));
-        }
+        folders = await this.bridge.pluginsList();
       } catch (err) {
-        this.editor.log(`Plugins: ${(err as Error).message}.`);
+        this.editor.log(`Plugins: ${err instanceof Error ? err.message : String(err)}.`);
+      }
+      for (const f of folders) {
+        const known = [...this.entries.values()].some((e) => e.source.folder === f.folder);
+        if (known || f.manifest === null || f.error) continue;
+        try {
+          out.push(await this.load(await this.readFolder(f.folder)));
+        } catch (err) {
+          this.editor.log(`Plugin folder ${f.folder}: ${err instanceof Error ? err.message : String(err)}.`);
+        }
       }
     }
     return out;

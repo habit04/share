@@ -1,10 +1,29 @@
-const { app, BrowserWindow, Menu, dialog, ipcMain, screen } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain: rawIpcMain, screen } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const fsSync = require('node:fs');
 const updater = require('./updater.cjs');
+const { guardIpc, appUrlTest, createRejectionLog, createPathPolicy, dxfImageNames } = require('./ipc-guard.cjs');
+const { createDwgHost, progressThreshold } = require('./dwg-host.cjs');
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL;
+
+// Every IPC listener checks its caller: only the application page in the main window's top
+// frame may use the bridge (electron/ipc-guard.cjs). Refusals go to <userData>/ipc-rejections.log.
+const rejections = createRejectionLog(() => app.getPath('userData'));
+const ipcMain = guardIpc(rawIpcMain, {
+  getWindow: () => mainWindow,
+  isAppUrl: appUrlTest(path.join(__dirname, '..', 'dist', 'index.html'), DEV_URL),
+  log: rejections,
+});
+/** Path rules shared by every file IPC (known paths, image locations, folders we own). */
+const pathPolicy = createPathPolicy({ isKnownPath, knownPaths: () => knownPaths, log: rejections });
+/** The window that sent an IPC message (the guard has already checked it is the main window). */
+function senderWindow(/** @type {Electron.IpcMainInvokeEvent} */ ev) {
+  const win = BrowserWindow.fromWebContents(ev.sender) || mainWindow;
+  if (!win) throw new Error('No application window');
+  return win;
+}
 
 // ------------------------------------------------------------------ persisted main-process state
 /** Paths the user chose through our own dialogs (persisted so Recent Documents keep working). */
@@ -84,9 +103,11 @@ function initialBounds() {
 // ------------------------------------------------------------------ menu
 function buildMenu(win) {
   const send = (cmd) => () => win.webContents.send('menu-command', cmd);
+  /** @type {Electron.MenuItemConstructorOptions[]} */
   const recentSub = recentFiles.length
     ? [...recentFiles.map((f, i) => ({ label: `${i + 1}. ${path.basename(f)}`, toolTip: f, click: send(`RECENT ${i + 1}`) })), { type: 'separator' }, { label: 'Clear Recent', click: send('CLEARRECENT') }]
     : [{ label: '(empty)', enabled: false }];
+  /** @type {Electron.MenuItemConstructorOptions[]} */
   const template = [
     {
       label: 'File',
@@ -188,6 +209,7 @@ function buildMenu(win) {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
+/** @type {BrowserWindow | null} */
 let mainWindow = null;
 /** Set when electron-updater is about to quit and relaunch: the close veto must not run then. */
 let quittingForUpdate = false;
@@ -278,7 +300,10 @@ async function createWindow() {
   }
 }
 
+/** @type {Promise<any> | null} */
 let dwgReader = null;
+/** LibreDWG in a worker thread (electron/dwg-host.cjs, scripts/dwg-worker.mjs), cancellable. */
+const dwgHost = createDwgHost({ scriptsDir: path.join(__dirname, '..', 'scripts') });
 /** The reader and the LibreDWG wasm are unpacked from the asar so Node's ESM loader can import them. */
 function dwgReaderPath() {
   return path.join(__dirname, '..', 'scripts', 'dwg-reader.mjs').replace(/app\.asar([\\/])/, 'app.asar.unpacked$1');
@@ -301,16 +326,9 @@ async function decodeDxf(bytes) {
     return { text: new TextDecoder('utf-8').decode(bytes), encoding: 'utf-8', reason: 'fallback' };
   }
 }
-async function readDwg(bytes) {
-  const mod = await loadReader();
-  try {
-    return await mod.readDwgPayload(bytes, 'dwg');
-  } catch (err) {
-    // A WebAssembly abort leaves the module unusable: drop it so the next open starts fresh.
-    dwgReader = null;
-    mod.resetLibreDwg?.();
-    throw err;
-  }
+/** Parse DWG bytes off the main thread (the worker restarts after a WebAssembly abort). */
+async function readDwg(bytes, id) {
+  return dwgHost.read(bytes, id);
 }
 
 /** Open a DXF or DWG. Returns { path, kind: 'dxf', text } or { path, kind: 'dwg', payload, version } or null. */
@@ -328,32 +346,57 @@ async function openDrawingFile(win, file) {
     });
     if (res.canceled || res.filePaths.length === 0) return null;
     file = res.filePaths[0];
-  } else if (!isKnownPath(file)) {
+  } else if (!pathPolicy.known(file, 'open-drawing')) {
     // Only paths that came from our own dialogs / recent list may be opened by name.
     throw new Error('Unknown file path');
   }
   if (file.toLowerCase().endsWith('.dwg')) {
     rememberPath(file.replace(/\.dwg$/i, '.dxf'));
     const bytes = await fs.readFile(file);
-    const { payload, version } = await readDwg(bytes);
+    const { payload, version } = await readDwgWithProgress(win, file, bytes);
     rememberPath(file);
+    pathPolicy.rememberImages(file, (payload.imageDefs || []).map((d) => d && d.fileName));
     return { path: file, kind: 'dwg', payload, version };
   }
   // Read bytes, not a UTF-8 string: pre-2007 DXF files are in the $DWGCODEPAGE code page.
   const { text, encoding } = await decodeDxf(await fs.readFile(file));
   rememberPath(file);
+  pathPolicy.rememberImages(file, dxfImageNames(text));
   return { path: file, kind: 'dxf', text, encoding };
 }
 
+/**
+ * Parse a DWG in the worker. Files over the progress threshold are announced to the renderer
+ * ('open-progress': start / end / cancelled), which shows a dialog whose Cancel button calls
+ * 'cancel-open'.
+ */
+async function readDwgWithProgress(win, file, bytes) {
+  const id = dwgHost.newId();
+  const announce = bytes.length >= progressThreshold() && win && !win.isDestroyed();
+  const send = (/** @type {object} */ msg) => {
+    if (announce && !win.webContents.isDestroyed()) win.webContents.send('open-progress', { id, name: path.basename(file), size: bytes.length, ...msg });
+  };
+  send({ state: 'start', cancellable: dwgHost.usesWorker });
+  try {
+    const r = await readDwg(bytes, id);
+    send({ state: 'end' });
+    return r;
+  } catch (err) {
+    send({ state: err && err.cancelled ? 'cancelled' : 'end' });
+    throw err;
+  }
+}
+ipcMain.handle('cancel-open', (_ev, id) => (typeof id === 'number' ? dwgHost.cancel(id) : false));
+
 ipcMain.handle('open-drawing', async (ev, file) => {
-  const win = BrowserWindow.fromWebContents(ev.sender);
+  const win = senderWindow(ev);
   if (file !== undefined && typeof file !== 'string') throw new Error('Invalid path');
   return openDrawingFile(win, file);
 });
 
 /** Read a project file and register its drawings as openable paths. */
 ipcMain.handle('open-project', async (ev, file) => {
-  const win = BrowserWindow.fromWebContents(ev.sender);
+  const win = senderWindow(ev);
   if (file !== undefined && typeof file !== 'string') throw new Error('Invalid path');
   if (!file) {
     const res = await dialog.showOpenDialog(win, {
@@ -363,7 +406,7 @@ ipcMain.handle('open-project', async (ev, file) => {
     });
     if (res.canceled || res.filePaths.length === 0) return null;
     file = res.filePaths[0];
-  } else if (!isKnownPath(file)) throw new Error('Unknown file path');
+  } else if (!pathPolicy.known(file, 'open-project')) throw new Error('Unknown file path');
   const text = await fs.readFile(file, 'utf8');
   let parsed;
   try {
@@ -383,7 +426,7 @@ ipcMain.handle('open-project', async (ev, file) => {
 
 /** Save arbitrary text (CSV report, project file) through a save dialog. */
 ipcMain.handle('save-text', async (ev, suggestName, text, filterName, ext) => {
-  const win = BrowserWindow.fromWebContents(ev.sender);
+  const win = senderWindow(ev);
   if (typeof text !== 'string') throw new Error('Invalid payload');
   const res = await dialog.showSaveDialog(win, {
     title: 'Save',
@@ -402,6 +445,7 @@ ipcMain.handle('save-text', async (ev, suggestName, text, filterName, ext) => {
  */
 ipcMain.handle('backup-file', async (ev, file) => {
   if (typeof file !== 'string' || !/\.(dxf|jcadproj\.json)$/i.test(file)) return null;
+  if (!pathPolicy.known(file, 'backup-file')) return null;
   try {
     const target = `${file}.bak`;
     await fs.copyFile(file, target);
@@ -414,7 +458,7 @@ ipcMain.handle('backup-file', async (ev, file) => {
 
 /** Plot: the renderer sends a PNG data URL of the sheet; we print it to PDF via a hidden window. */
 ipcMain.handle('plot-pdf', async (ev, dataUrl, suggestName, landscape, sheet) => {
-  const win = BrowserWindow.fromWebContents(ev.sender);
+  const win = senderWindow(ev);
   if (typeof dataUrl !== 'string' || !/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(dataUrl)) throw new Error('Invalid image');
   const res = await dialog.showSaveDialog(win, {
     title: 'Plot to PDF',
@@ -444,7 +488,7 @@ ipcMain.handle('plot-pdf', async (ev, dataUrl, suggestName, landscape, sheet) =>
 
 // Track E: vector PLOT output. The renderer builds the PDF (src/io/pdf-vector.ts); this only asks where to save it.
 ipcMain.handle('save-pdf', async (ev, bytes, suggestName) => {
-  const win = BrowserWindow.fromWebContents(ev.sender);
+  const win = senderWindow(ev);
   if (!(bytes instanceof Uint8Array) || bytes.length < 8 || bytes.length > 512 * 1024 * 1024) throw new Error('Invalid PDF payload');
   if (Buffer.from(bytes.subarray(0, 5)).toString('latin1') !== '%PDF-') throw new Error('Invalid PDF payload');
   const res = await dialog.showSaveDialog(win, {
@@ -498,14 +542,14 @@ ipcMain.handle('print-drawing', async (ev, dataUrl, title, landscape, sheet) => 
 });
 
 ipcMain.handle('open-dxf', async (ev) => {
-  const win = BrowserWindow.fromWebContents(ev.sender);
+  const win = senderWindow(ev);
   const r = await openDrawingFile(win);
   return r && r.kind === 'dxf' ? { path: r.path, text: r.text } : null;
 });
 
 ipcMain.handle('save-dxf', async (ev, existingPath, text, suggestName) => {
-  const win = BrowserWindow.fromWebContents(ev.sender);
-  let target = isKnownPath(existingPath) ? existingPath : null;
+  const win = senderWindow(ev);
+  let target = existingPath == null ? null : pathPolicy.known(existingPath, 'save-dxf');
   if (!target) {
     const res = await dialog.showSaveDialog(win, {
       title: 'Save Drawing As',
@@ -650,6 +694,8 @@ ipcMain.handle('plugins-read', async (_ev, folder) => {
   const dir = path.join(pluginsDir(), safePluginFolder(folder));
   let manifest;
   try {
+    // A plugin folder (or its files) may not be a link to somewhere outside the plugins folder.
+    await pathPolicy.insideRoot(pluginsDir(), path.join(dir, 'plugin.json'), 'plugins-read');
     manifest = await readLimited(path.join(dir, 'plugin.json'), MAX_PLUGIN_MANIFEST);
   } catch (err) {
     if (err && err.code === 'ENOENT') return null;
@@ -664,6 +710,7 @@ ipcMain.handle('plugins-read', async (_ev, folder) => {
   }
   if (!PLUGIN_MAIN_RE.test(main)) throw new Error('plugin.json "main" must be a .js file in the plugin folder');
   const file = path.join(dir, main);
+  await pathPolicy.insideRoot(pluginsDir(), file, 'plugins-read');
   return { manifest, code: await readLimited(file, MAX_PLUGIN_CODE), path: file };
 });
 // ------------------------------------------------------------------ raster images of IMAGE entities (read-image)
@@ -672,9 +719,15 @@ ipcMain.handle('plugins-read', async (_ev, folder) => {
 const IMAGE_TYPES = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.bmp': 'image/bmp', '.webp': 'image/webp' };
 const MAX_IMAGE_BYTES = 50 * 1024 * 1024;
 ipcMain.handle('read-image', async (_ev, file) => {
-  if (typeof file !== 'string' || file.length > 4096 || file.includes('\0') || !path.isAbsolute(file)) throw new Error('Invalid path');
+  if (pathPolicy.shapeProblem(file)) throw new Error('Invalid path');
   const type = IMAGE_TYPES[path.extname(file).toLowerCase()];
   if (!type) throw new Error('Not an image file');
+  // Only images next to a file the user chose, or named by a drawing the user opened.
+  const refused = pathPolicy.imageProblem(file);
+  if (refused) {
+    rejections.reject('read-image', `${refused}: ${String(file).slice(0, 300)}`);
+    throw new Error('Invalid path');
+  }
   let stat;
   try {
     stat = await fs.stat(file);
@@ -710,6 +763,7 @@ ipcMain.handle('packs-list', async () => {
 ipcMain.handle('packs-read', async (_ev, name) => {
   const file = path.join(packsDir(), safePackName(name));
   try {
+    await pathPolicy.insideRoot(packsDir(), file, 'packs-read');
     const st = await fs.stat(file);
     if (st.size > MAX_PACK_BYTES) throw new Error(`Pack file is larger than ${MAX_PACK_BYTES / (1024 * 1024)} MB`);
     return await fs.readFile(file, 'utf8');
@@ -738,7 +792,7 @@ ipcMain.handle('packs-remove', async (_ev, name) => {
 });
 /** Native picker for a pack file; returns { name, text } (the renderer verifies and stores it) or null. */
 ipcMain.handle('pick-pack-file', async (ev) => {
-  const win = BrowserWindow.fromWebContents(ev.sender);
+  const win = senderWindow(ev);
   const res = await dialog.showOpenDialog(win, {
     title: 'Install Catalog Pack',
     filters: [
@@ -794,10 +848,11 @@ ipcMain.on('app-quit', (ev) => {
 // Headless probe used by packaging smoke tests:  jcad --probe-dwg <file.dwg>
 const probeIndex = process.argv.indexOf('--probe-dwg');
 if (probeIndex >= 0) {
-  app.whenReady().then(async () => {
+  void app.whenReady().then(async () => {
     try {
       const file = process.argv[probeIndex + 1];
       const { payload, version } = await readDwg(await fs.readFile(file));
+      dwgHost.dispose();
       process.stdout.write(`PROBE_OK ${version} entities=${payload.entities.length} blocks=${payload.blocks.length}\n`);
       app.exit(0);
     } catch (err) {
@@ -805,6 +860,7 @@ if (probeIndex >= 0) {
       app.exit(1);
     }
   });
+  // @ts-expect-error TS1108: CommonJS modules may return at the top level (Node wraps them in a function).
   return;
 }
 
@@ -813,6 +869,7 @@ if (probeIndex >= 0) {
 // runs headless and must not take (or be blocked by) the lock.
 if (!app.requestSingleInstanceLock()) {
   app.quit();
+  // @ts-expect-error TS1108: CommonJS modules may return at the top level (Node wraps them in a function).
   return;
 }
 app.on('second-instance', () => {
@@ -847,6 +904,8 @@ app.whenReady().then(() => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 });
+
+app.on('will-quit', () => dwgHost.dispose());
 
 app.on('window-all-closed', () => {
   mainWindow = null;

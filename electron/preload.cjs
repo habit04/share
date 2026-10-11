@@ -11,6 +11,11 @@ contextBridge.exposeInMainWorld('jcad', {
   // Vector PLOT: the renderer's PDF bytes, saved through a Save dialog in the main process.
   savePdf: (bytes, suggestName) => ipcRenderer.invoke('save-pdf', bytes, suggestName),
   saveDxf: (path, text, suggestName) => ipcRenderer.invoke('save-dxf', path, text, suggestName),
+  // Progress of a large DWG read (the main process parses it in a worker thread) and its Cancel button
+  onOpenProgress: (cb) => {
+    ipcRenderer.on('open-progress', (_ev, p) => cb(p));
+  },
+  cancelOpen: (id) => ipcRenderer.invoke('cancel-open', Number(id)),
   // Autosave / Drawing Recovery (files live in the app data folder)
   autosaveWrite: (name, text, meta) => ipcRenderer.invoke('autosave-write', name, text, meta),
   autosaveList: () => ipcRenderer.invoke('autosave-list'),
