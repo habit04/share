@@ -114,7 +114,7 @@ const sameBytes = (a, b) => Buffer.compare(readFileSync(a), readFileSync(b)) ===
  *   openPaths / savePaths   answers of the Open / Save dialogs (empty = cancelled)
  *   boxAnswers / syncAnswers responses of showMessageBox / showMessageBoxSync (empty = cancel)
  *   faults                  [{ prefix, code, op }] fs/promises calls on paths under `prefix` throw `code`
- *   slowReads               [{ path, ms }] readFile of that path waits first (a slow open)
+ *   slowReads               [{ path, ms }] reading that path (readFile, or open for reading) waits first (a slow open)
  */
 async function launch(profile, { recover = true, extraArgs = [] } = {}) {
   const args = ['.', `--user-data-dir=${profile}`];
@@ -167,7 +167,8 @@ async function launch(profile, { recover = true, extraArgs = [] } = {}) {
       const real = fsp[op].bind(fsp);
       fsp[op] = async (...a) => {
         const p = String(a[0]);
-        if (op === 'readFile') {
+        // Drawings are read through one handle (readLimitedFile: open + read), small files with readFile.
+        if (op === 'readFile' || (op === 'open' && (a[1] === undefined || a[1] === 'r'))) {
           const slow = g.__e2e.slowReads.find((s) => s.path === p);
           if (slow) await new Promise((r) => setTimeout(r, slow.ms));
         }
