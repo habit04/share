@@ -16,7 +16,7 @@
 import { chromium } from 'playwright';
 import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, extname } from 'node:path';
 
 const selfTest = process.argv.includes('--self-test');
@@ -188,13 +188,17 @@ for (const c of ['ZOOM E', 'ZOOM W', 'ZOOM I', 'ZOOM O', 'HELP shortcuts', 'HELP
 // Every command string the native (Electron) menu sends must exist in the registry.
 current = 'electron menu';
 {
-  const mainCjs = readFileSync(join(process.cwd(), 'electron/main.cjs'), 'utf8');
+  // electron/main.cjs and the modules it wires (the menu is electron/main/menu.cjs).
+  const mainDir = join(process.cwd(), 'electron/main');
+  const mainFiles = [join(process.cwd(), 'electron/main.cjs'), ...readdirSync(mainDir).filter((f) => f.endsWith('.cjs')).map((f) => join(mainDir, f))];
+  const mainCjs = mainFiles.map((f) => readFileSync(f, 'utf8')).join('\n');
   const sent = [...mainCjs.matchAll(/click: send\('([^']+)'\)/g)].map((m) => m[1]);
+  if (sent.length === 0) fail('MENU', 'no menu commands found in electron/main.cjs or electron/main/*.cjs');
   const known = new Set(await page.evaluate(() => [...window.editor.commands.keys()]));
   for (const s of sent) {
     counts.menuCommands += 1;
     const name = s.split(/\s+/)[0].toUpperCase();
-    if (!known.has(name)) fail('MENU', `electron/main.cjs sends "${s}" but ${name} is not a registered command`);
+    if (!known.has(name)) fail('MENU', `the native menu sends "${s}" but ${name} is not a registered command`);
   }
 }
 
