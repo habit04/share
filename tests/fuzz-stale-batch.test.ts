@@ -14,7 +14,8 @@ import { rawEntitiesOf } from '../src/io/import-report';
 import { SessionManager } from '../src/app/sessions';
 import type { Editor, BackupResult, LegacyBackupResult } from '../src/app/editor';
 import { resolveDrawingPath, resolveProjectPath, type Project } from '../src/app/project';
-import { loadProjectSheets, commitSheets, projectUi, type SheetChange, type CommitResult } from '../src/app/commands-electrical';
+import { loadProjectSheets, commitSheets, projectUi, runTitleBlocksAll, type SheetChange, type CommitResult } from '../src/app/commands-electrical';
+import { newFromTemplate, SHEET_SIZES } from '../src/electrical/templates';
 import { captureRevision, saveQueue } from '../src/app/savequeue';
 import { pathKey, samePath, setPathPlatform } from '../src/app/paths';
 import { Rng, fuzz, check } from './helpers/fuzz';
@@ -42,12 +43,26 @@ function withFace(dxf: string, i: number): string {
   const at = m.index + m[0].length;
   return dxf.slice(0, at) + face(i) + dxf.slice(at);
 }
-const faces = (dxf: string) => rawEntitiesOf(readDxf(dxf)).filter((r) => r.type === '3DFACE').length;
+/** Retained 3DFACE records in a DXF text (a cheap count; the reader keeps them as raw records, see the check below). */
+const faces = (dxf: string) => dxf.split(/\r?\n/).filter((l) => l.trim() === '3DFACE').length;
 
-function drawingText(label: string, rawFace: number | null): string {
-  const d = new Drawing();
-  d.addEntities([text(label)]);
-  const dxf = writeDxf(d.snapshot);
+/** A sheet with a title block is a large DXF (about 2 MB): written once, then labelled per drawing. */
+let titleSheet: string | null = null;
+function drawingText(label: string, rawFace: number | null, titleBlock = false): string {
+  let dxf: string;
+  if (titleBlock) {
+    if (!titleSheet) {
+      const d = new Drawing();
+      d.load(newFromTemplate(SHEET_SIZES[0]!, {}));
+      d.addEntities([text('LABEL-PLACEHOLDER')]);
+      titleSheet = writeDxf(d.snapshot);
+    }
+    dxf = titleSheet.replace(/\nLABEL-PLACEHOLDER\r?\n/, `\n${label}\n`);
+  } else {
+    const d = new Drawing();
+    d.addEntities([text(label)]);
+    dxf = writeDxf(d.snapshot);
+  }
   return rawFace === null ? dxf : withFace(dxf, rawFace);
 }
 
@@ -63,7 +78,9 @@ interface World {
 
 type Phase = 'confirm' | 'backup' | 'noBackup' | 'reread' | 'write';
 
-async function batchScenario(rng: Rng): Promise<void> {
+/** synthetic: commitSheets with random changes; titleblocks: the real AETITLEBLOCK project command. */
+async function batchScenario(rng: Rng, mode: 'synthetic' | 'titleblocks' = 'synthetic'): Promise<void> {
+  const real = mode === 'titleblocks';
   const win = rng.bool(0.4);
   setPathPlatform(win ? 'win32' : 'linux');
   const projectPath = win ? 'C:\\Jobs\\P\\p.jcadproj.json' : '/jobs/p/p.jcadproj.json';
@@ -71,7 +88,7 @@ async function batchScenario(rng: Rng): Promise<void> {
   const folders = ['', 'line1', 'line2', 'sub/deep', win ? 'LINE1' : 'Line1', '../shared'];
   const bases = ['a.dxf', 'b.dxf', 'c.dxf', win ? 'A.DXF' : 'A.dxf', 'x.dwg'];
   const entries: string[] = [];
-  const target = rng.int(5, 20);
+  const target = real ? rng.int(4, 6) : rng.int(5, 20); // title block sheets are slow to read and write
   for (let tries = 0; entries.length < target && tries < 200; tries += 1) {
     const f = rng.pick(folders);
     const b = rng.pick(bases);
@@ -91,7 +108,7 @@ async function batchScenario(rng: Rng): Promise<void> {
   const original = new Map<string, string>();
   paths.forEach((p, i) => {
     if (rng.bool(0.08)) return; // missing file
-    const t = drawingText(`SHEET-${i}`, rng.bool(0.5) ? i : null);
+    const t = drawingText(`SHEET-${i}`, rng.bool(0.5) ? i : null, real);
     disk.set(pathKey(p), t);
     original.set(pathKey(p), t);
   });
@@ -204,7 +221,7 @@ async function batchScenario(rng: Rng): Promise<void> {
         const key = pathKey(p);
         // Checked when the command sends the write; what happens while it is on its way cannot be prevented here.
         const m = /\nCHG-(\d+)\r?\n/.exec(t);
-        const sheet = m ? Number(m[1]) : -1;
+        const sheet = m ? Number(m[1]) : real ? paths.findIndex((x) => samePath(x, p)) : -1;
         // ---- the invariants of a command write
         if (sheet < 0) violations.push(`wrote ${p} without a change of its own`);
         const changedAfterRead = mutations.some((x) => x.key === key);
@@ -212,7 +229,9 @@ async function batchScenario(rng: Rng): Promise<void> {
         if (sessions.indexOfPath(p) >= 0) violations.push(`wrote ${p} while it is open in a tab`);
         if (backupAnswer.get(key) === 'failed' && noBackupAnswer.get(key) !== true) violations.push(`wrote ${p} after its backup failed without "Continue Without Backup"`);
         const before = original.get(key);
-        if (before && faces(before) > 0 && faces(t) === 0) violations.push(`the retained 3DFACE of ${p} was lost`);
+        if (before && faces(t) !== faces(before)) violations.push(`${p}: ${faces(before)} retained 3DFACE record(s) before, ${faces(t)} written`);
+        const own = before && /\nSHEET-\d+\r?\n/.exec(before)?.[0].trim();
+        if (own && !dxfHas(t, own)) violations.push(`${p}: the write lost the drawing's own content (${own})`);
         await chaos('write');
         if (rng.bool(0.05)) throw Object.assign(new Error(`EACCES: permission denied, open '${p}'`), { code: 'EACCES' });
         disk.set(key, t);
@@ -243,6 +262,7 @@ async function batchScenario(rng: Rng): Promise<void> {
   let choseFiles = true;
   let backupRequested = false;
   projectUi.confirmFiles = async (_t, _i, _items, opts) => {
+    loaded = true;
     await chaos('confirm');
     if (rng.bool(0.05)) return null;
     choseFiles = rng.bool(0.85);
@@ -256,6 +276,23 @@ async function batchScenario(rng: Rng): Promise<void> {
     return go;
   };
   // ------------------------------------------------------------ the command
+  if (real) {
+    await runTitleBlocksAll(editor);
+    const ctx = () => `win=${win}; ${paths.length} drawings; logs ${JSON.stringify(logs)}`;
+    check(violations.length === 0, () => `${violations.join('; ')} (${ctx()})`);
+    for (const e of tabEdits) {
+      const i = sessions.indexOfId(e.sessionId);
+      if (i < 0) continue;
+      check(has(i === sessions.active ? doc.snapshot : sessions.all[i]!.state, e.label), () => `tab edit ${e.label} lost (${ctx()})`);
+    }
+    for (const [key, t] of original) {
+      if (mutations.some((m) => m.key === key)) continue;
+      check(disk.get(key) === t, () => `${key} changed without a recorded write`);
+    }
+    // (Raw records and the drawing's own content are checked on every write, in saveDxf.)
+    commandWrites += cmdWrites.size;
+    return;
+  }
   const { sheets } = await loadProjectSheets(editor);
   loaded = true;
   const changes = new Map<number, SheetChange>();
@@ -314,9 +351,26 @@ async function batchScenario(rng: Rng): Promise<void> {
   if (!backupRequested) check(backupAnswer.size === 0, 'backup made although not requested');
 }
 
+let commandWrites = 0;
+
 describe('fuzz: project-wide commands never overwrite newer work', () => {
-  it('random projects, tabs, disk edits, backups and failures through loadProjectSheets + commitSheets', async () => {
-    const runs = await fuzz('stale-batch/commit', 600, batchScenario);
-    expect(runs).toBeGreaterThan(0);
+  it('the generated drawings carry a retained raw 3DFACE record the reader keeps and the writer writes back', () => {
+    for (const tb of [false, true]) {
+      const dxf = drawingText('SHEET-1', 3, tb);
+      const state = readDxf(dxf);
+      expect(rawEntitiesOf(state).map((r) => r.type)).toEqual(['3DFACE']);
+      expect(faces(dxf)).toBe(1);
+      expect(faces(writeDxf(state))).toBe(1);
+    }
   });
+  it('random projects, tabs, disk edits, backups and failures through loadProjectSheets + commitSheets', async () => {
+    const runs = await fuzz('stale-batch/commit', 250, (rng) => batchScenario(rng, 'synthetic'));
+    expect(runs).toBeGreaterThan(0);
+  }, 600_000);
+  it('the real project title block command (AETITLEBLOCK for all drawings) under the same events keeps retained records', async () => {
+    commandWrites = 0;
+    // Each run reads and writes several 2 MB sheets: few runs by default (FUZZ_RUNS=20 for a soak).
+    await fuzz('stale-batch/titleblocks', 3, (rng) => batchScenario(rng, 'titleblocks'));
+    if (!process.env.FUZZ_SEED) expect(commandWrites).toBeGreaterThan(0); // the property exercised real writes
+  }, 600_000);
 });
