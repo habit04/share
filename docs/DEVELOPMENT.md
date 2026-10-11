@@ -9,7 +9,7 @@ Contents: [Prerequisites](#prerequisites) · [Install](#install) · [Run](#run) 
 [Checks](#checks) · [Tests](#unit-and-regression-tests) · [Screenshots](#screenshots) ·
 [End-to-end](#end-to-end-tests) · [Performance](#performance) · [Packaging](#packaging) ·
 [Signing and release](#signing-and-release) · [Verifying a change](#verifying-a-change-end-to-end) ·
-[Layout of the tooling](#layout-of-the-tooling)
+[Layout of the tooling](#layout-of-the-tooling) · [Module map](#module-map)
 
 ## Prerequisites
 
@@ -217,3 +217,63 @@ installer and smoke-tests each one on its own OS without publishing anything.
 | `.github/workflows/release.yml` | gated installer builds and releases |
 | `.github/workflows/packaged-smoke.yml` | manual smoke test of an existing release's installers |
 | `.github/workflows/screenshot-baselines.yml` | manual regeneration of the screenshot baselines |
+
+## Module map
+
+Source files over 600 lines (measured on 0.4.1, `wc -l`), with the responsibilities each one
+holds. The first three are split along those lines (reliability review item 26); the others keep
+one responsibility each or are tables of data and stay as they are for now.
+
+| File | Lines | Responsibilities |
+| --- | ---: | --- |
+| `src/io/dxf.ts` | 2783 | DXF writing (group-code writer, entity codecs per type, HEADER / CLASSES / TABLES / BLOCKS / ENTITIES / OBJECTS sections); the DIMSTYLE record codec both sides share; DXF reading (tokenizer and structure checks, group accessors, entity codecs per type, section readers, import report, raw records) |
+| `src/core/entities.ts` | 1699 | entity types, ids, bounds, grips and transforms, block / insert expansion, parts of dimensions, leaders and tables |
+| `src/app/editor.ts` | 1685 | the `Editor`: drawing tabs and documents (new / open / deliver to a tab), command registry and the built-in commands, command line and prompter (tool context, typed input, Enter), selection, view / zoom and drafting toggles, pointer and keyboard input, save coordination (save queue, project save), plot / print, events and UI hooks |
+| `src/ui/electrical-dialogs.ts` | 1636 | the AutoCAD Electrical-style dialogs (component, catalog, terminal strip, properties, wire numbers) |
+| `scripts/e2e-flows.mjs` | 1430 | multi-launch end-to-end flows (close / quit matrix, recovery, save errors) |
+| `scripts/e2e-electron.mjs` | 1421 | single-launch Electron end-to-end checks |
+| `src/ui/symbol-builder.ts` | 1403 | Symbol Builder dialogs and palette |
+| `src/io/dwg.ts` | 1305 | LibreDWG database to `DrawingState` conversion |
+| `src/electrical/symbol-builder-core.ts` | 1280 | Symbol Builder conversions (pure) |
+| `src/core/dimension.ts` | 1216 | dimension styles, DIM* variables and dimension geometry |
+| `electron/main.cjs` | 1111 | the main process: IPC guard and path registry set-up, app-data state files, window (bounds, close / quit workflow), native menu, IPC handlers (drawings and projects, DWG reading, plot / print, autosave, user library, plugins, catalog packs, images, app info), updater wiring, files handed over by the OS and the second instance, crash logging |
+| `src/app/commands-electrical.ts` | 1105 | electrical commands (component data, catalog, wires, panel, project, reports) |
+| `src/tools/symbol-builder.ts` | 1042 | Symbol Builder controller and commands |
+| `src/app/commands-drafting.ts` | 987 | drafting commands on top of the Editor's basic set |
+| `tests/interchange-fixtures.test.ts` | 933 | interchange fixture tests (one file per fixture set) |
+| `src/tools/drafting-modify.ts` | 929 | FILLET, CHAMFER, ARRAY, STRETCH, BREAK, JOIN, LENGTHEN, ALIGN, MATCHPROP |
+| `src/tools/layouts.ts` | 894 | layout commands and the layout controller |
+| `src/electrical/symbols-power-fluid.ts` | 878 | symbol library data (power, PLC, fluid power) |
+| `src/io/pdf-vector.ts` | 848 | vector PDF plotting |
+| `src/tools/drafting-draw.ts` | 847 | PLINE, ELLIPSE, POINT, XLINE, RAY, DONUT, POLYGON, MTEXT, SPLINE |
+| `src/ui/dimstyle.ts` | 838 | Dimension Style Manager |
+| `src/app/api.ts` | 828 | the plugin / scripting API (`jcad`) |
+| `src/ui/dialogs.ts` | 827 | general dialogs (symbol picker, layers, reports, templates) |
+| `tests/project-file-safety.test.ts` | 822 | project file safety tests |
+| `src/electrical/symbols-jic-control.ts` | 777 | symbol library data (JIC control) |
+| `src/tools/dimension.ts` | 751 | dimensioning commands |
+| `src/main.ts` | 748 | renderer start-up: browser file bridge, UI construction, wiring of hooks and UI commands |
+| `src/electrical/iec-extended.ts` | 732 | symbol library data (IEC) |
+| `src/electrical/symbols.ts` | 730 | built-in JIC symbol library |
+| `src/electrical/wires.ts` | 726 | pure wire editing operations |
+| `src/render/viewport.ts` | 722 | canvas viewport: view transform, zoom / pan, rendering |
+| `src/app/plugins.ts` | 692 | plugin loading |
+| `src/tools/electrical-wires.ts` | 680 | interactive wire and component editing tools |
+| `src/tools/edit.ts` | 669 | TRIM, EXTEND, OFFSET, MIRROR, SCALE, EXPLODE, ZOOM Window |
+| `tests/cross-track-integrity.test.ts` | 620 | cross-feature integrity tests |
+
+**Planned splits.** Pure moves: no logic changes, every public import path keeps working.
+
+- `src/io/dxf.ts` becomes a façade over `src/io/dxf/`: shared tables (application names), the
+  DIMSTYLE codec, the writer side (group-code writer, entity codecs, section writers) and the
+  reader side (tokenizer and group accessors, read context, entity codecs, section readers).
+- `src/app/editor.ts` re-exports the `Editor` from `src/app/editor/`: the class keeps its public
+  members and delegates to one module per responsibility (types and hooks, events, built-in
+  commands, prompter and command line, selection and pointer input, view and toggles, keyboard,
+  documents and tabs, save coordination, project, plot).
+- `electron/main.cjs` stays the entry and wires `electron/main/`: app-data state files and
+  diagnostics, window and close workflow, menu, IPC handlers by area (drawings and projects,
+  plot and print, app-data stores, app and updates), and files handed over by the OS. The IPC
+  guard (`electron/ipc-guard.cjs`) and the path registry (`electron/path-registry.cjs`) stay the
+  only way handlers are registered and paths are granted.
+
