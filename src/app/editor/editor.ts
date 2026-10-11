@@ -8,6 +8,7 @@
  *   commands.ts    the built-in commands
  *   view.ts        settings, drafting toggles, zoom extents
  *   documents.ts   new / open, tabs, import reports, the Save / Don't Save / Cancel question
+ *   save.ts        drawing saves through the save queue
  *   plotting.ts    PLOT / PRINT
  */
 import type { Point } from '../../core/geometry';
@@ -21,20 +22,18 @@ import { Viewport, type ViewportOverlay } from '../../render/viewport';
 import type { Tool, ToolContext } from '../../tools/types';
 import { PanTool } from '../../tools/edit';
 import { WIRE_DOT } from '../../electrical/symbols';
-import { LIBRARY_SYMBOLS, withoutUnusedLibraryBlocks } from '../../electrical/library';
+import { LIBRARY_SYMBOLS } from '../../electrical/library';
 import { TITLE_BLOCK } from '../../electrical/templates';
 import { SOURCE_ARROW, DEST_ARROW } from '../../tools/plc';
 import { gripPoints, moveGrip } from '../../core/entities';
 import { parseProject, serializeProject, defaultProject, resolveDrawingPath, baseName, projectDrawingIndex, projectEntryFor, rebaseProject, type Project } from '../project';
 import { captureRevision, saveQueue } from '../savequeue';
 import { loadSettings, type UserSettings } from '../settings';
-import { SessionManager, applySaveResult } from '../sessions';
+import { SessionManager } from '../sessions';
 import { describeFileError } from '../file-errors';
 import type { ColorSpec } from '../../core/entities';
-import { writeDxf } from '../../io/dxf';
 import type { PlotOptions } from '../plot';
 import { parsePointInput, isPlainNumber } from '../input';
-import { confirmSaveOver } from '../import-open';
 import { trackFromPoints } from '../../core/snap';
 import type { SpaceRef } from '../../core/layouts';
 import type { EditorEvent, CommandDef, FileBridge, EditorHooks } from './types';
@@ -42,6 +41,7 @@ import { createInternals, fallbackUi, type EditorInternals } from './internals';
 import { registerBuiltinCommands } from './commands';
 import * as view from './view';
 import * as documents from './documents';
+import * as save from './save';
 import * as plotting from './plotting';
 
 /** Version compiled in from package.json (see vite.config.ts); 'dev' under plain vitest. */
@@ -499,70 +499,8 @@ export class Editor {
    * snapshot is older than one already written to that file is dropped (see savequeue.ts).
    * Resolves true when the file was written.
    */
-  async saveFile(saveAs: boolean): Promise<boolean> {
-    if (!this.fileBridge) {
-      this.log('No file access in this environment.');
-      return false;
-    }
-    // Saving over a source file that held content JCad could not keep (or a recovered file) asks first.
-    if (!saveAs && this.doc.filePath && (await confirmSaveOver(this.doc.snapshot, this.doc.filePath, (t, m) => (this.ui ?? fallbackUi).confirm(t, m))) === 'save-as') {
-      this.log('Save As keeps the original file unchanged.');
-      return this.saveFile(true);
-    }
-    const bridge = this.fileBridge;
-    // Remember exactly which document revision goes to disk: edits made while the file
-    // dialog / write is pending (or in another tab) must stay flagged as unsaved.
-    const sessionId = this.sessions.current.id;
-    const savedState = this.doc.snapshot;
-    const revision = captureRevision();
-    let target = saveAs ? null : this.doc.filePath;
-    const fileName = this.fileName();
-    const suggest = this.suggestedName ?? fileName;
-    this.lastFileError = null;
-    let path: string | null;
-    try {
-      const text = writeDxf(withoutUnusedLibraryBlocks(savedState));
-      // Save As picks the file first and then queues the write behind any save of that file still on its way.
-      if (!target && bridge.chooseDrawingPath) {
-        target = await bridge.chooseDrawingPath(suggest);
-        if (!target) return false;
-      }
-      if (target) {
-        const r = await saveQueue.run(target, revision, () => bridge.saveDxf(target, text, suggest));
-        if (r.status === 'stale') {
-          this.lastFileError = `a newer version of ${target} was saved meanwhile`;
-          return false;
-        }
-        path = r.value;
-      } else {
-        path = await bridge.saveDxf(null, text, suggest);
-        if (path) saveQueue.markCompleted(path, revision);
-      }
-    } catch (err) {
-      // Nothing is marked as saved: the dirty flag and the autosave / recovery copy stay.
-      const info = describeFileError(err, { action: 'save', path: target });
-      this.lastFileError = info.message;
-      this.log(`Save failed: ${info.message} The drawing is still marked as modified and its autosave copy is kept.`);
-      const choice = this.hooks.saveError ? await this.hooks.saveError(info, fileName, { saveAs: true }) : 'cancel';
-      if (choice === 'cancel' || this.sessions.current.id !== sessionId) return false;
-      return this.saveFile(choice === 'saveas' ? true : saveAs);
-    }
-    if (!path) return false;
-    if ((this.internals.savedRevisions.get(sessionId) ?? 0) > revision) {
-      // A newer revision of this drawing was saved while this (slower) save ran, possibly to another
-      // file: the drawing stays bound to that newer save - its file and its clean / modified state.
-      this.log(`Saved ${path} (an older revision: the drawing was saved again meanwhile and keeps that file).`);
-      documents.rememberRecent(this, path);
-      return true;
-    }
-    this.internals.savedRevisions.set(sessionId, revision);
-    const outcome = applySaveResult(this.sessions, this, sessionId, savedState, path);
-    if (outcome === 'clean' && this.sessions.current.id === sessionId) this.suggestedName = null;
-    this.log(outcome === 'newer-edits' ? `Saved ${path} (edits made during the save are still unsaved).` : `Saved ${path}`);
-    documents.rememberRecent(this, path);
-    this.hooks.drawingSaved?.(sessionId, savedState, path);
-    this.emit('file');
-    return true;
+  saveFile(saveAs: boolean): Promise<boolean> {
+    return save.saveFile(this, this.internals, saveAs);
   }
 
   confirmDiscardPublic(): Promise<boolean> {
