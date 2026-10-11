@@ -305,7 +305,7 @@ describe('r2018-dimensions.dxf: named DIMSTYLEs with XDATA, DIMENSIONs with thei
       closePt(a2.center, 300, 0);
       closePt(a2.p1, 360, 0);
       closePt(a2.p2, 330, 51.96152422706632);
-      closePt(a2.linePoint, 334.64101615137756, 20);
+      closePt(a2.linePoint, 300 + 20 * Math.sqrt(3), 20);
       close(dimensionMeasurement(a2), Math.PI / 3);
       expect(dimensionText(a2)).toBe('60%%d');
       const a3 = dims[6]!;
