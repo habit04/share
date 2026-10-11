@@ -1172,7 +1172,10 @@ export function dimStyleFromRecordPairs(name: string, pairs: ReadonlyArray<reado
     s = { ...s, textAlign: tih && toh ? 'horizontal' : !tih && !toh ? 'aligned' : 'iso' };
   }
   if (byCode.has(78)) s = withDimVar(s, 'DIMZIN', byCode.get(78)!);
-  if (!byCode.has(71) && !byCode.has(72)) return s;
+  // DIMTOL's display also depends on DIMTP / DIMTM (equal: symmetrical, else deviation), so an
+  // override of only those values recomputes it from the inherited flags (from PR #2's later
+  // commit bbbaf34): a DSTYLE override of DIMTP alone turns "±0.1" into "+0.2 / -0.1".
+  if (![71, 72, 47, 48].some((code) => byCode.has(code))) return s;
   const tol = Number(byCode.get(71) ?? dimVarValue(s, 'DIMTOL'));
   const lim = Number(byCode.get(72) ?? dimVarValue(s, 'DIMLIM'));
   const r = resolveDimStyle(s);

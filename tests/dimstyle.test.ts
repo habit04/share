@@ -383,6 +383,25 @@ describe('DIM* variables and DXF records', () => {
     const { arrow: _a, arrow2: _b, altPlacement: _c, suppressLeadingZeros: _d, suppressTrailingZeros: _e, ...rest } = resolveDimStyle(style);
     expect(resolveDimStyle(back)).toMatchObject(rest);
   });
+  it.each([
+    ['symmetrical', 0.01, 0.01, 47, 0.02, 'deviation'],
+    ['symmetrical', 0.01, 0.01, 48, 0.02, 'deviation'],
+    ['deviation', 0.01, 0.02, 47, 0.02, 'symmetrical'],
+    ['deviation', 0.01, 0.02, 48, 0.01, 'symmetrical'],
+  ] as const)('derives the inherited %s tolerance mode after a numeric-only override (PR #2 bbbaf34)', (mode, plus, minus, code, value, expected) => {
+    const inherited: DimStyle = { ...STANDARD_DIMSTYLE, tolerance: mode, tolPlus: plus, tolMinus: minus };
+    const restored = dimStyleFromRecordPairs(inherited.name, [[code, value]], inherited);
+    expect(restored.tolerance).toBe(expected);
+    expect(dimVarValue(restored, 'DIMTOL')).toBe(1);
+    expect(dimVarValue(restored, 'DIMLIM')).toBe(0);
+  });
+
+  it('keeps inherited disabled, limits and basic tolerance modes with numeric-only overrides', () => {
+    for (const mode of ['none', 'limits', 'basic'] as const) {
+      const inherited: DimStyle = { ...STANDARD_DIMSTYLE, tolerance: mode, tolPlus: 0.01, tolMinus: 0.01 };
+      expect(dimStyleFromRecordPairs(inherited.name, [[48, 0.02]], inherited).tolerance).toBe(mode);
+    }
+  });
 });
 
 describe('DIMBASELINE / DIMCONTINUE', () => {
