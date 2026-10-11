@@ -145,8 +145,9 @@ console.log(packaged ? `e2e-electron: packaged application ${executable}` : 'e2e
 const app = await electron.launch(packaged ? { executablePath: executable, args, env, timeout: 90_000 } : { args, cwd: repo, env, timeout: 60_000 });
 const mainLog = [];
 let userData = profile;
-app.process().stdout?.on('data', (d) => mainLog.push(String(d)));
-app.process().stderr?.on('data', (d) => mainLog.push(String(d)));
+const firstProcess = app.process(); // kept: app.process() is unavailable once the application closed
+firstProcess.stdout?.on('data', (d) => mainLog.push(String(d)));
+firstProcess.stderr?.on('data', (d) => mainLog.push(String(d)));
 
 try {
   step = 'window';
@@ -1283,7 +1284,7 @@ let second = null;
 let third = null;
 try {
   // The first instance quits by itself once its window is gone; give it time to release the lock.
-  if (!(await waitForExit(app.process(), 30_000))) console.warn('e2e-electron: the first instance has not exited 30 s after its window closed');
+  if (!(await waitForExit(firstProcess, 30_000))) console.warn('e2e-electron: the first instance has not exited 30 s after its window closed');
   second = await launch();
   const rec2 = second.w.locator('.recovery-dialog .modal');
   await rec2.waitFor({ timeout: 15_000 }).then(
