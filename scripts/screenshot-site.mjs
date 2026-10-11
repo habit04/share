@@ -124,6 +124,13 @@ check((await app.locator('.web-banner').count()) === 1, 'browser edition shows t
 const t0 = Date.now();
 const n = await openFixture('example_2000.dwg');
 check(n > 0, `browser edition opened fixtures/example_2000.dwg: ${n} entities in ${Date.now() - t0} ms`);
+// The import report (what the DWG held that cannot be kept) is a modal over the drawing: close it
+// before the picture and the clicks below; without such a dialog this is a no-op.
+const closeImportReport = async () => {
+  const close = app.locator('.import-report-dialog button', { hasText: 'Close' });
+  if ((await close.count()) > 0) await close.last().click();
+};
+await closeImportReport();
 await app.evaluate(() => window.editor.zoomExtents());
 await app.mouse.move(800, 480);
 await app.waitForTimeout(200);
@@ -135,6 +142,7 @@ await app.evaluate(() => { window.editor.doc.dirty = false; window.editor.runCom
 await app.waitForTimeout(150);
 const n2 = await openFixture('example_2018.dwg');
 check(n2 > 0, `second DWG (example_2018.dwg) in the same page: ${n2} entities`);
+await closeImportReport();
 
 // Dismissing the banner is remembered.
 await app.locator('.web-banner button').click();
