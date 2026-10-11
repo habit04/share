@@ -3,9 +3,8 @@
  * (security review E-7 / E-18). Ported from PR #2 (codex/electrical-review-fixes 2f89b0e,
  * electron/resource-limits.cjs), with the limits this project chose:
  *
- * - drawings (DXF and DWG): 512 MB, the ceiling the other channels already used for PDF
- *   output; a DXF of that size is near the longest string the renderer can hold anyway;
- * - project files: 64 MB, the size save-project always accepted;
+ * - drawings (DXF and DWG): 128 MiB;
+ * - project files: 8 MiB;
  * - plot / print sheets: at most 200 inches (5 m) a side; plotter rolls are shorter.
  *
  * `readLimitedFile` reads through one handle, so a file that grows between the size check and the
@@ -24,8 +23,8 @@ const { constants } = require('node:fs');
  */
 const READ_FLAGS = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0);
 
-const MAX_DRAWING_BYTES = 512 * 1024 * 1024;
-const MAX_PROJECT_BYTES = 64 * 1024 * 1024;
+const MAX_DRAWING_BYTES = 128 * 1024 * 1024;
+const MAX_PROJECT_BYTES = 8 * 1024 * 1024;
 const MAX_PAPER_INCHES = 200;
 
 /** 512 MB, 64 MB, 64 KB ... for messages. */

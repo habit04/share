@@ -10,6 +10,8 @@ import { DEFAULT_UNITS } from './units';
 // Paper-space layouts (Track E): the layout model and the paper-space entity projection.
 import type { Layout, SpaceRef } from './layouts';
 import { applyPaperEntities, layoutsOf, paperEntities, paperSpaceLayout, sheetBounds, withLayout } from './layouts';
+import { prepareDrawingState } from './geometry-budget';
+import { sealImmutableData } from './immutable-data';
 
 /** A named view (VIEW command): world centre and view height. */
 export interface NamedView {
@@ -37,6 +39,10 @@ export interface DrawingHeader {
   /** $CELTYPE / $CELWEIGHT: properties given to new entities ('ByLayer' / undefined = inherit). */
   readonly celtype: string;
   readonly celweight?: number;
+  /** Preserved source $CELTSCALE: current entity linetype scale; absent = 1 on export. */
+  readonly celtscale?: number;
+  /** Preserved source $TEXTSTYLE: current named text style; absent = Standard on export. */
+  readonly textStyle?: string;
   /** $CANNOSCALE: annotation scale name ("1:4"); annotative objects show at 1 / scale in model space. */
   readonly cannoscale?: string;
   /** $ANNOALLVISIBLE (default on): off hides annotative objects in viewports whose scale is not CANNOSCALE. */
@@ -107,6 +113,9 @@ export class Drawing {
   private redoStack: DrawingState[] = [];
   private listeners = new Set<DocListener>();
   private readonly maxUndo = 200;
+  private mutationRevision = 0;
+  /** Monotonic across edits, undo, redo and loads, even when the same snapshot returns. */
+  get revision(): number { return this.mutationRevision; }
   public filePath: string | null = null;
   public dirty = false;
   /** Current colour for new objects (CECOLOR; Home > Properties colour combo). 'ByLayer' leaves new objects alone. */
@@ -117,13 +126,13 @@ export class Drawing {
     // only the four required ones get defaults.
     const { entities, layers, blocks, currentLayer, ...rest } = initial ?? {};
     const optional = Object.fromEntries(Object.entries(rest).filter(([, v]) => v !== undefined)) as Partial<DrawingState>;
-    this.state = {
+    this.state = prepareDrawingState({
       ...optional,
       entities: entities ?? [],
       layers: layers ?? DEFAULT_LAYERS.map((l) => ({ ...l })),
       blocks: blocks ?? {},
       currentLayer: currentLayer ?? '0',
-    };
+    });
   }
 
   /**
@@ -133,20 +142,24 @@ export class Drawing {
    * nor re-applies it. `fn` must be safe on any of those states (return the state unchanged when
    * it does not apply).
    */
-  private outsideHistory(fn: (s: DrawingState) => DrawingState): void {
-    this.state = fn(this.state);
-    this.undoStack = this.undoStack.map(fn);
-    this.redoStack = this.redoStack.map(fn);
+  private outsideHistory(fn: (s: DrawingState) => DrawingState, current = fn(this.state)): void {
+    const next = prepareDrawingState(current, this.state);
+    const undo = this.undoStack.map((s) => prepareDrawingState(fn(s), s));
+    const redo = this.redoStack.map((s) => prepareDrawingState(fn(s), s));
+    // A failure in any history entry must leave the complete document untouched.
+    this.state = next;
+    this.undoStack = undo;
+    this.redoStack = redo;
   }
 
   /** The entities being edited: model space, or the paper space of the active layout (layouts.ts paperEntities). */
   get entities(): readonly Entity[] {
     const lay = paperSpaceLayout(this.state);
-    return lay ? paperEntities(lay) : this.state.entities;
+    return lay ? sealImmutableData(paperEntities(lay)) : this.state.entities;
   }
   /** All layouts (the implicit Layout1 when the drawing has none). */
   get layouts(): readonly Layout[] {
-    return layoutsOf(this.state);
+    return sealImmutableData(layoutsOf(this.state));
   }
   /** Active space: undefined = Model tab. */
   get space(): SpaceRef | undefined {
@@ -169,10 +182,8 @@ export class Drawing {
     const { space: _cur, ...rest } = this.state;
     // The current state takes the space as asked (the layout may be the implicit Layout1).
     let next: DrawingState = space ? { ...rest, space } : rest;
-    if (patch) next = patch(next);
-    this.state = next;
-    this.undoStack = this.undoStack.map(apply);
-    this.redoStack = this.redoStack.map(apply);
+    if (patch) next = patch(sealImmutableData(next));
+    this.outsideHistory(apply, next);
     this.emit();
   }
   /**
@@ -183,9 +194,8 @@ export class Drawing {
   patchQuiet(fn: (s: DrawingState) => DrawingState, markDirty = true): void {
     const next = fn(this.state);
     if (next === this.state) return;
-    this.state = next;
-    this.undoStack = this.undoStack.map(fn);
-    this.redoStack = this.redoStack.map(fn);
+    this.outsideHistory(fn, next);
+    this.mutationRevision += 1;
     if (markDirty) this.dirty = true;
   }
   get layers(): readonly Layer[] {
@@ -201,7 +211,7 @@ export class Drawing {
     return this.state;
   }
   get header(): DrawingHeader {
-    return this.state.header ?? DEFAULT_HEADER;
+    return this.state.header ?? sealImmutableData(DEFAULT_HEADER);
   }
 
   /**
@@ -231,12 +241,13 @@ export class Drawing {
   }
 
   private emit(): void {
+    this.mutationRevision += 1;
     for (const l of this.listeners) l(this);
   }
 
   /** Apply a state transition as one undoable step. */
   transact(fn: (s: DrawingState) => DrawingState): void {
-    const next = this.project(fn);
+    const next = prepareDrawingState(this.project(fn), this.state);
     if (next === this.state) return;
     this.undoStack.push(this.state);
     if (this.undoStack.length > this.maxUndo) this.undoStack.shift();
@@ -254,7 +265,7 @@ export class Drawing {
     const cur = this.state;
     const lay = paperSpaceLayout(cur);
     if (!lay) return fn(cur);
-    const view = { ...cur, entities: paperEntities(lay) };
+    const view = sealImmutableData({ ...cur, entities: paperEntities(lay) });
     const out = fn(view);
     if (out === view) return cur;
     const base: DrawingState = { ...out, entities: cur.entities };
@@ -268,8 +279,9 @@ export class Drawing {
   loadCount = 0;
 
   load(state: DrawingState, filePath: string | null = null): void {
+    const next = prepareDrawingState(state);
     this.loadCount += 1;
-    this.state = state;
+    this.state = next;
     this.undoStack = [];
     this.redoStack = [];
     this.filePath = filePath;
@@ -292,8 +304,10 @@ export class Drawing {
    * becomes active again. Neither the current state nor the dirty flag changes.
    */
   restoreHistory(history: DrawingHistory): void {
-    this.undoStack = [...history.undo];
-    this.redoStack = [...history.redo];
+    const undo = history.undo.map((state) => prepareDrawingState(state));
+    const redo = history.redo.map((state) => prepareDrawingState(state));
+    this.undoStack = undo;
+    this.redoStack = redo;
   }
 
   canUndo(): boolean {
@@ -304,8 +318,10 @@ export class Drawing {
   }
 
   undo(): boolean {
-    const prev = this.undoStack.pop();
+    const prev = this.undoStack[this.undoStack.length - 1];
     if (!prev) return false;
+    prepareDrawingState(prev);
+    this.undoStack.pop();
     this.redoStack.push(this.state);
     this.state = prev;
     this.dirty = true;
@@ -314,8 +330,10 @@ export class Drawing {
   }
 
   redo(): boolean {
-    const next = this.redoStack.pop();
+    const next = this.redoStack[this.redoStack.length - 1];
     if (!next) return false;
+    prepareDrawingState(next);
+    this.redoStack.pop();
     this.undoStack.push(this.state);
     this.state = next;
     this.dirty = true;

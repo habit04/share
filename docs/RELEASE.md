@@ -13,10 +13,9 @@ accounts and secrets in [CODE-SIGNING.md](CODE-SIGNING.md).
      the release notes: `npm run release-notes -- vX.Y.Z --mac-signing developer-id-notarized`
      shows them as the release page will, without the **Verified build** list the release job adds).
    - Make sure CI is green on the branch (`ci.yml`: test, ui, e2e on Ubuntu / Windows / macOS).
-   - Dress rehearsal (do it before the first release of a new pipeline): run **Build installers**
-     from the Actions tab on the branch with an empty tag. It runs the checks, builds, verifies the
-     uploaded artifact set (`verify-artifacts`) and smoke-tests the installers without publishing;
-     only the tag check, the release notes, the attestation and the publication wait for a tag.
+   - Optional dress rehearsal: run **Build installers** from the Actions tab on the branch with an
+     empty tag. It runs the source, test-ASAR, build, aggregate artifact and shipping smoke gates without
+     publishing. Tag checks, release notes and signed attestation run when publication is enabled.
 2. **Tag the exact commit** and push the tag:
 
    ```bash
@@ -30,16 +29,17 @@ accounts and secrets in [CODE-SIGNING.md](CODE-SIGNING.md).
 
    | Job | Runs on | What it does | Blocks |
    | --- | --- | --- | --- |
-   | `checks` | ubuntu-latest | On the tagged commit: workflow validation, lint, `typecheck:all`, unit tests, the dense Node performance run (`bench:node`), renderer build, website build, UI click check, screenshot scripts and **comparison with the approved baselines**, the browser performance budgets (`bench`, asserted), Electron end-to-end. Outputs the commit SHA it tested. | everything below |
-   | `build` | Windows, macOS, Linux | Checks out **that SHA**, checks that the tag equals `v` + `package.json` version, builds the installers (NSIS `.exe`, `.dmg` arm64 + x64, `.AppImage` + `.deb`), signs them when the secrets exist and verifies the signatures (Windows: valid and from exactly the `AZURE_PUBLISHER_NAME` publisher; macOS Developer ID builds: the Developer ID authority, the hardened runtime, the stapled notarization ticket and Gatekeeper's assessment; macOS ad-hoc builds: the seal after the fuse changes), then records platform, version, built SHA, signing result and the SHA-256 of every public artifact (installers, the updater feed `latest*.yml`, the `.exe` / `.dmg` blockmaps; not electron-builder's `builder-debug.yml`) in `JCad-Electrical-<platform>-provenance.json` (`scripts/release-provenance.mjs build`, which fails when a feed or blockmap is missing) and uploads exactly those files. | verify-artifacts, packaged-smoke, release |
-   | `verify-artifacts` | ubuntu-latest | Downloads what the three builds uploaded and verifies it against their records, the tested SHA and the version (`scripts/release-provenance.mjs verify`): five installers, three feeds, three blockmaps, sizes and hashes. Runs in every dispatch, a build-only rehearsal included, so an upload that leaves out a recorded file fails before a tag is pushed. | release |
-   | `packaged-smoke` | Windows, macOS, Linux | Installs the NSIS installer silently, mounts each disk image (the x64 one under Rosetta) and extracts the AppImage and the `.deb`, then runs the headless DWG probe, checks the Electron fuses the build ships with (`scripts/electron-fuses.mjs`) and runs the end-to-end checks against each **packaged** application (its copy with `--inspect` switched back on for Playwright): start-up, open a DXF and a DWG fixture, large-DWG progress and Cancel, save, autosave / recovery copy, vector PDF, IPC guard, clean close, no error log (`scripts/packaged-smoke.mjs`). | release |
-   | `release` | ubuntu-latest | After `verify-artifacts`: verifies that the tag points at the SHA the checks ran on (a tag moved after the push, or an existing tag elsewhere for a manual run, stops it; deleted remote tags are pruned first), downloads the three platforms' artifacts, writes the release notes from the tag's `CHANGELOG.md` section with the download footer, whose macOS first-launch sentence follows the signing status the macOS build recorded (`scripts/release-notes.mjs --strict --provenance artifacts`: no section, no release), verifies every platform's provenance against the tested SHA, the version, the five expected installers and the downloaded bytes, adds each build's signing result to the notes and writes `release-provenance.json` and `SHA256SUMS.txt` (`scripts/release-provenance.mjs verify`), has GitHub sign the verified artifact set (`actions/attest`, bundle `release-provenance.sigstore.json`), then publishes the GitHub Release with those notes and files, targeting that SHA (failing on any unmatched file). | - |
+   | `checks` | ubuntu-latest, Node 22 / 24 | On the tagged commit: workflow validation, lint, `typecheck:all`, mandatory-fixture unit tests, dense Node performance, renderer and website builds, UI checks, screenshot scripts and approved baseline comparison, asserted browser performance, Electron end-to-end and legacy preference migration. Outputs the tested commit SHA. | everything below |
+   | `test-build` | Windows, macOS, Linux | Builds a separate unpublished inspection-enabled ASAR and runs the full packaged Playwright suite and preference restart checks. Checks its test fuse policy. Its metadata, output folder and artifact naming keep it separate from shipping uploads. | build, release |
+   | `build` | Windows, macOS, Linux | Checks out **that SHA**, checks tag/version when publishing, builds all five installers with inspection disabled, verifies binary fuses, signs when configured and verifies final signatures or the macOS ad-hoc seal. Publication requires Windows and Apple credentials. Requires updater feeds/blockmaps and records source, signing/fuse results and artifact hashes. Builder diagnostic YAML and test builds are excluded. | verify-artifacts, packaged-smoke, release |
+   | `verify-artifacts` | ubuntu-latest | Downloads the actual uploaded platform artifacts and requires all five installers, three updater feeds and Windows/macOS external blockmaps, with matching source/version, sizes and hashes. Writes aggregate provenance/checksums. Also runs for an empty-tag build-only dispatch. | release |
+   | `packaged-smoke` | Windows, macOS, Linux | Installs NSIS, mounts each disk image (x64 under Rosetta) and extracts AppImage/deb. Checks exact shipping fuses, DWG reading and bounded first-launch/save/reopen probes, including secure-origin preference migration and preservation. Confirms debugging arguments are refused. Writes results per installer (`scripts/packaged-smoke.mjs`). | release |
+   | `release` | ubuntu-latest | Verifies tag/tested SHA, downloads and verifies the complete public asset set again, renders the CHANGELOG notes and macOS first-launch footer from verified signing provenance (`scripts/release-notes.mjs --strict --provenance artifacts`), and writes aggregate provenance/checksums and the **Verified build** list. GitHub signs the complete verified artifact set with `actions/attest@v4`; publication follows all gates and targets the tested SHA. | - |
 
    `npm run check:workflows` (run in CI and in `checks`) fails if any of these gates is removed.
 4. **After publishing**: download one installer per platform from the release page and start
    it once; check that **Help > About** shows the new version and that an older installed
-   version offers the update (Windows / AppImage) or the download (macOS / `.deb`).
+   version offers a signed-Windows update or the manual download appropriate to its installation.
 5. If something is wrong after publishing: mark the release as a pre-release or delete it (the
    updater only follows the latest non-prerelease release), fix, and release a new patch
    version. Never move or re-use a published tag; the updater compares versions, not tags.
@@ -59,44 +59,56 @@ the text the release workflow publishes before the **Verified build** list;
 The manual **Packaged smoke test (existing release)** workflow re-runs the packaged checks
 against the installers attached to any published release (for example after a runner image or
 OS update); checks for features newer than that release are skipped.
+The secure-origin migration gate applies from 0.4.1, including prereleases. It uses stock Electron
+only to seed an isolated legacy profile, then launches the installed application twice. The
+output includes `origin-migration.log`, per-installer `packaged-smoke-result.json` and an aggregate
+`packaged-smoke-results.json`. Install/extract helpers and all application checks have process deadlines.
 
 ## What is signed, and how to verify it
 
 | Platform | Artifact | Signature | Verify |
 | --- | --- | --- | --- |
-| Windows | `jcad-electrical-<v>-win-x64.exe` and the installed `JCad Electrical.exe` | Authenticode through Azure Artifact Signing when the seven `AZURE_*` secrets are set (publisher name = `AZURE_PUBLISHER_NAME`); the workflow fails if any `.exe` is not validly signed | PowerShell: `Get-AuthenticodeSignature .\jcad-electrical-<v>-win-x64.exe` shows `Valid` and the publisher; or `signtool verify /pa /v <file>`; or file Properties > Digital Signatures |
-| macOS | `jcad-electrical-<v>-mac-arm64.dmg`, `...-mac-x64.dmg` | Developer ID + hardened runtime + notarization (stapled) when the five Apple secrets are set (every release from 0.4.2 on); otherwise an **ad-hoc** signature (`scripts/afterPack.cjs`), which keeps the bundle intact but is not an identity | `codesign --verify --deep --strict --verbose=2 "/Applications/JCad Electrical.app"`; `spctl --assess --type execute --verbose=4 "/Applications/JCad Electrical.app"` (Developer ID builds: "accepted, source=Notarized Developer ID"); `xcrun stapler validate "/Applications/JCad Electrical.app"` |
+| Windows | `jcad-electrical-<v>-win-x64.exe` and the installed `JCad Electrical.exe` | Authenticode through Azure Artifact Signing when the seven `AZURE_*` secrets are set (publisher common name = `AZURE_PUBLISHER_NAME`); the workflow fails if any `.exe` lacks a valid signature from that exact publisher | PowerShell: `Get-AuthenticodeSignature .\jcad-electrical-<v>-win-x64.exe` shows `Valid` and the publisher; or `signtool verify /pa /v <file>`; or file Properties > Digital Signatures |
+| macOS | `jcad-electrical-<v>-mac-arm64.dmg`, `...-mac-x64.dmg` | Developer ID + hardened runtime + notarization (stapled) when the five Apple secrets are set; required for publication from this pipeline. Empty-tag rehearsals without credentials and with `require_signing` disabled use an **ad-hoc** signature (`scripts/afterPack.cjs`), which keeps the bundle intact but is not an identity | `codesign --verify --deep --strict --verbose=2 "/Applications/JCad Electrical.app"`; `spctl --assess --type execute --verbose=4 "/Applications/JCad Electrical.app"` (Developer ID builds: "accepted, source=Notarized Developer ID"); `xcrun stapler validate "/Applications/JCad Electrical.app"` |
 | Linux | `.AppImage`, `.deb` | not signed | compare the checksum below |
 | All | `latest.yml`, `latest-mac.yml`, `latest-linux.yml` | written by electron-builder; electron-updater checks downloads against them (and, on Windows, the publisher name), and the application checks the downloaded installer again before installing it (`electron/update-verify.cjs`) | each installer's `sha512` (base64) is listed there: `openssl dgst -sha512 -binary <file> \| base64` must print the same value |
 | All | `release-provenance.json`, the platform records, `SHA256SUMS.txt`, installers and metadata | GitHub / Sigstore attestation of the complete verified artifact set (from the release after 0.4.1); separate from OS code signing | `gh attestation verify <download> --repo habit04/share --bundle release-provenance.sigstore.json`; `sha256sum -c SHA256SUMS.txt` |
 
-Signing never changes the build itself: without secrets the workflow produces the same
-unsigned (Windows, Linux) or ad-hoc signed (macOS) installers as before.
+An empty-tag build-only rehearsal may produce unsigned Windows or ad-hoc macOS installers when
+credentials are absent. `require_signing` makes even a rehearsal require those credentials.
+Publishing always requires configured Windows publisher and Apple Developer ID/notarization
+credentials; missing secrets fail before installers are built. Linux remains unsigned. Actual
+signature and notarization verification must pass; secret presence alone does not prove signing.
 
-`scripts/release-provenance.mjs` (ported from PR #2) rejects missing or extra installers,
-duplicate platform records, changed bytes, and any record with a different source SHA or version;
-each build checks its checked-out `HEAD` against the checks job's SHA before recording hashes. The
-signing labels state what passed in CI: `unsigned`, `authenticode-verified`, `ad-hoc` or
-`developer-id-notarized`. The attestation proves the workflow origin and the bytes; it does not
-make an unsigned Windows installer Authenticode signed or an ad-hoc macOS app notarized.
+`scripts/release-provenance.mjs` rejects missing installers, updater feeds or required external
+blockmaps, extra installers, duplicate platform records, changed bytes, and any record with a
+different source SHA or version. The AppImage's blockmap is embedded. Linux artifact architectures
+are `x86_64` for AppImage and `amd64` for deb, as electron-builder names them. Each build validates
+its checked-out `HEAD` against the checks job's SHA before recording hashes. Build-only and
+publication jobs validate again after downloading the artifacts. Signing labels describe checks that passed in CI:
+`unsigned`, `authenticode-verified`, `ad-hoc`, or `developer-id-notarized`.
+
+The [GitHub attestation action](https://github.com/actions/attest) signs with an OIDC-issued
+certificate and publishes a verifiable bundle. It proves workflow origin and artifact bytes; an
+attestation does not make an unsigned Windows installer Authenticode signed or an ad-hoc macOS
+app notarized. Signed OS release paths still require the maintainer's Azure or Apple credentials.
+Older releases can lack provenance assets. Verify the specific release's published evidence.
 
 ## How updates reach users
 
 - The application asks GitHub Releases for the latest non-prerelease version a few seconds
   after start-up and on **Help > Check for Updates…** (`CHECKUPDATES`).
-- **Windows (NSIS) and Linux AppImage** update in place through electron-updater: it reads
-  `latest.yml` / `latest-linux.yml`, downloads the new installer after the user agrees, checks
-  its SHA-512 (and on Windows its signature publisher) and installs it when the application
-  restarts (the unsaved-work prompt runs first).
-- **macOS and Linux `.deb`** are told that a newer release exists and offered the matching
+- **Windows (NSIS) with a trusted publisher configured** updates in place through electron-updater:
+  it reads `latest.yml`, downloads after consent, checks SHA-512 and the signature publisher,
+  and installs only through **Restart Now**, after the unsaved-work prompt and a fresh
+  checksum/publisher verification. Ordinary quitting does not install an update; **Later**
+  leaves it available through Check for Updates.
+- **Unsigned Windows, macOS and all Linux builds** are told that a newer release exists and offered the matching
   download; they are replaced by installing the new version over the old one. On macOS the
-  updater first reads the release's `latest-mac.yml`: when its `minimumSystemVersion` (written by
-  the macOS build from `package.json` `build.mac.minimumSystemVersion`, which also sets the
-  application's `LSMinimumSystemVersion`; `scripts/mac-update-info.mjs`) is newer than the Mac's
-  system, the download is not offered (Check for Updates says which macOS is needed). Raising the
-  minimum is a breaking change for users: say so at the top of the release's CHANGELOG section,
-  which is what the update dialog of older versions shows first (its first 600 characters).
-  Copies up to 0.4.1 do not read the minimum; for them that note is the only warning.
+  release's `latest-mac.yml` declares `minimumSystemVersion`, written from `package.json` by
+  `scripts/mac-update-info.mjs`. A Mac below that minimum is told the requirement and is not
+  offered the incompatible installer. Keep the minimum-version warning at the start of release
+  notes because versions through 0.4.1 cannot enforce this metadata check.
 - Users only see a release once it is published (the `release` job is the last step), so a
   failed gate never reaches anyone.
 - Download counts are watched by the hourly **Download alerts** workflow (README).
@@ -105,7 +117,7 @@ make an unsigned Windows installer Authenticode signed or an ad-hoc macOS app no
 
 Once a month, and before every release:
 
-- [ ] `npm ci` on Node 22, then **`npm audit`** (all dependencies). Do not rely on
+- [ ] `npm ci` on supported Node 22 and 24 releases, then **`npm audit`** (all dependencies). Do not rely on
       `npm audit --omit=dev`: `electron` is a development dependency but its runtime ships inside
       every installer, so its advisories matter to users. Triage each advisory: shipped
       (runtime dependencies, Electron), build-only (electron-builder and its tools), or
@@ -128,12 +140,10 @@ Once a month, and before every release:
       (`tests/about.test.ts` fails when a direct dependency is missing).
 - [ ] Record what was updated (or why not) in the `[Unreleased]` section of `CHANGELOG.md`.
 
-**State at the time of writing (October 2026), after the move to Electron 44.7.0 and Vitest 5:**
-`npm audit` reports 12 advisories (2 critical, 2 high, 8 moderate), none of them in what ships:
-`shell-quote` under `concurrently` (the `electron:dev` script runner), `global-agent` / `roarr` /
-`sprintf-js` and `http-cache-semantics` under the Electron download that electron-builder does
-while packaging (`app-builder-lib` -> `@electron/get` 3), and `source-map-js` under Vite's PostCSS
-(build only). The Electron runtime and the test runner advisories (Electron 33, Vitest 2 and its
-pool, the old Vite / esbuild copies) are gone. `npm audit --omit=dev` reports none, which is
-exactly why it must not be used alone. Electron 44 is a supported major; plan the next upgrade
-by the rule above.
+**Recorded dependency review, 2026-10-11:** the updated lockfile uses Electron 44.7.0, Vitest
+5.0.3, Vite 6.4.3, esbuild 0.25.12 and electron-builder 26.17.0. The scoped
+`@electron/get` → `global-agent ^4.1.3` override removes the obsolete `roarr` / `sprintf-js`
+tooling chain while retaining builder's Azure signing API. Its CommonJS bootstrap/proxy API was
+checked with a local HTTP proxy smoke test. Both full and production-only audit must be rerun for
+each release; the full audit after these updates reported **0 vulnerabilities**. That result is
+a dated dependency check, not proof that every future advisory is covered.

@@ -83,7 +83,8 @@ function registerStoreIpc(ctx) {
     for (const d of dirents) {
       if (!d.isDirectory() || !PLUGIN_FOLDER_RE.test(d.name) || d.name === '.' || d.name === '..') continue;
       try {
-        out.push({ folder: d.name, manifest: await readLimited(path.join(pluginsDir(), d.name, 'plugin.json'), MAX_PLUGIN_MANIFEST) });
+        const manifest = await pathPolicy.insideRoot(pluginsDir(), path.join(pluginsDir(), d.name, 'plugin.json'), 'plugins-list');
+        out.push({ folder: d.name, manifest: await readLimited(manifest, MAX_PLUGIN_MANIFEST) });
       } catch (err) {
         out.push({ folder: d.name, manifest: null, error: err && err.code === 'ENOENT' ? 'no plugin.json' : String((err && err.message) || err) });
       }

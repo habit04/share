@@ -1,16 +1,17 @@
 # Code signing and notarization
 
 JCad Electrical's release workflow (`.github/workflows/release.yml`) builds the
-Windows, macOS and Linux installers on GitHub-hosted runners. Signing is
-**optional per platform**: each signing path switches itself on only when all of
-its GitHub secrets exist. Without them the workflow produces exactly the same
-unsigned builds as before (macOS keeps the ad-hoc signature from
-`scripts/afterPack.cjs`). No secret, certificate or key is stored in the
-repository.
+Windows, macOS and Linux installers on GitHub-hosted runners. Publication requires both
+Windows publisher and Apple Developer ID/notarization credentials, then verifies the resulting
+signatures. Empty-tag build-only rehearsals may run unsigned or ad-hoc when secrets are absent;
+the `require_signing` input can require signing for those runs too. macOS rehearsals without Apple credentials retain the
+ad-hoc signature from `scripts/afterPack.cjs`. No secret, certificate or key is stored in the
+repository. `scripts/check-apple-signing.mjs` reports only missing credential names, never values.
 
-Current state: the repository has both sets of secrets, so releases from 0.4.2 on are
-Authenticode signed on Windows and Developer ID signed, hardened and notarized on macOS; the
-Linux packages are not signed. The macOS builds of releases up to 0.4.1 were ad-hoc signed.
+The repository's Windows and Apple credentials have been configured, and a signed build-only
+run verified both platforms on prior PR head `d0ff078`. Each new release must pass those checks
+on its own tested commit; configured secrets alone do not prove signing. Linux packages are
+not signed. The macOS builds of releases up to 0.4.1 were ad-hoc signed.
 
 The release notes state the signing result each build's verification steps recorded, rather than
 assuming the credentials were there (the **Verified build** list), and the footer's macOS
@@ -99,7 +100,7 @@ publisher identity rather than on one certificate.
 | `AZURE_SIGNING_ENDPOINT` | region endpoint, e.g. `https://eus.codesigning.azure.net/` | `win.azureSignOptions.endpoint` |
 | `AZURE_SIGNING_ACCOUNT` | signing account name | `win.azureSignOptions.codeSigningAccountName` |
 | `AZURE_CERT_PROFILE` | certificate profile name | `win.azureSignOptions.certificateProfileName` |
-| `AZURE_PUBLISHER_NAME` | the profile subject's common name / validated publisher | `win.azureSignOptions.publisherName` |
+| `AZURE_PUBLISHER_NAME` | the profile subject's common name / validated publisher | `win.azureSignOptions.publisherName`; builder derives the updater's publisher list |
 
 ### How the build uses them
 
@@ -108,10 +109,17 @@ are present it adds `build.win.azureSignOptions` (endpoint, account, profile,
 publisher) to the runner's copy of `package.json`; otherwise it leaves the file
 alone and the build stays unsigned. The workflow passes the three login values
 to electron-builder on Windows only, and when signing is on it fails the job if
-any produced `.exe` is not validly signed by exactly that publisher common name. electron-builder (26.x) signs the app
+any produced `.exe` is not validly signed by that exact publisher common name. electron-builder (26.x) signs the app
 executable, the uninstaller and the NSIS installer through the Artifact Signing
 client (it installs the `TrustedSigning` PowerShell module on demand). The
 committed `package.json` never contains signing settings.
+
+The script sets `build.win.azureSignOptions.publisherName`. Builder 26 derives the packaged
+`app-update.yml` publisher list from that Azure setting; its Windows schema rejects the obsolete
+top-level `build.win.publisherName`. Regression tests validate the installed builder's schema
+and generated updater configuration without contacting the signing service. The packaged
+`app-update.yml` must contain a trusted publisher before the application enables an in-place
+Windows update. Unsigned Windows and all Linux builds offer manual downloads.
 
 An equivalent alternative, if electron-builder's built-in support ever gets in
 the way, is to build unsigned and sign the output with the
@@ -140,15 +148,22 @@ runtime**, and **notarized** by Apple (with the ticket stapled).
 1. Membership in the **Apple Developer Program** (individual or organization;
    organizations need a D-U-N-S number). Only the Account Holder can create
    Developer ID certificates.
-2. A Mac with Xcode or the command-line tools, once, to create the certificate
-   and export it (the CI runner does the rest).
+2. A matching certificate/private-key pair exported as a password-protected `.p12`.
+   Keychain Access on a Mac provides the usual creation/export flow below. A Windows-generated
+   RSA CSR and compatible PKCS#12 export also work; keep the CSR's private key, include the
+   Developer ID intermediate certificate, and verify the pair before uploading it. The CI Mac
+   runner performs signing, notarization and final platform checks.
 
 ### One-time setup
 
 1. **Certificate**: Keychain Access → Certificate Assistant → *Request a
    Certificate From a Certificate Authority* (save to disk). In the developer
    portal → Certificates → **+** → *Developer ID Application* → upload the
-   request, download the certificate and double-click it to install.
+   request, download the certificate and double-click it to install. Apple's
+   [Developer ID instructions](https://developer.apple.com/help/account/certificates/create-developer-id-certificates/)
+   and [CSR instructions](https://developer.apple.com/help/account/certificates/create-a-certificate-signing-request)
+   describe these steps. A downloaded `.cer` alone does not include the private key: keep the
+   key created with the CSR, and export the matching certificate/key pair in the next step.
 2. **Export**: in Keychain Access, select the certificate *with its private
    key* → Export → `.p12` with a strong password. Base64-encode it:
    `base64 -i DeveloperID.p12 | pbcopy`.
@@ -174,13 +189,13 @@ When `HAS_APPLE` is true the macOS job skips the unsigned step and runs
 1. It sets, **on the runner's copy of `package.json` only**, `build.mac`:
    `hardenedRuntime: true`, `gatekeeperAssess: false`,
    `entitlements` and `entitlementsInherit` = `build/entitlements.mac.plist`.
-   The committed `package.json` keeps `hardenedRuntime: false`, which is what
+   `scripts/mac-signing-config.mjs` checks the required secret names before applying this
+   configuration. The committed `package.json` keeps `hardenedRuntime: false`, which is what
    the ad-hoc signed build needs.
-2. The step imports `CSC_LINK` into a keychain of the job's own, with Apple's
+2. The step imports `CSC_LINK` into a temporary keychain belonging to this job, with Apple's
    Developer ID intermediate certificates, and fails unless it holds a valid
-   *Developer ID Application* identity. (electron-builder 26's own import passes
-   the certificate's password as the keychain password to
-   `security set-key-partition-list`, which the macOS 26 runners refuse.)
+   *Developer ID Application* identity. Private-key partition permissions use the keychain's
+   password; the PKCS#12 export password is used only to import the signing package.
    electron-builder then runs without `CSC_LINK` / `CSC_KEY_PASSWORD` (so it does
    not import the certificate a second time) and signs the `.app` (both arm64 and
    x64) with that identity (`CSC_KEYCHAIN`, `CSC_NAME` = its SHA-1; the ad-hoc
@@ -190,8 +205,8 @@ When `HAS_APPLE` is true the macOS job skips the unsigned step and runs
    building the DMGs. The keychain is deleted when the step ends.
 3. *Verify the macOS signature and notarization ticket* runs
    `codesign --verify --deep --strict`, checks for the Developer ID authority
-   and the `runtime` flag, `xcrun stapler validate` and `spctl --assess` on each
-   `.app`, and fails the job otherwise.
+   and configured Team ID, the `runtime` flag, `xcrun stapler validate` and `spctl --assess` on each
+   `.app`. It also verifies each DMG's signature and Team ID, and fails the job on a mismatch.
 4. The build records the signing status `developer-id-notarized` in
    `JCad-Electrical-macOS-provenance.json` (`ad-hoc` without the secrets); the
    release job writes the notes' macOS sentence and **Verified build** line from it.
@@ -240,8 +255,8 @@ tagged release is signed on both platforms without further changes.
 
 ## Rotating or turning signing off
 
-- Delete any one secret of a platform to return that platform to the unsigned
-  path; nothing else changes.
+- Removing a required signing secret blocks publication. Empty-tag rehearsals without
+  `require_signing` may still exercise the unsigned/ad-hoc build path.
 - Azure: create a new client secret before the old one expires (Entra shows the
   expiry) and update `AZURE_CLIENT_SECRET`.
 - Apple: Developer ID certificates last five years; export the new `.p12` and

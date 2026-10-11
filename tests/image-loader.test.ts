@@ -85,7 +85,8 @@ describe('read-image IPC', () => {
     // Shape (absolute, no NUL, length) and location (next to a file the user chose, or named by an
     // opened drawing) are checked by the shared path policy (electron/ipc-guard.cjs, tests/ipc-guard.test.ts).
     expect(section).toContain('pathPolicy.shapeProblem(file)');
-    expect(section).toContain('pathPolicy.imageProblem(file)');
+    expect(section).toContain('await pathPolicy.imagePath(file)');
+    expect(section).toContain("err.code === 'ERR_IMAGE_PATH'");
     expect(readFileSync('electron/ipc-guard.cjs', 'utf8')).toContain("if (!path.isAbsolute(p)) return 'relative path';");
     expect(section).toContain('IMAGE_TYPES[path.extname(file).toLowerCase()]');
     expect(section).toContain('stat.size > MAX_IMAGE_BYTES');

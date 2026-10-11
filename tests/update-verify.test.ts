@@ -93,32 +93,60 @@ describe('update verification (electron/update-verify.cjs, E-8)', () => {
   });
 });
 
-describe('the updater after a failed verification (electron/updater.cjs with stand-ins)', () => {
-  it('a retried download that verifies installs on quit again, as the dialog says', async () => {
+describe('verified explicit update installation (electron/updater.cjs with stand-ins)', () => {
+  async function exercise(test: (h: Awaited<ReturnType<typeof makeHarness>>) => Promise<void>) {
     const realPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!;
-    Object.defineProperty(process, 'platform', { ...realPlatform, value: 'linux' });
-    process.env.APPIMAGE = '/tmp/jcad.AppImage';
-    const tampered = join(dir, 'tampered-retry.exe');
-    writeFileSync(tampered, Buffer.from('MZ not the release bytes'));
-    const downloads = [tampered, installer];
+    const realResourcesPath = Object.getOwnPropertyDescriptor(process, 'resourcesPath');
+    const portableDir = process.env.PORTABLE_EXECUTABLE_DIR;
+    Object.defineProperty(process, 'platform', { ...realPlatform, value: 'win32' });
+    Object.defineProperty(process, 'resourcesPath', { configurable: true, value: dir });
+    delete process.env.PORTABLE_EXECUTABLE_DIR;
+    writeFileSync(join(dir, 'app-update.yml'), 'publisherName: ACME LLC\n');
+    const h = makeHarness();
+    try {
+      expect(h.updater.canSelfUpdate()).toBe(true);
+      await test(h);
+    } finally {
+      h.restore();
+      Object.defineProperty(process, 'platform', realPlatform);
+      if (realResourcesPath) Object.defineProperty(process, 'resourcesPath', realResourcesPath);
+      else delete (process as unknown as { resourcesPath?: string }).resourcesPath;
+      if (portableDir === undefined) delete process.env.PORTABLE_EXECUTABLE_DIR;
+      else process.env.PORTABLE_EXECUTABLE_DIR = portableDir;
+    }
+  }
+
+  function makeHarness() {
+    const downloads: string[] = [];
+    const order: string[] = [];
+    const boxes: Array<{ message: string; detail?: string; buttons?: string[] }> = [];
+    const statuses: Array<{ state: string; message?: string }> = [];
+    let restart = false;
+    let installs = 0;
     const autoUpdater = {
       autoDownload: true,
       autoInstallOnAppQuit: true,
       on: () => {},
       checkForUpdates: async () => ({ updateInfo: info() }),
       downloadUpdate: async () => [downloads.shift()!],
-      quitAndInstall: () => {
-        throw new Error('not in this test');
+      verifyUpdateCodeSignature: async (names: string[], file: string) => {
+        expect(names).toEqual(['ACME LLC']);
+        expect(file.endsWith('.exe')).toBe(true);
+        order.push('signature');
+        return null;
+      },
+      quitAndInstall: (silent: boolean, forceRun: boolean) => {
+        expect([silent, forceRun]).toEqual([false, true]);
+        order.push('install');
+        installs += 1;
       },
     };
-    const boxes: string[] = [];
     const electron = {
       app: { isPackaged: true, getVersion: () => '0.4.1' },
       dialog: {
-        showMessageBox: async (_w: unknown, o: { message: string; buttons?: string[] }) => {
-          boxes.push(o.message);
-          // "Download" in Update Available, "Later" in Update Ready, "Close" elsewhere.
-          const i = (o.buttons ?? []).findIndex((b) => b === 'Download' || b === 'Later' || b === 'Close');
+        showMessageBox: async (_w: unknown, o: { message: string; detail?: string; buttons?: string[] }) => {
+          boxes.push(o);
+          const i = (o.buttons ?? []).findIndex((b) => b === 'Download' || b === (restart ? 'Restart Now' : 'Later') || b === 'Close');
           return { response: Math.max(0, i) };
         },
       },
@@ -131,24 +159,70 @@ describe('the updater after a failed verification (electron/updater.cjs with sta
     require.cache[paths.electron] = fake(paths.electron, electron);
     require.cache[paths.updater] = fake(paths.updater, { autoUpdater });
     delete require.cache[paths.mod];
-    try {
-      const updater = require(paths.mod) as { checkForUpdates(win: unknown, o?: { interactive?: boolean }): Promise<{ state: string; message?: string }> };
-      const first = await updater.checkForUpdates({}, { interactive: true });
+    const updater = require(paths.mod) as {
+      checkForUpdates(win: unknown, o?: { interactive?: boolean }): Promise<{ state: string; message?: string }>;
+      canSelfUpdate(): boolean;
+      onConfirmRestart(fn: (win: unknown) => Promise<boolean>): void;
+      onStatus(fn: (status: { state: string; message?: string }) => void): void;
+    };
+    updater.onConfirmRestart(async () => { order.push('unsaved-work'); return true; });
+    updater.onStatus((status) => statuses.push(status));
+    return {
+      updater, autoUpdater, downloads, boxes, order, statuses,
+      installs: () => installs,
+      restart: () => { restart = true; },
+      restore: () => {
+        for (const k of ['electron', 'updater'] as const) {
+          if (saved[k]) require.cache[paths[k]] = saved[k];
+          else delete require.cache[paths[k]];
+        }
+        delete require.cache[paths.mod];
+      },
+    };
+  }
+
+  it('a successful retry stays nonautomatic and Later explains how to install when ready', async () => {
+    await exercise(async (h) => {
+      const tampered = join(dir, 'tampered-retry.exe');
+      writeFileSync(tampered, Buffer.from('MZ not the release bytes'));
+      h.downloads.push(tampered, installer);
+      const first = await h.updater.checkForUpdates({}, { interactive: true });
       expect(first.state).toBe('error');
       expect(first.message).toMatch(/failed verification and will not be installed: the downloaded file does not match the SHA-512 checksum/);
-      expect(autoUpdater.autoInstallOnAppQuit).toBe(false);
-      const second = await updater.checkForUpdates({}, { interactive: true });
+      expect(h.autoUpdater.autoInstallOnAppQuit).toBe(false);
+      const second = await h.updater.checkForUpdates({}, { interactive: true });
       expect(second.state).toBe('downloaded');
-      expect(boxes).toContain('JCad Electrical 0.4.2 has been downloaded.'); // "...or it will be installed when you quit."
-      expect(autoUpdater.autoInstallOnAppQuit).toBe(true);
-    } finally {
-      for (const k of ['electron', 'updater'] as const) {
-        if (saved[k]) require.cache[paths[k]] = saved[k];
-        else delete require.cache[paths[k]];
-      }
-      delete require.cache[paths.mod];
-      Object.defineProperty(process, 'platform', realPlatform);
-      delete process.env.APPIMAGE;
-    }
+      expect(h.boxes.find((box) => box.message === 'JCad Electrical 0.4.2 has been downloaded.')?.detail).toMatch(/choose Check for Updates when you are ready/);
+      expect(h.autoUpdater.autoInstallOnAppQuit).toBe(false);
+      expect(h.installs()).toBe(0);
+    });
+  });
+
+  it('explicit Restart Now handles unsaved work and rechecks the publisher before installing', async () => {
+    await exercise(async (h) => {
+      h.downloads.push(installer);
+      h.restart();
+      expect((await h.updater.checkForUpdates({}, { interactive: true })).state).toBe('downloaded');
+      expect(h.order).toEqual(['signature', 'unsaved-work', 'signature', 'install']);
+      expect(h.installs()).toBe(1);
+      expect(h.autoUpdater.autoInstallOnAppQuit).toBe(false);
+    });
+  });
+
+  it('refuses a cached installer changed after download when Restart Now is chosen later', async () => {
+    await exercise(async (h) => {
+      const cached = join(dir, 'cached-installer.exe');
+      writeFileSync(cached, readFileSync(installer));
+      h.downloads.push(cached);
+      expect((await h.updater.checkForUpdates({}, { interactive: true })).state).toBe('downloaded');
+      writeFileSync(cached, 'MZ replaced after download');
+      h.restart();
+      await h.updater.checkForUpdates({}, { interactive: true });
+      expect(h.order).toEqual(['signature', 'unsaved-work']);
+      expect(h.statuses.some((status) => status.state === 'error' && /does not match the SHA-512/.test(status.message ?? ''))).toBe(true);
+      expect(h.boxes.some((box) => /failed verification and was not installed/.test(box.message))).toBe(true);
+      expect(h.installs()).toBe(0);
+      expect(h.autoUpdater.autoInstallOnAppQuit).toBe(false);
+    });
   });
 });

@@ -1,4 +1,3 @@
-/** The screenshot output gate (e2e/output-scanner.mjs), ported from PR #2 (codex/electrical-review-fixes 2f89b0e). */
 import { describe, expect, it } from 'vitest';
 import { createLineScanner, createOutputGate } from '../e2e/output-scanner.mjs';
 

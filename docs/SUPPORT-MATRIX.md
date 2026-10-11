@@ -3,7 +3,7 @@
 What JCad Electrical reads from DXF and DWG files, what it writes back, and what is lost on the
 way. JCad is a 2D program: it works in the drawing plane and keeps 2D geometry. DXF is the native
 format (written as AutoCAD 2000, `AC1015`); DWG is **read-only** (LibreDWG, versions R14 to 2018,
-files up to 512 MB), and SAVE after opening a DWG writes a DXF next to it.
+files up to 128 MiB), and SAVE after opening a DWG writes a DXF next to it.
 
 Legend: **yes** = kept; **partly** = kept with the limits in the last column; **no** = not read or
 not written (the object is dropped; on DWG import the dropped types are counted in the "Skipped
@@ -19,25 +19,26 @@ the fixtures in `fixtures/` and `tests/fixtures/`.
 | LINE | yes | yes | yes | Z coordinates and thickness are dropped (2D). |
 | CIRCLE, ARC | yes | yes | yes | Same. Circles and arcs inside a non-uniformly scaled block become polylines when exploded or drawn. |
 | LWPOLYLINE | yes | yes | yes | Constant width (group 43) and bulges round-trip; per-vertex start / end widths (groups 40 / 41) are not read. A closed two-vertex polyline with bulges 1 and a width (a filled donut) is read as a filled circle. *Verified by fixtures:* `interchange/r2000-hatch-curves.dxf` (bulges, width 43; widths 40 / 41 dropped). |
-| POLYLINE (2D, with VERTEX) | yes | yes (POLYLINE2D) | as LWPOLYLINE | Read as a light-weight polyline. 3D polylines and polyface / polygon meshes are not read. |
+| POLYLINE (with VERTEX) | partly | partly | as LWPOLYLINE | 2D polylines retain their outline and bulges. 3D polylines are flattened to XY and reported; polyface / polygon meshes are dropped and reported. |
 | SOLID, TRACE | yes | yes (SOLID) | SOLID | Read as a filled closed polyline; written back as SOLID (three or four corners) or, with more corners, as a solid HATCH. |
 | TEXT | yes | yes | yes | Style name, height, width factor, oblique angle, rotation, horizontal alignment (left / center / right) and fields are kept. Vertical justification (bottom / middle / top) is converted to the equivalent baseline position, so the justification mode itself is not written back; fit and aligned text keep their first point only. |
-| MTEXT | yes | yes | yes | Format codes are kept verbatim while the text is unchanged and evaluated for display. *Verified by fixtures:* `interchange/r2018-mtext.dxf` (`\P \f \F \C \H \L \O \p \W \Q \T`, stacks, group 3 chunks, UTF-8, R2018 static columns). Columns (static and dynamic, also dynamic with auto height, which AutoCAD saves with a column count of 0: count, width, gutter, heights, flow direction, `\N` breaks) are kept and drawn column by column; text moves to the next column only at a column break, so dynamic columns that AutoCAD flows by height show their text in the first column. AutoCAD 2000 DXF has no MTEXT columns, so JCad writes them as `JCAD_MTEXT_COLUMNS` XDATA: JCad reads them back, other programs show one column. |
-| INSERT (block reference) | yes | yes | yes | Mirrored and non-uniform X / Y scales round-trip. Arrays (MINSERT rows / columns) and dynamic-block parameters are not kept (the block is inserted once). One reference draws at most 2,000,000 objects and follows at most 2,000,000 nested references (8 levels deep), and a block that inserts itself is drawn once; such blocks are kept, saved unchanged and listed in the Import Report. *Verified by fixtures:* `interchange/r2000-nested-blocks-xref.dxf` (three nesting levels). |
+| MTEXT | partly | partly | partly | Formatting source, chunks and UTF-8 survive. Static/dynamic column definitions are read from native groups or R2018 embedded objects; explicit `\N` breaks render in separate columns. Column dimensions survive JCad edits and reimport through `JCAD_MTEXT_COLUMNS` XDATA. AutoCAD 2000 export displays one MTEXT column in external CAD; automatic column flow is approximated and reported. Background fill is dropped and reported. *Verified:* `interchange/r2018-mtext.dxf`. |
+| INSERT (block reference) | yes | yes | yes | Mirrored and non-uniform X / Y scales round-trip. Arrays (MINSERT rows / columns) and dynamic-block parameters are not kept (the block is inserted once). *Verified by fixtures:* `interchange/r2000-nested-blocks-xref.dxf` (three nesting levels). |
 | ATTDEF, ATTRIB | yes | yes | yes | Tag, prompt, default and value, invisible flag, constant attributes, position, height and justification. *Verified by fixtures:* `interchange/r2000-layouts-titleblock.dxf` (paper-space title block, an ATTRIB hidden on one insert). |
 | ELLIPSE | yes | yes | yes | Full and elliptical arcs. *Verified by fixtures:* `interchange/r2000-hatch-curves.dxf`. |
 | POINT | yes | yes | yes | PDMODE / PDSIZE come from the header. |
 | XLINE, RAY | yes | yes | yes | |
-| DIMENSION | partly | partly | yes | Linear (rotated), aligned, radius, diameter and angular (2-line and 3-point, both read as angular) are kept with their style, DIMEDIT oblique angle and DIMTEDIT text rotation, and written with an anonymous `*D` picture block. Ordinate and arc-length dimensions are dropped (DWG import counts them as skipped DIMENSIONs). Per-dimension overrides of the style (AutoCAD's DSTYLE XDATA) are applied and written back the same way. Dimensions inside block definitions are written with their picture block too. *Verified by fixtures:* `interchange/r2000-dimensions.dxf`, `interchange/r2018-dimensions.dxf` (ordinate dropped and reported; DSTYLE DIMTXT / DIMDEC overrides kept). |
-| SPLINE | yes | yes | yes | Fit points or control vertices, weights, closed / periodic flags. *Verified by fixtures:* `interchange/r2000-hatch-curves.dxf` (fit points with end tangents, rational). |
-| HATCH | yes | yes | yes | Boundary loops (polyline and edge loops), pattern definition lines as stored in the file (the stored lines win, so ISO and double hatches draw as saved), solid fill. Gradient settings are not kept, and associativity to boundary objects is lost (the hatch keeps its own loops and is saved non-associative, flag 71 = 0). *Verified by fixtures:* `interchange/r2000-hatch-curves.dxf` (ANSI31 with bulges and with edges, SOLID with an island). |
+| DIMENSION | partly | partly | yes | Linear, aligned, radius, diameter and angular dimensions retain styles and anonymous `*D` pictures, including dimensions inside blocks. Supported per-entity ACAD DSTYLE variables are applied and written independently of the named style. Unknown override groups are reported. Two-line angular dimensions export as three-point angular dimensions. Ordinate/arc-length dimensions are dropped and reported. DWG support depends on exposed variables/XDATA. *Verified:* both dimension fixtures. |
+| SPLINE | partly | partly | yes | Fit points or control vertices, weights, closed / periodic flags. Imports exceeding 2,000,000 calculated basis-work units or a 128-row fit-interpolation matrix are dropped with a source warning before expensive evaluation/allocation. *Verified by fixtures:* `interchange/r2000-hatch-curves.dxf` (fit points with end tangents, rational). |
+| HATCH | partly | partly | yes | Loops, bulges, stored pattern lines and solid fill survive. Boundary association links are lost and reported; export writes non-associative flag 71 = 0 while retaining loop geometry. DWG boundaries that cannot be reconstructed become reported outline approximations. Counts are bounded by available records; spline work limits also apply to hatch edges. Arc/ellipse sampling is capped at 64 samples per edge; derived coordinate overflow is dropped and reported. Gradient settings are not retained. *Verified:* `interchange/r2000-hatch-curves.dxf`. |
 | LEADER | yes | yes | yes | With its associated MTEXT. |
 | MULTILEADER / MLEADER | yes | yes | as LEADER + MTEXT | Leader lines, landing and text are kept; block content is not drawn (a note says so on open). Written back as a LEADER with MTEXT, not as a MULTILEADER. |
-| IMAGE (+ IMAGEDEF) | yes | yes | yes | The bitmap file is referenced by path (absolute or relative to the drawing); the clip boundary, brightness, contrast and fade are written. The desktop app draws `.png` / `.jpg` / `.gif` / `.bmp` / `.webp` up to 50 MB; other formats (and every bitmap in the browser edition) show as a frame with the file name. *Verified by fixtures:* `interchange/r2018-image-inches.dxf` (model and paper space). |
-| ACAD_TABLE | yes (with cell data) | yes | as INSERT + XDATA | A table is written as an insert of an anonymous block (other programs show its picture) carrying the cells in `JCAD_TABLE` XDATA, which JCad reads back as a table. Other programs see a block, not an editable table. Cells without their own text height or alignment take the TABLESTYLE's (title, header and data rows each their own), and the table takes its cell margins; other table style settings (borders, fills, fonts) are not read. *Verified by fixtures:* `interchange/r2018-table.dxf` and the AutoCAD-written table of `fixtures/example_2000.dxf` (cell styles in the order data, title, header). |
-| VIEWPORT (paper space) | yes | yes | yes | Rectangular viewports with their frozen layers (DXF); non-rectangular clipping is not supported. DWG import reads the layouts' viewports, but layers frozen per viewport (VPLAYER) are not exposed by the DWG reader, so such viewports show every layer (the import report says so). *Verified by fixtures:* `interchange/r2000-layouts-titleblock.dxf`, `interchange/r2018-image-inches.dxf` (scale, frozen layer, lock, off). |
-| External references (xref blocks) | yes | yes | yes | Kept as references and drawn as a named frame; the referenced file is not loaded. Xref-dependent layers keep their LAYER flags 16 / 32. *Verified by fixtures:* `interchange/r2000-nested-blocks-xref.dxf` (attach, overlay, `SITE-PLAN\|WALLS` with flags 48). |
-| WIPEOUT, 3DFACE, 3DSOLID, REGION, BODY, MESH, MLINE, TOLERANCE, OLE2FRAME, SURFACE, LIGHT, UNDERLAY (PDF / DGN / DWF) | kept (DXF) | no | as read | Not drawn or edited. The import report (IMPORTREPORT) lists every such object: unknown ENTITIES records of a DXF are kept with the drawing and written back as they were on save; what cannot be kept is dropped, and saving over the original file asks first (Save As keeps the original). DWG import counts them as skipped. |
+| IMAGE (+ IMAGEDEF) | yes | partly | yes | Paths resolve after model space, blocks and layouts have all been read, including late IMAGEDEF objects. Clip boundary, pixel vectors and display adjustments survive. Missing definitions/paths are reported. Desktop-supported bitmaps render when available; unsupported formats/browser edition use a named frame. DWG reader path omissions are reported. *Verified:* `interchange/r2018-image-inches.dxf`. |
+| ACAD_TABLE | partly | partly | as INSERT + XDATA | DXF TABLESTYLE supplies title/header/data heights, alignment and margins; cell overrides win. JCad exports a picture block with cell data in `JCAD_TABLE` XDATA. External CAD sees a block. DWG unreadable cells fall back to the anonymous picture; estimated positions and editing/metadata losses are listed in the import report. Formulas, advanced borders and fills are not modeled. *Verified:* `interchange/r2018-table.dxf`. |
+| VIEWPORT (paper space) | partly | partly | yes | Rectangular scale, center, lock/off and frozen layer names survive. DWG frozen layer handles are resolved when exposed; missing/unresolved handles are reported. Non-rectangular clipping and view twist are unsupported and reported when exposed. *Verified:* layout/image fixtures and DWG payload tests. |
+| External references (xref blocks) | yes | partly | yes | Attach/overlay references and xref-dependent layer flags 16/32 survive. References display a named frame; external files are not loaded. DWG missing file paths are explicitly reported when the block name substitutes for the path. *Verified:* `interchange/r2000-nested-blocks-xref.dxf`. |
+| 3DFACE, 3DSOLID, REGION, BODY | partly | no | retained raw groups | Unknown model-space records with self-contained data are retained without rendering/editing. Original handles, reactors, cross-object links and XDATA are removed; newer solids whose data is external to the record cannot be retained. The report distinguishes retained records from losses. |
+| WIPEOUT, MESH, MLINE, TOLERANCE, OLE2FRAME, SURFACE, LIGHT, UNDERLAY (PDF / DGN / DWF) | no | no | no | Dropped and reported. Unsupported block/paper-space records are reported rather than silently claimed to survive. |
 
 ## Drawing-level data
 
@@ -46,14 +47,14 @@ the fixtures in `fixtures/` and `tests/fixtures/`.
 | Layers | yes | yes | yes | Colour (ACI), linetype, lineweight, on / off, frozen, locked, no-plot (DXF), true colour (group 420 in DXF; a DWG layer with colour index 256 carries its RGB). Layer transparency is not read. *Verified by fixtures:* `interchange/r2018-truecolor-linetypes.dxf` (the Default lineweight -3 is written back as 0.25 mm). |
 | Linetypes (LTYPE) | yes | yes | yes | Dash patterns (group 49). Text or shapes embedded in complex linetypes are not drawn; only the dashes are. *Verified by fixtures:* `interchange/r2018-truecolor-linetypes.dxf` (GAS_LINE, FENCELINE1: dashes kept, text and shape not written). |
 | Text styles (STYLE) | yes | yes | yes | Name, font file / TrueType family, big font, height, width factor, oblique, flags. |
-| Dimension styles (DIMSTYLE) | yes | yes | yes | Every DIM* group code JCad models, including the decimal separator (DIMDSEP 278), the text style (DIMTXSTY 340, resolved by its STYLE handle; dimension text is drawn in that style), tolerance zero suppression (DIMTZIN 284) and the dimension / extension lineweights (DIMLWD / DIMLWE 371 / 372); arrowheads, tolerances and alternate-unit placement in `JCAD_DIMSTYLE` XDATA; arrow blocks of other programs resolved by handle; a DIMAPOST `[]` placeholder takes the alternate value. *Verified by fixtures:* `interchange/r2000-dimensions.dxf`, `interchange/r2018-dimensions.dxf`. |
+| Dimension styles (DIMSTYLE) | partly | partly | partly | Supported DIM variables include DIMDSEP decimal commas, DIMTXSTY resolved STYLE handles, DIMTZIN independent tolerance suppression, DIMLWD/E lineweights and DIMAPOST `[]` substitution. DIMADEC -1 inherits DIMDEC. Arrow names/basic tolerances/alternate placement use `JCAD_DIMSTYLE` XDATA, so external readers may use their defaults; dimension picture geometry preserves the appearance. Unsupported non-default native style/header variables and unmodeled `ACAD_DSTYLE_*` metadata are reported. *Verified:* both dimension fixtures and active regression tests. |
 | Blocks and attributes | yes | yes | yes | Nested blocks, base point, description. Unused library blocks are left out on save. *Verified by fixtures:* `interchange/r2000-nested-blocks-xref.dxf`, `interchange/r2000-layouts-titleblock.dxf`. |
 | Named views (VIEW) | yes | no | yes | |
-| Header variables | partly | partly | partly | Kept: $INSUNITS, $LUNITS / $LUPREC, $AUNITS / $AUPREC, $LIMMIN / $LIMMAX, $LTSCALE, $CELTSCALE, $CELTYPE, $CELWEIGHT, $CLAYER, $TEXTSTYLE, $PDMODE / $PDSIZE, $DIMSTYLE and the current style's $DIM* variables, $CANNOSCALE, $ANNOALLVISIBLE, $TDCREATE / $TDUPDATE; $DWGCODEPAGE is used to decode older files. DWG import reads units, limits and the dimension variables. Every other header variable is dropped. $LIMMIN / $LIMMAX are written as 2D points, and the file gets the plot style dictionary (ACAD_PLOTSTYLENAME) its layers refer to, as AutoCAD 2000 files do. *Verified by fixtures:* $INSUNITS 1 with architectural $LUNITS / $LUPREC (`interchange/r2018-image-inches.dxf`), $INSUNITS 4 elsewhere. |
+| Header variables | partly | partly | partly | Kept: $INSUNITS, $LUNITS / $LUPREC, $AUNITS / $AUPREC, $LIMMIN / $LIMMAX, $LTSCALE, $CELTYPE / $CELTSCALE, $CELWEIGHT, $TEXTSTYLE, $CLAYER, $PDMODE / $PDSIZE, $DIMSTYLE and the current style's supported $DIM* variables. DXF retains valid source angular formats, current entity linetype scale and current text style; DWG retains the values exposed by its reader, including resolved style names. Absent values default to 0, 1 and Standard on export. JCad's angle display remains decimal degrees; new entities do not yet inherit $CELTSCALE / $TEXTSTYLE. $CANNOSCALE / $ANNOALLVISIBLE are read for JCad annotation display but are not valid AutoCAD 2000 header variables; $TDCREATE / $TDUPDATE are read as document timestamps. $DWGCODEPAGE decodes older files. Other header variables are dropped. *Verified:* `tests/interchange-header-settings.test.ts` and interchange fixtures. |
 | Layouts (paper space) | yes | yes | yes | `*Paper_Space` blocks, LAYOUT objects in `ACAD_LAYOUT` (paper size, margins, plot scale); from DWG the LAYOUT objects and their paper-space blocks (a lone, untouched Layout1 is not kept). A drawing always opens in the Model tab. Plot style tables (CTB / STB) are not read. *Verified by fixtures:* `interchange/r2000-layouts-titleblock.dxf` (two layouts, `*Paper_Space0`, plot scale 1:2, saved with $TILEMODE 0), `interchange/r2018-image-inches.dxf` (inch paper, plot rotation). |
 | Annotative objects | yes | no | yes | `AcadAnnotative` XDATA; one annotation scale per object. |
 | Fields | yes | partly | yes | Evaluated on open, written back as field codes; DWG keeps most fields in FIELD objects, which are read as their last displayed value. |
-| Groups, object data, other XDATA / XRECORDs | no | no | no | Only the XDATA applications listed above are read; everything else is dropped. *Verified by fixtures:* AutoCAD's `ACAD_DSTYLE_*` DIMSTYLE XDATA and the layer `AcCmTransparency` XDATA are dropped. |
+| Groups, object data, other XDATA / XRECORDs | no | no | no | Unmodeled DXF application data and object metadata are reported as losses, including ACAD-prefixed data. DWG import reports exposed omitted object types and a conservative reader-limit warning because the reader may omit XDATA/dictionaries/fields entirely. Estimated positions/shape approximations are included in the structured report and notes. |
 | Handles | no | no | new | Handles are reassigned on save; references from outside the file to object handles do not survive. |
 
 ## Colours
@@ -68,12 +69,40 @@ the fixtures in `fixtures/` and `tests/fixtures/`.
 
 ## Fonts and text
 
-All text is drawn with a single-stroke vector font (Hershey Roman Simplex, `src/render/fonts/rowmans.jhf`)
-whatever font the style names, so line breaks and widths can differ slightly from the original
+TrueType/OpenType styles render on screen through installed CSS font families and fallback stacks.
+SHX and unknown styles use a single-stroke vector font (Hershey Roman Simplex,
+`src/render/fonts/rowmans.jhf`). Geometry bounds and MTEXT wrapping still use stroke-font
+measurements, so spacing and line breaks can differ from the displayed font and the original CAD
 program. The style's font file / TrueType family is kept and written back. In vector PDF output,
-TrueType-style text becomes PDF text and stroke-font text becomes paths. Text in pre-2007 DXF
+WinAnsi-compatible TrueType-style text uses Helvetica or Helvetica-Bold; other text falls back to
+stroke paths. Exact font embedding and SHX rendering are not implemented. Text in pre-2007 DXF
 files is decoded from `$DWGCODEPAGE`; the writer produces pure ASCII with `\U+XXXX` escapes, so
 non-English text survives any code page.
+Non-default font metrics and absent STYLE definitions are disclosed in import reports; font
+files are referenced rather than embedded.
+
+## Import validation and external checks
+
+DXF numbers must consume the complete value; garbage suffixes never become valid numeric
+prefixes. Rejected geometry carries its source handle, layer, space and line/group context;
+invalid numeric headers are rejected with the variable and value line.
+Display precision is limited to 0–8, with -1 also accepted for DIMADEC; damaged direct-call
+settings are bounded before numeric formatting. DXF integer values must be safe finite integers
+and group codes must be in 0–1071. Default budgets are
+128 million source characters, 2 million pairs, 250,000 records and 1 MiB per string. Line/string
+budgets are checked before splitting the source into arrays. DWG conversion also limits
+records, string lengths, total string data, metadata nodes and nesting depth.
+
+Installed AutoCAD 2027 validation opens JCad exports, runs AUDIT and DXFOUT, then reimports
+the normalized result. The dimension, hatch, layout, MTEXT, table and sample exports passed
+with zero AUDIT errors. Writer regressions cover two-dimensional LIMMIN/LIMMAX header
+points, version-compatible dimension groups and a valid Normal plot-style dictionary and
+placeholder for layer references. Autodesk vendor samples remain local validation inputs;
+they are not distributed with the repository.
+
+Column and table-style group semantics follow Autodesk's
+[MTEXT reference](https://help.autodesk.com/cloudhelp/2024/ENU/AutoCAD-DXF/files/GUID-5E5DB93B-F8D3-4433-ADF7-E92E250D2BAB.htm)
+and [TABLESTYLE reference](https://help.autodesk.com/cloudhelp/2024/ENU/AutoCAD-DXF/files/GUID-0DBCA057-9F6C-4DEB-A66F-8A9B3C62FB1A.htm).
 
 ## Electrical data
 

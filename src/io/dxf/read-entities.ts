@@ -4,29 +4,33 @@
  * XLINE, RAY, SPLINE, HATCH, INSERT); DIMENSION, LEADER, MULTILEADER, IMAGE and tables come from
  * read-annotations.ts.
  */
-import type { Entity, SplineEntity, HatchEntity, HatchLoop, WorldPatternLine, FieldLink } from '../../core/entities';
-import { mtextFromDxf, hasFormatting, type MTextAttachment, type MTextColumns } from '../../core/mtext';
-import { findPattern, LoopBuilder, edgeArc, fitPatternToLines } from '../../core/hatch';
-import { isValidNurbs, nurbsPoints, interpolateFitPoints } from '../../core/spline';
-import { evaluateFields, hasFields } from '../../core/fields';
+import type { Obj } from './groups';
+import { commonProps, reportObj } from './read-core';
+import type { SplineEntity, HatchLoop, HatchEntity, WorldPatternLine, FieldLink, Entity } from '../../core/entities';
+import { afterSubclass, num, pointList, flt, Cursor, int, HatchReadError, pt, has, str } from './groups';
 import * as g from '../../core/geometry';
-import { num, has, str, pt, int, flt, afterSubclass, pointList, Cursor, xdata, type Obj } from './groups';
-import { MTEXT_COLUMNS_APP } from './codes';
-import { commonProps, reportObj, type ReadContext } from './read-core';
-import { readDimStyleFromEntity, readDimension, readLeader, readMLeader, readImage, readTable, readJcadTable } from './read-annotations';
+import { splineWorkProblem, SplineWorkLimitError, isValidNurbs, nurbsPoints, interpolateFitPoints } from '../../core/spline';
+import { LoopBuilder, edgeArc, fitPatternToLines, findPattern } from '../../core/hatch';
+import type { ReadContext } from './read-core';
+import { hasFields, evaluateFields } from '../../core/fields';
+import { readMTextColumns, readDimension, readDimStyleFromEntity, readLeader, readMLeader, readImage, readTable, readJcadTable } from './read-annotations';
+import type { MTextAttachment } from '../../core/mtext';
+import { mtextFromDxf, hasFormatting } from '../../core/mtext';
 
 function readSpline(o: Obj, base: ReturnType<typeof commonProps>): SplineEntity | null {
   const gs = afterSubclass(o, 'AcDbSpline');
   const flags = Math.trunc(num(o, 70));
   const degree = Math.max(1, Math.trunc(num(o, 71, 3)));
-  const knots = gs.filter((x) => x.code === 40).map((x) => parseFloat(x.value));
-  const weights = gs.filter((x) => x.code === 41).map((x) => parseFloat(x.value));
+  const knots = gs.filter((x) => x.code === 40).map((x) => Number(x.value));
+  const weights = gs.filter((x) => x.code === 41).map((x) => Number(x.value));
   const controlPoints = pointList(gs, 10);
   const fitPoints = pointList(gs, 11);
   if (controlPoints.length < 2 && fitPoints.length < 2) return null;
   const tangent = (code: number): g.Point | undefined => (gs.some((x) => x.code === code) ? { x: flt(gs.find((x) => x.code === code)?.value), y: flt(gs.find((x) => x.code === code + 10)?.value) } : undefined);
   const st = tangent(12);
   const et = tangent(13);
+  const workProblem = splineWorkProblem({ degree, knots, controlPoints }, fitPoints.length, { closed: (flags & 1) === 1, startTangent: st, endTangent: et });
+  if (workProblem) throw new SplineWorkLimitError(workProblem);
   return {
     ...base,
     type: 'spline',
@@ -43,26 +47,25 @@ function readSpline(o: Obj, base: ReturnType<typeof commonProps>): SplineEntity 
 }
 
 function readHatchLoop(c: Cursor): HatchLoop | null {
-  const flags = int(c.seek(92, 4));
+  const flags = int(c.required(c.seek(92, 4), 92));
   const b = new LoopBuilder();
   if (flags & 2) {
     const hasBulge = int(c.take(72)) !== 0;
     c.take(73);
-    const n = int(c.seek(93, 3));
+    const n = c.count(c.required(c.seek(93, 3), 93), 93, 2);
     const pts: g.Point[] = [];
     const bulges: number[] = [];
-    for (let k = 0; k < n && c.code !== undefined; k += 1) {
+    for (let k = 0; k < n; k += 1) {
       pts.push(c.point(10));
       bulges.push(hasBulge && c.code === 42 ? flt(c.take(42)) : 0);
     }
-    const nsrc = int(c.take(97));
-    for (let k = 0; k < nsrc; k += 1) c.take(330);
+    c.sourceHandles(c.take(97));
     if (pts.length < 2) return null;
     return { points: pts, ...(bulges.some((v) => Math.abs(v) > 1e-12) ? { bulges } : {}) };
   }
-  const nEdges = int(c.seek(93, 3));
-  for (let k = 0; k < nEdges && c.code !== undefined; k += 1) {
-    const type = int(c.seek(72, 3));
+  const nEdges = c.count(c.required(c.seek(93, 3), 93), 93);
+  for (let k = 0; k < nEdges; k += 1) {
+    const type = int(c.required(c.seek(72, 3), 72));
     if (type === 1) {
       const a = c.point(10);
       const e = c.point(11);
@@ -95,28 +98,29 @@ function readHatchLoop(c: Cursor): HatchLoop | null {
       const degree = int(c.take(94), 3);
       const rational = int(c.take(73)) !== 0;
       c.take(74);
-      const nk = int(c.take(95));
-      const nc = int(c.take(96));
+      const nk = c.count(c.required(c.take(95), 95), 95);
+      const nc = c.count(c.required(c.take(96), 96), 96, 2);
       const knots: number[] = [];
-      for (let i = 0; i < nk; i += 1) knots.push(flt(c.seek(40, 2)));
+      for (let i = 0; i < nk; i += 1) knots.push(flt(c.required(c.seek(40, 2), 40)));
       const cps: g.Point[] = [];
       const weights: number[] = [];
       for (let i = 0; i < nc; i += 1) {
         cps.push(c.point(10));
         if (rational && c.code === 42) weights.push(flt(c.take(42), 1));
       }
-      const nf = c.code === 97 ? int(c.take(97)) : 0;
+      const nf = c.code === 97 ? c.count(c.take(97), 97, 2) : 0;
       const fit: g.Point[] = [];
       for (let i = 0; i < nf; i += 1) fit.push(c.point(11));
       if (c.code === 12) c.point(12);
       if (c.code === 13) c.point(13);
       const curve = { degree, knots, controlPoints: cps, ...(weights.length === cps.length ? { weights } : {}) };
+      const workProblem = splineWorkProblem(curve, fit.length, {}, 8);
+      if (workProblem) throw new HatchReadError(workProblem);
       const pts = isValidNurbs(curve) ? nurbsPoints(curve, 8) : fit.length >= 2 ? nurbsPoints(interpolateFitPoints(fit) ?? curve, 8) : cps;
       b.polyline(pts);
-    } else break;
+    } else throw new HatchReadError(`unsupported hatch edge type ${type}`);
   }
-  const nsrc = int(c.seek(97, 2));
-  for (let k = 0; k < nsrc; k += 1) c.take(330);
+  c.sourceHandles(c.seek(97, 2));
   return b.loop();
 }
 
@@ -137,8 +141,8 @@ function readHatch(o: Obj, base: ReturnType<typeof commonProps>): HatchEntity | 
     const value = c.gs[c.i]!.value;
     if (code === 91 && loops.length === 0) {
       c.i += 1;
-      const n = int(value);
-      for (let k = 0; k < n && c.code !== undefined; k += 1) {
+      const n = c.count(value, 91);
+      for (let k = 0; k < n; k += 1) {
         const l = readHatchLoop(c);
         if (l) loops.push(l);
       }
@@ -146,16 +150,16 @@ function readHatch(o: Obj, base: ReturnType<typeof commonProps>): HatchEntity | 
     }
     if (code === 78) {
       c.i += 1;
-      const n = int(value);
-      for (let k = 0; k < n && c.code !== undefined; k += 1) {
-        const a = flt(c.seek(53, 3));
+      const n = c.count(value, 78);
+      for (let k = 0; k < n; k += 1) {
+        const a = flt(c.required(c.seek(53, 3), 53));
         const bx = flt(c.take(43));
         const by = flt(c.take(44));
         const ox = flt(c.take(45));
         const oy = flt(c.take(46));
-        const nd = int(c.take(79));
+        const nd = c.count(c.required(c.take(79), 79), 79);
         const dashes: number[] = [];
-        for (let d = 0; d < nd; d += 1) dashes.push(flt(c.take(49)));
+        for (let d = 0; d < nd; d += 1) dashes.push(flt(c.required(c.take(49), 49)));
         lines.push({ angle: g.rad(a), base: { x: bx, y: by }, offset: { x: ox, y: oy }, dashes });
       }
       continue;
@@ -211,42 +215,6 @@ function readHatch(o: Obj, base: ReturnType<typeof commonProps>): HatchEntity | 
   };
 }
 
-/**
- * MTEXT columns: JCad's own JCAD_MTEXT_COLUMNS XDATA, else AutoCAD's (the R2018 "Embedded
- * Object" groups 71-74 / 44-46, or the native groups 75-79 / 48-50). Ported from PR #2
- * (codex/electrical-review-fixes 2f89b0e).
- */
-function readMTextColumns(o: Obj): MTextColumns | undefined {
-  const own = xdata(o, MTEXT_COLUMNS_APP);
-  if (own) {
-    try {
-      const c = JSON.parse(own.filter((p) => p.code === 1000).map((p) => p.value).join('')) as MTextColumns;
-      if ((c.type === 1 || c.type === 2) && Number.isInteger(c.count) && c.count > 0 && c.count <= 256 && Number.isFinite(c.width) && c.width > 0 && Number.isFinite(c.gutter) && c.gutter >= 0 && Array.isArray(c.heights) && c.heights.length <= 256 && c.heights.every((h) => Number.isFinite(h) && h >= 0)) return c;
-    } catch {
-      /* the native groups below */
-    }
-  }
-  const embedded = o.groups.findIndex((p) => p.code === 101 && p.value === 'Embedded Object');
-  const nativeStart = o.groups.findIndex((p) => p.code === 75);
-  const groups = embedded < 0 ? o.groups.slice(Math.max(0, nativeStart)) : o.groups.slice(embedded + 1);
-  const code = (native: number, modern: number) => groups.find((p) => p.code === (embedded < 0 ? native : modern))?.value;
-  // Embedded object (R2018): 71 type, 72 count, 44 width, 45 gutter, 73 auto height, 74 reversed
-  // flow, 46 heights; the native groups: 75 type, 76 count, 48 / 49, 79 auto height, 78 reversed.
-  const type = int(code(75, 71));
-  let count = int(code(76, 72));
-  const width = flt(code(48, 44));
-  const gutter = Math.max(0, flt(code(49, 45)));
-  const heights = embedded >= 0 ? groups.filter((p) => p.code === 46).map((p) => flt(p.value)) : groups.filter((p) => p.code === 50).slice(1).map((p) => flt(p.value));
-  // Dynamic columns with auto height (AutoCAD's default for new columns) are saved with a count of
-  // 0: the number follows from the total width (42) the columns and gutters take.
-  if (count === 0 && embedded >= 0 && width > 0) {
-    const total = flt(code(42, 42));
-    count = heights.length > 0 ? heights.length : total > 0 ? Math.round((total + gutter) / (width + gutter)) : 0;
-  }
-  if ((type !== 1 && type !== 2) || count < 1 || count > 256 || !(width > 0)) return undefined;
-  return { type, count, width, gutter, autoHeight: int(code(79, 73)) !== 0, reversed: int(code(78, 74)) !== 0, heights: heights.slice(0, count) };
-}
-
 /** Field expressions in TEXT: evaluate for display and keep the code. */
 function withTextField(text: string, ctx: ReadContext): { text: string; field?: FieldLink } {
   if (!hasFields(text)) return { text };
@@ -275,12 +243,12 @@ export function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
       const bulges: number[] = [];
       let x: number | null = null;
       for (const p of o.groups) {
-        if (p.code === 10) x = parseFloat(p.value);
+        if (p.code === 10) x = Number(p.value);
         else if (p.code === 20 && x !== null) {
-          pts.push({ x, y: parseFloat(p.value) });
+          pts.push({ x, y: Number(p.value) });
           bulges.push(0);
           x = null;
-        } else if (p.code === 42 && bulges.length) bulges[bulges.length - 1] = parseFloat(p.value);
+        } else if (p.code === 42 && bulges.length) bulges[bulges.length - 1] = Number(p.value);
       }
       const closed = (num(o, 70) & 1) === 1;
       const width = num(o, 43, 0);
@@ -333,8 +301,6 @@ export function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
       };
     }
     case 'MTEXT': {
-      // Column definitions follow the MTEXT's own groups (R2018 "Embedded Object", or the
-      // native 75.. groups): the main properties are read from the groups before them.
       const columns = readMTextColumns(o);
       const embedded = o.groups.findIndex((p) => p.code === 101 && p.value === 'Embedded Object');
       const nativeStart = embedded < 0 ? o.groups.findIndex((p) => p.code === 75) : -1;

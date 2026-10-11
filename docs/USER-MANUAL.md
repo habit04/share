@@ -36,9 +36,11 @@ Download the installer for your system from the project's
 buttons on the website (<https://habit04.github.io/share/>). The file names look like
 `jcad-electrical-<version>-<os>-<arch>.<ext>`.
 
-The Windows installer is signed (publisher: Justin Rodriguez). The macOS disk images are signed
-with an Apple Developer ID and notarized by Apple (from version 0.4.2 on). The Linux packages are
-not signed.
+The release pipeline for 0.4.2 and later requires verified Windows Authenticode signatures from
+the configured publisher (Justin Rodriguez) and verified Apple Developer ID signatures and
+notarization for macOS. Older releases and empty-tag build rehearsals may be unsigned on Windows
+or ad-hoc signed on macOS. The release notes and `release-provenance.json`, when published,
+state the actual status. Linux packages are unsigned.
 
 ### Windows
 
@@ -48,7 +50,8 @@ not signed.
    **Run anyway**.
 3. Follow the installer. JCad Electrical appears in the Start menu.
 
-The Windows installer version updates itself (see [Updates](#12-updates)).
+Signed Windows installations with trusted publisher configuration can update in place; unsigned
+installations offer a manual download (see [Updates](#12-updates)).
 
 ### macOS
 
@@ -63,17 +66,18 @@ those systems, so do not replace it.
    downloaded from the internet. Click **Open**.
 3. From now on the app starts normally.
 
-Versions up to 0.4.1 are not notarized (they are ad-hoc signed, so macOS does not report them as
-"damaged"). The first time you start one of them, macOS says it cannot verify the developer:
+Versions up to 0.4.1 and ad-hoc build rehearsals are not notarized. Their ad-hoc seal keeps the
+bundle intact, but the first time you start one, macOS says it cannot verify the developer:
 click **Done** (or **Cancel**), open **System Settings > Privacy & Security**, scroll down to the
-message about JCad Electrical, click **Open Anyway** and confirm with your password. The release
-notes of each version say how its macOS build is signed.
+message about JCad Electrical, click **Open Anyway** and confirm with your password. A verified
+Developer ID and notarized build ordinarily opens after the normal downloaded-app confirmation;
+check the specific release's recorded status.
 
 ### Linux
 
 Two packages are offered:
 
-- **AppImage** (runs on most distributions, updates itself):
+- **AppImage** (runs on most distributions; updates by manual replacement):
 
   ```bash
   chmod +x jcad-electrical-*.AppImage
@@ -1286,10 +1290,13 @@ space, a layout, a block) and the reason; **Copy Report** copies the complete li
   other objects and their extended data are not kept.
 - **Kept** (blocks): a block whose references would expand, through the blocks nested in it, to
   more than 2,000,000 objects, and a block that inserts itself (directly or through other
-  blocks). The block is kept and saved unchanged; each reference draws only its first 2,000,000
-  objects (a self-reference is not drawn again), and `EXPLODE` leaves such a reference as it is.
-  When all the references of a drawing together expand to more than that, the report adds a
-  note that drawing and selecting may be slow.
+  blocks). The reader retains their definitions. Before a drawing opens or an edit is accepted,
+  geometry validation rejects any active reference exceeding 100,000 work units, model/layout
+  expansion exceeding 1,000,000 units, or block definitions exceeding a separate 1,000,000 units.
+  An excessive drawing is refused before rendering; it is not opened with a partial expansion.
+  Accepted cyclic references skip the repeated self-reference, and `EXPLODE` leaves them as
+  references so their content is preserved. Unused block definitions can remain when they fit
+  the separate definition budget. The report notes large potential expansion and these guards.
 
 **Saving over the original.** When the file you opened contained content JCad Electrical
 cannot keep, `SAVE` asks before writing over it: **Yes** saves over the original (the dropped
@@ -1330,21 +1337,21 @@ limits. Also brought in: paper-space **layouts** with their entities and floatin
 **ByBlock** colours (so block content takes the block reference's colour), and the layers'
 lock, freeze and plot settings.
 
-What the DWG reader cannot see is listed in the Import Report as **not supported yet**
-instead of being lost silently: a layout's page setup (plot device, plot scale and plot style;
-the sheet size is taken from the layout limits), layers frozen in individual viewports, the
-fixed text height of a text style, and the text or shape elements of complex linetypes.
+The Import Report lists missing data and approximations, including incomplete layout page
+setups, unresolved viewport layer references, font substitutions, and unsupported text or shape
+elements in complex linetypes. Exposed text-style properties and viewport frozen-layer handles
+are retained when available. The [support matrix](SUPPORT-MATRIX.md) describes the remaining losses.
 
 Large DWG files (1 MB and up) show an **Opening Drawing** window with the file size, the elapsed
 time and a **Cancel** button while they are read; the program stays responsive, and Cancel (or Esc)
 stops the read and leaves the current drawing as it was.
 
-DWG files are read in a separate reader with fixed limits, so a damaged or hostile file cannot
-take the program down: files over **512 MB** are refused, the reader may use about 2 GB of
-memory, and a read is stopped after 60 seconds plus one second per MB of the file (at most
-10 minutes). The open then fails with a message ("... took longer than ... and was stopped",
-"The DWG reader ran out of its memory limit") and the current drawing stays as it was. DXF files
-and projects have size limits too (512 MB and 64 MB).
+DWG files are read in a separate reader with workload limits: files over **128 MiB** are refused.
+A desktop read is stopped after 60 seconds plus one second per input MiB (at most 188 seconds
+for an accepted file); the browser edition allows 60 seconds. Desktop readers also limit their
+JavaScript heap and the shipped WebAssembly allocator's memory growth. These guards do not cap
+all memory used by the process. A refused or cancelled open reports the reason and leaves the
+current drawing as it was. DXF files and projects have size limits too (128 MiB and 8 MiB).
 
 DWG is **read-only**: JCad Electrical cannot write DWG files. When you save a drawing that
 was opened from a DWG, you are asked for a new file name and a DXF is written; the original
@@ -1477,14 +1484,15 @@ A few seconds after start-up JCad Electrical checks GitHub Releases for a newer 
 can also check any time with **Help > Check for Updates…** or the `CHECKUPDATES` command
 (UPDATE, CHECKFORUPDATES). Help > About shows the installed version.
 
-- **Windows installer** and **Linux AppImage**: the update is downloaded when you agree and
-  installed when the program restarts. Unsaved drawings are handled by the usual
+- **Windows installer with trusted publisher configuration**: the update is downloaded when you agree and
+  installed when you choose **Restart Now**. Choosing **Later** or quitting normally leaves it
+  uninstalled; use **Check for Updates** when you are ready. Unsaved drawings are handled by the usual
   save prompt before the restart. Before installing, JCad Electrical checks the downloaded
   file against the checksum published with the release (and, for a signed Windows
   installation, the publisher's signature). If the check fails, **Update Not Installed**
   says why, nothing is installed, and you can download the new version from the releases
   page instead.
-- **macOS** and **Linux .deb**: you are told that a new version exists and offered the right
+- **Unsigned Windows**, **macOS** and **all Linux builds**: you are told that a new version exists and offered the right
   download; install it like the first time. A Mac whose macOS is older than a new version needs
   is not offered it: the check says which macOS the new version needs, and the installed version
   keeps working.
@@ -1501,9 +1509,8 @@ lists the changes in every version.
   shortcuts directly.
 - **Report a Problem** (`REPORTBUG`, BUGREPORT, REPORTPROBLEM; Help menu, ribbon Add-ins):
   describe the summary, what happened and the steps to reproduce. The report adds the
-  version, platform, recent commands and any errors the program caught. Local file paths in
-  them become `[local path]` and the drawing name is left out, unless you tick **Include local
-  file paths and the drawing name**. Then choose **Open
+  version and platform. Command history, captured errors and private details are optional and
+  unchecked by default; local paths and drawing names are redacted. Then choose **Open
   GitHub Issue** (a prefilled issue in your browser), **Copy Report**, or **Save Report…** (a
   text file, optionally with the current drawing as DXF, for e-mail). Nothing is sent
   automatically.

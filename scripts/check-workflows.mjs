@@ -66,18 +66,23 @@ else {
     return n === undefined ? [] : Array.isArray(n) ? n : [n];
   };
   const runs = (id) => (jobs[id]?.steps ?? []).map((s) => String(s.run ?? '')).join('\n');
+  const matrixNodes = jobs.checks?.strategy?.matrix?.node;
+  if (!Array.isArray(matrixNodes) || ![22, 24].every((node) => matrixNodes.includes(node))) problems.push('release.yml: checks must test both Node 22 and 24');
   if (!jobs.checks) problems.push('release.yml: no "checks" job');
   else {
-    for (const cmd of ['npm run lint', 'npm run typecheck:all', 'npm test', 'npm run build', 'npm run ui-check', 'npm run screenshot:compare', 'npm run e2e', 'npm run bench:node'])
+    for (const cmd of ['npm run lint', 'npm run typecheck:all', 'npm test', 'npm run build', 'npm run ui-check', 'npm run screenshot:compare', 'npm run e2e', 'npm run e2e:origin', 'npm run bench:node', 'npm run bench:project'])
       if (!runs('checks').includes(cmd)) problems.push(`release.yml: the checks job does not run "${cmd}"`);
     if (!jobs.checks.outputs?.sha) problems.push('release.yml: the checks job does not output the tested commit (sha)');
-    // Electron 44 downloads its binary on first use; the end-to-end run must not pay for it inside its launch timeout.
-    const steps = jobs.checks.steps ?? [];
-    const fetchElectron = steps.findIndex((s) => /node node_modules\/electron\/install\.js/.test(String(s.run ?? '')));
-    const e2e = steps.findIndex((s) => /npm run e2e\b/.test(String(s.run ?? '')));
-    if (fetchElectron < 0 || fetchElectron > e2e) problems.push('release.yml: the checks job must fetch the Electron binary (node node_modules/electron/install.js) before the end-to-end run');
     const browserBench = (jobs.checks.steps ?? []).find((s) => /\bnpm run bench\s*$/.test(String(s.run ?? '')));
     if (!browserBench || String(browserBench.env?.JCAD_BENCH_ASSERT) !== '1') problems.push('release.yml: browser performance budgets must be asserted');
+    const projectBench = (jobs.checks.steps ?? []).find((s) => String(s.run ?? '').trim() === 'npm run bench:project');
+    if (!projectBench || String(projectBench.env?.JCAD_BENCH_ASSERT) !== '1') problems.push('release.yml: filesystem project performance budgets must be asserted');
+  }
+  for (const id of ['checks', 'test-build', 'packaged-smoke']) {
+    const steps = jobs[id]?.steps ?? [];
+    const fetchElectron = steps.findIndex((s) => /node node_modules\/electron\/install\.js/.test(String(s.run ?? '')));
+    const launches = steps.findIndex((s) => /npm run e2e\b|scripts\/packaged-smoke\.mjs/.test(String(s.run ?? '')));
+    if (fetchElectron < 0 || launches < 0 || fetchElectron >= launches) problems.push(`release.yml: job ${id} must fetch the Electron binary before test launches`);
   }
   for (const id of Object.keys(jobs)) {
     if (id === 'checks') continue;
@@ -85,10 +90,18 @@ else {
   }
   if (!needsOf('build').includes('checks')) problems.push('release.yml: build must need checks');
   const checkoutRef = (id) => (jobs[id]?.steps ?? []).find((s) => String(s.uses ?? '').startsWith('actions/checkout'))?.with?.ref;
-  for (const id of ['build', 'verify-artifacts', 'packaged-smoke', 'release'])
+  for (const id of ['test-build', 'build', 'verify-artifacts', 'packaged-smoke', 'release'])
     if (jobs[id] && checkoutRef(id) !== '${{ needs.checks.outputs.sha }}') problems.push(`release.yml: job ${id} must check out the tested commit (needs.checks.outputs.sha)`);
-  // The uploaded assets are verified together in every run, a build-only rehearsal included
-  // (ported from PR #2, codex/electrical-review-fixes 89df2b8).
+  if (!jobs['packaged-smoke']) problems.push('release.yml: no "packaged-smoke" job');
+  else if (!runs('packaged-smoke').includes('scripts/packaged-smoke.mjs')) problems.push('release.yml: packaged-smoke does not run scripts/packaged-smoke.mjs');
+  const smokeInstall = (jobs['packaged-smoke']?.steps ?? []).find((s) => String(s.run ?? '').trim() === 'npm ci');
+  if (String(smokeInstall?.env?.ELECTRON_SKIP_BINARY_DOWNLOAD) === '1') problems.push('release.yml: packaged origin migration needs the stock Electron binary for legacy seeding');
+  for (const step of (jobs['packaged-smoke']?.steps ?? []).filter((s) => String(s.run ?? '').includes('scripts/packaged-smoke.mjs'))) {
+    if (String(step.env?.JCAD_SMOKE_REQUIRE_SHIPPING) !== '1') problems.push('release.yml: shipping smoke must require disabled inspection fuses and fixed runtime probes');
+  }
+  if (!jobs['test-build'] || !runs('test-build').includes('npm run dist:test') || !runs('test-build').includes('npm run e2e:test-build') || !needsOf('test-build').includes('checks') || !needsOf('build').includes('test-build')) problems.push('release.yml: shipping builds must wait for the dedicated inspection-enabled test-build suite');
+  const requiredSigning = jobs.build?.env?.REQUIRE_PUBLISHER_SIGNING;
+  if (requiredSigning !== "${{ startsWith(github.ref, 'refs/tags/v') || github.event.inputs.tag != '' || github.event.inputs.require_signing == 'true' }}" || !runs('build').includes('scripts/check-apple-signing.mjs')) problems.push('release.yml: publication and required-signing rehearsals must fail closed on missing publisher credentials');
   if (!jobs['verify-artifacts']) problems.push('release.yml: no "verify-artifacts" job');
   else {
     const gate = jobs['verify-artifacts'];
@@ -100,11 +113,10 @@ else {
     if (download < 0 || verify <= download) problems.push('release.yml: verify-artifacts must download all platform assets and verify them against the tested source SHA');
     for (const s of [steps[download], steps[verify]]) if (s?.if) problems.push('release.yml: aggregate artifact download and verification must not be conditionally skipped');
   }
-  if (!jobs['packaged-smoke']) problems.push('release.yml: no "packaged-smoke" job');
-  else if (!runs('packaged-smoke').includes('scripts/packaged-smoke.mjs')) problems.push('release.yml: packaged-smoke does not run scripts/packaged-smoke.mjs');
   if (!jobs.release) problems.push('release.yml: no "release" job');
   else {
-    for (const n of ['checks', 'build', 'packaged-smoke', 'verify-artifacts']) if (!needsOf('release').includes(n)) problems.push(`release.yml: release must need ${n}`);
+    for (const n of ['checks', 'test-build', 'build', 'packaged-smoke', 'verify-artifacts']) if (!needsOf('release').includes(n)) problems.push(`release.yml: release must need ${n}`);
+    if (jobs.release.if !== "startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '')") problems.push('release.yml: publication must remain disabled for empty-tag build-only dispatches');
     if (!runs('release').includes('needs.checks.outputs.sha') && !(jobs.release.steps ?? []).some((s) => JSON.stringify(s.env ?? {}).includes('needs.checks.outputs.sha')))
       problems.push('release.yml: release does not verify the tag against the tested commit');
     if (!/git fetch\b[^\n]*--prune-tags\b/.test(runs('release'))) problems.push('release.yml: release must prune remotely deleted tags before verifying the tested commit');
@@ -116,16 +128,18 @@ else {
       const notes = (jobs.release.steps ?? []).findIndex((s) => /scripts\/release-notes\.mjs\b.*--out release-notes\.md/.test(String(s.run ?? '')));
       if (notes < 0 || publish.with?.body_path !== 'release-notes.md') problems.push('release.yml: the release notes must come from CHANGELOG.md (scripts/release-notes.mjs --out release-notes.md, body_path: release-notes.md)');
       else if (notes > (jobs.release.steps ?? []).indexOf(publish)) problems.push('release.yml: the release notes are written after the release is published');
-      // Source-bound provenance and its signed attestation (ported from PR #2, codex/electrical-review-fixes 2f89b0e).
       const steps = jobs.release.steps ?? [];
+      const download = steps.findIndex((s) => String(s.uses ?? '').startsWith('actions/download-artifact') && s.with?.path === 'artifacts' && s.with?.pattern === 'JCad-Electrical-*');
       const verify = steps.findIndex((s) => /scripts\/release-provenance\.mjs verify artifacts\b/.test(String(s.run ?? '')) && s.env?.SOURCE_SHA === '${{ needs.checks.outputs.sha }}');
       const attest = steps.findIndex((s) => String(s.uses ?? '').startsWith('actions/attest@') && s.with?.['subject-path'] === 'artifacts/**/*');
       if (verify < 0 || attest <= verify || attest >= steps.indexOf(publish)) problems.push('release.yml: verify all artifacts and sign provenance before publishing');
-      if (!String(steps[verify]?.run ?? '').includes('--notes release-notes.md')) problems.push('release.yml: release notes must state verified artifact signing status');
+      if (download < 0 || verify <= download || notes <= verify || !/--provenance artifacts\/release-provenance\.json\b/.test(String(steps[notes]?.run ?? '')) || !/--strict\b/.test(String(steps[notes]?.run ?? '')))
+        problems.push('release.yml: release notes must consume the verified aggregate after source-bound artifact verification');
+      if (/--notes\b/.test(String(steps[verify]?.run ?? ''))) problems.push('release.yml: render the verified signing summary once, from the aggregate');
       for (const permission of ['id-token', 'attestations', 'artifact-metadata']) if (jobs.release.permissions?.[permission] !== 'write') problems.push(`release.yml: missing ${permission} permission for signed provenance`);
       if (!steps.some((s) => String(s.run ?? '').includes('artifacts/release-provenance.sigstore.json'))) problems.push('release.yml: publish the signed provenance bundle');
       if (publish.with?.fail_on_unmatched_files !== true) problems.push('release.yml: publishing must fail on unmatched artifact files');
-      for (const s of [steps[verify], steps[attest], publish]) if (s?.if) problems.push('release.yml: artifact verification, attestation and publication must not be conditionally skipped');
+      for (const s of [steps[download], steps[verify], steps[notes], steps[attest], publish]) if (s && s.if !== undefined) problems.push('release.yml: artifact download, verification, release notes, attestation and publication must not be conditionally skipped');
     }
   }
   // A gate is only a gate when a failed dependency stops the dependants: no job may run on
@@ -134,7 +148,7 @@ else {
     if (/\b(always|cancelled|failure)\s*\(/.test(String(job?.if ?? ''))) problems.push(`release.yml: job ${id} runs even when a job it needs failed (if: ${job.if})`);
     if (job && job['continue-on-error']) problems.push(`release.yml: job ${id} continues on error`);
   }
-  for (const id of ['checks', 'build', 'verify-artifacts', 'packaged-smoke', 'release'])
+  for (const id of ['checks', 'test-build', 'build', 'verify-artifacts', 'packaged-smoke', 'release'])
     (jobs[id]?.steps ?? []).forEach((s, i) => {
       if (s && s['continue-on-error']) problems.push(`release.yml: job ${id} step ${i + 1} continues on error`);
       if (s && /\b(always|failure)\s*\(/.test(String(s.if ?? '')) && typeof s.run === 'string') problems.push(`release.yml: job ${id} step ${i + 1} runs a command on always() / failure()`);
@@ -143,13 +157,19 @@ else {
   const buildRuns = JSON.stringify(jobs.build ?? {});
   for (const marker of ['scripts/azure-signing.mjs', 'Get-AuthenticodeSignature', 'HAS_APPLE', 'xcrun stapler validate'])
     if (!buildRuns.includes(marker)) problems.push(`release.yml: the build job lost its signing step (${marker})`);
+  const macSigning = (jobs.build?.steps ?? []).find((s) => String(s.run ?? '').includes('scripts/mac-signing-config.mjs'));
+  for (const marker of ['security create-keychain', 'security import', 'security set-key-partition-list -S apple-tool:,apple: -s -k "$kc_password"', 'trap cleanup_signing EXIT', 'security delete-keychain', 'env -u CSC_LINK -u CSC_KEY_PASSWORD CSC_KEYCHAIN="$keychain" CSC_NAME="$identity"']) {
+    if (!String(macSigning?.run ?? '').includes(marker)) problems.push(`release.yml: macOS signing must use an isolated temporary keychain (${marker})`);
+  }
+  const macVerification = (jobs.build?.steps ?? []).find((s) => String(s.run ?? '').includes('xcrun stapler validate'));
+  for (const marker of ['codesign --verify --deep --strict', 'Authority=Developer ID Application', 'TeamIdentifier=$APPLE_TEAM_ID', 'flags=.*runtime', 'spctl --assess --type execute', 'codesign --verify --strict']) {
+    if (!String(macVerification?.run ?? '').includes(marker)) problems.push(`release.yml: verify macOS publisher identity, runtime, notarization and DMG signatures (${marker})`);
+  }
   const windowsSignature = (jobs.build?.steps ?? []).find((s) => String(s.run ?? '').includes('Get-AuthenticodeSignature'));
   if (windowsSignature?.env?.AZURE_PUBLISHER_NAME !== '${{ secrets.AZURE_PUBLISHER_NAME }}' || !String(windowsSignature?.run ?? '').includes('GetNameInfo') || !String(windowsSignature?.run ?? '').includes('[System.StringComparison]::Ordinal'))
     problems.push('release.yml: Windows signature verification must match the configured updater publisher');
   const platforms = jobs.build?.strategy?.matrix?.include ?? [];
   for (const platform of ['Windows', 'macOS', 'Linux']) if (!platforms.some((entry) => entry.platform === platform && String(entry.glob ?? '').includes('provenance.json'))) problems.push(`release.yml: missing ${platform} artifacts/provenance`);
-  // Every file the build records must be uploaded: the updater feed and the separate blockmaps
-  // (scripts/release-provenance.mjs expectedUpdateAssets; the AppImage embeds its blockmap).
   for (const platform of ['Windows', 'macOS', 'Linux']) {
     const globs = String(platforms.find((entry) => entry.platform === platform)?.glob ?? '').trim().split(/\r?\n/).map((pattern) => pattern.trim());
     const wanted = { Windows: ['latest.yml', 'installer.exe', 'installer.exe.blockmap'], macOS: ['latest-mac.yml', 'installer.dmg', 'installer.dmg.blockmap'], Linux: ['latest-linux.yml', 'installer.AppImage', 'installer.deb'] }[platform];
@@ -158,8 +178,6 @@ else {
   const record = (jobs.build?.steps ?? []).findIndex((s) => /scripts\/release-provenance\.mjs build release\b/.test(String(s.run ?? '')) && s.env?.SOURCE_SHA === '${{ needs.checks.outputs.sha }}');
   const upload = (jobs.build?.steps ?? []).findIndex((s) => String(s.uses ?? '').startsWith('actions/upload-artifact'));
   if (record < 0 || upload <= record) problems.push('release.yml: record built SHA and checksums before uploading artifacts');
-  // A Mac too old for the release is not offered its download (electron/updater.cjs reads the
-  // minimum from latest-mac.yml): the macOS build writes it there before the record hashes the file.
   const macMinimum = (jobs.build?.steps ?? []).findIndex((s) => /scripts\/mac-update-info\.mjs release\b/.test(String(s.run ?? '')));
   if (macMinimum < 0 || macMinimum > record || !/runner\.os == 'macOS'/.test(String(jobs.build.steps[macMinimum].if ?? ''))) problems.push('release.yml: the macOS build must write the minimum macOS version into latest-mac.yml before recording checksums');
 }

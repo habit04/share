@@ -8,7 +8,8 @@ const { app, BrowserWindow, dialog, screen } = require('electron');
 const path = require('node:path');
 const fsSync = require('node:fs');
 const updater = require('../updater.cjs');
-const { windowStateFile, writeStateFile } = require('./app-data.cjs');
+const { windowStateFile, writeStateFile, flushRendererPreferences } = require('./app-data.cjs');
+const { APP_URL } = require('../renderer-origin.cjs');
 const { buildMenu } = require('./menu.cjs');
 const { secureContents } = require('../web-security.cjs');
 
@@ -58,7 +59,7 @@ function initialBounds() {
  * @param {MainContext} ctx
  * @param {string | undefined} devUrl  the Vite dev server (VITE_DEV_SERVER_URL); the built page when unset
  */
-function createWindows(ctx, devUrl) {
+function createWindows(ctx, devUrl, allowInspection = !app.isPackaged) {
   const { ipcMain } = ctx;
   /** Set when electron-updater is about to quit and relaunch: the close veto must not run then. */
   let quittingForUpdate = false;
@@ -178,6 +179,7 @@ function createWindows(ctx, devUrl) {
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
+        devTools: allowInspection,
       },
     });
     ctx.mainWindow = win;
@@ -185,13 +187,16 @@ function createWindows(ctx, devUrl) {
     if (b.maximized) win.maximize();
     win.once('ready-to-show', () => win.show());
     installWindowStatePersistence(win);
-    buildMenu(win);
-    // No windows, navigation or <webview> (also applied to every contents by main.cjs, E-12).
+    buildMenu(win, ctx);
     secureContents(win.webContents);
     // Unsaved work: the renderer's Save All workflow decides; the close (and a quit) waits for it.
     let pendingClose = null;
     win.on('close', (e) => {
-      if (closeApproved.has(win) || quittingForUpdate || win.webContents.isDestroyed()) return;
+      if (win.webContents.isDestroyed()) return;
+      if (closeApproved.has(win) || quittingForUpdate) {
+        flushRendererPreferences(win.webContents);
+        return;
+      }
       e.preventDefault();
       if (pendingClose) return; // the dialog is already up
       pendingClose = requestClose(win, quitRequested ? 'quit' : 'close').then((ok) => {
@@ -209,7 +214,7 @@ function createWindows(ctx, devUrl) {
     if (devUrl) {
       await win.loadURL(devUrl);
     } else {
-      await win.loadFile(path.join(ELECTRON_DIR, '..', 'dist', 'index.html'));
+      await win.loadURL(APP_URL);
     }
   }
 
@@ -222,4 +227,4 @@ function createWindows(ctx, devUrl) {
   return { createWindow };
 }
 
-module.exports = { createWindows };
+module.exports = { createWindows, secureContents };

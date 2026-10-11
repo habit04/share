@@ -3,7 +3,7 @@ import { formatLength, formatAngle, parseDistance, insunitsFactor, formatArea } 
 import { STANDARD_LINETYPES, findLinetype, dashArray, effectiveLinetype, patternLength, nearestLineweight } from '../src/core/linetypes';
 
 describe('units formatting', () => {
-  it('bounds damaged direct-call precision before fixed or exponential formatting (PR #2)', () => {
+  it('bounds damaged direct-call precision before fixed or exponential formatting', () => {
     for (const precision of [9999, -100, Infinity, NaN]) {
       expect(() => formatLength(1.25, { lunits: 1, luprec: precision })).not.toThrow();
       expect(() => formatLength(1.25, { lunits: 2, luprec: precision })).not.toThrow();

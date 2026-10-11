@@ -15,6 +15,47 @@ export interface NurbsCurve {
   readonly weights?: readonly number[];
 }
 
+// Basis evaluation is quadratic in degree; fit interpolation allocates a dense matrix
+// and solves two cubic systems. Bound the calculated work before either allocation.
+const MAX_SPLINE_BASIS_WORK = 2_000_000;
+const MAX_SPLINE_MATRIX_DIMENSION = 128;
+export class SplineWorkLimitError extends Error {}
+
+export interface SplineSamplePlan {
+  readonly spanCount: number;
+  readonly stepsPerSpan: number;
+  readonly sampleCount: number;
+}
+
+/** Exact integer loop counts, shared by the work check and tessellation. */
+export function splineSamplePlan(c: NurbsCurve, perSpan = 16, maxPoints = 4000): SplineSamplePlan | undefined {
+  if (!isValidNurbs(c) || !Number.isFinite(perSpan) || !Number.isFinite(maxPoints)) return undefined;
+  let spanCount = 0;
+  for (let i = c.degree; i < c.controlPoints.length; i += 1) if (c.knots[i + 1]! - c.knots[i]! > 1e-12) spanCount += 1;
+  // Round the requested rate up once; the integer cap still limits each span.
+  const want = Math.max(Math.ceil(perSpan), Math.ceil(64 / Math.max(1, spanCount)));
+  const stepsPerSpan = c.degree === 1 ? 1 : Math.max(2, Math.min(want, Math.floor(maxPoints / Math.max(1, spanCount))));
+  const sampleCount = spanCount * stepsPerSpan + 1;
+  return Number.isSafeInteger(sampleCount) ? { spanCount, stepsPerSpan, sampleCount } : undefined;
+}
+
+function sampleWorkProblem(degree: number, plan: SplineSamplePlan | undefined): string | undefined {
+  if (!plan) return 'spline tessellation requires finite, safely bounded sampling limits';
+  if (plan.sampleCount * (degree + 1) ** 2 > MAX_SPLINE_BASIS_WORK) return `spline tessellation exceeds the supported work limit (degree ${degree}, ${plan.sampleCount} samples)`;
+  return undefined;
+}
+
+/** Resource check shared by imports and the curve evaluators they later use. */
+export function splineWorkProblem(c: NurbsCurve, fitCount = 0, opts: InterpolationOptions = {}, perSpan = 16, maxPoints = 4000): string | undefined {
+  if (isValidNurbs(c)) {
+    return sampleWorkProblem(c.degree, splineSamplePlan(c, perSpan, maxPoints));
+  } else if (fitCount >= 2) {
+    const dimension = fitCount + (opts.closed ? 1 : 0) + (opts.closed || (opts.startTangent && opts.endTangent) ? 2 : 0);
+    if (dimension > MAX_SPLINE_MATRIX_DIMENSION) return `spline fit interpolation exceeds the supported work limit (${dimension} matrix rows; maximum ${MAX_SPLINE_MATRIX_DIMENSION})`;
+  }
+  return undefined;
+}
+
 /** True when the knot vector matches the control points and degree (m + 1 = n + p + 2). */
 export function isValidNurbs(c: NurbsCurve): boolean {
   const n = c.controlPoints.length;
@@ -102,18 +143,17 @@ export function nurbsPoint(c: NurbsCurve, u: number): Point {
  * (degree-1 curves keep their control polygon).
  */
 export function nurbsPoints(c: NurbsCurve, perSpan = 16, maxPoints = 4000): Point[] {
-  if (!isValidNurbs(c)) return [...c.controlPoints];
+  const plan = splineSamplePlan(c, perSpan, maxPoints);
+  // Imports reject this case with context; direct callers get the existing polygon fallback.
+  if (!plan || sampleWorkProblem(c.degree, plan)) return [...c.controlPoints];
   const n = c.controlPoints.length - 1;
   const p = c.degree;
   const U = c.knots;
-  const spans: Array<[number, number]> = [];
-  for (let i = p; i <= n; i += 1) if (U[i + 1]! - U[i]! > 1e-12) spans.push([U[i]!, U[i + 1]!]);
-  // At least ~64 samples over the whole curve, perSpan per span otherwise, within maxPoints.
-  const want = Math.max(perSpan, Math.ceil(64 / Math.max(1, spans.length)));
-  const steps = p === 1 ? 1 : Math.max(2, Math.min(want, Math.floor(maxPoints / Math.max(1, spans.length))));
   const out: Point[] = [];
-  for (const [a, b] of spans) {
-    for (let k = 0; k < steps; k += 1) out.push(nurbsPoint(c, a + ((b - a) * k) / steps));
+  for (let i = p; i <= n; i += 1) {
+    const a = U[i]!, b = U[i + 1]!;
+    if (b - a <= 1e-12) continue;
+    for (let k = 0; k < plan.stepsPerSpan; k += 1) out.push(nurbsPoint(c, a + ((b - a) * k) / plan.stepsPerSpan));
   }
   const [, end] = nurbsDomain(c);
   out.push(nurbsPoint(c, end));
@@ -195,6 +235,7 @@ export interface InterpolationOptions {
  */
 export function interpolateFitPoints(fit: readonly Point[], opts: InterpolationOptions = {}): NurbsCurve | null {
   let Q = dedupe(fit);
+  if (splineWorkProblem({ degree: 0, knots: [], controlPoints: [] }, Q.length, opts)) return null;
   const closed = Boolean(opts.closed) && Q.length >= 3;
   if (closed) {
     if (g.eq(Q[0]!, Q[Q.length - 1]!, 1e-9)) Q = Q.slice(0, -1);

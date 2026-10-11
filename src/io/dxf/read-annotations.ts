@@ -3,21 +3,18 @@
  * LEADER (with DSTYLE overrides), MULTILEADER (CONTEXT_DATA), IMAGE, ACAD_TABLE cell data and the
  * tables JCad writes (an INSERT with the cell data as JCAD_TABLE XDATA).
  */
-import type { Entity, DimStyle, LeaderEntity, ImageEntity, TableEntity, TableCell } from '../../core/entities';
-import { mtextFromDxf, hasFormatting, type MTextAttachment } from '../../core/mtext';
+import type { Obj, Pair } from './groups';
+import type { DimStyle, Entity, LeaderEntity, ImageEntity, TableEntity, TableCell } from '../../core/entities';
+import { str, xdata, num, pt, has, flt, int, afterSubclass, pointList } from './groups';
 import { dimStyleFromRecordPairs } from '../../core/dimension';
-import * as g from '../../core/geometry';
-import { DIMSTYLE_APP, TABLE_APP } from './codes';
+import { DIMSTYLE_APP, MTEXT_COLUMNS_APP, TABLE_APP } from './codes';
 import { applyDimStyleXdata } from './dimstyles';
-import { num, has, str, pt, int, flt, afterSubclass, pointList, xdata, type Pair, type Obj } from './groups';
-import type { commonProps, ReadContext } from './read-core';
+import { commonProps } from './read-core';
+import * as g from '../../core/geometry';
+import type { ReadContext } from './read-core';
+import { mtextFromDxf, hasFormatting } from '../../core/mtext';
+import type { MTextAttachment, MTextColumns } from '../../core/mtext';
 
-/**
- * A DIMENSION's style: its named style (group 3) with the dimension's own overrides applied -
- * ACAD XDATA "DSTYLE" { 1070 code, value ... } as AutoCAD writes them (340 DIMTXSTY names a STYLE
- * by handle) and JCAD_DIMSTYLE XDATA for arrowheads. Ported from PR #2
- * (codex/electrical-review-fixes 2f89b0e).
- */
 export function readDimStyleFromEntity(o: Obj, styles: Map<string, DimStyle>, fallback: DimStyle, textStyleHandles?: ReadonlyMap<string, string>): DimStyle {
   const name = str(o, 3);
   const style = (name && styles.get(name.toUpperCase())) || fallback;
@@ -28,21 +25,6 @@ export function readDimStyleFromEntity(o: Obj, styles: Map<string, DimStyle>, fa
   if (resolvedStyle) result = { ...result, textStyle: resolvedStyle };
   const arrowData = xdata(o, DIMSTYLE_APP);
   return arrowData ? applyDimStyleXdata(result, arrowData) : result;
-}
-
-/** The [code, value] pairs of ACAD XDATA "DSTYLE" { 1070 code, 1000 / 1005 / 1040 / 1070 / 1071 value ... }. */
-export function dstylePairs(o: Obj): Array<readonly [number, string]> {
-  const xd = xdata(o, 'ACAD');
-  if (!xd) return [];
-  const start = xd.findIndex((p) => p.code === 1000 && p.value === 'DSTYLE');
-  if (start < 0 || xd[start + 1]?.code !== 1002 || xd[start + 1]?.value !== '{') return [];
-  const out: Array<readonly [number, string]> = [];
-  for (let k = start + 2; k + 1 < xd.length && xd[k]!.code !== 1002; k += 2) {
-    const key = xd[k]!;
-    const value = xd[k + 1]!;
-    if (key.code === 1070 && [1000, 1005, 1040, 1070, 1071].includes(value.code)) out.push([int(key.value), value.value]);
-  }
-  return out;
 }
 
 export function readDimension(o: Obj, base: ReturnType<typeof commonProps>, style: DimStyle): Entity | null {
@@ -106,13 +88,29 @@ export function readDimension(o: Obj, base: ReturnType<typeof commonProps>, styl
 
 /** A dimension-variable override (ACAD DSTYLE xdata: 1070 code, 1040/1070 value). */
 function dstyleOverride(o: Obj, dimvarCode: number): number | undefined {
-  const pair = dstylePairs(o).find(([code]) => code === dimvarCode);
-  if (pair) return flt(pair[1]);
-  // Files that leave out the DSTYLE { } framing: any 1070 code followed by its value.
+  const value = dstylePairs(o).find(([code]) => code === dimvarCode)?.[1];
+  return value === undefined ? undefined : flt(String(value));
+}
+
+export function dstylePairs(o: Obj): Array<readonly [number, string]> {
   const xd = xdata(o, 'ACAD');
-  if (!xd) return undefined;
-  for (let k = 0; k + 1 < xd.length; k += 1) if (xd[k]!.code === 1070 && int(xd[k]!.value) === dimvarCode) return flt(xd[k + 1]!.value);
-  return undefined;
+  if (!xd) return [];
+  const start = xd.findIndex((p) => p.code === 1000 && p.value === 'DSTYLE');
+  if (start < 0 || xd[start + 1]?.code !== 1002 || xd[start + 1]?.value !== '{') return [];
+  const out: Array<readonly [number, string]> = [];
+  for (let k = start + 2; k + 1 < xd.length && xd[k]!.code !== 1002; k += 2) {
+    const key = xd[k]!, value = xd[k + 1]!;
+    if (key.code === 1070 && [1000, 1005, 1040, 1070, 1071].includes(value.code)) out.push([int(key.value), value.value]);
+  }
+  return out;
+}
+
+export function hasUnconsumedAcadXdata(o: Obj): boolean {
+  const xd = xdata(o, 'ACAD');
+  if (!xd) return false;
+  const start = xd.findIndex((p) => p.code === 1000 && p.value === 'DSTYLE');
+  const end = xd.findIndex((p, i) => i > start + 1 && p.code === 1002 && p.value === '}');
+  return start < 0 || end < 0 || !dstylePairs(o).length || xd.slice(0, start).length > 0 || xd.slice(end + 1).length > 0;
 }
 
 export function readLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: ReadContext): LeaderEntity | null {
@@ -307,15 +305,42 @@ export function readImage(o: Obj, base: ReturnType<typeof commonProps>): ImageEn
   };
 }
 
-/** ACAD_TABLE with legacy cell data (91/92 size, 141/142 sizes, 171.. per cell) -> native table. */
 /**
- * What JCad takes from a TABLESTYLE object: the cell margins, whether the title and header rows
- * are suppressed, and per cell style the text height and alignment. Ported from PR #2
- * (codex/electrical-review-fixes 2f89b0e), corrected against a table AutoCAD wrote
- * (fixtures/example_2000.dxf): the cell styles come in the order data, title, header (the order of
- * AutoCAD's row types 1, 2, 4), not data, header, title - its 11-unit title row fits the 6-unit
- * text of the second style, the 9-unit header and data rows the 4.5-unit text of the other two.
+ * MTEXT columns: JCad's own JCAD_MTEXT_COLUMNS XDATA, else AutoCAD's (the R2018 "Embedded
+ * Object" groups 71-74 / 44-46, or the native groups 75-79 / 48-50). Ported from PR #2
+ * (codex/electrical-review-fixes 2f89b0e).
  */
+export function readMTextColumns(o: Obj): MTextColumns | undefined {
+  const own = xdata(o, MTEXT_COLUMNS_APP);
+  if (own) {
+    try {
+      const c = JSON.parse(own.filter((p) => p.code === 1000).map((p) => p.value).join('')) as MTextColumns;
+      if ((c.type === 1 || c.type === 2) && Number.isInteger(c.count) && c.count > 0 && c.count <= 256 && Number.isFinite(c.width) && c.width > 0 && Number.isFinite(c.gutter) && c.gutter >= 0 && Array.isArray(c.heights) && c.heights.length <= 256 && c.heights.every((h) => Number.isFinite(h) && h >= 0)) return c;
+    } catch {
+      /* the native groups below */
+    }
+  }
+  const embedded = o.groups.findIndex((p) => p.code === 101 && p.value === 'Embedded Object');
+  const nativeStart = o.groups.findIndex((p) => p.code === 75);
+  const groups = embedded < 0 ? o.groups.slice(Math.max(0, nativeStart)) : o.groups.slice(embedded + 1);
+  const code = (native: number, modern: number) => groups.find((p) => p.code === (embedded < 0 ? native : modern))?.value;
+  // Embedded object (R2018): 71 type, 72 count, 44 width, 45 gutter, 73 auto height, 74 reversed
+  // flow, 46 heights; the native groups: 75 type, 76 count, 48 / 49, 79 auto height, 78 reversed.
+  const type = int(code(75, 71));
+  let count = int(code(76, 72));
+  const width = flt(code(48, 44));
+  const gutter = Math.max(0, flt(code(49, 45)));
+  const heights = embedded >= 0 ? groups.filter((p) => p.code === 46).map((p) => flt(p.value)) : groups.filter((p) => p.code === 50).slice(1).map((p) => flt(p.value));
+  // Dynamic columns with auto height (AutoCAD's default for new columns) are saved with a count of
+  // 0: the number follows from the total width (42) the columns and gutters take.
+  if (count === 0 && embedded >= 0 && width > 0) {
+    const total = flt(code(42, 42));
+    count = heights.length > 0 ? heights.length : total > 0 ? Math.round((total + gutter) / (width + gutter)) : 0;
+  }
+  if ((type !== 1 && type !== 2) || count < 1 || count > 256 || !(width > 0)) return undefined;
+  return { type, count, width, gutter, autoHeight: int(code(79, 73)) !== 0, reversed: int(code(78, 74)) !== 0, heights: heights.slice(0, count) };
+}
+
 export interface TableStyleData {
   marginX: number;
   marginY: number;
@@ -347,11 +372,7 @@ export function readTableStyle(o: Obj): TableStyleData {
   };
 }
 
-/**
- * ACAD_TABLE with legacy cell data (91/92 size, 141/142 sizes, 171.. per cell) -> native table.
- * Cells without their own text height / alignment take the table style's (`style`, the
- * TABLESTYLE group 342 names): the title row, the header row and the data rows each their own.
- */
+/** ACAD_TABLE with legacy cell data (91/92 size, 141/142 sizes, 171.. per cell) -> native table. */
 export function readTable(o: Obj, base: ReturnType<typeof commonProps>, style?: TableStyleData): TableEntity | null {
   const gs = afterSubclass(o, 'AcDbTable');
   const firstCell = gs.findIndex((x) => x.code === 171);

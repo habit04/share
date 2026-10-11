@@ -2,9 +2,12 @@
  * DXF reading basics: the tokenizer (group pairs, file structure checks, recovery of a file that
  * ends early), objects (the pairs grouped at each 0 code) and the group accessors every reader uses.
  */
-import * as g from '../../core/geometry';
 import { ImportReportBuilder } from '../import-report';
-import { isRealCode } from './codes';
+import type { DxfReadOptions } from './reader';
+import { isRealText, isRealCode } from './codes';
+import * as g from '../../core/geometry';
+
+// ---------------------------------------------------------------- reading
 
 export interface Pair {
   code: number;
@@ -30,17 +33,17 @@ export class DxfReadError extends Error {
   }
 }
 
-const shortText = (t: string): string => (t.length > 40 ? `${t.slice(0, 40)}...` : t);
+export const shortText = (t: string): string => (t.length > 40 ? `${t.slice(0, 40)}...` : t);
 
 /** An optionally signed run of digits (a valid group code line, already trimmed). */
-function isIntegerText(t: string): boolean {
+export function isIntegerText(t: string): boolean {
   let i = t.charCodeAt(0) === 43 || t.charCodeAt(0) === 45 ? 1 : 0;
   if (i >= t.length) return false;
   for (; i < t.length; i += 1) {
     const c = t.charCodeAt(i);
     if (c < 48 || c > 57) return false;
   }
-  return true;
+  return Number.isSafeInteger(Number(t));
 }
 
 /**
@@ -49,18 +52,31 @@ function isIntegerText(t: string): boolean {
  * ends early throws a `truncated` DxfReadError unless `recover` is set; then the incomplete last
  * object is left out, open sections are closed and `report.recovered` tells what happened.
  */
-export function tokenize(text: string, recover = false, report?: ImportReportBuilder): Pair[] {
+export function tokenize(text: string, recover = false, report?: ImportReportBuilder, limits: DxfReadOptions = {}): Pair[] {
   if (text.startsWith('AutoCAD Binary DXF')) throw new DxfReadError('This is a binary DXF file. Save it as an ASCII DXF (DXFOUT, ASCII format) to open it.', 1);
+  if (text.length > (limits.maxSourceLength ?? 128 * 1024 * 1024)) throw new DxfReadError('DXF exceeds the source text size limit.', 1);
+  // Check before split(): many tiny lines or one enormous string must not allocate an unbounded array.
+  let lineLength = 0, lineCount = 1;
+  const maxLines = 2 * (limits.maxPairs ?? 2_000_000) + 2;
+  for (let offset = 0; offset < text.length; offset += 1) {
+    const ch = text.charCodeAt(offset);
+    if (ch === 10 || ch === 13) {
+      if (ch === 13 && text.charCodeAt(offset + 1) === 10) offset += 1;
+      lineLength = 0;
+      if (++lineCount > maxLines) throw new DxfReadError(`Line ${lineCount}: DXF exceeds the group pair limit.`, lineCount);
+    } else if (++lineLength > (limits.maxStringLength ?? 1024 * 1024)) throw new DxfReadError(`Line ${lineCount}: DXF value exceeds the string length limit.`, lineCount);
+  }
   const lines = text.split(/\r\n|\r|\n/);
   const pairs: Pair[] = [];
   let eof = false;
   let i = 0;
   /** A group code on the last line of a file that ends early, without its value (0 = a new object was starting). */
   let danglingCode: number | null = null;
+  let records = 0;
   for (; i + 1 < lines.length; i += 2) {
     const rawCode = lines[i]!.trim();
-    const code = parseInt(rawCode, 10);
-    if (Number.isNaN(code) || !isIntegerText(rawCode)) {
+    const code = Number(rawCode);
+    if (!isIntegerText(rawCode) || code < 0 || code > 1071) {
       if (rawCode === '' && lines.slice(i).every((l) => l.trim() === '')) break; // trailing blank lines
       throw new DxfReadError(`Line ${i + 1}: "${shortText(rawCode)}" is not a DXF group code (a whole number was expected). The file is damaged or is not a DXF file.`, i + 1);
     }
@@ -69,6 +85,9 @@ export function tokenize(text: string, recover = false, report?: ImportReportBui
     // start position and took quadratic time on a long run of spaces followed by any other
     // character (security review E-6: a crafted line froze the renderer).
     const raw = lines[i + 1]!;
+    if (raw.length > (limits.maxStringLength ?? 1024 * 1024)) throw new DxfReadError(`Line ${i + 2}: DXF value exceeds the string length limit.`, i + 2);
+    if (pairs.length >= (limits.maxPairs ?? 2_000_000)) throw new DxfReadError(`Line ${i + 1}: DXF exceeds the group pair limit.`, i + 1);
+    if (code === 0 && ++records > (limits.maxRecords ?? 250_000)) throw new DxfReadError(`Line ${i + 1}: DXF exceeds the record limit.`, i + 1);
     const value = code === 1 || code === 3 || code === 304 ? raw : raw.trimEnd();
     pairs.push({ code, value, line: i + 1 });
     if (code === 0 && value.trim() === 'EOF') {
@@ -82,7 +101,7 @@ export function tokenize(text: string, recover = false, report?: ImportReportBui
     let last = lines.length;
     while (last > 0 && lines[last - 1]!.trim() === '') last -= 1;
     truncatedAt = Math.max(1, last);
-    if (i < lines.length && i === last - 1 && isIntegerText(lines[i]!.trim())) danglingCode = parseInt(lines[i]!.trim(), 10);
+    if (i < lines.length && i === last - 1 && isIntegerText(lines[i]!.trim())) danglingCode = Number(lines[i]!.trim());
     // A last pair "0" + empty value is a new object that never got its type: the same boundary.
     const tail = pairs[pairs.length - 1]!;
     if (tail.code === 0 && tail.value.trim() === '') {
@@ -158,24 +177,33 @@ export function objects(pairs: Pair[], start: number, end: number): Obj[] {
   return out;
 }
 
+export const invalidPrecision = (name: string, value: string): boolean => !isIntegerText(value.trim()) || Number(value) < (name === 'DIMADEC' ? -1 : 0) || Number(value) > 8;
+
+export const precisionRequirement = (name: string): string => `an integer from ${name === 'DIMADEC' ? -1 : 0} to 8`;
+
 export const num = (o: Obj, code: number, dflt = 0): number => {
   const p = o.groups.find((x) => x.code === code);
   if (!p) return dflt;
-  const v = parseFloat(p.value);
+  const v = isRealText(p.value) ? Number(p.value) : NaN;
   if (!Number.isNaN(v)) return v;
   // A coordinate that is not a number (NaN, garbage) must not silently become 0: the object is rejected.
   return isRealCode(code) && p.value.trim() !== '' ? NaN : dflt;
 };
+
 export const has = (o: Obj, code: number): boolean => o.groups.some((x) => x.code === code);
+
 export const str = (o: Obj, code: number, dflt = ''): string => o.groups.find((x) => x.code === code)?.value ?? dflt;
+
 export const pt = (o: Obj, xCode: number, dflt: g.Point = { x: 0, y: 0 }): g.Point => (has(o, xCode) ? { x: num(o, xCode), y: num(o, xCode + 10) } : dflt);
 
+// ---------------------------------------------------------------- SPLINE / HATCH / LEADER / MLEADER / IMAGE / TABLE readers
+
 export const int = (v: string | undefined, dflt = 0): number => {
-  const n = v === undefined ? NaN : parseInt(v, 10);
-  return Number.isNaN(n) ? dflt : n;
+  return v !== undefined && isIntegerText(v.trim()) ? Number(v) : dflt;
 };
+
 export const flt = (v: string | undefined, dflt = 0): number => {
-  const n = v === undefined ? NaN : parseFloat(v);
+  const n = v === undefined ? NaN : Number(v);
   return Number.isFinite(n) ? n : dflt;
 };
 
@@ -190,9 +218,9 @@ export function pointList(gs: readonly Pair[], xCode: number): g.Point[] {
   const out: g.Point[] = [];
   let x: number | null = null;
   for (const p of gs) {
-    if (p.code === xCode) x = parseFloat(p.value);
+    if (p.code === xCode) x = Number(p.value);
     else if (p.code === xCode + 10 && x !== null) {
-      out.push({ x, y: parseFloat(p.value) });
+      out.push({ x, y: Number(p.value) });
       x = null;
     }
   }
@@ -200,6 +228,8 @@ export function pointList(gs: readonly Pair[], xCode: number): g.Point[] {
 }
 
 /** Sequential reader over a group list. */
+export class HatchReadError extends Error {}
+
 export class Cursor {
   i = 0;
   constructor(readonly gs: readonly Pair[]) {}
@@ -225,9 +255,28 @@ export class Cursor {
     return undefined;
   }
   point(xCode: number): g.Point {
-    const x = flt(this.seek(xCode));
-    const y = flt(this.seek(xCode + 10, 3));
+    const x = flt(this.required(this.seek(xCode), xCode));
+    const y = flt(this.required(this.seek(xCode + 10, 3), xCode + 10));
     return { x, y };
+  }
+  required(value: string | undefined, code: number): string {
+    if (value === undefined) throw new HatchReadError(`missing group ${code} in declared hatch data`);
+    return value;
+  }
+  /** Declared collections cannot exceed the records still available to describe them. */
+  count(value: string | undefined, code: number, groupsPerItem = 1): number {
+    if (value === undefined) return 0;
+    const pair = this.gs[this.i - 1];
+    const location = pair?.line ? ` at value line ${pair.line + 1}` : '';
+    if (!isIntegerText(value.trim()) || Number(value) < 0) throw new HatchReadError(`invalid hatch count group ${code}${location}: "${shortText(value)}" must be a nonnegative safe integer`);
+    const n = Number(value);
+    const available = Math.floor((this.gs.length - this.i) / groupsPerItem);
+    if (n > available) throw new HatchReadError(`hatch count group ${code}${location} declares ${n} items, but only ${available} can fit in the remaining group records`);
+    return n;
+  }
+  sourceHandles(value: string | undefined): void {
+    const n = this.count(value, 97);
+    for (let k = 0; k < n; k += 1) this.required(this.take(330), 330);
   }
 }
 

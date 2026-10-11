@@ -1,4 +1,3 @@
-/** Committed fixtures are required (tests/fixtures/manifest.json), ported from PR #2 (codex/electrical-review-fixes 2f89b0e). */
 import { describe, expect, it } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

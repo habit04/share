@@ -112,7 +112,7 @@ app.on('console', (m) => { if (m.type() === 'error') console.error('CONSOLE', m.
 const shot = (name) => app.screenshot({ path: name });
 
 async function openFixture(name) {
-  const [chooser] = await Promise.all([app.waitForEvent('filechooser'), app.evaluate(() => window.editor.runCommand('OPEN'))]);
+  const [chooser] = await Promise.all([app.waitForEvent('filechooser'), app.evaluate(() => void window.editor.runCommand('OPEN'))]);
   await chooser.setFiles(join(process.cwd(), 'fixtures', name));
   await app.waitForFunction(() => window.editor.doc.entities.length > 0 || /Failed to open/.test(document.querySelector('#command-window')?.textContent ?? ''), null, { timeout: 90000 });
   return app.evaluate(() => window.editor.doc.entities.length);
@@ -136,7 +136,15 @@ check(n > 0, `browser edition opened fixtures/example_2000.dwg: ${n} entities in
 // The DWG contains objects JCad cannot keep (wipeouts, ...), so the Import Report dialog opens; close it
 // so the drawing screenshot and the later banner click are not covered by its backdrop.
 check((await app.locator('.import-report-dialog').count()) === 1, 'Import Report dialog shown for the DWG');
+const reportCounts = await app.locator('.import-report-dialog .import-report-counts li').allTextContents();
+check(reportCounts.some((line) => /^DICTIONARY:\s+\d+ dropped/.test(line)), 'DWG report warns that dictionary metadata is dropped');
+check(reportCounts.some((line) => /^DIMENSION:.*\d+ simplified/.test(line)), 'DWG report lists simplified dimensions');
+check(reportCounts.some((line) => /^DIMSTYLE:.*\d+ simplified/.test(line)), 'DWG report lists unsupported dimension-style settings');
+const reportDetails = await app.locator('.import-report-dialog .import-report-row').allTextContents();
+check(reportDetails.some((line) => /^XDATA unsupported.*cannot be guaranteed on DXF save/.test(line)), 'DWG report explains the reader cannot guarantee application metadata on DXF save');
 await closeImportReport();
+const importHistory = await app.locator('#command-window').textContent();
+check(/DICTIONARY:\s+\d+ dropped/.test(importHistory) && /DIMENSION:.*\d+ simplified/.test(importHistory) && /DIMSTYLE:.*\d+ simplified/.test(importHistory), 'DWG warning summaries remain in command history after the report closes');
 await app.evaluate(() => window.editor.zoomExtents());
 await app.mouse.move(800, 480);
 await app.waitForTimeout(200);
@@ -171,7 +179,7 @@ if (withImages) {
   await app.waitForTimeout(150);
   await shot('site/img/schematic.png');
 
-  await app.evaluate(() => window.editor.runCommand('AECOMPONENT'));
+  await app.evaluate(() => void window.editor.runCommand('AECOMPONENT'));
   await app.waitForTimeout(300);
   await shot('site/img/icon-menu.png');
   await closeDialogs();
@@ -186,7 +194,7 @@ if (withImages) {
   await closeDialogs();
 
   // Symbol Builder: copy of HPB11_NO from the library, then the editing tab with the palette.
-  await app.evaluate(() => window.editor.runCommand('AESYMBUILDER'));
+  await app.evaluate(() => void window.editor.runCommand('AESYMBUILDER'));
   await app.waitForTimeout(250);
   const dialog = app.locator('.modal').first();
   await dialog.locator('input[name=sb-source][value=library]').check();
@@ -214,7 +222,7 @@ if (withImages) {
   await app.waitForTimeout(250);
   await app.click('.modal .btn.primary >> nth=-1');
   await app.waitForTimeout(250);
-  await app.evaluate(() => window.editor.runCommand('AEPLC'));
+  await app.evaluate(() => void window.editor.runCommand('AEPLC'));
   await app.waitForTimeout(200);
   await app.click('.modal .btn.primary >> nth=-1');
   await app.waitForTimeout(100);

@@ -53,9 +53,8 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
     if (file.toLowerCase().endsWith('.dwg')) {
       // The DXF copy next to a DWG gets the DWG's access (DWG itself is never written).
       const twin = file.replace(/\.dwg$/i, '.dxf');
-      if (registry.isWritable(file)) registry.grant(twin);
-      else registry.grantRead(twin);
-      // At most 512 MB, read through one handle (electron/resource-limits.cjs, E-7).
+      registry.grantDerived(twin, file);
+      // At most 128 MiB, read through one nonblocking handle (E-7).
       const bytes = /** @type {Buffer} */ (await readLimitedFile(fs, file, MAX_DRAWING_BYTES));
       const { payload, version } = await readDwgWithProgress(win, file, bytes);
       pathPolicy.rememberImages(file, (payload.imageDefs || []).map((d) => d && d.fileName));
@@ -76,10 +75,9 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
   /**
    * Read a project file (or, by name, a project's catalog file) and register the project's drawings
    * and catalog file (electron/path-registry.cjs registerProject). A project the user chose - in
-   * this dialog, handed over by the OS, or from Recent Documents (`opts.userChosen`, accepted only
-   * for a project file the user chose or saved to before) - makes the drawings it lists writable
+   * this dialog, handed over by the OS, or from the native Recent menu - makes the drawings it lists writable
    * wherever they are; one opened only by name (a plugin, OPENPROJECT with a path) only those inside
-   * its folder. `opts.textOnly`: the dialog reads a JSON file for its text (a catalog file), and
+   * its folder. A renderer's `opts.userChosen` claim grants no permission. `opts.textOnly` reads a JSON file for its text, and
    * nothing it lists is registered.
    */
   ipcMain.handle('open-project', async (ev, file, opts) => {
@@ -106,7 +104,7 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
     const text = /** @type {string} */ (await readLimitedFile(fs, file, MAX_PROJECT_BYTES, 'utf8'));
     let parsed;
     try {
-      parsed = JSON.parse(text);
+      parsed = JSON.parse(String(text));
     } catch {
       throw new Error('Not a valid project file');
     }
@@ -114,7 +112,8 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
     // Only a project file the user may write registers what it lists: a file that is readable only
     // (a project's catalog file, read through this channel) grants nothing.
     const writable = registry.isWritable(file);
-    const userChosen = chosen || takeHandedOverProject(file) || (o.userChosen === true && writable);
+    const handedOver = takeHandedOverProject(file);
+    const userChosen = chosen || handedOver;
     if (writable && o.textOnly !== true) registry.registerProject(file, parsed, { userChosen });
     return { path: file, text };
   });
@@ -284,17 +283,18 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
     if (pathPolicy.shapeProblem(file)) throw new Error('Invalid path');
     const type = IMAGE_TYPES[path.extname(file).toLowerCase()];
     if (!type) throw new Error('Not an image file');
-    // Only images next to a file the user chose, or named by a drawing the user opened.
-    const refused = pathPolicy.imageProblem(file);
-    if (refused) {
-      rejections.reject('read-image', `${refused}: ${String(file).slice(0, 300)}`);
-      throw new Error('Invalid path');
-    }
+    // Resolve through the canonical policy once: Windows short names and macOS system aliases
+    // may differ from the spelling registered by the native drawing dialog.
     let stat;
     try {
+      file = await pathPolicy.imagePath(file);
       stat = await fs.stat(file);
     } catch (err) {
       if (err && (err.code === 'ENOENT' || err.code === 'ENOTDIR')) return null;
+      if (err && err.code === 'ERR_IMAGE_PATH') {
+        rejections.reject('read-image', `${err.message}: ${String(file).slice(0, 300)}`);
+        throw new Error('Invalid path');
+      }
       throw err;
     }
     if (!stat.isFile() || stat.size > MAX_IMAGE_BYTES) return null;

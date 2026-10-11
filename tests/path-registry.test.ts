@@ -15,6 +15,7 @@ type Registry = {
   serialize(): string;
   restore(text: string): void;
   writeRoot(p: unknown): string | null;
+  grantDerived(p: unknown, source: unknown): boolean;
 };
 const reg = require('../electron/path-registry.cjs') as {
   createPathRegistry: (o?: { onChange?: () => void }) => Registry;
@@ -223,6 +224,38 @@ describe('readable / writable paths (electron/path-registry.cjs)', () => {
     d.restore(JSON.stringify({ version: 2, writable: [s1], writeRoots: { [s1]: 42, [cover]: folder, relative: 'x' } }));
     expect(d.writeRoot(s1)).toBeNull();
     expect(d.writeRoot(cover)).toBeNull();
+  });
+
+  it('a DWG-derived DXF inherits read/write authority and persisted project confinement', () => {
+    const snapshots: string[] = [];
+    const registry: Registry = reg.createPathRegistry({ onChange: () => snapshots.push(registry.serialize()) });
+    const dwg = abs('work', 'jobs', 'a', 'sheets', 'source.dwg');
+    const twin = abs('work', 'jobs', 'a', 'sheets', 'source.dxf');
+    const folder = abs('work', 'jobs', 'a');
+    registry.registerProject(project, { drawings: [{ file: 'sheets/source.dwg' }] });
+    expect(registry.grantDerived(twin, dwg)).toBe(true);
+    expect(registry.isWritable(twin)).toBe(true);
+    expect(registry.writeRoot(twin)).toBe(folder);
+    const restarted = reg.createPathRegistry();
+    restarted.restore(snapshots[snapshots.length - 1]!);
+    expect(restarted.writeRoot(twin)).toBe(folder);
+
+    const readOnly = abs('work', 'jobs', 'outside.dwg');
+    const readOnlyTwin = abs('work', 'jobs', 'outside.dxf');
+    registry.grantRead(readOnly);
+    registry.grantDerived(readOnlyTwin, readOnly);
+    expect(registry.isKnown(readOnlyTwin)).toBe(true);
+    expect(registry.isWritable(readOnlyTwin)).toBe(false);
+    expect(registry.grantDerived(twin, abs('unknown.dwg'))).toBe(false);
+
+    // A subsequent native file choice lifts confinement on the source and its derived sibling.
+    registry.grant(dwg);
+    registry.grantDerived(twin, dwg);
+    expect(registry.writeRoot(twin)).toBeNull();
+    // Previously chosen DXFs keep that grant even when a confined source is opened afterwards.
+    registry.registerProject(project, { drawings: [{ file: 'sheets/confined.dwg' }] });
+    registry.grantDerived(twin, abs('work', 'jobs', 'a', 'sheets', 'confined.dwg'));
+    expect(registry.writeRoot(twin)).toBeNull();
   });
 
   it('recent.json as written on each change carries the write root of every confined drawing, the last one too', () => {

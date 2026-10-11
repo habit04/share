@@ -3,22 +3,30 @@
  * BLOCKS, ENTITIES, OBJECTS); tables read from anonymous blocks, the layers every entity refers
  * to, the header, paper space (io/dxf-layouts.ts) and then the IMAGE paths are settled at the end.
  */
-import type { Entity, BlockDef, Layer, DimStyle } from '../../core/entities';
-import { STANDARD_DIMSTYLE, DIMSTYLES_META_KEY, diffDimStyles } from '../../core/dimension';
 import type { FieldContext } from '../../core/fields';
-import { DEFAULT_LAYERS, type DrawingState, type NamedView } from '../../core/document';
+import type { DrawingState, NamedView } from '../../core/document';
+import type { DimStyle, Layer, BlockDef, Entity } from '../../core/entities';
+import { ImportReportBuilder, reportBlockExpansion, withImportData } from '../import-report';
+import type { RawDxfEntity } from '../import-report';
+import { diffDimStyles, STANDARD_DIMSTYLE, DIMSTYLES_META_KEY } from '../../core/dimension';
+import { DxfReadError, tokenize, objects, has, str } from './groups';
+import { decodeUnicodeEscapes, textStyleOf, textStylesMeta } from '../encoding';
+import type { TextStyle } from '../encoding';
+import type { Pair } from './groups';
 import type { Linetype } from '../../core/linetypes';
-// Track E: paper space (layouts, VIEWPORT entities, LAYOUT objects) lives in dxf-layouts.ts.
-import { LayoutReader } from '../dxf-layouts';
-import { decodeUnicodeEscapes, textStylesMeta, type TextStyle } from '../encoding';
-import { ImportReportBuilder, reportBlockExpansion, withImportData, type RawDxfEntity } from '../import-report';
-import { tokenize, objects, has, str, type Pair } from './groups';
 import type { ReadContext } from './read-core';
-import { readEntities } from './read-pass';
+import { LayoutReader } from '../dxf-layouts';
 import { readTableStyle, type TableStyleData } from './read-annotations';
-import { readHeaderSection, drawingHeader, readTablesSection, readBlocksSection, readEntitiesSection, readObjectsSection } from './read-sections';
+import { readHeaderSection, readObjectsSection, readTablesSection, readBlocksSection, readEntitiesSection, drawingHeader } from './read-sections';
+import { DEFAULT_LAYERS } from '../../core/document';
+import { readEntities } from './read-pass';
 
 export interface DxfReadOptions {
+  /** Allocation budgets; callers may lower them for untrusted or constrained imports. */
+  maxSourceLength?: number;
+  maxStringLength?: number;
+  maxPairs?: number;
+  maxRecords?: number;
   /** Path of the file being read (Filename fields). */
   filePath?: string | null;
   /** Extra values for field evaluation (drawing properties, current date ...). */
@@ -75,7 +83,8 @@ function tableStylesOf(pairs: readonly Pair[]): Map<string, TableStyleData> {
 
 /** The reader proper; DIMSTYLE records are collected into `dimStyles`. */
 function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string, DimStyle>, report: ImportReportBuilder, raw: RawDxfEntity[]): DrawingState {
-  const pairs = tokenize(decodeUnicodeEscapes(text), opts.recover, report);
+  if (text.length > (opts.maxSourceLength ?? 128 * 1024 * 1024)) throw new DxfReadError('DXF exceeds the source text size limit.', 1);
+  const pairs = tokenize(decodeUnicodeEscapes(text), opts.recover, report, opts);
   const textStyles: Record<string, TextStyle> = {};
   const layers: Layer[] = [];
   const blocks: Record<string, BlockDef> = {};
@@ -160,25 +169,30 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
     ctx.where = undefined;
     return list;
   }, { entities, header });
-  // IMAGE paths come from the IMAGEDEF objects, read last: resolved once every space is read,
-  // paper space included (ported from PR #2, codex/electrical-review-fixes 2f89b0e).
+  // Resolve after every space has been read, by stable id (extrusion transforms may copy an entity).
   if (ctx.pendingImages?.size) {
-    const resolve = (list: readonly Entity[]): Entity[] =>
-      list.map((e) => {
-        if (e.type !== 'image') return e;
-        const h = ctx.pendingImages!.get(e.id);
-        return h !== undefined ? { ...e, path: imageDefs.get(h) ?? e.path } : e;
-      });
+    const resolve = (list: readonly Entity[]): Entity[] => list.map((e) => {
+      if (e.type !== 'image') return e;
+      const handle = ctx.pendingImages!.get(e.id);
+      const path = handle ? imageDefs.get(handle) : undefined;
+      if (!path) report.add({ type: 'IMAGE', action: 'simplified', layer: e.layer, reason: `IMAGEDEF ${handle || '(missing)'} has no file path; only the image frame is kept` });
+      return path !== undefined ? { ...e, path } : e;
+    });
     entities = resolve(entities);
-    for (const [k, b] of Object.entries(blocks)) if (b.entities.some((e) => e.type === 'image')) blocks[k] = { ...b, entities: resolve(b.entities) };
-    layouts = layouts?.map((l) => (l.entities.some((e) => e.type === 'image') ? { ...l, entities: resolve(l.entities) } : l));
+    for (const [key, block] of Object.entries(blocks)) blocks[key] = { ...block, entities: resolve(block.entities) };
+    layouts = layouts?.map((l) => ({ ...l, entities: resolve(l.entities) }));
   }
   for (const l of layouts ?? []) {
     for (const e of l.entities) ensure(e.layer);
     for (const v of l.viewports) ensure(v.layer);
   }
-  // Blocks that insert themselves or multiply into millions of objects (E-13).
   reportBlockExpansion(report, blocks, [...entities, ...(layouts ?? []).flatMap((l) => l.entities)]);
+  const styleNames = new Set(['STANDARD', ...Object.keys(textStyles).map((name) => name.toUpperCase())]);
+  const referencedStyles = [...entities, ...Object.values(blocks).flatMap((b) => b.entities), ...(layouts ?? []).flatMap((l) => l.entities)];
+  for (const entity of referencedStyles) {
+    const name = entity.type === 'dimension' ? entity.style.textStyle : textStyleOf(entity);
+    if (name && !styleNames.has(name.toUpperCase())) { report.add({ type: 'STYLE', action: 'unsupported', reason: `referenced text style "${name}" has no STYLE definition; its name is kept with a default stroke-font substitute`, layer: entity.layer }); styleNames.add(name.toUpperCase()); }
+  }
   const styleMeta = textStylesMeta(textStyles);
   return { entities, layers, blocks, currentLayer, header, ...(styleMeta ? { meta: styleMeta } : {}), ...(layouts ? { layouts } : {}) };
 }

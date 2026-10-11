@@ -10,6 +10,7 @@ import { captureRevision, saveQueue } from '../savequeue';
 import { applySaveResult } from '../sessions';
 import { describeFileError } from '../file-errors';
 import { confirmSaveOver } from '../import-open';
+import { saveOverwriteWarning } from '../../io/import-report';
 import type { Editor } from './editor';
 import { fallbackUi, type EditorInternals } from './internals';
 import { rememberRecent } from './documents';
@@ -19,15 +20,13 @@ export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean)
     ed.log('No file access in this environment.');
     return false;
   }
-  // Saving over a source file that held content JCad could not keep (or a recovered file) asks first.
-  if (!saveAs && ed.doc.filePath && (await confirmSaveOver(ed.doc.snapshot, ed.doc.filePath, (t, m) => (ed.ui ?? fallbackUi).confirm(t, m))) === 'save-as') {
-    ed.log('Save As keeps the original file unchanged.');
-    return ed.saveFile(true);
-  }
   const bridge = ed.fileBridge;
   // Remember exactly which document revision goes to disk: edits made while the file
   // dialog / write is pending (or in another tab) must stay flagged as unsaved.
-  const sessionId = ed.sessions.current.id;
+  const session = ed.sessions.current;
+  const sessionId = session.id;
+  const sessionRevision = session.revision;
+  const contentGeneration = session.contentGeneration;
   const savedState = ed.doc.snapshot;
   const revision = captureRevision();
   let target = saveAs ? null : ed.doc.filePath;
@@ -43,7 +42,21 @@ export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean)
       if (!target) return false;
     }
     if (target) {
-      const r = await saveQueue.run(target, revision, () => bridge.saveDxf(target, text, suggest));
+      const stillCurrent = () => ed.sessions.all.some((s) => s === session && s.state === savedState && s.revision === sessionRevision);
+      const needsReview = !!saveOverwriteWarning(savedState, target);
+      const permitted = await confirmSaveOver(savedState, target, (t, m) => (ed.ui ?? fallbackUi).confirm(t, m), session, stillCurrent);
+      if (needsReview && !stillCurrent()) {
+        ed.lastFileError = 'the drawing changed or closed while its save destination or loss warning was open';
+        ed.log(`Not saved: ${ed.lastFileError}. Save again to review the current drawing.`);
+        return false;
+      }
+      if (permitted === 'save-as') {
+        ed.log('Save As keeps the original file unchanged.');
+        // Repeatedly choosing the source in Save As must keep requiring permission.
+        if (!bridge.chooseDrawingPath && saveAs) return false;
+        return ed.saveFile(true);
+      }
+      const r = await saveQueue.run(target, revision, () => !needsReview || stillCurrent() ? bridge.saveDxf(target, text, suggest) : Promise.resolve(null));
       if (r.status === 'stale') {
         ed.lastFileError = `a newer version of ${target} was saved meanwhile`;
         return false;
@@ -71,7 +84,12 @@ export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean)
     return true;
   }
   st.savedRevisions.set(sessionId, revision);
-  const outcome = applySaveResult(ed.sessions, ed, sessionId, savedState, path);
+  const outcome = applySaveResult(ed.sessions, ed, sessionId, savedState, path, contentGeneration);
+  if (outcome === 'replaced') {
+    ed.log(`Saved ${path} (another drawing replaced this tab while saving; it keeps its current file).`);
+    rememberRecent(ed, path);
+    return true;
+  }
   if (outcome === 'clean' && ed.sessions.current.id === sessionId) ed.suggestedName = null;
   ed.log(outcome === 'newer-edits' ? `Saved ${path} (edits made during the save are still unsaved).` : `Saved ${path}`);
   rememberRecent(ed, path);

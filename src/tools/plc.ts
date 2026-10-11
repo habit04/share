@@ -133,10 +133,10 @@ export class PlcModuleTool implements Tool {
   private settings: PlcModuleSettings = { ...DEFAULT_PLC };
   private ready = false;
   constructor(private ask: (init: PlcModuleSettings) => Promise<PlcModuleSettings | null>) {}
-  start(ctx: ToolContext): void {
+  start(ctx: ToolContext): Promise<void> {
     this.ready = false;
     ctx.prompt('Insert PLC Module...');
-    void this.ask(this.settings).then((s) => {
+    return this.ask(this.settings).then((s) => {
       if (!s) {
         ctx.finish();
         return;
@@ -220,9 +220,9 @@ export class SignalArrowTool implements Tool {
   private make(p: Point, code = ''): InsertEntity {
     return { id: newId(), layer: 'MISC', color: 'ByLayer', type: 'insert', block: this.kind === 'source' ? SOURCE_ARROW.name : DEST_ARROW.name, position: p, rotation: 0, scale: 1, attributes: { SIGCODE: code, XREF: '' } };
   }
-  onPoint(p: Point, ctx: ToolContext): void {
+  onPoint(p: Point, ctx: ToolContext): Promise<void> {
     ctx.setPreview([]);
-    void this.ask('Signal Arrow', 'Signal code (e.g. 24VDC-1)', '').then((code) => {
+    return this.ask('Signal Arrow', 'Signal code (e.g. 24VDC-1)', '').then((code) => {
       if (code === null) {
         ctx.finish();
         return;
@@ -290,10 +290,10 @@ export class TerminalStripTool implements Tool {
   private settings: TerminalStripSettings = { ...DEFAULT_STRIP };
   private ready = false;
   constructor(private ask: (init: TerminalStripSettings) => Promise<TerminalStripSettings | null>) {}
-  start(ctx: ToolContext): void {
+  start(ctx: ToolContext): Promise<void> {
     this.ready = false;
     ctx.prompt('Insert Terminal Strip...');
-    void this.ask(this.settings).then((s) => {
+    return this.ask(this.settings).then((s) => {
       if (!s) {
         ctx.finish();
         return;

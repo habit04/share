@@ -2,10 +2,9 @@
  * Application updates from GitHub Releases.
  *
  * Two paths:
- *  - Windows (NSIS installer) and Linux AppImage builds update in place through
- *    electron-updater: the release carries latest.yml / latest-linux.yml written by
- *    electron-builder, the new installer is downloaded and applied on restart.
- *  - macOS, Linux .deb, development runs and anything electron-updater cannot handle
+ *  - Windows NSIS installations with a configured trusted publisher update through
+ *    electron-updater, which verifies the downloaded installer's signature.
+ *  - Unsigned Windows, Linux, macOS, development runs and other installations
  *    only check: the GitHub Releases API is asked for the latest version and, if it
  *    is newer, the user is offered the download page. (macOS in-place updates need a
  *    Developer ID signed app; the ad-hoc signed builds cannot be swapped by Squirrel.)
@@ -21,6 +20,7 @@
 const { app, dialog, shell, net } = require('electron');
 const { parseVersion, compareVersions, minimumSystemVersionFrom, systemOlderThan } = require('./version.cjs');
 const { externalUrl } = require('./ipc-guard.cjs');
+const { installationHasTrustedPublisher } = require('./update-policy.cjs');
 const { publisherNamesFrom, updateInfoProblem, verifyDownloadedUpdate } = require('./update-verify.cjs');
 
 const OWNER = 'habit04';
@@ -46,8 +46,9 @@ let confirmRestart = async () => true;
 /** Whether electron-updater can replace this installation in place. */
 function canSelfUpdate() {
   if (!app.isPackaged) return false;
-  if (process.platform === 'win32') return !process.env.PORTABLE_EXECUTABLE_DIR;
-  if (process.platform === 'linux') return Boolean(process.env.APPIMAGE);
+  if (process.platform === 'win32') return !process.env.PORTABLE_EXECUTABLE_DIR && installationHasTrustedPublisher(process.resourcesPath);
+  // Until release metadata has an independently trusted signature, Linux uses manual downloads.
+  if (process.platform === 'linux') return false;
   return false; // macOS: ad-hoc signed builds cannot be swapped by Squirrel.Mac
 }
 
@@ -57,7 +58,8 @@ function getAutoUpdater() {
   const mod = require('electron-updater');
   autoUpdater = mod.autoUpdater;
   autoUpdater.autoDownload = false;
-  autoUpdater.autoInstallOnAppQuit = true;
+  // Ordinary quit does not run our final checksum/publisher recheck or close workflow.
+  autoUpdater.autoInstallOnAppQuit = false;
   autoUpdater.allowPrerelease = false;
   autoUpdater.logger = null;
   autoUpdater.on('download-progress', (p) => statusSink({ state: 'downloading', percent: Math.round(p.percent || 0) }));
@@ -186,6 +188,7 @@ function installedPublisherNames() {
  */
 async function verifyDownloaded() {
   const u = getAutoUpdater();
+  u.autoInstallOnAppQuit = false;
   const d = downloadedUpdate;
   const why = d
     ? await verifyDownloadedUpdate({
@@ -199,10 +202,6 @@ async function verifyDownloaded() {
     u.autoInstallOnAppQuit = false;
     downloaded = null;
     downloadedUpdate = null;
-  } else {
-    // A download that passes (a retry after a failed one too) installs on quit again, as the
-    // "Update Ready" dialog says.
-    u.autoInstallOnAppQuit = true;
   }
   return why;
 }
@@ -213,7 +212,7 @@ async function offerRestart(win, version) {
     type: 'info',
     title: 'Update Ready',
     message: `JCad Electrical ${version} has been downloaded.`,
-    detail: 'Restart now to install it, or it will be installed when you quit.',
+    detail: 'Restart now to install it, or choose Check for Updates when you are ready. Quitting normally does not install it.',
     buttons: ['Restart Now', 'Later'],
     defaultId: 0,
     cancelId: 1,

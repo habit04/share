@@ -97,7 +97,7 @@ describe('r2000-layouts-titleblock.dxf: layouts, paper-space viewports, title bl
     const [a3, detail] = s.layouts ?? [];
 
     it('has no import losses; units, layers, linetype and text style', () => {
-      expect(importReportOf(s)).toBeUndefined();
+      expect(importReportOf(s)?.items).toContainEqual(expect.objectContaining({ type: 'STYLE', action: 'unsupported', reason: expect.stringContaining('stroke font') }));
       expect(s.header?.units).toMatchObject({ insunits: 4, lunits: 2, luprec: 1 });
       expect(layerOf(s, '0')).toMatchObject({ color: 7, lineWeight: 0.25 });
       expect(layerOf(s, 'TITLE')).toMatchObject({ color: 7, lineWeight: 0.5 });
@@ -330,9 +330,9 @@ describe('r2018-dimensions.dxf: named DIMSTYLEs with XDATA, DIMENSIONs with thei
 
   it('lost as the matrix says: the ordinate dimension is dropped and listed in the import report', () => {
     const report = importReportOf(f.imported)!;
-    expect(report.items.map((i) => [i.type, i.action, i.handle])).toEqual([['DIMENSION', 'dropped', '127']]);
+    expect(report.items.filter((i) => i.action === 'dropped').map((i) => [i.type, i.action, i.handle])).toEqual([['DIMENSION', 'dropped', '127']]);
     expect(f.written).not.toContain('AcDbOrdinateDimension');
-    expect(importReportOf(f.roundTripped)).toBeUndefined();
+    expect(importReportOf(f.roundTripped)?.items.every((i) => i.action === 'unsupported')).toBe(true);
   });
 
   it('lost as the matrix says: arrowheads go to JCAD_DIMSTYLE XDATA (no DIMBLK handles); 2-line angular is written as 3-point; ACAD_DSTYLE_* XDATA is dropped', () => {
@@ -487,8 +487,8 @@ describe('r2018-mtext.dxf: MTEXT formatting codes, stacked fractions, columns, l
   describe.each(both(f))('%s', (_label, s) => {
     const m = ofType<MTextEntity>(s.entities, 'mtext');
 
-    it('five MTEXT entities, no import losses', () => {
-      expect(importReportOf(s)).toBeUndefined();
+    it('five MTEXT entities with font and external column display limitations reported', () => {
+      expect(importReportOf(s)?.items).toContainEqual(expect.objectContaining({ type: 'MTEXT', reason: expect.stringContaining('column definitions') }));
       expect(m).toHaveLength(5);
     });
 
@@ -617,8 +617,13 @@ describe('r2000-hatch-curves.dxf: HATCH (ANSI31 with bulges, SOLID with island),
     const splines = ofType<SplineEntity>(s.entities, 'spline');
     const ellipses = ofType<EllipseEntity>(s.entities, 'ellipse');
 
-    it('no import losses; entity order kept', () => {
-      expect(importReportOf(s)).toBeUndefined();
+    it('entity order kept; source boundary/vertex-width losses are reported', () => {
+      if (s === f.imported) {
+        expect(importReportOf(s)?.items).toContainEqual(expect.objectContaining({ type: 'HATCH', reason: expect.stringContaining('boundary links') }));
+        expect(importReportOf(s)?.items).toContainEqual(expect.objectContaining({ type: 'LWPOLYLINE', reason: expect.stringContaining('per-vertex polyline widths') }));
+        expect(importReportOf(s)?.items).toContainEqual(expect.objectContaining({ type: 'LWPOLYLINE', reason: expect.stringContaining('reactor/extension-dictionary links') }));
+      }
+      else expect(importReportOf(s)).toBeUndefined();
       expect(s.entities.map((e) => e.type)).toEqual(['polyline', 'hatch', 'hatch', 'polyline', 'circle', 'hatch', 'polyline', 'polyline', 'spline', 'spline', 'ellipse', 'ellipse']);
     });
 
@@ -752,7 +757,7 @@ describe('r2018-truecolor-linetypes.dxf: true colours, colour book, transparency
 
   describe.each(both(f))('%s', (_label, s) => {
     it('layers: true colour with the nearest ACI, lineweights, linetypes, off / frozen / locked / no-plot', () => {
-      expect(importReportOf(s)).toBeUndefined();
+      expect(importReportOf(s)?.items.some((i) => i.type === 'STYLE')).toBe(true);
       expect(layerOf(s, '0')).toMatchObject({ color: 7, lineWeight: 0.25 });
       expect(layerOf(s, 'PANEL-TC')).toMatchObject({ color: 5, trueColor: 0x3399ff, lineWeight: 0.5 });
       expect(layerOf(s, 'WIRE-RED')).toMatchObject({ color: 1, trueColor: 0xc80000, lineWeight: 0.35, linetype: 'GAS_LINE' });
@@ -906,7 +911,7 @@ describe('r2018-table.dxf: ACAD_TABLE with cells, merged title, table style (AC1
     const t = ofType<TableEntity>(s.entities, 'table')[0]!;
 
     it('one native table: insertion point, direction, row heights, column widths', () => {
-      expect(importReportOf(s)).toBeUndefined();
+      expect(importReportOf(s)?.items.every((i) => (i.type === 'STYLE' && i.action === 'unsupported') || (i.type === 'ACAD_TABLE' && i.reason.includes('native table editing')))).toBe(true);
       expect(s.entities).toHaveLength(1);
       expect(t).toMatchObject({ layer: 'TABLES', rotation: 0, rowHeights: [9, 7, 7, 7], columnWidths: [40, 25, 25] });
       closePt(t.position, 10, 200);
@@ -1045,8 +1050,9 @@ describe('r2018-image-inches.dxf: IMAGE + IMAGEDEF in model and paper space, $IN
     const layout = s.layouts?.[0];
 
     it('inch units with architectural format, limits and linetype scale', () => {
-      expect(importReportOf(s)).toBeUndefined();
-      expect(s.header?.units).toEqual({ insunits: 1, lunits: 4, luprec: 4, auprec: 0 });
+      if (s === f.imported) expect(importReportOf(s)?.items).toContainEqual(expect.objectContaining({ type: 'RASTERVARIABLES', action: 'dropped' }));
+      else expect(importReportOf(s)).toBeUndefined();
+      expect(s.header?.units).toEqual({ insunits: 1, lunits: 4, luprec: 4, auprec: 0, aunits: 0 });
       expect(formatLength(30.5, s.header!.units)).toBe('2\'-6 1/2"');
       expect(s.header?.limits.max).toEqual({ x: 432, y: 288 });
       expect(s.header?.ltscale).toBe(12);

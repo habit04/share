@@ -19,7 +19,7 @@ export interface CommandDef {
   name: string;
   aliases: string[];
   description: string;
-  run: (editor: Editor, arg?: string) => void;
+  run: (editor: Editor, arg?: string) => void | Promise<void>;
   /** The command starts a Tool (which logs "Command: NAME" itself). */
   startsTool?: boolean;
 }
@@ -63,9 +63,9 @@ export interface FileBridge {
    */
   chooseDrawingPath?(suggestName: string): Promise<string | null>;
   /**
-   * Read a project file: through the Open Project dialog without `file`, else by name. `userChosen`:
-   * the user picked it (Recent Documents); its drawings outside the project folder may then be
-   * written too (electron/path-registry.cjs). `textOnly`: the dialog reads a JSON file for its text.
+   * Read a project file: through the Open Project dialog without `file`, else by name. `userChosen`
+   * is a compatibility hint only; the main process controls authorization from native choices.
+   * `textOnly`: the dialog reads a JSON file for its text.
    */
   openProject?(file?: string, opts?: { userChosen?: boolean; textOnly?: boolean }): Promise<{ path: string; text: string } | null>;
   saveText?(suggestName: string, text: string, filterName: string, ext: string): Promise<string | null>;

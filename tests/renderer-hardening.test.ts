@@ -3,15 +3,18 @@
  * installers. The page's Content-Security-Policy, developer tools only in development runs, and
  * the Electron fuses the installers ship with (package.json build.electronFuses): RunAsNode,
  * NODE_OPTIONS and --inspect off, the application only from app.asar. The packaged smoke test
- * verifies the fuses of every installer and switches --inspect back on in its own copy for
- * Playwright (scripts/electron-fuses.mjs); the fuse helpers are tested here on a small file that
- * carries a fuse wire like the Electron binary.
+ * verifies every shipping installer without changing its signed executable. Playwright uses a
+ * separate unpublished test ASAR. The read-only fuse helpers are tested on small files carrying
+ * the same fuse wire as Electron binaries.
  */
 import { describe, it, expect, afterAll } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { SHIPPED_FUSES, shippedFuseProblems, allowInspectForTests, shipsFuses } from '../scripts/electron-fuses.mjs';
+import * as path from 'node:path';
+import { runInNewContext } from 'node:vm';
+import { SHIPPED_FUSES, shippedFuseProblems, shipsFuses } from '../scripts/electron-fuses.mjs';
+import { verifyExecutableFuses } from '../scripts/electron-fuse-policy.mjs';
 import { readSource } from './helpers/main-process';
 
 const root = join(import.meta.dirname, '..');
@@ -36,37 +39,57 @@ describe('Content-Security-Policy and developer tools', () => {
     expect(csp).not.toMatch(/unsafe-eval/);
   });
   it('the View menu has Toggle Developer Tools only when the application is not packaged', () => {
-    const menu = readSource('electron/main/menu.cjs');
-    expect(menu).toMatch(/\.\.\.\(app\.isPackaged \? \[\] : \[\/\*\* @type \{Electron\.MenuItemConstructorOptions\} \*\/ \(\{ role: 'toggleDevTools' \}\)\]\)/);
-    expect(menu.match(/toggleDevTools/g)).toHaveLength(1);
+    type Item = { role?: string; submenu?: Item[] };
+    for (const isPackaged of [false, true]) {
+      let items: Item[] = [];
+      const module = { exports: {} as { buildMenu: (win: unknown, ctx: unknown) => void } };
+      runInNewContext(readSource('electron/main/menu.cjs'), {
+        module,
+        require: (name: string) => {
+          if (name === 'electron') return {
+            app: { isPackaged, getVersion: () => '0.4.2' }, BrowserWindow: {},
+            Menu: { buildFromTemplate: (template: Item[]) => template, setApplicationMenu: (template: Item[]) => { items = template; } },
+          };
+          if (name === 'node:path') return path;
+          if (name === '../updater.cjs') return {};
+          if (name === '../path-registry.cjs') return { pathKey: () => null };
+          throw new Error(`Unexpected menu dependency: ${name}`);
+        },
+      });
+      module.exports.buildMenu({ webContents: { send: () => {} } }, { registry: {}, handedOverProjects: new Set() });
+      const roles = items.flatMap((item) => item.submenu ?? []).filter((item) => item.role === 'toggleDevTools');
+      expect(roles).toHaveLength(isPackaged ? 0 : 1);
+    }
   });
 });
 
 describe('Electron fuses (package.json build.electronFuses, scripts/electron-fuses.mjs)', () => {
   it('the build switches off RunAsNode, NODE_OPTIONS and --inspect and loads the app from app.asar only', () => {
     expect(pkg.build.electronFuses).toEqual({ ...SHIPPED_FUSES, resetAdHocDarwinSignature: true });
-    expect(SHIPPED_FUSES).toEqual({ runAsNode: false, enableNodeOptionsEnvironmentVariable: false, enableNodeCliInspectArguments: false, onlyLoadAppFromAsar: true });
-    // The page is served from file://: its extra privileges (module scripts, fetch) are needed.
-    expect(pkg.build.electronFuses).not.toHaveProperty('grantFileProtocolExtraPrivileges');
+    expect(SHIPPED_FUSES).toEqual({ runAsNode: false, enableNodeOptionsEnvironmentVariable: false, enableNodeCliInspectArguments: false, enableEmbeddedAsarIntegrityValidation: true, onlyLoadAppFromAsar: true, grantFileProtocolExtraPrivileges: false });
   });
 
   it('shippedFuseProblems reads the wire: none for a build as shipped, each wrong fuse named otherwise', async () => {
-    const shipped = fakeBinary([OFF, ON, OFF, OFF, ON, ON, OFF, ON]);
+    const shipped = fakeBinary([OFF, ON, OFF, OFF, ON, ON, OFF, OFF]);
     expect(await shippedFuseProblems(shipped)).toEqual([]);
-    const stock = fakeBinary([ON, ON, ON, ON, OFF, OFF, OFF, ON]);
-    expect(await shippedFuseProblems(stock)).toEqual([
-      'RunAsNode is on, expected off',
-      'EnableNodeOptionsEnvironmentVariable is on, expected off',
-      'EnableNodeCliInspectArguments is on, expected off',
-      'OnlyLoadAppFromAsar is off, expected on',
-    ]);
-    await expect(shippedFuseProblems(join(dir, 'missing'))).rejects.toThrow();
+    const options: [number, string][] = [[0, 'RunAsNode'], [2, 'EnableNodeOptionsEnvironmentVariable'], [3, 'EnableNodeCliInspectArguments'], [4, 'EnableEmbeddedAsarIntegrityValidation'], [5, 'OnlyLoadAppFromAsar'], [7, 'GrantFileProtocolExtraPrivileges']];
+    for (const [index, name] of options) {
+      const states = [OFF, ON, OFF, OFF, ON, ON, OFF, OFF];
+      states[index] = states[index] === ON ? OFF : ON;
+      expect(await shippedFuseProblems(fakeBinary(states))).toEqual([expect.stringContaining(name)]);
+    }
+    expect(await shippedFuseProblems(join(dir, 'missing'))).toHaveLength(1);
   });
 
-  it('allowInspectForTests switches on --inspect only', async () => {
-    const shipped = fakeBinary([OFF, ON, OFF, OFF, ON, ON, OFF, ON]);
-    await allowInspectForTests(shipped);
-    expect(await shippedFuseProblems(shipped)).toEqual(['EnableNodeCliInspectArguments is on, expected off']);
+  it('shipping validation leaves bytes untouched and the separate test policy permits inspection only', async () => {
+    const shipped = fakeBinary([OFF, ON, OFF, OFF, ON, ON, OFF, OFF]);
+    const original = readFileSync(shipped);
+    await verifyExecutableFuses(shipped, 'shipping');
+    expect(readFileSync(shipped)).toEqual(original);
+    const test = fakeBinary([OFF, ON, OFF, ON, ON, ON, OFF, OFF]);
+    await verifyExecutableFuses(test, 'test');
+    await expect(verifyExecutableFuses(test, 'shipping')).rejects.toThrow(/EnableNodeCliInspectArguments/);
+    await expect(verifyExecutableFuses(shipped, 'test')).rejects.toThrow(/EnableNodeCliInspectArguments/);
   });
 
   it('installers from the release after 0.4.1 ship the fuses; older ones are not checked', () => {
@@ -76,14 +99,14 @@ describe('Electron fuses (package.json build.electronFuses, scripts/electron-fus
     expect(() => shipsFuses('latest')).toThrow(/Invalid version/);
   });
 
-  it('the packaged smoke test checks the fuses before the end-to-end run and fails on a wrong one', () => {
+  it('the packaged smoke test verifies shipping fuses before fixed probes and never unlocks inspection', () => {
     const smoke = readFileSync(join(root, 'scripts', 'packaged-smoke.mjs'), 'utf8');
-    const check = smoke.indexOf('await shippedFuseProblems(t.executable)');
-    const unlock = smoke.indexOf('await allowInspectForTests(t.executable)');
-    const e2e = smoke.indexOf("join(repo, 'scripts', 'e2e-electron.mjs'), '--packaged', t.executable");
+    const check = smoke.indexOf("await verifyExecutableFuses(t.executable, 'shipping')");
+    const runtime = smoke.indexOf("join(repo, 'scripts', 'shipping-runtime-smoke.mjs')");
     expect(check).toBeGreaterThan(0);
-    expect(unlock).toBeGreaterThan(check);
-    expect(e2e).toBeGreaterThan(unlock);
-    expect(smoke).toMatch(/const ok = probeOk && fusesOk && e2e\.status === 0;/);
+    expect(runtime).toBeGreaterThan(check);
+    expect(smoke).not.toMatch(/allowInspectForTests|flipFuses/);
+    expect(smoke).toContain("JCAD_SMOKE_REQUIRE_SHIPPING === '1'");
+    expect(smoke).toContain('const ok = probeOk && runtime.status === 0;');
   });
 });

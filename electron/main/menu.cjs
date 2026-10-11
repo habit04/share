@@ -5,17 +5,25 @@
 const { app, BrowserWindow, Menu } = require('electron');
 const path = require('node:path');
 const updater = require('../updater.cjs');
+const { pathKey } = require('../path-registry.cjs');
+const PROJECT_FILE = /\.json$/i;
 
 /** @typedef {import('./context.cjs').MainContext} MainContext */
 
 /** The Recent Documents list the renderer sent last (set-recent-files). */
 let recentFiles = [];
 
-function buildMenu(win) {
+/** @param {Electron.BrowserWindow} win @param {MainContext} ctx */
+function buildMenu(win, ctx) {
+  const { registry, handedOverProjects } = ctx;
   const send = (cmd) => () => win.webContents.send('menu-command', cmd);
   /** @type {Electron.MenuItemConstructorOptions[]} */
   const recentSub = recentFiles.length
-    ? [...recentFiles.map((f, i) => ({ label: `${i + 1}. ${path.basename(f)}`, toolTip: f, click: send(`RECENT ${i + 1}`) })), { type: 'separator' }, { label: 'Clear Recent', click: send('CLEARRECENT') }]
+    ? [...recentFiles.map((f, i) => ({ label: `${i + 1}. ${path.basename(f)}`, toolTip: f, click: () => {
+      const key = pathKey(f);
+      if (key && PROJECT_FILE.test(f) && registry.isWritable(f)) handedOverProjects.add(key);
+      win.webContents.send('menu-command', `RECENT ${i + 1}`);
+    } })), { type: 'separator' }, { label: 'Clear Recent', click: send('CLEARRECENT') }]
     : [{ label: '(empty)', enabled: false }];
   /** @type {Electron.MenuItemConstructorOptions[]} */
   const template = [
@@ -77,9 +85,7 @@ function buildMenu(win) {
         { label: 'Command Window (Ctrl+9)', click: send('COMMANDLINE') },
         { label: 'Clean Screen (Ctrl+0)', click: send('CLEANSCREEN') },
         { type: 'separator' },
-        // Developer tools only in development runs (security review E-15): an installed copy has no
-        // menu item and no Ctrl+Shift+I.
-        ...(app.isPackaged ? [] : [/** @type {Electron.MenuItemConstructorOptions} */ ({ role: 'toggleDevTools' })]),
+        ...(app.isPackaged ? [] : [/** @type {import('electron').MenuItemConstructorOptions} */ ({ role: 'toggleDevTools' })]),
         { role: 'togglefullscreen' },
       ],
     },
@@ -132,7 +138,7 @@ function registerMenuIpc(ctx) {
     if (!Array.isArray(files)) return;
     recentFiles = files.filter((f) => typeof f === 'string').slice(0, 9);
     const win = BrowserWindow.fromWebContents(ev.sender);
-    if (win) buildMenu(win);
+    if (win) buildMenu(win, ctx);
   });
 }
 

@@ -11,6 +11,10 @@ in development builds; installed builds have no developer tools).
 - Everything the API hands out is a **frozen copy**. To change the drawing you pass entities
   back through `document.add / replace / remove` or group changes with `document.transact`;
   every change is an undo step like any command (Ctrl+Z works).
+- Accepted drawing snapshots are also sealed at runtime. Build replacement objects instead of
+  mutating objects retained by the drawing. Geometry budgets apply to edits and project batches:
+  an oversized candidate throws before it changes document state, undo history or dirty status.
+  `commands.run` returns an asynchronous command's promise, so scripts can await a rejection.
 - Errors thrown by plugin code (while loading, in a command, in an event listener, in a
   rejected promise, in a timer or other callback whose stack points into the plugin) are
   caught and printed on the command line as `[plugin-name] ...`, and one plugin that fails to
@@ -144,9 +148,10 @@ a JSON object keyed by `"<origin>:<path>"` (`folder:`, `file:` or `script:`) hol
 changes the user is asked again. A "no" is kept at start-up (the plugin is listed as
 *declined*); `PLUGINLOAD <folder>` asks again. `PLUGINS Forget` clears answers.
 
-Only a SHA-256 digest (64 hexadecimal digits) remembers an answer. Where WebCrypto is not
-available the code is hashed with FNV-1a, which is not collision-resistant: then the answer
-holds for that run only and is not saved, so the user is asked at every start.
+Only a 64-hex SHA-256 digest can persist approval. If WebCrypto is unavailable, approval is
+requested for that run and is not saved. The desktop's secure `jcad://app` origin provides
+WebCrypto without giving plugins Node integration. Plugins still have full renderer and bridge
+access after approval; the trust prompt does not create a capability sandbox.
 
 Plugin settings written with `jcad.settings.set('plugin:<key>', value)` live in
 `localStorage` under `jcad.plugins.settings.<plugin name>`.

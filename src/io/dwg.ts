@@ -33,13 +33,14 @@ import type {
 import { insertScales, insertScaleFields } from './dxf';
 import type { Entity, BlockDef, Layer, AttributeDef, ColorSpec, MTextAttachment, SplineEntity, HatchEntity, HatchLoop, LeaderEntity, ImageEntity, TableEntity, TableCell, FieldLink } from '../core/entities';
 import { translateEntity } from '../core/entities';
-import { DIMSTYLES_META_KEY, diffDimStyles } from '../core/dimension';
+import { DIMSTYLES_META_KEY, DIM_VARIABLES, diffDimStyles, dimStyleFromRecordPairs } from '../core/dimension';
 import { findLinetype, type Linetype } from '../core/linetypes';
 import { paperFromSize, unitsOfHost, uniformMargins, newViewportId, type Layout, type LayoutViewport } from '../core/layouts';
 import { textStylesMeta, type TextStyle } from './encoding';
+import { fontImportWarning } from './font-warning';
 import { ImportReportBuilder, geometryProblem, reportBlockExpansion, withImportData, type ImportReport } from './import-report';
 import { findPattern, LoopBuilder, edgeArc, fitPatternToLines } from '../core/hatch';
-import { isValidNurbs, nurbsPoints, interpolateFitPoints } from '../core/spline';
+import { isValidNurbs, nurbsPoints, interpolateFitPoints, splineWorkProblem, SplineWorkLimitError } from '../core/spline';
 import { evaluateFields, hasFields } from '../core/fields';
 import { newId, entityBounds } from '../core/entities';
 import type { DrawingState, DrawingHeader } from '../core/document';
@@ -50,13 +51,14 @@ import { STANDARD_DIMSTYLE, withDimVars, type DimStyle } from '../core/dimension
 import { mtextFromDxf, hasFormatting } from '../core/mtext';
 import { LINEWEIGHTS } from '../core/linetypes';
 import type { LinearUnits } from '../core/units';
+import { cadPrecision } from '../core/units';
 
 /** Subset of DwgDatabase we actually need (what the main process sends over IPC). */
 export interface DwgImportPayload {
   header: { CLAYER?: unknown; INSUNITS?: unknown } & Record<string, unknown>;
   entities: DwgEntity[];
   /** `color` is the layer's RGB (meaningful when colorIndex is 256: a true-colour layer). */
-  layers: Array<{ name: string; colorIndex: number; color?: number; off: boolean; frozen: boolean; locked: boolean; lineweight: number; lineType?: string; standardFlag?: number; plotFlag?: number }>;
+  layers: Array<{ name: string; handle?: string; colorIndex: number; color?: number; off: boolean; frozen: boolean; locked: boolean; lineweight: number; lineType?: string; standardFlag?: number; plotFlag?: number }>;
   blocks: Array<Pick<DwgBlockRecordTableEntry, 'name' | 'basePoint' | 'entities' | 'description'> & { handle?: string; flags?: number }>;
   version?: string;
   /** IMAGEDEF objects (handle -> file name) so IMAGE entities know their file. Optional: older readers omit it. */
@@ -69,10 +71,13 @@ export interface DwgImportPayload {
   linetypes?: DwgPayloadLinetype[];
   /** LAYOUT objects: name, tab order, the BLOCK_RECORD of their paper space, paper limits. */
   layouts?: DwgPayloadLayout[];
+  /** Object metadata omitted from the drawing model, summarized for loss reporting. */
+  omittedObjectTypes?: Record<string, number>;
 }
 
 export interface DwgPayloadStyle {
   name: string;
+  handle?: string;
   standardFlag?: number;
   fixedTextHeight?: number;
   widthFactor?: number;
@@ -95,6 +100,7 @@ export interface DwgPayloadLayout {
   blockHandle: string;
   minLimit?: { x: number; y: number };
   maxLimit?: { x: number; y: number };
+  plotSettings?: { paperWidth?: number; paperHeight?: number; plotPaperUnit?: number; plotRotation?: number; marginLeft?: number; marginBottom?: number; marginRight?: number; marginTop?: number; printScaleNominator?: number; printScaleDenominator?: number; configName?: string; currentStyleSheet?: string };
 }
 
 /** Trim a full DwgDatabase down to the payload (drops thumbnails, dictionaries, classes). */
@@ -104,6 +110,7 @@ export function toImportPayload(db: DwgDatabase, version?: string): DwgImportPay
     entities: db.entities ?? [],
     layers: (db.tables?.LAYER?.entries ?? []).map((l) => ({
       name: l.name,
+      ...((l as { handle?: string }).handle ? { handle: String((l as { handle?: string }).handle) } : {}),
       colorIndex: l.colorIndex,
       color: l.color,
       standardFlag: l.standardFlag,
@@ -126,6 +133,7 @@ export function toImportPayload(db: DwgDatabase, version?: string): DwgImportPay
     imageDefs: (db.objects?.IMAGEDEF ?? []).map((d) => ({ handle: String(d.handle ?? ''), fileName: d.fileName ?? '' })),
     styles: (db.tables?.STYLE?.entries ?? []).map((t) => ({
       name: t.name,
+      ...((t as { handle?: string }).handle ? { handle: String((t as { handle?: string }).handle) } : {}),
       standardFlag: t.standardFlag,
       fixedTextHeight: t.fixedTextHeight,
       widthFactor: t.widthFactor,
@@ -141,7 +149,8 @@ export function toImportPayload(db: DwgDatabase, version?: string): DwgImportPay
       standardFlag: t.standardFlag,
       pattern: (t.pattern ?? []).map((x) => ({ elementLength: x.elementLength, elementTypeFlag: x.elementTypeFlag })),
     })),
-    layouts: (db.objects?.LAYOUT ?? []).map((l) => ({ name: l.layoutName, tabOrder: l.tabOrder, blockHandle: String(l.paperSpaceTableId ?? ''), minLimit: l.minLimit, maxLimit: l.maxLimit })),
+    layouts: (db.objects?.LAYOUT ?? []).map((l) => ({ name: l.layoutName, tabOrder: l.tabOrder, blockHandle: String(l.paperSpaceTableId ?? ''), minLimit: l.minLimit, maxLimit: l.maxLimit, ...((l as unknown as { paperWidth?: number }).paperWidth !== undefined ? { plotSettings: l as unknown as DwgPayloadLayout['plotSettings'] } : {}) })),
+    omittedObjectTypes: Object.fromEntries(Object.entries(db.objects ?? {}).filter(([kind]) => !['LAYOUT', 'IMAGEDEF', 'IMAGEDEF_REACTOR'].includes(kind)).map(([kind, values]) => [kind, Array.isArray(values) ? values.length : 1])),
   };
 }
 
@@ -272,17 +281,40 @@ interface DwgHatchLike {
   boundaryPaths?: DwgHatchPath[];
 }
 
-const deg2rad = (d: number) => (d * Math.PI) / 180;
+const deg2rad = (d: number) => d * (Math.PI / 180);
+
+const MAX_HATCH_EDGE_SAMPLES = 64;
+class HatchGeometryError extends Error {}
+const finiteHatchPoint = (pt: Point): Point => {
+  if (!Number.isFinite(pt.x) || !Number.isFinite(pt.y)) throw new HatchGeometryError('non-finite coordinate derived from hatch boundary data');
+  return pt;
+};
+/** Reduce endpoints individually before subtraction; large finite angles cannot overflow a sweep. */
+function hatchEdgeArc(edge: DwgHatchEdge & { isCCW?: number | boolean }): { a0: number; sweep: number } {
+  const start = angleRad(edge.startAngle);
+  const end = angleRad(edge.endAngle ?? 2 * Math.PI);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) throw new HatchGeometryError('non-finite hatch boundary angle');
+  const ccw = edge.isCCW ?? edge.isCounterClockwise;
+  return edgeArc(g.deg(g.normAngle(start)), g.deg(g.normAngle(end)), ccw === undefined ? true : Boolean(ccw));
+}
+const hatchEdgeSamples = (sweep: number, minimum: number, perTurn: number): number => Math.max(minimum, Math.min(MAX_HATCH_EDGE_SAMPLES, Math.ceil(Math.abs(sweep) / (2 * Math.PI) * perTurn)));
+function checkHatchArc(center: Point, radius: number): void {
+  finiteHatchPoint(center);
+  if (!Number.isFinite(radius) || radius < 0) throw new HatchGeometryError('invalid hatch boundary radius');
+  finiteHatchPoint({ x: center.x + radius, y: center.y + radius });
+  finiteHatchPoint({ x: center.x - radius, y: center.y - radius });
+}
 
 /** Points of one hatch boundary path (polyline paths keep their bulges; edge paths are sampled). */
 function hatchPathGeometry(path: DwgHatchPath): { points: Point[]; bulges?: number[] } | null {
   if (path.vertices && path.vertices.length >= 2) {
-    const points = path.vertices.map((v) => p2(v));
+    const points = path.vertices.map((v) => finiteHatchPoint(p2(v)));
     const bulges = path.vertices.map((v) => v.bulge ?? 0);
     return { points, bulges: bulges.some((b) => Math.abs(b) > 1e-12) ? bulges : undefined };
   }
   const points: Point[] = [];
   const push = (pt: Point) => {
+    finiteHatchPoint(pt);
     const last = points[points.length - 1];
     if (!last || !g.eq(last, pt)) points.push(pt);
   };
@@ -294,17 +326,11 @@ function hatchPathGeometry(path: DwgHatchPath): { points: Point[]; bulges?: numb
         break;
       case 2: {
         if (!ed.center || ed.radius === undefined) break;
-        // Angles come in degrees in DXF-style payloads; radians are unlikely to exceed 2*pi.
-        const toRad = (v: number) => (Math.abs(v) > 2 * Math.PI + 1e-6 ? deg2rad(v) : v);
-        let s0 = toRad(ed.startAngle ?? 0);
-        let e0 = toRad(ed.endAngle ?? 2 * Math.PI);
-        const ccw = ed.isCounterClockwise === undefined ? true : Boolean(ed.isCounterClockwise);
-        if (!ccw) [s0, e0] = [-s0, -e0];
-        let sweep = e0 - s0;
-        if (sweep <= 1e-9) sweep += 2 * Math.PI;
-        const n = Math.max(4, Math.ceil((sweep / (2 * Math.PI)) * 32));
+        checkHatchArc(ed.center, ed.radius);
+        const { a0, sweep } = hatchEdgeArc(ed);
+        const n = hatchEdgeSamples(sweep, 4, 32);
         for (let i = 0; i <= n; i += 1) {
-          const t = s0 + (sweep * i) / n;
+          const t = a0 + (sweep * i) / n;
           push({ x: ed.center.x + ed.radius * Math.cos(t), y: ed.center.y + ed.radius * Math.sin(t) });
         }
         break;
@@ -312,14 +338,11 @@ function hatchPathGeometry(path: DwgHatchPath): { points: Point[]; bulges?: numb
       case 3: {
         if (!ed.center || !ed.majorAxis) break;
         const ratio = ed.minorAxisRatio ?? 1;
-        const s0 = ed.startAngle ?? 0;
-        const e0 = ed.endAngle ?? 2 * Math.PI;
-        let sweep = e0 - s0;
-        if (sweep <= 1e-9) sweep += 2 * Math.PI;
-        const n = Math.max(8, Math.ceil((sweep / (2 * Math.PI)) * 48));
-        const minor = { x: -ed.majorAxis.y * ratio, y: ed.majorAxis.x * ratio };
+        const { a0, sweep } = hatchEdgeArc(ed);
+        const n = hatchEdgeSamples(sweep, 8, 48);
+        const minor = finiteHatchPoint({ x: -ed.majorAxis.y * ratio, y: ed.majorAxis.x * ratio });
         for (let i = 0; i <= n; i += 1) {
-          const t = s0 + (sweep * i) / n;
+          const t = a0 + (sweep * i) / n;
           push({ x: ed.center.x + ed.majorAxis.x * Math.cos(t) + minor.x * Math.sin(t), y: ed.center.y + ed.majorAxis.y * Math.cos(t) + minor.y * Math.sin(t) });
         }
         break;
@@ -368,6 +391,8 @@ function convertSpline(s: DwgSplineEntity, base: Base): SplineEntity | null {
   const tan = (t: { x: number; y: number } | undefined) => (t && (t.x !== 0 || t.y !== 0) ? p2(t) : undefined);
   const st = tan(s.startTangent);
   const et = tan(s.endTangent);
+  const workProblem = splineWorkProblem({ degree: Math.max(1, s.degree || 3), knots: s.knots ?? [], controlPoints: cps }, fit.length, { closed: ((s.flag ?? 0) & 1) === 1, startTangent: st, endTangent: et });
+  if (workProblem) throw new SplineWorkLimitError(workProblem);
   return {
     ...base,
     type: 'spline',
@@ -400,7 +425,7 @@ interface DwgHatchEdgeAny extends DwgHatchEdge {
 
 function hatchLoopFromPath(path: DwgHatchPath): HatchLoop | null {
   if (path.vertices && path.vertices.length >= 2) {
-    const points = path.vertices.map((v) => p2(v));
+    const points = path.vertices.map((v) => finiteHatchPoint(p2(v)));
     const bulges = path.vertices.map((v) => v.bulge ?? 0);
     return { points, ...(bulges.some((b) => Math.abs(b) > 1e-12) ? { bulges } : {}) };
   }
@@ -410,11 +435,12 @@ function hatchLoopFromPath(path: DwgHatchPath): HatchLoop | null {
     const ccw = ccwRaw === undefined ? true : Boolean(ccwRaw);
     switch (raw.type) {
       case 1:
-        if (raw.start && raw.end) b.segment(p2(raw.start), p2(raw.end), 0);
+        if (raw.start && raw.end) b.segment(finiteHatchPoint(p2(raw.start)), finiteHatchPoint(p2(raw.end)), 0);
         break;
       case 2: {
         if (!raw.center || raw.radius === undefined) break;
-        const { a0, sweep } = edgeArc(g.deg(angleRad(raw.startAngle)), g.deg(angleRad(raw.endAngle ?? 2 * Math.PI)), ccw);
+        checkHatchArc(raw.center, raw.radius);
+        const { a0, sweep } = hatchEdgeArc({ ...raw, isCCW: ccw });
         b.arc(p2(raw.center), raw.radius, a0, sweep);
         break;
       }
@@ -422,13 +448,13 @@ function hatchLoopFromPath(path: DwgHatchPath): HatchLoop | null {
         const major = raw.majorAxis ?? raw.end;
         if (!raw.center || !major) break;
         const ratio = raw.minorAxisRatio ?? raw.lengthOfMinorAxis ?? 1;
-        const { a0, sweep } = edgeArc(g.deg(angleRad(raw.startAngle)), g.deg(angleRad(raw.endAngle ?? 2 * Math.PI)), ccw);
-        const minor = { x: -major.y * ratio, y: major.x * ratio };
-        const steps = Math.max(8, Math.ceil((Math.abs(sweep) / (2 * Math.PI)) * 64));
+        const { a0, sweep } = hatchEdgeArc({ ...raw, isCCW: ccw });
+        const minor = finiteHatchPoint({ x: -major.y * ratio, y: major.x * ratio });
+        const steps = hatchEdgeSamples(sweep, 8, 64);
         const pts: Point[] = [];
         for (let i = 0; i <= steps; i += 1) {
           const t = a0 + (sweep * i) / steps;
-          pts.push({ x: raw.center.x + major.x * Math.cos(t) + minor.x * Math.sin(t), y: raw.center.y + major.y * Math.cos(t) + minor.y * Math.sin(t) });
+          pts.push(finiteHatchPoint({ x: raw.center.x + major.x * Math.cos(t) + minor.x * Math.sin(t), y: raw.center.y + major.y * Math.cos(t) + minor.y * Math.sin(t) }));
         }
         b.polyline(pts);
         break;
@@ -437,8 +463,10 @@ function hatchLoopFromPath(path: DwgHatchPath): HatchLoop | null {
         const cps = (raw.controlPoints ?? []).map((q) => p2(q));
         const fit = (raw.fitDatum?.length ? raw.fitDatum : raw.fitPoints ?? []).map((q) => p2(q));
         const curve = { degree: raw.degree ?? 3, knots: raw.knots ?? [], controlPoints: cps };
+        const workProblem = splineWorkProblem(curve, fit.length, {}, 8);
+        if (workProblem) throw new SplineWorkLimitError(workProblem);
         const pts = isValidNurbs(curve) ? nurbsPoints(curve, 8) : fit.length >= 2 ? nurbsPoints(interpolateFitPoints(fit) ?? curve, 8) : cps;
-        b.polyline(pts);
+        b.polyline(pts.map(finiteHatchPoint));
         break;
       }
       default:
@@ -717,7 +745,7 @@ function convertEntity(e: DwgEntity, blockIndex: Map<string, string>, dimStyle: 
       let position = useEnd ? p2(t.endPoint) : p2(t.startPoint);
       const drop = v === 2 ? height / 2 : v === 3 ? height : 0;
       if (drop) position = { x: position.x + Math.sin(rotation) * drop, y: position.y - Math.cos(rotation) * drop };
-      return { ...base, type: 'text', position, ...textWithField(t.text ?? ''), height, rotation, align };
+      return { ...base, type: 'text', position, ...textWithField(t.text ?? ''), height, rotation, align, ...(t.styleName && !/^standard$/i.test(t.styleName) ? { style: t.styleName } : {}), ...(t.xScale && t.xScale !== 1 ? { widthFactor: t.xScale } : {}) };
     }
     case 'MTEXT': {
       const m = e as DwgMTextEntity;
@@ -739,6 +767,8 @@ function convertEntity(e: DwgEntity, blockIndex: Map<string, string>, dimStyle: 
         rotation: rot,
         attachment: ap,
         lineSpacing: m.lineSpacing && m.lineSpacing > 0 ? m.lineSpacing : 1,
+        ...(m.styleName && !/^standard$/i.test(m.styleName) ? { style: m.styleName } : {}),
+        ...((m.columnType === 1 || m.columnType === 2) && m.columnWidth > 0 && m.columnHeightCount > 0 && m.columnHeightCount <= 256 ? { columns: { type: m.columnType as 1 | 2, count: m.columnHeightCount, width: m.columnWidth, gutter: Math.max(0, m.columnGutter ?? 0), autoHeight: !!m.columnAutoHeight, reversed: !!m.columnFlowReversed, heights: (m.columnHeights ?? []).slice(0, m.columnHeightCount) } } : {}),
       };
     }
     case 'ELLIPSE': {
@@ -774,7 +804,15 @@ function convertEntity(e: DwgEntity, blockIndex: Map<string, string>, dimStyle: 
     }
     case 'DIMENSION': {
       const named = (e as { styleName?: string }).styleName;
-      return convertDimension(e as DwgDimensionEntity, base, (named && extras?.dimStyles?.get(named.toUpperCase())) || dimStyle);
+      let style = (named && extras?.dimStyles?.get(named.toUpperCase())) || dimStyle;
+      if (e.xdata?.appName === 'ACAD') {
+        const flat = e.xdata.value.flatMap((v) => Array.isArray(v.value) ? v.value : [v]);
+        const start = flat.findIndex((v) => v.value === 'DSTYLE');
+        const pairs: Array<readonly [number, number | string]> = [];
+        for (let i = start + 1; start >= 0 && i + 1 < flat.length; i += 1) if (flat[i]!.code === 1070 && typeof flat[i]!.value === 'number' && !Array.isArray(flat[i + 1]!.value)) { pairs.push([flat[i]!.value as number, flat[i + 1]!.value as number | string]); i += 1; }
+        if (pairs.length) style = dimStyleFromRecordPairs(style.name, pairs, style);
+      }
+      return convertDimension(e as DwgDimensionEntity, base, style);
     }
     case 'INSERT': {
       const i = e as DwgInsertEntity;
@@ -854,6 +892,8 @@ function convertStyles(styles: readonly DwgPayloadStyle[], report: ImportReportB
       generation: t.textGenerationFlag ?? 0,
     };
     if (!t.fixedTextHeight) fixedHeights += 1;
+    const fontWarning = fontImportWarning(out[t.name]!);
+    if (fontWarning) report.add({ type: 'STYLE', action: 'unsupported', reason: fontWarning });
   }
   // LibreDWG does not decode a style's fixed text height (it always reports 0).
   if (fixedHeights && styles.some((t) => t.name && !/^standard$/i.test(t.name))) {
@@ -899,7 +939,8 @@ function convertLayouts(
 ): Layout[] | undefined {
   const units = unitsOfHost(host);
   const out: Array<{ layout: Layout; tab: number }> = [];
-  let floating = 0;
+  let unknownFrozen = 0;
+  const layerNames = new Map(payload.layers.flatMap((l) => l.handle ? [[l.handle.toUpperCase(), l.name] as const] : []));
   for (const lo of payload.layouts ?? []) {
     if (!lo.name || /^model$/i.test(lo.name)) continue;
     const block = payload.blocks.find((b) => b.handle && String(b.handle).toUpperCase() === lo.blockHandle.toUpperCase());
@@ -928,7 +969,7 @@ function convertLayouts(
     for (const e of block?.entities ?? []) {
       if (e.type === 'ATTRIB' || e.type === 'ATTDEF') continue;
       if (e.type === 'VIEWPORT') {
-        const v = e as DwgEntity & { viewportId?: number; viewportCenter?: { x: number; y: number }; width?: number; height?: number; displayCenter?: { x: number; y: number }; viewHeight?: number; statusBitFlags?: number; clippingBoundaryId?: string; viewTwistAngle?: number };
+        const v = e as DwgEntity & { viewportId?: number; viewportCenter?: { x: number; y: number }; width?: number; height?: number; displayCenter?: { x: number; y: number }; viewHeight?: number; statusBitFlags?: number; clippingBoundaryId?: string; viewTwistAngle?: number; frozenLayerIds?: string[]; frozenLayers?: string[] };
         if (e === overall) continue; // the overall paper-space viewport
         const vw = v.width ?? 0;
         const vh = v.height ?? 0;
@@ -941,7 +982,9 @@ function convertLayouts(
         if (v.clippingBoundaryId && v.clippingBoundaryId !== '0') report.add({ ...item, action: 'simplified', reason: 'its clipping boundary is not kept: the viewport shows its whole rectangle' });
         if (v.viewTwistAngle && Math.abs(v.viewTwistAngle) > 1e-9) report.add({ ...item, action: 'simplified', reason: 'its twisted view is shown untwisted' });
         const flags = v.statusBitFlags ?? 0;
-        floating += 1;
+        const frozen = v.frozenLayers ?? v.frozenLayerIds?.map((id) => layerNames.get(String(id).toUpperCase()) ?? (payload.layers.some((l) => l.name === id) ? id : undefined)).filter((n): n is string => !!n);
+        if (!v.frozenLayers && !v.frozenLayerIds) unknownFrozen += 1;
+        else if (v.frozenLayerIds && frozen?.length !== v.frozenLayerIds.length) report.add({ ...item, action: 'simplified', reason: 'some frozen layer handles could not be resolved; the resolved frozen layers are kept' });
         viewports.push({
           id: newViewportId(),
           center: { x: (v.viewportCenter?.x ?? 0) + offset.x, y: (v.viewportCenter?.y ?? 0) + offset.y },
@@ -950,26 +993,29 @@ function convertLayouts(
           view: { center: p2(v.displayCenter), scale: vh / viewHeight, ...(flags & DWG_VP_LOCKED ? { locked: true } : {}) },
           layer: e.layer || '0',
           on: !(flags & DWG_VP_OFF),
+          ...(frozen?.length ? { frozenLayers: frozen } : {}),
         });
         continue;
       }
       const c = convert(e, where);
       if (c) entities.push(offset.x || offset.y ? translateEntity(c, offset) : c);
     }
+    const ps = lo.plotSettings;
+    const plotPaper = ps && (ps.paperWidth ?? 0) > 0 && (ps.paperHeight ?? 0) > 0 ? paperFromSize(ps.paperWidth!, ps.paperHeight!, ps.plotPaperUnit === 0 ? 'in' : 'mm', ps.plotRotation === 1 || ps.plotRotation === 3 ? 'landscape' : 'portrait') : null;
     const layout: Layout = {
       name: lo.name,
-      paper,
-      plotScale: '1:1',
-      margins: uniformMargins(margin),
+      paper: plotPaper ?? paper,
+      plotScale: ps?.printScaleNominator && ps.printScaleDenominator ? `${ps.printScaleNominator}:${ps.printScaleDenominator}` : '1:1',
+      margins: ps ? { left: ps.marginLeft ?? margin, bottom: ps.marginBottom ?? margin, right: ps.marginRight ?? margin, top: ps.marginTop ?? margin } : uniformMargins(margin),
       entities,
       viewports,
       plotStyle: 'monochrome',
       ...(entities.length === 0 && viewports.length === 0 ? { pristine: true } : {}),
     };
     out.push({ layout, tab: lo.tabOrder ?? out.length + 1 });
-    report.add({ type: 'LAYOUT', action: 'unsupported', where, reason: 'page setup (plot device, plot scale, plot style) is not exposed by the DWG reader: the paper size is taken from the layout limits' });
+    report.add({ type: 'LAYOUT', action: 'unsupported', where, reason: ps ? 'exposed page size, margins and scale are kept; plot device and external plot style tables are not retained' : 'page setup (plot device, plot scale, plot style) is not exposed by the DWG reader: the paper size is taken from the layout limits' });
   }
-  if (floating) report.add({ type: 'VIEWPORT', action: 'unsupported', reason: `layers frozen in individual viewports (VPLAYER) are not exposed by the DWG reader: ${floating} viewport(s) show every layer` });
+  if (unknownFrozen) report.add({ type: 'VIEWPORT', action: 'unsupported', reason: `layers frozen in individual viewports (VPLAYER) are not exposed by the DWG reader: ${unknownFrozen} viewport(s) show every layer` });
   out.sort((a, b) => a.tab - b.tab);
   const layouts = out.map((o) => o.layout);
   if (layouts.length === 0) return undefined;
@@ -993,9 +1039,9 @@ function dimStyleFromVars(h: Record<string, unknown>, name: string): DimStyle {
     textGap: num('DIMGAP', STANDARD_DIMSTYLE.textGap),
     centerMark: num('DIMCEN', STANDARD_DIMSTYLE.centerMark),
     scale: num('DIMSCALE', 1) || 1,
-    decimals: Math.max(0, Math.trunc(num('DIMDEC', 4))),
+    decimals: cadPrecision(num('DIMDEC', 4), 4),
     lunit: (dimlunit >= 1 && dimlunit <= 5 ? dimlunit : 2) as LinearUnits,
-    angularDecimals: Math.max(0, Math.trunc(num('DIMADEC', 0))),
+    angularDecimals: num('DIMADEC', 0) === -1 ? -1 : cadPrecision(num('DIMADEC', 0)),
   };
   // The rest of the DIM* variables (arrows, tolerances, alternate units, text placement, colours ...)
   // when LibreDWG provides them. Colours may come as a number or as a { index } colour object.
@@ -1023,11 +1069,14 @@ function readHeader(h: DwgImportPayload['header']): DrawingHeader {
     ...DEFAULT_HEADER,
     units: {
       lunits: (lunits >= 1 && lunits <= 5 ? lunits : 2) as LinearUnits,
-      luprec: Math.max(0, Math.trunc(num('LUPREC', 4))),
+      luprec: cadPrecision(num('LUPREC', 4), 4),
       insunits: Math.trunc(num('INSUNITS', 1)),
-      auprec: Math.max(0, Math.trunc(num('AUPREC', 0))),
+      auprec: cadPrecision(num('AUPREC', 0)),
+      ...(typeof h.AUNITS === 'number' && Number.isFinite(h.AUNITS) ? { aunits: h.AUNITS } : {}),
     },
     ltscale: num('LTSCALE', 1) || 1,
+    ...(typeof h.CELTSCALE === 'number' && Number.isFinite(h.CELTSCALE) ? { celtscale: h.CELTSCALE } : {}),
+    ...(typeof h.TEXTSTYLE === 'string' && h.TEXTSTYLE ? { textStyle: h.TEXTSTYLE } : {}),
     limits: { min: pt('LIMMIN', DEFAULT_HEADER.limits.min), max: pt('LIMMAX', DEFAULT_HEADER.limits.max) },
     pdmode: Math.trunc(num('PDMODE', 0)),
     pdsize: num('PDSIZE', 0),
@@ -1037,15 +1086,47 @@ function readHeader(h: DwgImportPayload['header']): DrawingHeader {
 }
 
 export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null): DwgImportResult {
+  let records = payload.entities.length + payload.layers.length + payload.blocks.length;
+  for (const block of payload.blocks) records += block.entities.length;
+  if (records > 250_000) throw new Error('DWG exceeds the import record limit (250000).');
+  let metadataNodes = 0, stringLength = 0;
+  const checkStrings = (value: unknown, depth = 0): void => {
+    if (++metadataNodes > 2_000_000) throw new Error('DWG metadata exceeds the import allocation budget.');
+    if (typeof value === 'string' && value.length > 1024 * 1024) throw new Error('DWG value exceeds the import string length limit (1048576).');
+    if (typeof value === 'string' && (stringLength += value.length) > 64 * 1024 * 1024) throw new Error('DWG strings exceed the total import size limit.');
+    if (depth > 64) throw new Error('DWG metadata nesting exceeds the import limit.');
+    if (value && typeof value === 'object') for (const entry of Object.values(value)) checkStrings(entry, depth + 1);
+  };
+  checkStrings(payload);
   const skipped: Record<string, number> = {};
   const notes: string[] = [];
   const report = new ImportReportBuilder();
-  const baseHeader = readHeader(payload.header ?? {});
+  for (const source of [payload.header, ...(payload.dimStyles ?? [])]) for (const name of ['DIMDEC', 'DIMADEC', 'DIMALTD', 'DIMTDEC', 'LUPREC', 'AUPREC']) {
+    if (source[name] === undefined) continue;
+    const value = Number(source[name]);
+    if (!Number.isInteger(value) || value < (name === 'DIMADEC' ? -1 : 0) || value > 8) report.add({ type: source === payload.header ? 'HEADER' : 'DIMSTYLE', action: 'simplified', reason: `${name} precision ${String(source[name]).slice(0, 40)} is outside its valid range; a bounded display precision is used` });
+  }
+  const supportedDimNames = new Set([...DIM_VARIABLES.map((v) => v.name), 'DIMSTYLE', 'DIMTOL', 'DIMLIM', 'DIMTIH', 'DIMTOH', 'DIMZIN', 'DIMSAH', 'DIMBLK']);
+  for (const source of [payload.header, ...(payload.dimStyles ?? [])]) {
+    const unsupported = Object.entries(source).filter(([name, value]) => name.startsWith('DIM') && !supportedDimNames.has(name) && value !== '' && Number(value) !== 0).map(([name]) => name);
+    if (unsupported.length) report.add({ type: source === payload.header ? 'HEADER' : 'DIMSTYLE', action: 'simplified', reason: `${unsupported.join(', ')} settings exposed by the DWG reader are not modeled or written back; supported dimension variables are kept` });
+  }
+  report.add({ type: 'XDATA', action: 'unsupported', reason: 'the DWG reader may omit application XDATA, extension dictionaries, fields and dynamic parameters; these cannot be guaranteed on DXF save. Compare a source DXF export when metadata fidelity matters' });
+  for (const [type, count] of Object.entries(payload.omittedObjectTypes ?? {})) if (count > 0) report.add({ type, action: 'dropped', reason: `${count} object metadata record(s) exposed by the DWG reader are not retained in the drawing model` });
+  const currentStyleName = typeof payload.header.DIMSTYLE === 'string' ? payload.header.DIMSTYLE : 'Standard';
+  const currentStyleRecord = payload.dimStyles?.find((s) => s.name.toUpperCase() === currentStyleName.toUpperCase());
+  const styleByHandle = new Map((payload.styles ?? []).flatMap((s) => s.handle ? [[s.handle.toUpperCase(), s.name] as const] : []));
+  const mergedHeader = { ...currentStyleRecord, ...payload.header };
+  const currentTextStyle = mergedHeader.DIMTXSTY === undefined ? undefined : styleByHandle.get(String(mergedHeader.DIMTXSTY).toUpperCase());
+  const baseHeader = readHeader({ ...mergedHeader, ...(currentTextStyle ? { DIMTXSTY: currentTextStyle } : {}) });
   const linetypes = convertLinetypes(payload.linetypes ?? [], report);
   const header: DrawingHeader = linetypes.length ? { ...baseHeader, linetypes } : baseHeader;
   // Named dimension styles: the DIMSTYLE records; the current one is the header's DIM* variables.
   const dimStyles = new Map<string, DimStyle>();
-  for (const d of payload.dimStyles ?? []) if (d.name) dimStyles.set(d.name.toUpperCase(), dimStyleFromVars(d, d.name));
+  for (const d of payload.dimStyles ?? []) if (d.name) {
+    const textStyle = d.DIMTXSTY === undefined ? undefined : styleByHandle.get(String(d.DIMTXSTY).toUpperCase());
+    dimStyles.set(d.name.toUpperCase(), dimStyleFromVars({ ...d, ...(textStyle ? { DIMTXSTY: textStyle } : {}) }, d.name));
+  }
   if (dimStyles.has(header.dimStyle.name.toUpperCase())) dimStyles.set(header.dimStyle.name.toUpperCase(), header.dimStyle);
   /** An entity the converter could not use: counted and listed in the import report. */
   const skip = (e: DwgEntity, where: string, reason?: string) => {
@@ -1057,13 +1138,27 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
    * anything not converted is counted and listed in the report.
    */
   const convertChecked = (e: DwgEntity, where: string, blockDefs: Record<string, BlockDef> | undefined, extras: ConvertExtras): Entity | null => {
-    const c = convertEntity(e, blockIndex, header.dimStyle, blockDefs, extras);
+    const previousNotes = extras.notes.length;
+    let c: Entity | null;
+    try {
+      c = convertEntity(e, blockIndex, header.dimStyle, blockDefs, extras);
+    } catch (err) {
+      if (!(err instanceof SplineWorkLimitError)) throw err;
+      skip(e, where, err.message);
+      return null;
+    }
     if (!c) {
       skip(e, where, e.type === 'DIMENSION' ? 'this dimension type is not supported (ordinate dimensions, or unreadable definition points)' : DWG_CONVERTED_TYPES.has(e.type) ? 'its data is incomplete or of a variant that is not supported' : undefined);
       return null;
     }
     const bad = geometryProblem(c);
     if (!bad) {
+      const item = { type: e.type, ...(e.handle ? { handle: String(e.handle) } : {}), layer: e.layer || '0', where };
+      for (const note of extras.notes.slice(previousNotes)) report.add({ ...item, action: 'simplified', reason: note });
+      if (e.xdata) report.add({ ...item, action: 'simplified', reason: `application XDATA (${e.xdata.appName || 'unnamed'}) is not written back; supported DSTYLE values are applied to dimensions` });
+      if (e.transparency || e.colorName) report.add({ ...item, action: 'simplified', reason: 'transparency/color-book names are not kept; RGB/ACI color is kept' });
+      if (c.type === 'mtext' && c.columns) report.add({ ...item, action: 'simplified', reason: 'MTEXT column definitions are kept in JCAD_MTEXT_COLUMNS for JCad reimport; external CAD displays one column in AutoCAD 2000 export' });
+      if (e.type === 'MTEXT' && (e as DwgMTextEntity).backgroundFill) report.add({ ...item, action: 'simplified', reason: 'MTEXT background fill is not kept' });
       if (e.type === 'POLYLINE3D') report.add({ type: e.type, action: 'simplified', reason: '3D polyline: flattened to its XY projection', ...(e.handle ? { handle: String(e.handle) } : {}), layer: e.layer || '0', where });
       return c;
     }
@@ -1099,16 +1194,27 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
     return { annotations, imageDefs, notes: [], consumed: new Set(annotations.values()), dimStyles };
   };
   /** HATCH: a real hatch entity; outline polylines when the boundary cannot be rebuilt. */
-  const hatchOf = (e: DwgEntity): Entity[] => {
+  const hatchOf = (e: DwgEntity, where: string): { parts: Entity[]; reason?: string } => {
     try {
       const h = convertHatchEntity(e);
-      if (h) return [h];
-    } catch {
+      if (h && !geometryProblem(h)) {
+        if (h.associative) report.add({ type: 'HATCH', action: 'simplified', handle: String(e.handle ?? ''), where, reason: 'associative boundary links are not kept; hatch geometry is kept and saved non-associative' });
+        return { parts: [h] };
+      }
+    } catch (err) {
+      if (err instanceof HatchGeometryError) return { parts: [], reason: `invalid geometry: ${err.message}` };
+      if (err instanceof SplineWorkLimitError) return { parts: [], reason: err.message };
       /* fall back to outlines */
     }
-    const parts = convertHatch(e);
-    if (parts.length) noteSet.add('HATCH: some hatch boundaries could not be rebuilt and were imported as outlines.');
-    return parts;
+    let parts: Entity[];
+    try {
+      parts = convertHatch(e);
+    } catch (err) {
+      if (err instanceof HatchGeometryError) return { parts: [], reason: `invalid geometry: ${err.message}` };
+      throw err;
+    }
+    if (parts.length) { noteSet.add('HATCH: some hatch boundaries could not be rebuilt and were imported as outlines.'); report.add({ type: 'HATCH', action: 'simplified', handle: String(e.handle ?? ''), where, reason: 'some hatch boundaries could not be rebuilt; imported as outlines' }); }
+    return { parts: parts.filter((part) => !geometryProblem(part)) };
   };
 
   const blocks: Record<string, BlockDef> = {};
@@ -1124,9 +1230,9 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
         continue;
       }
       if (e.type === 'HATCH') {
-        const parts = hatchOf(e);
+        const { parts, reason } = hatchOf(e, `block "${b.name}"`);
         if (parts.length) entities.push(...parts);
-        else skip(e, `block "${b.name}"`, 'the hatch boundary could not be read');
+        else skip(e, `block "${b.name}"`, reason ?? 'the hatch boundary could not be read');
         continue;
       }
       const c = convertChecked(e, `block "${b.name}"`, undefined, bx);
@@ -1137,6 +1243,7 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
     const isXref = ((b.flags ?? 0) & 4) === 4;
     blocks[name] = { name, basePoint: p2(b.basePoint), entities, attributes, description: b.description || undefined, ...(isXref ? { xref: { path: b.name, ...(((b.flags ?? 0) & 8) === 8 ? { overlay: true } : {}) } } : {}) };
     if (isXref) noteSet.add(`XREF ${b.name}: the reference is kept, but the DWG reader does not expose its file path (the block name is used).`);
+    if (isXref) report.add({ type: 'XREF', action: 'simplified', reason: `external reference "${b.name}" file path is not exposed; the block name is used as an estimate` });
   }
 
   // ACAD_TABLE entities draw through an anonymous *T<n> block that holds the rendered grid and
@@ -1175,15 +1282,18 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
     if (e.type === 'ATTDEF' || e.type === 'VIEWPORT' || e.type === 'ATTRIB') continue; // ATTRIBs are folded into their INSERTs
     if (mx.consumed.has(e)) continue; // a LEADER's MTEXT, merged into the leader
     if (e.type === 'HATCH') {
-      const parts = hatchOf(e);
+      const { parts, reason } = hatchOf(e, 'model space');
       if (parts.length) entities.push(...parts);
-      else skip(e, 'model space', 'the hatch boundary could not be read');
+      else skip(e, 'model space', reason ?? 'the hatch boundary could not be read');
       continue;
     }
     if (e.type === 'ACAD_TABLE') {
       const native = convertTable(e);
       if (native) {
+        const bad = geometryProblem(native);
+        if (bad) { skip(e, 'model space', `invalid geometry: ${bad}`); continue; }
         entities.push(native);
+        report.add({ type: 'ACAD_TABLE', action: 'simplified', ...(e.handle ? { handle: String(e.handle) } : {}), layer: e.layer || '0', where: 'model space', reason: 'table cells and sizes are kept; native table editing, formulas and advanced cell/style formatting are not modeled, and export uses an INSERT picture with JCAD_TABLE data' });
         // Its *T block is no longer drawn.
         const bh = (e as unknown as { blockRecordHandle?: string }).blockRecordHandle;
         const bname = bh ? tableBlocksByHandle.get(String(bh).toUpperCase()) : undefined;
@@ -1195,7 +1305,7 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
         continue;
       }
       const ins = tableInsert(e);
-      if (ins) entities.push(ins);
+      if (ins) { entities.push(ins); report.add({ type: 'ACAD_TABLE', action: 'simplified', handle: String(e.handle ?? ''), where: 'model space', reason: 'unreadable cell data is replaced by its anonymous picture block; table editing, formulas and cell metadata are lost' }); }
       else skip(e, 'model space', 'the table data and its block could not be read');
       continue;
     }
@@ -1243,6 +1353,7 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
       const idx = entities.indexOf(ins);
       entities[idx] = { ...ins, position: { x: ins.position.x + (target.x - tb.min.x), y: ins.position.y + (target.y - tb.min.y) } };
       notes.push(`Table ${ins.block}: this DWG format does not expose the table's position to the reader, so it was placed ${where} (estimated). MOVE it to its spot; a DXF saved from AutoCAD keeps the exact position.`);
+      report.add({ type: 'ACAD_TABLE', action: 'simplified', where: 'model space', reason: `table ${ins.block} position was estimated ${where}; the DWG reader did not expose the insertion point` });
     }
   }
 
@@ -1260,6 +1371,7 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
       ...(l.colorIndex === 256 && typeof l.color === 'number' ? { trueColor: l.color & 0xffffff } : {}),
       visible: !l.off && !l.frozen,
       ...(l.frozen ? { frozen: true } : {}),
+      ...((l.standardFlag ?? 0) & 48 ? { xrefFlags: (l.standardFlag ?? 0) & 48 } : {}),
       locked: typeof l.standardFlag === 'number' ? (l.standardFlag & 4) !== 0 : !!l.locked,
       lineWeight: lineweightMm(l.lineweight) ?? 0.25,
       linetype: l.lineType && !/^(continuous|bylayer)$/i.test(l.lineType) ? l.lineType : undefined,
@@ -1298,6 +1410,7 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
   notes.push(...noteSet);
   for (const [type, n] of Object.entries(skipped)) notes.push(`${type}: ${n} object(s) of this type are not supported and were skipped.`);
   for (const n of noteSet) report.note(n);
+  for (const n of notes) report.note(n);
   const styleMeta = textStylesMeta(convertStyles(payload.styles ?? [], report));
   const named = [...dimStyles.values()].filter((d) => !(d.name.toUpperCase() === 'STANDARD' && diffDimStyles(d, STANDARD_DIMSTYLE).length === 0));
   const meta: Record<string, unknown> = { ...(styleMeta ?? {}), ...(named.length ? { [DIMSTYLES_META_KEY]: Object.fromEntries(named.map((d) => [d.name, d])) } : {}) };

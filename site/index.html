@@ -55,7 +55,7 @@
         <div class="dl-grid">
           <article class="dl-card" data-os="win">
             <h3>Windows</h3>
-            <p>64-bit installer, updates itself in place.</p>
+            <p>64-bit installer, updates when you choose Restart Now.</p>
             <a class="btn" data-asset="win" href="{{project.releases}}">Windows installer (.exe)</a>
             <small class="dl-size" data-size="win"></small>
           </article>
@@ -73,7 +73,7 @@
           </article>
           <article class="dl-card" data-os="linux">
             <h3>Linux · AppImage</h3>
-            <p>Any distribution, no install, updates itself.</p>
+            <p>Any distribution, no install; replace manually to update.</p>
             <a class="btn" data-asset="linux-appimage" href="{{project.releases}}">AppImage (x86_64)</a>
             <small class="dl-size" data-size="linux-appimage"></small>
           </article>
@@ -95,7 +95,7 @@
             <li><strong>macOS:</strong> the app is signed with a Developer ID and notarized by Apple, so macOS only asks whether to open an app downloaded from the internet: click <em>Open</em>. Versions up to 0.4.1 were not notarized: for those, go to <em>System Settings › Privacy &amp; Security</em> and click <em>Open Anyway</em>. On macOS 11 or 12 keep version 0.4.1.</li>
             <li><strong>Linux:</strong> make the AppImage executable (<code>chmod +x jcad-electrical-*.AppImage</code>) or install the .deb with <code>sudo apt install ./jcad-electrical-*.deb</code>.</li>
           </ul>
-          <p>The app checks GitHub Releases for updates a few seconds after it starts and under <em>Help › Check for Updates</em>. Windows and AppImage builds update in place; macOS and .deb builds are told when a newer version exists.</p>
+          <p>The app checks GitHub Releases for updates a few seconds after it starts and under <em>Help › Check for Updates</em>. Signed Windows installers update when you choose <em>Restart Now</em>; unsigned Windows, macOS and all Linux builds offer a download for manual installation.</p>
         </div>
       </section>
 
@@ -191,7 +191,7 @@
           <article class="feature">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.7" /><path d="M20 4v5h-5" /></svg>
             <h3>Keeps itself current</h3>
-            <p>The desktop app checks GitHub Releases for updates and installs them in place on Windows and Linux AppImage. Help › Report a Problem prefills a GitHub issue with diagnostics.</p>
+            <p>The desktop app checks GitHub Releases for updates. Signed Windows installers update through Restart Now; other builds offer a download for manual installation. Help › Report a Problem prefills a GitHub issue with diagnostics.</p>
           </article>
           <article class="feature">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8l-5 4 5 4M16 8l5 4-5 4M14 4l-4 16" /></svg>

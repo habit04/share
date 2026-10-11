@@ -1,0 +1,50 @@
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { readDxf, writeDxf } from '../../src/io/dxf';
+import type { DrawingState } from '../../src/core/document';
+import type { DimensionEntity } from '../../src/core/entities';
+
+const sources = [
+  'tests/fixtures/interchange/r2000-dimensions.dxf',
+  'tests/fixtures/interchange/r2000-hatch-curves.dxf',
+  'fixtures/example_2000.dxf',
+  'tests/fixtures/interchange/r2000-layouts-titleblock.dxf',
+  'tests/fixtures/interchange/r2018-mtext.dxf',
+  'tests/fixtures/interchange/r2018-table.dxf',
+  'tests/fixtures/interchange/r2018-dimensions.dxf',
+];
+function summary(state: DrawingState) {
+  const counts = (entities: DrawingState['entities']) => entities.reduce<Record<string, number>>((out, entity) => {
+    out[entity.type] = (out[entity.type] ?? 0) + 1; return out;
+  }, {});
+  return { model: counts(state.entities), paper: (state.layouts ?? []).filter((layout) => layout.entities.length).map((layout) => ({ name: layout.name, entities: counts(layout.entities) })), ...(state.blocks.NESTED_DIM ? { nested: counts(state.blocks.NESTED_DIM.entities) } : {}) };
+}
+
+function nestedDimensionCase(repo: string): DrawingState {
+  const state = readDxf(readFileSync(join(repo, sources[0]!), 'utf8'));
+  const original = state.entities.find((entity): entity is DimensionEntity => entity.type === 'dimension');
+  if (!original) throw new Error('The committed dimension fixture must contain a dimension.');
+  const dimension: DimensionEntity = { ...original, id: 'nested-dimension', style: { ...original.style, tolerance: 'symmetrical', tolPlus: 0.1, tolDecimals: 2 } };
+  return { ...state, layouts: [], entities: [{ type: 'insert', id: 'nested-insert', layer: '0', color: 'ByLayer', position: { x: 10, y: 12 }, block: 'NESTED_DIM', scale: 2, rotation: 0, attributes: {} }], blocks: { NESTED_DIM: { name: 'NESTED_DIM', basePoint: { x: 0, y: 0 }, entities: [dimension], attributes: [] } } };
+}
+
+const [mode, repo, output] = process.argv.slice(2);
+if (!repo || !output) throw new Error('Missing AutoCAD export helper arguments.');
+if (mode === 'export') {
+  const cases = [...sources, 'generated:nested-dimension-overrides'].map((source, index) => {
+    const state = source.startsWith('generated:') ? nestedDimensionCase(repo) : readDxf(readFileSync(join(repo, source), 'utf8'));
+    const file = join(output, `jcad-${index}.dxf`);
+    writeFileSync(file, writeDxf(state));
+    return { source, file, expected: summary(state) };
+  });
+  writeFileSync(join(output, 'cases.json'), JSON.stringify(cases, null, 2));
+} else if (mode === 'check') {
+  const cases = JSON.parse(readFileSync(join(output, 'cases.json'), 'utf8')) as Array<{ expected: ReturnType<typeof summary> }>;
+  const results = cases.map((test, index) => {
+    const actual = summary(readDxf(readFileSync(join(output, `autocad-${index}.dxf`), 'utf8')));
+    const equal = (a: unknown, b: unknown) => JSON.stringify(a, (_key, value) => value && typeof value === 'object' && !Array.isArray(value) ? Object.fromEntries(Object.entries(value).sort(([x], [y]) => x.localeCompare(y))) : value) === JSON.stringify(b, (_key, value) => value && typeof value === 'object' && !Array.isArray(value) ? Object.fromEntries(Object.entries(value).sort(([x], [y]) => x.localeCompare(y))) : value);
+    return { index, expected: test.expected, actual, matched: equal(test.expected, actual) };
+  });
+  writeFileSync(join(output, 'roundtrip.json'), JSON.stringify(results, null, 2));
+  for (const result of results) if (!result.matched) throw new Error(`AutoCAD changed entity types/counts in case ${result.index}: ${JSON.stringify(result)}`);
+} else throw new Error('Unknown AutoCAD export helper mode.');

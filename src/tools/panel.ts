@@ -158,12 +158,12 @@ export class NameplateTool implements Tool {
     ctx.finish();
   }
   onText(_t: string, _c: ToolContext): void {}
-  onEnter(ctx: ToolContext): void {
+  onEnter(ctx: ToolContext): void | Promise<void> {
     if (this.picked) {
       ctx.finish();
       return;
     }
-    void this.ask('Nameplate', 'Legend text', '').then((v) => {
+    return this.ask('Nameplate', 'Legend text', '').then((v) => {
       if (v === null) {
         ctx.finish();
         return;
@@ -492,7 +492,7 @@ export function registerPanelCommands(editor: Editor): void {
   reg('AEFOOTPRINTALIGN', ['FOOTPRINTALIGN'], 'Panel: align selected footprints on a DIN rail with an even spacing', (ed) => ed.startTool(footprintAlignTool()));
   reg('AETERMFOOTPRINT', ['TERMFOOTPRINT', 'AETERMSTRIPFP'], 'Panel: insert the footprint of a terminal strip (terminals numbered from the terminal strip table)', (ed) => {
     // Project drawings are read through the electrical commands module (loaded on demand to keep the import graph acyclic).
-    void import('../app/commands-electrical').then(async ({ projectDocuments }) => {
+    return import('../app/commands-electrical').then(async ({ projectDocuments }) => {
       const docs = await projectDocuments(ed);
       const rows = docs.flatMap((d) => terminalStripTable(d.doc.entities, d.doc.lookupBlock));
       ed.startTool(terminalStripTool(rows));

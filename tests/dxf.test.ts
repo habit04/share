@@ -23,6 +23,41 @@ function sample(): Drawing {
 }
 
 describe('DXF round trip', () => {
+  it('writes drawing limits as 2D header points accepted by AutoCAD', () => {
+    const text = writeDxf(sample().snapshot);
+    for (const name of ['LIMMIN', 'LIMMAX']) {
+      expect(text).toMatch(new RegExp(`\\r\\n9\\r\\n\\$${name}\\r\\n10\\r\\n[-.\\d]+\\r\\n20\\r\\n[-.\\d]+\\r\\n9\\r\\n`));
+    }
+  });
+
+  it('resolves every layer plot-style handle to a dictionary-owned Normal placeholder', () => {
+    const lines = writeDxf(sample().snapshot).trimEnd().split(/\r?\n/);
+    const records: Array<Array<[number, string]>> = [];
+    let record: Array<[number, string]> = [];
+    for (let i = 0; i + 1 < lines.length; i += 2) {
+      const pair: [number, string] = [Number(lines[i]), lines[i + 1]!];
+      if (pair[0] === 0) { record = []; records.push(record); }
+      record.push(pair);
+    }
+    const value = (groups: Array<[number, string]>, code: number) => groups.find(([c]) => c === code)?.[1];
+    const byHandle = new Map(records.filter((groups) => value(groups, 5)).map((groups) => [value(groups, 5)!, groups]));
+    const layers = records.filter((groups) => value(groups, 0) === 'LAYER');
+    expect(layers.length).toBeGreaterThan(0);
+    for (const layer of layers) {
+      const target = value(layer, 390)!;
+      const placeholder = byHandle.get(target)!;
+      expect(value(placeholder, 0)).toBe('ACDBPLACEHOLDER');
+      const dictionary = byHandle.get(value(placeholder, 330)!)!;
+      expect(value(dictionary, 0)).toBe('ACDBDICTIONARYWDFLT');
+      expect(value(dictionary, 3)).toBe('Normal');
+      expect(value(dictionary, 350)).toBe(target);
+      expect(value(dictionary, 340)).toBe(target);
+      const root = byHandle.get(value(dictionary, 330)!)!;
+      const entry = root.findIndex(([code, name]) => code === 3 && name === 'ACAD_PLOTSTYLENAME');
+      expect(root[entry + 1]).toEqual([350, value(dictionary, 5)]);
+    }
+  });
+
   it('writes a DXF with the expected sections', () => {
     const text = writeDxf(sample().snapshot);
     expect(text).toContain('AC1015');
@@ -114,6 +149,19 @@ describe('DXF round trip', () => {
       // top-left attachment: baseline is one text height below the corner, along the rotated up-vector
       expect(t.position.x).toBeCloseTo(5 + Math.sin(Math.PI / 4) * 0.2, 3);
       expect(t.position.y).toBeCloseTo(6 - Math.cos(Math.PI / 4) * 0.2, 3);
+    }
+  });
+
+  it('separates optional MTEXT main fields from native and embedded column fields', () => {
+    const base = ['0', 'SECTION', '2', 'ENTITIES', '0', 'MTEXT', '10', '0', '20', '0', '40', '1', '41', '22', '1', 'ONE\\NTWO'];
+    const variants = [
+      { data: ['75', '1', '76', '2', '48', '10', '49', '2', '50', '2', '50', '5', '50', '5'], rotation: 0 },
+      { data: ['50', '0.25', '75', '1', '76', '2', '48', '10', '49', '2', '50', '2', '50', '5', '50', '5'], rotation: 0.25 },
+      { data: ['101', 'Embedded Object', '71', '2', '72', '2', '44', '10', '45', '2', '46', '5', '46', '5'], rotation: 0 },
+    ];
+    for (const variant of variants) {
+      const state = readDxf([...base, ...variant.data, '0', 'ENDSEC', '0', 'EOF'].join('\n'));
+      expect(state.entities[0]).toMatchObject({ type: 'mtext', attachment: 1, lineSpacing: 1, rotation: variant.rotation, columns: { count: 2, width: 10, gutter: 2, heights: [5, 5] } });
     }
   });
 

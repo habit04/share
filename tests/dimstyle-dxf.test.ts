@@ -79,7 +79,17 @@ function drawing(): DrawingState {
 const byName = (list: DimStyle[], name: string) => list.find((s) => s.name === name)!;
 
 describe('dimension styles in DXF', () => {
-  // Per-dimension overrides and nested dimensions, ported from PR #2 (codex/electrical-review-fixes 2f89b0e).
+  it('reports unsupported native dimension style/header semantics and extra ACAD XDATA', () => {
+    const text = ['0', 'SECTION', '2', 'HEADER', '9', '$DIMAUNIT', '70', '3', '0', 'ENDSEC', '0', 'SECTION', '2', 'TABLES', '0', 'DIMSTYLE', '105', 'A1', '2', 'Radians', '275', '3', '0', 'ENDSEC', '0', 'EOF'].join('\n');
+    const report = importReportOf(readDxf(text))!;
+    expect(report.items).toContainEqual(expect.objectContaining({ type: 'HEADER', action: 'simplified', reason: expect.stringContaining('$DIMAUNIT') }));
+    expect(report.items).toContainEqual(expect.objectContaining({ type: 'DIMSTYLE', action: 'simplified', reason: expect.stringContaining('DIMAUNIT') }));
+    const named = { ...STANDARD_DIMSTYLE, name: 'Overrides' };
+    const state = withDimStyle({ entities: [dim('d', { ...named, decimals: 2 })], layers, blocks: {}, currentLayer: '0' }, named, false);
+    const out = writeDxf(state).replace('1001\r\nACAD\r\n1000\r\nDSTYLE', '1001\r\nACAD\r\n1000\r\nOTHER_METADATA\r\n1000\r\nDSTYLE');
+    expect(importReportOf(readDxf(out))?.items).toContainEqual(expect.objectContaining({ type: 'DIMENSION', reason: expect.stringContaining('XDATA) of ACAD') }));
+  });
+
   it('keeps per-entity numeric, text-style and arrow overrides without changing its named style', () => {
     let src = drawing();
     const named = src.entities[0] as DimensionEntity;
@@ -98,32 +108,33 @@ describe('dimension styles in DXF', () => {
     ];
     const entities = variants.map((style, i) => dim(`override-${i}`, style));
     const src = withDimStyle({ entities, layers, blocks: {}, currentLayer: '0' }, base, false);
-    const back = readDxf(writeDxf(src));
+    const out = writeDxf(src);
+    const back = readDxf(out);
     for (let i = 0; i < entities.length; i += 1) {
       const restored = back.entities[i] as DimensionEntity;
       expect(resolveDimStyle(restored.style)).toEqual(resolveDimStyle(variants[i]!));
       expect(dimensionText(restored)).toEqual(dimensionText(entities[i]!));
     }
     expect(resolveDimStyle(byName(namedDimStyles(back), base.name)).tolerance).toBe('none');
-    // AutoCAD's own XDATA stays quiet in the import report.
-    expect(importReportOf(back)).toBeUndefined();
+    expect(importReportOf(back)?.items.some((item) => item.reason.includes('DSTYLE override'))).toBeFalsy();
   });
 
   it.each([
     ['symmetrical', 0.01, 'deviation', 0.02],
     ['deviation', 0.02, 'symmetrical', 0.01],
-  ] as const)('round-trips numeric-only overrides with an inherited %s tolerance display (PR #2 bbbaf34)', (inheritedMode, inheritedMinus, effectiveMode, effectiveMinus) => {
+  ] as const)('round-trips numeric-only overrides with inherited %s tolerance display', (inheritedMode, inheritedMinus, effectiveMode, effectiveMinus) => {
     const named: DimStyle = { ...STANDARD_DIMSTYLE, name: 'Numeric-tolerance', tolerance: inheritedMode, tolPlus: 0.01, tolMinus: inheritedMinus, tolDecimals: 2 };
     const effective: DimStyle = { ...named, tolerance: effectiveMode, tolMinus: effectiveMinus };
     const entity = dim('numeric-override', effective);
-    const source = withDimStyle({ ...drawing(), entities: [entity] }, named, false);
+    const source = withDimStyle({ entities: [entity], layers, blocks: {}, currentLayer: '0' }, named, false);
     const out = writeDxf(source);
     expect(out).toContain('1070\r\n48\r\n1040\r\n');
     expect(out).not.toContain('1070\r\n71\r\n');
+    expect(out).not.toContain('1070\r\n72\r\n');
     const restored = readDxf(out);
-    const back = restored.entities.find((e) => e.id === 'numeric-override' || e.type === 'dimension') as DimensionEntity;
-    expect(resolveDimStyle(back.style)).toEqual(resolveDimStyle(effective));
-    expect(dimensionText(back)).toBe(dimensionText(entity));
+    const restoredEntity = restored.entities[0] as DimensionEntity;
+    expect(resolveDimStyle(restoredEntity.style)).toEqual(resolveDimStyle(effective));
+    expect(dimensionText(restoredEntity)).toBe(dimensionText(entity));
     expect(resolveDimStyle(byName(namedDimStyles(restored), named.name))).toEqual(resolveDimStyle(named));
   });
 
@@ -141,7 +152,7 @@ describe('dimension styles in DXF', () => {
     const out = writeDxf(drawing());
     const dimensions = out.split('\r\n0\r\nDIMENSION\r\n').slice(1).map((record) => record.split('\r\n0\r\n')[0]!);
     expect(dimensions).toHaveLength(3);
-    for (const record of dimensions) expect(record).not.toContain('\r\n280\r\n'); // not part of an AC1015 DIMENSION
+    for (const record of dimensions) expect(record).not.toContain('\r\n280\r\n'); // introduced after AC1015
     const records = out.match(/\r\n0\r\nDIMSTYLE\r\n/g) ?? [];
     expect(records.length).toBe(4); // Standard + three named styles
     expect(out).toContain(`1001\r\n${DIMSTYLE_APP}\r\n1000\r\nDIMBLK1\r\n1000\r\n_OPEN\r\n1000\r\nDIMBLK2\r\n1000\r\n_DOT\r\n`);

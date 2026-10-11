@@ -4,7 +4,8 @@
 //
 //   npm run build && npm run bench           (JCAD_BENCH_OUT=<folder> keeps bench.json there)
 //
-// Measures, best of several runs each:
+// Separately measures first-use document validation, geometry bounds and first paint;
+// the original interactive measurements remain warmed, best of several runs each:
 //   render (extents)   one full redraw of the whole drawing (Viewport.render + a 1-pixel read-back,
 //                      which waits for the canvas to finish rasterising)
 //   render (zoomed)    the same, zoomed in to a 1/16 of the sheet (culling)
@@ -97,14 +98,34 @@ const result = await page.evaluate(async () => {
   const flush = () => ctx.getImageData(0, 0, 1, 1);
   const out = {};
 
+  // Do this synchronously before any await/idle callback can prepare geometry. All 50,000
+  // entities and PERF_SYM are new identities, so their geometry and scene caches are cold.
+  // File reading/parsing is measured separately by bench-project.mjs.
+  const readyStart = performance.now();
+  const loadStart = performance.now();
+  ed.doc.load(state, null);
+  out.coldStateLoad = performance.now() - loadStart;
+  const geometryStart = performance.now();
+  const bounds = ed.doc.extents();
+  out.firstGeometry = performance.now() - geometryStart;
+  if (!bounds) throw new Error('cold geometry preparation produced no drawing bounds');
+  ed.viewport.zoomToBounds(bounds);
+  ed.selection = new Set();
+  const ov = ed.overlay;
+  ov.selection = ed.selection;
+  const paintStart = performance.now();
+  ed.viewport.render(ov);
+  flush();
+  out.coldRender = performance.now() - paintStart;
+  out.coldReady = performance.now() - readyStart;
+
   out.load = await best(() => {
     ed.loadState(state, null);
   }, 2);
   ed.runCommand('ZOOM E');
   ed.selection = new Set();
-  const ov = ed.overlay;
   ov.selection = ed.selection;
-  ed.viewport.render(ov); // first draw pays for the geometry caches
+  ed.viewport.render(ov);
   flush();
   // A full redraw: drawings of 200 entities or more keep the drawn scene and copy it when only the
   // cursor moves (render/viewport.ts), so the copy is dropped before each timed frame - else these
@@ -157,6 +178,10 @@ await browser.close();
 server.close();
 const fmt = (ms) => `${ms.toFixed(1).padStart(8)} ms`;
 console.log(`bench: ${result.entities} entities (Chromium ${browser.version()}, ${process.platform} ${process.arch})`);
+console.log(`  cold state load            ${fmt(result.coldStateLoad)}`);
+console.log(`  first geometry bounds      ${fmt(result.firstGeometry)}`);
+console.log(`  cold render + read-back    ${fmt(result.coldRender)}`);
+console.log(`  cold document ready        ${fmt(result.coldReady)}   (excludes file I/O/parsing)`);
 console.log(`  load (loadState + ZOOM E)  ${fmt(result.load)}`);
 console.log(`  redraw, whole drawing      ${fmt(result.renderExtents)}`);
 console.log(`  redraw, zoomed 4x          ${fmt(result.renderZoomed)}`);

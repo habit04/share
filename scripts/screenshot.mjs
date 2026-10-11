@@ -62,13 +62,13 @@ await shot('03-line-tool');
 await page.keyboard.press('Escape');
 
 // Icon menu dialog
-await page.evaluate(() => window.editor.runCommand('AECOMPONENT'));
+await page.evaluate(() => void window.editor.runCommand('AECOMPONENT'));
 await page.waitForTimeout(250);
 await shot('04-icon-menu');
 await closeDialogs();
 
 // Layer dialog
-await page.evaluate(() => window.editor.runCommand('LAYER'));
+await page.evaluate(() => void window.editor.runCommand('LAYER'));
 await page.waitForTimeout(200);
 await shot('05-layers');
 await closeDialogs();
@@ -84,7 +84,7 @@ await page.evaluate(() => {
 });
 await page.waitForTimeout(200);
 await shot('06-properties');
-await page.evaluate(() => window.editor.runCommand('PROPERTIES'));
+await page.evaluate(() => void window.editor.runCommand('PROPERTIES'));
 
 // Cross references + reports
 await page.evaluate(() => {
@@ -130,7 +130,7 @@ await page.keyboard.press('Escape');
 await page.evaluate(() => (/** @type {HTMLInputElement} */ (document.querySelector('.command-input')).value = ''));
 
 // 11. Options dialog (Display tab)
-await page.evaluate(() => window.editor.runCommand('OPTIONS'));
+await page.evaluate(() => void window.editor.runCommand('OPTIONS'));
 await page.waitForTimeout(200);
 await shot('11-options');
 await page.click('.dlg-tab >> nth=2');
@@ -139,7 +139,7 @@ await shot('11b-options-selection');
 await closeDialogs();
 
 // 12. Drafting Settings (Object Snap tab)
-await page.evaluate(() => window.editor.runCommand('DSETTINGS 2'));
+await page.evaluate(() => void window.editor.runCommand('DSETTINGS 2'));
 await page.waitForTimeout(200);
 await shot('12-drafting-settings');
 await closeDialogs();
@@ -197,7 +197,7 @@ await shot('16-application-menu');
 await closeDialogs();
 
 // 17. Help window
-await page.evaluate(() => window.editor.runCommand('HELP lay'));
+await page.evaluate(() => void window.editor.runCommand('HELP lay'));
 await page.waitForTimeout(200);
 await shot('17-help');
 await closeDialogs();
@@ -249,7 +249,7 @@ const reloadDemo = async () => {
 
 // 10: Insert/Edit Component dialog with ACADE data, used tags and pins
 await reloadDemo();
-await page.evaluate(() => window.editor.runCommand('AECOMPONENT HPB11_NO'));
+await page.evaluate(() => void window.editor.runCommand('AECOMPONENT HPB11_NO'));
 await page.waitForTimeout(100);
 await page.evaluate(() => window.editor.submitInput('7.2,5'));
 await page.waitForTimeout(300);
@@ -268,7 +268,7 @@ await page.screenshot({ path: 'screenshots/11-catalog-browser.png' });
 await closeModal();
 
 // 12: Child contact flow (parent list) + toggled NC contact, scoot and wire gap applied to the drawing
-await page.evaluate(() => window.editor.runCommand('AECHILD'));
+await page.evaluate(() => void window.editor.runCommand('AECHILD'));
 await page.waitForTimeout(300);
 await page.screenshot({ path: 'screenshots/12-child-contact.png' });
 await closeModal();
@@ -285,19 +285,19 @@ await page.waitForTimeout(200);
 await page.screenshot({ path: 'screenshots/13-xref-tables.png' });
 
 // 14: Electrical audit with jump-to-error
-await page.evaluate(() => window.editor.runCommand('AEAUDIT'));
+await page.evaluate(() => void window.editor.runCommand('AEAUDIT'));
 await page.waitForTimeout(300);
 await page.screenshot({ path: 'screenshots/14-audit.png' });
 await closeModal();
 
 // 15: Reports: PLC I/O + wire labels + put on drawing
-await page.evaluate(() => window.editor.runCommand('AEREPORT labels'));
+await page.evaluate(() => void window.editor.runCommand('AEREPORT labels'));
 await page.waitForTimeout(400);
 await page.screenshot({ path: 'screenshots/15-report-wire-labels.png' });
 await closeModal();
 
 // 16: Panel: schematic list dialog, then footprints, balloon and nameplate placed on a panel area
-await page.evaluate(() => window.editor.runCommand('AESCHEMATICLIST'));
+await page.evaluate(() => void window.editor.runCommand('AESCHEMATICLIST'));
 await page.waitForTimeout(400);
 await page.screenshot({ path: 'screenshots/16-schematic-list.png' });
 await closeModal();
@@ -329,13 +329,13 @@ await page.waitForTimeout(250);
 await page.screenshot({ path: 'screenshots/17-panel-footprints.png' });
 
 // 18: Terminal strip editor
-await page.evaluate(() => window.editor.runCommand('AETERMEDIT'));
+await page.evaluate(() => void window.editor.runCommand('AETERMEDIT'));
 await page.waitForTimeout(300);
 await page.screenshot({ path: 'screenshots/18-terminal-strip-editor.png' });
 await closeModal();
 
 // 19: Drawing properties (WD_M settings)
-await page.evaluate(() => window.editor.runCommand('AEDRAWINGPROPS'));
+await page.evaluate(() => void window.editor.runCommand('AEDRAWINGPROPS'));
 await page.waitForTimeout(300);
 await page.screenshot({ path: 'screenshots/19-drawing-properties.png' });
 await closeModal();
@@ -348,7 +348,7 @@ await page.evaluate(() => {
 await page.waitForTimeout(200);
 await page.click('.modal .btn.primary >> nth=-1');
 await page.waitForTimeout(200);
-await page.evaluate(() => window.editor.runCommand('AECIRCUIT'));
+await page.evaluate(() => void window.editor.runCommand('AECIRCUIT'));
 await page.waitForTimeout(250);
 await page.evaluate(() => {
   const sel = /** @type {HTMLSelectElement} */ (document.querySelector('.modal select'));

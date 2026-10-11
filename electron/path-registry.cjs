@@ -161,6 +161,24 @@ function createPathRegistry({ onChange } = {}) {
       return add(p, false, true);
     },
     /**
+     * A derived drawing (the DXF sibling of an opened DWG) inherits its source's authority.
+     * Keep an existing native grant, and preserve a by-name project's write confinement.
+     * @param {unknown} p
+     * @param {unknown} source
+     */
+    grantDerived(p, source) {
+      const key = pathKey(p);
+      const sourceKey = pathKey(source);
+      if (key === null || sourceKey === null || !readable.has(sourceKey)) return false;
+      const write = writable.has(sourceKey);
+      if (write) {
+        const root = roots.get(sourceKey);
+        if (!root) roots.delete(key);
+        else if (!writable.has(key)) roots.set(key, root);
+      }
+      return add(p, write, true);
+    },
+    /**
      * Register what an opened project file lists. Relative entries resolve against the project
      * folder like src/app/paths.ts resolveFromFile (backslashes written on Windows are separators
      * here too); the checks below apply to the resolved absolute path. Drawings (.dxf / .dwg)

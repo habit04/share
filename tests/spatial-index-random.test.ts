@@ -151,6 +151,5 @@ describe('spatial index on a randomized drawing of 2,000 mixed entities', () => 
     doc.setSpace(undefined);
     expect(doc.entities).toBe(modelEntities);
     agree(doc, 1008);
-    // About 10 s of synchronous work; Vitest 3 and later fail a synchronous test that overruns its timeout.
   }, 30_000);
 });

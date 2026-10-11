@@ -3,11 +3,12 @@
  * header variables the writer emits, the reader's record parser (arrowheads from JCAD_DIMSTYLE
  * XDATA or from BLOCK_RECORD handles) and the current style read from the header.
  */
-import type { Entity, DimStyle } from '../../core/entities';
-import { STANDARD_DIMSTYLE, DIM_VARIABLES, namedDimStyles, dimVarValue, withDimVars, dimStyleFromRecordPairs, arrowBlockName, arrowFromBlockName, resolveDimStyle } from '../../core/dimension';
+import type { DimStyle, Entity } from '../../core/entities';
+import { resolveDimStyle, arrowBlockName, arrowFromBlockName, namedDimStyles, DIM_VARIABLES, dimVarValue, withDimVars, dimStyleFromRecordPairs, STANDARD_DIMSTYLE } from '../../core/dimension';
+import type { Pair, Obj } from './groups';
 import type { DrawingState } from '../../core/document';
+import { str, xdata } from './groups';
 import { DIMSTYLE_APP } from './codes';
-import { str, xdata, type Pair, type Obj } from './groups';
 
 export function dimStyleXdata(s: DimStyle): Array<[string, string]> {
   const r = resolveDimStyle(s);

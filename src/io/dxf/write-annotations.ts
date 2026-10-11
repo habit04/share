@@ -3,14 +3,16 @@
  * name of its *D picture block), LEADER (+ its MTEXT), IMAGE (+ its IMAGEDEF reactor) and JCad
  * tables (an INSERT of an anonymous block with the cell data as XDATA).
  */
-import { textWidth, leaderParts, leaderPath, type DimensionEntity, type MTextEntity, type LeaderEntity, type ImageEntity, type TableEntity } from '../../core/entities';
-import { dimensionTextPoint, dimensionMeasurement, diffDimStyles, DIM_VARIABLES } from '../../core/dimension';
-import { mtextToDxf, formattedSource } from '../../core/mtext';
-import * as g from '../../core/geometry';
+import { Writer, writeEntityCommon } from './write-core';
+import type { MTextEntity, DimensionEntity, LeaderEntity, ImageEntity, TableEntity } from '../../core/entities';
+import { formattedSource, mtextToDxf } from '../../core/mtext';
 import { textStyleOf } from '../encoding';
-import { DIM_TYPE, DIMSTYLE_APP, MTEXT_COLUMNS_APP, TABLE_APP } from './codes';
+import { MTEXT_COLUMNS_APP, DIM_TYPE, DIMSTYLE_APP, TABLE_APP } from './codes';
+import * as g from '../../core/geometry';
+import { dimensionTextPoint, dimensionMeasurement, diffDimStyles, DIM_VARIABLES } from '../../core/dimension';
+import { textWidth, leaderParts, leaderPath } from '../../core/entities';
 import { dimStyleXdata } from './dimstyles';
-import { Writer, writeEntityCommon, type WriteExtras } from './write-core';
+import type { WriteExtras } from './write-core';
 
 export function writeMText(w: Writer, e: MTextEntity, owner: string): void {
   writeEntityCommon(w, e, owner, 'MTEXT', 'AcDbMText');

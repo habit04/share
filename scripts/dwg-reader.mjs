@@ -23,7 +23,7 @@ async function lib() {
 }
 
 /** The largest DWG the reader accepts (electron/resource-limits.cjs MAX_DRAWING_BYTES). */
-export const MAX_DWG_BYTES = 512 * 1024 * 1024;
+export const MAX_DWG_BYTES = 128 * 1024 * 1024;
 
 /**
  * @param {Uint8Array|Buffer} bytes DWG or DXF file content
@@ -59,9 +59,10 @@ export async function readDwgPayload(bytes, kind = 'dwg') {
 
 /**
  * Refuse to grow any WebAssembly memory of this thread beyond `maxBytes` (security review E-7).
- * LibreDWG's memory starts at 1 GiB and may grow to the wasm32 maximum of 4 GiB; the DWG worker
- * (scripts/dwg-worker.mjs) caps it, so a crafted file cannot make one read take all the memory of
- * the machine. A refused growth makes the allocation inside LibreDWG fail, and the read with it.
+ * The shipped Emscripten allocator calls Memory.grow from JS, which this intercepts. It bounds
+ * that linear memory's growth, not aggregate RSS, buffers, initial memory allocations or direct
+ * WASM memory.grow instructions. The browser reader does not install this Node-worker policy.
+ * A refused growth makes the allocation inside LibreDWG fail, and the read with it.
  * Returns a function that removes the cap.
  * @param {number} maxBytes
  */
@@ -88,6 +89,7 @@ export function payloadFromDatabase(db, version = '') {
     entities: db.entities ?? [],
     layers: (db.tables?.LAYER?.entries ?? []).map((x) => ({
       name: x.name,
+      ...(x.handle ? { handle: String(x.handle) } : {}),
       colorIndex: x.colorIndex,
       color: x.color,
       standardFlag: x.standardFlag,
@@ -110,6 +112,7 @@ export function payloadFromDatabase(db, version = '') {
     imageDefs: (db.objects?.IMAGEDEF ?? []).map((d) => ({ handle: String(d.handle ?? ''), fileName: d.fileName ?? '' })),
     styles: (db.tables?.STYLE?.entries ?? []).map((t) => ({
       name: t.name,
+      ...(t.handle ? { handle: String(t.handle) } : {}),
       standardFlag: t.standardFlag,
       fixedTextHeight: t.fixedTextHeight,
       widthFactor: t.widthFactor,
@@ -125,7 +128,8 @@ export function payloadFromDatabase(db, version = '') {
       standardFlag: t.standardFlag,
       pattern: (t.pattern ?? []).map((x) => ({ elementLength: x.elementLength, elementTypeFlag: x.elementTypeFlag })),
     })),
-    layouts: (db.objects?.LAYOUT ?? []).map((l) => ({ name: l.layoutName, tabOrder: l.tabOrder, blockHandle: String(l.paperSpaceTableId ?? ''), minLimit: l.minLimit, maxLimit: l.maxLimit })),
+    layouts: (db.objects?.LAYOUT ?? []).map((l) => ({ name: l.layoutName, tabOrder: l.tabOrder, blockHandle: String(l.paperSpaceTableId ?? ''), minLimit: l.minLimit, maxLimit: l.maxLimit, ...(l.paperWidth !== undefined ? { plotSettings: l } : {}) })),
+    omittedObjectTypes: Object.fromEntries(Object.entries(db.objects ?? {}).filter(([kind]) => !['LAYOUT', 'IMAGEDEF', 'IMAGEDEF_REACTOR'].includes(kind)).map(([kind, values]) => [kind, Array.isArray(values) ? values.length : 1])),
   };
 }
 

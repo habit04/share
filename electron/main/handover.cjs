@@ -36,13 +36,13 @@ function drawingArgs(argv, cwd) {
  * @param {MainContext} ctx
  */
 function createHandover(ctx) {
-  const { ipcMain, registry } = ctx;
+  const { ipcMain, registry, handedOverProjects } = ctx;
   const pendingOpenFiles = [];
   /**
-   * Project files handed over and not opened yet (pathKey): the user chose them, so open-project
+   * Project files chosen through OS hand-over or the native Recent menu and not opened yet (pathKey):
+   * the user chose them, so open-project
    * registers what they list like a project chosen in the dialog, without relying on the renderer.
    */
-  const handedOverProjects = new Set();
   function takeHandedOverProject(file) {
     const k = pathKey(file);
     return k !== null && handedOverProjects.delete(k);

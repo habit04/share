@@ -15,8 +15,8 @@ Contents: [Prerequisites](#prerequisites) · [Install](#install) · [Run](#run) 
 
 | | All systems | Windows | macOS | Linux |
 | --- | --- | --- | --- | --- |
-| Node.js | **22.x** (22.12 or later, which Vitest 5 and the Electron 44 package need; `.nvmrc` / `.node-version` say `22`, `package.json` `engines` says `>=22.12.0 <23`) | nodejs.org installer, `nvm-windows` or `fnm` | `nvm`, `fnm` or Homebrew `node@22` | `nvm`, `fnm` or NodeSource |
-| npm | the one bundled with Node 22 (10.x) | | | |
+| Node.js | **22.20+ or 24.12+**, within those major versions (`package.json`: `>=22.20.0 <23 || >=24.12.0 <25`) | nodejs.org installer, `nvm-windows` or `fnm` | `nvm`, `fnm` or Homebrew | `nvm`, `fnm` or NodeSource |
+| npm | the version bundled with the supported Node release | | | |
 | Git | any recent | Git for Windows (Git Bash runs the shell snippets below) | Xcode command-line tools | distribution package |
 | Native build tools | not needed (no native modules) | | | |
 | For `npm run e2e` | the Electron binary: the `electron` package fetches it the first time it is started (or run `node node_modules/electron/install.js` after `npm ci`) | | | a display: `xvfb-run` (package `xvfb`) on a server or in a container |
@@ -27,12 +27,10 @@ Contents: [Prerequisites](#prerequisites) · [Install](#install) · [Run](#run) 
 at once with `EBADENGINE` and the required range, instead of failing later in a confusing way.
 With `nvm` or `fnm`, `nvm use` / `fnm use` in the repository picks the version from `.nvmrc`.
 
-**Version used in CI and in the development container.** CI installs Node from `.nvmrc`
-(`actions/setup-node` with `node-version-file`), i.e. the newest 22.x release on the day the
-job runs. The development container used for this work runs Node **22.22.2** with npm 10.9.7, so
-there is no major-version gap; the only difference is the patch level, which can move ahead in CI
-before it does locally. Its Playwright Chromium is older than the one CI installs (see
-[Screenshots](#screenshots)), which matters only for pixel comparisons.
+**Versions used in CI.** Unit checks and release checks run a Node **22 / 24** matrix.
+The other jobs use `.nvmrc` (`22`); setup-node resolves the latest patch in that major.
+Use the committed lockfile on either supported major. Browser pixel comparisons still require
+the Playwright Chromium and fonts used by CI ([Screenshots](#screenshots)).
 
 ## Install
 
@@ -83,6 +81,13 @@ npm run build:site          # landing page + browser edition into site-dist/
 
 ## Unit and regression tests
 
+`npm test` first runs `npm run check:fixtures`. The explicit inventory in
+`tests/fixtures/manifest.json` requires every committed DXF, DWG and pack input to be present and
+nonempty. Their tests fail if inputs disappear; they never silently skip. Private customer DWGs
+remain optional through `JCAD_CUSTOMER_DWG_DIR`. External AutoCAD proof runs separately with
+`npm run check:autocad` on a Windows machine with AutoCAD Core Console installed; see
+[QA-CHECKLIST.md](QA-CHECKLIST.md). Keep vendor outputs and private drawings outside the repository.
+
 ```bash
 npm test                    # vitest run: every tests/**/*.test.ts (includes the DWG fixtures in fixtures/)
 npx vitest run tests/dxf.test.ts          # one file
@@ -99,6 +104,11 @@ The screenshot scripts (`scripts/screenshot*.mjs`) drive the built renderer and 
 headless Chromium; `e2e/run-screenshots.mjs` runs them all as gates (page errors, console errors,
 failed checks and unknown commands fail it). Every resulting `screenshots/*.png` is then compared
 with its **approved baseline** in `screenshots/baseline/`:
+
+The output scanner decodes split UTF-8 bytes, carries only each stream's unfinished line, and
+caps that tail at 8,192 characters. It scans final lines on process exit. An oversized line fails
+the gate; the offline website's single exact `net::ERR_FAILED` console message is allowed because
+the test intentionally aborts that GitHub request. Other console failures fail the gate.
 
 ```bash
 npm run build && npm run build:site
@@ -137,28 +147,38 @@ npm run build
 npm run e2e                                  # Windows / macOS
 xvfb-run -a npm run e2e                      # Linux without a display
 JCAD_E2E_OUT=e2e-output npm run e2e          # keep the plotted PDFs and a window screenshot
+npm run e2e:origin                           # real two-launch legacy preference migration
 ```
 
 `scripts/e2e-electron.mjs` launches Electron on `dist/` with Playwright and drives the real main
 process, preload bridge and IPC (native dialogs are replaced inside the main process; see the
-file header for the full list of checks). The same script tests a **packaged** application:
+file header for the full list of checks). Full packaged Playwright coverage uses a dedicated,
+unpublished ASAR build with inspection enabled and `jcadTestBuild` metadata:
 
 ```bash
-npm run e2e:packaged -- "release/win-unpacked/JCad Electrical.exe"
-xvfb-run -a npm run e2e:packaged -- release/linux-unpacked/jcad-electrical
+npx electron-builder --dir --config scripts/electron-test-build.cjs --publish never
+node scripts/test-build-e2e.mjs
 node scripts/packaged-smoke.mjs release/     # installs / mounts / extracts every installer in release/ for this OS
 ```
 
 `scripts/packaged-smoke.mjs` runs the NSIS installer silently (`/S /D=<temp folder>`), mounts a
 disk image with `hdiutil attach` and copies the `.app` out, or extracts an AppImage
 (`--appimage-extract`) or a `.deb` (`dpkg-deb -x`); then it runs the headless DWG probe
-(`--probe-dwg`) and the end-to-end checks against the packaged executable.
+(`--probe-dwg`). Current shipping binaries disable inspection, so the script verifies their actual
+binary fuses and runs bounded fixed startup probes for packaged metadata, saving/reopening a
+fixture and two-launch secure-origin preference migration. The probes accept only enumerated
+operations in an owned temporary profile, with no arbitrary script argument. Older releases with
+inspection enabled retain the legacy Playwright path; release CI requires the hardened shipping
+path. Stock Electron seeds the isolated legacy profile; do not skip its download for these checks.
+Each target writes its migration log and JSON result below `packaged-smoke-output/`.
 
 ## Performance
 
 ```bash
 npm run bench:node                  # pick / select / snap on 50,000 entities, with and without the spatial index; 20-drawing project reports
 npm run build && npm run bench      # rendering, hover and window selection in headless Chromium
+JCAD_BENCH_ASSERT=1 npm run bench:project  # filesystem reads, preparation and twelve project reports
+JCAD_BENCH_ASSERT=1 JCAD_PERF_FACTOR=2 npm run bench  # enforce browser budgets (CI / release)
 ```
 
 Numbers and method: [PERFORMANCE.md](PERFORMANCE.md).
@@ -172,19 +192,25 @@ npm run dist                # installers for this OS (electron-builder; see pack
 
 electron-builder only builds installers for the OS it runs on (macOS disk images need macOS).
 The release workflow builds all three on GitHub's runners; locally, `npm run dist:dir` plus
-`npm run e2e:packaged` is the quickest way to test a packaged build.
+`node scripts/shipping-runtime-smoke.mjs <packaged-executable>` checks the hardened shipping
+build. The full Playwright suite uses `release-test/`; that build is excluded from shipping uploads.
 
 ## Signing and release
 
-- Signing is optional per platform and switches on from repository secrets; see
+- Local and build-only rehearsal signing switches on from repository secrets; publication
+  requires Windows publisher and Apple signing/notarization credentials. See
   [CODE-SIGNING.md](CODE-SIGNING.md). Local builds are unsigned (macOS: ad-hoc signed by
   `scripts/afterPack.cjs`).
+- Packaging flips Electron fuses after `afterPack`, then signs. The fuse reset option reseals
+  the macOS ad-hoc app after mutation; release CI verifies that final seal. Shipping disables the
+  CLI inspect fuse. The separate test ASAR enables inspection for full Playwright checks, and
+  fixed probes exercise the actual shipping binaries without enabling debugging.
 - Releases are cut by pushing a `v<version>` tag (or running **Build installers** with a tag);
   the pipeline, its gates and how to verify a published build are in [RELEASE.md](RELEASE.md).
 
 ## Verifying a change end to end
 
-Before opening a pull request, on Node 22:
+Before opening a pull request, on a supported Node 22 or 24 release:
 
 ```bash
 npm ci
@@ -196,7 +222,9 @@ npm run build
 npm run ui-check                    # every command and clickable control
 npm run build:site && node e2e/run-screenshots.mjs && npm run screenshot:compare
 xvfb-run -a npm run e2e             # (Windows / macOS: npm run e2e)
+xvfb-run -a npm run e2e:origin      # (Windows / macOS: npm run e2e:origin)
 npm run bench:node                  # when selection, snapping, reports or geometry changed
+JCAD_BENCH_ASSERT=1 npm run bench:project  # filesystem project preparation and reports
 ```
 
 Then push the branch: CI runs the same steps (`ci.yml`: `test`, `ui` and `e2e-electron` on
@@ -212,14 +240,17 @@ installer and smoke-tests each one on its own OS without publishing anything.
 | `eslint.config.js` | lint rules (no formatting rules) |
 | `tsconfig.json`, `tsconfig.electron.json`, `tsconfig.scripts.json` | type checks |
 | `scripts/screenshot*.mjs`, `scripts/screenshot-env.mjs`, `scripts/screenshot-compare.mjs`, `screenshots/baseline/` | visual review and approved baselines |
-| `scripts/e2e-electron.mjs`, `scripts/e2e-flows.mjs`, `scripts/packaged-smoke.mjs` | Electron end-to-end, development and packaged |
-| `scripts/electron-fuses.mjs` | the Electron fuses the installers ship with (checked by the packaged smoke test) |
-| `e2e/output-scanner.mjs` | line-by-line failure scan of the screenshot runs' output |
-| `scripts/bench.mjs`, `scripts/bench-budgets.mjs`, `tests/perf*.test.ts`, `tests/spatial-index.test.ts` | performance and its asserted budgets |
-| `scripts/check-fixtures.mjs`, `tests/fixtures/manifest.json` | committed test fixtures (run before `npm test`) |
+| `scripts/e2e-electron.mjs`, `scripts/test-build-e2e.mjs` | Full source and unpublished test-ASAR Playwright suites |
+| `scripts/packaged-smoke.mjs`, `scripts/shipping-runtime-smoke.mjs`, `scripts/electron-fuse-policy.mjs` | Actual shipping installer extraction, fuse checks and bounded startup/save/restart probes |
+| `scripts/bench.mjs`, `tests/perf*.test.ts`, `tests/spatial-index.test.ts` | performance |
+| `scripts/electron-fuses.mjs` | read-only compatibility helpers for shipping fuse validation |
 | `scripts/release-provenance.mjs` | release provenance records and their verification |
-| `scripts/mac-update-info.mjs` | writes the minimum macOS version (`build.mac.minimumSystemVersion`) into the release's `latest-mac.yml` |
+| `scripts/mac-update-info.mjs` | writes the minimum macOS version into `latest-mac.yml` |
 | `scripts/check-workflows.mjs` | workflow validation |
+| `scripts/check-fixtures.mjs`, `tests/fixtures/manifest.json` | mandatory committed regression inputs |
+| `e2e/output-scanner.mjs` | bounded screenshot output scanning |
+| `scripts/bench-budgets.mjs` | asserted browser timing budgets |
+| `scripts/release-provenance.mjs` | source SHA, installer completeness, artifact hashes and verified signing notes |
 | `.github/workflows/ci.yml` | every push and pull request |
 | `.github/workflows/release.yml` | gated installer builds and releases |
 | `.github/workflows/packaged-smoke.yml` | manual smoke test of an existing release's installers |

@@ -12,6 +12,7 @@
  * @property {ReturnType<typeof import('../ipc-guard.cjs').createPathPolicy>} pathPolicy  path rules shared by every file IPC
  * @property {(ev: Electron.IpcMainInvokeEvent) => Electron.BrowserWindow} senderWindow  the window that sent an IPC message
  * @property {Electron.BrowserWindow | null} mainWindow  the application window (window.cjs creates it)
+ * @property {Set<string>} handedOverProjects  one-use project grants made only by OS hand-over or the native Recent menu
  * @property {boolean} openFilesReady  the page asked for the files handed over (take-open-files); false while a new page loads
  */
 module.exports = {};

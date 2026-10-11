@@ -6,7 +6,7 @@
  * parses, the main process keeps answering IPC, menus and window events, and the read can be
  * cancelled: `cancel(id)` terminates the worker (a fresh one starts for the next file). Limits:
  *
- * - input: at most 512 MB (MAX_DRAWING_BYTES, electron/resource-limits.cjs), checked before the
+ * - input: at most 128 MiB (MAX_DRAWING_BYTES, electron/resource-limits.cjs), checked before the
  *   worker sees the bytes;
  * - JavaScript heap of the worker: 2048 MB old generation, 64 MB young generation, 8 MB stack
  *   (`resourceLimits`); a worker over it is stopped by V8 and the read fails;
@@ -20,7 +20,7 @@
  * with a message.
  *
  * Ported from PR #2 (codex/electrical-review-fixes 2f89b0e, electron/dwg-host.cjs), adapted: the
- * 512 MB input limit, a time limit that grows with the file (a 100 MB drawing may legitimately need
+ * 128 MiB input limit, a time limit that grows with the file (a 100 MB drawing may legitimately need
  * more than a minute), a JavaScript heap of 2 GB (the payload of a DWG is about twelve times its
  * size: 512 MB would refuse files over about 40 MB), and the WebAssembly memory cap.
  */
@@ -39,11 +39,7 @@ const START_TIMEOUT_MS = 15_000;
 const WORKER_RESOURCE_LIMITS = Object.freeze({ maxOldGenerationSizeMb: 2048, maxYoungGenerationSizeMb: 64, stackSizeMb: 8 });
 
 class OpenCancelledError extends Error {
-  constructor() {
-    super('Open cancelled');
-    this.name = 'OpenCancelledError';
-    this.cancelled = true;
-  }
+  constructor() { super('Open cancelled'); this.name = 'OpenCancelledError'; this.cancelled = true; }
 }
 
 /** The time limit for reading `bytes` bytes. */
@@ -54,7 +50,7 @@ function readTimeoutFor(bytes) {
 /**
  * @param {{ scriptsDir: string, timeoutMs?: number, maxBytes?: number, resourceLimits?: import('node:worker_threads').ResourceLimits }} opts
  *   scriptsDir: folder holding dwg-worker.mjs (unpacked from the asar); timeoutMs: a fixed time
- *   limit per read instead of readTimeoutFor (tests); maxBytes: input limit (default 512 MB);
+ *   limit per read instead of readTimeoutFor (tests); maxBytes: input limit (default 128 MiB);
  *   resourceLimits: the worker's V8 limits (default WORKER_RESOURCE_LIMITS; tests lower them)
  */
 function createDwgHost({ scriptsDir, timeoutMs, maxBytes = MAX_DRAWING_BYTES, resourceLimits = WORKER_RESOURCE_LIMITS }) {
@@ -220,11 +216,9 @@ function createDwgHost({ scriptsDir, timeoutMs, maxBytes = MAX_DRAWING_BYTES, re
     newId: () => nextId++,
   };
 }
-
-/** Progress threshold in bytes. */
 function progressThreshold() {
-  const v = Number(process.env.JCAD_OPEN_PROGRESS_BYTES);
-  return Number.isFinite(v) && v >= 0 ? v : DEFAULT_PROGRESS_BYTES;
+  const value = Number(process.env.JCAD_OPEN_PROGRESS_BYTES);
+  return Number.isFinite(value) && value >= 0 ? value : DEFAULT_PROGRESS_BYTES;
 }
 
 module.exports = { createDwgHost, OpenCancelledError, progressThreshold, readTimeoutFor, DEFAULT_PROGRESS_BYTES, WORKER_RESOURCE_LIMITS, START_TIMEOUT_MS };

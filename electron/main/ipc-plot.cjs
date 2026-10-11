@@ -4,6 +4,7 @@
  */
 const { BrowserWindow, dialog } = require('electron');
 const { writeUserFile } = require('./app-data.cjs');
+const { secureContents } = require('./window.cjs');
 const { validatePaperDimensions } = require('../resource-limits.cjs');
 
 /** @typedef {import('./context.cjs').MainContext} MainContext */
@@ -23,6 +24,7 @@ function registerPlotIpc(ctx) {
     });
     if (res.canceled || !res.filePath) return null;
     const hidden = new BrowserWindow({ show: false, webPreferences: { sandbox: true, contextIsolation: true } });
+    secureContents(hidden.webContents);
     try {
       // Keep the navigation URL tiny and inject the (possibly multi-megabyte) image afterwards.
       const html = '<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;background:#fff;height:100%}img{width:100%;height:100%;object-fit:contain;display:block}@page{margin:0}</style></head><body><img id="p"></body></html>';
@@ -86,6 +88,7 @@ function registerPlotIpc(ctx) {
     if (typeof dataUrl !== 'string' || !/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(dataUrl)) throw new Error('Invalid image');
     validatePaperDimensions(sheet); // at most 200 inches a side (E-18)
     const hidden = new BrowserWindow({ show: false, parent: win || undefined, webPreferences: { sandbox: true, contextIsolation: true } });
+    secureContents(hidden.webContents);
     try {
       const html = `<!doctype html><html><head><meta charset="utf-8"><title>${String(title || 'Drawing').replace(/[<>&]/g, '')}</title><style>html,body{margin:0;background:#fff;height:100%}img{width:100%;height:100%;object-fit:contain;display:block}@page{margin:0;size:${landscape ? 'landscape' : 'portrait'}}</style></head><body><img id="p"></body></html>`;
       await hidden.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));

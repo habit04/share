@@ -1,5 +1,4 @@
-// Required inputs must fail the suite when missing; private external inputs remain optional (ported
-// from PR #2, codex/electrical-review-fixes 2f89b0e). The list: tests/fixtures/manifest.json.
+// Required inputs must fail the suite when missing; private external inputs remain optional.
 import { readFileSync, statSync } from 'node:fs';
 import { resolve, relative, isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';

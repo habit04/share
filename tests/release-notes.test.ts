@@ -45,6 +45,10 @@ describe('release notes from CHANGELOG.md', () => {
     expect(n).toContain('jcad-electrical-0.3.0-mac-arm64.dmg');
     expect(n).toContain('https://habit04.github.io/share/');
     expect(n).toContain('https://github.com/habit04/share/blob/v0.3.0/CHANGELOG.md');
+    expect(n).toContain('Signing varies by release');
+    expect(n).toContain('unsigned Windows and all Linux/macOS builds use manual installation');
+    expect(n).toContain('install a verified update only after you choose Restart Now');
+    expect(n).not.toContain('macOS builds are not notarized');
   });
 
   it('says how a macOS build opens from the signing status the build recorded', () => {
@@ -99,9 +103,10 @@ describe('release notes from CHANGELOG.md', () => {
     // docs/releases/v0.4.0.md is exactly what the script makes for v0.4.0 (pasted into that release;
     // its macOS builds were ad-hoc signed), docs/releases/v0.4.2.md what it makes for v0.4.2, whose
     // macOS builds are Developer ID signed and notarized (the release page adds the Verified build list).
+    // Normalize checkout line endings while keeping both snapshots otherwise exact.
     const signing = { 'v0.4.0': 'ad-hoc', 'v0.4.2': 'developer-id-notarized' };
     for (const [tag, macSigning] of Object.entries(signing)) {
-      expect(readFileSync(new URL(`../docs/releases/${tag}.md`, import.meta.url), 'utf8')).toBe(releaseNotes(real, tag, undefined, { macSigning }));
+      expect(readFileSync(new URL(`../docs/releases/${tag}.md`, import.meta.url), 'utf8').replace(/\r\n/g, '\n')).toBe(releaseNotes(real, tag, undefined, { macSigning }));
     }
     // Upgrade notes first (0.4.1's update dialog shows the first 600 characters), the footer last.
     const v042 = releaseNotes(real, 'v0.4.2', undefined, { macSigning: 'developer-id-notarized' });

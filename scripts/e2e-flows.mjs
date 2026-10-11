@@ -9,6 +9,7 @@
 //
 // JCAD_FLOWS=close,open (comma-separated scenario names) runs only those scenarios.
 import { _electron as electron } from 'playwright';
+import { applicationWindow } from './electron-window.mjs';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { execFileSync, spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
@@ -126,7 +127,7 @@ async function launch(profile, { recover = true, extraArgs = [] } = {}) {
   const mainLog = [];
   app.process().stdout?.on('data', (d) => mainLog.push(String(d)));
   app.process().stderr?.on('data', (d) => mainLog.push(String(d)));
-  const win = await app.firstWindow({ timeout: 60_000 });
+  const win = await applicationWindow(app);
   const pageErrors = [];
   win.on('pageerror', (e) => pageErrors.push(`PAGE ERROR ${e.message}`));
   win.on('console', (m) => {
@@ -202,7 +203,8 @@ async function launch(profile, { recover = true, extraArgs = [] } = {}) {
     pushSync: (...r) => app.evaluate((_e, list) => globalThis.__e2e.syncAnswers.push(...list), r),
     setFaults: (f) => app.evaluate((_e, list) => void (globalThis.__e2e.faults = list), f),
     setSlowReads: (s) => app.evaluate((_e, list) => void (globalThis.__e2e.slowReads = list), s),
-    run: (c) => win.evaluate((x) => window.editor.runCommand(x), c),
+    // Human command dispatch returns immediately; each flow waits for its visible result.
+    run: (c) => win.evaluate((x) => void window.editor.runCommand(x), c),
     h: () => win.evaluate(() => window.editor.history.length),
     logSince: (k) => win.evaluate((n) => window.editor.history.slice(n), k),
     waitLog: (re, from, timeout = 20_000) =>
@@ -902,7 +904,7 @@ scenario('project-wide', async () => {
   const ctx = await launch(tempDir('profile'));
   try {
     // A sheet with a title block and the demo ladder (components, wires), saved six times.
-    await ctx.app.evaluate(({ BrowserWindow }, f) => BrowserWindow.getAllWindows()[0].loadFile(f, { query: { demo: '1', norecover: '1' } }), join(repo, 'dist', 'index.html'));
+    await ctx.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].loadURL('jcad://app/index.html?demo=1&norecover=1'));
     await ctx.win.waitForFunction(() => !!window.editor && window.editor.doc.entities.length > 20, null, { timeout: 30_000 });
     const demo = await ctx.win.evaluate(() => ({ entities: window.editor.doc.entities, blocks: Object.values(window.editor.doc.snapshot.blocks) }));
     await ctx.run('NEWSHEET');
@@ -966,7 +968,7 @@ scenario('project-wide', async () => {
     check(readdirSync(dir).every((f) => !f.endsWith('.tmp')), 'no temporary files left in the project folder');
     const s1 = await ctx.win.evaluate(() => ({ dirty: window.editor.doc.dirty, space: !!window.editor.doc.space, tags: window.editor.doc.snapshot.entities.filter((e) => e.type === 'insert').map((e) => e.attributes.TAG1 ?? '').join(',') }));
     check(s1.dirty && s1.space === inLayout && s1.tags !== s1Before && Buffer.compare(readFileSync(file('s1-open')), original['s1-open']) === 0, `the open tab was updated in memory (modified, still in its ${inLayout ? 'layout' : 'model'} tab), its file untouched`);
-    await ctx.win.evaluate(() => window.editor.runCommand('UNDO'));
+    await ctx.win.evaluate(() => void window.editor.runCommand('UNDO'));
     check(await ctx.win.evaluate((t) => window.editor.doc.snapshot.entities.filter((e) => e.type === 'insert').map((e) => e.attributes.TAG1 ?? '').join(',') === t, s1Before), 'one UNDO in the open tab takes the retag back');
     flowsRun.push('AERETAGPROJECT: truncated, edited on disk, .bak blocked (Skip), raw records, open layout tab');
 

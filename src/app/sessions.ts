@@ -9,9 +9,14 @@
 import { Drawing, type DrawingState } from '../core/document';
 import type { Point } from '../core/geometry';
 import { fileBaseName, samePath, shortNames } from './paths';
+import { prepareDrawingState, validateGeometryBudget } from '../core/geometry-budget';
 
 export interface DocumentSession {
   readonly id: number;
+  /** Changes when this document changes; restoring a parked tab alone keeps it stable. */
+  revision: number;
+  /** Changes when a load replaces this tab's contents, independently of edits and tab switches. */
+  contentGeneration: number;
   /**
    * Permanent unique id of this open document (a UUID, generated once). Unlike `id`, which
    * restarts at 1 every launch, it never repeats, so its autosave file can never overwrite an
@@ -64,17 +69,24 @@ export class SessionManager {
   private activeIndex = 0;
   private nextId = 1;
   private untitledCounter = 0;
+  private observedDocumentRevision = 0;
+  private observedDocumentLoadCount = 0;
   /** Fired after the active document changed (tab switch, add, close). */
   onChange: (() => void) | null = null;
 
   constructor(private host: SessionHost) {
     this.list = [this.make(host.doc.snapshot, host.doc.filePath)];
+    this.observedDocumentRevision = host.doc.revision;
+    this.observedDocumentLoadCount = host.doc.loadCount;
   }
 
   private make(state: DrawingState, filePath: string | null): DocumentSession {
+    prepareDrawingState(state);
     this.untitledCounter += 1;
     return {
       id: this.nextId++,
+      revision: 0,
+      contentGeneration: 0,
       docId: newDocumentId(),
       state,
       filePath,
@@ -136,6 +148,14 @@ export class SessionManager {
     const s = this.list[this.activeIndex];
     if (!s) return;
     const { doc, viewport } = this.host;
+    if (doc.loadCount !== this.observedDocumentLoadCount) {
+      s.contentGeneration += 1;
+      this.observedDocumentLoadCount = doc.loadCount;
+    }
+    if (doc.revision !== this.observedDocumentRevision) {
+      s.revision += 1;
+      this.observedDocumentRevision = doc.revision;
+    }
     const h = doc.history();
     s.state = doc.snapshot;
     s.filePath = doc.filePath;
@@ -154,6 +174,8 @@ export class SessionManager {
     try {
       host.loadState(s.state, s.filePath);
     } finally {
+      this.observedDocumentRevision = host.doc.revision;
+      this.observedDocumentLoadCount = host.doc.loadCount;
       this.restoring = false;
     }
     host.doc.restoreHistory({ undo: s.undo, redo: s.redo });
@@ -172,6 +194,7 @@ export class SessionManager {
 
   switchTo(i: number): boolean {
     if (i < 0 || i >= this.list.length || i === this.activeIndex) return false;
+    validateGeometryBudget(this.list[i]!.state);
     this.sync();
     this.activeIndex = i;
     this.restore(this.list[i]!);
@@ -210,6 +233,13 @@ export class SessionManager {
   close(i: number, next?: number): void {
     if (i < 0 || i >= this.list.length) return;
     if (i !== this.activeIndex) this.sync();
+    const remaining = this.list.filter((_session, index) => index !== i);
+    let target = next ?? (i < this.activeIndex ? this.activeIndex - 1 : i === this.activeIndex ? i : this.activeIndex);
+    if (next !== undefined && next > i) target = next - 1;
+    target = Math.max(0, Math.min(remaining.length - 1, target));
+    const restores = i === this.activeIndex || target !== (i < this.activeIndex ? this.activeIndex - 1 : this.activeIndex);
+    // A rejected target must leave the outgoing tab and active index untouched.
+    if (remaining.length && restores) validateGeometryBudget(remaining[target]!.state);
     this.list.splice(i, 1);
     if (this.list.length === 0) {
       // AutoCAD shows an empty application; we keep one blank drawing so the UI always has a document.
@@ -219,10 +249,7 @@ export class SessionManager {
       this.restore(this.list[0]!);
       return;
     }
-    let target = next ?? (i < this.activeIndex ? this.activeIndex - 1 : i === this.activeIndex ? i : this.activeIndex);
-    if (next !== undefined && next > i) target = next - 1;
-    target = Math.max(0, Math.min(this.list.length - 1, target));
-    if (i === this.activeIndex || target !== (i < this.activeIndex ? this.activeIndex - 1 : this.activeIndex)) {
+    if (restores) {
       this.activeIndex = target;
       this.restore(this.list[target]!);
     } else {
@@ -253,12 +280,15 @@ export class SessionManager {
   loadInto(id: number, state: DrawingState, filePath: string | null, dirty = false): boolean {
     const i = this.indexOfId(id);
     if (i < 0) return false;
+    prepareDrawingState(state);
     if (i === this.activeIndex) {
       this.host.loadState(state, filePath);
       this.host.doc.dirty = dirty;
       return true;
     }
     const s = this.list[i]!;
+    s.revision += 1;
+    s.contentGeneration += 1;
     s.state = state;
     s.filePath = filePath;
     s.dirty = dirty;
@@ -308,9 +338,10 @@ export class SessionManager {
  * being written (or in another tab) keep their "unsaved changes" flag.
  * Returns what happened for the command log.
  */
-export function applySaveResult(sessions: SessionManager, host: SessionHost, sessionId: number, savedState: DrawingState, path: string): 'clean' | 'newer-edits' | 'closed' {
+export function applySaveResult(sessions: SessionManager, host: SessionHost, sessionId: number, savedState: DrawingState, path: string, contentGeneration: number): 'clean' | 'newer-edits' | 'closed' | 'replaced' {
   const active = sessions.current;
   if (active.id === sessionId) {
+    if (active.contentGeneration !== contentGeneration) return 'replaced';
     host.doc.filePath = path;
     if (host.doc.snapshot === savedState) {
       host.doc.dirty = false;
@@ -320,6 +351,7 @@ export function applySaveResult(sessions: SessionManager, host: SessionHost, ses
   }
   const s = sessions.all.find((x) => x.id === sessionId);
   if (!s) return 'closed';
+  if (s.contentGeneration !== contentGeneration) return 'replaced';
   s.filePath = path;
   if (s.state === savedState) {
     s.dirty = false;

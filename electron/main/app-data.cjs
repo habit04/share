@@ -8,15 +8,14 @@ const { app } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const fsSync = require('node:fs');
-const { atomicWriteFile, createWriteQueue } = require('../atomic-write.cjs');
-const { pathKey } = require('../path-registry.cjs');
+const { atomicWriteFile, createCanonicalWriteQueue } = require('../atomic-write.cjs');
 
 const stateDir = () => app.getPath('userData');
 const recentFile = () => path.join(stateDir(), 'recent.json');
 const windowStateFile = () => path.join(stateDir(), 'window-state.json');
 const autosaveDir = () => path.join(stateDir(), 'autosave');
 /** Writes of the same app-data file (recent list, window state) run one at a time, in call order. */
-const enqueueWrite = createWriteQueue();
+const enqueueWrite = createCanonicalWriteQueue();
 /** Crash-safe write of a small app-data file; failures are logged, never shown (the app keeps working). */
 function writeStateFile(file, text, what) {
   return enqueueWrite(file, async () => {
@@ -26,14 +25,15 @@ function writeStateFile(file, text, what) {
 }
 /**
  * Crash-safe write of a user file (drawing, project, export). Writes of one file run one at a time,
- * in the order the requests arrived, keyed by pathKey so "C:\Jobs\A.dxf" and "c:/jobs/a.DXF" share
- * a queue. The renderer orders the saves of one file by revision (src/app/savequeue.ts), but a
+ * in the order the requests arrived. Canonical parent paths make real folders, linked aliases
+ * and case aliases share a queue; asynchronous resolution cannot reorder its reservations.
+ * The renderer orders the saves of one file by revision (src/app/savequeue.ts), but a
  * Save As (and a save whose path needed the dialog) only learns its file here: without this queue
  * a slower Save of the same file that started earlier could land after it and replace the newer
  * content while the drawing is shown as saved.
  */
 function writeUserFile(file, data, opts) {
-  return enqueueWrite(pathKey(file) ?? file, () => atomicWriteFile(file, data, opts));
+  return enqueueWrite(file, (key) => atomicWriteFile(file, data, { ...opts, expectedDestination: key }));
 }
 
 // Main-process failures go to a log the user can send with a problem report.
@@ -47,6 +47,16 @@ function logMainError(kind, err) {
     /* nothing else we can do */
   }
 }
+/** Flush queued DOM storage while its renderer still exists; Electron exposes no durability acknowledgement. @param {Electron.WebContents} contents */
+function flushRendererPreferences(contents) {
+  try {
+    contents.session.flushStorageData();
+    return true;
+  } catch (err) {
+    logMainError('renderer preference persistence', err);
+    return false;
+  }
+}
 /** Uncaught exceptions, unhandled rejections and crashed renderer / helper processes go to error.log. */
 function installCrashLogging() {
   process.on('uncaughtException', (err) => logMainError('uncaughtException', err));
@@ -55,4 +65,4 @@ function installCrashLogging() {
   app.on('child-process-gone', (_ev, details) => logMainError('child-process-gone', new Error(`${details.type} ${details.reason}`)));
 }
 
-module.exports = { stateDir, recentFile, windowStateFile, autosaveDir, enqueueWrite, writeStateFile, writeUserFile, logMainError, installCrashLogging };
+module.exports = { stateDir, recentFile, windowStateFile, autosaveDir, enqueueWrite, writeStateFile, writeUserFile, logMainError, flushRendererPreferences, installCrashLogging };

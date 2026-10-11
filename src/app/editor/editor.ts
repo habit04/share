@@ -20,6 +20,7 @@ import type { Point } from '../../core/geometry';
 import type { Entity } from '../../core/entities';
 import { Drawing } from '../../core/document';
 import type { DrawingState } from '../../core/document';
+import { GeometryBudgetError } from '../../core/geometry-budget-error';
 import { defaultSnapSettings, type SnapSettings } from '../../core/snap';
 import { Viewport, type ViewportOverlay } from '../../render/viewport';
 import type { Tool, ToolContext } from '../../tools/types';
@@ -197,8 +198,51 @@ export class Editor {
   }
 
   // ------------------------------------------------------------- tool context
-  startTool(tool: Tool): void {
-    prompter.startTool(this, this.internals, tool);
+  /** Handle only deliberate budget refusals at human input boundaries; API callers still throw. */
+  private geometryAction<T>(action: () => T, refused: T): T {
+    const fromApi = this.apiCommandDepth > 0;
+    const report = (error: unknown, failedTool: Tool | null, asynchronous: boolean): void => {
+      if (fromApi || !(error instanceof GeometryBudgetError)) throw error;
+      this.log(`Edit canceled: ${error.message} Reduce the geometry or selection and try again.`);
+      // A dialog from an old command must not cancel a tool started while it was pending.
+      if (!asynchronous || this.tool === failedTool) {
+        this.internals.gripDrag = null;
+        this.internals.panning = false;
+        prompter.finishTool(this, this.internals);
+      }
+    };
+    try {
+      const result = action();
+      if (!fromApi && result && typeof (result as unknown as Promise<unknown>).then === 'function') {
+        const failedTool = this.tool;
+        return Promise.resolve(result).catch((error: unknown) => {
+          report(error, failedTool, true);
+          return refused;
+        }) as T;
+      }
+      return result;
+    } catch (error) {
+      report(error, this.tool, false);
+      return refused;
+    }
+  }
+
+  /** Tool startup is internal: its command/input boundary decides how to report a refusal. */
+  startTool(tool: Tool): void | Promise<void> {
+    const reject = (error: unknown): never => {
+      if (error instanceof GeometryBudgetError && this.tool === tool) {
+        this.internals.gripDrag = null;
+        this.internals.panning = false;
+        prompter.finishTool(this, this.internals);
+      }
+      throw error;
+    };
+    try {
+      const result = prompter.startTool(this, this.internals, tool);
+      return result ? Promise.resolve(result).catch(reject) : result;
+    } catch (error) {
+      return reject(error);
+    }
   }
 
   finishTool(): void {
@@ -206,7 +250,7 @@ export class Editor {
   }
 
   cancel(): void {
-    prompter.cancel(this, this.internals);
+    this.geometryAction(() => prompter.cancel(this, this.internals), undefined);
   }
 
   applySettings(): void {
@@ -233,17 +277,17 @@ export class Editor {
 
   layerDialogRequested: (() => void) | null = null;
 
-  runCommand(input: string): void {
-    prompter.runCommand(this, input);
+  runCommand(input: string): void | Promise<void> {
+    return this.geometryAction(() => prompter.runCommand(this, input), undefined);
   }
 
   /** Handle text typed at the command line. */
   submitInput(raw: string): void {
-    prompter.submitInput(this, this.internals, raw);
+    this.geometryAction(() => prompter.submitInput(this, this.internals, raw), undefined);
   }
 
   pressEnter(): void {
-    prompter.pressEnter(this, this.internals);
+    this.geometryAction(() => prompter.pressEnter(this, this.internals), undefined);
   }
 
   /** Parse absolute "x,y", relative "@dx,dy" and polar "@d<a" input. */
@@ -337,8 +381,8 @@ export class Editor {
   }
 
   /**
-   * OPENPROJECT: the Open Project dialog, or the project file `file` by name. `userChosen`: the user
-   * picked `file` (Recent Documents, an OS hand-over), not a plugin or a typed path.
+   * OPENPROJECT: the Open Project dialog, or the project file `file` by name. `userChosen` is a
+   * legacy bridge hint; native main-process choices determine write access.
    */
   openProject(file?: string, opts: { userChosen?: boolean } = {}): Promise<boolean> {
     return projects.openProject(this, this.internals, file, opts);
@@ -397,23 +441,23 @@ export class Editor {
   }
 
   onMouseMove(ev: MouseEvent): void {
-    pointer.onMouseMove(this, this.internals, ev);
+    this.geometryAction(() => pointer.onMouseMove(this, this.internals, ev), undefined);
   }
 
   onMouseDown(ev: MouseEvent): void {
-    pointer.onMouseDown(this, this.internals, ev);
+    this.geometryAction(() => pointer.onMouseDown(this, this.internals, ev), undefined);
   }
 
   onMouseUp(ev: MouseEvent): void {
-    pointer.onMouseUp(this, this.internals, ev);
+    this.geometryAction(() => pointer.onMouseUp(this, this.internals, ev), undefined);
   }
 
   onDoubleClick(ev: MouseEvent): void {
-    pointer.onDoubleClick(this, ev);
+    this.geometryAction(() => pointer.onDoubleClick(this, ev), undefined);
   }
 
   onWheel(ev: WheelEvent): void {
-    pointer.onWheel(this, this.internals, ev);
+    this.geometryAction(() => pointer.onWheel(this, this.internals, ev), undefined);
   }
 
   onMouseLeave(): void {
@@ -426,7 +470,7 @@ export class Editor {
 
   // ------------------------------------------------------------- keyboard
   onKeyDown(ev: KeyboardEvent): boolean {
-    return keyboard.onKeyDown(this, this.internals, ev);
+    return this.geometryAction(() => keyboard.onKeyDown(this, this.internals, ev), true);
   }
 
   /** Current mouse position in world coordinates for the status bar. */

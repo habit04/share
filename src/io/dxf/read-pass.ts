@@ -4,25 +4,35 @@
  * entity's plane (extrusion) is applied, invalid geometry and lost XDATA are reported, unknown
  * records are reported or kept raw when that is safe, and LEADERs take the MTEXT they point to.
  */
+import type { Obj } from './groups';
+import type { RawDxfEntity } from '../import-report';
+import { isPointerCode, isRealCode, isRealText, isIntCode, PRECISION_CODES, isQuietXdataApp, ANNO_APP } from './codes';
+import { str, num, isIntegerText, shortText, invalidPrecision, precisionRequirement, has, HatchReadError, xdata } from './groups';
 import type { Entity, TextEntity } from '../../core/entities';
+import type { ReadContext } from './read-core';
 import * as g from '../../core/geometry';
-import { withTextStyle } from '../encoding';
-import { geometryProblem, type RawDxfEntity } from '../import-report';
-import { ANNO_APP, DIMSTYLE_APP, MTEXT_COLUMNS_APP, TABLE_APP, isPointerCode } from './codes';
-import { num, has, str, xdata, type Obj } from './groups';
-import { commonProps, reportObj, type ReadContext } from './read-core';
+import { reportObj, commonProps } from './read-core';
+import { geometryProblem } from '../import-report';
+import { dstylePairs, hasUnconsumedAcadXdata } from './read-annotations';
+import { formattedSource } from '../../core/mtext';
+import { DIM_VARIABLES } from '../../core/dimension';
 import { readEntityObj } from './read-entities';
+import { SplineWorkLimitError } from '../../core/spline';
+import { withTextStyle } from '../encoding';
 
 /** Entity types the reader converts (anything else is reported, or kept raw when safe). */
 const READ_KINDS = new Set(['LINE', 'CIRCLE', 'ARC', 'LWPOLYLINE', 'POLYLINE', 'SOLID', 'TRACE', 'TEXT', 'MTEXT', 'ELLIPSE', 'POINT', 'XLINE', 'RAY', 'DIMENSION', 'SPLINE', 'HATCH', 'LEADER', 'MULTILEADER', 'MLEADER', 'IMAGE', 'ACAD_TABLE', 'INSERT']);
+
 /** Records folded into the preceding entity (or block / layout structure). */
 const FOLLOWER_KINDS = new Set(['ATTRIB', 'VERTEX', 'SEQEND', 'ENDBLK', 'BLOCK', 'VIEWPORT']);
+
 /**
  * Unknown entity types kept as raw records in model space: self-contained types that need no
  * CLASSES entry, no other object and no handle reference, so writing them back cannot make the
  * file unreadable. (Solids / regions only with their ACIS data inline, as in AC1015..AC1024.)
  */
 const RAW_KEEP_KINDS = new Set(['3DFACE', '3DSOLID', 'REGION', 'BODY']);
+
 const UNSUPPORTED_REASONS: Record<string, string> = {
   ATTDEF: 'attribute definitions outside a block definition are not supported',
   WIPEOUT: 'wipeouts (masking areas) are not supported',
@@ -42,11 +52,6 @@ const UNSUPPORTED_REASONS: Record<string, string> = {
   DWFUNDERLAY: 'DWF underlays are not supported',
   DGNUNDERLAY: 'DGN underlays are not supported',
 };
-/**
- * Applications whose extended data is not reported when it is left out: the reader's own, and
- * AutoCAD's internal ones (ACAD, ACAD_MATERIAL_MAPPER, AcadAnnotative ...) that carry no drawing content.
- */
-const isQuietXdataApp = (app: string): boolean => app === DIMSTYLE_APP || app === TABLE_APP || app === MTEXT_COLUMNS_APP || /^acad/i.test(app);
 
 /** A raw record of an unknown entity, or null when it cannot be kept safely. */
 function rawRecord(o: Obj): RawDxfEntity | null {
@@ -112,6 +117,7 @@ export function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): En
   /** A converted entity: validated (invalid geometry is rejected), extrusion applied, XDATA loss reported. */
   const accept = (o: Obj, e: Entity | null): Entity | null => {
     if (!e) return null;
+    const invalid = o.groups.find((p) => (isRealCode(p.code) && (!isRealText(p.value) || !Number.isFinite(Number(p.value)))) || (isIntCode(p.code) && !isIntegerText(p.value.trim())));
     let extrusion = false;
     let xdataApps = false;
     for (const p of o.groups) {
@@ -121,11 +127,35 @@ export function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): En
     const placed = extrusion ? applyExtrusion(o, e, ctx) : e;
     const bad = geometryProblem(placed);
     if (bad) {
-      reportObj(ctx, o, 'dropped', `invalid geometry: ${bad}`);
+      reportObj(ctx, o, 'dropped', `invalid geometry: ${bad}${invalid ? ` (group ${invalid.code}, value line ${(invalid.line ?? 1) + 1}: "${shortText(invalid.value)}")` : ''}`);
       return null;
     }
+    if (invalid) {
+      reportObj(ctx, o, 'dropped', `invalid numeric group ${invalid.code} at line ${(invalid.line ?? 1) + 1}: "${shortText(invalid.value)}" must be a complete ${isIntCode(invalid.code) ? 'integer' : 'number'}`);
+      return null;
+    }
+    const badPrecision = o.kind === 'DIMENSION' ? dstylePairs(o).find(([code, value]) => PRECISION_CODES[code] && invalidPrecision(PRECISION_CODES[code]!, value)) : undefined;
+    if (badPrecision) {
+      const name = PRECISION_CODES[badPrecision[0]]!;
+      reportObj(ctx, o, 'dropped', `invalid DSTYLE ${name} precision "${shortText(badPrecision[1])}": expected ${precisionRequirement(name)}`);
+      return null;
+    }
+    if (e.type === 'hatch' && e.associative) reportObj(ctx, o, 'simplified', 'associative hatch boundary links are not kept; its boundary geometry is kept and saved non-associative');
+    if (o.kind === 'ACAD_TABLE') reportObj(ctx, o, 'simplified', 'table cells, sizes and supported style defaults are kept; native table editing, formulas, style font names, advanced borders and fills are not modeled, and export uses an INSERT picture with JCAD_TABLE data');
+    if (o.kind === 'HATCH' && num(o, 450) === 1) reportObj(ctx, o, 'simplified', 'gradient hatch settings are not kept; boundary geometry and the solid/pattern fill are retained');
+    if (e.type === 'mtext' && e.columns) reportObj(ctx, o, 'simplified', `column definitions are kept in JCAD_MTEXT_COLUMNS on AutoCAD 2000 export; other CAD programs show one column${e.columns.type === 2 || !formattedSource(e)?.includes('\\N') ? '; automatic column flow is approximated in JCad' : ''}`);
+    if (o.kind === 'LWPOLYLINE' && (has(o, 40) || has(o, 41))) reportObj(ctx, o, 'simplified', 'per-vertex polyline widths are not kept; its centerline and constant width are kept');
+    if (has(o, 39) && num(o, 39) !== 0) reportObj(ctx, o, 'simplified', 'nonzero thickness is not kept in the 2D drawing');
+    if (has(o, 440) || has(o, 430)) reportObj(ctx, o, 'simplified', 'transparency and color-book names are not kept; RGB/ACI color is kept');
+    // IMAGE's IMAGEDEF reactor is reconstructed on export; other object links are unmodeled.
+    const unmodeledLinks = o.kind === 'IMAGE' ? o.groups.some((p) => p.code === 102 && p.value !== '{ACAD_REACTORS' && p.value !== '}') : has(o, 102) || has(o, 360);
+    if (unmodeledLinks) reportObj(ctx, o, 'simplified', 'reactor/extension-dictionary links are not kept; supported drawing geometry is kept');
+    if (o.kind === 'MTEXT' && num(o, 90) !== 0) reportObj(ctx, o, 'simplified', 'MTEXT background fill is not kept');
     if (ctx.report && xdataApps) {
-      const apps = [...new Set(o.groups.filter((x) => x.code === 1001 && !isQuietXdataApp(x.value.trim())).map((x) => x.value.trim()))];
+      const consumedDstyle = o.kind === 'DIMENSION' || o.kind === 'LEADER';
+      const unsupportedOverrides = o.kind === 'DIMENSION' ? dstylePairs(o).filter(([code]) => ![71, 72, 73, 74, 78, 340].includes(code) && !DIM_VARIABLES.some((v) => v.code === code)) : o.kind === 'LEADER' ? dstylePairs(o).filter(([code]) => code !== 41) : [];
+      if (unsupportedOverrides.length) reportObj(ctx, o, 'simplified', `DSTYLE override groups ${unsupportedOverrides.map(([code]) => code).join(', ')} are not modeled or written back`);
+      const apps = [...new Set(o.groups.filter((x) => x.code === 1001 && !isQuietXdataApp(x.value.trim()) && !(x.value.trim() === 'ACAD' && consumedDstyle && !hasUnconsumedAcadXdata(o))).map((x) => x.value.trim()))];
       if (apps.length) reportObj(ctx, o, 'simplified', `extended data (XDATA) of ${apps.join(', ')} is not kept`);
     }
     return placed;
@@ -142,6 +172,7 @@ export function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): En
       const flags = Math.trunc(num(o, 70));
       const closed = (flags & 1) === 1;
       let j = i + 1;
+      const vertexStart = j;
       while (j < objs.length && objs[j]!.kind === 'VERTEX') {
         pts.push({ x: num(objs[j]!, 10), y: num(objs[j]!, 20) });
         bulges.push(num(objs[j]!, 42, 0));
@@ -156,7 +187,8 @@ export function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): En
       }
       if (flags & 8) reportObj(ctx, o, 'simplified', '3D polyline: flattened to its XY projection');
       const width = num(o, 40, 0);
-      const poly = accept(o, {
+      const vertexGroups = objs.slice(vertexStart, j).filter((child) => child.kind === 'VERTEX').flatMap((child) => child.groups);
+      const poly = accept({ ...o, groups: [...o.groups, ...vertexGroups] }, {
         ...commonProps(o),
         type: 'polyline',
         points: pts,
@@ -167,7 +199,25 @@ export function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): En
       if (poly) out.push(poly);
       continue;
     }
-    const read = readEntityObj(o, ctx);
+    // HATCH readers use declared counts and tessellate curves before accept() sees the
+    // result. Reject bad numeric tokens before those loops or geometry calculations.
+    if (o.kind === 'HATCH') {
+      const invalid = o.groups.find((p) => (isRealCode(p.code) && (!isRealText(p.value) || !Number.isFinite(Number(p.value)))) || (isIntCode(p.code) && !isIntegerText(p.value.trim())));
+      if (invalid) {
+        reportObj(ctx, o, 'dropped', `invalid numeric group ${invalid.code}, value line ${(invalid.line ?? 1) + 1}: "${shortText(invalid.value)}" must be a complete finite ${isIntCode(invalid.code) ? 'safe integer' : 'number'}`);
+        i += 1;
+        continue;
+      }
+    }
+    let read: Entity | null;
+    try {
+      read = readEntityObj(o, ctx);
+    } catch (err) {
+      if (!(err instanceof HatchReadError) && !(err instanceof SplineWorkLimitError)) throw err;
+      reportObj(ctx, o, 'dropped', err instanceof SplineWorkLimitError ? err.message : `invalid hatch data: ${err.message}`);
+      i += 1;
+      continue;
+    }
     if (!read) {
       if (FOLLOWER_KINDS.has(o.kind)) {
         // An ATTRIB / VERTEX / SEQEND without its owner: nothing to fold it into.

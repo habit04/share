@@ -7,7 +7,10 @@
 import { backupOutcome, type Editor } from './editor';
 import type { Point } from '../core/geometry';
 import type { Entity, InsertEntity } from '../core/entities';
-import { Drawing, type DrawingState } from '../core/document';
+import { Drawing, type DrawingState, type DrawingHistory } from '../core/document';
+import { prepareDrawingState } from '../core/geometry-budget';
+import type { DocumentSession } from './sessions';
+import { confirmSaveOver } from './import-open';
 import { ComponentTool, componentDialogInit, componentAttributes, lookupSymbol } from '../tools/electrical';
 import {
   TrimWireTool,
@@ -91,6 +94,7 @@ import {
 } from '../ui/electrical-dialogs';
 import { isComponent } from '../electrical/families';
 import { backupFailedDialog } from '../ui/filedialogs';
+import { confirmDialog } from '../ui/dialogs';
 
 /** The dialog set: whatever main.ts installed on `hooks.electrical`, else the built-in dialogs (created lazily). */
 export function electricalUi(editor: Editor): ElectricalUi {
@@ -255,7 +259,7 @@ export function registerElectricalCommands(editor: Editor): void {
       ed.log('No parent devices (coils) in the drawing yet.');
       return;
     }
-    void ui()
+    return ui()
       .pickList('Insert Child Contact: select parent', parents.map((p) => ({ value: p.id, label: p.tag, detail: `${p.description || p.block}  rung ${p.ref ?? '?'}  (${p.contacts} contact${p.contacts === 1 ? '' : 's'})` })), { detailHeader: 'Description / rung / contacts', okLabel: 'Next' })
       .then(async (id) => {
         if (!id) return;
@@ -271,15 +275,14 @@ export function registerElectricalCommands(editor: Editor): void {
         );
         const block = await ui().pickList(`Contact type for ${parent.attributes.TAG1}`, items, { detailHeader: 'Symbol' });
         if (!block) return;
-        ed.startTool(new ComponentTool(block, ui, settings, parent.id));
+        return ed.startTool(new ComponentTool(block, ui, settings, parent.id));
       });
   });
   reg('AECOMPONENT3', ['COMPONENT3', 'AEC3'], 'Insert a 3-phase (3-pole) component onto a 3-wire bus', (ed, arg) => ed.startTool(new ThreePhaseComponentTool(arg, ui)));
   reg('AERETAG', ['RETAG'], 'Retag components in ladder order [Selection/Project/project Duplicates]; fixed tags are kept', (ed, arg) => {
     const a = (arg ?? '').toUpperCase();
     if (a === 'P' || a === 'PROJECT' || a === 'D' || a === 'PD' || a === 'DUPLICATES') {
-      void runProjectRetag(ed, a === 'P' || a === 'PROJECT' ? 'all' : 'duplicates');
-      return;
+      return runProjectRetag(ed, a === 'P' || a === 'PROJECT' ? 'all' : 'duplicates');
     }
     const only = a.startsWith('S') && ed.selection.size ? new Set(ed.selection) : undefined;
     const r = retagDrawing(ed.doc, settings(), only);
@@ -312,7 +315,7 @@ export function registerElectricalCommands(editor: Editor): void {
   reg('AECATALOG', ['CATALOG', 'CATALOGBROWSER'], 'Catalog browser: pick a part for the selected component', (ed, arg) => {
     const sel = [...ed.selection].map((id) => ed.doc.entity(id)).find((e): e is InsertEntity => !!e && isComponent(e));
     const family = arg ?? (sel ? catalogFamilyFor(componentDialogInit(ed.doc, sel.block, sel.position, sel).family) : undefined);
-    void ui()
+    return ui()
       .catalogBrowser({ family, type: sel && /_NC$/.test(sel.block) ? 'NC' : sel && /_NO$/.test(sel.block) ? 'NO' : undefined })
       .then((item) => {
         if (!item) return;
@@ -360,8 +363,7 @@ export function registerElectricalCommands(editor: Editor): void {
   reg('AEWIRENO', ['WIRENO'], 'Insert wire numbers (fixed numbers are kept) [start / P = project sheet-based / PD = project drawing start]', (ed, arg) => {
     const a = (arg ?? '').toUpperCase();
     if (a === 'P' || a === 'PROJECT' || a === 'PD') {
-      void runProjectWireNumbers(ed, a !== 'PD');
-      return;
+      return runProjectWireNumbers(ed, a !== 'PD');
     }
     const s = settings();
     const start = arg ? parseInt(arg, 10) : s.wireStart;
@@ -374,8 +376,7 @@ export function registerElectricalCommands(editor: Editor): void {
   reg('AEXREF', ['XREF'], 'Update coil/contact cross-references [Drawing/Project] (project-wide when the drawing is in a project)', (ed, arg) => {
     const a = (arg ?? '').toUpperCase();
     if (a.startsWith('P') || (!a.startsWith('D') && editor.project.drawings.length > 1 && projectDrawingIndex(ed.project, ed.doc.filePath) >= 0)) {
-      void runProjectXref(ed);
-      return;
+      return runProjectXref(ed);
     }
     const n = updateCrossReferences(ed.doc, settings());
     ed.log(`Cross-references updated for ${n} tag(s).`);
@@ -383,16 +384,16 @@ export function registerElectricalCommands(editor: Editor): void {
 
   // ---- panel
   reg('AESCHEMATICLIST', ['SCHEMATICLIST', 'AEPANELLIST'], 'Schematic list: insert panel footprints for schematic components', (ed) => {
-    void projectDocuments(ed).then((docs) => {
+    return projectDocuments(ed).then((docs) => {
       const rows = schematicList(docs.map((d) => ({ name: d.name, entities: d.doc.entities })), ed.doc.entities);
       if (rows.length === 0) {
         ed.log('No schematic components found (in this drawing or the project).');
         return;
       }
-      void ui()
+      return ui()
         .schematicList(rows)
         .then((row) => {
-          if (row) ed.startTool(new FootprintTool(row));
+          if (row) return ed.startTool(new FootprintTool(row));
         });
     });
   });
@@ -413,7 +414,7 @@ export function registerElectricalCommands(editor: Editor): void {
       ed.log('No terminals in the drawing.');
       return;
     }
-    void ui()
+    return ui()
       .terminalStripEditor(rows)
       .then((edited) => {
         if (!edited) return;
@@ -427,7 +428,7 @@ export function registerElectricalCommands(editor: Editor): void {
   reg('AEDRAWINGPROPS', ['DRAWINGPROPERTIES', 'DWGPROPS', 'AESETTINGS'], 'Drawing properties: sheet, description, tag / wire formats, IEC codes', (ed) => {
     const idx = projectDrawingIndex(ed.project, ed.doc.filePath);
     const current = readWdSettings(ed.doc);
-    void ui()
+    return ui()
       .drawingProperties({ settings: current, drawing: idx >= 0 ? ed.project.drawings[idx]! : null, fileName: ed.fileName() })
       .then((r) => {
         if (!r) return;
@@ -452,8 +453,7 @@ export function registerElectricalCommands(editor: Editor): void {
   });
   reg('AETITLEBLOCK', ['UPDATETITLEBLOCK', 'TITLEBLOCK'], 'Update the title block from project and drawing properties through the project mapping (.wdt) [All drawings]', (ed, arg) => {
     if ((arg ?? '').toUpperCase().startsWith('A')) {
-      void runTitleBlocksAll(ed);
-      return;
+      return runTitleBlocksAll(ed);
     }
     const idx = projectDrawingIndex(ed.project, ed.doc.filePath);
     const sheet = makeSheet(ed.doc, { name: ed.fileName(), path: ed.doc.filePath, index: idx, entrySheet: idx >= 0 ? ed.project.drawings[idx]?.sheet : undefined, projectSettings: ed.project.settings });
@@ -471,7 +471,7 @@ export function registerElectricalCommands(editor: Editor): void {
   reg('AECIRCUIT', ['CIRCUITBUILDER', 'CIRCUIT'], 'Circuit builder: start/stop, reversing or jog motor control circuit', (ed) => {
     const s = settings();
     const init: CircuitOptions = { ...DEFAULT_CIRCUIT, standard: s.standard, spacing: s.rungSpacing, drawLadder: rungReferences(ed.doc).length === 0 };
-    void ui()
+    return ui()
       .circuitBuilder(init)
       .then((o) => {
         if (!o) return;
@@ -484,7 +484,7 @@ export function registerElectricalCommands(editor: Editor): void {
           const refOf = (y: number) => (opts.drawLadder ? String(o.firstReference + Math.round((opts.top - y) / opts.spacing)) : nearestReference(doc, { x: opts.left, y }));
           return buildMotorCircuit(opts, makeTagger(doc, s, refOf));
         };
-        ed.startTool(
+        return ed.startTool(
           new PlaceTool('AECIRCUIT', build, 'Specify the first rung on the ladder (left rail intersection) for the circuit:', () => {
             assignWireNumbers(ed.doc, { start: s.wireStart, position: s.wirePosition, format: s.wireFormat });
             updateCrossReferences(ed.doc, s);
@@ -533,6 +533,7 @@ export const projectUi = {
   confirmFiles: (title: string, intro: string, items: AffectedDrawing[], opts: { backupAvailable: boolean }): Promise<ConfirmFilesResult | null> => confirmFilesDialog(title, intro, items, opts),
   /** The .bak copy of `file` failed: true = write it anyway ("Continue Without Backup"), false = skip this drawing. */
   confirmNoBackup: (name: string, path: string, error: string): Promise<boolean> => backupFailedDialog(name, path, error),
+  confirmLoss: (title: string, warning: string): Promise<boolean> => confirmDialog(title, warning),
   showProblems: (editor: Editor, sheets: readonly LoadedSheet[], problems: XrefProblem[]): void => showXrefProblems(editor, sheets, problems),
 };
 
@@ -543,6 +544,11 @@ export interface LoadedSheet extends ProjectSheet {
   sessionId?: number;
   /** Open drawings: the document state the changes were calculated from (compared before applying). */
   base?: DrawingState;
+  /** The open session and its immutable history snapshot captured before any file read. */
+  session?: DocumentSession;
+  sessionRevision?: number;
+  history?: DrawingHistory;
+  projectState?: { generation: number; revision: number };
   /** Closed files: hash of the file text that was read (compared with the file on disk before writing). */
   baseHash?: string;
   /** Save-queue revision captured when the drawing was read (an older write never replaces a newer one). */
@@ -562,8 +568,10 @@ export function canReadProjectFiles(editor: Pick<Editor, 'fileBridge'>): boolean
  */
 export async function loadProjectSheets(editor: Editor, opts: { files?: boolean } = {}): Promise<{ sheets: LoadedSheet[]; skipped: string[] }> {
   const project = editor.project;
-  const sessions = editor.sessions.all;
+  const sessions = editor.sessions.all.map((s) => ({ session: s, id: s.id, filePath: s.filePath, state: s.state, history: { undo: [...s.undo], redo: [...s.redo] }, sessionRevision: s.revision, revision: captureRevision() }));
   const activeId = editor.sessions.current.id;
+  const projectState = editor.projectState;
+  const active = sessions.find((s) => s.id === activeId)!;
   const sheets: LoadedSheet[] = [];
   const skipped: string[] = [];
   // Drawings are identified by full path; equal file names in different folders get their folder added.
@@ -581,14 +589,9 @@ export async function loadProjectSheets(editor: Editor, opts: { files?: boolean 
     const d = project.drawings[i]!;
     const path = paths[i]!;
     const base = { name: names[i] || baseName(path), path, index: i, entrySheet: d.sheet, projectSettings: project.settings };
-    if (samePath(editor.doc.filePath, path)) {
-      const state = editor.doc.snapshot;
-      sheets.push({ ...makeSheet(copyOf(state, editor.doc.filePath), base), source: 'active', sessionId: activeId, base: state, revision: captureRevision() });
-      continue;
-    }
-    const s = sessions.find((x) => x.id !== activeId && samePath(x.filePath, path));
+    const s = sessions.find((x) => samePath(x.filePath, path));
     if (s) {
-      sheets.push({ ...makeSheet(copyOf(s.state, s.filePath), base), source: 'session', sessionId: s.id, base: s.state, revision: captureRevision() });
+      sheets.push({ ...makeSheet(copyOf(s.state, s.filePath), base), source: s.id === activeId ? 'active' : 'session', sessionId: s.id, session: s.session, sessionRevision: s.sessionRevision, base: s.state, history: s.history, revision: s.revision, projectState });
       continue;
     }
     if (opts.files === false || !canReadProjectFiles(editor)) {
@@ -608,16 +611,15 @@ export async function loadProjectSheets(editor: Editor, opts: { files?: boolean 
       }
       const doc = new Drawing();
       // A damaged file is not rewritten from a partial read: it is skipped (closedReadError says why).
-      doc.load(withByBlockLibrarySymbols(readDxf(res.text)), path);
+      doc.load(withByBlockLibrarySymbols(readDxf(res.text, { filePath: path })), path);
       doc.ensureBlocks(LIBRARY_BLOCKS);
-      sheets.push({ ...makeSheet(doc, base), source: 'file', baseHash: contentHash(res.text), revision });
+      sheets.push({ ...makeSheet(doc, base), source: 'file', baseHash: contentHash(res.text), revision, projectState });
     } catch (err) {
       skipped.push(`${base.name} (${closedReadError(err, path)})`);
     }
   }
   if (project.drawings.length === 0) {
-    const state = editor.doc.snapshot;
-    sheets.push({ ...makeSheet(copyOf(state, editor.doc.filePath), { name: editor.fileName(), path: editor.doc.filePath, index: -1, projectSettings: project.settings }), source: 'active', sessionId: activeId, base: state, revision: captureRevision() });
+    sheets.push({ ...makeSheet(copyOf(active.state, active.filePath), { name: editor.fileName(), path: active.filePath, index: -1, projectSettings: project.settings }), source: 'active', sessionId: activeId, session: active.session, sessionRevision: active.sessionRevision, base: active.state, history: active.history, revision: active.revision, projectState });
   }
   return { sheets, skipped };
 }
@@ -653,6 +655,13 @@ export interface CommitResult {
  * written unless the user chooses "Continue Without Backup" for it.
  */
 export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[], changes: ReadonlyMap<number, SheetChange>, title: string, intro: string, alwaysConfirm = false): Promise<CommitResult | null> {
+  // Check every proposed drawing before changing tabs/history or making backups and writes.
+  // Background tabs do not pass through the live Drawing's transaction boundary.
+  const prepared = new Map<number, DrawingState>();
+  for (const [index, change] of changes) {
+    const sheet = sheets[index]!;
+    prepared.set(index, prepareDrawingState(withSpaceOf(change.state, sheet.base), sheet.base ?? sheet.doc.snapshot));
+  }
   const items: AffectedDrawing[] = [...changes].map(([i, c]) => ({ name: sheets[i]!.name, kind: sheets[i]!.source === 'file' ? 'file' : 'open', detail: c.detail }));
   if (items.length === 0) return { open: 0, written: 0, failed: [], conflicts: [], notSaved: [] };
   const bridge = editor.fileBridge;
@@ -667,9 +676,27 @@ export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[
   const failed: string[] = [];
   const conflicts: string[] = [];
   const notSaved: string[] = [];
-  for (const [i, c] of changes) {
+  const projectChanged = (sh: LoadedSheet) => !!sh.projectState &&
+    (editor.projectState.generation !== sh.projectState.generation || editor.projectState.revision !== sh.projectState.revision);
+  const historyMatches = (sh: LoadedSheet, s: DocumentSession) => !sh.history ||
+    (sh.history.undo.length === s.undo.length && sh.history.undo.every((state, at) => state === s.undo[at]) &&
+     sh.history.redo.length === s.redo.length && sh.history.redo.every((state, at) => state === s.redo[at]));
+  for (const [i] of changes) {
     const sh = sheets[i]!;
+    if (projectChanged(sh)) {
+      conflicts.push(`${sh.name} (project changed while the command ran)`);
+      continue;
+    }
     if (sh.source !== 'file') {
+      const current = editor.sessions.all.find((s) => s.id === sh.sessionId);
+      if (!current || (sh.session && current !== sh.session)) {
+        failed.push(`${sh.name} (tab closed or replaced)`);
+        continue;
+      }
+      if ((sh.base && current.state !== sh.base) || (sh.sessionRevision !== undefined && current.revision !== sh.sessionRevision) || !historyMatches(sh, current) || !samePath(current.filePath, sh.path)) {
+        conflicts.push(`${sh.name} (edited while the command ran)`);
+        continue;
+      }
       if (editor.sessions.current.id === sh.sessionId) {
         if (sh.base && editor.doc.snapshot !== sh.base) {
           conflicts.push(`${sh.name} (edited while the command ran)`);
@@ -677,7 +704,7 @@ export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[
         }
         // In a layout tab, transact() maps the change onto the paper entities: apply it in model
         // space (the new state carries the active space of the state it was calculated from).
-        const next = withSpaceOf(c.state, sh.base);
+        const next = prepared.get(i)!;
         if (editor.doc.space) editor.doc.setSpace(undefined);
         editor.doc.transact(() => next);
         open += 1;
@@ -694,8 +721,9 @@ export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[
       }
       s.undo.push(s.state);
       s.redo = [];
-      s.state = withSpaceOf(c.state, sh.base);
+      s.state = prepared.get(i)!;
       s.dirty = true;
+      s.revision += 1;
       open += 1;
       continue;
     }
@@ -706,12 +734,14 @@ export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[
     const path = sh.path;
     /** Why the file is no longer the revision the change was calculated from (null = it still is). */
     const changedSince = async (): Promise<string | null> => {
+      if (projectChanged(sh)) return 'project changed while the command ran';
       if (editor.sessions.indexOfPath(path) >= 0) return 'opened in a tab while the command ran';
       if (sh.baseHash !== undefined && bridge.openDrawing) {
         const now = await bridge.openDrawing(path);
         if (!now || now.kind !== 'dxf' || contentHash(now.text) !== sh.baseHash) return 'changed on disk since it was read';
         // Opened in a tab while the file was being read.
         if (editor.sessions.indexOfPath(path) >= 0) return 'opened in a tab while the command ran';
+        if (projectChanged(sh)) return 'project changed while the command ran';
       }
       return null;
     };
@@ -721,6 +751,11 @@ export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[
       const early = await changedSince();
       if (early) {
         conflicts.push(`${sh.name} (${early})`);
+        continue;
+      }
+      const allowed = await confirmSaveOver(sh.doc.snapshot, path, projectUi.confirmLoss, sh, () => !projectChanged(sh) && editor.sessions.indexOfPath(path) < 0);
+      if (allowed !== 'save') {
+        notSaved.push(sh.name);
         continue;
       }
       if (choice.backup && bridge.backupFile) {
@@ -734,7 +769,7 @@ export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[
           editor.log(`${sh.name}: backup failed (${b.error}); written without a backup as chosen.`);
         }
       }
-      const text = writeDxf(withoutUnusedLibraryBlocks(c.state));
+      const text = writeDxf(withoutUnusedLibraryBlocks(prepared.get(i)!));
       // The .bak was made above (or the user chose to write without one): the write itself makes no second copy,
       // so "Continue Without Backup" also works when the .bak path cannot be written.
       let late: string | null = null;
@@ -940,32 +975,30 @@ function titleBlockChange(editor: Editor, s: ProjectSheet, state: DrawingState =
 function registerProjectCommands(editor: Editor): void {
   const reg = (name: string, aliases: string[], description: string, run: (ed: Editor, arg?: string) => void) => editor.register({ name, aliases, description, run });
 
-  reg('AEXREFPROJECT', ['XREFPROJECT', 'AEXREFP'], 'Update coil/contact cross-references across all project drawings', (ed) => void runProjectXref(ed));
+  reg('AEXREFPROJECT', ['XREFPROJECT', 'AEXREFP'], 'Update coil/contact cross-references across all project drawings', (ed) => runProjectXref(ed));
   reg('AERETAGPROJECT', ['RETAGPROJECT'], 'Retag components project-wide [All/Duplicates] (fixed tags are kept)', (ed, arg) => {
     const a = (arg ?? '').toUpperCase();
     if (a.startsWith('A') || a.startsWith('D')) {
-      void runProjectRetag(ed, a.startsWith('D') ? 'duplicates' : 'all');
-      return;
+      return runProjectRetag(ed, a.startsWith('D') ? 'duplicates' : 'all');
     }
-    void electricalUi(ed)
+    return electricalUi(ed)
       .pickList('Retag Components: project-wide', [
         { value: 'all', label: 'All components', detail: 'Renumber every tag in sheet and ladder order with each drawing\'s tag format' },
         { value: 'duplicates', label: 'Duplicates only', detail: 'Keep unique tags; retag repeated and blank tags only' },
       ], { detailHeader: 'What changes', okLabel: 'Next' })
-      .then((m) => m && void runProjectRetag(ed, m === 'duplicates' ? 'duplicates' : 'all'));
+      .then((m) => { if (m) return runProjectRetag(ed, m === 'duplicates' ? 'duplicates' : 'all'); });
   });
   reg('AEWIRENOPROJECT', ['WIRENOPROJECT'], 'Wire numbers project-wide, unique across drawings [Sheet-based/Drawing start]', (ed, arg) => {
     const a = (arg ?? '').toUpperCase();
     if (a.startsWith('S') || a.startsWith('D')) {
-      void runProjectWireNumbers(ed, a.startsWith('S'));
-      return;
+      return runProjectWireNumbers(ed, a.startsWith('S'));
     }
-    void electricalUi(ed)
+    return electricalUi(ed)
       .pickList('Wire Numbers: project-wide', [
         { value: 'sheet', label: 'Sheet-based start', detail: 'Sequential numbers start at sheet x 100 (sheet 3: 300, 301 ...); rung-based drawings keep rung numbers' },
         { value: 'drawing', label: 'Drawing start number', detail: 'Each drawing starts at its own WIRE_START; numbers stay unique across the project' },
       ], { detailHeader: 'Numbering', okLabel: 'Next' })
-      .then((m) => m && void runProjectWireNumbers(ed, m === 'sheet'));
+      .then((m) => { if (m) return runProjectWireNumbers(ed, m === 'sheet'); });
   });
   reg('AEFIXTAG', ['FIXTAG'], 'Toggle the fixed-tag flag (TAGFIXED) of the selected components; RETAG keeps fixed tags', (ed) => {
     const sel = [...ed.selection].map((id) => ed.doc.entity(id)).filter((e): e is InsertEntity => !!e && e.type === 'insert' && isComponent(e));
@@ -1000,7 +1033,7 @@ function registerProjectCommands(editor: Editor): void {
   });
 
   reg('AEPLCIO', ['PLCIO', 'PLCIMPORT'], 'PLC I/O from a spreadsheet (CSV / TSV): preview, then insert modules with point descriptions', (ed) => {
-    void browserOpenTextFile('.csv,.tsv,.txt').then(async (file) => {
+    return browserOpenTextFile('.csv,.tsv,.txt').then(async (file) => {
       if (!file) return;
       const parsed = parsePlcIo(file.text);
       for (const w of parsed.warnings.slice(0, 5)) ed.log(`AEPLCIO: ${w}`);
@@ -1016,7 +1049,7 @@ function registerProjectCommands(editor: Editor): void {
       if (res.options.rungs) for (const m of modules) for (const p of m.io ?? []) if (p.device) blocks.add(plcDeviceBlock(p.device, m.kind) ?? '');
       ed.doc.ensureBlocks([...blocks].map((b) => findLibrarySymbol(b)).filter((b): b is NonNullable<typeof b> => !!b));
       if (!ed.doc.layer('WIREFIXED')) ed.doc.addLayer({ name: 'WIREFIXED', color: 3, visible: true, locked: false, lineWeight: 0.25 });
-      ed.startTool(
+      return ed.startTool(
         new PlaceTool('AEPLCIO', (o) => buildPlcModules(o, modules), `Specify top-left corner for ${modules.length} PLC module(s):`, () => {
           ed.log(`AEPLCIO: ${modules.length} module(s) with ${res.rows.length} point(s) inserted (${modules.map((m) => m.tag).join(', ')}).`);
         }),
@@ -1044,17 +1077,16 @@ function registerProjectCommands(editor: Editor): void {
         ed.log('No report templates in the project (AEREPORTTEMPLATES creates them).');
         return;
       }
-      void electricalUi(ed)
+      return electricalUi(ed)
         .pickList('Run Report Template', list.map((t) => ({ value: t.name, label: t.name, detail: describeTemplate(t) })), { detailHeader: 'Template', okLabel: 'Run' })
         .then((n) => {
           const t = n ? findTemplate(ed.project, n) : undefined;
-          if (t) void runReportTemplate(ed, t);
+          if (t) return runReportTemplate(ed, t);
         });
-      return;
     }
     const t = findTemplate(ed.project, arg);
     if (!t) ed.log(`No report template "${arg}" (templates: ${list.map((x) => x.name).join(', ') || 'none'}).`);
-    else void runReportTemplate(ed, t);
+    else return runReportTemplate(ed, t);
   });
   reg('AEREPORTTEMPLATES', ['REPORTTEMPLATES', 'AEREPORTFORMAT'], 'Create / edit / run report templates (saved in the project file)', (ed) => {
     reportTemplatesDialog({
@@ -1068,7 +1100,7 @@ function registerProjectCommands(editor: Editor): void {
     });
   });
 
-  reg('AETITLEBLOCKALL', ['TITLEBLOCKALL'], 'Update the title blocks of all project drawings from the project mapping', (ed) => void runTitleBlocksAll(ed));
+  reg('AETITLEBLOCKALL', ['TITLEBLOCKALL'], 'Update the title blocks of all project drawings from the project mapping', (ed) => runTitleBlocksAll(ed));
   reg('AEWDTIMPORT', ['WDTIMPORT'], 'Import a title block mapping (.wdt) into the project', (ed) => {
     void browserOpenTextFile('.wdt,.txt').then((f) => {
       if (!f) return;

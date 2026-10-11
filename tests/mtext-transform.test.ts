@@ -1,4 +1,3 @@
-/** MTEXT columns under transforms, ported from PR #2 (codex/electrical-review-fixes 2f89b0e). */
 import { describe, expect, it } from 'vitest';
 import { blockTransform, scaleEntityBy, type MTextEntity } from '../src/core/entities';
 

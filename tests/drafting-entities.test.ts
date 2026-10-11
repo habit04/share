@@ -208,7 +208,7 @@ describe('DXF round trip of the new entities', () => {
     });
     const back = readDxf(writeDxf(d.snapshot));
     const h = back.header!;
-    expect(h.units).toEqual({ lunits: 4, luprec: 3, insunits: 4, auprec: 2 });
+    expect(h.units).toEqual({ lunits: 4, luprec: 3, insunits: 4, auprec: 2, aunits: 0 });
     expect(h.ltscale).toBe(0.5);
     expect(h.limits).toEqual({ min: { x: -1, y: -2 }, max: { x: 30, y: 20 } });
     expect(h.pdmode).toBe(34);

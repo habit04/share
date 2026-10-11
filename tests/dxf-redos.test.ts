@@ -3,7 +3,8 @@
  * trailing-whitespace regex (/\s+$/) and the field-expression regexes backtracked quadratically
  * on a long run of spaces that does not end the line (or has no closing ">%"), so one crafted
  * line froze the renderer for minutes. The replacements must give exactly what the regular
- * expressions gave (checked against them on random text) in bounded time on 10 MB inputs.
+ * expressions gave (checked against them on random text) in bounded time. DXF values over the
+ * parser's 1 MiB string budget reject before trimming; accepted values near that limit stay linear.
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -14,6 +15,7 @@ import { readDxf } from '../src/io/dxf';
 import { evaluateFields, replaceFields, splitArgs } from '../src/core/fields';
 
 const MB10 = 10 * 1024 * 1024;
+const MAX_STRING = 1024 * 1024;
 /** A minimal DXF: one TEXT on `layer` with `text`. */
 const dxfWith = (layer: string, text: string) => ['0', 'SECTION', '2', 'ENTITIES', '0', 'TEXT', '8', layer, '10', '0', '20', '0', '40', '2.5', '1', text, '0', 'ENDSEC', '0', 'EOF', ''].join('\n');
 const timed = <T>(fn: () => T): { value: T; ms: number } => {
@@ -38,19 +40,27 @@ function* randomStrings(alphabet: readonly string[], count: number, maxLen: numb
 }
 
 describe('DXF tokenizer: trailing whitespace in linear time (E-6)', () => {
-  it('a 10 MB line of spaces followed by another character tokenizes in bounded time', () => {
-    const value = `${' '.repeat(MB10)}x`;
+  it('a line just below the string cap followed by another character tokenizes in bounded time', () => {
+    const value = `${' '.repeat(MAX_STRING - 2)}x`;
     const { value: pairs, ms } = timed(() => tokenize(['0', 'SECTION', '2', 'ENTITIES', '8', value, '0', 'ENDSEC', '0', 'EOF', ''].join('\n')));
     expect(pairs.find((p) => p.code === 8)!.value).toBe(value);
     // The regex needed hours here (quadratic); a linear pass takes milliseconds. Generous for loaded CI.
     expect(ms).toBeLessThan(5000);
   });
 
-  it('a 10 MB line of spaces alone becomes an empty value, also through readDxf', () => {
-    const { value: s, ms } = timed(() => readDxf(dxfWith(' '.repeat(MB10), 'A')));
+  it('an accepted line of spaces becomes an empty value through readDxf', () => {
+    const { value: s, ms } = timed(() => readDxf(dxfWith(' '.repeat(MAX_STRING - 1), 'A')));
     expect(ms).toBeLessThan(10_000);
     expect(s.entities).toHaveLength(1);
     expect(s.entities[0]!.layer).toBe(''); // the value is the empty string, as the regex gave
+  });
+
+  it.each(['spaces', 'spaces followed by x'] as const)('rejects an oversized raw value before trimming: %s', (kind) => {
+    const value = ' '.repeat(MB10) + (kind === 'spaces' ? '' : 'x');
+    const source = dxfWith(value, 'A');
+    const result = timed(() => expect(() => tokenize(source)).toThrow(/Line 8: DXF value exceeds the string length limit/));
+    expect(result.ms).toBeLessThan(5000);
+    expect(() => readDxf(source, { recover: true })).toThrow(/string length limit/);
   });
 
   it('strips exactly what /\\s+$/ stripped (every Unicode space and line terminator)', () => {
@@ -97,8 +107,12 @@ describe('field expressions in linear time (E-6)', () => {
     // Many unterminated expressions: still one pass.
     const many = '%<\\AcVar '.repeat(200_000);
     expect(timed(() => evaluateFields(many)).ms).toBeLessThan(5000);
-    // Through the reader (fields are evaluated on open).
-    expect(timed(() => readDxf(dxfWith('0', open))).ms).toBeLessThan(10_000);
+    // The DXF reader rejects the oversized value; an accepted field still evaluates on open.
+    expect(() => readDxf(dxfWith('0', open))).toThrow(/string length limit/);
+    const accepted = `%<\\AcVar${' '.repeat(MAX_STRING - 20)}x`;
+    const imported = timed(() => readDxf(dxfWith('0', accepted)));
+    expect(imported.ms).toBeLessThan(10_000);
+    expect(imported.value.entities[0]).toMatchObject({ type: 'text', text: accepted });
   });
 
   it('still evaluates nested expressions innermost first', () => {
@@ -156,4 +170,3 @@ describe('on every committed DXF fixture the linear scanners give what the expre
     if (file === 'fixtures/example_2000.dxf') expect(seen.length).toBeGreaterThan(0);
   });
 });
-

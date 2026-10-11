@@ -1,5 +1,5 @@
 /**
- * Security review E-7: the desktop DWG reader runs in a worker with bounded input (512 MB), V8 heap,
+ * Security review E-7: the desktop DWG reader runs in a worker with bounded input (128 MiB), V8 heap,
  * WebAssembly memory and time, and never falls back to parsing in the main process. Stub workers
  * stand in for LibreDWG: one that never answers (time limit), one that allocates without end
  * (heap limit), and a missing one (start-up failure). Adapted from PR #2
@@ -50,12 +50,12 @@ afterAll(() => {
 });
 
 describe('desktop DWG resource limits (electron/dwg-host.cjs, E-7)', () => {
-  it('the input limit is 512 MB, checked before the worker starts (and by the reader itself)', async () => {
-    expect(MAX_DRAWING_BYTES).toBe(512 * 1024 * 1024);
+  it('the input limit is 128 MiB, checked before the worker starts (and by the reader itself)', async () => {
+    expect(MAX_DRAWING_BYTES).toBe(128 * 1024 * 1024);
     expect(MAX_DWG_BYTES).toBe(MAX_DRAWING_BYTES);
     await expect(host({ maxBytes: 2 }).read(new Uint8Array(3))).rejects.toThrow(/larger than the supported/);
     const oversize = { byteLength: MAX_DWG_BYTES + 1, buffer: new ArrayBuffer(0), byteOffset: 0 };
-    await expect(readDwgPayload(oversize, 'dwg')).rejects.toThrow(/larger than the supported 512 MB/);
+    await expect(readDwgPayload(oversize, 'dwg')).rejects.toThrow(/larger than the supported 128 MB/);
   });
 
   it('a read that does not finish in time is stopped (slow worker), and the next read gets a fresh worker', async () => {
@@ -70,8 +70,8 @@ describe('desktop DWG resource limits (electron/dwg-host.cjs, E-7)', () => {
     expect(readTimeoutFor(0)).toBe(60_000);
     expect(readTimeoutFor(1)).toBe(61_000);
     expect(readTimeoutFor(100 * 1024 * 1024)).toBe(160_000);
-    expect(readTimeoutFor(MAX_DRAWING_BYTES)).toBe(572_000);
-    expect(readTimeoutFor(2 * MAX_DRAWING_BYTES)).toBe(600_000);
+    expect(readTimeoutFor(MAX_DRAWING_BYTES)).toBe(188_000);
+    expect(readTimeoutFor(1024 * 1024 * 1024)).toBe(600_000);
   });
 
   it('a worker over its heap limit is stopped and the read fails with a message', () => {

@@ -28,6 +28,8 @@ export interface EditorInternals {
   projectRev: number;
   /** Bumped when another project is opened or created: saves bind to the project that started them. */
   projectGen: number;
+  /** Latest completed save in this generation, including saves to different destinations. */
+  projectSavedRevision: number;
   /** The grip being dragged (grip stretch of a selected object). */
   gripDrag: { entity: Entity; index: number; start: Point } | null;
   /** Points acquired for object snap tracking; cleared whenever a point is accepted. */
@@ -47,6 +49,7 @@ export function createInternals(overlay: ViewportOverlay): EditorInternals {
     savedRevisions: new Map<number, number>(),
     projectRev: 0,
     projectGen: 0,
+    projectSavedRevision: 0,
     gripDrag: null,
     acquired: [],
   };

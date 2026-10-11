@@ -408,7 +408,7 @@ export class SymbolBuilder {
   }
 
   /** AESYMBUILDER [name]: open the start dialog, or edit the named user symbol directly. */
-  start(arg?: string): void {
+  start(arg?: string): void | Promise<void> {
     const ed = this.editor;
     const ui = ed.hooks.symbolBuilder;
     const preset = arg?.trim() ? normalizeSymbolName(arg.trim()) : undefined;
@@ -437,7 +437,7 @@ export class SymbolBuilder {
     };
     const p = ui.start(init);
     this.pendingStart = p;
-    void p
+    return p
       .then((r) => {
         if (r) this.openFrom(r);
       })

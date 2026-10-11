@@ -4,7 +4,7 @@ Checks that need real machines, real printers, other CAD programs and a person l
 screen. Run them on release candidates before a version is announced. Everything the automated
 suites already cover (listed below) is left out.
 
-Written against JCad Electrical 0.4.0 plus the `[Unreleased]` changes in [CHANGELOG.md](../CHANGELOG.md).
+Written against JCad Electrical 0.4.1 plus the `[Unreleased]` changes in [CHANGELOG.md](../CHANGELOG.md).
 AutoCAD, BricsCAD, FreeCAD, SolidWorks and Fusion are named only as compatibility references; JCad
 Electrical is not affiliated with their makers.
 
@@ -17,8 +17,9 @@ Electrical is not affiliated with their makers.
 - **Must pass before release**: a failure blocks the release (or needs a written decision and a line
   in the release notes). **Nice to verify**: run when time allows, always on a minor or major
   version; failures become issues.
-- Record each failure with **Help > Report a Problem…** (`REPORTBUG`): it adds the version, platform,
-  recent commands and errors. Attach screenshots, the drawing and `error.log`.
+- Record each failure with **Help > Report a Problem…** (`REPORTBUG`). Version and platform are
+  included; command history, captured errors and private details require explicit opt-in.
+  Local paths and drawing names are redacted by default. Inspect reports before attaching them.
 - Note at the top of your copy: version, installer file name, date, tester, machine (CPU, RAM, GPU),
   OS name and build number, display scaling.
 - App data folder (settings, `autosave/`, `plugins/`, `user-library.json`, `error.log`):
@@ -44,17 +45,21 @@ Do not repeat these by hand; they run on every push (`.github/workflows/ci.yml`)
   safety), the type check and the renderer build.
 - `npm run ui-check`: every command, ribbon button, menu entry, status-bar control and context-menu
   item in headless Chromium, failing on page errors.
-- `scripts/e2e-electron.mjs` on Ubuntu and Windows (a development build, not an installer; native
+- `scripts/e2e-electron.mjs` on Ubuntu, Windows and macOS (native
   dialogs and the network are stubbed): opening DXF / DWG, the Import Report, IMAGE bitmaps,
   RECENT, a Tabloid vector PDF parsed for page size and paths, a raster plot, a layout page, the
   updater's logic offline, the Symbol Builder, About, the unsaved-changes prompt, the Drawing
   Recovery Manager with migrated backups, temp-file-and-rename saves with `.bak`, a simulated failed
   save, an unreadable recovery folder.
 
-Not automated, and therefore below: the installers and their first launch, signatures as Windows
-and macOS present them, macOS as a whole (no macOS job), a real update download and install, real
-printers and how PDFs look in viewers, other CAD programs, display scaling and monitors, real
-network shares, a killed process, real-world file sizes, and accessibility.
+The release pipeline also installs/extracts the packaged installers and drives them on their OS.
+It verifies configured signatures, notarization or ad-hoc seals, binds all artifact checksums to
+the tested SHA, and publishes a GitHub-signed provenance bundle. The normal unit and release
+checks run Node 22 and 24; dense Node and browser performance budgets are gates.
+
+Manual coverage below still includes quarantine / SmartScreen on downloaded files, real update
+downloads and installation, printers and PDF viewer appearance, other CAD programs, display
+scaling, monitors, real network shares, process termination, production-sized drawings and accessibility.
 
 ## Test files
 
@@ -72,6 +77,13 @@ network shares, a killed process, real-world file sizes, and accessibility.
   least one AutoCAD Electrical project drawing (with the `WD_M` block).
 - Large drawings: see [Large files](#11-large-files) and [Appendix B](#appendix-b-making-a-large-drawing).
 
+For an independent export check, run `npm run check:autocad` on Windows with licensed AutoCAD
+Core Console installed. Set `JCAD_AUTOCAD_CONSOLE` if it is outside the default AutoCAD 2027 path;
+`JCAD_AUTOCAD_OUT` can name a fresh empty folder. The script opens freshly exported regression
+DXFs, requires `AUDIT` to report zero errors, saves a normalized DXF and checks reimported
+entity types/counts. Logs and vendor outputs stay outside the repository. This validates those
+exports only; it does not prove arbitrary AutoCAD drawing or semantic compatibility.
+
 ---
 
 ## 1. Windows 10 and 11
@@ -82,15 +94,15 @@ internet" mark; a copy from a USB stick or network share skips SmartScreen.
 ### Must pass before release
 
 - [ ] Download `jcad-electrical-X.Y.Z-win-x64.exe` in Edge → download completes; a "isn't commonly downloaded" notice may appear for a new release (choose **Keep**), but never a malware or virus block.
-- [ ] Right-click the `.exe` > Properties > Digital Signatures → signer **Justin Rodriguez**, "This digital signature is OK", with a timestamp.
-- [ ] Run the installer → either no SmartScreen prompt, or "Windows protected your PC" whose **More info** shows `Publisher: Justin Rodriguez` (never "Unknown publisher"); **Run anyway** continues.
+- [ ] Check this release's `release-provenance.json`: if Windows is `authenticode-verified`, Properties > Digital Signatures shows the configured publisher and a valid timestamped signature. If it is `unsigned`, record that status; there is no publisher identity to verify.
+- [ ] Run the installer → the displayed publisher agrees with the verified release status. Unsigned builds can show "Unknown publisher" and SmartScreen; signed builds can still show reputation warnings. **Run anyway**, when offered, continues.
 - [ ] Installer runs → no UAC (administrator) prompt (per-user install), a short progress window, then JCad Electrical starts by itself.
-- [ ] Start menu → entry **JCad Electrical** exists and starts the app; a desktop shortcut exists (the icon is Electron's default icon: no app icon is configured in `package.json` yet).
+- [ ] Start menu → entry **JCad Electrical** exists and starts the app; its icon and desktop shortcut show the schematic relay icon configured in `package.json`.
 - [ ] First launch → window titled "JCad Electrical", ribbon, palettes, command line and dark model space; no error dialog, no error panel; the command line accepts `LINE`.
 - [ ] Wait 10 s after start with the newest version installed → no update dialog appears.
 - [ ] Help > About → version X.Y.Z, author, licence links (GPL v3 text and third-party notices open).
 - [ ] Start JCad Electrical again from the Start menu while it is running (also while minimized) → no second window or taskbar button; the running window is restored and comes to the front.
-- [ ] Double-click a `.dxf` and a `.dwg` in Explorer → they open in the program that owned them before installing (the installer registers no file types and must not take over `.dxf` / `.dwg`).
+- [ ] Open With for `.dxf` and `.jcadproj.json` offers JCad Electrical; choosing it opens the file in the running app. Existing default-app choices should be respected. `.dwg` is importable but is not registered as a file association.
 - [ ] Close the window with an unsaved change (title-bar X, Alt+F4, and the taskbar's "Close window") → Save / Don't Save / Cancel prompt each time; Cancel keeps the app open.
 - [ ] Settings > Apps > Installed apps → "JCad Electrical X.Y.Z" listed; **Uninstall** removes the program, Start menu entry and desktop shortcut, and leaves `%APPDATA%\jcad-electrical` (settings, autosave, user library) in place.
 - [ ] Install again after the uninstall → recent files, Options and the user symbol library are still there.
@@ -101,7 +113,7 @@ internet" mark; a copy from a USB stick or network share skips SmartScreen.
 - [ ] Windows 11 with **Smart App Control** on → the signed installer and app run; if they are blocked ("Smart App Control blocked an app that may be unsafe"), record it.
 - [ ] Install under a standard (non-admin) user account → installs and runs without asking for an administrator password.
 - [ ] Windows 11 on ARM → the x64 build installs and runs under emulation; drawing, zoom and plotting work.
-- [ ] Explorer > a `.dxf` > Open with > Choose another app > JCad Electrical → the app starts or comes to the front, but the file is **not** opened (no file hand-over yet); record if this changes.
+- [ ] Explorer > a `.dxf` > Open with > Choose another app > JCad Electrical → the app starts or comes to the front and opens the selected drawing.
 - [ ] Third-party antivirus (any one) → no detection of the installer or `JCad Electrical.exe`; Defender real-time protection does not slow the first start by more than a few seconds.
 - [ ] Sign out or shut down Windows with an unsaved drawing → record whether Windows shows "This app is preventing shutdown" and whether the drawing appears in the Drawing Recovery Manager at the next start.
 - [ ] Pin JCad Electrical to the taskbar, update it (section 4), start it from the pin → the pin still starts the new version.
@@ -111,10 +123,11 @@ internet" mark; a copy from a USB stick or network share skips SmartScreen.
 ## 2. macOS (Apple Silicon and Intel)
 
 Download the DMG with Safari or Chrome so it carries the quarantine flag (`xattr -l` on the file
-shows `com.apple.quarantine`). Releases from 0.4.2 on are Developer ID signed, hardened and
-notarized (the release workflow has the five Apple secrets) and open after a single confirmation;
-a build made without the secrets is ad-hoc signed and needs the one-time **Open Anyway**. The
-release notes' **Verified build** list says which kind the release is
+shows `com.apple.quarantine`). Publication from this pipeline requires verified Developer ID
+signatures, hardened runtime and notarization, and ordinarily opens after the downloaded-app
+confirmation. Older ad-hoc releases and empty-tag rehearsals built without Apple credentials
+need the one-time **Open Anyway**. The release notes' **Verified build** list records the
+signing checks that passed for that build
 ([section 13](#13-release-sign-off-github-release-page)); a release meant to be notarized that
 says "ad-hoc" is not ready.
 
@@ -136,7 +149,7 @@ says "ad-hoc" is not ready.
 ### Nice to verify
 
 - [ ] Intel DMG on an Apple Silicon Mac → macOS offers to install Rosetta; the app runs; Check for Updates offers the x64 DMG.
-- [ ] Drag a `.dxf` onto the Dock icon → not supported yet; record what happens (nothing, or the app comes to the front).
+- [ ] Drag a `.dxf` or `.jcadproj.json` onto the Dock icon → the app opens the selected file and comes to the front.
 - [ ] Full-screen mode (green button) and a second Space → ribbon, dialogs and the Plot dialog appear on the full-screen window, not on another Space.
 - [ ] macOS dark and light appearance → the application keeps its own dark workspace; native dialogs follow the system.
 - [ ] `spctl --assess --type execute --verbose=4 "/Applications/JCad Electrical.app"` on an ad-hoc build → "rejected" (expected); on a Developer ID build → "accepted, source=Notarized Developer ID".
@@ -172,7 +185,10 @@ says "ad-hoc" is not ready.
 Install the **previous** release (for example v0.4.0 from the releases page), make sure the new
 release is published (not a draft, not a pre-release), then start the old version. The start-up
 check runs about 8 s after launch; **Help > Check for Updates…** (`CHECKUPDATES`) checks at once.
-Windows and the AppImage update in place; macOS and the .deb are offered the download.
+Only a Windows installation with a trusted `publisherName` in its packaged update configuration
+offers in-place updates. Unsigned Windows builds, macOS, AppImage and .deb offer manual downloads.
+Run the Windows download/restart checks below only for signed builds; on other installations,
+verify that Download opens the release asset without offering automatic installation.
 
 Where to look when something goes wrong: the dialog text (copy it; the updater's own log is turned
 off), the command-line history (**F2**), `error.log` in the app data folder, and the downloaded
@@ -185,9 +201,9 @@ Windows, `~/.cache/jcad-electrical-updater/pending/` on Linux).
 - [ ] Windows: **Download** → the command line logs "Downloading update: 0%" … "75%", then "Update Ready: JCad Electrical X.Y.Z has been downloaded." with **Restart Now** / Later.
 - [ ] Windows: **Restart Now** with an unsaved drawing open → the Save / Don't Save / Cancel prompt comes first; Cancel keeps the app running and nothing is installed.
 - [ ] Windows: **Restart Now** after saving → the app closes, the installer runs without SmartScreen or UAC, the app restarts by itself; Help > About shows X.Y.Z.
-- [ ] Windows: **Later** in "Update Ready", then quit normally → the next start runs X.Y.Z (installed on quit).
+- [ ] Windows: on a version with the explicit-restart policy, **Later** in "Update Ready", then quit normally → the next start still runs A.B.C. **Check for Updates** offers **Restart Now**; installation runs only after confirmation, the unsaved-work prompt and checksum/publisher re-verification. Record older versions' differing quit behavior separately.
 - [ ] Windows: no error "New version X.Y.Z is not signed by the application owner" (signer of the new build must equal the old build's publisher).
-- [ ] AppImage: same dialogs → after Restart Now the app runs X.Y.Z; note the AppImage file name afterwards (record whether it was renamed to the new version).
+- [ ] AppImage: Download opens the matching release asset; replace the executable manually and verify X.Y.Z after restart. No in-place update is offered.
 - [ ] macOS: "Update Available" with **Download** / Release Notes / Later and the text "Download the new disk image and drag the app to Applications to replace this one. If macOS blocks the first launch, allow it once in System Settings > Privacy & Security." → **Download** opens the DMG for this Mac's architecture (arm64 or x64) in the browser.
 - [ ] macOS: replace the app in Applications with the new one → a Developer ID build opens after the downloaded-from-the-internet confirmation at most (an ad-hoc build asks for Open Anyway once more), then About shows X.Y.Z.
 - [ ] .deb: "Update Available" with "Download and install the new package over this one; your settings and drawings are kept." → **Download** opens the `.deb` download; `sudo apt install ./…` upgrades.
@@ -454,11 +470,12 @@ these sizes for comparison: `.exe` 82 MB, arm64 `.dmg` 101 MB, x64 `.dmg` 108 MB
 - [ ] `latest.yml` (open it in the browser) → `version: X.Y.Z`; `path` and `files[0].url` are `jcad-electrical-X.Y.Z-win-x64.exe`; `size` equals the asset size; `releaseDate` is today.
 - [ ] `latest.yml` `sha512` equals the downloaded `.exe` ([Appendix A](#appendix-a-verification-commands)); the same for `latest-linux.yml` and the AppImage.
 - [ ] `latest-mac.yml` → `version: X.Y.Z` and the DMG names of this release.
-- [ ] Windows signature (Properties > Digital Signatures or `Get-AuthenticodeSignature`) → Status `Valid`, signer **Justin Rodriguez**, timestamped; the installed `JCad Electrical.exe` is signed too.
-- [ ] macOS: `codesign --verify --deep --strict --verbose=2 "/Applications/JCad Electrical.app"` passes; `codesign -dv` shows `Authority=Developer ID Application: …` and `flags=0x10000(runtime)`, `xcrun stapler validate` says "The validate action worked!" and `spctl --assess --type execute --verbose=4` "accepted, source=Notarized Developer ID" (signed build, every release from 0.4.2 on); `Signature=adhoc` means the build was made without the Apple secrets. Write down which kind it is; it must match the release notes.
+- [ ] Windows signatures agree with provenance: installer and installed executable have Status `Valid`, the configured publisher (Justin Rodriguez) and a valid timestamp. Publication requires `authenticode-verified`; older unsigned releases and build-only rehearsals must be described as unsigned.
+- [ ] macOS: `codesign --verify --deep --strict --verbose=2 "/Applications/JCad Electrical.app"` passes; `codesign -dv` shows `Authority=Developer ID Application: …`, the configured Team ID and the `runtime` flag. `xcrun stapler validate` says "The validate action worked!" and `spctl --assess --type execute --verbose=4` reports "accepted, source=Notarized Developer ID". Each DMG's signature also verifies with that Team ID. Publication requires `developer-id-notarized`; `Signature=adhoc` is allowed only for older releases or build-only rehearsals and must match their notes/provenance.
 - [ ] Linux: `dpkg-deb -I jcad-electrical-X.Y.Z-linux-amd64.deb` → Package `jcad-electrical`, Version `X.Y.Z`.
-- [ ] Release notes (the release body) → the CHANGELOG section of X.Y.Z first (upgrade notes at the top: the update dialog of older versions shows the first 600 characters), then the download footer, whose First launch line matches the macOS build (Developer ID: "signed with a Developer ID and notarized by Apple", no Open Anyway; ad-hoc: Open Anyway), then the **Verified build** list with each platform's signing result (macOS: "Developer ID signature, hardened runtime and notarization verified"). v0.4.0 went out empty; the **Release notes** workflow rewrites a release body and keeps that list.
-- [ ] One fresh install per platform from the published assets (sections 1–3) and one update from the previous release on Windows and AppImage (section 4) done on the published files, not CI artifacts.
+- [ ] Release notes contain the X.Y.Z CHANGELOG section first (upgrade notes at the top: older update dialogs show the first 600 characters), then the download footer with first-launch instructions matching the macOS build's verified signing record, then the **Verified build** list with the exact tested source SHA and each platform's signing result. A Developer ID footer requires no Open Anyway step. The **Release notes** workflow preserves the signing instructions and **Verified build** list when rewriting a release that has provenance.
+- [ ] One fresh install per platform and a supported signed-Windows update (or manual replacement on the other builds) succeed using the published assets.
+- [ ] Verify `release-provenance.json` and each downloaded installer with `gh attestation verify <file> --repo habit04/share --bundle release-provenance.sigstore.json`; their SHA-256 values also match `SHA256SUMS.txt`.
 - [ ] Website <https://habit04.github.io/share/> → download buttons point at the X.Y.Z files (allow up to 30 minutes for caches).
 
 ### Nice to verify

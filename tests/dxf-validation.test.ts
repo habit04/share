@@ -24,6 +24,52 @@ function readError(text: string, opts = {}): DxfReadError {
 }
 
 describe('invalid DXF structure', () => {
+  it('rejects non-finite/unsafe integers and out-of-range display precision with value lines', () => {
+    const header = (name: string, value: string) => ['0', 'SECTION', '2', 'HEADER', '9', name, '70', value, '0', 'ENDSEC', '0', 'EOF'].join('\n');
+    for (const name of ['$DIMDEC', '$DIMADEC', '$DIMALTD', '$DIMTDEC', '$LUPREC', '$AUPREC']) expect(readError(header(name, '9999'))).toMatchObject({ line: 8, message: expect.stringContaining(`${name} precision`) });
+    expect(readError(header('$DIMDEC', '9'.repeat(400)))).toMatchObject({ line: 8, message: expect.stringContaining('invalid number') });
+    expect(readError(header('$DIMDEC', '9007199254740992')).line).toBe(8);
+    for (const code of ['9'.repeat(400), '9999', '-1']) expect(readError(`${code}\nSECTION\n0\nEOF\n`)).toMatchObject({ line: 1, message: expect.stringContaining('not a DXF group code') });
+    expect(readDxf(header('$DIMADEC', '-1')).header!.dimStyle.angularDecimals).toBe(-1);
+  });
+  it('rejects garbage numeric suffixes instead of accepting a numeric prefix', () => {
+    const text = ['0', 'SECTION', '2', 'ENTITIES', '0', 'LINE', '5', 'ABC', '8', 'TEST', '10', '12oops', '20', '0', '11', '1', '21', '0', '0', 'ENDSEC', '0', 'EOF'].join('\n');
+    const state = readDxf(text);
+    expect(state.entities).toHaveLength(0);
+    expect(importReportOf(state)?.items).toEqual([expect.objectContaining({ type: 'LINE', handle: 'ABC', layer: 'TEST', line: 5, where: 'model space', reason: expect.stringMatching(/group 10, value line 12: "12oops"/) })]);
+    const header = ['0', 'SECTION', '2', 'HEADER', '9', '$LTSCALE', '40', '2junk', '0', 'ENDSEC', '0', 'EOF'].join('\n');
+    expect(readError(header)).toMatchObject({ line: 8, message: expect.stringMatching(/\$LTSCALE group 40.*2junk/) });
+  });
+
+  it('checks string, pair, record and source budgets before allocating the import', () => {
+    const minimal = '0\nSECTION\n2\nENTITIES\n0\nENDSEC\n0\nEOF\n';
+    expect(() => readDxf(minimal, { maxSourceLength: 8 })).toThrow(/source text size limit/);
+    expect(() => readDxf(minimal, { maxStringLength: 3 })).toThrow(/string length limit/);
+    expect(() => readDxf(minimal, { maxPairs: 2 })).toThrow(/group pair limit/);
+    expect(() => readDxf(minimal, { maxRecords: 2 })).toThrow(/record limit/);
+    expect(readDxf(minimal, { maxPairs: 4, maxRecords: 3 }).entities).toEqual([]);
+  });
+
+  it('rejects out-of-range DIMSTYLE record precision without accepting a dangerous style', () => {
+    const text = ['0', 'SECTION', '2', 'TABLES', '0', 'DIMSTYLE', '105', 'A1', '2', 'BAD', '271', '9999', '0', 'ENDSEC', '0', 'EOF'].join('\n');
+    const state = readDxf(text);
+    expect(importReportOf(state)?.items).toContainEqual(expect.objectContaining({ type: 'DIMSTYLE', action: 'dropped', reason: expect.stringMatching(/DIMDEC precision at line 12/) }));
+  });
+
+  it('reports malformed legacy VERTEX numbers at their value line', () => {
+    const text = ['0', 'SECTION', '2', 'ENTITIES', '0', 'POLYLINE', '5', 'AA', '8', 'VERTS', '0', 'VERTEX', '10', '2oops', '20', '0', '0', 'VERTEX', '10', '3', '20', '0', '0', 'SEQEND', '0', 'ENDSEC', '0', 'EOF'].join('\n');
+    const state = readDxf(text);
+    expect(state.entities).toHaveLength(0);
+    expect(importReportOf(state)?.items).toContainEqual(expect.objectContaining({ type: 'POLYLINE', handle: 'AA', layer: 'VERTS', reason: expect.stringMatching(/group 10, value line 14: "2oops"/) }));
+  });
+
+  it('drops unsafe inline MTEXT numeric factors with source context', () => {
+    const text = ['0', 'SECTION', '2', 'ENTITIES', '0', 'MTEXT', '5', 'F1', '8', 'NOTES', '10', '0', '20', '0', '40', '1', '41', '10', '71', '1', '1', '\\H1e308x;\\H1e308x;BAD', '0', 'ENDSEC', '0', 'EOF'].join('\n');
+    const state = readDxf(text);
+    expect(state.entities).toHaveLength(0);
+    expect(importReportOf(state)?.items).toContainEqual(expect.objectContaining({ type: 'MTEXT', handle: 'F1', layer: 'NOTES', line: 5, where: 'model space', action: 'dropped', reason: expect.stringContaining('MTEXT formatting') }));
+  });
+
   it('rejects a non-numeric group code with its line number', () => {
     const e = readError(broken('bad-groupcode.dxf'));
     expect(e.line).toBe(9);

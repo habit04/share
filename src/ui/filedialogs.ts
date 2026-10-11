@@ -144,3 +144,28 @@ export function projectRecoveryDialog(name: string, path: string | null, savedAt
     m.footer.append(open, discard, later);
   });
 }
+
+/** Read failures keep recovery available and offer a deliberate retry. */
+export function projectRecoveryReadFailedDialog(name: string, error: unknown): Promise<'retry' | 'later'> {
+  return new Promise((resolve) => {
+    const m = modal('Project Recovery Could Not Be Read', 520);
+    let done = false;
+    const finish = (choice: 'retry' | 'later') => {
+      if (done) return;
+      done = true;
+      m.close();
+      resolve(choice);
+    };
+    m.onClose(() => finish('later'));
+    const p = document.createElement('p');
+    p.textContent = `${name} could not be read: ${error instanceof Error ? error.message : String(error)}`;
+    const hint = document.createElement('p');
+    hint.textContent = 'The recovery copy is kept. Retry now, or continue to drawing recovery and try this project next time.';
+    m.body.append(p, hint);
+    const retry = button('Retry', true);
+    const later = button('Later');
+    retry.addEventListener('click', () => finish('retry'));
+    later.addEventListener('click', () => finish('later'));
+    m.footer.append(retry, later);
+  });
+}

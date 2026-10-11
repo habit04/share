@@ -201,10 +201,8 @@ describe('save queue fuzzing regressions', () => {
     expect(wrote).toBe(true);
     expect(logs).toEqual([]);
   });
-  it('the main process writes one user file at a time, in arrival order (electron/main writeUserFile)', () => {
-    // electron/main.cjs and the modules it wires (electron/main/*.cjs).
-    const src = mainProcessSource();
-    expect(src).toMatch(/function writeUserFile\(file, data, opts\) \{\s*return enqueueWrite\(pathKey\(file\) \?\? file, \(\) => atomicWriteFile\(file, data, opts\)\);/);
+  it('the IPC save channels use the shared user-file writer', () => {
+    // Queue ordering and aliases are exercised through app-data.cjs in main-write-queue.test.ts.
     const handler = ipcHandlerSource;
     for (const name of ['save-dxf', 'save-project', 'save-text', 'save-pdf']) {
       expect(handler(name), name).toMatch(/await writeUserFile\(/);

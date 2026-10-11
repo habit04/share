@@ -2,10 +2,12 @@
  * DXF writing basics: number formatting, the group-code writer with its handle counter, and the
  * groups entities start with (AcDbEntity common data, text placement, annotative XDATA).
  */
-import type { Entity, ColorSpec, ImageEntity, TableEntity, DimStyle } from '../../core/entities';
-import { STANDARD_DIMSTYLE } from '../../core/dimension';
-import * as g from '../../core/geometry';
+import type { DimStyle, ColorSpec, Entity, ImageEntity, TableEntity } from '../../core/entities';
 import { ANNO_APP } from './codes';
+import * as g from '../../core/geometry';
+import { STANDARD_DIMSTYLE } from '../../core/dimension';
+
+// ---------------------------------------------------------------- writing
 
 function fmt(n: number): string {
   if (!Number.isFinite(n)) return '0';
@@ -16,9 +18,7 @@ function fmt(n: number): string {
 export class Writer {
   private out: string[] = [];
   private handle = 0x100;
-  /** STYLE record handles by upper-case style name (DIMTXSTY, group 340, refers to them). */
   readonly textStyleHandles = new Map<string, string>();
-  /** The DIMSTYLE records written, by upper-case name: a dimension writes what differs from its record (DSTYLE). */
   readonly dimensionStyles = new Map<string, DimStyle>();
   pair(code: number, value: string | number): void {
     this.out.push(String(code), typeof value === 'number' ? fmt(value) : value);
@@ -41,10 +41,6 @@ function colorCode(c: ColorSpec): number {
 
 /** Block-record handles of paper-space layouts while writeDxf runs: their entities get group 67 = 1 (Track E). */
 let paperOwners: ReadonlySet<string> = new Set();
-/** writeDxf names the paper-space owners before it writes any entity. */
-export function setPaperOwners(owners: ReadonlySet<string>): void {
-  paperOwners = owners;
-}
 
 export function writeAnnotativeXdata(w: Writer): void {
   w.pair(1001, ANNO_APP);
@@ -100,4 +96,9 @@ export interface WriteExtras {
 
 export function emptyExtras(): WriteExtras {
   return { imageDefs: new Map(), imageReactors: new Map(), tableBlocks: new Map(), arrowSize: STANDARD_DIMSTYLE.arrowSize };
+}
+
+/** writeDxf names the paper-space owners before it writes any entity. */
+export function setPaperOwners(owners: ReadonlySet<string>): void {
+  paperOwners = owners;
 }

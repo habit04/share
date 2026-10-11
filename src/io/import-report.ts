@@ -7,7 +7,9 @@
  * never written to a file: re-opening a saved drawing produces a fresh report.
  */
 import type { DrawingState } from '../core/document';
-import { expansionReport, MAX_INSERT_EXPANSION, type BlockDef, type Entity } from '../core/entities';
+import { expansionReport, MAX_INSERT_EXPANSION, MAX_BLOCK_EXPANSION_WORK, type BlockDef, type Entity } from '../core/entities';
+import { mtextFormattingProblem } from '../core/mtext';
+import { samePath } from '../app/paths';
 
 /**
  * - dropped: not imported; it is lost when the drawing is saved.
@@ -100,16 +102,18 @@ export class ImportReportBuilder {
 /**
  * Report how the drawing's blocks expand (security review E-13): blocks that insert themselves
  * (the repeated reference is not drawn), blocks one reference to which expands to more than
- * MAX_INSERT_EXPANSION objects (each reference draws that many), and a drawing whose references
- * add up to more than that. The blocks are kept and saved as they are, so the items are `kept`:
+ * MAX_INSERT_EXPANSION objects, and a drawing whose references add up to more than that. These
+ * counts retain definitions without allocating expansions; Drawing acceptance enforces the
+ * stricter work budgets. The blocks are kept and saved as they are, so the items are `kept`:
  * they are listed, but neither open the report dialog nor ask before saving over the file.
  */
 export function reportBlockExpansion(report: ImportReportBuilder, blocks: Readonly<Record<string, BlockDef>>, topLevel: readonly Entity[]): void {
   const r = expansionReport(blocks, topLevel);
   const cap = MAX_INSERT_EXPANSION.toLocaleString('en-US');
+  const workCap = MAX_BLOCK_EXPANSION_WORK.toLocaleString('en-US');
   for (const name of r.cyclic) report.add({ type: 'BLOCK', action: 'kept', reason: `block "${name}" inserts itself (directly or through other blocks): the repeated reference is not drawn` });
-  for (const name of r.oversized) report.add({ type: 'BLOCK', action: 'kept', reason: `block "${name}" expands to more than ${cap} objects through its nested blocks: each reference draws only the first ${cap}, and EXPLODE leaves it a reference` });
-  if (r.total > MAX_INSERT_EXPANSION) report.note(`The block references of this drawing expand to ${r.total > MAX_INSERT_EXPANSION * 999 ? 'billions of' : `about ${r.total.toLocaleString('en-US')}`} objects (more than ${cap}): drawing and selecting may be slow and use much memory.`);
+  for (const name of r.oversized) report.add({ type: 'BLOCK', action: 'kept', reason: `block "${name}" expands to more than ${cap} objects through its nested blocks: its definition is kept, but drawing acceptance rejects references exceeding the ${workCap}-work geometry budget` });
+  if (r.total > MAX_INSERT_EXPANSION) report.note(`The block references of this drawing expand to ${r.total > MAX_INSERT_EXPANSION * 999 ? 'billions of' : `about ${r.total.toLocaleString('en-US')}`} objects (more than ${cap}); drawing acceptance enforces the per-reference and whole-drawing geometry budgets before rendering.`);
 }
 
 /** Whether a value holds a non-finite number anywhere (deep). Fast path: no allocation. */
@@ -159,8 +163,30 @@ export function geometryProblem(e: Entity): string | null {
     case 'polyline':
       return e.points.length < 2 ? `a polyline needs at least 2 vertices (it has ${e.points.length})` : null;
     case 'text':
-    case 'mtext':
       return e.height < 0 ? `negative text height ${e.height}` : null;
+    case 'mtext': {
+      if (e.raw) {
+        const format = mtextFormattingProblem(e.raw, e.height);
+        if (format) return format;
+      }
+      return e.height < 0 ? `negative text height ${e.height}` : null;
+    }
+    case 'leader':
+      return e.raw ? mtextFormattingProblem(e.raw, e.textHeight ?? 1) ?? null : null;
+    case 'table':
+      if (!Array.isArray(e.cells)) return 'table cells must be an array';
+      for (const row of e.cells) {
+        if (!Array.isArray(row)) return 'table cell rows must be arrays';
+        for (const cell of row) {
+          if (!cell || typeof cell !== 'object' || typeof cell.text !== 'string') return 'table cells must contain text';
+          if (cell.raw) {
+            if (typeof cell.raw !== 'string') return 'table formatting source must be text';
+            const format = mtextFormattingProblem(cell.raw, cell.height ?? e.textHeight);
+            if (format) return format;
+          }
+        }
+      }
+      return null;
     default:
       return null;
   }
@@ -242,11 +268,6 @@ export function saveOverwriteWarning(state: DrawingState, path: string | null): 
   const n = lossCount(r);
   if (n === 0) return null;
   return `${baseName(path)} contained ${n} object(s) JCad cannot keep (see the import report). Saving over it removes them from the file. Use Save As to keep the original. Save over it anyway?`;
-}
-
-function samePath(a: string, b: string): boolean {
-  const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+/g, '/');
-  return norm(a) === norm(b) || norm(a).toLowerCase() === norm(b).toLowerCase();
 }
 
 function baseName(p: string): string {

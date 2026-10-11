@@ -17,6 +17,8 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const fsp = require('node:fs/promises');
 const { createAtomicWriter, createWriteQueue, isTempName } = require('./atomic-write.cjs');
+const { readLimitedFile, validateTextSize, MAX_DRAWING_BYTES } = require('./resource-limits.cjs');
+const MAX_METADATA_BYTES = 8 * 1024 * 1024;
 
 const ID_NAME_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.sv\.dxf$/i;
 const NAME_RE = /^[A-Za-z0-9_-]{1,60}\.sv\.dxf$/;
@@ -85,7 +87,7 @@ function createAutosaveStore(dir, deps = {}) {
   async function readIndex() {
     let text;
     try {
-      text = await fs.readFile(indexFile, 'utf8');
+      text = String(await readLimitedFile(fs, indexFile, MAX_METADATA_BYTES, 'utf8'));
     } catch (err) {
       if (err && err.code === 'ENOENT') return {};
       throw err;
@@ -101,7 +103,9 @@ function createAutosaveStore(dir, deps = {}) {
   function saveIndex() {
     return enqueue(indexFile, async () => {
       await fs.mkdir(dir, { recursive: true });
-      await writer.atomicWriteFile(indexFile, JSON.stringify({ version: 1, entries }, null, 1));
+      const text = JSON.stringify({ version: 1, entries }, null, 1);
+      validateTextSize(text, MAX_METADATA_BYTES, 'recovery index');
+      await writer.atomicWriteFile(indexFile, text);
     });
   }
 
@@ -128,9 +132,10 @@ function createAutosaveStore(dir, deps = {}) {
       if (!isLegacyName(f)) continue;
       let meta = null;
       try {
-        meta = JSON.parse(await fs.readFile(path.join(dir, `${f}.json`), 'utf8'));
-      } catch {
-        /* no sidecar */
+        meta = JSON.parse(String(await readLimitedFile(fs, path.join(dir, `${f}.json`), MAX_METADATA_BYTES, 'utf8')));
+      } catch (err) {
+        if (!(err instanceof SyntaxError) && (!err || err.code !== 'ENOENT')) throw err;
+        /* missing or damaged JSON sidecar: retain the drawing with fallback metadata */
       }
       if (!meta || !Number(meta.savedAt)) {
         try {
@@ -190,7 +195,7 @@ function createAutosaveStore(dir, deps = {}) {
     ensure,
     async write(name, text, meta) {
       const n = safeAutosaveName(name);
-      if (typeof text !== 'string') throw new Error('Invalid payload');
+      validateTextSize(text, MAX_DRAWING_BYTES, 'recovery copy');
       await ensure();
       const file = path.join(dir, n);
       // Everything about one backup (its file and its index entry) changes inside its own queue, so a
@@ -233,7 +238,7 @@ function createAutosaveStore(dir, deps = {}) {
     async read(name) {
       const n = safeAutosaveName(name);
       try {
-        return await fs.readFile(path.join(dir, n), 'utf8');
+        return String(await readLimitedFile(fs, path.join(dir, n), MAX_DRAWING_BYTES, 'utf8'));
       } catch (err) {
         if (err && err.code === 'ENOENT') return null;
         throw err;

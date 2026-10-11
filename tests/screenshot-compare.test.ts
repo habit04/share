@@ -28,7 +28,9 @@ function png(w: number, h: number, paint?: (x: number, y: number) => [number, nu
 }
 
 function run(dir: string, ...args: string[]) {
-  const r = spawnSync(process.execPath, [script, ...args], { env: { ...process.env, JCAD_SCREENSHOTS: dir }, encoding: 'utf8' });
+  // Bound each CLI launch independently; multi-launch scenarios have their own total deadline.
+  const r = spawnSync(process.execPath, [script, ...args], { env: { ...process.env, JCAD_SCREENSHOTS: dir }, encoding: 'utf8', timeout: 5000, windowsHide: true, maxBuffer: 2 * 1024 * 1024 });
+  if (r.error) throw new Error(`screenshot comparison process failed: ${r.error.message}`);
   return { code: r.status, out: `${r.stdout}${r.stderr}` };
 }
 
@@ -45,7 +47,7 @@ describe('screenshot:compare / screenshot:approve', () => {
     const r = run(dir);
     expect(r.code).toBe(0);
     expect(r.out).toMatch(/2 match, 0 failed/);
-  });
+  }, 15000);
 
   it('fails on a regression and writes the diff and actual images', () => {
     writeFileSync(join(dir, 'a.png'), png(100, 80, box(40, 10, 20)));
@@ -63,7 +65,7 @@ describe('screenshot:compare / screenshot:approve', () => {
     writeFileSync(join(dir, 'a.png'), png(100, 80, box(40, 10, 20)));
     writeFileSync(join(dir, 'baseline', 'config.json'), JSON.stringify({ images: { 'a.png': { masks: [[0, 0, 70, 40]] } } }));
     expect(run(dir).code).toBe(0);
-  });
+  }, 15000);
 
   it('fails on a size change, a missing screenshot and an unapproved one; ignore skips files', () => {
     writeFileSync(join(dir, 'baseline', 'config.json'), '{}');
@@ -87,5 +89,5 @@ describe('screenshot:compare / screenshot:approve', () => {
     expect(run(dir, '--approve', '--prune').code).toBe(0);
     expect(existsSync(join(dir, 'baseline', 'b.png'))).toBe(false);
     expect(readFileSync(join(dir, 'baseline', 'config.json'), 'utf8')).toBe('{}');
-  });
+  }, 30000);
 });

@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
+import fs from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { decodeDxfBytes, decodeUnicodeEscapes, escapeNonAscii, encodeDxfText, sniffDxfHeader, encodingForCodepage, acadVersionNumber, isUtf8Version } from '../src/io/encoding';
 // @ts-expect-error plain JS helper shared with Electron main / CLI
@@ -10,7 +13,6 @@ import { newId, type TextEntity, type MTextEntity } from '../src/core/entities';
 import { autosaveName } from '../src/app/autosave';
 import { newDocumentId } from '../src/app/sessions';
 import { createRequire } from 'node:module';
-import { mainProcessSource } from './helpers/main-process';
 
 /** A minimal DXF (header + one TEXT) with the text value given as raw bytes. */
 function dxfBytes(acadver: string, codepage: string | null, textBytes: number[], opts: { bom?: boolean } = {}): Uint8Array {
@@ -116,7 +118,6 @@ describe('DXF code pages', () => {
 });
 
 describe('non-ASCII file names', () => {
-  const mainSource = mainProcessSource();
   const { safeAutosaveName } = createRequire(import.meta.url)('../electron/autosave-store.cjs') as { safeAutosaveName: (n: string) => string };
 
   it('autosave names come from the document id, not the title, and pass the main-process filter', () => {
@@ -130,14 +131,25 @@ describe('non-ASCII file names', () => {
     expect(() => safeAutosaveName('../x.sv.dxf')).toThrow();
   });
 
-  it('the main process reads DXF bytes and compares paths in NFC', () => {
-    // Bytes, at most 512 MB, read through one handle (electron/resource-limits.cjs).
-    expect(mainSource).toMatch(/decodeDxf\(\/\*\* @type \{Buffer\} \*\/ \(await readLimitedFile\(fs, file, MAX_DRAWING_BYTES\)\)\)/);
-    expect(mainSource).not.toMatch(/const text = await fs\.readFile\(file, 'utf8'\);\s*rememberPath\(file\);\s*return \{ path: file, kind: 'dxf'/);
-    expect('Jose\u0301.dxf'.normalize('NFC')).toBe('José.dxf'.normalize('NFC'));
+  it('reads encoded DXF bytes from a Unicode file path and compares grants in NFC', async () => {
+    const require = createRequire(import.meta.url);
+    const { readLimitedFile } = require('../electron/resource-limits.cjs');
+    const { createPathRegistry } = require('../electron/path-registry.cjs');
+    const root = await fs.mkdtemp(join(tmpdir(), 'jcad-encoding-'));
+    const file = join(root, 'José 日本語.dxf');
+    try {
+      await fs.writeFile(file, dxfBytes('AC1015', 'ANSI_1252', [0x43, 0x61, 0x66, 0xe9]));
+      const decoded = decodeDxfBytesNode(await readLimitedFile(fs, file, 1024 * 1024));
+      expect(readDxf(decoded.text).entities[0]).toMatchObject({ type: 'text', text: 'Café' });
+      const registry = createPathRegistry(); registry.grant(file);
+      expect(registry.isKnown(file.normalize('NFD'))).toBe(true);
+    } finally {
+      if (root.startsWith(join(tmpdir(), 'jcad-encoding-'))) await fs.rm(root, { recursive: true, force: true });
+    }
     // The reader module URL survives spaces and non-ASCII install folders.
-    const href = pathToFileURL('/opt/José/JCad Electrical/resources/app.asar.unpacked/scripts/dwg-reader.mjs').href;
+    const module = join(root, 'José', 'JCad Electrical', 'resources', 'app.asar.unpacked', 'scripts', 'dwg-reader.mjs');
+    const href = pathToFileURL(module).href;
     expect(href).toContain('/Jos%C3%A9/JCad%20Electrical/');
-    expect(fileURLToPath(href)).toBe('/opt/José/JCad Electrical/resources/app.asar.unpacked/scripts/dwg-reader.mjs');
+    expect(fileURLToPath(href)).toBe(module);
   });
 });

@@ -1,30 +1,27 @@
-// Bind each platform's actual output bytes to the checked commit before publication (ported from
-// PR #2, codex/electrical-review-fixes 2f89b0e).
+// Bind each platform's actual output bytes to the checked commit before publication.
 import { createHash } from 'node:crypto';
 import { createReadStream, readdirSync, readFileSync, lstatSync, writeFileSync, appendFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { basename, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { validateFuseEvidence } from './electron-fuse-evidence.mjs';
 
 const PLATFORMS = ['Windows', 'macOS', 'Linux'];
 const SIGNING = { Windows: ['unsigned', 'authenticode-verified'], macOS: ['ad-hoc', 'developer-id-notarized'], Linux: ['unsigned'] };
 const ASSET = /\.(?:exe|dmg|AppImage|deb|blockmap)$/;
-/**
- * The public assets: installers, blockmaps and the updater feeds (latest*.yml). electron-builder's
- * diagnostics in the same folder (builder-debug.yml, builder-effective-config.yaml) are not.
- * Ported from PR #2 (codex/electrical-review-fixes 89df2b8).
- */
+// Match the public upload contract: builder-debug.yml and builder-effective-config.yaml
+// are diagnostics; only updater feeds (latest*.yml) accompany the installers/blockmaps.
 export const isReleaseAsset = (file) => ASSET.test(basename(file)) || /^latest.*\.yml$/.test(basename(file));
 export function expectedInstallers(version, platform) {
   const prefix = `jcad-electrical-${version}-`;
   return { Windows: [`${prefix}win-x64.exe`], macOS: [`${prefix}mac-arm64.dmg`, `${prefix}mac-x64.dmg`], Linux: [`${prefix}linux-x86_64.AppImage`, `${prefix}linux-amd64.deb`] }[platform];
 }
-/**
- * The updater feed and the separate blockmaps each platform's build writes next to its installers:
- * NSIS and DMG targets write `<installer>.blockmap`; the AppImage carries its blockmap inside.
- */
 export function expectedUpdateAssets(version, platform) {
+  // This repository uses GitHub without a channel override. The installed builder keeps
+  // latest for that provider even when the application version has an alpha/beta suffix;
+  // tests exercise its actual publish configuration and generated feeds for those versions.
   const feeds = { Windows: 'latest.yml', macOS: 'latest-mac.yml', Linux: 'latest-linux.yml' };
+  // NSIS and DMG targets emit separate blockmaps. AppImage embeds its blockmap.
   const blockmaps = platform === 'Linux' ? [] : expectedInstallers(version, platform).map((name) => `${name}.blockmap`);
   return [feeds[platform], ...blockmaps];
 }
@@ -37,13 +34,14 @@ function validateIdentity(platform, version, sha, signing) {
   if (!PLATFORMS.includes(platform) || !SIGNING[platform].includes(signing)) throw new Error(`invalid platform/signing status: ${platform}/${signing}`);
   if (!/^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(version) || !/^[0-9a-f]{40}$/.test(sha)) throw new Error('invalid release version or source SHA');
 }
-export async function writeBuildProvenance(dir, platform, version, sha, signing) {
+export async function writeBuildProvenance(dir, platform, version, sha, signing, executableFuses) {
   validateIdentity(platform, version, sha, signing);
   const names = readdirSync(dir).filter(isReleaseAsset).sort();
   const expected = expectedInstallers(version, platform);
   for (const name of expected) if (!names.includes(name)) throw new Error(`missing ${platform} installer: ${name}`);
   for (const name of expectedUpdateAssets(version, platform)) if (!names.includes(name)) throw new Error(`missing ${platform} update asset: ${name}`);
   for (const name of names.filter((name) => /\.(?:exe|dmg|AppImage|deb)$/.test(name))) if (!expected.includes(name)) throw new Error(`unexpected installer: ${name}`);
+  validateFuseEvidence(platform, executableFuses);
   const artifacts = [];
   for (const name of names) {
     const file = join(dir, name);
@@ -51,7 +49,7 @@ export async function writeBuildProvenance(dir, platform, version, sha, signing)
     if (!info.isFile() || info.size === 0) throw new Error(`empty or non-file artifact: ${name}`);
     artifacts.push({ name, bytes: info.size, sha256: await digest(file) });
   }
-  const record = { schemaVersion: 1, platform, version, sourceSha: sha, signing, artifacts };
+  const record = { schemaVersion: 1, platform, version, sourceSha: sha, signing, executableFuses, artifacts };
   writeFileSync(join(dir, `JCad-Electrical-${platform}-provenance.json`), `${JSON.stringify(record, null, 2)}\n`);
   return record;
 }
@@ -73,6 +71,7 @@ export async function verifyReleaseProvenance(dir, version, sha) {
     if (record.schemaVersion !== 1 || record.version !== version || record.sourceSha !== sha) throw new Error(`provenance does not match tested source/version: ${file}`);
     if (basename(file) !== `JCad-Electrical-${record.platform}-provenance.json`) throw new Error('platform provenance filename does not match its record');
     if (seen.has(record.platform)) throw new Error(`duplicate platform provenance: ${record.platform}`);
+    validateFuseEvidence(record.platform, record.executableFuses);
     seen.add(record.platform);
     if (!Array.isArray(record.artifacts) || !record.artifacts.length) throw new Error(`empty provenance artifacts: ${file}`);
     const names = new Set();
@@ -110,7 +109,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     const builtSha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
     const expectedSha = process.env.SOURCE_SHA;
     if (!expectedSha || builtSha !== expectedSha) throw new Error('checked out HEAD does not match SOURCE_SHA from release checks');
-    if (mode === 'build') await writeBuildProvenance(resolve(dir), platform, pkg.version, expectedSha, signing);
+    if (mode === 'build') {
+      const { verifyPlatformFuses } = await import('./electron-fuse-policy.mjs');
+      await writeBuildProvenance(resolve(dir), platform, pkg.version, expectedSha, signing, await verifyPlatformFuses(resolve(dir), platform));
+    }
     else if (mode === 'verify') {
       const record = await verifyReleaseProvenance(resolve(dir), pkg.version, expectedSha);
       if (platform === '--notes' && signing) appendFileSync(resolve(signing), signingSummary(record));

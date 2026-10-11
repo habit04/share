@@ -13,6 +13,7 @@ import nodePath from 'node:path';
 import type { Rng } from './fuzz';
 
 const p = nodePath.posix;
+const normalize = (file: string): string => p.normalize(file.replace(/\\/g, '/'));
 
 export class CrashError extends Error {
   code = 'ECRASH';
@@ -40,7 +41,7 @@ export class MemFs {
   crashAt = Infinity;
   crashed = false;
   inject: Injector | null = null;
-  readonly constants = { F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1 };
+  readonly constants = { F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1, COPYFILE_EXCL: 1 };
   /** Calls made, for failure messages. */
   trace: string[] = [];
   private clock = 1_000_000;
@@ -72,6 +73,7 @@ export class MemFs {
 
   // ---------------------------------------------------------------- fs/promises API
   async readFile(file: string, _enc?: unknown): Promise<string> {
+    file = normalize(file);
     if ((await this.enter('readFile', file)) === 'crash') throw new CrashError();
     const f = this.files.get(file);
     if (!f) throw this.noent('open', file);
@@ -79,6 +81,7 @@ export class MemFs {
   }
 
   async readdir(dir: string): Promise<string[]> {
+    dir = normalize(dir);
     if ((await this.enter('readdir', dir)) === 'crash') throw new CrashError();
     if (!this.dirs.has(dir)) throw this.noent('scandir', dir);
     const out: string[] = [];
@@ -88,6 +91,7 @@ export class MemFs {
   }
 
   async mkdir(dir: string, _opts?: unknown): Promise<void> {
+    dir = normalize(dir);
     if ((await this.enter('mkdir', dir)) === 'crash') throw new CrashError();
     let d = dir;
     while (d !== '/' && !this.dirs.has(d)) {
@@ -96,29 +100,33 @@ export class MemFs {
     }
   }
 
-  async stat(file: string): Promise<{ isDirectory(): boolean; isFile(): boolean; mode: number; mtimeMs: number; size: number }> {
+  async stat(file: string): Promise<{ isDirectory(): boolean; isFile(): boolean; isSymbolicLink(): boolean; mode: number; mtimeMs: number; size: number }> {
+    file = normalize(file);
     if ((await this.enter('stat', file)) === 'crash') throw new CrashError();
-    if (this.dirs.has(file)) return { isDirectory: () => true, isFile: () => false, mode: 0o40755, mtimeMs: this.clock, size: 0 };
+    if (this.dirs.has(file)) return { isDirectory: () => true, isFile: () => false, isSymbolicLink: () => false, mode: 0o40755, mtimeMs: this.clock, size: 0 };
     const f = this.files.get(file);
     if (!f) throw this.noent('stat', file);
-    return { isDirectory: () => false, isFile: () => true, mode: f.mode, mtimeMs: f.mtimeMs, size: f.data.length };
+    return { isDirectory: () => false, isFile: () => true, isSymbolicLink: () => false, mode: f.mode, mtimeMs: f.mtimeMs, size: f.data.length };
   }
 
-  /** No symbolic links here: lstat is stat. */
-  async lstat(file: string): Promise<{ isDirectory(): boolean; isFile(): boolean; isSymbolicLink(): boolean; mode: number; mtimeMs: number; size: number }> {
+  /** No symbolic links here; count lstat independently for failure injection. */
+  async lstat(file: string): ReturnType<MemFs['stat']> {
+    file = normalize(file);
     if ((await this.enter('lstat', file)) === 'crash') throw new CrashError();
     if (this.dirs.has(file)) return { isDirectory: () => true, isFile: () => false, isSymbolicLink: () => false, mode: 0o40755, mtimeMs: this.clock, size: 0 };
     const f = this.files.get(file);
     if (!f) throw this.noent('lstat', file);
-    return { isDirectory: () => false, isFile: () => true, isSymbolicLink: () => false, mode: f.mode, mtimeMs: f.mtimeMs, size: f.data.length };
+    return { isDirectory: () => false, isFile: () => true, isSymbolicLink: () => false, mode: f.mode, mtimeMs: f.mtimeMs, size: Buffer.byteLength(f.data, 'utf8') };
   }
 
   async access(file: string, _mode?: number): Promise<void> {
+    file = normalize(file);
     if ((await this.enter('access', file)) === 'crash') throw new CrashError();
     if (!this.files.has(file) && !this.dirs.has(file)) throw this.noent('access', file);
   }
 
   async chmod(file: string, mode: number): Promise<void> {
+    file = normalize(file);
     if ((await this.enter('chmod', file)) === 'crash') throw new CrashError();
     const f = this.files.get(file);
     if (!f) throw this.noent('chmod', file);
@@ -126,12 +134,15 @@ export class MemFs {
   }
 
   async realpath(file: string): Promise<string> {
+    file = normalize(file);
     if ((await this.enter('realpath', file)) === 'crash') throw new CrashError();
     if (!this.files.has(file) && !this.dirs.has(file)) throw this.noent('realpath', file);
     return file;
   }
 
   async rename(from: string, to: string): Promise<void> {
+    from = normalize(from);
+    to = normalize(to);
     if ((await this.enter('rename', `${from} -> ${to}`)) === 'crash') throw new CrashError();
     const f = this.files.get(from);
     if (!f) throw this.noent('rename', from);
@@ -141,8 +152,9 @@ export class MemFs {
     this.files.set(to, f); // one atomic directory update
   }
 
-  /** `mode` 1 = COPYFILE_EXCL: fail when `dest` exists. */
-  async copyFile(src: string, dest: string, mode = 0): Promise<void> {
+  async copyFile(src: string, dest: string, flags = 0): Promise<void> {
+    src = normalize(src);
+    dest = normalize(dest);
     const r = await this.enter('copyFile', `${src} -> ${dest}`);
     const f = this.files.get(src);
     if (r === 'crash') {
@@ -151,12 +163,13 @@ export class MemFs {
       throw new CrashError();
     }
     if (!f) throw this.noent('copyfile', src);
+    if ((flags & this.constants.COPYFILE_EXCL) && (this.files.has(dest) || this.dirs.has(dest))) throw fsError('EEXIST', 'copyfile', dest);
     if (!this.parentExists(dest)) throw this.noent('copyfile', dest);
-    if (mode & 1 && (this.files.has(dest) || this.dirs.has(dest))) throw fsError('EEXIST', 'copyfile', dest);
     this.files.set(dest, { data: f.data, mode: f.mode, mtimeMs: this.tick(), dirty: true });
   }
 
   async rm(file: string, opts?: { force?: boolean }): Promise<void> {
+    file = normalize(file);
     if ((await this.enter('rm', file)) === 'crash') throw new CrashError();
     if (!this.files.delete(file) && !opts?.force) throw this.noent('rm', file);
   }
@@ -165,7 +178,8 @@ export class MemFs {
     return this.rm(file);
   }
 
-  async open(file: string, flags: string): Promise<{ writeFile(data: string | Uint8Array, enc?: unknown): Promise<void>; sync(): Promise<void>; close(): Promise<void> }> {
+  async open(file: string, flags: string | number): Promise<{ stat(): Promise<{ size: number; isFile(): boolean }>; read(buffer: Uint8Array, offset: number, length: number, position: number | null): Promise<{ bytesRead: number }>; writeFile(data: string | Uint8Array, enc?: unknown): Promise<void>; sync(): Promise<void>; close(): Promise<void> }> {
+    file = normalize(file);
     if ((await this.enter(`open(${flags})`, file)) === 'crash') throw new CrashError();
     if (flags === 'wx') {
       if (this.files.has(file)) throw fsError('EEXIST', 'open', file);
@@ -173,8 +187,26 @@ export class MemFs {
       this.files.set(file, { data: '', mode: 0o100644, mtimeMs: this.tick(), dirty: true });
     } else if (!this.files.has(file) && !this.dirs.has(file)) throw this.noent('open', file);
     let closed = false;
+    let readOffset = 0;
+    const openedFile = this.files.get(file);
     const self = this;
     return {
+      async stat() {
+        if ((await self.enter('fh.stat', file)) === 'crash') throw new CrashError();
+        if (closed) throw fsError('EBADF', 'fstat', file);
+        return { size: openedFile ? Buffer.byteLength(openedFile.data, 'utf8') : 0, isFile: () => !!openedFile };
+      },
+      async read(buffer, offset, length, position) {
+        if ((await self.enter('fh.read', file)) === 'crash') throw new CrashError();
+        if (closed) throw fsError('EBADF', 'read', file);
+        if (!openedFile) throw self.noent('read', file);
+        const bytes = Buffer.from(openedFile.data, 'utf8');
+        const start = position ?? readOffset;
+        const bytesRead = Math.max(0, Math.min(length, bytes.length - start));
+        buffer.set(bytes.subarray(start, start + bytesRead), offset);
+        if (position === null) readOffset += bytesRead;
+        return { bytesRead };
+      },
       async writeFile(data: string | Uint8Array) {
         const text = typeof data === 'string' ? data : Buffer.from(data).toString('latin1');
         const r = await self.enter('fh.writeFile', file);
@@ -212,6 +244,7 @@ export class MemFs {
 
   /** Synchronous setup (no step counted). */
   put(file: string, data: string, mtimeMs?: number): void {
+    file = normalize(file);
     let d = p.dirname(file);
     while (!this.dirs.has(d)) {
       this.dirs.add(d);
@@ -221,10 +254,12 @@ export class MemFs {
   }
 
   get(file: string): string | undefined {
+    file = normalize(file);
     return this.files.get(file)?.data;
   }
 
   list(dir: string): string[] {
+    dir = normalize(dir);
     return [...this.files.keys()].filter((f) => p.dirname(f) === dir).map((f) => p.basename(f)).sort();
   }
 

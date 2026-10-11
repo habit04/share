@@ -9,32 +9,53 @@ change, and what is still slow.
 | --- | --- | --- |
 | `npm test` (`tests/perf.test.ts`) | Node (vitest), every CI run | Extents, selection, pick, snap, DXF write / read on a 6,500-entity schematic, with budgets about 3x the development machine (`JCAD_PERF_FACTOR` scales them). |
 | `npm run bench:node` (`tests/perf-dense.test.ts`, `JCAD_BENCH=1`) | Node, a separate CI step (alone, so it neither disturbs nor is disturbed by other tests) | A **dense drawing of 50,000 entities** (38,000 wires, 8,000 symbol inserts, 4,000 labels on a 200 x 150 sheet): spatial-index build and rebuild, pick, window / crossing / fence / polygon selection and object snap, each **with the index off (linear scan) and on**; and a **project of 20 drawings** (3,900 entities and 600 tagged components each, read from DXF text) running all twelve project-wide reports. Budgets: a frame (16 ms) for pick, snap and window / crossing selection. |
-| `npm run build && npm run bench` (`scripts/bench.mjs`) | Headless Chromium on the built renderer; the CI `ui` job and the release checks assert the budgets below (`JCAD_BENCH_ASSERT=1`, factor 2; `screenshots/bench/bench.json` in the artifact) | The same 50,000-entity drawing in the real editor: `loadState` + ZOOM E, a full redraw at extents and zoomed in (with a 1-pixel read-back so the canvas has finished drawing), hover (`Editor.onMouseMove`: rollover pick + overlay) and a window-selection drag (`onMouseDown / Move / Up`). |
+| `npm run build && npm run bench` (`scripts/bench.mjs`) | Headless Chromium on the built renderer; CI `ui` and release checks assert budgets with `JCAD_BENCH_ASSERT=1`; JSON in the artifact | The same 50,000-entity drawing in the real editor: first state acceptance, first extents/geometry construction and first render before idle warmup, then warmed load/ZOOM E, redraw, hover and selection. Cold render includes a 1-pixel read-back. These phases exclude file I/O and parsing. |
+| `npm run bench:project` (`scripts/bench-project.mjs`) | Node, CI and release checks | Writes 20 synthetic DXF sheets to temporary files, reads them through the normal project path, measures disk reads separately from parsing/state preparation, and runs all twelve reports. JSON records workload, bytes and per-report timings. Newly written files can be in the OS cache; this does not measure a physical cold disk. |
 | `tests/spatial-index.test.ts` | every `npm test` | Correctness: the index gives exactly the linear scan's results (same entities, order and tie-breaks) for pick, all selection modes and snapping, including stray far-away objects, construction lines, hidden and locked layers, and a redefined block. |
 | `tests/spatial-index-random.test.ts` | every `npm test` | Property-style check on a randomized drawing of 2,000 mixed entities (lines, circles, arcs, text, polylines, inserts; hidden and locked layers): 200 random queries of every kind agree with the linear scan, and keep agreeing after replace, add, remove, undo, redo, a block redefinition and a layout switch. |
 
-Timings below are from the development container (Linux x64, Node 22.22, shared CPU), best of
+Historical timings below are from the development container (Linux x64, Node 22.22, shared CPU), best of
 several runs unless noted; repeated runs varied by up to 2x because other work shared the
 machine, so ranges are given. Shared CI runners are slower; compare runs on the same machine.
 
-## Performance gates
+## Current performance gates and changes
 
-CI and the release checks run the dense Node benchmark (`npm run bench:node`) and assert the
-browser benchmark's budgets (`scripts/bench-budgets.mjs`, milliseconds before
-`JCAD_PERF_FACTOR`, which CI sets to 2): load 500, full redraw at extents 400, full redraw zoomed
-in 100, the cursor-only frame (the scene copy below) 8, median hover 8, median window selection
-50. A workload other than 50,000 entities, a window selection that selects nothing, a "redraw" no
-slower than the scene copy, or a measurement that is not a number fails too. (Gates ported from
-PR #2, codex/electrical-review-fixes 2f89b0e. Its render budgets, 50 and 25, were met only because
-the benchmark repeated an unchanged frame, which the scene cache answers with a bitmap copy in
-0.5 ms; `scripts/bench.mjs` now drops that copy before each timed redraw, and the budgets are
-about twice the measured redraws: 160 - 230 ms and 26 - 40 ms here.)
+Both the normal CI and release checks run the dense Node benchmark and the browser benchmark.
+Browser budgets in `scripts/bench-budgets.mjs`, in milliseconds before `JCAD_PERF_FACTOR`, are:
+load 500, full redraw at extents 400, full redraw zoomed in 100, cached-scene redraw 8, median
+hover 8, median window selection 50. The full-redraw measurements discard the cached bitmap
+before each draw; cached-scene redraw measures its reuse separately. The gate also rejects a
+full-redraw result less than five times the cached result (with a 0.2 ms floor), so an accidentally
+cached benchmark cannot pass as a full redraw. CI uses factor 2. Invalid measurements, a workload
+other than 50,000 entities, or a selection
+that selected nothing also fail. First-use budgets are separately enforced: state acceptance
+2,000 ms, geometry construction 2,000 ms, first render 1,000 ms, and their complete first-view
+path 3,000 ms. The project filesystem benchmark requires 20 files, 21 loaded documents (including
+the active drawing), 12,000 component rows and consistent phase totals, with a 15,000 ms total
+budget. Both sets scale by `JCAD_PERF_FACTOR`; missing or invalid measurements fail.
 
-Since then, drawings of 200 entities or more keep a bitmap of the drawn scene, so frames that only
-move the cursor, crosshair or snap marker copy it instead of redrawing every entity; the spatial
-index of the current entities is built 50 ms after a render request instead of on the first
-hover; and the component, wire from/to, wire label and PLC I/O reports find rung references
-through a sorted index built once per report instead of a scan per row.
+On 2026-10-11, the earlier benchmark on Windows x64 / Chromium 154 measured: load 16.2 ms,
+cached renders 5.6 ms at extents and 5.8 ms zoomed, median hover 0.1 ms, median selection 5.0 ms
+(1,693 entities). These renders reused the bitmap and do not measure the full redraw now checked
+separately. These local measurements do not replace the Linux CI browser/font baseline.
+
+After the edit-budget follow-up on the same date, Windows x64 / Chromium 154 measured first
+state acceptance 96.7 ms, first geometry 69.5 ms, first render 356.2 ms and complete first view
+522.7 ms. Warm load was 31.6 ms, cached renders 7.1 / 8.0 ms, hover 0.1 ms and selection 11.7 ms.
+The filesystem project benchmark read 15,861,240 bytes in 54.2 ms, spent 756.2 ms parsing and
+preparing states, and 2,553.4 ms on all reports: 3,363.7 ms total. All factor-1 budgets passed.
+These are local measurements with the workload and cache conditions described above.
+
+The eight dense Node checks include editing: the slowest measured single edit on 50,000 entities
+was 16.2 ms, and a settings-only change across 30 undo states took 0.3 ms. Immutable, already
+validated geometry can reuse budget calculations; new entities or block definitions are checked
+before acceptance. Rejected candidates leave the existing document/history intact.
+
+The viewport now caches the static drawing and redraws the cursor and overlay separately. The
+editor defers spatial-index warmup by 50 ms, then builds the index synchronously; that delay is
+not a limit on how long the build can take. Component/report lookups
+cache the ladder/reference index and net rail data per immutable drawing state. Cache invalidation
+and block dependency tests cover edits, undo/redo, redefinition and layout switches.
 
 ## Hit testing and selection on 50,000 entities (Node)
 
@@ -111,24 +132,25 @@ window event. It now runs in a worker thread (`scripts/dwg-worker.mjs`, managed 
   dialog in the editor with the file name, size, elapsed time and a **Cancel** button
   (`src/ui/open-progress.ts`); Cancel terminates the worker and the open fails with
   "Open cancelled", leaving the current drawing untouched; the next DWG starts a fresh worker;
-- if a worker cannot be started (an unusual packaging layout), the reader is imported in the
-  main process as before (without Cancel);
+- a worker startup failure fails the open; there is no main-process parser fallback;
+- both desktop and browser readers refuse inputs over 128 MiB. The browser terminates parsing
+  after 60 s. Desktop parsing allows 60 s plus one second per input MiB, up to 188 s for accepted
+  files, with a separate 15 s startup deadline. Desktop workers limit V8 old/young generations
+  to 2,048/64 MiB and the stack to 8 MiB. A per-memory JavaScript growth guard limits the shipped
+  WebAssembly allocator to 2 GiB; it does not cap total process memory or intercept allocations
+  and growth performed directly by WebAssembly instructions. Browser workers have no explicit
+  heap or WebAssembly memory cap. These are workload guards, not an OS-level memory sandbox;
 - the end-to-end test covers the dialog, the progress events and Cancel; `--probe-dwg` checks the
   worker inside each packaged build.
 
 LibreDWG reports no percentage, so the bar is indeterminate. Converting the parsed DWG into a
 drawing (`convertDwg`) still runs in the renderer after the read; it was not measured separately.
 
-## Known slow spots (follow-ups)
+## Historical slow spots and remaining follow-ups
 
-- **Full redraw of a dense drawing** (160-230 ms for 50,000 entities at extents) is still the
-  largest cost when the drawing or the view changes: every entity is stroked as its own path.
-  Cursor-only frames reuse the scene bitmap now; batching consecutive entities of the same colour,
-  linetype and width into one path remains a follow-up (it needs the screenshot baselines
-  re-approved because antialiasing at overlaps changes slightly).
-- **Index build on a freshly opened 50,000-entity drawing** costs 340-590 ms the first time
-  (mostly exploding the 8,000 inserts, which the first redraw needs anyway); it now runs 50 ms
-  after the first render request instead of on the first mouse move.
-- **Missing Catalog report**: the drawing's unit scale is still found by scanning every entity
-  (`drawingUnitScale` in `src/electrical/`); the rung references of the other reports use a
-  sorted index now.
+- **Cold redraw of a dense drawing** still strokes entity geometry. Static bitmap reuse now
+  removes that cost from ordinary cursor movement; path batching remains a possible follow-up.
+- **First geometry preparation** still costs work, especially for nested inserts. Idle spatial
+  warmup moves index work away from the first mouse move; cold geometry remains worth measuring.
+- **Project-wide reports** still read every project drawing. Ladder/reference and unit lookups
+  now use cached indexes; project I/O and parsing remain separate from those lookup timings.

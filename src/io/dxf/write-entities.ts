@@ -3,13 +3,16 @@
  * SEQEND) per JCad entity. Geometry types are written here; MTEXT, DIMENSION, LEADER, IMAGE and
  * tables come from write-annotations.ts.
  */
-import { insertTransform, splineCurve, hatchPatternLines, tableParts, type Entity, type BlockDef, type PolylineEntity, type SplineEntity, type HatchEntity } from '../../core/entities';
+import { Writer, writeEntityCommon, writeTextLike, emptyExtras, writeAnnotativeXdata } from './write-core';
+import type { PolylineEntity, HatchEntity, SplineEntity, Entity, BlockDef } from '../../core/entities';
+import { splineCurve, hatchPatternLines, tableParts, insertTransform } from '../../core/entities';
 import { findPattern } from '../../core/hatch';
 import * as g from '../../core/geometry';
-import { attdefFlags, type AttributeDefExt } from '../../electrical/symbol-builder-core';
+import type { WriteExtras } from './write-core';
 import { textStyleOf } from '../encoding';
-import { Writer, writeAnnotativeXdata, writeEntityCommon, writeTextLike, emptyExtras, type WriteExtras } from './write-core';
-import { writeMText, writeDimension, writeLeader, writeImage, writeTableInsert } from './write-annotations';
+import { writeLeader, writeImage, writeTableInsert, writeMText, writeDimension } from './write-annotations';
+import type { AttributeDefExt } from '../../electrical/symbol-builder-core';
+import { attdefFlags } from '../../electrical/symbol-builder-core';
 
 function writePolyline(w: Writer, e: PolylineEntity, owner: string): void {
   if (e.filled && e.closed && (e.points.length === 3 || e.points.length === 4)) {

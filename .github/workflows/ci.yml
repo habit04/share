@@ -13,13 +13,17 @@ jobs:
   # Lint, type checks (renderer, Electron main/preload, scripts), unit / regression tests, the
   # dense-drawing performance run and the renderer build.
   test:
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
-          node-version-file: .nvmrc
+          node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
         env:
@@ -38,10 +42,21 @@ jobs:
         run: npm run bench:node
         env:
           JCAD_PERF_FACTOR: 2
+      - name: Filesystem project read, parse and report profiling
+        run: npm run bench:project
+        env:
+          JCAD_BENCH_ASSERT: 1
+          JCAD_PERF_FACTOR: 2
+          JCAD_BENCH_OUT: performance-output
+      - uses: actions/upload-artifact@v4
+        with:
+          name: filesystem-performance-node-${{ matrix.node }}
+          path: performance-output/
+          if-no-files-found: error
       - run: npm run build
       - uses: actions/upload-artifact@v4
         with:
-          name: renderer-dist
+          name: renderer-dist-node-${{ matrix.node }}
           path: dist
 
   # The built renderer in headless Chromium: every command, every clickable control, and the
@@ -129,6 +144,12 @@ jobs:
         run: npm run e2e
         env:
           JCAD_E2E_OUT: e2e-output
+      - name: Secure origin and one-time preference migration (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run e2e:origin
+      - name: Secure origin and one-time preference migration (Windows, macOS)
+        if: runner.os != 'Linux'
+        run: npm run e2e:origin
       - uses: actions/upload-artifact@v4
         if: always()
         with:

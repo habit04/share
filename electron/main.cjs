@@ -14,14 +14,23 @@
  *   updates.cjs       app info, external links, update checks and status
  *   handover.cjs      files handed over by the OS and by a second launch
  */
-const { app, BrowserWindow, session, ipcMain: rawIpcMain } = require('electron');
+const { app, BrowserWindow, session, ipcMain: rawIpcMain, protocol, net } = require('electron');
+const { rejectsProductionDebugging } = require('./inspection-policy.cjs');
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const fsSync = require('node:fs');
+const testBuild = JSON.parse(fsSync.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')).jcadTestBuild === true;
+const debugArgs = [...process.argv, ...['remote-debugging-port', 'remote-debugging-pipe'].filter((name) => app.commandLine.hasSwitch(name)).map((name) => `--${name}`)];
+if (rejectsProductionDebugging(app.isPackaged, testBuild, debugArgs)) {
+  process.stdout.write('SHIPPING_DEBUG_DISABLED\n');
+  app.exit(2);
+  // @ts-expect-error TS1108: CommonJS modules may return at the top level.
+  return;
+}
 const updater = require('./updater.cjs');
 const { guardIpc, appUrlTest, createRejectionLog, createPathPolicy } = require('./ipc-guard.cjs');
 const { createPathRegistry } = require('./path-registry.cjs');
-const { recentFile, writeStateFile, installCrashLogging } = require('./main/app-data.cjs');
+const { stateDir, recentFile, writeStateFile, logMainError, flushRendererPreferences, installCrashLogging } = require('./main/app-data.cjs');
 const { createWindows } = require('./main/window.cjs');
 const { registerMenuIpc } = require('./main/menu.cjs');
 const { dwgHost, readDwg, registerDwgIpc } = require('./main/dwg.cjs');
@@ -30,10 +39,27 @@ const { registerPlotIpc } = require('./main/ipc-plot.cjs');
 const { registerStoreIpc } = require('./main/ipc-stores.cjs');
 const { registerUpdatesIpc } = require('./main/updates.cjs');
 const { createHandover } = require('./main/handover.cjs');
-const { MAX_DRAWING_BYTES, readLimitedFile } = require('./resource-limits.cjs');
+const { runShippingProbe, shippingProbePhase } = require('./main/shipping-probe.cjs');
+let probePhase = null;
+try { probePhase = shippingProbePhase(process.argv); }
+catch (error) {
+  process.stdout.write(`SHIPPING_PROBE_FAIL ${error && error.message}\n`);
+  app.exit(2);
+  // @ts-expect-error TS1108: CommonJS modules may return at the top level.
+  return;
+}
+if (probePhase) setTimeout(() => { process.stdout.write('SHIPPING_PROBE_FAIL startup timed out\n'); app.exit(1); }, 60_000);
 const { installPermissionHandlers, installWebContentsGuards } = require('./web-security.cjs');
 
-const DEV_URL = process.env.VITE_DEV_SERVER_URL;
+const { MAX_DRAWING_BYTES, readLimitedFile } = require('./resource-limits.cjs');
+const { installAssetHandler, legacyStorage } = require('./renderer-origin.cjs');
+
+protocol.registerSchemesAsPrivileged([{ scheme: 'jcad', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
+
+const DEV_URL = require('./inspection-policy.cjs').developmentServerUrl(app.isPackaged, process.env.VITE_DEV_SERVER_URL);
+/** @type {Record<string, string> | null} */
+let rendererStorage = null;
+let startingMainWindow = true;
 
 // Every IPC listener checks its caller: only the application page in the main window's top
 // frame may use the bridge (electron/ipc-guard.cjs). Refusals go to <userData>/ipc-rejections.log.
@@ -70,7 +96,7 @@ function senderWindow(/** @type {Electron.IpcMainInvokeEvent} */ ev) {
  * check paths - and the main window.
  * @type {import('./main/context.cjs').MainContext}
  */
-const ctx = { ipcMain, rejections, registry, pathPolicy, senderWindow, mainWindow: null, openFilesReady: false };
+const ctx = { ipcMain, rejections, registry, pathPolicy, senderWindow, mainWindow: null, openFilesReady: false, handedOverProjects: new Set() };
 
 function loadPersistedPaths() {
   try {
@@ -81,7 +107,7 @@ function loadPersistedPaths() {
 }
 
 // ------------------------------------------------------------------ the modules (electron/main/)
-const { createWindow } = createWindows(ctx, DEV_URL);
+const { createWindow } = createWindows(ctx, DEV_URL, !app.isPackaged || testBuild);
 registerDwgIpc(ctx);
 const { takeHandedOverProject, handOverFiles, drawingArgs, registerSecondInstance } = createHandover(ctx);
 registerDrawingIpc(ctx, { takeHandedOverProject });
@@ -122,25 +148,41 @@ registerSecondInstance();
 // Main-process failures go to a log the user can send with a problem report.
 installCrashLogging();
 
-// Every web contents (the main window, the hidden plot / print windows) may not open windows,
-// navigate or attach a <webview>; no web permission is granted but clipboard writes of the
-// application page (electron/web-security.cjs, E-12).
+// Protect every contents, including temporary migration and plot windows.
 installWebContentsGuards(app);
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   installPermissionHandlers(session.defaultSession, () => (ctx.mainWindow && !ctx.mainWindow.isDestroyed() ? ctx.mainWindow.webContents : null));
+  installAssetHandler({ protocol, net, root: path.join(__dirname, '..', 'dist') });
+  if (!DEV_URL && !fsSync.existsSync(path.join(stateDir(), 'renderer-origin-migrated'))) {
+    try { rendererStorage = fsSync.existsSync(path.join(stateDir(), 'Local Storage', 'leveldb')) ? await legacyStorage({ BrowserWindow, protocol, indexFile: path.join(__dirname, '..', 'dist', 'index.html') }) : {}; }
+    catch (error) { logMainError('renderer preference migration', error); }
+  }
   loadPersistedPaths();
   handOverFiles(drawingArgs(process.argv, process.cwd()));
-  createWindow();
+  await createWindow();
+  startingMainWindow = false;
+  if (probePhase) {
+    await runShippingProbe(ctx, probePhase, testBuild);
+    return;
+  }
   updater.scheduleStartupCheck(() => ctx.mainWindow);
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 });
 
+ipcMain.on('renderer-storage-migration', (event) => { event.returnValue = rendererStorage; });
+ipcMain.on('renderer-storage-migrated', (event) => {
+  if (rendererStorage === null || !flushRendererPreferences(event.sender)) return;
+  rendererStorage = null;
+  void writeStateFile(path.join(stateDir(), 'renderer-origin-migrated'), '1', 'renderer origin migration');
+});
+
 app.on('will-quit', () => dwgHost.dispose());
 
 app.on('window-all-closed', () => {
+  if (startingMainWindow) return; // The temporary preference-migration window has just closed.
   ctx.mainWindow = null;
   if (process.platform !== 'darwin') app.quit();
 });

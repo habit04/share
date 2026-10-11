@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "description": "Required committed regression inputs. Optional private customer files (tests/dxf-regression.test.ts) are deliberately outside this inventory.",
+  "description": "Required committed regression inputs. Optional private customer files and external AutoCAD results are deliberately outside this inventory.",
   "files": [
     "fixtures/example_2000.dwg",
     "fixtures/example_2000.dxf",

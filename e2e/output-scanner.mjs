@@ -1,6 +1,3 @@
-// Scanning the screenshot scripts' output for failure lines (e2e/run-screenshots.mjs): whole lines
-// across chunk boundaries and UTF-8 sequences, each unfinished line bounded. Ported from PR #2
-// (codex/electrical-review-fixes 2f89b0e).
 import { StringDecoder } from 'node:string_decoder';
 
 export const BAD_OUTPUT = [/^PAGE ERROR\b/, /^CONSOLE\b/, /^FAIL\b/, /Unknown command/, /\bcheck\(s\) failed\b/];

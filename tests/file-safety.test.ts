@@ -10,7 +10,7 @@ import { exportErrorText, exportFailed } from '../src/app/file-error-text';
 import { projectAutosaveName, projectAutosaveText, parseProjectAutosave, isProjectAutosave } from '../src/app/project-autosave';
 
 const require = createRequire(import.meta.url);
-type WriteResult = { path: string; backup: string | null; method: 'rename' | 'copy' };
+type WriteResult = { path: string; backup: string | null; method: 'rename' };
 type Writer = {
   atomicWriteFile(file: string, data: string | Uint8Array, opts?: { backup?: boolean; encoding?: string; root?: string }): Promise<WriteResult>;
   copyFileAtomic(src: string, dest: string, opts?: { root?: string }): Promise<string>;
@@ -164,7 +164,7 @@ describe('atomic writes (electron/atomic-write.cjs)', () => {
   });
 
   for (const code of ['EPERM', 'EXDEV']) {
-    it(`falls back to copy + remove when rename keeps failing with ${code}, after making the .bak`, async () => {
+    it(`fails safely when rename keeps failing with ${code}, retaining the complete original and .bak`, async () => {
       const f = join(dir, 'panel.dxf');
       writeFileSync(f, 'v1');
       const w = atomic.createAtomicWriter(
@@ -176,9 +176,8 @@ describe('atomic writes (electron/atomic-write.cjs)', () => {
         }),
         { renameDelays: [1, 1] },
       );
-      const r = await w.atomicWriteFile(f, 'v2', { backup: true });
-      expect(r.method).toBe('copy');
-      expect(readFileSync(f, 'utf8')).toBe('v2');
+      await expect(w.atomicWriteFile(f, 'v2', { backup: true })).rejects.toMatchObject({ code });
+      expect(readFileSync(f, 'utf8')).toBe('v1');
       expect(readFileSync(`${f}.bak`, 'utf8')).toBe('v1');
       expect(leftovers()).toEqual([]);
     });
@@ -244,6 +243,83 @@ describe('atomic writes (electron/atomic-write.cjs)', () => {
     const f = join(dir, 'plot.pdf');
     await atomic.atomicWriteFile(f, new Uint8Array([0x25, 0x50, 0x44, 0x46]));
     expect(readFileSync(f, 'latin1')).toBe('%PDF');
+  });
+
+  it('a failed replacement without a backup preserves the only original', async () => {
+    const file = join(dir, 'only.dxf');
+    writeFileSync(file, 'ONLY COMPLETE COPY');
+    const writer = atomic.createAtomicWriter(faultyFs({ rename: async () => { throw fsError('EACCES', 'rename'); } }), { renameDelays: [] });
+    await expect(writer.atomicWriteFile(file, 'NEW')).rejects.toMatchObject({ code: 'EACCES' });
+    expect(readFileSync(file, 'utf8')).toBe('ONLY COMPLETE COPY');
+    expect(leftovers()).toEqual([]);
+  });
+
+  it('pins a linked parent folder for chosen writes and backup destinations, and enforces a project root', async () => {
+    const real = join(dir, 'real');
+    const link = join(dir, 'link');
+    mkdirSync(real);
+    symlinkSync(real, link, 'junction');
+    const source = join(dir, 'source.dxf');
+    writeFileSync(source, 'SOURCE');
+    await atomic.atomicWriteFile(join(link, 'drawing.dxf'), 'NEW');
+    await atomic.copyFileAtomic(source, join(link, 'copy.dxf.bak'));
+    expect(readFileSync(join(real, 'drawing.dxf'), 'utf8')).toBe('NEW');
+    expect(readFileSync(join(real, 'copy.dxf.bak'), 'utf8')).toBe('SOURCE');
+    const confined = join(dir, 'confined');
+    mkdirSync(confined);
+    const escaped = join(confined, 'linked');
+    symlinkSync(real, escaped, 'junction');
+    await expect(atomic.atomicWriteFile(join(escaped, 'drawing.dxf'), 'ESCAPE', { root: confined })).rejects.toMatchObject({ code: 'ELOOP' });
+    await expect(atomic.copyFileAtomic(source, join(escaped, 'copy.dxf.bak'), { root: confined })).rejects.toMatchObject({ code: 'ELOOP' });
+    expect(readFileSync(join(real, 'drawing.dxf'), 'utf8')).toBe('NEW');
+    expect(readFileSync(join(real, 'copy.dxf.bak'), 'utf8')).toBe('SOURCE');
+  });
+
+  it('detects a parent swapped after the temp write and does not clean up through the replacement junction', async () => {
+    const folder = join(dir, 'work');
+    const old = join(dir, 'old-work');
+    const outside = join(dir, 'other');
+    mkdirSync(folder);
+    mkdirSync(outside);
+    const file = join(folder, 'drawing.dxf');
+    writeFileSync(file, 'ORIGINAL');
+    let trap = '';
+    const writer = atomic.createAtomicWriter(fsp, { hooks: { beforeRename: async (tmp) => {
+      await fsp.rename(folder, old);
+      symlinkSync(outside, folder, 'junction');
+      trap = join(outside, tmp.split(/[\\/]/).pop()!);
+      writeFileSync(trap, 'UNRELATED FILE');
+    } } });
+    await expect(writer.atomicWriteFile(file, 'NEW')).rejects.toMatchObject({ code: 'ELOOP' });
+    expect(readFileSync(join(old, 'drawing.dxf'), 'utf8')).toBe('ORIGINAL');
+    expect(readFileSync(trap, 'utf8')).toBe('UNRELATED FILE');
+    expect(existsSync(join(outside, 'drawing.dxf'))).toBe(false);
+  });
+
+  it('a backup destination parent swapped after copy cannot redirect rename or cleanup', async () => {
+    const folder = join(dir, 'backups');
+    const moved = join(dir, 'old-backups');
+    const outside = join(dir, 'other-backups');
+    mkdirSync(folder);
+    mkdirSync(outside);
+    const source = join(dir, 'source.dxf');
+    const dest = join(folder, 'source.dxf.bak');
+    writeFileSync(source, 'SOURCE');
+    let trap = '';
+    const writer = atomic.createAtomicWriter(faultyFs({
+      copyFile: async (from: string, tmp: string, flags: number) => {
+        await fsp.copyFile(from, tmp, flags);
+        renameSync(folder, moved);
+        symlinkSync(outside, folder, 'junction');
+        trap = join(outside, basename(tmp));
+        writeFileSync(trap, 'UNRELATED');
+      },
+    }));
+    await expect(writer.copyFileAtomic(source, dest)).rejects.toMatchObject({ code: 'ELOOP' });
+    expect(readFileSync(source, 'utf8')).toBe('SOURCE');
+    expect(readFileSync(trap, 'utf8')).toBe('UNRELATED');
+    expect(existsSync(join(outside, 'source.dxf.bak'))).toBe(false);
+    expect(readdirSync(moved)).toHaveLength(1); // the complete copy is retained safely
   });
 
   it('a missing folder is reported as ENOENT for the destination', async () => {
@@ -410,14 +486,13 @@ describe.skipIf(process.platform === 'win32')('symbolic links (security review E
     expect(readFileSync(join(project, 'real', 'a.dxf'), 'utf8')).toBe('A');
   });
 
-  it('a .bak that is a link is replaced by the backup, never written through', async () => {
+  it('a linked .bak destination refuses the save and leaves both files intact', async () => {
     const f = join(dir, 'panel.dxf');
     writeFileSync(f, 'V1');
     symlinkSync(victim, `${f}.bak`);
-    await atomic.atomicWriteFile(f, 'V2', { backup: true });
-    expect(readFileSync(f, 'utf8')).toBe('V2');
-    expect(lstatSync(`${f}.bak`).isSymbolicLink()).toBe(false);
-    expect(readFileSync(`${f}.bak`, 'utf8')).toBe('V1');
+    await refused(atomic.atomicWriteFile(f, 'V2', { backup: true }));
+    expect(readFileSync(f, 'utf8')).toBe('V1');
+    expect(lstatSync(`${f}.bak`).isSymbolicLink()).toBe(true);
     expect(readFileSync(victim, 'utf8')).toBe('VICTIM');
   });
 
@@ -447,7 +522,7 @@ describe.skipIf(process.platform === 'win32')('symbolic links (security review E
     }
   });
 
-  it('the non-atomic copy fallback refuses a destination that became a link after the check', async () => {
+  it('a destination changed to a link before replacement fails without a destructive copy', async () => {
     const f = join(dir, 'panel.dxf');
     writeFileSync(f, 'V1');
     const w = atomic.createAtomicWriter(
@@ -467,9 +542,9 @@ describe.skipIf(process.platform === 'win32')('symbolic links (security review E
       },
     );
     const err = (await w.atomicWriteFile(f, 'V2').catch((e: unknown) => e)) as NodeJS.ErrnoException;
-    expect(err.code).toBe('EXDEV');
+    expect(err.code).toBe('ELOOP');
     expect(readFileSync(victim, 'utf8')).toBe('VICTIM');
-    expect(leftovers()).toEqual([]);
+    expect(leftovers()).toHaveLength(1); // cleanup also refuses the changed destination
   });
 
   it('backup-file does not copy a file a link leads to from outside the folder', async () => {
@@ -792,13 +867,24 @@ describe('autosave store with permanent ids (electron/autosave-store.cjs)', () =
 
   it('read errors other than "missing" are reported', async () => {
     const d = join(dir, 'autosave');
+    const name = '11111111-1111-4111-8111-111111111111.sv.dxf';
+    mkdirSync(d);
+    writeFileSync(join(d, name), 'RECOVERY');
+    let closed = false;
     const fs = faultyFs({
-      readFile: async (p: string, enc: string) => {
-        if (String(p).endsWith('.sv.dxf')) throw Object.assign(new Error('EIO: i/o error, read'), { code: 'EIO' });
-        return fsp.readFile(p, enc as BufferEncoding);
+      open: async (p: string, flags: string) => {
+        const handle = await fsp.open(p, flags);
+        if (!String(p).endsWith('.sv.dxf')) return handle;
+        return {
+          stat: () => handle.stat(),
+          read: async () => { throw fsError('EIO', 'i/o error, read'); },
+          close: async () => { await handle.close(); closed = true; },
+        };
       },
     });
     const s = createAutosaveStore(d, { fs, uuid });
-    await expect(s.read('11111111-1111-4111-8111-111111111111.sv.dxf')).rejects.toMatchObject({ code: 'EIO' });
+    await expect(s.read(name)).rejects.toMatchObject({ code: 'EIO' });
+    expect(closed).toBe(true);
+    expect(readFileSync(join(d, name), 'utf8')).toBe('RECOVERY');
   });
 });

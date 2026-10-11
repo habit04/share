@@ -235,7 +235,8 @@ const TT_BOLD = 0x2000000;
 export function textStyleFromGroups(groups: ReadonlyArray<{ code: number; value: string }>): TextStyle | null {
   const first = (code: number) => groups.find((g) => g.code === code)?.value;
   const num = (code: number, d: number) => {
-    const v = parseFloat(first(code) ?? '');
+    const raw = first(code);
+    const v = raw === undefined || raw.trim() === '' ? NaN : Number(raw);
     return Number.isFinite(v) ? v : d;
   };
   const name = (first(2) ?? '').trim();

@@ -6,6 +6,8 @@ import { mtextLayoutFull, type MTextEntity, type MTextAttachment, type MTextColu
 import { interpolateFitPoints, isValidNurbs, nurbsPoints, type NurbsCurve } from './spline';
 import { findPattern, loopPolygon, patternSegments, pointInLoops, worldPatternLines, type HatchLoop, type WorldPatternLine } from './hatch';
 import { tableGeometry, type TableEntity } from './table';
+import { isImmutableData } from './immutable-data';
+import { GeometryBudgetError } from './geometry-budget-error';
 
 export type { DimensionEntity, DimStyle, DimKind } from './dimension';
 export type { MTextEntity, MTextAttachment } from './mtext';
@@ -998,12 +1000,87 @@ export function blockTransform(e: Entity, tf: (p: Point) => Point, rotation: num
  * blocks are empty, missing or below the nesting depth draws nothing but would otherwise be
  * walked billions of times. Readers report such blocks (expansionReport).
  */
+const workCache = new WeakMap<Entity, number>();
+/** Coordinate and text work copied or rendered by each instance of an immutable entity. */
+export function entityGeometryWork(entity: Entity): number {
+  const immutable = isImmutableData(entity);
+  const hit = immutable ? workCache.get(entity) : undefined;
+  if (hit !== undefined) return hit;
+  let work = 1;
+  switch (entity.type) {
+    case 'polyline':
+      work += entity.points.length * (entity.bulges?.some((value) => Math.abs(value) > 1e-12) ? 32 : 1);
+      break;
+    case 'spline':
+      work += entity.controlPoints.length + entity.knots.length + (entity.weights?.length ?? 0) + (entity.fitPoints?.length ?? 0);
+      break;
+    case 'hatch':
+      for (const loop of entity.loops) work += loop.points.length * (loop.bulges?.some((value) => Math.abs(value) > 1e-12) ? 32 : 1);
+      for (const line of entity.patternLines ?? []) work += 1 + line.dashes.length;
+      break;
+    case 'leader':
+      work += entity.vertices.length + (entity.text?.length ?? 0) + (entity.raw?.length ?? 0);
+      for (const path of entity.extraPaths ?? []) work += path.length;
+      break;
+    case 'text':
+      work += entity.text.length;
+      break;
+    case 'mtext':
+      work += entity.text.length + (entity.raw?.length ?? 0) + (entity.columns?.heights.length ?? 0);
+      break;
+    case 'insert':
+      for (const value of Object.values(entity.attributes)) work += value.length;
+      break;
+    case 'table':
+      work += entity.rowHeights.length + entity.columnWidths.length + entity.rowHeights.length * entity.columnWidths.length;
+      for (const row of entity.cells) for (const cell of row) work += 1 + cell.text.length + (cell.raw?.length ?? 0);
+      break;
+    case 'dimension':
+      work += entity.text?.length ?? 0;
+      break;
+    case 'image':
+      work += (entity.clip?.length ?? 0) + entity.path.length;
+      break;
+  }
+  if (immutable) workCache.set(entity, work);
+  return work;
+}
+
+const dependencyDepths = new WeakMap<Map<string, BlockDef | undefined>, Map<string, number>>();
+/** Definitions used within rendering's depth limit, including currently missing nested blocks. */
+export function collectBlockDependencies(name: string, lookup: BlockLookup, deps = new Map<string, BlockDef | undefined>()): Map<string, BlockDef | undefined> {
+  const pending = [{ name, depth: 0 }];
+  const depths = dependencyDepths.get(deps) ?? new Map<string, number>();
+  dependencyDepths.set(deps, depths);
+  let examined = 0;
+  while (pending.length) {
+    const current = pending.pop()!;
+    if (current.depth > 8 || (depths.get(current.name) ?? Infinity) <= current.depth) continue;
+    depths.set(current.name, current.depth);
+    const block = lookup(current.name);
+    deps.set(current.name, block);
+    if (!block) continue;
+    if (block.xref && !block.entities.length) continue; // only the fixed placeholder is rendered
+    for (const attribute of block.attributes) examined += 1 + attribute.default.length;
+    for (const entity of block.entities) {
+      examined += entityGeometryWork(entity);
+      if (examined > MAX_BLOCK_EXPANSION_WORK) throw new GeometryBudgetError('Block definitions exceed the safe geometry budget.');
+      if (entity.type === 'insert') pending.push({ name: entity.block, depth: current.depth + 1 });
+    }
+    if (examined > MAX_BLOCK_EXPANSION_WORK) throw new GeometryBudgetError('Block definitions exceed the safe geometry budget.');
+  }
+  return deps;
+}
+
+export const MAX_BLOCK_EXPANSION_WORK = 100_000;
+
 export const MAX_INSERT_EXPANSION = 2_000_000;
 /** Nesting levels drawn below a reference (deeper references are not expanded). */
 const MAX_INSERT_DEPTH = 8;
 
 /** One expansion: objects it may still produce, the chain of blocks being expanded. */
 interface ExpansionBudget {
+  remaining: number;
   left: number;
   /** References it may still follow (the top one included). */
   visits: number;
@@ -1015,7 +1092,12 @@ interface ExpansionBudget {
   /** A block inserts itself (directly or through others): the repeated reference was skipped. */
   cyclic: boolean;
 }
-const newBudget = (maxObjects = MAX_INSERT_EXPANSION): ExpansionBudget => ({ left: maxObjects, visits: maxObjects, chain: [], deps: new Map(), truncated: false, cyclic: false });
+const newBudget = (maxObjects = MAX_INSERT_EXPANSION): ExpansionBudget => ({ remaining: MAX_BLOCK_EXPANSION_WORK, left: maxObjects, visits: maxObjects, chain: [], deps: new Map(), truncated: false, cyclic: false });
+
+function spendExpansion(budget: ExpansionBudget, work = 1): void {
+  budget.remaining -= work;
+  if (budget.remaining < 0) throw new GeometryBudgetError('Block expansion exceeds the safe geometry budget.');
+}
 
 interface InsertCache {
   block: BlockDef;
@@ -1030,13 +1112,14 @@ interface InsertCache {
   /** The expansion was cut short (the cap, or a block that inserts itself). */
   limited: boolean;
 }
-/** Entities are immutable, so an insert's exploded geometry can be cached by identity. */
+/** Only accepted immutable inserts and definitions qualify for identity caching. */
 const insertCache = new WeakMap<InsertEntity, InsertCache>();
 
 function cachedInsert(ins: InsertEntity, lookup: BlockLookup): InsertCache | null {
   const block = lookup(ins.block);
   if (!block) return null;
-  const hit = insertCache.get(ins);
+  const immutable = isImmutableData(ins);
+  const hit = immutable ? insertCache.get(ins) : undefined;
   if (hit && hit.block === block && depsCurrent(hit.deps, lookup)) return hit;
   const budget = newBudget();
   const exploded: Entity[] = [];
@@ -1044,7 +1127,7 @@ function cachedInsert(ins: InsertEntity, lookup: BlockLookup): InsertCache | nul
   let bounds: Bounds | null = null;
   for (const sub of exploded) bounds = g.unionBounds(bounds, entityBounds(sub, lookup));
   const entry = { block, deps: budget.deps, exploded, bounds: bounds ?? g.boundsOfPoints([ins.position]), limited: budget.truncated || budget.cyclic };
-  insertCache.set(ins, entry);
+  if (immutable && [...budget.deps.values()].every((definition) => !definition || isImmutableData(definition))) insertCache.set(ins, entry);
   return entry;
 }
 
@@ -1101,6 +1184,7 @@ function explodeInto(out: Entity[], ins: InsertEntity, lookup: BlockLookup, dept
     return;
   }
   budget.visits -= 1;
+  if (depth === 0) spendExpansion(budget, entityGeometryWork(ins));
   if (depth > MAX_INSERT_DEPTH) return;
   const block = lookup(ins.block);
   budget.deps.set(ins.block, block);
@@ -1111,8 +1195,13 @@ function explodeInto(out: Entity[], ins: InsertEntity, lookup: BlockLookup, dept
   }
   const tf = insertTransform(ins, block);
   if (block.xref && block.entities.length === 0) {
-    for (const e of xrefPlaceholder(ins, block, tf)) out.push(e);
-    budget.left -= 2;
+    spendExpansion(budget, 2);
+    for (const e of xrefPlaceholder(ins, block, tf)) {
+      if (budget.left <= 0) { budget.truncated = true; break; }
+      out.push(e);
+      budget.left -= 1;
+    }
+
     return;
   }
   budget.chain.push(ins.block);
@@ -1122,10 +1211,12 @@ function explodeInto(out: Entity[], ins: InsertEntity, lookup: BlockLookup, dept
       budget.truncated = true;
       break;
     }
+    spendExpansion(budget, entityGeometryWork(e));
     transformInto(out, e, tf, ins, similar, lookup, depth + 1, budget);
   }
   // Attribute text
   for (const a of block.attributes) {
+    spendExpansion(budget, 1 + a.default.length);
     if (a.invisible || ins.hiddenAttributes?.includes(a.tag)) continue;
     const value = ins.attributes[a.tag] ?? a.default;
     if (!value) continue;

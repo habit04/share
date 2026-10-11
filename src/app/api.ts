@@ -22,6 +22,7 @@ import { isWire } from '../electrical/ladder';
 import { updateCrossReferences } from '../electrical/xref';
 import { withInsertAttributes } from '../electrical/attributes';
 import { modal, button } from '../ui/dialogkit';
+import { ensureFileLimit, MAX_DRAWING_FILE_BYTES } from '../io/file-limits';
 
 export const API_VERSION = 1;
 const APP_VERSION: string = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : 'dev';
@@ -76,7 +77,8 @@ export interface JcadApi {
   };
   readonly commands: {
     register(cmd: PluginCommand): () => void;
-    run(name: string, arg?: string): void;
+    /** Returns the command's promise when it has asynchronous work. */
+    run(name: string, arg?: string): void | Promise<void>;
     list(): CommandInfo[];
   };
   readonly document: {
@@ -331,8 +333,7 @@ function hubOf(editor: Editor): Hub {
     const name = input.trim().split(/\s+/)[0]?.toUpperCase();
     const def = name ? editor.commands.get(name) : undefined;
     if (!def) {
-      original(input);
-      return;
+      return original(input);
     }
     if (hub.active) {
       const n = hub.active.name;
@@ -342,7 +343,7 @@ function hubOf(editor: Editor): Hub {
     emit('commandStarted', def.name);
     const before = editor.tool;
     try {
-      original(input);
+      return original(input);
     } finally {
       if (editor.tool && editor.tool !== before) hub.active = { name: def.name, tool: editor.tool };
       else emit('commandEnded', def.name);
@@ -427,9 +428,9 @@ function openDialog(editor: Editor, options: string | DialogOptions): Promise<st
 }
 
 /** Native file picker (works in the browser and in Electron's renderer). */
-export function pickTextFile(accept: string): Promise<{ name: string; text: string } | null> {
+export function pickTextFile(accept: string, maximum = MAX_DRAWING_FILE_BYTES): Promise<{ name: string; text: string } | null> {
   if (!hasDom()) return Promise.resolve(null);
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = accept;
@@ -438,6 +439,7 @@ export function pickTextFile(accept: string): Promise<{ name: string; text: stri
       const f = input.files?.[0];
       input.remove();
       if (!f) return resolve(null);
+      try { ensureFileLimit(f, maximum); } catch (error) { reject(error); return; }
       void f.text().then(
         (text) => resolve({ name: f.name, text }),
         () => resolve(null),
@@ -538,7 +540,7 @@ export function createApi(editor: Editor, owner: string): ApiHandle {
       // A command a plugin runs is not the user's choice (RECENT opens a project by name then).
       editor.apiCommandDepth += 1;
       try {
-        editor.runCommand(arg !== undefined && arg !== '' ? `${n} ${arg}` : n);
+        return editor.runCommand(arg !== undefined && arg !== '' ? `${n} ${arg}` : n);
       } finally {
         editor.apiCommandDepth -= 1;
       }

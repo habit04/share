@@ -132,6 +132,23 @@ describe('MTEXT formatted layout', () => {
     expect(mtextParts(edited)[0]!.text).toBe('changed');
     expect(entityBounds(m, () => undefined)).not.toBeNull();
   });
+  it('distinguishes column breaks from literal escaped backslashes', () => {
+    const columns = { type: 1 as const, count: 2, width: 10, gutter: 2, autoHeight: false, reversed: false, heights: [5, 5] };
+    const parts = mtextLayoutFull(mt('\\\\N literal', { columns }), (t, h) => t.length * h).texts;
+    expect(parts.map((p) => p.text)).toEqual(['\\N', 'literal']);
+    expect(parts.every((p) => p.position.x < 12)).toBe(true);
+  });
+  it('carries style and scope state across columns and keeps excess break content', () => {
+    const columns = { type: 1 as const, count: 2, width: 10, gutter: 2, autoHeight: false, reversed: false, heights: [5, 5] };
+    const parts = mtextLayoutFull(mt('{\\C1;\\LRED\\NRED}\\NPLAIN', { columns }), (t, h) => t.length * h);
+    expect(parts.texts.map((p) => [p.text, p.color, p.position.x])).toEqual([['RED', 1, 0], ['RED', 1, 12], ['PLAIN', 'ByLayer', 12]]);
+    expect(parts.strokes).toHaveLength(2);
+  });
+  it('keeps invalid derived positions out of layout when called without import validation', () => {
+    const layout = mtextLayoutFull(mt('a\\Pb', { height: 1e308, attachment: 9, lineSpacing: 1e308, position: { x: 1e308, y: 1e308 } }), (t, h) => t.length * h);
+    expect(layout.texts.every((t) => Number.isFinite(t.position.x) && Number.isFinite(t.position.y) && Number.isFinite(t.height))).toBe(true);
+    expect(layout.strokes.every((s) => [s.a.x, s.a.y, s.b.x, s.b.y].every(Number.isFinite))).toBe(true);
+  });
 });
 
 describe('MTEXT columns (layout)', () => {

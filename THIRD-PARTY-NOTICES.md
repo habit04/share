@@ -21,6 +21,7 @@ Intel) and the Linux `.AppImage` / `.deb` packages contain:
 - the **LibreDWG** WebAssembly build from `@mlightcad/libredwg-web`, used to read DWG files
   (GPL-3.0) - see [LibreDWG](#libredwg-via-mlightcadlibredwg-web);
 - `electron-updater` and its dependencies, used for update checks;
+- `js-yaml`, used directly to read trusted update publisher configuration and by electron-updater;
 - the `hershey` package and the **Hershey Roman Simplex** font data
   (`src/render/fonts/rowmans.jhf`, compiled into the renderer bundle) - see
   [Hershey fonts](#hershey-fonts).
@@ -51,7 +52,7 @@ Versions are the ones in `package-lock.json` at the time this file was written.
 | jsonfile | 6.2.1 | MIT | Copyright (c) 2012-2015, JP Richardson | fs-extra | <https://github.com/jprichardson/node-jsonfile> |
 | universalify | 2.0.1 | MIT | Copyright (c) 2017, Ryan Zimmerman | fs-extra | <https://github.com/RyanZim/universalify> |
 | graceful-fs | 4.2.11 | ISC | Copyright (c) 2011-2022 Isaac Z. Schlueter, Ben Noordhuis, and Contributors | fs-extra | <https://github.com/isaacs/node-graceful-fs> |
-| js-yaml | 4.3.2 | MIT | Copyright (C) 2011-2015 by Vitaly Puzrin | electron-updater | <https://github.com/nodeca/js-yaml> |
+| js-yaml | 4.3.2 | MIT | Copyright (C) 2011-2015 by Vitaly Puzrin | direct runtime dependency; trusted update configuration and electron-updater; workflow validation during development | <https://github.com/nodeca/js-yaml> |
 | argparse | 2.0.1 | Python-2.0 | Copyright (c) 2001-2020 Python Software Foundation (see the licence text) | js-yaml | <https://github.com/nodeca/argparse> |
 | lazy-val | 1.0.5 | MIT | Vladimir Krivosheev (package author; the package ships no licence file) | electron-updater | <https://github.com/develar/lazy-val> |
 | lodash.escaperegexp | 4.1.2 | MIT | Copyright jQuery Foundation and other contributors | electron-updater | <https://lodash.com/> |
@@ -73,11 +74,12 @@ none of their code is part of what is distributed.
 | Package | Version | Licence | Copyright | Role | Link |
 | --- | --- | --- | --- | --- | --- |
 | electron | 44.7.0 | MIT | Copyright (c) Electron contributors; Copyright (c) 2013-2020 GitHub Inc. | Runtime shipped inside every installer (see below). | <https://github.com/electron/electron> |
-| electron-builder | 26.15.3 | MIT | Copyright (c) 2015 Loopline Systems | Build tool; its NSIS installer stub is part of the Windows installer. | <https://github.com/electron-userland/electron-builder> |
-| @electron/fuses | 1.8.0 | MIT | Copyright (c) 2020 Electron Maintainers | Release checks only: `scripts/electron-fuses.mjs` reads the fuses electron-builder sets, and the packaged smoke test re-enables the inspector fuse in its own copy of the app (also an electron-builder dependency). | <https://github.com/electron/fuses> |
+| @electron/fuses | 1.8.0 | MIT | Copyright (c) 2020 Electron Maintainers. | Build and test tool for setting and verifying the packaged Electron fuse policy. | <https://github.com/electron/fuses> |
+| electron-builder | 26.17.0 | MIT | Copyright (c) 2015 Loopline Systems | Build tool; its NSIS installer stub is part of the Windows installer. | <https://github.com/electron-userland/electron-builder> |
 | vite | 6.4.3 | MIT | Copyright (c) 2019-present, VoidZero Inc. and Vite contributors | Build tool; small Vite runtime helpers (module preload) end up in the renderer bundle. | <https://github.com/vitejs/vite> |
 | typescript | 5.9.3 | Apache-2.0 | Copyright (c) Microsoft Corporation | Compiler only. | <https://github.com/microsoft/TypeScript> |
-| vitest | 5.0.3 | MIT | Copyright (c) 2021-Present VoidZero Inc. and Vitest contributors | Unit tests only. | <https://github.com/vitest-dev/vitest> |
+| vitest | 5.0.3 | MIT | Copyright (c) 2021-Present Vitest Team | Unit tests only. | <https://github.com/vitest-dev/vitest> |
+| esbuild | 0.25.12 | MIT | Copyright (c) 2020 Evan Wallace | Direct build-tool dependency for the compatible patched Vite toolchain. | <https://github.com/evanw/esbuild> |
 | playwright | 1.63.0 | Apache-2.0 | Copyright (c) Microsoft Corporation | Screenshot and website checks only. | <https://github.com/microsoft/playwright> |
 | @types/node | 22.20.4 | MIT | Copyright (c) Microsoft Corporation | Type definitions only. | <https://github.com/DefinitelyTyped/DefinitelyTyped> |
 | concurrently | 9.2.4 | MIT | Copyright (c) 2015 Kimmo Brunfeldt | Development script runner only. | <https://github.com/open-cli-tools/concurrently> |
@@ -89,7 +91,6 @@ none of their code is part of what is distributed.
 | globals | 16.5.0 | MIT | Copyright (c) Sindre Sorhus | Lint configuration only. | <https://github.com/sindresorhus/globals> |
 | pngjs | 7.0.0 | MIT | Copyright (c) 2015 Luke Page & Original Contributors | Screenshot comparison only (`scripts/screenshot-compare.mjs`). | <https://github.com/pngjs/pngjs> |
 | pixelmatch | 7.2.0 | ISC | Copyright (c) 2025, Mapbox | Screenshot comparison only. | <https://github.com/mapbox/pixelmatch> |
-| js-yaml (as a development dependency) | 4.3.2 | MIT | Copyright (C) 2011-2015 by Vitaly Puzrin | Workflow validation (`scripts/check-workflows.mjs`); the same package ships at run time through electron-updater (above). | <https://github.com/nodeca/js-yaml> |
 | @types/pngjs, @types/js-yaml | 6.0.5, 4.0.9 | MIT | Copyright (c) Microsoft Corporation | Type definitions only. | <https://github.com/DefinitelyTyped/DefinitelyTyped> |
 
 ### Other material in the repository

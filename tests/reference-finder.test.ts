@@ -1,4 +1,3 @@
-/** Sorted rung reference lookup for reports, ported from PR #2 (codex/electrical-review-fixes 2f89b0e). */
 import { describe, expect, it } from 'vitest';
 import { nearestReference, referenceFinder } from '../src/electrical/ladder';
 import { DEFAULT_HEADER } from '../src/core/document';

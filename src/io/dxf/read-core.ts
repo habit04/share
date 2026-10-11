@@ -3,17 +3,20 @@
  * styles, blocks read so far, field values, IMAGE entities waiting for their IMAGEDEF, the import
  * report), the properties every entity starts with and the report entry for one record.
  */
-import { newId, type BlockDef, type ColorSpec, type DimStyle } from '../../core/entities';
+import type { Obj } from './groups';
+import type { ColorSpec, DimStyle, BlockDef } from '../../core/entities';
+import { str, has, num } from './groups';
+import { newId } from '../../core/entities';
 import type { FieldContext } from '../../core/fields';
-import type { ImportReportBuilder, RawDxfEntity } from '../import-report';
-import { num, has, str, type Obj } from './groups';
 import type { TableStyleData } from './read-annotations';
+import { ImportReportBuilder } from '../import-report';
+import type { RawDxfEntity } from '../import-report';
 
 /** Entity properties common to every DXF entity (layer, colour, linetype, lineweight, ltscale). */
 export function commonProps(o: Obj): { id: string; layer: string; color: ColorSpec; linetype?: string; lineWeight?: number; ltscale?: number; trueColor?: number } {
   const layer = str(o, 8, '0');
   const rawColor = o.groups.find((x) => x.code === 62);
-  const color: ColorSpec = rawColor && parseInt(rawColor.value, 10) !== 256 ? parseInt(rawColor.value, 10) : 'ByLayer';
+  const color: ColorSpec = rawColor && Number(rawColor.value) !== 256 ? Number(rawColor.value) : 'ByLayer';
   const base: { id: string; layer: string; color: ColorSpec; linetype?: string; lineWeight?: number; ltscale?: number } = { id: newId(), layer, color };
   const lt = str(o, 6);
   if (lt && lt.toUpperCase() !== 'BYLAYER') base.linetype = lt;

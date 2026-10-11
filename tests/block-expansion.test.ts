@@ -3,11 +3,12 @@
  * insert the previous one many times stay within the nesting depth while multiplying into
  * billions of objects (a "fan-out bomb"), and a block may insert itself. One reference expands to
  * at most MAX_INSERT_EXPANSION (2,000,000, as JCad 3D's DXF reader) objects, a block that inserts
- * itself is expanded once, the readers report both (kept: the blocks are saved as they are), and
- * EXPLODE leaves such a reference alone. Nothing throws and nothing blocks opening the drawing.
+ * itself is expanded once, the readers report both (kept: the block definitions can be saved as
+ * they are), and EXPLODE leaves cyclic references alone. The earlier 100,000-work guard rejects
+ * excessive expansion before a Drawing accepts it; the object/visit cap remains defense in depth.
  */
 import { describe, it, expect } from 'vitest';
-import { explodeInsert, expandInsert, expansionReport, insertExpansionLimited, entityBounds, MAX_INSERT_EXPANSION, type BlockDef, type Entity, type InsertEntity } from '../src/core/entities';
+import { explodeInsert, expandInsert, expansionReport, insertExpansionLimited, entityBounds, MAX_INSERT_EXPANSION, MAX_BLOCK_EXPANSION_WORK, type BlockDef, type Entity, type InsertEntity } from '../src/core/entities';
 import { readDxf, writeDxf } from '../src/io/dxf';
 import { importReportOf, saveOverwriteWarning } from '../src/io/import-report';
 import { reportNeedsAttention } from '../src/app/import-open';
@@ -27,8 +28,9 @@ function fanOut(levels: number): Record<string, BlockDef> {
 }
 
 describe('block expansion budget (core/entities.ts, E-13)', () => {
-  it('the cap is 2,000,000 objects per reference', () => {
+  it('retains the 2,000,000 object cap behind the 100,000 work rejection limit', () => {
     expect(MAX_INSERT_EXPANSION).toBe(2_000_000);
+    expect(MAX_BLOCK_EXPANSION_WORK).toBe(100_000);
   });
 
   it('a fan-out bomb expands to the budget and stops, quickly', () => {
@@ -91,22 +93,23 @@ describe('block expansion budget (core/entities.ts, E-13)', () => {
       for (let k = 1; k <= 8; k += 1) blocks[`E${k}`] = block(`E${k}`, Array.from({ length: 20 }, (_, i) => insertOf(`E${k - 1}`, `e${k}-${i}`, i)));
       const lookup = (n: string) => blocks[n];
       const t = performance.now();
-      const r = expandInsert(insertOf('E8'), lookup);
+      expect(() => expandInsert(insertOf('E8'), lookup), leaf).toThrow(/geometry budget/);
       expect(performance.now() - t, leaf).toBeLessThan(10_000);
-      expect(r, leaf).toMatchObject({ truncated: true, cyclic: false });
-      expect(r.entities, leaf).toHaveLength(0);
       const ins = insertOf('E8', `top-${leaf}`);
-      expect(explodeInsert(ins, lookup)).toHaveLength(0);
-      expect(insertExpansionLimited(ins, lookup)).toBe(true);
-      expect(entityBounds(ins, lookup)).toEqual({ min: { x: 0, y: 0 }, max: { x: 0, y: 0 } });
+      expect(() => explodeInsert(ins, lookup), leaf).toThrow(/geometry budget/);
+      expect(() => insertExpansionLimited(ins, lookup), leaf).toThrow(/geometry budget/);
+      expect(() => entityBounds(ins, lookup), leaf).toThrow(/geometry budget/);
+      expect(() => new Drawing({ blocks, entities: [ins] }), leaf).toThrow(/geometry budget/);
       const report = expansionReport(blocks, [ins]);
       expect(report.oversized, leaf).toContain('E8');
       expect(report.total).toBe(0);
     }
-    // Within the limits nothing changes: 20^4 references, 160,000 lines.
+    // Within the work limit nothing changes: 20^3 references, 8,000 lines.
     const ok: Record<string, BlockDef> = { L0: block('L0', [line('a')]) };
-    for (let k = 1; k <= 4; k += 1) ok[`L${k}`] = block(`L${k}`, Array.from({ length: 20 }, (_, i) => insertOf(`L${k - 1}`, `l${k}-${i}`, i)));
-    expect(expandInsert(insertOf('L4'), (n) => ok[n])).toMatchObject({ truncated: false, cyclic: false });
+    for (let k = 1; k <= 3; k += 1) ok[`L${k}`] = block(`L${k}`, Array.from({ length: 20 }, (_, i) => insertOf(`L${k - 1}`, `l${k}-${i}`, i)));
+    const expanded = expandInsert(insertOf('L3'), (n) => ok[n]);
+    expect(expanded).toMatchObject({ truncated: false, cyclic: false });
+    expect(expanded.entities).toHaveLength(8000);
     expect(expansionReport(ok, []).oversized).toEqual([]);
   }, 60_000);
 
@@ -151,8 +154,8 @@ describe('readers report the expansion and keep the blocks (E-13)', () => {
     const report = importReportOf(s)!;
     const reasons = report.items.map((i) => `${i.type} ${i.action}: ${i.reason}`);
     expect(reasons).toContain('BLOCK kept: block "SELF" inserts itself (directly or through other blocks): the repeated reference is not drawn');
-    expect(reasons).toContain('BLOCK kept: block "B8" expands to more than 2,000,000 objects through its nested blocks: each reference draws only the first 2,000,000, and EXPLODE leaves it a reference');
-    expect(report.notes, JSON.stringify(report.notes)).toContain('The block references of this drawing expand to about 2,010,002 objects (more than 2,000,000): drawing and selecting may be slow and use much memory.');
+    expect(reasons).toContain('BLOCK kept: block "B8" expands to more than 2,000,000 objects through its nested blocks: its definition is kept, but drawing acceptance rejects references exceeding the 100,000-work geometry budget');
+    expect(report.notes, JSON.stringify(report.notes)).toContain('The block references of this drawing expand to about 2,010,002 objects (more than 2,000,000); drawing acceptance enforces the per-reference and whole-drawing geometry budgets before rendering.');
     // Kept: neither the report dialog nor the "save over the original" question.
     expect(reportNeedsAttention(report)).toBe(false);
     expect(saveOverwriteWarning(s, '/jobs/bomb.dxf')).toBeNull();
@@ -160,6 +163,7 @@ describe('readers report the expansion and keep the blocks (E-13)', () => {
     expect(Object.keys(back.blocks).sort()).toEqual(['B0', 'B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'SELF']);
     expect(back.blocks.B8!.entities).toHaveLength(10);
     expect(back.blocks.SELF!.entities.map((e) => e.type)).toEqual(['line', 'insert']);
+    expect(() => new Drawing(s)).toThrow(/geometry budget/);
   });
 
   it('a DXF whose 20,000 blocks each insert the next opens, reports nothing and saves (the report used to overflow the stack)', () => {

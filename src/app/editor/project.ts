@@ -157,6 +157,12 @@ export async function saveProject(ed: Editor, st: EditorInternals, saveAs: boole
     ed.log(`Project ${snapshot.name} saved: ${written.path} (another project is open now; it is unchanged).`);
     return true;
   }
+  if (st.projectSavedRevision > revision) {
+    ed.log(`Project ${snapshot.name} saved: ${written.path} (a newer save completed meanwhile; the current project keeps that destination).`);
+    rememberRecent(ed, written.path);
+    return true;
+  }
+  st.projectSavedRevision = revision;
   if (st.projectRev === rev) {
     ed.project = written.project;
     ed.projectDirty = false;
@@ -164,6 +170,7 @@ export async function saveProject(ed: Editor, st: EditorInternals, saveAs: boole
   } else {
     // Edits made while the file was written stay (unsaved), re-expressed for the new location.
     ed.project = rebaseProject(ed.project, written.path);
+    ed.projectDirty = true;
     ed.log(`Project saved: ${written.path} (changes made during the save are still unsaved).`);
   }
   rememberRecent(ed, written.path);

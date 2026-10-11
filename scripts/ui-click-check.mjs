@@ -180,7 +180,7 @@ phase('commands with selection done');
 current = 'command args';
 for (const c of ['ZOOM E', 'ZOOM W', 'ZOOM I', 'ZOOM O', 'HELP shortcuts', 'HELP about', 'AEREPORT bom', 'AEREPORT wires', 'AEREPORT terminals', 'AEREPORT strip', 'AEREPORT audit', 'OPTIONS 4', 'DSETTINGS 2', 'WORKSPACE drafting', 'WORKSPACE electrical', 'RECENT']) {
   current = `command args ${c}`;
-  await page.evaluate((x) => window.editor.runCommand(x), c);
+  await page.evaluate((x) => void window.editor.runCommand(x), c);
   counts.commands += 1;
   await settle();
 }
@@ -486,7 +486,7 @@ await sweep('#properties', 'properties+selection', async () => {
       await page.waitForTimeout(80);
       if (await page.evaluate(() => !document.getElementById('symbol-builder').classList.contains('hidden'))) return true;
     }
-    await page.evaluate(() => window.editor.runCommand('AESYMBUILDER'));
+    await page.evaluate(() => void window.editor.runCommand('AESYMBUILDER'));
     await page.waitForTimeout(200);
     const primary = page.locator('.modal .btn.primary').last();
     if (await primary.count()) await primary.click().catch(() => {});

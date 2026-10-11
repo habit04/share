@@ -8,6 +8,7 @@
 import type { AutosaveEntry, AutosaveStore } from './autosave';
 import { parseProject, serializeProject, type Project } from './project';
 import { contentHash } from './savequeue';
+import { newDocumentId } from './sessions';
 
 /**
  * Drawing autosaves are "<document id>.sv.dxf"; project autosaves end in this suffix, which the
@@ -15,8 +16,9 @@ import { contentHash } from './savequeue';
  */
 const SUFFIX = '_jcadproj.sv.dxf';
 
-export function projectAutosaveName(p: Pick<Project, 'name' | 'path'>): string {
+export function projectAutosaveName(p: Pick<Project, 'name' | 'path'>, owner?: string): string {
   const base = p.name.replace(/[^A-Za-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 30) || 'Project';
+  if (owner) return `${base.slice(0, 8)}_${owner.replace(/-/g, '')}${SUFFIX}`;
   const tag = contentHash(p.path ?? `untitled:${p.name}`).replace(/[^0-9a-f]/g, '').slice(0, 8);
   return `${base}_${tag}${SUFFIX}`;
 }
@@ -55,15 +57,14 @@ export function parseProjectAutosave(text: string): Project | null {
 interface ProjectHost {
   project: Project;
   projectDirty: boolean;
+  readonly projectState?: { generation: number; revision: number };
   on(ev: 'project', fn: () => void): () => void;
 }
 
 export class ProjectAutosaver {
-  private written: string | null = null;
+  private owner: { generation: number | undefined; id: string; written: string | null; discarded: boolean };
   private timer: ReturnType<typeof setTimeout> | null = null;
   private chain: Promise<void> = Promise.resolve();
-  /** Set by discard(): the current changes were thrown away on purpose; the next change autosaves again. */
-  private discarded = false;
   onError: ((err: unknown) => void) | null = null;
 
   constructor(
@@ -72,12 +73,22 @@ export class ProjectAutosaver {
     private enabled: () => boolean = () => true,
     private delayMs = 1500,
   ) {
+    this.owner = { generation: host.projectState?.generation, id: newDocumentId(), written: null, discarded: false };
     host.on('project', () => this.schedule());
+  }
+
+  private ownership() {
+    const generation = this.host.projectState?.generation;
+    if (generation !== this.owner.generation) {
+      // Unadopted backups of prior generations remain available for explicit recovery.
+      this.owner = { generation, id: newDocumentId(), written: null, discarded: false };
+    }
+    return this.owner;
   }
 
   /** Write (or remove) the project autosave shortly after a change. */
   schedule(): void {
-    this.discarded = false;
+    this.ownership().discarded = false;
     if (this.timer) clearTimeout(this.timer);
     this.timer = setTimeout(() => {
       this.timer = null;
@@ -93,17 +104,17 @@ export class ProjectAutosaver {
 
   private async sync(): Promise<void> {
     const { project, projectDirty } = this.host;
-    if (projectDirty && this.enabled() && !this.discarded) {
-      const name = projectAutosaveName(project);
+    const owner = this.ownership();
+    if (projectDirty && this.enabled() && !owner.discarded) {
+      const name = owner.written ?? projectAutosaveName(project, owner.id);
       await this.store.write(name, projectAutosaveText(project), { originalPath: project.path ?? null, title: `Project ${project.name}`, savedAt: Date.now() });
-      if (this.written && this.written !== name) await this.store.remove(this.written);
-      this.written = name;
+      owner.written = name;
       return;
     }
-    if (this.written) {
-      const n = this.written;
-      this.written = null;
+    if (owner.written) {
+      const n = owner.written;
       await this.store.remove(n);
+      if (owner.written === n) owner.written = null;
     }
   }
 
@@ -115,12 +126,13 @@ export class ProjectAutosaver {
   discard(): Promise<void> {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
-    this.discarded = true;
+    const owner = this.ownership();
+    owner.discarded = true;
     this.chain = this.chain
       .then(async () => {
-        const names = new Set([this.written, projectAutosaveName(this.host.project)].filter((n): n is string => !!n));
-        this.written = null;
-        for (const n of names) await this.store.remove(n);
+        const name = owner.written;
+        if (name) await this.store.remove(name);
+        if (owner.written === name) owner.written = null;
       })
       .catch((err) => this.onError?.(err));
     return this.chain;
@@ -128,12 +140,13 @@ export class ProjectAutosaver {
 
   /** Continue writing to (and later remove) the autosave a recovered project came from. */
   adopt(name: string): void {
-    this.written = name;
+    this.ownership().written = name;
   }
 }
 
 export interface ProjectRecoveryHost {
   projectDirty: boolean;
+  readonly projectState?: { generation: number; revision: number };
   replaceProject(p: Project, dirty?: boolean): void;
   log(text: string): void;
 }
@@ -147,24 +160,46 @@ export async function offerProjectRecovery(
   store: AutosaveStore,
   ask: (name: string, path: string | null, savedAt: number) => Promise<'open' | 'discard' | 'later'>,
   autosaver?: Pick<ProjectAutosaver, 'adopt'>,
+  readFailure?: (name: string, error: unknown) => Promise<'retry' | 'later'>,
 ): Promise<AutosaveEntry | null> {
-  const entries = (await store.list()).filter((e) => isProjectAutosave(e.name)).sort((a, b) => b.savedAt - a.savedAt);
+  let entries: AutosaveEntry[];
+  while (true) {
+    try {
+      entries = (await store.list()).filter((e) => isProjectAutosave(e.name)).sort((a, b) => b.savedAt - a.savedAt);
+      break;
+    } catch (err) {
+      host.log('Project autosaves could not be listed; recovery copies were kept.');
+      if (!readFailure || await readFailure('Project autosaves', err) !== 'retry') return null;
+    }
+  }
   let recovered: AutosaveEntry | null = null;
   for (const e of entries) {
-    const text = await store.read(e.name);
-    const p = text ? parseProjectAutosave(text) : null;
-    if (!p) {
-      host.log(`Project autosave ${e.name} could not be read.`);
-      continue;
+    let p: Project | null = null;
+    while (true) {
+      try {
+        const text = await store.read(e.name);
+        p = text ? parseProjectAutosave(text) : null;
+        if (!p) throw new Error('The project recovery copy is missing or unreadable.');
+        break;
+      } catch (err) {
+        host.log(`Project autosave ${e.name} could not be read; its recovery copy was kept.`);
+        if (!readFailure || await readFailure(e.title || e.name, err) !== 'retry') break;
+      }
     }
+    if (!p) continue;
     // Only one project is open at a time: further autosaves wait for the next start.
     if (recovered || host.projectDirty) continue;
+    const state = host.projectState;
     const choice = await ask(p.name, p.path ?? null, e.savedAt);
     if (choice === 'discard') {
       await store.remove(e.name);
       continue;
     }
     if (choice === 'later') continue;
+    if (host.projectDirty || (state && (host.projectState?.generation !== state.generation || host.projectState?.revision !== state.revision))) {
+      host.log(`Project ${p.name} was not recovered because the current project changed while recovery was offered. Its recovery copy is kept.`);
+      continue;
+    }
     host.replaceProject(p, true);
     autosaver?.adopt(e.name);
     host.log(`Recovered project ${p.name} from autosave. Use PROJECTSAVE to keep the changes; the autosave is kept until then.`);

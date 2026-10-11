@@ -16,7 +16,7 @@
  *       the macOS sentence from the macOS build record (JCad-Electrical-macOS-provenance.json) in
  *       that folder (the release job's downloaded artifacts); given a release's published
  *       release-provenance.json (file, or a folder holding it), also its "Verified build" list,
- *       as the release job appended it (scripts/release-provenance.mjs verify --notes)
+ *       after the release job verified the downloaded artifacts
  *   node scripts/release-notes.mjs v0.4.2 --mac-signing developer-id-notarized   (or ad-hoc)
  *       the macOS sentence for a known signing status, without a record
  */
@@ -73,8 +73,9 @@ export function releaseNotes(changelog, version, repo = 'habit04/share', options
     '---',
     '',
     `**Downloads:** Windows \`jcad-electrical-${v}-win-x64.exe\` · macOS \`jcad-electrical-${v}-mac-arm64.dmg\` (Apple Silicon) / \`jcad-electrical-${v}-mac-x64.dmg\` (Intel) · Linux \`.AppImage\` / \`.deb\`.`,
-    'Installed copies learn about this release on their own: the Windows installer and the AppImage update in place; macOS and `.deb` installs offer the download.',
+    'Installed copies offer the release download. Windows builds configured with a trusted signing publisher install a verified update only after you choose Restart Now; unsigned Windows and all Linux/macOS builds use manual installation.',
     '',
+    'Signing varies by release. When published, inspect `release-provenance.json` and its signed attestation for the verified status.',
     `First launch: Windows SmartScreen may say "Windows protected your PC" (More info > Run anyway); ${mac}`,
     `Website and browser edition: https://${owner}.github.io/${name}/ · Full history: https://github.com/${repo}/blob/v${v}/CHANGELOG.md`,
   ];

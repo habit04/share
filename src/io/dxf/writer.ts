@@ -3,20 +3,23 @@
  * order, so the sections are written in sequence: HEADER, CLASSES, TABLES, BLOCKS, ENTITIES and
  * OBJECTS (paper space comes from io/dxf-layouts.ts).
  */
-import { dimensionParts, tableParts, type Entity, type Layer, type DimensionEntity } from '../../core/entities';
-import { dimStyleRecordPairs } from '../../core/dimension';
-import { DEFAULT_HEADER, type DrawingState } from '../../core/document';
-import { STANDARD_LINETYPES, findLinetype, patternLength, type Linetype } from '../../core/linetypes';
-import * as g from '../../core/geometry';
-import { attdefFlags } from '../../electrical/symbol-builder-core';
-// Track E: paper space (layouts, VIEWPORT entities, LAYOUT objects) lives in dxf-layouts.ts.
-import { planLayouts, writeLayoutHeader, extraBlockRecords, layoutHandleOf, writeLayoutContent, writeLayoutObjects } from '../dxf-layouts';
-import { encodeDxfText, textStyleGroups, textStyleOf, textStylesForWrite, STANDARD_TEXT_STYLE } from '../encoding';
+import type { DrawingState } from '../../core/document';
+import type { Linetype } from '../../core/linetypes';
+import type { Entity, DimensionEntity, Layer } from '../../core/entities';
 import { rawEntitiesOf } from '../import-report';
-import { ANNO_APP, DIMSTYLE_APP, MTEXT_COLUMNS_APP, TABLE_APP } from './codes';
-import { dimStyleXdata, dimStylesToWrite, dimHeaderVars } from './dimstyles';
-import { Writer, setPaperOwners, writeTextLike, emptyExtras, type WriteExtras } from './write-core';
-import { writeEntity, writeEntityAnno } from './write-entities';
+import { findLinetype, patternLength, STANDARD_LINETYPES } from '../../core/linetypes';
+import { Writer, setPaperOwners, emptyExtras, writeTextLike } from './write-core';
+import { DEFAULT_HEADER } from '../../core/document';
+import { planLayouts, writeLayoutHeader, extraBlockRecords, layoutHandleOf, writeLayoutContent, writeLayoutObjects } from '../dxf-layouts';
+import type { WriteExtras } from './write-core';
+import * as g from '../../core/geometry';
+import { dimHeaderVars, dimStylesToWrite, dimStyleXdata } from './dimstyles';
+import { textStylesForWrite, textStyleOf, STANDARD_TEXT_STYLE, textStyleGroups, encodeDxfText } from '../encoding';
+import { DIMSTYLE_APP, TABLE_APP, ANNO_APP, MTEXT_COLUMNS_APP } from './codes';
+import { dimStyleRecordPairs } from '../../core/dimension';
+import { writeEntityAnno, writeEntity } from './write-entities';
+import { attdefFlags } from '../../electrical/symbol-builder-core';
+import { tableParts, dimensionParts } from '../../core/entities';
 
 /** Linetype names referenced anywhere in the drawing (layers, entities, block entities). */
 function usedLinetypes(state: DrawingState): Linetype[] {
@@ -114,18 +117,18 @@ export function writeDxf(state: DrawingState): string {
   hv('$INSUNITS', 70, header.units.insunits);
   hv('$LUNITS', 70, header.units.lunits);
   hv('$LUPREC', 70, header.units.luprec);
-  hv('$AUNITS', 70, 0);
+  hv('$AUNITS', 70, header.units.aunits ?? 0);
   hv('$AUPREC', 70, header.units.auprec);
   hv('$CLAYER', 8, state.currentLayer);
   hv('$CELTYPE', 6, header.celtype || 'ByLayer');
   hv('$CELWEIGHT', 370, header.celweight === undefined ? -1 : Math.round(header.celweight * 100));
   hv('$LTSCALE', 40, header.ltscale);
-  hv('$CELTSCALE', 40, 1);
+  hv('$CELTSCALE', 40, header.celtscale ?? 1);
   hpt('$LIMMIN', header.limits.min);
   hpt('$LIMMAX', header.limits.max);
   hv('$PDMODE', 70, header.pdmode);
   hv('$PDSIZE', 40, header.pdsize);
-  hv('$TEXTSTYLE', 7, 'Standard');
+  hv('$TEXTSTYLE', 7, encodeDxfText(header.textStyle || 'Standard'));
   hv('$DIMSTYLE', 2, ds.name);
   for (const [name, code, value] of dimHeaderVars(ds)) if (name !== 'DIMLUNIT') hv(`$${name}`, code, value);
   hv('$DIMLUNIT', 70, ds.lunit);
@@ -227,12 +230,11 @@ export function writeDxf(state: DrawingState): string {
     }
   });
   const textStyles = textStylesForWrite(state);
-  // Every style a dimension (DIMTXSTY) or a text names needs a record, so its handle exists.
-  const requiredTextStyles = new Set([ds.textStyle, ...allEntities.map((e) => (e.type === 'dimension' ? e.style.textStyle : textStyleOf(e)))].filter((n): n is string => !!n));
-  for (const name of requiredTextStyles) if (!textStyles.some((t) => t.name.toUpperCase() === name.toUpperCase())) textStyles.push({ ...STANDARD_TEXT_STYLE, name });
+  const requiredTextStyles = new Set([header.textStyle, ds.textStyle, ...allEntities.map((e) => e.type === 'dimension' ? e.style.textStyle : textStyleOf(e))].filter((n): n is string => !!n));
+  for (const name of requiredTextStyles) if (!textStyles.some((s) => s.name.toUpperCase() === name.toUpperCase())) textStyles.push({ ...STANDARD_TEXT_STYLE, name });
   table('STYLE', '3', textStyles.length, () => {
     for (const ts of textStyles) {
-      record('STYLE', '3', 'AcDbTextStyleTableRecord', ts.name, ts.flags);
+      record('STYLE', '3', 'AcDbTextStyleTableRecord', encodeDxfText(ts.name), ts.flags);
       w.textStyleHandles.set(ts.name.toUpperCase(), w.lastHandle().toString(16).toUpperCase());
       for (const [code, value] of textStyleGroups(ts)) w.pair(code, value);
     }
@@ -281,8 +283,7 @@ export function writeDxf(state: DrawingState): string {
       w.pair(2, style.name);
       w.pair(70, 0);
       for (const [code, value] of dimStyleRecordPairs(style)) w.pair(code, value);
-      // DIMTXSTY: the handle of the STYLE record.
-      w.pair(340, w.textStyleHandles.get((style.textStyle ?? 'Standard').toUpperCase()) ?? w.textStyleHandles.get('STANDARD') ?? '0');
+      w.pair(340, w.textStyleHandles.get((style.textStyle ?? 'Standard').toUpperCase()) ?? w.textStyleHandles.get('STANDARD')!);
       w.pair(1001, DIMSTYLE_APP);
       for (const [k, v] of dimStyleXdata(style)) {
         w.pair(1000, k);

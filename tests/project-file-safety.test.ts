@@ -12,7 +12,7 @@ import { newId } from '../src/core/entities';
 import { writeDxf, readDxf as readDxfState } from '../src/io/dxf';
 import { SaveQueue, captureRevision } from '../src/app/savequeue';
 import { parseProject, resolveDrawingPath, resolveProjectPath } from '../src/app/project';
-import { closeDrawingTab, collectUnsaved, runCloseWorkflow, type CloseDecision, type UnsavedItem } from '../src/app/closeflow';
+import { closeDrawingTab, collectUnsaved, runCloseWorkflow, settleBeforeClose, type CloseDecision, type UnsavedItem } from '../src/app/closeflow';
 import { ProjectAutosaver, drawingAutosaves, offerProjectRecovery, projectAutosaveName, isProjectAutosave } from '../src/app/project-autosave';
 import { localAutosaveStore, type KeyValueStorage } from '../src/app/autosave';
 import { createApi } from '../src/app/api';
@@ -475,7 +475,8 @@ describe('project dirty flag and protection', () => {
     ed.updateProject({ ...ed.project, descriptions: ['ACME'] });
     await pa.flush();
     const list = await store.list();
-    expect(list.map((e) => e.name)).toEqual([projectAutosaveName(ed.project)]);
+    expect(list).toHaveLength(1);
+    expect(list[0]!.name).not.toBe(projectAutosaveName(ed.project));
     expect(isProjectAutosave(list[0]!.name)).toBe(true);
     expect(list[0]!.name).toMatch(/^[A-Za-z0-9_-]{1,60}\.sv\.dxf$/); // the main process's autosave name rule
     expect(await drawingAutosaves(store).list()).toEqual([]); // not shown as a drawing
@@ -542,6 +543,96 @@ describe('who chose the project (write access to its drawings outside its folder
   });
 });
 
+describe('project save generations and recovery ownership', () => {
+  it('a hung project cleanup has a bounded close wait and retains its recovery copy', async () => {
+    const values = new Map<string, string>();
+    const pending = deferred<void>();
+    const store = {
+      write: async (name: string, value: string) => { values.set(name, value); },
+      remove: async () => pending.promise,
+      read: async (name: string) => values.get(name) ?? null,
+      list: async () => [...values.keys()].map((name) => ({ name, savedAt: 1, title: 'P', originalPath: '/p/p.jcadproj.json' })),
+    };
+    const { ed } = makeEditor();
+    const saver = new ProjectAutosaver(ed, store);
+    ed.replaceProject({ name: 'P', drawings: [] }, true);
+    await saver.flush();
+    expect(await settleBeforeClose([saver.discard()], 5)).toBe(false);
+    expect(values.size).toBe(1);
+    pending.resolve();
+  });
+
+  it('a slower old Save As cannot restore an old destination or mark a newer revision clean', async () => {
+    const older = deferred<string | null>();
+    let choices = 0;
+    const { ed } = makeEditor({
+      chooseProjectPath: async () => ++choices === 1 ? '/jobs/old/p.jcadproj.json' : '/jobs/new/p.jcadproj.json',
+      saveProject: async (path) => path.includes('/old/') ? older.promise : path,
+    });
+    ed.replaceProject({ name: 'P', path: '/jobs/original/p.jcadproj.json', drawings: [{ file: 'a.dxf' }] }, true);
+    const first = ed.saveProject(true);
+    await tick();
+    ed.updateProject({ ...ed.project, description: 'newer' });
+    expect(await ed.saveProject(true)).toBe(true);
+    ed.updateProject({ ...ed.project, description: 'latest unsaved' });
+    older.resolve('/jobs/old/p.jcadproj.json');
+    expect(await first).toBe(true);
+    expect(ed.project.path).toBe('/jobs/new/p.jcadproj.json');
+    expect(ed.project.description).toBe('latest unsaved');
+    expect(ed.projectDirty).toBe(true);
+    expect(resolveDrawingPath(ed.project, ed.project.drawings[0]!)).toBe('/jobs/original/a.dxf');
+  });
+
+  it('same filename in a fresh generation preserves the unrecovered copy; explicit recovery adopts it', async () => {
+    const entries = new Map<string, string>();
+    const store = {
+      write: async (name: string, value: string) => { entries.set(name, value); },
+      remove: async (name: string) => { entries.delete(name); },
+      read: async (name: string) => entries.get(name) ?? null,
+      list: async () => [...entries.keys()].map((name) => ({ name, savedAt: 1, title: 'P', originalPath: '/p/p.jcadproj.json' })),
+    };
+    const { ed } = makeEditor();
+    const saver = new ProjectAutosaver(ed, store);
+    ed.replaceProject({ name: 'P', path: '/p/p.jcadproj.json', drawings: [], description: 'first recovery' }, true);
+    await saver.flush();
+    const old = [...entries][0]!;
+    ed.replaceProject({ name: 'P', path: '/p/p.jcadproj.json', drawings: [], description: 'second recovery' }, true);
+    await saver.flush();
+    expect(entries.size).toBe(2);
+    expect(entries.get(old[0])).toBe(old[1]);
+    await saver.discard();
+    expect([...entries.keys()]).toEqual([old[0]]);
+    const { ed: recovered } = makeEditor();
+    const recoveredSaver = new ProjectAutosaver(recovered, store);
+    await offerProjectRecovery(recovered, store, async () => 'open', recoveredSaver);
+    recovered.updateProject({ ...recovered.project, description: 'adopted edit' });
+    await recoveredSaver.flush();
+    expect([...entries.keys()]).toEqual([old[0]]);
+    await recoveredSaver.discard();
+    expect(entries.size).toBe(0);
+  });
+
+  it('project recovery retries a failed read and keeps unreadable copies on Later', async () => {
+    const { ed } = makeEditor();
+    const name = projectAutosaveName({ name: 'P', path: '/p/p.jcadproj.json' });
+    let reads = 0;
+    const store = {
+      write: async () => {}, remove: async () => { throw new Error('must keep copy'); },
+      list: async () => [{ name, savedAt: 1, title: 'P', originalPath: '/p/p.jcadproj.json' }],
+      read: async () => { if (++reads === 1) throw new Error('temporarily locked'); return JSON.stringify({ kind: 'jcad-project-autosave', path: '/p/p.jcadproj.json', text: '{"name":"P","drawings":[]}' }); },
+    };
+    const errors: string[] = [];
+    const entry = await offerProjectRecovery(ed, store, async () => 'open', undefined, async (_name, error) => { errors.push(String(error)); return 'retry'; });
+    expect(entry?.name).toBe(name);
+    expect(reads).toBe(2);
+    expect(errors[0]).toContain('temporarily locked');
+    const { ed: later } = makeEditor();
+    store.read = async () => { throw new Error('unreadable'); };
+    expect(await offerProjectRecovery(later, store, async () => 'open', undefined, async () => 'later')).toBeNull();
+    expect(later.projectDirty).toBe(false);
+  });
+});
+
 describe('project autosave when the changes are discarded at close', () => {
   it('discard() removes the autosave, a later flush does not write it back, the next change does', async () => {
     const data = new Map<string, string>();
@@ -560,7 +651,8 @@ describe('project autosave when the changes are discarded at close', () => {
     ed.replaceProject({ name: 'Thrown Away', path: '/jobs/t.jcadproj.json', drawings: [] });
     ed.updateProject({ ...ed.project, description: 'x' });
     await pa.flush();
-    expect((await store.list()).map((e) => e.name)).toEqual([projectAutosaveName(ed.project)]);
+    const ownedName = (await store.list())[0]!.name;
+    expect(isProjectAutosave(ownedName)).toBe(true);
     await pa.discard();
     await pa.flush(); // what the close workflow does afterwards
     expect(await store.list()).toEqual([]);
@@ -730,6 +822,60 @@ describe('save / close fuzzing regressions (tests/fuzz-save-close.test.ts)', () 
     expect(ok).toBe(false); // the user cancelled the second question: nothing is lost
     expect(ed.doc.dirty).toBe(true);
   });
+  it('a completed save cannot change a replacement drawing or remove its recovery copy', async () => {
+    const gate = deferred<void>();
+    const { ed } = makeEditor({ saveDxf: async (path) => { await gate.promise; return path; } });
+    ed.loadState(new Drawing().snapshot, '/w/a.dxf');
+    ed.doc.addEntities([text('A')]);
+    const completed: number[] = [];
+    ed.hooks.drawingSaved = (id) => { completed.push(id); };
+    const pending = ed.saveFile(false);
+    await tick();
+    ed.loadState(new Drawing({ entities: [text('B')] }).snapshot, '/w/b.dxf');
+    gate.resolve();
+    expect(await pending).toBe(true);
+    expect(ed.doc.filePath).toBe('/w/b.dxf');
+    expect(ed.doc.entities).toContainEqual(expect.objectContaining({ text: 'B' }));
+    expect(ed.doc.dirty).toBe(false);
+    expect(completed).toEqual([]);
+  });
+  it('Discard All covers only the revision shown before its dialog opened, including edit then undo', async () => {
+    const { ed } = makeEditor();
+    ed.doc.addEntities([text('A')]);
+    const original = ed.doc.snapshot;
+    const asked: string[][] = [];
+    const ok = await runCloseWorkflow(ed, {
+      ask: async (items) => {
+        asked.push(items.map((it) => it.key));
+        if (asked.length > 1) return { action: 'cancel' };
+        ed.doc.addEntities([text('DURING DIALOG')]); ed.doc.undo();
+        return { action: 'discard' };
+      },
+      saveSymbol: async () => null,
+      showError: async () => {},
+    }, () => false);
+    expect(ed.doc.snapshot).toBe(original);
+    expect(asked).toHaveLength(2);
+    expect(ok).toBe(false);
+    expect(ed.doc.dirty).toBe(true);
+  });
+  it('a project changed while its Discard dialog was open must be reviewed again', async () => {
+    const { ed } = makeEditor();
+    ed.replaceProject({ name: 'P', drawings: [] }, true);
+    let asked = 0;
+    const ok = await runCloseWorkflow(ed, {
+      ask: async () => {
+        if (++asked > 1) return { action: 'cancel' };
+        ed.updateProject({ ...ed.project, description: 'CHANGED DURING DIALOG' });
+        return { action: 'discard' };
+      },
+      saveSymbol: async () => null,
+      showError: async () => {},
+    }, () => false);
+    expect(asked).toBe(2);
+    expect(ok).toBe(false);
+    expect(ed.projectDirty).toBe(true);
+  });
   it('work changed while the close waits for autosaves is asked about; unchanged discarded work is not', async () => {
     const { ed } = makeEditor();
     ed.loadState(new Drawing().snapshot, '/w/a.dxf');
@@ -782,6 +928,21 @@ describe('save / close fuzzing regressions (tests/fuzz-save-close.test.ts)', () 
     expect(ed.sessions.indexOfId(bId)).toBe(-1);
     expect(ed.sessions.indexOfId(cId)).toBeGreaterThanOrEqual(0); // c.dxf and its edits are still open
     expect(ed.sessions.all.find((s) => s.id === cId)!.dirty).toBe(true);
+  });
+  it('CLOSE aborts when that drawing changed during confirmation and keeps its backup', async () => {
+    const { ed } = makeEditor();
+    ed.doc.addEntities([text('A')]);
+    const id = ed.sessions.current.id;
+    const removed: number[] = [], changed: string[] = [];
+    expect(await closeDrawingTab(ed.sessions, 0, {
+      confirmDiscard: async () => { ed.doc.addEntities([text('NEW')]); return true; },
+      discardBackup: (session) => { removed.push(session); },
+      changed: (title) => { changed.push(title); },
+    })).toBe(false);
+    expect(ed.sessions.indexOfId(id)).toBe(0);
+    expect(ed.doc.entities).toContainEqual(expect.objectContaining({ text: 'NEW' }));
+    expect(removed).toEqual([]);
+    expect(changed).toHaveLength(1);
   });
   it('a Save As onto the file a queued save is about to write is written after it (seed 1596464263)', async () => {
     // The main process writes requests in arrival order (electron/main/app-data.cjs writeUserFile); here every

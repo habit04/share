@@ -187,7 +187,7 @@ describe('lines, text placement and colours', () => {
 });
 
 describe('dimension text: units, tolerances and alternate units', () => {
-  it('bounds direct style precision and supports DIMADEC=-1 inheritance (PR #2)', () => {
+  it('bounds direct style precision and supports DIMADEC=-1 inheritance', () => {
     for (const precision of [9999, -100, Infinity, NaN]) {
       const style = { ...STANDARD_DIMSTYLE, decimals: precision, tolDecimals: precision, altDecimals: precision, angularDecimals: precision, altUnits: true, tolerance: 'symmetrical' as const, tolPlus: 0.1, tolMinus: 0.1 };
       expect(() => dimensionText(linear(style))).not.toThrow();
@@ -383,12 +383,13 @@ describe('DIM* variables and DXF records', () => {
     const { arrow: _a, arrow2: _b, altPlacement: _c, suppressLeadingZeros: _d, suppressTrailingZeros: _e, ...rest } = resolveDimStyle(style);
     expect(resolveDimStyle(back)).toMatchObject(rest);
   });
+
   it.each([
     ['symmetrical', 0.01, 0.01, 47, 0.02, 'deviation'],
     ['symmetrical', 0.01, 0.01, 48, 0.02, 'deviation'],
     ['deviation', 0.01, 0.02, 47, 0.02, 'symmetrical'],
     ['deviation', 0.01, 0.02, 48, 0.01, 'symmetrical'],
-  ] as const)('derives the inherited %s tolerance mode after a numeric-only override (PR #2 bbbaf34)', (mode, plus, minus, code, value, expected) => {
+  ] as const)('derives the inherited %s tolerance mode after a numeric-only override', (mode, plus, minus, code, value, expected) => {
     const inherited: DimStyle = { ...STANDARD_DIMSTYLE, tolerance: mode, tolPlus: plus, tolMinus: minus };
     const restored = dimStyleFromRecordPairs(inherited.name, [[code, value]], inherited);
     expect(restored.tolerance).toBe(expected);

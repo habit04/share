@@ -5,6 +5,8 @@
  * equal names in different folders), and an older write never replaces a newer one.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { Drawing, type DrawingState } from '../src/core/document';
 import type { Entity, InsertEntity } from '../src/core/entities';
 import { newId } from '../src/core/entities';
@@ -17,6 +19,7 @@ import type { Project } from '../src/app/project';
 import { loadProjectSheets, commitSheets, runProjectXref, runTitleBlocksAll, projectUi } from '../src/app/commands-electrical';
 import { captureRevision, saveQueue } from '../src/app/savequeue';
 import { newFromTemplate, SHEET_SIZES } from '../src/electrical/templates';
+import { defaultLayout } from '../src/core/layouts';
 
 const ins = (block: string, x: number, y: number, attrs: Record<string, string>): InsertEntity => ({ id: newId(), layer: 'SYMS', color: 'ByLayer', type: 'insert', block, position: { x, y }, rotation: 0, scale: 1, attributes: attrs });
 const ref = (y: number, t: string): Entity => ({ id: newId(), layer: 'MISC', color: 'ByLayer', type: 'text', position: { x: 0.75, y: y - 0.06 }, text: t, height: 0.125, rotation: 0, align: 'right' });
@@ -109,6 +112,7 @@ beforeEach(() => {
     noBackupAsked.push({ name, path, error });
     return continueWithoutBackup;
   };
+  projectUi.confirmLoss = async () => false;
   projectUi.showProblems = () => {};
 });
 afterEach(() => {
@@ -118,6 +122,52 @@ afterEach(() => {
 
 const closed = () => sheetState('3', 300, [ins('HCR1_NC', 3, 8, { TAG1: 'CR100' })]);
 const base = { projectPath: '/p/p.jcadproj.json', drawings: ['a.dxf', 'b.dxf', 'c.dxf'], activePath: '/p/a.dxf', tabPath: '/p/b.dxf' };
+
+describe('geometry budgets are checked before project batch changes', () => {
+  it.each(['active', 'session', 'file'] as const)('rejects an excessive %s candidate before changing any drawing, history, active space or file', async (source) => {
+    const f = fake({ ...base, files: { '/p/c.dxf': closed() } });
+    f.editor.doc.transact((state) => ({ ...state, layouts: [defaultLayout('L1')], space: { layout: 'L1' } }));
+    f.editor.doc.addEntities([note('paper note')]);
+    const { sheets } = await loadProjectSheets(f.editor);
+    const before = f.editor.doc.snapshot;
+    const history = f.editor.doc.history();
+    const revision = f.editor.doc.revision;
+    const tabs = () => f.editor.sessions.all.map((session) => ({ state: session.state, undo: [...session.undo], redo: [...session.redo], dirty: session.dirty, revision: session.revision }));
+    const beforeTabs = tabs();
+    const beforeDisk = [...f.disk];
+    let confirmations = 0;
+    onConfirm = () => { confirmations += 1; };
+    const active = sheets.findIndex((sheet) => sheet.source === 'active');
+    const target = sheets.findIndex((sheet) => sheet.source === source);
+    const changes = new Map([[active, { state: { ...sheets[active]!.doc.snapshot, entities: [...sheets[active]!.doc.entities, note('valid update')] }, detail: 'valid' }]]);
+    changes.set(target, { state: { ...sheets[target]!.doc.snapshot, entities: [note('X'.repeat(1_000_000))] }, detail: 'excessive' });
+    await expect(commitSheets(f.editor, sheets, changes, 'Budget test', 'test', true)).rejects.toThrow(/safe geometry budget/);
+    expect(f.editor.doc.snapshot).toBe(before);
+    expect(f.editor.doc.history()).toEqual(history);
+    expect(f.editor.doc.revision).toBe(revision);
+    expect(f.editor.doc.space).toEqual({ layout: 'L1' });
+    expect(tabs()).toEqual(beforeTabs);
+    expect([...f.disk]).toEqual(beforeDisk);
+    expect(confirmations).toBe(0);
+    expect(f.backups).toEqual([]);
+    expect(f.writes).toEqual([]);
+  });
+
+  it('seals accepted background batch geometry before retaining it and permits its undo', async () => {
+    const f = fake({ ...base, files: { '/p/c.dxf': closed() } });
+    const { sheets } = await loadProjectSheets(f.editor);
+    const target = sheets.findIndex((sheet) => sheet.source === 'session');
+    const previous = f.editor.sessions.all[1]!.state;
+    const borrowed = { ...sheets[target]!.doc.snapshot, entities: [note('valid background update')] };
+    const result = await commitSheets(f.editor, sheets, new Map([[target, { state: borrowed, detail: 'valid' }]]), 'Budget test', 'test');
+    expect(result?.open).toBe(1);
+    expect(f.editor.sessions.all[1]!.state).toBe(borrowed);
+    expect(() => borrowed.entities.push(note('borrowed mutation'))).toThrow(TypeError);
+    f.editor.sessions.switchTo(1);
+    expect(f.editor.doc.undo()).toBe(true);
+    expect(f.editor.doc.snapshot).toBe(previous);
+  });
+});
 
 describe('failed backups stop the write', () => {
   it('reads every backup answer shape', () => {
@@ -184,6 +234,33 @@ describe('damaged closed drawings', () => {
 });
 
 describe('changes apply only to the revision they were calculated from', () => {
+  it('captures open sheets before an earlier closed-sheet read can edit or replace them', async () => {
+    const f = fake({ ...base, drawings: ['c.dxf', 'a.dxf', 'b.dxf'], files: { '/p/c.dxf': closed() } });
+    const before = f.editor.doc.snapshot;
+    const read = f.editor.fileBridge!.openDrawing!;
+    f.editor.fileBridge!.openDrawing = async (path) => {
+      f.editor.doc.addEntities([note('EDIT DURING READ')]);
+      return read(path);
+    };
+    const { sheets } = await loadProjectSheets(f.editor);
+    const index = sheets.findIndex((s) => s.name === 'a.dxf');
+    expect(sheets[index]!.base).toBe(before);
+    expect(sheets[index]!.doc.entities.some((e) => e.type === 'text' && e.text === 'EDIT DURING READ')).toBe(false);
+    const result = await commitSheets(f.editor, sheets, new Map([[index, { state: sheets[index]!.doc.snapshot, detail: 'update' }]]), 'T', 'I');
+    expect(result!.open).toBe(0);
+    expect(result!.conflicts).toEqual(['a.dxf (edited while the command ran)']);
+  });
+
+  it('edit followed by Undo to the captured state still invalidates the batch revision', async () => {
+    const f = fake({ ...base, drawings: ['a.dxf'], files: {} });
+    const { sheets } = await loadProjectSheets(f.editor);
+    f.editor.doc.addEntities([note('TEMP')]);
+    f.editor.doc.undo();
+    expect(f.editor.doc.snapshot).toBe(sheets[0]!.base);
+    const result = await commitSheets(f.editor, sheets, new Map([[0, { state: sheets[0]!.doc.snapshot, detail: 'update' }]]), 'T', 'I');
+    expect(result!.open).toBe(0);
+    expect(result!.conflicts).toEqual(['a.dxf (edited while the command ran)']);
+  });
   it('an open tab edited while the command waits is reported and left alone', async () => {
     const f = fake({ ...base, files: { '/p/c.dxf': closed() } });
     onConfirm = () => {
@@ -253,6 +330,27 @@ describe('changes apply only to the revision they were calculated from', () => {
     expect(aSession.state.entities.some((e) => e.type === 'text' && e.text === 'XREF')).toBe(true);
     expect(f.editor.doc.filePath).toBe('/p/b.dxf');
     expect(f.editor.doc.entities.some((e) => e.type === 'text' && e.text === 'XREF')).toBe(false);
+  });
+});
+
+describe('closed drawings with import losses', () => {
+  it('requires an explicit loss warning answer before rewriting the source', async () => {
+    const f = fake({ ...base, files: { '/p/c.dxf': closed() } });
+    const original = readFileSync(join(__dirname, 'fixtures', 'unsupported-content.dxf'), 'latin1');
+    f.disk.set('/p/c.dxf', original);
+    const { sheets } = await loadProjectSheets(f.editor);
+    const index = sheets.findIndex((s) => s.source === 'file');
+    const asked: string[] = [];
+    projectUi.confirmLoss = async (_title, message) => { asked.push(message); return false; };
+    const changes = new Map([[index, { state: sheets[index]!.doc.snapshot, detail: 'update' }]]);
+    const declined = await commitSheets(f.editor, sheets, changes, 'T', 'I');
+    expect(asked[0]).toMatch(/contained \d+ object\(s\).*removes them/);
+    expect(declined!.notSaved).toEqual(['c.dxf']);
+    expect(f.writes).toEqual([]);
+    expect(f.disk.get('/p/c.dxf')).toBe(original);
+    projectUi.confirmLoss = async () => true;
+    const accepted = await commitSheets(f.editor, sheets, changes, 'T', 'I');
+    expect(accepted!.written).toBe(1);
   });
 });
 

@@ -1,0 +1,2 @@
+# Hashbangs must remain at byte zero after Vite/Vitest transform on Windows.
+*.mjs text eol=lf
