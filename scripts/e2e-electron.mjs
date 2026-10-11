@@ -43,7 +43,8 @@
 // written and for the backup removal of a drawing it saved, and a crash after the project was autosaved
 // (the next start offers Project Recovery, and the Drawing Recovery Manager lists drawings only).
 import { _electron as electron } from 'playwright';
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, existsSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, existsSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { deflateSync, crc32 } from 'node:zlib';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -159,7 +160,15 @@ try {
   await win.waitForTimeout(500);
   check(/JCad Electrical/.test(await win.title()), `window title "${await win.title()}"`);
   userData = await app.evaluate(({ app: a }) => a.getPath('userData'));
-  check(userData === profile, `private profile in use (${userData})`);
+  // macOS reports the profile through /private/var while mkdtemp gave /var: compare the real paths.
+  const samePath = (x, y) => {
+    try {
+      return realpathSync.native(x) === realpathSync.native(y);
+    } catch {
+      return x === y;
+    }
+  };
+  check(samePath(userData, profile), `private profile in use (${userData})`);
   const loadedFile = await win.evaluate(() => location.protocol + location.pathname.replace(/^.*\//, '/'));
   check(loadedFile === 'file:/index.html', `renderer loaded from dist/index.html (${loadedFile})`);
 
@@ -1227,19 +1236,54 @@ const relaunchTimeout = setTimeout(() => {
   console.error('e2e-electron: crash recovery timed out after 3 minutes');
   process.exit(1);
 }, 3 * 60 * 1000);
+/**
+ * Resolves when a child process is gone (true), or after `ms` (false).
+ * @param {import('node:child_process').ChildProcess | null | undefined} p
+ * @param {number} ms
+ */
+const waitForExit = (p, ms) =>
+  new Promise((resolve) => {
+    if (!p || p.exitCode !== null || p.signalCode !== null) return resolve(true);
+    const t = setTimeout(() => resolve(false), ms);
+    p.once('exit', () => {
+      clearTimeout(t);
+      resolve(true);
+    });
+  });
+const lostTheLock = (err) => /has been closed|Target closed/i.test(String(err && err.message ? err.message : err));
+// A start right after the previous instance went away can lose the single-instance lock to that
+// instance while it still shuts down (on Windows the helper processes of a killed instance linger
+// for a while): such a start quits at once (main.cjs: requestSingleInstanceLock) and Playwright
+// reports "browser has been closed". It is tried again every second for up to 30 s.
 const launch = async () => {
-  const a = await electron.launch(packaged ? { executablePath: executable, args, env, timeout: 90_000 } : { args, cwd: repo, env, timeout: 60_000 });
-  a.process().stdout?.on('data', (d) => mainLog.push(String(d)));
-  a.process().stderr?.on('data', (d) => mainLog.push(String(d)));
-  const w = await a.firstWindow({ timeout: 60_000 });
-  await w.waitForFunction(() => !!window.editor, null, { timeout: 30_000 });
-  return { a, w };
+  for (let attempt = 1; ; attempt += 1) {
+    const a = await electron.launch(packaged ? { executablePath: executable, args, env, timeout: 90_000 } : { args, cwd: repo, env, timeout: 60_000 }).catch((err) => {
+      if (attempt < 30 && lostTheLock(err)) return null;
+      throw err;
+    });
+    if (a) {
+      a.process().stdout?.on('data', (d) => mainLog.push(String(d)));
+      a.process().stderr?.on('data', (d) => mainLog.push(String(d)));
+      try {
+        const w = await a.firstWindow({ timeout: 60_000 });
+        await w.waitForFunction(() => !!window.editor, null, { timeout: 30_000 });
+        if (attempt > 1) console.warn(`e2e-electron: the instance started at attempt ${attempt} (the previous one held the lock for about ${attempt - 1} s)`);
+        return { a, w };
+      } catch (err) {
+        if (!(attempt < 30 && lostTheLock(err))) throw err;
+        await a.close().catch(() => {});
+      }
+    }
+    await new Promise((r) => setTimeout(r, 1000));
+  }
 };
 const projectBackups = () => readdirSync(autosaveDir).filter((f) => f.endsWith('_jcadproj.sv.dxf'));
 const recoveryRows = async (w) => (await w.locator('.recovery-dialog .recovery-row').allTextContents()).map((t) => t.trim());
 let second = null;
 let third = null;
 try {
+  // The first instance quits by itself once its window is gone; give it time to release the lock.
+  if (!(await waitForExit(app.process(), 30_000))) console.warn('e2e-electron: the first instance has not exited 30 s after its window closed');
   second = await launch();
   const rec2 = second.w.locator('.recovery-dialog .modal');
   await rec2.waitFor({ timeout: 15_000 }).then(
@@ -1261,8 +1305,12 @@ try {
     if (!found.length) await second.w.waitForTimeout(100);
   }
   check(found.length === 1, `the modified project was autosaved (${found.join(', ') || readdirSync(autosaveDir).join(', ')})`);
-  const exited = new Promise((r) => second.a.process().once('exit', r));
-  second.a.process().kill('SIGKILL');
+  // The crash: kill the main process. On Windows that leaves the helper processes behind (they
+  // keep the profile and the single-instance lock busy), so the whole tree goes, as a crash would.
+  const crashed = second.a.process();
+  const exited = waitForExit(crashed, 30_000);
+  if (process.platform === 'win32') spawnSync('taskkill', ['/PID', String(crashed.pid), '/T', '/F'], { stdio: 'ignore' });
+  else crashed.kill('SIGKILL');
   await exited;
   second = null;
 
