@@ -40,6 +40,13 @@
   "build": {
     "appId": "com.jcad.electrical",
     "productName": "JCad Electrical",
+    "electronFuses": {
+      "runAsNode": false,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "onlyLoadAppFromAsar": true,
+      "resetAdHocDarwinSignature": true
+    },
     "directories": {
       "output": "release"
     },
@@ -110,6 +117,7 @@
     "afterPack": "scripts/afterPack.cjs"
   },
   "devDependencies": {
+    "@electron/fuses": "^1.8.0",
     "@eslint/js": "^9.39.5",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.10.0",

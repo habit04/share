@@ -77,7 +77,9 @@ function buildMenu(win) {
         { label: 'Command Window (Ctrl+9)', click: send('COMMANDLINE') },
         { label: 'Clean Screen (Ctrl+0)', click: send('CLEANSCREEN') },
         { type: 'separator' },
-        { role: 'toggleDevTools' },
+        // Developer tools only in development runs (security review E-15): an installed copy has no
+        // menu item and no Ctrl+Shift+I.
+        ...(app.isPackaged ? [] : [/** @type {Electron.MenuItemConstructorOptions} */ ({ role: 'toggleDevTools' })]),
         { role: 'togglefullscreen' },
       ],
     },

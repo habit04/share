@@ -2,7 +2,10 @@
 // operating system, then run the end-to-end checks of scripts/e2e-electron.mjs against the packaged
 // application (start-up, open the committed DXF and DWG fixtures, SAVEAS, AUTOSAVE / recovery copy,
 // vector PDF through save-pdf, large-DWG progress and Cancel, IPC guard, clean close, no error log)
-// plus the headless `--probe-dwg` reader of the packaged build.
+// plus the headless `--probe-dwg` reader of the packaged build, and the Electron fuses the build
+// ships with (scripts/electron-fuses.mjs: RunAsNode, NODE_OPTIONS and --inspect off, the app
+// from app.asar only). Playwright attaches with --inspect, so after the fuse check the test's own
+// copy gets EnableNodeCliInspectArguments switched back on before it is driven.
 //
 //   node scripts/packaged-smoke.mjs <folder with installers>   (default: release/)
 //
@@ -17,9 +20,10 @@
 // JCAD_SMOKE_OUT (default packaged-smoke-output/) receives one folder of e2e output per installer.
 // Exits non-zero when no installer was found or any check failed.
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
+import { allowInspectForTests, shippedFuseProblems, shipsFuses } from './electron-fuses.mjs';
 
 const repo = resolve(import.meta.dirname, '..');
 const dir = resolve(process.argv[2] || join(repo, 'release'));
@@ -27,6 +31,8 @@ const outRoot = resolve(process.env.JCAD_SMOKE_OUT || join(repo, 'packaged-smoke
 mkdirSync(outRoot, { recursive: true });
 const product = 'JCad Electrical';
 const executableName = 'jcad-electrical'; // package.json "name": the Linux binary
+/** The version of the installers (an older release through the manual workflow, else this one). */
+const expectedVersion = process.env.JCAD_E2E_EXPECT_VERSION || JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')).version;
 
 /** Every file below `root` (depth-limited), for the installer search. */
 function walk(root, depth = 3) {
@@ -138,16 +144,33 @@ for (const t of targets) {
   const probeLine = `${probe.stdout || ''}`.split(/\r?\n/).find((l) => l.startsWith('PROBE_')) ?? `(no output; exit ${probe.status}${probe.error ? `, ${probe.error.message}` : ''})`;
   const probeOk = probe.status === 0 && /^PROBE_OK \S+ entities=\d+/.test(probeLine);
   console.log(`${probeOk ? 'ok  ' : 'FAIL'} --probe-dwg: ${probeLine}`);
-  // 2. The end-to-end checks against the packaged application.
+  // 2. The fuses as shipped (security review E-15); then --inspect on in this copy only, for Playwright.
+  let fusesOk = true;
+  let fuseLine = `skipped: ${expectedVersion} predates the fuses`;
+  if (shipsFuses(expectedVersion)) {
+    const problems = await shippedFuseProblems(t.executable).catch((err) => [`cannot read the fuses: ${err && err.message}`]);
+    fusesOk = problems.length === 0;
+    fuseLine = fusesOk ? 'as shipped (RunAsNode, NODE_OPTIONS and --inspect off, app.asar only)' : problems.join('; ');
+    if (fusesOk) {
+      try {
+        await allowInspectForTests(t.executable);
+      } catch (err) {
+        fusesOk = false;
+        fuseLine = `could not enable --inspect for the tests: ${err && err.message}`;
+      }
+    }
+  }
+  console.log(`${fusesOk ? 'ok  ' : 'FAIL'} fuses: ${fuseLine}`);
+  // 3. The end-to-end checks against the packaged application.
   const out = join(outRoot, t.label.replace(/[^A-Za-z0-9._-]+/g, '-'));
   const e2e = spawnSync(process.execPath, ['--experimental-strip-types', join(repo, 'scripts', 'e2e-electron.mjs'), '--packaged', t.executable], {
     stdio: 'inherit',
     env: { ...process.env, JCAD_E2E_OUT: out },
     timeout: 15 * 60 * 1000,
   });
-  const ok = probeOk && e2e.status === 0;
+  const ok = probeOk && fusesOk && e2e.status === 0;
   if (!ok) failed += 1;
-  summary.push(`${ok ? 'ok  ' : 'FAIL'} ${t.label}: probe ${probeOk ? 'ok' : 'failed'}, e2e exit ${e2e.status}`);
+  summary.push(`${ok ? 'ok  ' : 'FAIL'} ${t.label}: probe ${probeOk ? 'ok' : 'failed'}, fuses ${fusesOk ? 'ok' : 'failed'}, e2e exit ${e2e.status}`);
 }
 console.log(`\npackaged-smoke (${process.platform} ${process.arch}):\n${summary.join('\n')}`);
 // The extracted / installed copies are large; keep them only when asked (JCAD_SMOKE_KEEP=1).
