@@ -111,6 +111,25 @@ export function nearestReference(doc: UnitSource, p: Point): string | null {
   return bestD < tol ? best : null;
 }
 
+/** Build once per report; each rung lookup is logarithmic and preserves drawing-order ties. */
+export function referenceFinder(doc: UnitSource): (p: Point) => string | null {
+  const tol = REFERENCE_TOLERANCE * drawingUnitScale(doc);
+  const sorted = doc.entities.flatMap((e, order) => e.type === 'text' && e.layer === 'MISC' && /^\d+$/.test(e.text) ? [{ y: e.position.y, text: e.text, order }] : []).sort((a, b) => a.y - b.y || a.order - b.order);
+  const refs = sorted.filter((r, i) => i === 0 || r.y !== sorted[i - 1]!.y);
+  return (p) => {
+    let low = 0, high = refs.length;
+    while (low < high) {
+      const mid = (low + high) >>> 1;
+      if (refs[mid]!.y < p.y) low = mid + 1; else high = mid;
+    }
+    const a = refs[low - 1], b = refs[low];
+    const da = a ? Math.abs(a.y - p.y) : Infinity;
+    const db = b ? Math.abs(b.y - p.y) : Infinity;
+    const best = da < db || da === db && a && (!b || a.order < b.order) ? a : b;
+    return Math.min(da, db) < tol ? best?.text ?? null : null;
+  };
+}
+
 /** Ladder rung reference texts (MISC layer numbers), top to bottom. */
 export function rungReferences(doc: { entities: readonly Entity[] }): TextEntity[] {
   return doc.entities.filter((e): e is TextEntity => e.type === 'text' && e.layer === 'MISC' && /^\d+$/.test(e.text)).sort((a, b) => b.position.y - a.position.y);
