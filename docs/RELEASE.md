@@ -48,6 +48,9 @@ text for the 0.4.0 release page (`npm run release-notes -- v0.4.0`). The manual 
 workflow writes it for you: Actions > Release notes > **Run workflow**, tag `v0.4.0`; it renders the
 tag's `CHANGELOG.md` section with the same script and updates the release description (the
 installers stay as they are). Pasting it by hand (**Edit**, paste, **Update release**) works too.
+`docs/releases/v0.4.2.md` keeps the 0.4.2 notes as they were cut
+(`node scripts/release-notes.mjs v0.4.2 --strict --out docs/releases/v0.4.2.md`), the same text the
+release workflow publishes; `tests/release-notes.test.ts` checks both files against `CHANGELOG.md`.
 
 The manual **Packaged smoke test (existing release)** workflow re-runs the packaged checks
 against the installers attached to any published release (for example after a runner image or

@@ -161,7 +161,7 @@ npm run e2e:packaged -- <app executable>   # the same end-to-end checks on a pac
 npm run bench:node && npm run bench   # interactive performance on a 50,000-entity drawing (docs/PERFORMANCE.md)
 npm run build && npm run e2e:flows    # multi-launch flows: close / quit matrix, crash + recovery, open, project-wide commands, save errors
 npm run icons                         # redraw the application icon (build/icon.*, build/icons/, public/favicon.svg, site/img/icon.svg)
-npm run release-notes -- v0.4.1       # the GitHub release body for a tag, from CHANGELOG.md
+npm run release-notes -- v0.4.2       # the GitHub release body for a tag, from CHANGELOG.md
 ```
 
 **CI** (`.github/workflows/ci.yml`) runs three jobs on every push and pull request: `test` (workflow
