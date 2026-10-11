@@ -621,6 +621,12 @@ const errorLog = join(userData, 'error.log');
 check(!existsSync(errorLog), `no main-process error log${existsSync(errorLog) ? `: ${readFileSync(errorLog, 'utf8').slice(0, 2000)}` : ''}`);
 const mainErrors = mainLog.join('').split(/\r?\n/).filter((l) => /Uncaught|UnhandledPromiseRejection|TypeError|ReferenceError/.test(l));
 check(mainErrors.length === 0, `main process printed no JS errors${mainErrors.length ? `: ${mainErrors.slice(0, 5).join(' | ')}` : ''}`);
+// The IPC guard refused only what this test provoked (the foreign window, the images outside the
+// allowed folders): every legitimate flow (dialogs, plugins, packs, autosave, user library, updater,
+// read-image next to a chosen file) went through.
+const rejections = existsSync(join(userData, 'ipc-rejections.log')) ? readFileSync(join(userData, 'ipc-rejections.log'), 'utf8').split(/\r?\n/).filter(Boolean) : [];
+const unexpected = rejections.filter((l) => !/ipc app-info: sender is not the application window|read-image: (not next to a drawing the user opened|relative path|not an image file): /.test(l));
+check(unexpected.length === 0, `ipc-rejections.log holds only the provoked refusals (${rejections.length} line(s))${unexpected.length ? `: ${unexpected.slice(0, 5).join(' | ')}` : ''}`);
 
 rmSync(profile, { recursive: true, force: true });
 if (!process.env.JCAD_E2E_OUT) rmSync(outDir, { recursive: true, force: true });
