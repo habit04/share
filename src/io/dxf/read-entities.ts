@@ -378,7 +378,7 @@ export function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
     case 'ACAD_TABLE': {
       // Cell data present: a native table. Otherwise it draws through its anonymous *T block (group 2).
       const block = str(o, 2);
-      const table = readTable(o, base);
+      const table = readTable(o, base, ctx.tableStyles?.get(str(o, 342).toUpperCase()));
       if (table) {
         if (block) ctx.consumedBlocks?.add(block);
         return table;

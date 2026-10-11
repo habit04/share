@@ -12,9 +12,10 @@ import type { Linetype } from '../../core/linetypes';
 import { LayoutReader } from '../dxf-layouts';
 import { decodeUnicodeEscapes, textStylesMeta, type TextStyle } from '../encoding';
 import { ImportReportBuilder, reportBlockExpansion, withImportData, type RawDxfEntity } from '../import-report';
-import { tokenize, objects, type Pair } from './groups';
+import { tokenize, objects, has, str, type Pair } from './groups';
 import type { ReadContext } from './read-core';
 import { readEntities } from './read-pass';
+import { readTableStyle, type TableStyleData } from './read-annotations';
 import { readHeaderSection, drawingHeader, readTablesSection, readBlocksSection, readEntitiesSection, readObjectsSection } from './read-sections';
 
 export interface DxfReadOptions {
@@ -56,6 +57,22 @@ function withDimStylesMeta(state: DrawingState, dimStyles: ReadonlyMap<string, D
   return { ...state, meta: { ...(state.meta ?? {}), [DIMSTYLES_META_KEY]: Object.fromEntries(named.map((d) => [d.name, d])) } };
 }
 
+/**
+ * The TABLESTYLE objects of the OBJECTS section, by upper-case handle: they come after the tables
+ * that use them, so they are read first.
+ */
+function tableStylesOf(pairs: readonly Pair[]): Map<string, TableStyleData> {
+  const out = new Map<string, TableStyleData>();
+  for (let i = 0; i + 1 < pairs.length; i += 1) {
+    if (pairs[i]!.code !== 0 || pairs[i]!.value !== 'SECTION' || pairs[i + 1]!.value !== 'OBJECTS') continue;
+    let j = i + 2;
+    while (j < pairs.length && !(pairs[j]!.code === 0 && pairs[j]!.value === 'ENDSEC')) j += 1;
+    for (const o of objects(pairs as Pair[], i + 2, j)) if (o.kind === 'TABLESTYLE' && has(o, 5)) out.set(str(o, 5).toUpperCase(), readTableStyle(o));
+    i = j;
+  }
+  return out;
+}
+
 /** The reader proper; DIMSTYLE records are collected into `dimStyles`. */
 function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string, DimStyle>, report: ImportReportBuilder, raw: RawDxfEntity[]): DrawingState {
   const pairs = tokenize(decodeUnicodeEscapes(text), opts.recover, report);
@@ -75,6 +92,7 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
     fields: { ...opts.fieldContext, ...(opts.filePath !== undefined ? { filePath: opts.filePath } : {}) },
     pendingImages: new Map(),
     textStyleHandles: new Map(),
+    tableStyles: tableStylesOf(pairs),
     consumedBlocks: new Set(),
     notes: opts.notes ?? [],
     report,

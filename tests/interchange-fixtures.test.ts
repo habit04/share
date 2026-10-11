@@ -890,7 +890,18 @@ describe('r2018-table.dxf: ACAD_TABLE with cells, merged title, table style (AC1
     expect(group(insert, 2)).toMatch(/^\*U\d+$/);
   });
 
-  it.todo('cells without an override take the TABLESTYLE text height, alignment and margins (title 5, header 3.5, data 2.5 top centre, margins 1.5) -- the TABLESTYLE is not read: they get the median override (3), middle centre and 0.06 margins');
+  it('cells without an override take the TABLESTYLE text height, alignment and margins (title 5, header 3.5, data 2.5 top centre, margins 1.5)', () => {
+    for (const [, s] of both(f)) {
+      const t = ofType<TableEntity>(s.entities, 'table')[0]!;
+      expect(t.margin).toBe(1.5);
+      expect(t.textHeight).toBe(2.5);
+      expect(t.cells[0]![0]).toMatchObject({ height: 5, attachment: 5 });
+      expect(t.cells[1]![0]).toMatchObject({ height: 3.5, attachment: 5 });
+      expect(t.cells[2]![0]).toMatchObject({ height: 2.5, attachment: 2 });
+      // A cell's own override wins.
+      expect(t.cells[3]![0]!.height).toBe(3);
+    }
+  });
 });
 
 // ---------------------------------------------------------------- IMAGE, inch drawing (R2018)

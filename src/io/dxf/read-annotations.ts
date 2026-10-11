@@ -308,7 +308,44 @@ export function readImage(o: Obj, base: ReturnType<typeof commonProps>): ImageEn
 }
 
 /** ACAD_TABLE with legacy cell data (91/92 size, 141/142 sizes, 171.. per cell) -> native table. */
-export function readTable(o: Obj, base: ReturnType<typeof commonProps>): TableEntity | null {
+/**
+ * What JCad takes from a TABLESTYLE object: the cell margins, whether the title and header rows
+ * are suppressed, and per cell style (data, header, title, in file order) the text height and
+ * alignment. Ported from PR #2 (codex/electrical-review-fixes 2f89b0e).
+ */
+export interface TableStyleData {
+  marginX: number;
+  marginY: number;
+  titleSuppressed: boolean;
+  headerSuppressed: boolean;
+  rows: Array<{ height: number; attachment: number }>;
+}
+
+export function readTableStyle(o: Obj): TableStyleData {
+  const groups = afterSubclass(o, 'AcDbTableStyle');
+  const rows: TableStyleData['rows'] = [];
+  for (let i = 0; i < groups.length; i += 1) {
+    if (groups[i]!.code !== 7) continue;
+    let end = i + 1;
+    while (end < groups.length && groups[end]!.code !== 7) end += 1;
+    const cell = groups.slice(i, end);
+    rows.push({ height: flt(cell.find((p) => p.code === 140)?.value, 0.18), attachment: int(cell.find((p) => p.code === 170)?.value, 5) });
+  }
+  return {
+    marginX: flt(groups.find((p) => p.code === 40)?.value, 0.06),
+    marginY: flt(groups.find((p) => p.code === 41)?.value, 0.06),
+    titleSuppressed: int(groups.filter((p) => p.code === 280)[1]?.value) !== 0,
+    headerSuppressed: int(groups.find((p) => p.code === 281)?.value) !== 0,
+    rows,
+  };
+}
+
+/**
+ * ACAD_TABLE with legacy cell data (91/92 size, 141/142 sizes, 171.. per cell) -> native table.
+ * Cells without their own text height / alignment take the table style's (`style`, the
+ * TABLESTYLE group 342 names): the title row, the header row and the data rows each their own.
+ */
+export function readTable(o: Obj, base: ReturnType<typeof commonProps>, style?: TableStyleData): TableEntity | null {
   const gs = afterSubclass(o, 'AcDbTable');
   const firstCell = gs.findIndex((x) => x.code === 171);
   const head = firstCell >= 0 ? gs.slice(0, firstCell) : gs;
@@ -339,8 +376,11 @@ export function readTable(o: Obj, base: ReturnType<typeof commonProps>): TableEn
       const cg = chunks[r * cols + c]!;
       let text = cg.filter((x) => x.code === 2 || x.code === 3).map((x) => x.value).join('') + (cg.find((x) => x.code === 1)?.value ?? '');
       if (!text) text = cg.find((x) => x.code === 302 && x.value)?.value ?? '';
-      const h = flt(cg.find((x) => x.code === 140)?.value);
-      const align = int(cg.find((x) => x.code === 170)?.value);
+      // The style's cell styles: title (row 0 unless suppressed), header (the next row unless suppressed), data.
+      const headerRow = style?.titleSuppressed ? 0 : 1;
+      const rowStyle = style?.rows[r === 0 && !style.titleSuppressed ? 2 : r === headerRow && !style?.headerSuppressed ? 1 : 0];
+      const h = flt(cg.find((x) => x.code === 140)?.value, rowStyle?.height ?? 0);
+      const align = int(cg.find((x) => x.code === 170)?.value, rowStyle?.attachment ?? 0);
       const spanC = int(cg.find((x) => x.code === 175)?.value, 1);
       const spanR = int(cg.find((x) => x.code === 176)?.value, 1);
       const plain = text ? mtextFromDxf(text) : '';
@@ -367,7 +407,8 @@ export function readTable(o: Obj, base: ReturnType<typeof commonProps>): TableEn
     rowHeights,
     columnWidths,
     cells,
-    textHeight: heights[Math.floor(heights.length / 2)] ?? 0.18,
+    textHeight: style?.rows[0]?.height ?? heights[Math.floor(heights.length / 2)] ?? 0.18,
+    ...(style ? { margin: Math.max(style.marginX, style.marginY) } : {}),
   };
 }
 

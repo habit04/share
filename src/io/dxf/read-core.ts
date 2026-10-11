@@ -7,6 +7,7 @@ import { newId, type BlockDef, type ColorSpec, type DimStyle, type ImageEntity }
 import type { FieldContext } from '../../core/fields';
 import type { ImportReportBuilder, RawDxfEntity } from '../import-report';
 import { num, has, str, type Obj } from './groups';
+import type { TableStyleData } from './read-annotations';
 
 /** Entity properties common to every DXF entity (layer, colour, linetype, lineweight, ltscale). */
 export function commonProps(o: Obj): { id: string; layer: string; color: ColorSpec; linetype?: string; lineWeight?: number; ltscale?: number; trueColor?: number } {
@@ -37,6 +38,8 @@ export interface ReadContext {
   pendingImages?: Map<ImageEntity, string>;
   /** STYLE record names by upper-case handle (DIMTXSTY overrides name a style by handle). */
   textStyleHandles?: Map<string, string>;
+  /** TABLESTYLE objects by upper-case handle (OBJECTS comes last; ACAD_TABLE group 342 names one). */
+  tableStyles?: Map<string, TableStyleData>;
   /** Anonymous blocks replaced by native tables. */
   consumedBlocks?: Set<string>;
   /** Remarks about content that was simplified. */
