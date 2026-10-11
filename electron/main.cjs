@@ -11,13 +11,14 @@
  *   ipc-drawings.cjs  open / save drawings and projects, Save As paths, backups, images
  *   ipc-plot.cjs      plot to PDF, vector PDF, print
  *   ipc-stores.cjs    autosave, user library, plugins, catalog packs
+ *   updates.cjs       app info, external links, update checks and status
  */
 const { app, BrowserWindow, ipcMain: rawIpcMain } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const fsSync = require('node:fs');
 const updater = require('./updater.cjs');
-const { guardIpc, appUrlTest, createRejectionLog, createPathPolicy, externalUrl } = require('./ipc-guard.cjs');
+const { guardIpc, appUrlTest, createRejectionLog, createPathPolicy } = require('./ipc-guard.cjs');
 const { createPathRegistry, pathKey } = require('./path-registry.cjs');
 const { recentFile, writeStateFile, installCrashLogging } = require('./main/app-data.cjs');
 const { createWindows } = require('./main/window.cjs');
@@ -26,6 +27,7 @@ const { dwgHost, readDwg, registerDwgIpc } = require('./main/dwg.cjs');
 const { registerDrawingIpc } = require('./main/ipc-drawings.cjs');
 const { registerPlotIpc } = require('./main/ipc-plot.cjs');
 const { registerStoreIpc } = require('./main/ipc-stores.cjs');
+const { registerUpdatesIpc } = require('./main/updates.cjs');
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL;
 
@@ -81,36 +83,7 @@ registerDrawingIpc(ctx, { takeHandedOverProject });
 registerPlotIpc(ctx);
 registerStoreIpc(ctx);
 registerMenuIpc(ctx);
-
-// ------------------------------------------------------------------ updates
-ipcMain.handle('app-info', () => ({
-  version: app.getVersion(),
-  platform: process.platform,
-  arch: process.arch,
-  packaged: app.isPackaged,
-  selfUpdate: updater.canSelfUpdate(),
-  releases: updater.RELEASES_PAGE,
-}));
-/**
- * Links the renderer may open: this project's GitHub pages and the Cash App donation page, compared
- * after the URL is parsed (electron/ipc-guard.cjs externalUrl); the normalised URL is opened.
- */
-ipcMain.handle('open-external', async (_ev, url) => {
-  const u = externalUrl(url);
-  if (!u) {
-    rejections.reject('open-external', `not an allowed link: ${String(url).slice(0, 300)}`);
-    return false;
-  }
-  await require('electron').shell.openExternal(u);
-  return true;
-});
-ipcMain.handle('check-updates', (ev) => {
-  const win = BrowserWindow.fromWebContents(ev.sender) || ctx.mainWindow;
-  return updater.checkForUpdates(win, { interactive: true });
-});
-updater.onStatus((status) => {
-  for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.webContents.send('update-status', status);
-});
+registerUpdatesIpc(ctx);
 
 // ------------------------------------------------------------------ files handed over by the OS
 // "Open with JCad Electrical", a double click on a .dxf / .dwg / .jcadproj.json file (the installers
