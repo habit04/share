@@ -34,7 +34,48 @@ export const FIELD_EMPTY = '----';
 /** The \AcVar names this module evaluates (FIELD command list). */
 export const ACVAR_FIELDS = ['Date', 'CreateDate', 'SaveDate', 'PlotDate', 'Filename', 'Title', 'Subject', 'Author', 'Keywords', 'Comments', 'LastSavedBy', 'Login'] as const;
 
-const FIELD_RE = /%<\\([A-Za-z_]+)(?:\.[\d.]+)?\s+((?:(?!%<|>%)[\s\S])*?)>%/g;
+/**
+ * The field expressions of `text`, innermost first: `%<\Kind(.version) args>%` whose args hold
+ * no other `%<` (a nested expression is found on its own). One pass with forward-only searches,
+ * so the time is linear in the text: the regular expression this replaces took quadratic time on
+ * a long run of spaces without a closing `>%` (security review E-6).
+ */
+export function replaceFields(text: string, fn: (kind: string, args: string) => string): string {
+  const isWord = (c: number) => (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95;
+  const isDigitOrDot = (c: number) => (c >= 48 && c <= 57) || c === 46;
+  const isSpace = (ch: string) => ch.trim() === '' && ch !== '';
+  let out = '';
+  let copied = 0;
+  // The next ">%" and "%<" at or after the scan position (positions only grow, so each search
+  // continues where the previous one stopped).
+  let close = -2;
+  let open = -2;
+  let i = text.indexOf('%<\\');
+  while (i >= 0) {
+    let p = i + 3;
+    const kindStart = p;
+    while (p < text.length && isWord(text.charCodeAt(p))) p += 1;
+    const kind = text.slice(kindStart, p);
+    if (kind && text[p] === '.' && p + 1 < text.length && isDigitOrDot(text.charCodeAt(p + 1))) {
+      p += 1;
+      while (p < text.length && isDigitOrDot(text.charCodeAt(p))) p += 1;
+    }
+    let matched = false;
+    if (kind && p < text.length && isSpace(text[p]!)) {
+      while (p < text.length && isSpace(text[p]!)) p += 1;
+      if (close !== -1 && close < p) close = text.indexOf('>%', p);
+      if (close === -1) break; // no closing ">%" anywhere after here: nothing more matches
+      if (open !== -1 && open < p) open = text.indexOf('%<', p);
+      if (open === -1 || open >= close) {
+        out += text.slice(copied, i) + fn(kind, text.slice(p, close));
+        copied = close + 2;
+        matched = true;
+      }
+    }
+    i = text.indexOf('%<\\', matched ? copied : i + 1);
+  }
+  return copied === 0 ? text : out + text.slice(copied);
+}
 
 /** True when the text holds at least one field expression. */
 export function hasFields(text: string): boolean {
@@ -131,11 +172,23 @@ export function formatFilename(filePath: string, fmt: string): string {
   return applyCase(out || file, fmt);
 }
 
-/** Split "Name \f "format"" into the variable name and its format string. */
-function splitArgs(args: string): { name: string; format: string | null } {
-  const m = /^(.*?)\s*\\f\s*"([^"]*)"\s*$/.exec(args.trim());
-  if (m) return { name: m[1]!.trim(), format: m[2]! };
-  return { name: args.trim(), format: null };
+/**
+ * Split "Name \f "format"" into the variable name and its format string: the arguments end in a
+ * quoted format (no quote inside) that `\f` introduces. Scanned from the end, in linear time (a
+ * regular expression here took quadratic time on long runs of spaces, security review E-6).
+ */
+export function splitArgs(args: string): { name: string; format: string | null } {
+  const t = args.trim();
+  const none = { name: t, format: null };
+  if (t.length < 2 || !t.endsWith('"')) return none;
+  const q = t.lastIndexOf('"', t.length - 2);
+  if (q < 0) return none;
+  const head = t.slice(0, q).trimEnd();
+  if (!head.endsWith('\\f')) return none;
+  const name = head.slice(0, -2);
+  // The name is on one line (the expression's "." did not cross line breaks).
+  if (/[\n\r\u2028\u2029]/.test(name.trimEnd())) return none;
+  return { name: name.trim(), format: t.slice(q + 1, -1) };
 }
 
 function evaluateOne(kind: string, args: string, ctx: FieldContext): string {
@@ -182,8 +235,7 @@ export function evaluateFields(text: string, ctx: FieldContext = {}): string {
   let out = text;
   // Innermost first, so nested expressions (%<\AcExpr (%<...>%)>%) collapse from the inside.
   for (let guard = 0; guard < 8; guard += 1) {
-    FIELD_RE.lastIndex = 0;
-    const next = out.replace(FIELD_RE, (_m, kind: string, args: string) => evaluateOne(kind, args, ctx));
+    const next = replaceFields(out, (kind, args) => evaluateOne(kind, args, ctx));
     if (next === out) break;
     out = next;
   }

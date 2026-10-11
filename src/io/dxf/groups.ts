@@ -65,8 +65,11 @@ export function tokenize(text: string, recover = false, report?: ImportReportBui
       throw new DxfReadError(`Line ${i + 1}: "${shortText(rawCode)}" is not a DXF group code (a whole number was expected). The file is damaged or is not a DXF file.`, i + 1);
     }
     // Text chunks (1 / 3, MLEADER 304) keep trailing spaces: a 250-character MTEXT chunk may end in one.
+    // trimEnd() strips exactly what /\s+$/ did, in one pass from the end; the regex tried every
+    // start position and took quadratic time on a long run of spaces followed by any other
+    // character (security review E-6: a crafted line froze the renderer).
     const raw = lines[i + 1]!;
-    const value = code === 1 || code === 3 || code === 304 ? raw : raw.replace(/\s+$/, '');
+    const value = code === 1 || code === 3 || code === 304 ? raw : raw.trimEnd();
     pairs.push({ code, value, line: i + 1 });
     if (code === 0 && value.trim() === 'EOF') {
       eof = true;
