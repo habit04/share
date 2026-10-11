@@ -112,10 +112,12 @@ Once a month, and before every release:
       (`tests/about.test.ts` fails when a direct dependency is missing).
 - [ ] Record what was updated (or why not) in the `[Unreleased]` section of `CHANGELOG.md`.
 
-**State at the time of writing (October 2026):** `npm audit` reports 20 advisories (4 critical,
-5 high, 11 moderate). The one that reaches users is against the Electron 33 runtime (fixed in
-Electron 41.10.6, 42.3.4 and 43.0.0); the others are in build and test tooling only (vitest and
-its pool, Vite / esbuild, the packages behind the development scripts and the Electron
-download). `npm audit --omit=dev` reports none, which is exactly why it must not be used alone.
-Electron 33 is no longer a supported major: upgrading Electron is the most important open
-dependency task.
+**State at the time of writing (October 2026), after the move to Electron 44.7.0 and Vitest 5:**
+`npm audit` reports 12 advisories (2 critical, 2 high, 8 moderate), none of them in what ships:
+`shell-quote` under `concurrently` (the `electron:dev` script runner), `global-agent` / `roarr` /
+`sprintf-js` and `http-cache-semantics` under the Electron download that electron-builder does
+while packaging (`app-builder-lib` -> `@electron/get` 3), and `source-map-js` under Vite's PostCSS
+(build only). The Electron runtime and the test runner advisories (Electron 33, Vitest 2 and its
+pool, the old Vite / esbuild copies) are gone. `npm audit --omit=dev` reports none, which is
+exactly why it must not be used alone. Electron 44 is a supported major; plan the next upgrade
+by the rule above.

@@ -53,7 +53,8 @@ The Windows installer version updates itself (see [Updates](#12-updates)).
 ### macOS
 
 There are two disk images: `arm64` for Apple Silicon (M1 and later) and `x64` for Intel Macs.
-Choose the one that matches your Mac (Apple menu > About This Mac).
+Choose the one that matches your Mac (Apple menu > About This Mac). JCad Electrical needs
+macOS 13 Ventura or later (versions up to 0.4.1 also ran on macOS 11 and 12).
 
 1. Open the `.dmg` and drag **JCad Electrical** into Applications.
 2. Start it from Applications. The first time, macOS says it cannot verify the developer.

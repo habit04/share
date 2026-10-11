@@ -31,7 +31,7 @@ function registerPlotIpc(ctx) {
       // printToPDF takes a named size or {width, height} in INCHES (print() uses microns).
       const pdf = await hidden.webContents.printToPDF({
         printBackground: true,
-        margins: { marginType: 'none' },
+        margins: { top: 0, bottom: 0, left: 0, right: 0 },
         landscape: Boolean(landscape),
         pageSize: pdfPageSize(sheet, landscape),
       });

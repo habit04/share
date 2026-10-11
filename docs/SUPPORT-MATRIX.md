@@ -92,3 +92,17 @@ Electrical, so it survives a round trip through other programs that keep blocks 
 - Writing DWG.
 - 3D geometry and 3D views (only the XY projection of 2D-capable entities is read).
 - Parametric constraints, dynamic-block actions, sheet sets, data links, digital signatures.
+
+## Platforms
+
+The desktop application runs on the Electron 44 runtime (44.7.0), whose platform support it
+follows:
+
+| System | Installer | Minimum |
+| --- | --- | --- |
+| Windows | `.exe` (NSIS), x64 | Windows 10 |
+| macOS | `.dmg`, Apple Silicon (`arm64`) and Intel (`x64`) | macOS 13 Ventura (releases up to 0.4.1, on Electron 33, ran on macOS 11 Big Sur and 12 Monterey) |
+| Linux | `.AppImage`, `.deb`, x64 | a distribution release still supported by both its maker and Chromium |
+
+The browser edition on the website does not use Electron and is not affected by these minimums
+(its automated checks run in Chromium).

@@ -11,6 +11,15 @@ messages). The date of each version is the date of the commit that set that vers
 
 ## [Unreleased]
 
+### Security
+
+- Electron 44.7.0 (was 33.4.11, out of support since 2025; security review E-2): current
+  Chromium, V8 and image decoders for the drawings' IMAGE files, and the Electron runtime
+  advisories that `npm audit` listed are gone. **macOS 13 Ventura or later is now required**
+  (0.4.1 ran on macOS 11 and 12); Windows 10 and the Linux packages are unchanged. Vitest 5 (was
+  2.1.9) for the unit tests; Node.js 22.12 or later for development (`engines`), which both need.
+  PDF plots of the raster path set their zero margins in inches, the form Electron 44 accepts.
+
 ### Changed
 
 - Maintainability (reliability review item 26), with no change in behaviour: the three largest

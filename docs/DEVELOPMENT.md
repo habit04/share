@@ -15,11 +15,11 @@ Contents: [Prerequisites](#prerequisites) · [Install](#install) · [Run](#run) 
 
 | | All systems | Windows | macOS | Linux |
 | --- | --- | --- | --- | --- |
-| Node.js | **22.x** (22.6 or later; `.nvmrc` / `.node-version` say `22`, `package.json` `engines` says `>=22.6.0 <23`) | nodejs.org installer, `nvm-windows` or `fnm` | `nvm`, `fnm` or Homebrew `node@22` | `nvm`, `fnm` or NodeSource |
+| Node.js | **22.x** (22.12 or later, which Vitest 5 and the Electron 44 package need; `.nvmrc` / `.node-version` say `22`, `package.json` `engines` says `>=22.12.0 <23`) | nodejs.org installer, `nvm-windows` or `fnm` | `nvm`, `fnm` or Homebrew `node@22` | `nvm`, `fnm` or NodeSource |
 | npm | the one bundled with Node 22 (10.x) | | | |
 | Git | any recent | Git for Windows (Git Bash runs the shell snippets below) | Xcode command-line tools | distribution package |
 | Native build tools | not needed (no native modules) | | | |
-| For `npm run e2e` | the Electron binary that `npm ci` downloads | | | a display: `xvfb-run` (package `xvfb`) on a server or in a container |
+| For `npm run e2e` | the Electron binary: the `electron` package fetches it the first time it is started (or run `node node_modules/electron/install.js` after `npm ci`) | | | a display: `xvfb-run` (package `xvfb`) on a server or in a container |
 | For screenshots / UI check / bench | a Chromium for Playwright (below) | | | `npx playwright install --with-deps chromium` installs Chromium and its system libraries and fonts |
 | For packaging | | NSIS is bundled by electron-builder | Xcode command-line tools (`codesign`, `hdiutil`) | `dpkg-deb` comes with Debian / Ubuntu; AppImage needs nothing extra |
 
@@ -39,12 +39,14 @@ before it does locally. Its Playwright Chromium is older than the one CI install
 ```bash
 git clone https://github.com/habit04/share.git
 cd share
-npm ci                      # exact versions from package-lock.json; downloads the Electron binary
+npm ci                      # exact versions from package-lock.json
+node node_modules/electron/install.js   # the Electron binary (otherwise fetched on the first start)
 ```
 
 Optional environment variables for `npm ci`:
 
-- `ELECTRON_SKIP_BINARY_DOWNLOAD=1` when you only work on the renderer (no `npm run e2e` / `npm start`).
+- `ELECTRON_SKIP_BINARY_DOWNLOAD=1` is no longer needed: since Electron 44 the package downloads its
+  binary only when Electron is first started (`npm start`, `npm run e2e`), not during `npm ci`.
 - `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1` always (the Playwright package is used, its browsers are
   installed separately when needed).
 

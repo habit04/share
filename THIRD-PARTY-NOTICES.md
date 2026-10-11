@@ -62,7 +62,7 @@ Versions are the ones in `package-lock.json` at the time this file was written.
 | ms | 2.1.3 | MIT | Copyright (c) 2020 Vercel, Inc. | debug | <https://github.com/vercel/ms> |
 | sax | 1.6.1 | BlueOak-1.0.0 | Isaac Z. Schlueter and contributors | builder-util-runtime | <https://github.com/isaacs/sax-js> |
 | Hershey font data (`rowmans.jhf`) | - | Public domain, with the Hershey use restriction | Dr. A. V. Hershey (U.S. National Bureau of Standards); data format by James Hurt, Cognition, Inc. | text rendering | [notice](#hershey-fonts) |
-| Electron runtime (Chromium, Node.js, ...) | 33.4.11 | MIT (Electron); various (components) | Electron contributors; GitHub Inc.; The Chromium Authors; others | the whole app | <https://github.com/electron/electron> |
+| Electron runtime (Chromium, Node.js, ...) | 44.7.0 | MIT (Electron); various (components) | Electron contributors; GitHub Inc.; The Chromium Authors; others | the whole app | <https://github.com/electron/electron> |
 
 ### Development dependencies (build and test only)
 
@@ -72,12 +72,12 @@ none of their code is part of what is distributed.
 
 | Package | Version | Licence | Copyright | Role | Link |
 | --- | --- | --- | --- | --- | --- |
-| electron | 33.4.11 | MIT | Copyright (c) Electron contributors; Copyright (c) 2013-2020 GitHub Inc. | Runtime shipped inside every installer (see below). | <https://github.com/electron/electron> |
+| electron | 44.7.0 | MIT | Copyright (c) Electron contributors; Copyright (c) 2013-2020 GitHub Inc. | Runtime shipped inside every installer (see below). | <https://github.com/electron/electron> |
 | electron-builder | 26.15.3 | MIT | Copyright (c) 2015 Loopline Systems | Build tool; its NSIS installer stub is part of the Windows installer. | <https://github.com/electron-userland/electron-builder> |
 | @electron/fuses | 1.8.0 | MIT | Copyright (c) 2020 Electron Maintainers | Release checks only: `scripts/electron-fuses.mjs` reads the fuses electron-builder sets, and the packaged smoke test re-enables the inspector fuse in its own copy of the app (also an electron-builder dependency). | <https://github.com/electron/fuses> |
 | vite | 6.4.3 | MIT | Copyright (c) 2019-present, VoidZero Inc. and Vite contributors | Build tool; small Vite runtime helpers (module preload) end up in the renderer bundle. | <https://github.com/vitejs/vite> |
 | typescript | 5.9.3 | Apache-2.0 | Copyright (c) Microsoft Corporation | Compiler only. | <https://github.com/microsoft/TypeScript> |
-| vitest | 2.1.9 | MIT | Copyright (c) 2021-Present Vitest Team | Unit tests only. | <https://github.com/vitest-dev/vitest> |
+| vitest | 5.0.3 | MIT | Copyright (c) 2021-Present VoidZero Inc. and Vitest contributors | Unit tests only. | <https://github.com/vitest-dev/vitest> |
 | playwright | 1.63.0 | Apache-2.0 | Copyright (c) Microsoft Corporation | Screenshot and website checks only. | <https://github.com/microsoft/playwright> |
 | @types/node | 22.20.4 | MIT | Copyright (c) Microsoft Corporation | Type definitions only. | <https://github.com/DefinitelyTyped/DefinitelyTyped> |
 | concurrently | 9.2.4 | MIT | Copyright (c) 2015 Kimmo Brunfeldt | Development script runner only. | <https://github.com/open-cli-tools/concurrently> |
@@ -160,12 +160,12 @@ The JavaScript code of the `hershey` package is MIT-licensed (text below).
 
 ## Electron and Chromium
 
-Every installer contains the Electron runtime (version 33.4.11). Electron is MIT-licensed
+Every installer contains the Electron runtime (version 44.7.0). Electron is MIT-licensed
 (text below). Electron is built on Chromium, Node.js, V8 and many other open-source
 components under their own licences (BSD-3-Clause, MIT, Apache-2.0, LGPL-2.1 for FFmpeg,
 and others). Electron distributes their notices in the file **`LICENSES.chromium.html`**,
 which accompanies the Electron runtime and is included in every Electron release archive at
-<https://github.com/electron/electron/releases/tag/v33.4.11>. Node.js licence:
+<https://github.com/electron/electron/releases/tag/v44.7.0>. Node.js licence:
 <https://github.com/nodejs/node/blob/main/LICENSE>.
 
 ## Licence texts
@@ -970,7 +970,7 @@ will be liable to anyone for any damages related to this
 software or this license, under any kind of legal claim.***
 ```
 
-### electron 33.4.11
+### electron 44.7.0
 
 MIT - Copyright (c) Electron contributors; Copyright (c) 2013-2020 GitHub Inc. - <https://github.com/electron/electron>
 
