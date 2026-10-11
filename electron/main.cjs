@@ -6,7 +6,7 @@ const updater = require('./updater.cjs');
 const { atomicWriteFile, backupFile, createWriteQueue } = require('./atomic-write.cjs');
 const { createAutosaveStore, safeAutosaveName } = require('./autosave-store.cjs');
 const { guardIpc, appUrlTest, createRejectionLog, createPathPolicy, dxfImageNames, externalUrl } = require('./ipc-guard.cjs');
-const { createPathRegistry } = require('./path-registry.cjs');
+const { createPathRegistry, pathKey } = require('./path-registry.cjs');
 const { createDwgHost, progressThreshold } = require('./dwg-host.cjs');
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL;
@@ -57,6 +57,17 @@ function writeStateFile(file, text, what) {
     await fs.mkdir(path.dirname(file), { recursive: true });
     await atomicWriteFile(file, text);
   }).catch((err) => logMainError(what, err));
+}
+/**
+ * Crash-safe write of a user file (drawing, project, export). Writes of one file run one at a time,
+ * in the order the requests arrived, keyed by pathKey so "C:\Jobs\A.dxf" and "c:/jobs/a.DXF" share
+ * a queue. The renderer orders the saves of one file by revision (src/app/savequeue.ts), but a
+ * Save As (and a save whose path needed the dialog) only learns its file here: without this queue
+ * a slower Save of the same file that started earlier could land after it and replace the newer
+ * content while the drawing is shown as saved.
+ */
+function writeUserFile(file, data, opts) {
+  return enqueueWrite(pathKey(file) ?? file, () => atomicWriteFile(file, data, opts));
 }
 
 function loadPersistedPaths() {
@@ -518,7 +529,7 @@ ipcMain.handle('save-text', async (ev, suggestName, text, filterName, ext) => {
   // Crash-safe for every export; only a project file keeps its previous version as <name>.bak
   // (a .bak next to a CSV or text export would only clutter the user's folder).
   const isProject = /\.jcadproj\.json$/i.test(res.filePath) || String(filterName) === 'JCad Electrical Project';
-  await atomicWriteFile(res.filePath, text, { backup: isProject });
+  await writeUserFile(res.filePath, text, { backup: isProject });
   registry.grant(res.filePath);
   return res.filePath;
 });
@@ -545,7 +556,7 @@ ipcMain.handle('save-project', async (_ev, file, text) => {
   if (typeof text !== 'string' || text.length > 64 * 1024 * 1024) throw new Error('Invalid project payload');
   if (!pathPolicy.writable(file, 'save-project', PROJECT_FILE)) throw new Error('Unknown project path');
   // Temporary file + fsync + rename, previous version kept as <name>.bak (electron/atomic-write.cjs).
-  await atomicWriteFile(file, text, { backup: true });
+  await writeUserFile(file, text, { backup: true });
   return file;
 });
 
@@ -583,7 +594,7 @@ ipcMain.handle('plot-pdf', async (ev, dataUrl, suggestName, landscape, sheet) =>
       landscape: Boolean(landscape),
       pageSize: pdfPageSize(sheet, landscape),
     });
-    await atomicWriteFile(res.filePath, pdf);
+    await writeUserFile(res.filePath, pdf);
     return res.filePath;
   } finally {
     hidden.destroy();
@@ -601,7 +612,7 @@ ipcMain.handle('save-pdf', async (ev, bytes, suggestName) => {
     filters: [{ name: 'PDF', extensions: ['pdf'] }],
   });
   if (res.canceled || !res.filePath) return null;
-  await atomicWriteFile(res.filePath, Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+  await writeUserFile(res.filePath, Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
   return res.filePath;
 });
 
@@ -677,7 +688,7 @@ ipcMain.handle('save-dxf', async (ev, existingPath, text, suggestName) => {
   }
   // Temporary file + fsync + rename, previous version kept as <name>.dxf.bak (electron/atomic-write.cjs).
   // A failure is thrown as "CODE: reason, write '<target>'"; the renderer maps it to a message.
-  await atomicWriteFile(target, text, { backup: true });
+  await writeUserFile(target, text, { backup: true });
   registry.grant(target);
   return target;
 });

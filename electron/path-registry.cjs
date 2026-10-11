@@ -26,12 +26,13 @@ const DRAWING_RE = /\.(dxf|dwg)$/i;
  * Identity key of a path, the twin of src/app/paths.ts pathKey: absolute only, "." / ".." and
  * separators resolved, Unicode NFC (macOS hands out decomposed names while project files and
  * typed names are usually composed, so "José.dxf" matches either way), case-folded on Windows.
- * A relative path or one with a NUL byte has no key and is never "known".
+ * A relative path or one with a NUL byte has no key and is never "known". (Self-contained apart from
+ * `path` and `process`: tests/fuzz-paths.test.ts evaluates its source text per platform.)
  * @param {unknown} p
  * @returns {string | null}
  */
 function pathKey(p) {
-  if (typeof p !== 'string' || !p || p.length > MAX_PATH || p.includes('\0') || !path.isAbsolute(p)) return null;
+  if (typeof p !== 'string' || !p || p.length > 4096 || p.includes('\0') || !path.isAbsolute(p)) return null;
   const k = path.resolve(p).normalize('NFC');
   return process.platform === 'win32' ? k.toLowerCase() : k;
 }

@@ -20,8 +20,13 @@ const { createAtomicWriter, createWriteQueue, isTempName } = require('./atomic-w
 
 const ID_NAME_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.sv\.dxf$/i;
 const NAME_RE = /^[A-Za-z0-9_-]{1,60}\.sv\.dxf$/;
-/** Old scheme: drawing title + "_" + a session number (Drawing1_1.sv.dxf). Only these are migrated. */
-const LEGACY_NAME_RE = /^[A-Za-z0-9_-]{1,60}_\d+\.sv\.dxf$/;
+/**
+ * The old scheme: "<title>_<session number>.sv.dxf". Only these are migrated; other names in the
+ * folder are kept as they are - in particular the project's own autosave
+ * ("<name>_<hash>_jcadproj.sv.dxf", src/app/project-autosave.ts), which the project recovery
+ * finds by that suffix and which would otherwise turn into a "drawing" nobody can open.
+ */
+const LEGACY_NAME_RE = /^[A-Za-z0-9_-]{0,58}_\d+\.sv\.dxf$/;
 /** The project autosave (twin of SUFFIX in src/app/project-autosave.ts): keeps its name across launches. */
 const PROJECT_SUFFIX = '_jcadproj.sv.dxf';
 /**
@@ -33,7 +38,7 @@ const PROJECT_NAME_RE = /_jcadproj\.sv\.dxf$/;
 
 /** A drawing backup in the 0.4.0 naming scheme (renamed to a permanent id on first use). */
 function isLegacyName(name) {
-  return LEGACY_NAME_RE.test(name) && !ID_NAME_RE.test(name) && !name.endsWith(PROJECT_SUFFIX);
+  return NAME_RE.test(name) && LEGACY_NAME_RE.test(name) && !ID_NAME_RE.test(name) && !name.endsWith(PROJECT_SUFFIX);
 }
 const INDEX = 'index.json';
 
@@ -187,10 +192,14 @@ function createAutosaveStore(dir, deps = {}) {
       const n = safeAutosaveName(name);
       if (typeof text !== 'string') throw new Error('Invalid payload');
       await ensure();
-      await fs.mkdir(dir, { recursive: true });
       const file = path.join(dir, n);
-      await enqueue(file, () => writer.atomicWriteFile(file, text));
-      entries[n] = cleanMeta(meta, n);
+      // Everything about one backup (its file and its index entry) changes inside its own queue, so a
+      // write and a remove of the same name take effect in the order they were called.
+      await enqueue(file, async () => {
+        await fs.mkdir(dir, { recursive: true });
+        await writer.atomicWriteFile(file, text);
+        entries[n] = cleanMeta(meta, n);
+      });
       await saveIndex();
     },
     /** Every backup, newest first. Throws (instead of answering "nothing") when the folder cannot be read. */
@@ -234,14 +243,16 @@ function createAutosaveStore(dir, deps = {}) {
       const n = safeAutosaveName(name);
       await ensure();
       const file = path.join(dir, n);
-      await enqueue(file, () => fs.rm(file, { force: true }));
-      await fs.rm(`${file}.json`, { force: true });
-      if (entries && n in entries) {
-        delete entries[n];
-        await saveIndex();
-      }
+      const listed = await enqueue(file, async () => {
+        await fs.rm(file, { force: true });
+        await fs.rm(`${file}.json`, { force: true });
+        const had = !!entries && n in entries;
+        if (had) delete entries[n];
+        return had;
+      });
+      if (listed) await saveIndex();
     },
   };
 }
 
-module.exports = { createAutosaveStore, safeAutosaveName, isLegacyName, ID_NAME_RE, PROJECT_NAME_RE, legacyTitle };
+module.exports = { createAutosaveStore, safeAutosaveName, isLegacyName, ID_NAME_RE, LEGACY_NAME_RE, PROJECT_NAME_RE, legacyTitle };

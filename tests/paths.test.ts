@@ -3,7 +3,7 @@
  * project-relative paths that survive moving the project file (src/app/project.ts).
  */
 import { describe, it, expect, afterEach } from 'vitest';
-import { normalizePath, pathKey, samePath, dirName, resolveFromFile, relativePath, rebaseProjectEntry, shortNames, isAbsolutePath, setPathPlatform } from '../src/app/paths';
+import { normalizePath, pathKey, samePath, dirName, resolveFromFile, resolvePath, relativePath, rebaseProjectEntry, shortNames, isAbsolutePath, setPathPlatform } from '../src/app/paths';
 import { parseProject, serializeProject, rebaseProject, resolveDrawingPath, resolveProjectPath, projectDrawingIndex, projectEntryFor, type Project } from '../src/app/project';
 import { pushRecent } from '../src/app/settings';
 
@@ -118,5 +118,31 @@ describe('project paths', () => {
     expect(sibling.drawings[0]!.file).toBe('../P/dwg/A.dxf');
     expect(resolveDrawingPath(sibling, sibling.drawings[0]!)).toBe('C:\\jobs\\P\\dwg\\A.dxf');
     expect(samePath(resolveDrawingPath(sibling, sibling.drawings[0]!), 'C:\\Jobs\\P\\dwg\\A.dxf')).toBe(true);
+  });
+});
+
+describe('path fuzzing regressions (tests/fuzz-paths.test.ts seeds)', () => {
+  it('resolving below a "/" root on Windows does not turn the root into a UNC share', () => {
+    setPathPlatform('win32');
+    expect(resolvePath('/', 'b.dxf')).toBe('/b.dxf');
+    expect(resolveFromFile('/p.jcadproj.json', 'proj/x.dxf')).toBe('/proj/x.dxf');
+    expect(resolvePath('/', '\\lib\\x.dxf')).toBe('/lib/x.dxf');
+    expect(resolvePath('C:\\', 'b.dxf')).toBe('C:\\b.dxf');
+    expect(resolvePath('\\\\srv\\share', 'b.dxf')).toBe('\\\\srv\\share\\b.dxf');
+  });
+  it('a POSIX file name with a backslash is kept absolute instead of becoming a folder', () => {
+    setPathPlatform('linux');
+    expect(relativePath('/p', '/p/a\\b.dxf')).toBe('/p/a\\b.dxf');
+    expect(resolvePath('/p', relativePath('/p', '/p/a\\b.dxf'))).toBe('/p/a\\b.dxf');
+    expect(rebaseProjectEntry('/home/u/proj/x\\y.dxf', '/home/u/a.json', '/home/u/proj/p.json')).toBe('/home/u/proj/x\\y.dxf');
+  });
+  it('short names: composed and decomposed names collide, and folders are added up to the root', () => {
+    expect(shortNames(['/p/1/José.dxf', '/p/2/Jose\u0301.dxf'])).toEqual(['José.dxf (1)', 'José.dxf (2)']);
+    const deep = 'a/b/b/x/a/b/a';
+    const names = shortNames([`/line1/${deep}/a.dxf`, `/A/${deep}/a.dxf`]);
+    expect(new Set(names).size).toBe(2);
+    expect(names[0]).toBe(`a.dxf (line1/${deep})`);
+    // Alike up to the root: the full paths tell them apart.
+    expect(shortNames(['/srv/share/a.dxf', '\\\\srv\\share\\a.dxf'])).toEqual(['/srv/share/a.dxf', '\\\\srv\\share\\a.dxf']);
   });
 });

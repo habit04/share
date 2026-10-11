@@ -291,3 +291,43 @@ describe('a drawing shown in a layout tab', () => {
     expect(doc.dirty).toBe(true);
   });
 });
+
+describe('stale-batch fuzzing regressions (tests/fuzz-stale-batch.test.ts)', () => {
+  const commitClosed = async (f: ReturnType<typeof fake>) => {
+    const { sheets } = await loadProjectSheets(f.editor);
+    const i = sheets.findIndex((s) => s.source === 'file');
+    return commitSheets(f.editor, sheets, new Map([[i, { state: { ...sheets[i]!.doc.snapshot, entities: [...sheets[i]!.doc.snapshot.entities, note('BATCH')] }, detail: 'x' }]]), 'T', 'I');
+  };
+  it('a file changed on disk while "backup failed, continue?" is open is not overwritten (seed 1657033021)', async () => {
+    continueWithoutBackup = true;
+    const f = fake({ ...base, files: { '/p/c.dxf': closed() }, backup: async () => ({ ok: false, code: 'EACCES', error: 'EACCES' }) });
+    const changed = writeDxf({ ...closed(), entities: [...closed().entities, note('SAVED ELSEWHERE')] });
+    projectUi.confirmNoBackup = async () => {
+      f.disk.set('/p/c.dxf', changed); // another program saves the file while the question is shown
+      return true;
+    };
+    const r = await commitClosed(f);
+    expect(r!.conflicts).toEqual(['c.dxf (changed on disk since it was read)']);
+    expect(f.writes).toEqual([]);
+    expect(f.disk.get('/p/c.dxf')).toBe(changed);
+  });
+  it('a file opened in a tab while its backup is made is not written under the tab', async () => {
+    const f = fake({ ...base, files: { '/p/c.dxf': closed() }, backup: async (p) => {
+      f.editor.sessions.add(closed(), '/p/c.dxf');
+      return { ok: true, path: `${p}.bak` };
+    } });
+    const r = await commitClosed(f);
+    expect(r!.conflicts).toEqual(['c.dxf (opened in a tab while the command ran)']);
+    expect(f.writes).toEqual([]);
+  });
+  it('closed drawings left unsaved by choice are named in the outcome and the log (seed 2670937247)', async () => {
+    projectUi.confirmFiles = async () => ({ files: false, backup: false });
+    const f = fake({ ...base, files: { '/p/c.dxf': closed() } });
+    const r = await commitClosed(f);
+    expect(r).toEqual({ open: 0, written: 0, failed: [], conflicts: [], notSaved: ['c.dxf'] });
+    expect(f.writes).toEqual([]);
+    const g2 = fake({ ...base, files: { '/p/c.dxf': closed() } });
+    await runProjectXref(g2.editor);
+    expect(g2.logs.join('\n')).toMatch(/Not updated \(closed drawing files were not saved, as chosen\): c\.dxf\./);
+  });
+});
