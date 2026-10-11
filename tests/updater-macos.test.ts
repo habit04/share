@@ -153,6 +153,16 @@ describe('Check for Updates on macOS (electron/updater.cjs)', () => {
     }
   });
 
+  it('the Update Available text fits a notarized build and an ad-hoc one alike (no Open Anyway step promised)', async () => {
+    const t = updaterOn('14.0', release([dmg, feed]), { [feed.browser_download_url]: yml14 });
+    expect((await t.updater.checkForUpdates({}, { interactive: true })).state).toBe('available');
+    expect(t.boxes[0]).toMatchObject({ title: 'Update Available', message: 'JCad Electrical 0.5.0 is available (you have 0.4.2).' });
+    expect(t.boxes[0]?.detail).toBe(
+      'Download the new disk image and drag the app to Applications to replace this one. If macOS blocks the first launch, allow it once in System Settings > Privacy & Security.\n\nNotes',
+    );
+    expect(t.boxes[0]?.detail).not.toContain('Open Anyway');
+  });
+
   it("the feed is read only from this project's release downloads", async () => {
     const elsewhere = { name: 'latest-mac.yml', browser_download_url: 'https://example.com/habit04/share/releases/download/v0.5.0/latest-mac.yml' };
     const t = updaterOn('12.7.4', release([dmg, elsewhere]), { [elsewhere.browser_download_url]: yml14 });

@@ -11,7 +11,9 @@ messages). The date of each version is the date of the commit that set that vers
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- macOS: the update dialog no longer asks for Open Anyway, which notarized builds do not need.
 
 ## [0.4.2] - 2026-10-11
 
