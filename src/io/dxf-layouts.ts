@@ -1,6 +1,7 @@
 /**
  * DXF paper space (Track E): layouts, their paper-space entities, VIEWPORT entities and the
- * LAYOUT objects of the ACAD_LAYOUT dictionary. io/dxf.ts calls in here at a few points:
+ * LAYOUT objects of the ACAD_LAYOUT dictionary. io/dxf/writer.ts and io/dxf/reader.ts call in
+ * here at a few points:
  *
  *   writing: planLayouts (handles) -> header vars -> BLOCK_RECORD rows -> *Paper_SpaceN blocks
  *            -> the active layout's paper space at the end of ENTITIES -> ACAD_LAYOUT + LAYOUTs
@@ -342,7 +343,7 @@ const VP_NONRECT_CLIP = 65536;
 /** Reads the entities of a layout; `where` names the layout for the import report. */
 export type LayoutEntityReader = (objs: Obj[], where: string) => Entity[];
 
-/** Collects paper-space data while io/dxf.ts walks the sections, then builds the layouts. */
+/** Collects paper-space data while io/dxf/reader.ts walks the sections, then builds the layouts. */
 export class LayoutReader {
   /** `report` receives viewports that are dropped or simplified. */
   constructor(private readonly report?: ImportReportBuilder) {}
