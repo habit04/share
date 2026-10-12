@@ -18,7 +18,8 @@ import {
 } from '../core/entities';
 import type { Point, Bounds } from '../core/geometry';
 import * as g from '../core/geometry';
-import { polylineWidthGeometry } from '../core/polyline-widths';
+import { polylineWidthGeometry, strokeOutlinePolygons } from '../core/polyline-widths';
+import { paintOpacityGroup } from './opacity-group';
 import { aciToCss } from './palette';
 import { strokeText, strokeTextWidth, hasStrokeFont, expandControlCodes, drawStyledText } from './hershey';
 import { placedText } from '../core/text-placement';
@@ -454,27 +455,43 @@ function drawGeometry(
       if ((e.widths || e.widthFrame) && !e.filled) {
         const geometry = polylineWidthGeometry(e);
         const dashed = typeof ctx.getLineDash === 'function' && ctx.getLineDash().length > 0;
-        for (const { polygon, spines } of geometry.strokes) {
+        const path = (points: readonly Point[], closed = false) => {
+          points.forEach((point, index) => { const p = tf.toScreen(point); if (index === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y); });
+          if (closed) ctx.closePath();
+        };
+        if (!geometry.polygons.length) {
           ctx.beginPath();
-          polygon.forEach((point, index) => { const p = tf.toScreen(point); if (index === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y); });
-          ctx.closePath();
-          if (dashed) {
-            ctx.save();
-            ctx.clip();
-            ctx.lineWidth = Math.min(Number.MAX_VALUE, geometry.maxWidth * tf.scale);
-            for (const spine of spines) {
-              ctx.beginPath();
-              spine.forEach((point, index) => { const p = tf.toScreen(point); if (index === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y); });
-              ctx.stroke();
-            }
-            ctx.restore();
-          } else ctx.fill();
-        }
-        for (const spine of geometry.thin) {
-          ctx.beginPath();
-          spine.forEach((point, index) => { const p = tf.toScreen(point); if (index === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y); });
+          geometry.thin.forEach((spine) => path(spine));
           ctx.stroke();
+          break;
         }
+        if (dashed) {
+          const masks = (target: CanvasRenderingContext2D) => {
+            const addPath = (points: readonly Point[], closed = false) => {
+              points.forEach((point, index) => { const p = tf.toScreen(point); if (index === 0) target.moveTo(p.x, p.y); else target.lineTo(p.x, p.y); });
+              if (closed) target.closePath();
+            };
+            for (const { polygon, spines } of geometry.strokes) {
+              target.save(); target.beginPath(); addPath(polygon, true); target.clip();
+              target.lineWidth = Math.min(Number.MAX_VALUE, geometry.maxWidth * tf.scale);
+              target.beginPath(); spines.forEach((spine) => addPath(spine)); target.stroke();
+              target.restore();
+            }
+            if (geometry.thin.length) {
+              target.beginPath(); geometry.thin.forEach((spine) => addPath(spine)); target.stroke();
+            }
+          };
+          if (ctx.globalAlpha < 1 && geometry.strokes.length + Number(geometry.thin.length > 0) > 1) paintOpacityGroup(ctx, [...geometry.polygons, ...geometry.thin], (point) => tf.toScreen(point), masks);
+          else masks(ctx);
+          break;
+        }
+        // One paint operation composites the complete entity alpha once, including joins
+        // and explicit-zero segments drawn at the current display lineweight.
+        const thinWidth = ctx.lineWidth / tf.scale;
+        const polygons = [...geometry.polygons, ...strokeOutlinePolygons(geometry.thin, thinWidth)];
+        ctx.beginPath();
+        polygons.forEach((polygon) => path(polygon, true));
+        ctx.fill();
         break;
       }
       strokePolyline(ctx, e, tf);

@@ -33,7 +33,7 @@ import {
 } from '../core/entities';
 import type { Point, Bounds } from '../core/geometry';
 import * as g from '../core/geometry';
-import { polylineWidthGeometry } from '../core/polyline-widths';
+import { polylineWidthGeometry, strokeOutlinePolygons } from '../core/polyline-widths';
 import { aciToCss } from '../render/palette';
 import { strokeText, strokeTextWidth, expandControlCodes, textRenderer, CAP_HEIGHT_EM } from '../render/hershey';
 import { placedText } from '../core/text-placement';
@@ -318,11 +318,19 @@ interface ImageRes {
   data: PdfImageData;
 }
 
+interface VectorForm {
+  name: string;
+  content: string;
+  width: number;
+  height: number;
+}
+
 /** Content stream builder for one page. */
 class PageWriter {
   readonly ops: string[] = [];
   readonly images: ImageRes[] = [];
   readonly fonts = new Set<'F1' | 'F2'>();
+  readonly forms: VectorForm[] = [];
   private stroke = '';
   private fill = '';
   private width = '';
@@ -585,21 +593,55 @@ class PageWriter {
     this.pathOps += 1;
   }
 
-  private polyline(e: PolylineEntity): void {
+  private compoundPath(paths: readonly (readonly Point[])[], closed: boolean, paint: string): void {
+    const parts: string[] = [];
+    for (const pts of paths) {
+      if (!pts.length) continue;
+      parts.push(`${this.P(pts[0]!)} m`);
+      for (let i = 1; i < pts.length; i++) parts.push(`${this.P(pts[i]!)} l`);
+      if (closed) parts.push('h');
+    }
+    if (!parts.length) return;
+    this.ops.push(`${parts.join(' ')} ${paint}`);
+    this.pathOps += 1;
+  }
+
+  private polyline(e: PolylineEntity, opacityByte = 255): void {
     if (e.points.length === 0) return;
     if ((e.widths || e.widthFrame) && !e.filled) {
       const geometry = polylineWidthGeometry(e);
       const dashed = this.dash && this.dash !== '[] 0 d';
-      for (const { polygon, spines } of geometry.strokes) {
-        if (dashed) {
+      if (!geometry.polygons.length) {
+        this.compoundPath(geometry.thin, false, 'S');
+        return;
+      }
+      const thinWidth = Number.parseFloat(this.width) / this.tf.k;
+      const polygons = [...geometry.polygons, ...strokeOutlinePolygons(geometry.thin, thinWidth)];
+      const isolate = opacityByte < 255 && ((dashed && geometry.strokes.length + Number(geometry.thin.length > 0) > 1) || (!thinWidth && geometry.thin.length > 0));
+      const groupStart = this.ops.length;
+      if (dashed) {
+        // Keep each varying-width segment's own mask. A global maximum-width mask can
+        // paint into a nearby segment's gap, even with a compound clip.
+        for (const { polygon, spines } of geometry.strokes) {
           this.ops.push('q');
           this.polyPath(polygon, true, 'W n');
           this.ops.push(`${n(Math.min(Number.MAX_VALUE, geometry.maxWidth * this.tf.k))} w`);
-          for (const spine of spines) this.polyPath(spine, false, 'S');
+          this.compoundPath(spines, false, 'S');
           this.ops.push('Q');
-        } else this.polyPath(polygon, true, 'f');
+        }
+        this.compoundPath(geometry.thin, false, 'S');
+      } else this.compoundPath(polygons, true, 'f');
+      // A PDF hairline has device-dependent width. The colors integration isolates
+      // this mixed case in a vector transparency group instead of inventing a width.
+      if (!dashed && !thinWidth) this.compoundPath(geometry.thin, false, 'S');
+      if (isolate) {
+        if (![this.page.width, this.page.height].every((size) => Number.isFinite(size) && size > 0 && size <= 14400)) throw new Error('Translucent polyline exceeds the bounded PDF page area.');
+        const body = this.ops.splice(groupStart).join('\n');
+        if (body.length > 64 * 1024 * 1024) throw new Error('Translucent polyline exceeds the PDF form work budget.');
+        const name = `Wide${this.forms.length}`;
+        this.forms.push({ name, width: this.page.width, height: this.page.height, content: `q /Opaque gs ${this.stroke} ${this.fill} ${this.width} ${this.dash}\n${body}\nQ` });
+        this.ops.push(`/${name} Do`);
       }
-      for (const spine of geometry.thin) this.polyPath(spine, false, 'S');
       return;
     }
     this.ops.push(`${this.P(e.points[0]!)} m`);
@@ -784,6 +826,8 @@ export interface RenderedPage {
   content: string;
   images: ImageRes[];
   fonts: ReadonlySet<'F1' | 'F2'>;
+  /** Isolated vector paint groups for translucent dash masks and mixed device hairlines. */
+  forms?: readonly VectorForm[];
   pathOps: number;
 }
 
@@ -792,7 +836,7 @@ export function renderPdfPages(pages: readonly PdfPageSpec[], ctx: PdfDrawingCon
   return pages.map((page) => {
     const w = new PageWriter(ctx, style, page);
     w.run();
-    return { width: page.width, height: page.height, content: w.ops.join('\n'), images: w.images, fonts: w.fonts, pathOps: w.pathOps };
+    return { width: page.width, height: page.height, content: w.ops.join('\n'), images: w.images, fonts: w.fonts, forms: w.forms, pathOps: w.pathOps };
   });
 }
 
@@ -827,6 +871,15 @@ export function assembleVectorPdf(rendered: readonly RenderedPage[], title = 'Dr
       const filter = d.kind === 'jpeg' ? ' /Filter /DCTDecode' : d.deflated ? ' /Filter /FlateDecode' : '';
       set(num, [enc.encode(`<< /Type /XObject /Subtype /Image /Width ${d.width} /Height ${d.height} /ColorSpace /DeviceRGB /BitsPerComponent 8${filter} /Length ${d.data.length} >>\nstream\n`), d.data, enc.encode('\nendstream')]);
       xobjects.push(`/${im.name} ${num} 0 R`);
+    }
+    if (pg.forms?.length) {
+      const opaque = reserve();
+      set(opaque, '<< /Type /ExtGState /CA 1 /ca 1 /BM /Normal >>');
+      for (const form of pg.forms) {
+        const num = reserve(), data = enc.encode(form.content);
+        set(num, [enc.encode(`<< /Type /XObject /Subtype /Form /FormType 1 /BBox [0 0 ${n(form.width)} ${n(form.height)}] /Group << /S /Transparency /I true /CS /DeviceRGB >> /Resources << /ExtGState << /Opaque ${opaque} 0 R >> >> /Length ${data.length} >>\nstream\n`), data, enc.encode('\nendstream')]);
+        xobjects.push(`/${form.name} ${num} 0 R`);
+      }
     }
     const fonts = [...pg.fonts].map((f) => `/${f} ${f === 'F1' ? f1 : f2} 0 R`);
     const res = `<< /ProcSet [/PDF /Text /ImageC]${fonts.length ? ` /Font << ${fonts.join(' ')} >>` : ''}${xobjects.length ? ` /XObject << ${xobjects.join(' ')} >>` : ''} >>`;

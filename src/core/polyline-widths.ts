@@ -6,12 +6,49 @@ import { GeometryBudgetError } from './geometry-budget-error';
 import { isImmutableData } from './immutable-data';
 
 type Frame = NonNullable<PolylineEntity['widthFrame']>;
-interface WidthGeometry { polygons: Point[][]; thin: Point[][]; strokes: Array<{ polygon: Point[]; spines: Point[][] }>; maxWidth: number }
+interface WidthGeometry { polygons: Point[][]; thin: Point[][]; spines: Point[][]; strokes: Array<{ polygon: Point[]; spines: Point[][] }>; maxWidth: number }
 const cache = new WeakMap<PolylineEntity, WidthGeometry>();
 const checkedPoint = (point: Point): Point => {
   if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) throw new GeometryBudgetError('Polyline width geometry exceeds finite coordinate limits.');
   return point;
 };
+
+/** Same winding gives a nonzero compound path the union of overlapping outlines. */
+function positivePolygon(polygon: Point[]): Point[] {
+  const magnitude = polygon.reduce((max, point) => Math.max(max, Math.abs(point.x), Math.abs(point.y)), 0);
+  if (!magnitude) return polygon;
+  const origin = { x: polygon[0]!.x / magnitude, y: polygon[0]!.y / magnitude };
+  let area = 0;
+  for (let i = 1; i + 1 < polygon.length; i++) {
+    const a = { x: polygon[i]!.x / magnitude - origin.x, y: polygon[i]!.y / magnitude - origin.y };
+    const b = { x: polygon[i + 1]!.x / magnitude - origin.x, y: polygon[i + 1]!.y / magnitude - origin.y };
+    area += g.cross(a, b);
+  }
+  return area < 0 ? [...polygon].reverse() : polygon;
+}
+
+/** Butt-ended stroke strips and bounded bevel joins, in the same coordinates as the spines. */
+export function strokeOutlinePolygons(spines: readonly (readonly Point[])[], width: number): Point[][] {
+  if (!Number.isFinite(width) || width < 0) throw new GeometryBudgetError('Polyline stroke width must be finite and nonnegative.');
+  if (!width) return [];
+  const polygons: Point[][] = [], half = width / 2;
+  for (const spine of spines) {
+    let previous: { left: Point; right: Point } | undefined;
+    for (let i = 1; i < spine.length; i++) {
+      const a = spine[i - 1]!, b = spine[i]!, direction = g.normalize(g.sub(b, a));
+      const offset = { x: -direction.y * half, y: direction.x * half };
+      const leftStart = checkedPoint(g.add(a, offset)), rightStart = checkedPoint(g.sub(a, offset));
+      const leftEnd = checkedPoint(g.add(b, offset)), rightEnd = checkedPoint(g.sub(b, offset));
+      polygons.push(positivePolygon([leftStart, leftEnd, rightEnd, rightStart]));
+      if (previous) {
+        polygons.push(positivePolygon([previous.left, leftStart, a]));
+        polygons.push(positivePolygon([previous.right, rightStart, a]));
+      }
+      previous = { left: leftEnd, right: rightEnd };
+    }
+  }
+  return polygons;
+}
 
 export function polylineFramePoint(frame: Frame, point: Point): Point {
   return checkedPoint({ x: frame.origin.x + frame.x.x * point.x + frame.y.x * point.y, y: frame.origin.y + frame.x.y * point.x + frame.y.y * point.y });
@@ -110,7 +147,7 @@ export function polylineWidthGeometry(entity: PolylineEntity): WidthGeometry {
       right.push(transform(g.sub(point, g.scale(normal, h))));
     }
     if (start === 0 && end === 0) thin.push(spine);
-    else { const polygon = [...left, ...[...right].reverse()]; polygons.push(polygon); strokes.push({ polygon, spines: [spine] }); }
+    else { const polygon = positivePolygon([...left, ...[...right].reverse()]); polygons.push(polygon); strokes.push({ polygon, spines: [spine] }); }
     ends.push({ a: spine[0]!, leftStart: left[0]!, leftEnd: left[left.length - 1]!, rightStart: right[0]!, rightEnd: right[right.length - 1]!, spine });
   });
   // Bevel joins avoid an unbounded miter spike at nearly reversing segments. Width changes
@@ -118,13 +155,13 @@ export function polylineWidthGeometry(entity: PolylineEntity): WidthGeometry {
   for (let i = source.closed ? 0 : 1; i < ends.length; i++) {
     const before = ends[(i + ends.length - 1) % ends.length]!, after = ends[i]!;
     for (const [a, b] of [[before.leftEnd, after.leftStart], [before.rightEnd, after.rightStart]]) if (!g.eq(a!, b!)) {
-      const polygon = [a!, b!, after.a]; polygons.push(polygon); strokes.push({ polygon, spines: [before.spine, after.spine] });
+      const polygon = positivePolygon([a!, b!, after.a]); polygons.push(polygon); strokes.push({ polygon, spines: [before.spine, after.spine] });
     }
   }
   // This finite upper bound is used only to stroke a dash mask inside the checked outline.
   // Multiply first so a zero width remains zero even for very large finite frame axes.
   if (entity.widthFrame) maxWidth = Math.min(Number.MAX_VALUE, Math.hypot(maxWidth * entity.widthFrame.x.x, maxWidth * entity.widthFrame.x.y) + Math.hypot(maxWidth * entity.widthFrame.y.x, maxWidth * entity.widthFrame.y.y));
-  const result = { polygons, thin, strokes, maxWidth };
+  const result = { polygons, thin, spines: ends.map((end) => end.spine), strokes, maxWidth };
   if (immutable) cache.set(entity, result);
   return result;
 }

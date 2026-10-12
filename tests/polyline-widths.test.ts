@@ -6,9 +6,10 @@ import { Drawing, DEFAULT_HEADER } from '../src/core/document';
 import { readDxf, writeDxf } from '../src/io/dxf';
 import { importReportOf, geometryProblem } from '../src/io/import-report';
 import { convertDwg, type DwgImportPayload } from '../src/io/dwg';
-import { blockTransform, distanceToEntity, entityBounds, entityGeometryWork, explodeInsert, mirrorEntityAcross, moveGrip, scaleEntityBy, snapCandidates, translateEntity, type PolylineEntity, type InsertEntity } from '../src/core/entities';
-import { polylineWidthGeometry } from '../src/core/polyline-widths';
+import { blockTransform, distanceToEntity, entityBounds, entityGeometryWork, explodeInsert, mirrorEntityAcross, moveGrip, pointInPolygon, scaleEntityBy, snapCandidates, translateEntity, type PolylineEntity, type InsertEntity } from '../src/core/entities';
+import { polylineWidthGeometry, strokeOutlinePolygons } from '../src/core/polyline-widths';
 import { drawEntity } from '../src/render/draw';
+import { paintOpacityGroup, MAX_OPACITY_GROUP_PIXELS } from '../src/render/opacity-group';
 import { drawingContext, plotPages, vectorPdf } from '../src/io/pdf-vector';
 import type { PlotOptions } from '../src/app/plot';
 import { pageContents, parseContentStream, parsePdfBasics } from './helpers/pdf';
@@ -196,5 +197,90 @@ describe('nonuniform blocks and output', () => {
     expect(summary.counts.S).toBeGreaterThan(0);
     expect(summary.counts.f ?? 0).toBe(0);
     expect(summary.dashes.some((dash) => dash !== '[]')).toBe(true);
+  });
+});
+
+describe('single paint operation for overlapping wide-polyline outlines', () => {
+  const corner = (thin = false): PolylineEntity => ({ ...tapered(), points: [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }], widths: [{ start: 2, end: 2 }, { start: thin ? 0 : 2, end: thin ? 0 : 2 }, { start: 0, end: 0 }] });
+  const area = (polygon: readonly { x: number; y: number }[]) => polygon.reduce((sum, p, i) => { const q = polygon[(i + 1) % polygon.length]!; return sum + p.x * q.y - q.x * p.y; }, 0);
+
+  it.each([false, true])('fills a continuous corner and explicit-zero segment at alpha0.5 once (thin=%s)', (thin) => {
+    const paths: Array<Array<{ x: number; y: number }>> = [];
+    let current: Array<{ x: number; y: number }> = [];
+    const ctx = { globalAlpha: 1, save: vi.fn(), restore: vi.fn(), setLineDash: vi.fn(), getLineDash: () => [], beginPath: () => { paths.length = 0; }, closePath: () => {}, fill: vi.fn(), stroke: vi.fn(), moveTo: (x: number, y: number) => { current = [{ x, y }]; paths.push(current); }, lineTo: (x: number, y: number) => current.push({ x, y }) } as unknown as CanvasRenderingContext2D;
+    drawEntity(ctx, corner(thin), { scale: 1, toScreen: (p) => p }, [], lookup, { alpha: 0.5 });
+    expect(ctx.globalAlpha).toBe(0.5);
+    expect(ctx.fill).toHaveBeenCalledOnce();
+    expect(ctx.stroke).not.toHaveBeenCalled();
+    expect(paths.every((polygon) => area(polygon) >= 0)).toBe(true);
+    // These outlines overlap, so the old per-polygon fills painted this point twice or more.
+    const overlap = { x: 9.75, y: 0.25 };
+    expect(paths.filter((polygon) => pointInPolygon(overlap, polygon)).length).toBeGreaterThan(1);
+  });
+
+  it.each([false, true])('retains each dashed segment mask inside one opaque cropped composite (thin=%s)', (thin) => {
+    const internalAlpha: number[] = [], compositeAlpha: number[] = [];
+    const group = { globalAlpha: 1, save: vi.fn(), restore: vi.fn(), setTransform: vi.fn(), setLineDash: vi.fn(), clip: vi.fn(), beginPath: vi.fn(), closePath: vi.fn(), fill: vi.fn(), stroke: () => internalAlpha.push(group.globalAlpha), moveTo: vi.fn(), lineTo: vi.fn() };
+    const surface = { width: 1, height: 1, getContext: () => group };
+    const parent = { width: 100, height: 100, ownerDocument: { createElement: () => surface } };
+    const ctx = { canvas: parent, globalAlpha: 1, save: vi.fn(), restore: vi.fn(), setTransform: vi.fn(), drawImage: () => compositeAlpha.push(ctx.globalAlpha), getTransform: () => ({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }), setLineDash: vi.fn(), getLineDash: () => [3, 2], clip: vi.fn(), beginPath: vi.fn(), closePath: vi.fn(), fill: vi.fn(), stroke: vi.fn(), moveTo: vi.fn(), lineTo: vi.fn() } as unknown as CanvasRenderingContext2D;
+    drawEntity(ctx, corner(thin), { scale: 1, toScreen: (p) => p }, [], lookup, { alpha: 0.5 });
+    const masks = polylineWidthGeometry(corner(thin));
+    expect(group.clip).toHaveBeenCalledTimes(masks.strokes.length);
+    expect(internalAlpha).toEqual(Array(masks.strokes.length + Number(thin)).fill(1));
+    expect(compositeAlpha).toEqual([0.5]);
+    expect(ctx.clip).not.toHaveBeenCalled();
+    expect(ctx.stroke).not.toHaveBeenCalled();
+    expect(ctx.fill).not.toHaveBeenCalled();
+    expect(surface.width * surface.height).toBeLessThanOrEqual(MAX_OPACITY_GROUP_PIXELS);
+  });
+
+  it.each([false, true])('uses one PDF fill while opaque dashes retain individual masks (dashed=%s)', (dashed) => {
+    const e = { ...corner(true), lineWeight: 0.5, ...(dashed ? { linetype: 'DASHED' } : {}) };
+    const s = new Drawing({ entities: [e], header: { ...DEFAULT_HEADER, linetypes: [{ name: 'DASHED', description: 'test', pattern: [3, -2] }] } }).snapshot;
+    const pdf = parsePdfBasics(vectorPdf(plotPages(s, lookup, 'model', TABLOID_LANDSCAPE), drawingContext(s, lookup), { mode: 'color', lineweights: true, usePlotStyles: false }));
+    const summary = parseContentStream(pageContents(pdf, (data) => new Uint8Array(inflateSync(data)))[0]!);
+    expect(pdf.errors).toEqual([]);
+    expect(summary.errors).toEqual([]);
+    expect(summary.counts.f ?? 0).toBe(dashed ? 0 : 1);
+    expect(summary.counts.S ?? 0).toBe(dashed ? polylineWidthGeometry(e).strokes.length + 1 : 0);
+    expect(summary.counts.W ?? 0).toBe(dashed ? polylineWidthGeometry(e).strokes.length : 0);
+  });
+
+  it('leaves an all-thin path as one native stroke and a filled SOLID on its existing path', () => {
+    const thin = { ...corner(), widths: [{ start: 0, end: 0 }, { start: 0, end: 0 }, { start: 0, end: 0 }] };
+    const solid = { ...corner(), filled: true, closed: true };
+    for (const e of [thin, solid]) {
+      const ctx = { save: vi.fn(), restore: vi.fn(), setLineDash: vi.fn(), getLineDash: () => [], beginPath: vi.fn(), closePath: vi.fn(), fill: vi.fn(), stroke: vi.fn(), moveTo: vi.fn(), lineTo: vi.fn() } as unknown as CanvasRenderingContext2D;
+      drawEntity(ctx, e, { scale: 1, toScreen: (p) => p }, [], lookup, { alpha: 0.5 });
+      expect(ctx.fill).toHaveBeenCalledTimes(e === solid ? 1 : 0);
+      expect(ctx.stroke).toHaveBeenCalledTimes(e === thin ? 1 : 0);
+    }
+  });
+
+  it('rejects nonfinite strip widths and derived strip coordinates', () => {
+    expect(() => strokeOutlinePolygons([[{ x: 0, y: 0 }, { x: 1, y: 0 }]], Infinity)).toThrow(/finite/);
+    expect(() => strokeOutlinePolygons([[{ x: 0, y: 1e308 }, { x: 1e308, y: 1e308 }]], 1.7e308)).toThrow(/finite coordinate/);
+  });
+
+  it('tiles large visible groups without overlapping composites and refuses excessive surface/work budgets', () => {
+    const tiles: Array<{ x: number; y: number; width: number; height: number; alpha: number }> = [];
+    const group = { setTransform: vi.fn(), setLineDash: vi.fn(), globalAlpha: 1 };
+    const surface = { width: 1, height: 1, getContext: () => group };
+    const parent = { width: 10000, height: 10, ownerDocument: { createElement: () => surface } };
+    const ctx = { canvas: parent, globalAlpha: 0.5, lineWidth: 1, save: vi.fn(), restore: vi.fn(), setTransform: vi.fn(), getLineDash: () => [], getTransform: () => ({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }), drawImage: (_canvas: unknown, x: number, y: number) => tiles.push({ x, y, width: surface.width, height: surface.height, alpha: ctx.globalAlpha }) } as unknown as CanvasRenderingContext2D;
+    paintOpacityGroup(ctx, [[{ x: 0, y: 0 }, { x: 9000, y: 1 }]], (p) => p, () => expect(group.globalAlpha).toBe(1));
+    expect(tiles).toHaveLength(5);
+    for (let i = 0; i < tiles.length; i++) {
+      expect(tiles[i]!.width * tiles[i]!.height).toBeLessThanOrEqual(MAX_OPACITY_GROUP_PIXELS);
+      expect(tiles[i]!.alpha).toBe(0.5);
+      if (i) expect(tiles[i]!.x).toBe(tiles[i - 1]!.x + tiles[i - 1]!.width);
+    }
+    parent.width = parent.height = 50000;
+    expect(() => paintOpacityGroup(ctx, [[{ x: 0, y: 0 }, { x: 49999, y: 49999 }]], (p) => p, () => {})).toThrow(/bounded visible compositing area/);
+    parent.width = 5000; parent.height = 10;
+    const heavy = Array<{ x: number; y: number }>(700_000).fill({ x: 0, y: 0 });
+    heavy.push({ x: 4999, y: 1 });
+    expect(() => paintOpacityGroup(ctx, [heavy], (p) => p, () => {})).toThrow(/work budget/);
   });
 });
