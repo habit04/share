@@ -87,8 +87,11 @@ export function scaledText<T extends TextPlacement>(t: T, tf: (p: Point) => Poin
   const u = { x: sx * Math.cos(a), y: sy * Math.sin(a) };
   const v = { x: -sx * Math.sin(a), y: sy * Math.cos(a) };
   const xScale = Math.hypot(u.x, u.y);
-  const yScale = Math.abs(sx * sy) / xScale;
-  const slant = Math.tan(t.oblique ?? 0) * xScale / yScale + g.dot(u, v) / (xScale * yScale);
+  const smaller = Math.min(Math.abs(sx), Math.abs(sy));
+  const larger = Math.max(Math.abs(sx), Math.abs(sy));
+  const ratio = larger / xScale;
+  const yScale = Number.isFinite(ratio) ? smaller * ratio : (smaller / xScale) * larger;
+  const slant = (t.oblique ? Math.tan(t.oblique) * (xScale / yScale) : 0) + (u.x / xScale) * (v.x / yScale) + (u.y / xScale) * (v.y / yScale);
   const widthFactor = (t.widthFactor ?? 1) * xScale / yScale;
   return {
     ...transformedTextAnchors(t, tf),

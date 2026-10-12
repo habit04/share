@@ -837,7 +837,12 @@ function convertEntity(e: DwgEntity, blockIndex: Map<string, string>, dimStyle: 
         const placement = { ...appearance, ...(a.layer ? { layer } : {}), ...dwgTextPlacement(a.text, a.alignmentPoint) };
         const problem = geometryProblem({ ...base, ...placement, rotation: placement.rotation ?? 0, type: 'text', text: a.text?.text ?? '' });
         if (problem) extras?.notes.push(`ATTRIB ${tag}: invalid placement (${problem}); its value uses the definition's placement.`);
-        else placements[tag] = localAttributePlacement(ins, basePoint, placement);
+        else {
+          const local = localAttributePlacement(ins, basePoint, placement);
+          const inverseProblem = geometryProblem({ ...base, ...local, rotation: local.rotation ?? 0, type: 'text', text: a.text?.text ?? '' });
+          if (inverseProblem) extras?.notes.push(`ATTRIB ${tag}: its placement cannot be represented in the insert's local coordinates (${inverseProblem}); its value uses the definition's placement.`);
+          else placements[tag] = local;
+        }
       }
       return Object.keys(placements).length ? { ...ins, attributePlacements: placements } : ins;
     }

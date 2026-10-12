@@ -268,7 +268,12 @@ export function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): En
           const source = { ...appearance, ...(has(objs[j]!, 8) ? { layer } : {}), ...readTextPlacement(objs[j]!, 74) };
           const bad = geometryProblem({ ...commonProps(objs[j]!), ...source, type: 'text', text: attrs[tag]!, id: 'attribute' });
           if (bad) reportObj(ctx, objs[j]!, 'simplified', `attribute placement is invalid (${bad}); its value is kept at the definition's placement`);
-          else placements[tag] = localAttributePlacement(e, def.basePoint, source);
+          else {
+            const local = localAttributePlacement(e, def.basePoint, source);
+            const inverseProblem = geometryProblem({ ...commonProps(objs[j]!), ...local, rotation: local.rotation ?? 0, type: 'text', text: attrs[tag]!, id: 'attribute' });
+            if (inverseProblem) reportObj(ctx, objs[j]!, 'simplified', `attribute placement cannot be represented in the insert's local coordinates (${inverseProblem}); its value is kept at the definition's placement`);
+            else placements[tag] = local;
+          }
         }
         if ((Math.trunc(num(objs[j]!, 70)) & 1) === 1) hidden.push(tag);
         j += 1;

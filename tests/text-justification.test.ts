@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { readDxf, writeDxf } from '../src/io/dxf';
-import { importReportOf } from '../src/io/import-report';
+import { importReportOf, geometryProblem } from '../src/io/import-report';
 import { Drawing } from '../src/core/document';
 import { inflateSync } from 'node:zlib';
 import { convertDwg, type DwgImportPayload } from '../src/io/dwg';
@@ -11,7 +11,7 @@ import { drawEntity } from '../src/render/draw';
 import { vectorPdf, drawingContext } from '../src/io/pdf-vector';
 import { parsePdfBasics, pageContents, parseContentStream } from './helpers/pdf';
 
-const fixture = readFileSync(new URL('./fixtures/interchange/r2000-text-justification.dxf', import.meta.url), 'utf8');
+const fixture = readFileSync(new URL('./fixtures/interchange/r2000-text-justification.dxf', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 const sample = () => readDxf(fixture);
 const txt = (text: string) => sample().entities.find((e): e is TextEntity => e.type === 'text' && e.text === text)!;
 const unwrap = (e: Entity) => { expect(e.type).toBe('text'); return e as TextEntity; };
@@ -126,6 +126,19 @@ describe('native TEXT and attribute justification', () => {
       expect(JSON.stringify(importReportOf(r))).toContain('BEEF');
       expect(JSON.stringify(importReportOf(r))).toMatch(/justification|alignment/);
     }
+  });
+
+  it('tiny finite insert scales never store overflowing inverse ATTRIB placement', () => {
+    const input = fixture.replace('2\nLABEL\n66\n1\n10\n100\n20\n100', '2\nLABEL\n66\n1\n10\n100\n20\n100\n41\n1e-320\n42\n1e-320');
+    const s = readDxf(input);
+    const ins = s.entities.find((e): e is InsertEntity => e.type === 'insert')!;
+    expect(ins.scale).toBeGreaterThan(0);
+    expect(ins.attributePlacements).toBeUndefined();
+    expect(ins.attributes.TAG1).toBe('OVERRIDE');
+    expect(geometryProblem(ins)).toBeNull();
+    expect(JSON.stringify(importReportOf(s))).toContain('local coordinates');
+    for (const part of explodeInsert(ins, (n) => s.blocks[n])) expect(geometryProblem(part)).toBeNull();
+    expect(writeDxf(s)).not.toMatch(/NaN|Infinity/);
   });
 
   it('screen strokes and vector PDF use identical fitted/rotated glyph placement', () => {
