@@ -12,7 +12,7 @@ export const NATIVE_SOURCE = Object.freeze({ repository: 'https://github.com/mli
 const SDK = { version: '4.0.23', commit: 'c0bb220cb6e6f4e0fabb6f6db9efd53390ef5e56', releaseHash: 'aaa43392544d695232b70eda706d751f18980c2a' };
 const DECLARATION = { name: 'typescript', version: '5.7.3', resolved: 'https://registry.npmjs.org/typescript/-/typescript-5.7.3.tgz', integrity: 'sha512-84MVSjMEHP+FQRPy3pX9sTVV/INIex71s9TL2Gm5FG/WG1SqXeKyZ0k7/blY/4FdOzI12CBy1vGc4og/eus0fw==' };
 const PATCH_SHA256 = 'f666e69a0316536df7e344efe2b0a9c550918d06ad57b65ecbc4c523540f8cf6';
-const APPEARANCE_PATCH_SHA256 = '94aad13d104c05289c417bc4e0d45c5ade53eadc65621b7603c00519546ab963';
+const APPEARANCE_PATCH_SHA256 = 'a25b0d13e3ea34b95a41bca9a1674ce3433fa5f3b057bd2b3fe14267af446e3e';
 const ASSETS = ['factory/libredwg-web.js', 'factory/libredwg-web.wasm', 'factory/package.json', 'modified-source.tar.gz', 'COPYING', 'pins.json', 'mtext-background-scale.patch.json', 'README.md', 'patch-source.mjs', 'validate-fixture.mjs', 'write-provenance.mjs', 'patch-report.json', 'fixture-report.json', 'declaration-tools/package.json', 'declaration-tools/package-lock.json'];
 const APPEARANCE_ASSETS = [...ASSETS, 'validate-appearance-fixture.mjs', 'appearance-report.json'];
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
