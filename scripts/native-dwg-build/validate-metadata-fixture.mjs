@@ -1,0 +1,168 @@
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { readFile, writeFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+const MAX_NATIVE_METADATA_DXF_BYTES = 32 * 1024 * 1024;
+
+const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
+const unicode = (value) => value.replace(/\\U\+([0-9a-f]{4})/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+const numeric = (code) => (code >= 10 && code <= 99) || (code >= 110 && code <= 149) ||
+  (code >= 170 && code <= 179) || (code >= 210 && code <= 299) || (code >= 370 && code <= 389) ||
+  (code >= 400 && code <= 469) || (code >= 1010 && code <= 1059) || code === 1070 || code === 1071;
+const handle = (code) => (code >= 320 && code <= 369) || (code >= 390 && code <= 399) || code === 5 || code === 105 || code === 480 || code === 481 || code === 1005;
+
+/** Independent token-level oracle: keeps string chunks and repeated reference order. */
+export function metadataDxfRecords(text) {
+  const lines = text.split(/\r\n|\n|\r/);
+  if (lines.at(-1) === '') lines.pop();
+  assert.equal(lines.length % 2, 0, 'Incomplete native DXF pair.');
+  const records = [];
+  let current;
+  for (let index = 0; index < lines.length; index += 2) {
+    const code = Number(lines[index].trim());
+    assert.ok(Number.isInteger(code) && code >= 0 && code <= 1071, 'Invalid native DXF group code.');
+    const value = lines[index + 1];
+    if (code === 0) {
+      current = { type: value.trim(), groups: [] };
+      records.push(current);
+      assert.ok(records.length <= 250000, 'Native DXF exceeds the record budget.');
+    } else if (current) current.groups.push({ code, value });
+  }
+  assert.equal(records.at(-1)?.type, 'EOF', 'Native DXF is incomplete.');
+  return records;
+}
+
+function compareValue(code, actual, wanted) {
+  if (code >= 160 && code <= 169) {
+    assert.match(String(actual).trim(), /^-?\d+$/);
+    assert.match(String(wanted).trim(), /^-?\d+$/);
+    assert.equal(BigInt(String(actual).trim()), BigInt(String(wanted).trim()), `Metadata int64 group ${code} changed.`);
+  } else if (numeric(code)) {
+    const a = Number(actual), b = Number(wanted);
+    assert.ok(Number.isFinite(a) && Number.isFinite(b), `Non-finite metadata group ${code}.`);
+    assert.ok(Math.abs(a - b) <= 1e-10 * Math.max(1, Math.abs(b)), `Metadata group ${code} changed: ${actual} != ${wanted}`);
+  } else if (handle(code) || (code >= 310 && code <= 319) || code === 1004) {
+    assert.equal(String(actual).trim().toUpperCase(), String(wanted).trim().toUpperCase(), `Metadata identity/binary group ${code} changed.`);
+  } else assert.equal(unicode(String(actual)), unicode(String(wanted)), `Metadata string group ${code} changed.`);
+}
+
+export function validateMetadataOracle(metadata, expected) {
+  assert.equal(metadata.readError, 0, 'Metadata fixture must decode without native warning bits.');
+  assert.equal(metadata.writeError, 0, 'Metadata fixture must project without native write errors.');
+  assert.equal(metadata.complete, true, 'Fixture contains incomplete native projection identities.');
+  assert.equal(expected.schemaVersion, 1);
+  assert.ok(Array.isArray(expected.records) && expected.records.some((record) => record.type === 'VIEW') && expected.records.some((record) => record.type === 'FIELD'), 'Independent oracle must exercise named VIEW and real FIELD records.');
+  const records = metadataDxfRecords(metadata.dxf);
+  const inventory = new Map(metadata.objects.map((object) => [object.handle, object]));
+  const certified = [];
+  for (const wanted of expected.records) {
+    assert.match(wanted.handle, /^[1-9A-F][0-9A-F]{0,15}$/);
+    assert.ok(Array.isArray(wanted.groups) && wanted.groups.length > 0);
+    const nativeObject = inventory.get(wanted.handle);
+    assert.ok(nativeObject, `Native source identity ${wanted.handle} missing.`);
+    assert.equal(nativeObject.dxfType, wanted.type, `${wanted.handle}: native DXF class changed.`);
+    const candidates = records.filter((record) => record.type === wanted.type && record.groups.some((group) => (group.code === 5 || group.code === 105) && group.value.trim().toUpperCase() === wanted.handle));
+    assert.equal(candidates.length, 1, `${wanted.type} ${wanted.handle} must project exactly once.`);
+    const actual = candidates[0];
+    const combined = wanted.type === 'FIELD' ? [[2, 3], [301, 9]] : [];
+    for (const codes of combined) {
+      if (!wanted.groups.some((group) => codes.includes(group.code))) continue;
+      const text = (groups) => unicode(groups.filter((group) => codes.includes(group.code)).map((group) => group.value).join(''));
+      assert.equal(text(actual.groups), text(wanted.groups), `FIELD ${wanted.handle}: expression/cache string changed.`);
+    }
+    for (const code of new Set(wanted.groups.map((group) => group.code))) {
+      if (combined.some((codes) => codes.includes(code))) continue;
+      const a = actual.groups.filter((group) => group.code === code), b = wanted.groups.filter((group) => group.code === code);
+      assert.equal(a.length, b.length, `${wanted.type} ${wanted.handle}: group ${code} count/order changed.`);
+      for (let index = 0; index < b.length; index++) compareValue(code, a[index].value, b[index].value);
+    }
+    certified.push({ type: wanted.type, handle: wanted.handle, groups: actual.groups });
+  }
+  return certified;
+}
+
+/** Verify copied report records against local ground truth without executing artifact code. */
+export function validateMetadataReport(report, expected) {
+  assert.equal(report.schemaVersion, 1);
+  assert.equal(report.nativeError, 0);
+  assert.equal(report.writeError, 0);
+  assert.equal(report.complete, true);
+  assert.equal(report.maxOutputBytes, MAX_NATIVE_METADATA_DXF_BYTES);
+  assert.ok(Number.isSafeInteger(report.outputBytes) && report.outputBytes > 0 && report.outputBytes <= MAX_NATIVE_METADATA_DXF_BYTES);
+  assert.equal(report.limitedOutputRejected, true);
+  assert.ok(Array.isArray(report.objects) && report.objects.length > 0 && report.objects.length <= 100000);
+  assert.equal(report.inventoryCount, report.objects.length);
+  const handles = new Set();
+  for (const object of report.objects) {
+    assert.match(object.handle, /^[1-9A-F][0-9A-F]{0,15}$/);
+    assert.ok(!handles.has(object.handle), 'Duplicate native inventory identity.');
+    handles.add(object.handle);
+    for (const key of ['type', 'dxfType']) assert.ok(typeof object[key] === 'string' && object[key].length > 0 && object[key].length <= 256);
+    assert.ok(['entity', 'object', 'unknown'].includes(object.supertype));
+  }
+  assert.ok(Array.isArray(report.records) && report.records.length === expected.records.length);
+  const dxf = report.records.map((record) => {
+    assert.ok(typeof record.type === 'string' && !/[\r\n]/.test(record.type));
+    assert.ok(Array.isArray(record.groups));
+    return `0\n${record.type}\n` + record.groups.map(({ code, value }) => {
+      assert.ok(Number.isInteger(code) && code >= 0 && code <= 1071 && typeof value === 'string' && !/[\r\n]/.test(value));
+      return `${code}\n${value}\n`;
+    }).join('');
+  }).join('') + '0\nEOF\n';
+  return validateMetadataOracle({ ...report, readError: report.nativeError, dxf }, expected);
+}
+
+export async function validateMetadataFixture(factory, wasmPath, fixturePath, expectedPath, output) {
+  const [wasm, bytes, expectedBytes] = await Promise.all([readFile(wasmPath), readFile(fixturePath), readFile(expectedPath)]);
+  const expected = JSON.parse(expectedBytes.toString('utf8'));
+  assert.equal(sha256(bytes), expected.source?.dwgSha256, 'Independent metadata fixture bytes changed.');
+  assert.match(expected.source?.software ?? '', /AutoCAD/);
+  assert.deepEqual(expected.source?.audit, { errors: 0, fixed: 0 }, 'Independent native CAD audit must have no errors/fixes.');
+  const diagnostics = [];
+  const createModule = (await import(pathToFileURL(resolve(factory)).href)).default;
+  const module = await createModule({ wasmBinary: wasm, printErr: (message) => { if (diagnostics.length < 32) diagnostics.push(String(message).slice(0, 1024)); } });
+  assert.equal(typeof module.jcad_dwg_export_metadata, 'function', 'Candidate has no checked native metadata export.');
+  let pointer, readError;
+  try {
+    module.FS.writeFile('/native-metadata.dwg', bytes);
+    const read = module.dwg_read_file('/native-metadata.dwg');
+    pointer = read.data;
+    readError = read.error;
+    assert.ok(Number.isInteger(pointer) && pointer > 0 && pointer <= 0xffffffff);
+    assert.equal(readError, 0, 'Independent metadata fixture has native decoder flags.');
+    const limited = module.jcad_dwg_export_metadata(pointer, 128);
+    assert.ok(limited.writeError > 0 && limited.dxf === '' && limited.complete === false, 'Output cap must stop native writes without returning partial metadata.');
+    const metadata = { ...module.jcad_dwg_export_metadata(pointer, MAX_NATIVE_METADATA_DXF_BYTES), readError };
+    assert.equal(metadata.schemaVersion, 1);
+    assert.equal(typeof metadata.dxf, 'string');
+    assert.ok(Buffer.byteLength(metadata.dxf) <= MAX_NATIVE_METADATA_DXF_BYTES);
+    assert.ok(Array.isArray(metadata.objects) && metadata.objects.length <= 100000);
+    const handles = new Set();
+    for (const object of metadata.objects) {
+      assert.match(object.handle, /^[1-9A-F][0-9A-F]{0,15}$/);
+      assert.ok(!handles.has(object.handle), 'Duplicate native inventory identity.');
+      handles.add(object.handle);
+      assert.ok(typeof object.type === 'string' && object.type.length > 0 && object.type.length <= 256);
+      assert.ok(typeof object.dxfType === 'string' && object.dxfType.length > 0 && object.dxfType.length <= 256);
+      assert.ok(['entity', 'object', 'unknown'].includes(object.supertype));
+    }
+    const records = validateMetadataOracle(metadata, expected);
+    const report = { schemaVersion: 1, nativeError: readError, writeError: metadata.writeError,
+      factorySha256: sha256(await readFile(factory)), wasmSha256: sha256(wasm), fixtureSha256: sha256(bytes), expectedSha256: sha256(Buffer.from(expectedBytes.toString('utf8').replace(/\r\n/g, '\n'))),
+      maxOutputBytes: MAX_NATIVE_METADATA_DXF_BYTES, outputBytes: Buffer.byteLength(metadata.dxf), inventoryCount: metadata.objects.length,
+      limitedOutputRejected: true, objects: metadata.objects, complete: metadata.complete, records, diagnostics };
+    if (output) await writeFile(output, JSON.stringify(report, null, 2) + '\n', { flag: 'wx' });
+    return report;
+  } finally {
+    if (pointer) module.dwg_free(pointer);
+    if (module.FS.analyzePath('/native-metadata.dwg').exists) module.FS.unlink('/native-metadata.dwg');
+  }
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const [factory, wasm, fixture, expected, output] = process.argv.slice(2);
+  if (!output || process.argv.length !== 7) throw new Error('Usage: validate-metadata-fixture.mjs FACTORY WASM DWG EXPECTED REPORT');
+  const report = await validateMetadataFixture(factory, wasm, fixture, expected, output);
+  console.log(`NATIVE_METADATA_FIXTURE_OK ${report.records.length} independent VIEW/FIELD/typed metadata records; bounded output; error=${report.nativeError}`);
+}

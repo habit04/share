@@ -9,6 +9,7 @@ import { convertDwgMTextDatabase } from './dwg-mtext-background.mjs';
 import { convertDwgDatabase } from './dwg-array-conversion.mjs';
 import { convertDwgAppearanceDatabase } from './dwg-appearance-conversion.mjs';
 import { readNativeDwg } from './dwg-native-read.mjs';
+import { metadataGeometryReader, projectNativeMetadata } from './dwg-native-metadata.mjs';
 import { boundDwgWasmMemory } from './dwg-wasm-memory.mjs';
 import createNativeModule from '../vendor/libredwg-web-bg/factory/libredwg-web.js';
 
@@ -40,9 +41,11 @@ export async function readDwgPayload(bytes, kind = 'dwg') {
   if (bytes.byteLength > MAX_DWG_BYTES) throw new Error(`The DWG file is larger than the supported ${MAX_DWG_BYTES / (1024 * 1024)} MB.`);
   let l;
   let ptr;
+  let abandon = false;
   try {
     l = await lib();
-    ptr = readNativeDwg(l, bytes, kind);
+    let readError = 0;
+    ptr = readNativeDwg(l, bytes, kind, (error) => { readError = error; });
     let version = '';
     try {
       version = l.dwg_get_version_type(ptr)?.type ?? '';
@@ -50,14 +53,26 @@ export async function readDwgPayload(bytes, kind = 'dwg') {
       /* the file can still be converted without a version label */
     }
     const { Dwg_Object_Type } = await import('@mlightcad/libredwg-web');
-    const db = convertDwgMTextDatabase(l, ptr, (reader, input) => convertDwgAppearanceDatabase(reader, input, (appearanceReader, drawing) => convertDwgDatabase(appearanceReader, drawing, Dwg_Object_Type)));
-    return { payload: payloadFromDatabase(db, version), version };
+    const checkedMetadata = process.platform === 'win32' && kind === 'dwg' && typeof l.wasmInstance?.jcad_dwg_export_metadata === 'function';
+    const geometryReader = checkedMetadata ? metadataGeometryReader(l) : l;
+    const db = convertDwgMTextDatabase(geometryReader, ptr, (reader, input) => convertDwgAppearanceDatabase(reader, input, (appearanceReader, drawing) => convertDwgDatabase(appearanceReader, drawing, Dwg_Object_Type)));
+    const payload = payloadFromDatabase(db, version);
+    if (process.platform === 'win32' && kind === 'dwg') {
+      const projection = projectNativeMetadata(l.wasmInstance, ptr, readError);
+      abandon = projection.abandon;
+      if (checkedMetadata) projection.metadata.notes.push('Borrowed XDATA/XRECORD decoders were bypassed; metadata comes from the checked native DXF projection.');
+      payload.nativeMetadata = projection.metadata;
+    }
+    return { payload, version };
   } finally {
     // A failed conversion releases the native memory like a successful one (ported from PR #2,
     // codex/electrical-review-fixes 2f89b0e). LibreDWG keeps per-version state in the module;
     // reading files of different versions in one instance can abort the WASM: start fresh.
     try {
-      if (ptr) l.dwg_free(ptr);
+      if (ptr) {
+        if (abandon) l.dwg_abandon(ptr);
+        else l.dwg_free(ptr);
+      }
     } finally {
       void resetLibreDwg();
     }

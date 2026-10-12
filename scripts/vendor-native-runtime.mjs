@@ -6,6 +6,7 @@ import { resolve, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { wasmMemoryLimits } from './dwg-wasm-memory.mjs';
 import { checkedNativeColor, encodedNativeAlpha } from './native-dwg-build/validate-appearance-fixture.mjs';
+import { validateMetadataReport } from './native-dwg-build/validate-metadata-fixture.mjs';
 export { wasmMemoryLimits } from './dwg-wasm-memory.mjs';
 
 export const NATIVE_SOURCE = Object.freeze({ repository: 'https://github.com/mlightcad/libredwg-web', tag: 'v0.7.14', commit: '1dd682f46339f37b67c5ff1085d10d04a8c16d7e' });
@@ -13,8 +14,10 @@ const SDK = { version: '4.0.23', commit: 'c0bb220cb6e6f4e0fabb6f6db9efd53390ef5e
 const DECLARATION = { name: 'typescript', version: '5.7.3', resolved: 'https://registry.npmjs.org/typescript/-/typescript-5.7.3.tgz', integrity: 'sha512-84MVSjMEHP+FQRPy3pX9sTVV/INIex71s9TL2Gm5FG/WG1SqXeKyZ0k7/blY/4FdOzI12CBy1vGc4og/eus0fw==' };
 const PATCH_SHA256 = 'f666e69a0316536df7e344efe2b0a9c550918d06ad57b65ecbc4c523540f8cf6';
 const APPEARANCE_PATCH_SHA256 = '98c701b374f44baeebf36aca079b9258da87b6ecef13784b7e1a6d294e222aae';
+const METADATA_PATCH_SHA256 = '1a8c726c33cbb22f3b1c726def8bef1df6137a3598fc7943b89954627abd5c2b';
 const ASSETS = ['factory/libredwg-web.js', 'factory/libredwg-web.wasm', 'factory/package.json', 'modified-source.tar.gz', 'COPYING', 'pins.json', 'mtext-background-scale.patch.json', 'README.md', 'patch-source.mjs', 'validate-fixture.mjs', 'write-provenance.mjs', 'patch-report.json', 'fixture-report.json', 'declaration-tools/package.json', 'declaration-tools/package-lock.json'];
 const APPEARANCE_ASSETS = [...ASSETS, 'validate-appearance-fixture.mjs', 'appearance-report.json'];
+const METADATA_ASSETS = [...APPEARANCE_ASSETS, 'validate-metadata-fixture.mjs', 'metadata-report.json'];
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const samePath = (a, b) => process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
 
@@ -30,9 +33,10 @@ async function regularFile(root, name, maxBytes) {
 
 /** All inputs are mandatory. Byte hashes establish consistency, not GitHub run authenticity. */
 export async function verifyNativeRuntime(directory, fixturePath, expectedPath, { repairPolicy = 'appearance-arrays' } = {}) {
-  assert.ok(['background', 'appearance-arrays'].includes(repairPolicy), 'Unknown native repair policy.');
-  const appearancePolicy = repairPolicy === 'appearance-arrays', assets = appearancePolicy ? APPEARANCE_ASSETS : ASSETS;
-  const checkedPatchHash = appearancePolicy ? APPEARANCE_PATCH_SHA256 : PATCH_SHA256;
+  assert.ok(['background', 'appearance-arrays', 'metadata-graph'].includes(repairPolicy), 'Unknown native repair policy.');
+  const metadataPolicy = repairPolicy === 'metadata-graph', appearancePolicy = repairPolicy !== 'background';
+  const assets = metadataPolicy ? METADATA_ASSETS : appearancePolicy ? APPEARANCE_ASSETS : ASSETS;
+  const checkedPatchHash = metadataPolicy ? METADATA_PATCH_SHA256 : appearancePolicy ? APPEARANCE_PATCH_SHA256 : PATCH_SHA256;
   assert.ok(directory && fixturePath && expectedPath, 'Native runtime, fixture and ground truth are required.');
   const root = await realpath(resolve(directory));
   const json = async (name) => JSON.parse((await regularFile(root, name, 512 * 1024)).toString('utf8'));
@@ -76,7 +80,8 @@ export async function verifyNativeRuntime(directory, fixturePath, expectedPath, 
   const submodules = [{ path: 'jsmn', repository: 'https://github.com/zserge/jsmn', commit: '85695f3d5903b1cd5b4030efe50db3b4f5f3c928' }];
   assert.deepEqual(pins.submodules, submodules); assert.deepEqual(provenance.submodules, submodules);
   const patch = await json('patch-report.json'); assert.deepEqual(patch.source, NATIVE_SOURCE); assert.equal(patch.patchSha256, checkedPatchHash);
-  assert.equal(patch.files?.length, appearancePolicy ? 11 : 6); assert.equal(provenance.patchedFiles?.length, appearancePolicy ? 11 : 6);
+  const fileCount = metadataPolicy ? 13 : appearancePolicy ? 11 : 6;
+  assert.equal(patch.files?.length, fileCount); assert.equal(provenance.patchedFiles?.length, fileCount);
   const checkedPatch = await json('mtext-background-scale.patch.json');
   assert.deepEqual(patch.files.map((file) => file.path).sort(), checkedPatch.files.map((file) => file.path).sort());
   for (const file of checkedPatch.files) {
@@ -152,13 +157,33 @@ export async function verifyNativeRuntime(directory, fixturePath, expectedPath, 
     }
     assert.deepEqual(provenance.validation?.appearanceCases, appearance.cases.map(({ kind, fixtureSha256, expectedSha256, nativeError }) => ({ kind, fixtureSha256, expectedSha256, nativeError })));
   }
+  let metadata;
+  if (metadataPolicy) {
+    assert.equal(pins.metadataFixture, 'tests/fixtures/interchange/r2018-views-fields.dwg');
+    assert.equal(pins.metadataExpected, 'tests/fixtures/interchange/r2018-views-fields.expected.json');
+    const sourceRoot = resolve(import.meta.dirname, '..');
+    const [fixture, expectedBytes] = await Promise.all([readFile(resolve(sourceRoot, pins.metadataFixture)), readFile(resolve(sourceRoot, pins.metadataExpected))]);
+    assert.ok(fixture.length > 0 && fixture.length <= 4 * 1024 * 1024 && expectedBytes.length <= 128 * 1024);
+    const wanted = JSON.parse(expectedBytes.toString('utf8'));
+    assert.equal(wanted.source?.dwgSha256, digest(fixture));
+    assert.match(wanted.source?.software || '', /AutoCAD/);
+    assert.deepEqual(wanted.source?.audit, { errors: 0, fixed: 0 });
+    metadata = await json('metadata-report.json');
+    assert.equal(metadata.factorySha256, report.factorySha256);
+    assert.equal(metadata.wasmSha256, report.wasmSha256);
+    assert.equal(metadata.fixtureSha256, digest(fixture));
+    assert.equal(metadata.expectedSha256, digest(Buffer.from(expectedBytes.toString('utf8').replace(/\r\n/g, '\n'))));
+    validateMetadataReport(metadata, wanted);
+    assert.deepEqual(provenance.validation?.metadata, { report: 'metadata-report.json', fixtureSha256: metadata.fixtureSha256, expectedSha256: metadata.expectedSha256,
+      nativeError: 0, writeError: 0, complete: true, recordCount: wanted.records.length, maxOutputBytes: metadata.maxOutputBytes, limitedOutputRejected: true });
+  }
   const memory = wasmMemoryLimits(bytes.get('factory/libredwg-web.wasm'));
   assert.deepEqual(memory, [{ origin: 'defined', flags: 1, minPages: 16384, maxPages: 65536, minBytes: 1073741824, maxBytes: 4294967296 }], 'Native memory policy differs from distributed baseline.');
-  return { directory: root, source: provenance.source, compiler: SDK.version, declarationCompiler: DECLARATION.version, workflow: provenance.workflow, factorySha256: report.factorySha256, wasmSha256: report.wasmSha256, memory: memory[0], masks: report.masks, repairPolicy, ...(appearance ? { appearance } : {}) };
+  return { directory: root, source: provenance.source, compiler: SDK.version, declarationCompiler: DECLARATION.version, workflow: provenance.workflow, factorySha256: report.factorySha256, wasmSha256: report.wasmSha256, memory: memory[0], masks: report.masks, repairPolicy, ...(appearance ? { appearance } : {}), ...(metadata ? { metadata } : {}) };
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const [directory, fixture, expected, option, policy] = process.argv.slice(2);
-  if (process.argv.length !== 5 && !(process.argv.length === 7 && option === '--policy')) throw new Error('Usage: vendor-native-runtime.mjs VENDOR_DIRECTORY DWG_FIXTURE EXPECTED_JSON [--policy appearance-arrays|background]');
+  if (process.argv.length !== 5 && !(process.argv.length === 7 && option === '--policy')) throw new Error('Usage: vendor-native-runtime.mjs VENDOR_DIRECTORY DWG_FIXTURE EXPECTED_JSON [--policy metadata-graph|appearance-arrays|background]');
   console.log(JSON.stringify(await verifyNativeRuntime(directory, fixture, expected, policy ? { repairPolicy: policy } : {}), null, 2));
 }

@@ -48,6 +48,89 @@
           "count": 1
         }
       ]
+    },
+    {
+      "path": "src/document.rs",
+      "beforeSha256": "a9c4a6a297346f9844dd967cd49982a638bd5aa706b754c4402c07f2bfc2e478",
+      "afterSha256": "db8c177b9c8897f0fbb7c4a4b4e7a400d2ad3051f75d58b49f1d540e85dafe2e",
+      "replacements": [
+        {
+          "before": "    /// Owner handle of a database object, for ownership-chain walks.",
+          "after": "    /// Ordered common reactor references for strict typed interchange verification.\r\n    /// FIELD/FIELDLIST keep these in the existing common-object side cache.\r\n    pub fn object_reactors(&self, handle: Handle) -> Vec<Handle> {\r\n        if let Some(entity) = self.get_entity(handle) {\r\n            return entity.common().reactors.clone();\r\n        }\r\n        let native = match self.objects.get(&handle) {\r\n            Some(ObjectType::Dictionary(value)) => Some(&value.reactors),\r\n            Some(ObjectType::Layout(value)) => Some(&value.reactors),\r\n            Some(ObjectType::XRecord(value)) => Some(&value.reactors),\r\n            Some(ObjectType::PlotSettings(value)) => Some(&value.reactors),\r\n            Some(ObjectType::VisualStyle(value)) => Some(&value.reactors),\r\n            Some(ObjectType::Material(value)) => Some(&value.reactors),\r\n            Some(ObjectType::ProxyObject(value)) => Some(&value.reactors),\r\n            _ => None,\r\n        };\r\n        if let Some(values) = native.filter(|values| !values.is_empty()) {\r\n            return values.clone();\r\n        }\r\n        self.reactors_by_handle.get(&handle).cloned().unwrap_or_default()\r\n    }\r\n\r\n    /// Owner handle of a database object, for ownership-chain walks.",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "path": "src/io/dxf/reader/section_reader.rs",
+      "beforeSha256": "bb6654d7282300e54ea568efda7824149037a6b33a01d4fd287d7c8a2c9ac45b",
+      "afterSha256": "2b315fc83f72305e615bdd38ed6cb138f8d7c2931cffba319f2e3ed6725ea0da",
+      "replacements": [
+        {
+          "before": "let obj = self.read_field_object_dxf(document.version)?;",
+          "after": "let obj = self.read_field_object_dxf(document)?;",
+          "count": 1
+        },
+        {
+          "before": "let obj = self.read_field_list_dxf()?;",
+          "after": "let obj = self.read_field_list_dxf(document)?;",
+          "count": 1
+        },
+        {
+          "before": "    fn read_field_object_dxf(&mut self, version: DxfVersion) -> Result<Field> {\r\n        let mut value = Field::default();\r\n        let mut entries = Vec::new();",
+          "after": "    fn read_field_object_dxf(&mut self, document: &mut CadDocument) -> Result<Field> {\r\n        let version = document.version;\r\n        let mut value = Field::default();\r\n        let mut entries = Vec::new();\r\n        let mut reactors = Vec::new();\r\n        let mut xdictionary_handle = None;",
+          "count": 1
+        },
+        {
+          "before": "                5 => value.handle = parse_dxf_handle(&pair.value_string),\r\n                330 if value.owner.is_null() => value.owner = parse_dxf_handle(&pair.value_string),\r\n                100 => {}",
+          "after": "                5 => value.handle = parse_dxf_handle(&pair.value_string),\r\n                102 => match pair.value_string.trim() {\r\n                    \"{ACAD_REACTORS\" => reactors = self.read_reactor_handles()?,\r\n                    \"{ACAD_XDICTIONARY\" => xdictionary_handle = self.read_xdictionary_handle()?,\r\n                    group if group.starts_with('{') => self.skip_defined_group()?,\r\n                    _ => {}\r\n                },\r\n                330 if value.owner.is_null() => value.owner = parse_dxf_handle(&pair.value_string),\r\n                100 => {}",
+          "count": 1
+        },
+        {
+          "before": "        let mut cursor = 0usize;\r\n        value.evaluator_id = field_next_code(&entries, &mut cursor, 1)",
+          "after": "        if !reactors.is_empty() {\r\n            document.reactors_by_handle.insert(value.handle, reactors);\r\n        }\r\n        if let Some(handle) = xdictionary_handle {\r\n            document.xdic_by_handle.insert(value.handle, handle);\r\n        }\r\n        let mut cursor = 0usize;\r\n        value.evaluator_id = field_next_code(&entries, &mut cursor, 1)",
+          "count": 1
+        },
+        {
+          "before": "    fn read_field_list_dxf(&mut self) -> Result<FieldList> {\r\n        let mut value = FieldList::default();\r\n        let mut count = 0usize;",
+          "after": "    fn read_field_list_dxf(&mut self, document: &mut CadDocument) -> Result<FieldList> {\r\n        let mut value = FieldList::default();\r\n        let mut count = 0usize;\r\n        let mut reactors = Vec::new();\r\n        let mut xdictionary_handle = None;",
+          "count": 1
+        },
+        {
+          "before": "                5 => value.handle = parse_dxf_handle(&pair.value_string),\r\n                330 if value.owner.is_null() => value.owner = parse_dxf_handle(&pair.value_string),\r\n                90 => count = pair.value_string.trim().parse::<usize>().unwrap_or(0).min(20_000),",
+          "after": "                5 => value.handle = parse_dxf_handle(&pair.value_string),\r\n                102 => match pair.value_string.trim() {\r\n                    \"{ACAD_REACTORS\" => reactors = self.read_reactor_handles()?,\r\n                    \"{ACAD_XDICTIONARY\" => xdictionary_handle = self.read_xdictionary_handle()?,\r\n                    group if group.starts_with('{') => self.skip_defined_group()?,\r\n                    _ => {}\r\n                },\r\n                330 if value.owner.is_null() => value.owner = parse_dxf_handle(&pair.value_string),\r\n                90 => count = pair.value_string.trim().parse::<usize>().unwrap_or(0).min(20_000),",
+          "count": 1
+        },
+        {
+          "before": "        Ok(value)\r\n    }\r\n\r\n    /// Read an unknown object, capturing handle, owner and all group-code pairs",
+          "after": "        if !reactors.is_empty() {\r\n            document.reactors_by_handle.insert(value.handle, reactors);\r\n        }\r\n        if let Some(handle) = xdictionary_handle {\r\n            document.xdic_by_handle.insert(value.handle, handle);\r\n        }\r\n        Ok(value)\r\n    }\r\n\r\n    /// Read an unknown object, capturing handle, owner and all group-code pairs",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "path": "src/io/dwg/dwg_stream_readers/object_reader/tables.rs",
+      "beforeSha256": "d4470deb0659c31ac285d36c72a5bcc06ff6c25928515c3082d99504d789bad6",
+      "afterSha256": "7e7a1578c1096d9ac37e2aea226c3d3058db881c049623e08681b8f9198b6128",
+      "replacements": [
+        {
+          "before": "    let front_clip_z = reader.read_bit();",
+          "after": "    // ODA 5.4.1 VIEW: fourth packed bit is front-clip-Z, opposite DXF 71 bit 16.\r\n    // The builder stores this value as View::front_clip_at_eye.\r\n    let front_clip_z = !reader.read_bit();",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "path": "src/io/dwg/dwg_stream_writers/object_writer/mod.rs",
+      "beforeSha256": "a0cd00ba6c0552e8caecff602f0cc58e04b97405021ea696bff1ac926253bcca",
+      "afterSha256": "77e25d687ce2c6c33f83a3b979627f40c6314db00f921989e0509a66fa2802c2",
+      "replacements": [
+        {
+          "before": "        self.writer.write_bit(view.front_clip_at_eye);",
+          "after": "        // ODA 5.4.1 VIEW front-clip-Z is the opposite of DXF 71 front-clip-at-eye.\r\n        self.writer.write_bit(!view.front_clip_at_eye);",
+          "count": 1
+        }
+      ]
     }
   ]
 }

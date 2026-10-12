@@ -40,6 +40,9 @@ describe('native WASM declaration inspection', () => {
       await expect(verifyNativeRuntime(candidate, fixture, expected, { repairPolicy: 'appearance-arrays' })).rejects.toThrow(/asset contract mismatch/);
     } finally { rmSync(candidate, { recursive: true, force: true }); }
   });
+  it('cannot accept the old appearance runtime as a metadata graph candidate', async () => {
+    await expect(verifyNativeRuntime(join(root, 'vendor/libredwg-web-bg'), fixture, expected, { repairPolicy: 'metadata-graph' })).rejects.toThrow(/asset contract mismatch/);
+  });
 });
 
 type Mask = { type: string; text?: string; background?: { flags: number; scale: number; color: number | string; trueColor?: number; colorName?: string } };

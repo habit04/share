@@ -3,13 +3,14 @@ mod spline_packet;
 mod validation;
 mod windows_job;
 
-use acadrust::objects::ObjectType;
-use acadrust::tables::Layer;
+use acadrust::objects::{ObjectType, ProxyReferenceKind, XRecordValue, XRecordValueType};
+use acadrust::tables::{Layer, TableEntry};
+use acadrust::types::Handle;
 use acadrust::{CadDocument, DwgReader, DwgWriter, DxfReader, DxfVersion};
 use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Read, Write};
 
@@ -213,6 +214,14 @@ fn normalize(value: &mut Value) {
 fn equivalent(before: &Value, after: &Value, location: &str) -> Result<(), String> {
     match (before, after) {
         (Value::Number(a), Value::Number(b)) => {
+            // Integer payloads (especially XRECORD int64) must never pass through f64.
+            // Adjacent values beyond 2^53 otherwise become indistinguishable.
+            if (a.is_i64() || a.is_u64()) && (b.is_i64() || b.is_u64()) {
+                if a != b {
+                    return Err(format!("DWG reopening changed {location}."));
+                }
+                return Ok(());
+            }
             let a = a.as_f64().ok_or("Invalid source geometry number.")?;
             let b = b.as_f64().ok_or("Invalid reopened geometry number.")?;
             if !a.is_finite()
@@ -295,6 +304,396 @@ fn canonicalize_names(value: &mut Value, aliases: &BTreeMap<String, String>) {
     }
 }
 
+/// Only these metadata classes have a complete typed DXF-to-DWG representation
+/// in the bounded interchange contract. Unknown records are never certified by
+/// stripping their raw fields or treating their handles as harmless storage.
+fn retained_metadata(object: &ObjectType) -> bool {
+    matches!(
+        object,
+        ObjectType::Dictionary(_)
+            | ObjectType::DictionaryWithDefault(_)
+            | ObjectType::Field(_)
+            | ObjectType::FieldList(_)
+            | ObjectType::XRecord(_)
+    )
+}
+
+fn add_alias(
+    aliases: &mut BTreeMap<u64, String>,
+    handle: Handle,
+    identity: String,
+) -> Result<(), String> {
+    if handle.is_null() {
+        return Ok(());
+    }
+    if let Some(previous) = aliases.get(&handle.value()) {
+        if previous != &identity {
+            return Err("Drawing metadata contains conflicting native identities.".into());
+        }
+    } else {
+        aliases.insert(handle.value(), identity);
+    }
+    Ok(())
+}
+
+/// Symbol names/control roles are stable when storage handles are regenerated.
+/// Entities retain the identities already required by the geometry guard;
+/// objects reachable through dictionary keys/field-child indexes use those paths.
+fn metadata_aliases(doc: &CadDocument) -> Result<BTreeMap<u64, String>, String> {
+    let mut aliases = BTreeMap::new();
+    let anonymous = anonymous_names(doc);
+    macro_rules! table {
+        ($name:ident) => {
+            add_alias(
+                &mut aliases,
+                doc.$name.handle(),
+                concat!("table:", stringify!($name)).into(),
+            )?;
+            for entry in doc.$name.iter() {
+                let name = if stringify!($name) == "block_records" {
+                    anonymous
+                        .get(entry.name())
+                        .cloned()
+                        .unwrap_or_else(|| entry.name().to_owned())
+                } else {
+                    entry.name().to_owned()
+                };
+                add_alias(
+                    &mut aliases,
+                    entry.handle(),
+                    format!("{}:{name:?}", stringify!($name)),
+                )?;
+            }
+        };
+    }
+    table!(layers);
+    table!(line_types);
+    table!(text_styles);
+    table!(block_records);
+    table!(dim_styles);
+    table!(app_ids);
+    table!(views);
+    table!(vports);
+    table!(ucss);
+    table!(vx_table);
+    for entity in doc.entities() {
+        add_alias(
+            &mut aliases,
+            entity.common().handle,
+            format!("entity:{:X}", entity.common().handle.value()),
+        )?;
+    }
+    add_alias(
+        &mut aliases,
+        doc.header.named_objects_dict_handle,
+        "named-objects".into(),
+    )?;
+    let mut queue = aliases
+        .iter()
+        .map(|(handle, identity)| (identity.clone(), *handle))
+        .collect::<BTreeSet<_>>();
+    let mut visited = BTreeSet::new();
+    while let Some((identity, handle)) = queue.pop_first() {
+        if !visited.insert(handle) {
+            continue;
+        }
+        let native_handle = Handle::new(handle);
+        let mut children = Vec::new();
+        if let Some(extension) = doc.extension_dictionary_handle(native_handle) {
+            children.push((extension, format!("{identity}/extension")));
+        }
+        match doc.objects.get(&native_handle) {
+            Some(ObjectType::Dictionary(value)) => {
+                for (key, target) in &value.entries {
+                    children.push((*target, format!("{identity}/key:{key:?}")));
+                }
+            }
+            Some(ObjectType::DictionaryWithDefault(value)) => {
+                for (key, target) in &value.entries {
+                    children.push((*target, format!("{identity}/key:{key:?}")));
+                }
+            }
+            Some(ObjectType::Field(value)) => {
+                for (index, target) in value.child_fields.iter().enumerate() {
+                    children.push((*target, format!("{identity}/child:{index}")));
+                }
+            }
+            _ => {}
+        }
+        for (target, path) in children {
+            // A shared pointer does not create a new object identity. Its edge is
+            // still compared below; the first reachable stable path is canonical.
+            if target.is_null() || aliases.contains_key(&target.value()) {
+                continue;
+            }
+            if !doc.objects.contains_key(&target) {
+                return Err("Drawing metadata contains a missing owned object.".into());
+            }
+            aliases.insert(target.value(), path.clone());
+            queue.insert((path, target.value()));
+        }
+    }
+    for handle in doc.objects.keys() {
+        aliases
+            .entry(handle.value())
+            .or_insert_with(|| format!("object:{:X}", handle.value()));
+    }
+    Ok(aliases)
+}
+
+fn canonical_handle(value: &mut Value, aliases: &BTreeMap<u64, String>) -> Result<(), String> {
+    if value.is_null() {
+        return Ok(());
+    }
+    let handle = value.as_u64().ok_or("Invalid typed metadata handle.")?;
+    *value = if handle == 0 {
+        Value::Null
+    } else {
+        Value::String(
+            aliases
+                .get(&handle)
+                .ok_or("Drawing metadata contains an unresolved reference.")?
+                .clone(),
+        )
+    };
+    Ok(())
+}
+
+/// Handle-bearing fields are explicit. Literal strings, binary bytes and numeric
+/// values are not searched or rewritten as possible handles.
+fn canonicalize_metadata(value: &mut Value, aliases: &BTreeMap<u64, String>) -> Result<(), String> {
+    match value {
+        Value::Object(fields) => {
+            for (key, child) in fields {
+                if matches!(key.as_str(), "handle" | "owner" | "Handle" | "handle_value")
+                    || key.ends_with("_handle")
+                {
+                    canonical_handle(child, aliases)?;
+                } else if matches!(
+                    key.as_str(),
+                    "reactors" | "child_fields" | "referenced_objects" | "fields"
+                ) {
+                    for handle in child
+                        .as_array_mut()
+                        .ok_or("Invalid typed metadata reference list.")?
+                    {
+                        canonical_handle(handle, aliases)?;
+                    }
+                } else if key == "entries"
+                    && child.as_array().is_some_and(|entries| {
+                        entries.first().is_some_and(|entry| entry.is_array())
+                    })
+                {
+                    for entry in child.as_array_mut().unwrap() {
+                        let pair = entry.as_array_mut().ok_or("Invalid dictionary entry.")?;
+                        if pair.len() != 2 || !pair[0].is_string() {
+                            return Err("Invalid dictionary entry.".into());
+                        }
+                        canonical_handle(&mut pair[1], aliases)?;
+                    }
+                } else {
+                    canonicalize_metadata(child, aliases)?;
+                }
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                canonicalize_metadata(child, aliases)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn checked_xrecord(object: &acadrust::objects::XRecord) -> Result<(), String> {
+    if !object.entries_complete {
+        return Err("XRECORD has an incomplete typed payload. Save a DXF copy instead.".into());
+    }
+    let mut references = Vec::new();
+    for entry in &object.entries {
+        let coherent = matches!(
+            (entry.value_type(), &entry.value),
+            (XRecordValueType::String, XRecordValue::String(_))
+                | (XRecordValueType::Point3D, XRecordValue::Point3D(_, _, _))
+                | (XRecordValueType::Double, XRecordValue::Double(_))
+                | (XRecordValueType::Byte, XRecordValue::Byte(_))
+                | (XRecordValueType::Int16, XRecordValue::Int16(_))
+                | (XRecordValueType::Int32, XRecordValue::Int32(_))
+                | (XRecordValueType::Int64, XRecordValue::Int64(_))
+                | (
+                    XRecordValueType::Handle | XRecordValueType::ObjectId,
+                    XRecordValue::Handle(_)
+                )
+                | (XRecordValueType::Bool, XRecordValue::Bool(_))
+                | (XRecordValueType::Chunk, XRecordValue::Chunk(_))
+        );
+        if !coherent || entry.code <= 0 || matches!(entry.code, 5 | 105) || entry.code > 1071 {
+            return Err(
+                "XRECORD has an unsupported group-code/value schema. Save a DXF copy instead."
+                    .into(),
+            );
+        }
+        if (330..=369).contains(&entry.code) {
+            let XRecordValue::Handle(handle) = &entry.value else {
+                unreachable!()
+            };
+            let kind = match entry.code {
+                330..=339 => ProxyReferenceKind::SoftPointer,
+                340..=349 => ProxyReferenceKind::HardPointer,
+                350..=359 => ProxyReferenceKind::SoftOwnership,
+                _ => ProxyReferenceKind::HardOwnership,
+            };
+            references.push((*handle, kind));
+        }
+    }
+    if references.len() != object.object_references.len()
+        || references
+            .iter()
+            .zip(&object.object_references)
+            .any(|((handle, kind), reference)| {
+                *handle != reference.handle || *kind != reference.kind
+            })
+    {
+        return Err(
+            "XRECORD has an incoherent ordered reference stream. Save a DXF copy instead.".into(),
+        );
+    }
+    Ok(())
+}
+
+fn typed_metadata_value(object: &ObjectType) -> Result<Value, String> {
+    if let ObjectType::XRecord(value) = object {
+        checked_xrecord(value)?;
+    }
+    let mut value =
+        serde_json::to_value(object).map_err(|_| "Cannot verify typed metadata fields.")?;
+    if let Some(fields) = value.get_mut("XRecord").and_then(Value::as_object_mut) {
+        // These fields describe binary storage, not decoded XRECORD values or
+        // reference kinds. Completeness and all typed entries remain mandatory.
+        for key in [
+            "raw_data",
+            "raw_dwg_handle_bits",
+            "preserve_object_reference_stream",
+        ] {
+            fields.remove(key);
+        }
+    }
+    Ok(value)
+}
+
+fn checked_metadata_object(doc: &CadDocument, object: &ObjectType) -> Result<(), String> {
+    let entries = match object {
+        ObjectType::Dictionary(value) => Some(&value.entries),
+        ObjectType::DictionaryWithDefault(value) => Some(&value.entries),
+        ObjectType::Field(value) => {
+            for child in &value.child_fields {
+                if !matches!(doc.objects.get(child), Some(ObjectType::Field(_)))
+                    || doc.object_owner(*child) != Some(value.handle)
+                {
+                    return Err(
+                        "FIELD child has a missing identity, wrong class or changed ownership."
+                            .into(),
+                    );
+                }
+            }
+            None
+        }
+        ObjectType::FieldList(value) => {
+            if value
+                .fields
+                .iter()
+                .any(|handle| !matches!(doc.objects.get(handle), Some(ObjectType::Field(_))))
+            {
+                return Err("FIELDLIST references a missing or non-FIELD object.".into());
+            }
+            None
+        }
+        _ => None,
+    };
+    if let Some(entries) = entries {
+        let mut keys = BTreeSet::new();
+        if entries
+            .iter()
+            .any(|(key, _)| key.is_empty() || !keys.insert(key.to_uppercase()))
+        {
+            return Err("Dictionary metadata contains empty or duplicate keys.".into());
+        }
+    }
+    Ok(())
+}
+
+fn metadata_snapshot(doc: &CadDocument) -> Result<Value, String> {
+    let aliases = metadata_aliases(doc)?;
+    let mut graph = BTreeMap::new();
+    for (handle, object) in &doc.objects {
+        if matches!(object, ObjectType::Unknown { .. }) {
+            return Err(
+                "Unknown native object cannot be verified for DWG export. Save a DXF copy instead."
+                    .into(),
+            );
+        }
+        if !retained_metadata(object) {
+            continue;
+        }
+        checked_metadata_object(doc, object)?;
+        let mut value = typed_metadata_value(object)?;
+        canonicalize_metadata(&mut value, &aliases)?;
+        if graph
+            .insert(aliases[&handle.value()].clone(), value)
+            .is_some()
+        {
+            return Err("Drawing metadata contains duplicate canonical identities.".into());
+        }
+    }
+    let mut views = BTreeMap::new();
+    for view in doc.views.iter() {
+        let mut value =
+            serde_json::to_value(view).map_err(|_| "Cannot verify named VIEW fields.")?;
+        canonicalize_metadata(&mut value, &aliases)?;
+        views.insert(view.name.clone(), value);
+    }
+    let mut common = BTreeMap::new();
+    for (handle, identity) in &aliases {
+        let handle = Handle::new(*handle);
+        let reactors = doc.object_reactors(handle);
+        let extension = doc.extension_dictionary_handle(handle);
+        if !reactors.is_empty() || extension.is_some() {
+            let mut value =
+                serde_json::json!({ "reactors": reactors, "xdictionary_handle": extension });
+            canonicalize_metadata(&mut value, &aliases)?;
+            common.insert(identity.clone(), value);
+        }
+    }
+    let mut xdata = BTreeMap::new();
+    for entity in doc.entities() {
+        let records = &entity.common().extended_data;
+        if records.records().is_empty() {
+            continue;
+        }
+        let mut value = serde_json::to_value(records).map_err(|_| "Cannot verify entity XDATA.")?;
+        canonicalize_metadata(&mut value, &aliases)?;
+        xdata.insert(aliases[&entity.common().handle.value()].clone(), value);
+    }
+    for (handle, records) in &doc.object_xdata {
+        if records.records().is_empty() {
+            continue;
+        }
+        let mut value =
+            serde_json::to_value(records).map_err(|_| "Cannot verify metadata XDATA.")?;
+        canonicalize_metadata(&mut value, &aliases)?;
+        let identity = aliases
+            .get(&handle.value())
+            .ok_or("XDATA source identity is unresolved.")?
+            .clone();
+        if let Some(entity_value) = xdata.get(&identity) {
+            equivalent(entity_value, &value, "duplicate XDATA source")?;
+        }
+        xdata.insert(identity, value);
+    }
+    Ok(serde_json::json!({ "views": views, "objects": graph, "common": common, "xdata": xdata }))
+}
+
 fn verify_reopening(before: &CadDocument, after: &CadDocument) -> Result<(), String> {
     if after.version != DxfVersion::AC1032
         || counts(before) != counts(after)
@@ -302,6 +701,11 @@ fn verify_reopening(before: &CadDocument, after: &CadDocument) -> Result<(), Str
     {
         return Err("DWG reopening changed the drawing version or entity counts.".into());
     }
+    equivalent(
+        &metadata_snapshot(before)?,
+        &metadata_snapshot(after)?,
+        "metadata graph",
+    )?;
     let source_names = anonymous_names(before);
     let reopened_names = anonymous_names(after);
     for entity in before.entities() {
@@ -446,6 +850,8 @@ fn convert() -> Result<Report, String> {
     }
     spline_packet::prepare(&mut document)?;
     document.version = DxfVersion::AC1032;
+    // Refuse incomplete/unsupported native graph values before creating any output.
+    metadata_snapshot(&document)?;
     let file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -638,9 +1044,18 @@ mod tests {
         normalize(&mut source);
         for (field, changed) in [
             ("twist_angle", serde_json::json!(0.0)),
-            ("view_center", serde_json::json!({"x": 120.0, "y": 190.0, "z": 0.0})),
-            ("view_target", serde_json::json!({"x": 1.0, "y": 0.0, "z": 0.0})),
-            ("view_direction", serde_json::json!({"x": 0.0, "y": 0.0, "z": -1.0})),
+            (
+                "view_center",
+                serde_json::json!({"x": 120.0, "y": 190.0, "z": 0.0}),
+            ),
+            (
+                "view_target",
+                serde_json::json!({"x": 1.0, "y": 0.0, "z": 0.0}),
+            ),
+            (
+                "view_direction",
+                serde_json::json!({"x": 0.0, "y": 0.0, "z": -1.0}),
+            ),
         ] {
             let mut result = source.clone();
             result[field] = changed;
@@ -648,6 +1063,331 @@ mod tests {
             assert!(equivalent(&source, &result, "viewport").is_err());
         }
         assert!(equivalent(&source, &source.clone(), "viewport").is_ok());
+    }
+    fn metadata_document(offset: u64) -> CadDocument {
+        use acadrust::objects::{Dictionary, Field, FieldList, XRecord, XRecordEntry};
+        let mut doc = CadDocument::new();
+        doc.version = DxfVersion::AC1032;
+        let root = Handle::new(offset + 0x200);
+        let parent = Handle::new(offset + 0x201);
+        let first = Handle::new(offset + 0x202);
+        let second = Handle::new(offset + 0x203);
+        let list = Handle::new(offset + 0x204);
+        let record = Handle::new(offset + 0x205);
+        doc.header.named_objects_dict_handle = root;
+        let mut dictionary = Dictionary::new();
+        dictionary.handle = root;
+        dictionary.add_entry("FIELD", parent);
+        dictionary.add_entry("FIELDLIST", list);
+        dictionary.add_entry("PAYLOAD", record);
+        dictionary.set_entry_hard_owner("FIELD", true);
+        doc.objects.insert(root, ObjectType::Dictionary(dictionary));
+        doc.objects.insert(
+            parent,
+            ObjectType::Field(Field {
+                handle: parent,
+                owner: root,
+                code: " %<\\_FldIdx 0>% + %<\\_FldIdx 1>% Δ ".into(),
+                evaluator_id: "_text".into(),
+                child_fields: vec![first, second],
+                referenced_objects: vec![record],
+                ..Field::default()
+            }),
+        );
+        for (handle, code) in [(first, "FIRST"), (second, "SECOND")] {
+            doc.objects.insert(
+                handle,
+                ObjectType::Field(Field {
+                    handle,
+                    owner: parent,
+                    code: code.into(),
+                    evaluator_id: "AcExpr".into(),
+                    ..Field::default()
+                }),
+            );
+        }
+        doc.objects.insert(
+            list,
+            ObjectType::FieldList(FieldList {
+                handle: list,
+                owner: root,
+                fields: vec![parent, first, second],
+                ..FieldList::default()
+            }),
+        );
+        let mut payload = XRecord::named("PAYLOAD");
+        payload.handle = record;
+        payload.owner = root;
+        payload.add_entry(XRecordEntry::new(
+            160,
+            XRecordValue::Int64(9_007_199_254_740_993),
+        ));
+        payload.add_entry(XRecordEntry::new(
+            310,
+            XRecordValue::Chunk(vec![0, 1, 127, 128, 255]),
+        ));
+        payload.add_string(1, "Payload 201 is literal text Δ 雷");
+        payload.add_handle(330, first);
+        payload.add_handle(340, second);
+        doc.objects.insert(record, ObjectType::XRecord(payload));
+        let mut view = acadrust::tables::View::new("FUTURE_3D");
+        view.handle = Handle::new(offset + 0x206);
+        view.direction = acadrust::types::Vector3::new(1.0, 2.0, 3.0);
+        view.target = acadrust::types::Vector3::new(100.0, 200.0, 12.0);
+        view.twist_angle = std::f64::consts::FRAC_PI_6;
+        view.ucs_associated = true;
+        view.ucs_origin = acadrust::types::Vector3::new(3.0, 4.0, 5.0);
+        doc.views.add(view).unwrap();
+        doc
+    }
+
+    #[test]
+    fn metadata_graph_accepts_handle_aliases_without_rewriting_literals_or_binary_values() {
+        let source = metadata_document(0);
+        let remapped = metadata_document(0x1000);
+        assert!(equivalent(
+            &metadata_snapshot(&source).unwrap(),
+            &metadata_snapshot(&remapped).unwrap(),
+            "metadata"
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn metadata_graph_rejects_changed_field_order_kinds_ownership_and_values() {
+        let source = metadata_document(0);
+        let snapshot = metadata_snapshot(&source).unwrap();
+        for change in [
+            "child-order",
+            "list-order",
+            "ownership",
+            "dictionary-kind",
+            "expression",
+            "int64",
+            "binary",
+            "reference-kind",
+        ] {
+            let mut result = source.clone();
+            match change {
+                "child-order" => {
+                    if let ObjectType::Field(value) =
+                        result.objects.get_mut(&Handle::new(0x201)).unwrap()
+                    {
+                        value.child_fields.reverse();
+                    }
+                }
+                "list-order" => {
+                    if let ObjectType::FieldList(value) =
+                        result.objects.get_mut(&Handle::new(0x204)).unwrap()
+                    {
+                        value.fields.reverse();
+                    }
+                }
+                "ownership" => {
+                    if let ObjectType::Field(value) =
+                        result.objects.get_mut(&Handle::new(0x202)).unwrap()
+                    {
+                        value.owner = Handle::new(0x200);
+                    }
+                }
+                "dictionary-kind" => {
+                    if let ObjectType::Dictionary(value) =
+                        result.objects.get_mut(&Handle::new(0x200)).unwrap()
+                    {
+                        value.hard_owner_entries.clear();
+                    }
+                }
+                "expression" => {
+                    if let ObjectType::Field(value) =
+                        result.objects.get_mut(&Handle::new(0x201)).unwrap()
+                    {
+                        value.code = value.code.trim().into();
+                    }
+                }
+                "int64" => {
+                    if let ObjectType::XRecord(value) =
+                        result.objects.get_mut(&Handle::new(0x205)).unwrap()
+                    {
+                        value.entries[0].value = XRecordValue::Int64(9_007_199_254_740_994);
+                    }
+                }
+                "binary" => {
+                    if let ObjectType::XRecord(value) =
+                        result.objects.get_mut(&Handle::new(0x205)).unwrap()
+                    {
+                        value.entries[1].value = XRecordValue::Chunk(vec![0, 1, 127, 128, 254]);
+                    }
+                }
+                "reference-kind" => {
+                    if let ObjectType::XRecord(value) =
+                        result.objects.get_mut(&Handle::new(0x205)).unwrap()
+                    {
+                        value.object_references[0].kind = ProxyReferenceKind::HardPointer;
+                    }
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                metadata_snapshot(&result)
+                    .and_then(|result| equivalent(&snapshot, &result, "metadata"))
+                    .is_err(),
+                "{change}"
+            );
+        }
+    }
+
+    #[test]
+    fn metadata_graph_keeps_all_named_view_dimensions_and_camera_fields() {
+        let source = metadata_document(0);
+        let snapshot = metadata_snapshot(&source).unwrap();
+        for change in [
+            "target-z",
+            "direction-z",
+            "ucs-z",
+            "twist",
+            "lens",
+            "perspective",
+            "front-clip-eye",
+        ] {
+            let mut result = source.clone();
+            let view = result.views.get_mut("FUTURE_3D").unwrap();
+            match change {
+                "target-z" => view.target.z = 0.0,
+                "direction-z" => view.direction.z = 0.0,
+                "ucs-z" => view.ucs_origin.z = 0.0,
+                "twist" => view.twist_angle = 0.0,
+                "lens" => view.lens_length = 25.0,
+                "perspective" => view.perspective = true,
+                "front-clip-eye" => view.front_clip_at_eye = true,
+                _ => unreachable!(),
+            }
+            assert!(
+                equivalent(&snapshot, &metadata_snapshot(&result).unwrap(), "metadata").is_err(),
+                "{change}"
+            );
+        }
+    }
+
+    #[test]
+    fn metadata_graph_refuses_incomplete_incoherent_and_missing_objects() {
+        for change in [
+            "incomplete",
+            "schema",
+            "reference-count",
+            "missing-child",
+            "duplicate-key",
+            "unknown",
+        ] {
+            let mut source = metadata_document(0);
+            match change {
+                "incomplete" => {
+                    if let ObjectType::XRecord(value) =
+                        source.objects.get_mut(&Handle::new(0x205)).unwrap()
+                    {
+                        value.entries_complete = false;
+                    }
+                }
+                "schema" => {
+                    if let ObjectType::XRecord(value) =
+                        source.objects.get_mut(&Handle::new(0x205)).unwrap()
+                    {
+                        value.entries[0].value = XRecordValue::Double(1.0);
+                    }
+                }
+                "reference-count" => {
+                    if let ObjectType::XRecord(value) =
+                        source.objects.get_mut(&Handle::new(0x205)).unwrap()
+                    {
+                        value.object_references.pop();
+                    }
+                }
+                "missing-child" => {
+                    source.objects.remove(&Handle::new(0x202));
+                }
+                "duplicate-key" => {
+                    if let ObjectType::Dictionary(value) =
+                        source.objects.get_mut(&Handle::new(0x200)).unwrap()
+                    {
+                        value.add_entry("field", Handle::new(0x204));
+                    }
+                }
+                "unknown" => {
+                    source.objects.insert(
+                        Handle::new(0x299),
+                        ObjectType::Unknown {
+                            type_name: "PRIVATE_UNSUPPORTED".into(),
+                            handle: Handle::new(0x299),
+                            owner: Handle::new(0x200),
+                            raw_dxf_codes: None,
+                            raw_dwg_data: None,
+                            raw_dwg_handle_bits: 0,
+                            raw_dwg_version: None,
+                        },
+                    );
+                }
+                _ => unreachable!(),
+            }
+            assert!(metadata_snapshot(&source).is_err(), "{change}");
+        }
+    }
+
+    #[test]
+    fn field_dxf_common_groups_keep_reactors_separate_from_owner_and_field_list_contents() {
+        let text = "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1032\n0\nENDSEC\n0\nSECTION\n2\nOBJECTS\n0\nFIELD\n5\n200\n102\n{ACAD_REACTORS\n330\nA1\n330\nA2\n102\n}\n102\n{ACAD_XDICTIONARY\n360\nF0\n102\n}\n330\nC\n100\nAcDbField\n1\nAcExpr\n2\n Δ expression \n90\n0\n97\n0\n0\nFIELDLIST\n5\n201\n102\n{ACAD_REACTORS\n330\nA3\n102\n}\n102\n{ACAD_XDICTIONARY\n360\nF1\n102\n}\n330\nC\n100\nAcDbIdSet\n90\n1\n330\n200\n100\nAcDbFieldList\n0\nENDSEC\n0\nEOF\n";
+        let source = DxfReader::from_reader(std::io::Cursor::new(text.as_bytes()))
+            .unwrap()
+            .read()
+            .unwrap();
+        assert_eq!(
+            source.object_owner(Handle::new(0x200)),
+            Some(Handle::new(0xC))
+        );
+        assert_eq!(
+            source.object_reactors(Handle::new(0x200)),
+            vec![Handle::new(0xA1), Handle::new(0xA2)]
+        );
+        assert_eq!(
+            source.extension_dictionary_handle(Handle::new(0x200)),
+            Some(Handle::new(0xF0))
+        );
+        assert_eq!(
+            source.object_owner(Handle::new(0x201)),
+            Some(Handle::new(0xC))
+        );
+        assert_eq!(
+            source.object_reactors(Handle::new(0x201)),
+            vec![Handle::new(0xA3)]
+        );
+        assert_eq!(
+            source.extension_dictionary_handle(Handle::new(0x201)),
+            Some(Handle::new(0xF1))
+        );
+        let ObjectType::FieldList(list) = &source.objects[&Handle::new(0x201)] else {
+            panic!("Missing FIELDLIST")
+        };
+        assert_eq!(list.fields, vec![Handle::new(0x200)]);
+    }
+
+    #[test]
+    fn integer_semantic_comparison_is_exact_beyond_f64_precision() {
+        assert!(equivalent(
+            &serde_json::json!(9_007_199_254_740_993_i64),
+            &serde_json::json!(9_007_199_254_740_994_i64),
+            "int64"
+        )
+        .is_err());
+        assert!(equivalent(
+            &serde_json::json!(i64::MIN),
+            &serde_json::json!(i64::MIN + 1),
+            "int64"
+        )
+        .is_err());
+        assert!(equivalent(
+            &serde_json::json!(i64::MAX),
+            &serde_json::json!(i64::MAX - 1),
+            "int64"
+        )
+        .is_err());
     }
     #[cfg(windows)]
     #[test]

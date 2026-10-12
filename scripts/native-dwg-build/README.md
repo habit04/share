@@ -1,4 +1,4 @@
-# Controlled native MTEXT background repair
+# Controlled native DWG decoder and metadata repair
 
 This workflow builds a candidate runtime. It does not change `node_modules`, acquire credentials,
 sign an installer, create a release, or publish anything. Integration into JCad is a separate step.
@@ -44,6 +44,59 @@ arbitrary dependency version. `patch-source.mjs` verifies the source HEAD, pinne
 package build scripts/license Git blobs, every complete file preimage, and exact replacement
 counts before writing. It rejects reapplication or drift and records original/modified SHA256
 digests. The field types are checked again after autogen and after compilation.
+
+## Bounded metadata projection
+
+The candidate adds `jcad_dwg_export_metadata` around the already decoded drawing.
+It copies a source inventory of canonical hexadecimal handles, native/DXF type
+names and entity/object classifications, then writes the native DXF projection
+into one owned fixed-size memory stream. No output path or native pointer is
+returned. The output limit is 32 MiB and the inventory limit is 100000 objects;
+an exhausted stream returns an error and no partial DXF. Application import also
+has record, string and total payload limits. A trapped native projection discards
+the module while retaining geometry already copied by the fallback converter.
+
+The native `complete` result is only a precondition. LibreDWG can skip classes
+without propagating every error to its top-level writer. The application must
+reconcile every source identity against projected records and report unsupported
+objects, omitted references and decoder/write errors. Candidate Windows geometry
+conversion bypasses the old borrowed EED and XRECORD getters: the complete C DXF
+projection supplies typed metadata, including binary and int64 values, instead.
+The old accepted runtime and its appearance policy remain separate until this
+candidate passes the new `metadata-graph` acceptance policy.
+
+The independent `r2018-views-fields` fixture is authored by the checked-in
+AutoCAD 2027 .NET oracle and has native AUDIT errors/fixes of 0/0. Its expected
+records come directly from AutoCAD DXFOUT, never from JCad output. It exercises
+three named views, full 3D direction/target and camera fields, a real nested FIELD
+expression and cached values, FIELDLIST and extension/application dictionaries,
+binary XRECORD data, exact int64 `9007199254740993`, and ordered hard/soft references.
+The compiled gate requires zero decoder and projection errors and compares the
+actual projected groups and inventory identities with these independent records.
+It also proves a 128-byte output cap rejects the projection before a normal read.
+
+The fixture exposed three pinned native defects addressed by checked preimages:
+
+- AcValue flag bit 0 controls whether its typed body is present; bit 1 does not
+  suppress the body. String values use a byte count and main-stream UTF-16 data
+  for R2007+, rather than a separate T string-stream field. The decoder bounds
+  the allocation to 1 MiB and validates UTF-16 length and its terminator.
+  FIELD DXF output places child values before the main value and emits its
+  `ACFD_FIELD_VALUE` / `ACVALUE_END` markers. See ODA FIELD (printed page 200)
+  and AcValue section 20.4.99 (printed page 241).
+  The native free traversal uses the same body flag guard so these newly
+  decoded strings/buffers are released; the native encoder retains its path.
+- VIEW's stream flags are mapped into DXF masks 1/2/4, with the fourth stream bit
+  opposite to DXF's front-clip-at-eye bit 16 (ODA VIEW, printed page 174).
+  This remapping is decoder-only; pre-R13 and other native projections retain
+  their existing behavior.
+- DXF groups 160–169 use `PRId64`; wasm32's 32-bit `long` otherwise truncates
+  native 64-bit XRECORD values.
+
+These gates cover defined records and source identities. They do not certify
+unknown proprietary object schemas, raw DWG object bytes, arbitrary FIELD
+evaluators, or all files and DWG versions. Retention through the portable writer
+requires a separate typed graph comparison after saving and reopening.
 
 ## Pins and commands
 
@@ -126,8 +179,9 @@ The actual AutoCAD-normalized `COLUMN ONE\NCOLUMN TWO` record has no native grou
 76/78/79/50) column fields. It has application XDATA: group 1001 `JCAD_MTEXT_COLUMNS` and group
 1000 JSON with type 1, count 2, width 6, gutter 3 and heights [20,20]. That is JCad metadata,
 not a native column definition. The gate therefore checks native column type/width/gutter are
-0/0/0. The pinned raw factory has no decoded EED/XDATA accessor; XDATA retention is not certified
-here. This fixture also does not exercise native embedded MTEXT containers; both embedded/main
+0/0/0. The original borrowed EED/XDATA accessor is not certified safe or complete;
+XDATA retention is not certified by the seven-mask gate. This fixture also does not
+exercise native embedded MTEXT containers; both embedded/main
 scale declarations are patched and checked, but embedded runtime equivalence needs its own fixture.
 
 The successful artifact contains the matching compiled JS/WASM pair, full modified corresponding
