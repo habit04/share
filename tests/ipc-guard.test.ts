@@ -19,7 +19,7 @@ const guard = require('../electron/ipc-guard.cjs') as {
     insideRoot: (root: string, file: string, what: string) => Promise<string>;
   };
   dxfImageNames: (text: string) => string[];
-  externalUrl: (u: unknown, o?: { cashApp?: boolean }) => string | null;
+  externalUrl: (u: unknown, o?: { cashApp?: boolean; supportEmail?: boolean }) => string | null;
 };
 
 const posix = process.platform !== 'win32';
@@ -292,6 +292,12 @@ describe('file path allow lists (electron/ipc-guard.cjs)', () => {
 });
 
 describe('links handed to the system browser (externalUrl)', () => {
+  it('allows composing email only to support and only when opted in', () => {
+    const url = 'mailto:Justinrod04@gmail.com';
+    expect(guard.externalUrl(url)).toBeNull();
+    expect(guard.externalUrl(url, { supportEmail: true })).toBe(url);
+    for (const bad of ['mailto:other@example.com', `${url},other@example.com`, `${url}?bcc=other@example.com`, `${url}?body=private`, 'mailto:Justinrod04%40gmail.com']) expect(guard.externalUrl(bad, { supportEmail: true })).toBeNull();
+  });
   it('allows this repository and the donation page, compared after the URL is parsed', () => {
     expect(guard.externalUrl('https://github.com/habit04/share')).toBe('https://github.com/habit04/share');
     expect(guard.externalUrl('https://github.com/habit04/share/releases')).toBe('https://github.com/habit04/share/releases');

@@ -1520,8 +1520,12 @@ lists the changes in every version.
   (`DONATE`, TIP, SUPPORT) and the licence with links to the GNU GPL v3 text and the
   third-party notices.
 
-Links from the program only open pages of the project's GitHub repository (and the
-donation page).
+For bugs or feature requests, email [Justinrod04@gmail.com](mailto:Justinrod04@gmail.com).
+Help > About and the report dialogs open your email app; use Copy Report or Save Report
+to include details and attach files yourself.
+
+Links from the program open pages of the project's GitHub repository, the donation page,
+or an email to this support address.
 
 ---
 

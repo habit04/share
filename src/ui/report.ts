@@ -12,6 +12,7 @@ import { APP_VERSION_LABEL } from './help';
 import { writeDxf } from '../io/dxf';
 import { withoutUnusedLibraryBlocks } from '../electrical/library';
 import { exportFailed } from '../app/file-error-text';
+import { supportContact } from '../app/about';
 
 interface AppInfo {
   version: string;
@@ -109,6 +110,18 @@ export function reportProblemDialog(editor: Editor, kind: 'bug' | 'feedback' = '
   const status = document.createElement('div');
   status.className = 'dlg-note';
   m.body.appendChild(status);
+  const contact = supportContact();
+  if (contact) {
+    const row = document.createElement('p'); row.className = 'dlg-note';
+    row.append('You can also email bugs or feature requests to ');
+    const link = document.createElement('a'); link.href = contact.url; link.textContent = contact.email;
+    link.style.color = 'var(--accent)';
+    link.addEventListener('click', (ev) => {
+      if (window.jcad?.openExternal) { ev.preventDefault(); void window.jcad.openExternal(contact.url); }
+    });
+    row.append(link, '. Use Copy Report or Save Report to include details and attach any files in your email app.');
+    m.body.append(row);
+  }
 
   let info: AppInfo = { version: APP_VERSION_LABEL, platform: window.jcad?.platform ?? 'browser', arch: '' };
   const input = (): ReportInput => ({

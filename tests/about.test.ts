@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { donateUrl, safeAboutUrl, aboutInfo, licenseLinks, licenseLineHtml } from '../src/app/about';
+import { donateUrl, safeAboutUrl, aboutInfo, licenseLinks, licenseLineHtml, supportContact } from '../src/app/about';
 import pkg from '../package.json';
 
 describe('about / donate configuration', () => {
@@ -25,6 +25,12 @@ describe('about / donate configuration', () => {
     expect(safeAboutUrl('http://cash.app/$X')).toBeNull();
     expect(safeAboutUrl('https://evil.example/cash.app')).toBeNull();
     expect(safeAboutUrl('javascript:alert(1)')).toBeNull();
+  });
+  it('opens only the configured public support email without extra recipients or headers', () => {
+    const url = 'mailto:Justinrod04@gmail.com';
+    expect(supportContact()).toEqual({ email: 'Justinrod04@gmail.com', url });
+    expect(safeAboutUrl(url)).toBe(url);
+    for (const bad of ['mailto:other@example.com', `${url},other@example.com`, `${url}?bcc=other@example.com`, `${url}#anything`]) expect(safeAboutUrl(bad)).toBeNull();
   });
 });
 

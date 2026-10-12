@@ -140,6 +140,10 @@ DXF) for e-mail. Nothing is sent automatically. The main process appends crashes
 `error.log` in the app data folder. **Help > Send Feedback…** (`FEEDBACK`) opens the feature
 request form.
 
+For bugs or feature requests, email [Justinrod04@gmail.com](mailto:Justinrod04@gmail.com).
+Help > About and the report dialogs include a link that opens your email app. Use Copy Report
+or Save Report to include diagnostics; attach drawings or screenshots in your email app.
+
 ## Run from source
 
 Requires **Node.js 22** (`.nvmrc`; `npm ci` refuses other major versions). The full guide, with
