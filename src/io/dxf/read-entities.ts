@@ -17,6 +17,7 @@ import { readMTextColumns, readDimension, readDimStyleFromEntity, readLeader, re
 import type { MTextAttachment, MTextBackground } from '../../core/mtext';
 import { mtextFromDxf, hasFormatting } from '../../core/mtext';
 import { readTextPlacement } from './read-text';
+import { insertArrayFields } from '../../core/insert-array';
 
 function readSpline(o: Obj, base: ReturnType<typeof commonProps>): SplineEntity | null {
   const gs = afterSubclass(o, 'AcDbSpline');
@@ -413,6 +414,7 @@ export function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
         rotation: g.rad(num(o, 50)) + insertScales(sx, sy).rotationOffset,
         attributes: {},
         ...insertScaleFields(sx, sy),
+        ...insertArrayFields(has(o, 70) ? num(o, 70) : undefined, has(o, 71) ? num(o, 71) : undefined, has(o, 44) ? num(o, 44) : undefined, has(o, 45) ? num(o, 45) : undefined, insertScales(sx, sy).rotationOffset),
       };
     }
     default:

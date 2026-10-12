@@ -12,6 +12,7 @@ import { placedText, scaledText, transformedTextAnchors, textAnchor, type TextPl
 import { mtextBackgroundPolygons, hasMTextFill, hasMTextFrame, entityMTextBackground } from './mtext-background';
 import { polylineWidthGeometry, polylineWidthFrame, transformWidthFrame, polylineFramePoint, polylineFrameSource, polylineWidthProblem, moveWidthFrameGrip } from './polyline-widths';
 import { appearanceProperties, inheritedTransparency, resolveAlpha, type TransparencySpec } from './appearance';
+import { insertArrayCount, insertArrayInstances, MAX_INSERT_ARRAY_INSTANCES } from './insert-array';
 
 export type { DimensionEntity, DimStyle, DimKind } from './dimension';
 export type { MTextEntity, MTextAttachment } from './mtext';
@@ -146,6 +147,11 @@ export interface InsertEntity extends EntityBase {
   readonly mirror?: boolean;
   /** Attribute values (tag -> value), e.g. TAG1 = "PB101". */
   readonly attributes: Readonly<Record<string, string>>;
+  /** MINSERT grid; counts default to one, spacing is independent of the block scale. */
+  readonly columns?: number;
+  readonly rows?: number;
+  readonly columnSpacing?: number;
+  readonly rowSpacing?: number;
   /**
    * Visible attributes of the block that this insert does not display (ATTRIB flag 1 on the
    * insert only), e.g. TAG1 on poles 2 and 3 of a 3-pole device. The value is kept for reports.
@@ -250,7 +256,7 @@ export interface LeaderEntity extends EntityBase {
   readonly textRotation?: number;
   /** Native associated MTEXT's mask and layout, kept when the two records become one leader. */
   readonly textBackground?: MTextBackground;
-  readonly textAppearance?: AttributeAppearance;
+  readonly textAppearance?: AttributeAppearance & Pick<EntityBase, 'colorLayer' | 'transparencyLayer'>;
   readonly textLayer?: string;
   readonly textLineSpacing?: number;
   readonly textColumns?: MTextColumns;
@@ -700,8 +706,11 @@ export function leaderParts(e: LeaderEntity): Entity[] {
     }
   });
   if (e.text && e.textPosition) {
+    const textStyle = e.textAppearance
+      ? { layer: e.textLayer ?? e.layer, color: e.textAppearance.color ?? 'ByLayer', ...e.textAppearance, linetype: e.linetype, lineWeight: e.lineWeight }
+      : style;
     out.push({
-      ...style,
+      ...textStyle,
       id: `${e.id}:t`,
       type: 'mtext',
       ...(e.textAppearance ?? {}),
@@ -1091,6 +1100,7 @@ export function entityGeometryWork(entity: Entity): number {
       break;
     case 'insert':
       for (const value of Object.values(entity.attributes)) work += value.length;
+      work *= insertArrayCount(entity);
       break;
     case 'table':
       work += entity.rowHeights.length + entity.columnWidths.length + entity.rowHeights.length * entity.columnWidths.length;
@@ -1133,7 +1143,7 @@ export function collectBlockDependencies(name: string, lookup: BlockLookup, deps
   return deps;
 }
 
-export const MAX_BLOCK_EXPANSION_WORK = 100_000;
+export const MAX_BLOCK_EXPANSION_WORK = MAX_INSERT_ARRAY_INSTANCES;
 
 export const MAX_INSERT_EXPANSION = 2_000_000;
 /** Nesting levels drawn below a reference (deeper references are not expanded). */
@@ -1238,6 +1248,15 @@ export function insertExpansionLimited(ins: InsertEntity, lookup: BlockLookup): 
 
 /** Append the expansion of `ins` to `out` (no spread: nested results may be large). */
 function explodeInto(out: Entity[], ins: InsertEntity, lookup: BlockLookup, depth: number, budget: ExpansionBudget): void {
+  // Refuse multiplicative work before iterating, including empty or missing definitions.
+  if (entityGeometryWork(ins) > MAX_BLOCK_EXPANSION_WORK) throw new GeometryBudgetError('Block expansion exceeds the safe geometry budget.');
+  for (const instance of insertArrayInstances(ins)) {
+    if (budget.visits <= 0 || budget.left <= 0) { budget.truncated = true; break; }
+    explodeSingleInto(out, instance, lookup, depth, budget);
+  }
+}
+
+function explodeSingleInto(out: Entity[], ins: InsertEntity, lookup: BlockLookup, depth: number, budget: ExpansionBudget): void {
   // Every reference followed costs one visit, also one that draws nothing (an empty or missing
   // block, or one below the nesting depth): the walk itself is bounded, not only its output.
   if (budget.visits <= 0) {
@@ -1339,8 +1358,9 @@ export function expansionReport(blocks: Readonly<Record<string, BlockDef>>, topL
     for (const e of block.entities) {
       if (e.type === 'insert') {
         const c = sizeOf(e.block, depth + 1);
-        objects += c.objects;
-        visits += c.visits;
+        const instances = insertArrayCount(e);
+        objects += c.objects * instances;
+        visits += c.visits * instances;
       } else objects += 1;
       if (objects >= CAP || visits >= CAP) break;
     }
@@ -1351,7 +1371,7 @@ export function expansionReport(blocks: Readonly<Record<string, BlockDef>>, topL
   };
   for (const name of Object.keys(blocks)) sizeOf(name, 0);
   let total = 0;
-  for (const e of topLevel) if (e.type === 'insert') total = Math.min(CAP * 1000, total + sizeOf(e.block, 0).objects);
+  for (const e of topLevel) if (e.type === 'insert') total = Math.min(CAP * 1000, total + sizeOf(e.block, 0).objects * insertArrayCount(e));
   const oversized = [...size[0]!].filter(([, c]) => c.objects >= CAP || c.visits > MAX_INSERT_EXPANSION).map(([name]) => name);
   return { cyclic: [...cyclic].sort(), oversized: oversized.sort(), total };
 }
@@ -1397,7 +1417,7 @@ export function similarityTransform(e: Entity, tf: (p: Point) => Point, rotation
     case 'text':
       return { ...transformedTextAnchors(e, tf), height: e.height * k, rotation: e.rotation + rotation };
     case 'insert':
-      return { ...e, position: tf(e.position), rotation: e.rotation + rotation, scale: e.scale * k, ...(e.scaleY !== undefined ? { scaleY: e.scaleY * k } : {}) };
+      return { ...e, position: tf(e.position), rotation: e.rotation + rotation, scale: e.scale * k, ...(e.scaleY !== undefined ? { scaleY: e.scaleY * k } : {}), ...(e.columnSpacing !== undefined ? { columnSpacing: e.columnSpacing * k } : {}), ...(e.rowSpacing !== undefined ? { rowSpacing: e.rowSpacing * k } : {}) };
     case 'ellipse':
       return { ...e, center: tf(e.center), majorAxis: g.rotate(g.scale(e.majorAxis, k), rotation) };
     case 'point':
@@ -1448,6 +1468,16 @@ export function inheritedColor(e: EntityBase, ins: EntityBase): Pick<EntityBase,
 
 /** Exploded block content made permanent (EXPLODE): a `colorLayer` becomes that layer's colour. */
 export function bakeInheritedColor<T extends Entity>(e: T, layers: readonly Layer[]): T {
+  if (e.type === 'leader' && e.textAppearance) {
+    const a = e.textAppearance;
+    const layer = layers.find((l) => l.name === a.colorLayer);
+    e = { ...e, textAppearance: {
+      ...a,
+      ...(a.colorLayer !== undefined ? { color: layer?.color ?? 7, trueColor: layer?.trueColor, colorName: a.colorName ?? layer?.colorName } : {}),
+      ...(a.transparencyLayer !== undefined ? { transparency: Math.round(resolveAlpha({ layer: e.textLayer ?? e.layer, ...a }, layers) * 255) } : {}),
+      colorLayer: undefined, transparencyLayer: undefined,
+    } };
+  }
   const bg = entityMTextBackground(e);
   if (bg?.colorLayer !== undefined) {
     const { colorLayer, ...background } = bg;
@@ -1466,11 +1496,23 @@ export function bakeInheritedColor<T extends Entity>(e: T, layers: readonly Laye
 }
 
 function transformInto(out: Entity[], e: Entity, tf: (p: Point) => Point, ins: InsertEntity, similar: boolean, lookup: BlockLookup, depth: number, budget: ExpansionBudget): void {
+  // Transform each local grid anchor before a nonuniform parent can shear the grid.
+  if (e.type === 'insert' && insertArrayCount(e) > 1) {
+    for (const instance of insertArrayInstances(e)) {
+      if (budget.visits <= 0 || budget.left <= 0) { budget.truncated = true; break; }
+      transformInto(out, instance, tf, ins, similar, lookup, depth, budget);
+    }
+    return;
+  }
   // Entities on layer "0" inside a block inherit the insert's layer (AutoCAD behaviour).
   const lay = e.layer === '0' ? ins.layer : e.layer;
   const lt = e.linetype && e.linetype.toUpperCase() === 'BYBLOCK' ? ins.linetype : e.linetype;
   const { trueColor: _t, colorLayer: _c, colorName: _n, transparency: _a, transparencyLayer: _al, ...plain } = e;
   const styled = { ...plain, layer: lay, ...inheritedColor(e, ins), ...inheritedTransparency(e, ins), linetype: lt } as Entity;
+  if (e.type === 'leader' && e.textAppearance) {
+    const annotation: EntityBase = { id: e.id, layer: e.textLayer ?? e.layer, color: e.textAppearance.color ?? 'ByLayer', ...e.textAppearance };
+    Object.assign(styled, { textAppearance: { ...e.textAppearance, ...inheritedColor(annotation, ins), ...inheritedTransparency(annotation, ins) } });
+  }
   const bg = entityMTextBackground(e);
   if (bg) {
     const inherited = inheritedColor({ ...e, color: bg.color, trueColor: bg.trueColor, colorName: bg.colorName, colorLayer: bg.colorLayer }, ins);
@@ -1710,7 +1752,7 @@ export function mirrorEntityAcross(e: Entity, a: Point, b: Point): Entity {
     case 'insert':
       // A reflection is a mirror about the block's Y axis plus a rotation: the block geometry is
       // mirrored while attribute / text glyphs stay readable (MIRRTEXT = 0), like AutoCAD.
-      return { ...e, position: reflect(e.position), rotation: normAngle(reflectAngle(e.rotation) + Math.PI), mirror: !e.mirror };
+      return { ...e, position: reflect(e.position), rotation: normAngle(reflectAngle(e.rotation) + Math.PI), mirror: !e.mirror, ...(e.columnSpacing !== undefined ? { columnSpacing: -e.columnSpacing } : {}) };
     case 'ellipse': {
       const tip = reflect(g.add(e.center, e.majorAxis));
       const c = reflect(e.center);
@@ -1930,8 +1972,10 @@ export function snapCandidates(e: Entity, lookup: BlockLookup): SnapCandidate[] 
     case 'text':
       return [{ point: textAnchor(e), kind: 'insertion' }];
     case 'insert': {
-      const out: SnapCandidate[] = [{ point: e.position, kind: 'insertion' }];
-      for (const sub of explodeInsert(e, lookup)) {
+      const exploded = explodeInsert(e, lookup);
+      const out: SnapCandidate[] = [];
+      for (const instance of insertArrayInstances(e)) out.push({ point: instance.position, kind: 'insertion' });
+      for (const sub of exploded) {
         if (sub.type === 'text') continue;
         for (const c of snapCandidates(sub, lookup)) if (c.kind === 'endpoint') out.push(c);
       }

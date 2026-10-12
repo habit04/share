@@ -13,6 +13,7 @@ import { textStyleOf } from '../encoding';
 import { writeLeader, writeImage, writeTableInsert, writeMText, writeDimension } from './write-annotations';
 import type { AttributeDefExt } from '../../electrical/symbol-builder-core';
 import { attdefFlags } from '../../electrical/symbol-builder-core';
+import { insertArrayProblem } from '../../core/insert-array';
 
 function writePolyline(w: Writer, e: PolylineEntity, owner: string): void {
   if (e.filled && e.closed && (e.points.length === 3 || e.points.length === 4)) {
@@ -261,7 +262,8 @@ export function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonl
       // Constant attributes (ATTDEF flag 2) have no ATTRIB on the insert: the definition's value shows.
       const attribDefs = block ? (block.attributes as readonly AttributeDefExt[]).filter((a) => !a.constant) : [];
       const hasAttribs = attribDefs.length > 0;
-      writeEntityCommon(w, e, owner, 'INSERT', 'AcDbBlockReference');
+      const array = (e.columns ?? 1) > 1 || (e.rows ?? 1) > 1;
+      writeEntityCommon(w, e, owner, 'INSERT', array ? 'AcDbMInsertBlock' : 'AcDbBlockReference');
       if (hasAttribs) w.pair(66, 1);
       w.pair(2, e.block);
       w.pair(10, e.position.x);
@@ -274,6 +276,14 @@ export function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonl
         w.pair(43, e.scale);
       }
       if (e.rotation !== 0) w.pair(50, g.deg(e.rotation));
+      const arrayProblem = insertArrayProblem(e);
+      if (arrayProblem) throw new Error(arrayProblem);
+      if (array || e.columns !== undefined || e.rows !== undefined || e.columnSpacing !== undefined || e.rowSpacing !== undefined) {
+        w.pair(70, e.columns ?? 1);
+        w.pair(71, e.rows ?? 1);
+        w.pair(44, e.columnSpacing ?? 0);
+        w.pair(45, e.rowSpacing ?? 0);
+      }
       if (e.annotative) writeAnnotativeXdata(w);
       if (hasAttribs && block) {
         for (const a of attribDefs) {

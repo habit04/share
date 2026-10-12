@@ -14,6 +14,7 @@ import { samePath } from '../app/paths';
 import { textPlacementProblem, placedText } from '../core/text-placement';
 import { textWidth } from '../core/entities';
 import { mtextBackgroundProblem } from '../core/mtext-background';
+import { insertArrayProblem } from '../core/insert-array';
 
 /**
  * - dropped: not imported; it is lost when the drawing is saved.
@@ -161,6 +162,8 @@ export function geometryProblem(e: Entity): string | null {
   const bad = nonFinite(e, '');
   if (bad) return `${bad} is not a finite number`;
   switch (e.type) {
+    case 'insert':
+      return insertArrayProblem(e);
     case 'circle':
     case 'arc':
       return e.radius < 0 ? `negative radius ${e.radius}` : null;

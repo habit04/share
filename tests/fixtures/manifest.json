@@ -35,6 +35,8 @@
     "tests/fixtures/insert-scales.dxf",
     "tests/fixtures/interchange-reference.dxf",
     "tests/fixtures/interchange/r2000-dimensions.dxf",
+    "tests/fixtures/interchange/r2018-minsert.dwg",
+    "tests/fixtures/interchange/r2018-minsert.dxf",
     "tests/fixtures/interchange/r2000-hatch-curves.dxf",
     "tests/fixtures/interchange/r2000-layouts-titleblock.dxf",
     "tests/fixtures/interchange/r2000-nested-blocks-xref.dxf",

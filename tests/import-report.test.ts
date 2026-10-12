@@ -56,7 +56,8 @@ describe('import report of unsupported DXF content', () => {
     expect(item('WIPEOUT', '104')).toMatchObject({ action: 'dropped', layer: '0', where: 'model space', reason: expect.stringMatching(/wipeout/i) });
     expect(item('MLINE', '105')).toMatchObject({ action: 'dropped', reason: expect.stringMatching(/multiline/i) });
     expect(item('POLYLINE', '107')).toMatchObject({ action: 'dropped', reason: expect.stringMatching(/polyface/) });
-    expect(item('INSERT', '106')).toMatchObject({ action: 'simplified', reason: expect.stringMatching(/MINSERT array of 3 x 2/) });
+    expect(item('INSERT', '106')).toBeUndefined();
+    expect(state.entities.find((e) => e.type === 'insert' && e.columns === 3 && e.rows === 2)).toBeDefined();
     expect(item('LINE', '100')).toMatchObject({ action: 'simplified', layer: 'WIRES', reason: expect.stringMatching(/VIA_WD_WIRE/) });
     expect(item('TEXT', '10E')).toMatchObject({ action: 'simplified', reason: expect.stringMatching(/extrusion/) });
     expect(item('REGION', '103')).toMatchObject({ action: 'dropped', reason: expect.stringMatching(/stored outside the object/) });
@@ -67,14 +68,14 @@ describe('import report of unsupported DXF content', () => {
     expect(item('3DSOLID', '102')).toMatchObject({ action: 'kept', layer: 'SOLIDS' });
     expect(item('WIPEOUT', '104')!.line).toBeGreaterThan(1);
     expect(report.counts['3DFACE']).toEqual({ dropped: 2, kept: 1 });
-    expect(lossCount(report)).toBe(10);
+    expect(lossCount(report)).toBe(9);
     expect(countOf(report, 'kept')).toBe(2);
   });
 
   it('the copied report lists counts and every item', () => {
     const text = formatImportReport(report, 'plant.dxf');
     expect(text).toMatch(/DXF import report: plant\.dxf/);
-    expect(text).toMatch(/10 object\(s\) dropped or simplified, 2 kept/);
+    expect(text).toMatch(/9 object\(s\) dropped or simplified, 2 kept/);
     expect(text).toMatch(/3DFACE: 2 dropped, 1 kept/);
     expect(text).toMatch(/WIPEOUT dropped \(handle 104, layer "0", model space, line \d+\)/);
   });
@@ -97,7 +98,7 @@ describe('import report of unsupported DXF content', () => {
     expect(countOf(r, 'kept')).toBe(2);
     expect(reportNeedsAttention(r)).toBe(false);
     expect(reportNeedsAttention(report)).toBe(true);
-    expect(importReportLog(report).join('\n')).toMatch(/10 object\(s\) dropped or simplified, 2 kept/);
+    expect(importReportLog(report).join('\n')).toMatch(/9 object\(s\) dropped or simplified, 2 kept/);
   });
   it('reports malformed table cell metadata without throwing during format validation', () => {
     const metadata = JSON.stringify({ position: { x: 0, y: 0 }, rowHeights: [1], columnWidths: [1], cells: [[null]], textHeight: 1 });
@@ -228,7 +229,7 @@ describe('project-wide rewrite keeps the retained records', () => {
 describe('Save over the source file', () => {
   it('warns while the drawing came from that file and content was lost', () => {
     const w = saveOverwriteWarning(state, SOURCE);
-    expect(w).toMatch(/plant\.dxf contained 10 object\(s\) JCad cannot keep/);
+    expect(w).toMatch(/plant\.dxf contained 9 object\(s\) JCad cannot keep/);
     expect(w).toMatch(/Save As/);
     expect(saveOverwriteWarning(state, '/drawings/copy.dxf')).toBeNull();
     expect(saveOverwriteWarning(state, null)).toBeNull();

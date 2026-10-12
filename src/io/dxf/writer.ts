@@ -5,7 +5,7 @@
  */
 import type { DrawingState } from '../../core/document';
 import type { Linetype } from '../../core/linetypes';
-import type { Entity, DimensionEntity, Layer } from '../../core/entities';
+import type { Entity, DimensionEntity, Layer, AttributeAppearance } from '../../core/entities';
 import { rawEntitiesOf } from '../import-report';
 import { findLinetype, patternLength, STANDARD_LINETYPES } from '../../core/linetypes';
 import { Writer, setPaperOwners, emptyExtras, writeTextLike, writeEntityCommon } from './write-core';
@@ -81,7 +81,7 @@ export function writeDxf(state: DrawingState): string {
   for (const b of blockList) allEntities.push(...b.entities);
   // Choose the highest native format required anywhere, including associated text/attributes.
   const appearances = [...allEntities, ...state.layers, ...blockList.flatMap((b) => b.attributes),
-    ...allEntities.flatMap((e) => e.type === 'insert' ? Object.values(e.attributePlacements ?? {}) : e.type === 'leader' && e.textAppearance ? [e.textAppearance] : [])];
+    ...allEntities.flatMap<AttributeAppearance>((e) => e.type === 'insert' ? Object.values(e.attributePlacements ?? {}) : e.type === 'leader' && e.textAppearance ? [e.textAppearance] : [])];
   const acadVersion = allEntities.some((e) => (entityMTextBackground(e)?.flags ?? 0) & 16) ? 'AC1032'
     : appearances.some((e) => e.transparency !== undefined) ? 'AC1024'
       : allEntities.some((e) => entityMTextBackground(e)) ? 'AC1021'

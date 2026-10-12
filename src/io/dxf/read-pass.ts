@@ -103,7 +103,7 @@ function applyExtrusion(o: Obj, e: Entity, ctx: ReadContext): Entity {
         // The insertion point, rotation and scales are in the object's plane: mirroring the plane
         // flips the position, reverses the rotation and mirrors the block about its Y axis.
         const { mirror: _m, ...rest } = e;
-        return { ...rest, position: flip(e.position), rotation: -e.rotation, ...(e.mirror ? {} : { mirror: true }) };
+        return { ...rest, position: flip(e.position), rotation: -e.rotation, ...(e.mirror ? {} : { mirror: true }), ...(e.columnSpacing !== undefined ? { columnSpacing: -e.columnSpacing } : {}) };
       }
       default:
         break;
@@ -250,9 +250,6 @@ export function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): En
       }
       i += 1;
       continue;
-    }
-    if (read.type === 'insert' && o.kind === 'INSERT' && (num(o, 70, 1) > 1 || num(o, 71, 1) > 1)) {
-      reportObj(ctx, o, 'simplified', `MINSERT array of ${Math.trunc(num(o, 70, 1))} x ${Math.trunc(num(o, 71, 1))} copies: only the first copy is kept`);
     }
     // TEXT / MTEXT keep their text style name (group 7) for the TrueType renderer and the writer.
     const styled = read && (read.type === 'text' || read.type === 'mtext') ? withTextStyle(read, str(o, 7)) : read;

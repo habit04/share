@@ -6,6 +6,7 @@ import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { convertDwgMTextDatabase } from './dwg-mtext-background.mjs';
+import { convertDwgDatabase } from './dwg-array-conversion.mjs';
 
 let libPromise = null;
 
@@ -44,7 +45,8 @@ export async function readDwgPayload(bytes, kind = 'dwg') {
     } catch {
       /* the file can still be converted without a version label */
     }
-    const db = convertDwgMTextDatabase(l, ptr);
+    const { Dwg_Object_Type } = await import('@mlightcad/libredwg-web');
+    const db = convertDwgMTextDatabase(l, ptr, (reader, input) => convertDwgDatabase(reader, input, Dwg_Object_Type));
     return { payload: payloadFromDatabase(db, version), version };
   } finally {
     // A failed conversion releases the native memory like a successful one (ported from PR #2,

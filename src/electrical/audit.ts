@@ -10,6 +10,7 @@ import { isWire, isHorizontal, isVertical, nearestReference } from './ladder';
 import { isParentComponent, isChild, isTerminal, isCoil, isExtraPole } from './families';
 import { collectNets, netOfWireNumber, isWireNumber, wireDegreeCounter, WIRENO_LAYER, connectionLevels, symbolSpan } from './wires';
 import { WIRE_DOT } from './symbols';
+import { insertArrayCount } from '../core/insert-array';
 
 export interface AuditIssue {
   check: string;
@@ -27,6 +28,10 @@ export function auditIssues(doc: Drawing): AuditIssue[] {
   const ents = doc.entities;
   const lookup = doc.lookupBlock;
   const parents = ents.filter(isParentComponent);
+  for (const entity of ents) {
+    if (entity.type !== 'insert' || insertArrayCount(entity) === 1) continue;
+    out.push({ check: 'Shared array attributes', item: entity.attributes.TAG1 ?? entity.attributes.TERM01 ?? entity.block, detail: `${insertArrayCount(entity)} block instances share one attribute set. Component/BOM reports count every instance; explode the array for independent tags and electrical connectivity.`, severity: 'warning', entityId: entity.id, position: entity.position });
+  }
   const byTag = new Map<string, InsertEntity[]>();
   for (const p of parents) {
     const t = p.attributes.TAG1!;

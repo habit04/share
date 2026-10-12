@@ -6,6 +6,7 @@ import * as g from '../core/geometry';
 import { PATTERN_NAMES } from '../core/hatch';
 import { aciToCss, ACI_NAMES } from '../render/palette';
 import { icon } from './icons';
+import { GeometryBudgetError } from '../core/geometry-budget-error';
 
 /** Properties palette: shows and edits the current selection (docked right). */
 export class PropertiesPalette {
@@ -146,11 +147,23 @@ export class PropertiesPalette {
     if (sel.length !== 1) return;
     const e = sel[0]!;
     const num = (v: number) => v.toFixed(4);
-    const patch = (p: Partial<Entity>) => doc.replaceEntities([{ ...e, ...p } as Entity]);
+    const patch = (p: Partial<Entity>) => {
+      try { doc.replaceEntities([{ ...e, ...p } as Entity]); }
+      catch (error) {
+        if (!(error instanceof GeometryBudgetError)) throw error;
+        this.editor.log(error.message);
+        this.render();
+      }
+    };
     const numInput = (v: number, fn: (n: number) => void) =>
       this.input(num(v), (s) => {
         const n = parseFloat(s);
         if (Number.isFinite(n)) fn(n);
+      });
+    const arrayInput = (v: number, fn: (n: number) => void) =>
+      this.input(num(v), (s) => {
+        const n = Number(s.trim());
+        if (s.trim() && Number.isFinite(n)) fn(n);
       });
     b.appendChild(this.section('Geometry'));
     switch (e.type) {
@@ -207,6 +220,11 @@ export class PropertiesPalette {
         b.appendChild(this.row('Y', numInput(e.position.y, (n) => patch({ position: { x: e.position.x, y: n } }))));
         b.appendChild(this.row('Rotation', numInput((e.rotation * 180) / Math.PI, (n) => patch({ rotation: (n * Math.PI) / 180 }))));
         b.appendChild(this.row('Scale', numInput(e.scale, (n) => n > 0 && patch({ scale: n }))));
+        b.appendChild(this.section('Array'));
+        b.appendChild(this.row('Columns', arrayInput(e.columns ?? 1, (n) => Number.isSafeInteger(n) && n > 0 && n <= 65535 && patch({ columns: n }))));
+        b.appendChild(this.row('Rows', arrayInput(e.rows ?? 1, (n) => Number.isSafeInteger(n) && n > 0 && n <= 65535 && patch({ rows: n }))));
+        b.appendChild(this.row('Column spacing', arrayInput(e.columnSpacing ?? 0, (n) => patch({ columnSpacing: n }))));
+        b.appendChild(this.row('Row spacing', arrayInput(e.rowSpacing ?? 0, (n) => patch({ rowSpacing: n }))));
         if (block && block.attributes.length) {
           b.appendChild(this.section('Attributes'));
           for (const a of block.attributes) {

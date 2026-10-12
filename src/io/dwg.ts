@@ -31,6 +31,7 @@ import type {
   DwgTableEntity,
 } from '@mlightcad/libredwg-web';
 import { insertScales, insertScaleFields } from './dxf';
+import { insertArrayFields } from '../core/insert-array';
 import type { Entity, BlockDef, Layer, AttributeDef, ColorSpec, MTextAttachment, SplineEntity, HatchEntity, HatchLoop, LeaderEntity, ImageEntity, TableEntity, TableCell, FieldLink } from '../core/entities';
 import { translateEntity, localAttributePlacement, type InsertEntity, type AttributeAppearance } from '../core/entities';
 import { textJustification, type TextPlacement } from '../core/text-placement';
@@ -878,6 +879,7 @@ function convertEntity(e: DwgEntity, blockIndex: Map<string, string>, dimStyle: 
         position: p2(i.insertionPoint),
         rotation: (i.rotation ?? 0) + insertScales(i.xScale ?? 1, (i as { yScale?: number }).yScale ?? i.xScale ?? 1).rotationOffset,
         ...insertScaleFields(i.xScale ?? 1, (i as { yScale?: number }).yScale ?? i.xScale ?? 1),
+        ...insertArrayFields(i.columnCount === 0 && !i.rowCount ? undefined : i.columnCount, i.rowCount === 0 && !i.columnCount ? undefined : i.rowCount, i.columnSpacing, i.rowSpacing, insertScales(i.xScale ?? 1, i.yScale ?? i.xScale ?? 1).rotationOffset),
         attributes: attrs,
         ...(hiddenHere.length ? { hiddenAttributes: hiddenHere } : {}),
       };
