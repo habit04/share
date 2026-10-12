@@ -17,7 +17,7 @@ permissions; it is not an OS capability sandbox for executing hostile extensions
 | Reserved input | 128 MiB across accepted active and queued reads | Reserve before retaining a request |
 | WASM linear memory | Shipped initial allocation 1 GiB; maximum 2 GiB | Restrict the sole defined, unshared wasm32 memory declaration before instantiation |
 | Parser V8 heap/stack | 512 MiB old generation, 64 MiB young generation, 8 MiB stack | Inner worker `resourceLimits` |
-| OS process memory | Abort at a sampled 3 GiB threshold | Parent samples every 100 ms; maximum of resident, peak resident and Windows private memory |
+| OS process memory | Abort at a sampled 3 GiB threshold | Parent samples every 100 ms through Windows/macOS Electron metrics or Linux `/proc`; maximum of resident, peak resident and Windows private memory |
 | Serialized result | 64 MiB | Bound V8-serialized bytes before parent-side reconstruction |
 | Transport frame | 1 MiB | Acknowledge each input/output frame before sending the next |
 | Startup | 15 seconds | Host deadline |
@@ -35,11 +35,18 @@ runtime changes a checked in-memory copy; the committed vendor factory/WASM arti
 available for their existing source/hash provenance checks.
 
 The parent starts its memory watchdog before permitting LibreDWG initialization. Readiness
-requires a valid OS measurement for the spawned utility PID. Its creation time binds future
-measurements to the same process identity. Missing or invalid measurements fail closed after a
-short startup grace during which parsing is prohibited. The watchdog continues observing the
-process while native parsing blocks the child JavaScript event loop. Its OS memory figures are
-reported by Electron in KiB and converted to bytes; overlapping figures are compared, not added.
+requires a positive, valid OS measurement for the spawned utility PID. Its creation time binds
+future measurements to the same process identity, including while waiting for startup data.
+Missing metrics and Electron's numeric all-zero startup memory placeholder may wait for up to
+three seconds while parsing remains prohibited. On macOS, Electron can return this placeholder
+before the child's Mach task information is available. Malformed measurements fail immediately;
+after the first valid measurement, unavailable/zero measurements also fail immediately. The
+watchdog continues observing the process while native parsing blocks the child JavaScript event
+loop. Windows/macOS figures come from Electron; Linux reads bounded `/proc/<pid>/stat` and
+`status` files for resident/peak memory. Linux sampling brackets the status read with start-tick
+checks, verifies its PID/Tgid and binds Electron's process creation time, rather than trusting
+an undocumented Linux `memory` property.
+These OS figures use KiB and are converted to bytes; overlapping figures are compared, not added.
 
 Electron utility-process heap flags are not relied upon as the heap enforcement mechanism.
 The V8 resource limits belong to the inner worker. Production uses Electron's utility process;

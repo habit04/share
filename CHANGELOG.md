@@ -32,6 +32,9 @@ Nothing yet.
   It remains active while native parsing blocks the child's event loop and fails closed when
   process metrics cannot be verified. Sampling can allow temporary overshoot; this is not an
   instantaneous OS memory allocation cap.
+- The reader waits for positive startup measurements before loading the parser, including
+  delayed Mac process metrics. Linux uses bounded parent reads of `/proc` resident/peak memory
+  with process-identity checks rather than depending on undocumented Electron memory fields.
 - DWG opens share one parser, at most four outstanding requests and 128 MiB of reserved input.
   Converted results are checked for metadata, string, record and nesting budgets, then transferred
   in acknowledged 1 MiB chunks with a 64 MiB result cap. Binary XDATA is preserved within those limits.

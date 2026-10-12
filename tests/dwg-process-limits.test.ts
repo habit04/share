@@ -55,7 +55,72 @@ describe('DWG process memory watchdog', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it.each(['missing', 'reused', 'malformed', 'throws', 'duplicate', 'wrong-type'])(
+  it('waits for a positive OS measurement when Electron initially reports numeric zeros', async () => {
+    vi.useFakeTimers();
+    let metrics = [metric(0, 0)];
+    const failure = vi.fn();
+    const guard = createProcessMemoryGuard({ pid: 42, getMetrics: () => metrics, onFailure: failure });
+    let ready = false;
+    void guard.ready.then(() => { ready = true; });
+    expect(guard.checkNow()).toBe(false);
+    expect(guard.lastSample).toBeNull();
+    await vi.advanceTimersByTimeAsync(2_900);
+    expect(ready).toBe(false);
+    expect(failure).not.toHaveBeenCalled();
+    metrics = [metric(100, 100)];
+    await vi.advanceTimersByTimeAsync(100);
+    await expect(guard.ready).resolves.toEqual({ bytes: 100 * 1024, creationTime: 123 });
+    expect(ready).toBe(true);
+    expect(failure).not.toHaveBeenCalled();
+    guard.stop();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('rejects persistent numeric zeros at the startup deadline with bounded diagnostics', async () => {
+    vi.useFakeTimers();
+    const failure = vi.fn();
+    const guard = createProcessMemoryGuard({ pid: 42, getMetrics: () => [metric(0, 0, 0)], onFailure: failure });
+    const rejected = expect(guard.ready).rejects.toBeInstanceOf(DwgMemoryMonitorError);
+    await vi.advanceTimersByTimeAsync(2_999);
+    expect(failure).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await rejected;
+    expect(failure).toHaveBeenCalledOnce();
+    expect(failure.mock.calls[0]![0].message).toContain('pid=42, rssKiB=0, peakKiB=0, privateKiB=0');
+    expect(failure.mock.calls[0]![0].message.length).toBeLessThan(256);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('binds process identity while startup memory is unavailable', async () => {
+    vi.useFakeTimers();
+    let metrics = [metric(0, 0)];
+    const failure = vi.fn();
+    const guard = createProcessMemoryGuard({ pid: 42, getMetrics: () => metrics, onFailure: failure });
+    const rejected = expect(guard.ready).rejects.toThrow('process identity changed');
+    metrics = [metric(100, 100, undefined, 456)];
+    await vi.advanceTimersByTimeAsync(100);
+    await rejected;
+    expect(failure).toHaveBeenCalledOnce();
+    expect(guard.lastSample).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([
+    { workingSetSize: 0 },
+    { workingSetSize: 0, peakWorkingSetSize: NaN },
+    { workingSetSize: 0, peakWorkingSetSize: 0, privateBytes: -1 },
+    { workingSetSize: 0, peakWorkingSetSize: 1 },
+    { workingSetSize: -1, peakWorkingSetSize: 0 },
+  ])('immediately rejects malformed startup memory %j without extending the grace', async (memory) => {
+    vi.useFakeTimers();
+    const failure = vi.fn();
+    const guard = createProcessMemoryGuard({ pid: 42, getMetrics: () => [{ ...metric(), memory }], onFailure: failure });
+    await expect(guard.ready).rejects.toBeInstanceOf(DwgMemoryMonitorError);
+    expect(failure).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(['missing', 'zero', 'reused', 'malformed', 'throws', 'duplicate', 'wrong-type'])(
     'fails closed after readiness if measurements are %s', async (change) => {
       vi.useFakeTimers();
       let metrics = [metric()];
@@ -67,6 +132,7 @@ describe('DWG process memory watchdog', () => {
       }, onFailure: failure });
       await guard.ready;
       if (change === 'missing') metrics = [];
+      if (change === 'zero') metrics = [metric(0, 0)];
       if (change === 'reused') metrics = [metric(100, 100, undefined, 456)];
       if (change === 'malformed') metrics = [metric(NaN)];
       if (change === 'duplicate') metrics = [metric(), metric()];

@@ -77,6 +77,7 @@ try {
   assert.equal(report.ok, true, report.error ?? 'Containment checks did not pass.');
   assert.equal(report.cases.length, 5, 'A required containment case did not run.');
   assert.ok(report.cases.every((item) => item.ok === true), 'Containment report has a failed case.');
+  assert.equal(report.cases[0].opens, 5, 'Fresh-reader startup coverage did not complete.');
   const output = join(root, 'e2e-output');
   mkdirSync(output, { recursive: true });
   writeFileSync(join(output, 'dwg-containment.json'), `${JSON.stringify(report, null, 2)}\n`);

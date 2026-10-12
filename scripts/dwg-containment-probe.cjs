@@ -5,6 +5,7 @@ const path = require('node:path');
 const { Worker } = require('node:worker_threads');
 const { createDwgHost, OpenCancelledError } = require('../electron/dwg-host.cjs');
 const { createProcessMemoryGuard, DwgMemoryLimitError } = require('../electron/dwg-process-limits.cjs');
+const { createProcessMetricsReader } = require('../electron/dwg-linux-metrics.cjs');
 const { PROTOCOL_VERSION, WORKER_RESOURCE_LIMITS, validateResourceLimits } = require('../electron/dwg-protocol.cjs');
 const utilityPort = /** @type {any} */ (process).parentPort;
 
@@ -135,8 +136,9 @@ async function runMain() {
   try {
     await app.whenReady();
     const host = makeHost();
-    await realRead(host);
-    cases.push({ name: 'real-dwg-isolated-read', ok: true, processCount: processIds.length, heartbeatTicks: ticks });
+    // Fresh-process starts also exercise delayed OS metric readiness, including Mac task ports.
+    for (let open = 0; open < 5; open++) await realRead(host);
+    cases.push({ name: 'real-dwg-isolated-read', ok: true, opens: 5, processCount: processIds.length, heartbeatTicks: ticks });
 
     const cancelId = host.newId();
     const cancelled = host.read(bytes, cancelId);
@@ -166,13 +168,14 @@ async function runMain() {
         return launch(__filename, options, ['--containment-mode=native-host']);
       },
       memoryGuardFactory: ({ pid, onFailure }) => {
-        if (!pressureMonitoring) return createProcessMemoryGuard({ pid, getMetrics: () => app.getAppMetrics(), onFailure });
+        const getMetrics = createProcessMetricsReader({ pid, getMetrics: () => app.getAppMetrics() });
+        if (!pressureMonitoring) return createProcessMemoryGuard({ pid, getMetrics, onFailure });
         pressureMonitoring = false;
-        const initial = createProcessMemoryGuard({ pid, getMetrics: () => app.getAppMetrics(), onFailure });
+        const initial = createProcessMemoryGuard({ pid, getMetrics, onFailure });
         let pressureGuard;
         const ready = initial.ready.then((sample) => {
           initial.stop();
-          pressureGuard = createProcessMemoryGuard({ pid, getMetrics: () => app.getAppMetrics(), maxBytes: sample.bytes + 16 * 1024 * 1024,
+          pressureGuard = createProcessMemoryGuard({ pid, getMetrics, maxBytes: sample.bytes + 16 * 1024 * 1024,
             onFailure: (error) => { observedMemoryError = error; onFailure(error); } });
           return pressureGuard.ready;
         });

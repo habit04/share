@@ -397,8 +397,10 @@ verification of a downloaded installer), `file-errors.cjs` (plain-language file 
 The desktop DWG process owns a V8-limited worker; Electron utility-process `execArgv` heap flags
 are not relied on to enforce its heap policy. `scripts/dwg-wasm-memory.mjs` restricts the shipped
 module's memory declaration before the native factory allocates WASM memory. Production always
-uses Electron's utility process with parent-side `app.getAppMetrics()` observations. Node-only
-test/CLI adapters do not establish shipping utility-process behavior. See
+uses Electron's utility process with a parent-side OS memory reader: Electron metrics on
+Windows/macOS and bounded `/proc` measurements on Linux. The Linux target PID, creation time
+and start ticks bind readings to the same process. Node-only test/CLI adapters do not establish
+shipping utility-process behavior. See
 [DWG memory containment](DWG-MEMORY-CONTAINMENT.md) for limits and required validation evidence.
 
 **Boundaries the tests hold.** The undo history is private to `src/core/document.ts` (use

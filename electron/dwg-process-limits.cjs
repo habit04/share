@@ -39,10 +39,11 @@ class DwgMemoryMonitorError extends Error {
  * @param {{ workingSetSize: number, peakWorkingSetSize: number, privateBytes?: number }} memory
  */
 function measuredProcessBytes(memory) {
-  if (!memory || !Number.isSafeInteger(memory.workingSetSize) || memory.workingSetSize <= 0 ||
+  if (!memory || typeof memory !== 'object' || Array.isArray(memory) || !Number.isSafeInteger(memory.workingSetSize) || memory.workingSetSize <= 0 ||
       !Number.isSafeInteger(memory.peakWorkingSetSize) || memory.peakWorkingSetSize < 0 ||
       (memory.privateBytes !== undefined && (!Number.isSafeInteger(memory.privateBytes) || memory.privateBytes < 0))) {
-    throw new DwgMemoryMonitorError('The DWG reader memory monitor returned an invalid measurement; opening was stopped.');
+    const number = (value) => typeof value === 'number' ? String(value).slice(0, 24) : typeof value;
+    throw new DwgMemoryMonitorError(`The DWG reader memory monitor returned an invalid measurement; opening was stopped (rssKiB=${number(memory?.workingSetSize)}, peakKiB=${number(memory?.peakWorkingSetSize)}, privateKiB=${number(memory?.privateBytes)}).`);
   }
   const largestKiB = Math.max(memory.workingSetSize, memory.peakWorkingSetSize, memory.privateBytes ?? 0);
   if (largestKiB > Number.MAX_SAFE_INTEGER / 1024) throw new DwgMemoryMonitorError();
@@ -50,9 +51,28 @@ function measuredProcessBytes(memory) {
 }
 
 /**
+ * Electron 44.7's macOS GetMemoryInfo returns its default zero values until the child's Mach
+ * task port/task_info can be obtained. This is unavailable monitoring, never a zero-memory
+ * authorization. Only that exact numeric shape can wait during the bounded startup grace;
+ * missing fields, negative/nonfinite values and mixed zero/positive fields remain malformed.
+ * https://github.com/electron/electron/blob/v44.7.0/shell/browser/api/process_metric.cc
+ */
+function isUnavailableZeroMemory(memory) {
+  return memory && typeof memory === 'object' && !Array.isArray(memory) && memory.workingSetSize === 0 &&
+    memory.peakWorkingSetSize === 0 && (memory.privateBytes === undefined || memory.privateBytes === 0);
+}
+
+/** Numeric OS fields only: keep diagnostics bounded and do not stringify arbitrary objects. */
+function zeroMemoryUnavailableError(pid, memory) {
+  return new DwgMemoryMonitorError(`The DWG reader memory monitor is unavailable; opening was stopped (pid=${pid}, rssKiB=0, peakKiB=0, privateKiB=${memory.privateBytes === 0 ? '0' : 'unavailable'}).`);
+}
+
+/**
  * Start monitoring after utilityProcess's spawn event, before loading LibreDWG or sending bytes.
  * `ready` is the parser-start gate: it resolves only after the first valid under-threshold OS
- * measurement. Metrics may appear shortly after spawn; no parse may begin during that grace.
+ * measurement. Missing metrics or Electron's numeric all-zero startup placeholder may appear
+ * shortly after spawn; no parse may begin during that grace. Valid process identity is bound
+ * even while waiting for an initial positive measurement.
  * After readiness, a missing measurement immediately fails closed. Process creation time binds
  * samples to the same OS process if its PID is reused.
  * @param {{
@@ -115,9 +135,13 @@ function createProcessMemoryGuard({ pid, getMetrics, onFailure, maxBytes = DEFAU
           (creationTime !== null && metric.creationTime !== creationTime)) {
         throw new DwgMemoryMonitorError('The DWG reader process identity changed; opening was stopped.');
       }
+      creationTime = metric.creationTime;
+      if (isUnavailableZeroMemory(metric.memory)) {
+        if (readyOnce || Date.now() - startedAt >= startupGraceMs) fail(zeroMemoryUnavailableError(pid, metric.memory));
+        return false;
+      }
       const bytes = measuredProcessBytes(metric.memory);
       if (bytes >= maxBytes) throw new DwgMemoryLimitError(bytes, maxBytes);
-      creationTime = metric.creationTime;
       lastSample = Object.freeze({ bytes, creationTime });
       if (!readyOnce) {
         readyOnce = true;

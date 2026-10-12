@@ -12,6 +12,7 @@ const { randomUUID } = require('node:crypto');
 const { deserialize } = require('node:v8');
 const { MAX_DRAWING_BYTES } = require('./resource-limits.cjs');
 const { createProcessMemoryGuard } = require('./dwg-process-limits.cjs');
+const { createProcessMetricsReader } = require('./dwg-linux-metrics.cjs');
 const { expectDwgProcessExit, forgetDwgProcessExit } = require('./dwg-exit-policy.cjs');
 const { MAX_DWG_PAYLOAD_BYTES, MAX_DWG_CHUNK_BYTES, PROTOCOL_VERSION, WORKER_RESOURCE_LIMITS, validateResourceLimits, validateDwgPayload } = require('./dwg-protocol.cjs');
 
@@ -39,7 +40,8 @@ function launchUtilityProcess(modulePath, options) {
 }
 function defaultMemoryGuard({ pid, onFailure }) {
   const { app } = require('electron');
-  return createProcessMemoryGuard({ pid, getMetrics: () => app.getAppMetrics(), onFailure });
+  const getMetrics = createProcessMetricsReader({ pid, getMetrics: () => app.getAppMetrics() });
+  return createProcessMemoryGuard({ pid, getMetrics, onFailure });
 }
 function childEnvironment(allowTestHooks) {
   const env = { ...process.env };
