@@ -193,6 +193,10 @@ atomic writer; the migration marker is committed afterward. The preload restores
 only when the new origin is empty and unmarked, preserving deletions and existing DOM values.
 An unreadable checkpoint never falls back to stale legacy settings. DOM storage flushing remains
 best effort; the checkpoint supplies the acknowledged disk commit.
+Initial page loading has a separate 15-second readiness deadline; capture keeps its five-second
+execution deadline. Loaded close/update captures do not wait through a startup allowance.
+The updater verifies the downloaded package again after asynchronous checkpoint disk work,
+so a slow settings write cannot leave an old verification authorizing installation.
 
 ## Performance
 

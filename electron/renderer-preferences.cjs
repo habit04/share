@@ -9,6 +9,8 @@ const MAX_PREFERENCE_BYTES = 8 * 1024 * 1024;
 const MIGRATION_KEY = 'jcad-origin-migrated';
 const CHECKPOINT_NAME = 'renderer-preferences.json';
 const MIGRATION_NAME = 'renderer-origin-migrated';
+const RENDERER_LOAD_TIMEOUT_MS = 15_000;
+const PREFERENCE_CAPTURE_TIMEOUT_MS = 5_000;
 
 /** Reject accessors and non-string values without executing renderer-supplied code. */
 function preferenceDictionary(values) {
@@ -53,15 +55,71 @@ const SNAPSHOT_SCRIPT = `(() => {
   return JSON.stringify(values);
 })()`;
 
+function assertPreferencesRenderer(contents) {
+  if (contents.isDestroyed() || contents.isCrashed()) throw new Error('No trusted preferences renderer');
+  const url = new URL(contents.getURL());
+  if (url.protocol !== 'jcad:' || url.hostname !== 'app' || url.port || url.username || url.password || url.pathname !== '/index.html') throw new Error('No trusted preferences renderer');
+}
+
+/**
+ * Electron v44.7 defers executeJavaScriptInIsolatedWorld until the main frame stops loading.
+ * Initial preload migration arrives before that point, so load readiness has its own bounded
+ * phase. The execution deadline must measure capture time rather than bundled page startup.
+ */
+function waitForPreferencesRenderer(contents) {
+  assertPreferencesRenderer(contents);
+  if (!contents.isLoadingMainFrame()) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timer;
+    const cleanup = () => {
+      clearTimeout(timer);
+      contents.removeListener('did-finish-load', onReady);
+      contents.removeListener('did-stop-loading', onReady);
+      contents.removeListener('did-fail-load', onFailed);
+      contents.removeListener('did-fail-provisional-load', onFailed);
+      contents.removeListener('render-process-gone', onGone);
+      contents.removeListener('destroyed', onGone);
+    };
+    const finish = (/** @type {Error | null} */ error = null) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (error) reject(error);
+      else resolve(undefined);
+    };
+    const onReady = () => {
+      try {
+        assertPreferencesRenderer(contents);
+        // Match Electron's execution predicate: finish-load may precede stop-loading.
+        if (!contents.isLoadingMainFrame()) finish();
+      } catch (error) { finish(error); }
+    };
+    const onFailed = (_event, _code, _description, _url, isMainFrame) => {
+      if (isMainFrame) finish(new Error('Renderer preference page failed to load'));
+    };
+    const onGone = () => finish(new Error('Renderer preference page stopped before it was ready'));
+    contents.on('did-finish-load', onReady);
+    contents.on('did-stop-loading', onReady);
+    contents.on('did-fail-load', onFailed);
+    contents.on('did-fail-provisional-load', onFailed);
+    contents.on('render-process-gone', onGone);
+    contents.on('destroyed', onGone);
+    timer = setTimeout(() => finish(new Error('Renderer preference page load timed out')), RENDERER_LOAD_TIMEOUT_MS);
+    // Close the state-check/listener-registration race without restarting either deadline.
+    onReady();
+  });
+}
+
 /** No renderer-chosen path or payload is accepted; capture only the built application page. */
 async function snapshotPreferences(contents) {
-  const url = new URL(contents.getURL());
-  if (contents.isDestroyed() || contents.isCrashed() || url.protocol !== 'jcad:' || url.hostname !== 'app' || url.port || url.username || url.password || url.pathname !== '/index.html') throw new Error('No trusted preferences renderer');
+  await waitForPreferencesRenderer(contents);
+  assertPreferencesRenderer(contents);
   let timer;
   try {
     const text = await Promise.race([
       contents.executeJavaScriptInIsolatedWorld(999, [{ code: SNAPSHOT_SCRIPT }]),
-      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Renderer preference checkpoint timed out')), 5000); }),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Renderer preference checkpoint timed out')), PREFERENCE_CAPTURE_TIMEOUT_MS); }),
     ]);
     return decodePreferences(text);
   } finally { clearTimeout(timer); }

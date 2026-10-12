@@ -4,13 +4,15 @@ import * as fs from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { runInNewContext } from 'node:vm';
+import { EventEmitter } from 'node:events';
 
 const require = createRequire(import.meta.url);
 type Preferences = Record<string, string>;
-type Contents = {
+type Contents = EventEmitter & {
   getURL(): string;
   isDestroyed(): boolean;
   isCrashed(): boolean;
+  isLoadingMainFrame(): boolean;
   executeJavaScriptInIsolatedWorld(world: number, scripts: { code: string }[]): Promise<unknown>;
 };
 type Store = {
@@ -77,7 +79,8 @@ function snapshotText(entries: [string, string][]) {
   return runInNewContext(SNAPSHOT_SCRIPT, { localStorage: storage, Storage: TestStorage, TextEncoder }) as string;
 }
 function contents(execute: Contents['executeJavaScriptInIsolatedWorld'], url = 'jcad://app/index.html'): Contents {
-  return { getURL: () => url, isDestroyed: () => false, isCrashed: () => false, executeJavaScriptInIsolatedWorld: execute };
+  return Object.assign(new EventEmitter(), { getURL: () => url, isDestroyed: () => false, isCrashed: () => false,
+    isLoadingMainFrame: () => false, executeJavaScriptInIsolatedWorld: execute });
 }
 
 describe('bounded renderer preference dictionaries', () => {
@@ -172,6 +175,102 @@ describe('isolated renderer snapshots', () => {
     late.resolve('{"theme":"stale"}');
     await Promise.resolve();
     expect(write).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits for bounded initial page readiness before starting the capture deadline', async () => {
+    vi.useFakeTimers();
+    let loading = true;
+    const execute = vi.fn(async () => '{"theme":"ready"}');
+    const page = contents(execute);
+    page.isLoadingMainFrame = () => loading;
+    const result = snapshotPreferences(page);
+    await vi.advanceTimersByTimeAsync(12_000);
+    expect(execute).not.toHaveBeenCalled();
+    page.emit('did-finish-load');
+    await Promise.resolve();
+    expect(execute).not.toHaveBeenCalled(); // Electron still defers until loading stops.
+    loading = false;
+    page.emit('did-stop-loading');
+    expect(await result).toEqual({ theme: 'ready' });
+    expect(execute).toHaveBeenCalledOnce();
+    expect(page.eventNames()).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('retains a full five-second execution budget after initial page loading completes', async () => {
+    vi.useFakeTimers();
+    let loading = true;
+    const late = deferred<string>();
+    const execute = vi.fn(() => late.promise);
+    const page = contents(execute);
+    page.isLoadingMainFrame = () => loading;
+    const result = snapshotPreferences(page).then(() => null, (error: Error) => error);
+    await vi.advanceTimersByTimeAsync(12_000);
+    loading = false; page.emit('did-stop-loading');
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(execute).toHaveBeenCalledOnce();
+    let settled = false;
+    void result.then(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await result).toEqual(expect.objectContaining({ message: 'Renderer preference checkpoint timed out' }));
+    late.resolve('{"theme":"late"}');
+    expect(page.eventNames()).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(['did-fail-load', 'did-fail-provisional-load', 'destroyed', 'render-process-gone'])(
+    'rejects startup %s without executing or committing and cleans readiness listeners', async (event) => {
+      const dir = await profile();
+      vi.useFakeTimers();
+      const execute = vi.fn(async () => '{"theme":"never captured"}');
+      const page = contents(execute);
+      page.isLoadingMainFrame = () => true;
+      const write = vi.fn(async () => undefined);
+      const store = createPreferenceStore({ stateDir: () => dir, write });
+      const failed = store.checkpoint(page, true).then(() => null, (error: Error) => error);
+      await Promise.resolve();
+      page.emit(event, {}, -2, 'failed', 'jcad://app/index.html', true);
+      expect(await failed).toBeInstanceOf(Error);
+      expect(execute).not.toHaveBeenCalled();
+      expect(write).not.toHaveBeenCalled();
+      expect(page.eventNames()).toEqual([]);
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
+
+  it('ignores subframe failures and rejects a main frame that never becomes ready after fifteen seconds', async () => {
+    vi.useFakeTimers();
+    const execute = vi.fn(async () => '{}');
+    const page = contents(execute);
+    page.isLoadingMainFrame = () => true;
+    const result = snapshotPreferences(page).then(() => null, (error: Error) => error);
+    page.emit('did-fail-load', {}, -2, 'subframe failed', 'jcad://app/iframe.html', false);
+    await vi.advanceTimersByTimeAsync(14_999);
+    expect(execute).not.toHaveBeenCalled();
+    expect(page.listenerCount('did-stop-loading')).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await result).toEqual(expect.objectContaining({ message: 'Renderer preference page load timed out' }));
+    expect(page.eventNames()).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('rejects a stop-loading notification from a crashed renderer before its asynchronous gone event', async () => {
+    vi.useFakeTimers();
+    let loading = true;
+    let crashed = false;
+    const execute = vi.fn(async () => '{}');
+    const page = contents(execute);
+    page.isLoadingMainFrame = () => loading;
+    page.isCrashed = () => crashed;
+    const result = snapshotPreferences(page).then(() => null, (error: Error) => error);
+    loading = false; crashed = true;
+    page.emit('did-stop-loading');
+    expect(await result).toEqual(expect.objectContaining({ message: 'No trusted preferences renderer' }));
+    expect(execute).not.toHaveBeenCalled();
+    expect(page.eventNames()).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
 
