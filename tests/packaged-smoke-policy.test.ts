@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { needsPackagedOrigin, needsPortableDwgExport, processResult, childSucceeded, dwgProbeSucceeded, validateSmokeArchitecture, macDmgTargets } from '../scripts/packaged-smoke-policy.mjs';
+import { needsPackagedOrigin, needsPortableDwgExport, needsPortableDwgSave, processResult, childSucceeded, dwgProbeSucceeded, validateSmokeArchitecture, macDmgTargets } from '../scripts/packaged-smoke-policy.mjs';
 
 describe('portable DWG shipping gate', () => {
   it('requires actual Windows export probes starting with 0.4.6 and keeps older/platform-paused releases testable', () => {
@@ -9,6 +9,16 @@ describe('portable DWG shipping gate', () => {
     }
     for (const version of ['0.4.5', 'v0.4.4', '0.3.0']) expect(needsPortableDwgExport(version, 'win32')).toBe(false);
     expect(() => needsPortableDwgExport('invalid', 'win32')).toThrow(/Invalid packaged smoke version/);
+  });
+  it('requires normal Windows DWG Save and Save As evidence from 0.4.7 without invalidating older export-only releases', () => {
+    for (const version of ['0.4.7', '0.4.7-beta.1', 'v0.4.8', '0.5.0', '1.0.0']) {
+      expect(needsPortableDwgSave(version, 'win32')).toBe(true);
+      expect(needsPortableDwgExport(version, 'win32')).toBe(true);
+      for (const platform of ['darwin', 'linux']) expect(needsPortableDwgSave(version, platform)).toBe(false);
+    }
+    for (const version of ['0.4.6', 'v0.4.6', '0.4.6-beta.1', '0.4.5', '0.3.0']) expect(needsPortableDwgSave(version, 'win32')).toBe(false);
+    expect(needsPortableDwgExport('0.4.6', 'win32')).toBe(true);
+    expect(() => needsPortableDwgSave('invalid', 'win32')).toThrow(/Invalid packaged smoke version/);
   });
 });
 

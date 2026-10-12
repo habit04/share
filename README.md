@@ -255,7 +255,7 @@ keywords shown in `[brackets]` are clickable.
 | AEAUDIT | AUDIT | Electrical Audit dialog with jump-to-error |
 | NEWSHEET | TEMPLATE | New drawing from an ANSI / ISO sheet template with title block |
 | OPENPROJECT, NEWPROJECT, PROJECTADD, PROJECTSAVE, PROJECTSAVEAS | PROJECT | Project files (`*.jcadproj.json`) listing drawings, description lines and settings |
-| NEW, OPEN, SAVE, SAVEAS, PLOT, PRINT, RECENT | Ctrl+N / O / S / Shift+S / P / Shift+P | Files: DXF and DWG open, DXF save, PDF plot (vector by default; the Model tab, the current layout or all layouts), print through the system dialog (the browser edition builds the PDF in the page and prints through the browser's dialog). NEW / OPEN work in file tabs |
+| NEW, OPEN, SAVE, SAVEAS, PLOT, PRINT, RECENT | Ctrl+N / O / S / Shift+S / P / Shift+P | Files: DXF and DWG open; DXF save, plus portable DWG Save / Save As on Windows; PDF plot (vector by default; the Model tab, the current layout or all layouts); print through the system dialog (the browser edition builds the PDF in the page and prints through the browser's dialog). NEW / OPEN work in file tabs |
 | LAYOUT [Copy/Delete/New/Template/Rename/Set/?], LAYOUTWIZARD, PAGESETUP | LO | Paper-space layouts: a sheet with its paper size, orientation, margins, plot scale and plot style; the wizard adds a sheet border and title block |
 | MODEL, TILEMODE, MSPACE, PSPACE | MS, PS | Model tab / layouts; work inside a floating viewport (MSPACE) or on the paper (PSPACE) |
 | MVIEW [ON/OFF/Fit/Lock], MVSETUP [Create/Scale viewports], VPSCALE | MV | Floating viewports: two corners or Fit, on / off, view lock, scale (1:4, 2:1, 0.5XP ...) |
@@ -358,7 +358,8 @@ title block mapping (the `.wdt` text format: `ATTRIBUTE = SOURCE` lines with the
 templates and `"literal"` text). Project-wide commands work on every drawing of the project: the
 active drawing and other open tabs change in memory (Undo works, SAVE writes them); closed drawings
 are read from disk, listed in a confirmation dialog and written back as DXF (with an optional `.bak`
-copy) only when confirmed. DWG drawings are read-only and skipped; the browser edition only updates
+copy) only when confirmed. Closed DWG drawings are skipped; open them in tabs to update them and
+save to DWG on Windows or a DXF copy in other editions. The browser edition only updates
 drawings that are open in tabs. The Project Manager shows each drawing's installation / location codes
 and cross-reference status, and its context menu offers the project-wide commands.
 
@@ -513,9 +514,13 @@ The entity-by-entity table of what survives import and export is [docs/SUPPORT-M
   construction lines, solids, polyline bulges, entity/layer linetypes and lineweights and the
   header units / limits / dimension variables (arrows, tolerances, alternate units, text placement,
   fit, colours, DIMPOST / DIMAPOST, DIMRND, DIMLFAC, DIMZIN ...), splines, hatches, leaders,
-  multileaders, tables and images. SAVE writes a DXF next to the original. The Windows desktop
-  edition also exports AC1032 DWG copies through its bundled offline writer, without installed
-  AutoCAD; see [DWG saving](docs/DWG-SAVING.md) for supported content and refusal limits.
+  multileaders, tables and images. The Windows desktop edition saves AC1032 DWG through its
+  bundled offline writer, without installed AutoCAD: SAVE keeps an opened DWG's destination when
+  the writer is available, and SAVEAS offers DXF or DWG. Original-source overwrites warn about
+  content the importer could not keep. Validated output is saved atomically with a `.bak` copy;
+  failures leave the drawing modified and keep recovery records. EXPORTDWG writes a separate
+  copy without changing the working destination or saved state. Other editions save DXF copies;
+  see [DWG saving](docs/DWG-SAVING.md) for supported content and refusal limits.
   Sample files from the LibreDWG test suite live in `fixtures/` and are used
   by the tests. Mirrored and stretched block references keep their X/Y scales (circles and
   arcs inside a stretched block become polylines).

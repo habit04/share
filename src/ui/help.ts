@@ -2,6 +2,7 @@ import type { Editor, CommandDef } from '../app/editor';
 import { modal, button, tabbedDialog } from './dialogkit';
 import { esc } from './dom';
 import { aboutInfo, donateUrl, authorLinks, safeAboutUrl, licenseLineHtml, supportContact } from '../app/about';
+import { hasDwgSave } from '../app/drawing-save';
 
 /** Version compiled into the renderer (package.json version via Vite define). */
 export const APP_VERSION_LABEL: string = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : 'dev';
@@ -112,7 +113,7 @@ export function helpDialog(editor: Editor, query = ''): void {
   };
   about.innerHTML = `<p><b>JCad Electrical</b> <span class="help-version">${esc(APP_VERSION_LABEL)}</span> — 2D electrical schematic drafting.</p>
     <p>Type commands at the command line (AutoComplete lists matches as you type; Tab cycles, Enter accepts). Option keywords in [brackets] are clickable. Coordinates: <code>x,y</code>, <code>@dx,dy</code>, <code>@dist&lt;angle</code>, or type a distance while dragging.</p>
-    <p>Native DXF (AutoCAD 2000) save; DWG R14–2018 import; PDF plot; CSV reports. All artwork and symbol geometry are original.</p>
+    <p>Native DXF (AutoCAD 2000) save; ${hasDwgSave(editor.fileBridge) ? 'portable DWG save (Windows); ' : ''}DWG R14–2018 import; PDF plot; CSV reports. All artwork and symbol geometry are original.</p>
     <p class="help-update-row"></p>
     <div class="about-author"></div>
     <div class="about-donate"></div>

@@ -43,4 +43,9 @@ describe('fixed DWG shipping probe confinement', () => {
     const f = load(root), originalDialog = f.dialog.showSaveDialog; await expect(f.run()).rejects.toMatchObject({ code: 'EEXIST' });
     expect(readFileSync(target, 'utf8')).toBe('existing file'); expect(f.executeJavaScript).not.toHaveBeenCalled(); expect(f.dialog.showSaveDialog).toBe(originalDialog);
   });
+  it('never overwrites a pre-existing normal Save As destination in the temporary profile', async () => {
+    const root = profile(); writeFileSync(join(root, 'shipping-startup.dxf'), 'fixture'); const target = join(root, 'shipping-normal-save.dwg'); writeFileSync(target, 'existing normal save');
+    const f = load(root), originalDialog = f.dialog.showSaveDialog; await expect(f.run()).rejects.toMatchObject({ code: 'EEXIST' });
+    expect(readFileSync(target, 'utf8')).toBe('existing normal save'); expect(f.executeJavaScript).not.toHaveBeenCalled(); expect(f.dialog.showSaveDialog).toBe(originalDialog);
+  });
 });

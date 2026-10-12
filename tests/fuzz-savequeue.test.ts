@@ -219,9 +219,10 @@ describe('save queue fuzzing regressions', () => {
     expect(src).toMatch(/const ipcMain = guardIpc\(rawIpcMain,/);
     expect(src).not.toMatch(/rawIpcMain\.(handle|on|once)\(/);
     expect(body).toMatch(/senderWindow\(ev\)/);
-    // The chosen file becomes writable through the path registry, as a .dxf file only; a name typed without
-    // the extension is completed (and asked about when that file exists) before anything is granted.
-    expect(body).toMatch(/const file = await completeSavePath\(win, res\.filePath, DXF_FILE, '\.dxf'\);\s*if \(!file\) return null;\s*registry\.grant\(file\);\s*return file;/);
+    // The chosen drawing becomes writable only after its supported extension is validated and
+    // completed (with confirmation when that completed path exists). Format behavior is exercised
+    // through the actual IPC handlers in portable-dwg-ipc.test.ts.
+    expect(body).toMatch(/const file = await completeSavePath\(win, res\.filePath,[^;]+;\s*if \(!file \|\| pathPolicy\.shapeProblem\(file\)\) return null;\s*registry\.grant\(file\);\s*return file;/);
     const helper = src.slice(src.indexOf('async function completeSavePath('), src.indexOf('ipcMain.handle(', src.indexOf('async function completeSavePath(')));
     expect(helper).toMatch(/const file = type\.test\(chosen\) \? chosen : `\$\{chosen\}\$\{ext\}`;/);
     expect(helper).toMatch(/dialog\.showMessageBox\(win,[\s\S]*buttons: \['Replace', 'Cancel'\][\s\S]*cancelId: 1/);
@@ -233,6 +234,6 @@ describe('save queue fuzzing regressions', () => {
     expect(project).toMatch(/const file = await completeSavePath\(win, res\.filePath, PROJECT_FILE, '\.jcadproj\.json'\);\s*if \(!file\) return null;\s*registry\.grant\(file\);/);
     expect(body).not.toMatch(/writeUserFile|atomicWriteFile/);
     const preload = readFileSync(new URL('../electron/preload.cjs', import.meta.url), 'utf8');
-    expect(preload).toMatch(/chooseDrawingPath: \(suggestName\) => ipcRenderer\.invoke\('choose-drawing-path'/);
+    expect(preload).toMatch(/chooseDrawingPath: \(suggestName, format\) => ipcRenderer\.invoke\('choose-drawing-path', String\(suggestName \|\| ''\), format\)/);
   });
 });

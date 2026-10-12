@@ -15,6 +15,7 @@ import { isAbsolutePath } from '../paths';
 import { saveSettings, pushRecent } from '../settings';
 import { describeFileError } from '../file-errors';
 import { readDxfForOpen, reportNeedsAttention, importReportLog, importReportOf } from '../import-open';
+import { hasDwgSave } from '../drawing-save';
 import type { Editor } from './editor';
 import { fallbackUi } from './internals';
 
@@ -90,19 +91,19 @@ export async function openFile(ed: Editor, file?: string): Promise<boolean> {
       ed.log(file ? `Opening ${file} ...` : 'Opening ...');
       const res = await ed.fileBridge.openDrawing(file);
       if (!res) return false;
-      if (res.kind === 'dxf' && showAlreadyOpen(ed, res.path, targetId, before)) return true;
+      const writableDwg = res.kind === 'dwg' && hasDwgSave(ed.fileBridge);
+      if ((res.kind === 'dxf' || writableDwg) && showAlreadyOpen(ed, res.path, targetId, before)) return true;
       if (res.kind === 'dwg') {
         const { state, skipped, notes } = convertDwg(res.payload, res.path);
-        // DWG is read-only for us: keep the file untitled so SAVE asks where to write the DXF copy.
-        const where = deliverOpened(ed, targetId, before, state, null, true);
+        const where = deliverOpened(ed, targetId, before, state, writableDwg ? res.path : null, !writableDwg);
         rememberRecent(ed, res.path);
-        if (where === 'active' || where === 'new-tab') ed.suggestedName = res.path.replace(/\.dwg$/i, '.dxf').split(/[\\/]/).pop() ?? null;
+        if (where === 'active' || where === 'new-tab') ed.suggestedName = writableDwg ? null : res.path.replace(/\.dwg$/i, '.dxf').split(/[\\/]/).pop() ?? null;
         const skippedText = Object.keys(skipped).length
           ? ` Skipped unsupported: ${Object.entries(skipped).map(([k, v]) => `${k}×${v}`).join(', ')}.`
           : '';
         ed.log(`Imported DWG ${res.path} (${res.version || 'unknown version'}): ${state.entities.length} entities, ${state.layers.length} layers, ${Object.keys(state.blocks).length} blocks.${skippedText}`);
         for (const n of notes) ed.log(`DWG import: ${n}`);
-        ed.log('DWG import is read-only; use SAVE to write a DXF copy next to the original.');
+        ed.log(writableDwg ? 'Save writes this DWG with the portable writer. Save As can choose DWG or DXF; review the import report before replacing the original.' : 'DWG import is read-only in this edition; use SAVE to write a DXF copy next to the original.');
         ed.notify('file');
         showOpenedReport(ed, where, state, res.path);
         return true;

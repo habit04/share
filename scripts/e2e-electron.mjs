@@ -472,7 +472,10 @@ try {
     // The worker was terminated; the next read starts a fresh one.
     await app.evaluate((_e, p) => globalThis.__e2e.openPaths.push(p), fixtures.dwg);
     h = await historyLen();
-    await win.evaluate(() => void window.editor.runCommand('OPEN'));
+    // Windows DWGs now stay bound to their tab. Reload that tab so this check exercises
+    // a fresh reader rather than Open's already-open-tab shortcut.
+    if (await win.evaluate(() => typeof window.jcad.saveDwg === 'function')) await win.evaluate(() => void window.editor.openFile());
+    else await win.evaluate(() => void window.editor.runCommand('OPEN'));
     await waitLog(/^(Imported DWG|Failed to open)/, h, 90_000).catch(() => bad('no result after the cancelled read'));
     log = await logSince(h);
     check(log.some((l) => l.startsWith('Imported DWG')), `a DWG opens again after Cancel: ${log.filter((l) => /Imported|Failed/.test(l)).join(' | ')}`);

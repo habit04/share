@@ -16,6 +16,13 @@ export function needsPortableDwgExport(version, platform = process.platform) {
   return platform === 'win32' && (major > 0 || minor > 4 || (minor === 4 && patch >= 6));
 }
 
+export function needsPortableDwgSave(version, platform = process.platform) {
+  const parsed = versionTools.parseVersion(version);
+  if (!parsed) throw new Error(`Invalid packaged smoke version: ${version}`);
+  const [major, minor, patch] = parsed.parts;
+  return platform === 'win32' && (major > 0 || minor > 4 || (minor === 4 && patch >= 7));
+}
+
 export function processResult(result) {
   if (result.error) return `error: ${result.error.message}`;
   if (result.signal) return `signal: ${result.signal}`;

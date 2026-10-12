@@ -16,6 +16,7 @@ import {
   formatImportReport,
   saveOverwriteWarning,
   withImportData,
+  withDwgRecoveryWarning,
   ImportReportBuilder,
   MAX_REPORT_ITEMS,
   type ImportReportItem,
@@ -50,6 +51,29 @@ function entitiesSection(text: string): Array<[number, string]> {
 const entityKinds = (text: string) => entitiesSection(text).filter(([c]) => c === 0).map(([, v]) => v);
 
 describe('import report of unsupported DXF content', () => {
+  it('warns about unreadable DWG metadata even when no drawing objects were dropped', () => {
+    const b = new ImportReportBuilder();
+    b.add({ type: 'XDATA', action: 'unsupported', reason: 'Not exposed by the DWG reader' });
+    const imported = withImportData(new Drawing().snapshot, b.build('DWG', '/d/source.dwg'));
+    expect(lossCount(importReportOf(imported)!)).toBe(0);
+    expect(saveOverwriteWarning(imported, '/d/source.dwg')).toMatch(/properties JCad cannot read.*Save As/);
+    expect(saveOverwriteWarning(imported, '/d/copy.dwg')).toBeNull();
+  });
+
+  it('restores source-loss caution after DWG recovery from a DXF autosave', () => {
+    const original = new Drawing();
+    original.addEntities([{ id: 'recovered-line', type: 'line', layer: '0', color: 'ByLayer', a: { x: 0, y: 0 }, b: { x: 2, y: 3 } }]);
+    const snapshot = readDxf(writeDxf(original.snapshot), { filePath: '/d/original.dwg' });
+    expect(importReportOf(snapshot)).toBeUndefined();
+    const recovered = withDwgRecoveryWarning(snapshot, '/d/original.dwg');
+    expect(recovered.entities).toBe(snapshot.entities);
+    expect(importReportOf(snapshot)).toBeUndefined();
+    expect(importReportOf(recovered)).toMatchObject({ format: 'DWG', sourcePath: '/d/original.dwg' });
+    expect(saveOverwriteWarning(recovered, '/d/original.dwg')).toMatch(/properties JCad cannot read/);
+    expect(saveOverwriteWarning(recovered, '/d/copy.dwg')).toBeNull();
+    expect(withDwgRecoveryWarning(snapshot, '/d/source.dxf')).toBe(snapshot);
+  });
+
   it('records type, handle, layer, place and reason of every dropped, simplified or kept object', () => {
     expect(report.format).toBe('DXF');
     expect(report.sourcePath).toBe(SOURCE);

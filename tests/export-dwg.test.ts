@@ -123,7 +123,7 @@ describe('portable DWG export coordination', () => {
     expect(copy.blocks[LIBRARY_SYMBOLS[0]!.name]).toBeUndefined();
     expect(Object.keys(copy.blocks).length).toBeLessThan(Object.keys(state.blocks).length);
     expect(copy.blocks.WD_TITLEBLOCK).toBeDefined(); // Drawing-private blocks are retained.
-    expect(f.logs.join('\n')).toMatch(/Save the working drawing separately as DXF/);
+    expect(f.logs.join('\n')).toMatch(/Save the working drawing separately to keep edits/);
   });
 
   it('preserves an already clean DXF document as clean after exporting', async () => {

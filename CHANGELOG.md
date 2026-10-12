@@ -11,6 +11,32 @@ messages). The date of each version is the date of the commit that set that vers
 
 ## [Unreleased]
 
+## [0.4.7] - 2026-10-12
+
+### Upgrade notes
+
+- Windows Save and Save As now support DWG without installed AutoCAD. Review import warnings
+  before replacing an existing DWG, or use Save As to keep the original. macOS and Linux
+  desktop updates remain paused at 0.4.5.
+
+### Added
+
+- Windows **Save As** offers DWG or DXF. A DWG saved with Save As becomes the working file,
+  and **Save** writes subsequent edits back to it without installed AutoCAD. Opening a DWG
+  retains its filename for normal saving.
+- Normal DWG saves use the bundled AutoCAD 2018-format writer, independent round-trip checks,
+  per-file save ordering, atomic replacement and an exact previous-file `.bak`. Conversion
+  failures keep unsaved edits and recovery copies.
+
+### Fixed
+
+- Saving over an imported or recovered DWG warns about content JCad could not retain,
+  including unreadable metadata. Choose Save As to preserve the original file.
+- Explicit DXF export controls keep their DXF-only destination picker. **Export DWG copy**
+  continues to create a separate copy without changing the working file or saved state.
+- Windows installed-release checks exercise DWG Save As, in-place Save and semantic reopen
+  on a fresh Windows runner that verifies AutoCAD is absent before installation.
+
 ## [0.4.6] - 2026-10-12
 
 ### Upgrade notes
@@ -919,7 +945,8 @@ First release.
 
 - Renamed the application to JCad Electrical.
 
-[Unreleased]: https://github.com/habit04/share/compare/v0.4.6...HEAD
+[Unreleased]: https://github.com/habit04/share/compare/v0.4.7...HEAD
+[0.4.7]: https://github.com/habit04/share/compare/v0.4.6...v0.4.7
 [0.4.6]: https://github.com/habit04/share/compare/v0.4.5...v0.4.6
 [0.4.5]: https://github.com/habit04/share/compare/v0.4.4...v0.4.5
 [0.4.4]: https://github.com/habit04/share/compare/v0.4.3...v0.4.4

@@ -25,7 +25,8 @@ export function importReportDialog(report: ImportReport, fileName: string): void
       (kept ? `, <b>${kept}</b> kept without being shown (written back on save)` : '') +
       (unsupported ? `, <b>${unsupported}</b> not supported yet` : '') +
       '.' +
-      (loss && !report.recovered && report.format === 'DXF' ? ' Saving over the original file removes the dropped content: use Save As to keep the original.' : ''),
+      (loss && !report.recovered && report.format === 'DXF' ? ' Saving over the original file removes the dropped content: use Save As to keep the original.' : '') +
+      ((loss || unsupported) && !report.recovered && report.format === 'DWG' ? ' Saving over the original file may remove content JCad could not keep: use Save As to keep the original.' : ''),
   );
   intro.innerHTML = parts.join('<br>');
   const counts = document.createElement('ul');
