@@ -49,6 +49,8 @@ export type BackupResult = { ok: true; path: string } | { ok: false; error: stri
 export type SaveErrorChoice = 'retry' | 'saveas' | 'cancel';
 
 export interface FileBridge {
+  /** Desktop platform; absent for the browser file bridge. */
+  platform?: string;
   openDxf(): Promise<{ path: string; text: string } | null>;
   /** Desktop only: open DXF or DWG (DWG parsed by LibreDWG in the main process). */
   openDrawing?(file?: string): Promise<OpenResult | null>;
@@ -62,6 +64,12 @@ export interface FileBridge {
    * Save As is written through the per-file save queue like every other save of that file.
    */
   chooseDrawingPath?(suggestName: string): Promise<string | null>;
+  /** Windows only: whether the packaged portable DWG writer is available. */
+  dwgExportStatus?(): Promise<{ available: boolean; reason?: string }>;
+  /** Windows only: choose a DWG export destination without writing it yet. */
+  chooseDwgPath?(suggestName: string): Promise<string | null>;
+  /** Windows only: write a DWG copy of the captured DXF with the packaged portable writer. */
+  exportDwg?(path: string, text: string): Promise<string | null>;
   /**
    * Read a project file: through the Open Project dialog without `file`, else by name. `userChosen`
    * is a compatibility hint only; the main process controls authorization from native choices.

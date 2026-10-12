@@ -25,6 +25,11 @@
           "before": "FIELD_BL (bg_fill_scale, 45)",
           "after": "FIELD_BD (bg_fill_scale, 45)",
           "count": 1
+        },
+        {
+          "before": "    // XRECORD subclass\n    SINCE (R_2010b) {\n      FIELD_RC (keep_duplicate_records, 0);\n      VALUEOUTOFBOUNDS (keep_duplicate_records, 1)\n    }\n  }\n  COMMON_ENTITY_HANDLE_DATA;\n  SINCE (R_13b1) {\n    FIELD_HANDLE (style, 5, 0); // unexpected here in DXF\n  }",
+          "after": "    // A DWG ATTRIB ends at lock_position_flag (ODA 20.4.4).\n    // Preserve the DXF/export projection without decoding an extra byte.\n#ifndef IS_DECODER\n    // XRECORD subclass\n    SINCE (R_2010b) {\n      FIELD_RC (keep_duplicate_records, 0);\n      VALUEOUTOFBOUNDS (keep_duplicate_records, 1)\n    }\n#endif\n  }\n  COMMON_ENTITY_HANDLE_DATA;\n  SINCE (R_13b1) {\n    FIELD_HANDLE (style, 5, 0); // unexpected here in DXF\n  }",
+          "count": 1
         }
       ]
     },
@@ -78,6 +83,81 @@
         {
           "before": "    auto color = reinterpret_cast<Dwg_Color*>(&((char *)_obj)[f->offset]);\n    auto js_object = color_to_js_object(color);\n    result.set(\"data\", js_object);",
           "after": "    auto color = reinterpret_cast<Dwg_Color*>(&((char *)_obj)[f->offset]);\n    // CMC strings are TU in R2007+; the shared numeric projection has no version context.\n    // Supply empty strings there, then project the names here with the owning DWG version.\n    Dwg_Color numeric_color = *color;\n    numeric_color.name = const_cast<char*>(\"\");\n    numeric_color.book_name = const_cast<char*>(\"\");\n    auto js_object = color_to_js_object(&numeric_color);\n    const auto color_string = [dwg](const char *text) -> std::string {\n      if (!text)\n        return std::string();\n      if (dwg && IS_FROM_TU_DWG(dwg)) {\n        std::unique_ptr<char, decltype(&free)> utf8(\n          bit_convert_TU(reinterpret_cast<BITCODE_TU>(const_cast<char*>(text))), &free);\n        return utf8 ? std::string(utf8.get()) : std::string();\n      }\n      // R2004 names keep their existing code-page bytes for the JS layer to decode.\n      return std::string(text);\n    };\n    js_object.set(\"name\", color_string(color->name));\n    js_object.set(\"book_name\", color_string(color->book_name));\n    result.set(\"data\", js_object);",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "path": "bindings/javascript/embind/binding_common.cpp",
+      "gitBlob": "bc74e1696f95186d8a0c6535ae10e2ab674228fa",
+      "replacements": [
+        {
+          "before": "#include <cstdlib>",
+          "after": "#include <cstdlib>\n#include <memory>",
+          "count": 1
+        },
+        {
+          "before": "  color_obj.set(\"alpha\", color->alpha);\n  return color_obj;",
+          "after": "  color_obj.set(\"alpha\", color->alpha);\n  // Borrowed native reference pointer, never an inferred palette/handle value.\n  color_obj.set(\"handle\", reinterpret_cast<uintptr_t>(color->handle));\n  return color_obj;",
+          "count": 1
+        },
+        {
+          "before": "emscripten::val dwg_object_entity_get_color_object_wrapper(Dwg_Object_Entity_Ptr ent_ptr) {\n  Dwg_Object_Entity* ent = reinterpret_cast<Dwg_Object_Entity*>(ent_ptr);\n  int error = 0;\n  const Dwg_Color* color = dwg_ent_get_color(ent, &error);\n  return color_to_js_object(color);\n}",
+          "after": "emscripten::val dwg_object_entity_get_color_object_wrapper(Dwg_Object_Entity_Ptr ent_ptr) {\n  Dwg_Object_Entity* ent = reinterpret_cast<Dwg_Object_Entity*>(ent_ptr);\n  int error = 0;\n  const Dwg_Color* color = dwg_ent_get_color(ent, &error);\n  if (!ent || error || !color)\n    return emscripten::val::null();\n  Dwg_Color effective = *color;\n  const bool has_reference = color->handle || (color->flag & 0x40);\n  bool reference_resolved = !has_reference;\n  bool names_are_tu = false;\n  if (has_reference && color->handle && ent->dwg) {\n    Dwg_Object* owner = dwg_ent_to_object(ent, &error);\n    Dwg_Object* target = (!error && owner)\n      ? dwg_ref_object_relative(ent->dwg, color->handle, owner) : nullptr;\n    if (target && target->fixedtype == DWG_TYPE_DBCOLOR\n        && target->supertype == DWG_SUPERTYPE_OBJECT && target->tio.object\n        && target->tio.object->tio.DBCOLOR) {\n      const Dwg_Color* referenced = &target->tio.object->tio.DBCOLOR->color;\n      // Exact DBCOLOR supplies appearance; the entity keeps its ACI fallback and alpha.\n      effective.rgb = referenced->rgb;\n      effective.method = referenced->method;\n      effective.name = referenced->name;\n      effective.book_name = referenced->book_name;\n      names_are_tu = IS_FROM_TU_DWG(ent->dwg);\n      reference_resolved = true;\n    }\n  }\n  // Unresolved references have no certified appearance. ENC fallback strings are TV,\n  // while resolved DBCOLOR CMC names are TU in R2007+; never reinterpret their origin.\n  if (has_reference && !reference_resolved) {\n    effective.name = nullptr;\n    effective.book_name = nullptr;\n  }\n  // The shared projection has no owning version context; never pass it TU/null names.\n  Dwg_Color numeric = effective;\n  numeric.name = const_cast<char*>(\"\");\n  numeric.book_name = const_cast<char*>(\"\");\n  auto result = color_to_js_object(&numeric);\n  const auto color_string = [names_are_tu](const char* value) -> std::string {\n    if (!value)\n      return std::string();\n    if (names_are_tu) {\n      std::unique_ptr<char, decltype(&free)> utf8(\n        bit_convert_TU(reinterpret_cast<BITCODE_TU>(const_cast<char*>(value))), &free);\n      return utf8 ? std::string(utf8.get()) : std::string();\n    }\n    return std::string(value);\n  };\n  result.set(\"name\", color_string(effective.name));\n  result.set(\"book_name\", color_string(effective.book_name));\n  result.set(\"hasReference\", has_reference);\n  result.set(\"referenceResolved\", reference_resolved);\n  return result;\n}",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "path": "bindings/javascript/embind/binding_ent.cpp",
+      "gitBlob": "d73c9cef32d09aa495af38b86a183a9bc2039312",
+      "replacements": [
+        {
+          "before": "emscripten::val dwg_entity_insert_get_attribs_wrapper(Dwg_Object_Entity_Ptr obj_ptr) {\n  Dwg_Entity_INSERT* ent = reinterpret_cast<Dwg_Entity_INSERT*>(obj_ptr);\n  emscripten::val result = emscripten::val::object();\n  emscripten::val attribs = emscripten::val::array();\n  result.set(\"data\", attribs);\n\n  if (!ent || !ent->has_attribs) {\n    return result;\n  }\n\n  Dwg_Object *o;\n\n  // R_2004a+ storage: owned handle vector. AC1018+ DWGs use this path.\n  if (ent->num_owned > 0 && ent->attribs) {\n    for (BITCODE_BL j = 0; j < ent->num_owned; j++) {\n      o = ent->attribs[j] ? ent->attribs[j]->obj : NULL;\n      if (o && o->fixedtype == DWG_TYPE_ATTRIB) {\n        attribs.call<void>(\"push\", reinterpret_cast<uintptr_t>(o));\n      }\n    }\n    return result;\n  }\n\n  // R_13b1..R_2000 storage: linked list walk from first_attrib to last_attrib.\n  // AC1015 (R_2000) DWGs never populate num_owned/attribs[] — the attribs are\n  // reachable only as consecutive objects between first_attrib and last_attrib.\n  if (ent->first_attrib && ent->first_attrib->obj) {\n    Dwg_Object *first = ent->first_attrib->obj;\n    Dwg_Object *last  = ent->last_attrib ? ent->last_attrib->obj : NULL;\n    o = first;\n    // Safety cap to avoid runaway loops on corrupt files.\n    for (unsigned int guard = 0; o && guard < 100000; guard++) {\n      if (o->fixedtype == DWG_TYPE_ATTRIB) {\n        attribs.call<void>(\"push\", reinterpret_cast<uintptr_t>(o));\n      }\n      if (o == last) break;\n      o = dwg_next_object(o);\n    }\n  }\n\n  return result;\n}\n",
+          "after": "emscripten::val dwg_entity_insert_get_attribs_wrapper(Dwg_Object_Entity_Ptr obj_ptr) {\n  emscripten::val result = emscripten::val::object();\n  emscripten::val attribs = emscripten::val::array();\n  result.set(\"data\", attribs);\n\n  if (!obj_ptr) return result;\n  int error = 0;\n  Dwg_Object* owner = dwg_ent_generic_to_object(reinterpret_cast<void*>(obj_ptr), &error);\n  if (error || !owner) return result;\n  BITCODE_B has_attribs = 0;\n  BITCODE_BL num_owned = 0;\n  BITCODE_H* owned_attribs = nullptr;\n  BITCODE_H first_attrib = nullptr, last_attrib = nullptr;\n  // MINSERT has array fields before its handles; INSERT has them after.\n  // The JS conversion discriminator must never select a native struct layout.\n  if (owner->fixedtype == DWG_TYPE_MINSERT) {\n    const auto ent = reinterpret_cast<Dwg_Entity_MINSERT*>(obj_ptr);\n    has_attribs = ent->has_attribs;\n    num_owned = ent->num_owned;\n    owned_attribs = ent->attribs;\n    first_attrib = ent->first_attrib;\n    last_attrib = ent->last_attrib;\n  } else if (owner->fixedtype == DWG_TYPE_INSERT) {\n    const auto base = reinterpret_cast<Dwg_Entity_INSERT*>(obj_ptr);\n    has_attribs = base->has_attribs;\n    num_owned = base->num_owned;\n    owned_attribs = base->attribs;\n    first_attrib = base->first_attrib;\n    last_attrib = base->last_attrib;\n  } else return result;\n  if (!has_attribs) return result;\n\n  Dwg_Object *o;\n\n  // R_2004a+ storage: owned handle vector. AC1018+ DWGs use this path.\n  if (num_owned > 0 && owned_attribs) {\n    for (BITCODE_BL j = 0; j < num_owned; j++) {\n      o = owned_attribs[j] ? owned_attribs[j]->obj : NULL;\n      if (o && o->fixedtype == DWG_TYPE_ATTRIB) {\n        attribs.call<void>(\"push\", reinterpret_cast<uintptr_t>(o));\n      }\n    }\n    return result;\n  }\n\n  // R_13b1..R_2000 storage: linked list walk from first_attrib to last_attrib.\n  // AC1015 (R_2000) DWGs never populate num_owned/attribs[] — the attribs are\n  // reachable only as consecutive objects between first_attrib and last_attrib.\n  if (first_attrib && first_attrib->obj) {\n    Dwg_Object *first = first_attrib->obj;\n    Dwg_Object *last  = last_attrib ? last_attrib->obj : NULL;\n    o = first;\n    // Safety cap to avoid runaway loops on corrupt files.\n    for (unsigned int guard = 0; o && guard < 100000; guard++) {\n      if (o->fixedtype == DWG_TYPE_ATTRIB) {\n        attribs.call<void>(\"push\", reinterpret_cast<uintptr_t>(o));\n      }\n      if (o == last) break;\n      o = dwg_next_object(o);\n    }\n  }\n\n  return result;\n}\n",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "path": "src/common_entity_data.spec",
+      "gitBlob": "20c47b9053bc97e610310aa075ea572a09d6745b",
+      "replacements": [
+        {
+          "before": "#ifndef IS_ENCODER\n          FIELD_HANDLE (color.handle, 0, 430); // DBCOLOR 1E9F74 => 1F05B9\n#endif",
+          "after": "#if !defined(IS_ENCODER) && !defined(IS_DECODER)\n          // Decoder consumes this reference after owner/reactors/xdic, before layer.\n          FIELD_HANDLE (color.handle, 0, 430); // DBCOLOR 1E9F74 => 1F05B9\n#endif",
+          "count": 1
+        },
+        {
+          "before": "      flags = _ent->color.flag;\n      if (flags & 0x20)",
+          "after": "      flags = _ent->color.flag;\n#ifdef IS_DECODER\n      // ENC stores inline RGB before alpha. Referenced book colors carry no RGB BL.\n      if ((flags & 0x80) && !(flags & 0x40))\n        {\n          FIELD_BLx (color.rgb, 420);\n        }\n#endif\n      if (flags & 0x20)",
+          "count": 1
+        },
+        {
+          "before": "      else if (flags & 0x80) // and not a reference\n        {\n          DXF {\n            VALUE_BL (_ent->color.rgb & 0x00ffffff, 420);\n          } else {\n            FIELD_BLx (color.rgb, 420); // ODA bug, documented as BS\n          }\n        }",
+          "after": "      else if (flags & 0x80) // and not a reference\n        {\n#ifndef IS_DECODER\n          DXF {\n            VALUE_BL (_ent->color.rgb & 0x00ffffff, 420);\n          } else {\n            FIELD_BLx (color.rgb, 420); // ODA bug, documented as BS\n          }\n#endif\n        }",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "path": "src/decode.c",
+      "gitBlob": "a050372799e4216a5735f1622186c4623c95ede6",
+      "replacements": [
+        {
+          "before": "  // deferred from common_entity_data, which has no hdl_dat\n  if (dat->from_version >= R_2007 && _ent->color.flag & 0x40)\n    FIELD_HANDLE (color.handle, 0, 430);\n",
+          "after": "  // The shared handle spec consumes the color reference once, after the\n  // owner/reactors/xdic prefix and before the R2000+ layer reference.\n",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "path": "src/common_entity_handle_data.spec",
+      "gitBlob": "a0dffb7a1b4ab79d6198d7a401825f29c3af31ed",
+      "replacements": [
+        {
+          "before": "  SINCE (R_2000b)\n    {\n      FIELD_HANDLE (layer, 5, 8);",
+          "after": "#ifdef IS_DECODER\n  // R2004+ ENC references follow owner/reactors/xdic and legacy handles.\n  // Consume exactly once before the R2000+ layer reference.\n  SINCE (R_2004a)\n    {\n      if (_ent->color.flag & 0x40)\n        FIELD_HANDLE (color.handle, 0, 430);\n    }\n#endif\n\n  SINCE (R_2000b)\n    {\n      FIELD_HANDLE (layer, 5, 8);",
           "count": 1
         }
       ]

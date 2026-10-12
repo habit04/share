@@ -10,6 +10,10 @@ on:
       - scripts/native-dwg-build/**
       - tests/fixtures/interchange/r2018-mtext-background.dwg
       - tests/fixtures/interchange/r2018-mtext-background.expected.json
+      - tests/fixtures/interchange/r2018-portable-appearance.dwg
+      - tests/fixtures/interchange/r2018-portable-appearance.expected.json
+      - tests/fixtures/interchange/r2018-native-shipping.dwg
+      - tests/fixtures/interchange/r2018-native-shipping.expected.json
 
 permissions:
   contents: read
@@ -50,6 +54,8 @@ jobs:
           set -euo pipefail
           test -f tests/fixtures/interchange/r2018-mtext-background.dwg
           test -f tests/fixtures/interchange/r2018-mtext-background.expected.json
+          test -f tests/fixtures/interchange/r2018-portable-appearance.dwg
+          test -f tests/fixtures/interchange/r2018-native-shipping.dwg
           node --test scripts/native-dwg-build/tooling.test.mjs
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y autoconf automake libtool build-essential pkg-config python3 git zlib1g-dev texinfo
@@ -90,6 +96,7 @@ jobs:
           "$NATIVE_DECLARATION_TOOLS/node_modules/.bin/tsc" --outFile "$NATIVE_DECLARATION_TOOLS/probe.d.ts" --skipLibCheck --declaration --emitDeclarationOnly --allowJs "$NATIVE_DECLARATION_TOOLS/probe.js"
           test -s "$NATIVE_DECLARATION_TOOLS/probe.d.ts"
       - name: Compile matching factory glue and WASM using upstream build scripts
+        id: native_compile
         timeout-minutes: 40
         shell: bash
         run: |
@@ -110,6 +117,12 @@ jobs:
         run: |
           set -euo pipefail
           timeout 90s node scripts/native-dwg-build/validate-fixture.mjs "$NATIVE_ARTIFACT/factory/libredwg-web.js" "$NATIVE_ARTIFACT/factory/libredwg-web.wasm" tests/fixtures/interchange/r2018-mtext-background.dwg tests/fixtures/interchange/r2018-mtext-background.expected.json "$NATIVE_ARTIFACT/fixture-report.json"
+      - name: Exact native color reference and MINSERT attribute gate
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 90s node scripts/native-dwg-build/validate-appearance-fixture.mjs "$NATIVE_ARTIFACT/factory/libredwg-web.js" "$NATIVE_ARTIFACT/factory/libredwg-web.wasm" tests/fixtures/interchange/r2018-portable-appearance.dwg tests/fixtures/interchange/r2018-portable-appearance.expected.json tests/fixtures/interchange/r2018-native-shipping.dwg tests/fixtures/interchange/r2018-native-shipping.expected.json "$NATIVE_ARTIFACT/appearance-report.json"
       - name: Package corresponding source, license, checked patch and SHA256 provenance
         shell: bash
         run: |
@@ -125,3 +138,23 @@ jobs:
           path: ${{ runner.temp }}/native-dwg-artifact/
           if-no-files-found: error
           retention-days: 30
+      - name: Preserve unverified native diagnostics after a failed gate
+        id: native_diagnostics
+        if: failure() && steps.native_compile.conclusion == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          NATIVE_DIAGNOSTIC="$RUNNER_TEMP/native-dwg-unverified-diagnostic"
+          mkdir -p "$NATIVE_DIAGNOSTIC/factory"
+          cp "$NATIVE_ARTIFACT/factory/libredwg-web.js" "$NATIVE_ARTIFACT/factory/libredwg-web.wasm" "$NATIVE_ARTIFACT/factory/package.json" "$NATIVE_DIAGNOSTIC/factory/"
+          cp "$NATIVE_SOURCE/COPYING" "$NATIVE_DIAGNOSTIC/COPYING"
+          cp scripts/native-dwg-build/mtext-background-scale.patch.json scripts/native-dwg-build/pins.json "$NATIVE_DIAGNOSTIC/"
+          tar --exclude=.git --exclude=build-wasm --exclude=node_modules -czf "$NATIVE_DIAGNOSTIC/modified-source.tar.gz" -C "$NATIVE_SOURCE" .
+          printf '%s\n' 'UNVERIFIED DIAGNOSTIC ONLY. A native acceptance gate failed. Do not integrate this factory/WASM into JCad. It has no accepted provenance contract.' > "$NATIVE_DIAGNOSTIC/README.txt"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: failure() && steps.native_diagnostics.conclusion == 'success'
+        with:
+          name: UNVERIFIED-native-dwg-diagnostics-${{ github.sha }}
+          path: ${{ runner.temp }}/native-dwg-unverified-diagnostic/
+          if-no-files-found: error
+          retention-days: 7

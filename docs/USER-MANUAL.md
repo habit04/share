@@ -1357,10 +1357,15 @@ exceed it between checks. Only one DWG is parsed at a time, and converted result
 are refused. A refused or cancelled open reports the reason and leaves the current drawing as
 it was. DXF files and projects have size limits too (128 MiB and 8 MiB).
 
-DWG is **read-only**: JCad Electrical cannot write DWG files. When you save a drawing that
-was opened from a DWG, you are asked for a new file name and a DXF is written; the original
-DWG is not changed. Most CAD programs, including AutoCAD, open DXF files and can save them
-back as DWG if you need one.
+When you use SAVE on a drawing opened from DWG, you are asked for a DXF destination.
+The Windows desktop edition also offers **J menu > Export > DWG copy** or **EXPORTDWG**.
+Its bundled writer creates an AutoCAD 2018-format DWG without installed AutoCAD. Exporting
+a copy keeps your DXF working destination, unsaved edits, undo history and recovery records.
+Use SAVE to save the working drawing. Export cannot restore content lost during import;
+review IMPORTREPORT and keep the original. Unsupported retained 3D/ACIS objects and detected
+conversion differences refuse export while preserving the destination. See
+[DWG saving](DWG-SAVING.md) for supported content and memory/file limits. Browser export remains
+DXF; macOS and Linux desktop updates are paused at 0.4.5.
 
 ### What Undo covers
 

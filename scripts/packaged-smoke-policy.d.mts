@@ -1,5 +1,6 @@
 import type { SpawnSyncReturns } from 'node:child_process';
 export function needsPackagedOrigin(version: string): boolean;
+export function needsPortableDwgExport(version: string, platform?: string): boolean;
 export function processResult(result: Pick<SpawnSyncReturns<Buffer>, 'status' | 'signal' | 'error'>): string;
 export function childSucceeded(result: Pick<SpawnSyncReturns<Buffer>, 'status' | 'signal' | 'error'>): boolean;
 export function dwgProbeSucceeded(result: Pick<SpawnSyncReturns<Buffer>, 'status' | 'signal' | 'error'>, line: string, version?: string): boolean;

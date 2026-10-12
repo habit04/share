@@ -2,10 +2,11 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, realpathSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, realpathSync, lstatSync, copyFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { verifyExecutableFuses } from './electron-fuse-policy.mjs';
+import { needsPortableDwgExport } from './packaged-smoke-policy.mjs';
 
 const repo = resolve(import.meta.dirname, '..');
 const source = process.argv[2] === '--source';
@@ -59,6 +60,16 @@ w.webContents.session.flushStorageData(); w.destroy(); app.quit();
     launches.push(result);
   }
   assert.ok(existsSync(`${fixture}.bak`), 'A real drawing save must preserve its backup');
+  let portableDwg = null;
+  if (needsPortableDwgExport(expectedVersion)) {
+    const output = run(executable, [...appArgs, '--probe-startup=dwg', `--user-data-dir=${profile}`, realpathSync.native(fixture)]);
+    const line = output.split(/\r?\n/).find(entry => entry.startsWith('SHIPPING_PROBE_OK '));
+    assert.ok(line, 'Missing successful portable DWG shipping result');
+    portableDwg = JSON.parse(line.slice('SHIPPING_PROBE_OK '.length));
+    assert.equal(portableDwg.phase, 'dwg'); assert.equal(portableDwg.version, expectedVersion); assert.equal(portableDwg.packaged, !source); assert.equal(portableDwg.testBuild, false);
+    for (const key of ['writer', 'reopened', 'arrays', 'attributes', 'widths', 'appearance', 'workingPreserved', 'rejectedContent', 'backup', 'integrityRefused']) assert.equal(portableDwg[key], true, key);
+    assert.equal(portableDwg.entities, 4);
+  }
   const errors = join(profile, 'error.log');
   assert.ok(!existsSync(errors) || readFileSync(errors, 'utf8').trim() === '', 'No main-process errors');
   // The CLI debugger is not an alternative way to run the production app.
@@ -66,9 +77,18 @@ w.webContents.session.flushStorageData(); w.destroy(); app.quit();
     const denied = spawnSync(executable, ['--remote-debugging-port=0', `--user-data-dir=${profile}`, ...linuxArgs], { cwd:repo, env, encoding:'utf8', windowsHide:true, timeout:15_000, maxBuffer:1024 * 1024 });
     assert.equal(denied.error, undefined); assert.equal(denied.status, 2); assert.match(denied.stdout || '', /SHIPPING_DEBUG_DISABLED/);
   }
-  const record = { mode:source ? 'source-probe-development' : 'shipping-no-inspection', expectedVersion, executable, fuses, launches, remoteDebugRejected:!source, noMainErrors:true };
+  const record = { mode:source ? 'source-probe-development' : 'shipping-no-inspection', expectedVersion, executable, fuses, launches, portableDwg, remoteDebugRejected:!source, noMainErrors:true };
   writeFileSync(join(out, 'shipping-runtime-result.json'), `${JSON.stringify(record, null, 2)}\n`);
   console.log(`${source ? 'Source probe validation (no shipping fuse/signature evidence)' : 'Exact shipping runtime smoke'}: startup, DXF open/save/backup/reopen, secure origin, two-launch migration, private persistent storage and clean exit passed.`);
 } finally {
+  // Preserve only fixed, generated smoke artifacts for native-reader diagnosis. The private
+  // profile is still removed, and ordinary user files can never be selected by this probe.
+  for (const [name, saved] of [['shipping-startup.dxf', 'shipping-dwg-fixture.dxf'], ['shipping-export.dwg', 'shipping-dwg-output.dwg'], ['shipping-export.dwg.bak', 'shipping-dwg-backup.bak']]) {
+    const file = join(profile, name);
+    if (existsSync(file)) {
+      const stat = lstatSync(file);
+      if (stat.isFile() && !stat.isSymbolicLink() && dirname(realpathSync.native(file)) === realpathSync.native(profile)) copyFileSync(file, join(out, saved));
+    }
+  }
   cleanProfile();
 }

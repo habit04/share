@@ -11,7 +11,46 @@ messages). The date of each version is the date of the commit that set that vers
 
 ## [Unreleased]
 
-Nothing yet.
+## [0.4.6] - 2026-10-12
+
+### Upgrade notes
+
+- New desktop builds target Windows x64. macOS and Linux downloads remain at 0.4.5 while their
+  updates are paused; the browser edition continues to receive supported renderer changes.
+- Windows adds **Export > DWG copy** / **EXPORTDWG** without requiring installed AutoCAD.
+  **SAVE** and **SAVEAS** still save the working drawing as DXF. Exporting a copy keeps its
+  existing destination, unsaved edits, undo history and recovery state.
+
+### Added
+
+- A bundled native Windows writer produces AutoCAD 2018-format DWG (`AC1032`). It converts a
+  captured DXF snapshot in a private directory and reopens the result to check supported
+  entity, block, layout, geometry, text, attribute and appearance fields before committing it.
+- Exports use native destination selection, per-file save ordering, atomic replacement and
+  backups. Cancellation, conversion errors and concurrent destination changes preserve the
+  existing file. Overwriting an imported original asks for confirmation when its import report
+  records lost or unreadable content.
+- The writer applies and verifies a Windows Job Object 1 GiB process-memory limit before
+  parsing, with bounded input, record collections, diagnostics, output and conversion time.
+  Unsupported retained 3D/ACIS content and verification differences refuse export.
+- The build pins the Rust toolchain, dependency lockfile, upstream writer source and reviewed
+  patches. Corresponding modified source and dependency notices accompany the helper. Publisher
+  signing precedes its integrity manifest; the protected ASAR records the final helper hashes.
+
+### Fixed
+
+- Portable DWG copies reopen with their native entity transparency, Unicode color-book names
+  and rectangular block-array attributes. The Windows package includes the appearance reader
+  adapter and its matching, checked native runtime.
+
+### Known limitations
+
+- DWG copies contain the drawing JCad currently holds. They cannot recover content discarded or
+  simplified during import. Review **IMPORTREPORT** and keep original files when fidelity matters.
+- This is supported 2D interchange, with AC1032 output only. It does not establish universal
+  compatibility with every DWG entity, application dictionary, dynamic block, field or font.
+  A detected unsupported record or changed field refuses export; some valid drawings can exceed
+  the memory or collection limits. See [DWG saving](docs/DWG-SAVING.md).
 
 ## [0.4.5] - 2026-10-12
 
@@ -880,7 +919,10 @@ First release.
 
 - Renamed the application to JCad Electrical.
 
-[Unreleased]: https://github.com/habit04/share/compare/v0.4.3...HEAD
+[Unreleased]: https://github.com/habit04/share/compare/v0.4.6...HEAD
+[0.4.6]: https://github.com/habit04/share/compare/v0.4.5...v0.4.6
+[0.4.5]: https://github.com/habit04/share/compare/v0.4.4...v0.4.5
+[0.4.4]: https://github.com/habit04/share/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/habit04/share/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/habit04/share/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/habit04/share/compare/v0.4.0...v0.4.1

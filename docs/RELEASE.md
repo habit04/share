@@ -5,14 +5,30 @@ what is signed and how to verify a download, how updates reach users, and the ro
 dependency review. Setup for development is in [DEVELOPMENT.md](DEVELOPMENT.md); signing
 accounts and secrets in [CODE-SIGNING.md](CODE-SIGNING.md).
 
+## Current desktop release policy
+
+New desktop releases are **Windows x64 only**. macOS and Linux releases are paused at
+[v0.4.5](https://github.com/habit04/share/releases/tag/v0.4.5); their existing installers remain
+available, but do not include subsequent Windows features or fixes. Portable application code,
+historical signing tools and package targets are retained for a future return. The browser
+edition remains available on supported browsers. Generic source and browser checks still run
+on Ubuntu; that runner does not produce a Linux desktop installer.
+
+The workflow explicitly verifies `--policy windows-only`. This policy requires the Windows
+installer, `latest.yml`, external NSIS blockmap and Windows provenance, rejects other platform
+records or untracked release assets, and writes `releasePolicy: "windows-only"` in the aggregate.
+Publication also verifies `--require-signing`; an unsigned rehearsal can never pass that gate.
+Library callers verifying older releases may omit the policy or explicitly use `all-platforms`;
+the historical contract still requires all three platforms and all five installers.
+
 ## Cutting a release
 
 1. **Prepare on the release branch.**
    - Bump `"version"` in `package.json` (and `package-lock.json`: `npm version <x.y.z> --no-git-tag-version`).
    - Move the `[Unreleased]` entries of `CHANGELOG.md` under `## [x.y.z] - <date>` (they become
-     the release notes: `npm run release-notes -- vX.Y.Z --mac-signing developer-id-notarized`
+     the release notes: `npm run release-notes -- vX.Y.Z --policy windows-only`
      shows them as the release page will, without the **Verified build** list the release job adds).
-   - Make sure CI is green on the branch (`ci.yml`: test, ui, e2e on Ubuntu / Windows / macOS).
+   - Make sure CI is green on the branch (`ci.yml`: source/browser tests on Ubuntu and native desktop e2e on Windows).
    - Optional dress rehearsal: run **Build installers** from the Actions tab on the branch with an
      empty tag. It runs the source, test-ASAR, build, aggregate artifact and shipping smoke gates without
      publishing. Tag checks, release notes and signed attestation run when publication is enabled.
@@ -30,16 +46,24 @@ accounts and secrets in [CODE-SIGNING.md](CODE-SIGNING.md).
    | Job | Runs on | What it does | Blocks |
    | --- | --- | --- | --- |
    | `checks` | ubuntu-latest, Node 22 / 24 | On the tagged commit: workflow validation, lint, `typecheck:all`, mandatory-fixture unit tests, dense Node performance, renderer and website builds, UI checks, screenshot scripts and approved baseline comparison, asserted browser performance, Electron end-to-end and legacy preference migration. Outputs the tested commit SHA. | everything below |
-   | `test-build` | Windows, macOS, Linux | Builds a separate unpublished inspection-enabled ASAR and runs the full packaged Playwright suite and preference restart checks. Checks its test fuse policy. Its metadata, output folder and artifact naming keep it separate from shipping uploads. | build, release |
-   | `build` | Windows, macOS, Linux | Checks out **that SHA**, checks tag/version when publishing, builds all five installers with inspection disabled, verifies binary fuses, signs when configured and verifies final signatures or the macOS ad-hoc seal. Publication requires Windows and Apple credentials. Requires updater feeds/blockmaps and records source, signing/fuse results and artifact hashes. Builder diagnostic YAML and test builds are excluded. | verify-artifacts, packaged-smoke, release |
-   | `verify-artifacts` | ubuntu-latest | Downloads the actual uploaded platform artifacts and requires all five installers, three updater feeds and Windows/macOS external blockmaps, with matching source/version, sizes and hashes. Writes aggregate provenance/checksums. Also runs for an empty-tag build-only dispatch. | release |
-   | `packaged-smoke` | Windows, native Apple Silicon and Intel macOS, Linux | Installs NSIS, mounts each Mac disk image on its matching architecture (`macos-15` / `macos-15-intel`) and extracts AppImage/deb. Both Mac jobs are required and reject a mismatched runner or missing native installer. Checks exact shipping fuses, DWG reading and bounded first-launch/save/reopen probes, including secure-origin preference migration and preservation. Confirms debugging arguments are refused. Writes results per installer (`scripts/packaged-smoke.mjs`). | release |
-   | `release` | ubuntu-latest | Verifies tag/tested SHA, downloads and verifies the complete public asset set again, renders the CHANGELOG notes and macOS first-launch footer from verified signing provenance (`scripts/release-notes.mjs --strict --provenance artifacts`), and writes aggregate provenance/checksums and the **Verified build** list. GitHub signs the complete verified artifact set with `actions/attest@v4`; publication follows all gates and targets the tested SHA. | - |
+   | `test-build` | Windows x64 | Builds a separate unpublished inspection-enabled ASAR and runs the full packaged Playwright suite and preference restart checks. Checks its test fuse policy. Its metadata, output folder and artifact naming keep it separate from shipping uploads. | build, release |
+   | `build` | Windows x64 | Checks out **that SHA**, checks tag/version when publishing, builds the NSIS installer with inspection disabled, verifies binary fuses, verifies final Windows publisher signatures. Publication requires Windows signing credentials. Requires updater feeds/blockmaps and records source, signing/fuse results and artifact hashes. Builder diagnostic YAML and test builds are excluded. | verify-artifacts, packaged-smoke, release |
+   | `verify-artifacts` | ubuntu-latest | Downloads the actual uploaded platform artifacts and requires exactly the Windows installer, updater feed and external blockmap, with matching source/version, sizes and hashes. Writes aggregate provenance/checksums. Also runs for an empty-tag build-only dispatch. | release |
+   | `packaged-smoke` | Windows x64 | Installs NSIS and requires the native architecture. Checks exact shipping fuses, DWG reading and bounded first-launch/save/reopen probes, including secure-origin preference migration and preservation. Confirms debugging arguments are refused. Writes results per installer (`scripts/packaged-smoke.mjs`). | release |
+   | `release` | ubuntu-latest | Verifies tag/tested SHA, downloads and verifies the complete public asset set again, renders the CHANGELOG notes and Windows-only download footer from verified signing provenance (`scripts/release-notes.mjs --strict --provenance artifacts`), and writes aggregate provenance/checksums and the **Verified build** list. GitHub signs the complete verified artifact set with `actions/attest@v4`; publication follows all gates and targets the tested SHA. | - |
 
    `npm run check:workflows` (run in CI and in `checks`) fails if any of these gates is removed.
-4. **After publishing**: download one installer per platform from the release page and start
+
+   For an unsigned-helper block on a Windows development machine, **Build installers** also
+   accepts `native_helper_only=true` with an empty tag. This isolated job checks the exact
+   dispatched commit, runs helper supply-chain/signing tests and locked native tests, requires
+   the configured publisher, signs before hashing, and uploads the helper bundle, matching
+   embedded integrity manifest and source provenance. It cannot create a release or installer.
+   Download that private build artifact and verify its signature, hashes and source SHA before
+   using it locally. This helper test does not replace the normal installer publication gates.
+4. **After publishing**: download the Windows installer from the release page and start
    it once; check that **Help > About** shows the new version and that an older installed
-   version offers a signed-Windows update or the manual download appropriate to its installation.
+   version offers a signed Windows update.
 5. If something is wrong after publishing: mark the release as a pre-release or delete it (the
    updater only follows the latest non-prerelease release), fix, and release a new patch
    version. Never move or re-use a published tag; the updater compares versions, not tags.
@@ -58,7 +82,7 @@ the text the release workflow publishes before the **Verified build** list.
 `tests/release-notes.test.ts` checks all three snapshots against `CHANGELOG.md`.
 
 The manual **Packaged smoke test (existing release)** workflow re-runs the packaged checks
-against the installers attached to any published release (for example after a runner image or
+against the Windows installer attached to any published release (for example after a runner image or
 OS update); checks for features newer than that release are skipped.
 The secure-origin migration gate applies from 0.4.1, including prereleases. It uses stock Electron
 only to seed an isolated legacy profile, then launches the installed application twice. The
@@ -67,19 +91,23 @@ output includes `origin-migration.log`, per-installer `packaged-smoke-result.jso
 
 ## What is signed, and how to verify it
 
+The macOS/Linux rows below document historical releases through v0.4.5. New releases contain
+only the Windows installer/feed/blockmap and its source-bound provenance and attestation.
+
 | Platform | Artifact | Signature | Verify |
 | --- | --- | --- | --- |
 | Windows | `jcad-electrical-<v>-win-x64.exe` and the installed `JCad Electrical.exe` | Authenticode through Azure Artifact Signing when the seven `AZURE_*` secrets are set (publisher common name = `AZURE_PUBLISHER_NAME`); the workflow fails if any `.exe` lacks a valid signature from that exact publisher | PowerShell: `Get-AuthenticodeSignature .\jcad-electrical-<v>-win-x64.exe` shows `Valid` and the publisher; or `signtool verify /pa /v <file>`; or file Properties > Digital Signatures |
-| macOS | `jcad-electrical-<v>-mac-arm64.dmg`, `...-mac-x64.dmg` | Developer ID + hardened runtime + notarization (stapled) when the five Apple secrets are set; required for publication from this pipeline. Empty-tag rehearsals without credentials and with `require_signing` disabled use an **ad-hoc** signature (`scripts/afterPack.cjs`), which keeps the bundle intact but is not an identity | `codesign --verify --deep --strict --verbose=2 "/Applications/JCad Electrical.app"`; `spctl --assess --type execute --verbose=4 "/Applications/JCad Electrical.app"` (Developer ID builds: "accepted, source=Notarized Developer ID"); `xcrun stapler validate "/Applications/JCad Electrical.app"` |
+| macOS | `jcad-electrical-<v>-mac-arm64.dmg`, `...-mac-x64.dmg` | Developer ID + hardened runtime + notarization (stapled) when the five Apple secrets are set; required for historical Mac publication; new Mac releases are paused. Empty-tag rehearsals without credentials and with `require_signing` disabled use an **ad-hoc** signature (`scripts/afterPack.cjs`), which keeps the bundle intact but is not an identity | `codesign --verify --deep --strict --verbose=2 "/Applications/JCad Electrical.app"`; `spctl --assess --type execute --verbose=4 "/Applications/JCad Electrical.app"` (Developer ID builds: "accepted, source=Notarized Developer ID"); `xcrun stapler validate "/Applications/JCad Electrical.app"` |
 | Linux | `.AppImage`, `.deb` | not signed | compare the checksum below |
 | All | `latest.yml`, `latest-mac.yml`, `latest-linux.yml` | written by electron-builder; electron-updater checks downloads against them (and, on Windows, the publisher name), and the application checks the downloaded installer again before installing it (`electron/update-verify.cjs`) | each installer's `sha512` (base64) is listed there: `openssl dgst -sha512 -binary <file> \| base64` must print the same value |
 | All | `release-provenance.json`, the platform records, `SHA256SUMS.txt`, installers and metadata | GitHub / Sigstore attestation of the complete verified artifact set (from the release after 0.4.1); separate from OS code signing | `gh attestation verify <download> --repo habit04/share --bundle release-provenance.sigstore.json`; `sha256sum -c SHA256SUMS.txt` |
 
-An empty-tag build-only rehearsal may produce unsigned Windows or ad-hoc macOS installers when
-credentials are absent. `require_signing` makes even a rehearsal require those credentials.
-Publishing always requires configured Windows publisher and Apple Developer ID/notarization
-credentials; missing secrets fail before installers are built. Linux remains unsigned. Actual
-signature and notarization verification must pass; secret presence alone does not prove signing.
+An empty-tag build-only rehearsal may produce an unsigned Windows installer when credentials
+are absent. `require_signing` makes even a rehearsal require Windows signing credentials.
+Publishing always requires the configured Windows publisher; missing secrets fail before the
+installer is built. Its actual signature verification must pass; secret presence alone does not
+prove signing. Apple credentials are retained for historical support but are no longer used by
+the current release workflow.
 
 `scripts/release-provenance.mjs` rejects missing installers, updater feeds or required external
 blockmaps, extra installers, duplicate platform records, changed bytes, and any record with a
@@ -104,8 +132,8 @@ Older releases can lack provenance assets. Verify the specific release's publish
   and installs only through **Restart Now**, after the unsaved-work prompt and a fresh
   checksum/publisher verification. Ordinary quitting does not install an update; **Later**
   leaves it available through Check for Updates.
-- **Unsigned Windows, macOS and all Linux builds** are told that a newer release exists and offered the matching
-  download; they are replaced by installing the new version over the old one. On macOS the
+- **Historical unsigned Windows, macOS and Linux builds** offer manual installation when a matching
+  installer exists in the release; they are replaced by installing that version over the old one. New Mac/Linux installers are paused at v0.4.5. On macOS the
   release's `latest-mac.yml` declares `minimumSystemVersion`, written from `package.json` by
   `scripts/mac-update-info.mjs`. A Mac below that minimum is told the requirement and is not
   offered the incompatible installer. Keep the minimum-version warning at the start of release
@@ -148,3 +176,6 @@ tooling chain while retaining builder's Azure signing API. Its CommonJS bootstra
 checked with a local HTTP proxy smoke test. Both full and production-only audit must be rerun for
 each release; the full audit after these updates reported **0 vulnerabilities**. That result is
 a dated dependency check, not proof that every future advisory is covered.
+
+**Release dependency check, 2026-10-12:** both the full and production-only audit of the
+locked 0.4.6 dependencies reported **0 vulnerabilities** before publication.

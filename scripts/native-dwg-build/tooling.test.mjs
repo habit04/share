@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { checkedReplacement, validateReplacementText, patch, pins } from './patch-source.mjs';
+import { checkedNativeColor, encodedNativeAlpha } from './validate-appearance-fixture.mjs';
 
 const before = Buffer.from('#include "binding_common.h"\nFIELD_BL (bg_fill_scale, 45);\n');
 const entry = {
@@ -43,6 +44,36 @@ test('production patch covers both main and embedded fields with pinned source',
   assert.equal(api.replacements[0].count, 2);
   assert.ok(patch.files.some((file) => file.path === 'src/dwg_spec_shared.h'));
   assert.ok(patch.files.some((file) => file.path === 'bindings/javascript/embind/binding_dynapi.cpp'));
+  assert.ok(patch.files.some((file) => file.path === 'bindings/javascript/embind/binding_common.cpp'));
+  assert.ok(patch.files.some((file) => file.path === 'bindings/javascript/embind/binding_ent.cpp'));
+  for (const path of ['src/common_entity_data.spec', 'src/common_entity_handle_data.spec', 'src/decode.c']) {
+    assert.ok(patch.files.some((file) => file.path === path), `Missing checked decoder ordering preimage: ${path}`);
+  }
+  const attributeRepair = patch.files.find((file) => file.path === 'src/dwg.spec').replacements.find((replacement) => replacement.before.includes('keep_duplicate_records'));
+  assert.ok(attributeRepair, 'ATTRIB must not decode a DXF-only trailing byte.');
+  assert.equal(attributeRepair.count, 1, 'ATTDEF retains its real second version byte.');
+  assert.match(attributeRepair.after, /#ifndef IS_DECODER\n[\s\S]*FIELD_RC \(keep_duplicate_records, 0\);[\s\S]*#endif\n {2}}\n {2}COMMON_ENTITY_HANDLE_DATA;/);
+  assert.match(attributeRepair.before, /FIELD_HANDLE \(style, 5, 0\); \/\/ unexpected here in DXF/, 'The replacement must bind the ATTRIB-only ending.');
+});
+
+test('native color gate refuses unresolved references and impossible pointers', () => {
+  const color = { handle: 1024, flag: 0xe0, hasReference: true, referenceResolved: true, name: 'Pearl Δ', book_name: 'Studio Book', alpha_type: 2, alpha: 127 };
+  assert.equal(checkedNativeColor(color), color);
+  assert.equal(encodedNativeAlpha(color), 33554559);
+  assert.throws(() => checkedNativeColor({ ...color, referenceResolved: false }), /not resolved exactly/);
+  assert.throws(() => checkedNativeColor({ ...color, handle: 0, referenceResolved: false }), /not resolved exactly/);
+  assert.throws(() => checkedNativeColor({ ...color, handle: 0x100000000 }), /WASM32/);
+  assert.throws(() => checkedNativeColor({ ...color, name: null }), /string/);
+  assert.equal(encodedNativeAlpha({ alpha_type: 1, alpha: 255 }), 0x01000000);
+  assert.equal(encodedNativeAlpha({ alpha_type: 0, alpha: 255 }), 0);
+});
+
+test('native candidate upload is gated by exact color and MINSERT acceptance', () => {
+  const workflow = readFileSync(new URL('../../.github/workflows/native-dwg-background.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /timeout 90s node scripts\/native-dwg-build\/validate-appearance-fixture\.mjs/);
+  assert.ok(workflow.indexOf('Exact native color reference and MINSERT attribute gate') > workflow.indexOf('Compile matching factory glue'));
+  assert.ok(workflow.indexOf('Exact native color reference and MINSERT attribute gate') < workflow.indexOf('Package corresponding source'));
+  assert.match(workflow, /r2018-portable-appearance\.dwg.*r2018-native-shipping\.dwg.*appearance-report\.json/);
 });
 
 test('native workflow initializes runner paths inside steps, not unavailable job env context', () => {

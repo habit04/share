@@ -5,8 +5,13 @@ way. JCad is a 2D program: it works in the drawing plane and keeps 2D geometry. 
 format (AutoCAD 2000, `AC1015`, unless native properties require a newer version: MTEXT masks use
 AutoCAD 2007, `AC1021`, transparency uses AutoCAD 2010, `AC1024`, RGB/named colors use AutoCAD 2004,
 `AC1018`, and native MTEXT frames use AutoCAD 2018, `AC1032`). The highest required version wins.
-DWG is **read-only** (LibreDWG, versions R14 to 2018,
-files up to 128 MiB), and SAVE after opening a DWG writes a DXF next to it.
+DWG opens through LibreDWG (versions R14 to 2018, files up to 128 MiB), and SAVE after opening
+a DWG writes a DXF next to it. The Windows desktop edition also offers **EXPORTDWG** / **Export >
+DWG copy** through a bundled offline writer, without installed AutoCAD. It emits AC1032
+(AutoCAD 2018) copies of the current supported 2D state; SAVE and SAVEAS remain DXF operations.
+External DWG import retains all the limits below. Export cannot recover content lost on import.
+Retained 3D/ACIS records and detected conversion differences refuse DWG export. See
+[DWG saving](DWG-SAVING.md) for limits and working-file behavior.
 
 Legend: **yes** = kept; **partly** = kept with the limits in the last column; **no** = not read or
 not written (the object is dropped; on DWG import the dropped types are counted in the "Skipped

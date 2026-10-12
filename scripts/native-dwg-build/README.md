@@ -11,7 +11,33 @@ declarations to `BD` and updates the native unit-test declaration/expectation. I
 the owning-DWG-aware dynamic API projection of CMC color-book names: R2007+ strings are converted
 from TU using the existing native conversion function, null strings become empty, and pre-R2007
 code-page bytes keep their existing representation. Conversion buffers use RAII cleanup. Other
-shared CMC projections are unchanged.
+shared CMC projections retain their fields and expose a borrowed WASM32 native
+color-reference pointer. The entity getter now resolves only that exact reference
+to DBCOLOR in the owning drawing, preserves the entity's index/alpha/flags and
+projects referenced RGB/method/name/book_name with null-safe, version-aware strings.
+`hasReference` and `referenceResolved` distinguish unresolved/wrong-type references;
+the application refuses those rather than guessing a palette color.
+
+The pinned decoder also consumes a referenced entity color handle twice: once
+while decoding common color data, then again before decoding the common handle
+prefix. The second read replaces the DBCOLOR reference with the following layer
+reference and shifts later fields. The repair reads that handle exactly once in
+its R2004+ handle-stream position: owner (when present), reactors, extension
+dictionary, legacy handles, optional color reference, then layer. Model-space
+entities with implicit ownership and block entities with explicit owners use the
+same ordering. This move is limited to `IS_DECODER`; existing free/print/DXF
+projections and the native encoder's separate handle path remain unchanged.
+
+The MINSERT attribute getter selects the actual native INSERT or MINSERT layout
+before reading owned handles. MINSERT places array count/spacing fields before
+those handles, so treating it as INSERT dereferenced spacing bytes as pointers.
+Existing vector/linked-list traversal is retained after selecting the correct fields.
+
+For ATTRIB, the decoder stops its single-line field sequence at the lock-position
+bit, as specified by ODA section 20.4.4. Its extra R2010+ KeepDuplicateRecords read
+belongs to the existing DXF/export projection and must not consume bytes from the
+DWG stream. That read is excluded only for `IS_DECODER`. ATTDEF retains its
+separate R2010+ byte before the prompt; the ATTRIB repair does not alter ATTDEF.
 
 `mtext-background-scale.patch.json` is an exact checked patch, not a search-and-replace over an
 arbitrary dependency version. `patch-source.mjs` verifies the source HEAD, pinned submodule,
@@ -20,6 +46,13 @@ counts before writing. It rejects reapplication or drift and records original/mo
 digests. The field types are checked again after autogen and after compilation.
 
 ## Pins and commands
+
+The decoder also reads inline ENC RGB before its optional alpha word, following
+[ODA section 2.11](https://www.opendesign.com/files/guestdownloads/OpenDesign_Specification_for_.dwg_files.pdf#page=13).
+Book-color handle placement follows section 20.4.2; the single-line ATTRIB ending follows
+section 20.4.4. These repairs preserve the existing nondecoder projections. Failed compiled
+gates may upload a clearly labeled diagnostic factory/WASM with corresponding source and
+license; those bundles have no accepted provenance and are never integrated into the app.
 
 - Source: `mlightcad/libredwg-web`, tag `v0.7.14`, commit
   `1dd682f46339f37b67c5ff1085d10d04a8c16d7e`.
@@ -67,6 +100,15 @@ The root agent supplies these independently generated fixtures:
 
 - `tests/fixtures/interchange/r2018-mtext-background.dwg`
 - `tests/fixtures/interchange/r2018-mtext-background.expected.json`
+- `tests/fixtures/interchange/r2018-portable-appearance.dwg` and its expected JSON
+- `tests/fixtures/interchange/r2018-native-shipping.dwg` and its expected JSON
+
+The additional native gate checks exact DBCOLOR RGB and Unicode book/name identity,
+inline layer color identity, all three transparency modes, and the real shipping
+combination's MINSERT row/column/spacing and TAG1=QF1 owned attribute. The combination
+was independently accepted by AutoCAD 2027 with AUDIT 0. Raw native getters must
+complete without memory faults; application conversion and full geometry remain
+separate checks.
 
 The DWG was created/normalized with AutoCAD 2027 and saved as DWG 2018; it is JCad's own drawing,
 not an Autodesk vendor asset. The expected JSON comes from the normalized DXF. The validator calls

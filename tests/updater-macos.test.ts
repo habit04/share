@@ -21,7 +21,7 @@ const version = require('../electron/version.cjs') as { minimumSystemVersionFrom
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 
 describe('the minimum macOS version of a release', () => {
-  it('package.json declares macOS 13 (LSMinimumSystemVersion) and the macOS build writes it into latest-mac.yml', () => {
+  it('retains the macOS 13 requirement and legacy feed tools while new Mac releases are paused', () => {
     expect(macMinimumOf(pkg)).toBe('13.0');
     expect(() => macMinimumOf({ build: { mac: {} } })).toThrow(/minimumSystemVersion is not set/);
     const yml = "version: 0.4.2\r\nfiles:\r\n  - url: jcad-electrical-0.4.2-mac-arm64.dmg\r\n    sha512: abc\r\npath: jcad-electrical-0.4.2-mac-arm64.dmg\r\nsha512: abc\r\nreleaseDate: '2026-10-12T00:00:00.000Z'\r\n";
@@ -32,8 +32,9 @@ describe('the minimum macOS version of a release', () => {
     expect(() => withMinimumSystemVersion('files: []', '13.0')).toThrow(/no version/);
     expect(() => withMinimumSystemVersion(yml, '13; rm')).toThrow(/invalid macOS version/);
     const wf = readFileSync(join(root, '.github', 'workflows', 'release.yml'), 'utf8');
-    expect(wf.indexOf('node scripts/mac-update-info.mjs release')).toBeGreaterThan(0);
-    expect(wf.indexOf('node scripts/mac-update-info.mjs release')).toBeLessThan(wf.indexOf('node scripts/release-provenance.mjs build release'));
+    expect(wf).not.toContain('node scripts/mac-update-info.mjs release');
+    expect(wf).not.toContain('os: macos-');
+    expect(wf).toContain('--policy windows-only');
   });
 
   it('reads the minimum and compares dotted versions part by part', () => {

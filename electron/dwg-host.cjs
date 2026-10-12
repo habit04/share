@@ -34,6 +34,8 @@ function readTimeoutFor(bytes) {
 
 /** Production has no Node/worker-thread fallback: Electron's utility API must be available. */
 function launchUtilityProcess(modulePath, options) {
+  // Requiring the development Electron package in plain Node can download its binary.
+  if (!process.versions.electron) throw new Error('The isolated DWG reader is unavailable.');
   const { utilityProcess } = require('electron');
   if (!utilityProcess?.fork) throw new Error('The isolated DWG reader is unavailable.');
   return utilityProcess.fork(modulePath, [], { ...options, stdio: 'ignore', allowLoadingUnsignedLibraries: false });

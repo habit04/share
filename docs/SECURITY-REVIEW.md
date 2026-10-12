@@ -85,6 +85,17 @@ that a low-memory computer never encounters system-wide pressure. The Node utili
 isolation for crash/resource recovery, not an OS capability sandbox. Trusted plugins retain renderer
 and exposed bridge authority; capability isolation would be a separate product/API change.
 
+Windows DWG export uses a separate native Rust helper with a verified 1 GiB Windows Job Object
+process-memory limit applied before parsing. Its absolute executable path and dependency files
+must match hashes inside the protected ASAR; publisher signing occurs before sealing those
+hashes. The renderer cannot choose the executable or its arguments. A fresh private workspace,
+128 MiB input/output ceilings, record/collection limits, bounded diagnostics and a deadline
+contain each conversion. A stop must be acknowledged before cleanup or another export; an
+unconfirmed stop disables further export until restart. Only native-selected DWG destinations
+can be written. Parent/file identity is rechecked before atomic commit, and unsupported content
+or verification errors never authorize output. This process isolation is not an OS permissions
+sandbox; the helper's memory limit does not cap total application or system memory.
+
 ---
 
 ## Findings

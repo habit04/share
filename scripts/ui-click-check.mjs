@@ -16,8 +16,9 @@
 import { chromium } from 'playwright';
 import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { join, extname } from 'node:path';
+import { nativeMenuCommands } from './native-menu-commands.mjs';
 
 const selfTest = process.argv.includes('--self-test');
 const quick = process.argv.includes('--quick') || selfTest;
@@ -185,15 +186,13 @@ for (const c of ['ZOOM E', 'ZOOM W', 'ZOOM I', 'ZOOM O', 'HELP shortcuts', 'HELP
   await settle();
 }
 
-// Every command string the native (Electron) menu sends must exist in the registry.
+// Check the actual native menu branches shared with this bridge-free browser registry.
+// Windows desktop-only branches are checked against their real capability registrar in
+// tests/export-dwg.test.ts and exercised by the packaged Windows suite.
 current = 'electron menu';
 {
-  // electron/main.cjs and the modules it wires (the menu is electron/main/menu.cjs).
-  const mainDir = join(process.cwd(), 'electron/main');
-  const mainFiles = [join(process.cwd(), 'electron/main.cjs'), ...readdirSync(mainDir).filter((f) => f.endsWith('.cjs')).map((f) => join(mainDir, f))];
-  const mainCjs = mainFiles.map((f) => readFileSync(f, 'utf8')).join('\n');
-  const sent = [...mainCjs.matchAll(/click: send\('([^']+)'\)/g)].map((m) => m[1]);
-  if (sent.length === 0) fail('MENU', 'no menu commands found in electron/main.cjs or electron/main/*.cjs');
+  const sent = new Set([...nativeMenuCommands('linux'), ...nativeMenuCommands('darwin')]);
+  if (sent.size === 0) fail('MENU', 'the production native menu dispatched no commands');
   const known = new Set(await page.evaluate(() => [...window.editor.commands.keys()]));
   for (const s of sent) {
     counts.menuCommands += 1;

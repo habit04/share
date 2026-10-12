@@ -1,22 +1,30 @@
 // Fixed diagnostics for the exact shipping executable. No supplied JavaScript, remote
-// debugging transport or renderer IPC endpoint; only two enumerated startup phases.
+// debugging transport or renderer IPC endpoint; only fixed, enumerated probe phases.
 const { app, session } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
+const { runShippingDwgProbe } = require('./shipping-dwg-probe.cjs');
 
 function shippingProbePhase(args) {
   const flags = args.filter((arg) => typeof arg === 'string' && arg.startsWith('--probe-startup='));
   if (!flags.length) return null;
-  if (flags.length !== 1 || !/^--probe-startup=(first|second)$/.test(flags[0])) throw new Error('Invalid startup probe phase');
+  if (flags.length !== 1 || !/^--probe-startup=(first|second|dwg)$/.test(flags[0])) throw new Error('Invalid startup probe phase');
   return flags[0].slice('--probe-startup='.length);
 }
 
 /** @param {import('./context.cjs').MainContext} ctx */
 async function runShippingProbe(ctx, phase, testBuild) {
-  if (!['first', 'second'].includes(phase)) throw new Error('Invalid startup probe phase');
+  if (!['first', 'second', 'dwg'].includes(phase)) throw new Error('Invalid startup probe phase');
   const timer = setTimeout(() => { process.stdout.write('SHIPPING_PROBE_FAIL timed out\n'); app.exit(1); }, 45_000);
   try {
+    if (phase === 'dwg') {
+      const record = await runShippingDwgProbe(ctx, testBuild);
+      process.stdout.write(`SHIPPING_PROBE_OK ${JSON.stringify(record)}\n`);
+      clearTimeout(timer);
+      app.quit();
+      return;
+    }
     const win = ctx.mainWindow;
     if (!win || win.isDestroyed()) throw new Error('No renderer window');
     // These probes may modify only their fresh temporary-profile fixture, never a user's

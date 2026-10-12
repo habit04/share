@@ -37,7 +37,7 @@ type SmokeJob = {
   'timeout-minutes': number;
   needs: string[];
   strategy: { matrix: { include: SmokeRow[]; exclude?: SmokeRow[] } };
-  steps: { if?: string | boolean; run?: string; uses?: string; env?: Record<string, string | number>; with?: Record<string, string> }[];
+  steps: { if?: string | boolean; run?: string; uses?: string; shell?: string; env?: Record<string, string | number>; with?: Record<string, string> }[];
 };
 
 function withSmoke(edit: (job: SmokeJob) => void): string {
@@ -47,6 +47,76 @@ function withSmoke(edit: (job: SmokeJob) => void): string {
     return yaml.dump(workflow);
   });
 }
+
+function withHelper(edit: (workflow: any, job: any) => void): string {
+  return withRelease(text => {
+    const workflow = yaml.load(text) as any;
+    edit(workflow, workflow.jobs['native-helper']);
+    return yaml.dump(workflow);
+  });
+}
+
+describe('signed native-helper build-only workflow', () => {
+  it('requires an explicit manual input, read-only permissions and exact SHA metadata without entering publication', () => {
+    const workflow = yaml.load(readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')) as any;
+    expect(workflow.on.workflow_dispatch.inputs.native_helper_only).toMatchObject({ type: 'boolean', required: false, default: false });
+    const helper = workflow.jobs['native-helper'];
+    expect(helper.if).toBe("github.event_name == 'workflow_dispatch' && github.event.inputs.native_helper_only == 'true'");
+    expect(helper.permissions).toEqual({ contents: 'read' });
+    expect(helper.env).toMatchObject({ REQUIRE_PUBLISHER_SIGNING: 'true', SOURCE_SHA: '${{ github.sha }}', TAG: '${{ github.event.inputs.tag }}' });
+    expect(workflow.jobs.checks.if).toBe("github.event_name != 'workflow_dispatch' || github.event.inputs.native_helper_only != 'true'");
+    expect(workflow.jobs.release.if).toContain("github.event.inputs.native_helper_only != 'true'");
+    expect(workflow.jobs.release.needs).toContain('checks');
+    expect(helper.steps.find((step: any) => step.uses?.startsWith('actions/upload-artifact')).with.path).toBe('release/dwg-writer/\nelectron/dwg-writer-integrity.json\nnative-helper-provenance.json\n');
+  });
+  it.each(['default', 'trigger', 'PR trigger', 'permissions', 'signing', 'SHA'])('rejects weakening the helper-only %s boundary', change => {
+    const result = check(withHelper((workflow, job) => {
+      if (change === 'default') workflow.on.workflow_dispatch.inputs.native_helper_only.default = true;
+      else if (change === 'trigger') job.if = 'always()';
+      else if (change === 'PR trigger') workflow.on.pull_request_target = {};
+      else if (change === 'permissions') job.permissions.contents = 'write';
+      else if (change === 'signing') job.env.REQUIRE_PUBLISHER_SIGNING = 'false';
+      else job.env.SOURCE_SHA = '${{ github.ref }}';
+    }));
+    expect(result.code).toBe(1); expect(result.out).toMatch(/helper/);
+  });
+  it.each(['ref', 'credentials', 'empty tag', 'commit check'])('rejects losing the helper %s binding before signing', change => {
+    const result = check(withHelper((_workflow, job) => {
+      const checkout = job.steps.find((step: any) => step.uses?.startsWith('actions/checkout'));
+      const validate = job.steps.find((step: any) => step.run?.includes('native_helper_only requires an empty tag'));
+      if (change === 'ref') checkout.with.ref = '${{ github.ref }}';
+      else if (change === 'credentials') checkout.with['persist-credentials'] = true;
+      else if (change === 'empty tag') validate.run = validate.run.replace('if ($env:TAG)', 'if ($false)');
+      else validate.run = validate.run.replace('$actual -ne $env:SOURCE_SHA', '$false');
+    }));
+    expect(result.code).toBe(1); expect(result.out).toMatch(/helper/);
+  });
+  it('rejects compiling/sealing before tests, pinned toolchain or signing configuration', () => {
+    const result = check(withHelper((_workflow, job) => {
+      const steps = job.steps, build = steps.findIndex((step: any) => step.run === 'npm run build:dwg-writer'), signing = steps.findIndex((step: any) => step.run === 'node scripts/azure-signing.mjs');
+      [steps[build], steps[signing]] = [steps[signing], steps[build]];
+    }));
+    expect(result.code).toBe(1); expect(result.out).toMatch(/seal, verify and upload in order/);
+  });
+  it.each(['tests', 'toolchain', 'verify', 'conditional build', 'continue on error', 'embedded manifest', 'publication'])('rejects bypassing the helper %s gate', change => {
+    const result = check(withHelper((_workflow, job) => {
+      if (change === 'tests') job.steps.find((step: any) => step.run?.includes('vitest.mjs run')).run = 'echo skipped';
+      else if (change === 'toolchain') job.steps.find((step: any) => step.run?.includes('rustup toolchain')).run = 'rustup toolchain install stable';
+      else if (change === 'verify') job.steps.find((step: any) => step.run === 'node scripts/check-signed-dwg-writer.mjs').run = 'echo skipped';
+      else if (change === 'conditional build') job.steps.find((step: any) => step.run === 'npm run build:dwg-writer').if = false;
+      else if (change === 'continue on error') job.steps.find((step: any) => step.run === 'npm run build:dwg-writer')['continue-on-error'] = true;
+      else if (change === 'embedded manifest') job.steps.find((step: any) => step.uses?.startsWith('actions/upload-artifact')).with.path = 'release/dwg-writer/';
+      else job.steps.push({ uses: 'softprops/action-gh-release@v2' });
+    }));
+    expect(result.code).toBe(1); expect(result.out).toMatch(/helper/);
+  });
+  it.each(['checks', 'release'])('rejects removing the helper-only separation from %s', job => {
+    const result = check(withHelper((workflow, _helper) => {
+      workflow.jobs[job].if = job === 'checks' ? undefined : "startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '')";
+    }));
+    expect(result.code).toBe(1); expect(result.out).toMatch(/helper-only/);
+  });
+});
 
 describe('workflow validation', () => {
   it('accepts the repository workflows', () => {
@@ -82,7 +152,7 @@ describe('workflow validation', () => {
   });
 
   it('notices a release that runs on always(), and a checks step that continues on error', () => {
-    const r = check(withRelease((t) => t.replace(/ {4}if: startsWith\(github\.ref, 'refs\/tags\/v'\).*\n/, '    if: always()\n').replace('      - run: npm test\n', '      - run: npm test\n        continue-on-error: true\n')));
+    const r = check(withRelease((t) => t.replace(/ {4}if: github.event.inputs.native_helper_only != 'true' && .*\n/, '    if: always()\n').replace('      - run: npm test\n', '      - run: npm test\n        continue-on-error: true\n')));
     expect(r.code).toBe(1);
     expect(r.out).toMatch(/job release runs even when a job it needs failed/);
     expect(r.out).toMatch(/job checks step \d+ continues on error/);
@@ -95,7 +165,7 @@ describe('workflow validation', () => {
   });
 
   it('notices a dropped signing step and a needs on an unknown job', () => {
-    const r = check(withRelease((t) => t.replace('run: node scripts/azure-signing.mjs', 'run: echo skipped').replace('needs: [checks, build]\n    strategy', 'needs: [checks, bild]\n    strategy')));
+    const r = check(withRelease((t) => t.replaceAll('run: node scripts/azure-signing.mjs', 'run: echo skipped').replace('needs: [checks, test-build]\n    strategy', 'needs: [checks, bild]\n    strategy')));
     expect(r.code).toBe(1);
     expect(r.out).toMatch(/lost its signing step \(scripts\/azure-signing\.mjs\)/);
     expect(r.out).toMatch(/needs unknown job bild/);
@@ -111,6 +181,26 @@ describe('workflow validation', () => {
     const r = check(withRelease((t) => t.replace('run: node scripts/release-provenance.mjs verify artifacts', 'run: echo skipped').replace('uses: actions/attest@v4', 'uses: actions/download-artifact@v4')));
     expect(r.code).toBe(1);
     expect(r.out).toMatch(/verify all artifacts and sign provenance before publishing/);
+  });
+  it('rejects omitting the portable writer build or moving it after ASAR packing', () => {
+    const missing = check(withRelease((text) => text.replaceAll('run: npm run build:dwg-writer', 'run: echo skipped')));
+    expect(missing.code).toBe(1);
+    expect(missing.out).toMatch(/build and seal the pinned portable DWG writer/);
+    const reordered = check(withRelease((text) => {
+      const workflow = yaml.load(text) as { jobs: { build: { steps: { run?: string }[] } } };
+      const steps = workflow.jobs.build.steps;
+      const helper = steps.findIndex((step) => step.run === 'npm run build:dwg-writer');
+      const pack = steps.findIndex((step) => step.run?.startsWith('npx electron-builder'));
+      [steps[helper], steps[pack]] = [steps[pack]!, steps[helper]!];
+      return yaml.dump(workflow);
+    }));
+    expect(reordered.code).toBe(1);
+    expect(reordered.out).toMatch(/build and seal the pinned portable DWG writer/);
+  });
+  it('rejects dropping the helper from the publisher signature gate', () => {
+    const r = check(withRelease((text) => text.replace('$installers + $applications + $helpers', '$installers + $applications')));
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/native DWG helper signature/);
   });
   it('rejects generating release notes before artifact verification', () => {
     const r = check(withRelease((text) => {
@@ -134,7 +224,7 @@ describe('workflow validation', () => {
     expect(r.out).toMatch(/release notes must consume the verified aggregate after source-bound artifact verification/);
   });
   it('rejects appending a second signing summary during artifact verification', () => {
-    const r = check(withRelease((text) => text.replace('run: node scripts/release-provenance.mjs verify artifacts\n      # A tag', 'run: node scripts/release-provenance.mjs verify artifacts --notes release-notes.md\n      # A tag')));
+    const r = check(withRelease((text) => text.replace('run: node scripts/release-provenance.mjs verify artifacts --policy windows-only --require-signing\n      # A tag', 'run: node scripts/release-provenance.mjs verify artifacts --policy windows-only --require-signing --notes release-notes.md\n      # A tag')));
     expect(r.code).toBe(1);
     expect(r.out).toMatch(/render the verified signing summary once, from the aggregate/);
   });
@@ -144,9 +234,9 @@ describe('workflow validation', () => {
     expect(r.out).toMatch(/release notes.*must not be conditionally skipped/);
   });
   it('rejects missing platform provenance and build steps that continue on error', () => {
-    const r = check(withRelease((t) => t.replace('platform: macOS', 'platform: missing').replace('run: node scripts/azure-signing.mjs', 'run: node scripts/azure-signing.mjs\n        continue-on-error: true')));
+    const r = check(withRelease((t) => t.replace('platform: Windows', 'platform: missing').replaceAll('run: node scripts/azure-signing.mjs', 'run: node scripts/azure-signing.mjs\n        continue-on-error: true')));
     expect(r.code).toBe(1);
-    expect(r.out).toMatch(/missing macOS artifacts\/provenance/);
+    expect(r.out).toMatch(/missing Windows artifacts\/provenance/);
     expect(r.out).toMatch(/job build step \d+ continues on error/);
   });
 
@@ -168,14 +258,11 @@ describe('workflow validation', () => {
     expect(r.out).toMatch(/needs the stock Electron binary for legacy seeding/);
   });
 
-  it('requires both native Mac architectures against the same signed artifact without extending smoke deadlines', () => {
+  it('requires the native Windows installer with unchanged shipping gates and deadlines', () => {
     const workflow = yaml.load(readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')) as { jobs: { 'packaged-smoke': SmokeJob; release: { needs: string[] } } };
     const smoke = workflow.jobs['packaged-smoke'];
     expect(smoke.strategy.matrix.include).toEqual([
       { os: 'windows-latest', arch: 'x64', artifact: 'JCad-Electrical-Windows' },
-      { os: 'macos-15', arch: 'arm64', artifact: 'JCad-Electrical-macOS' },
-      { os: 'macos-15-intel', arch: 'x64', artifact: 'JCad-Electrical-macOS' },
-      { os: 'ubuntu-latest', arch: 'x64', artifact: 'JCad-Electrical-Linux' },
     ]);
     expect(smoke['runs-on']).toBe('${{ matrix.os }}');
     expect(smoke['timeout-minutes']).toBe(30);
@@ -189,27 +276,27 @@ describe('workflow validation', () => {
     expect(workflow.jobs.release.needs).toContain('packaged-smoke');
   });
 
-  it.each(['macos-15', 'macos-15-intel'])('rejects removing the mandatory %s packaged smoke entry', (os) => {
+  it.each(['windows-latest'])('rejects removing the mandatory %s packaged smoke entry', (os) => {
     const r = check(withSmoke((job) => { job.strategy.matrix.include = job.strategy.matrix.include.filter((row) => row.os !== os); }));
     expect(r.code).toBe(1);
     expect(r.out).toContain(`packaged-smoke must test ${os}/`);
   });
 
-  it.each(['runner', 'architecture', 'artifact'])('rejects substituting the native Intel smoke %s', (field) => {
+  it.each(['runner', 'architecture', 'artifact'])('rejects substituting the native Windows smoke %s', (field) => {
     const r = check(withSmoke((job) => {
-      const intel = job.strategy.matrix.include.find((row) => row.os === 'macos-15-intel')!;
+      const intel = job.strategy.matrix.include.find((row) => row.os === 'windows-latest')!;
       if (field === 'runner') intel.os = 'macos-15';
       else if (field === 'architecture') intel.arch = 'arm64';
-      else intel.artifact = 'JCad-Electrical-Windows';
+      else intel.artifact = 'JCad-Electrical-macOS';
     }));
     expect(r.code).toBe(1);
-    expect(r.out).toContain('packaged-smoke must test macos-15-intel/x64 with JCad-Electrical-macOS exactly once');
+    expect(r.out).toContain('packaged-smoke must test windows-latest/x64 with JCad-Electrical-Windows exactly once');
   });
 
   it.each(['job condition', 'matrix exclusion', 'runner override'])('rejects bypassing the native smoke matrix through a %s', (change) => {
     const r = check(withSmoke((job) => {
       if (change === 'job condition') job.if = false;
-      else if (change === 'matrix exclusion') job.strategy.matrix.exclude = [{ ...job.strategy.matrix.include[2]! }];
+      else if (change === 'matrix exclusion') job.strategy.matrix.exclude = [{ ...job.strategy.matrix.include[0]! }];
       else job['runs-on'] = 'macos-15';
     }));
     expect(r.code).toBe(1);
@@ -226,16 +313,30 @@ describe('workflow validation', () => {
     expect(r.out).toMatch(/packaged smoke must require native installers and assert the matrix architecture/);
   });
 
-  it('rejects skipping the Windows and native Mac runtime smoke step', () => {
+  it('rejects skipping the Windows runtime smoke step', () => {
     const r = check(withSmoke((job) => { job.steps.find((entry) => entry.run === 'node scripts/packaged-smoke.mjs installers')!.if = false; }));
     expect(r.code).toBe(1);
-    expect(r.out).toMatch(/packaged smoke must run for both Linux and Windows\/macOS runners/);
+    expect(r.out).toMatch(/packaged smoke must run unconditionally on Windows/);
+  });
+
+  it.each(['missing', 'conditional', 'wrong shell', 'wrong source', 'after smoke'])('rejects an AutoCAD absence inventory that is %s', (change) => {
+    const r = check(withSmoke((job) => {
+      const index = job.steps.findIndex((entry) => entry.run?.includes('scripts/check-no-autocad.ps1'));
+      const step = job.steps[index]!;
+      if (change === 'missing') job.steps.splice(index, 1);
+      else if (change === 'conditional') step.if = false;
+      else if (change === 'wrong shell') step.shell = 'bash';
+      else if (change === 'wrong source') step.env!.SOURCE_SHA = '${{ github.sha }}';
+      else { job.steps.splice(index, 1); job.steps.push(step); }
+    }));
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/unconditional source-bound AutoCAD absence inventory must run immediately before installed Windows smoke/);
   });
 
   it.each(['wrong artifact', 'conditional download'])('rejects a %s for packaged smoke', (change) => {
     const r = check(withSmoke((job) => {
       const step = job.steps.find((entry) => entry.uses?.startsWith('actions/download-artifact'))!;
-      if (change === 'wrong artifact') step.with!.name = 'JCad-Electrical-Windows';
+      if (change === 'wrong artifact') step.with!.name = 'JCad-Electrical-macOS';
       else step.if = false;
     }));
     expect(r.code).toBe(1);
@@ -248,7 +349,7 @@ describe('workflow validation', () => {
       jobs: Record<string, { if?: string; needs?: string[]; steps: { if?: string; run?: string }[] }>;
     };
     expect(workflow.on.workflow_dispatch.inputs.tag.default).toBe('');
-    expect(workflow.jobs.release?.if).toBe("startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '')");
+    expect(workflow.jobs.release?.if).toBe("github.event.inputs.native_helper_only != 'true' && (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.tag != ''))");
     expect(workflow.jobs['verify-artifacts']?.if).toBeUndefined();
     expect(workflow.jobs['verify-artifacts']?.steps.every((step) => step.if === undefined)).toBe(true);
     expect(workflow.jobs.release?.needs).toContain('verify-artifacts');
@@ -274,10 +375,10 @@ describe('workflow validation', () => {
     expect(r.out).toMatch(/job verify-artifacts step \d+ continues on error/);
   });
 
-  it('rejects dropping actual macOS DMG blockmaps or updater metadata from the upload', () => {
-    const r = check(withRelease((t) => t.replace('release/*.dmg\n              release/*.blockmap\n              release/latest*.yml', 'release/*.dmg')));
+  it('rejects dropping Windows installer blockmaps or updater metadata from the upload', () => {
+    const r = check(withRelease((t) => t.replace('release/*.exe\n              release/*.blockmap\n              release/latest*.yml', 'release/*.exe')));
     expect(r.code).toBe(1);
-    expect(r.out).toMatch(/macOS upload must include its installers, updater metadata and blockmaps/);
+    expect(r.out).toMatch(/Windows upload must include its installers, updater metadata and blockmaps/);
   });
   it('rejects bypassing the dedicated test-build gate or allowing legacy inspection smoke for shipping', () => {
     const r = check(withRelease((t) => t.replace('needs: [checks, test-build]\n    strategy', 'needs: [checks]\n    strategy').replace('JCAD_SMOKE_REQUIRE_SHIPPING: 1', 'JCAD_SMOKE_REQUIRE_SHIPPING: 0')));
@@ -290,10 +391,15 @@ describe('workflow validation', () => {
     expect(r.code).toBe(1);
     expect(r.out).toMatch(/publication and required-signing rehearsals must fail closed/);
   });
-  it('rejects missing macOS updater version metadata before checksums', () => {
-    const r = check(withRelease((t) => t.replace('run: node scripts/mac-update-info.mjs release', 'run: echo skipped')));
+  it.each(['verify-artifacts', 'release'])('rejects missing explicit Windows-only provenance policy in %s', (job) => {
+    const r = check(withRelease((source) => {
+      const workflow = yaml.load(source) as { jobs: Record<string, { steps: { run?: string }[] }> };
+      const verify = workflow.jobs[job]!.steps.find((step) => step.run?.includes('release-provenance.mjs verify'))!;
+      verify.run = verify.run!.replace(' --policy windows-only', '');
+      return yaml.dump(workflow);
+    }));
     expect(r.code).toBe(1);
-    expect(r.out).toMatch(/minimum macOS version into latest-mac\.yml before recording checksums/);
+    expect(r.out).toMatch(/verify.*artifacts/);
   });
   it.each(['checks', 'test-build', 'packaged-smoke'])('fetches stock Electron outside %s launch deadlines', (job) => {
     const r = check(withRelease((text) => {
@@ -304,15 +410,28 @@ describe('workflow validation', () => {
     expect(r.code).toBe(1);
     expect(r.out).toContain(`job ${job} must fetch the Electron binary before test launches`);
   });
-  it('rejects importing the Apple identity without its temporary keychain cleanup or correct partition password', () => {
-    const r = check(withRelease((t) => t.replace('trap cleanup_signing EXIT', 'true').replace('-s -k "$kc_password"', '-s -k "$CSC_KEY_PASSWORD"')));
+  it('rejects publication provenance that allows unsigned Windows evidence', () => {
+    const r = check(withRelease((source) => source.replace(' --require-signing', '')));
     expect(r.code).toBe(1);
-    expect(r.out).toMatch(/macOS signing must use an isolated temporary keychain/);
+    expect(r.out).toMatch(/verify all artifacts and sign provenance before publishing/);
   });
-  it('requires the Mac Team ID and signed DMG checks and keeps empty-tag publication disabled', () => {
-    const r = check(withRelease((t) => t.replaceAll('TeamIdentifier=$APPLE_TEAM_ID', 'IgnoredTeam').replace('codesign --verify --strict --verbose=2 "$image"', 'true').replace("if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '')", 'if: true')));
+  it('rejects a conditional Windows signing setup', () => {
+    const r = check(withRelease((source) => source.replaceAll('        id: signing\n', '        id: signing\n        if: false\n')));
     expect(r.code).toBe(1);
-    expect(r.out).toMatch(/verify macOS publisher identity/);
-    expect(r.out).toMatch(/publication must remain disabled for empty-tag/);
+    expect(r.out).toMatch(/Windows signing setup must run unconditionally/);
+  });
+  it('rejects skipping the actual Windows signature verification', () => {
+    const r = check(withRelease((source) => source.replace("if: steps.signing.outputs.enabled == 'true'", 'if: false')));
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/signature verification must run in order without bypass conditions/);
+  });
+  it('rejects accidentally restoring additional platform release builds', () => {
+    const r = check(withRelease((source) => {
+      const workflow = yaml.load(source) as { jobs: { build: { strategy: { matrix: { include: Record<string, string>[] } } } } };
+      workflow.jobs.build.strategy.matrix.include.push({ os:'macos-latest', platform:'macOS', target:'--mac dmg' });
+      return yaml.dump(workflow);
+    }));
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/Windows-only build must contain exactly one unconditional Windows NSIS target/);
   });
 });

@@ -57,7 +57,7 @@ export function sectionFor(changelog, version) {
  * @param {string} changelog
  * @param {string} version  the tag, e.g. "v0.4.1"
  * @param {string} [repo]   owner/name of the GitHub repository
- * @param {{ macSigning?: string }} [options]  macSigning: the macOS build's recorded signing status
+ * @param {{ macSigning?: string, releasePolicy?: string }} [options]  macSigning: the macOS build's recorded signing status
  *   ("developer-id-notarized" or "ad-hoc"); left out, the footer's macOS sentence is neutral
  * @returns {string}
  */
@@ -66,17 +66,19 @@ export function releaseNotes(changelog, version, repo = 'habit04/share', options
   const body = sectionFor(changelog, v) ?? sectionFor(changelog, 'Unreleased') ?? 'See CHANGELOG.md.';
   const [owner, name] = repo.split('/');
   const { macSigning } = options;
+  const windowsOnly = options.releasePolicy === 'windows-only';
+  if (options.releasePolicy !== undefined && !['all-platforms', 'windows-only'].includes(options.releasePolicy)) throw new Error('unknown release policy');
   if (macSigning !== undefined && !MAC_SIGNING.includes(macSigning)) throw new Error(`unknown macOS signing status: ${macSigning}`);
   const mac = macSigning === undefined ? MAC_UNKNOWN : MAC_FIRST_LAUNCH[/** @type {keyof typeof MAC_FIRST_LAUNCH} */ (macSigning)];
   const footer = [
     '',
     '---',
     '',
-    `**Downloads:** Windows \`jcad-electrical-${v}-win-x64.exe\` · macOS \`jcad-electrical-${v}-mac-arm64.dmg\` (Apple Silicon) / \`jcad-electrical-${v}-mac-x64.dmg\` (Intel) · Linux \`.AppImage\` / \`.deb\`.`,
-    'Installed copies offer the release download. Windows builds configured with a trusted signing publisher install a verified update only after you choose Restart Now; unsigned Windows and all Linux/macOS builds use manual installation.',
+    windowsOnly ? `**Downloads:** Windows \`jcad-electrical-${v}-win-x64.exe\`. macOS and Linux desktop updates are paused; their last release is [v0.4.5](https://github.com/${repo}/releases/tag/v0.4.5).` : `**Downloads:** Windows \`jcad-electrical-${v}-win-x64.exe\` · macOS \`jcad-electrical-${v}-mac-arm64.dmg\` (Apple Silicon) / \`jcad-electrical-${v}-mac-x64.dmg\` (Intel) · Linux \`.AppImage\` / \`.deb\`.`,
+    windowsOnly ? 'Signed Windows installations offer a verified update only after you choose Restart Now.' : 'Installed copies offer the release download. Windows builds configured with a trusted signing publisher install a verified update only after you choose Restart Now; unsigned Windows and all Linux/macOS builds use manual installation.',
     '',
     'Signing varies by release. When published, inspect `release-provenance.json` and its signed attestation for the verified status.',
-    `First launch: Windows SmartScreen may say "Windows protected your PC" (More info > Run anyway); ${mac}`,
+    windowsOnly ? 'First launch: Windows SmartScreen may say "Windows protected your PC" (More info > Run anyway).' : `First launch: Windows SmartScreen may say "Windows protected your PC" (More info > Run anyway); ${mac}`,
     `Website and browser edition: https://${owner}.github.io/${name}/ · Full history: https://github.com/${repo}/blob/v${v}/CHANGELOG.md`,
   ];
   return `${body}\n${footer.join('\n')}\n`;
@@ -89,7 +91,7 @@ export function releaseNotes(changelog, version, repo = 'habit04/share', options
  * Returns the macOS signing status and, when the record is a release's verified record, that
  * record; null when there is none.
  * @param {string} path
- * @returns {{ macSigning: string, release: { sourceSha: string, builds: { platform: string, signing: string }[] } | null } | null}
+ * @returns {{ macSigning?: string, releasePolicy?: string, release: { sourceSha: string, builds: { platform: string, signing: string }[] } | null } | null}
  */
 export function readProvenance(path) {
   if (!existsSync(path)) return null;
@@ -103,6 +105,10 @@ export function readProvenance(path) {
   }
   const record = JSON.parse(readFileSync(file, 'utf8'));
   const release = Array.isArray(record?.builds) ? record : null;
+  if (release?.releasePolicy === 'windows-only') {
+    if (release.builds.length !== 1 || release.builds[0]?.platform !== 'Windows' || release.builds[0]?.signing !== 'authenticode-verified') throw new Error(`${file}: invalid signed Windows-only release record`);
+    return { releasePolicy: 'windows-only', release };
+  }
   const mac = release ? release.builds.find((/** @type {{ platform?: string }} */ b) => b?.platform === 'macOS') : record;
   if (mac?.platform !== 'macOS' || !MAC_SIGNING.includes(mac.signing)) throw new Error(`${file}: no macOS build with a known signing status`);
   return { macSigning: mac.signing, release };
@@ -110,14 +116,14 @@ export function readProvenance(path) {
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const args = process.argv.slice(2);
-  const valued = ['--out', '--provenance', '--mac-signing'];
+  const valued = ['--out', '--provenance', '--mac-signing', '--policy'];
   const option = (/** @type {string} */ name) => {
     const i = args.indexOf(name);
     return i >= 0 ? args[i + 1] : undefined;
   };
   const [version] = args.filter((a, i) => !a.startsWith('--') && !valued.includes(args[i - 1] ?? ''));
   if (!version) {
-    console.error('usage: node scripts/release-notes.mjs <tag> [--out file] [--strict] [--provenance file|folder | --mac-signing developer-id-notarized|ad-hoc]');
+    console.error('usage: node scripts/release-notes.mjs <tag> [--out file] [--strict] [--policy all-platforms|windows-only] [--provenance file|folder | --mac-signing developer-id-notarized|ad-hoc]');
     process.exit(2);
   }
   const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -132,6 +138,11 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     process.exit(2);
   }
   let summary = '';
+  let releasePolicy = option('--policy');
+  if (args.includes('--policy') && !['all-platforms', 'windows-only'].includes(releasePolicy)) {
+    console.error('release-notes: --policy is all-platforms or windows-only');
+    process.exit(2);
+  }
   const from = option('--provenance');
   if (from) {
     const provenance = readProvenance(from);
@@ -140,9 +151,14 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
       process.exit(1);
     }
     macSigning = provenance.macSigning;
+    if (releasePolicy !== undefined && releasePolicy !== (provenance.releasePolicy ?? 'all-platforms')) {
+      console.error('release-notes: policy does not match verified provenance');
+      process.exit(1);
+    }
+    releasePolicy = provenance.releasePolicy;
     if (provenance.release) summary = signingSummary(provenance.release);
   }
-  const notes = releaseNotes(changelog, version, process.env.GITHUB_REPOSITORY || undefined, { macSigning }) + summary;
+  const notes = releaseNotes(changelog, version, process.env.GITHUB_REPOSITORY || undefined, { macSigning, releasePolicy }) + summary;
   const out = option('--out');
   if (out) writeFileSync(out, notes);
   else process.stdout.write(notes);

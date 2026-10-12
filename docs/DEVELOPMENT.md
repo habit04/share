@@ -18,7 +18,7 @@ Contents: [Prerequisites](#prerequisites) · [Install](#install) · [Run](#run) 
 | Node.js | **22.20+ or 24.12+**, within those major versions (`package.json`: `>=22.20.0 <23 || >=24.12.0 <25`) | nodejs.org installer, `nvm-windows` or `fnm` | `nvm`, `fnm` or Homebrew | `nvm`, `fnm` or NodeSource |
 | npm | the version bundled with the supported Node release | | | |
 | Git | any recent | Git for Windows (Git Bash runs the shell snippets below) | Xcode command-line tools | distribution package |
-| Native build tools | not needed (no native modules) | | | |
+| Native build tools | not needed for renderer/browser checks | Rust **1.99.0-x86_64-pc-windows-gnu** for the portable DWG helper | desktop updates paused | desktop updates paused |
 | For `npm run e2e` | the Electron binary: the `electron` package fetches it the first time it is started (or run `node node_modules/electron/install.js` after `npm ci`) | | | a display: `xvfb-run` (package `xvfb`) on a server or in a container |
 | For screenshots / UI check / bench | a Chromium for Playwright (below) | | | `npx playwright install --with-deps chromium` installs Chromium and its system libraries and fonts |
 | For packaging | | NSIS is bundled by electron-builder | Xcode command-line tools (`codesign`, `hdiutil`) | `dpkg-deb` comes with Debian / Ubuntu; AppImage needs nothing extra |
@@ -68,6 +68,19 @@ npm run build:site          # landing page + browser edition into site-dist/
 ```
 
 ## Checks
+
+Windows desktop builds include a native portable DWG writer. Install the pinned Rust GNU
+toolchain and run `npm run build:dwg-writer` before launching its export tests. The preparation
+script verifies the upstream crate and reviewed patches; Cargo uses the committed lockfile and
+the build runs native unit tests before staging the executable, source archive, dependency notices
+and integrity manifest. `JCAD_CARGO` and `JCAD_RUSTC` may point to a private copy of the same pinned
+toolchain. Generated source, caches and binaries stay ignored. Do not edit a Cargo registry cache.
+
+Publisher signing must happen before the final helper hash is embedded in the ASAR. The release
+pipeline does this automatically. Unsigned development helpers can be blocked by Windows
+Security; use the build-only signed-helper workflow on a reviewed source commit to test on such
+a machine. No AutoCAD installation is required by the helper. The separate `check:autocad`
+conformance test uses installed AutoCAD as an independent validation tool, not a runtime dependency.
 
 | Command | What it checks |
 | --- | --- |

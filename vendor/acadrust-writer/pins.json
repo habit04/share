@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "crate": {
+    "name": "acadrust",
+    "version": "0.6.4",
+    "url": "https://static.crates.io/crates/acadrust/acadrust-0.6.4.crate",
+    "sha256": "94862189cab6e282ed0433a801a216cd1a712953813284a48fa81c67223e38f6",
+    "repository": "https://github.com/hakanaktt/acadrust",
+    "tag": "v0.6.4",
+    "commit": "8d5c46d423941ad96575760bf77979f8c46156fb",
+    "license": "MPL-2.0"
+  },
+  "toolchain": {
+    "version": "1.99.0",
+    "target": "x86_64-pc-windows-gnu"
+  },
+  "patches": [
+    {
+      "path": "src/io/dwg/dwg_stream_writers/object_writer/entities.rs",
+      "beforeSha256": "73d1fbb8cce962af3a7ef5ec4447bb200e7ee4b71ed7f451109302b531af4f5f",
+      "afterSha256": "7c9156a9143bf20bf682861d79b18ad28d2370d0a56663bda74cc23a8f2fab73",
+      "replacements": [
+        {
+          "before": "            // The background-fill block is written when the UseBackgroundFillColor\r\n            // bit (0x01) is set, or — for R2018+ — when the TextFrame bit (0x10)\r\n            // is set. Mirrors read_mtext.\r\n            if (e.background_fill_flags & 0x01) != 0\r\n                || (self.version.r2018_plus(self.dxf_version)\r\n                    && (e.background_fill_flags & 0x10) != 0)\r\n            {\r\n",
+          "after": "            // The private DXF-to-DWG writer emits this block only for actual fill.\r\n            // A standalone frame (0x10) remains a frame without inert fill data;\r\n            // AutoCAD independently accepts this encoding and preserves flags 16.\r\n            if (e.background_fill_flags & 0x01) != 0 {\r\n",
+          "count": 1
+        },
+        {
+          "before": "            att.common.entity_mode,\r\n",
+          "after": "            // Owned ATTRIBs must name their INSERT owner; DXF model/paper mode\r\n            // is not an override for the child's DWG entity ownership mode.\r\n            None,\r\n",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "path": "src/io/dwg/dwg_stream_readers/object_reader/entities.rs",
+      "beforeSha256": "aa42e4c48279556ae38d59d8b3317b05c7694a0e66fe9c1510565941aa6fa303",
+      "afterSha256": "3a1e0f7e3bfecaf3aa7574e1dd60dd0b26f65f5ae2074fdbfaa5a27e12db9629",
+      "replacements": [
+        {
+          "before": "        // The background-fill block follows when the UseBackgroundFillColor bit\r\n        // (0x01) is set, or — for R2018+ — when the TextFrame bit (0x10) is set.\r\n        if (background_flags & 0x01) != 0\r\n            || (version.r2018_plus(dxf_version) && (background_flags & 0x10) != 0)\r\n        {\r\n",
+          "after": "        // Private validation of freshly emitted JCad writer output only: the fill\r\n        // block exists only for bit 0x01. This reader is not used for external DWG\r\n        // imports, whose frame-only optional payloads may differ.\r\n        if (background_flags & 0x01) != 0 {\r\n",
+          "count": 1
+        },
+        {
+          "before": "pub fn read_minsert(reader: &mut DwgMergedReader, version: DwgVersion) -> MInsertData {\r\n    let insert = read_insert(reader, version);\r\n",
+          "after": "pub fn read_minsert(reader: &mut DwgMergedReader, version: DwgVersion) -> MInsertData {\r\n    let insert = read_insert(reader, version);\r\n    // Private own-writer validation: R2004+ emits the owned ATTRIB count before\r\n    // MINSERT's array fields. It belongs to the main stream, unlike block handles.\r\n    if insert.has_attribs && version.r2004_plus() {\r\n        let _owned_attribute_count = reader.read_bit_long();\r\n    }\r\n",
+          "count": 1
+        }
+      ]
+    }
+  ]
+}

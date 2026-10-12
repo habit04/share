@@ -45,6 +45,7 @@ describe('Content-Security-Policy and developer tools', () => {
       const module = { exports: {} as { buildMenu: (win: unknown, ctx: unknown) => void } };
       runInNewContext(readSource('electron/main/menu.cjs'), {
         module,
+        process: { platform: 'win32' },
         require: (name: string) => {
           if (name === 'electron') return {
             app: { isPackaged, getVersion: () => '0.4.2' }, BrowserWindow: {},

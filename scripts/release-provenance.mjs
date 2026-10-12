@@ -38,9 +38,10 @@ export async function writeBuildProvenance(dir, platform, version, sha, signing,
   validateIdentity(platform, version, sha, signing);
   const names = readdirSync(dir).filter(isReleaseAsset).sort();
   const expected = expectedInstallers(version, platform);
+  const expectedAssets = [...expected, ...expectedUpdateAssets(version, platform)];
   for (const name of expected) if (!names.includes(name)) throw new Error(`missing ${platform} installer: ${name}`);
   for (const name of expectedUpdateAssets(version, platform)) if (!names.includes(name)) throw new Error(`missing ${platform} update asset: ${name}`);
-  for (const name of names.filter((name) => /\.(?:exe|dmg|AppImage|deb)$/.test(name))) if (!expected.includes(name)) throw new Error(`unexpected installer: ${name}`);
+  for (const name of names) if (!expectedAssets.includes(name)) throw new Error(`unexpected ${platform} release asset: ${name}`);
   validateFuseEvidence(platform, executableFuses);
   const artifacts = [];
   for (const name of names) {
@@ -61,24 +62,31 @@ function walk(dir) {
     return info.isDirectory() ? walk(file) : [file];
   });
 }
-export async function verifyReleaseProvenance(dir, version, sha) {
+/** @param {{ policy?: string, requireSigning?: boolean }} options */
+export async function verifyReleaseProvenance(dir, version, sha, options = {}) {
+  const policy = options.policy ?? 'all-platforms';
+  if (!['all-platforms', 'windows-only'].includes(policy)) throw new Error(`invalid release policy: ${policy}`);
+  const requiredPlatforms = policy === 'windows-only' ? ['Windows'] : PLATFORMS;
   const files = walk(dir);
   const manifests = files.filter((file) => /^JCad-Electrical-(?:Windows|macOS|Linux)-provenance\.json$/.test(basename(file)));
   const records = []; const seen = new Set(); const covered = new Set();
   for (const file of manifests) {
     const record = JSON.parse(readFileSync(file, 'utf8'));
     validateIdentity(record.platform, record.version, record.sourceSha, record.signing);
+    if (!requiredPlatforms.includes(record.platform)) throw new Error(`unexpected platform for ${policy} release: ${record.platform}`);
     if (record.schemaVersion !== 1 || record.version !== version || record.sourceSha !== sha) throw new Error(`provenance does not match tested source/version: ${file}`);
     if (basename(file) !== `JCad-Electrical-${record.platform}-provenance.json`) throw new Error('platform provenance filename does not match its record');
     if (seen.has(record.platform)) throw new Error(`duplicate platform provenance: ${record.platform}`);
     validateFuseEvidence(record.platform, record.executableFuses);
     seen.add(record.platform);
+    if (options.requireSigning && record.signing !== (record.platform === 'Windows' ? 'authenticode-verified' : record.platform === 'macOS' ? 'developer-id-notarized' : 'unsigned')) throw new Error(`publisher signing is required for ${record.platform}`);
     if (!Array.isArray(record.artifacts) || !record.artifacts.length) throw new Error(`empty provenance artifacts: ${file}`);
     const names = new Set();
     for (const artifact of record.artifacts) {
       if (typeof artifact.name !== 'string' || basename(artifact.name) !== artifact.name || !isReleaseAsset(artifact.name) || names.has(artifact.name)) throw new Error('invalid or duplicate artifact name');
       names.add(artifact.name);
       if (/\.(?:exe|dmg|AppImage|deb)$/.test(artifact.name) && !expectedInstallers(version, record.platform).includes(artifact.name)) throw new Error(`unexpected ${record.platform} installer: ${artifact.name}`);
+      if (![...expectedInstallers(version, record.platform), ...expectedUpdateAssets(version, record.platform)].includes(artifact.name)) throw new Error(`unexpected ${record.platform} release asset: ${artifact.name}`);
       const matches = files.filter((candidate) => basename(candidate) === artifact.name);
       if (matches.length !== 1) throw new Error(`missing or duplicate artifact: ${artifact.name}`);
       const actual = matches[0]; const info = lstatSync(actual);
@@ -90,10 +98,10 @@ export async function verifyReleaseProvenance(dir, version, sha) {
     for (const name of expectedUpdateAssets(version, record.platform)) if (!names.has(name)) throw new Error(`missing ${record.platform} update asset: ${name}`);
     records.push(record);
   }
-  for (const platform of PLATFORMS) if (!seen.has(platform)) throw new Error(`missing platform provenance: ${platform}`);
+  for (const platform of requiredPlatforms) if (!seen.has(platform)) throw new Error(`missing platform provenance: ${platform}`);
   for (const file of files.filter(isReleaseAsset)) if (!covered.has(file)) throw new Error(`artifact has no provenance: ${basename(file)}`);
   records.sort((a, b) => PLATFORMS.indexOf(a.platform) - PLATFORMS.indexOf(b.platform));
-  const aggregate = { schemaVersion: 1, version, sourceSha: sha, builds: records };
+  const aggregate = { schemaVersion: 1, ...(policy === 'windows-only' ? { releasePolicy: policy } : {}), version, sourceSha: sha, builds: records };
   writeFileSync(join(dir, 'release-provenance.json'), `${JSON.stringify(aggregate, null, 2)}\n`);
   writeFileSync(join(dir, 'SHA256SUMS.txt'), records.flatMap((record) => record.artifacts.map((artifact) => `${artifact.sha256}  ${artifact.name}`)).join('\n') + '\n');
   return aggregate;
@@ -114,10 +122,15 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       await writeBuildProvenance(resolve(dir), platform, pkg.version, expectedSha, signing, await verifyPlatformFuses(resolve(dir), platform));
     }
     else if (mode === 'verify') {
-      const record = await verifyReleaseProvenance(resolve(dir), pkg.version, expectedSha);
-      if (platform === '--notes' && signing) appendFileSync(resolve(signing), signingSummary(record));
+      const args = process.argv.slice(4);
+      const policyIndex = args.indexOf('--policy');
+      const policy = policyIndex < 0 ? 'all-platforms' : args[policyIndex + 1];
+      if (policyIndex >= 0 && !policy) throw new Error('--policy requires all-platforms or windows-only');
+      const record = await verifyReleaseProvenance(resolve(dir), pkg.version, expectedSha, { policy, requireSigning: args.includes('--require-signing') });
+      const notesIndex = args.indexOf('--notes');
+      if (notesIndex >= 0 && args[notesIndex + 1]) appendFileSync(resolve(args[notesIndex + 1]), signingSummary(record));
     }
-    else throw new Error('usage: release-provenance.mjs build <dir> <Windows|macOS|Linux> <signing-status> | verify <dir>');
+    else throw new Error('usage: release-provenance.mjs build <dir> <Windows|macOS|Linux> <signing-status> | verify <dir> [--policy all-platforms|windows-only] [--require-signing]');
     console.log(`release-provenance: ${mode} verified at ${expectedSha}`);
   } catch (error) { console.error(`release-provenance: ${error.message}`); process.exitCode = 1; }
 }
