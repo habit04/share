@@ -63,9 +63,11 @@ export interface FileBridge {
    * Desktop only: ask where to save a drawing (Save As); the path is not written yet. With it, a
    * Save As is written through the per-file save queue like every other save of that file.
    */
-  chooseDrawingPath?(suggestName: string): Promise<string | null>;
+  chooseDrawingPath?(suggestName: string, format?: 'dxf'): Promise<string | null>;
   /** Windows only: whether the packaged portable DWG writer is available. */
   dwgExportStatus?(): Promise<{ available: boolean; reason?: string }>;
+  /** Windows only: save a captured drawing to an authorized DWG path, with verification and backup. */
+  saveDwg?(path: string, text: string): Promise<string | null>;
   /** Windows only: choose a DWG export destination without writing it yet. */
   chooseDwgPath?(suggestName: string): Promise<string | null>;
   /** Windows only: write a DWG copy of the captured DXF with the packaged portable writer. */

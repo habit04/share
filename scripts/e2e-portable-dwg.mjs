@@ -68,6 +68,37 @@ export async function runPortableDwgChecks({ app, page, repo, outDir, check, cur
       check(true, `Portable DWG ${label}: real helper, atomic backup, preserved working state and isolated-reader semantic reopen`);
       selectedTarget = target; validDxf = readFileSync(file, 'utf8');
     }
+    const working = join(directory, 'save-as-working.dwg');
+    const previousWorking = Buffer.from('previous normal save destination'); writeFileSync(working, previousWorking);
+    const beforeSaveAs = await signature();
+    await app.evaluate((_e, p) => globalThis.__e2e.savePaths.push(p), working);
+    assert.equal(await page.evaluate(() => window.editor.saveFile(true)), true, 'Normal Save As writes DWG');
+    const binding = await page.evaluate(() => ({ path: window.editor.doc.filePath, dirty: window.editor.doc.dirty }));
+    assert.deepEqual(binding, { path: working, dirty: false }, 'DWG Save As becomes the clean working file');
+    assert.equal(readFileSync(working).subarray(0, 6).toString('ascii'), 'AC1032');
+    assert.deepEqual(readFileSync(working + '.bak'), previousWorking, 'DWG Save As keeps exact previous destination');
+    const beforeNormalSave = readFileSync(working);
+    await page.evaluate(() => window.editor.doc.addEntities([{ id: 'normal-dwg-save-marker', type: 'line', layer: '0', color: 'ByLayer', a: { x: -23, y: -24 }, b: { x: -22, y: -21 } }]));
+    const afterEdit = await signature();
+    assert.equal(await page.evaluate(() => window.editor.saveFile(false)), true, 'Normal Save writes DWG in place without another picker');
+    assert.deepEqual(readFileSync(working + '.bak'), beforeNormalSave, 'Normal DWG Save keeps exact previous file');
+    assert.equal(await page.evaluate(() => window.editor.doc.dirty), false);
+    assert.equal(await page.evaluate(p => window.editor.openFile(p), working), true); await closeReports();
+    approximate(await signature(), afterEdit, 'Normal DWG Save semantic reopen');
+    assert.equal((await signature()).length, beforeSaveAs.length + 1);
+    await page.evaluate(() => window.editor.doc.addEntities([{ id: 'dwg-overwrite-consent-marker', type: 'line', layer: '0', color: 'ByLayer', a: { x: -33, y: -34 }, b: { x: -32, y: -31 } }]));
+    const overwrite = page.evaluate(() => window.editor.saveFile(false));
+    const warning = page.locator('.modal', { hasText: 'Save over the original file?' });
+    await warning.waitFor({ timeout: 10000 });
+    assert.match(await warning.innerText(), /properties JCad cannot read/);
+    await warning.locator('button', { hasText: /^Yes$/ }).click();
+    assert.equal(await overwrite, true, 'Normal DWG source overwrite requires and accepts loss consent');
+    const explicitDxf = join(directory, 'explicit-dxf-copy.dxf');
+    await app.evaluate((_e, p) => globalThis.__e2e.savePaths.push(p), explicitDxf);
+    assert.equal(await page.evaluate(() => window.editor.saveFile(true, 'dxf')), true, 'Explicit DXF export from DWG uses DXF Save As');
+    assert.match(readFileSync(explicitDxf, 'utf8'), /AC1015/);
+    assert.equal(await page.evaluate(() => window.editor.doc.filePath), explicitDxf);
+    check(true, 'Normal DWG Save As and in-place Save preserve semantics and exact backups, source overwrite requires loss consent, and explicit DXF stays DXF');
     const prior = readFileSync(selectedTarget), backup = readFileSync(selectedTarget + '.bak');
     for (const [label, text] of [['malformed', 'not DXF'], ['unsupported 3D', '0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1032\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\n3DSOLID\n5\n101\n100\nAcDbEntity\n8\n0\n100\nAcDbModelerGeometry\n70\n1\n1\nunsupported ACIS\n0\nENDSEC\n0\nEOF\n']]) {
       const refused = await page.evaluate(([p, text]) => window.jcad.exportDwg(p, text).then(() => false, () => true), [selectedTarget, text]);

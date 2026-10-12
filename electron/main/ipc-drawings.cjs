@@ -21,13 +21,13 @@ const { MAX_DRAWING_BYTES, MAX_PROJECT_BYTES, readLimitedFile, validateTextSize 
  */
 function registerDrawingIpc(ctx, { takeHandedOverProject }) {
   const { ipcMain, rejections, registry, pathPolicy, senderWindow } = ctx;
-  /** What each write channel accepts (besides being writable): save-dxf, save-project, backup-file. */
+  /** What each write channel accepts (besides being writable): save-dxf, save-dwg, save-project, backup-file. */
   const DXF_FILE = /\.dxf$/i;
   const PROJECT_FILE = /\.json$/i;
   const BACKUP_FILE = /\.(dxf|jcadproj\.json)$/i;
   const DWG_FILE = /\.dwg$/i;
   const dwgExporter = createPortableDwgExporter();
-  // Opening a DWG never authorizes this export. Only its dedicated native Save dialog does.
+  // Export Copy requires its dedicated picker even when normal Save may write an opened DWG.
   const dwgDestinations = new Set();
   const dwgKey = (file) => path.resolve(file).normalize('NFC').toLowerCase();
 
@@ -57,7 +57,7 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
     }
     if (chosen) registry.grant(file);
     if (file.toLowerCase().endsWith('.dwg')) {
-      // The DXF working copy gets the DWG's access; a DWG export needs its own Save dialog.
+      // The DXF working copy gets the DWG's access; Export Copy still needs its own Save dialog.
       const twin = file.replace(/\.dwg$/i, '.dxf');
       registry.grantDerived(twin, file);
       // At most 128 MiB, read through one nonblocking handle (E-7).
@@ -145,7 +145,7 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
 
   /**
    * The file a Save dialog's answer names once the channel's extension is appended to a name typed
-   * without one (.dxf for drawings, .jcadproj.json for projects). The Windows and macOS dialogs
+   * without one (.dxf or .dwg for drawings, .jcadproj.json for projects). The Windows and macOS dialogs
    * complete the name themselves and ask there before a file is replaced; the Linux (GTK) dialog asks
    * only about the name as typed, so when the completed name already exists, the question is asked
    * here. Resolves the completed path, or null when the user keeps that file.
@@ -185,22 +185,34 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
   });
 
   /**
-   * Drawing Save As: ask where to save; the path becomes writable by save-dxf (a .dxf file: a name
-   * typed without the extension gets it, and is asked about when that file already exists -
-   * completeSavePath) but nothing is written yet. The renderer then writes it
+   * Drawing Save As: Windows offers DXF and DWG; other platforms and explicit DXF exports offer
+   * DXF. The suggested format comes first, but a supported extension selects the final format. A
+   * name without an extension gets the initial format (with confirmation if that completed path exists). Nothing
+   * is written yet: the chosen path becomes writable, then the renderer writes it
    * through its per-file save queue (src/app/savequeue.ts), so a Save As onto a file with an older
    * save still on its way is ordered after that save instead of racing it.
    */
-  ipcMain.handle('choose-drawing-path', async (ev, suggestName) => {
+  ipcMain.handle('choose-drawing-path', async (ev, suggestName, format) => {
     const win = senderWindow(ev);
+    if (suggestName !== undefined && (typeof suggestName !== 'string' || suggestName.length > 4096 || suggestName.includes('\0'))) throw new Error('Invalid drawing filename');
+    if (format !== undefined && format !== 'dxf') throw new Error('Invalid drawing format');
+    const allowDwg = process.platform === 'win32' && format !== 'dxf';
+    const suggested = String(suggestName || 'Drawing1.dxf');
+    const defaultPath = format === 'dxf' ? suggested.replace(DWG_FILE, '.dxf') : suggested;
+    const preferredDwg = allowDwg && DWG_FILE.test(defaultPath);
+    const dxfFilter = { name: 'DXF Drawing (AutoCAD 2000)', extensions: ['dxf'] };
+    const dwgFilter = { name: 'DWG Drawing (AutoCAD 2018)', extensions: ['dwg'] };
     const res = await dialog.showSaveDialog(win, {
       title: 'Save Drawing As',
-      defaultPath: String(suggestName || 'Drawing1.dxf'),
-      filters: [{ name: 'DXF Drawing (AutoCAD 2000)', extensions: ['dxf'] }],
+      defaultPath,
+      filters: allowDwg ? (preferredDwg ? [dwgFilter, dxfFilter] : [dxfFilter, dwgFilter]) : [dxfFilter],
     });
     if (res.canceled || !res.filePath) return null;
-    const file = await completeSavePath(win, res.filePath, DXF_FILE, '.dxf');
-    if (!file) return null;
+    if (pathPolicy.shapeProblem(res.filePath)) return null;
+    const ext = path.extname(res.filePath).toLowerCase();
+    if (ext && ext !== '.dxf' && !(allowDwg && ext === '.dwg')) throw new Error('Choose a supported drawing extension: ' + (allowDwg ? '.dxf or .dwg.' : '.dxf.'));
+    const file = await completeSavePath(win, res.filePath, allowDwg ? /\.(dxf|dwg)$/i : DXF_FILE, preferredDwg ? '.dwg' : '.dxf');
+    if (!file || pathPolicy.shapeProblem(file)) return null;
     registry.grant(file);
     return file;
   });
@@ -226,11 +238,15 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
     return file;
   });
 
-  ipcMain.handle('export-dwg', async (ev, file, text) => {
-    const win = senderWindow(ev);
-    validateTextSize(text, MAX_DRAWING_BYTES, 'DXF');
-    const target = pathPolicy.writable(file, 'export-dwg', DWG_FILE);
-    if (!target || !dwgDestinations.has(dwgKey(target))) throw new Error('Choose the DWG export destination using its Save dialog first.');
+  /**
+   * Both DWG channels use the verified portable writer, canonical queue and atomic backup. A
+   * normal Save keeps a by-name project's write confinement; Export Copy is native-picked.
+   * @param {Electron.BrowserWindow} win
+   * @param {string} target
+   * @param {string} text
+   * @param {string | undefined} [root]
+   */
+  async function writePortableDwg(win, target, text, root) {
     const controller = new AbortController();
     const cancel = () => controller.abort();
     win.once('closed', cancel);
@@ -241,7 +257,7 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
         // Queue with DXF/project writes, then check the original identity again inside the reservation.
         await check();
         const writer = createAtomicWriter(undefined, { hooks: { beforeRename: check } });
-        await writer.atomicWriteFile(destination, bytes, { backup: true, expectedDestination: key });
+        await writer.atomicWriteFile(destination, bytes, { backup: true, expectedDestination: key, root });
       }), controller.signal);
       pathPolicy.rememberImages(target, dxfImageNames(text));
       return result;
@@ -250,6 +266,24 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
       win.webContents.removeListener('destroyed', cancel);
       win.webContents.removeListener('render-process-gone', cancel);
     }
+  }
+
+  ipcMain.handle('export-dwg', async (ev, file, text) => {
+    const win = senderWindow(ev);
+    validateTextSize(text, MAX_DRAWING_BYTES, 'DXF');
+    const target = pathPolicy.writable(file, 'export-dwg', DWG_FILE);
+    if (!target || !dwgDestinations.has(dwgKey(target))) throw new Error('Choose the DWG export destination using its Save dialog first.');
+    return writePortableDwg(win, target, text);
+  });
+
+  /** Save an authorized .dwg in place; read-only or unknown drawings must use Save As first. */
+  ipcMain.handle('save-dwg', async (ev, file, text) => {
+    const win = senderWindow(ev);
+    if (process.platform !== 'win32') throw new Error('DWG saving is available on Windows only.');
+    validateTextSize(text, MAX_DRAWING_BYTES, 'DXF');
+    const target = pathPolicy.writable(file, 'save-dwg', DWG_FILE);
+    if (!target) throw new Error('Choose a writable DWG destination using Save As first.');
+    return writePortableDwg(win, target, text, registry.writeRoot(target) ?? undefined);
   });
 
   /**

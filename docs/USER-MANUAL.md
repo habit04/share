@@ -143,7 +143,7 @@ matching ribbon button.
    contact shows the rung of its coil.
 9. **Check it.** Run `AEAUDIT` for the Electrical Audit; double-check any warnings with
    **Go To**.
-10. **Save.** Press Ctrl+S. Drawings are saved as DXF, using the version required by their native properties.
+10. **Save.** Press Ctrl+S. Save As offers DXF or DWG on Windows; later saves keep that destination. DWG uses the bundled portable writer without installed AutoCAD. Other editions save DXF, using the version required by the drawing's native properties.
 11. **Plot.** Press Ctrl+P, choose a paper size and click **Plot to PDF**.
 
 Tip: add `?demo` to the address of the browser edition to load a sample motor-control ladder.
@@ -194,7 +194,7 @@ Help.
 | Schematic | Insert Wires / Wire Numbers, Insert Components (icon menu and one-click common symbols), Child Contact, 3 Phase, Catalog Browser, Circuit Builder, Symbol Builder, Edit Components, Edit Wires / Wire Numbers, Cables / Jumpers / PLC I/O (Cable Marker, Cable Schedule, Jumper, Delete Jumper, PLC I/O Import / Export), Other Tools (cross-reference, PLC module, source / destination arrows, audit) |
 | Panel | Schematic List, Footprint, Balloon, Nameplate, Terminal Strip, Terminal Strip Editor, Panel Layout (Enclosure, DIN Rail, Wire Duct, Plate Grid, Align Footprints, Terminal Strip FP, Panel Hardware), panel reports |
 | Reports | Bill of Material, Component Report, Wire From/To, Wire Labels, PLC I/O Address, Missing Catalog, Terminal Report, Terminal Strip, Panel Components, Panel Hardware, Electrical Audit, Audit Report |
-| Import/Export Data | Open DXF / DWG, save as DXF |
+| Import/Export Data | Open DXF / DWG, export DXF; Windows Save As also offers DWG |
 | Conversion Tools | Explode, Line to Wire |
 | Add-ins | Command List (Help), Report Problem |
 | View | Pan, zoom buttons, palettes (Project Manager, Properties, Layers), named views, units, limits, regen; Layout (New Layout, From Template, Page Setup, Viewport, Lock Viewport, Model Space, Paper Space, Model Tab) |
@@ -905,8 +905,9 @@ How the changes are applied:
    what is readable. When the project was opened only by its path (not by you, see above), a
    drawing outside its folder that you have not opened or saved yourself gets no `.bak` copy and
    is written only after you confirm it in the Save As dialog.
-3. DWG drawings are read-only and are skipped; the command line lists skipped drawings. The
-   browser edition cannot read closed drawings, so open them in tabs first.
+3. Closed DWG drawings are skipped; the command line lists them. Open a DWG in a tab to apply
+   the changes there, then use Save to write DWG on Windows or a DXF copy in other editions.
+   The browser edition cannot read closed drawings, so open them in tabs first.
 4. Changes are only applied to the drawing they were calculated from. When you edit an open
    drawing while the command runs (for example while its confirmation dialog is up), when a
    closed drawing changes on disk or is opened in a tab in the meantime, or when a newer save of
@@ -1243,8 +1244,10 @@ Settings are stored per user on this computer (in the browser edition, per brows
 DXF is JCad Electrical's native format, starting at AutoCAD 2000 / AC1015 and choosing the
 highest version required by native properties: RGB/named colors need AutoCAD 2004,
 MTEXT masks need 2007, transparency needs 2010, and MTEXT frames need 2018.
-`SAVE` (QSAVE, Ctrl+S) and
-`SAVEAS` (Ctrl+Shift+S) write DXF. Layers, linetypes, lineweights, blocks, attributes
+`SAVE` (QSAVE, Ctrl+S) writes to the drawing's current destination. `SAVEAS` (Ctrl+Shift+S)
+offers DXF or DWG in the Windows desktop edition; other editions save DXF copies. DXF saves
+keep the version required by the drawing's native properties. Layers, linetypes, lineweights,
+blocks, attributes
 (including invisible ones), dimensions, text, polylines with arcs and widths, and the
 electrical data all round-trip, and the files open in other CAD programs. `OPEN` (Ctrl+O)
 reads DXF and DWG files into a new tab; `NEW` (QNEW, Ctrl+N) starts an empty drawing. A file
@@ -1288,8 +1291,9 @@ space, a layout, a block) and the reason; **Copy Report** copies the complete li
 - **Kept (not shown)**: 3D faces, and 3D solids, regions and bodies with their data stored in
   the object (DXF files up to AutoCAD 2010) cannot be shown or edited, but stay in the drawing
   exactly as they were and are written back, on their layer, at the end of the drawing's
-  entities when you save (also when a project-wide command rewrites the file). Their links to
-  other objects and their extended data are not kept.
+  entities when you save DXF (also when a project-wide command rewrites the file). The portable
+  DWG writer refuses retained 3D/ACIS records that it cannot safely convert; use Save As to DXF
+  in that case. Their links to other objects and their extended data are not kept.
 - **Kept** (blocks): a block whose references would expand, through the blocks nested in it, to
   more than 2,000,000 objects, and a block that inserts itself (directly or through other
   blocks). The reader retains their definitions. Before a drawing opens or an edit is accepted,
@@ -1302,8 +1306,10 @@ space, a layout, a block) and the reason; **Copy Report** copies the complete li
 
 **Saving over the original.** When the file you opened contained content JCad Electrical
 cannot keep, `SAVE` asks before writing over it: **Yes** saves over the original (the dropped
-content is then gone from that file), **No** opens Save As so you keep the original. You are
-asked once per file.
+or unreadable content is then gone from that file), **No** opens Save As so you keep the original.
+For DWG this also covers metadata the importer cannot read, even when no visible objects were
+dropped. An accepted warning applies to that imported drawing; choosing the original for an
+explicit DWG copy asks again. Saving cannot reconstruct content already lost on import.
 
 ### Damaged DXF files
 
@@ -1357,15 +1363,20 @@ exceed it between checks. Only one DWG is parsed at a time, and converted result
 are refused. A refused or cancelled open reports the reason and leaves the current drawing as
 it was. DXF files and projects have size limits too (128 MiB and 8 MiB).
 
-When you use SAVE on a drawing opened from DWG, you are asked for a DXF destination.
-The Windows desktop edition also offers **J menu > Export > DWG copy** or **EXPORTDWG**.
-Its bundled writer creates an AutoCAD 2018-format DWG without installed AutoCAD. Exporting
-a copy keeps your DXF working destination, unsaved edits, undo history and recovery records.
-Use SAVE to save the working drawing. Export cannot restore content lost during import;
-review IMPORTREPORT and keep the original. Unsupported retained 3D/ACIS objects and detected
-conversion differences refuse export while preserving the destination. See
-[DWG saving](DWG-SAVING.md) for supported content and memory/file limits. Browser export remains
-DXF; macOS and Linux desktop updates are paused at 0.4.5.
+On Windows, a drawing opened from DWG keeps its DWG destination when portable saving is available.
+**SAVE** writes there; **SAVEAS** offers DXF or DWG and lets you choose a new destination.
+The bundled writer creates AutoCAD 2018-format DWG (`AC1032`) without installed AutoCAD.
+It converts a captured DXF snapshot, reopens the result for validation, then replaces the
+destination atomically with a backup. Only the saved revision becomes clean; edits made while
+conversion runs remain unsaved. Canceling or a failed conversion keeps the destination and recovery copy.
+
+**J menu > Export > DWG copy** or **EXPORTDWG** creates a separate DWG copy. It keeps your working
+destination, dirty state, undo history and recovery checkpoint. Use Save to save the working drawing
+separately. Saving or exporting cannot restore content lost during import; review IMPORTREPORT and
+use a new destination to preserve the original. Unsupported retained 3D/ACIS objects and detected
+conversion differences refuse DWG output. See [DWG saving](DWG-SAVING.md) for supported content and
+memory/file limits. The browser and other desktop editions save DXF copies; macOS and Linux desktop
+updates are paused at 0.4.5.
 
 ### What Undo covers
 
@@ -1403,7 +1414,9 @@ A drawing that is still loading when you switch to another tab opens in the tab 
 from (in the background). If you typed into that tab meanwhile, the drawing opens in a new tab
 instead. Saves of the same file are written one after another, so an older save can never
 overwrite a newer one; `SAVEAS` asks for the file name first and then waits for a save of that
-file that is still on its way. A name typed without `.dxf` gets it; when a file of that completed name
+file that is still on its way. On Windows, choose DXF or DWG in the Save As file-type list; the
+destination's `.dxf` or `.dwg` extension determines the format written. A name without an extension
+gets the chosen extension; other editions complete the name with `.dxf`. When the completed name
 already exists, Save As asks before replacing it.
 
 **Closing the application.** When you close the window, quit (File > Exit, Cmd+Q) or restart to
@@ -1432,6 +1445,10 @@ disabled, so a double click opens a backup only once.
   overwrites a backup you have not recovered yet. `autosave/index.json` lists the title, original
   path and time of each backup. Backups from 0.4.0 and earlier are renamed to this scheme the
   first time the new version starts.
+- Recovery snapshots are DXF even when the working file is DWG. A recovered DWG keeps a
+  conservative warning before replacing its original: the recovery snapshot cannot prove that
+  all original DWG metadata was retained. On Windows it can be saved as DWG; other editions
+  ask for a DXF destination.
 - A backup is written only for changes it actually contains: edits you make while an autosave is
   being written are picked up by the next one. Saving a drawing removes its backup only if you did
   not change the drawing again after that save. Closing the window waits (a few seconds at most)
@@ -1446,8 +1463,8 @@ Drawings, projects, exports, plots, autosaves and the files in the application d
 written to a temporary file in the same folder first, flushed to disk, and only then renamed over
 the old file, so a crash, power cut or full disk during a save leaves the previous file intact.
 When you save over an existing drawing or project, its previous version is kept next to it as
-`<name>.bak` (for example `panel.dxf.bak`, one generation; other exports such as CSV reports get
-no `.bak`). To go back to it, rename it to `panel.dxf`.
+`<name>.bak` (for example `panel.dxf.bak` or `panel.dwg.bak`, one generation; other exports such
+as CSV reports get no `.bak`). To go back to it, restore a copy under its original drawing extension.
 
 **Links are not followed.** A file that is a symbolic link (a shortcut created with `ln -s` or
 `mklink`) is never saved over: the save fails with "the file is a symbolic link (shortcut) ...",

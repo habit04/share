@@ -352,8 +352,8 @@ export class Editor {
    * snapshot is older than one already written to that file is dropped (see savequeue.ts).
    * Resolves true when the file was written.
    */
-  saveFile(saveAs: boolean): Promise<boolean> {
-    return save.saveFile(this, this.internals, saveAs);
+  saveFile(saveAs: boolean, format?: 'dxf'): Promise<boolean> {
+    return save.saveFile(this, this.internals, saveAs, format);
   }
 
   confirmDiscardPublic(): Promise<boolean> {

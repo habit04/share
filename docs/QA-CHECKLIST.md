@@ -261,8 +261,10 @@ Weights (wording varies by version) before judging lineweights.
 ## 6. Interchange with other CAD programs
 
 What must survive is listed in [README.md, File formats](../README.md#file-formats) and the user
-manual ([DXF](USER-MANUAL.md#dxf), [DWG](USER-MANUAL.md#dwg)): JCad Electrical writes AutoCAD 2000
-(AC1015) DXF and reads DWG R14 to 2018. Save the QA drawing as DXF and open it elsewhere.
+manual ([DXF](USER-MANUAL.md#dxf), [DWG](USER-MANUAL.md#dwg)): JCad Electrical writes DXF starting
+at AutoCAD 2000 (AC1015), selecting a newer version when native properties require it, and reads
+DWG R14 to 2018. Windows also saves supported 2D state as AC1032 DWG through its portable writer.
+Save the QA drawing as DXF and, on Windows, DWG, then open both elsewhere.
 
 ### Must pass before release
 
@@ -276,6 +278,15 @@ manual ([DXF](USER-MANUAL.md#dxf), [DWG](USER-MANUAL.md#dwg)): JCad Electrical w
 - [ ] AutoCAD: layout tabs → each JCad layout is a tab with its paper size and the viewports at 1:2 and 1:4.
 - [ ] AutoCAD: a JCad TABLE → shown as a block insert with the cell text (not an editable table: expected); reopened in JCad it is a table again.
 - [ ] AutoCAD: save the DXF as DWG 2018, open that DWG in JCad → same objects, layers and layouts; the Import Report lists only what the DWG reader documents as unsupported.
+- [ ] Windows without installed AutoCAD: Save As > DWG creates a real AC1032 DWG, binds the tab to that path and marks the captured revision saved. Reopen it in JCad; inspect it on the separate native CAD validation machine and require `AUDIT` 0 errors for supported fixtures.
+- [ ] Windows: open a DWG, edit, Ctrl+S → saves to that DWG after any original-loss warning; `panel.dwg.bak` contains the previous complete file. Save As can switch between DXF and DWG; subsequent Ctrl+S follows the chosen destination.
+- [ ] Windows Save As: switch the DXF/DWG file type, type names with and without extensions and try uppercase extensions → returned suffix matches the bytes written. A different explicit suffix is refused. Existing completed names require overwrite confirmation.
+- [ ] DWG original with dropped objects or unsupported metadata → Ctrl+S warns before replacement even when all visible objects survived; declining opens Save As and choosing another name preserves the original.
+- [ ] DWG conversion of unsupported retained 3D/ACIS/proxy records or a validation failure → destination remains unchanged, drawing stays modified and recovery copy remains; Save As to DXF still works for retained DXF content.
+- [ ] Windows: edit while DWG Save converts → the captured snapshot reaches disk and newer edits stay modified. Switch or replace tabs during the operation → save completion applies only to the initiating drawing. Save All on close awaits conversion and cancels closing on failure.
+- [ ] EXPORTDWG / Export > DWG copy → writes a separate DWG without changing working destination, dirty state, undo or recovery checkpoint; editing during export keeps the later edits unsaved.
+- [ ] Browser and non-Windows desktop: opening DWG and saving still produces a DXF copy; Symbol Builder Export DXF and drawing Export > DXF also produce DXF on Windows.
+- [ ] Project-wide retag, wire numbers, cross-references and title blocks → open DWG tabs change in memory and save normally on Windows; closed DWGs are listed as skipped and are not rewritten. Open a skipped DWG in a tab and repeat → its changes apply there.
 - [ ] BricsCAD: open `qa-drawing.dxf` → no errors; `AUDIT` 0 errors; layers, blocks with attributes, dimensions and layouts as in AutoCAD.
 - [ ] Real project DWGs (2000, 2007, 2013, 2018 formats) → open in JCad; compare with the source program side by side: no missing geometry beyond the Import Report; text, dimensions and hatches in place.
 - [ ] An AutoCAD Electrical project drawing (with `WD_M`) → opens; components show their tags in reports (`AEREPORT components`) and the Project Manager.
@@ -355,7 +366,7 @@ followed by the reason quoted below.
 - [ ] Disconnect the network (Wi-Fi off or cable out) and save to the share → "…"<folder>" is not available. It may have been moved or deleted, or the network or removable drive is disconnected." after the system gives up (record how long); reconnect, **Retry** → saved.
 - [ ] Remove a USB stick holding the open drawing, then save → the same "is not available" message; **Save As...** to the local disk works.
 - [ ] After any failed save → the tab still shows the drawing as modified; kill the app → the Drawing Recovery Manager offers the drawing at the next start.
-- [ ] Open a DXF and a DWG from a read-only share → both open; saving the DXF there fails with a message and Save As works; saving the DWG asks for a new name (DWG is read-only).
+- [ ] Open a DXF and a DWG from a read-only share → both open. On Windows, saving either there fails without changing the source; Save As to a writable folder works in either format. Other editions ask for a DXF destination when saving the imported DWG.
 
 ### Nice to verify
 
@@ -382,6 +393,8 @@ macOS Activity Monitor > Force Quit, or `pkill -9 -f "JCad Electrical"`; Linux
 - [ ] **Open** → the drawing opens with the autosaved content as a modified, unsaved tab; the command line says "Recovered <title> from autosave (N entities). Use SAVE to keep it; the backup is kept until then."
 - [ ] Kill again before saving the recovered drawing → it is offered again at the next start.
 - [ ] Save the recovered drawing, quit normally, start → no recovery dialog.
+- [ ] Windows: autosave a modified DWG, crash and recover → DXF snapshot restores the edited state with its DWG destination and a conservative original-overwrite warning. Cancel or fail DWG conversion → recovery remains. Successful Save removes only the saved revision's recovery copy; newer edits retain theirs.
+- [ ] Recover a DWG snapshot in an edition that cannot save DWG → Save chooses a DXF destination and never writes DXF text under the original `.dwg` name.
 - [ ] Two modified drawings in tabs, kill → both are listed, each opens with its own content.
 - [ ] **Discard** one → only that row disappears; **Discard All** → the listed backups are deleted, a drawing opened from the list keeps its backup.
 - [ ] Kill during a save over an existing large drawing (about 20 MB, see Appendix B) → after restart the drawing opens complete (old or new content, never cut off); `<name>.bak` opens; a leftover `<name>.~<random>.tmp` may exist and can be deleted.
@@ -411,6 +424,11 @@ drawings with [Appendix B](#appendix-b-making-a-large-drawing) or use real proje
 | 500 000 entities DXF | 100 MB | 60 s | 25 s | — |
 | Real DWG, 10 MB | 10 MB | 10 s | 5 s (as DXF) | 15 s |
 | Real DWG, 50 MB | 50 MB | 60 s | 25 s (as DXF) | — |
+
+The DWG rows above measure saving a DXF copy. Record portable Windows DWG conversion time
+separately, including validation; it has the additional deadline and memory/file limits in
+[DWG saving](DWG-SAVING.md). A conversion refused by those limits must preserve the destination
+and offer a usable DXF Save As.
 
 ### Must pass before release
 

@@ -563,7 +563,7 @@ export function canReadProjectFiles(editor: Pick<Editor, 'fileBridge'>): boolean
 /**
  * Every drawing of the project as a sheet: the active drawing and other
  * open tabs from memory (so unsaved edits count), closed drawings read
- * through the file bridge (DXF only; DWG is read-only). When the project
+ * through the file bridge (DXF only; DWG updates require an open tab). When the project
  * has no drawings, the current drawing alone is used.
  */
 export async function loadProjectSheets(editor: Editor, opts: { files?: boolean } = {}): Promise<{ sheets: LoadedSheet[]; skipped: string[] }> {
@@ -606,7 +606,7 @@ export async function loadProjectSheets(editor: Editor, opts: { files?: boolean 
         continue;
       }
       if (res.kind === 'dwg') {
-        skipped.push(`${base.name} (DWG is read-only)`);
+        skipped.push(`${base.name} (open this DWG in a tab to update it)`);
         continue;
       }
       const doc = new Drawing();

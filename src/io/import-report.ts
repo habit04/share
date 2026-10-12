@@ -280,8 +280,26 @@ export function saveOverwriteWarning(state: DrawingState, path: string | null): 
   if (!r || !path || !r.sourcePath || !samePath(r.sourcePath, path)) return null;
   if (r.recovered) return `This drawing was recovered from a damaged file (${r.recovered.message}). Saving over ${baseName(path)} replaces the original with what could be read. Use Save As to keep the original file. Save over it anyway?`;
   const n = lossCount(r);
+  if (n === 0 && r.format === 'DWG' && countOf(r, 'unsupported')) return `${baseName(path)} contains properties JCad cannot read (see the import report). Saving the current drawing cannot restore them and may remove them from the original file. Use Save As to keep the original. Save over it anyway?`;
   if (n === 0) return null;
   return `${baseName(path)} contained ${n} object(s) JCad cannot keep (see the import report). Saving over it removes them from the file. Use Save As to keep the original. Save over it anyway?`;
+}
+
+/** DXF recovery snapshots cannot retain the unreadable properties of their original DWG. */
+export function withDwgRecoveryWarning(state: DrawingState, path: string | null): DrawingState {
+  if (!path || !/\.dwg$/i.test(path)) return state;
+  const previous = importReportOf(state);
+  const item: ImportReportItem = { type: 'DWG_AUTOSAVE_SOURCE', action: 'unsupported', reason: 'This DXF autosave contains the recovered drawing, but cannot restore unreadable properties from the original DWG.' };
+  const items = previous?.items ?? [];
+  const report: ImportReport = {
+    ...(previous ?? { counts: {}, items: [], omitted: 0, notes: [] }),
+    format: 'DWG', sourcePath: path,
+    counts: { ...previous?.counts, DWG_AUTOSAVE_SOURCE: { unsupported: 1 } },
+    items: items.length < MAX_REPORT_ITEMS ? [...items, item] : items,
+    omitted: (previous?.omitted ?? 0) + (items.length < MAX_REPORT_ITEMS ? 0 : 1),
+    notes: [...(previous?.notes ?? []), item.reason],
+  };
+  return { ...state, meta: { ...state.meta, [IMPORT_REPORT_META_KEY]: report } };
 }
 
 function baseName(p: string): string {

@@ -325,7 +325,7 @@ export const RIBBON: RibbonTab[] = [
     name: 'Import/Export Data',
     panels: [
       { title: 'Import', buttons: [B('From\nDXF', 'open', 'OPEN')] },
-      { title: 'Export', buttons: [B('To DXF', 'saveas', 'SAVEAS'), B('Save', 'save', 'SAVE', 'small')] },
+      { title: 'Export', buttons: [B('To DXF', 'saveas', 'SAVEASDXF'), B('Save', 'save', 'SAVE', 'small')] },
     ],
   },
   {

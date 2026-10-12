@@ -87,7 +87,7 @@ export async function exportDwgCopy(ed: Editor): Promise<boolean> {
     const sourceOverwrite = !!overwriteWarning(state, target);
     const result = await saveQueue.run(target, revision, () => {
       if (!sessionExists() || (sourceOverwrite && !unchanged())) return Promise.resolve(null);
-      ed.log('Exporting a DWG copy. The working drawing remains a DXF document; save it separately to keep edits and recovery records current.');
+      ed.log('Exporting a DWG copy. Save the working drawing separately to keep edits and recovery records current.');
       return bridge.exportDwg(target!, text);
     });
     if (result.status === 'stale') {
@@ -99,7 +99,7 @@ export async function exportDwgCopy(ed: Editor): Promise<boolean> {
       return false;
     }
     const suffix = !sessionExists() ? ' (the exported drawing closed or was replaced meanwhile)' : !unchanged() ? ' (edits made during export are not in this copy)' : '';
-    ed.log(`Exported DWG copy: ${result.value}${suffix}. Save the working drawing separately as DXF.`);
+    ed.log(`Exported DWG copy: ${result.value}${suffix}. Save the working drawing separately to keep edits.`);
     return true;
   } catch (err) {
     const info = describeFileError(err, { action: 'save', path: target });

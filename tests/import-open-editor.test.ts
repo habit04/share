@@ -46,6 +46,34 @@ async function makeEditor(files: Record<string, string>, answers: boolean[]) {
 }
 
 describe('import report in the editor', () => {
+  it('Windows DWG open keeps its path and subsequent Save uses the portable writer with source-loss consent', async () => {
+    const f = await makeEditor({}, [true]);
+    const writes: string[] = [];
+    f.ed.fileBridge!.platform = 'win32';
+    f.ed.fileBridge!.dwgExportStatus = async () => ({ available: true });
+    f.ed.fileBridge!.saveDwg = async (path) => { writes.push(path); return path; };
+    f.ed.fileBridge!.openDrawing = async () => ({ path: '/d/working.dwg', kind: 'dwg', version: 'AC1032', payload: { header: {}, entities: [], layers: [], blocks: [] } });
+    expect(await f.ed.openFile()).toBe(true);
+    expect(f.ed.doc.filePath).toBe('/d/working.dwg');
+    expect(f.ed.doc.dirty).toBe(false);
+    f.ed.doc.addEntities([{ id: 'edit-dwg', type: 'line', layer: '0', color: 'ByLayer', a: { x: 0, y: 0 }, b: { x: 2, y: 3 } }]);
+    expect(await f.ed.saveFile(false)).toBe(true);
+    expect(writes).toEqual(['/d/working.dwg']);
+    expect(f.saves).toEqual([]);
+    expect(f.asked[0]?.message).toMatch(/properties JCad cannot read/);
+    expect(f.ed.doc.dirty).toBe(false);
+  });
+
+  it('non-Windows DWG opens as an unsaved DXF copy', async () => {
+    const f = await makeEditor({}, []);
+    f.ed.fileBridge!.platform = 'linux';
+    f.ed.fileBridge!.openDrawing = async () => ({ path: '/d/original.dwg', kind: 'dwg', payload: { header: {}, entities: [], layers: [], blocks: [] } });
+    expect(await f.ed.openFile()).toBe(true);
+    expect(f.ed.doc.filePath).toBeNull();
+    expect(f.ed.doc.dirty).toBe(true);
+    expect(f.ed.suggestedName).toBe('original.dxf');
+  });
+
   it('SAVEAS choosing the original source still warns; a changed or replaced session cannot use its answer', async () => {
     const f = await makeEditor({ '/d/saveas-source.dxf': text('unsupported-content.dxf') }, [true]);
     await f.ed.openFile('/d/saveas-source.dxf');

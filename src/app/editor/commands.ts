@@ -98,8 +98,9 @@ export function registerBuiltinCommands(ed: Editor): void {
   });
   reg('NEW', ['QNEW'], 'New drawing', (ed) => ed.newDrawing());
   reg('OPEN', [], 'Open a DXF or DWG drawing', (ed, arg) => void ed.openFile(arg));
-  reg('SAVE', ['QSAVE'], 'Save drawing (DXF)', (ed) => void ed.saveFile(false));
-  reg('SAVEAS', [], 'Save drawing as (DXF)', (ed) => void ed.saveFile(true));
+  reg('SAVE', ['QSAVE'], 'Save drawing', (ed) => void ed.saveFile(false));
+  reg('SAVEAS', [], 'Save drawing as', (ed) => void ed.saveFile(true));
+  reg('SAVEASDXF', [], 'Save drawing as DXF (AutoCAD 2000)', (ed) => void ed.saveFile(true, 'dxf'));
   reg('IMPORTREPORT', [], 'Show what opening this drawing dropped, simplified or kept without showing', (ed) => ed.showImportReport(true));
   reg('LIST', ['LI'], 'List selected objects', (ed) => ed.listSelection());
   reg('HELP', ['?'], 'List commands', (ed) => {

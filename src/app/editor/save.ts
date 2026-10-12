@@ -11,11 +11,12 @@ import { applySaveResult } from '../sessions';
 import { describeFileError } from '../file-errors';
 import { confirmSaveOver } from '../import-open';
 import { saveOverwriteWarning } from '../../io/import-report';
+import { hasDwgSave } from '../drawing-save';
 import type { Editor } from './editor';
 import { fallbackUi, type EditorInternals } from './internals';
 import { rememberRecent } from './documents';
 
-export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean): Promise<boolean> {
+export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean, format?: 'dxf'): Promise<boolean> {
   if (!ed.fileBridge) {
     ed.log('No file access in this environment.');
     return false;
@@ -29,39 +30,57 @@ export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean)
   const contentGeneration = session.contentGeneration;
   const savedState = ed.doc.snapshot;
   const revision = captureRevision();
-  let target = saveAs ? null : ed.doc.filePath;
+  let target = saveAs || format === 'dxf' ? null : ed.doc.filePath;
   const fileName = ed.fileName();
-  const suggest = ed.suggestedName ?? fileName;
+  const canSaveDwg = format !== 'dxf' && hasDwgSave(bridge);
+  // A recovered Windows DWG can be opened in an edition that only writes DXF.
+  // Keep that edition's Save behavior: choose a DXF destination for the copy.
+  if (target && /\.dwg$/i.test(target) && !canSaveDwg) target = null;
+  const suggest = (ed.suggestedName ?? fileName).replace(/\.dwg$/i, canSaveDwg ? '.dwg' : '.dxf');
+  const sessionExists = () => ed.sessions.all.some((s) => s === session && s.contentGeneration === contentGeneration);
+  const stillCurrent = () => sessionExists() && session.state === savedState && session.revision === sessionRevision;
+  const changed = () => {
+    ed.lastFileError = 'the drawing changed or closed while its save destination or loss warning was open';
+    ed.log(`Not saved: ${ed.lastFileError}. Save again to review the current drawing.`);
+    return false;
+  };
   ed.lastFileError = null;
   let path: string | null;
   try {
     const text = writeDxf(withoutUnusedLibraryBlocks(savedState));
     // Save As picks the file first and then queues the write behind any save of that file still on its way.
     if (!target && bridge.chooseDrawingPath) {
-      target = await bridge.chooseDrawingPath(suggest);
+      target = format ? await bridge.chooseDrawingPath(suggest, format) : await bridge.chooseDrawingPath(suggest);
       if (!target) return false;
     }
     if (target) {
-      const stillCurrent = () => ed.sessions.all.some((s) => s === session && s.state === savedState && s.revision === sessionRevision);
+      const dwg = /\.dwg$/i.test(target);
+      if (dwg && format === 'dxf') throw new Error('The DXF save destination must end in .dxf. Choose a DXF destination with Save As.');
+      if (dwg && !canSaveDwg) throw new Error('DWG saving is available in the Windows desktop edition. Choose a DXF destination with Save As.');
+      if (dwg && !sessionExists()) return changed();
       const needsReview = !!saveOverwriteWarning(savedState, target);
       const permitted = await confirmSaveOver(savedState, target, (t, m) => (ed.ui ?? fallbackUi).confirm(t, m), session, stillCurrent);
-      if (needsReview && !stillCurrent()) {
-        ed.lastFileError = 'the drawing changed or closed while its save destination or loss warning was open';
-        ed.log(`Not saved: ${ed.lastFileError}. Save again to review the current drawing.`);
-        return false;
-      }
+      if (needsReview && !stillCurrent()) return changed();
       if (permitted === 'save-as') {
         ed.log('Save As keeps the original file unchanged.');
         // Repeatedly choosing the source in Save As must keep requiring permission.
         if (!bridge.chooseDrawingPath && saveAs) return false;
-        return ed.saveFile(true);
+        return ed.saveFile(true, format);
       }
-      const r = await saveQueue.run(target, revision, () => !needsReview || stillCurrent() ? bridge.saveDxf(target, text, suggest) : Promise.resolve(null));
+      const r = await saveQueue.run(target, revision, async () => {
+        if ((needsReview && !stillCurrent()) || (dwg && !sessionExists())) return null;
+        if (!dwg) return bridge.saveDxf(target, text, suggest);
+        const status = await bridge.dwgExportStatus!();
+        if (!sessionExists() || (needsReview && !stillCurrent())) return null;
+        if (!status.available) throw new Error(`DWG saving is unavailable: ${status.reason || 'the portable DWG writer could not be loaded.'} Use Save As to save a DXF copy.`);
+        return bridge.saveDwg!(target!, text);
+      });
       if (r.status === 'stale') {
         ed.lastFileError = `a newer version of ${target} was saved meanwhile`;
         return false;
       }
       path = r.value;
+      if (!path && dwg && (!sessionExists() || (needsReview && !stillCurrent()))) return changed();
     } else {
       path = await bridge.saveDxf(null, text, suggest);
       if (path) saveQueue.markCompleted(path, revision);
@@ -71,9 +90,10 @@ export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean)
     const info = describeFileError(err, { action: 'save', path: target });
     ed.lastFileError = info.message;
     ed.log(`Save failed: ${info.message} The drawing is still marked as modified and its autosave copy is kept.`);
+    if (!sessionExists()) return false;
     const choice = ed.hooks.saveError ? await ed.hooks.saveError(info, fileName, { saveAs: true }) : 'cancel';
-    if (choice === 'cancel' || ed.sessions.current.id !== sessionId) return false;
-    return ed.saveFile(choice === 'saveas' ? true : saveAs);
+    if (choice === 'cancel' || ed.sessions.current.id !== sessionId || !sessionExists()) return false;
+    return ed.saveFile(choice === 'saveas' ? true : saveAs, format);
   }
   if (!path) return false;
   if ((st.savedRevisions.get(sessionId) ?? 0) > revision) {
