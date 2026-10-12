@@ -33,6 +33,7 @@ import {
 } from '../core/entities';
 import type { Point, Bounds } from '../core/geometry';
 import * as g from '../core/geometry';
+import { polylineWidthGeometry } from '../core/polyline-widths';
 import { aciToCss } from '../render/palette';
 import { strokeText, strokeTextWidth, expandControlCodes, textRenderer, CAP_HEIGHT_EM } from '../render/hershey';
 import { placedText } from '../core/text-placement';
@@ -586,6 +587,21 @@ class PageWriter {
 
   private polyline(e: PolylineEntity): void {
     if (e.points.length === 0) return;
+    if ((e.widths || e.widthFrame) && !e.filled) {
+      const geometry = polylineWidthGeometry(e);
+      const dashed = this.dash && this.dash !== '[] 0 d';
+      for (const { polygon, spines } of geometry.strokes) {
+        if (dashed) {
+          this.ops.push('q');
+          this.polyPath(polygon, true, 'W n');
+          this.ops.push(`${n(Math.min(Number.MAX_VALUE, geometry.maxWidth * this.tf.k))} w`);
+          for (const spine of spines) this.polyPath(spine, false, 'S');
+          this.ops.push('Q');
+        } else this.polyPath(polygon, true, 'f');
+      }
+      for (const spine of geometry.thin) this.polyPath(spine, false, 'S');
+      return;
+    }
     this.ops.push(`${this.P(e.points[0]!)} m`);
     for (const s of polylineSegments(e)) {
       // Bulge arcs from vertex a to b with the signed included angle (negative = clockwise).

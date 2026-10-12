@@ -9,6 +9,7 @@
 import type { DrawingState } from '../core/document';
 import { expansionReport, MAX_INSERT_EXPANSION, MAX_BLOCK_EXPANSION_WORK, type BlockDef, type Entity } from '../core/entities';
 import { mtextFormattingProblem } from '../core/mtext';
+import { polylineWidthProblem } from '../core/polyline-widths';
 import { samePath } from '../app/paths';
 import { textPlacementProblem, placedText } from '../core/text-placement';
 import { textWidth } from '../core/entities';
@@ -164,7 +165,7 @@ export function geometryProblem(e: Entity): string | null {
     case 'arc':
       return e.radius < 0 ? `negative radius ${e.radius}` : null;
     case 'polyline':
-      return e.points.length < 2 ? `a polyline needs at least 2 vertices (it has ${e.points.length})` : null;
+      return e.points.length < 2 ? `a polyline needs at least 2 vertices (it has ${e.points.length})` : polylineWidthProblem(e);
     case 'text': {
       if (e.height < 0) return `negative text height ${e.height}`;
       const placement = textPlacementProblem(e);

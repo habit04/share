@@ -10,6 +10,7 @@ import { isImmutableData } from './immutable-data';
 import { GeometryBudgetError } from './geometry-budget-error';
 import { placedText, scaledText, transformedTextAnchors, textAnchor, type TextPlacement } from './text-placement';
 import { mtextBackgroundPolygons, hasMTextFill, hasMTextFrame, entityMTextBackground } from './mtext-background';
+import { polylineWidthGeometry, polylineWidthFrame, transformWidthFrame, polylineFramePoint, polylineFrameSource, polylineWidthProblem, moveWidthFrameGrip } from './polyline-widths';
 
 export type { DimensionEntity, DimStyle, DimKind } from './dimension';
 export type { MTextEntity, MTextAttachment } from './mtext';
@@ -91,6 +92,18 @@ export interface PolylineEntity extends EntityBase {
   readonly bulges?: readonly number[];
   /** Constant width (PLINE Width / DXF 43). 0 or undefined = thin. */
   readonly width?: number;
+  /** Start/end width of the segment at each vertex (DXF 40/41). Takes precedence over width. */
+  readonly widths?: readonly { readonly start: number; readonly end: number }[];
+  /** Affine display geometry after a nonuniform transform; native block definitions keep their widths. */
+  readonly widthFrame?: {
+    readonly points: readonly Point[];
+    readonly bulges?: readonly number[];
+    readonly width?: number;
+    readonly widths?: readonly { readonly start: number; readonly end: number }[];
+    readonly origin: Point;
+    readonly x: Point;
+    readonly y: Point;
+  };
   /** Closed polyline drawn as a solid fill (dimension arrowheads, SOLID entities). */
   readonly filled?: boolean;
 }
@@ -397,12 +410,14 @@ export function bulgeArc(a: Point, b: Point, bulge: number): BulgeArc | null {
   const chord = g.dist(a, b);
   if (chord < 1e-12) return null;
   const theta = 4 * Math.atan(bulge);
-  const r = chord / (2 * Math.sin(Math.abs(theta) / 2));
-  const m = g.mid(a, b);
-  const d = Math.sqrt(Math.max(0, r * r - (chord / 2) * (chord / 2)));
+  // Use the bulge directly: sin(2*atan(b)) loses the small complement of a nearly
+  // full circle, and squaring r overflows for otherwise finite large-radius arcs.
+  const magnitude = Math.abs(bulge);
+  const r = (chord / 4) * magnitude + (chord / 4) / magnitude;
+  const m = { x: a.x / 2 + b.x / 2, y: a.y / 2 + b.y / 2 };
+  const offset = (chord / 4) / bulge - (chord / 4) * bulge;
   const nrm = { x: -(b.y - a.y) / chord, y: (b.x - a.x) / chord };
-  const side = Math.abs(theta) <= Math.PI ? Math.sign(theta) : -Math.sign(theta);
-  const center = { x: m.x + nrm.x * d * side, y: m.y + nrm.y * d * side };
+  const center = { x: m.x + nrm.x * offset, y: m.y + nrm.y * offset };
   const a0 = g.angleOf(center, a);
   const a1 = g.angleOf(center, b);
   return theta > 0
@@ -424,6 +439,7 @@ export interface PolySegment {
 
 /** Segments of a polyline with their arc data. */
 export function polylineSegments(pl: PolylineEntity): PolySegment[] {
+  if (pl.widthFrame) return polylineSegments({ ...pl, points: polylineVertices(pl), bulges: undefined, widthFrame: undefined });
   const n = pl.points.length;
   const out: PolySegment[] = [];
   // A closed two-vertex polyline (a DONUT) has two arc segments, so the closing segment counts from n = 2.
@@ -444,7 +460,8 @@ export function polylineVertices(pl: PolylineEntity): Point[] {
   const hit = polyCache.get(pl);
   if (hit) return hit;
   let out: Point[];
-  if (!pl.bulges || !pl.bulges.some((b) => Math.abs(b) > 1e-12)) out = [...pl.points];
+  if (pl.widthFrame) out = polylineVertices(polylineFrameSource(pl)).map((point) => polylineFramePoint(pl.widthFrame!, point));
+  else if (!pl.bulges || !pl.bulges.some((b) => Math.abs(b) > 1e-12)) out = [...pl.points];
   else {
     out = [];
     const segs = polylineSegments(pl);
@@ -977,7 +994,8 @@ export function blockTransform(e: Entity, tf: (p: Point) => Point, rotation: num
         ? { ...e, center: tf(e.center), radius: e.radius * k, startAngle: ang(e.endAngle), endAngle: ang(e.startAngle) }
         : { ...e, center: tf(e.center), radius: e.radius * k, startAngle: e.startAngle + rotation, endAngle: e.endAngle + rotation };
     case 'polyline':
-      return { ...e, points: e.points.map(tf), bulges: mirror ? e.bulges?.map((bu) => -bu) : e.bulges, width: e.width !== undefined ? e.width * k : e.width };
+      if (e.widthFrame || (!uniform && (e.widths || e.width))) return { ...e, points: e.points.map(tf), widthFrame: polylineWidthFrame(e, tf), bulges: undefined };
+      return { ...e, points: e.points.map(tf), bulges: mirror ? e.bulges?.map((bu) => -bu) : e.bulges, width: e.width !== undefined ? e.width * k : e.width, widths: e.widths?.map((w) => ({ start: w.start * k, end: w.end * k })) };
     case 'text':
       return scaledText(e, tf, rotation, Math.abs(sx), Math.abs(sy), mirror) as TextEntity;
     case 'mtext':
@@ -1038,7 +1056,9 @@ export function entityGeometryWork(entity: Entity): number {
   let work = 1;
   switch (entity.type) {
     case 'polyline':
-      work += entity.points.length * (entity.bulges?.some((value) => Math.abs(value) > 1e-12) ? 32 : 1);
+      if (entity.widths || entity.widthFrame || entity.width !== undefined) { const invalid = polylineWidthProblem(entity); if (invalid) throw new GeometryBudgetError(invalid); }
+      work += entity.points.length * (entity.widths ? (entity.bulges?.some((value) => Math.abs(value) > 1e-12) ? 210 : 12) : entity.bulges?.some((value) => Math.abs(value) > 1e-12) ? 32 : 1);
+      if (entity.widthFrame) work += entity.widthFrame.points.length * (entity.widthFrame.bulges?.some((value) => Math.abs(value) > 1e-12) ? 210 : 12);
       break;
     case 'spline':
       work += entity.controlPoints.length + entity.knots.length + (entity.weights?.length ?? 0) + (entity.fitPoints?.length ?? 0);
@@ -1361,7 +1381,7 @@ export function similarityTransform(e: Entity, tf: (p: Point) => Point, rotation
     case 'arc':
       return { ...e, center: tf(e.center), radius: e.radius * k, startAngle: e.startAngle + rotation, endAngle: e.endAngle + rotation };
     case 'polyline':
-      return { ...e, points: e.points.map(tf), width: e.width !== undefined ? e.width * k : e.width };
+      return { ...e, points: e.points.map(tf), width: e.width !== undefined ? e.width * Math.abs(k) : e.width, widths: e.widths?.map((w) => ({ start: w.start * Math.abs(k), end: w.end * Math.abs(k) })), ...(e.widthFrame ? { widthFrame: transformWidthFrame(e.widthFrame, tf) } : {}) };
     case 'text':
       return { ...transformedTextAnchors(e, tf), height: e.height * k, rotation: e.rotation + rotation };
     case 'insert':
@@ -1439,6 +1459,15 @@ function transformInto(out: Entity[], e: Entity, tf: (p: Point) => Point, ins: I
     Object.assign(styled, styled.type === 'leader' ? { textBackground: { ...bg, ...inherited } } : { background: { ...bg, ...inherited } });
   }
   if (styled.type === 'leader' && styled.textLayer === '0') Object.assign(styled, { textLayer: ins.layer });
+  if (!similar && styled.type === 'insert') {
+    // Applying anisotropic scale after a rotated nested INSERT produces shear. Combining
+    // its rotation/scales as scalar INSERT fields would lose that affine geometry. Expand
+    // in the nested reference's own coordinates, then apply this ancestor to its primitives.
+    const children: Entity[] = [];
+    explodeInto(children, styled, lookup, depth, budget);
+    for (const child of children) out.push(blockTransform(child, tf, ins.rotation, ins.scale, ins.scaleY ?? ins.scale, Boolean(ins.mirror)));
+    return;
+  }
   const moved = similar ? similarityTransform(styled, tf, ins.rotation, ins.scale) : blockTransform(styled, tf, ins.rotation, ins.scale, ins.scaleY ?? ins.scale, Boolean(ins.mirror));
   if (moved.type === 'insert') {
     explodeInto(out, moved, lookup, depth, budget);
@@ -1460,6 +1489,11 @@ export function entityBounds(e: Entity, lookup: BlockLookup): Bounds | null {
     case 'arc':
       return g.boundsOfPoints(arcPoints(e, 16));
     case 'polyline': {
+      if (e.widths || e.widthFrame) {
+        let bounds = g.boundsOfPoints(polylineVertices(e));
+        for (const polygon of polylineWidthGeometry(e).polygons) bounds = g.unionBounds(bounds, g.boundsOfPoints(polygon));
+        return bounds;
+      }
       const b = g.boundsOfPoints(polylineVertices(e));
       if (!b || !e.width) return b;
       const h = e.width / 2;
@@ -1524,6 +1558,16 @@ export function distanceToEntity(p: Point, e: Entity, lookup: BlockLookup): numb
       return Math.min(g.dist(p, s), g.dist(p, en));
     }
     case 'polyline': {
+      if (e.widths || e.widthFrame) {
+        const geometry = polylineWidthGeometry(e);
+        let distance = Infinity;
+        for (const polygon of geometry.polygons) {
+          if (pointInPolygon(p, polygon)) return 0;
+          for (let i = 0; i < polygon.length; i++) distance = Math.min(distance, g.distToSegment(p, polygon[i]!, polygon[(i + 1) % polygon.length]!));
+        }
+        for (const spine of geometry.thin) for (let i = 1; i < spine.length; i++) distance = Math.min(distance, g.distToSegment(p, spine[i - 1]!, spine[i]!));
+        return distance;
+      }
       let best = Infinity;
       const pts = polylineVertices(e);
       const n = pts.length;
@@ -1642,7 +1686,7 @@ export function mirrorEntityAcross(e: Entity, a: Point, b: Point): Entity {
     case 'arc':
       return { ...e, center: reflect(e.center), startAngle: reflectAngle(e.endAngle), endAngle: reflectAngle(e.startAngle) };
     case 'polyline':
-      return { ...e, points: e.points.map(reflect), bulges: e.bulges?.map((bu) => -bu) };
+      return { ...e, points: e.points.map(reflect), bulges: e.bulges?.map((bu) => -bu), ...(e.widthFrame ? { widthFrame: transformWidthFrame(e.widthFrame, reflect) } : {}) };
     case 'text':
       return transformedTextAnchors(e, reflect);
     case 'insert':
@@ -1771,7 +1815,7 @@ export function moveGrip(e: Entity, index: number, p: Point): Entity | null {
       return { ...e, radius: Math.max(1e-6, g.dist(e.center, p)) };
     }
     case 'polyline':
-      return { ...e, points: e.points.map((q, i) => (i === index ? p : q)) };
+      return { ...e, points: e.points.map((q, i) => (i === index ? p : q)), ...(e.widthFrame ? { widthFrame: moveWidthFrameGrip(e.widthFrame, index, p) } : {}) };
     case 'text': {
       if (e.justification && (e.justification.horizontal === 3 || e.justification.horizontal === 5) && e.alignmentPoint) return index === 0 ? { ...e, position: p } : { ...e, alignmentPoint: p };
       return translateEntity(e, g.sub(p, textAnchor(e)));
@@ -1856,11 +1900,12 @@ export function snapCandidates(e: Entity, lookup: BlockLookup): SnapCandidate[] 
     }
     case 'polyline': {
       const out: SnapCandidate[] = e.points.map((p) => ({ point: p, kind: 'endpoint' as const }));
-      for (const s of polylineSegments(e)) {
+      for (const s of polylineSegments(e.widthFrame ? polylineFrameSource(e) : e)) {
         if (s.arc) {
-          out.push({ point: g.polar(s.arc.center, g.angleOf(s.arc.center, s.a) + s.arc.sweep / 2, s.arc.radius), kind: 'midpoint' });
-          out.push({ point: s.arc.center, kind: 'center' });
-        } else out.push({ point: g.mid(s.a, s.b), kind: 'midpoint' });
+          const midpoint = g.polar(s.arc.center, g.angleOf(s.arc.center, s.a) + s.arc.sweep / 2, s.arc.radius);
+          out.push({ point: e.widthFrame ? polylineFramePoint(e.widthFrame, midpoint) : midpoint, kind: 'midpoint' });
+          out.push({ point: e.widthFrame ? polylineFramePoint(e.widthFrame, s.arc.center) : s.arc.center, kind: 'center' });
+        } else { const midpoint = g.mid(s.a, s.b); out.push({ point: e.widthFrame ? polylineFramePoint(e.widthFrame, midpoint) : midpoint, kind: 'midpoint' }); }
       }
       return out;
     }

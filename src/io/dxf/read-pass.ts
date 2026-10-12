@@ -147,7 +147,6 @@ export function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): En
     if (o.kind === 'ACAD_TABLE') reportObj(ctx, o, 'simplified', 'table cells, sizes and supported style defaults are kept; native table editing, formulas, style font names, advanced borders and fills are not modeled, and export uses an INSERT picture with JCAD_TABLE data');
     if (o.kind === 'HATCH' && num(o, 450) === 1) reportObj(ctx, o, 'simplified', 'gradient hatch settings are not kept; boundary geometry and the solid/pattern fill are retained');
     if (e.type === 'mtext' && e.columns) reportObj(ctx, o, 'simplified', `column definitions are kept in JCAD_MTEXT_COLUMNS on AutoCAD 2000 export; other CAD programs show one column${e.columns.type === 2 || !formattedSource(e)?.includes('\\N') ? '; automatic column flow is approximated in JCad' : ''}`);
-    if (o.kind === 'LWPOLYLINE' && (has(o, 40) || has(o, 41))) reportObj(ctx, o, 'simplified', 'per-vertex polyline widths are not kept; its centerline and constant width are kept');
     if (has(o, 39) && num(o, 39) !== 0) reportObj(ctx, o, 'simplified', 'nonzero thickness is not kept in the 2D drawing');
     if (has(o, 440) || has(o, 430)) reportObj(ctx, o, 'simplified', 'transparency and color-book names are not kept; RGB/ACI color is kept');
     // IMAGE's IMAGEDEF reactor is reconstructed on export; other object links are unmodeled.
@@ -175,6 +174,9 @@ export function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): En
     if (o.kind === 'POLYLINE') {
       const pts: g.Point[] = [];
       const bulges: number[] = [];
+      const widths: Array<{ start: number; end: number }> = [];
+      const defaultStart = num(o, 40, 0), defaultEnd = num(o, 41, 0);
+      let variableWidth = has(o, 40) || has(o, 41);
       const flags = Math.trunc(num(o, 70));
       const closed = (flags & 1) === 1;
       let j = i + 1;
@@ -182,6 +184,8 @@ export function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): En
       while (j < objs.length && objs[j]!.kind === 'VERTEX') {
         pts.push({ x: num(objs[j]!, 10), y: num(objs[j]!, 20) });
         bulges.push(num(objs[j]!, 42, 0));
+        widths.push({ start: num(objs[j]!, 40, defaultStart), end: num(objs[j]!, 41, defaultEnd) });
+        variableWidth ||= has(objs[j]!, 40) || has(objs[j]!, 41);
         j += 1;
       }
       if (j < objs.length && objs[j]!.kind === 'SEQEND') j += 1;
@@ -200,7 +204,7 @@ export function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): En
         points: pts,
         closed,
         bulges: bulges.some((b) => Math.abs(b) > 1e-12) ? bulges : undefined,
-        width: width > 0 ? width : undefined,
+        ...(variableWidth ? { widths } : { width: width !== 0 ? width : undefined }),
       });
       if (poly) out.push(poly);
       continue;

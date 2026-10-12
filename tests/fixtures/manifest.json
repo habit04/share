@@ -42,6 +42,7 @@
     "tests/fixtures/interchange/r2018-mtext.dxf",
     "tests/fixtures/interchange/r2018-table.dxf",
     "tests/fixtures/interchange/r2018-truecolor-linetypes.dxf",
-    "tests/fixtures/unsupported-content.dxf"
+    "tests/fixtures/unsupported-content.dxf",
+    "tests/fixtures/polyline-widths.dxf"
   ]
 }

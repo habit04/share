@@ -21,6 +21,7 @@ import { writeEntityAnno, writeEntity } from './write-entities';
 import { attdefFlags } from '../../electrical/symbol-builder-core';
 import { tableParts, dimensionParts } from '../../core/entities';
 import { entityMTextBackground } from '../../core/mtext-background';
+import { materializePolylineWidthFrames } from './polyline-width-blocks';
 
 /** Linetype names referenced anywhere in the drawing (layers, entities, block entities). */
 function usedLinetypes(state: DrawingState): Linetype[] {
@@ -46,6 +47,7 @@ function usedLinetypes(state: DrawingState): Linetype[] {
 }
 
 export function writeDxf(state: DrawingState): string {
+  state = materializePolylineWidthFrames(state);
   const w = new Writer();
   // ACAD_PLOTSTYLENAME: the dictionary layers point at (390) and its "Normal" entry (AutoCAD's
   // AUDIT reports layers whose plot style handle names no object).

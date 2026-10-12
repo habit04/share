@@ -18,6 +18,7 @@ import {
 } from '../core/entities';
 import type { Point, Bounds } from '../core/geometry';
 import * as g from '../core/geometry';
+import { polylineWidthGeometry } from '../core/polyline-widths';
 import { aciToCss } from './palette';
 import { strokeText, strokeTextWidth, hasStrokeFont, expandControlCodes, drawStyledText } from './hershey';
 import { placedText } from '../core/text-placement';
@@ -450,6 +451,32 @@ function drawGeometry(
     }
     case 'polyline': {
       if (e.points.length === 0) break;
+      if ((e.widths || e.widthFrame) && !e.filled) {
+        const geometry = polylineWidthGeometry(e);
+        const dashed = typeof ctx.getLineDash === 'function' && ctx.getLineDash().length > 0;
+        for (const { polygon, spines } of geometry.strokes) {
+          ctx.beginPath();
+          polygon.forEach((point, index) => { const p = tf.toScreen(point); if (index === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y); });
+          ctx.closePath();
+          if (dashed) {
+            ctx.save();
+            ctx.clip();
+            ctx.lineWidth = Math.min(Number.MAX_VALUE, geometry.maxWidth * tf.scale);
+            for (const spine of spines) {
+              ctx.beginPath();
+              spine.forEach((point, index) => { const p = tf.toScreen(point); if (index === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y); });
+              ctx.stroke();
+            }
+            ctx.restore();
+          } else ctx.fill();
+        }
+        for (const spine of geometry.thin) {
+          ctx.beginPath();
+          spine.forEach((point, index) => { const p = tf.toScreen(point); if (index === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y); });
+          ctx.stroke();
+        }
+        break;
+      }
       strokePolyline(ctx, e, tf);
       if (e.filled && e.closed) {
         ctx.fill();

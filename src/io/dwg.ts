@@ -715,17 +715,17 @@ function convertEntity(e: DwgEntity, blockIndex: Map<string, string>, dimStyle: 
       if (verts.length === 0) return null;
       const closed = (pl.flag & 1) === 1;
       const cw = pl.constantWidth ?? 0;
-      if (closed && verts.length === 2 && cw > 0 && Math.abs(verts[0]!.bulge - 1) < 1e-6 && Math.abs(verts[1]!.bulge - 1) < 1e-6) {
+      const variable = verts.some((vertex) => vertex.startWidth !== undefined || vertex.endWidth !== undefined);
+      if (!variable && closed && verts.length === 2 && cw > 0 && Math.abs(verts[0]!.bulge - 1) < 1e-6 && Math.abs(verts[1]!.bulge - 1) < 1e-6) {
         const a = p2(verts[0]);
         const b = p2(verts[1]);
         return { ...base, type: 'circle', center: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, radius: Math.hypot(b.x - a.x, b.y - a.y) / 2 + cw / 2, filled: true };
       }
-      // Bulges are kept (the polyline entity carries arc segments); widths per vertex collapse to the constant width.
+      // Vertex widths are preserved independently; an explicit zero is not a missing width.
       const pts = verts.map((v) => p2(v));
       const bulges = verts.map((v) => v.bulge || 0);
       const hasBulge = bulges.some((b) => Math.abs(b) > 1e-12);
-      const width = cw > 0 ? cw : verts[0]?.startWidth && verts.every((v) => Math.abs((v.startWidth ?? 0) - (verts[0]!.startWidth ?? 0)) < 1e-9) ? verts[0]!.startWidth : 0;
-      return { ...base, type: 'polyline', points: pts, closed, bulges: hasBulge ? bulges : undefined, width: width && width > 0 ? width : undefined };
+      return { ...base, type: 'polyline', points: pts, closed, bulges: hasBulge ? bulges : undefined, ...(variable ? { widths: verts.map((v) => ({ start: v.startWidth ?? 0, end: v.endWidth ?? 0 })) } : { width: cw !== 0 ? cw : undefined }) };
     }
     case 'POLYLINE2D': {
       const pl = e as DwgPolyline2dEntity;
@@ -734,7 +734,8 @@ function convertEntity(e: DwgEntity, blockIndex: Map<string, string>, dimStyle: 
       const closed = (pl.flag & 1) === 1;
       const pts = verts.map((v) => p2(v));
       const bulges = verts.map((v) => v.bulge || 0);
-      return { ...base, type: 'polyline', points: pts, closed, bulges: bulges.some((b) => Math.abs(b) > 1e-12) ? bulges : undefined };
+      const widths = verts.map((v) => ({ start: v.startWidth ?? pl.startWidth ?? 0, end: v.endWidth ?? pl.endWidth ?? 0 }));
+      return { ...base, type: 'polyline', points: pts, closed, bulges: bulges.some((b) => Math.abs(b) > 1e-12) ? bulges : undefined, ...(widths.some((w) => w.start !== 0 || w.end !== 0) ? { widths } : {}) };
     }
     case 'POLYLINE3D': {
       // Flattened to its XY projection (reported as simplified by the caller).

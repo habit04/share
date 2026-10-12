@@ -40,10 +40,14 @@ function writePolyline(w: Writer, e: PolylineEntity, owner: string): void {
   writeEntityCommon(w, e, owner, 'LWPOLYLINE', 'AcDbPolyline');
   w.pair(90, e.points.length);
   w.pair(70, e.closed ? 1 : 0);
-  if (e.width) w.pair(43, e.width);
+  if (!e.widths && e.width) w.pair(43, e.width);
   e.points.forEach((p, i) => {
     w.pair(10, p.x);
     w.pair(20, p.y);
+    if (e.widths) {
+      w.pair(40, e.widths[i]?.start ?? 0);
+      w.pair(41, e.widths[i]?.end ?? 0);
+    }
     const b = e.bulges?.[i] ?? 0;
     if (Math.abs(b) > 1e-12) w.pair(42, b);
   });
