@@ -113,7 +113,12 @@
     for (var i = 0; i < buttons.length; i += 1) {
       var btn = buttons[i];
       var key = btn.getAttribute('data-asset');
-      if (key === 'auto') key = os === 'win' ? 'win' : os === 'mac' ? 'mac-arm64' : os === 'linux' ? 'linux-appimage' : '';
+      if (key === 'auto' && os === 'mac') {
+        btn.href = '#download';
+        btn.removeAttribute('download');
+        continue;
+      }
+      if (key === 'auto') key = os === 'win' ? 'win' : os === 'linux' ? 'linux-appimage' : '';
       var asset = key ? assetFor(release, key) : null;
       if (asset) {
         btn.href = asset.browser_download_url;
@@ -132,7 +137,15 @@
   function applyOs(os) {
     var label = document.querySelector('#primary-download .dl-os');
     var names = { win: 'for Windows', mac: 'for macOS', linux: 'for Linux' };
-    if (label && names[os]) label.textContent = names[os];
+    if (os === 'mac') {
+      var button = document.getElementById('primary-download');
+      var buttonLabel = document.querySelector('#primary-download .btn-label');
+      if (buttonLabel) buttonLabel.textContent = 'Choose Mac version';
+      if (button) {
+        button.href = '#download';
+        button.removeAttribute('download');
+      }
+    } else if (label && names[os]) label.textContent = names[os];
     if (os === 'mobile' && label) label.textContent = 'the desktop app';
     var cards = document.querySelectorAll('.dl-card[data-os]');
     for (var i = 0; i < cards.length; i += 1) {

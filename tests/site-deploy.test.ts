@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, existsSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { build } from 'vite';
+import { runInNewContext } from 'node:vm';
 
 // The website (GitHub Pages) must not serve a mix of old and new files after a deploy. GitHub
 // Pages sends every file with the same short cache lifetime (Cache-Control: max-age=600) and no
@@ -72,6 +73,46 @@ describe('landing page (site/)', () => {
     for (const text of [landing, siteJs]) {
       expect(text).not.toMatch(/assets\/[^"'\s]+-[A-Za-z0-9_-]{8,}\.(js|css|wasm)/);
       expect(text).not.toMatch(/index-[A-Za-z0-9_-]{8}\.(js|css)/);
+    }
+  });
+
+  it.each(['Intel Mac OS X 10_15_7', 'Mac OS X 14_0'])('offers an explicit Mac architecture choice for %s instead of guessing an installer', async (agent) => {
+    expect(landing).toContain('<section id="download"');
+    expect(landing).toContain('data-asset="mac-arm64"');
+    expect(landing).toContain('data-asset="mac-x64"');
+    const releases = 'https://github.com/habit04/share/releases';
+    const makeButton = (asset: string) => {
+      const attributes = new Map([['data-asset', asset]]);
+      return { href: releases, attributes, getAttribute: (name: string) => attributes.get(name) ?? null, setAttribute: (name: string, value: string) => attributes.set(name, value), removeAttribute: (name: string) => attributes.delete(name) };
+    };
+    for (const online of [true, false]) {
+      const hero = makeButton('auto'), arm = makeButton('mac-arm64'), intel = makeButton('mac-x64');
+      const label = { textContent: '' }, fallback = { hidden: true };
+      const buttons = [hero, arm, intel];
+      let done!: () => void;
+      const completed = new Promise<void>((resolve) => { done = resolve; });
+      const document = {
+        querySelector: (selector: string) => selector === '#primary-download .btn-label' ? label : null,
+        querySelectorAll: (selector: string) => selector === '[data-asset]' ? buttons : [],
+        getElementById: (id: string) => id === 'primary-download' ? hero : id === 'dl-fallback' ? fallback : null,
+      };
+      runInNewContext(siteJs, {
+        document, navigator: { platform: 'MacIntel', userAgent: `Mozilla/5.0 (Macintosh; ${agent})` },
+        sessionStorage: { getItem: () => null, setItem: () => {} },
+        fetch: () => online ? Promise.resolve({ ok: true, json: () => Promise.resolve({ tag_name: 'v0.4.4', html_url: releases, assets: [
+          { name: 'jcad-electrical-0.4.4-mac-x64.dmg', browser_download_url: 'https://example.test/intel.dmg' },
+          { name: 'jcad-electrical-0.4.4-mac-arm64.dmg', browser_download_url: 'https://example.test/arm.dmg' },
+        ] }) }) : Promise.reject(new Error('offline')),
+        setTimeout: () => 1, clearTimeout: done,
+      });
+      await completed;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(label.textContent).toBe('Choose Mac version');
+      expect(hero.href).toBe('#download');
+      expect(hero.attributes.has('download')).toBe(false);
+      expect(arm.href).toBe(online ? 'https://example.test/arm.dmg' : releases);
+      expect(intel.href).toBe(online ? 'https://example.test/intel.dmg' : releases);
+      expect(fallback.hidden).toBe(online);
     }
   });
 

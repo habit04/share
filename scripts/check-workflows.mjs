@@ -94,10 +94,35 @@ else {
     if (jobs[id] && checkoutRef(id) !== '${{ needs.checks.outputs.sha }}') problems.push(`release.yml: job ${id} must check out the tested commit (needs.checks.outputs.sha)`);
   if (!jobs['packaged-smoke']) problems.push('release.yml: no "packaged-smoke" job');
   else if (!runs('packaged-smoke').includes('scripts/packaged-smoke.mjs')) problems.push('release.yml: packaged-smoke does not run scripts/packaged-smoke.mjs');
+  const smoke = jobs['packaged-smoke'];
+  const smokeRows = smoke?.strategy?.matrix?.include;
+  for (const [os, arch, artifact] of [
+    ['windows-latest', 'x64', 'JCad-Electrical-Windows'],
+    ['macos-15', 'arm64', 'JCad-Electrical-macOS'],
+    ['macos-15-intel', 'x64', 'JCad-Electrical-macOS'],
+    ['ubuntu-latest', 'x64', 'JCad-Electrical-Linux'],
+  ]) {
+    if (!Array.isArray(smokeRows) || smokeRows.filter((row) => row.os === os && row.arch === arch && row.artifact === artifact).length !== 1)
+      problems.push(`release.yml: packaged-smoke must test ${os}/${arch} with ${artifact} exactly once`);
+  }
+  if (smoke?.['runs-on'] !== '${{ matrix.os }}' || smoke?.if !== undefined || smoke?.strategy?.matrix?.exclude !== undefined)
+    problems.push('release.yml: all native packaged smoke matrix entries must run unconditionally on their specified runner');
+  for (const n of ['checks', 'build']) if (!needsOf('packaged-smoke').includes(n)) problems.push(`release.yml: packaged-smoke must need ${n}`);
+  const smokeDownload = (smoke?.steps ?? []).find((s) => String(s.uses ?? '').startsWith('actions/download-artifact'));
+  if (smokeDownload?.with?.name !== '${{ matrix.artifact }}' || smokeDownload?.with?.path !== 'installers' || smokeDownload?.if !== undefined)
+    problems.push('release.yml: packaged smoke must download its matrix artifact unconditionally into installers');
   const smokeInstall = (jobs['packaged-smoke']?.steps ?? []).find((s) => String(s.run ?? '').trim() === 'npm ci');
   if (String(smokeInstall?.env?.ELECTRON_SKIP_BINARY_DOWNLOAD) === '1') problems.push('release.yml: packaged origin migration needs the stock Electron binary for legacy seeding');
-  for (const step of (jobs['packaged-smoke']?.steps ?? []).filter((s) => String(s.run ?? '').includes('scripts/packaged-smoke.mjs'))) {
+  const smokeSteps = (smoke?.steps ?? []).filter((s) => String(s.run ?? '').includes('scripts/packaged-smoke.mjs'));
+  for (const [condition, command] of [
+    ["runner.os == 'Linux'", 'xvfb-run -a node scripts/packaged-smoke.mjs installers'],
+    ["runner.os != 'Linux'", 'node scripts/packaged-smoke.mjs installers'],
+  ])
+    if (smokeSteps.filter((step) => step.if === condition && String(step.run ?? '').trim() === command).length !== 1) problems.push('release.yml: packaged smoke must run for both Linux and Windows/macOS runners');
+  for (const step of smokeSteps) {
     if (String(step.env?.JCAD_SMOKE_REQUIRE_SHIPPING) !== '1') problems.push('release.yml: shipping smoke must require disabled inspection fuses and fixed runtime probes');
+    if (String(step.env?.JCAD_SMOKE_NATIVE_ONLY) !== '1' || step.env?.JCAD_SMOKE_EXPECT_ARCH !== '${{ matrix.arch }}')
+      problems.push('release.yml: packaged smoke must require native installers and assert the matrix architecture');
   }
   if (!jobs['test-build'] || !runs('test-build').includes('npm run dist:test') || !runs('test-build').includes('npm run e2e:test-build') || !needsOf('test-build').includes('checks') || !needsOf('build').includes('test-build')) problems.push('release.yml: shipping builds must wait for the dedicated inspection-enabled test-build suite');
   const requiredSigning = jobs.build?.env?.REQUIRE_PUBLISHER_SIGNING;
