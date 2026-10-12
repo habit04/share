@@ -7,6 +7,7 @@ import { LIBRARY_SYMBOLS } from '../src/electrical/library';
 import { withImportData, type ImportReport } from '../src/io/import-report';
 import { exportDwgCopy, hasDwgExport, registerDwgExportCommand } from '../src/app/export-dwg';
 import { captureRevision, saveQueue } from '../src/app/savequeue';
+import { nativeMenuCommands } from '../scripts/native-menu-commands.mjs';
 
 let Editor: typeof EditorType;
 let counter = 0;
@@ -60,14 +61,20 @@ function importOriginal(f: ReturnType<typeof setup>, action: 'dropped' | 'unsupp
 describe('portable DWG export coordination', () => {
   it('registers a discoverable export command only for a capable Windows desktop bridge', async () => {
     const f = setup();
+    const commandName = (command: string) => command.split(/\s+/)[0]!.toUpperCase();
+    const sharedMenu = new Set([...nativeMenuCommands('linux'), ...nativeMenuCommands('darwin')].map(commandName));
+    const windowsOnly = nativeMenuCommands('win32').map(commandName).filter((name) => !sharedMenu.has(name));
+    expect(windowsOnly.length, 'Expected a Windows desktop-only menu branch.').toBeGreaterThan(0);
     for (const platform of [undefined, 'darwin', 'linux']) {
       f.bridge.platform = platform;
       expect(hasDwgExport(f.bridge)).toBe(false);
       registerDwgExportCommand(f.ed);
       expect(f.ed.commands.has('EXPORTDWG')).toBe(false);
+      for (const name of windowsOnly) expect(f.ed.commands.has(name), `${name} must respect the desktop capability scope.`).toBe(false);
     }
     f.bridge.platform = 'win32';
     registerDwgExportCommand(f.ed);
+    for (const name of windowsOnly) expect(f.ed.commands.has(name), `The Windows native menu dispatches ${name}; its production registrar must provide it.`).toBe(true);
     expect(f.ed.commands.get('EXPORTDWG')?.description).toMatch(/portable writer/);
     await f.ed.commands.get('EXPORTDWG')!.run(f.ed);
     expect(f.writes).toHaveLength(1);
