@@ -23,9 +23,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
-      NATIVE_SOURCE: ${{ runner.temp }}/native-dwg-source
-      NATIVE_SDK: ${{ runner.temp }}/native-dwg-sdk
-      NATIVE_ARTIFACT: ${{ runner.temp }}/native-dwg-artifact
       SOURCE_SHA: 1dd682f46339f37b67c5ff1085d10d04a8c16d7e
       SDK_SHA: c0bb220cb6e6f4e0fabb6f6db9efd53390ef5e56
       SDK_VERSION: 4.0.23
@@ -37,6 +34,15 @@ jobs:
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 24
+      - name: Initialize isolated runner directories
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$RUNNER_TEMP"
+          test -d "$RUNNER_TEMP"
+          printf 'NATIVE_SOURCE=%s/native-dwg-source\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'NATIVE_SDK=%s/native-dwg-sdk\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'NATIVE_ARTIFACT=%s/native-dwg-artifact\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - name: Verify controlled fixture and install native CI prerequisites
         shell: bash
         run: |

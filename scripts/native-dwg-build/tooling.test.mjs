@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { checkedReplacement, validateReplacementText, patch, pins } from './patch-source.mjs';
 
 const before = Buffer.from('#include "binding_common.h"\nFIELD_BL (bg_fill_scale, 45);\n');
@@ -42,4 +43,18 @@ test('production patch covers both main and embedded fields with pinned source',
   assert.equal(api.replacements[0].count, 2);
   assert.ok(patch.files.some((file) => file.path === 'src/dwg_spec_shared.h'));
   assert.ok(patch.files.some((file) => file.path === 'bindings/javascript/embind/binding_dynapi.cpp'));
+});
+
+test('native workflow initializes runner paths inside steps, not unavailable job env context', () => {
+  const workflow = readFileSync(new URL('../../.github/workflows/native-dwg-background.yml', import.meta.url), 'utf8');
+  const jobEnv = workflow.match(/^ {4}env:\r?\n((?: {6}.*\r?\n)+)/m)?.[1];
+  assert.ok(jobEnv, 'Expected explicit pinned job environment.');
+  const check = (text) => {
+    for (const [, expression] of text.matchAll(/\$\{\{([\s\S]*?)\}\}/g)) assert.doesNotMatch(expression, /\b(?:runner|steps|job|env)\s*\./, 'GitHub job env does not allow runtime contexts.');
+  };
+  check(jobEnv);
+  assert.throws(() => check(jobEnv + '      NATIVE_SOURCE: ${{ runner.temp }}/native-dwg-source\n'), /runtime contexts/);
+  assert.match(workflow, /printf 'NATIVE_SOURCE=%s\/native-dwg-source\\n' "\$RUNNER_TEMP" >> "\$GITHUB_ENV"/);
+  assert.match(workflow, /printf 'NATIVE_SDK=%s\/native-dwg-sdk\\n' "\$RUNNER_TEMP" >> "\$GITHUB_ENV"/);
+  assert.match(workflow, /printf 'NATIVE_ARTIFACT=%s\/native-dwg-artifact\\n' "\$RUNNER_TEMP" >> "\$GITHUB_ENV"/);
 });
