@@ -4,7 +4,7 @@
   "fixtureSha256": "f982246c6e529c286b89fefec07fc5e6e6c3fc0f984e679961ace29c8de83c53",
   "expectedSha256": "459da44bbcd883825bcbfa45593e177bb1a0e7a97b080313948b0ef5ef7a736e",
   "factorySha256": "2665f1fe5c798d8557642124be62036ccbaf825a6043766042a06e1108009a95",
-  "wasmSha256": "981b2480043a44743f42e41d19171079c68274bb326a1b0097b0c1971a595904",
+  "wasmSha256": "0e97b1cce3a7fb05d89ff69c2c8a5399d76e2726c5d9c7b2aed2ae453f84380a",
   "masks": [
     {
       "text": "ACI MASK",
@@ -18,7 +18,8 @@
         "name": "",
         "book_name": "",
         "alpha_type": 0,
-        "alpha": 0
+        "alpha": 0,
+        "handle": 0
       },
       "transparency": 0,
       "columnType": 0,
@@ -37,7 +38,8 @@
         "name": "Slate",
         "book_name": "Example Book",
         "alpha_type": 0,
-        "alpha": 0
+        "alpha": 0,
+        "handle": 0
       },
       "transparency": 0,
       "columnType": 0,
@@ -56,7 +58,8 @@
         "name": "",
         "book_name": "",
         "alpha_type": 0,
-        "alpha": 0
+        "alpha": 0,
+        "handle": 0
       },
       "transparency": 0,
       "columnType": 0,
@@ -82,7 +85,8 @@
         "name": "",
         "book_name": "",
         "alpha_type": 0,
-        "alpha": 0
+        "alpha": 0,
+        "handle": 0
       },
       "transparency": 0,
       "columnType": 0,
@@ -108,7 +112,8 @@
         "name": "",
         "book_name": "",
         "alpha_type": 0,
-        "alpha": 0
+        "alpha": 0,
+        "handle": 0
       },
       "transparency": 0,
       "columnType": 0,
