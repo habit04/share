@@ -11,7 +11,11 @@ messages). The date of each version is the date of the commit that set that vers
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- Portable DWG copies reopen with their native entity transparency, Unicode color-book names
+  and rectangular block-array attributes. The Windows package includes the appearance reader
+  adapter and its matching, checked native runtime.
 
 ## [0.4.6] - 2026-10-12
 

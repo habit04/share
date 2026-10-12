@@ -113,6 +113,39 @@
           "count": 1
         }
       ]
+    },
+    {
+      "path": "src/common_entity_data.spec",
+      "gitBlob": "20c47b9053bc97e610310aa075ea572a09d6745b",
+      "replacements": [
+        {
+          "before": "#ifndef IS_ENCODER\n          FIELD_HANDLE (color.handle, 0, 430); // DBCOLOR 1E9F74 => 1F05B9\n#endif",
+          "after": "#if !defined(IS_ENCODER) && !defined(IS_DECODER)\n          // Decoder consumes this reference after owner/reactors/xdic, before layer.\n          FIELD_HANDLE (color.handle, 0, 430); // DBCOLOR 1E9F74 => 1F05B9\n#endif",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "path": "src/decode.c",
+      "gitBlob": "a050372799e4216a5735f1622186c4623c95ede6",
+      "replacements": [
+        {
+          "before": "  // deferred from common_entity_data, which has no hdl_dat\n  if (dat->from_version >= R_2007 && _ent->color.flag & 0x40)\n    FIELD_HANDLE (color.handle, 0, 430);\n",
+          "after": "  // The shared handle spec consumes the color reference once, after the\n  // owner/reactors/xdic prefix and before the R2000+ layer reference.\n",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "path": "src/common_entity_handle_data.spec",
+      "gitBlob": "a0dffb7a1b4ab79d6198d7a401825f29c3af31ed",
+      "replacements": [
+        {
+          "before": "  SINCE (R_2000b)\n    {\n      FIELD_HANDLE (layer, 5, 8);",
+          "after": "#ifdef IS_DECODER\n  // R2004+ ENC references follow owner/reactors/xdic and legacy handles.\n  // Consume exactly once before the R2000+ layer reference.\n  SINCE (R_2004a)\n    {\n      if (_ent->color.flag & 0x40)\n        FIELD_HANDLE (color.handle, 0, 430);\n    }\n#endif\n\n  SINCE (R_2000b)\n    {\n      FIELD_HANDLE (layer, 5, 8);",
+          "count": 1
+        }
+      ]
     }
   ]
 }

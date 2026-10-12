@@ -18,6 +18,16 @@ projects referenced RGB/method/name/book_name with null-safe, version-aware stri
 `hasReference` and `referenceResolved` distinguish unresolved/wrong-type references;
 the application refuses those rather than guessing a palette color.
 
+The pinned decoder also consumes a referenced entity color handle twice: once
+while decoding common color data, then again before decoding the common handle
+prefix. The second read replaces the DBCOLOR reference with the following layer
+reference and shifts later fields. The repair reads that handle exactly once in
+its R2004+ handle-stream position: owner (when present), reactors, extension
+dictionary, legacy handles, optional color reference, then layer. Model-space
+entities with implicit ownership and block entities with explicit owners use the
+same ordering. This move is limited to `IS_DECODER`; existing free/print/DXF
+projections and the native encoder's separate handle path remain unchanged.
+
 The MINSERT attribute getter selects the actual native INSERT or MINSERT layout
 before reading owned handles. MINSERT places array count/spacing fields before
 those handles, so treating it as INSERT dereferenced spacing bytes as pointers.

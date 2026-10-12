@@ -66,6 +66,8 @@ describe('mandatory repaired native runtime acceptance', () => {
   it('binds the complete vendor artifact to its source, fixture and original memory limits', async () => {
     const verified = await verifyNativeRuntime(join(root, 'vendor/libredwg-web-bg'), fixture, expected);
     expect(verified.source).toEqual(NATIVE_SOURCE);
+    expect(verified.repairPolicy).toBe('appearance-arrays');
+    expect(verified.appearance).toMatchObject({ cases: [{ kind: 'appearance' }, { kind: 'shipping' }] });
     expect(verified.memory).toEqual({ origin: 'defined', ...memory });
     expect(verified.masks).toHaveLength(7);
     expect(verified.masks.find((mask) => mask.text === 'ACI MASK')?.color).toMatchObject({ index: 256, method: 0xc3, rgb: 0xc3000001 });

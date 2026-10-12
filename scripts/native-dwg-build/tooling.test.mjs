@@ -46,6 +46,9 @@ test('production patch covers both main and embedded fields with pinned source',
   assert.ok(patch.files.some((file) => file.path === 'bindings/javascript/embind/binding_dynapi.cpp'));
   assert.ok(patch.files.some((file) => file.path === 'bindings/javascript/embind/binding_common.cpp'));
   assert.ok(patch.files.some((file) => file.path === 'bindings/javascript/embind/binding_ent.cpp'));
+  for (const path of ['src/common_entity_data.spec', 'src/common_entity_handle_data.spec', 'src/decode.c']) {
+    assert.ok(patch.files.some((file) => file.path === path), `Missing checked decoder ordering preimage: ${path}`);
+  }
 });
 
 test('native color gate refuses unresolved references and impossible pointers', () => {

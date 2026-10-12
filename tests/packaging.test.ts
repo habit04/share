@@ -151,7 +151,9 @@ describe('electron-builder configuration', () => {
       expect(accepted(mainMatchers, new URL(`scripts/${name}`, root)), 'Allocation test harnesses must not ship with the application').toBe(false);
     }
     const provenance = JSON.parse(read('vendor/libredwg-web-bg/provenance.json')) as { assets: Array<{ path: string; bytes: number }> };
-    expect(provenance.assets).toHaveLength(15);
+    expect(provenance.assets).toHaveLength(17);
+    expect(provenance.assets.some((asset) => asset.path === 'appearance-report.json')).toBe(true);
+    expect(provenance.assets.some((asset) => asset.path === 'validate-appearance-fixture.mjs')).toBe(true);
     expect(provenance.assets.some((asset) => asset.path === 'declaration-tools/package-lock.json')).toBe(true);
     for (const name of [...provenance.assets.map((asset) => asset.path), 'provenance.json', 'SHA256SUMS']) {
       const source = new URL(`vendor/libredwg-web-bg/${name}`, root), stat = lstatSync(source);
