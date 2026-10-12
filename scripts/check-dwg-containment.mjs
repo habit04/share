@@ -18,9 +18,15 @@ const fixture = readFileSync(join(root, 'fixtures', 'example_2000.dwg'));
 assert.ok(fixture.length > 0 && fixture.length <= 128 * 1024 * 1024, 'Containment fixture is missing or oversized.');
 writeFileSync(join(temporary, 'fixture.dwg'), fixture);
 writeFileSync(join(temporary, 'config.json'), JSON.stringify({ nonce, fixtureBytes: fixture.length }));
+const profile = join(temporary, 'profile');
+mkdirSync(profile);
 const env = { ...process.env };
 for (const name of ['NODE_OPTIONS', 'NODE_PATH', 'ELECTRON_RUN_AS_NODE', 'JCAD_DWG_TEST_DELAY_MS']) delete env[name];
-const child = spawn(electron, [join(root, 'scripts', 'dwg-containment-probe.cjs'), `--containment-dir=${temporary}`, `--containment-nonce=${nonce}`],
+const args = [join(root, 'scripts', 'dwg-containment-probe.cjs'), `--containment-dir=${temporary}`, `--containment-nonce=${nonce}`, `--user-data-dir=${profile}`];
+// GitHub's Linux test runner has no configured SUID chrome-sandbox helper. This switch belongs
+// only to the unpackaged test main; installer/application security configuration is unchanged.
+if (process.platform === 'linux') args.push('--no-sandbox');
+const child = spawn(electron, args,
   { env, cwd: root, windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
 let diagnostic = '';
 let diagnosticBytes = 0;
@@ -67,6 +73,7 @@ try {
   assert.ok(reportBytes.length <= 64 * 1024, 'Containment result is unexpectedly large.');
   const report = JSON.parse(reportBytes.toString('utf8'));
   assert.equal(report.nonce, nonce, 'Containment report did not belong to this run.');
+  assert.equal(realpathSync(report.userDataPath), realpathSync(profile), 'Containment probe did not use its isolated temporary profile.');
   assert.equal(report.ok, true, report.error ?? 'Containment checks did not pass.');
   assert.equal(report.cases.length, 5, 'A required containment case did not run.');
   assert.ok(report.cases.every((item) => item.ok === true), 'Containment report has a failed case.');

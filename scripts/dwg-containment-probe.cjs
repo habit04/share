@@ -63,6 +63,9 @@ async function runMain() {
   assert.ok(path.isAbsolute(temporary), 'Containment paths must be absolute.');
   const config = JSON.parse(readFileSync(path.join(temporary, 'config.json'), 'utf8'));
   assert.equal(config.nonce, nonce);
+  // Isolate both Electron's userData path and Chromium's command-line profile before readiness.
+  // Utility children run their Node transport directly and do not initialize a separate app profile.
+  app.setPath('userData', path.join(temporary, 'profile'));
   const bytes = new Uint8Array(readFileSync(path.join(temporary, 'fixture.dwg')));
   assert.equal(bytes.byteLength, config.fixtureBytes);
   assert.ok(bytes.byteLength > 0 && bytes.byteLength <= 128 * 1024 * 1024);
@@ -84,7 +87,7 @@ async function runMain() {
     clearTimeout(deadline);
     for (const host of hosts) host.dispose();
     for (const child of children) { try { child.kill(); } catch { /* launcher deadline owns final cleanup */ } }
-    const report = { schemaVersion: 1, nonce, ok, platform: process.platform, arch: process.arch, electronVersion: process.versions.electron,
+    const report = { schemaVersion: 1, nonce, ok, platform: process.platform, arch: process.arch, electronVersion: process.versions.electron, userDataPath: app.getPath('userData'),
       mainPid: process.pid, processIds, maxLiveChildren, heartbeatTicks: ticks, elapsedMs: Date.now() - startedAt, cases,
       ...(error ? { error: String(error.message ?? error).slice(0, 2_048) } : {}) };
     writeFileSync(path.join(temporary, 'result.json'), JSON.stringify(report));
