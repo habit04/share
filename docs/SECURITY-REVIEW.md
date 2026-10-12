@@ -69,6 +69,15 @@ without application scripts, plugins or preload; the helper temporarily disables
 read the old storage after the file-privilege fuse is disabled. It refuses navigation and popups
 and is destroyed before the application starts. Failure does not execute the old application.
 
+Desktop settings have an atomic, bounded 8 MiB checkpoint in the private user-data directory.
+The main process captures only its healthy built application page through an isolated-world
+script, accepts string dictionaries and provides no renderer-selected file path. Captures and
+commits are queued before acknowledging migration or an approved close; the migration marker
+cannot outrun the checkpoint. Empty lost DOM storage can recover the latest complete dictionary,
+including deletions. Existing DOM values remain authoritative; an unreadable checkpoint never
+revives legacy values. Update installation retains signature verification after Save All and
+then requires a final checkpoint; its failure cancels the restart.
+
 Drawing reads are capped at 128 MiB, project JSON at 8 MiB and image files at 50 MiB. Desktop DWG
 also has an engine-enforced limit on its sole WASM linear memory and a sampled parent-side process
 memory watchdog. The watchdog cannot prevent a transient allocation between samples or guarantee

@@ -38,6 +38,12 @@ Nothing yet.
 - Real Electron containment checks cover cancellation, damaged files, native-buffer growth and
   V8 exhaustion, followed by successful valid-file reads. Installer smoke tests additionally
   require the actual shipping executable to cancel, reject damaged data and reopen a valid DWG.
+- Desktop settings are checkpointed atomically before migration is acknowledged and before an
+  approved close or update restart. Immediate restarts preserve edits and deletions; an empty
+  lost Chromium storage origin can recover the latest complete checkpoint. A failed settings
+  write keeps closing cancelable and leaves the previous checkpoint intact.
+- Normal DWG process teardown no longer creates a misleading crash-log entry. Unexpected
+  crashes, memory exhaustion and other child-process failures remain logged.
 
 ### Known limitations
 

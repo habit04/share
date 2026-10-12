@@ -76,6 +76,8 @@ describe('update verification (electron/update-verify.cjs, E-8)', () => {
     const offer = src.slice(src.indexOf('async function offerRestart('), src.indexOf('async function checkViaUpdater('));
     expect(offer.indexOf('await verifyDownloaded()')).toBeGreaterThan(offer.indexOf('await confirmRestart(win)'));
     expect(offer.indexOf('quitAndInstall(false, true)')).toBeGreaterThan(offer.indexOf('await verifyDownloaded()'));
+    expect(offer.indexOf('await beforeRestart(win)')).toBeGreaterThan(offer.indexOf('await verifyDownloaded()'));
+    expect(offer.indexOf('quitAndInstall(false, true)')).toBeGreaterThan(offer.indexOf('await beforeRestart(win)'));
     const check = src.slice(src.indexOf('async function checkViaUpdater('));
     expect(check.indexOf('updateInfoProblem(info)')).toBeLessThan(check.indexOf('u.downloadUpdate()'));
     expect(check.indexOf('await verifyDownloaded()')).toBeGreaterThan(check.indexOf('files = await u.downloadUpdate()'));
@@ -163,9 +165,11 @@ describe('verified explicit update installation (electron/updater.cjs with stand
       checkForUpdates(win: unknown, o?: { interactive?: boolean }): Promise<{ state: string; message?: string }>;
       canSelfUpdate(): boolean;
       onConfirmRestart(fn: (win: unknown) => Promise<boolean>): void;
+      onBeforeRestart(fn: (win: unknown) => Promise<boolean>): void;
       onStatus(fn: (status: { state: string; message?: string }) => void): void;
     };
     updater.onConfirmRestart(async () => { order.push('unsaved-work'); return true; });
+    updater.onBeforeRestart(async () => { order.push('preference-checkpoint'); return true; });
     updater.onStatus((status) => statuses.push(status));
     return {
       updater, autoUpdater, downloads, boxes, order, statuses,
@@ -203,8 +207,20 @@ describe('verified explicit update installation (electron/updater.cjs with stand
       h.downloads.push(installer);
       h.restart();
       expect((await h.updater.checkForUpdates({}, { interactive: true })).state).toBe('downloaded');
-      expect(h.order).toEqual(['signature', 'unsaved-work', 'signature', 'install']);
+      expect(h.order).toEqual(['signature', 'unsaved-work', 'signature', 'preference-checkpoint', 'install']);
       expect(h.installs()).toBe(1);
+      expect(h.autoUpdater.autoInstallOnAppQuit).toBe(false);
+    });
+  });
+
+  it('keeps the application open when the final settings checkpoint is canceled after verification', async () => {
+    await exercise(async (h) => {
+      h.downloads.push(installer);
+      h.restart();
+      h.updater.onBeforeRestart(async () => { h.order.push('preference-checkpoint-canceled'); return false; });
+      await h.updater.checkForUpdates({}, { interactive: true });
+      expect(h.order).toEqual(['signature', 'unsaved-work', 'signature', 'preference-checkpoint-canceled']);
+      expect(h.installs()).toBe(0);
       expect(h.autoUpdater.autoInstallOnAppQuit).toBe(false);
     });
   });

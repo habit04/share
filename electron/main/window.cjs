@@ -8,7 +8,7 @@ const { app, BrowserWindow, dialog, screen } = require('electron');
 const path = require('node:path');
 const fsSync = require('node:fs');
 const updater = require('../updater.cjs');
-const { windowStateFile, writeStateFile, flushRendererPreferences } = require('./app-data.cjs');
+const { windowStateFile, writeStateFile, flushRendererPreferences, checkpointRendererPreferences, logMainError } = require('./app-data.cjs');
 const { APP_URL } = require('../renderer-origin.cjs');
 const { buildMenu } = require('./menu.cjs');
 const { secureContents } = require('../web-security.cjs');
@@ -73,6 +73,38 @@ function createWindows(ctx, devUrl, allowInspection = !app.isPackaged) {
   });
   /** Windows whose unsaved work was dealt with (saved or discarded): their next close goes through. */
   const closeApproved = new WeakSet();
+  /** Checkpoint finished, or the user explicitly accepted losing settings from an unavailable renderer. */
+  const closeCommitted = new WeakSet();
+  const forceClose = new WeakSet();
+
+  async function persistBeforeClose(win, canAcceptLoss = true) {
+    if (!win || win.isDestroyed() || win.webContents.isDestroyed() || win.webContents.isCrashed() || forceClose.has(win)) return true;
+    if (devUrl) return true;
+    try {
+      await checkpointRendererPreferences(win.webContents);
+      flushRendererPreferences(win.webContents);
+      return true;
+    } catch (error) {
+      logMainError('renderer preference checkpoint', error);
+      if (!canAcceptLoss) {
+        // Final updater preparation follows installer verification. A failure cancels restart;
+        // no user wait here may resume installation with a stale verification result.
+        dialog.showMessageBoxSync(win, {
+          type: 'warning', buttons: ['OK'], defaultId: 0, cancelId: 0,
+          message: 'The update was not installed because JCad Electrical could not save its settings.',
+          detail: 'The application will stay open. Try restarting again after the settings can be saved.',
+        });
+        return false;
+      }
+      const proceed = dialog.showMessageBoxSync(win, {
+        type: 'warning', buttons: ['Close Without Saving Settings', 'Cancel'], defaultId: 1, cancelId: 1,
+        message: 'JCad Electrical could not save its settings.',
+        detail: 'Settings changed during this session may be lost. The previous saved settings remain available.',
+      }) === 0;
+      if (proceed) forceClose.add(win);
+      return proceed;
+    }
+  }
 
   let closeSeq = 0;
   /**
@@ -87,6 +119,7 @@ function createWindows(ctx, devUrl, allowInspection = !app.isPackaged) {
   function requestClose(win, context) {
     return new Promise((resolve) => {
       if (!win || win.isDestroyed() || win.webContents.isDestroyed() || win.webContents.isCrashed()) return resolve(true);
+      forceClose.delete(win);
       const wc = win.webContents;
       const id = (closeSeq += 1);
       let acked = false;
@@ -135,7 +168,10 @@ function createWindows(ctx, devUrl, allowInspection = !app.isPackaged) {
           message: 'JCad Electrical is not responding.',
           detail: 'Unsaved changes cannot be saved now. Autosave copies of modified drawings stay available in the Drawing Recovery Manager.',
         });
-        if (r === 0) return finish(true);
+        if (r === 0) {
+          forceClose.add(win);
+          return finish(true);
+        }
         // Cancel: the close is off for now, but keep listening for this request's answer (see above).
         settled = true;
         late = true;
@@ -152,12 +188,37 @@ function createWindows(ctx, devUrl, allowInspection = !app.isPackaged) {
   const RESTART_APPROVAL_MS = 10_000;
   updater.onConfirmRestart(async (w) => {
     const win = w && !w.isDestroyed() ? w : ctx.mainWindow;
-    const ok = await requestClose(win, 'restart');
+    const approved = await requestClose(win, 'restart');
+    // Native update installation can destroy windows without honoring their close events.
+    // Commit before handing control to the installer; ordinary close checkpoints again below.
+    const ok = approved && await persistBeforeClose(win);
     if (ok && win) {
       closeApproved.add(win);
       setTimeout(() => {
-        if (!win.isDestroyed()) closeApproved.delete(win);
+        if (!win.isDestroyed()) {
+          closeApproved.delete(win);
+          forceClose.delete(win);
+        }
       }, RESTART_APPROVAL_MS);
+    }
+    if (!ok) {
+      quitRequested = false;
+      if (win) {
+        closeApproved.delete(win);
+        forceClose.delete(win);
+      }
+    }
+    return ok;
+  });
+  updater.onBeforeRestart(async (w) => {
+    const win = w && !w.isDestroyed() ? w : ctx.mainWindow;
+    const ok = await persistBeforeClose(win, false);
+    if (!ok) {
+      quitRequested = false;
+      if (win) {
+        closeApproved.delete(win);
+        forceClose.delete(win);
+      }
     }
     return ok;
   });
@@ -193,20 +254,21 @@ function createWindows(ctx, devUrl, allowInspection = !app.isPackaged) {
     let pendingClose = null;
     win.on('close', (e) => {
       if (win.webContents.isDestroyed()) return;
-      if (closeApproved.has(win) || quittingForUpdate) {
-        flushRendererPreferences(win.webContents);
-        return;
-      }
+      if (closeCommitted.has(win)) return;
       e.preventDefault();
       if (pendingClose) return; // the dialog is already up
-      pendingClose = requestClose(win, quitRequested ? 'quit' : 'close').then((ok) => {
+      const approval = closeApproved.has(win) || quittingForUpdate ? Promise.resolve(true) : requestClose(win, quitRequested ? 'quit' : 'close');
+      pendingClose = approval.then(async (ok) => {
+        if (ok) ok = await persistBeforeClose(win);
         pendingClose = null;
         if (!ok) {
           quitRequested = false;
+          closeApproved.delete(win);
+          forceClose.delete(win);
           return;
         }
         const quit = quitRequested;
-        closeApproved.add(win);
+        closeCommitted.add(win);
         win.close();
         if (quit && process.platform === 'darwin') app.quit();
       });

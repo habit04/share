@@ -1,18 +1,32 @@
 const { contextBridge, ipcRenderer, webFrame } = require('electron');
 
-// Populate the new secure origin before the renderer reads its settings. Existing values win.
+// Populate before the application reads settings. A complete checkpoint is authoritative only
+// on an empty lost origin; existing Chromium values win. Legacy values never replace a checkpoint.
 try {
   if (globalThis.location.protocol === 'jcad:' && !localStorage.getItem('jcad-origin-migrated')) {
-    const values = ipcRenderer.sendSync('renderer-storage-migration');
-    if (values && typeof values === 'object') {
-      for (const [key, value] of Object.entries(values)) {
-        if (typeof value === 'string' && localStorage.getItem(key) === null) localStorage.setItem(key, value);
+    const saved = ipcRenderer.sendSync('renderer-storage-migration');
+    if (saved && typeof saved.values === 'object' && (saved.source === 'legacy' || (saved.source === 'checkpoint' && localStorage.length === 0))) {
+      const inserted = [];
+      try {
+        for (const [key, value] of Object.entries(saved.values)) {
+          if (key !== 'jcad-origin-migrated' && typeof value === 'string' && localStorage.getItem(key) === null) {
+            localStorage.setItem(key, value);
+            inserted.push(key);
+          }
+        }
+      } catch (error) {
+        // Do not let a partial recovery replace the complete disk checkpoint on the next start.
+        for (const key of inserted) localStorage.removeItem(key);
+        throw error;
       }
-      localStorage.setItem('jcad-origin-migrated', '1');
     }
   }
-  if (globalThis.location.protocol === 'jcad:' && localStorage.getItem('jcad-origin-migrated')) {
-    ipcRenderer.send('renderer-storage-migrated');
+  if (globalThis.location.protocol === 'jcad:') {
+    // Electron's DOM flush has no durability acknowledgement. Mark migration complete only
+    // after main has fsynced and atomically committed the checkpoint and its migration marker.
+    void ipcRenderer.invoke('renderer-storage-migrated').then((ok) => {
+      if (ok === true) localStorage.setItem('jcad-origin-migrated', '1');
+    }).catch(() => {});
   }
 } catch { /* Keep the application usable and retry migration on the next start. */ }
 

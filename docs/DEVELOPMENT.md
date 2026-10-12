@@ -156,7 +156,7 @@ npm run build
 npm run e2e                                  # Windows / macOS
 xvfb-run -a npm run e2e                      # Linux without a display
 JCAD_E2E_OUT=e2e-output npm run e2e          # keep the plotted PDFs and a window screenshot
-npm run e2e:origin                           # real two-launch legacy preference migration
+npm run e2e:origin                           # migration, immediate restart and lost-storage recovery
 ```
 
 `scripts/e2e-electron.mjs` launches Electron on `dist/` with Playwright and drives the real main
@@ -180,6 +180,19 @@ operations in an owned temporary profile, with no arbitrary script argument. Old
 inspection enabled retain the legacy Playwright path; release CI requires the hardened shipping
 path. Stock Electron seeds the isolated legacy profile; do not skip its download for these checks.
 Each target writes its migration log and JSON result below `packaged-smoke-output/`.
+
+The source/test-build origin check uses three immediate launches: migrate Unicode legacy
+settings, preserve changed and deleted values after an approved quit, and recover the latest
+checkpoint after removing only the generated profile's Chromium DOM storage. It waits for the
+actual durable migration acknowledgement. Shipping startup probes retain their bounded two-phase
+save/reopen sequence and also wait for that acknowledgement.
+
+Desktop preferences use a bounded 8 MiB string dictionary in the private user-data directory's
+`renderer-preferences.json`. Migration and approved close captures share a queue and use the
+atomic writer; the migration marker is committed afterward. The preload restores a checkpoint
+only when the new origin is empty and unmarked, preserving deletions and existing DOM values.
+An unreadable checkpoint never falls back to stale legacy settings. DOM storage flushing remains
+best effort; the checkpoint supplies the acknowledged disk commit.
 
 ## Performance
 

@@ -9,11 +9,17 @@ const path = require('node:path');
 const fs = require('node:fs/promises');
 const fsSync = require('node:fs');
 const { atomicWriteFile, createCanonicalWriteQueue } = require('../atomic-write.cjs');
+const { createPreferenceStore } = require('../renderer-preferences.cjs');
+const { shouldLogChildProcessGone } = require('../dwg-exit-policy.cjs');
 
 const stateDir = () => app.getPath('userData');
 const recentFile = () => path.join(stateDir(), 'recent.json');
 const windowStateFile = () => path.join(stateDir(), 'window-state.json');
 const autosaveDir = () => path.join(stateDir(), 'autosave');
+const rendererPreferences = createPreferenceStore({ stateDir });
+const readRendererPreferences = rendererPreferences.read;
+const checkpointRendererPreferences = rendererPreferences.checkpoint;
+const latestRendererPreferences = rendererPreferences.latest;
 /** Writes of the same app-data file (recent list, window state) run one at a time, in call order. */
 const enqueueWrite = createCanonicalWriteQueue();
 /** Crash-safe write of a small app-data file; failures are logged, never shown (the app keeps working). */
@@ -62,7 +68,9 @@ function installCrashLogging() {
   process.on('uncaughtException', (err) => logMainError('uncaughtException', err));
   process.on('unhandledRejection', (err) => logMainError('unhandledRejection', err));
   app.on('render-process-gone', (_ev, _wc, details) => logMainError('render-process-gone', new Error(`${details.reason} (exit code ${details.exitCode})`)));
-  app.on('child-process-gone', (_ev, details) => logMainError('child-process-gone', new Error(`${details.type} ${details.reason}`)));
+  app.on('child-process-gone', (_ev, details) => {
+    if (shouldLogChildProcessGone(details)) logMainError('child-process-gone', new Error(`${details.type} ${details.reason}`));
+  });
 }
 
-module.exports = { stateDir, recentFile, windowStateFile, autosaveDir, enqueueWrite, writeStateFile, writeUserFile, logMainError, flushRendererPreferences, installCrashLogging };
+module.exports = { stateDir, recentFile, windowStateFile, autosaveDir, enqueueWrite, writeStateFile, writeUserFile, logMainError, flushRendererPreferences, readRendererPreferences, checkpointRendererPreferences, latestRendererPreferences, installCrashLogging };

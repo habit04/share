@@ -42,6 +42,8 @@ let statusSink = () => {};
  * @type {(win: Electron.BrowserWindow) => Promise<boolean>}
  */
 let confirmRestart = async () => true;
+/** Final bounded settings commit after verification, before the native installer takes over. */
+let beforeRestart = async (/** @type {Electron.BrowserWindow} */ _win) => true;
 
 /** Whether electron-updater can replace this installation in place. */
 function canSelfUpdate() {
@@ -226,6 +228,7 @@ async function offerRestart(win, version) {
     await dialog.showMessageBox(win, { type: 'warning', title: 'Update Not Installed', message: 'The downloaded update failed verification and was not installed.', detail: `${why}.\n\nYou can download the new version from the releases page.` });
     return;
   }
+  if (!(await beforeRestart(win))) return;
   getAutoUpdater().quitAndInstall(false, true);
 }
 
@@ -347,6 +350,10 @@ module.exports = {
   /** fn(win) -> Promise<boolean>: may the application close now (unsaved work handled)? */
   onConfirmRestart(fn) {
     confirmRestart = typeof fn === 'function' ? fn : async () => true;
+  },
+  /** A final acknowledged settings checkpoint; false keeps the application open. */
+  onBeforeRestart(fn) {
+    beforeRestart = typeof fn === 'function' ? fn : async () => true;
   },
   /** The check "Restart Now" runs before quitAndInstall (main's Save All workflow); end-to-end tests drive it. */
   confirmRestart: (win) => confirmRestart(win),

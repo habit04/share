@@ -8,9 +8,11 @@
  * Every read, cancellation, timeout and failure tears down its process before the next starts.
  */
 const path = require('node:path');
+const { randomUUID } = require('node:crypto');
 const { deserialize } = require('node:v8');
 const { MAX_DRAWING_BYTES } = require('./resource-limits.cjs');
 const { createProcessMemoryGuard } = require('./dwg-process-limits.cjs');
+const { expectDwgProcessExit, forgetDwgProcessExit } = require('./dwg-exit-policy.cjs');
 const { MAX_DWG_PAYLOAD_BYTES, MAX_DWG_CHUNK_BYTES, PROTOCOL_VERSION, WORKER_RESOURCE_LIMITS, validateResourceLimits, validateDwgPayload } = require('./dwg-protocol.cjs');
 
 const DEFAULT_PROGRESS_BYTES = 1024 * 1024;
@@ -33,7 +35,7 @@ function readTimeoutFor(bytes) {
 function launchUtilityProcess(modulePath, options) {
   const { utilityProcess } = require('electron');
   if (!utilityProcess?.fork) throw new Error('The isolated DWG reader is unavailable.');
-  return utilityProcess.fork(modulePath, [], { ...options, serviceName: 'JCad DWG Reader', stdio: 'ignore', allowLoadingUnsignedLibraries: false });
+  return utilityProcess.fork(modulePath, [], { ...options, stdio: 'ignore', allowLoadingUnsignedLibraries: false });
 }
 function defaultMemoryGuard({ pid, onFailure }) {
   const { app } = require('electron');
@@ -80,6 +82,13 @@ function createDwgHost({ scriptsDir, timeoutMs, maxBytes = MAX_DRAWING_BYTES, re
   function stopAll(error) {
     for (const item of queue.splice(0)) settle(item, error);
   }
+  function killReader(state) {
+    const identified = Number.isSafeInteger(state.child?.pid) && state.child.pid > 0;
+    if (identified) expectDwgProcessExit(state.serviceName);
+    try {
+      if (state.child.kill() === false) forgetDwgProcessExit(state.serviceName);
+    } catch { forgetDwgProcessExit(state.serviceName); /* stop deadline refuses further reads */ }
+  }
   function finish(state, error, result) {
     if (state.finished) return;
     state.finished = true;
@@ -94,7 +103,7 @@ function createDwgHost({ scriptsDir, timeoutMs, maxBytes = MAX_DRAWING_BYTES, re
       disposed = true;
       stopAll(new Error('The DWG reader could not be stopped. Restart JCad before opening another DWG.'));
     }, STOP_TIMEOUT_MS);
-    try { state.child.kill(); } catch { /* exit/stop deadline still owns cleanup */ }
+    killReader(state);
   }
   function retired(state) {
     clearTimeout(state.stopTimer);
@@ -171,11 +180,11 @@ function createDwgHost({ scriptsDir, timeoutMs, maxBytes = MAX_DRAWING_BYTES, re
     if (disposed || current || stopping || !queue.length) return;
     const item = queue.shift();
     /** @type {any} */
-    const state = { item, child: null, guard: null, ready: false, monitored: false, finished: false, exited: false, inputStarted: false, inputEnded: false, inputSent: 0, outputOffset: 0 };
+    const state = { item, serviceName: 'JCad DWG Reader:' + randomUUID(), child: null, guard: null, ready: false, monitored: false, finished: false, exited: false, inputStarted: false, inputEnded: false, inputSent: 0, outputOffset: 0 };
     current = state;
     state.startTimer = setTimeout(() => finish(state, new Error('The isolated DWG reader did not start in time.')), START_TIMEOUT_MS);
     try {
-      state.child = launchProcess(entry, { env: childEnvironment(allowTestHooks) });
+      state.child = launchProcess(entry, { env: childEnvironment(allowTestHooks), serviceName: state.serviceName });
       state.child.on('message', (msg) => {
         try { message(state, msg); } catch (error) { finish(state, error); }
       });
@@ -187,7 +196,7 @@ function createDwgHost({ scriptsDir, timeoutMs, maxBytes = MAX_DRAWING_BYTES, re
       });
       state.child.once('spawn', () => {
         if (state.finished) {
-          try { state.child.kill(); } catch { /* the stop deadline refuses further reads */ }
+          killReader(state);
           return;
         }
         try {

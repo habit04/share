@@ -15,7 +15,9 @@ const atomic = require('../electron/atomic-write.cjs') as {
   createAtomicWriter(fs?: unknown, options?: { hooks?: { beforeRename(tmp: string): void } }): Writer;
   createCanonicalWriteQueue(resolveKey?: (file: string) => Promise<string>): <T>(file: string, job: (key: string) => Promise<T>) => Promise<T>;
 };
-const source = readFileSync(new URL('../electron/main/app-data.cjs', import.meta.url), 'utf8');
+const appDataFile = new URL('../electron/main/app-data.cjs', import.meta.url);
+const appDataRequire = createRequire(appDataFile);
+const source = readFileSync(appDataFile, 'utf8');
 const deferred = () => {
   let release!: () => void;
   const promise = new Promise<void>((resolve) => { release = resolve; });
@@ -31,7 +33,8 @@ function userWriter(writer: Writer, resolve: (file: string) => Promise<string>, 
       atomicWriteFile: write,
       createCanonicalWriteQueue: () => atomic.createCanonicalWriteQueue(resolve),
     };
-    return require(name);
+    // Resolve new private helpers from the module under test, rather than this test folder.
+    return appDataRequire(name);
   }, module);
   return module.exports.writeUserFile;
 }
