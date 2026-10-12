@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, realpathSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, realpathSync, lstatSync, copyFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { verifyExecutableFuses } from './electron-fuse-policy.mjs';
@@ -81,5 +81,14 @@ w.webContents.session.flushStorageData(); w.destroy(); app.quit();
   writeFileSync(join(out, 'shipping-runtime-result.json'), `${JSON.stringify(record, null, 2)}\n`);
   console.log(`${source ? 'Source probe validation (no shipping fuse/signature evidence)' : 'Exact shipping runtime smoke'}: startup, DXF open/save/backup/reopen, secure origin, two-launch migration, private persistent storage and clean exit passed.`);
 } finally {
+  // Preserve only fixed, generated smoke artifacts for native-reader diagnosis. The private
+  // profile is still removed, and ordinary user files can never be selected by this probe.
+  for (const [name, saved] of [['shipping-startup.dxf', 'shipping-dwg-fixture.dxf'], ['shipping-export.dwg', 'shipping-dwg-output.dwg'], ['shipping-export.dwg.bak', 'shipping-dwg-backup.bak']]) {
+    const file = join(profile, name);
+    if (existsSync(file)) {
+      const stat = lstatSync(file);
+      if (stat.isFile() && !stat.isSymbolicLink() && dirname(realpathSync.native(file)) === realpathSync.native(profile)) copyFileSync(file, join(out, saved));
+    }
+  }
   cleanProfile();
 }

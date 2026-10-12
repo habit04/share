@@ -64,7 +64,7 @@ async function hashHelper(file, expectedSize, fileSystem) {
       hash.update(chunk.subarray(0, bytesRead));
     }
     if (size !== expectedSize || fileIdentity(await handle.stat()) !== fileIdentity(before)) throw new Error('DWG writer changed during its integrity check.');
-    return { sha256: hash.digest('hex'), identity: fileIdentity(before) };
+    return { sha256: hash.digest('hex'), identity: fileIdentity(before), dev: before.dev, ino: before.ino };
   } finally { await handle.close(); }
 }
 
@@ -96,7 +96,7 @@ async function verifyPortableWriter(locations, fileSystem = fs) {
     const file = path.join(directory, item.name);
     const result = await hashHelper(file, item.size, fileSystem);
     if (result.sha256 !== item.sha256) throw new Error('DWG writer integrity check failed.');
-    verified.push({ file, identity: result.identity });
+    verified.push({ file, identity: result.identity, dev: result.dev, ino: result.ino, size: item.size, sha256: item.sha256 });
   }
   if (!manifest.files.some((item) => item.name === HELPER_NAME)) throw new Error('DWG writer executable is missing from its integrity manifest.');
   // Additional DLLs could be automatically loaded by the runtime. A bundle may only contain
@@ -108,7 +108,14 @@ async function verifyPortableWriter(locations, fileSystem = fs) {
     if (!current.isDirectory() || current.isSymbolicLink() || current.ino !== folder.ino || current.dev !== folder.dev || await fileSystem.realpath(directory) !== resolved) throw new Error('DWG writer directory changed.');
     for (const item of verified) {
       const stat = await fileSystem.lstat(item.file);
-      if (!stat.isFile() || stat.isSymbolicLink() || fileIdentity(stat) !== item.identity) throw new Error('DWG writer changed after its integrity check.');
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.dev !== item.dev || stat.ino !== item.ino || stat.size !== item.size) throw new Error('DWG writer changed after its integrity check.');
+      if (fileIdentity(stat) !== item.identity) {
+        // Windows can update executable metadata on first use without changing its contents.
+        // A timestamp change permits only a fresh bounded hash of the same regular file.
+        const result = await hashHelper(item.file, item.size, fileSystem);
+        if (result.dev !== item.dev || result.ino !== item.ino || result.sha256 !== item.sha256) throw new Error('DWG writer changed after its integrity check.');
+        item.identity = result.identity;
+      }
     }
     if ((await fileSystem.readdir(directory)).some((name) => name !== 'integrity.json' && !names.has(name.toLowerCase()))) throw new Error('DWG writer bundle contains an unverified file.');
   };

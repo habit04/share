@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "description": "JCad's hand-authored r2010-appearance.dxf exported with the portable writer, plus the plain dirty-state test marker. This is JCad test data, not an Autodesk sample.",
+  "source": "tests/fixtures/interchange/r2010-appearance.dxf",
+  "dwgSha256": "c3fa691475abad139e1e80c18c470bbfa5b1598cb5b59ec511ab77d48b5169c2",
+  "nativeValidation": {
+    "application": "AutoCAD 2027 Core Console",
+    "auditErrors": 0,
+    "method": "AUDIT and independent DXFOUT confirmed group 440; native DXFOUT also retains RGB and color-book identity."
+  },
+  "modelTransparencyByHandle": {
+    "146": 33554528,
+    "147": 0,
+    "148": 33554432,
+    "149": 33554687,
+    "14A": 16777216,
+    "14B": 33554559,
+    "14C": 0
+  },
+  "namedEntityByHandle": {
+    "14B": { "rgb": 11259375, "name": "Studio Book$Pearl Δ" }
+  },
+  "scope": "Native emitted bytes are audited. Normal importer alpha and named-color retention are tested separately; the native color-book reference must be resolved exactly rather than inferred from its palette fallback."
+}

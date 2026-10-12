@@ -5,13 +5,16 @@ import { readFile, lstat, realpath } from 'node:fs/promises';
 import { resolve, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { wasmMemoryLimits } from './dwg-wasm-memory.mjs';
+import { checkedNativeColor, encodedNativeAlpha } from './native-dwg-build/validate-appearance-fixture.mjs';
 export { wasmMemoryLimits } from './dwg-wasm-memory.mjs';
 
 export const NATIVE_SOURCE = Object.freeze({ repository: 'https://github.com/mlightcad/libredwg-web', tag: 'v0.7.14', commit: '1dd682f46339f37b67c5ff1085d10d04a8c16d7e' });
 const SDK = { version: '4.0.23', commit: 'c0bb220cb6e6f4e0fabb6f6db9efd53390ef5e56', releaseHash: 'aaa43392544d695232b70eda706d751f18980c2a' };
 const DECLARATION = { name: 'typescript', version: '5.7.3', resolved: 'https://registry.npmjs.org/typescript/-/typescript-5.7.3.tgz', integrity: 'sha512-84MVSjMEHP+FQRPy3pX9sTVV/INIex71s9TL2Gm5FG/WG1SqXeKyZ0k7/blY/4FdOzI12CBy1vGc4og/eus0fw==' };
 const PATCH_SHA256 = 'f666e69a0316536df7e344efe2b0a9c550918d06ad57b65ecbc4c523540f8cf6';
+const APPEARANCE_PATCH_SHA256 = '98c701b374f44baeebf36aca079b9258da87b6ecef13784b7e1a6d294e222aae';
 const ASSETS = ['factory/libredwg-web.js', 'factory/libredwg-web.wasm', 'factory/package.json', 'modified-source.tar.gz', 'COPYING', 'pins.json', 'mtext-background-scale.patch.json', 'README.md', 'patch-source.mjs', 'validate-fixture.mjs', 'write-provenance.mjs', 'patch-report.json', 'fixture-report.json', 'declaration-tools/package.json', 'declaration-tools/package-lock.json'];
+const APPEARANCE_ASSETS = [...ASSETS, 'validate-appearance-fixture.mjs', 'appearance-report.json'];
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const samePath = (a, b) => process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
 
@@ -26,7 +29,10 @@ async function regularFile(root, name, maxBytes) {
 }
 
 /** All inputs are mandatory. Byte hashes establish consistency, not GitHub run authenticity. */
-export async function verifyNativeRuntime(directory, fixturePath, expectedPath) {
+export async function verifyNativeRuntime(directory, fixturePath, expectedPath, { repairPolicy = 'appearance-arrays' } = {}) {
+  assert.ok(['background', 'appearance-arrays'].includes(repairPolicy), 'Unknown native repair policy.');
+  const appearancePolicy = repairPolicy === 'appearance-arrays', assets = appearancePolicy ? APPEARANCE_ASSETS : ASSETS;
+  const checkedPatchHash = appearancePolicy ? APPEARANCE_PATCH_SHA256 : PATCH_SHA256;
   assert.ok(directory && fixturePath && expectedPath, 'Native runtime, fixture and ground truth are required.');
   const root = await realpath(resolve(directory));
   const json = async (name) => JSON.parse((await regularFile(root, name, 512 * 1024)).toString('utf8'));
@@ -38,13 +44,13 @@ export async function verifyNativeRuntime(directory, fixturePath, expectedPath) 
   assert.equal(provenance.declarationCompiler?.observedVersion, 'Version 5.7.3');
   assert.equal(provenance.workflow?.repository, 'habit04/share'); assert.match(provenance.workflow?.commit || '', /^[a-f0-9]{40}$/);
   assert.match(provenance.workflow?.runId || '', /^[1-9]\d*$/); assert.match(provenance.workflow?.runAttempt || '', /^[1-9]\d*$/);
-  assert.deepEqual(provenance.assets?.map((asset) => asset.path).sort(), [...ASSETS].sort(), 'Native public asset contract mismatch.');
+  assert.deepEqual(provenance.assets?.map((asset) => asset.path).sort(), [...assets].sort(), 'Native public asset contract mismatch.');
   const checksumBytes = await regularFile(root, 'SHA256SUMS', 16 * 1024), checksums = new Map();
   for (const line of checksumBytes.toString('utf8').trim().split(/\r?\n/)) {
     const match = /^([a-f0-9]{64}) {2}([^\r\n]+)$/.exec(line); assert.ok(match, 'Malformed native checksum line.');
     assert.ok(!checksums.has(match[2]), 'Duplicate native checksum path.'); checksums.set(match[2], match[1]);
   }
-  assert.deepEqual([...checksums.keys()].sort(), [...ASSETS, 'provenance.json'].sort());
+  assert.deepEqual([...checksums.keys()].sort(), [...assets, 'provenance.json'].sort());
   assert.equal(checksums.get('provenance.json'), digest(provenanceBytes), 'Native provenance checksum mismatch.');
   const bytes = new Map();
   for (const asset of provenance.assets) {
@@ -56,7 +62,7 @@ export async function verifyNativeRuntime(directory, fixturePath, expectedPath) 
     assert.equal(checksums.get(asset.path), asset.sha256, `Native checksum/manifest mismatch: ${asset.path}`);
     bytes.set(asset.path, content);
   }
-  assert.equal(digest(bytes.get('mtext-background-scale.patch.json')), PATCH_SHA256, 'Checked native patch changed.');
+  assert.equal(digest(bytes.get('mtext-background-scale.patch.json')), checkedPatchHash, 'Checked native patch changed.');
   const copying = bytes.get('COPYING');
   assert.equal(createHash('sha1').update(`blob ${copying.length}\0`).update(copying).digest('hex'), '94a9ed024d3859793618152ea559a168bbcbb5e2', 'Original native COPYING changed.');
   assert.equal(provenance.license?.correspondingSource, 'modified-source.tar.gz');
@@ -69,8 +75,8 @@ export async function verifyNativeRuntime(directory, fixturePath, expectedPath) 
   assert.equal((await json('declaration-tools/package.json')).dependencies.typescript, DECLARATION.version);
   const submodules = [{ path: 'jsmn', repository: 'https://github.com/zserge/jsmn', commit: '85695f3d5903b1cd5b4030efe50db3b4f5f3c928' }];
   assert.deepEqual(pins.submodules, submodules); assert.deepEqual(provenance.submodules, submodules);
-  const patch = await json('patch-report.json'); assert.deepEqual(patch.source, NATIVE_SOURCE); assert.equal(patch.patchSha256, PATCH_SHA256);
-  assert.equal(patch.files?.length, 6); assert.equal(provenance.patchedFiles?.length, 6);
+  const patch = await json('patch-report.json'); assert.deepEqual(patch.source, NATIVE_SOURCE); assert.equal(patch.patchSha256, checkedPatchHash);
+  assert.equal(patch.files?.length, appearancePolicy ? 11 : 6); assert.equal(provenance.patchedFiles?.length, appearancePolicy ? 11 : 6);
   const checkedPatch = await json('mtext-background-scale.patch.json');
   assert.deepEqual(patch.files.map((file) => file.path).sort(), checkedPatch.files.map((file) => file.path).sort());
   for (const file of checkedPatch.files) {
@@ -104,13 +110,55 @@ export async function verifyNativeRuntime(directory, fixturePath, expectedPath) 
     if (wanted.trueColor !== undefined) assert.equal((actual.color?.rgb >>> 0) & 0xffffff, wanted.trueColor);
     if (wanted.colorName !== undefined) assert.equal(actual.color?.book_name ? `${actual.color.book_name}$${actual.color.name}` : actual.color?.name, wanted.colorName);
   }
+  let appearance;
+  if (appearancePolicy) {
+    appearance = await json('appearance-report.json');
+    assert.equal(appearance.schemaVersion, 1);
+    assert.equal(appearance.factorySha256, report.factorySha256, 'Native appearance factory differs.');
+    assert.equal(appearance.wasmSha256, report.wasmSha256, 'Native appearance WASM differs.');
+    assert.deepEqual(appearance.cases?.map((entry) => entry.kind), ['appearance', 'shipping']);
+    const sourceRoot = resolve(import.meta.dirname, '..');
+    const appearancePaths = { appearanceFixture: 'tests/fixtures/interchange/r2018-portable-appearance.dwg', appearanceExpected: 'tests/fixtures/interchange/r2018-portable-appearance.expected.json', shippingFixture: 'tests/fixtures/interchange/r2018-native-shipping.dwg', shippingExpected: 'tests/fixtures/interchange/r2018-native-shipping.expected.json' };
+    for (const [key, value] of Object.entries(appearancePaths)) assert.equal(pins[key], value, 'Native appearance fixture path changed.');
+    for (const [index, fixtureKey, expectedKey] of [[0, 'appearanceFixture', 'appearanceExpected'], [1, 'shippingFixture', 'shippingExpected']]) {
+      const entry = appearance.cases[index];
+      const fixture = await readFile(resolve(sourceRoot, pins[fixtureKey])), expectedBytes = await readFile(resolve(sourceRoot, pins[expectedKey]));
+      assert.ok(fixture.length > 0 && fixture.length <= 4 * 1024 * 1024 && expectedBytes.length <= 64 * 1024, 'Native appearance input budget exceeded.');
+      const wanted = JSON.parse(expectedBytes.toString('utf8'));
+      assert.equal(entry.fixtureSha256, digest(fixture));
+      assert.equal(entry.fixtureSha256, wanted.dwgSha256);
+      assert.equal(entry.expectedSha256, digest(Buffer.from(expectedBytes.toString('utf8').replace(/\r\n/g, '\n'))));
+      assert.equal(entry.nativeError, 0);
+      for (const color of Object.values(entry.colors ?? {})) checkedNativeColor(color);
+      assert.ok(Object.keys(entry.colors ?? {}).length > 0, 'Native common colors are absent.');
+      if (index === 0) {
+        for (const [handle, alpha] of Object.entries(wanted.modelTransparencyByHandle)) assert.equal(encodedNativeAlpha(entry.colors[handle]), alpha);
+        for (const [handle, color] of Object.entries(wanted.namedEntityByHandle)) {
+          const actual = checkedNativeColor(entry.colors[handle]);
+          assert.equal(actual.referenceResolved, true);
+          assert.equal((actual.rgb >>> 0) & 0xffffff, color.rgb);
+          assert.equal(actual.book_name ? `${actual.book_name}$${actual.name}` : actual.name, color.name);
+        }
+        assert.equal((entry.layers?.RICH?.rgb >>> 0) & 0xffffff, 0x123456);
+        assert.equal(`${entry.layers?.RICH?.book_name}$${entry.layers?.RICH?.name}`, 'Studio Book$Teal 雷');
+      } else {
+        assert.equal(entry.arrays?.length, 1);
+        const { handle: _handle, ...array } = entry.arrays[0];
+        assert.deepEqual(array, wanted.array);
+        const polyline = checkedNativeColor(entry.colors[wanted.polyline.handle]);
+        assert.equal((polyline.rgb >>> 0) & 0xffffff, wanted.polyline.rgb);
+        assert.equal(encodedNativeAlpha(polyline), wanted.polyline.alpha);
+      }
+    }
+    assert.deepEqual(provenance.validation?.appearanceCases, appearance.cases.map(({ kind, fixtureSha256, expectedSha256, nativeError }) => ({ kind, fixtureSha256, expectedSha256, nativeError })));
+  }
   const memory = wasmMemoryLimits(bytes.get('factory/libredwg-web.wasm'));
   assert.deepEqual(memory, [{ origin: 'defined', flags: 1, minPages: 16384, maxPages: 65536, minBytes: 1073741824, maxBytes: 4294967296 }], 'Native memory policy differs from distributed baseline.');
-  return { directory: root, source: provenance.source, compiler: SDK.version, declarationCompiler: DECLARATION.version, workflow: provenance.workflow, factorySha256: report.factorySha256, wasmSha256: report.wasmSha256, memory: memory[0], masks: report.masks };
+  return { directory: root, source: provenance.source, compiler: SDK.version, declarationCompiler: DECLARATION.version, workflow: provenance.workflow, factorySha256: report.factorySha256, wasmSha256: report.wasmSha256, memory: memory[0], masks: report.masks, repairPolicy, ...(appearance ? { appearance } : {}) };
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const [directory, fixture, expected] = process.argv.slice(2);
-  if (process.argv.length !== 5) throw new Error('Usage: vendor-native-runtime.mjs VENDOR_DIRECTORY DWG_FIXTURE EXPECTED_JSON');
-  console.log(JSON.stringify(await verifyNativeRuntime(directory, fixture, expected), null, 2));
+  const [directory, fixture, expected, option, policy] = process.argv.slice(2);
+  if (process.argv.length !== 5 && !(process.argv.length === 7 && option === '--policy')) throw new Error('Usage: vendor-native-runtime.mjs VENDOR_DIRECTORY DWG_FIXTURE EXPECTED_JSON [--policy appearance-arrays|background]');
+  console.log(JSON.stringify(await verifyNativeRuntime(directory, fixture, expected, policy ? { repairPolicy: policy } : {}), null, 2));
 }

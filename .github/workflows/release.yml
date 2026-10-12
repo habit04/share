@@ -397,6 +397,11 @@ jobs:
         run: node node_modules/electron/install.js
       - name: DWG process containment on this native runner (Windows)
         run: npm run check:dwg-containment
+      - name: Verify AutoCAD is absent before installed shipping probes
+        shell: pwsh
+        run: ./scripts/check-no-autocad.ps1 -EvidencePath packaged-smoke-output/no-autocad-inventory.json
+        env:
+          SOURCE_SHA: ${{ needs.checks.outputs.sha }}
       - name: Packaged smoke test (Windows)
         run: node scripts/packaged-smoke.mjs installers
         env:

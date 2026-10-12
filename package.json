@@ -68,6 +68,7 @@
       "scripts/dwg-native-read.mjs",
       "scripts/dwg-mtext-background.mjs",
       "scripts/dwg-array-conversion.mjs",
+      "scripts/dwg-appearance-conversion.mjs",
       "scripts/dwg-worker.mjs",
       "scripts/dwg-process.mjs",
       "scripts/dwg-wasm-memory.mjs",

@@ -176,3 +176,6 @@ tooling chain while retaining builder's Azure signing API. Its CommonJS bootstra
 checked with a local HTTP proxy smoke test. Both full and production-only audit must be rerun for
 each release; the full audit after these updates reported **0 vulnerabilities**. That result is
 a dated dependency check, not proof that every future advisory is covered.
+
+**Release dependency check, 2026-10-12:** both the full and production-only audit of the
+locked 0.4.6 dependencies reported **0 vulnerabilities** before publication.

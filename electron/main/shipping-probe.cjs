@@ -1,5 +1,5 @@
 // Fixed diagnostics for the exact shipping executable. No supplied JavaScript, remote
-// debugging transport or renderer IPC endpoint; only two enumerated startup phases.
+// debugging transport or renderer IPC endpoint; only fixed, enumerated probe phases.
 const { app, session } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');

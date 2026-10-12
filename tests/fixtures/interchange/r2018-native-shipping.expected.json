@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "description": "JCad controlled 2D shipping probe: lines, variable-width RGB/alpha polyline and MINSERT referencing a block with ATTDEF/ATTRIB. AutoCAD 2027 AUDIT reports zero errors.",
+  "dwgSha256": "72bf97b710633c5085674de4d83d343872e4a2296a062acf9b5eafd610a7340d",
+  "nativeValidation": { "application": "AutoCAD 2027 Core Console", "auditErrors": 0, "normalizedDxf": "Independent DXFOUT confirms exact array and attribute values below." },
+  "array": { "columns": 3, "rows": 2, "columnSpacing": 7, "rowSpacing": 11, "attributes": [{ "tag": "TAG1", "text": "QF1" }] },
+  "polyline": { "handle": "13D", "rgb": 2386092, "alpha": 33554528 },
+  "scope": "The native getter gate checks appearance, native array fields and exact owned attributes. Full geometry and variable-width fidelity are tested separately by JCad/AutoCAD conformance."
+}

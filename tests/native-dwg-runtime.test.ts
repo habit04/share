@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { NATIVE_SOURCE, verifyNativeRuntime, wasmMemoryLimits } from '../scripts/vendor-native-runtime.mjs';
@@ -30,6 +31,15 @@ describe('native WASM declaration inspection', () => {
     await expect(verifyNativeRuntime('', fixture, expected)).rejects.toThrow(/required/);
     await expect(verifyNativeRuntime(join(root, 'vendor/absent-native-runtime'), fixture, expected)).rejects.toThrow();
   });
+  it('requires the new exact repair contract when appearance/arrays are requested', async () => {
+    const candidate = mkdtempSync(join(tmpdir(), 'jcad-native-policy-'));
+    try {
+      const provenance = JSON.parse(readFileSync(join(root, 'vendor/libredwg-web-bg/provenance.json'), 'utf8'));
+      provenance.assets = provenance.assets.filter((asset: { path: string }) => !['appearance-report.json', 'validate-appearance-fixture.mjs'].includes(asset.path));
+      writeFileSync(join(candidate, 'provenance.json'), JSON.stringify(provenance));
+      await expect(verifyNativeRuntime(candidate, fixture, expected, { repairPolicy: 'appearance-arrays' })).rejects.toThrow(/asset contract mismatch/);
+    } finally { rmSync(candidate, { recursive: true, force: true }); }
+  });
 });
 
 type Mask = { type: string; text?: string; background?: { flags: number; scale: number; color: number | string; trueColor?: number; colorName?: string } };
@@ -56,6 +66,8 @@ describe('mandatory repaired native runtime acceptance', () => {
   it('binds the complete vendor artifact to its source, fixture and original memory limits', async () => {
     const verified = await verifyNativeRuntime(join(root, 'vendor/libredwg-web-bg'), fixture, expected);
     expect(verified.source).toEqual(NATIVE_SOURCE);
+    expect(verified.repairPolicy).toBe('appearance-arrays');
+    expect(verified.appearance).toMatchObject({ cases: [{ kind: 'appearance' }, { kind: 'shipping' }] });
     expect(verified.memory).toEqual({ origin: 'defined', ...memory });
     expect(verified.masks).toHaveLength(7);
     expect(verified.masks.find((mask) => mask.text === 'ACI MASK')?.color).toMatchObject({ index: 256, method: 0xc3, rgb: 0xc3000001 });

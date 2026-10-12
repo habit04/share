@@ -30,12 +30,15 @@ assert.equal(patchReport.source.commit, pins.source.commit);
 const fixture = JSON.parse(await readFile(join(artifact, 'fixture-report.json'), 'utf8'));
 assert.equal(fixture.nativeError, 0, 'Fixture validation did not complete successfully.');
 assert.equal(fixture.masks.length, 7);
+const appearance = JSON.parse(await readFile(join(artifact, 'appearance-report.json'), 'utf8'));
+assert.equal(appearance.cases?.length, 2, 'Native appearance/shipping validation did not complete.');
+for (const result of appearance.cases) assert.equal(result.nativeError, 0, 'Native appearance/shipping fixture has decoder errors.');
 const packageManifest = JSON.parse(await readFile(join(source, 'bindings/javascript/package.json'), 'utf8'));
-for (const filename of ['pins.json', 'mtext-background-scale.patch.json', 'README.md', 'patch-source.mjs', 'validate-fixture.mjs', 'write-provenance.mjs']) await copyFile(join(here, filename), join(artifact, filename));
+for (const filename of ['pins.json', 'mtext-background-scale.patch.json', 'README.md', 'patch-source.mjs', 'validate-fixture.mjs', 'validate-appearance-fixture.mjs', 'write-provenance.mjs']) await copyFile(join(here, filename), join(artifact, filename));
 await mkdir(join(artifact, 'declaration-tools'), { recursive: true });
 for (const filename of ['package.json', 'package-lock.json']) await copyFile(join(here, 'declaration-tools', filename), join(artifact, 'declaration-tools', filename));
 await copyFile(join(source, 'COPYING'), join(artifact, 'COPYING'));
-const files = ['factory/libredwg-web.js', 'factory/libredwg-web.wasm', 'factory/package.json', 'modified-source.tar.gz', 'COPYING', 'pins.json', 'mtext-background-scale.patch.json', 'README.md', 'patch-source.mjs', 'validate-fixture.mjs', 'write-provenance.mjs', 'patch-report.json', 'fixture-report.json', 'declaration-tools/package.json', 'declaration-tools/package-lock.json'];
+const files = ['factory/libredwg-web.js', 'factory/libredwg-web.wasm', 'factory/package.json', 'modified-source.tar.gz', 'COPYING', 'pins.json', 'mtext-background-scale.patch.json', 'README.md', 'patch-source.mjs', 'validate-fixture.mjs', 'validate-appearance-fixture.mjs', 'write-provenance.mjs', 'patch-report.json', 'fixture-report.json', 'appearance-report.json', 'declaration-tools/package.json', 'declaration-tools/package-lock.json'];
 const assets = [];
 for (const filename of files) {
   const path = join(artifact, filename), stat = await lstat(path);
@@ -44,17 +47,19 @@ for (const filename of files) {
 }
 assert.equal(assets.find((asset) => asset.path === 'factory/libredwg-web.js').sha256, fixture.factorySha256);
 assert.equal(assets.find((asset) => asset.path === 'factory/libredwg-web.wasm').sha256, fixture.wasmSha256);
+assert.equal(appearance.factorySha256, fixture.factorySha256, 'Appearance gate used different factory bytes.');
+assert.equal(appearance.wasmSha256, fixture.wasmSha256, 'Appearance gate used different WASM bytes.');
 assert.equal(assets.find((asset) => asset.path === 'mtext-background-scale.patch.json').sha256, patchReport.patchSha256);
 const provenance = {
   schemaVersion: 1,
-  purpose: 'Controlled native MTEXT background repair; no release publication or installed dependency mutation',
+  purpose: 'Controlled native MTEXT/color-reference/MINSERT facade repair; no release publication or installed dependency mutation',
   source: pins.source,
   submodules: pins.submodules,
   compiler: { ...pins.compiler, observedVersion: compiler },
   declarationCompiler: { ...pins.declarationCompiler, observedVersion: declarationVersion },
   license: { packageSpdx: 'GPL-3.0', nativeSourceNotice: 'GPL-3.0-or-later; see each source file and COPYING', correspondingSource: 'modified-source.tar.gz' },
   build: { commands: ['./autogen.sh', 'npm run build:prepare', 'npm run build:obj', 'npm run build:wasm'], makeFlags: '-j2', scripts: Object.fromEntries(['build:prepare', 'build:obj', 'build:wasm'].map((name) => [name, packageManifest.scripts[name]])), observedTools: { node: process.version, ...Object.fromEntries(['npm', 'autoconf', 'automake', 'libtoolize', 'make', 'gcc', 'pkg-config'].map((command) => [command, execFileSync(command, ['--version'], { encoding: 'utf8' }).trim().split('\n')[0]])) } },
-  validation: { fixtureSha256: fixture.fixtureSha256, expectedSha256: fixture.expectedSha256, nativeError: fixture.nativeError, maskCount: fixture.masks.length, report: 'fixture-report.json' },
+  validation: { fixtureSha256: fixture.fixtureSha256, expectedSha256: fixture.expectedSha256, nativeError: fixture.nativeError, maskCount: fixture.masks.length, report: 'fixture-report.json', appearanceReport: 'appearance-report.json', appearanceCases: appearance.cases.map(({ kind, fixtureSha256, expectedSha256, nativeError }) => ({ kind, fixtureSha256, expectedSha256, nativeError })) },
   workflow: { repository: process.env.GITHUB_REPOSITORY || '', commit: process.env.GITHUB_SHA || '', runId: process.env.GITHUB_RUN_ID || '', runAttempt: process.env.GITHUB_RUN_ATTEMPT || '' },
   patchedFiles: await Promise.all(patchReport.files.map(async (file) => ({ ...file, builtSourceSha256: sha256(await readFile(join(source, file.path))) }))),
   assets,

@@ -5,7 +5,7 @@
     "tag": "v0.7.14",
     "commit": "1dd682f46339f37b67c5ff1085d10d04a8c16d7e"
   },
-  "patchSha256": "f666e69a0316536df7e344efe2b0a9c550918d06ad57b65ecbc4c523540f8cf6",
+  "patchSha256": "98c701b374f44baeebf36aca079b9258da87b6ecef13784b7e1a6d294e222aae",
   "files": [
     {
       "path": "include/dwg.h",
@@ -16,8 +16,8 @@
     {
       "path": "src/dwg.spec",
       "beforeSha256": "c3c6dec791321721b0ff75854d3ac2e8832986b62fce832cc053e2ac85f2e9fd",
-      "afterSha256": "6eff3439480c35882f15ea79e8de8b6d8b5c8e603a3ccd72eb6fe8a8cabd8369",
-      "replacements": 1
+      "afterSha256": "b71557ff995822c2314d57d3728fd9a56ffa68a090f4932b921e58fe4fc1d1f7",
+      "replacements": 2
     },
     {
       "path": "src/dwg_spec_shared.h",
@@ -42,6 +42,36 @@
       "beforeSha256": "0a162468e91dddfaf26eca4dce7a81723bf788e915dae3f359ccdd48b209ae82",
       "afterSha256": "a7ed2409649664a8aea39e034127ea6d135d0a52efc25773ee571e8a683b7d16",
       "replacements": 2
+    },
+    {
+      "path": "bindings/javascript/embind/binding_common.cpp",
+      "beforeSha256": "20963977bf386b1e988238ef3931e167b6408ab3828df097213925d413162180",
+      "afterSha256": "21f6e7bc5a37d79faf67f950c9c6fb359aa9ed8dc4c6ba78d80991c723d166c8",
+      "replacements": 3
+    },
+    {
+      "path": "bindings/javascript/embind/binding_ent.cpp",
+      "beforeSha256": "66070f3216dfa59749bd1f10154148f65ae78b26ee2e6fffcc2c4b47265d87e4",
+      "afterSha256": "dbace2a45a119cd7207f3ca786aa63a28ec4a210e09035df03c11fca4f685121",
+      "replacements": 1
+    },
+    {
+      "path": "src/common_entity_data.spec",
+      "beforeSha256": "07de52db00238278ace317e0b77753623e6db14bc9ee046ed839caa02beb612f",
+      "afterSha256": "ff31c5fa31086c7f75444492e828bb47a8b05221c826957ca2cb9ee3731fe52b",
+      "replacements": 3
+    },
+    {
+      "path": "src/decode.c",
+      "beforeSha256": "8350a8b648a4cc2e817b539da2273adac7f6d801020467cfb083111135428eb2",
+      "afterSha256": "3b0805c4a7448ffde977d66ecadf19d5bff21d6327df5ea0b9b54fed9ad0faa3",
+      "replacements": 1
+    },
+    {
+      "path": "src/common_entity_handle_data.spec",
+      "beforeSha256": "288858df07e8a37b6fb0cccceeca2cf153cccc8a6784d3b0cd9962f770768a8d",
+      "afterSha256": "1140eedbd1a93824dc9a7f0dbae23c182b1342bc939005b6a2427da97a45ca2a",
+      "replacements": 1
     }
   ]
 }

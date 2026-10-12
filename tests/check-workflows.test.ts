@@ -37,7 +37,7 @@ type SmokeJob = {
   'timeout-minutes': number;
   needs: string[];
   strategy: { matrix: { include: SmokeRow[]; exclude?: SmokeRow[] } };
-  steps: { if?: string | boolean; run?: string; uses?: string; env?: Record<string, string | number>; with?: Record<string, string> }[];
+  steps: { if?: string | boolean; run?: string; uses?: string; shell?: string; env?: Record<string, string | number>; with?: Record<string, string> }[];
 };
 
 function withSmoke(edit: (job: SmokeJob) => void): string {
@@ -317,6 +317,20 @@ describe('workflow validation', () => {
     const r = check(withSmoke((job) => { job.steps.find((entry) => entry.run === 'node scripts/packaged-smoke.mjs installers')!.if = false; }));
     expect(r.code).toBe(1);
     expect(r.out).toMatch(/packaged smoke must run unconditionally on Windows/);
+  });
+
+  it.each(['missing', 'conditional', 'wrong shell', 'wrong source', 'after smoke'])('rejects an AutoCAD absence inventory that is %s', (change) => {
+    const r = check(withSmoke((job) => {
+      const index = job.steps.findIndex((entry) => entry.run?.includes('scripts/check-no-autocad.ps1'));
+      const step = job.steps[index]!;
+      if (change === 'missing') job.steps.splice(index, 1);
+      else if (change === 'conditional') step.if = false;
+      else if (change === 'wrong shell') step.shell = 'bash';
+      else if (change === 'wrong source') step.env!.SOURCE_SHA = '${{ github.sha }}';
+      else { job.steps.splice(index, 1); job.steps.push(step); }
+    }));
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/unconditional source-bound AutoCAD absence inventory must run immediately before installed Windows smoke/);
   });
 
   it.each(['wrong artifact', 'conditional download'])('rejects a %s for packaged smoke', (change) => {

@@ -17,7 +17,9 @@ export async function runPortableDwgChecks({ app, page, repo, outDir, check, cur
   };
   const signature = () => page.evaluate(() => {
     const ed = window.editor;
-    const appearance = e => ({ color: e.color, trueColor: e.trueColor, colorName: e.colorName, transparency: e.transparency ?? 'ByLayer' });
+    // Match the independent native oracle: explicit RGB is authoritative and AutoCAD may
+    // recompute its fallback ACI. Missing RGB, full color-book identity or alpha still fails.
+    const appearance = e => ({ color: e.trueColor === undefined ? e.color : undefined, trueColor: e.trueColor, colorName: e.colorName, transparency: e.transparency ?? 'ByLayer' });
     const entities = ed.doc.entities.map(e => e.type === 'insert' ? {
       type: e.type, block: e.block, position: e.position, scale: e.scale, scaleY: e.scaleY ?? e.scale, rotation: e.rotation,
       columns: e.columns ?? 1, rows: e.rows ?? 1, columnSpacing: e.columnSpacing ?? 0, rowSpacing: e.rowSpacing ?? 0, attributes: e.attributes, ...appearance(e),

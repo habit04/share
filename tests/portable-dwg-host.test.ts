@@ -210,6 +210,28 @@ describe('portable DWG helper integrity and protocol', () => {
     await expect(host.verifyPortableWriter(f.locations())).rejects.toThrow(/integrity/);
   });
 
+  it('rehashes metadata changes while still refusing same-size changed bytes', async () => {
+    const f = await fixture();
+    const checked = await host.verifyPortableWriter(f.locations());
+    const original = await fs.readFile(f.executable);
+    await fs.utimes(f.executable, new Date('2025-01-01'), new Date('2025-01-01'));
+    await expect(checked.check()).resolves.toBeUndefined();
+    const changed = Buffer.from(original);
+    changed[0] = changed[0]! ^ 1;
+    await fs.writeFile(f.executable, changed);
+    await fs.utimes(f.executable, new Date('2025-01-01'), new Date('2025-01-01'));
+    await expect(checked.check()).rejects.toThrow(/changed after its integrity check/);
+  });
+
+  it('refuses a replacement file even when it has the exact trusted bytes', async () => {
+    const f = await fixture();
+    const checked = await host.verifyPortableWriter(f.locations());
+    const original = await fs.readFile(f.executable);
+    await fs.rename(f.executable, path.join(f.directory, 'old.exe'));
+    await fs.writeFile(f.executable, original);
+    await expect(checked.check()).rejects.toThrow(/changed after its integrity check/);
+  });
+
   it('refuses mismatched hashes, directory traversal, duplicate Windows names, and unlisted dependencies', async () => {
     const f = await fixture();
     const item = f.manifestValue.files[0]!;
