@@ -10,6 +10,8 @@ import type { DrawingState } from '../core/document';
 import { expansionReport, MAX_INSERT_EXPANSION, MAX_BLOCK_EXPANSION_WORK, type BlockDef, type Entity } from '../core/entities';
 import { mtextFormattingProblem } from '../core/mtext';
 import { samePath } from '../app/paths';
+import { textPlacementProblem, placedText } from '../core/text-placement';
+import { textWidth } from '../core/entities';
 
 /**
  * - dropped: not imported; it is lost when the drawing is saved.
@@ -162,8 +164,13 @@ export function geometryProblem(e: Entity): string | null {
       return e.radius < 0 ? `negative radius ${e.radius}` : null;
     case 'polyline':
       return e.points.length < 2 ? `a polyline needs at least 2 vertices (it has ${e.points.length})` : null;
-    case 'text':
-      return e.height < 0 ? `negative text height ${e.height}` : null;
+    case 'text': {
+      if (e.height < 0) return `negative text height ${e.height}`;
+      const placement = textPlacementProblem(e);
+      if (placement) return placement;
+      const derived = placedText(e, textWidth);
+      return Number.isFinite(derived.height) && Number.isFinite(derived.widthFactor ?? 1) && Number.isFinite(derived.position.x) && Number.isFinite(derived.position.y) ? null : 'TEXT justification produces nonfinite geometry';
+    }
     case 'mtext': {
       if (e.raw) {
         const format = mtextFormattingProblem(e.raw, e.height);

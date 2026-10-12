@@ -32,7 +32,8 @@ import type {
 } from '@mlightcad/libredwg-web';
 import { insertScales, insertScaleFields } from './dxf';
 import type { Entity, BlockDef, Layer, AttributeDef, ColorSpec, MTextAttachment, SplineEntity, HatchEntity, HatchLoop, LeaderEntity, ImageEntity, TableEntity, TableCell, FieldLink } from '../core/entities';
-import { translateEntity } from '../core/entities';
+import { translateEntity, localAttributePlacement, type InsertEntity, type AttributeAppearance } from '../core/entities';
+import { textJustification, type TextPlacement } from '../core/text-placement';
 import { DIMSTYLES_META_KEY, DIM_VARIABLES, diffDimStyles, dimStyleFromRecordPairs } from '../core/dimension';
 import { findLinetype, type Linetype } from '../core/linetypes';
 import { paperFromSize, unitsOfHost, uniformMargins, newViewportId, type Layout, type LayoutViewport } from '../core/layouts';
@@ -667,6 +668,7 @@ function textWithField(text: string): { text: string; field?: FieldLink } {
 
 /** Lookups for entity types that refer to other objects (LEADER -> MTEXT, IMAGE -> IMAGEDEF). */
 interface ConvertExtras {
+  blockBasePoints?: ReadonlyMap<string, Point>;
   annotations: ReadonlyMap<string, DwgEntity>;
   imageDefs: ReadonlyMap<string, string>;
   notes: string[];
@@ -735,17 +737,7 @@ function convertEntity(e: DwgEntity, blockIndex: Map<string, string>, dimStyle: 
     }
     case 'TEXT': {
       const t = e as DwgTextEntity;
-      const align = halign(t.halign);
-      const h = t.halign ?? 0;
-      const v = t.valign ?? 0;
-      // Alignment point applies for any non-default justification except Aligned/Fit (3/5), which keep the first point.
-      const useEnd = (h !== 0 || v !== 0) && h !== 3 && h !== 5 && t.endPoint && (t.endPoint.x !== 0 || t.endPoint.y !== 0);
-      const height = t.textHeight || 0.125;
-      const rotation = t.rotation ?? 0;
-      let position = useEnd ? p2(t.endPoint) : p2(t.startPoint);
-      const drop = v === 2 ? height / 2 : v === 3 ? height : 0;
-      if (drop) position = { x: position.x + Math.sin(rotation) * drop, y: position.y - Math.cos(rotation) * drop };
-      return { ...base, type: 'text', position, ...textWithField(t.text ?? ''), height, rotation, align, ...(t.styleName && !/^standard$/i.test(t.styleName) ? { style: t.styleName } : {}), ...(t.xScale && t.xScale !== 1 ? { widthFactor: t.xScale } : {}) };
+      return { ...base, type: 'text', ...dwgTextPlacement(t), ...textWithField(t.text ?? ''), rotation: t.rotation ?? 0 };
     }
     case 'MTEXT': {
       const m = e as DwgMTextEntity;
@@ -827,7 +819,7 @@ function convertEntity(e: DwgEntity, blockIndex: Map<string, string>, dimStyle: 
       // An invisible ATTRIB whose ATTDEF is visible hides that attribute on this insert only.
       const def = blocks?.[name];
       const hiddenHere = def ? hidden.filter((t) => def.attributes.some((a) => a.tag === t && !a.invisible)) : [];
-      return {
+      const ins: InsertEntity = {
         ...base,
         type: 'insert',
         block: name,
@@ -837,31 +829,54 @@ function convertEntity(e: DwgEntity, blockIndex: Map<string, string>, dimStyle: 
         attributes: attrs,
         ...(hiddenHere.length ? { hiddenAttributes: hiddenHere } : {}),
       };
+      const basePoint = def?.basePoint ?? extras?.blockBasePoints?.get(name);
+      const placements: Record<string, TextPlacement & AttributeAppearance & { style?: string }> = {};
+      if (basePoint) for (const a of i.attribs ?? []) {
+        const tag = a.tag || a.attrTag;
+        const { id: _id, layer, ...appearance } = baseProps(a);
+        const placement = { ...appearance, ...(a.layer ? { layer } : {}), ...dwgTextPlacement(a.text, a.alignmentPoint) };
+        const problem = geometryProblem({ ...base, ...placement, rotation: placement.rotation ?? 0, type: 'text', text: a.text?.text ?? '' });
+        if (problem) extras?.notes.push(`ATTRIB ${tag}: invalid placement (${problem}); its value uses the definition's placement.`);
+        else placements[tag] = localAttributePlacement(ins, basePoint, placement);
+      }
+      return Object.keys(placements).length ? { ...ins, attributePlacements: placements } : ins;
     }
     default:
       return null;
   }
 }
 
-function convertAttdef(a: DwgAttdefEntity): AttributeDef {
-  const t = a.text;
+function dwgTextPlacement(t: Partial<DwgTextEntity> | undefined, alignmentPoint?: { x: number; y: number }): TextPlacement & { style?: string } {
   const h = t?.halign ?? 0;
   const v = t?.valign ?? 0;
-  const useAlign = (h !== 0 || v !== 0) && h !== 3 && h !== 5 && a.alignmentPoint && (a.alignmentPoint.x !== 0 || a.alignmentPoint.y !== 0);
-  const height = t?.textHeight || 0.125;
-  let position = useAlign ? p2(a.alignmentPoint) : p2(t?.startPoint);
-  const drop = v === 2 ? height / 2 : v === 3 ? height : 0;
-  if (drop) position = { x: position.x, y: position.y - drop };
-  const rotation = t?.rotation ?? 0;
+  const second = alignmentPoint ?? t?.endPoint;
+  const first = p2(t?.startPoint);
+  const useSecond = (h !== 0 || v !== 0) && h !== 3 && h !== 5 && second !== undefined;
+  return {
+    position: useSecond ? p2(second) : first,
+    ...(useSecond ? { firstAlignmentPoint: first } : {}),
+    height: t?.textHeight ?? 0.125,
+    rotation: t?.rotation ?? 0,
+    align: halign(h),
+    ...(h !== 0 || v !== 0 ? { justification: textJustification(h, v) } : {}),
+    ...(second ? { alignmentPoint: p2(second) } : {}),
+    ...(t?.xScale !== undefined && t.xScale !== 1 ? { widthFactor: t.xScale } : {}),
+    ...(t?.obliqueAngle ? { oblique: t.obliqueAngle } : {}),
+    ...(t?.styleName && !/^standard$/i.test(t.styleName) ? { style: t.styleName } : {}),
+  };
+}
+
+function convertAttdef(a: DwgAttdefEntity): AttributeDef {
+  const t = a.text;
+  const { id: _id, layer, ...appearance } = baseProps(a);
   return {
     tag: a.tag || a.attrTag || 'ATTR',
     prompt: a.prompt ?? '',
     default: t?.text ?? '',
-    position,
-    height,
-    align: halign(h),
+    ...appearance,
+    ...(a.layer ? { layer } : {}),
+    ...dwgTextPlacement(t, a.alignmentPoint),
     invisible: ((a.flags ?? 0) & 1) === 1,
-    ...(Math.abs(rotation) > 1e-9 ? { rotation } : {}),
   };
 }
 
@@ -1191,7 +1206,7 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
   const noteSet = new Set<string>();
   const extrasFor = (list: readonly DwgEntity[]): ConvertExtras & { consumed: Set<DwgEntity> } => {
     const annotations = annotationsOf(list);
-    return { annotations, imageDefs, notes: [], consumed: new Set(annotations.values()), dimStyles };
+    return { annotations, imageDefs, notes: [], consumed: new Set(annotations.values()), dimStyles, blockBasePoints: new Map(payload.blocks.map((b) => [publicName(b.name), p2(b.basePoint)])) };
   };
   /** HATCH: a real hatch entity; outline polylines when the boundary cannot be rebuilt. */
   const hatchOf = (e: DwgEntity, where: string): { parts: Entity[]; reason?: string } => {
@@ -1226,7 +1241,10 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
     for (const e of b.entities) {
       if (bx.consumed.has(e)) continue;
       if (e.type === 'ATTDEF') {
-        attributes.push(convertAttdef(e as DwgAttdefEntity));
+        const definition = convertAttdef(e as DwgAttdefEntity);
+        const problem = geometryProblem({ ...definition, id: 'attribute', type: 'text', layer: e.layer || '0', color: 'ByLayer', text: definition.default, rotation: definition.rotation ?? 0 });
+        if (problem) skip(e, `block "${b.name}"`, `invalid attribute placement: ${problem}`);
+        else attributes.push(definition);
         continue;
       }
       if (e.type === 'HATCH') {

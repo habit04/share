@@ -18,7 +18,8 @@ import {
 import type { Point, Bounds } from '../core/geometry';
 import * as g from '../core/geometry';
 import { aciToCss } from './palette';
-import { strokeText, hasStrokeFont, expandControlCodes, drawStyledText } from './hershey';
+import { strokeText, strokeTextWidth, hasStrokeFont, expandControlCodes, drawStyledText } from './hershey';
+import { placedText } from '../core/text-placement';
 import { textStyleOf, withTextStyle } from '../io/encoding';
 import { findLinetype, effectiveLinetype, dashArray, type Linetype } from '../core/linetypes';
 import { annotativeEntity } from '../core/layouts';
@@ -218,6 +219,8 @@ function strokePolyline(ctx: CanvasRenderingContext2D, e: PolylineEntity, tf: Tr
 }
 
 function drawText(ctx: CanvasRenderingContext2D, e: TextEntity, tf: Transform): void {
+  const source = e;
+  e = placedText(e, strokeTextWidth);
   const p = tf.toScreen(e.position);
   const px = e.height * tf.scale;
   const wf = e.widthFactor && e.widthFactor > 0 ? e.widthFactor : 1;
@@ -237,7 +240,7 @@ function drawText(ctx: CanvasRenderingContext2D, e: TextEntity, tf: Transform): 
     return;
   }
   // TrueType / OpenType text styles draw with a canvas font stack (SHX and unknown styles fall through to the strokes).
-  if (drawStyledText(ctx, text === e.text ? e : { ...e, text }, tf)) return;
+  if (drawStyledText(ctx, text === source.text ? source : { ...source, text }, tf)) return;
   if (hasStrokeFont) {
     const plain = wf === 1 && slant === 0;
     const strokes = plain ? strokeText(text, e.position, e.height, e.rotation, e.align) : strokeText(text, { x: 0, y: 0 }, e.height, 0, e.align);

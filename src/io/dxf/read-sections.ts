@@ -28,6 +28,9 @@ import { DEFAULT_HEADER } from '../../core/document';
 import type { LinearUnits } from '../../core/units';
 import { isScaleName } from '../../core/layouts';
 import type { TextStyle } from '../encoding';
+import { readTextPlacement } from './read-text';
+import { geometryProblem } from '../import-report';
+import { commonProps } from './read-core';
 
 export function readHeaderSection(pairs: Pair[], from: number, to: number, headerVars: Map<string, Pair[]>, ctx: ReadContext): string {
   let cur: Pair[] | null = null;
@@ -134,23 +137,23 @@ export function readBlocksSection(objs: Obj[], blocks: Record<string, BlockDef>,
     const inner = objs.slice(k + 1, m);
     const attributes: AttributeDefExt[] = inner
       .filter((x) => x.kind === 'ATTDEF')
-      .map((x) => {
-        const h = num(x, 72, 0);
-        const align: 'left' | 'center' | 'right' = h === 1 || h === 4 ? 'center' : h === 2 ? 'right' : 'left';
-        const useAlignPt = h !== 0 && has(x, 11);
-        const rotation = g.rad(num(x, 50, 0));
-        return {
+      .flatMap((x) => {
+        const { id: _id, layer, ...appearance } = commonProps(x);
+        const placement = { ...appearance, ...(has(x, 8) ? { layer } : {}), ...readTextPlacement(x, 74) };
+        const problem = geometryProblem({ ...placement, id: 'attribute', type: 'text', layer: str(x, 8, '0'), color: 'ByLayer', text: str(x, 1) });
+        if (problem) {
+          ctx.report?.add({ type: 'ATTDEF', action: 'dropped', reason: `invalid attribute placement: ${problem}`, where: `block "${str(o, 2)}"`, ...(has(x, 5) ? { handle: str(x, 5) } : {}) });
+          return [];
+        }
+        return [{
           tag: str(x, 2),
           prompt: str(x, 3),
           default: str(x, 1),
-          position: useAlignPt ? { x: num(x, 11), y: num(x, 21) } : { x: num(x, 10), y: num(x, 20) },
-          height: num(x, 40, 0.125),
-          align,
+          ...placement,
           invisible: (Math.trunc(num(x, 70)) & 1) === 1,
           // constant / verify / preset (bits 2, 4, 8)
           ...attdefFlagProps(Math.trunc(num(x, 70))),
-          ...(Math.abs(rotation) > 1e-9 ? { rotation } : {}),
-        };
+        }];
       });
     const bname = str(o, 2);
     const anonymousLayout = /^\*(MODEL_SPACE|PAPER_SPACE)/i.test(bname);

@@ -1,6 +1,8 @@
 import type { Editor } from '../app/editor';
 import type { Entity } from '../core/entities';
-import { splinePoints, imageLabel } from '../core/entities';
+import { splinePoints, imageLabel, textWidth, translateEntity, rotateEntity } from '../core/entities';
+import { textAnchor, textJustification } from '../core/text-placement';
+import * as g from '../core/geometry';
 import { PATTERN_NAMES } from '../core/hatch';
 import { aciToCss, ACI_NAMES } from '../render/palette';
 import { icon } from './icons';
@@ -179,14 +181,24 @@ export class PropertiesPalette {
         b.appendChild(this.row('Vertices', String(e.points.length)));
         b.appendChild(this.row('Closed', this.select([['1', 'Yes'], ['0', 'No']], e.closed ? '1' : '0', (v) => patch({ closed: v === '1' }))));
         break;
-      case 'text':
+      case 'text': {
+        const anchor = textAnchor(e);
+        const horizontal = e.justification?.horizontal ?? (e.align === 'center' ? 1 : e.align === 'right' ? 2 : 0);
+        const move = (p: g.Point) => patch(translateEntity(e, g.sub(p, anchor)));
         b.appendChild(this.row('Contents', this.input(e.text, (v) => patch({ text: v }))));
         b.appendChild(this.row('Height', numInput(e.height, (n) => n > 0 && patch({ height: n }))));
-        b.appendChild(this.row('Rotation', numInput((e.rotation * 180) / Math.PI, (n) => patch({ rotation: (n * Math.PI) / 180 }))));
-        b.appendChild(this.row('Justify', this.select([['left', 'Left'], ['center', 'Center'], ['right', 'Right']], e.align, (v) => patch({ align: v as 'left' | 'center' | 'right' }))));
-        b.appendChild(this.row('X', numInput(e.position.x, (n) => patch({ position: { x: n, y: e.position.y } }))));
-        b.appendChild(this.row('Y', numInput(e.position.y, (n) => patch({ position: { x: e.position.x, y: n } }))));
+        const rotation = (horizontal === 3 || horizontal === 5) && e.alignmentPoint ? g.angleOf(e.position, e.alignmentPoint) : e.rotation;
+        b.appendChild(this.row('Rotation', numInput(g.deg(rotation), (n) => patch(rotateEntity(e, anchor, g.rad(n) - rotation)))));
+        b.appendChild(this.row('Justify', this.select([['0', 'Left'], ['1', 'Center'], ['2', 'Right'], ['3', 'Aligned'], ['4', 'Middle'], ['5', 'Fit']], String(horizontal), (value) => {
+          const h = Number(value);
+          const span = Math.max(1e-6, textWidth(e.text, e.height) * (e.widthFactor ?? 1));
+          patch({ position: anchor, align: h === 1 || h === 4 ? 'center' : h === 2 ? 'right' : 'left', justification: textJustification(h, h > 2 ? 0 : e.justification?.vertical ?? 0), alignmentPoint: h === 3 || h === 5 ? e.alignmentPoint ?? g.polar(anchor, e.rotation, span) : anchor });
+        })));
+        if (horizontal <= 2) b.appendChild(this.row('Vertical', this.select([['0', 'Baseline'], ['1', 'Bottom'], ['2', 'Middle'], ['3', 'Top']], String(e.justification?.vertical ?? 0), (v) => patch({ justification: textJustification(horizontal, Number(v)), alignmentPoint: e.alignmentPoint ?? anchor }))));
+        b.appendChild(this.row('X', numInput(anchor.x, (n) => move({ x: n, y: anchor.y }))));
+        b.appendChild(this.row('Y', numInput(anchor.y, (n) => move({ x: anchor.x, y: n }))));
         break;
+      }
       case 'insert': {
         const block = doc.lookupBlock(e.block);
         b.appendChild(this.row('Name', e.block));

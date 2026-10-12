@@ -33,7 +33,8 @@ import {
 import type { Point, Bounds } from '../core/geometry';
 import * as g from '../core/geometry';
 import { aciToCss } from '../render/palette';
-import { strokeText, expandControlCodes, textRenderer, CAP_HEIGHT_EM } from '../render/hershey';
+import { strokeText, strokeTextWidth, expandControlCodes, textRenderer, CAP_HEIGHT_EM } from '../render/hershey';
+import { placedText } from '../core/text-placement';
 import { findLinetype, effectiveLinetype, isByBlock, type Linetype } from '../core/linetypes';
 import type { TextStyle } from './encoding';
 import { textStyleOf, textStylesOf } from './encoding';
@@ -660,7 +661,9 @@ class PageWriter {
     const text = expandControlCodes(raw);
     if (!text.trim()) return;
     const r = textRenderer(textStyleOf(e), this.ctx.textStyles);
-    const wf = (e.widthFactor && e.widthFactor > 0 ? e.widthFactor : 1) * r.widthFactor;
+    const initialWidthFactor = (e.widthFactor && e.widthFactor > 0 ? e.widthFactor : 1) * r.widthFactor;
+    e = placedText({ ...e, widthFactor: initialWidthFactor }, r.kind === 'canvas' && isWinAnsi(text) ? (_text, height) => helveticaWidth(text, r.bold || !!e.bold) * height / CAP_HEIGHT_EM : strokeTextWidth);
+    const wf = e.widthFactor ?? 1;
     const oblique = e.oblique ?? r.oblique;
     const slant = oblique ? Math.tan(oblique) : 0;
     if (r.kind === 'canvas' && isWinAnsi(text)) {

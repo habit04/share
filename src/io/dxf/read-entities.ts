@@ -16,6 +16,7 @@ import { hasFields, evaluateFields } from '../../core/fields';
 import { readMTextColumns, readDimension, readDimStyleFromEntity, readLeader, readMLeader, readImage, readTable, readJcadTable } from './read-annotations';
 import type { MTextAttachment } from '../../core/mtext';
 import { mtextFromDxf, hasFormatting } from '../../core/mtext';
+import { readTextPlacement } from './read-text';
 
 function readSpline(o: Obj, base: ReturnType<typeof commonProps>): SplineEntity | null {
   const gs = afterSubclass(o, 'AcDbSpline');
@@ -275,29 +276,11 @@ export function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
       return { ...base, type: 'polyline', points, closed: true, filled: true };
     }
     case 'TEXT': {
-      const h = num(o, 72, 0);
-      const v = num(o, 73, 0);
-      const align: 'left' | 'center' | 'right' = h === 1 || h === 4 ? 'center' : h === 2 ? 'right' : 'left';
-      // Alignment point (11/21) applies for any non-default justification; fit/aligned (3/5) keep the first point.
-      const useAlignPt = (h !== 0 || v !== 0) && h !== 3 && h !== 5 && has(o, 11);
-      let position = useAlignPt ? { x: num(o, 11), y: num(o, 21) } : { x: num(o, 10), y: num(o, 20) };
-      const height = num(o, 40, 0.125);
-      const rotation = g.rad(num(o, 50));
-      // Vertical justification: shift down to the baseline (1 bottom, 2 middle, 3 top).
-      const drop = v === 2 ? height / 2 : v === 3 ? height : 0;
-      if (drop) position = { x: position.x + Math.sin(rotation) * drop, y: position.y - Math.cos(rotation) * drop };
-      const wf = num(o, 41, 1);
-      const oblique = g.rad(num(o, 51, 0));
       return {
         ...base,
         type: 'text',
-        position,
+        ...readTextPlacement(o),
         ...withTextField(str(o, 1), ctx),
-        height,
-        rotation,
-        align,
-        ...(wf > 0 && Math.abs(wf - 1) > 1e-9 ? { widthFactor: wf } : {}),
-        ...(Math.abs(oblique) > 1e-9 ? { oblique } : {}),
       };
     }
     case 'MTEXT': {

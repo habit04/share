@@ -8,7 +8,7 @@ import type { Obj } from './groups';
 import type { RawDxfEntity } from '../import-report';
 import { isPointerCode, isRealCode, isRealText, isIntCode, PRECISION_CODES, isQuietXdataApp, ANNO_APP } from './codes';
 import { str, num, isIntegerText, shortText, invalidPrecision, precisionRequirement, has, HatchReadError, xdata } from './groups';
-import type { Entity, TextEntity } from '../../core/entities';
+import type { Entity, TextEntity, AttributeAppearance } from '../../core/entities';
 import type { ReadContext } from './read-core';
 import * as g from '../../core/geometry';
 import { reportObj, commonProps } from './read-core';
@@ -19,6 +19,9 @@ import { DIM_VARIABLES } from '../../core/dimension';
 import { readEntityObj } from './read-entities';
 import { SplineWorkLimitError } from '../../core/spline';
 import { withTextStyle } from '../encoding';
+import { readTextPlacement } from './read-text';
+import { localAttributePlacement } from '../../core/entities';
+import type { TextPlacement } from '../../core/text-placement';
 
 /** Entity types the reader converts (anything else is reported, or kept raw when safe). */
 const READ_KINDS = new Set(['LINE', 'CIRCLE', 'ARC', 'LWPOLYLINE', 'POLYLINE', 'SOLID', 'TRACE', 'TEXT', 'MTEXT', 'ELLIPSE', 'POINT', 'XLINE', 'RAY', 'DIMENSION', 'SPLINE', 'HATCH', 'LEADER', 'MULTILEADER', 'MLEADER', 'IMAGE', 'ACAD_TABLE', 'INSERT']);
@@ -254,18 +257,26 @@ export function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): En
     if (e && e.type === 'insert') {
       const attrs: Record<string, string> = {};
       const hidden: string[] = [];
+      const placements: Record<string, TextPlacement & AttributeAppearance & { style?: string }> = {};
+      const def = ctx.blocks?.[e.block];
       let j = i + 1;
       while (j < objs.length && objs[j]!.kind === 'ATTRIB') {
         const tag = str(objs[j]!, 2);
         attrs[tag] = str(objs[j]!, 1);
+        if (def) {
+          const { id: _id, layer, ...appearance } = commonProps(objs[j]!);
+          const source = { ...appearance, ...(has(objs[j]!, 8) ? { layer } : {}), ...readTextPlacement(objs[j]!, 74) };
+          const bad = geometryProblem({ ...commonProps(objs[j]!), ...source, type: 'text', text: attrs[tag]!, id: 'attribute' });
+          if (bad) reportObj(ctx, objs[j]!, 'simplified', `attribute placement is invalid (${bad}); its value is kept at the definition's placement`);
+          else placements[tag] = localAttributePlacement(e, def.basePoint, source);
+        }
         if ((Math.trunc(num(objs[j]!, 70)) & 1) === 1) hidden.push(tag);
         j += 1;
       }
       if (j < objs.length && objs[j]!.kind === 'SEQEND') j += 1;
       // An ATTRIB flagged invisible whose ATTDEF is visible hides that attribute on this insert only.
-      const def = ctx.blocks?.[e.block];
       const hiddenHere = def ? hidden.filter((t) => def.attributes.some((a) => a.tag === t && !a.invisible)) : [];
-      out.push({ ...e, attributes: attrs, ...(hiddenHere.length ? { hiddenAttributes: hiddenHere } : {}) });
+      out.push({ ...e, attributes: attrs, ...(hiddenHere.length ? { hiddenAttributes: hiddenHere } : {}), ...(Object.keys(placements).length ? { attributePlacements: placements } : {}) });
       i = j;
       continue;
     }

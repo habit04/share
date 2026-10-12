@@ -15,6 +15,7 @@
  */
 import type { Entity, PolylineEntity, Layer, InsertEntity, TextEntity, MTextEntity, LeaderEntity, DimensionEntity } from './entities';
 import type { Point, Bounds } from './geometry';
+import * as g from './geometry';
 
 export type PaperUnits = 'in' | 'mm';
 
@@ -500,7 +501,7 @@ export function annotativeEntity(e: Entity, f: number): Entity {
   if (f === 1 || !(f > 0)) return e;
   switch (e.type) {
     case 'text':
-      return { ...(e as TextEntity), height: e.height * f };
+      return { ...(e as TextEntity), height: e.height * f, ...(e.alignmentPoint ? { alignmentPoint: g.add(e.position, g.scale(g.sub(e.alignmentPoint, e.position), f)) } : {}) };
     case 'mtext':
       return { ...(e as MTextEntity), height: e.height * f, width: e.width * f };
     case 'dimension':

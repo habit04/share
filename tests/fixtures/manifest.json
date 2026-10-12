@@ -2,6 +2,7 @@
   "schemaVersion": 1,
   "description": "Required committed regression inputs. Optional private customer files and external AutoCAD results are deliberately outside this inventory.",
   "files": [
+    "tests/fixtures/interchange/r2000-text-justification.dxf",
     "fixtures/example_2000.dwg",
     "fixtures/example_2000.dxf",
     "fixtures/example_2004.dwg",

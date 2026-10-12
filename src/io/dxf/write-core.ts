@@ -6,6 +6,7 @@ import type { DimStyle, ColorSpec, Entity, ImageEntity, TableEntity } from '../.
 import { ANNO_APP } from './codes';
 import * as g from '../../core/geometry';
 import { STANDARD_DIMSTYLE } from '../../core/dimension';
+import type { TextPlacement } from '../../core/text-placement';
 
 // ---------------------------------------------------------------- writing
 
@@ -66,20 +67,26 @@ export function writeEntityCommon(w: Writer, e: Entity, owner: string, kind: str
   w.pair(100, subclass);
 }
 
-export function writeTextLike(w: Writer, position: g.Point, height: number, text: string, rotation: number, align: 'left' | 'center' | 'right'): void {
-  w.pair(10, position.x);
-  w.pair(20, position.y);
+export function writeTextLike(w: Writer, position: g.Point, height: number, text: string, rotation: number, align: 'left' | 'center' | 'right', placement?: TextPlacement): void {
+  w.pair(10, placement?.firstAlignmentPoint?.x ?? position.x);
+  w.pair(20, placement?.firstAlignmentPoint?.y ?? position.y);
   w.pair(30, 0);
   w.pair(40, height);
   w.pair(1, text);
   if (rotation !== 0) w.pair(50, g.deg(rotation));
-  const h = align === 'center' ? 1 : align === 'right' ? 2 : 0;
-  if (h !== 0) {
-    w.pair(72, h);
-    w.pair(11, position.x);
-    w.pair(21, position.y);
+  const h = placement?.justification?.horizontal ?? (align === 'center' ? 1 : align === 'right' ? 2 : 0);
+  if (h !== 0) w.pair(72, h);
+  if (h !== 0 || placement?.justification?.vertical || placement?.alignmentPoint) {
+    w.pair(11, placement?.alignmentPoint?.x ?? position.x);
+    w.pair(21, placement?.alignmentPoint?.y ?? position.y);
     w.pair(31, 0);
   }
+}
+
+export function writeTextStyle(w: Writer, placement: TextPlacement & { readonly style?: string }): void {
+  if (placement.style) w.pair(7, placement.style);
+  if (placement.widthFactor !== undefined && placement.widthFactor !== 1) w.pair(41, placement.widthFactor);
+  if (placement.oblique) w.pair(51, g.deg(placement.oblique));
 }
 
 /** Handles and names the writer allocates before the entity pass (images, tables). */

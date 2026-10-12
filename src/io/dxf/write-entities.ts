@@ -3,9 +3,9 @@
  * SEQEND) per JCad entity. Geometry types are written here; MTEXT, DIMENSION, LEADER, IMAGE and
  * tables come from write-annotations.ts.
  */
-import { Writer, writeEntityCommon, writeTextLike, emptyExtras, writeAnnotativeXdata } from './write-core';
+import { Writer, writeEntityCommon, writeTextLike, writeTextStyle, emptyExtras, writeAnnotativeXdata } from './write-core';
 import type { PolylineEntity, HatchEntity, SplineEntity, Entity, BlockDef } from '../../core/entities';
-import { splineCurve, hatchPatternLines, tableParts, insertTransform } from '../../core/entities';
+import { splineCurve, hatchPatternLines, tableParts, attributeText } from '../../core/entities';
 import { findPattern } from '../../core/hatch';
 import * as g from '../../core/geometry';
 import type { WriteExtras } from './write-core';
@@ -187,11 +187,12 @@ export function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonl
       break;
     case 'text': {
       writeEntityCommon(w, e, owner, 'TEXT', 'AcDbText');
-      writeTextLike(w, e.position, e.height, e.field && e.field.value === e.text ? e.field.code : e.text, e.rotation, e.align);
+      writeTextLike(w, e.position, e.height, e.field && e.field.value === e.text ? e.field.code : e.text, e.rotation, e.align, e);
       if (textStyleOf(e)) w.pair(7, textStyleOf(e)!);
       if (e.widthFactor !== undefined && Math.abs(e.widthFactor - 1) > 1e-12) w.pair(41, e.widthFactor);
       if (e.oblique) w.pair(51, g.deg(e.oblique));
       w.pair(100, 'AcDbText');
+      if (e.justification?.vertical) w.pair(73, e.justification.vertical);
       break;
     }
     case 'spline':
@@ -271,21 +272,17 @@ export function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonl
       if (e.rotation !== 0) w.pair(50, g.deg(e.rotation));
       if (e.annotative) writeAnnotativeXdata(w);
       if (hasAttribs && block) {
-        const toWorld = insertTransform(e, block);
         for (const a of attribDefs) {
           const value = e.attributes[a.tag] ?? a.default;
           // Attribute position in world space
-          const world = toWorld(a.position);
-          w.pair(0, 'ATTRIB');
-          w.pair(5, w.nextHandle());
-          w.pair(330, owner);
-          w.pair(100, 'AcDbEntity');
-          w.pair(8, e.layer);
-          w.pair(100, 'AcDbText');
-          writeTextLike(w, world, a.height * Math.sqrt(e.scale * sy), value, e.rotation + (a.rotation ?? 0), e.mirror ? (a.align === 'left' ? 'right' : a.align === 'right' ? 'left' : a.align) : a.align);
+          const label = attributeText(e, block, a, value, false);
+          writeEntityCommon(w, label, owner, 'ATTRIB', 'AcDbText');
+          writeTextLike(w, label.position, label.height, value, label.rotation, label.align, label);
+          writeTextStyle(w, label);
           w.pair(100, 'AcDbAttribute');
           w.pair(2, a.tag);
           w.pair(70, attdefFlags(a) | (e.hiddenAttributes?.includes(a.tag) ? 1 : 0));
+          if (label.justification?.vertical) w.pair(74, label.justification.vertical);
         }
         w.pair(0, 'SEQEND');
         w.pair(5, w.nextHandle());

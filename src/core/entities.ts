@@ -8,6 +8,7 @@ import { findPattern, loopPolygon, patternSegments, pointInLoops, worldPatternLi
 import { tableGeometry, type TableEntity } from './table';
 import { isImmutableData } from './immutable-data';
 import { GeometryBudgetError } from './geometry-budget-error';
+import { placedText, scaledText, transformedTextAnchors, textAnchor, type TextPlacement } from './text-placement';
 
 export type { DimensionEntity, DimStyle, DimKind } from './dimension';
 export type { MTextEntity, MTextAttachment } from './mtext';
@@ -93,7 +94,7 @@ export interface PolylineEntity extends EntityBase {
   readonly filled?: boolean;
 }
 
-export interface TextEntity extends EntityBase {
+export interface TextEntity extends EntityBase, TextPlacement {
   readonly type: 'text';
   readonly position: Point;
   readonly text: string;
@@ -108,6 +109,7 @@ export interface TextEntity extends EntityBase {
   readonly bold?: boolean;
   /** Field expression the text was evaluated from. */
   readonly field?: FieldLink;
+  readonly style?: string;
 }
 
 export interface InsertEntity extends EntityBase {
@@ -128,6 +130,8 @@ export interface InsertEntity extends EntityBase {
    * insert only), e.g. TAG1 on poles 2 and 3 of a 3-pole device. The value is kept for reports.
    */
   readonly hiddenAttributes?: readonly string[];
+  /** Native per-insert attribute placement, stored in the block's local coordinate system. */
+  readonly attributePlacements?: Readonly<Record<string, TextPlacement & AttributeAppearance & { readonly style?: string }>>;
 }
 
 export interface EllipseEntity extends EntityBase {
@@ -268,7 +272,15 @@ export type Entity =
   | TableEntity
   | ImageEntity;
 
-export interface AttributeDef {
+export interface AttributeAppearance {
+  readonly layer?: string;
+  readonly color?: ColorSpec;
+  readonly trueColor?: number;
+  readonly colorName?: string;
+  readonly transparency?: 'ByLayer' | 'ByBlock' | number;
+}
+
+export interface AttributeDef extends TextPlacement, AttributeAppearance {
   readonly tag: string;
   readonly prompt: string;
   readonly default: string;
@@ -279,6 +291,7 @@ export interface AttributeDef {
   readonly invisible?: boolean;
   /** Text rotation in radians (DXF group 50), like TextEntity; undefined = 0. Adds to the insert rotation. */
   readonly rotation?: number;
+  readonly style?: string;
 }
 
 export interface BlockDef {
@@ -348,6 +361,7 @@ export function textWidth(text: string, height: number): number {
 }
 
 export function textBounds(t: TextEntity): Bounds {
+  t = placedText(t, textWidth);
   const w = textWidth(t.text, t.height) * (t.widthFactor ?? 1);
   const ox = t.align === 'center' ? -w / 2 : t.align === 'right' ? -w : 0;
   const corners = [
@@ -355,7 +369,7 @@ export function textBounds(t: TextEntity): Bounds {
     { x: ox + w, y: 0 },
     { x: ox + w, y: t.height },
     { x: ox, y: t.height },
-  ].map((c) => g.add(t.position, g.rotate(c, t.rotation)));
+  ].map((c) => g.add(t.position, g.rotate({ x: c.x + c.y * Math.tan(t.oblique ?? 0), y: c.y }, t.rotation)));
   return g.boundsOfPoints(corners)!;
 }
 
@@ -903,7 +917,6 @@ const normAngle = (t: number): number => {
   return Math.abs(a) < 1e-12 || Math.abs(a - two) < 1e-12 ? 0 : a;
 };
 
-const flipAlign = (al: 'left' | 'center' | 'right'): 'left' | 'center' | 'right' => (al === 'left' ? 'right' : al === 'right' ? 'left' : al);
 
 /** Sample an arc / circle into a polyline (used when a non-uniform scale would turn it into an ellipse). */
 function sampledPolyline(e: CircleEntity | ArcEntity, tf: (p: Point) => Point): PolylineEntity {
@@ -950,7 +963,7 @@ export function blockTransform(e: Entity, tf: (p: Point) => Point, rotation: num
     case 'polyline':
       return { ...e, points: e.points.map(tf), bulges: mirror ? e.bulges?.map((bu) => -bu) : e.bulges, width: e.width !== undefined ? e.width * k : e.width };
     case 'text':
-      return { ...e, position: tf(e.position), height: e.height * k, rotation: e.rotation + rotation, align: mirror ? flipAlign(e.align) : e.align };
+      return scaledText(e, tf, rotation, Math.abs(sx), Math.abs(sy), mirror) as TextEntity;
     case 'mtext':
       return { ...e, position: tf(e.position), height: e.height * k, width: e.width * k, rotation: e.rotation + rotation, ...(e.columns ? { columns: scaledMTextColumns(e.columns, k) } : {}) };
     case 'insert':
@@ -1225,17 +1238,7 @@ function explodeInto(out: Entity[], ins: InsertEntity, lookup: BlockLookup, dept
       break;
     }
     budget.left -= 1;
-    out.push({
-      type: 'text',
-      id: `${ins.id}:${a.tag}`,
-      layer: attributeLayer(a.tag, ins.layer),
-      color: 'ByLayer',
-      position: tf(a.position),
-      text: value,
-      height: a.height * Math.sqrt(ins.scale * (ins.scaleY ?? ins.scale)),
-      rotation: ins.rotation + (a.rotation ?? 0),
-      align: ins.mirror ? flipAlign(a.align) : a.align,
-    });
+    out.push(attributeText(ins, block, a, value));
   }
   budget.chain.pop();
 }
@@ -1314,6 +1317,24 @@ export function attributeLayer(tag: string, fallback: string): string {
   return fallback;
 }
 
+/** The visible attribute's own native anchors win over the ATTDEF defaults. */
+export function attributeText(ins: InsertEntity, block: BlockDef, a: AttributeDef, value = ins.attributes[a.tag] ?? a.default, inheritAppearance = true): TextEntity {
+  const placement = ins.attributePlacements?.[a.tag] ?? a;
+  const rawLayer = placement.layer ?? attributeLayer(a.tag, ins.layer);
+  const local: TextEntity = { ...placement, id: `${ins.id}:${a.tag}`, type: 'text', layer: inheritAppearance && rawLayer === '0' ? ins.layer : rawLayer, color: placement.color ?? 'ByLayer', rotation: placement.rotation ?? 0, text: value };
+  if (inheritAppearance) Object.assign(local, inheritedColor(local, ins));
+  return scaledText(local, insertTransform(ins, block), ins.rotation, ins.scale, ins.scaleY ?? ins.scale, !!ins.mirror) as TextEntity;
+}
+
+/** ATTRIB data is in world coordinates; keep overrides local so moving an insert moves its labels. */
+export function localAttributePlacement(ins: InsertEntity, basePoint: Point, placement: TextPlacement & AttributeAppearance & { readonly style?: string }): TextPlacement & AttributeAppearance & { readonly style?: string } {
+  const inverse = (p: Point) => {
+    const q = g.rotate(g.sub(p, ins.position), -ins.rotation);
+    return g.add(basePoint, { x: q.x / (ins.scale * (ins.mirror ? -1 : 1)), y: q.y / (ins.scaleY ?? ins.scale) });
+  };
+  return scaledText({ ...placement, rotation: (placement.rotation ?? 0) - ins.rotation }, inverse, 0, 1 / ins.scale, 1 / (ins.scaleY ?? ins.scale), !!ins.mirror);
+}
+
 /** Apply a similarity transform (translate/rotate/uniform scale) to any entity. */
 export function similarityTransform(e: Entity, tf: (p: Point) => Point, rotation: number, k: number): Entity {
   switch (e.type) {
@@ -1326,7 +1347,7 @@ export function similarityTransform(e: Entity, tf: (p: Point) => Point, rotation
     case 'polyline':
       return { ...e, points: e.points.map(tf), width: e.width !== undefined ? e.width * k : e.width };
     case 'text':
-      return { ...e, position: tf(e.position), height: e.height * k, rotation: e.rotation + rotation };
+      return { ...transformedTextAnchors(e, tf), height: e.height * k, rotation: e.rotation + rotation };
     case 'insert':
       return { ...e, position: tf(e.position), rotation: e.rotation + rotation, scale: e.scale * k, ...(e.scaleY !== undefined ? { scaleY: e.scaleY * k } : {}) };
     case 'ellipse':
@@ -1589,7 +1610,7 @@ export function mirrorEntityAcross(e: Entity, a: Point, b: Point): Entity {
     case 'polyline':
       return { ...e, points: e.points.map(reflect), bulges: e.bulges?.map((bu) => -bu) };
     case 'text':
-      return { ...e, position: reflect(e.position) };
+      return transformedTextAnchors(e, reflect);
     case 'insert':
       // A reflection is a mirror about the block's Y axis plus a rotation: the block geometry is
       // mirrored while attribute / text glyphs stay readable (MIRRTEXT = 0), like AutoCAD.
@@ -1651,7 +1672,7 @@ export function gripPoints(e: Entity): Point[] {
     case 'polyline':
       return [...e.points];
     case 'text':
-      return [e.position];
+      return e.justification && (e.justification.horizontal === 3 || e.justification.horizontal === 5) && e.alignmentPoint ? [e.position, e.alignmentPoint] : [textAnchor(e)];
     case 'insert':
       return [e.position];
     case 'ellipse':
@@ -1717,7 +1738,10 @@ export function moveGrip(e: Entity, index: number, p: Point): Entity | null {
     }
     case 'polyline':
       return { ...e, points: e.points.map((q, i) => (i === index ? p : q)) };
-    case 'text':
+    case 'text': {
+      if (e.justification && (e.justification.horizontal === 3 || e.justification.horizontal === 5) && e.alignmentPoint) return index === 0 ? { ...e, position: p } : { ...e, alignmentPoint: p };
+      return translateEntity(e, g.sub(p, textAnchor(e)));
+    }
     case 'insert':
     case 'point':
     case 'mtext':
@@ -1807,7 +1831,7 @@ export function snapCandidates(e: Entity, lookup: BlockLookup): SnapCandidate[] 
       return out;
     }
     case 'text':
-      return [{ point: e.position, kind: 'insertion' }];
+      return [{ point: textAnchor(e), kind: 'insertion' }];
     case 'insert': {
       const out: SnapCandidate[] = [{ point: e.position, kind: 'insertion' }];
       for (const sub of explodeInsert(e, lookup)) {

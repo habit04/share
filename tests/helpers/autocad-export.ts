@@ -12,6 +12,7 @@ const sources = [
   'tests/fixtures/interchange/r2018-mtext.dxf',
   'tests/fixtures/interchange/r2018-table.dxf',
   'tests/fixtures/interchange/r2018-dimensions.dxf',
+  'tests/fixtures/interchange/r2000-text-justification.dxf',
 ];
 function summary(state: DrawingState) {
   const counts = (entities: DrawingState['entities']) => entities.reduce<Record<string, number>>((out, entity) => {

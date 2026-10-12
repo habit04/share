@@ -8,7 +8,7 @@ import type { Linetype } from '../../core/linetypes';
 import type { Entity, DimensionEntity, Layer } from '../../core/entities';
 import { rawEntitiesOf } from '../import-report';
 import { findLinetype, patternLength, STANDARD_LINETYPES } from '../../core/linetypes';
-import { Writer, setPaperOwners, emptyExtras, writeTextLike } from './write-core';
+import { Writer, setPaperOwners, emptyExtras, writeTextLike, writeEntityCommon } from './write-core';
 import { DEFAULT_HEADER } from '../../core/document';
 import { planLayouts, writeLayoutHeader, extraBlockRecords, layoutHandleOf, writeLayoutContent, writeLayoutObjects } from '../dxf-layouts';
 import type { WriteExtras } from './write-core';
@@ -351,17 +351,16 @@ export function writeDxf(state: DrawingState): string {
     blockShell(owner, b.name, b.basePoint, (b.attributes.length > 0 ? 2 : 0) | (b.name.startsWith('*') ? 1 : 0) | xrefFlags, b.description, () => {
       for (const e of b.entities) writeEntityAnno(w, e, owner, state.blocks, dimBlocks, extras);
       for (const a of b.attributes) {
-        w.pair(0, 'ATTDEF');
-        w.pair(5, w.nextHandle());
-        w.pair(330, owner);
-        w.pair(100, 'AcDbEntity');
-        w.pair(8, '0');
-        w.pair(100, 'AcDbText');
-        writeTextLike(w, a.position, a.height, a.default, a.rotation ?? 0, a.align);
+        writeEntityCommon(w, { ...a, id: a.tag, type: 'text', text: a.default, rotation: a.rotation ?? 0, color: a.color ?? 'ByLayer', layer: a.layer ?? '0' }, owner, 'ATTDEF', 'AcDbText');
+        writeTextLike(w, a.position, a.height, a.default, a.rotation ?? 0, a.align, a);
+        if (a.style) w.pair(7, a.style);
+        if (a.widthFactor !== undefined && a.widthFactor !== 1) w.pair(41, a.widthFactor);
+        if (a.oblique) w.pair(51, g.deg(a.oblique));
         w.pair(100, 'AcDbAttributeDefinition');
         w.pair(3, a.prompt);
         w.pair(2, a.tag);
         w.pair(70, attdefFlags(a));
+        if (a.justification?.vertical) w.pair(74, a.justification.vertical);
       }
     }, b.xref?.path ?? '');
   }
