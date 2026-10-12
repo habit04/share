@@ -69,6 +69,7 @@ function windowHarness(checkpoint: () => Promise<unknown>, answer: boolean | nul
   const app = new EventEmitter();
   Object.assign(app, { isPackaged: true, quit: vi.fn() });
   const ipcMain = new EventEmitter();
+  const autoUpdater = new EventEmitter();
   const windows: MockWindow[] = [];
   let response = answer;
   let confirmRestart: (win: MockWindow) => Promise<boolean> = async () => false;
@@ -102,7 +103,7 @@ function windowHarness(checkpoint: () => Promise<unknown>, answer: boolean | nul
     }
   }
   const imports: Record<string, unknown> = {
-    electron: { app, BrowserWindow: MockWindow, autoUpdater: new EventEmitter(), dialog: { showMessageBoxSync: () => nativeAnswer }, screen: {} },
+    electron: { app, BrowserWindow: MockWindow, autoUpdater, dialog: { showMessageBoxSync: () => nativeAnswer }, screen: {} },
     '../updater.cjs': { onConfirmRestart: (cb: typeof confirmRestart) => { confirmRestart = cb; }, onBeforeRestart: (cb: typeof beforeRestart) => { beforeRestart = cb; } },
     './app-data.cjs': { windowStateFile: () => 'missing-window-state.json', writeStateFile: () => Promise.resolve(), checkpointRendererPreferences: checkpoint, flushRendererPreferences: () => true, logMainError: () => {} },
     './menu.cjs': { buildMenu: () => {} }, '../web-security.cjs': { secureContents: () => {} },
@@ -113,7 +114,7 @@ function windowHarness(checkpoint: () => Promise<unknown>, answer: boolean | nul
   const module = { exports: {} as { createWindows(ctx: unknown, devUrl?: string): { createWindow(): Promise<void> } } };
   new Function('require', 'module', '__dirname', readSource(file))((name: string) => Object.hasOwn(imports, name) ? imports[name] : localRequire(name), module, dirname(resolve(file)));
   const factory = module.exports.createWindows({ ipcMain, mainWindow: null });
-  return { create: factory.createWindow, windows, ipcMain, setAnswer: (answer: boolean) => { response = answer; }, restart: (win: MockWindow) => confirmRestart(win), beforeRestart: (win: MockWindow) => beforeRestart(win) };
+  return { create: factory.createWindow, windows, ipcMain, autoUpdater, setAnswer: (answer: boolean) => { response = answer; }, restart: (win: MockWindow) => confirmRestart(win), beforeRestart: (win: MockWindow) => beforeRestart(win) };
 }
 
 describe('close preference ordering', () => {
@@ -198,5 +199,27 @@ describe('close preference ordering', () => {
     expect(await harness.beforeRestart(win)).toBe(false);
     expect(checkpoint).toHaveBeenCalledTimes(2);
     expect(win.destroyed).toBe(false);
+  });
+
+  it('clears an update close bypass after checkpoint Cancel so subsequent work goes through Save All', async () => {
+    const checkpoint = vi.fn().mockRejectedValueOnce(new Error('ENOSPC')).mockResolvedValue(undefined);
+    const harness = windowHarness(checkpoint);
+    await harness.create();
+    const win = harness.windows[0]!;
+    harness.autoUpdater.emit('before-quit-for-update');
+    win.close(); await tick();
+    expect(win.closeRequests).toBe(0);
+    expect(win.destroyed).toBe(false);
+    // New unsaved work cancels the next ordinary close through the renderer's Save All answer.
+    harness.setAnswer(false);
+    win.close(); await tick();
+    expect(win.closeRequests).toBe(1);
+    expect(checkpoint).toHaveBeenCalledTimes(1);
+    expect(win.destroyed).toBe(false);
+    harness.setAnswer(true);
+    win.close(); await tick();
+    expect(win.closeRequests).toBe(2);
+    expect(checkpoint).toHaveBeenCalledTimes(2);
+    expect(win.destroyed).toBe(true);
   });
 });

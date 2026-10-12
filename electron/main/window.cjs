@@ -203,6 +203,7 @@ function createWindows(ctx, devUrl, allowInspection = !app.isPackaged) {
     }
     if (!ok) {
       quitRequested = false;
+      quittingForUpdate = false;
       if (win) {
         closeApproved.delete(win);
         forceClose.delete(win);
@@ -215,6 +216,7 @@ function createWindows(ctx, devUrl, allowInspection = !app.isPackaged) {
     const ok = await persistBeforeClose(win, false);
     if (!ok) {
       quitRequested = false;
+      quittingForUpdate = false;
       if (win) {
         closeApproved.delete(win);
         forceClose.delete(win);
@@ -263,6 +265,7 @@ function createWindows(ctx, devUrl, allowInspection = !app.isPackaged) {
         pendingClose = null;
         if (!ok) {
           quitRequested = false;
+          quittingForUpdate = false;
           closeApproved.delete(win);
           forceClose.delete(win);
           return;
