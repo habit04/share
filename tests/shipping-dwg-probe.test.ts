@@ -48,4 +48,20 @@ describe('fixed DWG shipping probe confinement', () => {
     const f = load(root), originalDialog = f.dialog.showSaveDialog; await expect(f.run()).rejects.toMatchObject({ code: 'EEXIST' });
     expect(readFileSync(target, 'utf8')).toBe('existing normal save'); expect(f.executeJavaScript).not.toHaveBeenCalled(); expect(f.dialog.showSaveDialog).toBe(originalDialog);
   });
+  it('never overwrites a pre-existing rotated-layout DXF proof destination', async () => {
+    const root = profile(); writeFileSync(join(root, 'shipping-startup.dxf'), 'fixture'); const target = join(root, 'shipping-rotated-layout.dxf'); writeFileSync(target, 'existing rotated DXF');
+    const f = load(root), originalDialog = f.dialog.showSaveDialog; await expect(f.run()).rejects.toMatchObject({ code: 'EEXIST' });
+    expect(readFileSync(target, 'utf8')).toBe('existing rotated DXF'); expect(f.executeJavaScript).not.toHaveBeenCalled(); expect(f.dialog.showSaveDialog).toBe(originalDialog);
+  });
+  it('emits syntactically valid fixed renderer diagnostics and restores native dialogs after a failure', async () => {
+    const root = profile(); writeFileSync(join(root, 'shipping-startup.dxf'), 'fixture');
+    const f = load(root), originalDialog = f.dialog.showSaveDialog, stopped = new Error('Stop after compiling the fixed diagnostic');
+    f.executeJavaScript.mockImplementation(async (code: string) => {
+      // These template-generated diagnostics are shipped as strings, outside TypeScript checking.
+      expect(() => new Function('window', code)).not.toThrow();
+      throw stopped;
+    });
+    await expect(f.run()).rejects.toBe(stopped);
+    expect(f.executeJavaScript).toHaveBeenCalledOnce(); expect(f.dialog.showSaveDialog).toBe(originalDialog);
+  });
 });

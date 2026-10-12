@@ -11,6 +11,33 @@ messages). The date of each version is the date of the commit that set that vers
 
 ## [Unreleased]
 
+## [0.4.8] - 2026-10-12
+
+### Upgrade notes
+
+- Windows layouts now retain planar viewport view rotation from DWG and DXF. The model's
+  coordinates stay intact. Perspective, tilted/reversed 3D views and nonrectangular viewport
+  clipping still produce import warnings. macOS and Linux desktop updates remain paused at 0.4.5.
+
+### Added
+
+- **VPTWIST** sets an unlocked layout viewport's absolute view angle in degrees. A selected
+  viewport frame also exposes **View rotation** in Properties. Positive angles turn the
+  model counterclockwise on the sheet; viewport locks protect its view settings.
+
+### Fixed
+
+- Imported viewport rotation applies consistently to canvas display, vector/raster plotting,
+  selection, snapping, coordinate conversion, pan, anchored zoom and zoom windows. Native
+  arcs, text, block attributes, images and wide polylines turn with the viewport.
+- DWG/DXF viewport centers are converted between display and world coordinates using their
+  view target and twist. Saving and reopening retains the angle, model view center and scale
+  without rotating the underlying entities.
+- Window/crossing selection follows the visible screen rectangle in a rotated view, and
+  layers frozen in the active viewport are excluded from picking and object snaps.
+- Windows installed-release checks verify quarter-turn and oblique viewport save/reopen and
+  model-coordinate preservation using the signed application on a runner without AutoCAD.
+
 ## [0.4.7] - 2026-10-12
 
 ### Upgrade notes
@@ -945,7 +972,8 @@ First release.
 
 - Renamed the application to JCad Electrical.
 
-[Unreleased]: https://github.com/habit04/share/compare/v0.4.7...HEAD
+[Unreleased]: https://github.com/habit04/share/compare/v0.4.8...HEAD
+[0.4.8]: https://github.com/habit04/share/compare/v0.4.7...v0.4.8
 [0.4.7]: https://github.com/habit04/share/compare/v0.4.6...v0.4.7
 [0.4.6]: https://github.com/habit04/share/compare/v0.4.5...v0.4.6
 [0.4.5]: https://github.com/habit04/share/compare/v0.4.4...v0.4.5

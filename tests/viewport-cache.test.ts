@@ -43,6 +43,15 @@ describe('viewport static scene caching', () => {
     expect(drawEntity).toHaveBeenCalledTimes(1000);
     vp.dispose();
   });
+  it('invalidates cached geometry when only the view rotation changes', () => {
+    const { vp } = setup(), ov = overlay();
+    vp.render(ov); const first = vi.mocked(drawEntity).mock.calls.length;
+    vp.twist = Math.PI / 8; vp.render(ov); const rotated = vi.mocked(drawEntity).mock.calls.length;
+    expect(rotated).toBeGreaterThan(first);
+    vp.render(ov); expect(drawEntity).toHaveBeenCalledTimes(rotated);
+    expect(vi.mocked(drawEntity).mock.calls[rotated - 1]![2].rotation).toBe(vp.twist);
+    vp.dispose();
+  });
   it('continues repainting custom underlays and documents containing asynchronous images', () => {
     const { doc, vp } = setup(), ov = overlay();
     vp.underlay = vi.fn(); vp.render(ov); vp.render(ov);

@@ -258,7 +258,7 @@ keywords shown in `[brackets]` are clickable.
 | NEW, OPEN, SAVE, SAVEAS, PLOT, PRINT, RECENT | Ctrl+N / O / S / Shift+S / P / Shift+P | Files: DXF and DWG open; DXF save, plus portable DWG Save / Save As on Windows; PDF plot (vector by default; the Model tab, the current layout or all layouts); print through the system dialog (the browser edition builds the PDF in the page and prints through the browser's dialog). NEW / OPEN work in file tabs |
 | LAYOUT [Copy/Delete/New/Template/Rename/Set/?], LAYOUTWIZARD, PAGESETUP | LO | Paper-space layouts: a sheet with its paper size, orientation, margins, plot scale and plot style; the wizard adds a sheet border and title block |
 | MODEL, TILEMODE, MSPACE, PSPACE | MS, PS | Model tab / layouts; work inside a floating viewport (MSPACE) or on the paper (PSPACE) |
-| MVIEW [ON/OFF/Fit/Lock], MVSETUP [Create/Scale viewports], VPSCALE | MV | Floating viewports: two corners or Fit, on / off, view lock, scale (1:4, 2:1, 0.5XP ...) |
+| MVIEW [ON/OFF/Fit/Lock], MVSETUP [Create/Scale viewports], VPSCALE, VPTWIST | MV | Floating viewports: two corners or Fit, on / off, view lock, scale (1:4, 2:1, 0.5XP ...), view rotation in degrees |
 | CANNOSCALE, ANNOALLVISIBLE, OBJECTSCALE [ON/OFF/Toggle] | ANNOSCALE, ANNOTATIVE | Annotation scale; annotative text, dimensions, leaders and blocks keep their paper height at the annotation / viewport scale |
 | CLOSE, CLOSEALL, CLOSEALLOTHER, NEXTTAB, PREVTAB | Ctrl+W, Ctrl+Tab | Drawing tabs (several open documents) |
 | OPTIONS | OP | Options dialog: Display, Drafting, Selection, Files (autosave), Units — applied live |
@@ -295,6 +295,10 @@ and outside to return to the paper (PSPACE); the status bar's MODEL / PAPER butt
 its annotation-scale list sets CANNOSCALE (and, inside a viewport, the viewport scale). Zooming inside
 an unlocked viewport changes that viewport's view; with a locked viewport the paper zooms. Viewport
 frames move, stretch (grips), copy and erase like other objects. The View tab has a Layout panel.
+Use `VPTWIST 90` inside an unlocked viewport to set its view to 90 degrees counterclockwise on the
+sheet, or select its frame on the paper and edit **Properties > Viewport > View rotation**. This
+sets the view angle without changing model coordinates; display, picking, panning, zooming and
+printing use that angle. `MVIEW Lock` must be off to change it.
 
 Mouse: wheel zooms at the cursor, middle-drag pans, double middle-click zooms extents.
 Click picks; drag left-to-right is a window selection (blue), right-to-left is crossing (green);
@@ -525,11 +529,13 @@ The entity-by-entity table of what survives import and export is [docs/SUPPORT-M
   by the tests. Mirrored and stretched block references keep their X/Y scales (circles and
   arcs inside a stretched block become polylines).
 - **Paper space** round-trips through DXF: `*Paper_Space` / `*Paper_SpaceN` blocks, VIEWPORT
-  entities (with their frozen layers), LAYOUT objects in the `ACAD_LAYOUT` dictionary (paper size,
+  entities (with their frozen layers and planar view rotation), LAYOUT objects in the `ACAD_LAYOUT` dictionary (paper size,
   margins, plot scale), `$CANNOSCALE` / `$ANNOALLVISIBLE` and `AcadAnnotative` XDATA on annotative
   objects. Paper-space entities of other programs (group 67) are read into their layouts, so layout
-  tabs made in AutoCAD come in with their viewports; non-rectangular viewport clipping is not
-  supported, and a drawing always opens in the Model tab. Layers keep the no-plot flag (group 290).
+  tabs made in AutoCAD come in with their viewports. Planar orthographic top-view rotations survive
+  DXF and Windows DWG saving and reopen with the same model coordinates. Perspective views, tilted
+  or reversed view directions and non-rectangular clipping remain approximations listed in the
+  Import Report. A drawing always opens in the Model tab. Layers keep the no-plot flag (group 290).
 - **PDF** plotting and **printing**: the Model tab plots its extents onto a chosen paper (Letter,
   Legal, Tabloid 11 x 17, ANSI C/D/E, Arch C/D, ISO A4-A0, or a custom sheet fitted to the drawing)
   with automatic or forced orientation, fit-to-paper or a fixed scale (1:1, 1:2, 1:4, 2:1) and

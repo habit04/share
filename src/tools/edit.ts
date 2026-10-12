@@ -646,7 +646,7 @@ export class PanTool implements Tool {
 export class ZoomWindowTool implements Tool {
   readonly name = 'ZOOM';
   private a: Point | null = null;
-  constructor(private apply: (b: { min: Point; max: Point }) => void) {}
+  constructor(private apply: (corners: readonly Point[]) => void) {}
   start(ctx: ToolContext): void {
     this.a = null;
     ctx.prompt('Specify first corner:');
@@ -657,12 +657,12 @@ export class ZoomWindowTool implements Tool {
       ctx.prompt('Specify opposite corner:');
       return;
     }
-    const b = g.boundsOfPoints([this.a, p])!;
-    if (b.max.x - b.min.x > 1e-9 && b.max.y - b.min.y > 1e-9) this.apply(b);
+    const d = g.rotate(g.sub(p, this.a), ctx.viewTwist ?? 0);
+    if (Math.abs(d.x) > 1e-9 && Math.abs(d.y) > 1e-9) this.apply(g.viewBoxCorners(this.a, p, ctx.viewTwist));
     ctx.finish();
   }
   onMove(p: Point, ctx: ToolContext): void {
-    if (this.a) ctx.setPreview([{ id: 'zw', layer: '0', color: 8, type: 'polyline', closed: true, points: [this.a, { x: p.x, y: this.a.y }, p, { x: this.a.x, y: p.y }] }]);
+    if (this.a) ctx.setPreview([{ id: 'zw', layer: '0', color: 8, type: 'polyline', closed: true, points: g.viewBoxCorners(this.a, p, ctx.viewTwist) }]);
     else ctx.setDynText([fmt(p)]);
   }
   onText(_t: string, _c: ToolContext): void {}

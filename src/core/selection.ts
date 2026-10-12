@@ -1,8 +1,9 @@
 import type { Point, Bounds } from './geometry';
 import * as g from './geometry';
 import type { Entity, BlockLookup } from './entities';
-import { distanceToEntity, entityBounds, entitySegments, pointInPolygon } from './entities';
+import { distanceToEntity, entityBounds, entitySegments, pointInPolygon, textCorners, mtextParts, mtextDecorations, mtextMasks, explodeInsert, dimensionParts, compoundParts } from './entities';
 import { spatialIndexFor } from './spatial-index';
+import { polylineWidthGeometry } from './polyline-widths';
 
 /**
  * The entities to test against `box`, in drawing order, with their bounds: every entity
@@ -146,6 +147,42 @@ function boundsEdges(b: Bounds): Array<[Point, Point]> {
   ];
 }
 
+/** Oriented text and compound geometry, rather than their world-axis bounding rectangles. */
+function polygonSegments(e: Entity, lookup: BlockLookup): Array<[Point, Point]> {
+  const edges = (points: readonly Point[]): Array<[Point, Point]> => points.map((p, i) => [p, points[(i + 1) % points.length]!]);
+  switch (e.type) {
+    case 'text': return edges(textCorners(e));
+    case 'mtext': return [...mtextParts(e).flatMap((t) => edges(textCorners(t))), ...mtextDecorations(e).map((l): [Point, Point] => [l.a, l.b]), ...mtextMasks(e).flatMap(edges)];
+    case 'point': return [[e.position, e.position]];
+    case 'polyline': {
+      if (e.filled || !(e.width || e.widths || e.widthFrame)) return entitySegments(e, lookup);
+      const geometry = polylineWidthGeometry(e);
+      return [...geometry.polygons.flatMap(edges), ...geometry.thin.flatMap((spine) => spine.slice(1).map((p, i): [Point, Point] => [spine[i]!, p]))];
+    }
+    case 'insert': return explodeInsert(e, lookup).flatMap((part) => polygonSegments(part, lookup));
+    case 'dimension': return dimensionParts(e).flatMap((part) => polygonSegments(part, lookup));
+    case 'leader':
+    case 'table':
+    case 'image': return compoundParts(e).flatMap((part) => polygonSegments(part, lookup));
+    default: return entitySegments(e, lookup);
+  }
+}
+
+/** Filled text and wide-polyline areas also accept a crossing window wholly within them. */
+function selectionRegions(e: Entity, lookup: BlockLookup): readonly (readonly Point[])[] {
+  switch (e.type) {
+    case 'text': return [textCorners(e)];
+    case 'mtext': return [...mtextParts(e).map(textCorners), ...mtextMasks(e)];
+    case 'polyline': return e.width || e.widths || e.widthFrame ? polylineWidthGeometry(e).polygons : [];
+    case 'insert': return explodeInsert(e, lookup).flatMap((part) => selectionRegions(part, lookup));
+    case 'dimension': return dimensionParts(e).flatMap((part) => selectionRegions(part, lookup));
+    case 'leader':
+    case 'table':
+    case 'image': return compoundParts(e).flatMap((part) => selectionRegions(part, lookup));
+    default: return [];
+  }
+}
+
 /**
  * Polygon selection. 'window' (WPolygon) keeps entities entirely inside the
  * polygon; 'crossing' (CPolygon) keeps anything inside or touching it.
@@ -170,7 +207,7 @@ export function selectByPolygon(
     if (hiddenLayers.has(e.layer) || lockedLayers.has(e.layer)) continue;
     const b = bounds(i);
     if (!b || !g.boundsIntersect(pb, b)) continue;
-    const segs = e.type === 'text' || e.type === 'mtext' || e.type === 'point' ? boundsEdges(b) : entitySegments(e, lookup);
+    const segs = polygonSegments(e, lookup);
     if (segs.length === 0) continue;
     let crosses = false;
     let allInside = true;
@@ -190,6 +227,7 @@ export function selectByPolygon(
       }
       if (mode === 'crossing' && crosses) break;
     }
+    if (mode === 'crossing' && !crosses) crosses = selectionRegions(e, lookup).some((region) => polygon.some((p) => pointInPolygon(p, region)));
     if (mode === 'window' ? allInside : crosses) out.push(e);
   }
   return out;

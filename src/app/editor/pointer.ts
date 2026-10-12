@@ -8,7 +8,7 @@ import * as g from '../../core/geometry';
 import type { Entity } from '../../core/entities';
 import { gripPoints, moveGrip } from '../../core/entities';
 import { findObjectSnap, constrainDirection, snapToGrid, trackFromPoints, type SnapResult } from '../../core/snap';
-import { pickEntity, selectByBox } from '../../core/selection';
+import { pickEntity, selectByBox, selectByPolygon } from '../../core/selection';
 import { PanTool } from '../../tools/edit';
 import type { Editor } from './editor';
 import { fallbackUi, type EditorInternals } from './internals';
@@ -162,8 +162,9 @@ export function onMouseUp(ed: Editor, st: EditorInternals, ev: MouseEvent): void
     const s = ed.screenFromEvent(ev);
     if (st.overlay.selectionBox) {
       const box = st.overlay.selectionBox;
-      const bounds = g.boundsOfPoints([box.a, box.b])!;
-      const found = selectByBox(bounds, box.mode, ed.doc.entities, ed.doc.lookupBlock, hiddenLayers(ed), lockedLayers(ed));
+      const found = ed.viewport.twist === 0
+        ? selectByBox(g.boundsOfPoints([box.a, box.b])!, box.mode, ed.doc.entities, ed.doc.lookupBlock, hiddenLayers(ed), lockedLayers(ed))
+        : selectByPolygon(g.viewBoxCorners(box.a, box.b, ed.viewport.twist), box.mode, ed.doc.entities, ed.doc.lookupBlock, hiddenLayers(ed), lockedLayers(ed));
       toggleSelect(ed, st, found.map((e) => e.id), ev.shiftKey);
     } else if (g.dist(s, st.dragStart) <= 3 && !st.selReq && !ev.shiftKey) {
       // click on empty space clears selection

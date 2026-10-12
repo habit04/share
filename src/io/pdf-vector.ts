@@ -48,6 +48,7 @@ import {
   layoutsOf,
   findLayout,
   modelToPaper,
+  viewTwist,
   sheetSize,
   unitInches,
   viewportPaperBounds,
@@ -61,12 +62,14 @@ import { resolveAlpha } from '../core/appearance';
 
 // ---------------------------------------------------------------- page model
 
-/** A set of entities drawn with one uniform-scale transform (page point = k * p + (e, f)), optionally clipped. */
+/** Entities drawn with a uniform scale and planar rotation (page point = k * R(rotation) * p + (e, f)). */
 export interface PdfDrawGroup {
   readonly entities: readonly Entity[];
   readonly k: number;
   readonly e: number;
   readonly f: number;
+  /** Applied counterclockwise model-to-page angle in radians; omitted = 0. */
+  readonly rotation?: number;
   /** Clip rectangle in page points. */
   readonly clip?: { x: number; y: number; w: number; h: number };
   /** Layers left out (off, frozen, no-plot, frozen in this viewport). */
@@ -198,12 +201,14 @@ export function layoutPageSpec(state: DrawingState, layout: Layout, lookup: Bloc
     frames.push({ ...rect, layer: v.layer });
     if (!v.on) continue;
     const s = v.view.scale;
+    const rotation = viewTwist(v.view);
     const origin = modelToPaper(v, { x: 0, y: 0 });
     groups.push({
       entities: state.entities,
       k: pk * s,
       e: pe + pk * origin.x,
       f: pf + pk * origin.y,
+      ...(rotation ? { rotation } : {}),
       clip: rect,
       hidden: new Set([...hidden, ...(v.frozenLayers ?? [])]),
       ltUnit: pk,
@@ -338,7 +343,7 @@ class PageWriter {
   private fill = '';
   private width = '';
   private dash = '';
-  private tf: { k: number; e: number; f: number } = { k: 1, e: 0, f: 0 };
+  private tf = { k: 1, e: 0, f: 0, rotation: 0, c: 1, s: 0 };
   private group: PdfDrawGroup | null = null;
   pathOps = 0;
 
@@ -357,9 +362,17 @@ class PageWriter {
   }
 
   private P(p: Point): string {
+    if (this.tf.rotation) {
+      const q = this.pt(p);
+      return `${n(q.x)} ${n(q.y)}`;
+    }
     return `${n(this.tf.k * p.x + this.tf.e)} ${n(this.tf.k * p.y + this.tf.f)}`;
   }
   private pt(p: Point): Point {
+    if (this.tf.rotation) {
+      const { k, e, f, c, s } = this.tf;
+      return { x: k * (c * p.x - s * p.y) + e, y: k * (s * p.x + c * p.y) + f };
+    }
     return { x: this.tf.k * p.x + this.tf.e, y: this.tf.k * p.y + this.tf.f };
   }
 
@@ -367,7 +380,8 @@ class PageWriter {
     this.ops.push('1 J 1 j');
     for (const grp of this.page.groups) {
       this.group = grp;
-      this.tf = { k: grp.k, e: grp.e, f: grp.f };
+      const rotation = grp.rotation ?? 0;
+      this.tf = { k: grp.k, e: grp.e, f: grp.f, rotation, c: Math.cos(rotation), s: Math.sin(rotation) };
       this.ops.push('q');
       this.resetState();
       if (grp.clip) this.ops.push(`${n(grp.clip.x)} ${n(grp.clip.y)} ${n(grp.clip.w)} ${n(grp.clip.h)} re W n`);
@@ -402,10 +416,14 @@ class PageWriter {
     }
   }
 
-  /** Model-space rectangle covered by a clip rectangle of the current group. */
+  /** Conservative model-space bounds of all four inverse-mapped clip corners. */
   private modelRect(r: { x: number; y: number; w: number; h: number }): Bounds {
-    const { k, e, f } = this.tf;
-    return { min: { x: (r.x - e) / k, y: (r.y - f) / k }, max: { x: (r.x + r.w - e) / k, y: (r.y + r.h - f) / k } };
+    const { k, e, f, c, s } = this.tf;
+    const inverse = (x: number, y: number): Point => {
+      const dx = (x - e) / k, dy = (y - f) / k;
+      return { x: c * dx + s * dy, y: -s * dx + c * dy };
+    };
+    return g.boundsOfPoints([inverse(r.x, r.y), inverse(r.x + r.w, r.y), inverse(r.x + r.w, r.y + r.h), inverse(r.x, r.y + r.h)])!;
   }
 
   private setStroke(c: [number, number, number]): void {
@@ -737,10 +755,11 @@ class PageWriter {
     const boundary = imageBoundary(e);
     const clip = [`${this.P(boundary[0]!)} m`, ...boundary.slice(1).map((p) => `${this.P(p)} l`), 'h W n'].join(' ');
     const o = this.pt(e.position);
-    const ux = e.u.x * e.size.x * this.tf.k;
-    const uy = e.u.y * e.size.x * this.tf.k;
-    const vx = e.v.x * e.size.y * this.tf.k;
-    const vy = e.v.y * e.size.y * this.tf.k;
+    const { k, c, s } = this.tf;
+    const ux = (c * e.u.x - s * e.u.y) * e.size.x * k;
+    const uy = (s * e.u.x + c * e.u.y) * e.size.x * k;
+    const vx = (c * e.v.x - s * e.v.y) * e.size.y * k;
+    const vy = (s * e.v.x + c * e.v.y) * e.size.y * k;
     this.ops.push(`q ${clip} ${n(ux)} ${n(uy)} ${n(vx)} ${n(vy)} ${n(o.x)} ${n(o.y)} cm /${name} Do Q`);
   }
 
@@ -760,8 +779,8 @@ class PageWriter {
       this.fonts.add(font);
       const size = (e.height * this.tf.k) / CAP_HEIGHT_EM;
       const width = helveticaWidth(text, bold) * size * wf;
-      const c = Math.cos(e.rotation);
-      const s = Math.sin(e.rotation);
+      const c = Math.cos(e.rotation + this.tf.rotation);
+      const s = Math.sin(e.rotation + this.tf.rotation);
       const off = e.align === 'center' ? -width / 2 : e.align === 'right' ? -width : 0;
       const p = this.pt(e.position);
       const x = p.x + off * c;

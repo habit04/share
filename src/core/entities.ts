@@ -396,17 +396,21 @@ export function textWidth(text: string, height: number): number {
   return strokeTextWidth(text, height);
 }
 
-export function textBounds(t: TextEntity): Bounds {
+/** Placed text's oriented quadrilateral, including alignment and oblique shear. */
+export function textCorners(t: TextEntity): Point[] {
   t = placedText(t, textWidth);
   const w = textWidth(t.text, t.height) * (t.widthFactor ?? 1);
   const ox = t.align === 'center' ? -w / 2 : t.align === 'right' ? -w : 0;
-  const corners = [
+  return [
     { x: ox, y: 0 },
     { x: ox + w, y: 0 },
     { x: ox + w, y: t.height },
     { x: ox, y: t.height },
   ].map((c) => g.add(t.position, g.rotate({ x: c.x + c.y * Math.tan(t.oblique ?? 0), y: c.y }, t.rotation)));
-  return g.boundsOfPoints(corners)!;
+}
+
+export function textBounds(t: TextEntity): Bounds {
+  return g.boundsOfPoints(textCorners(t))!;
 }
 
 // ------------------------------------------------------------------ polyline arcs (bulges)
@@ -1638,11 +1642,9 @@ export function distanceToEntity(p: Point, e: Entity, lookup: BlockLookup): numb
       return Math.max(0, best - (e.width ?? 0) / 2);
     }
     case 'text': {
-      const b = textBounds(e);
-      if (g.pointInBounds(p, b)) return 0;
-      const cx = Math.max(b.min.x, Math.min(p.x, b.max.x));
-      const cy = Math.max(b.min.y, Math.min(p.y, b.max.y));
-      return g.dist(p, { x: cx, y: cy });
+      const corners = textCorners(e);
+      if (pointInPolygon(p, corners)) return 0;
+      return Math.min(...corners.map((a, i) => g.distToSegment(p, a, corners[(i + 1) % corners.length]!)));
     }
     case 'insert': {
       let best = Infinity;

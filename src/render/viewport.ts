@@ -88,12 +88,14 @@ export class Viewport {
   scale = 80;
   /** world coordinate at canvas centre */
   center: Point = { x: 5, y: 4 };
+  /** Positive radians rotate model content counterclockwise in the Y-up view. */
+  twist = 0;
   width = 1;
   height = 1;
   dpr = 1;
   settings: ViewSettings = { gridVisible: true, gridSize: 0.5, background: '#212830', crosshairSize: 5, pickBox: 3, gridBeyondLimits: true };
   /** Previous view states for ZOOM Previous (most recent last). */
-  readonly viewHistory: Array<{ center: Point; scale: number }> = [];
+  readonly viewHistory: Array<{ center: Point; scale: number; twist: number }> = [];
   /**
    * Extra background painter drawn after the grid and before the entities
    * (Symbol Builder guides). Not part of the document; null for normal drawings.
@@ -132,7 +134,7 @@ export class Viewport {
     if (this.sceneHasImages) return null;
     // Set order is stable during cursor motion; a different order only causes a safe cache miss.
     // Avoid sorting large selections on every frame, while still detecting in-place Set edits.
-    return JSON.stringify([this.width, this.height, this.dpr, this.scale, this.center.x, this.center.y, this.settings, lineweightDisplay, [...ov.selection], ov.hover]);
+    return JSON.stringify([this.width, this.height, this.dpr, this.scale, this.center.x, this.center.y, this.twist, this.settings, lineweightDisplay, [...ov.selection], ov.hover]);
   }
 
   private rememberScene(key: string): void {
@@ -211,14 +213,14 @@ export class Viewport {
   }
 
   get transform(): Transform {
-    return { scale: this.scale, toScreen: (p) => this.toScreen(p), viewBounds: this.visibleBounds() };
+    return { scale: this.scale, rotation: this.twist, toScreen: (p) => this.toScreen(p), viewBounds: this.visibleBounds() };
   }
 
   /** Remember the current view (call before changing it) so ZOOM Previous can return. */
   pushView(): void {
     const last = this.viewHistory[this.viewHistory.length - 1];
-    if (last && Math.abs(last.scale - this.scale) < 1e-12 && g.eq(last.center, this.center, 1e-9)) return;
-    this.viewHistory.push({ center: this.center, scale: this.scale });
+    if (last && Math.abs(last.scale - this.scale) < 1e-12 && Math.abs(last.twist - this.twist) < 1e-12 && g.eq(last.center, this.center, 1e-9)) return;
+    this.viewHistory.push({ center: this.center, scale: this.scale, twist: this.twist });
     if (this.viewHistory.length > 20) this.viewHistory.shift();
   }
 
@@ -228,6 +230,7 @@ export class Viewport {
     if (!v) return false;
     this.center = v.center;
     this.scale = v.scale;
+    this.twist = v.twist;
     return true;
   }
 
@@ -240,17 +243,15 @@ export class Viewport {
   }
 
   toScreen(p: Point): Point {
+    const d = g.rotate(g.sub(p, this.center), this.twist);
     return {
-      x: this.width / 2 + (p.x - this.center.x) * this.scale,
-      y: this.height / 2 - (p.y - this.center.y) * this.scale,
+      x: this.width / 2 + d.x * this.scale,
+      y: this.height / 2 - d.y * this.scale,
     };
   }
 
   toWorld(s: Point): Point {
-    return {
-      x: this.center.x + (s.x - this.width / 2) / this.scale,
-      y: this.center.y - (s.y - this.height / 2) / this.scale,
-    };
+    return g.add(this.center, g.rotate({ x: (s.x - this.width / 2) / this.scale, y: -(s.y - this.height / 2) / this.scale }, -this.twist));
   }
 
   /** World-unit size of a pixel distance. */
@@ -266,7 +267,7 @@ export class Viewport {
   }
 
   panByPixels(dx: number, dy: number): void {
-    this.center = { x: this.center.x - dx / this.scale, y: this.center.y + dy / this.scale };
+    this.center = g.add(this.center, g.rotate({ x: -dx / this.scale, y: dy / this.scale }, -this.twist));
   }
 
   zoomToBounds(b: Bounds | null, margin = 0.08): void {
@@ -275,14 +276,22 @@ export class Viewport {
       this.scale = 80;
       return;
     }
+    this.zoomToPoints([b.min, { x: b.max.x, y: b.min.y }, b.max, { x: b.min.x, y: b.max.y }], margin);
+  }
+
+  /** Fit model points using their view extents, without fitting a second world-axis bounding box. */
+  zoomToPoints(points: readonly Point[], margin = 0.08): void {
+    if (!points.length) return;
+    const origin = points[0]!;
+    const b = g.boundsOfPoints(points.map((p) => g.rotate(g.sub(p, origin), this.twist)))!;
     const bw = Math.max(b.max.x - b.min.x, 1e-3);
     const bh = Math.max(b.max.y - b.min.y, 1e-3);
     const r = this.fitRect ?? { x: 0, y: 0, w: this.width, h: this.height };
     const s = Math.min(r.w / (bw * (1 + margin * 2)), r.h / (bh * (1 + margin * 2)));
     this.scale = Math.min(1e6, Math.max(1e-4, s));
-    this.center = { x: (b.min.x + b.max.x) / 2, y: (b.min.y + b.max.y) / 2 };
+    this.center = g.add(origin, g.rotate(g.mid(b.min, b.max), -this.twist));
     // Fitting into a sub-rectangle: shift so the bounds' centre lands on the rectangle's centre.
-    if (this.fitRect) this.center = { x: this.center.x - (r.x + r.w / 2 - this.width / 2) / this.scale, y: this.center.y + (r.y + r.h / 2 - this.height / 2) / this.scale };
+    if (this.fitRect) this.center = g.add(this.center, g.rotate({ x: -(r.x + r.w / 2 - this.width / 2) / this.scale, y: (r.y + r.h / 2 - this.height / 2) / this.scale }, -this.twist));
   }
 
   requestRender(overlay: ViewportOverlay): void {
@@ -381,9 +390,7 @@ export class Viewport {
   }
 
   visibleBounds(): Bounds {
-    const a = this.toWorld({ x: 0, y: this.height });
-    const b = this.toWorld({ x: this.width, y: 0 });
-    return { min: a, max: b };
+    return g.boundsOfPoints([{ x: 0, y: 0 }, { x: this.width, y: 0 }, { x: this.width, y: this.height }, { x: 0, y: this.height }].map((p) => this.toWorld(p)))!;
   }
 
   private drawGrid(): void {
@@ -398,10 +405,12 @@ export class Viewport {
       };
       if (vb.min.x >= vb.max.x || vb.min.y >= vb.max.y) return;
     }
-    const top = this.toScreen({ x: 0, y: vb.max.y }).y;
-    const bottom = this.toScreen({ x: 0, y: vb.min.y }).y;
-    const left = this.toScreen({ x: vb.min.x, y: 0 }).x;
-    const right = this.toScreen({ x: vb.max.x, y: 0 }).x;
+    const line = (a: Point, b: Point) => {
+      const p = this.toScreen(a), q = this.toScreen(b);
+      const crispAxis = Math.abs(this.twist) < 1e-12;
+      ctx.moveTo(crispAxis ? this.px(p.x) : p.x, crispAxis ? this.px(p.y) : p.y);
+      ctx.lineTo(crispAxis ? this.px(q.x) : q.x, crispAxis ? this.px(q.y) : q.y);
+    };
     let step = this.settings.gridSize;
     // Keep minor spacing at >= 10 px, like AutoCAD's adaptive grid.
     while (step * this.scale < 10) step *= 5;
@@ -416,23 +425,23 @@ export class Viewport {
       // Dot grid (AutoCAD 2D model space style): one dot per minor intersection.
       ctx.fillStyle = 'rgba(255,255,255,0.28)';
       for (let x = startX; x <= vb.max.x; x += step) {
-        const sx = Math.round(this.toScreen({ x, y: 0 }).x);
-        for (let y = startY; y <= vb.max.y; y += step) ctx.fillRect(sx, Math.round(this.toScreen({ x: 0, y }).y), 1, 1);
+        if (x < vb.min.x) continue;
+        for (let y = startY; y <= vb.max.y; y += step) {
+          if (y < vb.min.y) continue;
+          const p = this.toScreen({ x, y });
+          ctx.fillRect(Math.round(p.x), Math.round(p.y), 1, 1);
+        }
       }
     }
     ctx.strokeStyle = 'rgba(255,255,255,0.055)';
     ctx.beginPath();
     for (let x = startX; x <= vb.max.x; x += step) {
       if (isMajor(x) || x < vb.min.x || this.settings.gridStyle === 'dots') continue;
-      const sx = this.px(this.toScreen({ x, y: 0 }).x);
-      ctx.moveTo(sx, top);
-      ctx.lineTo(sx, bottom);
+      line({ x, y: vb.min.y }, { x, y: vb.max.y });
     }
     for (let y = startY; y <= vb.max.y; y += step) {
       if (isMajor(y) || y < vb.min.y || this.settings.gridStyle === 'dots') continue;
-      const sy = this.px(this.toScreen({ x: 0, y }).y);
-      ctx.moveTo(left, sy);
-      ctx.lineTo(right, sy);
+      line({ x: vb.min.x, y }, { x: vb.max.x, y });
     }
     ctx.stroke();
 
@@ -440,33 +449,30 @@ export class Viewport {
     ctx.beginPath();
     for (let x = Math.floor(vb.min.x / major) * major; x <= vb.max.x; x += major) {
       if (x < vb.min.x) continue;
-      const sx = this.px(this.toScreen({ x, y: 0 }).x);
-      ctx.moveTo(sx, top);
-      ctx.lineTo(sx, bottom);
+      line({ x, y: vb.min.y }, { x, y: vb.max.y });
     }
     for (let y = Math.floor(vb.min.y / major) * major; y <= vb.max.y; y += major) {
       if (y < vb.min.y) continue;
-      const sy = this.px(this.toScreen({ x: 0, y }).y);
-      ctx.moveTo(left, sy);
-      ctx.lineTo(right, sy);
+      line({ x: vb.min.x, y }, { x: vb.max.x, y });
     }
     ctx.stroke();
     if (!this.settings.gridBeyondLimits) {
       ctx.strokeStyle = 'rgba(255,255,255,0.2)';
-      ctx.strokeRect(this.px(left), this.px(top), Math.round(right - left), Math.round(bottom - top));
+      ctx.beginPath();
+      const corners = [vb.min, { x: vb.max.x, y: vb.min.y }, vb.max, { x: vb.min.x, y: vb.max.y }];
+      for (let i = 0; i < corners.length; i += 1) line(corners[i]!, corners[(i + 1) % corners.length]!);
+      ctx.stroke();
     }
 
     // Axes
-    const o = this.toScreen({ x: 0, y: 0 });
+    const axes = this.visibleBounds();
     ctx.strokeStyle = 'rgba(200,60,60,0.3)';
     ctx.beginPath();
-    ctx.moveTo(0, this.px(o.y));
-    ctx.lineTo(this.width, this.px(o.y));
+    line({ x: axes.min.x, y: 0 }, { x: axes.max.x, y: 0 });
     ctx.stroke();
     ctx.strokeStyle = 'rgba(80,200,80,0.3)';
     ctx.beginPath();
-    ctx.moveTo(this.px(o.x), 0);
-    ctx.lineTo(this.px(o.x), this.height);
+    line({ x: 0, y: axes.min.y }, { x: 0, y: axes.max.y });
     ctx.stroke();
   }
 

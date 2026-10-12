@@ -72,8 +72,8 @@ export function registerBuiltinCommands(ed: Editor): void {
     if (a.startsWith('E') || a.startsWith('A')) ed.zoomExtents();
     else if (a.startsWith('W')) {
       ed.startTool(
-        new ZoomWindowTool((b) => {
-          ed.viewport.zoomToBounds(b, 0.02);
+        new ZoomWindowTool((corners) => {
+          ed.viewport.zoomToPoints(corners, 0.02);
           ed.render();
           ed.notify('view');
         }),

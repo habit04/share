@@ -6,7 +6,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { verifyExecutableFuses } from './electron-fuse-policy.mjs';
-import { needsPortableDwgExport, needsPortableDwgSave } from './packaged-smoke-policy.mjs';
+import { needsPortableDwgExport, needsPortableDwgSave, needsRotatedLayoutViewports } from './packaged-smoke-policy.mjs';
 
 const repo = resolve(import.meta.dirname, '..');
 const source = process.argv[2] === '--source';
@@ -69,6 +69,7 @@ w.webContents.session.flushStorageData(); w.destroy(); app.quit();
     assert.equal(portableDwg.phase, 'dwg'); assert.equal(portableDwg.version, expectedVersion); assert.equal(portableDwg.packaged, !source); assert.equal(portableDwg.testBuild, false);
     for (const key of ['writer', 'reopened', 'arrays', 'attributes', 'widths', 'appearance', 'workingPreserved', 'rejectedContent', 'backup', 'integrityRefused']) assert.equal(portableDwg[key], true, key);
     if (needsPortableDwgSave(expectedVersion)) for (const key of ['saveAsDwg', 'saveDwg', 'normalSaveBackup']) assert.equal(portableDwg[key], true, key);
+    if (needsRotatedLayoutViewports(expectedVersion)) assert.equal(portableDwg.viewportRotation, true, 'viewportRotation');
     assert.equal(portableDwg.entities, 4);
   }
   const errors = join(profile, 'error.log');
@@ -80,11 +81,11 @@ w.webContents.session.flushStorageData(); w.destroy(); app.quit();
   }
   const record = { mode:source ? 'source-probe-development' : 'shipping-no-inspection', expectedVersion, executable, fuses, launches, portableDwg, remoteDebugRejected:!source, noMainErrors:true };
   writeFileSync(join(out, 'shipping-runtime-result.json'), `${JSON.stringify(record, null, 2)}\n`);
-  console.log(`${source ? 'Source probe validation (no shipping fuse/signature evidence)' : 'Exact shipping runtime smoke'}: startup, DXF open/save/backup/reopen${portableDwg?.saveDwg ? ', DWG Save As/save/backup/reopen' : ''}, secure origin, two-launch migration, private persistent storage and clean exit passed.`);
+  console.log(`${source ? 'Source probe validation (no shipping fuse/signature evidence)' : 'Exact shipping runtime smoke'}: startup, DXF open/save/backup/reopen${portableDwg?.saveDwg ? ', DWG Save As/save/backup/reopen' : ''}${portableDwg?.viewportRotation ? ', rotated layout viewports' : ''}, secure origin, two-launch migration, private persistent storage and clean exit passed.`);
 } finally {
   // Preserve only fixed, generated smoke artifacts for native-reader diagnosis. The private
   // profile is still removed, and ordinary user files can never be selected by this probe.
-  for (const [name, saved] of [['shipping-startup.dxf', 'shipping-dwg-fixture.dxf'], ['shipping-export.dwg', 'shipping-dwg-output.dwg'], ['shipping-export.dwg.bak', 'shipping-dwg-backup.bak'], ['shipping-normal-save.dwg', 'shipping-dwg-normal-save.dwg'], ['shipping-normal-save.dwg.bak', 'shipping-dwg-normal-save.bak']]) {
+  for (const [name, saved] of [['shipping-startup.dxf', 'shipping-dwg-fixture.dxf'], ['shipping-rotated-layout.dxf', 'shipping-rotated-layout.dxf'], ['shipping-export.dwg', 'shipping-dwg-output.dwg'], ['shipping-export.dwg.bak', 'shipping-dwg-backup.bak'], ['shipping-normal-save.dwg', 'shipping-dwg-normal-save.dwg'], ['shipping-normal-save.dwg.bak', 'shipping-dwg-normal-save.bak']]) {
     const file = join(profile, name);
     if (existsSync(file)) {
       const stat = lstatSync(file);
