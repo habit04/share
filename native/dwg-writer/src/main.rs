@@ -1098,7 +1098,7 @@ mod tests {
             r#"Δ 雷 literal \U+0041 JSON {"literal":"\\U+0041","newline":"\n","caret":"^J^M^I^ "}"#;
         let source = format!("0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1032\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nLINE\n5\nA0\n100\nAcDbEntity\n8\n0\n100\nAcDbLine\n10\n0\n20\n0\n30\n0\n11\n1\n21\n1\n31\n0\n1001\nLITERAL\n1000\n{literal}\n1000\nsecond ^J \\n\n0\nTEXT\n5\nA1\n100\nAcDbEntity\n8\n0\n100\nAcDbText\n10\n0\n20\n0\n30\n0\n40\n1\n1\nDisplay \\U+0394^Jnext\n0\nENDSEC\n0\nSECTION\n2\nOBJECTS\n0\nXRECORD\n5\nB0\n330\n0\n100\nAcDbXrecord\n280\n1\n1\n{literal}\n300\nsecond ^J \\n\n0\nFIELD\n5\nC0\n330\n0\n100\nAcDbField\n1\nAcExpr\n2\n1+1\n90\n0\n97\n0\n1001\nFIELD_LITERAL\n1000\n{literal}\n0\nENDSEC\n0\nEOF\n");
         validation::validate(&source).unwrap();
-        let document = DxfReader::from_reader(std::io::Cursor::new(source.as_bytes()))
+        let document = DxfReader::from_reader(std::io::Cursor::new(source.as_bytes().to_vec()))
             .unwrap()
             .read()
             .unwrap();
