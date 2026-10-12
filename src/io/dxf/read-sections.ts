@@ -8,7 +8,8 @@
 import type { Pair, Obj } from './groups';
 import type { ReadContext } from './read-core';
 import { isRealCode, isRealText, isIntCode, PRECISION_NAMES, SUPPORTED_DIM_NAMES, PRECISION_CODES, isQuietXdataApp, UNSUPPORTED_DIM_CODES } from './codes';
-import { isIntegerText, DxfReadError, shortText, invalidPrecision, precisionRequirement, str, num, has, int, pt } from './groups';
+import { isIntegerText, DxfReadError, shortText, invalidPrecision, precisionRequirement, str, num, has, int, pt, xdata } from './groups';
+import { LAYER_TRANSPARENCY_APP, transparencyFromDxf, validColorName } from '../../core/appearance';
 import { dimStyleFromHeader, readDimStyleRecord } from './dimstyles';
 import { STANDARD_DIMSTYLE } from '../../core/dimension';
 import { julianToDate } from '../../core/fields';
@@ -78,8 +79,15 @@ export function readTablesSection(objs: Obj[], tables: TableRecords, dimStyles: 
       const flags = Math.trunc(num(o, 70));
       const lt = str(o, 6);
       const tc = has(o, 420) ? Math.trunc(num(o, 420)) : NaN;
+      const transparencyApp = o.groups.find((q) => q.code === 1001 && q.value.toLowerCase() === LAYER_TRANSPARENCY_APP.toLowerCase())?.value;
+      const transparencyValue = transparencyApp ? xdata(o, transparencyApp)?.filter((q) => q.code === 1071).at(-1)?.value : undefined;
+      const rawTransparency = transparencyValue !== undefined ? Number(transparencyValue) : has(o, 440) ? num(o, 440) : undefined;
+      const transparency = transparencyFromDxf(rawTransparency);
+      const colorName = str(o, 430);
       layers.push({
         ...(Number.isFinite(tc) ? { trueColor: tc & 0xffffff } : {}),
+        ...(transparency !== undefined ? { transparency } : {}),
+        ...(validColorName(colorName) ? { colorName } : {}),
         name: name2,
         color: Math.abs(c) || 7,
         visible: c >= 0 && (flags & 1) === 0, // negative colour = off, flag 1 = frozen
@@ -91,8 +99,10 @@ export function readTablesSection(objs: Obj[], tables: TableRecords, dimStyles: 
         ...(has(o, 290) && num(o, 290) === 0 ? { plot: false } : {}),
         linetype: lt && lt.toUpperCase() !== 'CONTINUOUS' ? lt : undefined,
       });
-      const apps = o.groups.filter((q) => q.code === 1001 && !isQuietXdataApp(q.value)).map((q) => q.value);
-      if (apps.length || has(o, 440)) report.add({ type: 'LAYER', action: 'simplified', reason: `layer transparency/extended metadata${apps.length ? ` (${[...new Set(apps)].join(', ')})` : ''} is not kept`, ...(o.line ? { line: o.line } : {}) });
+      const apps = o.groups.filter((q) => q.code === 1001 && !isQuietXdataApp(q.value) && q.value !== transparencyApp).map((q) => q.value);
+      if (apps.length) report.add({ type: 'LAYER', action: 'simplified', reason: `layer extended metadata (${[...new Set(apps)].join(', ')}) is not kept`, ...(o.line ? { line: o.line } : {}) });
+      if ((rawTransparency !== undefined || transparencyApp) && transparency === undefined) report.add({ type: 'LAYER', action: 'simplified', reason: 'invalid layer transparency is not kept; opaque is used', line: o.line });
+      if (has(o, 430) && !validColorName(colorName)) report.add({ type: 'LAYER', action: 'simplified', reason: 'invalid named/color-book identity is not kept; RGB/ACI color is kept', line: o.line });
     } else if (o.kind === 'LTYPE') {
       const ltName = str(o, 2);
       if (!ltName || /^(BYLAYER|BYBLOCK|CONTINUOUS)$/i.test(ltName)) continue;

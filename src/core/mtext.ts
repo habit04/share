@@ -11,6 +11,7 @@
 import type { Point } from './geometry';
 import * as g from './geometry';
 import type { ColorSpec, EntityBase, TextEntity, FieldLink } from './entities';
+import { appearanceProperties } from './appearance';
 
 /** 1 TL, 2 TC, 3 TR, 4 ML, 5 MC, 6 MR, 7 BL, 8 BC, 9 BR */
 export type MTextAttachment = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
@@ -488,6 +489,7 @@ function layoutMText(m: MTextEntity, measure: Measure): MTextLayout {
     const local = { x: 0, y: top - m.height - i * lineH };
     out.push({
       id: `${m.id}:${i}`,
+      ...appearanceProperties(m),
       layer: m.layer,
       color: m.color,
       linetype: m.linetype,
@@ -590,8 +592,11 @@ function formattedLayout(m: MTextEntity, paras: MTextParagraph[], measure: Measu
   const strokes: MTextStroke[] = [];
   let baseline = top;
   let n = 0;
-  const color = (s: MTextStyle): { color: ColorSpec; trueColor?: number } =>
-    s.trueColor !== undefined ? { color: m.color, trueColor: s.trueColor } : s.color !== undefined ? { color: s.color } : { color: m.color, ...(m.trueColor !== undefined ? { trueColor: m.trueColor } : {}) };
+  const color = (s: MTextStyle): Pick<EntityBase, 'color' | 'trueColor' | 'colorName' | 'colorLayer' | 'transparency' | 'transparencyLayer'> => ({
+    ...appearanceProperties(m),
+    color: s.color ?? m.color,
+    ...(s.trueColor !== undefined ? { trueColor: s.trueColor, colorName: undefined, colorLayer: undefined } : s.color !== undefined ? { trueColor: undefined, colorName: undefined, colorLayer: undefined } : {}),
+  });
   const piece = (text: string, x: number, y: number, s: MTextStyle, h: number) => {
     if (!text.trim()) return;
     const c = color(s);

@@ -57,6 +57,7 @@ import {
 } from '../core/layouts';
 import { layoutPage, type PlotOptions } from '../app/plot';
 import type { DrawingState } from '../core/document';
+import { resolveAlpha } from '../core/appearance';
 
 // ---------------------------------------------------------------- page model
 
@@ -331,6 +332,8 @@ class PageWriter {
   readonly images: ImageRes[] = [];
   readonly fonts = new Set<'F1' | 'F2'>();
   readonly forms: VectorForm[] = [];
+  readonly alphas = new Set<number>();
+  private alpha = 255;
   private stroke = '';
   private fill = '';
   private width = '';
@@ -350,6 +353,7 @@ class PageWriter {
     this.fill = '';
     this.width = '';
     this.dash = '';
+    this.alpha = 255;
   }
 
   private P(p: Point): string {
@@ -390,6 +394,7 @@ class PageWriter {
       this.ops.push('q');
       this.resetState();
       this.setStroke(plotColor(objectRgb('ByLayer', undefined, layer), this.style));
+      this.setAlpha(resolveAlpha({ layer: f.layer }, this.ctx.layers));
       this.setWidth(this.style.lineweights ? mmToPt(layer?.lineWeight ?? 0.25) : 0);
       this.ops.push(`${n(f.x)} ${n(f.y)} ${n(f.w)} ${n(f.h)} re S`);
       this.pathOps += 1;
@@ -432,12 +437,21 @@ class PageWriter {
     }
   }
 
+  private setAlpha(alpha: number): void {
+    const byte = Math.round(alpha * 255);
+    if (byte === this.alpha) return;
+    this.alphas.add(byte);
+    this.ops.push(`/A${byte} gs`);
+    this.alpha = byte;
+  }
+
   // ---- entity properties (ByLayer / ByBlock resolved against the parent insert)
   private layer(name: string): Layer | undefined {
     return this.ctx.layers.find((l) => l.name === name);
   }
 
   private applyStyle(e: Entity, parent: InsertEntity | null): void {
+    this.setAlpha(resolveAlpha(e, this.ctx.layers));
     const layer = this.layer(e.layer);
     // Block content arrives resolved from explodeInsert (core/entities.ts inheritedColor): ByBlock
     // objects carry the reference's colour, or `colorLayer` (the reference's layer) when it is ByLayer.
@@ -498,7 +512,7 @@ class PageWriter {
         break;
       }
       case 'polyline':
-        this.polyline(e);
+        this.polyline(e, this.alpha);
         break;
       case 'ellipse':
         this.ellipse(e);
@@ -828,6 +842,8 @@ export interface RenderedPage {
   fonts: ReadonlySet<'F1' | 'F2'>;
   /** Isolated vector paint groups for translucent dash masks and mixed device hairlines. */
   forms?: readonly VectorForm[];
+  /** ExtGState opacity bytes used by both strokes and fills. */
+  alphas?: ReadonlySet<number>;
   pathOps: number;
 }
 
@@ -836,7 +852,7 @@ export function renderPdfPages(pages: readonly PdfPageSpec[], ctx: PdfDrawingCon
   return pages.map((page) => {
     const w = new PageWriter(ctx, style, page);
     w.run();
-    return { width: page.width, height: page.height, content: w.ops.join('\n'), images: w.images, fonts: w.fonts, forms: w.forms, pathOps: w.pathOps };
+    return { width: page.width, height: page.height, content: w.ops.join('\n'), images: w.images, fonts: w.fonts, forms: w.forms, alphas: w.alphas, pathOps: w.pathOps };
   });
 }
 
@@ -882,7 +898,12 @@ export function assembleVectorPdf(rendered: readonly RenderedPage[], title = 'Dr
       }
     }
     const fonts = [...pg.fonts].map((f) => `/${f} ${f === 'F1' ? f1 : f2} 0 R`);
-    const res = `<< /ProcSet [/PDF /Text /ImageC]${fonts.length ? ` /Font << ${fonts.join(' ')} >>` : ''}${xobjects.length ? ` /XObject << ${xobjects.join(' ')} >>` : ''} >>`;
+    const alphaResources = [...(pg.alphas ?? [])].map((alpha) => {
+      const num = reserve();
+      set(num, `<< /Type /ExtGState /CA ${n(alpha / 255)} /ca ${n(alpha / 255)} /BM /Normal >>`);
+      return `/A${alpha} ${num} 0 R`;
+    });
+    const res = `<< /ProcSet [/PDF /Text /ImageC]${fonts.length ? ` /Font << ${fonts.join(' ')} >>` : ''}${xobjects.length ? ` /XObject << ${xobjects.join(' ')} >>` : ''}${alphaResources.length ? ` /ExtGState << ${alphaResources.join(' ')} >>` : ''} >>`;
     set(pageNum, `<< /Type /Page /Parent ${pagesObj} 0 R /MediaBox [0 0 ${n(pg.width)} ${n(pg.height)}] /Resources ${res} /Contents ${contentNum} 0 R >>`);
     const packed = compressed?.[i] ?? null;
     const body = packed ?? enc.encode(pg.content);

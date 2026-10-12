@@ -53,13 +53,14 @@ import { mtextFromDxf, hasFormatting, type MTextBackground } from '../core/mtext
 import { LINEWEIGHTS } from '../core/linetypes';
 import type { LinearUnits } from '../core/units';
 import { cadPrecision } from '../core/units';
+import { explicitAlpha, transparencyFromDxf, validColorName, type TransparencySpec } from '../core/appearance';
 
 /** Subset of DwgDatabase we actually need (what the main process sends over IPC). */
 export interface DwgImportPayload {
   header: { CLAYER?: unknown; INSUNITS?: unknown } & Record<string, unknown>;
   entities: DwgEntity[];
   /** `color` is the layer's RGB (meaningful when colorIndex is 256: a true-colour layer). */
-  layers: Array<{ name: string; handle?: string; colorIndex: number; color?: number; off: boolean; frozen: boolean; locked: boolean; lineweight: number; lineType?: string; standardFlag?: number; plotFlag?: number }>;
+  layers: Array<{ name: string; handle?: string; colorIndex: number; color?: number; colorName?: string; transparency?: number; transparencyType?: number; off: boolean; frozen: boolean; locked: boolean; lineweight: number; lineType?: string; standardFlag?: number; plotFlag?: number }>;
   blocks: Array<Pick<DwgBlockRecordTableEntry, 'name' | 'basePoint' | 'entities' | 'description'> & { handle?: string; flags?: number }>;
   version?: string;
   /** IMAGEDEF objects (handle -> file name) so IMAGE entities know their file. Optional: older readers omit it. */
@@ -114,6 +115,9 @@ export function toImportPayload(db: DwgDatabase, version?: string): DwgImportPay
       ...((l as { handle?: string }).handle ? { handle: String((l as { handle?: string }).handle) } : {}),
       colorIndex: l.colorIndex,
       color: l.color,
+      colorName: l.colorName,
+      transparency: l.transparency,
+      transparencyType: (l as { transparencyType?: number }).transparencyType,
       standardFlag: l.standardFlag,
       plotFlag: l.plotFlag,
       off: l.off,
@@ -175,10 +179,26 @@ function lineweightMm(code: number | undefined): number | undefined {
   return LINEWEIGHTS[code];
 }
 
-function baseProps(e: DwgEntity): { id: string; layer: string; color: ColorSpec; linetype?: string; lineWeight?: number; ltscale?: number; trueColor?: number } {
-  const out: { id: string; layer: string; color: ColorSpec; linetype?: string; lineWeight?: number; ltscale?: number; trueColor?: number } = { id: newId(), layer: e.layer || '0', color: color(e) };
+/** LibreDWG's alpha_type differs from AcCmTransparency's serialized method byte. */
+function dwgTransparency(e: { transparency?: number; transparencyType?: number }, layer = false): TransparencySpec | undefined {
+  if (e.transparencyType === 0) return 'ByLayer';
+  if (e.transparencyType === 1) return 'ByBlock';
+  if (e.transparencyType === 3) return explicitAlpha(e.transparency);
+  if (e.transparencyType !== undefined) return undefined;
+  const serialized = transparencyFromDxf(e.transparency);
+  if (serialized !== undefined) return serialized;
+  // The installed layer converter omits alpha_type and layer XDATA. Its default zero
+  // is not evidence of a fully transparent layer; retain only an exposed nonzero alpha.
+  return layer && e.transparency !== 0 ? explicitAlpha(e.transparency) : undefined;
+}
+
+function baseProps(e: DwgEntity): import('../core/entities').EntityBase {
+  const out: { id: string; layer: string; color: ColorSpec; linetype?: string; lineWeight?: number; ltscale?: number; trueColor?: number; colorName?: string; transparency?: TransparencySpec } = { id: newId(), layer: e.layer || '0', color: color(e) };
   const tc = trueColorOf(e);
   if (tc !== undefined) out.trueColor = tc;
+  if (validColorName(e.colorName)) out.colorName = e.colorName;
+  const transparency = dwgTransparency(e);
+  if (transparency !== undefined && transparency !== 'ByLayer') out.transparency = transparency;
   if (e.lineType && !/^bylayer$/i.test(e.lineType)) out.linetype = e.lineType;
   const lw = lineweightMm(e.lineweight);
   if (lw !== undefined) out.lineWeight = lw;
@@ -1163,7 +1183,7 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
     const unsupported = Object.entries(source).filter(([name, value]) => name.startsWith('DIM') && !supportedDimNames.has(name) && value !== '' && Number(value) !== 0).map(([name]) => name);
     if (unsupported.length) report.add({ type: source === payload.header ? 'HEADER' : 'DIMSTYLE', action: 'simplified', reason: `${unsupported.join(', ')} settings exposed by the DWG reader are not modeled or written back; supported dimension variables are kept` });
   }
-  report.add({ type: 'XDATA', action: 'unsupported', reason: 'the DWG reader may omit application XDATA, extension dictionaries, fields and dynamic parameters; these cannot be guaranteed on DXF save. Compare a source DXF export when metadata fidelity matters' });
+  report.add({ type: 'XDATA', action: 'unsupported', reason: 'the DWG reader may omit application XDATA (including layer transparency), the color-book portion of a color name, extension dictionaries, fields and dynamic parameters; these cannot be guaranteed on DXF save. Compare a source DXF export when metadata fidelity matters' });
   for (const [type, count] of Object.entries(payload.omittedObjectTypes ?? {})) if (count > 0) report.add({ type, action: 'dropped', reason: `${count} object metadata record(s) exposed by the DWG reader are not retained in the drawing model` });
   const currentStyleName = typeof payload.header.DIMSTYLE === 'string' ? payload.header.DIMSTYLE : 'Standard';
   const currentStyleRecord = payload.dimStyles?.find((s) => s.name.toUpperCase() === currentStyleName.toUpperCase());
@@ -1208,7 +1228,8 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
       const item = { type: e.type, ...(e.handle ? { handle: String(e.handle) } : {}), layer: e.layer || '0', where };
       for (const note of extras.notes.slice(previousNotes)) report.add({ ...item, action: 'simplified', reason: note });
       if (e.xdata) report.add({ ...item, action: 'simplified', reason: `application XDATA (${e.xdata.appName || 'unnamed'}) is not written back; supported DSTYLE values are applied to dimensions` });
-      if (e.transparency || e.colorName) report.add({ ...item, action: 'simplified', reason: 'transparency/color-book names are not kept; RGB/ACI color is kept' });
+      if ((e.transparency !== undefined || e.transparencyType !== undefined) && dwgTransparency(e) === undefined) report.add({ ...item, action: 'simplified', reason: 'invalid or unexposed DWG transparency method/alpha is not kept; ByLayer is used' });
+      if (e.colorName !== undefined && !validColorName(e.colorName)) report.add({ ...item, action: 'simplified', reason: 'invalid named/color-book identity is not kept; RGB/ACI color is kept' });
       if (c.type === 'mtext' && c.columns) report.add({ ...item, action: 'simplified', reason: 'MTEXT column definitions are kept in JCAD_MTEXT_COLUMNS for JCad reimport; external CAD displays one column in AutoCAD 2000 export' });
       if (e.type === 'POLYLINE3D') report.add({ type: e.type, action: 'simplified', reason: '3D polyline: flattened to its XY projection', ...(e.handle ? { handle: String(e.handle) } : {}), layer: e.layer || '0', where });
       return c;
@@ -1423,6 +1444,8 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
       // colorIndex 256 marks a true-colour layer (its RGB in `color`); 7 is the ACI shown by older readers.
       color: Math.abs(l.colorIndex) >= 1 && Math.abs(l.colorIndex) <= 255 ? Math.abs(l.colorIndex) : 7,
       ...(l.colorIndex === 256 && typeof l.color === 'number' ? { trueColor: l.color & 0xffffff } : {}),
+      ...(validColorName(l.colorName) ? { colorName: l.colorName } : {}),
+      ...(dwgTransparency(l, true) !== undefined && dwgTransparency(l, true) !== 'ByLayer' ? { transparency: dwgTransparency(l, true) } : {}),
       visible: !l.off && !l.frozen,
       ...(l.frozen ? { frozen: true } : {}),
       ...((l.standardFlag ?? 0) & 48 ? { xrefFlags: (l.standardFlag ?? 0) & 48 } : {}),

@@ -27,7 +27,8 @@
  * vertical and the NO / NC sibling of a symbol.
  */
 import type { AttributeDef, BlockDef, Entity, Layer, LineEntity, TextEntity } from '../core/entities';
-import { BYBLOCK, newId, explodeInsert, translateEntity, scaleEntityBy, rotateEntity, entityBounds } from '../core/entities';
+import { BYBLOCK, newId, explodeInsert, bakeInheritedColor, translateEntity, scaleEntityBy, rotateEntity, entityBounds } from '../core/entities';
+import { bakeLayerAppearance } from '../core/appearance';
 import type { DrawingState } from '../core/document';
 import { DEFAULT_LAYERS } from '../core/document';
 import type { Point, Bounds } from '../core/geometry';
@@ -525,7 +526,10 @@ export interface CompiledPin {
  * recolours the symbol; a ByLayer object would only ever show the reference layer's colour).
  */
 export function symbolGeometry(state: DrawingState): Entity[] {
-  return state.entities.filter(isSymbolGeometry).map((e) => ({ ...e, id: newId(), layer: '0', color: typeof e.color === 'number' ? e.color : BYBLOCK }));
+  return state.entities.filter(isSymbolGeometry).map((entity) => {
+    const e = bakeLayerAppearance(entity, state.layers);
+    return { ...e, id: newId(), layer: '0', color: typeof e.color === 'number' ? e.color : BYBLOCK };
+  });
 }
 
 /** An endpoint of the symbol geometry and the direction the geometry leaves it (unit vector, or null). */
@@ -891,11 +895,15 @@ export function boundsOfEntities(entities: readonly Entity[], lookup: (name: str
 }
 
 /** Explode inserts (recursively) into primitives; other entities pass through. */
-export function explodeAll(entities: readonly Entity[], lookup: (name: string) => BlockDef | undefined): Entity[] {
+export function explodeAll(entities: readonly Entity[], lookup: (name: string) => BlockDef | undefined, layers?: readonly Layer[]): Entity[] {
   const out: Entity[] = [];
   for (const e of entities) {
-    if (e.type === 'insert') for (const { colorLayer: _display, ...x } of explodeInsert(e, lookup, 1)) out.push({ ...x, id: newId() } as Entity);
-    else out.push({ ...e, id: newId() });
+    if (e.type === 'insert') for (const part of explodeInsert(e, lookup, 1)) {
+      const baked = layers ? bakeLayerAppearance(bakeInheritedColor(part, layers), layers) : part;
+      const { colorLayer: _display, transparencyLayer: _alphaDisplay, ...x } = baked;
+      out.push({ ...x, id: newId() } as Entity);
+    }
+    else out.push({ ...(layers ? bakeLayerAppearance(e, layers) : e), id: newId() });
   }
   return out;
 }
@@ -957,7 +965,7 @@ export function harvestBlock(state: DrawingState, blockName: string, opts: Harve
   if (!def) return null;
   const lookup = (n: string) => state.blocks[n];
   const base = opts.basePoint ?? def.basePoint;
-  const geometry = explodeAll(def.entities, lookup).filter((e) => e.type !== 'text' || (e.layer !== SYMATTR_LAYER && e.layer !== SYMPIN_LAYER));
+  const geometry = explodeAll(def.entities, lookup, state.layers).filter((e) => e.type !== 'text' || (e.layer !== SYMATTR_LAYER && e.layer !== SYMPIN_LAYER));
   const markers: Entity[] = [];
   for (const a of def.attributes) {
     const tag = a.tag.toUpperCase();
@@ -984,8 +992,8 @@ export function harvestBlock(state: DrawingState, blockName: string, opts: Harve
 }
 
 /** Selected drawing objects -> symbol state (inserts exploded, base point to the origin, optional scale). */
-export function fromSelection(entities: readonly Entity[], basePoint: Point, lookup: (name: string) => BlockDef | undefined, opts: { scaleToWidth?: number } = {}): SymbolState {
-  const exploded = explodeAll(entities, lookup);
+export function fromSelection(entities: readonly Entity[], basePoint: Point, lookup: (name: string) => BlockDef | undefined, opts: { scaleToWidth?: number; layers?: readonly Layer[] } = {}): SymbolState {
+  const exploded = explodeAll(entities, lookup, opts.layers);
   const norm = normalise(exploded, basePoint, lookup, opts.scaleToWidth);
   const meta = defaultMeta({ name: 'USER1' });
   return { state: { entities: norm.entities, layers: symbolLayers(), blocks: {}, currentLayer: '0', meta: metaRecord(meta) }, meta };

@@ -7,6 +7,7 @@ import { ANNO_APP } from './codes';
 import * as g from '../../core/geometry';
 import { STANDARD_DIMSTYLE } from '../../core/dimension';
 import type { TextPlacement } from '../../core/text-placement';
+import { transparencyToDxf, validColorName } from '../../core/appearance';
 
 // ---------------------------------------------------------------- writing
 
@@ -64,6 +65,11 @@ export function writeEntityCommon(w: Writer, e: Entity, owner: string, kind: str
   if (e.ltscale !== undefined && e.ltscale !== 1) w.pair(48, e.ltscale);
   if (e.lineWeight !== undefined) w.pair(370, e.lineWeight < 0 ? Math.round(e.lineWeight) : Math.round(e.lineWeight * 100));
   if (e.trueColor !== undefined) w.pair(420, e.trueColor & 0xffffff);
+  if (e.colorName !== undefined) {
+    if (!validColorName(e.colorName)) throw new Error('Invalid named/color-book identity.');
+    w.pair(430, e.colorName);
+  }
+  if (e.transparency !== undefined) w.pair(440, transparencyToDxf(e.transparency));
   w.pair(100, subclass);
 }
 

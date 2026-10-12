@@ -11,7 +11,8 @@ import { str, num, isIntegerText, shortText, invalidPrecision, precisionRequirem
 import type { Entity, TextEntity, AttributeAppearance } from '../../core/entities';
 import type { ReadContext } from './read-core';
 import * as g from '../../core/geometry';
-import { reportObj, commonProps } from './read-core';
+import { reportObj, commonProps, commonAppearanceObject } from './read-core';
+import { transparencyFromDxf, validColorName } from '../../core/appearance';
 import { geometryProblem } from '../import-report';
 import { dstylePairs, hasUnconsumedAcadXdata } from './read-annotations';
 import { formattedSource } from '../../core/mtext';
@@ -148,7 +149,9 @@ export function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): En
     if (o.kind === 'HATCH' && num(o, 450) === 1) reportObj(ctx, o, 'simplified', 'gradient hatch settings are not kept; boundary geometry and the solid/pattern fill are retained');
     if (e.type === 'mtext' && e.columns) reportObj(ctx, o, 'simplified', `column definitions are kept in JCAD_MTEXT_COLUMNS on AutoCAD 2000 export; other CAD programs show one column${e.columns.type === 2 || !formattedSource(e)?.includes('\\N') ? '; automatic column flow is approximated in JCad' : ''}`);
     if (has(o, 39) && num(o, 39) !== 0) reportObj(ctx, o, 'simplified', 'nonzero thickness is not kept in the 2D drawing');
-    if (has(o, 440) || has(o, 430)) reportObj(ctx, o, 'simplified', 'transparency and color-book names are not kept; RGB/ACI color is kept');
+    const appearance = commonAppearanceObject(o);
+    if (has(appearance, 440) && transparencyFromDxf(Number(str(appearance, 440))) === undefined) reportObj(ctx, o, 'simplified', 'invalid transparency method/alpha is not kept; ByLayer transparency is used');
+    if (has(appearance, 430) && !validColorName(str(appearance, 430))) reportObj(ctx, o, 'simplified', 'invalid named/color-book identity is not kept; RGB/ACI color is kept');
     // IMAGE's IMAGEDEF reactor is reconstructed on export; other object links are unmodeled.
     const unmodeledLinks = o.kind === 'IMAGE' ? o.groups.some((p) => p.code === 102 && p.value !== '{ACAD_REACTORS' && p.value !== '}') : has(o, 102) || has(o, 360);
     if (unmodeledLinks) reportObj(ctx, o, 'simplified', 'reactor/extension-dictionary links are not kept; supported drawing geometry is kept');

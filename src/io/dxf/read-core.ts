@@ -10,10 +10,21 @@ import { newId } from '../../core/entities';
 import type { FieldContext } from '../../core/fields';
 import type { TableStyleData } from './read-annotations';
 import { ImportReportBuilder } from '../import-report';
+import { transparencyFromDxf, validColorName } from '../../core/appearance';
+import type { EntityBase } from '../../core/entities';
 import type { RawDxfEntity } from '../import-report';
 
 /** Entity properties common to every DXF entity (layer, colour, linetype, lineweight, ltscale). */
-export function commonProps(o: Obj): { id: string; layer: string; color: ColorSpec; linetype?: string; lineWeight?: number; ltscale?: number; trueColor?: number } {
+/** Separate class-level appearance from MTEXT/ATTRIB background color groups. */
+export function commonAppearanceObject(o: Obj): Obj {
+  const start = o.groups.findIndex((p) => p.code === 100 && p.value === 'AcDbEntity');
+  if (start < 0) return o;
+  const end = o.groups.findIndex((p, i) => i > start && (p.code === 100 || p.code === 1001));
+  return { ...o, groups: o.groups.slice(start + 1, end < 0 ? undefined : end) };
+}
+
+export function commonProps(o: Obj): EntityBase {
+  const common = commonAppearanceObject(o);
   const layer = str(o, 8, '0');
   const rawColor = o.groups.find((x) => x.code === 62);
   const color: ColorSpec = rawColor && Number(rawColor.value) !== 256 ? Number(rawColor.value) : 'ByLayer';
@@ -26,8 +37,11 @@ export function commonProps(o: Obj): { id: string; layer: string; color: ColorSp
     else if (lw === -2) base.lineWeight = -2;
   }
   if (has(o, 48) && num(o, 48) !== 1) base.ltscale = num(o, 48);
-  if (has(o, 420)) (base as { trueColor?: number }).trueColor = Math.trunc(num(o, 420)) & 0xffffff;
-  return base;
+  const colorObject = o.kind === 'MTEXT' ? common : o;
+  if (has(colorObject, 420)) (base as { trueColor?: number }).trueColor = Math.trunc(num(colorObject, 420)) & 0xffffff;
+  const transparency = has(common, 440) ? transparencyFromDxf(Number(str(common, 440))) : undefined;
+  const name = str(common, 430);
+  return { ...base, ...(transparency !== undefined ? { transparency } : {}), ...(validColorName(name) ? { colorName: name } : {}) };
 }
 
 export interface ReadContext {

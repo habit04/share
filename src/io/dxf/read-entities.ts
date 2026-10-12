@@ -308,12 +308,14 @@ export function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
       const plain = mtextFromDxf(raw);
       const field: FieldLink | undefined = raw !== source ? { code: source, value: plain } : undefined;
       const bgGroups: Obj = { ...main, groups: afterSubclass(main, 'AcDbMText') };
+      const backgroundRgb = has(bgGroups, 421) ? 421 : has(main, 100) && has(bgGroups, 420) ? 420 : undefined;
+      const backgroundName = has(bgGroups, 431) ? 431 : has(main, 100) && has(bgGroups, 430) ? 430 : undefined;
       const background: MTextBackground | undefined = has(bgGroups, 90) ? {
         flags: num(bgGroups, 90),
         scale: num(bgGroups, 45, 1.5),
         color: num(bgGroups, 63, 256) === 256 ? 'ByLayer' : num(bgGroups, 63, 256),
-        ...(has(bgGroups, 421) ? { trueColor: num(bgGroups, 421) } : {}),
-        ...(has(bgGroups, 431) ? { colorName: str(bgGroups, 431) } : {}),
+        ...(backgroundRgb !== undefined ? { trueColor: num(bgGroups, backgroundRgb) } : {}),
+        ...(backgroundName !== undefined ? { colorName: str(bgGroups, backgroundName) } : {}),
         ...(has(bgGroups, 441) ? { transparency: num(bgGroups, 441) } : {}),
       } : undefined;
       if (has(main, 41) || columns || background) {

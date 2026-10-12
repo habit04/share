@@ -492,7 +492,7 @@ export class SymbolBuilder {
             'Specify the base point of the symbol (the wire-connection centre):',
             (p) => ({ id: 'sb-base', layer: '0', color: 1, type: 'circle', center: p, radius: ed.viewport.worldPerPixel() * 6 }),
             (p) => {
-              const sym = fromSelection(ents, p, ed.doc.lookupBlock, { scaleToWidth: scale ? INLINE_HALF * 2 : undefined });
+              const sym = fromSelection(ents, p, ed.doc.lookupBlock, { scaleToWidth: scale ? INLINE_HALF * 2 : undefined, layers: ed.doc.layers });
               ed.log(`${ents.length} object(s) copied into the symbol${scale ? ', scaled to 0.75 in wide' : ''}.`);
               ed.finishTool();
               this.open({ state: withMeta(sym.state, meta), meta });

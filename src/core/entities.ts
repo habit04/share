@@ -11,6 +11,7 @@ import { GeometryBudgetError } from './geometry-budget-error';
 import { placedText, scaledText, transformedTextAnchors, textAnchor, type TextPlacement } from './text-placement';
 import { mtextBackgroundPolygons, hasMTextFill, hasMTextFrame, entityMTextBackground } from './mtext-background';
 import { polylineWidthGeometry, polylineWidthFrame, transformWidthFrame, polylineFramePoint, polylineFrameSource, polylineWidthProblem, moveWidthFrameGrip } from './polyline-widths';
+import { appearanceProperties, inheritedTransparency, resolveAlpha, type TransparencySpec } from './appearance';
 
 export type { DimensionEntity, DimStyle, DimKind } from './dimension';
 export type { MTextEntity, MTextAttachment } from './mtext';
@@ -39,6 +40,12 @@ export interface EntityBase {
   readonly ltscale?: number;
   /** True colour 0xRRGGBB (DXF 420); overrides `color` for display when set. */
   readonly trueColor?: number;
+  /** Named/color-book identity (DXF 430), retained independently of ACI/RGB. */
+  readonly colorName?: string;
+  /** Opacity byte, or ByLayer/ByBlock inheritance. Undefined means ByLayer. */
+  readonly transparency?: TransparencySpec;
+  /** Display only: ByBlock alpha inherited from a reference's layer. */
+  readonly transparencyLayer?: string;
   /** Annotative object (text, mtext, dimension, leader, insert): its paper size stays constant (see core/layouts.ts). */
   readonly annotative?: boolean;
   /**
@@ -338,6 +345,9 @@ export interface Layer {
   readonly plot?: boolean;
   /** True colour 0xRRGGBB (DXF 420 on the LAYER record); shown instead of `color` when set. */
   readonly trueColor?: number;
+  readonly colorName?: string;
+  /** Explicit opacity byte; layer inheritance values are preserved but resolve opaque. */
+  readonly transparency?: TransparencySpec;
   /** Xref-dependent LAYER flags (DXF 70 bits 16 and 32), kept from the source file. */
   readonly xrefFlags?: number;
 }
@@ -554,10 +564,12 @@ function mtextRendered(m: MTextEntity): { texts: TextEntity[]; lines: LineEntity
   if (hit) return hit;
   const lay = mtextLayoutFull(m, textWidth);
   const lines: LineEntity[] = lay.strokes.map((st, i) => ({
+    ...appearanceProperties(m),
     id: `${m.id}:s${i}`,
     layer: m.layer,
     color: st.color ?? m.color,
     ...(st.trueColor !== undefined ? { trueColor: st.trueColor } : m.trueColor !== undefined && st.color === undefined ? { trueColor: m.trueColor } : {}),
+    ...(st.color !== undefined || st.trueColor !== undefined ? { trueColor: st.trueColor, colorName: undefined, colorLayer: undefined } : {}),
     type: 'line',
     a: st.a,
     b: st.b,
@@ -666,7 +678,7 @@ const leaderCache = new WeakMap<LeaderEntity, Entity[]>();
 export function leaderParts(e: LeaderEntity): Entity[] {
   const hit = leaderCache.get(e);
   if (hit) return hit;
-  const style = { layer: e.layer, color: e.color, ...(e.trueColor !== undefined ? { trueColor: e.trueColor } : {}), linetype: e.linetype, lineWeight: e.lineWeight };
+  const style = { layer: e.layer, color: e.color, ...appearanceProperties(e), linetype: e.linetype, lineWeight: e.lineWeight };
   const out: Entity[] = [];
   const paths: Point[][] = [leaderPath(e), ...(e.extraPaths ?? []).map((p) => [...p])];
   paths.forEach((path, i) => {
@@ -718,7 +730,7 @@ export function tableParts(t: TableEntity): Entity[] {
   const hit = tableCache.get(t);
   if (hit) return hit;
   const geo = tableGeometry(t);
-  const style = { layer: t.layer, color: t.color, ...(t.trueColor !== undefined ? { trueColor: t.trueColor } : {}), linetype: t.linetype, lineWeight: t.lineWeight };
+  const style = { layer: t.layer, color: t.color, ...appearanceProperties(t), linetype: t.linetype, lineWeight: t.lineWeight };
   const out: Entity[] = geo.lines.map(([a, b], i) => ({ ...style, id: `${t.id}:b${i}`, type: 'line' as const, a, b }));
   out.push(...geo.texts);
   tableCache.set(t, out);
@@ -755,7 +767,7 @@ const imageCache = new WeakMap<ImageEntity, Entity[]>();
 export function imageParts(e: ImageEntity): Entity[] {
   const hit = imageCache.get(e);
   if (hit) return hit;
-  const style = { layer: e.layer, color: e.color, ...(e.trueColor !== undefined ? { trueColor: e.trueColor } : {}), linetype: e.linetype, lineWeight: e.lineWeight };
+  const style = { layer: e.layer, color: e.color, ...appearanceProperties(e), linetype: e.linetype, lineWeight: e.lineWeight };
   const frame = imageBoundary(e);
   const out: Entity[] = [{ ...style, id: `${e.id}:f`, type: 'polyline', points: frame, closed: true }];
   const W = g.len(e.u) * e.size.x;
@@ -914,7 +926,7 @@ export function explodeCompound(e: Entity): Entity[] | null {
     }
     case 'hatch': {
       const geo = hatchGeometry(e);
-      const style = { layer: e.layer, color: e.color, ...(e.trueColor !== undefined ? { trueColor: e.trueColor } : {}), linetype: e.linetype, lineWeight: e.lineWeight };
+      const style = { layer: e.layer, color: e.color, ...appearanceProperties(e), linetype: e.linetype, lineWeight: e.lineWeight };
       if (e.solid) return geo.polys.map((points) => ({ ...style, id: newId(), type: 'polyline' as const, points, closed: true, filled: true }));
       return geo.segments.filter(([a, b]) => !g.eq(a, b, 1e-12)).map(([a, b]) => ({ ...style, id: newId(), type: 'line' as const, a, b }));
     }
@@ -1358,7 +1370,7 @@ export function attributeText(ins: InsertEntity, block: BlockDef, a: AttributeDe
   const placement = ins.attributePlacements?.[a.tag] ?? a;
   const rawLayer = placement.layer ?? attributeLayer(a.tag, ins.layer);
   const local: TextEntity = { ...placement, id: `${ins.id}:${a.tag}`, type: 'text', layer: inheritAppearance && rawLayer === '0' ? ins.layer : rawLayer, color: placement.color ?? 'ByLayer', rotation: placement.rotation ?? 0, text: value };
-  if (inheritAppearance) Object.assign(local, inheritedColor(local, ins));
+  if (inheritAppearance) Object.assign(local, inheritedColor(local, ins), inheritedTransparency(local, ins));
   return scaledText(local, insertTransform(ins, block), ins.rotation, ins.scale, ins.scaleY ?? ins.scale, !!ins.mirror) as TextEntity;
 }
 
@@ -1424,12 +1436,14 @@ export function similarityTransform(e: Entity, tf: (p: Point) => Point, rotation
  *   ByLayer, the colour of the reference's layer (`colorLayer`); a ByBlock reference passes
  *   ByBlock on to the next level up, so nested blocks resolve outwards.
  */
-export function inheritedColor(e: EntityBase, ins: EntityBase): { color: ColorSpec; trueColor?: number; colorLayer?: string } {
-  if (e.trueColor !== undefined) return { color: e.color, trueColor: e.trueColor };
-  if (e.color !== BYBLOCK) return { color: e.color };
-  if (ins.trueColor !== undefined) return { color: ins.color, trueColor: ins.trueColor };
-  if (ins.color === 'ByLayer') return { color: 'ByLayer', colorLayer: ins.colorLayer ?? ins.layer };
-  return { color: ins.color };
+export function inheritedColor(e: EntityBase, ins: EntityBase): Pick<EntityBase, 'color' | 'trueColor' | 'colorName' | 'colorLayer'> {
+  const ownName = e.colorName !== undefined ? { colorName: e.colorName } : {};
+  const parentName = ins.colorName !== undefined ? { colorName: ins.colorName } : {};
+  if (e.trueColor !== undefined) return { color: e.color, trueColor: e.trueColor, ...ownName };
+  if (e.color !== BYBLOCK) return { color: e.color, ...ownName, ...(e.colorLayer !== undefined ? { colorLayer: e.colorLayer } : {}) };
+  if (ins.trueColor !== undefined) return { color: ins.color, trueColor: ins.trueColor, ...parentName, ...ownName };
+  if (ins.color === 'ByLayer') return { color: 'ByLayer', colorLayer: ins.colorLayer ?? ins.layer, ...parentName, ...ownName };
+  return { color: ins.color, ...parentName, ...ownName };
 }
 
 /** Exploded block content made permanent (EXPLODE): a `colorLayer` becomes that layer's colour. */
@@ -1441,21 +1455,25 @@ export function bakeInheritedColor<T extends Entity>(e: T, layers: readonly Laye
     const baked = { ...background, color: layer?.color ?? 7, ...(layer?.trueColor !== undefined ? { trueColor: layer.trueColor } : {}) };
     e = { ...e, ...(e.type === 'leader' ? { textBackground: baked } : { background: baked }) };
   }
-  if (e.colorLayer === undefined) return e;
-  const { colorLayer, ...rest } = e;
+  if (e.colorLayer === undefined && e.transparencyLayer === undefined) return e;
+  const { colorLayer, transparencyLayer, ...rest } = e;
   const layer = layers.find((l) => l.name === colorLayer);
-  return { ...rest, color: layer?.color ?? 7, ...(layer?.trueColor !== undefined ? { trueColor: layer.trueColor } : {}) } as T;
+  return {
+    ...rest,
+    ...(colorLayer !== undefined ? { color: layer?.color ?? 7, ...(layer?.trueColor !== undefined ? { trueColor: layer.trueColor } : {}), ...(e.colorName === undefined && layer?.colorName !== undefined ? { colorName: layer.colorName } : {}) } : {}),
+    ...(transparencyLayer !== undefined ? { transparency: Math.round(resolveAlpha(e, layers) * 255) } : {}),
+  } as T;
 }
 
 function transformInto(out: Entity[], e: Entity, tf: (p: Point) => Point, ins: InsertEntity, similar: boolean, lookup: BlockLookup, depth: number, budget: ExpansionBudget): void {
   // Entities on layer "0" inside a block inherit the insert's layer (AutoCAD behaviour).
   const lay = e.layer === '0' ? ins.layer : e.layer;
   const lt = e.linetype && e.linetype.toUpperCase() === 'BYBLOCK' ? ins.linetype : e.linetype;
-  const { trueColor: _t, colorLayer: _c, ...plain } = e;
-  const styled = { ...plain, layer: lay, ...inheritedColor(e, ins), linetype: lt } as Entity;
+  const { trueColor: _t, colorLayer: _c, colorName: _n, transparency: _a, transparencyLayer: _al, ...plain } = e;
+  const styled = { ...plain, layer: lay, ...inheritedColor(e, ins), ...inheritedTransparency(e, ins), linetype: lt } as Entity;
   const bg = entityMTextBackground(e);
   if (bg) {
-    const inherited = inheritedColor({ ...e, color: bg.color, trueColor: bg.trueColor, colorLayer: bg.colorLayer }, ins);
+    const inherited = inheritedColor({ ...e, color: bg.color, trueColor: bg.trueColor, colorName: bg.colorName, colorLayer: bg.colorLayer }, ins);
     Object.assign(styled, styled.type === 'leader' ? { textBackground: { ...bg, ...inherited } } : { background: { ...bg, ...inherited } });
   }
   if (styled.type === 'leader' && styled.textLayer === '0') Object.assign(styled, { textLayer: ins.layer });

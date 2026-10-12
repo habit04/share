@@ -46,7 +46,7 @@ export function materializePolylineWidthFrames(state: DrawingState): DrawingStat
     const sourceName = name(), wrapperName = name();
     const source: PolylineEntity = { ...entity, points: frame.points, bulges: frame.bulges, width: frame.width, widths: frame.widths, widthFrame: undefined };
     blocks[sourceName] = { name: sourceName, basePoint: { x: 0, y: 0 }, attributes: [], entities: [source] };
-    const inner: InsertEntity = { id: `${entity.id}:width`, type: 'insert', layer: '0', color: 0, block: sourceName, position: { x: 0, y: 0 }, rotation: -angle, scale: 1, attributes: {} };
+    const inner: InsertEntity = { id: `${entity.id}:width`, type: 'insert', layer: '0', color: 0, transparency: 'ByBlock', block: sourceName, position: { x: 0, y: 0 }, rotation: -angle, scale: 1, attributes: {} };
     blocks[wrapperName] = { name: wrapperName, basePoint: { x: 0, y: 0 }, attributes: [], entities: [inner] };
     return { ...entity, type: 'insert', block: wrapperName, position: frame.origin, rotation, scale: sx, scaleY: sy, mirror: mirrored, attributes: {} };
   };

@@ -23,6 +23,7 @@
     "tests/fixtures/acad-table.dxf",
     "tests/fixtures/all-entities.dxf",
     "tests/fixtures/block-colors.dxf",
+    "tests/fixtures/interchange/r2010-appearance.dxf",
     "tests/fixtures/broken/bad-geometry.dxf",
     "tests/fixtures/broken/bad-groupcode.dxf",
     "tests/fixtures/broken/missing-eof.dxf",

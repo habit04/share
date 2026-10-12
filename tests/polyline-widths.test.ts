@@ -14,7 +14,7 @@ import { drawingContext, plotPages, vectorPdf } from '../src/io/pdf-vector';
 import type { PlotOptions } from '../src/app/plot';
 import { pageContents, parseContentStream, parsePdfBasics } from './helpers/pdf';
 
-const fixture = readFileSync(join(import.meta.dirname, 'fixtures/polyline-widths.dxf'), 'utf8');
+const fixture = readFileSync(join(import.meta.dirname, 'fixtures/polyline-widths.dxf'), 'utf8').replace(/\r\n/g, '\n');
 const TABLOID_LANDSCAPE: PlotOptions = { paper: 'tabloid', orientation: 'landscape', scale: 'fit', margin: 0.5 };
 const state = () => readDxf(fixture);
 const lookup = () => undefined;

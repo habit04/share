@@ -7,6 +7,7 @@
 import type { Point } from './geometry';
 import * as g from './geometry';
 import type { EntityBase } from './entities';
+import { appearanceProperties } from './appearance';
 import type { MTextAttachment, MTextEntity } from './mtext';
 
 export interface TableCell {
@@ -169,6 +170,7 @@ export function tableGeometry(t: TableEntity): TableGeometry {
       const ax = col === 0 ? x0 + margin : col === 1 ? x0 + w / 2 : x0 + w - margin;
       const ay = row === 0 ? y0 - margin : row === 1 ? y0 - h / 2 : y0 - h + margin;
       texts.push({
+        ...appearanceProperties(t),
         id: `${t.id}:c${r}_${c}`,
         layer: t.layer,
         color: t.color,

@@ -27,6 +27,7 @@ import { hasMTextFill, hasMTextFrame } from '../core/mtext-background';
 import { textStyleOf, withTextStyle } from '../io/encoding';
 import { findLinetype, effectiveLinetype, dashArray, type Linetype } from '../core/linetypes';
 import { annotativeEntity } from '../core/layouts';
+import { resolveAlpha } from '../core/appearance';
 
 export interface Transform {
   toScreen(p: Point): Point;
@@ -169,10 +170,11 @@ export function drawEntity(
   ctx.lineWidth = width;
   ctx.lineCap = 'butt';
   ctx.lineJoin = 'miter';
-  if (style.alpha !== undefined) ctx.globalAlpha = style.alpha;
+  const baseAlpha = style.alpha ?? ctx.globalAlpha;
+  ctx.globalAlpha = baseAlpha * resolveAlpha(e, layers);
   if (style.dashed) ctx.setLineDash([6, 4]);
   else ctx.setLineDash(resolveDash(e, layers, tf));
-  drawGeometry(ctx, e, tf, layers, lookup, style);
+  drawGeometry(ctx, e, tf, layers, lookup, { ...style, alpha: baseAlpha });
   ctx.restore();
 }
 
@@ -299,6 +301,7 @@ function styledMtextParts(e: MTextEntity): TextEntity[] {
 /** Draw sub-entities in their own colours (formatted MTEXT runs, leader / table / image parts). */
 function drawParts(ctx: CanvasRenderingContext2D, parts: readonly Entity[], tf: Transform, layers: readonly Layer[], lookup: BlockLookup, style: DrawStyle): void {
   for (const sub of parts) {
+    ctx.globalAlpha = (style.alpha ?? 1) * resolveAlpha(sub, layers);
     const subColor = style.strokeOverride ?? resolveColor(sub, layers);
     ctx.strokeStyle = subColor;
     ctx.fillStyle = subColor;
@@ -520,6 +523,7 @@ function drawGeometry(
     case 'insert': {
       for (const sub of explodeInsert(e, lookup)) {
         if (style.hidden?.has(sub.layer)) continue;
+        ctx.globalAlpha = (style.alpha ?? 1) * resolveAlpha(sub, layers);
         const subColor = style.strokeOverride ?? resolveColor(sub, layers);
         ctx.strokeStyle = subColor;
         ctx.fillStyle = subColor;
@@ -580,6 +584,7 @@ function drawGeometry(
       const ownStroke = ctx.strokeStyle;
       const ownFill = ctx.fillStyle;
       for (const part of dimensionParts(e)) {
+        ctx.globalAlpha = (style.alpha ?? 1) * resolveAlpha(part, layers);
         const own = style.strokeOverride !== undefined || part.color === e.color;
         ctx.strokeStyle = own ? ownStroke : resolveColor(part, layers);
         ctx.fillStyle = own ? ownFill : ctx.strokeStyle;

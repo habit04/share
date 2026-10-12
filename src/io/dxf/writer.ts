@@ -22,6 +22,7 @@ import { attdefFlags } from '../../electrical/symbol-builder-core';
 import { tableParts, dimensionParts } from '../../core/entities';
 import { entityMTextBackground } from '../../core/mtext-background';
 import { materializePolylineWidthFrames } from './polyline-width-blocks';
+import { LAYER_TRANSPARENCY_APP, transparencyToDxf, validColorName } from '../../core/appearance';
 
 /** Linetype names referenced anywhere in the drawing (layers, entities, block entities). */
 function usedLinetypes(state: DrawingState): Linetype[] {
@@ -78,8 +79,13 @@ export function writeDxf(state: DrawingState): string {
   const extras: WriteExtras = { ...emptyExtras(), arrowSize: ds.arrowSize * (ds.scale || 1) };
   const allEntities: Entity[] = [...state.entities, ...layoutPlan.entities];
   for (const b of blockList) allEntities.push(...b.entities);
+  // Choose the highest native format required anywhere, including associated text/attributes.
+  const appearances = [...allEntities, ...state.layers, ...blockList.flatMap((b) => b.attributes),
+    ...allEntities.flatMap((e) => e.type === 'insert' ? Object.values(e.attributePlacements ?? {}) : e.type === 'leader' && e.textAppearance ? [e.textAppearance] : [])];
   const acadVersion = allEntities.some((e) => (entityMTextBackground(e)?.flags ?? 0) & 16) ? 'AC1032'
-    : allEntities.some((e) => entityMTextBackground(e)) ? 'AC1021' : 'AC1015';
+    : appearances.some((e) => e.transparency !== undefined) ? 'AC1024'
+      : allEntities.some((e) => entityMTextBackground(e)) ? 'AC1021'
+        : appearances.some((e) => e.colorName !== undefined) ? 'AC1018' : 'AC1015';
   let imageDict: string | null = null;
   let anon = 0;
   for (const e of allEntities) {
@@ -229,10 +235,18 @@ export function writeDxf(state: DrawingState): string {
       layerHandles.set(l.name, w.lastHandle().toString(16).toUpperCase());
       w.pair(62, l.visible || l.frozen ? l.color : -l.color);
       if (l.trueColor !== undefined) w.pair(420, l.trueColor & 0xffffff);
+      if (l.colorName !== undefined) {
+        if (!validColorName(l.colorName)) throw new Error('Invalid layer named/color-book identity.');
+        w.pair(430, l.colorName);
+      }
       w.pair(6, l.linetype && l.linetype.toUpperCase() !== 'BYLAYER' ? l.linetype : 'Continuous');
       w.pair(370, Math.round(l.lineWeight * 100));
       if (l.plot === false) w.pair(290, 0);
       w.pair(390, normalPlotStyle);
+      if (l.transparency !== undefined) {
+        w.pair(1001, LAYER_TRANSPARENCY_APP);
+        w.pair(1071, transparencyToDxf(l.transparency));
+      }
     }
   });
   const textStyles = textStylesForWrite(state);
@@ -268,12 +282,14 @@ export function writeDxf(state: DrawingState): string {
   table('UCS', '7', 0, () => {});
   const annotative = allEntities.some((e) => e.annotative);
   const columnMtext = allEntities.some((e) => e.type === 'mtext' ? e.columns : e.type === 'leader' && e.textColumns);
-  table('APPID', '9', (tableList.length ? 3 : 2) + (annotative ? 1 : 0) + (columnMtext ? 1 : 0), () => {
+  const layerTransparency = state.layers.some((l) => l.transparency !== undefined);
+  table('APPID', '9', (tableList.length ? 3 : 2) + (annotative ? 1 : 0) + (columnMtext ? 1 : 0) + (layerTransparency ? 1 : 0), () => {
     record('APPID', '9', 'AcDbRegAppTableRecord', 'ACAD');
     record('APPID', '9', 'AcDbRegAppTableRecord', DIMSTYLE_APP);
     if (tableList.length) record('APPID', '9', 'AcDbRegAppTableRecord', TABLE_APP);
     if (annotative) record('APPID', '9', 'AcDbRegAppTableRecord', ANNO_APP);
     if (columnMtext) record('APPID', '9', 'AcDbRegAppTableRecord', MTEXT_COLUMNS_APP);
+    if (layerTransparency) record('APPID', '9', 'AcDbRegAppTableRecord', LAYER_TRANSPARENCY_APP);
   });
   // Dimensions on layouts count too, so their (unnamed) styles get a record.
   const dimStyleList = dimStylesToWrite(state, allEntities);
