@@ -107,6 +107,6 @@ describe('Electron fuses (package.json build.electronFuses, scripts/electron-fus
     expect(runtime).toBeGreaterThan(check);
     expect(smoke).not.toMatch(/allowInspectForTests|flipFuses/);
     expect(smoke).toContain("JCAD_SMOKE_REQUIRE_SHIPPING === '1'");
-    expect(smoke).toContain('const ok = probeOk && runtime.status === 0;');
+    expect(smoke).toContain('const ok = probeOk && childSucceeded(runtime);');
   });
 });
