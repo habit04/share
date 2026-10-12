@@ -83,7 +83,17 @@ export function textAnchor(t: TextPlacement): Point {
 
 /** Transform text axes as well as its anchors through a positive, nonuniform block scale. */
 export function scaledText<T extends TextPlacement>(t: T, tf: (p: Point) => Point, rotation: number, sx: number, sy: number, mirror = false): T {
-  const a = t.rotation ?? 0;
+  const moved = transformedTextAnchors(t, tf);
+  let a = t.rotation ?? 0;
+  const fitted = t.justification?.horizontal === 3 || t.justification?.horizontal === 5;
+  if (fitted && moved.alignmentPoint) {
+    // FIT/ALIGNED use their anchors, even when DXF50 contains an unrelated angle. Undo the
+    // output rotation/scale to recover the input axis; this also handles the inverse ATTRIB
+    // transform, whose rotation is applied inside tf before its nonuniform scale.
+    const angle = Math.atan2(moved.alignmentPoint.y - moved.position.y, moved.alignmentPoint.x - moved.position.x) - rotation;
+    const largest = Math.max(Math.abs(sx), Math.abs(sy));
+    a = Math.atan2(Math.sin(angle) * (sx / largest), Math.cos(angle) * (sy / largest) * (mirror ? -1 : 1));
+  }
   const u = { x: sx * Math.cos(a), y: sy * Math.sin(a) };
   const v = { x: -sx * Math.sin(a), y: sy * Math.cos(a) };
   const xScale = Math.hypot(u.x, u.y);
@@ -91,10 +101,13 @@ export function scaledText<T extends TextPlacement>(t: T, tf: (p: Point) => Poin
   const larger = Math.max(Math.abs(sx), Math.abs(sy));
   const ratio = larger / xScale;
   const yScale = Number.isFinite(ratio) ? smaller * ratio : (smaller / xScale) * larger;
-  const slant = (t.oblique ? Math.tan(t.oblique) * (xScale / yScale) : 0) + (u.x / xScale) * (v.x / yScale) + (u.y / xScale) * (v.y / yScale);
+  const axisSlant = (t.oblique ? Math.tan(t.oblique) * (xScale / yScale) : 0) + (u.x / xScale) * (v.x / yScale) + (u.y / xScale) * (v.y / yScale);
+  // Reflected fitting anchors reverse the baseline's readable perpendicular normal. Both
+  // the original oblique component and the scale-induced shear therefore reverse sign.
+  const slant = mirror && fitted ? -axisSlant : axisSlant;
   const widthFactor = (t.widthFactor ?? 1) * xScale / yScale;
   return {
-    ...transformedTextAnchors(t, tf),
+    ...moved,
     height: t.height * yScale,
     rotation: g.normAngle(Math.atan2(u.y, u.x) + rotation),
     ...(Math.abs(widthFactor - 1) > 1e-12 || t.widthFactor !== undefined ? { widthFactor } : {}),

@@ -469,10 +469,11 @@ edit or delete it.
 The entity-by-entity table of what survives import and export is [docs/SUPPORT-MATRIX.md](docs/SUPPORT-MATRIX.md).
 
 - **DXF** is the native save format, defaulting to AC1015 / AutoCAD 2000 and selecting newer
-  versions when a native property needs them (MTEXT background masks: AC1021 / 2007;
+  versions when a native property needs them (RGB/named colors: AC1018 / 2004;
+  transparency: AC1024 / 2010; MTEXT background masks: AC1021 / 2007;
   native MTEXT frames: AC1032 / 2018). Layers (linetype, lineweight,
   frozen/off/locked), blocks, attributes (including invisible ones), LINE / CIRCLE / ARC /
-  LWPOLYLINE (bulges and constant width round-trip) / TEXT / MTEXT / INSERT / ELLIPSE / POINT /
+  LWPOLYLINE (bulges, constant and vertex widths round-trip) / TEXT / MTEXT / INSERT / ELLIPSE / POINT /
   XLINE / RAY / SOLID and DIMENSION (linear, aligned, radius, diameter, angular) written with an
   anonymous `*D` picture block so other CAD programs show them. Mirrored (negative X scale) and
   non-uniform inserts (groups 41/42) round-trip; a mirrored block draws its geometry reflected

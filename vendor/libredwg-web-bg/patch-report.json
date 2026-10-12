@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "source": {
+    "repository": "https://github.com/mlightcad/libredwg-web",
+    "tag": "v0.7.14",
+    "commit": "1dd682f46339f37b67c5ff1085d10d04a8c16d7e"
+  },
+  "patchSha256": "f666e69a0316536df7e344efe2b0a9c550918d06ad57b65ecbc4c523540f8cf6",
+  "files": [
+    {
+      "path": "include/dwg.h",
+      "beforeSha256": "5343c827df7c305ad21c3f534ced72a79f5885eb50119a25fb9ae40cf8a69696",
+      "afterSha256": "717114dc4bc732cef58eaa3eccb04b2285461047dc23df27a998f8a942453edd",
+      "replacements": 2
+    },
+    {
+      "path": "src/dwg.spec",
+      "beforeSha256": "c3c6dec791321721b0ff75854d3ac2e8832986b62fce832cc053e2ac85f2e9fd",
+      "afterSha256": "6eff3439480c35882f15ea79e8de8b6d8b5c8e603a3ccd72eb6fe8a8cabd8369",
+      "replacements": 1
+    },
+    {
+      "path": "src/dwg_spec_shared.h",
+      "beforeSha256": "fce80dd4c234293ef9a5bf3acc3ffeb13efce67bd60bb127a961bba0b06ef91c",
+      "afterSha256": "35e6758075cf1c2e315aaed0574695d47b949f1eee86027dd6202b5914b48656",
+      "replacements": 1
+    },
+    {
+      "path": "src/dynapi.c",
+      "beforeSha256": "7f605d7de91f8a9e216a71cd40df8851930279b00a47afa754f0417d1a982f35",
+      "afterSha256": "7f889f4d0cf231c332a5bf7e8de7efa1f35ec9166dfce3f3ae77dfafeb4115a3",
+      "replacements": 2
+    },
+    {
+      "path": "test/unit-testing/mtext.c",
+      "beforeSha256": "e8b257779e68791c434dad0c85a96e0db62fc9b63b7ba289584d83a227898a8d",
+      "afterSha256": "32547e84d6365b8c8a00cbb920c4f3461f7541fcaecf122f7e124720dcf7ab4d",
+      "replacements": 2
+    },
+    {
+      "path": "bindings/javascript/embind/binding_dynapi.cpp",
+      "beforeSha256": "0a162468e91dddfaf26eca4dce7a81723bf788e915dae3f359ccdd48b209ae82",
+      "afterSha256": "a7ed2409649664a8aea39e034127ea6d135d0a52efc25773ee571e8a683b7d16",
+      "replacements": 2
+    }
+  ]
+}

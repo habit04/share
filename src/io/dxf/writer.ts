@@ -85,7 +85,7 @@ export function writeDxf(state: DrawingState): string {
   const acadVersion = allEntities.some((e) => (entityMTextBackground(e)?.flags ?? 0) & 16) ? 'AC1032'
     : appearances.some((e) => e.transparency !== undefined) ? 'AC1024'
       : allEntities.some((e) => entityMTextBackground(e)) ? 'AC1021'
-        : appearances.some((e) => e.colorName !== undefined) ? 'AC1018' : 'AC1015';
+        : appearances.some((e) => e.colorName !== undefined || e.trueColor !== undefined) ? 'AC1018' : 'AC1015';
   let imageDict: string | null = null;
   let anon = 0;
   for (const e of allEntities) {

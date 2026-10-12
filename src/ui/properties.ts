@@ -67,8 +67,13 @@ export class PropertiesPalette {
     i.className = 'prop-input';
     i.value = value;
     i.spellcheck = false;
+    let committed = value;
     const commit = () => {
-      if (i.value !== value) onCommit(i.value);
+      if (i.value !== committed) {
+        // Rendering can blur this input and deliver change again during the first commit.
+        committed = i.value;
+        onCommit(committed);
+      }
     };
     i.addEventListener('change', commit);
     i.addEventListener('keydown', (ev) => {
@@ -133,7 +138,7 @@ export class PropertiesPalette {
     const colorVal = common('color');
     const colorSel = this.select(colorVal === '*VARIES*' ? [['*VARIES*', '*VARIES*'], ...colors] : colors, colorVal, (v) => {
       if (v === '*VARIES*') return;
-      doc.replaceEntities(sel.map((e) => ({ ...e, color: v === 'ByLayer' ? ('ByLayer' as const) : parseInt(v, 10) })));
+      doc.replaceEntities(sel.map((e) => ({ ...e, color: v === 'ByLayer' ? ('ByLayer' as const) : parseInt(v, 10), trueColor: undefined, colorName: undefined, colorLayer: undefined })));
     });
     const swatchWrap = document.createElement('span');
     swatchWrap.className = 'prop-color';

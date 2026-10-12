@@ -783,13 +783,16 @@ function convertEntity(e: DwgEntity, blockIndex: Map<string, string>, dimStyle: 
         const cmc = invalidFillScale ? undefined : (m as DwgMTextEntity & { backgroundFillColorData?: { index?: number; rgb?: number; method?: number; name?: string; bookName?: string } }).backgroundFillColorData;
         const rgb = cmc?.rgb ?? m.backgroundFillColor;
         const method = cmc?.method ?? (typeof rgb === 'number' ? (rgb >>> 24) & 0xff : undefined);
-        const index = cmc?.index;
+        // AutoCAD's independent seven-mask fixture proves C3 encodes ACI in low24,
+        // while C2 is RGB. The native palette lookup may overwrite C3's index with256.
+        const encodedIndex = method === 0xc3 && typeof rgb === 'number' ? rgb & 0xffffff : undefined;
+        const index = encodedIndex !== undefined && encodedIndex >= 0 && encodedIndex <= 255 ? encodedIndex : cmc?.index;
         const name = cmc?.name ? (cmc.bookName ? `${cmc.bookName}$${cmc.name}` : cmc.name) : undefined;
         background = {
           flags: m.backgroundFill,
           scale: invalidFillScale ? 1.5 : m.fillBoxScale || 1.5,
           color: invalidFillScale ? 'ByLayer' : method === 0xc1 ? 0 : index !== undefined && index >= 0 && index < 256 ? index : 'ByLayer',
-          ...(!invalidFillScale && typeof rgb === 'number' && Number.isFinite(rgb) && (method === 0xc3 || index === undefined) ? { trueColor: rgb & 0xffffff } : {}),
+          ...(!invalidFillScale && typeof rgb === 'number' && Number.isFinite(rgb) && (method === 0xc2 || (!cmc && rgb >= 0 && rgb <= 0xffffff)) ? { trueColor: rgb & 0xffffff } : {}),
           ...(name ? { colorName: name } : {}),
           ...(!invalidFillScale && m.backgroundFillTransparency !== undefined ? { transparency: m.backgroundFillTransparency } : {}),
         };

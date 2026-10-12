@@ -1,0 +1,200 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Controlled native MTEXT background repair; no release publication or installed dependency mutation",
+  "source": {
+    "repository": "https://github.com/mlightcad/libredwg-web",
+    "tag": "v0.7.14",
+    "commit": "1dd682f46339f37b67c5ff1085d10d04a8c16d7e"
+  },
+  "submodules": [
+    {
+      "path": "jsmn",
+      "repository": "https://github.com/zserge/jsmn",
+      "commit": "85695f3d5903b1cd5b4030efe50db3b4f5f3c928"
+    }
+  ],
+  "compiler": {
+    "version": "4.0.23",
+    "repository": "https://github.com/emscripten-core/emsdk",
+    "commit": "c0bb220cb6e6f4e0fabb6f6db9efd53390ef5e56",
+    "releaseHash": "aaa43392544d695232b70eda706d751f18980c2a",
+    "originalPackageCompiler": "unknown: source uses install latest; distributed WASM producer metadata is stripped",
+    "observedVersion": "emcc (Emscripten gcc/clang-like replacement + linker emulating GNU ld) 4.0.23 (7a5d93b50f6a3a35e85a0d2fc9e667b8498e6aed)\nCopyright (C) 2026 the Emscripten authors (see AUTHORS.txt)\nThis is free and open source software under the MIT license.\nThere is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE."
+  },
+  "declarationCompiler": {
+    "name": "typescript",
+    "version": "5.7.3",
+    "resolved": "https://registry.npmjs.org/typescript/-/typescript-5.7.3.tgz",
+    "integrity": "sha512-84MVSjMEHP+FQRPy3pX9sTVV/INIex71s9TL2Gm5FG/WG1SqXeKyZ0k7/blY/4FdOzI12CBy1vGc4og/eus0fw==",
+    "observedVersion": "Version 5.7.3"
+  },
+  "license": {
+    "packageSpdx": "GPL-3.0",
+    "nativeSourceNotice": "GPL-3.0-or-later; see each source file and COPYING",
+    "correspondingSource": "modified-source.tar.gz"
+  },
+  "build": {
+    "commands": [
+      "./autogen.sh",
+      "npm run build:prepare",
+      "npm run build:obj",
+      "npm run build:wasm"
+    ],
+    "makeFlags": "-j2",
+    "scripts": {
+      "build:prepare": "mkdir -p ../../build-wasm && cd ../../build-wasm && emconfigure ../configure CFLAGS=\"-O2 -sUSE_ZLIB=1 -DNDEBUG\" CC=emcc --enable-release --enable-debug --disable-docs --disable-write --disable-python --disable-bindings --disable-shared --disable-json",
+      "build:obj": "cd ../../build-wasm && emmake make",
+      "build:wasm": "cd ../../build-wasm && emcc ../bindings/javascript/embind/*.cpp src/*.o -O2 -lembind -std=c++17 -Isrc -I../src -I../include -o libredwg-web.js -s ALLOW_MEMORY_GROWTH=1 -s INITIAL_MEMORY=1GB -s MAXIMUM_MEMORY=4GB -s MALLOC=mimalloc -s EXPORT_ES6=1 -s MODULARIZE=1 -s EXPORT_NAME=\"createModule\" -sEXPORTED_RUNTIME_METHODS=FS,ENV,ccall,cwrap,UTF8ToString,stringToNewUTF8,setValue --emit-tsd libredwg-web.d.ts"
+    },
+    "observedTools": {
+      "node": "v24.21.0",
+      "npm": "11.19.0",
+      "autoconf": "autoconf (GNU Autoconf) 2.71",
+      "automake": "automake (GNU automake) 1.16.5",
+      "libtoolize": "libtoolize (GNU libtool) 2.4.7",
+      "make": "GNU Make 4.3",
+      "gcc": "gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+      "pkg-config": "1.8.1"
+    }
+  },
+  "validation": {
+    "fixtureSha256": "f982246c6e529c286b89fefec07fc5e6e6c3fc0f984e679961ace29c8de83c53",
+    "expectedSha256": "459da44bbcd883825bcbfa45593e177bb1a0e7a97b080313948b0ef5ef7a736e",
+    "nativeError": 0,
+    "maskCount": 7,
+    "report": "fixture-report.json"
+  },
+  "workflow": {
+    "repository": "habit04/share",
+    "commit": "5aa39175fd9420f833d95af234808053cc3b08aa",
+    "runId": "38196495059",
+    "runAttempt": "1"
+  },
+  "patchedFiles": [
+    {
+      "path": "include/dwg.h",
+      "beforeSha256": "5343c827df7c305ad21c3f534ced72a79f5885eb50119a25fb9ae40cf8a69696",
+      "afterSha256": "717114dc4bc732cef58eaa3eccb04b2285461047dc23df27a998f8a942453edd",
+      "replacements": 2,
+      "builtSourceSha256": "717114dc4bc732cef58eaa3eccb04b2285461047dc23df27a998f8a942453edd"
+    },
+    {
+      "path": "src/dwg.spec",
+      "beforeSha256": "c3c6dec791321721b0ff75854d3ac2e8832986b62fce832cc053e2ac85f2e9fd",
+      "afterSha256": "6eff3439480c35882f15ea79e8de8b6d8b5c8e603a3ccd72eb6fe8a8cabd8369",
+      "replacements": 1,
+      "builtSourceSha256": "6eff3439480c35882f15ea79e8de8b6d8b5c8e603a3ccd72eb6fe8a8cabd8369"
+    },
+    {
+      "path": "src/dwg_spec_shared.h",
+      "beforeSha256": "fce80dd4c234293ef9a5bf3acc3ffeb13efce67bd60bb127a961bba0b06ef91c",
+      "afterSha256": "35e6758075cf1c2e315aaed0574695d47b949f1eee86027dd6202b5914b48656",
+      "replacements": 1,
+      "builtSourceSha256": "35e6758075cf1c2e315aaed0574695d47b949f1eee86027dd6202b5914b48656"
+    },
+    {
+      "path": "src/dynapi.c",
+      "beforeSha256": "7f605d7de91f8a9e216a71cd40df8851930279b00a47afa754f0417d1a982f35",
+      "afterSha256": "7f889f4d0cf231c332a5bf7e8de7efa1f35ec9166dfce3f3ae77dfafeb4115a3",
+      "replacements": 2,
+      "builtSourceSha256": "7f889f4d0cf231c332a5bf7e8de7efa1f35ec9166dfce3f3ae77dfafeb4115a3"
+    },
+    {
+      "path": "test/unit-testing/mtext.c",
+      "beforeSha256": "e8b257779e68791c434dad0c85a96e0db62fc9b63b7ba289584d83a227898a8d",
+      "afterSha256": "32547e84d6365b8c8a00cbb920c4f3461f7541fcaecf122f7e124720dcf7ab4d",
+      "replacements": 2,
+      "builtSourceSha256": "32547e84d6365b8c8a00cbb920c4f3461f7541fcaecf122f7e124720dcf7ab4d"
+    },
+    {
+      "path": "bindings/javascript/embind/binding_dynapi.cpp",
+      "beforeSha256": "0a162468e91dddfaf26eca4dce7a81723bf788e915dae3f359ccdd48b209ae82",
+      "afterSha256": "a7ed2409649664a8aea39e034127ea6d135d0a52efc25773ee571e8a683b7d16",
+      "replacements": 2,
+      "builtSourceSha256": "a7ed2409649664a8aea39e034127ea6d135d0a52efc25773ee571e8a683b7d16"
+    }
+  ],
+  "assets": [
+    {
+      "path": "factory/libredwg-web.js",
+      "bytes": 111290,
+      "sha256": "2665f1fe5c798d8557642124be62036ccbaf825a6043766042a06e1108009a95"
+    },
+    {
+      "path": "factory/libredwg-web.wasm",
+      "bytes": 10817550,
+      "sha256": "981b2480043a44743f42e41d19171079c68274bb326a1b0097b0c1971a595904"
+    },
+    {
+      "path": "factory/package.json",
+      "bytes": 18,
+      "sha256": "1239d4d885dcad42201a27ed9324f8f0f760b78700d8db9ced39a511cffe7eae"
+    },
+    {
+      "path": "modified-source.tar.gz",
+      "bytes": 24736777,
+      "sha256": "c90ed2aa1a69dacd93779b749e16362d1a10dcd7827895d773a6a87d8746ebe5"
+    },
+    {
+      "path": "COPYING",
+      "bytes": 35147,
+      "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903"
+    },
+    {
+      "path": "pins.json",
+      "bytes": 1266,
+      "sha256": "2c3fe2b90d1ed75e72f0883f29ca44e0bff942db1b2133ac4a767989ab03776c"
+    },
+    {
+      "path": "mtext-background-scale.patch.json",
+      "bytes": 3650,
+      "sha256": "f666e69a0316536df7e344efe2b0a9c550918d06ad57b65ecbc4c523540f8cf6"
+    },
+    {
+      "path": "README.md",
+      "bytes": 7813,
+      "sha256": "8b0c8f10d567e4b4cc9934bc1ed2339e86377557190214ad1c5ec0b80b18198c"
+    },
+    {
+      "path": "patch-source.mjs",
+      "bytes": 5099,
+      "sha256": "4f30bf5175d7338eaf9f3163fe0759a8d528f0eb91d3951c630ab7ffa0197ffc"
+    },
+    {
+      "path": "validate-fixture.mjs",
+      "bytes": 6646,
+      "sha256": "6d12cea3d9600806a4db50407b50b0c3f7bfd91924a2d74aa65758997d1605ce"
+    },
+    {
+      "path": "write-provenance.mjs",
+      "bytes": 7046,
+      "sha256": "fd4cca80d98e2edc422d35582e24b67c6a7396feae3eb405af173d108415b7d5"
+    },
+    {
+      "path": "patch-report.json",
+      "bytes": 1820,
+      "sha256": "0e3060936c1091f5352ab3b077d82e1f59ff82f168b6b17ab5d11fab9456ce43"
+    },
+    {
+      "path": "fixture-report.json",
+      "bytes": 2799,
+      "sha256": "22f9573bc19f9869a98f253194aa5153d6fb772d53f46c6502577514d5519487"
+    },
+    {
+      "path": "declaration-tools/package.json",
+      "bytes": 142,
+      "sha256": "3b0fb8b904168be666aae715c2ddd43124e54c78f81f8f3fb4a512e833670286"
+    },
+    {
+      "path": "declaration-tools/package-lock.json",
+      "bytes": 727,
+      "sha256": "9259fb79c81e9ced768f3c97466c34e5755cbe9ba7bce2fd7d1a4ce488de8678"
+    }
+  ],
+  "limitations": [
+    "The original npm binary compiler version is not recorded upstream; this rebuild uses the pinned compiler above.",
+    "This fixture validates native decoder fields, not all DWG versions/entities or final application adapters.",
+    "Its column layout is JCAD_MTEXT_COLUMNS XDATA; native columns are absent, and this raw API does not decode/certify application XDATA or embedded MTEXT containers.",
+    "SHA256 records bind artifact bytes; this workflow does not sign or publish artifacts."
+  ]
+}

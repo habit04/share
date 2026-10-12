@@ -18,7 +18,7 @@ Intel) and the Linux `.AppImage` / `.deb` packages contain:
 - the **Electron** runtime (which includes Chromium, Node.js, V8, FFmpeg and the other
   components Electron is built from) - see [Electron and Chromium](#electron-and-chromium);
 - the application code of JCad Electrical (GPL-3.0-only);
-- the **LibreDWG** WebAssembly build from `@mlightcad/libredwg-web`, used to read DWG files
+- the locally repaired **LibreDWG** WebAssembly runtime based on `@mlightcad/libredwg-web`, used to read DWG files
   (GPL-3.0) - see [LibreDWG](#libredwg-via-mlightcadlibredwg-web);
 - `electron-updater` and its dependencies, used for update checks;
 - `js-yaml`, used directly to read trusted update publisher configuration and by electron-updater;
@@ -107,6 +107,24 @@ none of their code is part of what is distributed.
 JCad Electrical reads DWG files with **GNU LibreDWG** compiled to WebAssembly by the
 `@mlightcad/libredwg-web` package (version 0.7.14, `"license": "GPL-3.0"` in its
 `package.json`; the package itself ships no separate licence file).
+
+The Node reader and browser worker use the matching factory/WASM pair in
+[vendor/libredwg-web-bg](vendor/libredwg-web-bg), with the unchanged 0.7.14 npm JavaScript facade.
+This local native build is based on upstream commit `1dd682f46339f37b67c5ff1085d10d04a8c16d7e`.
+It changes MTEXT background scale fields from BL to BD consistently and repairs the native
+dynamic API's version-aware color-book string projection. Emscripten 4.0.23 compiled the pair;
+TypeScript 5.7.3 generated its declarations. The original npm binary's compiler version is not
+recorded upstream.
+
+The complete modified corresponding source is available in
+[modified-source.tar.gz](vendor/libredwg-web-bg/modified-source.tar.gz), including the pinned
+submodule, original notices and build inputs. The runtime and source are included in the desktop
+package. [COPYING](vendor/libredwg-web-bg/COPYING), the
+[checked local patch](vendor/libredwg-web-bg/mtext-background-scale.patch.json),
+[build provenance](vendor/libredwg-web-bg/provenance.json) and
+[SHA256 checksums](vendor/libredwg-web-bg/SHA256SUMS) accompany it. The provenance binds the native
+source, compiler, exact factory/WASM bytes and independent seven-mask fixture validation; it does
+not claim complete CAD compatibility.
 
 - GNU LibreDWG: Copyright (C) Free Software Foundation, Inc. Licensed under the GNU General
   Public License, version 3 or (at your option) any later version.

@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readDxf, writeDxf } from '../../src/io/dxf';
 import type { DrawingState } from '../../src/core/document';
-import type { DimensionEntity } from '../../src/core/entities';
+import type { DimensionEntity, InsertEntity } from '../../src/core/entities';
 import { leaderParts } from '../../src/core/entities';
 import { aciToCss } from '../../src/render/palette';
 
@@ -17,6 +17,8 @@ const sources = [
   'tests/fixtures/interchange/r2000-text-justification.dxf',
   'tests/fixtures/interchange/r2018-mtext-background.dxf',
   'tests/fixtures/interchange/r2018-minsert.dxf',
+  'tests/fixtures/polyline-widths.dxf',
+  'tests/fixtures/interchange/r2010-appearance.dxf',
 ];
 function summary(state: DrawingState) {
   const counts = (entities: DrawingState['entities']) => entities.reduce<Record<string, number>>((out, entity) => {
@@ -44,11 +46,25 @@ function nestedDimensionCase(repo: string): DrawingState {
   return { ...state, layouts: [], entities: [{ type: 'insert', id: 'nested-insert', layer: '0', color: 'ByLayer', position: { x: 10, y: 12 }, block: 'NESTED_DIM', scale: 2, rotation: 0, attributes: {} }], blocks: { NESTED_DIM: { name: 'NESTED_DIM', basePoint: { x: 0, y: 0 }, entities: [dimension], attributes: [] } } };
 }
 
+function arrayAttributeCase(repo: string): DrawingState {
+  const state = readDxf(readFileSync(join(repo, 'tests/fixtures/interchange/r2000-text-justification.dxf'), 'utf8'));
+  const original = state.entities.find((entity): entity is InsertEntity => entity.type === 'insert' && entity.attributes.TAG1 === 'OVERRIDE');
+  if (!original?.attributePlacements?.TAG1 || !state.blocks[original.block]) throw new Error('The independent TEXT fixture must have its native TAG1 placement.');
+  const insert: InsertEntity = {
+    ...original, id: 'native-array-attributes', rotation: Math.PI / 2, scale: 2, scaleY: 3,
+    columns: 3, rows: 2, columnSpacing: 7, rowSpacing: 11,
+    color: 2, trueColor: 0x2468ac, transparency: 96,
+    attributePlacements: { ...original.attributePlacements, TAG1: { ...original.attributePlacements.TAG1, color: 5, trueColor: 0x123456, transparency: 127 } },
+  };
+  return { ...state, entities: [insert], layouts: [], blocks: { [original.block]: state.blocks[original.block]! } };
+}
+
 const [mode, repo, output] = process.argv.slice(2);
 if (!repo || !output) throw new Error('Missing AutoCAD export helper arguments.');
 if (mode === 'export') {
-  const cases = [...sources, 'generated:nested-dimension-overrides'].map((source, index) => {
-    const state = source.startsWith('generated:') ? nestedDimensionCase(repo) : readDxf(readFileSync(join(repo, source), 'utf8'));
+  const cases = [...sources, 'generated:nested-dimension-overrides', 'generated:minsert-attribute-overrides'].map((source, index) => {
+    const state = source === 'generated:nested-dimension-overrides' ? nestedDimensionCase(repo)
+      : source === 'generated:minsert-attribute-overrides' ? arrayAttributeCase(repo) : readDxf(readFileSync(join(repo, source), 'utf8'));
     const file = join(output, `jcad-${index}.dxf`);
     writeFileSync(file, writeDxf(state));
     return { source, file, expected: summary(state) };

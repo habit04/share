@@ -143,7 +143,7 @@ matching ribbon button.
    contact shows the rung of its coil.
 9. **Check it.** Run `AEAUDIT` for the Electrical Audit; double-check any warnings with
    **Go To**.
-10. **Save.** Press Ctrl+S. Drawings are saved as DXF (AutoCAD 2000 format).
+10. **Save.** Press Ctrl+S. Drawings are saved as DXF, using the version required by their native properties.
 11. **Plot.** Press Ctrl+P, choose a paper size and click **Plot to PDF**.
 
 Tip: add `?demo` to the address of the browser edition to load a sample motor-control ladder.
@@ -1240,8 +1240,10 @@ Settings are stored per user on this computer (in the browser edition, per brows
 
 ### DXF
 
-DXF (AutoCAD 2000 / AC1015) is JCad Electrical's native format (AutoCAD is named here only as
-the compatibility reference). `SAVE` (QSAVE, Ctrl+S) and
+DXF is JCad Electrical's native format, starting at AutoCAD 2000 / AC1015 and choosing the
+highest version required by native properties: RGB/named colors need AutoCAD 2004,
+MTEXT masks need 2007, transparency needs 2010, and MTEXT frames need 2018.
+`SAVE` (QSAVE, Ctrl+S) and
 `SAVEAS` (Ctrl+Shift+S) write DXF. Layers, linetypes, lineweights, blocks, attributes
 (including invisible ones), dimensions, text, polylines with arcs and widths, and the
 electrical data all round-trip, and the files open in other CAD programs. `OPEN` (Ctrl+O)
@@ -1264,8 +1266,8 @@ in layouts keep their file. AutoCAD 2000 DXF has no MTEXT columns: JCad Electric
 as its own extended data, which it reads back while other programs show one column. Files
 written by programs before AutoCAD 2007 are
 read in the code page they name (`$DWGCODEPAGE`), newer ones as UTF-8; the command line reports
-the detected encoding. JCad Electrical writes AutoCAD 2000 DXF with any non-English characters
-escaped, so the text reads correctly whatever the code page of the program that opens it.
+the detected encoding. Exports before AutoCAD 2007 escape non-English characters; exports
+for 2007 and later use UTF-8.
 Arcs, circles, polylines and block references drawn in a mirrored plane (extrusion 0,0,-1, as
 MIRROR leaves them) open in their true place.
 

@@ -4,9 +4,10 @@ import { convertDwgMTextDatabase } from '../../scripts/dwg-mtext-background.mjs'
 import { convertDwgDatabase } from '../../scripts/dwg-array-conversion.mjs';
 
 export async function parseBrowserDwg(bytes: ArrayBuffer): Promise<{ payload: DwgImportPayload; version: string }> {
-  const [{ LibreDwg, createModule, Dwg_Object_Type }, wasmUrl] = await Promise.all([
+  const [{ LibreDwg, Dwg_Object_Type }, { default: createModule }, wasmUrl] = await Promise.all([
     import('@mlightcad/libredwg-web'),
-    import('../../node_modules/@mlightcad/libredwg-web/wasm/libredwg-web.wasm?url'),
+    import('../../vendor/libredwg-web-bg/factory/libredwg-web.js'),
+    import('../../vendor/libredwg-web-bg/factory/libredwg-web.wasm?url'),
   ]);
   const instance = await createModule({ locateFile: () => wasmUrl.default });
   const l = LibreDwg.createByWasmInstance(instance);

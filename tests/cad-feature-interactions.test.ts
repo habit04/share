@@ -204,6 +204,7 @@ describe('associated LEADER text appearance across feature boundaries', () => {
   it.each([
     { appearance: { color: 'ByLayer' as const, transparency: 127 as TransparencySpec }, version: 'AC1024', code: 440, value: '33554559' },
     { appearance: { color: 'ByLayer' as const, colorName: 'Book$Text only' }, version: 'AC1018', code: 430, value: 'Book$Text only' },
+    { appearance: { color: 'ByLayer' as const, trueColor: 0x123456 }, version: 'AC1018', code: 420, value: '1193046' },
   ])('promotes native DXF to $version when only associated text requires it', ({ appearance, version, code, value }) => {
     const source = onlyLeader(readDxf(leaderDxf()));
     const leader: LeaderEntity = { ...source, layer: '0', color: 'ByLayer', trueColor: undefined, colorName: undefined, transparency: undefined, textLayer: '0', textAppearance: appearance };

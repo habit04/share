@@ -5,8 +5,8 @@ import { importReportOf, geometryProblem } from '../src/io/import-report';
 import { Drawing } from '../src/core/document';
 import { inflateSync } from 'node:zlib';
 import { convertDwg, type DwgImportPayload } from '../src/io/dwg';
-import { placedText, textAnchor } from '../src/core/text-placement';
-import { textWidth, textBounds, rotateEntity, scaleEntityBy, translateEntity, mirrorEntityAcross, moveGrip, gripPoints, explodeInsert, type TextEntity, type Entity, type InsertEntity } from '../src/core/entities';
+import { placedText, textAnchor, scaledText } from '../src/core/text-placement';
+import { textWidth, textBounds, rotateEntity, scaleEntityBy, translateEntity, mirrorEntityAcross, moveGrip, gripPoints, explodeInsert, localAttributePlacement, attributeText, type TextEntity, type Entity, type InsertEntity, type BlockDef } from '../src/core/entities';
 import { drawEntity } from '../src/render/draw';
 import { vectorPdf, drawingContext } from '../src/io/pdf-vector';
 import { parsePdfBasics, pageContents, parseContentStream } from './helpers/pdf';
@@ -68,6 +68,59 @@ describe('native TEXT and attribute justification', () => {
     expect(aligned.widthFactor).toBe(1);
     expect(textWidth(aligned.text, aligned.height)).toBeCloseTo(Math.sqrt(200));
     expect(aligned.height).not.toBe(2);
+  });
+
+  it.each(['FIT', 'ALIGNED'])('scales the anchor-defined %s axes inside a nonuniform block, independently of DXF50', (name) => {
+    const source = { ...txt(name), position: { x: 0, y: 0 }, alignmentPoint: { x: 0, y: 10 }, rotation: 0 };
+    const block: BlockDef = { name: 'FITTED', basePoint: { x: 0, y: 0 }, entities: [source], attributes: [] };
+    const ins: InsertEntity = { id: 'fit-insert', type: 'insert', layer: '0', color: 'ByLayer', block: block.name, position: { x: 7, y: 11 }, scale: 2, scaleY: 3, rotation: 0, attributes: {} };
+    const before = placedText(source, textWidth);
+    const transformed = unwrap(explodeInsert(ins, () => block)[0]!);
+    const after = placedText(transformed, textWidth);
+    // The vertical baseline triples; its perpendicular horizontal glyph height doubles.
+    expect(after.position).toEqual({ x: 7, y: 11 });
+    expect(transformed.alignmentPoint).toEqual({ x: 7, y: 41 });
+    expect(after.rotation).toBeCloseTo(Math.PI / 2);
+    expect(after.height).toBeCloseTo(before.height * 2);
+    expect(textWidth(after.text, after.height) * after.widthFactor!).toBeCloseTo(30);
+    const native = records(writeDxf({ ...sample(), entities: [transformed] }), 'TEXT')[0]!;
+    expect(Number(native.get(40))).toBeCloseTo(4);
+    expect([Number(native.get(11)), Number(native.get(21))]).toEqual([7, 41]);
+  });
+
+  it('keeps rotated world-space FIT attribute axes when converting through an inverse nonuniform insert', () => {
+    const ins: InsertEntity = { id: 'fit-attribute', type: 'insert', layer: '0', color: 'ByLayer', block: 'ATTR', position: { x: 10, y: 20 }, scale: 2, scaleY: 3, rotation: Math.PI / 2, attributes: { TAG1: 'FIT' } };
+    const world = { ...txt('FIT'), position: { x: 10, y: 20 }, alignmentPoint: { x: -20, y: 20 }, height: 4, rotation: 0 };
+    const local = localAttributePlacement(ins, { x: 0, y: 0 }, world);
+    expect(local.height).toBeCloseTo(2);
+    expect(local.alignmentPoint!.x).toBeCloseTo(0);
+    expect(local.alignmentPoint!.y).toBeCloseTo(10);
+    const def = { ...local, tag: 'TAG1', prompt: 'Tag', default: 'FIT' };
+    const block: BlockDef = { name: 'ATTR', basePoint: { x: 0, y: 0 }, entities: [], attributes: [def] };
+    const restored = placedText(attributeText(ins, block, def), textWidth);
+    expect(restored.height).toBeCloseTo(4);
+    expect(restored.rotation).toBeCloseTo(Math.PI);
+    expect(textWidth(restored.text, restored.height) * restored.widthFactor!).toBeCloseTo(30);
+  });
+
+  it.each([['FIT', 0], ['FIT', 0.2], ['ALIGNED', 0], ['ALIGNED', 0.2]] as const)('reverses the readable normal for mirrored %s and restores source oblique %s after its inverse', (name, oblique) => {
+    const source = { ...txt(name), position: { x: 0, y: 0 }, alignmentPoint: { x: 10, y: 10 }, height: 2, widthFactor: 1, rotation: 0, oblique };
+    const forward = scaledText(source, (p) => ({ x: -2 * p.x, y: 3 * p.y }), 0, 2, 3, true);
+    // A diagonal baseline scaled by 2x3 has height factor 12/sqrt(26), width/height
+    // ratio 13/12 and shear 5/12. Reflection reverses the complete readable slant.
+    expect(forward.height).toBeCloseTo(24 / Math.sqrt(26));
+    expect(forward.widthFactor).toBeCloseTo(13 / 12);
+    expect(Math.tan(forward.oblique!)).toBeCloseTo(-(Math.tan(oblique) * 13 / 12 + 5 / 12));
+    const shown = placedText(forward, textWidth);
+    expect(shown.rotation).toBeCloseTo(Math.atan2(30, -20));
+    expect(textWidth(shown.text, shown.height) * shown.widthFactor!).toBeCloseTo(Math.hypot(20, 30));
+    const back = scaledText(forward, (p) => ({ x: -p.x / 2, y: p.y / 3 }), 0, 1 / 2, 1 / 3, true);
+    expect(back.position).toEqual(source.position);
+    expect(back.alignmentPoint).toEqual(source.alignmentPoint);
+    expect(back.height).toBeCloseTo(source.height);
+    expect(back.widthFactor).toBeCloseTo(1);
+    expect(back.oblique).toBeCloseTo(oblique);
+    expect(placedText(back, textWidth).height).toBeCloseTo(placedText(source, textWidth).height);
   });
 
   it('native anchors survive move, rotate, scale, mirror, grips, export and undo', () => {

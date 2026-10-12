@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 1,
+  "upstream": {
+    "repository": "https://github.com/mlightcad/libredwg-web",
+    "tag": "v0.7.14",
+    "commit": "1dd682f46339f37b67c5ff1085d10d04a8c16d7e"
+  },
+  "files": [
+    {
+      "path": "include/dwg.h",
+      "gitBlob": "b28e71a8dc37f9329d73dcb9d0d56c91c45f7625",
+      "replacements": [
+        {
+          "before": "BITCODE_BL bg_fill_scale;",
+          "after": "BITCODE_BD bg_fill_scale;",
+          "count": 2
+        }
+      ]
+    },
+    {
+      "path": "src/dwg.spec",
+      "gitBlob": "940d64a7122d4cfc62f0179799f388760c10372d",
+      "replacements": [
+        {
+          "before": "FIELD_BL (bg_fill_scale, 45)",
+          "after": "FIELD_BD (bg_fill_scale, 45)",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "path": "src/dwg_spec_shared.h",
+      "gitBlob": "b3419cab824688e6a6b55336217aa63a7775f373",
+      "replacements": [
+        {
+          "before": "SUB_FIELD_BL (mtext, bg_fill_scale, 45)",
+          "after": "SUB_FIELD_BD (mtext, bg_fill_scale, 45)",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "path": "src/dynapi.c",
+      "gitBlob": "8c5db6145a5813e6b309185b84c4260bd248b6c2",
+      "replacements": [
+        {
+          "before": "\"bg_fill_scale\",\t\"BL\", sizeof (BITCODE_BL)",
+          "after": "\"bg_fill_scale\",\t\"BD\", sizeof (BITCODE_BD)",
+          "count": 2
+        }
+      ]
+    },
+    {
+      "path": "test/unit-testing/mtext.c",
+      "gitBlob": "32f7fad727b2bfab5005362019c33426f56295ce",
+      "replacements": [
+        {
+          "before": "BITCODE_BL bg_fill_flag, bg_fill_scale, bg_fill_trans;",
+          "after": "BITCODE_BL bg_fill_flag, bg_fill_trans;\n  BITCODE_BD bg_fill_scale;",
+          "count": 1
+        },
+        {
+          "before": "CHK_ENTITY_TYPE (mtext, MTEXT, bg_fill_scale, BL)",
+          "after": "CHK_ENTITY_TYPE (mtext, MTEXT, bg_fill_scale, BD)",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "path": "bindings/javascript/embind/binding_dynapi.cpp",
+      "gitBlob": "8770af129e5439141b73b9de8c1f44a6aa167610",
+      "replacements": [
+        {
+          "before": "#include \"binding_common.h\"",
+          "after": "#include \"binding_common.h\"\n#include <memory>",
+          "count": 1
+        },
+        {
+          "before": "    auto color = reinterpret_cast<Dwg_Color*>(&((char *)_obj)[f->offset]);\n    auto js_object = color_to_js_object(color);\n    result.set(\"data\", js_object);",
+          "after": "    auto color = reinterpret_cast<Dwg_Color*>(&((char *)_obj)[f->offset]);\n    // CMC strings are TU in R2007+; the shared numeric projection has no version context.\n    // Supply empty strings there, then project the names here with the owning DWG version.\n    Dwg_Color numeric_color = *color;\n    numeric_color.name = const_cast<char*>(\"\");\n    numeric_color.book_name = const_cast<char*>(\"\");\n    auto js_object = color_to_js_object(&numeric_color);\n    const auto color_string = [dwg](const char *text) -> std::string {\n      if (!text)\n        return std::string();\n      if (dwg && IS_FROM_TU_DWG(dwg)) {\n        std::unique_ptr<char, decltype(&free)> utf8(\n          bit_convert_TU(reinterpret_cast<BITCODE_TU>(const_cast<char*>(text))), &free);\n        return utf8 ? std::string(utf8.get()) : std::string();\n      }\n      // R2004 names keep their existing code-page bytes for the JS layer to decode.\n      return std::string(text);\n    };\n    js_object.set(\"name\", color_string(color->name));\n    js_object.set(\"book_name\", color_string(color->book_name));\n    result.set(\"data\", js_object);",
+          "count": 1
+        }
+      ]
+    }
+  ]
+}

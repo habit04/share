@@ -6,7 +6,9 @@
  */
 import { describe, it, expect } from 'vitest';
 import { createRequire } from 'node:module';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { isAbsolute, join, relative } from 'node:path';
 import { buildAll, pngPixels, sameIcon, ICO_SIZES, PNG_SIZES } from '../scripts/make-icons.mjs';
 import { mainProcessSource } from './helpers/main-process';
 
@@ -112,6 +114,44 @@ describe('electron-builder configuration', () => {
       expect(a.name).toBeTruthy();
       expect(a.mimeType).toMatch(/^[a-z]+\/[a-z0-9.+-]+$/);
       expect(a.role).toBe('Editor');
+    }
+  });
+
+  it('includes the shared support configuration and every native DWG adapter under the real builder filters', () => {
+    const { getMainFileMatchers, getFileMatchers } = require('app-builder-lib/out/fileMatcher.js');
+    const from = fileURLToPath(root);
+    const output = join(from, 'release');
+    const macroExpander = (pattern: string) => pattern;
+    // Use the full builder function: its default exclusions drop package-lock.json
+    // under a plain vendor/** glob, while a dedicated file mapping preserves it.
+    const info = { projectDir: from, buildResourcesDir: 'build', config: build, debugLogger: { isEnabled: false } };
+    const mainMatchers = getMainFileMatchers(from, output, macroExpander, {}, { info }, output, false);
+    const unpackMatchers = getFileMatchers(build, 'asarUnpack', from, { macroExpander, customBuildOptions: {}, globalOutDir: output, defaultSrc: from });
+    const accepted = (matchers: Array<{ from: string; createFilter: () => (file: string, info: ReturnType<typeof lstatSync>) => boolean }>, file: URL) => {
+      const path = fileURLToPath(file), stat = lstatSync(file);
+      return matchers.some((matcher) => {
+        const rel = relative(matcher.from, path);
+        return !isAbsolute(rel) && rel !== '..' && !rel.startsWith('../') && !rel.startsWith('..\\') && matcher.createFilter()(path, stat);
+      });
+    };
+    const support = new URL('electron/support.json', root), supportInfo = lstatSync(support);
+    expect(supportInfo.isFile()).toBe(true);
+    expect(accepted(mainMatchers, support), 'Main-process mailto authorization requires the packaged shared JSON').toBe(true);
+    const adapters = ['dwg-reader.mjs', 'dwg-worker.mjs', 'dwg-array-conversion.mjs', 'dwg-mtext-background.mjs'];
+    for (const name of adapters) {
+      const source = new URL(`scripts/${name}`, root), info = lstatSync(source);
+      expect(info.isFile(), name).toBe(true);
+      expect(accepted(mainMatchers, source), `${name} must be packaged`).toBe(true);
+      expect(accepted(unpackMatchers, source), `${name} must remain importable by the real native worker outside ASAR`).toBe(true);
+    }
+    const provenance = JSON.parse(read('vendor/libredwg-web-bg/provenance.json')) as { assets: Array<{ path: string; bytes: number }> };
+    expect(provenance.assets).toHaveLength(15);
+    expect(provenance.assets.some((asset) => asset.path === 'declaration-tools/package-lock.json')).toBe(true);
+    for (const name of [...provenance.assets.map((asset) => asset.path), 'provenance.json', 'SHA256SUMS']) {
+      const source = new URL(`vendor/libredwg-web-bg/${name}`, root), stat = lstatSync(source);
+      expect(stat.isFile() && !stat.isSymbolicLink(), name).toBe(true);
+      expect(accepted(mainMatchers, source), `${name} must not be dropped by builder default exclusions`).toBe(true);
+      expect(accepted(unpackMatchers, source), `${name} belongs to the full unpacked native artifact`).toBe(true);
     }
   });
 

@@ -47,6 +47,7 @@
 import { _electron as electron } from 'playwright';
 import { applicationWindow } from './electron-window.mjs';
 import { verifyExecutableFuses } from './electron-fuse-policy.mjs';
+import { runCadFidelity } from './e2e-cad-fidelity.mjs';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, existsSync, lstatSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { deflateSync, crc32 } from 'node:zlib';
@@ -614,6 +615,10 @@ try {
   while ((await win.locator('.import-report-dialog').count()) > 0)
     await win.locator('.import-report-dialog .modal button', { hasText: 'Close' }).last().click();
 
+  // Independent five-feature CAD imports share this app and restore its original tab/view.
+  step = 'CAD fidelity';
+  await runCadFidelity({ app, page: win, repo, outDir, check, packaged });
+
   // ------------------------------------------------------------------ PLOT through plot-pdf
   step = 'PLOT';
   const pdfPath = join(outDir, 'plot-tabloid.pdf');
@@ -733,6 +738,10 @@ try {
   await about.waitFor({ timeout: 10_000 });
   const aboutText = await about.textContent();
   check(aboutText.includes('JCad Electrical') && aboutText.includes(info.version), 'About dialog shows the name and version');
+  const support = JSON.parse(readFileSync(join(repo, 'electron', 'support.json'), 'utf8'));
+  const supportUrl = `mailto:${support.email}`;
+  const aboutContact = about.locator('.about-contact a');
+  check(await aboutContact.count() === 1 && await aboutContact.textContent() === support.email && await aboutContact.getAttribute('href') === supportUrl, 'About shows the shared support email and exact mailto target');
   await win.waitForFunction(() => /Version \d/.test(document.querySelector('.modal .help-update-row')?.textContent ?? ''), null, { timeout: 5000 }).then(
     () => ok('About dialog shows appInfo from the main process'),
     () => bad('About dialog never showed appInfo'),
@@ -760,6 +769,13 @@ try {
     () => ok('Help > About (native menu) opens the About dialog'),
     () => bad('Help > About did not open the dialog'),
   );
+  const externalBeforeReport = await app.evaluate(() => globalThis.__e2e.external.length);
+  await win.locator('.modal', { hasText: 'Check for Updates' }).locator('button', { hasText: 'Report a Problem' }).click();
+  const reportContactDialog = win.locator('.modal', { hasText: 'You can also email bugs or feature requests' });
+  await reportContactDialog.waitFor({ timeout: 5000 });
+  const reportContact = reportContactDialog.locator('a[href^="mailto:"]');
+  check(await reportContact.count() === 1 && await reportContact.textContent() === support.email && await reportContact.getAttribute('href') === supportUrl, 'Report a Problem shows the shared support email and exact mailto target');
+  check(await app.evaluate(() => globalThis.__e2e.external.length) === externalBeforeReport, 'Observing About/report contact links does not launch an email client');
   await win.keyboard.press('Escape');
   await win.waitForTimeout(100);
 

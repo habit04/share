@@ -2,23 +2,22 @@
  * Node-side DWG reader shared by the Electron main process, the CLI and tests.
  * Loads LibreDWG (WebAssembly) lazily and returns a trimmed payload.
  */
-import { createRequire } from 'node:module';
-import { dirname, join } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { convertDwgMTextDatabase } from './dwg-mtext-background.mjs';
 import { convertDwgDatabase } from './dwg-array-conversion.mjs';
+import createNativeModule from '../vendor/libredwg-web-bg/factory/libredwg-web.js';
 
 let libPromise = null;
 
 async function lib() {
   if (!libPromise) {
     libPromise = (async () => {
-      const require = createRequire(import.meta.url);
-      // The package's "exports" map hides package.json, so resolve the wasm dir from the entry file.
-      const entry = require.resolve('@mlightcad/libredwg-web');
-      const pkgDir = join(dirname(entry), '..');
       const { LibreDwg } = await import('@mlightcad/libredwg-web');
-      return LibreDwg.create(join(pkgDir, 'wasm') + '/');
+      const wasmBinary = await readFile(new URL('../vendor/libredwg-web-bg/factory/libredwg-web.wasm', import.meta.url));
+      const instance = await createNativeModule({ wasmBinary });
+      return LibreDwg.createByWasmInstance(instance);
     })();
   }
   return libPromise;

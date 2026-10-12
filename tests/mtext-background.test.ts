@@ -152,7 +152,7 @@ describe('native MTEXT background masks', () => {
   });
 
   it('retains exposed DWG RGB masks and reports fields the installed reader cannot preserve', () => {
-    const payload = { header: {}, layers: [], blocks: [], entities: [{ type: 'MTEXT', handle: 'A2', layer: '0', insertionPoint: { x: 0, y: 0, z: 0 }, text: 'DWG RGB', textHeight: 2, rectWidth: 20, attachmentPoint: 1, backgroundFill: 1, fillBoxScale: 2, backgroundFillColor: 0xc3123456, backgroundFillTransparency: 0 }] } as unknown as DwgImportPayload;
+    const payload = { header: {}, layers: [], blocks: [], entities: [{ type: 'MTEXT', handle: 'A2', layer: '0', insertionPoint: { x: 0, y: 0, z: 0 }, text: 'DWG RGB', textHeight: 2, rectWidth: 20, attachmentPoint: 1, backgroundFill: 1, fillBoxScale: 2, backgroundFillColor: 0xc2123456, backgroundFillTransparency: 0 }] } as unknown as DwgImportPayload;
     const result = convertDwg(payload); const e = result.state.entities[0] as MTextEntity;
     expect(e.background).toMatchObject({ flags: 1, scale: 2, trueColor: 0x123456 });
     expect(JSON.stringify(result.report)).toMatch(/background.*(reader|color|index)/i);
@@ -160,8 +160,9 @@ describe('native MTEXT background masks', () => {
 
   it('uses preserved native CMC indexes and book identities rather than treating an ACI payload as RGB', () => {
     for (const [data, expected] of [
-      [{ method: 0xc2, index: 1, rgb: 0xc2000001 }, { color: 1 }],
-      [{ method: 0xc3, index: 256, rgb: 0xc3123456, bookName: 'Example Book', name: 'Slate' }, { color: 'ByLayer', trueColor: 0x123456, colorName: 'Example Book$Slate' }],
+      // Tuples from the independent AutoCAD DWG fixture, not GNU's reversed header comments.
+      [{ method: 0xc3, index: 256, rgb: 0xc3000001 }, { color: 1 }],
+      [{ method: 0xc2, index: 256, rgb: 0xc2123456, bookName: 'Example Book', name: 'Slate' }, { color: 'ByLayer', trueColor: 0x123456, colorName: 'Example Book$Slate' }],
       [{ method: 0xc1, index: 0, rgb: 0xc1000000 }, { color: 0 }],
     ] as const) {
       const payload = { header: {}, layers: [], blocks: [], entities: [{ type: 'MTEXT', handle: 'A2', layer: '0', insertionPoint: { x: 0, y: 0, z: 0 }, text: 'DWG', textHeight: 2, rectWidth: 20, attachmentPoint: 1, backgroundFill: 1, fillBoxScale: 1.5, backgroundFillColor: data.rgb, backgroundFillColorData: data }] } as unknown as DwgImportPayload;
@@ -201,7 +202,7 @@ describe('native MTEXT background masks', () => {
     expect(reopened.textBackground).toEqual(leader.textBackground); expect(reopened.textLayer).toBe('0');
     const payload = { header: {}, layers: [], blocks: [], entities: [
       { type: 'LEADER', handle: 'B1', layer: 'LEADERS', vertices: [{ x: -10, y: -10 }, { x: 0, y: 0 }], associatedAnnotation: 'A1' },
-      { type: 'MTEXT', handle: 'A1', layer: 'NOTES', insertionPoint: { x: 0, y: 0, z: 0 }, text: 'DWG MASK', textHeight: 2, rectWidth: 20, attachmentPoint: 1, lineSpacing: 1.25, backgroundFill: 1, fillBoxScale: 1.5, backgroundFillColor: 0xc3000011, backgroundFillColorData: { method: 0xc3, index: 256, rgb: 0xc3000011 } },
+      { type: 'MTEXT', handle: 'A1', layer: 'NOTES', insertionPoint: { x: 0, y: 0, z: 0 }, text: 'DWG MASK', textHeight: 2, rectWidth: 20, attachmentPoint: 1, lineSpacing: 1.25, backgroundFill: 1, fillBoxScale: 1.5, backgroundFillColor: 0xc2000011, backgroundFillColorData: { method: 0xc2, index: 256, rgb: 0xc2000011 } },
     ] } as unknown as DwgImportPayload;
     const dwg = convertDwg(payload).state;
     expect(dwg.entities).toHaveLength(1);
@@ -212,7 +213,7 @@ describe('native MTEXT background masks', () => {
 
   it('captures native CMC metadata through the pinned converter boundary for both model and block MTEXT', () => {
     // Simulate its documented object -> common entity -> entity-tio calls, with distinct handles.
-    const raw = new Map([[1, { index: 1, method: 0xc2, rgb: 0xc2000001 }], [2, { index: 256, method: 0xc3, rgb: 0xc3123456, name: 'Slate', book_name: 'Book' }]]);
+    const raw = new Map([[1, { index: 256, method: 0xc3, rgb: 0xc3000001 }], [2, { index: 256, method: 0xc2, rgb: 0xc2123456, name: 'Slate', book_name: 'Book' }]]);
     const instance = {
       dwg_object_to_entity: (object: number) => object + 100,
       dwg_object_to_entity_tio: (object: number) => object + 200,
@@ -223,8 +224,8 @@ describe('native MTEXT background masks', () => {
       for (const object of [1, 2]) { reader.dwg_object_to_entity(object); const tio = reader.dwg_object_to_entity_tio(object); reader.dwg_dynapi_entity_data(tio, 'bg_fill_color'); }
       return { entities: [{ type: 'MTEXT', handle: 'A1' }], tables: { BLOCK_RECORD: { entries: [{ entities: [{ type: 'MTEXT', handle: 'A2' }] }] } } } as unknown as ReturnType<typeof convertDwgMTextDatabase>;
     });
-    expect(database.entities[0]).toMatchObject({ backgroundFillColorData: { index: 1, method: 0xc2, rgb: 0xc2000001 } });
-    expect(database.tables.BLOCK_RECORD.entries[0]?.entities[0]).toMatchObject({ backgroundFillColorData: { index: 256, method: 0xc3, rgb: 0xc3123456, name: 'Slate', bookName: 'Book' } });
+    expect(database.entities[0]).toMatchObject({ backgroundFillColorData: { index: 256, method: 0xc3, rgb: 0xc3000001 } });
+    expect(database.tables.BLOCK_RECORD.entries[0]?.entities[0]).toMatchObject({ backgroundFillColorData: { index: 256, method: 0xc2, rgb: 0xc2123456, name: 'Slate', bookName: 'Book' } });
   });
 
   it('rejects malformed mask geometry and reports unsupported native transparency rather than applying it', () => {

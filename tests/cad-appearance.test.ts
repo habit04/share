@@ -55,11 +55,15 @@ describe('CAD appearance codes and independent fixture', () => {
     expect(explodeInsert(back.entities[0] as InsertEntity, (n) => back.blocks[n]).map((e) => Math.round(resolveAlpha(e, back.layers) * 255))).toEqual(expected);
     expect(JSON.stringify(importReportOf(back)?.items ?? [])).not.toMatch(/transparency.*not kept|color-book names are not kept/);
   });
-  it('keeps legacy DXF output when new properties are absent and promotes named colors only to 2004', () => {
-    const plain = { ...named, colorName: undefined, transparency: undefined };
+  it('keeps legacy DXF output for ACI-only drawings and promotes RGB or named colors to 2004', () => {
+    const plain = { ...named, trueColor: undefined, colorName: undefined, transparency: undefined };
     const simple: DrawingState = { entities: [plain], layers: [], blocks: {}, currentLayer: '0' };
     expect(writeDxf(simple)).toContain('AC1015');
     expect(writeDxf({ ...simple, entities: [{ ...plain, colorName: 'Book$Named' }] })).toContain('AC1018');
+    const rgb = writeDxf({ ...simple, entities: [{ ...plain, trueColor: 0x123456 }] });
+    expect(rgb).toContain('AC1018');
+    expect(rgb).toContain('420\r\n1193046');
+    expect(readDxf(rgb).entities[0]?.trueColor).toBe(0x123456);
   });
   it('accepts a layer 440 value but exports its supported AcCmTransparency XDATA representation', () => {
     const alternate = fixture.replace('1001\nAcCmTransparency\n1071\n33554560', '440\n33554560');

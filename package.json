@@ -1,6 +1,6 @@
 {
   "name": "jcad-electrical",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "2D electrical schematic drafting application (desktop)",
   "author": "JCad Electrical contributors",
   "license": "GPL-3.0-only",
@@ -66,10 +66,18 @@
       "scripts/dwg-mtext-background.mjs",
       "scripts/dwg-array-conversion.mjs",
       "scripts/dwg-worker.mjs",
+      {
+        "from": "vendor/libredwg-web-bg",
+        "to": "vendor/libredwg-web-bg",
+        "filter": [
+          "**/*"
+        ]
+      },
       "package.json"
     ],
     "asarUnpack": [
       "node_modules/@mlightcad/libredwg-web/**",
+      "vendor/libredwg-web-bg/**",
       "scripts/**"
     ],
     "win": {

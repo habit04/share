@@ -604,9 +604,9 @@ describe('MTEXT columns in the R2018 embedded object: static, dynamic auto heigh
 /*
  * Survives: HATCH pattern name, scale and angle fitted to the stored definition lines, boundary
  * loops (polyline loops with bulges, line / arc edges as bulged polylines), SOLID with an island;
- * LWPOLYLINE bulges and constant width (43); SPLINE fit points, end tangents, knots, control
+ * LWPOLYLINE bulges, constant width (43) and vertex start/end widths (40/41); SPLINE fit points, end tangents, knots, control
  * points and weights; ELLIPSE axes, ratio and parameters; entity lineweights.
- * Lost (matrix): per-vertex start / end widths (40 / 41); the hatch's link to its boundary object.
+ * Lost (matrix): the hatch's link to its boundary object.
  */
 describe('r2000-hatch-curves.dxf: HATCH (ANSI31 with bulges, SOLID with island), LWPOLYLINE, SPLINE, ELLIPSE (AC1015)', () => {
   const f = fixture('r2000-hatch-curves.dxf');
@@ -617,14 +617,15 @@ describe('r2000-hatch-curves.dxf: HATCH (ANSI31 with bulges, SOLID with island),
     const splines = ofType<SplineEntity>(s.entities, 'spline');
     const ellipses = ofType<EllipseEntity>(s.entities, 'ellipse');
 
-    it('entity order kept; source boundary/vertex-width losses are reported', () => {
+    it('entity order and vertex widths kept; source boundary-link losses are reported', () => {
       if (s === f.imported) {
         expect(importReportOf(s)?.items).toContainEqual(expect.objectContaining({ type: 'HATCH', reason: expect.stringContaining('boundary links') }));
-        expect(importReportOf(s)?.items).toContainEqual(expect.objectContaining({ type: 'LWPOLYLINE', reason: expect.stringContaining('per-vertex polyline widths') }));
+        expect(importReportOf(s)?.items.some((i) => i.reason.includes('per-vertex polyline widths'))).toBe(false);
         expect(importReportOf(s)?.items).toContainEqual(expect.objectContaining({ type: 'LWPOLYLINE', reason: expect.stringContaining('reactor/extension-dictionary links') }));
       }
       else expect(importReportOf(s)).toBeUndefined();
       expect(s.entities.map((e) => e.type)).toEqual(['polyline', 'hatch', 'hatch', 'polyline', 'circle', 'hatch', 'polyline', 'polyline', 'spline', 'spline', 'ellipse', 'ellipse']);
+      expect(polys.find((e) => e.widths)?.widths).toEqual([{ start: 0, end: 0 }, { start: 6, end: 0 }, { start: 0, end: 0 }]);
     });
 
     it('ANSI31 at scale 10 inside the slot: a polyline loop with two half circles (bulge 1)', () => {
@@ -749,8 +750,8 @@ describe('r2000-hatch-curves.dxf: HATCH (ANSI31 with bulges, SOLID with island),
  * Survives: layer and entity true colours (420) with their ACI, layer lineweights, entity
  * lineweights (explicit, ByBlock -2; ByLayer -1 as inherit), linetype scale, layer linetypes,
  * off / frozen / locked / no-plot; complex linetypes as their dash patterns; SOLID hatch colour.
- * Lost (matrix): colour-book names (430) and transparency (440, layer AcCmTransparency XDATA);
- * text and shapes embedded in complex linetypes ("only the dashes are" drawn and written).
+ * Survives: colour-book names (430) and transparency (440, layer AcCmTransparency XDATA).
+ * Lost (matrix): text and shapes embedded in complex linetypes ("only the dashes are" drawn and written).
  */
 describe('r2018-truecolor-linetypes.dxf: true colours, colour book, transparency, lineweights, complex linetypes (AC1032)', () => {
   const f = fixture('r2018-truecolor-linetypes.dxf');
@@ -799,10 +800,19 @@ describe('r2018-truecolor-linetypes.dxf: true colours, colour book, transparency
     });
   });
 
-  it('lost as the matrix says: colour-book names (430), transparency (440 and layer XDATA) and linetype text / shapes are not written', () => {
-    expect(f.written).not.toContain('PANTONE+');
-    expect(f.written).not.toContain('AcCmTransparency');
-    expect(records(f.written, 'ARC')[0]!.some(([c]) => c === 440)).toBe(false);
+  it('writes native color-book identity and opacity while complex linetype text/shapes remain unsupported', () => {
+    const identity = 'PANTONE+ Solid Coated$PANTONE 355 C';
+    expect(group(records(f.written, 'TEXT')[0], 430)).toBe(identity);
+    expect(group(records(f.written, 'LAYER').find((r) => group(r, 2) === 'BOOK'), 430)).toBe(identity);
+    const fence = records(f.written, 'LAYER').find((r) => group(r, 2) === 'FENCE');
+    expect(group(fence, 1001)).toBe('AcCmTransparency');
+    expect(group(fence, 1071)).toBe('33554559');
+    expect(group(records(f.written, 'ARC')[0], 440)).toBe('33554559');
+    for (const [, state] of both(f)) {
+      expect(layerOf(state, 'FENCE')?.transparency).toBe(127);
+      expect(ofType<ArcEntity>(state.entities, 'arc')[0]?.transparency).toBe(127);
+      expect(ofType<TextEntity>(state.entities, 'text')[0]?.colorName).toBe(identity);
+    }
     const gas = records(f.written, 'LTYPE').find((r) => group(r, 2) === 'GAS_LINE')!;
     expect(gas.filter(([c]) => c === 49).map(([, v]) => Number(v))).toEqual([12.7, -5.08, -6.35]);
     expect(gas.some(([c]) => c === 9)).toBe(false);
