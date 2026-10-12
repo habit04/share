@@ -33,6 +33,12 @@ before reading owned handles. MINSERT places array count/spacing fields before
 those handles, so treating it as INSERT dereferenced spacing bytes as pointers.
 Existing vector/linked-list traversal is retained after selecting the correct fields.
 
+For ATTRIB, the decoder stops its single-line field sequence at the lock-position
+bit, as specified by ODA section 20.4.4. Its extra R2010+ KeepDuplicateRecords read
+belongs to the existing DXF/export projection and must not consume bytes from the
+DWG stream. That read is excluded only for `IS_DECODER`. ATTDEF retains its
+separate R2010+ byte before the prompt; the ATTRIB repair does not alter ATTDEF.
+
 `mtext-background-scale.patch.json` is an exact checked patch, not a search-and-replace over an
 arbitrary dependency version. `patch-source.mjs` verifies the source HEAD, pinned submodule,
 package build scripts/license Git blobs, every complete file preimage, and exact replacement
@@ -40,6 +46,13 @@ counts before writing. It rejects reapplication or drift and records original/mo
 digests. The field types are checked again after autogen and after compilation.
 
 ## Pins and commands
+
+The decoder also reads inline ENC RGB before its optional alpha word, following
+[ODA section 2.11](https://www.opendesign.com/files/guestdownloads/OpenDesign_Specification_for_.dwg_files.pdf#page=13).
+Book-color handle placement follows section 20.4.2; the single-line ATTRIB ending follows
+section 20.4.4. These repairs preserve the existing nondecoder projections. Failed compiled
+gates may upload a clearly labeled diagnostic factory/WASM with corresponding source and
+license; those bundles have no accepted provenance and are never integrated into the app.
 
 - Source: `mlightcad/libredwg-web`, tag `v0.7.14`, commit
   `1dd682f46339f37b67c5ff1085d10d04a8c16d7e`.

@@ -49,6 +49,11 @@ test('production patch covers both main and embedded fields with pinned source',
   for (const path of ['src/common_entity_data.spec', 'src/common_entity_handle_data.spec', 'src/decode.c']) {
     assert.ok(patch.files.some((file) => file.path === path), `Missing checked decoder ordering preimage: ${path}`);
   }
+  const attributeRepair = patch.files.find((file) => file.path === 'src/dwg.spec').replacements.find((replacement) => replacement.before.includes('keep_duplicate_records'));
+  assert.ok(attributeRepair, 'ATTRIB must not decode a DXF-only trailing byte.');
+  assert.equal(attributeRepair.count, 1, 'ATTDEF retains its real second version byte.');
+  assert.match(attributeRepair.after, /#ifndef IS_DECODER\n[\s\S]*FIELD_RC \(keep_duplicate_records, 0\);[\s\S]*#endif\n  }\n  COMMON_ENTITY_HANDLE_DATA;/);
+  assert.match(attributeRepair.before, /FIELD_HANDLE \(style, 5, 0\); \/\/ unexpected here in DXF/, 'The replacement must bind the ATTRIB-only ending.');
 });
 
 test('native color gate refuses unresolved references and impossible pointers', () => {

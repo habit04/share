@@ -96,6 +96,7 @@ jobs:
           "$NATIVE_DECLARATION_TOOLS/node_modules/.bin/tsc" --outFile "$NATIVE_DECLARATION_TOOLS/probe.d.ts" --skipLibCheck --declaration --emitDeclarationOnly --allowJs "$NATIVE_DECLARATION_TOOLS/probe.js"
           test -s "$NATIVE_DECLARATION_TOOLS/probe.d.ts"
       - name: Compile matching factory glue and WASM using upstream build scripts
+        id: native_compile
         timeout-minutes: 40
         shell: bash
         run: |
@@ -137,3 +138,23 @@ jobs:
           path: ${{ runner.temp }}/native-dwg-artifact/
           if-no-files-found: error
           retention-days: 30
+      - name: Preserve unverified native diagnostics after a failed gate
+        id: native_diagnostics
+        if: failure() && steps.native_compile.conclusion == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          NATIVE_DIAGNOSTIC="$RUNNER_TEMP/native-dwg-unverified-diagnostic"
+          mkdir -p "$NATIVE_DIAGNOSTIC/factory"
+          cp "$NATIVE_ARTIFACT/factory/libredwg-web.js" "$NATIVE_ARTIFACT/factory/libredwg-web.wasm" "$NATIVE_ARTIFACT/factory/package.json" "$NATIVE_DIAGNOSTIC/factory/"
+          cp "$NATIVE_SOURCE/COPYING" "$NATIVE_DIAGNOSTIC/COPYING"
+          cp scripts/native-dwg-build/mtext-background-scale.patch.json scripts/native-dwg-build/pins.json "$NATIVE_DIAGNOSTIC/"
+          tar --exclude=.git --exclude=build-wasm --exclude=node_modules -czf "$NATIVE_DIAGNOSTIC/modified-source.tar.gz" -C "$NATIVE_SOURCE" .
+          printf '%s\n' 'UNVERIFIED DIAGNOSTIC ONLY. A native acceptance gate failed. Do not integrate this factory/WASM into JCad. It has no accepted provenance contract.' > "$NATIVE_DIAGNOSTIC/README.txt"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: failure() && steps.native_diagnostics.conclusion == 'success'
+        with:
+          name: UNVERIFIED-native-dwg-diagnostics-${{ github.sha }}
+          path: ${{ runner.temp }}/native-dwg-unverified-diagnostic/
+          if-no-files-found: error
+          retention-days: 7

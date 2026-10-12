@@ -25,6 +25,11 @@
           "before": "FIELD_BL (bg_fill_scale, 45)",
           "after": "FIELD_BD (bg_fill_scale, 45)",
           "count": 1
+        },
+        {
+          "before": "    // XRECORD subclass\n    SINCE (R_2010b) {\n      FIELD_RC (keep_duplicate_records, 0);\n      VALUEOUTOFBOUNDS (keep_duplicate_records, 1)\n    }\n  }\n  COMMON_ENTITY_HANDLE_DATA;\n  SINCE (R_13b1) {\n    FIELD_HANDLE (style, 5, 0); // unexpected here in DXF\n  }",
+          "after": "    // A DWG ATTRIB ends at lock_position_flag (ODA 20.4.4).\n    // Preserve the DXF/export projection without decoding an extra byte.\n#ifndef IS_DECODER\n    // XRECORD subclass\n    SINCE (R_2010b) {\n      FIELD_RC (keep_duplicate_records, 0);\n      VALUEOUTOFBOUNDS (keep_duplicate_records, 1)\n    }\n#endif\n  }\n  COMMON_ENTITY_HANDLE_DATA;\n  SINCE (R_13b1) {\n    FIELD_HANDLE (style, 5, 0); // unexpected here in DXF\n  }",
+          "count": 1
         }
       ]
     },
@@ -121,6 +126,16 @@
         {
           "before": "#ifndef IS_ENCODER\n          FIELD_HANDLE (color.handle, 0, 430); // DBCOLOR 1E9F74 => 1F05B9\n#endif",
           "after": "#if !defined(IS_ENCODER) && !defined(IS_DECODER)\n          // Decoder consumes this reference after owner/reactors/xdic, before layer.\n          FIELD_HANDLE (color.handle, 0, 430); // DBCOLOR 1E9F74 => 1F05B9\n#endif",
+          "count": 1
+        },
+        {
+          "before": "      flags = _ent->color.flag;\n      if (flags & 0x20)",
+          "after": "      flags = _ent->color.flag;\n#ifdef IS_DECODER\n      // ENC stores inline RGB before alpha. Referenced book colors carry no RGB BL.\n      if ((flags & 0x80) && !(flags & 0x40))\n        {\n          FIELD_BLx (color.rgb, 420);\n        }\n#endif\n      if (flags & 0x20)",
+          "count": 1
+        },
+        {
+          "before": "      else if (flags & 0x80) // and not a reference\n        {\n          DXF {\n            VALUE_BL (_ent->color.rgb & 0x00ffffff, 420);\n          } else {\n            FIELD_BLx (color.rgb, 420); // ODA bug, documented as BS\n          }\n        }",
+          "after": "      else if (flags & 0x80) // and not a reference\n        {\n#ifndef IS_DECODER\n          DXF {\n            VALUE_BL (_ent->color.rgb & 0x00ffffff, 420);\n          } else {\n            FIELD_BLx (color.rgb, 420); // ODA bug, documented as BS\n          }\n#endif\n        }",
           "count": 1
         }
       ]
