@@ -117,6 +117,13 @@ else {
   const smokeSteps = (smoke?.steps ?? []).filter((s) => String(s.run ?? '').includes('scripts/packaged-smoke.mjs'));
   if (smokeSteps.length !== 1 || smokeSteps[0].if !== undefined || String(smokeSteps[0].run ?? '').trim() !== 'node scripts/packaged-smoke.mjs installers')
     problems.push('release.yml: packaged smoke must run unconditionally on Windows');
+  const absenceCommand = './scripts/check-no-autocad.ps1 -EvidencePath packaged-smoke-output/no-autocad-inventory.json';
+  const smokeAllSteps = smoke?.steps ?? [];
+  const absenceSteps = smokeAllSteps.filter((step) => String(step.run ?? '').includes('scripts/check-no-autocad.ps1'));
+  if (absenceSteps.length !== 1 || absenceSteps[0].if !== undefined || absenceSteps[0].shell !== 'pwsh' ||
+      String(absenceSteps[0].run ?? '').trim() !== absenceCommand || absenceSteps[0].env?.SOURCE_SHA !== '${{ needs.checks.outputs.sha }}' ||
+      smokeAllSteps.indexOf(absenceSteps[0]) !== smokeAllSteps.indexOf(smokeSteps[0]) - 1)
+    problems.push('release.yml: an unconditional source-bound AutoCAD absence inventory must run immediately before installed Windows smoke and retain its evidence');
   for (const step of smokeSteps) {
     if (String(step.env?.JCAD_SMOKE_REQUIRE_SHIPPING) !== '1') problems.push('release.yml: shipping smoke must require disabled inspection fuses and fixed runtime probes');
     if (String(step.env?.JCAD_SMOKE_NATIVE_ONLY) !== '1' || step.env?.JCAD_SMOKE_EXPECT_ARCH !== '${{ matrix.arch }}')
