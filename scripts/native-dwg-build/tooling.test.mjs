@@ -80,6 +80,8 @@ test('metadata native patch uses one owned bounded stream and copied identities 
   assert.match(after, /ferror\(stream\)/);
   assert.match(after, /fclose\(stream\)/);
   assert.match(after, /"%llX"/);
+  assert.equal((after.match(/notes\.call<void>\("push", std::string\(/g) ?? []).length, 8);
+  assert.doesNotMatch(after, /notes\.call<void>\("push", (?:"|over_limit)/);
   assert.doesNotMatch(after, /FS\.|input_filename|output_filename|reinterpret_cast<uintptr_t>\(obj/);
   const values = patch.files.find((file) => file.path === 'src/dwg_spec_shared.h').replacements.find((replacement) => replacement.after.includes('JCAD_TABLE_VALUE_BODY_FLAGS 1')).after;
   assert.match(values, /# if defined\(IS_DXF\) \|\| defined\(IS_FREE\)\n# {2}define JCAD_TABLE_VALUE_BODY_FLAGS 1/);
