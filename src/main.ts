@@ -46,6 +46,7 @@ import { registerDimStyleCommands } from './tools/dimension';
 import { renderSettings, clearImageCache } from './render/draw';
 import { bridgeImageLoader } from './render/images';
 import { installOpenProgress, type OpenProgressBridge } from './ui/open-progress';
+import { registerDwgExportCommand } from './app/export-dwg';
 
 declare global {
   interface Window {
@@ -61,6 +62,9 @@ declare global {
       savePdf?(bytes: Uint8Array, suggestName: string): Promise<string | null>;
       saveDxf(path: string | null, text: string, suggestName: string, opts?: { backup?: boolean }): Promise<string | null>;
       chooseDrawingPath?(suggestName: string): Promise<string | null>;
+      dwgExportStatus?(): Promise<{ available: boolean; reason?: string }>;
+      chooseDwgPath?(suggestName: string): Promise<string | null>;
+      exportDwg?(path: string, text: string): Promise<string | null>;
       onMenuCommand(cb: (cmd: string) => void): void;
       /** Close / quit / restart: the main process waits for the Save All workflow's answer (true = close). */
       onCloseRequest?(cb: (context: 'close' | 'quit' | 'restart') => Promise<boolean>): void;
@@ -336,6 +340,7 @@ function boot(): void {
   const canvasWrap = canvas.parentElement as HTMLElement;
   const editor = new Editor(canvas);
   editor.fileBridge = window.jcad ?? browserFileBridge();
+  registerDwgExportCommand(editor);
   editor.ui = {
     pickSymbol: () =>
       pickSymbolDialog(editor, editor.settings.symbolStandard, (std) => {

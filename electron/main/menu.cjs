@@ -39,6 +39,7 @@ function buildMenu(win, ctx) {
         { label: 'Close', accelerator: 'CmdOrCtrl+W', click: send('CLOSE') },
         { label: 'Save', accelerator: 'CmdOrCtrl+S', click: send('SAVE') },
         { label: 'Save As…', accelerator: 'CmdOrCtrl+Shift+S', click: send('SAVEAS') },
+        ...(process.platform === 'win32' ? [{ label: 'Export DWG copy…', click: send('EXPORTDWG') }] : []),
         { label: 'Plot to PDF…', accelerator: 'CmdOrCtrl+P', click: send('PLOT') },
         { label: 'Print…', accelerator: 'CmdOrCtrl+Shift+P', click: send('PRINT') },
         { type: 'separator' },

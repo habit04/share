@@ -68,6 +68,31 @@ describe('landing page (site/)', () => {
   const landing = readFileSync(join(root, 'site/index.html'), 'utf8');
   const siteJs = readFileSync(join(root, 'site/site.js'), 'utf8');
 
+  it.each(['win', 'linux'])('keeps legacy downloads pinned when the latest release contains only Windows (%s visitor)', async (os) => {
+    const keys = ['auto', 'win', 'mac-arm64', 'mac-x64', 'linux-appimage', 'linux-deb'];
+    const buttons = keys.map((key) => {
+      const attributes = new Map([['data-asset', key]]);
+      return { href: '', getAttribute: (name: string) => attributes.get(name) ?? null, setAttribute: (name: string, value: string) => attributes.set(name, value), removeAttribute: (name: string) => attributes.delete(name) };
+    });
+    const label = { textContent: '' };
+    let done!: () => void;
+    const completed = new Promise<void>((resolve) => { done = resolve; });
+    runInNewContext(siteJs, {
+      document: { querySelector: (s: string) => s === '#primary-download .btn-label' ? label : null, querySelectorAll: (s: string) => s === '[data-asset]' ? buttons : [], getElementById: (s: string) => s === 'primary-download' ? buttons[0] : null },
+      navigator: { platform: os === 'win' ? 'Win32' : 'Linux x86_64', userAgent: '' },
+      sessionStorage: { getItem: () => null, setItem: () => {} },
+      fetch: () => Promise.resolve({ ok: true, json: () => Promise.resolve({ tag_name:'v0.4.6', assets:[{ name:'jcad-electrical-0.4.6-win-x64.exe', browser_download_url:'https://example.test/windows.exe' }] }) }),
+      setTimeout: () => 1, clearTimeout: done,
+    });
+    await completed;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(buttons[1]!.href).toBe('https://example.test/windows.exe');
+    expect(buttons[0]!.href).toBe(os === 'win' ? 'https://example.test/windows.exe' : '#download');
+    for (const button of buttons.slice(2)) expect(button.href).toMatch(/^https:\/\/github.com\/habit04\/share\/releases\/download\/v0\.4\.5\/jcad-electrical-0\.4\.5-/);
+    if (os === 'linux') expect(label.textContent).toBe('Older Linux downloads');
+    expect(landing).toContain('updates paused');
+  });
+
   it('links the app by folder (its index.html resolves the current hashes) and hard-codes no hashed asset', () => {
     expect(landing).toMatch(/href="\.\/app\/\?/);
     for (const text of [landing, siteJs]) {
@@ -87,6 +112,8 @@ describe('landing page (site/)', () => {
     };
     for (const online of [true, false]) {
       const hero = makeButton('auto'), arm = makeButton('mac-arm64'), intel = makeButton('mac-x64');
+      arm.href = 'https://github.com/habit04/share/releases/download/v0.4.5/jcad-electrical-0.4.5-mac-arm64.dmg';
+      intel.href = 'https://github.com/habit04/share/releases/download/v0.4.5/jcad-electrical-0.4.5-mac-x64.dmg';
       const label = { textContent: '' }, fallback = { hidden: true };
       const buttons = [hero, arm, intel];
       let done!: () => void;
@@ -107,11 +134,11 @@ describe('landing page (site/)', () => {
       });
       await completed;
       await new Promise<void>((resolve) => setImmediate(resolve));
-      expect(label.textContent).toBe('Choose Mac version');
+      expect(label.textContent).toBe('Older Mac downloads');
       expect(hero.href).toBe('#download');
       expect(hero.attributes.has('download')).toBe(false);
-      expect(arm.href).toBe(online ? 'https://example.test/arm.dmg' : releases);
-      expect(intel.href).toBe(online ? 'https://example.test/intel.dmg' : releases);
+      expect(arm.href).toBe('https://github.com/habit04/share/releases/download/v0.4.5/jcad-electrical-0.4.5-mac-arm64.dmg');
+      expect(intel.href).toBe('https://github.com/habit04/share/releases/download/v0.4.5/jcad-electrical-0.4.5-mac-x64.dmg');
       expect(fallback.hidden).toBe(online);
     }
   });

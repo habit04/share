@@ -29,6 +29,23 @@ const changelog = `# Changelog
 `;
 
 describe('release notes from CHANGELOG.md', () => {
+  it('renders signed Windows-only provenance without inventing new Mac or Linux installers', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'jcad-windows-notes-'));
+    try {
+      const release = { releasePolicy: 'windows-only', version: '0.4.6', sourceSha: 'a'.repeat(40), builds: [{ platform: 'Windows', signing: 'authenticode-verified' }] };
+      const file = join(dir, 'release-provenance.json');
+      writeFileSync(file, JSON.stringify(release));
+      expect(readProvenance(file)).toEqual({ releasePolicy: 'windows-only', release });
+      const notes = releaseNotes(changelog, 'v0.4.6', undefined, { releasePolicy: 'windows-only' }) + signingSummary(release);
+      expect(notes).toContain('jcad-electrical-0.4.6-win-x64.exe');
+      expect(notes).toContain('macOS and Linux desktop updates are paused');
+      expect(notes).toContain('/releases/tag/v0.4.5');
+      expect(notes).not.toMatch(/0\.4\.6-mac|Developer ID|\.AppImage/);
+      expect(notes).toContain('Windows: Authenticode signature verified.');
+      writeFileSync(file, JSON.stringify({ ...release, builds: [{ platform: 'Windows', signing: 'unsigned' }] }));
+      expect(() => readProvenance(file)).toThrow(/invalid signed Windows-only release record/);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
   it('takes the section of the version, up to the next heading or link list', () => {
     expect(sectionFor(changelog, 'v0.2.0')).toBe('### Fixed\n\n- A bug.');
     expect(sectionFor(changelog, '0.1.0')).toBe('- First.');
@@ -112,9 +129,11 @@ describe('release notes from CHANGELOG.md', () => {
     const v042 = releaseNotes(real, 'v0.4.2', undefined, { macSigning: 'developer-id-notarized' });
     expect(v042.startsWith('### Upgrade notes\n')).toBe(true);
     expect(v042).not.toContain('Open Anyway');
-    const current = releaseNotes(real, `v${pkg.version}`, undefined, { macSigning: 'developer-id-notarized' });
+    const current = releaseNotes(real, `v${pkg.version}`, undefined, { releasePolicy: 'windows-only' });
     expect(current.startsWith('### Upgrade notes\n')).toBe(true);
     expect(current).toContain(`jcad-electrical-${pkg.version}-win-x64.exe`);
     expect(current).not.toContain('Open Anyway');
+    expect(current).not.toMatch(new RegExp(`${pkg.version.replaceAll('.', '\\.')}-mac|${pkg.version.replaceAll('.', '\\.')}-linux`));
+    expect(readFileSync(new URL(`../docs/releases/v${pkg.version}.md`, import.meta.url), 'utf8').replace(/\r\n/g, '\n')).toBe(current);
   });
 });

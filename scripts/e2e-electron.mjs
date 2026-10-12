@@ -48,6 +48,7 @@ import { _electron as electron } from 'playwright';
 import { applicationWindow } from './electron-window.mjs';
 import { verifyExecutableFuses } from './electron-fuse-policy.mjs';
 import { runCadFidelity } from './e2e-cad-fidelity.mjs';
+import { runPortableDwgChecks } from './e2e-portable-dwg.mjs';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, existsSync, lstatSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { deflateSync, crc32 } from 'node:zlib';
@@ -618,6 +619,9 @@ try {
   // Independent five-feature CAD imports share this app and restore its original tab/view.
   step = 'CAD fidelity';
   await runCadFidelity({ app, page: win, repo, outDir, check, packaged });
+
+  step = 'Portable DWG export';
+  await runPortableDwgChecks({ app, page: win, repo, outDir, check, current });
 
   // ------------------------------------------------------------------ PLOT through plot-pdf
   step = 'PLOT';

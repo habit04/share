@@ -1,50 +1,32 @@
 # Code signing and notarization
 
-JCad Electrical's release workflow (`.github/workflows/release.yml`) builds the
-Windows, macOS and Linux installers on GitHub-hosted runners. Publication requires both
-Windows publisher and Apple Developer ID/notarization credentials, then verifies the resulting
-signatures. Empty-tag build-only rehearsals may run unsigned or ad-hoc when secrets are absent;
-the `require_signing` input can require signing for those runs too. macOS rehearsals without Apple credentials retain the
-ad-hoc signature from `scripts/afterPack.cjs`. No secret, certificate or key is stored in the
-repository. `scripts/check-apple-signing.mjs` reports only missing credential names, never values.
+New JCad Electrical desktop releases are **Windows x64 only**. The release workflow requires
+Windows publisher credentials for publication and verifies the installer and application
+signatures against the exact updater publisher. Empty-tag build-only rehearsals may run
+unsigned; `require_signing` makes those runs fail closed too. Aggregate provenance independently
+requires `authenticode-verified` evidence before publication. No signing secret is stored in
+the repository.
 
-The repository's Windows and Apple credentials have been configured, and a signed build-only
-run verified both platforms on prior PR head `d0ff078`. Each new release must pass those checks
-on its own tested commit; configured secrets alone do not prove signing. Linux packages are
-not signed. The macOS builds of releases up to 0.4.1 were ad-hoc signed.
+macOS and Linux desktop updates are paused at [v0.4.5](https://github.com/habit04/share/releases/tag/v0.4.5).
+Their existing downloads, portable code and historical signing tools remain available. Apple
+secrets are retained but the current workflow does not read them, create keychains or submit
+notarization requests. The Apple instructions below document the existing distribution and
+a future return; they are not a prerequisite for new Windows releases. Linux packages in
+historical releases are unsigned; Mac releases from v0.4.2 through v0.4.5 are Developer ID
+signed and notarized, and versions through v0.4.1 are ad-hoc signed.
 
-The release notes state the signing result each build's verification steps recorded, rather than
-assuming the credentials were there (the **Verified build** list), and the footer's macOS
-first-launch sentence follows the macOS build's record as well: notarized builds open after the
-usual downloaded-from-the-internet confirmation, ad-hoc builds once through Privacy & Security >
-Open Anyway (`scripts/release-notes.mjs --provenance`). Every platform also publishes a
-source-SHA / checksum record, and the release attaches GitHub's signed provenance bundle
-(docs/RELEASE.md). That attestation is separate from Authenticode, Developer ID and notarization
-and replaces none of them.
+Each new release must verify its own source SHA, shipping fuses and artifact bytes. The
+**Verified build** list follows actual verified provenance. GitHub/Sigstore attestation proves
+workflow origin and bytes, and does not replace the Windows Authenticode signature.
 
-| Platform | Service | Secrets (Settings → Secrets and variables → Actions) | Switch |
-| --- | --- | --- | --- |
-| Windows | Azure Artifact Signing (formerly Trusted Signing) | `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_SIGNING_ENDPOINT`, `AZURE_SIGNING_ACCOUNT`, `AZURE_CERT_PROFILE`, `AZURE_PUBLISHER_NAME` | `scripts/azure-signing.mjs` (all seven set) |
-| macOS | Apple Developer ID + notarization | `CSC_LINK`, `CSC_KEY_PASSWORD`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID` | job env `HAS_APPLE` (all five set) |
-| Linux | not signed (AppImage / deb) | — | — |
+| Platform | Current distribution | Signing inputs |
+| --- | --- | --- |
+| Windows | New x64 NSIS releases | Seven `AZURE_*` GitHub Actions secrets, checked by `scripts/azure-signing.mjs` |
+| macOS | Paused at v0.4.5 | Existing Apple secrets retained; unused by current release workflow |
+| Linux | Paused at v0.4.5 | Historical packages unsigned |
 
-GitHub does not let a step's `if:` read `secrets.*`, so the workflow computes a
-flag once at job level and the steps test the flag:
-
-```yaml
-jobs:
-  build:
-    env:
-      HAS_APPLE: ${{ secrets.CSC_LINK != '' && secrets.CSC_KEY_PASSWORD != '' && secrets.APPLE_ID != '' && secrets.APPLE_APP_SPECIFIC_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' }}
-    steps:
-      - run: npx electron-builder ${{ matrix.target }} --publish never     # unsigned path, unchanged
-        if: ${{ runner.os != 'macOS' || env.HAS_APPLE != 'true' }}
-      - name: Build, sign and notarize (macOS, Developer ID)
-        if: ${{ runner.os == 'macOS' && env.HAS_APPLE == 'true' }}
-```
-
-Secrets are not passed to workflows triggered from forks, so pull requests from
-forks always take the unsigned path.
+Secrets are not passed to workflows triggered from forks, so those checks cannot publish a
+signed Windows installer.
 
 ## Windows: Azure Artifact Signing
 
@@ -137,7 +119,11 @@ PowerShell `Get-AuthenticodeSignature .\JCad-Electrical-*.exe` (Status `Valid`,
 signer = the validated publisher). SmartScreen may still warn for the first
 downloads of a new publisher until reputation builds up.
 
-## macOS: Developer ID signing and notarization
+## macOS: historical Developer ID signing and notarization
+
+This section describes the release workflow through v0.4.5. New Mac releases are paused;
+the current Windows-only workflow does not run these steps. The scripts and credentials
+are retained for a future return and for verifying existing signed releases.
 
 Gatekeeper only opens downloaded apps without a warning when they are signed
 with a **Developer ID Application** certificate, built with the **hardened

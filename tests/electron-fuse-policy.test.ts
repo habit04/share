@@ -65,6 +65,7 @@ describe('production inspection separation', () => {
     expect(shippingProbePhase([])).toBeNull();
     expect(shippingProbePhase(['--probe-startup=first'])).toBe('first');
     expect(shippingProbePhase(['--probe-startup=second'])).toBe('second');
+    expect(shippingProbePhase(['--probe-startup=dwg'])).toBe('dwg');
     for (const flags of [['--probe-startup=eval(1)'], ['--probe-startup=first', '--probe-startup=second']]) expect(() => shippingProbePhase(flags)).toThrow(/Invalid/);
   });
 });

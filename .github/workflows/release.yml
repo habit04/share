@@ -2,7 +2,7 @@ name: Build installers
 
 # Release pipeline (docs/RELEASE.md):
 #   checks          the full test gate on the exact commit being released
-#   build           installers for Windows, macOS and Linux from that same commit (needs: checks)
+#   build           the Windows installer from that same commit (needs: checks)
 #   verify-artifacts all uploaded public assets checked together, including build-only dispatches
 #   packaged-smoke  each installer installed / extracted on its own OS and driven end to end
 #   release         publishes the installers, only after all of the above passed, and only when
@@ -18,7 +18,12 @@ on:
         required: false
         default: ''
       require_signing:
-        description: 'Require Windows publisher signing and macOS Developer ID/notarization (fails if credentials are missing)'
+        description: 'Require Windows publisher signing (fails if credentials are missing)'
+        type: boolean
+        required: false
+        default: false
+      native_helper_only:
+        description: 'Build and sign only the portable Windows DWG helper (requires an empty tag; never publishes)'
         type: boolean
         required: false
         default: false
@@ -26,7 +31,78 @@ on:
     tags: ['v*']
 
 jobs:
+  native-helper:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.native_helper_only == 'true'
+    name: Signed portable DWG helper only
+    runs-on: windows-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    env:
+      SOURCE_SHA: ${{ github.sha }}
+      TAG: ${{ github.event.inputs.tag }}
+      REQUIRE_PUBLISHER_SIGNING: 'true'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Validate the helper-only request and exact source commit
+        shell: pwsh
+        run: |
+          if ($env:TAG) { throw 'native_helper_only requires an empty tag and cannot publish a release' }
+          $actual = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $actual -ne $env:SOURCE_SHA) { throw 'Checked out source differs from the dispatched commit' }
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+      - name: Check the source and helper supply-chain/signing rules
+        run: node node_modules/vitest/vitest.mjs run tests/dwg-writer-build.test.ts tests/dwg-writer-signing.test.ts tests/portable-dwg-host.test.ts tests/check-workflows.test.ts tests/signed-dwg-writer-verification.test.ts
+      - name: Set up the pinned Windows DWG writer toolchain
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.99.0-x86_64-pc-windows-gnu --profile minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          'RUSTUP_TOOLCHAIN=1.99.0-x86_64-pc-windows-gnu' >> $env:GITHUB_ENV
+      - name: Require the configured Windows publisher
+        id: signing
+        run: node scripts/azure-signing.mjs
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_SIGNING_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          AZURE_SIGNING_ACCOUNT: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          AZURE_CERT_PROFILE: ${{ secrets.AZURE_CERT_PROFILE }}
+          AZURE_PUBLISHER_NAME: ${{ secrets.AZURE_PUBLISHER_NAME }}
+      # build:dwg-writer runs locked native guard/memory tests, signs the EXE, verifies
+      # its exact publisher, and hashes the final signed bytes before copying the ASAR manifest.
+      - name: Build, test and seal the signed native helper
+        run: npm run build:dwg-writer
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      - name: Verify the final signature, exact embedded manifest and source provenance
+        run: node scripts/check-signed-dwg-writer.mjs
+        env:
+          AZURE_PUBLISHER_NAME: ${{ secrets.AZURE_PUBLISHER_NAME }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signed-native-dwg-writer-${{ github.sha }}
+          path: |
+            release/dwg-writer/
+            electron/dwg-writer-integrity.json
+            native-helper-provenance.json
+          if-no-files-found: error
+          retention-days: 7
+
   checks:
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.native_helper_only != 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -110,7 +186,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest, ubuntu-latest]
+        os: [windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     steps:
@@ -124,24 +200,21 @@ jobs:
       - run: npm ci
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+      - name: Set up the pinned Windows DWG writer toolchain
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.99.0-x86_64-pc-windows-gnu --profile minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          'RUSTUP_TOOLCHAIN=1.99.0-x86_64-pc-windows-gnu' >> $env:GITHUB_ENV
+      # The test ASAR contains the same portable writer and integrity manifest.
       - run: npm run dist:test
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
       - name: Fetch the legacy-seeding Electron binary before test launches
         run: node node_modules/electron/install.js
-      - name: DWG process containment (Linux)
-        if: runner.os == 'Linux'
-        run: xvfb-run -a npm run check:dwg-containment
-      - name: DWG process containment (Windows, macOS)
-        if: runner.os != 'Linux'
+      - name: DWG process containment (Windows)
         run: npm run check:dwg-containment
-      - name: Dedicated test-build Electron suite (Linux)
-        if: runner.os == 'Linux'
-        run: xvfb-run -a npm run e2e:test-build
-        env:
-          JCAD_E2E_OUT: test-build-output
-      - name: Dedicated test-build Electron suite (Windows, macOS)
-        if: runner.os != 'Linux'
+      - name: Dedicated test-build Electron suite (Windows)
         run: npm run e2e:test-build
         env:
           JCAD_E2E_OUT: test-build-output
@@ -167,33 +240,11 @@ jobs:
               release/*.blockmap
               release/latest*.yml
               release/JCad-Electrical-*-provenance.json
-          - os: macos-latest
-            platform: macOS
-            target: --mac dmg --arm64 --x64
-            artifact: JCad-Electrical-macOS
-            glob: |
-              release/*.dmg
-              release/*.blockmap
-              release/latest*.yml
-              release/JCad-Electrical-*-provenance.json
-          - os: ubuntu-latest
-            platform: Linux
-            target: --linux AppImage deb
-            artifact: JCad-Electrical-Linux
-            glob: |
-              release/*.AppImage
-              release/*.deb
-              release/*.blockmap
-              release/latest*.yml
-              release/JCad-Electrical-*-provenance.json
     runs-on: ${{ matrix.os }}
     env:
-      # Publication always requires publisher identity. Unsigned/ad-hoc build-only rehearsals
+      # Publication always requires publisher identity. Unsigned Windows build-only rehearsals
       # remain explicit; require_signing also makes a build-only run fail closed.
       REQUIRE_PUBLISHER_SIGNING: ${{ startsWith(github.ref, 'refs/tags/v') || github.event.inputs.tag != '' || github.event.inputs.require_signing == 'true' }}
-      # macOS Developer ID signing + notarization runs only when all five secrets exist (docs/CODE-SIGNING.md).
-      # Secrets cannot be tested in a step's `if:`, so the job computes a flag the steps read from env.
-      HAS_APPLE: ${{ secrets.CSC_LINK != '' && secrets.CSC_KEY_PASSWORD != '' && secrets.APPLE_ID != '' && secrets.APPLE_APP_SPECIFIC_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' }}
     steps:
       # Exactly the commit the checks passed on.
       - uses: actions/checkout@v5
@@ -217,18 +268,8 @@ jobs:
             exit 1
           fi
       - run: npm run build
-      - name: Require macOS signing inputs when requested
-        if: runner.os == 'macOS'
-        run: node scripts/check-apple-signing.mjs
-        env:
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       - name: Turn on Azure signing when its secrets are set
         id: signing
-        if: runner.os == 'Windows'
         run: node scripts/azure-signing.mjs
         env:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
@@ -238,12 +279,22 @@ jobs:
           AZURE_SIGNING_ACCOUNT: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
           AZURE_CERT_PROFILE: ${{ secrets.AZURE_CERT_PROFILE }}
           AZURE_PUBLISHER_NAME: ${{ secrets.AZURE_PUBLISHER_NAME }}
+      - name: Set up the pinned Windows DWG writer toolchain
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.99.0-x86_64-pc-windows-gnu --profile minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          'RUSTUP_TOOLCHAIN=1.99.0-x86_64-pc-windows-gnu' >> $env:GITHUB_ENV
+      - name: Build and seal the portable DWG writer before ASAR packing
+        run: npm run build:dwg-writer
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
       - run: npx electron-builder ${{ matrix.target }} --publish never
-        # Unsigned path (unchanged): every OS without the Apple secrets. macOS gets the ad-hoc signature from scripts/afterPack.cjs.
-        if: ${{ runner.os != 'macOS' || env.HAS_APPLE != 'true' }}
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-          # Read by the TrustedSigning PowerShell module; empty on macOS and Linux.
+          # Read by the TrustedSigning PowerShell module.
           AZURE_TENANT_ID: ${{ runner.os == 'Windows' && secrets.AZURE_TENANT_ID || '' }}
           AZURE_CLIENT_ID: ${{ runner.os == 'Windows' && secrets.AZURE_CLIENT_ID || '' }}
           AZURE_CLIENT_SECRET: ${{ runner.os == 'Windows' && secrets.AZURE_CLIENT_SECRET || '' }}
@@ -258,112 +309,15 @@ jobs:
           $expectedPublisher = $env:AZURE_PUBLISHER_NAME.Trim()
           $installers = @(Get-ChildItem release/*.exe -File)
           $applications = @(Get-ChildItem release/win-unpacked/*.exe -File)
-          if (!$expectedPublisher -or !$installers.Count -or !$applications.Count) { Write-Error 'Missing trusted publisher or executables to verify'; exit 1 }
-          foreach ($f in $installers + $applications) {
+          $helpers = @(Get-ChildItem release/win-unpacked/resources/dwg-writer/JcadDwgWriter.exe -File)
+          if (!$expectedPublisher -or !$installers.Count -or !$applications.Count -or $helpers.Count -ne 1) { Write-Error 'Missing trusted publisher or executables to verify'; exit 1 }
+          foreach ($f in $installers + $applications + $helpers) {
             $sig = Get-AuthenticodeSignature $f.FullName
             Write-Host "$($f.Name): $($sig.Status) $($sig.SignerCertificate.Subject)"
             $publisher = if ($sig.SignerCertificate) { $sig.SignerCertificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false) } else { '' }
             if ($sig.Status -ne 'Valid' -or ![string]::Equals($publisher, $expectedPublisher, [System.StringComparison]::Ordinal)) { $bad++ }
           }
           if ($bad) { Write-Error "$bad executable(s) lack a valid signature from the configured updater publisher"; exit 1 }
-      - name: Build, sign and notarize (macOS, Developer ID)
-        if: ${{ runner.os == 'macOS' && env.HAS_APPLE == 'true' }}
-        # package.json keeps hardenedRuntime false for the ad-hoc build; on this runner only, the signed build
-        # turns on the hardened runtime with build/entitlements.mac.plist. The CSC_LINK certificate goes into a
-        # private, temporary keychain, using that keychain's own password for its partition list.
-        # electron-builder then signs with that identity (CSC_KEYCHAIN,
-        # CSC_NAME = its SHA-1; the ad-hoc afterPack hook steps aside because CSC_NAME is set) and notarizes (and
-        # staples) because APPLE_ID / _APP_SPECIFIC_PASSWORD / _TEAM_ID are set.
-        shell: bash
-        run: |
-          set -euo pipefail
-          umask 077
-          node scripts/mac-signing-config.mjs
-          scratch="$(mktemp -d "$RUNNER_TEMP/jcad-signing.XXXXXX")"
-          keychain="$scratch/signing.keychain-db"
-          cert="$scratch/signing.p12"
-          kc_password="$(openssl rand -base64 32)"
-          original_keychains=()
-          while IFS= read -r item; do
-            original_keychains+=("$item")
-          done < <(security list-keychains -d user | sed 's/^[[:space:]]*"//; s/"[[:space:]]*$//')
-          cleanup_signing() {
-            rm -f "$cert" "$scratch/DeveloperIDG2CA.cer" "$scratch/DeveloperIDCA.cer"
-            security list-keychains -d user -s "${original_keychains[@]}" 2> /dev/null || true
-            security delete-keychain "$keychain" 2> /dev/null || true
-            rmdir "$scratch" 2> /dev/null || true
-          }
-          trap cleanup_signing EXIT
-          case "$CSC_LINK" in
-            https://*) curl -fsSL --retry 3 -o "$cert" "$CSC_LINK" ;;
-            *) node -e "require('fs').writeFileSync(process.argv[1], Buffer.from(process.env.CSC_LINK, 'base64'))" "$cert" ;;
-          esac
-          security create-keychain -p "$kc_password" "$keychain"
-          security set-keychain-settings -lut 21600 "$keychain"
-          security unlock-keychain -p "$kc_password" "$keychain"
-          security import "$cert" -k "$keychain" -P "$CSC_KEY_PASSWORD" -T /usr/bin/codesign -T /usr/bin/productbuild
-          rm -f "$cert"
-          # Apple's Developer ID intermediates, so either issuing chain can be built.
-          for ca in DeveloperIDG2CA DeveloperIDCA; do
-            curl -fsSL --retry 3 -o "$scratch/$ca.cer" "https://www.apple.com/certificateauthority/$ca.cer"
-            security import "$scratch/$ca.cer" -k "$keychain" || true
-          done
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$kc_password" "$keychain" > /dev/null
-          security list-keychains -d user -s "$keychain" "${original_keychains[@]}"
-          identity="$(security find-identity -v -p codesigning "$keychain" | awk '/"Developer ID Application: / { print $2; exit }')"
-          if [ -z "$identity" ]; then
-            echo "::error::CSC_LINK holds no valid Developer ID Application identity"
-            exit 1
-          fi
-          echo "Developer ID signing identity: $identity"
-          env -u CSC_LINK -u CSC_KEY_PASSWORD CSC_KEYCHAIN="$keychain" CSC_NAME="$identity" npx electron-builder ${{ matrix.target }} --publish never
-        env:
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      - name: Verify the macOS signature and notarization ticket
-        if: ${{ runner.os == 'macOS' && env.HAS_APPLE == 'true' }}
-        shell: bash
-        env:
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          apps=(release/mac*/*.app)
-          if [ ${#apps[@]} -eq 0 ]; then echo "No .app bundle under release/"; exit 1; fi
-          for app in "${apps[@]}"; do
-            codesign --verify --deep --strict --verbose=2 "$app"
-            signature="$(codesign -dv --verbose=4 "$app" 2>&1)"
-            echo "$signature" | grep 'Authority=Developer ID Application'
-            echo "$signature" | grep -Fx "TeamIdentifier=$APPLE_TEAM_ID"
-            echo "$signature" | grep -E 'flags=.*runtime'
-            xcrun stapler validate "$app"
-            spctl --assess --type execute --verbose=4 "$app"
-          done
-          images=(release/*.dmg)
-          if [ ${#images[@]} -eq 0 ]; then echo "No disk image under release/"; exit 1; fi
-          for image in "${images[@]}"; do
-            codesign --verify --strict --verbose=2 "$image"
-            signature="$(codesign -dv --verbose=4 "$image" 2>&1)"
-            echo "$signature" | grep 'Authority=Developer ID Application'
-            echo "$signature" | grep -Fx "TeamIdentifier=$APPLE_TEAM_ID"
-          done
-      - name: Verify the macOS ad-hoc seal after fuse changes
-        if: ${{ runner.os == 'macOS' && env.HAS_APPLE != 'true' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          apps=(release/mac*/*.app)
-          if [ ${#apps[@]} -eq 0 ]; then echo "No .app bundle under release/"; exit 1; fi
-          for app in "${apps[@]}"; do
-            codesign --verify --deep --strict --verbose=2 "$app"
-          done
-      - name: Record the minimum macOS version in latest-mac.yml
-        if: runner.os == 'macOS'
-        run: node scripts/mac-update-info.mjs release
       - name: Record tested source, checksums and verified signing status
         shell: bash
         env:
@@ -373,10 +327,6 @@ jobs:
         run: |
           status=unsigned
           if [ "$PLATFORM" = Windows ] && [ "$WINDOWS_SIGNED" = true ]; then status=authenticode-verified; fi
-          if [ "$PLATFORM" = macOS ]; then
-            status=ad-hoc
-            if [ "$HAS_APPLE" = true ]; then status=developer-id-notarized; fi
-          fi
           node scripts/release-provenance.mjs build release "$PLATFORM" "$status"
       - uses: actions/upload-artifact@v4
         with:
@@ -404,7 +354,7 @@ jobs:
       - name: Verify all uploaded assets against the tested source SHA
         env:
           SOURCE_SHA: ${{ needs.checks.outputs.sha }}
-        run: node scripts/release-provenance.mjs verify artifacts
+        run: node scripts/release-provenance.mjs verify artifacts --policy windows-only
       - uses: actions/upload-artifact@v4
         with:
           name: verified-release-provenance
@@ -413,10 +363,8 @@ jobs:
             artifacts/SHA256SUMS.txt
           if-no-files-found: error
 
-  # Install (Windows: NSIS silently), mount (macOS: hdiutil) or extract (Linux: AppImage, deb) the
-  # installers just built retain their signed shipping fuses. Fixed runtime/save/restart probes
-  # run without inspection; the broader Playwright suite belongs to the separate test ASAR.
-  # Each Mac architecture is mandatory on its own native runner; Rosetta is not a release gate.
+  # Install the Windows NSIS package and run fixed shipping probes without inspection.
+  # The broad Playwright suite runs in the separate unpublished test ASAR.
   packaged-smoke:
     needs: [checks, build]
     strategy:
@@ -426,15 +374,6 @@ jobs:
           - os: windows-latest
             arch: x64
             artifact: JCad-Electrical-Windows
-          - os: macos-15
-            arch: arm64
-            artifact: JCad-Electrical-macOS
-          - os: macos-15-intel
-            arch: x64
-            artifact: JCad-Electrical-macOS
-          - os: ubuntu-latest
-            arch: x64
-            artifact: JCad-Electrical-Linux
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
@@ -456,22 +395,9 @@ jobs:
           path: installers
       - name: Fetch the legacy-seeding Electron binary before shipping probes
         run: node node_modules/electron/install.js
-      - name: DWG process containment on this native runner (Linux)
-        if: runner.os == 'Linux'
-        run: xvfb-run -a npm run check:dwg-containment
-      - name: DWG process containment on this native runner (Windows, macOS)
-        if: runner.os != 'Linux'
+      - name: DWG process containment on this native runner (Windows)
         run: npm run check:dwg-containment
-      - name: Packaged smoke test (Linux, virtual display)
-        if: runner.os == 'Linux'
-        run: xvfb-run -a node scripts/packaged-smoke.mjs installers
-        env:
-          JCAD_SMOKE_OUT: packaged-smoke-output
-          JCAD_SMOKE_REQUIRE_SHIPPING: 1
-          JCAD_SMOKE_NATIVE_ONLY: '1'
-          JCAD_SMOKE_EXPECT_ARCH: ${{ matrix.arch }}
-      - name: Packaged smoke test (Windows, macOS)
-        if: runner.os != 'Linux'
+      - name: Packaged smoke test (Windows)
         run: node scripts/packaged-smoke.mjs installers
         env:
           JCAD_SMOKE_OUT: packaged-smoke-output
@@ -486,7 +412,7 @@ jobs:
           if-no-files-found: warn
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '')
+    if: github.event.inputs.native_helper_only != 'true' && (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.tag != ''))
     needs: [checks, test-build, build, packaged-smoke, verify-artifacts]
     runs-on: ubuntu-latest
     permissions:
@@ -535,9 +461,9 @@ jobs:
       - name: Verify every platform artifact against the tested source SHA
         env:
           SOURCE_SHA: ${{ needs.checks.outputs.sha }}
-        run: node scripts/release-provenance.mjs verify artifacts
-      # A tag without its own CHANGELOG.md section stops publication. The macOS first-launch
-      # sentence and the single Verified build list come from the verified aggregate.
+        run: node scripts/release-provenance.mjs verify artifacts --policy windows-only --require-signing
+      # A tag without its own CHANGELOG.md section stops publication. The downloads and
+      # single Verified build list come from the verified Windows-only aggregate.
       - name: Release notes from CHANGELOG.md and verified provenance
         env:
           TAG: ${{ github.event.inputs.tag || github.ref_name }}

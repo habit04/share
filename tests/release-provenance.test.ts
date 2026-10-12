@@ -36,6 +36,27 @@ async function prepared(run: (dir: string) => Promise<void>) {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
 describe('release artifact provenance', () => {
+  it('requires an explicit Windows-only policy and still rejects missing Windows outputs and unsigned publication', async () => prepared(async (dir) => {
+    const options = { policy: 'windows-only' as const, requireSigning: true };
+    await expect(verifyReleaseProvenance(dir, '0.4.1', sha, options)).rejects.toThrow(/unexpected platform/);
+    rmSync(join(dir, 'macOS'), { recursive: true });
+    rmSync(join(dir, 'Linux'), { recursive: true });
+    await expect(verifyReleaseProvenance(dir, '0.4.1', sha)).rejects.toThrow(/missing platform provenance/);
+    await expect(verifyReleaseProvenance(dir, '0.4.1', sha, options)).rejects.toThrow(/publisher signing is required/);
+    const out = join(dir, 'Windows');
+    await writeBuildProvenance(out, 'Windows', '0.4.1', sha, 'authenticode-verified', shippingFuses('Windows'));
+    const aggregate = await verifyReleaseProvenance(dir, '0.4.1', sha, options);
+    expect(aggregate.releasePolicy).toBe('windows-only');
+    expect(aggregate.builds.map((record) => record.platform)).toEqual(['Windows']);
+    writeFileSync(join(dir, 'latest-mac.yml'), 'unexpected feed');
+    await expect(verifyReleaseProvenance(dir, '0.4.1', sha, options)).rejects.toThrow(/artifact has no provenance/);
+    rmSync(join(dir, 'latest-mac.yml'));
+    rmSync(join(out, expectedInstallers('0.4.1', 'Windows')[0]!));
+    await expect(verifyReleaseProvenance(dir, '0.4.1', sha, options)).rejects.toThrow(/missing or duplicate artifact/);
+  }));
+  it('rejects unknown release policies', async () => prepared(async (dir) => {
+    await expect(verifyReleaseProvenance(dir, '0.4.1', sha, { policy: 'auto' as never })).rejects.toThrow(/invalid release policy/);
+  }));
   it('exports the same installer, feed and blockmap contract for callers without diagnostic YAML', () => {
     for (const platform of ['Windows', 'macOS', 'Linux']) expect(expectedUpdateAssets('0.4.1', platform)).toEqual(updateAssets[platform]);
     expect(isReleaseAsset('builder-debug.yml')).toBe(false);
@@ -120,11 +141,11 @@ describe('release artifact provenance', () => {
       const destination = join(downloaded, entry.artifact); mkdirSync(destination);
       for (const name of uploaded) copyFileSync(join(out, name), join(destination, name));
     }
-    const aggregate = await verifyReleaseProvenance(downloaded, '0.4.1', sha);
-    expect(aggregate.builds.flatMap((build) => build.artifacts)).toHaveLength(11);
-    // The actual failed rehearsal omitted both DMG blockmaps from upload. A single omission fails.
-    rmSync(join(downloaded, 'JCad-Electrical-macOS', 'jcad-electrical-0.4.1-mac-arm64.dmg.blockmap'));
-    await expect(verifyReleaseProvenance(downloaded, '0.4.1', sha)).rejects.toThrow(/missing or duplicate artifact: .*mac-arm64\.dmg\.blockmap/);
+    const aggregate = await verifyReleaseProvenance(downloaded, '0.4.1', sha, { policy: 'windows-only' });
+    expect(aggregate.builds.flatMap((build) => build.artifacts)).toHaveLength(3);
+    // The Windows contract failed rehearsal omitted requires its external blockmap. A single omission fails.
+    rmSync(join(downloaded, 'JCad-Electrical-Windows', 'jcad-electrical-0.4.1-win-x64.exe.blockmap'));
+    await expect(verifyReleaseProvenance(downloaded, '0.4.1', sha)).rejects.toThrow(/missing or duplicate artifact: .*win-x64\.exe\.blockmap/);
   }));
   it.each(Object.entries(updateAssets).flatMap(([platform, names]) => names.map((name) => [platform, name])))('requires %s update asset %s before recording or verifying', async (platform, name) => prepared(async (dir) => {
     const out = join(dir, platform!);

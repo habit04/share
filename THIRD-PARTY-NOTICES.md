@@ -20,6 +20,12 @@ Intel) and the Linux `.AppImage` / `.deb` packages contain:
 - the application code of JCad Electrical (GPL-3.0-only);
 - the locally repaired **LibreDWG** WebAssembly runtime based on `@mlightcad/libredwg-web`, used to read DWG files
   (GPL-3.0) - see [LibreDWG](#libredwg-via-mlightcadlibredwg-web);
+- Windows builds from 0.4.6 also include **acadrust 0.6.4** (MPL-2.0), statically linked into
+  `JcadDwgWriter.exe`, for portable DWG copies. Its pinned upstream source, patch definitions
+  and license are recorded in [vendor/acadrust-writer](vendor/acadrust-writer/README.md).
+  `resources/dwg-writer/JcadDwgWriter-Source.zip` contains corresponding modified engine and
+  helper source, the Cargo lockfile and build instructions. `ThirdPartyNotices.json` beside it
+  contains full dependency and redistributed Rust/GNU runtime notices;
 - `electron-updater` and its dependencies, used for update checks;
 - `js-yaml`, used directly to read trusted update publisher configuration and by electron-updater;
 - the `hershey` package and the **Hershey Roman Simplex** font data

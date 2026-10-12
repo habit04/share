@@ -1,0 +1,994 @@
+{
+  "schemaVersion": 1,
+  "oracle": "Autodesk AutoCAD Core Console 2027",
+  "sourceCase": "tests/fixtures/interchange/r2018-mtext-background.dxf",
+  "before": {
+    "index": 8,
+    "source": "tests/fixtures/interchange/r2018-mtext-background.dxf",
+    "bytes": 21299,
+    "exitCode": 53,
+    "complete": false,
+    "auditErrors": -1,
+    "nativeFeatures": false
+  },
+  "after": {
+    "index": 8,
+    "source": "tests/fixtures/interchange/r2018-mtext-background.dxf",
+    "bytes": 21299,
+    "exitCode": 0,
+    "complete": true,
+    "auditErrors": 0,
+    "nativeFeatures": true
+  },
+  "expected": {
+    "model": {
+      "line": 1,
+      "mtext": 7
+    },
+    "paper": [],
+    "backgrounds": [
+      {
+        "text": "ACI MASK",
+        "flags": 1,
+        "scale": 1.5,
+        "effectiveColor": "#ff0000"
+      },
+      {
+        "text": "RGB\nMULTILINE",
+        "flags": 1,
+        "scale": 2,
+        "effectiveColor": "#123456"
+      },
+      {
+        "text": "WINDOW",
+        "flags": 3,
+        "scale": 1.5
+      },
+      {
+        "text": "FRAME",
+        "flags": 16
+      },
+      {
+        "text": "FILL + FRAME",
+        "flags": 17,
+        "scale": 1.25,
+        "effectiveColor": "#00ffff"
+      },
+      {
+        "text": "COLUMN ONE\nCOLUMN TWO",
+        "flags": 1,
+        "scale": 1.5,
+        "effectiveColor": "#ffff00"
+      }
+    ]
+  },
+  "actual": {
+    "model": {
+      "line": 1,
+      "mtext": 7
+    },
+    "paper": [],
+    "backgrounds": [
+      {
+        "text": "ACI MASK",
+        "flags": 1,
+        "scale": 1.5,
+        "effectiveColor": "#ff0000"
+      },
+      {
+        "text": "RGB\nMULTILINE",
+        "flags": 1,
+        "scale": 2,
+        "effectiveColor": "#123456"
+      },
+      {
+        "text": "WINDOW",
+        "flags": 3,
+        "scale": 1.5
+      },
+      {
+        "text": "FRAME",
+        "flags": 16
+      },
+      {
+        "text": "FILL + FRAME",
+        "flags": 17,
+        "scale": 1.25,
+        "effectiveColor": "#00ffff"
+      },
+      {
+        "text": "COLUMN ONE\nCOLUMN TWO",
+        "flags": 1,
+        "scale": 1.5,
+        "effectiveColor": "#ffff00"
+      }
+    ]
+  },
+  "matched": true,
+  "files": {
+    "inputSha256": "73043ff3e9b41a3d71dd970bf65c7ae88d7df1d243ee37704183a5cb5a911626",
+    "beforeDwgSha256": "9468d42c1098429a6a492f384751d2a4c4662ed8380cae37b7eae5ed2efb5fb6",
+    "afterDwgSha256": "ca2c5e8be93d73e37f5be4d31d0a05444f655e6afd1b879ea2374c2a21fdc152",
+    "normalizedDxfSha256": "9be1f94a5deee5f9e22cead09addbdaa92234f675438de4fdacde9a24bedef41"
+  },
+  "cases": [
+    {
+      "index": 0,
+      "source": "tests/fixtures/interchange/r2000-dimensions.dxf",
+      "exitCode": 0,
+      "complete": true,
+      "auditErrors": 0,
+      "nativeFeatures": true,
+      "countsMatched": true
+    },
+    {
+      "index": 1,
+      "source": "tests/fixtures/interchange/r2000-hatch-curves.dxf",
+      "exitCode": 0,
+      "complete": true,
+      "auditErrors": 0,
+      "nativeFeatures": true,
+      "countsMatched": true
+    },
+    {
+      "index": 2,
+      "source": "fixtures/example_2000.dxf",
+      "exitCode": 53,
+      "complete": false,
+      "auditErrors": -1,
+      "nativeFeatures": false,
+      "countsMatched": false
+    },
+    {
+      "index": 3,
+      "source": "tests/fixtures/interchange/r2000-layouts-titleblock.dxf",
+      "exitCode": 0,
+      "complete": true,
+      "auditErrors": 0,
+      "nativeFeatures": true,
+      "countsMatched": true
+    },
+    {
+      "index": 4,
+      "source": "tests/fixtures/interchange/r2018-mtext.dxf",
+      "exitCode": 0,
+      "complete": true,
+      "auditErrors": 0,
+      "nativeFeatures": true,
+      "countsMatched": true
+    },
+    {
+      "index": 5,
+      "source": "tests/fixtures/interchange/r2018-table.dxf",
+      "exitCode": 0,
+      "complete": true,
+      "auditErrors": 0,
+      "nativeFeatures": true,
+      "countsMatched": true
+    },
+    {
+      "index": 6,
+      "source": "tests/fixtures/interchange/r2018-dimensions.dxf",
+      "exitCode": 0,
+      "complete": true,
+      "auditErrors": 0,
+      "nativeFeatures": true,
+      "countsMatched": true
+    },
+    {
+      "index": 7,
+      "source": "tests/fixtures/interchange/r2000-text-justification.dxf",
+      "exitCode": 0,
+      "complete": true,
+      "auditErrors": 0,
+      "nativeFeatures": true,
+      "countsMatched": true
+    },
+    {
+      "index": 8,
+      "source": "tests/fixtures/interchange/r2018-mtext-background.dxf",
+      "exitCode": 0,
+      "complete": true,
+      "auditErrors": 0,
+      "nativeFeatures": true,
+      "countsMatched": true
+    },
+    {
+      "index": 9,
+      "source": "tests/fixtures/interchange/r2018-minsert.dxf",
+      "exitCode": 0,
+      "complete": true,
+      "auditErrors": 0,
+      "nativeFeatures": true,
+      "countsMatched": true
+    },
+    {
+      "index": 10,
+      "source": "tests/fixtures/polyline-widths.dxf",
+      "exitCode": 0,
+      "complete": true,
+      "auditErrors": 0,
+      "nativeFeatures": true,
+      "countsMatched": true
+    },
+    {
+      "index": 11,
+      "source": "tests/fixtures/interchange/r2010-appearance.dxf",
+      "exitCode": 0,
+      "complete": true,
+      "auditErrors": 0,
+      "nativeFeatures": true,
+      "countsMatched": true
+    },
+    {
+      "index": 12,
+      "source": "generated:nested-dimension-overrides",
+      "exitCode": 0,
+      "complete": true,
+      "auditErrors": 0,
+      "nativeFeatures": true,
+      "countsMatched": true
+    },
+    {
+      "index": 13,
+      "source": "generated:minsert-attribute-overrides",
+      "exitCode": 0,
+      "complete": true,
+      "auditErrors": 0,
+      "nativeFeatures": true,
+      "countsMatched": true
+    }
+  ],
+  "readerScope": "Private own-output validator only. Canonical AutoCAD-authored frame-only payloads may include inert fill fields; this patch is not a general external DWG reader. JCad imported DWGs continue through LibreDWG.",
+  "ownership": {
+    "oracleResults": [
+      {
+        "index": 0,
+        "source": "tests/fixtures/interchange/r2000-dimensions.dxf",
+        "exitCode": 0,
+        "complete": true,
+        "auditErrors": 0,
+        "nativeFeatures": true
+      },
+      {
+        "index": 1,
+        "source": "tests/fixtures/interchange/r2000-hatch-curves.dxf",
+        "exitCode": 0,
+        "complete": true,
+        "auditErrors": 0,
+        "nativeFeatures": true
+      },
+      {
+        "index": 2,
+        "source": "fixtures/example_2000.dxf",
+        "exitCode": 53,
+        "complete": false,
+        "auditErrors": -1,
+        "nativeFeatures": false
+      },
+      {
+        "index": 3,
+        "source": "tests/fixtures/interchange/r2000-layouts-titleblock.dxf",
+        "exitCode": 0,
+        "complete": true,
+        "auditErrors": 0,
+        "nativeFeatures": true
+      },
+      {
+        "index": 4,
+        "source": "tests/fixtures/interchange/r2018-mtext.dxf",
+        "exitCode": 0,
+        "complete": true,
+        "auditErrors": 0,
+        "nativeFeatures": true
+      },
+      {
+        "index": 5,
+        "source": "tests/fixtures/interchange/r2018-table.dxf",
+        "exitCode": 0,
+        "complete": true,
+        "auditErrors": 0,
+        "nativeFeatures": true
+      },
+      {
+        "index": 6,
+        "source": "tests/fixtures/interchange/r2018-dimensions.dxf",
+        "exitCode": 0,
+        "complete": true,
+        "auditErrors": 0,
+        "nativeFeatures": true
+      },
+      {
+        "index": 7,
+        "source": "tests/fixtures/interchange/r2000-text-justification.dxf",
+        "exitCode": 0,
+        "complete": true,
+        "auditErrors": 0,
+        "nativeFeatures": true
+      },
+      {
+        "index": 8,
+        "source": "tests/fixtures/interchange/r2018-mtext-background.dxf",
+        "exitCode": 0,
+        "complete": true,
+        "auditErrors": 0,
+        "nativeFeatures": true
+      },
+      {
+        "index": 9,
+        "source": "tests/fixtures/interchange/r2018-minsert.dxf",
+        "exitCode": 0,
+        "complete": true,
+        "auditErrors": 0,
+        "nativeFeatures": true
+      },
+      {
+        "index": 10,
+        "source": "tests/fixtures/polyline-widths.dxf",
+        "exitCode": 0,
+        "complete": true,
+        "auditErrors": 0,
+        "nativeFeatures": true
+      },
+      {
+        "index": 11,
+        "source": "tests/fixtures/interchange/r2010-appearance.dxf",
+        "exitCode": 0,
+        "complete": true,
+        "auditErrors": 0,
+        "nativeFeatures": true
+      },
+      {
+        "index": 12,
+        "source": "generated:nested-dimension-overrides",
+        "exitCode": 0,
+        "complete": true,
+        "auditErrors": 0,
+        "nativeFeatures": true
+      },
+      {
+        "index": 13,
+        "source": "generated:minsert-attribute-overrides",
+        "exitCode": 0,
+        "complete": true,
+        "auditErrors": 0,
+        "nativeFeatures": true
+      }
+    ],
+    "ownReader": {
+      "titleblockAttributesBefore": 0,
+      "titleblockAttributesAfter": 4,
+      "minsertBefore": {
+        "columns": 1,
+        "rows": 3,
+        "columnSpacing": 1,
+        "rowSpacing": "invalid subnormal"
+      },
+      "minsertAfter": {
+        "columns": 3,
+        "rows": 2,
+        "columnSpacing": 7,
+        "rowSpacing": 11,
+        "attributes": 1
+      }
+    },
+    "scope": "Preserves owned ATTRIB parent relationship and reads the already encoded MINSERT owned-attribute count; does not suppress semantic differences."
+  },
+  "sourcePatchProof": {
+    "phase": "Prototype before production preflight and spline adaptation",
+    "supportedCasesPassed": 13,
+    "totalFixtureCases": 14,
+    "unsupportedOriginal": {
+      "source": "fixtures/example_2000.dxf",
+      "prototypeExitCode": 53,
+      "productionOutcome": "Expected refusal for retained 3D/ACIS objects. Production does not silently strip them."
+    }
+  },
+  "productionGuard": {
+    "helperSha256": "efb7153bb077f3fc5edf90ada1dcb814d9f2f84597962c81b3ba84516855a3c4",
+    "proofResults": ".codex-local/rust-production-helper/probe-results-v5.json",
+    "proofResultsSha256": "b4f3b3c3c061d86cfbfdb4689d8c0292ce49fae7125be6f3142d8f1eafe02c48",
+    "rustUnitTestsPassed": 20,
+    "supportedCasesPassed": 13,
+    "expectedRetained3dRefusals": 1,
+    "cases": [
+      {
+        "index": 0,
+        "source": "tests/fixtures/interchange/r2000-dimensions.dxf",
+        "status": 0,
+        "schemaVersion": 1,
+        "success": true,
+        "outputFormat": "AC1032",
+        "outputSha256": "8cbe73d613ed4d5aa03c3341ab0d8f976114984e6ff76780ecd42f35d2729c04",
+        "warnings": [],
+        "errors": [],
+        "processMemoryLimitBytes": 1073741824,
+        "inputEntityCount": 32,
+        "outputEntityCount": 32
+      },
+      {
+        "index": 1,
+        "source": "tests/fixtures/interchange/r2000-hatch-curves.dxf",
+        "status": 0,
+        "schemaVersion": 1,
+        "success": true,
+        "outputFormat": "AC1032",
+        "outputSha256": "27a079762f80141bb83674720eb2dffa6ef1719359515fdf3e0402b5502c2d4e",
+        "warnings": [],
+        "errors": [],
+        "processMemoryLimitBytes": 1073741824,
+        "inputEntityCount": 13,
+        "outputEntityCount": 13
+      },
+      {
+        "index": 2,
+        "source": "fixtures/example_2000.dxf",
+        "status": 1,
+        "schemaVersion": 1,
+        "success": false,
+        "outputFormat": "AC1032",
+        "outputSha256": "",
+        "warnings": [],
+        "errors": [
+          "DWG export cannot preserve retained 3D/ACIS objects; save DXF or remove them in a separate copy."
+        ],
+        "processMemoryLimitBytes": 1073741824,
+        "inputEntityCount": 0,
+        "outputEntityCount": 0
+      },
+      {
+        "index": 3,
+        "source": "tests/fixtures/interchange/r2000-layouts-titleblock.dxf",
+        "status": 0,
+        "schemaVersion": 1,
+        "success": true,
+        "outputFormat": "AC1032",
+        "outputSha256": "50b89e3edca6a69ba14f2df3ae2f3776816177a5c809b18afcd5ec81da63fe4d",
+        "warnings": [],
+        "errors": [],
+        "processMemoryLimitBytes": 1073741824,
+        "inputEntityCount": 23,
+        "outputEntityCount": 23
+      },
+      {
+        "index": 4,
+        "source": "tests/fixtures/interchange/r2018-mtext.dxf",
+        "status": 0,
+        "schemaVersion": 1,
+        "success": true,
+        "outputFormat": "AC1032",
+        "outputSha256": "def0cf2222081dbb4e03b1255980e7d185937f7f2f8a1628057e950f3809cec2",
+        "warnings": [],
+        "errors": [],
+        "processMemoryLimitBytes": 1073741824,
+        "inputEntityCount": 6,
+        "outputEntityCount": 6
+      },
+      {
+        "index": 5,
+        "source": "tests/fixtures/interchange/r2018-table.dxf",
+        "status": 0,
+        "schemaVersion": 1,
+        "success": true,
+        "outputFormat": "AC1032",
+        "outputSha256": "7840e6327fb9c91672063e6fcee7d6e84a1b17d865f74d96f0bd42626f5652bf",
+        "warnings": [],
+        "errors": [],
+        "processMemoryLimitBytes": 1073741824,
+        "inputEntityCount": 21,
+        "outputEntityCount": 21
+      },
+      {
+        "index": 6,
+        "source": "tests/fixtures/interchange/r2018-dimensions.dxf",
+        "status": 0,
+        "schemaVersion": 1,
+        "success": true,
+        "outputFormat": "AC1032",
+        "outputSha256": "5b3a80d92f648a3f60098907925328e783fbd1fb59331ba120131a36f068c6d4",
+        "warnings": [],
+        "errors": [],
+        "processMemoryLimitBytes": 1073741824,
+        "inputEntityCount": 71,
+        "outputEntityCount": 71
+      },
+      {
+        "index": 7,
+        "source": "tests/fixtures/interchange/r2000-text-justification.dxf",
+        "status": 0,
+        "schemaVersion": 1,
+        "success": true,
+        "outputFormat": "AC1032",
+        "outputSha256": "1be57e7bc7ec13e97853f0806eed33d24b8a41c0848b1478c62f3e3a87d33de3",
+        "warnings": [],
+        "errors": [],
+        "processMemoryLimitBytes": 1073741824,
+        "inputEntityCount": 9,
+        "outputEntityCount": 9
+      },
+      {
+        "index": 8,
+        "source": "tests/fixtures/interchange/r2018-mtext-background.dxf",
+        "status": 0,
+        "schemaVersion": 1,
+        "success": true,
+        "outputFormat": "AC1032",
+        "outputSha256": "ca2c5e8be93d73e37f5be4d31d0a05444f655e6afd1b879ea2374c2a21fdc152",
+        "warnings": [],
+        "errors": [],
+        "processMemoryLimitBytes": 1073741824,
+        "inputEntityCount": 9,
+        "outputEntityCount": 9
+      },
+      {
+        "index": 9,
+        "source": "tests/fixtures/interchange/r2018-minsert.dxf",
+        "status": 0,
+        "schemaVersion": 1,
+        "success": true,
+        "outputFormat": "AC1032",
+        "outputSha256": "ea1f278e62d9ff471d1b90f3891e81b5f4fea2958096ffa32c8ac4f922e4b2c7",
+        "warnings": [],
+        "errors": [],
+        "processMemoryLimitBytes": 1073741824,
+        "inputEntityCount": 3,
+        "outputEntityCount": 3
+      },
+      {
+        "index": 10,
+        "source": "tests/fixtures/polyline-widths.dxf",
+        "status": 0,
+        "schemaVersion": 1,
+        "success": true,
+        "outputFormat": "AC1032",
+        "outputSha256": "eee9d75b7b02025964114e7ca1b4032f898c812bff436d1009b7e72da94b65cf",
+        "warnings": [],
+        "errors": [],
+        "processMemoryLimitBytes": 1073741824,
+        "inputEntityCount": 6,
+        "outputEntityCount": 6
+      },
+      {
+        "index": 11,
+        "source": "tests/fixtures/interchange/r2010-appearance.dxf",
+        "status": 0,
+        "schemaVersion": 1,
+        "success": true,
+        "outputFormat": "AC1032",
+        "outputSha256": "84ecd5b981ba8b05e61290b74ad0860aa973ed3b65c60c71dec4854b61760450",
+        "warnings": [],
+        "errors": [],
+        "processMemoryLimitBytes": 1073741824,
+        "inputEntityCount": 15,
+        "outputEntityCount": 15
+      },
+      {
+        "index": 12,
+        "source": "generated:nested-dimension-overrides",
+        "status": 0,
+        "schemaVersion": 1,
+        "success": true,
+        "outputFormat": "AC1032",
+        "outputSha256": "5a474e535830da26809b4d85a8218bbc476ff5beeccf6b540cbeb8c552b48e5f",
+        "warnings": [],
+        "errors": [],
+        "processMemoryLimitBytes": 1073741824,
+        "inputEntityCount": 9,
+        "outputEntityCount": 9
+      },
+      {
+        "index": 13,
+        "source": "generated:minsert-attribute-overrides",
+        "status": 0,
+        "schemaVersion": 1,
+        "success": true,
+        "outputFormat": "AC1032",
+        "outputSha256": "b429801cc04ef0280706147c925379a8294dcf97bad424811d8fe89e7582a53b",
+        "warnings": [],
+        "errors": [],
+        "processMemoryLimitBytes": 1073741824,
+        "inputEntityCount": 3,
+        "outputEntityCount": 3
+      }
+    ],
+    "scope": "Production CLI own-output semantic guard; independent AutoCAD native export evidence is recorded separately."
+  },
+  "stagedProductionGuard": {
+    "helperSha256": "396c7a2ea42ba542185bae2683a4be9c268fd86fb33c5b2506e099a5285ee5a2",
+    "helperSigning": "unsigned local rehearsal; publisher signing required for distributed bundles",
+    "proofResults": ".codex-local/rust-latest-proof/staged-production-probe.json",
+    "proofResultsSha256": "b24572b9df44aeccf15fa84b5fb4f6f2900a825c1cbd6579a8acdc43fe932403",
+    "supportedCasesPassed": 13,
+    "expectedRetained3dRefusals": 1,
+    "cases": [
+      {
+        "index": 0,
+        "source": "tests/fixtures/interchange/r2000-dimensions.dxf",
+        "status": 0,
+        "schemaVersion": 1,
+        "success": true,
+        "outputFormat": "AC1032",
+        "outputSha256": "8cbe73d613ed4d5aa03c3341ab0d8f976114984e6ff76780ecd42f35d2729c04",
+        "warnings": [],
+        "errors": [],
+        "processMemoryLimitBytes": 1073741824,
+        "inputEntityCount": 32,
+        "outputEntityCount": 32
+      },
+      {
+        "index": 1,
+        "source": "tests/fixtures/interchange/r2000-hatch-curves.dxf",
+        "status": 0,
+        "schemaVersion": 1,
+        "success": true,
+        "outputFormat": "AC1032",
+        "outputSha256": "27a079762f80141bb83674720eb2dffa6ef1719359515fdf3e0402b5502c2d4e",
+        "warnings": [],
+        "errors": [],
+        "processMemoryLimitBytes": 1073741824,
+        "inputEntityCount": 13,
+        "outputEntityCount": 13
+      },
+      {
+        "index": 2,
+        "source": "fixtures/example_2000.dxf",
+        "status": 1,
+        "schemaVersion": 1,
+        "success": false,
+        "outputFormat": "AC1032",
+        "outputSha256": "",
+        "warnings": [],
+        "errors": [
+          "DWG export cannot preserve retained 3D/ACIS objects; save DXF or remove them in a separate copy."
+        ],
+        "processMemoryLimitBytes": 1073741824,
+        "inputEntityCount": 0,
+        "outputEntityCount": 0
+      },
+      {
+        "index": 3,
+        "source": "tests/fixtures/interchange/r2000-layouts-titleblock.dxf",
+        "status": 0,
+        "schemaVersion": 1,
+        "success": true,
+        "outputFormat": "AC1032",
+        "outputSha256": "50b89e3edca6a69ba14f2df3ae2f3776816177a5c809b18afcd5ec81da63fe4d",
+        "warnings": [],
+        "errors": [],
+        "processMemoryLimitBytes": 1073741824,
+        "inputEntityCount": 23,
+        "outputEntityCount": 23
+      },
+      {
+        "index": 4,
+        "source": "tests/fixtures/interchange/r2018-mtext.dxf",
+        "status": 0,
+        "schemaVersion": 1,
+        "success": true,
+        "outputFormat": "AC1032",
+        "outputSha256": "def0cf2222081dbb4e03b1255980e7d185937f7f2f8a1628057e950f3809cec2",
+        "warnings": [],
+        "errors": [],
+        "processMemoryLimitBytes": 1073741824,
+        "inputEntityCount": 6,
+        "outputEntityCount": 6
+      },
+      {
+        "index": 5,
+        "source": "tests/fixtures/interchange/r2018-table.dxf",
+        "status": 0,
+        "schemaVersion": 1,
+        "success": true,
+        "outputFormat": "AC1032",
+        "outputSha256": "7840e6327fb9c91672063e6fcee7d6e84a1b17d865f74d96f0bd42626f5652bf",
+        "warnings": [],
+        "errors": [],
+        "processMemoryLimitBytes": 1073741824,
+        "inputEntityCount": 21,
+        "outputEntityCount": 21
+      },
+      {
+        "index": 6,
+        "source": "tests/fixtures/interchange/r2018-dimensions.dxf",
+        "status": 0,
+        "schemaVersion": 1,
+        "success": true,
+        "outputFormat": "AC1032",
+        "outputSha256": "5b3a80d92f648a3f60098907925328e783fbd1fb59331ba120131a36f068c6d4",
+        "warnings": [],
+        "errors": [],
+        "processMemoryLimitBytes": 1073741824,
+        "inputEntityCount": 71,
+        "outputEntityCount": 71
+      },
+      {
+        "index": 7,
+        "source": "tests/fixtures/interchange/r2000-text-justification.dxf",
+        "status": 0,
+        "schemaVersion": 1,
+        "success": true,
+        "outputFormat": "AC1032",
+        "outputSha256": "1be57e7bc7ec13e97853f0806eed33d24b8a41c0848b1478c62f3e3a87d33de3",
+        "warnings": [],
+        "errors": [],
+        "processMemoryLimitBytes": 1073741824,
+        "inputEntityCount": 9,
+        "outputEntityCount": 9
+      },
+      {
+        "index": 8,
+        "source": "tests/fixtures/interchange/r2018-mtext-background.dxf",
+        "status": 0,
+        "schemaVersion": 1,
+        "success": true,
+        "outputFormat": "AC1032",
+        "outputSha256": "ca2c5e8be93d73e37f5be4d31d0a05444f655e6afd1b879ea2374c2a21fdc152",
+        "warnings": [],
+        "errors": [],
+        "processMemoryLimitBytes": 1073741824,
+        "inputEntityCount": 9,
+        "outputEntityCount": 9
+      },
+      {
+        "index": 9,
+        "source": "tests/fixtures/interchange/r2018-minsert.dxf",
+        "status": 0,
+        "schemaVersion": 1,
+        "success": true,
+        "outputFormat": "AC1032",
+        "outputSha256": "ea1f278e62d9ff471d1b90f3891e81b5f4fea2958096ffa32c8ac4f922e4b2c7",
+        "warnings": [],
+        "errors": [],
+        "processMemoryLimitBytes": 1073741824,
+        "inputEntityCount": 3,
+        "outputEntityCount": 3
+      },
+      {
+        "index": 10,
+        "source": "tests/fixtures/polyline-widths.dxf",
+        "status": 0,
+        "schemaVersion": 1,
+        "success": true,
+        "outputFormat": "AC1032",
+        "outputSha256": "eee9d75b7b02025964114e7ca1b4032f898c812bff436d1009b7e72da94b65cf",
+        "warnings": [],
+        "errors": [],
+        "processMemoryLimitBytes": 1073741824,
+        "inputEntityCount": 6,
+        "outputEntityCount": 6
+      },
+      {
+        "index": 11,
+        "source": "tests/fixtures/interchange/r2010-appearance.dxf",
+        "status": 0,
+        "schemaVersion": 1,
+        "success": true,
+        "outputFormat": "AC1032",
+        "outputSha256": "84ecd5b981ba8b05e61290b74ad0860aa973ed3b65c60c71dec4854b61760450",
+        "warnings": [],
+        "errors": [],
+        "processMemoryLimitBytes": 1073741824,
+        "inputEntityCount": 15,
+        "outputEntityCount": 15
+      },
+      {
+        "index": 12,
+        "source": "generated:nested-dimension-overrides",
+        "status": 0,
+        "schemaVersion": 1,
+        "success": true,
+        "outputFormat": "AC1032",
+        "outputSha256": "5a474e535830da26809b4d85a8218bbc476ff5beeccf6b540cbeb8c552b48e5f",
+        "warnings": [],
+        "errors": [],
+        "processMemoryLimitBytes": 1073741824,
+        "inputEntityCount": 9,
+        "outputEntityCount": 9
+      },
+      {
+        "index": 13,
+        "source": "generated:minsert-attribute-overrides",
+        "status": 0,
+        "schemaVersion": 1,
+        "success": true,
+        "outputFormat": "AC1032",
+        "outputSha256": "b429801cc04ef0280706147c925379a8294dcf97bad424811d8fe89e7582a53b",
+        "warnings": [],
+        "errors": [],
+        "processMemoryLimitBytes": 1073741824,
+        "inputEntityCount": 3,
+        "outputEntityCount": 3
+      }
+    ]
+  },
+  "nativeSplineControlCurve": {
+    "proofResults": ".codex-local/native-spline-proof-F5PZjc/result.json",
+    "proofResultsSha256": "6bf2d50a21bc46ddfadc1266691f1fe3df50423705a3aaa52469ec26782fb994",
+    "oracle": "Autodesk AutoCAD Core Console 2027",
+    "auditErrors": 0,
+    "curves": 2,
+    "matched": true,
+    "verifiedFields": [
+      "degree",
+      "curve flags",
+      "control points",
+      "knots",
+      "weights"
+    ],
+    "absoluteNumericTolerance": 1e-9,
+    "scope": "Two mixed-fit/control splines in this fixture: independent native curve proof. This is separate from the example_2000 2D subset.",
+    "sourceCase": "tests/fixtures/interchange/r2000-hatch-curves.dxf"
+  },
+  "nativeExample2000Explicit2dSubset": {
+    "sourceCase": "fixtures/example_2000.dxf",
+    "oracle": "Autodesk AutoCAD Core Console 2027",
+    "removed": {
+      "REGION": 2,
+      "3DSOLID": 1
+    },
+    "generationExitCode": 0,
+    "nativeComplete": true,
+    "auditErrors": 0,
+    "entityCountsMatched": true,
+    "expectedEntityCounts": {
+      "model": {
+        "line": 8,
+        "xline": 1,
+        "polyline": 13,
+        "arc": 2,
+        "spline": 2,
+        "ellipse": 1,
+        "point": 1,
+        "mtext": 1,
+        "text": 2,
+        "insert": 10,
+        "ray": 1,
+        "hatch": 1,
+        "dimension": 6,
+        "table": 1,
+        "leader": 1
+      },
+      "paper": []
+    },
+    "actualEntityCounts": {
+      "model": {
+        "line": 8,
+        "xline": 1,
+        "polyline": 13,
+        "arc": 2,
+        "spline": 2,
+        "ellipse": 1,
+        "point": 1,
+        "mtext": 1,
+        "text": 2,
+        "insert": 10,
+        "ray": 1,
+        "hatch": 1,
+        "dimension": 6,
+        "table": 1,
+        "leader": 1
+      },
+      "paper": []
+    },
+    "proofResults": ".codex-local/rust-case2-proof/result.json",
+    "proofResultsSha256": "613ecc6b3da78b7233be8dbcd4b0c06af80ddc7462d2fd1aa2bc2ea3b1a7f70d",
+    "countResults": ".codex-local/rust-case2-proof/roundtrip.json",
+    "countResultsSha256": "2e659f6e0a0f3d4aef6c41e6decae56f9f463d4dd56ad505864d8cd7b9a77cfb",
+    "scope": "Explicitly stripped 2D-only proof copy, not production stripping. Count/AUDIT checks do not establish detailed native spline-field fidelity. The unchanged original is refused in production."
+  },
+  "finalProductionNative": {
+    "oracle": "Autodesk AutoCAD Core Console 2027",
+    "proofResults": ".codex-local/native-final-writer-proof-VZElDy/results.json",
+    "proofResultsSha256": "df8a1ffd1f32b05ae4d602c32fa2bd43c945654bd202822f115a46eaff4df89a",
+    "helperSha256": "efb7153bb077f3fc5edf90ada1dcb814d9f2f84597962c81b3ba84516855a3c4",
+    "supportedCasesPassed": 13,
+    "stagedHelperSha256": "396c7a2ea42ba542185bae2683a4be9c268fd86fb33c5b2506e099a5285ee5a2",
+    "stagedOutputBytesMatchAuditedOutputs": true,
+    "cases": [
+      {
+        "index": 0,
+        "source": "tests/fixtures/interchange/r2000-dimensions.dxf",
+        "outputSha256": "8cbe73d613ed4d5aa03c3341ab0d8f976114984e6ff76780ecd42f35d2729c04",
+        "auditErrors": 0,
+        "nativeFieldsMatched": true,
+        "nativeRecordCount": 0
+      },
+      {
+        "index": 1,
+        "source": "tests/fixtures/interchange/r2000-hatch-curves.dxf",
+        "outputSha256": "27a079762f80141bb83674720eb2dffa6ef1719359515fdf3e0402b5502c2d4e",
+        "auditErrors": 0,
+        "nativeFieldsMatched": true,
+        "nativeRecordCount": 0
+      },
+      {
+        "index": 3,
+        "source": "tests/fixtures/interchange/r2000-layouts-titleblock.dxf",
+        "outputSha256": "50b89e3edca6a69ba14f2df3ae2f3776816177a5c809b18afcd5ec81da63fe4d",
+        "auditErrors": 0,
+        "nativeFieldsMatched": true,
+        "nativeRecordCount": 0
+      },
+      {
+        "index": 4,
+        "source": "tests/fixtures/interchange/r2018-mtext.dxf",
+        "outputSha256": "def0cf2222081dbb4e03b1255980e7d185937f7f2f8a1628057e950f3809cec2",
+        "auditErrors": 0,
+        "nativeFieldsMatched": true,
+        "nativeRecordCount": 0
+      },
+      {
+        "index": 5,
+        "source": "tests/fixtures/interchange/r2018-table.dxf",
+        "outputSha256": "7840e6327fb9c91672063e6fcee7d6e84a1b17d865f74d96f0bd42626f5652bf",
+        "auditErrors": 0,
+        "nativeFieldsMatched": true,
+        "nativeRecordCount": 0
+      },
+      {
+        "index": 6,
+        "source": "tests/fixtures/interchange/r2018-dimensions.dxf",
+        "outputSha256": "5b3a80d92f648a3f60098907925328e783fbd1fb59331ba120131a36f068c6d4",
+        "auditErrors": 0,
+        "nativeFieldsMatched": true,
+        "nativeRecordCount": 0
+      },
+      {
+        "index": 7,
+        "source": "tests/fixtures/interchange/r2000-text-justification.dxf",
+        "outputSha256": "1be57e7bc7ec13e97853f0806eed33d24b8a41c0848b1478c62f3e3a87d33de3",
+        "auditErrors": 0,
+        "nativeFieldsMatched": true,
+        "nativeRecordCount": 11
+      },
+      {
+        "index": 8,
+        "source": "tests/fixtures/interchange/r2018-mtext-background.dxf",
+        "outputSha256": "ca2c5e8be93d73e37f5be4d31d0a05444f655e6afd1b879ea2374c2a21fdc152",
+        "auditErrors": 0,
+        "nativeFieldsMatched": true,
+        "nativeRecordCount": 0
+      },
+      {
+        "index": 9,
+        "source": "tests/fixtures/interchange/r2018-minsert.dxf",
+        "outputSha256": "ea1f278e62d9ff471d1b90f3891e81b5f4fea2958096ffa32c8ac4f922e4b2c7",
+        "auditErrors": 0,
+        "nativeFieldsMatched": true,
+        "nativeRecordCount": 3
+      },
+      {
+        "index": 10,
+        "source": "tests/fixtures/polyline-widths.dxf",
+        "outputSha256": "eee9d75b7b02025964114e7ca1b4032f898c812bff436d1009b7e72da94b65cf",
+        "auditErrors": 0,
+        "nativeFieldsMatched": true,
+        "nativeRecordCount": 6
+      },
+      {
+        "index": 11,
+        "source": "tests/fixtures/interchange/r2010-appearance.dxf",
+        "outputSha256": "84ecd5b981ba8b05e61290b74ad0860aa973ed3b65c60c71dec4854b61760450",
+        "auditErrors": 0,
+        "nativeFieldsMatched": true,
+        "nativeRecordCount": 19
+      },
+      {
+        "index": 12,
+        "source": "generated:nested-dimension-overrides",
+        "outputSha256": "5a474e535830da26809b4d85a8218bbc476ff5beeccf6b540cbeb8c552b48e5f",
+        "auditErrors": 0,
+        "nativeFieldsMatched": true,
+        "nativeRecordCount": 0
+      },
+      {
+        "index": 13,
+        "source": "generated:minsert-attribute-overrides",
+        "outputSha256": "b429801cc04ef0280706147c925379a8294dcf97bad424811d8fe89e7582a53b",
+        "auditErrors": 0,
+        "nativeFieldsMatched": true,
+        "nativeRecordCount": 5
+      }
+    ]
+  }
+}

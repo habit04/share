@@ -1,4 +1,9 @@
 .codex-local/
+native/dwg-writer/.cargo-home/
+native/dwg-writer/.acadrust-*.crate
+native/dwg-writer/vendor/
+native/dwg-writer/target/
+electron/dwg-writer-integrity.json
 node_modules/
 dist/
 release/

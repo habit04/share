@@ -41,16 +41,12 @@ await mkdir('screenshots', { recursive: true });
 // A stand-in for the GitHub API so the page renders deterministically offline (asset names follow
 // electron-builder's artifactName in package.json). The offline capture below exercises the fallback.
 const fakeRelease = {
-  tag_name: 'v0.3.0',
-  html_url: 'https://github.com/habit04/share/releases/tag/v0.3.0',
+  tag_name: 'v0.4.6',
+  html_url: 'https://github.com/habit04/share/releases/tag/v0.4.6',
   published_at: '2026-09-20T12:00:00Z',
   assets: [
-    ['jcad-electrical-0.3.0-win-x64.exe', 98_000_000],
-    ['jcad-electrical-0.3.0-mac-arm64.dmg', 112_000_000],
-    ['jcad-electrical-0.3.0-mac-x64.dmg', 118_000_000],
-    ['jcad-electrical-0.3.0-linux-x86_64.AppImage', 121_000_000],
-    ['jcad-electrical-0.3.0-linux-amd64.deb', 84_000_000],
-  ].map(([name, size]) => ({ name, size, browser_download_url: `https://github.com/habit04/share/releases/download/v0.3.0/${name}` })),
+    ['jcad-electrical-0.4.6-win-x64.exe', 98_000_000],
+  ].map(([name, size]) => ({ name, size, browser_download_url: `https://github.com/habit04/share/releases/download/v0.4.6/${name}` })),
 };
 
 const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || '/opt/pw-browsers/chromium' });
@@ -88,15 +84,16 @@ async function landingPage(viewport, name, { online, userAgent, phone } = { onli
   const fallbackShown = await page.locator('#dl-fallback').isVisible();
   if (online && phone) {
     // No desktop installer for a phone: the primary button opens the release page instead.
-    check(/releases\/tag\/v0\.3\.0$/.test(primary), `${name}: primary button on a phone opens the release page (${primary})`);
+    check(/releases\/tag\/v0\.4\.6$/.test(primary), `${name}: primary button on a phone opens the release page (${primary})`);
     check(!fallbackShown, `${name}: fallback notice hidden`);
   } else if (online) {
-    check(/releases\/download\/v0\.3\.0\/.+\.(exe|dmg|AppImage)$/.test(primary), `${name}: primary button links to an installer (${primary})`);
+    check(/releases\/download\/v0\.4\.6\/.+\.exe$/.test(primary), `${name}: primary button links to the Windows installer (${primary})`);
     check(!fallbackShown, `${name}: fallback notice hidden`);
     const version = await page.locator('#primary-download [data-version]').textContent();
-    check(version.trim() === 'v0.3.0', `${name}: version badge ${version.trim()}`);
+    check(version.trim() === 'v0.4.6', `${name}: version badge ${version.trim()}`);
     const hrefs = await page.locator('.dl-card [data-asset]').evaluateAll((els) => els.map((e) => e.getAttribute('href')));
-    check(hrefs.every((h) => /releases\/download\//.test(h)), `${name}: all five platform buttons filled`);
+    check(hrefs[0]?.includes('/v0.4.6/'), `${name}: current Windows download follows latest`);
+    check(hrefs.slice(1).every((h) => /releases\/download\/v0\.4\.5\//.test(h)), `${name}: paused platform downloads retain v0.4.5`);
   } else {
     check(/\/releases$/.test(primary), `${name}: offline fallback links to the releases page (${primary})`);
     check(fallbackShown, `${name}: fallback notice visible`);
@@ -244,7 +241,7 @@ await app.close();
 // ---------------------------------------------------------------- landing page (after the pictures exist in site-dist/img)
 await landingPage({ width: 1440, height: 900 }, 'site-desktop', { online: true, userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/130' });
 await landingPage({ width: 390, height: 844 }, 'site-phone', { online: true, phone: true, userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Safari/605' });
-await landingPage({ width: 1440, height: 900 }, 'site-desktop-offline', { online: false });
+await landingPage({ width: 1440, height: 900 }, 'site-desktop-offline', { online: false, userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/130' });
 
 await browser.close();
 server.close();

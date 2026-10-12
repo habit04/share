@@ -6,9 +6,10 @@
 const { dialog } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs/promises');
-const { backupFile, copyFileAtomic } = require('../atomic-write.cjs');
+const { backupFile, copyFileAtomic, createAtomicWriter } = require('../atomic-write.cjs');
 const { dxfImageNames } = require('../ipc-guard.cjs');
-const { writeUserFile } = require('./app-data.cjs');
+const { writeUserFile, enqueueWrite } = require('./app-data.cjs');
+const { createPortableDwgExporter } = require('../portable-dwg.cjs');
 const { decodeDxf, readDwgWithProgress } = require('./dwg.cjs');
 const { MAX_DRAWING_BYTES, MAX_PROJECT_BYTES, readLimitedFile, validateTextSize } = require('../resource-limits.cjs');
 
@@ -24,6 +25,11 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
   const DXF_FILE = /\.dxf$/i;
   const PROJECT_FILE = /\.json$/i;
   const BACKUP_FILE = /\.(dxf|jcadproj\.json)$/i;
+  const DWG_FILE = /\.dwg$/i;
+  const dwgExporter = createPortableDwgExporter();
+  // Opening a DWG never authorizes this export. Only its dedicated native Save dialog does.
+  const dwgDestinations = new Set();
+  const dwgKey = (file) => path.resolve(file).normalize('NFC').toLowerCase();
 
   /**
    * Open a DXF or DWG. Returns { path, kind: 'dxf', text } or { path, kind: 'dwg', payload, version } or null.
@@ -51,7 +57,7 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
     }
     if (chosen) registry.grant(file);
     if (file.toLowerCase().endsWith('.dwg')) {
-      // The DXF copy next to a DWG gets the DWG's access (DWG itself is never written).
+      // The DXF working copy gets the DWG's access; a DWG export needs its own Save dialog.
       const twin = file.replace(/\.dwg$/i, '.dxf');
       registry.grantDerived(twin, file);
       // At most 128 MiB, read through one nonblocking handle (E-7).
@@ -197,6 +203,53 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
     if (!file) return null;
     registry.grant(file);
     return file;
+  });
+
+  ipcMain.handle('dwg-export-status', async (_ev) => dwgExporter.status());
+
+  ipcMain.handle('choose-dwg-path', async (ev, suggestName) => {
+    const win = senderWindow(ev);
+    const status = await dwgExporter.status();
+    if (!status.available) throw new Error(status.reason);
+    if (suggestName !== undefined && (typeof suggestName !== 'string' || suggestName.length > 4096 || suggestName.includes('\0'))) throw new Error('Invalid DWG filename');
+    const res = await dialog.showSaveDialog(win, {
+      title: 'Export DWG Copy',
+      defaultPath: String(suggestName || 'Drawing1.dwg'),
+      filters: [{ name: 'DWG Drawing (AutoCAD 2018)', extensions: ['dwg'] }],
+    });
+    if (res.canceled || !res.filePath) return null;
+    const file = await completeSavePath(win, res.filePath, DWG_FILE, '.dwg');
+    if (!file || pathPolicy.shapeProblem(file)) return null;
+    registry.grant(file);
+    dwgDestinations.add(dwgKey(file));
+    if (dwgDestinations.size > 128) dwgDestinations.delete(dwgDestinations.values().next().value);
+    return file;
+  });
+
+  ipcMain.handle('export-dwg', async (ev, file, text) => {
+    const win = senderWindow(ev);
+    validateTextSize(text, MAX_DRAWING_BYTES, 'DXF');
+    const target = pathPolicy.writable(file, 'export-dwg', DWG_FILE);
+    if (!target || !dwgDestinations.has(dwgKey(target))) throw new Error('Choose the DWG export destination using its Save dialog first.');
+    const controller = new AbortController();
+    const cancel = () => controller.abort();
+    win.once('closed', cancel);
+    win.webContents.once('destroyed', cancel);
+    win.webContents.once('render-process-gone', cancel);
+    try {
+      const result = await dwgExporter.export(target, text, (destination, bytes, check) => enqueueWrite(destination, async (key) => {
+        // Queue with DXF/project writes, then check the original identity again inside the reservation.
+        await check();
+        const writer = createAtomicWriter(undefined, { hooks: { beforeRename: check } });
+        await writer.atomicWriteFile(destination, bytes, { backup: true, expectedDestination: key });
+      }), controller.signal);
+      pathPolicy.rememberImages(target, dxfImageNames(text));
+      return result;
+    } finally {
+      win.removeListener('closed', cancel);
+      win.webContents.removeListener('destroyed', cancel);
+      win.webContents.removeListener('render-process-gone', cancel);
+    }
   });
 
   /**

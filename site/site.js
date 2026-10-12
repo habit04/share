@@ -6,6 +6,15 @@
   var API = 'https://api.github.com/repos/' + REPO + '/releases/latest';
   var CACHE_KEY = 'jcad.latestRelease';
   var CACHE_MS = 30 * 60 * 1000;
+  var LEGACY_VERSION = '0.4.5';
+  var LEGACY_FILES = {
+    'mac-arm64': 'mac-arm64.dmg', 'mac-x64': 'mac-x64.dmg',
+    'linux-appimage': 'linux-x86_64.AppImage', 'linux-deb': 'linux-amd64.deb',
+  };
+
+  function legacyUrl(key) {
+    return 'https://github.com/' + REPO + '/releases/download/v' + LEGACY_VERSION + '/jcad-electrical-' + LEGACY_VERSION + '-' + LEGACY_FILES[key];
+  }
 
   // Installer file names follow electron-builder's ${name}-${version}-${os}-${arch}.${ext}.
   var MATCHERS = {
@@ -107,18 +116,22 @@
     var date = document.getElementById('release-date');
     if (date) date.textContent = fmtDate(release.published_at);
     var note = document.getElementById('release-note');
-    if (note) note.textContent = 'Latest release ' + version + (release.published_at ? ' (' + fmtDate(release.published_at) + ')' : '') + '.';
+    if (note) note.textContent = 'Latest Windows release ' + version + (release.published_at ? ' (' + fmtDate(release.published_at) + ')' : '') + '.';
+    if (os === 'mac' || os === 'linux') setText('#primary-download [data-version]', 'v' + LEGACY_VERSION);
 
     var buttons = document.querySelectorAll('[data-asset]');
     for (var i = 0; i < buttons.length; i += 1) {
       var btn = buttons[i];
       var key = btn.getAttribute('data-asset');
-      if (key === 'auto' && os === 'mac') {
+      // These platform updates are paused. Never replace pinned legacy links with a
+      // Windows-only latest release or advertise that Windows version for another OS.
+      if (LEGACY_FILES[key]) { btn.href = legacyUrl(key); continue; }
+      if (key === 'auto' && (os === 'mac' || os === 'linux')) {
         btn.href = '#download';
         btn.removeAttribute('download');
         continue;
       }
-      if (key === 'auto') key = os === 'win' ? 'win' : os === 'linux' ? 'linux-appimage' : '';
+      if (key === 'auto') key = os === 'win' ? 'win' : '';
       var asset = key ? assetFor(release, key) : null;
       if (asset) {
         btn.href = asset.browser_download_url;
@@ -137,10 +150,11 @@
   function applyOs(os) {
     var label = document.querySelector('#primary-download .dl-os');
     var names = { win: 'for Windows', mac: 'for macOS', linux: 'for Linux' };
-    if (os === 'mac') {
+    if (os === 'mac' || os === 'linux') {
+      setText('#primary-download [data-version]', 'v' + LEGACY_VERSION);
       var button = document.getElementById('primary-download');
       var buttonLabel = document.querySelector('#primary-download .btn-label');
-      if (buttonLabel) buttonLabel.textContent = 'Choose Mac version';
+      if (buttonLabel) buttonLabel.textContent = 'Older ' + (os === 'mac' ? 'Mac' : 'Linux') + ' downloads';
       if (button) {
         button.href = '#download';
         button.removeAttribute('download');
@@ -157,7 +171,7 @@
     var fb = document.getElementById('dl-fallback');
     if (fb) fb.hidden = false;
     var note = document.getElementById('release-note');
-    if (note) note.textContent = 'Download the installer for your platform from the releases page.';
+    if (note) note.textContent = 'New desktop releases are for Windows. Mac and Linux downloads remain at v0.4.5.';
   }
 
   function initDownloads() {

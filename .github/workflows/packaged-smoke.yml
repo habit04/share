@@ -1,7 +1,7 @@
 name: Packaged smoke test (existing release)
 
 # Manual check of the installers attached to a published release: downloads them, installs /
-# mounts / extracts each one on its own OS and drives the packaged application end to end
+# checks the Windows package and drives the packaged application end to end
 # (scripts/packaged-smoke.mjs). The release workflow runs the same test on every new build before
 # publishing; this one re-checks a release that is already out (for example after a runner image
 # or OS update). Test scripts and fixtures come from the branch the workflow is run from; checks
@@ -25,10 +25,6 @@ jobs:
         include:
           - os: windows-latest
             patterns: '*.exe'
-          - os: macos-latest
-            patterns: '*.dmg'
-          - os: ubuntu-latest
-            patterns: '*.AppImage *.deb'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
@@ -40,6 +36,8 @@ jobs:
       - run: npm ci
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+      - name: Fetch the legacy-seeding Electron binary before test launches
+        run: node node_modules/electron/install.js
       - name: Download the release's installers
         shell: bash
         env:
@@ -58,13 +56,7 @@ jobs:
         run: echo "JCAD_E2E_EXPECT_VERSION=${TAG#v}" >> "$GITHUB_ENV"
         env:
           TAG: ${{ github.event.inputs.tag }}
-      - name: Packaged smoke test (Linux, virtual display)
-        if: runner.os == 'Linux'
-        run: xvfb-run -a node scripts/packaged-smoke.mjs installers
-        env:
-          JCAD_SMOKE_OUT: packaged-smoke-output
-      - name: Packaged smoke test (Windows, macOS)
-        if: runner.os != 'Linux'
+      - name: Packaged smoke test (Windows)
         run: node scripts/packaged-smoke.mjs installers
         env:
           JCAD_SMOKE_OUT: packaged-smoke-output

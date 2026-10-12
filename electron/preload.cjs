@@ -48,6 +48,12 @@ contextBridge.exposeInMainWorld('jcad', {
   saveDxf: (path, text, suggestName, opts) => ipcRenderer.invoke('save-dxf', path, text, suggestName, opts && opts.backup === false ? { backup: false } : undefined),
   // Drawing Save As: pick the destination first, then write it with saveDxf (in save-queue order).
   chooseDrawingPath: (suggestName) => ipcRenderer.invoke('choose-drawing-path', String(suggestName || '')),
+  // Windows desktop portable DWG copies; ordinary SAVE remains the working DXF document.
+  ...(process.platform === 'win32' ? {
+    dwgExportStatus: () => ipcRenderer.invoke('dwg-export-status'),
+    chooseDwgPath: (suggestName) => ipcRenderer.invoke('choose-dwg-path', String(suggestName || '')),
+    exportDwg: (path, text) => ipcRenderer.invoke('export-dwg', path, text),
+  } : {}),
   // Progress of a large DWG read (the main process parses it in a worker thread) and its Cancel button
   onOpenProgress: (cb) => {
     ipcRenderer.on('open-progress', (_ev, p) => cb(p));

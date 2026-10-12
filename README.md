@@ -25,20 +25,22 @@ trademarks are used.
 
 ## Download and run
 
-Ready-made installers are built by the **Build installers** GitHub Actions workflow
-(Actions tab, run it or push a `v*` tag): a Windows installer (`.exe`), macOS disk
-images (`.dmg`, Apple Silicon and Intel) and Linux `.AppImage` / `.deb` packages appear as workflow artifacts, and
-tagged builds are attached to a GitHub Release only after all release gates pass. Publication requires
-Azure signing credentials for Windows and Apple Developer ID/notarization credentials for macOS;
-missing credentials fail the release. The workflow verifies the Windows installer and app against the
-configured publisher (Justin Rodriguez), and both macOS architectures' Developer ID, hardened runtime,
-notarization and Gatekeeper checks. macOS 0.4.2 and later require macOS 13 Ventura or later. Verified notarized
-builds ordinarily open after the normal downloaded-app confirmation.
+New desktop releases are **Windows x64 only**. The **Build installers** GitHub Actions workflow
+produces a Windows installer (`.exe`); tagged builds are attached to a GitHub Release only after
+the source, packaged application, installed application and artifact verification gates pass.
+Publication requires Azure signing credentials and verifies the installer and application against
+the configured publisher (Justin Rodriguez).
 
-An empty-tag build-only rehearsal with `require_signing` disabled may produce unsigned Windows or
-ad-hoc macOS installers when credentials are absent. Older unsigned Windows versions and a new signing
+Mac and Linux updates are paused. Their existing installers remain available in
+[v0.4.5](https://github.com/habit04/share/releases/tag/v0.4.5), and portable code and packaging
+targets are retained for a future return. Those installers do not include subsequent Windows
+features or fixes. The browser edition remains available. Generic source and browser checks
+continue running on Ubuntu; that does not produce a Linux desktop release.
+
+An empty-tag build-only rehearsal with `require_signing` disabled may produce unsigned Windows
+installers when credentials are absent. Older unsigned Windows versions and a new signing
 publisher can still trigger SmartScreen warnings. Older ad-hoc macOS releases (through 0.4.1) and ad-hoc
-rehearsals need confirmation through System Settings > Privacy & Security > "Open Anyway". Each release's
+builds need confirmation through System Settings > Privacy & Security > "Open Anyway". Each release's
 notes and provenance record the signing checks that actually passed. [docs/CODE-SIGNING.md](docs/CODE-SIGNING.md)
 walks through both platforms (accounts, secrets, costs, verification).
 
@@ -511,8 +513,10 @@ The entity-by-entity table of what survives import and export is [docs/SUPPORT-M
   construction lines, solids, polyline bulges, entity/layer linetypes and lineweights and the
   header units / limits / dimension variables (arrows, tolerances, alternate units, text placement,
   fit, colours, DIMPOST / DIMAPOST, DIMRND, DIMLFAC, DIMZIN ...), splines, hatches, leaders,
-  multileaders, tables and images. The import is read-only; SAVE writes a DXF next
-  to the original. Sample files from the LibreDWG test suite live in `fixtures/` and are used
+  multileaders, tables and images. SAVE writes a DXF next to the original. The Windows desktop
+  edition also exports AC1032 DWG copies through its bundled offline writer, without installed
+  AutoCAD; see [DWG saving](docs/DWG-SAVING.md) for supported content and refusal limits.
+  Sample files from the LibreDWG test suite live in `fixtures/` and are used
   by the tests. Mirrored and stretched block references keep their X/Y scales (circles and
   arcs inside a stretched block become polylines).
 - **Paper space** round-trips through DXF: `*Paper_Space` / `*Paper_SpaceN` blocks, VIEWPORT
