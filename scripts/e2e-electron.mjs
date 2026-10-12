@@ -449,7 +449,7 @@ try {
     log = await logSince(h);
     const line = log.find((l) => /Imported DWG|Failed/.test(l)) ?? '';
     const n = Number(/: (\d+) entities/.exec(line)?.[1] ?? 0);
-    check(line.startsWith('Imported DWG') && n > 10, `DWG opened through IPC + LibreDWG in the main-process worker: ${line}`);
+    check(line.startsWith('Imported DWG') && n > 10, `DWG opened through IPC + LibreDWG in the isolated reader: ${line}`);
   }
   if (existsSync(fixtures.dwg) && current) {
     const progress = await win.evaluate(() => /** @type {any} */ (window).__progress.splice(0));

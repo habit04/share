@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { convertDwgMTextDatabase } from './dwg-mtext-background.mjs';
 import { convertDwgDatabase } from './dwg-array-conversion.mjs';
 import { readNativeDwg } from './dwg-native-read.mjs';
+import { boundDwgWasmMemory } from './dwg-wasm-memory.mjs';
 import createNativeModule from '../vendor/libredwg-web-bg/factory/libredwg-web.js';
 
 let libPromise = null;
@@ -17,7 +18,9 @@ async function lib() {
     libPromise = (async () => {
       const { LibreDwg } = await import('@mlightcad/libredwg-web');
       const wasmBinary = await readFile(new URL('../vendor/libredwg-web-bg/factory/libredwg-web.wasm', import.meta.url));
-      const instance = await createNativeModule({ wasmBinary });
+      // The native factory owns a defined memory; Module.wasmMemory cannot constrain it.
+      // Lower the declaration on a checked copy before any initial memory is allocated.
+      const instance = await createNativeModule({ wasmBinary: boundDwgWasmMemory(wasmBinary) });
       return LibreDwg.createByWasmInstance(instance);
     })();
   }
@@ -58,27 +61,6 @@ export async function readDwgPayload(bytes, kind = 'dwg') {
       void resetLibreDwg();
     }
   }
-}
-
-/**
- * Refuse to grow any WebAssembly memory of this thread beyond `maxBytes` (security review E-7).
- * The shipped Emscripten allocator calls Memory.grow from JS, which this intercepts. It bounds
- * that linear memory's growth, not aggregate RSS, buffers, initial memory allocations or direct
- * WASM memory.grow instructions. The browser reader does not install this Node-worker policy.
- * A refused growth makes the allocation inside LibreDWG fail, and the read with it.
- * Returns a function that removes the cap.
- * @param {number} maxBytes
- */
-export function capWasmMemory(maxBytes) {
-  const proto = WebAssembly.Memory.prototype;
-  const grow = proto.grow;
-  proto.grow = function cappedGrow(/** @type {number} */ pages) {
-    if (this.buffer.byteLength + pages * 65536 > maxBytes) throw new RangeError(`WebAssembly memory limit of ${Math.round(maxBytes / (1024 * 1024))} MB reached`);
-    return grow.call(this, pages);
-  };
-  return () => {
-    proto.grow = grow;
-  };
 }
 
 /**

@@ -207,6 +207,26 @@ else {
   if (macMinimum < 0 || macMinimum > record || !/runner\.os == 'macOS'/.test(String(jobs.build.steps[macMinimum].if ?? ''))) problems.push('release.yml: the macOS build must write the minimum macOS version into latest-mac.yml before recording checksums');
 }
 
+// DWG containment must run with real Electron OS metrics, including both native Mac runners.
+const containmentTargets = /** @type {Array<[string, string, boolean]>} */ ([
+  ['ci.yml', 'e2e-electron', false],
+  ['release.yml', 'checks', true],
+  ['release.yml', 'test-build', false],
+  ['release.yml', 'packaged-smoke', false],
+]);
+for (const [file, job, linuxOnly] of containmentTargets) {
+  const steps = parsed[file]?.jobs?.[job]?.steps ?? [];
+  const matching = steps.filter((step) => /\bnpm run check:dwg-containment\s*$/.test(String(step.run ?? '')));
+  const expected = linuxOnly ? [[undefined, 'xvfb-run -a npm run check:dwg-containment']] : [
+    ["runner.os == 'Linux'", 'xvfb-run -a npm run check:dwg-containment'],
+    ["runner.os != 'Linux'", 'npm run check:dwg-containment'],
+  ];
+  for (const [condition, command] of expected) {
+    if (matching.filter((step) => step.if === condition && String(step.run ?? '').trim() === command && !step['continue-on-error']).length !== 1)
+      problems.push(`${file}: ${job} must run the DWG containment gate on every target platform`);
+  }
+}
+
 if (problems.length) {
   console.error(`check-workflows: ${problems.length} problem(s)\n${problems.map((p) => `  - ${p}`).join('\n')}`);
   process.exit(1);

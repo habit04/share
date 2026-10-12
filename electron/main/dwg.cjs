@@ -1,6 +1,6 @@
 /**
  * Reading drawing files: DXF bytes decoded by their code page, DWG files parsed by LibreDWG in a
- * worker thread (electron/dwg-host.cjs: input, memory and time limits), with the renderer's
+ * separate utility process (electron/dwg-host.cjs: input, memory and time limits), with the renderer's
  * progress dialog and Cancel for large files.
  */
 const path = require('node:path');
@@ -13,8 +13,11 @@ const ELECTRON_DIR = path.join(__dirname, '..');
 
 /** @type {Promise<any> | null} */
 let dwgReader = null;
-/** LibreDWG in a worker thread (electron/dwg-host.cjs, scripts/dwg-worker.mjs), cancellable. */
-const dwgHost = createDwgHost({ scriptsDir: path.join(ELECTRON_DIR, '..', 'scripts') });
+/** LibreDWG in a disposable utility process; its parser worker cannot exhaust the main heap. */
+const dwgHost = createDwgHost({
+  scriptsDir: path.join(ELECTRON_DIR, '..', 'scripts'),
+  allowTestHooks: !require('electron').app.isPackaged || JSON.parse(require('node:fs').readFileSync(path.join(ELECTRON_DIR, '..', 'package.json'), 'utf8')).jcadTestBuild === true,
+});
 /** The reader and the LibreDWG wasm are unpacked from the asar so Node's ESM loader can import them. */
 function dwgReaderPath() {
   return path.join(ELECTRON_DIR, '..', 'scripts', 'dwg-reader.mjs').replace(/app\.asar([\\/])/, 'app.asar.unpacked$1');
@@ -37,13 +40,13 @@ async function decodeDxf(bytes) {
     return { text: new TextDecoder('utf-8').decode(bytes), encoding: 'utf-8', reason: 'fallback' };
   }
 }
-/** Parse DWG bytes off the main thread, within the host's limits (the worker restarts after a WebAssembly abort). */
+/** Parse DWG bytes outside the main process, within the host's limits. Each file gets a fresh process. */
 async function readDwg(bytes, id) {
   return dwgHost.read(bytes, id);
 }
 
 /**
- * Parse a DWG in the worker. Files over the progress threshold are announced to the renderer
+ * Parse a DWG in the isolated reader. Files over the progress threshold are announced to the renderer
  * ('open-progress': start / end / cancelled), which shows a dialog whose Cancel button calls
  * 'cancel-open'.
  */

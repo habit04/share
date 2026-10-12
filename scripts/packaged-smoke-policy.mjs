@@ -20,8 +20,15 @@ export function childSucceeded(result) {
   return result.status === 0 && !result.error && !result.signal;
 }
 
-export function dwgProbeSucceeded(result, line) {
-  return childSucceeded(result) && /^PROBE_OK \S+ entities=\d+/.test(line);
+export function dwgProbeSucceeded(result, line, version = '0.4.4') {
+  const decoded = /^PROBE_OK (\S+) entities=(\d+) blocks=(\d+)(?:\s|$)/.exec(line);
+  if (!childSucceeded(result) || !decoded || decoded[1] === 'invalid' || Number(decoded[2]) <= 0) return false;
+  const parsed = versionTools.parseVersion(version);
+  if (!parsed) throw new Error(`Invalid packaged smoke version: ${version}`);
+  const [major, minor, patch] = parsed.parts;
+  const containmentRequired = major > 0 || minor > 4 || (minor === 4 && patch >= 5);
+  // The smoke driver always supplies the committed example_2000.dwg fixture.
+  return !containmentRequired || (decoded[1] === 'r2000' && Number(decoded[2]) === 67 && Number(decoded[3]) === 16 && /\bisolated=1 recovery=1\s*$/.test(line));
 }
 
 /** Native release jobs must identify their expected architecture and run on that host. */

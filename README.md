@@ -17,7 +17,7 @@ trademarks are used.
   text is drawn with the public-domain **Hershey Roman Simplex** stroke font (see
   `src/render/fonts/HERSHEY-LICENSE`), which gives the classic `txt.shx` look.
 - **LibreDWG** (GPL-3.0) compiled to WebAssembly (`@mlightcad/libredwg-web`) reads DWG
-  files R14 through 2018 in the main process. Because LibreDWG is GPL, a distributed build
+  files R14 through 2018 in an isolated desktop utility process. Because LibreDWG is GPL, a distributed build
   that includes it must be licensed compatibly.
 - **Vitest** unit tests (geometry, entities, document/undo, snapping, DXF, DWG fixtures,
   electrical helpers, reports, templates, projects). **Playwright** screenshot script for
@@ -72,7 +72,8 @@ printers, other CAD programs, displays, network drives, crash recovery, large fi
 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) (setting up, testing and packaging from source),
 [docs/PERFORMANCE.md](docs/PERFORMANCE.md) (measured performance),
 [docs/SECURITY-REVIEW.md](docs/SECURITY-REVIEW.md) (security review of the desktop shell and file readers, with the
-status of each finding),
+status of each finding), [docs/DWG-MEMORY-CONTAINMENT.md](docs/DWG-MEMORY-CONTAINMENT.md)
+(desktop parser isolation, memory budgets and validation),
 [LICENSE](LICENSE) and [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
 ### Website and browser edition

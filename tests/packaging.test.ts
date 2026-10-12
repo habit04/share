@@ -137,12 +137,18 @@ describe('electron-builder configuration', () => {
     const support = new URL('electron/support.json', root), supportInfo = lstatSync(support);
     expect(supportInfo.isFile()).toBe(true);
     expect(accepted(mainMatchers, support), 'Main-process mailto authorization requires the packaged shared JSON').toBe(true);
-    const adapters = ['dwg-reader.mjs', 'dwg-worker.mjs', 'dwg-native-read.mjs', 'dwg-array-conversion.mjs', 'dwg-mtext-background.mjs'];
+    const adapters = ['dwg-reader.mjs', 'dwg-worker.mjs', 'dwg-process.mjs', 'dwg-wasm-memory.mjs', 'dwg-native-read.mjs', 'dwg-array-conversion.mjs', 'dwg-mtext-background.mjs'];
     for (const name of adapters) {
       const source = new URL(`scripts/${name}`, root), info = lstatSync(source);
       expect(info.isFile(), name).toBe(true);
       expect(accepted(mainMatchers, source), `${name} must be packaged`).toBe(true);
       expect(accepted(unpackMatchers, source), `${name} must remain importable by the real native worker outside ASAR`).toBe(true);
+    }
+    const protocol = new URL('electron/dwg-protocol.cjs', root);
+    expect(accepted(mainMatchers, protocol), 'The shared bounded transport must be packaged').toBe(true);
+    expect(accepted(unpackMatchers, protocol), 'The isolated ESM scripts import the shared protocol outside ASAR').toBe(true);
+    for (const name of ['check-dwg-containment.mjs', 'dwg-containment-probe.cjs']) {
+      expect(accepted(mainMatchers, new URL(`scripts/${name}`, root)), 'Allocation test harnesses must not ship with the application').toBe(false);
     }
     const provenance = JSON.parse(read('vendor/libredwg-web-bg/provenance.json')) as { assets: Array<{ path: string; bytes: number }> };
     expect(provenance.assets).toHaveLength(15);

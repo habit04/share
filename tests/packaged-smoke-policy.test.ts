@@ -66,4 +66,16 @@ describe('packaged child exit evidence', () => {
     expect(dwgProbeSucceeded({ status:0, signal:'SIGTERM', error:undefined }, line)).toBe(false);
     expect(dwgProbeSucceeded({ status:1, signal:null, error:undefined }, line)).toBe(false);
   });
+  it('requires isolated DWG cancellation and damaged-file recovery in new shipping installers', () => {
+    expect(dwgProbeSucceeded(success, line, '0.4.4')).toBe(true);
+    for (const version of ['0.4.5', '0.4.5-beta.1', '0.5.0', '1.0.0']) {
+      expect(dwgProbeSucceeded(success, line, version)).toBe(false);
+      expect(dwgProbeSucceeded(success, `${line} isolated=1 recovery=1`, version)).toBe(true);
+      expect(dwgProbeSucceeded(success, `${line} isolated=1 recovery=0`, version)).toBe(false);
+      expect(dwgProbeSucceeded(success, 'PROBE_OK invalid entities=0 blocks=0 isolated=1 recovery=1', version)).toBe(false);
+      expect(dwgProbeSucceeded(success, 'PROBE_OK r2000 entities=1 blocks=16 isolated=1 recovery=1', version)).toBe(false);
+      expect(dwgProbeSucceeded(success, 'PROBE_OK r2000 entities=67 blocks=0 isolated=1 recovery=1', version)).toBe(false);
+    }
+    expect(() => dwgProbeSucceeded(success, line, 'unknown')).toThrow(/Invalid packaged smoke version/);
+  });
 });

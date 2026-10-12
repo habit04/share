@@ -92,7 +92,16 @@ remain optional through `JCAD_CUSTOMER_DWG_DIR`. External AutoCAD proof runs sep
 npm test                    # vitest run: every tests/**/*.test.ts (includes the DWG fixtures in fixtures/)
 npx vitest run tests/dxf.test.ts          # one file
 npx vitest                  # watch mode
+npm run check:dwg-containment # actual Electron utility/OS-memory/heap/cancel/recovery checks
 ```
+
+Run the containment command under `xvfb-run -a` on a Linux worker without a display. It creates
+temporary fixture copies and writes bounded proof to `e2e-output/dwg-containment.json`; its
+unpackaged test main is not included in installers. Shipping probes still have to verify the
+production app with its enabled fuses on each supported OS through a real DWG read, cancellation,
+malformed-input refusal and reopening. Forced native-memory and heap exhaustion are tested by
+the unpackaged containment gate, rather than an allocation test hook in the installed app. See
+[DWG memory containment](DWG-MEMORY-CONTAINMENT.md) for that evidence boundary.
 
 Timing budgets in `tests/perf.test.ts` are about three times the development machine; set
 `JCAD_PERF_FACTOR=2` on slower machines (CI does). The heavy dense-drawing benchmarks only run
@@ -357,7 +366,7 @@ hands them to the modules in one context (`context.cjs`). No module requires Ele
 | `app-data.cjs` | 58 | state files in the app-data folder, crash-safe user-file writes, `error.log` and crash logging |
 | `window.cjs` | 224 | the main window: bounds, the close / quit / update-restart workflow, `app-quit` |
 | `menu.cjs` | 137 | the native menu and File > Open Recent |
-| `dwg.cjs` | 76 | DXF decoding, DWG reading in a worker with progress and cancel |
+| `dwg.cjs` | 76 | DXF decoding, isolated DWG reading with progress and cancel |
 | `ipc-drawings.cjs` | 292 | open / save drawings and projects, Save As paths, backups, IMAGE files |
 | `ipc-plot.cjs` | 99 | plot to PDF, vector PDF, print |
 | `ipc-stores.cjs` | 178 | autosave, user library, plugins, catalog packs |
@@ -367,9 +376,17 @@ hands them to the modules in one context (`context.cjs`). No module requires Ele
 Shared by those modules, in `electron/`: `atomic-write.cjs` (temp file + rename, symbolic links
 refused, folder pinned), `path-registry.cjs` and `ipc-guard.cjs` (what may be read or written,
 who may call), `resource-limits.cjs` (size-checked reads, write payload and sheet size limits),
-`dwg-host.cjs` (the DWG worker with its memory and time limits), `web-security.cjs` (permission
+`dwg-host.cjs` (isolated DWG process, bounded requests/transport and deadlines),
+`dwg-process-limits.cjs` (parent-side OS memory watchdog), `web-security.cjs` (permission
 handlers and web contents guards), `updater.cjs` and `update-verify.cjs` (update checks and the
 verification of a downloaded installer), `file-errors.cjs` (plain-language file errors).
+
+The desktop DWG process owns a V8-limited worker; Electron utility-process `execArgv` heap flags
+are not relied on to enforce its heap policy. `scripts/dwg-wasm-memory.mjs` restricts the shipped
+module's memory declaration before the native factory allocates WASM memory. Production always
+uses Electron's utility process with parent-side `app.getAppMetrics()` observations. Node-only
+test/CLI adapters do not establish shipping utility-process behavior. See
+[DWG memory containment](DWG-MEMORY-CONTAINMENT.md) for limits and required validation evidence.
 
 **Boundaries the tests hold.** The undo history is private to `src/core/document.ts` (use
 `Drawing.history()` / `restoreHistory()`; `tests/history-api.test.ts` scans `src/`, `tests/`,

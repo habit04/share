@@ -122,9 +122,18 @@ if (probeIndex >= 0) {
   void app.whenReady().then(async () => {
     try {
       const file = process.argv[probeIndex + 1];
-      const { payload, version } = await readDwg(/** @type {Buffer} */ (await readLimitedFile(fs, file, MAX_DRAWING_BYTES)));
+      const bytes = /** @type {Buffer} */ (await readLimitedFile(fs, file, MAX_DRAWING_BYTES));
+      const first = await readDwg(bytes);
+      if (!first.version || first.version === 'invalid' || first.payload.entities.length === 0) throw new Error('The DWG probe did not decode a nonempty drawing.');
+      const cancelId = dwgHost.newId();
+      const cancelled = readDwg(bytes, cancelId).then(() => false, (error) => error?.cancelled === true);
+      if (!dwgHost.cancel(cancelId) || !await cancelled) throw new Error('The isolated DWG cancellation probe failed.');
+      const damaged = await readDwg(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8])).then(() => false, () => true);
+      if (!damaged) throw new Error('The isolated DWG damaged-file probe failed.');
+      const { payload, version } = await readDwg(bytes);
+      if (!dwgHost.usesProcess || version !== first.version || payload.entities.length !== first.payload.entities.length || payload.blocks.length !== first.payload.blocks.length) throw new Error('The isolated DWG recovery probe failed.');
       dwgHost.dispose();
-      process.stdout.write(`PROBE_OK ${version} entities=${payload.entities.length} blocks=${payload.blocks.length}\n`);
+      process.stdout.write(`PROBE_OK ${version} entities=${payload.entities.length} blocks=${payload.blocks.length} isolated=1 recovery=1\n`);
       app.exit(0);
     } catch (err) {
       process.stdout.write(`PROBE_FAIL ${err && err.message}\n`);

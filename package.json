@@ -1,6 +1,6 @@
 {
   "name": "jcad-electrical",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "description": "2D electrical schematic drafting application (desktop)",
   "author": "JCad Electrical contributors",
   "license": "GPL-3.0-only",
@@ -20,6 +20,7 @@
     "test": "vitest run",
     "check:fixtures": "node scripts/check-fixtures.mjs",
     "check:autocad": "node scripts/check-autocad.mjs",
+    "check:dwg-containment": "node scripts/check-dwg-containment.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "typecheck:electron": "tsc -p tsconfig.electron.json",
     "typecheck:scripts": "tsc -p tsconfig.scripts.json",
@@ -67,6 +68,8 @@
       "scripts/dwg-mtext-background.mjs",
       "scripts/dwg-array-conversion.mjs",
       "scripts/dwg-worker.mjs",
+      "scripts/dwg-process.mjs",
+      "scripts/dwg-wasm-memory.mjs",
       {
         "from": "vendor/libredwg-web-bg",
         "to": "vendor/libredwg-web-bg",
@@ -77,6 +80,7 @@
       "package.json"
     ],
     "asarUnpack": [
+      "electron/dwg-protocol.cjs",
       "node_modules/@mlightcad/libredwg-web/**",
       "vendor/libredwg-web-bg/**",
       "scripts/**"

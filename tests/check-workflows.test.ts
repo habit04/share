@@ -62,6 +62,12 @@ describe('workflow validation', () => {
     expect(r.out).toMatch(/release\.yml: not valid YAML/);
   });
 
+  it('rejects removing the native DWG memory containment gate', () => {
+    const r = check(withRelease((text) => text.replaceAll('npm run check:dwg-containment', 'node -e "process.exit(0)"')));
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/must run the DWG containment gate on every target platform/);
+  });
+
   it('notices a build that no longer waits for the checks', () => {
     const r = check(withRelease((t) => t.replace('  build:\n    needs: [checks, test-build]\n', '  build:\n')));
     expect(r.code).toBe(1);

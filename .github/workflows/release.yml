@@ -56,6 +56,8 @@ jobs:
       # Electron 44's package fetches its binary on first use, not at install (as in ci.yml): fetch
       # it here so the download does not happen inside the end-to-end run's launch timeout.
       - run: node node_modules/electron/install.js
+      - name: DWG process containment on the release source
+        run: xvfb-run -a npm run check:dwg-containment
       - name: Install Chromium for Playwright
         run: |
           npx playwright install --with-deps chromium
@@ -127,6 +129,12 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
       - name: Fetch the legacy-seeding Electron binary before test launches
         run: node node_modules/electron/install.js
+      - name: DWG process containment (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run check:dwg-containment
+      - name: DWG process containment (Windows, macOS)
+        if: runner.os != 'Linux'
+        run: npm run check:dwg-containment
       - name: Dedicated test-build Electron suite (Linux)
         if: runner.os == 'Linux'
         run: xvfb-run -a npm run e2e:test-build
@@ -448,6 +456,12 @@ jobs:
           path: installers
       - name: Fetch the legacy-seeding Electron binary before shipping probes
         run: node node_modules/electron/install.js
+      - name: DWG process containment on this native runner (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run check:dwg-containment
+      - name: DWG process containment on this native runner (Windows, macOS)
+        if: runner.os != 'Linux'
+        run: npm run check:dwg-containment
       - name: Packaged smoke test (Linux, virtual display)
         if: runner.os == 'Linux'
         run: xvfb-run -a node scripts/packaged-smoke.mjs installers

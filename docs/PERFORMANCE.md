@@ -120,28 +120,39 @@ the same spatial index (`wireDegreeCounter` in `src/electrical/wires.ts`, identi
 issues with collators created once. The output is unchanged (compared issue by issue on the
 benchmark sheets; `tests/spatial-index.test.ts` checks the wire counts).
 
-## DWG reading off the main thread
+## DWG reading in an isolated process
 
 LibreDWG (WebAssembly) parses synchronously. It used to run in the Electron main process
 itself, so while a large DWG was read the main process answered no IPC and handled no menu or
-window event. It now runs in a worker thread (`scripts/dwg-worker.mjs`, managed by
-`electron/dwg-host.cjs`):
+window event. Desktop reads now use a fresh Electron utility process containing a worker thread
+(`scripts/dwg-worker.mjs`, managed by `electron/dwg-host.cjs`):
 
 - the main process stays responsive while a file is parsed;
 - files of 1 MB or more (`JCAD_OPEN_PROGRESS_BYTES` overrides the threshold) show a progress
   dialog in the editor with the file name, size, elapsed time and a **Cancel** button
-  (`src/ui/open-progress.ts`); Cancel terminates the worker and the open fails with
-  "Open cancelled", leaving the current drawing untouched; the next DWG starts a fresh worker;
-- a worker startup failure fails the open; there is no main-process parser fallback;
+  (`src/ui/open-progress.ts`); Cancel terminates the isolated reader and the open fails with
+  "Open cancelled", leaving the current drawing untouched; the next DWG starts a fresh process;
+- a reader startup failure fails the open; there is no main-process parser fallback. The previous
+  process must exit before another starts, including after successful reads;
+- at most four reads are accepted at once, with 128 MiB reserved across active and queued input.
+  Queued reads cannot multiply the parser's WASM instances. Input and output travel in acknowledged
+  1 MiB frames, with a 64 MiB serialized-result limit before the parent accepts a result;
 - both desktop and browser readers refuse inputs over 128 MiB. The browser terminates parsing
   after 60 s. Desktop parsing allows 60 s plus one second per input MiB, up to 188 s for accepted
-  files, with a separate 15 s startup deadline. Desktop workers limit V8 old/young generations
-  to 2,048/64 MiB and the stack to 8 MiB. A per-memory JavaScript growth guard limits the shipped
-  WebAssembly allocator to 2 GiB; it does not cap total process memory or intercept allocations
-  and growth performed directly by WebAssembly instructions. Browser workers have no explicit
-  heap or WebAssembly memory cap. These are workload guards, not an OS-level memory sandbox;
-- the end-to-end test covers the dialog, the progress events and Cancel; `--probe-dwg` checks the
-  worker inside each packaged build.
+  files, with a separate 15 s startup deadline. The desktop process's inner worker limits V8
+  old/young generations to 512/64 MiB and the stack to 8 MiB. A checked WASM declaration gives the
+  shipped reader an engine-enforced 2 GiB linear-memory maximum, including initial allocation
+  and direct WASM growth. The parent confirms valid OS measurements before parsing and polls
+  every 100 ms, aborting at a sampled 3 GiB process memory threshold. Polling includes resident,
+  peak resident and, on Windows, private committed memory, rather than V8 heap alone. It cannot
+  prevent brief overshoot between samples and is not a strict OS allocation cap. Browser workers
+  retain their existing policy without explicit heap or WASM limits;
+- the end-to-end test covers the dialog, the progress events and Cancel. The unpackaged
+  `check:dwg-containment` gate forces native-pressure and worker-heap failures on the actual OS.
+  Separately, the installed build's fixed `--probe-dwg` sequence reads a real fixture, cancels
+  a pending read, rejects malformed input and reopens matching drawing data through the shipping
+  utility/import/fuse configuration. It does not force allocation exhaustion in that binary.
+  [DWG memory containment](DWG-MEMORY-CONTAINMENT.md) records this evidence boundary.
 
 LibreDWG reports no percentage, so the bar is indeterminate. Converting the parsed DWG into a
 drawing (`convertDwg`) still runs in the renderer after the read; it was not measured separately.
