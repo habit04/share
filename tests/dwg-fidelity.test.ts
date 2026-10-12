@@ -247,7 +247,7 @@ describe('DWG payload twins carry the table data', () => {
     expect(result.report?.items).toContainEqual(expect.objectContaining({ type: 'MTEXT', handle: 'F2', layer: 'NOTES', where: 'model space', action: 'dropped', reason: expect.stringContaining('MTEXT formatting') }));
   });
 
-  it('preserves exposed frozen layer handles and reports clipping/twist losses', () => {
+  it('preserves exposed frozen layer handles and planar twist while reporting clipping loss', () => {
     const p = payload();
     p.layers[0]!.handle = 'A1';
     const vp = p.blocks.find((b) => b.name === '*Paper_Space')!.entities.find((e) => e.handle === '201')! as unknown as Record<string, unknown>;
@@ -255,7 +255,8 @@ describe('DWG payload twins carry the table data', () => {
     vp.viewTwistAngle = 0.25;
     const result = convertDwg(p);
     expect(result.state.layouts![0]!.viewports[0]!.frozenLayers).toEqual(['0']);
-    expect(result.report?.items).toContainEqual(expect.objectContaining({ type: 'VIEWPORT', action: 'simplified', reason: expect.stringContaining('twisted view') }));
+    expect(result.state.layouts![0]!.viewports[0]!.view.twist).toBeCloseTo(0.25, 12);
+    expect(result.report?.items.some((i) => i.type === 'VIEWPORT' && /untwisted/.test(i.reason))).toBe(false);
     expect(result.report?.items.some((i) => i.type === 'VIEWPORT' && i.reason.includes('show every layer'))).toBe(false);
     expect(readDxf(writeDxf(result.state)).layouts![0]!.viewports[0]!.frozenLayers).toEqual(['0']);
   });

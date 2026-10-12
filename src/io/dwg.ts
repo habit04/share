@@ -52,6 +52,7 @@ import * as g from '../core/geometry';
 import { STANDARD_DIMSTYLE, withDimVars, type DimStyle } from '../core/dimension';
 import { mtextFromDxf, hasFormatting, type MTextBackground } from '../core/mtext';
 import { LINEWEIGHTS } from '../core/linetypes';
+import { importViewportView } from './viewport-view';
 import type { LinearUnits } from '../core/units';
 import { cadPrecision } from '../core/units';
 import { explicitAlpha, transparencyFromDxf, validColorName, type TransparencySpec } from '../core/appearance';
@@ -1046,28 +1047,36 @@ function convertLayouts(
     for (const e of block?.entities ?? []) {
       if (e.type === 'ATTRIB' || e.type === 'ATTDEF') continue;
       if (e.type === 'VIEWPORT') {
-        const v = e as DwgEntity & { viewportId?: number; viewportCenter?: { x: number; y: number }; width?: number; height?: number; displayCenter?: { x: number; y: number }; viewHeight?: number; statusBitFlags?: number; clippingBoundaryId?: string; viewTwistAngle?: number; frozenLayerIds?: string[]; frozenLayers?: string[] };
+        const v = e as DwgEntity & { viewportId?: number; viewportCenter?: { x: number; y: number }; width?: number; height?: number; displayCenter?: { x: number; y: number }; viewHeight?: number; statusBitFlags?: number; clippingBoundaryId?: string; viewTwistAngle?: number; viewDirection?: { x: number; y: number; z?: number }; targetPoint?: { x: number; y: number; z?: number }; frozenLayerIds?: string[]; frozenLayers?: string[] };
         if (e === overall) continue; // the overall paper-space viewport
         const vw = v.width ?? 0;
         const vh = v.height ?? 0;
         const viewHeight = v.viewHeight ?? 0;
         const item = { type: 'VIEWPORT', layer: e.layer || '0', where, ...(e.handle ? { handle: String(e.handle) } : {}) };
-        if (!(vw > 0 && vh > 0 && viewHeight > 0)) {
+        if (![vw, vh, viewHeight].every(Number.isFinite) || !(vw > 0 && vh > 0 && viewHeight > 0)) {
           report.add({ ...item, action: 'dropped', reason: 'invalid viewport size or view height' });
           continue;
         }
-        if (v.clippingBoundaryId && v.clippingBoundaryId !== '0') report.add({ ...item, action: 'simplified', reason: 'its clipping boundary is not kept: the viewport shows its whole rectangle' });
-        if (v.viewTwistAngle && Math.abs(v.viewTwistAngle) > 1e-9) report.add({ ...item, action: 'simplified', reason: 'its twisted view is shown untwisted' });
         const flags = v.statusBitFlags ?? 0;
+        if (flags & 65536 || v.clippingBoundaryId && v.clippingBoundaryId !== '0') report.add({ ...item, action: 'simplified', reason: 'its clipping boundary is not kept: the viewport shows its whole rectangle' });
+        // The pinned LibreDWG facade exposes twist_angle unchanged in radians; never infer units from magnitude.
+        const view = importViewportView(v.displayCenter ?? { x: 0, y: 0 }, v.targetPoint, v.viewDirection, v.viewTwistAngle ?? 0, flags);
+        const scale = vh / viewHeight;
+        const center = { x: (v.viewportCenter?.x ?? 0) + offset.x, y: (v.viewportCenter?.y ?? 0) + offset.y };
+        if (!view || ![scale, center.x, center.y].every(Number.isFinite)) {
+          report.add({ ...item, action: 'dropped', reason: 'invalid viewport view coordinates or scale' });
+          continue;
+        }
+        for (const reason of view.warnings) report.add({ ...item, action: 'simplified', reason });
         const frozen = v.frozenLayers ?? v.frozenLayerIds?.map((id) => layerNames.get(String(id).toUpperCase()) ?? (payload.layers.some((l) => l.name === id) ? id : undefined)).filter((n): n is string => !!n);
         if (!v.frozenLayers && !v.frozenLayerIds) unknownFrozen += 1;
         else if (v.frozenLayerIds && frozen?.length !== v.frozenLayerIds.length) report.add({ ...item, action: 'simplified', reason: 'some frozen layer handles could not be resolved; the resolved frozen layers are kept' });
         viewports.push({
           id: newViewportId(),
-          center: { x: (v.viewportCenter?.x ?? 0) + offset.x, y: (v.viewportCenter?.y ?? 0) + offset.y },
+          center,
           width: vw,
           height: vh,
-          view: { center: p2(v.displayCenter), scale: vh / viewHeight, ...(flags & DWG_VP_LOCKED ? { locked: true } : {}) },
+          view: { center: view.center, scale, ...(view.twist ? { twist: view.twist } : {}), ...(flags & DWG_VP_LOCKED ? { locked: true } : {}) },
           layer: e.layer || '0',
           on: !(flags & DWG_VP_OFF),
           ...(frozen?.length ? { frozenLayers: frozen } : {}),

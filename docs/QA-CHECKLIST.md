@@ -240,6 +240,7 @@ Weights (wording varies by version) before judging lineweights.
 - [ ] Page sizes: plot to Letter, ANSI D, ISO A3 and A1 → viewer page sizes 8.5 x 11 in, 34 x 22 in (landscape), 420 x 297 mm, 841 x 594 mm (or portrait equivalents as chosen).
 - [ ] Scale 1:1 (a 10 in line in the drawing) → measures 10 in with Acrobat's Measure tool (and on paper, see below).
 - [ ] What to plot = All layouts → one page per layout, each with its own paper size and orientation from its page setup.
+- [ ] A layout with planar viewports at 90° and 30°, including text, arcs, hatches and an image → on-screen display, vector PDF, raster PDF and printed sheet have the same orientation and rectangular clipping; paper-space title blocks remain in their own orientation.
 - [ ] Hidden (off / frozen) layers and layers marked not to plot → absent from the PDF.
 - [ ] Plot styles: grayscale, acad.ctb (object colours) and screening 50 % → greys, colours and lighter ink as chosen.
 - [ ] Raster image output → a sharp enough picture of the same sheet (text readable at 200 %), correct page size.
@@ -276,6 +277,10 @@ Save the QA drawing as DXF and, on Windows, DWG, then open both elsewhere.
 - [ ] AutoCAD: text → same height and position; MTEXT bold, colour and stacked fraction kept; `Señal Ø 24 V ±10 % µF` reads correctly (no `?` or `\U+` codes).
 - [ ] AutoCAD: dashed linetypes → same dash lengths as in JCad at the same LTSCALE.
 - [ ] AutoCAD: layout tabs → each JCad layout is a tab with its paper size and the viewports at 1:2 and 1:4.
+- [ ] Import a planar top-view viewport with nonzero view rotation and an off-origin view target → same model placement and angle as in the source program, with no unsupported-twist warning. Save DXF and Windows DWG, reopen each → rotation, view center, scale and original model coordinates survive.
+- [ ] Windows: unlock a layout viewport, use `VPTWIST 90` and change its frame's Properties > View rotation to 30° → only the viewport view turns; Model tab geometry stays unchanged. Locked viewports reject angle changes until unlocked.
+- [ ] Inside a rotated viewport: point picks, window/crossing selection, snapping, typed model coordinates, pan and cursor-anchored zoom agree with the displayed geometry. Switch to paper/model and back, and use Undo / Redo after changing the angle → each view keeps the expected orientation. Frozen viewport layers cannot be picked or snapped.
+- [ ] Perspective, tilted/reversed view directions and non-rectangular clipping → Import Report describes the approximation; saving over the imported original retains the loss warning.
 - [ ] AutoCAD: a JCad TABLE → shown as a block insert with the cell text (not an editable table: expected); reopened in JCad it is a table again.
 - [ ] AutoCAD: save the DXF as DWG 2018, open that DWG in JCad → same objects, layers and layouts; the Import Report lists only what the DWG reader documents as unsupported.
 - [ ] Windows without installed AutoCAD: Save As > DWG creates a real AC1032 DWG, binds the tab to that path and marks the captured revision saved. Reopen it in JCad; inspect it on the separate native CAD validation machine and require `AUDIT` 0 errors for supported fixtures.

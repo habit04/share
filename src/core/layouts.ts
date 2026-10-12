@@ -43,6 +43,8 @@ export interface ViewportView {
   readonly center: Point;
   /** Paper units per model unit (0.25 = 1:4). */
   readonly scale: number;
+  /** View twist in radians: positive rotates model content counterclockwise on the sheet. */
+  readonly twist?: number;
   /** Display locked: zooming in the viewport zooms the paper instead (MVIEW Lock). */
   readonly locked?: boolean;
 }
@@ -319,11 +321,20 @@ export function validLayoutName(name: string): boolean {
 
 /** Model -> paper mapping of a viewport. */
 export function modelToPaper(vp: Pick<LayoutViewport, 'center' | 'view'>, p: Point): Point {
-  return { x: vp.center.x + (p.x - vp.view.center.x) * vp.view.scale, y: vp.center.y + (p.y - vp.view.center.y) * vp.view.scale };
+  const delta = g.sub(p, vp.view.center);
+  const angle = viewTwist(vp.view);
+  return g.add(vp.center, g.scale(angle ? g.rotate(delta, angle) : delta, vp.view.scale));
 }
 
 export function paperToModel(vp: Pick<LayoutViewport, 'center' | 'view'>, p: Point): Point {
-  return { x: vp.view.center.x + (p.x - vp.center.x) / vp.view.scale, y: vp.view.center.y + (p.y - vp.center.y) / vp.view.scale };
+  const delta = g.scale(g.sub(p, vp.center), 1 / vp.view.scale);
+  const angle = viewTwist(vp.view);
+  return g.add(vp.view.center, angle ? g.rotate(delta, -angle) : delta);
+}
+
+/** Untwisted drawings and older saved states use zero; malformed optional values cannot poison a transform. */
+export function viewTwist(view: Pick<ViewportView, 'twist'>): number {
+  return Number.isFinite(view.twist) ? view.twist! : 0;
 }
 
 export function viewportPaperBounds(vp: Pick<LayoutViewport, 'center' | 'width' | 'height'>): Bounds {
@@ -332,6 +343,11 @@ export function viewportPaperBounds(vp: Pick<LayoutViewport, 'center' | 'width' 
 
 /** The part of model space a viewport shows. */
 export function viewportModelBounds(vp: LayoutViewport): Bounds {
+  if (viewTwist(vp.view)) {
+    const b = viewportPaperBounds(vp);
+    const points = [b.min, { x: b.max.x, y: b.min.y }, b.max, { x: b.min.x, y: b.max.y }].map((p) => paperToModel(vp, p));
+    return { min: { x: Math.min(...points.map((p) => p.x)), y: Math.min(...points.map((p) => p.y)) }, max: { x: Math.max(...points.map((p) => p.x)), y: Math.max(...points.map((p) => p.y)) } };
+  }
   const hw = vp.width / 2 / vp.view.scale;
   const hh = vp.height / 2 / vp.view.scale;
   return { min: { x: vp.view.center.x - hw, y: vp.view.center.y - hh }, max: { x: vp.view.center.x + hw, y: vp.view.center.y + hh } };
@@ -350,8 +366,13 @@ export function viewportAt(layout: Layout, p: Point): LayoutViewport | undefined
 /** Zoom a viewport to show `model` (ZOOM Extents inside it / MVIEW Fit). */
 export function fitViewportView(vp: LayoutViewport, model: Bounds | null, margin = 0.05): ViewportView {
   if (!model) return vp.view;
-  const w = Math.max(model.max.x - model.min.x, 1e-6);
-  const h = Math.max(model.max.y - model.min.y, 1e-6);
+  const angle = viewTwist(vp.view);
+  const points = [model.min, { x: model.max.x, y: model.min.y }, model.max, { x: model.min.x, y: model.max.y }].map((p) => {
+    const local = g.sub(p, model.min);
+    return angle ? g.rotate(local, angle) : local;
+  });
+  const w = Math.max(Math.max(...points.map((p) => p.x)) - Math.min(...points.map((p) => p.x)), 1e-6);
+  const h = Math.max(Math.max(...points.map((p) => p.y)) - Math.min(...points.map((p) => p.y)), 1e-6);
   const scale = Math.min(vp.width / (w * (1 + 2 * margin)), vp.height / (h * (1 + 2 * margin)));
   return { ...vp.view, center: { x: (model.min.x + model.max.x) / 2, y: (model.min.y + model.max.y) / 2 }, scale: scale > 0 && Number.isFinite(scale) ? scale : vp.view.scale };
 }
@@ -436,7 +457,9 @@ function viewportFromFrame(f: ViewportFrame): LayoutViewport {
   const center = { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
   const resized = Math.abs(width - vp.width) > 1e-9 || Math.abs(height - vp.height) > 1e-9;
   // A move carries the view along (same model centre); a stretch keeps the model where it is on the paper.
-  const view = resized ? { ...vp.view, center: { x: vp.view.center.x + (center.x - vp.center.x) / vp.view.scale, y: vp.view.center.y + (center.y - vp.center.y) / vp.view.scale } } : vp.view;
+  const delta = g.scale(g.sub(center, vp.center), 1 / vp.view.scale);
+  const angle = viewTwist(vp.view);
+  const view = resized ? { ...vp.view, center: g.add(vp.view.center, angle ? g.rotate(delta, -angle) : delta) } : vp.view;
   return { ...vp, id: f.id, layer: f.layer, center, width, height, view };
 }
 

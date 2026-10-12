@@ -9,6 +9,7 @@ import { entityTypeName } from '../core/entities';
 import { selectByBox, selectByFence, selectByPolygon, pickEntity } from '../core/selection';
 import type { Tool, ToolContext } from './types';
 import { scriptTool, point, pointOrKeyword, type Step } from './script';
+import { activeViewport } from '../core/layouts';
 
 /** The selection set of the previous command (SELECT Previous). */
 export const selectionHistory: { previous: string[] } = { previous: [] };
@@ -17,7 +18,7 @@ const SELECT_KEYWORDS = ['Window', 'Crossing', 'Fence', 'WPolygon', 'CPolygon', 
 
 function visibility(ctx: ToolContext): { hidden: Set<string>; locked: Set<string> } {
   return {
-    hidden: new Set(ctx.doc.layers.filter((l) => !l.visible).map((l) => l.name)),
+    hidden: new Set([...ctx.doc.layers.filter((l) => !l.visible).map((l) => l.name), ...(activeViewport(ctx.doc.snapshot)?.viewport.frozenLayers ?? [])]),
     locked: new Set(ctx.doc.layers.filter((l) => l.locked).map((l) => l.name)),
   };
 }
@@ -67,12 +68,14 @@ export function* selectByMode(ctx: ToolContext, mode: string): Step<string[] | n
       if (!a) return [];
       const b = yield* point(ctx, 'Specify opposite corner:', {
         trackFrom: a,
-        preview: (c) => [{ id: 'selbox', layer: '0', color: mode === 'CROSSING' ? 3 : 5, type: 'polyline', closed: true, points: [a, { x: c.x, y: a.y }, c, { x: a.x, y: c.y }] }],
+        preview: (c) => [{ id: 'selbox', layer: '0', color: mode === 'CROSSING' ? 3 : 5, type: 'polyline', closed: true, points: g.viewBoxCorners(a, c, ctx.viewTwist) }],
       });
       ctx.setPreview([]);
       if (!b) return [];
-      const m = mode === 'BOX' ? (b.x >= a.x ? 'window' : 'crossing') : mode === 'WINDOW' ? 'window' : 'crossing';
-      return selectByBox(g.boundsOfPoints([a, b])!, m, ents, look, hidden, locked).map((e) => e.id);
+      const twist = ctx.viewTwist ?? 0;
+      const m = mode === 'BOX' ? (g.rotate(g.sub(b, a), twist).x >= 0 ? 'window' : 'crossing') : mode === 'WINDOW' ? 'window' : 'crossing';
+      const found = twist === 0 ? selectByBox(g.boundsOfPoints([a, b])!, m, ents, look, hidden, locked) : selectByPolygon(g.viewBoxCorners(a, b, twist), m, ents, look, hidden, locked);
+      return found.map((e) => e.id);
     }
     case 'FENCE': {
       const pts = yield* collectPoints(ctx, 'fence');
@@ -142,7 +145,7 @@ export function selectTool(): Tool {
 /** Handle a keyword typed during another command's "Select objects:" prompt (ALL, Last, Previous). */
 export function selectionKeyword(text: string, ctx: { doc: ToolContext['doc'] }, ids: Set<string>): boolean {
   const t = text.trim().toUpperCase();
-  const hidden = new Set(ctx.doc.layers.filter((l) => !l.visible).map((l) => l.name));
+  const hidden = new Set([...ctx.doc.layers.filter((l) => !l.visible).map((l) => l.name), ...(activeViewport(ctx.doc.snapshot)?.viewport.frozenLayers ?? [])]);
   if (t === 'ALL') {
     for (const e of ctx.doc.entities) if (!hidden.has(e.layer)) ids.add(e.id);
     return true;

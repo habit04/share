@@ -6,6 +6,8 @@ import type { SnapSettings } from '../core/snap';
 export interface ToolContext {
   readonly doc: Drawing;
   readonly snap: SnapSettings;
+  /** Applied model-to-view rotation in radians; absent in older contexts means zero. */
+  readonly viewTwist?: number;
   /** Current selection (ids). Tools may read or replace it. */
   selection: Set<string>;
   /** Pick-box aperture in world units at the current zoom. */

@@ -15,6 +15,7 @@ import { drawEntity, lineweightDisplay, annotationDisplay, colorDisplay, type Tr
 import {
   activeLayout,
   modelToPaper,
+  viewTwist,
   printableArea,
   sheetSize,
   unitInches,
@@ -57,7 +58,7 @@ export function paperTransform(pv: PaperView, width: number, height: number): Tr
 /** Screen transform of a floating viewport's model space under a paper view. */
 export function viewportTransform(vp: LayoutViewport, pv: PaperView, width: number, height: number): Transform {
   const paper = paperTransform(pv, width, height);
-  return { scale: pv.scale * vp.view.scale, toScreen: (m) => paper.toScreen(modelToPaper(vp, m)), viewBounds: viewportModelBounds(vp) };
+  return { scale: pv.scale * vp.view.scale, rotation: viewTwist(vp.view), toScreen: (m) => paper.toScreen(modelToPaper(vp, m)), viewBounds: viewportModelBounds(vp) };
 }
 
 /** Screen rectangle of a viewport under a paper view (x, y = top-left). */
@@ -200,7 +201,12 @@ export function renderPageToCanvas(canvas: HTMLCanvasElement, page: PdfPageSpec,
   colorDisplay.paper = true;
   try {
     for (const grp of page.groups) {
-      const tf: Transform = { scale: grp.k * s, toScreen: (p) => ({ x: (grp.k * p.x + grp.e) * s, y: H - (grp.k * p.y + grp.f) * s }) };
+      const rotation = grp.rotation ?? 0, c = Math.cos(rotation), sn = Math.sin(rotation);
+      const tf: Transform = {
+        scale: grp.k * s,
+        rotation,
+        toScreen: (p) => ({ x: (grp.k * (c * p.x - sn * p.y) + grp.e) * s, y: H - (grp.k * (sn * p.x + c * p.y) + grp.f) * s }),
+      };
       ctx.save();
       if (grp.clip) {
         ctx.beginPath();

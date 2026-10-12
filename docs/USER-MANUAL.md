@@ -1129,6 +1129,7 @@ Page Setup Manager... and Plot.... A drawing always opens in the Model tab.
 | MVIEW | MV | Create viewports; `ON / OFF / Fit / Lock` |
 | MVSETUP | | `Create` a viewport or `Scale viewports` |
 | VPSCALE | | Scale of the current or selected viewports |
+| VPTWIST | | View rotation in degrees of the current or selected unlocked viewports; with neither current nor selected, all unlocked viewports in the layout |
 | CANNOSCALE | ANNOSCALE | Annotation scale |
 | ANNOALLVISIBLE | | Show annotative objects at every viewport scale (1) or only at the annotation scale (0) |
 | OBJECTSCALE | ANNOTATIVE | Make selected text, dimensions, leaders and blocks annotative `[ON/OFF/Toggle]` |
@@ -1155,14 +1156,29 @@ Page Setup Manager... and Plot.... A drawing always opens in the Model tab.
    object colours, or screening with a percentage), **Plot object lineweights** and **Plot with plot
    styles**.
 
+**Rotate a viewport view.** If it is locked, run `MVIEW Lock`, choose `OFF` and select its frame.
+Double-click inside it and run `VPTWIST 90`, or return to the paper with `PSPACE`, select its frame and edit
+**Properties > Viewport > View rotation**. Angles are in degrees; positive angles turn the
+displayed model counterclockwise on the sheet. The command sets an absolute view angle, so
+`VPTWIST 0` restores the unrotated view. Selecting several frames applies the same angle to each
+unlocked viewport; with no active or selected viewport, it applies to all unlocked viewports in
+that layout. Locked views keep their angle until unlocked.
+
+Only the view rotates: the model's coordinates and geometry stay intact. Drawing and snapping
+inside the viewport use model coordinates, while selection, panning, zooming and plotting follow
+the rotated display. Returning to the Model tab shows the original model orientation. Each
+viewport can have its own angle, independent of the paper orientation in Page Setup.
+
 **Annotation scale.** Text, dimensions, leaders and blocks can be made annotative with `OBJECTSCALE`
 (Annotative ON). An annotative object keeps its paper height: in model space it is shown at 1 /
 CANNOSCALE, and in a viewport at 1 / the viewport's scale. Set the annotation scale with `CANNOSCALE
 1:4` or the status bar list. With `ANNOALLVISIBLE 0` annotative objects show only in viewports whose
 scale equals the annotation scale.
 
-Layouts, viewports and annotative objects are saved in the DXF file and read back; layouts made in
-AutoCAD come in with their viewports (non-rectangular viewport clipping is not supported).
+Layouts, viewports and annotative objects are saved in the DXF file and read back; Windows DWG
+saving also keeps supported layout viewport views. Layouts made in AutoCAD retain planar
+orthographic top-view rotations. Perspective views, tilted or reversed view directions and
+non-rectangular viewport clipping remain unsupported approximations listed in the Import Report.
 
 ### Plotting and printing
 
@@ -1340,7 +1356,7 @@ circles, polylines (with bulges; 3D polylines flattened), text and MTEXT, blocks
 dimensions (each with its named dimension style), ellipses, points, construction lines, solids,
 splines, hatches, leaders and multileaders, tables, images, lineweights and header units /
 limits. Also brought in: paper-space **layouts** with their entities and floating
-**viewports** (position, size, scale, display lock, on / off), **text styles**, named
+**viewports** (position, size, scale, planar top-view rotation, display lock, on / off), **text styles**, named
 **dimension styles**, custom **linetype** patterns, **true colours** of objects and layers,
 **ByBlock** colours (so block content takes the block reference's colour), and the layers'
 lock, freeze and plot settings.

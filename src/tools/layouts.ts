@@ -38,6 +38,7 @@ import {
   unitsOfHost,
   validLayoutName,
   viewportAt,
+  viewTwist,
   VIEWPORT_LAYER,
   withLayout,
   withViewport,
@@ -85,6 +86,8 @@ export class LayoutController {
   private paperView: PaperView | null = null;
   private applied: SpaceRef | undefined = undefined;
   private views = new Map<string, { center: Point; scale: number }>();
+  /** ZOOM Previous belongs to a model tab, paper tab or individual floating viewport. */
+  private histories = new Map<string, Editor['viewport']['viewHistory']>();
   /** Layout that TILEMODE 0 / the MODEL button returns to. */
   lastLayout = 'Layout1';
   ui: LayoutUi = {};
@@ -181,14 +184,22 @@ export class LayoutController {
       // Another document (open, new, tab switch): its views are not ours; `resync` follows on 'file'.
       this.loads = this.ed.doc.loadCount;
       this.views.clear();
+      this.histories.clear();
+      this.ed.viewport.viewHistory.splice(0);
       this.applied = next;
       this.paperView = null;
       this.updatePainter();
       return;
     }
+    let changedView = false;
     if (spaceKey(next) !== spaceKey(this.applied)) this.transition(this.applied, next);
-    else if (next?.viewport) this.applyViewportToCanvas();
+    else if (next?.viewport) {
+      const vp = this.ed.viewport, center = vp.center, scale = vp.scale, twist = vp.twist;
+      this.applyViewportToCanvas();
+      changedView = !g.eq(center, vp.center, 1e-9) || Math.abs(scale - vp.scale) > 1e-12 || Math.abs(twist - vp.twist) > 1e-12;
+    }
     this.updatePainter();
+    if (changedView) this.ed.notify('view');
   }
 
   /** After open / new / tab switch: take the canvas view as it is and derive the paper view from it. */
@@ -202,9 +213,10 @@ export class LayoutController {
         const vp = this.ed.viewport;
         const v = act.viewport;
         const k = v.view.scale;
-        this.paperView = { scale: vp.scale / k, center: { x: v.center.x + (vp.center.x - v.view.center.x) * k, y: v.center.y + (vp.center.y - v.view.center.y) * k } };
+        vp.twist = viewTwist(v.view);
+        this.paperView = { scale: vp.scale / k, center: g.add(v.center, g.scale(g.rotate(g.sub(vp.center, v.view.center), vp.twist), k)) };
       }
-    }
+    } else this.ed.viewport.twist = 0;
     if (s) this.lastLayout = s.layout;
     this.updatePainter();
     this.ed.notify('space');
@@ -213,6 +225,8 @@ export class LayoutController {
   private transition(prev: SpaceRef | undefined, next: SpaceRef | undefined): void {
     const vp = this.ed.viewport;
     const state = this.ed.doc.snapshot;
+    this.histories.set(spaceKey(prev), [...vp.viewHistory]);
+    vp.viewHistory.splice(0, vp.viewHistory.length, ...(this.histories.get(spaceKey(next)) ?? []));
     // Remember the outgoing view.
     if (!prev) this.views.set('MODEL', { center: { ...vp.center }, scale: vp.scale });
     else this.views.set(`L:${prev.layout.toUpperCase()}`, this.currentPaperView());
@@ -220,6 +234,7 @@ export class LayoutController {
     this.applied = next;
     vp.fitRect = null;
     if (!next) {
+      vp.twist = 0;
       this.paperView = null;
       vp.layoutPainter = null;
       const saved = this.views.get('MODEL');
@@ -237,6 +252,7 @@ export class LayoutController {
       this.paperView = pv;
       if (next.viewport) this.applyViewportToCanvas();
       else {
+        vp.twist = 0;
         vp.center = { ...pv.center };
         vp.scale = pv.scale;
         this.paperView = null;
@@ -273,7 +289,8 @@ export class LayoutController {
     const k = v.view.scale;
     const vp = this.ed.viewport;
     vp.scale = pv.scale * k;
-    vp.center = { x: v.view.center.x + (pv.center.x - v.center.x) / k, y: v.view.center.y + (pv.center.y - v.center.y) / k };
+    vp.twist = viewTwist(v.view);
+    vp.center = g.add(v.view.center, g.rotate(g.scale(g.sub(pv.center, v.center), 1 / k), -vp.twist));
   }
 
   /** After a zoom / pan in a floating viewport: store the new view (or move the paper when the viewport is locked). */
@@ -286,19 +303,21 @@ export class LayoutController {
     const pv = this.paperView;
     const k = v.view.scale;
     const expScale = pv.scale * k;
-    const expCenter = { x: v.view.center.x + (pv.center.x - v.center.x) / k, y: v.view.center.y + (pv.center.y - v.center.y) / k };
+    const twist = viewTwist(v.view);
+    const expCenter = g.add(v.view.center, g.rotate(g.scale(g.sub(pv.center, v.center), 1 / k), -twist));
     const tol = 1e-9 * Math.max(1, Math.abs(expCenter.x), Math.abs(expCenter.y));
-    if (Math.abs(vp.scale - expScale) <= 1e-9 * expScale && Math.abs(vp.center.x - expCenter.x) <= tol && Math.abs(vp.center.y - expCenter.y) <= tol) return;
+    if (Math.abs(vp.scale - expScale) <= 1e-9 * expScale && Math.abs(vp.center.x - expCenter.x) <= tol && Math.abs(vp.center.y - expCenter.y) <= tol && Math.abs(vp.twist - twist) < 1e-12) return;
     if (v.view.locked) {
       // Locked display: the paper zooms / pans, the viewport keeps its view.
-      this.paperView = { scale: vp.scale / k, center: { x: v.center.x + (vp.center.x - v.view.center.x) * k, y: v.center.y + (vp.center.y - v.view.center.y) * k } };
+      vp.twist = twist;
+      this.paperView = { scale: vp.scale / k, center: g.add(v.center, g.scale(g.rotate(g.sub(vp.center, v.view.center), twist), k)) };
     } else {
       const nk = vp.scale / pv.scale;
-      const center = { x: vp.center.x - (pv.center.x - v.center.x) / nk, y: vp.center.y - (pv.center.y - v.center.y) / nk };
+      const center = g.sub(vp.center, g.rotate(g.scale(g.sub(pv.center, v.center), 1 / nk), -vp.twist));
       const name = act.layout.name;
       this.ed.doc.patchQuiet((s) => {
         const lay = findLayout(s, name);
-        return lay ? withLayout(s, withViewport(lay, v.id, (x) => ({ ...x, view: { ...x.view, center, scale: nk } }))) : s;
+        return lay ? withLayout(s, withViewport(lay, v.id, (x) => ({ ...x, view: { ...x.view, center, scale: nk, twist: vp.twist } }))) : s;
       });
     }
     this.updatePainter();
@@ -525,6 +544,22 @@ export class LayoutController {
     }));
     return n;
   }
+
+  setViewportTwist(ids: readonly string[] | null, twist: number): number {
+    const lay = this.layout;
+    if (!lay || !Number.isFinite(twist)) return 0;
+    if (!lay.viewports.some((v) => (!ids || ids.includes(v.id)) && !v.view.locked && viewTwist(v.view) !== twist)) return 0;
+    let n = 0;
+    this.editLayout(lay.name, (l) => ({
+      ...l,
+      viewports: l.viewports.map((v) => {
+        if (ids && !ids.includes(v.id) || v.view.locked || viewTwist(v.view) === twist) return v;
+        n += 1;
+        return { ...v, view: { ...v.view, twist } };
+      }),
+    }));
+    return n;
+  }
 }
 
 function withRequiredLayers(layers: DrawingState['layers'], border: boolean): DrawingState['layers'] {
@@ -745,6 +780,27 @@ function scaleTool(ed: Editor, name: string, arg?: string) {
   });
 }
 
+function twistTool(ed: Editor, arg?: string) {
+  const c = layoutController(ed);
+  return scriptTool('VPTWIST', function* (ctx) {
+    const lay = c.layout;
+    if (!lay?.viewports.length) return;
+    const act = activeViewport(ed.doc.snapshot);
+    const selected = selectedViewports(ed, [...ed.selection]).map((v) => v.id);
+    const ids = act ? [act.viewport.id] : selected.length ? selected : null;
+    const current = act?.viewport ?? lay.viewports.find((v) => !ids || ids.includes(v.id))!;
+    const raw = arg ?? (yield* text(`Enter viewport view rotation in degrees <${(viewTwist(current.view) * 180 / Math.PI).toFixed(2)}>:`, null, false));
+    if (raw === null) return;
+    const degrees = Number(raw);
+    if (!raw.trim() || !Number.isFinite(degrees)) {
+      ctx.log(`Invalid view rotation "${raw}".`);
+      return;
+    }
+    const n = c.setViewportTwist(ids, g.normAngle(degrees * (Math.PI / 180)));
+    ctx.log(n ? `${n} viewport(s) rotated to ${degrees} degrees.` : 'No unlocked viewport to rotate.');
+  });
+}
+
 export function registerLayoutCommands(ed: Editor): void {
   const c = layoutController(ed);
   c.install();
@@ -813,6 +869,10 @@ export function registerLayoutCommands(ed: Editor): void {
   reg('VPSCALE', [], 'Viewport scale of the current or selected viewports', (e, arg) => {
     if (!needLayout(e)) return;
     e.startTool(scaleTool(e, 'VPSCALE', arg));
+  }, true);
+  reg('VPTWIST', [], 'Rotate the view of the current or selected viewports in degrees', (e, arg) => {
+    if (!needLayout(e)) return;
+    e.startTool(twistTool(e, arg));
   }, true);
   reg('PAGESETUP', [], 'Page setup of the current layout (paper, orientation, scale, margins, plot style)', (e, arg) => {
     const lc = layoutController(e);

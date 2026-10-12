@@ -25,6 +25,7 @@ import {
   unitsOfHost,
   defaultLayout,
   newViewportId,
+  viewTwist,
   formatScale,
   type Layout,
   type LayoutHost,
@@ -34,6 +35,7 @@ import {
   type PlotStyleMode,
 } from '../core/layouts';
 import type { ImportReportBuilder } from './import-report';
+import { importViewportView } from './viewport-view';
 
 export interface DxfSink {
   pair(code: number, value: string | number): void;
@@ -111,7 +113,7 @@ export function layoutHandleOf(plan: LayoutPlan, blockRecord: string, modelRecor
   return plan.records.find((r) => r.blockRecord === blockRecord)?.handle;
 }
 
-function writeViewport(w: DxfSink, owner: string, v: { center: Point; width: number; height: number; viewCenter: Point; viewHeight: number; layer: string; status: number; id: number; flags: number; frozen: string[] }): string {
+function writeViewport(w: DxfSink, owner: string, v: { center: Point; width: number; height: number; viewCenter: Point; viewHeight: number; twist?: number; layer: string; status: number; id: number; flags: number; frozen: string[] }): string {
   const h = w.nextHandle();
   w.pair(0, 'VIEWPORT');
   w.pair(5, h);
@@ -146,7 +148,7 @@ function writeViewport(w: DxfSink, owner: string, v: { center: Point; width: num
   w.pair(44, 0);
   w.pair(45, v.viewHeight);
   w.pair(50, 0);
-  w.pair(51, 0);
+  w.pair(51, (v.twist ?? 0) * 180 / Math.PI);
   w.pair(72, 1000);
   for (const f of v.frozen) w.pair(331, f);
   w.pair(90, v.flags);
@@ -193,12 +195,16 @@ export function writeLayoutContent(w: DxfSink, rec: LayoutRecord, writeEntity: (
   });
   lay.viewports.forEach((v, i) => {
     const frozen = (v.frozenLayers ?? []).map((n) => layerHandles.get(n)).filter((h): h is string => !!h);
+    const twist = viewTwist(v.view) % (2 * Math.PI);
+    const cos = Math.cos(twist), sin = Math.sin(twist);
     writeViewport(w, rec.blockRecord, {
       center: v.center,
       width: v.width,
       height: v.height,
-      viewCenter: v.view.center,
+      // The exported target is zero, so WCS->DCS is R(+twist) about the origin.
+      viewCenter: { x: v.view.center.x * cos - v.view.center.y * sin, y: v.view.center.x * sin + v.view.center.y * cos },
       viewHeight: v.height / v.view.scale,
+      twist,
       layer: v.layer,
       status: v.on ? i + 2 : 0,
       id: i + 2,
@@ -475,16 +481,30 @@ export class LayoutReader {
       if (flags & VP_NONRECT_CLIP || v.groups.some((x) => x.code === 340 && x.value.trim() !== '' && x.value.trim() !== '0')) {
         this.report?.add({ ...item, action: 'simplified', reason: 'its clipping boundary is not kept: the viewport shows its whole rectangle' });
       }
-      const twist = num(v, 51, 0);
-      if (Math.abs(twist) > 1e-9) this.report?.add({ ...item, action: 'simplified', reason: 'its twisted view (DVIEW TWist) is shown untwisted' });
+      const optionalNum = (code: number, fallback = 0) => v.groups.some((p) => p.code === code) ? num(v, code, NaN) : fallback;
+      const degrees = optionalNum(51);
+      const view = importViewportView(
+        { x: optionalNum(12), y: optionalNum(22) },
+        { x: optionalNum(17), y: optionalNum(27), z: optionalNum(37) },
+        { x: optionalNum(16), y: optionalNum(26), z: optionalNum(36, 1) },
+        (degrees % 360) * Math.PI / 180,
+        flags,
+      );
+      const scale = height / viewHeight;
+      const center = { x: optionalNum(10) + offset.x, y: optionalNum(20) + offset.y };
+      if (!view || ![scale, center.x, center.y].every(Number.isFinite)) {
+        this.report?.add({ ...item, action: 'dropped', reason: 'invalid viewport view coordinates or scale' });
+        continue;
+      }
+      for (const reason of view.warnings) this.report?.add({ ...item, action: 'simplified', reason });
       const status = Math.trunc(num(v, 68, 1));
       const frozen = v.groups.filter((x) => x.code === 331).map((x) => this.layerNames.get(x.value.toUpperCase())).filter((x): x is string => !!x);
       viewports.push({
         id: newViewportId(),
-        center: { x: num(v, 10) + offset.x, y: num(v, 20) + offset.y },
+        center,
         width,
         height,
-        view: { center: { x: num(v, 12), y: num(v, 22) }, scale: height / viewHeight, ...(flags & VP_LOCKED ? { locked: true } : {}) },
+        view: { center: view.center, scale, ...(view.twist ? { twist: view.twist } : {}), ...(flags & VP_LOCKED ? { locked: true } : {}) },
         layer: str(o, 8, '0'),
         on: status !== 0 && !(flags & VP_OFF),
         ...(frozen.length ? { frozenLayers: frozen } : {}),

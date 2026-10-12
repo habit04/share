@@ -7,6 +7,7 @@ import { PATTERN_NAMES } from '../core/hatch';
 import { aciToCss, ACI_NAMES } from '../render/palette';
 import { icon } from './icons';
 import { GeometryBudgetError } from '../core/geometry-budget-error';
+import { isViewportFrame, viewTwist } from '../core/layouts';
 
 /** Properties palette: shows and edits the current selection (docked right). */
 export class PropertiesPalette {
@@ -196,6 +197,17 @@ export class PropertiesPalette {
         b.appendChild(this.row('End angle', numInput((e.endAngle * 180) / Math.PI, (n) => patch({ endAngle: (n * Math.PI) / 180 }))));
         break;
       case 'polyline':
+        if (isViewportFrame(e)) {
+          b.appendChild(this.section('Viewport'));
+          const rotationInput = numInput(g.deg(viewTwist(e.vport.view)), (n) => {
+            if (e.vport.view.locked) return;
+            const edited: typeof e = { ...e, vport: { ...e.vport, view: { ...e.vport.view, twist: g.rad(n) } } };
+            doc.replaceEntities([edited]);
+          });
+          rotationInput.disabled = Boolean(e.vport.view.locked);
+          rotationInput.title = e.vport.view.locked ? 'Unlock the viewport with MVIEW before changing its view rotation.' : 'Degrees; positive turns the model counterclockwise on the sheet.';
+          b.appendChild(this.row('View rotation', rotationInput));
+        }
         b.appendChild(this.row('Vertices', String(e.points.length)));
         b.appendChild(this.row('Closed', this.select([['1', 'Yes'], ['0', 'No']], e.closed ? '1' : '0', (v) => patch({ closed: v === '1' }))));
         break;

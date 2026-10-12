@@ -31,6 +31,12 @@ export function rotate(p: Point, angle: number, about: Point = { x: 0, y: 0 }): 
   return { x: about.x + dx * c - dy * s, y: about.y + dx * s + dy * c };
 }
 
+/** Model corners of a rectangle aligned with a view applying `twist` to model points. */
+export function viewBoxCorners(a: Point, b: Point, twist = 0): Point[] {
+  const d = rotate(sub(b, a), twist);
+  return [{ x: 0, y: 0 }, { x: d.x, y: 0 }, d, { x: 0, y: d.y }].map((p) => add(a, rotate(p, -twist)));
+}
+
 export const polar = (from: Point, angle: number, distance: number): Point => ({
   x: from.x + Math.cos(angle) * distance,
   y: from.y + Math.sin(angle) * distance,

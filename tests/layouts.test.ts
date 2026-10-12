@@ -249,6 +249,37 @@ function fakeEditor(state: DrawingState): { ed: Editor; c: LayoutController; log
 }
 
 describe('layout controller (space switching, viewport zoom)', () => {
+  it.each([Math.PI / 2, -Math.PI / 3, 0.41])('maps and pans an off-center floating view at twist %s without changing model geometry', (twist) => {
+    const state = withLayoutState(), twisted = { ...state, layouts: state.layouts!.map((l) => ({ ...l, viewports: l.viewports.map((v) => ({ ...v, view: { ...v.view, twist } })) })) };
+    const { ed, c, vp } = fakeEditor(twisted); const entities = ed.doc.snapshot.entities;
+    c.activate('Layout1'); const paperView = c.currentPaperView(); c.enterViewport('v1');
+    expect(vp.twist).toBe(twist);
+    const model = { x: 63, y: 32 };
+    const check = () => {
+      const v = activeLayout(ed.doc.snapshot)!.viewports[0]!, p = modelToPaper(v, model), s = vp.toScreen(model);
+      expect(s.x).toBeCloseTo(400 + (p.x - paperView.center.x) * paperView.scale, 8); expect(s.y).toBeCloseTo(300 - (p.y - paperView.center.y) * paperView.scale, 8);
+    };
+    check(); vp.panByPixels(45, -27); vp.zoomAt({ x: 360, y: 285 }, 1.6); ed.notify('view'); check();
+    expect(activeLayout(ed.doc.snapshot)!.viewports[0]!.view.twist).toBe(twist); expect(ed.doc.snapshot.entities).toEqual(entities);
+    c.exitToPaper(); expect(vp.twist).toBe(0); expect(vp.center).toEqual(paperView.center); expect(vp.scale).toBe(paperView.scale);
+    c.enterViewport('v1'); expect(vp.twist).toBe(twist); c.activate(null); expect(vp.twist).toBe(0); vp.dispose();
+  });
+  it('locked rotated viewport pan changes the paper view while preserving the viewport center, scale and angle', () => {
+    const state = withLayoutState(), locked = { ...state, layouts: state.layouts!.map((l) => ({ ...l, viewports: l.viewports.map((v) => ({ ...v, view: { ...v.view, twist: 0.67, locked: true } })) })) };
+    const { ed, c, vp } = fakeEditor(locked); c.activate('Layout1'); const pv = c.currentPaperView(); c.enterViewport('v1'); const original = activeLayout(ed.doc.snapshot)!.viewports[0]!.view;
+    vp.panByPixels(45, -27); ed.notify('view');
+    const changedPaper = c.currentPaperView(); expect(changedPaper.center.x).toBeCloseTo(pv.center.x - 45 / pv.scale, 8); expect(changedPaper.center.y).toBeCloseTo(pv.center.y - 27 / pv.scale, 8);
+    expect(activeLayout(ed.doc.snapshot)!.viewports[0]!.view).toEqual(original);
+    const m = { x: 63, y: 32 }, p = modelToPaper(activeLayout(ed.doc.snapshot)!.viewports[0]!, m), screen = vp.toScreen(m);
+    expect(screen.x).toBeCloseTo(400 + (p.x - changedPaper.center.x) * changedPaper.scale, 8); expect(screen.y).toBeCloseTo(300 - (p.y - changedPaper.center.y) * changedPaper.scale, 8);
+    c.exitToPaper(); expect(vp.twist).toBe(0); expect(vp.center).toEqual(changedPaper.center); vp.dispose();
+  });
+  it('resync derives the paper center with the restored viewport angle and resets angle for another document', () => {
+    const state = withLayoutState(), rotated = { ...state, space: { layout: 'Layout1', viewport: 'v1' }, layouts: state.layouts!.map((l) => ({ ...l, viewports: l.viewports.map((v) => ({ ...v, view: { ...v.view, twist: -0.61 } })) })) };
+    const { ed, c, vp } = fakeEditor(rotated), v = activeLayout(ed.doc.snapshot)!.viewports[0]!;
+    expect(vp.twist).toBe(-0.61); expect(c.currentPaperView().center).toEqual(modelToPaper(v, vp.center)); expect(c.currentPaperView().scale).toBe(vp.scale / v.view.scale);
+    ed.doc.load(new Drawing({ entities: [line('new')] }).snapshot); ed.notify('file'); expect(vp.twist).toBe(0); vp.dispose();
+  });
   it('activating a pristine layout initialises it; MSPACE maps the canvas through the viewport', () => {
     const { ed, c, vp } = fakeEditor(new Drawing({ entities: [line('m1'), line('m2', 30)] }).snapshot);
     vp.center = { x: 3, y: 3 };

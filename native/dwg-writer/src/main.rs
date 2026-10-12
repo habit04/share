@@ -626,6 +626,29 @@ mod tests {
         after["background_fill_flags"] = serde_json::json!(1);
         assert!(equivalent(&source, &after, "entity").is_err());
     }
+    #[test]
+    fn semantic_guard_keeps_viewport_twist_center_target_and_direction() {
+        let mut source = serde_json::json!({
+            "handle": 1, "viewport": 4, "viewports": [4],
+            "twist_angle": std::f64::consts::FRAC_PI_2,
+            "view_center": {"x": -190.0, "y": 120.0, "z": 0.0},
+            "view_target": {"x": 0.0, "y": 0.0, "z": 0.0},
+            "view_direction": {"x": 0.0, "y": 0.0, "z": 1.0}
+        });
+        normalize(&mut source);
+        for (field, changed) in [
+            ("twist_angle", serde_json::json!(0.0)),
+            ("view_center", serde_json::json!({"x": 120.0, "y": 190.0, "z": 0.0})),
+            ("view_target", serde_json::json!({"x": 1.0, "y": 0.0, "z": 0.0})),
+            ("view_direction", serde_json::json!({"x": 0.0, "y": 0.0, "z": -1.0})),
+        ] {
+            let mut result = source.clone();
+            result[field] = changed;
+            normalize(&mut result);
+            assert!(equivalent(&source, &result, "viewport").is_err());
+        }
+        assert!(equivalent(&source, &source.clone(), "viewport").is_ok());
+    }
     #[cfg(windows)]
     #[test]
     fn installs_and_verifies_the_os_process_memory_limit() {

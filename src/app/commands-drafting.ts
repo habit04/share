@@ -118,11 +118,11 @@ function zoomTool(ed: Editor, arg?: string): Tool {
         const a = r.point;
         const b = yield* point(ctx, 'Specify opposite corner:', {
           trackFrom: a,
-          preview: (c) => [{ id: 'zw', layer: '0', color: 8, type: 'polyline', closed: true, points: [a, { x: c.x, y: a.y }, c, { x: a.x, y: c.y }] }],
+          preview: (c) => [{ id: 'zw', layer: '0', color: 8, type: 'polyline', closed: true, points: g.viewBoxCorners(a, c, vp.twist) }],
         });
         if (!b) return;
         vp.pushView();
-        vp.zoomToBounds(g.boundsOfPoints([a, b])!, 0.02);
+        vp.zoomToPoints(g.viewBoxCorners(a, b, vp.twist), 0.02);
         after();
         return;
       }
@@ -165,11 +165,11 @@ function zoomTool(ed: Editor, arg?: string): Tool {
         if (!a) return;
         const b = yield* point(ctx, 'Specify opposite corner:', {
           trackFrom: a,
-          preview: (c) => [{ id: 'zw', layer: '0', color: 8, type: 'polyline', closed: true, points: [a, { x: c.x, y: a.y }, c, { x: a.x, y: c.y }] }],
+          preview: (c) => [{ id: 'zw', layer: '0', color: 8, type: 'polyline', closed: true, points: g.viewBoxCorners(a, c, vp.twist) }],
         });
         if (!b) return;
         vp.pushView();
-        vp.zoomToBounds(g.boundsOfPoints([a, b])!, 0.02);
+        vp.zoomToPoints(g.viewBoxCorners(a, b, vp.twist), 0.02);
         after();
         return;
       }
@@ -249,9 +249,9 @@ function viewTool(ed: Editor, arg?: string): Tool {
           if (!a) return;
           const b = yield* point(ctx, 'Specify opposite corner:', { trackFrom: a });
           if (!b) return;
-          const bb = g.boundsOfPoints([a, b])!;
-          center = g.mid(bb.min, bb.max);
-          height = Math.max(bb.max.y - bb.min.y, ((bb.max.x - bb.min.x) * vp.height) / Math.max(1, vp.width));
+          const d = g.rotate(g.sub(b, a), vp.twist);
+          center = g.mid(a, b);
+          height = Math.max(Math.abs(d.y), (Math.abs(d.x) * vp.height) / Math.max(1, vp.width));
         }
         ed.doc.setHeader({ views: [...views.filter((v) => v.name.toUpperCase() !== n.toUpperCase()), { name: n, center, height }] });
         ctx.log(`View "${n}" saved.`);
@@ -960,20 +960,33 @@ export function registerDraftingCommands(editor: Editor): void {
   });
 
   // View history for ZOOM Previous: remember the view before each burst of wheel/pan changes.
-  let lastView = { center: editor.viewport.center, scale: editor.viewport.scale };
+  let lastView = { center: editor.viewport.center, scale: editor.viewport.scale, twist: editor.viewport.twist };
   let lastChange = 0;
+  const contextKey = () => {
+    const space = editor.doc.space;
+    return space ? `${space.layout.toUpperCase()}|${space.viewport ?? ''}` : 'MODEL';
+  };
+  let lastContext = contextKey(), lastLoad = editor.doc.loadCount;
+  editor.on('space', () => {
+    const context = contextKey(), load = editor.doc.loadCount;
+    if (context === lastContext && load === lastLoad) return;
+    const vp = editor.viewport;
+    if (load !== lastLoad) vp.viewHistory.splice(0);
+    lastView = { center: vp.center, scale: vp.scale, twist: vp.twist };
+    lastChange = 0; lastContext = context; lastLoad = load;
+  });
   editor.on('view', () => {
     const vp = editor.viewport;
-    if (Math.abs(vp.scale - lastView.scale) < 1e-12 && g.eq(vp.center, lastView.center, 1e-9)) return;
+    if (Math.abs(vp.scale - lastView.scale) < 1e-12 && Math.abs(vp.twist - lastView.twist) < 1e-12 && g.eq(vp.center, lastView.center, 1e-9)) return;
     const now = Date.now();
     if (!zoomState.suppressHistory && now - lastChange > 700) {
       const top = vp.viewHistory[vp.viewHistory.length - 1];
-      if (!top || Math.abs(top.scale - lastView.scale) > 1e-12 || !g.eq(top.center, lastView.center, 1e-9)) {
+      if (!top || Math.abs(top.scale - lastView.scale) > 1e-12 || Math.abs(top.twist - lastView.twist) > 1e-12 || !g.eq(top.center, lastView.center, 1e-9)) {
         vp.viewHistory.push(lastView);
         if (vp.viewHistory.length > 20) vp.viewHistory.shift();
       }
     }
-    lastView = { center: vp.center, scale: vp.scale };
+    lastView = { center: vp.center, scale: vp.scale, twist: vp.twist };
     lastChange = now;
   });
 }

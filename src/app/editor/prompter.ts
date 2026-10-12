@@ -15,6 +15,7 @@ export function makeContext(ed: Editor, st: EditorInternals): ToolContext {
   return {
     doc: ed.doc,
     snap: ed.snap,
+    get viewTwist() { return ed.viewport.twist; },
     get selection() {
       return ed.selection;
     },

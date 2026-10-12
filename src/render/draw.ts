@@ -32,6 +32,8 @@ import { resolveAlpha } from '../core/appearance';
 export interface Transform {
   toScreen(p: Point): Point;
   scale: number; // px per world unit
+  /** Applied model-to-view rotation in radians, counterclockwise in world/paper coordinates. */
+  rotation?: number;
   /** Visible world area; used to clip construction lines. */
   viewBounds?: Bounds;
 }
@@ -157,6 +159,22 @@ export function drawEntity(
   lookup: BlockLookup,
   style: DrawStyle = {},
 ): void {
+  const rotation = tf.rotation;
+  if (rotation && Number.isFinite(rotation)) {
+    // Entity painters use an unrotated, Y-down screen. Rotate the whole painter so native
+    // arcs, ellipses, font glyphs, images, hatch patterns and block attributes share one view.
+    const c = Math.cos(rotation), s = Math.sin(rotation);
+    const base: Transform = { ...tf, rotation: 0, toScreen: (point) => {
+      const { x, y } = tf.toScreen(point);
+      return { x: c * x - s * y, y: s * x + c * y };
+    } };
+    ctx.save();
+    try {
+      ctx.rotate(-rotation);
+      drawEntity(ctx, e, base, layers, lookup, style);
+    } finally { ctx.restore(); }
+    return;
+  }
   // Annotative objects (Track E hook, see annotationDisplay).
   if (e.annotative) {
     if (annotationDisplay.hide) return;

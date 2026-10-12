@@ -7,6 +7,7 @@ import * as g from '../../core/geometry';
 import type { Entity } from '../../core/entities';
 import type { Editor } from './editor';
 import type { EditorInternals } from './internals';
+import { activeViewport } from '../../core/layouts';
 
 export function listSelection(ed: Editor): void {
   if (ed.selection.size === 0) {
@@ -57,7 +58,7 @@ export function toggleSelect(ed: Editor, st: EditorInternals, ids: string[], rem
 }
 
 export function hiddenLayers(ed: Editor): Set<string> {
-  return new Set(ed.doc.layers.filter((l) => !l.visible).map((l) => l.name));
+  return new Set([...ed.doc.layers.filter((l) => !l.visible).map((l) => l.name), ...(activeViewport(ed.doc.snapshot)?.viewport.frozenLayers ?? [])]);
 }
 
 export function lockedLayers(ed: Editor): Set<string> {
