@@ -163,7 +163,7 @@ export function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): En
       const consumedDstyle = o.kind === 'DIMENSION' || o.kind === 'LEADER';
       const unsupportedOverrides = o.kind === 'DIMENSION' ? dstylePairs(o).filter(([code]) => ![71, 72, 73, 74, 78, 340].includes(code) && !DIM_VARIABLES.some((v) => v.code === code)) : o.kind === 'LEADER' ? dstylePairs(o).filter(([code]) => code !== 41) : [];
       if (unsupportedOverrides.length) reportObj(ctx, o, 'simplified', `DSTYLE override groups ${unsupportedOverrides.map(([code]) => code).join(', ')} are not modeled or written back`);
-      const apps = [...new Set(o.groups.filter((x) => x.code === 1001 && !isQuietXdataApp(x.value.trim()) && !(x.value.trim() === 'ACAD' && consumedDstyle && !hasUnconsumedAcadXdata(o))).map((x) => x.value.trim()))];
+      const apps = [...new Set(o.groups.filter((x) => x.code === 1001 && !isQuietXdataApp(x.value.trim(), o.kind) && !(x.value.trim() === 'ACAD' && consumedDstyle && !hasUnconsumedAcadXdata(o))).map((x) => x.value.trim()))];
       if (apps.length) reportObj(ctx, o, 'simplified', `extended data (XDATA) of ${apps.join(', ')} is not kept`);
     }
     return placed;

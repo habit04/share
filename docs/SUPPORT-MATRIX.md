@@ -67,6 +67,12 @@ do not change native widths saved inside an existing nonuniform block reference.
 
 ## Colours
 
+Disabled MTEXT mask settings use registered `JCAD_MTEXT_BACKGROUND` XDATA because AutoCAD
+rejects inactive native padding/color groups. JCad restores the settings on reopen, even when
+another CAD program removes the redundant native off flag. This metadata is limited to 4 KiB of
+UTF-8 JSON and validated before use; malformed or conflicting records are reported. Active masks
+and frames retain their native groups.
+
 | | Read | Write | Notes |
 | --- | --- | --- | --- |
 | ACI index colours 1-255 | yes | yes | Displayed with the standard AutoCAD palette (`src/render/palette.ts`); 7 is white on the dark background and black on paper. |

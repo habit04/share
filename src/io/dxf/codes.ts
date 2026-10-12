@@ -39,6 +39,8 @@ export const TABLE_APP = 'JCAD_TABLE';
  * no MTEXT columns, so JCad keeps them here and other programs show one column.
  */
 export const MTEXT_COLUMNS_APP = 'JCAD_MTEXT_COLUMNS';
+/** Disabled MTEXT mask settings that cannot be written as native fill groups in AutoCAD. */
+export const MTEXT_BACKGROUND_APP = 'JCAD_MTEXT_BACKGROUND';
 
 /** Real-valued group codes (points, distances, angles, scales): unreadable values there are invalid geometry. */
 export const isRealCode = (code: number): boolean => (code >= 10 && code <= 59) || (code >= 110 && code <= 149) || (code >= 210 && code <= 239) || (code >= 1010 && code <= 1059);
@@ -56,7 +58,7 @@ export const UNSUPPORTED_DIM_CODES: Readonly<Record<number, string>> = { 49: 'DI
 export const SUPPORTED_DIM_NAMES = new Set([...DIM_VARIABLES.map((v) => v.name), 'DIMSTYLE', 'DIMTOL', 'DIMLIM', 'DIMTIH', 'DIMTOH', 'DIMZIN', 'DIMSAH', 'DIMBLK']);
 
 /** Applications whose data the reader models; other applications are reported as losses. */
-export const isQuietXdataApp = (app: string): boolean => app === DIMSTYLE_APP || app === TABLE_APP || app === MTEXT_COLUMNS_APP || app === ANNO_APP;
+export const isQuietXdataApp = (app: string, ownerKind?: string): boolean => app === DIMSTYLE_APP || app === TABLE_APP || app === MTEXT_COLUMNS_APP || (app === MTEXT_BACKGROUND_APP && ownerKind === 'MTEXT') || app === ANNO_APP;
 
 /** Pointer groups that refer to other objects (dropped from raw records: those objects are not kept). */
 export const isPointerCode = (code: number): boolean => code === 5 || code === 105 || (code >= 320 && code <= 369) || (code >= 390 && code <= 399) || (code >= 480 && code <= 481) || code === 67;

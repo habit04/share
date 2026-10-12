@@ -7,7 +7,8 @@ import { Writer, writeEntityCommon } from './write-core';
 import type { MTextEntity, DimensionEntity, LeaderEntity, ImageEntity, TableEntity } from '../../core/entities';
 import { formattedSource, mtextToDxf } from '../../core/mtext';
 import { textStyleOf } from '../encoding';
-import { MTEXT_COLUMNS_APP, DIM_TYPE, DIMSTYLE_APP, TABLE_APP } from './codes';
+import { MTEXT_COLUMNS_APP, MTEXT_BACKGROUND_APP, DIM_TYPE, DIMSTYLE_APP, TABLE_APP } from './codes';
+import { backgroundMetadataChunks } from './mtext-background-data';
 import * as g from '../../core/geometry';
 import { dimensionTextPoint, dimensionMeasurement, diffDimStyles, DIM_VARIABLES } from '../../core/dimension';
 import { textWidth, leaderParts, leaderPath } from '../../core/entities';
@@ -43,13 +44,18 @@ export function writeMText(w: Writer, e: MTextEntity, owner: string): void {
   if (e.background) {
     const bg = e.background;
     w.pair(90, bg.flags);
-    // AutoCAD 2027 requires the inert fill parameters even for a frame-only record.
-    // The flag still controls whether any fill is displayed; retain disabled mask settings too.
-    w.pair(45, bg.scale);
-    w.pair(63, bg.color === 'ByLayer' ? 256 : bg.color);
-    if (bg.trueColor !== undefined) w.pair(421, bg.trueColor);
-    if (bg.colorName !== undefined) w.pair(431, bg.colorName);
-    if (bg.transparency !== undefined) w.pair(441, bg.transparency);
+    // AutoCAD accepts inert fill parameters for frame16, but rejects them when fill flags are0.
+    if (bg.flags !== 0) {
+      w.pair(45, bg.scale);
+      w.pair(63, bg.color === 'ByLayer' ? 256 : bg.color);
+      if (bg.trueColor !== undefined) w.pair(421, bg.trueColor);
+      if (bg.colorName !== undefined) w.pair(431, bg.colorName);
+      if (bg.transparency !== undefined) w.pair(441, bg.transparency);
+    }
+  }
+  if (e.background?.flags === 0) {
+    w.pair(1001, MTEXT_BACKGROUND_APP);
+    for (const chunk of backgroundMetadataChunks(e.background, e.height)) w.pair(1000, chunk);
   }
   // AC1015 has no MTEXT columns: JCad keeps the definition as XDATA (other programs show one column).
   if (e.columns) {

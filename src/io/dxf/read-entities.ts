@@ -18,6 +18,7 @@ import type { MTextAttachment, MTextBackground } from '../../core/mtext';
 import { mtextFromDxf, hasFormatting } from '../../core/mtext';
 import { readTextPlacement } from './read-text';
 import { insertArrayFields } from '../../core/insert-array';
+import { readBackgroundMetadata } from './mtext-background-data';
 
 function readSpline(o: Obj, base: ReturnType<typeof commonProps>): SplineEntity | null {
   const gs = afterSubclass(o, 'AcDbSpline');
@@ -311,7 +312,7 @@ export function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
       const bgGroups: Obj = { ...main, groups: afterSubclass(main, 'AcDbMText') };
       const backgroundRgb = has(bgGroups, 421) ? 421 : has(main, 100) && has(bgGroups, 420) ? 420 : undefined;
       const backgroundName = has(bgGroups, 431) ? 431 : has(main, 100) && has(bgGroups, 430) ? 430 : undefined;
-      const background: MTextBackground | undefined = has(bgGroups, 90) ? {
+      let background: MTextBackground | undefined = has(bgGroups, 90) ? {
         flags: num(bgGroups, 90),
         scale: num(bgGroups, 45, 1.5),
         color: num(bgGroups, 63, 256) === 256 ? 'ByLayer' : num(bgGroups, 63, 256),
@@ -319,6 +320,12 @@ export function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
         ...(backgroundName !== undefined ? { colorName: str(bgGroups, backgroundName) } : {}),
         ...(has(bgGroups, 441) ? { transparency: num(bgGroups, 441) } : {}),
       } : undefined;
+      const inactive = readBackgroundMetadata(o, height);
+      if (inactive.problem) reportObj(ctx, o, 'simplified', `inactive MTEXT background settings are not restored: ${inactive.problem}`);
+      else if (inactive.background) {
+        if (background && background.flags !== 0) reportObj(ctx, o, 'simplified', 'inactive MTEXT background metadata is ignored because native fill/frame flags are active');
+        else background = inactive.background;
+      }
       if (has(main, 41) || columns || background) {
         return {
           ...base,
