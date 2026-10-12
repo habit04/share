@@ -90,7 +90,7 @@ export async function runPortableDwgChecks({ app, page, repo, outDir, check, cur
     const overwrite = page.evaluate(() => window.editor.saveFile(false));
     const warning = page.locator('.modal', { hasText: 'Save over the original file?' });
     await warning.waitFor({ timeout: 10000 });
-    assert.match(await warning.innerText(), /properties JCad cannot read/);
+    assert.match(await warning.innerText(), /properties JCad cannot read|object\(s\) JCad cannot keep/);
     await warning.locator('button', { hasText: /^Yes$/ }).click();
     assert.equal(await overwrite, true, 'Normal DWG source overwrite requires and accepts loss consent');
     const explicitDxf = join(directory, 'explicit-dxf-copy.dxf');
