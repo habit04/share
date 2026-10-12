@@ -2,6 +2,7 @@
 import { toImportPayload, type DwgImportPayload } from './dwg';
 import { convertDwgMTextDatabase } from '../../scripts/dwg-mtext-background.mjs';
 import { convertDwgDatabase } from '../../scripts/dwg-array-conversion.mjs';
+import { readNativeDwg } from '../../scripts/dwg-native-read.mjs';
 
 export async function parseBrowserDwg(bytes: ArrayBuffer): Promise<{ payload: DwgImportPayload; version: string }> {
   const [{ LibreDwg, Dwg_Object_Type }, { default: createModule }, wasmUrl] = await Promise.all([
@@ -11,8 +12,7 @@ export async function parseBrowserDwg(bytes: ArrayBuffer): Promise<{ payload: Dw
   ]);
   const instance = await createModule({ locateFile: () => wasmUrl.default });
   const l = LibreDwg.createByWasmInstance(instance);
-  const ptr = l.dwg_read_data(bytes, 0);
-  if (!ptr) throw new Error('LibreDWG could not read this file (unsupported version or corrupt data).');
+  const ptr = readNativeDwg(instance, bytes);
   try {
     const v: unknown = l.dwg_get_version_type(ptr);
     const version = typeof v === 'string' ? v : v && typeof v === 'object' && typeof (v as { type?: unknown }).type === 'string' ? (v as { type: string }).type : '';

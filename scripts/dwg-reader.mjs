@@ -7,6 +7,7 @@ import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { convertDwgMTextDatabase } from './dwg-mtext-background.mjs';
 import { convertDwgDatabase } from './dwg-array-conversion.mjs';
+import { readNativeDwg } from './dwg-native-read.mjs';
 import createNativeModule from '../vendor/libredwg-web-bg/factory/libredwg-web.js';
 
 let libPromise = null;
@@ -33,11 +34,11 @@ export const MAX_DWG_BYTES = 128 * 1024 * 1024;
  */
 export async function readDwgPayload(bytes, kind = 'dwg') {
   if (bytes.byteLength > MAX_DWG_BYTES) throw new Error(`The DWG file is larger than the supported ${MAX_DWG_BYTES / (1024 * 1024)} MB.`);
-  const l = await lib();
-  const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-  const ptr = l.dwg_read_data(ab, kind === 'dxf' ? 1 : 0);
-  if (!ptr) throw new Error('LibreDWG could not read this file (unsupported version or corrupt data).');
+  let l;
+  let ptr;
   try {
+    l = await lib();
+    ptr = readNativeDwg(l, bytes, kind);
     let version = '';
     try {
       version = l.dwg_get_version_type(ptr)?.type ?? '';
@@ -52,7 +53,7 @@ export async function readDwgPayload(bytes, kind = 'dwg') {
     // codex/electrical-review-fixes 2f89b0e). LibreDWG keeps per-version state in the module;
     // reading files of different versions in one instance can abort the WASM: start fresh.
     try {
-      l.dwg_free(ptr);
+      if (ptr) l.dwg_free(ptr);
     } finally {
       void resetLibreDwg();
     }

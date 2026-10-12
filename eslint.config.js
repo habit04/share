@@ -7,7 +7,7 @@ import globals from 'globals';
 
 export default tseslint.config(
   {
-    ignores: ['node_modules/**', 'dist/**', 'dist-node/**', 'release/**', 'site-dist/**', 'screenshots/**', 'e2e-output/**', 'packaged-smoke-output/**', '.claude/**', '.codex-local/**', 'src/render/fonts/**', 'vendor/libredwg-web-bg/**'],
+    ignores: ['node_modules/**', 'dist/**', 'dist-node/**', 'release/**', 'release-test/**', 'site-dist/**', 'screenshots/**', 'e2e-output/**', 'packaged-smoke-output/**', '.claude/**', '.codex-local/**', 'src/render/fonts/**', 'vendor/libredwg-web-bg/**'],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,

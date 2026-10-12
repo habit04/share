@@ -1,6 +1,7 @@
 /** Five independent CAD format fixtures through the real desktop open/save bridge.
  * Reuses the existing Electron harness; no application launch or fuse mutation here. */
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { copyFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, rmSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { verifyNativeRuntime } from './vendor-native-runtime.mjs';
@@ -230,9 +231,15 @@ export async function runCadFidelity({ app, page, repo, outDir, check, packaged 
     if (metadata.jcadTestBuild !== true) { check(true, 'CAD fidelity: legacy packaged run predates the dedicated test ASAR'); return; }
     const unpackedRoot = asar ? appPath + '.unpacked' : appPath;
     const scripts = join(unpackedRoot, 'scripts');
-    for (const name of ['dwg-reader.mjs', 'dwg-worker.mjs', 'dwg-array-conversion.mjs', 'dwg-mtext-background.mjs']) assert.ok(lstatSync(join(scripts, name)).isFile(), 'Packaged DWG helpers must be unpacked regular files');
+    const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
+    for (const name of ['dwg-reader.mjs', 'dwg-worker.mjs', 'dwg-native-read.mjs', 'dwg-array-conversion.mjs', 'dwg-mtext-background.mjs']) {
+      const file = join(scripts, name), info = lstatSync(file);
+      assert.ok(info.isFile() && !info.isSymbolicLink() && info.size > 0 && info.size <= 1024 * 1024, 'Packaged DWG helpers must be bounded unpacked regular files');
+      assert.equal(digest(readFileSync(file)), digest(readFileSync(join(repo, 'scripts', name))), 'Packaged native worker uses the exact source helper bytes: ' + name);
+    }
     const reader = readFileSync(join(scripts, 'dwg-reader.mjs'), 'utf8');
     assert.ok(reader.includes('convertDwgDatabase') && reader.includes('convertDwgMTextDatabase'), 'Packaged reader must compose both adapters');
+    assert.ok(reader.includes('readNativeDwg') && /from\s+['"]\.\/dwg-native-read\.mjs['"]/.test(reader), 'Packaged real reader must use the checked native critical-error policy');
     assert.ok(reader.includes('../vendor/libredwg-web-bg/factory/libredwg-web.js') && reader.includes('../vendor/libredwg-web-bg/factory/libredwg-web.wasm'), 'Packaged real reader must load the matching repaired native pair');
     const supportBytes = asar ? asar.extractFile(appPath, 'electron/support.json') : readFileSync(join(appPath, 'electron/support.json'));
     assert.ok(supportBytes.length > 0 && supportBytes.length <= 8192, 'Packaged support configuration is bounded');
@@ -271,8 +278,11 @@ export async function runCadFidelity({ app, page, repo, outDir, check, packaged 
       const source = join(workspace, item.kind + '-source.dxf'), saved = join(workspace, item.kind + '-saved.dxf');
       copyFileSync(join(repo, 'tests', 'fixtures', item.file), source); const original = readFileSync(source);
       await openChosen(source); const before = await inspect(); liveExpectations(item.kind, before);
-      const points = item.kind === 'widths' ? [{ x: 9, y: 1 }, { x: 1, y: 1 }] : item.kind === 'arrays' ? [{ x: 10, y: 28 }] : item.kind === 'appearance' ? [{ x: 1, y: 8 }, { x: 1, y: 9 }, { x: 1, y: 11 }] : item.kind === 'backgrounds' ? [{ x: -0.5, y: -1 }, { x: 29, y: -1 }, { x: 19.5, y: 20.5 }, { x: 59.5, y: 20.5 }, { x: 61, y: 21 }, { x: 99.5, y: 20.5 }, { x: 127.5, y: 19.5 }, { x: 79.75, y: 20.25 }] : [];
-      const boxes = item.kind === 'backgrounds' ? [{ x: 19, y: 20, w: 1, h: 1 }, { x: 59, y: 20, w: 1, h: 1 }, { x: 99, y: 20, w: 1, h: 1 }, { x: 127, y: 19, w: 1, h: 1 }] : [];
+      // The long first-row word can overhang its column and cross the gutter at y18..20.
+      // At y15.5, both masks still cover this height, while the short second-row glyphs
+      // end at x126 / start at x129. Sample the blank gutter center,1.5 units from either edge.
+      const points = item.kind === 'widths' ? [{ x: 9, y: 1 }, { x: 1, y: 1 }] : item.kind === 'arrays' ? [{ x: 10, y: 28 }] : item.kind === 'appearance' ? [{ x: 1, y: 8 }, { x: 1, y: 9 }, { x: 1, y: 11 }] : item.kind === 'backgrounds' ? [{ x: -0.5, y: -1 }, { x: 29, y: -1 }, { x: 19.5, y: 20.5 }, { x: 59.5, y: 20.5 }, { x: 61, y: 21 }, { x: 99.5, y: 20.5 }, { x: 127.5, y: 15.5 }, { x: 79.75, y: 20.25 }] : [];
+      const boxes = item.kind === 'backgrounds' ? [{ x: 19, y: 20, w: 1, h: 1 }, { x: 59, y: 20, w: 1, h: 1 }, { x: 99, y: 20, w: 1, h: 1 }, { x: 127, y: 15, w: 1, h: 1 }] : [];
       const rendered = await raster(points, boxes); assert.ok(rendered.changed > 10, item.kind + ': rendered content');
       if (item.kind === 'widths') { assert.ok(rendered.samples[0].delta > 10, 'Taper interior renders'); assert.ok(rendered.samples[1].delta <= 3, 'Thin end excludes the maximum width'); }
       if (item.kind === 'arrays') assert.ok(rendered.samples[0].delta > 10, 'Native second column renders');

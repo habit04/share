@@ -63,6 +63,7 @@
       "dist/**",
       "electron/**",
       "scripts/dwg-reader.mjs",
+      "scripts/dwg-native-read.mjs",
       "scripts/dwg-mtext-background.mjs",
       "scripts/dwg-array-conversion.mjs",
       "scripts/dwg-worker.mjs",

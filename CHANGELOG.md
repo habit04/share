@@ -54,6 +54,9 @@ Nothing yet.
 
 ### Fixed
 
+- Corrupt DWG files with critical native errors are rejected instead of opening as empty
+  drawings. Failed native pointers and temporary inputs are cleaned up, and a later valid
+  read starts with a fresh Node runtime; recoverable compatibility warnings still import.
 - Fitted text axes follow their authoritative anchors under nonuniform and mirrored transforms,
   including inverse attribute placement. Associated LEADER text no longer inherits unrelated
   leader RGB, name or alpha when its own foreground uses defaults.
