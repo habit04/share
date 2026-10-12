@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "source": {
+    "repository": "https://github.com/mlightcad/libredwg-web",
+    "tag": "v0.7.14",
+    "commit": "1dd682f46339f37b67c5ff1085d10d04a8c16d7e"
+  },
+  "submodules": [
+    {
+      "path": "jsmn",
+      "repository": "https://github.com/zserge/jsmn",
+      "commit": "85695f3d5903b1cd5b4030efe50db3b4f5f3c928"
+    }
+  ],
+  "compiler": {
+    "version": "4.0.23",
+    "repository": "https://github.com/emscripten-core/emsdk",
+    "commit": "c0bb220cb6e6f4e0fabb6f6db9efd53390ef5e56",
+    "releaseHash": "aaa43392544d695232b70eda706d751f18980c2a",
+    "originalPackageCompiler": "unknown: source uses install latest; distributed WASM producer metadata is stripped"
+  },
+  "packageManifestGitBlob": "baacc33186d7c1e3c3f249c92dd140766ce45d5e",
+  "licenseGitBlob": "94a9ed024d3859793618152ea559a168bbcbb5e2",
+  "fixture": "tests/fixtures/interchange/r2018-mtext-background.dwg",
+  "expected": "tests/fixtures/interchange/r2018-mtext-background.expected.json"
+}

@@ -1,0 +1,56 @@
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { readFile, writeFile, copyFile, lstat } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { pins, sha256, validatePatchedSource } from './patch-source.mjs';
+
+const [sourceArg, sdkArg, artifactArg] = process.argv.slice(2);
+if (!sourceArg || !sdkArg || !artifactArg || process.argv.length !== 5) throw new Error('Usage: write-provenance.mjs SOURCE SDK ARTIFACT');
+const source = resolve(sourceArg), sdk = resolve(sdkArg), artifact = resolve(artifactArg);
+const here = dirname(fileURLToPath(import.meta.url));
+const gitHead = (directory) => execFileSync('git', ['rev-parse', 'HEAD'], { cwd: directory, encoding: 'utf8' }).trim();
+assert.equal(gitHead(source), pins.source.commit, 'Source SHA changed during build.');
+assert.equal(gitHead(sdk), pins.compiler.commit, 'SDK SHA changed during build.');
+for (const submodule of pins.submodules) assert.equal(gitHead(join(source, submodule.path)), submodule.commit, 'Submodule SHA changed during build.');
+const releaseTags = JSON.parse(await readFile(join(sdk, 'emscripten-releases-tags.json'), 'utf8'));
+assert.equal(releaseTags.releases[pins.compiler.version], pins.compiler.releaseHash, 'Emscripten release binary pin changed.');
+const compiler = execFileSync('emcc', ['--version'], { encoding: 'utf8' }).trim();
+assert.match(compiler.split('\n')[0], /\b4\.0\.23\b/, 'Wrong active Emscripten compiler.');
+await validatePatchedSource(source);
+const patchReport = JSON.parse(await readFile(join(artifact, 'patch-report.json'), 'utf8'));
+assert.equal(patchReport.source.commit, pins.source.commit);
+const fixture = JSON.parse(await readFile(join(artifact, 'fixture-report.json'), 'utf8'));
+assert.equal(fixture.nativeError, 0, 'Fixture validation did not complete successfully.');
+assert.equal(fixture.masks.length, 7);
+const packageManifest = JSON.parse(await readFile(join(source, 'bindings/javascript/package.json'), 'utf8'));
+for (const filename of ['pins.json', 'mtext-background-scale.patch.json', 'README.md', 'patch-source.mjs', 'validate-fixture.mjs', 'write-provenance.mjs']) await copyFile(join(here, filename), join(artifact, filename));
+await copyFile(join(source, 'COPYING'), join(artifact, 'COPYING'));
+const files = ['factory/libredwg-web.js', 'factory/libredwg-web.wasm', 'factory/package.json', 'modified-source.tar.gz', 'COPYING', 'pins.json', 'mtext-background-scale.patch.json', 'README.md', 'patch-source.mjs', 'validate-fixture.mjs', 'write-provenance.mjs', 'patch-report.json', 'fixture-report.json'];
+const assets = [];
+for (const filename of files) {
+  const path = join(artifact, filename), stat = await lstat(path);
+  assert.ok(stat.isFile() && !stat.isSymbolicLink(), `Not a regular artifact: ${filename}`);
+  assets.push({ path: filename, bytes: stat.size, sha256: sha256(await readFile(path)) });
+}
+assert.equal(assets.find((asset) => asset.path === 'factory/libredwg-web.js').sha256, fixture.factorySha256);
+assert.equal(assets.find((asset) => asset.path === 'factory/libredwg-web.wasm').sha256, fixture.wasmSha256);
+assert.equal(assets.find((asset) => asset.path === 'mtext-background-scale.patch.json').sha256, patchReport.patchSha256);
+const provenance = {
+  schemaVersion: 1,
+  purpose: 'Controlled native MTEXT background repair; no release publication or installed dependency mutation',
+  source: pins.source,
+  submodules: pins.submodules,
+  compiler: { ...pins.compiler, observedVersion: compiler },
+  license: { packageSpdx: 'GPL-3.0', nativeSourceNotice: 'GPL-3.0-or-later; see each source file and COPYING', correspondingSource: 'modified-source.tar.gz' },
+  build: { commands: ['./autogen.sh', 'npm run build:prepare', 'npm run build:obj', 'npm run build:wasm'], makeFlags: '-j2', scripts: Object.fromEntries(['build:prepare', 'build:obj', 'build:wasm'].map((name) => [name, packageManifest.scripts[name]])), observedTools: { node: process.version, ...Object.fromEntries(['npm', 'autoconf', 'automake', 'libtoolize', 'make', 'gcc', 'pkg-config'].map((command) => [command, execFileSync(command, ['--version'], { encoding: 'utf8' }).trim().split('\n')[0]])) } },
+  validation: { fixtureSha256: fixture.fixtureSha256, expectedSha256: fixture.expectedSha256, nativeError: fixture.nativeError, maskCount: fixture.masks.length, report: 'fixture-report.json' },
+  workflow: { repository: process.env.GITHUB_REPOSITORY || '', commit: process.env.GITHUB_SHA || '', runId: process.env.GITHUB_RUN_ID || '', runAttempt: process.env.GITHUB_RUN_ATTEMPT || '' },
+  patchedFiles: await Promise.all(patchReport.files.map(async (file) => ({ ...file, builtSourceSha256: sha256(await readFile(join(source, file.path))) }))),
+  assets,
+  limitations: ['The original npm binary compiler version is not recorded upstream; this rebuild uses the pinned compiler above.', 'This fixture validates native decoder fields, not all DWG versions/entities or final application adapters.', 'Its column layout is JCAD_MTEXT_COLUMNS XDATA; native columns are absent, and this raw API does not decode/certify application XDATA or embedded MTEXT containers.', 'SHA256 records bind artifact bytes; this workflow does not sign or publish artifacts.'],
+};
+await writeFile(join(artifact, 'provenance.json'), JSON.stringify(provenance, null, 2) + '\n', { flag: 'wx' });
+const checksums = [...assets, { path: 'provenance.json', sha256: sha256(await readFile(join(artifact, 'provenance.json'))) }].map((asset) => `${asset.sha256}  ${asset.path}`).join('\n') + '\n';
+await writeFile(join(artifact, 'SHA256SUMS'), checksums, { flag: 'wx' });
+console.log(`NATIVE_PROVENANCE_OK source=${pins.source.commit} sdk=${pins.compiler.version} assets=${assets.length}`);

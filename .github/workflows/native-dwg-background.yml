@@ -1,0 +1,105 @@
+name: Native DWG background repair
+
+# Isolated candidate build. This never modifies installed dependencies or publishes a release.
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/cad-fidelity-five]
+    paths:
+      - .github/workflows/native-dwg-background.yml
+      - scripts/native-dwg-build/**
+      - tests/fixtures/interchange/r2018-mtext-background.dwg
+      - tests/fixtures/interchange/r2018-mtext-background.expected.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-dwg-background-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  native-repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      NATIVE_SOURCE: ${{ runner.temp }}/native-dwg-source
+      NATIVE_SDK: ${{ runner.temp }}/native-dwg-sdk
+      NATIVE_ARTIFACT: ${{ runner.temp }}/native-dwg-artifact
+      SOURCE_SHA: 1dd682f46339f37b67c5ff1085d10d04a8c16d7e
+      SDK_SHA: c0bb220cb6e6f4e0fabb6f6db9efd53390ef5e56
+      SDK_VERSION: 4.0.23
+      MAKEFLAGS: -j2
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24
+      - name: Verify controlled fixture and install native CI prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f tests/fixtures/interchange/r2018-mtext-background.dwg
+          test -f tests/fixtures/interchange/r2018-mtext-background.expected.json
+          node --test scripts/native-dwg-build/tooling.test.mjs
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y autoconf automake libtool build-essential pkg-config python3 git zlib1g-dev texinfo
+          mkdir -p "$NATIVE_ARTIFACT/factory"
+      - name: Fetch exact upstream source and SDK commits
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init "$NATIVE_SOURCE"
+          git -C "$NATIVE_SOURCE" remote add origin https://github.com/mlightcad/libredwg-web.git
+          git -C "$NATIVE_SOURCE" fetch --depth 1 origin tag v0.7.14
+          test "$(git -C "$NATIVE_SOURCE" rev-parse 'v0.7.14^{commit}')" = "$SOURCE_SHA"
+          git -C "$NATIVE_SOURCE" checkout --detach "$SOURCE_SHA"
+          git -C "$NATIVE_SOURCE" submodule update --init --recursive
+          git init "$NATIVE_SDK"
+          git -C "$NATIVE_SDK" remote add origin https://github.com/emscripten-core/emsdk.git
+          git -C "$NATIVE_SDK" fetch --depth 1 origin "$SDK_SHA"
+          git -C "$NATIVE_SDK" checkout --detach "$SDK_SHA"
+          node scripts/native-dwg-build/patch-source.mjs apply "$NATIVE_SOURCE" "$NATIVE_ARTIFACT/patch-report.json"
+      - name: Install pinned Emscripten SDK
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module -e 'import fs from "node:fs"; const p=JSON.parse(fs.readFileSync("scripts/native-dwg-build/pins.json")); const t=JSON.parse(fs.readFileSync(process.env.NATIVE_SDK+"/emscripten-releases-tags.json")); if(t.releases[p.compiler.version]!==p.compiler.releaseHash) throw Error("SDK release hash mismatch");'
+          "$NATIVE_SDK/emsdk" install "$SDK_VERSION"
+          "$NATIVE_SDK/emsdk" activate "$SDK_VERSION"
+      - name: Compile matching factory glue and WASM using upstream build scripts
+        timeout-minutes: 40
+        shell: bash
+        run: |
+          set -euo pipefail
+          source "$NATIVE_SDK/emsdk_env.sh"
+          emcc --version
+          (cd "$NATIVE_SOURCE" && ./autogen.sh)
+          node scripts/native-dwg-build/patch-source.mjs verify "$NATIVE_SOURCE"
+          (cd "$NATIVE_SOURCE/bindings/javascript" && npm run build:prepare && npm run build:obj && npm run build:wasm)
+          node scripts/native-dwg-build/patch-source.mjs verify "$NATIVE_SOURCE"
+          cp "$NATIVE_SOURCE/build-wasm/libredwg-web.js" "$NATIVE_SOURCE/build-wasm/libredwg-web.wasm" "$NATIVE_ARTIFACT/factory/"
+          printf '{"type":"module"}\n' > "$NATIVE_ARTIFACT/factory/package.json"
+      - name: Exact native seven-mask and downstream metadata gate
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 90s node scripts/native-dwg-build/validate-fixture.mjs "$NATIVE_ARTIFACT/factory/libredwg-web.js" "$NATIVE_ARTIFACT/factory/libredwg-web.wasm" tests/fixtures/interchange/r2018-mtext-background.dwg tests/fixtures/interchange/r2018-mtext-background.expected.json "$NATIVE_ARTIFACT/fixture-report.json"
+      - name: Package corresponding source, license, checked patch and SHA256 provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          source "$NATIVE_SDK/emsdk_env.sh"
+          tar --exclude=.git --exclude=build-wasm --exclude=node_modules -czf "$NATIVE_ARTIFACT/modified-source.tar.gz" -C "$NATIVE_SOURCE" .
+          node scripts/native-dwg-build/write-provenance.mjs "$NATIVE_SOURCE" "$NATIVE_SDK" "$NATIVE_ARTIFACT"
+          (cd "$NATIVE_ARTIFACT" && sha256sum --check SHA256SUMS)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-dwg-background-${{ github.sha }}
+          path: ${{ runner.temp }}/native-dwg-artifact/
+          if-no-files-found: error
+          retention-days: 30
