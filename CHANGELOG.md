@@ -11,12 +11,6 @@ messages). The date of each version is the date of the commit that set that vers
 
 ## [Unreleased]
 
-### Fixed
-
-- Portable DWG copies reopen with their native entity transparency, Unicode color-book names
-  and rectangular block-array attributes. The Windows package includes the appearance reader
-  adapter and its matching, checked native runtime.
-
 ## [0.4.6] - 2026-10-12
 
 ### Upgrade notes
@@ -42,6 +36,12 @@ messages). The date of each version is the date of the commit that set that vers
 - The build pins the Rust toolchain, dependency lockfile, upstream writer source and reviewed
   patches. Corresponding modified source and dependency notices accompany the helper. Publisher
   signing precedes its integrity manifest; the protected ASAR records the final helper hashes.
+
+### Fixed
+
+- Portable DWG copies reopen with their native entity transparency, Unicode color-book names
+  and rectangular block-array attributes. The Windows package includes the appearance reader
+  adapter and its matching, checked native runtime.
 
 ### Known limitations
 
@@ -919,7 +919,10 @@ First release.
 
 - Renamed the application to JCad Electrical.
 
-[Unreleased]: https://github.com/habit04/share/compare/v0.4.3...HEAD
+[Unreleased]: https://github.com/habit04/share/compare/v0.4.6...HEAD
+[0.4.6]: https://github.com/habit04/share/compare/v0.4.5...v0.4.6
+[0.4.5]: https://github.com/habit04/share/compare/v0.4.4...v0.4.5
+[0.4.4]: https://github.com/habit04/share/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/habit04/share/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/habit04/share/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/habit04/share/compare/v0.4.0...v0.4.1
