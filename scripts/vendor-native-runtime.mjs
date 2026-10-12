@@ -4,6 +4,8 @@ import { createHash } from 'node:crypto';
 import { readFile, lstat, realpath } from 'node:fs/promises';
 import { resolve, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { wasmMemoryLimits } from './dwg-wasm-memory.mjs';
+export { wasmMemoryLimits } from './dwg-wasm-memory.mjs';
 
 export const NATIVE_SOURCE = Object.freeze({ repository: 'https://github.com/mlightcad/libredwg-web', tag: 'v0.7.14', commit: '1dd682f46339f37b67c5ff1085d10d04a8c16d7e' });
 const SDK = { version: '4.0.23', commit: 'c0bb220cb6e6f4e0fabb6f6db9efd53390ef5e56', releaseHash: 'aaa43392544d695232b70eda706d751f18980c2a' };
@@ -12,59 +14,6 @@ const PATCH_SHA256 = 'f666e69a0316536df7e344efe2b0a9c550918d06ad57b65ecbc4c52354
 const ASSETS = ['factory/libredwg-web.js', 'factory/libredwg-web.wasm', 'factory/package.json', 'modified-source.tar.gz', 'COPYING', 'pins.json', 'mtext-background-scale.patch.json', 'README.md', 'patch-source.mjs', 'validate-fixture.mjs', 'write-provenance.mjs', 'patch-report.json', 'fixture-report.json', 'declaration-tools/package.json', 'declaration-tools/package-lock.json'];
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const samePath = (a, b) => process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
-
-/** Inspect declarations only; an artifact cannot request memory by being inspected. */
-export function wasmMemoryLimits(bytes) {
-  assert.ok(bytes instanceof Uint8Array && bytes.length >= 8, 'Truncated WASM header.');
-  assert.deepEqual(Array.from(bytes.subarray(0, 8)), [0, 97, 115, 109, 1, 0, 0, 0], 'Invalid WASM header/version.');
-  let offset = 8, boundary = bytes.length;
-  const byte = () => { assert.ok(offset < boundary, 'Truncated WASM section.'); return bytes[offset++]; };
-  const u32 = () => {
-    let value = 0;
-    for (let count = 0; count < 5; count++) {
-      const part = byte(); value += (part & 127) * 2 ** (count * 7);
-      assert.ok(value <= 0xffffffff, 'WASM integer exceeds u32.');
-      if (!(part & 128)) return value;
-    }
-    throw new Error('Overlong WASM integer.');
-  };
-  const string = () => {
-    const size = u32(); assert.ok(size <= 4096 && offset + size <= boundary, 'Invalid WASM import name.');
-    const result = new TextDecoder('utf8', { fatal: true }).decode(bytes.subarray(offset, offset + size)); offset += size; return result;
-  };
-  const valueType = () => { const type = byte(); if (type === 0x63 || type === 0x64) u32(); };
-  const limits = () => {
-    const flags = u32(); assert.ok(flags <= 3, 'Candidate must retain wasm32 limits.');
-    const minPages = u32(), maxPages = flags & 1 ? u32() : null;
-    assert.ok(maxPages === null || maxPages >= minPages, 'Invalid WASM limits.');
-    return { flags, minPages, maxPages, minBytes: minPages * 65536, maxBytes: maxPages === null ? null : maxPages * 65536 };
-  };
-  const memories = [];
-  while (offset < bytes.length) {
-    boundary = bytes.length;
-    const section = byte(), size = u32(), end = offset + size;
-    assert.ok(end <= bytes.length, 'Truncated WASM section payload.'); boundary = end;
-    if (section === 2) {
-      const count = u32(); assert.ok(count <= 4096, 'WASM import count exceeds inspection budget.');
-      for (let index = 0; index < count; index++) {
-        const module = string(), name = string(), kind = byte();
-        if (kind === 0) u32();
-        else if (kind === 1) { valueType(); limits(); }
-        else if (kind === 2) memories.push({ origin: 'import', module, name, ...limits() });
-        else if (kind === 3) { valueType(); byte(); }
-        else if (kind === 4) { byte(); u32(); }
-        else throw new Error('Unknown WASM import kind.');
-      }
-      assert.equal(offset, end, 'Invalid WASM import section length.');
-    } else if (section === 5) {
-      const count = u32(); assert.ok(count <= 1, 'Candidate must retain one linear memory.');
-      for (let index = 0; index < count; index++) memories.push({ origin: 'defined', ...limits() });
-      assert.equal(offset, end, 'Invalid WASM memory section length.');
-    }
-    offset = end;
-  }
-  return memories;
-}
 
 async function regularFile(root, name, maxBytes) {
   assert.ok(!name.includes('\\') && !name.includes('\0') && !isAbsolute(name), 'Invalid native artifact path.');

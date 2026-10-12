@@ -42,6 +42,8 @@ let statusSink = () => {};
  * @type {(win: Electron.BrowserWindow) => Promise<boolean>}
  */
 let confirmRestart = async () => true;
+/** Acknowledged settings commit before final package verification and native installation. */
+let beforeRestart = async (/** @type {Electron.BrowserWindow} */ _win) => true;
 
 /** Whether electron-updater can replace this installation in place. */
 function canSelfUpdate() {
@@ -219,8 +221,13 @@ async function offerRestart(win, version) {
   });
   if (r.response !== 0) return;
   if (!(await confirmRestart(win))) return;
-  // Verified again right before it runs (E-8).
-  const why = await verifyDownloaded();
+  // Verify after unsaved work, and once more after asynchronous settings/disk preparation.
+  // A slow checkpoint must not leave an old package verification authorizing installation.
+  let why = await verifyDownloaded();
+  if (!why) {
+    if (!(await beforeRestart(win))) return;
+    why = await verifyDownloaded();
+  }
   if (why) {
     statusSink({ state: 'error', message: `The update was not installed: ${why}.` });
     await dialog.showMessageBox(win, { type: 'warning', title: 'Update Not Installed', message: 'The downloaded update failed verification and was not installed.', detail: `${why}.\n\nYou can download the new version from the releases page.` });
@@ -347,6 +354,10 @@ module.exports = {
   /** fn(win) -> Promise<boolean>: may the application close now (unsaved work handled)? */
   onConfirmRestart(fn) {
     confirmRestart = typeof fn === 'function' ? fn : async () => true;
+  },
+  /** A final acknowledged settings checkpoint; false keeps the application open. */
+  onBeforeRestart(fn) {
+    beforeRestart = typeof fn === 'function' ? fn : async () => true;
   },
   /** The check "Restart Now" runs before quitAndInstall (main's Save All workflow); end-to-end tests drive it. */
   confirmRestart: (win) => confirmRestart(win),

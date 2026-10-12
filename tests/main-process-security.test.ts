@@ -74,7 +74,7 @@ describe('main-process security across modules', () => {
     expect(template.find((item) => item.label === 'View')!.submenu!.some((item) => item.role === 'toggleDevTools')).toBe(false);
   });
 
-  it('reports failed preference flushes so a migration is not marked complete', () => {
+  it('logs best-effort DOM flush failures and requires a durable checkpoint before migration acknowledgement', () => {
     const logs: string[] = [];
     const { flushRendererPreferences } = loadMainModule<{ flushRendererPreferences(contents: unknown): boolean }>('electron/main/app-data.cjs', {
       electron: { app: { getPath: () => resolve('private-test-data') } },
@@ -87,6 +87,9 @@ describe('main-process security across modules', () => {
     expect(logs).toHaveLength(1);
     expect(logs[0]).toContain('renderer preference persistence');
     expect(logs[0]).toContain('storage unavailable');
-    expect(readSource('electron/main.cjs')).toContain('rendererStorage === null || !flushRendererPreferences(event.sender)');
+    const source = readSource('electron/main.cjs');
+    expect(source).toContain("ipcMain.handle('renderer-storage-migrated'");
+    expect(source).toContain('await checkpointRendererPreferences(event.sender, true)');
+    expect(source.indexOf('await checkpointRendererPreferences(event.sender, true)')).toBeLessThan(source.indexOf('flushRendererPreferences(event.sender)'));
   });
 });

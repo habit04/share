@@ -153,7 +153,7 @@ for (const t of targets) {
   if (process.platform === 'linux') probeArgs.push('--no-sandbox');
   const probe = spawnSync(t.executable, probeArgs, { encoding: 'utf8', timeout: 120_000, windowsHide: true, maxBuffer: 2 * 1024 * 1024 });
   const probeLine = `${probe.stdout || ''}`.split(/\r?\n/).find((l) => l.startsWith('PROBE_')) ?? `(no output; exit ${probe.status}${probe.error ? `, ${probe.error.message}` : ''})`;
-  const probeOk = dwgProbeSucceeded(probe, probeLine);
+  const probeOk = dwgProbeSucceeded(probe, probeLine, expectedVersion);
   console.log(`${probeOk ? 'ok  ' : 'FAIL'} --probe-dwg: ${probeLine} (${processResult(probe)})`);
   // The current release gate requires disabled inspection. Older published builds
   // remain testable through the legacy driver; they are explicitly reported as legacy.

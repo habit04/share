@@ -1351,9 +1351,11 @@ stops the read and leaves the current drawing as it was.
 DWG files are read in a separate reader with workload limits: files over **128 MiB** are refused.
 A desktop read is stopped after 60 seconds plus one second per input MiB (at most 188 seconds
 for an accepted file); the browser edition allows 60 seconds. Desktop readers also limit their
-JavaScript heap and the shipped WebAssembly allocator's memory growth. These guards do not cap
-all memory used by the process. A refused or cancelled open reports the reason and leaves the
-current drawing as it was. DXF files and projects have size limits too (128 MiB and 8 MiB).
+JavaScript heap and WebAssembly memory inside an isolated process. A parent monitor stops the
+reader when its measured memory reaches 3 GiB. This is a sampled threshold; memory can briefly
+exceed it between checks. Only one DWG is parsed at a time, and converted results over 64 MiB
+are refused. A refused or cancelled open reports the reason and leaves the current drawing as
+it was. DXF files and projects have size limits too (128 MiB and 8 MiB).
 
 DWG is **read-only**: JCad Electrical cannot write DWG files. When you save a drawing that
 was opened from a DWG, you are asked for a new file name and a DXF is written; the original

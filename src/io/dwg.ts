@@ -1,7 +1,7 @@
 /**
  * DWG import. The binary parsing is done by LibreDWG (GPL-3.0) compiled to
- * WebAssembly (@mlightcad/libredwg-web). That runs in the Electron main
- * process (or Node CLI / tests); this module converts the resulting
+ * WebAssembly (@mlightcad/libredwg-web). Desktop parsing runs in an isolated Electron utility
+ * process (the CLI/tests have their own entry points); this module converts the resulting
  * DwgDatabase JSON into our DrawingState. Only types are imported here so the
  * renderer bundle never includes the WASM.
  */

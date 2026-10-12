@@ -28,7 +28,7 @@ async function runShippingProbe(ctx, phase, testBuild) {
       const phase = ${JSON.stringify(phase)};
       const fixture = ${JSON.stringify(fixture)};
       const until = Date.now() + 30000;
-      while (!window.editor || !window.jcad || !window.editor.doc.filePath || window.editor.doc.entities.length === 0) {
+      while (!window.editor || !window.jcad || !window.editor.doc.filePath || window.editor.doc.entities.length === 0 || localStorage.getItem('jcad-origin-migrated') !== '1') {
         if (Date.now() >= until) throw new Error('Renderer or handed-over DXF did not become ready');
         await new Promise(resolve => setTimeout(resolve, 25));
       }

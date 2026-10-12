@@ -50,7 +50,7 @@ PR head `d0ff078`; the integrated version must pass the same exact-commit CI gat
 | E-4 IMAGE path handling | Medium | Hardened: folder access comes from opened drawings rather than arbitrary known files; actual link targets are checked against canonical drawing folders, including Windows short/long aliases; network references cannot change servers. Explicit image references in opened drawings remain allowed. |
 | E-5 writes follow links | Medium | Hardened: atomic writes reject symlink/junction destinations and use exclusive temporary files with rename-only replacement. Preexisting linked parent folders are allowed after canonical resolution, while aliases, canonical parent identities and project write-root containment are rechecked before replacement. Node lacks portable descriptor-relative rename, so a hostile process can still race the final check. |
 | E-6 DXF tokenizer ReDoS | Medium | Fixed: bounded source text and linear line parsing; malformed group codes fail with bounded diagnostics. |
-| E-7 DWG parser limits | Medium | Desktop and browser use cancellable workers with a 128 MiB input cap and no main-thread fallback. Desktop worker V8 limits are 2048/64/8 MiB (old/young/stack), with 15 s startup and 60 s + input MiB for parsing, at most 188 s for accepted input. A per-memory JavaScript growth guard caps the shipped LibreDWG allocator at 2 GiB; it is not a total process/native memory cap and does not intercept initial allocations or direct WASM growth instructions. Browser parsing has a 60 s deadline and no explicit heap/WASM cap. |
+| E-7 DWG parser limits | Medium | Desktop parses each read in a fresh Electron utility process containing a V8-limited worker (512/64/8 MiB old/young/stack), with no main-process fallback. Before LibreDWG starts, the parent confirms OS memory monitoring. Its 100 ms watchdog stops the utility at a sampled 3 GiB resident/peak or Windows private-memory threshold; this is not an instantaneous OS allocation cap. The shipped WASM memory declaration is restricted before instantiation to an engine-enforced 2 GiB maximum, including initial allocation and direct WASM growth. Inputs and combined active/queued reservations are capped at 128 MiB, at most four requests are accepted, and results are limited to 64 MiB through acknowledged 1 MiB frames. Cancellation, failure and completion release the process before the next starts. Startup remains 15 s and parsing 60 s + input MiB, at most 188 s for accepted input. Browser parsing retains its 128 MiB/60 s worker policy without an explicit heap/WASM cap. See [DWG memory containment](DWG-MEMORY-CONTAINMENT.md). |
 | E-8 update authenticity | Medium | In-place updates require trusted packaged Windows publisher configuration. The application rechecks SHA-512 against release metadata and the Windows publisher immediately after download and before explicit Restart Now, after the unsaved-work check. Ordinary quitting never installs an update, and failed checks refuse installation. Unsigned Windows and all Linux/macOS builds offer manual downloads. macOS release metadata filters incompatible system versions. CI verifies configured signatures and records actual status. |
 | E-9 external URL allowlist escape | Low | Fixed: parsed scheme, host and path checks reject user information, ports, encoded separators and traversal. |
 | E-10 plugin trust model | Low | Persisted trust requires a 64-hex SHA-256 digest; weak fallback approval lasts only the current run. Plugins remain explicitly trusted code with full renderer access, not capability-isolated extensions. |
@@ -69,8 +69,20 @@ without application scripts, plugins or preload; the helper temporarily disables
 read the old storage after the file-privilege fuse is disabled. It refuses navigation and popups
 and is destroyed before the application starts. Failure does not execute the old application.
 
-Drawing reads are capped at 128 MiB, project JSON at 8 MiB and image files at 50 MiB. These are
-input bounds, not a guarantee of maximum native/WASM memory use. Trusted plugins retain renderer
+Desktop settings have an atomic, bounded 8 MiB checkpoint in the private user-data directory.
+The main process captures only its healthy built application page through an isolated-world
+script, accepts string dictionaries and provides no renderer-selected file path. Captures and
+commits are queued before acknowledging migration or an approved close; the migration marker
+cannot outrun the checkpoint. Empty lost DOM storage can recover the latest complete dictionary,
+including deletions. Existing DOM values remain authoritative; an unreadable checkpoint never
+revives legacy values. Update installation retains signature verification after Save All and
+then requires a final checkpoint; its failure cancels the restart.
+
+Drawing reads are capped at 128 MiB, project JSON at 8 MiB and image files at 50 MiB. Desktop DWG
+also has an engine-enforced limit on its sole WASM linear memory and a sampled parent-side process
+memory watchdog. The watchdog cannot prevent a transient allocation between samples or guarantee
+that a low-memory computer never encounters system-wide pressure. The Node utility is process
+isolation for crash/resource recovery, not an OS capability sandbox. Trusted plugins retain renderer
 and exposed bridge authority; capability isolation would be a separate product/API change.
 
 ---

@@ -30,7 +30,7 @@ if (rejectsProductionDebugging(app.isPackaged, testBuild, debugArgs)) {
 const updater = require('./updater.cjs');
 const { guardIpc, appUrlTest, createRejectionLog, createPathPolicy } = require('./ipc-guard.cjs');
 const { createPathRegistry } = require('./path-registry.cjs');
-const { stateDir, recentFile, writeStateFile, logMainError, flushRendererPreferences, installCrashLogging } = require('./main/app-data.cjs');
+const { stateDir, recentFile, writeStateFile, logMainError, flushRendererPreferences, readRendererPreferences, checkpointRendererPreferences, latestRendererPreferences, installCrashLogging } = require('./main/app-data.cjs');
 const { createWindows } = require('./main/window.cjs');
 const { registerMenuIpc } = require('./main/menu.cjs');
 const { dwgHost, readDwg, registerDwgIpc } = require('./main/dwg.cjs');
@@ -57,7 +57,7 @@ const { installAssetHandler, legacyStorage } = require('./renderer-origin.cjs');
 protocol.registerSchemesAsPrivileged([{ scheme: 'jcad', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 
 const DEV_URL = require('./inspection-policy.cjs').developmentServerUrl(app.isPackaged, process.env.VITE_DEV_SERVER_URL);
-/** @type {Record<string, string> | null} */
+/** @type {{ values: Record<string, string>, source: 'checkpoint' | 'legacy' } | null} */
 let rendererStorage = null;
 let startingMainWindow = true;
 
@@ -122,9 +122,18 @@ if (probeIndex >= 0) {
   void app.whenReady().then(async () => {
     try {
       const file = process.argv[probeIndex + 1];
-      const { payload, version } = await readDwg(/** @type {Buffer} */ (await readLimitedFile(fs, file, MAX_DRAWING_BYTES)));
+      const bytes = /** @type {Buffer} */ (await readLimitedFile(fs, file, MAX_DRAWING_BYTES));
+      const first = await readDwg(bytes);
+      if (!first.version || first.version === 'invalid' || first.payload.entities.length === 0) throw new Error('The DWG probe did not decode a nonempty drawing.');
+      const cancelId = dwgHost.newId();
+      const cancelled = readDwg(bytes, cancelId).then(() => false, (error) => error?.cancelled === true);
+      if (!dwgHost.cancel(cancelId) || !await cancelled) throw new Error('The isolated DWG cancellation probe failed.');
+      const damaged = await readDwg(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8])).then(() => false, () => true);
+      if (!damaged) throw new Error('The isolated DWG damaged-file probe failed.');
+      const { payload, version } = await readDwg(bytes);
+      if (!dwgHost.usesProcess || version !== first.version || payload.entities.length !== first.payload.entities.length || payload.blocks.length !== first.payload.blocks.length) throw new Error('The isolated DWG recovery probe failed.');
       dwgHost.dispose();
-      process.stdout.write(`PROBE_OK ${version} entities=${payload.entities.length} blocks=${payload.blocks.length}\n`);
+      process.stdout.write(`PROBE_OK ${version} entities=${payload.entities.length} blocks=${payload.blocks.length} isolated=1 recovery=1\n`);
       app.exit(0);
     } catch (err) {
       process.stdout.write(`PROBE_FAIL ${err && err.message}\n`);
@@ -154,9 +163,18 @@ installWebContentsGuards(app);
 app.whenReady().then(async () => {
   installPermissionHandlers(session.defaultSession, () => (ctx.mainWindow && !ctx.mainWindow.isDestroyed() ? ctx.mainWindow.webContents : null));
   installAssetHandler({ protocol, net, root: path.join(__dirname, '..', 'dist') });
-  if (!DEV_URL && !fsSync.existsSync(path.join(stateDir(), 'renderer-origin-migrated'))) {
-    try { rendererStorage = fsSync.existsSync(path.join(stateDir(), 'Local Storage', 'leveldb')) ? await legacyStorage({ BrowserWindow, protocol, indexFile: path.join(__dirname, '..', 'dist', 'index.html') }) : {}; }
-    catch (error) { logMainError('renderer preference migration', error); }
+  if (!DEV_URL) {
+    try {
+      const checkpoint = await readRendererPreferences();
+      if (checkpoint !== null) rendererStorage = { values: checkpoint, source: 'checkpoint' };
+      else if (!fsSync.existsSync(path.join(stateDir(), 'renderer-origin-migrated'))) {
+        const values = fsSync.existsSync(path.join(stateDir(), 'Local Storage', 'leveldb')) ? await legacyStorage({ BrowserWindow, protocol, indexFile: path.join(__dirname, '..', 'dist', 'index.html') }) : {};
+        rendererStorage = values === null ? null : { values, source: 'legacy' };
+      }
+    } catch (error) {
+      // An unreadable/corrupt checkpoint must not fall back to stale legacy values.
+      logMainError('renderer preference migration', error);
+    }
   }
   loadPersistedPaths();
   handOverFiles(drawingArgs(process.argv, process.cwd()));
@@ -172,11 +190,22 @@ app.whenReady().then(async () => {
   });
 });
 
-ipcMain.on('renderer-storage-migration', (event) => { event.returnValue = rendererStorage; });
-ipcMain.on('renderer-storage-migrated', (event) => {
-  if (rendererStorage === null || !flushRendererPreferences(event.sender)) return;
-  rendererStorage = null;
-  void writeStateFile(path.join(stateDir(), 'renderer-origin-migrated'), '1', 'renderer origin migration');
+ipcMain.on('renderer-storage-migration', (event) => {
+  // macOS can reopen a window in this process after close; use the latest committed snapshot,
+  // including an authoritative empty dictionary, rather than the earlier startup migration.
+  const values = latestRendererPreferences();
+  event.returnValue = values === null ? rendererStorage : { values, source: 'checkpoint' };
+});
+ipcMain.handle('renderer-storage-migrated', async (event) => {
+  try {
+    const values = await checkpointRendererPreferences(event.sender, true);
+    rendererStorage = { values, source: 'checkpoint' };
+    flushRendererPreferences(event.sender);
+    return true;
+  } catch (error) {
+    logMainError('renderer preference migration', error);
+    throw error;
+  }
 });
 
 app.on('will-quit', () => dwgHost.dispose());

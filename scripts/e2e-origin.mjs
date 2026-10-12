@@ -26,7 +26,7 @@ app.whenReady().then(async()=>{
   protocol.handle('file',()=>new Response('<!doctype html>',{headers:{'content-type':'text/html'}}));
   const w=new BrowserWindow({show:false,webPreferences:{nodeIntegration:false,contextIsolation:true,sandbox:true}});
   await w.loadFile(${JSON.stringify(index)});
-  await w.webContents.executeJavaScript("localStorage.setItem('jcad-origin-test','legacy preference Δ 雷');");
+  await w.webContents.executeJavaScript("localStorage.setItem('jcad-origin-test','legacy preference Δ 雷'); localStorage.setItem('jcad-origin-deleted-test','stale legacy setting');");
   w.webContents.session.flushStorageData();
   w.destroy(); app.quit();
 }).catch(e=>{console.error(e);app.exit(1)});`);
@@ -43,16 +43,19 @@ try {
     });
   });
 
-  for (let launch = 0; launch < 2; launch++) {
+  for (let launch = 0; launch < 3; launch++) {
     const app = await electron.launch({ ...(executable ? { executablePath: executable } : {}), args: [...(executable ? [] : ['.']), `--user-data-dir=${profile}`, ...linuxTestArgs], cwd: repo, env, timeout: 60_000 });
     try {
       const page = await applicationWindow(app);
       const errors = [];
       page.on('pageerror', (error) => errors.push(error.message));
       await page.waitForFunction(() => Boolean(window.editor), null, { timeout: 30_000 });
+      // This marker is the real acknowledgement of the atomic checkpoint and migration commit.
+      await page.waitForFunction(() => localStorage.getItem('jcad-origin-migrated') === '1', null, { timeout: 30_000 });
       const result = await page.evaluate(() => ({
         url: location.href,
         preference: localStorage.getItem('jcad-origin-test'),
+        deleted: localStorage.getItem('jcad-origin-deleted-test'),
         migrated: localStorage.getItem('jcad-origin-migrated'),
         secure: isSecureContext && Boolean(crypto.subtle),
         bridge: Boolean(window.jcad),
@@ -71,16 +74,31 @@ try {
       })}`);
       assert.equal(storage.persistent, true, 'The default session must persist renderer preferences.');
       assert.equal(result.url, 'jcad://app/index.html');
-      assert.equal(result.preference, launch === 0 ? 'legacy preference Δ 雷' : 'new preference');
+      assert.equal(result.preference, ['legacy preference Δ 雷', 'new preference', 'newest preference'][launch]);
+      assert.equal(result.deleted, launch === 0 ? 'stale legacy setting' : null, 'A deleted setting must not return from legacy storage or the checkpoint.');
       assert.equal(result.migrated, '1');
       assert.equal(result.secure, true);
       assert.equal(result.bridge, true);
       assert.deepEqual(errors, []);
-      if (launch === 0) await page.evaluate(() => localStorage.setItem('jcad-origin-test', 'new preference'));
+      if (launch === 0) await page.evaluate(() => {
+        localStorage.setItem('jcad-origin-test', 'new preference');
+        localStorage.removeItem('jcad-origin-deleted-test');
+      });
       // The second launch must preserve values already saved at the new origin.
-      if (launch === 1) assert.equal(await page.evaluate(() => localStorage.getItem('jcad-origin-test')), 'new preference');
+      if (launch === 1) await page.evaluate(() => {
+        if (localStorage.getItem('jcad-origin-test') !== 'new preference') throw new Error('Changed preference did not survive immediate restart.');
+        localStorage.setItem('jcad-origin-test', 'newest preference');
+      });
       console.log(`Secure renderer origin and preference migration: launch ${launch + 1} passed.`);
     } finally { await app.close(); }
+    if (launch === 1) {
+      // Emulate lost Chromium DOM storage after a completed quit. Keep the durable private
+      // checkpoint and migration marker; the next immediate launch must recover the latest state.
+      assert.ok(existsSync(join(profile, 'renderer-preferences.json')));
+      const storageDir = resolve(profile, 'Local Storage');
+      assert.equal(dirname(storageDir), resolve(profile));
+      rmSync(storageDir, { recursive: true, force: true });
+    }
   }
 } finally {
   // Only delete the private, freshly created test profile.

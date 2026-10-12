@@ -13,6 +13,47 @@ messages). The date of each version is the date of the commit that set that vers
 
 Nothing yet.
 
+## [0.4.5] - 2026-10-12
+
+### Upgrade notes
+
+- DWG import keeps the 128 MiB input ceiling, with tighter parser and converted-result memory
+  budgets. Some large valid files may be refused with a clear message; the current drawing stays intact.
+- The browser edition is unchanged. Desktop DWG parsing now uses a separate process on every open.
+
+### Fixed
+
+- Desktop DWG files parse in a disposable utility process, with a separate heap-limited worker
+  inside it. Native parser failures and worker heap exhaustion are isolated from JCad's main
+  process. The worker's actual heap limit is checked before parsing; each file gets a fresh process.
+- The WebAssembly engine enforces a 2 GiB linear-memory maximum, including direct WASM growth
+  and initial allocation checks. Original vendor factory/WASM bytes and provenance stay intact.
+- A parent OS-metrics watchdog stops the whole parser process at a sampled 3 GiB threshold.
+  It remains active while native parsing blocks the child's event loop and fails closed when
+  process metrics cannot be verified. Sampling can allow temporary overshoot; this is not an
+  instantaneous OS memory allocation cap.
+- The reader waits for positive startup measurements before loading the parser, including
+  delayed Mac process metrics. Linux uses bounded parent reads of `/proc` resident/peak memory
+  with process-identity checks rather than depending on undocumented Electron memory fields.
+- DWG opens share one parser, at most four outstanding requests and 128 MiB of reserved input.
+  Converted results are checked for metadata, string, record and nesting budgets, then transferred
+  in acknowledged 1 MiB chunks with a 64 MiB result cap. Binary XDATA is preserved within those limits.
+- Real Electron containment checks cover cancellation, damaged files, native-buffer growth and
+  V8 exhaustion, followed by successful valid-file reads. Installer smoke tests additionally
+  require the actual shipping executable to cancel, reject damaged data and reopen a valid DWG.
+- Desktop settings are checkpointed atomically before migration is acknowledged and before an
+  approved close or update restart. Immediate restarts preserve edits and deletions; an empty
+  lost Chromium storage origin can recover the latest complete checkpoint. A failed settings
+  write keeps closing cancelable and leaves the previous checkpoint intact.
+- Normal DWG process teardown no longer creates a misleading crash-log entry. Unexpected
+  crashes, memory exhaustion and other child-process failures remain logged.
+
+### Known limitations
+
+- Memory limits can refuse large valid drawings as well as damaged ones. DWG compatibility and
+  the browser edition's memory safeguards retain the documented limits. Desktop process
+  isolation is not an OS permissions sandbox or a strict cap on total system memory.
+
 ## [0.4.4] - 2026-10-11
 
 ### Upgrade notes
