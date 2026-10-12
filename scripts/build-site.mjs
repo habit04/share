@@ -16,6 +16,8 @@ const withApp = !process.argv.includes('--no-app');
 
 const about = JSON.parse(await readFile(join(root, 'src/app/about.json'), 'utf8'));
 const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
+const support = JSON.parse(await readFile(join(root, 'electron/support.json'), 'utf8'));
+if (typeof support.email !== 'string' || !/^[A-Za-z0-9._+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(support.email)) throw new Error('Invalid public support email');
 
 const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
@@ -38,6 +40,8 @@ const links = (about.author?.links ?? [])
   .join('\n            ');
 
 const values = {
+  'support.email': esc(support.email),
+  'support.url': esc(`mailto:${support.email}`),
   'author.name': esc(about.author.name),
   'author.title': esc(about.author.title),
   'author.bio': esc(about.author.bio),

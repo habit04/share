@@ -9,7 +9,12 @@
 import type { DrawingState } from '../core/document';
 import { expansionReport, MAX_INSERT_EXPANSION, MAX_BLOCK_EXPANSION_WORK, type BlockDef, type Entity } from '../core/entities';
 import { mtextFormattingProblem } from '../core/mtext';
+import { polylineWidthProblem } from '../core/polyline-widths';
 import { samePath } from '../app/paths';
+import { textPlacementProblem, placedText } from '../core/text-placement';
+import { textWidth } from '../core/entities';
+import { mtextBackgroundProblem } from '../core/mtext-background';
+import { insertArrayProblem } from '../core/insert-array';
 
 /**
  * - dropped: not imported; it is lost when the drawing is saved.
@@ -157,14 +162,23 @@ export function geometryProblem(e: Entity): string | null {
   const bad = nonFinite(e, '');
   if (bad) return `${bad} is not a finite number`;
   switch (e.type) {
+    case 'insert':
+      return insertArrayProblem(e);
     case 'circle':
     case 'arc':
       return e.radius < 0 ? `negative radius ${e.radius}` : null;
     case 'polyline':
-      return e.points.length < 2 ? `a polyline needs at least 2 vertices (it has ${e.points.length})` : null;
-    case 'text':
-      return e.height < 0 ? `negative text height ${e.height}` : null;
+      return e.points.length < 2 ? `a polyline needs at least 2 vertices (it has ${e.points.length})` : polylineWidthProblem(e);
+    case 'text': {
+      if (e.height < 0) return `negative text height ${e.height}`;
+      const placement = textPlacementProblem(e);
+      if (placement) return placement;
+      const derived = placedText(e, textWidth);
+      return Number.isFinite(derived.height) && Number.isFinite(derived.widthFactor ?? 1) && Number.isFinite(derived.position.x) && Number.isFinite(derived.position.y) ? null : 'TEXT justification produces nonfinite geometry';
+    }
     case 'mtext': {
+      const background = mtextBackgroundProblem(e);
+      if (background) return background;
       if (e.raw) {
         const format = mtextFormattingProblem(e.raw, e.height);
         if (format) return format;
@@ -172,7 +186,7 @@ export function geometryProblem(e: Entity): string | null {
       return e.height < 0 ? `negative text height ${e.height}` : null;
     }
     case 'leader':
-      return e.raw ? mtextFormattingProblem(e.raw, e.textHeight ?? 1) ?? null : null;
+      return mtextBackgroundProblem({ background: e.textBackground, height: e.textHeight }) ?? (e.raw ? mtextFormattingProblem(e.raw, e.textHeight ?? 1) ?? null : null);
     case 'table':
       if (!Array.isArray(e.cells)) return 'table cells must be an array';
       for (const row of e.cells) {

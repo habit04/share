@@ -14,8 +14,11 @@ import { LoopBuilder, edgeArc, fitPatternToLines, findPattern } from '../../core
 import type { ReadContext } from './read-core';
 import { hasFields, evaluateFields } from '../../core/fields';
 import { readMTextColumns, readDimension, readDimStyleFromEntity, readLeader, readMLeader, readImage, readTable, readJcadTable } from './read-annotations';
-import type { MTextAttachment } from '../../core/mtext';
+import type { MTextAttachment, MTextBackground } from '../../core/mtext';
 import { mtextFromDxf, hasFormatting } from '../../core/mtext';
+import { readTextPlacement } from './read-text';
+import { insertArrayFields } from '../../core/insert-array';
+import { readBackgroundMetadata } from './mtext-background-data';
 
 function readSpline(o: Obj, base: ReturnType<typeof commonProps>): SplineEntity | null {
   const gs = afterSubclass(o, 'AcDbSpline');
@@ -241,25 +244,30 @@ export function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
     case 'LWPOLYLINE': {
       const pts: g.Point[] = [];
       const bulges: number[] = [];
-      let x: number | null = null;
+      const widths: Array<{ start: number; end: number }> = [];
+      let variableWidth = false;
       for (const p of o.groups) {
-        if (p.code === 10) x = Number(p.value);
-        else if (p.code === 20 && x !== null) {
-          pts.push({ x, y: Number(p.value) });
+        if (p.code === 10) {
+          pts.push({ x: Number(p.value), y: NaN });
           bulges.push(0);
-          x = null;
-        } else if (p.code === 42 && bulges.length) bulges[bulges.length - 1] = Number(p.value);
+          widths.push({ start: 0, end: 0 });
+        } else if (p.code === 20 && pts.length) pts[pts.length - 1] = { x: pts[pts.length - 1]!.x, y: Number(p.value) };
+        else if (p.code === 42 && bulges.length) bulges[bulges.length - 1] = Number(p.value);
+        else if ((p.code === 40 || p.code === 41) && widths.length) {
+          variableWidth = true;
+          widths[widths.length - 1]![p.code === 40 ? 'start' : 'end'] = flt(p.value);
+        }
       }
       const closed = (num(o, 70) & 1) === 1;
       const width = num(o, 43, 0);
       // Zero-hole donut (two bulge-1 vertices, constant width = radius): read back as a filled dot.
-      if (closed && pts.length === 2 && width > 0 && Math.abs((bulges[0] ?? 0) - 1) < 1e-6 && Math.abs((bulges[1] ?? 0) - 1) < 1e-6) {
+      if (!variableWidth && closed && pts.length === 2 && width > 0 && Math.abs((bulges[0] ?? 0) - 1) < 1e-6 && Math.abs((bulges[1] ?? 0) - 1) < 1e-6) {
         const c = g.mid(pts[0]!, pts[1]!);
         const r = g.dist(pts[0]!, pts[1]!) / 2 + width / 2;
         return { ...base, type: 'circle', center: c, radius: r, filled: true };
       }
       const hasBulge = bulges.some((b) => Math.abs(b) > 1e-12);
-      return { ...base, type: 'polyline', points: pts, closed, bulges: hasBulge ? bulges : undefined, width: width > 0 ? width : undefined };
+      return { ...base, type: 'polyline', points: pts, closed, bulges: hasBulge ? bulges : undefined, ...(variableWidth ? { widths } : { width: width !== 0 ? width : undefined }) };
     }
     case 'POLYLINE':
       // Old-style POLYLINE with VERTEX children is handled by caller.
@@ -275,29 +283,11 @@ export function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
       return { ...base, type: 'polyline', points, closed: true, filled: true };
     }
     case 'TEXT': {
-      const h = num(o, 72, 0);
-      const v = num(o, 73, 0);
-      const align: 'left' | 'center' | 'right' = h === 1 || h === 4 ? 'center' : h === 2 ? 'right' : 'left';
-      // Alignment point (11/21) applies for any non-default justification; fit/aligned (3/5) keep the first point.
-      const useAlignPt = (h !== 0 || v !== 0) && h !== 3 && h !== 5 && has(o, 11);
-      let position = useAlignPt ? { x: num(o, 11), y: num(o, 21) } : { x: num(o, 10), y: num(o, 20) };
-      const height = num(o, 40, 0.125);
-      const rotation = g.rad(num(o, 50));
-      // Vertical justification: shift down to the baseline (1 bottom, 2 middle, 3 top).
-      const drop = v === 2 ? height / 2 : v === 3 ? height : 0;
-      if (drop) position = { x: position.x + Math.sin(rotation) * drop, y: position.y - Math.cos(rotation) * drop };
-      const wf = num(o, 41, 1);
-      const oblique = g.rad(num(o, 51, 0));
       return {
         ...base,
         type: 'text',
-        position,
+        ...readTextPlacement(o),
         ...withTextField(str(o, 1), ctx),
-        height,
-        rotation,
-        align,
-        ...(wf > 0 && Math.abs(wf - 1) > 1e-9 ? { widthFactor: wf } : {}),
-        ...(Math.abs(oblique) > 1e-9 ? { oblique } : {}),
       };
     }
     case 'MTEXT': {
@@ -319,7 +309,24 @@ export function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
       const raw = hasFields(source) ? evaluateFields(source, ctx.fields) : source;
       const plain = mtextFromDxf(raw);
       const field: FieldLink | undefined = raw !== source ? { code: source, value: plain } : undefined;
-      if (has(main, 41) || columns) {
+      const bgGroups: Obj = { ...main, groups: afterSubclass(main, 'AcDbMText') };
+      const backgroundRgb = has(bgGroups, 421) ? 421 : has(main, 100) && has(bgGroups, 420) ? 420 : undefined;
+      const backgroundName = has(bgGroups, 431) ? 431 : has(main, 100) && has(bgGroups, 430) ? 430 : undefined;
+      let background: MTextBackground | undefined = has(bgGroups, 90) ? {
+        flags: num(bgGroups, 90),
+        scale: num(bgGroups, 45, 1.5),
+        color: num(bgGroups, 63, 256) === 256 ? 'ByLayer' : num(bgGroups, 63, 256),
+        ...(backgroundRgb !== undefined ? { trueColor: num(bgGroups, backgroundRgb) } : {}),
+        ...(backgroundName !== undefined ? { colorName: str(bgGroups, backgroundName) } : {}),
+        ...(has(bgGroups, 441) ? { transparency: num(bgGroups, 441) } : {}),
+      } : undefined;
+      const inactive = readBackgroundMetadata(o, height);
+      if (inactive.problem) reportObj(ctx, o, 'simplified', `inactive MTEXT background settings are not restored: ${inactive.problem}`);
+      else if (inactive.background) {
+        if (background && background.flags !== 0) reportObj(ctx, o, 'simplified', 'inactive MTEXT background metadata is ignored because native fill/frame flags are active');
+        else background = inactive.background;
+      }
+      if (has(main, 41) || columns || background) {
         return {
           ...base,
           type: 'mtext',
@@ -333,6 +340,7 @@ export function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
           attachment: ap,
           lineSpacing: num(main, 44, 1) || 1,
           ...(columns ? { columns } : {}),
+          ...(background ? { background } : {}),
         };
       }
       // Minimal MTEXT without a reference width: keep it as single-line TEXT.
@@ -413,6 +421,7 @@ export function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
         rotation: g.rad(num(o, 50)) + insertScales(sx, sy).rotationOffset,
         attributes: {},
         ...insertScaleFields(sx, sy),
+        ...insertArrayFields(has(o, 70) ? num(o, 70) : undefined, has(o, 71) ? num(o, 71) : undefined, has(o, 44) ? num(o, 44) : undefined, has(o, 45) ? num(o, 45) : undefined, insertScales(sx, sy).rotationOffset),
       };
     }
     default:

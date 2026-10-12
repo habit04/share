@@ -31,8 +31,10 @@ import type {
   DwgTableEntity,
 } from '@mlightcad/libredwg-web';
 import { insertScales, insertScaleFields } from './dxf';
+import { insertArrayFields } from '../core/insert-array';
 import type { Entity, BlockDef, Layer, AttributeDef, ColorSpec, MTextAttachment, SplineEntity, HatchEntity, HatchLoop, LeaderEntity, ImageEntity, TableEntity, TableCell, FieldLink } from '../core/entities';
-import { translateEntity } from '../core/entities';
+import { translateEntity, localAttributePlacement, type InsertEntity, type AttributeAppearance } from '../core/entities';
+import { textJustification, type TextPlacement } from '../core/text-placement';
 import { DIMSTYLES_META_KEY, DIM_VARIABLES, diffDimStyles, dimStyleFromRecordPairs } from '../core/dimension';
 import { findLinetype, type Linetype } from '../core/linetypes';
 import { paperFromSize, unitsOfHost, uniformMargins, newViewportId, type Layout, type LayoutViewport } from '../core/layouts';
@@ -48,17 +50,18 @@ import { DEFAULT_LAYERS, DEFAULT_HEADER } from '../core/document';
 import type { Point } from '../core/geometry';
 import * as g from '../core/geometry';
 import { STANDARD_DIMSTYLE, withDimVars, type DimStyle } from '../core/dimension';
-import { mtextFromDxf, hasFormatting } from '../core/mtext';
+import { mtextFromDxf, hasFormatting, type MTextBackground } from '../core/mtext';
 import { LINEWEIGHTS } from '../core/linetypes';
 import type { LinearUnits } from '../core/units';
 import { cadPrecision } from '../core/units';
+import { explicitAlpha, transparencyFromDxf, validColorName, type TransparencySpec } from '../core/appearance';
 
 /** Subset of DwgDatabase we actually need (what the main process sends over IPC). */
 export interface DwgImportPayload {
   header: { CLAYER?: unknown; INSUNITS?: unknown } & Record<string, unknown>;
   entities: DwgEntity[];
   /** `color` is the layer's RGB (meaningful when colorIndex is 256: a true-colour layer). */
-  layers: Array<{ name: string; handle?: string; colorIndex: number; color?: number; off: boolean; frozen: boolean; locked: boolean; lineweight: number; lineType?: string; standardFlag?: number; plotFlag?: number }>;
+  layers: Array<{ name: string; handle?: string; colorIndex: number; color?: number; colorName?: string; transparency?: number; transparencyType?: number; off: boolean; frozen: boolean; locked: boolean; lineweight: number; lineType?: string; standardFlag?: number; plotFlag?: number }>;
   blocks: Array<Pick<DwgBlockRecordTableEntry, 'name' | 'basePoint' | 'entities' | 'description'> & { handle?: string; flags?: number }>;
   version?: string;
   /** IMAGEDEF objects (handle -> file name) so IMAGE entities know their file. Optional: older readers omit it. */
@@ -113,6 +116,9 @@ export function toImportPayload(db: DwgDatabase, version?: string): DwgImportPay
       ...((l as { handle?: string }).handle ? { handle: String((l as { handle?: string }).handle) } : {}),
       colorIndex: l.colorIndex,
       color: l.color,
+      colorName: l.colorName,
+      transparency: l.transparency,
+      transparencyType: (l as { transparencyType?: number }).transparencyType,
       standardFlag: l.standardFlag,
       plotFlag: l.plotFlag,
       off: l.off,
@@ -174,10 +180,26 @@ function lineweightMm(code: number | undefined): number | undefined {
   return LINEWEIGHTS[code];
 }
 
-function baseProps(e: DwgEntity): { id: string; layer: string; color: ColorSpec; linetype?: string; lineWeight?: number; ltscale?: number; trueColor?: number } {
-  const out: { id: string; layer: string; color: ColorSpec; linetype?: string; lineWeight?: number; ltscale?: number; trueColor?: number } = { id: newId(), layer: e.layer || '0', color: color(e) };
+/** LibreDWG's alpha_type differs from AcCmTransparency's serialized method byte. */
+function dwgTransparency(e: { transparency?: number; transparencyType?: number }, layer = false): TransparencySpec | undefined {
+  if (e.transparencyType === 0) return 'ByLayer';
+  if (e.transparencyType === 1) return 'ByBlock';
+  if (e.transparencyType === 3) return explicitAlpha(e.transparency);
+  if (e.transparencyType !== undefined) return undefined;
+  const serialized = transparencyFromDxf(e.transparency);
+  if (serialized !== undefined) return serialized;
+  // The installed layer converter omits alpha_type and layer XDATA. Its default zero
+  // is not evidence of a fully transparent layer; retain only an exposed nonzero alpha.
+  return layer && e.transparency !== 0 ? explicitAlpha(e.transparency) : undefined;
+}
+
+function baseProps(e: DwgEntity): import('../core/entities').EntityBase {
+  const out: { id: string; layer: string; color: ColorSpec; linetype?: string; lineWeight?: number; ltscale?: number; trueColor?: number; colorName?: string; transparency?: TransparencySpec } = { id: newId(), layer: e.layer || '0', color: color(e) };
   const tc = trueColorOf(e);
   if (tc !== undefined) out.trueColor = tc;
+  if (validColorName(e.colorName)) out.colorName = e.colorName;
+  const transparency = dwgTransparency(e);
+  if (transparency !== undefined && transparency !== 'ByLayer') out.transparency = transparency;
   if (e.lineType && !/^bylayer$/i.test(e.lineType)) out.linetype = e.lineType;
   const lw = lineweightMm(e.lineweight);
   if (lw !== undefined) out.lineWeight = lw;
@@ -513,7 +535,7 @@ export function convertHatchEntity(e: DwgEntity): HatchEntity | null {
   };
 }
 
-function convertLeader(l: DwgLeaderEntity, base: Base, dimStyle: DimStyle, annotation?: DwgEntity): LeaderEntity | null {
+function convertLeader(l: DwgLeaderEntity, base: Base, dimStyle: DimStyle, annotation?: DwgEntity, background?: MTextBackground): LeaderEntity | null {
   const verts = (l.vertices ?? []).map((q) => p2(q));
   if (verts.length < 2) return null;
   let vertices = verts;
@@ -535,6 +557,7 @@ function convertLeader(l: DwgLeaderEntity, base: Base, dimStyle: DimStyle, annot
   };
   if (annotation && annotation.type === 'MTEXT') {
     const m = annotation as DwgMTextEntity;
+    const appearance = baseProps(annotation) as Base & AttributeAppearance;
     const raw = m.text ?? '';
     const text = mtextFromDxf(raw);
     const rot = m.direction && (m.direction.x !== 0 || m.direction.y !== 0) ? Math.atan2(m.direction.y, m.direction.x) : m.rotation ?? 0;
@@ -545,6 +568,11 @@ function convertLeader(l: DwgLeaderEntity, base: Base, dimStyle: DimStyle, annot
       textPosition: p2(m.insertionPoint),
       textHeight: m.textHeight || out.textHeight,
       textAttachment: Math.max(1, Math.min(9, m.attachmentPoint ?? 1)) as MTextAttachment,
+      textLayer: m.layer || base.layer,
+      textAppearance: { color: appearance.color, ...(appearance.trueColor !== undefined ? { trueColor: appearance.trueColor } : {}), ...(appearance.colorName !== undefined ? { colorName: appearance.colorName } : {}), ...(appearance.transparency !== undefined ? { transparency: appearance.transparency } : {}) },
+      textLineSpacing: m.lineSpacing && m.lineSpacing > 0 ? m.lineSpacing : 1,
+      ...(background ? { textBackground: background } : {}),
+      ...((m.columnType === 1 || m.columnType === 2) && m.columnWidth > 0 && m.columnHeightCount > 0 && m.columnHeightCount <= 256 ? { textColumns: { type: m.columnType as 1 | 2, count: m.columnHeightCount, width: m.columnWidth, gutter: Math.max(0, m.columnGutter ?? 0), autoHeight: !!m.columnAutoHeight, reversed: !!m.columnFlowReversed, heights: (m.columnHeights ?? []).slice(0, m.columnHeightCount) } } : {}),
       ...(m.rectWidth && m.rectWidth > 0 ? { textWidth: m.rectWidth } : {}),
       ...(Math.abs(rot) > 1e-12 ? { textRotation: rot } : {}),
     };
@@ -667,6 +695,7 @@ function textWithField(text: string): { text: string; field?: FieldLink } {
 
 /** Lookups for entity types that refer to other objects (LEADER -> MTEXT, IMAGE -> IMAGEDEF). */
 interface ConvertExtras {
+  blockBasePoints?: ReadonlyMap<string, Point>;
   annotations: ReadonlyMap<string, DwgEntity>;
   imageDefs: ReadonlyMap<string, string>;
   notes: string[];
@@ -681,7 +710,9 @@ function convertEntity(e: DwgEntity, blockIndex: Map<string, string>, dimStyle: 
       return convertSpline(e as DwgSplineEntity, base);
     case 'LEADER': {
       const l = e as DwgLeaderEntity;
-      return convertLeader(l, base, dimStyle, l.associatedAnnotation ? extras?.annotations.get(String(l.associatedAnnotation).toUpperCase()) : undefined);
+      const annotation = l.associatedAnnotation ? extras?.annotations.get(String(l.associatedAnnotation).toUpperCase()) : undefined;
+      const converted = annotation?.type === 'MTEXT' ? convertEntity(annotation, blockIndex, dimStyle, blocks, extras) : undefined;
+      return convertLeader(l, base, dimStyle, annotation, converted?.type === 'mtext' ? converted.background : undefined);
     }
     case 'MULTILEADER':
       return convertMLeader(e as DwgMultiLeaderEntity, base, dimStyle, extras?.notes ?? []);
@@ -705,17 +736,17 @@ function convertEntity(e: DwgEntity, blockIndex: Map<string, string>, dimStyle: 
       if (verts.length === 0) return null;
       const closed = (pl.flag & 1) === 1;
       const cw = pl.constantWidth ?? 0;
-      if (closed && verts.length === 2 && cw > 0 && Math.abs(verts[0]!.bulge - 1) < 1e-6 && Math.abs(verts[1]!.bulge - 1) < 1e-6) {
+      const variable = verts.some((vertex) => vertex.startWidth !== undefined || vertex.endWidth !== undefined);
+      if (!variable && closed && verts.length === 2 && cw > 0 && Math.abs(verts[0]!.bulge - 1) < 1e-6 && Math.abs(verts[1]!.bulge - 1) < 1e-6) {
         const a = p2(verts[0]);
         const b = p2(verts[1]);
         return { ...base, type: 'circle', center: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, radius: Math.hypot(b.x - a.x, b.y - a.y) / 2 + cw / 2, filled: true };
       }
-      // Bulges are kept (the polyline entity carries arc segments); widths per vertex collapse to the constant width.
+      // Vertex widths are preserved independently; an explicit zero is not a missing width.
       const pts = verts.map((v) => p2(v));
       const bulges = verts.map((v) => v.bulge || 0);
       const hasBulge = bulges.some((b) => Math.abs(b) > 1e-12);
-      const width = cw > 0 ? cw : verts[0]?.startWidth && verts.every((v) => Math.abs((v.startWidth ?? 0) - (verts[0]!.startWidth ?? 0)) < 1e-9) ? verts[0]!.startWidth : 0;
-      return { ...base, type: 'polyline', points: pts, closed, bulges: hasBulge ? bulges : undefined, width: width && width > 0 ? width : undefined };
+      return { ...base, type: 'polyline', points: pts, closed, bulges: hasBulge ? bulges : undefined, ...(variable ? { widths: verts.map((v) => ({ start: v.startWidth ?? 0, end: v.endWidth ?? 0 })) } : { width: cw !== 0 ? cw : undefined }) };
     }
     case 'POLYLINE2D': {
       const pl = e as DwgPolyline2dEntity;
@@ -724,7 +755,8 @@ function convertEntity(e: DwgEntity, blockIndex: Map<string, string>, dimStyle: 
       const closed = (pl.flag & 1) === 1;
       const pts = verts.map((v) => p2(v));
       const bulges = verts.map((v) => v.bulge || 0);
-      return { ...base, type: 'polyline', points: pts, closed, bulges: bulges.some((b) => Math.abs(b) > 1e-12) ? bulges : undefined };
+      const widths = verts.map((v) => ({ start: v.startWidth ?? pl.startWidth ?? 0, end: v.endWidth ?? pl.endWidth ?? 0 }));
+      return { ...base, type: 'polyline', points: pts, closed, bulges: bulges.some((b) => Math.abs(b) > 1e-12) ? bulges : undefined, ...(widths.some((w) => w.start !== 0 || w.end !== 0) ? { widths } : {}) };
     }
     case 'POLYLINE3D': {
       // Flattened to its XY projection (reported as simplified by the caller).
@@ -735,17 +767,7 @@ function convertEntity(e: DwgEntity, blockIndex: Map<string, string>, dimStyle: 
     }
     case 'TEXT': {
       const t = e as DwgTextEntity;
-      const align = halign(t.halign);
-      const h = t.halign ?? 0;
-      const v = t.valign ?? 0;
-      // Alignment point applies for any non-default justification except Aligned/Fit (3/5), which keep the first point.
-      const useEnd = (h !== 0 || v !== 0) && h !== 3 && h !== 5 && t.endPoint && (t.endPoint.x !== 0 || t.endPoint.y !== 0);
-      const height = t.textHeight || 0.125;
-      const rotation = t.rotation ?? 0;
-      let position = useEnd ? p2(t.endPoint) : p2(t.startPoint);
-      const drop = v === 2 ? height / 2 : v === 3 ? height : 0;
-      if (drop) position = { x: position.x + Math.sin(rotation) * drop, y: position.y - Math.cos(rotation) * drop };
-      return { ...base, type: 'text', position, ...textWithField(t.text ?? ''), height, rotation, align, ...(t.styleName && !/^standard$/i.test(t.styleName) ? { style: t.styleName } : {}), ...(t.xScale && t.xScale !== 1 ? { widthFactor: t.xScale } : {}) };
+      return { ...base, type: 'text', ...dwgTextPlacement(t), ...textWithField(t.text ?? ''), rotation: t.rotation ?? 0 };
     }
     case 'MTEXT': {
       const m = e as DwgMTextEntity;
@@ -755,6 +777,31 @@ function convertEntity(e: DwgEntity, blockIndex: Map<string, string>, dimStyle: 
       const source = m.text ?? '';
       const raw = hasFields(source) ? evaluateFields(source, {}) : source;
       const plain = mtextFromDxf(raw);
+      let background: MTextBackground | undefined;
+      if (m.backgroundFill) {
+        const invalidFillScale = Boolean(m.backgroundFill & 3) && !(m.fillBoxScale >= 1 && m.fillBoxScale <= 5);
+        const cmc = invalidFillScale ? undefined : (m as DwgMTextEntity & { backgroundFillColorData?: { index?: number; rgb?: number; method?: number; name?: string; bookName?: string } }).backgroundFillColorData;
+        const rgb = cmc?.rgb ?? m.backgroundFillColor;
+        const method = cmc?.method ?? (typeof rgb === 'number' ? (rgb >>> 24) & 0xff : undefined);
+        // AutoCAD's independent seven-mask fixture proves C3 encodes ACI in low24,
+        // while C2 is RGB. The native palette lookup may overwrite C3's index with256.
+        const encodedIndex = method === 0xc3 && typeof rgb === 'number' ? rgb & 0xffffff : undefined;
+        const index = encodedIndex !== undefined && encodedIndex >= 0 && encodedIndex <= 255 ? encodedIndex : cmc?.index;
+        const name = cmc?.name ? (cmc.bookName ? `${cmc.bookName}$${cmc.name}` : cmc.name) : undefined;
+        background = {
+          flags: m.backgroundFill,
+          scale: invalidFillScale ? 1.5 : m.fillBoxScale || 1.5,
+          color: invalidFillScale ? 'ByLayer' : method === 0xc1 ? 0 : index !== undefined && index >= 0 && index < 256 ? index : 'ByLayer',
+          ...(!invalidFillScale && typeof rgb === 'number' && Number.isFinite(rgb) && (method === 0xc2 || (!cmc && rgb >= 0 && rgb <= 0xffffff)) ? { trueColor: rgb & 0xffffff } : {}),
+          ...(name ? { colorName: name } : {}),
+          ...(!invalidFillScale && m.backgroundFillTransparency !== undefined ? { transparency: m.backgroundFillTransparency } : {}),
+        };
+        if (invalidFillScale) extras?.notes.push('The DWG reader returned unusable MTEXT background scale/color metadata; the mask uses scale 1.5 and ByLayer color. Its original mask appearance may differ.');
+        else if ((m.backgroundFill & 3) && !cmc) extras?.notes.push('MTEXT background RGB is retained, but this reader payload omits the original ACI index and color-book name.');
+        if (cmc?.method !== undefined && ![0xc0, 0xc1, 0xc2, 0xc3].includes(cmc.method) && (m.backgroundFill & 3)) extras?.notes.push(`MTEXT background color method ${cmc.method} is not supported; its available color fields are used.`);
+        if (m.backgroundFill & ~19) extras?.notes.push('Unmodeled MTEXT background flag bits are retained but their effects are not drawn.');
+        if (!invalidFillScale && m.backgroundFillTransparency) extras?.notes.push('MTEXT background transparency is retained but not applied; native AutoCAD does not implement group 441.');
+      }
       return {
         ...base,
         type: 'mtext',
@@ -769,6 +816,7 @@ function convertEntity(e: DwgEntity, blockIndex: Map<string, string>, dimStyle: 
         lineSpacing: m.lineSpacing && m.lineSpacing > 0 ? m.lineSpacing : 1,
         ...(m.styleName && !/^standard$/i.test(m.styleName) ? { style: m.styleName } : {}),
         ...((m.columnType === 1 || m.columnType === 2) && m.columnWidth > 0 && m.columnHeightCount > 0 && m.columnHeightCount <= 256 ? { columns: { type: m.columnType as 1 | 2, count: m.columnHeightCount, width: m.columnWidth, gutter: Math.max(0, m.columnGutter ?? 0), autoHeight: !!m.columnAutoHeight, reversed: !!m.columnFlowReversed, heights: (m.columnHeights ?? []).slice(0, m.columnHeightCount) } } : {}),
+        ...(background ? { background } : {}),
       };
     }
     case 'ELLIPSE': {
@@ -827,41 +875,70 @@ function convertEntity(e: DwgEntity, blockIndex: Map<string, string>, dimStyle: 
       // An invisible ATTRIB whose ATTDEF is visible hides that attribute on this insert only.
       const def = blocks?.[name];
       const hiddenHere = def ? hidden.filter((t) => def.attributes.some((a) => a.tag === t && !a.invisible)) : [];
-      return {
+      const ins: InsertEntity = {
         ...base,
         type: 'insert',
         block: name,
         position: p2(i.insertionPoint),
         rotation: (i.rotation ?? 0) + insertScales(i.xScale ?? 1, (i as { yScale?: number }).yScale ?? i.xScale ?? 1).rotationOffset,
         ...insertScaleFields(i.xScale ?? 1, (i as { yScale?: number }).yScale ?? i.xScale ?? 1),
+        ...insertArrayFields(i.columnCount === 0 && !i.rowCount ? undefined : i.columnCount, i.rowCount === 0 && !i.columnCount ? undefined : i.rowCount, i.columnSpacing, i.rowSpacing, insertScales(i.xScale ?? 1, i.yScale ?? i.xScale ?? 1).rotationOffset),
         attributes: attrs,
         ...(hiddenHere.length ? { hiddenAttributes: hiddenHere } : {}),
       };
+      const basePoint = def?.basePoint ?? extras?.blockBasePoints?.get(name);
+      const placements: Record<string, TextPlacement & AttributeAppearance & { style?: string }> = {};
+      if (basePoint) for (const a of i.attribs ?? []) {
+        const tag = a.tag || a.attrTag;
+        const { id: _id, layer, ...appearance } = baseProps(a);
+        const placement = { ...appearance, ...(a.layer ? { layer } : {}), ...dwgTextPlacement(a.text, a.alignmentPoint) };
+        const problem = geometryProblem({ ...base, ...placement, rotation: placement.rotation ?? 0, type: 'text', text: a.text?.text ?? '' });
+        if (problem) extras?.notes.push(`ATTRIB ${tag}: invalid placement (${problem}); its value uses the definition's placement.`);
+        else {
+          const local = localAttributePlacement(ins, basePoint, placement);
+          const inverseProblem = geometryProblem({ ...base, ...local, rotation: local.rotation ?? 0, type: 'text', text: a.text?.text ?? '' });
+          if (inverseProblem) extras?.notes.push(`ATTRIB ${tag}: its placement cannot be represented in the insert's local coordinates (${inverseProblem}); its value uses the definition's placement.`);
+          else placements[tag] = local;
+        }
+      }
+      return Object.keys(placements).length ? { ...ins, attributePlacements: placements } : ins;
     }
     default:
       return null;
   }
 }
 
-function convertAttdef(a: DwgAttdefEntity): AttributeDef {
-  const t = a.text;
+function dwgTextPlacement(t: Partial<DwgTextEntity> | undefined, alignmentPoint?: { x: number; y: number }): TextPlacement & { style?: string } {
   const h = t?.halign ?? 0;
   const v = t?.valign ?? 0;
-  const useAlign = (h !== 0 || v !== 0) && h !== 3 && h !== 5 && a.alignmentPoint && (a.alignmentPoint.x !== 0 || a.alignmentPoint.y !== 0);
-  const height = t?.textHeight || 0.125;
-  let position = useAlign ? p2(a.alignmentPoint) : p2(t?.startPoint);
-  const drop = v === 2 ? height / 2 : v === 3 ? height : 0;
-  if (drop) position = { x: position.x, y: position.y - drop };
-  const rotation = t?.rotation ?? 0;
+  const second = alignmentPoint ?? t?.endPoint;
+  const first = p2(t?.startPoint);
+  const useSecond = (h !== 0 || v !== 0) && h !== 3 && h !== 5 && second !== undefined;
+  return {
+    position: useSecond ? p2(second) : first,
+    ...(useSecond ? { firstAlignmentPoint: first } : {}),
+    height: t?.textHeight ?? 0.125,
+    rotation: t?.rotation ?? 0,
+    align: halign(h),
+    ...(h !== 0 || v !== 0 ? { justification: textJustification(h, v) } : {}),
+    ...(second ? { alignmentPoint: p2(second) } : {}),
+    ...(t?.xScale !== undefined && t.xScale !== 1 ? { widthFactor: t.xScale } : {}),
+    ...(t?.obliqueAngle ? { oblique: t.obliqueAngle } : {}),
+    ...(t?.styleName && !/^standard$/i.test(t.styleName) ? { style: t.styleName } : {}),
+  };
+}
+
+function convertAttdef(a: DwgAttdefEntity): AttributeDef {
+  const t = a.text;
+  const { id: _id, layer, ...appearance } = baseProps(a);
   return {
     tag: a.tag || a.attrTag || 'ATTR',
     prompt: a.prompt ?? '',
     default: t?.text ?? '',
-    position,
-    height,
-    align: halign(h),
+    ...appearance,
+    ...(a.layer ? { layer } : {}),
+    ...dwgTextPlacement(t, a.alignmentPoint),
     invisible: ((a.flags ?? 0) & 1) === 1,
-    ...(Math.abs(rotation) > 1e-9 ? { rotation } : {}),
   };
 }
 
@@ -1111,7 +1188,7 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
     const unsupported = Object.entries(source).filter(([name, value]) => name.startsWith('DIM') && !supportedDimNames.has(name) && value !== '' && Number(value) !== 0).map(([name]) => name);
     if (unsupported.length) report.add({ type: source === payload.header ? 'HEADER' : 'DIMSTYLE', action: 'simplified', reason: `${unsupported.join(', ')} settings exposed by the DWG reader are not modeled or written back; supported dimension variables are kept` });
   }
-  report.add({ type: 'XDATA', action: 'unsupported', reason: 'the DWG reader may omit application XDATA, extension dictionaries, fields and dynamic parameters; these cannot be guaranteed on DXF save. Compare a source DXF export when metadata fidelity matters' });
+  report.add({ type: 'XDATA', action: 'unsupported', reason: 'the DWG reader may omit application XDATA (including layer transparency), the color-book portion of a color name, extension dictionaries, fields and dynamic parameters; these cannot be guaranteed on DXF save. Compare a source DXF export when metadata fidelity matters' });
   for (const [type, count] of Object.entries(payload.omittedObjectTypes ?? {})) if (count > 0) report.add({ type, action: 'dropped', reason: `${count} object metadata record(s) exposed by the DWG reader are not retained in the drawing model` });
   const currentStyleName = typeof payload.header.DIMSTYLE === 'string' ? payload.header.DIMSTYLE : 'Standard';
   const currentStyleRecord = payload.dimStyles?.find((s) => s.name.toUpperCase() === currentStyleName.toUpperCase());
@@ -1156,9 +1233,9 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
       const item = { type: e.type, ...(e.handle ? { handle: String(e.handle) } : {}), layer: e.layer || '0', where };
       for (const note of extras.notes.slice(previousNotes)) report.add({ ...item, action: 'simplified', reason: note });
       if (e.xdata) report.add({ ...item, action: 'simplified', reason: `application XDATA (${e.xdata.appName || 'unnamed'}) is not written back; supported DSTYLE values are applied to dimensions` });
-      if (e.transparency || e.colorName) report.add({ ...item, action: 'simplified', reason: 'transparency/color-book names are not kept; RGB/ACI color is kept' });
+      if ((e.transparency !== undefined || e.transparencyType !== undefined) && dwgTransparency(e) === undefined) report.add({ ...item, action: 'simplified', reason: 'invalid or unexposed DWG transparency method/alpha is not kept; ByLayer is used' });
+      if (e.colorName !== undefined && !validColorName(e.colorName)) report.add({ ...item, action: 'simplified', reason: 'invalid named/color-book identity is not kept; RGB/ACI color is kept' });
       if (c.type === 'mtext' && c.columns) report.add({ ...item, action: 'simplified', reason: 'MTEXT column definitions are kept in JCAD_MTEXT_COLUMNS for JCad reimport; external CAD displays one column in AutoCAD 2000 export' });
-      if (e.type === 'MTEXT' && (e as DwgMTextEntity).backgroundFill) report.add({ ...item, action: 'simplified', reason: 'MTEXT background fill is not kept' });
       if (e.type === 'POLYLINE3D') report.add({ type: e.type, action: 'simplified', reason: '3D polyline: flattened to its XY projection', ...(e.handle ? { handle: String(e.handle) } : {}), layer: e.layer || '0', where });
       return c;
     }
@@ -1191,7 +1268,7 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
   const noteSet = new Set<string>();
   const extrasFor = (list: readonly DwgEntity[]): ConvertExtras & { consumed: Set<DwgEntity> } => {
     const annotations = annotationsOf(list);
-    return { annotations, imageDefs, notes: [], consumed: new Set(annotations.values()), dimStyles };
+    return { annotations, imageDefs, notes: [], consumed: new Set(annotations.values()), dimStyles, blockBasePoints: new Map(payload.blocks.map((b) => [publicName(b.name), p2(b.basePoint)])) };
   };
   /** HATCH: a real hatch entity; outline polylines when the boundary cannot be rebuilt. */
   const hatchOf = (e: DwgEntity, where: string): { parts: Entity[]; reason?: string } => {
@@ -1226,7 +1303,10 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
     for (const e of b.entities) {
       if (bx.consumed.has(e)) continue;
       if (e.type === 'ATTDEF') {
-        attributes.push(convertAttdef(e as DwgAttdefEntity));
+        const definition = convertAttdef(e as DwgAttdefEntity);
+        const problem = geometryProblem({ ...definition, id: 'attribute', type: 'text', layer: e.layer || '0', color: 'ByLayer', text: definition.default, rotation: definition.rotation ?? 0 });
+        if (problem) skip(e, `block "${b.name}"`, `invalid attribute placement: ${problem}`);
+        else attributes.push(definition);
         continue;
       }
       if (e.type === 'HATCH') {
@@ -1369,6 +1449,8 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
       // colorIndex 256 marks a true-colour layer (its RGB in `color`); 7 is the ACI shown by older readers.
       color: Math.abs(l.colorIndex) >= 1 && Math.abs(l.colorIndex) <= 255 ? Math.abs(l.colorIndex) : 7,
       ...(l.colorIndex === 256 && typeof l.color === 'number' ? { trueColor: l.color & 0xffffff } : {}),
+      ...(validColorName(l.colorName) ? { colorName: l.colorName } : {}),
+      ...(dwgTransparency(l, true) !== undefined && dwgTransparency(l, true) !== 'ByLayer' ? { transparency: dwgTransparency(l, true) } : {}),
       visible: !l.off && !l.frozen,
       ...(l.frozen ? { frozen: true } : {}),
       ...((l.standardFlag ?? 0) & 48 ? { xrefFlags: (l.standardFlag ?? 0) & 48 } : {}),
@@ -1384,8 +1466,9 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
     }
   };
   ensure('0');
-  for (const e of entities) ensure(e.layer);
-  for (const b of Object.values(blocks)) for (const e of b.entities) ensure(e.layer);
+  const ensureEntityLayers = (e: Entity) => { ensure(e.layer); if (e.type === 'leader' && e.textLayer) ensure(e.textLayer); };
+  for (const e of entities) ensureEntityLayers(e);
+  for (const b of Object.values(blocks)) for (const e of b.entities) ensureEntityLayers(e);
 
   const rawClayer = typeof payload.header.CLAYER === 'string' ? payload.header.CLAYER : '0';
   const currentLayer =
@@ -1401,7 +1484,7 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
     report,
   );
   for (const l of layouts ?? []) {
-    for (const e of l.entities) ensure(e.layer);
+    for (const e of l.entities) ensureEntityLayers(e);
     for (const v of l.viewports) ensure(v.layer);
   }
   // Blocks that insert themselves or multiply into millions of objects (E-13).

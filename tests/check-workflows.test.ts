@@ -30,6 +30,24 @@ function withRelease(edit: (text: string) => string): string {
   return dir;
 }
 
+type SmokeRow = { os: string; arch: string; artifact: string };
+type SmokeJob = {
+  if?: string | boolean;
+  'runs-on': string;
+  'timeout-minutes': number;
+  needs: string[];
+  strategy: { matrix: { include: SmokeRow[]; exclude?: SmokeRow[] } };
+  steps: { if?: string | boolean; run?: string; uses?: string; env?: Record<string, string | number>; with?: Record<string, string> }[];
+};
+
+function withSmoke(edit: (job: SmokeJob) => void): string {
+  return withRelease((text) => {
+    const workflow = yaml.load(text) as { jobs: { 'packaged-smoke': SmokeJob } };
+    edit(workflow.jobs['packaged-smoke']);
+    return yaml.dump(workflow);
+  });
+}
+
 describe('workflow validation', () => {
   it('accepts the repository workflows', () => {
     const r = check();
@@ -142,6 +160,80 @@ describe('workflow validation', () => {
     const r = check(withRelease((t) => t.replace('# The application comes from the installer; stock Electron seeds the legacy origin test profile.\n      - run: npm ci\n        env:\n', '# The application comes from the installer; stock Electron seeds the legacy origin test profile.\n      - run: npm ci\n        env:\n          ELECTRON_SKIP_BINARY_DOWNLOAD: 1\n')));
     expect(r.code).toBe(1);
     expect(r.out).toMatch(/needs the stock Electron binary for legacy seeding/);
+  });
+
+  it('requires both native Mac architectures against the same signed artifact without extending smoke deadlines', () => {
+    const workflow = yaml.load(readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')) as { jobs: { 'packaged-smoke': SmokeJob; release: { needs: string[] } } };
+    const smoke = workflow.jobs['packaged-smoke'];
+    expect(smoke.strategy.matrix.include).toEqual([
+      { os: 'windows-latest', arch: 'x64', artifact: 'JCad-Electrical-Windows' },
+      { os: 'macos-15', arch: 'arm64', artifact: 'JCad-Electrical-macOS' },
+      { os: 'macos-15-intel', arch: 'x64', artifact: 'JCad-Electrical-macOS' },
+      { os: 'ubuntu-latest', arch: 'x64', artifact: 'JCad-Electrical-Linux' },
+    ]);
+    expect(smoke['runs-on']).toBe('${{ matrix.os }}');
+    expect(smoke['timeout-minutes']).toBe(30);
+    expect(smoke.if).toBeUndefined();
+    expect(smoke.steps.find((step) => step.uses?.startsWith('actions/download-artifact'))?.with?.name).toBe('${{ matrix.artifact }}');
+    for (const step of smoke.steps.filter((entry) => entry.run?.includes('scripts/packaged-smoke.mjs'))) {
+      expect(String(step.env?.JCAD_SMOKE_REQUIRE_SHIPPING)).toBe('1');
+      expect(String(step.env?.JCAD_SMOKE_NATIVE_ONLY)).toBe('1');
+      expect(step.env?.JCAD_SMOKE_EXPECT_ARCH).toBe('${{ matrix.arch }}');
+    }
+    expect(workflow.jobs.release.needs).toContain('packaged-smoke');
+  });
+
+  it.each(['macos-15', 'macos-15-intel'])('rejects removing the mandatory %s packaged smoke entry', (os) => {
+    const r = check(withSmoke((job) => { job.strategy.matrix.include = job.strategy.matrix.include.filter((row) => row.os !== os); }));
+    expect(r.code).toBe(1);
+    expect(r.out).toContain(`packaged-smoke must test ${os}/`);
+  });
+
+  it.each(['runner', 'architecture', 'artifact'])('rejects substituting the native Intel smoke %s', (field) => {
+    const r = check(withSmoke((job) => {
+      const intel = job.strategy.matrix.include.find((row) => row.os === 'macos-15-intel')!;
+      if (field === 'runner') intel.os = 'macos-15';
+      else if (field === 'architecture') intel.arch = 'arm64';
+      else intel.artifact = 'JCad-Electrical-Windows';
+    }));
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('packaged-smoke must test macos-15-intel/x64 with JCad-Electrical-macOS exactly once');
+  });
+
+  it.each(['job condition', 'matrix exclusion', 'runner override'])('rejects bypassing the native smoke matrix through a %s', (change) => {
+    const r = check(withSmoke((job) => {
+      if (change === 'job condition') job.if = false;
+      else if (change === 'matrix exclusion') job.strategy.matrix.exclude = [{ ...job.strategy.matrix.include[2]! }];
+      else job['runs-on'] = 'macos-15';
+    }));
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/all native packaged smoke matrix entries must run unconditionally on their specified runner/);
+  });
+
+  it.each(['native only', 'expected architecture'])('rejects removing the runtime %s assertion', (change) => {
+    const r = check(withSmoke((job) => {
+      const step = job.steps.find((entry) => entry.run === 'node scripts/packaged-smoke.mjs installers')!;
+      if (change === 'native only') delete step.env!.JCAD_SMOKE_NATIVE_ONLY;
+      else step.env!.JCAD_SMOKE_EXPECT_ARCH = 'x64';
+    }));
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/packaged smoke must require native installers and assert the matrix architecture/);
+  });
+
+  it('rejects skipping the Windows and native Mac runtime smoke step', () => {
+    const r = check(withSmoke((job) => { job.steps.find((entry) => entry.run === 'node scripts/packaged-smoke.mjs installers')!.if = false; }));
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/packaged smoke must run for both Linux and Windows\/macOS runners/);
+  });
+
+  it.each(['wrong artifact', 'conditional download'])('rejects a %s for packaged smoke', (change) => {
+    const r = check(withSmoke((job) => {
+      const step = job.steps.find((entry) => entry.uses?.startsWith('actions/download-artifact'))!;
+      if (change === 'wrong artifact') step.with!.name = 'JCad-Electrical-Windows';
+      else step.if = false;
+    }));
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/packaged smoke must download its matrix artifact unconditionally into installers/);
   });
 
   it('keeps publication disabled for empty-tag dispatches while aggregate verification is unconditional', () => {

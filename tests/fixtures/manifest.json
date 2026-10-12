@@ -2,6 +2,10 @@
   "schemaVersion": 1,
   "description": "Required committed regression inputs. Optional private customer files and external AutoCAD results are deliberately outside this inventory.",
   "files": [
+    "tests/fixtures/interchange/r2018-mtext-background.dxf",
+    "tests/fixtures/interchange/r2018-mtext-background.dwg",
+    "tests/fixtures/interchange/r2018-mtext-background.expected.json",
+    "tests/fixtures/interchange/r2000-text-justification.dxf",
     "fixtures/example_2000.dwg",
     "fixtures/example_2000.dxf",
     "fixtures/example_2004.dwg",
@@ -19,6 +23,7 @@
     "tests/fixtures/acad-table.dxf",
     "tests/fixtures/all-entities.dxf",
     "tests/fixtures/block-colors.dxf",
+    "tests/fixtures/interchange/r2010-appearance.dxf",
     "tests/fixtures/broken/bad-geometry.dxf",
     "tests/fixtures/broken/bad-groupcode.dxf",
     "tests/fixtures/broken/missing-eof.dxf",
@@ -30,6 +35,8 @@
     "tests/fixtures/insert-scales.dxf",
     "tests/fixtures/interchange-reference.dxf",
     "tests/fixtures/interchange/r2000-dimensions.dxf",
+    "tests/fixtures/interchange/r2018-minsert.dwg",
+    "tests/fixtures/interchange/r2018-minsert.dxf",
     "tests/fixtures/interchange/r2000-hatch-curves.dxf",
     "tests/fixtures/interchange/r2000-layouts-titleblock.dxf",
     "tests/fixtures/interchange/r2000-nested-blocks-xref.dxf",
@@ -38,6 +45,7 @@
     "tests/fixtures/interchange/r2018-mtext.dxf",
     "tests/fixtures/interchange/r2018-table.dxf",
     "tests/fixtures/interchange/r2018-truecolor-linetypes.dxf",
-    "tests/fixtures/unsupported-content.dxf"
+    "tests/fixtures/unsupported-content.dxf",
+    "tests/fixtures/polyline-widths.dxf"
   ]
 }

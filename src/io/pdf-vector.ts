@@ -12,7 +12,7 @@
  * Pure module: `plotPages` turns a drawing into page specs, `vectorPdf` writes them. The
  * editor supplies image bitmaps and saves the bytes (src/app/editor/plotting.ts plotOrPrint).
  */
-import type { Entity, Layer, BlockLookup, TextEntity, PolylineEntity, InsertEntity, ImageEntity, HatchEntity, EllipseEntity } from '../core/entities';
+import type { Entity, Layer, BlockLookup, TextEntity, MTextEntity, PolylineEntity, InsertEntity, ImageEntity, HatchEntity, EllipseEntity } from '../core/entities';
 import {
   explodeInsert,
   entityBounds,
@@ -20,6 +20,7 @@ import {
   dimensionParts,
   mtextParts,
   mtextDecorations,
+  mtextMasks,
   ellipseSweep,
   isFullEllipse,
   splinePoints,
@@ -32,8 +33,11 @@ import {
 } from '../core/entities';
 import type { Point, Bounds } from '../core/geometry';
 import * as g from '../core/geometry';
+import { polylineWidthGeometry, strokeOutlinePolygons } from '../core/polyline-widths';
 import { aciToCss } from '../render/palette';
-import { strokeText, expandControlCodes, textRenderer, CAP_HEIGHT_EM } from '../render/hershey';
+import { strokeText, strokeTextWidth, expandControlCodes, textRenderer, CAP_HEIGHT_EM } from '../render/hershey';
+import { placedText } from '../core/text-placement';
+import { hasMTextFill, hasMTextFrame } from '../core/mtext-background';
 import { findLinetype, effectiveLinetype, isByBlock, type Linetype } from '../core/linetypes';
 import type { TextStyle } from './encoding';
 import { textStyleOf, textStylesOf } from './encoding';
@@ -53,6 +57,7 @@ import {
 } from '../core/layouts';
 import { layoutPage, type PlotOptions } from '../app/plot';
 import type { DrawingState } from '../core/document';
+import { resolveAlpha } from '../core/appearance';
 
 // ---------------------------------------------------------------- page model
 
@@ -314,11 +319,21 @@ interface ImageRes {
   data: PdfImageData;
 }
 
+interface VectorForm {
+  name: string;
+  content: string;
+  width: number;
+  height: number;
+}
+
 /** Content stream builder for one page. */
 class PageWriter {
   readonly ops: string[] = [];
   readonly images: ImageRes[] = [];
   readonly fonts = new Set<'F1' | 'F2'>();
+  readonly forms: VectorForm[] = [];
+  readonly alphas = new Set<number>();
+  private alpha = 255;
   private stroke = '';
   private fill = '';
   private width = '';
@@ -338,6 +353,7 @@ class PageWriter {
     this.fill = '';
     this.width = '';
     this.dash = '';
+    this.alpha = 255;
   }
 
   private P(p: Point): string {
@@ -378,6 +394,7 @@ class PageWriter {
       this.ops.push('q');
       this.resetState();
       this.setStroke(plotColor(objectRgb('ByLayer', undefined, layer), this.style));
+      this.setAlpha(resolveAlpha({ layer: f.layer }, this.ctx.layers));
       this.setWidth(this.style.lineweights ? mmToPt(layer?.lineWeight ?? 0.25) : 0);
       this.ops.push(`${n(f.x)} ${n(f.y)} ${n(f.w)} ${n(f.h)} re S`);
       this.pathOps += 1;
@@ -420,12 +437,21 @@ class PageWriter {
     }
   }
 
+  private setAlpha(alpha: number): void {
+    const byte = Math.round(alpha * 255);
+    if (byte === this.alpha) return;
+    this.alphas.add(byte);
+    this.ops.push(`/A${byte} gs`);
+    this.alpha = byte;
+  }
+
   // ---- entity properties (ByLayer / ByBlock resolved against the parent insert)
   private layer(name: string): Layer | undefined {
     return this.ctx.layers.find((l) => l.name === name);
   }
 
   private applyStyle(e: Entity, parent: InsertEntity | null): void {
+    this.setAlpha(resolveAlpha(e, this.ctx.layers));
     const layer = this.layer(e.layer);
     // Block content arrives resolved from explodeInsert (core/entities.ts inheritedColor): ByBlock
     // objects carry the reference's colour, or `colorLayer` (the reference's layer) when it is ByLayer.
@@ -486,7 +512,7 @@ class PageWriter {
         break;
       }
       case 'polyline':
-        this.polyline(e);
+        this.polyline(e, this.alpha);
         break;
       case 'ellipse':
         this.ellipse(e);
@@ -500,13 +526,14 @@ class PageWriter {
         this.text(e);
         break;
       case 'mtext':
+        this.mtextBackground(e);
         this.parts([...mtextParts(e), ...mtextDecorations(e)], e, parent, view);
         break;
       case 'dimension':
         this.parts(dimensionParts(e), e, parent, view);
         break;
       case 'leader':
-        this.parts(leaderParts(e), e, parent, view);
+        for (const part of leaderParts(e)) if (!this.group?.hidden.has(part.layer)) this.entity(part, parent, view);
         break;
       case 'table':
         this.parts(tableParts(e), e, parent, view);
@@ -558,6 +585,19 @@ class PageWriter {
     }
   }
 
+  private mtextBackground(e: MTextEntity): void {
+    const bg = e.background;
+    if (!bg) return;
+    const masks = mtextMasks(e);
+    if (!masks.length) return;
+    // The drawing-window mask becomes white paper, including under monochrome plotting.
+    const rgb: [number, number, number] = bg.flags & 2 ? [1, 1, 1] : plotColor(objectRgb(bg.color, bg.trueColor, this.layer(bg.colorLayer ?? e.layer)), this.style);
+    this.ops.push(`q ${rgbOp(rgb, 'rg')}`);
+    const paint = hasMTextFill(e) ? (hasMTextFrame(e) ? 'B' : 'f') : 'S';
+    for (const mask of masks) this.polyPath(mask, true, paint);
+    this.ops.push('Q');
+  }
+
   private polyPath(pts: readonly Point[], closed: boolean, paint: string): void {
     const parts = [`${this.P(pts[0]!)} m`];
     for (let i = 1; i < pts.length; i += 1) parts.push(`${this.P(pts[i]!)} l`);
@@ -567,8 +607,57 @@ class PageWriter {
     this.pathOps += 1;
   }
 
-  private polyline(e: PolylineEntity): void {
+  private compoundPath(paths: readonly (readonly Point[])[], closed: boolean, paint: string): void {
+    const parts: string[] = [];
+    for (const pts of paths) {
+      if (!pts.length) continue;
+      parts.push(`${this.P(pts[0]!)} m`);
+      for (let i = 1; i < pts.length; i++) parts.push(`${this.P(pts[i]!)} l`);
+      if (closed) parts.push('h');
+    }
+    if (!parts.length) return;
+    this.ops.push(`${parts.join(' ')} ${paint}`);
+    this.pathOps += 1;
+  }
+
+  private polyline(e: PolylineEntity, opacityByte = 255): void {
     if (e.points.length === 0) return;
+    if ((e.widths || e.widthFrame) && !e.filled) {
+      const geometry = polylineWidthGeometry(e);
+      const dashed = this.dash && this.dash !== '[] 0 d';
+      if (!geometry.polygons.length) {
+        this.compoundPath(geometry.thin, false, 'S');
+        return;
+      }
+      const thinWidth = Number.parseFloat(this.width) / this.tf.k;
+      const polygons = [...geometry.polygons, ...strokeOutlinePolygons(geometry.thin, thinWidth)];
+      const isolate = opacityByte < 255 && ((dashed && geometry.strokes.length + Number(geometry.thin.length > 0) > 1) || (!thinWidth && geometry.thin.length > 0));
+      const groupStart = this.ops.length;
+      if (dashed) {
+        // Keep each varying-width segment's own mask. A global maximum-width mask can
+        // paint into a nearby segment's gap, even with a compound clip.
+        for (const { polygon, spines } of geometry.strokes) {
+          this.ops.push('q');
+          this.polyPath(polygon, true, 'W n');
+          this.ops.push(`${n(Math.min(Number.MAX_VALUE, geometry.maxWidth * this.tf.k))} w`);
+          this.compoundPath(spines, false, 'S');
+          this.ops.push('Q');
+        }
+        this.compoundPath(geometry.thin, false, 'S');
+      } else this.compoundPath(polygons, true, 'f');
+      // A PDF hairline has device-dependent width. The colors integration isolates
+      // this mixed case in a vector transparency group instead of inventing a width.
+      if (!dashed && !thinWidth) this.compoundPath(geometry.thin, false, 'S');
+      if (isolate) {
+        if (![this.page.width, this.page.height].every((size) => Number.isFinite(size) && size > 0 && size <= 14400)) throw new Error('Translucent polyline exceeds the bounded PDF page area.');
+        const body = this.ops.splice(groupStart).join('\n');
+        if (body.length > 64 * 1024 * 1024) throw new Error('Translucent polyline exceeds the PDF form work budget.');
+        const name = `Wide${this.forms.length}`;
+        this.forms.push({ name, width: this.page.width, height: this.page.height, content: `q /Opaque gs ${this.stroke} ${this.fill} ${this.width} ${this.dash}\n${body}\nQ` });
+        this.ops.push(`/${name} Do`);
+      }
+      return;
+    }
     this.ops.push(`${this.P(e.points[0]!)} m`);
     for (const s of polylineSegments(e)) {
       // Bulge arcs from vertex a to b with the signed included angle (negative = clockwise).
@@ -660,7 +749,9 @@ class PageWriter {
     const text = expandControlCodes(raw);
     if (!text.trim()) return;
     const r = textRenderer(textStyleOf(e), this.ctx.textStyles);
-    const wf = (e.widthFactor && e.widthFactor > 0 ? e.widthFactor : 1) * r.widthFactor;
+    const initialWidthFactor = (e.widthFactor && e.widthFactor > 0 ? e.widthFactor : 1) * r.widthFactor;
+    e = placedText({ ...e, widthFactor: initialWidthFactor }, r.kind === 'canvas' && isWinAnsi(text) ? (_text, height) => helveticaWidth(text, r.bold || !!e.bold) * height / CAP_HEIGHT_EM : strokeTextWidth);
+    const wf = e.widthFactor ?? 1;
     const oblique = e.oblique ?? r.oblique;
     const slant = oblique ? Math.tan(oblique) : 0;
     if (r.kind === 'canvas' && isWinAnsi(text)) {
@@ -749,6 +840,10 @@ export interface RenderedPage {
   content: string;
   images: ImageRes[];
   fonts: ReadonlySet<'F1' | 'F2'>;
+  /** Isolated vector paint groups for translucent dash masks and mixed device hairlines. */
+  forms?: readonly VectorForm[];
+  /** ExtGState opacity bytes used by both strokes and fills. */
+  alphas?: ReadonlySet<number>;
   pathOps: number;
 }
 
@@ -757,7 +852,7 @@ export function renderPdfPages(pages: readonly PdfPageSpec[], ctx: PdfDrawingCon
   return pages.map((page) => {
     const w = new PageWriter(ctx, style, page);
     w.run();
-    return { width: page.width, height: page.height, content: w.ops.join('\n'), images: w.images, fonts: w.fonts, pathOps: w.pathOps };
+    return { width: page.width, height: page.height, content: w.ops.join('\n'), images: w.images, fonts: w.fonts, forms: w.forms, alphas: w.alphas, pathOps: w.pathOps };
   });
 }
 
@@ -793,8 +888,22 @@ export function assembleVectorPdf(rendered: readonly RenderedPage[], title = 'Dr
       set(num, [enc.encode(`<< /Type /XObject /Subtype /Image /Width ${d.width} /Height ${d.height} /ColorSpace /DeviceRGB /BitsPerComponent 8${filter} /Length ${d.data.length} >>\nstream\n`), d.data, enc.encode('\nendstream')]);
       xobjects.push(`/${im.name} ${num} 0 R`);
     }
+    if (pg.forms?.length) {
+      const opaque = reserve();
+      set(opaque, '<< /Type /ExtGState /CA 1 /ca 1 /BM /Normal >>');
+      for (const form of pg.forms) {
+        const num = reserve(), data = enc.encode(form.content);
+        set(num, [enc.encode(`<< /Type /XObject /Subtype /Form /FormType 1 /BBox [0 0 ${n(form.width)} ${n(form.height)}] /Group << /S /Transparency /I true /CS /DeviceRGB >> /Resources << /ExtGState << /Opaque ${opaque} 0 R >> >> /Length ${data.length} >>\nstream\n`), data, enc.encode('\nendstream')]);
+        xobjects.push(`/${form.name} ${num} 0 R`);
+      }
+    }
     const fonts = [...pg.fonts].map((f) => `/${f} ${f === 'F1' ? f1 : f2} 0 R`);
-    const res = `<< /ProcSet [/PDF /Text /ImageC]${fonts.length ? ` /Font << ${fonts.join(' ')} >>` : ''}${xobjects.length ? ` /XObject << ${xobjects.join(' ')} >>` : ''} >>`;
+    const alphaResources = [...(pg.alphas ?? [])].map((alpha) => {
+      const num = reserve();
+      set(num, `<< /Type /ExtGState /CA ${n(alpha / 255)} /ca ${n(alpha / 255)} /BM /Normal >>`);
+      return `/A${alpha} ${num} 0 R`;
+    });
+    const res = `<< /ProcSet [/PDF /Text /ImageC]${fonts.length ? ` /Font << ${fonts.join(' ')} >>` : ''}${xobjects.length ? ` /XObject << ${xobjects.join(' ')} >>` : ''}${alphaResources.length ? ` /ExtGState << ${alphaResources.join(' ')} >>` : ''} >>`;
     set(pageNum, `<< /Type /Page /Parent ${pagesObj} 0 R /MediaBox [0 0 ${n(pg.width)} ${n(pg.height)}] /Resources ${res} /Contents ${contentNum} 0 R >>`);
     const packed = compressed?.[i] ?? null;
     const body = packed ?? enc.encode(pg.content);

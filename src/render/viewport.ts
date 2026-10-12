@@ -320,6 +320,7 @@ export class Viewport {
     setTextStyles(textStylesOf(this.doc.snapshot));
     // Model tab: annotative objects at 1 / CANNOSCALE; a layout painter sets its own (Track E).
     colorDisplay.paper = !!this.layoutPainter;
+    colorDisplay.background = this.settings.background;
     annotationDisplay.factor = 1 / cannoscaleValue(header.cannoscale);
     annotationDisplay.hide = false;
 

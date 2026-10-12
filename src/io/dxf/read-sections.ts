@@ -8,7 +8,8 @@
 import type { Pair, Obj } from './groups';
 import type { ReadContext } from './read-core';
 import { isRealCode, isRealText, isIntCode, PRECISION_NAMES, SUPPORTED_DIM_NAMES, PRECISION_CODES, isQuietXdataApp, UNSUPPORTED_DIM_CODES } from './codes';
-import { isIntegerText, DxfReadError, shortText, invalidPrecision, precisionRequirement, str, num, has, int, pt } from './groups';
+import { isIntegerText, DxfReadError, shortText, invalidPrecision, precisionRequirement, str, num, has, int, pt, xdata } from './groups';
+import { LAYER_TRANSPARENCY_APP, transparencyFromDxf, validColorName } from '../../core/appearance';
 import { dimStyleFromHeader, readDimStyleRecord } from './dimstyles';
 import { STANDARD_DIMSTYLE } from '../../core/dimension';
 import { julianToDate } from '../../core/fields';
@@ -28,6 +29,9 @@ import { DEFAULT_HEADER } from '../../core/document';
 import type { LinearUnits } from '../../core/units';
 import { isScaleName } from '../../core/layouts';
 import type { TextStyle } from '../encoding';
+import { readTextPlacement } from './read-text';
+import { geometryProblem } from '../import-report';
+import { commonProps } from './read-core';
 
 export function readHeaderSection(pairs: Pair[], from: number, to: number, headerVars: Map<string, Pair[]>, ctx: ReadContext): string {
   let cur: Pair[] | null = null;
@@ -75,8 +79,15 @@ export function readTablesSection(objs: Obj[], tables: TableRecords, dimStyles: 
       const flags = Math.trunc(num(o, 70));
       const lt = str(o, 6);
       const tc = has(o, 420) ? Math.trunc(num(o, 420)) : NaN;
+      const transparencyApp = o.groups.find((q) => q.code === 1001 && q.value.toLowerCase() === LAYER_TRANSPARENCY_APP.toLowerCase())?.value;
+      const transparencyValue = transparencyApp ? xdata(o, transparencyApp)?.filter((q) => q.code === 1071).at(-1)?.value : undefined;
+      const rawTransparency = transparencyValue !== undefined ? Number(transparencyValue) : has(o, 440) ? num(o, 440) : undefined;
+      const transparency = transparencyFromDxf(rawTransparency);
+      const colorName = str(o, 430);
       layers.push({
         ...(Number.isFinite(tc) ? { trueColor: tc & 0xffffff } : {}),
+        ...(transparency !== undefined ? { transparency } : {}),
+        ...(validColorName(colorName) ? { colorName } : {}),
         name: name2,
         color: Math.abs(c) || 7,
         visible: c >= 0 && (flags & 1) === 0, // negative colour = off, flag 1 = frozen
@@ -88,8 +99,10 @@ export function readTablesSection(objs: Obj[], tables: TableRecords, dimStyles: 
         ...(has(o, 290) && num(o, 290) === 0 ? { plot: false } : {}),
         linetype: lt && lt.toUpperCase() !== 'CONTINUOUS' ? lt : undefined,
       });
-      const apps = o.groups.filter((q) => q.code === 1001 && !isQuietXdataApp(q.value)).map((q) => q.value);
-      if (apps.length || has(o, 440)) report.add({ type: 'LAYER', action: 'simplified', reason: `layer transparency/extended metadata${apps.length ? ` (${[...new Set(apps)].join(', ')})` : ''} is not kept`, ...(o.line ? { line: o.line } : {}) });
+      const apps = o.groups.filter((q) => q.code === 1001 && !isQuietXdataApp(q.value) && q.value !== transparencyApp).map((q) => q.value);
+      if (apps.length) report.add({ type: 'LAYER', action: 'simplified', reason: `layer extended metadata (${[...new Set(apps)].join(', ')}) is not kept`, ...(o.line ? { line: o.line } : {}) });
+      if ((rawTransparency !== undefined || transparencyApp) && transparency === undefined) report.add({ type: 'LAYER', action: 'simplified', reason: 'invalid layer transparency is not kept; opaque is used', line: o.line });
+      if (has(o, 430) && !validColorName(colorName)) report.add({ type: 'LAYER', action: 'simplified', reason: 'invalid named/color-book identity is not kept; RGB/ACI color is kept', line: o.line });
     } else if (o.kind === 'LTYPE') {
       const ltName = str(o, 2);
       if (!ltName || /^(BYLAYER|BYBLOCK|CONTINUOUS)$/i.test(ltName)) continue;
@@ -134,23 +147,23 @@ export function readBlocksSection(objs: Obj[], blocks: Record<string, BlockDef>,
     const inner = objs.slice(k + 1, m);
     const attributes: AttributeDefExt[] = inner
       .filter((x) => x.kind === 'ATTDEF')
-      .map((x) => {
-        const h = num(x, 72, 0);
-        const align: 'left' | 'center' | 'right' = h === 1 || h === 4 ? 'center' : h === 2 ? 'right' : 'left';
-        const useAlignPt = h !== 0 && has(x, 11);
-        const rotation = g.rad(num(x, 50, 0));
-        return {
+      .flatMap((x) => {
+        const { id: _id, layer, ...appearance } = commonProps(x);
+        const placement = { ...appearance, ...(has(x, 8) ? { layer } : {}), ...readTextPlacement(x, 74) };
+        const problem = geometryProblem({ ...placement, id: 'attribute', type: 'text', layer: str(x, 8, '0'), color: 'ByLayer', text: str(x, 1) });
+        if (problem) {
+          ctx.report?.add({ type: 'ATTDEF', action: 'dropped', reason: `invalid attribute placement: ${problem}`, where: `block "${str(o, 2)}"`, ...(has(x, 5) ? { handle: str(x, 5) } : {}) });
+          return [];
+        }
+        return [{
           tag: str(x, 2),
           prompt: str(x, 3),
           default: str(x, 1),
-          position: useAlignPt ? { x: num(x, 11), y: num(x, 21) } : { x: num(x, 10), y: num(x, 20) },
-          height: num(x, 40, 0.125),
-          align,
+          ...placement,
           invisible: (Math.trunc(num(x, 70)) & 1) === 1,
           // constant / verify / preset (bits 2, 4, 8)
           ...attdefFlagProps(Math.trunc(num(x, 70))),
-          ...(Math.abs(rotation) > 1e-9 ? { rotation } : {}),
-        };
+        }];
       });
     const bname = str(o, 2);
     const anonymousLayout = /^\*(MODEL_SPACE|PAPER_SPACE)/i.test(bname);

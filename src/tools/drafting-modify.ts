@@ -855,7 +855,7 @@ export function alignTool(): Tool {
 // ------------------------------------------------------------------ MATCHPROP
 
 export function matchProperties(source: Entity, target: Entity): Entity {
-  let out: Entity = { ...target, layer: source.layer, color: source.color, linetype: source.linetype, lineWeight: source.lineWeight, ltscale: source.ltscale };
+  let out: Entity = { ...target, layer: source.layer, color: source.color, trueColor: source.trueColor, colorName: source.colorName, colorLayer: source.colorLayer, transparency: source.transparency, transparencyLayer: source.transparencyLayer, linetype: source.linetype, lineWeight: source.lineWeight, ltscale: source.ltscale };
   if (source.type === 'text' && out.type === 'text') out = { ...out, height: source.height };
   if (source.type === 'mtext' && out.type === 'mtext') out = { ...out, height: source.height, lineSpacing: source.lineSpacing };
   if (source.type === 'text' && out.type === 'mtext') out = { ...out, height: source.height };

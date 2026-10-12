@@ -25,7 +25,7 @@ function registerUpdatesIpc(ctx) {
    * after the URL is parsed (electron/ipc-guard.cjs externalUrl); the normalised URL is opened.
    */
   ipcMain.handle('open-external', async (_ev, url) => {
-    const u = externalUrl(url);
+    const u = externalUrl(url, { supportEmail: true });
     if (!u) {
       rejections.reject('open-external', `not an allowed link: ${String(url).slice(0, 300)}`);
       return false;

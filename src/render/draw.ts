@@ -6,6 +6,7 @@ import {
   dimensionParts,
   mtextParts,
   mtextDecorations,
+  mtextMasks,
   ellipseSweep,
   isFullEllipse,
   splinePoints,
@@ -17,11 +18,16 @@ import {
 } from '../core/entities';
 import type { Point, Bounds } from '../core/geometry';
 import * as g from '../core/geometry';
+import { polylineWidthGeometry, strokeOutlinePolygons } from '../core/polyline-widths';
+import { paintOpacityGroup } from './opacity-group';
 import { aciToCss } from './palette';
-import { strokeText, hasStrokeFont, expandControlCodes, drawStyledText } from './hershey';
+import { strokeText, strokeTextWidth, hasStrokeFont, expandControlCodes, drawStyledText } from './hershey';
+import { placedText } from '../core/text-placement';
+import { hasMTextFill, hasMTextFrame } from '../core/mtext-background';
 import { textStyleOf, withTextStyle } from '../io/encoding';
 import { findLinetype, effectiveLinetype, dashArray, type Linetype } from '../core/linetypes';
 import { annotativeEntity } from '../core/layouts';
+import { resolveAlpha } from '../core/appearance';
 
 export interface Transform {
   toScreen(p: Point): Point;
@@ -48,7 +54,7 @@ export type ImageLoader = (path: string) => Promise<ImageBitmap | null>;
 export const trueColorCss = (c: number): string => `#${(c & 0xffffff).toString(16).padStart(6, '0')}`;
 
 /** Drawing on white paper (layout views, Track E): ACI 7 shows black there, as in AutoCAD. */
-export const colorDisplay = { paper: false };
+export const colorDisplay = { paper: false, background: '#212830' };
 const aciDisplay = (i: number): string => (colorDisplay.paper && i === 7 ? '#000000' : aciToCss(i));
 
 /**
@@ -164,10 +170,11 @@ export function drawEntity(
   ctx.lineWidth = width;
   ctx.lineCap = 'butt';
   ctx.lineJoin = 'miter';
-  if (style.alpha !== undefined) ctx.globalAlpha = style.alpha;
+  const baseAlpha = style.alpha ?? ctx.globalAlpha;
+  ctx.globalAlpha = baseAlpha * resolveAlpha(e, layers);
   if (style.dashed) ctx.setLineDash([6, 4]);
   else ctx.setLineDash(resolveDash(e, layers, tf));
-  drawGeometry(ctx, e, tf, layers, lookup, style);
+  drawGeometry(ctx, e, tf, layers, lookup, { ...style, alpha: baseAlpha });
   ctx.restore();
 }
 
@@ -218,6 +225,8 @@ function strokePolyline(ctx: CanvasRenderingContext2D, e: PolylineEntity, tf: Tr
 }
 
 function drawText(ctx: CanvasRenderingContext2D, e: TextEntity, tf: Transform): void {
+  const source = e;
+  e = placedText(e, strokeTextWidth);
   const p = tf.toScreen(e.position);
   const px = e.height * tf.scale;
   const wf = e.widthFactor && e.widthFactor > 0 ? e.widthFactor : 1;
@@ -237,7 +246,7 @@ function drawText(ctx: CanvasRenderingContext2D, e: TextEntity, tf: Transform): 
     return;
   }
   // TrueType / OpenType text styles draw with a canvas font stack (SHX and unknown styles fall through to the strokes).
-  if (drawStyledText(ctx, text === e.text ? e : { ...e, text }, tf)) return;
+  if (drawStyledText(ctx, text === source.text ? source : { ...source, text }, tf)) return;
   if (hasStrokeFont) {
     const plain = wf === 1 && slant === 0;
     const strokes = plain ? strokeText(text, e.position, e.height, e.rotation, e.align) : strokeText(text, { x: 0, y: 0 }, e.height, 0, e.align);
@@ -292,6 +301,7 @@ function styledMtextParts(e: MTextEntity): TextEntity[] {
 /** Draw sub-entities in their own colours (formatted MTEXT runs, leader / table / image parts). */
 function drawParts(ctx: CanvasRenderingContext2D, parts: readonly Entity[], tf: Transform, layers: readonly Layer[], lookup: BlockLookup, style: DrawStyle): void {
   for (const sub of parts) {
+    ctx.globalAlpha = (style.alpha ?? 1) * resolveAlpha(sub, layers);
     const subColor = style.strokeOverride ?? resolveColor(sub, layers);
     ctx.strokeStyle = subColor;
     ctx.fillStyle = subColor;
@@ -445,6 +455,48 @@ function drawGeometry(
     }
     case 'polyline': {
       if (e.points.length === 0) break;
+      if ((e.widths || e.widthFrame) && !e.filled) {
+        const geometry = polylineWidthGeometry(e);
+        const dashed = typeof ctx.getLineDash === 'function' && ctx.getLineDash().length > 0;
+        const path = (points: readonly Point[], closed = false) => {
+          points.forEach((point, index) => { const p = tf.toScreen(point); if (index === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y); });
+          if (closed) ctx.closePath();
+        };
+        if (!geometry.polygons.length) {
+          ctx.beginPath();
+          geometry.thin.forEach((spine) => path(spine));
+          ctx.stroke();
+          break;
+        }
+        if (dashed) {
+          const masks = (target: CanvasRenderingContext2D) => {
+            const addPath = (points: readonly Point[], closed = false) => {
+              points.forEach((point, index) => { const p = tf.toScreen(point); if (index === 0) target.moveTo(p.x, p.y); else target.lineTo(p.x, p.y); });
+              if (closed) target.closePath();
+            };
+            for (const { polygon, spines } of geometry.strokes) {
+              target.save(); target.beginPath(); addPath(polygon, true); target.clip();
+              target.lineWidth = Math.min(Number.MAX_VALUE, geometry.maxWidth * tf.scale);
+              target.beginPath(); spines.forEach((spine) => addPath(spine)); target.stroke();
+              target.restore();
+            }
+            if (geometry.thin.length) {
+              target.beginPath(); geometry.thin.forEach((spine) => addPath(spine)); target.stroke();
+            }
+          };
+          if (ctx.globalAlpha < 1 && geometry.strokes.length + Number(geometry.thin.length > 0) > 1) paintOpacityGroup(ctx, [...geometry.polygons, ...geometry.thin], (point) => tf.toScreen(point), masks);
+          else masks(ctx);
+          break;
+        }
+        // One paint operation composites the complete entity alpha once, including joins
+        // and explicit-zero segments drawn at the current display lineweight.
+        const thinWidth = ctx.lineWidth / tf.scale;
+        const polygons = [...geometry.polygons, ...strokeOutlinePolygons(geometry.thin, thinWidth)];
+        ctx.beginPath();
+        polygons.forEach((polygon) => path(polygon, true));
+        ctx.fill();
+        break;
+      }
       strokePolyline(ctx, e, tf);
       if (e.filled && e.closed) {
         ctx.fill();
@@ -471,6 +523,7 @@ function drawGeometry(
     case 'insert': {
       for (const sub of explodeInsert(e, lookup)) {
         if (style.hidden?.has(sub.layer)) continue;
+        ctx.globalAlpha = (style.alpha ?? 1) * resolveAlpha(sub, layers);
         const subColor = style.strokeOverride ?? resolveColor(sub, layers);
         ctx.strokeStyle = subColor;
         ctx.fillStyle = subColor;
@@ -506,6 +559,18 @@ function drawGeometry(
       break;
     }
     case 'mtext': {
+      if (e.background) {
+        ctx.save();
+        const background = e.background;
+        ctx.fillStyle = background.flags & 2 ? (colorDisplay.paper ? '#ffffff' : colorDisplay.background) : resolveColor({ ...e, color: background.color, trueColor: background.trueColor, colorLayer: background.colorLayer }, layers);
+        for (const mask of mtextMasks(e)) {
+          ctx.beginPath();
+          tracePoints(ctx, mask, tf, true);
+          if (hasMTextFill(e)) ctx.fill();
+          if (hasMTextFrame(e)) ctx.stroke();
+        }
+        ctx.restore();
+      }
       const pieces = styledMtextParts(e);
       const lines = mtextDecorations(e);
       if (lines.length === 0 && pieces.every((t) => t.color === e.color && t.trueColor === e.trueColor)) {
@@ -519,6 +584,7 @@ function drawGeometry(
       const ownStroke = ctx.strokeStyle;
       const ownFill = ctx.fillStyle;
       for (const part of dimensionParts(e)) {
+        ctx.globalAlpha = (style.alpha ?? 1) * resolveAlpha(part, layers);
         const own = style.strokeOverride !== undefined || part.color === e.color;
         ctx.strokeStyle = own ? ownStroke : resolveColor(part, layers);
         ctx.fillStyle = own ? ownFill : ctx.strokeStyle;
@@ -540,7 +606,7 @@ function drawGeometry(
       drawHatch(ctx, e, tf, style);
       break;
     case 'leader':
-      drawParts(ctx, leaderParts(e), tf, layers, lookup, style);
+      drawParts(ctx, leaderParts(e).filter((p) => !style.hidden?.has(p.layer) && layers.find((l) => l.name === p.layer)?.visible !== false), tf, layers, lookup, style);
       break;
     case 'table':
       drawParts(ctx, tableParts(e), tf, layers, lookup, style);

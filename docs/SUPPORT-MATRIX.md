@@ -2,7 +2,10 @@
 
 What JCad Electrical reads from DXF and DWG files, what it writes back, and what is lost on the
 way. JCad is a 2D program: it works in the drawing plane and keeps 2D geometry. DXF is the native
-format (written as AutoCAD 2000, `AC1015`); DWG is **read-only** (LibreDWG, versions R14 to 2018,
+format (AutoCAD 2000, `AC1015`, unless native properties require a newer version: MTEXT masks use
+AutoCAD 2007, `AC1021`, transparency uses AutoCAD 2010, `AC1024`, RGB/named colors use AutoCAD 2004,
+`AC1018`, and native MTEXT frames use AutoCAD 2018, `AC1032`). The highest required version wins.
+DWG is **read-only** (LibreDWG, versions R14 to 2018,
 files up to 128 MiB), and SAVE after opening a DWG writes a DXF next to it.
 
 Legend: **yes** = kept; **partly** = kept with the limits in the last column; **no** = not read or
@@ -18,13 +21,13 @@ the fixtures in `fixtures/` and `tests/fixtures/`.
 | --- | --- | --- | --- | --- |
 | LINE | yes | yes | yes | Z coordinates and thickness are dropped (2D). |
 | CIRCLE, ARC | yes | yes | yes | Same. Circles and arcs inside a non-uniformly scaled block become polylines when exploded or drawn. |
-| LWPOLYLINE | yes | yes | yes | Constant width (group 43) and bulges round-trip; per-vertex start / end widths (groups 40 / 41) are not read. A closed two-vertex polyline with bulges 1 and a width (a filled donut) is read as a filled circle. *Verified by fixtures:* `interchange/r2000-hatch-curves.dxf` (bulges, width 43; widths 40 / 41 dropped). |
-| POLYLINE (with VERTEX) | partly | partly | as LWPOLYLINE | 2D polylines retain their outline and bulges. 3D polylines are flattened to XY and reported; polyface / polygon meshes are dropped and reported. |
+| LWPOLYLINE | yes | yes | yes | Constant width (group 43), bulges and outgoing per-vertex start/end widths (groups 40/41) round-trip. Explicit vertex widths override constant width, including zero. Tapers draw on straight and bulged segments; arc sides use at most 64 samples per segment and joins are beveled. Bounds/hit testing use that displayed footprint; snaps remain on the centerline. A closed two-vertex constant-width donut retains its existing filled-circle conversion. *Verified:* `polyline-widths.dxf`, `interchange/r2000-hatch-curves.dxf` and width regressions. |
+| POLYLINE (with VERTEX) | partly | partly | as LWPOLYLINE | 2D polylines retain their outline, bulges and exposed vertex widths. Missing vertex start/end widths inherit the corresponding header default independently; explicit zero overrides it. 3D polylines are flattened to XY and reported; polyface / polygon meshes are dropped and reported. |
 | SOLID, TRACE | yes | yes (SOLID) | SOLID | Read as a filled closed polyline; written back as SOLID (three or four corners) or, with more corners, as a solid HATCH. |
-| TEXT | yes | yes | yes | Style name, height, width factor, oblique angle, rotation, horizontal alignment (left / center / right) and fields are kept. Vertical justification (bottom / middle / top) is converted to the equivalent baseline position, so the justification mode itself is not written back; fit and aligned text keep their first point only. |
-| MTEXT | partly | partly | partly | Formatting source, chunks and UTF-8 survive. Static/dynamic column definitions are read from native groups or R2018 embedded objects; explicit `\N` breaks render in separate columns. Column dimensions survive JCad edits and reimport through `JCAD_MTEXT_COLUMNS` XDATA. AutoCAD 2000 export displays one MTEXT column in external CAD; automatic column flow is approximated and reported. Background fill is dropped and reported. *Verified:* `interchange/r2018-mtext.dxf`. |
-| INSERT (block reference) | yes | yes | yes | Mirrored and non-uniform X / Y scales round-trip. Arrays (MINSERT rows / columns) and dynamic-block parameters are not kept (the block is inserted once). *Verified by fixtures:* `interchange/r2000-nested-blocks-xref.dxf` (three nesting levels). |
-| ATTDEF, ATTRIB | yes | yes | yes | Tag, prompt, default and value, invisible flag, constant attributes, position, height and justification. *Verified by fixtures:* `interchange/r2000-layouts-titleblock.dxf` (paper-space title block, an ATTRIB hidden on one insert). |
+| TEXT | yes | yes | yes | Style name, height, width factor, oblique angle, rotation and fields are kept. All fifteen legal native horizontal/vertical justification combinations and both alignment points survive DXF and exposed DWG data, including origin anchors. FIT retains height and fits width between its anchors; ALIGNED scales height and width together. Rendering, bounds, transforms and vector PDF honor the modes; font metrics and vertical offsets remain approximate as described below. *Verified:* `interchange/r2000-text-justification.dxf`. |
+| MTEXT | partly | partly | partly | Formatting source, chunks and UTF-8 survive. Static/dynamic column definitions are read from native groups or R2018 embedded objects; explicit `\N` breaks render in separate columns. Column dimensions survive JCad edits and reimport through `JCAD_MTEXT_COLUMNS` XDATA; external CAD displays one column and automatic column flow remains approximated and reported. Native background flags, padding scale, ACI/RGB/book-name fields and text frames survive DXF, including associated LEADER annotations. The vendored native DWG reader repairs fractional mask scales and preserves full background color-book strings; an independent seven-mask AutoCAD DWG verifies flags, padding, ACI/RGB and names through the actual Node loader and DXF reimport. It does not certify native columns, embedded MTEXT or reader-omitted XDATA; unusable exposed mask values are reported with a fallback. Window-color masks follow the viewport and become white in vector PDF; column gutters stay unmasked. Bounds and masks use JCad's approximate text metrics. Background transparency is retained as native metadata with its unsupported effect reported; it is not applied. Non-uniform block transformations retain existing MTEXT layout approximations. *Verified:* `interchange/r2018-mtext.dxf`, `interchange/r2018-mtext-background.dxf`/`.dwg`, `tests/mtext-background.test.ts` and `tests/native-dwg-runtime.test.ts`. |
+| INSERT (block reference) | yes | yes | yes | Mirrored and non-uniform X / Y scales round-trip. Native MINSERT row/column counts, rotated grid spacing and shared attributes survive DXF/DWG import and native DXF export. Expansion shares the existing geometry budget; arrays above it are rejected before allocation. All cells share one attribute set; independent electrical tags/connectivity require exploding the array, and the electrical audit warns about this. Dynamic-block parameters are not modeled. *Verified by fixtures:* `interchange/r2000-nested-blocks-xref.dxf` (three nesting levels), `interchange/r2018-minsert.dxf` and `.dwg` (AutoCAD-normalized 3 by 2 array). |
+| ATTDEF, ATTRIB | yes | yes | yes | Tag, prompt, default and value, invisible flag, constant attributes, text style, position, height, width/oblique and native justification. Per-insert placement overrides survive independently of the ATTDEF and move with the insert. Native appearance passes through the shared entity codecs. Font metrics retain the TEXT limits. *Verified:* `interchange/r2000-layouts-titleblock.dxf` and `interchange/r2000-text-justification.dxf`. |
 | ELLIPSE | yes | yes | yes | Full and elliptical arcs. *Verified by fixtures:* `interchange/r2000-hatch-curves.dxf`. |
 | POINT | yes | yes | yes | PDMODE / PDSIZE come from the header. |
 | XLINE, RAY | yes | yes | yes | |
@@ -40,11 +43,18 @@ the fixtures in `fixtures/` and `tests/fixtures/`.
 | 3DFACE, 3DSOLID, REGION, BODY | partly | no | retained raw groups | Unknown model-space records with self-contained data are retained without rendering/editing. Original handles, reactors, cross-object links and XDATA are removed; newer solids whose data is external to the record cannot be retained. The report distinguishes retained records from losses. |
 | WIPEOUT, MESH, MLINE, TOLERANCE, OLE2FRAME, SURFACE, LIGHT, UNDERLAY (PDF / DGN / DWF) | no | no | no | Dropped and reported. Unsupported block/paper-space records are reported rather than silently claimed to survive. |
 
+Nonuniform transforms preserve wide-polyline geometry directionally. An exploded affine wide
+polyline exports as two native nested INSERTs around its original centerline/bulges/widths;
+reopening therefore yields a block reference rather than a standalone polyline. Export refuses
+an invalid or degenerate frame, a generated expansion exceeding the geometry budget, or wrappers
+that would push currently visible geometry beyond the depth-eight block limit. These restrictions
+do not change native widths saved inside an existing nonuniform block reference.
+
 ## Drawing-level data
 
 | Item | DXF read | DWG read | DXF write | Known losses |
 | --- | --- | --- | --- | --- |
-| Layers | yes | yes | yes | Colour (ACI), linetype, lineweight, on / off, frozen, locked, no-plot (DXF), true colour (group 420 in DXF; a DWG layer with colour index 256 carries its RGB). Layer transparency is not read. *Verified by fixtures:* `interchange/r2018-truecolor-linetypes.dxf` (the Default lineweight -3 is written back as 0.25 mm). |
+| Layers | yes | partly | yes | ACI/RGB and named-color identity, linetype, lineweight, on/off, frozen, locked and no-plot (DXF) survive. DXF layer opacity uses registered `AcCmTransparency` XDATA; layer group 440 is also accepted on read. DWG keeps unambiguous exposed alpha, but the converter can omit the layer method/XDATA, so a default zero byte cannot safely distinguish an opaque layer from an explicitly transparent one; this is reported. *Verified:* `interchange/r2018-truecolor-linetypes.dxf`, `interchange/r2010-appearance.dxf` and appearance regressions. The Default lineweight -3 is written back as 0.25 mm. |
 | Linetypes (LTYPE) | yes | yes | yes | Dash patterns (group 49). Text or shapes embedded in complex linetypes are not drawn; only the dashes are. *Verified by fixtures:* `interchange/r2018-truecolor-linetypes.dxf` (GAS_LINE, FENCELINE1: dashes kept, text and shape not written). |
 | Text styles (STYLE) | yes | yes | yes | Name, font file / TrueType family, big font, height, width factor, oblique, flags. |
 | Dimension styles (DIMSTYLE) | partly | partly | partly | Supported DIM variables include DIMDSEP decimal commas, DIMTXSTY resolved STYLE handles, DIMTZIN independent tolerance suppression, DIMLWD/E lineweights and DIMAPOST `[]` substitution. DIMADEC -1 inherits DIMDEC. Arrow names/basic tolerances/alternate placement use `JCAD_DIMSTYLE` XDATA, so external readers may use their defaults; dimension picture geometry preserves the appearance. Unsupported non-default native style/header variables and unmodeled `ACAD_DSTYLE_*` metadata are reported. *Verified:* both dimension fixtures and active regression tests. |
@@ -59,13 +69,20 @@ the fixtures in `fixtures/` and `tests/fixtures/`.
 
 ## Colours
 
+Disabled MTEXT mask settings use registered `JCAD_MTEXT_BACKGROUND` XDATA because AutoCAD
+rejects inactive native padding/color groups. JCad restores the settings on reopen, even when
+another CAD program removes the redundant native off flag. This metadata is limited to 4 KiB of
+UTF-8 JSON and validated before use; malformed or conflicting records are reported. Active masks
+and frames retain their native groups.
+
 | | Read | Write | Notes |
 | --- | --- | --- | --- |
 | ACI index colours 1-255 | yes | yes | Displayed with the standard AutoCAD palette (`src/render/palette.ts`); 7 is white on the dark background and black on paper. |
 | ByLayer | yes | yes | |
 | ByBlock (0) | yes | yes | Kept as colour 0 and written back; when drawn, block content with ByBlock takes the reference's colour (or the reference's layer colour when the reference is ByLayer); ByBlock left on a top-level entity draws as the layer colour. Entities on layer 0 with colour ByLayer inside a block take the insert's layer and colour (AutoCAD behaviour). *Verified by fixtures:* `interchange/r2000-nested-blocks-xref.dxf` (three levels under a ByLayer and a red insert). |
 | True colour (group 420) | yes | yes | On entities and layers. *Verified by fixtures:* `interchange/r2018-truecolor-linetypes.dxf`. |
-| Colour books, transparency (group 440) | no | no | Shown in the nearest ACI colour / opaque. *Verified by fixtures:* `interchange/r2018-truecolor-linetypes.dxf`; a colour-book colour shows its RGB (420), the book name (430) is dropped. |
+| Named colors and color books (group 430) | yes | yes | Supplied identity survives independently of RGB/ACI, including UTF-8 names. Display uses the supplied RGB or ACI fallback; JCad does not load vendor color-book catalogs or infer RGB from a name. DWG preserves exposed identity, but the converter can omit the separate book portion and reports this limit. *Verified:* `interchange/r2010-appearance.dxf` and appearance regressions. |
+| Entity/layer transparency | yes | yes | ByLayer, ByBlock and explicit alpha (0 transparent, 255 opaque) survive DXF and use shared canvas/PDF resolution. Entity group 440 and layer `AcCmTransparency` XDATA retain their native methods. Nested block inheritance resolves one source alpha rather than multiplying parent and child values. DWG preserves valid exposed values with the layer ambiguity noted above. Background group 441 remains metadata with its unsupported effect reported. *Verified:* appearance, affine width opacity and cross-feature regressions. |
 
 ## Fonts and text
 
@@ -76,8 +93,9 @@ measurements, so spacing and line breaks can differ from the displayed font and 
 program. The style's font file / TrueType family is kept and written back. In vector PDF output,
 WinAnsi-compatible TrueType-style text uses Helvetica or Helvetica-Bold; other text falls back to
 stroke paths. Exact font embedding and SHX rendering are not implemented. Text in pre-2007 DXF
-files is decoded from `$DWGCODEPAGE`; the writer produces pure ASCII with `\U+XXXX` escapes, so
-non-English text survives any code page.
+files is decoded from `$DWGCODEPAGE`; older exports use pure ASCII with `\U+XXXX` escapes,
+while AutoCAD 2007 and later exports use UTF-8. Supplementary Unicode stays intact across
+MTEXT chunk boundaries.
 Non-default font metrics and absent STYLE definitions are disclosed in import reports; font
 files are referenced rather than embedded.
 

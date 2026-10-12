@@ -396,10 +396,11 @@ export function parseContentStream(content: string): PdfContentSummary {
       .replace(/\\(\d{3})/g, (_x, oct: string) => String.fromCharCode(parseInt(oct, 8)))
       .replace(/\\([()\\])/g, '$1');
   // Operand counts of the operators a vector plot uses.
-  const arity: Record<string, number> = { m: 2, l: 2, c: 6, re: 4, w: 1, RG: 3, rg: 3, d: 2, cm: 6, Tf: 2, Tm: 6, Tj: 1, J: 1, j: 1, Do: 1, G: 1, g: 1 };
+  const arity: Record<string, number> = { m: 2, l: 2, c: 6, re: 4, w: 1, RG: 3, rg: 3, d: 2, cm: 6, Tf: 2, Tm: 6, Tj: 1, J: 1, j: 1, Do: 1, gs: 1, G: 1, g: 1 };
   for (const o of ops) {
     const want = arity[o.op];
     if (want !== undefined && o.args.length !== want) errors.push(`${o.op} with ${o.args.length} operand(s) (expected ${want})`);
+    if (o.op === 'gs' && !/^\/[^\s]+$/.test(o.args[0] ?? '')) errors.push('gs requires a named graphics-state resource');
     else if (want === undefined && o.args.length > 0 && !['q', 'Q', 'BT', 'ET'].includes(o.op) && !PATH_OPS.has(o.op)) errors.push(`unknown operator ${o.op}`);
   }
   let depth = 0;

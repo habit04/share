@@ -2,6 +2,7 @@ import type { DrawingState } from './document';
 import { entityGeometryWork, MAX_BLOCK_EXPANSION_WORK } from './entities';
 import { isImmutableData, sealImmutableData } from './immutable-data';
 import { GeometryBudgetError } from './geometry-budget-error';
+import { insertArrayCount } from './insert-array';
 
 /** Limit aggregate work before imported or edited block references allocate expanded geometry. */
 export const MAX_DRAWING_EXPANSION_WORK = 1_000_000;
@@ -35,7 +36,7 @@ export function validateGeometryBudget(state: DrawingState, previous?: DrawingSt
     if (hit !== undefined) return hit;
     let work = block.xref && !block.entities.length ? 2 : block.attributes.reduce((sum, attribute) => sum + 1 + attribute.default.length, 0);
     for (const entity of block.entities) {
-      work += entityGeometryWork(entity) + (entity.type === 'insert' ? cost(entity.block, depth + 1) : 0);
+      work += entityGeometryWork(entity) + (entity.type === 'insert' ? insertArrayCount(entity) * cost(entity.block, depth + 1) : 0);
       if (work > MAX_BLOCK_EXPANSION_WORK) break;
     }
     let depths = memo.get(name);
@@ -46,7 +47,7 @@ export function validateGeometryBudget(state: DrawingState, previous?: DrawingSt
   let total = 0;
   for (const entities of [state.entities, ...(state.layouts ?? []).map((layout) => layout.entities)]) {
     for (const entity of entities) {
-      const expanded = entityGeometryWork(entity) + (entity.type === 'insert' ? cost(entity.block, 0) : 0);
+      const expanded = entityGeometryWork(entity) + (entity.type === 'insert' ? insertArrayCount(entity) * cost(entity.block, 0) : 0);
       if (entity.type === 'insert' && expanded > MAX_BLOCK_EXPANSION_WORK) throw new GeometryBudgetError('Block expansion exceeds the safe geometry budget.');
       total += expanded;
       if (total > MAX_DRAWING_EXPANSION_WORK) throw new GeometryBudgetError('Drawing expansion exceeds the safe geometry budget.');

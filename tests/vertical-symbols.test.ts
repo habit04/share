@@ -63,7 +63,7 @@ describe('attribute rotation', () => {
     const back = readDxf(writeDxf(d.snapshot));
     const tag = back.blocks.ROT1!.attributes.find((a) => a.tag === 'TAG1')!;
     expect(tag.rotation).toBeCloseTo(Math.PI / 2, 9);
-    expect(back.blocks.ROT1!.attributes.find((a) => a.tag === 'DESC1')!.rotation).toBeUndefined();
+    expect(back.blocks.ROT1!.attributes.find((a) => a.tag === 'DESC1')!.rotation ?? 0).toBe(0);
     // the rendered attribute text turns with the insert plus its own rotation
     const text = explodeInsert(d.entities[0] as InsertEntity, d.lookupBlock).find((e) => e.type === 'text' && e.text === 'LS1');
     expect(text?.type === 'text' && text.rotation).toBeCloseTo(Math.PI / 4 + Math.PI / 2, 9);

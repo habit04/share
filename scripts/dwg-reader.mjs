@@ -2,21 +2,23 @@
  * Node-side DWG reader shared by the Electron main process, the CLI and tests.
  * Loads LibreDWG (WebAssembly) lazily and returns a trimmed payload.
  */
-import { createRequire } from 'node:module';
-import { dirname, join } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { convertDwgMTextDatabase } from './dwg-mtext-background.mjs';
+import { convertDwgDatabase } from './dwg-array-conversion.mjs';
+import { readNativeDwg } from './dwg-native-read.mjs';
+import createNativeModule from '../vendor/libredwg-web-bg/factory/libredwg-web.js';
 
 let libPromise = null;
 
 async function lib() {
   if (!libPromise) {
     libPromise = (async () => {
-      const require = createRequire(import.meta.url);
-      // The package's "exports" map hides package.json, so resolve the wasm dir from the entry file.
-      const entry = require.resolve('@mlightcad/libredwg-web');
-      const pkgDir = join(dirname(entry), '..');
       const { LibreDwg } = await import('@mlightcad/libredwg-web');
-      return LibreDwg.create(join(pkgDir, 'wasm') + '/');
+      const wasmBinary = await readFile(new URL('../vendor/libredwg-web-bg/factory/libredwg-web.wasm', import.meta.url));
+      const instance = await createNativeModule({ wasmBinary });
+      return LibreDwg.createByWasmInstance(instance);
     })();
   }
   return libPromise;
@@ -32,25 +34,26 @@ export const MAX_DWG_BYTES = 128 * 1024 * 1024;
  */
 export async function readDwgPayload(bytes, kind = 'dwg') {
   if (bytes.byteLength > MAX_DWG_BYTES) throw new Error(`The DWG file is larger than the supported ${MAX_DWG_BYTES / (1024 * 1024)} MB.`);
-  const l = await lib();
-  const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-  const ptr = l.dwg_read_data(ab, kind === 'dxf' ? 1 : 0);
-  if (!ptr) throw new Error('LibreDWG could not read this file (unsupported version or corrupt data).');
+  let l;
+  let ptr;
   try {
+    l = await lib();
+    ptr = readNativeDwg(l, bytes, kind);
     let version = '';
     try {
       version = l.dwg_get_version_type(ptr)?.type ?? '';
     } catch {
       /* the file can still be converted without a version label */
     }
-    const db = l.convert(ptr);
+    const { Dwg_Object_Type } = await import('@mlightcad/libredwg-web');
+    const db = convertDwgMTextDatabase(l, ptr, (reader, input) => convertDwgDatabase(reader, input, Dwg_Object_Type));
     return { payload: payloadFromDatabase(db, version), version };
   } finally {
     // A failed conversion releases the native memory like a successful one (ported from PR #2,
     // codex/electrical-review-fixes 2f89b0e). LibreDWG keeps per-version state in the module;
     // reading files of different versions in one instance can abort the WASM: start fresh.
     try {
-      l.dwg_free(ptr);
+      if (ptr) l.dwg_free(ptr);
     } finally {
       void resetLibreDwg();
     }
@@ -92,6 +95,9 @@ export function payloadFromDatabase(db, version = '') {
       ...(x.handle ? { handle: String(x.handle) } : {}),
       colorIndex: x.colorIndex,
       color: x.color,
+      colorName: x.colorName,
+      transparency: x.transparency,
+      transparencyType: x.transparencyType,
       standardFlag: x.standardFlag,
       plotFlag: x.plotFlag,
       off: x.off,

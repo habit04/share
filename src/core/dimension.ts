@@ -14,6 +14,7 @@
 import type { Point } from './geometry';
 import * as g from './geometry';
 import type { EntityBase, LineEntity, PolylineEntity, TextEntity, ArcEntity, CircleEntity, ColorSpec } from './entities';
+import { appearanceProperties } from './appearance';
 import type { DrawingState } from './document';
 import { formatLength, formatAngle, cadPrecision, type LinearUnits } from './units';
 
@@ -442,7 +443,7 @@ function base(c: Ctx, suffix: string, role: Role = 'dim'): { id: string; layer: 
   const d = c.d;
   const override = role === 'text' ? c.s.textColor : role === 'ext' ? c.s.extLineColor : c.s.dimLineColor;
   const weight = role === 'ext' ? c.s.extLineWeight : role === 'dim' ? c.s.dimLineWeight : -2;
-  return { id: `${d.id}:${suffix}`, layer: d.layer, color: override ?? d.color, linetype: d.linetype, lineWeight: weight === -2 ? d.lineWeight : weight };
+  return { ...appearanceProperties(d), id: `${d.id}:${suffix}`, layer: d.layer, color: override ?? d.color, ...(override !== undefined ? { trueColor: undefined, colorName: undefined, colorLayer: undefined } : {}), linetype: d.linetype, lineWeight: weight === -2 ? d.lineWeight : weight };
 }
 
 function line(c: Ctx, a: Point, b: Point, role: Role = 'dim'): void {

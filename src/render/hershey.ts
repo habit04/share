@@ -10,6 +10,7 @@
  */
 import jhf from './fonts/rowmans.jhf?raw';
 import { textStyleOf, type TextStyle } from '../io/encoding';
+import { placedText, type TextJustification } from '../core/text-placement';
 
 export interface Glyph {
   /** Advance width in normalised units (cap height = 1). */
@@ -226,6 +227,7 @@ export function canvasFont(r: Extract<TextRenderer, { kind: 'canvas' }>, capPx: 
 
 /** The 2D context calls `drawStyledText` makes (a CanvasRenderingContext2D satisfies it). */
 export interface TextCanvas {
+  measureText?(text: string): { width: number };
   save(): void;
   restore(): void;
   translate(x: number, y: number): void;
@@ -257,6 +259,8 @@ export function drawStyledText(
     readonly widthFactor?: number;
     readonly oblique?: number;
     readonly bold?: boolean;
+    readonly justification?: TextJustification;
+    readonly alignmentPoint?: { x: number; y: number };
   },
   tf: { toScreen(p: { x: number; y: number }): { x: number; y: number }; scale: number },
   styleName: string | undefined = textStyleOf(e),
@@ -269,12 +273,16 @@ export function drawStyledText(
     ...(e.oblique ? { oblique: e.oblique } : {}),
     ...(e.bold ? { bold: true } : {}),
   };
-  const p = tf.toScreen(e.position);
   ctx.save();
+  e = placedText({ ...e, widthFactor: r.widthFactor }, (text, height) => {
+    ctx.font = canvasFont(r, height * tf.scale);
+    return ctx.measureText ? ctx.measureText(expandControlCodes(text)).width / tf.scale : strokeTextWidth(text, height);
+  });
+  const p = tf.toScreen(e.position);
   ctx.translate(p.x, p.y);
   ctx.rotate(-e.rotation);
   if (r.oblique) ctx.transform(1, 0, -Math.tan(r.oblique), 1, 0, 0);
-  if (r.widthFactor !== 1) ctx.scale(r.widthFactor, 1);
+  if (e.widthFactor !== 1) ctx.scale(e.widthFactor ?? 1, 1);
   ctx.font = canvasFont(r, e.height * tf.scale);
   ctx.textBaseline = 'alphabetic';
   ctx.textAlign = e.align;

@@ -431,11 +431,14 @@ const REPO_PATH = '/habit04/share';
  * ones and backslashes), so ".." cannot leave the repository; a user name / password, a port, an
  * encoded "/" or "\\" in the path, and anything over 16,000 characters are refused.
  * @param {unknown} u
- * @param {{ cashApp?: boolean }} [opts]
+ * @param {{ cashApp?: boolean, supportEmail?: boolean }} [opts]
  * @returns {string | null} the normalised URL to open, or null
  */
-function externalUrl(u, { cashApp = true } = {}) {
+function externalUrl(u, { cashApp = true, supportEmail = false } = {}) {
   if (typeof u !== 'string' || u.length === 0 || u.length > 16000) return null;
+  // Email composition is opt-in and limited to the one public support address, with no headers.
+  const contact = require('./support.json');
+  if (supportEmail && u === `mailto:${contact.email}`) return u;
   let url;
   try {
     url = new URL(u);

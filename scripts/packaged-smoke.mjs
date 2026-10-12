@@ -10,8 +10,9 @@
 // Windows  *.exe (NSIS): installed silently with `/S /D=<temp folder>`; a `win-unpacked` folder next
 //          to it is tested too when present.
 // macOS    *.dmg: mounted with `hdiutil attach`, the .app copied out with `ditto`; the disk image
-//          that matches this Mac's architecture is tested, and the other one too when it can run
-//          (x64 under Rosetta on Apple silicon).
+//          matching a required native architecture is tested when JCAD_SMOKE_NATIVE_ONLY=1
+//          and JCAD_SMOKE_EXPECT_ARCH are set. Default/manual runs also test the other image
+//          when it can run (x64 under Rosetta on Apple silicon).
 // Linux    *.AppImage: `--appimage-extract`; *.deb: unpacked with `dpkg-deb -x` (no root needed).
 //          Run under a display (xvfb-run -a on CI).
 //
@@ -21,7 +22,7 @@ import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
-import { needsPackagedOrigin, processResult } from './packaged-smoke-policy.mjs';
+import { needsPackagedOrigin, processResult, childSucceeded, dwgProbeSucceeded, validateSmokeArchitecture, macDmgTargets } from './packaged-smoke-policy.mjs';
 import { verifyExecutableFuses } from './electron-fuse-policy.mjs';
 
 const repo = resolve(import.meta.dirname, '..');
@@ -32,6 +33,9 @@ const product = 'JCad Electrical';
 const executableName = 'jcad-electrical'; // package.json "name": the Linux binary
 const expectedVersion = process.env.JCAD_E2E_EXPECT_VERSION || JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')).version;
 const originRequired = needsPackagedOrigin(expectedVersion);
+const expectedArch = process.env.JCAD_SMOKE_EXPECT_ARCH || '';
+const nativeOnly = process.env.JCAD_SMOKE_NATIVE_ONLY === '1';
+validateSmokeArchitecture(process.arch, expectedArch, nativeOnly);
 
 /** Every file below `root` (depth-limited), for the installer search. */
 function walk(root, depth = 3) {
@@ -51,7 +55,7 @@ function walk(root, depth = 3) {
 function run(cmd, args, opts = {}) {
   console.log(`$ ${cmd} ${args.map((a) => (/\s/.test(a) ? JSON.stringify(a) : a)).join(' ')}`);
   const r = spawnSync(cmd, args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, windowsHide: true, timeout: 180_000, ...opts });
-  if (r.status !== 0) throw new Error(`${cmd} exited with ${r.status}${r.error ? ` (${r.error.message})` : ''}\n${(r.stdout || '').slice(-2000)}\n${(r.stderr || '').slice(-2000)}`);
+  if (!childSucceeded(r)) throw new Error(`${cmd} failed (${processResult(r)})\n${(r.stdout || '').slice(-2000)}\n${(r.stderr || '').slice(-2000)}`);
   return r.stdout || '';
 }
 
@@ -93,16 +97,11 @@ if (process.platform === 'win32') {
   const unpacked = join(dir, 'win-unpacked', `${product}.exe`);
   if (existsSync(unpacked)) targets.push({ label: 'win-unpacked', executable: unpacked });
 } else if (process.platform === 'darwin') {
-  const dmgs = files.filter((f) => /\.dmg$/i.test(f));
-  const native = process.arch === 'arm64' ? 'arm64' : 'x64';
-  // Native first; the other architecture only when this Mac can run it (Rosetta on Apple silicon).
-  const rosetta = native === 'arm64' && spawnSync('/usr/bin/arch', ['-x86_64', '/usr/bin/true'], { timeout: 15_000, windowsHide: true }).status === 0;
-  for (const dmg of dmgs.sort((a, b) => Number(b.includes(native)) - Number(a.includes(native)))) {
-    const isNative = basename(dmg).includes(native) || !/(arm64|x64)/.test(basename(dmg));
-    if (!isNative && !rosetta) {
-      console.log(`skipping ${basename(dmg)}: this Mac cannot run that architecture`);
-      continue;
-    }
+  // Required native jobs never rely on Rosetta; a missing native installer is a failure.
+  const rosetta = !nativeOnly && process.arch === 'arm64' && childSucceeded(spawnSync('/usr/bin/arch', ['-x86_64', '/usr/bin/true'], { timeout: 15_000, windowsHide: true }));
+  const selected = macDmgTargets(files, { hostArch:process.arch, expectedArch, nativeOnly, rosetta });
+  console.log(`macOS installer selection: ${nativeOnly ? `required native ${expectedArch}` : 'default/manual native and available Rosetta'}; ${selected.map((file) => basename(file)).join(', ')}`);
+  for (const dmg of selected) {
     const mount = join(tmp, `mnt-${basename(dmg, '.dmg')}`);
     mkdirSync(mount, { recursive: true });
     run('hdiutil', ['attach', '-nobrowse', '-readonly', '-noautoopen', '-mountpoint', mount, dmg]);
@@ -154,8 +153,8 @@ for (const t of targets) {
   if (process.platform === 'linux') probeArgs.push('--no-sandbox');
   const probe = spawnSync(t.executable, probeArgs, { encoding: 'utf8', timeout: 120_000, windowsHide: true, maxBuffer: 2 * 1024 * 1024 });
   const probeLine = `${probe.stdout || ''}`.split(/\r?\n/).find((l) => l.startsWith('PROBE_')) ?? `(no output; exit ${probe.status}${probe.error ? `, ${probe.error.message}` : ''})`;
-  const probeOk = probe.status === 0 && /^PROBE_OK \S+ entities=\d+/.test(probeLine);
-  console.log(`${probeOk ? 'ok  ' : 'FAIL'} --probe-dwg: ${probeLine}`);
+  const probeOk = dwgProbeSucceeded(probe, probeLine);
+  console.log(`${probeOk ? 'ok  ' : 'FAIL'} --probe-dwg: ${probeLine} (${processResult(probe)})`);
   // The current release gate requires disabled inspection. Older published builds
   // remain testable through the legacy driver; they are explicitly reported as legacy.
   let shipping = false;
@@ -165,7 +164,7 @@ for (const t of targets) {
     const runtime = spawnSync(process.execPath, [join(repo, 'scripts', 'shipping-runtime-smoke.mjs'), t.executable], {
       stdio:'inherit', env:{ ...process.env, JCAD_E2E_OUT:out }, timeout:4 * 60 * 1000, windowsHide:true,
     });
-    const ok = probeOk && runtime.status === 0;
+    const ok = probeOk && childSucceeded(runtime);
     if (!ok) failed += 1;
     const result = { label:t.label, expectedVersion, mode:'shipping-no-inspection', ok, probe:{ ok:probeOk, result:processResult(probe), output:probeLine }, shippingRuntime:processResult(runtime) };
     results.push(result);
@@ -195,7 +194,7 @@ for (const t of targets) {
     process.stdout.write(output);
     writeFileSync(join(out, 'origin-migration.log'), output);
   }
-  const ok = probeOk && e2e.status === 0 && (!originRequired || origin?.status === 0);
+  const ok = probeOk && childSucceeded(e2e) && (!originRequired || (!!origin && childSucceeded(origin)));
   if (!ok) failed += 1;
   const result = { label: t.label, expectedVersion, mode:'legacy-inspection-enabled', ok, probe: { ok: probeOk, result: processResult(probe), output: probeLine }, e2e: processResult(e2e), origin: { required: originRequired, result: originResult } };
   results.push(result);
@@ -203,6 +202,6 @@ for (const t of targets) {
   summary.push(`${ok ? 'ok  ' : 'FAIL'} ${t.label}: probe ${probeOk ? 'ok' : 'failed'}, e2e ${processResult(e2e)}, origin ${originResult}`);
 }
 console.log(`\npackaged-smoke (${process.platform} ${process.arch}):\n${summary.join('\n')}`);
-writeFileSync(join(outRoot, 'packaged-smoke-results.json'), `${JSON.stringify({ platform: process.platform, arch: process.arch, expectedVersion, results, failed }, null, 2)}\n`);
+writeFileSync(join(outRoot, 'packaged-smoke-results.json'), `${JSON.stringify({ platform: process.platform, arch: process.arch, expectedArch:expectedArch || null, nativeOnly, expectedVersion, results, failed }, null, 2)}\n`);
 process.exitCode = failed ? 1 : 0;
 } finally { cleanScratch(); }

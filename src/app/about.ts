@@ -3,6 +3,7 @@
  * (and the Donate entries) comes from about.json so it can be edited without code.
  */
 import raw from './about.json';
+import support from '../../electron/support.json';
 
 export interface AboutLink {
   label: string;
@@ -43,8 +44,16 @@ export function donateUrl(): string | null {
   return `https://cash.app/$${tag}`;
 }
 
-/** Only http(s) links to the allowed hosts are ever opened from About. */
+/** Public bug/feature contact, shared by the renderer, desktop link handler and website. */
+export function supportContact(): { email: string; url: string } | null {
+  const email = support.email;
+  return /^[A-Za-z0-9._+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(email) ? { email, url: `mailto:${email}` } : null;
+}
+
+/** HTTPS links to allowed hosts, plus the exact configured support email. */
 export function safeAboutUrl(url: string): string | null {
+  const contact = supportContact();
+  if (contact && url === contact.url) return contact.url;
   try {
     const u = new URL(url);
     if (u.protocol !== 'https:') return null;

@@ -18,6 +18,15 @@ import { auditIssues } from './audit';
 import { panelRows, terminalStripTable, panelHardwareReport } from './panel';
 import { WIRE_TYPES } from '../tools/plc';
 import { cableSchedule, jumperText } from './cables';
+import { insertArrayInstances } from '../core/insert-array';
+
+/** Physical component rows use each array position; native arrays retain shared attribute values. */
+function* reportEntities(doc: Drawing): Generator<Entity> {
+  for (const entity of doc.entities) {
+    if (entity.type === 'insert') yield* insertArrayInstances(entity);
+    else yield entity;
+  }
+}
 
 export interface Report {
   title: string;
@@ -49,7 +58,7 @@ const loc = (e: InsertEntity) => `${e.position.x.toFixed(3)}, ${e.position.y.toF
 export function componentReport(doc: Drawing, columns?: ReportColumns): Report {
   const reference = referenceFinder(doc);
   const rows: string[][] = [];
-  for (const e of doc.entities) {
+  for (const e of reportEntities(doc)) {
     if (!isComponent(e)) continue;
     const block = doc.lookupBlock(e.block);
     rows.push([
@@ -72,7 +81,7 @@ export function componentReport(doc: Drawing, columns?: ReportColumns): Report {
 /** Bill of material: parent devices grouped by manufacturer + catalog (or block when no catalog). */
 export function billOfMaterial(doc: Drawing, columns?: ReportColumns): Report {
   const groups = new Map<string, { mfg: string; cat: string; desc: string; tags: string[] }>();
-  for (const e of doc.entities) {
+  for (const e of reportEntities(doc)) {
     if (!isComponent(e) || isChild(e) || isExtraPole(e)) continue;
     const mfg = e.attributes.MFG ?? '';
     const cat = e.attributes.CAT ?? '';

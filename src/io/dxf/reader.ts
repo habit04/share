@@ -154,9 +154,10 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
       layers.push(dflt ?? { name, color: 7, visible: true, locked: false, lineWeight: 0.25 });
     }
   };
+  const ensureEntityLayers = (e: Entity) => { ensure(e.layer); if (e.type === 'leader' && e.textLayer) ensure(e.textLayer); };
   ensure('0');
-  for (const e of entities) ensure(e.layer);
-  for (const b of Object.values(blocks)) for (const e of b.entities) ensure(e.layer);
+  for (const e of entities) ensureEntityLayers(e);
+  for (const b of Object.values(blocks)) for (const e of b.entities) ensureEntityLayers(e);
   for (const r of raw) ensure(r.layer);
   ensure(currentLayer);
 
@@ -183,7 +184,7 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
     layouts = layouts?.map((l) => ({ ...l, entities: resolve(l.entities) }));
   }
   for (const l of layouts ?? []) {
-    for (const e of l.entities) ensure(e.layer);
+    for (const e of l.entities) ensureEntityLayers(e);
     for (const v of l.viewports) ensure(v.layer);
   }
   reportBlockExpansion(report, blocks, [...entities, ...(layouts ?? []).flatMap((l) => l.entities)]);

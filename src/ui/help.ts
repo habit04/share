@@ -1,7 +1,7 @@
 import type { Editor, CommandDef } from '../app/editor';
 import { modal, button, tabbedDialog } from './dialogkit';
 import { esc } from './dom';
-import { aboutInfo, donateUrl, authorLinks, safeAboutUrl, licenseLineHtml } from '../app/about';
+import { aboutInfo, donateUrl, authorLinks, safeAboutUrl, licenseLineHtml, supportContact } from '../app/about';
 
 /** Version compiled into the renderer (package.json version via Vite define). */
 export const APP_VERSION_LABEL: string = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : 'dev';
@@ -145,6 +145,19 @@ export function helpDialog(editor: Editor, query = ''): void {
       }
       authorEl.appendChild(row);
     }
+  }
+  const contact = supportContact();
+  if (contact) {
+    const row = document.createElement('p');
+    row.className = 'about-contact';
+    row.append('Bugs or feature requests: ');
+    const link = document.createElement('a');
+    link.href = contact.url; link.textContent = contact.email;
+    link.style.color = 'var(--accent)';
+    link.addEventListener('click', (ev) => {
+      if (window.jcad?.openExternal) { ev.preventDefault(); void window.jcad.openExternal(contact.url); }
+    });
+    row.append(link); authorEl.append(row);
   }
   const donateEl = about.querySelector('.about-donate') as HTMLElement;
   const donate = donateUrl();

@@ -2,12 +2,17 @@ import type { Point, Bounds } from './geometry';
 import * as g from './geometry';
 import { strokeTextWidth } from '../render/hershey';
 import { dimensionGeometry, type DimensionEntity } from './dimension';
-import { mtextLayoutFull, type MTextEntity, type MTextAttachment, type MTextColumns } from './mtext';
+import { mtextLayoutFull, type MTextEntity, type MTextAttachment, type MTextColumns, type MTextBackground } from './mtext';
 import { interpolateFitPoints, isValidNurbs, nurbsPoints, type NurbsCurve } from './spline';
 import { findPattern, loopPolygon, patternSegments, pointInLoops, worldPatternLines, type HatchLoop, type WorldPatternLine } from './hatch';
 import { tableGeometry, type TableEntity } from './table';
 import { isImmutableData } from './immutable-data';
 import { GeometryBudgetError } from './geometry-budget-error';
+import { placedText, scaledText, transformedTextAnchors, textAnchor, type TextPlacement } from './text-placement';
+import { mtextBackgroundPolygons, hasMTextFill, hasMTextFrame, entityMTextBackground } from './mtext-background';
+import { polylineWidthGeometry, polylineWidthFrame, transformWidthFrame, polylineFramePoint, polylineFrameSource, polylineWidthProblem, moveWidthFrameGrip } from './polyline-widths';
+import { appearanceProperties, inheritedTransparency, resolveAlpha, type TransparencySpec } from './appearance';
+import { insertArrayCount, insertArrayInstances, MAX_INSERT_ARRAY_INSTANCES } from './insert-array';
 
 export type { DimensionEntity, DimStyle, DimKind } from './dimension';
 export type { MTextEntity, MTextAttachment } from './mtext';
@@ -36,6 +41,12 @@ export interface EntityBase {
   readonly ltscale?: number;
   /** True colour 0xRRGGBB (DXF 420); overrides `color` for display when set. */
   readonly trueColor?: number;
+  /** Named/color-book identity (DXF 430), retained independently of ACI/RGB. */
+  readonly colorName?: string;
+  /** Opacity byte, or ByLayer/ByBlock inheritance. Undefined means ByLayer. */
+  readonly transparency?: TransparencySpec;
+  /** Display only: ByBlock alpha inherited from a reference's layer. */
+  readonly transparencyLayer?: string;
   /** Annotative object (text, mtext, dimension, leader, insert): its paper size stays constant (see core/layouts.ts). */
   readonly annotative?: boolean;
   /**
@@ -89,11 +100,23 @@ export interface PolylineEntity extends EntityBase {
   readonly bulges?: readonly number[];
   /** Constant width (PLINE Width / DXF 43). 0 or undefined = thin. */
   readonly width?: number;
+  /** Start/end width of the segment at each vertex (DXF 40/41). Takes precedence over width. */
+  readonly widths?: readonly { readonly start: number; readonly end: number }[];
+  /** Affine display geometry after a nonuniform transform; native block definitions keep their widths. */
+  readonly widthFrame?: {
+    readonly points: readonly Point[];
+    readonly bulges?: readonly number[];
+    readonly width?: number;
+    readonly widths?: readonly { readonly start: number; readonly end: number }[];
+    readonly origin: Point;
+    readonly x: Point;
+    readonly y: Point;
+  };
   /** Closed polyline drawn as a solid fill (dimension arrowheads, SOLID entities). */
   readonly filled?: boolean;
 }
 
-export interface TextEntity extends EntityBase {
+export interface TextEntity extends EntityBase, TextPlacement {
   readonly type: 'text';
   readonly position: Point;
   readonly text: string;
@@ -108,6 +131,7 @@ export interface TextEntity extends EntityBase {
   readonly bold?: boolean;
   /** Field expression the text was evaluated from. */
   readonly field?: FieldLink;
+  readonly style?: string;
 }
 
 export interface InsertEntity extends EntityBase {
@@ -123,11 +147,18 @@ export interface InsertEntity extends EntityBase {
   readonly mirror?: boolean;
   /** Attribute values (tag -> value), e.g. TAG1 = "PB101". */
   readonly attributes: Readonly<Record<string, string>>;
+  /** MINSERT grid; counts default to one, spacing is independent of the block scale. */
+  readonly columns?: number;
+  readonly rows?: number;
+  readonly columnSpacing?: number;
+  readonly rowSpacing?: number;
   /**
    * Visible attributes of the block that this insert does not display (ATTRIB flag 1 on the
    * insert only), e.g. TAG1 on poles 2 and 3 of a 3-pole device. The value is kept for reports.
    */
   readonly hiddenAttributes?: readonly string[];
+  /** Native per-insert attribute placement, stored in the block's local coordinate system. */
+  readonly attributePlacements?: Readonly<Record<string, TextPlacement & AttributeAppearance & { readonly style?: string }>>;
 }
 
 export interface EllipseEntity extends EntityBase {
@@ -223,6 +254,12 @@ export interface LeaderEntity extends EntityBase {
   readonly textAttachment?: MTextAttachment;
   readonly textWidth?: number;
   readonly textRotation?: number;
+  /** Native associated MTEXT's mask and layout, kept when the two records become one leader. */
+  readonly textBackground?: MTextBackground;
+  readonly textAppearance?: AttributeAppearance & Pick<EntityBase, 'colorLayer' | 'transparencyLayer'>;
+  readonly textLayer?: string;
+  readonly textLineSpacing?: number;
+  readonly textColumns?: MTextColumns;
   /** Where it came from (LEADER + MTEXT or MULTILEADER); written back as LEADER + MTEXT either way. */
   readonly kind?: 'leader' | 'mleader';
 }
@@ -268,7 +305,15 @@ export type Entity =
   | TableEntity
   | ImageEntity;
 
-export interface AttributeDef {
+export interface AttributeAppearance {
+  readonly layer?: string;
+  readonly color?: ColorSpec;
+  readonly trueColor?: number;
+  readonly colorName?: string;
+  readonly transparency?: 'ByLayer' | 'ByBlock' | number;
+}
+
+export interface AttributeDef extends TextPlacement, AttributeAppearance {
   readonly tag: string;
   readonly prompt: string;
   readonly default: string;
@@ -279,6 +324,7 @@ export interface AttributeDef {
   readonly invisible?: boolean;
   /** Text rotation in radians (DXF group 50), like TextEntity; undefined = 0. Adds to the insert rotation. */
   readonly rotation?: number;
+  readonly style?: string;
 }
 
 export interface BlockDef {
@@ -305,6 +351,9 @@ export interface Layer {
   readonly plot?: boolean;
   /** True colour 0xRRGGBB (DXF 420 on the LAYER record); shown instead of `color` when set. */
   readonly trueColor?: number;
+  readonly colorName?: string;
+  /** Explicit opacity byte; layer inheritance values are preserved but resolve opaque. */
+  readonly transparency?: TransparencySpec;
   /** Xref-dependent LAYER flags (DXF 70 bits 16 and 32), kept from the source file. */
   readonly xrefFlags?: number;
 }
@@ -348,6 +397,7 @@ export function textWidth(text: string, height: number): number {
 }
 
 export function textBounds(t: TextEntity): Bounds {
+  t = placedText(t, textWidth);
   const w = textWidth(t.text, t.height) * (t.widthFactor ?? 1);
   const ox = t.align === 'center' ? -w / 2 : t.align === 'right' ? -w : 0;
   const corners = [
@@ -355,7 +405,7 @@ export function textBounds(t: TextEntity): Bounds {
     { x: ox + w, y: 0 },
     { x: ox + w, y: t.height },
     { x: ox, y: t.height },
-  ].map((c) => g.add(t.position, g.rotate(c, t.rotation)));
+  ].map((c) => g.add(t.position, g.rotate({ x: c.x + c.y * Math.tan(t.oblique ?? 0), y: c.y }, t.rotation)));
   return g.boundsOfPoints(corners)!;
 }
 
@@ -376,12 +426,14 @@ export function bulgeArc(a: Point, b: Point, bulge: number): BulgeArc | null {
   const chord = g.dist(a, b);
   if (chord < 1e-12) return null;
   const theta = 4 * Math.atan(bulge);
-  const r = chord / (2 * Math.sin(Math.abs(theta) / 2));
-  const m = g.mid(a, b);
-  const d = Math.sqrt(Math.max(0, r * r - (chord / 2) * (chord / 2)));
+  // Use the bulge directly: sin(2*atan(b)) loses the small complement of a nearly
+  // full circle, and squaring r overflows for otherwise finite large-radius arcs.
+  const magnitude = Math.abs(bulge);
+  const r = (chord / 4) * magnitude + (chord / 4) / magnitude;
+  const m = { x: a.x / 2 + b.x / 2, y: a.y / 2 + b.y / 2 };
+  const offset = (chord / 4) / bulge - (chord / 4) * bulge;
   const nrm = { x: -(b.y - a.y) / chord, y: (b.x - a.x) / chord };
-  const side = Math.abs(theta) <= Math.PI ? Math.sign(theta) : -Math.sign(theta);
-  const center = { x: m.x + nrm.x * d * side, y: m.y + nrm.y * d * side };
+  const center = { x: m.x + nrm.x * offset, y: m.y + nrm.y * offset };
   const a0 = g.angleOf(center, a);
   const a1 = g.angleOf(center, b);
   return theta > 0
@@ -403,6 +455,7 @@ export interface PolySegment {
 
 /** Segments of a polyline with their arc data. */
 export function polylineSegments(pl: PolylineEntity): PolySegment[] {
+  if (pl.widthFrame) return polylineSegments({ ...pl, points: polylineVertices(pl), bulges: undefined, widthFrame: undefined });
   const n = pl.points.length;
   const out: PolySegment[] = [];
   // A closed two-vertex polyline (a DONUT) has two arc segments, so the closing segment counts from n = 2.
@@ -423,7 +476,8 @@ export function polylineVertices(pl: PolylineEntity): Point[] {
   const hit = polyCache.get(pl);
   if (hit) return hit;
   let out: Point[];
-  if (!pl.bulges || !pl.bulges.some((b) => Math.abs(b) > 1e-12)) out = [...pl.points];
+  if (pl.widthFrame) out = polylineVertices(polylineFrameSource(pl)).map((point) => polylineFramePoint(pl.widthFrame!, point));
+  else if (!pl.bulges || !pl.bulges.some((b) => Math.abs(b) > 1e-12)) out = [...pl.points];
   else {
     out = [];
     const segs = polylineSegments(pl);
@@ -510,27 +564,33 @@ export function dimensionParts(d: DimensionEntity): Entity[] {
   return parts;
 }
 
-const mtextCache = new WeakMap<MTextEntity, { texts: TextEntity[]; lines: LineEntity[] }>();
-function mtextRendered(m: MTextEntity): { texts: TextEntity[]; lines: LineEntity[] } {
+const mtextCache = new WeakMap<MTextEntity, { texts: TextEntity[]; lines: LineEntity[]; masks: Point[][] }>();
+function mtextRendered(m: MTextEntity): { texts: TextEntity[]; lines: LineEntity[]; masks: Point[][] } {
   const hit = mtextCache.get(m);
   if (hit) return hit;
   const lay = mtextLayoutFull(m, textWidth);
   const lines: LineEntity[] = lay.strokes.map((st, i) => ({
+    ...appearanceProperties(m),
     id: `${m.id}:s${i}`,
     layer: m.layer,
     color: st.color ?? m.color,
     ...(st.trueColor !== undefined ? { trueColor: st.trueColor } : m.trueColor !== undefined && st.color === undefined ? { trueColor: m.trueColor } : {}),
+    ...(st.color !== undefined || st.trueColor !== undefined ? { trueColor: st.trueColor, colorName: undefined, colorLayer: undefined } : {}),
     type: 'line',
     a: st.a,
     b: st.b,
   }));
-  const entry = { texts: lay.texts, lines };
+  const entry = { texts: lay.texts, lines, masks: mtextBackgroundPolygons(m, textWidth, lay) };
   mtextCache.set(m, entry);
   return entry;
 }
 /** Single-line text pieces that render an MTEXT (word wrapped, format codes applied). Cached per entity. */
 export function mtextParts(m: MTextEntity): TextEntity[] {
   return mtextRendered(m).texts;
+}
+
+export function mtextMasks(m: MTextEntity): readonly (readonly Point[])[] {
+  return mtextRendered(m).masks;
 }
 /** Underline / overline / strike-through / fraction-bar strokes of a formatted MTEXT. */
 export function mtextDecorations(m: MTextEntity): LineEntity[] {
@@ -624,7 +684,7 @@ const leaderCache = new WeakMap<LeaderEntity, Entity[]>();
 export function leaderParts(e: LeaderEntity): Entity[] {
   const hit = leaderCache.get(e);
   if (hit) return hit;
-  const style = { layer: e.layer, color: e.color, ...(e.trueColor !== undefined ? { trueColor: e.trueColor } : {}), linetype: e.linetype, lineWeight: e.lineWeight };
+  const style = { layer: e.layer, color: e.color, ...appearanceProperties(e), linetype: e.linetype, lineWeight: e.lineWeight };
   const out: Entity[] = [];
   const paths: Point[][] = [leaderPath(e), ...(e.extraPaths ?? []).map((p) => [...p])];
   paths.forEach((path, i) => {
@@ -646,10 +706,15 @@ export function leaderParts(e: LeaderEntity): Entity[] {
     }
   });
   if (e.text && e.textPosition) {
+    const textStyle = e.textAppearance
+      ? { layer: e.textLayer ?? e.layer, color: e.textAppearance.color ?? 'ByLayer', ...e.textAppearance, linetype: e.linetype, lineWeight: e.lineWeight }
+      : style;
     out.push({
-      ...style,
+      ...textStyle,
       id: `${e.id}:t`,
       type: 'mtext',
+      ...(e.textAppearance ?? {}),
+      ...(e.textLayer ? { layer: e.textLayer } : {}),
       position: e.textPosition,
       text: e.text,
       ...(e.raw ? { raw: e.raw } : {}),
@@ -657,7 +722,9 @@ export function leaderParts(e: LeaderEntity): Entity[] {
       width: e.textWidth ?? 0,
       rotation: e.textRotation ?? 0,
       attachment: leaderTextAttachment(e),
-      lineSpacing: 1,
+      lineSpacing: e.textLineSpacing ?? 1,
+      ...(e.textBackground ? { background: e.textBackground } : {}),
+      ...(e.textColumns ? { columns: e.textColumns } : {}),
     });
   }
   leaderCache.set(e, out);
@@ -672,7 +739,7 @@ export function tableParts(t: TableEntity): Entity[] {
   const hit = tableCache.get(t);
   if (hit) return hit;
   const geo = tableGeometry(t);
-  const style = { layer: t.layer, color: t.color, ...(t.trueColor !== undefined ? { trueColor: t.trueColor } : {}), linetype: t.linetype, lineWeight: t.lineWeight };
+  const style = { layer: t.layer, color: t.color, ...appearanceProperties(t), linetype: t.linetype, lineWeight: t.lineWeight };
   const out: Entity[] = geo.lines.map(([a, b], i) => ({ ...style, id: `${t.id}:b${i}`, type: 'line' as const, a, b }));
   out.push(...geo.texts);
   tableCache.set(t, out);
@@ -709,7 +776,7 @@ const imageCache = new WeakMap<ImageEntity, Entity[]>();
 export function imageParts(e: ImageEntity): Entity[] {
   const hit = imageCache.get(e);
   if (hit) return hit;
-  const style = { layer: e.layer, color: e.color, ...(e.trueColor !== undefined ? { trueColor: e.trueColor } : {}), linetype: e.linetype, lineWeight: e.lineWeight };
+  const style = { layer: e.layer, color: e.color, ...appearanceProperties(e), linetype: e.linetype, lineWeight: e.lineWeight };
   const frame = imageBoundary(e);
   const out: Entity[] = [{ ...style, id: `${e.id}:f`, type: 'polyline', points: frame, closed: true }];
   const W = g.len(e.u) * e.size.x;
@@ -816,6 +883,7 @@ function affineCompound(e: Compound, A: Affine): Entity {
         textHeight: e.textHeight * k,
         arrowSize: e.arrowSize * k,
         ...(e.textWidth !== undefined ? { textWidth: e.textWidth * k } : {}),
+        ...(e.textColumns ? { textColumns: scaledMTextColumns(e.textColumns, k) } : {}),
         textRotation: A.mirrored ? readableAngle(dirAngle(rot), rot + A.rotation) : normAngle(rot + A.rotation),
         ...(A.mirrored && att ? { textAttachment: flip(att) } : {}),
       };
@@ -867,7 +935,7 @@ export function explodeCompound(e: Entity): Entity[] | null {
     }
     case 'hatch': {
       const geo = hatchGeometry(e);
-      const style = { layer: e.layer, color: e.color, ...(e.trueColor !== undefined ? { trueColor: e.trueColor } : {}), linetype: e.linetype, lineWeight: e.lineWeight };
+      const style = { layer: e.layer, color: e.color, ...appearanceProperties(e), linetype: e.linetype, lineWeight: e.lineWeight };
       if (e.solid) return geo.polys.map((points) => ({ ...style, id: newId(), type: 'polyline' as const, points, closed: true, filled: true }));
       return geo.segments.filter(([a, b]) => !g.eq(a, b, 1e-12)).map(([a, b]) => ({ ...style, id: newId(), type: 'line' as const, a, b }));
     }
@@ -903,7 +971,6 @@ const normAngle = (t: number): number => {
   return Math.abs(a) < 1e-12 || Math.abs(a - two) < 1e-12 ? 0 : a;
 };
 
-const flipAlign = (al: 'left' | 'center' | 'right'): 'left' | 'center' | 'right' => (al === 'left' ? 'right' : al === 'right' ? 'left' : al);
 
 /** Sample an arc / circle into a polyline (used when a non-uniform scale would turn it into an ellipse). */
 function sampledPolyline(e: CircleEntity | ArcEntity, tf: (p: Point) => Point): PolylineEntity {
@@ -948,9 +1015,10 @@ export function blockTransform(e: Entity, tf: (p: Point) => Point, rotation: num
         ? { ...e, center: tf(e.center), radius: e.radius * k, startAngle: ang(e.endAngle), endAngle: ang(e.startAngle) }
         : { ...e, center: tf(e.center), radius: e.radius * k, startAngle: e.startAngle + rotation, endAngle: e.endAngle + rotation };
     case 'polyline':
-      return { ...e, points: e.points.map(tf), bulges: mirror ? e.bulges?.map((bu) => -bu) : e.bulges, width: e.width !== undefined ? e.width * k : e.width };
+      if (e.widthFrame || (!uniform && (e.widths || e.width))) return { ...e, points: e.points.map(tf), widthFrame: polylineWidthFrame(e, tf), bulges: undefined };
+      return { ...e, points: e.points.map(tf), bulges: mirror ? e.bulges?.map((bu) => -bu) : e.bulges, width: e.width !== undefined ? e.width * k : e.width, widths: e.widths?.map((w) => ({ start: w.start * k, end: w.end * k })) };
     case 'text':
-      return { ...e, position: tf(e.position), height: e.height * k, rotation: e.rotation + rotation, align: mirror ? flipAlign(e.align) : e.align };
+      return scaledText(e, tf, rotation, Math.abs(sx), Math.abs(sy), mirror) as TextEntity;
     case 'mtext':
       return { ...e, position: tf(e.position), height: e.height * k, width: e.width * k, rotation: e.rotation + rotation, ...(e.columns ? { columns: scaledMTextColumns(e.columns, k) } : {}) };
     case 'insert':
@@ -1009,7 +1077,9 @@ export function entityGeometryWork(entity: Entity): number {
   let work = 1;
   switch (entity.type) {
     case 'polyline':
-      work += entity.points.length * (entity.bulges?.some((value) => Math.abs(value) > 1e-12) ? 32 : 1);
+      if (entity.widths || entity.widthFrame || entity.width !== undefined) { const invalid = polylineWidthProblem(entity); if (invalid) throw new GeometryBudgetError(invalid); }
+      work += entity.points.length * (entity.widths ? (entity.bulges?.some((value) => Math.abs(value) > 1e-12) ? 210 : 12) : entity.bulges?.some((value) => Math.abs(value) > 1e-12) ? 32 : 1);
+      if (entity.widthFrame) work += entity.widthFrame.points.length * (entity.widthFrame.bulges?.some((value) => Math.abs(value) > 1e-12) ? 210 : 12);
       break;
     case 'spline':
       work += entity.controlPoints.length + entity.knots.length + (entity.weights?.length ?? 0) + (entity.fitPoints?.length ?? 0);
@@ -1019,7 +1089,7 @@ export function entityGeometryWork(entity: Entity): number {
       for (const line of entity.patternLines ?? []) work += 1 + line.dashes.length;
       break;
     case 'leader':
-      work += entity.vertices.length + (entity.text?.length ?? 0) + (entity.raw?.length ?? 0);
+      work += entity.vertices.length + (entity.text?.length ?? 0) + (entity.raw?.length ?? 0) + (entity.textColumns?.heights.length ?? 0);
       for (const path of entity.extraPaths ?? []) work += path.length;
       break;
     case 'text':
@@ -1030,6 +1100,7 @@ export function entityGeometryWork(entity: Entity): number {
       break;
     case 'insert':
       for (const value of Object.values(entity.attributes)) work += value.length;
+      work *= insertArrayCount(entity);
       break;
     case 'table':
       work += entity.rowHeights.length + entity.columnWidths.length + entity.rowHeights.length * entity.columnWidths.length;
@@ -1072,7 +1143,7 @@ export function collectBlockDependencies(name: string, lookup: BlockLookup, deps
   return deps;
 }
 
-export const MAX_BLOCK_EXPANSION_WORK = 100_000;
+export const MAX_BLOCK_EXPANSION_WORK = MAX_INSERT_ARRAY_INSTANCES;
 
 export const MAX_INSERT_EXPANSION = 2_000_000;
 /** Nesting levels drawn below a reference (deeper references are not expanded). */
@@ -1177,6 +1248,15 @@ export function insertExpansionLimited(ins: InsertEntity, lookup: BlockLookup): 
 
 /** Append the expansion of `ins` to `out` (no spread: nested results may be large). */
 function explodeInto(out: Entity[], ins: InsertEntity, lookup: BlockLookup, depth: number, budget: ExpansionBudget): void {
+  // Refuse multiplicative work before iterating, including empty or missing definitions.
+  if (entityGeometryWork(ins) > MAX_BLOCK_EXPANSION_WORK) throw new GeometryBudgetError('Block expansion exceeds the safe geometry budget.');
+  for (const instance of insertArrayInstances(ins)) {
+    if (budget.visits <= 0 || budget.left <= 0) { budget.truncated = true; break; }
+    explodeSingleInto(out, instance, lookup, depth, budget);
+  }
+}
+
+function explodeSingleInto(out: Entity[], ins: InsertEntity, lookup: BlockLookup, depth: number, budget: ExpansionBudget): void {
   // Every reference followed costs one visit, also one that draws nothing (an empty or missing
   // block, or one below the nesting depth): the walk itself is bounded, not only its output.
   if (budget.visits <= 0) {
@@ -1225,17 +1305,7 @@ function explodeInto(out: Entity[], ins: InsertEntity, lookup: BlockLookup, dept
       break;
     }
     budget.left -= 1;
-    out.push({
-      type: 'text',
-      id: `${ins.id}:${a.tag}`,
-      layer: attributeLayer(a.tag, ins.layer),
-      color: 'ByLayer',
-      position: tf(a.position),
-      text: value,
-      height: a.height * Math.sqrt(ins.scale * (ins.scaleY ?? ins.scale)),
-      rotation: ins.rotation + (a.rotation ?? 0),
-      align: ins.mirror ? flipAlign(a.align) : a.align,
-    });
+    out.push(attributeText(ins, block, a, value));
   }
   budget.chain.pop();
 }
@@ -1288,8 +1358,9 @@ export function expansionReport(blocks: Readonly<Record<string, BlockDef>>, topL
     for (const e of block.entities) {
       if (e.type === 'insert') {
         const c = sizeOf(e.block, depth + 1);
-        objects += c.objects;
-        visits += c.visits;
+        const instances = insertArrayCount(e);
+        objects += c.objects * instances;
+        visits += c.visits * instances;
       } else objects += 1;
       if (objects >= CAP || visits >= CAP) break;
     }
@@ -1300,7 +1371,7 @@ export function expansionReport(blocks: Readonly<Record<string, BlockDef>>, topL
   };
   for (const name of Object.keys(blocks)) sizeOf(name, 0);
   let total = 0;
-  for (const e of topLevel) if (e.type === 'insert') total = Math.min(CAP * 1000, total + sizeOf(e.block, 0).objects);
+  for (const e of topLevel) if (e.type === 'insert') total = Math.min(CAP * 1000, total + sizeOf(e.block, 0).objects * insertArrayCount(e));
   const oversized = [...size[0]!].filter(([, c]) => c.objects >= CAP || c.visits > MAX_INSERT_EXPANSION).map(([name]) => name);
   return { cyclic: [...cyclic].sort(), oversized: oversized.sort(), total };
 }
@@ -1314,6 +1385,24 @@ export function attributeLayer(tag: string, fallback: string): string {
   return fallback;
 }
 
+/** The visible attribute's own native anchors win over the ATTDEF defaults. */
+export function attributeText(ins: InsertEntity, block: BlockDef, a: AttributeDef, value = ins.attributes[a.tag] ?? a.default, inheritAppearance = true): TextEntity {
+  const placement = ins.attributePlacements?.[a.tag] ?? a;
+  const rawLayer = placement.layer ?? attributeLayer(a.tag, ins.layer);
+  const local: TextEntity = { ...placement, id: `${ins.id}:${a.tag}`, type: 'text', layer: inheritAppearance && rawLayer === '0' ? ins.layer : rawLayer, color: placement.color ?? 'ByLayer', rotation: placement.rotation ?? 0, text: value };
+  if (inheritAppearance) Object.assign(local, inheritedColor(local, ins), inheritedTransparency(local, ins));
+  return scaledText(local, insertTransform(ins, block), ins.rotation, ins.scale, ins.scaleY ?? ins.scale, !!ins.mirror) as TextEntity;
+}
+
+/** ATTRIB data is in world coordinates; keep overrides local so moving an insert moves its labels. */
+export function localAttributePlacement(ins: InsertEntity, basePoint: Point, placement: TextPlacement & AttributeAppearance & { readonly style?: string }): TextPlacement & AttributeAppearance & { readonly style?: string } {
+  const inverse = (p: Point) => {
+    const q = g.rotate(g.sub(p, ins.position), -ins.rotation);
+    return g.add(basePoint, { x: q.x / (ins.scale * (ins.mirror ? -1 : 1)), y: q.y / (ins.scaleY ?? ins.scale) });
+  };
+  return scaledText({ ...placement, rotation: (placement.rotation ?? 0) - ins.rotation }, inverse, 0, 1 / ins.scale, 1 / (ins.scaleY ?? ins.scale), !!ins.mirror);
+}
+
 /** Apply a similarity transform (translate/rotate/uniform scale) to any entity. */
 export function similarityTransform(e: Entity, tf: (p: Point) => Point, rotation: number, k: number): Entity {
   switch (e.type) {
@@ -1324,11 +1413,11 @@ export function similarityTransform(e: Entity, tf: (p: Point) => Point, rotation
     case 'arc':
       return { ...e, center: tf(e.center), radius: e.radius * k, startAngle: e.startAngle + rotation, endAngle: e.endAngle + rotation };
     case 'polyline':
-      return { ...e, points: e.points.map(tf), width: e.width !== undefined ? e.width * k : e.width };
+      return { ...e, points: e.points.map(tf), width: e.width !== undefined ? e.width * Math.abs(k) : e.width, widths: e.widths?.map((w) => ({ start: w.start * Math.abs(k), end: w.end * Math.abs(k) })), ...(e.widthFrame ? { widthFrame: transformWidthFrame(e.widthFrame, tf) } : {}) };
     case 'text':
-      return { ...e, position: tf(e.position), height: e.height * k, rotation: e.rotation + rotation };
+      return { ...transformedTextAnchors(e, tf), height: e.height * k, rotation: e.rotation + rotation };
     case 'insert':
-      return { ...e, position: tf(e.position), rotation: e.rotation + rotation, scale: e.scale * k, ...(e.scaleY !== undefined ? { scaleY: e.scaleY * k } : {}) };
+      return { ...e, position: tf(e.position), rotation: e.rotation + rotation, scale: e.scale * k, ...(e.scaleY !== undefined ? { scaleY: e.scaleY * k } : {}), ...(e.columnSpacing !== undefined ? { columnSpacing: e.columnSpacing * k } : {}), ...(e.rowSpacing !== undefined ? { rowSpacing: e.rowSpacing * k } : {}) };
     case 'ellipse':
       return { ...e, center: tf(e.center), majorAxis: g.rotate(g.scale(e.majorAxis, k), rotation) };
     case 'point':
@@ -1367,28 +1456,78 @@ export function similarityTransform(e: Entity, tf: (p: Point) => Point, rotation
  *   ByLayer, the colour of the reference's layer (`colorLayer`); a ByBlock reference passes
  *   ByBlock on to the next level up, so nested blocks resolve outwards.
  */
-export function inheritedColor(e: EntityBase, ins: EntityBase): { color: ColorSpec; trueColor?: number; colorLayer?: string } {
-  if (e.trueColor !== undefined) return { color: e.color, trueColor: e.trueColor };
-  if (e.color !== BYBLOCK) return { color: e.color };
-  if (ins.trueColor !== undefined) return { color: ins.color, trueColor: ins.trueColor };
-  if (ins.color === 'ByLayer') return { color: 'ByLayer', colorLayer: ins.colorLayer ?? ins.layer };
-  return { color: ins.color };
+export function inheritedColor(e: EntityBase, ins: EntityBase): Pick<EntityBase, 'color' | 'trueColor' | 'colorName' | 'colorLayer'> {
+  const ownName = e.colorName !== undefined ? { colorName: e.colorName } : {};
+  const parentName = ins.colorName !== undefined ? { colorName: ins.colorName } : {};
+  if (e.trueColor !== undefined) return { color: e.color, trueColor: e.trueColor, ...ownName };
+  if (e.color !== BYBLOCK) return { color: e.color, ...ownName, ...(e.colorLayer !== undefined ? { colorLayer: e.colorLayer } : {}) };
+  if (ins.trueColor !== undefined) return { color: ins.color, trueColor: ins.trueColor, ...parentName, ...ownName };
+  if (ins.color === 'ByLayer') return { color: 'ByLayer', colorLayer: ins.colorLayer ?? ins.layer, ...parentName, ...ownName };
+  return { color: ins.color, ...parentName, ...ownName };
 }
 
 /** Exploded block content made permanent (EXPLODE): a `colorLayer` becomes that layer's colour. */
 export function bakeInheritedColor<T extends Entity>(e: T, layers: readonly Layer[]): T {
-  if (e.colorLayer === undefined) return e;
-  const { colorLayer, ...rest } = e;
+  if (e.type === 'leader' && e.textAppearance) {
+    const a = e.textAppearance;
+    const layer = layers.find((l) => l.name === a.colorLayer);
+    e = { ...e, textAppearance: {
+      ...a,
+      ...(a.colorLayer !== undefined ? { color: layer?.color ?? 7, trueColor: layer?.trueColor, colorName: a.colorName ?? layer?.colorName } : {}),
+      ...(a.transparencyLayer !== undefined ? { transparency: Math.round(resolveAlpha({ layer: e.textLayer ?? e.layer, ...a }, layers) * 255) } : {}),
+      colorLayer: undefined, transparencyLayer: undefined,
+    } };
+  }
+  const bg = entityMTextBackground(e);
+  if (bg?.colorLayer !== undefined) {
+    const { colorLayer, ...background } = bg;
+    const layer = layers.find((l) => l.name === colorLayer);
+    const baked = { ...background, color: layer?.color ?? 7, ...(layer?.trueColor !== undefined ? { trueColor: layer.trueColor } : {}) };
+    e = { ...e, ...(e.type === 'leader' ? { textBackground: baked } : { background: baked }) };
+  }
+  if (e.colorLayer === undefined && e.transparencyLayer === undefined) return e;
+  const { colorLayer, transparencyLayer, ...rest } = e;
   const layer = layers.find((l) => l.name === colorLayer);
-  return { ...rest, color: layer?.color ?? 7, ...(layer?.trueColor !== undefined ? { trueColor: layer.trueColor } : {}) } as T;
+  return {
+    ...rest,
+    ...(colorLayer !== undefined ? { color: layer?.color ?? 7, ...(layer?.trueColor !== undefined ? { trueColor: layer.trueColor } : {}), ...(e.colorName === undefined && layer?.colorName !== undefined ? { colorName: layer.colorName } : {}) } : {}),
+    ...(transparencyLayer !== undefined ? { transparency: Math.round(resolveAlpha(e, layers) * 255) } : {}),
+  } as T;
 }
 
 function transformInto(out: Entity[], e: Entity, tf: (p: Point) => Point, ins: InsertEntity, similar: boolean, lookup: BlockLookup, depth: number, budget: ExpansionBudget): void {
+  // Transform each local grid anchor before a nonuniform parent can shear the grid.
+  if (e.type === 'insert' && insertArrayCount(e) > 1) {
+    for (const instance of insertArrayInstances(e)) {
+      if (budget.visits <= 0 || budget.left <= 0) { budget.truncated = true; break; }
+      transformInto(out, instance, tf, ins, similar, lookup, depth, budget);
+    }
+    return;
+  }
   // Entities on layer "0" inside a block inherit the insert's layer (AutoCAD behaviour).
   const lay = e.layer === '0' ? ins.layer : e.layer;
   const lt = e.linetype && e.linetype.toUpperCase() === 'BYBLOCK' ? ins.linetype : e.linetype;
-  const { trueColor: _t, colorLayer: _c, ...plain } = e;
-  const styled = { ...plain, layer: lay, ...inheritedColor(e, ins), linetype: lt } as Entity;
+  const { trueColor: _t, colorLayer: _c, colorName: _n, transparency: _a, transparencyLayer: _al, ...plain } = e;
+  const styled = { ...plain, layer: lay, ...inheritedColor(e, ins), ...inheritedTransparency(e, ins), linetype: lt } as Entity;
+  if (e.type === 'leader' && e.textAppearance) {
+    const annotation: EntityBase = { id: e.id, layer: e.textLayer ?? e.layer, color: e.textAppearance.color ?? 'ByLayer', ...e.textAppearance };
+    Object.assign(styled, { textAppearance: { ...e.textAppearance, ...inheritedColor(annotation, ins), ...inheritedTransparency(annotation, ins) } });
+  }
+  const bg = entityMTextBackground(e);
+  if (bg) {
+    const inherited = inheritedColor({ ...e, color: bg.color, trueColor: bg.trueColor, colorName: bg.colorName, colorLayer: bg.colorLayer }, ins);
+    Object.assign(styled, styled.type === 'leader' ? { textBackground: { ...bg, ...inherited } } : { background: { ...bg, ...inherited } });
+  }
+  if (styled.type === 'leader' && styled.textLayer === '0') Object.assign(styled, { textLayer: ins.layer });
+  if (!similar && styled.type === 'insert') {
+    // Applying anisotropic scale after a rotated nested INSERT produces shear. Combining
+    // its rotation/scales as scalar INSERT fields would lose that affine geometry. Expand
+    // in the nested reference's own coordinates, then apply this ancestor to its primitives.
+    const children: Entity[] = [];
+    explodeInto(children, styled, lookup, depth, budget);
+    for (const child of children) out.push(blockTransform(child, tf, ins.rotation, ins.scale, ins.scaleY ?? ins.scale, Boolean(ins.mirror)));
+    return;
+  }
   const moved = similar ? similarityTransform(styled, tf, ins.rotation, ins.scale) : blockTransform(styled, tf, ins.rotation, ins.scale, ins.scaleY ?? ins.scale, Boolean(ins.mirror));
   if (moved.type === 'insert') {
     explodeInto(out, moved, lookup, depth, budget);
@@ -1410,6 +1549,11 @@ export function entityBounds(e: Entity, lookup: BlockLookup): Bounds | null {
     case 'arc':
       return g.boundsOfPoints(arcPoints(e, 16));
     case 'polyline': {
+      if (e.widths || e.widthFrame) {
+        let bounds = g.boundsOfPoints(polylineVertices(e));
+        for (const polygon of polylineWidthGeometry(e).polygons) bounds = g.unionBounds(bounds, g.boundsOfPoints(polygon));
+        return bounds;
+      }
       const b = g.boundsOfPoints(polylineVertices(e));
       if (!b || !e.width) return b;
       const h = e.width / 2;
@@ -1430,6 +1574,7 @@ export function entityBounds(e: Entity, lookup: BlockLookup): Bounds | null {
       let b: Bounds | null = null;
       for (const t of mtextParts(e)) b = g.unionBounds(b, textBounds(t));
       for (const l of mtextDecorations(e)) b = g.unionBounds(b, g.boundsOfPoints([l.a, l.b]));
+      for (const mask of mtextMasks(e)) b = g.unionBounds(b, g.boundsOfPoints(mask));
       return b ?? { min: e.position, max: e.position };
     }
     case 'dimension': {
@@ -1473,6 +1618,16 @@ export function distanceToEntity(p: Point, e: Entity, lookup: BlockLookup): numb
       return Math.min(g.dist(p, s), g.dist(p, en));
     }
     case 'polyline': {
+      if (e.widths || e.widthFrame) {
+        const geometry = polylineWidthGeometry(e);
+        let distance = Infinity;
+        for (const polygon of geometry.polygons) {
+          if (pointInPolygon(p, polygon)) return 0;
+          for (let i = 0; i < polygon.length; i++) distance = Math.min(distance, g.distToSegment(p, polygon[i]!, polygon[(i + 1) % polygon.length]!));
+        }
+        for (const spine of geometry.thin) for (let i = 1; i < spine.length; i++) distance = Math.min(distance, g.distToSegment(p, spine[i - 1]!, spine[i]!));
+        return distance;
+      }
       let best = Infinity;
       const pts = polylineVertices(e);
       const n = pts.length;
@@ -1509,6 +1664,10 @@ export function distanceToEntity(p: Point, e: Entity, lookup: BlockLookup): numb
     }
     case 'mtext': {
       let best = Infinity;
+      for (const mask of mtextMasks(e)) {
+        if (hasMTextFill(e) && pointInPolygon(p, mask)) return 0;
+        for (let i = 0; i < mask.length; i++) best = Math.min(best, g.distToSegment(p, mask[i]!, mask[(i + 1) % mask.length]!));
+      }
       for (const t of mtextParts(e)) best = Math.min(best, distanceToEntity(p, t, lookup));
       for (const l of mtextDecorations(e)) best = Math.min(best, g.distToSegment(p, l.a, l.b));
       return best;
@@ -1587,13 +1746,13 @@ export function mirrorEntityAcross(e: Entity, a: Point, b: Point): Entity {
     case 'arc':
       return { ...e, center: reflect(e.center), startAngle: reflectAngle(e.endAngle), endAngle: reflectAngle(e.startAngle) };
     case 'polyline':
-      return { ...e, points: e.points.map(reflect), bulges: e.bulges?.map((bu) => -bu) };
+      return { ...e, points: e.points.map(reflect), bulges: e.bulges?.map((bu) => -bu), ...(e.widthFrame ? { widthFrame: transformWidthFrame(e.widthFrame, reflect) } : {}) };
     case 'text':
-      return { ...e, position: reflect(e.position) };
+      return transformedTextAnchors(e, reflect);
     case 'insert':
       // A reflection is a mirror about the block's Y axis plus a rotation: the block geometry is
       // mirrored while attribute / text glyphs stay readable (MIRRTEXT = 0), like AutoCAD.
-      return { ...e, position: reflect(e.position), rotation: normAngle(reflectAngle(e.rotation) + Math.PI), mirror: !e.mirror };
+      return { ...e, position: reflect(e.position), rotation: normAngle(reflectAngle(e.rotation) + Math.PI), mirror: !e.mirror, ...(e.columnSpacing !== undefined ? { columnSpacing: -e.columnSpacing } : {}) };
     case 'ellipse': {
       const tip = reflect(g.add(e.center, e.majorAxis));
       const c = reflect(e.center);
@@ -1651,7 +1810,7 @@ export function gripPoints(e: Entity): Point[] {
     case 'polyline':
       return [...e.points];
     case 'text':
-      return [e.position];
+      return e.justification && (e.justification.horizontal === 3 || e.justification.horizontal === 5) && e.alignmentPoint ? [e.position, e.alignmentPoint] : [textAnchor(e)];
     case 'insert':
       return [e.position];
     case 'ellipse':
@@ -1716,8 +1875,11 @@ export function moveGrip(e: Entity, index: number, p: Point): Entity | null {
       return { ...e, radius: Math.max(1e-6, g.dist(e.center, p)) };
     }
     case 'polyline':
-      return { ...e, points: e.points.map((q, i) => (i === index ? p : q)) };
-    case 'text':
+      return { ...e, points: e.points.map((q, i) => (i === index ? p : q)), ...(e.widthFrame ? { widthFrame: moveWidthFrameGrip(e.widthFrame, index, p) } : {}) };
+    case 'text': {
+      if (e.justification && (e.justification.horizontal === 3 || e.justification.horizontal === 5) && e.alignmentPoint) return index === 0 ? { ...e, position: p } : { ...e, alignmentPoint: p };
+      return translateEntity(e, g.sub(p, textAnchor(e)));
+    }
     case 'insert':
     case 'point':
     case 'mtext':
@@ -1798,19 +1960,22 @@ export function snapCandidates(e: Entity, lookup: BlockLookup): SnapCandidate[] 
     }
     case 'polyline': {
       const out: SnapCandidate[] = e.points.map((p) => ({ point: p, kind: 'endpoint' as const }));
-      for (const s of polylineSegments(e)) {
+      for (const s of polylineSegments(e.widthFrame ? polylineFrameSource(e) : e)) {
         if (s.arc) {
-          out.push({ point: g.polar(s.arc.center, g.angleOf(s.arc.center, s.a) + s.arc.sweep / 2, s.arc.radius), kind: 'midpoint' });
-          out.push({ point: s.arc.center, kind: 'center' });
-        } else out.push({ point: g.mid(s.a, s.b), kind: 'midpoint' });
+          const midpoint = g.polar(s.arc.center, g.angleOf(s.arc.center, s.a) + s.arc.sweep / 2, s.arc.radius);
+          out.push({ point: e.widthFrame ? polylineFramePoint(e.widthFrame, midpoint) : midpoint, kind: 'midpoint' });
+          out.push({ point: e.widthFrame ? polylineFramePoint(e.widthFrame, s.arc.center) : s.arc.center, kind: 'center' });
+        } else { const midpoint = g.mid(s.a, s.b); out.push({ point: e.widthFrame ? polylineFramePoint(e.widthFrame, midpoint) : midpoint, kind: 'midpoint' }); }
       }
       return out;
     }
     case 'text':
-      return [{ point: e.position, kind: 'insertion' }];
+      return [{ point: textAnchor(e), kind: 'insertion' }];
     case 'insert': {
-      const out: SnapCandidate[] = [{ point: e.position, kind: 'insertion' }];
-      for (const sub of explodeInsert(e, lookup)) {
+      const exploded = explodeInsert(e, lookup);
+      const out: SnapCandidate[] = [];
+      for (const instance of insertArrayInstances(e)) out.push({ point: instance.position, kind: 'insertion' });
+      for (const sub of exploded) {
         if (sub.type === 'text') continue;
         for (const c of snapCandidates(sub, lookup)) if (c.kind === 'endpoint') out.push(c);
       }
@@ -1900,7 +2065,7 @@ export function entitySegments(e: Entity, lookup: BlockLookup): Array<[Point, Po
     case 'ray':
       return [rayEndpoints(e)];
     case 'mtext':
-      return [];
+      return hasMTextFrame(e) ? mtextMasks(e).flatMap((mask) => mask.map((p, i): [Point, Point] => [p, mask[(i + 1) % mask.length]!])) : [];
     case 'dimension': {
       const out: Array<[Point, Point]> = [];
       for (const part of dimensionParts(e)) out.push(...entitySegments(part, lookup));

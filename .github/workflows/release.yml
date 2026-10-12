@@ -408,6 +408,7 @@ jobs:
   # Install (Windows: NSIS silently), mount (macOS: hdiutil) or extract (Linux: AppImage, deb) the
   # installers just built retain their signed shipping fuses. Fixed runtime/save/restart probes
   # run without inspection; the broader Playwright suite belongs to the separate test ASAR.
+  # Each Mac architecture is mandatory on its own native runner; Rosetta is not a release gate.
   packaged-smoke:
     needs: [checks, build]
     strategy:
@@ -415,10 +416,16 @@ jobs:
       matrix:
         include:
           - os: windows-latest
+            arch: x64
             artifact: JCad-Electrical-Windows
-          - os: macos-latest
+          - os: macos-15
+            arch: arm64
+            artifact: JCad-Electrical-macOS
+          - os: macos-15-intel
+            arch: x64
             artifact: JCad-Electrical-macOS
           - os: ubuntu-latest
+            arch: x64
             artifact: JCad-Electrical-Linux
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -447,12 +454,16 @@ jobs:
         env:
           JCAD_SMOKE_OUT: packaged-smoke-output
           JCAD_SMOKE_REQUIRE_SHIPPING: 1
+          JCAD_SMOKE_NATIVE_ONLY: '1'
+          JCAD_SMOKE_EXPECT_ARCH: ${{ matrix.arch }}
       - name: Packaged smoke test (Windows, macOS)
         if: runner.os != 'Linux'
         run: node scripts/packaged-smoke.mjs installers
         env:
           JCAD_SMOKE_OUT: packaged-smoke-output
           JCAD_SMOKE_REQUIRE_SHIPPING: 1
+          JCAD_SMOKE_NATIVE_ONLY: '1'
+          JCAD_SMOKE_EXPECT_ARCH: ${{ matrix.arch }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:

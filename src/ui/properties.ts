@@ -1,9 +1,12 @@
 import type { Editor } from '../app/editor';
 import type { Entity } from '../core/entities';
-import { splinePoints, imageLabel } from '../core/entities';
+import { splinePoints, imageLabel, textWidth, translateEntity, rotateEntity } from '../core/entities';
+import { textAnchor, textJustification } from '../core/text-placement';
+import * as g from '../core/geometry';
 import { PATTERN_NAMES } from '../core/hatch';
 import { aciToCss, ACI_NAMES } from '../render/palette';
 import { icon } from './icons';
+import { GeometryBudgetError } from '../core/geometry-budget-error';
 
 /** Properties palette: shows and edits the current selection (docked right). */
 export class PropertiesPalette {
@@ -64,8 +67,13 @@ export class PropertiesPalette {
     i.className = 'prop-input';
     i.value = value;
     i.spellcheck = false;
+    let committed = value;
     const commit = () => {
-      if (i.value !== value) onCommit(i.value);
+      if (i.value !== committed) {
+        // Rendering can blur this input and deliver change again during the first commit.
+        committed = i.value;
+        onCommit(committed);
+      }
     };
     i.addEventListener('change', commit);
     i.addEventListener('keydown', (ev) => {
@@ -130,7 +138,7 @@ export class PropertiesPalette {
     const colorVal = common('color');
     const colorSel = this.select(colorVal === '*VARIES*' ? [['*VARIES*', '*VARIES*'], ...colors] : colors, colorVal, (v) => {
       if (v === '*VARIES*') return;
-      doc.replaceEntities(sel.map((e) => ({ ...e, color: v === 'ByLayer' ? ('ByLayer' as const) : parseInt(v, 10) })));
+      doc.replaceEntities(sel.map((e) => ({ ...e, color: v === 'ByLayer' ? ('ByLayer' as const) : parseInt(v, 10), trueColor: undefined, colorName: undefined, colorLayer: undefined })));
     });
     const swatchWrap = document.createElement('span');
     swatchWrap.className = 'prop-color';
@@ -144,11 +152,23 @@ export class PropertiesPalette {
     if (sel.length !== 1) return;
     const e = sel[0]!;
     const num = (v: number) => v.toFixed(4);
-    const patch = (p: Partial<Entity>) => doc.replaceEntities([{ ...e, ...p } as Entity]);
+    const patch = (p: Partial<Entity>) => {
+      try { doc.replaceEntities([{ ...e, ...p } as Entity]); }
+      catch (error) {
+        if (!(error instanceof GeometryBudgetError)) throw error;
+        this.editor.log(error.message);
+        this.render();
+      }
+    };
     const numInput = (v: number, fn: (n: number) => void) =>
       this.input(num(v), (s) => {
         const n = parseFloat(s);
         if (Number.isFinite(n)) fn(n);
+      });
+    const arrayInput = (v: number, fn: (n: number) => void) =>
+      this.input(num(v), (s) => {
+        const n = Number(s.trim());
+        if (s.trim() && Number.isFinite(n)) fn(n);
       });
     b.appendChild(this.section('Geometry'));
     switch (e.type) {
@@ -179,14 +199,24 @@ export class PropertiesPalette {
         b.appendChild(this.row('Vertices', String(e.points.length)));
         b.appendChild(this.row('Closed', this.select([['1', 'Yes'], ['0', 'No']], e.closed ? '1' : '0', (v) => patch({ closed: v === '1' }))));
         break;
-      case 'text':
+      case 'text': {
+        const anchor = textAnchor(e);
+        const horizontal = e.justification?.horizontal ?? (e.align === 'center' ? 1 : e.align === 'right' ? 2 : 0);
+        const move = (p: g.Point) => patch(translateEntity(e, g.sub(p, anchor)));
         b.appendChild(this.row('Contents', this.input(e.text, (v) => patch({ text: v }))));
         b.appendChild(this.row('Height', numInput(e.height, (n) => n > 0 && patch({ height: n }))));
-        b.appendChild(this.row('Rotation', numInput((e.rotation * 180) / Math.PI, (n) => patch({ rotation: (n * Math.PI) / 180 }))));
-        b.appendChild(this.row('Justify', this.select([['left', 'Left'], ['center', 'Center'], ['right', 'Right']], e.align, (v) => patch({ align: v as 'left' | 'center' | 'right' }))));
-        b.appendChild(this.row('X', numInput(e.position.x, (n) => patch({ position: { x: n, y: e.position.y } }))));
-        b.appendChild(this.row('Y', numInput(e.position.y, (n) => patch({ position: { x: e.position.x, y: n } }))));
+        const rotation = (horizontal === 3 || horizontal === 5) && e.alignmentPoint ? g.angleOf(e.position, e.alignmentPoint) : e.rotation;
+        b.appendChild(this.row('Rotation', numInput(g.deg(rotation), (n) => patch(rotateEntity(e, anchor, g.rad(n) - rotation)))));
+        b.appendChild(this.row('Justify', this.select([['0', 'Left'], ['1', 'Center'], ['2', 'Right'], ['3', 'Aligned'], ['4', 'Middle'], ['5', 'Fit']], String(horizontal), (value) => {
+          const h = Number(value);
+          const span = Math.max(1e-6, textWidth(e.text, e.height) * (e.widthFactor ?? 1));
+          patch({ position: anchor, align: h === 1 || h === 4 ? 'center' : h === 2 ? 'right' : 'left', justification: textJustification(h, h > 2 ? 0 : e.justification?.vertical ?? 0), alignmentPoint: h === 3 || h === 5 ? e.alignmentPoint ?? g.polar(anchor, e.rotation, span) : anchor });
+        })));
+        if (horizontal <= 2) b.appendChild(this.row('Vertical', this.select([['0', 'Baseline'], ['1', 'Bottom'], ['2', 'Middle'], ['3', 'Top']], String(e.justification?.vertical ?? 0), (v) => patch({ justification: textJustification(horizontal, Number(v)), alignmentPoint: e.alignmentPoint ?? anchor }))));
+        b.appendChild(this.row('X', numInput(anchor.x, (n) => move({ x: n, y: anchor.y }))));
+        b.appendChild(this.row('Y', numInput(anchor.y, (n) => move({ x: anchor.x, y: n }))));
         break;
+      }
       case 'insert': {
         const block = doc.lookupBlock(e.block);
         b.appendChild(this.row('Name', e.block));
@@ -195,6 +225,11 @@ export class PropertiesPalette {
         b.appendChild(this.row('Y', numInput(e.position.y, (n) => patch({ position: { x: e.position.x, y: n } }))));
         b.appendChild(this.row('Rotation', numInput((e.rotation * 180) / Math.PI, (n) => patch({ rotation: (n * Math.PI) / 180 }))));
         b.appendChild(this.row('Scale', numInput(e.scale, (n) => n > 0 && patch({ scale: n }))));
+        b.appendChild(this.section('Array'));
+        b.appendChild(this.row('Columns', arrayInput(e.columns ?? 1, (n) => Number.isSafeInteger(n) && n > 0 && n <= 65535 && patch({ columns: n }))));
+        b.appendChild(this.row('Rows', arrayInput(e.rows ?? 1, (n) => Number.isSafeInteger(n) && n > 0 && n <= 65535 && patch({ rows: n }))));
+        b.appendChild(this.row('Column spacing', arrayInput(e.columnSpacing ?? 0, (n) => patch({ columnSpacing: n }))));
+        b.appendChild(this.row('Row spacing', arrayInput(e.rowSpacing ?? 0, (n) => patch({ rowSpacing: n }))));
         if (block && block.attributes.length) {
           b.appendChild(this.section('Attributes'));
           for (const a of block.attributes) {

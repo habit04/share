@@ -8,10 +8,11 @@ import type { Obj } from './groups';
 import type { RawDxfEntity } from '../import-report';
 import { isPointerCode, isRealCode, isRealText, isIntCode, PRECISION_CODES, isQuietXdataApp, ANNO_APP } from './codes';
 import { str, num, isIntegerText, shortText, invalidPrecision, precisionRequirement, has, HatchReadError, xdata } from './groups';
-import type { Entity, TextEntity } from '../../core/entities';
+import type { Entity, TextEntity, AttributeAppearance } from '../../core/entities';
 import type { ReadContext } from './read-core';
 import * as g from '../../core/geometry';
-import { reportObj, commonProps } from './read-core';
+import { reportObj, commonProps, commonAppearanceObject } from './read-core';
+import { transparencyFromDxf, validColorName } from '../../core/appearance';
 import { geometryProblem } from '../import-report';
 import { dstylePairs, hasUnconsumedAcadXdata } from './read-annotations';
 import { formattedSource } from '../../core/mtext';
@@ -19,6 +20,9 @@ import { DIM_VARIABLES } from '../../core/dimension';
 import { readEntityObj } from './read-entities';
 import { SplineWorkLimitError } from '../../core/spline';
 import { withTextStyle } from '../encoding';
+import { readTextPlacement } from './read-text';
+import { localAttributePlacement } from '../../core/entities';
+import type { TextPlacement } from '../../core/text-placement';
 
 /** Entity types the reader converts (anything else is reported, or kept raw when safe). */
 const READ_KINDS = new Set(['LINE', 'CIRCLE', 'ARC', 'LWPOLYLINE', 'POLYLINE', 'SOLID', 'TRACE', 'TEXT', 'MTEXT', 'ELLIPSE', 'POINT', 'XLINE', 'RAY', 'DIMENSION', 'SPLINE', 'HATCH', 'LEADER', 'MULTILEADER', 'MLEADER', 'IMAGE', 'ACAD_TABLE', 'INSERT']);
@@ -99,7 +103,7 @@ function applyExtrusion(o: Obj, e: Entity, ctx: ReadContext): Entity {
         // The insertion point, rotation and scales are in the object's plane: mirroring the plane
         // flips the position, reverses the rotation and mirrors the block about its Y axis.
         const { mirror: _m, ...rest } = e;
-        return { ...rest, position: flip(e.position), rotation: -e.rotation, ...(e.mirror ? {} : { mirror: true }) };
+        return { ...rest, position: flip(e.position), rotation: -e.rotation, ...(e.mirror ? {} : { mirror: true }), ...(e.columnSpacing !== undefined ? { columnSpacing: -e.columnSpacing } : {}) };
       }
       default:
         break;
@@ -144,18 +148,22 @@ export function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): En
     if (o.kind === 'ACAD_TABLE') reportObj(ctx, o, 'simplified', 'table cells, sizes and supported style defaults are kept; native table editing, formulas, style font names, advanced borders and fills are not modeled, and export uses an INSERT picture with JCAD_TABLE data');
     if (o.kind === 'HATCH' && num(o, 450) === 1) reportObj(ctx, o, 'simplified', 'gradient hatch settings are not kept; boundary geometry and the solid/pattern fill are retained');
     if (e.type === 'mtext' && e.columns) reportObj(ctx, o, 'simplified', `column definitions are kept in JCAD_MTEXT_COLUMNS on AutoCAD 2000 export; other CAD programs show one column${e.columns.type === 2 || !formattedSource(e)?.includes('\\N') ? '; automatic column flow is approximated in JCad' : ''}`);
-    if (o.kind === 'LWPOLYLINE' && (has(o, 40) || has(o, 41))) reportObj(ctx, o, 'simplified', 'per-vertex polyline widths are not kept; its centerline and constant width are kept');
     if (has(o, 39) && num(o, 39) !== 0) reportObj(ctx, o, 'simplified', 'nonzero thickness is not kept in the 2D drawing');
-    if (has(o, 440) || has(o, 430)) reportObj(ctx, o, 'simplified', 'transparency and color-book names are not kept; RGB/ACI color is kept');
+    const appearance = commonAppearanceObject(o);
+    if (has(appearance, 440) && transparencyFromDxf(Number(str(appearance, 440))) === undefined) reportObj(ctx, o, 'simplified', 'invalid transparency method/alpha is not kept; ByLayer transparency is used');
+    if (has(appearance, 430) && !validColorName(str(appearance, 430))) reportObj(ctx, o, 'simplified', 'invalid named/color-book identity is not kept; RGB/ACI color is kept');
     // IMAGE's IMAGEDEF reactor is reconstructed on export; other object links are unmodeled.
     const unmodeledLinks = o.kind === 'IMAGE' ? o.groups.some((p) => p.code === 102 && p.value !== '{ACAD_REACTORS' && p.value !== '}') : has(o, 102) || has(o, 360);
     if (unmodeledLinks) reportObj(ctx, o, 'simplified', 'reactor/extension-dictionary links are not kept; supported drawing geometry is kept');
-    if (o.kind === 'MTEXT' && num(o, 90) !== 0) reportObj(ctx, o, 'simplified', 'MTEXT background fill is not kept');
+    if (e.type === 'mtext' && e.background) {
+      if (e.background.flags & ~19) reportObj(ctx, o, 'simplified', 'unmodeled MTEXT background flag bits are retained but their effects are not drawn');
+      if (e.background.transparency) reportObj(ctx, o, 'simplified', 'MTEXT background transparency is retained but not applied; native AutoCAD does not implement group 441');
+    }
     if (ctx.report && xdataApps) {
       const consumedDstyle = o.kind === 'DIMENSION' || o.kind === 'LEADER';
       const unsupportedOverrides = o.kind === 'DIMENSION' ? dstylePairs(o).filter(([code]) => ![71, 72, 73, 74, 78, 340].includes(code) && !DIM_VARIABLES.some((v) => v.code === code)) : o.kind === 'LEADER' ? dstylePairs(o).filter(([code]) => code !== 41) : [];
       if (unsupportedOverrides.length) reportObj(ctx, o, 'simplified', `DSTYLE override groups ${unsupportedOverrides.map(([code]) => code).join(', ')} are not modeled or written back`);
-      const apps = [...new Set(o.groups.filter((x) => x.code === 1001 && !isQuietXdataApp(x.value.trim()) && !(x.value.trim() === 'ACAD' && consumedDstyle && !hasUnconsumedAcadXdata(o))).map((x) => x.value.trim()))];
+      const apps = [...new Set(o.groups.filter((x) => x.code === 1001 && !isQuietXdataApp(x.value.trim(), o.kind) && !(x.value.trim() === 'ACAD' && consumedDstyle && !hasUnconsumedAcadXdata(o))).map((x) => x.value.trim()))];
       if (apps.length) reportObj(ctx, o, 'simplified', `extended data (XDATA) of ${apps.join(', ')} is not kept`);
     }
     return placed;
@@ -169,6 +177,9 @@ export function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): En
     if (o.kind === 'POLYLINE') {
       const pts: g.Point[] = [];
       const bulges: number[] = [];
+      const widths: Array<{ start: number; end: number }> = [];
+      const defaultStart = num(o, 40, 0), defaultEnd = num(o, 41, 0);
+      let variableWidth = has(o, 40) || has(o, 41);
       const flags = Math.trunc(num(o, 70));
       const closed = (flags & 1) === 1;
       let j = i + 1;
@@ -176,6 +187,8 @@ export function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): En
       while (j < objs.length && objs[j]!.kind === 'VERTEX') {
         pts.push({ x: num(objs[j]!, 10), y: num(objs[j]!, 20) });
         bulges.push(num(objs[j]!, 42, 0));
+        widths.push({ start: num(objs[j]!, 40, defaultStart), end: num(objs[j]!, 41, defaultEnd) });
+        variableWidth ||= has(objs[j]!, 40) || has(objs[j]!, 41);
         j += 1;
       }
       if (j < objs.length && objs[j]!.kind === 'SEQEND') j += 1;
@@ -194,7 +207,7 @@ export function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): En
         points: pts,
         closed,
         bulges: bulges.some((b) => Math.abs(b) > 1e-12) ? bulges : undefined,
-        width: width > 0 ? width : undefined,
+        ...(variableWidth ? { widths } : { width: width !== 0 ? width : undefined }),
       });
       if (poly) out.push(poly);
       continue;
@@ -238,9 +251,6 @@ export function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): En
       i += 1;
       continue;
     }
-    if (read.type === 'insert' && o.kind === 'INSERT' && (num(o, 70, 1) > 1 || num(o, 71, 1) > 1)) {
-      reportObj(ctx, o, 'simplified', `MINSERT array of ${Math.trunc(num(o, 70, 1))} x ${Math.trunc(num(o, 71, 1))} copies: only the first copy is kept`);
-    }
     // TEXT / MTEXT keep their text style name (group 7) for the TrueType renderer and the writer.
     const styled = read && (read.type === 'text' || read.type === 'mtext') ? withTextStyle(read, str(o, 7)) : read;
     const e = accept(o, styled && xdata(o, ANNO_APP) ? ({ ...styled, annotative: true } as Entity) : styled);
@@ -254,18 +264,31 @@ export function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): En
     if (e && e.type === 'insert') {
       const attrs: Record<string, string> = {};
       const hidden: string[] = [];
+      const placements: Record<string, TextPlacement & AttributeAppearance & { style?: string }> = {};
+      const def = ctx.blocks?.[e.block];
       let j = i + 1;
       while (j < objs.length && objs[j]!.kind === 'ATTRIB') {
         const tag = str(objs[j]!, 2);
         attrs[tag] = str(objs[j]!, 1);
+        if (def) {
+          const { id: _id, layer, ...appearance } = commonProps(objs[j]!);
+          const source = { ...appearance, ...(has(objs[j]!, 8) ? { layer } : {}), ...readTextPlacement(objs[j]!, 74) };
+          const bad = geometryProblem({ ...commonProps(objs[j]!), ...source, type: 'text', text: attrs[tag]!, id: 'attribute' });
+          if (bad) reportObj(ctx, objs[j]!, 'simplified', `attribute placement is invalid (${bad}); its value is kept at the definition's placement`);
+          else {
+            const local = localAttributePlacement(e, def.basePoint, source);
+            const inverseProblem = geometryProblem({ ...commonProps(objs[j]!), ...local, rotation: local.rotation ?? 0, type: 'text', text: attrs[tag]!, id: 'attribute' });
+            if (inverseProblem) reportObj(ctx, objs[j]!, 'simplified', `attribute placement cannot be represented in the insert's local coordinates (${inverseProblem}); its value is kept at the definition's placement`);
+            else placements[tag] = local;
+          }
+        }
         if ((Math.trunc(num(objs[j]!, 70)) & 1) === 1) hidden.push(tag);
         j += 1;
       }
       if (j < objs.length && objs[j]!.kind === 'SEQEND') j += 1;
       // An ATTRIB flagged invisible whose ATTDEF is visible hides that attribute on this insert only.
-      const def = ctx.blocks?.[e.block];
       const hiddenHere = def ? hidden.filter((t) => def.attributes.some((a) => a.tag === t && !a.invisible)) : [];
-      out.push({ ...e, attributes: attrs, ...(hiddenHere.length ? { hiddenAttributes: hiddenHere } : {}) });
+      out.push({ ...e, attributes: attrs, ...(hiddenHere.length ? { hiddenAttributes: hiddenHere } : {}), ...(Object.keys(placements).length ? { attributePlacements: placements } : {}) });
       i = j;
       continue;
     }
@@ -282,6 +305,7 @@ export function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): En
     const ld = out[l.index];
     if (!ann || !ld || ld.type !== 'leader' || drop.has(at!)) continue;
     if (ann.type === 'mtext') {
+      const appearance = ann as typeof ann & AttributeAppearance;
       out[l.index] = {
         ...ld,
         text: ann.text,
@@ -289,6 +313,11 @@ export function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): En
         textPosition: ann.position,
         textHeight: ann.height,
         textAttachment: ann.attachment,
+        textLayer: ann.layer,
+        textAppearance: { color: appearance.color, ...(appearance.trueColor !== undefined ? { trueColor: appearance.trueColor } : {}), ...(appearance.colorName !== undefined ? { colorName: appearance.colorName } : {}), ...(appearance.transparency !== undefined ? { transparency: appearance.transparency } : {}) },
+        textLineSpacing: ann.lineSpacing,
+        ...(ann.background ? { textBackground: ann.background } : {}),
+        ...(ann.columns ? { textColumns: ann.columns } : {}),
         ...(ann.width > 0 ? { textWidth: ann.width } : {}),
         ...(Math.abs(ann.rotation) > 1e-12 ? { textRotation: ann.rotation } : {}),
       };

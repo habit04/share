@@ -165,7 +165,7 @@ export function frozenCopy<T>(o: T): T {
 // ------------------------------------------------------------------ entity input
 
 const ENTITY_TYPES = new Set(['line', 'circle', 'arc', 'polyline', 'text', 'insert', 'ellipse', 'point', 'xline', 'ray', 'mtext', 'dimension']);
-const POINT_KEYS = ['a', 'b', 'center', 'position', 'p1', 'p2', 'linePoint', 'base', 'direction', 'majorAxis', 'textPosition'];
+const POINT_KEYS = ['a', 'b', 'center', 'position', 'p1', 'p2', 'linePoint', 'base', 'direction', 'majorAxis', 'textPosition', 'alignmentPoint', 'firstAlignmentPoint'];
 const REQUIRED: Record<string, string[]> = {
   line: ['a', 'b'],
   circle: ['center', 'radius'],

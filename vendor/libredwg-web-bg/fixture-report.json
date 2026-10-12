@@ -1,0 +1,128 @@
+{
+  "schemaVersion": 1,
+  "nativeError": 0,
+  "fixtureSha256": "f982246c6e529c286b89fefec07fc5e6e6c3fc0f984e679961ace29c8de83c53",
+  "expectedSha256": "459da44bbcd883825bcbfa45593e177bb1a0e7a97b080313948b0ef5ef7a736e",
+  "factorySha256": "2665f1fe5c798d8557642124be62036ccbaf825a6043766042a06e1108009a95",
+  "wasmSha256": "981b2480043a44743f42e41d19171079c68274bb326a1b0097b0c1971a595904",
+  "masks": [
+    {
+      "text": "ACI MASK",
+      "flags": 1,
+      "scale": 1.5,
+      "color": {
+        "index": 256,
+        "flag": 0,
+        "rgb": 3271557121,
+        "method": 195,
+        "name": "",
+        "book_name": "",
+        "alpha_type": 0,
+        "alpha": 0
+      },
+      "transparency": 0,
+      "columnType": 0,
+      "columnWidth": 0,
+      "gutter": 0
+    },
+    {
+      "text": "RGB\\PMULTILINE",
+      "flags": 1,
+      "scale": 2,
+      "color": {
+        "index": 256,
+        "flag": 3,
+        "rgb": 3255972950,
+        "method": 194,
+        "name": "Slate",
+        "book_name": "Example Book",
+        "alpha_type": 0,
+        "alpha": 0
+      },
+      "transparency": 0,
+      "columnType": 0,
+      "columnWidth": 0,
+      "gutter": 0
+    },
+    {
+      "text": "WINDOW",
+      "flags": 3,
+      "scale": 1.5,
+      "color": {
+        "index": 1,
+        "flag": 0,
+        "rgb": 3271491584,
+        "method": 194,
+        "name": "",
+        "book_name": "",
+        "alpha_type": 0,
+        "alpha": 0
+      },
+      "transparency": 0,
+      "columnType": 0,
+      "columnWidth": 0,
+      "gutter": 0
+    },
+    {
+      "text": "FRAME",
+      "flags": 16,
+      "columnType": 0,
+      "columnWidth": 0,
+      "gutter": 0
+    },
+    {
+      "text": "FILL + FRAME",
+      "flags": 17,
+      "scale": 1.25,
+      "color": {
+        "index": 256,
+        "flag": 0,
+        "rgb": 3271557124,
+        "method": 195,
+        "name": "",
+        "book_name": "",
+        "alpha_type": 0,
+        "alpha": 0
+      },
+      "transparency": 0,
+      "columnType": 0,
+      "columnWidth": 0,
+      "gutter": 0
+    },
+    {
+      "text": "OFF",
+      "flags": 0,
+      "columnType": 0,
+      "columnWidth": 0,
+      "gutter": 0
+    },
+    {
+      "text": "COLUMN ONE\\NCOLUMN TWO",
+      "flags": 1,
+      "scale": 1.5,
+      "color": {
+        "index": 256,
+        "flag": 0,
+        "rgb": 3271557122,
+        "method": 195,
+        "name": "",
+        "book_name": "",
+        "alpha_type": 0,
+        "alpha": 0
+      },
+      "transparency": 0,
+      "columnType": 0,
+      "columnWidth": 0,
+      "gutter": 0
+    }
+  ],
+  "diagnostics": [],
+  "columnOracle": {
+    "native": {
+      "type": 0,
+      "width": 0,
+      "gutter": 0
+    },
+    "applicationXdata": "JCAD_MTEXT_COLUMNS is present in the normalized DXF but not decoded/certified by this raw factory API"
+  }
+}

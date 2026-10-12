@@ -13,6 +13,77 @@ messages). The date of each version is the date of the commit that set that vers
 
 Nothing yet.
 
+## [0.4.4] - 2026-10-11
+
+### Upgrade notes
+
+- DXF saves choose the version required by native drawing properties. RGB/named colors require
+  AutoCAD 2004, MTEXT masks 2007, transparency 2010 and MTEXT frames 2018; ACI-only drawings
+  keep AutoCAD 2000 output when no other property requires a newer version.
+- macOS 13 Ventura or later remains required. Windows updates install after **Restart Now**;
+  choosing **Later** and quitting normally does not install an update.
+- Array cells share their attribute values. Explode an electrical array and assign separate
+  tags when its copies need independent identities; the electrical audit explains this.
+
+### Added
+
+- Native TEXT, ATTDEF and ATTRIB justification retains both alignment anchors and all fifteen
+  legal horizontal/vertical combinations, including an anchor at the origin. FIT retains height
+  while fitting width; ALIGNED fits height and width together. Attribute placement overrides
+  remain independent of their definitions through transforms, DXF save/reopen and vector PDF.
+- Polyline start/end widths round-trip through DXF groups 40/41 and exposed DWG fields,
+  including independent legacy POLYLINE defaults and explicit zero widths. Straight and bulged
+  segments render tapered footprints used by bounds and hit testing; snaps stay on the centerline.
+  Nonuniform and sheared width geometry can be saved through native nested block references.
+- ACI, true-color RGB, supplied color-book names and ByLayer/ByBlock/explicit opacity survive
+  supported imports, transforms, block inheritance, DXF persistence and canvas/PDF output.
+  Native ATTDEF/ATTRIB overrides and LEADER annotation foregrounds keep their own appearance.
+- Native MTEXT background fills and text frames retain padding, ACI/RGB/name fields and flags,
+  including associated LEADER annotations. Window-color fills follow the drawing background;
+  column gutters remain unmasked. Disabled settings use registered, bounded metadata that
+  survives JCad save/reopen without emitting invalid inactive native fields.
+- MINSERT rectangular arrays retain row/column counts, rotated drawing-unit spacing and shared
+  attributes through DXF/DWG import and native DXF export. Nested arrays preserve affine geometry,
+  and the Properties palette edits array dimensions with undo/redo and existing geometry limits.
+- About, Report a Problem and the download page show the public support email
+  `Justinrod04@gmail.com`. Desktop email links allow only that exact recipient; reports remain
+  available through Copy Report and Save Report.
+- A pinned native LibreDWG repair build validates fractional MTEXT mask scales and color-book
+  strings with an independent seven-mask AutoCAD DWG. Matching factory/WASM bytes, corresponding
+  modified source, checked patches and SHA-256 provenance accompany the candidate runtime.
+
+### Fixed
+
+- The Mac website download button offers an explicit Apple Silicon or Intel choice instead
+  of assuming every Mac needs the Apple Silicon installer.
+- Corrupt DWG files with critical native errors are rejected instead of opening as empty
+  drawings. Failed native pointers and temporary inputs are cleaned up, and a later valid
+  read starts with a fresh Node runtime; recoverable compatibility warnings still import.
+- Fitted text axes follow their authoritative anchors under nonuniform and mirrored transforms,
+  including inverse attribute placement. Associated LEADER text no longer inherits unrelated
+  leader RGB, name or alpha when its own foreground uses defaults.
+- Property edits commit once when a control loses focus during rerender, so one undo restores
+  the previous value. Choosing an ACI color clears prior RGB/name overrides and retains opacity.
+- DXF exports choose the highest native format required by any entity, layer, attribute or
+  associated annotation: RGB/names require 2004, MTEXT fills 2007, opacity 2010 and frames 2018.
+  Widths and arrays retain 2000 output when no other property requires a newer format.
+- Desktop regression checks exercise all five CAD fixtures through actual open/save/backup/reopen,
+  rendering, bounds and property undo. The AutoCAD oracle checks native width, color, array,
+  text-anchor and attribute fields in addition to AUDIT and entity counts.
+
+### Known limitations
+
+- The repaired native reader validates the documented mask fields. Complete DWG compatibility
+  is not established; converter omissions and ambiguous layer transparency remain.
+- Supplied color-book identities do not load vendor palettes. MTEXT background transparency is
+  retained with its unsupported effect reported, rather than applied. Fonts, vertical text
+  offsets, MTEXT column flow and nonuniform MTEXT layout retain the documented approximations.
+- Bulged width outlines use bounded sampling and beveled joins. Exported affine width wrappers
+  reopen as block references and must fit the existing nesting/work budgets. MINSERT cells share
+  attributes; distinct electrical identities require exploding and assigning separate tags.
+- Existing file, geometry and worker limits still apply. The native repair does not establish a
+  strict bound on total process/native memory or initial WASM allocation.
+
 ## [0.4.3] - 2026-10-11
 
 ### Upgrade notes
