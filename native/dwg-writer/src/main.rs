@@ -694,6 +694,153 @@ fn metadata_snapshot(doc: &CadDocument) -> Result<Value, String> {
     Ok(serde_json::json!({ "views": views, "objects": graph, "common": common, "xdata": xdata }))
 }
 
+#[derive(Default, Debug)]
+struct SourceLiterals {
+    xrecords: BTreeMap<u64, Vec<(i32, String)>>,
+    xdata: BTreeMap<u64, Vec<String>>,
+}
+
+#[derive(Default)]
+struct LiteralRecord {
+    kind: String,
+    handle: Option<u64>,
+    subclass: bool,
+    payload: bool,
+    application: bool,
+    xrecord: Vec<(i32, String)>,
+    xdata: Vec<String>,
+}
+
+impl LiteralRecord {
+    fn finish(self, source: &mut SourceLiterals) -> Result<(), String> {
+        if self.kind != "XRECORD" && self.xdata.is_empty() {
+            return Ok(());
+        }
+        let handle = self
+            .handle
+            .filter(|handle| *handle != 0)
+            .ok_or("Opaque DXF metadata has no source identity. Save a DXF copy instead.")?;
+        if self.kind == "XRECORD" {
+            if !self.subclass || !self.payload {
+                return Err("XRECORD source schema is incomplete. Save a DXF copy instead.".into());
+            }
+            if source.xrecords.insert(handle, self.xrecord).is_some() {
+                return Err("Opaque DXF metadata repeats a source identity.".into());
+            }
+        }
+        if !self.xdata.is_empty() && source.xdata.insert(handle, self.xdata).is_some() {
+            return Err("Opaque DXF XDATA repeats a source identity.".into());
+        }
+        Ok(())
+    }
+}
+
+/// Capture literal payloads independently of the third-party DXF decoder. Input has
+/// already passed the bounded ASCII preflight; strings are never display-unescaped.
+fn source_literals(text: &str) -> Result<SourceLiterals, String> {
+    let mut result = SourceLiterals::default();
+    let mut record = LiteralRecord::default();
+    let mut lines = text.lines();
+    while let Some(code) = lines.next() {
+        let value = lines.next().ok_or("Incomplete source literal pair.")?;
+        let code = code
+            .trim()
+            .parse::<i32>()
+            .map_err(|_| "Invalid source literal code.")?;
+        if code == 0 {
+            record.finish(&mut result)?;
+            record = LiteralRecord {
+                kind: value.trim().to_uppercase(),
+                ..LiteralRecord::default()
+            };
+            continue;
+        }
+        if code == 105 && record.kind == "DIMSTYLE" || code == 5 && record.kind != "DIMSTYLE" {
+            record.handle = u64::from_str_radix(value.trim(), 16).ok();
+        }
+        if code == 1001 {
+            record.application = true;
+            continue;
+        }
+        if record.application {
+            if code == 1000 {
+                record.xdata.push(value.to_owned());
+            }
+            continue;
+        }
+        if record.kind != "XRECORD" {
+            continue;
+        }
+        if !record.payload {
+            if code == 100 && value.trim() == "AcDbXrecord" {
+                record.subclass = true;
+            }
+            if code == 280 {
+                record.payload = true;
+            }
+            continue;
+        }
+        if matches!(XRecordValueType::from_code(code), XRecordValueType::String) {
+            record.xrecord.push((code, value.to_owned()));
+        }
+    }
+    record.finish(&mut result)?;
+    Ok(result)
+}
+
+fn verify_source_literals(doc: &CadDocument, source: &SourceLiterals) -> Result<(), String> {
+    for (handle, expected) in &source.xrecords {
+        let Some(ObjectType::XRecord(object)) = doc.objects.get(&Handle::new(*handle)) else {
+            return Err(
+                "XRECORD literal source identity was lost. Save a DXF copy instead.".into(),
+            );
+        };
+        let actual = object
+            .entries
+            .iter()
+            .filter_map(|entry| match &entry.value {
+                XRecordValue::String(value) => Some((entry.code, value.clone())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if &actual != expected {
+            return Err(
+                "XRECORD literal payload changed during DXF import. Save a DXF copy instead."
+                    .into(),
+            );
+        }
+    }
+    for (handle, expected) in &source.xdata {
+        let handle = Handle::new(*handle);
+        let entity = doc.get_entity(handle);
+        let records = entity
+            .map(|value| &value.common().extended_data)
+            .filter(|records| !records.records().is_empty())
+            .or_else(|| match doc.objects.get(&handle) {
+                Some(ObjectType::Field(value)) => Some(&value.xdata),
+                _ => None,
+            })
+            .filter(|records| !records.records().is_empty())
+            .or_else(|| doc.object_xdata.get(&handle))
+            .ok_or("XDATA literal source identity was lost. Save a DXF copy instead.")?;
+        let actual = records
+            .records()
+            .iter()
+            .flat_map(|record| &record.values)
+            .filter_map(|value| match value {
+                acadrust::xdata::XDataValue::String(value) => Some(value.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if &actual != expected {
+            return Err(
+                "XDATA literal payload changed during DXF import. Save a DXF copy instead.".into(),
+            );
+        }
+    }
+    Ok(())
+}
+
 fn verify_reopening(before: &CadDocument, after: &CadDocument) -> Result<(), String> {
     if after.version != DxfVersion::AC1032
         || counts(before) != counts(after)
@@ -820,6 +967,7 @@ fn convert() -> Result<Report, String> {
     let text = std::str::from_utf8(&bytes)
         .map_err(|_| "DWG export expects UTF-8 DXF interchange input.")?;
     let preflight = validation::validate(text)?;
+    let literal_source = source_literals(text)?;
     let layers = preflight
         .layers
         .into_iter()
@@ -832,6 +980,10 @@ fn convert() -> Result<Report, String> {
         .read()
         .map_err(|error| error.to_string())?;
     no_notifications(&document, "import")?;
+    // A parser-normalized baseline must not hide a changed literal payload.
+    // This runs before any output is created; reopening compares these verified
+    // typed strings exactly through the strict metadata snapshot.
+    verify_source_literals(&document, &literal_source)?;
     if counts(&document) != expected_counts {
         return Err(
             "The DWG engine could not preserve every DXF entity record. Save a DXF copy instead."
@@ -940,6 +1092,95 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn literal_document() -> (String, CadDocument) {
+        let literal =
+            r#"Δ 雷 literal \U+0041 JSON {"literal":"\\U+0041","newline":"\n","caret":"^J^M^I^ "}"#;
+        let source = format!("0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1032\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nLINE\n5\nA0\n100\nAcDbEntity\n8\n0\n100\nAcDbLine\n10\n0\n20\n0\n30\n0\n11\n1\n21\n1\n31\n0\n1001\nLITERAL\n1000\n{literal}\n1000\nsecond ^J \\n\n0\nTEXT\n5\nA1\n100\nAcDbEntity\n8\n0\n100\nAcDbText\n10\n0\n20\n0\n30\n0\n40\n1\n1\nDisplay \\U+0394^Jnext\n0\nENDSEC\n0\nSECTION\n2\nOBJECTS\n0\nXRECORD\n5\nB0\n330\n0\n100\nAcDbXrecord\n280\n1\n1\n{literal}\n300\nsecond ^J \\n\n0\nFIELD\n5\nC0\n330\n0\n100\nAcDbField\n1\nAcExpr\n2\n1+1\n90\n0\n97\n0\n1001\nFIELD_LITERAL\n1000\n{literal}\n0\nENDSEC\n0\nEOF\n");
+        validation::validate(&source).unwrap();
+        let document = DxfReader::from_reader(std::io::Cursor::new(source.as_bytes()))
+            .unwrap()
+            .read()
+            .unwrap();
+        (source, document)
+    }
+
+    #[test]
+    fn source_literal_guard_preserves_raw_xrecord_xdata_and_display_decoding() {
+        let (source, document) = literal_document();
+        let literals = source_literals(&source).unwrap();
+        verify_source_literals(&document, &literals).unwrap();
+        let text = document.get_entity(Handle::new(0xA1)).unwrap();
+        let acadrust::entities::EntityType::Text(text) = text else {
+            panic!("TEXT missing");
+        };
+        assert_eq!(text.value, "Display Δ\nnext");
+        assert_eq!(literals.xrecords[&0xB0][0].0, 1);
+        assert_eq!(literals.xrecords[&0xB0][1], (300, r"second ^J \n".into()));
+        assert_eq!(literals.xdata[&0xA0].len(), 2);
+        assert_eq!(literals.xdata[&0xC0].len(), 1);
+    }
+
+    #[test]
+    fn source_literal_guard_refuses_normalized_or_reordered_payloads() {
+        let (source, document) = literal_document();
+        let literals = source_literals(&source).unwrap();
+        for (from, to) in [(r"\U+0041", "A"), (r"\n", "\n"), ("^J", "\n"), ("Δ", "D")] {
+            let mut changed = document.clone();
+            let Some(ObjectType::XRecord(object)) = changed.objects.get_mut(&Handle::new(0xB0))
+            else {
+                panic!("XRECORD missing");
+            };
+            let XRecordValue::String(value) = &mut object.entries[0].value else {
+                panic!("literal missing");
+            };
+            *value = value.replace(from, to);
+            assert!(verify_source_literals(&changed, &literals).is_err());
+        }
+        let mut changed = document.clone();
+        let Some(ObjectType::XRecord(object)) = changed.objects.get_mut(&Handle::new(0xB0)) else {
+            panic!("XRECORD missing");
+        };
+        object.entries.reverse();
+        assert!(verify_source_literals(&changed, &literals).is_err());
+        let entity = changed.get_entity_mut(Handle::new(0xA0)).unwrap();
+        let mut record = entity.common().extended_data.records()[0].clone();
+        let acadrust::xdata::XDataValue::String(value) = &mut record.values[0] else {
+            panic!("XDATA missing");
+        };
+        *value = value.replace(r"\U+0041", "A");
+        entity.common_mut().extended_data.upsert_record(record);
+        // Keep the XRECORD intact so this failure proves the XDATA boundary.
+        changed.objects.insert(
+            Handle::new(0xB0),
+            document.objects[&Handle::new(0xB0)].clone(),
+        );
+        assert!(verify_source_literals(&changed, &literals)
+            .unwrap_err()
+            .contains("XDATA literal"));
+    }
+
+    #[test]
+    fn source_literal_guard_requires_xrecord_schema_identity_and_every_string() {
+        let (source, document) = literal_document();
+        for invalid in [
+            source.replace("5\nB0\n", "5\n0\n"),
+            source.replace("100\nAcDbXrecord\n", ""),
+            source.replace("280\n1\n", ""),
+        ] {
+            assert!(source_literals(&invalid).is_err());
+        }
+        let literals = source_literals(&source).unwrap();
+        let mut changed = document.clone();
+        changed.objects.remove(&Handle::new(0xB0));
+        assert!(verify_source_literals(&changed, &literals).is_err());
+        let mut changed = document.clone();
+        let Some(ObjectType::XRecord(object)) = changed.objects.get_mut(&Handle::new(0xB0)) else {
+            panic!("XRECORD missing");
+        };
+        object.entries.pop();
+        assert!(verify_source_literals(&changed, &literals).is_err());
+    }
     #[test]
     fn report_contract_is_explicit_and_bounded() {
         let report = failure(&"x".repeat(5000));

@@ -4,10 +4,10 @@ The Windows DXF-to-DWG helper links acadrust 0.6.4, pinned by its published crat
 SHA-256 and matching upstream commit in `pins.json`. It is MPL-2.0 licensed; the
 unmodified full license is included here. The helper itself is GPL-3.0-only.
 
-Fifteen exact source replacements in six files correct standalone MTEXT frame
+Seventeen exact source replacements in seven files correct standalone MTEXT frame
 output, its matching private validator, owned ATTRIB parent relationships,
 MINSERT's owned-attribute count before array fields, FIELD/FIELDLIST common DXF
-groups, and the VIEW front-clipping mode bit. Whole-file hashes verify both the
+groups, the VIEW front-clipping mode bit, and opaque DXF metadata strings. Whole-file hashes verify both the
 original and patched files. `scripts/prepare-dwg-writer.mjs` verifies the original
 crate, extracts it inside the ignored build directory and applies only these replacements.
 No prebuilt executable is committed. The released bundle includes the helper and
@@ -25,6 +25,17 @@ the fourth packed DWG mode bit represents front-clip-Z, opposite DXF group 71
 bit 16 (front-clip-at-eye). Both the private writer and its matching reader
 invert that bit. Perspective and front/back clipping keep their existing bit
 order. This patch applies to VIEW only; it does not change VPORT encoding.
+
+The ASCII DXF reader repair delays display escape decoding until record context
+is known. XRECORD values and XDATA group 1000 strings keep literal CIF/MIF,
+caret and JSON escape sequences; display text, FIELD expressions and known
+identifiers retain their existing decoding. The helper independently captures
+ordered literal payloads from the bounded source DXF and compares them with the
+typed import before creating output. Missing source identities, incomplete
+XRECORD subclass/cloning headers and altered or missing literals refuse export.
+The strict metadata snapshot then compares those verified typed strings after
+DWG reopening. This repair covers the helper's UTF-8 ASCII DXF input; binary DXF
+and arbitrary opaque native object records remain outside its input contract.
 
 The helper separately compares full typed named VIEW parameters and the retained
 DICTIONARY, DICTIONARYWDFLT, FIELD, FIELDLIST and XRECORD graph. It preserves

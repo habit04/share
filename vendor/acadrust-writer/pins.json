@@ -131,6 +131,23 @@
           "count": 1
         }
       ]
+    },
+    {
+      "path": "src/io/dxf/reader/text_reader.rs",
+      "beforeSha256": "172284ba96b304a07c836e815cb0a68b13c39b8be1fff0670c754833fe85622b",
+      "afterSha256": "0c1e107122d42bdec1bd88d41edb09fccb506adaf4fba740a21e67e83e4f8904",
+      "replacements": [
+        {
+          "before": "        // Characters outside the code page arrive as MIF escapes.\r\n        let line = if crate::io::dxf::code_page::has_legacy_escape(&line) {\r\n            crate::io::dxf::code_page::decode_legacy_escapes(&line)\r\n        } else {\r\n            line\r\n        };",
+          "after": "        // Keep payload bytes literal until the record-aware pair decoder.",
+          "count": 1
+        },
+        {
+          "before": "        // Process special character sequences in strings\r\n        let value = self.process_string_value(&value_line);",
+          "after": "        // XRECORD payloads and XDATA strings are opaque application data,\r\n        // not display text. Literal CIF/MIF and caret sequences must survive.\r\n        let opaque = code == 1000\r\n            || code != 0 && self.context.record_type.as_deref() == Some(\"XRECORD\");\r\n        let value = if opaque {\r\n            value_line\r\n        } else {\r\n            let decoded = if crate::io::dxf::code_page::has_legacy_escape(&value_line) {\r\n                crate::io::dxf::code_page::decode_legacy_escapes(&value_line)\r\n            } else {\r\n                value_line\r\n            };\r\n            self.process_string_value(&decoded)\r\n        };",
+          "count": 1
+        }
+      ]
     }
   ]
 }
