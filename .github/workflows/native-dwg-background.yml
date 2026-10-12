@@ -43,6 +43,7 @@ jobs:
           printf 'NATIVE_SOURCE=%s/native-dwg-source\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
           printf 'NATIVE_SDK=%s/native-dwg-sdk\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
           printf 'NATIVE_ARTIFACT=%s/native-dwg-artifact\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'NATIVE_DECLARATION_TOOLS=%s/native-dwg-declaration-tools\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - name: Verify controlled fixture and install native CI prerequisites
         shell: bash
         run: |
@@ -76,12 +77,26 @@ jobs:
           node --input-type=module -e 'import fs from "node:fs"; const p=JSON.parse(fs.readFileSync("scripts/native-dwg-build/pins.json")); const t=JSON.parse(fs.readFileSync(process.env.NATIVE_SDK+"/emscripten-releases-tags.json")); if(t.releases[p.compiler.version]!==p.compiler.releaseHash) throw Error("SDK release hash mismatch");'
           "$NATIVE_SDK/emsdk" install "$SDK_VERSION"
           "$NATIVE_SDK/emsdk" activate "$SDK_VERSION"
+      - name: Install integrity-pinned declaration compiler in isolated CI directory
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$NATIVE_DECLARATION_TOOLS"
+          cp scripts/native-dwg-build/declaration-tools/package.json scripts/native-dwg-build/declaration-tools/package-lock.json "$NATIVE_DECLARATION_TOOLS/"
+          npm ci --prefix "$NATIVE_DECLARATION_TOOLS" --ignore-scripts --no-audit --no-fund
+          test "$("$NATIVE_DECLARATION_TOOLS/node_modules/.bin/tsc" --version)" = 'Version 5.7.3'
+          printf 'var nativeDeclarationProbe = 1;\n' > "$NATIVE_DECLARATION_TOOLS/probe.js"
+          "$NATIVE_DECLARATION_TOOLS/node_modules/.bin/tsc" --outFile "$NATIVE_DECLARATION_TOOLS/probe.d.ts" --skipLibCheck --declaration --emitDeclarationOnly --allowJs "$NATIVE_DECLARATION_TOOLS/probe.js"
+          test -s "$NATIVE_DECLARATION_TOOLS/probe.d.ts"
       - name: Compile matching factory glue and WASM using upstream build scripts
         timeout-minutes: 40
         shell: bash
         run: |
           set -euo pipefail
           source "$NATIVE_SDK/emsdk_env.sh"
+          export PATH="$NATIVE_DECLARATION_TOOLS/node_modules/.bin:$PATH"
+          test "$(tsc --version)" = 'Version 5.7.3'
           emcc --version
           (cd "$NATIVE_SOURCE" && ./autogen.sh)
           node scripts/native-dwg-build/patch-source.mjs verify "$NATIVE_SOURCE"
@@ -100,6 +115,7 @@ jobs:
         run: |
           set -euo pipefail
           source "$NATIVE_SDK/emsdk_env.sh"
+          export PATH="$NATIVE_DECLARATION_TOOLS/node_modules/.bin:$PATH"
           tar --exclude=.git --exclude=build-wasm --exclude=node_modules -czf "$NATIVE_ARTIFACT/modified-source.tar.gz" -C "$NATIVE_SOURCE" .
           node scripts/native-dwg-build/write-provenance.mjs "$NATIVE_SOURCE" "$NATIVE_SDK" "$NATIVE_ARTIFACT"
           (cd "$NATIVE_ARTIFACT" && sha256sum --check SHA256SUMS)

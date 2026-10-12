@@ -58,3 +58,18 @@ test('native workflow initializes runner paths inside steps, not unavailable job
   assert.match(workflow, /printf 'NATIVE_SDK=%s\/native-dwg-sdk\\n' "\$RUNNER_TEMP" >> "\$GITHUB_ENV"/);
   assert.match(workflow, /printf 'NATIVE_ARTIFACT=%s\/native-dwg-artifact\\n' "\$RUNNER_TEMP" >> "\$GITHUB_ENV"/);
 });
+
+test('declaration generation uses an isolated version/integrity pin before unchanged native build', () => {
+  const workflow = readFileSync(new URL('../../.github/workflows/native-dwg-background.yml', import.meta.url), 'utf8');
+  const manifest = JSON.parse(readFileSync(new URL('./declaration-tools/package.json', import.meta.url), 'utf8'));
+  const lock = JSON.parse(readFileSync(new URL('./declaration-tools/package-lock.json', import.meta.url), 'utf8')).packages['node_modules/typescript'];
+  assert.equal(manifest.dependencies.typescript, '5.7.3');
+  assert.equal(pins.declarationCompiler.version, '5.7.3');
+  for (const key of ['version', 'resolved', 'integrity']) assert.equal(lock[key], pins.declarationCompiler[key]);
+  assert.match(lock.integrity, /^sha512-[A-Za-z0-9+/]+={0,2}$/);
+  assert.match(workflow, /npm ci --prefix "\$NATIVE_DECLARATION_TOOLS" --ignore-scripts --no-audit --no-fund/);
+  assert.match(workflow, /export PATH="\$NATIVE_DECLARATION_TOOLS\/node_modules\/\.bin:\$PATH"/);
+  assert.match(workflow, /tsc" --outFile "\$NATIVE_DECLARATION_TOOLS\/probe\.d\.ts" --skipLibCheck --declaration --emitDeclarationOnly --allowJs/);
+  assert.ok(workflow.indexOf('Install integrity-pinned declaration compiler') < workflow.indexOf('Compile matching factory glue'));
+  assert.match(workflow, /npm run build:prepare && npm run build:obj && npm run build:wasm/);
+});

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { readFile, writeFile, copyFile, lstat } from 'node:fs/promises';
+import { readFile, writeFile, copyFile, lstat, mkdir } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pins, sha256, validatePatchedSource } from './patch-source.mjs';
@@ -17,6 +17,13 @@ const releaseTags = JSON.parse(await readFile(join(sdk, 'emscripten-releases-tag
 assert.equal(releaseTags.releases[pins.compiler.version], pins.compiler.releaseHash, 'Emscripten release binary pin changed.');
 const compiler = execFileSync('emcc', ['--version'], { encoding: 'utf8' }).trim();
 assert.match(compiler.split('\n')[0], /\b4\.0\.23\b/, 'Wrong active Emscripten compiler.');
+assert.ok(process.env.NATIVE_DECLARATION_TOOLS, 'Missing isolated declaration compiler directory.');
+const declarationPackage = JSON.parse(await readFile(join(process.env.NATIVE_DECLARATION_TOOLS, 'node_modules/typescript/package.json'), 'utf8'));
+const declarationLock = JSON.parse(await readFile(join(process.env.NATIVE_DECLARATION_TOOLS, 'package-lock.json'), 'utf8')).packages['node_modules/typescript'];
+assert.equal(declarationPackage.version, pins.declarationCompiler.version);
+for (const key of ['version', 'resolved', 'integrity']) assert.equal(declarationLock[key], pins.declarationCompiler[key], 'Declaration compiler pin changed.');
+const declarationVersion = execFileSync('tsc', ['--version'], { encoding: 'utf8' }).trim();
+assert.equal(declarationVersion, `Version ${pins.declarationCompiler.version}`, 'Wrong active declaration compiler.');
 await validatePatchedSource(source);
 const patchReport = JSON.parse(await readFile(join(artifact, 'patch-report.json'), 'utf8'));
 assert.equal(patchReport.source.commit, pins.source.commit);
@@ -25,8 +32,10 @@ assert.equal(fixture.nativeError, 0, 'Fixture validation did not complete succes
 assert.equal(fixture.masks.length, 7);
 const packageManifest = JSON.parse(await readFile(join(source, 'bindings/javascript/package.json'), 'utf8'));
 for (const filename of ['pins.json', 'mtext-background-scale.patch.json', 'README.md', 'patch-source.mjs', 'validate-fixture.mjs', 'write-provenance.mjs']) await copyFile(join(here, filename), join(artifact, filename));
+await mkdir(join(artifact, 'declaration-tools'), { recursive: true });
+for (const filename of ['package.json', 'package-lock.json']) await copyFile(join(here, 'declaration-tools', filename), join(artifact, 'declaration-tools', filename));
 await copyFile(join(source, 'COPYING'), join(artifact, 'COPYING'));
-const files = ['factory/libredwg-web.js', 'factory/libredwg-web.wasm', 'factory/package.json', 'modified-source.tar.gz', 'COPYING', 'pins.json', 'mtext-background-scale.patch.json', 'README.md', 'patch-source.mjs', 'validate-fixture.mjs', 'write-provenance.mjs', 'patch-report.json', 'fixture-report.json'];
+const files = ['factory/libredwg-web.js', 'factory/libredwg-web.wasm', 'factory/package.json', 'modified-source.tar.gz', 'COPYING', 'pins.json', 'mtext-background-scale.patch.json', 'README.md', 'patch-source.mjs', 'validate-fixture.mjs', 'write-provenance.mjs', 'patch-report.json', 'fixture-report.json', 'declaration-tools/package.json', 'declaration-tools/package-lock.json'];
 const assets = [];
 for (const filename of files) {
   const path = join(artifact, filename), stat = await lstat(path);
@@ -42,6 +51,7 @@ const provenance = {
   source: pins.source,
   submodules: pins.submodules,
   compiler: { ...pins.compiler, observedVersion: compiler },
+  declarationCompiler: { ...pins.declarationCompiler, observedVersion: declarationVersion },
   license: { packageSpdx: 'GPL-3.0', nativeSourceNotice: 'GPL-3.0-or-later; see each source file and COPYING', correspondingSource: 'modified-source.tar.gz' },
   build: { commands: ['./autogen.sh', 'npm run build:prepare', 'npm run build:obj', 'npm run build:wasm'], makeFlags: '-j2', scripts: Object.fromEntries(['build:prepare', 'build:obj', 'build:wasm'].map((name) => [name, packageManifest.scripts[name]])), observedTools: { node: process.version, ...Object.fromEntries(['npm', 'autoconf', 'automake', 'libtoolize', 'make', 'gcc', 'pkg-config'].map((command) => [command, execFileSync(command, ['--version'], { encoding: 'utf8' }).trim().split('\n')[0]])) } },
   validation: { fixtureSha256: fixture.fixtureSha256, expectedSha256: fixture.expectedSha256, nativeError: fixture.nativeError, maskCount: fixture.masks.length, report: 'fixture-report.json' },

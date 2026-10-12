@@ -29,9 +29,16 @@ digests. The field types are checked again after autogen and after compilation.
 - The original distributed npm binary's compiler version is **unknown**. Upstream's installation
   script selects `latest`; its distributed WASM has no producer/version custom section. This
   build records its own pinned compiler rather than claiming to reproduce that unknown compiler.
+- Declaration generation: TypeScript 5.7.3 from an integrity-pinned isolated CI package lock.
+  Emscripten 4.0.23's `--emit-tsd` invokes `tsc --outFile`; the runner's newer global compiler
+  removed that option. The temporary tools directory is installed with `npm ci --ignore-scripts
+  --no-audit --no-fund` and placed first on PATH after sourcing the SDK. A tiny declaration probe
+  exercises the exact options before the native build. This changes no native compiler/memory
+  flags, upstream source scripts, application dependencies or installed `node_modules`.
 - Ubuntu 24.04 CI prerequisites: autoconf, automake, libtool, build-essential, pkg-config,
   python3, git, zlib1g-dev, texinfo. No JavaScript dependencies need to be installed to run the
-  upstream native build scripts with npm.
+  upstream native build scripts with npm; the declaration compiler alone is installed in its
+  separate runner-temp directory.
 
 After the pinned SDK is installed/activated and its environment sourced:
 
