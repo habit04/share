@@ -5,6 +5,7 @@
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { convertDwgMTextDatabase } from './dwg-mtext-background.mjs';
 
 let libPromise = null;
 
@@ -43,7 +44,7 @@ export async function readDwgPayload(bytes, kind = 'dwg') {
     } catch {
       /* the file can still be converted without a version label */
     }
-    const db = l.convert(ptr);
+    const db = convertDwgMTextDatabase(l, ptr);
     return { payload: payloadFromDatabase(db, version), version };
   } finally {
     // A failed conversion releases the native memory like a successful one (ported from PR #2,

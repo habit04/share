@@ -6,6 +6,7 @@ import {
   dimensionParts,
   mtextParts,
   mtextDecorations,
+  mtextMasks,
   ellipseSweep,
   isFullEllipse,
   splinePoints,
@@ -20,6 +21,7 @@ import * as g from '../core/geometry';
 import { aciToCss } from './palette';
 import { strokeText, strokeTextWidth, hasStrokeFont, expandControlCodes, drawStyledText } from './hershey';
 import { placedText } from '../core/text-placement';
+import { hasMTextFill, hasMTextFrame } from '../core/mtext-background';
 import { textStyleOf, withTextStyle } from '../io/encoding';
 import { findLinetype, effectiveLinetype, dashArray, type Linetype } from '../core/linetypes';
 import { annotativeEntity } from '../core/layouts';
@@ -49,7 +51,7 @@ export type ImageLoader = (path: string) => Promise<ImageBitmap | null>;
 export const trueColorCss = (c: number): string => `#${(c & 0xffffff).toString(16).padStart(6, '0')}`;
 
 /** Drawing on white paper (layout views, Track E): ACI 7 shows black there, as in AutoCAD. */
-export const colorDisplay = { paper: false };
+export const colorDisplay = { paper: false, background: '#212830' };
 const aciDisplay = (i: number): string => (colorDisplay.paper && i === 7 ? '#000000' : aciToCss(i));
 
 /**
@@ -509,6 +511,18 @@ function drawGeometry(
       break;
     }
     case 'mtext': {
+      if (e.background) {
+        ctx.save();
+        const background = e.background;
+        ctx.fillStyle = background.flags & 2 ? (colorDisplay.paper ? '#ffffff' : colorDisplay.background) : resolveColor({ ...e, color: background.color, trueColor: background.trueColor, colorLayer: background.colorLayer }, layers);
+        for (const mask of mtextMasks(e)) {
+          ctx.beginPath();
+          tracePoints(ctx, mask, tf, true);
+          if (hasMTextFill(e)) ctx.fill();
+          if (hasMTextFrame(e)) ctx.stroke();
+        }
+        ctx.restore();
+      }
       const pieces = styledMtextParts(e);
       const lines = mtextDecorations(e);
       if (lines.length === 0 && pieces.every((t) => t.color === e.color && t.trueColor === e.trueColor)) {
@@ -543,7 +557,7 @@ function drawGeometry(
       drawHatch(ctx, e, tf, style);
       break;
     case 'leader':
-      drawParts(ctx, leaderParts(e), tf, layers, lookup, style);
+      drawParts(ctx, leaderParts(e).filter((p) => !style.hidden?.has(p.layer) && layers.find((l) => l.name === p.layer)?.visible !== false), tf, layers, lookup, style);
       break;
     case 'table':
       drawParts(ctx, tableParts(e), tf, layers, lookup, style);

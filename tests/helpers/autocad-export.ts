@@ -3,6 +3,8 @@ import { join } from 'node:path';
 import { readDxf, writeDxf } from '../../src/io/dxf';
 import type { DrawingState } from '../../src/core/document';
 import type { DimensionEntity } from '../../src/core/entities';
+import { leaderParts } from '../../src/core/entities';
+import { aciToCss } from '../../src/render/palette';
 
 const sources = [
   'tests/fixtures/interchange/r2000-dimensions.dxf',
@@ -13,12 +15,24 @@ const sources = [
   'tests/fixtures/interchange/r2018-table.dxf',
   'tests/fixtures/interchange/r2018-dimensions.dxf',
   'tests/fixtures/interchange/r2000-text-justification.dxf',
+  'tests/fixtures/interchange/r2018-mtext-background.dxf',
 ];
 function summary(state: DrawingState) {
   const counts = (entities: DrawingState['entities']) => entities.reduce<Record<string, number>>((out, entity) => {
     out[entity.type] = (out[entity.type] ?? 0) + 1; return out;
   }, {});
-  return { model: counts(state.entities), paper: (state.layouts ?? []).filter((layout) => layout.entities.length).map((layout) => ({ name: layout.name, entities: counts(layout.entities) })), ...(state.blocks.NESTED_DIM ? { nested: counts(state.blocks.NESTED_DIM.entities) } : {}) };
+  const backgrounds = state.entities.flatMap((entity) => {
+    const e = entity.type === 'leader' ? leaderParts(entity).find((p) => p.type === 'mtext') : entity;
+    if (e?.type !== 'mtext' || !e.background || !(e.background.flags & 19)) return [];
+    const bg = e.background;
+    if (!(bg.flags & 3)) return [{ text: e.text, flags: bg.flags }]; // frame-only inert fields are normalized by AutoCAD
+    if (bg.flags & 2) return [{ text: e.text, flags: bg.flags, scale: bg.scale }]; // window mask ignores its fallback color
+    const layer = state.layers.find((l) => l.name === (bg.colorLayer ?? e.layer));
+    const rgb = bg.trueColor ?? (bg.color === 'ByLayer' ? layer?.trueColor : undefined);
+    const effectiveColor = rgb !== undefined ? `#${rgb.toString(16).padStart(6, '0')}` : aciToCss(bg.color === 'ByLayer' ? layer?.color ?? 7 : bg.color || 7);
+    return [{ text: e.text, flags: bg.flags, scale: bg.scale, effectiveColor }];
+  });
+  return { model: counts(state.entities), paper: (state.layouts ?? []).filter((layout) => layout.entities.length).map((layout) => ({ name: layout.name, entities: counts(layout.entities) })), ...(state.blocks.NESTED_DIM ? { nested: counts(state.blocks.NESTED_DIM.entities) } : {}), ...(backgrounds.length ? { backgrounds } : {}) };
 }
 
 function nestedDimensionCase(repo: string): DrawingState {

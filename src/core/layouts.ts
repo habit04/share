@@ -503,11 +503,11 @@ export function annotativeEntity(e: Entity, f: number): Entity {
     case 'text':
       return { ...(e as TextEntity), height: e.height * f, ...(e.alignmentPoint ? { alignmentPoint: g.add(e.position, g.scale(g.sub(e.alignmentPoint, e.position), f)) } : {}) };
     case 'mtext':
-      return { ...(e as MTextEntity), height: e.height * f, width: e.width * f };
+      return { ...(e as MTextEntity), height: e.height * f, width: e.width * f, ...(e.columns ? { columns: { ...e.columns, width: e.columns.width * f, gutter: e.columns.gutter * f, heights: e.columns.heights.map((h) => h * f) } } : {}) };
     case 'dimension':
       return { ...(e as DimensionEntity), style: { ...e.style, scale: (e.style.scale || 1) * f } };
     case 'leader':
-      return { ...(e as LeaderEntity), textHeight: e.textHeight * f, arrowSize: e.arrowSize * f, ...(e.textWidth ? { textWidth: e.textWidth * f } : {}) };
+      return { ...(e as LeaderEntity), textHeight: e.textHeight * f, arrowSize: e.arrowSize * f, ...(e.textWidth ? { textWidth: e.textWidth * f } : {}), ...(e.textColumns ? { textColumns: { ...e.textColumns, width: e.textColumns.width * f, gutter: e.textColumns.gutter * f, heights: e.textColumns.heights.map((h) => h * f) } } : {}) };
     case 'insert': {
       const ins = e as InsertEntity;
       return { ...ins, scale: ins.scale * f, ...(ins.scaleY !== undefined ? { scaleY: ins.scaleY * f } : {}) };

@@ -153,7 +153,10 @@ export function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): En
     // IMAGE's IMAGEDEF reactor is reconstructed on export; other object links are unmodeled.
     const unmodeledLinks = o.kind === 'IMAGE' ? o.groups.some((p) => p.code === 102 && p.value !== '{ACAD_REACTORS' && p.value !== '}') : has(o, 102) || has(o, 360);
     if (unmodeledLinks) reportObj(ctx, o, 'simplified', 'reactor/extension-dictionary links are not kept; supported drawing geometry is kept');
-    if (o.kind === 'MTEXT' && num(o, 90) !== 0) reportObj(ctx, o, 'simplified', 'MTEXT background fill is not kept');
+    if (e.type === 'mtext' && e.background) {
+      if (e.background.flags & ~19) reportObj(ctx, o, 'simplified', 'unmodeled MTEXT background flag bits are retained but their effects are not drawn');
+      if (e.background.transparency) reportObj(ctx, o, 'simplified', 'MTEXT background transparency is retained but not applied; native AutoCAD does not implement group 441');
+    }
     if (ctx.report && xdataApps) {
       const consumedDstyle = o.kind === 'DIMENSION' || o.kind === 'LEADER';
       const unsupportedOverrides = o.kind === 'DIMENSION' ? dstylePairs(o).filter(([code]) => ![71, 72, 73, 74, 78, 340].includes(code) && !DIM_VARIABLES.some((v) => v.code === code)) : o.kind === 'LEADER' ? dstylePairs(o).filter(([code]) => code !== 41) : [];
@@ -298,6 +301,7 @@ export function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): En
     const ld = out[l.index];
     if (!ann || !ld || ld.type !== 'leader' || drop.has(at!)) continue;
     if (ann.type === 'mtext') {
+      const appearance = ann as typeof ann & AttributeAppearance;
       out[l.index] = {
         ...ld,
         text: ann.text,
@@ -305,6 +309,11 @@ export function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): En
         textPosition: ann.position,
         textHeight: ann.height,
         textAttachment: ann.attachment,
+        textLayer: ann.layer,
+        textAppearance: { color: appearance.color, ...(appearance.trueColor !== undefined ? { trueColor: appearance.trueColor } : {}), ...(appearance.colorName !== undefined ? { colorName: appearance.colorName } : {}), ...(appearance.transparency !== undefined ? { transparency: appearance.transparency } : {}) },
+        textLineSpacing: ann.lineSpacing,
+        ...(ann.background ? { textBackground: ann.background } : {}),
+        ...(ann.columns ? { textColumns: ann.columns } : {}),
         ...(ann.width > 0 ? { textWidth: ann.width } : {}),
         ...(Math.abs(ann.rotation) > 1e-12 ? { textRotation: ann.rotation } : {}),
       };

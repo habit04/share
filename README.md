@@ -464,7 +464,9 @@ edit or delete it.
 
 The entity-by-entity table of what survives import and export is [docs/SUPPORT-MATRIX.md](docs/SUPPORT-MATRIX.md).
 
-- **DXF (AC1015 / AutoCAD 2000)** is the native save format: layers (linetype, lineweight,
+- **DXF** is the native save format, defaulting to AC1015 / AutoCAD 2000 and selecting newer
+  versions when a native property needs them (MTEXT background masks: AC1021 / 2007;
+  native MTEXT frames: AC1032 / 2018). Layers (linetype, lineweight,
   frozen/off/locked), blocks, attributes (including invisible ones), LINE / CIRCLE / ARC /
   LWPOLYLINE (bulges and constant width round-trip) / TEXT / MTEXT / INSERT / ELLIPSE / POINT /
   XLINE / RAY / SOLID and DIMENSION (linear, aligned, radius, diameter, angular) written with an
@@ -484,7 +486,10 @@ The entity-by-entity table of what survives import and export is [docs/SUPPORT-M
   `.webp` bitmaps up to 50 MB through a read-only bridge, resolving relative paths against the drawing
   folder; the browser edition draws the frame and file name), external references (xref blocks are
   kept as references and drawn as a named frame), MTEXT format codes (kept verbatim while the text is
-  unchanged) and fields in TEXT / MTEXT (evaluated on open, written back as field codes).
+  unchanged), native MTEXT background masks and frames (screen and vector PDF), and fields in
+  TEXT / MTEXT (evaluated on open, written back as field codes). Mask extents use the existing
+  approximate text metrics; native column flow and background transparency retain the limits in
+  the support matrix.
   **Dimension styles:** every named style is a DIMSTYLE record (all DIM* group codes; arrowheads,
   basic tolerances and alternate-unit placement in `JCAD_DIMSTYLE` XDATA on the record; records from
   other programs name their arrow blocks by handle, which is resolved), the current style's `$DIM*`
@@ -493,7 +498,7 @@ The entity-by-entity table of what survives import and export is [docs/SUPPORT-M
   DIMTEDIT text rotation. DIMCLRD / DIMCLRE / DIMCLRT colour the dimension parts on screen.
   **Encodings:** files before AutoCAD 2007 are decoded in their `$DWGCODEPAGE` code page (UTF-8 for
   AC1021 and later, byte order marks honoured), `\U+XXXX` / `\M+nXXXX` escapes are decoded, and the
-  writer produces pure-ASCII AC1015 with `\U+XXXX` escapes so non-English text survives any code page;
+  older exports use pure ASCII with `\U+XXXX` escapes and AC1021 or later exports use UTF-8;
   the detected encoding is logged on open. STYLE table records (font file, TrueType family) round-trip
   and TEXT / MTEXT keep their style name.
 - **DWG** (R14 - 2018) opens through LibreDWG, including dimensions, ellipses, points, MTEXT,

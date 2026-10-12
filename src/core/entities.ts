@@ -2,13 +2,14 @@ import type { Point, Bounds } from './geometry';
 import * as g from './geometry';
 import { strokeTextWidth } from '../render/hershey';
 import { dimensionGeometry, type DimensionEntity } from './dimension';
-import { mtextLayoutFull, type MTextEntity, type MTextAttachment, type MTextColumns } from './mtext';
+import { mtextLayoutFull, type MTextEntity, type MTextAttachment, type MTextColumns, type MTextBackground } from './mtext';
 import { interpolateFitPoints, isValidNurbs, nurbsPoints, type NurbsCurve } from './spline';
 import { findPattern, loopPolygon, patternSegments, pointInLoops, worldPatternLines, type HatchLoop, type WorldPatternLine } from './hatch';
 import { tableGeometry, type TableEntity } from './table';
 import { isImmutableData } from './immutable-data';
 import { GeometryBudgetError } from './geometry-budget-error';
 import { placedText, scaledText, transformedTextAnchors, textAnchor, type TextPlacement } from './text-placement';
+import { mtextBackgroundPolygons, hasMTextFill, hasMTextFrame, entityMTextBackground } from './mtext-background';
 
 export type { DimensionEntity, DimStyle, DimKind } from './dimension';
 export type { MTextEntity, MTextAttachment } from './mtext';
@@ -227,6 +228,12 @@ export interface LeaderEntity extends EntityBase {
   readonly textAttachment?: MTextAttachment;
   readonly textWidth?: number;
   readonly textRotation?: number;
+  /** Native associated MTEXT's mask and layout, kept when the two records become one leader. */
+  readonly textBackground?: MTextBackground;
+  readonly textAppearance?: AttributeAppearance;
+  readonly textLayer?: string;
+  readonly textLineSpacing?: number;
+  readonly textColumns?: MTextColumns;
   /** Where it came from (LEADER + MTEXT or MULTILEADER); written back as LEADER + MTEXT either way. */
   readonly kind?: 'leader' | 'mleader';
 }
@@ -524,8 +531,8 @@ export function dimensionParts(d: DimensionEntity): Entity[] {
   return parts;
 }
 
-const mtextCache = new WeakMap<MTextEntity, { texts: TextEntity[]; lines: LineEntity[] }>();
-function mtextRendered(m: MTextEntity): { texts: TextEntity[]; lines: LineEntity[] } {
+const mtextCache = new WeakMap<MTextEntity, { texts: TextEntity[]; lines: LineEntity[]; masks: Point[][] }>();
+function mtextRendered(m: MTextEntity): { texts: TextEntity[]; lines: LineEntity[]; masks: Point[][] } {
   const hit = mtextCache.get(m);
   if (hit) return hit;
   const lay = mtextLayoutFull(m, textWidth);
@@ -538,13 +545,17 @@ function mtextRendered(m: MTextEntity): { texts: TextEntity[]; lines: LineEntity
     a: st.a,
     b: st.b,
   }));
-  const entry = { texts: lay.texts, lines };
+  const entry = { texts: lay.texts, lines, masks: mtextBackgroundPolygons(m, textWidth, lay) };
   mtextCache.set(m, entry);
   return entry;
 }
 /** Single-line text pieces that render an MTEXT (word wrapped, format codes applied). Cached per entity. */
 export function mtextParts(m: MTextEntity): TextEntity[] {
   return mtextRendered(m).texts;
+}
+
+export function mtextMasks(m: MTextEntity): readonly (readonly Point[])[] {
+  return mtextRendered(m).masks;
 }
 /** Underline / overline / strike-through / fraction-bar strokes of a formatted MTEXT. */
 export function mtextDecorations(m: MTextEntity): LineEntity[] {
@@ -664,6 +675,8 @@ export function leaderParts(e: LeaderEntity): Entity[] {
       ...style,
       id: `${e.id}:t`,
       type: 'mtext',
+      ...(e.textAppearance ?? {}),
+      ...(e.textLayer ? { layer: e.textLayer } : {}),
       position: e.textPosition,
       text: e.text,
       ...(e.raw ? { raw: e.raw } : {}),
@@ -671,7 +684,9 @@ export function leaderParts(e: LeaderEntity): Entity[] {
       width: e.textWidth ?? 0,
       rotation: e.textRotation ?? 0,
       attachment: leaderTextAttachment(e),
-      lineSpacing: 1,
+      lineSpacing: e.textLineSpacing ?? 1,
+      ...(e.textBackground ? { background: e.textBackground } : {}),
+      ...(e.textColumns ? { columns: e.textColumns } : {}),
     });
   }
   leaderCache.set(e, out);
@@ -830,6 +845,7 @@ function affineCompound(e: Compound, A: Affine): Entity {
         textHeight: e.textHeight * k,
         arrowSize: e.arrowSize * k,
         ...(e.textWidth !== undefined ? { textWidth: e.textWidth * k } : {}),
+        ...(e.textColumns ? { textColumns: scaledMTextColumns(e.textColumns, k) } : {}),
         textRotation: A.mirrored ? readableAngle(dirAngle(rot), rot + A.rotation) : normAngle(rot + A.rotation),
         ...(A.mirrored && att ? { textAttachment: flip(att) } : {}),
       };
@@ -1032,7 +1048,7 @@ export function entityGeometryWork(entity: Entity): number {
       for (const line of entity.patternLines ?? []) work += 1 + line.dashes.length;
       break;
     case 'leader':
-      work += entity.vertices.length + (entity.text?.length ?? 0) + (entity.raw?.length ?? 0);
+      work += entity.vertices.length + (entity.text?.length ?? 0) + (entity.raw?.length ?? 0) + (entity.textColumns?.heights.length ?? 0);
       for (const path of entity.extraPaths ?? []) work += path.length;
       break;
     case 'text':
@@ -1398,6 +1414,13 @@ export function inheritedColor(e: EntityBase, ins: EntityBase): { color: ColorSp
 
 /** Exploded block content made permanent (EXPLODE): a `colorLayer` becomes that layer's colour. */
 export function bakeInheritedColor<T extends Entity>(e: T, layers: readonly Layer[]): T {
+  const bg = entityMTextBackground(e);
+  if (bg?.colorLayer !== undefined) {
+    const { colorLayer, ...background } = bg;
+    const layer = layers.find((l) => l.name === colorLayer);
+    const baked = { ...background, color: layer?.color ?? 7, ...(layer?.trueColor !== undefined ? { trueColor: layer.trueColor } : {}) };
+    e = { ...e, ...(e.type === 'leader' ? { textBackground: baked } : { background: baked }) };
+  }
   if (e.colorLayer === undefined) return e;
   const { colorLayer, ...rest } = e;
   const layer = layers.find((l) => l.name === colorLayer);
@@ -1410,6 +1433,12 @@ function transformInto(out: Entity[], e: Entity, tf: (p: Point) => Point, ins: I
   const lt = e.linetype && e.linetype.toUpperCase() === 'BYBLOCK' ? ins.linetype : e.linetype;
   const { trueColor: _t, colorLayer: _c, ...plain } = e;
   const styled = { ...plain, layer: lay, ...inheritedColor(e, ins), linetype: lt } as Entity;
+  const bg = entityMTextBackground(e);
+  if (bg) {
+    const inherited = inheritedColor({ ...e, color: bg.color, trueColor: bg.trueColor, colorLayer: bg.colorLayer }, ins);
+    Object.assign(styled, styled.type === 'leader' ? { textBackground: { ...bg, ...inherited } } : { background: { ...bg, ...inherited } });
+  }
+  if (styled.type === 'leader' && styled.textLayer === '0') Object.assign(styled, { textLayer: ins.layer });
   const moved = similar ? similarityTransform(styled, tf, ins.rotation, ins.scale) : blockTransform(styled, tf, ins.rotation, ins.scale, ins.scaleY ?? ins.scale, Boolean(ins.mirror));
   if (moved.type === 'insert') {
     explodeInto(out, moved, lookup, depth, budget);
@@ -1451,6 +1480,7 @@ export function entityBounds(e: Entity, lookup: BlockLookup): Bounds | null {
       let b: Bounds | null = null;
       for (const t of mtextParts(e)) b = g.unionBounds(b, textBounds(t));
       for (const l of mtextDecorations(e)) b = g.unionBounds(b, g.boundsOfPoints([l.a, l.b]));
+      for (const mask of mtextMasks(e)) b = g.unionBounds(b, g.boundsOfPoints(mask));
       return b ?? { min: e.position, max: e.position };
     }
     case 'dimension': {
@@ -1530,6 +1560,10 @@ export function distanceToEntity(p: Point, e: Entity, lookup: BlockLookup): numb
     }
     case 'mtext': {
       let best = Infinity;
+      for (const mask of mtextMasks(e)) {
+        if (hasMTextFill(e) && pointInPolygon(p, mask)) return 0;
+        for (let i = 0; i < mask.length; i++) best = Math.min(best, g.distToSegment(p, mask[i]!, mask[(i + 1) % mask.length]!));
+      }
       for (const t of mtextParts(e)) best = Math.min(best, distanceToEntity(p, t, lookup));
       for (const l of mtextDecorations(e)) best = Math.min(best, g.distToSegment(p, l.a, l.b));
       return best;
@@ -1924,7 +1958,7 @@ export function entitySegments(e: Entity, lookup: BlockLookup): Array<[Point, Po
     case 'ray':
       return [rayEndpoints(e)];
     case 'mtext':
-      return [];
+      return hasMTextFrame(e) ? mtextMasks(e).flatMap((mask) => mask.map((p, i): [Point, Point] => [p, mask[(i + 1) % mask.length]!])) : [];
     case 'dimension': {
       const out: Array<[Point, Point]> = [];
       for (const part of dimensionParts(e)) out.push(...entitySegments(part, lookup));

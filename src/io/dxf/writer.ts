@@ -20,6 +20,7 @@ import { dimStyleRecordPairs } from '../../core/dimension';
 import { writeEntityAnno, writeEntity } from './write-entities';
 import { attdefFlags } from '../../electrical/symbol-builder-core';
 import { tableParts, dimensionParts } from '../../core/entities';
+import { entityMTextBackground } from '../../core/mtext-background';
 
 /** Linetype names referenced anywhere in the drawing (layers, entities, block entities). */
 function usedLinetypes(state: DrawingState): Linetype[] {
@@ -75,6 +76,8 @@ export function writeDxf(state: DrawingState): string {
   const extras: WriteExtras = { ...emptyExtras(), arrowSize: ds.arrowSize * (ds.scale || 1) };
   const allEntities: Entity[] = [...state.entities, ...layoutPlan.entities];
   for (const b of blockList) allEntities.push(...b.entities);
+  const acadVersion = allEntities.some((e) => (entityMTextBackground(e)?.flags ?? 0) & 16) ? 'AC1032'
+    : allEntities.some((e) => entityMTextBackground(e)) ? 'AC1021' : 'AC1015';
   let imageDict: string | null = null;
   let anon = 0;
   for (const e of allEntities) {
@@ -111,7 +114,7 @@ export function writeDxf(state: DrawingState): string {
     w.pair(10, p.x);
     w.pair(20, p.y);
   };
-  hv('$ACADVER', 1, 'AC1015');
+  hv('$ACADVER', 1, acadVersion);
   hv('$DWGCODEPAGE', 3, 'ANSI_1252');
   hv('$HANDSEED', 5, 'HANDSEED_PLACEHOLDER');
   hv('$INSUNITS', 70, header.units.insunits);
@@ -139,21 +142,22 @@ export function writeDxf(state: DrawingState): string {
   w.pair(0, 'SECTION');
   w.pair(2, 'CLASSES');
   {
-    const cls = (name: string, cpp: string, flags: number, isEntity: boolean) => {
+    const cls = (name: string, cpp: string, flags: number, isEntity: boolean, instances = 1) => {
       w.pair(0, 'CLASS');
       w.pair(1, name);
       w.pair(2, cpp);
       w.pair(3, 'ISM');
       w.pair(90, flags);
+      if (acadVersion !== 'AC1015') w.pair(91, instances);
       w.pair(280, 0);
       w.pair(281, isEntity ? 1 : 0);
     };
     cls('ACDBDICTIONARYWDFLT', 'AcDbDictionaryWithDefault', 0, false);
     cls('ACDBPLACEHOLDER', 'AcDbPlaceHolder', 0, false);
     if (imageDict) {
-      cls('IMAGE', 'AcDbRasterImage', 127, true);
-      cls('IMAGEDEF', 'AcDbRasterImageDef', 0, false);
-      cls('IMAGEDEF_REACTOR', 'AcDbRasterImageDefReactor', 1, false);
+      cls('IMAGE', 'AcDbRasterImage', 127, true, extras.imageReactors.size);
+      cls('IMAGEDEF', 'AcDbRasterImageDef', 0, false, extras.imageDefs.size);
+      cls('IMAGEDEF_REACTOR', 'AcDbRasterImageDefReactor', 1, false, extras.imageReactors.size);
     }
   }
   w.pair(0, 'ENDSEC');
@@ -261,7 +265,7 @@ export function writeDxf(state: DrawingState): string {
   });
   table('UCS', '7', 0, () => {});
   const annotative = allEntities.some((e) => e.annotative);
-  const columnMtext = allEntities.some((e) => e.type === 'mtext' && e.columns);
+  const columnMtext = allEntities.some((e) => e.type === 'mtext' ? e.columns : e.type === 'leader' && e.textColumns);
   table('APPID', '9', (tableList.length ? 3 : 2) + (annotative ? 1 : 0) + (columnMtext ? 1 : 0), () => {
     record('APPID', '9', 'AcDbRegAppTableRecord', 'ACAD');
     record('APPID', '9', 'AcDbRegAppTableRecord', DIMSTYLE_APP);
@@ -478,5 +482,5 @@ export function writeDxf(state: DrawingState): string {
   w.pair(0, 'EOF');
   // The handle seed must exceed every handle used in the file.
   // AC1015 is read in the $DWGCODEPAGE page: non-ASCII goes out as \U+XXXX escapes (see io/encoding.ts).
-  return encodeDxfText(w.toString().replace('HANDSEED_PLACEHOLDER', (w.lastHandle() + 1).toString(16).toUpperCase()), 'AC1015');
+  return encodeDxfText(w.toString().replace('HANDSEED_PLACEHOLDER', (w.lastHandle() + 1).toString(16).toUpperCase()), acadVersion);
 }

@@ -28,8 +28,10 @@ export function writeMText(w: Writer, e: MTextEntity, owner: string): void {
   // Long strings go in 250-char chunks of code 3 followed by a final code 1.
   let rest = text;
   while (rest.length > 250) {
-    w.pair(3, rest.slice(0, 250));
-    rest = rest.slice(250);
+    // A promoted UTF-8 DXF must not separate the halves of a supplementary character.
+    const end = /[\uD800-\uDBFF]/.test(rest[249]!) && /[\uDC00-\uDFFF]/.test(rest[250]!) ? 249 : 250;
+    w.pair(3, rest.slice(0, end));
+    rest = rest.slice(end);
   }
   w.pair(1, rest);
   w.pair(7, textStyleOf(e) ?? 'Standard');
@@ -38,6 +40,17 @@ export function writeMText(w: Writer, e: MTextEntity, owner: string): void {
   w.pair(31, 0);
   w.pair(73, 1);
   w.pair(44, e.lineSpacing || 1);
+  if (e.background) {
+    const bg = e.background;
+    w.pair(90, bg.flags);
+    // AutoCAD 2027 requires the inert fill parameters even for a frame-only record.
+    // The flag still controls whether any fill is displayed; retain disabled mask settings too.
+    w.pair(45, bg.scale);
+    w.pair(63, bg.color === 'ByLayer' ? 256 : bg.color);
+    if (bg.trueColor !== undefined) w.pair(421, bg.trueColor);
+    if (bg.colorName !== undefined) w.pair(431, bg.colorName);
+    if (bg.transparency !== undefined) w.pair(441, bg.transparency);
+  }
   // AC1015 has no MTEXT columns: JCad keeps the definition as XDATA (other programs show one column).
   if (e.columns) {
     w.pair(1001, MTEXT_COLUMNS_APP);

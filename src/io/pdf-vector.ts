@@ -12,7 +12,7 @@
  * Pure module: `plotPages` turns a drawing into page specs, `vectorPdf` writes them. The
  * editor supplies image bitmaps and saves the bytes (src/app/editor/plotting.ts plotOrPrint).
  */
-import type { Entity, Layer, BlockLookup, TextEntity, PolylineEntity, InsertEntity, ImageEntity, HatchEntity, EllipseEntity } from '../core/entities';
+import type { Entity, Layer, BlockLookup, TextEntity, MTextEntity, PolylineEntity, InsertEntity, ImageEntity, HatchEntity, EllipseEntity } from '../core/entities';
 import {
   explodeInsert,
   entityBounds,
@@ -20,6 +20,7 @@ import {
   dimensionParts,
   mtextParts,
   mtextDecorations,
+  mtextMasks,
   ellipseSweep,
   isFullEllipse,
   splinePoints,
@@ -35,6 +36,7 @@ import * as g from '../core/geometry';
 import { aciToCss } from '../render/palette';
 import { strokeText, strokeTextWidth, expandControlCodes, textRenderer, CAP_HEIGHT_EM } from '../render/hershey';
 import { placedText } from '../core/text-placement';
+import { hasMTextFill, hasMTextFrame } from '../core/mtext-background';
 import { findLinetype, effectiveLinetype, isByBlock, type Linetype } from '../core/linetypes';
 import type { TextStyle } from './encoding';
 import { textStyleOf, textStylesOf } from './encoding';
@@ -501,13 +503,14 @@ class PageWriter {
         this.text(e);
         break;
       case 'mtext':
+        this.mtextBackground(e);
         this.parts([...mtextParts(e), ...mtextDecorations(e)], e, parent, view);
         break;
       case 'dimension':
         this.parts(dimensionParts(e), e, parent, view);
         break;
       case 'leader':
-        this.parts(leaderParts(e), e, parent, view);
+        for (const part of leaderParts(e)) if (!this.group?.hidden.has(part.layer)) this.entity(part, parent, view);
         break;
       case 'table':
         this.parts(tableParts(e), e, parent, view);
@@ -557,6 +560,19 @@ class PageWriter {
       this.ops.push(`${this.P(c1)} ${this.P(c2)} ${this.P(p3)} c`);
       a0 = a1;
     }
+  }
+
+  private mtextBackground(e: MTextEntity): void {
+    const bg = e.background;
+    if (!bg) return;
+    const masks = mtextMasks(e);
+    if (!masks.length) return;
+    // The drawing-window mask becomes white paper, including under monochrome plotting.
+    const rgb: [number, number, number] = bg.flags & 2 ? [1, 1, 1] : plotColor(objectRgb(bg.color, bg.trueColor, this.layer(bg.colorLayer ?? e.layer)), this.style);
+    this.ops.push(`q ${rgbOp(rgb, 'rg')}`);
+    const paint = hasMTextFill(e) ? (hasMTextFrame(e) ? 'B' : 'f') : 'S';
+    for (const mask of masks) this.polyPath(mask, true, paint);
+    this.ops.push('Q');
   }
 
   private polyPath(pts: readonly Point[], closed: boolean, paint: string): void {

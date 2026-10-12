@@ -1,0 +1,12 @@
+{
+  "source": "JCad's hand-written mask fixture, exported and normalized by AutoCAD 2027 with zero AUDIT errors, saved as DWG 2018",
+  "masks": [
+    { "text": "ACI MASK", "flags": 1, "scale": 1.5, "color": 1 },
+    { "text": "RGB\\PMULTILINE", "flags": 1, "scale": 2, "trueColor": 1193046, "colorName": "Example Book$Slate" },
+    { "text": "WINDOW", "flags": 3, "scale": 1.5 },
+    { "text": "FRAME", "flags": 16 },
+    { "text": "FILL + FRAME", "flags": 17, "scale": 1.25, "color": 4 },
+    { "text": "OFF", "flags": 0 },
+    { "text": "COLUMN ONE\\NCOLUMN TWO", "flags": 1, "scale": 1.5, "color": 2 }
+  ]
+}

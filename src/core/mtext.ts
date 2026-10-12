@@ -24,6 +24,20 @@ export interface MTextColumns {
   readonly heights: readonly number[];
 }
 
+export interface MTextBackground {
+  /** DXF90: 1 explicit fill, 2 drawing-window color, 16 text frame. */
+  readonly flags: number;
+  /** DXF45; 1.5 adds a half text-height margin on each side. */
+  readonly scale: number;
+  readonly color: ColorSpec;
+  readonly trueColor?: number;
+  readonly colorName?: string;
+  /** Native DXF441 data is retained; AutoCAD does not implement background transparency. */
+  readonly transparency?: number;
+  /** Display-only ByBlock color source after an insert is expanded. */
+  readonly colorLayer?: string;
+}
+
 export interface MTextEntity extends EntityBase {
   readonly type: 'mtext';
   /** Attachment point (see `attachment`). */
@@ -42,6 +56,7 @@ export interface MTextEntity extends EntityBase {
   /** Field expression the text was evaluated from (%<\AcVar Date>% ...). */
   readonly field?: FieldLink;
   readonly columns?: MTextColumns;
+  readonly background?: MTextBackground;
 }
 
 export type Measure = (text: string, height: number) => number;

@@ -49,7 +49,7 @@ import { DEFAULT_LAYERS, DEFAULT_HEADER } from '../core/document';
 import type { Point } from '../core/geometry';
 import * as g from '../core/geometry';
 import { STANDARD_DIMSTYLE, withDimVars, type DimStyle } from '../core/dimension';
-import { mtextFromDxf, hasFormatting } from '../core/mtext';
+import { mtextFromDxf, hasFormatting, type MTextBackground } from '../core/mtext';
 import { LINEWEIGHTS } from '../core/linetypes';
 import type { LinearUnits } from '../core/units';
 import { cadPrecision } from '../core/units';
@@ -514,7 +514,7 @@ export function convertHatchEntity(e: DwgEntity): HatchEntity | null {
   };
 }
 
-function convertLeader(l: DwgLeaderEntity, base: Base, dimStyle: DimStyle, annotation?: DwgEntity): LeaderEntity | null {
+function convertLeader(l: DwgLeaderEntity, base: Base, dimStyle: DimStyle, annotation?: DwgEntity, background?: MTextBackground): LeaderEntity | null {
   const verts = (l.vertices ?? []).map((q) => p2(q));
   if (verts.length < 2) return null;
   let vertices = verts;
@@ -536,6 +536,7 @@ function convertLeader(l: DwgLeaderEntity, base: Base, dimStyle: DimStyle, annot
   };
   if (annotation && annotation.type === 'MTEXT') {
     const m = annotation as DwgMTextEntity;
+    const appearance = baseProps(annotation) as Base & AttributeAppearance;
     const raw = m.text ?? '';
     const text = mtextFromDxf(raw);
     const rot = m.direction && (m.direction.x !== 0 || m.direction.y !== 0) ? Math.atan2(m.direction.y, m.direction.x) : m.rotation ?? 0;
@@ -546,6 +547,11 @@ function convertLeader(l: DwgLeaderEntity, base: Base, dimStyle: DimStyle, annot
       textPosition: p2(m.insertionPoint),
       textHeight: m.textHeight || out.textHeight,
       textAttachment: Math.max(1, Math.min(9, m.attachmentPoint ?? 1)) as MTextAttachment,
+      textLayer: m.layer || base.layer,
+      textAppearance: { color: appearance.color, ...(appearance.trueColor !== undefined ? { trueColor: appearance.trueColor } : {}), ...(appearance.colorName !== undefined ? { colorName: appearance.colorName } : {}), ...(appearance.transparency !== undefined ? { transparency: appearance.transparency } : {}) },
+      textLineSpacing: m.lineSpacing && m.lineSpacing > 0 ? m.lineSpacing : 1,
+      ...(background ? { textBackground: background } : {}),
+      ...((m.columnType === 1 || m.columnType === 2) && m.columnWidth > 0 && m.columnHeightCount > 0 && m.columnHeightCount <= 256 ? { textColumns: { type: m.columnType as 1 | 2, count: m.columnHeightCount, width: m.columnWidth, gutter: Math.max(0, m.columnGutter ?? 0), autoHeight: !!m.columnAutoHeight, reversed: !!m.columnFlowReversed, heights: (m.columnHeights ?? []).slice(0, m.columnHeightCount) } } : {}),
       ...(m.rectWidth && m.rectWidth > 0 ? { textWidth: m.rectWidth } : {}),
       ...(Math.abs(rot) > 1e-12 ? { textRotation: rot } : {}),
     };
@@ -683,7 +689,9 @@ function convertEntity(e: DwgEntity, blockIndex: Map<string, string>, dimStyle: 
       return convertSpline(e as DwgSplineEntity, base);
     case 'LEADER': {
       const l = e as DwgLeaderEntity;
-      return convertLeader(l, base, dimStyle, l.associatedAnnotation ? extras?.annotations.get(String(l.associatedAnnotation).toUpperCase()) : undefined);
+      const annotation = l.associatedAnnotation ? extras?.annotations.get(String(l.associatedAnnotation).toUpperCase()) : undefined;
+      const converted = annotation?.type === 'MTEXT' ? convertEntity(annotation, blockIndex, dimStyle, blocks, extras) : undefined;
+      return convertLeader(l, base, dimStyle, annotation, converted?.type === 'mtext' ? converted.background : undefined);
     }
     case 'MULTILEADER':
       return convertMLeader(e as DwgMultiLeaderEntity, base, dimStyle, extras?.notes ?? []);
@@ -747,6 +755,28 @@ function convertEntity(e: DwgEntity, blockIndex: Map<string, string>, dimStyle: 
       const source = m.text ?? '';
       const raw = hasFields(source) ? evaluateFields(source, {}) : source;
       const plain = mtextFromDxf(raw);
+      let background: MTextBackground | undefined;
+      if (m.backgroundFill) {
+        const invalidFillScale = Boolean(m.backgroundFill & 3) && !(m.fillBoxScale >= 1 && m.fillBoxScale <= 5);
+        const cmc = invalidFillScale ? undefined : (m as DwgMTextEntity & { backgroundFillColorData?: { index?: number; rgb?: number; method?: number; name?: string; bookName?: string } }).backgroundFillColorData;
+        const rgb = cmc?.rgb ?? m.backgroundFillColor;
+        const method = cmc?.method ?? (typeof rgb === 'number' ? (rgb >>> 24) & 0xff : undefined);
+        const index = cmc?.index;
+        const name = cmc?.name ? (cmc.bookName ? `${cmc.bookName}$${cmc.name}` : cmc.name) : undefined;
+        background = {
+          flags: m.backgroundFill,
+          scale: invalidFillScale ? 1.5 : m.fillBoxScale || 1.5,
+          color: invalidFillScale ? 'ByLayer' : method === 0xc1 ? 0 : index !== undefined && index >= 0 && index < 256 ? index : 'ByLayer',
+          ...(!invalidFillScale && typeof rgb === 'number' && Number.isFinite(rgb) && (method === 0xc3 || index === undefined) ? { trueColor: rgb & 0xffffff } : {}),
+          ...(name ? { colorName: name } : {}),
+          ...(!invalidFillScale && m.backgroundFillTransparency !== undefined ? { transparency: m.backgroundFillTransparency } : {}),
+        };
+        if (invalidFillScale) extras?.notes.push('The DWG reader returned unusable MTEXT background scale/color metadata; the mask uses scale 1.5 and ByLayer color. Its original mask appearance may differ.');
+        else if ((m.backgroundFill & 3) && !cmc) extras?.notes.push('MTEXT background RGB is retained, but this reader payload omits the original ACI index and color-book name.');
+        if (cmc?.method !== undefined && ![0xc0, 0xc1, 0xc2, 0xc3].includes(cmc.method) && (m.backgroundFill & 3)) extras?.notes.push(`MTEXT background color method ${cmc.method} is not supported; its available color fields are used.`);
+        if (m.backgroundFill & ~19) extras?.notes.push('Unmodeled MTEXT background flag bits are retained but their effects are not drawn.');
+        if (!invalidFillScale && m.backgroundFillTransparency) extras?.notes.push('MTEXT background transparency is retained but not applied; native AutoCAD does not implement group 441.');
+      }
       return {
         ...base,
         type: 'mtext',
@@ -761,6 +791,7 @@ function convertEntity(e: DwgEntity, blockIndex: Map<string, string>, dimStyle: 
         lineSpacing: m.lineSpacing && m.lineSpacing > 0 ? m.lineSpacing : 1,
         ...(m.styleName && !/^standard$/i.test(m.styleName) ? { style: m.styleName } : {}),
         ...((m.columnType === 1 || m.columnType === 2) && m.columnWidth > 0 && m.columnHeightCount > 0 && m.columnHeightCount <= 256 ? { columns: { type: m.columnType as 1 | 2, count: m.columnHeightCount, width: m.columnWidth, gutter: Math.max(0, m.columnGutter ?? 0), autoHeight: !!m.columnAutoHeight, reversed: !!m.columnFlowReversed, heights: (m.columnHeights ?? []).slice(0, m.columnHeightCount) } } : {}),
+        ...(background ? { background } : {}),
       };
     }
     case 'ELLIPSE': {
@@ -1178,7 +1209,6 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
       if (e.xdata) report.add({ ...item, action: 'simplified', reason: `application XDATA (${e.xdata.appName || 'unnamed'}) is not written back; supported DSTYLE values are applied to dimensions` });
       if (e.transparency || e.colorName) report.add({ ...item, action: 'simplified', reason: 'transparency/color-book names are not kept; RGB/ACI color is kept' });
       if (c.type === 'mtext' && c.columns) report.add({ ...item, action: 'simplified', reason: 'MTEXT column definitions are kept in JCAD_MTEXT_COLUMNS for JCad reimport; external CAD displays one column in AutoCAD 2000 export' });
-      if (e.type === 'MTEXT' && (e as DwgMTextEntity).backgroundFill) report.add({ ...item, action: 'simplified', reason: 'MTEXT background fill is not kept' });
       if (e.type === 'POLYLINE3D') report.add({ type: e.type, action: 'simplified', reason: '3D polyline: flattened to its XY projection', ...(e.handle ? { handle: String(e.handle) } : {}), layer: e.layer || '0', where });
       return c;
     }
@@ -1407,8 +1437,9 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
     }
   };
   ensure('0');
-  for (const e of entities) ensure(e.layer);
-  for (const b of Object.values(blocks)) for (const e of b.entities) ensure(e.layer);
+  const ensureEntityLayers = (e: Entity) => { ensure(e.layer); if (e.type === 'leader' && e.textLayer) ensure(e.textLayer); };
+  for (const e of entities) ensureEntityLayers(e);
+  for (const b of Object.values(blocks)) for (const e of b.entities) ensureEntityLayers(e);
 
   const rawClayer = typeof payload.header.CLAYER === 'string' ? payload.header.CLAYER : '0';
   const currentLayer =
@@ -1424,7 +1455,7 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
     report,
   );
   for (const l of layouts ?? []) {
-    for (const e of l.entities) ensure(e.layer);
+    for (const e of l.entities) ensureEntityLayers(e);
     for (const v of l.viewports) ensure(v.layer);
   }
   // Blocks that insert themselves or multiply into millions of objects (E-13).

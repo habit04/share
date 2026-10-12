@@ -2,7 +2,8 @@
 
 What JCad Electrical reads from DXF and DWG files, what it writes back, and what is lost on the
 way. JCad is a 2D program: it works in the drawing plane and keeps 2D geometry. DXF is the native
-format (written as AutoCAD 2000, `AC1015`); DWG is **read-only** (LibreDWG, versions R14 to 2018,
+format (AutoCAD 2000, `AC1015`, unless native properties require a newer version: MTEXT masks use
+AutoCAD 2007, `AC1021`, and native MTEXT frames use AutoCAD 2018, `AC1032`); DWG is **read-only** (LibreDWG, versions R14 to 2018,
 files up to 128 MiB), and SAVE after opening a DWG writes a DXF next to it.
 
 Legend: **yes** = kept; **partly** = kept with the limits in the last column; **no** = not read or
@@ -22,7 +23,7 @@ the fixtures in `fixtures/` and `tests/fixtures/`.
 | POLYLINE (with VERTEX) | partly | partly | as LWPOLYLINE | 2D polylines retain their outline and bulges. 3D polylines are flattened to XY and reported; polyface / polygon meshes are dropped and reported. |
 | SOLID, TRACE | yes | yes (SOLID) | SOLID | Read as a filled closed polyline; written back as SOLID (three or four corners) or, with more corners, as a solid HATCH. |
 | TEXT | yes | yes | yes | Style name, height, width factor, oblique angle, rotation and fields are kept. All fifteen legal native horizontal/vertical justification combinations and both alignment points survive DXF and exposed DWG data, including origin anchors. FIT retains height and fits width between its anchors; ALIGNED scales height and width together. Rendering, bounds, transforms and vector PDF honor the modes; font metrics and vertical offsets remain approximate as described below. *Verified:* `interchange/r2000-text-justification.dxf`. |
-| MTEXT | partly | partly | partly | Formatting source, chunks and UTF-8 survive. Static/dynamic column definitions are read from native groups or R2018 embedded objects; explicit `\N` breaks render in separate columns. Column dimensions survive JCad edits and reimport through `JCAD_MTEXT_COLUMNS` XDATA. AutoCAD 2000 export displays one MTEXT column in external CAD; automatic column flow is approximated and reported. Background fill is dropped and reported. *Verified:* `interchange/r2018-mtext.dxf`. |
+| MTEXT | partly | partly | partly | Formatting source, chunks and UTF-8 survive. Static/dynamic column definitions are read from native groups or R2018 embedded objects; explicit `\N` breaks render in separate columns. Column dimensions survive JCad edits and reimport through `JCAD_MTEXT_COLUMNS` XDATA; external CAD displays one column and automatic column flow remains approximated and reported. Native background flags, padding scale, ACI/RGB/book-name fields and text frames survive DXF, including associated LEADER annotations. Valid exposed DWG mask fields are converted, but the bundled native reader has a background-scale decoding defect that can corrupt subsequent mask color fields; unusable values get a source warning and a default-scale/ByLayer fallback. Native DWG mask fidelity remains limited. Window-color masks follow the viewport and become white in vector PDF; column gutters stay unmasked. Bounds and masks use JCad's approximate text metrics. Background transparency is retained as native metadata with its unsupported effect reported; it is not applied. Non-uniform block transformations retain existing MTEXT layout approximations. *Verified:* `interchange/r2018-mtext.dxf`, `interchange/r2018-mtext-background.dxf` and `tests/mtext-background.test.ts`. |
 | INSERT (block reference) | yes | yes | yes | Mirrored and non-uniform X / Y scales round-trip. Arrays (MINSERT rows / columns) and dynamic-block parameters are not kept (the block is inserted once). *Verified by fixtures:* `interchange/r2000-nested-blocks-xref.dxf` (three nesting levels). |
 | ATTDEF, ATTRIB | yes | yes | yes | Tag, prompt, default and value, invisible flag, constant attributes, text style, position, height, width/oblique and native justification. Per-insert placement overrides survive independently of the ATTDEF and move with the insert. Native appearance passes through the shared entity codecs. Font metrics retain the TEXT limits. *Verified:* `interchange/r2000-layouts-titleblock.dxf` and `interchange/r2000-text-justification.dxf`. |
 | ELLIPSE | yes | yes | yes | Full and elliptical arcs. *Verified by fixtures:* `interchange/r2000-hatch-curves.dxf`. |
@@ -76,8 +77,9 @@ measurements, so spacing and line breaks can differ from the displayed font and 
 program. The style's font file / TrueType family is kept and written back. In vector PDF output,
 WinAnsi-compatible TrueType-style text uses Helvetica or Helvetica-Bold; other text falls back to
 stroke paths. Exact font embedding and SHX rendering are not implemented. Text in pre-2007 DXF
-files is decoded from `$DWGCODEPAGE`; the writer produces pure ASCII with `\U+XXXX` escapes, so
-non-English text survives any code page.
+files is decoded from `$DWGCODEPAGE`; older exports use pure ASCII with `\U+XXXX` escapes,
+while AutoCAD 2007 and later exports use UTF-8. Supplementary Unicode stays intact across
+MTEXT chunk boundaries.
 Non-default font metrics and absent STYLE definitions are disclosed in import reports; font
 files are referenced rather than embedded.
 

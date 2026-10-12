@@ -14,7 +14,7 @@ import { LoopBuilder, edgeArc, fitPatternToLines, findPattern } from '../../core
 import type { ReadContext } from './read-core';
 import { hasFields, evaluateFields } from '../../core/fields';
 import { readMTextColumns, readDimension, readDimStyleFromEntity, readLeader, readMLeader, readImage, readTable, readJcadTable } from './read-annotations';
-import type { MTextAttachment } from '../../core/mtext';
+import type { MTextAttachment, MTextBackground } from '../../core/mtext';
 import { mtextFromDxf, hasFormatting } from '../../core/mtext';
 import { readTextPlacement } from './read-text';
 
@@ -302,7 +302,16 @@ export function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
       const raw = hasFields(source) ? evaluateFields(source, ctx.fields) : source;
       const plain = mtextFromDxf(raw);
       const field: FieldLink | undefined = raw !== source ? { code: source, value: plain } : undefined;
-      if (has(main, 41) || columns) {
+      const bgGroups: Obj = { ...main, groups: afterSubclass(main, 'AcDbMText') };
+      const background: MTextBackground | undefined = has(bgGroups, 90) ? {
+        flags: num(bgGroups, 90),
+        scale: num(bgGroups, 45, 1.5),
+        color: num(bgGroups, 63, 256) === 256 ? 'ByLayer' : num(bgGroups, 63, 256),
+        ...(has(bgGroups, 421) ? { trueColor: num(bgGroups, 421) } : {}),
+        ...(has(bgGroups, 431) ? { colorName: str(bgGroups, 431) } : {}),
+        ...(has(bgGroups, 441) ? { transparency: num(bgGroups, 441) } : {}),
+      } : undefined;
+      if (has(main, 41) || columns || background) {
         return {
           ...base,
           type: 'mtext',
@@ -316,6 +325,7 @@ export function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
           attachment: ap,
           lineSpacing: num(main, 44, 1) || 1,
           ...(columns ? { columns } : {}),
+          ...(background ? { background } : {}),
         };
       }
       // Minimal MTEXT without a reference width: keep it as single-line TEXT.

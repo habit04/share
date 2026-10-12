@@ -12,6 +12,7 @@ import { mtextFormattingProblem } from '../core/mtext';
 import { samePath } from '../app/paths';
 import { textPlacementProblem, placedText } from '../core/text-placement';
 import { textWidth } from '../core/entities';
+import { mtextBackgroundProblem } from '../core/mtext-background';
 
 /**
  * - dropped: not imported; it is lost when the drawing is saved.
@@ -172,6 +173,8 @@ export function geometryProblem(e: Entity): string | null {
       return Number.isFinite(derived.height) && Number.isFinite(derived.widthFactor ?? 1) && Number.isFinite(derived.position.x) && Number.isFinite(derived.position.y) ? null : 'TEXT justification produces nonfinite geometry';
     }
     case 'mtext': {
+      const background = mtextBackgroundProblem(e);
+      if (background) return background;
       if (e.raw) {
         const format = mtextFormattingProblem(e.raw, e.height);
         if (format) return format;
@@ -179,7 +182,7 @@ export function geometryProblem(e: Entity): string | null {
       return e.height < 0 ? `negative text height ${e.height}` : null;
     }
     case 'leader':
-      return e.raw ? mtextFormattingProblem(e.raw, e.textHeight ?? 1) ?? null : null;
+      return mtextBackgroundProblem({ background: e.textBackground, height: e.textHeight }) ?? (e.raw ? mtextFormattingProblem(e.raw, e.textHeight ?? 1) ?? null : null);
     case 'table':
       if (!Array.isArray(e.cells)) return 'table cells must be an array';
       for (const row of e.cells) {
