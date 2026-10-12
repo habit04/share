@@ -18,7 +18,9 @@ export interface NativeRuntimeVerification {
   wasmSha256: string;
   memory: WasmMemoryLimits;
   masks: Array<{ text: string; flags: number; scale?: number; color?: { index?: number; method?: number; rgb?: number; name?: string; book_name?: string } }>;
+  repairPolicy: 'background' | 'appearance-arrays';
+  appearance?: Record<string, unknown>;
 }
 export const NATIVE_SOURCE: Readonly<{ repository: string; tag: string; commit: string }>;
 export function wasmMemoryLimits(bytes: Uint8Array): WasmMemoryLimits[];
-export function verifyNativeRuntime(directory: string, fixturePath: string, expectedPath: string): Promise<NativeRuntimeVerification>;
+export function verifyNativeRuntime(directory: string, fixturePath: string, expectedPath: string, options?: { repairPolicy?: 'background' | 'appearance-arrays' }): Promise<NativeRuntimeVerification>;

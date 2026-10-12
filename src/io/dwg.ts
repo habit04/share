@@ -180,11 +180,11 @@ function lineweightMm(code: number | undefined): number | undefined {
   return LINEWEIGHTS[code];
 }
 
-/** LibreDWG's alpha_type differs from AcCmTransparency's serialized method byte. */
+/** The pinned decoder exposes native explicit alpha as type 2; its facade also documents type 3. */
 function dwgTransparency(e: { transparency?: number; transparencyType?: number }, layer = false): TransparencySpec | undefined {
   if (e.transparencyType === 0) return 'ByLayer';
   if (e.transparencyType === 1) return 'ByBlock';
-  if (e.transparencyType === 3) return explicitAlpha(e.transparency);
+  if (e.transparencyType === 2 || e.transparencyType === 3) return explicitAlpha(e.transparency);
   if (e.transparencyType !== undefined) return undefined;
   const serialized = transparencyFromDxf(e.transparency);
   if (serialized !== undefined) return serialized;

@@ -7,6 +7,7 @@ import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { convertDwgMTextDatabase } from './dwg-mtext-background.mjs';
 import { convertDwgDatabase } from './dwg-array-conversion.mjs';
+import { convertDwgAppearanceDatabase } from './dwg-appearance-conversion.mjs';
 import { readNativeDwg } from './dwg-native-read.mjs';
 import { boundDwgWasmMemory } from './dwg-wasm-memory.mjs';
 import createNativeModule from '../vendor/libredwg-web-bg/factory/libredwg-web.js';
@@ -49,7 +50,7 @@ export async function readDwgPayload(bytes, kind = 'dwg') {
       /* the file can still be converted without a version label */
     }
     const { Dwg_Object_Type } = await import('@mlightcad/libredwg-web');
-    const db = convertDwgMTextDatabase(l, ptr, (reader, input) => convertDwgDatabase(reader, input, Dwg_Object_Type));
+    const db = convertDwgMTextDatabase(l, ptr, (reader, input) => convertDwgAppearanceDatabase(reader, input, (appearanceReader, drawing) => convertDwgDatabase(appearanceReader, drawing, Dwg_Object_Type)));
     return { payload: payloadFromDatabase(db, version), version };
   } finally {
     // A failed conversion releases the native memory like a successful one (ported from PR #2,

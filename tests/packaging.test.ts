@@ -137,7 +137,7 @@ describe('electron-builder configuration', () => {
     const support = new URL('electron/support.json', root), supportInfo = lstatSync(support);
     expect(supportInfo.isFile()).toBe(true);
     expect(accepted(mainMatchers, support), 'Main-process mailto authorization requires the packaged shared JSON').toBe(true);
-    const adapters = ['dwg-reader.mjs', 'dwg-worker.mjs', 'dwg-process.mjs', 'dwg-wasm-memory.mjs', 'dwg-native-read.mjs', 'dwg-array-conversion.mjs', 'dwg-mtext-background.mjs'];
+    const adapters = ['dwg-reader.mjs', 'dwg-worker.mjs', 'dwg-process.mjs', 'dwg-wasm-memory.mjs', 'dwg-native-read.mjs', 'dwg-array-conversion.mjs', 'dwg-appearance-conversion.mjs', 'dwg-mtext-background.mjs'];
     for (const name of adapters) {
       const source = new URL(`scripts/${name}`, root), info = lstatSync(source);
       expect(info.isFile(), name).toBe(true);

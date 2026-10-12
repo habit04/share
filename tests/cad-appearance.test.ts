@@ -184,11 +184,11 @@ describe('screen and PDF use the same source alpha', () => {
 
 describe('DWG exposed appearance fields', () => {
   const line = (transparencyType: number, transparency: number): DwgEntity => ({ type: 'LINE', layer: 'L', colorIndex: 1, color: 0xabcdef, colorName: 'Book$Pearl', transparencyType, transparency, startPoint: { x: 0, y: 0 }, endPoint: { x: 1, y: 1 } } as unknown as DwgEntity);
-  it('uses LibreDWG alpha_type 0/1/3 rather than treating a byte as serialized DXF', () => {
-    const payload: DwgImportPayload = { header: {}, blocks: [], layers: [{ name: 'L', colorIndex: 256, color: 0x123456, colorName: 'Book$Teal', transparency: 64, off: false, frozen: false, locked: false, lineweight: 0 }], entities: [line(0, 0), line(1, 0), line(3, 0), line(3, 128), line(3, 255), line(3, 256)] };
+  it.each([2, 3])('uses verified/documented LibreDWG explicit alpha_type %i without mistaking a byte for serialized DXF', (alphaType) => {
+    const payload: DwgImportPayload = { header: {}, blocks: [], layers: [{ name: 'L', colorIndex: 256, color: 0x123456, colorName: 'Book$Teal', transparency: 64, off: false, frozen: false, locked: false, lineweight: 0 }], entities: [line(0, 0), line(1, 0), line(alphaType, 0), line(alphaType, 128), line(alphaType, 255), line(alphaType, 256), line(4, 128)] };
     const imported = convertDwg(payload);
-    expect(imported.state.entities.map((e) => e.transparency)).toEqual([undefined, 'ByBlock', 0, 128, 255, undefined]);
-    expect(imported.state.entities.map((e) => Math.round(resolveAlpha(e, imported.state.layers) * 255))).toEqual([64, 255, 0, 128, 255, 64]);
+    expect(imported.state.entities.map((e) => e.transparency)).toEqual([undefined, 'ByBlock', 0, 128, 255, undefined, undefined]);
+    expect(imported.state.entities.map((e) => Math.round(resolveAlpha(e, imported.state.layers) * 255))).toEqual([64, 255, 0, 128, 255, 64, 64]);
     expect(imported.state.entities[0]).toMatchObject({ color: 1, trueColor: 0xabcdef, colorName: 'Book$Pearl' });
     expect(readDxf(writeDxf(imported.state)).layers.find((l) => l.name === 'L')).toMatchObject({ colorName: 'Book$Teal', transparency: 64 });
     expect(JSON.stringify(imported.report)).toContain('invalid or unexposed DWG transparency');
