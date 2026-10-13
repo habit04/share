@@ -676,11 +676,59 @@ visible LINE before timing and proving the same edit independently afterward.
 Full checks, native raster/performance, recovery and replacement exact-head CI
 remain pending for this candidate.
 
+The old CI clip cases passed individually on Delly at about 2.24 and 2.35
+seconds, versus about 6 seconds in the failed runner samples. This is evidence
+of load sensitivity, not proof that the CI failure is resolved. Replacement
+Node CI bounds the test pool to two workers while preserving all cases and
+the existing 5-second budgets. The standalone edit-selector checks also run
+before the GPU benchmark. Both changes still require replacement exact-head CI.
+
 The straight construction bounds target the pinned experimental
 Electron 44.7/Chromium 152/Skia path and assume its IEEE arithmetic. Actual binary
 lowering, rounding modes and every native CPU/GPU stroker dispatch have not been
 audited; runtime versions are not enforced by these helpers. These are limits
 on general production claims, not evidence of broad driver/browser coverage.
+
+The first clean repair source `5188097` failed its full suite: 21 failures,
+3,325 passes and 28 conditional skips. Twenty old expectations assumed GPU
+admission for newly refused native topology/rotation cases. Their original
+inputs are retained as explicit refusal checks, with separately named admitted
+controls preserving packing and precision coverage. One failure was a real
+counter bug: joined-stroke budget counting passed width zero to the source
+proof instead of the operation's actual paint width. The narrow correction
+and additional width-varied counter checks remain subject to the next full run.
+
+A further independent source review found direct ARC/CIRCLE admission lacked
+the native Float32 center/radius/ellipse construction bound. At CSS 1216 x 552,
+DPR 1, scale 1 and twist 0, arcs with radius 40,000,000, angles 0..0.000002,
+and center x values -40,000,000 versus -40,000,000.75 both passed the old guards.
+Their Canvas Float32 argument tuples are identical, while their GPU boundaries
+differ by 0.75 pixels. Both cannot fit the same quarter-pixel native boundary.
+This is a source-level counterexample, not yet a measured raster result.
+See the [pinned native argument casts](https://github.com/chromium/chromium/blob/152.0.7977.130/third_party/blink/renderer/modules/canvas/canvas2d/canvas_path.cc#L401-L448).
+The bounded repair must refuse unsafe native parameter construction and deduct
+its accepted error from the existing tessellation allowance. It must preserve
+the total quarter-pixel limit and existing complete-view Canvas fallback.
+This parameter repair does not establish a new native libm/angle guarantee;
+the existing angle admission and broader production limitations remain explicit.
+
+The subsequent [Intel audit on unchanged 9df assets](benchmarks/windows-gpu-9df-direct-arc-alias-intel-audit.json)
+retains an **inconclusive pair** because the first baseline Canvas output changed
+after readback. The shifted width-16 case was individually stable across four
+captures and a repeat: native Canvas painted zero foreground pixels, while
+admitted GPU painted 408 in the ROI (360 pixelmatch differences). An independent
+LINE painted 384 pixels, confirming the context was usable. The two final native
+captures were identical; GPU centroids differed by about 0.7483 pixels, with all
+three GPU repeats exact. Width 2.5 was skipped after baseline instability. The
+Canvas backend-transition cause is unproved. This is correctness evidence for
+the conservative refusal, not a corrected GPU curve or a paired benchmark pass.
+The baseline Canvas large-arc omission is not repaired by this GPU guard.
+
+The bounded parameter guard and its integration passed 13 helper and 16
+integration tests, TypeScript and scoped lint. Independent arithmetic review
+found no concrete counterexample within its stated center/radius/oval scope.
+Nonzero context rotation remains an explicit complete-view refusal. These
+checks do not replace native validation of the final clean source.
 
 ### NVIDIA validation on the pinned GPU source
 

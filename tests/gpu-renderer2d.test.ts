@@ -172,9 +172,16 @@ describe('GPU double-precision preparation', () => {
     expect(new Float32Array([translated.a.x, translated.b.x])[0]).toBe(new Float32Array([translated.a.x, translated.b.x])[1]);
   });
 
-  it('rebases representable circle centers before adding small curve offsets', () => {
+  it('keeps the original rotated near/trillion circle construction on complete Canvas', () => {
     const origin = { x: 1e12, y: -1e12 };
     const small = { ...view, scale: 1024, twist: 0.2 };
+    const circle: Entity = { ...line, type: 'circle', center: { x: 0, y: 0 }, radius: 1 / 32 };
+    expectOwnedCanvasRefusal(drawing([circle]), small, 'native context rotation is unproved');
+    expectOwnedCanvasRefusal(drawing([{ ...circle, center: origin }]), { ...small, center: origin }, 'native context rotation is unproved');
+  });
+
+  it('rebases representable circle centers in a separately admitted zero-twist control', () => {
+    const origin = { x: 1e12, y: -1e12 }, small = { ...view, scale: 1024, twist: 0 };
     const circle: Entity = { ...line, type: 'circle', center: { x: 0, y: 0 }, radius: 1 / 32 };
     expect(prepare2D(drawing([{ ...circle, center: origin }]), { ...small, center: origin }, overlay).vertices).toEqual(prepare2D(drawing([circle]), small, overlay).vertices);
   });
@@ -217,8 +224,16 @@ describe('GPU double-precision preparation', () => {
     renderer.dispose();
   });
 
-  it('keeps separate direct semicircle ARC and CIRCLE bytes equal at trillion-unit origins', () => {
+  it('keeps the original rotated direct ARC/CIRCLE combination on complete Canvas at near/trillion origins', () => {
     const origin = { x: 1e12, y: -1e12 }, small = { ...view, scale: 1024, twist: 0.2 };
+    const circle: Entity = { ...line, type: 'circle', center: { x: 0, y: 0 }, radius: 1 / 32 };
+    const arc: Entity = { ...line, id: 'direct-arc', type: 'arc', center: { x: 0, y: 0 }, radius: 1 / 32, startAngle: Math.PI, endAngle: Math.PI * 2 };
+    expectOwnedCanvasRefusal(drawing([circle, arc]), small, 'native context rotation is unproved');
+    expectOwnedCanvasRefusal(drawing([{ ...circle, center: origin }, { ...arc, center: origin }]), { ...small, center: origin }, 'native context rotation is unproved');
+  });
+
+  it('keeps separately admitted zero-twist ARC/CIRCLE bytes equal at trillion-unit origins', () => {
+    const origin = { x: 1e12, y: -1e12 }, small = { ...view, scale: 1024, twist: 0 };
     const circle: Entity = { ...line, type: 'circle', center: { x: 0, y: 0 }, radius: 1 / 32 };
     const arc: Entity = { ...line, id: 'direct-arc', type: 'arc', center: { x: 0, y: 0 }, radius: 1 / 32, startAngle: Math.PI, endAngle: Math.PI * 2 };
     expect(prepare2D(drawing([{ ...circle, center: origin }, { ...arc, center: origin }]), { ...small, center: origin }, overlay).vertices).toEqual(prepare2D(drawing([circle, arc]), small, overlay).vertices);
@@ -418,7 +433,12 @@ describe('CAD appearance and strict fallback', () => {
   it('refuses malformed geometry and excessive tessellation rather than omitting it', () => {
     expect(() => prepare2D(drawing([{ ...line, a: { x: NaN, y: 0 } }]), view, overlay)).toThrow(/Nonfinite/);
     expect(() => prepare2D(drawing([{ ...polyline, bulges: [NaN] }]), view, overlay)).toThrow(/bulge/);
-    for (const radius of [-1, NaN, 1e12]) expect(() => prepare2D(drawing([{ ...line, type: 'circle', center: { x: 0, y: 0 }, radius }]), view, overlay)).toThrow(/radius|budget|geometry/);
+    for (const radius of [-1, NaN, 1e12]) {
+      const state = drawing([{ ...line, type: 'circle', center: { x: 0, y: 0 }, radius }]);
+      const reason = radius === 1e12 ? 'native float curve parameters exceed precision budget' : 'invalid native float curve parameter envelope';
+      expect(() => prepare2D(state, view, overlay)).toThrow(`Unsupported Canvas stroke construction: ${reason}`);
+      expectOwnedCanvasRefusal(state, view, reason);
+    }
     expect(() => prepare2D(drawing(), { ...view, scale: Infinity }, overlay)).toThrow(/view/);
   });
 
@@ -570,8 +590,20 @@ describe('GPU renderer submission, caching and lifecycle', () => {
     renderer.dispose();
   });
 
-  it.each([1, 2, 3])('keeps the original rotated shader-pan proof for a separately admitted ARC-only scene, DPR %s', (dpr) => {
+  it.each([1, 2, 3])('keeps the original rotated ARC-only scene on complete Canvas through tiny pans, DPR %s', (dpr) => {
     const center = { x: 1e12, y: -1e12 }, close = { ...view, center, scale: 1024, twist: 0.63, dpr, lineweights: true };
+    const arc: Entity = { ...line, id: 'direct-arc', type: 'arc', center, radius: 1 / 32, startAngle: Math.PI, endAngle: Math.PI * 2 };
+    const state = sealImmutableData(drawing([arc])), moved = { ...close, center: { x: center.x + 1 / 8192, y: center.y - 1 / 4096 } };
+    expectOwnedCanvasRefusal(state, close, 'native context rotation is unproved');
+    expectOwnedCanvasRefusal(state, moved, 'native context rotation is unproved');
+    // This is an independent JS/shader coordinate identity, not native rotation admission.
+    const atOrigin = screenPoint(center, close), afterPan = screenPoint(center, moved);
+    expect(afterPan.x - atOrigin.x).toBeCloseTo((-Math.cos(close.twist) / 8 - Math.sin(close.twist) / 4), 12);
+    expect(afterPan.y - atOrigin.y).toBeCloseTo((Math.sin(close.twist) / 8 - Math.cos(close.twist) / 4), 12);
+  });
+
+  it.each([1, 2, 3])('retains cached ARC tiny-pan geometry in a separately admitted zero-twist control, DPR %s', (dpr) => {
+    const center = { x: 1e12, y: -1e12 }, close = { ...view, center, scale: 1024, twist: 0, dpr, lineweights: true };
     const arc: Entity = { ...line, id: 'direct-arc', type: 'arc', center, radius: 1 / 32, startAngle: Math.PI, endAngle: Math.PI * 2 };
     const state = sealImmutableData(drawing([arc])), { canvas, gl } = rendererFixture(), renderer = new Gpu2DRenderer(canvas);
     expect(renderer.render(state, close, overlay)).toMatchObject({ rendered: true, uploadKind: 'full', uploadCalls: 1 });
@@ -1084,7 +1116,7 @@ describe('GPU compiled block and stroke-text integration', () => {
       : type === 'arc' ? { ...line, type, center: { x: 1000, y: 1000 }, radius: 0.1, startAngle: 0, endAngle: 1 }
         : { ...polyline, points: [{ x: 999.9, y: 1000 }, { x: 1000.1, y: 1000 }], bulges: [1] };
     const state = sealImmutableData(scene([text(), insert('B', { lineWeight: 10 })], { B: block([curve]) }));
-    expect(renderer.render(state, { ...view, lineweights: true }, overlay)).toMatchObject({ rendered: false, reason: expect.stringContaining(type === 'polyline' ? 'native float arc connection is unproved' : 'Curve stroke overlap'), bytes: 0, submissionMs: 0 });
+    expect(renderer.render(state, { ...view, lineweights: true }, overlay)).toMatchObject({ rendered: false, reason: expect.stringContaining(type === 'polyline' ? 'native float arc connection is unproved' : 'native float curve parameters exceed precision budget'), bytes: 0, submissionMs: 0 });
     expect(gl.bufferData).not.toHaveBeenCalled(); expect(gl.clear).not.toHaveBeenCalled(); expect(gl.drawArrays).not.toHaveBeenCalled();
     renderer.dispose();
   });
@@ -1640,14 +1672,20 @@ describe('GPU bounded zoom correctness and separate CPU telemetry', () => {
     const circle: Entity = { ...line, id: 'offscreen-wide', type: 'circle', center: { x: 1000, y: 1000 }, radius: 0.1, lineWeight: 10 };
     const { canvas, gl } = rendererFixture();
     const renderer = new Gpu2DRenderer(canvas);
-    expect(renderer.render(sealImmutableData(drawing([line, circle])), { ...view, scale: 80, lineweights: true }, overlay)).toMatchObject({ rendered: false, bytes: 0, uploadCalls: 0, reason: expect.stringContaining('offscreen-wide') });
+    expect(renderer.render(sealImmutableData(drawing([line, circle])), { ...view, scale: 80, lineweights: true }, overlay)).toMatchObject({ rendered: false, bytes: 0, uploadCalls: 0, reason: 'Unsupported Canvas stroke construction: native float curve parameters exceed precision budget' });
     expect(gl.clear).not.toHaveBeenCalled(); expect(gl.drawArrays).not.toHaveBeenCalled();
     renderer.dispose();
   });
 
-  it.each([1, 2, 3])('bounds wide open-arc butt-cap tangent error independently at DPR %s', (dpr) => {
+  it.each([1, 2, 3])('keeps the original rotated wide open ARC on complete Canvas at DPR %s', (dpr) => {
     const arc: Entity = { ...line, type: 'arc', center: { x: 0, y: 0 }, radius: 2, startAngle: 0.2, endAngle: 3.8, lineWeight: 10 };
     const weighted = { ...view, dpr, twist: 0.4, lineweights: true };
+    expectOwnedCanvasRefusal(drawing([arc]), weighted, 'native context rotation is unproved');
+  });
+
+  it.each([1, 2, 3])('bounds wide open-arc butt-cap tangent error in a separately admitted zero-twist control at DPR %s', (dpr) => {
+    const arc: Entity = { ...line, type: 'arc', center: { x: 0, y: 0 }, radius: 2, startAngle: 0.2, endAngle: 3.8, lineWeight: 10 };
+    const weighted = { ...view, dpr, twist: 0, lineweights: true };
     const prepared = prepareZoom2D(drawing([arc]), weighted, overlay);
     for (const angle of [arc.startAngle, arc.endAngle]) {
       const rotated = angle + weighted.twist;

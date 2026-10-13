@@ -75,23 +75,57 @@ function refusalFixture() {
   return { gl, renderer: new Gpu2DRenderer(canvas) };
 }
 
+const rotationReason = 'Unsupported Canvas stroke construction: native context rotation is unproved';
+const nativeFloatReason = 'Unsupported Canvas stroke construction: native float segment topology is unproved';
+
+function expectCompleteRefusal(state: DrawingState, camera: Gpu2DView, reason: string): void {
+  const before = JSON.stringify(state);
+  expect(lowerStrokeScene(state, camera, overlay)).toEqual({ ok: false, reason });
+  const { gl, renderer } = refusalFixture();
+  expect(renderer.render(state, camera, overlay)).toMatchObject({ rendered: false, reason, uploadCalls: 0, bytes: 0 });
+  for (const call of [gl.createShader, gl.createBuffer, gl.bufferData, gl.bufferSubData, gl.clear, gl.drawArrays]) expect(call).not.toHaveBeenCalled();
+  expect(JSON.stringify(state)).toBe(before);
+  renderer.dispose();
+}
+
 afterEach(() => vi.restoreAllMocks());
 
 describe('Canvas world-coordinate parity for compiled GPU scenes', () => {
-  it.each([1, 2])('measures readable world-glyph quantization and refuses it without weakening near-origin accuracy at DPR %s', (dpr) => {
+  it.each([1, 2])('preserves the original rotated readable-world case as full fallback and measures far quantization at DPR %s', (dpr) => {
     const near = text({ position: { x: 1 / 64, y: -1 / 64 }, widthFactor: 1.3, oblique: 0.2 });
     const far = { ...near, position: { x: origin.x + near.position.x, y: origin.y + near.position.y } };
     const camera = { ...view, dpr, twist: 0.63 }, farCamera = { ...camera, center: origin };
+    const reference = canvasPaths(drawing([near]), camera).paths;
+    expectCompleteRefusal(drawing([near]), camera, rotationReason);
+    expect(maximumPathError(canvasPaths(drawing([far]), farCamera).paths, reference) * dpr).toBeGreaterThan(0.0625);
+    expect(lowerStrokeScene(drawing([far]), farCamera, overlay)).toEqual({ ok: false, reason: expect.stringContaining('world-coordinate quantization') });
+  });
+
+  it.each([1, 2])('admits zero-twist readable-world glyphs without weakening near-origin or far quantization gates at DPR %s', (dpr) => {
+    const near = text({ position: { x: 1 / 64, y: -1 / 64 }, widthFactor: 1.3, oblique: 0.2 });
+    const far = { ...near, position: { x: origin.x + near.position.x, y: origin.y + near.position.y } };
+    const camera = { ...view, dpr, twist: 0 }, farCamera = { ...camera, center: origin };
     const reference = canvasPaths(drawing([near]), camera).paths;
     expect(maximumPathError(loweredPaths(lowerStrokeScene(drawing([near]), camera, overlay), camera), reference)).toBeLessThan(1e-10);
     expect(maximumPathError(canvasPaths(drawing([far]), farCamera).paths, reference) * dpr).toBeGreaterThan(0.0625);
     expect(lowerStrokeScene(drawing([far]), farCamera, overlay)).toEqual({ ok: false, reason: expect.stringContaining('world-coordinate quantization') });
   });
 
-  it('admits a lower-scale trillion-coordinate TEXT only when actual Canvas path error fits the reserve', () => {
+  it('preserves the original rotated lower-scale trillion TEXT as full fallback despite small Canvas world error', () => {
     const near = text({ position: { x: 1 / 8, y: -1 / 8 }, height: 1, align: 'right', widthFactor: 1.3, oblique: 0.2 });
     const far = { ...near, position: { x: origin.x + near.position.x, y: origin.y + near.position.y } };
     const camera = { ...view, scale: 16, center: origin, twist: 0.63 };
+    expect(maximumPathError(canvasPaths(drawing([near]), { ...camera, center: { x: 0, y: 0 } }).paths, canvasPaths(drawing([far]), camera).paths)).toBeLessThan(0.0625);
+    expectCompleteRefusal(drawing([far]), camera, rotationReason);
+    expect(lowerStrokeScene(drawing([far]), { ...camera, dpr: 2 }, overlay).ok).toBe(false);
+    expect(lowerStrokeScene(drawing([far]), { ...camera, scale: 32 }, overlay).ok).toBe(false);
+    expect(lowerStrokeScene(drawing([far]), { ...camera, scale: 32 }, overlay, { maxRatio: 1 })).toEqual({ ok: false, reason: rotationReason });
+  });
+
+  it('admits zero-twist lower-scale trillion TEXT only when actual Canvas path error fits the original reserve', () => {
+    const near = text({ position: { x: 1 / 8, y: -1 / 8 }, height: 1, align: 'right', widthFactor: 1.3, oblique: 0.2 });
+    const far = { ...near, position: { x: origin.x + near.position.x, y: origin.y + near.position.y } };
+    const camera = { ...view, scale: 16, center: origin, twist: 0 };
     const result = lowerStrokeScene(drawing([far]), camera, overlay);
     expect(maximumPathError(loweredPaths(result, camera), canvasPaths(drawing([far]), camera).paths)).toBeLessThan(0.0625);
     expect(lowerStrokeScene(drawing([far]), { ...camera, dpr: 2 }, overlay).ok).toBe(false);
@@ -107,9 +141,16 @@ describe('Canvas world-coordinate parity for compiled GPU scenes', () => {
     expect(lowerStrokeScene(drawing([far]), { ...camera, center: origin }, overlay).ok).toBe(false);
   });
 
-  it('keeps giant-origin QTEXT bars eligible when Canvas constructs their offsets in screen space', () => {
+  it('preserves the original rotated giant-origin QTEXT bar as complete fallback', () => {
     const far = text({ position: origin, height: 1 / 4096, text: '%%uAB%%k', align: 'center', rotation: 0.31, widthFactor: 1.3 });
     const camera = { ...view, center: origin, twist: 0.7, dpr: 2 };
+    expect(canvasPaths(drawing([far]), camera).paths).toHaveLength(1);
+    expectCompleteRefusal(drawing([far]), camera, rotationReason);
+  });
+
+  it('keeps zero-twist giant-origin QTEXT eligible with the original screen-space error and single-stroke gates', () => {
+    const far = text({ position: origin, height: 1 / 4096, text: '%%uAB%%k', align: 'center', rotation: 0.31, widthFactor: 1.3 });
+    const camera = { ...view, center: origin, twist: 0, dpr: 2 };
     const result = lowerStrokeScene(drawing([far]), camera, overlay);
     expect(maximumPathError(loweredPaths(result, camera), canvasPaths(drawing([far]), camera).paths)).toBeLessThan(1e-10);
     expect(accepted(result).operations[0]!.paths).toHaveLength(1);
@@ -157,7 +198,9 @@ describe('Canvas world-coordinate parity for compiled GPU scenes', () => {
     const state = drawing([line(), insert('ATTR', { position: origin })], { ATTR: definition });
     const glyphs = vi.spyOn(hershey, 'strokeText');
     const { gl, renderer } = refusalFixture();
-    expect(renderer.render(state, { ...view, center: origin }, overlay)).toMatchObject({ rendered: false, reason: expect.stringContaining('world-coordinate quantization'), uploadCalls: 0, bytes: 0 });
+    // Preserve the original world-zero LINE and giant-origin camera: its native
+    // float segment collapses before ATTRIB's later world-budget preflight.
+    expect(renderer.render(state, { ...view, center: origin }, overlay)).toMatchObject({ rendered: false, reason: nativeFloatReason, uploadCalls: 0, bytes: 0 });
     expect(glyphs).not.toHaveBeenCalled();
     expect(gl.createShader).not.toHaveBeenCalled(); expect(gl.createBuffer).not.toHaveBeenCalled();
     expect(gl.bufferData).not.toHaveBeenCalled(); expect(gl.bufferSubData).not.toHaveBeenCalled();
@@ -165,12 +208,30 @@ describe('Canvas world-coordinate parity for compiled GPU scenes', () => {
     renderer.dispose();
   });
 
-  it('pairs repeated nested text in expansion order including hidden child slots and skipped attributes', () => {
+  it('checks the separate zero-twist ATTRIB-only world budget before glyph allocation or submission', () => {
+    const definition = block('ATTR', [], [{ tag: 'TAG', prompt: '', default: 'A', position: { x: 0.012345, y: 0.004321 }, height: 1 / 512, align: 'left' }]);
+    const state = drawing([insert('ATTR', { position: origin })], { ATTR: definition });
+    const glyphs = vi.spyOn(hershey, 'strokeText');
+    expectCompleteRefusal(state, { ...view, center: origin, twist: 0 }, 'Canvas world-coordinate quantization exceeds TEXT precision budget (owner:TAG)');
+    expect(glyphs).not.toHaveBeenCalled();
+  });
+
+  it('preserves the original rotated repeated nested-text/ATTRIB ordering fixture as full fallback', () => {
     const attribute = (tag: string, patch: Partial<AttributeDef> = {}): AttributeDef => ({ tag, prompt: '', default: 'AB', position: { x: 0.5, y: 1 }, height: 1, align: 'left', ...patch });
     const leaf = block('LEAF', [text({ id: 'repeat', layer: 'OFF', position: { x: 7, y: 8 }, height: 1 }), text({ id: 'repeat', position: { x: 0, y: 0 }, height: 1 })], [attribute('INVISIBLE', { invisible: true }), attribute('HIDE'), attribute('SHOW')]);
     const root = block('ROOT', [insert('LEAF', { id: 'A', position: { x: -3, y: -1 }, hiddenAttributes: ['HIDE'], rotation: 0.2 }), insert('LEAF', { id: 'B', position: { x: 3, y: 1 }, hiddenAttributes: ['HIDE'], rotation: 0.4 })]);
     const state = { ...drawing([insert('ROOT', { position: { x: 30, y: -20 } })], { ROOT: root, LEAF: leaf }), layers: [layer, { ...layer, name: 'OFF', visible: false }] };
     const camera = { ...view, center: { x: 30, y: -20 }, scale: 10, twist: 0.3 };
+    expect(canvasPaths(state, camera).paths.length).toBeGreaterThan(4);
+    expectCompleteRefusal(state, camera, rotationReason);
+  });
+
+  it('pairs zero-twist repeated nested text/ATTRIB in the original expansion order with hidden child and skipped attribute slots', () => {
+    const attribute = (tag: string, patch: Partial<AttributeDef> = {}): AttributeDef => ({ tag, prompt: '', default: 'AB', position: { x: 0.5, y: 1 }, height: 1, align: 'left', ...patch });
+    const leaf = block('LEAF', [text({ id: 'repeat', layer: 'OFF', position: { x: 7, y: 8 }, height: 1 }), text({ id: 'repeat', position: { x: 0, y: 0 }, height: 1 })], [attribute('INVISIBLE', { invisible: true }), attribute('HIDE'), attribute('SHOW')]);
+    const root = block('ROOT', [insert('LEAF', { id: 'A', position: { x: -3, y: -1 }, hiddenAttributes: ['HIDE'], rotation: 0.2 }), insert('LEAF', { id: 'B', position: { x: 3, y: 1 }, hiddenAttributes: ['HIDE'], rotation: 0.4 })]);
+    const state = { ...drawing([insert('ROOT', { position: { x: 30, y: -20 } })], { ROOT: root, LEAF: leaf }), layers: [layer, { ...layer, name: 'OFF', visible: false }] };
+    const camera = { ...view, center: { x: 30, y: -20 }, scale: 10, twist: 0 };
     const result = lowerStrokeScene(state, camera, overlay);
     expect(accepted(result).operations.map((operation) => operation.sourceId)).toEqual(['repeat', 'A:SHOW', 'repeat', 'B:SHOW']);
     expect(maximumPathError(loweredPaths(result, camera), canvasPaths(state, camera).paths)).toBeLessThan(1e-10);

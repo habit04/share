@@ -45,7 +45,9 @@ jobs:
           name: native-metadata-fixtures
           path: native-metadata-output/
           if-no-files-found: error
-      - run: npm test
+      # Keep CPU-heavy geometry and retained-graph regressions from competing
+      # across the automatic worker pool. Assertions and 5-second budgets stay.
+      - run: npm test -- --maxWorkers=2
         env:
           # tests/perf.test.ts budgets are 3x the development machine; allow shared runners 2x more.
           JCAD_PERF_FACTOR: 2
@@ -202,7 +204,9 @@ jobs:
       - name: Private GPU-process failure, Canvas recovery and DXF persistence
         run: node scripts/e2e-gpu-process.mjs --cached-scene
       - name: Experimental geometry, pan cache, fallback and context restoration
-        run: npm run bench:gpu
+        run: |
+          node --test scripts/gpu-edit-candidate.test.mjs
+          npm run bench:gpu
       - uses: actions/upload-artifact@v4
         if: always()
         with:

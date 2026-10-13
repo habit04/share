@@ -9,7 +9,8 @@ import { colorDisplay, lineweightDisplay, resolveColor, resolveLineWidth } from 
 import { lowerStrokeScene, type LocalStrokePath, type LoweredStrokeScene, type StrokePaintOperation } from './stroke-scene';
 import { canvasArcAdmission } from './arc-admission';
 import { assertPrimitiveStrokePrecision, canvasPolylineStrokeProblem } from './stroke-parity';
-import { isSourcePrecisionCertificateError, sourceTopologyAdmissionError } from './stroke-precision-error';
+import { isSourcePrecisionCertificateError, sourcePrecisionCertificateError, sourceTopologyAdmissionError } from './stroke-precision-error';
+import { nativeFloatCurveBound, type NativeFloatCurveOptions } from './native-float-curve-bound';
 
 export interface Gpu2DView {
   width: number;
@@ -126,7 +127,24 @@ function arcPath(center: Point, radius: number, start: number, sweep: number, vi
   return path;
 }
 
-function entityPath(entity: Entity, view: Gpu2DView, curveScale = view.scale, pixelError = PIXEL_ERROR, strokeWidth = 0, onCurve?: (radius: number) => void): { points: Point[]; closed: boolean } {
+interface CurveParameterEnvelope extends NativeFloatCurveOptions { readonly maxRatio?: number }
+
+/** Parameter casting/oval construction share the inherited curve allowance.
+ * This does not extend the separate Canvas angle gate or claim native libm proof.
+ */
+function curveTessellationAllowance(center: Point, radius: number, view: Gpu2DView, curveScale: number, pixelError: number, width: number, envelope: CurveParameterEnvelope): number {
+  const { maxRatio = curveScale / view.scale, ...options } = envelope;
+  const proof = nativeFloatCurveBound(projectLocal(center, view), radius * view.scale, width, view, maxRatio, options);
+  if (proof.problem) {
+    const reason = `Unsupported Canvas stroke construction: ${proof.problem}`;
+    throw proof.failure === 'topology' ? sourceTopologyAdmissionError(reason) : sourcePrecisionCertificateError(reason);
+  }
+  const remaining = pixelError - proof.errorCss * view.dpr;
+  if (!Number.isFinite(remaining) || remaining <= 0) throw sourcePrecisionCertificateError('Unsupported Canvas stroke construction: native float curve parameters exhaust tessellation precision budget');
+  return remaining;
+}
+
+function entityPath(entity: Entity, view: Gpu2DView, curveScale = view.scale, pixelError = PIXEL_ERROR, strokeWidth = 0, onCurve?: (radius: number) => void, curveEnvelope: CurveParameterEnvelope = { minRatio: 1, panPhysical: 0 }): { points: Point[]; closed: boolean } {
   const local = (point: Point): Point => checked({ x: point.x - view.center.x, y: point.y - view.center.y });
   switch (entity.type) {
     case 'line': {
@@ -134,14 +152,16 @@ function entityPath(entity: Entity, view: Gpu2DView, curveScale = view.scale, pi
       return { points: [screenPoint(entity.a, view), screenPoint(entity.b, view)], closed: false };
     }
     case 'circle': {
-      const points = arcPath(local(entity.center), entity.radius, 0, Math.PI * 2, view, curveScale, pixelError, strokeWidth, false, onCurve);
+      const center = local(entity.center), remaining = curveTessellationAllowance(center, entity.radius, view, curveScale, pixelError, strokeWidth, curveEnvelope);
+      const points = arcPath(center, entity.radius, 0, Math.PI * 2, view, curveScale, remaining, strokeWidth, false, onCurve);
       points.pop();
       return { points, closed: true };
     }
     case 'arc': {
       const admission = canvasArcAdmission(entity);
       if (!admission.ok) throw new Error(`${admission.reason} (${entity.id})`);
-      return { points: arcPath(local(entity.center), entity.radius, admission.startAngle, admission.sweep, view, curveScale, pixelError, strokeWidth, true, onCurve), closed: false };
+      const center = local(entity.center), remaining = curveTessellationAllowance(center, entity.radius, view, curveScale, pixelError, strokeWidth, curveEnvelope);
+      return { points: arcPath(center, entity.radius, admission.startAngle, admission.sweep, view, curveScale, remaining, strokeWidth, true, onCurve), closed: false };
     }
     case 'polyline': {
       // Rebase BEFORE bulgeArc computes its midpoint/center, preserving close-zoom arcs.
@@ -560,7 +580,7 @@ export function compiledStraightVertexLowerBound(operations: readonly StrokePain
     if (!straightPathSize(source)) continue;
     const path = source.kind === 'path'
       ? { points: source.points.map((point) => projectLocal(point, localView)), closed: source.closed }
-      : entityPath(source.entity, localView);
+      : entityPath(source.entity, localView, undefined, undefined, operation.widthCss);
     const centers = path.points.map((point) => checked({ x: point.x - view.width / 2, y: point.y - view.height / 2 }));
     visitZoomStrokeTriangles(centers, path.closed, operation.widthCss, extent, () => {
       vertices += 3; // Budget is vertices, never floats or bytes.
@@ -641,7 +661,7 @@ export function prepareCompiledZoom2D(state: DrawingState, view: Gpu2DView, over
     };
     for (const source of operation.paths) {
       const path = source.kind === 'entity'
-        ? entityPath(source.entity, localView, view.scale * maxRatio, COMPILED_CURVE_PIXEL_ERROR, operation.widthCss, admitCurve)
+        ? entityPath(source.entity, localView, view.scale * maxRatio, COMPILED_CURVE_PIXEL_ERROR, operation.widthCss, admitCurve, { minRatio, maxRatio, panPhysical: padding * Math.max(1, view.dpr), nativeParameterUncertaintyCss: 0.0625 / view.dpr })
         : { points: source.points.map((point) => projectLocal(point, localView)), closed: source.closed };
       const points = path.points.map((point) => {
         const center = checked({ x: point.x - view.width / 2, y: point.y - view.height / 2 });
@@ -842,7 +862,7 @@ export function prepareZoom2D(state: DrawingState, view: Gpu2DView, overlay: Gpu
         const required = innerLimit / projectedRadius * (1 + 16 * Number.EPSILON);
         admittedMinRatio = Math.max(admittedMinRatio, Math.min(1, required));
       };
-      const path = entityPath(entity, view, view.scale * maxRatio, ZOOM_CURVE_PIXEL_ERROR, width, admitCurve);
+      const path = entityPath(entity, view, view.scale * maxRatio, ZOOM_CURVE_PIXEL_ERROR, width, admitCurve, { minRatio, maxRatio, panPhysical: padding * Math.max(1, view.dpr) });
       const { points, bounds } = zoomLocalPoints(path.points, view);
       includeZoomBounds(sourceBounds, bounds);
       const first = vertices.length / GPU_ZOOM_VERTEX_STRIDE;
@@ -894,7 +914,7 @@ export function prepare2D(state: DrawingState, view: Gpu2DView, overlay: Gpu2DOv
       if (!color) throw new Error(`Unsupported display color (${entity.id})`);
       const width = selected ? 2.5 : hovered ? 2 : resolveLineWidth(entity, state.layers, { scale: view.scale, toScreen: (point) => screenPoint(point, view) });
       const first = vertices.length / STRIDE;
-      const path = entityPath(entity, view, view.scale, PIXEL_ERROR, width);
+      const path = entityPath(entity, view, view.scale, PIXEL_ERROR, width, undefined, { minRatio: 1, maxRatio: 1, panPhysical: clipPadding * Math.max(1, view.dpr) });
       // Include offscreen source points: clipping must not hide a later precision refusal.
       for (const point of path.points) {
         panPrecisionMargin.x = Math.min(panPrecisionMargin.x, precisionBound - Math.abs(point.x));

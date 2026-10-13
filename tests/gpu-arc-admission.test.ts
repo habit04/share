@@ -8,6 +8,7 @@ import { canvasArcAdmission } from '../src/render/gpu-prototype/arc-admission';
 import { GPU_ZOOM_VERTEX_STRIDE, prepare2D, prepareZoom2D, screenPoint, type Gpu2DView, type PreparedZoom2D } from '../src/render/gpu-prototype/geometry2d';
 import { Gpu2DRenderer } from '../src/render/gpu-prototype/renderer2d';
 import { lowerStrokeScene } from '../src/render/gpu-prototype/stroke-scene';
+import { isSourceTopologyAdmissionError } from '../src/render/gpu-prototype/stroke-precision-error';
 
 const TAU = Math.PI * 2;
 const layer: Layer = { name: '0', color: 3, visible: true, locked: false, lineWeight: 0.5 };
@@ -136,21 +137,52 @@ describe('GPU ARC admission matches the actual Canvas painter', () => {
     expect(() => prepareZoom2D(drawing([arc(patch)]), view, overlay)).toThrow(/Invalid ARC/);
   });
 
-  it.each([1, 2])('retains full-circle coverage/lineweights through cached pan and zoom with no input mutation at DPR %s', (dpr) => {
+  it.each([1, 2, 3])('preserves the original rotated huge full-circle poses as complete Canvas with no GL work at DPR %s', (dpr) => {
     const entity = arc({ startAngle: 1e20, endAngle: 1e20, lineWeight: 0.5 });
     const state = sealImmutableData(drawing([entity])), before = JSON.stringify(state);
-    const camera = { ...view, dpr, twist: 0.43, lineweights: true };
+    const camera = { ...view, dpr, twist: 0.43, lineweights: true }, beforeCamera = JSON.stringify(camera);
+    const reason = 'Unsupported Canvas stroke construction: native context rotation is unproved';
+    let failure: unknown;
+    try { prepareZoom2D(state, camera, overlay); } catch (error) { failure = error; }
+    expect((failure as Error).message).toBe(reason);
+    expect(isSourceTopologyAdmissionError(failure)).toBe(true);
+    expect(() => prepare2D(state, camera, overlay)).toThrow(reason);
+    const { gl, renderer } = rendererFixture();
+    try {
+      expect(renderer.render(state, camera, overlay)).toMatchObject({ rendered: false, reason, cacheHit: false, bytes: 0, uploadCalls: 0, submissionMs: 0 });
+      expect(renderer.render(state, camera, overlay)).toMatchObject({ rendered: false, reason, cacheReason: 'refusal-hit', geometryPreparationMs: 0, bytes: 0, uploadCalls: 0 });
+      for (const ratio of [0.8, 1, 1.25]) {
+        const pan = { x: 30 / dpr, y: -25 / dpr }, scale = camera.scale * ratio, c = Math.cos(camera.twist), s = Math.sin(camera.twist);
+        const current = { ...camera, scale, center: { x: (-c * pan.x + s * pan.y) / scale, y: (s * pan.x + c * pan.y) / scale } };
+        const poseBefore = JSON.stringify(current);
+        expect(canvasArcs(entity, state, current)).toEqual([expect.objectContaining({ radius: 2 * scale, start: 0, end: TAU, anticlockwise: false })]);
+        expect(renderer.render(state, current, overlay)).toMatchObject({ rendered: false, reason, cacheHit: false, bytes: 0, uploadCalls: 0, submissionMs: 0 });
+        expect(JSON.stringify(current)).toBe(poseBefore);
+      }
+      for (const method of [gl.createShader, gl.createProgram, gl.createBuffer, gl.bufferData, gl.bufferSubData, gl.clear, gl.drawArrays]) expect(method).not.toHaveBeenCalled();
+      expect(JSON.stringify(state)).toBe(before); expect(JSON.stringify(camera)).toBe(beforeCamera);
+    } finally { renderer.dispose(); }
+  });
+
+  it.each([1, 2, 3])('retains huge full-circle coverage/lineweights on a separately certified zero-twist cache control, DPR %s', (dpr) => {
+    const entity = arc({ startAngle: 1e20, endAngle: 1e20, lineWeight: 0.5 });
+    const state = sealImmutableData(drawing([entity])), before = JSON.stringify(state);
+    const camera = { ...view, dpr, lineweights: true };
     const prepared = prepareZoom2D(state, camera, overlay);
+    expect(canvasArcAdmission(entity)).toEqual({ ok: true, startAngle: 0, sweep: TAU, fullCircle: true });
+    expect(canvasArcs(entity, state, camera)).toEqual([expect.objectContaining({ start: 0, end: TAU, anticlockwise: false })]);
     const { gl, renderer } = rendererFixture();
     expect(renderer.render(state, camera, overlay).rendered).toBe(true);
     for (const ratio of [0.8, 1, 1.25]) {
       const pan = { x: 30 / dpr, y: -25 / dpr }, scale = camera.scale * ratio, c = Math.cos(camera.twist), s = Math.sin(camera.twist);
       const current = { ...camera, scale, center: { x: (-c * pan.x + s * pan.y) / scale, y: (s * pan.x + c * pan.y) / scale } };
-      expect(renderer.render(state, current, overlay)).toMatchObject({ rendered: true, cacheHit: true, bytes: 0, uploadCalls: 0 });
+      expect(renderer.render(state, current, overlay)).toMatchObject({ rendered: true, cacheHit: true, geometryPreparationMs: 0, partialPreparationMs: 0, preparedEntities: 0, bytes: 0, uploadCalls: 0 });
       for (let index = 1; index < 24; index++) {
         const angle = index * TAU / 24, world = (radius: number): Point => ({ x: Math.cos(angle) * radius, y: Math.sin(angle) * radius });
         expect(covers(prepared, screenPoint(world(2), current), camera, ratio, pan)).toBe(true);
         expect(covers(prepared, screenPoint(world(2 + 0.5 / scale), current), camera, ratio, pan)).toBe(true);
+        expect(covers(prepared, screenPoint(world(2 - 0.5 / scale), current), camera, ratio, pan)).toBe(true);
+        expect(covers(prepared, screenPoint(world(2 - 4 / scale), current), camera, ratio, pan)).toBe(false);
         expect(covers(prepared, screenPoint(world(2 + 4 / scale), current), camera, ratio, pan)).toBe(false);
       }
     }

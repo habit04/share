@@ -5,8 +5,9 @@ import type { Point } from '../src/core/geometry';
 import { sealImmutableData } from '../src/core/immutable-data';
 import { lowerStrokeScene, type LocalStrokePath, type StrokePaintOperation } from '../src/render/gpu-prototype/stroke-scene';
 import * as geometry from '../src/render/gpu-prototype/geometry2d';
-import type { Gpu2DView } from '../src/render/gpu-prototype/geometry2d';
+import type { Gpu2DOverlay, Gpu2DView } from '../src/render/gpu-prototype/geometry2d';
 import { Gpu2DRenderer } from '../src/render/gpu-prototype/renderer2d';
+import { isSourcePrecisionCertificateError, isSourceTopologyAdmissionError } from '../src/render/gpu-prototype/stroke-precision-error';
 
 const layer: Layer = { name: '0', color: 3, visible: true, locked: false, lineWeight: 1 };
 const view: Gpu2DView = { width: 320, height: 240, dpr: 1, scale: 20, center: { x: 0, y: 0 }, twist: 0, background: '#212830', lineweights: false };
@@ -109,6 +110,30 @@ function refusalRenderer() {
   return { gl, renderer: new Gpu2DRenderer(canvas) };
 }
 
+function expectNoSubmission(gl: ReturnType<typeof refusalRenderer>['gl']): void {
+  for (const call of [gl.createShader, gl.createBuffer, gl.bufferData, gl.bufferSubData, gl.clear, gl.drawArrays]) expect(call).not.toHaveBeenCalled();
+}
+
+function expectNativeRefusal(drawing: DrawingState, camera: Gpu2DView, reason: string, topology = false, ov: Gpu2DOverlay = overlay): void {
+  let failure: unknown;
+  try { geometry.prepareCompiledZoom2D(drawing, camera, ov); } catch (error) { failure = error; }
+  expect((failure as Error).message).toBe(reason);
+  expect((topology ? isSourceTopologyAdmissionError : isSourcePrecisionCertificateError)((failure as Error).cause)).toBe(true);
+  const { renderer, gl } = refusalRenderer();
+  try {
+    expect(renderer.render(drawing, camera, ov)).toMatchObject({ rendered: false, reason, bytes: 0, uploadCalls: 0, submissionMs: 0 });
+    expectNoSubmission(gl);
+  } finally { renderer.dispose(); }
+}
+
+/** Separately certified right-angle cycles retain a large stroke/point workload
+ * without the original backtracking path's unproved 180-degree joins.
+ */
+function squareCycles(length: number, x = 0): Point[] {
+  const corners = [{ x, y: 0 }, { x: x + 1, y: 0 }, { x: x + 1, y: 1 }, { x, y: 1 }];
+  return Array.from({ length }, (_, index) => ({ ...corners[index % 4]! }));
+}
+
 afterEach(() => vi.restoreAllMocks());
 
 describe('compiled straight-stroke budget preflight', () => {
@@ -121,6 +146,15 @@ describe('compiled straight-stroke budget preflight', () => {
     expect(count([path(corner, true)])).toBe(36);
     expect(count([path([{ x: 1, y: 1 }, { x: 1, y: 1 }])])).toBe(0);
     expect(count([path([])])).toBe(0);
+  });
+
+  it.each([
+    { name: 'near reversal', points: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 0, y: 0.01 }], reason: 'near-reversal join is unproved', topology: false },
+    { name: 'exact reversal', points: [{ x: -1, y: 0 }, { x: 1, y: 0 }, { x: -1, y: 0 }], reason: 'near-reversal join is unproved', topology: false },
+    { name: 'internal duplicate', points: [{ x: -1, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 1 }], reason: 'internal degenerate join is unproved', topology: true },
+  ])('keeps the original $name counter input separate from strict native rendering admission', ({ points, reason, topology }) => {
+    const original: PolylineEntity = { ...line, type: 'polyline', points, closed: false };
+    expectNativeRefusal(state([original, { ...text, text: '' }]), { ...view, scale: 1 }, `Unsupported Canvas stroke construction: ${reason}`, topology);
   });
 
   it('counts clipped entering segments and retained joins rather than all source points', () => {
@@ -143,16 +177,38 @@ describe('compiled straight-stroke budget preflight', () => {
     const straight: PolylineEntity = { ...line, type: 'polyline', points: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }], closed: false, bulges: [0, 0, 0] };
     expect(count([{ kind: 'entity', entity: straight }])).toBe(18);
     expect(count([{ kind: 'entity', entity: { ...straight, bulges: [0.01, 0, 0] } }])).toBe(0);
+    expectNativeRefusal(state([{ ...straight, bulges: [0.01, 0, 0] }, text]), view, 'Unsupported Canvas stroke construction: native float arc connection is unproved (line)', true);
     expect(count([{ kind: 'entity', entity: { ...line, type: 'circle', center: { x: 0, y: 0 }, radius: 1 } }])).toBe(0);
     expect(count([{ kind: 'entity', entity: { ...line, type: 'arc', center: { x: 0, y: 0 }, radius: 1, startAngle: 0, endAngle: 1 } }])).toBe(0);
     const overlap: Entity = { ...line, type: 'circle', center: { x: 0, y: 0 }, radius: 0.01 };
     expect(() => geometry.prepareCompiledZoom2D(state([overlap, text]), view, overlay)).toThrow('Curve stroke overlap');
   });
 
-  it.each([1, 2])('preserves accepted legacy packed bytes, source bounds, paint order and fixed widths at DPR%s', (dpr) => {
+  it.each([1, 2, 2.5, 6])('uses actual paint width%s for a certified right-angle entity counter and packing parity', (width) => {
+    const straight: PolylineEntity = { ...line, type: 'polyline', points: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }], closed: false, lineWeight: width / 4 };
+    expect(count([{ kind: 'entity', entity: straight }], { ...view, scale: 1 }, { x: 5, y: 5 }, width)).toBe(18);
+    const drawing = state([straight, { ...text, text: '' }]), camera = { ...view, scale: 1, lineweights: true };
+    const lowered = lowerStrokeScene(drawing, camera, overlay);
+    if (!lowered.ok) throw new Error(lowered.reason);
+    expect(lowered.operations[0]!.widthCss).toBe(width);
+    const actual = geometry.prepareCompiledZoom2D(drawing, camera, overlay), expected = legacyCompiled(drawing, camera);
+    expect(new Uint8Array(actual.vertices.buffer)).toEqual(new Uint8Array(expected.vertices.buffer));
+    expect(geometry.compiledStraightVertexLowerBound(lowered.operations, camera, actual.extent)).toBe(actual.vertices.length / geometry.GPU_ZOOM_VERTEX_STRIDE);
+    expect(actual.vertices.length / geometry.GPU_ZOOM_VERTEX_STRIDE).toBe(18);
+  });
+
+  it.each([1, 2])('preserves original rotated paint inputs as complete Canvas with no submission at DPR%s', (dpr) => {
     const polyline: PolylineEntity = { ...line, id: 'joined', type: 'polyline', points: [{ x: -30, y: -1 }, { x: -2, y: -1 }, { x: -1, y: 0 }, { x: 2, y: 0 }], closed: false, lineWeight: 1.5 };
     const drawing = state([line, { ...text, rotation: 0.4, widthFactor: 1.2, oblique: 0.1 }, polyline, { ...line, id: 'offscreen', a: { x: 100, y: 0 }, b: { x: 101, y: 0 } }]);
     const camera = { ...view, dpr, twist: 0.2, lineweights: true };
+    const ov = { selection: new Set(['text']), solidSelection: true };
+    expectNativeRefusal(drawing, camera, 'Unsupported Canvas stroke construction: native context rotation is unproved', true, ov);
+  });
+
+  it.each([1, 2])('preserves legacy bytes, bounds, paint order and widths on a separately certified zero-view-twist control, DPR%s', (dpr) => {
+    const polyline: PolylineEntity = { ...line, id: 'joined', type: 'polyline', points: [{ x: -30, y: -1 }, { x: -2, y: -1 }, { x: -1, y: 0 }, { x: 2, y: 0 }], closed: false, lineWeight: 1.5 };
+    const drawing = state([line, { ...text, rotation: 0.4, widthFactor: 1.2, oblique: 0.1 }, polyline, { ...line, id: 'offscreen', a: { x: 100, y: 0 }, b: { x: 101, y: 0 } }]);
+    const camera = { ...view, dpr, lineweights: true };
     const ov = { selection: new Set(['text']), solidSelection: true };
     const actual = geometry.prepareCompiledZoom2D(drawing, camera, ov);
     const expected = legacyCompiled(drawing, camera, ov);
@@ -165,14 +221,25 @@ describe('compiled straight-stroke budget preflight', () => {
     expect(geometry.compiledStraightVertexLowerBound(lowered.operations, camera, actual.extent)).toBe(actual.vertices.length / geometry.GPU_ZOOM_VERTEX_STRIDE);
   });
 
-  it('does not turn a large mostly-offscreen upper bound into a false vertex-budget refusal', () => {
+  it('preserves the original mostly-offscreen reversal path as a native guard refusal rather than a budget refusal', () => {
     const points = Array.from({ length: 166_668 }, (_, index) => ({ x: 1000 + index % 2, y: 0 }));
     const remote: PolylineEntity = { ...line, type: 'polyline', points, closed: false };
-    const actual = geometry.prepareCompiledZoom2D(state([remote, { ...text, text: '', height: 3 }]), { ...view, scale: 1 }, overlay);
+    expect(count([path(points)], { ...view, scale: 1 })).toBe(0);
+    expectNativeRefusal(state([remote, { ...text, text: '', height: 3 }]), { ...view, scale: 1 }, 'Unsupported Canvas stroke construction: near-reversal join is unproved');
+  });
+
+  it('keeps a separately certified mostly-offscreen workload despite its large straight upper bound', () => {
+    const points = squareCycles(166_668, 1000), remote: PolylineEntity = { ...line, type: 'polyline', points, closed: false };
+    expect(points.length * 12).toBeGreaterThan(1_000_000);
+    const drawing = state([remote, { ...text, text: '', height: 3 }]), camera = { ...view, scale: 1 };
+    const actual = geometry.prepareCompiledZoom2D(drawing, camera, overlay);
     expect(actual.vertices).toHaveLength(0);
     expect(actual.batches).toEqual([]);
     expect(actual.sourceBounds.min.x).toBe(1000);
     expect(actual.sourceBounds.max.x).toBe(1001);
+    const lowered = lowerStrokeScene(drawing, camera, overlay);
+    if (!lowered.ok) throw new Error(lowered.reason);
+    expect(geometry.compiledStraightVertexLowerBound(lowered.operations, camera, actual.extent)).toBe(0);
   });
 
   it('keeps the full-packing vertex cap when the straight lower bound cannot detect curved excess', () => {
@@ -187,28 +254,28 @@ describe('compiled straight-stroke budget preflight', () => {
     renderer.dispose();
   });
 
-  it('rejects over-budget immutable compiled geometry before allocation/submission and memoizes only the exact snapshot', () => {
+  it('preserves the original immutable reversal input as an exact native refusal memo with no submission', () => {
     const points = Array.from({ length: 166_668 }, (_, index) => ({ x: index % 2, y: 0 }));
     const repeated: PolylineEntity = { ...line, type: 'polyline', points, closed: false };
     const drawing = sealImmutableData(state([repeated, { ...text, text: '' }]));
     const preparation = vi.spyOn(geometry, 'prepareZoom2D');
     const { gl, renderer } = refusalRenderer();
     const result = renderer.render(drawing, { ...view, scale: 1 }, overlay);
-    expect(result).toMatchObject({ rendered: false, reason: 'Stroke geometry exceeds prototype budget', uploadKind: 'none', bytes: 0, uploadCalls: 0, submissionMs: 0 });
+    expect(result).toMatchObject({ rendered: false, reason: 'Unsupported Canvas stroke construction: near-reversal join is unproved', uploadKind: 'none', bytes: 0, uploadCalls: 0, submissionMs: 0 });
     expect(renderer.render(drawing, { ...view, scale: 1 }, overlay)).toMatchObject({ rendered: false, cacheReason: 'refusal-hit', geometryPreparationMs: 0 });
     expect(preparation).toHaveBeenCalledOnce();
     for (const call of [gl.createShader, gl.createBuffer, gl.bufferData, gl.bufferSubData, gl.clear, gl.drawArrays]) expect(call).not.toHaveBeenCalled();
     renderer.dispose();
   });
 
-  it('retries mutable over-budget input and sees repaired geometry without reusing the refusal', () => {
+  it('preserves mutable reversal refusal retries and sees the original input repaired without reusing a refusal', () => {
     const points = Array.from({ length: 166_668 }, (_, index) => ({ x: index % 2, y: 0 }));
     const repeated: PolylineEntity = { ...line, type: 'polyline', points, closed: false };
     const drawing = state([repeated, { ...text, text: '' }]);
     const preparation = vi.spyOn(geometry, 'prepareZoom2D');
     const { gl, renderer } = refusalRenderer();
-    expect(renderer.render(drawing, { ...view, scale: 1 }, overlay)).toMatchObject({ rendered: false, reason: 'Stroke geometry exceeds prototype budget', cacheReason: 'mutable' });
-    expect(renderer.render(drawing, { ...view, scale: 1 }, overlay)).toMatchObject({ rendered: false, reason: 'Stroke geometry exceeds prototype budget', cacheReason: 'mutable' });
+    expect(renderer.render(drawing, { ...view, scale: 1 }, overlay)).toMatchObject({ rendered: false, reason: 'Unsupported Canvas stroke construction: near-reversal join is unproved', cacheReason: 'mutable' });
+    expect(renderer.render(drawing, { ...view, scale: 1 }, overlay)).toMatchObject({ rendered: false, reason: 'Unsupported Canvas stroke construction: near-reversal join is unproved', cacheReason: 'mutable' });
     expect(gl.createShader).not.toHaveBeenCalled();
     points.splice(2);
     expect(renderer.render(drawing, { ...view, scale: 1 }, overlay)).toMatchObject({ rendered: false, reason: 'WebGL2 shader allocation failed', preparedEntities: 2 });
@@ -216,5 +283,41 @@ describe('compiled straight-stroke budget preflight', () => {
     expect(gl.createShader).toHaveBeenCalledOnce();
     expect(gl.bufferData).not.toHaveBeenCalled();
     renderer.dispose();
+  });
+
+  it('refuses separately certified immutable over-budget strokes before allocation/submission and limits memo reuse to that snapshot', () => {
+    const points = squareCycles(100_001), repeated: PolylineEntity = { ...line, type: 'polyline', points, closed: false };
+    const drawing = sealImmutableData(state([repeated, { ...text, text: '' }])), camera = { ...view, scale: 1 };
+    const preparation = vi.spyOn(geometry, 'prepareZoom2D'), allocation = vi.spyOn(globalThis, 'Float32Array');
+    const { renderer, gl } = refusalRenderer();
+    try {
+      expect(renderer.render(drawing, camera, overlay)).toMatchObject({ rendered: false, reason: 'Stroke geometry exceeds prototype budget', uploadKind: 'none', bytes: 0, uploadCalls: 0, submissionMs: 0 });
+      expect(allocation).not.toHaveBeenCalled(); allocation.mockRestore();
+      expect(renderer.render(drawing, camera, overlay)).toMatchObject({ rendered: false, cacheReason: 'refusal-hit', geometryPreparationMs: 0 });
+      expect(preparation).toHaveBeenCalledOnce();
+      const changed = sealImmutableData({ ...drawing, entities: [...drawing.entities] });
+      // A slow-budget policy may defer the new snapshot. It must not claim the
+      // old snapshot's exact refusal as a certificate for this different input.
+      expect(renderer.render(changed, camera, overlay).cacheReason).not.toBe('refusal-hit');
+      renderer.clearRefusalCache();
+      expect(renderer.render(changed, camera, overlay)).toMatchObject({ rendered: false, reason: 'Stroke geometry exceeds prototype budget', bytes: 0, uploadCalls: 0 });
+      expectNoSubmission(gl);
+    } finally { renderer.dispose(); }
+  });
+
+  it('retries a separately certified mutable budget refusal and admits its repaired source geometry', () => {
+    const points = squareCycles(100_001), repeated: PolylineEntity = { ...line, type: 'polyline', points, closed: false };
+    const drawing = state([repeated, { ...text, text: '' }]), camera = { ...view, scale: 1 };
+    const preparation = vi.spyOn(geometry, 'prepareZoom2D'), { renderer, gl } = refusalRenderer();
+    try {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        expect(renderer.render(drawing, camera, overlay)).toMatchObject({ rendered: false, reason: 'Stroke geometry exceeds prototype budget', cacheReason: 'mutable', bytes: 0, uploadCalls: 0 });
+        expectNoSubmission(gl);
+      }
+      points.splice(2);
+      expect(renderer.render(drawing, camera, overlay)).toMatchObject({ rendered: false, reason: 'WebGL2 shader allocation failed', preparedEntities: 2 });
+      expect(preparation).toHaveBeenCalledTimes(3); expect(gl.createShader).toHaveBeenCalledOnce();
+      for (const call of [gl.createBuffer, gl.bufferData, gl.bufferSubData, gl.clear, gl.drawArrays]) expect(call).not.toHaveBeenCalled();
+    } finally { renderer.dispose(); }
   });
 });
