@@ -192,9 +192,9 @@ describe('r2000-layouts-titleblock.dxf: layouts, paper-space viewports, title bl
  * Survives: the current style from $DIMSTYLE + header $DIM*; named styles with their DIM* values,
  * arrowheads named by DIMBLK / DIMBLK1 / DIMBLK2 handles (DIMSAH), tolerances, DIM colours; the
  * arrowhead blocks; linear (with DIMTEDIT 53 and DIMEDIT 52), aligned, radius, diameter (text
- * override, moved text), angular 2-line and 3-point with their definition points and styles;
+ * override, moved text), angular 2-line and 3-point, and XY ordinate with their definition points and styles;
  * DIMDSEP, DIMTXSTY, DIMLWD / DIMLWE, DIMTZIN and per-dimension DSTYLE overrides.
- * Lost (matrix): ordinate dimensions (dropped, reported); arrowheads written in JCAD_DIMSTYLE
+ * Lost (matrix): arrowheads written in JCAD_DIMSTYLE
  * XDATA rather than as handles; 2-line angular written as 3-point; other XDATA (ACAD_DSTYLE_*).
  */
 describe('r2018-dimensions.dxf: named DIMSTYLEs with XDATA, DIMENSIONs with their *D blocks (AC1032)', () => {
@@ -244,7 +244,7 @@ describe('r2018-dimensions.dxf: named DIMSTYLEs with XDATA, DIMENSIONs with thei
       expect(textStylesOf(s).ISOCP).toMatchObject({ font: 'isocp.shx' });
     });
 
-    it('eight dimensions with their kinds and styles (the ordinate one is not read)', () => {
+    it('nine dimensions with their kinds and styles, including the native X ordinate', () => {
       expect(dims.map((d) => [d.kind, d.style.name, d.layer])).toEqual([
         ['linear', 'ISO-25', 'DIMS'],
         ['linear', 'ARCH-TICK', 'DIMS'],
@@ -253,6 +253,7 @@ describe('r2018-dimensions.dxf: named DIMSTYLEs with XDATA, DIMENSIONs with thei
         ['diameter', 'MECH-TOL', 'DIMS'],
         ['angular', 'ISO-25', 'DIMS'],
         ['angular', 'MECH-TOL', 'DIMS'],
+        ['ordinate', 'ISO-25', 'DIMS'],
         ['linear', 'ISO-25', 'DIMS'],
       ]);
       // Styles are resolved by name: the dimension carries the named record, not the header copy.
@@ -320,18 +321,27 @@ describe('r2018-dimensions.dxf: named DIMSTYLEs with XDATA, DIMENSIONs with thei
     });
 
     it('the dimension carrying DSTYLE overrides keeps its geometry and its named style', () => {
-      const d = dims[7]!;
+      const d = dims[8]!;
       closePt(d.p1, 0, 120);
       closePt(d.p2, 60, 120);
       closePt(d.linePoint, 60, 130);
       expect(d.style.name).toBe('ISO-25');
     });
+
+    it('the ordinate keeps native group 10 datum, group 13 feature, group 14 endpoint and X coordinate', () => {
+      const d = dims[7]!;
+      expect(d.kind).toBe('ordinate'); expect(d.ordinateAxis).toBe('x'); close(d.ordinateRotation, 0);
+      closePt(d.p1, 0, 0); closePt(d.p2, 100, 60); closePt(d.linePoint, 100, 80);
+      close(dimensionMeasurement(d), 100); expect(dimensionText(d)).toBe('100'); expect(d.textPosition).toBeUndefined();
+    });
   });
 
-  it('lost as the matrix says: the ordinate dimension is dropped and listed in the import report', () => {
-    const report = importReportOf(f.imported)!;
-    expect(report.items.filter((i) => i.action === 'dropped').map((i) => [i.type, i.action, i.handle])).toEqual([['DIMENSION', 'dropped', '127']]);
-    expect(f.written).not.toContain('AcDbOrdinateDimension');
+  it('writes the ordinate with its native subclass and flags without adding a dropped-object report', () => {
+    for (const [, s] of both(f)) expect(importReportOf(s)?.items.filter((i) => i.action === 'dropped') ?? []).toEqual([]);
+    const [rec] = records(f.written, 'DIMENSION').filter((r) => r.some(([c, v]) => c === 100 && v === 'AcDbOrdinateDimension'));
+    expect(rec).toBeDefined(); expect(Number(group(rec, 70))).toBe(102);
+    expect([10, 20, 13, 23, 14, 24, 42].map((code) => Number(group(rec, code)))).toEqual([0, 0, 100, 60, 100, 80, 100]);
+    expect(Number(group(rec, 51)) % 360).toBe(0);
     expect(importReportOf(f.roundTripped)?.items.every((i) => i.action === 'unsupported')).toBe(true);
   });
 
@@ -378,7 +388,7 @@ describe('r2018-dimensions.dxf: named DIMSTYLEs with XDATA, DIMENSIONs with thei
     }
   });
   it('the last linear dimension applies its DSTYLE overrides (ACAD XDATA: DIMTXT 5, DIMDEC 0) and keeps them on save', () => {
-    for (const [, s] of both(f)) expect(ofType<DimensionEntity>(s.entities, 'dimension')[7]!.style).toMatchObject({ name: 'ISO-25', textHeight: 5, decimals: 0 });
+    for (const [, s] of both(f)) expect(ofType<DimensionEntity>(s.entities, 'dimension')[8]!.style).toMatchObject({ name: 'ISO-25', textHeight: 5, decimals: 0 });
     const dims = records(f.written, 'DIMENSION');
     expect(dims.filter((r) => r.some(([c, v]) => c === 1000 && v === 'DSTYLE'))).toHaveLength(1);
   });
