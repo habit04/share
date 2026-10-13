@@ -48,6 +48,22 @@ function setup() {
 describe('readable / writable paths (electron/path-registry.cjs)', () => {
   const project = abs('work', 'jobs', 'a', 'plant.jcadproj.json');
 
+  it.runIf(!posix)('Windows: Unicode-equivalent filenames keep separate persisted write grants', () => {
+    const composed = abs('work', 'Jos\u00e9.dxf');
+    const decomposed = abs('work', 'Jose\u0301.dxf');
+    const { registry } = setup();
+    registry.grant(composed);
+    expect(registry.isKnown(decomposed)).toBe(false);
+    expect(registry.isWritable(decomposed)).toBe(false);
+    registry.grantRead(decomposed);
+    const restarted = reg.createPathRegistry();
+    restarted.restore(registry.serialize());
+    expect(restarted.isWritable(composed)).toBe(true);
+    expect(restarted.isKnown(decomposed)).toBe(true);
+    expect(restarted.isWritable(decomposed)).toBe(false);
+    expect([...restarted.paths()].sort()).toEqual([composed, decomposed].sort());
+  });
+
   it('a project opened only by name: file content cannot make a path outside the project folder writable', () => {
     const { registry } = setup();
     registry.grant(project); // chosen in a dialog once, opened by name now (a plugin, OPENPROJECT <path>)

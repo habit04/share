@@ -81,12 +81,14 @@ function fileError(err, file, op) {
 
 /**
  * Identity of a resolved path for the containment test: case-folded where the file system usually
- * is case-insensitive (Windows, macOS), Unicode NFC.
+ * is case-insensitive (Windows, macOS), Unicode NFC outside Windows. Windows filenames keep
+ * their Unicode spelling: composed/decomposed names can identify separate files or folders.
  * @param {string} p
  * @param {string} platform
  */
 function foldPath(p, platform) {
-  const r = path.resolve(p).normalize('NFC');
+  const resolved = path.resolve(p);
+  const r = platform === 'win32' ? resolved : resolved.normalize('NFC');
   return platform === 'win32' || platform === 'darwin' ? r.toLowerCase() : r;
 }
 
