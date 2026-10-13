@@ -69,7 +69,7 @@ import { buildPlcModule, normalizePlcSettings, type PlcModuleSettings } from '..
 import { WIRENO_LAYER } from '../electrical/wires';
 import { findRails, nearestReference, rungReferences } from '../electrical/ladder';
 import { projectDrawingIndex, projectEntryFor, resolveDrawingPath, resolveProjectPath, baseName } from './project';
-import { samePath, shortNames } from './paths';
+import { createPathComparator, samePath, shortNames } from './paths';
 import { captureRevision, contentHash, saveQueue } from './savequeue';
 import { SaveAdmission, hasSaveAdmissions, isStaleSaveAdmission, isCommittedSaveAdmissionError, committedSaveAdmissionError, unverifiedImportSource, UNVERIFIED_SOURCE_WARNING, UNVERIFIED_COMMITTED_SAVE_WARNING } from './save-admission';
 import { releaseOpenedSourceProof } from './opened-source-proof';
@@ -939,17 +939,17 @@ async function commitProjectBatch(editor: Editor, sheets: readonly LoadedSheet[]
     const sessions = editor.sessions.all.map(session => ({ session, id: session.id, filePath: session.filePath, state: session.state, revision: session.revision, undo: session.undo, redo: session.redo }));
     const byId = new Map(sessions.map(session => [session.id, session]));
     // Synchronisation hooks can replace the project; read its revision last.
-    return { sessions, byId, project: editor.projectState };
+    return { sessions, byId, comparePath: createPathComparator(), project: editor.projectState };
   };
   type TabBasis = ReturnType<typeof captureTabs>;
   const projectChanged = (sheet: LoadedSheet, project = editor.projectState) => !!sheet.projectState && (project.generation !== sheet.projectState.generation || project.revision !== sheet.projectState.revision);
   const openProblem = (sheet: LoadedSheet, tabs: TabBasis = captureTabs()): { conflict?: string; failure?: string } | null => {
     if (projectChanged(sheet, tabs.project)) return { conflict: 'project changed while the command ran' };
-    if (sheet.source === 'file') return tabs.sessions.some(session => samePath(session.filePath, sheet.path)) ? { conflict: 'opened in a tab while the command ran' } : null;
+    if (sheet.source === 'file') return tabs.sessions.some(session => tabs.comparePath(session.filePath, sheet.path)) ? { conflict: 'opened in a tab while the command ran' } : null;
     const current = tabs.byId.get(sheet.sessionId!);
     if (!current || sheet.session && current.session !== sheet.session) return { failure: 'tab closed or replaced' };
     const owned = ownedOpen.get(sheet), state = owned?.state ?? sheet.base, revision = owned?.revision ?? sheet.sessionRevision, history = owned?.history ?? sheet.history;
-    if (state && current.state !== state || revision !== undefined && current.revision !== revision || !(current.filePath === sheet.path || samePath(current.filePath, sheet.path)) || history && (history.undo.length !== current.undo.length || history.undo.some((item, index) => item !== current.undo[index]) || history.redo.length !== current.redo.length || history.redo.some((item, index) => item !== current.redo[index]))) return { conflict: 'edited while the command ran' };
+    if (state && current.state !== state || revision !== undefined && current.revision !== revision || !(current.filePath === sheet.path || tabs.comparePath(current.filePath, sheet.path)) || history && (history.undo.length !== current.undo.length || history.undo.some((item, index) => item !== current.undo[index]) || history.redo.length !== current.redo.length || history.redo.some((item, index) => item !== current.redo[index]))) return { conflict: 'edited while the command ran' };
     return null;
   };
   const recordProblem = (sheet: LoadedSheet, problem: { conflict?: string; failure?: string }) => {

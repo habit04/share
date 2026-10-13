@@ -51,8 +51,7 @@ interface Parsed {
   windows: boolean;
 }
 
-function parse(input: string): Parsed {
-  const windows = isWindowsPath(input);
+function parse(input: string, windows = isWindowsPath(input)): Parsed {
   // NTFS can store both "Jos\u00e9.dxf" and "Jose\u0301.dxf" in the same folder. Normalising
   // their Unicode spelling would redirect a project reference or save to a different file.
   const p = windows ? input : input.normalize('NFC');
@@ -160,6 +159,51 @@ export function samePath(a: string | null | undefined, b: string | null | undefi
   const nativeA = windowsIdentities.get(normalizePath(a)), nativeB = windowsIdentities.get(normalizePath(b));
   if (nativeA !== undefined && nativeB !== undefined) return nativeA === nativeB;
   return pathKey(a) === pathKey(b);
+}
+
+/** Reuse pure normalization within one synchronous scan; aliases and platform reads stay live. */
+export function createPathComparator(): typeof samePath {
+  const MAX_INTERPRETATIONS = 1024, MAX_CHARACTERS = 4 * 1024 * 1024;
+  type Normalized = { value: string; folded?: string; cached: boolean };
+  type Interpretations = { windows?: Normalized; posix?: Normalized };
+  const cache = new Map<string, Interpretations>();
+  let interpretations = 0, characters = 0;
+  const normalized = (path: string): Normalized => {
+    // Observe the current interpretation even on a hit. Passing it into parse
+    // avoids observing a platform getter twice for one normalization.
+    const windows = isWindowsPath(path), slot = windows ? 'windows' : 'posix';
+    const known = cache.get(path), hit = known?.[slot];
+    if (hit) return hit;
+    const entry: Normalized = { value: format(parse(path, windows)), cached: false };
+    // Charge raw and normalized strings conservatively, even if the engine
+    // shares their storage. Excess interpretations still compare uncached.
+    const size = path.length + entry.value.length;
+    if (interpretations < MAX_INTERPRETATIONS && characters + size <= MAX_CHARACTERS) {
+      const values = known ?? {};
+      values[slot] = entry; cache.set(path, values); entry.cached = true;
+      interpretations++; characters += size;
+    }
+    return entry;
+  };
+  const lexical = (path: string): string => {
+    const entry = normalized(path);
+    // Keep pathKey's second, fresh interpretation of the normalized spelling.
+    if (!isWindowsPath(entry.value)) return entry.value;
+    if (entry.folded !== undefined) return entry.folded;
+    const folded = entry.value.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+    if (entry.cached && characters + folded.length <= MAX_CHARACTERS) {
+      entry.folded = folded; characters += folded.length;
+    }
+    return folded;
+  };
+  return (a, b) => {
+    if (!a || !b) return false;
+    // Do not cache native evidence: a host bind/open can publish an alias
+    // between comparisons, including after the strings were already cached.
+    const nativeA = windowsIdentities.get(normalized(a).value), nativeB = windowsIdentities.get(normalized(b).value);
+    if (nativeA !== undefined && nativeB !== undefined) return nativeA === nativeB;
+    return lexical(a) === lexical(b);
+  };
 }
 
 /** Last path component ("a.dxf" for "C:\x\a.dxf" and "/x/a.dxf"). */
