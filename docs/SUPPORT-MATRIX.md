@@ -97,9 +97,11 @@ and frames retain their native groups.
 
 TrueType/OpenType styles render on screen through installed CSS font families and fallback stacks.
 SHX and unknown styles use a single-stroke vector font (Hershey Roman Simplex,
-`src/render/fonts/rowmans.jhf`). Geometry bounds and MTEXT wrapping still use stroke-font
-measurements, so spacing and line breaks can differ from the displayed font and the original CAD
-program. The style's font file / TrueType family is kept and written back. In vector PDF output,
+`src/render/fonts/rowmans.jhf`). Windows desktop TrueType styles use verified installed font metrics
+for drawing height, advances and bearings; unsupported faces/glyphs use Canvas measurement.
+Bounds, selection, wrapping, masks and raster plots share a per-drawing font context. Native MTEXT
+attachment/leading and unsupported glyph cases remain approximate; see `WINDOWS-FONT-METRICS.md`.
+The style's font file / TrueType family is kept and written back. In vector PDF output,
 WinAnsi-compatible TrueType-style text uses Helvetica or Helvetica-Bold; other text falls back to
 stroke paths. Exact font embedding and SHX rendering are not implemented. Text in pre-2007 DXF
 files is decoded from `$DWGCODEPAGE`; older exports use pure ASCII with `\U+XXXX` escapes,
@@ -107,7 +109,7 @@ while AutoCAD 2007 and later exports use UTF-8. Supplementary Unicode stays inta
 MTEXT chunk boundaries.
 Paragraph-final MTEXT lines remain unexpanded and oversized words do not acquire negative
 justification spacing. Explicit text width overrides take precedence over STYLE widths in
-Canvas and vector PDF; this does not provide exact installed-font metrics or embedding.
+Canvas and vector PDF; vector PDF still substitutes its own fonts and does not embed them.
 Explicit native width 1 and oblique 0 survive TEXT, ATTDEF and ATTRIB DXF save/reopen.
 Non-default font metrics and absent STYLE definitions are disclosed in import reports; font
 files are referenced rather than embedded.

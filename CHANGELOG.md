@@ -13,6 +13,13 @@ messages). The date of each version is the date of the commit that set that vers
 
 ### Added
 
+- Windows installed TrueType metrics use bounded background workers and a per-drawing context
+  for Canvas painting, text bounds/selection, wrapping, masks, annotation fitting and raster plots.
+  Native height, bearings, FIT/ALIGNED and verified vertical placement replace stroke measurements.
+  Missing/unsupported font structures and glyph origins use Canvas fallback measurement; source
+  STYLE data is retained. Font arrival and STYLE edits refresh caches without dirty/history changes.
+  Pending plots await metrics and retain captured drawing definitions. Native MTEXT layout details,
+  exact vector PDF embedding and SHX decoding remain open.
 - DXF layouts retain native closed straight-polyline viewport clips, including concave
   outlines, boundary appearance and the native enable flag. Canvas display, viewport
   activation, snapping and vector/raster plots honor the clip. Editing, copying and

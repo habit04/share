@@ -19,7 +19,7 @@ this milestone does not complete the entire gradient priority or remaining roadm
 | --- | --- | --- | --- |
 | 9 | Polygon DXF milestone implemented and tested: native closed straight-polyline boundaries, appearance, enable flag, copy/edit/undo/reopen, Canvas and vector/raster clips. Review corrections include enclosing hatch-pattern visibility and retained boundary layer/linetype resources during purge/export. Curved boundaries and DWG clip exposure remain missing. Graphical selection excludes fully hidden entities but keeps whole-entity tests for partially visible objects. | Lead; DWG boundary exposure depends on #19. | Import/edit/undo/save/reopen clip; Canvas, vector/raster plots and viewport activation agree. Unsupported curves stay reported. |
 | 10 | Confirmed angular suppression, arrow ownership and gap defects corrected; style traversal and paper-space undo/redo implemented. Supported native override presence/value survives matching named styles and later redefinitions; scaling, Match Properties and existing direct-style editing remain compatible. Ordinate/arc-length types still missing. | Dimension agent; native DWG exposure remains #19. | Styles/overrides, every space, native fixture edit/save/reopen, undo/redo, geometry/bounds and plots. |
-| 11 | Confirmed paragraph-ending justification, negative word gaps, phantom trailing-space lines and explicit Canvas style overrides corrected; 79 targeted tests and 3 PDF override tests pass. Installed-font wrapping/bounds still use stroke metrics; inline font/tracking/alignment incomplete. | Text agent and lead; PDF overrides aligned. | Canvas/PDF/bounds agree, installed/missing fonts, wrapping, alignment, Unicode and import-edit-reopen. |
+| 11 | Earlier paragraph/override fixes complete. Windows font metric milestone implemented and tested: bounded installed TrueType reader, per-drawing geometry, bearings/height/fitting, STYLE/font-arrival cache invalidation, annotation fitting and captured raster plots. Missing/unsupported faces, bitmap glyphs and unverified origins use Canvas measurement; contextual scripts retain shaping. Native MTEXT attachment/leading, inline font/tracking and Unicode edge cases remain incomplete; vector PDF still substitutes fonts. See `WINDOWS-FONT-METRICS.md`. | Text agent and lead; reader-omitted annotation font fields depend on #19. | Native references, actual Windows IPC/Canvas/raster, STYLE edit/undo/DXF reopen, fallback/Unicode bounds, eventual embedded PDF fidelity. |
 | 12 | Missing: `pdf-vector.ts` uses standard Helvetica or stroke paths, without embedding exact fonts. | Independent; font resolution/licensing required. | Inspect embedded font resources, Unicode mapping and real PDF rasterization; permitted font redistribution. |
 | 13 | Missing CTB/STB interpretation; layout sheet names select built-in color modes in `dxf-layouts.ts`. | Independent; real style table fixtures required. | Named/color-dependent tables, lineweight/screening/colors, layouts, save/reopen and external plot comparison. |
 | 14 | Partial: `core/linetypes.ts` retains dash sequences, complex text/shapes absent. | Independent; #21 for SHX shapes. | Native definitions retain text/shape/style/placement and render at correct scale across segments and plots. |
@@ -133,7 +133,23 @@ proof that their implementation or external verification has passed.
 
 ## Integration notes and next milestones
 
-- PR #9 remains open at the gradient milestone's read-only snapshot, head `b3ddf85a14de542034a9df0b09484b564f6f41df`.
+- Windows font foundation: `27de50b` (reader/worker) and `e98ecd9` (drawing geometry/painting).
+  Final combined suite: **2,600 passed, 1 known failure, 27 conditional skips** across 199 files.
+  The failure is the unchanged portable-helper cache assertion described below; an earlier run
+  passed it because of timestamp timing, which does not repair the confirmed defect. All **97
+  font reader tests** and **17 host tests** pass. Font/context regressions, all three TypeScript
+  projects, broad lint, fixture checking and the renderer build pass; **8 dense benchmarks** pass.
+  A final paper-space compatibility restore in the captured model-raster helper additionally
+  passed **50 targeted tests**, renderer TypeScript and scoped lint.
+- Final actual-source font proof: **62 Chrome checks** through real Windows Electron font IPC,
+  plus production Electron native DXF import, STYLE edit/undo/redo, real Save As/reopen and clean
+  dirty state. Source hashes matched the private proof; owned processes/port 5199 were closed.
+  Native fonts were unmocked; only file-dialog paths were queued. Arial/Arial Bold/Courier/Times
+  normalization, bearings, fitting and verified anchors match native references. The committed
+  20-entity font fixture passed native AUDIT with zero errors. Unverified origins, monochrome
+  bitmap glyphs, contextual scripts, native MTEXT details and vector PDF remain explicit limits.
+
+- PR #9 remains active and draft at the font milestone's read-only snapshot, head `01ebe95b3d05ddbcc46fb279b0dbffe19474b83a`.
   Its native
   reader/writer and real-file saving verification remain that workstream's responsibility.
   No commits were copied from it. Resolve shared codec/layout conflicts deliberately and rerun
@@ -152,6 +168,6 @@ proof that their implementation or external verification has passed.
   from DWG saving/export until native conversion is proven. A transformed display frame cannot
   be faithfully emitted as a standalone native HATCH angle; export refuses it and the EXPLODE
   command protects such block instances. DXF block definitions plus INSERT remain supported.
-- Next independent candidates: accurate installed-font metrics and complex linetype element
-  preservation. Nonlinear/shifted gradient rendering needs native spatial reference evidence;
+- Next independent milestones: native MTEXT attachment/wrapping and permitted TrueType PDF
+  embedding, followed by complex linetype element preservation. Nonlinear/shifted gradient rendering needs native spatial reference evidence;
   SHX shape rendering and full capability-isolated plugins need separate architectural work.
