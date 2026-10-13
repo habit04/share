@@ -342,7 +342,9 @@ export class Editor {
 
   /**
    * Read DXF text the way OPEN does (see import-open.ts readDxfForOpen): a file that ends early
-   * asks whether to open what was readable (marked as recovered); null = declined.
+   * asks whether to open what was readable (marked as recovered); null = declined. Used by OPEN
+   * and the Drawing Recovery Manager; the experimental 3D setting decides whether polyface meshes
+   * of other programs become solids (JCad's own solids, as in recovery copies, are always read).
    */
   readDxfText(text: string, path: string | null): Promise<DrawingState | null> {
     return documents.readDxfText(this, text, path);

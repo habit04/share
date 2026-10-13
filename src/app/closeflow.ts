@@ -6,7 +6,6 @@
  * unit tested; the dialogs come in through `CloseDeps`.
  */
 import type { Editor } from './editor';
-import { hasSolids } from '../model3d/model';
 
 export interface UnsavedItem {
   /** "s<session id>" for a tab, "project" for the project. */
@@ -179,12 +178,7 @@ async function saveItem(editor: CloseEditor, deps: CloseDeps, it: UnsavedItem): 
   const ok = await editor.saveFile(false);
   if (!ok) return editor.lastFileError ?? 'the save was cancelled';
   const now = editor.sessions.indexOfId(it.sessionId!);
-  if (now >= 0 && editor.sessions.isDirty(now)) {
-    // A save without the experimental 3D objects keeps the drawing modified on purpose.
-    const state = editor.sessions.all[now]?.state;
-    if (state && hasSolids(state)) return 'the saved file does not hold the 3D objects of the drawing, so it stays modified';
-    return 'the drawing changed while it was being saved';
-  }
+  if (now >= 0 && editor.sessions.isDirty(now)) return 'the drawing changed while it was being saved';
   return null;
 }
 

@@ -13,16 +13,18 @@ export type Confirm = (title: string, message: string) => Promise<boolean>;
 /**
  * Read a DXF file for OPEN. A file that ends early asks "open what was readable?" and, on yes,
  * opens the readable part marked as recovered; null = the user declined. Other damage throws
- * the reader's DxfReadError (its message says what and where).
+ * the reader's DxfReadError (its message says what and where). `model3d` is the experimental 3D
+ * setting: polyface meshes of other programs become mesh solids only when it is on (JCad's own 3D
+ * solids are read either way; see io/dxf/mesh3d-read.ts).
  */
-export async function readDxfForOpen(text: string, path: string | null, confirm: Confirm): Promise<DrawingState | null> {
+export async function readDxfForOpen(text: string, path: string | null, confirm: Confirm, model3d = false): Promise<DrawingState | null> {
   try {
-    return readDxf(text, { filePath: path });
+    return readDxf(text, { filePath: path, model3d });
   } catch (err) {
     if (!(err instanceof DxfReadError) || !err.truncated) throw err;
     const ok = await confirm('Damaged drawing file', `${err.message} Open what was readable? The drawing opens as recovered: check it, then use Save As to keep it under a new name.`);
     if (!ok) return null;
-    return readDxf(text, { filePath: path, recover: true });
+    return readDxf(text, { filePath: path, recover: true, model3d });
   }
 }
 

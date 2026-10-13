@@ -42,6 +42,14 @@ export const MTEXT_COLUMNS_APP = 'JCAD_MTEXT_COLUMNS';
 /** Disabled MTEXT mask settings that cannot be written as native fill groups in AutoCAD. */
 export const MTEXT_BACKGROUND_APP = 'JCAD_MTEXT_BACKGROUND';
 
+/**
+ * XDATA application on the polyface mesh of each experimental 3D solid: the solid's id, name and
+ * construction history as versioned JSON in 1000 chunks (src/model3d/file-format.ts,
+ * docs/3D-FILE-FORMAT.md). Other programs are expected to show the polyface mesh and ignore the
+ * data (not verified).
+ */
+export const MODEL3D_APP = 'JCAD_3D';
+
 /** Real-valued group codes (points, distances, angles, scales): unreadable values there are invalid geometry. */
 export const isRealCode = (code: number): boolean => (code >= 10 && code <= 59) || (code >= 110 && code <= 149) || (code >= 210 && code <= 239) || (code >= 1010 && code <= 1059);
 

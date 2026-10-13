@@ -10,7 +10,7 @@ import { captureRevision, saveQueue } from './savequeue';
 import { describeFileError } from './file-errors';
 import type { Editor, FileBridge } from './editor';
 import type { DrawingState } from '../core/document';
-import { confirmModel3DLoss, MODEL3D_NO_UI_REASON } from '../model3d/save-guard';
+import { model3dDwgRefusal } from '../model3d/save-guard';
 
 type DwgExportBridge = FileBridge & Required<Pick<FileBridge, 'dwgExportStatus' | 'chooseDwgPath' | 'exportDwg'>>;
 
@@ -61,16 +61,12 @@ export async function exportDwgCopy(ed: Editor): Promise<boolean> {
     return false;
   };
   let target: string | null = null;
-  // The DWG copy cannot hold experimental 3D solids yet: same policy as Save (one answer per
-  // state, shared with it; refused without an interface; No cancels).
-  const loss3d = await confirmModel3DLoss(state, ed.ui ? (t, m) => ed.ui!.confirm(t, m) : null, unchanged);
-  if (loss3d === 'changed') return changed();
-  if (loss3d === 'no-ui') {
-    ed.log(`DWG export canceled: ${MODEL3D_NO_UI_REASON}.`);
-    return false;
-  }
-  if (loss3d === 'declined') {
-    ed.log('DWG export canceled: the drawing contains 3D objects that DWG files cannot hold in this version.');
+  // A DWG copy cannot hold the experimental 3D solids (the portable writer would drop them), so
+  // the export is refused, never written without them: same policy as a DWG Save.
+  const refusal = model3dDwgRefusal(state);
+  if (refusal) {
+    ed.lastFileError = refusal;
+    ed.log(`DWG export canceled: ${refusal}.`);
     return false;
   }
   try {
