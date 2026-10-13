@@ -13,6 +13,7 @@ import { applyPaperEntities, layoutsOf, paperEntities, paperSpaceLayout, sheetBo
 import { prepareDrawingState } from './geometry-budget';
 import { sealImmutableData } from './immutable-data';
 import type { Model3D } from '../model3d/types';
+import { model3dOf, withModel3D } from '../model3d/model';
 
 /** A named view (VIEW command): world centre and view height. */
 export interface NamedView {
@@ -373,6 +374,23 @@ export class Drawing {
         })
       : entities;
     this.transact((s) => ({ ...s, entities: [...s.entities, ...list] }));
+  }
+
+  /**
+   * Experimental 3D: change the drawing's 3D model (`DrawingState.model3d`) as one undoable step,
+   * exactly like a 2D edit (new state, drawing marked modified, listeners notified). `fn` gets the
+   * current model (the empty model when the drawing has none) and returns the new one; returning
+   * it unchanged records nothing. `removeEntityIds` removes 2D entities in the same step (EXTRUDE
+   * / REVOLVE with Delete, ERASE of a mixed selection). Budget errors from `prepareDrawingState`
+   * propagate and leave the document unchanged.
+   */
+  updateModel3D(fn: (model: Model3D) => Model3D, removeEntityIds?: Iterable<string>): void {
+    const drop = new Set(removeEntityIds ?? []);
+    this.transact((s) => {
+      const entities = drop.size ? s.entities.filter((e) => !drop.has(e.id)) : s.entities;
+      const base = entities.length === s.entities.length ? s : { ...s, entities };
+      return withModel3D(base, fn(model3dOf(s)));
+    });
   }
 
   /** Remove some entities and add others in a single undo step. */

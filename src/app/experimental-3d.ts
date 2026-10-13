@@ -15,23 +15,68 @@
  *
  * Prototype-only: while a 2D drawing command runs in 3D mode, a left click hands the point where
  * the cursor ray meets z = 0 to the command as typed coordinates (no object snaps, no rubber band).
+ *
+ * Modelling (milestone 3, docs/3D-MODELLING.md): the commands BOX, WEDGE, CYLINDER, CONE, SPHERE,
+ * TORUS, EXTRUDE, REVOLVE, UNION, SUBTRACT, INTERSECT and 3DPLANE (src/tools3d/). The controller
+ * extends every tool context with the 3D members (src/tools3d/context.ts): the construction plane
+ * (WCS XY whenever 3D mode is off), `point3` (in 3D mode a click or the cursor gives the solid face
+ * under it, else the point on the construction plane), the kernel (created on first use, disposed
+ * when 3D mode ends or the window unloads) and ghost solids drawn by the 3D viewport. In 3D mode a
+ * click while "Select objects:" is pending picks the solid under the cursor, else the 2D object
+ * where the cursor ray meets z = 0; typing ALL also takes the visible solids, and typing a solid's
+ * id takes that solid.
  */
 import type { Editor } from './editor';
 import type { Tool, ToolContext } from '../tools/types';
 import type { Point } from '../core/geometry';
 import { RIBBON, type RibbonTab } from '../ui/ribbon';
-import { type Vec3, WORLD_XY_FRAME, intersectRayPlane, add3, scale3, v3 } from '../model3d/math';
+import { type Frame3, type Vec3, WORLD_XY_FRAME, intersectRayPlane, add3, scale3, v3 } from '../model3d/math';
 import { addSolids, model3dOf, newSolid, withModel3D } from '../model3d/model';
 import { primitiveMesh } from '../model3d/primitives';
 import type { PrimitiveFeature, Solid3D } from '../model3d/types';
+import type { GeometryKernel } from '../model3d/kernel/kernel';
+import { createDefaultKernel } from '../model3d/kernel/index';
 import { Viewport3D } from '../render3d/viewport3d';
 import { type ViewPresetName, VIEW_PRESETS, applyPreset, cameraFrom2D, matchingPreset, parseViewPreset, setProjection } from '../render3d/camera';
 import type { PickHit } from '../render3d/picking';
+import { hiddenLayerNames } from '../render3d/scene-sink';
+import { pickEntity } from '../core/selection';
+import { type Context3DSource, type Pick3, extendContext3d, planeLabel, worldToPlane } from '../tools3d/context';
+import { Script3DTool } from '../tools3d/script3d';
+import { boxTool, coneTool, cylinderTool, sphereTool, torusTool, wedgeTool } from '../tools3d/primitives';
+import { extrudeTool, revolveTool } from '../tools3d/sweeps';
+import { intersectTool, subtractTool, unionTool } from '../tools3d/booleans';
+import { planeTool } from '../tools3d/plane';
 
 /** The ribbon tab added when the flag is on (exported for tests; never in RIBBON when off). */
 export const RIBBON_3D_TAB: RibbonTab = {
   name: '3D',
   panels: [
+    {
+      title: 'Modelling',
+      buttons: [
+        { label: 'Box', icon: 'rectangle', command: 'BOX', size: 'large', tooltip: 'Solid box: first corner, other corner, height (BOX)' },
+        { label: 'Wedge', icon: 'polygon', command: 'WEDGE', size: 'small', tooltip: 'Solid wedge: first corner, other corner, height (WEDGE)' },
+        { label: 'Cylinder', icon: 'circle', command: 'CYLINDER', size: 'small', tooltip: 'Solid cylinder: base center, radius, height (CYLINDER)' },
+        { label: 'Cone', icon: 'point', command: 'CONE', size: 'small', tooltip: 'Solid cone or frustum: base center, radius, height, top radius (CONE)' },
+        { label: 'Sphere', icon: 'ellipse', command: 'SPHERE', size: 'small', tooltip: 'Solid sphere: center, radius (SPHERE)' },
+        { label: 'Torus', icon: 'donut', command: 'TORUS', size: 'small', tooltip: 'Solid torus: center, radius, tube radius (TORUS)' },
+        { label: 'Extrude', icon: 'extend', command: 'EXTRUDE', size: 'large', tooltip: 'Extrude closed 2D objects into a solid (EXTRUDE)' },
+        { label: 'Revolve', icon: 'rotate', command: 'REVOLVE', size: 'large', tooltip: 'Revolve closed 2D objects about an axis (REVOLVE)' },
+      ],
+    },
+    {
+      title: 'Boolean',
+      buttons: [
+        { label: 'Union', icon: 'join', command: 'UNION', size: 'small', tooltip: 'Join solids into one (UNION)' },
+        { label: 'Subtract', icon: 'trim', command: 'SUBTRACT', size: 'small', tooltip: 'Subtract solids from others (SUBTRACT)' },
+        { label: 'Intersect', icon: 'area', command: 'INTERSECT', size: 'small', tooltip: 'Keep the common volume of solids (INTERSECT)' },
+      ],
+    },
+    {
+      title: 'Plane',
+      buttons: [{ label: 'Plane', icon: 'grid', command: '3DPLANE', size: 'large', tooltip: 'Construction plane: World, XY, XZ, YZ, Face or Origin (3DPLANE)' }],
+    },
     {
       title: 'View',
       buttons: [
@@ -96,12 +141,113 @@ export class Experimental3d {
   private unsubscribe: Array<() => void> = [];
   private detachInput: (() => void) | null = null;
   private lastMiddle = 0;
+  private statusEl: HTMLElement | null = null;
+  /** The construction plane set by 3DPLANE (session state; used while 3D mode is on). */
+  private plane: Frame3 = WORLD_XY_FRAME;
+  private planeNameValue = 'World';
+  private kernelInstance: GeometryKernel | null = null;
+  /** Ghost solids of the running 3D command. */
+  previewSolids: readonly Solid3D[] = [];
+  /** The 3D pick of the click being handed to a 3D command, and of the cursor. */
+  private clickPick: Pick3 | null = null;
+  private cursorPick: Pick3 | null = null;
+  /** Makes the geometry kernel on first use (tests may replace it). */
+  kernelFactory: () => GeometryKernel = createDefaultKernel;
 
   constructor(readonly editor: Editor) {}
 
   /** True while model space is shown by the 3D viewport. */
   get active(): boolean {
     return this.viewport !== null;
+  }
+
+  // ---------------------------------------------------------------- 3D tool context
+
+  /** The construction plane 3D commands use now: the 3DPLANE setting in 3D mode, else WCS XY. */
+  get constructionPlane(): Frame3 {
+    return this.active ? this.plane : WORLD_XY_FRAME;
+  }
+
+  /** Name of the plane in effect ("World", "XY", "XZ", "YZ", "Face"). */
+  get constructionPlaneName(): string {
+    return this.active ? this.planeNameValue : 'World';
+  }
+
+  /** Status text for the plane in effect, e.g. "XZ @ 0,0,5". */
+  get planeText(): string {
+    return planeLabel(this.constructionPlaneName, this.constructionPlane);
+  }
+
+  /** 3DPLANE: make `frame` the construction plane. */
+  setConstructionPlane(frame: Frame3, name: string): void {
+    this.plane = frame;
+    this.planeNameValue = name;
+    if (!this.active && name !== 'World') this.editor.log('The construction plane applies in 3D mode (3DMODE); the 2D view always uses the WCS XY plane.');
+    this.updateLabel();
+    this.render();
+  }
+
+  /** The geometry kernel, created on first use. */
+  kernel(): GeometryKernel {
+    this.kernelInstance ??= this.kernelFactory();
+    return this.kernelInstance;
+  }
+
+  /** Release the kernel (worker and WebAssembly memory); the next Boolean starts a new one. */
+  disposeKernel(): void {
+    this.kernelInstance?.dispose();
+    this.kernelInstance = null;
+  }
+
+  /** True when a kernel has been created and not disposed. */
+  get kernelStarted(): boolean {
+    return this.kernelInstance !== null;
+  }
+
+  /** Ghost solids for the 3D view ([] clears). */
+  setPreview3d(solids: readonly Solid3D[]): void {
+    if (solids.length === 0 && this.previewSolids.length === 0) return;
+    this.previewSolids = solids;
+    this.render();
+  }
+
+  /** The 3D pick recorded for this tool point (a click being handed over, or the cursor). */
+  pickAt(p: Point): Pick3 | null {
+    for (const k of [this.clickPick, this.cursorPick]) {
+      if (k && Math.abs(k.p2.x - p.x) <= 1e-6 * Math.max(1, Math.abs(p.x)) && Math.abs(k.p2.y - p.y) <= 1e-6 * Math.max(1, Math.abs(p.y))) return k;
+    }
+    return null;
+  }
+
+  /** What the tool context extension reads (src/tools3d/context.ts). */
+  readonly source: Context3DSource = {
+    plane: () => this.constructionPlane,
+    planeName: () => this.constructionPlaneName,
+    setPlane: (frame, name) => this.setConstructionPlane(frame, name),
+    pickAt: (p) => this.pickAt(p),
+    kernel: () => this.kernel(),
+    setPreview3d: (solids) => this.setPreview3d(solids),
+  };
+
+  /**
+   * The 3D pick at canvas CSS px: the solid face under the cursor, else where the cursor ray meets
+   * the construction plane (null when the ray runs parallel to it), with plane coordinates.
+   */
+  pick3At(x: number, y: number): Pick3 | null {
+    const vp = this.viewport;
+    if (!vp) return null;
+    const ray = vp.pixelRay(x, y);
+    const hit = vp.pickExact(x, y);
+    const plane = this.constructionPlane;
+    let point: Vec3;
+    if (hit) point = hit.point;
+    else {
+      const t = intersectRayPlane(ray, { origin: plane.origin, normal: plane.zAxis });
+      if (t === null) return null;
+      point = add3(ray.origin, scale3(ray.dir, t));
+    }
+    const local = worldToPlane(plane, point);
+    return { p2: { x: local.x, y: local.y }, point, ray, hit };
   }
 
   /** Turn 3D mode on. Returns false (and logs why) when it cannot start. */
@@ -147,6 +293,16 @@ export class Experimental3d {
       color: 'rgba(230,230,230,0.85)', background: 'rgba(30,34,40,0.7)', border: '1px solid rgba(200,200,200,0.3)', borderRadius: '3px', pointerEvents: 'none',
     });
     canvas.after(this.label);
+    // Status bar: the construction plane (the StatusBar keeps its own children, so this stays).
+    const bar = document.getElementById('statusbar');
+    if (bar) {
+      this.statusEl = document.createElement('span');
+      this.statusEl.className = 'status-btn text status-plane';
+      this.statusEl.title = 'Construction plane of 3D commands (3DPLANE)';
+      const coords = bar.querySelector('.status-coords');
+      if (coords) coords.after(this.statusEl);
+      else bar.prepend(this.statusEl);
+    }
     vp.onRendered = () => this.updateLabel();
     vp.onError = (err) => {
       ed.log(`3D viewport stopped: ${err instanceof Error ? err.message : String(err)}. Back to the 2D view.`);
@@ -157,6 +313,12 @@ export class Experimental3d {
     this.unsubscribe = [
       ed.on('change', redraw),
       ed.on('selection', redraw),
+      ed.on('tool', () => {
+        if (!ed.tool) {
+          this.cursorPick = null;
+          this.setPreview3d([]);
+        }
+      }),
       ed.on('snap', () => { this.syncSettings(); this.render(); }),
       ed.on('view', () => this.resizeIfNeeded()),
       ed.on('space', () => {
@@ -182,11 +344,19 @@ export class Experimental3d {
     vp.dispose();
     this.canvas?.remove();
     this.label?.remove();
+    this.statusEl?.remove();
     this.canvas = null;
     this.label = null;
+    this.statusEl = null;
     this.viewport = null;
     this.drag = null;
     this.hover = null;
+    this.clickPick = null;
+    this.cursorPick = null;
+    this.previewSolids = [];
+    // The kernel's worker and WebAssembly memory go with 3D mode (a Boolean still running is
+    // rejected and changes nothing); the next Boolean starts a new kernel.
+    this.disposeKernel();
     const canvas2d = this.editor.viewport.canvas;
     canvas2d.style.visibility = '';
     const cube = canvas2d.parentElement?.querySelector<HTMLElement>('.viewcube');
@@ -206,7 +376,7 @@ export class Experimental3d {
 
   /** Redraw on the next frame with the current selection and hover. */
   render(): void {
-    this.viewport?.requestRender({ selection: this.editor.selection, hover: this.hover });
+    this.viewport?.requestRender({ selection: this.editor.selection, hover: this.hover, previewSolids: this.previewSolids });
   }
 
   private syncSettings(): void {
@@ -230,8 +400,10 @@ export class Experimental3d {
     const vp = this.viewport;
     if (!vp || !this.label) return;
     const preset = matchingPreset(vp.camera);
-    const text = `${preset ? VIEW_PRESETS[preset].label : 'Custom view'} · ${vp.camera.projection === 'perspective' ? 'Perspective' : 'Parallel'}`;
+    const text = `${preset ? VIEW_PRESETS[preset].label : 'Custom view'} · ${vp.camera.projection === 'perspective' ? 'Perspective' : 'Parallel'} · Plane ${this.planeText}`;
     if (this.label.textContent !== text) this.label.textContent = text;
+    const status = `Plane: ${this.planeText}`;
+    if (this.statusEl && this.statusEl.textContent !== status) this.statusEl.textContent = status;
   }
 
   /** Apply a named view (turning 3D mode on first when needed). */
@@ -302,6 +474,50 @@ export class Experimental3d {
     return this.viewport?.pickExact(x, y) ?? null;
   }
 
+  /**
+   * The 2D object (on z = 0) under canvas CSS px, with the 2D pick-box aperture measured on z = 0
+   * at the cursor; null when the cursor ray misses the drawing plane or nothing is near.
+   */
+  pick2dAt(x: number, y: number): string | null {
+    const vp = this.viewport;
+    if (!vp) return null;
+    const ed = this.editor;
+    const onPlane = (sx: number, sy: number) => {
+      const ray = vp.pixelRay(sx, sy);
+      const t = intersectRayPlane(ray, { origin: v3(0, 0, 0), normal: v3(0, 0, 1) });
+      return t === null ? null : add3(ray.origin, scale3(ray.dir, t));
+    };
+    const q = onPlane(x, y);
+    const box = Math.max(1, ed.viewport.settings.pickBox);
+    const r = onPlane(x + box, y);
+    if (!q || !r) return null;
+    const aperture = Math.hypot(r.x - q.x, r.y - q.y);
+    const layers = ed.doc.layers;
+    const locked = new Set(layers.filter((l) => l.locked).map((l) => l.name));
+    return pickEntity({ x: q.x, y: q.y }, ed.doc.entities, ed.doc.lookupBlock, aperture, hiddenLayerNames(layers), locked)?.id ?? null;
+  }
+
+  /** Ids of the drawing's solids in model order (type one at "Select objects:" to pick it). */
+  solidIds(): string[] {
+    return model3dOf(this.editor.doc.snapshot).solids.map((s) => s.id);
+  }
+
+  /** Resolves when the running 3D command is not computing (await after a Boolean's last input). */
+  async idle(): Promise<void> {
+    const tool = this.editor.tool;
+    if (tool instanceof Script3DTool) await tool.idle();
+  }
+
+  /** Move the cursor of a running 3D command to canvas CSS px (ghost preview), as the mouse does. */
+  hoverAt(x: number, y: number): void {
+    const ed = this.editor;
+    if (!this.viewport || !(ed.tool instanceof Script3DTool) || ed.selectionPending) return;
+    const pick = this.pick3At(x, y);
+    if (!pick) return;
+    this.cursorPick = pick;
+    ed.tool.onMove(pick.p2, ed.toolContext());
+  }
+
   // ---------------------------------------------------------------- mouse
 
   private attachInput(canvas: HTMLCanvasElement): void {
@@ -341,7 +557,8 @@ export class Experimental3d {
           return;
         }
       }
-      const hover = this.editor.tool ? null : vp.pick(p.x, p.y);
+      if (this.editor.tool instanceof Script3DTool) this.hoverAt(p.x, p.y);
+      const hover = this.editor.tool && !this.editor.selectionPending ? null : vp.pick(p.x, p.y);
       if (hover !== this.hover) {
         this.hover = hover;
         this.render();
@@ -388,11 +605,33 @@ export class Experimental3d {
     };
   }
 
-  /** Left click at canvas CSS px: select / deselect solids, or feed a running 2D command. */
+  /**
+   * Left click at canvas CSS px: pick a solid into a pending "Select objects:", give a running 3D
+   * command its 3D point, feed a running 2D command, or select / deselect solids.
+   */
   click(x: number, y: number, shift: boolean): void {
     const vp = this.viewport;
     if (!vp) return;
     const ed = this.editor;
+    if (ed.selectionPending) {
+      const id = vp.pick(x, y) ?? this.pick2dAt(x, y);
+      if (id) ed.pickIds([id], shift);
+      else ed.log('Nothing under the cursor: pick a solid, or a 2D object where the cursor meets z = 0 (or type ALL).');
+      this.render();
+      return;
+    }
+    if (ed.tool instanceof Script3DTool) {
+      // The exact 3D pick travels with the typed coordinates (plane-local), see `pickAt`.
+      const pick = this.pick3At(x, y);
+      if (!pick) return;
+      this.clickPick = pick;
+      try {
+        ed.submitInput(typedCoordinate(pick.p2, ed.settings.precision));
+      } finally {
+        this.clickPick = null;
+      }
+      return;
+    }
     if (ed.tool && !(ed.tool instanceof Orbit3DTool)) {
       // Prototype: the point on the drawing plane under the cursor, as typed coordinates.
       const ray = vp.pixelRay(x, y);
@@ -443,6 +682,50 @@ function registerCommands(editor: Editor, c: Experimental3d): void {
   reg('3DDEMO', [], 'Experimental (development test scene): add a box, a cylinder and a sphere', () => {
     c.addDemo();
   });
+  // Modelling (milestone 3): every command is a 3D tool (src/tools3d/), usable from the 2D view too
+  // (on the WCS XY plane, z = 0).
+  const tool = (name: string, aliases: string[], description: string, make: (arg?: string) => Tool) =>
+    reg(name, aliases, `Experimental: ${description}`, (ed, arg) => {
+      void ed.startTool(make(arg));
+    });
+  tool('BOX', [], 'solid box [Center/Cube/Length/2Point]', boxTool);
+  tool('WEDGE', ['WE'], 'solid wedge [Center/Cube/Length/2Point]', wedgeTool);
+  tool('CYLINDER', ['CYL'], 'solid cylinder [Diameter/2Point/Axis endpoint]', cylinderTool);
+  tool('CONE', [], 'solid cone or frustum [Diameter/2Point/Axis endpoint/Top radius]', coneTool);
+  tool('SPHERE', [], 'solid sphere [Diameter]', sphereTool);
+  tool('TORUS', ['TOR'], 'solid torus [Diameter/2Point]', torusTool);
+  tool('EXTRUDE', ['EXT'], 'extrude closed 2D objects into a solid [Delete]', extrudeTool);
+  tool('REVOLVE', ['REV'], 'revolve closed 2D objects about an axis [X/Y/Z/Reverse/Delete]', revolveTool);
+  tool('UNION', ['UNI'], 'join solids into one', unionTool);
+  tool('SUBTRACT', ['SU'], 'subtract solids from solids', subtractTool);
+  tool('INTERSECT', ['IN'], 'keep the common volume of solids', intersectTool);
+  tool('3DPLANE', [], 'construction plane for 3D commands [World/XY/XZ/YZ/Face/Origin]', planeTool);
+}
+
+/**
+ * "Select objects:" keywords with the flag on: ALL also takes the visible solids, and a solid's id
+ * (as `jcad3d.solidIds()` lists them) takes that solid. Everything else goes to the 2D handler.
+ */
+function extendSelectionKeywords(editor: Editor): void {
+  const base = editor.selectionKeyword;
+  editor.selectionKeyword = (text, ids) => {
+    const handled = base ? base(text, ids) : false;
+    const t = text.trim();
+    const state = editor.doc.snapshot;
+    const solids = model3dOf(state).solids;
+    if (t.toUpperCase() === 'ALL') {
+      if (!base) for (const e of editor.doc.entities) ids.add(e.id);
+      const hidden = hiddenLayerNames(state.layers);
+      for (const s of solids) if (!hidden.has(s.layer)) ids.add(s.id);
+      return true;
+    }
+    const solid = solids.find((s) => s.id.toLowerCase() === t.toLowerCase());
+    if (solid) {
+      ids.add(solid.id);
+      return true;
+    }
+    return handled;
+  };
 }
 
 /**
@@ -454,7 +737,12 @@ export function installExperimental3d(editor: Editor): Experimental3d | null {
   if (!editor.settings.experimental3d) return null;
   const c = new Experimental3d(editor);
   registerCommands(editor, c);
+  editor.toolContextExtension = (ctx) => extendContext3d(ctx, c.source);
+  extendSelectionKeywords(editor);
   if (!RIBBON.some((t) => t.name === RIBBON_3D_TAB.name)) RIBBON.push(RIBBON_3D_TAB);
-  if (typeof window !== 'undefined') window.jcad3d = c;
+  if (typeof window !== 'undefined') {
+    window.jcad3d = c;
+    window.addEventListener?.('pagehide', () => c.disposeKernel());
+  }
   return c;
 }

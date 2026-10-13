@@ -12,6 +12,12 @@ import type { Editor } from './editor';
 import { fallbackUi, type EditorInternals } from './internals';
 
 export function makeContext(ed: Editor, st: EditorInternals): ToolContext {
+  const ctx = baseContext(ed, st);
+  // Experimental 3D adds its optional members here (flag on only; null otherwise).
+  return ed.toolContextExtension ? ed.toolContextExtension(ctx) : ctx;
+}
+
+function baseContext(ed: Editor, st: EditorInternals): ToolContext {
   return {
     doc: ed.doc,
     snap: ed.snap,

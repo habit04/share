@@ -41,6 +41,11 @@ export interface Viewport3DOverlay {
   readonly selection: ReadonlySet<string>;
   /** Solid under the cursor (rollover highlight). */
   readonly hover: string | null;
+  /**
+   * Solids a running 3D command is building (not in the document): drawn as translucent ghosts
+   * with their edges, never picked. Absent = none.
+   */
+  readonly previewSolids?: readonly Solid3D[];
 }
 
 export interface Viewport3DSettings {
@@ -63,6 +68,9 @@ const SELECT_RGB: Rgba = [0.25, 0.55, 1, 1];
 const SELECT_EDGE: Rgba = [0.5, 0.8, 1, 1];
 const HOVER_EDGE: Rgba = [1, 1, 1, 0.9];
 const AMBIENT = 0.35;
+/** Ghost (preview) solids: face opacity and edge colour. */
+const GHOST_ALPHA = 0.3;
+const GHOST_EDGE: Rgba = [1, 0.85, 0.35, 0.9];
 /** Corner triad size in CSS pixels. */
 const TRIAD_PX = 76;
 
@@ -92,6 +100,7 @@ export class Viewport3D {
   private idSolids: readonly Solid3D[] = [];
   private raf = 0;
   private prunedModel: unknown = null;
+  private prunedGhosts: readonly Solid3D[] | undefined = undefined;
   private lastOverlay: Viewport3DOverlay = { selection: new Set(), hover: null };
 
   /** Creates the WebGL2 context; throws GpuUnavailableError when WebGL2 is unavailable. */
@@ -456,7 +465,8 @@ export class Viewport3D {
     const solids = this.visibleSolids(state);
     this.ensureUnderlay(state);
     const spec = this.gridFor(this.camera);
-    const bounds = this.sceneBounds(solids, spec);
+    const ghosts = ov.previewSolids ?? [];
+    const bounds = this.sceneBounds(ghosts.length ? [...solids, ...ghosts] : solids, spec);
     this.camera = withOrthoClearance(this.camera, bounds);
     const cam = this.camera;
     const viewProj = Float32Array.from(this.viewProjection(bounds));
@@ -540,6 +550,29 @@ export class Viewport3D {
       gl.depthMask(true);
     }
 
+    // Ghosts of what a running 3D command builds: translucent faces, then bright edges on top.
+    if (ghosts.length) {
+      gl.depthMask(false);
+      gl.useProgram(sp.program);
+      for (const s of ghosts) {
+        const buf = this.meshes.get(s.mesh);
+        const c = parseCssColor(solidDisplayColor(s, state.layers));
+        const o = sub3(buf.origin, cam.target);
+        gl.uniform3f(sp.offset, o.x, o.y, o.z);
+        gl.uniform4f(sp.color, c[0], c[1], c[2], GHOST_ALPHA);
+        gl.bindVertexArray(buf.vao);
+        gl.drawArrays(gl.TRIANGLES, 0, buf.vertexCount);
+      }
+      gl.useProgram(lp.program);
+      gl.disable(gl.DEPTH_TEST);
+      for (const s of ghosts) {
+        const buf = this.meshes.get(s.mesh);
+        if (buf.edgeVao) drawLines(buf.edgeVao, buf.edgeVertexCount, buf.origin, GHOST_EDGE);
+      }
+      gl.enable(gl.DEPTH_TEST);
+      gl.depthMask(true);
+    }
+
     // WCS triad in the lower-left corner: orientation only, fixed size.
     const triad = this.ensureTriad();
     if (triad) {
@@ -562,7 +595,12 @@ export class Viewport3D {
     if (model !== this.prunedModel) {
       // The model changed (edit, undo, another drawing): drop buffers of meshes it no longer has.
       this.prunedModel = model;
-      this.meshes.prune(new Set(model.solids.map((s) => s.mesh)));
+      this.meshes.prune(new Set([...model.solids, ...ghosts].map((s) => s.mesh)));
+    }
+    if (ov.previewSolids !== this.prunedGhosts) {
+      // Ghosts change with every cursor move: drop the buffers of the previous ones right away.
+      this.prunedGhosts = ov.previewSolids;
+      this.meshes.prune(new Set([...model.solids, ...ghosts].map((s) => s.mesh)));
     }
     this.meshes.prune();
     if (t0) this.device.lastFrameMs = performance.now() - t0;

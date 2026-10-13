@@ -278,6 +278,30 @@ export class Editor {
 
   layerDialogRequested: (() => void) | null = null;
 
+  /**
+   * Experimental 3D (src/app/experimental-3d.ts, flag on only): adds the optional 3D members to
+   * every tool context the editor builds. Null (the default) leaves contexts exactly as before.
+   */
+  toolContextExtension: ((ctx: ToolContext) => ToolContext) | null = null;
+
+  /** The context the running tool gets (for input that does not come through the 2D canvas). */
+  toolContext(): ToolContext {
+    return prompter.makeContext(this, this.internals);
+  }
+
+  /** True while a tool waits on "Select objects:". */
+  get selectionPending(): boolean {
+    return this.internals.selReq !== null;
+  }
+
+  /**
+   * Add (or with `remove`, take away) objects picked by id: into the pending "Select objects:"
+   * request when there is one, else into the selection (the same path a 2D pick takes).
+   */
+  pickIds(ids: string[], remove = false): void {
+    select.toggleSelect(this, this.internals, ids, remove);
+  }
+
   runCommand(input: string): void | Promise<void> {
     return this.geometryAction(() => prompter.runCommand(this, input), undefined);
   }

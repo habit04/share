@@ -17,7 +17,12 @@ beforeAll(async () => {
   ({ installExperimental3d, RIBBON_3D_TAB } = await import('../src/app/experimental-3d'));
 });
 const canvas = () => ({ getContext: () => ({}), getBoundingClientRect: () => ({ width: 800, height: 600, left: 0, top: 0 }), width: 0, height: 0 }) as unknown as HTMLCanvasElement;
-const THREE_D_COMMANDS = ['3DMODE', '3DORBIT', '3DO', '3DVIEW', 'PLAN', '3DPERSPECTIVE', '3DZOOMEXTENTS', '3DDEMO'];
+const THREE_D_COMMANDS = [
+  '3DMODE', '3DORBIT', '3DO', '3DVIEW', 'PLAN', '3DPERSPECTIVE', '3DZOOMEXTENTS', '3DDEMO',
+  // Modelling (milestone 3)
+  'BOX', 'WEDGE', 'WE', 'CYLINDER', 'CYL', 'CONE', 'SPHERE', 'TORUS', 'TOR', 'EXTRUDE', 'EXT', 'REVOLVE', 'REV',
+  'UNION', 'UNI', 'SUBTRACT', 'SU', 'INTERSECT', 'IN', '3DPLANE',
+];
 
 afterEach(() => {
   // Keep RIBBON as the app module defines it for the next test.
