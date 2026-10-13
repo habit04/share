@@ -48,7 +48,7 @@ jobs:
           build_dir="$RUNNER_TEMP/jcad-header-diagnostic/build"
           (cd "$source_dir" && libtoolize --force --copy && autoreconf --force --install)
           mkdir "$build_dir"
-          (cd "$build_dir" && CC=gcc CFLAGS='-O2 -DNDEBUG' "$source_dir/configure" --disable-docs --disable-write --disable-json --disable-python --disable-bindings --disable-shared --enable-static)
+          (cd "$build_dir" && CC=gcc CFLAGS='-O2 -DNDEBUG -Wno-error=pointer-sign' "$source_dir/configure" --disable-docs --disable-write --disable-json --disable-python --disable-bindings --disable-shared --enable-static)
           make -C "$build_dir/src" -j2 libredwg.la
           gcc -std=c11 -O2 -Wall -Wextra -Werror -I"$source_dir/include" -I"$build_dir/src" scripts/native-dwg-build/header-diagnostic.c "$build_dir/src/.libs/libredwg.a" -lm -lz -o "$RUNNER_TEMP/jcad-header-diagnostic/diagnostic"
           python3 scripts/native-dwg-build/header-diagnostic.py record-build --workspace "$GITHUB_WORKSPACE" --directory "$RUNNER_TEMP/jcad-header-diagnostic" --revision "$GITHUB_SHA"

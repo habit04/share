@@ -40,6 +40,7 @@ class DiagnosticTests(unittest.TestCase):
         with tarfile.open(archive, "r:gz") as source:
             cls.original = source.extractfile("./src/decode.c").read()
             cls.header = source.extractfile("./include/dwg.h").read().decode()
+            cls.makefile = source.extractfile("./src/Makefile.in").read().decode()
         root = Path(os.environ.get("RUNNER_TEMP", WORKSPACE / ".codex-local/header-creation-audit")).resolve()
         root.mkdir(parents=True, exist_ok=True)
         cls.private = tempfile.TemporaryDirectory(prefix="header-diagnostic-tests-", dir=root)
@@ -94,6 +95,17 @@ class DiagnosticTests(unittest.TestCase):
             result = authored_result(); result['nativeVersion'] = version
             with self.subTest(version=version), self.assertRaises(ValueError):
                 diagnostic.validated_result(json.dumps(result).encode(), 0, 18644)
+
+    def test_only_library_pointer_sign_warning_is_nonfatal_driver_remains_strict(self):
+        workflow = (WORKSPACE / '.github/workflows/dwg-header-diagnostic.yml').read_text()
+        flags = re.search(r"CC=gcc CFLAGS='([^']+)'", workflow).group(1)
+        self.assertEqual(flags, diagnostic.LIBRARY_CFLAGS)
+        self.assertEqual(flags.split(), ['-O2', '-DNDEBUG', '-Wno-error=pointer-sign'])
+        self.assertIn('$(AM_CFLAGS) $(CFLAGS)', self.makefile)
+        self.assertNotIn('--disable-werror', workflow)
+        driver = next(line for line in workflow.splitlines() if line.strip().startswith('gcc -std=c11'))
+        self.assertIn('-Wall -Wextra -Werror ', driver)
+        self.assertNotIn('-Wno-error', driver)
 
     def test_parent_and_windows_archive_escape_refuse_before_output(self):
         for name in ("../outside", "/outside", "src\\outside", "src/../outside"):

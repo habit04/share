@@ -14,6 +14,7 @@ ARCHIVE_SHA = "96d407e96047237200360b1669768f80aaffbb003c34c6fe57228fc4cd345d5a"
 DECODE_SHA = "be1fa5ba174fee1a513de35c7a32a2344a009e00a45c39a7480fb444cf10829a"
 # Authenticated include/dwg.h DWG_VERSION_TYPE: R_12 aliases R_11; R_2018 is 40.
 NATIVE_R2018 = 40
+LIBRARY_CFLAGS = "-O2 -DNDEBUG -Wno-error=pointer-sign"
 FIXTURES = {
     "r2018-minsert": "74cafbe617e7a885d622a8a0270b60f64cc285801be42ea8829cc9e9472616d5",
     "r2018-views-fields": "5f5a9bd4a0ffd2e545f6f5404bed9edb27f2c41411c3b26a264f0696a649f105",
@@ -260,7 +261,7 @@ def record_build(workspace, directory, revision):
     # These commands are the explicit GCC step in the hash-bound development workflow.
     workflow = workspace / ".github/workflows/dwg-header-diagnostic.yml"
     manifest = {"revision": revision, "compilerKind": "native-gcc-development-only",
-        "compilerVersion": compiler, "cc": "gcc", "cflags": "-O2 -DNDEBUG",
+        "compilerVersion": compiler, "cc": "gcc", "cflags": LIBRARY_CFLAGS,
         "configureArgs": ["--disable-docs", "--disable-write", "--disable-json", "--disable-python",
                           "--disable-bindings", "--disable-shared", "--enable-static"],
         "libraryTarget": ["make", "-C", "build/src", "-j2", "libredwg.la"],
