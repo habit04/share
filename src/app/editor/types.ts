@@ -12,6 +12,7 @@ import type { SymbolBuilderUi } from '../../tools/symbol-builder';
 import type { FileErrorInfo } from '../file-errors';
 import type { PlotOptions } from '../plot';
 import type { Editor } from './editor';
+import type { GpuDiagnostics } from '../gpu-diagnostics';
 
 export type EditorEvent = 'change' | 'selection' | 'tool' | 'view' | 'snap' | 'file' | 'log' | 'space' | 'project';
 
@@ -49,6 +50,8 @@ export type BackupResult = { ok: true; path: string } | { ok: false; error: stri
 export type SaveErrorChoice = 'retry' | 'saveas' | 'cancel';
 
 export interface FileBridge {
+  /** Optional desktop capability summary; absent in browser previews and older builds. */
+  gpuDiagnostics?(): Promise<GpuDiagnostics>;
   /** Desktop platform; absent for the browser file bridge. */
   platform?: string;
   openDxf(): Promise<{ path: string; text: string } | null>;

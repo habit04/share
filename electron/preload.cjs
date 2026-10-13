@@ -113,6 +113,7 @@ contextBridge.exposeInMainWorld('jcad', {
   },
   // Updates (GitHub Releases)
   appInfo: () => ipcRenderer.invoke('app-info'),
+  gpuDiagnostics: () => ipcRenderer.invoke('gpu-diagnostics'),
   /** Open a link in the system browser; only this project's GitHub pages are allowed. */
   openExternal: (url) => ipcRenderer.invoke('open-external', String(url)),
   checkForUpdates: () => ipcRenderer.invoke('check-updates'),
