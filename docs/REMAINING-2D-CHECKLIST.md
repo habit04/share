@@ -15,7 +15,9 @@ is the current branch and `SUPPORT-MATRIX.md`, rather than an earlier planning l
 The user has paused further work through the long roadmap. The current batch finishes
 priority **24**, including confirmed direct text/PDF export ordering and source-protection
 defects. Its frozen commit `739950c` passed local validation and all four exact-head CI jobs.
-The completed #9 source is now combined with this batch and has passed its local gates.
+The completed #9 source is now combined with this batch; prior combined heads passed
+their local gates. The current color/path repair has focused, static/build and app
+passes, with an unresolved normal full-suite timeout recorded below.
 Each combined published head must clear fresh CI before adopting the next milestone.
 The next work is deliberate integration of completed 3D and eligible GPU development milestones;
 partial rows below remain recorded scope rather than new implementation assignments.
@@ -65,7 +67,7 @@ proof that their implementation or external verification has passed.
 
 ## Current validation and integration
 
-- Combined #9 + #24 source including the scoped CI repairs: **3,954 tests / 28 conditional skips**, all three TypeScript
+- Previous session-basis/common-link combination (`e18012cd`): **3,954 tests / 28 conditional skips**, all three TypeScript
   projects, broad lint, fixtures and production build pass. **32 actual Windows source-Electron
   workflows** pass together: 14 opened-source/save/recovery, seven tracked 2D import/edit/save/
   reopen and 11 PDF/CSV export workflows. All private app processes close; production bundle,
@@ -79,6 +81,17 @@ proof that their implementation or external verification has passed.
   [Current PR checks](https://github.com/habit04/share/pull/11/checks) must pass on the exact
   published combination before the 3D stage. Parent CI and local decoder evidence do not
   replace that matching-helper/Windows gate.
+- Current color/path repair: **318 focused backend tests** and **173 path/project tests**
+  pass, along with all three TypeScript projects, broad lint, fixtures and production build.
+  All **32 Windows app workflows** pass on the current unchanged bundle, with no remaining
+  owned processes or fallback termination. Two normal full-suite runs each retain **4,097
+  passes / 28 skips / one failure**: the unchanged extended-PDF safety case reaches its
+  60-second timeout and then its 10-second cleanup timeout. Its unchanged 34-case suite
+  passes separately. A full run with private syscall tracing passes **4,098 / 28 skips**;
+  this is diagnostic evidence, not normal-suite clearance. No production deadlock is
+  established. The original source, limits and assertions are preserved while sparse
+  phase tracing investigates the stall. Publishing independently tested repair commits
+  for fresh CI does not clear this gate or authorize ancestry/3D/GPU integration.
 - First combined CI at `e477954` found a Node 22 512-drawing deadline failure, a safely refused
   legacy-to-modern TABLESTYLE difference and a stale browser report check. The recovery failure
   followed the aborted export setup. The correction keeps the original 15-second test and limits
@@ -109,6 +122,23 @@ proof that their implementation or external verification has passed.
   in 7.7 seconds (8.4 seconds in the full suite). **246 native/metadata targeted checks** pass. Transport doubles and local
   source checks do not certify Node 22 CI or the 54 native Rust cases; fresh exact-head CI,
   matching-helper roundtrips and independent C postflight must clear before integration.
+- Exact `e18012cd` CI clears both Node jobs/UI and all 54 Rust + three CLI cases.
+  Windows end-to-end export refuses a VPORT ambient-color representation difference;
+  the destination stays unchanged and the recovery setup failure follows that abort.
+  The unchanged original AutoCAD DWG/C decode reproduces the same RGB with a C2 method
+  byte. A field-specific checked semantic comparison is being validated, with exact
+  RGB/count/ACI/name/unknown-field and unsupported-method guards. Node 22's 512 case
+  passes in 14,886/15,000 ms; measured normalization cost motivates bounded reuse for
+  each synchronous scan with fresh aliases/platform checks. Fresh full/app/exact-head
+  CI and matching-helper C postflight remain required; no integration is declared clean.
+- Related VISUALSTYLE RGB comparisons are restricted to the eight typed color slots in a
+  complete modern 58-property bag. Checked0/C2 storage compares every RGB bit; its derived
+  ACI companion is one color property's fallback, while standalone ACI, lighting177,
+  selectors/count/order, references and opaque data remain exact. **318 backend checks**
+  pass, including 88 new style cases. **173 path/project checks** pass; bounded normalization
+  stays within one synchronous scan and native aliases/platform remain live. The unchanged
+  512 case takes 6.7 seconds locally. Fresh combined/Windows app/CI/native gates remain due.
+  One targeted memory failure is retained separately from the unchanged31-case isolated pass.
 - Integration corrections retain modeled complex-LTYPE edits and opaque extensions, distinct
   anonymous STYLE identities, enabled/disabled/shared viewport boundary ownership, graph-aware
   copies/transforms/layout copies and fixed-point native 340 export. Full session/history and

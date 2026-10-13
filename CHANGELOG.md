@@ -73,6 +73,19 @@ messages). The date of each version is the date of the commit that set that vers
 
 ### Fixed
 
+- Native VISUALSTYLE postflight checks recognize RGB storage only in the eight typed color
+  slots of its complete modern property bag. Derived palette companions can differ when
+  explicit RGB agrees; standalone ACI, lighting, operations, framing and opaque data remain
+  exact. Unsupported methods and ambiguous schemas refuse. Legacy records keep raw checks.
+- Project source-basis scans reuse bounded path normalization within each synchronous scan.
+  Native aliases and platform reads remain live on every comparison; the original path
+  comparator and save guards remain intact. Oversized caches use uncached comparisons.
+
+- Native postflight checks compare VPORT ambient RGB through a bounded, method-aware
+  representation check. Only ordinary DXF RGB and native explicit-RGB C2 storage can
+  agree; different RGB, unsupported methods and other retained properties still refuse.
+  The correction uses the matching original AutoCAD DWG/DXF pair as its reference.
+
 - Project batch preparation captures the active session once per synchronous source-basis
   scan, retaining fresh scans around asynchronous reads and writes. Project replacement,
   newly opened path aliases and tab/history changes still refuse stale writes. The existing

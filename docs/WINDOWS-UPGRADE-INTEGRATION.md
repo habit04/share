@@ -8,7 +8,7 @@ All four [exact-head CI jobs](https://github.com/habit04/share/actions/runs/3843
 passed, including native Windows writer/containment, Electron, origin migration,
 both Node suites, UI screenshots and performance gates. The long roadmap is paused.
 The first source integration stage combines completed #9 with this freeze in the
-same isolated worktree. Including the scoped CI repairs, its full local suite passes
+same isolated worktree. The previous session-basis/common-link head's full local suite passes
 **3,954 tests / 28 conditional skips**, all three TypeScript projects, broad lint,
 fixtures and the production build. All **32 actual Windows app workflows** pass
 on the new unchanged production bundle:
@@ -56,6 +56,46 @@ margins cannot certify explicit DXFOUT margins or
 converted common links. CI retains only the development helper, corresponding source,
 notices and integrity manifest for private reproduction; release/signing workflows
 remain unchanged. No next-stage source or actual ancestry merge proceeds before this gate.
+
+Exact `e18012cd` CI passes both Node jobs and UI. Windows compiles/runs all 54 native
+Rust and three CLI tests, including the imported TABLESTYLE fixes; Electron then
+safely refuses a VPORT group421 representation difference, leaving the destination
+unchanged. Its later recovery failure follows the aborted export setup. Read-only
+decoding of the unchanged original AutoCAD DWG reproduces the same difference from
+its matching DXF: identical RGB bytes, with a native C2 color-method byte.
+The correction is confined to checked VPORT ambient-color semantics, retaining exact
+RGB/count/ACI/name/unknown-field comparisons and rejecting unsupported methods.
+Fresh exact-head/application/native postflight validation remains required.
+
+Node 22's original 512 case passes in 14,886 ms against 15,000 ms. This narrow margin
+remains a reliability concern. A measured CPU profile identifies repeated path
+normalization; a bounded comparator for each synchronous scan is under review.
+Native aliases and platform interpretation must stay fresh on every comparison,
+and overflow must use unchanged uncached behavior. No deadline or guard is relaxed.
+
+The related VISUALSTYLE audit proves only eight typed RGB slots in the complete modern
+58-property grammar. Checked method0/C2 storage compares every RGB bit; its palette ACI
+companion represents the same single native color property and is derived by the C reader.
+Standalone ACI, operations, count/order, common links, XDATA and opaque data remain exact.
+Lighting177 is **not** normalized: the writer preserves explicit source3, while original
+DWG2 is an unrelated default. Legacy/raw records retain their previous comparisons.
+All 318 focused backend checks, including 88 new style cases, pass. The 173 path/project
+checks pass, with the unchanged 512 case at 6.7 seconds locally. Independent counterexamples
+and source review pass; fresh full/app/exact-head CI and matching-helper gates remain required.
+One broader targeted run retained a native-read worker memory failure; its unchanged
+31-case suite passed separately without budget, factory, heap or deadline changes.
+
+Current color/path candidate validation: all static/build checks and all 32 Windows app
+workflows pass on unchanged `index-BllnhGHC.js`; every owned app closes without fallback
+termination. Two normal full runs each retain 4,097 passes, 28 skips and one unchanged
+extended-PDF body/cleanup timeout. Its unchanged 34-case suite passes separately. A full
+private syscall-traced run passes 4,098 with 28 skips, including the original 512-drawing
+case in 5.94 seconds. This is diagnostic evidence: asynchronous tracing can perturb the
+scheduler. No production deadlock is established; sparse phase tracing will preserve
+native FileHandle behavior while locating the stall. The independently tested repair
+commits may be published to the draft branch for fresh CI, while normal-suite clearance,
+all four exact-head CI jobs and actual matching-helper/C postflight remain integration
+gates. No ancestry merge or next-stage source adoption is cleared by these partial results.
 
 The corrected full local Windows suite passes serially with every original deadline and
 freshness assertion. A private phase trace of the 33-file project case passed in 18.7 seconds;

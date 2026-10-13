@@ -195,7 +195,7 @@ Electrical, so it survives a round trip through other programs that keep blocks 
 - Parametric constraints, dynamic-block actions, sheet sets, data links, digital signatures.
 
 Development integration note: the completed metadata source and matching reader/writer pins
-are combined with the current 2D/save protections. The session-basis/common-link candidate
+are combined with the current 2D/save protections. The previous session-basis/common-link head
 passes 3,954 tests with 28 conditional skips, all static/build checks and 32 actual Windows
 app workflows against an unchanged new production bundle. Native
 decoder/projection fixture validation is separate from matching-helper and combined exact-head
@@ -215,6 +215,30 @@ independent C postflight remain required.
 Original implicit-margin DWG data is not an oracle for explicit-margin DXFOUT conversion.
 Local authored projection checks pass;
 the changed Rust helper's binary roundtrip and independent C postflight require fresh CI.
+
+VPORT ambient color (groups63/421/431) uses the declared RGB bytes. Original AutoCAD
+DWG decoding also exposes an explicit C2 method byte, unlike matching DXF's 24-bit RGB.
+A checked field-specific comparison is under validation; unsupported methods, changed
+RGB/ACI/name, malformed storage and ambiguous groups must still refuse. Other records
+and opaque/XDATA color-sized values remain exact. See Autodesk's
+[VPORT reference](https://help.autodesk.com/cloudhelp/2023/ENU/AutoCAD-DXF/files/GUID-8CE7CC87-27BD-4490-89DA-C21F516415A9.htm).
+All 54 Rust and three CLI tests pass at `e18012cd`; native Electron export is still
+blocked by this representation difference, so combined CI/native postflight remain gates.
+
+The current color/path repair passes 318 focused backend and 173 path/project tests,
+static/build checks and all 32 Windows app workflows on the unchanged production bundle.
+Two normal full runs each retain 4,097 passes, 28 skips and the unchanged extended-PDF
+case's body/cleanup timeout. Its full 34-case suite passes separately; a privately traced
+full run passes 4,098 with 28 skips. Tracing is diagnostic only. Normal-suite clearance,
+fresh exact-head CI and matching-helper/C postflight remain required before integration;
+the draft repair commits do not certify those gates.
+
+Modern VISUALSTYLE RGB comparisons are confined to its eight typed color slots in a complete
+58-property bag. Valid raw/C2 RGB storage compares all color bytes; a derived palette companion
+belongs to that same color property. Standalone ACI, lighting177, operations, order/count,
+common links, XDATA and opaque properties remain exact. Legacy records retain raw comparison.
+Unsupported methods or claimed ambiguous modern schemas refuse. Local targeted tests/review
+pass; matching-helper/C postflight and fresh combined exact-head CI remain required.
 
 ## Platforms
 
