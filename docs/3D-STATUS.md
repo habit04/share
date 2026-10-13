@@ -73,8 +73,21 @@ Baseline on Windows x64, Node 22.23.3: typecheck, lint and 177 test files / 2,21
   worker transport with a structured-clone fake worker: matching, timeout, crash, restart,
   pre-ready failure). Independent review done; all findings fixed. Measured: two-cube union
   0.7 ms in Node, 8-16 ms through the worker; 50k-triangle union 156-255 ms.
-- Remains: the modelling commands (BOX ... TORUS, EXTRUDE, REVOLVE, UNION, SUBTRACT, INTERSECT),
-  construction plane and previews (in progress on feature/3d-tools3d).
+- Works (commands, flag on): BOX, WEDGE, CYLINDER, CONE, SPHERE, TORUS, EXTRUDE, REVOLVE,
+  UNION, SUBTRACT, INTERSECT and 3DPLANE (World / XY / XZ / YZ / Face / Origin) with
+  AutoCAD-style prompts, typed `x,y,z` and `@dx,dy,dz` input on the construction plane,
+  translucent previews in the 3D viewport, ERASE of solids, Properties rows for solids, and
+  ribbon panels Modelling / Boolean / Plane. Booleans run asynchronously in the worker, refuse
+  input while computing, discard the result if an operand changed meanwhile, and one Undo
+  restores every operand. See [3D-MODELLING.md](3D-MODELLING.md) for the input sequences.
+- Tested: 5 tool test files (50 tests, including a replay of the documented sequences against a
+  real Editor and Booleans through the in-process kernel); full suite 200 files / 2,515 tests
+  green. Verified by the supervisor in Chromium through the worker kernel: BOX volume 500,
+  CYLINDER 224.7 (32 segments), EXTRUDE of a rectangle 24, UNION of two boxes 12, SUBTRACT 10
+  with the nested feature tree kept under the first operand's id, Undo restoring operands.
+- Prototype: no 3D object snaps yet (milestone 4); one profile per EXTRUDE; no Taper / Path
+  options; new solids take the current layer and colour rather than the source object's; the
+  construction plane is session-only; ribbon buttons reuse 2D icons.
 - Known: a timed-out Boolean recycles the worker and fails the other pending calls; closedness
   and welding checks of large operands run on the main thread (milestone 6).
 
