@@ -12,6 +12,11 @@ export interface AutosaveMeta {
   originalPath: string | null;
   title: string;
   savedAt: number;
+  /**
+   * Experimental 3D solids the DXF recovery copy could not hold (absent = none). Recorded so the
+   * recovery dialog can say what is missing (milestone 5 surfaces it).
+   */
+  omitted3d?: number;
 }
 export interface AutosaveEntry extends AutosaveMeta {
   name: string;
@@ -229,9 +234,12 @@ export class Autosaver {
       try {
         // Recovery copies are DXF and omit experimental 3D solids (state.model3d) until milestone 5
         // adds a 3D-aware format. writeDxf ignores the field, so this never blocks or fails, and
-        // autosave must not raise the interactive "save without 3D objects?" question.
+        // autosave must not raise the interactive "save without 3D objects?" question; the
+        // metadata records how many solids the copy omitted instead.
         const text = writeDxf(withoutUnusedLibraryBlocks(job.state));
-        await this.store.write(job.name, text, { originalPath: job.originalPath, title: job.title, savedAt: job.savedAt });
+        const omitted3d = job.state.model3d?.solids.length ?? 0;
+        const meta: AutosaveMeta = { originalPath: job.originalPath, title: job.title, savedAt: job.savedAt, ...(omitted3d > 0 ? { omitted3d } : {}) };
+        await this.store.write(job.name, text, meta);
         this.backedUp.set(job.id, job.state);
         this.names.set(job.id, job.name);
         n += 1;

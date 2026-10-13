@@ -116,8 +116,10 @@ export function invertWinding(mesh: Mesh3D): Mesh3D {
 /**
  * Merge vertices closer than `tol` times the mesh's bounding-box diagonal (a relative tolerance,
  * so the same value works for a 1 mm part and a 100 m building; 0 merges only exact duplicates).
- * Each vertex snaps to the first earlier vertex within the tolerance; triangles that collapse
- * (two equal indices) are dropped and unreferenced vertices removed. Winding is unchanged.
+ * Each vertex snaps to the first earlier *kept* vertex within the tolerance (per axis); chains
+ * are not merged transitively, so A-B-C spaced just under the tolerance can keep A and C apart.
+ * Triangles that collapse (two equal indices) are dropped and unreferenced vertices removed.
+ * Winding is unchanged.
  */
 export function weldVertices(mesh: Mesh3D, tol = 1e-9): Mesh3D {
   const n = meshVertexCount(mesh);
@@ -223,11 +225,12 @@ export function meshSurfaceArea(mesh: Mesh3D): number {
 }
 
 /**
- * True when the mesh is a closed, consistently oriented 2-manifold by index topology: it has at
- * least one triangle, no triangle repeats a vertex index, every directed edge (i -> j) occurs
- * exactly once, and each has exactly one opposite edge (j -> i). Coincident but unwelded vertices
- * count as different vertices, so weld first. Says nothing about outward vs inward orientation
- * (use the sign of `meshVolume`) or self-intersection.
+ * True when the mesh is closed and consistently oriented by edge topology: it has at least one
+ * triangle, no triangle repeats a vertex index, every directed edge (i -> j) occurs exactly once,
+ * and each has exactly one opposite edge (j -> i). Vertex pinches (two surfaces touching at a
+ * single shared vertex) are not detected, and coincident but unwelded vertices count as different
+ * vertices, so weld first. Says nothing about outward vs inward orientation (use the sign of
+ * `meshVolume`) or self-intersection.
  */
 export function meshIsClosed(mesh: Mesh3D): boolean {
   const idx = mesh.indices;

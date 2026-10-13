@@ -423,9 +423,12 @@ export function aabbTransform(box: Aabb, m: Mat4): Aabb | null {
 
 /**
  * Ray parameter where the ray enters the box (slab method), 0 when the origin is already inside,
- * or null on a miss. Boundary contact (grazing a face or edge) counts as a hit.
+ * or null on a miss. Boundary contact (grazing a face or edge) counts as a hit. A non-finite
+ * origin or direction returns null. A zero direction is a point query: 0 when the origin is
+ * inside (or on) the box, null otherwise.
  */
 export function intersectRayAabb(ray: Ray, box: Aabb): number | null {
+  if (!finite3(ray.origin) || !finite3(ray.dir)) return null;
   let tMin = 0, tMax = Infinity;
   for (const axis of ['x', 'y', 'z'] as const) {
     const o = ray.origin[axis], d = ray.dir[axis], lo = box.min[axis], hi = box.max[axis];
@@ -454,6 +457,20 @@ export interface Frame3 {
   readonly xAxis: Vec3;
   readonly yAxis: Vec3;
   readonly zAxis: Vec3;
+}
+
+/**
+ * True when the frame is usable as a rigid placement: finite origin and axes, each axis of unit
+ * length and the axes mutually perpendicular within `tol`, and right-handed (xAxis x yAxis equals
+ * zAxis within `tol`). A frame failing this would shear, scale or mirror the geometry placed with
+ * it, so mesh builders reject it instead of producing a distorted or inside-out solid.
+ */
+export function isOrthonormalFrame(frame: Frame3, tol = 1e-9): boolean {
+  const { origin, xAxis: x, yAxis: y, zAxis: z } = frame;
+  if (![origin, x, y, z].every((v) => !!v && finite3(v))) return false;
+  if ([x, y, z].some((v) => Math.abs(len3(v) - 1) > tol)) return false;
+  if (Math.abs(dot3(x, y)) > tol || Math.abs(dot3(y, z)) > tol || Math.abs(dot3(z, x)) > tol) return false;
+  return eq3(cross3(x, y), z, tol);
 }
 
 /** The world coordinate system itself: the 2D drawing plane, Z toward the viewer. Frozen. */

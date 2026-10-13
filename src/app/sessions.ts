@@ -338,13 +338,15 @@ export class SessionManager {
  * being written (or in another tab) keep their "unsaved changes" flag.
  * Returns what happened for the command log.
  */
-export function applySaveResult(sessions: SessionManager, host: SessionHost, sessionId: number, savedState: DrawingState, path: string, contentGeneration: number): 'clean' | 'newer-edits' | 'closed' | 'replaced' {
+export function applySaveResult(sessions: SessionManager, host: SessionHost, sessionId: number, savedState: DrawingState, path: string, contentGeneration: number, markClean = true): 'clean' | 'newer-edits' | 'closed' | 'replaced' {
+  // markClean = false: the file was written without content it cannot hold (experimental 3D), so
+  // the drawing is bound to it but stays modified. 'clean' then means "this exact state was written".
   const active = sessions.current;
   if (active.id === sessionId) {
     if (active.contentGeneration !== contentGeneration) return 'replaced';
     host.doc.filePath = path;
     if (host.doc.snapshot === savedState) {
-      host.doc.dirty = false;
+      if (markClean) host.doc.dirty = false;
       return 'clean';
     }
     return 'newer-edits';
@@ -354,7 +356,7 @@ export function applySaveResult(sessions: SessionManager, host: SessionHost, ses
   if (s.contentGeneration !== contentGeneration) return 'replaced';
   s.filePath = path;
   if (s.state === savedState) {
-    s.dirty = false;
+    if (markClean) s.dirty = false;
     return 'clean';
   }
   return 'newer-edits';

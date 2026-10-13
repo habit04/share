@@ -49,6 +49,22 @@ describe('validateModel3DBudget', () => {
     expect(() => validateModel3DBudget({ ...base, model3d: modelOf(...new Array<Mesh3D>(count).fill(share), boxMesh(1, 1, 1)) })).toThrow(GeometryBudgetError);
   });
 
+  it('rejects a model whose total vertex count exceeds 3 * MAX_MODEL3D_TRIANGLES', () => {
+    const base = new Drawing().snapshot;
+    // Each solid is within its own limits (no triangles, the per-solid vertex maximum).
+    const points: Mesh3D = { positions: new Array<number>(9 * MAX_SOLID_TRIANGLES).fill(0), indices: [] };
+    const count = MAX_MODEL3D_TRIANGLES / MAX_SOLID_TRIANGLES;
+    expect(() => validateModel3DBudget({ ...base, model3d: modelOf(...new Array<Mesh3D>(count).fill(points)) })).not.toThrow();
+    expect(() => validateModel3DBudget({ ...base, model3d: modelOf(...new Array<Mesh3D>(count).fill(points), boxMesh(1, 1, 1)) })).toThrow(GeometryBudgetError);
+  });
+
+  it('counts whole triangles and whole vertices, like meshTriangleCount', () => {
+    const base = new Drawing().snapshot;
+    // Two stray indices beyond the limit do not form a triangle.
+    const ragged: Mesh3D = { positions: [0, 0, 0], indices: new Array<number>(3 * MAX_SOLID_TRIANGLES + 2).fill(0) };
+    expect(() => validateModel3DBudget({ ...base, model3d: modelOf(ragged) })).not.toThrow();
+  });
+
   it('rejects malformed models with a budget error, not a crash', () => {
     const base = new Drawing().snapshot;
     expect(() => validateModel3DBudget({ ...base, model3d: { version: 1, solids: null } as unknown as Model3D })).toThrow(GeometryBudgetError);

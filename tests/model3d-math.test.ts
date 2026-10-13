@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   type Mat4, type Vec3, EPS3, WORLD_XY_FRAME, aabbCenter, aabbFromPoints, aabbSize, aabbTransform, aabbUnion, add3, cross3, dist3, dot3, eq3, finite3,
-  frameFromPlane, frameToWorld, intersectRayAabb, intersectRayPlane, intersectRayTriangle, len3, lerp3, mat4Determinant, mat4Identity, mat4Invert,
+  frameFromPlane, frameToWorld, intersectRayAabb, isOrthonormalFrame, intersectRayPlane, intersectRayTriangle, len3, lerp3, mat4Determinant, mat4Identity, mat4Invert,
   mat4LookAt, mat4Multiply, mat4Orthographic, mat4Perspective, mat4RotationAxis, mat4RotationX, mat4RotationY, mat4RotationZ, mat4Scaling,
   mat4Translation, mat4Transpose, normalize3, scale3, sub3, transformDirection, transformPoint, v3, worldToFrame,
 } from '../src/model3d/math';
@@ -222,6 +222,15 @@ describe('bounding boxes', () => {
     expect(intersectRayAabb({ origin: v3(-1, -1, -1), dir: v3(1, 1, 1) }, unit)).toBeCloseTo(1, 12);
     expect(intersectRayAabb({ origin: v3(-1, 2, 0.5), dir: v3(1, -1, 0) }, unit)).toBeCloseTo(1, 12);
   });
+
+  it('ray / box rejects non-finite rays and treats a zero direction as a point query', () => {
+    const unit = { min: v3(0, 0, 0), max: v3(1, 1, 1) };
+    expect(intersectRayAabb({ origin: v3(NaN, 0.5, 0.5), dir: v3(1, 0, 0) }, unit)).toBeNull();
+    expect(intersectRayAabb({ origin: v3(0.5, 0.5, 5), dir: v3(0, 0, -Infinity) }, unit)).toBeNull();
+    expect(intersectRayAabb({ origin: v3(0.5, 0.5, 5), dir: v3(0, NaN, -1) }, unit)).toBeNull();
+    expect(intersectRayAabb({ origin: v3(0.5, 0.5, 0.5), dir: v3(0, 0, 0) }, unit)).toBe(0);
+    expect(intersectRayAabb({ origin: v3(2, 0.5, 0.5), dir: v3(0, 0, 0) }, unit)).toBeNull();
+  });
 });
 
 describe('frames', () => {
@@ -247,6 +256,19 @@ describe('frames', () => {
       expectVec(cross3(f.xAxis, f.yAxis), f.zAxis);
       expect(mat4Determinant(frameToWorld(f))).toBeCloseTo(1, 12);
     }
+  });
+
+  it('isOrthonormalFrame accepts rigid frames and rejects degenerate ones', () => {
+    expect(isOrthonormalFrame(WORLD_XY_FRAME)).toBe(true);
+    expect(isOrthonormalFrame(frameFromPlane({ origin: v3(1, 2, 3), normal: v3(1, -2, 0.5) }))).toBe(true);
+    const w = WORLD_XY_FRAME;
+    expect(isOrthonormalFrame({ ...w, xAxis: v3(2, 0, 0) })).toBe(false); // scaled
+    expect(isOrthonormalFrame({ ...w, yAxis: v3(Math.SQRT1_2, Math.SQRT1_2, 0) })).toBe(false); // sheared
+    expect(isOrthonormalFrame({ ...w, zAxis: v3(0, 0, -1) })).toBe(false); // left-handed
+    expect(isOrthonormalFrame({ ...w, zAxis: v3(0, 0, 0) })).toBe(false); // collapsed
+    expect(isOrthonormalFrame({ ...w, origin: v3(NaN, 0, 0) })).toBe(false);
+    expect(isOrthonormalFrame({ ...w, xAxis: v3(1 + 1e-6, 0, 0) })).toBe(false);
+    expect(isOrthonormalFrame({ ...w, xAxis: v3(1 + 1e-6, 0, 0) }, 1e-5)).toBe(true);
   });
 
   it('worldToFrame inverts frameToWorld', () => {

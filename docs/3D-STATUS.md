@@ -9,13 +9,28 @@ Baseline on Windows x64, Node 22.23.3: typecheck, lint and 177 test files / 2,21
 
 ## Milestone 0: plan and scaffold
 
-- Works: plan and status documents.
-- Tested: the existing suite is unchanged.
-- Remains: everything else.
+- Works: plan and status documents; Node 22 toolchain and test binaries set up on the development machine.
+- Tested: the existing suite is unchanged at the starting commit.
 
 ## Milestone 1: document model
 
-Pending.
+- Works: `src/model3d/` math (Vec3, column-major Mat4, Plane, Ray, Aabb, Frame3 with
+  orthonormality check), plain-array `Mesh3D` with validation, signed volume, surface area,
+  closedness by edge topology, welding and cached flat normals; `Solid3D` / `Feature3D` /
+  `Model3D` types; `DrawingState.model3d` (optional, sealed and undone like 2D state); model
+  helpers; closed outward primitives (box, wedge, cylinder, cone, sphere, torus); triangle and
+  vertex budgets enforced by `prepareDrawingState`; the `experimental3d` setting (default off).
+- Works: saving a drawing that has solids asks for confirmation (DXF Save / Save As and DWG
+  export share one helper); No cancels; without a desktop UI the save is refused; after Yes the
+  file is written without the solids and the drawing stays marked modified so the close flow and
+  recovery copy keep protecting them. Autosave records `omitted3d` in its metadata.
+- Tested: 7 new vitest files (analytic volumes, matrix round trips, both triangle windings,
+  degenerate frames, budget shortcuts, undo/redo of solids, every save-guard path); full suite
+  184 files / 2,293 tests, typecheck, lint and `npm run build` green. Independent review done;
+  all findings fixed.
+- Remains: nothing is drawn yet (milestone 2); no file persistence (milestone 5).
+- Known: `meshIsClosed` does not detect vertex pinches; welding is not transitive; sphere and
+  torus are centred on their frame origin while box, wedge, cylinder and cone sit on it.
 
 ## Milestone 2: viewport
 

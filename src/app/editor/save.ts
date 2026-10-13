@@ -15,14 +15,7 @@ import { hasDwgSave } from '../drawing-save';
 import type { Editor } from './editor';
 import { fallbackUi, type EditorInternals } from './internals';
 import { rememberRecent } from './documents';
-import { model3dSaveWarning, MODEL3D_SAVE_TITLE } from '../../model3d/save-guard';
-import type { DrawingState } from '../../core/document';
-
-/**
- * Snapshots whose 3D loss the user accepted. States are immutable, so the answer stays valid for
- * the Save As / Retry re-entries of the same save (and for saving that unchanged state again).
- */
-const model3dLossAccepted = new WeakSet<DrawingState>();
+import { confirmModel3DLoss, MODEL3D_NO_UI_REASON, MODEL3D_SAVED_WITHOUT } from '../../model3d/save-guard';
 
 export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean, format?: 'dxf'): Promise<boolean> {
   if (!ed.fileBridge) {
@@ -53,18 +46,21 @@ export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean,
     return false;
   };
   ed.lastFileError = null;
-  // DXF and DWG files cannot hold the experimental 3D solids yet: ask before dropping them, the
-  // same confirm the import-loss warning uses (No cancels the save; the drawing stays modified).
-  const loss3d = model3dLossAccepted.has(savedState) ? null : model3dSaveWarning(savedState);
-  if (loss3d) {
-    const ok = await (ed.ui ?? fallbackUi).confirm(MODEL3D_SAVE_TITLE, loss3d);
-    if (!stillCurrent()) return changed();
-    if (!ok) {
-      ed.log('Not saved: the drawing contains 3D objects that DXF and DWG files cannot hold in this version.');
-      return false;
-    }
-    model3dLossAccepted.add(savedState);
+  // DXF and DWG files cannot hold the experimental 3D solids yet. Unsupported geometry is never
+  // dropped silently: ask (once per state, shared with EXPORTDWG), refuse without an interface.
+  const loss3d = await confirmModel3DLoss(savedState, ed.ui ? (t, m) => ed.ui!.confirm(t, m) : null, stillCurrent);
+  if (loss3d === 'changed') return changed();
+  if (loss3d === 'no-ui') {
+    ed.lastFileError = MODEL3D_NO_UI_REASON;
+    ed.log(`Not saved: ${MODEL3D_NO_UI_REASON}.`);
+    return false;
   }
+  if (loss3d === 'declined') {
+    ed.log('Not saved: the drawing contains 3D objects that DXF and DWG files cannot hold in this version.');
+    return false;
+  }
+  // The file will not hold everything: bind it, but keep the drawing modified (close prompt, recovery copy).
+  const lossy = loss3d === 'accepted';
   let path: string | null;
   try {
     const text = writeDxf(withoutUnusedLibraryBlocks(savedState));
@@ -124,7 +120,7 @@ export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean,
     return true;
   }
   st.savedRevisions.set(sessionId, revision);
-  const outcome = applySaveResult(ed.sessions, ed, sessionId, savedState, path, contentGeneration);
+  const outcome = applySaveResult(ed.sessions, ed, sessionId, savedState, path, contentGeneration, !lossy);
   if (outcome === 'replaced') {
     ed.log(`Saved ${path} (another drawing replaced this tab while saving; it keeps its current file).`);
     rememberRecent(ed, path);
@@ -133,6 +129,12 @@ export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean,
   if (outcome === 'clean' && ed.sessions.current.id === sessionId) ed.suggestedName = null;
   ed.log(outcome === 'newer-edits' ? `Saved ${path} (edits made during the save are still unsaved).` : `Saved ${path}`);
   rememberRecent(ed, path);
+  if (lossy) {
+    // Not a complete save: the recovery copy (which drawingSaved would discard) stays too.
+    ed.log(MODEL3D_SAVED_WITHOUT);
+    ed.notify('file');
+    return true;
+  }
   ed.hooks.drawingSaved?.(sessionId, savedState, path);
   ed.notify('file');
   return true;

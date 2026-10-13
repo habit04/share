@@ -12,7 +12,7 @@
  * slightly below the analytic ones. Invalid dimensions throw a RangeError; tessellation counts are
  * clamped (see `clampSegments`), never rejected.
  */
-import { frameToWorld } from './math';
+import { frameToWorld, isOrthonormalFrame } from './math';
 import { type Mesh3D, transformMesh } from './mesh';
 import type { PrimitiveFeature } from './types';
 
@@ -24,6 +24,11 @@ export const MAX_SEGMENTS = 256;
 export const DEFAULT_RINGS = 16;
 export const MIN_RINGS = 2;
 export const MAX_RINGS = 128;
+/**
+ * Fewest divisions around a torus tube: a triangular cross-section is the smallest closed profile
+ * (two would flatten the tube into a zero-volume sheet).
+ */
+export const MIN_TUBE_RINGS = 3;
 
 /**
  * Clamp a tessellation count to an integer in [min, max]; non-numeric or non-finite input gives
@@ -181,13 +186,13 @@ export function sphereMesh(r: number, segments = DEFAULT_SEGMENTS, rings = DEFAU
  * Ring torus centred on the origin around local Z: tube centre at distance `R` from the axis,
  * tube radius `r` (0 < r < R; a horn or spindle torus would self-intersect). `segs` divisions
  * around the axis (clamped like `cylinderMesh`), `rings` around the tube (clamped to
- * [3, MAX_RINGS], default DEFAULT_RINGS). Throws RangeError for invalid radii.
+ * [MIN_TUBE_RINGS, MAX_RINGS], default DEFAULT_RINGS). Throws RangeError for invalid radii.
  */
 export function torusMesh(R: number, r: number, segs = DEFAULT_SEGMENTS, rings = DEFAULT_RINGS): Mesh3D {
   requirePositive('Torus major radius', R);
   requirePositive('Torus minor radius', r);
   if (!(r < R)) throw new RangeError(`Torus minor radius must be smaller than the major radius (got ${r} >= ${R}).`);
-  const n = clampSegments(rings, DEFAULT_RINGS, 3, MAX_RINGS);
+  const n = clampSegments(rings, DEFAULT_RINGS, MIN_TUBE_RINGS, MAX_RINGS);
   const profile: [number, number][] = [];
   for (let k = 0; k < n; k++) {
     const phi = (2 * Math.PI * k) / n;
@@ -199,9 +204,11 @@ export function torusMesh(R: number, r: number, segs = DEFAULT_SEGMENTS, rings =
 /**
  * Evaluate a primitive feature to a world-space mesh: build it in frame-local coordinates per the
  * module convention, then place it with `frameToWorld(feature.frame)`. Throws RangeError for
- * invalid dimensions (see the individual builders).
+ * invalid dimensions (see the individual builders) and for a frame that is not orthonormal and
+ * right-handed (`isOrthonormalFrame`), which would shear, scale or mirror the solid.
  */
 export function primitiveMesh(feature: PrimitiveFeature): Mesh3D {
+  if (!feature.frame || !isOrthonormalFrame(feature.frame)) throw new RangeError(`The ${feature.kind} placement frame must be orthonormal and right-handed.`);
   let local: Mesh3D;
   switch (feature.kind) {
     case 'box': local = boxMesh(feature.width, feature.depth, feature.height); break;

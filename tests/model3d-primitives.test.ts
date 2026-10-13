@@ -1,9 +1,9 @@
 /** Primitive solids: closed, outward (positive volume), analytic volumes, bounds, clamping, placement. */
 import { describe, expect, it } from 'vitest';
-import { type Frame3, WORLD_XY_FRAME, frameFromPlane, v3 } from '../src/model3d/math';
+import { type Frame3, WORLD_XY_FRAME, frameFromPlane, frameToWorld, mat4RotationAxis, transformDirection, v3 } from '../src/model3d/math';
 import { type Mesh3D, meshBounds, meshIsClosed, meshTriangleCount, meshVolume, validateMesh, weldVertices } from '../src/model3d/mesh';
 import {
-  DEFAULT_SEGMENTS, MAX_SEGMENTS, boxMesh, clampSegments, coneMesh, cylinderMesh, primitiveMesh, sphereMesh, torusMesh, wedgeMesh,
+  DEFAULT_SEGMENTS, MAX_SEGMENTS, MIN_TUBE_RINGS, boxMesh, clampSegments, coneMesh, cylinderMesh, primitiveMesh, sphereMesh, torusMesh, wedgeMesh,
 } from '../src/model3d/primitives';
 
 /** Area factor of an inscribed regular n-gon: area = k * r^2. */
@@ -156,7 +156,7 @@ describe('tessellation clamping', () => {
     expect(meshTriangleCount(cylinderMesh(1, 1, NaN))).toBe(4 * DEFAULT_SEGMENTS);
     expect(meshTriangleCount(sphereMesh(1, 3, 1))).toBe(2 * 3 * (2 - 1));
     expectSolid(sphereMesh(1, 3, 1));
-    expect(meshTriangleCount(torusMesh(2, 1, 3, 1))).toBe(2 * 3 * 3);
+    expect(meshTriangleCount(torusMesh(2, 1, 3, 1))).toBe(2 * 3 * MIN_TUBE_RINGS);
     expectSolid(torusMesh(2, 1, 3, 1));
     expect(meshTriangleCount(sphereMesh(1, 1e9, 1e9))).toBe(2 * 256 * 127);
   });
@@ -182,6 +182,48 @@ describe('primitiveMesh placement', () => {
       if (f.kind === 'sphere' || f.kind === 'torus') expect((b.min.z + b.max.z) / 2).toBeCloseTo(30, 9);
       else expect(b.min.z).toBeCloseTo(30, 12);
     }
+  });
+
+  it('rejects a degenerate placement frame', () => {
+    const w = WORLD_XY_FRAME;
+    const bad: Frame3[] = [
+      { ...w, xAxis: v3(2, 0, 0) },
+      { ...w, zAxis: v3(0, 0, -1) },
+      { ...w, yAxis: v3(1, 0, 0) },
+      { ...w, origin: v3(Infinity, 0, 0) },
+    ];
+    for (const frame of bad) {
+      expect(() => primitiveMesh({ kind: 'box', frame, width: 1, depth: 1, height: 1 })).toThrow(RangeError);
+      expect(() => primitiveMesh({ kind: 'sphere', frame, radius: 1 })).toThrow(RangeError);
+    }
+  });
+
+  it('a rotated cylinder keeps its volume and lies along the rotated axis', () => {
+    // Rotate the world frame 90 deg about Y: frame Z (the cylinder axis) becomes world +X.
+    const rot = mat4RotationAxis(v3(0, 1, 0), Math.PI / 2);
+    const frame: Frame3 = {
+      origin: v3(1, 2, 3),
+      xAxis: transformDirection(rot, v3(1, 0, 0)),
+      yAxis: transformDirection(rot, v3(0, 1, 0)),
+      zAxis: transformDirection(rot, v3(0, 0, 1)),
+    };
+    const n = 64, r = 0.5, h = 4;
+    const m = primitiveMesh({ kind: 'cylinder', frame, radius: r, height: h, segments: n });
+    expectSolid(m);
+    expectRelative(meshVolume(m), polygonFactor(n) * r * r * h, 1e-9);
+    const b = meshBounds(m)!;
+    expect(b.min.x).toBeCloseTo(1, 12);
+    expect(b.max.x).toBeCloseTo(1 + h, 12);
+    expect(b.max.y).toBeCloseTo(2 + r, 12);
+    expect(b.min.y).toBeCloseTo(2 - r, 12);
+    expect(b.max.z).toBeCloseTo(3 + r, 12);
+    expect(b.min.z).toBeCloseTo(3 - r, 12);
+    // An arbitrary oblique axis: volume unchanged.
+    const tilted = frameFromPlane({ origin: v3(-5, 7, 2), normal: v3(1, 2, -3) });
+    const t = primitiveMesh({ kind: 'cylinder', frame: tilted, radius: r, height: h, segments: n });
+    expectSolid(t);
+    expectRelative(meshVolume(t), polygonFactor(n) * r * r * h, 1e-9);
+    expect(frameToWorld(tilted)[12]).toBe(-5);
   });
 
   it('honours feature tessellation and a tilted frame', () => {
