@@ -8,6 +8,7 @@ import { countOf, importReportOf, saveOverwriteWarning } from '../io/import-repo
 import { samePath } from './paths';
 import { captureRevision, saveQueue } from './savequeue';
 import { describeFileError } from './file-errors';
+import { dwgCompatibilityProblem } from './dwg-compatibility';
 import type { Editor, FileBridge } from './editor';
 import type { DrawingState } from '../core/document';
 
@@ -49,6 +50,11 @@ export async function exportDwgCopy(ed: Editor): Promise<boolean> {
   // is open must never authorize writing another drawing over the selected destination.
   const session = ed.sessions.current;
   const state = ed.doc.snapshot;
+  const compatibilityProblem = dwgCompatibilityProblem(state);
+  if (compatibilityProblem) {
+    ed.log(`DWG export refused: ${compatibilityProblem} The working drawing and its recovery copy are kept.`);
+    return false;
+  }
   const sessionRevision = session.revision;
   const generation = session.contentGeneration;
   const revision = captureRevision();
