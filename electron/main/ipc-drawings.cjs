@@ -46,7 +46,8 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
     try { return await fs.realpath(file); } catch { return undefined; }
   }
   /** Couple returned bytes and identity to the same held descriptor, then recheck after close. */
-  async function readDrawingBytes(file) {
+  /** @param {import('../windows-path-identity.cjs').WindowsWriteTarget} [expectedPin] */
+  async function readDrawingBytes(file, expectedPin) {
     if (process.platform !== 'win32') return { bytes: await readLimitedFile(fs, file, MAX_DRAWING_BYTES), identityPath: undefined };
     const changed = () => Object.assign(new Error('ERR_WINDOWS_PATH_CHANGED: the drawing changed while it was opened. Open it again.'), { code: 'ERR_WINDOWS_PATH_CHANGED' });
     const version = (stat) => [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].map(String).join(':');
@@ -65,6 +66,10 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
       async beforeRead(handle) {
         const held = await handle.stat({ bigint: true }), current = await observe();
         if (version(held) !== current.version) throw changed();
+        if (expectedPin) {
+          const original = expectedPin.fileVersion;
+          if (!original || current.identityPath !== expectedPin.canonicalPath || current.version !== [original.dev, original.ino, original.size, original.mtimeNs, original.ctimeNs].join(':')) throw changed();
+        }
         captured = current;
       },
       async afterRead(handle, content) {
@@ -79,12 +84,24 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
     if (!pathPolicy.known(file, 'resolve-path-identity')) return null;
     return (await identityPath(file)) ?? null;
   });
+  if (saveOrder) ipcMain.handle('open-project-save-batch-drawing', async (ev, batch, child) => saveOrder.readBatch(ev, batch, child, async (scope) => {
+    const file = scope.pin.logicalPath;
+    if (!DXF_FILE.test(file) || !pathPolicy.known(file, 'open-project-save-batch-drawing')) throw new Error('Unknown project DXF path');
+    // The manifest's original native version supplies the calculation input. It is never rebound.
+    await scope.guard();
+    const read = await readDrawingBytes(file, scope.pin);
+    const { text, encoding } = await decodeDxf(/** @type {Buffer} */ (read.bytes));
+    if (read.check) await read.check();
+    await scope.guard();
+    pathPolicy.rememberImages(file, dxfImageNames(text));
+    return { path: file, identityPath: read.identityPath, kind: 'dxf', text, encoding };
+  }));
 
   async function writeAdmittedText(ev, kind, file, text, backup, ticket) {
     if (!saveOrder) { await writeUserFile(file, text, { backup, root: registry.writeRoot(file) ?? undefined }); return file; }
     return saveOrder.run(ev, kind, file, ticket, (scope) => scope.commit(text, (snapshot, target) => enqueueWrite(target.destinationPath, async (key) => {
       const writer = createAtomicWriter(undefined, { hooks: { beforeAttempt: target.guard } });
-      await writer.atomicWriteFile(target.destinationPath, snapshot, { backup, root: target.root, expectedDestination: key });
+      await writer.atomicWriteFile(target.destinationPath, snapshot, { backup, root: target.root, expectedDestination: key, beforeBackupRename: target.guard });
       await target.markCommitted();
       // Keep the bound logical spelling: renderer identity and relative references use it.
       return { path: target.logicalPath, identityPath: target.canonicalPath };
@@ -322,7 +339,7 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
       const result = await saveOrder.run(ev, kind, target, ticket, (scope) => dwgExporter.export(target, text, (_destination, bytes, check) => scope.commit(bytes, (snapshot, admitted) => enqueueWrite(admitted.destinationPath, async (key) => {
         const guard = async () => { await check(); await admitted.guard(); };
         const writer = createAtomicWriter(undefined, { hooks: { beforeAttempt: guard } });
-        await writer.atomicWriteFile(admitted.destinationPath, snapshot, { backup: true, expectedDestination: key, root: admitted.root });
+        await writer.atomicWriteFile(admitted.destinationPath, snapshot, { backup: true, expectedDestination: key, root: admitted.root, beforeBackupRename: guard });
         await admitted.markCommitted();
         return { path: admitted.logicalPath, identityPath: admitted.canonicalPath };
       })), scope.signal));

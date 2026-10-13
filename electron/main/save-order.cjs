@@ -60,6 +60,31 @@ function registerSaveOrder(ctx, authorize) {
     if (typeof ticket !== 'string' || !saved?.has(ticket)) return null;
     const receipt = saved.get(ticket); saved.delete(ticket); return receipt;
   });
+  ipcMain.handle('issue-project-save-batch', (ev) => admissions.issueProjectBatch(owner(ev)));
+  ipcMain.handle('bind-project-save-batch', async (ev, batch, paths) => {
+    try {
+      // Batch children may read/write only DXFs. Reject the whole list before native inspection.
+      if (!Array.isArray(paths) || paths.length > 512 || paths.some(file => typeof file !== 'string' || !/\.dxf$/i.test(file))) throw Object.assign(new Error('A bounded list of project DXF paths is required.'), { code: 'ERR_SAVE_BATCH_PATHS' });
+      return await admissions.bindProjectBatch(batch, owner(ev), paths);
+    } catch (error) { throw transportError(error); }
+  });
+  ipcMain.handle('seal-project-save-batch', async (ev, batch, children) => {
+    try { await admissions.sealProjectBatch(batch, owner(ev), children); }
+    catch (error) { throw transportError(error); }
+  });
+  ipcMain.handle('begin-project-save-batch-commit', async (ev, batch, children) => {
+    try { await admissions.beginProjectBatchCommit(batch, owner(ev), children); }
+    catch (error) { throw transportError(error); }
+  });
+  ipcMain.handle('cancel-project-save-batch', async (ev, batch) => {
+    try { await admissions.cancelProjectBatch(batch, owner(ev)); }
+    catch (error) { throw transportError(error); }
+  });
+  /** @param {(scope:import('../save-admissions.cjs').ProjectBatchReadScope)=>Promise<unknown>} operation */
+  async function readBatch(ev, batch, child, operation) {
+    try { return await admissions.readProjectBatch(batch, owner(ev), child, operation); }
+    catch (error) { throw transportError(error); }
+  }
   function capture(ev, kind, ticket) {
     const current = owner(ev), implicit = ticket === undefined;
     const captured = Object.freeze({ owner: current, kind, ticket: implicit ? admissions.issue(current, kind) : ticket, implicit });
@@ -106,6 +131,6 @@ function registerSaveOrder(ctx, authorize) {
     } catch (error) { throw transportError(error); }
     finally { discard(captured); }
   }
-  return Object.freeze({ capture, discard, assertCurrent, run, prepare, stats: admissions.stats });
+  return Object.freeze({ capture, discard, assertCurrent, run, prepare, readBatch, stats: admissions.stats });
 }
 module.exports = { registerSaveOrder };

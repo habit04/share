@@ -460,6 +460,7 @@ function createAtomicWriter(fs = fsp, options = {}) {
    * Write `data` (string or bytes) to `file` crash-safely.
    * opts.backup: keep the previous content as `<file>.bak` (one generation).
    * opts.encoding: string encoding (default utf8).
+   * opts.beforeBackupRename: trusted host guard repeated before replacing the automatic backup.
    * opts.root: a folder the file's resolved folder must be inside (a project's folder); see the
    *   module comment (E-5). A destination that is a symbolic link is refused with ELOOP.
    * Resolves { path (the file written, in its resolved folder), backup (path or null), method ('rename') }.
@@ -493,7 +494,7 @@ function createAtomicWriter(fs = fsp, options = {}) {
         // Keep the permission bits of the file being replaced (the temp file got the umask default).
         await fs.chmod(tmp, before.mode & 0o7777).catch(() => {});
       }
-      if (before && opts.backup) backup = await copyFileAtomic(dest, `${dest}.bak`, opts);
+      if (before && opts.backup) backup = await copyFileAtomic(dest, `${dest}.bak`, { root: opts.root, beforeRename: opts.beforeBackupRename });
       // Sharing retries must repeat the admission/version check. Keep cleanup separate.
       const method = await replace(tmp, dest, check, hooks.beforeAttempt, hooks.beforeRename);
       tmpCreated.yes = false;

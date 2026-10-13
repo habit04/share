@@ -60,6 +60,15 @@ export interface FileBridge {
   resolvePathIdentity?(path: string): Promise<string | null>;
   /** Consume host-proven identity from this completed commit; no fresh path lookup. */
   saveAdmissionResult?(ticket: string): Promise<{ path: string; identityPath: string } | null>;
+  /** One Windows host order covers a bounded project calculation before any snapshots or reads. */
+  issueProjectSaveBatch?(): Promise<string>;
+  bindProjectSaveBatch?(batch: string, paths: string[]): Promise<import('../project-save-batch').ProjectBatchBinding[]>;
+  /** Read the original bound DXF version; later writes cannot supply a different calculation input. */
+  openProjectSaveBatchDrawing?(batch: string, childTicket: string): Promise<OpenResult>;
+  sealProjectSaveBatch?(batch: string, selectedChildTickets: string[]): Promise<void>;
+  beginProjectSaveBatchCommit?(batch: string, remainingChildTickets?: string[]): Promise<void>;
+  /** Cancellation joins the batch's active read/copy/write cleanup. */
+  cancelProjectSaveBatch?(batch: string): Promise<void>;
   /** Native picker: no renderer-supplied file path or search root. */
   openShxFont?(): Promise<import('../../render/shx-fonts').ShxResource | null>;
   /** Windows only: licensed installed programs for this PDF plot, never drawing data. */
