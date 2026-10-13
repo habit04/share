@@ -4,7 +4,7 @@ The Windows DXF-to-DWG helper links acadrust 0.6.4, pinned by its published crat
 SHA-256 and matching upstream commit in `pins.json`. It is MPL-2.0 licensed; the
 unmodified full license is included here. The helper itself is GPL-3.0-only.
 
-Ninety-one exact source replacements in fifteen files correct standalone MTEXT frame
+Ninety-five exact source replacements in fifteen files correct standalone MTEXT frame
 output, its matching private validator, owned ATTRIB parent relationships,
 MINSERT's owned-attribute count before array fields, FIELD/FIELDLIST common DXF
 groups, the VIEW front-clipping mode bit, opaque DXF metadata strings, MLEADERSTYLE
@@ -35,6 +35,15 @@ the original DWG SHA-256 is
 Its full snapshots cover imported identities, plot flags and reciprocal layout
 references. A private test mutation proves an explicit imported Model bit is not
 overwritten during decoding and still refuses when binary reopening changes it.
+The same complete fixture retains the default plot-style dictionary E reactor C
+and its placeholder F reactor E. Their DXF readers consume ordered reactor and
+extension-dictionary groups separately from owner/default-entry pointers and keep
+the actual links in the existing common-object caches. The binary writer already
+uses those caches. A regression checks source admission, encoded non-entity common
+fields and native reopening for both records. Its private variant gives both
+objects distinct ordered reactors and owned extension dictionaries, with a second
+ordinary child dictionary to prevent ownership inference from hiding a lost link.
+No owner reactor is synthesized, and the independent C comparison stays mandatory.
 The INSERT decoder retains the declared SEQEND handle, which the existing binary
 writer already reuses. An explicit wrong INSERT owner or SEQEND reactor,
 extension dictionary or XDATA refuses: this repair stores identity only, and

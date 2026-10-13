@@ -1480,6 +1480,175 @@ mod tests {
     }
 
     #[test]
+    fn dictionary_with_default_and_placeholder_keep_ordered_common_links() {
+        use acadrust::io::dwg::dwg_stream_readers::{
+            handle_reader::read_handles, object_reader::DwgObjectReader,
+        };
+
+        let original = include_str!("../tests/fixtures/autocad-multilayout-app.dxf");
+        let mut extended = original.replace("\r\n", "\n");
+        let dictionary = "0\nACDBDICTIONARYWDFLT\n5\nE\n102\n{ACAD_REACTORS\n330\nC\n102\n}\n330\nC\n";
+        let placeholder = "0\nACDBPLACEHOLDER\n5\nF\n102\n{ACAD_REACTORS\n330\nE\n102\n}\n330\nE\n";
+        assert_eq!(extended.matches(dictionary).count(), 1);
+        assert_eq!(extended.matches(placeholder).count(), 1);
+        extended = extended.replace(
+            dictionary,
+            "0\nACDBDICTIONARYWDFLT\n5\nE\n102\n{ACAD_REACTORS\n330\n62\n330\nF\n102\n}\n102\n{ACAD_XDICTIONARY\n360\n11100\n102\n}\n330\nC\n",
+        );
+        extended = extended.replace(
+            placeholder,
+            "0\nACDBPLACEHOLDER\n5\nF\n102\n{ACAD_REACTORS\n330\n62\n330\nE\n102\n}\n102\n{ACAD_XDICTIONARY\n360\n11200\n102\n}\n330\nE\n",
+        );
+        let entry = "3\nNormal\n350\nF\n100\nAcDbDictionaryWithDefault\n340\nF\n";
+        assert_eq!(extended.matches(entry).count(), 1);
+        extended = extended.replace(
+            entry,
+            "3\nNormal\n350\nF\n3\nOrdinaryChild\n350\n11000\n100\nAcDbDictionaryWithDefault\n340\nF\n",
+        );
+        let end = extended.rfind("0\nENDSEC\n0\nEOF").unwrap();
+        // Two E-owned dictionaries ensure the declared extension wins over any
+        // ownership-only inference. F owns its separate extension dictionary.
+        extended.insert_str(
+            end,
+            "0\nDICTIONARY\n5\n11000\n330\nE\n100\nAcDbDictionary\n281\n1\n0\nDICTIONARY\n5\n11100\n330\nE\n100\nAcDbDictionary\n281\n1\n0\nDICTIONARY\n5\n11200\n330\nF\n100\nAcDbDictionary\n281\n1\n",
+        );
+
+        for (owned_extensions, text) in [(false, original), (true, extended.as_str())] {
+            validation::validate(text).unwrap();
+            let mut source = DxfReader::from_reader(std::io::Cursor::new(text.as_bytes().to_vec()))
+                .unwrap()
+                .read()
+                .unwrap();
+            source_schema::capture(text).unwrap().verify(&mut source).unwrap();
+            assert_eq!(source.version, DxfVersion::AC1032);
+            let Some(ObjectType::DictionaryWithDefault(dictionary)) =
+                source.objects.get(&Handle::new(0xE))
+            else {
+                panic!("imported default dictionary missing")
+            };
+            assert_eq!(dictionary.owner, Handle::new(0xC));
+            assert_eq!(dictionary.default_handle, Handle::new(0xF));
+            assert_eq!(dictionary.duplicate_cloning, 1);
+            assert!(!dictionary.hard_owner);
+            assert_eq!(
+                dictionary.entries[0],
+                ("Normal".to_string(), Handle::new(0xF)),
+            );
+            if owned_extensions {
+                assert_eq!(
+                    dictionary.entries[1],
+                    ("OrdinaryChild".to_string(), Handle::new(0x11000)),
+                );
+            }
+            let Some(ObjectType::PlaceHolder(placeholder)) = source.objects.get(&Handle::new(0xF))
+            else {
+                panic!("imported placeholder missing")
+            };
+            assert_eq!(placeholder.owner, Handle::new(0xE));
+            let expected = [
+                (
+                    Handle::new(0xE),
+                    Handle::new(0xC),
+                    if owned_extensions {
+                        vec![Handle::new(0x62), Handle::new(0xF)]
+                    } else {
+                        vec![Handle::new(0xC)]
+                    },
+                    owned_extensions.then_some(Handle::new(0x11100)),
+                ),
+                (
+                    Handle::new(0xF),
+                    Handle::new(0xE),
+                    if owned_extensions {
+                        vec![Handle::new(0x62), Handle::new(0xE)]
+                    } else {
+                        vec![Handle::new(0xE)]
+                    },
+                    owned_extensions.then_some(Handle::new(0x11200)),
+                ),
+            ];
+            for (handle, _, reactors, extension) in &expected {
+                assert_eq!(source.object_reactors(*handle), *reactors);
+                assert_eq!(source.extension_dictionary_handle(*handle), *extension);
+            }
+            let snapshot = metadata_snapshot(&source).unwrap();
+            let mut output = std::io::Cursor::new(Vec::new());
+            DwgWriter::write_to_writer(&mut output, &source).unwrap();
+            let bytes = output.into_inner();
+            let mut raw = DwgReader::from_stream(std::io::Cursor::new(bytes.clone()));
+            let info = raw.read_file_header().unwrap();
+            let handles = read_handles(&raw.get_section_buffer("AcDb:Handles", &info).unwrap()).unwrap();
+            let objects = raw.get_section_buffer("AcDb:AcDbObjects", &info).unwrap();
+            let reader = DwgObjectReader::new(objects, DxfVersion::AC1032, handles).unwrap();
+            for (handle, owner, reactors, extension) in &expected {
+                let offset = usize::try_from(reader.offset_for(handle.value()).unwrap()).unwrap();
+                let (kind, mut data) = reader.read_record_at(offset).unwrap();
+                let common = reader.read_common_non_entity_data(&mut data, kind);
+                assert_eq!(common.common.handle, handle.value());
+                assert_eq!(common.owner_handle, owner.value());
+                assert_eq!(
+                    common.reactors,
+                    reactors.iter().map(|handle| handle.value()).collect::<Vec<_>>(),
+                );
+                assert_eq!(common.xdictionary_handle, extension.map(|handle| handle.value()));
+            }
+            let reopened = DwgReader::from_stream(std::io::Cursor::new(bytes)).read().unwrap();
+            equivalent(
+                &snapshot,
+                &metadata_snapshot(&reopened).unwrap(),
+                "default dictionary common links",
+            )
+            .unwrap();
+            verify_reopening(&source, &reopened).unwrap();
+            for (handle, _, reactors, extension) in &expected {
+                assert_eq!(reopened.object_reactors(*handle), *reactors);
+                assert_eq!(reopened.extension_dictionary_handle(*handle), *extension);
+            }
+            let Some(ObjectType::DictionaryWithDefault(dictionary)) =
+                reopened.objects.get(&Handle::new(0xE))
+            else {
+                panic!("reopened default dictionary missing")
+            };
+            assert_eq!(dictionary.owner, Handle::new(0xC));
+            assert_eq!(dictionary.default_handle, Handle::new(0xF));
+            assert_eq!(
+                dictionary.entries[0],
+                ("Normal".to_string(), Handle::new(0xF)),
+            );
+            if owned_extensions {
+                assert_eq!(
+                    reopened.object_owner(Handle::new(0x11000)),
+                    Some(Handle::new(0xE)),
+                );
+                assert_eq!(
+                    reopened.object_owner(Handle::new(0x11100)),
+                    Some(Handle::new(0xE)),
+                );
+                assert_eq!(
+                    reopened.object_owner(Handle::new(0x11200)),
+                    Some(Handle::new(0xF)),
+                );
+                let changed = text.replace(
+                    "{ACAD_REACTORS\n330\n62\n330\nF\n102\n}",
+                    "{ACAD_REACTORS\n330\nF\n330\n62\n102\n}",
+                );
+                assert_ne!(changed, text);
+                let mut corrupted = DxfReader::from_reader(std::io::Cursor::new(changed.as_bytes().to_vec()))
+                    .unwrap()
+                    .read()
+                    .unwrap();
+                source_schema::capture(&changed).unwrap().verify(&mut corrupted).unwrap();
+                assert!(equivalent(
+                    &snapshot,
+                    &metadata_snapshot(&corrupted).unwrap(),
+                    "reordered source reactors",
+                )
+                .is_err());
+            }
+        }
+    }
+
+    #[test]
     fn insert_seqend_identity_survives_decoding_and_encoded_parent_ownership() {
         use acadrust::entities::EntityType;
         use acadrust::io::dwg::dwg_stream_readers::{

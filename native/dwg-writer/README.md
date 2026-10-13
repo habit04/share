@@ -16,6 +16,8 @@ Paper-space BLOCK markers preserve full logical names while their BLOCK_HEADER n
 
 INSERT retains a declared SEQEND identity and its explicit parent owner. Reactor, extension-dictionary and XDATA payloads on a SEQEND remain unsupported, and incoming metadata pointers still refuse when that marker lacks a registered metadata identity. Identity retention does not certify those unsupported payloads.
 
+Default dictionaries and their placeholders retain explicitly declared ordered reactors and extension dictionaries through the existing common-object caches. Those links are parsed separately from owner and default-entry pointers. Native regressions inspect the encoded common fields, complete snapshots and reopened links; the independent C postflight remains required before saving.
+
 Run `cargo test --locked` after preparation. Release packaging must use the staged binary and matching integrity manifest; any signing or binary mutation must happen before the final manifest is generated.
 
 The standalone source archive already includes the verified patched `vendor/acadrust` tree. To rebuild its helper without the full application's Node tooling, install the pinned **Rust 1.99.0 GNU** toolchain with target `x86_64-pc-windows-gnu`, open a terminal in `native/dwg-writer`, and run:
