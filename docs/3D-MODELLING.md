@@ -223,5 +223,5 @@ a solids-only selection).
 - No Taper / Path / Direction (EXTRUDE), no Start angle / Object axis (REVOLVE), no 3P / 2P / Ttr
   circles or elliptical bases (CYLINDER / CONE), no rotation for Cube.
 - Booleans with a `mesh`-feature operand work, but their history cannot be re-evaluated later.
-- The construction plane is session state (not saved), and solids are not saved to files yet
+- The construction plane is session state (not saved); solids are saved in JCad DXF files (see 3D-FILE-FORMAT.md) but not in DWG
   (milestone 5).
