@@ -127,7 +127,7 @@ test('metadata candidate provenance requires the independent native oracle befor
   assert.ok(workflow.indexOf('Exact native VIEW FIELD and typed metadata oracle gate') < workflow.indexOf('Package corresponding source'));
   assert.match(workflow, /r2018-views-fields\.dwg.*r2018-views-fields\.expected\.json.*metadata-report\.json/);
   const provenance = readFileSync(new URL('./write-provenance.mjs', import.meta.url), 'utf8');
-  assert.match(provenance, /validateMetadataReport\(metadata, metadataExpected\)/);
+  assert.match(provenance, /validateMetadataReport\(metadata, metadataExpected, metadataOriginalDxf\)/);
   assert.match(provenance, /metadata\.factorySha256, fixture\.factorySha256/);
   assert.match(provenance, /metadata\.wasmSha256, fixture\.wasmSha256/);
 });

@@ -256,8 +256,8 @@ the actual local source date. These changes prevent the verified 32-bit underflo
 UTC 01:17:54 into a local creation date 42 days in the future.
 
 Header colors serialize method C0 as ByLayer 256 and C1 as ByBlock 0; method C3 recovers
-the packed ACI when the native index is 0/256. DIMSTYLE color
-groups 176–178 serialize ByLayer, ByBlock and indexed colors as ACI; other CMC groups retain
+the packed ACI when the native index is 0/256. Ordinary CMC ACI groups also serialize C0/C1
+as ByLayer/ByBlock. DIMSTYLE color groups 176–178 serialize ByLayer, ByBlock and indexed colors as ACI; other CMC groups retain
 their existing packed representation. The two omitted VISUALSTYLE property selectors now emit
 group176, restoring the independently exported 58-property sequence. Every additional native
 file has a complete pinned Git-blob preimage and repeated patch application is refused.
@@ -276,6 +276,18 @@ override count, ordered group93 override keys, then group102 `}`. Existing group
 byte flag. This extension records stored fields absent from the ordinary DXF projection; it is
 regenerated from decoded native fields on every read, and requires no APPID. It does not infer
 keys from style identities or copy retained wrapper text into the native proof.
+
+The independent source gate compares stored UTC dates, normalized host-local dates, header ACI
+colors, declared DIMSTYLE colors, all 58 VISUALSTYLE selectors and their complete property
+sequence, and every ordered TABLESTYLE format against the original AutoCAD DXF. It reports
+explicit ByBlock-zero DIMSTYLE defaults omitted by DXFOUT, host timezone offset, and the pinned
+VISUALSTYLE binary lighting representation 2 versus AutoCAD's DXF representation 3. Color
+comparison uses the exact RGB bytes when a C2 packed method and its ordinary DXF RGB represent
+the same color; its fallback ACI is retained in the report. Source-to-output postflight retains
+its strict native representation comparison. TABLESTYLE headers, counts, keys and style identities
+also match copied typed native getters. Offline provenance/adoption rechecks the captured scalar
+and style records against the local original DXF, including its committed SHA256; a verification
+boolean alone cannot satisfy these gates.
 
 ## License and primary sources
 

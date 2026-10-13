@@ -15,6 +15,20 @@ const fixture = readFileSync(new URL('./fixtures/interchange/r2018-views-fields.
 const group = (node: CadNode, code: number) => node.groups.find(([c]) => c === code)?.[1].trim();
 const opened = () => readDxf(fixture, { filePath: 'C:/Drawings/test-plan.dwg' });
 describe('independent AutoCAD metadata oracle through DXF', () => {
+  it('retains versioned native table-style properties and their typed owned slot through repeated saves', () => {
+    const pairs = tokenize(fixture), start = pairs.findIndex(pair => pair.code === 0 && pair.value.trim() === 'TABLESTYLE');
+    const marker = pairs.findIndex((pair, index) => index > start && pair.code === 100 && pair.value.trim() === 'AcDbTableStyle');
+    const metadata = [[102, '{JCAD_TABLESTYLE_NATIVE_V1'], [90, '0'], [91, '101'], [360, '0'], [92, '3'], [93, '1'], [93, '2'], [93, '3'], [102, '}']] as const;
+    pairs.splice(marker, 0, ...metadata.map(([code, value]) => ({ code, value })));
+    const source = readDxf(pairs.flatMap(pair => [String(pair.code), pair.value]).join('\r\n') + '\r\n');
+    const style = source.cadGraph!.nodes.find(node => node.type === 'TABLESTYLE')!;
+    const at = style.groups.findIndex(([code, value]) => code === 102 && value === '{JCAD_TABLESTYLE_NATIVE_V1');
+    expect(style.groups.slice(at, at + metadata.length)).toEqual(metadata);
+    expect(style.references!.find(ref => ref.groupIndex === at + 3)).toMatchObject({ kind: 'hard-owner', sourceHandle: '0' });
+    const once = writeDxf(source), back = readDxf(once), retained = back.cadGraph!.nodes.find(node => node.sourceHandle === style.sourceHandle)!;
+    expect(retained.groups).toEqual(style.groups);
+    expect(writeDxf(back)).toBe(once);
+  });
   it('keeps retained shade-plot and opaque layout properties in their original subclasses through page edits and repeated saves', () => {
     const raw = tokenize(readFileSync(new URL('./fixtures/interchange/r2000-layouts-titleblock.dxf', import.meta.url), 'utf8'));
     const start = raw.findIndex(pair => pair.code === 0 && pair.value.trim() === 'LAYOUT');

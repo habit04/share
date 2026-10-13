@@ -1,11 +1,100 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { metadataDxfRecords, validateMetadataOracle, validateMetadataReport, validateNativeClassProjection, validateNativeClassOracle } from './validate-metadata-fixture.mjs';
+import { metadataDxfRecords, validateMetadataOracle, validateMetadataReport, validateNativeClassProjection, validateNativeClassOracle, validateNativeSourceScalarOracle, validateNativeTableStyleOracle, copyNativeTableStyleInventory } from './validate-metadata-fixture.mjs';
 import { readFileSync } from 'node:fs';
 
 // Synthetic tokens exercise the validator boundary. They do not establish native
 // DWG fidelity or replace the independently authored CAD fixture acceptance gate.
 const group = (code, value) => ({ code, value: String(value) });
+
+function sourceProjection(timezoneOffsetMinutes = 300) {
+  const original = readFileSync(new URL('../../tests/fixtures/interchange/r2018-views-fields.dxf', import.meta.url), 'utf8');
+  const records = metadataDxfRecords(original).filter(record => record.type !== 'EOF');
+  const header = records.find(record => record.type === 'SECTION' && record.groups[0]?.value === 'HEADER');
+  const variable = name => header.groups[header.groups.findIndex(pair => pair.code === 9 && pair.value === name) + 1];
+  for (const [local, utc] of [['$TDCREATE', '$TDUCREATE'], ['$TDUPDATE', '$TDUUPDATE']]) variable(local).value = String(Number(variable(utc).value) - timezoneOffsetMinutes / 1440);
+  const map = records.find(record => record.type === 'CELLSTYLEMAP'), parts = []; let start;
+  map.groups.forEach((pair, index) => {
+    if (pair.code === 1 && pair.value === 'TABLEFORMAT_BEGIN') start = index;
+    if (pair.code === 309 && pair.value === 'CELLSTYLE_END') parts.push(map.groups.slice(start, index + 1));
+  });
+  const base = structuredClone(parts[0]), at = base.findIndex(pair => pair.code === 1 && pair.value === 'CELLSTYLE_BEGIN');
+  base[at + 1].value = '4'; base[at + 2].value = '2'; base[at + 3].value = 'Table';
+  const native = records.find(record => record.type === 'TABLESTYLE'), subclass = native.groups.findIndex(pair => pair.code === 100 && pair.value === 'AcDbTableStyle');
+  // Deliberately unrelated keys prove that the validator checks copied stored keys,
+  // rather than reconstructing them from the style id or display name.
+  const keys = [91, 42, 7];
+  native.groups = [...native.groups.slice(0, subclass), group(102, '{JCAD_TABLESTYLE_NATIVE_V1'), group(90, 0), group(91, 101), group(360, '0'), group(92, 3), ...keys.map(key => group(93, key)), group(102, '}'), group(100, 'AcDbTableStyle'), group(70, 0), group(3, 'Standard'), ...base, ...parts.flat()];
+  const inventory = [{ handle: '155', unknown_rc: 0, name: 'Standard', unknown_bl1: 0, unknown_bl2: 101, cellstyle: '0', numoverrides: 3, keys,
+    styles: [{ id: 4, type: 2, name: 'Table' }, { id: 1, type: 1, name: '_TITLE' }, { id: 2, type: 1, name: '_HEADER' }, { id: 3, type: 2, name: '_DATA' }] }];
+  return { original, records, metadata: { dxf: dxf(records) }, inventory, timezoneOffsetMinutes };
+}
+
+test('independent source scalar oracle checks UTC dates, normalized host dates, colors and all 58 visual-style selectors', () => {
+  for (const offset of [0, 300, -345]) {
+    const fixture = sourceProjection(offset), report = validateNativeSourceScalarOracle(fixture.metadata, fixture.original, offset);
+    assert.equal(report.dateValues.length, 6); assert.equal(report.visualStyles.length, 24);
+    assert.ok(report.visualStyles.every(style => style.selectors === 58));
+  }
+  const fixture = sourceProjection();
+  const style = fixture.records.find(record => record.type === 'VISUALSTYLE'), lighting = style.groups.find(pair => pair.code === 177);
+  lighting.value = '2'; fixture.metadata.dxf = dxf(fixture.records);
+  assert.equal(validateNativeSourceScalarOracle(fixture.metadata, fixture.original, 300).lightingRepresentations.length, 1);
+  lighting.value = '4'; fixture.metadata.dxf = dxf(fixture.records);
+  assert.throws(() => validateNativeSourceScalarOracle(fixture.metadata, fixture.original, 300), /lighting representation/);
+});
+
+test('independent source scalar oracle refuses date units/underflow, ACI loss and omitted or changed visual properties', () => {
+  for (const mutation of ['time-units', 'local-underflow', 'header-color', 'selector', 'boolean', 'aci', 'rgb']) {
+    const fixture = sourceProjection(), header = fixture.records.find(record => record.type === 'SECTION' && record.groups[0]?.value === 'HEADER');
+    const variable = name => header.groups[header.groups.findIndex(pair => pair.code === 9 && pair.value === name) + 1];
+    const style = fixture.records.find(record => record.type === 'VISUALSTYLE');
+    if (mutation === 'time-units') variable('$TDUCREATE').value = '2461326.046740000';
+    else if (mutation === 'local-underflow') variable('$TDCREATE').value = '2461368.816412960';
+    else if (mutation === 'header-color') variable('$CECOLOR').value = '0';
+    else if (mutation === 'selector') style.groups.splice(style.groups.findIndex(pair => pair.code === 176), 1);
+    else if (mutation === 'boolean') style.groups.find(pair => pair.code === 290).value = '2';
+    else if (mutation === 'aci') style.groups.filter(pair => pair.code === 62).at(-1).value = '0';
+    else style.groups.find(pair => pair.code === 420).value = '123456';
+    fixture.metadata.dxf = dxf(fixture.records);
+    assert.throws(() => validateNativeSourceScalarOracle(fixture.metadata, fixture.original, 300), undefined, mutation);
+  }
+});
+
+test('independent TABLESTYLE oracle requires every ordered format and exact copied header/key values', () => {
+  const fixture = sourceProjection();
+  assert.equal(validateNativeTableStyleOracle(fixture.metadata, fixture.original, fixture.inventory)[0].styles.length, 4);
+  for (const mutation of ['hidden-override', 'reversed', 'key', 'header', 'text-height', 'name', 'count']) {
+    const fixture = sourceProjection(), record = fixture.records.find(record => record.type === 'TABLESTYLE');
+    const begin = record.groups.findIndex(pair => pair.code === 100 && pair.value === 'AcDbTableStyle');
+    if (mutation === 'hidden-override') {
+      const last = record.groups.findLastIndex(pair => pair.code === 1 && pair.value === 'TABLEFORMAT_BEGIN'); record.groups.splice(last);
+    } else if (mutation === 'reversed') fixture.inventory[0].styles.reverse();
+    else if (mutation === 'key') record.groups.find(pair => pair.code === 93).value = '1';
+    else if (mutation === 'header') record.groups.slice(0, begin).find(pair => pair.code === 91).value = '102';
+    else if (mutation === 'text-height') record.groups.findLast(pair => pair.code === 144).value = '0.19';
+    else if (mutation === 'name') record.groups.findLast(pair => pair.code === 300).value = '_CHANGED';
+    else record.groups.slice(0, begin).find(pair => pair.code === 92).value = '2';
+    fixture.metadata.dxf = dxf(fixture.records);
+    assert.throws(() => validateNativeTableStyleOracle(fixture.metadata, fixture.original, fixture.inventory), undefined, mutation);
+  }
+});
+
+test('typed TABLESTYLE copy bounds counts, pointer arithmetic and copied fields without persisting native pointers', () => {
+  const fields = { numoverrides: 3, overrides: 10000, cellstyle: 0, unknown_rc: 255, name: 'Standard', unknown_bl1: 0, unknown_bl2: 101 };
+  const module = { dwg_get_num_objects: () => 1, dwg_get_object: () => 1000, dwg_obj_get_handle_value: () => 0x155n,
+    dwg_object_to_object_tio: () => 2000, dwg_dynapi_subclass_size: () => 128, dwg_dynapi_entity_field_offset: () => 32,
+    dwg_dynapi_entity_value: (_pointer, name) => ({ success: true, data: fields[name] }),
+    dwg_dynapi_subclass_value: (pointer, _schema, name) => ({ success: true, data: name === 'name' ? 'Copied' : name === 'key' ? pointer - 10000 + 9 : 1 }) };
+  const inventory = copyNativeTableStyleInventory(module, 3000, { objects: [{ handle: '155', dxfType: 'TABLESTYLE' }] });
+  assert.deepEqual(inventory[0].keys, [9, 137, 265]); assert.equal(inventory[0].unknown_rc, -1);
+  assert.equal(inventory[0].styles.length, 4); assert.ok(!JSON.stringify(inventory).includes('10000'));
+  for (const change of [{ numoverrides: 65 }, { overrides: 0 }, { overrides: 0xfffffff0 }, { unknown_bl2: -1 }]) {
+    const original = { ...fields }; Object.assign(fields, change);
+    assert.throws(() => copyNativeTableStyleInventory(module, 3000, { objects: [{ handle: '155', dxfType: 'TABLESTYLE' }] }));
+    Object.assign(fields, original);
+  }
+});
 
 test('class projection checks copied native builtin identities, application names and schema flags', () => {
   const inventory = [{ dxfname: 'ACDBPLACEHOLDER', cppname: 'AcDbPlaceHolder', appname: 'Oracle Δ App', proxyflag: 1024, is_zombie: 0, item_class_id: 0x1f3, num_instances: 1 },
@@ -396,24 +485,35 @@ test('report acceptance requires an independent original class proof whenever th
     const value = code => record.groups.find(group => group.code === code)?.value.trim();
     return { dxfname: value(1), cppname: value(2), appname: value(3), proxyflag: Number(value(90)), is_zombie: Number(value(280)), item_class_id: Number(value(281)) ? 0x1f2 : 0x1f3, num_instances: Number(value(91)) };
   });
-  const valid = { ...report, classDefinitions: definitions, nativeClassCount: inventory.length, classInventory: inventory, classOracleVerified: true, sourceDxfSha256: expectedClasses.source.dxfSha256, declaredClassCount: definitions.length };
-  assert.doesNotThrow(() => validateMetadataReport(valid, expected));
-  for (const key of ['classOracleVerified', 'sourceDxfSha256', 'declaredClassCount']) {
-    const missing = { ...valid }; delete missing[key]; assert.throws(() => validateMetadataReport(missing, expected), `Missing ${key}`);
+  const projection = sourceProjection(), scalar = validateNativeSourceScalarOracle(projection.metadata, projection.original, 300);
+  const valid = { ...report, classDefinitions: definitions, nativeClassCount: inventory.length, classInventory: inventory, classOracleVerified: true, sourceDxfSha256: expectedClasses.source.dxfSha256, declaredClassCount: definitions.length,
+    sourceScalarOracleVerified: true, sourceTableStyleOracleVerified: true, tableStyleInventory: projection.inventory,
+    sourceOracleRecords: projection.records.filter(record => ['DIMSTYLE', 'VISUALSTYLE', 'TABLESTYLE'].includes(record.type) || record.type === 'SECTION' && record.groups[0]?.value === 'HEADER'),
+    sourceScalarSummary: { ...scalar, visualStyles: scalar.visualStyles.map(({ handle, selectors }) => ({ handle, selectors })) },
+    sourceTableStyleSummary: validateNativeTableStyleOracle(projection.metadata, projection.original, projection.inventory) };
+  assert.doesNotThrow(() => validateMetadataReport(valid, expected, projection.original));
+  assert.throws(() => validateMetadataReport(valid, expected), /original source DXF is required/);
+  for (const key of ['classOracleVerified', 'sourceDxfSha256', 'declaredClassCount', 'sourceScalarOracleVerified', 'sourceTableStyleOracleVerified', 'sourceOracleRecords', 'sourceScalarSummary', 'tableStyleInventory', 'sourceTableStyleSummary']) {
+    const missing = { ...valid }; delete missing[key]; assert.throws(() => validateMetadataReport(missing, expected, projection.original), `Missing ${key}`);
   }
   const changed = structuredClone(valid), cls = changed.classInventory.find(cls => cls.dxfname === 'FIELD');
   cls.proxyflag = 0;
   changed.classDefinitions.find(record => record.groups.some(group => group.code === 1 && group.value === 'FIELD')).groups.find(group => group.code === 90).value = '0';
-  assert.throws(() => validateMetadataReport(changed, expected), /Independent AutoCAD class FIELD group90 changed/);
+  assert.throws(() => validateMetadataReport(changed, expected, projection.original), /Independent AutoCAD class FIELD group90 changed/);
   const cached = structuredClone(valid);
   cached.classInventory.find(cls => cls.dxfname === 'CELLSTYLEMAP').num_instances = 0;
   cached.classDefinitions.find(record => record.groups.some(group => group.code === 1 && group.value === 'CELLSTYLEMAP')).groups.find(group => group.code === 91).value = '0';
-  assert.throws(() => validateMetadataReport(cached, expected), /counter differences were not reported accurately/);
+  assert.throws(() => validateMetadataReport(cached, expected, projection.original), /counter differences were not reported accurately/);
   cached.classCountDifferences = [{ dxfname: 'CELLSTYLEMAP', nativeCount: 0, sourceDxfCount: 1 }];
-  assert.doesNotThrow(() => validateMetadataReport(cached, expected));
-  assert.throws(() => validateMetadataReport({ ...cached, classCountDifferences: [] }, expected), /counter differences were not reported accurately/);
+  assert.doesNotThrow(() => validateMetadataReport(cached, expected, projection.original));
+  assert.throws(() => validateMetadataReport({ ...cached, classCountDifferences: [] }, expected, projection.original), /counter differences were not reported accurately/);
   const dishonest = structuredClone(cached); dishonest.classCountDifferences[0].sourceDxfCount = 0;
-  assert.throws(() => validateMetadataReport(dishonest, expected), /counter differences were not reported accurately/);
+  assert.throws(() => validateMetadataReport(dishonest, expected, projection.original), /counter differences were not reported accurately/);
+  const dishonestScalar = structuredClone(valid); dishonestScalar.sourceScalarSummary.colorValues[0].actual = 0;
+  assert.throws(() => validateMetadataReport(dishonestScalar, expected, projection.original), /scalar evidence was not reported accurately/);
+  const changedCaptured = structuredClone(valid), visual = changedCaptured.sourceOracleRecords.find(record => record.type === 'VISUALSTYLE');
+  visual.groups.find(pair => pair.code === 290).value = '2';
+  assert.throws(() => validateMetadataReport(changedCaptured, expected, projection.original), /Metadata group 290 changed/);
 });
 
 test('report acceptance refuses missing, duplicate, malformed and inconsistent inventory identities', () => {

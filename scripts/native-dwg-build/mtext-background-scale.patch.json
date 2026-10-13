@@ -288,6 +288,11 @@
           "count": 1
         },
         {
+          "before": "      if (!opt || color->index || color->method == 0xc1)\n        {\n          VALUE_RSd (color->index, dxf);\n        }",
+          "after": "      if (color->method == 0xc0 || color->method == 0xc1)\n        {\n          VALUE_RS (color->method == 0xc0 ? 256 : 0, dxf);\n          return;\n        }\n      if (!opt || color->index)\n        {\n          VALUE_RSd (color->index, dxf);\n        }",
+          "count": 1
+        },
+        {
           "before": "      if (dxf >= 90)\n        {\n          VALUE_RLd (color->rgb, dxf);\n          return;\n        }",
           "after": "      /* Only DIMSTYLE uses CMC group176..178. Its ACI methods are indices;\n         VISUALSTYLE group91/93 and truecolor methods retain packed storage. */\n      if (dxf >= 176 && dxf <= 178\n          && (color->method == 0xc0 || color->method == 0xc1\n              || color->method == 0xc3))\n        {\n          const int aci = color->method == 0xc0 ? 256\n            : color->method == 0xc1 ? 0\n            : abs (color->index) > 0 && abs (color->index) < 256\n              ? color->index : color->rgb & 0xff;\n          VALUE_RS (aci, dxf);\n          return;\n        }\n      if (dxf >= 90)\n        {\n          VALUE_RLd (color->rgb, dxf);\n          return;\n        }",
           "count": 1
@@ -390,7 +395,7 @@
         },
         {
           "before": "DWG_OBJECT (TABLESTYLE)\n  HANDLE_UNKNOWN_BITS;\n  SUBCLASS (AcDbTableStyle)",
-          "after": "DWG_OBJECT (TABLESTYLE)\n  HANDLE_UNKNOWN_BITS;\n  DXF {\n    if (dwg->header.version > R_2007) {\n      if (_obj->numoverrides > 64 || (_obj->numoverrides && !_obj->overrides))\n        return DWG_ERR_VALUEOUTOFBOUNDS;\n      /* Application-defined native interchange data; regenerate from decoded DWG fields. */\n      VALUE_TFF (\"{JCAD_TABLESTYLE_NATIVE_V1\", 102);\n      VALUE_BL (_obj->unknown_bl1, 90);\n      VALUE_BL (_obj->unknown_bl2, 91);\n      FIELD_HANDLE (cellstyle, DWG_HDL_HARDOWN, 360);\n      VALUE_BL (_obj->numoverrides, 92);\n      for (BITCODE_BL jcad_override = 0; jcad_override < _obj->numoverrides; jcad_override++)\n        VALUE_BL (_obj->overrides[jcad_override].key, 93);\n      VALUE_TFF (\"}\", 102);\n    }\n  }\n  SUBCLASS (AcDbTableStyle)",
+          "after": "DWG_OBJECT (TABLESTYLE)\n  HANDLE_UNKNOWN_BITS;\n  DXF {\n    if (dwg->header.version > R_2007) {\n      if (_obj->numoverrides > 64 || (_obj->numoverrides && !_obj->overrides))\n        return DWG_ERR_VALUEOUTOFBOUNDS;\n      /* Application-defined native interchange data; regenerate from decoded DWG fields. */\n      VALUE_TFF (\"{JCAD_TABLESTYLE_NATIVE_V1\", 102);\n      VALUE_BL (_obj->unknown_bl1, 90);\n      VALUE_BL (_obj->unknown_bl2, 91);\n      FIELD_HANDLE (cellstyle, DWG_HDL_HARDOWN, 360);\n      VALUE_BL (_obj->numoverrides, 92);\n      for (BITCODE_BL jcad_override = 0; jcad_override < _obj->numoverrides; jcad_override++) {\n        VALUE_BL (_obj->overrides[jcad_override].key, 93);\n      }\n      VALUE_TFF (\"}\", 102);\n    }\n  }\n  SUBCLASS (AcDbTableStyle)",
           "count": 1
         },
         {
