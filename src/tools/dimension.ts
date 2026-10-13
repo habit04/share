@@ -344,7 +344,7 @@ function linearAxes(d: DimensionEntity): { u: Point; n: Point } {
 export function chainDimension(base: DimensionEntity, mode: 'baseline' | 'continue', from: Point, p: Point, style: DimStyle = base.style, id = newId()): DimensionEntity {
   const r = resolveDimStyle(style);
   const spacing = r.baselineSpacing * (r.scale || 1);
-  const clean = { text: undefined, textPosition: undefined, textRotation: undefined };
+  const clean = { text: undefined, textPosition: undefined, textRotation: undefined, ...(style !== base.style ? { styleOverrides: undefined } : {}) };
   if (base.kind === 'angular' && base.center) {
     const c = base.center;
     const radius = g.dist(c, base.linePoint);
@@ -671,7 +671,7 @@ export function dimstyleCommandTool(arg?: string): Tool {
         const ids = yield* select(ctx);
         const set = new Set(ids);
         const dims = doc.entities.filter((e): e is DimensionEntity => set.has(e.id) && e.type === 'dimension');
-        doc.replaceEntities(dims.map((d) => ({ ...d, style: current })));
+        doc.replaceEntities(dims.map((d) => ({ ...d, style: current, styleOverrides: undefined })));
         ctx.log(`${dims.length} dimension(s) updated to style ${current.name}.`);
         return;
       }

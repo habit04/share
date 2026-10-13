@@ -1053,6 +1053,7 @@ export function blockTransform(e: Entity, tf: (p: Point) => Point, rotation: num
         textPosition: e.textPosition ? tf(e.textPosition) : e.textPosition,
         rotation: e.kind === 'linear' ? ang(e.rotation) : e.rotation + rotation,
         style: k === 1 ? e.style : { ...e.style, scale: e.style.scale * k },
+        ...(k !== 1 && e.styleOverrides !== undefined ? { styleOverrides: { ...e.styleOverrides, DIMSCALE: e.style.scale * k } } : {}),
       };
     case 'spline':
     case 'hatch':
@@ -1441,6 +1442,7 @@ export function similarityTransform(e: Entity, tf: (p: Point) => Point, rotation
         textPosition: e.textPosition ? tf(e.textPosition) : e.textPosition,
         rotation: e.rotation + rotation,
         style: k === 1 ? e.style : { ...e.style, scale: e.style.scale * k },
+        ...(k !== 1 && e.styleOverrides !== undefined ? { styleOverrides: { ...e.styleOverrides, DIMSCALE: e.style.scale * k } } : {}),
       };
     case 'spline':
     case 'hatch':

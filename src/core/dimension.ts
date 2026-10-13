@@ -271,6 +271,13 @@ export interface DimensionEntity extends EntityBase {
   /** DIMEDIT Oblique: absolute angle of the extension lines of a linear/aligned dimension (radians). DXF group 52. */
   readonly oblique?: number;
   readonly style: DimStyle;
+  /** Supported per-entity DIM* override values, including values equal to the named style.
+   * Absent on legacy drawings, whose overrides are inferred from effective style differences.
+   * TOLERANCE / ALTPLACEMENT identify the supported JCAD_DIMSTYLE extension fields.
+   * Text-style handles are resolved to names; native flag values remain distinct even when
+   * the effective style maps more than one flag combination to the same display mode.
+   */
+  readonly styleOverrides?: Readonly<Record<string, number | string>>;
 }
 
 export type DimPart = LineEntity | PolylineEntity | TextEntity | ArcEntity | CircleEntity;
@@ -928,16 +935,19 @@ function* drawingDimensions(state: DrawingState): Iterable<DimensionEntity> {
 }
 
 /** Retain differences from the previous named style while replacing inherited values. */
-function redefinedDimStyle(effective: DimStyle, previous: ResolvedDimStyle, replacement: DimStyle): DimStyle {
-  const resolved = resolveDimStyle(effective);
-  const oldValues = previous as unknown as Record<string, unknown>;
-  const values = resolved as unknown as Record<string, unknown>;
-  const raw = effective as unknown as Record<string, unknown>;
-  const overrides: Record<string, unknown> = {};
-  for (const key of new Set([...Object.keys(oldValues), ...Object.keys(values)])) {
-    if (key !== 'name' && values[key] !== oldValues[key]) overrides[key] = raw[key] ?? values[key];
+function redefinedDimStyle(replacement: DimStyle, overrides: Readonly<Record<string, number | string>>): DimStyle {
+  const pairs: Array<[number, number | string]> = [];
+  for (const [name, value] of Object.entries(overrides)) {
+    const code = dimStyleOverrideCode(name);
+    if (code !== undefined && code !== 340) pairs.push([code, value]);
   }
-  return Object.keys(overrides).length ? { ...replacement, ...overrides } : replacement;
+  let style = pairs.length ? dimStyleFromRecordPairs(replacement.name, pairs, replacement) : replacement;
+  for (const [name, value] of Object.entries(overrides)) {
+    if (name === 'DIMTXSTY' || name === 'DIMBLK1' || name === 'DIMBLK2') style = withDimVar(style, name, value);
+    else if (name === 'TOLERANCE') style = { ...style, tolerance: value as DimTolerance };
+    else if (name === 'ALTPLACEMENT') style = { ...style, altPlacement: value as 'after' | 'below' };
+  }
+  return style;
 }
 
 /**
@@ -955,15 +965,16 @@ export function withDimStyle(state: DrawingState, style: DimStyle, updateDimensi
     ?? (key === 'STANDARD' ? STANDARD_DIMSTYLE : state.header?.dimStyle.name.toUpperCase() === key ? state.header.dimStyle : undefined);
   // If the previous named record is unavailable, differences from the new record remain
   // overrides: registering a missing style must not erase the dimension's existing appearance.
-  const previous = resolveDimStyle(inherited ?? style);
+  const previous = inherited ?? style;
   for (const k of Object.keys(styles)) if (k.toUpperCase() === style.name.toUpperCase()) delete styles[k];
   styles[style.name] = style;
   const update = (list: readonly Entity[]): readonly Entity[] => {
     let changed = false;
     const entities = list.map((e) => {
-      if (e.type !== 'dimension' || e.style.name.toUpperCase() !== key || e.style === style) return e;
+      if (e.type !== 'dimension' || e.style.name.toUpperCase() !== key) return e;
       changed = true;
-      return { ...e, style: redefinedDimStyle(e.style, previous, style) };
+      const overrides = dimensionStyleOverrides(e.style, previous, e.styleOverrides);
+      return { ...e, style: redefinedDimStyle(style, overrides), styleOverrides: overrides };
     });
     return changed ? entities : list;
   };
@@ -1116,6 +1127,53 @@ export const DIM_VARIABLES: readonly DimVar[] = [
   { name: 'DIMBLK1', key: 'arrow', headerCode: 1, description: 'First arrow block', kind: 'string' },
   { name: 'DIMBLK2', key: 'arrow2', headerCode: 1, description: 'Second arrow block', kind: 'string' },
 ];
+
+/** Supported ACAD DSTYLE codes; object handles are resolved by the DXF codec, never retained here. */
+const DERIVED_OVERRIDE_CODES: Readonly<Record<string, number>> = { DIMTOL: 71, DIMLIM: 72, DIMTIH: 73, DIMTOH: 74, DIMZIN: 78, DIMTXSTY: 340 };
+
+export function dimStyleOverrideCode(name: string): number | undefined {
+  return DERIVED_OVERRIDE_CODES[name] ?? DIM_VARIABLES.find((v) => v.name === name)?.code;
+}
+
+/** Supported native variable corresponding to a DSTYLE code, or undefined for unmodeled data. */
+export function dimStyleOverrideName(code: number): string | undefined {
+  return Object.entries(DERIVED_OVERRIDE_CODES).find(([, value]) => value === code)?.[0]
+    ?? DIM_VARIABLES.find((v) => v.code === code)?.name;
+}
+
+/** Retain known native values; detect ordinary immutable style edits against their replayed values. */
+export function dimensionStyleOverrides(effective: DimStyle, inherited: DimStyle, known?: Readonly<Record<string, number | string>>): Record<string, number | string> {
+  const supported = (name: string) => dimStyleOverrideCode(name) !== undefined || ['DIMBLK1', 'DIMBLK2', 'TOLERANCE', 'ALTPLACEMENT'].includes(name);
+  if (known !== undefined) {
+    const overrides = Object.fromEntries(Object.entries(known).filter(([name, value]) => supported(name) && (typeof value === 'string' || Number.isFinite(value))));
+    const expected = resolveDimStyle(redefinedDimStyle(inherited, overrides));
+    const current = resolveDimStyle(effective);
+    for (const variable of DIM_VARIABLES) {
+      if (supported(variable.name) && current[variable.key as keyof ResolvedDimStyle] !== expected[variable.key as keyof ResolvedDimStyle]) overrides[variable.name] = dimVarValue(effective, variable.name);
+    }
+    // These native flag groups share one display property. A direct property edit must
+    // replace every alias, while an unchanged normalized mode keeps its original native flags.
+    if (current.textAlign !== expected.textAlign) {
+      overrides.DIMTIH = dimVarValue(effective, 'DIMTIH');
+      overrides.DIMTOH = dimVarValue(effective, 'DIMTOH');
+    }
+    if (current.tolerance !== expected.tolerance) {
+      delete overrides.TOLERANCE;
+      overrides.DIMTOL = dimVarValue(effective, 'DIMTOL');
+      overrides.DIMLIM = dimVarValue(effective, 'DIMLIM');
+      if (current.tolerance === 'basic' || expected.tolerance === 'basic') overrides.TOLERANCE = current.tolerance;
+    }
+    if (current.suppressLeadingZeros !== expected.suppressLeadingZeros || current.suppressTrailingZeros !== expected.suppressTrailingZeros) overrides.DIMZIN = dimVarValue(effective, 'DIMZIN');
+    if (current.altPlacement !== expected.altPlacement) overrides.ALTPLACEMENT = current.altPlacement;
+    return overrides;
+  }
+  const overrides: Record<string, number | string> = {};
+  for (const change of diffDimStyles(effective, inherited)) if (supported(change.name)) overrides[change.name] = change.a;
+  const current = resolveDimStyle(effective), previous = resolveDimStyle(inherited);
+  if (current.tolerance !== previous.tolerance && (current.tolerance === 'basic' || previous.tolerance === 'basic')) overrides.TOLERANCE = current.tolerance;
+  if (current.altPlacement !== previous.altPlacement) overrides.ALTPLACEMENT = current.altPlacement;
+  return overrides;
+}
 
 /** DIMBLK block name for an arrow type ('' = closed filled). */
 export function arrowBlockName(a: DimArrow): string {
