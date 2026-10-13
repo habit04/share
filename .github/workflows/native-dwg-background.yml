@@ -5,17 +5,14 @@ on:
   workflow_dispatch:
   push:
     branches: [codex/cad-fidelity-five, codex/windows-dwg-metadata-reference-graph]
+    # Fixture/tooling-only updates are checked against the accepted runtime in CI.
+    # Automatically rebuild checked-source/toolchain changes; workflow-only build
+    # changes remain available through explicit manual dispatch.
     paths:
-      - .github/workflows/native-dwg-background.yml
-      - scripts/native-dwg-build/**
-      - tests/fixtures/interchange/r2018-mtext-background.dwg
-      - tests/fixtures/interchange/r2018-mtext-background.expected.json
-      - tests/fixtures/interchange/r2018-portable-appearance.dwg
-      - tests/fixtures/interchange/r2018-portable-appearance.expected.json
-      - tests/fixtures/interchange/r2018-native-shipping.dwg
-      - tests/fixtures/interchange/r2018-native-shipping.expected.json
-      - tests/fixtures/interchange/r2018-views-fields.dwg
-      - tests/fixtures/interchange/r2018-views-fields.expected.json
+      - scripts/native-dwg-build/mtext-background-scale.patch.json
+      - scripts/native-dwg-build/pins.json
+      - scripts/native-dwg-build/patch-source.mjs
+      - scripts/native-dwg-build/declaration-tools/**
 
 permissions:
   contents: read

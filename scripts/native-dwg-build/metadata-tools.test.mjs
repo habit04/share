@@ -1,10 +1,24 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { metadataDxfRecords, validateMetadataOracle, validateMetadataReport } from './validate-metadata-fixture.mjs';
+import { metadataDxfRecords, validateMetadataOracle, validateMetadataReport, validateNativeClassProjection } from './validate-metadata-fixture.mjs';
 
 // Synthetic tokens exercise the validator boundary. They do not establish native
 // DWG fidelity or replace the independently authored CAD fixture acceptance gate.
 const group = (code, value) => ({ code, value: String(value) });
+
+test('class projection checks copied native builtin identities, application names and schema flags', () => {
+  const inventory = [{ dxfname: 'ACDBPLACEHOLDER', cppname: 'AcDbPlaceHolder', appname: 'Oracle Δ App', proxyflag: 1024, is_zombie: 0, item_class_id: 0x1f3, num_instances: 1 },
+    { dxfname: 'LAYOUT', cppname: 'AcDbLayout', appname: 'ObjectDBX Classes', proxyflag: 0, is_zombie: 0, item_class_id: 0x1f3, num_instances: 2 }];
+  const records = inventory.map(cls => ({ type: 'CLASS', groups: [group(1, cls.dxfname), group(2, cls.cppname), group(3, cls.appname), group(90, cls.proxyflag), group(91, cls.num_instances), group(280, cls.is_zombie), group(281, 0)] }));
+  assert.equal(validateNativeClassProjection({ dxf: dxf(records) }, inventory).length, 2);
+  assert.throws(() => validateNativeClassProjection({ dxf: dxf(records.slice(1)) }, inventory), /omitted or added/);
+  const changed = structuredClone(records); changed[0].groups.find(pair => pair.code === 3).value = 'ObjectDBX Classes';
+  assert.throws(() => validateNativeClassProjection({ dxf: dxf(changed) }, inventory), /group3 changed/);
+  changed[0] = structuredClone(records[0]); changed[0].groups.find(pair => pair.code === 90).value = '0';
+  assert.throws(() => validateNativeClassProjection({ dxf: dxf(changed) }, inventory), /group90 changed/);
+  assert.throws(() => validateNativeClassProjection({ dxf: dxf(records) }, [{ ...inventory[0], item_class_id: 0 }, inventory[1]]), /discriminator/);
+  assert.throws(() => validateNativeClassProjection({ dxf: dxf(records) }, [{ ...inventory[0], appname: 'x\nCLASS' }, inventory[1]]), /name/);
+});
 const record = (type, handle, groups) => ({ type, handle, groups: [group(5, handle), ...groups] });
 const mockRecords = () => [
   record('VIEW', 'A1', [
@@ -226,6 +240,23 @@ test('ordinary XRECORD strings preserve Unicode and meaningful surrounding space
     entry.groups.find(({ code }) => code === 1).value = 'raw Δ 雷';
   });
   assert.throws(() => validateMetadataOracle(fixture.metadata, fixture.expected), /Metadata string group 1 changed/);
+});
+
+test('opaque XRECORD literals retain Unicode, DXF-looking escapes and JSON bytes exactly', () => {
+  const fixture = mockFixture();
+  const literal = 'Δ雷 literal \\U+0041 {"escaped":"\\\\U+0041","unicode":"Δ雷"}';
+  changeRecord(fixture, 'XRECORD', (entry) => {
+    entry.groups.find(({ code }) => code === 1).value = literal;
+  });
+  fixture.expected.records = structuredClone(fixture.records);
+  fixture.expected.opaqueStrings = [{ handle: 'C3', code: 1, value: literal }];
+  assert.doesNotThrow(() => validateMetadataOracle(fixture.metadata, fixture.expected));
+  changeRecord(fixture, 'XRECORD', (entry) => {
+    entry.groups.find(({ code }) => code === 1).value = literal.replace('literal \\U+0041', 'literal A');
+  });
+  const { opaqueStrings: _opaque, ...ordinaryOracle } = fixture.expected;
+  assert.doesNotThrow(() => validateMetadataOracle(fixture.metadata, ordinaryOracle), 'Ordinary Unicode normalization alone cannot certify opaque literal content.');
+  assert.throws(() => validateMetadataOracle(fixture.metadata, fixture.expected), /Opaque metadata string changed/);
 });
 
 test('native warning bits, write errors and incomplete projection are refused before certification', () => {

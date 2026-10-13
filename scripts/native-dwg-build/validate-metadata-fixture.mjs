@@ -33,6 +33,42 @@ export function metadataDxfRecords(text) {
   return records;
 }
 
+/** Verify the projected definitions against copied native class values, without class pointers. */
+export function validateNativeClassProjection(metadata, inventory) {
+  assert.ok(Array.isArray(inventory) && inventory.length <= 100000, 'Invalid native class inventory budget.');
+  const definitions = metadataDxfRecords(metadata.dxf).filter(record => record.type === 'CLASS');
+  assert.equal(definitions.length, inventory.length, 'The projection omitted or added native class definitions.');
+  const byName = new Map();
+  for (const definition of definitions) {
+    const names = definition.groups.filter(group => group.code === 1);
+    assert.equal(names.length, 1, 'A native class must expose one identity.');
+    const name = unicode(names[0].value).trim().toUpperCase();
+    assert.ok(name && !byName.has(name), 'Duplicate projected native class identity.');
+    byName.set(name, definition);
+  }
+  const identities = new Set();
+  for (const cls of inventory) {
+    for (const key of ['dxfname', 'cppname', 'appname']) assert.ok(typeof cls?.[key] === 'string' && cls[key].length <= 1024 && !/[\r\n\0]/.test(cls[key]), 'Invalid copied native class name.');
+    assert.ok(cls.dxfname && cls.cppname, 'A native class has incomplete names.');
+    for (const [key, maximum] of [['proxyflag', 65535], ['is_zombie', 1], ['num_instances', 0xffffffff]]) assert.ok(Number.isSafeInteger(cls[key]) && cls[key] >= 0 && cls[key] <= maximum, 'Invalid copied native class flags or count.');
+    assert.ok([0x1f2, 0x1f3].includes(cls.item_class_id), 'Invalid native class entity/object discriminator.');
+    // DATATABLE has a specified native-to-DXF class-name spelling; no application value is replaced.
+    const name = (cls.dxfname === 'DATATABLE' ? 'ACDBDATATABLE' : cls.dxfname).toUpperCase();
+    assert.ok(!identities.has(name), 'Duplicate native class inventory identity.'); identities.add(name);
+    const definition = byName.get(name); assert.ok(definition, `Native class ${name} is absent from the projection.`);
+    for (const [code, wanted] of [[1, name], [2, cls.cppname], [3, cls.appname], [90, cls.proxyflag], [280, cls.is_zombie], [281, cls.item_class_id === 0x1f2 ? 1 : 0]]) {
+      const groups = definition.groups.filter(group => group.code === code);
+      assert.equal(groups.length, 1, `Native class ${name} group${code} is absent or duplicated.`);
+      if ([90, 280, 281].includes(code)) assert.equal(Number(groups[0].value), wanted, `Native class ${name} group${code} changed.`);
+      else assert.equal(unicode(groups[0].value), wanted, `Native class ${name} group${code} changed.`);
+    }
+    const counts = definition.groups.filter(group => group.code === 91);
+    assert.ok(counts.length <= 1, 'Duplicate native class instance count.');
+    if (counts.length) assert.equal(Number(counts[0].value), cls.num_instances, 'Native class instance count changed in projection.');
+  }
+  return definitions;
+}
+
 function compareValue(code, actual, wanted) {
   if (code >= 160 && code <= 169) {
     assert.match(String(actual).trim(), /^-?\d+$/);
@@ -79,6 +115,20 @@ export function validateMetadataOracle(metadata, expected) {
     }
     certified.push({ type: wanted.type, handle: wanted.handle, groups: actual.groups });
   }
+  // Opaque XRECORD strings are not display text: literal DXF-looking escapes and
+  // embedded JSON must match native .NET evidence without Unicode substitution.
+  if (expected.opaqueStrings !== undefined) {
+    assert.ok(Array.isArray(expected.opaqueStrings) && expected.opaqueStrings.length <= expected.records.length);
+    for (const wanted of expected.opaqueStrings) {
+      assert.match(wanted.handle, /^[1-9A-F][0-9A-F]{0,15}$/);
+      assert.ok(Number.isInteger(wanted.code) && typeof wanted.value === 'string');
+      const record = certified.find((entry) => entry.handle === wanted.handle && entry.type === 'XRECORD');
+      assert.ok(record, 'Opaque string oracle requires a certified XRECORD.');
+      const values = record.groups.filter((group) => group.code === wanted.code);
+      assert.equal(values.length, 1, 'Opaque string oracle requires one exact group.');
+      assert.equal(values[0].value, wanted.value, 'Opaque metadata string changed literal bytes.');
+    }
+  }
   return certified;
 }
 
@@ -110,6 +160,19 @@ export function validateMetadataReport(report, expected) {
       return `${code}\n${value}\n`;
     }).join('');
   }).join('') + '0\nEOF\n';
+  if (report.classProjectionVerified !== undefined) {
+    assert.equal(report.classProjectionVerified, true);
+    assert.ok(Array.isArray(report.classDefinitions) && report.classDefinitions.length <= 100000);
+    assert.equal(report.nativeClassCount, report.classInventory?.length);
+    const classDxf = report.classDefinitions.map(record => {
+      assert.equal(record.type, 'CLASS'); assert.ok(Array.isArray(record.groups));
+      return '0\nCLASS\n' + record.groups.map(({ code, value }) => {
+        assert.ok(Number.isInteger(code) && code >= 0 && code <= 1071 && typeof value === 'string' && !/[\r\n\0]/.test(value));
+        return `${code}\n${value}\n`;
+      }).join('');
+    }).join('') + '0\nEOF\n';
+    validateNativeClassProjection({ dxf: classDxf }, report.classInventory);
+  }
   return validateMetadataOracle({ ...report, readError: report.nativeError, dxf }, expected);
 }
 
@@ -148,10 +211,15 @@ export async function validateMetadataFixture(factory, wasmPath, fixturePath, ex
       assert.ok(['entity', 'object', 'unknown'].includes(object.supertype));
     }
     const records = validateMetadataOracle(metadata, expected);
+    const nativeClassCount = module.dwg_get_num_classes(pointer);
+    assert.ok(Number.isSafeInteger(nativeClassCount) && nativeClassCount >= 0 && nativeClassCount <= 100000, 'Native class count exceeds its budget.');
+    const classInventory = Array.from({ length: nativeClassCount }, (_, index) => module.dwg_get_class(pointer, index));
+    const classDefinitions = validateNativeClassProjection(metadata, classInventory);
     const report = { schemaVersion: 1, nativeError: readError, writeError: metadata.writeError,
       factorySha256: sha256(await readFile(factory)), wasmSha256: sha256(wasm), fixtureSha256: sha256(bytes), expectedSha256: sha256(Buffer.from(expectedBytes.toString('utf8').replace(/\r\n/g, '\n'))),
       maxOutputBytes: MAX_NATIVE_METADATA_DXF_BYTES, outputBytes: Buffer.byteLength(metadata.dxf), inventoryCount: metadata.objects.length,
-      limitedOutputRejected: true, objects: metadata.objects, complete: metadata.complete, records, diagnostics };
+      limitedOutputRejected: true, objects: metadata.objects, complete: metadata.complete, records, diagnostics,
+      classProjectionVerified: true, nativeClassCount, classInventory, classDefinitions };
     if (output) await writeFile(output, JSON.stringify(report, null, 2) + '\n', { flag: 'wx' });
     return report;
   } finally {

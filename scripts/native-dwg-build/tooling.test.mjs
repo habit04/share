@@ -88,6 +88,20 @@ test('metadata native patch uses one owned bounded stream and copied identities 
   assert.match(values, /# else\n# {2}define JCAD_TABLE_VALUE_BODY_FLAGS 3/);
 });
 
+test('metadata projection retains stored builtin class definitions and their actual application names', () => {
+  const classes = patch.files.find(file => file.path === 'src/out_dxf.c');
+  assert.ok(classes?.gitBlob, 'Class projection requires the complete pinned native-file preimage.');
+  const builtins = classes.replacements.find(replacement => replacement.before.includes('// some classes are now builtin'));
+  assert.ok(builtins); assert.equal(builtins.count, 1);
+  assert.match(builtins.before, /ACDBPLACEHOLDER[\s\S]*LAYOUT[\s\S]*continue;/);
+  assert.doesNotMatch(builtins.after, /continue|return/);
+  const application = classes.replacements.find(replacement => replacement.before.includes('special-cased for DXF'));
+  assert.ok(application); assert.equal(application.count, 1);
+  assert.match(application.before, /SPATIAL_INDEX[\s\S]*VALUE_TFF \("AutoCAD 2000", 3\)/);
+  assert.match(application.after, /VALUE_T \(dwg->dwg_class\[j\]\.appname, 3\)/);
+  assert.doesNotMatch(application.after, /AutoCAD 2000|VALUE_TFF/);
+});
+
 test('native candidate upload is gated by exact color and MINSERT acceptance', () => {
   const workflow = readFileSync(new URL('../../.github/workflows/native-dwg-background.yml', import.meta.url), 'utf8');
   assert.match(workflow, /timeout 90s node scripts\/native-dwg-build\/validate-appearance-fixture\.mjs/);
@@ -106,6 +120,18 @@ test('metadata candidate provenance requires the independent native oracle befor
   assert.match(provenance, /validateMetadataReport\(metadata, metadataExpected\)/);
   assert.match(provenance, /metadata\.factorySha256, fixture\.factorySha256/);
   assert.match(provenance, /metadata\.wasmSha256, fixture\.wasmSha256/);
+});
+
+test('normal CI checks the accepted native bytes against all three independent metadata fixtures', () => {
+  const workflow = readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /name: Accepted native reader matches all three independent metadata fixtures\r?\n {8}if: matrix\.node == 24\r?\n {8}run: \|/);
+  assert.match(workflow, /node --test scripts\/native-dwg-build\/tooling\.test\.mjs scripts\/native-dwg-build\/metadata-tools\.test\.mjs/);
+  assert.match(workflow, /node scripts\/native-dwg-build\/validate-vendored-metadata\.mjs native-metadata-output/);
+  assert.match(workflow, /name: native-metadata-fixtures\r?\n {10}path: native-metadata-output\/\r?\n {10}if-no-files-found: error/);
+  const gate = readFileSync(new URL('./validate-vendored-metadata.mjs', import.meta.url), 'utf8');
+  for (const stem of ['r2018-views-fields', 'r2018-field-object-reference', 'r2018-unicode-metadata']) assert.ok(gate.includes(`'${stem}'`));
+  assert.match(gate, /repairPolicy: 'metadata-graph'/);
+  assert.doesNotMatch(gate, /execFile|spawn|build:|copyFile/);
 });
 
 test('native workflow initializes runner paths inside steps, not unavailable job env context', () => {

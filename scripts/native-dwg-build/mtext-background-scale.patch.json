@@ -221,6 +221,16 @@
           "before": "  if (160 <= code && code <= 169)\n    return \"%12li\";",
           "after": "  if (160 <= code && code <= 169)\n    return \"%12\" PRId64;",
           "count": 1
+        },
+        {
+          "before": "      // some classes are now builtin\n      if (dat->version >= R_2004\n          && (strEQc (dxfname, \"ACDBPLACEHOLDER\")\n              || strEQc (dxfname, \"LAYOUT\")))\n        continue;",
+          "after": "      // JCad's bounded metadata projection must expose every stored class\n      // definition, including classes which modern DXF exporters omit as builtin.",
+          "count": 1
+        },
+        {
+          "before": "      if (strEQc (dxfname, \"SPATIAL_INDEX\"))\n        VALUE_TFF (\"AutoCAD 2000\", 3) // special-cased for DXF\n      else\n        VALUE_T (dwg->dwg_class[j].appname, 3)",
+          "after": "      // Preserve the stored class application rather than a display/export alias.\n      VALUE_T (dwg->dwg_class[j].appname, 3)",
+          "count": 1
         }
       ]
     }

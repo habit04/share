@@ -44,6 +44,7 @@ assert.deepEqual(metadataExpected.source?.audit, { errors: 0, fixed: 0 });
 assert.equal(metadata.fixtureSha256, sha256(metadataFixture));
 assert.equal(metadata.expectedSha256, sha256(Buffer.from(metadataExpectedBytes.toString('utf8').replace(/\r\n/g, '\n'))));
 validateMetadataReport(metadata, metadataExpected);
+assert.equal(metadata.classProjectionVerified, true, 'Every stored native CLASS definition must be exposed and checked.');
 const packageManifest = JSON.parse(await readFile(join(source, 'bindings/javascript/package.json'), 'utf8'));
 for (const filename of ['pins.json', 'mtext-background-scale.patch.json', 'README.md', 'patch-source.mjs', 'validate-fixture.mjs', 'validate-appearance-fixture.mjs', 'validate-metadata-fixture.mjs', 'write-provenance.mjs']) await copyFile(join(here, filename), join(artifact, filename));
 await mkdir(join(artifact, 'declaration-tools'), { recursive: true });
@@ -73,7 +74,8 @@ const provenance = {
   license: { packageSpdx: 'GPL-3.0', nativeSourceNotice: 'GPL-3.0-or-later; see each source file and COPYING', correspondingSource: 'modified-source.tar.gz' },
   build: { commands: ['./autogen.sh', 'npm run build:prepare', 'npm run build:obj', 'npm run build:wasm'], makeFlags: '-j2', scripts: Object.fromEntries(['build:prepare', 'build:obj', 'build:wasm'].map((name) => [name, packageManifest.scripts[name]])), observedTools: { node: process.version, ...Object.fromEntries(['npm', 'autoconf', 'automake', 'libtoolize', 'make', 'gcc', 'pkg-config'].map((command) => [command, execFileSync(command, ['--version'], { encoding: 'utf8' }).trim().split('\n')[0]])) } },
   validation: { fixtureSha256: fixture.fixtureSha256, expectedSha256: fixture.expectedSha256, nativeError: fixture.nativeError, maskCount: fixture.masks.length, report: 'fixture-report.json', appearanceReport: 'appearance-report.json', appearanceCases: appearance.cases.map(({ kind, fixtureSha256, expectedSha256, nativeError }) => ({ kind, fixtureSha256, expectedSha256, nativeError })),
-    metadata: { report: 'metadata-report.json', fixtureSha256: metadata.fixtureSha256, expectedSha256: metadata.expectedSha256, nativeError: 0, writeError: 0, complete: true, recordCount: metadata.records.length, maxOutputBytes: metadata.maxOutputBytes, limitedOutputRejected: true } },
+    metadata: { report: 'metadata-report.json', fixtureSha256: metadata.fixtureSha256, expectedSha256: metadata.expectedSha256, nativeError: 0, writeError: 0, complete: true, recordCount: metadata.records.length, maxOutputBytes: metadata.maxOutputBytes, limitedOutputRejected: true,
+      classProjectionVerified: true, nativeClassCount: metadata.nativeClassCount } },
   workflow: { repository: process.env.GITHUB_REPOSITORY || '', commit: process.env.GITHUB_SHA || '', runId: process.env.GITHUB_RUN_ID || '', runAttempt: process.env.GITHUB_RUN_ATTEMPT || '' },
   patchedFiles: await Promise.all(patchReport.files.map(async (file) => ({ ...file, builtSourceSha256: sha256(await readFile(join(source, file.path))) }))),
   assets,
