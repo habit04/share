@@ -1,6 +1,6 @@
 /** Host-owned save ordering. Authorization and the atomic writer remain caller-owned. */
 'use strict';
-const { randomBytes } = require('node:crypto');
+const { randomBytes, createHash } = require('node:crypto');
 const { absoluteWindowsPath, fileVersionKey } = require('./windows-path-identity.cjs');
 const byteLengthDescriptor = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), 'byteLength');
 if (!byteLengthDescriptor || typeof byteLengthDescriptor.get !== 'function') throw new Error('Native typed-array byte lengths are required.');
@@ -12,7 +12,7 @@ const LIMITS = Object.freeze({ pending: 32, ledger: 640, payload: 128 * 1024 * 1
 const fail = (code, message) => Object.assign(new Error(message), { code });
 /** @typedef {import('./windows-path-identity.cjs').WindowsWriteTarget} WriteTarget */
 /** @typedef {{allowed:true, root?:string}|{allowed:false}} Authorization */
-/** @typedef {{captureWriteTarget:(path:string,root?:string)=>Promise<WriteTarget>, revalidate:(pin:WriteTarget,options?:{preserveLeaf?:boolean,preserveVersion?:boolean})=>Promise<WriteTarget>}} PathIdentity */
+/** @typedef {{captureWriteTarget:(path:string,root?:string)=>Promise<WriteTarget>, captureContentTarget?:(pin:WriteTarget,options?:{signal?:AbortSignal})=>Promise<WriteTarget>, revalidate:(pin:WriteTarget,options?:{preserveLeaf?:boolean,preserveVersion?:boolean,signal?:AbortSignal,metadataOnly?:boolean})=>Promise<WriteTarget>}} PathIdentity */
 /** @typedef {{logicalPath:string,destinationPath:string,canonicalPath:string,root?:string,signal:AbortSignal,guard:()=>Promise<void>,guardParents:()=>Promise<void>,markCommitted:()=>Promise<void>}} WriterContext */
 /** @typedef {(payload:string|Uint8Array,context:WriterContext)=>Promise<unknown>} SaveWriter */
 /** @typedef {{logicalPath:string,destinationPath:string,canonicalPath:string,root?:string,signal:AbortSignal,guard:()=>Promise<void>,guardParents:()=>Promise<void>}} PreparationContext */
@@ -33,12 +33,18 @@ const fail = (code, message) => Object.assign(new Error(message), { code });
  * markCommitted immediately after replacement, before verification that can fail.
  * guardParents is for cleanup/verification and never relaxes junction/root pins.
  * No portable Node API can eliminate the last check-to-rename race with an
- * adversarial local process. File versions use native stat evidence, not hashes.
+ * adversarial local process. Existing versions include fresh held-FD SHA256 evidence.
  * @param {{identity:PathIdentity, authorize:(owner:object,kind:string,path:string)=>Authorization|Promise<Authorization>, maxPending?:number,maxLedger?:number,maxPayloadBytes?:number,maxQueuedBytes?:number,ttlMs?:number,maxBatchParents?:number,maxBatchChildren?:number,maxBatchInputBytes?:number,maxBatchPinChars?:number,batchHardLifeMs?:number,now?:()=>number}} options
  */
 function createSaveAdmissions(options) {
   if (!options || !options.identity || typeof options.authorize !== 'function') throw fail('ERR_SAVE_CONFIGURATION', 'Native identity and explicit main-owned authorization are required.');
   const { identity, authorize, now = () => performance.now() } = options;
+  async function contentPin(pin, signal) {
+    if (typeof identity.captureContentTarget !== 'function') throw fail('ERR_SAVE_CONFIGURATION', 'Fresh native file-content evidence is required.');
+    const captured = await identity.captureContentTarget(pin, { signal });
+    if (captured.hashContent !== true || captured.exists && !/^[a-f0-9]{64}$/.test(captured.fileVersion?.sha256 ?? '')) throw fail('ERR_SAVE_CONFIGURATION', 'Fresh native file-content evidence is required.');
+    return captured;
+  }
   function limit(value, fallback, ceiling) {
     const n = value === undefined ? fallback : value;
     if (!Number.isSafeInteger(n) || n < 1 || n > ceiling) throw fail('ERR_SAVE_CONFIGURATION', 'Save limits must be bounded positive integers.');
@@ -141,8 +147,9 @@ function createSaveAdmissions(options) {
     const task = (async () => {
       try {
         const root = await permission(entry, logicalPath, true); abortCheck(entry);
-        const pin = await identity.captureWriteTarget(logicalPath, root); abortCheck(entry);
+        let pin = await identity.captureWriteTarget(logicalPath, root); abortCheck(entry);
         if (!pin.parentExists) throw fail('ENOENT', 'The save parent does not exist.');
+        pin = await contentPin(pin, entry.abort.signal); abortCheck(entry);
         entry.pin = pin; entry.root = root; entry.deadline = now() + ttlMs; entry.state = 'bound';
         return pin;
       } catch (error) { finish(entry); throw error; }
@@ -256,7 +263,7 @@ function createSaveAdmissions(options) {
           const root = await permission(entry, paths[index], true); batchCheck(batch);
           const pin = await identity.captureWriteTarget(paths[index], root); batchCheck(batch);
           if (!pin.parentExists) throw fail('ENOENT', 'A project source parent does not exist.');
-          const retainedChars = JSON.stringify(pin).length;
+          const retainedChars = JSON.stringify(pin.exists ? { ...pin, hashContent: true, fileVersion: { ...pin.fileVersion, sha256: '0'.repeat(64) } } : pin).length;
           if (retainedChars > maxBatchPinChars - batchPinChars) throw fail('ERR_SAVE_BATCH_LIMIT', 'The project native-pin character budget is exhausted.');
           batch.pinChars += retainedChars; batchPinChars += retainedChars;
           if (!pin.exists) { manifest.push(Object.freeze({ index, path: paths[index], missing: true })); continue; }
@@ -270,6 +277,12 @@ function createSaveAdmissions(options) {
           batch.children.set(child.ticket, child); pending.set(child.ticket, child);
           manifest.push(Object.freeze({ index, path: paths[index], childTicket: child.ticket, identityPath: pin.canonicalPath, exists: true }));
         }
+        // Reserve the complete source-byte and retained-pin budgets before any
+        // descriptor hash is opened; a later oversized source aborts before reads.
+        await checkBatchSources([...batch.children.values()], (child) => withBatchMetadata(async () => {
+          batchCheck(batch);
+          child.pin = await contentPin(child.pin, batch.abort.signal); batchCheck(batch);
+        }));
         // Recheck the entire source basis: a late bind must not conceal an edit
         // to an earlier file or grant while this manifest was being assembled.
         await checkBatchSources([...batch.children.values()], (child) => strictBatchGuard(child));
@@ -286,7 +299,7 @@ function createSaveAdmissions(options) {
     return withBatchMetadata(async () => {
       batchCheck(entry.batch); if (!basis) abortCheck(entry);
       await permission(entry, pin.logicalPath); batchCheck(entry.batch); if (!basis) abortCheck(entry);
-      const current = await identity.revalidate(pin, { preserveLeaf: true, preserveVersion: !allowCommitted });
+      const current = await identity.revalidate(pin, { preserveLeaf: true, preserveVersion: !allowCommitted, signal: basis ? entry.batch.abort.signal : entry.abort.signal });
       const actual = fileVersionKey(current.fileVersion);
       if (allowCommitted && actual !== fileVersionKey(pin.fileVersion)
         && (!entry.batch.transitions.has(pin.targetKey) || entry.batch.transitions.get(pin.targetKey) !== actual)) throw targetChanged();
@@ -420,7 +433,7 @@ function createSaveAdmissions(options) {
         abortCheck(entry); await permission(entry, initial.logicalPath); abortCheck(entry);
         return await enqueueProjectWrite(entry, initial.queueKey, async () => {
           abortCheck(entry); await permission(entry, initial.logicalPath); abortCheck(entry);
-          const current = await identity.revalidate(initial);
+          const current = await identity.revalidate(initial, { signal: entry.abort.signal });
           if (!current.parentExists) throw fail('ENOENT', 'The save parent does not exist.');
           const checkOrder = (target) => {
             const previous = ledger.get(target.targetKey);
@@ -430,12 +443,12 @@ function createSaveAdmissions(options) {
           checkVersion(initial, current, checkOrder(current));
           let active = true;
           const activeCheck = () => { if (!active || entry.state !== 'preparing' || pending.get(entry.ticket) !== entry) throw fail('ERR_SAVE_TICKET', 'The backup preparation is no longer active.'); };
-          const guardParents = async () => { activeCheck(); await identity.revalidate(current, { preserveLeaf: true }); };
+          const guardParents = async () => { activeCheck(); await identity.revalidate(current, { preserveLeaf: true, metadataOnly: true }); };
           const guard = async () => {
             activeCheck(); abortCheck(entry);
             if (entry.batch) await guardProjectBasis(entry.batch);
             abortCheck(entry); await permission(entry, initial.logicalPath); abortCheck(entry);
-            const target = await identity.revalidate(current, { preserveLeaf: true, preserveVersion: true });
+            const target = await identity.revalidate(current, { preserveLeaf: true, preserveVersion: true, signal: entry.abort.signal });
             checkOrder(target);
           };
           try {
@@ -479,9 +492,10 @@ function createSaveAdmissions(options) {
         try {
           // Copy only after authorization and reserve before allocation/queueing.
           const snapshot = typeof payload === 'string' ? payload : new Uint8Array(payload);
+          const expectedDigest = createHash('sha256').update(snapshot).digest('hex');
           return await enqueueProjectWrite(entry, initial.queueKey, async () => {
             abortCheck(entry); await permission(entry, initial.logicalPath); abortCheck(entry);
-            const current = await identity.revalidate(initial);
+            const current = await identity.revalidate(initial, { signal: entry.abort.signal });
             if (!current.parentExists) throw fail('ENOENT', 'The save parent does not exist.');
             const previous = ledger.get(current.targetKey);
             if (previous && previous.order > entry.order) { stale = true; throw fail('ERR_SAVE_STALE', 'A newer host save has already reached this file.'); }
@@ -490,12 +504,12 @@ function createSaveAdmissions(options) {
             if (!ledger.has(current.targetKey) && !reservedTargets.has(current.targetKey) && orderingSlots() >= maxLedger) throw fail('ERR_SAVE_LEDGER_LIMIT', 'Save ordering history is full while older work remains pending.');
             const record = { order: entry.order, after: fileVersionKey(current.fileVersion), origins: originsFor(current, previous), parentPath: current.canonicalParent, targetPath: current.canonicalPath };
             ledger.set(current.targetKey, record);
-            const guardParents = async () => { await identity.revalidate(current, { preserveLeaf: true }); };
+            const guardParents = async () => { await identity.revalidate(current, { preserveLeaf: true, metadataOnly: true }); };
             const guard = async () => {
               abortCheck(entry);
               if (entry.batch) await guardProjectBasis(entry.batch);
               abortCheck(entry); await permission(entry, initial.logicalPath); abortCheck(entry);
-              await identity.revalidate(current, { preserveLeaf: true, preserveVersion: true });
+              await identity.revalidate(current, { preserveLeaf: true, preserveVersion: true, signal: entry.abort.signal });
             };
             /** @type {Promise<void>|undefined} */ let markTask;
             const markCommitted = () => {
@@ -503,6 +517,7 @@ function createSaveAdmissions(options) {
               committed = true;
               markTask = (async () => {
                 const after = await identity.revalidate(current, { preserveLeaf: true });
+                if (after.fileVersion?.sha256 !== expectedDigest) throw targetChanged();
                 record.after = fileVersionKey(after.fileVersion); record.origins.add(record.after);
                 if (entry.batch) entry.batch.transitions.set(current.targetKey, record.after);
               })();
@@ -532,8 +547,25 @@ function createSaveAdmissions(options) {
       let result, error, hasError = false;
       try {
         abortCheck(entry); await permission(entry, initial.logicalPath); abortCheck(entry);
-        const current = await identity.revalidate(initial);
-        if (!current.parentExists) throw fail('ENOENT', 'The save parent does not exist.');
+        const preflight = async () => {
+          abortCheck(entry);
+          if (entry.batch) await guardProjectBasis(entry.batch);
+          await permission(entry, initial.logicalPath); abortCheck(entry);
+          const current = await identity.revalidate(initial, { signal: entry.abort.signal });
+          if (!current.parentExists) throw fail('ENOENT', 'The save parent does not exist.');
+          const previous = ledger.get(current.targetKey);
+          if (previous && previous.order > entry.order) { stale = true; return; }
+          checkVersion(initial, current, previous);
+        };
+        try { await preflight(); }
+        catch (failure) {
+          // A preceding writer can be between replacement and its own proof.
+          // Only retry that changed-version check after joining its queue. Stable
+          // producers still snapshot/reserve their payload before queue waits.
+          if (failure?.code !== 'ERR_WINDOWS_PATH_CHANGED' || !tails.has(initial.queueKey) && !(entry.batch && tails.has(`project-batch:${entry.batch.ticket}`))) throw failure;
+          await enqueueProjectWrite(entry, initial.queueKey, preflight);
+        }
+        if (stale) return Object.freeze({ status: 'stale', committed: false });
         try { result = await operation(Object.freeze({ signal: entry.abort.signal, target: initial, commit })); }
         catch (failure) { error = failure; hasError = true; }
         if (commitTask) { try { await commitTask; } catch (failure) { if (!hasError) error = failure; hasError = true; } }

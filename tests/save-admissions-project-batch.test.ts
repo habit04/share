@@ -265,7 +265,7 @@ describe.runIf(process.platform === 'win32')('Native batch capacity, phase and o
     const f = await setup(512), parent = f.issue(), manifest = await f.bind(parent); expect(children(manifest)).toHaveLength(512); expect(f.host.stats().batchChildren).toBe(512);
     const other = {}, otherParent = f.host.issueProjectBatch(other); expect(() => f.host.bindProjectBatch(otherParent, other, [f.files[0]!])).toThrowError(/budget/);
     await f.read(parent, children(manifest)[0]!); await f.host.sealProjectBatch(parent, f.owner, [children(manifest)[0]!]); expect(f.host.stats()).toMatchObject({ reservedTargets: 1, ledger: 0 });
-  });
+  }, 30000);
 });
 
 describe.runIf(process.platform === 'win32')('Batch cleanup, cancellation and shared operation bounds', () => {

@@ -1,10 +1,13 @@
 /** Native Windows identities for main-owned, already-authorized file paths. No access is granted here. */
 'use strict';
 const fsp = require('node:fs/promises');
+const { createHash } = require('node:crypto');
 const path = require('node:path').win32;
 
 const MAX_PATH_LENGTH = 4096;
 const MAX_PARENT_DEPTH = 128;
+const MAX_CONTENT_BYTES = 128 * 1024 * 1024;
+const HASH_CHUNK_BYTES = 256 * 1024;
 const fail = (code, message) => Object.assign(new Error(message), { code });
 const asciiCaseFold = (value) => value.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
 
@@ -38,14 +41,70 @@ const versionOf = (stat) => {
   return Object.freeze({ ...identity, size: String(stat.size), mtimeNs: String(stat.mtimeNs), ctimeNs: String(stat.ctimeNs) });
 };
 /** @param {FileVersion|null} version */
-const fileVersionKey = (version) => version === null ? null : JSON.stringify([version.dev, version.ino, version.size, version.mtimeNs, version.ctimeNs]);
+const fileVersionKey = (version) => version === null ? null : JSON.stringify([version.dev, version.ino, version.size, version.mtimeNs, version.ctimeNs, version.sha256 ?? null]);
+const statVersionKey = (version) => JSON.stringify([version.dev, version.ino, version.size, version.mtimeNs, version.ctimeNs]);
+const abortCheck = (signal) => { if (signal?.aborted) throw fail('ERR_SAVE_CANCELLED', 'The file-content check was cancelled.'); };
 
 /** @typedef {{readonly dev:string, readonly ino:string}} FileIdentity */
-/** @typedef {FileIdentity & {readonly size:string, readonly mtimeNs:string, readonly ctimeNs:string}} FileVersion */
-/** @typedef {{readonly logicalPath:string, readonly destinationPath:string, readonly canonicalPath:string, readonly canonicalParent:string, readonly parentExists:boolean, readonly parentIdentity:FileIdentity, readonly ancestorLogicalPath:string, readonly canonicalAncestor:string, readonly missingParents:readonly string[], readonly queueKey:string, readonly targetKey:string, readonly exists:boolean, readonly fileVersion:FileVersion|null, readonly root?:string, readonly canonicalRoot?:string, readonly rootIdentity?:FileIdentity}} WindowsWriteTarget */
+/** @typedef {FileIdentity & {readonly size:string, readonly mtimeNs:string, readonly ctimeNs:string, readonly sha256?:string}} FileVersion */
+/** @typedef {{readonly logicalPath:string, readonly destinationPath:string, readonly canonicalPath:string, readonly canonicalParent:string, readonly parentExists:boolean, readonly parentIdentity:FileIdentity, readonly ancestorLogicalPath:string, readonly canonicalAncestor:string, readonly missingParents:readonly string[], readonly queueKey:string, readonly targetKey:string, readonly exists:boolean, readonly fileVersion:FileVersion|null, readonly hashContent?:boolean, readonly root?:string, readonly canonicalRoot?:string, readonly rootIdentity?:FileIdentity}} WindowsWriteTarget */
+
+/** Hash fresh bytes through one held descriptor. Caller must authorize before calling.
+ * Regular file symlinks are supported here for standalone opens; save pins impose their own policy.
+ * @param {string} value
+ * @param {{fs?:typeof fsp,maxBytes?:number,signal?:AbortSignal,expectedCanonicalPath?:string,expectedVersion?:FileVersion}} [options]
+ * @returns {Promise<{sha256:string,bytes:number,canonicalPath:string,version:FileVersion}>}
+ */
+async function coherentFileDigest(value, { fs = fsp, maxBytes = MAX_CONTENT_BYTES, signal, expectedCanonicalPath, expectedVersion } = {}) {
+  const file = absoluteWindowsPath(value);
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_CONTENT_BYTES) throw fail('ERR_WINDOWS_CONTENT_LIMIT', 'A bounded file-content limit is required.');
+  const changed = () => fail('ERR_WINDOWS_PATH_CHANGED', 'The file changed during its content check.');
+  abortCheck(signal);
+  const canonicalPath = await fs.realpath(file);
+  if (expectedCanonicalPath !== undefined && canonicalPath !== expectedCanonicalPath) throw changed();
+  let handle;
+  try {
+    abortCheck(signal);
+    handle = await fs.open(file, fsp.constants.O_RDONLY | fsp.constants.O_NONBLOCK);
+    abortCheck(signal);
+    const before = await handle.stat({ bigint: true });
+    if (!before.isFile()) throw fail('ERR_WINDOWS_CONTENT_TYPE', 'Only regular file contents can be checked.');
+    const version = versionOf(before), key = statVersionKey(version), size = before.size;
+    if (size < 0n || size > BigInt(maxBytes)) throw fail('ERR_WINDOWS_CONTENT_LIMIT', 'The file exceeds the content-check limit.');
+    if (expectedVersion && statVersionKey(expectedVersion) !== key) throw changed();
+    const pathCheck = async () => {
+      abortCheck(signal);
+      const logical = await fs.stat(file, { bigint: true });
+      if (!logical.isFile() || statVersionKey(versionOf(logical)) !== key || await fs.realpath(file) !== canonicalPath) throw changed();
+      const physical = await fs.stat(canonicalPath, { bigint: true });
+      if (!physical.isFile() || statVersionKey(versionOf(physical)) !== key) throw changed();
+      abortCheck(signal);
+    };
+    await pathCheck();
+    const scratch = Buffer.allocUnsafe(HASH_CHUNK_BYTES), hash = createHash('sha256');
+    const bytes = Number(size);
+    let position = 0;
+    while (position < bytes) {
+      abortCheck(signal);
+      const length = Math.min(scratch.byteLength, bytes - position);
+      const { bytesRead } = await handle.read(scratch, 0, length, position);
+      if (!Number.isInteger(bytesRead) || bytesRead < 1 || bytesRead > length) throw changed();
+      abortCheck(signal);
+      hash.update(scratch.subarray(0, bytesRead)); position += bytesRead;
+    }
+    abortCheck(signal);
+    if ((await handle.read(scratch, 0, 1, bytes)).bytesRead !== 0 || statVersionKey(versionOf(await handle.stat({ bigint: true }))) !== key) throw changed();
+    await pathCheck();
+    const sha256 = hash.digest('hex');
+    if (expectedVersion?.sha256 !== undefined && expectedVersion.sha256 !== sha256) throw changed();
+    await handle.close(); handle = undefined;
+    await pathCheck();
+    return Object.freeze({ sha256, bytes, canonicalPath, version });
+  } finally { if (handle) await handle.close(); }
+}
 
 /**
- * This helper performs metadata reads only. Its caller must authorize the exact
+ * Metadata capture performs no content reads. Its caller must authorize the exact
  * logical path and any network connection first. Canonical strings never pass
  * through Unicode folding or path.relative (which folds Unicode on Windows).
  * @param {{fs?:typeof fsp}} [options]
@@ -121,18 +180,38 @@ function createWindowsPathIdentity({ fs = fsp } = {}) {
   }
 
   /** Re-resolve native identities after slow work/queue waits; preserveLeaf also guards a commit's actual destination. */
-  /** @param {WindowsWriteTarget} pin @param {{preserveLeaf?:boolean, preserveVersion?:boolean}} [options] */
-  async function revalidate(pin, { preserveLeaf = false, preserveVersion = false } = {}) {
+  /** @param {WindowsWriteTarget} pin @param {{preserveLeaf?:boolean, preserveVersion?:boolean,signal?:AbortSignal,metadataOnly?:boolean}} [options] */
+  async function revalidate(pin, { preserveLeaf = false, preserveVersion = false, signal, metadataOnly = false } = {}) {
     if (!pin || !pins.has(pin)) throw fail('ERR_WINDOWS_IDENTITY', 'Only this helper\'s immutable captured paths can be revalidated.');
+    if (metadataOnly && preserveVersion && pin.hashContent) throw fail('ERR_WINDOWS_IDENTITY', 'Content evidence cannot be checked with metadata alone.');
+    abortCheck(signal);
     const originalAncestor = await directory(pin.ancestorLogicalPath);
     if (originalAncestor.canonical !== pin.canonicalAncestor || !sameIdentity(originalAncestor.identity, pin.parentIdentity)) throw changed();
-    const current = await captureWriteTarget(pin.logicalPath, pin.root);
+    let current = await captureWriteTarget(pin.logicalPath, pin.root);
     if (current.canonicalParent !== pin.canonicalParent || pin.parentExists && (!current.parentExists || current.queueKey !== pin.queueKey) || pin.canonicalRoot !== current.canonicalRoot || pin.rootIdentity && (!current.rootIdentity || !sameIdentity(pin.rootIdentity, current.rootIdentity))) throw changed();
     if (preserveLeaf && current.canonicalPath !== pin.canonicalPath) throw changed();
+    if (pin.hashContent && !metadataOnly) current = await captureContentTarget(current, { signal });
     if (preserveVersion && fileVersionKey(current.fileVersion) !== fileVersionKey(pin.fileVersion)) throw changed();
+    abortCheck(signal);
     return current;
   }
-  return Object.freeze({ captureWriteTarget, revalidate });
+  /** Add fresh content evidence without rebinding the captured native namespace.
+   * @param {WindowsWriteTarget} pin @param {{signal?:AbortSignal}} [options]
+   * @returns {Promise<WindowsWriteTarget>}
+   */
+  async function captureContentTarget(pin, { signal } = {}) {
+    const before = await revalidate(pin, { preserveLeaf: true, metadataOnly: true, signal });
+    if ((before.fileVersion === null) !== (pin.fileVersion === null) || before.fileVersion && pin.fileVersion && statVersionKey(before.fileVersion) !== statVersionKey(pin.fileVersion)) throw changed();
+    let fileVersion = pin.fileVersion;
+    if (fileVersion !== null) {
+      const digest = await coherentFileDigest(pin.logicalPath, { fs, signal, expectedCanonicalPath: pin.canonicalPath, expectedVersion: fileVersion });
+      fileVersion = Object.freeze({ ...fileVersion, sha256: digest.sha256 });
+    }
+    await revalidate(before, { preserveLeaf: true, preserveVersion: true, signal });
+    const content = Object.freeze({ ...pin, hashContent: true, fileVersion });
+    pins.add(content); return content;
+  }
+  return Object.freeze({ captureWriteTarget, captureContentTarget, revalidate });
 }
 
-module.exports = { MAX_PATH_LENGTH, MAX_PARENT_DEPTH, asciiCaseFold, absoluteWindowsPath, canonicalInside, fileVersionKey, createWindowsPathIdentity };
+module.exports = { MAX_PATH_LENGTH, MAX_PARENT_DEPTH, MAX_CONTENT_BYTES, HASH_CHUNK_BYTES, asciiCaseFold, absoluteWindowsPath, canonicalInside, fileVersionKey, coherentFileDigest, createWindowsPathIdentity };
