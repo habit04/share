@@ -4,7 +4,7 @@ import { DEFAULT_HEADER } from '../src/core/document';
 import type { BlockDef, Entity, InsertEntity, Layer, LineEntity, PolylineEntity, TextEntity } from '../src/core/entities';
 import type { Point } from '../src/core/geometry';
 import { sealImmutableData } from '../src/core/immutable-data';
-import { colorDisplay, lineweightDisplay } from '../src/render/draw';
+import { colorDisplay, drawEntity, lineweightDisplay } from '../src/render/draw';
 import { STANDARD_TEXT_STYLE } from '../src/io/encoding';
 import { strokeText } from '../src/render/hershey';
 import { prepare2D, prepareCompiledZoom2D, prepareZoom2D, screenPoint, GPU_ZOOM_VERTEX_STRIDE, type Gpu2DView, type Prepared2D } from '../src/render/gpu-prototype/geometry2d';
@@ -35,6 +35,21 @@ function covers(geometry: Prepared2D, point: Point): boolean {
     if (signs.every((value) => value >= -1e-5) || signs.every((value) => value <= 1e-5)) return true;
   }
   return false;
+}
+
+/** Record the current Canvas painter's world construction before viewport rotation. */
+function nativePolylineCommands(entity: PolylineEntity, camera: Gpu2DView) {
+  const ctx = {
+    globalAlpha: 1, save: vi.fn(), restore: vi.fn(), setLineDash: vi.fn(),
+    beginPath: vi.fn(), closePath: vi.fn(), lineTo: vi.fn(), stroke: vi.fn(),
+    moveTo: vi.fn<(x: number, y: number) => void>(),
+    arc: vi.fn<(x: number, y: number, radius: number, start: number, end: number, anticlockwise: boolean) => void>(),
+  };
+  drawEntity(ctx as unknown as CanvasRenderingContext2D, entity, {
+    scale: camera.scale,
+    toScreen: (point) => ({ x: camera.width / 2 + (point.x - camera.center.x) * camera.scale, y: camera.height / 2 - (point.y - camera.center.y) * camera.scale }),
+  }, [layer], () => undefined, { lineWidthOverride: 1 });
+  return ctx;
 }
 
 function rendererFixture() {
@@ -138,15 +153,41 @@ describe('GPU double-precision preparation', () => {
     expect(new Float32Array([translated.a.x, translated.b.x])[0]).toBe(new Float32Array([translated.a.x, translated.b.x])[1]);
   });
 
-  it('rebases circle centers and bulge helpers before adding small curve offsets', () => {
+  it('rebases representable circle centers before adding small curve offsets', () => {
+    const origin = { x: 1e12, y: -1e12 };
+    const small = { ...view, scale: 1024, twist: 0.2 };
+    const circle: Entity = { ...line, type: 'circle', center: { x: 0, y: 0 }, radius: 1 / 32 };
+    expect(prepare2D(drawing([{ ...circle, center: origin }]), { ...small, center: origin }, overlay).vertices).toEqual(prepare2D(drawing([circle]), small, overlay).vertices);
+  });
+
+  it('refuses the original world bulge construction when its native center and sweep quantize', () => {
     const origin = { x: 1e12, y: -1e12 };
     const small = { ...view, scale: 1024, twist: 0.2 };
     const circle: Entity = { ...line, type: 'circle', center: { x: 0, y: 0 }, radius: 1 / 32 };
     const curved: PolylineEntity = { ...polyline, points: [{ x: -1 / 32, y: 0 }, { x: 1 / 32, y: 0 }], bulges: [0.6] };
-    const translated = [
-      { ...circle, center: origin },
-      { ...curved, points: curved.points.map((point) => ({ x: origin.x + point.x, y: origin.y + point.y })) },
-    ];
+    const worldCurve = { ...curved, points: curved.points.map((point) => ({ x: origin.x + point.x, y: origin.y + point.y })) };
+    const farView = { ...small, center: origin };
+    const nearNative = nativePolylineCommands(curved, small), farNative = nativePolylineCommands(worldCurve, farView);
+    expect(nearNative.arc).toHaveBeenCalledOnce(); expect(farNative.arc).toHaveBeenCalledOnce();
+    const nearArc = nearNative.arc.mock.calls[0]!, farArc = farNative.arc.mock.calls[0]!;
+    expect(farArc[2]).toBe(nearArc[2]); // The native chord radius survives, its world center does not.
+    expect(Math.abs(farArc[1] - nearArc[1])).toBeGreaterThan(0.05);
+    expect(Math.abs(farArc[3] - nearArc[3])).toBeGreaterThan(0.001);
+    expect(() => prepare2D(drawing([circle, curved]), small, overlay)).not.toThrow();
+    const state = sealImmutableData(drawing([{ ...circle, center: origin }, worldCurve]));
+    expect(() => prepare2D(state, farView, overlay)).toThrow(/Unsupported Canvas stroke construction: native curve construction exceeds precision budget/);
+    const { canvas, gl } = rendererFixture(), renderer = new Gpu2DRenderer(canvas);
+    expect(renderer.render(state, farView, overlay)).toMatchObject({ rendered: false, reason: expect.stringContaining('native curve construction exceeds precision budget'), uploadKind: 'none', bytes: 0, uploadCalls: 0, submissionMs: 0 });
+    for (const method of [gl.createShader, gl.createBuffer, gl.bufferData, gl.bufferSubData, gl.clear, gl.drawArrays]) expect(method).not.toHaveBeenCalled();
+    renderer.dispose();
+  });
+
+  it('keeps representable semicircle and circle bytes equal at trillion-unit origins', () => {
+    const origin = { x: 1e12, y: -1e12 };
+    const small = { ...view, scale: 1024, twist: 0.2 };
+    const circle: Entity = { ...line, type: 'circle', center: { x: 0, y: 0 }, radius: 1 / 32 };
+    const curved: PolylineEntity = { ...polyline, points: [{ x: -1 / 32, y: 0 }, { x: 1 / 32, y: 0 }], bulges: [1] };
+    const translated = [{ ...circle, center: origin }, { ...curved, points: curved.points.map((point) => ({ x: origin.x + point.x, y: origin.y + point.y })) }];
     expect(prepare2D(drawing(translated), { ...small, center: origin }, overlay).vertices).toEqual(prepare2D(drawing([circle, curved]), small, overlay).vertices);
   });
 
@@ -179,11 +220,27 @@ describe('GPU double-precision preparation', () => {
 });
 
 describe('GPU curves and triangle strokes', () => {
-  it.each([1, -1])('preserves the signed direction of semicircle bulge %i', (bulge) => {
-    const geometry = prepare2D(drawing([{ ...polyline, bulges: [bulge] }]), view, overlay);
-    expect(covers(geometry, screenPoint({ x: 0, y: -2 * bulge }, view))).toBe(true);
-    expect(covers(geometry, screenPoint({ x: 0, y: 2 * bulge }, view))).toBe(false);
+  it('preserves the actual curve coverage of positive semicircle bulge 1', () => {
+    const geometry = prepare2D(drawing([{ ...polyline, bulges: [1] }]), view, overlay);
+    expect(covers(geometry, screenPoint({ x: 0, y: -2 }, view))).toBe(true);
+    expect(covers(geometry, screenPoint({ x: 0, y: 2 }, view))).toBe(false);
     expect(covers(geometry, screenPoint({ x: 0, y: 0 }, view))).toBe(false);
+  });
+
+  it('keeps the complete view on Canvas for negative semicircle bulge -1 with its native connector', () => {
+    const negative = { ...polyline, bulges: [-1] };
+    const native = nativePolylineCommands(negative, view), arc = native.arc.mock.calls[0]!;
+    expect(native.moveTo.mock.calls[0]).toEqual([100, 120]);
+    expect(native.arc).toHaveBeenCalledOnce(); expect(arc[5]).toBe(true);
+    // Canvas connects the current A point to its swapped arc start B across the diameter.
+    expect(arc[0] + arc[2] * Math.cos(arc[3])).toBeCloseTo(220, 12);
+    expect(arc[1] + arc[2] * Math.sin(arc[3])).toBeCloseTo(120, 12);
+    const state = sealImmutableData(drawing([line, negative]));
+    expect(() => prepare2D(state, view, overlay)).toThrow(/negative bulge has native connector/);
+    const { canvas, gl } = rendererFixture(), renderer = new Gpu2DRenderer(canvas);
+    expect(renderer.render(state, view, overlay)).toMatchObject({ rendered: false, reason: expect.stringContaining('negative bulge has native connector'), uploadKind: 'none', bytes: 0, uploadCalls: 0, submissionMs: 0 });
+    for (const method of [gl.createShader, gl.createBuffer, gl.bufferData, gl.bufferSubData, gl.clear, gl.drawArrays]) expect(method).not.toHaveBeenCalled();
+    renderer.dispose();
   });
 
   it('keeps both arcs of a closed two-vertex polyline', () => {
@@ -397,19 +454,33 @@ describe('GPU renderer submission, caching and lifecycle', () => {
     renderer.dispose();
   });
 
-  it.each([1, 2, 3])('rebases tiny pans at trillion-unit origins and preserves rotated curves at DPR %s', (dpr) => {
-    const { canvas, gl } = rendererFixture();
-    const renderer = new Gpu2DRenderer(canvas);
+  it.each([1, 2, 3])('keeps quantized original bulge construction on Canvas through tiny pans at DPR %s', (dpr) => {
+    const { canvas, gl } = rendererFixture(), renderer = new Gpu2DRenderer(canvas);
     const center = { x: 1e12, y: -1e12 };
     const state = sealImmutableData(drawing([
       { ...line, a: { x: center.x - 1 / 32, y: center.y }, b: { x: center.x + 1 / 32, y: center.y }, lineWeight: 1 },
       { ...polyline, points: [{ x: center.x - 1 / 32, y: center.y }, { x: center.x + 1 / 32, y: center.y }], bulges: [0.6] },
     ]));
     const close = { ...view, center, scale: 1024, twist: 0.63, dpr, lineweights: true };
-    renderer.render(state, close, overlay);
+    const moved = { ...close, center: { x: center.x + 1 / 8192, y: center.y - 1 / 4096 } };
+    for (const camera of [close, moved]) expect(renderer.render(state, camera, overlay)).toMatchObject({ rendered: false, reason: expect.stringContaining('native curve construction exceeds precision budget'), uploadKind: 'none', bytes: 0, uploadCalls: 0, submissionMs: 0 });
+    for (const method of [gl.createShader, gl.createBuffer, gl.bufferData, gl.bufferSubData, gl.clear, gl.drawArrays]) expect(method).not.toHaveBeenCalled();
+    renderer.dispose();
+  });
+
+  it.each([1, 2, 3])('rebases tiny pans at trillion-unit origins and preserves representable rotated curves at DPR %s', (dpr) => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas);
+    const center = { x: 1e12, y: -1e12 };
+    const state = sealImmutableData(drawing([
+      { ...line, a: { x: center.x - 1 / 32, y: center.y }, b: { x: center.x + 1 / 32, y: center.y }, lineWeight: 1 },
+      { ...polyline, points: [{ x: center.x - 1 / 32, y: center.y }, { x: center.x + 1 / 32, y: center.y }], bulges: [1] },
+    ]));
+    const close = { ...view, center, scale: 1024, twist: 0.63, dpr, lineweights: true };
+    expect(renderer.render(state, close, overlay)).toMatchObject({ rendered: true, uploadKind: 'full', uploadCalls: 1 });
     const original = uploadedGeometry(gl);
     const moved = { ...close, center: { x: center.x + 1 / 8192, y: center.y - 1 / 4096 } };
-    expect(renderer.render(state, moved, overlay).bytes).toBe(0);
+    expect(renderer.render(state, moved, overlay)).toMatchObject({ rendered: true, cacheHit: true, geometryPreparationMs: 0, uploadKind: 'none', bytes: 0, uploadCalls: 0 });
     const pan = gl.uniform2f.mock.lastCall!;
     expect(pan[1]).toBeCloseTo((-Math.cos(close.twist) / 8 - Math.sin(close.twist) / 4), 12);
     expect(pan[2]).toBeCloseTo((Math.sin(close.twist) / 8 - Math.cos(close.twist) / 4), 12);
@@ -906,8 +977,8 @@ describe('GPU compiled block and stroke-text integration', () => {
     const { canvas, gl } = rendererFixture();
     const renderer = new Gpu2DRenderer(canvas);
     const state = sealImmutableData(scene([line, text({ position: { x: 1e10, y: 1e10 } })]));
-    expect(renderer.render(state, view, overlay)).toMatchObject({ rendered: false, reason: expect.stringContaining('precision bound'), bytes: 0, submissionMs: 0 });
-    expect(gl.bufferData).not.toHaveBeenCalled(); expect(gl.clear).not.toHaveBeenCalled(); expect(gl.drawArrays).not.toHaveBeenCalled();
+    expect(renderer.render(state, view, overlay)).toMatchObject({ rendered: false, reason: expect.stringMatching(/^(?:Projected coordinates exceed GPU stroke precision bound|Unsupported Canvas stroke construction: point, normal or miter exceeds precision budget)$/), uploadKind: 'none', bytes: 0, uploadCalls: 0, submissionMs: 0 });
+    for (const method of [gl.createShader, gl.createBuffer, gl.bufferData, gl.bufferSubData, gl.clear, gl.drawArrays]) expect(method).not.toHaveBeenCalled();
     renderer.dispose();
   });
 });
