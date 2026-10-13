@@ -1,0 +1,633 @@
+{
+  "sourceSha": "fe653933be2bb2a359145efe01648111fc88c21f",
+  "worktreeModified": false,
+  "platform": "win32",
+  "arch": "x64",
+  "outcome": "passed",
+  "scope": {
+    "privateProfileVerified": true,
+    "mainPid": 3220,
+    "versions": {
+      "node": "24.21.0",
+      "acorn": "8.18.0",
+      "ada": "4.0.0",
+      "amaro": "1.1.11",
+      "ares": "1.34.8",
+      "brotli": "1.2.0",
+      "cldr": "48.0",
+      "icu": "78.2",
+      "llhttp": "9.4.3",
+      "merve": "1.2.2",
+      "modules": "149",
+      "napi": "10",
+      "nbytes": "0.1.4",
+      "ncrypto": "0.0.1",
+      "nghttp2": "1.70.0",
+      "nghttp3": "",
+      "ngtcp2": "",
+      "openssl": "0.0.0",
+      "simdjson": "4.6.7",
+      "simdutf": "7.7.0",
+      "sqlite": "3.53.4",
+      "tz": "2026d",
+      "undici": "7.29.1",
+      "unicode": "17.0",
+      "uv": "1.52.1",
+      "uvwasi": "0.0.23",
+      "v8": "15.2.124.28-electron.0",
+      "zlib": "1.3.2.1-motley",
+      "zstd": "1.6.0",
+      "electron": "44.7.0",
+      "chrome": "152.0.7977.130"
+    },
+    "highPerformanceSwitchPresent": true
+  },
+  "termination": {
+    "pid": 24484,
+    "creationTime": 1791890309959.011,
+    "mainPid": 3220,
+    "signal": "SIGKILL",
+    "at": 1791890311219,
+    "ownership": "private app.getAppMetrics()",
+    "freshIdentityVerified": true
+  },
+  "nativeEvents": [
+    {
+      "type": "GPU",
+      "reason": "killed",
+      "exitCode": 1,
+      "at": 1791890311633
+    }
+  ],
+  "observation": {
+    "contextEvents": [
+      {
+        "type": "lost",
+        "at": 1152.5
+      },
+      {
+        "type": "restored",
+        "at": 2179.9000000953674
+      }
+    ],
+    "canvasEvents": [
+      {
+        "type": "contextlost",
+        "at": 1168
+      },
+      {
+        "type": "contextrestored",
+        "at": 1671.7000000476837
+      }
+    ],
+    "cacheEvents": [
+      {
+        "type": "contextlost",
+        "at": 1167.9000000953674,
+        "contextLost": true,
+        "width": 1,
+        "height": 1,
+        "originalStillRetained": false
+      },
+      {
+        "type": "contextrestored",
+        "at": 1670.7000000476837,
+        "contextLost": false,
+        "width": 1,
+        "height": 1,
+        "originalStillRetained": false
+      }
+    ],
+    "fallback": [
+      {
+        "source": "loss-observer",
+        "at": 1159.4000000953674,
+        "rendered": false,
+        "device": "lost",
+        "gpuCanvasHidden": true,
+        "reason": "WebGL2 device is lost",
+        "samePixels": false,
+        "differentChannels": 2684540,
+        "nontransparentPixels": 0,
+        "canvasContextLost": true,
+        "cache": {
+          "exists": true,
+          "retainsOriginal": true,
+          "currentSnapshot": true,
+          "healthy": false
+        },
+        "width": 1216,
+        "height": 552,
+        "referenceWidth": 1216,
+        "referenceHeight": 552,
+        "input": {
+          "width": 1216,
+          "height": 552,
+          "dpr": 1,
+          "scale": 95.17241379310344,
+          "twist": 0,
+          "background": "#212830",
+          "center": {
+            "x": 3.5,
+            "y": 2.5
+          },
+          "hover": null,
+          "selection": []
+        },
+        "documentUnchanged": true
+      },
+      {
+        "source": "automatic-redraw",
+        "at": 1476.7999999523163,
+        "rendered": false,
+        "device": "lost",
+        "gpuCanvasHidden": true,
+        "reason": "WebGL2 device is lost",
+        "samePixels": false,
+        "differentChannels": 2684540,
+        "nontransparentPixels": 0,
+        "canvasContextLost": true,
+        "cache": {
+          "exists": true,
+          "retainsOriginal": false,
+          "currentSnapshot": true,
+          "healthy": true
+        },
+        "width": 1216,
+        "height": 552,
+        "referenceWidth": 1216,
+        "referenceHeight": 552,
+        "input": {
+          "width": 1216,
+          "height": 552,
+          "dpr": 1,
+          "scale": 95.17241379310344,
+          "twist": 0,
+          "background": "#212830",
+          "center": {
+            "x": 3.5,
+            "y": 2.5
+          },
+          "hover": null,
+          "selection": []
+        },
+        "documentUnchanged": true
+      },
+      {
+        "source": "automatic-redraw",
+        "at": 1694.7000000476837,
+        "rendered": false,
+        "device": "lost",
+        "gpuCanvasHidden": true,
+        "reason": "WebGL2 device is lost",
+        "samePixels": false,
+        "differentChannels": 205,
+        "nontransparentPixels": 671232,
+        "canvasContextLost": false,
+        "cache": {
+          "exists": true,
+          "retainsOriginal": false,
+          "currentSnapshot": true,
+          "healthy": true
+        },
+        "width": 1216,
+        "height": 552,
+        "referenceWidth": 1216,
+        "referenceHeight": 552,
+        "input": {
+          "width": 1216,
+          "height": 552,
+          "dpr": 1,
+          "scale": 95.17241379310344,
+          "twist": 0,
+          "background": "#212830",
+          "center": {
+            "x": 3.5,
+            "y": 2.5
+          },
+          "hover": null,
+          "selection": []
+        },
+        "documentUnchanged": true,
+        "imageFile": "automatic-canvas-fallback-2.png"
+      }
+    ],
+    "canvasRestoration": [
+      {
+        "source": "canvas-restore-observer",
+        "at": 1721.2999999523163,
+        "rendered": false,
+        "device": "lost",
+        "gpuCanvasHidden": true,
+        "reason": "WebGL2 device is lost",
+        "samePixels": false,
+        "differentChannels": 205,
+        "nontransparentPixels": 671232,
+        "canvasContextLost": false,
+        "cache": {
+          "exists": true,
+          "retainsOriginal": false,
+          "currentSnapshot": true,
+          "healthy": true
+        },
+        "width": 1216,
+        "height": 552,
+        "referenceWidth": 1216,
+        "referenceHeight": 552,
+        "input": {
+          "width": 1216,
+          "height": 552,
+          "dpr": 1,
+          "scale": 95.17241379310344,
+          "twist": 0,
+          "background": "#212830",
+          "center": {
+            "x": 3.5,
+            "y": 2.5
+          },
+          "hover": null,
+          "selection": []
+        },
+        "image": null,
+        "documentUnchanged": true
+      }
+    ],
+    "documentUnchanged": true
+  },
+  "restoration": {
+    "observed": true,
+    "automaticOnly": true,
+    "status": {
+      "mode": "gpu",
+      "rendered": true,
+      "preparationMs": 1.7999999523162842,
+      "submissionMs": 21.90000009536743,
+      "cacheLookupMs": 0,
+      "geometryPreparationMs": 1.7999999523162842,
+      "partialPreparationMs": 0,
+      "preparedEntities": 254,
+      "reusedEntities": 0,
+      "editMemoHit": false,
+      "editHistoryBytes": 0,
+      "editHistoryEntries": 0,
+      "initializationMs": 21,
+      "uploadMs": 0.2999999523162842,
+      "uploadCalls": 1,
+      "uploadKind": "full",
+      "subrangeUploadMs": 0,
+      "subrangeUploadCalls": 0,
+      "subrangeUploadBytes": 0,
+      "drawSubmissionMs": 0.5,
+      "geometryVertices": 2862,
+      "cacheHit": false,
+      "cacheReason": "cold",
+      "bytes": 80136,
+      "device": "ready",
+      "capabilities": {
+        "state": "ready",
+        "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+        "renderer": "WebKit WebGL",
+        "maxTextureSize": 16384,
+        "maxViewportDims": [
+          32767,
+          32767
+        ],
+        "antialias": true,
+        "stencil": true,
+        "timerQuery": true
+      },
+      "demo": null
+    }
+  },
+  "checks": [
+    "254-entity scene warmed and reused its real private Canvas bitmap cache before GPU rendering",
+    "Native GPU-process failure observed",
+    "Document unchanged by native failure",
+    "Automatic whole-view Canvas fallback while WebGL remains lost; opacity and bounded raster/coverage comparison passed",
+    "Lost warmed bitmap cache discarded; automatic complete Canvas repaint after cache loss passed while WebGL remained lost",
+    "Automatic WebGL2 restoration rendered and completed a frame",
+    "Ordinary LINE added one entity",
+    "Private DXF Save As and reopen retained entities and line endpoints"
+  ],
+  "scene": {
+    "requested": "cached-curves-and-lines",
+    "addedLines": 250,
+    "initialization": {
+      "drawingOnlyWillReadFrequentlyRequested": true,
+      "privateBlankReloadBeforeFixture": true,
+      "scope": "Only #drawing 2D context options; actual attributes and native events are recorded. The hint does not prove CPU-only drawing."
+    },
+    "entityCount": 254,
+    "cacheWarmProof": {
+      "entityCount": 254,
+      "cacheCopies": 1,
+      "currentSnapshot": true,
+      "width": 1216,
+      "height": 552,
+      "healthy": true,
+      "copiedOpaquePixels": 671232,
+      "copiedForegroundPixels": 10667,
+      "cacheReadbackUsed": false,
+      "mainContextAttributes": {
+        "alpha": true,
+        "colorSpace": "srgb",
+        "colorType": "unorm8",
+        "desynchronized": false,
+        "toneMapping": {
+          "mode": "standard"
+        },
+        "willReadFrequently": true
+      },
+      "cacheContextAttributes": {
+        "alpha": true,
+        "colorSpace": "srgb",
+        "colorType": "unorm8",
+        "desynchronized": false,
+        "toneMapping": {
+          "mode": "standard"
+        },
+        "willReadFrequently": false
+      }
+    },
+    "cacheBeforeTermination": {
+      "sameWarmedBitmap": true,
+      "currentSnapshot": true,
+      "width": 1216,
+      "height": 552,
+      "healthy": true
+    }
+  },
+  "gpuPreference": {
+    "requested": "high-performance",
+    "electronSwitch": "--force_high_performance_gpu",
+    "scope": "Private launched app only; requested preference is not proof of active hardware."
+  },
+  "limitations": [
+    "One Windows runtime and one app-owned GPU-process termination; no hardware coverage matrix.",
+    "No driver reset, persistent GPU disablement, system-wide adapter preference, or hardware-acceleration setting changes.",
+    "Canvas 2D may itself use Chromium GPU acceleration; Canvas fallback does not prove CPU-only drawing.",
+    "Renderer restart, application restart, and forced WebGL restoration are not used to claim native recovery."
+  ],
+  "before": {
+    "mode": "gpu",
+    "rendered": true,
+    "preparationMs": 6.5,
+    "submissionMs": 19,
+    "cacheLookupMs": 0,
+    "geometryPreparationMs": 6.099999904632568,
+    "partialPreparationMs": 0,
+    "preparedEntities": 254,
+    "reusedEntities": 0,
+    "editMemoHit": false,
+    "editHistoryBytes": 0,
+    "editHistoryEntries": 0,
+    "initializationMs": 9.699999809265137,
+    "uploadMs": 0.39999985694885254,
+    "uploadCalls": 1,
+    "uploadKind": "full",
+    "subrangeUploadMs": 0,
+    "subrangeUploadCalls": 0,
+    "subrangeUploadBytes": 0,
+    "drawSubmissionMs": 0.7000000476837158,
+    "geometryVertices": 2862,
+    "cacheHit": false,
+    "cacheReason": "cold",
+    "bytes": 80136,
+    "device": "ready",
+    "capabilities": {
+      "state": "ready",
+      "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+      "renderer": "WebKit WebGL",
+      "maxTextureSize": 16384,
+      "maxViewportDims": [
+        32767,
+        32767
+      ],
+      "antialias": true,
+      "stencil": true,
+      "timerQuery": true
+    },
+    "demo": null
+  },
+  "graphics": {
+    "before": {
+      "observedAt": 1791890311120,
+      "prototype": {
+        "state": "ready",
+        "rendered": true,
+        "unmaskedVendor": "Google Inc. (NVIDIA)",
+        "unmaskedRenderer": "ANGLE (NVIDIA, NVIDIA RTX A3000 12GB Laptop GPU (0x000024B9) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+      },
+      "diagnostics": {
+        "state": "ready",
+        "adapters": [
+          {
+            "name": "Intel(R) UHD Graphics",
+            "vendorId": "0x8086",
+            "deviceId": "0x4688",
+            "active": false,
+            "driverVendor": "NVIDIA",
+            "driverVersion": "32.0.101.7088"
+          },
+          {
+            "name": "NVIDIA RTX A3000 12GB Laptop GPU",
+            "vendorId": "0x10de",
+            "deviceId": "0x24b9",
+            "active": true,
+            "driverVendor": "Unknown",
+            "driverVersion": "32.0.15.9671"
+          },
+          {
+            "name": "Microsoft Basic Render Driver",
+            "vendorId": "0x1414",
+            "deviceId": "0x008c",
+            "active": false,
+            "driverVendor": "Unknown",
+            "driverVersion": "10.0.26100.9549"
+          }
+        ],
+        "hardwareAcceleration": true,
+        "features": {
+          "2d_canvas": "enabled",
+          "flash_3d": "Unknown",
+          "flash_stage3d": "Unknown",
+          "flash_stage3d_baseline": "Unknown",
+          "gpu_compositing": "enabled",
+          "multiple_raster_threads": "enabled_on",
+          "native_gpu_memory_buffers": "Unknown",
+          "rasterization": "enabled",
+          "video_decode": "enabled",
+          "video_encode": "enabled",
+          "vpx_decode": "Unknown",
+          "webgl": "enabled",
+          "webgl2": "Unknown",
+          "opengl": "enabled_on",
+          "vulkan": "Unknown",
+          "webgpu": "enabled",
+          "direct_rendering_display": "Unknown",
+          "skia_graphite": "disabled_off"
+        },
+        "driver": {
+          "vendor": "Unknown",
+          "version": "Unknown"
+        },
+        "fallback": "Unknown",
+        "reasons": [
+          "skia_graphite: disabled_off"
+        ],
+        "versions": {
+          "jcad": "0.4.8",
+          "electron": "44.7.0",
+          "chromium": "152.0.7977.130",
+          "windows": "10.0.26200"
+        }
+      },
+      "diagnosticsSource": "Bounded preload projection; may be cached.",
+      "metadataDeadlineMs": 2000
+    },
+    "after": {
+      "observedAt": 1791890312915,
+      "prototype": {
+        "state": "ready",
+        "rendered": true,
+        "unmaskedVendor": "Google Inc. (NVIDIA)",
+        "unmaskedRenderer": "ANGLE (NVIDIA, NVIDIA RTX A3000 12GB Laptop GPU (0x000024B9) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+      },
+      "diagnostics": {
+        "state": "ready",
+        "adapters": [
+          {
+            "name": "Intel(R) UHD Graphics",
+            "vendorId": "0x8086",
+            "deviceId": "0x4688",
+            "active": false,
+            "driverVendor": "NVIDIA",
+            "driverVersion": "32.0.101.7088"
+          },
+          {
+            "name": "NVIDIA RTX A3000 12GB Laptop GPU",
+            "vendorId": "0x10de",
+            "deviceId": "0x24b9",
+            "active": true,
+            "driverVendor": "Unknown",
+            "driverVersion": "32.0.15.9671"
+          },
+          {
+            "name": "Microsoft Basic Render Driver",
+            "vendorId": "0x1414",
+            "deviceId": "0x008c",
+            "active": false,
+            "driverVendor": "Unknown",
+            "driverVersion": "10.0.26100.9549"
+          }
+        ],
+        "hardwareAcceleration": true,
+        "features": {
+          "2d_canvas": "enabled",
+          "flash_3d": "Unknown",
+          "flash_stage3d": "Unknown",
+          "flash_stage3d_baseline": "Unknown",
+          "gpu_compositing": "enabled",
+          "multiple_raster_threads": "enabled_on",
+          "native_gpu_memory_buffers": "Unknown",
+          "rasterization": "enabled",
+          "video_decode": "enabled",
+          "video_encode": "enabled",
+          "vpx_decode": "Unknown",
+          "webgl": "enabled",
+          "webgl2": "Unknown",
+          "opengl": "enabled_on",
+          "vulkan": "Unknown",
+          "webgpu": "enabled",
+          "direct_rendering_display": "Unknown",
+          "skia_graphite": "disabled_off"
+        },
+        "driver": {
+          "vendor": "Unknown",
+          "version": "Unknown"
+        },
+        "fallback": "Unknown",
+        "reasons": [
+          "skia_graphite: disabled_off"
+        ],
+        "versions": {
+          "jcad": "0.4.8",
+          "electron": "44.7.0",
+          "chromium": "152.0.7977.130",
+          "windows": "10.0.26200"
+        }
+      },
+      "diagnosticsSource": "Bounded preload projection; may be cached.",
+      "metadataDeadlineMs": 2000
+    }
+  },
+  "referenceInput": {
+    "width": 1216,
+    "height": 552,
+    "dpr": 1,
+    "scale": 95.17241379310344,
+    "twist": 0,
+    "background": "#212830",
+    "center": {
+      "x": 3.5,
+      "y": 2.5
+    },
+    "hover": null,
+    "selection": []
+  },
+  "canvasRecoveryPath": "lost-then-restored",
+  "cacheRecoveryPath": "warmed-cache-loss-observed",
+  "automaticFallbackComparisons": [
+    {
+      "source": "automatic-redraw",
+      "at": 1694.7000000476837,
+      "canvasLossObserved": true,
+      "cacheLossObserved": true,
+      "cache": {
+        "exists": true,
+        "retainsOriginal": false,
+        "currentSnapshot": true,
+        "healthy": true
+      },
+      "fallbackAnchorAt": 1671.7000000476837,
+      "canvasRestoredAt": 1671.7000000476837,
+      "cacheLostAt": 1167.9000000953674,
+      "cacheRestoredAt": 1670.7000000476837,
+      "webglLostAt": 1152.5,
+      "webglRestoredAt": 2179.9000000953674,
+      "device": "lost",
+      "rawDifferentChannels": 205,
+      "exactPixels": false,
+      "imageDifferenceFraction": 0,
+      "twoPixelCoverageMissFraction": 0,
+      "referenceForegroundPixels": 10667,
+      "recoveredForegroundPixels": 10667,
+      "fullyOpaque": true,
+      "image": "automatic-canvas-fallback-2.png",
+      "thresholds": {
+        "pixelmatch": 0.15,
+        "imageDifferenceFraction": 0.005,
+        "twoPixelCoverageMissFraction": 0.005
+      }
+    }
+  ],
+  "afterMetrics": [
+    {
+      "pid": 61676,
+      "creationTime": 1791890311647.272,
+      "type": "GPU"
+    }
+  ],
+  "persistence": {
+    "expectedCount": 255,
+    "reopenedCount": 255,
+    "completeDxf": true
+  },
+  "pageErrors": [],
+  "exportProvenance": {
+    "producerSourceSha": "fe653933be2bb2a359145efe01648111fc88c21f",
+    "privateHostPathsOmitted": true,
+    "numericMeasurementsRetained": true,
+    "format": "Losslessly compact JSON for benchmark reports; native reports remain indented."
+  }
+}
