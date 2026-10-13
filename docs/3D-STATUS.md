@@ -93,7 +93,30 @@ Baseline on Windows x64, Node 22.23.3: typecheck, lint and 177 test files / 2,21
 
 ## Milestone 4: editing
 
-Pending.
+- Works (flag on): 3DMOVE, 3DROTATE (axis X/Y/Z of the plane or two points, typed or reference
+  angle), 3DSCALE (factor or reference) transforming mesh and feature history together in one
+  undo step; the 2D MOVE, COPY, ROTATE, SCALE and MIRROR commands carry selected solids along
+  with 2D objects (COPY and MIRROR give new ids; mirrored solids keep positive volume); 3D object
+  snaps END / MID / CEN / NEA on the face under the cursor, following the OSNAP toggles and
+  aperture, with the 2D-style marker; bounding-box grips with a centre-grip move; 3DDIST,
+  3DMASSPROP (volume, surface area, bounding box, centroid), 3DAREA on a planar face, and DIST
+  reporting 3D and planar distances in 3D mode; editable primitive parameters in the Properties
+  palette re-evaluating in place under the same id (Boolean solids re-run in the worker). Ribbon
+  panels Edit and Measure. See [3D-EDITING.md](3D-EDITING.md).
+- Tested: 5 tool test files (130 tests: transforms re-evaluated from their histories match the
+  transformed meshes within 1e-6 for every feature kind, mirror keeps volume positive, snaps
+  from rays, analytic measurements, dimension entity shape, parameter edits, undo). Full suite
+  207 files / 2,657 tests, typecheck, lint, build green. Verified by the supervisor in Chromium:
+  the documented replay (box moved to x 20..30 / z 3..8 and back, rotated about Z then X,
+  scaled to 4,000 and back to 500 by reference, 3DDIST 13.0000 with planar 5.0000, 3DDIM text
+  4.0000 undone cleanly, MASSPROP 500 / 400 / centroid 15,-2.5,5), an endpoint snap on a box
+  corner feeding 3DDIST, and 9 grip points on a selected box.
+- Prototype: 3DDIM writes an ordinary 2D aligned dimension on the drawing plane and refuses
+  planes not parallel to WCS XY; true 3D dimension entities are unsupported. Only the centre grip
+  does anything; there is no transform gizmo; snaps on curved faces land on tessellation
+  vertices; the 2D modify commands transform solids in the WCS XY plane, not the construction
+  plane.
+- Remains: hardening (milestone 6).
 
 ## Milestone 5: persistence
 
