@@ -6,7 +6,7 @@
  *    uses backslashes; a POSIX path keeps forward slashes;
  *  - "." and ".." segments are resolved and repeated separators collapsed;
  *  - Unicode NFC for POSIX paths; Windows preserves distinct composed/decomposed filenames;
- *  - comparison is case-insensitive for Windows paths and case-sensitive elsewhere;
+ *  - Windows lexical comparison folds ASCII only; native aliases require host evidence;
  *  - project-relative entries resolve against the folder of the project file, and are
  *    stored with forward slashes so a project opens on any system.
  *
@@ -102,15 +102,45 @@ export function normalizePath(p: string): string {
   return format(parse(p));
 }
 
-/** Identity key: the normalised path, lower-cased for Windows paths. */
+/** Lexical key only: Unicode Windows aliases cannot be inferred from JavaScript casing. */
 export function pathKey(p: string): string {
   const n = normalizePath(p);
-  return isWindowsPath(n) ? n.toLowerCase() : n;
+  return isWindowsPath(n) ? n.replace(/[A-Z]/g, (letter) => letter.toLowerCase()) : n;
 }
+
+export const MAX_WINDOWS_PATH_IDENTITIES = 2048;
+const MAX_IDENTITY_CHARACTERS = 4 * 1024 * 1024;
+const windowsIdentities = new Map<string, string>();
+let identityCharacters = 0;
+
+/** Runtime evidence from an authorized host open/bind; never drawing/project data. */
+export function registerWindowsPathIdentity(logical: string, canonical: string): void {
+  for (const value of [logical, canonical]) if (typeof value !== 'string' || !isWindowsPath(value) || !isAbsolutePath(value) || value.length > 4096 || /[\u0000-\u001f\u007f]/.test(value)) throw new Error('Invalid native Windows path identity.');
+  const source = normalizePath(logical), target = normalizePath(canonical), keys = [...new Set([source, target])];
+  for (const key of keys) {
+    const previous = windowsIdentities.get(key);
+    if (previous !== undefined && previous !== target) throw Object.assign(new Error('This file path now resolves to another native file. Choose its actual folder or reopen the drawing before saving.'), { code: 'ERR_PATH_IDENTITY_CHANGED' });
+  }
+  const additions = keys.filter(key => !windowsIdentities.has(key)), characters = additions.reduce((sum, key) => sum + key.length + target.length, 0);
+  if (windowsIdentities.size + additions.length > MAX_WINDOWS_PATH_IDENTITIES || identityCharacters + characters > MAX_IDENTITY_CHARACTERS) throw Object.assign(new Error('Native file identity history is full. Finish pending saves and restart the app before opening more files.'), { code: 'ERR_PATH_IDENTITY_CAPACITY' });
+  for (const key of additions) windowsIdentities.set(key, target);
+  identityCharacters += characters;
+}
+
+/** Queue identity prefers exact native stored spelling, including case-sensitive directories. */
+export function pathIdentityKey(p: string): string {
+  const native = windowsIdentities.get(normalizePath(p));
+  return native === undefined ? `lexical:${pathKey(p)}` : `native:${native}`;
+}
+
+/** Tests only; production identities have no eviction that could weaken active source warnings. */
+export function resetWindowsPathIdentitiesForTests(): void { windowsIdentities.clear(); identityCharacters = 0; }
 
 /** Do two paths name the same file? (null / empty never matches.) */
 export function samePath(a: string | null | undefined, b: string | null | undefined): boolean {
   if (!a || !b) return false;
+  const nativeA = windowsIdentities.get(normalizePath(a)), nativeB = windowsIdentities.get(normalizePath(b));
+  if (nativeA !== undefined && nativeB !== undefined) return nativeA === nativeB;
   return pathKey(a) === pathKey(b);
 }
 
@@ -157,7 +187,7 @@ export function relativePath(dir: string, target: string): string {
   const d = parse(dir);
   const t = parse(target);
   if (!d.root || !t.root || d.windows !== t.windows) return normalizePath(target);
-  const fold = (s: string) => (d.windows ? s.toLowerCase() : s);
+  const fold = (s: string) => (d.windows ? s.replace(/[A-Z]/g, (letter) => letter.toLowerCase()) : s);
   if (fold(d.root) !== fold(t.root)) return normalizePath(target);
   let i = 0;
   while (i < d.segments.length && i < t.segments.length && fold(d.segments[i]!) === fold(t.segments[i]!)) i += 1;

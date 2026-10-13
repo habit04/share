@@ -72,6 +72,7 @@ import { findRails, nearestReference, rungReferences } from '../electrical/ladde
 import { projectDrawingIndex, projectEntryFor, resolveDrawingPath, resolveProjectPath, baseName } from './project';
 import { samePath, shortNames } from './paths';
 import { captureRevision, contentHash, saveQueue } from './savequeue';
+import { SaveAdmission, hasSaveAdmissions, isStaleSaveAdmission, unverifiedImportSource, UNVERIFIED_SOURCE_WARNING } from './save-admission';
 import { fileErrorText, exportFailed, exportErrorText } from './file-error-text';
 import { fileErrorCode } from './file-errors';
 import { readDxf, writeDxf, DxfReadError } from '../io/dxf';
@@ -553,6 +554,21 @@ export interface LoadedSheet extends ProjectSheet {
   baseHash?: string;
   /** Save-queue revision captured when the drawing was read (an older write never replaces a newer one). */
   revision?: number;
+  /** Runtime-only host reservation for a writable closed-sheet snapshot. */
+  reservation?: SaveAdmission;
+}
+
+async function releaseSheetAdmissions(sheets: readonly LoadedSheet[]): Promise<void> {
+  await Promise.all(sheets.map(sheet => sheet.reservation?.close()));
+}
+
+async function loadWritableProjectSheets(editor: Editor): Promise<Awaited<ReturnType<typeof loadProjectSheets>> | null> {
+  try { return await loadProjectSheets(editor, { forSave: true }); }
+  catch (error) {
+    if (!hasSaveAdmissions(editor.fileBridge)) throw error;
+    editor.log(`Project command canceled: ${error instanceof Error ? error.message : String(error)} Nothing was changed.`);
+    return null;
+  }
 }
 
 /** Only the desktop bridge reads project drawings by path (the browser bridge would show a file picker per drawing). */
@@ -566,7 +582,7 @@ export function canReadProjectFiles(editor: Pick<Editor, 'fileBridge'>): boolean
  * through the file bridge (DXF only; DWG updates require an open tab). When the project
  * has no drawings, the current drawing alone is used.
  */
-export async function loadProjectSheets(editor: Editor, opts: { files?: boolean } = {}): Promise<{ sheets: LoadedSheet[]; skipped: string[] }> {
+export async function loadProjectSheets(editor: Editor, opts: { files?: boolean; forSave?: boolean } = {}): Promise<{ sheets: LoadedSheet[]; skipped: string[] }> {
   const project = editor.project;
   const sessions = editor.sessions.all.map((s) => ({ session: s, id: s.id, filePath: s.filePath, state: s.state, history: { undo: [...s.undo], redo: [...s.redo] }, sessionRevision: s.revision, revision: captureRevision() }));
   const activeId = editor.sessions.current.id;
@@ -576,6 +592,22 @@ export async function loadProjectSheets(editor: Editor, opts: { files?: boolean 
   const skipped: string[] = [];
   // Drawings are identified by full path; equal file names in different folders get their folder added.
   const paths = project.drawings.map((d) => resolveDrawingPath(project, d));
+  const reservations = new Map<number, SaveAdmission>();
+  if (opts.forSave && opts.files !== false && canReadProjectFiles(editor)) {
+    for (let i = 0; i < paths.length; i++) if (!sessions.some(session => samePath(session.filePath, paths[i]))) reservations.set(i, new SaveAdmission(editor.fileBridge!, 'drawing'));
+    // Reserve the whole writable preparation first. A capacity failure must not
+    // leave a partial global calculation that could modify open tabs or files.
+    const results = await Promise.allSettled([...reservations.values()].map(reservation => reservation.ready));
+    const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+    if (failed) {
+      await Promise.all([...reservations.values()].map(reservation => reservation.close()));
+      if (/ERR_SAVE_CAPACITY|too many.*sav|capacity/i.test(String(failed.reason?.message ?? failed.reason))) throw new Error('Too many drawing saves are pending; finish current saves or use a smaller project batch.');
+      throw failed.reason;
+    }
+    try { for (const [index, reservation] of reservations) await reservation.bind(paths[index]!); }
+    catch (error) { await Promise.all([...reservations.values()].map(reservation => reservation.close())); throw error; }
+  }
+  try {
   const names = shortNames(paths);
   // A detached copy of an open drawing: switching tabs while files load must not change what is calculated.
   // The copy is in model space (a layout tab would hand the calculations the paper entities).
@@ -591,6 +623,7 @@ export async function loadProjectSheets(editor: Editor, opts: { files?: boolean 
     const base = { name: names[i] || baseName(path), path, index: i, entrySheet: d.sheet, projectSettings: project.settings };
     const s = sessions.find((x) => samePath(x.filePath, path));
     if (s) {
+      await reservations.get(i)?.close();
       sheets.push({ ...makeSheet(copyOf(s.state, s.filePath), base), source: s.id === activeId ? 'active' : 'session', sessionId: s.id, session: s.session, sessionRevision: s.sessionRevision, base: s.state, history: s.history, revision: s.revision, projectState });
       continue;
     }
@@ -602,10 +635,12 @@ export async function loadProjectSheets(editor: Editor, opts: { files?: boolean 
       const revision = captureRevision();
       const res = await editor.fileBridge!.openDrawing!(path);
       if (!res) {
+        await reservations.get(i)?.close();
         skipped.push(base.name);
         continue;
       }
       if (res.kind === 'dwg') {
+        await reservations.get(i)?.close();
         skipped.push(`${base.name} (open this DWG in a tab to update it)`);
         continue;
       }
@@ -613,8 +648,9 @@ export async function loadProjectSheets(editor: Editor, opts: { files?: boolean 
       // A damaged file is not rewritten from a partial read: it is skipped (closedReadError says why).
       doc.load(withByBlockLibrarySymbols(readDxf(res.text, { filePath: path })), path);
       doc.ensureBlocks(LIBRARY_BLOCKS);
-      sheets.push({ ...makeSheet(doc, base), source: 'file', baseHash: contentHash(res.text), revision, projectState });
+      sheets.push({ ...makeSheet(doc, base), source: 'file', baseHash: contentHash(res.text), revision, projectState, reservation: reservations.get(i) });
     } catch (err) {
+      await reservations.get(i)?.close();
       skipped.push(`${base.name} (${closedReadError(err, path)})`);
     }
   }
@@ -622,6 +658,7 @@ export async function loadProjectSheets(editor: Editor, opts: { files?: boolean 
     sheets.push({ ...makeSheet(copyOf(active.state, active.filePath), { name: editor.fileName(), path: active.filePath, index: -1, projectSettings: project.settings }), source: 'active', sessionId: activeId, session: active.session, sessionRevision: active.sessionRevision, base: active.state, history: active.history, revision: active.revision, projectState });
   }
   return { sheets, skipped };
+  } catch (error) { await Promise.all([...reservations.values()].map(reservation => reservation.close())); throw error; }
 }
 
 export interface SheetChange {
@@ -655,6 +692,7 @@ export interface CommitResult {
  * written unless the user chooses "Continue Without Backup" for it.
  */
 export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[], changes: ReadonlyMap<number, SheetChange>, title: string, intro: string, alwaysConfirm = false): Promise<CommitResult | null> {
+  try {
   // Check every proposed drawing before changing tabs/history or making backups and writes.
   // Background tabs do not pass through the live Drawing's transaction boundary.
   const prepared = new Map<number, DrawingState>();
@@ -671,6 +709,7 @@ export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[
     if (!r) return null;
     choice = r;
   }
+  if (choice.files && hasSaveAdmissions(bridge) && [...changes.keys()].some(index => sheets[index]!.source === 'file' && !sheets[index]!.reservation?.enabled)) throw new Error('This project write was prepared without a Windows save admission. Prepare the project command again before changing drawings.');
   let open = 0;
   let written = 0;
   const failed: string[] = [];
@@ -732,6 +771,7 @@ export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[
       continue;
     }
     const path = sh.path;
+    const reservation = sh.reservation ?? new SaveAdmission(bridge, 'drawing');
     /** Why the file is no longer the revision the change was calculated from (null = it still is). */
     const changedSince = async (): Promise<string | null> => {
       if (projectChanged(sh)) return 'project changed while the command ran';
@@ -746,6 +786,8 @@ export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[
       return null;
     };
     try {
+      await reservation.ready;
+      await reservation.bind(path);
       // The file must still be what the change was calculated from (checked again right before the
       // write: the backup and its question take time, and the file can change or open meanwhile).
       const early = await changedSince();
@@ -753,13 +795,15 @@ export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[
         conflicts.push(`${sh.name} (${early})`);
         continue;
       }
-      const allowed = await confirmSaveOver(sh.doc.snapshot, path, projectUi.confirmLoss, sh, () => !projectChanged(sh) && editor.sessions.indexOfPath(path) < 0);
+      const unverified = await unverifiedImportSource(bridge, sh.doc.snapshot);
+      const allowed = unverified ? (await projectUi.confirmLoss('Review imported drawing before saving', UNVERIFIED_SOURCE_WARNING) ? 'save' : 'save-as') : await confirmSaveOver(sh.doc.snapshot, path, projectUi.confirmLoss, sh, () => !projectChanged(sh) && editor.sessions.indexOfPath(path) < 0);
       if (allowed !== 'save') {
         notSaved.push(sh.name);
         continue;
       }
       if (choice.backup && bridge.backupFile) {
-        const b = backupOutcome(await bridge.backupFile(path).catch((err: unknown) => ({ ok: false, error: err instanceof Error ? err.message : String(err) })));
+        const backup = reservation.ticket ? bridge.backupFile(path, { admission: reservation.ticket }) : bridge.backupFile(path);
+        const b = backupOutcome(await backup.catch((err: unknown) => { if (isStaleSaveAdmission(err)) throw err; return { ok: false, error: err instanceof Error ? err.message : String(err) }; }));
         if (!b.ok) {
           const go = await projectUi.confirmNoBackup(sh.name, path, b.error ?? 'unknown error');
           if (!go) {
@@ -775,18 +819,22 @@ export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[
       let late: string | null = null;
       const r = await saveQueue.run(path, sh.revision ?? captureRevision(), async () => {
         late = await changedSince();
-        return late ? null : bridge.saveDxf(path, text, sh.name, { backup: false });
+        if (late) return null;
+        const saved = await bridge.saveDxf(path, text, sh.name, { backup: false, ...(reservation.ticket ? { admission: reservation.ticket } : {}) });
+        await reservation.confirmSaved(saved); return saved;
       });
       if (r.status === 'stale') conflicts.push(`${sh.name} (a newer version was saved meanwhile)`);
       else if (late) conflicts.push(`${sh.name} (${late})`);
       else if (r.value) written += 1;
       else failed.push(sh.name);
     } catch (err) {
-      failed.push(`${sh.name} (${fileErrorText(err, { action: 'save', path })})`);
-    }
+      if (isStaleSaveAdmission(err)) conflicts.push(`${sh.name} (a newer version was saved meanwhile)`);
+      else failed.push(`${sh.name} (${fileErrorText(err, { action: 'save', path })})`);
+    } finally { await reservation.close(); }
   }
   if (open) editor.notify('file');
   return { open, written, failed, conflicts, notSaved };
+  } finally { await releaseSheetAdmissions(sheets); }
 }
 
 /** A state calculated from the model-space copy, put back into the layout tab the drawing showed. */
@@ -850,7 +898,9 @@ function showXrefProblems(editor: Editor, sheets: readonly LoadedSheet[], proble
 /** AEXREF project-wide. */
 export async function runProjectXref(editor: Editor): Promise<void> {
   editor.log('Cross-referencing the project ...');
-  const { sheets, skipped } = await loadProjectSheets(editor);
+  const loaded = await loadWritableProjectSheets(editor); if (!loaded) return;
+  const { sheets, skipped } = loaded;
+  try {
   const { changes, entries } = projectXrefChanges(sheets);
   const problems = xrefProblems(entries);
   const r = await commitSheets(editor, sheets, changes, 'Update Cross-References (Project)', `Coil / contact references across ${sheets.length} drawing(s): ${entries.length} tag(s).`);
@@ -860,6 +910,7 @@ export async function runProjectXref(editor: Editor): Promise<void> {
   const bad = problems.filter((p) => p.kind !== 'no-children');
   if (bad.length) editor.log(`${bad.filter((p) => p.kind === 'no-parent').length} contact(s) without a parent, ${bad.filter((p) => p.kind === 'duplicate-parent').length} duplicate parent(s).`);
   if (r) projectUi.showProblems(editor, sheets, problems);
+  } finally { await releaseSheetAdmissions(sheets); }
 }
 
 /** Rebuild sheet records over new states (for a second pass such as cross-referencing after a retag). */
@@ -875,7 +926,9 @@ function resheet(sheets: readonly LoadedSheet[], states: ReadonlyMap<number, Dra
 
 /** AERETAG project-wide (all tags, or only duplicates), followed by the project cross-reference. */
 export async function runProjectRetag(editor: Editor, mode: 'all' | 'duplicates'): Promise<void> {
-  const { sheets, skipped } = await loadProjectSheets(editor);
+  const loaded = await loadWritableProjectSheets(editor); if (!loaded) return;
+  const { sheets, skipped } = loaded;
+  try {
   const plan = planProjectRetag(sheets, mode);
   const tagged = new Map<number, DrawingState>();
   for (const [i, m] of plan.changes) tagged.set(i, withTags(sheets[i]!.doc.snapshot, m));
@@ -893,11 +946,14 @@ export async function runProjectRetag(editor: Editor, mode: 'all' | 'duplicates'
   logCommit(editor, `RETAG project (${plan.count} tag(s))`, r, skipped);
   if (r) recordProjectStatus(after, xrefProblems(x.entries));
   editor.hooks.projectChanged?.();
+  } finally { await releaseSheetAdmissions(sheets); }
 }
 
 /** AEWIRENO project-wide. */
 export async function runProjectWireNumbers(editor: Editor, perSheet: boolean): Promise<void> {
-  const { sheets, skipped } = await loadProjectSheets(editor);
+  const loaded = await loadWritableProjectSheets(editor); if (!loaded) return;
+  const { sheets, skipped } = loaded;
+  try {
   const plan = planProjectWireNumbers(sheets, { perSheet });
   const changes = new Map<number, SheetChange>();
   for (const [i, texts] of plan) {
@@ -911,6 +967,7 @@ export async function runProjectWireNumbers(editor: Editor, perSheet: boolean): 
   const total = [...plan.values()].reduce((n, t) => n + t.length, 0);
   const r = await commitSheets(editor, sheets, changes, 'Wire Numbers (Project)', `${total} wire number(s), unique across ${sheets.length} drawing(s); fixed numbers are kept.`, true);
   logCommit(editor, `Wire numbers project-wide (${total})`, r, skipped);
+  } finally { await releaseSheetAdmissions(sheets); }
 }
 
 const PLC_INPUT_BLOCKS = ['HPB11_NO', 'HLS11_NO', 'HPS11_NO', 'HFS11_NO', 'HTS11_NO', 'HPX11_NO', 'HSS11', 'HFL11_NO', 'HPE11_NO'];
@@ -1123,7 +1180,9 @@ function registerProjectCommands(editor: Editor): void {
 
 /** AETITLEBLOCK for every project drawing (closed drawings saved after confirmation). */
 export async function runTitleBlocksAll(editor: Editor): Promise<void> {
-  const { sheets, skipped } = await loadProjectSheets(editor);
+  const loaded = await loadWritableProjectSheets(editor); if (!loaded) return;
+  const { sheets, skipped } = loaded;
+  try {
   const changes = new Map<number, SheetChange>();
   let missing = 0;
   sheets.forEach((s, i) => {
@@ -1134,4 +1193,5 @@ export async function runTitleBlocksAll(editor: Editor): Promise<void> {
   const r = await commitSheets(editor, sheets, changes, 'Update Title Blocks (Project)', `Title block attributes from the project mapping for ${sheets.length} drawing(s).`);
   logCommit(editor, 'Title blocks', r, skipped);
   if (missing) editor.log(`${missing} drawing(s) have no title block matching the mapping.`);
+  } finally { await releaseSheetAdmissions(sheets); }
 }

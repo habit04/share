@@ -53,10 +53,10 @@ interface GenPath {
   text: string;
 }
 
-/** Flip the case of some letters (only letters whose case mapping is one character both ways: not "ß" or "İ"). */
+/** Only ASCII aliases are lexical; arbitrary Unicode casing needs native host evidence. */
 function caseVariant(rng: Rng, s: string): string {
   const flip = (c: string) => (c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase());
-  return [...s].map((c) => (rng.bool(0.3) && flip(flip(c)) === c && flip(c).length === 1 ? flip(c) : c)).join('');
+  return [...s].map((c) => (rng.bool(0.3) && /^[A-Za-z]$/.test(c) ? flip(c) : c)).join('');
 }
 
 function rootText(rng: Rng, style: Style, root: string, win32: boolean): string {
