@@ -137,7 +137,10 @@ describe('checked AC1032 compact built-in MATERIAL native projection', () => {
   });
   it('uses exact unchanged AutoCAD compact source bodies with honestly authored native producer defaults', () => {
     const raw = readFileSync(new URL('./fixtures/interchange/r2018-minsert.dxf', import.meta.url));
-    expect(createHash('sha256').update(raw).digest('hex')).toBe('89633c345b6c9fe5aae8ab36f6068ae8444780eba4bf11deeed85f275c01a450');
+    // Git text checkouts use LF or CRLF. Pin canonical LF content while the
+    // byte-for-byte reread below still proves the original input was untouched.
+    const canonical = raw.toString('utf8').replaceAll('\r\n', '\n');
+    expect(createHash('sha256').update(canonical).digest('hex')).toBe('d0539d4040a7c59264de839864bfacfa2728b820e527c84df4c157397cb52a96');
     const lines = raw.toString('utf8').trimEnd().split(/\r\n|\n|\r/), records: Array<{ type: string; groups: Pair[] }> = [];
     for (let index = 0; index < lines.length; index += 2) {
       const code = Number(lines[index]!.trim()), value = lines[index + 1]!;
