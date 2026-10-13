@@ -1117,7 +1117,8 @@ function convertLayouts(
   out.sort((a, b) => a.tab - b.tab);
   const layouts = out.map((o) => o.layout);
   if (layouts.length === 0) return undefined;
-  if (layouts.length === 1 && layouts[0]!.pristine && /^layout1$/i.test(layouts[0]!.name)) return undefined;
+  // Keep declared pristine layouts explicit: retained object references must
+  // still name their own sheet when another layout is added later.
   return layouts;
 }
 

@@ -394,7 +394,7 @@ export class LayoutReader {
     for (const o of objs) if (o.kind === 'LAYOUT') this.layoutObjs.push(o);
   }
 
-  /** Build the layouts; `readEntities` is the DXF reader's entity parser. Undefined = only an untouched Layout1. */
+  /** Build declared layouts; `readEntities` is the DXF reader's entity parser. */
   build(readEntities: LayoutEntityReader, host: LayoutHost): Layout[] | undefined {
     const units = unitsOfHost(host);
     const out: Array<{ layout: Layout; tab: number }> = [];
@@ -415,7 +415,8 @@ export class LayoutReader {
     out.sort((a, b) => a.tab - b.tab);
     const layouts = out.map((o) => o.layout);
     if (layouts.length === 0) return undefined;
-    if (layouts.length === 1 && layouts[0]!.pristine && /^layout1$/i.test(layouts[0]!.name)) return undefined;
+    // Even an untouched source Layout1 has its own retained LAYOUT/BLOCK_RECORD
+    // identities. Keep it explicit so a newly added sheet gets a distinct block.
     return layouts;
   }
 
