@@ -203,8 +203,8 @@ Implemented in milestone 5 (details and limits in [3D-FILE-FORMAT.md](3D-FILE-FO
   save; the import report says so). A polyface **without** JCad data is imported as a
   `mesh`-feature solid only when 3D reading is enabled and reported as "not editable
   parametrically"; otherwise behaviour is unchanged (dropped and reported) so 2D users see exactly
-  what they see today. DWG opens convert through LibreDWG into the same reader, so DWG polyfaces
-  follow the same rules.
+  what they see today. DWG opens go through a separate converter that drops polyface meshes
+  (`POLYLINE_PFACE`) and reports them; reading solids from DWG is unsupported on this branch.
 - A file JCad could not reopen is never written: when the solids would exceed the DXF reader's
   default limits, Save and Save As refuse with the triangle count and the limit, and autosave
   writes the recovery copy without the solids and records the omission for the recovery dialog.
