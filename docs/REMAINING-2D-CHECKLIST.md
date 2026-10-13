@@ -148,6 +148,13 @@ proof that their implementation or external verification has passed.
   normalization, bearings, fitting and verified anchors match native references. The committed
   20-entity font fixture passed native AUDIT with zero errors. Unverified origins, monochrome
   bitmap glyphs, contextual scripts, native MTEXT details and vector PDF remain explicit limits.
+- MTEXT milestone `c10e099`: **253 targeted tests** across 14 files, renderer TypeScript and
+  scoped lint pass. New attachment/wrapping suite has **42 cases**, including authored all-nine
+  attachment checks, native AP1/5/9 H/paragraphed-g anchors and Times default/qc/qr width55/60,
+  plus committed four-face fixture STYLE edit/undo/redo/DXF reopen. Native PDF position comparisons
+  allow 0.13 drawing units for quantization. Pen advances remain distinct from ink wrap spans;
+  overhanging dimension text participates in gaps/fit. Tall-glyph leading, inline font families,
+  tracking and automatic-height columns remain open. SHX/context-free layout remains unchanged.
 
 - PR #9 remains active and draft at the font milestone's read-only snapshot, head `01ebe95b3d05ddbcc46fb279b0dbffe19474b83a`.
   Its native

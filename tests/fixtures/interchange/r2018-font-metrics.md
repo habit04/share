@@ -1,7 +1,7 @@
 # Native Windows font metrics fixture
 
 This synthetic drawing was authored and normalized in a private directory using
-installed AutoCAD 2027 Core Console X.60.0.0 on 2026-10-12. AutoCAD reported
+installed AutoCAD 2027 Core Console X.60.0.0 on 2026-10-13. AutoCAD reported
 `AUDIT` with zero errors found or fixed, exported ASCII AutoCAD 2018 DXF with
 precision 16, and plotted the same source through `DWG To PDF.pc3`. The native
 PDF confirmed ArialMT, CourierNewPSMT, TimesNewRomanPSMT and Arial-BoldMT faces.
@@ -35,9 +35,11 @@ the tested installed faces, rather than a promise about every available font.
 The native MTEXT plot wraps this string into 4 + 1 words for Arial, Times and
 Arial Bold, and five one-word lines for Courier New. Times is a deliberate
 boundary case: four words have an advance slightly greater than 60 but fit by
-ink span. This fixture records remaining native wrapping work; it does not
-assert that advance-only wrapping, native leading or every attachment already
-matches AutoCAD.
+ink span. The subsequent MTEXT milestone uses that span for wrapping while
+preserving advances, and compares default/qc/qr at widths55/60 and AP1/5/9 with
+native positions. All nine attachment axes also have authored-metric regressions.
+Tall-glyph line leading remains approximate; the native iii baseline gaps are
+not claimed to match.
 
 A private current-source check on 2026-10-13 passed 62 Chrome checks through
 the actual Windows Electron font-metrics IPC: ordinary installed-face metrics,

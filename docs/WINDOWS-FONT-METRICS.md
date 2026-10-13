@@ -36,8 +36,11 @@ hinting and unusual Unicode glyphs can still differ from native CAD. Native TEXT
 overflowing glyphs to face bounds even when their visible ink extends farther; selection bounds
 keep visible outline extent, so special MIDDLE for these cases remains approximate.
 
-Native MTEXT attachment bounds, exact line leading, wrapping at ink-overhang boundaries, inline
-font changes/tracking and automatic column balancing remain open. Existing formatting source is
+MTEXT now attaches each default-aligned line by ink bearings and includes first-line ascent and
+lowest descender in its vertical anchor. Wrapping uses ink span while pen placement retains advances;
+explicit paragraph alignment keeps reference-width slack. Native AP1/5/9 and Times width55/60
+comparisons pass. Exact tall-glyph line leading, inline font changes/tracking and automatic column
+balancing remain open. Existing formatting source is
 retained. Reader-omitted leader/table font fields require the separate DWG workstream.
 
 Vector PDF still uses Helvetica/Helvetica-Bold or stroke paths and does not embed installed fonts.

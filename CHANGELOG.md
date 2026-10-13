@@ -44,6 +44,12 @@ messages). The date of each version is the date of the commit that set that vers
 
 ### Fixed
 
+- Installed TrueType MTEXT uses glyph ink for wrapping and attachment while retaining independent
+  pen advances. Default line anchors include bearings and vertical descenders; explicit paragraph
+  alignment retains reference-width slack. Dimension gaps and fitting include overhanging ink.
+  Native tall-glyph leading, inline font families and automatic column heights remain approximate.
+- Font lookup ignores inherited/malformed STYLE entries, so missing styles named `constructor`
+  or `toString` cannot crash painting; legitimate owned styles with those names remain supported.
 - Angular dimensions honor DIMSD1/DIMSD2 and keep distinct arrows attached to their defining
   legs when the displayed arc reverses. Text gaps cannot overrun blank-arrow backoffs.
 - Named dimension-style edits update model space, every block and every paper layout while
