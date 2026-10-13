@@ -2161,6 +2161,9 @@ mod tests {
         let original =
             include_str!("../tests/fixtures/projected-table-style.dxf").replace("\r\n", "\n");
         let text = original.replace(
+            "0\nENDTAB\n0\nENDSEC\n0\nSECTION\n2\nOBJECTS\n",
+            "0\nENDTAB\n0\nTABLE\n2\nAPPID\n5\n9\n70\n1\n0\nAPPID\n5\n201\n330\n9\n100\nAcDbSymbolTableRecord\n100\nAcDbRegAppTableRecord\n2\nJCAD_STYLE_PROOF\n70\n0\n0\nENDTAB\n0\nENDSEC\n0\nSECTION\n2\nOBJECTS\n",
+        ).replace(
             "0\nENDSEC\n0\nEOF\n",
             "1001\nJCAD_STYLE_PROOF\n1000\nLiteral \\U+0041 Δ\n1070\n7\n0\nENDSEC\n0\nEOF\n",
         );
@@ -2175,6 +2178,30 @@ mod tests {
             .unwrap();
         let literals = source_literals(&text).unwrap();
         verify_source_literals(&source, &literals).unwrap();
+        assert!(source.app_ids.get("JCAD_STYLE_PROOF").is_some());
+        let xdata = source.object_xdata.get(&Handle::new(0x155)).unwrap();
+        assert_eq!(xdata.records().len(), 1);
+        assert_eq!(
+            xdata.records()[0].values,
+            vec![
+                acadrust::xdata::XDataValue::String("Literal \\U+0041 Δ".into()),
+                acadrust::xdata::XDataValue::Integer16(7)
+            ]
+        );
+        let dxf_output = acadrust::DxfWriter::new(&source).write_to_vec().unwrap();
+        let dxf_output_text = std::str::from_utf8(&dxf_output).unwrap();
+        assert_eq!(
+            source_literals(dxf_output_text).unwrap().xdata[&0x155],
+            vec!["Literal \\U+0041 Δ".to_string()]
+        );
+        let dxf_reopened = DxfReader::from_reader(std::io::Cursor::new(dxf_output))
+            .unwrap()
+            .read()
+            .unwrap();
+        assert_eq!(
+            source.object_xdata[&Handle::new(0x155)].records(),
+            dxf_reopened.object_xdata[&Handle::new(0x155)].records()
+        );
         let before = metadata_snapshot(&source).unwrap()["xdata"].clone();
         assert!(!before.as_object().unwrap().is_empty());
         let mut output = std::io::Cursor::new(Vec::new());

@@ -79,7 +79,7 @@
     {
       "path": "src/io/dxf/reader/section_reader.rs",
       "beforeSha256": "bb6654d7282300e54ea568efda7824149037a6b33a01d4fd287d7c8a2c9ac45b",
-      "afterSha256": "4b5b86f2e60d158aef97fcc9672378677dc2f07a7b8e4c5c63da38f7669501ec",
+      "afterSha256": "207689f6015207163fa8dbce0e24b4b2dfac1a6a8543575e62de9af3399003b1",
       "replacements": [
         {
           "before": "let obj = self.read_field_object_dxf(document.version)?;",
@@ -204,6 +204,11 @@
         {
           "before": "self.read_table_style()?",
           "after": "self.read_table_style(document)?",
+          "count": 1
+        },
+        {
+          "before": "                .is_some_and(crate::io::dxf::object_has_own_dxf_xdata)",
+          "after": "                .is_some_and(|object| {\n                    // TABLESTYLE owns its raw DXF tail, but native common data\n                    // needs the same full typed XDATA registry. Keep the DXF\n                    // writer's own-tail suppression unchanged to avoid duplicates.\n                    crate::io::dxf::object_has_own_dxf_xdata(object)\n                        && !matches!(object, ObjectType::TableStyle(_))\n                })",
           "count": 1
         }
       ]
