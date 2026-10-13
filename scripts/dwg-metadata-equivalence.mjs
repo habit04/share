@@ -393,8 +393,67 @@ function sameValue(code, a, b, sourceRecord, source, target, matches, context) {
   }
 }
 
+// The R2013+ ordered property grammar is shared by the typed native writer and
+// the independent C reader. Colors occupy only these eight AcGi property slots.
+const visualPropertyCodes = [90, 90, 90, 90, 40, 40, 62, 90, 90, 62, 62, 90, 90, 40, 90, 62, 40, 90, 90, 90, 62, 90, 90, 90, 290, 90, 40, 90,
+  290, 290, 290, 290, 290, 290, 290, 290, 290, 90, 40, 40, 90, 62, 90, 90, 62, 290, 90, 90, 90, 290, 90, 62, 40, 90, 1, 290, 40, 40];
+function visualStyleColorPairs(record, pairs, parsed, label) {
+  if (record.section !== 'OBJECTS' || record.type !== 'VISUALSTYLE') return pairs;
+  const starts = [], top = []; let depth = 0, xdata = false;
+  for (let index = 0; index < pairs.length; index++) {
+    const pair = pairs[index];
+    if (pair.code === 1001) xdata = true;
+    if (pair.code === 102) { depth += pair.value.trim().startsWith('{') ? 1 : pair.value.trim() === '}' ? -1 : 0; continue; }
+    if (!depth && !xdata) {
+      top.push(pair);
+      if (pair.code === 100 && pair.value.trim() === 'AcDbVisualStyle') starts.push(index);
+    }
+  }
+  // Legacy/raw records retain exact comparisons. A second70 declares a modern
+  // count; do not grant RGB equivalence to absent or ambiguous property bags.
+  if (top.filter(pair => pair.code === 70).length < 2) return pairs;
+  const version = parsed.header.get('$ACADVER');
+  if (version && (version.length !== 1 || version[0].code !== 1 || !['AC1027', 'AC1032'].includes(version[0].value.trim()))) fail(`${label} has an unsupported VISUALSTYLE property version`);
+  if (starts.length !== 1) fail(`${label} lacks a unique VISUALSTYLE property subclass`);
+  let cursor = starts[0] + 1;
+  const prefix = [2, 70, 177, 291, 70];
+  for (const code of prefix) if (pairs[cursor++]?.code !== code) fail(`${label} has unsupported VISUALSTYLE property framing`);
+  const count = pairs[cursor - 1].value.trim();
+  if (!/^[+]?0*58$/.test(count)) fail(`${label} lacks the complete58 VISUALSTYLE property count`);
+  const result = pairs.slice();
+  for (const [slot, code] of visualPropertyCodes.entries()) {
+    const at = cursor, value = pairs[cursor++], context = `${label}.property${slot}`;
+    if (value?.code !== code) fail(`${context} has an unsupported VISUALSTYLE property type/order`);
+    if (code === 62) {
+      const aci = value.value.trim();
+      if (!/^[+-]?\d{1,20}$/.test(aci) || BigInt(aci) < 0n || BigInt(aci) > 257n) fail(`${context} has invalid bounded color-index storage`);
+      if (pairs[cursor]?.code === 420) {
+        const rgb = pairs[cursor].value.trim();
+        if (!/^[+-]?\d{1,20}$/.test(rgb)) fail(`${context} has invalid bounded RGB integer storage`);
+        const word = BigInt(rgb);
+        if (word < -0x80000000n || word > 0xffffffffn) fail(`${context} has invalid 32-bit RGB storage`);
+        const packed = word & 0xffffffffn, method = packed >> 24n;
+        if (method !== 0n && method !== 0xc2n) fail(`${context} has an unsupported RGB color method`);
+        // A ByColor property is ONE typed color, not two independent values.
+        // Autodesk420 takes precedence over62; CMC stores RGB/method and the
+        // C reader derives62 with dwg_find_color_index. AutoCAD DXFOUT's18
+        // beside blackRGB0 therefore becomes native62=0. Retain pair framing,
+        // require a unique bounded companion, and compare every RGB bit.
+        result[at] = { code: 62, value: '0' };
+        result[cursor] = { code: 420, value: String(packed & 0xffffffn) }; cursor++;
+      }
+    }
+    const selector = pairs[cursor++];
+    if (selector?.code !== 176 || !/^[+-]?\d{1,20}$/.test(selector.value.trim()) || BigInt(selector.value.trim()) < 0n || BigInt(selector.value.trim()) > 3n) fail(`${context} has an unsupported VISUALSTYLE operation selector`);
+  }
+  // No additional value/selector may masquerade as part of the58-property bag.
+  // Opaque suffixes (including XDATA) retain the original raw comparison.
+  if (pairs[cursor] && [1, 2, 40, 62, 70, 90, 100, 176, 177, 290, 291, 420].includes(pairs[cursor].code)) fail(`${label} has excess VISUALSTYLE property framing`);
+  return result;
+}
+
 function comparePairs(record, actual, sourcePairs, targetPairs, source, target, matches, label) {
-  const first = normalizePairs(record, sourcePairs), second = normalizePairs(actual, targetPairs);
+  const first = visualStyleColorPairs(record, normalizePairs(record, sourcePairs), source, label), second = visualStyleColorPairs(actual, normalizePairs(actual, targetPairs), target, label);
   if (first.length !== second.length) fail(`${label} group count changed (${first.length} -> ${second.length})`);
   for (let index = 0; index < first.length; index++) {
     const a = first[index], b = second[index], context = `${label}.group${a.code}[${index}]`;
@@ -567,6 +626,16 @@ function tablePayload(record) {
     return ![5, 105].includes(pair.code) && !(common && pair.code === 330);
   });
 }
+function vportAmbientRgb(value, context) {
+  if (!/^[+-]?\d{1,20}$/.test(value.trim())) fail(`${context} has invalid bounded ambient-color integer storage`);
+  const word = BigInt(value.trim());
+  if (word < -0x80000000n || word > 0xffffffffn) fail(`${context} has invalid 32-bit ambient-color storage`);
+  const packed = word & 0xffffffffn, method = packed >> 24n;
+  // Autodesk DXF421 is 0x00RRGGBB; the independent C projection also exposes
+  // native AcCmEntityColor ByColor (0xC2RRGGBB). No other color method is RGB.
+  if (method !== 0n && method !== 0xc2n) fail(`${context} has an unsupported ambient-color method`);
+  return packed & 0xffffffn;
+}
 function compareTable(record, actual, source, target, matches, label) {
   const codes = tableProperties.get(record.type), all = record.type === 'VPORT';
   if (!codes && !all) return;
@@ -589,6 +658,12 @@ function compareTable(record, actual, source, target, matches, label) {
     const a = first.filter(pair => pair.code === code), b = second.filter(pair => pair.code === code);
     if (!a.length) continue;
     if (a.length !== b.length) fail(`${label}.group${code} count changed (${a.length} -> ${b.length})`);
+    if (all && code === 421) {
+      if (a.length !== 1) fail(`${label}.group421 has ambiguous ambient-color storage`);
+      const context = `${label}.group421[0]`;
+      if (vportAmbientRgb(a[0].value, context) !== vportAmbientRgb(b[0].value, context)) fail(`${context} ambient RGB changed`);
+      continue;
+    }
     for (let index = 0; index < a.length; index++) sameValue(code, a[index].value, b[index].value, record, source, target, matches, `${label}.group${code}[${index}]`);
   }
   // Unknown native VPORT fields retain their ordered raw framing; only known
