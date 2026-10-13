@@ -5,6 +5,7 @@ import { explodeInsert, translateEntity, rotateEntity, scaleEntityBy, mirrorEnti
 import { resolveAlpha } from '../src/core/appearance';
 import { resolveColor } from '../src/render/draw';
 import { drawingContext, plotPages, renderPdfPages } from '../src/io/pdf-vector';
+import { defaultLayout } from '../src/core/layouts';
 
 // Native ATTDEF/ATTRIB records authored independently of JCad's writer. These exercise
 // the combined TEXT-placement and CAD-appearance feature, including an attribute override.
@@ -28,6 +29,32 @@ const sample = () => readDxf(native);
 const placementsOf = (ins: InsertEntity) => (ins as unknown as { attributePlacements: Record<string, Record<string, unknown>> }).attributePlacements;
 
 describe('combined native attribute appearance and placement', () => {
+  it.each(['model', 'paper'])('keeps array attributes and SEQEND owned by their INSERT in %s space', space => {
+    const source = sample(), insert = { ...(source.entities[0] as InsertEntity), columns: 3, rows: 2, columnSpacing: 7, rowSpacing: 11 };
+    const state = space === 'model' ? { ...source, entities: [insert] }
+      : { ...source, entities: [], layouts: [{ ...defaultLayout('Attributed sheet'), entities: [insert] }] };
+    const lines = writeDxf(state).trimEnd().split(/\r\n|\r|\n/);
+    const records: { type: string; groups: [number, string][] }[] = [];
+    let current: (typeof records)[number] | undefined;
+    for (let index = 0; index < lines.length; index += 2) {
+      const code = Number(lines[index]), value = lines[index + 1]!;
+      if (code === 0) { current = { type: value, groups: [] }; records.push(current); }
+      else current?.groups.push([code, value]);
+    }
+    const group = (record: (typeof records)[number], code: number) => record.groups.find(([key]) => key === code)?.[1];
+    const parent = records.find(record => record.type === 'INSERT' && group(record, 2) === 'A')!;
+    const followers = records.filter(record => record.type === 'ATTRIB' || record.type === 'SEQEND');
+    expect(followers.map(record => record.type)).toEqual(['ATTRIB', 'ATTRIB', 'SEQEND']);
+    for (const follower of followers) {
+      expect(group(follower, 330)).toBe(group(parent, 5));
+      expect(group(follower, 330)).not.toBe(group(parent, 330));
+      expect(group(follower, 67) ?? '0').toBe(space === 'paper' ? '1' : '0');
+    }
+    const back = readDxf(writeDxf(state));
+    const reopened = (space === 'model' ? back.entities : back.layouts?.[0]?.entities)?.[0] as InsertEntity;
+    expect(reopened).toMatchObject({ columns: 3, rows: 2, attributes: { INHERIT: 'PARENT', DIRECT: 'OVERRIDE' } });
+    expect(placementsOf(reopened).DIRECT).toMatchObject({ trueColor: 0x654321, colorName: 'Book$Override Ω', transparency: 0 });
+  });
   it('keeps ATTDEF appearance and each native ATTRIB override independently on DXF reimport', () => {
     for (const state of [sample(), readDxf(writeDxf(sample()))]) {
       expect(state.blocks.A?.attributes[1]).toMatchObject({ trueColor: 0x123456, colorName: 'Book$Definition 雷', transparency: 200 });

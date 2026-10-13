@@ -176,6 +176,20 @@ function entityMetadata(record) {
   return pairs;
 }
 
+function geometryOwner(record) {
+  let depth = 0, owner;
+  for (const pair of record.groups) {
+    if (pair.code === 102) { depth += pair.value.trim().startsWith('{') ? 1 : pair.value.trim() === '}' ? -1 : 0; continue; }
+    if (depth) continue;
+    if (pair.code === 100) break;
+    if (pair.code === 330) {
+      if (owner !== undefined) fail(`${record.type}(${record.handle}) has duplicated common owner references`);
+      owner = pair.value;
+    }
+  }
+  return owner;
+}
+
 function normalizePairs(record, pairs) {
   const result = [], chunks = record.type === 'FIELD' ? [[2, 3], [301, 9]] : [], seen = new Set(), combined = new Map();
   for (const chunk of chunks) combined.set(chunk[0], unicode(pairs.filter(pair => chunk.includes(pair.code)).map(pair => pair.value).join('')));
@@ -456,6 +470,15 @@ export function verifyDwgMetadataEquivalence(sourceDxf, targetDxf, targetInvento
     const subset = full ? [] : entityMetadata(record);
     const actual = matches.get(record), label = `SOURCE:${record.type}(${record.handle ?? (record.type === 'CLASS' ? valueOf(record, 1) : 'no handle')})`;
     if (record.section === 'TABLES') compareTable(record, actual, source, target, matches, label);
+    if (['ENTITIES', 'BLOCKS'].includes(record.section)) {
+      const owner = geometryOwner(record);
+      if (owner !== undefined) {
+        if (!actual) fail(`${label} with a declared owner is missing from the independently decoded DWG`);
+        const observed = geometryOwner(actual);
+        if (observed === undefined) fail(`${label}.owner is missing from the independently decoded DWG`);
+        sameValue(330, owner, observed, record, source, target, matches, `${label}.owner`);
+      }
+    }
     if (!full && !subset.length) continue;
     if (!actual) fail(`${label} is missing from the independently decoded DWG`);
     const wanted = full ? dictionaries.has(record.type) ? dictionaryPayload(record) : record.groups : subset;

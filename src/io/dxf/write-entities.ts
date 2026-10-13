@@ -3,7 +3,7 @@
  * SEQEND) per JCad entity. Geometry types are written here; MTEXT, DIMENSION, LEADER, IMAGE and
  * tables come from write-annotations.ts.
  */
-import { Writer, writeEntityCommon, writeTextLike, writeTextStyle, emptyExtras, writeAnnotativeXdata } from './write-core';
+import { Writer, writeEntityCommon, writeTextLike, writeTextStyle, emptyExtras, writeAnnotativeXdata, writePaperSpaceFlag } from './write-core';
 import type { PolylineEntity, HatchEntity, SplineEntity, Entity, BlockDef } from '../../core/entities';
 import { splineCurve, hatchPatternLines, tableParts, attributeText } from '../../core/entities';
 import { findPattern } from '../../core/hatch';
@@ -264,6 +264,7 @@ export function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonl
       const hasAttribs = attribDefs.length > 0;
       const array = (e.columns ?? 1) > 1 || (e.rows ?? 1) > 1;
       writeEntityCommon(w, e, owner, 'INSERT', array ? 'AcDbMInsertBlock' : 'AcDbBlockReference');
+      const insertHandle = w.lastHandle().toString(16).toUpperCase();
       if (hasAttribs) w.pair(66, 1);
       w.pair(2, e.block);
       w.pair(10, e.position.x);
@@ -290,7 +291,8 @@ export function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonl
           const value = e.attributes[a.tag] ?? a.default;
           // Attribute position in world space
           const label = attributeText(e, block, a, value, false);
-          writeEntityCommon(w, label, owner, 'ATTRIB', 'AcDbText');
+          // The INSERT owns its followers; their paper-space flag belongs to its enclosing block.
+          writeEntityCommon(w, label, insertHandle, 'ATTRIB', 'AcDbText', owner);
           w.anchor(w.lastHandle().toString(16).toUpperCase(), { kind: 'entity', id: e.id, part: `attribute:${a.tag}` });
           writeTextLike(w, label.position, label.height, value, label.rotation, label.align, label);
           writeTextStyle(w, label);
@@ -302,8 +304,9 @@ export function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonl
         w.pair(0, 'SEQEND');
         w.pair(5, w.nextHandle());
         w.anchor(w.lastHandle().toString(16).toUpperCase(), { kind: 'entity', id: e.id, part: 'sequence-end' });
-        w.pair(330, owner);
+        w.pair(330, insertHandle);
         w.pair(100, 'AcDbEntity');
+        writePaperSpaceFlag(w, owner);
         w.pair(8, e.layer);
       }
       break;

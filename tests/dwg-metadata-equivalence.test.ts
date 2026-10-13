@@ -62,6 +62,33 @@ const annotationFixture = () => {
 };
 
 describe('independent raw DWG metadata postflight', () => {
+  it('preserves explicit geometry and block marker owners by logical block identity', () => {
+    const source = text([
+      ...section('TABLES', [
+        ...record('TABLE', '1', [[2, 'BLOCK_RECORD'], [330, '0']]),
+        ...record('BLOCK_RECORD', '2', [[330, '1'], [2, '*Model_Space'], [70, 0], [280, 1], [281, 0]]),
+        ...record('BLOCK_RECORD', '3', [[330, '1'], [2, '*Paper_Space0'], [70, 0], [280, 1], [281, 0]]), [0, 'ENDTAB'],
+      ]),
+      ...section('BLOCKS', [
+        ...record('BLOCK', '6', [[330, '3'], [100, 'AcDbEntity'], [100, 'AcDbBlockBegin'], [2, '*Paper_Space0']]),
+        ...record('ENDBLK', '7', [[330, '3'], [100, 'AcDbEntity'], [100, 'AcDbBlockEnd']]),
+      ]),
+      ...section('ENTITIES', [
+        ...record('LINE', '4', [[330, '2'], [100, 'AcDbEntity'], [100, 'AcDbLine'], [10, 0], [11, 1]]),
+        ...record('INSERT', '5', [[330, '2'], [100, 'AcDbEntity'], [100, 'AcDbBlockReference'], [2, 'Parts'], [66, 1]]),
+        ...record('SEQEND', '8', [[330, '5'], [100, 'AcDbEntity']]),
+      ]), [0, 'EOF'],
+    ]);
+    // Geometry IDs stay stable while the referenced table/control handles change.
+    const target = text(pairs(source).map(([code, value]) => [code, [5, 330].includes(code) && ['1', '2', '3'].includes(String(value)) ? '1' + value : value]));
+    expect(verify(source, target).objects).toBe(0);
+    for (const type of ['LINE', 'BLOCK', 'ENDBLK', 'SEQEND']) {
+      const otherOwner = type === 'LINE' ? '13' : '12';
+      expect(() => verify(source, mutateRecord(target, type, groups => changeValue(groups, 330, otherOwner)))).toThrow(new RegExp(type + '.*owner.*reference changed'));
+      expect(() => verify(source, mutateRecord(target, type, groups => groups.filter(([code]) => code !== 330)))).toThrow(new RegExp(type + '.*owner.*missing'));
+      expect(() => verify(source, mutateRecord(target, type, groups => { groups.splice(1, 0, [330, otherOwner]); return groups; }))).toThrow(/duplicated common owner/);
+    }
+  });
   it('distinguishes DIMSTYLE flags from text-fill colors, allowing only the omitted zero fill defaults', () => {
     const source = text([...section('TABLES', [...record('TABLE', '1', [[2, 'DIMSTYLE'], [330, '0']]), [0, 'DIMSTYLE'], [105, '2'], [330, '1'], [100, 'AcDbSymbolTableRecord'], [100, 'AcDbDimStyleTableRecord'], [2, 'Standard'], [70, 16], [0, 'ENDTAB']]), [0, 'EOF']]);
     const nativeDefault = mutateRecord(source, 'DIMSTYLE', groups => [...groups, [70, 0]]);
