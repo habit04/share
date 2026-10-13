@@ -175,7 +175,9 @@ jobs:
   # as proof of consumer hardware support; timing comparisons have no speed gate.
   gpu-experimental:
     runs-on: windows-latest
-    timeout-minutes: 20
+    # Includes setup/build, the native benchmark, recovery and unavailable-device checks.
+    # Individual accuracy, performance and render deadlines remain unchanged.
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
