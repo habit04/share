@@ -65,20 +65,34 @@ proof that their implementation or external verification has passed.
 
 ## Current validation and integration
 
-- Combined #9 + #24 source: **3,907 tests / 28 conditional skips**, all three TypeScript
+- Combined #9 + #24 source: **3,943 tests / 28 conditional skips**, all three TypeScript
   projects, broad lint, fixtures and production build pass. **32 actual Windows source-Electron
   workflows** pass together: 14 opened-source/save/recovery, seven tracked 2D import/edit/save/
   reopen and 11 PDF/CSV export workflows. All private app processes close; production bundle,
   source/native/config/harness hashes remain unchanged through the app run. Independent native
   ATTRIB handle uniqueness and exact reopened identity checks supplement every previous text
-  comparison. The only change after the full suite was this app-harness comparison; fresh static
-  checks/build and all 32 app workflows then passed on it. Original deadlines and guards remain.
+  comparison. The latest full suite, fresh static/build and all 32 app workflows cover the
+  checked legacy TABLESTYLE repair below. Original deadlines and guards remain.
   Three existing native metadata fixture families pass the adopted decoder/projection validators
   with zero native/write errors and complete bounded inventories. This reuses completed #9
   native assets; it does not certify a locally rebuilt writer, new installer or AutoCAD roundtrip.
   [Current PR checks](https://github.com/habit04/share/pull/11/checks) must pass on the exact
   published combination before the 3D stage. Parent CI and local decoder evidence do not
   replace that matching-helper/Windows gate.
+- First combined CI at `e477954` found a Node 22 512-drawing deadline failure, a safely refused
+  legacy-to-modern TABLESTYLE difference and a stale browser report check. The recovery failure
+  followed the aborted export setup. The correction keeps the original 15-second test and limits
+  competing CI workers to two. Stronger native-kind/per-row report checks pass 28 actual site
+  workflows; all 48 authoritative Ubuntu screenshots pass with the original image tolerances.
+  The one reviewed image change is warning text, with drawing geometry unchanged.
+- TABLESTYLE conversion now validates all three legacy rows against retained native CELLSTYLEMAP
+  formats, exact STYLE links, margins, colors, grids and common links. Unsupported inactive values
+  refuse before encoding; strict typed snapshots and independent C postflight remain intact.
+  **239 targeted checks, including 36 new cases**, pass. A genuine Rust binary-roundtrip fixture
+  and mutation/refusal cases are added but were not compiled locally. Matching changed-helper
+  compilation and C postflight remain required in fresh CI; an original DWG with implicit margins
+  cannot certify its DXFOUT's explicit-margin conversion. Development helper/source/notices/
+  integrity artifacts support private reproduction; no installer/signing workflow was changed.
 - Integration corrections retain modeled complex-LTYPE edits and opaque extensions, distinct
   anonymous STYLE identities, enabled/disabled/shared viewport boundary ownership, graph-aware
   copies/transforms/layout copies and fixed-point native 340 export. Full session/history and

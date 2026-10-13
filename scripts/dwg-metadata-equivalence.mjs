@@ -377,7 +377,7 @@ function sameValue(code, a, b, sourceRecord, source, target, matches, context) {
   } else if (integer(code)) {
     if (!/^[+-]?\d{1,20}$/.test(a.trim()) || !/^[+-]?\d{1,20}$/.test(b.trim())) fail(`${context} has invalid bounded integer storage`);
     const first = BigInt(a.trim()), second = BigInt(b.trim());
-    if (sourceRecord.type === 'DBCOLOR' && code === 420) {
+    if (['DBCOLOR', 'TABLESTYLE'].includes(sourceRecord.type) && code === 420) {
       if (first < -0x80000000n || first > 0xffffffffn || second < -0x80000000n || second > 0xffffffffn) fail(`${context} has invalid 32-bit color storage`);
       const x = first & 0xffffffffn, y = second & 0xffffffffn, rgb = [0n, 0xc2n].includes(x >> 24n) && [0n, 0xc2n].includes(y >> 24n);
       if ((rgb ? x & 0xffffffn : x) !== (rgb ? y & 0xffffffn : y)) fail(`${context} color value/method changed`);
@@ -400,6 +400,159 @@ function comparePairs(record, actual, sourcePairs, targetPairs, source, target, 
     const a = first[index], b = second[index], context = `${label}.group${a.code}[${index}]`;
     if (a.code !== b.code) fail(`${context} framing/order changed to group${b.code}`);
     sameValue(a.code, a.value, b.value, record, source, target, matches, context);
+  }
+}
+
+// AutoCAD DXFOUT represents R2010+ TABLESTYLE rows in the legacy record and
+// retains its ordered native overrides in an owned CELLSTYLEMAP. Admit this
+// representation only after every legacy property has an exact native value.
+// The original record, links, XDATA and full map are still checked separately.
+function legacyTableStyleProjection(record, source) {
+  const subclass = record.groups.findIndex(pair => pair.code === 100 && pair.value.trim() === 'AcDbTableStyle');
+  if (subclass < 0) fail('legacy TABLESTYLE lacks its subclass');
+  const prefix = new Map();
+  for (let index = 0; index < subclass; index++) {
+    const pair = record.groups[index];
+    if (pair.code === 102 && ['{ACAD_REACTORS', '{ACAD_XDICTIONARY'].includes(pair.value)) {
+      const key = pair.value, code = key === '{ACAD_REACTORS' ? 330 : 360, group = [pair];
+      if (prefix.has(key)) fail('legacy TABLESTYLE has duplicate common links');
+      while (++index < subclass && record.groups[index].code !== 102) {
+        if (record.groups[index].code !== code || group.length > 1024) fail('legacy TABLESTYLE common link framing is invalid'); group.push(record.groups[index]);
+      }
+      if (record.groups[index]?.value !== '}' || (code === 360 && group.length !== 2)) fail('legacy TABLESTYLE common links are incomplete');
+      group.push(record.groups[index]); prefix.set(key, group);
+    } else {
+      if (![5, 330].includes(pair.code) || prefix.has(pair.code)) fail('legacy TABLESTYLE has unrepresentable common properties'); prefix.set(pair.code, [pair]);
+    }
+  }
+  const tail = record.groups.findIndex((pair, index) => index > subclass && pair.code === 1001);
+  const end = tail < 0 ? record.groups.length : tail;
+  const header = new Map(), rows = []; let row, sawName = false;
+  const store = (map, pair) => { if (map.has(pair.code)) fail(`legacy TABLESTYLE duplicates group${pair.code}`); map.set(pair.code, pair.value); };
+  for (const pair of record.groups.slice(subclass + 1, end)) {
+    if (pair.code === 7) { if (rows.length === 3) fail('legacy TABLESTYLE has more than three rows'); row = new Map(); rows.push(row); store(row, pair); }
+    else if (row) {
+      if (![1, 140, 170, 62, 63, 283, 90, 91, ...Array.from({ length: 6 }, (_, i) => 274 + i), ...Array.from({ length: 6 }, (_, i) => 284 + i), ...Array.from({ length: 6 }, (_, i) => 64 + i), ...Array.from({ length: 8 }, (_, i) => 420 + i)].includes(pair.code)) fail(`legacy TABLESTYLE has unrepresentable row group${pair.code}`);
+      store(row, pair);
+    } else {
+      if (![3, 70, 71, 40, 41, 280, 281].includes(pair.code)) fail(`legacy TABLESTYLE has unrepresentable header group${pair.code}`);
+      const code = pair.code === 280 && !sawName ? -280 : pair.code;
+      store(header, { code, value: pair.value }); if (pair.code === 3) sawName = true;
+    }
+  }
+  if (!header.has(3)) fail('legacy TABLESTYLE has no name');
+  const number = (map, code, fallback) => {
+    const value = map.get(code) ?? String(fallback);
+    if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(value.trim()) || !Number.isFinite(Number(value))) fail(`legacy TABLESTYLE has invalid numeric group${code}`);
+    return Number(value);
+  };
+  const int = (map, code, fallback, min, max) => {
+    const value = map.get(code) ?? String(fallback);
+    if (!/^[+-]?\d{1,10}$/.test(value.trim()) || Number(value) < min || Number(value) > max) fail(`legacy TABLESTYLE has invalid integer group${code}`);
+    return Number(value);
+  };
+  if (int(header, -280, 0, 0, 255) !== 0 || int(header, 70, 0, 0, 1) !== 0) fail('legacy TABLESTYLE version/flow has no exact modern encoding');
+  let flags = int(header, 71, 0, -32768, 32767);
+  const title = int(header, 280, flags & 1 ? 1 : 0, 0, 1), heading = int(header, 281, flags & 2 ? 1 : 0, 0, 1);
+  if (header.has(71) && ((flags & 1 ? 1 : 0) !== title || (flags & 2 ? 1 : 0) !== heading)) fail('legacy TABLESTYLE has conflicting source flag/suppression values');
+  flags = (flags & ~3) | (title ? 1 : 0) | (heading ? 2 : 0);
+  const horizontal = number(header, 40, .06), vertical = number(header, 41, .06);
+  const pairs = values => values.map(([code, value]) => ({ code, value: String(value) }));
+  const color = (map, aciCode, rgbCode, fallback) => {
+    const aci = int(map, aciCode, fallback, 0, 257), rgb = map.get(rgbCode);
+    if (rgb === undefined) return pairs([[62, aci]]);
+    if (aci !== 0) fail('legacy TABLESTYLE has an unrepresentable true-color fallback index');
+    const word = int(map, rgbCode, 0, -2147483648, 4294967295) >>> 0;
+    if (![0, 0xc2].includes(word >>> 24)) fail('legacy TABLESTYLE has an unsupported true-color method');
+    return pairs([[62, 0], [420, (word & 0xffffff) | 0xc2000000]]);
+  };
+  const styleHandle = map => {
+    const name = identifier(map.get(7) ?? 'Standard'), style = source.aliases.get(`table:STYLE:${name}`);
+    if (!style?.handle) fail('legacy TABLESTYLE names a missing STYLE'); return style.handle;
+  };
+  const content = (map, alignment, height, base = false) => [
+    ...pairs([[300, 'CONTENTFORMAT'], [1, 'CONTENTFORMAT_BEGIN'], [90, 0], [91, 0], [92, int(map, 90, 512, -2147483648, 2147483647)], [93, int(map, 91, 0, -2147483648, 2147483647)], [300, map.get(1) ?? ''], [40, 0], [140, 1], [94, int(map, 170, alignment, 1, 9)]]),
+    ...color(map, 62, 420, 0), ...pairs([[340, base ? '0' : styleHandle(map)], [144, number(map, 140, height)], [309, 'CONTENTFORMAT_END']]),
+  ];
+  const named = (body, id, type, name) => [...body, ...pairs([[309, 'TABLEFORMAT_END'], [1, 'CELLSTYLE_BEGIN'], [90, id], [91, type], [300, name], [309, 'CELLSTYLE_END']])];
+  const base = named([
+    ...pairs([[1, 'TABLEFORMAT_BEGIN'], [90, 5], [170, 1], [91, 0], [92, 0], [62, 257], [93, 1]]), ...content(new Map(), 1, .18, true),
+    ...pairs([[171, 1], [301, 'MARGIN'], [1, 'CELLMARGIN_BEGIN'], [40, vertical], [40, horizontal], [40, vertical], [40, horizontal], [40, .18], [40, .18], [309, 'CELLMARGIN_END'], [94, 0]]),
+  ], 4, 2, 'Table');
+  /** @type {Array<[number,string,number,number,number,number,number]>} */
+  const rowSpecs = [[1, '_TITLE', 1, 1, 0x8000, 2, .25], [2, '_HEADER', 2, 1, 0, 2, .25], [0, '_DATA', 3, 2, 0, 5, .18]];
+  const generated = rowSpecs.map(([index, name, id, type, merge, alignment, height]) => {
+    const map = rows[index] ?? new Map(), declared = rows[index] !== undefined;
+    if (!int(map, 283, 0, 0, 1) && (int(map, 63, 7, 0, 257) !== 7 || map.has(421))) fail('legacy TABLESTYLE inactive fill color has no exact native encoding');
+    const borders = [1, 2, 4, 8, 16, 32].flatMap((mask, index) => [
+      ...pairs([[95, mask], [302, 'GRIDFORMAT'], [1, 'GRIDFORMAT_BEGIN'], [90, 0], [91, 1]]), ...color(map, 64 + index, 422 + index, 0),
+      ...pairs([[92, int(map, 274 + index, -2, -3, 211)], [340, '0'], [93, 1 - int(map, 284 + index, 1, 0, 1)], [40, 0], [309, 'GRIDFORMAT_END']]),
+    ]);
+    return named([
+      ...pairs([[1, 'TABLEFORMAT_BEGIN'], [90, 5], [170, 1], [91, 0], [92, merge]]), ...(int(map, 283, 0, 0, 1) ? color(map, 63, 421, 7) : pairs([[62, 257]])),
+      ...pairs([[93, 1]]), ...content(map, declared ? 5 : alignment, declared ? .18 : height), ...pairs([[171, 0], [94, 6]]), ...borders,
+    ], id, type, name);
+  });
+  const extension = record.groups.findIndex(pair => pair.code === 102 && pair.value === '{ACAD_XDICTIONARY');
+  const extensionHandle = extension < 0 ? undefined : record.groups[extension + 1];
+  let overrides = generated, keys = [1, 2, 3];
+  if (extensionHandle?.code === 360) {
+    const dictionary = source.handles.get(handle(extensionHandle.value));
+    if (!dictionary || dictionary.type !== 'DICTIONARY') fail('legacy TABLESTYLE extension dictionary is missing');
+    const entries = dictionaryEntries(dictionary, source), map = entries.get('ACAD_ROUNDTRIP_2008_TABLESTYLE_CELLSTYLEMAP');
+    if (map) {
+      if (map.type !== 'CELLSTYLEMAP') fail('legacy TABLESTYLE roundtrip map has the wrong class');
+      const parts = []; let start;
+      map.groups.forEach((pair, index) => {
+        if (pair.code === 1 && pair.value === 'TABLEFORMAT_BEGIN') { if (start !== undefined) fail('nested legacy TABLESTYLE cell format'); start = index; }
+        if (pair.code === 309 && pair.value === 'CELLSTYLE_END') { if (start === undefined) fail('unmatched legacy TABLESTYLE cell format'); parts.push(map.groups.slice(start, index + 1)); start = undefined; }
+      });
+      if (start !== undefined || parts.length < 3 || parts.length > 64) fail('legacy TABLESTYLE roundtrip map is incomplete or oversized');
+      keys = parts.map(part => { const begin = part.findIndex(pair => pair.code === 1 && pair.value === 'CELLSTYLE_BEGIN'); if (begin < 0 || part[begin + 1]?.code !== 90) fail('legacy TABLESTYLE cell identity is malformed'); return int(new Map([[90, part[begin + 1].value]]), 90, 0, -2147483648, 2147483647); });
+      overrides = parts;
+      // Native map formats are retained verbatim. Check all legacy row values
+      // against the defaults or explicit fields in those exact native formats.
+      for (let index = 0; index < rowSpecs.length; index++) {
+        const name = rowSpecs[index][1], row = rows[rowSpecs[index][0]] ?? new Map();
+        const matching = parts.filter(part => part.some((pair, at) => pair.code === 300 && pair.value === name && part[at - 1]?.code === 91));
+        if (matching.length !== 1) fail('legacy TABLESTYLE requires a unique native row format');
+        compareLegacyRow(row, matching[0], styleHandle, number, int, color);
+      }
+    }
+  }
+  return [
+    ...[5, '{ACAD_REACTORS', '{ACAD_XDICTIONARY', 330].flatMap(key => prefix.get(key) ?? []), ...pairs([[102, '{JCAD_TABLESTYLE_NATIVE_V1'], [90, flags], [91, 101], [360, '0'], [92, overrides.length], ...keys.map(key => [93, key]), [102, '}']]),
+    record.groups[subclass], ...pairs([[70, 0], [3, header.get(3)]]), ...base, ...overrides.flat(), ...record.groups.slice(end),
+  ];
+}
+
+function compareLegacyRow(row, part, styleHandle, number, int, color) {
+  const start = part.findIndex(pair => pair.code === 1 && pair.value === 'CONTENTFORMAT_BEGIN'), end = part.findIndex((pair, index) => index > start && pair.code === 309 && pair.value === 'CONTENTFORMAT_END');
+  if (start < 0 || end < 0) fail('legacy TABLESTYLE native row has no complete content format');
+  const content = part.slice(start + 1, end), cell = part.slice(0, start - 1);
+  const one = (values, code) => { const found = values.filter(pair => pair.code === code); if (found.length !== 1) fail(`legacy TABLESTYLE native row group${code} is missing or duplicated`); return found[0].value; };
+  for (const [legacy, native, fallback] of [[90, 92, 512], [91, 93, 0], [170, 94, 5], [140, 144, .18]]) {
+    if (number(row, legacy, fallback) !== Number(one(content, native))) fail(`legacy TABLESTYLE row group${legacy} differs from its retained native format`);
+  }
+  if ((row.get(1) ?? '') !== one(content, 300) || handle(one(content, 340)) !== styleHandle(row)) fail('legacy TABLESTYLE row format/text-style identity differs from its retained native format');
+  const sameColor = (map, aciCode, rgbCode, fallback, values) => {
+    const expected = color(map, aciCode, rgbCode, fallback), actual = values.filter(pair => [62, 420].includes(pair.code));
+    if (expected.length !== actual.length || expected.some((pair, index) => pair.code !== actual[index].code || (pair.code === 420 ? (Number(pair.value) >>> 0) & 0xffffff : Number(pair.value)) !== (pair.code === 420 ? (Number(actual[index].value) >>> 0) & 0xffffff : Number(actual[index].value)))) fail('legacy TABLESTYLE row color differs from its retained native format');
+  };
+  sameColor(row, 62, 420, 0, content);
+  if (int(row, 283, 0, 0, 1)) sameColor(row, 63, 421, 7, cell);
+  else if (Number(one(cell, 62)) !== 257 || cell.some(pair => pair.code === 420)) fail('legacy TABLESTYLE disabled fill differs from its retained native format');
+  for (let index = 0; index < 6; index++) {
+    const mask = [1, 2, 4, 8, 16, 32][index], starts = part.flatMap((pair, at) => pair.code === 95 && Number(pair.value) === mask ? [at] : []);
+    if (starts.length > 1) fail('legacy TABLESTYLE has duplicate native grid masks');
+    if (!starts.length) {
+      if (int(row, 274 + index, -2, -3, 211) !== -2 || int(row, 284 + index, 1, 0, 1) !== 1 || int(row, 64 + index, 0, 0, 257) !== 0 || row.has(422 + index)) fail('legacy TABLESTYLE explicit border differs from the native default');
+    } else {
+      const begin = starts[0], stop = part.findIndex((pair, at) => at > begin && pair.code === 309 && pair.value === 'GRIDFORMAT_END');
+      if (stop < 0) fail('legacy TABLESTYLE native border is incomplete'); const grid = part.slice(begin, stop);
+      if (int(row, 274 + index, -2, -3, 211) !== Number(one(grid, 92)) || int(row, 284 + index, 1, 0, 1) !== 1 - Number(one(grid, 93))) fail('legacy TABLESTYLE border weight/visibility differs from its retained native format');
+      sameColor(row, 64 + index, 422 + index, 0, grid);
+    }
   }
 }
 
@@ -481,7 +634,8 @@ export function verifyDwgMetadataEquivalence(sourceDxf, targetDxf, targetInvento
     }
     if (!full && !subset.length) continue;
     if (!actual) fail(`${label} is missing from the independently decoded DWG`);
-    const wanted = full ? dictionaries.has(record.type) ? dictionaryPayload(record) : record.groups : subset;
+    const legacyStyle = record.type === 'TABLESTYLE' && !record.groups.some(pair => pair.code === 1 && pair.value === 'TABLEFORMAT_BEGIN') && actual.groups.some(pair => pair.code === 1 && pair.value === 'TABLEFORMAT_BEGIN');
+    const wanted = legacyStyle ? legacyTableStyleProjection(record, source) : full ? dictionaries.has(record.type) ? dictionaryPayload(record) : record.groups : subset;
     const got = full ? dictionaries.has(actual.type) ? dictionaryPayload(actual, annotations.ignored.get(actual)) : actual.groups : entityMetadata(actual);
     comparePairs(record, actual, wanted, got, source, target, matches, label);
     if (record.section === 'OBJECTS') objects++; else if (record.type === 'VIEW') views++; else if (subset.length) metadataOwners++;

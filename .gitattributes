@@ -2,3 +2,4 @@
 *.mjs text eol=lf
 # Preserve independently checked native layout fixture bytes on Windows.
 native/dwg-writer/tests/fixtures/autocad-multilayout-app.dxf -text
+native/dwg-writer/tests/fixtures/legacy-minsert.dxf -text

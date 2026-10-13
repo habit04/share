@@ -79,6 +79,11 @@ messages). The date of each version is the date of the commit that set that vers
   shape styles and viewport clip identities retain their newer compatibility behavior.
   Combined validation is separate from the released v0.4.9 evidence; no installer is included.
 
+- Legacy TABLESTYLE conversion checks retained row formats, inherited overrides, links,
+  colors, grids and margins before choosing a modern native representation. Unsupported
+  inactive values refuse before encoding. Strict metadata snapshots and independent native
+  postflight remain required; local projection tests do not certify a compiled helper.
+
 - Windows text/PDF exports share drawing saves' native ordering and opened-source guards.
   PDF orders precede dialogs and slow font/image/conversion work; direct CSV reports capture
   before project reads and serialization. Older output, outside edits and retired owners

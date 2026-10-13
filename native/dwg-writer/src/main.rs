@@ -2950,6 +2950,85 @@ mod tests {
     }
 
     #[test]
+    fn retained_legacy_minserts_style_has_exact_modern_binary_semantics() {
+        let text = include_str!("../tests/fixtures/legacy-minsert.dxf");
+        let mut source = DxfReader::from_reader(std::io::Cursor::new(text.as_bytes())).unwrap().read().unwrap();
+        let handle = Handle::new(0x159);
+        let ObjectType::TableStyle(original) = source.objects[&handle].clone() else { unreachable!() };
+        assert!(original.modern_style.is_none() && original.raw_dxf_codes.is_some());
+        assert_eq!(original.modern_overrides.len(), 3);
+        source_schema::capture(text).unwrap().verify(&mut source).unwrap();
+        let ObjectType::TableStyle(prepared) = &source.objects[&handle] else { unreachable!() };
+        assert_eq!(prepared.modern_overrides, original.modern_overrides);
+        assert_eq!(prepared.raw_dxf_codes, original.raw_dxf_codes);
+        assert!(prepared.modern_style.is_some());
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        DwgWriter::write_to_writer(&mut bytes, &source).unwrap();
+        bytes.set_position(0);
+        let reopened = DwgReader::from_stream(bytes).read().unwrap();
+        verify_reopening(&source, &reopened).unwrap();
+        let baseline = metadata_snapshot(&source).unwrap();
+        for change in 0..5 {
+            let mut changed = reopened.clone();
+            let ObjectType::TableStyle(style) = changed.objects.get_mut(&handle).unwrap() else { unreachable!() };
+            match change {
+                0 => style.modern_unknown_long1 ^= 1,
+                1 => style.modern_style.as_mut().unwrap().cell_style.horizontal_margin += 1.0,
+                2 => style.modern_overrides[2].1.cell_style.content_format.text_height += 1.0,
+                3 => style.modern_overrides[2].1.cell_style.content_format.text_style = Handle::NULL,
+                _ => style.owner_handle = Handle::NULL,
+            }
+            assert!(equivalent(&baseline, &metadata_snapshot(&changed).unwrap(), "retained legacy native mutation").is_err());
+        }
+        for change in 0..9 {
+            let mut changed = original.clone();
+            match change {
+                0 => changed.description = "retained description".into(),
+                1 => changed.version = 1,
+                2 => changed.flow_direction = acadrust::objects::TableFlowDirection::Up,
+                3 => changed.annotative = true,
+                4 => changed.data_row_style.fill_color = acadrust::types::Color::Index(1),
+                5 => changed.data_row_style.text_height += 1.0,
+                6 => changed.data_row_style.text_style_name = "Missing".into(),
+                7 => changed.modern_overrides[2].1.cell_style.content_format.text_style = Handle::NULL,
+                _ => changed.data_row_style.top_border.line_weight = acadrust::types::LineWeight::ByLayer,
+            }
+            assert!(generated_table_style::canonical_retained_legacy_table_style(&source, &changed).is_err(), "{change}");
+        }
+        // Nondefault values with actual native slots are retained, rather than
+        // exempted as a stock Standard style or compared with defaults.
+        let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
+        let mut kind = String::new();
+        let mut first_height = true;
+        let mut cell = 0;
+        for index in (0..lines.len()).step_by(2) {
+            let code = lines[index].trim().parse::<i32>().unwrap();
+            let value = lines[index + 1].clone();
+            if code == 0 { kind = value.trim().into(); }
+            if kind == "TABLESTYLE" {
+                match code {
+                    71 => lines[index + 1] = "8".into(),
+                    40 => lines[index + 1] = "0.37".into(),
+                    41 => lines[index + 1] = "0.23".into(),
+                    140 if first_height => { lines[index + 1] = "0.8".into(); first_height = false; }
+                    _ => (),
+                }
+            }
+            if kind == "CELLSTYLEMAP" {
+                if code == 1 && value == "TABLEFORMAT_BEGIN" { cell += 1; }
+                if code == 144 && cell == 3 { lines[index + 1] = "0.8".into(); }
+            }
+        }
+        let nondefault = lines.join("\n") + "\n";
+        let mut source = DxfReader::from_reader(std::io::Cursor::new(nondefault.as_bytes())).unwrap().read().unwrap();
+        source_schema::capture(&nondefault).unwrap().verify(&mut source).unwrap();
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        DwgWriter::write_to_writer(&mut bytes, &source).unwrap(); bytes.set_position(0);
+        let reopened = DwgReader::from_stream(bytes).read().unwrap();
+        verify_reopening(&source, &reopened).unwrap();
+    }
+
+    #[test]
     fn table_style_legacy_none_colors_and_trailing_xdata_are_preserved_or_refused() {
         let legacy = "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1032\n0\nENDSEC\n0\nSECTION\n2\nOBJECTS\n0\nTABLESTYLE\n5\n200\n330\nC\n100\nAcDbTableStyle\n3\nControlled\n70\n0\n71\n0\n7\nStandard\n62\n257\n63\n257\n64\n257\n0\nENDSEC\n0\nEOF\n";
         let mut document = DxfReader::from_reader(std::io::Cursor::new(legacy.as_bytes()))
@@ -2972,14 +3051,11 @@ mod tests {
             acadrust::types::Color::None
         );
         let retained = style.clone();
-        source_schema::capture(legacy)
+        assert!(source_schema::capture(legacy)
             .unwrap()
             .verify(&mut document)
-            .unwrap();
-        assert_eq!(
-            document.objects[&Handle::new(0x200)],
-            ObjectType::TableStyle(retained)
-        );
+            .unwrap_err().contains("_DATA row"));
+        assert_eq!(document.objects[&Handle::new(0x200)], ObjectType::TableStyle(retained));
         // Source identity, not raw/modern shape, excludes an explicit record
         // from constructor materialization even if its raw cache is cleared.
         let mut without_raw_cache = document.clone();
@@ -2991,13 +3067,11 @@ mod tests {
             unreachable!()
         };
         style.raw_dxf_codes = None;
-        source_schema::capture(legacy)
+        assert!(source_schema::capture(legacy)
             .unwrap()
             .verify(&mut without_raw_cache)
-            .unwrap();
-        assert!(
-            matches!(&without_raw_cache.objects[&Handle::new(0x200)], ObjectType::TableStyle(style) if style.modern_style.is_none())
-        );
+            .is_err());
+        assert!(matches!(&without_raw_cache.objects[&Handle::new(0x200)], ObjectType::TableStyle(style) if style.modern_style.is_none()));
         assert!(retained_metadata(&document.objects[&Handle::new(0x200)]));
         let baseline = typed_metadata_value(&document.objects[&Handle::new(0x200)]).unwrap();
         let ObjectType::TableStyle(style) = document.objects.get_mut(&Handle::new(0x200)).unwrap()

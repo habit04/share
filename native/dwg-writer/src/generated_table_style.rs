@@ -188,3 +188,130 @@ pub(crate) fn canonical_generated_table_style(
     }
     Ok(value)
 }
+
+/// Check the complete legacy representation against the modern native slots
+/// before changing the checked baseline. Retained CELLSTYLEMAP formats stay
+/// authoritative, and convenience values without an exact native encoding
+/// refuse instead of being dropped from the preservation comparison.
+pub(crate) fn canonical_retained_legacy_table_style(
+    document: &acadrust::document::CadDocument,
+    source: &acadrust::objects::TableStyle,
+) -> Result<acadrust::objects::TableStyle, String> {
+    use acadrust::objects::{CellAlignment, RowCellStyle, TableFlowDirection, TableStyleFlags};
+    use acadrust::types::Handle;
+    if source.modern_style.is_some() || source.raw_dxf_codes.is_none() {
+        return Err("Retained legacy TABLESTYLE requires its original legacy record.".into());
+    }
+    if !source.description.is_empty()
+        || source.version != 0
+        || source.flow_direction != TableFlowDirection::Down
+        || source.annotative
+        || source.title_suppressed != source.flags.contains(TableStyleFlags::TITLE_SUPPRESSED)
+        || source.header_suppressed != source.flags.contains(TableStyleFlags::HEADER_SUPPRESSED)
+    {
+        return Err("Legacy TABLESTYLE description/version/flow/annotation has no exact modern encoding.".into());
+    }
+    let raw = source.raw_dxf_codes.as_ref().unwrap();
+    let subclass = raw.iter().position(|(code, value)| *code == 100 && value == "AcDbTableStyle")
+        .ok_or("Legacy TABLESTYLE lacks its original subclass.")?;
+    let mut named = false;
+    let mut seen = std::collections::BTreeSet::new();
+    for (code, value) in &raw[subclass + 1..] {
+        if *code == 7 || *code == 1001 { break; }
+        if !matches!(*code, 3 | 70 | 71 | 40 | 41 | 280 | 281) {
+            return Err("Legacy TABLESTYLE has an unrepresentable header property.".into());
+        }
+        let key = if *code == 280 && !named { -280 } else { *code };
+        if !seen.insert(key) { return Err("Legacy TABLESTYLE duplicates a header property.".into()); }
+        if *code == 3 { named = true; }
+        if *code == 71 && value.trim().parse::<i16>() != Ok(source.flags.bits()) {
+            return Err("Legacy TABLESTYLE has conflicting source flag/suppression values.".into());
+        }
+        if *code == 70 && value.trim().parse::<i16>() != Ok(0) {
+            return Err("Legacy TABLESTYLE source flow has no exact modern encoding.".into());
+        }
+    }
+    for (name, row) in [
+        ("_DATA", &source.data_row_style),
+        ("_HEADER", &source.header_row_style),
+        ("_TITLE", &source.title_row_style),
+    ] {
+        if !row.fill_enabled && row.fill_color != acadrust::types::Color::Index(7) {
+            return Err(format!("Legacy TABLESTYLE {name} row has no exact inactive-fill encoding."));
+        }
+    }
+    let mut generated = source.clone();
+    generated.raw_dxf_codes = None;
+    generated.modern_overrides.clear();
+    let mut prepared = canonical_generated_table_style(document, &generated)?;
+    prepared.raw_dxf_codes = source.raw_dxf_codes.clone();
+    // Retained flag bits are native data, unlike a constructor's stale bit8.
+    prepared.modern_unknown_long1 = source.flags.bits() as i32;
+    prepared.flags = source.flags;
+    if !source.modern_overrides.is_empty() {
+        prepared.modern_overrides = source.modern_overrides.clone();
+    }
+    if prepared.modern_overrides.len() > 64 {
+        return Err("Legacy TABLESTYLE exceeds the native override budget.".into());
+    }
+    let resolve = |row: &RowCellStyle| -> Result<Handle, String> {
+        let named = document.text_styles.get(&row.text_style_name)
+            .ok_or("Legacy TABLESTYLE names a missing text style.")?;
+        let handle = row.text_style_handle.unwrap_or(named.handle);
+        if handle.is_null() || handle != named.handle {
+            return Err("Legacy TABLESTYLE has conflicting text-style identity/name.".into());
+        }
+        Ok(handle)
+    };
+    for (name, original, mut decoded) in [
+        ("_DATA", &source.data_row_style, RowCellStyle::data_row()),
+        ("_HEADER", &source.header_row_style, RowCellStyle::header_row()),
+        ("_TITLE", &source.title_row_style, RowCellStyle::title_row()),
+    ] {
+        let matches: Vec<_> = prepared.modern_overrides.iter()
+            .filter(|(_, cell)| cell.name == name).collect();
+        if matches.len() != 1 {
+            return Err("Legacy TABLESTYLE requires one native format for each row.".into());
+        }
+        let style = &matches[0].1.cell_style;
+        let format = &style.content_format;
+        if format.text_style != resolve(original)? {
+            return Err("Legacy TABLESTYLE native format changed a text-style reference.".into());
+        }
+        decoded.text_style_name = original.text_style_name.clone();
+        decoded.text_style_handle = Some(format.text_style);
+        decoded.data_type = format.value_data_type;
+        decoded.unit_type = format.value_unit_type;
+        decoded.format_string = format.value_format_string.clone();
+        decoded.alignment = CellAlignment::from(format.cell_alignment as i16);
+        decoded.text_color = format.content_color;
+        decoded.text_height = format.text_height;
+        decoded.fill_enabled = style.background_color != acadrust::types::Color::None;
+        if decoded.fill_enabled { decoded.fill_color = style.background_color; }
+        let mut masks = std::collections::BTreeSet::new();
+        for grid in &style.borders {
+            if !masks.insert(grid.index_mask) {
+                return Err("Legacy TABLESTYLE has ambiguous native border formats.".into());
+            }
+            let border = match grid.index_mask {
+                1 => &mut decoded.top_border,
+                2 => &mut decoded.horizontal_inside_border,
+                4 => &mut decoded.bottom_border,
+                8 => &mut decoded.left_border,
+                16 => &mut decoded.vertical_inside_border,
+                32 => &mut decoded.right_border,
+                _ => return Err("Legacy TABLESTYLE has an unrepresentable border mask.".into()),
+            };
+            *border = grid.border.clone();
+            border.is_invisible = !border.is_invisible;
+        }
+        // Missing grid overrides have the decoder's exact default borders.
+        // The complete row equality below still checks all six source edges.
+        let mut expected = original.clone();
+        expected.text_style_handle = Some(resolve(original)?);
+        if decoded != expected {
+            return Err(format!("Legacy TABLESTYLE {name} row does not match its complete native format."));
+        }
+    }
+    Ok(prepared)
+}

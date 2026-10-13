@@ -573,6 +573,19 @@ impl SourceSchema {
                 .objects
                 .insert(handle, ObjectType::TableStyle(prepared));
         }
+        let legacy_styles: Vec<_> = document.objects.iter().filter_map(|(handle, object)| {
+            matches!(object, ObjectType::TableStyle(style)
+                if self.objects.get(&handle.value()).is_some_and(|kind| kind == "TABLESTYLE")
+                    && style.modern_style.is_none()).then_some(*handle)
+        }).collect();
+        for handle in legacy_styles {
+            let Some(ObjectType::TableStyle(style)) = document.objects.get(&handle) else {
+                unreachable!()
+            };
+            let prepared = crate::generated_table_style::canonical_retained_legacy_table_style(document, style)
+                .map_err(|detail| refusal(&detail))?;
+            document.objects.insert(handle, ObjectType::TableStyle(prepared));
+        }
         if self.headers.contains_key("$CANNOSCALE") || self.headers.contains_key("$ANNOALLVISIBLE")
         {
             let root = root_dictionary(document)?;
