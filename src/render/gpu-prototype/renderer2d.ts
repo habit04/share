@@ -1,12 +1,15 @@
 import type { DrawingState } from '../../core/document';
+import type { Entity } from '../../core/entities';
 import { isImmutableData } from '../../core/immutable-data';
 import { TEXT_STYLES_META_KEY } from '../../io/encoding';
 import { lineweightDisplay } from '../draw';
 import { GpuDevice } from './device';
-import { cssRgb, GPU_ZOOM_VERTEX_STRIDE, prepareZoom2D, validateGpu2DView, zoomPrecisionSafe, type Gpu2DView, type Gpu2DOverlay, type PreparedZoom2D } from './geometry2d';
+import { cssRgb, GPU_ZOOM_VERTEX_STRIDE, prepareZoom2D, prepareZoomLine, replacementZoomBounds, validateGpu2DView, zoomPrecisionSafe, type Gpu2DView, type Gpu2DOverlay, type PreparedZoom2D, type PreparedZoomEntity, type PreparedZoomLine } from './geometry2d';
 
 export type { Gpu2DView, Gpu2DOverlay } from './geometry2d';
-export type Gpu2DCacheReason = 'not-checked' | 'cold' | 'mutable' | 'document' | 'view-style' | 'zoom-range' | 'pan-range' | 'precision' | 'hit';
+export type Gpu2DCacheReason = 'not-checked' | 'cold' | 'mutable' | 'document' | 'document-delta' | 'view-style' | 'zoom-range' | 'pan-range' | 'precision' | 'hit';
+export const GPU_EDIT_HISTORY_BYTES = 1024 * 1024;
+export const GPU_EDIT_HISTORY_ENTRIES = 256;
 export interface Gpu2DRenderResult {
   rendered: boolean;
   reason?: string;
@@ -14,16 +17,28 @@ export interface Gpu2DRenderResult {
   preparationMs: number;
   /** Total CPU GL phase, including resize, initialization, uploads and draw commands. */
   submissionMs: number;
-  /** CPU cache validation/lookup, excluding actual geometry preparation. */
+  /** CPU cache validation/lookup, bounds union and recovery-image patch; excludes line geometry preparation. */
   cacheLookupMs: number;
   /** CPU projection, tessellation, clipping and packing; exactly zero on a cache hit. */
   geometryPreparationMs: number;
+  /** Subset of geometryPreparationMs: preparing a candidate replacement line. */
+  partialPreparationMs: number;
+  preparedEntities: number;
+  reusedEntities: number;
+  editMemoHit: boolean;
+  editHistoryBytes: number;
+  editHistoryEntries: number;
   /** CPU shader initialization; excludes GPU completion and is zero on a warm program. */
   initializationMs: number;
   /** CPU buffer allocation/upload issuance and error checking, not transfer/GPU completion. */
   uploadMs: number;
   /** Allocation/upload attempts; a failed allocation may not reach bufferData. */
   uploadCalls: number;
+  uploadKind: 'none' | 'subrange' | 'full';
+  /** Subsets of total upload telemetry, including failed subrange attempts. */
+  subrangeUploadMs: number;
+  subrangeUploadCalls: number;
+  subrangeUploadBytes: number;
   /** CPU state/uniform/clear/draw commands and error checking, excluding uploads/initialization. */
   drawSubmissionMs: number;
   geometryVertices: number;
@@ -34,7 +49,7 @@ export interface Gpu2DRenderResult {
 }
 
 export function emptyGpu2DRenderResult(reason: string): Gpu2DRenderResult {
-  return { rendered: false, reason, preparationMs: 0, submissionMs: 0, cacheLookupMs: 0, geometryPreparationMs: 0, initializationMs: 0, uploadMs: 0, uploadCalls: 0, drawSubmissionMs: 0, geometryVertices: 0, cacheHit: false, cacheReason: 'not-checked', bytes: 0 };
+  return { rendered: false, reason, preparationMs: 0, submissionMs: 0, cacheLookupMs: 0, geometryPreparationMs: 0, partialPreparationMs: 0, preparedEntities: 0, reusedEntities: 0, editMemoHit: false, editHistoryBytes: 0, editHistoryEntries: 0, initializationMs: 0, uploadMs: 0, uploadCalls: 0, uploadKind: 'none', subrangeUploadMs: 0, subrangeUploadCalls: 0, subrangeUploadBytes: 0, drawSubmissionMs: 0, geometryVertices: 0, cacheHit: false, cacheReason: 'not-checked', bytes: 0 };
 }
 
 const VERTEX_SHADER = `#version 300 es
@@ -68,9 +83,16 @@ interface PreparationCache {
   hover: string | null;
   solidSelection: boolean;
   geometry: PreparedZoom2D;
+  generation: number;
+  immutableState: boolean;
 }
 
-interface PreparedFrame { geometry: PreparedZoom2D; pan: Gpu2DView['center']; ratio: number }
+interface SubrangeUpload { baseGeneration: number; byteOffset: number; vertices: Float32Array<ArrayBuffer> }
+interface PreparedFrame { geometry: PreparedZoom2D; pan: Gpu2DView['center']; ratio: number; generation: number; delta?: SubrangeUpload }
+
+function sameStrokeStyle(a: Pick<PreparedZoomEntity, 'color' | 'width' | 'alpha'>, b: Pick<PreparedZoomLine, 'color' | 'width' | 'alpha'>): boolean {
+  return a.width === b.width && a.alpha === b.alpha && a.color.every((value, index) => value === b.color[index]);
+}
 
 function sameSelection(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
   if (a.size !== b.size) return false;
@@ -95,8 +117,11 @@ export class Gpu2DRenderer {
   private panUniform: WebGLUniformLocation | null = null;
   private zoomUniform: WebGLUniformLocation | null = null;
   private alphaUniform: WebGLUniformLocation | null = null;
-  private uploaded: PreparedZoom2D | null = null;
+  private uploadedGeneration: number | null = null;
+  private generation = 0;
   private cache: PreparationCache | null = null;
+  private readonly editHistory = new Map<Entity, PreparedZoomLine>();
+  private editHistoryBytes = 0;
   private initializationError: string | null = null;
   private viewportLimits: readonly number[] | null = null;
   private stencilAvailable: boolean | null = null;
@@ -110,13 +135,84 @@ export class Gpu2DRenderer {
       this.panUniform = null;
       this.zoomUniform = null;
       this.alphaUniform = null;
-      this.uploaded = null;
+      this.uploadedGeneration = null;
       this.cache = null;
+      this.clearEditHistory();
       this.initializationError = null;
       this.viewportLimits = null;
       this.stencilAvailable = null;
       onStateChange?.();
     });
+  }
+
+  private clearEditHistory(): void {
+    this.editHistory.clear();
+    this.editHistoryBytes = 0;
+  }
+
+  private forgetEdit(entity: Entity): void {
+    const old = this.editHistory.get(entity);
+    if (old) { this.editHistoryBytes -= old.vertices.byteLength; this.editHistory.delete(entity); }
+  }
+
+  private rememberEdit(entity: PreparedZoomEntity, vertices: Float32Array<ArrayBuffer>): void {
+    this.forgetEdit(entity.entity);
+    this.editHistory.set(entity.entity, { vertices, color: entity.color, width: entity.width, alpha: entity.alpha, sourceBounds: entity.sourceBounds });
+    this.editHistoryBytes += vertices.byteLength;
+    while (this.editHistoryBytes > GPU_EDIT_HISTORY_BYTES || this.editHistory.size > GPU_EDIT_HISTORY_ENTRIES) {
+      const oldest = this.editHistory.keys().next().value;
+      if (!oldest) break;
+      this.forgetEdit(oldest);
+    }
+  }
+
+  private prepareEdit(cache: PreparationCache, state: DrawingState, view: Gpu2DView, overlay: Gpu2DOverlay, pan: Gpu2DView['center'], ratio: number, metrics: Gpu2DRenderResult): PreparedFrame | null {
+    const entries = cache.geometry.entities;
+    // A mutable outer snapshot or a dirty/unknown GPU buffer cannot certify a delta base.
+    if (!entries || !cache.immutableState || !isImmutableData(state) || this.uploadedGeneration !== cache.generation || cache.entities.length !== state.entities.length) return null;
+    let index = -1;
+    for (let i = 0; i < state.entities.length; i++) {
+      if (state.entities[i] === cache.entities[i]) continue;
+      if (index !== -1 || state.entities[i]!.id !== cache.entities[i]!.id) return null;
+      index = i;
+    }
+    if (index < 0) return null;
+    const previous = entries[index], entity = state.entities[index]!;
+    if (!previous || previous.entity !== cache.entities[index] || previous.entity.type !== 'line' || entity.type !== 'line' || entity.layer !== previous.entity.layer) return null;
+    let replacement = this.editHistory.get(entity);
+    const memoHit = !!replacement;
+    if (!replacement) {
+      const partialStart = performance.now();
+      metrics.preparedEntities++;
+      try { replacement = prepareZoomLine(entity, state, cache.view, overlay, cache.geometry.extent); }
+      catch { return null; } // Normal full-scene preparation decides the complete-view refusal.
+      finally {
+        const elapsed = Math.max(0, performance.now() - partialStart);
+        metrics.partialPreparationMs += elapsed;
+        metrics.geometryPreparationMs += elapsed;
+      }
+    }
+    if (!sameStrokeStyle(previous, replacement) || replacement.vertices.length / GPU_ZOOM_VERTEX_STRIDE !== previous.count) return null;
+    const floatOffset = previous.first * GPU_ZOOM_VERTEX_STRIDE;
+    if (!Number.isSafeInteger(floatOffset) || floatOffset < 0 || floatOffset + replacement.vertices.length > cache.geometry.vertices.length) return null;
+    const sourceBounds = replacementZoomBounds(entries, index, replacement.sourceBounds);
+    if (!zoomPrecisionSafe({ ...cache.geometry, sourceBounds }, view, ratio, pan)) return null;
+    // Allocate and validate all candidate data before mutating the private CPU recovery image.
+    const nextEntries = entries.slice();
+    nextEntries[index] = { ...previous, entity, sourceBounds: replacement.sourceBounds };
+    const oldVertices = cache.geometry.vertices.slice(floatOffset, floatOffset + replacement.vertices.length);
+    const baseGeneration = cache.generation;
+    cache.geometry.vertices.set(replacement.vertices, floatOffset);
+    cache.geometry.entities = nextEntries;
+    cache.geometry.sourceBounds = sourceBounds;
+    cache.entities = state.entities;
+    cache.generation = ++this.generation;
+    this.forgetEdit(entity); // The current slot is held by the CPU image, not duplicated in history.
+    this.rememberEdit(previous, oldVertices);
+    metrics.editMemoHit = memoHit;
+    metrics.reusedEntities = cache.geometry.entityCount - (memoHit ? 0 : 1);
+    metrics.cacheReason = 'document-delta';
+    return { geometry: cache.geometry, pan, ratio, generation: cache.generation, delta: { baseGeneration, byteOffset: floatOffset * Float32Array.BYTES_PER_ELEMENT, vertices: replacement.vertices } };
   }
 
   private prepare(state: DrawingState, view: Gpu2DView, overlay: Gpu2DOverlay, metrics: Gpu2DRenderResult): PreparedFrame {
@@ -132,7 +228,7 @@ export class Gpu2DRenderer {
     const compiledImmutable = !compiled || (isImmutableData(state.blocks) && (!textStyles || typeof textStyles !== 'object' || isImmutableData(textStyles)));
     const cacheable = isImmutableData(state.entities) && isImmutableData(state.layers) && (!linetypes || isImmutableData(linetypes)) && compiledImmutable;
     metrics.cacheReason = !cacheable ? 'mutable' : !cache ? 'cold' : 'document';
-    if (cacheable && cache && cache.entities === state.entities && cache.layers === state.layers && cache.linetypes === linetypes && sameCompoundDependencies(cache.geometry, state)) {
+    if (cacheable && cache && cache.layers === state.layers && cache.linetypes === linetypes && sameCompoundDependencies(cache.geometry, state)) {
       const lineweights = view.lineweights ?? lineweightDisplay.enabled;
       const sameStyle = cache.view.width === view.width && cache.view.height === view.height && cache.view.dpr === view.dpr && cache.view.twist === view.twist && cache.view.lineweights === lineweights && sameSelection(cache.selection, overlay.selection) && cache.hover === (overlay.hover ?? null) && cache.solidSelection === !!overlay.solidSelection;
       metrics.cacheReason = 'view-style';
@@ -147,23 +243,35 @@ export class Gpu2DRenderer {
           metrics.cacheReason = 'pan-range';
           if (Number.isFinite(pan.x) && Number.isFinite(pan.y) && Math.abs(pan.x) <= cache.geometry.padding && Math.abs(pan.y) <= cache.geometry.padding) {
             metrics.cacheReason = 'precision';
-            if (zoomPrecisionSafe(cache.geometry, view, ratio, pan)) {
+            if (cache.entities === state.entities && zoomPrecisionSafe(cache.geometry, view, ratio, pan)) {
               metrics.cacheHit = true;
               metrics.cacheReason = 'hit';
+              metrics.reusedEntities = cache.geometry.entityCount;
               metrics.cacheLookupMs = Math.max(0, performance.now() - lookupStart);
-              return { geometry: cache.geometry, pan, ratio };
+              return { geometry: cache.geometry, pan, ratio, generation: cache.generation };
+            }
+            if (cache.entities !== state.entities) {
+              const edited = this.prepareEdit(cache, state, view, overlay, pan, ratio, metrics);
+              if (edited) {
+                metrics.cacheLookupMs = Math.max(0, performance.now() - lookupStart - metrics.partialPreparationMs);
+                return edited;
+              }
+              metrics.cacheReason = 'document';
             }
           }
         }
       }
     }
-    metrics.cacheLookupMs = Math.max(0, performance.now() - lookupStart);
+    metrics.cacheLookupMs = Math.max(0, performance.now() - lookupStart - metrics.partialPreparationMs);
+    this.clearEditHistory();
     const geometryStart = performance.now();
     let geometry: PreparedZoom2D;
     try { geometry = cacheable ? prepareZoom2D(state, view, overlay) : prepareZoom2D(state, view, overlay, 1, 1, 0); }
-    finally { metrics.geometryPreparationMs = Math.max(0, performance.now() - geometryStart); }
-    this.cache = cacheable ? { entities: state.entities, layers: state.layers, linetypes, view: { ...view, center: { ...view.center }, lineweights: view.lineweights ?? lineweightDisplay.enabled }, selection: new Set(overlay.selection), hover: overlay.hover ?? null, solidSelection: !!overlay.solidSelection, geometry } : null;
-    return { geometry, pan: { x: 0, y: 0 }, ratio: 1 };
+    finally { metrics.geometryPreparationMs += Math.max(0, performance.now() - geometryStart); }
+    metrics.preparedEntities += geometry.entityCount;
+    const generation = ++this.generation;
+    this.cache = cacheable ? { entities: state.entities, layers: state.layers, linetypes, view: { ...view, center: { ...view.center }, lineweights: view.lineweights ?? lineweightDisplay.enabled }, selection: new Set(overlay.selection), hover: overlay.hover ?? null, solidSelection: !!overlay.solidSelection, geometry, generation, immutableState: isImmutableData(state) } : null;
+    return { geometry, pan: { x: 0, y: 0 }, ratio: 1, generation };
   }
 
   private initialize(): void {
@@ -187,14 +295,17 @@ export class Gpu2DRenderer {
     const start = performance.now();
     const metrics = emptyGpu2DRenderResult('');
     let submissionStart: number | null = null;
-    const finish = (rendered: boolean, reason?: string): Gpu2DRenderResult => ({ ...metrics, rendered, reason, preparationMs: submissionStart === null ? Math.max(0, performance.now() - start) : metrics.preparationMs, submissionMs: submissionStart === null ? 0 : Math.max(0, performance.now() - submissionStart) });
+    const finish = (rendered: boolean, reason?: string): Gpu2DRenderResult => ({ ...metrics, rendered, reason, editHistoryBytes: this.editHistoryBytes, editHistoryEntries: this.editHistory.size, preparationMs: submissionStart === null ? Math.max(0, performance.now() - start) : metrics.preparationMs, submissionMs: submissionStart === null ? 0 : Math.max(0, performance.now() - submissionStart) });
     const refusal = (reason: string): Gpu2DRenderResult => finish(false, reason);
     if (this.device.state !== 'ready') return refusal(`WebGL2 device is ${this.device.state}`);
     try {
       const background = cssRgb(view.background);
       if (!background) return refusal('Unsupported GPU background color');
       const gl = this.device.gl;
-      if (gl.isContextLost()) return refusal('WebGL2 context is lost');
+      if (gl.isContextLost()) {
+        this.uploadedGeneration = null;
+        return refusal('WebGL2 context is lost');
+      }
       const width = Math.round(view.width * view.dpr), height = Math.round(view.height * view.dpr);
       // Limits belong to this live context and cannot change until its handles are invalidated.
       if (!this.viewportLimits) {
@@ -204,7 +315,7 @@ export class Gpu2DRenderer {
       }
       const limits = this.viewportLimits;
       if (width < 1 || height < 1 || !Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width > limits[0]! || height > limits[1]!) return refusal('GPU viewport exceeds device limits');
-      const { geometry, pan, ratio } = this.prepare(state, view, overlay, metrics);
+      const { geometry, pan, ratio, generation, delta } = this.prepare(state, view, overlay, metrics);
       metrics.geometryVertices = geometry.vertices.length / GPU_ZOOM_VERTEX_STRIDE;
       if (geometry.batches.some((batch) => batch.alpha < 1)) {
         this.stencilAvailable ??= gl.getContextAttributes()?.stencil ?? false;
@@ -220,21 +331,36 @@ export class Gpu2DRenderer {
         try { this.initialize(); }
         finally { metrics.initializationMs = Math.max(0, performance.now() - initializationStart); }
       }
-      if (!this.buffer || this.uploaded !== geometry) {
+      // An empty retained line changes source bounds/history but not any GPU bytes.
+      if (this.buffer && delta && delta.vertices.byteLength === 0 && this.uploadedGeneration === delta.baseGeneration) this.uploadedGeneration = generation;
+      if (!this.buffer || this.uploadedGeneration !== generation) {
         const uploadStart = performance.now();
-        metrics.bytes = geometry.vertices.byteLength;
+        const subrange = !!this.buffer && !!delta && this.uploadedGeneration === delta.baseGeneration;
+        metrics.uploadKind = subrange ? 'subrange' : 'full';
+        metrics.bytes = subrange ? delta!.vertices.byteLength : geometry.vertices.byteLength;
         metrics.uploadCalls++;
-        this.uploaded = null; // A rejected upload can leave buffer contents undefined.
+        this.uploadedGeneration = null; // A rejected subupload can leave only part of the buffer updated.
         try {
-          if (!this.buffer) this.buffer = this.device.createBuffer(geometry.vertices, gl.DYNAMIC_DRAW);
+          if (subrange) {
+            metrics.subrangeUploadCalls++;
+            metrics.subrangeUploadBytes += delta!.vertices.byteLength;
+            gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
+            gl.bufferSubData(gl.ARRAY_BUFFER, delta!.byteOffset, delta!.vertices);
+            const error = gl.getError();
+            if (error !== gl.NO_ERROR) throw new Error(`WebGL2 stroke subrange upload failed (${error})`);
+          } else if (!this.buffer) this.buffer = this.device.createBuffer(geometry.vertices, gl.DYNAMIC_DRAW);
           else {
             gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
             gl.bufferData(gl.ARRAY_BUFFER, geometry.vertices, gl.DYNAMIC_DRAW);
             const error = gl.getError();
             if (error !== gl.NO_ERROR) throw new Error(`WebGL2 stroke upload failed (${error})`);
           }
-          this.uploaded = geometry;
-        } finally { metrics.uploadMs = Math.max(0, performance.now() - uploadStart); }
+          if (gl.isContextLost()) throw new Error('WebGL2 context lost during stroke upload');
+          this.uploadedGeneration = generation;
+        } finally {
+          metrics.uploadMs = Math.max(0, performance.now() - uploadStart);
+          if (subrange) metrics.subrangeUploadMs = metrics.uploadMs;
+        }
       }
       const drawStart = performance.now();
       let error: number;
@@ -291,16 +417,23 @@ export class Gpu2DRenderer {
         }
         error = gl.getError();
       } finally { metrics.drawSubmissionMs = Math.max(0, performance.now() - drawStart); }
-      if (error !== gl.NO_ERROR || gl.isContextLost()) return refusal(`WebGL2 stroke submission failed (${error})`);
+      if (error !== gl.NO_ERROR || gl.isContextLost()) {
+        // Do not certify a delta after a rejected draw. The caller paints the complete
+        // Canvas view; the next GPU attempt repairs the entire current CPU recovery image.
+        this.uploadedGeneration = null;
+        return refusal(`WebGL2 stroke submission failed (${error})`);
+      }
       return finish(true);
     } catch (error) {
+      if (submissionStart !== null) this.uploadedGeneration = null;
       return refusal(error instanceof Error ? error.message : 'GPU rendering failed');
     }
   }
 
   dispose(): void {
     this.cache = null;
-    this.uploaded = null;
+    this.uploadedGeneration = null;
+    this.clearEditHistory();
     this.device.dispose();
   }
 }

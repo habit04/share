@@ -1,5 +1,5 @@
 import type { DrawingState } from '../../core/document';
-import type { Entity, PolylineEntity } from '../../core/entities';
+import type { Entity, LineEntity, PolylineEntity } from '../../core/entities';
 import { polylineSegments } from '../../core/entities';
 import type { Point } from '../../core/geometry';
 import { EPS, normAngle } from '../../core/geometry';
@@ -41,6 +41,8 @@ export const GPU_PAN_CACHE_BORDER = 128;
 export const GPU_ZOOM_CACHE_MIN_RATIO = 0.8;
 export const GPU_ZOOM_CACHE_MAX_RATIO = 1.25;
 export const GPU_ZOOM_VERTEX_STRIDE = 7;
+/** Optional edit metadata must not grow with arbitrarily large zero-vertex scenes. */
+export const GPU_EDIT_ENTITY_LIMIT = 100_000;
 const MAX_CURVE_SEGMENTS = 32768;
 const MAX_VERTICES = 1_000_000;
 const PIXEL_ERROR = 0.25; // Physical pixels, including high-DPI views.
@@ -233,6 +235,26 @@ export function validateGpu2DView(view: Gpu2DView): void {
   if (![view.width, view.height, view.dpr, view.scale, view.center.x, view.center.y, view.twist].every(Number.isFinite) || view.width <= 0 || view.height <= 0 || view.dpr <= 0 || view.scale <= 0) throw new Error('Invalid GPU view');
 }
 
+/** Renderer-owned projected bounds; never an alias into immutable document points. */
+export interface ZoomSourceBounds { min: { x: number; y: number }; max: { x: number; y: number } }
+export interface PreparedZoomEntity {
+  entity: Entity;
+  first: number;
+  count: number;
+  color: [number, number, number];
+  width: number;
+  alpha: number;
+  /** Includes original/offscreen points even when no vertices were emitted. */
+  sourceBounds: ZoomSourceBounds | null;
+}
+export interface PreparedZoomLine {
+  vertices: Float32Array<ArrayBuffer>;
+  color: [number, number, number];
+  width: number;
+  alpha: number;
+  sourceBounds: ZoomSourceBounds | null;
+}
+
 export interface PreparedZoom2D {
   /** Anchor-local center XY, fixed CSS-pixel extrusion XY, RGB. Never world Float32s. */
   vertices: Float32Array<ArrayBuffer>;
@@ -242,9 +264,12 @@ export interface PreparedZoom2D {
   maxRatio: number;
   padding: number;
   /** Original projected centers, including discarded/offscreen points, in anchor-local doubles. */
-  sourceBounds: { min: Point; max: Point };
+  sourceBounds: ZoomSourceBounds;
   /** Retained centerline rectangle; generated butt ends are outside every admitted viewport. */
   extent: Point;
+  /** Original entity indices, including zero-vertex entries; hidden entries are null. */
+  entities: (PreparedZoomEntity | null)[] | null;
+  entityCount: number;
   /** Only compiled scenes depend on block definitions and drawing-local text styles. */
   compound?: Pick<Extract<LoweredStrokeScene, { ok: true }>, 'blockDependencies' | 'textStylesDependency'>;
 }
@@ -254,6 +279,44 @@ export interface PreparedCompoundZoom2D extends PreparedZoom2D {
   entities: null;
   entityCount: number;
   compound: NonNullable<PreparedZoom2D['compound']>;
+}
+
+function zoomStrokeStyle(entity: Entity, state: DrawingState, view: Gpu2DView, overlay: Gpu2DOverlay): Pick<PreparedZoomEntity, 'color' | 'width' | 'alpha'> {
+  const selected = overlay.selection.has(entity.id), hovered = overlay.hover === entity.id && !selected;
+  const color = cssRgb(resolveColor(entity, state.layers));
+  if (!color) throw new Error(`Unsupported display color (${entity.id})`);
+  const width = selected ? 2.5 : hovered ? 2 : resolveLineWidth(entity, state.layers, { scale: view.scale, toScreen: (point) => screenPoint(point, view) });
+  if (!Number.isFinite(width) || width <= 0) throw new Error('Invalid lineweight');
+  return { color, width, alpha: selected || hovered ? 0.95 : 1 };
+}
+
+function zoomLocalPoints(source: readonly Point[], view: Gpu2DView): { points: Point[]; bounds: ZoomSourceBounds | null } {
+  const bounds: ZoomSourceBounds = { min: { x: Infinity, y: Infinity }, max: { x: -Infinity, y: -Infinity } };
+  const points = source.map((point) => {
+    const center = checked({ x: point.x - view.width / 2, y: point.y - view.height / 2 });
+    for (const axis of ['x', 'y'] as const) {
+      bounds.min[axis] = Math.min(bounds.min[axis], center[axis]);
+      bounds.max[axis] = Math.max(bounds.max[axis], center[axis]);
+    }
+    return center;
+  });
+  return { points, bounds: points.length ? bounds : null };
+}
+
+function includeZoomBounds(target: ZoomSourceBounds, source: ZoomSourceBounds | null): void {
+  if (!source) return;
+  for (const axis of ['x', 'y'] as const) {
+    target.min[axis] = Math.min(target.min[axis], source.min[axis]);
+    target.max[axis] = Math.max(target.max[axis], source.max[axis]);
+  }
+}
+
+/** Union every current source certificate; a clipped/zero-vertex entry still contributes. */
+export function replacementZoomBounds(entities: readonly (PreparedZoomEntity | null)[], index: number, replacement: ZoomSourceBounds | null): ZoomSourceBounds {
+  const bounds: ZoomSourceBounds = { min: { x: Infinity, y: Infinity }, max: { x: -Infinity, y: -Infinity } };
+  for (let i = 0; i < entities.length; i++) includeZoomBounds(bounds, i === index ? replacement : entities[i]?.sourceBounds ?? null);
+  if (!Number.isFinite(bounds.min.x)) bounds.min = bounds.max = { x: 0, y: 0 };
+  return bounds;
 }
 
 /** Recheck the entire source, not just its clipped/uploaded subset, on each camera change. */
@@ -393,6 +456,111 @@ export function prepareCompiledZoom2D(state: DrawingState, view: Gpu2DView, over
   };
 }
 
+/** Prepare one line at an existing scene's original anchor and retention rectangle. */
+export function prepareZoomLine(entity: LineEntity, state: DrawingState, anchor: Gpu2DView, overlay: Gpu2DOverlay, extent: Point): PreparedZoomLine {
+  validateGpu2DView(anchor);
+  if (![extent.x, extent.y].every(Number.isFinite) || extent.x <= 0 || extent.y <= 0) throw new Error('Invalid GPU line retention extent');
+  const problem = styleProblem(entity, state);
+  if (problem) throw new Error(problem);
+  if (overlay.selection.has(entity.id) && !overlay.solidSelection) throw new Error(`Dashed selection requires canvas rendering (${entity.id})`);
+  const previousPaper = colorDisplay.paper, previousWeights = { ...lineweightDisplay };
+  colorDisplay.paper = false;
+  lineweightDisplay.enabled = anchor.lineweights ?? previousWeights.enabled;
+  lineweightDisplay.pxPerMm = undefined;
+  try {
+    const style = zoomStrokeStyle(entity, state, anchor, overlay);
+    const path = entityPath(entity, anchor);
+    const { points, bounds } = zoomLocalPoints(path.points, anchor);
+    const output: number[] = [];
+    zoomStrokeTriangles(points, path.closed, style.width, style.color, extent, output);
+    const vertices = new Float32Array(output);
+    if (!vertices.every(Number.isFinite)) throw new Error('Float32 stroke geometry exceeds finite limits');
+    return { ...style, vertices, sourceBounds: bounds };
+  } finally {
+    colorDisplay.paper = previousPaper;
+    Object.assign(lineweightDisplay, previousWeights);
+  }
+}
+
+type StyledZoomLine = Pick<PreparedZoomEntity, 'color' | 'width' | 'alpha'> & { entity: LineEntity };
+
+/** Grow only for emitted strokes; return exactly the owned used bytes for GPU upload. */
+class ZoomLineWriter {
+  private data = new Float32Array(0);
+  length = 0;
+  constructor(private readonly initialFloats: number) {}
+
+  private vertex(x: number, y: number, ox: number, oy: number, color: [number, number, number]): void {
+    const i = this.length;
+    this.data[i] = x; this.data[i + 1] = y;
+    this.data[i + 2] = ox; this.data[i + 3] = oy;
+    this.data[i + 4] = color[0]; this.data[i + 5] = color[1]; this.data[i + 6] = color[2];
+    this.length += GPU_ZOOM_VERTEX_STRIDE;
+  }
+
+  stroke(a: Point, b: Point, ox: number, oy: number, color: [number, number, number]): void {
+    const required = this.length + 6 * GPU_ZOOM_VERTEX_STRIDE;
+    if (required / GPU_ZOOM_VERTEX_STRIDE > MAX_VERTICES) throw new Error('Stroke geometry exceeds prototype budget');
+    if (required > this.data.length) {
+      const limit = Math.floor(MAX_VERTICES / 6) * 6 * GPU_ZOOM_VERTEX_STRIDE;
+      const capacity = Math.min(limit, Math.max(required, this.data.length ? this.data.length * 2 : this.initialFloats));
+      const next = new Float32Array(capacity);
+      next.set(this.data);
+      this.data = next;
+    }
+    // Validate each distinct packed scalar once. This preserves the generic path's
+    // Float32 refusal even for extremely small DPRs, without scanning repeated vertices.
+    const ax = Math.fround(a.x), ay = Math.fround(a.y), bx = Math.fround(b.x), by = Math.fround(b.y);
+    const x = Math.fround(ox), y = Math.fround(oy);
+    if (!Number.isFinite(ax) || !Number.isFinite(ay) || !Number.isFinite(bx) || !Number.isFinite(by) || !Number.isFinite(x) || !Number.isFinite(y)) throw new Error('Float32 stroke geometry exceeds finite limits');
+    this.vertex(ax, ay, x, y, color); this.vertex(bx, by, x, y, color); this.vertex(bx, by, -x, -y, color);
+    this.vertex(ax, ay, x, y, color); this.vertex(bx, by, -x, -y, color); this.vertex(ax, ay, -x, -y, color);
+  }
+
+  finish(): Float32Array<ArrayBuffer> { return this.length === this.data.length ? this.data : this.data.slice(0, this.length); }
+}
+
+/** Straight-only scenes need no temporary path, normals array, boxed vertex array or final finite scan. */
+function prepareZoomLines(state: DrawingState, view: Gpu2DView, styled: readonly StyledZoomLine[], extent: Point, padding: number, minRatio: number, maxRatio: number): PreparedZoom2D {
+  const writer = new ZoomLineWriter(Math.min(styled.length, 1024) * 6 * GPU_ZOOM_VERTEX_STRIDE);
+  const batches: StrokeBatch[] = [];
+  const entities: PreparedZoom2D['entities'] = state.entities.length <= GPU_EDIT_ENTITY_LIMIT ? Array.from({ length: state.entities.length }, () => null) : null;
+  const sourceBounds: ZoomSourceBounds = { min: { x: Infinity, y: Infinity }, max: { x: -Infinity, y: -Infinity } };
+  const c = Math.cos(view.twist), s = Math.sin(view.twist), halfX = view.width / 2, halfY = view.height / 2;
+  const precisionBound = MAX_PROJECTED_COORDINATE / Math.max(1, view.dpr);
+  let sourceIndex = 0;
+  for (const { entity, color, width, alpha } of styled) {
+    const adx = entity.a.x - view.center.x, ady = entity.a.y - view.center.y;
+    const bdx = entity.b.x - view.center.x, bdy = entity.b.y - view.center.y;
+    // Keep screenPoint's addition and zoomLocalPoints's subtraction in their original
+    // order. Reassociation would change tiny displacements and projected degeneracy.
+    const asx = halfX + (adx * c - ady * s) * view.scale, asy = halfY - (adx * s + ady * c) * view.scale;
+    const bsx = halfX + (bdx * c - bdy * s) * view.scale, bsy = halfY - (bdx * s + bdy * c) * view.scale;
+    if (!Number.isFinite(asx) || !Number.isFinite(asy) || !Number.isFinite(bsx) || !Number.isFinite(bsy)) throw new Error('Nonfinite screen geometry');
+    if (Math.abs(asx) > precisionBound || Math.abs(asy) > precisionBound || Math.abs(bsx) > precisionBound || Math.abs(bsy) > precisionBound) throw new Error('Projected coordinates exceed GPU stroke precision bound');
+    const ax = asx - halfX, ay = asy - halfY, bx = bsx - halfX, by = bsy - halfY;
+    const bounds: ZoomSourceBounds = { min: { x: Math.min(ax, bx), y: Math.min(ay, by) }, max: { x: Math.max(ax, bx), y: Math.max(ay, by) } };
+    includeZoomBounds(sourceBounds, bounds);
+    const first = writer.length / GPU_ZOOM_VERTEX_STRIDE;
+    if (ax !== bx || ay !== by) {
+      const dx = bx - ax, dy = by - ay, length = Math.hypot(dx, dy);
+      if (!Number.isFinite(length)) throw new Error('Stroke length exceeds finite limits');
+      const normalX = length ? -dy / length : 0, normalY = length ? dx / length : 0;
+      const clipped = clippedCenterSegment({ x: ax, y: ay }, { x: bx, y: by }, extent);
+      // A tangent clip still has six degenerate vertices, matching the generic path.
+      if (clipped) writer.stroke(clipped[0], clipped[1], normalX * (width / 2), normalY * (width / 2), color);
+    }
+    const count = writer.length / GPU_ZOOM_VERTEX_STRIDE - first;
+    if (count) batches.push({ id: entity.id, first, count, alpha });
+    if (entities) {
+      while (state.entities[sourceIndex] !== entity) sourceIndex++;
+      entities[sourceIndex++] = { entity, first, count, color, width, alpha, sourceBounds: bounds };
+    }
+  }
+  if (!Number.isFinite(sourceBounds.min.x)) sourceBounds.min = sourceBounds.max = { x: 0, y: 0 };
+  return { vertices: writer.finish(), batches, minRatio, maxRatio, padding, sourceBounds, extent, entities, entityCount: styled.length };
+}
+
 /**
  * Prepare once for a bounded camera interval. Uniform zoom acts only on center positions;
  * normal/miter offsets stay in CSS pixels. A minimum-scale rectangle retains entering strokes,
@@ -416,14 +584,7 @@ export function prepareZoom2D(state: DrawingState, view: Gpu2DView, overlay: Gpu
   lineweightDisplay.enabled = view.lineweights ?? previousWeights.enabled;
   lineweightDisplay.pxPerMm = undefined;
   try {
-    const styled = visible.map((entity) => {
-      const selected = overlay.selection.has(entity.id), hovered = overlay.hover === entity.id && !selected;
-      const color = cssRgb(resolveColor(entity, state.layers));
-      if (!color) throw new Error(`Unsupported display color (${entity.id})`);
-      const width = selected ? 2.5 : hovered ? 2 : resolveLineWidth(entity, state.layers, { scale: view.scale, toScreen: (point) => screenPoint(point, view) });
-      if (!Number.isFinite(width) || width <= 0) throw new Error('Invalid lineweight');
-      return { entity, color, width, alpha: selected || hovered ? 0.95 : 1 };
-    });
+    const styled = visible.map((entity) => ({ entity, ...zoomStrokeStyle(entity, state, view, overlay) }));
     const extrusion = styled.reduce((maximum, item) => Math.max(maximum, item.width * 5), 0);
     const guard = 1 / Math.max(1, view.dpr);
     const extent = {
@@ -434,8 +595,11 @@ export function prepareZoom2D(state: DrawingState, view: Gpu2DView, overlay: Gpu
     // Huge lineweights/retention regions must fall back instead of cancelling large Float32s.
     const magnitude = Math.max(extent.x, extent.y) * maxRatio + padding + Math.max(view.width, view.height) / 2 + extrusion;
     if (!Number.isFinite(magnitude) || magnitude * 12 * 2 ** -23 * view.dpr > ZOOM_FLOAT_PIXEL_ERROR) throw new Error('GPU zoom geometry exceeds Float32 precision budget');
+    if (styled.every((item): item is StyledZoomLine => item.entity.type === 'line')) return prepareZoomLines(state, view, styled, extent, padding, minRatio, maxRatio);
     const vertices: number[] = [], batches: StrokeBatch[] = [];
     const sourceBounds = { min: { x: Infinity, y: Infinity }, max: { x: -Infinity, y: -Infinity } };
+    const entities: PreparedZoom2D['entities'] = state.entities.length <= GPU_EDIT_ENTITY_LIMIT ? Array.from({ length: state.entities.length }, () => null) : null;
+    let sourceIndex = 0;
     let admittedMinRatio = minRatio;
     for (const { entity, color, width, alpha } of styled) {
       const admitCurve = entity.type === 'line' ? undefined : (radius: number): void => {
@@ -450,25 +614,23 @@ export function prepareZoom2D(state: DrawingState, view: Gpu2DView, overlay: Gpu
         admittedMinRatio = Math.max(admittedMinRatio, Math.min(1, required));
       };
       const path = entityPath(entity, view, view.scale * maxRatio, ZOOM_CURVE_PIXEL_ERROR, width, admitCurve);
-      const points = path.points.map((point) => {
-        const center = checked({ x: point.x - view.width / 2, y: point.y - view.height / 2 });
-        for (const axis of ['x', 'y'] as const) {
-          sourceBounds.min[axis] = Math.min(sourceBounds.min[axis], center[axis]);
-          sourceBounds.max[axis] = Math.max(sourceBounds.max[axis], center[axis]);
-        }
-        return center;
-      });
+      const { points, bounds } = zoomLocalPoints(path.points, view);
+      includeZoomBounds(sourceBounds, bounds);
       const first = vertices.length / GPU_ZOOM_VERTEX_STRIDE;
       zoomStrokeTriangles(points, path.closed, width, color, extent, vertices);
       const count = vertices.length / GPU_ZOOM_VERTEX_STRIDE - first;
       if (count) batches.push({ id: entity.id, first, count, alpha });
+      if (entities) {
+        while (state.entities[sourceIndex] !== entity) sourceIndex++;
+        entities[sourceIndex++] = { entity, first, count, color, width, alpha, sourceBounds: bounds };
+      }
     }
     if (!Number.isFinite(sourceBounds.min.x)) sourceBounds.min = sourceBounds.max = { x: 0, y: 0 };
     const packed = new Float32Array(vertices);
     if (!packed.every(Number.isFinite)) throw new Error('Float32 stroke geometry exceeds finite limits');
     // The rectangle was retained for the full requested interval. Narrowing admission above
     // keeps it conservative without a second geometry/rebase pass or larger GPU uploads.
-    return { vertices: packed, batches, minRatio: admittedMinRatio, maxRatio, padding, sourceBounds, extent };
+    return { vertices: packed, batches, minRatio: admittedMinRatio, maxRatio, padding, sourceBounds, extent, entities, entityCount: visible.length };
   } finally {
     colorDisplay.paper = previousPaper;
     Object.assign(lineweightDisplay, previousWeights);
