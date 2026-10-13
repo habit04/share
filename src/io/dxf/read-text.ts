@@ -21,8 +21,8 @@ export function readTextPlacement(o: Obj, verticalCode = 73): TextPlacement & { 
     align: h === 1 || h === 4 ? 'center' : h === 2 ? 'right' : 'left',
     ...(h !== 0 || v !== 0 ? { justification: textJustification(h, v) } : {}),
     ...(second ? { alignmentPoint: second } : {}),
-    ...(wf !== 1 ? { widthFactor: wf } : {}),
-    ...(oblique !== 0 ? { oblique } : {}),
+    ...(has(o, 41) ? { widthFactor: wf } : {}),
+    ...(has(o, 51) ? { oblique } : {}),
     ...(style && !/^standard$/i.test(style) ? { style } : {}),
   };
 }

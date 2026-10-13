@@ -378,8 +378,8 @@ export function writeDxf(state: DrawingState): string {
         writeEntityCommon(w, { ...a, id: a.tag, type: 'text', text: a.default, rotation: a.rotation ?? 0, color: a.color ?? 'ByLayer', layer: a.layer ?? '0' }, owner, 'ATTDEF', 'AcDbText');
         writeTextLike(w, a.position, a.height, a.default, a.rotation ?? 0, a.align, a);
         if (a.style) w.pair(7, a.style);
-        if (a.widthFactor !== undefined && a.widthFactor !== 1) w.pair(41, a.widthFactor);
-        if (a.oblique) w.pair(51, g.deg(a.oblique));
+        if (a.widthFactor !== undefined) w.pair(41, a.widthFactor);
+        if (a.oblique !== undefined) w.pair(51, g.deg(a.oblique));
         w.pair(100, 'AcDbAttributeDefinition');
         w.pair(3, a.prompt);
         w.pair(2, a.tag);

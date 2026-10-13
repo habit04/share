@@ -99,8 +99,8 @@ export function writeTextLike(w: Writer, position: g.Point, height: number, text
 
 export function writeTextStyle(w: Writer, placement: TextPlacement & { readonly style?: string }): void {
   if (placement.style) w.pair(7, placement.style);
-  if (placement.widthFactor !== undefined && placement.widthFactor !== 1) w.pair(41, placement.widthFactor);
-  if (placement.oblique) w.pair(51, g.deg(placement.oblique));
+  if (placement.widthFactor !== undefined) w.pair(41, placement.widthFactor);
+  if (placement.oblique !== undefined) w.pair(51, g.deg(placement.oblique));
 }
 
 /** Handles and names the writer allocates before the entity pass (images, tables). */
