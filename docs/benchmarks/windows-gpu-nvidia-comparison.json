@@ -1,0 +1,1549 @@
+{
+  "mode": "benchmark",
+  "sourceSha": "a0eea698e4af721b7fd0fb4199534d2c9ec46290",
+  "switch": "--force_high_performance_gpu",
+  "snapshots": [
+    {
+      "stage": "benchmark-initial-hardware",
+      "freshDiagnostics": {
+        "state": "ready",
+        "adapters": [
+          {
+            "name": "Intel(R) UHD Graphics",
+            "vendorId": "0x8086",
+            "deviceId": "0x4688",
+            "active": false,
+            "driverVendor": "NVIDIA",
+            "driverVersion": "32.0.101.7088"
+          },
+          {
+            "name": "NVIDIA RTX A3000 12GB Laptop GPU",
+            "vendorId": "0x10de",
+            "deviceId": "0x24b9",
+            "active": true,
+            "driverVendor": "Unknown",
+            "driverVersion": "32.0.15.9671"
+          },
+          {
+            "name": "Microsoft Basic Render Driver",
+            "vendorId": "0x1414",
+            "deviceId": "0x008c",
+            "active": false,
+            "driverVendor": "Unknown",
+            "driverVersion": "10.0.26100.9549"
+          }
+        ],
+        "hardwareAcceleration": true,
+        "features": {
+          "2d_canvas": "enabled",
+          "flash_3d": "Unknown",
+          "flash_stage3d": "Unknown",
+          "flash_stage3d_baseline": "Unknown",
+          "gpu_compositing": "enabled",
+          "multiple_raster_threads": "enabled_on",
+          "native_gpu_memory_buffers": "Unknown",
+          "rasterization": "enabled",
+          "video_decode": "enabled",
+          "video_encode": "enabled",
+          "vpx_decode": "Unknown",
+          "webgl": "enabled",
+          "webgl2": "Unknown",
+          "opengl": "enabled_on",
+          "vulkan": "Unknown",
+          "webgpu": "enabled",
+          "direct_rendering_display": "Unknown",
+          "skia_graphite": "disabled_off"
+        },
+        "driver": {
+          "vendor": "Unknown",
+          "version": "Unknown"
+        },
+        "fallback": "Unknown",
+        "reasons": [
+          "skia_graphite: disabled_off"
+        ],
+        "versions": {
+          "jcad": "0.4.8",
+          "electron": "44.7.0",
+          "chromium": "152.0.7977.130",
+          "windows": "10.0.26200"
+        }
+      },
+      "gpuProcesses": [
+        {
+          "pid": 13948,
+          "creationTime": 1791865253121.319
+        }
+      ],
+      "switchPresent": true,
+      "prototype": {
+        "available": false
+      },
+      "freshContext": {
+        "available": true,
+        "lost": false,
+        "unmaskedRenderer": "ANGLE (NVIDIA, NVIDIA RTX A3000 12GB Laptop GPU (0x000024B9) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+        "unmaskedVendor": "Google Inc. (NVIDIA)",
+        "readback": {
+          "pixel": [
+            255,
+            0,
+            0,
+            255
+          ],
+          "glError": 0
+        }
+      },
+      "prototypeStatus": {
+        "mode": "canvas",
+        "rendered": false,
+        "reason": "Canvas 2D selected",
+        "preparationMs": 0,
+        "submissionMs": 0,
+        "bytes": 0,
+        "device": "not-created",
+        "capabilities": null,
+        "demo": null
+      },
+      "perFixtureProofs": [],
+      "activeNvidia": true,
+      "freshNvidia": true
+    },
+    {
+      "stage": "benchmark-final-hardware",
+      "freshDiagnostics": {
+        "state": "ready",
+        "adapters": [
+          {
+            "name": "Intel(R) UHD Graphics",
+            "vendorId": "0x8086",
+            "deviceId": "0x4688",
+            "active": false,
+            "driverVendor": "NVIDIA",
+            "driverVersion": "32.0.101.7088"
+          },
+          {
+            "name": "NVIDIA RTX A3000 12GB Laptop GPU",
+            "vendorId": "0x10de",
+            "deviceId": "0x24b9",
+            "active": true,
+            "driverVendor": "Unknown",
+            "driverVersion": "32.0.15.9671"
+          },
+          {
+            "name": "Microsoft Basic Render Driver",
+            "vendorId": "0x1414",
+            "deviceId": "0x008c",
+            "active": false,
+            "driverVendor": "Unknown",
+            "driverVersion": "10.0.26100.9549"
+          }
+        ],
+        "hardwareAcceleration": true,
+        "features": {
+          "2d_canvas": "enabled",
+          "flash_3d": "Unknown",
+          "flash_stage3d": "Unknown",
+          "flash_stage3d_baseline": "Unknown",
+          "gpu_compositing": "enabled",
+          "multiple_raster_threads": "enabled_on",
+          "native_gpu_memory_buffers": "Unknown",
+          "rasterization": "enabled",
+          "video_decode": "enabled",
+          "video_encode": "enabled",
+          "vpx_decode": "Unknown",
+          "webgl": "enabled",
+          "webgl2": "Unknown",
+          "opengl": "enabled_on",
+          "vulkan": "Unknown",
+          "webgpu": "enabled",
+          "direct_rendering_display": "Unknown",
+          "skia_graphite": "disabled_off"
+        },
+        "driver": {
+          "vendor": "Unknown",
+          "version": "Unknown"
+        },
+        "fallback": "Unknown",
+        "reasons": [
+          "skia_graphite: disabled_off"
+        ],
+        "versions": {
+          "jcad": "0.4.8",
+          "electron": "44.7.0",
+          "chromium": "152.0.7977.130",
+          "windows": "10.0.26200"
+        }
+      },
+      "gpuProcesses": [
+        {
+          "pid": 13948,
+          "creationTime": 1791865253121.319
+        }
+      ],
+      "switchPresent": true,
+      "prototype": {
+        "available": false
+      },
+      "freshContext": {
+        "available": true,
+        "lost": false,
+        "unmaskedRenderer": "ANGLE (NVIDIA, NVIDIA RTX A3000 12GB Laptop GPU (0x000024B9) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+        "unmaskedVendor": "Google Inc. (NVIDIA)",
+        "readback": {
+          "pixel": [
+            255,
+            0,
+            0,
+            255
+          ],
+          "glError": 0
+        }
+      },
+      "prototypeStatus": {
+        "mode": "canvas",
+        "rendered": false,
+        "preparationMs": 0,
+        "submissionMs": 0.7000000476837158,
+        "bytes": 0,
+        "reason": "Grid visible: Canvas 2D preserves grid/geometry compositing order (F7 toggles grid)",
+        "device": "not-created",
+        "capabilities": null,
+        "demo": null
+      },
+      "perFixtureProofs": [
+        {
+          "entities": 4,
+          "firstEntity": "L",
+          "unmaskedRenderer": "ANGLE (NVIDIA, NVIDIA RTX A3000 12GB Laptop GPU (0x000024B9) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+          "device": "ready"
+        },
+        {
+          "entities": 38000,
+          "firstEntity": "L0",
+          "unmaskedRenderer": "ANGLE (NVIDIA, NVIDIA RTX A3000 12GB Laptop GPU (0x000024B9) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+          "device": "ready"
+        },
+        {
+          "entities": 4,
+          "firstEntity": "L",
+          "unmaskedRenderer": "ANGLE (NVIDIA, NVIDIA RTX A3000 12GB Laptop GPU (0x000024B9) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+          "device": "ready"
+        },
+        {
+          "entities": 4,
+          "firstEntity": "L",
+          "unmaskedRenderer": "ANGLE (NVIDIA, NVIDIA RTX A3000 12GB Laptop GPU (0x000024B9) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+          "device": "ready"
+        }
+      ],
+      "activeNvidia": true,
+      "freshNvidia": true
+    }
+  ],
+  "outcome": "passed",
+  "limitations": [
+    "Single NVIDIA adapter/driver/runtime sample.",
+    "Integration tests may run concurrently; timings are descriptive and do not establish a controlled speedup.",
+    "No global settings or driver changes. Existing native harness retains private-profile + metrics PID/creationTime proof before its sole GPU-child termination."
+  ],
+  "comparison": {
+    "sourceSha": "a0eea698e4af721b7fd0fb4199534d2c9ec46290",
+    "worktreeModified": false,
+    "platform": "win32",
+    "arch": "x64",
+    "applicationLaunchMs": 1098.4422,
+    "hardware": {
+      "state": "ready",
+      "adapters": [
+        {
+          "name": "Intel(R) UHD Graphics",
+          "vendorId": "0x8086",
+          "deviceId": "0x4688",
+          "active": false,
+          "driverVendor": "NVIDIA",
+          "driverVersion": "32.0.101.7088"
+        },
+        {
+          "name": "NVIDIA RTX A3000 12GB Laptop GPU",
+          "vendorId": "0x10de",
+          "deviceId": "0x24b9",
+          "active": true,
+          "driverVendor": "Unknown",
+          "driverVersion": "32.0.15.9671"
+        },
+        {
+          "name": "Microsoft Basic Render Driver",
+          "vendorId": "0x1414",
+          "deviceId": "0x008c",
+          "active": false,
+          "driverVendor": "Unknown",
+          "driverVersion": "10.0.26100.9549"
+        }
+      ],
+      "hardwareAcceleration": true,
+      "features": {
+        "2d_canvas": "enabled",
+        "flash_3d": "Unknown",
+        "flash_stage3d": "Unknown",
+        "flash_stage3d_baseline": "Unknown",
+        "gpu_compositing": "enabled",
+        "multiple_raster_threads": "enabled_on",
+        "native_gpu_memory_buffers": "Unknown",
+        "rasterization": "enabled",
+        "video_decode": "enabled",
+        "video_encode": "enabled",
+        "vpx_decode": "Unknown",
+        "webgl": "enabled",
+        "webgl2": "Unknown",
+        "opengl": "enabled_on",
+        "vulkan": "Unknown",
+        "webgpu": "enabled",
+        "direct_rendering_display": "Unknown",
+        "skia_graphite": "disabled_off"
+      },
+      "driver": {
+        "vendor": "Unknown",
+        "version": "Unknown"
+      },
+      "fallback": "Unknown",
+      "reasons": [
+        "skia_graphite: disabled_off"
+      ],
+      "versions": {
+        "jcad": "0.4.8",
+        "electron": "44.7.0",
+        "chromium": "152.0.7977.130",
+        "windows": "10.0.26200"
+      }
+    },
+    "viewport": {
+      "width": 1216,
+      "height": 552,
+      "dpr": 1
+    },
+    "comparisons": {
+      "curves": {
+        "canvas": {
+          "firstSubmissionMs": 0.2999999523162842,
+          "first": {
+            "rendered": false,
+            "reason": "Canvas 2D selected",
+            "preparationMs": 0,
+            "submissionMs": 0,
+            "bytes": 0
+          },
+          "redrawCpuMedianMs": 0.2999999523162842,
+          "redrawTotalMedianMs": 1.2000000476837158,
+          "cpuSubmissionMedianMs": 0.2999999523162842,
+          "completionWaitMedianMs": 0.9000000953674316,
+          "totalRenderMedianMs": 1.1000001430511475,
+          "preparationMedianMs": null,
+          "rafWaitMedianMs": 15.399999856948853,
+          "uploadedBytes": [
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "samples": 30,
+          "motion": "pan-zoom",
+          "heapBytes": 11788953,
+          "status": {
+            "mode": "canvas",
+            "rendered": false,
+            "reason": "Canvas 2D selected",
+            "preparationMs": 0,
+            "submissionMs": 0,
+            "bytes": 0,
+            "device": "not-created",
+            "capabilities": null,
+            "demo": null
+          }
+        },
+        "gpu": {
+          "firstSubmissionMs": 20.100000143051147,
+          "first": {
+            "rendered": true,
+            "preparationMs": 3,
+            "submissionMs": 11.899999856948853,
+            "bytes": 21240
+          },
+          "redrawCpuMedianMs": 0.8999998569488525,
+          "redrawTotalMedianMs": 7.099999904632568,
+          "cpuSubmissionMedianMs": 1.4000000953674316,
+          "completionWaitMedianMs": 6.1000001430511475,
+          "totalRenderMedianMs": 7.5,
+          "preparationMedianMs": 0.5,
+          "rafWaitMedianMs": 9.399999856948853,
+          "uploadedBytes": [
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240
+          ],
+          "samples": 30,
+          "motion": "pan-zoom",
+          "heapBytes": 12519814,
+          "status": {
+            "mode": "gpu",
+            "rendered": true,
+            "preparationMs": 0.2999999523162842,
+            "submissionMs": 0.8999998569488525,
+            "bytes": 21240,
+            "device": "ready",
+            "capabilities": {
+              "state": "ready",
+              "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+              "renderer": "WebKit WebGL",
+              "maxTextureSize": 16384,
+              "maxViewportDims": [
+                32767,
+                32767
+              ],
+              "antialias": true,
+              "stencil": true,
+              "timerQuery": true
+            },
+            "demo": null
+          }
+        },
+        "panOnly": {
+          "canvas": {
+            "firstSubmissionMs": 0.40000009536743164,
+            "first": {
+              "rendered": false,
+              "preparationMs": 0.2999999523162842,
+              "submissionMs": 0.8999998569488525,
+              "bytes": 21240,
+              "reason": "Canvas 2D selected"
+            },
+            "redrawCpuMedianMs": 0.5,
+            "redrawTotalMedianMs": 1.2999999523162842,
+            "cpuSubmissionMedianMs": 0.5,
+            "completionWaitMedianMs": 0.7999999523162842,
+            "totalRenderMedianMs": 1.2999999523162842,
+            "preparationMedianMs": null,
+            "rafWaitMedianMs": 15.400000095367432,
+            "uploadedBytes": [
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null
+            ],
+            "samples": 30,
+            "motion": "pan",
+            "heapBytes": 13224970,
+            "status": {
+              "mode": "canvas",
+              "rendered": false,
+              "preparationMs": 0.2999999523162842,
+              "submissionMs": 0.8999998569488525,
+              "bytes": 21240,
+              "reason": "Canvas 2D selected",
+              "device": "ready",
+              "capabilities": {
+                "state": "ready",
+                "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+                "renderer": "WebKit WebGL",
+                "maxTextureSize": 16384,
+                "maxViewportDims": [
+                  32767,
+                  32767
+                ],
+                "antialias": true,
+                "stencil": true,
+                "timerQuery": true
+              },
+              "demo": null
+            }
+          },
+          "gpu": {
+            "firstSubmissionMs": 0.6999998092651367,
+            "first": {
+              "rendered": true,
+              "preparationMs": 0.09999990463256836,
+              "submissionMs": 0.20000004768371582,
+              "bytes": 0
+            },
+            "redrawCpuMedianMs": 0.7999999523162842,
+            "redrawTotalMedianMs": 8,
+            "cpuSubmissionMedianMs": 0.7000000476837158,
+            "completionWaitMedianMs": 7.1000001430511475,
+            "totalRenderMedianMs": 8,
+            "preparationMedianMs": 0,
+            "rafWaitMedianMs": 8.700000047683716,
+            "uploadedBytes": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "samples": 30,
+            "motion": "pan",
+            "heapBytes": 13589498,
+            "status": {
+              "mode": "gpu",
+              "rendered": true,
+              "preparationMs": 0.09999990463256836,
+              "submissionMs": 0.2999999523162842,
+              "bytes": 0,
+              "device": "ready",
+              "capabilities": {
+                "state": "ready",
+                "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+                "renderer": "WebKit WebGL",
+                "maxTextureSize": 16384,
+                "maxViewportDims": [
+                  32767,
+                  32767
+                ],
+                "antialias": true,
+                "stencil": true,
+                "timerQuery": true
+              },
+              "demo": null
+            }
+          }
+        },
+        "imageDifferenceFraction": 0.00005661231884057971,
+        "twoPixelCoverageMissFraction": 0,
+        "pannedTwoPixelCoverageMissFraction": 0
+      },
+      "precision": {
+        "canvas": {
+          "firstSubmissionMs": 0.5,
+          "first": {
+            "rendered": false,
+            "preparationMs": 0.10000014305114746,
+            "submissionMs": 0.20000004768371582,
+            "bytes": 0,
+            "reason": "Canvas 2D selected"
+          },
+          "redrawCpuMedianMs": 0.40000009536743164,
+          "redrawTotalMedianMs": 1.2999999523162842,
+          "cpuSubmissionMedianMs": 0.5,
+          "completionWaitMedianMs": 0.8000001907348633,
+          "totalRenderMedianMs": 1.3000001907348633,
+          "preparationMedianMs": null,
+          "rafWaitMedianMs": 15.299999952316284,
+          "uploadedBytes": [
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "samples": 30,
+          "motion": "pan-zoom",
+          "heapBytes": 12615666,
+          "status": {
+            "mode": "canvas",
+            "rendered": false,
+            "preparationMs": 0.10000014305114746,
+            "submissionMs": 0.20000004768371582,
+            "bytes": 0,
+            "reason": "Canvas 2D selected",
+            "device": "ready",
+            "capabilities": {
+              "state": "ready",
+              "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+              "renderer": "WebKit WebGL",
+              "maxTextureSize": 16384,
+              "maxViewportDims": [
+                32767,
+                32767
+              ],
+              "antialias": true,
+              "stencil": true,
+              "timerQuery": true
+            },
+            "demo": null
+          }
+        },
+        "gpu": {
+          "firstSubmissionMs": 1,
+          "first": {
+            "rendered": true,
+            "preparationMs": 0.39999985694885254,
+            "submissionMs": 0.2999999523162842,
+            "bytes": 21240
+          },
+          "redrawCpuMedianMs": 0.8000001907348633,
+          "redrawTotalMedianMs": 6.900000095367432,
+          "cpuSubmissionMedianMs": 1.4000000953674316,
+          "completionWaitMedianMs": 6.300000190734863,
+          "totalRenderMedianMs": 7.800000190734863,
+          "preparationMedianMs": 0.40000009536743164,
+          "rafWaitMedianMs": 8.899999856948853,
+          "uploadedBytes": [
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240,
+            21240
+          ],
+          "samples": 30,
+          "motion": "pan-zoom",
+          "heapBytes": 14908242,
+          "status": {
+            "mode": "gpu",
+            "rendered": true,
+            "preparationMs": 0.40000009536743164,
+            "submissionMs": 0.7000000476837158,
+            "bytes": 21240,
+            "device": "ready",
+            "capabilities": {
+              "state": "ready",
+              "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+              "renderer": "WebKit WebGL",
+              "maxTextureSize": 16384,
+              "maxViewportDims": [
+                32767,
+                32767
+              ],
+              "antialias": true,
+              "stencil": true,
+              "timerQuery": true
+            },
+            "demo": null
+          }
+        },
+        "panOnly": {
+          "canvas": {
+            "firstSubmissionMs": 0.6000001430511475,
+            "first": {
+              "rendered": false,
+              "preparationMs": 0.40000009536743164,
+              "submissionMs": 0.7000000476837158,
+              "bytes": 21240,
+              "reason": "Canvas 2D selected"
+            },
+            "redrawCpuMedianMs": 0.5,
+            "redrawTotalMedianMs": 1.2999999523162842,
+            "cpuSubmissionMedianMs": 0.5,
+            "completionWaitMedianMs": 0.7999999523162842,
+            "totalRenderMedianMs": 1.2999999523162842,
+            "preparationMedianMs": null,
+            "rafWaitMedianMs": 15.299999952316284,
+            "uploadedBytes": [
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null
+            ],
+            "samples": 30,
+            "motion": "pan",
+            "heapBytes": 15567342,
+            "status": {
+              "mode": "canvas",
+              "rendered": false,
+              "preparationMs": 0.40000009536743164,
+              "submissionMs": 0.7000000476837158,
+              "bytes": 21240,
+              "reason": "Canvas 2D selected",
+              "device": "ready",
+              "capabilities": {
+                "state": "ready",
+                "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+                "renderer": "WebKit WebGL",
+                "maxTextureSize": 16384,
+                "maxViewportDims": [
+                  32767,
+                  32767
+                ],
+                "antialias": true,
+                "stencil": true,
+                "timerQuery": true
+              },
+              "demo": null
+            }
+          },
+          "gpu": {
+            "firstSubmissionMs": 1.7999999523162842,
+            "first": {
+              "rendered": true,
+              "preparationMs": 0.09999990463256836,
+              "submissionMs": 1.5,
+              "bytes": 0
+            },
+            "redrawCpuMedianMs": 0.7000000476837158,
+            "redrawTotalMedianMs": 7.1000001430511475,
+            "cpuSubmissionMedianMs": 0.7000000476837158,
+            "completionWaitMedianMs": 6,
+            "totalRenderMedianMs": 6.900000095367432,
+            "preparationMedianMs": 0,
+            "rafWaitMedianMs": 10,
+            "uploadedBytes": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "samples": 30,
+            "motion": "pan",
+            "heapBytes": 15927658,
+            "status": {
+              "mode": "gpu",
+              "rendered": true,
+              "preparationMs": 0,
+              "submissionMs": 0.5,
+              "bytes": 0,
+              "device": "ready",
+              "capabilities": {
+                "state": "ready",
+                "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+                "renderer": "WebKit WebGL",
+                "maxTextureSize": 16384,
+                "maxViewportDims": [
+                  32767,
+                  32767
+                ],
+                "antialias": true,
+                "stencil": true,
+                "timerQuery": true
+              },
+              "demo": null
+            }
+          }
+        },
+        "imageDifferenceFraction": 0.00005661231884057971,
+        "twoPixelCoverageMissFraction": 0,
+        "pannedTwoPixelCoverageMissFraction": 0
+      },
+      "dense-lines": {
+        "canvas": {
+          "firstSubmissionMs": 1.1000001430511475,
+          "first": {
+            "rendered": false,
+            "preparationMs": 0,
+            "submissionMs": 0.2999999523162842,
+            "bytes": 0,
+            "reason": "Canvas 2D selected"
+          },
+          "redrawCpuMedianMs": 0.6000001430511475,
+          "redrawTotalMedianMs": 18.799999952316284,
+          "cpuSubmissionMedianMs": 53.89999985694885,
+          "completionWaitMedianMs": 0.5,
+          "totalRenderMedianMs": 54.299999952316284,
+          "preparationMedianMs": null,
+          "rafWaitMedianMs": 1.7000000476837158,
+          "uploadedBytes": [
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "samples": 30,
+          "motion": "pan-zoom",
+          "heapBytes": 36265288,
+          "status": {
+            "mode": "canvas",
+            "rendered": false,
+            "preparationMs": 0,
+            "submissionMs": 0.2999999523162842,
+            "bytes": 0,
+            "reason": "Canvas 2D selected",
+            "device": "ready",
+            "capabilities": {
+              "state": "ready",
+              "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+              "renderer": "WebKit WebGL",
+              "maxTextureSize": 16384,
+              "maxViewportDims": [
+                32767,
+                32767
+              ],
+              "antialias": true,
+              "stencil": true,
+              "timerQuery": true
+            },
+            "demo": null
+          }
+        },
+        "gpu": {
+          "firstSubmissionMs": 83.40000009536743,
+          "first": {
+            "rendered": true,
+            "preparationMs": 75.40000009536743,
+            "submissionMs": 6.599999904632568,
+            "bytes": 4560000
+          },
+          "redrawCpuMedianMs": 1.2999999523162842,
+          "redrawTotalMedianMs": 8.400000095367432,
+          "cpuSubmissionMedianMs": 65.29999995231628,
+          "completionWaitMedianMs": 11.599999904632568,
+          "totalRenderMedianMs": 78.59999990463257,
+          "preparationMedianMs": 59.90000009536743,
+          "rafWaitMedianMs": 3.799999952316284,
+          "uploadedBytes": [
+            4560000,
+            4560000,
+            4560000,
+            4560000,
+            4560000,
+            4560000,
+            4560000,
+            4560000,
+            4560000,
+            4560000,
+            4560000,
+            4560000,
+            4560000,
+            4560000,
+            4560000,
+            4560000,
+            4560000,
+            4560000,
+            4560000,
+            4560000,
+            4560000,
+            4560000,
+            4560000,
+            4560000,
+            4560000,
+            4560000,
+            4560000,
+            4560000,
+            4560000,
+            4560000
+          ],
+          "samples": 30,
+          "motion": "pan-zoom",
+          "heapBytes": 28614914,
+          "status": {
+            "mode": "gpu",
+            "rendered": true,
+            "preparationMs": 0.2999999523162842,
+            "submissionMs": 1.3000001907348633,
+            "bytes": 0,
+            "device": "ready",
+            "capabilities": {
+              "state": "ready",
+              "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+              "renderer": "WebKit WebGL",
+              "maxTextureSize": 16384,
+              "maxViewportDims": [
+                32767,
+                32767
+              ],
+              "antialias": true,
+              "stencil": true,
+              "timerQuery": true
+            },
+            "demo": null
+          }
+        },
+        "panOnly": {
+          "canvas": {
+            "firstSubmissionMs": 1.2999999523162842,
+            "first": {
+              "rendered": false,
+              "preparationMs": 0.2999999523162842,
+              "submissionMs": 1.3000001907348633,
+              "bytes": 0,
+              "reason": "Canvas 2D selected"
+            },
+            "redrawCpuMedianMs": 0.5,
+            "redrawTotalMedianMs": 19.59999990463257,
+            "cpuSubmissionMedianMs": 51.200000047683716,
+            "completionWaitMedianMs": 0.5,
+            "totalRenderMedianMs": 51.700000047683716,
+            "preparationMedianMs": null,
+            "rafWaitMedianMs": 1.5999999046325684,
+            "uploadedBytes": [
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null
+            ],
+            "samples": 30,
+            "motion": "pan",
+            "heapBytes": 33283650,
+            "status": {
+              "mode": "canvas",
+              "rendered": false,
+              "preparationMs": 0.2999999523162842,
+              "submissionMs": 1.3000001907348633,
+              "bytes": 0,
+              "reason": "Canvas 2D selected",
+              "device": "ready",
+              "capabilities": {
+                "state": "ready",
+                "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+                "renderer": "WebKit WebGL",
+                "maxTextureSize": 16384,
+                "maxViewportDims": [
+                  32767,
+                  32767
+                ],
+                "antialias": true,
+                "stencil": true,
+                "timerQuery": true
+              },
+              "demo": null
+            }
+          },
+          "gpu": {
+            "firstSubmissionMs": 2.1999998092651367,
+            "first": {
+              "rendered": true,
+              "preparationMs": 0.09999990463256836,
+              "submissionMs": 1,
+              "bytes": 0
+            },
+            "redrawCpuMedianMs": 1.7999999523162842,
+            "redrawTotalMedianMs": 7.400000095367432,
+            "cpuSubmissionMedianMs": 1.7999999523162842,
+            "completionWaitMedianMs": 6.3999998569488525,
+            "totalRenderMedianMs": 8.200000047683716,
+            "preparationMedianMs": 0.20000004768371582,
+            "rafWaitMedianMs": 8.5,
+            "uploadedBytes": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "samples": 30,
+            "motion": "pan",
+            "heapBytes": 33614026,
+            "status": {
+              "mode": "gpu",
+              "rendered": true,
+              "preparationMs": 0.2999999523162842,
+              "submissionMs": 1,
+              "bytes": 0,
+              "device": "ready",
+              "capabilities": {
+                "state": "ready",
+                "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+                "renderer": "WebKit WebGL",
+                "maxTextureSize": 16384,
+                "maxViewportDims": [
+                  32767,
+                  32767
+                ],
+                "antialias": true,
+                "stencil": true,
+                "timerQuery": true
+              },
+              "demo": null
+            }
+          }
+        },
+        "imageDifferenceFraction": 0.03335359458428681,
+        "twoPixelCoverageMissFraction": 0,
+        "pannedTwoPixelCoverageMissFraction": 0
+      },
+      "mixed-schematic": {
+        "canvas": {
+          "firstSubmissionMs": 0.5999999046325684,
+          "first": {
+            "rendered": false,
+            "preparationMs": 0.09999990463256836,
+            "submissionMs": 0.7000000476837158,
+            "bytes": 0,
+            "reason": "Canvas 2D selected"
+          },
+          "redrawCpuMedianMs": 0.6000001430511475,
+          "redrawTotalMedianMs": 20.5,
+          "cpuSubmissionMedianMs": 18.799999952316284,
+          "completionWaitMedianMs": 0.5,
+          "totalRenderMedianMs": 19.299999952316284,
+          "preparationMedianMs": null,
+          "rafWaitMedianMs": 1.4000000953674316,
+          "uploadedBytes": [
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "samples": 30,
+          "motion": "pan-zoom",
+          "heapBytes": 64592421,
+          "status": {
+            "mode": "canvas",
+            "rendered": false,
+            "preparationMs": 0.09999990463256836,
+            "submissionMs": 0.7000000476837158,
+            "bytes": 0,
+            "reason": "Canvas 2D selected",
+            "device": "ready",
+            "capabilities": {
+              "state": "ready",
+              "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+              "renderer": "WebKit WebGL",
+              "maxTextureSize": 16384,
+              "maxViewportDims": [
+                32767,
+                32767
+              ],
+              "antialias": true,
+              "stencil": true,
+              "timerQuery": true
+            },
+            "demo": null
+          }
+        },
+        "gpu": {
+          "firstSubmissionMs": 2.9000000953674316,
+          "first": {
+            "rendered": false,
+            "reason": "Unsupported entity: insert (I0)",
+            "preparationMs": 2,
+            "submissionMs": 0,
+            "bytes": 0
+          },
+          "redrawCpuMedianMs": 2.8999998569488525,
+          "redrawTotalMedianMs": 9.399999856948853,
+          "cpuSubmissionMedianMs": 20.59999990463257,
+          "completionWaitMedianMs": 0.5,
+          "totalRenderMedianMs": 21.40000009536743,
+          "preparationMedianMs": null,
+          "rafWaitMedianMs": 1.4000000953674316,
+          "uploadedBytes": [
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "samples": 30,
+          "motion": "pan-zoom",
+          "heapBytes": 40695541,
+          "status": {
+            "mode": "gpu",
+            "rendered": false,
+            "reason": "Unsupported entity: insert (I0)",
+            "preparationMs": 1.3000001907348633,
+            "submissionMs": 0,
+            "bytes": 0,
+            "device": "ready",
+            "capabilities": {
+              "state": "ready",
+              "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+              "renderer": "WebKit WebGL",
+              "maxTextureSize": 16384,
+              "maxViewportDims": [
+                32767,
+                32767
+              ],
+              "antialias": true,
+              "stencil": true,
+              "timerQuery": true
+            },
+            "demo": null
+          }
+        },
+        "panOnly": {
+          "canvas": {
+            "firstSubmissionMs": 1.0999999046325684,
+            "first": {
+              "rendered": false,
+              "reason": "Canvas 2D selected",
+              "preparationMs": 1.3000001907348633,
+              "submissionMs": 0,
+              "bytes": 0
+            },
+            "redrawCpuMedianMs": 0.6000001430511475,
+            "redrawTotalMedianMs": 18.100000143051147,
+            "cpuSubmissionMedianMs": 17.90000009536743,
+            "completionWaitMedianMs": 0.5,
+            "totalRenderMedianMs": 18.5,
+            "preparationMedianMs": null,
+            "rafWaitMedianMs": 1.3000001907348633,
+            "uploadedBytes": [
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null
+            ],
+            "samples": 30,
+            "motion": "pan",
+            "heapBytes": 46403913,
+            "status": {
+              "mode": "canvas",
+              "rendered": false,
+              "reason": "Canvas 2D selected",
+              "preparationMs": 1.3000001907348633,
+              "submissionMs": 0,
+              "bytes": 0,
+              "device": "ready",
+              "capabilities": {
+                "state": "ready",
+                "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+                "renderer": "WebKit WebGL",
+                "maxTextureSize": 16384,
+                "maxViewportDims": [
+                  32767,
+                  32767
+                ],
+                "antialias": true,
+                "stencil": true,
+                "timerQuery": true
+              },
+              "demo": null
+            }
+          },
+          "gpu": {
+            "firstSubmissionMs": 2.5,
+            "first": {
+              "rendered": false,
+              "reason": "Unsupported entity: insert (I0)",
+              "preparationMs": 2,
+              "submissionMs": 0,
+              "bytes": 0
+            },
+            "redrawCpuMedianMs": 2.799999952316284,
+            "redrawTotalMedianMs": 7.099999904632568,
+            "cpuSubmissionMedianMs": 19,
+            "completionWaitMedianMs": 0.5,
+            "totalRenderMedianMs": 19.40000009536743,
+            "preparationMedianMs": null,
+            "rafWaitMedianMs": 1.2999999523162842,
+            "uploadedBytes": [
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null
+            ],
+            "samples": 30,
+            "motion": "pan",
+            "heapBytes": 38656053,
+            "status": {
+              "mode": "gpu",
+              "rendered": false,
+              "reason": "Unsupported entity: insert (I0)",
+              "preparationMs": 1.0999999046325684,
+              "submissionMs": 0,
+              "bytes": 0,
+              "device": "ready",
+              "capabilities": {
+                "state": "ready",
+                "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+                "renderer": "WebKit WebGL",
+                "maxTextureSize": 16384,
+                "maxViewportDims": [
+                  32767,
+                  32767
+                ],
+                "antialias": true,
+                "stencil": true,
+                "timerQuery": true
+              },
+              "demo": null
+            }
+          }
+        },
+        "imageDifferenceFraction": 0,
+        "twoPixelCoverageMissFraction": 0,
+        "pannedTwoPixelCoverageMissFraction": 0
+      }
+    },
+    "validation": [
+      "Selection highlight and grips",
+      "Two real WebGL context-loss/restoration cycles; grid full-view fallback",
+      "Separate 3D demonstration: orbit/pan/zoom, picking, both projections, context restoration, no document modification",
+      "Resource/canvas disposal"
+    ],
+    "limitations": [
+      "Single Windows machine or CI runner; OS caches not purged.",
+      "Drawing pointer input is disabled during comparisons so hover changes cannot alter the measured scene; hover invalidation is covered by regression tests.",
+      "GPU fence wall waits include driver/CPU scheduling and exclude final desktop presentation.",
+      "Canvas readback completion is not a pure GPU timer.",
+      "GPU memory is uploaded buffer bytes only; JS heap is approximate and shared with the whole application."
+    ]
+  },
+  "evidenceExport": {
+    "absoluteArtifactPathsOmitted": true,
+    "originalRun": "benchmark-hDFW9F/paired-result.json"
+  }
+}
