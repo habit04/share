@@ -135,8 +135,9 @@ export class Editor {
     this.doc.ensureBlocks([...LIBRARY_SYMBOLS, WIRE_DOT, TITLE_BLOCK, SOURCE_ARROW, DEST_ARROW]);
     this.applySettings();
     this.doc.subscribe(() => {
-      // Drop selection ids that no longer exist.
+      // Drop selection ids that no longer exist (experimental 3D solids count as existing).
       const ids = new Set(this.doc.entities.map((e) => e.id));
+      for (const s of this.doc.snapshot.model3d?.solids ?? []) ids.add(s.id);
       let changed = false;
       for (const id of this.selection) if (!ids.has(id)) {
         this.selection.delete(id);

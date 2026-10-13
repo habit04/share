@@ -173,6 +173,10 @@ export function optionsDialog(editor: Editor, initialTab = 0, restore?: UserSett
     dlgGroup(t('options.files.symbolLibrary'), [
       dlgRow(t('options.files.standard'), selectInput([['JIC', t('options.files.jic')], ['IEC', t('options.files.iec')]], cur().symbolStandard, (v) => set({ symbolStandard: v as 'JIC' | 'IEC' }))),
     ]),
+    dlgGroup(t('options.experimental.group'), [
+      dlgCheck(t('options.experimental.3d'), cur().experimental3d, (v) => set({ experimental3d: v })),
+      note(t('options.experimental.3dNote')),
+    ]),
     dlgGroup(t('options.files.recent'), [
       (() => {
         const b = button(t('options.files.clearRecent'));
