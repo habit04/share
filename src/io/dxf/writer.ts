@@ -33,6 +33,10 @@ function usedLinetypes(state: DrawingState): Linetype[] {
   };
   scan(state.entities);
   for (const b of Object.values(state.blocks)) scan(b.entities);
+  for (const l of state.layouts ?? []) {
+    scan(l.entities);
+    for (const v of l.viewports) if (v.clipBoundary) scan([v.clipBoundary]);
+  }
   // Retained raw records name their linetype in group 6: it must exist in the LTYPE table.
   for (const r of rawEntitiesOf(state)) for (const [code, value] of r.groups) if (code === 6 && value.trim()) names.add(value.trim().toUpperCase());
   const extra = state.header?.linetypes ?? [];

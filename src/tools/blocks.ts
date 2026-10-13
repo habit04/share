@@ -42,7 +42,11 @@ export function unusedLayers(state: DrawingState): string[] {
   // Layout entities and viewport frames (Track E).
   for (const l of state.layouts ?? []) {
     for (const e of l.entities) used.add(e.layer);
-    for (const v of l.viewports) used.add(v.layer);
+    for (const v of l.viewports) {
+      used.add(v.layer);
+      // A disabled native clip is still retained drawing data and must keep its resources.
+      if (v.clipBoundary) used.add(v.clipBoundary.layer);
+    }
   }
   return state.layers.map((l) => l.name).filter((n) => !used.has(n));
 }
@@ -56,6 +60,10 @@ export function unusedLinetypes(state: DrawingState): string[] {
   };
   scan(state.entities);
   for (const b of Object.values(state.blocks)) scan(b.entities);
+  for (const l of state.layouts ?? []) {
+    scan(l.entities);
+    for (const v of l.viewports) if (v.clipBoundary) scan([v.clipBoundary]);
+  }
   return (state.header?.linetypes ?? []).map((l) => l.name).filter((n) => !used.has(n.toUpperCase()));
 }
 
