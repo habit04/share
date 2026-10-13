@@ -35,7 +35,7 @@ completion here does not authorize a release, default switch or merge.
 | 1. GPU diagnostics | Implemented initially at `16abc740`; PR #10 adds bounded collection and clipboard-completion repairs. Combined source `4bad60b2` passed collector/About/copy/report checks and exact-head CI. Adapter activity and unavailable/software states remain explicit. Intel and NVIDIA evidence are recorded below with their source commits. | Require exact CI for each new candidate. Missing adapter data must stay Unknown; capabilities must remain distinct from the renderer actually in use. Stable-branch integration still requires separate approval. |
 | 2. Experimental 2D/simple 3D | The prototype at `2fbae728` and PR #10's pan-cache/recovery milestone have successful source CI. Combined source `4bad60b2` passed both builds, native failure/unavailability, benchmarks and the existing isolated demo checks. See [prototype evidence](GPU-RENDERER-PROTOTYPE.md). | Keep the development flag. Repeat these checks on each changed renderer candidate. Record source SHA, viewport, actual adapter/limits, CPU preparation/submission, completion observations and drawing differences before interpreting speed. |
 | 3. Remaining 2D/reliability | Partly complete: PR #11's pinned `3ce7e10a` batch is integrated in draft PR #12, with seven real Windows batch checks and exact source CI passed. At the October 13, 19:18 UTC read, active draft PR #11 was unmerged/conflicted at `eb692896`; the [remaining checklist](REMAINING-2D-CHECKLIST.md) stays with its owners. [PR #9](https://github.com/habit04/share/pull/9) passed exact source CI at `14cb3f9f` and was merged by another task as stable `8dfe1caa`; v0.4.9 has public Windows release assets. Stable `8dfe1caa` is integrated in this isolated candidate alongside the pinned batch. Clean `455b2662` passed the combined regression suite and all seven real Windows 2D batch checks; clean repair `344ec1a1` also passed all seven native batch checks. The later active PR #11 head is not integrated. | Each remaining fix needs regression and relevant import-edit-save-reopen evidence. Require exact-head CI and source-specific native checks for each new combination. Release metadata does not prove installation. Coordinate the active PR #11 owner before integrating unfinished font/project/dimension work. |
-| 4. Production GPU renderer | Incomplete. Clean `fd7fac07` passed bounded zoom reuse; `fe653933` passed eligible line subrange edits. PR #15's clean `72d70630` reduced full LINE preparation with accepted source-specific native evidence. Draft [PR #16](https://github.com/habit04/share/pull/16) adds bounded fourfold reuse for certified straight block/TEXT/ATTRIB scenes, native Float32 construction refusals and corrected fractional backing mapping. Clean `344ec1a1` passed all ten local checks (3,418 tests, 28 conditional skips), ordinary native checks and the strict backing/cache/unsafe-ARC fallback gates described below. Thin native reference stability and general curve/backend proof remain open; replacement CI still failed, and paired new-producer performance is pending. Dimensions and common hatches remain isolated until this repair checkpoint passes. | Pass every production gate below before considering a default change. Canvas stays default; no general performance or untested hardware claim. Record geometry preparation, upload issuance and completed-frame observations separately, and supplement repeated-readback comparisons with ordinary frame-cadence measurements. |
+| 4. Production GPU renderer | Incomplete. Clean `fd7fac07` passed bounded zoom reuse; `fe653933` passed eligible line subrange edits. PR #15's clean `72d70630` reduced full LINE preparation with accepted source-specific native evidence. Draft [PR #16](https://github.com/habit04/share/pull/16) adds bounded fourfold reuse for certified straight block/TEXT/ATTRIB scenes, native Float32 construction refusals and corrected fractional backing mapping. Clean `344ec1a1` passed the local/native repair gates described below. Clean `604a7ccf` passed 3,422 tests (28 conditional skips) and five native preflight checks, but both exact-head CI runs and the complete Intel benchmark failed at dense Canvas-fallback undo. Native cross-state drift remains inconclusive. The next direct-LINE fourfold certificate and fallback-reference repair have focused source checks only; clean-producer validation, native performance and replacement CI are pending. Dimensions and common hatches remain isolated until this checkpoint passes. | Pass every production gate below before considering a default change. Canvas stays default; no general performance or untested hardware claim. Record geometry preparation, upload issuance and completed-frame observations separately, and supplement repeated-readback comparisons with ordinary frame-cadence measurements. |
 | 5. Full 3D development | Already begun on `share/feature/3d-development`, `0f644a7`; [CI passed](https://github.com/habit04/share/actions/runs/38336811063). A separate Open CASCADE/three.js application also exists in [habit04/jcad-3d](https://github.com/habit04/jcad-3d), `c3802fc`, with [successful CI](https://github.com/habit04/jcad-3d/actions/runs/38202841903). | Resolve which architecture owns future 3D integration. Require direct modeling, selection/snapping, dimensions, undo and persistent save/reopen/recovery evidence for the chosen track. Keep stable public 2D independent. Embedded 3D status/validation: [3D-STATUS](https://github.com/habit04/share/blob/feature/3d-development/docs/3D-STATUS.md); separate-app limits: [NOT-TESTED](https://github.com/habit04/jcad-3d/blob/main/docs/NOT-TESTED.md). |
 
 The [October 11 remediation record](REVIEW-FIXES.md) tracks the original **53
@@ -786,6 +786,84 @@ harness repair preserves the original occluded samples, chooses an analytic
 curve point clear of every selection grip, and retains the unchanged opacity,
 raster and geometric coverage tolerances. Its native and exact-head CI checks,
 paired performance and failure recovery remain pending.
+
+### `604a7ccf` failure history and the next bounded producer
+
+Clean `604a7ccfc8b4c2c1216ce68c998a645b34d2227d` passed all local checks,
+including 3,422 tests with 28 conditional skips, and all five native preflight
+checks. Its fresh no-readback phase passed 12 workflows, including actual
+untwisted GPU LINE edit/undo. The complete Intel benchmark nevertheless failed
+at the original dense, twisted edit/undo pose. Baseline, edit and undo there
+used the signed native-context-rotation refusal and complete Canvas fallback,
+with zero GPU uploads and exact same-state Canvas/fallback RGBA equality.
+The baseline-to-undo native Canvas reference changed by three pixels; the
+requested-GPU fallback changed identically. This does not establish the native
+cache-regeneration or backend cause, nor prove exact native undo restoration.
+
+Both exact-head [PR CI](https://github.com/habit04/share/actions/runs/38455152011)
+and [push CI](https://github.com/habit04/share/actions/runs/38455142969) passed
+four of five jobs: Node22, Node24, UI and Windows Electron E2E. Experimental GPU
+failed at that dense fallback undo gate. Preserve this failed history and the
+private archives `.codex-local/validation-604a7ccf/benchmark-default/failure.json`
+and `.codex-local/ci-604-native-undo-diagnosis.json`. The
+[public failed-604 diagnostic](benchmarks/windows-gpu-604-failed-intel.json)
+retains all 12 fresh workflow summaries, original-camera GPU edit proof, native
+undo analysis and exact CI/local-check results; complete snapshots, raw samples
+and PNGs remain privately preserved. It claims no aggregate benchmark pass or
+new-producer result. The independent native probe retained
+its first restored-image drift and incomplete queued-undo command capture,
+so its backend diagnosis remains inconclusive even though later controls were exact.
+
+Diagnostic timing from the failed run motivates the next bounded optimization:
+38,000 direct LINEs still prepared twice in 30 sustained-zoom frames, with
+preparation max 90.3 ms, upload issuance max 3.9 ms and workflow CPU max 95.6 ms.
+The straight compiled-tag flow prepared/uploaded nothing across its 30 frames,
+with CPU median 1.1 ms and max 1.7 ms. These describe the failed producer's
+samples; they do not measure the next direct-LINE change or establish a paired pass.
+
+The next source candidate extends the direct all-LINE fast path to a proved
+maximum ratio of four only for an explicitly requested, fully immutable default
+cache interval with at most 100,000 original owner slots, including hidden owners.
+Every visible original endpoint, including zero/offscreen geometry, passes the
+native Float32 source proof and complete ratio/pan extrema before clipping or
+triangle allocation. Only a factory-certified source-precision failure may
+retry the ordinary 1.25 interval; topology and unexpected exceptions never weaken
+admission. Ordinary, mutable, strict/custom and over-limit requests keep their
+previous path. The .8 lower bound, 128-physical-pixel pan border, fixed CSS
+lineweights, .0625 source and .0625 shader reserves, retained rectangle, packed
+vertex bytes and vertex cap are unchanged. LINE deltas prove the actual stored
+maximum; a replacement safe only at 1.25 cannot patch a fourfold cache.
+The six focused geometry/renderer files passed all 182 tests, TypeScript and
+scoped lint. This candidate is unmeasured and adds no curve, dimension or hatch coverage.
+
+The next fallback oracle keeps the original drawing, camera and edit. Each
+baseline/edit/undo/redo state must retain exact complete-view Canvas/fallback
+RGBA equality and zero GL upload/clear/draw. Restoration also verifies exact
+immutable snapshot identity and complete document JSON, camera, settings,
+selection/overlays, DPR, logical/physical surface dimensions and surface rectangle.
+The original cross-state comparison and images remain recorded. For a changed
+native reference, compare every signed RGBA-channel change against the native
+Canvas control with zero differential tolerance; opposite changes cannot wrap
+into equality. Matching changes establish only relative fallback restoration,
+while native restoration stays explicitly **inconclusive**. A differing signed
+change, broken state invariant, changed refusal reason, missing edit or GPU
+submission still fails. Actually admitted GPU edit/undo retains exact cross-state
+restoration requirements. No pixel tolerance or production Canvas behavior changes.
+
+Primary research supports investigating the mechanisms, not declaring JCad accurate:
+pinned [Chromium 152 readback handling](https://github.com/chromium/chromium/blob/152.0.7977.130/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc#L398-L435)
+can disable acceleration after readback under its stated context conditions;
+[resource-provider replacement](https://github.com/chromium/chromium/blob/152.0.7977.130/third_party/blink/renderer/modules/canvas/canvas2d/canvas_rendering_context_2d.cc#L1057-L1071)
+does not prove it caused the observed drift. OpenLayers v10.11's
+[buffer-generation conditions](https://github.com/openlayers/openlayers/blob/v10.11.0/src/ol/renderer/webgl/VectorLayer.js#L424-L498)
+and [per-frame projection uniforms](https://github.com/openlayers/openlayers/blob/v10.11.0/src/ol/renderer/webgl/vectorUtil.js#L41-L59)
+provide an example of separating view transforms from geometry buffers. They
+prove neither JCad's quarter-pixel accuracy nor native stroke topology.
+
+Next clean-producer full checks/builds, native correctness/performance/recovery,
+and both exact-head CI runs are pending. Publish source-bound Intel/NVIDIA/process
+and unavailable-device evidence only after its gates pass. Canvas remains default;
+production approval and the broader hardware/curve gates remain open.
 
 ### NVIDIA validation on the pinned GPU source
 

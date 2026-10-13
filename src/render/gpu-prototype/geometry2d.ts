@@ -1,4 +1,5 @@
 import type { DrawingState } from '../../core/document';
+import { isImmutableData } from '../../core/immutable-data';
 import type { Entity, LineEntity, PolylineEntity } from '../../core/entities';
 import { polylineSegments } from '../../core/entities';
 import type { Point } from '../../core/geometry';
@@ -43,7 +44,7 @@ export const GPU_PAN_CACHE_BORDER = 128;
 /** A copied camera anchor owns this entire interval; crossing it prepares a new mesh. */
 export const GPU_ZOOM_CACHE_MIN_RATIO = 0.8;
 export const GPU_ZOOM_CACHE_MAX_RATIO = 1.25;
-/** Optional, proved zoom-IN interval for an entirely straight compiled scene. */
+/** Optional, proved zoom-IN interval for straight compiled or immutable all-LINE scenes. */
 export const GPU_STRAIGHT_ZOOM_CACHE_MAX_RATIO = 4;
 export interface ZoomPreparationOptions { readonly certifyStraightZoomIn?: boolean }
 export const GPU_ZOOM_VERTEX_STRIDE = 7;
@@ -732,6 +733,29 @@ export function prepareZoomLine(entity: LineEntity, state: DrawingState, anchor:
 
 type StyledZoomLine = Pick<PreparedZoomEntity, 'color' | 'width' | 'alpha'> & { entity: LineEntity };
 
+/** Prove the bounded original source before clipping or growing triangle storage.
+ * The larger band includes zero/offscreen lines, and uses the packer's exact arithmetic.
+ */
+function certifyZoomLineSources(styled: readonly StyledZoomLine[], view: Gpu2DView, minRatio: number, maxRatio: number, padding: number, checkRange: boolean): void {
+  const c = Math.cos(view.twist), s = Math.sin(view.twist), halfX = view.width / 2, halfY = view.height / 2;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const { entity, width } of styled) {
+    const adx = entity.a.x - view.center.x, ady = entity.a.y - view.center.y;
+    const bdx = entity.b.x - view.center.x, bdy = entity.b.y - view.center.y;
+    assertPrimitiveStrokePrecision({ ...entity, a: { x: adx, y: ady }, b: { x: bdx, y: bdy } }, entity, width, view, maxRatio);
+    if (!checkRange) continue;
+    const ax = halfX + (adx * c - ady * s) * view.scale - halfX, ay = halfY - (adx * s + ady * c) * view.scale - halfY;
+    const bx = halfX + (bdx * c - bdy * s) * view.scale - halfX, by = halfY - (bdx * s + bdy * c) * view.scale - halfY;
+    minX = Math.min(minX, ax, bx); maxX = Math.max(maxX, ax, bx);
+    minY = Math.min(minY, ay, by); maxY = Math.max(maxY, ay, by);
+  }
+  if (!checkRange || minX === Infinity) return;
+  const bound = (MAX_PROJECTED_COORDINATE - 1) / Math.max(1, view.dpr);
+  const within = (value: number): boolean => Number.isFinite(value) && Math.abs(value) <= bound;
+  const axisSafe = (center: number, half: number): boolean => within(center * minRatio - padding + half) && within(center * minRatio + padding + half) && within(center * maxRatio - padding + half) && within(center * maxRatio + padding + half);
+  if (!axisSafe(minX, halfX) || !axisSafe(maxX, halfX) || !axisSafe(minY, halfY) || !axisSafe(maxY, halfY)) throw sourcePrecisionCertificateError('GPU straight zoom source exceeds projected precision bound');
+}
+
 /** Grow only for emitted strokes; return exactly the owned used bytes for GPU upload. */
 class ZoomLineWriter {
   private data = new Float32Array(0);
@@ -769,7 +793,7 @@ class ZoomLineWriter {
 }
 
 /** Straight-only scenes need no temporary path, normals array, boxed vertex array or final finite scan. */
-function prepareZoomLines(state: DrawingState, view: Gpu2DView, styled: readonly StyledZoomLine[], extent: Point, padding: number, minRatio: number, maxRatio: number): PreparedZoom2D {
+function prepareZoomLines(state: DrawingState, view: Gpu2DView, styled: readonly StyledZoomLine[], extent: Point, padding: number, minRatio: number, maxRatio: number, sourceCertified = false): PreparedZoom2D {
   const writer = new ZoomLineWriter(Math.min(styled.length, 1024) * 6 * GPU_ZOOM_VERTEX_STRIDE);
   const batches: StrokeBatch[] = [];
   const entities: PreparedZoom2D['entities'] = state.entities.length <= GPU_EDIT_ENTITY_LIMIT ? Array.from({ length: state.entities.length }, () => null) : null;
@@ -778,7 +802,7 @@ function prepareZoomLines(state: DrawingState, view: Gpu2DView, styled: readonly
   const precisionBound = MAX_PROJECTED_COORDINATE / Math.max(1, view.dpr);
   let sourceIndex = 0;
   for (const { entity, color, width, alpha } of styled) {
-    assertPrimitiveStrokePrecision({ ...entity, a: { x: entity.a.x - view.center.x, y: entity.a.y - view.center.y }, b: { x: entity.b.x - view.center.x, y: entity.b.y - view.center.y } }, entity, width, view, maxRatio);
+    if (!sourceCertified) assertPrimitiveStrokePrecision({ ...entity, a: { x: entity.a.x - view.center.x, y: entity.a.y - view.center.y }, b: { x: entity.b.x - view.center.x, y: entity.b.y - view.center.y } }, entity, width, view, maxRatio);
     const adx = entity.a.x - view.center.x, ady = entity.a.y - view.center.y;
     const bdx = entity.b.x - view.center.x, bdy = entity.b.y - view.center.y;
     // Keep screenPoint's addition and zoomLocalPoints's subtraction in their original
@@ -844,7 +868,23 @@ export function prepareZoom2D(state: DrawingState, view: Gpu2DView, overlay: Gpu
     // Huge lineweights/retention regions must fall back instead of cancelling large Float32s.
     const magnitude = Math.max(extent.x, extent.y) * maxRatio + padding + Math.max(view.width, view.height) / 2 + extrusion;
     if (!Number.isFinite(magnitude) || magnitude * 12 * 2 ** -23 * view.dpr > ZOOM_FLOAT_PIXEL_ERROR) throw new Error('GPU zoom geometry exceeds Float32 precision budget');
-    if (styled.every((item): item is StyledZoomLine => item.entity.type === 'line')) return prepareZoomLines(state, view, styled, extent, padding, minRatio, maxRatio);
+    if (styled.every((item): item is StyledZoomLine => item.entity.type === 'line')) {
+      // Only the default immutable request may extend its upper interval. Bound
+      // the optional original-source pass; ordinary scenes keep their old work order.
+      const stronger = options.certifyStraightZoomIn === true && isImmutableData(state) && state.entities.length <= GPU_EDIT_ENTITY_LIMIT && minRatio === GPU_ZOOM_CACHE_MIN_RATIO && maxRatio === GPU_ZOOM_CACHE_MAX_RATIO && padding === GPU_PAN_CACHE_BORDER / Math.max(1, view.dpr) && zoomFloatRangeSafe(view, extent, padding, extrusion, GPU_STRAIGHT_ZOOM_CACHE_MAX_RATIO);
+      if (stronger) {
+        let admittedMaxRatio = GPU_STRAIGHT_ZOOM_CACHE_MAX_RATIO;
+        try { certifyZoomLineSources(styled, view, minRatio, admittedMaxRatio, padding, true); }
+        catch (error) {
+          // Message-only, topology, allocation and native exceptions never retry.
+          if (!isSourcePrecisionCertificateError(error)) throw error;
+          admittedMaxRatio = maxRatio;
+          certifyZoomLineSources(styled, view, minRatio, admittedMaxRatio, padding, false);
+        }
+        return prepareZoomLines(state, view, styled, extent, padding, minRatio, admittedMaxRatio, true);
+      }
+      return prepareZoomLines(state, view, styled, extent, padding, minRatio, maxRatio);
+    }
     const vertices: number[] = [], batches: StrokeBatch[] = [];
     const sourceBounds = { min: { x: Infinity, y: Infinity }, max: { x: -Infinity, y: -Infinity } };
     const entities: PreparedZoom2D['entities'] = state.entities.length <= GPU_EDIT_ENTITY_LIMIT ? Array.from({ length: state.entities.length }, () => null) : null;

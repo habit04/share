@@ -141,9 +141,9 @@ describe('proved straight compound zoom-IN interval', () => {
     expectUnchangedMesh(result, ordinary);
   });
 
-  it('keeps the direct all-LINE fast path and strict mutable/custom requests unchanged', () => {
+  it('keeps the ordinary direct all-LINE fast path and strict mutable/custom requests unchanged', () => {
     const state = drawing([line]);
-    expect(certified(state).maxRatio).toBe(1.25);
+    expect(prepareZoom2D(state, view, overlay).maxRatio).toBe(1.25);
     const compound = drawing([line, text]);
     const strict = prepareZoom2D(compound, view, overlay, 1, 1, 0, { certifyStraightZoomIn: true });
     expect(strict.maxRatio).toBe(1);

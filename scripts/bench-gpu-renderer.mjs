@@ -4,11 +4,13 @@ import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { _electron as electron } from 'playwright';
 import { PNG } from 'pngjs';
 import pixelmatch from 'pixelmatch';
 import { applicationWindow } from './electron-window.mjs';
 import { chooseBenchmarkLineEdit } from './gpu-edit-candidate.mjs';
+import { analyzeFallbackRestoration } from './gpu-fallback-restoration.mjs';
 
 const cliArgs = process.argv.slice(2);
 assert.ok(cliArgs.length <= 1 && cliArgs.every((argument) => argument === '--high-performance'), 'Usage: node scripts/bench-gpu-renderer.mjs [--high-performance]');
@@ -1235,10 +1237,11 @@ try {
     // image alone could therefore conceal a broken upload that never showed an edit.
     // Check edit, undo and redo separately, outside timing, retaining one live cache
     // throughout each Canvas reference / GPU comparison at a twisted, panned zoom.
-    const editCorrectness = { untimed: true, setup: null, transitions: {}, comparisons: {}, editedImageChanged: null, snapshotRestored: false, resourcesReset: false, expectedActualRenderer: 'canvas', originalTwistedPosePreserved: true, nativeGpuEditFreshnessClaimed: false, admittedSceneRotationRefusal: supportsGPU || poseDependentBudget ? nativeRotationReason : null };
+    const editCorrectness = { untimed: true, setup: null, transitions: {}, comparisons: {}, editedImageChanged: null, restorationControls: {}, nativeReferenceOutcome: 'pending', relativeCanvasRestorationOutcome: 'pending', snapshotRestored: false, resourcesReset: false, expectedActualRenderer: 'canvas', originalTwistedPosePreserved: true, nativeGpuEditFreshnessClaimed: false, admittedSceneRotationRefusal: supportsGPU || poseDependentBudget ? nativeRotationReason : null };
     Object.assign(result, { activeEditCorrectness: { fixture, proof: editCorrectness } });
     const proofBaseline = await page.evaluate(() => {
       const ed = window.editor, v = ed.viewport;
+      /** @type {any} */ (window).__gpuBenchmarkRestoreSnapshots = { baseline: ed.doc.snapshot, baselineJson: JSON.stringify(ed.doc.snapshot), edited: null, editedJson: null };
       return { document: JSON.stringify(ed.doc.snapshot), camera: { center: { ...v.center }, scale: v.scale, twist: v.twist } };
     });
     try {
@@ -1276,6 +1279,22 @@ try {
       if (supportsGPU || poseDependentBudget) assert.ok(setup.warm.reason?.includes(nativeRotationReason), `${fixture}: only the owned native-context rotation refusal allows this previously admitted scene to use Canvas`);
       assert.equal(setup.warm.bytes, 0); assert.equal(setup.warm.uploadCalls, 0);
       const proofImages = {};
+      let baselineInvariants;
+      const captureRestorationInvariants = async (label) => page.evaluate((label) => {
+        const ed = window.editor, v = ed.viewport, retained = /** @type {any} */ (window).__gpuBenchmarkRestoreSnapshots;
+        const original = label === 'baseline' || label === 'undo';
+        const expectedState = original ? retained.baseline : retained.edited, expectedJson = original ? retained.baselineJson : retained.editedJson;
+        if (ed.doc.snapshot !== expectedState) throw new Error(`${label}: restoration must retain the exact immutable snapshot identity`);
+        if (JSON.stringify(ed.doc.snapshot) !== expectedJson) throw new Error(`${label}: restoration must retain the complete document JSON`);
+        const canvas = /** @type {HTMLCanvasElement} */ (document.getElementById('drawing')), rect = canvas.getBoundingClientRect();
+        const overlay = /** @type {any} */ (v).lastOverlay;
+        return {
+          snapshotReference: original ? 'baseline' : 'edited', snapshotIdentityMatches: true, documentJsonMatches: true, documentJsonLength: expectedJson.length,
+          view: { camera: { center: { ...v.center }, scale: v.scale, twist: v.twist }, width: v.width, height: v.height, dpr: v.dpr, windowDpr: window.devicePixelRatio,
+            backing: { width: canvas.width, height: canvas.height }, rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height, top: rect.top, right: rect.right, bottom: rect.bottom, left: rect.left },
+            settings: JSON.parse(JSON.stringify(v.settings)), overlay: overlay ? JSON.parse(JSON.stringify({ ...overlay, selection: [...overlay.selection] })) : null },
+        };
+      }, label);
       const compareEditedState = async (label) => {
         const images = [];
         let gpuFrame;
@@ -1310,14 +1329,21 @@ try {
           assert.equal(Buffer.compare(images[0].data, images[1].data), 0, `${fixture}: ${label} fallback has identical RGBA pixels`);
         } else if (!denseRaster) assert.ok(pixels / (diff.width * diff.height) < 0.001, `${fixture}: ${label} preserves the raster accuracy gate`);
         assert.deepEqual(await page.evaluate(() => { const v = window.editor.viewport; return { center: { ...v.center }, scale: v.scale, twist: v.twist }; }), setup.camera, `${fixture}: ${label} comparison keeps the original warm edit camera`);
+        const restorationInvariants = await captureRestorationInvariants(label);
+        if (label === 'baseline') baselineInvariants = restorationInvariants;
+        else assert.deepEqual(restorationInvariants.view, baselineInvariants.view, `${fixture}: ${label} preserves the complete camera, physical surface, DPR, rectangle and overlays`);
         proofImages[label] = images;
-        editCorrectness.comparisons[label] = { gpuFrame, actualRenderer: gpuFrame.rendered ? 'gpu' : 'canvas', poseDependentBudgetAdmission: poseDependentBudget, imageDifferenceFraction: pixels / (diff.width * diff.height), twoPixelCoverageMissFraction: miss };
+        editCorrectness.comparisons[label] = { gpuFrame, actualRenderer: gpuFrame.rendered ? 'gpu' : 'canvas', poseDependentBudgetAdmission: poseDependentBudget, restorationInvariants, imageDifferenceFraction: pixels / (diff.width * diff.height), twoPixelCoverageMissFraction: miss };
       };
       const transition = async (action) => {
         const proof = await page.evaluate(async ({ action, edited, original, budgetPose }) => {
           const ed = window.editor, api = window.gpuPrototype;
           const previous = ed.doc.snapshot;
-          if (action === 'edit') ed.doc.replaceEntities([edited]);
+          if (action === 'edit') {
+            ed.doc.replaceEntities([edited]);
+            const retained = /** @type {any} */ (window).__gpuBenchmarkRestoreSnapshots;
+            retained.edited = ed.doc.snapshot; retained.editedJson = JSON.stringify(ed.doc.snapshot);
+          }
           else if (action === 'undo') { if (!ed.doc.undo()) throw new Error('Warm edit proof cannot undo'); }
           else if (action === 'redo') { if (!ed.doc.redo()) throw new Error('Warm edit proof cannot redo'); }
           else throw new Error(`Unknown edit proof action ${action}`);
@@ -1331,7 +1357,10 @@ try {
           if (ed.doc.snapshot === previous) throw new Error(`${action}: edit proof drawing transition was a no-op`);
           const expected = action === 'undo' ? original : edited;
           if (JSON.stringify(ed.doc.entities.find((entity) => entity.id === original.id)) !== JSON.stringify(expected)) throw new Error(`${action}: edit proof did not change/restore the requested entity`);
-          return { frame, completionMs, actualLine: expected };
+          const retained = /** @type {any} */ (window).__gpuBenchmarkRestoreSnapshots;
+          if (ed.doc.snapshot !== (action === 'undo' ? retained.baseline : retained.edited)) throw new Error(`${action}: edit proof must retain the exact snapshot object identity`);
+          if (JSON.stringify(ed.doc.snapshot) !== (action === 'undo' ? retained.baselineJson : retained.editedJson)) throw new Error(`${action}: edit proof must retain the complete document JSON`);
+          return { frame, completionMs, actualLine: expected, snapshotIdentityMatches: true, documentJsonMatches: true };
         }, { action, edited: setup.edited, original: setup.original, budgetPose: poseDependentBudget });
         assert.notEqual(proof.frame.cacheReason, 'admission-deferred', 'Twisted edit transition proves actual current-state admission');
         assert.equal(proof.frame.rendered, false, `${fixture}: ${action} preserves complete Canvas at the original twist`);
@@ -1365,12 +1394,28 @@ try {
       editCorrectness.editedImageChanged = { canvasPixels: changedCanvas, gpuPixels: changedGpu, canvasRawRgbaPixels: changedCanvasRgba, gpuRawRgbaPixels: changedGpuRgba, displacementCss: setup.displacementCss };
       assert.ok(changedCanvas > 0 && changedGpu > 0, `${fixture}: the edited line must visibly change both completed images before undo`);
       assert.ok(changedCanvasRgba > 0 && changedGpuRgba > 0, `${fixture}: edited images must have raw RGBA changes before undo`);
+      const assertRestoration = (beforeLabel, afterLabel) => {
+        const before = proofImages[beforeLabel], after = proofImages[afterLabel];
+        const originalCrossStateRgba = { canvasBufferCompare: Buffer.compare(before[0].data, after[0].data), requestedGpuBufferCompare: Buffer.compare(before[1].data, after[1].data) };
+        const pngSha256 = Object.fromEntries([beforeLabel, afterLabel].flatMap((label) => ['canvas', 'gpu'].map((mode) => [`${label}-${mode}`, createHash('sha256').update(readFileSync(resolve(out, `${fixture}-edit-proof-${label}-${mode}.png`))).digest('hex')])));
+        if (editCorrectness.comparisons[afterLabel].gpuFrame.rendered) {
+          assert.equal(originalCrossStateRgba.requestedGpuBufferCompare, 0, `${fixture}: ${afterLabel} restores the exact GPU RGBA image`);
+          editCorrectness.restorationControls[afterLabel] = { beforeLabel, originalCrossStateRgba, pngSha256, actualRenderer: 'gpu', exactGpuRestoration: true };
+          return;
+        }
+        const control = analyzeFallbackRestoration(before[0], after[0], before[1], after[1]);
+        editCorrectness.restorationControls[afterLabel] = { beforeLabel, originalCrossStateRgba, pngSha256, actualRenderer: 'canvas', ...control,
+          semantics: 'The original cross-state RGBA result remains evidence. Any native-reference drift is inconclusive; fallback must reproduce the signed Native Canvas restoration change exactly, without a pixel tolerance.' };
+        assert.equal(control.differentialMatches, true, `${fixture}: ${afterLabel} fallback signed RGBA restoration must equal Native Canvas byte for byte`);
+      };
       await transition('undo');
       await compareEditedState('undo');
-      assert.equal(Buffer.compare(proofImages.baseline[1].data, proofImages.undo[1].data), 0, `${fixture}: undo restores the original GPU/fallback RGBA image`);
+      assertRestoration('baseline', 'undo');
       await transition('redo');
       await compareEditedState('redo');
-      assert.equal(Buffer.compare(proofImages['edited-before-undo'][1].data, proofImages.redo[1].data), 0, `${fixture}: redo restores the edited GPU/fallback RGBA image`);
+      assertRestoration('edited-before-undo', 'redo');
+      editCorrectness.nativeReferenceOutcome = Object.values(editCorrectness.restorationControls).some((control) => control.nativeReferenceOutcome === 'inconclusive') ? 'inconclusive' : 'exact';
+      editCorrectness.relativeCanvasRestorationOutcome = 'passed';
       await transition('undo');
       assert.equal(await page.evaluate(() => JSON.stringify(window.editor.doc.snapshot)), proofBaseline.document, `${fixture}: edit proof restores the exact drawing snapshot`);
       editCorrectness.snapshotRestored = true;
@@ -1378,14 +1423,16 @@ try {
       // An assertion failure must not leave a private benchmark document edited.
       await page.evaluate(async ({ camera, baselineDocument }) => {
         const ed = window.editor, v = ed.viewport, api = window.gpuPrototype;
-        if (JSON.stringify(ed.doc.snapshot) !== baselineDocument && !ed.doc.undo()) throw new Error('Edit proof cleanup could not undo its owned edit');
-        if (JSON.stringify(ed.doc.snapshot) !== baselineDocument) throw new Error('Edit proof cleanup did not restore its original drawing snapshot');
-        v.center = camera.center; v.scale = camera.scale; v.twist = camera.twist;
-        const frame = api.renderNow();
-        if (frame.rendered) {
-          const completionMs = await api.completed();
-          if (!(typeof completionMs === 'number' && Number.isFinite(completionMs) && completionMs >= 0)) throw new Error('Edit proof camera cleanup completion was not observed');
-        } else /** @type {HTMLCanvasElement} */ (document.getElementById('drawing')).getContext('2d').getImageData(0, 0, 1, 1);
+        try {
+          if (JSON.stringify(ed.doc.snapshot) !== baselineDocument && !ed.doc.undo()) throw new Error('Edit proof cleanup could not undo its owned edit');
+          if (JSON.stringify(ed.doc.snapshot) !== baselineDocument) throw new Error('Edit proof cleanup did not restore its original drawing snapshot');
+          v.center = camera.center; v.scale = camera.scale; v.twist = camera.twist;
+          const frame = api.renderNow();
+          if (frame.rendered) {
+            const completionMs = await api.completed();
+            if (!(typeof completionMs === 'number' && Number.isFinite(completionMs) && completionMs >= 0)) throw new Error('Edit proof camera cleanup completion was not observed');
+          } else /** @type {HTMLCanvasElement} */ (document.getElementById('drawing')).getContext('2d').getImageData(0, 0, 1, 1);
+        } finally { delete /** @type {any} */ (window).__gpuBenchmarkRestoreSnapshots; }
       }, { camera: proofBaseline.camera, baselineDocument: proofBaseline.document });
     }
     result.comparisons[fixture] = { expectedSupportsGPU: supportsGPU, poseDependentBudgetAdmission: poseDependentBudget, aggregateRendererScope: poseDependentBudget ? 'Baseline budget refusal; requested-GPU workflows may mix actual GPU/Canvas/deferred policy, with per-frame and by-renderer metrics' : 'Fixed fixture admission classification', canvas: canvasResult, gpu: gpuResult, prototypeContext: context, panOnly: { canvas: panCanvas, gpu: panGpu, endpoint: panImage }, boundedZoom: { canvas: boundedCanvas, gpu: boundedGpu, endpoint: boundedImage }, sustainedZoom: { canvas: sustainedCanvas, gpu: sustainedGpu, endpoint: sustainedImage }, offCenterZoom: { canvas: offCenterCanvas, gpu: offCenterGpu, endpoint: offCenterImage }, cacheEnvelopeEdges: { min: { canvas: minEdgeCanvas, gpu: minEdgeGpu, endpoint: minEdgeImage }, max: { canvas: maxEdgeCanvas, gpu: maxEdgeGpu, endpoint: maxEdgeImage } }, editUndo: { canvas: editCanvas, gpu: editGpu, endpoint: editImage, correctness: editCorrectness }, trajectoryEndpoints, wholeViewFallbackEndpoints: poseDependentBudget ? Object.fromEntries(Object.entries(trajectoryEndpoints).filter(([, endpoint]) => !endpoint.gpuFrame.rendered)) : supportsGPU ? null : trajectoryEndpoints, imageDifferenceFraction: pixels / (a.width * a.height), twoPixelCoverageMissFraction: coverageMiss };

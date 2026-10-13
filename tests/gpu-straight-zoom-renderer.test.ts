@@ -245,17 +245,18 @@ describe('renderer uses only the actually certified straight compiled zoom inter
     expect(prepare).toHaveBeenCalledTimes(2); renderer.dispose();
   });
 
-  it.each(['line', 'arc', 'circle', 'curved-compound', 'unsealed', 'mutable'] as const)('preserves ordinary/custom behavior for %s controls', (kind) => {
+  it.each(['line', 'arc', 'circle', 'curved-compound', 'unsealed', 'mutable'] as const)('preserves scoped immutable/ordinary behavior for %s controls', (kind) => {
     const curve: Entity = kind === 'circle' ? { ...line, type: 'circle', center: { x: 0, y: 0 }, radius: 2 }
       : { ...line, type: 'arc', center: { x: 0, y: 0 }, radius: 2, startAngle: 0, endAngle: 1 };
     const base = kind === 'line' ? scene({ entities: [line] }) : kind === 'arc' || kind === 'circle' ? scene({ entities: [curve] }) : kind === 'curved-compound' ? scene({ entities: [text(), curve] }) : scene();
     const state = kind === 'mutable' ? structuredClone(base) : kind === 'unsealed' ? { ...base } : base;
     const prepare = vi.spyOn(geometry, 'prepareZoom2D'), { renderer } = rendererFixture();
-    expect(renderer.render(state, view, overlay)).toMatchObject({ rendered: true, cacheMaxRatio: kind === 'mutable' ? 1 : 1.25 });
+    expect(renderer.render(state, view, overlay)).toMatchObject({ rendered: true, cacheMaxRatio: kind === 'mutable' ? 1 : kind === 'line' ? 4 : 1.25 });
+    if (kind === 'line') expect(referencePrepare(state, view, overlay).maxRatio).toBe(1.25);
     if (kind === 'mutable') expect(prepare.mock.calls[0]!.slice(3)).toEqual([1, 1, 0]);
     if (kind === 'unsealed') expect(prepare.mock.calls[0]).toHaveLength(3);
-    expect(renderer.render(state, { ...view, scale: view.scale * 1.3 }, overlay)).toMatchObject({ rendered: true, cacheHit: false, uploadKind: 'full' });
-    expect(prepare).toHaveBeenCalledTimes(2);
+    expect(renderer.render(state, { ...view, scale: view.scale * 1.3 }, overlay)).toMatchObject({ rendered: true, cacheHit: kind === 'line', uploadKind: kind === 'line' ? 'none' : 'full' });
+    expect(prepare).toHaveBeenCalledTimes(kind === 'line' ? 1 : 2);
     renderer.dispose();
   });
 
