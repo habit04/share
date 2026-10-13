@@ -1,0 +1,355 @@
+{
+  "sourceSha": "4bad60b2f2fac8c2676d704f2f07f45d1076b431",
+  "worktreeModified": false,
+  "platform": "win32",
+  "arch": "x64",
+  "outcome": "passed",
+  "switches": [
+    "--disable-gpu",
+    "--disable-software-rasterizer"
+  ],
+  "scope": {
+    "privateProfileVerified": true,
+    "privateTempVerified": true,
+    "mainPid": 32192,
+    "versions": {
+      "node": "24.21.0",
+      "acorn": "8.18.0",
+      "ada": "4.0.0",
+      "amaro": "1.1.11",
+      "ares": "1.34.8",
+      "brotli": "1.2.0",
+      "cldr": "48.0",
+      "icu": "78.2",
+      "llhttp": "9.4.3",
+      "merve": "1.2.2",
+      "modules": "149",
+      "napi": "10",
+      "nbytes": "0.1.4",
+      "ncrypto": "0.0.1",
+      "nghttp2": "1.70.0",
+      "nghttp3": "",
+      "ngtcp2": "",
+      "openssl": "0.0.0",
+      "simdjson": "4.6.7",
+      "simdutf": "7.7.0",
+      "sqlite": "3.53.4",
+      "tz": "2026d",
+      "undici": "7.29.1",
+      "unicode": "17.0",
+      "uv": "1.52.1",
+      "uvwasi": "0.0.23",
+      "v8": "15.2.124.28-electron.0",
+      "zlib": "1.3.2.1-motley",
+      "zstd": "1.6.0",
+      "electron": "44.7.0",
+      "chrome": "152.0.7977.130"
+    },
+    "switches": {
+      "disableGpu": true,
+      "disableSoftwareRasterizer": true
+    }
+  },
+  "webgl": [
+    {
+      "type": "webgl",
+      "available": false,
+      "creationErrors": [
+        "Could not create a WebGL context, VENDOR = 0xffff, DEVICE = 0xffff, GL_VENDOR = Disabled, GL_RENDERER = Disabled, Sandboxed = yes, Optimus = no, AMD switchable = no, Reset notification strategy = 0x0000, ErrorMessage = BindToCurrentSequence failed: ."
+      ],
+      "error": null
+    },
+    {
+      "type": "webgl2",
+      "available": false,
+      "creationErrors": [
+        "Could not create a WebGL context, VENDOR = 0xffff, DEVICE = 0xffff, GL_VENDOR = Disabled, GL_RENDERER = Disabled, Sandboxed = yes, Optimus = no, AMD switchable = no, Reset notification strategy = 0x0000, ErrorMessage = BindToCurrentSequence failed: ."
+      ],
+      "error": null
+    }
+  ],
+  "diagnostics": {
+    "state": "unavailable",
+    "adapters": [],
+    "hardwareAcceleration": false,
+    "features": {
+      "2d_canvas": "disabled_software",
+      "flash_3d": "Unknown",
+      "flash_stage3d": "Unknown",
+      "flash_stage3d_baseline": "Unknown",
+      "gpu_compositing": "disabled_software",
+      "multiple_raster_threads": "disabled_off",
+      "native_gpu_memory_buffers": "Unknown",
+      "rasterization": "disabled_software",
+      "video_decode": "disabled_software",
+      "video_encode": "disabled_software",
+      "vpx_decode": "Unknown",
+      "webgl": "disabled_off",
+      "webgl2": "Unknown",
+      "opengl": "disabled_off",
+      "vulkan": "Unknown",
+      "webgpu": "disabled_off",
+      "direct_rendering_display": "Unknown",
+      "skia_graphite": "disabled_off"
+    },
+    "driver": {
+      "vendor": "Unknown",
+      "version": "Unknown"
+    },
+    "fallback": "Software fallback reported",
+    "reasons": [
+      "2d_canvas: disabled_software",
+      "gpu_compositing: disabled_software",
+      "multiple_raster_threads: disabled_off",
+      "rasterization: disabled_software",
+      "video_decode: disabled_software",
+      "video_encode: disabled_software",
+      "webgl: disabled_off",
+      "opengl: disabled_off",
+      "webgpu: disabled_off",
+      "skia_graphite: disabled_off",
+      "Electron reports hardware acceleration disabled; underlying reason Unknown.",
+      "Some GPU information could not be collected."
+    ],
+    "versions": {
+      "jcad": "0.4.8",
+      "electron": "44.7.0",
+      "chromium": "152.0.7977.130",
+      "windows": "10.0.26200"
+    }
+  },
+  "cases": [
+    {
+      "fixture": "curves",
+      "beforeInput": {
+        "width": 1216,
+        "height": 552,
+        "dpr": 1,
+        "scale": 95.17241379310344,
+        "twist": 0,
+        "center": {
+          "x": 3.5,
+          "y": 2.5
+        },
+        "settings": {
+          "gridVisible": false,
+          "gridSize": 0.5,
+          "background": "#212830",
+          "crosshairSize": 5,
+          "pickBox": 3,
+          "gridBeyondLimits": true,
+          "crosshairColor": "#ffffff",
+          "gripSize": 4,
+          "gripColor": "#1a3dff",
+          "gripHoverColor": "#ff3d3d",
+          "snapMarkerSize": 7,
+          "snapMarkerColor": "#3ff23f",
+          "selectionEffect": "dashed",
+          "gridStyle": "lines"
+        },
+        "selection": [],
+        "overlay": "{\"preview\":[],\"ghost\":[],\"selection\":{},\"hover\":null,\"selectionBox\":null,\"snap\":null,\"cursor\":null,\"trackFrom\":null,\"dynText\":[],\"cursorMode\":\"idle\"}"
+      },
+      "afterInput": {
+        "width": 1216,
+        "height": 552,
+        "dpr": 1,
+        "scale": 95.17241379310344,
+        "twist": 0,
+        "center": {
+          "x": 3.5,
+          "y": 2.5
+        },
+        "settings": {
+          "gridVisible": false,
+          "gridSize": 0.5,
+          "background": "#212830",
+          "crosshairSize": 5,
+          "pickBox": 3,
+          "gridBeyondLimits": true,
+          "crosshairColor": "#ffffff",
+          "gripSize": 4,
+          "gripColor": "#1a3dff",
+          "gripHoverColor": "#ff3d3d",
+          "snapMarkerSize": 7,
+          "snapMarkerColor": "#3ff23f",
+          "selectionEffect": "dashed",
+          "gridStyle": "lines"
+        },
+        "selection": [],
+        "overlay": "{\"preview\":[],\"ghost\":[],\"selection\":{},\"hover\":null,\"selectionBox\":null,\"snap\":null,\"cursor\":null,\"trackFrom\":null,\"dynText\":[],\"cursorMode\":\"idle\"}"
+      },
+      "status": {
+        "mode": "gpu",
+        "rendered": false,
+        "reason": "WebGL2 device is failed",
+        "preparationMs": 0,
+        "submissionMs": 0,
+        "bytes": 0,
+        "device": "failed",
+        "capabilities": {
+          "state": "failed",
+          "version": null,
+          "renderer": null,
+          "maxTextureSize": null,
+          "maxViewportDims": null,
+          "antialias": false,
+          "stencil": false,
+          "timerQuery": false
+        },
+        "demo": null
+      },
+      "canvasContextLost": false,
+      "referenceBytes": 2684928,
+      "actualBytes": 2684928,
+      "differentChannels": 0,
+      "nontransparentPixels": 671232,
+      "referenceForegroundPixels": 3604,
+      "documentUnchanged": true,
+      "entityCount": 4,
+      "entityKinds": [
+        "line",
+        "circle",
+        "arc",
+        "polyline"
+      ],
+      "gpuCanvasHidden": true
+    },
+    {
+      "fixture": "mixed-schematic",
+      "beforeInput": {
+        "width": 1216,
+        "height": 552,
+        "dpr": 1,
+        "scale": 3.076910082713406,
+        "twist": 0,
+        "center": {
+          "x": 102.23813490854256,
+          "y": 77.22936116467666
+        },
+        "settings": {
+          "gridVisible": false,
+          "gridSize": 0.5,
+          "background": "#212830",
+          "crosshairSize": 5,
+          "pickBox": 3,
+          "gridBeyondLimits": true,
+          "crosshairColor": "#ffffff",
+          "gripSize": 4,
+          "gripColor": "#1a3dff",
+          "gripHoverColor": "#ff3d3d",
+          "snapMarkerSize": 7,
+          "snapMarkerColor": "#3ff23f",
+          "selectionEffect": "dashed",
+          "gridStyle": "lines"
+        },
+        "selection": [],
+        "overlay": "{\"preview\":[],\"ghost\":[],\"selection\":{},\"hover\":null,\"selectionBox\":null,\"snap\":null,\"cursor\":null,\"trackFrom\":null,\"dynText\":[],\"cursorMode\":\"idle\"}"
+      },
+      "afterInput": {
+        "width": 1216,
+        "height": 552,
+        "dpr": 1,
+        "scale": 3.076910082713406,
+        "twist": 0,
+        "center": {
+          "x": 102.23813490854256,
+          "y": 77.22936116467666
+        },
+        "settings": {
+          "gridVisible": false,
+          "gridSize": 0.5,
+          "background": "#212830",
+          "crosshairSize": 5,
+          "pickBox": 3,
+          "gridBeyondLimits": true,
+          "crosshairColor": "#ffffff",
+          "gripSize": 4,
+          "gripColor": "#1a3dff",
+          "gripHoverColor": "#ff3d3d",
+          "snapMarkerSize": 7,
+          "snapMarkerColor": "#3ff23f",
+          "selectionEffect": "dashed",
+          "gridStyle": "lines"
+        },
+        "selection": [],
+        "overlay": "{\"preview\":[],\"ghost\":[],\"selection\":{},\"hover\":null,\"selectionBox\":null,\"snap\":null,\"cursor\":null,\"trackFrom\":null,\"dynText\":[],\"cursorMode\":\"idle\"}"
+      },
+      "status": {
+        "mode": "gpu",
+        "rendered": false,
+        "reason": "WebGL2 device is failed",
+        "preparationMs": 0,
+        "submissionMs": 0,
+        "bytes": 0,
+        "device": "failed",
+        "capabilities": {
+          "state": "failed",
+          "version": null,
+          "renderer": null,
+          "maxTextureSize": null,
+          "maxViewportDims": null,
+          "antialias": false,
+          "stencil": false,
+          "timerQuery": false
+        },
+        "demo": null
+      },
+      "canvasContextLost": false,
+      "referenceBytes": 2684928,
+      "actualBytes": 2684928,
+      "differentChannels": 0,
+      "nontransparentPixels": 671232,
+      "referenceForegroundPixels": 80623,
+      "documentUnchanged": true,
+      "entityCount": 6500,
+      "entityKinds": [
+        "line",
+        "insert",
+        "text"
+      ],
+      "gpuCanvasHidden": true
+    }
+  ],
+  "persistence": {
+    "expectedCount": 6501,
+    "status": {
+      "rendered": false,
+      "reason": "WebGL2 device is failed",
+      "preparationMs": 0,
+      "submissionMs": 0,
+      "bytes": 0
+    },
+    "count": 6501,
+    "lineRetained": true,
+    "device": "failed",
+    "dirty": false,
+    "completeDxf": true,
+    "file": "gpu-unavailable-saved.dxf"
+  },
+  "checks": [
+    "Private profile/temp and switches verified",
+    "Real WebGL and WebGL2 context creation returned null",
+    "Diagnostics settled with reasons, feature status and versions recorded",
+    "curves: whole-view Canvas fallback matched every channel with fixed inputs",
+    "mixed-schematic: whole-view Canvas fallback matched every channel with fixed inputs",
+    "Ordinary LINE and private DXF Save As/reopen worked with GPU requested and unavailable"
+  ],
+  "cleanup": {
+    "processExited": true,
+    "privateProfileRemoved": true,
+    "privateTempRemoved": true,
+    "errors": []
+  },
+  "limitations": [
+    "One Windows runtime with explicit per-process flags; no hardware or driver coverage matrix.",
+    "The switches are verified on this private app and real context creation determines availability.",
+    "Canvas backend usage and Chromium capability reports do not establish CPU-only execution or physical adapter usage.",
+    "No driver, adapter, persistent application setting, existing instance or unrelated process is changed."
+  ],
+  "pageErrors": [],
+  "exportProvenance": {
+    "producerSourceSha": "4bad60b2f2fac8c2676d704f2f07f45d1076b431",
+    "note": "Measured values and validation results retained; absolute host/profile paths replaced in this public export. Single-machine samples; source and limitations are recorded in the original result."
+  }
+}
