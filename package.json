@@ -35,6 +35,8 @@
     "e2e:packaged": "node --experimental-strip-types scripts/e2e-electron.mjs --packaged",
     "bench": "node scripts/bench.mjs",
     "bench:node": "cross-env JCAD_BENCH=1 vitest run tests/perf-dense.test.ts",
+    "bench:3d": "cross-env JCAD_BENCH=1 vitest run tests/perf-3d.test.ts",
+    "make:3d-fixtures": "node scripts/make-3d-fixtures.mjs",
     "bench:project": "node scripts/bench-project.mjs",
     "check:workflows": "node scripts/check-workflows.mjs",
     "e2e:flows": "node scripts/e2e-flows.mjs",

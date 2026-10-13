@@ -235,14 +235,15 @@ function feature(v: unknown, path: string, depth: number): Feature3D {
       return { kind, profile: profile(v.profile, `${path}.profile`), distance };
     }
     case 'revolve': {
-      keysOnly(v, path, ['kind', 'profile', 'axis', 'angle']);
+      // `segments` (steps per full turn) is part of a revolve's history (types.ts RevolveFeature).
+      keysOnly(v, path, ['kind', 'profile', 'axis', 'angle'], ['segments']);
       if (!isObject(v.axis)) fail(`${path}.axis`, 'must be an {origin, dir} object');
       keysOnly(v.axis, `${path}.axis`, ['origin', 'dir']);
       const angle = finite(v.angle, `${path}.angle`);
       if (angle === 0) fail(`${path}.angle`, 'must not be 0');
       const dir = vec3(v.axis.dir, `${path}.axis.dir`);
       if (!(Math.sqrt(dot(dir, dir)) > 0)) fail(`${path}.axis.dir`, 'must not be the zero vector');
-      return { kind, profile: profile(v.profile, `${path}.profile`), axis: { origin: vec3(v.axis.origin, `${path}.axis.origin`), dir }, angle };
+      return { kind, profile: profile(v.profile, `${path}.profile`), axis: { origin: vec3(v.axis.origin, `${path}.axis.origin`), dir }, angle, ...optionalCount(v, 'segments', path) };
     }
     case 'boolean': {
       keysOnly(v, path, ['kind', 'op', 'operands']);

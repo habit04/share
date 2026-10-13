@@ -4,7 +4,7 @@
  * Conventions:
  * - Profiles follow types.ts / sketch.ts: loops in the XY plane of the profile frame (drawing
  *   units), outer loop counter-clockwise seen from the frame's +Z, holes clockwise. Profiles are
- *   checked with `validateProfile` first; an invalid one throws a RangeError naming the problem,
+ *   checked with `validateProfile` first; an invalid one throws a Model3DInputError naming the problem,
  *   it is never repaired.
  * - Results are in world coordinates (AutoCAD WCS, right-handed), welded by construction (every
  *   profile point becomes shared vertices, no duplicates), wound counter-clockwise seen from
@@ -21,10 +21,11 @@ import { GeometryBudgetError } from '../core/geometry-budget-error';
 import type { Point } from '../core/geometry';
 import { MAX_SOLID_TRIANGLES } from './budget';
 import { type Vec3, cross3, dot3, frameToWorld, len3, normalize3, scale3, sub3, transformPoint } from './math';
-import { type Mesh3D, invertWinding, meshVolume, transformMesh } from './mesh';
-import { DEFAULT_SEGMENTS, MAX_SEGMENTS, MIN_SEGMENTS, clampSegments } from './primitives';
+import { type Mesh3D, invertWinding, meshIsClosed, transformMesh } from './mesh';
+import { DEFAULT_SEGMENTS, MAX_SEGMENTS, MIN_SEGMENTS, clampSegments, requireSolidMesh } from './primitives';
 import { validateProfile } from './sketch';
 import { loopSignedArea2, triangulatePolygon } from './triangulate';
+import { Model3DInputError } from './input-error';
 import type { Profile3D } from './types';
 
 function profilePointCount(profile: Profile3D): number {
@@ -37,26 +38,43 @@ function checkBudget(what: string, triangles: number): void {
   }
 }
 
+/**
+ * Cap triangles of a validated profile. The triangulator's own refusals (plain Errors whose
+ * message starts "Triangulation failed" or "Triangulation needs") become a Model3DInputError like
+ * every other refusal here: a valid profile can still fail after it is mapped into the revolution
+ * plane, when its points are below the precision of their distance to the axis (found by
+ * tests/fuzz-model3d-file.test.ts: an axis 1e300 away collapsed every loop to zero area).
+ * Anything else (a TypeError, a stack overflow) is rethrown unchanged: it is an internal error.
+ */
+function capTriangles(what: string, loops: readonly (readonly Point[])[]): number[] {
+  try {
+    return triangulatePolygon(loops);
+  } catch (err) {
+    if (!(err instanceof Error) || err.constructor !== Error || !/^Triangulation (failed|needs)\b/.test(err.message)) throw err;
+    throw new Model3DInputError(`Cannot ${what}: the profile cannot be triangulated (${err.message.replace(/\.$/, '')}).`);
+  }
+}
+
 function requireValidProfile(what: string, profile: Profile3D): void {
   const problem = validateProfile(profile);
-  if (problem) throw new RangeError(`Cannot ${what}: ${problem}.`);
+  if (problem) throw new Model3DInputError(`Cannot ${what}: ${problem}.`);
 }
 
 /**
  * Extrude `profile` by `distance` along its frame's +Z axis (negative: along -Z), giving a prism
  * with a cap on the profile plane, a cap at the far end and one quad (two triangles) per profile
- * edge. Volume = profile area x |distance|. Throws RangeError for an invalid profile or a zero or
+ * edge. Volume = profile area x |distance|. Throws Model3DInputError for an invalid profile or a zero or
  * non-finite distance, GeometryBudgetError when the result would exceed the triangle budget.
  */
 export function extrudeMesh(profile: Profile3D, distance: number): Mesh3D {
-  if (!(typeof distance === 'number' && Number.isFinite(distance)) || distance === 0) throw new RangeError(`Extrusion distance must be a non-zero finite number (got ${String(distance)}).`);
+  if (!(typeof distance === 'number' && Number.isFinite(distance)) || distance === 0) throw new Model3DInputError(`Extrusion distance must be a non-zero finite number (got ${String(distance)}).`);
   requireValidProfile('extrude', profile);
   const n = profilePointCount(profile);
   const holes = profile.loops.length - 1;
   // About 4 triangles per profile point: unreachable while MAX_PROFILE_POINTS (20 000) bounds the
   // profile, kept so the budget still holds if that limit is ever raised.
   checkBudget('extrusion', 2 * (n + 2 * holes - 2) + 2 * n);
-  const cap = triangulatePolygon(profile.loops);
+  const cap = capTriangles('extrude', profile.loops);
   const positions: number[] = [];
   for (const loop of profile.loops) for (const p of loop) positions.push(p.x, p.y, 0);
   for (const loop of profile.loops) for (const p of loop) positions.push(p.x, p.y, distance);
@@ -76,7 +94,7 @@ export function extrudeMesh(profile: Profile3D, distance: number): Mesh3D {
   }
   // Built for distance > 0; a negative distance mirrors the solid through the profile plane.
   const local: Mesh3D = distance > 0 ? { positions, indices } : invertWinding({ positions, indices });
-  return transformMesh(local, frameToWorld(profile.frame));
+  return requireSolidMesh('extrusion', transformMesh(local, frameToWorld(profile.frame)));
 }
 
 /** Axis of revolution in world coordinates; `dir` need not be unit length. */
@@ -97,19 +115,19 @@ export const REVOLVE_AXIS_TOLERANCE = 1e-9;
  * axis produce no faces, so a rectangle with one side on the axis gives a closed cylinder. A full
  * turn has no caps; a partial turn adds the profile as start and end caps. Volume is that of the
  * inscribed polygonal solid (each ring an inscribed polygon), slightly below the analytic value.
- * Throws RangeError for invalid input, GeometryBudgetError beyond the triangle budget.
+ * Throws Model3DInputError for invalid input, GeometryBudgetError beyond the triangle budget.
  */
 export function revolveMesh(profile: Profile3D, axis: RevolveAxis, angle: number, segments: number = DEFAULT_SEGMENTS): Mesh3D {
-  if (!(typeof angle === 'number' && Number.isFinite(angle)) || angle === 0) throw new RangeError(`Revolution angle must be a non-zero finite number of radians (got ${String(angle)}).`);
-  if (Math.abs(angle) > 2 * Math.PI + 1e-9) throw new RangeError(`Revolution angle must be at most one full turn (2 pi radians; got ${angle}).`);
-  if (!axis || ![axis.origin, axis.dir].every((v) => v && Number.isFinite(v.x) && Number.isFinite(v.y) && Number.isFinite(v.z))) throw new RangeError('Cannot revolve: the axis has non-finite coordinates.');
-  if (!(len3(axis.dir) > 0)) throw new RangeError('Cannot revolve: the axis direction is zero.');
+  if (!(typeof angle === 'number' && Number.isFinite(angle)) || angle === 0) throw new Model3DInputError(`Revolution angle must be a non-zero finite number of radians (got ${String(angle)}).`);
+  if (Math.abs(angle) > 2 * Math.PI + 1e-9) throw new Model3DInputError(`Revolution angle must be at most one full turn (2 pi radians; got ${angle}).`);
+  if (!axis || ![axis.origin, axis.dir].every((v) => v && Number.isFinite(v.x) && Number.isFinite(v.y) && Number.isFinite(v.z))) throw new Model3DInputError('Cannot revolve: the axis has non-finite coordinates.');
+  if (!(len3(axis.dir) > 0)) throw new Model3DInputError('Cannot revolve: the axis direction is zero.');
   requireValidProfile('revolve', profile);
   const frame = profile.frame;
   const u = normalize3(axis.dir);
   const tol = REVOLVE_AXIS_TOLERANCE;
-  if (Math.abs(dot3(u, frame.zAxis)) > 1e-9) throw new RangeError('Cannot revolve: the axis must lie in the plane of the profile.');
-  if (Math.abs(dot3(sub3(axis.origin, frame.origin), frame.zAxis)) > tol * Math.max(1, len3(sub3(axis.origin, frame.origin)))) throw new RangeError('Cannot revolve: the axis must lie in the plane of the profile.');
+  if (Math.abs(dot3(u, frame.zAxis)) > 1e-9) throw new Model3DInputError('Cannot revolve: the axis must lie in the plane of the profile.');
+  if (Math.abs(dot3(sub3(axis.origin, frame.origin), frame.zAxis)) > tol * Math.max(1, len3(sub3(axis.origin, frame.origin)))) throw new Model3DInputError('Cannot revolve: the axis must lie in the plane of the profile.');
 
   // Radial direction: in the profile plane, perpendicular to the axis, toward the profile.
   const toWorld = frameToWorld(frame);
@@ -126,8 +144,8 @@ export function revolveMesh(profile: Profile3D, axis: RevolveAxis, angle: number
     }
   }
   const onAxis = tol * Math.max(1, extent);
-  if (minS < -onAxis && maxS > onAxis) throw new RangeError('Cannot revolve: the profile crosses the axis; it must lie on one side of it (touching is allowed).');
-  if (maxS <= onAxis && minS >= -onAxis) throw new RangeError('Cannot revolve: the profile lies on the axis.');
+  if (minS < -onAxis && maxS > onAxis) throw new Model3DInputError('Cannot revolve: the profile crosses the axis; it must lie on one side of it (touching is allowed).');
+  if (maxS <= onAxis && minS >= -onAxis) throw new Model3DInputError('Cannot revolve: the profile lies on the axis.');
   const e1 = maxS > onAxis ? side : scale3(side, -1);
   const e2 = cross3(u, e1);
 
@@ -136,7 +154,17 @@ export function revolveMesh(profile: Profile3D, axis: RevolveAxis, angle: number
     const d = sub3(p, axis.origin);
     const r = dot3(d, e1);
     return { x: Math.abs(r) <= onAxis ? 0 : r, y: dot3(d, u) };
-  }));
+  })).map((loop, l) => {
+    // Snapping to the axis can make neighbours coincide (a point 1e-12 off the axis next to one on
+    // it): two pole vertices at one place would leave the mesh open, so keep one of them. Found by
+    // tests/fuzz-model3d-file.test.ts.
+    const kept = loop.filter((p, i) => { const q = loop[(i + loop.length - 1) % loop.length]!; return loop.length === 1 || p.x !== q.x || p.y !== q.y; });
+    if (kept.length < 3 || loopSignedArea2(kept) === 0) {
+      const which = l === 0 ? 'the outer loop' : `hole ${l}`;
+      throw new Model3DInputError(`Cannot revolve: ${which} collapses onto the axis (points within ${onAxis.toPrecision(2)} of it count as on it).`);
+    }
+    return kept;
+  });
   // The canonical construction needs the outer loop counter-clockwise in (r, h); reversing every
   // loop keeps holes opposite to it.
   if (loopSignedArea2(rh[0]!) < 0) rh = rh.map((loop) => [...loop].reverse());
@@ -196,7 +224,7 @@ export function revolveMesh(profile: Profile3D, axis: RevolveAxis, angle: number
   if (!full) {
     // Caps: the profile at angle 0 faces back along the rotation (triangles as computed in the
     // CCW (r, h) plane, whose normal e1 x u = -e2), the profile at the final angle faces forward.
-    const cap = triangulatePolygon(rh);
+    const cap = capTriangles('revolve', rh);
     const flat: [number, number][] = [];
     for (const [l, loop] of rh.entries()) for (let i = 0; i < loop.length; i++) flat.push([l, i]);
     const at = (t: number, k: number) => { const [l, i] = flat[cap[t]!]!; return vert(l, i, k); };
@@ -208,6 +236,7 @@ export function revolveMesh(profile: Profile3D, axis: RevolveAxis, angle: number
   // profile plane (mirroring reverses the winding). A full turn of either sign is the same solid
   // and is always built with the positive orientation.
   if (angle < 0 && !full) mesh = invertWinding(mesh);
-  if (!(meshVolume(mesh) > 0)) throw new RangeError('Cannot revolve: the profile produced a solid without volume.');
-  return mesh;
+  // Safety net for the remaining axis cases (non-adjacent points snapped onto one pole position).
+  if (!meshIsClosed(mesh)) throw new Model3DInputError('Cannot revolve: the profile touches the axis in a way that does not give a closed solid; move it off the axis or onto it along a whole edge.');
+  return requireSolidMesh('revolution', mesh);
 }

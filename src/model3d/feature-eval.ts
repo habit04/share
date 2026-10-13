@@ -10,9 +10,11 @@
  *   `maxNodes` features in total (default 1024), Boolean features with exactly two operands, known
  *   kinds only. A stored history that breaks these limits is refused, never truncated.
  * Every result follows the mesh conventions (closed, counter-clockwise from outside, positive
- * volume, world drawing units). Errors from the builders (RangeError, GeometryBudgetError) and the
- * kernel (KernelError) propagate unchanged.
+ * volume, world drawing units). Errors from the builders (Model3DInputError, GeometryBudgetError)
+ * and the kernel (KernelError) propagate unchanged; anything else is an internal error
+ * (errors.ts `describeModel3DError`).
  */
+import { Model3DInputError } from './input-error';
 import type { GeometryKernel } from './kernel/kernel';
 import type { Mesh3D } from './mesh';
 import { primitiveMesh } from './primitives';
@@ -30,8 +32,11 @@ export interface FeatureEvalOptions {
   readonly maxNodes?: number;
 }
 
-/** A feature history that cannot be evaluated; the message is fit for the user. */
-export class FeatureEvalError extends Error {
+/**
+ * A feature history that cannot be evaluated; the message is fit for the user. A Model3DInputError
+ * (so a RangeError too): the history is the user's input to re-evaluation.
+ */
+export class FeatureEvalError extends Model3DInputError {
   constructor(message: string) {
     super(message);
     this.name = 'FeatureEvalError';

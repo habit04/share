@@ -372,6 +372,9 @@ function checkLoops(loops: readonly Loop[], tol: number): void {
 
 /** Frame check shared by the sketch step and sweeps: finite, orthonormal and right-handed. */
 export function validateFrame(frame: Frame3): string | null {
+  // A stored history may lack its frame (found by tests/fuzz-model3d-file.test.ts: `frame: null`
+  // escaped as a TypeError from the destructuring below).
+  if (!frame || typeof frame !== 'object') return 'the profile frame is missing';
   const { origin, xAxis, yAxis, zAxis } = frame;
   for (const v of [origin, xAxis, yAxis, zAxis]) if (!v || !Number.isFinite(v.x) || !Number.isFinite(v.y) || !Number.isFinite(v.z)) return 'the profile frame has non-finite coordinates';
   const unit = (v: typeof xAxis) => Math.abs(len3(v) - 1) <= 1e-9;

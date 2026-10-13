@@ -9,11 +9,12 @@
  * Every mesh is welded by construction (shared vertices, no duplicates, poles are single vertices)
  * and wound counter-clockwise seen from outside, so `meshIsClosed` holds and `meshVolume` is
  * positive. Circles are inscribed polygons starting on the local +X axis, so curved volumes are
- * slightly below the analytic ones. Invalid dimensions throw a RangeError; tessellation counts are
- * clamped (see `clampSegments`), never rejected.
+ * slightly below the analytic ones. Invalid dimensions throw a Model3DInputError (input-error.ts,
+ * a RangeError); tessellation counts are clamped (see `clampSegments`), never rejected.
  */
 import { frameToWorld, isOrthonormalFrame } from './math';
-import { type Mesh3D, transformMesh } from './mesh';
+import { type Mesh3D, meshBounds, meshVolume, transformMesh, validateMesh } from './mesh';
+import { Model3DInputError } from './input-error';
 import type { PrimitiveFeature } from './types';
 
 /** Default and limits for divisions around a circle. */
@@ -41,12 +42,12 @@ export function clampSegments(value: number | undefined, fallback: number, min: 
 }
 
 function requirePositive(name: string, value: number): void {
-  if (!(typeof value === 'number' && Number.isFinite(value) && value > 0)) throw new RangeError(`${name} must be a positive finite number (got ${String(value)}).`);
+  if (!(typeof value === 'number' && Number.isFinite(value) && value > 0)) throw new Model3DInputError(`${name} must be a positive finite number (got ${String(value)}).`);
 }
 
 /**
  * Box of `w` (X) x `d` (Y) x `h` (Z), base on z = 0 centred on the origin: 8 vertices, 12
- * triangles, outward winding. Throws RangeError unless every size is positive and finite.
+ * triangles, outward winding. Throws Model3DInputError unless every size is positive and finite.
  */
 export function boxMesh(w: number, d: number, h: number): Mesh3D {
   requirePositive('Box width', w);
@@ -70,7 +71,7 @@ export function boxMesh(w: number, d: number, h: number): Mesh3D {
 /**
  * Wedge of `w` (X) x `d` (Y) x `h` (Z), base on z = 0 centred on the origin, full height at
  * x = -w / 2 sloping down to the base edge at x = +w / 2 (AutoCAD WEDGE): 6 vertices, 8 triangles,
- * volume w * d * h / 2. Throws RangeError unless every size is positive and finite.
+ * volume w * d * h / 2. Throws Model3DInputError unless every size is positive and finite.
  */
 export function wedgeMesh(w: number, d: number, h: number): Mesh3D {
   requirePositive('Wedge width', w);
@@ -140,7 +141,7 @@ function lathe(profile: readonly (readonly [number, number])[], segments: number
 /**
  * Cylinder of radius `r` and height `h` (base on z = 0 centred on the origin) with `segments`
  * sides (clamped to [MIN_SEGMENTS, MAX_SEGMENTS], default DEFAULT_SEGMENTS). Volume of the
- * inscribed prism: (segments / 2) r^2 sin(2 pi / segments) h. Throws RangeError for r, h <= 0.
+ * inscribed prism: (segments / 2) r^2 sin(2 pi / segments) h. Throws Model3DInputError for r, h <= 0.
  */
 export function cylinderMesh(r: number, h: number, segments = DEFAULT_SEGMENTS): Mesh3D {
   requirePositive('Cylinder radius', r);
@@ -151,12 +152,12 @@ export function cylinderMesh(r: number, h: number, segments = DEFAULT_SEGMENTS):
 /**
  * Cone or frustum: radius `r1` at z = 0, `r2` at z = `h`, centred on the origin. Either radius may
  * be 0 (that end becomes a single apex vertex) but not both. Segments as for `cylinderMesh`;
- * volume is that of the inscribed pyramid frustum. Throws RangeError for invalid sizes.
+ * volume is that of the inscribed pyramid frustum. Throws Model3DInputError for invalid sizes.
  */
 export function coneMesh(r1: number, r2: number, h: number, segments = DEFAULT_SEGMENTS): Mesh3D {
   requirePositive('Cone height', h);
   if (!(Number.isFinite(r1) && Number.isFinite(r2) && r1 >= 0 && r2 >= 0) || (r1 === 0 && r2 === 0)) {
-    throw new RangeError(`Cone radii must be finite, non-negative and not both 0 (got ${r1}, ${r2}).`);
+    throw new Model3DInputError(`Cone radii must be finite, non-negative and not both 0 (got ${r1}, ${r2}).`);
   }
   const profile: [number, number][] = [[0, 0]];
   if (r1 > 0) profile.push([r1, 0]);
@@ -168,7 +169,7 @@ export function coneMesh(r1: number, r2: number, h: number, segments = DEFAULT_S
 /**
  * UV sphere of radius `r` centred on the origin: `segments` meridians (clamped like
  * `cylinderMesh`) and `rings` latitude bands (clamped to [MIN_RINGS, MAX_RINGS], default
- * DEFAULT_RINGS), single-vertex poles on the local Z axis. Throws RangeError for r <= 0.
+ * DEFAULT_RINGS), single-vertex poles on the local Z axis. Throws Model3DInputError for r <= 0.
  */
 export function sphereMesh(r: number, segments = DEFAULT_SEGMENTS, rings = DEFAULT_RINGS): Mesh3D {
   requirePositive('Sphere radius', r);
@@ -186,12 +187,12 @@ export function sphereMesh(r: number, segments = DEFAULT_SEGMENTS, rings = DEFAU
  * Ring torus centred on the origin around local Z: tube centre at distance `R` from the axis,
  * tube radius `r` (0 < r < R; a horn or spindle torus would self-intersect). `segs` divisions
  * around the axis (clamped like `cylinderMesh`), `rings` around the tube (clamped to
- * [MIN_TUBE_RINGS, MAX_RINGS], default DEFAULT_RINGS). Throws RangeError for invalid radii.
+ * [MIN_TUBE_RINGS, MAX_RINGS], default DEFAULT_RINGS). Throws Model3DInputError for invalid radii.
  */
 export function torusMesh(R: number, r: number, segs = DEFAULT_SEGMENTS, rings = DEFAULT_RINGS): Mesh3D {
   requirePositive('Torus major radius', R);
   requirePositive('Torus minor radius', r);
-  if (!(r < R)) throw new RangeError(`Torus minor radius must be smaller than the major radius (got ${r} >= ${R}).`);
+  if (!(r < R)) throw new Model3DInputError(`Torus minor radius must be smaller than the major radius (got ${r} >= ${R}).`);
   const n = clampSegments(rings, DEFAULT_RINGS, MIN_TUBE_RINGS, MAX_RINGS);
   const profile: [number, number][] = [];
   for (let k = 0; k < n; k++) {
@@ -202,13 +203,42 @@ export function torusMesh(R: number, r: number, segs = DEFAULT_SEGMENTS, rings =
 }
 
 /**
+ * Check a finished world-space mesh before a builder returns it. Sizes that are valid on their own
+ * can still fail once placed, and what is detected is exactly this: coordinates that overflowed
+ * to a non-finite value; a volume that is zero up to rounding, |V| <= VOLUME_EPS * d^3 with d the
+ * bounding-box diagonal (every vertex collapsed onto a few positions, e.g. a 0.5 radius sphere at
+ * z = -1e300, or a denormal 1e-320 width, whose rounding noise can even be slightly negative);
+ * and an infinite volume (a 1e200 box). Those throw a Model3DInputError. A partial loss of
+ * precision that leaves a larger positive volume is not detected. A clearly negative volume, or a
+ * structural problem other than non-finite coordinates, means the builder itself is wrong: a plain
+ * Error (an internal error for `describeModel3DError`). Found by tests/fuzz-model3d-file.test.ts;
+ * before this check such meshes reached the caller.
+ */
+export function requireSolidMesh(what: string, mesh: Mesh3D): Mesh3D {
+  const problem = validateMesh(mesh);
+  if (problem === 'mesh positions must be finite numbers') throw new Model3DInputError(`The ${what} has coordinates that are not finite numbers at this size and position.`);
+  if (problem !== null) throw new Error(`Internal error: the ${what} builder produced an invalid mesh (${problem}).`);
+  const volume = meshVolume(mesh);
+  const box = meshBounds(mesh);
+  const d = box ? Math.hypot(box.max.x - box.min.x, box.max.y - box.min.y, box.max.z - box.min.z) : 0;
+  const noUsableVolume = `The ${what} has no usable volume at this size and position (sizes too small, or sizes or coordinates too large, for double precision).`;
+  if (!Number.isFinite(volume) || !(Math.abs(volume) > VOLUME_EPS * d * d * d)) throw new Model3DInputError(noUsableVolume);
+  if (volume < 0) throw new Error(`Internal error: the ${what} builder produced an inside-out mesh (volume ${volume}).`);
+  return mesh;
+}
+
+/** Relative volume below which a placed builder result counts as collapsed (see `requireSolidMesh`). */
+export const VOLUME_EPS = 1e-12;
+
+/**
  * Evaluate a primitive feature to a world-space mesh: build it in frame-local coordinates per the
- * module convention, then place it with `frameToWorld(feature.frame)`. Throws RangeError for
- * invalid dimensions (see the individual builders) and for a frame that is not orthonormal and
- * right-handed (`isOrthonormalFrame`), which would shear, scale or mirror the solid.
+ * module convention, then place it with `frameToWorld(feature.frame)`. Throws Model3DInputError for
+ * invalid dimensions (see the individual builders), for a frame that is not orthonormal and
+ * right-handed (`isOrthonormalFrame`), which would shear, scale or mirror the solid, and for a
+ * placed mesh without finite coordinates and a finite positive volume (`requireSolidMesh`).
  */
 export function primitiveMesh(feature: PrimitiveFeature): Mesh3D {
-  if (!feature.frame || !isOrthonormalFrame(feature.frame)) throw new RangeError(`The ${feature.kind} placement frame must be orthonormal and right-handed.`);
+  if (!feature.frame || !isOrthonormalFrame(feature.frame)) throw new Model3DInputError(`The ${feature.kind} placement frame must be orthonormal and right-handed.`);
   let local: Mesh3D;
   switch (feature.kind) {
     case 'box': local = boxMesh(feature.width, feature.depth, feature.height); break;
@@ -218,5 +248,5 @@ export function primitiveMesh(feature: PrimitiveFeature): Mesh3D {
     case 'sphere': local = sphereMesh(feature.radius, feature.segments, feature.rings); break;
     case 'torus': local = torusMesh(feature.majorRadius, feature.minorRadius, feature.segments, feature.rings); break;
   }
-  return transformMesh(local, frameToWorld(feature.frame));
+  return requireSolidMesh(feature.kind, transformMesh(local, frameToWorld(feature.frame)));
 }

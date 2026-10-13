@@ -2,6 +2,8 @@
 
 Date: 2026-10-11. The original read-only findings are preserved below; the current remediation
 status and practical limits are listed in [Status](#status-after-the-2026-10-11-remediation).
+The experimental 3D modelling track (WebAssembly kernel worker, 3D file payload) is reviewed
+separately at the end: [Experimental 3D track](#experimental-3d-track), findings E-19 to E-24.
 
 ## Scope
 
@@ -524,3 +526,196 @@ data URL validated at `:514`), but clamp the sheet dimensions to a sane maximum.
   (plain `fs.writeFile`). Carry M's `entryPath` filtering and crash-safe writes **and** apply E-1's
   read/write split on top.
 - E-4: port R4's `imageProblem` into M, but narrow both per the diff above (no UNC auto-open).
+
+## Experimental 3D track
+
+Date: 2026-10-12. Scope: branch `feature/3d-hardening` (from `feature/3d-development`, base
+`34221a7`), the experimental 3D modelling code that is compiled in but inert unless **Options >
+Experimental > 3D modelling** is on: `src/model3d/**` (including the Manifold kernel in
+`src/model3d/kernel/`), `src/io/dxf/mesh3d-read.ts` / `mesh3d-write.ts`, the 3D save guard
+(`src/model3d/save-guard.ts`, `src/app/editor/save.ts`), `src/app/experimental-3d.ts` (the debug
+handle) and, for the CSP question, `index.html` and `electron/renderer-origin.cjs`. Same threat
+model as above; the new inputs are DXF files carrying polyface meshes and `JCAD_3D` XDATA, and
+geometry handed to the WebAssembly kernel. File:line references are to that tree. Items marked
+**not verified** were not checked on this branch.
+
+| Finding | Severity | Status |
+| --- | --- | --- |
+| E-19 WebAssembly kernel in a module Worker: renderer CSP unchanged, worker reach | Low | Accepted with a recommended hardening (CSP header for worker scripts); packaged-app behaviour not verified |
+| E-20 Kernel memory growth and runaway Booleans | Low | Open: timeout and crash containment exist; no engine-enforced memory cap below 4 GiB |
+| E-21 `JCAD_3D` payload parsing | Info | Verified: bounded, strict, fuzzed (no finding) |
+| E-22 Triangle and vertex budgets | Info | Verified; main-thread cost of large meshes noted |
+| E-23 Saving files JCad could not reopen | Info | Verified: Save refuses, autosave omits solids and records it |
+| E-24 `window.jcad3d` debug handle | Info | Verified: flag on only, no exposure beyond `window.editor` |
+
+---
+
+### E-19 (Low). WebAssembly kernel in a module Worker: CSP and what the worker can reach
+
+**Where**: `src/model3d/kernel/manifold-kernel.ts:57-60` creates
+`new Worker(new URL('./manifold.worker.ts', import.meta.url), { type: 'module' })`;
+`manifold.worker.ts` loads `manifold-3d` (Apache-2.0) and its `manifold.wasm` (541 KB, emitted by
+Vite into `dist/assets`); `index.html:6` keeps the renderer CSP `default-src 'self'; ...` with no
+`'wasm-unsafe-eval'`.
+
+**Why the renderer CSP is unchanged**: a dedicated worker created from a same-origin script URL
+(not a `blob:` or `data:` URL) is governed by the policy delivered with its own response, not by
+the creating document's `<meta>` policy. The `jcad://` protocol handler
+(`electron/renderer-origin.cjs:19-29`) serves bundled files through `net.fetch(file://...)` and adds
+no headers, so the worker script carries no policy and WebAssembly compiles in the worker while
+main-thread `WebAssembly.compile` stays blocked. This was checked **manually** once, on
+2026-10-12 during milestone 3, in headless Chromium with the renderer's exact meta CSP served over
+HTTP (docs/3D-KERNEL.md: `ready()` reports Manifold 3.5.4, a union of two cubes gives 1.5,
+main-thread compile refused). That probe was not committed, so the check is **not reproducible**
+from the repository and was **not re-run** for this review; it should become a script (outside
+CI, like `scripts/e2e-3d.mjs`) before a release relies on it. **Not verified** inside the
+packaged Electron app under `jcad://app/` (no shipped command starts the kernel yet; nothing in
+`src/` outside `src/model3d` imports `createDefaultKernel`, so `npm run build` contains no kernel
+code or wasm today).
+
+**What the worker can reach**: its own global scope only. No DOM, no `window`, no preload bridge
+(`contextBridge` exposes `window.jcad` to the main world of the page, not to workers), no Node
+(`electron/main/window.cjs:240-246`: `sandbox: true`, `nodeIntegration: false`;
+`nodeIntegrationInWorker` is not set, so it is off), no IPC. Its only channel to
+the application is `postMessage`: requests carry typed arrays, and every reply is re-validated on
+the main thread (`kernel.ts` `finishResult`: well-formed, closed, non-empty, positive volume,
+within `MAX_SOLID_TRIANGLES`) before it can enter drawing state; a reply that cannot be read
+counts as a crash (`messageerror`). It can, however, use `fetch` and `import()`: because its
+response has no CSP, nothing restricts their destinations. The worker runs only bundled code
+(manifold.js and the worker chunk); exploiting this needs code execution in the worker first (a
+memory-safety bug in the WebAssembly module cannot call JavaScript beyond its Emscripten imports).
+Whether Electron's session settings block remote requests from workers is **not verified**.
+
+**Recommendation**: have the `jcad://` handler send
+`Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'` with worker
+scripts (or with every `.js` response), which keeps WebAssembly in the worker and removes remote
+`fetch` / `import()` from it, then check it in the packaged app with a committed probe. If the kernel ever has to
+run on the main thread (`ManifoldDirectKernel`), that needs `'wasm-unsafe-eval'` in the renderer
+policy and a new review; the default stays the worker (docs/3D-PLAN.md, open decision 1).
+
+---
+
+### E-20 (Low). Kernel memory growth and runaway Booleans
+
+**Where**: `node_modules/manifold-3d/manifold.wasm` (memory section) and `manifold.js`
+(`getHeapMax`); `src/model3d/kernel/manifold-kernel.ts` (timeouts, crash handling).
+
+**Facts** (read from the shipped files by `tests/model3d-wasm-memory.test.ts`, so they are
+re-checked on every `npm test` and fail when the dependency changes): one linear memory,
+exported, not imported, declared with 256 initial pages (16 MiB) and a maximum of 65,536 pages
+(4 GiB); manifold.js contains Emscripten's heap-growth code with `getHeapMax()` returning
+4,294,901,760 bytes. The Emscripten heap only grows; terminating the worker should release it
+(**not measured**).
+A dedicated worker is a thread of the renderer process, not a separate process: its WebAssembly
+memory counts against the renderer, and V8's JavaScript heap limit does not cover it. Measured in
+Node (in-process kernel): a union of two 499,712-triangle operands (the per-solid limit allows
+500,000) took 3.5 s and the process reached about 820 MB resident; its 776,948-triangle result is
+then refused by the budget, after the work was done.
+
+**Containment that exists**: operands are checked before they are sent (`prepareOperands`:
+well-formed, closed, positive volume, at most 500,000 triangles each); every call has a timeout
+(default 20 s): the call rejects with `timeout`, the busy worker is **terminated** (a running
+Boolean cannot be cancelled, so recycling the worker is the only way to stop it, and it frees
+its memory), the other pending calls reject, and the next call starts a fresh worker. An
+out-of-memory abort inside the module fires the worker's `error` event: pending calls reject with
+`worker-crash`, one restart is allowed, a second crash disables Booleans for the session
+(tested with an injected fake worker, `tests/model3d-kernel.test.ts`). **Not verified**: what a
+real allocation failure near 4 GiB does in Chromium (worker abort versus renderer termination),
+and peak memory for the largest accepted operands in the worker.
+
+**Impact**: a drawing (or a sequence of user Booleans) at the triangle limits can make the
+renderer allocate gigabytes for up to 20 s; on a machine with little free memory that can end in
+an out-of-memory renderer crash, which recovery copies limit to unsaved work since the last
+autosave. Self-inflicted rather than an attacker gain: a file never triggers a Boolean on open
+(the stored mesh is authoritative, histories are not re-evaluated on load).
+
+**Recommendation**: as for LibreDWG (E-7), rewrite the memory section's maximum before
+instantiation to an engine-enforced cap (for example 1 GiB), and refuse operand pairs whose
+combined size predicts a result over `MAX_SOLID_TRIANGLES` before calling the kernel.
+
+---
+
+### E-21 (Info). `JCAD_3D` payload parsing (verified, no finding)
+
+**Where**: `src/io/dxf/mesh3d-read.ts` (`payloadText`, `readFaces`), `src/model3d/file-format.ts`
+(`decodeSolidPayload`, `validateFeature`).
+
+- Bounded before parsing: each XDATA 1000 string at most 255 characters, the joined payload at
+  most 15,000 characters (`MAX_PAYLOAD_BYTES`, checked while joining and again before
+  `JSON.parse`), a duplicate `1001 JCAD_3D` or any other group inside the data makes the payload
+  unreadable; nothing else is parsed from XDATA.
+- Strict shapes: a hand-written validator with no `any`; every object's keys are checked against
+  required and optional lists (`keysOnly`), unknown kinds and fields are refused, numbers must be
+  finite (and positive where sizes are), frames orthonormal and right-handed within 1e-6, ids
+  match `^[A-Za-z0-9_.:-]{1,64}$`, names are cut to 255 characters and stripped of control
+  characters, `part` / `parts` are integers up to 1,000.
+- Recursion bounded: Boolean nesting at most 64 levels on read (`MAX_FEATURE_DEPTH`); re-evaluation
+  checks the tree iteratively first (at most 32 levels and 1,024 features).
+- Prototype keys: `JSON.parse` turns `"__proto__"` into an ordinary own property, which the key
+  check refuses as unknown; validated features are rebuilt from fresh object literals, never
+  copied, so no parsed object or prototype reaches drawing state.
+- A rejected payload never loses geometry: the mesh is kept, the history replaced by
+  `{kind: 'mesh'}` and an import-report item says why; a payload of a newer version is refused
+  explicitly.
+- Fuzzed (`tests/fuzz-model3d-file.test.ts`, docs/3D-TESTING.md): 2,000 mutated files (truncation,
+  swapped codes, `NaN` / `Infinity` / `-0` / huge numbers, deep nesting, Unicode and control
+  characters, duplicated 1001 groups, face-index corruption, count mismatches) only ever produced
+  a drawing or a `DxfReadError`; every drawing passed `prepareDrawingState`; every dropped record
+  was an import-report item. 2,000 mutated payload texts: `decodeSolidPayload` never threw.
+  Fuzzing found no reader defect. The new fixtures found one functional defect in the validator
+  (revolve histories with a segment count were refused, so reopened revolves lost their history;
+  fixed).
+
+---
+
+### E-22 (Info). Triangle and vertex budgets
+
+**Where**: `src/model3d/budget.ts`, called by `prepareDrawingState` for every state (open, edit,
+undo, recovery); `src/model3d/sweep.ts` (`checkBudget`); `src/model3d/kernel/kernel.ts`.
+
+Verified: at most 500,000 triangles and 1,500,000 vertices per solid, 2,000,000 triangles and
+6,000,000 vertices in a drawing (GeometryBudgetError, the same refusal as an oversized 2D file);
+sweeps check the count before allocating; Boolean operands and results are checked against the
+per-solid limit. In practice the DXF reader's limits (2,000,000 group pairs, 250,000 records,
+128 MB) cap a file at about 100,000 triangles first. Residual cost, not a vulnerability: a drawing
+at the limits makes the UI thread spend seconds in sealing (0.95-1.8 s for 2,000,000 triangles),
+the first pick (BVH build, 4-7 s for 2,000,000 triangles) and Boolean checks (docs/PERFORMANCE.md
+"3D").
+
+---
+
+### E-23 (Info). Saving a file JCad could not reopen (verified)
+
+**Where**: `src/model3d/save-guard.ts` (`model3dDxfLimitRefusal`, `recoveryDxf`),
+`src/app/editor/save.ts` (Save / Save As), `src/app/autosave.ts`.
+
+Verified in code and by `tests/model3d-save-guard.test.ts`: when the solids push the DXF text past
+the reader's default limits (`DXF_READ_LIMITS`), Save and Save As write nothing, set
+`lastFileError` with the triangle count and the limit, and leave the drawing modified; autosave
+writes the recovery copy without the solids and records `omitted3d` for the recovery dialog. DWG
+Save, Save As and EXPORTDWG refuse drawings with solids (the portable writer would drop them).
+A writer-side error (an invalid mesh in a hand-made state) fails the save visibly instead of
+writing a partial file.
+
+---
+
+### E-24 (Info). `window.jcad3d` debug handle (verified)
+
+**Where**: `src/app/experimental-3d.ts:453-460`, `src/main.ts` (`window.jcad3d` type).
+
+`installExperimental3d` returns before doing anything when `settings.experimental3d` is off, so
+the handle is set only with the flag on (`tests/experimental-3d-flag.test.ts` checks that nothing
+is registered with the flag off). It is the `Experimental3d` controller, which holds the editor;
+`src/main.ts:777` already exposes the editor itself as `window.editor` in every build, so the
+handle gives page script nothing it could not already reach. It is reachable only from script
+running in the renderer (threat 3 above), never from file content.
+
+### Verified safe in the 3D track (checked, no issue)
+
+- Solids read from a file are never re-evaluated on load: no file content reaches the kernel
+  without a user command.
+- Meshes in drawing state are plain arrays: typed arrays from the kernel are unpacked before they
+  enter state, so `sealImmutableData` seals them like 2D data; the reader builds plain arrays.
+- The writer emits only validated numbers (shortest round-trip decimals, no exponents) and a 7-bit,
+  whitespace-free, chunked payload. Import-report rows, including 3D reasons and solid names, are
+  assigned as text (`src/ui/import-report.ts:36-53` uses `textContent`).
