@@ -303,10 +303,24 @@ try {
     const raw = await messages();
     return { raw, unexpected: raw.filter((m) => m !== `fetch:${releaseLatestUrl}`) };
   };
-  const logSince = async (n) => win.evaluate((k) => window.editor.history.slice(k), n);
-  const historyLen = () => win.evaluate(() => window.editor.history.length);
+  // Editor.history is a 500-entry ring, so its length cannot be a log cursor.
+  // Capture real log calls for this private test instance before delegating to
+  // the unchanged editor. Exceeding the suite budget fails instead of truncating.
+  await win.evaluate(() => {
+    const ed = window.editor;
+    const messages = [...ed.history];
+    const originalLog = ed.log.bind(ed);
+    ed.__e2eLogCapture = messages;
+    ed.log = (text) => {
+      if (messages.length >= 5000) throw new Error('E2E log capture exceeded 5000 messages');
+      messages.push(text);
+      return originalLog(text);
+    };
+  });
+  const logSince = async (n) => win.evaluate((k) => window.editor.__e2eLogCapture.slice(k), n);
+  const historyLen = () => win.evaluate(() => window.editor.__e2eLogCapture.length);
   const waitLog = (re, from, timeout = 30_000) =>
-    win.waitForFunction(([src, flags, k]) => window.editor.history.slice(k).some((l) => new RegExp(src, flags).test(l)), [re.source, re.flags, from], { timeout });
+    win.waitForFunction(([src, flags, k]) => window.editor.__e2eLogCapture.slice(k).some((l) => new RegExp(src, flags).test(l)), [re.source, re.flags, from], { timeout });
 
   // ------------------------------------------------------------------ preload bridge
   step = 'bridge';
