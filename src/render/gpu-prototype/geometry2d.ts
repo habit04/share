@@ -412,6 +412,85 @@ export function prepareZoomLine(entity: LineEntity, state: DrawingState, anchor:
   }
 }
 
+type StyledZoomLine = Pick<PreparedZoomEntity, 'color' | 'width' | 'alpha'> & { entity: LineEntity };
+
+/** Grow only for emitted strokes; return exactly the owned used bytes for GPU upload. */
+class ZoomLineWriter {
+  private data = new Float32Array(0);
+  length = 0;
+  constructor(private readonly initialFloats: number) {}
+
+  private vertex(x: number, y: number, ox: number, oy: number, color: [number, number, number]): void {
+    const i = this.length;
+    this.data[i] = x; this.data[i + 1] = y;
+    this.data[i + 2] = ox; this.data[i + 3] = oy;
+    this.data[i + 4] = color[0]; this.data[i + 5] = color[1]; this.data[i + 6] = color[2];
+    this.length += GPU_ZOOM_VERTEX_STRIDE;
+  }
+
+  stroke(a: Point, b: Point, ox: number, oy: number, color: [number, number, number]): void {
+    const required = this.length + 6 * GPU_ZOOM_VERTEX_STRIDE;
+    if (required / GPU_ZOOM_VERTEX_STRIDE > MAX_VERTICES) throw new Error('Stroke geometry exceeds prototype budget');
+    if (required > this.data.length) {
+      const limit = Math.floor(MAX_VERTICES / 6) * 6 * GPU_ZOOM_VERTEX_STRIDE;
+      const capacity = Math.min(limit, Math.max(required, this.data.length ? this.data.length * 2 : this.initialFloats));
+      const next = new Float32Array(capacity);
+      next.set(this.data);
+      this.data = next;
+    }
+    // Validate each distinct packed scalar once. This preserves the generic path's
+    // Float32 refusal even for extremely small DPRs, without scanning repeated vertices.
+    const ax = Math.fround(a.x), ay = Math.fround(a.y), bx = Math.fround(b.x), by = Math.fround(b.y);
+    const x = Math.fround(ox), y = Math.fround(oy);
+    if (!Number.isFinite(ax) || !Number.isFinite(ay) || !Number.isFinite(bx) || !Number.isFinite(by) || !Number.isFinite(x) || !Number.isFinite(y)) throw new Error('Float32 stroke geometry exceeds finite limits');
+    this.vertex(ax, ay, x, y, color); this.vertex(bx, by, x, y, color); this.vertex(bx, by, -x, -y, color);
+    this.vertex(ax, ay, x, y, color); this.vertex(bx, by, -x, -y, color); this.vertex(ax, ay, -x, -y, color);
+  }
+
+  finish(): Float32Array<ArrayBuffer> { return this.length === this.data.length ? this.data : this.data.slice(0, this.length); }
+}
+
+/** Straight-only scenes need no temporary path, normals array, boxed vertex array or final finite scan. */
+function prepareZoomLines(state: DrawingState, view: Gpu2DView, styled: readonly StyledZoomLine[], extent: Point, padding: number, minRatio: number, maxRatio: number): PreparedZoom2D {
+  const writer = new ZoomLineWriter(Math.min(styled.length, 1024) * 6 * GPU_ZOOM_VERTEX_STRIDE);
+  const batches: StrokeBatch[] = [];
+  const entities: PreparedZoom2D['entities'] = state.entities.length <= GPU_EDIT_ENTITY_LIMIT ? Array.from({ length: state.entities.length }, () => null) : null;
+  const sourceBounds: ZoomSourceBounds = { min: { x: Infinity, y: Infinity }, max: { x: -Infinity, y: -Infinity } };
+  const c = Math.cos(view.twist), s = Math.sin(view.twist), halfX = view.width / 2, halfY = view.height / 2;
+  const precisionBound = MAX_PROJECTED_COORDINATE / Math.max(1, view.dpr);
+  let sourceIndex = 0;
+  for (const { entity, color, width, alpha } of styled) {
+    const adx = entity.a.x - view.center.x, ady = entity.a.y - view.center.y;
+    const bdx = entity.b.x - view.center.x, bdy = entity.b.y - view.center.y;
+    // Keep screenPoint's addition and zoomLocalPoints's subtraction in their original
+    // order. Reassociation would change tiny displacements and projected degeneracy.
+    const asx = halfX + (adx * c - ady * s) * view.scale, asy = halfY - (adx * s + ady * c) * view.scale;
+    const bsx = halfX + (bdx * c - bdy * s) * view.scale, bsy = halfY - (bdx * s + bdy * c) * view.scale;
+    if (!Number.isFinite(asx) || !Number.isFinite(asy) || !Number.isFinite(bsx) || !Number.isFinite(bsy)) throw new Error('Nonfinite screen geometry');
+    if (Math.abs(asx) > precisionBound || Math.abs(asy) > precisionBound || Math.abs(bsx) > precisionBound || Math.abs(bsy) > precisionBound) throw new Error('Projected coordinates exceed GPU stroke precision bound');
+    const ax = asx - halfX, ay = asy - halfY, bx = bsx - halfX, by = bsy - halfY;
+    const bounds: ZoomSourceBounds = { min: { x: Math.min(ax, bx), y: Math.min(ay, by) }, max: { x: Math.max(ax, bx), y: Math.max(ay, by) } };
+    includeZoomBounds(sourceBounds, bounds);
+    const first = writer.length / GPU_ZOOM_VERTEX_STRIDE;
+    if (ax !== bx || ay !== by) {
+      const dx = bx - ax, dy = by - ay, length = Math.hypot(dx, dy);
+      if (!Number.isFinite(length)) throw new Error('Stroke length exceeds finite limits');
+      const normalX = length ? -dy / length : 0, normalY = length ? dx / length : 0;
+      const clipped = clippedCenterSegment({ x: ax, y: ay }, { x: bx, y: by }, extent);
+      // A tangent clip still has six degenerate vertices, matching the generic path.
+      if (clipped) writer.stroke(clipped[0], clipped[1], normalX * (width / 2), normalY * (width / 2), color);
+    }
+    const count = writer.length / GPU_ZOOM_VERTEX_STRIDE - first;
+    if (count) batches.push({ id: entity.id, first, count, alpha });
+    if (entities) {
+      while (state.entities[sourceIndex] !== entity) sourceIndex++;
+      entities[sourceIndex++] = { entity, first, count, color, width, alpha, sourceBounds: bounds };
+    }
+  }
+  if (!Number.isFinite(sourceBounds.min.x)) sourceBounds.min = sourceBounds.max = { x: 0, y: 0 };
+  return { vertices: writer.finish(), batches, minRatio, maxRatio, padding, sourceBounds, extent, entities, entityCount: styled.length };
+}
+
 /**
  * Prepare once for a bounded camera interval. Uniform zoom acts only on center positions;
  * normal/miter offsets stay in CSS pixels. A minimum-scale rectangle retains entering strokes,
@@ -445,6 +524,7 @@ export function prepareZoom2D(state: DrawingState, view: Gpu2DView, overlay: Gpu
     // Huge lineweights/retention regions must fall back instead of cancelling large Float32s.
     const magnitude = Math.max(extent.x, extent.y) * maxRatio + padding + Math.max(view.width, view.height) / 2 + extrusion;
     if (!Number.isFinite(magnitude) || magnitude * 12 * 2 ** -23 * view.dpr > ZOOM_FLOAT_PIXEL_ERROR) throw new Error('GPU zoom geometry exceeds Float32 precision budget');
+    if (styled.every((item): item is StyledZoomLine => item.entity.type === 'line')) return prepareZoomLines(state, view, styled, extent, padding, minRatio, maxRatio);
     const vertices: number[] = [], batches: StrokeBatch[] = [];
     const sourceBounds = { min: { x: Infinity, y: Infinity }, max: { x: -Infinity, y: -Infinity } };
     const entities: PreparedZoom2D['entities'] = state.entities.length <= GPU_EDIT_ENTITY_LIMIT ? Array.from({ length: state.entities.length }, () => null) : null;
