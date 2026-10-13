@@ -58,7 +58,7 @@ Versions are the ones in `package-lock.json` at the time this file was written.
 | @mlightcad/libredwg-web | 0.7.14 | GPL-3.0 | MLight Lee (JavaScript/TypeScript wrapper); GNU LibreDWG: Free Software Foundation, Inc. | direct dependency | <https://github.com/mlightcad/libredwg-web> |
 | electron-updater | 6.8.9 | MIT | Copyright (c) 2015 Loopline Systems | direct dependency | <https://github.com/electron-userland/electron-builder> |
 | hershey | 2.1.7 | MIT (code); Hershey font data under the Hershey use restriction | Copyright (c) 2019 Ben Nortier | direct dependency | <https://github.com/bjnortier/hershey> |
-| manifold-3d | 3.5.4 | Apache-2.0 | Copyright 2021 The Manifold Authors (Emmett Lalish, Chun Kit Lam and contributors) | build-time (dev) dependency whose code is bundled: `manifold.js` in the 3D-kernel worker chunk, `manifold.wasm` as a build asset; Boolean operations of the experimental 3D modelling feature (`src/model3d/kernel/`, run in a Web Worker) | <https://github.com/elalish/manifold> |
+| manifold-3d | 3.5.4 | Apache-2.0 | Copyright 2021 The Manifold Authors (Emmett Lalish, Chun Kit Lam and contributors) | bundled at build time (3D kernel worker) | <https://github.com/elalish/manifold> |
 | builder-util-runtime | 9.7.0 | MIT | Copyright (c) 2015 Loopline Systems | electron-updater | <https://github.com/electron-userland/electron-builder> |
 | fs-extra | 10.1.0 | MIT | Copyright (c) 2011-2017 JP Richardson | electron-updater | <https://github.com/jprichardson/node-fs-extra> |
 | jsonfile | 6.2.1 | MIT | Copyright (c) 2012-2015, JP Richardson | fs-extra | <https://github.com/jprichardson/node-jsonfile> |
@@ -80,8 +80,10 @@ Versions are the ones in `package-lock.json` at the time this file was written.
 ### Development dependencies (build and test only)
 
 These are used to build, test and package JCad Electrical. Apart from the Electron runtime,
-the NSIS installer stub of electron-builder and a few lines of Vite's module-preload helper,
-none of their code is part of what is distributed.
+the NSIS installer stub of electron-builder, a few lines of Vite's module-preload helper and
+`manifold-3d` (installed as a development dependency because Vite bundles it: its loader goes
+into the 3D-kernel worker chunk and `manifold.wasm` into the build assets; listed with the
+runtime dependencies above), none of their code is part of what is distributed.
 
 | Package | Version | Licence | Copyright | Role | Link |
 | --- | --- | --- | --- | --- | --- |
@@ -1005,14 +1007,16 @@ software or this license, under any kind of legal claim.***
 
 Apache-2.0 - Copyright 2021 The Manifold Authors - <https://github.com/elalish/manifold>
 
-Used by: `src/model3d/kernel/manifold-core.ts` (loaded in the worker `src/model3d/kernel/manifold.worker.ts`,
-and in-process by the unit tests). Shipped files: the module loader `manifold.js` (bundled into the
-worker chunk) and `manifold.wasm` (emitted as a build asset). The licence text below is
-`node_modules/manifold-3d/LICENSE` as published in the npm package (which has no NOTICE file); the
-upstream source is at
-<https://github.com/elalish/manifold>. `manifold.wasm` also contains compiled code of Clipper2
-(Angus Johnson, Boost Software License 1.0, which requires no notice for machine-executable object
-code) and the Emscripten runtime (MIT). The package's own npm dependencies (glTF, 3MF and image
+Used by: `src/model3d/kernel/manifold-core.ts`, loaded in the worker
+`src/model3d/kernel/manifold.worker.ts` (and in-process by the unit tests), for the Boolean
+operations of the experimental 3D modelling feature. Installed as a development dependency
+because Vite bundles it; shipped files: the module loader `manifold.js` (bundled into the worker
+chunk) and `manifold.wasm` (emitted as a build asset). The licence text below is
+`node_modules/manifold-3d/LICENSE` as published in the npm package (which has no NOTICE file);
+the upstream source is at <https://github.com/elalish/manifold>. `manifold.wasm` also contains
+compiled code of Clipper2 (Angus Johnson, Boost Software License 1.0, which requires no notice
+for machine-executable object code); `manifold.js` is Emscripten-generated glue code, whose MIT
+notice follows the Apache text. The package's own npm dependencies (glTF, 3MF and image
 tools used by its `manifold-cad` command-line program) are not used by JCad Electrical and are
 not part of the renderer bundle.
 
@@ -1218,6 +1222,37 @@ not part of the renderer bundle.
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
    See the License for the specific language governing permissions and
    limitations under the License.
+```
+
+### Emscripten runtime (in manifold-3d 3.5.4)
+
+MIT (Emscripten is dual-licensed MIT / University of Illinois NCSA; the MIT terms are used here) -
+Copyright (c) 2010-2014 Emscripten authors, see the AUTHORS file of Emscripten -
+<https://github.com/emscripten-core/emscripten>
+
+The JavaScript loader `manifold.js` of manifold-3d, compiled into the 3D-kernel worker chunk, is
+generated by Emscripten and contains its runtime support code.
+
+```text
+Copyright (c) 2010-2014 Emscripten authors, see AUTHORS file.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
 ```
 
 ### electron 44.7.0

@@ -88,6 +88,15 @@ describe('profileFromEntities: accepted geometry', () => {
     expect(err(gap, WORLD_XY_FRAME, { tolerance: 1e-9 })).toMatch(/not closed/);
   });
 
+  it('chains with tolerance 0 (exact endpoints) and at huge coordinates without false branches', () => {
+    const tri = () => [line([0, 0], [1, 0]), line([1, 0], [1, 1]), line([1, 1], [0, 0])];
+    expect(ok(tri(), WORLD_XY_FRAME, { tolerance: 0 }).loops[0]).toHaveLength(3);
+    // Coordinates beyond 2^52 x tolerance, where neighbouring grid cells round to the same key.
+    const big = 2 ** 53 * 1e-6;
+    const far = [line([big, big], [big + 64, big]), line([big + 64, big], [big + 64, big + 64]), line([big + 64, big + 64], [big, big])];
+    expect(ok(far).loops[0]).toHaveLength(3);
+  });
+
   it('orders the outer loop first and makes holes clockwise', () => {
     const p = ok([circle(2, 2, 0.5), pline([[0, 0], [4, 0], [4, 4], [0, 4]]), pline([[3, 3], [3.5, 3], [3.5, 3.5], [3, 3.5]])]);
     expect(p.loops).toHaveLength(3);

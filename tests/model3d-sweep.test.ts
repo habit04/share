@@ -73,10 +73,6 @@ describe('extrudeMesh', () => {
     expect(() => extrudeMesh(prof([rect(0, 0, 3, 3), cw(rect(2, 2, 4, 4))]), 1)).toThrow(/cross or touch/);
   });
 
-  it('enforces the triangle budget before building', () => {
-    const big: Point[] = Array.from({ length: 20_000 }, (_, k) => ({ x: Math.cos((2 * Math.PI * k) / 20_000), y: Math.sin((2 * Math.PI * k) / 20_000) }));
-    expect(() => revolveMesh(prof([big.map((p) => ({ x: p.x + 2, y: p.y }))]), { origin: v3(0, 0, 0), dir: v3(0, 1, 0) }, 2 * Math.PI, 256)).toThrow(GeometryBudgetError);
-  });
 });
 
 describe('revolveMesh', () => {
@@ -148,6 +144,12 @@ describe('revolveMesh', () => {
     expect(() => revolveMesh(p, { origin: v3(0, 0, 1), dir: v3(0, 1, 0) }, 1)).toThrow(/plane of the profile/);
     expect(() => revolveMesh(prof([rect(-1, 0, 1, 1)]), yAxis, 1)).toThrow(/crosses the axis/);
     expect(() => revolveMesh(prof([cw(rect(1, 0, 2, 1))]), yAxis, 1)).toThrow(/counter-clockwise/);
+  });
+
+  it('enforces the triangle budget before building', () => {
+    // 20 000 points x 256 steps x 2 triangles = 10 240 000, far over MAX_SOLID_TRIANGLES.
+    const big: Point[] = Array.from({ length: 20_000 }, (_, k) => ({ x: Math.cos((2 * Math.PI * k) / 20_000), y: Math.sin((2 * Math.PI * k) / 20_000) }));
+    expect(() => revolveMesh(prof([big.map((p) => ({ x: p.x + 2, y: p.y }))]), yAxis, 2 * Math.PI, 256)).toThrow(GeometryBudgetError);
   });
 
   it('is deterministic', () => {

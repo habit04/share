@@ -26,7 +26,11 @@
  * The input must be a valid profile: loops simple, not crossing or touching each other, holes
  * inside the outer loop (sketch.ts `validateProfile` checks this). Invalid input throws an Error
  * instead of returning a partial or overlapping triangulation. Exactly collinear vertices are
- * kept; if they leave no strictly convex ear the clipper accepts a zero-area ear rather than fail.
+ * kept (dropping one would leave a T-junction against a sweep's side wall). If they leave no
+ * strictly convex ear, the clipper falls back (`allowFlat`) to clipping a zero-area ear rather
+ * than failing, so the output may then contain zero-area triangles; they keep a swept mesh closed
+ * and add no area or volume. Profiles from sketch.ts never trigger this (it drops collinear
+ * vertices), stored or hand-built profiles with collinear points can.
  */
 import type { Point } from '../core/geometry';
 
@@ -47,12 +51,17 @@ function cross(a: { x: number; y: number }, b: { x: number; y: number }, c: { x:
   return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
 }
 
-/** Twice the signed area of a closed loop (positive for counter-clockwise). */
+/**
+ * Twice the signed area of a closed loop (positive for counter-clockwise). Coordinates are taken
+ * relative to the first point, so loops far from the origin keep their precision.
+ */
 export function loopSignedArea2(loop: readonly Point[]): number {
+  const o = loop[0];
+  if (!o) return 0;
   let s = 0;
   for (let i = 0, j = loop.length - 1; i < loop.length; j = i++) {
-    const p = loop[j]!, q = loop[i]!;
-    s += p.x * q.y - q.x * p.y;
+    const px = loop[j]!.x - o.x, py = loop[j]!.y - o.y, qx = loop[i]!.x - o.x, qy = loop[i]!.y - o.y;
+    s += px * qy - qx * py;
   }
   return s;
 }

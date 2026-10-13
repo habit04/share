@@ -164,26 +164,32 @@ function chainPieces(open: readonly Piece[], tol: number): Loop[] {
   if (open.length === 0) return [];
   const ends: Point[] = [];
   for (const p of open) ends.push(p.points[0]!, p.points[p.points.length - 1]!);
-  const cell = Math.max(tol, 1e-300);
+  // Tolerance 0 matches exact coordinates only: key the points themselves instead of grid cells.
+  const exact = tol === 0;
+  const cellOf = (q: Point): [number, number] => (exact ? [q.x, q.y] : [Math.floor(q.x / tol), Math.floor(q.y / tol)]);
   const grid = new Map<string, number[]>();
   for (const [k, q] of ends.entries()) {
-    const key = cellKey(Math.floor(q.x / cell), Math.floor(q.y / cell));
+    const key = cellKey(...cellOf(q));
     const list = grid.get(key);
     if (list) list.push(k); else grid.set(key, [k]);
   }
   const partner = new Int32Array(ends.length).fill(-1);
   for (const [k, q] of ends.entries()) {
-    const cx = Math.floor(q.x / cell), cy = Math.floor(q.y / cell);
-    const matches: number[] = [];
-    for (let dx = -1; dx <= 1; dx++) {
-      for (let dy = -1; dy <= 1; dy++) {
-        for (const j of grid.get(cellKey(cx + dx, cy + dy)) ?? []) {
-          if (j === k) continue;
-          const r = ends[j]!;
-          if (Math.hypot(r.x - q.x, r.y - q.y) <= tol) matches.push(j);
-        }
+    const [cx, cy] = cellOf(q);
+    // Neighbouring cell keys can coincide (coordinates so large that cx +- 1 rounds to cx), so each
+    // distinct cell is scanned once and matches are collected as a set.
+    const cells = new Set<string>();
+    if (exact) cells.add(cellKey(cx, cy));
+    else for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) cells.add(cellKey(cx + dx, cy + dy));
+    const found = new Set<number>();
+    for (const key of cells) {
+      for (const j of grid.get(key) ?? []) {
+        if (j === k) continue;
+        const r = ends[j]!;
+        if (Math.hypot(r.x - q.x, r.y - q.y) <= tol) found.add(j);
       }
     }
+    const matches = [...found];
     const piece = open[k >> 1]!;
     if (matches.length === 0) throw new SketchError(`The profile is not closed: the ${k & 1 ? 'end' : 'start'} of ${piece.label} at ${at(q)} does not meet another curve.`);
     if (matches.length > 1) throw new SketchError(`The boundary branches at ${at(q)}: ${matches.length + 1} curve ends meet there, and a profile loop must not branch.`);

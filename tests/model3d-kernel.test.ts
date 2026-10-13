@@ -121,8 +121,9 @@ describe('Manifold in-process kernel', () => {
   it('checks results: budget, closedness and orientation', () => {
     const c = cube();
     expect(() => finishResult('union', { positions: c.positions, indices: c.indices.slice(3) })).toThrow(/open mesh/);
-    const inverted = finishResult('union', { positions: c.positions, indices: [...c.indices].reverse() });
-    expect(meshVolume(inverted)).toBeCloseTo(1, 12);
+    const inverted = (() => { try { finishResult('union', { positions: c.positions, indices: [...c.indices].reverse() }); } catch (e) { return e as KernelError; } return null; })();
+    expect(inverted?.code).toBe('kernel-failure');
+    expect(inverted?.message).toMatch(/inside-out mesh for the union \(volume -1\.00000\)/);
     const huge: Mesh3D = { positions: [0, 0, 0, 1, 0, 0, 0, 1, 0], indices: new Array<number>(3 * (MAX_SOLID_TRIANGLES + 1)).fill(0).map((_, i) => i % 3) };
     const err = (() => { try { finishResult('union', huge); } catch (e) { return e as KernelError; } return null; })();
     expect(err?.code).toBe('budget');
@@ -173,24 +174,38 @@ describe('Manifold in-process kernel', () => {
 
 // ---- worker transport -------------------------------------------------------------------------
 
-type Mode = 'normal' | 'reverse' | 'hang' | 'crash' | 'init-error';
+type Mode = 'normal' | 'reverse' | 'hang' | 'crash' | 'init-error' | 'silent' | 'load-error' | 'messageerror';
 
-/** A fake module worker running the real Manifold core in-process, with scripted failures. */
+/**
+ * A fake module worker running the real Manifold core in-process, with scripted failures. Messages
+ * go through `structuredClone` with their transfer lists in both directions, so transferred
+ * buffers are detached on the sending side exactly as with a real Worker.
+ */
 class FakeWorker implements WorkerLike {
-  onmessage: ((event: { readonly data: WorkerMessage }) => void) | null = null;
-  onerror: ((event: { readonly message?: string; preventDefault?: () => void }) => void) | null = null;
+  onmessage: ((event: MessageEvent<WorkerMessage>) => void) | null = null;
+  onerror: ((event: ErrorEvent) => void) | null = null;
+  onmessageerror: ((event: MessageEvent) => void) | null = null;
   terminated = false;
+  /** What the worker received, and the sender's (now detached) transfer list. */
   readonly posted: { msg: WorkerRequest; transfer: Transferable[] }[] = [];
+  /** Buffers the worker transferred back (detached after sending). */
+  readonly sent: ArrayBuffer[] = [];
   private held: WorkerRequest[] = [];
 
   constructor(private readonly mode: Mode) {
-    setTimeout(() => this.emit(mode === 'init-error' ? { type: 'init-error', message: 'WebAssembly.instantiate(): blocked' } : { type: 'ready', version: MANIFOLD_VERSION }), 0);
+    setTimeout(() => {
+      if (mode === 'silent') return;
+      if (mode === 'load-error') { this.fail('Failed to fetch dynamically imported module'); return; }
+      this.emit(mode === 'init-error' ? { type: 'init-error', message: 'WebAssembly.instantiate(): blocked' } : { type: 'ready', version: MANIFOLD_VERSION });
+    }, 0);
   }
 
-  postMessage(msg: WorkerRequest, transfer: Transferable[]): void {
+  postMessage(message: WorkerRequest, transfer: Transferable[]): void {
+    const msg = structuredClone(message, { transfer });
     this.posted.push({ msg, transfer });
-    if (this.mode === 'hang') return;
-    if (this.mode === 'crash') { setTimeout(() => this.onerror?.({ message: 'RuntimeError: memory access out of bounds' }), 0); return; }
+    if (this.mode === 'hang' || this.mode === 'silent') return;
+    if (this.mode === 'crash') { setTimeout(() => this.fail('RuntimeError: memory access out of bounds'), 0); return; }
+    if (this.mode === 'messageerror') { setTimeout(() => { if (!this.terminated) this.onmessageerror?.(new MessageEvent('messageerror')); }, 0); return; }
     if (this.mode === 'reverse') {
       this.held.push(msg);
       if (this.held.length === 2) { const [x, y] = this.held; this.held = []; void this.reply(y!).then(() => this.reply(x!)); }
@@ -201,18 +216,25 @@ class FakeWorker implements WorkerLike {
 
   terminate(): void { this.terminated = true; }
 
-  private emit(data: WorkerMessage): void {
-    if (!this.terminated) this.onmessage?.({ data });
+  private fail(message: string): void {
+    if (!this.terminated) this.onerror?.({ message, preventDefault() {} } as ErrorEvent);
+  }
+
+  private emit(data: WorkerMessage, transfer: Transferable[] = []): void {
+    if (this.terminated) return;
+    const cloned = structuredClone(data, { transfer });
+    this.onmessage?.(new MessageEvent('message', { data: cloned }));
   }
 
   private async reply(msg: WorkerRequest): Promise<void> {
     const wasm = await loadManifold();
     const out = manifoldBoolean(wasm, msg.op, msg.a, msg.b);
-    this.emit({ id: msg.id, ok: true, positions: out.positions, indices: out.indices });
+    this.sent.push(out.positions.buffer as ArrayBuffer, out.indices.buffer as ArrayBuffer);
+    this.emit({ id: msg.id, ok: true, positions: out.positions, indices: out.indices }, [out.positions.buffer, out.indices.buffer]);
   }
 }
 
-function fakeKernel(modes: Mode[], opts: { timeoutMs?: number } = {}) {
+function fakeKernel(modes: Mode[], opts: { timeoutMs?: number; startTimeoutMs?: number } = {}) {
   const workers: FakeWorker[] = [];
   const k = new ManifoldWorkerKernel({
     createWorker: () => {
@@ -234,7 +256,12 @@ describe('Manifold worker kernel transport', () => {
     const m = await k.boolean('union', cube(), cube(0.5));
     expect(Math.abs(meshVolume(m) - 1.5)).toBeLessThan(1e-9);
     const { msg, transfer } = workers[0]!.posted[0]!;
-    expect(transfer).toEqual([msg.a.positions.buffer, msg.a.indices.buffer, msg.b.positions.buffer, msg.b.indices.buffer]);
+    expect(transfer).toHaveLength(4);
+    // Transferred, not copied: the main thread's buffers are detached, the worker got the data.
+    for (const buf of transfer) expect((buf as ArrayBuffer).byteLength).toBe(0);
+    expect(msg.a.positions.length).toBe(24);
+    expect(msg.b.indices.length).toBe(36);
+    for (const buf of workers[0]!.sent) expect(buf.byteLength).toBe(0);
     k.dispose();
     expect(workers[0]!.terminated).toBe(true);
   });
@@ -301,6 +328,40 @@ describe('Manifold worker kernel transport', () => {
     const status = await k.ready();
     expect(status.available).toBe(false);
     expect(status.reason).toMatch(/failed to start \(WebAssembly.instantiate\(\): blocked\)/);
+    expect((await rejection(k.boolean('union', cube(), cube(0.5)))).code).toBe('unavailable');
+    expect(workers).toHaveLength(1);
+    k.dispose();
+  });
+
+  it('treats an unreadable reply after start-up as a crash', async () => {
+    const { k, workers } = fakeKernel(['messageerror', 'normal']);
+    const e = await rejection(k.boolean('union', cube(), cube(0.5)));
+    expect(e.code).toBe('worker-crash');
+    expect(e.message).toMatch(/could not be read/);
+    expect(meshVolume(await k.boolean('union', cube(), cube(0.5)))).toBeCloseTo(1.5, 9);
+    expect(workers).toHaveLength(2);
+    k.dispose();
+  });
+
+  it('reports a worker that fails to load before ready as unavailable, with its own message', async () => {
+    const { k, workers } = fakeKernel(['load-error']);
+    const pending = k.boolean('union', cube(), cube(0.5));
+    const e = await rejection(pending);
+    expect(e.code).toBe('unavailable');
+    expect(e.message).toMatch(/worker failed to load or start \(Failed to fetch dynamically imported module\)\.$/);
+    expect(e.message).not.toMatch(/crashed/);
+    expect((await k.ready()).available).toBe(false);
+    expect(workers).toHaveLength(1);
+    k.dispose();
+  });
+
+  it('gives up for the session when the worker does not start in time', async () => {
+    const { k, workers } = fakeKernel(['silent'], { startTimeoutMs: 30 });
+    const pending = k.boolean('union', cube(), cube(0.5));
+    const status = await k.ready();
+    expect(status).toEqual({ available: false, reason: 'the geometry kernel did not start within 0.03 s' });
+    expect((await rejection(pending)).code).toBe('unavailable');
+    expect(workers[0]!.terminated).toBe(true);
     expect((await rejection(k.boolean('union', cube(), cube(0.5)))).code).toBe('unavailable');
     expect(workers).toHaveLength(1);
     k.dispose();
