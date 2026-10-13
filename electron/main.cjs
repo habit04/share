@@ -11,6 +11,7 @@
  *   ipc-drawings.cjs  open / save drawings and projects, Save As paths, backups, images
  *   ipc-plot.cjs      plot to PDF, vector PDF, print
  *   ipc-stores.cjs    autosave, user library, plugins, catalog packs
+ *   ipc-shx.cjs       explicit Windows SHX font / shape selection, read-only
  *   updates.cjs       app info, external links, update checks and status
  *   handover.cjs      files handed over by the OS and by a second launch
  */
@@ -37,6 +38,7 @@ const { dwgHost, readDwg, registerDwgIpc } = require('./main/dwg.cjs');
 const { registerDrawingIpc } = require('./main/ipc-drawings.cjs');
 const { registerPlotIpc } = require('./main/ipc-plot.cjs');
 const { registerStoreIpc } = require('./main/ipc-stores.cjs');
+const { registerShxIpc } = require('./main/ipc-shx.cjs');
 const { registerUpdatesIpc } = require('./main/updates.cjs');
 const { createHandover } = require('./main/handover.cjs');
 const { createFontMetricsHost } = require('./font-metrics-host.cjs');
@@ -114,6 +116,7 @@ const { takeHandedOverProject, handOverFiles, drawingArgs, registerSecondInstanc
 registerDrawingIpc(ctx, { takeHandedOverProject });
 registerPlotIpc(ctx);
 registerStoreIpc(ctx);
+registerShxIpc(ctx);
 registerMenuIpc(ctx);
 registerUpdatesIpc(ctx);
 const fontMetricsHost = process.platform === 'win32' ? createFontMetricsHost() : null;

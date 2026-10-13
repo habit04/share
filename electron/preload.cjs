@@ -52,6 +52,7 @@ contextBridge.exposeInMainWorld('jcad', {
   ...(process.platform === 'win32' ? {
     fontMetrics: (request) => ipcRenderer.invoke('font-metrics', request),
     pdfFont: (request) => ipcRenderer.invoke('pdf-font', request),
+    openShxFont: () => ipcRenderer.invoke('open-shx-font'),
     dwgExportStatus: () => ipcRenderer.invoke('dwg-export-status'),
     saveDwg: (path, text) => ipcRenderer.invoke('save-dwg', path, text),
     chooseDwgPath: (suggestName) => ipcRenderer.invoke('choose-dwg-path', String(suggestName || '')),
