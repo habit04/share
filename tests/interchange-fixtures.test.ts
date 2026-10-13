@@ -332,17 +332,18 @@ describe('r2018-dimensions.dxf: named DIMSTYLEs with XDATA, DIMENSIONs with thei
     const report = importReportOf(f.imported)!;
     expect(report.items.filter((i) => i.action === 'dropped').map((i) => [i.type, i.action, i.handle])).toEqual([['DIMENSION', 'dropped', '127']]);
     expect(f.written).not.toContain('AcDbOrdinateDimension');
-    expect(importReportOf(f.roundTripped)?.items.every((i) => i.action === 'unsupported')).toBe(true);
+    expect(importReportOf(f.roundTripped)?.items.every((i) => i.action === 'unsupported' || i.action === 'kept')).toBe(true);
   });
 
-  it('lost as the matrix says: arrowheads go to JCAD_DIMSTYLE XDATA (no DIMBLK handles); 2-line angular is written as 3-point; ACAD_DSTYLE_* XDATA is dropped', () => {
+  it('writes arrowheads through JCAD_DIMSTYLE and angular geometry as three points while preserving source style XDATA', () => {
     const arch = records(f.written, 'DIMSTYLE').find((r) => group(r, 2) === 'ARCH-TICK')!;
     expect(arch.some(([c]) => c === 342 || c === 343 || c === 344)).toBe(false);
     expect(arch).toContainEqual([1001, 'JCAD_DIMSTYLE']);
     expect(arch).toContainEqual([1000, '_ARCHTICK']);
     expect(f.written).not.toContain('AcDb2LineAngularDimension');
     expect(f.written.match(/AcDb3PointAngularDimension/g)).toHaveLength(2);
-    expect(f.written).not.toContain('ACAD_DSTYLE_');
+    expect(f.written).toContain('ACAD_DSTYLE_DIMJAG');
+    expect(f.written).toContain('ACAD_DSTYLE_DIMTALN');
   });
 
   // The reader gaps below were closed by porting PR #2 (codex/electrical-review-fixes 2f89b0e).
@@ -542,9 +543,9 @@ describe('r2018-mtext.dxf: MTEXT formatting codes, stacked fractions, columns, l
     });
   });
 
-  it('lost as the matrix says: saved as AC1015 in pure ASCII, non-ASCII text as \\U+ escapes', () => {
-    expect([...f.written].every((c) => c.charCodeAt(0) < 0x80)).toBe(true);
-    expect(f.written).toContain('\\U+00D825 \\U+00B10,1');
+  it('keeps the source AC1032 version and writes its Unicode text as UTF-8', () => {
+    expect(f.written).toContain('AC1032');
+    expect(f.written).toContain('Ø25 ±0,1');
   });
 
   it('MTEXT static columns (R2018 embedded object: 2 columns 60 wide, gutter 5) are kept, and each column is laid out at its offset', () => {
@@ -555,7 +556,7 @@ describe('r2018-mtext.dxf: MTEXT formatting codes, stacked fractions, columns, l
       const origins = [...new Set(parts.filter((t) => t.text === 'COLUMN').map((t) => t.position.x))];
       expect(origins[1]! - origins[0]!).toBeCloseTo(65);
     }
-    // Written as JCad XDATA (AC1015 has no MTEXT columns), with its APPID.
+    // The established column interchange is retained alongside source metadata.
     expect(f.written).toContain('\r\n1001\r\nJCAD_MTEXT_COLUMNS\r\n');
     expect(records(f.written, 'APPID').map((r) => group(r, 2))).toContain('JCAD_MTEXT_COLUMNS');
   });
@@ -621,9 +622,9 @@ describe('r2000-hatch-curves.dxf: HATCH (ANSI31 with bulges, SOLID with island),
       if (s === f.imported) {
         expect(importReportOf(s)?.items).toContainEqual(expect.objectContaining({ type: 'HATCH', reason: expect.stringContaining('boundary links') }));
         expect(importReportOf(s)?.items.some((i) => i.reason.includes('per-vertex polyline widths'))).toBe(false);
-        expect(importReportOf(s)?.items).toContainEqual(expect.objectContaining({ type: 'LWPOLYLINE', reason: expect.stringContaining('reactor/extension-dictionary links') }));
+        expect(importReportOf(s)?.items).toContainEqual(expect.objectContaining({ type: 'LWPOLYLINE', action: 'kept', reason: expect.stringContaining('typed object references') }));
       }
-      else expect(importReportOf(s)).toBeUndefined();
+      else expect(importReportOf(s)?.items.every(item => item.action === 'kept')).toBe(true);
       expect(s.entities.map((e) => e.type)).toEqual(['polyline', 'hatch', 'hatch', 'polyline', 'circle', 'hatch', 'polyline', 'polyline', 'spline', 'spline', 'ellipse', 'ellipse']);
       expect(polys.find((e) => e.widths)?.widths).toEqual([{ start: 0, end: 0 }, { start: 6, end: 0 }, { start: 0, end: 0 }]);
     });
@@ -815,9 +816,9 @@ describe('r2018-truecolor-linetypes.dxf: true colours, colour book, transparency
     }
     const gas = records(f.written, 'LTYPE').find((r) => group(r, 2) === 'GAS_LINE')!;
     expect(gas.filter(([c]) => c === 49).map(([, v]) => Number(v))).toEqual([12.7, -5.08, -6.35]);
-    expect(gas.some(([c]) => c === 9)).toBe(false);
-    expect(gas.filter(([c]) => c === 74).every(([, v]) => Number(v) === 0)).toBe(true);
-    expect(f.written).not.toContain('ltypeshp.shx');
+    expect(gas).toContainEqual([9, 'GAS']);
+    expect(gas.filter(([c]) => c === 74).some(([, v]) => (Number(v) & 2) !== 0)).toBe(true);
+    expect(f.written).toContain('ltypeshp.shx');
   });
 
   it('the Default layer lineweight (370 = -3) reads as 0.25 mm and is written back as an explicit 25', () => {
@@ -1060,8 +1061,7 @@ describe('r2018-image-inches.dxf: IMAGE + IMAGEDEF in model and paper space, $IN
     const layout = s.layouts?.[0];
 
     it('inch units with architectural format, limits and linetype scale', () => {
-      if (s === f.imported) expect(importReportOf(s)?.items).toContainEqual(expect.objectContaining({ type: 'RASTERVARIABLES', action: 'dropped' }));
-      else expect(importReportOf(s)).toBeUndefined();
+      expect(importReportOf(s)?.items).toContainEqual(expect.objectContaining({ type: 'RASTERVARIABLES', action: 'kept' }));
       expect(s.header?.units).toEqual({ insunits: 1, lunits: 4, luprec: 4, auprec: 0, aunits: 0 });
       expect(formatLength(30.5, s.header!.units)).toBe('2\'-6 1/2"');
       expect(s.header?.limits.max).toEqual({ x: 432, y: 288 });

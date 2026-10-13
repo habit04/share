@@ -27,11 +27,12 @@ import type { Tool, ToolContext } from '../../tools/types';
 import { WIRE_DOT } from '../../electrical/symbols';
 import { LIBRARY_SYMBOLS } from '../../electrical/library';
 import { TITLE_BLOCK } from '../../electrical/templates';
+import { CadGraphError } from '../../core/cad-graph';
 import { SOURCE_ARROW, DEST_ARROW } from '../../tools/plc';
 import { defaultProject, type Project } from '../project';
 import { saveQueue } from '../savequeue';
 import { loadSettings, type UserSettings } from '../settings';
-import { SessionManager } from '../sessions';
+import { SessionManager, type ParkedSpaceViews } from '../sessions';
 import type { ColorSpec } from '../../core/entities';
 import type { PlotOptions } from '../plot';
 import type { SpaceRef } from '../../core/layouts';
@@ -125,6 +126,9 @@ export class Editor {
   suggestedName: string | null = null;
   /** Mouse hooks of the layout controller (tools/layouts.ts): viewport activation by (double-)click. */
   layoutInput: { doubleClick?(screen: Point): boolean; mouseDown?(screen: Point): boolean; hoverBlocked?(screen: Point): boolean } = {};
+  /** Installed by the layout controller; these hooks do not query or synchronize sessions. */
+  captureParkedSpaceViews?: () => ParkedSpaceViews;
+  restoreParkedSpaceViews?: (views: ParkedSpaceViews | null) => void;
   /** Active space ('space' event): undefined = Model tab, else the layout and the MSPACE viewport. */
   get activeSpace(): SpaceRef | undefined {
     return this.doc.space;
@@ -198,12 +202,12 @@ export class Editor {
   }
 
   // ------------------------------------------------------------- tool context
-  /** Handle only deliberate budget refusals at human input boundaries; API callers still throw. */
+  /** Report deliberate edit refusals at human input boundaries; API callers still throw. */
   private geometryAction<T>(action: () => T, refused: T): T {
     const fromApi = this.apiCommandDepth > 0;
     const report = (error: unknown, failedTool: Tool | null, asynchronous: boolean): void => {
-      if (fromApi || !(error instanceof GeometryBudgetError)) throw error;
-      this.log(`Edit canceled: ${error.message} Reduce the geometry or selection and try again.`);
+      if (fromApi || !(error instanceof GeometryBudgetError || error instanceof CadGraphError)) throw error;
+      this.log(`Edit canceled: ${error.message}${error instanceof GeometryBudgetError ? ' Reduce the geometry or selection and try again.' : ''}`);
       // A dialog from an old command must not cancel a tool started while it was pending.
       if (!asynchronous || this.tool === failedTool) {
         this.internals.gripDrag = null;
@@ -230,7 +234,7 @@ export class Editor {
   /** Tool startup is internal: its command/input boundary decides how to report a refusal. */
   startTool(tool: Tool): void | Promise<void> {
     const reject = (error: unknown): never => {
-      if (error instanceof GeometryBudgetError && this.tool === tool) {
+      if ((error instanceof GeometryBudgetError || error instanceof CadGraphError) && this.tool === tool) {
         this.internals.gripDrag = null;
         this.internals.panning = false;
         prompter.finishTool(this, this.internals);

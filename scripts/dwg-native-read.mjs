@@ -13,9 +13,10 @@ const validPointer = (value) => Number.isInteger(value) && value > 0 && value <=
  * @param {import('./dwg-native-read.mjs').NativeDwgModule} module
  * @param {Uint8Array | ArrayBuffer} input
  * @param {'dwg' | 'dxf'} [kind]
+ * @param {(error: number) => void} [onReadStatus]
  * @returns {number}
  */
-export function readNativeDwg(module, input, kind = 'dwg') {
+export function readNativeDwg(module, input, kind = 'dwg', onReadStatus) {
   if (kind !== 'dwg' && kind !== 'dxf') throw new Error('Unsupported native drawing kind.');
   if (!(input instanceof Uint8Array) && !(input instanceof ArrayBuffer)) throw new TypeError('Native drawing input must be bytes.');
   // The current pinned factory deliberately does not bind dxf_read_file. Normal app DXF
@@ -35,6 +36,7 @@ export function readNativeDwg(module, input, kind = 'dwg') {
     if (flags & OUT_OF_MEMORY) throw new Error('Failed to decode DWG: out of WASM memory. Use a smaller file.');
     if (flags >= DWG_CRITICAL_ERROR || !validPointer(pointer)) throw new Error(`LibreDWG could not read this file (native error ${flags}; unsupported version or corrupt data).`);
     if (flags) console.warn('Open dwg file with error code:', flags);
+    onReadStatus?.(flags);
   } catch (error) {
     failed = true;
     failure = error;

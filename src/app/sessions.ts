@@ -11,6 +11,13 @@ import type { Point } from '../core/geometry';
 import { fileBaseName, samePath, shortNames } from './paths';
 import { prepareDrawingState, validateGeometryBudget } from '../core/geometry-budget';
 
+/** Per-document views parked behind Model/paper/viewport context switches, independent of CAD data. */
+export interface ParkedSpaceViews {
+  readonly views: readonly (readonly [string, { readonly center: Point; readonly scale: number; readonly twist?: number }])[];
+  readonly histories: readonly (readonly [string, readonly { readonly center: Point; readonly scale: number; readonly twist: number }[]])[];
+  readonly lastLayout: string;
+}
+
 export interface DocumentSession {
   readonly id: number;
   /** Changes when this document changes; restoring a parked tab alone keeps it stable. */
@@ -29,7 +36,8 @@ export interface DocumentSession {
   undo: DrawingState[];
   redo: DrawingState[];
   /** null until the document has been shown once (then the host's zoom-extents view is kept). */
-  view: { center: Point; scale: number } | null;
+  view: { center: Point; scale: number; twist?: number } | null;
+  parkedSpaceViews: ParkedSpaceViews | null;
   selection: Set<string>;
   /** Name shown for drawings without a file (Drawing1.dxf, Drawing2.dxf ...). */
   untitledName: string;
@@ -37,12 +45,14 @@ export interface DocumentSession {
 
 export interface SessionHost {
   readonly doc: Drawing;
-  readonly viewport: { center: Point; scale: number };
+  readonly viewport: { center: Point; scale: number; twist?: number };
   selection: Set<string>;
   /** Replace the active document (the Editor's loadState: load, ensure library blocks, zoom extents). */
   loadState(state: DrawingState, path: string | null): void;
   notify?(ev: 'file' | 'selection' | 'view'): void;
   render?(): void;
+  captureParkedSpaceViews?(): ParkedSpaceViews;
+  restoreParkedSpaceViews?(views: ParkedSpaceViews | null): void;
 }
 
 
@@ -94,6 +104,7 @@ export class SessionManager {
       undo: [],
       redo: [],
       view: null,
+      parkedSpaceViews: null,
       selection: new Set(),
       untitledName: `Drawing${this.untitledCounter}.dxf`,
     };
@@ -162,7 +173,8 @@ export class SessionManager {
     s.dirty = doc.dirty;
     s.undo = [...h.undo];
     s.redo = [...h.redo];
-    if (viewport) s.view = { center: { ...viewport.center }, scale: viewport.scale };
+    if (viewport) s.view = { center: { ...viewport.center }, scale: viewport.scale, ...(viewport.twist ? { twist: viewport.twist } : {}) };
+    s.parkedSpaceViews = this.host.captureParkedSpaceViews?.() ?? null;
     s.selection = new Set(this.host.selection);
   }
 
@@ -183,8 +195,10 @@ export class SessionManager {
     if (s.view && host.viewport) {
       host.viewport.center = { ...s.view.center };
       host.viewport.scale = s.view.scale;
+      if ('twist' in host.viewport) host.viewport.twist = s.view.twist ?? 0;
     }
     host.selection = new Set(s.selection);
+    host.restoreParkedSpaceViews?.(s.parkedSpaceViews);
     host.notify?.('file');
     host.notify?.('selection');
     host.notify?.('view');
@@ -295,6 +309,7 @@ export class SessionManager {
     s.undo = [];
     s.redo = [];
     s.view = null;
+    s.parkedSpaceViews = null;
     s.selection = new Set();
     this.onChange?.();
     return true;

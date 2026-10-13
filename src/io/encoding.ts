@@ -279,7 +279,7 @@ export function textStyleGroups(s: TextStyle): Array<[number, string | number]> 
 
 /** A style that is exactly the default Standard (not worth keeping in the document). */
 export function isPlainStandard(s: TextStyle): boolean {
-  return s.name.toUpperCase() === 'STANDARD' && /^(txt(\.shx)?)?$/i.test(s.font) && !s.bigFont && !s.height && (s.widthFactor || 1) === 1 && !s.oblique && !s.family;
+  return s.name.toUpperCase() === 'STANDARD' && /^(txt(\.shx)?)?$/i.test(s.font) && !s.bigFont && !s.flags && !s.generation && !s.height && (s.widthFactor || 1) === 1 && !s.oblique && !s.family;
 }
 
 /** Text styles kept in a drawing state (empty when none were read). */

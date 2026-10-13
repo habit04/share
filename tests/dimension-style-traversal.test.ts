@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { Drawing, DEFAULT_HEADER, type DrawingState } from '../src/core/document';
+import { reconcileCadGraph } from '../src/core/cad-graph';
 import type { BlockDef, Entity } from '../src/core/entities';
 import {
   dimStyleUsage,
@@ -213,12 +214,12 @@ describe('imported native dimension-style overrides after global redefinition', 
     const overridden = source.entities.find((e): e is DimensionEntity => e.type === 'dimension' && e.p1.y === 120)!;
     expect(overridden.style).toMatchObject({ name: 'ISO-25', textHeight: 5, decimals: 0 });
     const base = findDimStyle(source, 'ISO-25')!;
-    const doc = new Drawing({
+    const doc = new Drawing(reconcileCadGraph(source, {
       ...source,
       blocks: { ...source.blocks, DIMBLOCK: block('DIMBLOCK', [{ ...overridden, id: 'block-override' }]) },
-      layouts: [{ ...defaultLayout('Paper'), entities: [{ ...overridden, id: 'paper-override' }], pristine: false }],
+      layouts: [...(source.layouts ?? []), { ...defaultLayout('Paper'), entities: [{ ...overridden, id: 'paper-override' }], pristine: false }],
       space: { layout: 'Paper' },
-    });
+    }));
     doc.transactDrawing((s) => withDimStyle(s, { ...base, textHeight: 3, extExtend: 4 }));
     const saved = writeDxf(doc.snapshot);
     const reopened = readDxf(saved);

@@ -32,5 +32,7 @@
   "appearanceFixture": "tests/fixtures/interchange/r2018-portable-appearance.dwg",
   "appearanceExpected": "tests/fixtures/interchange/r2018-portable-appearance.expected.json",
   "shippingFixture": "tests/fixtures/interchange/r2018-native-shipping.dwg",
-  "shippingExpected": "tests/fixtures/interchange/r2018-native-shipping.expected.json"
+  "shippingExpected": "tests/fixtures/interchange/r2018-native-shipping.expected.json",
+  "metadataFixture": "tests/fixtures/interchange/r2018-views-fields.dwg",
+  "metadataExpected": "tests/fixtures/interchange/r2018-views-fields.expected.json"
 }

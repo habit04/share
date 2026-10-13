@@ -4,13 +4,226 @@ The Windows DXF-to-DWG helper links acadrust 0.6.4, pinned by its published crat
 SHA-256 and matching upstream commit in `pins.json`. It is MPL-2.0 licensed; the
 unmodified full license is included here. The helper itself is GPL-3.0-only.
 
-Four exact source replacements in two files correct standalone MTEXT frame output,
-its matching private validator, owned ATTRIB parent relationships and MINSERT's
-owned-attribute count before array fields. Whole-file hashes verify both the
+Ninety-six exact source replacements in fifteen files correct standalone MTEXT frame
+output, its matching private validator, owned ATTRIB parent relationships,
+MINSERT's owned-attribute count before array fields, FIELD/FIELDLIST common DXF
+groups, the VIEW front-clipping mode bit, opaque DXF metadata strings, MLEADERSTYLE
+properties and colors, common object links, typed header values and source CLASS
+definitions. Whole-file hashes verify both the
 original and patched files. `scripts/prepare-dwg-writer.mjs` verifies the original
 crate, extracts it inside the ignored build directory and applies only these replacements.
 No prebuilt executable is committed. The released bundle includes the helper and
 modified crate source, Cargo.lock and third-party license notices.
+
+Synthesized BLOCK begin markers retain full logical names, including paper-space
+and anonymous suffixes; BLOCK_HEADER continues to use its abbreviated DWG name.
+Only the header-designated primary paper space uses implicit entity mode1.
+Secondary paper-space markers, LINEs and VIEWPORTs encode mode0 with their actual
+BLOCK_RECORD owner. A native regression reads these encoded fields before the
+private reader can restore names or ownership from block lists, then requires
+full metadata snapshots and distinct layout/reference closure after reopening.
+Source-absent Model layouts receive the ModelType plot flag that the encoder stores,
+both during default initialization and when a missing Model layout is generated.
+DXF OBJECTS import clears constructor objects before reading explicit layouts;
+their actual plot flags are retained, including an explicit conflicting bit that
+the unchanged full reopening comparison must refuse. No source layout is removed.
+The complete `autocad-multilayout-app.dxf` fixture comes from current app serialization
+of the independently authored AutoCAD two-sheet baseline. Its input SHA-256 is
+`f13cdbaba32229b8225f8b82b4ec9d0c9e01c9fae90516a3a9ef10875140b0d9`;
+the original DWG SHA-256 is
+`def417268106a61cb11d7bdafd883a9285ef5c98df52b9c9e2888a6bc63604de`.
+Its full snapshots cover imported identities, plot flags and reciprocal layout
+references. A private test mutation proves an explicit imported Model bit is not
+overwritten during decoding and still refuses when binary reopening changes it.
+The same complete fixture retains the default plot-style dictionary E reactor C
+and its placeholder F reactor E. Their DXF readers consume ordered reactor and
+extension-dictionary groups separately from owner/default-entry pointers and keep
+the actual links in the existing common-object caches. The binary writer already
+uses those caches. A regression checks source admission, encoded non-entity common
+fields and native reopening for both records. Its private variant gives both
+objects distinct ordered reactors and owned extension dictionaries, with a second
+ordinary child dictionary to prevent ownership inference from hiding a lost link.
+No owner reactor is synthesized, and the independent C comparison stays mandatory.
+Named entity and ATTRIB colors use the unchanged pinned encoder preparation
+through a public checked wrapper before the helper's baseline. Required DBCOLOR
+records are materialized with their exact book/name/RGB fields and NOD owner;
+matching records are reused and entity links are stored before comparison.
+Declared references with a missing/wrong class or conflicting identity/value
+refuse unchanged. A joined name whose existing fields disagree with the encoder's
+split also refuses instead of creating a second record. The wrapper bounds
+endpoint/object counts and commits the existing private output copy only after
+validation succeeds. A native regression checks escaped Unicode, shared records,
+ordered ATTRIBs, actual encoded DBCOLOR bodies and entity pointers, full reopened
+snapshots, idempotency and strict conflict/mutation refusal. It does not exempt
+new objects from the preservation comparison or change the independent C guard.
+The helper also appends the exact pinned DBCOLOR/AcDbColor CLASS recipe when any
+BookColor will be emitted and its class is absent. Registration follows admitted
+annotation classes, preserving their positional numbers. Required existing class
+identity/type and positional agreement are checked before the color copy commits;
+proxy flags and schema metadata are retained verbatim. A compact real source class
+table and a standalone explicit color regression verify raw record/class-number
+correlation before the private document builder can interpret the internal type129
+fallback. That fallback is not a valid substitute for a declared native class.
+The INSERT decoder retains the declared SEQEND handle, which the existing binary
+writer already reuses. An explicit wrong INSERT owner or SEQEND reactor,
+extension dictionary or XDATA refuses: this repair stores identity only, and
+does not claim a complete typed SEQEND metadata representation. Incoming retained
+object references to a SEQEND still require a registered metadata identity;
+the existing native closure guard refuses them when that identity is unavailable.
+The retained terminator raises HANDSEED with checked arithmetic during DXF import,
+before post-read repair or output allocation. Its regression uses a SEQEND above
+every other source identity and checks both subsequent allocation and the actual
+encoded header seed; an exhausted handle range refuses.
+
+MLINESTYLE now decodes actual DXF flags and retains its ordered reactor/extension
+links in the common cache. The binary common writer already uses that cache.
+VISUALSTYLE's declared R2013+ property bag must contain all 58 typed values and
+selectors; incomplete input refuses rather than replacing extension properties
+with defaults. Native preservation snapshots compare both style types, including
+property values, inherited/enabled selectors and common references.
+The native `autocad-stock-styles.dxf` test fixture contains the unchanged original
+style and owner-dictionary records from `r2018-views-fields.dxf`, with a small
+controlled root wrapper. It exercises actual binary readback and selector/flag
+mutations; it is derived from the independently authored AutoCAD oracle.
+
+Modern TABLESTYLE consumes complete ordered table/content/margin/grid formats
+and an explicit `{JCAD_TABLESTYLE_NATIVE_V1` application-defined 102 block before
+its subclass marker. The block carries the original native header words, owned
+cell-style reference, override count and ordered keys; no key or constructor
+default is inferred. [Autodesk's object group-code specification](https://help.autodesk.com/cloudhelp/2024/ENU/AutoCAD-DXF/files/GUID-6939D69E-04CB-4F4C-87B2-67BC540FCF58.htm)
+permits application-defined codes within 102 groups. This is JCad's versioned
+native interchange payload; it is regenerated from actual typed DWG values by
+the independent C reader. Unknown or incomplete wrappers, more than 64 overrides,
+more than six grid entries, unsupported colors/lineweights, malformed formats
+and nonfinite values refuse export. Indexed color 257 keeps the actual None
+method in both modern and legacy style parsing. Explicit zero override lists
+remain empty, and retained full native flag words are not truncated or masked.
+The helper compares actual modern TABLESTYLE slots and typed references after
+binary reopening. Legacy row/margin convenience fields are derived from those
+formats. Before the checked baseline, styles absent from the source OBJECTS
+inventory and without any retained raw or modern payload receive the exact
+generated formats emitted by the pinned encoder. Both the original generated
+path and its prepared representation are checked through binary readback;
+malformed text-style resolution refuses rather than changing a reference.
+Explicit imported legacy records remain in the full typed snapshot, including
+their row fields; a representation the native engine cannot preserve refuses.
+The mandatory independent raw-DXF host comparison also remains required.
+TABLESTYLE's full recorded XDATA enters the document's typed registry for native
+common-object encoding. Its original raw DXF tail remains the sole DXF output,
+so that registry does not duplicate application records. The regression declares
+the required APPID, checks exact literal and integer cache values, verifies one
+DXF record after rewriting, and compares native binary XDATA after reopening.
+Modern raw TABLESTYLE DXF records are replayed without synthesizing legacy
+71/280/281 header properties. The strict modern parser checks the rewritten
+record, while the existing legacy writer keeps its original behavior.
+The controlled `projected-table-style.dxf`
+unit fixture exercises grammar and one supplied override; it does not replace
+the complete independent three-override source/readback fixture proof.
+
+The FIELD/FIELDLIST DXF repair consumes `{ACAD_REACTORS}` and
+`{ACAD_XDICTIONARY}` groups separately from the object's owner and field list.
+It stores their ordered references in the library's existing common-object
+caches, which the DWG writer already emits. A read-only reactor accessor lets
+the helper verify those references after reopening. No native pointers or raw
+object bytes become part of this interchange contract.
+
+An explicit LASTSAVEDBY DXF header value is synchronized to the native SummaryInfo
+stream before the checked baseline. Its bounded Unicode string is compared again
+after native reopening; the unused duplicate header field cannot hide loss.
+
+Julian creation dates round to the nearest stored integer millisecond in both
+the main and auxiliary binary headers, with a carry into the next day at midnight.
+This preserves the actual local/UTC creation values whose floating-point fractions
+previously truncated one millisecond early. The regression checks the four failing
+inputs' shared values, UTC selection and local fallback, day rollover and default
+zero in both header streams. Time-span encoding is unchanged. The independent
+host comparison still checks nonvolatile creation dates with its original epsilon.
+
+The same common-link decoding applies to GROUP, DBCOLOR, MLEADERSTYLE,
+DICTIONARYVAR and SCALE. MLEADERSTYLE now consumes the source's alignment space,
+block scale/rotation switches, attachment direction and top/bottom attachment,
+draw order, break gap, block transform and color method rather than replacing
+them with constructor defaults. GROUP membership remains ordered and must refer
+to existing entities; DBCOLOR retains its RGB/method, book and color names.
+MLEADERSTYLE groups 3 and 300 populate the actual native description and default
+text slots, rather than treating the description as its dictionary-derived name.
+The common-link accessor also reads CLASS-backed objects' stored reactors and
+extension dictionary; the native DICTIONARY builder populates those same fields
+from its decoded common stream rather than leaving empty duplicate struct fields.
+This keeps the before/after comparison tied to actual links, including owned
+annotation registry dictionaries. SCALE group 70 is accepted only at zero,
+the exact version word emitted by the pinned binary encoder; nonzero values
+remain unsupported and refuse export.
+The DICTIONARY builder also restores per-entry hard-owner metadata from the
+decoded dictionary-wide flag, matching the DXF decoder's existing canonical
+FIELD policy. Dictionary item handles keep the specified DWG code 2; the
+encoder's global ownership flag and source/target ownership checks stay intact.
+
+Eighteen new typed header fields replace binary constants or discarded reads for
+DIMFXL, DIMJOGANG, DIMTFILL/CLR, DIMARCSYM, DIMFXLON, DIMTXTDIRECTION,
+3DDWFPREC, PSOLWIDTH/HEIGHT, LIGHTGLYPHDISPLAY, TILEMODELIGHTSYNCH,
+REALWORLDSCALE, INTERFERECOLOR/OBJVS/VPVS, DRAGVS and CSHADOW. The existing
+CMATERIAL handle also receives its declared DXF value. Both the private binary
+encoder and decoder use these fields; source-before-baseline checks prevent a
+successful comparison of values already lost during DXF parsing. Unknown header
+variables refuse export. A few unparsed stock fields are accepted only at the
+exact value already emitted by the pinned encoder, such as zero orthographic UCS
+origins; nondefault values refuse export.
+
+CANNOSCALE and ANNOALLVISIBLE use the native named-object variable dictionary,
+DICTIONARYVAR values and a matching owned SCALE record. When explicit DXF header
+values require missing registry objects, the helper creates bounded, owned
+records before its baseline; retained conflicting values or ownership refuse
+export. Existing identities, unrelated variables and scale definitions remain
+intact. Newly synthesized SCALE records use the independently authored registry
+flag value zero, including a 1:1 ratio; existing records retain their actual flag.
+Explicit source CLASS declarations replace generated defaults. Their
+application, C++ name, proxy and schema flags, including unused definitions, are
+preserved; only instance count is derived from emitted records.
+
+The VIEW repair follows Open Design Specification 5.4.1, VIEW, printed page 174:
+the fourth packed DWG mode bit represents front-clip-Z, opposite DXF group 71
+bit 16 (front-clip-at-eye). Both the private writer and its matching reader
+invert that bit. Perspective and front/back clipping keep their existing bit
+order. This patch applies to VIEW only; it does not change VPORT encoding.
+
+The ASCII DXF reader repair delays display escape decoding until record context
+is known. XRECORD values and XDATA group 1000 strings keep literal CIF/MIF,
+caret and JSON escape sequences; display text, FIELD expressions and known
+identifiers retain their existing decoding. The helper independently captures
+ordered literal payloads from the bounded source DXF and compares them with the
+typed import before creating output. Missing source identities, incomplete
+XRECORD subclass/cloning headers and altered or missing literals refuse export.
+The strict metadata snapshot then compares those verified typed strings after
+DWG reopening. This repair covers the helper's UTF-8 ASCII DXF input; binary DXF
+and arbitrary opaque native object records remain outside its input contract.
+
+The helper separately compares full typed named VIEW parameters and the retained
+DICTIONARY, DICTIONARYWDFLT, FIELD, FIELDLIST, XRECORD, GROUP, DBCOLOR,
+MLEADERSTYLE, MLINESTYLE, VISUALSTYLE, modern TABLESTYLE, DICTIONARYVAR and SCALE graph, source CLASS definitions and the
+repaired header fields. It preserves
+reference kind, order, ownership, common reactors/extension dictionaries and
+typed XDATA. Symbol names/control roles and dictionary-key/field-child paths
+identify objects when storage handles change; unrooted objects require unchanged
+handles. Literal strings and binary payloads are never treated as handles.
+Integer values, including XRECORD int64 values beyond 2^53, compare exactly.
+Incomplete XRECORD payloads, incoherent group-code/value or reference schemas,
+missing owned objects, duplicate dictionary keys and unknown object classes
+refuse export before replacement. These checks cover the typed interchange
+subset; they do not certify arbitrary opaque native object records. A bounded
+source schema guard rejects unconsumed properties of these supported records and
+requires every source OBJECTS identity to survive native import. Other typed
+object payloads and meaningful header values require the separate, mandatory
+LibreDWG projection comparison in the host before the destination is replaced.
+No generic stock-object or unknown-property exemption bypasses that comparison.
+
+The native test fixtures `autocad-header.dxf` and `autocad-mleaderstyle.dxf` are
+unchanged HEADER and MLEADERSTYLE record slices, with minimal section framing,
+from the independently AutoCAD-authored `r2018-views-fields.dxf` (SHA-256
+`3e4ec8f3f3fe9ddd91b21f627adfc3b8b2dc3657f6f11fdae4832c57bd70a857`). They
+test actual stock values and common links; mutation tests exercise group/color/
+style loss, unknown properties, conflicting annotation settings and class
+declarations. Controlled Windows native CI compiles and runs these checks.
 
 `native-evidence.json` records the independent AutoCAD 2027 before/after validation.
 Frame flags 16 remain frame-only; no background fill or replacement geometry is

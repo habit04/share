@@ -3,6 +3,7 @@ import * as g from '../core/geometry';
 import type { Entity } from '../core/entities';
 import { newId, translateEntity, rotateEntity } from '../core/entities';
 import type { Tool, ToolContext } from './types';
+import { cadTranslation, cadRotation, cadCloneBatch, cadTransformIntent } from './cad-edits';
 
 const fmt = (p: Point) => `${p.x.toFixed(4)}, ${p.y.toFixed(4)}`;
 
@@ -76,7 +77,8 @@ export class MoveTool extends SelectionTool {
       return;
     }
     const d = g.sub(p, this.base);
-    if (g.len(d) > 1e-12) ctx.doc.replaceEntities(this.entities(ctx).map((e) => translateEntity(e, d)));
+    const entities = this.entities(ctx);
+    if (g.len(d) > 1e-12) ctx.doc.replaceEntities(entities.map((e) => translateEntity(e, d)), cadTransformIntent(entities, cadTranslation(d)));
     ctx.finish();
   }
 
@@ -109,7 +111,8 @@ export class CopyTool extends SelectionTool {
       return;
     }
     const d = g.sub(p, this.base);
-    ctx.doc.addEntities(this.entities(ctx).map((e) => ({ ...translateEntity(e, d), id: newId() })));
+    const entities = this.entities(ctx), copies = entities.map((e) => ({ ...translateEntity(e, d), id: newId() }));
+    ctx.doc.addEntities(copies, false, { cloneBatches: [cadCloneBatch(entities, copies, cadTranslation(d))] });
     ctx.prompt('Specify second point or <Enter to exit>:');
   }
 
@@ -141,7 +144,8 @@ export class RotateTool extends SelectionTool {
       return;
     }
     const ang = g.angleOf(this.base, p);
-    ctx.doc.replaceEntities(this.entities(ctx).map((e) => rotateEntity(e, this.base!, ang)));
+    const entities = this.entities(ctx);
+    ctx.doc.replaceEntities(entities.map((e) => rotateEntity(e, this.base!, ang)), cadTransformIntent(entities, cadRotation(this.base, ang)));
     ctx.finish();
   }
 
@@ -158,7 +162,8 @@ export class RotateTool extends SelectionTool {
   override onText(text: string, ctx: ToolContext): void {
     const v = parseFloat(text);
     if (this.base && Number.isFinite(v)) {
-      ctx.doc.replaceEntities(this.entities(ctx).map((e) => rotateEntity(e, this.base!, g.rad(v))));
+      const entities = this.entities(ctx);
+      ctx.doc.replaceEntities(entities.map((e) => rotateEntity(e, this.base!, g.rad(v))), cadTransformIntent(entities, cadRotation(this.base, g.rad(v))));
       ctx.finish();
       return;
     }

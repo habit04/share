@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { Drawing } from '../src/core/document';
+import { reconcileCadGraph } from '../src/core/cad-graph';
 import { moveGrip, translateEntity, type PolylineEntity } from '../src/core/entities';
 import { defaultLayout, paperEntities, pointInViewport, viewportAt, type LayoutViewport } from '../src/core/layouts';
 import { readDxf, writeDxf } from '../src/io/dxf';
@@ -17,7 +18,7 @@ const viewport = (): LayoutViewport => ({ id: 'v', center: { x: 5, y: 5 }, width
   view: { center: { x: 100, y: 200 }, scale: 0.5, twist: Math.PI / 6 }, layer: '0', on: true, clipBoundary: clip });
 function scene() {
   const source = readDxf(readFileSync(new URL('./fixtures/interchange/r2000-layouts-titleblock.dxf', import.meta.url), 'utf8'));
-  return new Drawing({ ...source, layouts: [{ ...defaultLayout('Polygon'), pristine: undefined, viewports: [viewport()] }], space: { layout: 'Polygon' } });
+  return new Drawing(reconcileCadGraph(source, { ...source, layouts: [{ ...defaultLayout('Polygon'), pristine: undefined, viewports: [viewport()] }, ...(source.layouts ?? [])], space: { layout: 'Polygon' } }));
 }
 
 describe('native polygon viewport clipping', () => {
@@ -95,7 +96,7 @@ describe('native polygon viewport clipping', () => {
 
   it('gives shared immutable clip copies distinct native handles and owners', () => {
     const doc = scene(), layout = doc.snapshot.layouts![0]!;
-    const text = writeDxf({ ...doc.snapshot, layouts: [layout, { ...layout, name: 'Copy', viewports: [{ ...layout.viewports[0]!, id: 'copy' }] }] });
+    const text = writeDxf({ ...doc.snapshot, layouts: [layout, { ...layout, name: 'Copy', viewports: [{ ...layout.viewports[0]!, id: 'copy' }] }, ...doc.snapshot.layouts!.slice(1)] });
     const records = text.split(/\r\n0\r\n(?=[A-Z][A-Z0-9_]*\r\n)/);
     const boundaries = records.filter((r) => r.startsWith('LWPOLYLINE\r\n') && /\r\n90\r\n6\r\n/.test(r));
     expect(boundaries).toHaveLength(2);
@@ -104,12 +105,14 @@ describe('native polygon viewport clipping', () => {
     expect(new Set(handles).size).toBe(2); expect(new Set(owners).size).toBe(2);
     const pointers = records.filter((r) => r.startsWith('VIEWPORT\r\n')).flatMap((r) => /\r\n340\r\n([^\r]+)/.exec(r)?.[1] ?? []);
     expect(pointers.sort()).toEqual(handles.sort());
-    expect(readDxf(text).layouts!.every((l) => l.viewports[0]!.clipBoundary?.points.length === 6)).toBe(true);
+    const copiedLayouts = readDxf(text).layouts!.filter(layout => layout.name === 'Polygon' || layout.name === 'Copy');
+    expect(copiedLayouts).toHaveLength(2);
+    expect(copiedLayouts.every((l) => l.viewports[0]!.clipBoundary?.points.length === 6)).toBe(true);
   });
 
   it('retains disabled boundary data while keeping the native enable flag off', () => {
     const doc = scene(), layout = doc.snapshot.layouts![0]!;
-    const source = { ...doc.snapshot, layouts: [{ ...layout, viewports: [{ ...viewport(), clipOn: false }] }] };
+    const source = { ...doc.snapshot, layouts: [{ ...layout, viewports: [{ ...viewport(), clipOn: false }] }, ...doc.snapshot.layouts!.slice(1)] };
     const back = readDxf(writeDxf(source));
     const v = back.layouts![0]!.viewports[0]!;
     expect(v.clipOn).toBe(false); expect(v.clipBoundary?.points).toEqual(clip.points);
@@ -144,7 +147,7 @@ describe('native polygon viewport clipping', () => {
     const doc = scene(), before = doc.snapshot;
     const points = Array.from({ length: 8192 }, (_, i) => ({ x: i, y: i % 2 }));
     const many = Array.from({ length: 130 }, (_, i) => ({ ...viewport(), id: String(i), clipBoundary: { ...clip, points } }));
-    expect(() => doc.transactDrawing((s) => ({ ...s, layouts: [{ ...s.layouts![0]!, viewports: many }] }))).toThrow(/geometry budget|expansion exceeds/);
+    expect(() => doc.transactDrawing((s) => ({ ...s, layouts: [{ ...s.layouts![0]!, viewports: many }, ...s.layouts!.slice(1)] }))).toThrow(/geometry budget|expansion exceeds/);
     expect(doc.snapshot).toBe(before); expect(doc.dirty).toBe(false);
   });
 

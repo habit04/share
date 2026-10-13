@@ -112,10 +112,10 @@ describe('import report in the editor', () => {
     await ed.openFile('/d/plant.dxf');
     expect(reports).toHaveLength(1);
     expect(reports[0]!.report.sourcePath).toBe('/d/plant.dxf');
-    expect(logs.join('\n')).toMatch(/DXF import: 9 object\(s\) dropped or simplified, 2 kept without being shown/);
+    expect(logs.join('\n')).toMatch(/DXF import: 7 object\(s\) dropped or simplified, 4 kept without being shown/);
     await ed.saveFile(false);
     expect(asked.map((a) => a.title)).toEqual(['Save over the original file?']);
-    expect(asked[0]!.message).toMatch(/plant\.dxf contained 9 object\(s\) JCad cannot keep/);
+    expect(asked[0]!.message).toMatch(/plant\.dxf contained 7 object\(s\) JCad cannot keep/);
     // No -> Save As: the bridge is asked for a new path (null), the original is not written.
     expect(saves.map((s) => s.path)).toEqual([null]);
     expect(saves[0]!.text).toContain('3DSOLID');

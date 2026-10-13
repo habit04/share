@@ -36,11 +36,19 @@ import {
 } from '../core/layouts';
 import type { ImportReportBuilder } from './import-report';
 import { importViewportView } from './viewport-view';
+import { canonicalCadHandle } from '../core/cad-graph';
+
+/** The graph attachment reports malformed identities; layout lookup keeps valid aliases canonical. */
+function layoutHandleKey(handle: string): string {
+  try { return canonicalCadHandle(handle.trim()); }
+  catch { return handle.trim().toUpperCase(); }
+}
 
 export interface DxfSink {
   pair(code: number, value: string | number): void;
   nextHandle(): string;
   reserveEntityHandle(entity: Entity): string;
+  anchor?(handle: string, anchor: import('../core/cad-graph').CadAnchor): void;
 }
 
 interface Pair {
@@ -204,7 +212,7 @@ export function writeLayoutContent(w: DxfSink, rec: LayoutRecord, writeEntity: (
     const frozen = (v.frozenLayers ?? []).map((n) => layerHandles.get(n)).filter((h): h is string => !!h);
     const twist = viewTwist(v.view) % (2 * Math.PI);
     const cos = Math.cos(twist), sin = Math.sin(twist);
-    writeViewport(w, rec.blockRecord, {
+    const handle = writeViewport(w, rec.blockRecord, {
       center: v.center,
       width: v.width,
       height: v.height,
@@ -219,7 +227,11 @@ export function writeLayoutContent(w: DxfSink, rec: LayoutRecord, writeEntity: (
       frozen,
       clipHandle,
     });
-    if (boundary) writeEntity(boundary, rec.blockRecord);
+    if (boundary) {
+      writeEntity(boundary, rec.blockRecord);
+      w.anchor?.(clipHandle!, { kind: 'viewport', id: v.id, part: 'clip-boundary' });
+    }
+    w.anchor?.(handle, { kind: 'viewport', id: v.id });
   });
   for (const e of lay.entities) writeEntity(e, rec.blockRecord);
 }
@@ -295,6 +307,7 @@ export function writeLayoutObjects(w: DxfSink, plan: LayoutPlan, modelRecord: st
   const layoutObject = (handle: string, name: string, tab: number, lay: Layout | null, record: string) => {
     w.pair(0, 'LAYOUT');
     w.pair(5, handle);
+    if (lay) w.anchor?.(handle, { kind: 'layout', name });
     w.pair(102, '{ACAD_REACTORS');
     w.pair(330, plan.dictionary);
     w.pair(102, '}');
@@ -372,6 +385,7 @@ export type LayoutEntityReader = (objs: Obj[], where: string) => Entity[];
 
 /** Collects paper-space data while io/dxf/reader.ts walks the sections, then builds the layouts. */
 export class LayoutReader {
+  readonly viewportHandles = new Map<string, string>();
   /** `report` receives viewports that are dropped or simplified. */
   constructor(private readonly report?: ImportReportBuilder) {}
   private recordNames = new Map<string, string>();
@@ -383,7 +397,7 @@ export class LayoutReader {
   /** TABLES: BLOCK_RECORD names and LAYER handles (VIEWPORT 331 frozen layers). */
   scanTables(objs: readonly Obj[]): void {
     for (const o of objs) {
-      const h = str(o, 5).toUpperCase();
+      const h = layoutHandleKey(str(o, 5));
       if (o.kind === 'BLOCK_RECORD' && h) this.recordNames.set(h, str(o, 2));
       else if (o.kind === 'LAYER' && h) this.layerNames.set(h, str(o, 2));
     }
@@ -412,14 +426,14 @@ export class LayoutReader {
     for (const o of objs) if (o.kind === 'LAYOUT') this.layoutObjs.push(o);
   }
 
-  /** Build the layouts; `readEntities` is the DXF reader's entity parser. Undefined = only an untouched Layout1. */
+  /** Build declared layouts; `readEntities` is the DXF reader's entity parser. */
   build(readEntities: LayoutEntityReader, host: LayoutHost): Layout[] | undefined {
     const units = unitsOfHost(host);
     const out: Array<{ layout: Layout; tab: number }> = [];
     for (const lo of this.layoutObjs) {
       const lay = after(lo, 'AcDbLayout');
       const name = str(lay, 1);
-      const record = str(lay, 330).toUpperCase();
+      const record = layoutHandleKey(str(lay, 330));
       const recName = this.recordNames.get(record) ?? '';
       if (!name || /^model$/i.test(name) || /^\*MODEL_SPACE$/i.test(recName)) continue;
       const objs = /^\*PAPER_SPACE$/i.test(recName) || (!recName && out.length === 0) ? this.activePaper : (this.blocks.get(recName.toUpperCase()) ?? []);
@@ -433,7 +447,8 @@ export class LayoutReader {
     out.sort((a, b) => a.tab - b.tab);
     const layouts = out.map((o) => o.layout);
     if (layouts.length === 0) return undefined;
-    if (layouts.length === 1 && layouts[0]!.pristine && /^layout1$/i.test(layouts[0]!.name)) return undefined;
+    // Even an untouched source Layout1 has its own retained LAYOUT/BLOCK_RECORD
+    // identities. Keep it explicit so a newly added sheet gets a distinct block.
     return layouts;
   }
 
@@ -486,7 +501,7 @@ export class LayoutReader {
     const overall = vps.find((o) => Math.trunc(num(o, 69)) === 1) ?? vps[0];
     const viewports: LayoutViewport[] = [];
     const clipObjects = new Set<Obj>();
-    const byHandle = new Map(rest.map((o) => [str(o, 5).toUpperCase(), o]));
+    const byHandle = new Map(rest.map((o) => [layoutHandleKey(str(o, 5)), o]));
     for (const o of vps) {
       if (o === overall) continue;
       const v = after(o, 'AcDbViewport');
@@ -517,7 +532,7 @@ export class LayoutReader {
         continue;
       }
       for (const reason of view.warnings) this.report?.add({ ...item, action: 'simplified', reason });
-      const clipHandle = str(v, 340).trim().toUpperCase();
+      const clipHandle = layoutHandleKey(str(v, 340));
       const clipObject = clipHandle && clipHandle !== '0' ? byHandle.get(clipHandle) : undefined;
       const boundary = clipObject?.kind === 'LWPOLYLINE' ? readEntities([clipObject], where)[0] : undefined;
       const clipBoundary = boundary && supportedViewportClip(boundary) ? translateEntity(boundary, offset) as import('../core/entities').PolylineEntity : undefined;
@@ -526,9 +541,11 @@ export class LayoutReader {
         this.report?.add({ ...item, action: 'simplified', reason: 'its clipping boundary is not a supported closed straight polyline: the viewport shows its whole rectangle; readable boundary geometry is kept' });
       }
       const status = Math.trunc(num(v, 68, 1));
-      const frozen = v.groups.filter((x) => x.code === 331).map((x) => this.layerNames.get(x.value.toUpperCase())).filter((x): x is string => !!x);
+      const frozen = v.groups.filter((x) => x.code === 331).map((x) => this.layerNames.get(layoutHandleKey(x.value))).filter((x): x is string => !!x);
+      const id = newViewportId();
+      if (str(o, 5)) this.viewportHandles.set(layoutHandleKey(str(o, 5)), id);
       viewports.push({
-        id: newViewportId(),
+        id,
         center,
         width,
         height,
