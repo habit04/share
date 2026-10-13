@@ -20,6 +20,7 @@ interface FixtureMetadata {
   textStyle?: string;
   highlightProbes?: readonly { owner: string; label: string; point: Point; rgb: readonly number[]; region: readonly Point[] }[];
   curveConstructionReference?: { origin: Point; unit: number; localCenter: Point; roundedWorldCenter: Point; radius: number };
+  controlPolyline?: { points: readonly Point[]; bulge: number; color: string; rgb: readonly number[]; expectedCssLineWidth: number };
 }
 
 /** Distinct long-label budget input and short-tag stress input; historical data stays intact. */
@@ -293,6 +294,29 @@ export function installGpuPrototype(editor: Editor): void {
         view.center = origin;
         view.scale = 4096;
         view.twist = 0.63;
+      } else if (name === 'lineweights-control') {
+        const style = { layer: '0', color: 7 }, points = [{ x: -2, y: -1.5 }, { x: -1, y: -1.5 }];
+        editor.loadState({ ...base, entities: [
+          { ...style, id: 'L', type: 'line', a: { x: -4, y: -1 }, b: { x: 4, y: 1 }, lineWeight: 1 },
+          { ...style, color: 1, id: 'X', type: 'line', a: { x: -4, y: 1 }, b: { x: 4, y: -1 }, lineWeight: 2 },
+          { ...style, color: 3, id: 'C', type: 'circle', center: { x: -2, y: 1.5 }, radius: 0.4, lineWeight: 10 },
+          { ...style, color: 5, id: 'A', type: 'arc', center: { x: 2, y: 1 }, radius: 0.3, startAngle: 0.2, endAngle: 3.8, lineWeight: 6 },
+          { ...style, color: 2, id: 'P', type: 'polyline', points, closed: false, bulges: [0.6], lineWeight: 4 },
+        ] }, null);
+        view.center = { x: 0, y: 0 }; view.scale = 80; view.twist = 0;
+        fixtureMetadata = { name, probes: [], controlPolyline: { points, bulge: 0.6, color: '#ffff00', rgb: [255, 255, 0], expectedCssLineWidth: 16 } };
+      } else if (name === 'curve-control' || name === 'precision-control') {
+        const shift = name === 'precision-control' ? 1e9 : 0;
+        const p = (x: number, y: number): Point => ({ x: shift + x, y: shift + y });
+        const style = { layer: '0', color: 7 }, points = [p(0, 4), p(1, 5)];
+        view.twist = 0;
+        editor.loadState({ ...base, entities: [
+          { ...style, id: 'L', type: 'line', a: p(0, 0), b: p(7, 5) },
+          { ...style, color: 1, id: 'C', type: 'circle', center: p(3, 3), radius: 1 },
+          { ...style, color: 3, id: 'A', type: 'arc', center: p(5, 2), radius: 1.5, startAngle: 0.2, endAngle: 3.8 },
+          { ...style, color: 5, id: 'P', type: 'polyline', points, closed: false, bulges: [0.5] },
+        ] }, null);
+        fixtureMetadata = { name, probes: [], controlPolyline: { points, bulge: 0.5, color: '#0000ff', rgb: [0, 0, 255], expectedCssLineWidth: 1 } };
       } else if (name === 'lineweights' || name === 'wide-curve-fallback') {
         const style = { layer: '0', color: 7 };
         editor.loadState({ ...base, entities: [
@@ -317,7 +341,7 @@ export function installGpuPrototype(editor: Editor): void {
         ] }, null);
       } else editor.loadState(base, null);
       // Fixture-local display state must not leak into the ordinary comparison scenes.
-      lineweightDisplay.enabled = name === 'lineweights' || name === 'wide-curve-fallback' || name.startsWith('collapse-') || (name.startsWith('compound-') && name !== 'compound-dense' && name !== 'compound-tags');
+      lineweightDisplay.enabled = name === 'lineweights' || name === 'lineweights-control' || name === 'wide-curve-fallback' || name.startsWith('collapse-') || (name.startsWith('compound-') && name !== 'compound-dense' && name !== 'compound-tags');
       lineweightDisplay.pxPerMm = undefined;
       editor.viewport.settings.gridVisible = false;
       editor.viewport.renderCurrent();

@@ -116,26 +116,28 @@ async function noReadbackCadence(page) {
     const evidence = { outcome: 'started', beforeAnyBenchmarkReadback: true, drawingGetImageDataCalls: 0, canvasBackend: 'Unknown', contextAttributesBefore: ctx.getContextAttributes(), contextAttributesAfter: null, samplesPerWorkflow: 30, comparisons: {}, semantics: 'CPU mutation/render and consecutive rAF-boundary cadence only; no getImageData, screenshot, toDataURL, GPU fence or completion observation during this phase. Shared fresh drawing context; AB/BA order is balanced across workflows and caches are retained.', rendererResourcesReset: false };
     const stages = ['cacheLookupMs', 'geometryPreparationMs', 'partialPreparationMs', 'initializationMs', 'uploadMs', 'subrangeUploadMs', 'drawSubmissionMs'];
     const counters = ['bytes', 'uploadCalls', 'subrangeUploadBytes', 'subrangeUploadCalls', 'preparedEntities', 'reusedEntities', 'editHistoryBytes', 'editHistoryEntries'];
-    const frameTelemetry = (status, mode, expectedGPU, fallbackReason) => {
-      if (mode === 'gpu' && status.rendered !== expectedGPU) throw new Error(`No-readback scene admission differs from its explicit classification; expectedGPU=${expectedGPU}, reason=${status.reason}`);
-      if (mode === 'gpu' && fallbackReason && !status.reason?.includes(fallbackReason)) throw new Error(`No-readback refused scene must record its expected safety reason: ${status.reason}`);
+    const frameTelemetry = (status, mode, expectedGPU, fallbackReason, poseDependentBudget) => {
+      if (mode === 'gpu' && !poseDependentBudget && status.rendered !== expectedGPU) throw new Error(`No-readback scene admission differs from its explicit classification; expectedGPU=${expectedGPU}, reason=${status.reason}`);
+      if (mode === 'gpu' && !status.rendered && fallbackReason && !status.reason?.includes(fallbackReason)) throw new Error(`No-readback refused scene must record its expected safety reason: ${status.reason}`);
       if (mode === 'canvas' && status.rendered) throw new Error('No-readback Canvas mode unexpectedly used GPU');
       if (status.rendered) for (const key of [...stages, ...counters]) if (!(typeof status[key] === 'number' && Number.isFinite(status[key]) && status[key] >= 0)) throw new Error(`No-readback GPU telemetry ${key} is missing/invalid`);
       if (mode === 'gpu' && !status.rendered && (status.bytes !== 0 || status.uploadCalls !== 0)) throw new Error('No-readback budget refusal must preserve complete Canvas before GL uploads');
+      const admissionPolicyDeferred = mode === 'gpu' && status.cacheReason === 'admission-deferred';
+      if (admissionPolicyDeferred && (status.rendered || status.geometryPreparationMs !== 0 || status.partialPreparationMs !== 0 || status.bytes !== 0 || status.uploadCalls !== 0 || !status.reason?.includes('Stroke geometry exceeds prototype budget'))) throw new Error('Deferred admission must explain its prior budget refusal, with complete Canvas and no current geometry preparation/uploads');
       const available = (key) => {
         if (status[key] === undefined || status[key] === null) return null;
         if (!(typeof status[key] === 'number' && Number.isFinite(status[key]) && status[key] >= 0)) throw new Error(`No-readback attempted GPU telemetry ${key} is invalid`);
         return status[key];
       };
-      return { actualRenderer: status.rendered ? 'gpu' : 'canvas', reason: status.reason ?? null, gpuAttempt: mode === 'gpu' ? { rendered: status.rendered, reason: status.reason ?? null, ...Object.fromEntries([...stages, ...counters].map((key) => [key, available(key)])), requestedUploadBytes: available('bytes'), cacheHit: status.cacheHit, cacheReason: status.cacheReason, uploadKind: status.uploadKind, editMemoHit: status.editMemoHit } : null };
+      return { actualRenderer: status.rendered ? 'gpu' : 'canvas', reason: status.reason ?? null, gpuAttempt: mode === 'gpu' ? { rendered: status.rendered, reason: status.reason ?? null, admissionPolicyDeferred, admissionEvidence: admissionPolicyDeferred ? 'Deferred policy based on a prior slow budget refusal; current geometry not evaluated' : status.rendered ? 'Current GPU scene admitted' : status.cacheReason === 'refusal-hit' ? 'Exact-view certified prior geometry refusal' : 'Actual refused attempt at this pose; reported reason retained', ...Object.fromEntries([...stages, ...counters].map((key) => [key, available(key)])), requestedUploadBytes: available('bytes'), cacheHit: status.cacheHit, cacheReason: status.cacheReason, uploadKind: status.uploadKind, editMemoHit: status.editMemoHit } : null };
     };
-    const firstModeFrame = async (mode, expectedGPU, fallbackReason) => {
+    const firstModeFrame = async (mode, expectedGPU, fallbackReason, poseDependentBudget) => {
       const original = v.render;
       let timer, resolveFrame, rejectFrame;
       const observed = new Promise((resolve, reject) => { resolveFrame = resolve; rejectFrame = reject; });
       v.render = /** @this {any} */ function (overlay) {
         const started = performance.now();
-        try { original.call(this, overlay); resolveFrame({ viewportRenderCpuMs: performance.now() - started, ...frameTelemetry(api.renderStats(), mode, expectedGPU, fallbackReason) }); }
+        try { original.call(this, overlay); resolveFrame({ viewportRenderCpuMs: performance.now() - started, ...frameTelemetry(api.renderStats(), mode, expectedGPU, fallbackReason, poseDependentBudget) }); }
         catch (error) { rejectFrame(error); throw error; }
       };
       try {
@@ -144,11 +146,12 @@ async function noReadbackCadence(page) {
         return /** @type {any} */ (await observed);
       } finally { clearTimeout(timer); v.render = original; }
     };
-    const measure = async (mode, motion, initial, expectedGPU, fallbackReason) => {
+    const measure = async (mode, motion, initial, expectedGPU, fallbackReason, poseDependentBudget) => {
       v.center = { ...initial.center }; v.scale = initial.scale; v.twist = initial.twist;
-      const baseline = JSON.stringify(ed.doc.snapshot), firstFrame = await firstModeFrame(mode, expectedGPU, fallbackReason);
+      const baseline = JSON.stringify(ed.doc.snapshot), firstFrame = await firstModeFrame(mode, expectedGPU, fallbackReason, poseDependentBudget);
       const line = [...ed.doc.entities].reverse().find((entity) => {
         if (entity.type !== 'line') return false;
+        if (ed.doc.snapshot.layers.some((layer) => layer.name === entity.layer && !layer.visible)) return false;
         const midpoint = v.toScreen({ x: (entity.a.x + entity.b.x) / 2, y: (entity.a.y + entity.b.y) / 2 });
         return midpoint.x >= 0 && midpoint.x <= v.width && midpoint.y >= 0 && midpoint.y <= v.height;
       });
@@ -181,7 +184,7 @@ async function noReadbackCadence(page) {
               cameraUpdateMs = performance.now() - cameraStart;
             }
             const renderStarted = performance.now(), status = api.renderNow(), renderEnded = performance.now();
-            pending = { index: i, action, workflowStarted: started, viewportRenderCpuMs: renderEnded - renderStarted, documentMutationMs, cameraUpdateMs, workflowCpuMs: renderEnded - started, rafCallbackIntervalMs: previousTimestamp === null ? null : timestamp - previousTimestamp, observedNextRafBoundaryWallMs: null, camera: camera(), ...frameTelemetry(status, mode, expectedGPU, fallbackReason) };
+            pending = { index: i, action, workflowStarted: started, viewportRenderCpuMs: renderEnded - renderStarted, documentMutationMs, cameraUpdateMs, workflowCpuMs: renderEnded - started, rafCallbackIntervalMs: previousTimestamp === null ? null : timestamp - previousTimestamp, observedNextRafBoundaryWallMs: null, camera: camera(), ...frameTelemetry(status, mode, expectedGPU, fallbackReason, poseDependentBudget) };
             previousTimestamp = timestamp;
             // State verification is outside the measured CPU span. The next-rAF
             // wall observation necessarily includes this harness bookkeeping.
@@ -208,12 +211,13 @@ async function noReadbackCadence(page) {
       })();
       v.center = { ...initial.center }; v.scale = initial.scale; v.twist = initial.twist; api.renderNow();
       const summary = Object.fromEntries(['viewportRenderCpuMs', 'documentMutationMs', 'cameraUpdateMs', 'workflowCpuMs', 'rafCallbackIntervalMs', 'observedNextRafBoundaryWallMs'].map((key) => [key, summarize(frames.map((frame) => frame[key]))]));
+      const byActualRenderer = Object.fromEntries(['gpu', 'canvas'].map((renderer) => [renderer, Object.fromEntries(['viewportRenderCpuMs', 'documentMutationMs', 'cameraUpdateMs', 'workflowCpuMs', 'rafCallbackIntervalMs', 'observedNextRafBoundaryWallMs'].map((key) => [key, summarize(frames.filter((frame) => frame.actualRenderer === renderer).map((frame) => frame[key]))]))]));
       const gpuStages = Object.fromEntries([...stages, ...counters].map((key) => [key, summarize(frames.filter((frame) => frame.actualRenderer === 'gpu').map((frame) => frame.gpuAttempt[key]))]));
       const gpuAttemptStages = Object.fromEntries([...stages, ...counters].map((key) => [key, summarize(frames.map((frame) => frame.gpuAttempt?.[key]))]));
       const uploadKinds = frames.filter((frame) => frame.actualRenderer === 'gpu').reduce((counts, frame) => { const kind = frame.gpuAttempt.uploadKind; counts[kind] = (counts[kind] ?? 0) + 1; return counts; }, {});
       const attempts = frames.filter((frame) => frame.gpuAttempt), refused = attempts.filter((frame) => !frame.gpuAttempt.rendered);
       const refusedAttemptStages = Object.fromEntries([...stages, ...counters].map((key) => [key, summarize(refused.map((frame) => frame.gpuAttempt[key]))]));
-      return { requestedMode: mode, expectedSupportsGPU: expectedGPU, expectedFallbackReason: fallbackReason, motion, firstModeTriggeredCpuFrame: firstFrame, frameSamples: frames, summary, gpuStages, gpuAttemptStages, successfulGpuIssuanceKinds: uploadKinds, refusedGpuAttempts: { count: refused.length, stages: refusedAttemptStages, reasons: refused.reduce((counts, frame) => { const reason = frame.reason ?? 'missing'; counts[reason] = (counts[reason] ?? 0) + 1; return counts; }, {}) }, actualRendererCounts: frames.reduce((counts, frame) => { counts[frame.actualRenderer] = (counts[frame.actualRenderer] ?? 0) + 1; return counts; }, {}), initialCamera: initial, terminalCamera, snapshotRestored: true, visibleLineId: motion === 'edit-undo' ? line.id : null, gpuContext, completionObserved: false, presentationObserved: false };
+      return { requestedMode: mode, expectedSupportsGPU: expectedGPU, poseDependentBudgetAdmission: poseDependentBudget, expectedFallbackReason: fallbackReason, aggregateRendererScope: poseDependentBudget && mode === 'gpu' ? 'Requested GPU with potentially mixed actual GPU/Canvas samples; byActualRenderer separates both' : `Requested ${mode}; actual renderer recorded per sample`, motion, firstModeTriggeredCpuFrame: firstFrame, frameSamples: frames, summary, byActualRenderer, gpuStages, gpuAttemptStages, successfulGpuIssuanceKinds: uploadKinds, refusedGpuAttempts: { count: refused.length, deferredPolicyFrames: refused.filter((frame) => frame.gpuAttempt.admissionPolicyDeferred).length, exactViewRefusalMemoFrames: refused.filter((frame) => frame.gpuAttempt.cacheReason === 'refusal-hit').length, actualPoseAttemptFrames: refused.filter((frame) => !frame.gpuAttempt.admissionPolicyDeferred && frame.gpuAttempt.cacheReason !== 'refusal-hit').length, stages: refusedAttemptStages, reasons: refused.reduce((counts, frame) => { const reason = frame.reason ?? 'missing'; counts[reason] = (counts[reason] ?? 0) + 1; return counts; }, {}) }, actualRendererCounts: frames.reduce((counts, frame) => { counts[frame.actualRenderer] = (counts[frame.actualRenderer] ?? 0) + 1; return counts; }, {}), initialCamera: initial, terminalCamera, snapshotRestored: true, visibleLineId: motion === 'edit-undo' ? line.id : null, topLevelLineEdit: motion === 'edit-undo' ? { sourceIndex: ed.doc.entities.indexOf(line), id: line.id, entityType: line.type, visibleLayer: true, original: line, edited, childTextOrInsertEdit: false } : null, gpuContext, completionObserved: false, presentationObserved: false };
     };
     try {
       for (const { name: fixture, expectedGPU, fallbackReason = null } of [{ name: 'dense-lines', expectedGPU: true }, { name: 'compound-tags', expectedGPU: true }, { name: 'compound-dense', expectedGPU: false, fallbackReason: 'Stroke geometry exceeds prototype budget' }]) {
@@ -232,13 +236,19 @@ async function noReadbackCadence(page) {
         }
         for (const [index, motion] of ['pan', 'bounded-zoom', 'sustained-zoom', 'edit-undo'].entries()) {
           const modeOrder = index % 2 ? ['gpu', 'canvas'] : ['canvas', 'gpu'], pair = { modeOrder, canvas: null, gpu: null };
-          for (const mode of modeOrder) pair[mode] = await measure(mode, motion, initial, expectedGPU, fallbackReason);
+          for (const mode of modeOrder) pair[mode] = await measure(mode, motion, initial, expectedGPU, fallbackReason, fixture === 'compound-dense');
+          if (motion === 'edit-undo' && expectedGPU) {
+            for (const frame of pair.gpu.frameSamples) {
+              const attempt = frame.gpuAttempt;
+              if (attempt.cacheReason !== 'document-delta' || attempt.uploadKind !== 'subrange' || attempt.bytes !== 168 || attempt.uploadCalls !== 1 || attempt.subrangeUploadBytes !== 168 || attempt.subrangeUploadCalls !== 1 || attempt.preparedEntities > 1) throw new Error('No-readback admitted top-level LINE edit must retain its six-vertex slot and issue exactly168bytes/one upload');
+            }
+          }
           if (JSON.stringify(ed.doc.snapshot) !== baseline) throw new Error('No-readback paired workflows changed the drawing');
           if (JSON.stringify(pair.canvas.terminalCamera) !== JSON.stringify(pair.gpu.terminalCamera)) throw new Error('No-readback paired workflows ended on different cameras');
           for (let frame = 0; frame < 30; frame++) if (JSON.stringify(pair.canvas.frameSamples[frame].camera) !== JSON.stringify(pair.gpu.frameSamples[frame].camera)) throw new Error(`No-readback ${motion} paired sample${frame} used different cameras`);
           workflows[motion] = pair;
         }
-        evidence.comparisons[fixture] = { workflows, description, expectedSupportsGPU: expectedGPU, expectedFallbackReason: fallbackReason, performanceCategory: expectedGPU ? 'Requested GPU admitted: CPU and cadence observations, no completion claim' : 'Requested GPU refused: attempt preparation plus actual full Canvas rendering; no GPU improvement claim', samePairedSnapshotAndCamera: true, snapshotRestored: true };
+        evidence.comparisons[fixture] = { workflows, description, expectedSupportsGPU: expectedGPU, poseDependentBudgetAdmission: fixture === 'compound-dense', expectedFallbackReason: fallbackReason, performanceCategory: expectedGPU ? 'Requested GPU admitted: CPU and cadence observations, no completion claim' : 'Baseline budget refusal with pose-dependent admission: per-frame GPU, full Canvas and deferred policy are separate; requested-mode aggregates may mix actual renderers', samePairedSnapshotAndCamera: true, snapshotRestored: true };
       }
       if (readbackCalls !== 0) throw new Error(`No-readback phase attempted ${readbackCalls} drawing-context reads`);
       evidence.outcome = 'passed';
@@ -321,15 +331,15 @@ try {
     assert.fail(`${label}: Canvas reference did not become self-consistent within ${evidence.maximumCaptures} explicitly recorded captures`);
   };
   const fixtures = [
-    { name: 'curves', supportsGPU: true },
-    { name: 'precision', supportsGPU: true },
-    { name: 'precision-trillion', supportsGPU: true },
-    { name: 'lineweights', supportsGPU: true },
+    ...['curves', 'precision', 'precision-trillion', 'lineweights'].map((name) => ({ name, supportsGPU: false, supportsDeltas: false, fallbackReason: 'Unsupported Canvas stroke construction: nonsmooth curved join is unproved' })),
     { name: 'dense-lines', supportsGPU: true },
     // Historical 6,500-entity input retains its tiny PERF_SYM circle. Its fitted
     // radius is inside the stroke/precision margin, so the whole view uses Canvas.
     { name: 'mixed-schematic', supportsGPU: false, supportsDeltas: false, fallbackReason: 'Curve stroke overlap or precision margin requires Canvas rendering' },
     { name: 'wide-curve-fallback', supportsGPU: false },
+    { name: 'curve-control', supportsGPU: true },
+    { name: 'precision-control', supportsGPU: true },
+    { name: 'lineweights-control', supportsGPU: true },
     { name: 'arc-full-huge', supportsGPU: true },
     { name: 'arc-sweep-fallback', supportsGPU: false, fallbackReason: 'Unsupported Canvas ARC sweep beyond one revolution' },
     { name: 'arc-angle-fallback', supportsGPU: false, fallbackReason: 'Unsupported Canvas ARC angular precision range' },
@@ -337,9 +347,9 @@ try {
     ...['direct', 'compound'].map((kind) => ({ name: `negative-bulge-${kind}-fallback`, supportsGPU: false, supportsDeltas: false, fallbackReason: 'Unsupported Canvas stroke construction: negative bulge has native connector' })),
     { name: 'positive-bulge-precision-fallback', supportsGPU: false, supportsDeltas: false, fallbackReason: 'Unsupported Canvas stroke construction: native curve construction exceeds precision budget' },
     { name: 'compound-dense', supportsGPU: false, supportsDeltas: false, fallbackReason: 'Stroke geometry exceeds prototype budget' },
-    { name: 'compound-tags', supportsGPU: true, supportsDeltas: false },
-    { name: 'compound-ordered', supportsGPU: true, supportsDeltas: false },
-    { name: 'compound-trillion-reference', supportsGPU: true, supportsDeltas: false },
+    { name: 'compound-tags', supportsGPU: true, supportsDeltas: true },
+    { name: 'compound-ordered', supportsGPU: true, supportsDeltas: true },
+    { name: 'compound-trillion-reference', supportsGPU: true, supportsDeltas: true },
     // Canvas's absolute glyph/block offsets may quantize at this origin; preserve
     // complete Canvas until parity is proved rather than relaxing the image gate.
     { name: 'compound-trillion', supportsGPU: false, supportsDeltas: false },
@@ -367,6 +377,13 @@ try {
       textPixels: state.entities.filter((entity) => entity.type === 'text').map((entity) => entity.height * scale), attributePixels: usedBlocks.flatMap((block) => block.attributes.map((attribute) => attribute.height * scale)) };
   });
   const assertFixtureSetup = (name, description) => {
+    if (name.endsWith('-control')) {
+      assert.equal(description.entityCount, name === 'lineweights-control' ? 5 : 4);
+      assert.deepEqual(description.counts, { line: name === 'lineweights-control' ? 2 : 1, circle: 1, arc: 1, polyline: 1 });
+      assert.equal(description.metadata.controlPolyline.points.length, 2, 'Distinct curve control contains one isolated curved segment');
+      assert.ok(description.metadata.controlPolyline.bulge > 0);
+      return;
+    }
     if (name !== 'compound-dense' && name !== 'compound-tags') return;
     const blockName = name === 'compound-tags' ? 'GPU-TAGS-SYM' : 'GPU-DENSE-SYM';
     assert.equal(description.entityCount, 6500);
@@ -378,12 +395,92 @@ try {
     assert.equal(description.topLevelTextCharacters, description.topLevelTextStrings.reduce((total, text) => total + text.length, 0));
     assert.ok([...description.textPixels, ...description.attributePixels].every((pixels) => pixels * 0.8 > 2.5), 'Distinct dense compound glyphs remain readable inside the admitted minimum zoom band');
   };
+  // Justin's exact selected sharp-corner case: preserve the original input and
+  // prove reliable full Canvas resolution without claiming a refined GPU bound.
+  activeFixture = 'exact-selected-sharp-join-priority';
+  const sharpJoinPriority = { outcome: 'started', untimedCorrectnessProbe: true, fixture: 'curves', originalFixtureChanged: false, resolution: null, canvasSelfConsistency: null, nativeCommands: [], cleanup: null, assessedRefinementRoute: { status: 'Read-only assessment; no GPU implementation or native bound validated', smoothReservePhysicalPixels: 0.0625, joinReservePhysicalPixels: 0.0625, existingTotalCurveReservePhysicalPixels: 0.125, unchangedTolerancePhysicalPixels: 0.25, nativeGpuFixClaimed: false } };
+  Object.assign(result, { sharpJoinPriority });
+  await page.evaluate(() => {
+    const ed = window.editor, v = ed.viewport, api = window.gpuPrototype, g = /** @type {any} */ (window);
+    g.__sharpJoinPrioritySaved = { snapshot: ed.doc.snapshot, document: JSON.stringify(ed.doc.snapshot), history: ed.doc.history(), filePath: ed.doc.filePath, dirty: ed.doc.dirty, color: ed.doc.currentColor, selection: [...ed.selection], hover: /** @type {any} */ (v).lastOverlay?.hover ?? null, camera: { center: { ...v.center }, scale: v.scale, twist: v.twist }, settings: { ...v.settings }, mode: api.status().mode, metadata: api.fixtureMetadata() };
+    api.setMode('canvas'); api.loadFixture('curves'); ed.selection.clear(); ed.selection.add('P'); ed.setHover(null);
+    v.center = { x: 3.5, y: 2.5 }; v.scale = 95.17241379310344; v.twist = 0; v.settings.selectionEffect = 'solid';
+    const proto = CanvasRenderingContext2D.prototype, methods = ['beginPath', 'moveTo', 'lineTo', 'arc', 'stroke'], originals = {};
+    g.__sharpJoinPriorityCommands = { originals, commands: [], strokes: [] };
+    for (const method of methods) {
+      const original = proto[method]; originals[method] = original;
+      proto[method] = /** @this {CanvasRenderingContext2D} */ function (...args) {
+        if (this.canvas === document.getElementById('drawing')) {
+          const probe = g.__sharpJoinPriorityCommands;
+          if (method === 'beginPath') probe.commands = [];
+          else if (method === 'stroke') {
+            const transform = this.getTransform();
+            probe.strokes.push({ commands: probe.commands.map((command) => ({ method: command.method, args: [...command.args] })), color: this.strokeStyle, lineWidth: this.lineWidth, miterLimit: this.miterLimit, lineJoin: this.lineJoin, lineCap: this.lineCap, alpha: this.globalAlpha, contextTransform: { a: transform.a, b: transform.b, c: transform.c, d: transform.d, e: transform.e, f: transform.f } });
+          } else probe.commands.push({ method, args: [...args] });
+        }
+        return Reflect.apply(original, this, args);
+      };
+    }
+  });
+  try {
+    const exactInput = await page.evaluate(() => {
+      const ed = window.editor, v = ed.viewport;
+      return { document: JSON.stringify(ed.doc.snapshot), entities: ed.doc.entities, selected: [...ed.selection], selectionEffect: v.settings.selectionEffect, camera: { center: { ...v.center }, scale: v.scale, twist: v.twist, dpr: v.dpr }, width: v.width, height: v.height };
+    });
+    assert.deepEqual(exactInput.camera, { center: { x: 3.5, y: 2.5 }, scale: 95.17241379310344, twist: 0, dpr: 1 });
+    assert.deepEqual(exactInput.selected, ['P']); assert.equal(exactInput.selectionEffect, 'solid');
+    assert.equal(exactInput.entities.length, 4);
+    const selected = exactInput.entities.find((entity) => entity.id === 'P');
+    assert.deepEqual(selected.points, [{ x: 0, y: 4 }, { x: 1, y: 5 }, { x: 2, y: 4 }]);
+    assert.deepEqual(selected.bulges, [0.5, 0]);
+    const reference = await stableCanvasReference('exact-selected-sharp-join-priority', resolve(out, 'exact-selected-sharp-join-priority-canvas.png'));
+    sharpJoinPriority.canvasSelfConsistency = reference.evidence;
+    const frame = await modeFrame(page, 'gpu');
+    Object.assign(sharpJoinPriority, { gpuAttempt: frame, exactInput: { entities: exactInput.entities, selected: exactInput.selected, selectionEffect: exactInput.selectionEffect, camera: exactInput.camera, width: exactInput.width, height: exactInput.height } });
+    assert.equal(frame.rendered, false);
+    assert.notEqual(frame.cacheReason, 'admission-deferred', 'Exact priority case requires actual admission, not deferred policy');
+    assert.equal(frame.reason, 'Unsupported Canvas stroke construction: nonsmooth curved join is unproved');
+    assert.equal(frame.bytes, 0); assert.equal(frame.uploadCalls, 0); assert.equal(frame.subrangeUploadBytes, 0); assert.equal(frame.subrangeUploadCalls, 0);
+    const path = resolve(out, 'exact-selected-sharp-join-priority-full-fallback.png');
+    await page.locator('#drawing').screenshot({ path });
+    const fallback = PNG.sync.read(readFileSync(path));
+    assert.equal(fallback.width, reference.image.width); assert.equal(fallback.height, reference.image.height);
+    assert.equal(Buffer.compare(reference.image.data, fallback.data), 0, 'Exact selected sharp-corner priority case resolves through identical complete-view Canvas RGBA');
+    const native = await page.evaluate(() => /** @type {any} */ (window).__sharpJoinPriorityCommands.strokes);
+    sharpJoinPriority.nativeCommands = native;
+    const selectedStrokes = native.filter((stroke) => stroke.color === '#0000ff' && stroke.commands.some((command) => command.method === 'arc') && stroke.commands.some((command) => command.method === 'lineTo'));
+    assert.ok(selectedStrokes.length >= 2, 'Actual selected Canvas ARC→LINE stroke is observed in reference and fallback frames');
+    for (const stroke of selectedStrokes) {
+      assert.deepEqual(stroke.commands.map((command) => command.method), ['moveTo', 'arc', 'lineTo']);
+      assert.equal(stroke.lineWidth, 2.5); assert.equal(stroke.miterLimit, 10); assert.equal(stroke.lineJoin, 'miter'); assert.equal(stroke.lineCap, 'butt'); assert.equal(stroke.alpha, 0.95);
+      assert.deepEqual(stroke.contextTransform, { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 });
+    }
+    assert.equal(await page.evaluate(() => JSON.stringify(window.editor.doc.snapshot)), exactInput.document, 'Exact priority probe leaves the original fixture snapshot unchanged');
+    Object.assign(sharpJoinPriority, { outcome: 'passed', resolution: 'Exact selected 2.5CSSpx/miter10 sharp-corner case closed through reliable complete Canvas fallback; no accurate GPU fix claimed', rawDifferentPixels: changedRgbaPixels(reference.image, fallback), actualSelectedCanvasStrokes: selectedStrokes, zeroGpuUploads: true });
+  } finally {
+    sharpJoinPriority.cleanup = await page.evaluate(() => {
+      const ed = window.editor, v = ed.viewport, api = window.gpuPrototype, g = /** @type {any} */ (window), saved = g.__sharpJoinPrioritySaved, probe = g.__sharpJoinPriorityCommands;
+      if (probe) for (const method of Object.keys(probe.originals)) CanvasRenderingContext2D.prototype[method] = probe.originals[method];
+      api.setMode('canvas');
+      if (saved.metadata?.name) api.loadFixture(saved.metadata.name);
+      ed.doc.load(saved.snapshot, saved.filePath); ed.doc.restoreHistory(saved.history); ed.doc.dirty = saved.dirty; ed.doc.currentColor = saved.color;
+      for (const key of Object.keys(v.settings)) if (!Object.hasOwn(saved.settings, key)) delete v.settings[key];
+      Object.assign(v.settings, saved.settings); v.center = saved.camera.center; v.scale = saved.camera.scale; v.twist = saved.camera.twist;
+      ed.selection.clear(); for (const id of saved.selection) ed.selection.add(id); ed.setHover(saved.hover); api.setMode(saved.mode); api.renderNow();
+      const restored = { snapshotRestored: JSON.stringify(ed.doc.snapshot) === saved.document, selectionRestored: JSON.stringify([...ed.selection]) === JSON.stringify(saved.selection), cameraRestored: JSON.stringify({ center: { ...v.center }, scale: v.scale, twist: v.twist }) === JSON.stringify(saved.camera), settingsRestored: JSON.stringify(v.settings) === JSON.stringify(saved.settings), historyRestored: JSON.stringify(ed.doc.history()) === JSON.stringify(saved.history), modeRestored: api.status().mode === saved.mode };
+      delete g.__sharpJoinPrioritySaved; delete g.__sharpJoinPriorityCommands;
+      return restored;
+    });
+    assert.ok(Object.values(sharpJoinPriority.cleanup).every((restored) => restored === true), 'Exact priority probe restores snapshot/selection/camera/history/mode');
+  }
+  writeFileSync(resolve(out, 'sharp-join-priority.json'), JSON.stringify({ sourceSha, worktreeModified, overallBenchmark: 'pending', ...sharpJoinPriority }, null, 2));
+  console.log(JSON.stringify({ milestone: 'exact-selected-sharp-join', sourceSha, scope: 'Native correctness probe only; overall benchmark pending', outcome: sharpJoinPriority.outcome, resolution: sharpJoinPriority.resolution }));
   const fixturePreflight = [];
   Object.assign(result, { fixturePreflight });
   // Fail new fixture setup/admission/image gates before expensive timed loops.
   // This uses the same native data and camera and is explicitly untimed. The
   // measured loops reload fixtures and retain their existing cold resource reset.
-  for (const { name, supportsGPU, fallbackReason = null } of fixtures.filter((fixture) => fixture.name.startsWith('compound-') || fixture.name.startsWith('arc-') || fixture.name.startsWith('collapse-') || fixture.name.startsWith('negative-bulge-') || fixture.name === 'positive-bulge-precision-fallback')) {
+  for (const { name, supportsGPU, fallbackReason = null } of fixtures.filter((fixture) => ['curves', 'precision', 'precision-trillion', 'lineweights'].includes(fixture.name) || fixture.name.endsWith('-control') || fixture.name.startsWith('compound-') || fixture.name.startsWith('arc-') || fixture.name.startsWith('collapse-') || fixture.name.startsWith('negative-bulge-') || fixture.name === 'positive-bulge-precision-fallback')) {
     activeFixture = `preflight:${name}`;
     await page.evaluate((name) => { window.gpuPrototype.setMode('canvas'); window.editor.viewport.twist = 0; window.gpuPrototype.loadFixture(name); }, name);
     const description = await describeFixture();
@@ -399,9 +496,9 @@ try {
       assert.deepEqual(baseline.camera, { center: { x: 1e12, y: 1e12 }, scale: 16384, twist: 0 }, 'Positive-bulge counterexample uses the independently verified world camera');
       assert.equal(result.viewport.dpr, 1, 'Positive-bulge independent native construction probe is specified at DPR1');
     }
-    const images = [];
+    const images = [], controlSelectedImages = [];
     let gpuFrame;
-    const observeNativeArc = name === 'arc-full-huge' || name.startsWith('negative-bulge-') || name === 'positive-bulge-precision-fallback';
+    const observeNativeArc = name.endsWith('-control') || name === 'arc-full-huge' || name.startsWith('negative-bulge-') || name === 'positive-bulge-precision-fallback';
     if (observeNativeArc) {
       await page.evaluate(() => {
         const g = /** @type {any} */ (window), proto = CanvasRenderingContext2D.prototype;
@@ -418,7 +515,8 @@ try {
         CanvasRenderingContext2D.prototype.arc = /** @this {CanvasRenderingContext2D} */ function (x, y, radius, start, end, counterclockwise) {
           if (this.canvas === document.getElementById('drawing')) {
             const arcStartPoint = { x: x + radius * Math.cos(start), y: y + radius * Math.sin(start) }, arcEndPoint = { x: x + radius * Math.cos(end), y: y + radius * Math.sin(end) };
-            g.__gpuBenchmarkArcProbe.calls.push({ center: { x, y }, radius, start, end, counterclockwise: counterclockwise ?? false, color: this.strokeStyle, previousPoint: g.__gpuBenchmarkArcProbe.previousPoint, arcStartPoint, arcEndPoint });
+            const transform = this.getTransform();
+            g.__gpuBenchmarkArcProbe.calls.push({ center: { x, y }, radius, start, end, counterclockwise: counterclockwise ?? false, color: this.strokeStyle, lineWidth: this.lineWidth, alpha: this.globalAlpha, contextTransform: { a: transform.a, b: transform.b, c: transform.c, d: transform.d, e: transform.e, f: transform.f }, previousPoint: g.__gpuBenchmarkArcProbe.previousPoint, arcStartPoint, arcEndPoint });
             g.__gpuBenchmarkArcProbe.previousPoint = arcEndPoint;
           }
           return original.call(this, x, y, radius, start, end, counterclockwise);
@@ -442,12 +540,29 @@ try {
         if (mode === 'gpu') {
           gpuFrame = frame;
           Object.assign(preflightEvidence, { gpuFrame });
+          assert.notEqual(frame.cacheReason, 'admission-deferred', `${name}: preflight mode toggle requires actual same-pose admission, not a deferred policy claim`);
           assert.equal(frame.rendered, supportsGPU, `${name}: untimed admission preflight; refusal: ${frame.reason ?? 'none'}`);
           if (fallbackReason) assert.ok(frame.reason?.includes(fallbackReason), `${name}: preflight refusal matches '${fallbackReason}', actual: ${frame.reason ?? 'none'}`);
+          if (name === 'compound-dense') assert.equal(frame.reason, 'Stroke geometry exceeds prototype budget', 'Long-label baseline preflight proves its actual exact budget refusal');
           if (name === 'compound-tags') assert.equal(frame.preparedEntities + frame.reusedEntities, 10_500, 'Short-tag dense admission visits only the 5,000 wires, 4,000 block strokes, 1,000 attributes and 500 labels; unused catalog definitions remain unrendered');
         }
         await page.locator('#drawing').screenshot({ path });
         images.push(PNG.sync.read(readFileSync(path)));
+      }
+      if (name.endsWith('-control')) {
+        const selectionBefore = await page.evaluate(() => ({ ids: [...window.editor.selection], effect: window.editor.viewport.settings.selectionEffect }));
+        try {
+          await page.evaluate(() => { const ed = window.editor; ed.selection.clear(); ed.selection.add('P'); ed.viewport.settings.selectionEffect = 'solid'; });
+          for (const mode of ['canvas', 'gpu']) {
+            const frame = await modeFrame(page, mode);
+            if (mode === 'gpu') assert.equal(frame.rendered, true, `${name}: selected isolated curved segment uses GPU`);
+            const path = resolve(out, `${name}-preflight-selected-${mode}.png`);
+            await page.locator('#drawing').screenshot({ path });
+            controlSelectedImages.push(PNG.sync.read(readFileSync(path)));
+          }
+        } finally {
+          await page.evaluate((before) => { const ed = window.editor; ed.selection.clear(); for (const id of before.ids) ed.selection.add(id); ed.viewport.settings.selectionEffect = before.effect; window.gpuPrototype.renderNow(); }, selectionBefore);
+        }
       }
     } finally {
       if (observeNativeArc) canvasArcCalls = await page.evaluate(() => {
@@ -471,6 +586,42 @@ try {
       assert.equal(pixels, 0, `${name}: preflight fallback matches Canvas exactly`);
       assert.equal(Buffer.compare(images[0].data, images[1].data), 0, `${name}: preflight fallback has identical RGBA pixels`);
     } else if (name !== 'compound-tags') assert.ok(pixels / (diff.width * diff.height) < 0.001, `${name}: preflight preserves the strict small-scene raster gate`);
+    if (name.endsWith('-control')) {
+      const control = await page.evaluate(() => {
+        const v = window.editor.viewport, metadata = window.gpuPrototype.fixtureMetadata().controlPolyline;
+        return { ...metadata, screenA: v.toScreen(metadata.points[0]), screenB: v.toScreen(metadata.points[1]), width: v.width, height: v.height, dpr: v.dpr };
+      });
+      const close = (a, b) => a && Math.hypot(a.x - b.x, a.y - b.y) < 1e-8;
+      const ordinaryArc = canvasArcCalls.find((call) => call.color === control.color && call.alpha === 1 && close(call.previousPoint, control.screenA) && close(call.arcStartPoint, control.screenA) && close(call.arcEndPoint, control.screenB));
+      const selectedArc = canvasArcCalls.find((call) => call.color === control.color && call.alpha === 0.95 && close(call.previousPoint, control.screenA) && close(call.arcStartPoint, control.screenA) && close(call.arcEndPoint, control.screenB));
+      assert.ok(ordinaryArc && selectedArc, `${name}: actual Canvas isolated positive-bulge path starts at A and curves to B without the unproved sharp join`);
+      assert.equal(ordinaryArc.lineWidth, control.expectedCssLineWidth, `${name}: actual native ordinary lineweight`);
+      assert.equal(selectedArc.lineWidth, 2.5, `${name}: actual native solid-selection width`);
+      for (const arc of [ordinaryArc, selectedArc]) assert.deepEqual(arc.contextTransform, { a: control.dpr, b: 0, c: 0, d: control.dpr, e: 0, f: 0 }, `${name}: native context transform records the actual DPR`);
+      const angle = (ordinaryArc.start + ordinaryArc.end) / 2, point = { x: ordinaryArc.center.x + ordinaryArc.radius * Math.cos(angle), y: ordinaryArc.center.y + ordinaryArc.radius * Math.sin(angle) };
+      assert.ok(Math.min(Math.hypot(point.x - control.screenA.x, point.y - control.screenA.y), Math.hypot(point.x - control.screenB.x, point.y - control.screenB.y)) > 12, 'Independent opacity probe stays away from endpoint grips');
+      const expectedSelectedRgba = [...control.rgb.map((value, index) => Math.round(0.95 * value + 0.05 * [33, 40, 48][index])), 255];
+      const region = { left: Math.floor((point.x - 6) * images[0].width / control.width), right: Math.ceil((point.x + 6) * images[0].width / control.width), top: Math.floor((point.y - 6) * images[0].height / control.height), bottom: Math.ceil((point.y + 6) * images[0].height / control.height) };
+      const opacityProbes = controlSelectedImages.map((image, rendererIndex) => {
+        const x = Math.floor(point.x * image.width / control.width), y = Math.floor(point.y * image.height / control.height), samples = [];
+        for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
+          const index = ((y + dy) * image.width + x + dx) * 4;
+          samples.push([...image.data.subarray(index, index + 4)]);
+        }
+        assert.ok(samples.some((rgba) => expectedSelectedRgba.every((value, index) => Math.abs(value - rgba[index]) <= 2)), `${name}: actual selected curve has independently expected 0.95 opacity; expected ${expectedSelectedRgba}`);
+        let changed = 0;
+        for (let py = region.top; py <= region.bottom; py++) for (let px = region.left; px <= region.right; px++) {
+          const index = (py * image.width + px) * 4;
+          if ([0, 1, 2, 3].some((channel) => images[rendererIndex].data[index + channel] !== image.data[index + channel])) changed++;
+        }
+        assert.ok(changed > 0, `${name}: selection visibly changes actual curve pixels outside grips`);
+        return { point, expectedSelectedRgba, rgbaSamples: samples, regionRawDifferentPixels: changed, excludesEndpointGrips: true };
+      });
+      const selectedPixels = pixelmatch(controlSelectedImages[0].data, controlSelectedImages[1].data, null, controlSelectedImages[0].width, controlSelectedImages[0].height, { threshold: 0.15 });
+      const selectedMiss = Math.max(missedForeground(controlSelectedImages[0], controlSelectedImages[1]), missedForeground(controlSelectedImages[1], controlSelectedImages[0]));
+      assert.ok(selectedPixels / (diff.width * diff.height) < 0.001 && selectedMiss < 0.005, `${name}: selected control retains the unchanged strict raster/coverage gates`);
+      Object.assign(preflightEvidence, { isolatedPositiveBulgeControl: { control, actualOrdinaryCanvasArc: ordinaryArc, actualSelectedCanvasArc: selectedArc, actualPhysicalOrdinaryWidth: ordinaryArc.lineWidth * control.dpr, actualPhysicalSelectedWidth: selectedArc.lineWidth * control.dpr, independentSelectedOpacity: opacityProbes, selectedImageDifferenceFraction: selectedPixels / (diff.width * diff.height), selectedTwoPixelCoverageMissFraction: selectedMiss } });
+    }
     if (name === 'arc-full-huge') {
       assert.ok(canvasArcCalls.some((call) => call.radius === 128 && call.start === 0 && call.end === Math.PI * 2), 'Huge equal angles invoke the actual Canvas full-circle painter with canonical start zero');
       const cardinalPixels = await page.evaluate(() => {
@@ -541,7 +692,8 @@ try {
   }
   for (const { name: fixture, supportsGPU, supportsDeltas = supportsGPU, fallbackReason = null } of fixtures) {
     activeFixture = fixture;
-    const denseRaster = fixture === 'dense-lines' || fixture === 'compound-tags';
+    const poseDependentBudget = fixture === 'compound-dense';
+    const denseRaster = fixture === 'dense-lines' || fixture === 'compound-tags' || poseDependentBudget;
     await page.evaluate((name) => { window.gpuPrototype.setMode('canvas'); window.editor.viewport.twist = 0; window.gpuPrototype.loadFixture(name); }, fixture);
     await page.waitForTimeout(100);
     const fixtureDescription = await describeFixture();
@@ -565,6 +717,8 @@ try {
         if (status.rendered && !(typeof reportedCompletionMs === 'number' && Number.isFinite(reportedCompletionMs) && reportedCompletionMs >= 0)) throw new Error(`${label}: GPU completion was not observed (timeout or context loss)`);
         if (!status.rendered) ctx.getImageData(0, 0, 1, 1);
         const completedAt = performance.now();
+        const admissionPolicyDeferred = mode === 'gpu' && status.cacheReason === 'admission-deferred';
+        if (admissionPolicyDeferred && (status.rendered || status.geometryPreparationMs !== 0 || status.partialPreparationMs !== 0 || status.bytes !== 0 || status.uploadCalls !== 0 || !status.reason?.includes('Stroke geometry exceeds prototype budget'))) throw new Error(`${label}: deferred admission must label its prior budget refusal with complete Canvas and no current preparation/uploads`);
         if (status.rendered) {
           for (const key of [...stages, ...entityMetrics, ...uploadMetrics, 'geometryVertices']) {
             if (!(typeof status[key] === 'number' && Number.isFinite(status[key]) && status[key] >= 0)) throw new Error(`${label}: invalid or missing GPU telemetry ${key}`);
@@ -584,7 +738,7 @@ try {
         };
         // A refused GPU attempt still incurs CPU preparation before Canvas completes
         // the frame. Keep those measurements separate from successful GPU work.
-        const gpuAttempt = mode === 'gpu' ? { rendered: status.rendered, reason: status.reason ?? null, ...Object.fromEntries([...stages, ...entityMetrics, 'subrangeUploadBytes', 'subrangeUploadCalls'].map((key) => [key, available(key)])), requestedUploadBytes: available('bytes'), uploadCalls: available('uploadCalls'), uploadKind: status.uploadKind ?? null, geometryVertices: available('geometryVertices'), editMemoHit: typeof status.editMemoHit === 'boolean' ? status.editMemoHit : null, cacheHit: typeof status.cacheHit === 'boolean' ? status.cacheHit : null, cacheReason: status.cacheReason ?? null } : null;
+        const gpuAttempt = mode === 'gpu' ? { rendered: status.rendered, reason: status.reason ?? null, admissionPolicyDeferred, admissionEvidence: admissionPolicyDeferred ? 'Deferred policy based on a prior slow budget refusal; current geometry not evaluated' : status.rendered ? 'Current GPU scene admitted' : status.cacheReason === 'refusal-hit' ? 'Exact-view certified prior geometry refusal' : 'Actual refused attempt at this pose; reported reason retained', ...Object.fromEntries([...stages, ...entityMetrics, 'subrangeUploadBytes', 'subrangeUploadCalls'].map((key) => [key, available(key)])), requestedUploadBytes: available('bytes'), uploadCalls: available('uploadCalls'), uploadKind: status.uploadKind ?? null, geometryVertices: available('geometryVertices'), editMemoHit: typeof status.editMemoHit === 'boolean' ? status.editMemoHit : null, cacheHit: typeof status.cacheHit === 'boolean' ? status.cacheHit : null, cacheReason: status.cacheReason ?? null } : null;
         const sample = { label, requestedRenderer: mode, actualRenderer: status.rendered ? 'gpu' : 'canvas', gpuAttempt, rendered: status.rendered, reason: status.reason ?? null, cpuSubmissionMs: renderEnded - renderStarted, renderToCompletionWallMs: completedAt - renderStarted, workflowWallMs: completedAt - started, completedFrameWallMs: completedAt - started, completionWaitMs: completedAt - completionStart, reportedCompletionMs, uploadBytes: status.rendered ? status.bytes : null, uploadCalls: status.rendered ? status.uploadCalls : null, uploadKind: status.rendered ? status.uploadKind : null, subrangeUploadBytes: status.rendered ? status.subrangeUploadBytes : null, subrangeUploadCalls: status.rendered ? status.subrangeUploadCalls : null, geometryVertices: status.rendered ? status.geometryVertices : null, ...Object.fromEntries(entityMetrics.map((key) => [key, status.rendered ? status[key] : null])), editMemoHit: status.rendered ? status.editMemoHit : null, cacheHit: status.rendered ? status.cacheHit : null, cacheReason: status.rendered ? status.cacheReason : 'not-checked', center: { ...v.center }, scale: v.scale, twist: v.twist, ...extra };
         for (const stage of stages) sample[stage] = status.rendered && typeof status[stage] === 'number' ? status[stage] : null;
         return sample;
@@ -648,6 +802,7 @@ try {
       // completely conceal the representative changed line in the dense fixture.
       const editLine = [...ed.doc.entities].reverse().find((entity) => {
         if (entity.type !== 'line') return false;
+        if (ed.doc.snapshot.layers.some((layer) => layer.name === entity.layer && !layer.visible)) return false;
         const midpoint = v.toScreen({ x: (entity.a.x + entity.b.x) / 2, y: (entity.a.y + entity.b.y) / 2 });
         return midpoint.x >= 0 && midpoint.x <= v.width && midpoint.y >= 0 && midpoint.y <= v.height;
       });
@@ -713,8 +868,9 @@ try {
         cameraReset = await finishSample(status, resetStarted, renderStarted, performance.now(), 'untimed-camera-reset', { untimed: true });
       }
       const summary = statistics(frames), redrawSummary = statistics(redrawFrames);
+      Object.assign(summary, { aggregateRendererScope: 'Requested-mode completed-frame aggregates; actual GPU/Canvas samples are separated below, and GPU-only numeric stages remain successful-frame-only', actualRendererCounts: frames.reduce((counts, frame) => { counts[frame.actualRenderer] = (counts[frame.actualRenderer] ?? 0) + 1; return counts; }, {}), byActualRenderer: Object.fromEntries(['gpu', 'canvas'].map((renderer) => [renderer, Object.fromEntries(['cpuSubmissionMs', 'workflowWallMs', 'renderToCompletionWallMs', 'completedFrameWallMs', 'completionWaitMs'].map((key) => [key, summarize(frames.filter((frame) => frame.actualRenderer === renderer).map((frame) => frame[key]))]))])) });
       const heap = /** @type {any} */ (performance).memory?.usedJSHeapSize ?? null;
-      return { firstSubmissionMs: firstFrame.cpuSubmissionMs, first, firstFrame, coldSetup, redrawCpuMedianMs: redrawSummary.all.cpuSubmissionMs.median, redrawTotalMedianMs: redrawSummary.all.completedFrameWallMs.median, cpuSubmissionMedianMs: summary.all.cpuSubmissionMs.median, completionWaitMedianMs: summary.all.completionWaitMs.median, totalRenderMedianMs: summary.all.completedFrameWallMs.median, totalRenderP95Ms: summary.all.completedFrameWallMs.p95, totalRenderMaxMs: summary.all.completedFrameWallMs.max, preparationMedianMs: summary.all.preparationMs.median, rafWaitMedianMs: summarize(intervals).median, uploadedBytes: frames.map((frame) => frame.uploadBytes), uploadedCalls: frames.map((frame) => frame.uploadCalls), frameSamples: frames, summary, warmRedraw: { samples: redrawFrames, summary: redrawSummary }, camera: { initial: { center, scale, twist }, last: lastCamera, terminalRetained: retainEndCamera, untimedReset: cameraReset }, editUndo: motion === 'edit-undo' ? { entityId: editLine.id, visible: true, snapshotRestored: true } : null, samples, motion, heapBytes: heap, status: api.status() };
+      return { firstSubmissionMs: firstFrame.cpuSubmissionMs, first, firstFrame, coldSetup, redrawCpuMedianMs: redrawSummary.all.cpuSubmissionMs.median, redrawTotalMedianMs: redrawSummary.all.completedFrameWallMs.median, cpuSubmissionMedianMs: summary.all.cpuSubmissionMs.median, completionWaitMedianMs: summary.all.completionWaitMs.median, totalRenderMedianMs: summary.all.completedFrameWallMs.median, totalRenderP95Ms: summary.all.completedFrameWallMs.p95, totalRenderMaxMs: summary.all.completedFrameWallMs.max, preparationMedianMs: summary.all.preparationMs.median, rafWaitMedianMs: summarize(intervals).median, uploadedBytes: frames.map((frame) => frame.uploadBytes), uploadedCalls: frames.map((frame) => frame.uploadCalls), frameSamples: frames, summary, warmRedraw: { samples: redrawFrames, summary: redrawSummary }, camera: { initial: { center, scale, twist }, last: lastCamera, terminalRetained: retainEndCamera, untimedReset: cameraReset }, editUndo: motion === 'edit-undo' ? { entityId: editLine.id, topLevelSourceIndex: ed.doc.entities.indexOf(editLine), entityType: editLine.type, visible: true, visibleLayer: true, childTextOrInsertEdit: false, original: editLine, edited: editedLine, snapshotRestored: true } : null, samples, motion, heapBytes: heap, status: api.status() };
     }, { mode, samples: 30, motion, retainEndCamera });
     const compareTrajectoryEnd = async (label, camera, initialCamera) => {
       const terminal = await page.evaluate(() => ({ center: { ...window.editor.viewport.center }, scale: window.editor.viewport.scale, twist: window.editor.viewport.twist }));
@@ -728,11 +884,12 @@ try {
           const frame = await modeFrame(page, mode);
           if (mode === 'gpu') {
             gpuFrame = frame;
-            if (supportsGPU) {
+            assert.notEqual(frame.cacheReason, 'admission-deferred', `${fixture}: ${label} mode toggle requires actual same-pose admission`);
+            if (supportsGPU && !poseDependentBudget) {
               assert.equal(frame.rendered, true, `${fixture}: ${label} comparison uses GPU; refusal: ${frame.reason ?? 'none'}`);
               assert.equal(frame.bytes, 0, `${fixture}: ${label} comparison reuses the terminal geometry bytes`);
               assert.equal(frame.uploadCalls, 0, `${fixture}: ${label} comparison makes no upload calls`);
-            } else assert.equal(frame.rendered, false, `${fixture}: ${label} comparison preserves whole-view fallback`);
+            } else if (!poseDependentBudget) assert.equal(frame.rendered, false, `${fixture}: ${label} comparison preserves whole-view fallback`);
           }
           await page.locator('#drawing').screenshot({ path });
           images.push(PNG.sync.read(readFileSync(path)));
@@ -743,11 +900,11 @@ try {
         writeFileSync(resolve(out, `${fixture}-${label}-diff.png`), PNG.sync.write(diff));
         const miss = Math.max(missedForeground(images[0], images[1]), missedForeground(images[1], images[0]));
         assert.ok(miss < 0.005, `${fixture}: ${label} endpoint retains geometry within two pixels`);
-        if (!supportsGPU) {
+        if (!gpuFrame.rendered) {
           assert.equal(pixels, 0, `${fixture}: ${label} whole-view fallback matches Canvas exactly`);
           assert.equal(Buffer.compare(images[0].data, images[1].data), 0, `${fixture}: ${label} whole-view fallback has identical RGBA pixels`);
         } else if (!denseRaster) assert.ok(pixels / (diff.width * diff.height) < 0.001, `${fixture}: ${label} endpoint retains the existing raster accuracy gate`);
-        evidence = { camera, gpuFrame, imageDifferenceFraction: pixels / (diff.width * diff.height), twoPixelCoverageMissFraction: miss, untimedCameraReset: null };
+        evidence = { camera, gpuFrame, actualRenderer: gpuFrame.rendered ? 'gpu' : 'canvas', poseDependentBudgetAdmission: poseDependentBudget, actualAdmissionRequired: true, imageDifferenceFraction: pixels / (diff.width * diff.height), twoPixelCoverageMissFraction: miss, untimedCameraReset: null };
       } finally {
         const reset = await page.evaluate(async (next) => {
           const v = window.editor.viewport, api = window.gpuPrototype;
@@ -771,6 +928,9 @@ try {
     const gpuResult = await measure('gpu', 'pan-zoom', true);
     if (fallbackReason) assert.ok(gpuResult.firstFrame.reason?.includes(fallbackReason), `${fixture}: admission refuses with '${fallbackReason}', actual: ${gpuResult.firstFrame.reason ?? 'none'}`);
     const panZoomImage = await compareTrajectoryEnd('pan-zoom', gpuResult.camera.last, gpuResult.camera.initial);
+    if (poseDependentBudget) { await modeFrame(page, 'canvas'); await modeFrame(page, 'gpu'); }
+    const centeredGpuFrame = await page.evaluate(() => window.gpuPrototype.renderStats());
+    assert.notEqual(centeredGpuFrame.cacheReason, 'admission-deferred', `${fixture}: centered comparison requires actual admission`);
     const context = await prototypeContext(page);
     await page.locator('#drawing').screenshot({ path: resolve(out, `${fixture}-gpu.png`) });
     const a = PNG.sync.read(readFileSync(resolve(out, `${fixture}-canvas.png`)));
@@ -812,7 +972,7 @@ try {
       return { document: JSON.stringify(ed.doc.snapshot), camera: { center: { ...v.center }, scale: v.scale, twist: v.twist } };
     });
     try {
-      const setup = await page.evaluate(async () => {
+      const setup = await page.evaluate(async (budgetPose) => {
         const ed = window.editor, v = ed.viewport, api = window.gpuPrototype;
         const complete = async (frame) => {
           if (frame.rendered) {
@@ -826,14 +986,17 @@ try {
         // Twist establishes the anchor once, before the edit. No renderer-resource
         // reset or anchor change occurs during the edit/undo/redo comparisons.
         v.twist += 0.17;
+        if (budgetPose) { api.setMode('canvas'); api.setMode('gpu'); }
         const anchor = api.renderNow();
         const anchorCompletionMs = await complete(anchor);
         v.zoomAt({ x: v.width / 2, y: v.height / 2 }, 1.05);
         v.panByPixels(24 / v.dpr, -17 / v.dpr);
+        if (budgetPose) { api.setMode('canvas'); api.setMode('gpu'); }
         const warm = api.renderNow();
         const warmCompletionMs = await complete(warm);
         const original = [...ed.doc.entities].reverse().find((entity) => {
           if (entity.type !== 'line') return false;
+          if (ed.doc.snapshot.layers.some((layer) => layer.name === entity.layer && !layer.visible)) return false;
           const midpoint = v.toScreen({ x: (entity.a.x + entity.b.x) / 2, y: (entity.a.y + entity.b.y) / 2 });
           return midpoint.x >= 4 && midpoint.x <= v.width - 4 && midpoint.y >= 4 && midpoint.y <= v.height - 4;
         });
@@ -843,10 +1006,11 @@ try {
         const screenBefore = v.toScreen(original.a), screenAfter = v.toScreen(edited.a);
         const displacementCss = Math.hypot(screenAfter.x - screenBefore.x, screenAfter.y - screenBefore.y);
         if (!(displacementCss >= 1)) throw new Error('Warm-camera edit must move a visible line by at least one CSS pixel');
-        return { anchor, anchorCompletionMs, warm, warmCompletionMs, original, edited, displacementCss, camera: { center: { ...v.center }, scale: v.scale, twist: v.twist } };
-      });
+        return { anchor, anchorCompletionMs, warm, warmCompletionMs, original, edited, topLevelSourceIndex: ed.doc.entities.indexOf(original), sourceEntityType: original.type, visibleLayer: true, childTextOrInsertEdit: false, expectedRetainedVertices: 6, displacementCss, camera: { center: { ...v.center }, scale: v.scale, twist: v.twist } };
+      }, poseDependentBudget);
       editCorrectness.setup = setup;
-      if (supportsGPU) {
+      if (poseDependentBudget) assert.notEqual(setup.warm.cacheReason, 'admission-deferred', 'Budget edit proof starts with actual admission at its retained camera');
+      else if (supportsGPU) {
         assert.equal(setup.warm.rendered, true, `${fixture}: edit proof starts on GPU`);
         assert.equal(setup.warm.cacheHit, true, `${fixture}: edit proof starts on a warm camera/cache`);
         assert.equal(setup.warm.uploadKind, 'none');
@@ -863,8 +1027,9 @@ try {
           const frame = await modeFrame(page, mode);
           if (mode === 'gpu') {
             gpuFrame = frame;
-            assert.equal(frame.rendered, supportsGPU, `${fixture}: ${label} has the expected actual renderer`);
-            if (supportsGPU) {
+            assert.notEqual(frame.cacheReason, 'admission-deferred', `${fixture}: edited ${label} correctness requires actual admission at the retained pose`);
+            if (!poseDependentBudget) assert.equal(frame.rendered, supportsGPU, `${fixture}: ${label} has the expected actual renderer`);
+            if (frame.rendered && (!poseDependentBudget || label !== 'baseline' || setup.warm.rendered)) {
               assert.equal(frame.cacheHit, true, `${fixture}: ${label} comparison retains the edited cache`);
               assert.equal(frame.uploadKind, 'none', `${fixture}: ${label} comparison cannot hide a patch behind a new upload`);
               assert.equal(frame.bytes, 0);
@@ -880,22 +1045,23 @@ try {
         const miss = Math.max(missedForeground(images[0], images[1]), missedForeground(images[1], images[0]));
         writeFileSync(resolve(out, `${fixture}-edit-proof-${label}-diff.png`), PNG.sync.write(diff));
         assert.ok(miss < 0.005, `${fixture}: ${label} edited geometry matches within two pixels`);
-        if (!supportsGPU) {
+        if (!gpuFrame.rendered) {
           assert.equal(pixels, 0, `${fixture}: ${label} fallback matches Canvas exactly`);
           assert.equal(Buffer.compare(images[0].data, images[1].data), 0, `${fixture}: ${label} fallback has identical RGBA pixels`);
         } else if (!denseRaster) assert.ok(pixels / (diff.width * diff.height) < 0.001, `${fixture}: ${label} preserves the raster accuracy gate`);
         assert.deepEqual(await page.evaluate(() => { const v = window.editor.viewport; return { center: { ...v.center }, scale: v.scale, twist: v.twist }; }), setup.camera, `${fixture}: ${label} comparison keeps the original warm edit camera`);
         proofImages[label] = images;
-        editCorrectness.comparisons[label] = { gpuFrame, imageDifferenceFraction: pixels / (diff.width * diff.height), twoPixelCoverageMissFraction: miss };
+        editCorrectness.comparisons[label] = { gpuFrame, actualRenderer: gpuFrame.rendered ? 'gpu' : 'canvas', poseDependentBudgetAdmission: poseDependentBudget, imageDifferenceFraction: pixels / (diff.width * diff.height), twoPixelCoverageMissFraction: miss };
       };
       const transition = async (action) => {
-        const proof = await page.evaluate(async ({ action, edited, original }) => {
+        const proof = await page.evaluate(async ({ action, edited, original, budgetPose }) => {
           const ed = window.editor, api = window.gpuPrototype;
           const previous = ed.doc.snapshot;
           if (action === 'edit') ed.doc.replaceEntities([edited]);
           else if (action === 'undo') { if (!ed.doc.undo()) throw new Error('Warm edit proof cannot undo'); }
           else if (action === 'redo') { if (!ed.doc.redo()) throw new Error('Warm edit proof cannot redo'); }
           else throw new Error(`Unknown edit proof action ${action}`);
+          if (budgetPose) { api.setMode('canvas'); api.setMode('gpu'); }
           const frame = api.renderNow();
           let completionMs = null;
           if (frame.rendered) {
@@ -906,9 +1072,10 @@ try {
           const expected = action === 'undo' ? original : edited;
           if (JSON.stringify(ed.doc.entities.find((entity) => entity.id === original.id)) !== JSON.stringify(expected)) throw new Error(`${action}: edit proof did not change/restore the requested entity`);
           return { frame, completionMs, actualLine: expected };
-        }, { action, edited: setup.edited, original: setup.original });
-        assert.equal(proof.frame.rendered, supportsGPU, `${fixture}: ${action} proof preserves actual renderer`);
-        if (supportsGPU && supportsDeltas) {
+        }, { action, edited: setup.edited, original: setup.original, budgetPose: poseDependentBudget });
+        if (poseDependentBudget) assert.notEqual(proof.frame.cacheReason, 'admission-deferred', 'Budget edit transition proves actual current-state admission');
+        else assert.equal(proof.frame.rendered, supportsGPU, `${fixture}: ${action} proof preserves actual renderer`);
+        if (proof.frame.rendered && (supportsDeltas || (poseDependentBudget && proof.frame.cacheReason === 'document-delta'))) {
           assert.equal(proof.frame.cacheReason, 'document-delta', `${fixture}: ${action} uses partial scene preparation`);
           assert.equal(proof.frame.uploadKind, 'subrange', `${fixture}: ${action} updates the live GPU buffer`);
           assert.equal(proof.frame.bytes, 168, `${fixture}: ${action} uploads only six line vertices`);
@@ -917,7 +1084,7 @@ try {
           assert.equal(proof.frame.subrangeUploadCalls, 1);
           assert.ok(proof.frame.preparedEntities <= 1);
           if (action !== 'edit') assert.equal(proof.frame.editMemoHit, true, `${fixture}: ${action} reuses owned prior line geometry`);
-        } else if (supportsGPU) {
+        } else if (proof.frame.rendered) {
           assert.equal(proof.frame.cacheReason, 'document', `${fixture}: ${action} prepares the complete compound scene`);
           assert.equal(proof.frame.uploadKind, 'full', `${fixture}: ${action} cannot patch an uncertified compound slot`);
           assert.equal(proof.frame.subrangeUploadBytes, 0);
@@ -959,16 +1126,20 @@ try {
         } else /** @type {HTMLCanvasElement} */ (document.getElementById('drawing')).getContext('2d').getImageData(0, 0, 1, 1);
       }, { camera: proofBaseline.camera, baselineDocument: proofBaseline.document });
     }
-    result.comparisons[fixture] = { expectedSupportsGPU: supportsGPU, canvas: canvasResult, gpu: gpuResult, prototypeContext: context, panOnly: { canvas: panCanvas, gpu: panGpu, endpoint: panImage }, boundedZoom: { canvas: boundedCanvas, gpu: boundedGpu, endpoint: boundedImage }, sustainedZoom: { canvas: sustainedCanvas, gpu: sustainedGpu, endpoint: sustainedImage }, offCenterZoom: { canvas: offCenterCanvas, gpu: offCenterGpu, endpoint: offCenterImage }, cacheEnvelopeEdges: { min: { canvas: minEdgeCanvas, gpu: minEdgeGpu, endpoint: minEdgeImage }, max: { canvas: maxEdgeCanvas, gpu: maxEdgeGpu, endpoint: maxEdgeImage } }, editUndo: { canvas: editCanvas, gpu: editGpu, endpoint: editImage, correctness: editCorrectness }, trajectoryEndpoints, wholeViewFallbackEndpoints: supportsGPU ? null : trajectoryEndpoints, imageDifferenceFraction: pixels / (a.width * a.height), twoPixelCoverageMissFraction: coverageMiss };
-    Object.assign(result.comparisons[fixture], { fixtureDescription, expectedSupportsDeltas: supportsDeltas, expectedFallbackReason: fallbackReason, rasterGate: denseRaster ? 'Dense raster difference reported; unchanged bidirectional two-pixel coverage gate' : supportsGPU ? 'Strict pixelmatch fraction <0.001 and bidirectional two-pixel miss <0.005' : 'Complete-view Canvas with identical RGBA pixels' });
+    result.comparisons[fixture] = { expectedSupportsGPU: supportsGPU, poseDependentBudgetAdmission: poseDependentBudget, aggregateRendererScope: poseDependentBudget ? 'Baseline budget refusal; requested-GPU workflows may mix actual GPU/Canvas/deferred policy, with per-frame and by-renderer metrics' : 'Fixed fixture admission classification', canvas: canvasResult, gpu: gpuResult, prototypeContext: context, panOnly: { canvas: panCanvas, gpu: panGpu, endpoint: panImage }, boundedZoom: { canvas: boundedCanvas, gpu: boundedGpu, endpoint: boundedImage }, sustainedZoom: { canvas: sustainedCanvas, gpu: sustainedGpu, endpoint: sustainedImage }, offCenterZoom: { canvas: offCenterCanvas, gpu: offCenterGpu, endpoint: offCenterImage }, cacheEnvelopeEdges: { min: { canvas: minEdgeCanvas, gpu: minEdgeGpu, endpoint: minEdgeImage }, max: { canvas: maxEdgeCanvas, gpu: maxEdgeGpu, endpoint: maxEdgeImage } }, editUndo: { canvas: editCanvas, gpu: editGpu, endpoint: editImage, correctness: editCorrectness }, trajectoryEndpoints, wholeViewFallbackEndpoints: poseDependentBudget ? Object.fromEntries(Object.entries(trajectoryEndpoints).filter(([, endpoint]) => !endpoint.gpuFrame.rendered)) : supportsGPU ? null : trajectoryEndpoints, imageDifferenceFraction: pixels / (a.width * a.height), twoPixelCoverageMissFraction: coverageMiss };
+    Object.assign(result.comparisons[fixture], { fixtureDescription, expectedSupportsDeltas: supportsDeltas, expectedFallbackReason: fallbackReason, centeredActualAdmission: centeredGpuFrame, rasterGate: poseDependentBudget ? 'Exact RGBA whenever Canvas; when actually GPU-admitted, dense raster difference reported with unchanged bidirectional two-pixel coverage gate' : denseRaster ? 'Dense raster difference reported; unchanged bidirectional two-pixel coverage gate' : supportsGPU ? 'Strict pixelmatch fraction <0.001 and bidirectional two-pixel miss <0.005' : 'Complete-view Canvas with identical RGBA pixels' });
     for (const [name, canvas, gpu] of [['pan/zoom', canvasResult, gpuResult], ['pan', panCanvas, panGpu], ['bounded zoom', boundedCanvas, boundedGpu], ['sustained zoom', sustainedCanvas, sustainedGpu], ['off-center zoom', offCenterCanvas, offCenterGpu], ['minimum zoom with edge pan', minEdgeCanvas, minEdgeGpu], ['maximum zoom with edge pan', maxEdgeCanvas, maxEdgeGpu], ['edit/undo', editCanvas, editGpu]]) {
       assert.deepEqual(canvas.camera.initial, gpu.camera.initial, `${fixture}: ${name} pairs start at identical cameras`);
       assert.ok([canvas.firstFrame, ...canvas.warmRedraw.samples, ...canvas.frameSamples].every((frame) => frame.rendered === false), `${fixture}: ${name} baseline samples must use Canvas`);
     }
     for (const [name, workload] of [['pan/zoom', gpuResult], ['pan', panGpu], ['bounded zoom', boundedGpu], ['sustained zoom', sustainedGpu], ['off-center zoom', offCenterGpu], ['minimum zoom with edge pan', minEdgeGpu], ['maximum zoom with edge pan', maxEdgeGpu], ['edit/undo', editGpu]]) {
       const completedSamples = [workload.firstFrame, ...workload.warmRedraw.samples, ...workload.frameSamples];
-      assert.ok(completedSamples.every((frame) => frame.rendered === supportsGPU), `${fixture}: ${name} samples must not silently mix GPU and Canvas renderers; refusal: ${completedSamples.find((frame) => frame.rendered !== supportsGPU)?.reason ?? 'none'}`);
-      if (fallbackReason) assert.ok(completedSamples.every((frame) => frame.reason?.includes(fallbackReason)), `${fixture}: ${name} keeps its expected safety refusal; actual: ${completedSamples.find((frame) => !frame.reason?.includes(fallbackReason))?.reason ?? 'none'}`);
+      if (fixture === 'compound-dense') {
+        assert.notEqual(workload.firstFrame.gpuAttempt.cacheReason, 'admission-deferred', `${fixture}: ${name} cold resources require actual geometry admission`);
+        assert.equal(workload.firstFrame.reason, 'Stroke geometry exceeds prototype budget', `${fixture}: ${name} cold frame records actual exact budget refusal`);
+      }
+      if (!poseDependentBudget) assert.ok(completedSamples.every((frame) => frame.rendered === supportsGPU), `${fixture}: ${name} samples must not silently mix GPU and Canvas renderers; refusal: ${completedSamples.find((frame) => frame.rendered !== supportsGPU)?.reason ?? 'none'}`);
+      if (fallbackReason) assert.ok(completedSamples.filter((frame) => !frame.rendered).every((frame) => frame.reason?.includes(fallbackReason)), `${fixture}: ${name} actual fallback frames keep their safety reason; actual: ${completedSamples.find((frame) => !frame.rendered && !frame.reason?.includes(fallbackReason))?.reason ?? 'none'}`);
       if (supportsGPU) assert.equal(workload.firstFrame.cacheReason, 'cold', `${fixture}: ${name} mode-triggered first frame includes cold geometry work`);
     }
     if (fixture === 'mixed-schematic') {
@@ -1023,10 +1194,12 @@ try {
       refusalMemoProof.unchangedViewImage = { frame: memoFrame, identicalCanvasRgba: true, actualRenderer: 'canvas', untimed: true };
       Object.assign(result.comparisons[fixture], { refusalMemoProof });
     }
-    if (!supportsGPU) {
-      assert.equal(gpuResult.status.rendered, false, `${fixture}: unsupported full scene must fall back`);
+    if (!centeredGpuFrame.rendered) {
+      if (!poseDependentBudget) assert.equal(gpuResult.status.rendered, false, `${fixture}: unsupported full scene must fall back`);
       assert.equal(pixels, 0, 'whole-view fallback must match Canvas exactly');
       assert.equal(Buffer.compare(a.data, b.data), 0, `${fixture}: centered whole-view fallback has identical RGBA pixels`);
+    } else if (poseDependentBudget) {
+      assert.ok(coverageMiss < 0.005, `${fixture}: actually admitted centered budget scene retains the unchanged dense coverage gate`);
     } else {
       assert.equal(gpuResult.status.rendered, true, `${fixture} uses GPU`);
       assert.equal(gpuResult.firstFrame.cacheReason, 'cold', `${fixture}: mode-triggered first frame includes cold geometry work`);
@@ -1057,10 +1230,16 @@ try {
     // strokes that entered through the cache's overscan border or a wrong translation sign.
     await page.evaluate(() => { const v = window.editor.viewport; v.panByPixels(24 / v.dpr, -17 / v.dpr); });
     const pannedImages = [];
+    let pannedGpuFrame;
     for (const mode of ['canvas', 'gpu']) {
       const path = resolve(out, `${fixture}-pan-${mode}.png`);
       if (mode === 'canvas' && !supportsGPU) { pannedImages.push((await stableCanvasReference(`${fixture}-legacy-panned`, path)).image); continue; }
       const status = await modeFrame(page, mode);
+      if (mode === 'gpu') {
+        pannedGpuFrame = status;
+        assert.notEqual(status.cacheReason, 'admission-deferred', `${fixture}: legacy pan correctness requires actual current-pose admission`);
+        if (!poseDependentBudget) assert.equal(status.rendered, supportsGPU, `${fixture}: legacy pan retains its fixed admission classification`);
+      }
       if (mode === 'gpu' && supportsGPU) {
         assert.equal(status.rendered, true, `${fixture}: panned comparison uses GPU`);
         assert.equal(status.bytes, 0, `${fixture}: panned comparison reuses uploaded geometry`);
@@ -1069,11 +1248,12 @@ try {
       pannedImages.push(PNG.sync.read(readFileSync(path)));
     }
     const panMiss = Math.max(missedForeground(pannedImages[0], pannedImages[1]), missedForeground(pannedImages[1], pannedImages[0]));
-    if (!supportsGPU) {
+    if (!pannedGpuFrame.rendered) {
       assert.equal(pixelmatch(pannedImages[0].data, pannedImages[1].data, null, pannedImages[0].width, pannedImages[0].height, { threshold: 0.15 }), 0, `${fixture}: legacy panned whole-view fallback matches Canvas exactly`);
       assert.equal(Buffer.compare(pannedImages[0].data, pannedImages[1].data), 0, `${fixture}: legacy panned whole-view fallback has identical RGBA pixels`);
     }
     result.comparisons[fixture].pannedTwoPixelCoverageMissFraction = panMiss;
+    if (poseDependentBudget) Object.assign(result.comparisons[fixture], { pannedActualAdmission: pannedGpuFrame, pannedImageDifferenceFraction: pixelmatch(pannedImages[0].data, pannedImages[1].data, null, pannedImages[0].width, pannedImages[0].height, { threshold: 0.15 }) / (pannedImages[0].width * pannedImages[0].height) });
     assert.ok(panMiss < 0.005, `${fixture}: cached panned frame matches geometry within two pixels`);
     const cadenceFixture = result.noReadbackCadence.comparisons[fixture];
     if (cadenceFixture) {
@@ -1102,6 +1282,7 @@ try {
       const frame = await modeFrame(page, mode);
       if (mode === 'gpu') {
         gpuFrame = frame;
+        assert.notEqual(frame.cacheReason, 'admission-deferred', `${label}: mode toggle requires actual same-pose admission for correctness`);
         assert.equal(frame.rendered, expectedGPU, `${label}: expected actual renderer; refusal: ${frame.reason ?? 'none'}`);
         if (expectedGPU && requireWarm) {
           assert.equal(frame.cacheHit, true, `${label}: comparison retains prepared compound scene`);
@@ -1409,7 +1590,7 @@ try {
   result.validation.push('Ordered nested blocks/ATTRIB/stroke TEXT: strict raster, color interiors, selected/hovered whole glyph batches, block/STYLE dependency edit+undo, same-scene WebGL recovery, independent trillion reference/refusal, and actual DXF IPC save/reopen');
   // Lose the actual device after a proved zoom-cache hit, then verify the restored
   // scene at that same camera before the pre-existing repeated recovery checks.
-  await page.evaluate(() => { window.gpuPrototype.setMode('canvas'); window.editor.viewport.twist = 0; window.gpuPrototype.loadFixture('lineweights'); });
+  await page.evaluate(() => { window.gpuPrototype.setMode('canvas'); window.editor.viewport.twist = 0; window.gpuPrototype.loadFixture('lineweights-control'); });
   const warmZoomStart = await modeFrame(page, 'gpu');
   assert.equal(warmZoomStart.rendered, true, 'Wide-stroke recovery fixture uses GPU');
   await page.evaluate(() => { const v = window.editor.viewport; v.zoomAt({ x: v.width / 2, y: v.height / 2 }, 1.1); });
@@ -1448,14 +1629,14 @@ try {
   assert.ok(zoomPixels / (zoomDiff.width * zoomDiff.height) < 0.001, 'Restored warm zoom scene retains the existing raster accuracy gate');
   assert.equal(await page.evaluate(() => JSON.stringify(window.editor.doc.snapshot)), zoomRecoveryDocument);
   assert.deepEqual(await page.evaluate(() => { const v = window.editor.viewport; return { center: { ...v.center }, scale: v.scale, twist: v.twist }; }), zoomRecoveryCamera);
-  result.contextRecovery.push({ scenario: 'loss-after-warm-zoom-hit', camera: zoomRecoveryCamera, warmZoomHit, beforeZoomLoss, restoredZoom, before: zoomContextBefore, after: await prototypeContext(page), imageDifferenceFraction: zoomPixels / (zoomDiff.width * zoomDiff.height), twoPixelCoverageMissFraction: zoomMiss, documentUnchanged: true });
+  result.contextRecovery.push({ scenario: 'loss-after-warm-zoom-hit', fixture: 'lineweights-control', camera: zoomRecoveryCamera, warmZoomHit, beforeZoomLoss, restoredZoom, before: zoomContextBefore, after: await prototypeContext(page), imageDifferenceFraction: zoomPixels / (zoomDiff.width * zoomDiff.height), twoPixelCoverageMissFraction: zoomMiss, documentUnchanged: true });
   result.validation.push('Real context loss after a zero-upload warm zoom hit; restored wide-stroke accuracy and unchanged document/camera');
   // Existing selection logic is unchanged; solid highlight uses the GPU scene and Canvas grips.
-  await page.evaluate(() => { const ed = window.editor; window.gpuPrototype.loadFixture('curves'); ed.viewport.settings.selectionEffect = 'solid'; ed.selection.add('L'); ed.render(); });
+  await page.evaluate(() => { const ed = window.editor; window.gpuPrototype.loadFixture('curve-control'); ed.viewport.settings.selectionEffect = 'solid'; ed.selection.add('L'); ed.render(); });
   await page.waitForTimeout(80);
   assert.equal(await page.evaluate(() => window.gpuPrototype.renderNow().rendered), true);
   await page.locator('#drawing').screenshot({ path: resolve(out, 'selection.png') });
-  result.validation.push('Selection highlight and grips');
+  result.validation.push('Distinct curve-control: selection highlight/grips and preflight independent native width/DPR/0.95 opacity');
   await page.evaluate(() => window.editor.selection.clear());
   for (let cycle = 0; cycle < 2; cycle++) {
     const before = await prototypeContext(page);
@@ -1465,7 +1646,7 @@ try {
     await page.evaluate(() => window.gpuPrototype.restoreContext());
     await page.waitForFunction(() => window.gpuPrototype.status().device === 'ready');
     assert.equal(await page.evaluate(() => window.gpuPrototype.renderNow().rendered), true);
-    result.contextRecovery.push({ cycle: cycle + 1, before, after: await prototypeContext(page) });
+    result.contextRecovery.push({ fixture: 'curve-control', cycle: cycle + 1, before, after: await prototypeContext(page) });
   }
   await page.evaluate(() => window.editor.viewport.settings.gridVisible = true);
   assert.equal(await page.evaluate(() => window.gpuPrototype.renderNow().rendered), false, 'grid layering preserved through full Canvas fallback');

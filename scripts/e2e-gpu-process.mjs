@@ -30,7 +30,7 @@ const result = /** @type {any} */ ({
   worktreeModified: !!execFileSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' }).trim(),
   platform: process.platform, arch: process.arch, outcome: 'running', scope: null,
   termination: null, nativeEvents: [], observation: null, restoration: null, checks: [],
-  scene: { requested: cachedScene ? 'cached-curves-and-lines' : 'curves', addedLines: cachedScene ? 250 : 0 },
+  scene: { requested: cachedScene ? 'cached-curve-control-and-lines' : 'curve-control', fixture: 'curve-control', isolatedPositiveBulgeControl: true, originalCurvesInputUnchanged: true, addedLines: cachedScene ? 250 : 0 },
   gpuPreference: { requested: highPerformance ? 'high-performance' : 'default', electronSwitch: highPerformance ? '--force_high_performance_gpu' : null, scope: 'Private launched app only; requested preference is not proof of active hardware.' },
   limitations: [
     'One Windows runtime and one app-owned GPU-process termination; no hardware coverage matrix.',
@@ -147,7 +147,9 @@ try {
   await page.addStyleTag({ content: '#drawing { pointer-events:none !important }' });
   await page.mouse.move(0, 0);
   await page.evaluate((useCache) => {
-    window.gpuPrototype.setMode('canvas'); window.gpuPrototype.loadFixture('curves'); window.editor.setHover(null);
+    window.gpuPrototype.setMode('canvas'); window.gpuPrototype.loadFixture('curve-control'); window.editor.setHover(null);
+    const entities = window.editor.doc.entities, polyline = entities.find((entity) => entity.id === 'P');
+    if (entities.length !== 4 || JSON.stringify(entities.map((entity) => entity.type)) !== JSON.stringify(['line', 'circle', 'arc', 'polyline']) || polyline.type !== 'polyline' || polyline.points.length !== 2 || JSON.stringify(polyline.bulges) !== JSON.stringify([0.5]) || window.gpuPrototype.fixtureMetadata().name !== 'curve-control') throw new Error('Native GPU-process probe requires the distinct four-entity isolated-positive-bulge curve control');
     if (useCache) {
       const lines = Array.from({ length: 250 }, (_, index) => {
         const x = 0.15 + index % 25 * 0.27, y = 0.15 + Math.floor(index / 25) * 0.5;
@@ -251,7 +253,7 @@ try {
   result.before = before;
   result.scene.entityCount = await page.evaluate(() => window.editor.doc.entities.length);
   result.scene.cacheWarmProof = await page.evaluate(() => /** @type {any} */ (window).__gpuProcessProbe.cacheWarmProof);
-  if (cachedScene) result.checks.push('254-entity scene warmed and reused its real private Canvas bitmap cache before GPU rendering');
+  if (cachedScene) result.checks.push('254-entity curve-control plus250 LINE scene warmed and reused its real private Canvas bitmap cache before GPU rendering');
   result.graphics = { before: await captureGraphics(page) };
   await page.screenshot({ path: resolve(run, 'before.png') });
   result.referenceInput = await page.evaluate(() => /** @type {any} */ (window).__gpuProcessProbe.referenceInput);
