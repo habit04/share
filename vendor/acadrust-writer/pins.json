@@ -493,6 +493,18 @@
           "count": 1
         }
       ]
+    },
+    {
+      "path": "src/io/dxf/writer/section_writer.rs",
+      "beforeSha256": "66cce3118adb8bf793f4229926a9e9eb93b1cdfd5b8590b4120a3ff555f19cfd",
+      "afterSha256": "7c7dcd4d81299dc2ed1ace3b04dce9f9c4d5c89345f3cd3a66e50eaa8edca42b",
+      "replacements": [
+        {
+          "before": "        if let Some(raw_dxf_codes) = &style.raw_dxf_codes {\r\n            let has_flags = raw_dxf_codes.iter().any(|(code, _)| *code == 71);",
+          "after": "        if let Some(raw_dxf_codes) = &style.raw_dxf_codes {\r\n            if style.modern_style.is_some() {\r\n                // The checked modern raw record already contains its full\r\n                // native header and ordered formats. Legacy 71/280/281\r\n                // synthesis would change that schema; replay it exactly.\r\n                for (code, value) in raw_dxf_codes {\r\n                    self.writer.write_string(*code, value)?;\r\n                }\r\n                return Ok(());\r\n            }\r\n            let has_flags = raw_dxf_codes.iter().any(|(code, _)| *code == 71);",
+          "count": 1
+        }
+      ]
     }
   ]
 }

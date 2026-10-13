@@ -4,7 +4,7 @@ The Windows DXF-to-DWG helper links acadrust 0.6.4, pinned by its published crat
 SHA-256 and matching upstream commit in `pins.json`. It is MPL-2.0 licensed; the
 unmodified full license is included here. The helper itself is GPL-3.0-only.
 
-Seventy-nine exact source replacements in twelve files correct standalone MTEXT frame
+Eighty exact source replacements in thirteen files correct standalone MTEXT frame
 output, its matching private validator, owned ATTRIB parent relationships,
 MINSERT's owned-attribute count before array fields, FIELD/FIELDLIST common DXF
 groups, the VIEW front-clipping mode bit, opaque DXF metadata strings, MLEADERSTYLE
@@ -53,6 +53,9 @@ common-object encoding. Its original raw DXF tail remains the sole DXF output,
 so that registry does not duplicate application records. The regression declares
 the required APPID, checks exact literal and integer cache values, verifies one
 DXF record after rewriting, and compares native binary XDATA after reopening.
+Modern raw TABLESTYLE DXF records are replayed without synthesizing legacy
+71/280/281 header properties. The strict modern parser checks the rewritten
+record, while the existing legacy writer keeps its original behavior.
 The controlled `projected-table-style.dxf`
 unit fixture exercises grammar and one supplied override; it does not replace
 the complete independent three-override source/readback fixture proof.
