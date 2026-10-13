@@ -52,7 +52,7 @@
     {
       "path": "src/document.rs",
       "beforeSha256": "a9c4a6a297346f9844dd967cd49982a638bd5aa706b754c4402c07f2bfc2e478",
-      "afterSha256": "36a758fe7f62982b0eec35fd1299dc6bba34df0392a72b798bf02ee760309695",
+      "afterSha256": "93145845f51fe7ea5d4ad719637e308ded1e72d516ca3c188e922fc5c76dc293",
       "replacements": [
         {
           "before": "    /// Owner handle of a database object, for ownership-chain walks.",
@@ -72,6 +72,16 @@
         {
           "before": "            Some(ObjectType::ProxyObject(value)) => value.xdictionary_handle,",
           "after": "            Some(ObjectType::ProxyObject(value)) => value.xdictionary_handle,\r\n            Some(ObjectType::ClassObject(value)) => value.xdictionary_handle,",
+          "count": 1
+        },
+        {
+          "before": "        model_layout.flags = 1; // model space\r\n        model_layout.block_record = self.header.model_space_block_handle;",
+          "after": "        model_layout.flags = 1; // model space\r\n        // This source-absent default must match the ModelType bit encoded\r\n        // by write_layout. Imported LAYOUT records keep their explicit bits.\r\n        model_layout.plot_flags.model_type = true;\r\n        model_layout.block_record = self.header.model_space_block_handle;",
+          "count": 1
+        },
+        {
+          "before": "        layout.flags = 1; // model space\r\n        layout.block_record = model;",
+          "after": "        layout.flags = 1; // model space\r\n        // Only this newly generated missing Model layout receives the bit.\r\n        layout.plot_flags.model_type = true;\r\n        layout.block_record = model;",
           "count": 1
         }
       ]

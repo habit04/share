@@ -1,2 +1,4 @@
 # Hashbangs must remain at byte zero after Vite/Vitest transform on Windows.
 *.mjs text eol=lf
+# Preserve the independently checked native layout fixture bytes on Windows.
+native/dwg-writer/tests/fixtures/autocad-multilayout-app.dxf -text

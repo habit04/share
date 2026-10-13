@@ -1225,6 +1225,11 @@ mod tests {
         use acadrust::types::Vector3;
 
         let mut source = CadDocument::with_version(DxfVersion::AC1032);
+        let model_layout = source.block_records.get("*Model_Space").unwrap().layout;
+        assert!(matches!(
+            &source.objects[&model_layout],
+            ObjectType::Layout(layout) if layout.plot_flags.model_type
+        ));
         let second_layout = source.add_layout("SecondSheet").unwrap();
         let primary = source.header.paper_space_block_handle;
         let secondary = source.block_records.get("*Paper_Space0").unwrap().handle;
@@ -1345,75 +1350,129 @@ mod tests {
     }
 
     #[test]
-    fn explicit_layouts_prune_only_the_unreferenced_source_absent_constructor_layout() {
-        let constructor = CadDocument::new();
-        let old_layout = constructor
-            .objects
-            .iter()
-            .find_map(|(handle, object)| match object {
-                ObjectType::Layout(layout) if layout.name == "Layout1" => Some(*handle),
-                _ => None,
+    fn explicit_source_layouts_keep_imported_flags_and_distinct_reference_closure() {
+        let text = include_str!("../tests/fixtures/autocad-multilayout-app.dxf");
+        validation::validate(text).unwrap();
+        let mut source = DxfReader::from_reader(std::io::Cursor::new(text.as_bytes().to_vec()))
+            .unwrap()
+            .read()
+            .unwrap();
+        let layouts = |document: &CadDocument| {
+            document
+                .objects
+                .values()
+                .filter_map(|object| match object {
+                    ObjectType::Layout(layout) => Some((layout.name.clone(), layout.clone())),
+                    _ => None,
+                })
+                .collect::<BTreeMap<_, _>>()
+        };
+        let imported = layouts(&source);
+        assert_eq!(
+            imported.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec!["Layout1", "Layout2", "Model"],
+        );
+        assert!(imported["Model"].plot_flags.model_type);
+        assert!(!imported["Layout1"].plot_flags.model_type);
+        assert!(!imported["Layout2"].plot_flags.model_type);
+        assert_ne!(
+            imported["Layout1"].block_record,
+            imported["Layout2"].block_record,
+        );
+        source_schema::capture(text).unwrap().verify(&mut source).unwrap();
+        assert_eq!(
+            serde_json::to_value(layouts(&source)).unwrap(),
+            serde_json::to_value(&imported).unwrap(),
+        );
+        for layout in imported.values() {
+            let record = source
+                .block_records
+                .iter()
+                .find(|record| record.handle == layout.block_record)
+                .unwrap();
+            assert_eq!(record.layout, layout.handle);
+        }
+        let snapshot = metadata_snapshot(&source).unwrap();
+        let mut output = std::io::Cursor::new(Vec::new());
+        DwgWriter::write_to_writer(&mut output, &source).unwrap();
+        output.set_position(0);
+        let reopened = DwgReader::from_stream(output).read().unwrap();
+        equivalent(
+            &snapshot,
+            &metadata_snapshot(&reopened).unwrap(),
+            "complete imported two-sheet layouts",
+        )
+        .unwrap();
+        verify_reopening(&source, &reopened).unwrap();
+        let reopened_layouts = layouts(&reopened);
+        assert_eq!(
+            reopened_layouts.keys().collect::<Vec<_>>(),
+            imported.keys().collect::<Vec<_>>(),
+        );
+        for (name, original) in &imported {
+            let actual = &reopened_layouts[name];
+            assert_eq!(actual.handle, original.handle);
+            assert_eq!(actual.block_record, original.block_record);
+            assert_eq!(actual.plot_flags.to_bits(), original.plot_flags.to_bits());
+            let record = reopened
+                .block_records
+                .iter()
+                .find(|record| record.handle == actual.block_record)
+                .unwrap();
+            assert_eq!(record.layout, actual.handle);
+        }
+
+        // An explicit imported Model flag remains explicit. Neither constructor
+        // initialization nor missing-layout generation may overwrite its bits.
+        let mut lines: Vec<_> = text.lines().map(str::to_string).collect();
+        let model_handle = format!("{:X}", imported["Model"].handle.value());
+        let start = lines
+            .windows(4)
+            .position(|pairs| {
+                pairs[0].trim() == "0"
+                    && pairs[1] == "LAYOUT"
+                    && pairs[2].trim() == "5"
+                    && pairs[3] == model_handle
             })
             .unwrap();
-        let model_layout = constructor.block_records.get("*Model_Space").unwrap().layout;
-        let dictionary = constructor.header.acad_layout_dict_handle;
-        let paper = constructor.header.paper_space_block_handle;
-        for name in ["OnlySheet", "Layout1"] {
-            let text = format!(
-                "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1032\n0\nENDSEC\n0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nBLOCK_RECORD\n70\n1\n0\nBLOCK_RECORD\n5\n{:X}\n100\nAcDbSymbolTableRecord\n100\nAcDbBlockTableRecord\n2\n*Paper_Space\n340\n400\n70\n0\n280\n1\n281\n0\n0\nENDTAB\n0\nENDSEC\n0\nSECTION\n2\nOBJECTS\n0\nDICTIONARY\n5\n{:X}\n330\n{:X}\n100\nAcDbDictionary\n281\n1\n3\nModel\n350\n{:X}\n3\n{name}\n350\n400\n0\nLAYOUT\n5\n400\n330\n{:X}\n100\nAcDbPlotSettings\n100\nAcDbLayout\n1\n{name}\n70\n1\n71\n1\n330\n{:X}\n0\nENDSEC\n0\nEOF\n",
-                paper.value(), dictionary.value(), constructor.header.named_objects_dict_handle.value(),
-                model_layout.value(), dictionary.value(), paper.value(),
-            );
-            // This isolated fixture explicitly supplies the paper layout and
-            // relies on constructor context for other standard database objects.
-            let mut source = DxfReader::from_reader(std::io::Cursor::new(text.as_bytes().to_vec()))
-                .unwrap()
-                .read()
-                .unwrap();
-            assert!(matches!(&source.objects[&old_layout], ObjectType::Layout(layout) if layout.name == "Layout1"));
-            let imported = serde_json::to_value(&source.objects[&Handle::new(0x400)]).unwrap();
-            let schema = source_schema::capture(&text).unwrap();
-            schema.verify(&mut source).unwrap();
-            assert!(!source.objects.contains_key(&old_layout));
-            assert_eq!(
-                serde_json::to_value(&source.objects[&Handle::new(0x400)]).unwrap(),
-                imported,
-            );
-            assert_eq!(
-                source.objects.values().filter(|object| matches!(object, ObjectType::Layout(_))).count(),
-                2,
-            );
-            let ObjectType::Dictionary(entries) = &source.objects[&dictionary] else {
-                unreachable!()
-            };
-            assert_eq!(entries.get(name), Some(Handle::new(0x400)));
-            assert!(!entries.entries.iter().any(|(_, target)| *target == old_layout));
-            let snapshot = metadata_snapshot(&source).unwrap();
-            let mut output = std::io::Cursor::new(Vec::new());
-            DwgWriter::write_to_writer(&mut output, &source).unwrap();
-            output.set_position(0);
-            let reopened = DwgReader::from_stream(output).read().unwrap();
-            equivalent(
-                &snapshot,
-                &metadata_snapshot(&reopened).unwrap(),
-                "source-only paper layout",
-            )
-            .unwrap();
-            verify_reopening(&source, &reopened).unwrap();
-            assert_eq!(
-                reopened.objects.values().filter(|object| matches!(object, ObjectType::Layout(_))).count(),
-                2,
-            );
-
-            // An explicit source edge is never removed to make pruning work.
-            let referenced = text.replace("340\n400\n", &format!("340\n{:X}\n", old_layout.value()));
-            let mut refused = DxfReader::from_reader(std::io::Cursor::new(referenced.as_bytes().to_vec()))
-                .unwrap()
-                .read()
-                .unwrap();
-            assert!(source_schema::capture(&referenced).unwrap().verify(&mut refused).is_err());
-            assert!(refused.objects.contains_key(&old_layout));
+        let mut subclass = "";
+        let mut changes = 0;
+        for index in (start + 4..lines.len()).step_by(2) {
+            let code = lines[index].trim().parse::<i32>().unwrap();
+            if code == 0 {
+                break;
+            }
+            if code == 100 {
+                subclass = if lines[index + 1] == "AcDbPlotSettings" {
+                    "plot"
+                } else {
+                    "layout"
+                };
+            } else if code == 70 && subclass == "plot" {
+                lines[index + 1] = (imported["Model"].plot_flags.to_bits() & !0x400).to_string();
+                changes += 1;
+            }
         }
+        assert_eq!(changes, 1);
+        let changed = lines.join("\n");
+        let mut explicit = DxfReader::from_reader(std::io::Cursor::new(changed.as_bytes().to_vec()))
+            .unwrap()
+            .read()
+            .unwrap();
+        source_schema::capture(&changed).unwrap().verify(&mut explicit).unwrap();
+        assert!(!layouts(&explicit)["Model"].plot_flags.model_type);
+        let snapshot = metadata_snapshot(&explicit).unwrap();
+        let mut output = std::io::Cursor::new(Vec::new());
+        DwgWriter::write_to_writer(&mut output, &explicit).unwrap();
+        output.set_position(0);
+        let reopened = DwgReader::from_stream(output).read().unwrap();
+        let refusal = equivalent(
+            &snapshot,
+            &metadata_snapshot(&reopened).unwrap(),
+            "explicit imported Model plot flag",
+        )
+        .unwrap_err();
+        assert!(refusal.contains("layout.plot_flags.model_type"));
     }
 
     #[test]
@@ -1440,6 +1499,32 @@ mod tests {
         };
         assert_eq!(insert.seqend_handle, Some(Handle::new(0x20000)));
         assert_eq!(insert.attributes.len(), 1);
+        assert!(!text.contains("0\nSECTION\n2\nOBJECTS\n"));
+        let model = source.block_records.get("*Model_Space").unwrap().layout;
+        assert!(matches!(
+            &source.objects[&model],
+            ObjectType::Layout(layout) if layout.plot_flags.model_type
+        ));
+        // Exercise the other source-absent creation path without changing any
+        // explicit source object: this input carries no OBJECTS section.
+        source.objects.remove(&model);
+        let ObjectType::Dictionary(dictionary) = source
+            .objects
+            .get_mut(&source.header.acad_layout_dict_handle)
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        dictionary.entries.retain(|(_, target)| *target != model);
+        dictionary.hard_owner_entries.retain(|key| key != "Model");
+        source.block_records.get_mut("*Model_Space").unwrap().layout = Handle::NULL;
+        source.ensure_model_layout();
+        let model = source.block_records.get("*Model_Space").unwrap().layout;
+        assert!(model.value() > 0x20000);
+        assert!(matches!(
+            &source.objects[&model],
+            ObjectType::Layout(layout) if layout.plot_flags.model_type
+        ));
         let snapshot = metadata_snapshot(&source).unwrap();
         let mut output = std::io::Cursor::new(Vec::new());
         DwgWriter::write_to_writer(&mut output, &source).unwrap();

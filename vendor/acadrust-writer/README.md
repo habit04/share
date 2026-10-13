@@ -4,7 +4,7 @@ The Windows DXF-to-DWG helper links acadrust 0.6.4, pinned by its published crat
 SHA-256 and matching upstream commit in `pins.json`. It is MPL-2.0 licensed; the
 unmodified full license is included here. The helper itself is GPL-3.0-only.
 
-Eighty-nine exact source replacements in fifteen files correct standalone MTEXT frame
+Ninety-one exact source replacements in fifteen files correct standalone MTEXT frame
 output, its matching private validator, owned ATTRIB parent relationships,
 MINSERT's owned-attribute count before array fields, FIELD/FIELDLIST common DXF
 groups, the VIEW front-clipping mode bit, opaque DXF metadata strings, MLEADERSTYLE
@@ -22,10 +22,19 @@ Secondary paper-space markers, LINEs and VIEWPORTs encode mode0 with their actua
 BLOCK_RECORD owner. A native regression reads these encoded fields before the
 private reader can restore names or ownership from block lists, then requires
 full metadata snapshots and distinct layout/reference closure after reopening.
-The source schema removes only the known constructor Layout1 when explicit source
-layouts exist and that constructor identity is absent from every source object
-and reference. Source layouts and explicit source references remain protected;
-the candidate must retain full closure before it becomes the writer baseline.
+Source-absent Model layouts receive the ModelType plot flag that the encoder stores,
+both during default initialization and when a missing Model layout is generated.
+DXF OBJECTS import clears constructor objects before reading explicit layouts;
+their actual plot flags are retained, including an explicit conflicting bit that
+the unchanged full reopening comparison must refuse. No source layout is removed.
+The complete `autocad-multilayout-app.dxf` fixture comes from current app serialization
+of the independently authored AutoCAD two-sheet baseline. Its input SHA-256 is
+`f13cdbaba32229b8225f8b82b4ec9d0c9e01c9fae90516a3a9ef10875140b0d9`;
+the original DWG SHA-256 is
+`def417268106a61cb11d7bdafd883a9285ef5c98df52b9c9e2888a6bc63604de`.
+Its full snapshots cover imported identities, plot flags and reciprocal layout
+references. A private test mutation proves an explicit imported Model bit is not
+overwritten during decoding and still refuses when binary reopening changes it.
 The INSERT decoder retains the declared SEQEND handle, which the existing binary
 writer already reuses. An explicit wrong INSERT owner or SEQEND reactor,
 extension dictionary or XDATA refuses: this repair stores identity only, and
