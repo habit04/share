@@ -34,7 +34,8 @@ jobs:
       - run: npm run lint
       - name: Type check (renderer + tests, Electron main / preload, scripts)
         run: npm run typecheck:all
-      - run: npm test
+      # Reduce competing geometry/metadata work without changing any test deadline or assertion.
+      - run: npm test -- --maxWorkers=2
         env:
           # tests/perf.test.ts budgets are 3x the development machine; allow shared runners 2x more.
           JCAD_PERF_FACTOR: 2
@@ -150,6 +151,17 @@ jobs:
           JCAD_E2E_OUT: e2e-output
       - name: Secure origin and one-time preference migration (Windows)
         run: npm run e2e:origin
+      - name: Development DWG writer reproduction bundle
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: development-dwg-writer-${{ matrix.os }}
+          path: |
+            release/dwg-writer/JcadDwgWriter.exe
+            release/dwg-writer/JcadDwgWriter-Source.zip
+            release/dwg-writer/ThirdPartyNotices.json
+            release/dwg-writer/integrity.json
+          if-no-files-found: warn
       - uses: actions/upload-artifact@v4
         if: always()
         with:
