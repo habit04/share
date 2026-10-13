@@ -44,6 +44,8 @@ export class Script3DTool implements Tool {
   private cursor: Point | null = null;
   private finished = false;
   private busy: Promise<void> | null = null;
+  /** True while 2D rubber-band entities (`Request.preview`) are shown. */
+  private preview2d = false;
 
   constructor(
     readonly name: string,
@@ -81,6 +83,7 @@ export class Script3DTool implements Tool {
     this.finished = true;
     this.current = null;
     ctx.setPreview3d?.([]);
+    this.clearPreview2d(ctx);
     ctx.finish();
   }
 
@@ -118,7 +121,23 @@ export class Script3DTool implements Tool {
     this.showPreview(ctx);
   }
 
+  private clearPreview2d(ctx: ToolContext): void {
+    if (!this.preview2d) return;
+    this.preview2d = false;
+    ctx.setPreview([]);
+  }
+
   private showPreview(ctx: ToolContext): void {
+    // 2D rubber band (3DDIM's dimension): drawn by the 2D view's overlay (the 3D view does not show it).
+    const fn2 = this.current?.preview;
+    if (fn2 && this.cursor) {
+      try {
+        ctx.setPreview(fn2(this.cursor));
+        this.preview2d = true;
+      } catch {
+        this.clearPreview2d(ctx);
+      }
+    } else this.clearPreview2d(ctx);
     const fn = this.current?.preview3d;
     if (!ctx.setPreview3d) return;
     if (!fn) {
@@ -171,6 +190,7 @@ export class Script3DTool implements Tool {
       /* cleanup errors are not interesting */
     }
     ctx.setPreview3d?.([]);
+    this.clearPreview2d(ctx);
   }
 }
 
@@ -198,6 +218,8 @@ export interface AskOptions {
   /** Accept points (default true). */
   readonly points?: boolean;
   readonly preview3d?: Request3D['preview3d'];
+  /** 2D rubber-band entities for the cursor (plane-local tool point). */
+  readonly preview?: Request3D['preview'];
 }
 
 /**
@@ -208,7 +230,7 @@ export interface AskOptions {
 export function* ask3(ctx: ToolContext, st: InputState, prompt: string, opts: AskOptions = {}): Step3<Ans3> {
   const points = opts.points ?? true;
   for (;;) {
-    const a: Answer = yield { prompt, distance: false, preview3d: opts.preview3d };
+    const a: Answer = yield { prompt, distance: false, preview3d: opts.preview3d, preview: opts.preview };
     if (a.type === 'enter') return { kind: 'enter' };
     if (a.type === 'select') continue;
     if (a.type === 'point') {

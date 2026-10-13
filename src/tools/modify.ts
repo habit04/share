@@ -4,6 +4,8 @@ import type { Entity } from '../core/entities';
 import { newId, translateEntity, rotateEntity } from '../core/entities';
 import type { Tool, ToolContext } from './types';
 import { removeSolids } from '../model3d/model';
+import { v3 } from '../model3d/math';
+import { commitWithSolids, previewSolidsFor, rotationAbout, translationMatrix } from '../tools3d/solid-edit';
 
 const fmt = (p: Point) => `${p.x.toFixed(4)}, ${p.y.toFixed(4)}`;
 
@@ -82,7 +84,11 @@ export class MoveTool extends SelectionTool {
       return;
     }
     const d = g.sub(p, this.base);
-    if (g.len(d) > 1e-12) ctx.doc.replaceEntities(this.entities(ctx).map((e) => translateEntity(e, d)));
+    if (g.len(d) > 1e-12) {
+      const moved = this.entities(ctx).map((e) => translateEntity(e, d));
+      // Experimental 3D: selected solids move in the drawing plane in the same undo step.
+      if (!commitWithSolids(ctx, this.ids, translationMatrix(v3(d.x, d.y)), { replace: moved })) ctx.doc.replaceEntities(moved);
+    }
     ctx.finish();
   }
 
@@ -93,6 +99,7 @@ export class MoveTool extends SelectionTool {
     }
     const d = g.sub(p, this.base);
     ctx.setGhost(this.entities(ctx).map((e) => translateEntity(e, d)));
+    previewSolidsFor(ctx, this.ids, translationMatrix(v3(d.x, d.y)));
     ctx.setDynText([g.dist(this.base, p).toFixed(4), `${g.deg(g.normAngle(g.angleOf(this.base, p))).toFixed(0)}°`]);
   }
 }
@@ -115,7 +122,9 @@ export class CopyTool extends SelectionTool {
       return;
     }
     const d = g.sub(p, this.base);
-    ctx.doc.addEntities(this.entities(ctx).map((e) => ({ ...translateEntity(e, d), id: newId() })));
+    const copies = this.entities(ctx).map((e) => ({ ...translateEntity(e, d), id: newId() }));
+    // Experimental 3D: selected solids are copied (new ids) in the same undo step.
+    if (!commitWithSolids(ctx, this.ids, translationMatrix(v3(d.x, d.y)), { add: copies, copy: true })) ctx.doc.addEntities(copies);
     ctx.prompt('Specify second point or <Enter to exit>:');
   }
 
@@ -126,6 +135,7 @@ export class CopyTool extends SelectionTool {
     }
     const d = g.sub(p, this.base);
     ctx.setGhost(this.entities(ctx).map((e) => translateEntity(e, d)));
+    previewSolidsFor(ctx, this.ids, translationMatrix(v3(d.x, d.y)));
     ctx.setDynText([g.dist(this.base, p).toFixed(4)]);
   }
 }
@@ -146,9 +156,15 @@ export class RotateTool extends SelectionTool {
       ctx.prompt('Specify rotation angle or pick a point:');
       return;
     }
-    const ang = g.angleOf(this.base, p);
-    ctx.doc.replaceEntities(this.entities(ctx).map((e) => rotateEntity(e, this.base!, ang)));
+    this.rotate(ctx, g.angleOf(this.base, p));
     ctx.finish();
+  }
+
+  /** Rotate the selection by `ang` radians about the base point (solids about the world Z axis through it). */
+  private rotate(ctx: ToolContext, ang: number): void {
+    const base = this.base!;
+    const turned = this.entities(ctx).map((e) => rotateEntity(e, base, ang));
+    if (!commitWithSolids(ctx, this.ids, rotationAbout(v3(base.x, base.y), v3(0, 0, 1), ang), { replace: turned })) ctx.doc.replaceEntities(turned);
   }
 
   override onMove(p: Point, ctx: ToolContext): void {
@@ -158,13 +174,14 @@ export class RotateTool extends SelectionTool {
     }
     const ang = g.angleOf(this.base, p);
     ctx.setGhost(this.entities(ctx).map((e) => rotateEntity(e, this.base!, ang)));
+    previewSolidsFor(ctx, this.ids, rotationAbout(v3(this.base.x, this.base.y), v3(0, 0, 1), ang));
     ctx.setDynText([`${g.deg(g.normAngle(ang)).toFixed(1)}°`]);
   }
 
   override onText(text: string, ctx: ToolContext): void {
     const v = parseFloat(text);
     if (this.base && Number.isFinite(v)) {
-      ctx.doc.replaceEntities(this.entities(ctx).map((e) => rotateEntity(e, this.base!, g.rad(v))));
+      this.rotate(ctx, g.rad(v));
       ctx.finish();
       return;
     }

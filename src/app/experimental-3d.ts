@@ -25,13 +25,21 @@
  * click while "Select objects:" is pending picks the solid under the cursor, else the 2D object
  * where the cursor ray meets z = 0; typing ALL also takes the visible solids, and typing a solid's
  * id takes that solid.
+ *
+ * Editing (milestone 4, docs/3D-EDITING.md): 3DMOVE, 3DROTATE, 3DSCALE, 3DDIST, 3DMASSPROP, 3DAREA
+ * and the 3DDIM prototype (src/tools3d/), the Edit and Measure ribbon panels, DIST measuring 3D
+ * points while 3D mode is on, 3D object snaps (END / MID / CEN / NEA on the face under the cursor,
+ * the 2D OSNAP toggles and aperture) for every point a 3D command receives, with the 2D marker
+ * drawn at the snap, and grips on a single selected solid (dragging the centre grip moves it). In
+ * 3D mode 2D commands also get cursor moves (their ghosts, and ghosts of selected solids for MOVE /
+ * COPY / ROTATE / SCALE / MIRROR) and a click on a snapped solid point hands them its x, y.
  */
 import type { Editor } from './editor';
 import type { Tool, ToolContext } from '../tools/types';
 import type { Point } from '../core/geometry';
 import { RIBBON, type RibbonTab } from '../ui/ribbon';
-import { type Frame3, type Vec3, WORLD_XY_FRAME, intersectRayPlane, add3, scale3, v3 } from '../model3d/math';
-import { addSolids, model3dOf, newSolid, withModel3D } from '../model3d/model';
+import { type Frame3, type Vec3, WORLD_XY_FRAME, intersectRayPlane, add3, len3, scale3, sub3, v3 } from '../model3d/math';
+import { addSolids, model3dOf, newSolid, solidById, withModel3D } from '../model3d/model';
 import { primitiveMesh } from '../model3d/primitives';
 import type { PrimitiveFeature, Solid3D } from '../model3d/types';
 import type { GeometryKernel } from '../model3d/kernel/kernel';
@@ -47,6 +55,13 @@ import { boxTool, coneTool, cylinderTool, sphereTool, torusTool, wedgeTool } fro
 import { extrudeTool, revolveTool } from '../tools3d/sweeps';
 import { intersectTool, subtractTool, unionTool } from '../tools3d/booleans';
 import { planeTool } from '../tools3d/plane';
+import { move3dTool, rotate3dTool, scale3dTool } from '../tools3d/transform';
+import { area3dTool, dist3dTool, massProp3dTool } from '../tools3d/measure';
+import { dim3dTool } from '../tools3d/dim3d';
+import { type Snap3DKind, snapPick3 } from '../tools3d/snap3d';
+import { CENTER_GRIP, gripDragNormal, gripDragPoint, solidGrips } from '../tools3d/grips';
+import { commitSolidEdit, ghostSolids, translationMatrix } from '../tools3d/solid-edit';
+import { solidParameterTool } from '../tools3d/properties-edit';
 
 /** The ribbon tab added when the flag is on (exported for tests; never in RIBBON when off). */
 export const RIBBON_3D_TAB: RibbonTab = {
@@ -63,6 +78,14 @@ export const RIBBON_3D_TAB: RibbonTab = {
         { label: 'Torus', icon: 'donut', command: 'TORUS', size: 'small', tooltip: 'Solid torus: center, radius, tube radius (TORUS)' },
         { label: 'Extrude', icon: 'extend', command: 'EXTRUDE', size: 'large', tooltip: 'Extrude closed 2D objects into a solid (EXTRUDE)' },
         { label: 'Revolve', icon: 'rotate', command: 'REVOLVE', size: 'large', tooltip: 'Revolve closed 2D objects about an axis (REVOLVE)' },
+      ],
+    },
+    {
+      title: 'Edit',
+      buttons: [
+        { label: '3D Move', icon: 'move', command: '3DMOVE', size: 'large', tooltip: 'Move solids by a base point and a second point or a typed displacement (3DMOVE)' },
+        { label: '3D Rotate', icon: 'rotate', command: '3DROTATE', size: 'small', tooltip: 'Rotate solids about an X / Y / Z axis of the construction plane or two points (3DROTATE)' },
+        { label: '3D Scale', icon: 'scale', command: '3DSCALE', size: 'small', tooltip: 'Scale solids uniformly about a base point (3DSCALE)' },
       ],
     },
     {
@@ -89,6 +112,15 @@ export const RIBBON_3D_TAB: RibbonTab = {
         { label: 'Orbit', icon: 'orbit', command: '3DORBIT', size: 'small', tooltip: 'Orbit by dragging; Enter or Esc ends (3DORBIT)' },
         { label: 'Zoom Extents', icon: 'zoomext', command: '3DZOOMEXTENTS', size: 'small', tooltip: 'Zoom to the 3D model and the drawing (3DZOOMEXTENTS)' },
         { label: '3D Mode', icon: 'model', command: '3DMODE', size: 'large', tooltip: 'Switch model space between the 2D view and the experimental 3D viewport (3DMODE)' },
+      ],
+    },
+    {
+      title: 'Measure',
+      buttons: [
+        { label: '3D Distance', icon: 'dist', command: '3DDIST', size: 'small', tooltip: 'Distance, deltas and angles between two 3D points (3DDIST)' },
+        { label: 'Mass Properties', icon: 'props', command: '3DMASSPROP', size: 'small', tooltip: 'Volume, surface area, bounding box and centroid of solids (3DMASSPROP)' },
+        { label: 'Face Area', icon: 'area', command: '3DAREA', size: 'small', tooltip: 'Area and perimeter of a picked planar face (3DAREA)' },
+        { label: '3D Dimension', icon: 'dimaligned', command: '3DDIM', size: 'small', tooltip: 'Prototype: aligned 2D dimension between two 3D points projected onto the plane (3DDIM)' },
       ],
     },
     {
@@ -129,7 +161,18 @@ export class Orbit3DTool implements Tool {
   }
 }
 
-type Drag = { mode: 'pan' | 'orbit' | 'click'; last: { x: number; y: number }; start: { x: number; y: number }; shift: boolean };
+type Drag = { mode: 'pan' | 'orbit' | 'click' | 'grip'; last: { x: number; y: number }; start: { x: number; y: number }; shift: boolean };
+
+/**
+ * A centre-grip drag in progress: the solid, the grip, the drag plane normal and where the cursor
+ * ray met the drag plane when the drag started (the solid moves by the cursor's motion on it).
+ */
+interface GripDrag {
+  readonly solid: Solid3D;
+  readonly grip: Vec3;
+  readonly normal: Vec3;
+  readonly start: Vec3;
+}
 
 /** State and behaviour of 3D mode for one editor (also the `window.jcad3d` debug handle). */
 export class Experimental3d {
@@ -151,6 +194,9 @@ export class Experimental3d {
   /** The 3D pick of the click being handed to a 3D command, and of the cursor. */
   private clickPick: Pick3 | null = null;
   private cursorPick: Pick3 | null = null;
+  /** The 3D object snap under the cursor (drawn as the 2D marker), if any. */
+  snapMarker: { point: Vec3; kind: Snap3DKind } | null = null;
+  private gripDrag: GripDrag | null = null;
   /** Makes the geometry kernel on first use (tests may replace it). */
   kernelFactory: () => GeometryKernel = createDefaultKernel;
 
@@ -233,7 +279,7 @@ export class Experimental3d {
    * The 3D pick at canvas CSS px: the solid face under the cursor, else where the cursor ray meets
    * the construction plane (null when the ray runs parallel to it), with plane coordinates.
    */
-  pick3At(x: number, y: number): Pick3 | null {
+  pick3At(x: number, y: number, snap = false): Pick3 | null {
     const vp = this.viewport;
     if (!vp) return null;
     const ray = vp.pixelRay(x, y);
@@ -247,7 +293,33 @@ export class Experimental3d {
       point = add3(ray.origin, scale3(ray.dir, t));
     }
     const local = worldToPlane(plane, point);
-    return { p2: { x: local.x, y: local.y }, point, ray, hit };
+    const pick: Pick3 = { p2: { x: local.x, y: local.y }, point, ray, hit };
+    return snap ? this.snapped(x, y, pick) : pick;
+  }
+
+  /**
+   * The pick with the 3D object snap applied (OSNAP toggles, aperture = the 2D APERTURE box
+   * measured at the hit's depth); records the marker to draw.
+   */
+  snapped(x: number, y: number, pick: Pick3): Pick3 {
+    const vp = this.viewport;
+    const prev = this.snapMarker;
+    this.snapMarker = null;
+    if (vp && pick.hit) {
+      const px = this.editor.settings.apertureSize / 2 + 2;
+      const side = vp.pixelRay(x + px, y);
+      // Aperture in world units at the hit: distance from the hit point to the offset pixel's ray.
+      const v = sub3(pick.hit.point, side.origin);
+      const d = scale3(side.dir, 1 / Math.max(1e-300, len3(side.dir)));
+      const along = v.x * d.x + v.y * d.y + v.z * d.z;
+      const aperture = len3(sub3(v, scale3(d, along)));
+      const s = snapPick3(pick, model3dOf(this.editor.doc.snapshot), this.editor.snap, aperture, this.constructionPlane);
+      if (s.snap) this.snapMarker = { point: s.point, kind: s.snap };
+      if (prev !== this.snapMarker) this.render();
+      return s;
+    }
+    if (prev) this.render();
+    return pick;
   }
 
   /** Turn 3D mode on. Returns false (and logs why) when it cannot start. */
@@ -316,8 +388,10 @@ export class Experimental3d {
       ed.on('tool', () => {
         if (!ed.tool) {
           this.cursorPick = null;
+          this.snapMarker = null;
           this.setPreview3d([]);
         }
+        this.render();
       }),
       ed.on('snap', () => { this.syncSettings(); this.render(); }),
       ed.on('view', () => this.resizeIfNeeded()),
@@ -353,6 +427,8 @@ export class Experimental3d {
     this.hover = null;
     this.clickPick = null;
     this.cursorPick = null;
+    this.snapMarker = null;
+    this.gripDrag = null;
     this.previewSolids = [];
     // The kernel's worker and WebAssembly memory go with 3D mode (a Boolean still running is
     // rejected and changes nothing); the next Boolean starts a new kernel.
@@ -376,7 +452,93 @@ export class Experimental3d {
 
   /** Redraw on the next frame with the current selection and hover. */
   render(): void {
-    this.viewport?.requestRender({ selection: this.editor.selection, hover: this.hover, previewSolids: this.previewSolids });
+    this.viewport?.requestRender({
+      selection: this.editor.selection, hover: this.hover, previewSolids: this.previewSolids,
+      grips3d: this.grips(), gripSize: this.editor.settings.gripSize, snap3d: this.snapMarker,
+    });
+  }
+
+  /** The solid whose grips are shown: the only selected object, when it is a solid and no command runs. */
+  gripSolid(): Solid3D | null {
+    const ed = this.editor;
+    if (ed.tool || ed.selection.size !== 1) return null;
+    const [id] = ed.selection;
+    return solidById(model3dOf(ed.doc.snapshot), id!) ?? null;
+  }
+
+  /** Grip points shown now (the bounding-box corners and centre of `gripSolid`). */
+  grips(): Vec3[] {
+    const s = this.gripSolid();
+    return s ? solidGrips(s) : [];
+  }
+
+  /** Screen positions (CSS px) of the grips shown now (e2e helper; the centre grip is last). */
+  gripScreenPoints(): Array<{ x: number; y: number } | null> {
+    return this.grips().map((p) => this.project(p));
+  }
+
+  /**
+   * Start dragging the centre grip when (x, y) CSS px is on it (within the grip size + 2 px).
+   * Returns true when a drag started.
+   */
+  beginGripDrag(x: number, y: number): boolean {
+    const vp = this.viewport;
+    const solid = this.gripSolid();
+    if (!vp || !solid) return false;
+    const grip = solidGrips(solid)[CENTER_GRIP];
+    const s = grip ? vp.toScreen(grip) : null;
+    const h = this.editor.settings.gripSize + 2;
+    if (!grip || !s || Math.abs(s.x - x) > h || Math.abs(s.y - y) > h) return false;
+    const ray = vp.pixelRay(x, y);
+    const normal = gripDragNormal(this.constructionPlane, ray.dir);
+    const start = gripDragPoint(grip, normal, ray);
+    if (!start) return false;
+    this.gripDrag = { solid, grip, normal, start };
+    return true;
+  }
+
+  /** The grip drag's displacement for the cursor at (x, y) CSS px, or null. */
+  private gripDisplacement(x: number, y: number): Vec3 | null {
+    const vp = this.viewport, g = this.gripDrag;
+    if (!vp || !g) return null;
+    const p = gripDragPoint(g.grip, g.normal, vp.pixelRay(x, y));
+    return p ? sub3(p, g.start) : null;
+  }
+
+  /** Move the dragged grip's ghost to the cursor. */
+  gripDragTo(x: number, y: number): void {
+    const g = this.gripDrag;
+    const d = this.gripDisplacement(x, y);
+    if (!g) return;
+    this.setPreview3d(d ? ghostSolids([g.solid], translationMatrix(d)) : []);
+  }
+
+  /** Release the grip at (x, y) CSS px: move the solid there as one undoable step. */
+  endGripDrag(x: number, y: number): void {
+    const g = this.gripDrag;
+    const d = this.gripDisplacement(x, y);
+    this.gripDrag = null;
+    this.setPreview3d([]);
+    if (!g || !d || !(len3(d) > 1e-12)) return;
+    const ed = this.editor;
+    if (solidById(model3dOf(ed.doc.snapshot), g.solid.id) !== g.solid) return;
+    commitSolidEdit({ doc: ed.doc }, { solids: [g.solid], matrix: translationMatrix(d) });
+    const f = (v: number) => (Math.abs(v) < 5e-5 ? '0.0000' : v.toFixed(4));
+    ed.log(`Grip: solid moved by ${f(d.x)}, ${f(d.y)}, ${f(d.z)}.`);
+    this.render();
+  }
+
+  /** True while the centre grip is being dragged. */
+  get gripDragging(): boolean {
+    return this.gripDrag !== null;
+  }
+
+  /**
+   * Set a solid parameter as the Properties palette does (e2e helper): starts the PROPERTIES edit;
+   * await `idle()` for a Boolean solid.
+   */
+  setParameter(id: string, key: string, value: string): void {
+    void this.editor.startTool(solidParameterTool(id, key, value));
   }
 
   private syncSettings(): void {
@@ -511,11 +673,39 @@ export class Experimental3d {
   /** Move the cursor of a running 3D command to canvas CSS px (ghost preview), as the mouse does. */
   hoverAt(x: number, y: number): void {
     const ed = this.editor;
-    if (!this.viewport || !(ed.tool instanceof Script3DTool) || ed.selectionPending) return;
-    const pick = this.pick3At(x, y);
+    if (!this.viewport || !ed.tool || ed.selectionPending || ed.tool instanceof Orbit3DTool) return;
+    if (!(ed.tool instanceof Script3DTool)) {
+      // 2D command in 3D mode: the cursor where its ray meets z = 0 (ghosts of MOVE etc.).
+      const q = this.drawingPlanePoint(x, y);
+      if (q) ed.tool.onMove(q, ed.toolContext());
+      return;
+    }
+    const pick = this.pick3At(x, y, true);
     if (!pick) return;
     this.cursorPick = pick;
     ed.tool.onMove(pick.p2, ed.toolContext());
+  }
+
+  /**
+   * The drawing-plane (z = 0) point a 2D command gets for canvas CSS px: the x, y of the 3D snap
+   * when the cursor is over a solid and a snap applies, else where the cursor ray meets z = 0.
+   */
+  drawingPlanePoint(x: number, y: number): Point | null {
+    const vp = this.viewport;
+    if (!vp) return null;
+    const ray = vp.pixelRay(x, y);
+    const hit = vp.pickExact(x, y);
+    if (hit) {
+      const s = this.snapped(x, y, { p2: { x: hit.point.x, y: hit.point.y }, point: hit.point, ray, hit });
+      if (this.snapMarker) return { x: s.point.x, y: s.point.y };
+    } else if (this.snapMarker) {
+      this.snapMarker = null;
+      this.render();
+    }
+    const t = intersectRayPlane(ray, { origin: v3(0, 0, 0), normal: v3(0, 0, 1) });
+    if (t === null) return null;
+    const q = add3(ray.origin, scale3(ray.dir, t));
+    return { x: q.x, y: q.y };
   }
 
   // ---------------------------------------------------------------- mouse
@@ -539,7 +729,8 @@ export class Experimental3d {
         this.lastMiddle = now;
         this.drag = { mode: ev.shiftKey ? 'orbit' : 'pan', last: p, start: p, shift: ev.shiftKey };
       } else if (ev.button === 0) {
-        this.drag = { mode: this.editor.tool instanceof Orbit3DTool ? 'orbit' : 'click', last: p, start: p, shift: ev.shiftKey };
+        const grip = !this.editor.tool && !ev.shiftKey && this.beginGripDrag(p.x, p.y);
+        this.drag = { mode: grip ? 'grip' : this.editor.tool instanceof Orbit3DTool ? 'orbit' : 'click', last: p, start: p, shift: ev.shiftKey };
       }
     };
     const move = (ev: MouseEvent) => {
@@ -550,6 +741,10 @@ export class Experimental3d {
       if (d) {
         const dx = p.x - d.last.x, dy = p.y - d.last.y;
         d.last = p;
+        if (d.mode === 'grip') {
+          this.gripDragTo(p.x, p.y);
+          return;
+        }
         if (d.mode === 'pan') vp.panBy(dx, dy);
         else if (d.mode === 'orbit') vp.orbitBy(dx, dy);
         if (d.mode !== 'click') {
@@ -557,7 +752,7 @@ export class Experimental3d {
           return;
         }
       }
-      if (this.editor.tool instanceof Script3DTool) this.hoverAt(p.x, p.y);
+      if (this.editor.tool) this.hoverAt(p.x, p.y);
       const hover = this.editor.tool && !this.editor.selectionPending ? null : vp.pick(p.x, p.y);
       if (hover !== this.hover) {
         this.hover = hover;
@@ -568,6 +763,10 @@ export class Experimental3d {
       const d = this.drag;
       this.drag = null;
       const vp = this.viewport;
+      if (d?.mode === 'grip') {
+        this.endGripDrag(pos(ev).x, pos(ev).y);
+        return;
+      }
       if (!d || !vp || d.mode !== 'click' || ev.button !== 0) return;
       const p = pos(ev);
       if (Math.hypot(p.x - d.start.x, p.y - d.start.y) > 3) return;
@@ -622,7 +821,7 @@ export class Experimental3d {
     }
     if (ed.tool instanceof Script3DTool) {
       // The exact 3D pick travels with the typed coordinates (plane-local), see `pickAt`.
-      const pick = this.pick3At(x, y);
+      const pick = this.pick3At(x, y, true);
       if (!pick) return;
       this.clickPick = pick;
       try {
@@ -633,11 +832,10 @@ export class Experimental3d {
       return;
     }
     if (ed.tool && !(ed.tool instanceof Orbit3DTool)) {
-      // Prototype: the point on the drawing plane under the cursor, as typed coordinates.
-      const ray = vp.pixelRay(x, y);
-      const t = intersectRayPlane(ray, { origin: v3(0, 0, 0), normal: v3(0, 0, 1) });
-      if (t === null) return;
-      const q = add3(ray.origin, scale3(ray.dir, t));
+      // Prototype: the point on the drawing plane under the cursor (or the x, y of a snapped
+      // solid point), as typed coordinates.
+      const q = this.drawingPlanePoint(x, y);
+      if (!q) return;
       ed.submitInput(typedCoordinate(q, ed.settings.precision));
       return;
     }
@@ -700,6 +898,22 @@ function registerCommands(editor: Editor, c: Experimental3d): void {
   tool('SUBTRACT', ['SU'], 'subtract solids from solids', subtractTool);
   tool('INTERSECT', ['IN'], 'keep the common volume of solids', intersectTool);
   tool('3DPLANE', [], 'construction plane for 3D commands [World/XY/XZ/YZ/Face/Origin]', planeTool);
+  // Editing and measurement (milestone 4, docs/3D-EDITING.md).
+  tool('3DMOVE', ['3M'], 'move solids [Displacement]', move3dTool);
+  tool('3DROTATE', ['3R'], 'rotate solids about an axis [X/Y/Z/2Points] [Reference]', rotate3dTool);
+  tool('3DSCALE', [], 'scale solids uniformly [Reference]', scale3dTool);
+  tool('3DDIST', [], 'distance between two 3D points', () => dist3dTool());
+  tool('3DMASSPROP', [], 'volume, surface area, bounding box and centroid of solids', massProp3dTool);
+  tool('3DAREA', [], 'area and perimeter of a planar face of a solid', area3dTool);
+  tool('3DDIM', [], 'prototype: aligned 2D dimension between two 3D points', dim3dTool);
+  // DIST measures 3D points while 3D mode is on; otherwise it is the unchanged 2D command.
+  const dist = editor.commands.get('DIST');
+  if (dist) {
+    reg(dist.name, dist.aliases, dist.description, (ed, arg) => {
+      if (c.active) return ed.startTool(dist3dTool('DIST'));
+      return dist.run(ed, arg);
+    }, dist.startsTool);
+  }
 }
 
 /**

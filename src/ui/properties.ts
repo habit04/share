@@ -11,6 +11,7 @@ import { isViewportFrame, viewTwist } from '../core/layouts';
 import type { Solid3D } from '../model3d/types';
 import { replaceSolid, solidById } from '../model3d/model';
 import { selectedSolids, solidRows } from '../tools3d/properties';
+import { parameterRows, parameterText, solidParameterTool } from '../tools3d/properties-edit';
 
 /** Properties palette: shows and edits the current selection (docked right). */
 export class PropertiesPalette {
@@ -336,7 +337,10 @@ export class PropertiesPalette {
 
   /**
    * Experimental 3D solids (rows from src/tools3d/properties.ts): layer and colour for all of
-   * them, name and the read-only geometry for a single one. Edits are one undoable step each.
+   * them, name, the editable parameters (milestone 4: sizes and segment counts of primitives and
+   * sweeps, Boolean operands' parameters re-run through the kernel) and the read-only geometry for a
+   * single one. Edits are one undoable step each; a refused value is reported on the command line
+   * and the row shows the unchanged value again.
    */
   private renderSolids(solids: Solid3D[], layers: Array<[string, string]>, colors: Array<[string, string]>): void {
     const b = this.bodyEl;
@@ -377,6 +381,18 @@ export class PropertiesPalette {
       const { name: _old, ...rest } = s;
       return v.trim() ? { ...rest, name: v.trim() } : rest;
     }))));
+    const params = parameterRows(solids[0]!.feature);
+    if (params.length) {
+      const id = solids[0]!.id;
+      b.appendChild(this.section('Parameters'));
+      for (const p of params) {
+        b.appendChild(this.row(p.label, this.input(parameterText(p), (v) => {
+          void this.editor.startTool(solidParameterTool(id, p.key, v));
+          // A refused value leaves the model unchanged (no 'change' event): show the stored value.
+          this.render();
+        })));
+      }
+    }
     b.appendChild(this.section('Geometry'));
     for (const r of rows) if (!r.edit && r.label !== 'Type') b.appendChild(this.row(r.label, r.value));
   }
