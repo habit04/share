@@ -5,6 +5,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pins, sha256, validatePatchedSource } from './patch-source.mjs';
 import { validateMetadataReport } from './validate-metadata-fixture.mjs';
+import { validateBookColorProjectionReport } from './validate-appearance-fixture.mjs';
 
 const [sourceArg, sdkArg, artifactArg] = process.argv.slice(2);
 if (!sourceArg || !sdkArg || !artifactArg || process.argv.length !== 5) throw new Error('Usage: write-provenance.mjs SOURCE SDK ARTIFACT');
@@ -34,6 +35,8 @@ assert.equal(fixture.masks.length, 7);
 const appearance = JSON.parse(await readFile(join(artifact, 'appearance-report.json'), 'utf8'));
 assert.equal(appearance.cases?.length, 2, 'Native appearance/shipping validation did not complete.');
 for (const result of appearance.cases) assert.equal(result.nativeError, 0, 'Native appearance/shipping fixture has decoder errors.');
+const appearanceExpected = JSON.parse(await readFile(resolve(here, '../..', pins.appearanceExpected), 'utf8'));
+validateBookColorProjectionReport(appearance.cases[0].bookColorProjection, { handle: '14F', ...appearanceExpected.namedEntityByHandle['14B'] });
 const metadata = JSON.parse(await readFile(join(artifact, 'metadata-report.json'), 'utf8'));
 const metadataFixture = await readFile(resolve(here, '../..', pins.metadataFixture));
 const metadataExpectedBytes = await readFile(resolve(here, '../..', pins.metadataExpected));
@@ -75,7 +78,9 @@ const provenance = {
   build: { commands: ['./autogen.sh', 'npm run build:prepare', 'npm run build:obj', 'npm run build:wasm'], makeFlags: '-j2', scripts: Object.fromEntries(['build:prepare', 'build:obj', 'build:wasm'].map((name) => [name, packageManifest.scripts[name]])), observedTools: { node: process.version, ...Object.fromEntries(['npm', 'autoconf', 'automake', 'libtoolize', 'make', 'gcc', 'pkg-config'].map((command) => [command, execFileSync(command, ['--version'], { encoding: 'utf8' }).trim().split('\n')[0]])) } },
   validation: { fixtureSha256: fixture.fixtureSha256, expectedSha256: fixture.expectedSha256, nativeError: fixture.nativeError, maskCount: fixture.masks.length, report: 'fixture-report.json', appearanceReport: 'appearance-report.json', appearanceCases: appearance.cases.map(({ kind, fixtureSha256, expectedSha256, nativeError }) => ({ kind, fixtureSha256, expectedSha256, nativeError })),
     metadata: { report: 'metadata-report.json', fixtureSha256: metadata.fixtureSha256, expectedSha256: metadata.expectedSha256, nativeError: 0, writeError: 0, complete: true, recordCount: metadata.records.length, maxOutputBytes: metadata.maxOutputBytes, limitedOutputRejected: true,
-      classProjectionVerified: true, nativeClassCount: metadata.nativeClassCount } },
+      classProjectionVerified: true, nativeClassCount: metadata.nativeClassCount,
+      classOracleVerified: true, sourceDxfSha256: metadata.sourceDxfSha256,
+      declaredClassCount: metadata.declaredClassCount } },
   workflow: { repository: process.env.GITHUB_REPOSITORY || '', commit: process.env.GITHUB_SHA || '', runId: process.env.GITHUB_RUN_ID || '', runAttempt: process.env.GITHUB_RUN_ATTEMPT || '' },
   patchedFiles: await Promise.all(patchReport.files.map(async (file) => ({ ...file, builtSourceSha256: sha256(await readFile(join(source, file.path))) }))),
   assets,

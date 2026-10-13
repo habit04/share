@@ -10,7 +10,9 @@
     },
     "dwgSha256": "5f5a9bd4a0ffd2e545f6f5404bed9edb27f2c41411c3b26a264f0696a649f105",
     "oracle": "r2018-views-fields.oracle.cs",
-    "expectedFrom": "Native AutoCAD DXFOUT 2018, 16 decimal places, never JCad output"
+    "expectedFrom": "Native AutoCAD DXFOUT 2018, 16 decimal places, never JCad output",
+    "dxfSha256": "2630c55169a36ed81951e132b3a946feb57426197e64d4e5747c3bde6821dcad",
+    "dxfHashEncoding": "UTF-8; CRLF normalized to LF"
   },
   "records": [
     {
@@ -894,6 +896,404 @@
         {
           "code": 98,
           "value": "25"
+        }
+      ]
+    }
+  ],
+  "classDefinitions": [
+    {
+      "type": "CLASS",
+      "groups": [
+        {
+          "code": 1,
+          "value": "ACDBDICTIONARYWDFLT"
+        },
+        {
+          "code": 2,
+          "value": "AcDbDictionaryWithDefault"
+        },
+        {
+          "code": 3,
+          "value": "ObjectDBX Classes"
+        },
+        {
+          "code": 90,
+          "value": "        0"
+        },
+        {
+          "code": 91,
+          "value": "        1"
+        },
+        {
+          "code": 280,
+          "value": "     0"
+        },
+        {
+          "code": 281,
+          "value": "     0"
+        }
+      ]
+    },
+    {
+      "type": "CLASS",
+      "groups": [
+        {
+          "code": 1,
+          "value": "MATERIAL"
+        },
+        {
+          "code": 2,
+          "value": "AcDbMaterial"
+        },
+        {
+          "code": 3,
+          "value": "ObjectDBX Classes"
+        },
+        {
+          "code": 90,
+          "value": "     1153"
+        },
+        {
+          "code": 91,
+          "value": "        3"
+        },
+        {
+          "code": 280,
+          "value": "     0"
+        },
+        {
+          "code": 281,
+          "value": "     0"
+        }
+      ]
+    },
+    {
+      "type": "CLASS",
+      "groups": [
+        {
+          "code": 1,
+          "value": "VISUALSTYLE"
+        },
+        {
+          "code": 2,
+          "value": "AcDbVisualStyle"
+        },
+        {
+          "code": 3,
+          "value": "ObjectDBX Classes"
+        },
+        {
+          "code": 90,
+          "value": "     4095"
+        },
+        {
+          "code": 91,
+          "value": "       24"
+        },
+        {
+          "code": 280,
+          "value": "     0"
+        },
+        {
+          "code": 281,
+          "value": "     0"
+        }
+      ]
+    },
+    {
+      "type": "CLASS",
+      "groups": [
+        {
+          "code": 1,
+          "value": "TABLESTYLE"
+        },
+        {
+          "code": 2,
+          "value": "AcDbTableStyle"
+        },
+        {
+          "code": 3,
+          "value": "ObjectDBX Classes"
+        },
+        {
+          "code": 90,
+          "value": "     4095"
+        },
+        {
+          "code": 91,
+          "value": "        1"
+        },
+        {
+          "code": 280,
+          "value": "     0"
+        },
+        {
+          "code": 281,
+          "value": "     0"
+        }
+      ]
+    },
+    {
+      "type": "CLASS",
+      "groups": [
+        {
+          "code": 1,
+          "value": "SCALE"
+        },
+        {
+          "code": 2,
+          "value": "AcDbScale"
+        },
+        {
+          "code": 3,
+          "value": "ObjectDBX Classes"
+        },
+        {
+          "code": 90,
+          "value": "     1153"
+        },
+        {
+          "code": 91,
+          "value": "       17"
+        },
+        {
+          "code": 280,
+          "value": "     0"
+        },
+        {
+          "code": 281,
+          "value": "     0"
+        }
+      ]
+    },
+    {
+      "type": "CLASS",
+      "groups": [
+        {
+          "code": 1,
+          "value": "MLEADERSTYLE"
+        },
+        {
+          "code": 2,
+          "value": "AcDbMLeaderStyle"
+        },
+        {
+          "code": 3,
+          "value": "ACDB_MLEADERSTYLE_CLASS"
+        },
+        {
+          "code": 90,
+          "value": "     4095"
+        },
+        {
+          "code": 91,
+          "value": "        1"
+        },
+        {
+          "code": 280,
+          "value": "     0"
+        },
+        {
+          "code": 281,
+          "value": "     0"
+        }
+      ]
+    },
+    {
+      "type": "CLASS",
+      "groups": [
+        {
+          "code": 1,
+          "value": "ACDBSECTIONVIEWSTYLE"
+        },
+        {
+          "code": 2,
+          "value": "AcDbSectionViewStyle"
+        },
+        {
+          "code": 3,
+          "value": "ObjectDBX Classes"
+        },
+        {
+          "code": 90,
+          "value": "     1025"
+        },
+        {
+          "code": 91,
+          "value": "        1"
+        },
+        {
+          "code": 280,
+          "value": "     0"
+        },
+        {
+          "code": 281,
+          "value": "     0"
+        }
+      ]
+    },
+    {
+      "type": "CLASS",
+      "groups": [
+        {
+          "code": 1,
+          "value": "ACDBDETAILVIEWSTYLE"
+        },
+        {
+          "code": 2,
+          "value": "AcDbDetailViewStyle"
+        },
+        {
+          "code": 3,
+          "value": "ObjectDBX Classes"
+        },
+        {
+          "code": 90,
+          "value": "     1025"
+        },
+        {
+          "code": 91,
+          "value": "        1"
+        },
+        {
+          "code": 280,
+          "value": "     0"
+        },
+        {
+          "code": 281,
+          "value": "     0"
+        }
+      ]
+    },
+    {
+      "type": "CLASS",
+      "groups": [
+        {
+          "code": 1,
+          "value": "DICTIONARYVAR"
+        },
+        {
+          "code": 2,
+          "value": "AcDbDictionaryVar"
+        },
+        {
+          "code": 3,
+          "value": "ObjectDBX Classes"
+        },
+        {
+          "code": 90,
+          "value": "        0"
+        },
+        {
+          "code": 91,
+          "value": "        5"
+        },
+        {
+          "code": 280,
+          "value": "     0"
+        },
+        {
+          "code": 281,
+          "value": "     0"
+        }
+      ]
+    },
+    {
+      "type": "CLASS",
+      "groups": [
+        {
+          "code": 1,
+          "value": "CELLSTYLEMAP"
+        },
+        {
+          "code": 2,
+          "value": "AcDbCellStyleMap"
+        },
+        {
+          "code": 3,
+          "value": "ObjectDBX Classes"
+        },
+        {
+          "code": 90,
+          "value": "     1152"
+        },
+        {
+          "code": 91,
+          "value": "        1"
+        },
+        {
+          "code": 280,
+          "value": "     0"
+        },
+        {
+          "code": 281,
+          "value": "     0"
+        }
+      ]
+    },
+    {
+      "type": "CLASS",
+      "groups": [
+        {
+          "code": 1,
+          "value": "FIELD"
+        },
+        {
+          "code": 2,
+          "value": "AcDbField"
+        },
+        {
+          "code": 3,
+          "value": "ObjectDBX Classes"
+        },
+        {
+          "code": 90,
+          "value": "     1152"
+        },
+        {
+          "code": 91,
+          "value": "        2"
+        },
+        {
+          "code": 280,
+          "value": "     0"
+        },
+        {
+          "code": 281,
+          "value": "     0"
+        }
+      ]
+    },
+    {
+      "type": "CLASS",
+      "groups": [
+        {
+          "code": 1,
+          "value": "FIELDLIST"
+        },
+        {
+          "code": 2,
+          "value": "AcDbFieldList"
+        },
+        {
+          "code": 3,
+          "value": "ObjectDBX Classes"
+        },
+        {
+          "code": 90,
+          "value": "     1152"
+        },
+        {
+          "code": 91,
+          "value": "        1"
+        },
+        {
+          "code": 280,
+          "value": "     0"
+        },
+        {
+          "code": 281,
+          "value": "     0"
         }
       ]
     }

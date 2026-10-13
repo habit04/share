@@ -77,7 +77,8 @@ describe('mandatory repaired native runtime acceptance', () => {
     const verified = await verifyNativeRuntime(join(root, 'vendor/libredwg-web-bg'), fixture, expected);
     expect(verified.source).toEqual(NATIVE_SOURCE);
     expect(verified.repairPolicy).toBe('metadata-graph');
-    expect(verified.metadata).toMatchObject({ nativeError: 0, writeError: 0, complete: true, limitedOutputRejected: true });
+    expect(verified.metadata).toMatchObject({ nativeError: 0, writeError: 0, complete: true, limitedOutputRejected: true,
+      classProjectionVerified: true, classOracleVerified: true, nativeClassCount: 13, declaredClassCount: 12 });
     expect(verified.appearance).toMatchObject({ cases: [{ kind: 'appearance' }, { kind: 'shipping' }] });
     expect(verified.memory).toEqual({ origin: 'defined', ...memory });
     expect(verified.masks).toHaveLength(7);

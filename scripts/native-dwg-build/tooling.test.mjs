@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { checkedReplacement, validateReplacementText, patch, pins } from './patch-source.mjs';
-import { checkedNativeColor, encodedNativeAlpha } from './validate-appearance-fixture.mjs';
+import { checkedNativeColor, encodedNativeAlpha, checkedBookColorProjection, validateBookColorProjectionReport } from './validate-appearance-fixture.mjs';
 
 const before = Buffer.from('#include "binding_common.h"\nFIELD_BL (bg_fill_scale, 45);\n');
 const entry = {
@@ -80,7 +80,8 @@ test('metadata native patch uses one owned bounded stream and copied identities 
   assert.match(after, /ferror\(stream\)/);
   assert.match(after, /fclose\(stream\)/);
   assert.match(after, /"%llX"/);
-  assert.equal((after.match(/notes\.call<void>\("push", std::string\(/g) ?? []).length, 8);
+  // Every note, including the two invalid-class refusals, uses the copied string binding.
+  assert.equal((after.match(/notes\.call<void>\("push", std::string\(/g) ?? []).length, 10);
   assert.doesNotMatch(after, /notes\.call<void>\("push", (?:"|over_limit)/);
   assert.doesNotMatch(after, /FS\.|input_filename|output_filename|reinterpret_cast<uintptr_t>\(obj/);
   const values = patch.files.find((file) => file.path === 'src/dwg_spec_shared.h').replacements.find((replacement) => replacement.after.includes('JCAD_TABLE_VALUE_BODY_FLAGS 1')).after;
@@ -170,4 +171,39 @@ test('declaration generation uses an isolated version/integrity pin before uncha
   assert.match(workflow, /tsc" --outFile "\$NATIVE_DECLARATION_TOOLS\/probe\.d\.ts" --skipLibCheck --declaration --emitDeclarationOnly --allowJs/);
   assert.ok(workflow.indexOf('Install integrity-pinned declaration compiler') < workflow.indexOf('Compile matching factory glue'));
   assert.match(workflow, /npm run build:prepare && npm run build:obj && npm run build:wasm/);
+});
+
+test('book-color projection boundary retains the observed source identity, Unicode and encoded RGB', () => {
+  // Token boundary only; validateAppearanceFixtures supplies actual compiled/native proof.
+  const expected = { handle: '14F', name: 'Studio Book$Pearl Δ', rgb: 0xabcdef };
+  const dxf = '0\nSECTION\n2\nOBJECTS\n0\nDBCOLOR\n5\n14F\n330\nC\n100\nAcDbColor\n62\n256\n420\n-1028928017\n430\nStudio Book$Pearl Δ\n0\nENDSEC\n0\nEOF\n';
+  const metadata = { schemaVersion: 1, complete: true, writeError: 0, objects: [{ handle: '14F', type: 'DBCOLOR', dxfType: 'DBCOLOR', supertype: 'object' }], dxf };
+  const record = checkedBookColorProjection(metadata, expected);
+  assert.equal(record.handle, '14F'); assert.equal(record.type, 'DBCOLOR'); assert.equal(record.name, expected.name); assert.equal(record.rgb, expected.rgb);
+  assert.ok(record.outputBytes > dxf.length); assert.ok(record.groups.some(([code, value]) => code === 420 && value === '-1028928017'));
+  assert.equal(validateBookColorProjectionReport(record, expected), record);
+  for (const changed of [undefined, { ...record, name: 'Studio Book$Pearl Î”' }, { ...record, complete: false },
+    { ...record, writeError: 1 }, { ...record, outputBytes: 1 }, { ...record, inventoryCount: 0 },
+    { ...record, groups: record.groups.map(([code, value]) => [code, code === 430 ? 'Studio Book$Pearl Î”' : value]) }]) {
+    assert.throws(() => validateBookColorProjectionReport(changed, expected));
+  }
+  assert.throws(() => checkedBookColorProjection({ ...metadata, dxf: dxf.replace('Pearl Δ', 'Pearl Î”') }, expected), /Unicode color-book projection changed/);
+  assert.throws(() => checkedBookColorProjection({ ...metadata, dxf: dxf.replace('-1028928017', '11259375') }, expected), /true-color method changed/);
+  assert.throws(() => checkedBookColorProjection({ ...metadata, dxf: dxf.replace('-1028928017', '-1028928018') }, expected), /projection RGB changed/);
+});
+
+test('book-color projection boundary refuses missing, ambiguous, incomplete or erroneous native evidence', () => {
+  const expected = { handle: '14F', name: 'Studio Book$Pearl Δ', rgb: 0xabcdef };
+  const object = { handle: '14F', type: 'DBCOLOR', dxfType: 'DBCOLOR', supertype: 'object' };
+  const record = '0\nDBCOLOR\n5\n14F\n100\nAcDbColor\n420\n-1028928017\n430\nStudio Book$Pearl Δ\n';
+  const metadata = { schemaVersion: 1, complete: true, writeError: 0, objects: [object], dxf: '0\nSECTION\n2\nOBJECTS\n' + record + '0\nENDSEC\n0\nEOF\n' };
+  for (const broken of [
+    { ...metadata, complete: false }, { ...metadata, writeError: 1 }, { ...metadata, objects: [] },
+    { ...metadata, objects: [object, object] }, { ...metadata, objects: [{ ...object, type: 'LINE' }] },
+    { ...metadata, dxf: metadata.dxf.replace('5\n14F', '5\n150') },
+    { ...metadata, dxf: metadata.dxf.replace('0\nDBCOLOR', '0\nXRECORD') },
+    { ...metadata, dxf: metadata.dxf.replace(record, record + record) },
+    { ...metadata, dxf: metadata.dxf.replace('430\nStudio Book$Pearl Δ\n', '') },
+    { ...metadata, dxf: metadata.dxf.replace('0\nEOF\n', '') },
+  ]) assert.throws(() => checkedBookColorProjection(broken, expected));
 });

@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { metadataDxfRecords, validateMetadataOracle, validateMetadataReport, validateNativeClassProjection } from './validate-metadata-fixture.mjs';
+import { metadataDxfRecords, validateMetadataOracle, validateMetadataReport, validateNativeClassProjection, validateNativeClassOracle } from './validate-metadata-fixture.mjs';
+import { readFileSync } from 'node:fs';
 
 // Synthetic tokens exercise the validator boundary. They do not establish native
 // DWG fidelity or replace the independently authored CAD fixture acceptance gate.
@@ -18,6 +19,27 @@ test('class projection checks copied native builtin identities, application name
   assert.throws(() => validateNativeClassProjection({ dxf: dxf(changed) }, inventory), /group90 changed/);
   assert.throws(() => validateNativeClassProjection({ dxf: dxf(records) }, [{ ...inventory[0], item_class_id: 0 }, inventory[1]]), /discriminator/);
   assert.throws(() => validateNativeClassProjection({ dxf: dxf(records) }, [{ ...inventory[0], appname: 'x\nCLASS' }, inventory[1]]), /name/);
+});
+test('whole independent AutoCAD class oracle catches shared native/projection scalar corruption', () => {
+  const original = readFileSync(new URL('../../tests/fixtures/interchange/r2018-views-fields.dxf', import.meta.url), 'utf8');
+  const definitions = metadataDxfRecords(original).filter(record => record.type === 'CLASS');
+  assert.equal(validateNativeClassOracle({ dxf: dxf(definitions) }, original).length, 12);
+  const inventory = definitions.map(record => {
+    const value = code => record.groups.find(group => group.code === code)?.value.trim();
+    return { dxfname: value(1), cppname: value(2), appname: value(3), proxyflag: Number(value(90)), is_zombie: Number(value(280)), item_class_id: Number(value(281)) ? 0x1f2 : 0x1f3, num_instances: Number(value(91)) };
+  });
+  const changed = structuredClone(definitions), source = changed.find(record => record.groups.some(group => group.code === 1 && group.value === 'ACDBSECTIONVIEWSTYLE'));
+  source.groups.find(group => group.code === 90).value = '0';
+  source.groups.find(group => group.code === 91).value = '256';
+  const copied = inventory.map(cls => cls.dxfname === 'ACDBSECTIONVIEWSTYLE' ? { ...cls, proxyflag: 0, num_instances: 256 } : cls);
+  assert.doesNotThrow(() => validateNativeClassProjection({ dxf: dxf(changed) }, copied), 'Two views of the same corrupted native state agree.');
+  assert.throws(() => validateNativeClassOracle({ dxf: dxf(changed) }, original), /Independent AutoCAD class ACDBSECTIONVIEWSTYLE group90 changed/);
+  for (const code of [2, 3, 90, 91, 280, 281]) {
+    const mutated = structuredClone(definitions), cls = mutated.at(-1), group = cls.groups.find(group => group.code === code);
+    group.value = [2, 3].includes(code) ? group.value + 'changed' : String(Number(group.value) + 1);
+    assert.throws(() => validateNativeClassOracle({ dxf: dxf(mutated) }, original), new RegExp(`group${code} changed`));
+  }
+  assert.throws(() => validateNativeClassOracle({ dxf: dxf(definitions.slice(0, -1)) }, original), /missing/);
 });
 const record = (type, handle, groups) => ({ type, handle, groups: [group(5, handle), ...groups] });
 const mockRecords = () => [
@@ -83,6 +105,7 @@ function mockReport(fixture = mockFixture()) {
       limitedOutputRejected: true, objects: structuredClone(fixture.metadata.objects),
       inventoryCount: fixture.metadata.objects.length,
       records: validateMetadataOracle(fixture.metadata, fixture.expected),
+      classProjectionVerified: true, nativeClassCount: 0, classInventory: [], classDefinitions: [],
     },
   };
 }
@@ -341,7 +364,7 @@ test('report acceptance rechecks actual captured records against the local token
 
 test('report acceptance requires native success, completeness and the exercised fixed output cap', () => {
   const { report, fixture } = mockReport();
-  for (const key of ['schemaVersion', 'nativeError', 'writeError', 'complete', 'maxOutputBytes', 'outputBytes', 'limitedOutputRejected', 'objects', 'inventoryCount', 'records']) {
+  for (const key of ['schemaVersion', 'nativeError', 'writeError', 'complete', 'maxOutputBytes', 'outputBytes', 'limitedOutputRejected', 'objects', 'inventoryCount', 'records', 'classProjectionVerified', 'nativeClassCount', 'classInventory', 'classDefinitions']) {
     const missing = structuredClone(report);
     delete missing[key];
     assert.throws(() => validateMetadataReport(missing, fixture.expected), `Missing ${key}`);
@@ -358,6 +381,25 @@ test('report acceptance requires native success, completeness and the exercised 
   }
   const boundary = { ...report, outputBytes: 32 * 1024 * 1024 };
   assert.doesNotThrow(() => validateMetadataReport(boundary, fixture.expected));
+});
+
+test('report acceptance requires an independent original class proof whenever the committed oracle includes it', () => {
+  const { report, fixture } = mockReport();
+  const original = readFileSync(new URL('../../tests/fixtures/interchange/r2018-views-fields.expected.json', import.meta.url), 'utf8'), expectedClasses = JSON.parse(original);
+  const expected = { ...fixture.expected, source: expectedClasses.source, classDefinitions: expectedClasses.classDefinitions };
+  const definitions = structuredClone(expectedClasses.classDefinitions), inventory = definitions.map(record => {
+    const value = code => record.groups.find(group => group.code === code)?.value.trim();
+    return { dxfname: value(1), cppname: value(2), appname: value(3), proxyflag: Number(value(90)), is_zombie: Number(value(280)), item_class_id: Number(value(281)) ? 0x1f2 : 0x1f3, num_instances: Number(value(91)) };
+  });
+  const valid = { ...report, classDefinitions: definitions, nativeClassCount: inventory.length, classInventory: inventory, classOracleVerified: true, sourceDxfSha256: expectedClasses.source.dxfSha256, declaredClassCount: definitions.length };
+  assert.doesNotThrow(() => validateMetadataReport(valid, expected));
+  for (const key of ['classOracleVerified', 'sourceDxfSha256', 'declaredClassCount']) {
+    const missing = { ...valid }; delete missing[key]; assert.throws(() => validateMetadataReport(missing, expected), `Missing ${key}`);
+  }
+  const changed = structuredClone(valid), cls = changed.classInventory.find(cls => cls.dxfname === 'FIELD');
+  cls.proxyflag = 0;
+  changed.classDefinitions.find(record => record.groups.some(group => group.code === 1 && group.value === 'FIELD')).groups.find(group => group.code === 90).value = '0';
+  assert.throws(() => validateMetadataReport(changed, expected), /Independent AutoCAD class FIELD group90 changed/);
 });
 
 test('report acceptance refuses missing, duplicate, malformed and inconsistent inventory identities', () => {

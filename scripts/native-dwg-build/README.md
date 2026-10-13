@@ -98,6 +98,32 @@ unknown proprietary object schemas, raw DWG object bytes, arbitrary FIELD
 evaluators, or all files and DWG versions. Retention through the portable writer
 requires a separate typed graph comparison after saving and reopening.
 
+The CLASS gate also checks every projected definition against copied native
+class values and the independently authored DXF definitions. R2007 and later
+store the class DWG and maintenance versions as BL, whereas R2004 uses BS
+([ODA sections 5.8 and 10.2](https://www.opendesign.com/files/guestdownloads/OpenDesign_Specification_for_.dwg_files.pdf)).
+The pinned decoder used BS in both paths. A maintenance value above 255 shifted
+the scalar class stream and corrupted subsequent flags and counts while names
+in the separate string stream still appeared correct. The checked repair uses
+the source-version-specific width and keeps the two unknown fields separate.
+The existing copied class getter also converts R2007+ C++/application names
+from their actual UTF-16 representation before returning owned strings.
+
+The runtime refuses an invalid class number/discriminator or missing class
+inventory before exporting metadata. The original AutoCAD DXF CLASS definitions
+are checked separately from the native copied values, so a decoder and projection
+agreeing on the same corrupt flags does not pass the acceptance gate.
+
+CMC color-book components from R2007+ are already converted from UTF-16 to UTF-8
+when joined. Their DXF output now uses the UTF-8 path directly, preserving the
+original Unicode name instead of interpreting its bytes again as a legacy code
+page. The appearance gate checks the actual DBCOLOR source object and its name,
+in addition to the existing resolved entity color checks.
+
+AXISMODE and AXISUNIT are pre-R13 binary header fields. The DXF projection now
+emits them only for that source version, rather than synthesizing absent modern
+DWG properties as zero. This does not add encoding of legacy nonzero axis values.
+
 Normal CI also runs `validate-vendored-metadata.mjs` against the accepted runtime
 for all three tracked, independently authored AutoCAD fixtures: named views and
 filename fields; real AcObjProp Length fields with both indexed and cached object
