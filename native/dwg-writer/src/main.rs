@@ -3020,7 +3020,7 @@ mod tests {
             }
         }
         let nondefault = lines.join("\n") + "\n";
-        let mut source = DxfReader::from_reader(std::io::Cursor::new(nondefault.as_bytes())).unwrap().read().unwrap();
+        let mut source = DxfReader::from_reader(std::io::Cursor::new(nondefault.as_bytes().to_vec())).unwrap().read().unwrap();
         source_schema::capture(&nondefault).unwrap().verify(&mut source).unwrap();
         let mut bytes = std::io::Cursor::new(Vec::new());
         DwgWriter::write_to_writer(&mut bytes, &source).unwrap(); bytes.set_position(0);
