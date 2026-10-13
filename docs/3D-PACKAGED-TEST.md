@@ -126,3 +126,26 @@ each build: they must either be refused or carry the worker CSP.
   the worker without the header; static hosting cannot set one (E-19, residual).
 - **Real system memory pressure.** The limit stops the kernel at 1 GiB of WebAssembly memory. Whether
   the renderer survives when the machine has less than that free is not tested.
+
+
+## Windows Application Control blocker (observed 2026-10-13)
+
+On a machine with **Smart App Control** on (`HKLM\SYSTEM\CurrentControlSet\Control\CI\Policy`
+`VerifiedAndReputablePolicyState = 1`), the freshly built, unsigned test executable
+`release-test-no-dwg\win-unpacked\JCad Electrical.exe` is refused with "An Application Control
+policy has blocked this file" (bash: "Permission denied", exit 126), so `e2e:3d-security --packaged`
+cannot launch it. Do not weaken that policy to run the check. Instead:
+
+- `node scripts/e2e-3d-security.mjs --asar release-test-no-dwg/win-unpacked/resources/app.asar`
+  drives the packaged archive with the signed development Electron binary. It covers the packaged
+  ASAR layout, the `jcad://app/` handler, the worker under `assets/worker/`, its CSP and the memory
+  cap (19 checks). It does not cover the executable's fuses; verify those separately with
+  `node scripts/electron-fuse-policy.mjs` / the fuses check the script performs on `--packaged`.
+- Required environment for the full `--packaged` run: a Windows machine where the unsigned test
+  build may run (Smart App Control off or in evaluation mode, or a WDAC policy that allows it), or
+  a publisher-signed test build produced by the signing pipeline. Record which one was used.
+
+Result on this machine, final merged commit: `--asar` 19/19; the executable's fuses verified as an
+inspection-enabled test build; `--packaged` launch blocked by Smart App Control. The security branch
+state before the dimension merge had passed `--packaged` 20/20 on the same machine earlier that day
+(before the policy blocked newly built executables).

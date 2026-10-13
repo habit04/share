@@ -36,15 +36,25 @@ const LIMIT_PAGES = 16_384;
 
 const packagedArg = process.argv.indexOf('--packaged');
 const executable = packagedArg >= 0 ? process.argv[packagedArg + 1] : process.env.JCAD_E2E_EXECUTABLE || '';
-if (packagedArg >= 0 && !executable) {
-  console.error('usage: node scripts/e2e-3d-security.mjs [--packaged <path to the application executable>]');
+// --asar <app.asar>: drive a packaged application archive with the development Electron binary.
+// This exercises the packaged layout (ASAR paths, the jcad://app/ handler, the worker under
+// assets/worker/ and its CSP) when the renamed unsigned test executable cannot be launched (for
+// example under Windows Smart App Control); it does not cover the executable's fuses.
+const asarArg = process.argv.indexOf('--asar');
+const asar = asarArg >= 0 ? process.argv[asarArg + 1] : '';
+if ((packagedArg >= 0 && !executable) || (asarArg >= 0 && !asar) || (executable && asar)) {
+  console.error('usage: node scripts/e2e-3d-security.mjs [--packaged <path to the application executable> | --asar <path to app.asar>]');
+  process.exit(2);
+}
+if (asar && !existsSync(asar)) {
+  console.error(`application archive not found: ${asar}`);
   process.exit(2);
 }
 if (executable && !existsSync(executable)) {
   console.error(`packaged executable not found: ${executable}`);
   process.exit(2);
 }
-if (!executable && !existsSync(join(repo, 'dist', 'index.html'))) {
+if (!executable && !asar && !existsSync(join(repo, 'dist', 'index.html'))) {
   console.error('dist/index.html not found: run `npm run build` first.');
   process.exit(2);
 }
@@ -68,11 +78,11 @@ const profile = mkdtempSync(join(tmpdir(), 'jcad-3d-security-'));
 const env = { ...process.env, ELECTRON_DISABLE_SECURITY_WARNINGS: '1', JCAD_3D_TEST_HOOKS: '1' };
 delete env.VITE_DEV_SERVER_URL;
 delete env.ELECTRON_RUN_AS_NODE;
-const args = executable ? [`--user-data-dir=${profile}`] : ['.', `--user-data-dir=${profile}`];
+const args = executable ? [`--user-data-dir=${profile}`] : [asar ? resolve(asar) : '.', `--user-data-dir=${profile}`];
 if (process.platform === 'linux') args.push('--no-sandbox');
 
 const hardTimeout = setTimeout(() => { console.error('e2e-3d-security: timed out after 5 minutes'); process.exit(1); }, 5 * 60 * 1000);
-console.log(executable ? `e2e-3d-security: packaged application ${executable}` : 'e2e-3d-security: development build (electron . on dist/)');
+console.log(executable ? `e2e-3d-security: packaged application ${executable}` : asar ? `e2e-3d-security: packaged archive ${asar} in the development Electron binary` : 'e2e-3d-security: development build (electron . on dist/)');
 const app = await electron.launch(executable ? { executablePath: executable, args, env, timeout: 90_000 } : { args, cwd: repo, env, timeout: 60_000 });
 const pageErrors = [];
 try {

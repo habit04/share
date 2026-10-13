@@ -199,17 +199,16 @@ Baseline on Windows x64, Node 22.23.3: typecheck, lint and 177 test files / 2,21
   only a pathological 499,712-triangle everything-crossing union hits the cap (uncapped it needs
   1.8 GiB, 28.6 s and 4.99M triangles, over the budget and the timeout anyway). No operation
   whose result fits the budget fails at 1 GiB.
-- Verified: `npm run e2e:3d-security` against the development build (19/19, also on the final
-  merged commit) and against an unpacked Windows test build made without the Rust DWG helper
-  (`npm run dist:test:no-dwg`, electron-builder directory output, no installer) at the security
-  branch state: 20/20, run by the implementer and again by the supervisor. A rebuild of that
-  test build from the final merged commit could not be launched on the development machine:
-  Windows Application Control blocked the newly built unsigned executable ("An Application
-  Control policy has blocked this file"), a machine policy that was left untouched. The merge
-  added only the dimension work and documentation, none of the kernel, worker, CSP or packaging
-  code, so the packaged result stands for the same control code; rerun the packaged check on a
-  machine that allows the test build before any release. An installed, signed release build,
-  macOS and Linux are not verified.
+- Verified: `npm run e2e:3d-security` on the final merged commit: development build 19/19 and the
+  final combined packaged archive (`--asar release-test-no-dwg/win-unpacked/resources/app.asar`,
+  the ASAR built by `npm run dist:test:no-dwg` from that commit, driven by the signed development
+  Electron binary) 19/19, both run by the supervisor; the test executable's fuses verified as an
+  inspection-enabled test build. Launching the renamed unsigned test executable itself is blocked
+  on the development machine by Windows Smart App Control ("An Application Control policy has
+  blocked this file"), which was left untouched; the security-branch state before the dimension
+  merge had passed that `--packaged` run 20/20 earlier the same day. See
+  [3D-PACKAGED-TEST.md](3D-PACKAGED-TEST.md) for the blocker and the required environment. An
+  installed, signed release build, macOS and Linux are not verified.
 - Wording: a worker shares the renderer process; it is not memory or crash isolation (a docs
   test guards this). DWG saves of drawings with solids or 3D dimensions stay refused and the
   message states that JCad DXF and recovery copies keep the model (within the file limits).
