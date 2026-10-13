@@ -22,11 +22,11 @@ interface FixtureMetadata {
   curveConstructionReference?: { origin: Point; unit: number; localCenter: Point; roundedWorldCenter: Point; radius: number };
 }
 
-/** Separate admitted stress input; the historical PERF_SYM and mixed fixture stay intact. */
-function denseCompoundFixture(): DrawingState {
+/** Distinct long-label budget input and short-tag stress input; historical data stays intact. */
+function denseCompoundFixture(shortTags = false): DrawingState {
   const source = bigDrawing(5000, 1000, 500);
   const block: BlockDef = {
-    name: 'GPU-DENSE-SYM', basePoint: { x: 0, y: 0 },
+    name: shortTags ? 'GPU-TAGS-SYM' : 'GPU-DENSE-SYM', basePoint: { x: 0, y: 0 },
     entities: [
       { id: 'dense-left', layer: '0', color: 'ByLayer', type: 'line', a: { x: -0.25, y: 0 }, b: { x: -0.05, y: 0 } },
       { id: 'dense-right', layer: '0', color: 'ByLayer', type: 'line', a: { x: 0.05, y: 0 }, b: { x: 0.25, y: 0 } },
@@ -36,7 +36,8 @@ function denseCompoundFixture(): DrawingState {
     // Visible glyphs stay well above QTEXT throughout the standard .8..1.25 band.
     attributes: [{ tag: 'TAG1', prompt: 'Tag', default: 'X', position: { x: 0, y: 0.25 }, height: 1.25, align: 'center' }],
   };
-  return { ...source, blocks: { [block.name]: block }, entities: source.entities.map((entity) => entity.type === 'insert' ? { ...entity, block: block.name } : entity.type === 'text' ? { ...entity, height: 2 } : entity) };
+  let tagIndex = 0;
+  return { ...source, blocks: { [block.name]: block }, entities: source.entities.map((entity) => entity.type === 'insert' ? { ...entity, block: block.name } : entity.type === 'text' ? { ...entity, height: 2, text: shortTags ? `T${tagIndex++}` : entity.text } : entity) };
 }
 
 /** Source/math counterexamples: absolute Canvas addition collapses tiny edges. */
@@ -269,9 +270,10 @@ export function installGpuPrototype(editor: Editor): void {
         ] }, null);
         view.center = { x: 0, y: 0 }; view.scale = 64; view.twist = 0;
         fixtureMetadata = { name, probes: [] };
-      } else if (name === 'compound-dense') {
-        editor.loadState(denseCompoundFixture(), null);
-        fixtureMetadata = { name, block: 'GPU-DENSE-SYM', probes: [] };
+      } else if (name === 'compound-dense' || name === 'compound-tags') {
+        const shortTags = name === 'compound-tags';
+        editor.loadState(denseCompoundFixture(shortTags), null);
+        fixtureMetadata = { name, block: shortTags ? 'GPU-TAGS-SYM' : 'GPU-DENSE-SYM', probes: [] };
       } else if (name.startsWith('compound-')) {
         const fixture = compoundFixture(name);
         editor.loadState(fixture.state, null);
@@ -315,7 +317,7 @@ export function installGpuPrototype(editor: Editor): void {
         ] }, null);
       } else editor.loadState(base, null);
       // Fixture-local display state must not leak into the ordinary comparison scenes.
-      lineweightDisplay.enabled = name === 'lineweights' || name === 'wide-curve-fallback' || name.startsWith('collapse-') || (name.startsWith('compound-') && name !== 'compound-dense');
+      lineweightDisplay.enabled = name === 'lineweights' || name === 'wide-curve-fallback' || name.startsWith('collapse-') || (name.startsWith('compound-') && name !== 'compound-dense' && name !== 'compound-tags');
       lineweightDisplay.pxPerMm = undefined;
       editor.viewport.settings.gridVisible = false;
       editor.viewport.renderCurrent();

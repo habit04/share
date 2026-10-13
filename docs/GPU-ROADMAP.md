@@ -516,6 +516,26 @@ frame-cadence supplement, must be reported before any performance acceptance.
 Dimension and hatch modules have separate focused-test evidence and are undergoing
 incremental integration; they are not admitted by this recorded source.
 
+The subsequent clean `2006caf44838d231f3d477d0b8e347192b2f9500` candidate
+passed 3,110 regressions with 28 conditional skips, all nine local validation jobs,
+ordinary default/diagnostics checks and all seven native 2D batch checks. Its
+benchmark failed during the fresh-profile phase before any drawing readback:
+the preserved 6,500-entity long-label compound drawing exceeded the unchanged
+1,000,000-vertex cap. Geometry preparation took 238.5 ms before complete Canvas
+fallback; upload calls and bytes were zero. This is an explicit failed result,
+not a performance acceptance or a completed-frame measurement.
+
+The next candidate counts retained straight-stroke vertices with the same clipping
+and join decisions before allocating the oversized vertex array. Its benefit and
+admitted-scene overhead require fresh native measurements. The original
+`compound-dense` keeps all 500 `LABEL i MOTOR STARTER` strings (11,390 characters).
+A separately named `compound-tags` drawing keeps the same 5,000 wires, 1,000
+four-line symbols, 1,000 attributes and 500 readable labels, but uses `T0` through
+`T499` (1,890 characters). Results must name the input and actual renderer at each
+pose; clipping can change vertex-budget admission. Refused GPU preparation remains
+separate from successful uploads and GPU completion. Neither drawing substitutes
+for the original mixed schematic.
+
 ### NVIDIA validation on the pinned GPU source
 
 A separate private process using Electron's documented

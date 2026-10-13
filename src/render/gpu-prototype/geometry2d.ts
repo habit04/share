@@ -6,7 +6,7 @@ import { resolveAlpha } from '../../core/appearance';
 import { effectiveLinetype, findLinetype } from '../../core/linetypes';
 import { polylineWidthProblem } from '../../core/polyline-widths';
 import { colorDisplay, lineweightDisplay, resolveColor, resolveLineWidth } from '../draw';
-import { lowerStrokeScene, type LoweredStrokeScene } from './stroke-scene';
+import { lowerStrokeScene, type LocalStrokePath, type LoweredStrokeScene, type StrokePaintOperation } from './stroke-scene';
 import { canvasArcAdmission } from './arc-admission';
 import { assertPrimitiveStrokePrecision, canvasPolylineStrokeProblem } from './stroke-parity';
 
@@ -374,14 +374,12 @@ function clippedCenterSegment(a: Point, b: Point, extent: Point): [Point, Point]
   return [at(first), at(last)];
 }
 
-function zoomStrokeTriangles(source: readonly Point[], closed: boolean, width: number, color: [number, number, number], extent: Point, output: number[]): void {
+type ZoomTriangleVisitor = (a: Point, ao: Point, b: Point, bo: Point, c: Point, co: Point) => void;
+
+/** Count and pack through the same clipping, duplicate, segment and join decisions. */
+function visitZoomStrokeTriangles(source: readonly Point[], closed: boolean, width: number, extent: Point, triangle: ZoomTriangleVisitor): void {
   const points = source.filter((point, index) => index === 0 || point.x !== source[index - 1]!.x || point.y !== source[index - 1]!.y);
   if (points.length < 2) return;
-  const vertex = (point: Point, offset: Point): void => { output.push(point.x, point.y, offset.x, offset.y, ...color); };
-  const triangle = (a: Point, ao: Point, b: Point, bo: Point, c: Point, co: Point): void => {
-    vertex(a, ao); vertex(b, bo); vertex(c, co);
-    if (output.length / GPU_ZOOM_VERTEX_STRIDE > MAX_VERTICES) throw new Error('Stroke geometry exceeds prototype budget');
-  };
   const half = width / 2, count = closed ? points.length : points.length - 1;
   const normals: Point[] = [];
   for (let i = 0; i < count; i++) {
@@ -416,6 +414,59 @@ function zoomStrokeTriangles(source: readonly Point[], closed: boolean, width: n
   }
 }
 
+function zoomStrokeTriangles(source: readonly Point[], closed: boolean, width: number, color: [number, number, number], extent: Point, output: number[]): void {
+  const vertex = (point: Point, offset: Point): void => { output.push(point.x, point.y, offset.x, offset.y, ...color); };
+  visitZoomStrokeTriangles(source, closed, width, extent, (a, ao, b, bo, c, co) => {
+    vertex(a, ao); vertex(b, bo); vertex(c, co);
+    if (output.length / GPU_ZOOM_VERTEX_STRIDE > MAX_VERTICES) throw new Error('Stroke geometry exceeds prototype budget');
+  });
+}
+
+function straightPathSize(source: LocalStrokePath): { points: number; closed: boolean } | null {
+  if (source.kind === 'path') return { points: source.points.length, closed: source.closed };
+  if (source.entity.type === 'line') return { points: 2, closed: false };
+  if (source.entity.type === 'polyline' && (!source.entity.bulges || source.entity.bulges.every((bulge) => bulge === 0))) return { points: source.entity.points.length, closed: source.entity.closed };
+  return null; // Curved paths are packed normally; never estimate their retained geometry.
+}
+
+/** A cheap upper bound avoids traversing admitted small scenes a second time. */
+function straightVerticesMayExceedBudget(operations: readonly StrokePaintOperation[]): boolean {
+  let upperBound = 0;
+  for (const operation of operations) for (const source of operation.paths) {
+    const size = straightPathSize(source);
+    if (!size || size.points < 2) continue;
+    // Every segment emits at most six vertices, and every join at most six more.
+    // Clipping/duplicate removal only reduce this count. An upper bound never refuses.
+    upperBound += size.closed ? size.points * 12 : (size.points - 1) * 6 + Math.max(0, size.points - 2) * 6;
+    if (upperBound > MAX_VERTICES) return true;
+  }
+  return false;
+}
+
+/**
+ * Exact retained straight-path count, hence a lower bound for the complete compiled scene.
+ * Abort above the existing vertex cap before any seven-float vertex array is emitted.
+ * Curves are deliberately omitted; ordinary packing still enforces their complete budget.
+ */
+export function compiledStraightVertexLowerBound(operations: readonly StrokePaintOperation[], view: Gpu2DView, extent: Point): number {
+  validateGpu2DView(view);
+  if (![extent.x, extent.y].every(Number.isFinite) || extent.x <= 0 || extent.y <= 0) throw new Error('Invalid GPU line retention extent');
+  const localView = { ...view, center: { x: 0, y: 0 } };
+  let vertices = 0;
+  for (const operation of operations) for (const source of operation.paths) {
+    if (!straightPathSize(source)) continue;
+    const path = source.kind === 'path'
+      ? { points: source.points.map((point) => projectLocal(point, localView)), closed: source.closed }
+      : entityPath(source.entity, localView);
+    const centers = path.points.map((point) => checked({ x: point.x - view.width / 2, y: point.y - view.height / 2 }));
+    visitZoomStrokeTriangles(centers, path.closed, operation.widthCss, extent, () => {
+      vertices += 3; // Budget is vertices, never floats or bytes.
+      if (vertices > MAX_VERTICES) throw new Error('Stroke geometry exceeds prototype budget');
+    });
+  }
+  return vertices;
+}
+
 /** Compile ordered Canvas strokes, then share the tested zoom projection and stroke packing. */
 export function prepareCompiledZoom2D(state: DrawingState, view: Gpu2DView, overlay: Gpu2DOverlay, minRatio = GPU_ZOOM_CACHE_MIN_RATIO, maxRatio = GPU_ZOOM_CACHE_MAX_RATIO, padding = GPU_PAN_CACHE_BORDER / Math.max(1, view.dpr)): PreparedCompoundZoom2D {
   validateGpu2DView(view);
@@ -434,6 +485,10 @@ export function prepareCompiledZoom2D(state: DrawingState, view: Gpu2DView, over
   };
   const magnitude = Math.max(extent.x, extent.y) * maxRatio + padding + Math.max(view.width, view.height) / 2 + extrusion;
   if (!Number.isFinite(magnitude) || magnitude * 12 * 2 ** -23 * view.dpr > ZOOM_FLOAT_PIXEL_ERROR) throw new Error('GPU zoom geometry exceeds Float32 precision budget');
+  // Long readable labels can exceed the cap solely with retained straight strokes.
+  // Count their exact emission before allocating the boxed vertex array. This is an
+  // admission preflight only: successful packing/bounds/curve precision stay unchanged.
+  if (straightVerticesMayExceedBudget(lowered.operations)) compiledStraightVertexLowerBound(lowered.operations, view, extent);
   const localView = { ...view, center: { x: 0, y: 0 } };
   const vertices: number[] = [], batches: StrokeBatch[] = [];
   const sourceBounds = { min: { x: Infinity, y: Infinity }, max: { x: -Infinity, y: -Infinity } };
