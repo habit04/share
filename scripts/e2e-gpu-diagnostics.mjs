@@ -52,6 +52,8 @@ try {
   await copy.waitFor();
   // Exercise the real Windows clipboard, rather than replacing navigator.clipboard.
   await copy.click();
+  // The click starts an asynchronous write; wait for the UI's successful completion.
+  await page.getByText('Diagnostics copied.', { exact: true }).waitFor({ timeout: 10000 });
   const copied = await app.evaluate(({ clipboard }) => clipboard.readText());
   assert.match(copied, /Canvas 2D/);
   assert.match(copied, /Electron/);
