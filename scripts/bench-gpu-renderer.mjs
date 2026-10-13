@@ -23,7 +23,7 @@ const worktreeModified = !!execFileSync('git', ['status', '--porcelain', '--untr
 const started = performance.now();
 const profile = resolve(out, `profile-${Date.now()}`);
 const app = await electron.launch({ args: ['.', `--user-data-dir=${profile}`, ...(highPerformance ? ['--force_high_performance_gpu'] : [])], cwd: root, env, timeout: 60000 });
-const result = { sourceSha, worktreeModified, platform: process.platform, arch: process.arch, applicationLaunchMs: 0, hardware: null, viewport: null, comparisons: {}, contextRecovery: [], validation: [], scope: null, measurementSemantics: { firstSubmissionMs: 'CPU wall time of the actual mode-triggered viewport frame; firstFrame.completedFrameWallMs also includes mode/rAF scheduling and completion observation.', cpuSubmissionMedianMs: 'Legacy field: complete viewport render CPU wall time, not just GL submission.', totalRenderMedianMs: 'Observed completed-frame wall time including camera/document mutation for moving/edit workloads; excludes next-rAF wait and desktop presentation.', preparationMs: 'Legacy GPU pre-GL CPU total; detailed cache lookup and geometry preparation are separate.', submissionMs: 'Legacy GPU GL CPU total including initialization/upload/draw; detailed stages are separate.', gpuAttempt: 'Requested-GPU attempt CPU stages and requested uploads, including refused attempts; null means unavailable. actualRenderer labels the completed frame. Canvas fallback wall time includes the refused attempt and full Canvas rendering/readback.' }, gpuPreference: { requested: highPerformance ? 'high-performance' : 'default', electronSwitch: highPerformance ? '--force_high_performance_gpu' : null, scope: 'Private launched app only; requested preference is not proof of active hardware.' }, limitations: ['Single Windows machine or CI runner; OS caches not purged.', 'Cold frames reset renderer resources and the Canvas scene cache, not process/driver caches; drawing fixture loading precedes measurement.', 'Mode-triggered first-frame latency includes animation-frame scheduling; frame CPU and completion waits are also reported separately.', 'Drawing pointer input is disabled during comparisons so hover changes cannot alter the measured scene; hover invalidation is covered by regression tests.', 'GPU fence wall waits include driver/CPU scheduling and exclude final desktop presentation.', 'Canvas readback completion is not a pure GPU timer.', 'GPU memory is uploaded buffer bytes only; JS heap is approximate and shared with the whole application.', 'Edit/undo uses one visible line and may rebuild the whole scene; these measurements do not establish an editing speed gain.'] };
+const result = { sourceSha, worktreeModified, platform: process.platform, arch: process.arch, applicationLaunchMs: 0, hardware: null, viewport: null, comparisons: {}, contextRecovery: [], validation: [], scope: null, measurementSemantics: { firstSubmissionMs: 'CPU wall time of the actual mode-triggered viewport frame; firstFrame.completedFrameWallMs also includes mode/rAF scheduling and completion observation.', cpuSubmissionMedianMs: 'Legacy field: complete viewport render CPU wall time, not just GL submission.', totalRenderMedianMs: 'Observed completed-frame wall time including camera/document mutation for moving/edit workloads; excludes next-rAF wait and desktop presentation.', preparationMs: 'Legacy GPU pre-GL CPU total; detailed cache lookup and geometry preparation are separate.', submissionMs: 'Legacy GPU GL CPU total including initialization/upload/draw; detailed stages are separate.', documentDelta: 'Partial entity preparation is distinct from full-scene rebuilds; uploadKind separately records full, subrange or no successful-frame issuance. Edit memo statistics refer to bounded owned geometry history.', gpuAttempt: 'Requested-GPU attempt CPU stages and requested uploads, including refused attempts; null means unavailable. actualRenderer labels the completed frame. Canvas fallback wall time includes the refused attempt and full Canvas rendering/readback.' }, gpuPreference: { requested: highPerformance ? 'high-performance' : 'default', electronSwitch: highPerformance ? '--force_high_performance_gpu' : null, scope: 'Private launched app only; requested preference is not proof of active hardware.' }, limitations: ['Single Windows machine or CI runner; OS caches not purged.', 'Cold frames reset renderer resources and the Canvas scene cache, not process/driver caches; drawing fixture loading precedes measurement.', 'Mode-triggered first-frame latency includes animation-frame scheduling; frame CPU and completion waits are also reported separately.', 'Drawing pointer input is disabled during comparisons so hover changes cannot alter the measured scene; hover invalidation is covered by regression tests.', 'GPU fence wall waits include driver/CPU scheduling and exclude final desktop presentation.', 'Canvas readback completion is not a pure GPU timer.', 'GPU memory is uploaded buffer bytes only; JS heap is approximate and shared with the whole application.', 'Edit/undo measures one immutable visible line with fixed style/count/order; other edits may still require full preparation, upload or complete-view Canvas fallback. Geometry and subrange-upload stages are CPU issuance, with successful-frame fence wall completion reported separately.'] };
 
 /** Inspect only an owner-created, currently rendering context; missing proof remains Unknown. */
 async function prototypeContext(page) {
@@ -89,6 +89,14 @@ function missedForeground(a, b) {
   }
   return count ? missing / count : 0;
 }
+function changedRgbaPixels(a, b) {
+  assert.equal(a.width, b.width); assert.equal(a.height, b.height);
+  let changed = 0;
+  for (let index = 0; index < a.data.length; index += 4) {
+    if (a.data[index] !== b.data[index] || a.data[index + 1] !== b.data[index + 1] || a.data[index + 2] !== b.data[index + 2] || a.data[index + 3] !== b.data[index + 3]) changed++;
+  }
+  return changed;
+}
 try {
   result.scope = await app.evaluate(({ app }, expected) => {
     const path = process.getBuiltinModule('node:path');
@@ -137,7 +145,9 @@ try {
         const sorted = values.filter((value) => typeof value === 'number' && Number.isFinite(value)).sort((a, b) => a - b);
         return { count: sorted.length, median: sorted[Math.floor(sorted.length / 2)] ?? null, p95: sorted[Math.max(0, Math.ceil(sorted.length * 0.95) - 1)] ?? null, max: sorted.at(-1) ?? null };
       };
-      const stages = ['cacheLookupMs', 'geometryPreparationMs', 'initializationMs', 'uploadMs', 'drawSubmissionMs', 'preparationMs', 'submissionMs'];
+      const stages = ['cacheLookupMs', 'geometryPreparationMs', 'partialPreparationMs', 'initializationMs', 'uploadMs', 'subrangeUploadMs', 'drawSubmissionMs', 'preparationMs', 'submissionMs'];
+      const entityMetrics = ['preparedEntities', 'reusedEntities', 'editHistoryBytes', 'editHistoryEntries'];
+      const uploadMetrics = ['bytes', 'uploadCalls', 'subrangeUploadBytes', 'subrangeUploadCalls'];
       const finishSample = async (status, started, renderStarted, renderEnded, label, extra = {}) => {
         const completionStart = performance.now();
         const reportedCompletionMs = status.rendered ? await api.completed() : null;
@@ -145,10 +155,16 @@ try {
         if (!status.rendered) ctx.getImageData(0, 0, 1, 1);
         const completedAt = performance.now();
         if (status.rendered) {
-          for (const key of [...stages, 'bytes', 'uploadCalls', 'geometryVertices']) {
+          for (const key of [...stages, ...entityMetrics, ...uploadMetrics, 'geometryVertices']) {
             if (!(typeof status[key] === 'number' && Number.isFinite(status[key]) && status[key] >= 0)) throw new Error(`${label}: invalid or missing GPU telemetry ${key}`);
           }
-          if (typeof status.cacheHit !== 'boolean' || !['cold', 'mutable', 'document', 'view-style', 'zoom-range', 'pan-range', 'precision', 'hit', 'not-checked'].includes(status.cacheReason)) throw new Error(`${label}: invalid or missing GPU cache telemetry`);
+          for (const key of [...entityMetrics, ...uploadMetrics, 'geometryVertices']) if (!Number.isInteger(status[key])) throw new Error(`${label}: invalid integer GPU telemetry ${key}`);
+          if (typeof status.cacheHit !== 'boolean' || typeof status.editMemoHit !== 'boolean' || !['cold', 'mutable', 'document', 'document-delta', 'view-style', 'zoom-range', 'pan-range', 'precision', 'hit', 'not-checked'].includes(status.cacheReason) || !['none', 'subrange', 'full'].includes(status.uploadKind)) throw new Error(`${label}: invalid or missing GPU cache/upload telemetry`);
+          if (status.uploadKind === 'none' && (status.bytes !== 0 || status.uploadCalls !== 0)) throw new Error(`${label}: zero-upload frame has upload work`);
+          if (status.uploadKind === 'subrange' && (status.bytes !== status.subrangeUploadBytes || status.uploadCalls !== status.subrangeUploadCalls || status.uploadCalls === 0)) throw new Error(`${label}: subrange telemetry disagrees with successful upload issuance`);
+          if (status.uploadKind !== 'subrange' && (status.subrangeUploadBytes !== 0 || status.subrangeUploadCalls !== 0 || status.subrangeUploadMs !== 0)) throw new Error(`${label}: full/zero-upload frame reports subrange work`);
+          if (status.partialPreparationMs > status.geometryPreparationMs || status.subrangeUploadMs > status.uploadMs) throw new Error(`${label}: stage subsets exceed their totals`);
+          if (status.editHistoryBytes > 1024 * 1024 || status.editHistoryEntries > 256) throw new Error(`${label}: edit memo exceeds its bounded history budget`);
         } else if (typeof status.reason !== 'string' || !status.reason.trim()) throw new Error(`${label}: Canvas fallback must record its reason`);
         const available = (key) => {
           if (status[key] === undefined || status[key] === null) return null;
@@ -157,19 +173,26 @@ try {
         };
         // A refused GPU attempt still incurs CPU preparation before Canvas completes
         // the frame. Keep those measurements separate from successful GPU work.
-        const gpuAttempt = mode === 'gpu' ? { rendered: status.rendered, reason: status.reason ?? null, ...Object.fromEntries(stages.map((stage) => [stage, available(stage)])), requestedUploadBytes: available('bytes'), uploadCalls: available('uploadCalls'), geometryVertices: available('geometryVertices'), cacheHit: typeof status.cacheHit === 'boolean' ? status.cacheHit : null, cacheReason: status.cacheReason ?? null } : null;
-        const sample = { label, requestedRenderer: mode, actualRenderer: status.rendered ? 'gpu' : 'canvas', gpuAttempt, rendered: status.rendered, reason: status.reason ?? null, cpuSubmissionMs: renderEnded - renderStarted, renderToCompletionWallMs: completedAt - renderStarted, workflowWallMs: completedAt - started, completedFrameWallMs: completedAt - started, completionWaitMs: completedAt - completionStart, reportedCompletionMs, uploadBytes: status.rendered ? status.bytes : null, uploadCalls: status.rendered ? status.uploadCalls : null, geometryVertices: status.rendered ? status.geometryVertices : null, cacheHit: status.rendered ? status.cacheHit : null, cacheReason: status.rendered ? status.cacheReason : 'not-checked', center: { ...v.center }, scale: v.scale, twist: v.twist, ...extra };
+        const gpuAttempt = mode === 'gpu' ? { rendered: status.rendered, reason: status.reason ?? null, ...Object.fromEntries([...stages, ...entityMetrics, 'subrangeUploadBytes', 'subrangeUploadCalls'].map((key) => [key, available(key)])), requestedUploadBytes: available('bytes'), uploadCalls: available('uploadCalls'), uploadKind: status.uploadKind ?? null, geometryVertices: available('geometryVertices'), editMemoHit: typeof status.editMemoHit === 'boolean' ? status.editMemoHit : null, cacheHit: typeof status.cacheHit === 'boolean' ? status.cacheHit : null, cacheReason: status.cacheReason ?? null } : null;
+        const sample = { label, requestedRenderer: mode, actualRenderer: status.rendered ? 'gpu' : 'canvas', gpuAttempt, rendered: status.rendered, reason: status.reason ?? null, cpuSubmissionMs: renderEnded - renderStarted, renderToCompletionWallMs: completedAt - renderStarted, workflowWallMs: completedAt - started, completedFrameWallMs: completedAt - started, completionWaitMs: completedAt - completionStart, reportedCompletionMs, uploadBytes: status.rendered ? status.bytes : null, uploadCalls: status.rendered ? status.uploadCalls : null, uploadKind: status.rendered ? status.uploadKind : null, subrangeUploadBytes: status.rendered ? status.subrangeUploadBytes : null, subrangeUploadCalls: status.rendered ? status.subrangeUploadCalls : null, geometryVertices: status.rendered ? status.geometryVertices : null, ...Object.fromEntries(entityMetrics.map((key) => [key, status.rendered ? status[key] : null])), editMemoHit: status.rendered ? status.editMemoHit : null, cacheHit: status.rendered ? status.cacheHit : null, cacheReason: status.rendered ? status.cacheReason : 'not-checked', center: { ...v.center }, scale: v.scale, twist: v.twist, ...extra };
         for (const stage of stages) sample[stage] = status.rendered && typeof status[stage] === 'number' ? status[stage] : null;
         return sample;
       };
       const statistics = (frames) => {
-        const rebuilds = frames.filter((frame) => frame.rendered && (frame.cacheHit === false || frame.uploadCalls > 0));
-        const numeric = ['cpuSubmissionMs', 'renderToCompletionWallMs', 'workflowWallMs', 'completedFrameWallMs', 'completionWaitMs', 'uploadBytes', 'uploadCalls', 'geometryVertices', 'documentMutationMs', 'cameraUpdateMs', ...stages];
+        // Delta preparation is deliberately a cache miss, but it does not rebuild the
+        // full scene. A repaired upload can be full even after delta CPU preparation.
+        const rebuilds = frames.filter((frame) => frame.rendered && frame.cacheHit === false && frame.cacheReason !== 'document-delta');
+        const deltas = frames.filter((frame) => frame.rendered && frame.cacheReason === 'document-delta');
+        const fullUploads = frames.filter((frame) => frame.rendered && frame.uploadKind === 'full');
+        const subrangeUploads = frames.filter((frame) => frame.rendered && frame.uploadKind === 'subrange');
+        const zeroUploads = frames.filter((frame) => frame.rendered && frame.uploadKind === 'none');
+        const numeric = ['cpuSubmissionMs', 'renderToCompletionWallMs', 'workflowWallMs', 'completedFrameWallMs', 'completionWaitMs', 'uploadBytes', 'uploadCalls', 'subrangeUploadBytes', 'subrangeUploadCalls', 'geometryVertices', 'documentMutationMs', 'cameraUpdateMs', ...entityMetrics, ...stages];
         const aggregate = (samples) => Object.fromEntries(numeric.map((key) => [key, summarize(samples.map((frame) => frame[key]))]));
         const attempts = frames.filter((frame) => frame.gpuAttempt);
-        const attemptedStages = [...stages, 'requestedUploadBytes', 'uploadCalls', 'geometryVertices'];
+        const attemptedStages = [...stages, ...entityMetrics, 'requestedUploadBytes', 'uploadCalls', 'subrangeUploadBytes', 'subrangeUploadCalls', 'geometryVertices'];
         const aggregateAttempts = (samples) => Object.fromEntries(attemptedStages.map((key) => [key, summarize(samples.map((frame) => frame.gpuAttempt?.[key]))]));
-        return { all: aggregate(frames), rebuild: aggregate(rebuilds), gpuAttempts: { count: attempts.length, completedGpuFrames: attempts.filter((frame) => frame.rendered).length, canvasFallbackFrames: attempts.filter((frame) => !frame.rendered).length, all: aggregateAttempts(attempts), byAction: Object.fromEntries([...new Set(attempts.map((frame) => frame.label))].map((label) => [label, aggregateAttempts(attempts.filter((frame) => frame.label === label))])) }, byAction: Object.fromEntries([...new Set(frames.map((frame) => frame.label))].map((label) => [label, aggregate(frames.filter((frame) => frame.label === label))])), rebuildFrameIndices: frames.flatMap((frame, index) => rebuilds.includes(frame) ? [index] : []), cacheReasons: frames.reduce((counts, frame) => { counts[frame.cacheReason ?? 'missing-telemetry'] = (counts[frame.cacheReason ?? 'missing-telemetry'] ?? 0) + 1; return counts; }, {}) };
+        const indices = (samples) => frames.flatMap((frame, index) => samples.includes(frame) ? [index] : []);
+        return { all: aggregate(frames), rebuild: aggregate(rebuilds), documentDelta: aggregate(deltas), uploads: { full: aggregate(fullUploads), subrange: aggregate(subrangeUploads), none: aggregate(zeroUploads) }, editMemoHits: frames.filter((frame) => frame.rendered && frame.editMemoHit).length, gpuAttempts: { count: attempts.length, completedGpuFrames: attempts.filter((frame) => frame.rendered).length, canvasFallbackFrames: attempts.filter((frame) => !frame.rendered).length, all: aggregateAttempts(attempts), byAction: Object.fromEntries([...new Set(attempts.map((frame) => frame.label))].map((label) => [label, aggregateAttempts(attempts.filter((frame) => frame.label === label))])) }, byAction: Object.fromEntries([...new Set(frames.map((frame) => frame.label))].map((label) => [label, aggregate(frames.filter((frame) => frame.label === label))])), rebuildFrameIndices: indices(rebuilds), documentDeltaFrameIndices: indices(deltas), fullUploadFrameIndices: indices(fullUploads), subrangeUploadFrameIndices: indices(subrangeUploads), zeroUploadFrameIndices: indices(zeroUploads), cacheReasons: frames.reduce((counts, frame) => { counts[frame.cacheReason ?? 'missing-telemetry'] = (counts[frame.cacheReason ?? 'missing-telemetry'] ?? 0) + 1; return counts; }, {}) };
       };
       // Observe the actual setMode-triggered frame. Calling renderNow afterwards would
       // measure a second, warmed frame and hide initialization/geometry/upload costs.
@@ -210,7 +233,9 @@ try {
         await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
       }
       const frames = [], intervals = [];
-      const editLine = ed.doc.entities.find((entity) => {
+      // Prefer the latest visible line in painter order so later wires cannot
+      // completely conceal the representative changed line in the dense fixture.
+      const editLine = [...ed.doc.entities].reverse().find((entity) => {
         if (entity.type !== 'line') return false;
         const midpoint = v.toScreen({ x: (entity.a.x + entity.b.x) / 2, y: (entity.a.y + entity.b.y) / 2 });
         return midpoint.x >= 0 && midpoint.x <= v.width && midpoint.y >= 0 && midpoint.y <= v.height;
@@ -330,8 +355,8 @@ try {
     };
     const canvasResult = await measure('canvas');
     await page.locator('#drawing').screenshot({ path: resolve(out, `${fixture}-canvas.png`) });
-    const gpuResult = await measure('gpu', 'pan-zoom', !supportsGPU);
-    const fallbackPanZoomImage = supportsGPU ? null : await compareTrajectoryEnd('pan-zoom', gpuResult.camera.last, gpuResult.camera.initial);
+    const gpuResult = await measure('gpu', 'pan-zoom', true);
+    const panZoomImage = await compareTrajectoryEnd('pan-zoom', gpuResult.camera.last, gpuResult.camera.initial);
     const context = await prototypeContext(page);
     await page.locator('#drawing').screenshot({ path: resolve(out, `${fixture}-gpu.png`) });
     const a = PNG.sync.read(readFileSync(resolve(out, `${fixture}-canvas.png`)));
@@ -342,8 +367,8 @@ try {
     writeFileSync(resolve(out, `${fixture}-diff.png`), PNG.sync.write(diff));
     const coverageMiss = Math.max(missedForeground(a, b), missedForeground(b, a));
     const panCanvas = await measure('canvas', 'pan');
-    const panGpu = await measure('gpu', 'pan', !supportsGPU);
-    const fallbackPanImage = supportsGPU ? null : await compareTrajectoryEnd('pan-only', panGpu.camera.last, panGpu.camera.initial);
+    const panGpu = await measure('gpu', 'pan', true);
+    const panImage = await compareTrajectoryEnd('pan-only', panGpu.camera.last, panGpu.camera.initial);
     const boundedCanvas = await measure('canvas', 'bounded-zoom');
     const boundedGpu = await measure('gpu', 'bounded-zoom', true);
     const boundedImage = await compareTrajectoryEnd('bounded-zoom', boundedGpu.camera.last, boundedGpu.camera.initial);
@@ -360,9 +385,160 @@ try {
     const maxEdgeGpu = await measure('gpu', 'max-edge', true);
     const maxEdgeImage = await compareTrajectoryEnd('max-edge', maxEdgeGpu.camera.last, maxEdgeGpu.camera.initial);
     const editCanvas = await measure('canvas', 'edit-undo');
-    const editGpu = await measure('gpu', 'edit-undo', !supportsGPU);
-    const fallbackEditImage = supportsGPU ? null : await compareTrajectoryEnd('edit-undo', editGpu.camera.last, editGpu.camera.initial);
-    result.comparisons[fixture] = { expectedSupportsGPU: supportsGPU, canvas: canvasResult, gpu: gpuResult, prototypeContext: context, panOnly: { canvas: panCanvas, gpu: panGpu }, boundedZoom: { canvas: boundedCanvas, gpu: boundedGpu, endpoint: boundedImage }, sustainedZoom: { canvas: sustainedCanvas, gpu: sustainedGpu, endpoint: sustainedImage }, offCenterZoom: { canvas: offCenterCanvas, gpu: offCenterGpu, endpoint: offCenterImage }, cacheEnvelopeEdges: { min: { canvas: minEdgeCanvas, gpu: minEdgeGpu, endpoint: minEdgeImage }, max: { canvas: maxEdgeCanvas, gpu: maxEdgeGpu, endpoint: maxEdgeImage } }, editUndo: { canvas: editCanvas, gpu: editGpu }, wholeViewFallbackEndpoints: supportsGPU ? null : { panZoom: fallbackPanZoomImage, pan: fallbackPanImage, boundedZoom: boundedImage, sustainedZoom: sustainedImage, offCenterZoom: offCenterImage, minimumZoom: minEdgeImage, maximumZoom: maxEdgeImage, editUndo: fallbackEditImage }, imageDifferenceFraction: pixels / (a.width * a.height), twoPixelCoverageMissFraction: coverageMiss };
+    const editGpu = await measure('gpu', 'edit-undo', true);
+    const editImage = await compareTrajectoryEnd('edit-undo', editGpu.camera.last, editGpu.camera.initial);
+    const trajectoryEndpoints = { panZoom: panZoomImage, pan: panImage, boundedZoom: boundedImage, sustainedZoom: sustainedImage, offCenterZoom: offCenterImage, minimumZoom: minEdgeImage, maximumZoom: maxEdgeImage, editUndo: editImage };
+    // Thirty alternating edits finish on the original document. A correct terminal
+    // image alone could therefore conceal a broken upload that never showed an edit.
+    // Check edit, undo and redo separately, outside timing, retaining one live cache
+    // throughout each Canvas reference / GPU comparison at a twisted, panned zoom.
+    const editCorrectness = { untimed: true, setup: null, transitions: {}, comparisons: {}, editedImageChanged: null, snapshotRestored: false, resourcesReset: false };
+    const proofBaseline = await page.evaluate(() => {
+      const ed = window.editor, v = ed.viewport;
+      return { document: JSON.stringify(ed.doc.snapshot), camera: { center: { ...v.center }, scale: v.scale, twist: v.twist } };
+    });
+    try {
+      const setup = await page.evaluate(async () => {
+        const ed = window.editor, v = ed.viewport, api = window.gpuPrototype;
+        const complete = async (frame) => {
+          if (frame.rendered) {
+            const completionMs = await api.completed();
+            if (!(typeof completionMs === 'number' && Number.isFinite(completionMs) && completionMs >= 0)) throw new Error('Edit proof setup GPU completion was not observed');
+            return completionMs;
+          }
+          /** @type {HTMLCanvasElement} */ (document.getElementById('drawing')).getContext('2d').getImageData(0, 0, 1, 1);
+          return null;
+        };
+        // Twist establishes the anchor once, before the edit. No renderer-resource
+        // reset or anchor change occurs during the edit/undo/redo comparisons.
+        v.twist += 0.17;
+        const anchor = api.renderNow();
+        const anchorCompletionMs = await complete(anchor);
+        v.zoomAt({ x: v.width / 2, y: v.height / 2 }, 1.05);
+        v.panByPixels(24 / v.dpr, -17 / v.dpr);
+        const warm = api.renderNow();
+        const warmCompletionMs = await complete(warm);
+        const original = [...ed.doc.entities].reverse().find((entity) => {
+          if (entity.type !== 'line') return false;
+          const midpoint = v.toScreen({ x: (entity.a.x + entity.b.x) / 2, y: (entity.a.y + entity.b.y) / 2 });
+          return midpoint.x >= 4 && midpoint.x <= v.width - 4 && midpoint.y >= 4 && midpoint.y <= v.height - 4;
+        });
+        if (!original) throw new Error('Warm-camera edit proof needs a visible line');
+        const edited = { ...original, a: { x: original.a.x + 2 / v.scale, y: original.a.y }, b: { x: original.b.x + 2 / v.scale, y: original.b.y } };
+        if (edited.a.x === original.a.x && edited.b.x === original.b.x) throw new Error('Warm-camera edit proof is below coordinate precision');
+        const screenBefore = v.toScreen(original.a), screenAfter = v.toScreen(edited.a);
+        const displacementCss = Math.hypot(screenAfter.x - screenBefore.x, screenAfter.y - screenBefore.y);
+        if (!(displacementCss >= 1)) throw new Error('Warm-camera edit must move a visible line by at least one CSS pixel');
+        return { anchor, anchorCompletionMs, warm, warmCompletionMs, original, edited, displacementCss, camera: { center: { ...v.center }, scale: v.scale, twist: v.twist } };
+      });
+      editCorrectness.setup = setup;
+      if (supportsGPU) {
+        assert.equal(setup.warm.rendered, true, `${fixture}: edit proof starts on GPU`);
+        assert.equal(setup.warm.cacheHit, true, `${fixture}: edit proof starts on a warm camera/cache`);
+        assert.equal(setup.warm.uploadKind, 'none');
+        assert.equal(setup.warm.bytes, 0);
+        assert.equal(setup.warm.uploadCalls, 0);
+      } else assert.equal(setup.warm.rendered, false, `${fixture}: edit proof retains complete-view fallback`);
+      const proofImages = {};
+      const compareEditedState = async (label) => {
+        const images = [];
+        let gpuFrame;
+        for (const mode of ['canvas', 'gpu']) {
+          const frame = await modeFrame(page, mode);
+          if (mode === 'gpu') {
+            gpuFrame = frame;
+            assert.equal(frame.rendered, supportsGPU, `${fixture}: ${label} has the expected actual renderer`);
+            if (supportsGPU) {
+              assert.equal(frame.cacheHit, true, `${fixture}: ${label} comparison retains the edited cache`);
+              assert.equal(frame.uploadKind, 'none', `${fixture}: ${label} comparison cannot hide a patch behind a new upload`);
+              assert.equal(frame.bytes, 0);
+              assert.equal(frame.uploadCalls, 0);
+            }
+          }
+          const path = resolve(out, `${fixture}-edit-proof-${label}-${mode}.png`);
+          await page.locator('#drawing').screenshot({ path });
+          images.push(PNG.sync.read(readFileSync(path)));
+        }
+        assert.equal(images[0].width, images[1].width); assert.equal(images[0].height, images[1].height);
+        const diff = new PNG({ width: images[0].width, height: images[0].height });
+        const pixels = pixelmatch(images[0].data, images[1].data, diff.data, diff.width, diff.height, { threshold: 0.15 });
+        const miss = Math.max(missedForeground(images[0], images[1]), missedForeground(images[1], images[0]));
+        writeFileSync(resolve(out, `${fixture}-edit-proof-${label}-diff.png`), PNG.sync.write(diff));
+        assert.ok(miss < 0.005, `${fixture}: ${label} edited geometry matches within two pixels`);
+        if (!supportsGPU) {
+          assert.equal(pixels, 0, `${fixture}: ${label} fallback matches Canvas exactly`);
+          assert.equal(Buffer.compare(images[0].data, images[1].data), 0, `${fixture}: ${label} fallback has identical RGBA pixels`);
+        } else if (fixture !== 'dense-lines') assert.ok(pixels / (diff.width * diff.height) < 0.001, `${fixture}: ${label} preserves the raster accuracy gate`);
+        assert.deepEqual(await page.evaluate(() => { const v = window.editor.viewport; return { center: { ...v.center }, scale: v.scale, twist: v.twist }; }), setup.camera, `${fixture}: ${label} comparison keeps the original warm edit camera`);
+        proofImages[label] = images;
+        editCorrectness.comparisons[label] = { gpuFrame, imageDifferenceFraction: pixels / (diff.width * diff.height), twoPixelCoverageMissFraction: miss };
+      };
+      const transition = async (action) => {
+        const proof = await page.evaluate(async ({ action, edited, original }) => {
+          const ed = window.editor, api = window.gpuPrototype;
+          const previous = ed.doc.snapshot;
+          if (action === 'edit') ed.doc.replaceEntities([edited]);
+          else if (action === 'undo') { if (!ed.doc.undo()) throw new Error('Warm edit proof cannot undo'); }
+          else if (action === 'redo') { if (!ed.doc.redo()) throw new Error('Warm edit proof cannot redo'); }
+          else throw new Error(`Unknown edit proof action ${action}`);
+          const frame = api.renderNow();
+          let completionMs = null;
+          if (frame.rendered) {
+            completionMs = await api.completed();
+            if (!(typeof completionMs === 'number' && Number.isFinite(completionMs) && completionMs >= 0)) throw new Error(`${action}: edit proof GPU completion was not observed`);
+          } else /** @type {HTMLCanvasElement} */ (document.getElementById('drawing')).getContext('2d').getImageData(0, 0, 1, 1);
+          if (ed.doc.snapshot === previous) throw new Error(`${action}: edit proof drawing transition was a no-op`);
+          const expected = action === 'undo' ? original : edited;
+          if (JSON.stringify(ed.doc.entities.find((entity) => entity.id === original.id)) !== JSON.stringify(expected)) throw new Error(`${action}: edit proof did not change/restore the requested entity`);
+          return { frame, completionMs, actualLine: expected };
+        }, { action, edited: setup.edited, original: setup.original });
+        assert.equal(proof.frame.rendered, supportsGPU, `${fixture}: ${action} proof preserves actual renderer`);
+        if (supportsGPU) {
+          assert.equal(proof.frame.cacheReason, 'document-delta', `${fixture}: ${action} uses partial scene preparation`);
+          assert.equal(proof.frame.uploadKind, 'subrange', `${fixture}: ${action} updates the live GPU buffer`);
+          assert.equal(proof.frame.bytes, 168, `${fixture}: ${action} uploads only six line vertices`);
+          assert.equal(proof.frame.uploadCalls, 1);
+          assert.equal(proof.frame.subrangeUploadBytes, 168);
+          assert.equal(proof.frame.subrangeUploadCalls, 1);
+          assert.ok(proof.frame.preparedEntities <= 1);
+          if (action !== 'edit') assert.equal(proof.frame.editMemoHit, true, `${fixture}: ${action} reuses owned prior line geometry`);
+        }
+        editCorrectness.transitions[action] = proof;
+      };
+      await compareEditedState('baseline');
+      await transition('edit');
+      await compareEditedState('edited-before-undo');
+      const changedCanvas = pixelmatch(proofImages.baseline[0].data, proofImages['edited-before-undo'][0].data, null, proofImages.baseline[0].width, proofImages.baseline[0].height, { threshold: 0.15 });
+      const changedGpu = pixelmatch(proofImages.baseline[1].data, proofImages['edited-before-undo'][1].data, null, proofImages.baseline[1].width, proofImages.baseline[1].height, { threshold: 0.15 });
+      const changedCanvasRgba = changedRgbaPixels(proofImages.baseline[0], proofImages['edited-before-undo'][0]);
+      const changedGpuRgba = changedRgbaPixels(proofImages.baseline[1], proofImages['edited-before-undo'][1]);
+      assert.ok(changedCanvas > 0 && changedGpu > 0, `${fixture}: the edited line must visibly change both completed images before undo`);
+      assert.ok(changedCanvasRgba > 0 && changedGpuRgba > 0, `${fixture}: edited images must have raw RGBA changes before undo`);
+      editCorrectness.editedImageChanged = { canvasPixels: changedCanvas, gpuPixels: changedGpu, canvasRawRgbaPixels: changedCanvasRgba, gpuRawRgbaPixels: changedGpuRgba, displacementCss: setup.displacementCss };
+      await transition('undo');
+      await compareEditedState('undo');
+      assert.equal(Buffer.compare(proofImages.baseline[1].data, proofImages.undo[1].data), 0, `${fixture}: undo restores the original GPU/fallback RGBA image`);
+      await transition('redo');
+      await compareEditedState('redo');
+      assert.equal(Buffer.compare(proofImages['edited-before-undo'][1].data, proofImages.redo[1].data), 0, `${fixture}: redo restores the edited GPU/fallback RGBA image`);
+      await transition('undo');
+      assert.equal(await page.evaluate(() => JSON.stringify(window.editor.doc.snapshot)), proofBaseline.document, `${fixture}: edit proof restores the exact drawing snapshot`);
+      editCorrectness.snapshotRestored = true;
+    } finally {
+      // An assertion failure must not leave a private benchmark document edited.
+      await page.evaluate(async ({ camera, baselineDocument }) => {
+        const ed = window.editor, v = ed.viewport, api = window.gpuPrototype;
+        if (JSON.stringify(ed.doc.snapshot) !== baselineDocument && !ed.doc.undo()) throw new Error('Edit proof cleanup could not undo its owned edit');
+        if (JSON.stringify(ed.doc.snapshot) !== baselineDocument) throw new Error('Edit proof cleanup did not restore its original drawing snapshot');
+        v.center = camera.center; v.scale = camera.scale; v.twist = camera.twist;
+        const frame = api.renderNow();
+        if (frame.rendered) {
+          const completionMs = await api.completed();
+          if (!(typeof completionMs === 'number' && Number.isFinite(completionMs) && completionMs >= 0)) throw new Error('Edit proof camera cleanup completion was not observed');
+        } else /** @type {HTMLCanvasElement} */ (document.getElementById('drawing')).getContext('2d').getImageData(0, 0, 1, 1);
+      }, { camera: proofBaseline.camera, baselineDocument: proofBaseline.document });
+    }
+    result.comparisons[fixture] = { expectedSupportsGPU: supportsGPU, canvas: canvasResult, gpu: gpuResult, prototypeContext: context, panOnly: { canvas: panCanvas, gpu: panGpu, endpoint: panImage }, boundedZoom: { canvas: boundedCanvas, gpu: boundedGpu, endpoint: boundedImage }, sustainedZoom: { canvas: sustainedCanvas, gpu: sustainedGpu, endpoint: sustainedImage }, offCenterZoom: { canvas: offCenterCanvas, gpu: offCenterGpu, endpoint: offCenterImage }, cacheEnvelopeEdges: { min: { canvas: minEdgeCanvas, gpu: minEdgeGpu, endpoint: minEdgeImage }, max: { canvas: maxEdgeCanvas, gpu: maxEdgeGpu, endpoint: maxEdgeImage } }, editUndo: { canvas: editCanvas, gpu: editGpu, endpoint: editImage, correctness: editCorrectness }, trajectoryEndpoints, wholeViewFallbackEndpoints: supportsGPU ? null : trajectoryEndpoints, imageDifferenceFraction: pixels / (a.width * a.height), twoPixelCoverageMissFraction: coverageMiss };
     for (const [name, canvas, gpu] of [['pan/zoom', canvasResult, gpuResult], ['pan', panCanvas, panGpu], ['bounded zoom', boundedCanvas, boundedGpu], ['sustained zoom', sustainedCanvas, sustainedGpu], ['off-center zoom', offCenterCanvas, offCenterGpu], ['minimum zoom with edge pan', minEdgeCanvas, minEdgeGpu], ['maximum zoom with edge pan', maxEdgeCanvas, maxEdgeGpu], ['edit/undo', editCanvas, editGpu]]) {
       assert.deepEqual(canvas.camera.initial, gpu.camera.initial, `${fixture}: ${name} pairs start at identical cameras`);
       assert.ok([canvas.firstFrame, ...canvas.warmRedraw.samples, ...canvas.frameSamples].every((frame) => frame.rendered === false), `${fixture}: ${name} baseline samples must use Canvas`);
@@ -383,13 +559,17 @@ try {
         assert.ok(workload.frameSamples.every((frame) => frame.rendered && frame.cacheHit === true && frame.uploadBytes === 0 && frame.uploadCalls === 0), `${fixture}: ${name} reuses geometry without uploads for all 30 frames`);
       }
       assert.ok(sustainedGpu.frameSamples.some((frame) => frame.cacheReason === 'zoom-range' && frame.uploadCalls > 0), `${fixture}: sustained zoom reports cache-envelope rebuild frames`);
+      assert.ok(editGpu.frameSamples.every((frame) => frame.cacheReason === 'document-delta' && frame.uploadKind === 'subrange' && frame.uploadBytes === 168 && frame.uploadCalls === 1 && frame.subrangeUploadBytes === 168 && frame.subrangeUploadCalls === 1 && frame.preparedEntities <= 1), `${fixture}: all 30 visible edit/undo frames update one six-vertex subrange`);
+      assert.equal(editGpu.summary.rebuildFrameIndices.length, 0, `${fixture}: delta updates must not be counted as full-scene rebuilds`);
+      assert.equal(editGpu.summary.fullUploadFrameIndices.length, 0, `${fixture}: valid edit/undo workloads do not upload the full scene`);
+      assert.ok(editGpu.frameSamples.filter((frame) => frame.label === 'undo-line-edit').every((frame) => frame.editMemoHit === true && frame.preparedEntities === 0 && frame.partialPreparationMs === 0), `${fixture}: timed undo frames reuse memoized owned line geometry`);
       assert.ok(coverageMiss < 0.005, `${fixture}: supported geometry matches within two pixels`);
       if (fixture !== 'dense-lines') assert.ok(pixels / (a.width * a.height) < 0.001, `${fixture}: bounded raster differences`);
     }
     console.log(`${fixture}: Canvas ${canvasResult.totalRenderMedianMs.toFixed(2)} ms, requested GPU ${gpuResult.totalRenderMedianMs.toFixed(2)} ms (actual ${gpuResult.firstFrame.actualRenderer}); image difference ${(100 * pixels / (a.width * a.height)).toFixed(3)}%; ${gpuResult.status.reason ?? 'GPU'}`);
     console.log(`${fixture} pan only: Canvas ${panCanvas.totalRenderMedianMs.toFixed(2)} ms, requested GPU ${panGpu.totalRenderMedianMs.toFixed(2)} ms (actual ${panGpu.firstFrame.actualRenderer}); requested-GPU viewport CPU ${panGpu.cpuSubmissionMedianMs.toFixed(2)} ms, uploads ${panGpu.uploadedBytes.filter((bytes) => bytes > 0).length}/${panGpu.samples}`);
     for (const [name, canvas, gpu] of [['bounded zoom', boundedCanvas, boundedGpu], ['sustained zoom', sustainedCanvas, sustainedGpu], ['off-center zoom', offCenterCanvas, offCenterGpu], ['minimum zoom with edge pan', minEdgeCanvas, minEdgeGpu], ['maximum zoom with edge pan', maxEdgeCanvas, maxEdgeGpu], ['edit/undo', editCanvas, editGpu]]) {
-      console.log(`${fixture} ${name}: completed-frame median/p95/max Canvas ${canvas.totalRenderMedianMs.toFixed(2)}/${canvas.totalRenderP95Ms.toFixed(2)}/${canvas.totalRenderMaxMs.toFixed(2)} ms, requested GPU ${gpu.totalRenderMedianMs.toFixed(2)}/${gpu.totalRenderP95Ms.toFixed(2)}/${gpu.totalRenderMaxMs.toFixed(2)} ms; rebuild frames ${gpu.summary.rebuildFrameIndices.join(',') || 'none'}`);
+      console.log(`${fixture} ${name}: completed-frame median/p95/max Canvas ${canvas.totalRenderMedianMs.toFixed(2)}/${canvas.totalRenderP95Ms.toFixed(2)}/${canvas.totalRenderMaxMs.toFixed(2)} ms, requested GPU ${gpu.totalRenderMedianMs.toFixed(2)}/${gpu.totalRenderP95Ms.toFixed(2)}/${gpu.totalRenderMaxMs.toFixed(2)} ms; full-preparation frames ${gpu.summary.rebuildFrameIndices.join(',') || 'none'}; delta frames ${gpu.summary.documentDeltaFrameIndices.join(',') || 'none'}; full/subrange uploads ${gpu.summary.fullUploadFrameIndices.length}/${gpu.summary.subrangeUploadFrameIndices.length}`);
     }
     // Compare a translated cached frame too: a centered image alone cannot detect missing
     // strokes that entered through the cache's overscan border or a wrong translation sign.
