@@ -43,6 +43,43 @@ Zoom deliberately rebuilds: scaling screen-space triangles would also scale line
 widths and violate the curve error budget. Timing has no pass/fail speed target;
 zero uploads, geometric coverage, fallback and recovery are correctness gates.
 
+### Delly validation
+
+The clean committed source `09282834b62a9bbbe87bf56811ad7feca23190b7` passed
+the direct Windows benchmark. Its complete timing, capability, upload and coverage
+data are in [windows-gpu-pan-cache.json](benchmarks/windows-gpu-pan-cache.json).
+Electron 44.7.0 / Chromium 152 ran on Windows kernel build 10.0.26200 with Intel
+UHD Graphics explicitly active (driver 32.0.101.7088); NVIDIA RTX A3000 was inactive.
+The viewport was 1216 x 552 CSS pixels at DPR 1. This validates one adapter/driver
+combination. Other active development work was not stopped; system load and OS
+caches were not controlled, so these samples do not establish general speed gains.
+
+| Workload, 30 moving samples | Canvas observed render + flush median | GPU observed render + fence median |
+| --- | ---: | ---: |
+| 38,000 wires, pan only | 70.2 ms | 15.1 ms |
+| 38,000 wires, combined pan/zoom | 150.0 ms | 158.6 ms |
+| Small line/curve scene, pan only | 1.4 ms | 8.8 ms |
+| Mixed 6,500-object schematic, pan only | 26.8 ms | 25.3 ms (Canvas fallback) |
+
+Supported pan samples uploaded zero geometry bytes. The dense pan GPU CPU
+submission median was 0.8 ms. Dense images still differed by 3.335% under
+pixelmatch; panned and centered geometry passed the two-pixel coverage gate.
+The mixed schematic fallback matched Canvas pixel-for-pixel. Neither fence waits
+nor Canvas readback represent pure GPU execution or final display presentation.
+Pointer rollover was disabled during comparisons to hold appearance constant;
+hover/selection invalidation remains covered by focused tests.
+
+Local validation passed: 2,348 regression tests, 27 conditional skips; all 70
+focused GPU renderer tests; renderer/Electron/scripts typechecks; lint;
+fixture/workflow checks; both builds; real ordinary-build LINE/diagnostics/UI/
+clipboard/report checks; two context-loss/restoration cycles, grid fallback,
+resource disposal and the separate demo's cameras/picking/recovery. Initial
+sandbox runs could not perform private junction operations or launch Electron;
+the complete suite and Electron checks passed with approved execution using
+private profiles and temporary files. Exact-commit remote CI is still required
+for this branch. Actual GPU-process failure, additional consumer adapters/drivers
+and integration with the active 2D/DWG fixes remain unvalidated.
+
 ## Production gates still open
 
 1. **Correct 2D baseline:** integrate completed text, dimensions, layouts,
