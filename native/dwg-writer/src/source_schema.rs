@@ -174,6 +174,10 @@ fn annotation_scale(document: &mut CadDocument, root: Handle, name: &str) -> Res
     }
     let handle = document.allocate_handle();
     let mut scale = acadrust::objects::Scale::new(name, paper, drawing);
+    // Newly authored AutoCAD registry scales, including 1:1, store this flag
+    // as zero. It is not inferred from equal numeric units. Existing SCALE
+    // records retain their actual flag in the branch above.
+    scale.is_unit_scale = false;
     scale.handle = handle;
     scale.owner_handle = dictionary;
     document.objects.insert(handle, ObjectType::Scale(scale));

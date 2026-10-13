@@ -1,0 +1,2397 @@
+{
+  "schemaVersion": 1,
+  "nativeError": 0,
+  "writeError": 0,
+  "factorySha256": "2665f1fe5c798d8557642124be62036ccbaf825a6043766042a06e1108009a95",
+  "wasmSha256": "e93b4201a36f04f02ce537302248da1d6a0c7153f6b3a862a925eabc7d7a3c90",
+  "fixtureSha256": "5f5a9bd4a0ffd2e545f6f5404bed9edb27f2c41411c3b26a264f0696a649f105",
+  "expectedSha256": "28b458ef8f507b3b3693bc881a1d93e88773f9f9f80cf862f2ed4f857dc5748e",
+  "maxOutputBytes": 33554432,
+  "outputBytes": 84661,
+  "inventoryCount": 138,
+  "limitedOutputRejected": true,
+  "objects": [
+    {
+      "handle": "1",
+      "type": "BLOCK_CONTROL",
+      "dxfType": "BLOCK_CONTROL",
+      "supertype": "object"
+    },
+    {
+      "handle": "2",
+      "type": "LAYER_CONTROL",
+      "dxfType": "LAYER_CONTROL",
+      "supertype": "object"
+    },
+    {
+      "handle": "3",
+      "type": "STYLE_CONTROL",
+      "dxfType": "STYLE_CONTROL",
+      "supertype": "object"
+    },
+    {
+      "handle": "5",
+      "type": "LTYPE_CONTROL",
+      "dxfType": "LTYPE_CONTROL",
+      "supertype": "object"
+    },
+    {
+      "handle": "6",
+      "type": "VIEW_CONTROL",
+      "dxfType": "VIEW_CONTROL",
+      "supertype": "object"
+    },
+    {
+      "handle": "7",
+      "type": "UCS_CONTROL",
+      "dxfType": "UCS_CONTROL",
+      "supertype": "object"
+    },
+    {
+      "handle": "8",
+      "type": "VPORT_CONTROL",
+      "dxfType": "VPORT_CONTROL",
+      "supertype": "object"
+    },
+    {
+      "handle": "9",
+      "type": "APPID_CONTROL",
+      "dxfType": "APPID_CONTROL",
+      "supertype": "object"
+    },
+    {
+      "handle": "A",
+      "type": "DIMSTYLE_CONTROL",
+      "dxfType": "DIMSTYLE_CONTROL",
+      "supertype": "object"
+    },
+    {
+      "handle": "C",
+      "type": "DICTIONARY",
+      "dxfType": "DICTIONARY",
+      "supertype": "object"
+    },
+    {
+      "handle": "D",
+      "type": "DICTIONARY",
+      "dxfType": "DICTIONARY",
+      "supertype": "object"
+    },
+    {
+      "handle": "1B",
+      "type": "BLOCK_HEADER",
+      "dxfType": "BLOCK_HEADER",
+      "supertype": "object"
+    },
+    {
+      "handle": "1F",
+      "type": "BLOCK_HEADER",
+      "dxfType": "BLOCK_HEADER",
+      "supertype": "object"
+    },
+    {
+      "handle": "101",
+      "type": "DICTIONARYWDFLT",
+      "dxfType": "ACDBDICTIONARYWDFLT",
+      "supertype": "object"
+    },
+    {
+      "handle": "102",
+      "type": "PLACEHOLDER",
+      "dxfType": "ACDBPLACEHOLDER",
+      "supertype": "object"
+    },
+    {
+      "handle": "103",
+      "type": "LAYOUT",
+      "dxfType": "LAYOUT",
+      "supertype": "object"
+    },
+    {
+      "handle": "104",
+      "type": "LAYOUT",
+      "dxfType": "LAYOUT",
+      "supertype": "object"
+    },
+    {
+      "handle": "105",
+      "type": "DICTIONARY",
+      "dxfType": "DICTIONARY",
+      "supertype": "object"
+    },
+    {
+      "handle": "106",
+      "type": "VPORT",
+      "dxfType": "VPORT",
+      "supertype": "object"
+    },
+    {
+      "handle": "107",
+      "type": "LTYPE",
+      "dxfType": "LTYPE",
+      "supertype": "object"
+    },
+    {
+      "handle": "108",
+      "type": "LTYPE",
+      "dxfType": "LTYPE",
+      "supertype": "object"
+    },
+    {
+      "handle": "109",
+      "type": "LTYPE",
+      "dxfType": "LTYPE",
+      "supertype": "object"
+    },
+    {
+      "handle": "10A",
+      "type": "LAYER",
+      "dxfType": "LAYER",
+      "supertype": "object"
+    },
+    {
+      "handle": "10B",
+      "type": "STYLE",
+      "dxfType": "STYLE",
+      "supertype": "object"
+    },
+    {
+      "handle": "10C",
+      "type": "APPID",
+      "dxfType": "APPID",
+      "supertype": "object"
+    },
+    {
+      "handle": "10D",
+      "type": "APPID",
+      "dxfType": "APPID",
+      "supertype": "object"
+    },
+    {
+      "handle": "10E",
+      "type": "APPID",
+      "dxfType": "APPID",
+      "supertype": "object"
+    },
+    {
+      "handle": "10F",
+      "type": "DIMSTYLE",
+      "dxfType": "DIMSTYLE",
+      "supertype": "object"
+    },
+    {
+      "handle": "110",
+      "type": "BLOCK",
+      "dxfType": "BLOCK",
+      "supertype": "entity"
+    },
+    {
+      "handle": "111",
+      "type": "ENDBLK",
+      "dxfType": "ENDBLK",
+      "supertype": "entity"
+    },
+    {
+      "handle": "112",
+      "type": "BLOCK",
+      "dxfType": "BLOCK",
+      "supertype": "entity"
+    },
+    {
+      "handle": "113",
+      "type": "ENDBLK",
+      "dxfType": "ENDBLK",
+      "supertype": "entity"
+    },
+    {
+      "handle": "11C",
+      "type": "VIEWPORT",
+      "dxfType": "VIEWPORT",
+      "supertype": "entity"
+    },
+    {
+      "handle": "121",
+      "type": "DICTIONARY",
+      "dxfType": "DICTIONARY",
+      "supertype": "object"
+    },
+    {
+      "handle": "122",
+      "type": "MATERIAL",
+      "dxfType": "MATERIAL",
+      "supertype": "object"
+    },
+    {
+      "handle": "123",
+      "type": "DICTIONARY",
+      "dxfType": "DICTIONARY",
+      "supertype": "object"
+    },
+    {
+      "handle": "124",
+      "type": "XRECORD",
+      "dxfType": "XRECORD",
+      "supertype": "object"
+    },
+    {
+      "handle": "125",
+      "type": "XRECORD",
+      "dxfType": "XRECORD",
+      "supertype": "object"
+    },
+    {
+      "handle": "126",
+      "type": "XRECORD",
+      "dxfType": "XRECORD",
+      "supertype": "object"
+    },
+    {
+      "handle": "127",
+      "type": "XRECORD",
+      "dxfType": "XRECORD",
+      "supertype": "object"
+    },
+    {
+      "handle": "128",
+      "type": "XRECORD",
+      "dxfType": "XRECORD",
+      "supertype": "object"
+    },
+    {
+      "handle": "129",
+      "type": "XRECORD",
+      "dxfType": "XRECORD",
+      "supertype": "object"
+    },
+    {
+      "handle": "12A",
+      "type": "MATERIAL",
+      "dxfType": "MATERIAL",
+      "supertype": "object"
+    },
+    {
+      "handle": "12B",
+      "type": "DICTIONARY",
+      "dxfType": "DICTIONARY",
+      "supertype": "object"
+    },
+    {
+      "handle": "12C",
+      "type": "XRECORD",
+      "dxfType": "XRECORD",
+      "supertype": "object"
+    },
+    {
+      "handle": "12D",
+      "type": "XRECORD",
+      "dxfType": "XRECORD",
+      "supertype": "object"
+    },
+    {
+      "handle": "12E",
+      "type": "XRECORD",
+      "dxfType": "XRECORD",
+      "supertype": "object"
+    },
+    {
+      "handle": "12F",
+      "type": "XRECORD",
+      "dxfType": "XRECORD",
+      "supertype": "object"
+    },
+    {
+      "handle": "130",
+      "type": "XRECORD",
+      "dxfType": "XRECORD",
+      "supertype": "object"
+    },
+    {
+      "handle": "131",
+      "type": "XRECORD",
+      "dxfType": "XRECORD",
+      "supertype": "object"
+    },
+    {
+      "handle": "132",
+      "type": "MATERIAL",
+      "dxfType": "MATERIAL",
+      "supertype": "object"
+    },
+    {
+      "handle": "133",
+      "type": "DICTIONARY",
+      "dxfType": "DICTIONARY",
+      "supertype": "object"
+    },
+    {
+      "handle": "134",
+      "type": "XRECORD",
+      "dxfType": "XRECORD",
+      "supertype": "object"
+    },
+    {
+      "handle": "135",
+      "type": "XRECORD",
+      "dxfType": "XRECORD",
+      "supertype": "object"
+    },
+    {
+      "handle": "136",
+      "type": "XRECORD",
+      "dxfType": "XRECORD",
+      "supertype": "object"
+    },
+    {
+      "handle": "137",
+      "type": "XRECORD",
+      "dxfType": "XRECORD",
+      "supertype": "object"
+    },
+    {
+      "handle": "138",
+      "type": "XRECORD",
+      "dxfType": "XRECORD",
+      "supertype": "object"
+    },
+    {
+      "handle": "139",
+      "type": "XRECORD",
+      "dxfType": "XRECORD",
+      "supertype": "object"
+    },
+    {
+      "handle": "13A",
+      "type": "DICTIONARY",
+      "dxfType": "DICTIONARY",
+      "supertype": "object"
+    },
+    {
+      "handle": "13B",
+      "type": "VISUALSTYLE",
+      "dxfType": "VISUALSTYLE",
+      "supertype": "object"
+    },
+    {
+      "handle": "13C",
+      "type": "VISUALSTYLE",
+      "dxfType": "VISUALSTYLE",
+      "supertype": "object"
+    },
+    {
+      "handle": "13D",
+      "type": "VISUALSTYLE",
+      "dxfType": "VISUALSTYLE",
+      "supertype": "object"
+    },
+    {
+      "handle": "13E",
+      "type": "VISUALSTYLE",
+      "dxfType": "VISUALSTYLE",
+      "supertype": "object"
+    },
+    {
+      "handle": "13F",
+      "type": "VISUALSTYLE",
+      "dxfType": "VISUALSTYLE",
+      "supertype": "object"
+    },
+    {
+      "handle": "140",
+      "type": "VISUALSTYLE",
+      "dxfType": "VISUALSTYLE",
+      "supertype": "object"
+    },
+    {
+      "handle": "141",
+      "type": "VISUALSTYLE",
+      "dxfType": "VISUALSTYLE",
+      "supertype": "object"
+    },
+    {
+      "handle": "142",
+      "type": "VISUALSTYLE",
+      "dxfType": "VISUALSTYLE",
+      "supertype": "object"
+    },
+    {
+      "handle": "143",
+      "type": "VISUALSTYLE",
+      "dxfType": "VISUALSTYLE",
+      "supertype": "object"
+    },
+    {
+      "handle": "144",
+      "type": "VISUALSTYLE",
+      "dxfType": "VISUALSTYLE",
+      "supertype": "object"
+    },
+    {
+      "handle": "145",
+      "type": "VISUALSTYLE",
+      "dxfType": "VISUALSTYLE",
+      "supertype": "object"
+    },
+    {
+      "handle": "146",
+      "type": "VISUALSTYLE",
+      "dxfType": "VISUALSTYLE",
+      "supertype": "object"
+    },
+    {
+      "handle": "147",
+      "type": "VISUALSTYLE",
+      "dxfType": "VISUALSTYLE",
+      "supertype": "object"
+    },
+    {
+      "handle": "148",
+      "type": "VISUALSTYLE",
+      "dxfType": "VISUALSTYLE",
+      "supertype": "object"
+    },
+    {
+      "handle": "149",
+      "type": "VISUALSTYLE",
+      "dxfType": "VISUALSTYLE",
+      "supertype": "object"
+    },
+    {
+      "handle": "14A",
+      "type": "VISUALSTYLE",
+      "dxfType": "VISUALSTYLE",
+      "supertype": "object"
+    },
+    {
+      "handle": "14B",
+      "type": "VISUALSTYLE",
+      "dxfType": "VISUALSTYLE",
+      "supertype": "object"
+    },
+    {
+      "handle": "14C",
+      "type": "VISUALSTYLE",
+      "dxfType": "VISUALSTYLE",
+      "supertype": "object"
+    },
+    {
+      "handle": "14D",
+      "type": "VISUALSTYLE",
+      "dxfType": "VISUALSTYLE",
+      "supertype": "object"
+    },
+    {
+      "handle": "14E",
+      "type": "VISUALSTYLE",
+      "dxfType": "VISUALSTYLE",
+      "supertype": "object"
+    },
+    {
+      "handle": "14F",
+      "type": "VISUALSTYLE",
+      "dxfType": "VISUALSTYLE",
+      "supertype": "object"
+    },
+    {
+      "handle": "150",
+      "type": "VISUALSTYLE",
+      "dxfType": "VISUALSTYLE",
+      "supertype": "object"
+    },
+    {
+      "handle": "151",
+      "type": "VISUALSTYLE",
+      "dxfType": "VISUALSTYLE",
+      "supertype": "object"
+    },
+    {
+      "handle": "152",
+      "type": "VISUALSTYLE",
+      "dxfType": "VISUALSTYLE",
+      "supertype": "object"
+    },
+    {
+      "handle": "153",
+      "type": "DICTIONARY",
+      "dxfType": "DICTIONARY",
+      "supertype": "object"
+    },
+    {
+      "handle": "154",
+      "type": "DICTIONARY",
+      "dxfType": "DICTIONARY",
+      "supertype": "object"
+    },
+    {
+      "handle": "155",
+      "type": "TABLESTYLE",
+      "dxfType": "TABLESTYLE",
+      "supertype": "object"
+    },
+    {
+      "handle": "156",
+      "type": "DICTIONARY",
+      "dxfType": "DICTIONARY",
+      "supertype": "object"
+    },
+    {
+      "handle": "157",
+      "type": "MLINESTYLE",
+      "dxfType": "MLINESTYLE",
+      "supertype": "object"
+    },
+    {
+      "handle": "158",
+      "type": "DICTIONARY",
+      "dxfType": "DICTIONARY",
+      "supertype": "object"
+    },
+    {
+      "handle": "159",
+      "type": "SCALE",
+      "dxfType": "SCALE",
+      "supertype": "object"
+    },
+    {
+      "handle": "15A",
+      "type": "SCALE",
+      "dxfType": "SCALE",
+      "supertype": "object"
+    },
+    {
+      "handle": "15B",
+      "type": "SCALE",
+      "dxfType": "SCALE",
+      "supertype": "object"
+    },
+    {
+      "handle": "15C",
+      "type": "SCALE",
+      "dxfType": "SCALE",
+      "supertype": "object"
+    },
+    {
+      "handle": "15D",
+      "type": "SCALE",
+      "dxfType": "SCALE",
+      "supertype": "object"
+    },
+    {
+      "handle": "15E",
+      "type": "SCALE",
+      "dxfType": "SCALE",
+      "supertype": "object"
+    },
+    {
+      "handle": "15F",
+      "type": "SCALE",
+      "dxfType": "SCALE",
+      "supertype": "object"
+    },
+    {
+      "handle": "160",
+      "type": "SCALE",
+      "dxfType": "SCALE",
+      "supertype": "object"
+    },
+    {
+      "handle": "161",
+      "type": "SCALE",
+      "dxfType": "SCALE",
+      "supertype": "object"
+    },
+    {
+      "handle": "162",
+      "type": "SCALE",
+      "dxfType": "SCALE",
+      "supertype": "object"
+    },
+    {
+      "handle": "163",
+      "type": "SCALE",
+      "dxfType": "SCALE",
+      "supertype": "object"
+    },
+    {
+      "handle": "164",
+      "type": "SCALE",
+      "dxfType": "SCALE",
+      "supertype": "object"
+    },
+    {
+      "handle": "165",
+      "type": "SCALE",
+      "dxfType": "SCALE",
+      "supertype": "object"
+    },
+    {
+      "handle": "166",
+      "type": "SCALE",
+      "dxfType": "SCALE",
+      "supertype": "object"
+    },
+    {
+      "handle": "167",
+      "type": "SCALE",
+      "dxfType": "SCALE",
+      "supertype": "object"
+    },
+    {
+      "handle": "168",
+      "type": "SCALE",
+      "dxfType": "SCALE",
+      "supertype": "object"
+    },
+    {
+      "handle": "169",
+      "type": "SCALE",
+      "dxfType": "SCALE",
+      "supertype": "object"
+    },
+    {
+      "handle": "16A",
+      "type": "DICTIONARY",
+      "dxfType": "DICTIONARY",
+      "supertype": "object"
+    },
+    {
+      "handle": "16B",
+      "type": "MLEADERSTYLE",
+      "dxfType": "MLEADERSTYLE",
+      "supertype": "object"
+    },
+    {
+      "handle": "16C",
+      "type": "DICTIONARY",
+      "dxfType": "DICTIONARY",
+      "supertype": "object"
+    },
+    {
+      "handle": "16D",
+      "type": "SECTIONVIEWSTYLE",
+      "dxfType": "ACDBSECTIONVIEWSTYLE",
+      "supertype": "object"
+    },
+    {
+      "handle": "16E",
+      "type": "DICTIONARY",
+      "dxfType": "DICTIONARY",
+      "supertype": "object"
+    },
+    {
+      "handle": "16F",
+      "type": "DETAILVIEWSTYLE",
+      "dxfType": "ACDBDETAILVIEWSTYLE",
+      "supertype": "object"
+    },
+    {
+      "handle": "170",
+      "type": "DICTIONARY",
+      "dxfType": "DICTIONARY",
+      "supertype": "object"
+    },
+    {
+      "handle": "173",
+      "type": "XRECORD",
+      "dxfType": "XRECORD",
+      "supertype": "object"
+    },
+    {
+      "handle": "174",
+      "type": "APPID",
+      "dxfType": "APPID",
+      "supertype": "object"
+    },
+    {
+      "handle": "175",
+      "type": "DICTIONARY",
+      "dxfType": "DICTIONARY",
+      "supertype": "object"
+    },
+    {
+      "handle": "176",
+      "type": "DICTIONARYVAR",
+      "dxfType": "DICTIONARYVAR",
+      "supertype": "object"
+    },
+    {
+      "handle": "177",
+      "type": "DICTIONARYVAR",
+      "dxfType": "DICTIONARYVAR",
+      "supertype": "object"
+    },
+    {
+      "handle": "178",
+      "type": "DICTIONARYVAR",
+      "dxfType": "DICTIONARYVAR",
+      "supertype": "object"
+    },
+    {
+      "handle": "179",
+      "type": "DICTIONARYVAR",
+      "dxfType": "DICTIONARYVAR",
+      "supertype": "object"
+    },
+    {
+      "handle": "17A",
+      "type": "DICTIONARYVAR",
+      "dxfType": "DICTIONARYVAR",
+      "supertype": "object"
+    },
+    {
+      "handle": "181",
+      "type": "DICTIONARY",
+      "dxfType": "DICTIONARY",
+      "supertype": "object"
+    },
+    {
+      "handle": "182",
+      "type": "DICTIONARY",
+      "dxfType": "DICTIONARY",
+      "supertype": "object"
+    },
+    {
+      "handle": "18D",
+      "type": "LINE",
+      "dxfType": "LINE",
+      "supertype": "entity"
+    },
+    {
+      "handle": "18E",
+      "type": "LINE",
+      "dxfType": "LINE",
+      "supertype": "entity"
+    },
+    {
+      "handle": "18F",
+      "type": "MTEXT",
+      "dxfType": "MTEXT",
+      "supertype": "entity"
+    },
+    {
+      "handle": "190",
+      "type": "DICTIONARY",
+      "dxfType": "DICTIONARY",
+      "supertype": "object"
+    },
+    {
+      "handle": "191",
+      "type": "DICTIONARY",
+      "dxfType": "DICTIONARY",
+      "supertype": "object"
+    },
+    {
+      "handle": "192",
+      "type": "FIELD",
+      "dxfType": "FIELD",
+      "supertype": "object"
+    },
+    {
+      "handle": "193",
+      "type": "FIELD",
+      "dxfType": "FIELD",
+      "supertype": "object"
+    },
+    {
+      "handle": "194",
+      "type": "FIELDLIST",
+      "dxfType": "FIELDLIST",
+      "supertype": "object"
+    },
+    {
+      "handle": "195",
+      "type": "VIEW",
+      "dxfType": "VIEW",
+      "supertype": "object"
+    },
+    {
+      "handle": "196",
+      "type": "VIEW",
+      "dxfType": "VIEW",
+      "supertype": "object"
+    },
+    {
+      "handle": "197",
+      "type": "VIEW",
+      "dxfType": "VIEW",
+      "supertype": "object"
+    },
+    {
+      "handle": "198",
+      "type": "DICTIONARY",
+      "dxfType": "DICTIONARY",
+      "supertype": "object"
+    },
+    {
+      "handle": "199",
+      "type": "XRECORD",
+      "dxfType": "XRECORD",
+      "supertype": "object"
+    },
+    {
+      "handle": "19A",
+      "type": "DICTIONARY",
+      "dxfType": "DICTIONARY",
+      "supertype": "object"
+    },
+    {
+      "handle": "19B",
+      "type": "XRECORD",
+      "dxfType": "XRECORD",
+      "supertype": "object"
+    }
+  ],
+  "complete": true,
+  "records": [
+    {
+      "type": "VIEW",
+      "handle": "195",
+      "groups": [
+        {
+          "code": 5,
+          "value": "195"
+        },
+        {
+          "code": 330,
+          "value": "6"
+        },
+        {
+          "code": 100,
+          "value": "AcDbSymbolTableRecord"
+        },
+        {
+          "code": 100,
+          "value": "AcDbViewTableRecord"
+        },
+        {
+          "code": 2,
+          "value": "SITE_NORTH"
+        },
+        {
+          "code": 70,
+          "value": "     0"
+        },
+        {
+          "code": 40,
+          "value": "20.0"
+        },
+        {
+          "code": 10,
+          "value": "5.0"
+        },
+        {
+          "code": 20,
+          "value": "2.5"
+        },
+        {
+          "code": 41,
+          "value": "40.0"
+        },
+        {
+          "code": 11,
+          "value": "0.0"
+        },
+        {
+          "code": 21,
+          "value": "0.0"
+        },
+        {
+          "code": 31,
+          "value": "1.0"
+        },
+        {
+          "code": 12,
+          "value": "100.0"
+        },
+        {
+          "code": 22,
+          "value": "200.0"
+        },
+        {
+          "code": 32,
+          "value": "7.0"
+        },
+        {
+          "code": 50,
+          "value": "0.0"
+        },
+        {
+          "code": 42,
+          "value": "50.0"
+        },
+        {
+          "code": 43,
+          "value": "0.0"
+        },
+        {
+          "code": 44,
+          "value": "0.0"
+        },
+        {
+          "code": 71,
+          "value": "     0"
+        },
+        {
+          "code": 281,
+          "value": "     0"
+        },
+        {
+          "code": 292,
+          "value": "     1"
+        },
+        {
+          "code": 282,
+          "value": "     1"
+        },
+        {
+          "code": 141,
+          "value": "0.0"
+        },
+        {
+          "code": 142,
+          "value": "0.0"
+        },
+        {
+          "code": 63,
+          "value": "   250"
+        },
+        {
+          "code": 421,
+          "value": "-1036831949"
+        },
+        {
+          "code": 72,
+          "value": "     0"
+        },
+        {
+          "code": 73,
+          "value": "     0"
+        }
+      ]
+    },
+    {
+      "type": "VIEW",
+      "handle": "196",
+      "groups": [
+        {
+          "code": 5,
+          "value": "196"
+        },
+        {
+          "code": 330,
+          "value": "6"
+        },
+        {
+          "code": 100,
+          "value": "AcDbSymbolTableRecord"
+        },
+        {
+          "code": 100,
+          "value": "AcDbViewTableRecord"
+        },
+        {
+          "code": 2,
+          "value": "SITE_ANGLE"
+        },
+        {
+          "code": 70,
+          "value": "     0"
+        },
+        {
+          "code": 40,
+          "value": "20.0"
+        },
+        {
+          "code": 10,
+          "value": "5.0"
+        },
+        {
+          "code": 20,
+          "value": "2.5"
+        },
+        {
+          "code": 41,
+          "value": "40.0"
+        },
+        {
+          "code": 11,
+          "value": "0.0"
+        },
+        {
+          "code": 21,
+          "value": "0.0"
+        },
+        {
+          "code": 31,
+          "value": "1.0"
+        },
+        {
+          "code": 12,
+          "value": "100.0"
+        },
+        {
+          "code": 22,
+          "value": "200.0"
+        },
+        {
+          "code": 32,
+          "value": "7.0"
+        },
+        {
+          "code": 50,
+          "value": "30.0"
+        },
+        {
+          "code": 42,
+          "value": "50.0"
+        },
+        {
+          "code": 43,
+          "value": "0.0"
+        },
+        {
+          "code": 44,
+          "value": "0.0"
+        },
+        {
+          "code": 71,
+          "value": "     0"
+        },
+        {
+          "code": 281,
+          "value": "     0"
+        },
+        {
+          "code": 292,
+          "value": "     1"
+        },
+        {
+          "code": 282,
+          "value": "     1"
+        },
+        {
+          "code": 141,
+          "value": "0.0"
+        },
+        {
+          "code": 142,
+          "value": "0.0"
+        },
+        {
+          "code": 63,
+          "value": "   250"
+        },
+        {
+          "code": 421,
+          "value": "-1036831949"
+        },
+        {
+          "code": 72,
+          "value": "     0"
+        },
+        {
+          "code": 73,
+          "value": "     0"
+        }
+      ]
+    },
+    {
+      "type": "VIEW",
+      "handle": "197",
+      "groups": [
+        {
+          "code": 5,
+          "value": "197"
+        },
+        {
+          "code": 330,
+          "value": "6"
+        },
+        {
+          "code": 100,
+          "value": "AcDbSymbolTableRecord"
+        },
+        {
+          "code": 100,
+          "value": "AcDbViewTableRecord"
+        },
+        {
+          "code": 2,
+          "value": "FUTURE_3D"
+        },
+        {
+          "code": 70,
+          "value": "     0"
+        },
+        {
+          "code": 40,
+          "value": "20.0"
+        },
+        {
+          "code": 10,
+          "value": "5.0"
+        },
+        {
+          "code": 20,
+          "value": "2.5"
+        },
+        {
+          "code": 41,
+          "value": "40.0"
+        },
+        {
+          "code": 11,
+          "value": "1.0"
+        },
+        {
+          "code": 21,
+          "value": "2.0"
+        },
+        {
+          "code": 31,
+          "value": "3.0"
+        },
+        {
+          "code": 12,
+          "value": "100.0"
+        },
+        {
+          "code": 22,
+          "value": "200.0"
+        },
+        {
+          "code": 32,
+          "value": "12.0"
+        },
+        {
+          "code": 50,
+          "value": "0.0"
+        },
+        {
+          "code": 42,
+          "value": "50.0"
+        },
+        {
+          "code": 43,
+          "value": "0.0"
+        },
+        {
+          "code": 44,
+          "value": "0.0"
+        },
+        {
+          "code": 71,
+          "value": "     0"
+        },
+        {
+          "code": 281,
+          "value": "     0"
+        },
+        {
+          "code": 292,
+          "value": "     1"
+        },
+        {
+          "code": 282,
+          "value": "     1"
+        },
+        {
+          "code": 141,
+          "value": "0.0"
+        },
+        {
+          "code": 142,
+          "value": "0.0"
+        },
+        {
+          "code": 63,
+          "value": "   250"
+        },
+        {
+          "code": 421,
+          "value": "-1036831949"
+        },
+        {
+          "code": 72,
+          "value": "     0"
+        },
+        {
+          "code": 73,
+          "value": "     0"
+        }
+      ]
+    },
+    {
+      "type": "DICTIONARY",
+      "handle": "19A",
+      "groups": [
+        {
+          "code": 5,
+          "value": "19A"
+        },
+        {
+          "code": 330,
+          "value": "18D"
+        },
+        {
+          "code": 100,
+          "value": "AcDbDictionary"
+        },
+        {
+          "code": 280,
+          "value": "     1"
+        },
+        {
+          "code": 281,
+          "value": "     1"
+        },
+        {
+          "code": 3,
+          "value": "LinkedMetadata"
+        },
+        {
+          "code": 360,
+          "value": "19B"
+        }
+      ]
+    },
+    {
+      "type": "DICTIONARY",
+      "handle": "190",
+      "groups": [
+        {
+          "code": 5,
+          "value": "190"
+        },
+        {
+          "code": 330,
+          "value": "18F"
+        },
+        {
+          "code": 100,
+          "value": "AcDbDictionary"
+        },
+        {
+          "code": 280,
+          "value": "     1"
+        },
+        {
+          "code": 281,
+          "value": "     1"
+        },
+        {
+          "code": 3,
+          "value": "ACAD_FIELD"
+        },
+        {
+          "code": 360,
+          "value": "191"
+        }
+      ]
+    },
+    {
+      "type": "FIELDLIST",
+      "handle": "194",
+      "groups": [
+        {
+          "code": 5,
+          "value": "194"
+        },
+        {
+          "code": 102,
+          "value": "{ACAD_REACTORS"
+        },
+        {
+          "code": 330,
+          "value": "C"
+        },
+        {
+          "code": 102,
+          "value": "}"
+        },
+        {
+          "code": 330,
+          "value": "C"
+        },
+        {
+          "code": 100,
+          "value": "AcDbIdSet"
+        },
+        {
+          "code": 90,
+          "value": "        2"
+        },
+        {
+          "code": 330,
+          "value": "192"
+        },
+        {
+          "code": 330,
+          "value": "193"
+        },
+        {
+          "code": 100,
+          "value": "AcDbFieldList"
+        }
+      ]
+    },
+    {
+      "type": "DICTIONARY",
+      "handle": "198",
+      "groups": [
+        {
+          "code": 5,
+          "value": "198"
+        },
+        {
+          "code": 102,
+          "value": "{ACAD_REACTORS"
+        },
+        {
+          "code": 330,
+          "value": "C"
+        },
+        {
+          "code": 102,
+          "value": "}"
+        },
+        {
+          "code": 330,
+          "value": "C"
+        },
+        {
+          "code": 100,
+          "value": "AcDbDictionary"
+        },
+        {
+          "code": 281,
+          "value": "     1"
+        },
+        {
+          "code": 3,
+          "value": "TypedPayload"
+        },
+        {
+          "code": 350,
+          "value": "199"
+        }
+      ]
+    },
+    {
+      "type": "XRECORD",
+      "handle": "19B",
+      "groups": [
+        {
+          "code": 5,
+          "value": "19B"
+        },
+        {
+          "code": 102,
+          "value": "{ACAD_REACTORS"
+        },
+        {
+          "code": 330,
+          "value": "19A"
+        },
+        {
+          "code": 102,
+          "value": "}"
+        },
+        {
+          "code": 330,
+          "value": "19A"
+        },
+        {
+          "code": 100,
+          "value": "AcDbXrecord"
+        },
+        {
+          "code": 280,
+          "value": "     1"
+        },
+        {
+          "code": 1,
+          "value": "owned by the line"
+        },
+        {
+          "code": 330,
+          "value": "18E"
+        }
+      ]
+    },
+    {
+      "type": "DICTIONARY",
+      "handle": "191",
+      "groups": [
+        {
+          "code": 5,
+          "value": "191"
+        },
+        {
+          "code": 102,
+          "value": "{ACAD_REACTORS"
+        },
+        {
+          "code": 330,
+          "value": "190"
+        },
+        {
+          "code": 102,
+          "value": "}"
+        },
+        {
+          "code": 330,
+          "value": "190"
+        },
+        {
+          "code": 100,
+          "value": "AcDbDictionary"
+        },
+        {
+          "code": 280,
+          "value": "     1"
+        },
+        {
+          "code": 281,
+          "value": "     1"
+        },
+        {
+          "code": 3,
+          "value": "TEXT"
+        },
+        {
+          "code": 360,
+          "value": "192"
+        }
+      ]
+    },
+    {
+      "type": "XRECORD",
+      "handle": "199",
+      "groups": [
+        {
+          "code": 5,
+          "value": "199"
+        },
+        {
+          "code": 102,
+          "value": "{ACAD_REACTORS"
+        },
+        {
+          "code": 330,
+          "value": "198"
+        },
+        {
+          "code": 102,
+          "value": "}"
+        },
+        {
+          "code": 330,
+          "value": "198"
+        },
+        {
+          "code": 100,
+          "value": "AcDbXrecord"
+        },
+        {
+          "code": 280,
+          "value": "     1"
+        },
+        {
+          "code": 1,
+          "value": "Payload F0A is literal text"
+        },
+        {
+          "code": 160,
+          "value": "9007199254740993"
+        },
+        {
+          "code": 310,
+          "value": "00017F80FF"
+        },
+        {
+          "code": 330,
+          "value": "18D"
+        },
+        {
+          "code": 340,
+          "value": "18E"
+        }
+      ]
+    },
+    {
+      "type": "FIELD",
+      "handle": "192",
+      "groups": [
+        {
+          "code": 5,
+          "value": "192"
+        },
+        {
+          "code": 102,
+          "value": "{ACAD_REACTORS"
+        },
+        {
+          "code": 330,
+          "value": "191"
+        },
+        {
+          "code": 102,
+          "value": "}"
+        },
+        {
+          "code": 330,
+          "value": "191"
+        },
+        {
+          "code": 100,
+          "value": "AcDbField"
+        },
+        {
+          "code": 1,
+          "value": "_text"
+        },
+        {
+          "code": 2,
+          "value": "Drawing: %<\\_FldIdx 0>%"
+        },
+        {
+          "code": 90,
+          "value": "        1"
+        },
+        {
+          "code": 360,
+          "value": "193"
+        },
+        {
+          "code": 97,
+          "value": "        0"
+        },
+        {
+          "code": 91,
+          "value": "       63"
+        },
+        {
+          "code": 92,
+          "value": "        0"
+        },
+        {
+          "code": 94,
+          "value": "       13"
+        },
+        {
+          "code": 95,
+          "value": "        2"
+        },
+        {
+          "code": 96,
+          "value": "        0"
+        },
+        {
+          "code": 300,
+          "value": ""
+        },
+        {
+          "code": 93,
+          "value": "        1"
+        },
+        {
+          "code": 6,
+          "value": "ACFD_FIELDTEXT_CHECKSUM"
+        },
+        {
+          "code": 93,
+          "value": "        2"
+        },
+        {
+          "code": 90,
+          "value": "        2"
+        },
+        {
+          "code": 140,
+          "value": "56169.0"
+        },
+        {
+          "code": 94,
+          "value": "        0"
+        },
+        {
+          "code": 300,
+          "value": ""
+        },
+        {
+          "code": 302,
+          "value": ""
+        },
+        {
+          "code": 304,
+          "value": "ACVALUE_END"
+        },
+        {
+          "code": 7,
+          "value": "ACFD_FIELD_VALUE"
+        },
+        {
+          "code": 93,
+          "value": "        3"
+        },
+        {
+          "code": 90,
+          "value": "        0"
+        },
+        {
+          "code": 94,
+          "value": "        0"
+        },
+        {
+          "code": 300,
+          "value": ""
+        },
+        {
+          "code": 302,
+          "value": ""
+        },
+        {
+          "code": 304,
+          "value": "ACVALUE_END"
+        },
+        {
+          "code": 301,
+          "value": ""
+        },
+        {
+          "code": 98,
+          "value": "        0"
+        }
+      ]
+    },
+    {
+      "type": "FIELD",
+      "handle": "193",
+      "groups": [
+        {
+          "code": 5,
+          "value": "193"
+        },
+        {
+          "code": 330,
+          "value": "192"
+        },
+        {
+          "code": 100,
+          "value": "AcDbField"
+        },
+        {
+          "code": 1,
+          "value": "AcVar"
+        },
+        {
+          "code": 2,
+          "value": "\\AcVar Filename \\f \"%fn2\""
+        },
+        {
+          "code": 90,
+          "value": "        0"
+        },
+        {
+          "code": 97,
+          "value": "        0"
+        },
+        {
+          "code": 91,
+          "value": "       63"
+        },
+        {
+          "code": 92,
+          "value": "        0"
+        },
+        {
+          "code": 94,
+          "value": "       59"
+        },
+        {
+          "code": 95,
+          "value": "        2"
+        },
+        {
+          "code": 96,
+          "value": "        0"
+        },
+        {
+          "code": 300,
+          "value": ""
+        },
+        {
+          "code": 93,
+          "value": "        1"
+        },
+        {
+          "code": 6,
+          "value": "Variable"
+        },
+        {
+          "code": 93,
+          "value": "        2"
+        },
+        {
+          "code": 90,
+          "value": "        4"
+        },
+        {
+          "code": 1,
+          "value": "Filename"
+        },
+        {
+          "code": 94,
+          "value": "        0"
+        },
+        {
+          "code": 300,
+          "value": ""
+        },
+        {
+          "code": 302,
+          "value": ""
+        },
+        {
+          "code": 304,
+          "value": "ACVALUE_END"
+        },
+        {
+          "code": 7,
+          "value": "ACFD_FIELD_VALUE"
+        },
+        {
+          "code": 93,
+          "value": "        4"
+        },
+        {
+          "code": 90,
+          "value": "        4"
+        },
+        {
+          "code": 1,
+          "value": "C:\\Users\\justi\\Chad\\jcad-portable-dwg\\.codex-local\\cad-metadata-oracle\\r2018-native-views-fields.dwg"
+        },
+        {
+          "code": 94,
+          "value": "        0"
+        },
+        {
+          "code": 300,
+          "value": "%fn2"
+        },
+        {
+          "code": 302,
+          "value": "r2018-native-views-fields"
+        },
+        {
+          "code": 304,
+          "value": "ACVALUE_END"
+        },
+        {
+          "code": 301,
+          "value": "r2018-native-views-fields"
+        },
+        {
+          "code": 98,
+          "value": "       25"
+        }
+      ]
+    }
+  ],
+  "diagnostics": [],
+  "classProjectionVerified": true,
+  "nativeClassCount": 13,
+  "classInventory": [
+    {
+      "num": 500,
+      "proxyflag": 0,
+      "appname": "ObjectDBX Classes",
+      "cppname": "AcDbDictionaryWithDefault",
+      "dxfname": "ACDBDICTIONARYWDFLT",
+      "is_zombie": 0,
+      "item_class_id": 499,
+      "num_instances": 1,
+      "dwg_version": 22,
+      "maint_version": 42
+    },
+    {
+      "num": 501,
+      "proxyflag": 0,
+      "appname": "ObjectDBX Classes",
+      "cppname": "AcDbPlaceHolder",
+      "dxfname": "ACDBPLACEHOLDER",
+      "is_zombie": 0,
+      "item_class_id": 499,
+      "num_instances": 1,
+      "dwg_version": 22,
+      "maint_version": 42
+    },
+    {
+      "num": 502,
+      "proxyflag": 1153,
+      "appname": "ObjectDBX Classes",
+      "cppname": "AcDbMaterial",
+      "dxfname": "MATERIAL",
+      "is_zombie": 0,
+      "item_class_id": 499,
+      "num_instances": 3,
+      "dwg_version": 23,
+      "maint_version": 14
+    },
+    {
+      "num": 503,
+      "proxyflag": 4095,
+      "appname": "ObjectDBX Classes",
+      "cppname": "AcDbVisualStyle",
+      "dxfname": "VISUALSTYLE",
+      "is_zombie": 0,
+      "item_class_id": 499,
+      "num_instances": 24,
+      "dwg_version": 26,
+      "maint_version": 0
+    },
+    {
+      "num": 504,
+      "proxyflag": 4095,
+      "appname": "ObjectDBX Classes",
+      "cppname": "AcDbTableStyle",
+      "dxfname": "TABLESTYLE",
+      "is_zombie": 0,
+      "item_class_id": 499,
+      "num_instances": 1,
+      "dwg_version": 25,
+      "maint_version": 20
+    },
+    {
+      "num": 505,
+      "proxyflag": 1153,
+      "appname": "ObjectDBX Classes",
+      "cppname": "AcDbScale",
+      "dxfname": "SCALE",
+      "is_zombie": 0,
+      "item_class_id": 499,
+      "num_instances": 17,
+      "dwg_version": 27,
+      "maint_version": 1
+    },
+    {
+      "num": 506,
+      "proxyflag": 4095,
+      "appname": "ACDB_MLEADERSTYLE_CLASS",
+      "cppname": "AcDbMLeaderStyle",
+      "dxfname": "MLEADERSTYLE",
+      "is_zombie": 0,
+      "item_class_id": 499,
+      "num_instances": 1,
+      "dwg_version": 33,
+      "maint_version": 427
+    },
+    {
+      "num": 507,
+      "proxyflag": 1025,
+      "appname": "ObjectDBX Classes",
+      "cppname": "AcDbSectionViewStyle",
+      "dxfname": "ACDBSECTIONVIEWSTYLE",
+      "is_zombie": 0,
+      "item_class_id": 499,
+      "num_instances": 1,
+      "dwg_version": 27,
+      "maint_version": 50
+    },
+    {
+      "num": 508,
+      "proxyflag": 1025,
+      "appname": "ObjectDBX Classes",
+      "cppname": "AcDbDetailViewStyle",
+      "dxfname": "ACDBDETAILVIEWSTYLE",
+      "is_zombie": 0,
+      "item_class_id": 499,
+      "num_instances": 1,
+      "dwg_version": 33,
+      "maint_version": 427
+    },
+    {
+      "num": 509,
+      "proxyflag": 0,
+      "appname": "ObjectDBX Classes",
+      "cppname": "AcDbDictionaryVar",
+      "dxfname": "DICTIONARYVAR",
+      "is_zombie": 0,
+      "item_class_id": 499,
+      "num_instances": 5,
+      "dwg_version": 20,
+      "maint_version": 0
+    },
+    {
+      "num": 510,
+      "proxyflag": 1152,
+      "appname": "ObjectDBX Classes",
+      "cppname": "AcDbCellStyleMap",
+      "dxfname": "CELLSTYLEMAP",
+      "is_zombie": 0,
+      "item_class_id": 499,
+      "num_instances": 1,
+      "dwg_version": 27,
+      "maint_version": 1
+    },
+    {
+      "num": 511,
+      "proxyflag": 1152,
+      "appname": "ObjectDBX Classes",
+      "cppname": "AcDbField",
+      "dxfname": "FIELD",
+      "is_zombie": 0,
+      "item_class_id": 499,
+      "num_instances": 2,
+      "dwg_version": 25,
+      "maint_version": 20
+    },
+    {
+      "num": 512,
+      "proxyflag": 1152,
+      "appname": "ObjectDBX Classes",
+      "cppname": "AcDbFieldList",
+      "dxfname": "FIELDLIST",
+      "is_zombie": 0,
+      "item_class_id": 499,
+      "num_instances": 1,
+      "dwg_version": 25,
+      "maint_version": 20
+    }
+  ],
+  "classDefinitions": [
+    {
+      "type": "CLASS",
+      "groups": [
+        {
+          "code": 1,
+          "value": "ACDBDICTIONARYWDFLT"
+        },
+        {
+          "code": 2,
+          "value": "AcDbDictionaryWithDefault"
+        },
+        {
+          "code": 3,
+          "value": "ObjectDBX Classes"
+        },
+        {
+          "code": 90,
+          "value": "        0"
+        },
+        {
+          "code": 91,
+          "value": "        1"
+        },
+        {
+          "code": 280,
+          "value": "     0"
+        },
+        {
+          "code": 281,
+          "value": "     0"
+        }
+      ]
+    },
+    {
+      "type": "CLASS",
+      "groups": [
+        {
+          "code": 1,
+          "value": "ACDBPLACEHOLDER"
+        },
+        {
+          "code": 2,
+          "value": "AcDbPlaceHolder"
+        },
+        {
+          "code": 3,
+          "value": "ObjectDBX Classes"
+        },
+        {
+          "code": 90,
+          "value": "        0"
+        },
+        {
+          "code": 91,
+          "value": "        1"
+        },
+        {
+          "code": 280,
+          "value": "     0"
+        },
+        {
+          "code": 281,
+          "value": "     0"
+        }
+      ]
+    },
+    {
+      "type": "CLASS",
+      "groups": [
+        {
+          "code": 1,
+          "value": "MATERIAL"
+        },
+        {
+          "code": 2,
+          "value": "AcDbMaterial"
+        },
+        {
+          "code": 3,
+          "value": "ObjectDBX Classes"
+        },
+        {
+          "code": 90,
+          "value": "     1153"
+        },
+        {
+          "code": 91,
+          "value": "        3"
+        },
+        {
+          "code": 280,
+          "value": "     0"
+        },
+        {
+          "code": 281,
+          "value": "     0"
+        }
+      ]
+    },
+    {
+      "type": "CLASS",
+      "groups": [
+        {
+          "code": 1,
+          "value": "VISUALSTYLE"
+        },
+        {
+          "code": 2,
+          "value": "AcDbVisualStyle"
+        },
+        {
+          "code": 3,
+          "value": "ObjectDBX Classes"
+        },
+        {
+          "code": 90,
+          "value": "     4095"
+        },
+        {
+          "code": 91,
+          "value": "       24"
+        },
+        {
+          "code": 280,
+          "value": "     0"
+        },
+        {
+          "code": 281,
+          "value": "     0"
+        }
+      ]
+    },
+    {
+      "type": "CLASS",
+      "groups": [
+        {
+          "code": 1,
+          "value": "TABLESTYLE"
+        },
+        {
+          "code": 2,
+          "value": "AcDbTableStyle"
+        },
+        {
+          "code": 3,
+          "value": "ObjectDBX Classes"
+        },
+        {
+          "code": 90,
+          "value": "     4095"
+        },
+        {
+          "code": 91,
+          "value": "        1"
+        },
+        {
+          "code": 280,
+          "value": "     0"
+        },
+        {
+          "code": 281,
+          "value": "     0"
+        }
+      ]
+    },
+    {
+      "type": "CLASS",
+      "groups": [
+        {
+          "code": 1,
+          "value": "SCALE"
+        },
+        {
+          "code": 2,
+          "value": "AcDbScale"
+        },
+        {
+          "code": 3,
+          "value": "ObjectDBX Classes"
+        },
+        {
+          "code": 90,
+          "value": "     1153"
+        },
+        {
+          "code": 91,
+          "value": "       17"
+        },
+        {
+          "code": 280,
+          "value": "     0"
+        },
+        {
+          "code": 281,
+          "value": "     0"
+        }
+      ]
+    },
+    {
+      "type": "CLASS",
+      "groups": [
+        {
+          "code": 1,
+          "value": "MLEADERSTYLE"
+        },
+        {
+          "code": 2,
+          "value": "AcDbMLeaderStyle"
+        },
+        {
+          "code": 3,
+          "value": "ACDB_MLEADERSTYLE_CLASS"
+        },
+        {
+          "code": 90,
+          "value": "     4095"
+        },
+        {
+          "code": 91,
+          "value": "        1"
+        },
+        {
+          "code": 280,
+          "value": "     0"
+        },
+        {
+          "code": 281,
+          "value": "     0"
+        }
+      ]
+    },
+    {
+      "type": "CLASS",
+      "groups": [
+        {
+          "code": 1,
+          "value": "ACDBSECTIONVIEWSTYLE"
+        },
+        {
+          "code": 2,
+          "value": "AcDbSectionViewStyle"
+        },
+        {
+          "code": 3,
+          "value": "ObjectDBX Classes"
+        },
+        {
+          "code": 90,
+          "value": "     1025"
+        },
+        {
+          "code": 91,
+          "value": "        1"
+        },
+        {
+          "code": 280,
+          "value": "     0"
+        },
+        {
+          "code": 281,
+          "value": "     0"
+        }
+      ]
+    },
+    {
+      "type": "CLASS",
+      "groups": [
+        {
+          "code": 1,
+          "value": "ACDBDETAILVIEWSTYLE"
+        },
+        {
+          "code": 2,
+          "value": "AcDbDetailViewStyle"
+        },
+        {
+          "code": 3,
+          "value": "ObjectDBX Classes"
+        },
+        {
+          "code": 90,
+          "value": "     1025"
+        },
+        {
+          "code": 91,
+          "value": "        1"
+        },
+        {
+          "code": 280,
+          "value": "     0"
+        },
+        {
+          "code": 281,
+          "value": "     0"
+        }
+      ]
+    },
+    {
+      "type": "CLASS",
+      "groups": [
+        {
+          "code": 1,
+          "value": "DICTIONARYVAR"
+        },
+        {
+          "code": 2,
+          "value": "AcDbDictionaryVar"
+        },
+        {
+          "code": 3,
+          "value": "ObjectDBX Classes"
+        },
+        {
+          "code": 90,
+          "value": "        0"
+        },
+        {
+          "code": 91,
+          "value": "        5"
+        },
+        {
+          "code": 280,
+          "value": "     0"
+        },
+        {
+          "code": 281,
+          "value": "     0"
+        }
+      ]
+    },
+    {
+      "type": "CLASS",
+      "groups": [
+        {
+          "code": 1,
+          "value": "CELLSTYLEMAP"
+        },
+        {
+          "code": 2,
+          "value": "AcDbCellStyleMap"
+        },
+        {
+          "code": 3,
+          "value": "ObjectDBX Classes"
+        },
+        {
+          "code": 90,
+          "value": "     1152"
+        },
+        {
+          "code": 91,
+          "value": "        1"
+        },
+        {
+          "code": 280,
+          "value": "     0"
+        },
+        {
+          "code": 281,
+          "value": "     0"
+        }
+      ]
+    },
+    {
+      "type": "CLASS",
+      "groups": [
+        {
+          "code": 1,
+          "value": "FIELD"
+        },
+        {
+          "code": 2,
+          "value": "AcDbField"
+        },
+        {
+          "code": 3,
+          "value": "ObjectDBX Classes"
+        },
+        {
+          "code": 90,
+          "value": "     1152"
+        },
+        {
+          "code": 91,
+          "value": "        2"
+        },
+        {
+          "code": 280,
+          "value": "     0"
+        },
+        {
+          "code": 281,
+          "value": "     0"
+        }
+      ]
+    },
+    {
+      "type": "CLASS",
+      "groups": [
+        {
+          "code": 1,
+          "value": "FIELDLIST"
+        },
+        {
+          "code": 2,
+          "value": "AcDbFieldList"
+        },
+        {
+          "code": 3,
+          "value": "ObjectDBX Classes"
+        },
+        {
+          "code": 90,
+          "value": "     1152"
+        },
+        {
+          "code": 91,
+          "value": "        1"
+        },
+        {
+          "code": 280,
+          "value": "     0"
+        },
+        {
+          "code": 281,
+          "value": "     0"
+        }
+      ]
+    }
+  ],
+  "classOracleVerified": true,
+  "sourceDxfSha256": "2630c55169a36ed81951e132b3a946feb57426197e64d4e5747c3bde6821dcad",
+  "declaredClassCount": 12
+}

@@ -114,6 +114,14 @@ inventory before exporting metadata. The original AutoCAD DXF CLASS definitions
 are checked separately from the native copied values, so a decoder and projection
 agreeing on the same corrupt flags does not pass the acceptance gate.
 
+CLASS group 91 is the cached or derived instance count, rather than a class
+schema field. AutoCAD DXFOUT materializes the TABLESTYLE's inline CELLSTYLEMAP
+as a separate object: the independent Unicode fixture has a native cached
+count of 0 and a DXF count of 1. The copied native getter and C projection must
+still agree exactly on group 91. The independent class oracle compares every
+other group exactly and reports these count differences explicitly as
+`classCountDifferences`; it does not replace source fixture counts.
+
 CMC color-book components from R2007+ are already converted from UTF-16 to UTF-8
 when joined. Their DXF output now uses the UTF-8 path directly, preserving the
 original Unicode name instead of interpreting its bytes again as a legacy code

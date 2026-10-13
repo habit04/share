@@ -56,7 +56,9 @@ DICTIONARYVAR values and a matching owned SCALE record. When explicit DXF header
 values require missing registry objects, the helper creates bounded, owned
 records before its baseline; retained conflicting values or ownership refuse
 export. Existing identities, unrelated variables and scale definitions remain
-intact. Explicit source CLASS declarations replace generated defaults. Their
+intact. Newly synthesized SCALE records use the independently authored registry
+flag value zero, including a 1:1 ratio; existing records retain their actual flag.
+Explicit source CLASS declarations replace generated defaults. Their
 application, C++ name, proxy and schema flags, including unused definitions, are
 preserved; only instance count is derived from emitted records.
 

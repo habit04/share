@@ -17,6 +17,8 @@ test('class projection checks copied native builtin identities, application name
   assert.throws(() => validateNativeClassProjection({ dxf: dxf(changed) }, inventory), /group3 changed/);
   changed[0] = structuredClone(records[0]); changed[0].groups.find(pair => pair.code === 90).value = '0';
   assert.throws(() => validateNativeClassProjection({ dxf: dxf(changed) }, inventory), /group90 changed/);
+  changed[0] = structuredClone(records[0]); changed[0].groups.find(pair => pair.code === 91).value = '0';
+  assert.throws(() => validateNativeClassProjection({ dxf: dxf(changed) }, inventory), /instance count changed/);
   assert.throws(() => validateNativeClassProjection({ dxf: dxf(records) }, [{ ...inventory[0], item_class_id: 0 }, inventory[1]]), /discriminator/);
   assert.throws(() => validateNativeClassProjection({ dxf: dxf(records) }, [{ ...inventory[0], appname: 'x\nCLASS' }, inventory[1]]), /name/);
 });
@@ -34,12 +36,15 @@ test('whole independent AutoCAD class oracle catches shared native/projection sc
   const copied = inventory.map(cls => cls.dxfname === 'ACDBSECTIONVIEWSTYLE' ? { ...cls, proxyflag: 0, num_instances: 256 } : cls);
   assert.doesNotThrow(() => validateNativeClassProjection({ dxf: dxf(changed) }, copied), 'Two views of the same corrupted native state agree.');
   assert.throws(() => validateNativeClassOracle({ dxf: dxf(changed) }, original), /Independent AutoCAD class ACDBSECTIONVIEWSTYLE group90 changed/);
-  for (const code of [2, 3, 90, 91, 280, 281]) {
+  for (const code of [2, 3, 90, 280, 281]) {
     const mutated = structuredClone(definitions), cls = mutated.at(-1), group = cls.groups.find(group => group.code === code);
     group.value = [2, 3].includes(code) ? group.value + 'changed' : String(Number(group.value) + 1);
     assert.throws(() => validateNativeClassOracle({ dxf: dxf(mutated) }, original), new RegExp(`group${code} changed`));
   }
   assert.throws(() => validateNativeClassOracle({ dxf: dxf(definitions.slice(0, -1)) }, original), /missing/);
+  const cached = structuredClone(definitions);
+  cached.find(record => record.groups.some(group => group.code === 1 && group.value === 'CELLSTYLEMAP')).groups.find(group => group.code === 91).value = '0';
+  assert.doesNotThrow(() => validateNativeClassOracle({ dxf: dxf(cached) }, original), 'DWG cached counts and DXFOUT materialized counts do not define class behavior.');
 });
 const record = (type, handle, groups) => ({ type, handle, groups: [group(5, handle), ...groups] });
 const mockRecords = () => [
@@ -400,6 +405,15 @@ test('report acceptance requires an independent original class proof whenever th
   cls.proxyflag = 0;
   changed.classDefinitions.find(record => record.groups.some(group => group.code === 1 && group.value === 'FIELD')).groups.find(group => group.code === 90).value = '0';
   assert.throws(() => validateMetadataReport(changed, expected), /Independent AutoCAD class FIELD group90 changed/);
+  const cached = structuredClone(valid);
+  cached.classInventory.find(cls => cls.dxfname === 'CELLSTYLEMAP').num_instances = 0;
+  cached.classDefinitions.find(record => record.groups.some(group => group.code === 1 && group.value === 'CELLSTYLEMAP')).groups.find(group => group.code === 91).value = '0';
+  assert.throws(() => validateMetadataReport(cached, expected), /counter differences were not reported accurately/);
+  cached.classCountDifferences = [{ dxfname: 'CELLSTYLEMAP', nativeCount: 0, sourceDxfCount: 1 }];
+  assert.doesNotThrow(() => validateMetadataReport(cached, expected));
+  assert.throws(() => validateMetadataReport({ ...cached, classCountDifferences: [] }, expected), /counter differences were not reported accurately/);
+  const dishonest = structuredClone(cached); dishonest.classCountDifferences[0].sourceDxfCount = 0;
+  assert.throws(() => validateMetadataReport(dishonest, expected), /counter differences were not reported accurately/);
 });
 
 test('report acceptance refuses missing, duplicate, malformed and inconsistent inventory identities', () => {

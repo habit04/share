@@ -1803,10 +1803,22 @@ mod tests {
     #[test]
     fn native_dictionary_global_ownership_keeps_actual_entry_kinds() {
         let text = "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1032\n0\nENDSEC\n0\nSECTION\n2\nOBJECTS\n0\nDICTIONARY\n5\n200\n330\nC\n100\nAcDbDictionary\n280\n1\n281\n1\n3\nLinkedMetadata\n360\n201\n0\nXRECORD\n5\n201\n330\n200\n100\nAcDbXrecord\n280\n1\n1\nNative owned metadata\n0\nENDSEC\n0\nEOF\n";
-        let mut document = DxfReader::from_reader(std::io::Cursor::new(text.as_bytes()))
+        let imported = DxfReader::from_reader(std::io::Cursor::new(text.as_bytes()))
             .unwrap()
             .read()
             .unwrap();
+        // The small DXF fragment supplies the owned records, not a complete
+        // database. Attach them to a valid root with all standard objects so
+        // the native writer does not have to repair an absent NOD/layout tree.
+        let mut document = CadDocument::with_version(DxfVersion::AC1032);
+        for (handle, object) in imported.objects {
+            document.objects.insert(handle, object);
+        }
+        let root = document.header.named_objects_dict_handle;
+        let ObjectType::Dictionary(dictionary) = document.objects.get_mut(&root).unwrap() else {
+            unreachable!()
+        };
+        dictionary.add_entry("OwnedMetadata", Handle::new(0x200));
         source_schema::capture(text)
             .unwrap()
             .verify(&mut document)
@@ -1943,6 +1955,38 @@ mod tests {
             .verify(&mut document)
             .unwrap_err()
             .contains("contradicts"));
+        let unit_text = text.replace("1:4", "1:1");
+        let unit_source = source_schema::capture(&unit_text).unwrap();
+        let mut unit_document =
+            DxfReader::from_reader(std::io::Cursor::new(unit_text.into_bytes()))
+                .unwrap()
+                .read()
+                .unwrap();
+        unit_source.verify(&mut unit_document).unwrap();
+        let handle = unit_document.objects.iter().find_map(|(handle, object)| matches!(object, ObjectType::Scale(value) if value.name == "1:1" && !value.is_unit_scale).then_some(*handle)).unwrap();
+        let check_unit_roundtrip = |document: &CadDocument| {
+            let baseline = metadata_snapshot(document).unwrap();
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            DwgWriter::write_to_writer(&mut bytes, document).unwrap();
+            bytes.set_position(0);
+            let reopened = DwgReader::from_stream(bytes).read().unwrap();
+            equivalent(
+                &baseline,
+                &metadata_snapshot(&reopened).unwrap(),
+                "unit SCALE native flags",
+            )
+            .unwrap();
+        };
+        check_unit_roundtrip(&unit_document);
+        let ObjectType::Scale(value) = unit_document.objects.get_mut(&handle).unwrap() else {
+            unreachable!()
+        };
+        value.is_unit_scale = true;
+        unit_source.verify(&mut unit_document).unwrap();
+        assert!(
+            matches!(&unit_document.objects[&handle], ObjectType::Scale(value) if value.is_unit_scale)
+        );
+        check_unit_roundtrip(&unit_document);
     }
 
     #[test]

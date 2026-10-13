@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "factorySha256": "2665f1fe5c798d8557642124be62036ccbaf825a6043766042a06e1108009a95",
-  "wasmSha256": "0e97b1cce3a7fb05d89ff69c2c8a5399d76e2726c5d9c7b2aed2ae453f84380a",
+  "wasmSha256": "e93b4201a36f04f02ce537302248da1d6a0c7153f6b3a862a925eabc7d7a3c90",
   "cases": [
     {
       "kind": "appearance",
@@ -771,6 +771,43 @@
           "alpha": 0,
           "handle": 0
         }
+      },
+      "bookColorProjection": {
+        "schemaVersion": 1,
+        "complete": true,
+        "writeError": 0,
+        "outputBytes": 64276,
+        "inventoryCount": 94,
+        "handle": "14F",
+        "type": "DBCOLOR",
+        "name": "Studio Book$Pearl Δ",
+        "rgb": 11259375,
+        "groups": [
+          [
+            5,
+            "14F"
+          ],
+          [
+            330,
+            "C"
+          ],
+          [
+            100,
+            "AcDbColor"
+          ],
+          [
+            62,
+            "   256"
+          ],
+          [
+            420,
+            "-1028928017"
+          ],
+          [
+            430,
+            "Studio Book$Pearl Δ"
+          ]
+        ]
       }
     },
     {

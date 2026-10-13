@@ -95,21 +95,37 @@ export function validateNativeClassOracle(metadata, originalDxf) {
     const name = unicode(names[0].value).trim().toUpperCase(); assert.ok(name && !seen.has(name), 'Duplicate original AutoCAD class identity.'); seen.add(name);
     const actual = byName.get(name); assert.ok(actual, `Independent AutoCAD class ${name} is missing.`);
     const codes = new Set(original.groups.map(group => group.code));
-    // Class fields are scalar schema values. The independent instance count is
-    // checked too: this gate reads the original unmodified native fixture.
+    // Group91 is an instance counter rather than a class definition. AutoCAD
+    // DXFOUT materializes TABLESTYLE's inline CELLSTYLEMAP as a separate object:
+    // the Unicode oracle has cached DWG count0 but DXF count1. Keep native getter
+    // versus C projection counts exact above; compare every independent schema
+    // group here and separately report any cached/derived count differences.
     for (const code of codes) {
       const first = original.groups.filter(group => group.code === code), second = actual.groups.filter(group => group.code === code);
       assert.equal(second.length, first.length, `Independent AutoCAD class ${name} group${code} count changed.`);
       for (let index = 0; index < first.length; index++) {
         if ([90, 91, 280, 281].includes(code)) {
           assert.match(first[index].value.trim(), /^[+-]?\d{1,20}$/); assert.match(second[index].value.trim(), /^[+-]?\d{1,20}$/);
-          assert.equal(BigInt(second[index].value.trim()), BigInt(first[index].value.trim()), `Independent AutoCAD class ${name} group${code} changed.`);
+          if (code === 91) {
+            for (const pair of [first[index], second[index]]) assert.ok(BigInt(pair.value.trim()) >= 0n && BigInt(pair.value.trim()) <= 0xffffffffn, 'Invalid class instance counter.');
+          } else assert.equal(BigInt(second[index].value.trim()), BigInt(first[index].value.trim()), `Independent AutoCAD class ${name} group${code} changed.`);
         } else assert.equal(unicode(second[index].value), unicode(first[index].value), `Independent AutoCAD class ${name} group${code} changed.`);
       }
     }
     for (const pair of actual.groups) assert.ok(codes.has(pair.code), `Independent AutoCAD class ${name} gained unrecognized group${pair.code}.`);
   }
   return wanted;
+}
+
+function classCountDifferences(definitions, originals) {
+  const byName = new Map(definitions.map(record => [unicode(record.groups.find(group => group.code === 1).value).trim().toUpperCase(), record]));
+  return originals.flatMap(record => {
+    const dxfname = unicode(record.groups.find(group => group.code === 1).value).trim().toUpperCase();
+    const source = record.groups.find(group => group.code === 91), native = byName.get(dxfname)?.groups.find(group => group.code === 91);
+    if (!source || !native) return [];
+    const nativeCount = Number(native.value), sourceDxfCount = Number(source.value);
+    return nativeCount === sourceDxfCount ? [] : [{ dxfname, nativeCount, sourceDxfCount }];
+  });
 }
 
 function compareValue(code, actual, wanted) {
@@ -214,6 +230,8 @@ export function validateMetadataReport(report, expected) {
     assert.equal(report.classOracleVerified, true, 'Independent AutoCAD class proof is required.');
     const original = validateNativeClassOracle({ dxf: projectedClasses }, classDxf(expected.classDefinitions));
     assert.equal(report.declaredClassCount, original.length, 'Independent AutoCAD class count changed.');
+    const differences = classCountDifferences(report.classDefinitions, original);
+    if (differences.length || report.classCountDifferences !== undefined) assert.deepEqual(report.classCountDifferences, differences, 'Independent class counter differences were not reported accurately.');
   }
   return validateMetadataOracle({ ...report, readError: report.nativeError, dxf }, expected);
 }
@@ -271,7 +289,8 @@ export async function validateMetadataFixture(factory, wasmPath, fixturePath, ex
       maxOutputBytes: MAX_NATIVE_METADATA_DXF_BYTES, outputBytes: Buffer.byteLength(metadata.dxf), inventoryCount: metadata.objects.length,
       limitedOutputRejected: true, objects: metadata.objects, complete: metadata.complete, records, diagnostics,
       classProjectionVerified: true, nativeClassCount, classInventory, classDefinitions,
-      classOracleVerified: true, sourceDxfSha256, declaredClassCount: originalClasses.length };
+      classOracleVerified: true, sourceDxfSha256, declaredClassCount: originalClasses.length,
+      classCountDifferences: classCountDifferences(classDefinitions, originalClasses) };
     if (output) await writeFile(output, JSON.stringify(report, null, 2) + '\n', { flag: 'wx' });
     return report;
   } finally {
