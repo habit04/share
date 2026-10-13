@@ -1,7 +1,7 @@
 import type { Point, Bounds } from './geometry';
 import * as g from './geometry';
 import type { Entity, BlockLookup } from './entities';
-import { distanceToEntity, entityBounds, entitySegments, pointInPolygon, textCorners, mtextParts, mtextDecorations, mtextMasks, explodeInsert, dimensionParts, compoundParts } from './entities';
+import { distanceToEntity, entityBounds, entitySegments, pointInPolygon, textCorners, mtextParts, mtextDecorations, mtextMasks, explodeInsert, dimensionParts, compoundParts, hatchGeometry } from './entities';
 import { spatialIndexFor } from './spatial-index';
 import { polylineWidthGeometry } from './polyline-widths';
 import { activeViewport, modelToPaper, paperToModel, pointInViewport, viewportPaperBounds, type LayoutHost, type LayoutViewport } from './layouts';
@@ -55,7 +55,7 @@ export function viewportSelectionEntities(state: LayoutHost, entities: readonly 
     const e = entities[i]!;
     const box = bounds(i);
     if (!box || !g.boundsIntersect(box, clip.bounds)) continue;
-    const segments = polygonSegments(e, lookup);
+    const segments = polygonSegments(e, lookup, true);
     const touches = segments.some(([a, b]) => {
       if (clip.contains(a) || clip.contains(b)) return true;
       return clip.edges.some(([c, d]) => {
@@ -214,7 +214,7 @@ function boundsEdges(b: Bounds): Array<[Point, Point]> {
 }
 
 /** Oriented text and compound geometry, rather than their world-axis bounding rectangles. */
-function polygonSegments(e: Entity, lookup: BlockLookup): Array<[Point, Point]> {
+function polygonSegments(e: Entity, lookup: BlockLookup, includeHatchPattern = false): Array<[Point, Point]> {
   const edges = (points: readonly Point[]): Array<[Point, Point]> => points.map((p, i) => [p, points[(i + 1) % points.length]!]);
   switch (e.type) {
     case 'text': return edges(textCorners(e));
@@ -225,11 +225,15 @@ function polygonSegments(e: Entity, lookup: BlockLookup): Array<[Point, Point]> 
       const geometry = polylineWidthGeometry(e);
       return [...geometry.polygons.flatMap(edges), ...geometry.thin.flatMap((spine) => spine.slice(1).map((p, i): [Point, Point] => [spine[i]!, p]))];
     }
-    case 'insert': return explodeInsert(e, lookup).flatMap((part) => polygonSegments(part, lookup));
-    case 'dimension': return dimensionParts(e).flatMap((part) => polygonSegments(part, lookup));
+    // An enclosing hatch outline can miss the clip entirely while its bounded, cached
+    // pattern strokes or dots remain visible. Ordinary polygon selection keeps its
+    // established boundary tests; viewport visibility also needs the rendered strokes.
+    case 'hatch': return [...entitySegments(e, lookup), ...(includeHatchPattern ? hatchGeometry(e).segments : [])];
+    case 'insert': return explodeInsert(e, lookup).flatMap((part) => polygonSegments(part, lookup, includeHatchPattern));
+    case 'dimension': return dimensionParts(e).flatMap((part) => polygonSegments(part, lookup, includeHatchPattern));
     case 'leader':
     case 'table':
-    case 'image': return compoundParts(e).flatMap((part) => polygonSegments(part, lookup));
+    case 'image': return compoundParts(e).flatMap((part) => polygonSegments(part, lookup, includeHatchPattern));
     default: return entitySegments(e, lookup);
   }
 }
