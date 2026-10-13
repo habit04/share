@@ -54,8 +54,10 @@ describe('Properties palette: solids', () => {
       return row?.[1];
     };
     expect(r[0]).toBe('3D Solid');
-    expect(r.filter((x) => typeof x === 'string')).toEqual(['3D Solid', 'General', 'Geometry']);
-    expect(r.filter(Array.isArray).map((x) => x[0])).toEqual(['Type', 'Layer', 'Color', 'Name', 'Triangles', 'Volume', 'Size X', 'Size Y', 'Size Z']);
+    // Milestone 4 adds the editable Parameters section (docs/3D-EDITING.md).
+    expect(r.filter((x) => typeof x === 'string')).toEqual(['3D Solid', 'General', 'Parameters', 'Geometry']);
+    expect(r.filter(Array.isArray).map((x) => x[0])).toEqual(['Type', 'Layer', 'Color', 'Name', 'Width', 'Depth', 'Height', 'Triangles', 'Volume', 'Size X', 'Size Y', 'Size Z']);
+    expect(value('Width')!.value).toBe('10.0000');
     expect(value('Type')!.textContent).toBe('Box');
     expect(value('Volume')!.textContent).toBe('150.0000');
     expect(value('Size X')!.textContent).toBe('10.0000');
@@ -73,5 +75,19 @@ describe('Properties palette: solids', () => {
     expect(model3dOf(ed.doc.snapshot).solids[0]).toMatchObject({ layer: '0', name: 'Base plate' });
     ed.doc.undo();
     expect(model3dOf(ed.doc.snapshot).solids[0]!.name).toBeUndefined();
+    // A parameter edit re-evaluates the box under the same id; a refused value changes nothing.
+    const row = (label: string) => rows(container.children[0]!.children[1]!).find((x): x is [string, FakeElement] => Array.isArray(x) && x[0] === label)![1];
+    const width = row('Width');
+    width.value = '4';
+    width.fire('change');
+    expect(model3dOf(ed.doc.snapshot).solids[0]).toMatchObject({ id, feature: { width: 4 } });
+    expect(row('Volume').textContent).toBe('60.0000');
+    const before = ed.doc.snapshot;
+    const bad = row('Width');
+    bad.value = '-2';
+    bad.fire('change');
+    expect(ed.doc.snapshot).toBe(before);
+    expect(ed.history.at(-1)).toBe('PROPERTIES: Width must be positive and finite (got -2). The solid is unchanged.');
+    expect(row('Width').value).toBe('4.0000');
   });
 });

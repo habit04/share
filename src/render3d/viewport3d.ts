@@ -34,6 +34,7 @@ import { ATTR_COLOR, ATTR_POSITION, MeshBufferCache, type Programs, createProgra
 import { type PickHit, pickSolids } from './picking';
 import { type GridSpec, type Rgba, LineBatchBuilder, gridLines, gridSpec, parseCssColor, solidDisplayColor } from './scene-data';
 import { emitDrawingUnderlay, hiddenLayerNames } from './scene-sink';
+import { GRIP_EDGE_RGBA, GRIP_FILL_RGBA, type MarkerKind, SNAP_MARKER_RGBA, type Segment2, gripSegments, markerSegments } from './markers';
 
 /** What changes between frames without changing the document. */
 export interface Viewport3DOverlay {
@@ -46,6 +47,15 @@ export interface Viewport3DOverlay {
    * with their edges, never picked. Absent = none.
    */
   readonly previewSolids?: readonly Solid3D[];
+  /**
+   * Grip points (world) drawn as small filled squares like the 2D grips (milestone 4: the corners
+   * and centre of a single selected solid). Absent = none.
+   */
+  readonly grips3d?: readonly Vec3[];
+  /** Half-size of a grip square in CSS px (the 2D GRIPSIZE setting; default 4). */
+  readonly gripSize?: number;
+  /** The 3D object snap under the cursor: the 2D snap marker shape is drawn at its projection. */
+  readonly snap3d?: { readonly point: Vec3; readonly kind: MarkerKind } | null;
 }
 
 export interface Viewport3DSettings {
@@ -571,6 +581,45 @@ export class Viewport3D {
       }
       gl.enable(gl.DEPTH_TEST);
       gl.depthMask(true);
+    }
+
+    // Screen-space marks on top of everything: grips of the selected solid, the 3D snap marker.
+    const grips = ov.grips3d ?? [];
+    const snap = ov.snap3d ?? null;
+    if (grips.length || snap) {
+      const mb = new LineBatchBuilder();
+      const add = (segs: readonly Segment2[], c: Rgba) => {
+        for (const [x1, y1, x2, y2] of segs) mb.add(v3(x1, H - y1, 0), v3(x2, H - y2, 0), c);
+      };
+      const h = Math.max(1, Math.round((ov.gripSize ?? 4) * this.dpr));
+      for (const gp of grips) {
+        const s = projectToScreen(cam, gp, W, H);
+        if (!s) continue;
+        const gs = gripSegments(s.x, s.y, h);
+        add(gs.fill, GRIP_FILL_RGBA);
+        add(gs.edge, GRIP_EDGE_RGBA);
+      }
+      const s = snap ? projectToScreen(cam, snap.point, W, H) : null;
+      if (snap && s) {
+        const r = 7 * this.dpr;
+        // Two nested outlines: the 2D marker is drawn two pixels wide.
+        add(markerSegments(snap.kind, s.x, s.y, r), SNAP_MARKER_RGBA);
+        add(markerSegments(snap.kind, s.x, s.y, r - this.dpr), SNAP_MARKER_RGBA);
+      }
+      const marks = this.uploadLines(mb.build());
+      if (marks) {
+        gl.disable(gl.DEPTH_TEST);
+        gl.useProgram(lp.program);
+        gl.uniformMatrix4fv(lp.viewProj, false, Float32Array.from(mat4Orthographic(0, W, 0, H, -1, 1)));
+        gl.uniform2f(lp.fade, 0, 0);
+        gl.uniform3f(lp.offset, marks.origin.x, marks.origin.y, marks.origin.z);
+        gl.uniform4f(lp.tint, 1, 1, 1, 1);
+        gl.bindVertexArray(marks.vao);
+        gl.drawArrays(gl.LINES, 0, marks.count);
+        gl.bindVertexArray(null);
+        this.deleteLines(marks);
+        gl.enable(gl.DEPTH_TEST);
+      }
     }
 
     // WCS triad in the lower-left corner: orientation only, fixed size.

@@ -8,6 +8,8 @@ import type { Entity, LineEntity, PolylineEntity, ArcEntity, CircleEntity } from
 import { newId, explodeInsert, insertExpansionLimited, MAX_INSERT_EXPANSION, bakeInheritedColor, entitySegments, arcPoints, mirrorEntityAcross, scaleEntityBy } from '../core/entities';
 import { pickEntity } from '../core/selection';
 import type { Tool, ToolContext } from './types';
+import { v3 } from '../model3d/math';
+import { commitWithSolids, mirrorAcrossLine2d, previewSolidsFor, scalingAbout } from '../tools3d/solid-edit';
 
 const fmt = (p: Point) => `${p.x.toFixed(4)}, ${p.y.toFixed(4)}`;
 
@@ -524,7 +526,9 @@ export class MirrorTool extends SelectionTool {
     }
     if (g.eq(this.a, p)) return;
     const a = this.a;
-    ctx.doc.addEntities(this.entities(ctx).map((e) => ({ ...mirrorEntity(e, a, p), id: newId() })));
+    const copies = this.entities(ctx).map((e) => ({ ...mirrorEntity(e, a, p), id: newId() }));
+    // Experimental 3D: selected solids get mirrored copies (in the vertical plane through the line).
+    if (!commitWithSolids(ctx, this.ids, mirrorAcrossLine2d(a, p), { add: copies, copy: true })) ctx.doc.addEntities(copies);
     ctx.finish();
   }
   override onMove(p: Point, ctx: ToolContext): void {
@@ -534,6 +538,7 @@ export class MirrorTool extends SelectionTool {
     }
     const a = this.a;
     ctx.setGhost(this.entities(ctx).map((e) => mirrorEntity(e, a, p)));
+    if (!g.eq(a, p)) previewSolidsFor(ctx, this.ids, mirrorAcrossLine2d(a, p));
     ctx.setPreview([{ id: 'mirror-line', layer: '0', color: 8, type: 'line', a, b: p }]);
   }
 }
@@ -558,9 +563,14 @@ export class ScaleTool extends SelectionTool {
     }
     const k = g.dist(this.base, p);
     if (k < 1e-9) return;
-    const b = this.base;
-    ctx.doc.replaceEntities(this.entities(ctx).map((e) => scaleEntity(e, b, k)));
+    this.scale(ctx, k);
     ctx.finish();
+  }
+  /** Scale the selection by `k` about the base point (solids about the same point on z = 0). */
+  private scale(ctx: ToolContext, k: number): void {
+    const b = this.base!;
+    const scaled = this.entities(ctx).map((e) => scaleEntity(e, b, k));
+    if (!commitWithSolids(ctx, this.ids, scalingAbout(v3(b.x, b.y), k), { replace: scaled })) ctx.doc.replaceEntities(scaled);
   }
   override onMove(p: Point, ctx: ToolContext): void {
     if (!this.base) {
@@ -570,13 +580,13 @@ export class ScaleTool extends SelectionTool {
     const k = g.dist(this.base, p);
     const b = this.base;
     ctx.setGhost(this.entities(ctx).map((e) => scaleEntity(e, b, k)));
+    if (k > 1e-9) previewSolidsFor(ctx, this.ids, scalingAbout(v3(b.x, b.y), k));
     ctx.setDynText([`× ${k.toFixed(3)}`]);
   }
   override onText(text: string, ctx: ToolContext): void {
     const k = parseFloat(text);
     if (this.base && Number.isFinite(k) && k > 0) {
-      const b = this.base;
-      ctx.doc.replaceEntities(this.entities(ctx).map((e) => scaleEntity(e, b, k)));
+      this.scale(ctx, k);
       ctx.finish();
       return;
     }

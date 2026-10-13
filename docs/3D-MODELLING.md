@@ -5,7 +5,8 @@ Status: **experimental, off by default.** Everything here exists only when
 started; with the flag off none of these commands is registered and the ribbon has no 3D tab
 (`tests/experimental-3d-flag.test.ts`). The modelling core (profiles, sweeps, the Manifold kernel)
 is described in [3D-KERNEL.md](3D-KERNEL.md), the viewport in [3D-VIEWPORT.md](3D-VIEWPORT.md),
-the plan in [3D-PLAN.md](3D-PLAN.md).
+the plan in [3D-PLAN.md](3D-PLAN.md). Editing, 3D object snaps, measurement and the Properties
+parameter rows (milestone 4) are in [3D-EDITING.md](3D-EDITING.md).
 
 ## Commands
 
@@ -213,8 +214,9 @@ a solids-only selection).
 
 ## Prototype limits
 
-- No 3D object snaps (vertex, edge midpoint, face centre) yet (milestone 4); clicks snap only to
-  solid faces and the construction plane. 2D commands in 3D mode still get z = 0 typed points.
+- 3D object snaps (endpoint, midpoint, face centre, nearest) arrived in milestone 4
+  ([3D-EDITING.md](3D-EDITING.md)); 2D commands in 3D mode get z = 0 points (the x, y of a snapped
+  solid point when they click on one).
 - The ghost and picked heights exist in the 3D view only; the 2D view shows no ghost of a solid.
 - EXTRUDE / REVOLVE take one profile (one outer loop with holes) per command; several separate
   closed objects are refused by the sketch step ("more than one outer region").
