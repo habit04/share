@@ -2967,6 +2967,8 @@ mod tests {
             let ObjectType::DataObject(map) = &document.objects[&map_handle] else { unreachable!() };
             assert_eq!(map.owner, dictionary_handle);
             assert_eq!(map.reactors, vec![dictionary_handle]);
+            assert_eq!(document.object_reactors(map_handle), map.reactors);
+            assert_eq!(document.extension_dictionary_handle(map_handle), map.xdictionary_handle);
             let acadrust::objects::DataObjectData::CellStyleMap(cells) = &map.data else { unreachable!() };
             assert_eq!(cells.cells.len(), 3);
         };
@@ -3032,6 +3034,44 @@ mod tests {
                     "retained CELLSTYLEMAP mutation").is_err(), "{change}");
             }
         }
+    }
+
+    #[test]
+    fn data_object_typed_common_links_do_not_require_native_reader_side_caches() {
+        use acadrust::objects::{CellStyleMap, DataObject, DataObjectData, Dictionary};
+        let mut document = metadata_document(0);
+        let root = document.header.named_objects_dict_handle;
+        let handle = Handle::new(0xFFFFFD);
+        let extension = Handle::new(0xFFFFFE);
+        let mut map = DataObject::new(DataObjectData::CellStyleMap(CellStyleMap::default()));
+        map.handle = handle;
+        map.owner = root;
+        map.reactors = vec![root, handle];
+        map.xdictionary_handle = Some(extension);
+        let mut dictionary = Dictionary::new();
+        dictionary.handle = extension;
+        // A typed explicit reference must be observable without inferring the
+        // dictionary from its owner or populating native reader side caches.
+        dictionary.owner = root;
+        document.objects.insert(handle, ObjectType::DataObject(map));
+        document.objects.insert(extension, ObjectType::Dictionary(dictionary));
+        assert_eq!(document.object_reactors(handle), vec![root, handle]);
+        assert_eq!(document.extension_dictionary_handle(handle), Some(extension));
+        let before = metadata_snapshot(&document).unwrap();
+        for change in 0..3 {
+            let mut changed = document.clone();
+            let ObjectType::DataObject(map) = changed.objects.get_mut(&handle).unwrap() else { unreachable!() };
+            match change {
+                0 => map.reactors.reverse(),
+                1 => map.reactors.clear(),
+                _ => map.xdictionary_handle = None,
+            }
+            assert!(metadata_snapshot(&changed).and_then(|snapshot|
+                equivalent(&before, &snapshot, "typed DataObject common links")).is_err(), "{change}");
+        }
+        let ObjectType::DataObject(map) = document.objects.get_mut(&handle).unwrap() else { unreachable!() };
+        map.xdictionary_handle = Some(Handle::NULL);
+        assert_eq!(document.extension_dictionary_handle(handle), None);
     }
 
     #[test]

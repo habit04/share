@@ -52,7 +52,7 @@
     {
       "path": "src/document.rs",
       "beforeSha256": "a9c4a6a297346f9844dd967cd49982a638bd5aa706b754c4402c07f2bfc2e478",
-      "afterSha256": "93145845f51fe7ea5d4ad719637e308ded1e72d516ca3c188e922fc5c76dc293",
+      "afterSha256": "7750c6658c7c77dd3f7542f1e8c149a876f8be73e3f59356f81c6fcdcb9a711b",
       "replacements": [
         {
           "before": "    /// Owner handle of a database object, for ownership-chain walks.",
@@ -82,6 +82,16 @@
         {
           "before": "        layout.flags = 1; // model space\r\n        layout.block_record = model;",
           "after": "        layout.flags = 1; // model space\r\n        // Only this newly generated missing Model layout receives the bit.\r\n        layout.plot_flags.model_type = true;\r\n        layout.block_record = model;",
+          "count": 1
+        },
+        {
+          "before": "            Some(ObjectType::XRecord(value)) => Some(&value.reactors),",
+          "after": "            Some(ObjectType::XRecord(value)) => Some(&value.reactors),\r\n            Some(ObjectType::DataObject(value)) => Some(&value.reactors),",
+          "count": 1
+        },
+        {
+          "before": "            Some(ObjectType::XRecord(value)) => value.xdictionary_handle,",
+          "after": "            Some(ObjectType::XRecord(value)) => value.xdictionary_handle,\r\n            Some(ObjectType::DataObject(value)) => value.xdictionary_handle,",
           "count": 1
         }
       ]
