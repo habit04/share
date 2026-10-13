@@ -26,6 +26,7 @@ interface RestorableCanvas {
   element: HTMLCanvasElement;
   context: CanvasRenderingContext2D;
   fills: { color: string; rect: number[] }[];
+  children: RestorableCanvas[];
   painted: () => boolean;
   lose: () => Event;
   addEventListener: ReturnType<typeof vi.fn>;
@@ -33,28 +34,36 @@ interface RestorableCanvas {
 }
 const paintedCanvases = new WeakMap<object, () => boolean>();
 
-/** A lost cache bitmap copies transparency until geometry is repainted. */
+/** Track backing-store loss and default source-over compositing for cached scene copies. */
 function restorableCanvas(): RestorableCanvas {
   const element = canvas(), context = element.getContext('2d')!, events = new EventTarget();
   let painted = false;
+  let lost = false;
   const fills: RestorableCanvas['fills'] = [];
   const children: RestorableCanvas[] = [];
   const addEventListener = vi.fn(events.addEventListener.bind(events));
   const removeEventListener = vi.fn(events.removeEventListener.bind(events));
   Object.assign(element, {
-    addEventListener, removeEventListener, dispatchEvent: events.dispatchEvent.bind(events),
+    addEventListener, removeEventListener, dispatchEvent: (event: Event) => {
+      if (event.type === 'contextrestored') lost = false;
+      return events.dispatchEvent(event);
+    },
     ownerDocument: { createElement: () => {
       const child = restorableCanvas(); children.push(child); return child.element;
     } },
   });
   vi.mocked(context.fillRect).mockImplementation((x, y, width, height) => {
+    if (lost) return;
     painted = true; fills.push({ color: String(context.fillStyle), rect: [x, y, width, height] });
   });
-  vi.mocked(context.clearRect).mockImplementation(() => { painted = false; });
-  vi.mocked(context.drawImage).mockImplementation((source) => { painted = paintedCanvases.get(source)?.() ?? false; });
+  vi.mocked(context.clearRect).mockImplementation(() => { if (!lost) painted = false; });
+  vi.mocked(context.drawImage).mockImplementation((source) => {
+    if (!lost) painted = painted || (paintedCanvases.get(source)?.() ?? false);
+  });
+  vi.mocked(context.isContextLost).mockImplementation(() => lost);
   paintedCanvases.set(element, () => painted);
-  return { element, context, fills, painted: () => painted, addEventListener, removeEventListener, lose: () => {
-    painted = false;
+  return { element, context, fills, children, painted: () => painted, addEventListener, removeEventListener, lose: () => {
+    lost = true; painted = false;
     for (const child of children) child.lose();
     const event = new Event('contextlost', { cancelable: true });
     element.dispatchEvent(event);
@@ -68,7 +77,7 @@ function animationFrames() {
   const request = vi.fn((callback: FrameRequestCallback) => { pending.set(++serial, callback); return serial; });
   const cancel = vi.fn((id: number) => { pending.delete(id); });
   vi.stubGlobal('requestAnimationFrame', request); vi.stubGlobal('cancelAnimationFrame', cancel);
-  return { request, cancel, flush: () => {
+  return { request, cancel, pendingCount: () => pending.size, flush: () => {
     const callbacks = [...pending.values()]; pending.clear();
     for (const callback of callbacks) callback(0);
   } };
@@ -129,6 +138,52 @@ describe('viewport static scene caching', () => {
 });
 
 describe('Canvas context restoration', () => {
+  it('repaints a restored scene cache while the main Canvas context stays healthy', () => {
+    vi.useFakeTimers(); const frames = animationFrames(), surface = restorableCanvas();
+    const { doc, vp } = setup(surface.element), ov = overlay();
+    const mainEvents = vi.fn();
+    surface.element.addEventListener('contextlost', mainEvents); surface.element.addEventListener('contextrestored', mainEvents);
+    try {
+      vp.render(ov); vp.render(ov);
+      expect(drawEntity).toHaveBeenCalledTimes(250);
+      const cache = surface.children[0]!;
+      expect(cache.painted()).toBe(true);
+      const state = doc.snapshot;
+      expect(cache.lose().defaultPrevented).toBe(false);
+      expect(surface.context.isContextLost()).toBe(false); expect(surface.painted()).toBe(true);
+      cache.element.dispatchEvent(new Event('contextrestored'));
+      frames.flush();
+      expect(mainEvents).not.toHaveBeenCalled(); expect(doc.snapshot).toBe(state);
+      expect(vi.mocked(drawEntity).mock.calls.length).toBeGreaterThan(250);
+      expect(surface.painted()).toBe(true);
+    } finally { vp.dispose(); }
+  });
+
+  it('repaints Canvas fallback after only its saved bitmap was lost during a GPU frame', () => {
+    vi.useFakeTimers(); const frames = animationFrames(), surface = restorableCanvas();
+    const { doc, vp } = setup(surface.element), ov = overlay();
+    const mainEvents = vi.fn();
+    surface.element.addEventListener('contextlost', mainEvents); surface.element.addEventListener('contextrestored', mainEvents);
+    try {
+      vp.render(ov);
+      const cache = surface.children[0]!, state = doc.snapshot;
+      expect(cache.painted()).toBe(true); expect(drawEntity).toHaveBeenCalledTimes(250);
+      // A successful sibling GPU frame normally clears the still-healthy main Canvas base.
+      vp.experimentalSceneRenderer = () => true; vp.render(ov);
+      expect(surface.painted()).toBe(false); expect(surface.context.isContextLost()).toBe(false);
+      expect(cache.lose().defaultPrevented).toBe(false);
+      cache.element.dispatchEvent(new Event('contextrestored'));
+      vi.mocked(surface.context.fillRect).mockClear();
+      // Same document/view/style key, but the sibling GPU now requires complete Canvas fallback.
+      vp.experimentalSceneRenderer = () => false; vp.render(ov); frames.flush();
+      expect(mainEvents).not.toHaveBeenCalled(); expect(surface.context.isContextLost()).toBe(false);
+      expect(doc.snapshot).toBe(state);
+      expect(surface.context.fillRect).toHaveBeenCalledWith(0, 0, vp.width, vp.height);
+      expect(vi.mocked(drawEntity).mock.calls.length).toBeGreaterThan(250);
+      expect(surface.painted()).toBe(true);
+    } finally { vp.dispose(); }
+  });
+
   it('discards a lost scene bitmap and repaints without an edit or mouse movement', () => {
     vi.useFakeTimers(); const frames = animationFrames(), surface = restorableCanvas();
     const { doc, vp } = setup(surface.element), ov = overlay();
@@ -136,14 +191,17 @@ describe('Canvas context restoration', () => {
     expect(drawEntity).toHaveBeenCalledTimes(250);
     expect(surface.painted()).toBe(true);
     const state = doc.snapshot;
+    const render = vi.spyOn(vp, 'render');
     for (let cycle = 0; cycle < 2; cycle++) {
       const lost = surface.lose();
       expect(lost.defaultPrevented).toBe(false);
       expect(surface.painted()).toBe(false);
       vi.mocked(drawEntity).mockClear(); vi.mocked(surface.context.fillRect).mockClear(); vi.mocked(surface.context.drawImage).mockClear();
+      render.mockClear();
       surface.element.dispatchEvent(new Event('contextrestored'));
-      expect(frames.request).toHaveBeenCalledTimes(cycle + 1);
+      expect(frames.pendingCount()).toBe(1);
       frames.flush();
+      expect(render).toHaveBeenCalledExactlyOnceWith(ov);
       expect(surface.context.fillRect).toHaveBeenCalledWith(0, 0, vp.width, vp.height);
       expect(drawEntity).toHaveBeenCalledTimes(250);
       expect(surface.context.drawImage).not.toHaveBeenCalled();
@@ -170,7 +228,7 @@ describe('Canvas context restoration', () => {
     vi.mocked(drawEntity).mockClear(); vi.mocked(surface.context.fillRect).mockClear();
     surface.fills.length = 0;
     surface.element.dispatchEvent(new Event('contextrestored'));
-    expect(frames.cancel).toHaveBeenCalledOnce();
+    expect(frames.pendingCount()).toBe(1);
     frames.flush();
     expect(render).toHaveBeenCalledExactlyOnceWith(latest);
     expect(surface.context.setTransform).toHaveBeenLastCalledWith(2, 0, 0, 2, 0, 0);
@@ -196,16 +254,105 @@ describe('Canvas context restoration', () => {
     const listener = surface.addEventListener.mock.calls[0]![1] as EventListener;
     vp.render(overlay()); surface.lose();
     surface.element.dispatchEvent(new Event('contextrestored'));
-    expect(frames.request).toHaveBeenCalledOnce();
+    expect(frames.pendingCount()).toBe(1);
+    const requestsBeforeDispose = frames.request.mock.calls.length;
     vp.dispose();
     expect(surface.removeEventListener).toHaveBeenCalledWith('contextrestored', listener);
-    expect(frames.cancel).toHaveBeenCalledOnce();
+    expect(frames.pendingCount()).toBe(0);
     vi.mocked(drawEntity).mockClear(); vi.mocked(surface.context.fillRect).mockClear();
     surface.element.dispatchEvent(new Event('contextrestored'));
     listener(new Event('contextrestored')); // A stale event-dispatch callback is also inert.
     frames.flush();
-    expect(frames.request).toHaveBeenCalledOnce();
+    expect(frames.request).toHaveBeenCalledTimes(requestsBeforeDispose);
     expect(drawEntity).not.toHaveBeenCalled(); expect(surface.context.fillRect).not.toHaveBeenCalled();
     expect(surface.painted()).toBe(false);
+  });
+
+  it('keeps a replacement cache intact when a retired canvas dispatches or invokes stale callbacks', () => {
+    vi.useFakeTimers(); const frames = animationFrames(), surface = restorableCanvas();
+    const { doc, vp } = setup(surface.element), ov = overlay();
+    try {
+      vp.render(ov);
+      const retired = surface.children[0]!;
+      const staleListener = retired.addEventListener.mock.calls.find(([type]) => type === 'contextlost')![1] as EventListener;
+      expect(retired.addEventListener).toHaveBeenCalledWith('contextrestored', staleListener);
+      vp.center.x += 1; vp.render(ov);
+      expect(surface.children).toHaveLength(1); expect(retired.addEventListener).toHaveBeenCalledTimes(2);
+      // Main restoration retires this bitmap and creates a new one on its queued frame.
+      surface.element.dispatchEvent(new Event('contextrestored')); frames.flush();
+      const replacement = surface.children[1]!, state = doc.snapshot;
+      expect(replacement).not.toBe(retired); expect(replacement.painted()).toBe(true);
+      expect(retired.removeEventListener).toHaveBeenCalledWith('contextlost', staleListener);
+      expect(retired.removeEventListener).toHaveBeenCalledWith('contextrestored', staleListener);
+      expect(retired.element.width).toBe(1); expect(retired.element.height).toBe(1);
+      const requests = frames.request.mock.calls.length;
+      vi.mocked(drawEntity).mockClear();
+      retired.lose(); retired.element.dispatchEvent(new Event('contextrestored'));
+      staleListener(new Event('contextlost')); staleListener(new Event('contextrestored'));
+      expect(frames.pendingCount()).toBe(0); expect(frames.request).toHaveBeenCalledTimes(requests);
+      vp.render(ov); frames.flush();
+      expect(drawEntity).not.toHaveBeenCalled(); expect(surface.children).toHaveLength(2);
+      expect(replacement.painted()).toBe(true); expect(doc.snapshot).toBe(state);
+    } finally { vp.dispose(); }
+  });
+
+  it('detaches cache listeners and cancels recovery when the viewport is disposed', () => {
+    vi.useFakeTimers(); const frames = animationFrames(), surface = restorableCanvas();
+    const { doc, vp } = setup(surface.element), ov = overlay();
+    vp.render(ov);
+    const cache = surface.children[0]!, state = doc.snapshot;
+    const listener = cache.addEventListener.mock.calls.find(([type]) => type === 'contextlost')![1] as EventListener;
+    vp.requestRender(ov); expect(frames.pendingCount()).toBe(1);
+    const requests = frames.request.mock.calls.length;
+    vp.dispose();
+    expect(cache.removeEventListener).toHaveBeenCalledWith('contextlost', listener);
+    expect(cache.removeEventListener).toHaveBeenCalledWith('contextrestored', listener);
+    expect(cache.element.width).toBe(1); expect(cache.element.height).toBe(1);
+    expect(frames.pendingCount()).toBe(0);
+    vi.mocked(drawEntity).mockClear(); vi.mocked(surface.context.fillRect).mockClear();
+    cache.lose(); cache.element.dispatchEvent(new Event('contextrestored'));
+    listener(new Event('contextlost')); listener(new Event('contextrestored'));
+    frames.flush();
+    expect(frames.request).toHaveBeenCalledTimes(requests);
+    expect(drawEntity).not.toHaveBeenCalled(); expect(surface.context.fillRect).not.toHaveBeenCalled();
+    expect(doc.snapshot).toBe(state);
+  });
+
+  it('retires a cache whose copy fails without preventing main-view painting', () => {
+    vi.useFakeTimers(); const frames = animationFrames(), surface = restorableCanvas();
+    const { doc, vp } = setup(surface.element), ov = overlay();
+    try {
+      vp.render(ov);
+      const failed = surface.children[0]!;
+      const staleListener = failed.addEventListener.mock.calls.find(([type]) => type === 'contextlost')![1] as EventListener;
+      failed.context.drawImage = vi.fn(() => { throw new Error('Bitmap copy failed'); });
+      vp.center.x += 1;
+      expect(() => vp.render(ov)).not.toThrow();
+      expect(surface.painted()).toBe(true); expect(drawEntity).toHaveBeenCalledTimes(500);
+      expect(failed.removeEventListener).toHaveBeenCalledWith('contextlost', staleListener);
+      expect(failed.removeEventListener).toHaveBeenCalledWith('contextrestored', staleListener);
+      staleListener(new Event('contextrestored')); expect(frames.pendingCount()).toBe(0);
+      vp.render(ov); expect(drawEntity).toHaveBeenCalledTimes(750);
+      expect(surface.children).toHaveLength(2); expect(surface.children[1]!.painted()).toBe(true);
+      const state = doc.snapshot;
+      vp.render(ov); expect(drawEntity).toHaveBeenCalledTimes(750); expect(doc.snapshot).toBe(state);
+    } finally { vp.dispose(); }
+  });
+
+  it('does not retain a newly created cache whose context is already lost', () => {
+    vi.useFakeTimers(); const frames = animationFrames(), surface = restorableCanvas();
+    const { doc, vp } = setup(surface.element), ov = overlay();
+    Object.assign(surface.element, { ownerDocument: { createElement: () => {
+      const cache = restorableCanvas(); cache.lose(); surface.children.push(cache); return cache.element;
+    } } });
+    try {
+      const state = doc.snapshot;
+      expect(() => vp.render(ov)).not.toThrow(); expect(surface.painted()).toBe(true);
+      expect(() => vp.render(ov)).not.toThrow(); expect(drawEntity).toHaveBeenCalledTimes(500);
+      for (const cache of surface.children) {
+        expect(cache.context.drawImage).not.toHaveBeenCalled(); expect(cache.addEventListener).not.toHaveBeenCalled();
+      }
+      expect(frames.pendingCount()).toBe(0); expect(doc.snapshot).toBe(state);
+    } finally { vp.dispose(); }
   });
 });

@@ -119,7 +119,7 @@ export class Viewport {
   /** Called after a devicePixelRatio change (window moved to another monitor, browser zoom) resized the canvas. */
   onDprChange: ((dpr: number) => void) | null = null;
 
-  private baseScene: { state: Drawing['snapshot']; key: string; canvas: HTMLCanvasElement } | null = null;
+  private baseScene: { state: Drawing['snapshot']; key: string; canvas: HTMLCanvasElement; onContextChange: () => void } | null = null;
   private imageState: Drawing['snapshot'] | null = null;
   private sceneHasImages = false;
   private warmTimer: ReturnType<typeof setTimeout> | null = null;
@@ -145,14 +145,29 @@ export class Viewport {
     if (!canvas) return;
     canvas.width = this.canvas.width; canvas.height = this.canvas.height;
     const context = canvas.getContext('2d');
-    if (!context) return;
-    context.drawImage(this.canvas, 0, 0);
-    this.baseScene = { state: this.doc.snapshot, key, canvas };
+    if (!context || context.isContextLost?.()) { this.discardScene(); return; }
+    try { context.drawImage(this.canvas, 0, 0); }
+    catch { this.discardScene(); return; } // A bitmap cache must never prevent the main view from drawing.
+    const onContextChange = this.baseScene?.onContextChange ?? (() => {
+      if (this.disposed || this.baseScene?.canvas !== canvas) return;
+      this.contextRestored();
+    });
+    if (!this.baseScene) {
+      // The saved bitmap can lose its context independently of the main Canvas.
+      canvas.addEventListener?.('contextlost', onContextChange);
+      canvas.addEventListener?.('contextrestored', onContextChange);
+    }
+    this.baseScene = { state: this.doc.snapshot, key, canvas, onContextChange };
   }
 
   private discardScene(): void {
-    if (this.baseScene) { this.baseScene.canvas.width = 1; this.baseScene.canvas.height = 1; }
+    const scene = this.baseScene;
     this.baseScene = null;
+    if (scene) {
+      scene.canvas.removeEventListener?.('contextlost', scene.onContextChange);
+      scene.canvas.removeEventListener?.('contextrestored', scene.onContextChange);
+      scene.canvas.width = 1; scene.canvas.height = 1;
+    }
   }
 
   private readonly contextRestored = (): void => {
