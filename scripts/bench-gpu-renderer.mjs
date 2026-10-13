@@ -1517,7 +1517,19 @@ try {
       for (const [name, workload] of [['bounded zoom', boundedGpu], ['off-center bounded zoom', offCenterGpu], ['minimum zoom with edge pan', minEdgeGpu], ['maximum zoom with edge pan', maxEdgeGpu]]) {
         assert.ok(workload.frameSamples.every((frame) => frame.rendered && frame.cacheHit === true && frame.uploadBytes === 0 && frame.uploadCalls === 0), `${fixture}: ${name} reuses geometry without uploads for all 30 frames`);
       }
-      assert.ok(sustainedGpu.frameSamples.some((frame) => frame.cacheReason === 'zoom-range' && frame.uploadCalls > 0), `${fixture}: sustained zoom reports cache-envelope rebuild frames`);
+      const initialInterval = { minRatio: sustainedGpu.firstFrame.cacheMinRatio, maxRatio: sustainedGpu.firstFrame.cacheMaxRatio };
+      assert.ok(initialInterval.minRatio > 0 && initialInterval.minRatio <= 1 && Number.isFinite(initialInterval.minRatio) && initialInterval.maxRatio >= 1 && Number.isFinite(initialInterval.maxRatio), `${fixture}: sustained zoom reports its actual cold geometry certificate`);
+      if (fixture === 'compound-tags' || fixture === 'dense-lines') assert.ok(initialInterval.maxRatio >= 1.02 ** 30, `${fixture}: the representative straight-stroke certificate includes the unchanged sustained-zoom endpoint`);
+      const sustainedRatios = sustainedGpu.frameSamples.map((frame) => frame.scale / sustainedGpu.firstFrame.scale);
+      const remainsCertified = sustainedRatios.every((ratio) => ratio >= initialInterval.minRatio && ratio <= initialInterval.maxRatio);
+      Object.assign(result.comparisons[fixture], { sustainedZoomCertificate: { initialInterval, anchorScale: sustainedGpu.firstFrame.scale, prescribedEndpointRatio: 1.02 ** 30, actualEndpointRatio: sustainedRatios.at(-1), allThirtySamplesInsideInitialCertificate: remainsCertified } });
+      if (remainsCertified) {
+        for (const frame of sustainedGpu.frameSamples) {
+          assert.equal(frame.actualRenderer, 'gpu'); assert.equal(frame.cacheHit, true);
+          assert.equal(frame.geometryPreparationMs, 0); assert.equal(frame.partialPreparationMs, 0);
+          assert.equal(frame.uploadKind, 'none'); assert.equal(frame.uploadBytes, 0); assert.equal(frame.uploadCalls, 0);
+        }
+      } else assert.ok(sustainedGpu.frameSamples.some((frame) => frame.cacheReason === 'zoom-range' && frame.uploadKind === 'full' && frame.uploadCalls > 0), `${fixture}: crossing the actual sustained-zoom certificate reports a full rebuild/upload`);
       if (supportsDeltas) {
         assert.ok(editGpu.frameSamples.every((frame) => frame.cacheReason === 'document-delta' && frame.uploadKind === 'subrange' && frame.uploadBytes === 168 && frame.uploadCalls === 1 && frame.subrangeUploadBytes === 168 && frame.subrangeUploadCalls === 1 && frame.preparedEntities <= 1), `${fixture}: all 30 visible edit/undo frames update one six-vertex subrange`);
         assert.equal(editGpu.summary.rebuildFrameIndices.length, 0, `${fixture}: delta updates must not be counted as full-scene rebuilds`);
@@ -1579,13 +1591,8 @@ try {
       }
       Object.assign(cadenceFixture, { laterSourceSpecificAccuracy: endpointLinks });
     }
-    if (fixture === 'compound-tags') {
+    if (fixture === 'compound-tags' || fixture === 'dense-lines') {
       const sustainedRatio = 1.02 ** 30;
-      assert.ok(sustainedGpu.firstFrame.cacheMaxRatio >= sustainedRatio, 'The proved straight-stroke interval includes the unchanged sustained-zoom endpoint');
-      for (const frame of sustainedGpu.frameSamples) {
-        assert.equal(frame.actualRenderer, 'gpu'); assert.equal(frame.cacheHit, true);
-        assert.equal(frame.geometryPreparationMs, 0); assert.equal(frame.uploadBytes, 0); assert.equal(frame.uploadCalls, 0);
-      }
       const saved = await page.evaluate(() => { const ed = window.editor, v = ed.viewport; return { document: JSON.stringify(ed.doc.snapshot), mode: window.gpuPrototype.status().mode, camera: { center: { ...v.center }, scale: v.scale, twist: v.twist } }; });
       const boundary = { outcome: 'started', untimedCorrectnessProbe: true, fixture, originalSustainedRatio: sustainedRatio, originalSustainedEndpointUnchanged: true, singleExplicitColdSetup: true, resetsDuringWarmOrBoundaryFrames: false, documentUnchanged: false, cameraRestored: false, samples: {}, accuracy: {} };
       Object.assign(result.comparisons[fixture], { certifiedZoomBoundary: boundary });
@@ -1632,7 +1639,8 @@ try {
         const cold = await timedFrame(null, true);
         boundary.samples.cold = cold;
         assert.equal(cold.frame.rendered, true); assert.equal(cold.frame.cacheReason, 'cold');
-        assert.ok(cold.frame.cacheMaxRatio >= sustainedRatio);
+        assert.ok(cold.frame.cacheMinRatio > 0 && cold.frame.cacheMinRatio <= 1 && Number.isFinite(cold.frame.cacheMinRatio) && cold.frame.cacheMaxRatio >= 1 && Number.isFinite(cold.frame.cacheMaxRatio), 'The separate boundary probe reports its actual stored certificate');
+        assert.ok(cold.frame.cacheMaxRatio >= sustainedRatio, `${fixture}: the separately prepared straight-stroke certificate includes the original sustained endpoint`);
         Object.assign(boundary, { anchorCamera: cold.camera, actualCertifiedInterval: { minRatio: cold.frame.cacheMinRatio, maxRatio: cold.frame.cacheMaxRatio, minScale: cold.camera.scale * cold.frame.cacheMinRatio, maxScale: cold.camera.scale * cold.frame.cacheMaxRatio } });
         const insideRatio = cold.frame.cacheMaxRatio * (1 - 1e-6), outsideRatio = cold.frame.cacheMaxRatio * 1.01;
         const inside = await timedFrame(cold.camera.scale * insideRatio);

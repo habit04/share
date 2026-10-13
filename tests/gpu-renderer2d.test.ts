@@ -1310,10 +1310,23 @@ describe('GPU immutable line subrange edits', () => {
     const renderer = new Gpu2DRenderer(canvas), before = sealImmutableData(drawing());
     const after = nextState(before, [shifted(line)]);
     renderer.render(before, view, overlay); renderer.render(after, view, overlay);
-    const camera = kind === 'zoom' ? { ...view, scale: 38 } : kind === 'pan' ? { ...view, center: { x: -5, y: 0 } } : view;
+    const camera = kind === 'zoom' ? { ...view, scale: view.scale * 4 + 0.0001 } : kind === 'pan' ? { ...view, center: { x: -5, y: 0 } } : view;
     const selection = kind === 'selection' ? { selection: new Set(['line']), solidSelection: true } : overlay;
     expect(renderer.render(before, camera, selection)).toMatchObject({ rendered: true, uploadKind: 'full', editMemoHit: false, editHistoryBytes: 0, editHistoryEntries: 0 });
     expect(gl.bufferData).toHaveBeenCalledTimes(2); expect(gl.bufferSubData).toHaveBeenCalledOnce();
+    renderer.dispose();
+  });
+
+  it('reuses the immutable LINE undo memo at the original scale38 inside the fourfold interval', () => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas), before = sealImmutableData(drawing());
+    const after = nextState(before, [shifted(line)]);
+    expect(renderer.render(before, view, overlay)).toMatchObject({ rendered: true, cacheMaxRatio: 4, uploadKind: 'full' });
+    expect(renderer.render(after, view, overlay)).toMatchObject({ rendered: true, cacheReason: 'document-delta', uploadKind: 'subrange', bytes: 168 });
+    // The current slot owns its CPU bytes; only the other immutable version is memoized.
+    expect(renderer.render(before, { ...view, scale: 38 }, overlay)).toMatchObject({ rendered: true, cacheMaxRatio: 4, cacheReason: 'document-delta', uploadKind: 'subrange', bytes: 168, editMemoHit: true, editHistoryBytes: 168, editHistoryEntries: 1, preparedEntities: 0, reusedEntities: 1 });
+    expect(gl.bufferData).toHaveBeenCalledOnce(); expect(gl.bufferSubData).toHaveBeenCalledTimes(2);
+    expect(gl.bufferVertices).toEqual(prepareZoom2D(before, view, overlay).vertices);
     renderer.dispose();
   });
 
@@ -1461,17 +1474,38 @@ describe('GPU bounded zoom correctness and separate CPU telemetry', () => {
     renderer.dispose();
   });
 
-  it('copies the scale anchor, admits both exact boundaries and rebuilds after crossing either', () => {
+  it('copies the ordinary1.25 scale anchor, admits both exact boundaries and rebuilds after crossing either', () => {
     const { canvas, gl } = rendererFixture();
-    const renderer = new Gpu2DRenderer(canvas), state = sealImmutableData(drawing());
+    // Sealed children allow identity caching; the explicitly unsealed outer
+    // snapshot preserves the original ordinary request and exact camera inputs.
+    const renderer = new Gpu2DRenderer(canvas), state = { ...sealImmutableData(drawing()) };
     const camera = { ...view, center: { ...view.center } };
-    renderer.render(state, camera, overlay);
+    expect(renderer.render(state, camera, overlay)).toMatchObject({ rendered: true, cacheMinRatio: 0.8, cacheMaxRatio: 1.25 });
     for (const scale of [33, 24, 37.5, 30]) {
       camera.scale = scale;
       expect(renderer.render(state, camera, overlay)).toMatchObject({ rendered: true, bytes: 0, cacheReason: 'hit' });
     }
     camera.scale = 37.5001;
     expect(renderer.render(state, camera, overlay)).toMatchObject({ rendered: true, bytes: 168, cacheReason: 'zoom-range' });
+    expect(gl.uniform1f).toHaveBeenCalledWith({ name: 'u_zoom' }, 1);
+    camera.scale = 30;
+    expect(renderer.render(state, camera, overlay)).toMatchObject({ rendered: true, bytes: 168, cacheReason: 'zoom-range' });
+    expect(gl.bufferData).toHaveBeenCalledTimes(3);
+    renderer.dispose();
+  });
+
+  it('copies the immutable fourfold scale anchor and prepares only outside its actual boundaries', () => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas), state = sealImmutableData(drawing());
+    const camera = { ...view, center: { ...view.center } };
+    expect(renderer.render(state, camera, overlay)).toMatchObject({ rendered: true, cacheMinRatio: 0.8, cacheMaxRatio: 4 });
+    for (const scale of [33, 24, 37.5, 30, 120]) {
+      camera.scale = scale;
+      expect(renderer.render(state, camera, overlay)).toMatchObject({ rendered: true, bytes: 0, uploadCalls: 0, geometryPreparationMs: 0, cacheReason: 'hit', cacheMaxRatio: 4 });
+    }
+    expect(gl.bufferData).toHaveBeenCalledOnce();
+    camera.scale = 120.0001;
+    expect(renderer.render(state, camera, overlay)).toMatchObject({ rendered: true, bytes: 168, cacheReason: 'zoom-range', cacheMaxRatio: 4 });
     expect(gl.uniform1f).toHaveBeenCalledWith({ name: 'u_zoom' }, 1);
     camera.scale = 30;
     expect(renderer.render(state, camera, overlay)).toMatchObject({ rendered: true, bytes: 168, cacheReason: 'zoom-range' });

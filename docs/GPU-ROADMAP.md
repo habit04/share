@@ -860,6 +860,20 @@ and [per-frame projection uniforms](https://github.com/openlayers/openlayers/blo
 provide an example of separating view transforms from geometry buffers. They
 prove neither JCad's quarter-pixel accuracy nor native stroke topology.
 
+The first candidate `ad80f739` full run passed 3,465 tests with 28 conditional
+skips and failed two old immutable-LINE expectations that required rebuilding
+at the previous 1.25 boundary. Native preflight and timing did not run after
+that failure. Preserve ordinary-band controls while adding the new certified
+fourfold boundaries and edit-history behavior explicitly; the complete suite
+must pass on the repaired clean producer before native validation.
+The finished experimental GPU job in [ad80 PR CI](https://github.com/habit04/share/actions/runs/38462476195)
+passed the repaired fallback restoration checks, then failed the old assertion
+requiring a rebuild during the unchanged 30-frame sustained trajectory, which
+now stays inside the certified fourfold interval. Use the actual stored interval:
+inside it require zero preparation/uploads on every frame, and separately prove
+admission and accuracy immediately inside and beyond that interval. Preserve
+the original ordinary-band trajectory and rebuild requirement where applicable.
+
 Next clean-producer full checks/builds, native correctness/performance/recovery,
 and both exact-head CI runs are pending. Publish source-bound Intel/NVIDIA/process
 and unavailable-device evidence only after its gates pass. Canvas remains default;
