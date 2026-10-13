@@ -208,6 +208,17 @@ function normalizePairs(record, pairs) {
       result.splice(start + 1, end - start - 1, ...retained, ...[...defaults].map(([code, value]) => stored.get(code) ?? { code, value }));
     }
   }
+  if (record.type === 'LAYOUT') {
+    const start = result.findIndex(pair => pair.code === 100 && pair.value.trim() === 'AcDbLayout');
+    if (start >= 0) {
+      let end = result.findIndex((pair, index) => index > start && (pair.code === 100 || pair.code === 1001)); if (end < 0) end = result.length;
+      const body = result.slice(start + 1, end), viewport = body.filter(pair => pair.code === 331);
+      if (viewport.length > 1) fail(`LAYOUT(${record.handle}) has duplicated active viewport references`);
+      // The typed native FIELD_HANDLE0(active_viewport,331) omits a null reference.
+      // Only this optional slot gets its documented null default; nonnull links remain exact.
+      result.splice(start + 1, end - start - 1, ...body.filter(pair => pair.code !== 331), viewport[0] ?? { code: 331, value: '0' });
+    }
+  }
   if (record.type === 'VIEW') {
     const start = result.findIndex(pair => pair.code === 100 && pair.value.trim() === 'AcDbViewTableRecord');
     if (start >= 0) {
@@ -393,6 +404,18 @@ function compareTable(record, actual, source, target, matches, label) {
   if (!codes && !all) return;
   if (!actual) fail(`${label} is missing from the independently decoded DWG`);
   const first = normalizePairs(record, tablePayload(record)), second = normalizePairs(actual, tablePayload(actual));
+  if (record.type === 'DIMSTYLE') {
+    const a = first.filter(pair => pair.code === 70), b = second.filter(pair => pair.code === 70);
+    if (!a.length || !b.length || a.length > 2 || b.length > 2) fail(`${label} has ambiguous DIMSTYLE symbol flags or text-fill colors`);
+    sameValue(70, a[0].value, b[0].value, record, source, target, matches, `${label}.group70[0]`);
+    // The first70 is the table flag; the second70 is R2007+ DIMTFILLCLR. The
+    // native optional default is ByBlock0, which can be omitted in an older DXF.
+    sameValue(70, a[1]?.value ?? '0', b[1]?.value ?? '0', record, source, target, matches, `${label}.DIMTFILLCLR`);
+    const fillA = first.filter(pair => pair.code === 69), fillB = second.filter(pair => pair.code === 69);
+    if (fillA.length > 1 || fillB.length > 1) fail(`${label} has duplicated DIMTFILL modes`);
+    sameValue(69, fillA[0]?.value ?? '0', fillB[0]?.value ?? '0', record, source, target, matches, `${label}.DIMTFILL`);
+    return;
+  }
   const selected = all ? new Set(first.map(pair => pair.code).filter(code => vportScalars.has(code))) : new Set(codes);
   for (const code of selected) {
     const a = first.filter(pair => pair.code === code), b = second.filter(pair => pair.code === code);

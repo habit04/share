@@ -1491,8 +1491,8 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
     }
   }
 
-  // The DWG reader's own `locked` is unreliable (reported for every layer); bit 4 of the layer flags
-  // is the lock in every DWG version (R14: 64 + 4 + 1, R2000+: 16 + 4 + 1 for a frozen locked layer).
+  // Without complete metadata, retain the legacy facade's layer heuristics. Its standardFlag
+  // also contains internal DWG bits; the exact native DXF70 join below repairs structural flags.
   // Plot flags exist from R2000 on: an R14 file reports 0 for every layer.
   const plotFlags = payload.layers.some((l) => l.plotFlag === 1);
   const layers: Layer[] = payload.layers
@@ -1562,7 +1562,8 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
       }
       const layoutHandles = new Map((payload.layouts ?? []).flatMap(layout => layout.handle ? [[layout.handle.toUpperCase(), layout.name] as const] : []));
       const entityTypes = new Map([...payload.entities, ...payload.blocks.flatMap(block => block.entities)].flatMap(entity => entity.handle ? [[String(entity.handle).toUpperCase(), entity.type] as const] : []));
-      base = mergeDwgCadGraph(base, nativeProjected, { viewportHandles, tableHandles, layoutHandles, entityTypes });
+      const layerOff = new Map(payload.layers.flatMap(layer => layer.handle ? [[layer.handle.toUpperCase(), layer.off] as const] : []));
+      base = mergeDwgCadGraph(base, nativeProjected, { viewportHandles, tableHandles, layoutHandles, entityTypes, layerOff });
       report.retainItems(item => ['HEADER', 'DIMSTYLE'].includes(item.type) && item.reason.includes('not modeled or written back'),
         item => item.reason.replace('not modeled or written back', 'retained as source metadata; these settings are not modeled by the editor'));
       const imported = importReportOf(nativeProjected);

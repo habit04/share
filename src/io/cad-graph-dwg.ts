@@ -12,6 +12,8 @@ export interface DwgCadGraphJoin {
   readonly entityTypes?: ReadonlyMap<string, string>;
   readonly viewportHandles?: ReadonlyMap<string, string>;
   readonly tableHandles?: ReadonlyMap<string, { readonly table: string; readonly name: string }>;
+  /** The repaired native DTO exposes off separately; the raw DXF projection's color sign is unreliable. */
+  readonly layerOff?: ReadonlyMap<string, boolean>;
   readonly layoutHandles?: ReadonlyMap<string, string>;
 }
 function sameEntityClass(dto: string, node: CadNode): boolean {
@@ -51,7 +53,7 @@ export function mergeDwgCadGraph(base: DrawingState, projected: DrawingState, jo
   const source = projected.cadGraph;
   if (!source) throw new CadGraphError('invalid', 'The native DWG projection has no checked metadata graph.');
   const byHandle = new Map<string, Entity>(), sourceEntities = new Map(entitiesOf(projected).map(entity => [entity.id, entity]));
-  const entityTypes = normalizeMap(join.entityTypes), viewports = normalizeMap(join.viewportHandles), tables = normalizeMap(join.tableHandles), layouts = normalizeMap(join.layoutHandles);
+  const entityTypes = normalizeMap(join.entityTypes), viewports = normalizeMap(join.viewportHandles), tables = normalizeMap(join.tableHandles), layouts = normalizeMap(join.layoutHandles), layerOff = normalizeMap(join.layerOff);
   for (const node of source.nodes) if (node.sourceHandle) {
     const handle = canonicalCadHandle(node.sourceHandle), dto = entityTypes.get(handle), table = tables.get(handle);
     if (dto && !sameEntityClass(dto, node)) throw new CadGraphError('invalid', `DWG entity source handle ${handle} has DTO type ${dto} but native metadata type ${node.type}.`);
@@ -74,6 +76,14 @@ export function mergeDwgCadGraph(base: DrawingState, projected: DrawingState, jo
     if (original) supplements.set(entity.id, { source: original, node, ...(original.cadIdentity ? { identity: node.id } : {}) });
   }
   const layerTransparency = new Map<string, NonNullable<DrawingState['layers'][number]['transparency']>>();
+  const layerFlags = new Map<string, { frozen: boolean; locked: boolean; xrefFlags: number; off?: boolean }>();
+  for (const node of source.nodes) if (node.type === 'LAYER' && node.sourceHandle) {
+    const handle = canonicalCadHandle(node.sourceHandle), target = tables.get(handle);
+    if (target?.table !== 'LAYER') continue;
+    const flags = Number(node.groups.find(([code]) => code === 70)?.[1] ?? '0');
+    if (!Number.isSafeInteger(flags) || flags < 0 || flags > 0xffff) throw new CadGraphError('invalid', 'Native LAYER structural flags are invalid.');
+    layerFlags.set(target.name, { frozen: !!(flags & 1), locked: !!(flags & 4), xrefFlags: flags & 48, ...(layerOff.has(handle) ? { off: layerOff.get(handle)! } : {}) });
+  }
   for (const node of source.nodes) if (node.anchor?.kind === 'table' && node.anchor.table === 'LAYER' && node.sourceHandle
     && node.groups.some(([code, value]) => code === 1001 && value.toUpperCase() === LAYER_TRANSPARENCY_APP.toUpperCase())) {
     const target = tables.get(canonicalCadHandle(node.sourceHandle));
@@ -113,7 +123,17 @@ export function mergeDwgCadGraph(base: DrawingState, projected: DrawingState, jo
   };
   let state: DrawingState = {
     ...base,
-    layers: layerTransparency.size ? base.layers.map(layer => layerTransparency.has(layer.name) ? { ...layer, transparency: layerTransparency.get(layer.name)! } : layer) : base.layers,
+    layers: layerFlags.size || layerTransparency.size ? base.layers.map(layer => {
+      const flags = layerFlags.get(layer.name);
+      const transparency = layerTransparency.has(layer.name) ? { transparency: layerTransparency.get(layer.name)! } : {};
+      if (!flags) return layerTransparency.has(layer.name) ? { ...layer, ...transparency } : layer;
+      // The legacy facade's standardFlag includes internal DWG plot bits. Only native DXF70
+      // supplies modeled structural flags; appearance and the independently exposed off bit
+      // remain authoritative DTO values, rather than borrowing the projection's color sign.
+      const { frozen: _frozen, xrefFlags: _xref, ...ordinary } = layer;
+      return { ...ordinary, locked: flags.locked, visible: (flags.off === undefined ? layer.visible : !flags.off) && !flags.frozen,
+        ...(flags.frozen ? { frozen: true } : {}), ...(flags.xrefFlags ? { xrefFlags: flags.xrefFlags } : {}), ...transparency };
+    }) : base.layers,
     entities: base.entities.map(entity),
     blocks: Object.fromEntries(Object.entries(base.blocks).map(([name, block]) => [name, { ...block, entities: block.entities.map(entity) }])),
     ...(base.layouts ? { layouts: base.layouts.map(layout => ({ ...layout, entities: layout.entities.map(entity) })) } : {}),

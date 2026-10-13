@@ -62,6 +62,25 @@ const annotationFixture = () => {
 };
 
 describe('independent raw DWG metadata postflight', () => {
+  it('distinguishes DIMSTYLE flags from text-fill colors, allowing only the omitted zero fill defaults', () => {
+    const source = text([...section('TABLES', [...record('TABLE', '1', [[2, 'DIMSTYLE'], [330, '0']]), [0, 'DIMSTYLE'], [105, '2'], [330, '1'], [100, 'AcDbSymbolTableRecord'], [100, 'AcDbDimStyleTableRecord'], [2, 'Standard'], [70, 16], [0, 'ENDTAB']]), [0, 'EOF']]);
+    const nativeDefault = mutateRecord(source, 'DIMSTYLE', groups => [...groups, [70, 0]]);
+    expect(verify(source, nativeDefault).objects).toBe(0);
+    expect(() => verify(source, mutateRecord(nativeDefault, 'DIMSTYLE', groups => changeValue(groups, 70, 0)))).toThrow(/group70\[0\].*changed/);
+    const nondefault = mutateRecord(source, 'DIMSTYLE', groups => [...groups, [69, 2], [70, 7]]);
+    expect(verify(nondefault, nondefault).objects).toBe(0);
+    expect(() => verify(nondefault, nativeDefault)).toThrow(/DIMTFILLCLR/);
+    expect(() => verify(nondefault, mutateRecord(nondefault, 'DIMSTYLE', groups => changeValue(groups, 69, 0)))).toThrow(/DIMTFILL.*changed/);
+    expect(() => verify(source, mutateRecord(nativeDefault, 'DIMSTYLE', groups => [...groups, [70, 0]]))).toThrow(/ambiguous/);
+  });
+  it('allows omitted null layout active-viewport references while protecting nonnull links and subclass shade settings', () => {
+    const source = text([...section('OBJECTS', [...record('DICTIONARY', '1', [[330, '0'], [3, 'SHEET'], [350, '2']]), ...record('LAYOUT', '2', [[330, '1'], [100, 'AcDbPlotSettings'], [76, 0], [77, 5], [78, 240], [333, 0], [100, 'AcDbLayout'], [1, 'Sheet'], [76, 0], [331, 0]])]), [0, 'EOF']]);
+    const missing = mutateRecord(source, 'LAYOUT', groups => groups.filter(([code]) => code !== 331));
+    expect(verify(source, missing).objects).toBe(2);
+    expect(() => verify(mutateRecord(source, 'LAYOUT', groups => changeValue(groups, 331, '1')), missing)).toThrow(/reference changed/);
+    expect(() => verify(source, mutateRecord(missing, 'LAYOUT', groups => changeValue(groups, 77, 0)))).toThrow(/group77.*changed/);
+    expect(() => verify(source, mutateRecord(missing, 'LAYOUT', groups => [...groups, [79, 0]]))).toThrow(/group count/);
+  });
   it.each(['views-fields', 'field-object-reference', 'unicode-metadata'])('covers every original AutoCAD OBJECTS/VIEW/header record in %s', (name) => {
     const result = verify(oracle(name), oracle(name));
     expect(result.objects).toBeGreaterThan(100); expect(result.views).toBe(3); expect(result.metadataOwners).toBeGreaterThan(4); expect(result.headerVariables).toBeGreaterThan(200);

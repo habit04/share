@@ -383,6 +383,42 @@ function withoutReplacedReferenceBlocks(groups: readonly CadGroup[], replacement
 }
 const referenceBlockPosition = (groups: readonly CadGroup[]) => { const index = groups.findIndex(([code]) => code === 5 || code === 105); return index < 0 ? 0 : index + 1; };
 const appendBeforeXdata = (groups: CadGroup[], ...extra: CadGroup[]) => { const index = groups.findIndex(([code]) => code === 1001); groups.splice(index < 0 ? groups.length : index, 0, ...extra); };
+/** Retained dictionaries own their schema and existing entries; generated records only add missing keys. */
+function mergeDictionaryGroups(source: readonly CadGroup[], generated: readonly CadGroup[]): CadGroup[] {
+  const groups = [...source], keys = new Set(source.filter(([code]) => code === 3).map(([, name]) => name));
+  const additions: CadGroup[] = [];
+  for (let index = 0; index + 1 < generated.length; index++) {
+    const entry = generated[index]!, reference = generated[index + 1]!;
+    if (entry[0] === 3 && [350, 360].includes(reference[0]) && !keys.has(entry[1])) {
+      additions.push(entry, reference); keys.add(entry[1]);
+    }
+  }
+  if (additions.length) {
+    const subclass = groups.findIndex(([code, name]) => code === 100 && name.trim() === 'AcDbDictionary');
+    const end = groups.findIndex(([code], index) => index > subclass && (code === 100 || code === 1001));
+    groups.splice(end < 0 ? groups.length : end, 0, ...additions);
+  }
+  return groups;
+}
+/** Repeated codes in PlotSettings and Layout belong to distinct native subclasses. */
+function retainLayoutSubclassProperties(source: readonly CadGroup[], generated: readonly CadGroup[]): CadGroup[] {
+  const groups = [...generated];
+  for (let start = 0; start < source.length; start++) {
+    const marker = source[start]!;
+    if (marker[0] !== 100) continue;
+    let end = source.findIndex(([code], index) => index > start && (code === 100 || code === 1001));
+    if (end < 0) end = source.length;
+    const target = groups.findIndex(([code, name]) => code === 100 && name.trim() === marker[1].trim());
+    if (target < 0) { appendBeforeXdata(groups, ...source.slice(start, end)); continue; }
+    let targetEnd = groups.findIndex(([code], index) => index > target && (code === 100 || code === 1001));
+    if (targetEnd < 0) targetEnd = groups.length;
+    const existing = new Set(groups.slice(target + 1, targetEnd).map(([code]) => code));
+    const retained = source.slice(start + 1, end).filter(([code]) => !existing.has(code));
+    groups.splice(targetEnd, 0, ...retained);
+    start = end - 1;
+  }
+  return groups;
+}
 /** Bind generated geometry to the same retained identities, then remap every typed reference. */
 export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: ReadonlyMap<string, CadAnchor>): string {
   let graph = state.cadGraph;
@@ -453,6 +489,14 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
     });
     const node = match.get(record);
     if (!node) continue;
+    if (dictionaries.has(node.type)) {
+      // The fallback writer does not model dictionary ownership flags, default340 or arbitrary
+      // native properties. Keep their complete source record and every typed target, including
+      // the original 350/360 entry kind; newly generated layouts/images can add missing keys.
+      record.type = node.type;
+      record.groups = mergeDictionaryGroups(sourceGroups(node), record.groups);
+      continue;
+    }
     if (node.type === 'VPORT' && node.section === 'TABLES') {
       // The editor's viewport/session view is not a modeled VPORT symbol-table
       // edit. The default writer's limits-based *Active record is a new-drawing
@@ -460,12 +504,21 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
       record.groups = sourceGroups(node);
       continue;
     }
+    if (node.type === 'LAYOUT') record.groups = retainLayoutSubclassProperties(sourceGroups(node), record.groups);
     const unmodeledTableCodes = node.type === 'APPID' || node.type === 'LTYPE' || node.type === 'DIMSTYLE' ? new Set([70])
       : node.type === 'BLOCK_RECORD' ? new Set([70, 280, 281])
         : node.type === 'STYLE' ? new Set([42]) : new Set<number>();
     if (node.section === 'TABLES' && unmodeledTableCodes.size) {
-      const source = new Map(node.groups.filter(([code]) => unmodeledTableCodes.has(code)));
+      // DIMSTYLE repeats70 for the unmodeled text-fill color. Only the first70 is
+      // the symbol-table flag, so its later color must never overwrite that flag.
+      const source = new Map<number, string>();
+      for (const [code, raw] of node.groups) if (unmodeledTableCodes.has(code) && !source.has(code)) source.set(code, raw);
       record.groups = record.groups.map(group => source.has(group[0]) ? [group[0], source.get(group[0])!] : group);
+      if (node.type === 'DIMSTYLE') {
+        const colors = node.groups.filter(([code]) => code === 70).slice(1);
+        if (colors.length > 1) throw new CadGraphError('invalid', 'The retained DIMSTYLE has ambiguous text-fill color fields.');
+        if (colors.length) appendBeforeXdata(record.groups, ...node.groups.filter(([code]) => code === 69), ...colors);
+      }
     }
     if (node.type === 'LAYER' && node.section === 'TABLES') {
       const original = node.groups.find(([code]) => code === 70)?.[1];
@@ -494,7 +547,6 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
     }
     const selected = new Set<number>(), generatedCodes = new Set(record.groups.map(([code]) => code));
     const rebuilt = node.type === 'LAYER' ? new Set([390]) : node.type === 'DIMSTYLE' ? new Set([340, 342, 343, 344]) : node.type === 'LEADER' ? new Set([340]) : node.type === 'VIEWPORT' ? new Set([331]) : ['MULTILEADER', 'MLEADER', 'ACAD_TABLE', 'IMAGE'].includes(node.type) ? new Set([340, 341, 342, 343, 344, 360]) : new Set<number>();
-    const existingEntries = new Set(record.groups.filter(([code]) => code === 3).map(([, name]) => name));
     let nesting = 0, selectedApp: string | undefined, keepHeader = false;
     const existingVariables = new Set(record.groups.filter(([code]) => code === 9).map(([, name]) => name));
     node.groups.forEach(([code, raw], index) => {
@@ -503,24 +555,12 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
       if (nesting) { selected.add(index); return; }
       if (code === 1001) selectedApp = raw.trim();
       if (selectedApp) { if (!isQuietXdataApp(selectedApp, node.type) && !(selectedApp === 'AcCmTransparency' && node.type === 'LAYER')) selected.add(index); return; }
-      if (dictionaries.has(record.type)) {
-        if (code === 3 && [350, 360].includes(node.groups[index + 1]?.[0] ?? -1) && !existingEntries.has(raw)) { selected.add(index); selected.add(index + 1); }
-        if ([280, 281].includes(code)) selected.add(index);
-        return;
-      }
       if (rebuilt.has(code)) return;
       if (node.anchor?.kind === 'entity' || node.anchor?.kind === 'viewport') {
         if (cadReferenceKind(code) && code !== 330) selected.add(index);
       } else if (![5, 105, 100, 330].includes(code) && !generatedCodes.has(code)) selected.add(index);
     });
     const retained = mergeAcadDstyle(sourceGroups(node, selected), record.groups, node.type);
-    if (dictionaries.has(record.type)) {
-      const existing = new Set(record.groups.filter(([code]) => code === 3).map(([, val]) => val));
-      for (let index = 0; index + 1 < retained.length; index++) if (retained[index]![0] === 3 && [350, 360].includes(retained[index + 1]![0]) && !existing.has(retained[index]![1])) appendBeforeXdata(record.groups, retained[index]!, retained[index + 1]!);
-      for (const group of retained) {
-        if ([280, 281].includes(group[0])) record.groups = record.groups.map(pair => pair[0] === group[0] ? group : pair);
-      }
-    }
     if (record.type === 'HEADER') {
       const existing = new Set(record.groups.filter(([code]) => code === 9).map(([, val]) => val));
       let keep = false;
@@ -534,8 +574,8 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
       if (brace) { metadata.push(group); continue; }
       if (code === 1001) { app = raw; apps.add(raw.trim().toUpperCase()); }
       if (app) { metadata.push(group); continue; }
-      if (!dictionaries.has(record.type) && node.anchor?.kind !== 'entity' && node.anchor?.kind !== 'viewport' && ![5, 105, 100, 330].includes(code) && !generatedCodes.has(code)) appendBeforeXdata(record.groups, group);
-      else if (!dictionaries.has(record.type) && (node.anchor?.kind === 'entity' || node.anchor?.kind === 'viewport') && cadReferenceKind(code)) appendBeforeXdata(record.groups, group);
+      if (node.anchor?.kind !== 'entity' && node.anchor?.kind !== 'viewport' && ![5, 105, 100, 330].includes(code) && !generatedCodes.has(code)) appendBeforeXdata(record.groups, group);
+      else if ((node.anchor?.kind === 'entity' || node.anchor?.kind === 'viewport') && cadReferenceKind(code)) appendBeforeXdata(record.groups, group);
     }
     // Source extension/reactor blocks precede the common subclass; each XDATA application occurs once.
     let active: string | undefined;

@@ -101,7 +101,7 @@ describe('mandatory repaired native runtime acceptance', () => {
     };
     const { payload } = await readDwgPayload(readFileSync(base + '.dwg'));
     const { state, report } = convertDwg(payload, 'C:/Drawings/metadata-site.dwg');
-    expect(state.cadGraph?.sourceFormat).toBe('DWG');
+    expect(state.cadGraph?.sourceFormat, JSON.stringify(report)).toBe('DWG');
     expect(report?.counts.CAD_METADATA).toBeUndefined();
     validateCadState(state);
     for (const record of oracle.records) expect(state.cadGraph!.nodes.find(node => node.sourceHandle === record.handle), record.handle).toMatchObject({ type: record.type });

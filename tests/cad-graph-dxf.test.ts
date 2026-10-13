@@ -1,17 +1,53 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { readDxf, writeDxf } from '../src/io/dxf';
-import { Drawing } from '../src/core/document';
+import { Drawing, type DrawingState } from '../src/core/document';
 import { CadGraphError, type CadNode } from '../src/core/cad-graph';
 import { importReportOf } from '../src/io/import-report';
 import { translateEntity } from '../src/core/entities';
 import { attachDxfCadGraph } from '../src/io/cad-graph-dxf';
 import { tokenize } from '../src/io/dxf/groups';
+import { EntityClipboard } from '../src/ui/clipboard';
+import type { Editor } from '../src/app/editor';
+import { paperFromSize, sheetSize } from '../src/core/layouts';
 
 const fixture = readFileSync(new URL('./fixtures/interchange/r2018-views-fields.dxf', import.meta.url), 'utf8');
 const group = (node: CadNode, code: number) => node.groups.find(([c]) => c === code)?.[1].trim();
 const opened = () => readDxf(fixture, { filePath: 'C:/Drawings/test-plan.dwg' });
 describe('independent AutoCAD metadata oracle through DXF', () => {
+  it('keeps retained shade-plot and opaque layout properties in their original subclasses through page edits and repeated saves', () => {
+    const raw = tokenize(readFileSync(new URL('./fixtures/interchange/r2000-layouts-titleblock.dxf', import.meta.url), 'utf8'));
+    const start = raw.findIndex(pair => pair.code === 0 && pair.value.trim() === 'LAYOUT');
+    const marker = raw.findIndex((pair, index) => index > start && pair.code === 100 && pair.value.trim() === 'AcDbLayout');
+    raw.splice(marker, 0, { code: 77, value: '5' }, { code: 78, value: '240' }, { code: 310, value: '0001FE' });
+    const end = raw.findIndex((pair, index) => index > marker && pair.code === 0);
+    raw.splice(end, 0, { code: 310, value: '0002FD' });
+    const source = readDxf(raw.flatMap(pair => [String(pair.code), pair.value]).join('\r\n') + '\r\n');
+    const layout = source.cadGraph!.nodes.find(node => node.type === 'LAYOUT' && node.anchor?.kind === 'layout' && node.anchor.name !== 'Model')!;
+    const name = layout.anchor?.kind === 'layout' ? layout.anchor.name : '';
+    const edited = { ...source, layouts: source.layouts!.map(sheet => sheet.name === name ? { ...sheet, paper: paperFromSize(24, 18, sheet.paper.units, 'landscape')! } : sheet) };
+    const once = writeDxf(edited), back = readDxf(once);
+    const retained = back.cadGraph!.nodes.find(node => node.sourceHandle === layout.sourceHandle)!;
+    const at = retained.groups.findIndex(([code, value]) => code === 100 && value === 'AcDbLayout');
+    expect(retained.groups.slice(0, at)).toContainEqual([77, '5']);
+    expect(retained.groups.slice(0, at)).toContainEqual([78, '240']);
+    expect(retained.groups.slice(0, at)).toContainEqual([310, '0001FE']);
+    expect(retained.groups.slice(at)).toContainEqual([310, '0002FD']);
+    expect(retained.groups.slice(at).some(([code]) => code === 77 || code === 78)).toBe(false);
+    expect(sheetSize(back.layouts!.find(sheet => sheet.name === name)!)).toEqual({ width: 24, height: 18 });
+    expect(writeDxf(back)).toBe(once);
+  });
+  it('retains the distinct DIMSTYLE symbol flags and nondefault repeated text-fill color', () => {
+    const source = opened(), style = source.cadGraph!.nodes.find(node => node.type === 'DIMSTYLE')!;
+    const end = style.groups.findIndex(([code]) => code === 1001);
+    const groups = style.groups.map(([code, value]) => [code, code === 70 ? '16' : value] as const);
+    groups.splice(end < 0 ? groups.length : end, 0, [69, '2'], [70, '7']);
+    const controlled = { ...source, cadGraph: { ...source.cadGraph!, nodes: source.cadGraph!.nodes.map(node => node === style ? { ...node, groups } : node) } };
+    const once = writeDxf(controlled), back = readDxf(once), retained = back.cadGraph!.nodes.find(node => node.sourceHandle === style.sourceHandle)!;
+    expect(retained.groups.filter(([code]) => code === 70)).toEqual([[70, '16'], [70, '7']]);
+    expect(retained.groups).toContainEqual([69, '2']);
+    expect(writeDxf(back)).toBe(once);
+  });
   it.each(['malformed identity', 'duplicate identity', 'malformed pointer'])('reports %s while keeping bounded semantic geometry, but strict native projection refuses', kind => {
     const rows: [number, string][] = [[0, 'SECTION'], [2, 'ENTITIES'], [0, 'LINE'], [5, kind === 'malformed identity' ? 'P1' : 'A'], [8, '0'], [10, '0'], [20, '0'], [11, '1'], [21, '1'], [0, 'ENDSEC'], [0, 'SECTION'], [2, 'OBJECTS'], [0, 'XRECORD'], [5, kind === 'duplicate identity' ? 'A' : 'B'], [100, 'AcDbXrecord'], [280, '1'], [1, 'literal payload'], ...(kind === 'malformed pointer' ? [[340, 'not-a-handle'] as [number, string]] : []), [0, 'ENDSEC'], [0, 'EOF']];
     const pairs = tokenize(rows.flatMap(([code, value]) => [String(code), value]).join('\r\n') + '\r\n');
@@ -83,6 +119,55 @@ describe('independent AutoCAD metadata oracle through DXF', () => {
   it('repeated saves preserve exact metadata and reach a byte-identical fixed point', () => {
     const one = writeDxf(opened()), two = writeDxf(readDxf(one));
     expect(two).toBe(one); expect(writeDxf(readDxf(two))).toBe(two);
+  });
+  it('retains native dictionary defaults, hard ownership and unknown groups after editing and COPYCLIP', () => {
+    const pairs = tokenize(fixture);
+    const changeRecord = (type: string, change: (groups: typeof pairs) => typeof pairs) => {
+      const at = pairs.findIndex(pair => pair.code === 0 && pair.value.trim() === type);
+      const end = pairs.findIndex((pair, index) => index > at && pair.code === 0);
+      expect(at).toBeGreaterThan(0); expect(end).toBeGreaterThan(at);
+      pairs.splice(at + 1, end - at - 1, ...change(pairs.slice(at + 1, end)));
+    };
+    changeRecord('DICTIONARY', groups => {
+      const entry = groups.findIndex(pair => pair.code === 3 && pair.value === 'ACAD_GROUP');
+      expect(entry).toBeGreaterThan(0);
+      groups[entry + 1] = { code: 360, value: groups[entry + 1]!.value };
+      groups.splice(groups.findIndex(pair => pair.code === 281), 0, { code: 280, value: '1' });
+      return groups;
+    });
+    let dictionaryHandle = '';
+    changeRecord('ACDBDICTIONARYWDFLT', groups => {
+      dictionaryHandle = groups.find(pair => pair.code === 5)!.value.trim();
+      groups[groups.findIndex(pair => pair.code === 340)] = { code: 340, value: 'EFFFFF' };
+      const subclass = groups.findIndex(pair => pair.code === 100 && pair.value === 'AcDbDictionaryWithDefault');
+      groups.splice(subclass, 0, { code: 3, value: 'Custom' }, { code: 360, value: 'EFFFFF' });
+      groups.push({ code: 290, value: '1' }, { code: 1, value: 'opaque dictionary {"target":"102"}' });
+      return groups;
+    });
+    const objectEnd = pairs.reduce((last, pair, index) => pair.code === 0 && pair.value === 'ENDSEC' ? index : last, -1);
+    pairs.splice(objectEnd, 0, { code: 0, value: 'ACDBPLACEHOLDER' }, { code: 5, value: 'EFFFFF' }, { code: 330, value: dictionaryHandle });
+    const source = readDxf(pairs.flatMap(pair => [String(pair.code), pair.value]).join('\r\n') + '\r\n');
+    const rootOf = (state: DrawingState) => state.cadGraph!.nodes.find(node => node.anchor?.kind === 'dictionary' && node.anchor.path.length === 0)!;
+    const defaultOf = (state: DrawingState) => state.cadGraph!.nodes.find(node => node.type === 'ACDBDICTIONARYWDFLT')!;
+    const check = (state: DrawingState) => {
+      const root = rootOf(state), dictionary = defaultOf(state);
+      expect(root.groups).toEqual(rootOf(source).groups);
+      expect(dictionary.groups).toEqual(defaultOf(source).groups);
+      const entry = root.groups.findIndex(([code, name]) => code === 3 && name === 'ACAD_GROUP');
+      expect(root.references!.find(ref => ref.groupIndex === entry + 1)!.kind).toBe('hard-owner');
+      const target = dictionary.references!.find(ref => dictionary.groups[ref.groupIndex]![0] === 340)!.target;
+      expect(state.cadGraph!.nodes.find(node => node.id === target)?.sourceHandle).toBe('EFFFFF');
+    };
+    check(readDxf(writeDxf(source)));
+    const doc = new Drawing(source), selected = new Set(source.entities.filter(entity => source.cadGraph!.nodes.some(node => node.anchor?.kind === 'entity' && node.anchor.id === entity.id && ['18D', '18E'].includes(node.sourceHandle ?? ''))).map(entity => entity.id));
+    expect(selected.size).toBe(2);
+    const ed = { doc, selection: selected, entitiesSelected: () => doc.entities.filter(entity => selected.has(entity.id)), cursorPosition: () => null, log: () => {}, notify: () => {}, render: () => {} } as unknown as Editor;
+    const clipboard = new EntityClipboard(ed); expect(clipboard.copy()).toBe(true); clipboard.paste({ x: 50, y: 50 });
+    expect(doc.entities).toHaveLength(source.entities.length + 2);
+    const line = doc.entities.find(entity => selected.has(entity.id))!;
+    doc.replaceEntities([translateEntity(line, { x: 3, y: 4 })], { transforms: [{ entityIds: [line.id], transform: { xx: 1, xy: 0, yx: 0, yy: 1, tx: 3, ty: 4 } }] });
+    const one = writeDxf(doc.snapshot), reopened = readDxf(one);
+    check(reopened); expect(writeDxf(reopened)).toBe(one);
   });
   it('native FIELD links serialize the display cache in MTEXT while the expression stays on owned FIELD objects', () => {
     const source = opened(), entity = source.entities.find(e => e.type === 'mtext')!;
