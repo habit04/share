@@ -1,5 +1,6 @@
 import type { DrawingState } from '../../core/document';
 import { isImmutableData } from '../../core/immutable-data';
+import { TEXT_STYLES_META_KEY } from '../../io/encoding';
 import { lineweightDisplay } from '../draw';
 import { GpuDevice } from './device';
 import { cssRgb, GPU_ZOOM_VERTEX_STRIDE, prepareZoom2D, validateGpu2DView, zoomPrecisionSafe, type Gpu2DView, type Gpu2DOverlay, type PreparedZoom2D } from './geometry2d';
@@ -77,6 +78,14 @@ function sameSelection(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean 
   return true;
 }
 
+function sameCompoundDependencies(geometry: PreparedZoom2D, state: DrawingState): boolean {
+  const compound = geometry.compound;
+  if (!compound) return true;
+  if (compound.textStylesDependency !== state.meta?.[TEXT_STYLES_META_KEY]) return false;
+  for (const [name, definition] of compound.blockDependencies) if (state.blocks[name] !== definition) return false;
+  return true;
+}
+
 /** Prototype model-space painter. Refusals leave full Canvas rendering to the caller. */
 export class Gpu2DRenderer {
   readonly device: GpuDevice;
@@ -115,10 +124,15 @@ export class Gpu2DRenderer {
     validateGpu2DView(view);
     const linetypes = state.header?.linetypes;
     // Identity is safe only for snapshots certified immutable by the drawing core.
-    const cacheable = isImmutableData(state.entities) && isImmutableData(state.layers) && (!linetypes || isImmutableData(linetypes));
     const cache = this.cache;
+    const unchangedScene = cache?.entities === state.entities && cache.layers === state.layers;
+    const compiled = unchangedScene ? !!cache.geometry.compound : state.entities.some((entity) =>
+      (entity.type === 'insert' || entity.type === 'text') && !state.layers.some((layer) => layer.name === entity.layer && !layer.visible));
+    const textStyles = compiled ? state.meta?.[TEXT_STYLES_META_KEY] : undefined;
+    const compiledImmutable = !compiled || (isImmutableData(state.blocks) && (!textStyles || typeof textStyles !== 'object' || isImmutableData(textStyles)));
+    const cacheable = isImmutableData(state.entities) && isImmutableData(state.layers) && (!linetypes || isImmutableData(linetypes)) && compiledImmutable;
     metrics.cacheReason = !cacheable ? 'mutable' : !cache ? 'cold' : 'document';
-    if (cacheable && cache && cache.entities === state.entities && cache.layers === state.layers && cache.linetypes === linetypes) {
+    if (cacheable && cache && cache.entities === state.entities && cache.layers === state.layers && cache.linetypes === linetypes && sameCompoundDependencies(cache.geometry, state)) {
       const lineweights = view.lineweights ?? lineweightDisplay.enabled;
       const sameStyle = cache.view.width === view.width && cache.view.height === view.height && cache.view.dpr === view.dpr && cache.view.twist === view.twist && cache.view.lineweights === lineweights && sameSelection(cache.selection, overlay.selection) && cache.hover === (overlay.hover ?? null) && cache.solidSelection === !!overlay.solidSelection;
       metrics.cacheReason = 'view-style';

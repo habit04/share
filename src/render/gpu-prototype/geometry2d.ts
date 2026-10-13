@@ -7,6 +7,7 @@ import { resolveAlpha } from '../../core/appearance';
 import { effectiveLinetype, findLinetype } from '../../core/linetypes';
 import { polylineWidthProblem } from '../../core/polyline-widths';
 import { colorDisplay, lineweightDisplay, resolveColor, resolveLineWidth } from '../draw';
+import { lowerStrokeScene, type LoweredStrokeScene } from './stroke-scene';
 
 export interface Gpu2DView {
   width: number;
@@ -244,6 +245,15 @@ export interface PreparedZoom2D {
   sourceBounds: { min: Point; max: Point };
   /** Retained centerline rectangle; generated butt ends are outside every admitted viewport. */
   extent: Point;
+  /** Only compiled scenes depend on block definitions and drawing-local text styles. */
+  compound?: Pick<Extract<LoweredStrokeScene, { ok: true }>, 'blockDependencies' | 'textStylesDependency'>;
+}
+
+export interface PreparedCompoundZoom2D extends PreparedZoom2D {
+  /** Compound paint slots cannot be patched by the simple-entity edit fast path. */
+  entities: null;
+  entityCount: number;
+  compound: NonNullable<PreparedZoom2D['compound']>;
 }
 
 /** Recheck the entire source, not just its clipped/uploaded subset, on each camera change. */
@@ -323,6 +333,66 @@ function zoomStrokeTriangles(source: readonly Point[], closed: boolean, width: n
   }
 }
 
+/** Compile ordered Canvas strokes, then share the tested zoom projection and stroke packing. */
+export function prepareCompiledZoom2D(state: DrawingState, view: Gpu2DView, overlay: Gpu2DOverlay, minRatio = GPU_ZOOM_CACHE_MIN_RATIO, maxRatio = GPU_ZOOM_CACHE_MAX_RATIO, padding = GPU_PAN_CACHE_BORDER / Math.max(1, view.dpr)): PreparedCompoundZoom2D {
+  validateGpu2DView(view);
+  if (!Number.isFinite(minRatio) || !Number.isFinite(maxRatio) || minRatio < GPU_ZOOM_CACHE_MIN_RATIO || minRatio > 1 || maxRatio < 1 || maxRatio > GPU_ZOOM_CACHE_MAX_RATIO) throw new Error('Invalid GPU zoom cache interval');
+  if (!Number.isFinite(padding) || padding < 0 || padding > GPU_PAN_CACHE_BORDER / Math.max(1, view.dpr)) throw new Error('Invalid GPU pan cache border');
+  // Nothing is uploaded or cleared until every visible expansion/font/style has passed.
+  const lowered = lowerStrokeScene(state, view, overlay, { minRatio, maxRatio });
+  if (!lowered.ok) throw new Error(lowered.reason);
+  minRatio = lowered.minRatio;
+  maxRatio = lowered.maxRatio;
+  const extrusion = lowered.operations.reduce((maximum, operation) => Math.max(maximum, operation.widthCss * 5), 0);
+  const guard = 1 / Math.max(1, view.dpr);
+  const extent = {
+    x: (view.width / 2 + padding + extrusion + guard) / minRatio,
+    y: (view.height / 2 + padding + extrusion + guard) / minRatio,
+  };
+  const magnitude = Math.max(extent.x, extent.y) * maxRatio + padding + Math.max(view.width, view.height) / 2 + extrusion;
+  if (!Number.isFinite(magnitude) || magnitude * 12 * 2 ** -23 * view.dpr > ZOOM_FLOAT_PIXEL_ERROR) throw new Error('GPU zoom geometry exceeds Float32 precision budget');
+  const localView = { ...view, center: { x: 0, y: 0 } };
+  const vertices: number[] = [], batches: StrokeBatch[] = [];
+  const sourceBounds = { min: { x: Infinity, y: Infinity }, max: { x: -Infinity, y: -Infinity } };
+  let admittedMinRatio = minRatio;
+  for (const operation of lowered.operations) {
+    const first = vertices.length / GPU_ZOOM_VERTEX_STRIDE;
+    const color: [number, number, number] = [...operation.color];
+    const admitCurve = (radius: number): void => {
+      const projectedRadius = radius * view.scale;
+      if (!Number.isFinite(projectedRadius)) throw new Error('Invalid curve radius or scale');
+      const innerLimit = operation.widthCss / 2 + PIXEL_ERROR / view.dpr;
+      if (!(projectedRadius > innerLimit)) throw new Error(`Curve stroke overlap or precision margin requires Canvas rendering (${operation.sourceId})`);
+      admittedMinRatio = Math.max(admittedMinRatio, Math.min(1, innerLimit / projectedRadius * (1 + 16 * Number.EPSILON)));
+    };
+    for (const source of operation.paths) {
+      const path = source.kind === 'entity'
+        ? entityPath(source.entity, localView, view.scale * maxRatio, ZOOM_CURVE_PIXEL_ERROR, operation.widthCss, admitCurve)
+        : { points: source.points.map((point) => projectLocal(point, localView)), closed: source.closed };
+      const points = path.points.map((point) => {
+        const center = checked({ x: point.x - view.width / 2, y: point.y - view.height / 2 });
+        for (const axis of ['x', 'y'] as const) {
+          sourceBounds.min[axis] = Math.min(sourceBounds.min[axis], center[axis]);
+          sourceBounds.max[axis] = Math.max(sourceBounds.max[axis], center[axis]);
+        }
+        return center;
+      });
+      zoomStrokeTriangles(points, path.closed, operation.widthCss, color, extent, vertices);
+    }
+    const count = vertices.length / GPU_ZOOM_VERTEX_STRIDE - first;
+    // All glyph subpaths composite together; separate child strokes never share a stencil.
+    if (count) batches.push({ id: operation.paintId, first, count, alpha: operation.alpha });
+  }
+  if (!Number.isFinite(sourceBounds.min.x)) sourceBounds.min = sourceBounds.max = { x: 0, y: 0 };
+  const packed = new Float32Array(vertices);
+  if (!packed.every(Number.isFinite)) throw new Error('Float32 stroke geometry exceeds finite limits');
+  return {
+    vertices: packed, batches, minRatio: admittedMinRatio, maxRatio, padding, sourceBounds, extent,
+    entities: null, entityCount: lowered.preparedEntities,
+    compound: { blockDependencies: lowered.blockDependencies, textStylesDependency: lowered.textStylesDependency },
+  };
+}
+
 /**
  * Prepare once for a bounded camera interval. Uniform zoom acts only on center positions;
  * normal/miter offsets stay in CSS pixels. A minimum-scale rectangle retains entering strokes,
@@ -334,6 +404,7 @@ export function prepareZoom2D(state: DrawingState, view: Gpu2DView, overlay: Gpu
   if (!Number.isFinite(padding) || padding < 0 || padding > GPU_PAN_CACHE_BORDER / Math.max(1, view.dpr)) throw new Error('Invalid GPU pan cache border');
   const hidden = new Set(state.layers.filter((layer) => !layer.visible).map((layer) => layer.name));
   const visible = state.entities.filter((entity) => !hidden.has(entity.layer));
+  if (visible.some((entity) => entity.type === 'insert' || entity.type === 'text')) return prepareCompiledZoom2D(state, view, overlay, minRatio, maxRatio, padding);
   // Validate every layer-visible entity before allowing any GPU submission, even offscreen.
   for (const entity of visible) {
     const problem = styleProblem(entity, state);
