@@ -23,6 +23,17 @@ messages). The date of each version is the date of the commit that set that vers
 - MTEXT flows through declared-height static and dynamic-manual columns, retaining explicit
   column breaks, formatting, reversed placement and overflow. Automatic-height balancing and
   native column export remain open.
+- Native DXF gradient HATCH definitions retain names, angle, shift, dialog mode/tint, stored
+  ACI/RGB colors and inactive descriptors. All nine native names roundtrip through an
+  AutoCAD-normalized fixture. Verified unshifted LINEAR fills render in Canvas and vector/raster
+  plots with holes, transparency and block transforms; vector PDF uses smooth axial shading.
+  Nonlinear and shifted definitions retain data and report a solid-fill display fallback.
+  HATCHEDIT angle/shift edits support undo/redo. EXPLODE protects retained gradients; DWG
+  saving/export refuses them until native conversion is verified, keeping the DXF fallback.
+  Patterned hatches with gradient tails retain their data and refuse native DXF export because
+  AutoCAD rejects the combination; HATCHEDIT cannot introduce it. Explicit SOLID conversion
+  retains inactive gradient data. Invalid or precision-collapsed gradient PDF transforms
+  report a plotting error instead of emitting corrupt shading matrices.
 
 ### Fixed
 
