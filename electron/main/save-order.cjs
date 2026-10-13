@@ -7,6 +7,10 @@ const { createSaveAdmissions } = require('../save-admissions.cjs');
 // so existing file-error guidance still identifies confinement, cancellation and stale saves.
 function transportError(error) {
   const code = typeof error?.code === 'string' ? error.code : undefined;
+  if (error?.committed === true) {
+    const detail = `${code ? `${code}: ` : ''}${typeof error.message === 'string' ? error.message : 'The completed save could not be verified.'}`;
+    return Object.assign(new Error(`ERR_SAVE_COMMITTED: A file replacement occurred, but the completed save could not be verified. Check the destination before saving again. ${detail}`), { code: 'ERR_SAVE_COMMITTED', committed: true, cause: error });
+  }
   if (!code || typeof error.message !== 'string' || error.message.startsWith(`${code}:`)) return error;
   return Object.assign(new Error(`${code}: ${error.message}`), { code, committed: error.committed, cause: error });
 }

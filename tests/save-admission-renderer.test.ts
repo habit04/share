@@ -156,7 +156,20 @@ describe('drawing/project/export admission lifetimes', () => {
   it('keeps the drawing modified and its recovery hook untouched when a new host loses its commit receipt', async () => {
     const f = setup(); f.edit(); f.bridge.saveAdmissionResult = vi.fn(async () => null);
     expect(await f.editor.saveFile(false)).toBe(false); expect(f.editor.doc.dirty).toBe(true); expect(f.saved).not.toHaveBeenCalled(); expect(f.active.size).toBe(0);
-    expect(f.editor.lastFileError).toMatch(/receipt is unavailable/);
+    expect(f.editor.lastFileError).toMatch(/replacement occurred.*could not be verified/);
+  });
+  it('reports an unverified replacement instead of hiding it behind a post-write permission error', async () => {
+    const f = setup(); f.edit(); const state = f.editor.doc.snapshot;
+    f.bridge.saveDxf = vi.fn(async (file, text) => {
+      f.disk.set(file!, text);
+      throw new Error("Error invoking remote method 'save-dxf': Error: ERR_SAVE_COMMITTED: A file replacement occurred, but the completed save could not be verified. EACCES: post-write verification failed");
+    });
+    const show = vi.fn(async () => 'cancel' as const); f.editor.hooks.saveError = show;
+    expect(await f.editor.saveFile(false)).toBe(false); expect(f.disk.has(f.original)).toBe(true);
+    expect(f.editor.doc.snapshot).toBe(state); expect(f.editor.doc.dirty).toBe(true);
+    expect(f.saved).not.toHaveBeenCalled(); expect(f.active.size).toBe(0);
+    expect(show).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringMatching(/replacement occurred.*Check the destination/) }), expect.any(String), { saveAs: true });
+    expect(f.editor.lastFileError).not.toMatch(/you do not have permission/);
   });
   it('preserves old/browser bridge save behavior without adding ticket arguments', async () => {
     const f = setup(); f.edit(); delete f.bridge.issueSaveAdmission; delete f.bridge.bindSaveAdmission; delete f.bridge.cancelSaveAdmission;

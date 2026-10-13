@@ -7,6 +7,17 @@ import { registerWindowsPathIdentity } from './paths';
 export type SaveAdmissionKind = 'drawing' | 'project' | 'export-copy';
 type IdentityBridge = FileBridge & { resolvePathIdentity?(path: string): Promise<string | null> };
 
+export const UNVERIFIED_COMMITTED_SAVE_WARNING = 'The file was replaced, but final save verification failed. Review the destination before saving again.';
+export function committedSaveAdmissionError(detail: string): Error & { code: 'ERR_SAVE_COMMITTED'; detail: string } {
+  return Object.assign(new Error(`ERR_SAVE_COMMITTED: ${UNVERIFIED_COMMITTED_SAVE_WARNING} ${detail}`), { code: 'ERR_SAVE_COMMITTED' as const, detail });
+}
+/** Electron transports error messages but drops custom fields; this marker precedes stale/OS errors. */
+export function isCommittedSaveAdmissionError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const record = error as { code?: unknown; message?: unknown };
+  return record.code === 'ERR_SAVE_COMMITTED' || typeof record.message === 'string' && /\bERR_SAVE_COMMITTED\b|The file was written, but its committed native identity receipt is unavailable/.test(record.message);
+}
+
 export function hasSaveAdmissions(bridge: FileBridge | null): bridge is FileBridge {
   return bridge?.platform === 'win32' && typeof bridge.issueSaveAdmission === 'function' && typeof bridge.bindSaveAdmission === 'function' && typeof bridge.cancelSaveAdmission === 'function';
 }
@@ -46,9 +57,10 @@ export class SaveAdmission {
   /** Missing destinations become aliases only after the host created the actual leaf. */
   async confirmSaved(path: string | null): Promise<void> {
     if (!path || !this.enabled) return;
+    try {
     if (this.bridge.saveAdmissionResult) {
       const receipt = await this.bridge.saveAdmissionResult(this.value!);
-      if (!receipt || receipt.path !== path) throw new Error('The file was written, but its committed native identity receipt is unavailable. The drawing remains modified; check the destination before saving again.');
+      if (!receipt || receipt.path !== path) throw committedSaveAdmissionError('Its committed native identity receipt is unavailable. The drawing remains modified.');
       registerWindowsPathIdentity(path, receipt.identityPath);
       return;
     }
@@ -57,6 +69,10 @@ export class SaveAdmission {
     if (!this.bridge.resolvePathIdentity) return;
     const canonical = await this.bridge.resolvePathIdentity(path);
     if (canonical) registerWindowsPathIdentity(path, canonical);
+    } catch (error) {
+      if (isCommittedSaveAdmissionError(error)) throw error;
+      throw committedSaveAdmissionError(error instanceof Error ? error.message : String(error));
+    }
   }
   async close(): Promise<void> {
     if (this.closed) return;

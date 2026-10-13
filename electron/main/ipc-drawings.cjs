@@ -6,6 +6,7 @@
 const { dialog } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs/promises');
+const { createHash } = require('node:crypto');
 const { backupFile, copyFileAtomic, createAtomicWriter } = require('../atomic-write.cjs');
 const { dxfImageNames } = require('../ipc-guard.cjs');
 const { writeUserFile, enqueueWrite } = require('./app-data.cjs');
@@ -13,6 +14,7 @@ const { createPortableDwgExporter } = require('../portable-dwg.cjs');
 const { decodeDxf, readDwgWithProgress } = require('./dwg.cjs');
 const { MAX_DRAWING_BYTES, MAX_PROJECT_BYTES, readLimitedFile, validateTextSize } = require('../resource-limits.cjs');
 const { registerSaveOrder } = require('./save-order.cjs');
+const { coherentFileDigest } = require('../windows-path-identity.cjs');
 
 /** @typedef {import('./context.cjs').MainContext} MainContext */
 
@@ -51,7 +53,7 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
     if (process.platform !== 'win32') return { bytes: await readLimitedFile(fs, file, MAX_DRAWING_BYTES), identityPath: undefined };
     const changed = () => Object.assign(new Error('ERR_WINDOWS_PATH_CHANGED: the drawing changed while it was opened. Open it again.'), { code: 'ERR_WINDOWS_PATH_CHANGED' });
     const version = (stat) => [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].map(String).join(':');
-    /** @type {{version:string,size:bigint,identityPath:string|undefined}|undefined} */ let captured;
+    /** @type {{version:string,size:bigint,identityPath:string|undefined,sha256?:string}|undefined} */ let captured;
     const observe = async () => {
       const stat = await fs.stat(file, { bigint: true }), canonical = await identityPath(file);
       if (canonical && (version(await fs.stat(canonical, { bigint: true })) !== version(stat) || await identityPath(file) !== canonical)) throw changed();
@@ -61,6 +63,16 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
       if (!captured) throw changed();
       const current = await observe();
       if (current.version !== captured.version || current.identityPath !== captured.identityPath) throw changed();
+      if (captured.sha256) {
+        try {
+          const digest = await coherentFileDigest(file, { fs, maxBytes: MAX_DRAWING_BYTES, expectedCanonicalPath: captured.identityPath });
+          if (digest.sha256 !== captured.sha256 || version(digest.version) !== captured.version) throw changed();
+        } catch (error) {
+          // Standalone opens have no admission wrapper; preserve the code in IPC error text.
+          if (error?.code === 'ERR_WINDOWS_PATH_CHANGED') throw changed();
+          throw error;
+        }
+      }
     };
     const bytes = await readLimitedFile(fs, file, MAX_DRAWING_BYTES, undefined, {
       async beforeRead(handle) {
@@ -74,6 +86,8 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
       },
       async afterRead(handle, content) {
         if (!captured || version(await handle.stat({ bigint: true })) !== captured.version || BigInt(content.byteLength) !== captured.size) throw changed();
+        captured.sha256 = createHash('sha256').update(content).digest('hex');
+        if (expectedPin && captured.sha256 !== expectedPin.fileVersion?.sha256) throw changed();
         await check();
       },
     });

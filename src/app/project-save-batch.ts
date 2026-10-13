@@ -2,6 +2,7 @@
 import type { FileBridge, OpenResult } from './editor';
 import { normalizePath, registerWindowsPathIdentities, registerWindowsPathIdentity } from './paths';
 import { ProjectBatchBudget } from './project-batch-budget';
+import { committedSaveAdmissionError, isCommittedSaveAdmissionError } from './save-admission';
 
 export type ProjectBatchBinding = { index: number; path: string; childTicket: string; identityPath: string; exists: true } | { index: number; path: string; missing: true };
 export interface ProjectSaveBatchBridge {
@@ -101,9 +102,14 @@ export class ProjectBatchChild {
   async bind(path: string): Promise<void> { if (this.closed || normalizePath(path) !== this.path) throw new Error('A project admission cannot be transferred to another drawing.'); }
   async confirmSaved(path: string | null): Promise<void> {
     if (!path) return;
+    try {
     const receipt = await this.bridge.saveAdmissionResult!(this.ticket);
-    if (!receipt || receipt.path !== path || normalizePath(path) !== this.path || typeof receipt.identityPath !== 'string' || normalizePath(receipt.identityPath) !== this.identityPath) throw new Error('The file was written, but its committed native identity receipt is unavailable. Check the destination before updating this drawing again.');
+    if (!receipt || receipt.path !== path || normalizePath(path) !== this.path || typeof receipt.identityPath !== 'string' || normalizePath(receipt.identityPath) !== this.identityPath) throw committedSaveAdmissionError('Its committed native identity receipt is unavailable.');
     registerWindowsPathIdentity(path, receipt.identityPath);
+    } catch (error) {
+      if (isCommittedSaveAdmissionError(error)) throw error;
+      throw committedSaveAdmissionError(error instanceof Error ? error.message : String(error));
+    }
   }
   async close(): Promise<void> {
     if (this.closed) return;

@@ -16,7 +16,7 @@ import { dwgCompatibilityProblem } from '../dwg-compatibility';
 import type { Editor } from './editor';
 import { fallbackUi, type EditorInternals } from './internals';
 import { rememberRecent } from './documents';
-import { SaveAdmission, isStaleSaveAdmission, isSaveAdmissionAuthorizationError, unverifiedImportSource, UNVERIFIED_SOURCE_WARNING } from '../save-admission';
+import { SaveAdmission, isStaleSaveAdmission, isCommittedSaveAdmissionError, isSaveAdmissionAuthorizationError, unverifiedImportSource, UNVERIFIED_SOURCE_WARNING } from '../save-admission';
 
 export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean, format?: 'dxf'): Promise<boolean> {
   if (!ed.fileBridge) {
@@ -105,9 +105,11 @@ export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean,
       if (path) saveQueue.markCompleted(path, revision);
     }
   } catch (err) {
-    if (isStaleSaveAdmission(err)) { ed.lastFileError = `a newer version of ${target} was saved meanwhile`; return false; }
+    const unverifiedCommit = isCommittedSaveAdmissionError(err);
+    if (!unverifiedCommit && isStaleSaveAdmission(err)) { ed.lastFileError = `a newer version of ${target} was saved meanwhile`; return false; }
     // Nothing is marked as saved: the dirty flag and the autosave / recovery copy stay.
-    const info = describeFileError(err, { action: 'save', path: target });
+    const described = describeFileError(err, { action: 'save', path: target });
+    const info = unverifiedCommit ? { ...described, message: 'A file replacement occurred, but the completed save could not be verified. Check the destination before retrying or choose Save As for a separate copy.' } : described;
     ed.lastFileError = info.message;
     ed.log(`Save failed: ${info.message} The drawing is still marked as modified and its autosave copy is kept.`);
     if (!sessionExists()) return false;

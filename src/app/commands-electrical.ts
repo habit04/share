@@ -72,7 +72,7 @@ import { findRails, nearestReference, rungReferences } from '../electrical/ladde
 import { projectDrawingIndex, projectEntryFor, resolveDrawingPath, resolveProjectPath, baseName } from './project';
 import { samePath, shortNames } from './paths';
 import { captureRevision, contentHash, saveQueue } from './savequeue';
-import { SaveAdmission, hasSaveAdmissions, isStaleSaveAdmission, unverifiedImportSource, UNVERIFIED_SOURCE_WARNING } from './save-admission';
+import { SaveAdmission, hasSaveAdmissions, isStaleSaveAdmission, isCommittedSaveAdmissionError, unverifiedImportSource, UNVERIFIED_SOURCE_WARNING, UNVERIFIED_COMMITTED_SAVE_WARNING } from './save-admission';
 import { ProjectSaveBatch, ProjectBatchChild, hasProjectSaveBatch } from './project-save-batch';
 import { fileErrorText, exportFailed, exportErrorText } from './file-error-text';
 import { fileErrorCode } from './file-errors';
@@ -713,6 +713,13 @@ export interface CommitResult {
   notSaved: string[];
   /** A change committed, but a downstream UI notification failed. */
   warnings?: string[];
+  /** Replacement occurred, but the saved bytes/identity could not be verified. */
+  unverified?: string[];
+}
+
+function unverifiedReplacement(name: string, error: unknown): string {
+  const detail = error instanceof Error ? error.message : String(error);
+  return `${name}: ${UNVERIFIED_COMMITTED_SAVE_WARNING} (${detail})`;
 }
 
 /**
@@ -755,6 +762,7 @@ export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[
   const failed: string[] = [];
   const conflicts: string[] = [];
   const notSaved: string[] = [];
+  const unverifiedReplacements: string[] = [];
   const projectChanged = (sh: LoadedSheet) => !!sh.projectState &&
     (editor.projectState.generation !== sh.projectState.generation || editor.projectState.revision !== sh.projectState.revision);
   const historyMatches = (sh: LoadedSheet, s: DocumentSession) => !sh.history ||
@@ -867,12 +875,13 @@ export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[
       else if (r.value) written += 1;
       else failed.push(sh.name);
     } catch (err) {
-      if (isStaleSaveAdmission(err)) conflicts.push(`${sh.name} (a newer version was saved meanwhile)`);
+      if (isCommittedSaveAdmissionError(err)) { unverifiedReplacements.push(unverifiedReplacement(sh.name, err)); break; }
+      else if (isStaleSaveAdmission(err)) conflicts.push(`${sh.name} (a newer version was saved meanwhile)`);
       else failed.push(`${sh.name} (${fileErrorText(err, { action: 'save', path })})`);
     } finally { await reservation.close(); }
   }
   if (open) editor.notify('file');
-  return { open, written, failed, conflicts, notSaved };
+  return { open, written, failed, conflicts, notSaved, ...(unverifiedReplacements.length ? { unverified: unverifiedReplacements } : {}) };
   } finally { await releaseSheetAdmissions(sheets); }
 }
 
@@ -1022,6 +1031,12 @@ async function commitProjectBatch(editor: Editor, sheets: readonly LoadedSheet[]
       }
       else result.failed.push(sheet.name);
     } catch (error) {
+      if (isCommittedSaveAdmissionError(error)) {
+        (result.unverified ??= []).push(unverifiedReplacement(sheet.name, error));
+        // The replacement won the race, but its final bytes/identity are uncertain.
+        // Join native cleanup before stopping every later dependent output.
+        await batch.close(); break;
+      }
       const changed = changedOpenBasis();
       if (changed) result.conflicts.push(`${sheet.name} (${changed}; pending save cancelled or unconfirmed: ${error instanceof Error ? error.message : String(error)})`);
       else if (isStaleSaveAdmission(error)) result.conflicts.push(`${sheet.name} (a newer version was saved meanwhile)`);
@@ -1054,6 +1069,7 @@ function logCommit(editor: Editor, what: string, r: CommitResult | null, skipped
   if (r.conflicts.length) editor.log(`Not updated because they changed while the command ran (run it again): ${r.conflicts.join(', ')}.`);
   if (r.notSaved.length) editor.log(`Not updated (closed drawing files were not saved, as chosen): ${r.notSaved.join(', ')}.`);
   if (r.warnings?.length) editor.log(`Updated with notification problems: ${r.warnings.join(', ')}.`);
+  if (r.unverified?.length) editor.log(`File replacement requires review: ${r.unverified.join(', ')}.`);
   if (skipped.length) editor.log(`Skipped: ${skipped.join(', ')}${canReadProjectFiles(editor) ? '' : ' (open them in tabs, or use the desktop app to update closed drawings)'}.`);
 }
 

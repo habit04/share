@@ -7,8 +7,10 @@ import { defaultLayout } from '../src/core/layouts';
 import { makeSheet } from '../src/electrical/project-tools';
 import { readDxf, writeDxf } from '../src/io/dxf';
 import * as dxf from '../src/io/dxf';
-import { commitSheets, loadProjectSheets, projectUi, type LoadedSheet } from '../src/app/commands-electrical';
+import { commitSheets, loadProjectSheets, projectUi, runTitleBlocksAll, type LoadedSheet } from '../src/app/commands-electrical';
 import { ProjectSaveBatch, type ProjectBatchBinding, type ProjectSaveBatchBridge } from '../src/app/project-save-batch';
+import { committedSaveAdmissionError, isCommittedSaveAdmissionError } from '../src/app/save-admission';
+import { TITLE_BLOCK } from '../src/electrical/templates';
 import { pathIdentityKey, registerWindowsPathIdentity, resetWindowsPathIdentitiesForTests, samePath, setPathPlatform } from '../src/app/paths';
 
 let Editor: typeof EditorType, sequence = 0;
@@ -183,7 +185,52 @@ describe('backup and receipt lifetimes', () => {
     const f = setup(), loaded = await loadProjectSheets(f.editor, { forSave: true });
     f.bridge.resolvePathIdentity = vi.fn(async () => { throw new Error('fresh identity would refer to a retargeted path'); }); f.bridge.saveAdmissionResult = vi.fn(async () => null);
     const result = await commitSheets(f.editor, loaded.sheets, f.changes(loaded.sheets), 'Batch', 'test');
-    expect(result?.written).toBe(0); expect(result?.failed.join(' ')).toMatch(/receipt is unavailable/); expect(f.bridge.resolvePathIdentity).not.toHaveBeenCalled(); expect(f.saved).not.toHaveBeenCalled(); expect(f.closed()).toBe(true);
+    expect(result?.written).toBe(0); expect(result?.unverified?.join(' ')).toMatch(/file was replaced.*receipt is unavailable/s); expect(result?.failed).toEqual([]); expect(f.bridge.resolvePathIdentity).not.toHaveBeenCalled(); expect(f.saved).not.toHaveBeenCalled(); expect(f.closed()).toBe(true);
+  });
+  it.each([
+    Object.assign(new Error('EACCES'), { code: 'ERR_SAVE_COMMITTED' }),
+    new Error("Error invoking remote method 'save-dxf': Error: ERR_SAVE_COMMITTED: final verification failed; original ERR_SAVE_STALE"),
+    new Error('The file was written, but its committed native identity receipt is unavailable.'),
+  ])('recognizes committed replacements before generic or stale error causes', reason => {
+    expect(isCommittedSaveAdmissionError(reason)).toBe(true);
+    expect(isCommittedSaveAdmissionError(error('ERR_SAVE_STALE'))).toBe(false);
+    expect(isCommittedSaveAdmissionError(error('EACCES'))).toBe(false);
+    expect(isCommittedSaveAdmissionError(null)).toBe(false);
+  });
+  it('joins cancellation after an unverified replacement and does not claim a verified save or write later outputs', async () => {
+    const f = setup(2, true), loaded = await loadProjectSheets(f.editor, { forSave: true }), cancelGate = deferred<void>(), write = f.bridge.saveDxf, cancel = f.bridge.cancelProjectSaveBatch;
+    const untouched = f.disk.get(`${f.root}\\closed-1.dxf`), selection = [...f.editor.selection];
+    f.bridge.cancelProjectSaveBatch = vi.fn(async ticket => { await cancel(ticket); await cancelGate.promise; });
+    f.bridge.saveDxf = vi.fn(async (...args: Parameters<FileBridge['saveDxf']>) => {
+      await write(...args); f.editor.doc.addEntities([note('newer edit after unverified replacement')]);
+      throw new Error("Error invoking remote method 'save-dxf': Error: ERR_SAVE_COMMITTED: final verification failed; original ERR_SAVE_STALE: EACCES");
+    });
+    const saving = commitSheets(f.editor, loaded.sheets, f.changes(loaded.sheets), 'Batch', 'test'); let settled = false; void saving.then(() => { settled = true; });
+    await vi.waitFor(() => expect(f.bridge.cancelProjectSaveBatch).toHaveBeenCalledOnce()); await Promise.resolve(); expect(settled).toBe(false); cancelGate.resolve();
+    const result = await saving; expect(result?.written).toBe(0); expect(result?.unverified?.join(' ')).toMatch(/closed-0.dxf.*file was replaced.*Review the destination/s); expect(result?.failed).toEqual([]); expect(result?.conflicts).toEqual([]);
+    expect(readDxf(f.disk.get(`${f.root}\\closed-0.dxf`)!).entities.some(entity => entity.type === 'text' && entity.text === 'update-2')).toBe(true);
+    expect(f.disk.get(`${f.root}\\closed-1.dxf`)).toBe(untouched); expect(f.bridge.saveDxf).toHaveBeenCalledOnce(); expect(f.bridge.saveAdmissionResult).not.toHaveBeenCalled(); expect(f.saved).not.toHaveBeenCalled();
+    expect(f.editor.doc.entities.some(entity => entity.type === 'text' && entity.text === 'newer edit after unverified replacement')).toBe(true); expect(f.editor.doc.dirty).toBe(true); expect([...f.editor.selection]).toEqual(selection); expect(f.closed()).toBe(true);
+  });
+  it('logs a replaced file as requiring review rather than Not updated, preserving actual title-block output', async () => {
+    const f = setup(2), state = new Drawing({ blocks: { [TITLE_BLOCK.name]: TITLE_BLOCK }, entities: [{ id: 'title', type: 'insert', layer: '0', color: 'ByLayer', block: TITLE_BLOCK.name, position: { x: 0, y: 0 }, rotation: 0, scale: 1, attributes: { TITLE: 'Original' } }] }).snapshot;
+    for (const path of f.disk.keys()) f.disk.set(path, writeDxf(state));
+    f.editor.replaceProject({ ...f.editor.project, titleBlockMap: `BLOCK = ${TITLE_BLOCK.name}\nTITLE = "Changed"` }, false);
+    const original = f.editor.doc.snapshot, history = f.editor.doc.history(), dirty = f.editor.doc.dirty, untouched = f.disk.get(`${f.root}\\closed-1.dxf`), write = f.bridge.saveDxf;
+    f.bridge.saveDxf = vi.fn(async (...args: Parameters<FileBridge['saveDxf']>) => { await write(...args); throw committedSaveAdmissionError('EACCES during final verification'); });
+    await runTitleBlocksAll(f.editor);
+    expect(f.editor.history.some(line => /File replacement requires review:.*closed-0.dxf.*file was replaced.*Review the destination/s.test(line))).toBe(true);
+    expect(f.editor.history.filter(line => /^Not updated/.test(line)).some(line => line.includes('closed-0.dxf'))).toBe(false);
+    expect((readDxf(f.disk.get(`${f.root}\\closed-0.dxf`)!).entities[0] as { attributes: Record<string, string> }).attributes.TITLE).toBe('Changed');
+    expect(f.disk.get(`${f.root}\\closed-1.dxf`)).toBe(untouched); expect(f.bridge.saveDxf).toHaveBeenCalledOnce(); expect(f.editor.doc.snapshot).toBe(original); expect(f.editor.doc.history()).toEqual(history); expect(f.editor.doc.dirty).toBe(dirty); expect(f.saved).not.toHaveBeenCalled(); expect(f.closed()).toBe(true);
+  });
+  it('also stops legacy project writes after an explicitly unverified replacement', async () => {
+    const f = setup(2); f.bridge.platform = 'browser';
+    f.bridge.saveDxf = vi.fn(async (path, text) => { if (path) f.disk.set(path, text); throw new Error('ERR_SAVE_COMMITTED: final verification failed; original EACCES'); });
+    const loaded = await loadProjectSheets(f.editor, { forSave: true }), original = f.snapshot(), untouched = f.disk.get(`${f.root}\\closed-1.dxf`);
+    const result = await commitSheets(f.editor, loaded.sheets, f.changes(loaded.sheets), 'Batch', 'test');
+    expect(result?.written).toBe(0); expect(result?.unverified?.join(' ')).toMatch(/closed-0.dxf.*file was replaced.*Review the destination/s); expect(result?.failed).toEqual([]); expect(result?.conflicts).toEqual([]);
+    expect(f.bridge.saveDxf).toHaveBeenCalledOnce(); expect(f.disk.get(`${f.root}\\closed-1.dxf`)).toBe(untouched); expect(f.snapshot()).toEqual(original); expect(f.saved).not.toHaveBeenCalled();
   });
   it('joins one pending cancellation when an event and finally both close the parent', async () => {
     const f = setup(), gate = deferred<void>(); f.bridge.cancelProjectSaveBatch = vi.fn(async () => gate.promise);

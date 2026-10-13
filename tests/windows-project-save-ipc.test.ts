@@ -40,11 +40,12 @@ function setup() {
   const ipcMain = guardIpc(raw, { getWindow: () => win, isAppUrl: (url: string) => url === frame.url, log });
   const pathPolicy = createPathPolicy({ isKnownPath: (file: string) => registry.isKnown(file), isWritablePath: (file: string) => registry.isWritable(file), knownPaths: () => registry.paths(), log });
   const dialog = { showSaveDialog: vi.fn(), showOpenDialog: vi.fn(), showMessageBox: vi.fn() };
+  const decode = vi.fn((bytes: Uint8Array) => Promise.resolve(decodeDxfBytes(bytes)));
   const enqueueWrite = atomic.createCanonicalWriteQueue(), module = { exports: {} as { registerDrawingIpc(ctx: unknown, opts: unknown): void } };
   new Function('require', 'module', source)((name: string) => {
     if (name === 'electron') return { dialog };
     if (name === './app-data.cjs') return { enqueueWrite, writeUserFile: (file: string, text: string, opts: unknown) => enqueueWrite(file, key => atomic.atomicWriteFile(file, text, { ...(opts as object), expectedDestination: key })) };
-    if (name === './dwg.cjs') return { decodeDxf: (bytes: Uint8Array) => Promise.resolve(decodeDxfBytes(bytes)), readDwgWithProgress: () => { throw new Error('No native DWG decoder in this DXF test.'); } };
+    if (name === './dwg.cjs') return { decodeDxf: decode, readDwgWithProgress: () => { throw new Error('No native DWG decoder in this DXF test.'); } };
     if (name === '../portable-dwg.cjs') return { createPortableDwgExporter: () => ({ status: () => ({ available: false }), export: () => { throw new Error('No native writer fixture.'); } }) };
     return require(name);
   }, module);
@@ -66,7 +67,7 @@ function setup() {
     const manifest = await invoke('bind-project-save-batch', batch, paths) as Binding[];
     return { batch, manifest };
   };
-  return { registry, invoke, reserve, files, bind, contents, win, handlers };
+  return { registry, invoke, reserve, files, bind, contents, win, handlers, decode };
 }
 function child(binding: Binding) { if ('missing' in binding) throw new Error('Expected a native existing source.'); return binding; }
 function edited(text: string, x: number) {
@@ -75,7 +76,56 @@ function edited(text: string, x: number) {
   drawing.undo(); drawing.redo(); return writeDxf(drawing.snapshot);
 }
 
+// Real file bytes/descriptors, with only the original native version fields held constant.
+// Deterministic clock collisions exercise byte evidence without depending on NTFS timing.
+async function holdNativeVersion(file: string, beforeRead?: () => Promise<void>) {
+  const [large, ordinary] = await Promise.all([fs.stat(file, { bigint: true }), fs.stat(file)]);
+  const stat = fs.stat, lstat = fs.lstat, open = fs.open;
+  vi.spyOn(fs, 'stat').mockImplementation((async (name, options) => String(name) === file
+    ? options?.bigint ? large : ordinary : stat(name, options)) as typeof fs.stat);
+  vi.spyOn(fs, 'lstat').mockImplementation((async (name, options) => String(name) === file
+    ? options?.bigint ? large : ordinary : lstat(name, options)) as typeof fs.lstat);
+  let readIntervened = false;
+  vi.spyOn(fs, 'open').mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+    const drawingRead = new Error().stack?.includes('readLimitedFile'), handle = await open(...args);
+    if (String(args[0]) === file && (args[1] === 0 || args[1] === 'r')) {
+      handle.stat = (async options => options?.bigint ? large : ordinary) as typeof handle.stat;
+      if (drawingRead && beforeRead) {
+        const read = handle.read.bind(handle);
+        handle.read = (async (...readArgs) => {
+          if (!readIntervened) { readIntervened = true; await beforeRead(); }
+          return Reflect.apply(read, handle, readArgs);
+        }) as typeof handle.read;
+      }
+    }
+    return handle;
+  });
+  return () => readIntervened;
+}
+const clockDxf = (text: string) => [0, 'SECTION', 2, 'HEADER', 9, '$ACADVER', 1, 'AC1032', 0, 'ENDSEC',
+  0, 'SECTION', 2, 'ENTITIES', 0, 'TEXT', 8, '0', 10, 1, 20, 2, 40, 2.5, 1, text, 0, 'ENDSEC', 0, 'EOF', ''].join('\r\n');
+
 describe.runIf(process.platform === 'win32')('bounded project saves through production IPC and native NTFS files', () => {
+  it('refuses a changed same-size calculation input before decoding even when every native version field collides', async () => {
+    const f = setup(), file = path.join(dir, 'Clock.dxf'), original = clockDxf('CLOCK_ORIGINAL'), external = clockDxf('CLOCK_EXTERNAL');
+    expect(Buffer.byteLength(original)).toBe(Buffer.byteLength(external)); await fs.writeFile(file, original); f.registry.grant(file);
+    const { batch, manifest } = await f.bind([file]), b = child(manifest[0]!);
+    const intervened = await holdNativeVersion(file, () => fs.writeFile(file, external));
+    await expect(f.invoke('open-project-save-batch-drawing', batch, b.childTicket)).rejects.toThrow(/ERR_WINDOWS_PATH_CHANGED/);
+    expect(intervened()).toBe(true); expect(f.decode).not.toHaveBeenCalled();
+    expect(await fs.readFile(file, 'utf8')).toBe(external);
+    expect(readDxf(external).entities[0]).toMatchObject({ type: 'text', text: 'CLOCK_EXTERNAL' });
+    await f.invoke('cancel-project-save-batch', batch).catch(() => {});
+  });
+
+  it('refuses a same-size standalone source edit during decoding when native timestamps are restored', async () => {
+    const f = setup(), file = path.join(dir, 'Decode.dxf'), original = clockDxf('CLOCK_ORIGINAL'), external = clockDxf('CLOCK_EXTERNAL');
+    await fs.writeFile(file, original); f.registry.grant(file); await holdNativeVersion(file);
+    f.decode.mockImplementationOnce(async bytes => { await fs.writeFile(file, external); return decodeDxfBytes(bytes); });
+    await expect(f.invoke('open-drawing', file)).rejects.toThrow(/ERR_WINDOWS_PATH_CHANGED/);
+    expect(f.decode).toHaveBeenCalledOnce(); expect(await fs.readFile(file, 'utf8')).toBe(external);
+  });
+
   it('reads, edits, backs up and freshly reopens 33 files under one inherited project order', async () => {
     const f = setup(), paths = await f.files(33), { batch, manifest } = await f.bind(paths);
     expect(manifest).toHaveLength(33);
@@ -196,6 +246,27 @@ describe.runIf(process.platform === 'win32')('bounded project saves through prod
     expect(await fs.readFile(paths[0]!, 'utf8')).toBe(nativeFixture);
     expect(await fs.readFile(`${paths[0]}.bak`, 'utf8')).toBe('PREVIOUS BACKUP MUST SURVIVE');
     expect(await fs.readFile(paths[1]!, 'utf8')).toBe('REFERENCE EDIT DURING BACKUP COPY');
+    expect((await fs.readdir(dir)).filter(name => name.endsWith('.tmp'))).toEqual([]);
+    await f.invoke('cancel-project-save-batch', batch).catch(() => {});
+  });
+
+  it('reports an actual unverified replacement and refuses later derived outputs after an external post-rename edit', async () => {
+    const f = setup(), paths = await f.files(2), { batch, manifest } = await f.bind(paths);
+    for (const entry of manifest) await f.invoke('open-project-save-batch-drawing', batch, child(entry).childTicket);
+    const first = child(manifest[0]!), second = child(manifest[1]!);
+    await f.invoke('seal-project-save-batch', batch, [first.childTicket, second.childTicket]);
+    await f.invoke('begin-project-save-batch-commit', batch);
+    const outside = edited(nativeFixture, 999), rename = fs.rename; let replaced = false;
+    vi.spyOn(fs, 'rename').mockImplementation(async (src, dest) => {
+      await rename(src, dest);
+      if (String(dest) === paths[0] && !replaced) { replaced = true; await fs.writeFile(paths[0]!, outside); }
+    });
+    await expect(f.invoke('save-dxf', paths[0], edited(nativeFixture, 100), 'first', { admission: first.childTicket })).rejects.toThrow(/ERR_SAVE_COMMITTED.*replacement occurred/);
+    expect(replaced).toBe(true); expect(await fs.readFile(paths[0]!, 'utf8')).toBe(outside);
+    expect(await fs.readFile(`${paths[0]}.bak`, 'utf8')).toBe(nativeFixture);
+    expect(await f.invoke('save-admission-result', first.childTicket)).toBe(null);
+    await expect(f.invoke('save-dxf', paths[1], edited(nativeFixture, 200), 'second', { admission: second.childTicket, backup: false })).rejects.toThrow(/ERR_WINDOWS_PATH_CHANGED|ERR_SAVE_STALE/);
+    expect(await fs.readFile(paths[1]!, 'utf8')).toBe(nativeFixture);
     expect((await fs.readdir(dir)).filter(name => name.endsWith('.tmp'))).toEqual([]);
     await f.invoke('cancel-project-save-batch', batch).catch(() => {});
   });
