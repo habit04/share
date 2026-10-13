@@ -255,11 +255,27 @@ an absent source date remains absent. The pre-R13 reverse conversion takes milli
 the actual local source date. These changes prevent the verified 32-bit underflow which turned
 UTC 01:17:54 into a local creation date 42 days in the future.
 
-Header method-C3 colors recover the packed ACI when the native index is 0/256. DIMSTYLE color
+Header colors serialize method C0 as ByLayer 256 and C1 as ByBlock 0; method C3 recovers
+the packed ACI when the native index is 0/256. DIMSTYLE color
 groups 176–178 serialize ByLayer, ByBlock and indexed colors as ACI; other CMC groups retain
 their existing packed representation. The two omitted VISUALSTYLE property selectors now emit
 group176, restoring the independently exported 58-property sequence. Every additional native
 file has a complete pinned Git-blob preimage and repeated patch application is refused.
+
+Modern TABLESTYLE decoding retains the complete ordered override array and each stored key,
+including all three independently materialized TITLE/HEADER/DATA formats in the source fixtures.
+The decoder bounds the array to 64 elements, checks the minimum available bit budget before
+allocation, and frees each owned name, nested border array and override exactly once. The old
+embedded first-override convenience field copies scalars only. Zero-mask border slots keep their
+explicit GRIDFORMAT framing and decoded border parent links.
+
+The private native interchange projection emits a standard application-defined braced group102
+block `{JCAD_TABLESTYLE_NATIVE_V1` immediately before `AcDbTableStyle`. It contains group90
+`unknown_bl1`, group91 `unknown_bl2`, hard-owned group360 `cellstyle` (including 0), group92 the
+override count, ordered group93 override keys, then group102 `}`. Existing group70 retains the
+byte flag. This extension records stored fields absent from the ordinary DXF projection; it is
+regenerated from decoded native fields on every read, and requires no APPID. It does not infer
+keys from style identities or copy retained wrapper text into the native proof.
 
 ## License and primary sources
 
