@@ -908,6 +908,28 @@ safety causes, rejects unrelated errors, and leaves poses, precision/image limit
 refusal memoization and document/history invariants unchanged. Fresh complete
 native benchmarks and exact-head CI remain required; no failed timing is accepted.
 
+Clean `68533e29` passed all ten local checks (3,469 tests, 28 conditional
+skips), all 18 Node helper tests and all five Windows native preflight checks.
+Its full Intel benchmark passed the repaired boundary cleanup and all mixed
+safety-reason checks, then failed the untimed original-camera compound-dense
+edit certificate: the initial expensive budget refusal legitimately defers a
+fresh edited snapshot until the automatic 100 ms idle admission retry. The check
+captured `admission-deferred`, not a current geometry decision. Both exact-head
+[PR CI](https://github.com/habit04/share/actions/runs/38470083288) and
+[push CI](https://github.com/habit04/share/actions/runs/38470073765) passed the
+other four jobs and failed at that same assertion. The native failure and initial
+209.9 ms preparation are retained privately; no failed timing is an accepted gain.
+NVIDIA was not started on this failed producer. Producer-bound fractional
+backing/clear/cache and unsafe-ARC fallback safety checks passed, while observed
+native Canvas reference drift remains inconclusive.
+
+The next untimed correction observes the owner's automatic admission frame at
+the same immutable snapshot, camera and display state. It keeps the initial
+deferred frame and wait separately, retains the actual-admission assertion and
+existing ten-second deadline, and does not request another render or change
+admission policy. Its unit/native regression, replacement complete benchmarks
+and exact-head CI remain required.
+
 ### NVIDIA validation on the pinned GPU source
 
 A separate private process using Electron's documented

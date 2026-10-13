@@ -12,6 +12,7 @@ import { applicationWindow } from './electron-window.mjs';
 import { chooseBenchmarkLineEdit } from './gpu-edit-candidate.mjs';
 import { analyzeFallbackRestoration } from './gpu-fallback-restoration.mjs';
 import { matchesBenchmarkFallbackReason, mixedSchematicFallbackReasons } from './gpu-benchmark-fallback.mjs';
+import { observeActualGpuAdmission } from './gpu-benchmark-admission.mjs';
 
 const cliArgs = process.argv.slice(2);
 assert.ok(cliArgs.length <= 1 && cliArgs.every((argument) => argument === '--high-performance'), 'Usage: node scripts/bench-gpu-renderer.mjs [--high-performance]');
@@ -929,8 +930,19 @@ try {
           else /** @type {HTMLCanvasElement} */ (document.getElementById('drawing')).getContext('2d').getImageData(0, 0, 1, 1);
           if (ed.doc.snapshot === previous) throw new Error('Original-camera edit transition was a no-op');
           if (JSON.stringify(ed.doc.entities.find((entity) => entity.id === original.id)) !== JSON.stringify(action === 'undo' ? original : edited)) throw new Error('Original-camera edit did not apply/restore its frozen LINE');
-          return { frame, completedFrameWallMs: performance.now() - started, completionWaitMs: performance.now() - completionStarted, reportedCompletionMs };
+          return { frame, completedFrameWallMs: performance.now() - started, completionWaitMs: performance.now() - completionStarted, reportedCompletionMs, admissionState: { document: JSON.stringify(ed.doc.snapshot), camera: { center: { ...ed.viewport.center }, scale: ed.viewport.scale, twist: ed.viewport.twist, width: ed.viewport.width, height: ed.viewport.height, dpr: ed.viewport.dpr } } };
         }, { action, original: chosen.original, edited: chosen.edited });
+        // This certificate is untimed. A slow budget refusal deliberately defers
+        // fresh document admission until the owner's automatic idle retry. Keep
+        // the original mutation frame and latency; observe current admission
+        // separately without requesting renders or changing the product policy.
+        if (transition.frame.cacheReason === 'admission-deferred') {
+          assert.equal(poseDependentBudget, true, 'Only the original dense budget certificate may observe automatic idle admission');
+          assert.equal(supportsGPU, false);
+          transition.admissionObservation = await page.evaluate(observeActualGpuAdmission, transition.admissionState);
+        }
+        transition.correctnessFrame = transition.admissionObservation?.frame ?? transition.frame;
+        delete transition.admissionState;
         if (supportsGPU) {
           assert.equal(transition.frame.rendered, true); assert.equal(transition.frame.cacheReason, 'document-delta'); assert.equal(transition.frame.uploadKind, 'subrange');
           assert.equal(transition.frame.bytes, 168); assert.equal(transition.frame.uploadCalls, 1); assert.equal(transition.frame.subrangeUploadBytes, 168); assert.equal(transition.frame.subrangeUploadCalls, 1);
@@ -944,7 +956,7 @@ try {
         const baselineGpu = await gpuImage('baseline', await modeFrame(page, 'gpu')); comparePair(baseline, baselineGpu, 'baseline');
         assert.equal(await page.evaluate((original) => JSON.stringify(window.editor.doc.entities.find((entity) => entity.id === original.id)) === JSON.stringify(original), chosen.original), true);
         const edit = await mutateGpu('edit');
-        const editedGpu = await gpuImage('edited-before-undo', edit.frame); Object.assign(certificate.gpuStages['edited-before-undo'], { completion: edit });
+        const editedGpu = await gpuImage('edited-before-undo', edit.correctnessFrame); Object.assign(certificate.gpuStages['edited-before-undo'], { completion: edit });
         const edited = (await stableCanvasReference(`${fixture}-timed-edit-edited`, resolve(out, `${fixture}-timed-edit-edited-canvas.png`))).image;
         comparePair(edited, editedGpu, 'edited-before-undo');
         certificate.canvasPixels = pixelmatch(baseline.data, edited.data, null, baseline.width, baseline.height, { threshold: 0.15 });
@@ -954,12 +966,12 @@ try {
         certificate.gpuPixels = pixelmatch(baselineGpu.data, editedGpu.data, null, baselineGpu.width, baselineGpu.height, { threshold: 0.15 });
         certificate.gpuRawRgbaPixels = changedRgbaPixels(baselineGpu, editedGpu);
         assert.ok(certificate.gpuPixels > 0 && certificate.gpuRawRgbaPixels > 0, `${fixture}: actual GPU/fallback must visibly show the frozen edit before undo`);
-        const undo = await mutateGpu('undo'), undoneGpu = await gpuImage('undo', undo.frame); Object.assign(certificate.gpuStages.undo, { completion: undo });
+        const undo = await mutateGpu('undo'), undoneGpu = await gpuImage('undo', undo.correctnessFrame); Object.assign(certificate.gpuStages.undo, { completion: undo });
         assert.equal(Buffer.compare(baselineGpu.data, undoneGpu.data), 0, 'Original-camera GPU/fallback undo restores exact pixels');
         const undone = (await stableCanvasReference(`${fixture}-timed-edit-undo`, resolve(out, `${fixture}-timed-edit-undo-canvas.png`))).image;
         assert.equal(Buffer.compare(baseline.data, undone.data), 0, 'Timed LINE undo restores exact Canvas pixels');
         comparePair(undone, undoneGpu, 'undo');
-        const redo = await mutateGpu('redo'), redoneGpu = await gpuImage('redo', redo.frame); Object.assign(certificate.gpuStages.redo, { completion: redo });
+        const redo = await mutateGpu('redo'), redoneGpu = await gpuImage('redo', redo.correctnessFrame); Object.assign(certificate.gpuStages.redo, { completion: redo });
         assert.equal(Buffer.compare(editedGpu.data, redoneGpu.data), 0, 'Original-camera GPU/fallback redo restores exact edited pixels');
         const redone = (await stableCanvasReference(`${fixture}-timed-edit-redo`, resolve(out, `${fixture}-timed-edit-redo-canvas.png`))).image;
         assert.equal(Buffer.compare(edited.data, redone.data), 0); comparePair(redone, redoneGpu, 'redo');
