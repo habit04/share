@@ -257,7 +257,7 @@
     {
       "path": "src/io/dwg/dwg_stream_writers/header_writer.rs",
       "beforeSha256": "e8912fc4bfb5c6da57181ca12f29c9cdfe3b2dee2997df18a9dc36119ee343b6",
-      "afterSha256": "bc43a458bcba429bf7b48f7293fced5611ca2faa2b6d61c97314917ae5869d98",
+      "afterSha256": "03cdf823a93bf8bb7c09a75df0c21ae48f469967ff8227f4832ff1153cef611f",
       "replacements": [
         {
           "before": "w.write_bit_double(0.0); // DIMFXL",
@@ -347,6 +347,11 @@
         {
           "before": "        w.write_bit(false); // unknown\r\n\r\n        w.write_cm_color(&h.interference_color);",
           "after": "        w.write_bit(h.real_world_scale); // REALWORLDSCALE\r\n\r\n        w.write_cm_color(&h.interference_color);",
+          "count": 1
+        },
+        {
+          "before": "fn julian_to_day_ms(julian: f64) -> (i32, i32) {\r\n    let day = julian as i32;\r\n    let fraction = julian - day as f64;\r\n    let ms = (fraction * 86_400_000.0) as i32;\r\n    (day, ms)\r\n}",
+          "after": "fn julian_to_day_ms(julian: f64) -> (i32, i32) {\r\n    let day = julian as i32;\r\n    let fraction = julian - day as f64;\r\n    // Stored dates use integer milliseconds. Truncation loses a millisecond\r\n    // when a decoded Julian double lies just below its exact stored value.\r\n    let ms = (fraction * 86_400_000.0).round() as i32;\r\n    if ms == 86_400_000 {\r\n        (day.saturating_add(1), 0)\r\n    } else {\r\n        (day, ms)\r\n    }\r\n}",
           "count": 1
         }
       ]
@@ -502,6 +507,18 @@
         {
           "before": "        if let Some(raw_dxf_codes) = &style.raw_dxf_codes {\r\n            let has_flags = raw_dxf_codes.iter().any(|(code, _)| *code == 71);",
           "after": "        if let Some(raw_dxf_codes) = &style.raw_dxf_codes {\r\n            if style.modern_style.is_some() {\r\n                // The checked modern raw record already contains its full\r\n                // native header and ordered formats. Legacy 71/280/281\r\n                // synthesis would change that schema; replay it exactly.\r\n                for (code, value) in raw_dxf_codes {\r\n                    self.writer.write_string(*code, value)?;\r\n                }\r\n                return Ok(());\r\n            }\r\n            let has_flags = raw_dxf_codes.iter().any(|(code, _)| *code == 71);",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "path": "src/io/dwg/dwg_stream_writers/aux_header_writer.rs",
+      "beforeSha256": "2efadfa61efe4042f0cfc0fe31a108b8780d2f4db16b826ccf7999626c6c50b2",
+      "afterSha256": "84390c4463af251847ae21df343c649cba1118b575ac70976797d507b246911b",
+      "replacements": [
+        {
+          "before": "fn julian_from_f64(julian: f64) -> (i32, i32) {\r\n    let day = julian as i32;\r\n    let fraction = julian - day as f64;\r\n    let ms = (fraction * 86_400_000.0) as i32;\r\n    (day, ms)\r\n}",
+          "after": "fn julian_from_f64(julian: f64) -> (i32, i32) {\r\n    let day = julian as i32;\r\n    let fraction = julian - day as f64;\r\n    // Stored dates use integer milliseconds. Truncation loses a millisecond\r\n    // when a decoded Julian double lies just below its exact stored value.\r\n    let ms = (fraction * 86_400_000.0).round() as i32;\r\n    if ms == 86_400_000 {\r\n        (day.saturating_add(1), 0)\r\n    } else {\r\n        (day, ms)\r\n    }\r\n}",
           "count": 1
         }
       ]

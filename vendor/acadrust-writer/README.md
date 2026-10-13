@@ -4,7 +4,7 @@ The Windows DXF-to-DWG helper links acadrust 0.6.4, pinned by its published crat
 SHA-256 and matching upstream commit in `pins.json`. It is MPL-2.0 licensed; the
 unmodified full license is included here. The helper itself is GPL-3.0-only.
 
-Eighty exact source replacements in thirteen files correct standalone MTEXT frame
+Eighty-two exact source replacements in fourteen files correct standalone MTEXT frame
 output, its matching private validator, owned ATTRIB parent relationships,
 MINSERT's owned-attribute count before array fields, FIELD/FIELDLIST common DXF
 groups, the VIEW front-clipping mode bit, opaque DXF metadata strings, MLEADERSTYLE
@@ -70,6 +70,14 @@ object bytes become part of this interchange contract.
 An explicit LASTSAVEDBY DXF header value is synchronized to the native SummaryInfo
 stream before the checked baseline. Its bounded Unicode string is compared again
 after native reopening; the unused duplicate header field cannot hide loss.
+
+Julian creation dates round to the nearest stored integer millisecond in both
+the main and auxiliary binary headers, with a carry into the next day at midnight.
+This preserves the actual local/UTC creation values whose floating-point fractions
+previously truncated one millisecond early. The regression checks the four failing
+inputs' shared values, UTC selection and local fallback, day rollover and default
+zero in both header streams. Time-span encoding is unchanged. The independent
+host comparison still checks nonvolatile creation dates with its original epsilon.
 
 The same common-link decoding applies to GROUP, DBCOLOR, MLEADERSTYLE,
 DICTIONARYVAR and SCALE. MLEADERSTYLE now consumes the source's alignment space,

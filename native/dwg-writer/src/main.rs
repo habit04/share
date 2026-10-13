@@ -2305,6 +2305,61 @@ mod tests {
     }
 
     #[test]
+    fn creation_dates_keep_stored_milliseconds_in_both_header_streams() {
+        // These local/UTC doubles occur in all four actual failing inputs.
+        // UTC is stored when declared; an absent UTC date uses the local value.
+        let cases: [(f64, f64, i32, i32); 5] = [
+            (2461325.845763889, 2461326.054097222, 2461326, 4674000),
+            (2461325.845763889, 0.0, 2461325, 73074000),
+            (0.0, 2461325.999999999, 2461326, 0),
+            (2461325.999999999, 0.0, 2461326, 0),
+            (0.0, 0.0, 0, 0),
+        ];
+        for (local, utc, day, milliseconds) in cases {
+            let text = format!(
+                "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1032\n9\n$TDCREATE\n40\n{local}\n9\n$TDUCREATE\n40\n{utc}\n0\nENDSEC\n0\nEOF\n"
+            );
+            let document = DxfReader::from_reader(std::io::Cursor::new(text.as_bytes()))
+                .unwrap()
+                .read()
+                .unwrap();
+            assert_eq!(document.header.create_date_julian, local);
+            assert_eq!(document.header.universal_create_date_julian, utc);
+            let written = acadrust::io::dwg::dwg_stream_writers::header_writer::write_header(
+                DxfVersion::AC1032,
+                &document.header,
+                0,
+            );
+            let reopened = acadrust::io::dwg::dwg_stream_readers::header_reader::read_header(
+                &written,
+                DxfVersion::AC1032,
+                0,
+            )
+            .unwrap();
+            let stored = day as f64 + milliseconds as f64 / 86_400_000.0;
+            assert_eq!(reopened.universal_create_date_julian, stored);
+            // The private header decoder exposes the stored UTC in both fields.
+            assert_eq!(reopened.create_date_julian, stored);
+            let auxiliary =
+                acadrust::io::dwg::dwg_stream_writers::aux_header_writer::write_aux_header(
+                    DxfVersion::AC1032,
+                    &document.header,
+                );
+            // R2018 AuxHeader has 69 bytes before its two raw creation longs.
+            assert_eq!(i32::from_le_bytes(auxiliary[69..73].try_into().unwrap()), day);
+            assert_eq!(
+                i32::from_le_bytes(auxiliary[73..77].try_into().unwrap()),
+                milliseconds
+            );
+            if local == 2461325.845763889 && utc == 2461326.054097222 {
+                // The real input declares local time five hours before UTC.
+                let restored_local = stored - 5.0 / 24.0;
+                assert!((restored_local - local).abs() <= 8.0 * f64::EPSILON * local.abs());
+            }
+        }
+    }
+
+    #[test]
     fn original_autocad_header_values_survive_the_actual_binary_header_codec() {
         let text = include_str!("../tests/fixtures/autocad-header.dxf");
         let doc = DxfReader::from_reader(std::io::Cursor::new(text.as_bytes()))
