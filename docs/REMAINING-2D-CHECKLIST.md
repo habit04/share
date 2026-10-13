@@ -7,7 +7,7 @@ This is development work; no release, installer, signing or GPU renderer changes
 Status distinguishes a tested correction from completion of the entire priority. Source evidence
 is the current branch and `SUPPORT-MATRIX.md`, rather than an earlier planning list.
 
-The first batch is complete: polygon viewport DXF/display/input compatibility, dimension
+Completed corrections so far include: polygon viewport DXF/display/input compatibility, dimension
 style correctness, text/default override correctness, declared-height MTEXT flow and Windows
 path/save protection. Independent review findings are fixed and covered by regressions. The
 remaining feature/dependency rows below form later batches; no release or installer is implied.
@@ -28,15 +28,15 @@ remain open where full compatibility is unverified.
 | 16 | Partial milestone implemented: native DXF gradient name/angle/shift/dialog mode/tint/color records and inactive descriptors retained; all nine names and both endpoint shifts externally reopened. Unshifted LINEAR Canvas and vector/raster plotting verified, including holes, opacity, ACI/RGB, direct transforms and affine block instances. HATCHEDIT angle/shift is undoable; explicit SOLID conversion retains an inactive descriptor. Named-pattern conversion is refused because native DXF cannot retain the combination. Nonlinear/nonzero-shift rendering uses a reported solid fallback. Destructive EXPLODE and unverified DWG saving are guarded. See `HATCH-GRADIENTS.md`. | Independent; native DWG fields/conversion still #19. | Complete nonlinear/shifted fields from native reference; native DWG metadata equivalence; retain current DXF/Canvas/PDF/edit/reopen checks. |
 | 17 | Missing associations: HATCH export writes flag 71=0; links reported lost. | Object-reference integration #29. | Boundary edits/undo/erase update hatch; native ownership/reference roundtrip. |
 | 18 | Partial: MULTILEADER becomes LEADER+MTEXT; block content not drawn. | Independent 2D model, native preservation with #19/#29. | Text/block content, leader context/style, editing, native export/reopen, no silent substitution. |
-| 19 | PR #9 completed portion is merged at head 14cb3f9 (merge 8dfe1ca), with green Node/Windows Electron CI. Named views, FIELD/object links and typed metadata are available for deliberate integration. Further reader/writer/table-style XDATA and real-file validation remain active in the owner session; unfinished changes are not copied. | "Check GitHub access to JCad", PR #9, `codex/windows-dwg-metadata-reference-graph`. | Integrate verified completed slices, resolve shared codecs deliberately, then rerun combined native/real-file checks; no release work here. |
+| 19 | PR #9 merged at head 14cb3f9 (merge 8dfe1ca), with green Node/Windows Electron CI. The owner has completed and published Windows v0.4.9, including independent reader/writer metadata and installed save/reopen verification without AutoCAD. Named views, FIELD/object links and typed metadata are ready for deliberate integration; only the helper byte-admission repair is applied here so far. | Completed external work: "Check GitHub access to JCad", PR #9, `codex/windows-dwg-metadata-reference-graph`. | Integrate verified slices, resolve shared codecs deliberately, then rerun combined native/real-file checks; no release work here. |
 | 20 | Missing: xref block path/overlay flags retained, `xrefPlaceholder` shows frame; no external drawing loading/refresh. | Independent; Windows path grants and recursion/geometry limits required. | Relative paths, nesting/cycles, refresh/undo, missing files, no rewriting original references. |
 | 21 | Horizontal SHX milestone implemented: bounded native shape/unifont decoder, explicit Windows SHXFONT/SHXLOAD picker, per-session resources, native TEXT ink/space/fitting/descent rules and shared Canvas/raster/eligible vector paths. Native/actual app proof passes 1,477 checks plus the final rebuilt save/default/backup/reopen gate. Unsupported glyphs/modes retain substitutes. BigFont, vertical/mirrored text, fractional arcs and complex-linetype glyph painting remain open. See `SHX-FONTS.md`. | Independent; no proprietary font bytes committed. DWG exposure/reference dependencies remain #19. | Retain native fixture, metrics/plot/real IPC/undo/save/reopen proof; extend each encoding/mode and linetype placement with native fixtures. |
 | 22 | Partial: table cells edited in JCad, export is INSERT + `JCAD_TABLE` XDATA. | Native table model/export; #19 for omitted DWG cells. | Native editable ACAD_TABLE reopened externally and in JCad, styles/cell values retained. |
 | 23 | Partial: electrical attributes, WD_M settings and project metadata exist; remaining proprietary extensions require fixture-based audit. | Electrical audit; application dictionaries #29. | Real AutoCAD Electrical cases preserve exposed tags/catalog/connectivity/settings; report unmodeled metadata. |
-| 24 | Earlier NFC/NFD path correction is implemented. A further confirmed Unicode folding gap aliases distinct dotted-I filenames in permission/tab keys; generic uppercase/.NET also disagree with native NTFS. Physical canonical identity plus ordered save admission is in development, including missing aliases and atomic case changes. SHX/plugin canonical read containment is fixed independently. The helper timestamp cache defect accepted changed bytes in 31/64 probes; its verified merged PR #9 rehash slice is available but not yet integrated here. | Lead/reliability agent; native path/grant/admission tests required. Helper source credited to verified PR #9. | Existing/missing Unicode aliases, grants, stale-save ordering, real backups/recovery/cancel/error/retarget tests; changed helper bytes must refuse under identical metadata. |
-| 25 | Native plugin read races/Unicode escapes corrected with bounded verified descriptors and exact canonical paths; 90 plugin/API/IPC/resource tests and actual callback/native filesystem probes pass. API v1 remains full-trust page code; capability isolation is missing. Stale same-name load and disposed-API lifecycle defects are confirmed follow-ups. See `PLUGIN-SOURCE-READS.md`. | Independent source/lifecycle fixes; separate realm/RPC compatibility architecture for full isolation. | Retain real file-read boundary regressions; lifecycle revocation/reload tests, then declared caps enforced outside plugin globals with actual denied operations and explicit migration. |
+| 24 | Native Windows admission, Unicode grant keys, coherent held-descriptor opens, immutable commit receipts, stored leaf preservation and guarded backup preparation implemented. Every sharing retry repeats version/root checks. The completed PR #9 helper rehash repair is integrated as 05feb08. Larger project batches, provider/UNC/case-sensitive fixtures and direct export producer ordering remain open. See `WINDOWS-SAVE-ADMISSIONS.md`. | Lead/reliability; host-owned orders and native identity. Completed helper hunk credited to PR #9; native converter/metadata verification remains #19/#29. | Retain native existing/missing aliases, stale saves/backups, external edits, every retry, cancel/reload, dirty/recovery and coherent byte/identity checks; extend bounded batch protocol before lifting capacity limits. |
+| 25 | Plugin read races/Unicode escapes and lifecycle revocation implemented: bounded descriptors, stale-load/reload ownership, scoped prompt/dialog/picker cleanup and nested transaction rollback. API v1 remains full-trust page code; capability isolation is missing. See `PLUGIN-SOURCE-READS.md`. | Independent source/lifecycle fixes; separate realm/RPC compatibility architecture for full isolation. | Retain real file-read and unload/reload regressions, then enforce declared caps outside plugin globals with actual denied operations and explicit migration. |
 | 28 | Missing specialized entities and PDF/DGN/DWF underlays; unsupported records reported (`SUPPORT-MATRIX.md`). | Independent per-entity milestones; parsers/licensing required for underlays. | Preserve source/reference metadata; fixture import/edit/save/reopen and visible unsupported feedback. |
-| 29 | External active work: arbitrary metadata/object-reference preservation. Current baseline strips unsupported cross-object links. | PR #9 as #19. | Independent metadata equivalence, ownership graph, real-file edit/save/reopen; no silent retained-property loss. |
+| 29 | External completed PR #9 implements bounded metadata/object-reference preservation. This branch still uses the earlier codecs and strips unsupported cross-object links pending deliberate integration. | Verified PR #9 as #19; lead owns integration. | Independent metadata equivalence, ownership graph, real-file edit/save/reopen; no silent retained-property loss. |
 | 30 | Missing dynamic-block actions/parameters and constraints; static INSERT representation exists. | #29 reference graph prerequisite. | Native actions/parameters/constraints retained, safe supported edits, explicit unsupported cases. |
 | 31 | Missing sheet sets, data links and drawing digital signatures. Drawing signatures differ from installer signing. | Formats/reference graph/licensed validation prerequisites. | Real sheet/data-link fixtures; signature validity and explicit invalidation on edits, no false signing claim. |
 
@@ -45,187 +45,25 @@ coverage, not rebuild work. #7 was superseded by portable saving. #26 (Mac/Linux
 #32 (full 3D) are excluded. Unsupported requirements above are still open; a dependency is not
 proof that their implementation or external verification has passed.
 
-## Validation record
+## Current validation and integration
 
-- SHX milestone: **1,477 native/actual Windows source checks** pass, including 1,328 precise
-  placement/path comparisons and 144 independent rendered comparisons. Final rebuilt app
-  confirms canonical 41/51 on 27 TEXT, 12 ATTDEF and one generated ATTRIB on the first save,
-  exact backups, fresh empty-resource reopen/reload and both Plot routes. The resulting DXF
-  passes two native AUDIT0 runs. Four missing literal U+2300 cases remain explicit substitutes.
-  The committed 20-case fixture and authored SHP sources include no proprietary programs.
-  Combined gate: **3,092 passed, 28 conditional skips** across 220 files; all three TypeScript
-  projects, broad lint, fixtures, production build and eight dense benchmarks pass.
-- Plugin source-read milestone: **90 targeted tests** and native NTFS/actual production
-  callback escape/retarget probes pass. Electron/app-data are substituted in callback tests;
-  this does not establish a live Electron plugin installation or a capability sandbox.
-
-- CTB/STB plotting: **1,823 native/actual Windows source checks** pass, including 266 native
-  RGB samples, 22 Canvas/raster/vector pages, production Plot dialog and real Save PDF IPC.
-  Requested widths match serialization precision; native widths match half the 0.12-point
-  device quantum. Unsupported effects are reported; tables are private and ephemeral.
-  Combined suite: **2,960 passed, 27 conditional skips**, with eight dense benchmarks passing.
-  All three TypeScript projects, broad lint, fixtures and production build pass. This run's
-  passing helper test does not resolve the independently confirmed #24 cache defect.
-
-- Complex linetype milestone: **230 targeted tests in seven suites** pass, including the native
-  fixture, undo/redo/repeated saves, missing-resource refusal, signed Canvas dash phase, DWG save
-  state protection and bounded linear scanning. New native fixture has two LINEs, padded text,
-  nonzero absolute rotations and an anonymous shape STYLE. Actual source Electron Open/edit/
-  undo/redo/Save As/normal Save/exact backup/fresh reopen/recovery IPC/DWG refusal all pass;
-  only native file-dialog paths were queued. The UI-written DXF then passes AutoCAD AUDIT0
-  and ordered descriptor/STYLE signature comparison at native numeric tolerance 1e-11.
-- Broad linetype/reader snapshot: **2,865 passed, 1 failed, 27 conditional skips** across 210 files.
-  The new fixture exposed a stale scanner expectation that trimmed literal LTYPE text; corrected
-  context-specific assertions pass with all 230 targeted tests. The preceding full run also caught
-  the stale positive-only dash expectation, now corrected. The helper test passed on this timing
-  run, but the confirmed #24 identity-cache defect remains unfixed and is not treated as resolved.
-  Broad lint, all three TypeScript projects, fixtures and production build pass before the
-  subsequent plotting integration; later combined validation is required.
-
-- Standalone Windows PDF embedding: 75 program-reader, 97 metric-reader, 18 worker-host,
-  36 resource and 17 integration regressions pass. Actual source Electron/Chrome/Poppler
-  proof passes **1,496 checks** with four exact installed programs, Unicode extraction,
-  native TEXT positions and 66 rendered crop comparisons. The production Plot dialog and
-  real Windows Save PDF route pass on a private native fixture copy, preserving snapshot/clean state.
-  Only destination dialogs use test doubles; font bytes and reference PDFs stay private.
-  Native MTEXT remains **198/216**: 18 Times tall multiline leading differences are recorded,
-  with the original 0.12 tolerance. PDF source was frozen and source hashes verified.
-- PDF milestone combined suite: **2,773 passed, 1 failed, 27 conditional skips** across
-  203 files. The unchanged portable-helper identity-cache test is the failure described in #24;
-  it remains owned by PR #9. Broad lint, all three TypeScript projects, fixtures and production
-  renderer build pass. Existing eight dense benchmarks passed in the preceding font milestone.
-
-- Private Node 24.19.0, locked `npm ci --ignore-scripts`, worktree-local npm cache and TEMP/TMP.
-- Dimension milestones: 137 tests, including 25 new regression cases; baseline angular probes fail and fixed
-  probes pass. Committed dimension fixture import/edit/undo/redo/DXF save/reopen included.
-- Text milestone: 79 tests in 7 suites, including 7 new regression cases; targeted lint and
-  renderer/tests typecheck pass. Committed MTEXT fixture edit/undo/redo/DXF reopen included. Declared-height column flow passes 295 tests across 13 suites, including 26 new cases.
-- Windows path milestone: 80 tests pass, including real NTFS Unicode files, separate backups and junction confinement; the DWG picker wrapper passes 25 tests. These junction checks ran outside the sandbox with all files confined to private worktree TEMP/TMP.
-- Polygon native fixture: AutoCAD 2027 opened the generated private DXF, AUDIT found zero errors, DXFOUT preserved flag/pointer/owner and JCad reopened all vertices. Fixture and provenance are committed.
-- Actual headless Chrome pixels and Poppler-rendered vector PDF pixels match the polygon interior and white cutout; Canvas layout and raster plotting both pass. Chrome ran on private port 5197.
-- Clip input milestone: 120 tests across 9 suites, including 17 new input cases; curves/text use existing selection approximations, and partly visible entities retain whole-entity selection geometry.
-- Broad lint, all three TypeScript projects, production renderer build and eight dense geometry/selection benchmarks pass. Final combined suite and command/control UI gate results are recorded below after completion.
-- Native DWG clips/columns, a signed helper or installed-release validation were not run. The other workstream retains ownership of DWG/native/installer proof. No new installer was built or installed.
-- Native explicit text defaults: 288 passed / 2 absent-private-DWG skips across 14 suites;
-  9 new regressions cover TEXT/ATTDEF/ATTRIB presence, repeated native DXF reopen, undo/redo,
-  and Canvas/PDF placement. Absent properties keep their legacy behavior.
-- DWG clip safety: 53 tests cover working Save/Save As and Export Copy refusal for retained
-  clip boundaries, including disabled/off/inactive views, DXF fallback and untouched dirty,
-  history, destination and recovery state. DWG bridges are mocked to prove no writer call.
-- UI gate: 611 command runs, 796 clicks, 52 Electron menu commands resolved; passed in isolated
-  Chrome. Three actual Electron launches passed origin migration, acknowledged checkpoint,
-  deletion persistence and lost-storage recovery using private worktree profiles.
-- Initial batch snapshot `c1b2587` serial suite: **2,331 passed, 0 failed, 27 conditional skips** across
-  187 files. The opt-in dense suite ran separately: all 8 benchmarks passed. Initial lint,
-  renderer/Electron/scripts TypeScript checks and production renderer build passed.
-- Final review added 35 regressions: 19 dimension-override cases, 12 viewport hatch-visibility
-  cases and 4 retained boundary-resource cases. Native integer overrides normalize safely;
-  native DIMTIH/DIMTOH values remain distinct despite the existing ISO display approximation.
-  Ordinary immutable style edits still work without callers supplying override metadata;
-  malformed prototype names cannot become supported native override codes.
-- AutoCAD 2027 accepted the matching-style dimension export with **zero AUDIT errors**.
-  DXFOUT retained native explicit DIMTXT=5 / DIMDEC=0 even when the named style matched.
-  Exact-source JCad reimport and a later named-style change to 3 / 1 kept the entity at 5 / 0.
-  The oracle used a private synthetic export and isolated AutoCAD profile in this worktree.
-- `npm run e2e:2d-batch`: **7 checks passed in actual source Electron 44.7.0**, using only
-  queued native Open/Save dialog answers. Real renderer, codecs, preload, IPC permissions,
-  Windows disk writes and backups exercised polygon edit/undo/reopen, native pointer ownership,
-  text default presence, MTEXT columns, safe clip-DWG refusal and distinct NFC/NFD files/tabs.
-  The reopened paper-space screenshot shows the concave boundary and clipped model line.
-  This gate passed again on the fresh `4e0b047` production build. It does not certify the
-  native DWG helper or an installed release. Equal DSTYLE preservation through portable
-  DWG conversion still requires native verification with PR #9.
-- Combined source snapshot `3d3198a`: **2,365 passed, 0 failed, 27 conditional skips**
-  across 190 files. Required fixtures, broad lint, renderer/Electron/scripts TypeScript and
-  production renderer build passed; all **8 dense benchmarks** passed separately. The full
-  native-helper Electron gate remains unavailable
-  in this private worktree because its signed portable helper is absent; no helper was copied
-  from the other workstream and no installer was built.
-- Final source `4e0b047` full run: **2,365 passed, 1 failed, 27 conditional skips**. The failure
-  was the previously observed unchanged `portable-dwg-host.test.ts` same-size-byte-rewrite
-  integrity assertion, not a batch regression. Its focused two-suite rerun passed **28/28**;
-  final dimension checks passed **93/93** and the fresh source Electron gate passed **7/7**.
-  Later private NTFS probes confirmed an actual identity-cache defect (see integration notes).
-  Rerun success is not a repair claim.
-- Gradient initial frozen source: **2,425 passed, 0 failed, 27 conditional skips** across
-  195 files. Fixture checks, broad lint, renderer/Electron/scripts TypeScript and production
-  renderer build passed. The earlier gradient run reproduced the unchanged helper failure
-  (2,421 passed / 1 failed); the final passing run does not resolve its confirmed cache defect.
-- Gradient native fixture: AutoCAD 2027 opened and normalized all nine names at shift 0/1;
-  JCad's re-export passed native AUDIT with zero errors and all eighteen native gradient tails
-  matched exactly, including optional RGB presence. Private native plots established LINEAR
-  world-axis bounding-box projection, stored RGB interpolation, ACI 0 black / 7 white,
-  unchanged angle on direct ROTATE/MIRROR/SCALE and local-frame behavior in rotated INSERTs.
-- Gradient pixels: **111/111** actual checks, 37 each for Chrome Canvas, raster plotting and
-  Poppler-rendered vector PDF. Includes triangle extents, holes, opacity, colors, rotated and
-  sheared nested INSERTs and explicit unsupported fallbacks. PDF has ten axial shadings and
-  no raster image XObjects. Chrome used private port 5198; owned browser/server were closed.
-- Gradient final fresh build: **6/6 actual source Electron checks** passed for secure origin,
-  native eighteen-hatch IPC import, real HATCHEDIT angle edit/undo/redo, actual DXF save/backup/
-  fresh reopen and actual DWG-refusal dialog with dirty/history/path/recovery state retained.
-  Only native Open/Save dialog answers were queued; no renderer/codec/storage/IPC mocks.
-  Owned app closed. Native DWG helper and installed-release behavior were not certified.
-- Final review fixed protected mixed-EXPLODE selection and finite-corner/PDF matrix validation,
-  including rounding collapse and invalid exponent syntax. **62 targeted gradient tests** and
-  **8 dense benchmarks** pass. Private AutoCAD probes rejected patterned HATCH + gradient
-  tails for active/inactive/empty-color variants, while ordinary patterned HATCH and solid
-  inactive descriptors passed AUDIT with zero errors. Such unsupported combinations retain
-  all imported pattern/gradient data, report the native export limit and refuse DXF emission;
-  HATCHEDIT cannot introduce them. Final full-source results are recorded at handoff below.
-- Final committed source `4c46059`: **2,429 passed, 1 failed, 27 conditional skips** across
-  195 files. All **62 gradient regressions** passed. The sole failure is the unchanged,
-  independently confirmed portable-helper integrity-cache assertion at
-  `portable-dwg-host.test.ts:223`; it remains an explicit PR #9 integration dependency.
-  Broad lint, all three TypeScript projects, required fixtures and production renderer build
-  passed. Final source pixel gate passed **111/111**, actual Electron gate **6/6**, and dense
-  benchmarks **8/8**. No test was suppressed or native helper repair claimed.
-
-## Integration notes and next milestones
-
-- Windows font foundation: `27de50b` (reader/worker) and `e98ecd9` (drawing geometry/painting).
-  Final combined suite: **2,600 passed, 1 known failure, 27 conditional skips** across 199 files.
-  The failure is the unchanged portable-helper cache assertion described below; an earlier run
-  passed it because of timestamp timing, which does not repair the confirmed defect. All **97
-  font reader tests** and **17 host tests** pass. Font/context regressions, all three TypeScript
-  projects, broad lint, fixture checking and the renderer build pass; **8 dense benchmarks** pass.
-  A final paper-space compatibility restore in the captured model-raster helper additionally
-  passed **50 targeted tests**, renderer TypeScript and scoped lint.
-- Final actual-source font proof: **62 Chrome checks** through real Windows Electron font IPC,
-  plus production Electron native DXF import, STYLE edit/undo/redo, real Save As/reopen and clean
-  dirty state. Source hashes matched the private proof; owned processes/port 5199 were closed.
-  Native fonts were unmocked; only file-dialog paths were queued. Arial/Arial Bold/Courier/Times
-  normalization, bearings, fitting and verified anchors match native references. The committed
-  20-entity font fixture passed native AUDIT with zero errors. Unverified origins, monochrome
-  bitmap glyphs, contextual scripts, native MTEXT details and vector PDF remain explicit limits.
-- MTEXT milestone `c10e099`: **253 targeted tests** across 14 files, renderer TypeScript and
-  scoped lint pass. New attachment/wrapping suite has **42 cases**, including authored all-nine
-  attachment checks, native AP1/5/9 H/paragraphed-g anchors and Times default/qc/qr width55/60,
-  plus committed four-face fixture STYLE edit/undo/redo/DXF reopen. Native PDF position comparisons
-  allow 0.13 drawing units for quantization. Pen advances remain distinct from ink wrap spans;
-  overhanging dimension text participates in gaps/fit. Tall-glyph leading, inline font families,
-  tracking and automatic-height columns remain open. SHX/context-free layout remains unchanged.
-
-- PR #9 remains active and draft at the font milestone's read-only snapshot, head `01ebe95b3d05ddbcc46fb279b0dbffe19474b83a`.
-  Its native
-  reader/writer and real-file saving verification remain that workstream's responsibility.
-  No commits were copied from it. Resolve shared codec/layout conflicts deliberately and rerun
-  native equivalence, combined 2D regressions and real-file saving before considering release.
-- The baseline native helper removes object handles during its comparison. Newly retained
-  viewport boundaries therefore remain explicitly blocked from DWG saving/export until clip
-  pointer ownership is independently verified; lift the renderer guard only with that proof.
-- Earlier full-suite runs encountered a WASM allocation failure in `dwg-host.test.ts` and the
-  same-size-byte-rewrite assertion in unchanged `portable-dwg-host.test.ts`. Private actual
-  NTFS probes now prove the latter is an integrity-cache defect: 31/64 modified binaries
-  retained equal timestamp identity and were incorrectly accepted. PR #9 changes that exact
-  `verifyPortableWriter.check` loop to hash every bounded admission. Leave its repair with
-  that active workstream; no unfinished commit was copied. Combined native validation is still
-  required after verified integration, regardless of the latest passing full test run.
-- Retained gradient descriptors, including inactive data in unused blocks/layouts, are blocked
-  from DWG saving/export until native conversion is proven. A transformed display frame cannot
-  be faithfully emitted as a standalone native HATCH angle; export refuses it and the EXPLODE
-  command protects such block instances. DXF block definitions plus INSERT remain supported.
-- Native MTEXT ink attachment/wrapping, eligible TrueType PDF embedding, complex linetype
-  retention and the CTB/STB plotting subset are implemented. Next independent work is bounded
-  real SHX font/shape decoding, authorized resource loading and shared drawing/plot geometry.
-  Native spatial references remain required for nonlinear/shifted gradients. Full plugin
-  capability isolation, external-reference loading and other missing rows remain open.
+- The frozen SHX/plotting milestone passed **3,092 tests / 28 conditional skips**, all three
+  TypeScript projects, broad lint, fixtures, production build and eight dense benchmarks.
+  SHX passed **1,477 native/actual Windows/Poppler checks**, final app save/backup/reopen and
+  two native AUDIT0 runs. See `SHX-FONTS.md` for supported formats and explicit substitutes.
+- CTB/STB passed **1,823 native/actual checks**; TrueType PDF embedding passed **1,496**.
+  Native MTEXT remains **198/216**, with 18 tall Times leading differences kept at the
+  original tolerance. Font/plot/gradient/linetype documents record these individual limits.
+- Plugin lifecycle passed **153 targeted checks** and **11 actual Chrome source/DOM checks**;
+  source-read tests and native production-callback probes are separate from a capability sandbox.
+- Save admission/preparation passed **88 native tests**; renderer transport tests passed **31**
+  cases. Combined reliability branch passed **3,280 tests / 28 conditional skips**, all three
+  TypeScript projects, broad lint and fixtures. Final source Electron passed **17 save/recovery
+  workflows** plus **7 tracked 2D workflows**, with unchanged source/bundle hashes. Real IPC,
+  codecs, NTFS files, backups and recovery UI ran; only native destination answers were queued.
+  Both owned app profiles/processes were closed. This does not certify a new installer/DWG helper.
+- PR #9 merged head `14cb3f9` / merge `8dfe1ca`; only its completed helper check-loop repair
+  has been integrated. The owner subsequently verified and published Windows v0.4.9. Shared
+  codecs/native assets require deliberate integration and combined native equivalence checks.
+- Historical source snapshots and provenance remain in [REMAINING-2D-EVIDENCE.md](REMAINING-2D-EVIDENCE.md).
+  This checklist records tested corrections and partial features, not completion of the roadmap.

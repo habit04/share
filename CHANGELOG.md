@@ -67,6 +67,20 @@ messages). The date of each version is the date of the commit that set that vers
 
 ### Fixed
 
+- Windows saves capture host ordering before slow work and refuse older native path aliases.
+  Unicode sibling grants remain separate, stored leaf casing is preserved, and every sharing
+  retry rechecks authorization, file version and parent/root identity. Project backup preparation
+  shares the bound save reservation; stale backups and external edits are preserved.
+- Native drawing opens pair held-descriptor bytes with coherent filesystem identity. Saved
+  drawings use commit receipts instead of fresh path lookups, preventing post-save junction
+  changes from altering tab/source identity. Reloaded compatibility Save As dialogs cannot write
+  an old document's payload. Dirty state and recovery survive failed or unverified saves.
+- Portable writer admissions now always hash bounded executable/dependency bytes. The completed
+  repair from PR #9 rejects same-size edits whose timestamps collide or were restored.
+- Plugin unload revokes retained API handles and cancels owned prompts, dialogs and file pickers.
+  Stale loads/reloads cannot replace newer entries; nested edits roll back after unload, including
+  hostile error formatting and return-value getters. API v1 remains trusted page code.
+
 - Native omitted TEXT/ATTDEF/ATTRIB width/slant groups mean entity defaults 1/0, rather than
   STYLE creation defaults. Generated labels and attributes emit canonical defaults on their
   first export, keeping repeated DXF exports consistent.

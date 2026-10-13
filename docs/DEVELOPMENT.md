@@ -406,6 +406,7 @@ hands them to the modules in one context (`context.cjs`). No module requires Ele
 | `menu.cjs` | 137 | the native menu and File > Open Recent |
 | `dwg.cjs` | 76 | DXF decoding, isolated DWG reading with progress and cancel |
 | `ipc-drawings.cjs` | 292 | open / save drawings and projects, Save As paths, backups, IMAGE files |
+| `save-order.cjs` | — | Windows renderer ownership, save tickets, guarded backup preparation and committed identity receipts |
 | `ipc-plot.cjs` | 99 | plot to PDF, vector PDF, print |
 | `ipc-shx.cjs` | — | guarded one-use Windows SHX font/shape picker, without general file grants |
 | `ipc-stores.cjs` | 178 | autosave, user library, plugins, catalog packs |
@@ -419,6 +420,11 @@ who may call), `resource-limits.cjs` (size-checked reads, write payload and shee
 `dwg-process-limits.cjs` (parent-side OS memory watchdog), `web-security.cjs` (permission
 handlers and web contents guards), `updater.cjs` and `update-verify.cjs` (update checks and the
 verification of a downloaded installer), `file-errors.cjs` (plain-language file errors).
+
+Windows saves also use `windows-path-identity.cjs` and `save-admissions.cjs` for native
+destination/version pins and bounded orders issued before slow producers. The renderer's
+`src/app/save-admission.ts` carries tickets through dialogs, serialization and recovery-state
+updates. See [Windows save admissions](WINDOWS-SAVE-ADMISSIONS.md) for invariants and limits.
 
 The desktop DWG process owns a V8-limited worker; Electron utility-process `execArgv` heap flags
 are not relied on to enforce its heap policy. `scripts/dwg-wasm-memory.mjs` restricts the shipped
