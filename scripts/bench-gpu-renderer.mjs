@@ -19,7 +19,7 @@ const sourceSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encodi
 const worktreeModified = !!execFileSync('git', ['status', '--porcelain', '--untracked-files=no'], { cwd: root, encoding: 'utf8' }).trim();
 const started = performance.now();
 const app = await electron.launch({ args: ['.', `--user-data-dir=${resolve(out, `profile-${Date.now()}`)}`], cwd: root, env, timeout: 60000 });
-const result = { sourceSha, worktreeModified, platform: process.platform, arch: process.arch, applicationLaunchMs: 0, hardware: null, viewport: null, comparisons: {}, validation: [], limitations: ['Single Windows machine or CI runner; OS caches not purged.', 'GPU fence wall waits include driver/CPU scheduling and exclude final desktop presentation.', 'Canvas readback completion is not a pure GPU timer.', 'GPU memory is uploaded buffer bytes only; JS heap is approximate and shared with the whole application.'] };
+const result = { sourceSha, worktreeModified, platform: process.platform, arch: process.arch, applicationLaunchMs: 0, hardware: null, viewport: null, comparisons: {}, validation: [], limitations: ['Single Windows machine or CI runner; OS caches not purged.', 'Drawing pointer input is disabled during comparisons so hover changes cannot alter the measured scene; hover invalidation is covered by regression tests.', 'GPU fence wall waits include driver/CPU scheduling and exclude final desktop presentation.', 'Canvas readback completion is not a pure GPU timer.', 'GPU memory is uploaded buffer bytes only; JS heap is approximate and shared with the whole application.'] };
 // Compare geometric coverage with a two-pixel rasterization allowance. Pixelmatch
 // still reports color/AA differences; coverage does not pretend they are equivalent.
 function missedForeground(a, b) {
@@ -53,7 +53,11 @@ try {
   }
   if (result.hardware.state !== 'ready') result.limitations.push(`Hardware diagnostic collection: ${result.hardware.state}; adapter/acceleration conclusions are limited.`);
   result.viewport = await page.evaluate(() => { const v = window.editor.viewport; return { width: v.width, height: v.height, dpr: v.dpr }; });
-  await page.addStyleTag({ content: '[data-gpu-prototype="indicator"] { visibility:hidden !important }' });
+  // A visible Windows window can receive rollover events during screenshot capture.
+  // Hold the comparison scene constant; interactive selection/demo checks follow separately.
+  await page.addStyleTag({ content: '[data-gpu-prototype="indicator"] { visibility:hidden !important } #drawing { pointer-events:none !important }' });
+  await page.mouse.move(0, 0);
+  await page.evaluate(() => window.editor.setHover(null));
   for (const fixture of ['curves', 'precision', 'dense-lines', 'mixed-schematic']) {
     await page.evaluate((name) => { window.gpuPrototype.setMode('canvas'); window.gpuPrototype.loadFixture(name); }, fixture);
     await page.waitForTimeout(100);
