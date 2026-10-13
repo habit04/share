@@ -452,13 +452,158 @@ function visualStyleColorPairs(record, pairs, parsed, label) {
   return result;
 }
 
+/** @param {RecordData} record @param {Pair[]} pairs @param {string} subclass @param {string} label */
+function retainedStyleRegion(record, pairs, subclass, label) {
+  const xdata=pairs.findIndex(pair=>pair.code===1001),core=xdata<0?pairs:pairs.slice(0,xdata);
+  const markers = core.flatMap((pair, index) => pair.code === 100 && pair.value.trim() === subclass ? [index] : []);
+  if (markers.length !== 1) fail(`${label} has ambiguous retained style subclass framing`);
+  const start = markers[0];
+  // A style's common owner/reactors precede its own first subclass. The
+  // remaining common/application framing is opaque and never reinterpreted.
+  if (pairs.slice(0, start).some(pair => pair.code === 100 || pair.code === 1001)) fail(`${label} has malformed retained style common framing`);
+  let end = pairs.findIndex((pair, index) => index > start && [100, 102, 1001].includes(pair.code));
+  if (end < 0) end = pairs.length;
+  return { start, end, body: pairs.slice(start + 1, end) };
+}
+
+/** @param {Pair} pair @param {number} min @param {number} max @param {string} context */
+function retainedStyleInteger(pair, min, max, context) {
+  const value = pair?.value?.trim();
+  if (typeof value !== 'string' || !/^[+-]?\d{1,20}$/.test(value)) fail(`${context} has invalid retained style integer storage`);
+  const parsed = BigInt(value);
+  if (parsed < BigInt(min) || parsed > BigInt(max)) fail(`${context} has out-of-range retained style integer storage`);
+  return Number(parsed);
+}
+
+/** @param {Pair} pair @param {Parsed} parsed @param {string} expected @param {string} context */
+function retainedStyleReference(pair, parsed, expected, context) {
+  const id = handle(pair.value);
+  if (id === '0') return;
+  if (parsed.handles.get(id)?.type !== expected) fail(`${context} has a missing or wrong-class retained style reference`);
+}
+
+/** @param {Pair[]} pairs @param {string} subclass @param {number} code @param {(value:string)=>boolean} [accept] */
+function retainedStyleClaim(pairs,subclass,code,accept=()=>true) {
+  // A duplicated early subclass cannot conceal a later declared modern bag.
+  // XDATA begins the opaque suffix and cannot declare another style version.
+  let body=false;
+  for(const pair of pairs) {
+    if(pair.code===1001) break;
+    if(pair.code===100 || pair.code===102) { body=pair.code===100 && pair.value.trim()===subclass; continue; }
+    if(body && pair.code===code && accept(pair.value)) return true;
+  }
+  return false;
+}
+
+/** @param {RecordData} record @param {Pair[]} pairs @param {Parsed} parsed @param {string} label
+ * @returns {{pairs:Pair[],linetypeFields:Set<Pair>}} */
+function retainedStylePairs(record, pairs, parsed, label) {
+  const linetypeFields = new Set();
+  if (record.section !== 'OBJECTS' || !['MLEADERSTYLE', 'MLINESTYLE'].includes(record.type)) return { pairs, linetypeFields };
+  if (record.type === 'MLEADERSTYLE') {
+    // Partial/legacy raw records retain the original opaque comparison. They
+    // receive no new NULL or order equivalence. Only a declared version2 bag
+    // is interpreted; a claimed but incomplete bag cannot take this fallback.
+    if(!retainedStyleClaim(pairs,'AcDbMLeaderStyle',179,value=>/^[+-]?\d{1,20}$/.test(value.trim()) && BigInt(value.trim())===2n)) return {pairs,linetypeFields};
+    const region = retainedStyleRegion(record, pairs, 'AcDbMLeaderStyle', label);
+    // Complete admitted R2010/class-version2 prefix. Optional native block
+    // pointers341/343 are the only missing properties materialized here.
+    const required = [179,170,171,172,90,40,41,173,91,340,92,290,42,291,43,3,44,300,342,174,178,175,176,93,45,292,297,46,94,47,49,140,293,141,294,177,142,295,296,143,271,272,273,298];
+    const known = new Set([...required,341,343]), slots = new Map();
+    let consumed = 0;
+    for (const pair of region.body) {
+      if (!known.has(pair.code)) break;
+      if (slots.has(pair.code)) fail(`${label} has duplicated retained style group${pair.code}`);
+      slots.set(pair.code, pair); consumed++;
+    }
+    // A same-subclass unknown field cannot hide another known property slot.
+    // Genuine new subclasses/common framing/XDATA begin outside region.body.
+    if (region.body.some((pair, index) => index >= consumed && known.has(pair.code))) fail(`${label} has ambiguous interleaved MLEADERSTYLE property framing`);
+    if (required.some(code => !slots.has(code))) fail(`${label} has incomplete supported MLEADERSTYLE property framing`);
+    if (retainedStyleInteger(slots.get(179),2,2,`${label}.group179`) !== 2) fail(`${label} has unsupported retained MLEADERSTYLE version`);
+    /** @type {[number,string][]} */ const references = [[340,'LTYPE'],[341,'BLOCK_RECORD'],[342,'STYLE'],[343,'BLOCK_RECORD']];
+    for (const [code, type] of references) {
+      const pair = slots.get(code); if (pair) retainedStyleReference(pair,parsed,type,`${label}.group${code}`);
+    }
+    const body = region.body.slice(0,consumed), tail = body.slice(-4);
+    if (tail[0]?.code !== 271 || tail[3]?.code !== 298 || ![272,273].includes(tail[1]?.code) || ![272,273].includes(tail[2]?.code)) fail(`${label} has unsupported MLEADERSTYLE attachment framing`);
+    const prefix = [];
+    for (const pair of body.slice(0,-4)) {
+      if ([341,343].includes(pair.code)) continue;
+      if (pair.code === 44) prefix.push(slots.get(341) ?? { code:341,value:'0' });
+      if (pair.code === 94) prefix.push(slots.get(343) ?? { code:343,value:'0' });
+      prefix.push(pair);
+    }
+    return { pairs:[...pairs.slice(0,region.start+1),...prefix,slots.get(271),slots.get(273),slots.get(272),slots.get(298),...region.body.slice(consumed),...pairs.slice(region.end)], linetypeFields };
+  }
+  if(!retainedStyleClaim(pairs,'AcDbMlineStyle',71)) return {pairs,linetypeFields};
+  const region = retainedStyleRegion(record,pairs,'AcDbMlineStyle',label), body = region.body;
+  const prefix = [2,70,3,62,51,52,71];
+  if (prefix.some((code,index) => body[index]?.code !== code)) fail(`${label} has unsupported MLINESTYLE property framing`);
+  const count = retainedStyleInteger(body[6],0,255,`${label}.group71`);
+  const flags = retainedStyleInteger(body[1],0,0x773,`${label}.group70`);
+  if (flags & ~0x773) fail(`${label} has unsupported MLINESTYLE flags`);
+  let cursor = prefix.length;
+  for (let index=0; index<count; index++) {
+    if (body[cursor]?.code !== 49 || body[cursor+1]?.code !== 62 || body[cursor+2]?.code !== 6) fail(`${label} has changed MLINESTYLE element count or framing`);
+    linetypeFields.add(body[cursor+2]); cursor += 3;
+  }
+  if (body[cursor] && [...prefix,49,6].includes(body[cursor].code)) fail(`${label} has excess or duplicated MLINESTYLE property framing`);
+  return { pairs,linetypeFields };
+}
+
+// Parsed inputs are private synchronous verifier snapshots. Cache only proven
+// table/name/owner evidence for this exact parse, so huge common/XDATA tails
+// are not rescanned per element. Weak keys release all evidence after a call.
+/** @type {WeakMap<Parsed,{control:RecordData,entries:Map<RecordData,string>}>} */
+const retainedLinetypeEvidence=new WeakMap();
+
+/** @param {string} value @param {Parsed} parsed @param {string} context @returns {{record:RecordData,control:RecordData}} */
+function retainedLinetype(value, parsed, context) {
+  // Native symbol lookup is case-insensitive. This bounded correction proves
+  // ASCII spelling differences only; Unicode aliases are not inferred.
+  const name = unicode(value), ascii = text => /^[\x00-\x7f]*$/.test(text), fold = text => text.replace(/[a-z]/g,character=>character.toUpperCase());
+  // parse/assignAliases already rejects duplicate logical names. Use that
+  // authenticated per-parse index rather than rescan every record per element.
+  // Its generic lookup only selects a candidate; exact/ASCII-name, class and
+  // owner checks below prove the reference and reject Unicode/trim aliases.
+  let evidence=retainedLinetypeEvidence.get(parsed);
+  if(!evidence) {
+    const control=parsed.aliases.get('table-control:LTYPE'),names=control?.groups.filter(pair=>pair.code===2)??[];
+    if(control?.section!=='TABLES' || control.type!=='TABLE' || !control.handle || names.length!==1 || fold(names[0].value)!=='LTYPE') fail(`${context} has no unique retained LTYPE table control`);
+    evidence={control,entries:new Map()};retainedLinetypeEvidence.set(parsed,evidence);
+  }
+  const {control}=evidence,candidate=parsed.aliases.get('table:LTYPE:'+identifier(name));
+  if(!candidate) fail(`${context} has a missing retained LTYPE target`);
+  let stored=evidence.entries.get(candidate);
+  if(stored===undefined) {
+    if(candidate.section!=='TABLES' || candidate.type!=='LTYPE' || !candidate.handle || commonOwner(candidate)!==control.handle) fail(`${context} has a missing, ambiguous or disconnected retained LTYPE target`);
+    const names=candidate.groups.filter(pair=>pair.code===2);
+    if(names.length!==1) fail(`${context} has ambiguous retained LTYPE name framing`);
+    stored=unicode(names[0].value);evidence.entries.set(candidate,stored);
+  }
+  if(stored!==name && !(ascii(name) && ascii(stored) && fold(stored)===fold(name))) fail(`${context} has a missing or unproven retained LTYPE target`);
+  return {record:candidate,control};
+}
+
+/** @param {string} first @param {string} second @param {Parsed} source @param {Parsed} target @param {Map<RecordData,RecordData>} matches @param {string} context */
+function sameRetainedLinetype(first,second,source,target,matches,context) {
+  const original = retainedLinetype(first,source,context), actual = retainedLinetype(second,target,context);
+  if (matches.get(original.record) !== actual.record || matches.get(original.control)!==actual.control) fail(`${context} retained LTYPE reference changed or lost its target`);
+}
+
 function comparePairs(record, actual, sourcePairs, targetPairs, source, target, matches, label) {
-  const first = visualStyleColorPairs(record, normalizePairs(record, sourcePairs), source, label), second = visualStyleColorPairs(actual, normalizePairs(actual, targetPairs), target, label);
+  const firstStyle = retainedStylePairs(record, normalizePairs(record, sourcePairs), source, label);
+  const secondStyle = retainedStylePairs(actual, normalizePairs(actual, targetPairs), target, label);
+  const first = visualStyleColorPairs(record, firstStyle.pairs, source, label), second = visualStyleColorPairs(actual, secondStyle.pairs, target, label);
   if (first.length !== second.length) fail(`${label} group count changed (${first.length} -> ${second.length})`);
   for (let index = 0; index < first.length; index++) {
     const a = first[index], b = second[index], context = `${label}.group${a.code}[${index}]`;
     if (a.code !== b.code) fail(`${context} framing/order changed to group${b.code}`);
-    sameValue(a.code, a.value, b.value, record, source, target, matches, context);
+    if (firstStyle.linetypeFields.has(a) || secondStyle.linetypeFields.has(b)) {
+      if (!firstStyle.linetypeFields.has(a) || !secondStyle.linetypeFields.has(b)) fail(`${context} typed linetype framing changed`);
+      sameRetainedLinetype(a.value, b.value, source, target, matches, context);
+    } else sameValue(a.code, a.value, b.value, record, source, target, matches, context);
   }
 }
 
@@ -615,6 +760,81 @@ function compareLegacyRow(row, part, styleHandle, number, int, color) {
   }
 }
 
+// AutoCAD's compact AC1032 built-ins retain six complete mapper matrices. The
+// pinned native encoder writes their full typed defaults; C emits that native
+// grammar, including an unused diffuse texture tuple. Account for every added
+// value without granting defaults to arbitrary/custom MATERIAL records.
+function builtinMaterialProjection(record, actual, source, target) {
+  if (record.section !== 'OBJECTS' || record.type !== 'MATERIAL') return undefined;
+  const version = parsed => {
+    const values = parsed.header.get('$ACADVER');
+    return values?.length === 1 && values[0].code === 1 && values[0].value.trim() === 'AC1032';
+  };
+  if (!version(source) || !version(target)) return undefined;
+  const starts = record.groups.flatMap((pair, index) => pair.code === 100 && pair.value.trim() === 'AcDbMaterial' ? [index] : []);
+  if (starts.length !== 1) return undefined;
+  const begin = starts[0] + 1, end = record.groups.findIndex((pair, index) => index >= begin && pair.code === 1001);
+  const body = record.groups.slice(begin, end < 0 ? undefined : end), name = body[0]?.value;
+  if (body[0]?.code !== 1 || !['ByBlock', 'ByLayer', 'Global'].includes(name) || body[1]?.code !== 72) return undefined;
+  // An unchanged compact record keeps the original full comparison. The
+  // checked native expansion applies only when the target gained its body.
+  const targetMarkers = actual.groups.flatMap((pair, index) => pair.code === 100 && pair.value.trim() === 'AcDbMaterial' ? [index] : []);
+  if (targetMarkers.length === 1 && actual.groups[targetMarkers[0] + 1]?.code === 1 && actual.groups[targetMarkers[0] + 2]?.code === 72) return undefined;
+  const slot = `dictionary:[]/key:"ACAD_MATERIAL"/key:${JSON.stringify(name)}`;
+  const owned = (parsed, material) => {
+    const root = parsed.aliases.get('dictionary:[]'), owner = root && dictionaryEntries(root, parsed).get('ACAD_MATERIAL');
+    return owner && dictionaries.has(owner.type) && commonOwner(owner) === root.handle
+      && dictionaryEntries(owner, parsed).get(name) === material && commonOwner(material) === owner.handle && material.aliases.has(slot);
+  };
+  if (!actual || !owned(source, record) || !owned(target, actual)) fail('compact built-in MATERIAL lacks its exact ACAD_MATERIAL ownership slot');
+  const maps = [[72, 43], [77, 47], [171, 49], [175, 142], [179, 144], [undefined, 147]];
+  const matrices = [], flags = []; let cursor = 1;
+  for (const [sourceCode, matrixCode] of maps) {
+    if (sourceCode !== undefined) {
+      const pair = body[cursor++];
+      if (pair?.code !== sourceCode || !/^[+]?0+$/.test(pair.value.trim())) fail('compact built-in MATERIAL has an unsupported scene-source flag');
+      flags.push(pair);
+    }
+    const matrix = [];
+    for (let index = 0; index < 16; index++) {
+      const pair = body[cursor++];
+      if (pair?.code !== matrixCode || !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(pair.value.trim()) || !Number.isFinite(Number(pair.value))) fail('compact built-in MATERIAL lacks a complete finite ordered mapper matrix');
+      matrix.push(pair);
+    }
+    matrices.push(matrix);
+  }
+  if (cursor !== body.length) fail('compact built-in MATERIAL has unconsumed source properties');
+  const injected = new Set();
+  const pairs = values => values.map(([code, value]) => { const pair = { code, value: String(value) }; injected.add(pair); return pair; });
+  const projected = [...record.groups.slice(0, begin), body[0], ...pairs([[2, ''], [70, 0], [40, 1], [71, 0], [41, 1]])];
+  const mapper = (index, scalar) => projected.push(...pairs(scalar), ...matrices[index], ...(index < 5 ? [flags[index]] : pairs([[273, 0]])));
+  mapper(0, [[42, 1], [73, 2], [74, 1], [75, 1]]);
+  // This exact zero tuple is an unused Texture_diffusemap projection after
+  // source72=0, not permission to discard arbitrary advanced460/461 values.
+  projected.push(...pairs([[277, 0], [278, 0], [460, 0], [279, 0], [461, 0], [76, 0], [45, 1], [44, .5]]));
+  mapper(1, [[46, 1], [78, 2], [79, 1], [170, 1]]);
+  mapper(2, [[48, 1], [172, 2], [173, 1], [174, 1]]);
+  mapper(3, [[140, 1], [141, 1], [176, 2], [177, 1], [178, 1]]);
+  mapper(4, [[143, 1], [270, 2], [271, 1], [272, 1]]);
+  mapper(5, [[145, 1], [146, 1], [274, 2], [275, 1], [276, 1]]);
+  projected.push(...pairs([[94, 127]]), ...(end < 0 ? [] : record.groups.slice(end)));
+  const expected = normalizePairs(record, projected), observed = normalizePairs(actual, actual.groups);
+  if (expected.length !== observed.length) fail('compact built-in MATERIAL native group count changed');
+  for (let index = 0; index < expected.length; index++) {
+    const pair = expected[index]; if (!injected.has(pair)) continue;
+    const found = observed[index], raw = found.value.trim(), context = `compact built-in MATERIAL default group${pair.code}`;
+    if (found.code !== pair.code) fail(`${context} framing/order changed`);
+    if (integer(pair.code)) {
+      const limit = pair.code === 94 ? 0x7fffffffn : 0x7fffn;
+      if (!/^[+-]?\d{1,20}$/.test(raw) || BigInt(raw) < -limit - 1n || BigInt(raw) > limit || BigInt(raw) !== BigInt(pair.value)) fail(`${context} changed or has invalid bounded integer storage`);
+    } else if (real(pair.code)) {
+      const zero = /^[+-]?(?:0+(?:\.0*)?|\.0+)(?:e[+-]?\d+)?$/i.test(raw);
+      if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(raw) || !Number.isFinite(Number(raw)) || Number(raw) !== Number(pair.value) || pair.value === '0' && !zero) fail(`${context} changed`);
+    } else if (found.value !== pair.value) fail(`${context} changed`);
+  }
+  return projected;
+}
+
 const tableProperties = new Map([['APPID', [70]], ['LTYPE', [70]], ['DIMSTYLE', [70]], ['BLOCK_RECORD', [70, 280, 281]], ['LAYER', [70]], ['STYLE', [70, 71, 42]]]);
 // Autodesk VPORT group282 is the default lighting type (0 one distant light, 1 two).
 const vportScalars = new Set([2, 70, 10, 20, 11, 21, 12, 22, 13, 23, 14, 24, 15, 25, 16, 26, 36, 17, 27, 37, 40, 41, 42, 43, 44, 50, 51, 71, 72, 73, 74, 75, 76, 77, 78, 79, 110, 120, 130, 111, 121, 131, 112, 122, 132, 141, 142, 143, 144, 145, 146, 281, 65, 348, 60, 61, 292, 282, 63, 421, 431, 64, 441, 340, 341, 345, 346]);
@@ -710,7 +930,8 @@ export function verifyDwgMetadataEquivalence(sourceDxf, targetDxf, targetInvento
     if (!full && !subset.length) continue;
     if (!actual) fail(`${label} is missing from the independently decoded DWG`);
     const legacyStyle = record.type === 'TABLESTYLE' && !record.groups.some(pair => pair.code === 1 && pair.value === 'TABLEFORMAT_BEGIN') && actual.groups.some(pair => pair.code === 1 && pair.value === 'TABLEFORMAT_BEGIN');
-    const wanted = legacyStyle ? legacyTableStyleProjection(record, source) : full ? dictionaries.has(record.type) ? dictionaryPayload(record) : record.groups : subset;
+    const material = builtinMaterialProjection(record, actual, source, target);
+    const wanted = material ?? (legacyStyle ? legacyTableStyleProjection(record, source) : full ? dictionaries.has(record.type) ? dictionaryPayload(record) : record.groups : subset);
     const got = full ? dictionaries.has(actual.type) ? dictionaryPayload(actual, annotations.ignored.get(actual)) : actual.groups : entityMetadata(actual);
     comparePairs(record, actual, wanted, got, source, target, matches, label);
     if (record.section === 'OBJECTS') objects++; else if (record.type === 'VIEW') views++; else if (subset.length) metadataOwners++;
