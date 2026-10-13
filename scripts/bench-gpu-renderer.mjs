@@ -705,15 +705,35 @@ try {
     } else if (name !== 'compound-tags') assert.ok(pixels / (diff.width * diff.height) < 0.001, `${name}: preflight preserves the strict small-scene raster gate`);
     if (name.endsWith('-control')) {
       const directArc = name.startsWith('direct-arc-');
-      const control = await page.evaluate((directArc) => {
-        const v = window.editor.viewport, metadata = window.gpuPrototype.fixtureMetadata();
+      const control = await page.evaluate(({ directArc, name }) => {
+        const editor = window.editor, v = editor.viewport, metadata = window.gpuPrototype.fixtureMetadata();
+        const selected = editor.doc.entities.find((entity) => entity.id === (directArc ? metadata.controlArc.id : 'P'));
+        if (!selected || selected.type !== (directArc ? 'arc' : 'polyline')) throw new Error('Missing unique selected opacity control');
+        // Match core/entities.ts gripPoints: ARC endpoints, world-space arc midpoint,
+        // and center; POLYLINE vertices. Project only after the world additions.
+        const polar = (angle) => ({ x: selected.center.x + selected.radius * Math.cos(angle), y: selected.center.y + selected.radius * Math.sin(angle) });
+        let sweep = directArc ? (selected.endAngle - selected.startAngle) % (Math.PI * 2) : 0;
+        if (sweep < 0) sweep += Math.PI * 2;
+        if (directArc && sweep < 1e-9) sweep = Math.PI * 2;
+        const grips = directArc ? [polar(selected.startAngle), polar(selected.startAngle + sweep / 2), polar(selected.endAngle), selected.center] : selected.points;
+        const selectionGrips = grips.map((world, index) => ({ label: directArc ? ['start', 'midpoint', 'end', 'center'][index] : `vertex-${index}`, world, screen: v.toScreen(world) }));
+        const weighted = name === 'lineweights-control' || name === 'direct-arc-lineweights-control';
+        const otherGeometry = editor.doc.entities.filter((entity) => entity.id !== selected.id).map((entity) => {
+          const layer = editor.doc.layers.find((layer) => layer.name === entity.layer);
+          const mm = entity.lineWeight !== undefined && entity.lineWeight >= 0 ? entity.lineWeight : layer?.lineWeight ?? 0.25;
+          const lineWidth = weighted ? Math.max(1, Math.round(mm / 0.25 * 10) / 10) : 1;
+          if (entity.type === 'line') return { id: entity.id, type: entity.type, a: v.toScreen(entity.a), b: v.toScreen(entity.b), lineWidth };
+          if (entity.type === 'arc' || entity.type === 'circle') return { id: entity.id, type: entity.type, center: v.toScreen(entity.center), radius: entity.radius * v.scale, lineWidth };
+          throw new Error(`Unexpected opacity-control neighbor: ${entity.type}`);
+        });
+        const probeGeometry = { selectionGrips, otherGeometry, gripHalfSize: v.settings.gripSize ?? 4, gripColor: v.settings.gripColor ?? '#1a3dff' };
         if (directArc) {
           const arc = metadata.controlArc, center = v.toScreen(arc.center), radius = arc.radius * v.scale;
-          return { ...arc, screenCenter: center, screenRadius: radius, screenA: { x: center.x + radius * Math.cos(-arc.startAngle), y: center.y + radius * Math.sin(-arc.startAngle) }, screenB: { x: center.x + radius * Math.cos(-arc.endAngle), y: center.y + radius * Math.sin(-arc.endAngle) }, width: v.width, height: v.height, dpr: v.dpr };
+          return { ...arc, ...probeGeometry, screenCenter: center, screenRadius: radius, screenA: { x: center.x + radius * Math.cos(-arc.startAngle), y: center.y + radius * Math.sin(-arc.startAngle) }, screenB: { x: center.x + radius * Math.cos(-arc.endAngle), y: center.y + radius * Math.sin(-arc.endAngle) }, width: v.width, height: v.height, dpr: v.dpr };
         }
         const polyline = metadata.controlPolyline;
-        return { ...polyline, screenA: v.toScreen(polyline.points[0]), screenB: v.toScreen(polyline.points[1]), width: v.width, height: v.height, dpr: v.dpr };
-      }, directArc);
+        return { ...polyline, ...probeGeometry, screenA: v.toScreen(polyline.points[0]), screenB: v.toScreen(polyline.points[1]), width: v.width, height: v.height, dpr: v.dpr };
+      }, { directArc, name });
       const close = (a, b) => a && Math.hypot(a.x - b.x, a.y - b.y) < 1e-8;
       const sourceArc = (call) => directArc ? call.previousPoint === null && close(call.center, control.screenCenter) && Math.abs(call.radius - control.screenRadius) < 1e-8 && call.start === -control.startAngle && call.end === -control.endAngle : close(call.previousPoint, control.screenA);
       const ordinaryArc = canvasArcCalls.find((call) => call.color === control.color && call.alpha === 1 && sourceArc(call));
@@ -722,16 +742,46 @@ try {
       assert.equal(ordinaryArc.lineWidth, control.expectedCssLineWidth, `${name}: actual native ordinary lineweight`);
       assert.equal(selectedArc.lineWidth, 2.5, `${name}: actual native solid-selection width`);
       for (const arc of [ordinaryArc, selectedArc]) assert.deepEqual(arc.contextTransform, { a: control.dpr, b: 0, c: 0, d: control.dpr, e: 0, f: 0 }, `${name}: native context transform records the actual DPR`);
-      const angle = (ordinaryArc.start + ordinaryArc.end) / 2, point = { x: ordinaryArc.center.x + ordinaryArc.radius * Math.cos(angle), y: ordinaryArc.center.y + ordinaryArc.radius * Math.sin(angle) };
-      assert.ok(Math.min(Math.hypot(point.x - control.screenA.x, point.y - control.screenA.y), Math.hypot(point.x - control.screenB.x, point.y - control.screenB.y)) > 12, 'Independent opacity probe stays away from endpoint grips');
       const expectedSelectedRgba = [...control.rgb.map((value, index) => Math.round(0.95 * value + 0.05 * [33, 40, 48][index])), 255];
-      const region = { left: Math.floor((point.x - 6) * images[0].width / control.width), right: Math.ceil((point.x + 6) * images[0].width / control.width), top: Math.floor((point.y - 6) * images[0].height / control.height), bottom: Math.ceil((point.y + 6) * images[0].height / control.height) };
-      const opacityProbes = controlSelectedImages.map((image, rendererIndex) => {
+      const arcPoint = (fraction) => {
+        const angle = ordinaryArc.start + (ordinaryArc.end - ordinaryArc.start) * fraction;
+        return { x: ordinaryArc.center.x + ordinaryArc.radius * Math.cos(angle), y: ordinaryArc.center.y + ordinaryArc.radius * Math.sin(angle) };
+      };
+      const samplesAt = (image, point) => {
         const x = Math.floor(point.x * image.width / control.width), y = Math.floor(point.y * image.height / control.height), samples = [];
         for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
           const index = ((y + dy) * image.width + x + dx) * 4;
           samples.push([...image.data.subarray(index, index + 4)]);
         }
+        return samples;
+      };
+      const originalMidpoint = arcPoint(0.5);
+      const originalMidpointDiagnostics = controlSelectedImages.map((image, rendererIndex) => ({
+        renderer: rendererIndex === 0 ? 'canvas' : 'gpu-requested', point: originalMidpoint,
+        expectedSelectedRgba, rgbaSamples: samplesAt(image, originalMidpoint),
+        gripCoordinates: control.selectionGrips,
+        overlappingGrips: control.selectionGrips.filter(({ screen }) => Math.abs(originalMidpoint.x - Math.round(screen.x)) <= control.gripHalfSize + 1 && Math.abs(originalMidpoint.y - Math.round(screen.y)) <= control.gripHalfSize + 1),
+      }));
+      const roiRadius = Math.SQRT2 * 6, requiredClearance = 12 + roiRadius;
+      const candidates = [0.25, 0.75, 1 / 3, 2 / 3].map((fraction) => {
+        const point = arcPoint(fraction);
+        const gripClearance = Math.min(...control.selectionGrips.map(({ screen }) => Math.hypot(point.x - screen.x, point.y - screen.y)));
+        const otherClearance = Math.min(...control.otherGeometry.map((entity) => {
+          if (entity.type !== 'line') return Math.abs(Math.hypot(point.x - entity.center.x, point.y - entity.center.y) - entity.radius) - entity.lineWidth / 2;
+          const dx = entity.b.x - entity.a.x, dy = entity.b.y - entity.a.y;
+          const t = Math.max(0, Math.min(1, ((point.x - entity.a.x) * dx + (point.y - entity.a.y) * dy) / (dx * dx + dy * dy)));
+          return Math.hypot(point.x - entity.a.x - t * dx, point.y - entity.a.y - t * dy) - entity.lineWidth / 2;
+        }));
+        return { fraction, point, gripClearance, otherClearance, inViewport: point.x > 6 && point.y > 6 && point.x < control.width - 6 && point.y < control.height - 6 };
+      });
+      // Choose by source geometry only, never by image color or renderer outcome.
+      const chosen = candidates.find((candidate) => candidate.inViewport && candidate.gripClearance >= Math.max(12, Math.SQRT2 * (control.gripHalfSize + 1)) + roiRadius && candidate.otherClearance >= requiredClearance);
+      Object.assign(preflightEvidence, { opacityProbeGeometry: { originalMidpointDiagnostics, candidates, chosen, requiredClearance, roiRadius, gripSource: 'core/entities.ts gripPoints-equivalent world construction' } });
+      assert.ok(chosen, `${name}: independent opacity probe clears every selection grip and neighboring primitive by 12 CSS pixels plus its ROI`);
+      const point = chosen.point;
+      const region = { left: Math.floor((point.x - 6) * images[0].width / control.width), right: Math.ceil((point.x + 6) * images[0].width / control.width), top: Math.floor((point.y - 6) * images[0].height / control.height), bottom: Math.ceil((point.y + 6) * images[0].height / control.height) };
+      const opacityProbes = controlSelectedImages.map((image, rendererIndex) => {
+        const samples = samplesAt(image, point);
         assert.ok(samples.some((rgba) => expectedSelectedRgba.every((value, index) => Math.abs(value - rgba[index]) <= 2)), `${name}: actual selected curve has independently expected 0.95 opacity; expected ${expectedSelectedRgba}`);
         let changed = 0;
         for (let py = region.top; py <= region.bottom; py++) for (let px = region.left; px <= region.right; px++) {
@@ -739,7 +789,7 @@ try {
           if ([0, 1, 2, 3].some((channel) => images[rendererIndex].data[index + channel] !== image.data[index + channel])) changed++;
         }
         assert.ok(changed > 0, `${name}: selection visibly changes actual curve pixels outside grips`);
-        return { point, expectedSelectedRgba, rgbaSamples: samples, regionRawDifferentPixels: changed, excludesEndpointGrips: true };
+        return { point, fraction: chosen.fraction, expectedSelectedRgba, rgbaSamples: samples, regionRawDifferentPixels: changed, originalMidpointDiagnostic: originalMidpointDiagnostics[rendererIndex], excludesEndpointGrips: true, excludesAllSelectionGrips: true, gripClearance: chosen.gripClearance, otherGeometryClearance: chosen.otherClearance };
       });
       const selectedPixels = pixelmatch(controlSelectedImages[0].data, controlSelectedImages[1].data, null, controlSelectedImages[0].width, controlSelectedImages[0].height, { threshold: 0.15 });
       const selectedMiss = Math.max(missedForeground(controlSelectedImages[0], controlSelectedImages[1]), missedForeground(controlSelectedImages[1], controlSelectedImages[0]));

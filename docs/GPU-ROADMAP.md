@@ -34,8 +34,8 @@ completion here does not authorize a release, default switch or merge.
 | --- | --- | --- |
 | 1. GPU diagnostics | Implemented initially at `16abc740`; PR #10 adds bounded collection and clipboard-completion repairs. Combined source `4bad60b2` passed collector/About/copy/report checks and exact-head CI. Adapter activity and unavailable/software states remain explicit. Intel and NVIDIA evidence are recorded below with their source commits. | Require exact CI for each new candidate. Missing adapter data must stay Unknown; capabilities must remain distinct from the renderer actually in use. Stable-branch integration still requires separate approval. |
 | 2. Experimental 2D/simple 3D | The prototype at `2fbae728` and PR #10's pan-cache/recovery milestone have successful source CI. Combined source `4bad60b2` passed both builds, native failure/unavailability, benchmarks and the existing isolated demo checks. See [prototype evidence](GPU-RENDERER-PROTOTYPE.md). | Keep the development flag. Repeat these checks on each changed renderer candidate. Record source SHA, viewport, actual adapter/limits, CPU preparation/submission, completion observations and drawing differences before interpreting speed. |
-| 3. Remaining 2D/reliability | Partly complete: PR #11's pinned `3ce7e10a` batch is integrated in draft PR #12, with seven real Windows batch checks and exact source CI passed. PR #11 later advanced to unmerged/conflicted `878655e2`; the [remaining checklist](REMAINING-2D-CHECKLIST.md) stays open with its owners. [PR #9](https://github.com/habit04/share/pull/9) passed exact source CI at `14cb3f9f` and was merged by another task as stable `8dfe1caa`; v0.4.9 has public Windows release assets. Stable `8dfe1caa` is integrated in this isolated candidate alongside the pinned batch. Clean `455b2662` passed the combined regression suite and all seven real Windows 2D batch checks; its new compound native benchmark remains unaccepted. The later active PR #11 head is not integrated. | Each remaining fix needs regression and relevant import-edit-save-reopen evidence. Require exact-head CI and source-specific native checks for each new combination. Release metadata does not prove installation. Coordinate the active PR #11 owner before integrating unfinished font/project/dimension work. |
-| 4. Production GPU renderer | Incomplete. Clean `fd7fac07` passed bounded zoom reuse; `fe653933` passed eligible line subrange edits. Published PR #15's clean `72d70630` reduces full LINE preparation while preserving the zoom envelope, all eight retained trajectories, edited/undo/redo image proof and native recovery/unavailability on both tested adapters. Dense edit/undo measures 24.1/23.3 ms medians with 35.4/36.9 ms peaks; sustained-zoom boundaries peak at 53.6/48.3 ms. Incremental block/TEXT/ATTRIB coverage is undergoing native accuracy and performance validation; no new performance acceptance is claimed. Short-segment world-coordinate stroke parity and a Canvas-reference stability issue must be resolved before that milestone. Dimensions and common hatches remain on separate integration branches. | Pass every production gate below before considering a default change. Canvas stays default; no general performance or untested hardware claim. Record geometry preparation, upload issuance and completed-frame observations separately, and supplement repeated-readback comparisons with ordinary frame-cadence measurements. |
+| 3. Remaining 2D/reliability | Partly complete: PR #11's pinned `3ce7e10a` batch is integrated in draft PR #12, with seven real Windows batch checks and exact source CI passed. At the October 13, 19:18 UTC read, active draft PR #11 was unmerged/conflicted at `eb692896`; the [remaining checklist](REMAINING-2D-CHECKLIST.md) stays with its owners. [PR #9](https://github.com/habit04/share/pull/9) passed exact source CI at `14cb3f9f` and was merged by another task as stable `8dfe1caa`; v0.4.9 has public Windows release assets. Stable `8dfe1caa` is integrated in this isolated candidate alongside the pinned batch. Clean `455b2662` passed the combined regression suite and all seven real Windows 2D batch checks; clean repair `344ec1a1` also passed all seven native batch checks. The later active PR #11 head is not integrated. | Each remaining fix needs regression and relevant import-edit-save-reopen evidence. Require exact-head CI and source-specific native checks for each new combination. Release metadata does not prove installation. Coordinate the active PR #11 owner before integrating unfinished font/project/dimension work. |
+| 4. Production GPU renderer | Incomplete. Clean `fd7fac07` passed bounded zoom reuse; `fe653933` passed eligible line subrange edits. PR #15's clean `72d70630` reduced full LINE preparation with accepted source-specific native evidence. Draft [PR #16](https://github.com/habit04/share/pull/16) adds bounded fourfold reuse for certified straight block/TEXT/ATTRIB scenes, native Float32 construction refusals and corrected fractional backing mapping. Clean `344ec1a1` passed all ten local checks (3,418 tests, 28 conditional skips), ordinary native checks and the strict backing/cache/unsafe-ARC fallback gates described below. Thin native reference stability and general curve/backend proof remain open; replacement CI still failed, and paired new-producer performance is pending. Dimensions and common hatches remain isolated until this repair checkpoint passes. | Pass every production gate below before considering a default change. Canvas stays default; no general performance or untested hardware claim. Record geometry preparation, upload issuance and completed-frame observations separately, and supplement repeated-readback comparisons with ordinary frame-cadence measurements. |
 | 5. Full 3D development | Already begun on `share/feature/3d-development`, `0f644a7`; [CI passed](https://github.com/habit04/share/actions/runs/38336811063). A separate Open CASCADE/three.js application also exists in [habit04/jcad-3d](https://github.com/habit04/jcad-3d), `c3802fc`, with [successful CI](https://github.com/habit04/jcad-3d/actions/runs/38202841903). | Resolve which architecture owns future 3D integration. Require direct modeling, selection/snapping, dimensions, undo and persistent save/reopen/recovery evidence for the chosen track. Keep stable public 2D independent. Embedded 3D status/validation: [3D-STATUS](https://github.com/habit04/share/blob/feature/3d-development/docs/3D-STATUS.md); separate-app limits: [NOT-TESTED](https://github.com/habit04/jcad-3d/blob/main/docs/NOT-TESTED.md). |
 
 The [October 11 remediation record](REVIEW-FIXES.md) tracks the original **53
@@ -729,6 +729,63 @@ integration tests, TypeScript and scoped lint. Independent arithmetic review
 found no concrete counterexample within its stated center/radius/oval scope.
 Nonzero context rotation remains an explicit complete-view refusal. These
 checks do not replace native validation of the final clean source.
+
+### Repair validation and CI diagnosis on `344ec1a1`
+
+Clean `344ec1a11f6d8897e9b8ae1098081b4fd3793bf9` passed all ten
+local checks: 3,418 tests passed, 28 conditional tests skipped, standalone
+edit-selector tests, three TypeScript projects, full lint, fixtures/workflows
+and both builds. Ordinary native Canvas/default, diagnostics and all seven
+2D compatibility/save checks passed. This validates the counter and parameter
+repairs above; it does not establish production GPU acceptance.
+
+The [producer-bound Intel accuracy evidence](benchmarks/windows-gpu-344-native-accuracy-intel.json)
+records all five compiled asset digests before and after both private audits.
+At synthetic DPR 1.2 and 1.25, the complete backing background, clearing,
+251-LINE cache copying and cold/restored backing gates passed with exact full
+RGBA comparison. Both last rows and last columns matched. Stable width-2.5/16
+probe displacement was 0/0 CSS pixels at DPR1.25 and approximately
+-0.0977/+0.0280 at DPR1.2; the old approximately 0.4/0.5-pixel displacement
+was absent on those samples. The pure backing audit suppresses only the
+editing overlay callback; it does not claim a normal UCS overlay is absent.
+
+All four original unsafe large-ARC parameter cases (both centers, widths
+16 and 2.5) refused before any instrumented GL buffer upload, clear or draw.
+The GPU overlay stayed hidden and two complete 671,232-pixel fallback captures
+per case matched stabilized Canvas references exactly. An independent LINE
+confirmed each Canvas context remained usable. These are correct fallback
+results, not corrected native curve construction.
+
+Both aggregate audits remain **inconclusive** because native references changed
+between captures. In the thin DPR1.2 case, the first-to-second native capture
+changed 48 red-channel bytes from 40 to 39 before GPU rendering; subsequent
+native captures and the independent physical reference were exact. GPU differed
+from that settled thin reference by 48 raw pixels (zero pixelmatch differences),
+so no strict thin-line pass is asserted. The baseline width-16 ARC changed by
+1,228 raw pixels between references 2 and 3 before references 3 and 4 stabilized.
+The captures are preserved and the backend/readback cause is unproved. Actual
+window DPR was 1; these were synthetic fractional-DPR tests on one Intel driver.
+
+Exact-head [PR CI](https://github.com/habit04/share/actions/runs/38451183798)
+passed Node22, Node24, UI and Windows Electron E2E but failed experimental GPU.
+[Push CI](https://github.com/habit04/share/actions/runs/38451175567) passed
+Node24, UI and Windows Electron E2E but failed Node22 and experimental GPU.
+The Node22 failure was the retained-graph clip test bundling three independent
+save/save-as/export workflows under one 5-second budget: 5,266 ms on the push
+runner, versus 4,997 ms passing on the PR runner. Two workers did not reliably
+resolve it. The replacement separates all six enabled/operation combinations,
+with every assertion, fresh setup and the default 5-second per-case limit
+preserved. Focused Node24 tests passed all 15 cases; the six changed cases took
+598 to 1,161 ms. Exact replacement Node22 CI is still required.
+
+The experimental GPU failure was the new direct-ARC selected-opacity oracle,
+which sampled the arc's midpoint grip. Both saved Canvas and GPU 5x5 regions
+were uniformly the actual grip fill `[26,61,255,255]`. ARC selection includes
+that midpoint grip; excluding only endpoints was insufficient. The bounded
+harness repair preserves the original occluded samples, chooses an analytic
+curve point clear of every selection grip, and retains the unchanged opacity,
+raster and geometric coverage tolerances. Its native and exact-head CI checks,
+paired performance and failure recovery remain pending.
 
 ### NVIDIA validation on the pinned GPU source
 

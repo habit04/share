@@ -58,8 +58,9 @@ afterEach(() => {
 });
 
 describe('retained viewport clip DWG compatibility safeguard', () => {
-  it.each([true, false])('refuses a reopened DXF clip with retained graph metadata before any destination write (enabled: %s)', async enabled => {
-    for (const operation of ['save', 'saveas', 'export'] as const) {
+  it.each([true, false].flatMap(enabled => (['save', 'saveas', 'export'] as const).map(operation => ({ enabled, operation }))))(
+    'refuses a reopened DXF clip with retained graph metadata before any destination write (enabled: $enabled, operation: $operation)',
+    async ({ enabled, operation }) => {
       const f = setup(enabled);
       f.ed.doc.load(readDxf(writeDxf(f.ed.doc.snapshot)), f.original);
       f.ed.doc.addEntities([{ id: 'graph-edit', type: 'line', layer: '0', color: 'ByLayer', a: { x: 20, y: 0 }, b: { x: 21, y: 0 } }]);
@@ -76,7 +77,6 @@ describe('retained viewport clip DWG compatibility safeguard', () => {
       expect(f.ed.doc.dirty).toBe(true);
       expect([...f.backups]).toEqual(recovery);
       expect(f.drawingSaved).not.toHaveBeenCalled();
-    }
   });
 
   it.each([true, false])('refuses working DWG Save, DWG Save As and Export Copy without changing retained data (clip enabled: %s)', async (enabled) => {
