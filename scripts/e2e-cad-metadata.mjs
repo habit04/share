@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { copyFileSync, lstatSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { validateMetadataOracle } from './native-dwg-build/validate-metadata-fixture.mjs';
 
 const unicode = (text) => text.replace(/\\U\+([0-9a-f]{4})/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
@@ -182,6 +182,40 @@ export async function runCadMetadataChecks({ app, page, repo, outDir, check, cur
     assert.deepEqual(readFileSync(path + '.bak'), previous, 'Save As preserves exact previous destination bytes');
     assert.deepEqual(await page.evaluate(() => ({ path: window.editor.doc.filePath, dirty: window.editor.doc.dirty })), { path, dirty: false });
   };
+  const saveInPlace = async (path, expectedConsent = false) => {
+    await page.evaluate(({ path, expectedConsent }) => {
+      const ed = window.editor;
+      if (ed.doc.filePath !== path) throw new Error('In-place metadata Save has an unexpected binding.');
+      if (expectedConsent) {
+        const report = ed.doc.snapshot.meta?.importReport, counts = Object.values(report?.counts ?? {});
+        if (report?.format !== 'DWG' || report.sourcePath !== path || report.recovered
+          || !counts.every(count => Object.values(count).every(value => Number.isInteger(value) && value >= 0))
+          || counts.reduce((sum, count) => sum + (count.dropped ?? 0) + (count.simplified ?? 0), 0) !== 0
+          || counts.reduce((sum, count) => sum + (count.unsupported ?? 0), 0) !== 1 || report.counts.LAYOUT?.unsupported !== 1) {
+          throw new Error('In-place metadata Save has an unexpected import report.');
+        }
+      }
+      const w = /** @type {any} */ (window);
+      w.__metadataSaving = { snapshot: ed.doc.snapshot, session: ed.sessions.activeId, path };
+    }, { path, expectedConsent });
+    const saving = page.evaluate(() => window.editor.saveFile(false));
+    if (expectedConsent) {
+      const modal = page.locator('.modal').filter({ hasText: 'Save over the original file?' });
+      await modal.waitFor({ timeout: 10000 });
+      assert.equal(await modal.locator('.modal-title > span').textContent(), 'Save over the original file?');
+      const message = basename(path) + ' contains properties JCad cannot read (see the import report). Saving the current drawing cannot restore them and may remove them from the original file. Use Save As to keep the original. Save over it anyway?\n\nYes saves over it; No opens Save As.';
+      assert.equal(await modal.locator('.modal-body p').textContent(), message, 'Real Save confirmation shows the exact proven warning and consent choices');
+      assert.equal(await page.evaluate(() => {
+        const ed = window.editor, saving = /** @type {any} */ (window).__metadataSaving;
+        return ed.doc.snapshot === saving.snapshot && ed.sessions.activeId === saving.session && ed.doc.filePath === saving.path;
+      }), true, 'Save confirmation remains bound to the captured snapshot, path and session');
+      await modal.locator('.modal-footer button').filter({ hasText: /^Yes$/ }).click();
+    }
+    assert.equal(await saving, true, 'In-place DWG Save succeeds');
+    assert.deepEqual(await page.evaluate(() => ({ path: window.editor.doc.filePath, dirty: window.editor.doc.dirty })), { path, dirty: false });
+    assert.equal(await page.locator('.modal').count(), 0, 'In-place Save leaves no unexpected confirmation');
+    await page.evaluate(() => { delete /** @type {any} */ (window).__metadataSaving; });
+  };
   const objectFieldTargets = (state) => {
     const fields = state.graph.nodes.filter(node => node.type === 'FIELD' && node.groups.some(([code, raw]) => code === 1 && raw === 'AcObjProp'));
     return fields.map(field => {
@@ -280,7 +314,7 @@ export async function runCadMetadataChecks({ app, page, repo, outDir, check, cur
     same(metadataSignature(state), copiedSignature, 'Copied native DWG Save As fresh reopen');
     const saveAsAnnotationSettings = state.annotationSettings, saveIds = state.entities.map(entity => entity.id);
     assert.deepEqual(saveAsAnnotationSettings, { cannoscale: '1:2', annoAllVisible: false }, 'Save As fresh reopen retains edited annotation settings');
-    assert.equal(await page.evaluate(() => window.editor.saveFile(false)), true, 'In-place DWG Save succeeds');
+    await saveInPlace(copied, true);
     assert.deepEqual(readFileSync(copied + '.bak'), firstBytes, 'In-place Save keeps byte-exact prior DWG');
     state = await open(copied); assert.ok(state.entities.every(entity => !saveIds.includes(entity.id)), 'In-place Save reopens fresh entities');
     same(metadataSignature(state), copiedSignature, 'Copied native DWG in-place Save fresh reopen');
@@ -300,7 +334,7 @@ export async function runCadMetadataChecks({ app, page, repo, outDir, check, cur
     await page.evaluate(() => window.editor.doc.redo()); state = await inspect(); assert.equal(boundFields(state, text.id).length, 0);
     const overriddenSignature = metadataSignature(state);
     await saveAs(overridden); const prior = readFileSync(overridden);
-    assert.equal(await page.evaluate(() => window.editor.saveFile(false)), true); assert.deepEqual(readFileSync(overridden + '.bak'), prior);
+    await saveInPlace(overridden); assert.deepEqual(readFileSync(overridden + '.bak'), prior);
     const overrideIds = state.entities.map(entity => entity.id); state = await open(overridden);
     assert.ok(state.entities.every(entity => !overrideIds.includes(entity.id))); same(metadataSignature(state), overriddenSignature, 'FIELD override native DWG round trip');
     const literal = state.entities.find(entity => entity.type === 'mtext' && entity.position.x === 100);
@@ -335,7 +369,7 @@ export async function runCadMetadataChecks({ app, page, repo, outDir, check, cur
       same(targets.map(line => line.a.x).sort((a, b) => a - b), [100, 130], name + ': copied FIELD refers to matching copied LINE');
       exactOpaque(state, expected); const signature = metadataSignature(state);
       await saveAs(copy); const prior = readFileSync(copy);
-      assert.equal(await page.evaluate(() => window.editor.saveFile(false)), true); assert.deepEqual(readFileSync(copy + '.bak'), prior);
+      await saveInPlace(copy); assert.deepEqual(readFileSync(copy + '.bak'), prior);
       const ids = state.entities.map(entity => entity.id); state = await open(copy);
       assert.ok(state.entities.every(entity => !ids.includes(entity.id))); same(metadataSignature(state), signature, name + ': DWG Save As/Save/fresh reopen');
       exactOpaque(state, expected); assert.equal(objectFieldTargets(state).length, 2);
@@ -362,7 +396,7 @@ export async function runCadMetadataChecks({ app, page, repo, outDir, check, cur
       for (const text of state.entities.filter(entity => entity.type === 'mtext')) assert.equal(boundFields(state, text.id).length, 2);
       const pastedSignature = metadataSignature(state), pastedIds = state.entities.map(entity => entity.id);
       await saveAs(pasted); const pastedPrior = readFileSync(pasted);
-      assert.equal(await page.evaluate(() => window.editor.saveFile(false)), true); assert.deepEqual(readFileSync(pasted + '.bak'), pastedPrior);
+      await saveInPlace(pasted); assert.deepEqual(readFileSync(pasted + '.bak'), pastedPrior);
       state = await open(pasted); assert.ok(state.entities.every(entity => !pastedIds.includes(entity.id)));
       same(metadataSignature(state), pastedSignature, name + ': cross-document FIELD paste DWG persistence');
       assert.equal(objectFieldTargets(state).length, 1);
@@ -377,7 +411,7 @@ export async function runCadMetadataChecks({ app, page, repo, outDir, check, cur
       for (let index = ed.sessions.count - 1; index >= 0; index--) if (!saved.ids.includes(ed.sessions.all[index].id)) ed.sessions.close(index);
       ed.switchSession(ed.sessions.indexOfId(saved.active)); ed.settings = saved.settings; ed.persistSettings(); Object.assign(ed.snap, saved.snap); ed.viewport.settings = saved.viewportSettings;
       document.querySelector('#properties')?.classList.toggle('hidden', !!saved.paletteHidden); ed.render();
-      const w = /** @type {any} */ (window); delete w.__metadataCopyBefore; delete w.__metadataCopyAfter; delete w.__metadataOverrideBefore;
+      const w = /** @type {any} */ (window); delete w.__metadataCopyBefore; delete w.__metadataCopyAfter; delete w.__metadataOverrideBefore; delete w.__metadataSaving;
     }, saved);
     await app.evaluate(() => globalThis.__e2e.messages.splice(0));
   }

@@ -7,6 +7,8 @@ import { tmpdir } from 'node:os';
 import { METADATA_SMOKE_FIXTURES } from '../scripts/packaged-smoke-policy.mjs';
 import { readDxf } from '../src/io/dxf';
 import { Drawing } from '../src/core/document';
+import { translateEntity } from '../src/core/entities';
+import { cadCloneBatch, cadTranslation } from '../src/tools/cad-edits';
 
 const sourceFile = resolve('electron/main/shipping-dwg-probe.cjs');
 const source = readFileSync(sourceFile, 'utf8');
@@ -126,6 +128,49 @@ describe('fixed DWG shipping probe confinement', () => {
     const fixed = new Function('window', 'return (' + f.renderer + ');')({ editor: ed });
     await expect(fixed({ ...pin, stage: 'prepare', input: 'fixed-source', output: 'fixed-copy', outputName: 'fixed-copy.dwg' })).rejects.toBe(stop);
     expect(runCommand.mock.calls.map(call => call[0])).toEqual(['CANNOSCALE 1:2', 'ANNOALLVISIBLE 0', 'COPY']);
+  });
+  it.each(['accepted', 'wrong-message', 'no-consent', 'wrong-report'] as const)('checks %s metadata Save consent through the full fixed renderer', async mode => {
+    // Actual core graph edits with simulated file transport; this is not native/app proof.
+    const f = load(profile()), pin = f.pins[2]!;
+    const imported = structuredClone(readDxf(readFileSync(join('tests/fixtures/interchange', pin.name + '.dxf'), 'utf8')));
+    const doc = new Drawing({ ...imported, cadGraph: { ...imported.cadGraph!, sourceFormat: 'DWG' as const } });
+    const output = 'fixed-copy.dwg', oldReport = vi.fn(), oldConfirm = vi.fn(async (_title: string, _message: string) => false), oldError = vi.fn();
+    const report = { format: 'DWG', sourcePath: output, counts: { LAYOUT: { unsupported: 1, ...(mode === 'wrong-report' ? { dropped: 1 } : {}) } }, items: [], omitted: 0, notes: [] };
+    const warning = output + ' contains properties JCad cannot read (see the import report). Saving the current drawing cannot restore them and may remove them from the original file. Use Save As to keep the original. Save over it anyway?\n\nYes saves over it; No opens Save As.';
+    const saveFile = vi.fn(async (saveAs: boolean) => {
+      if (!saveAs && mode !== 'no-consent') await ed.ui.confirm('Save over the original file?', mode === 'wrong-message' ? warning.replace(output, 'other.dwg') : warning);
+      doc.filePath = output; doc.dirty = false; return true;
+    });
+    const ed = {
+      doc, hooks: { importReport: oldReport, saveError: oldError }, ui: { confirm: oldConfirm }, cancel: vi.fn(),
+      sessions: { add: vi.fn(), activeId: 'fixed-session' }, history: [] as string[], selection: new Set<string>(),
+      openFile: vi.fn(async (path?: string) => {
+        if (path) doc.load({ ...structuredClone(doc.snapshot), meta: { ...doc.snapshot.meta, importReport: report } }, path);
+        return true;
+      }), saveFile, submitInput: vi.fn(),
+      runCommand: vi.fn((command: string) => {
+        if (command === 'COPY') {
+          const entities = doc.entities, delta = { x: 30, y: 0 };
+          const copies = entities.map((entity, index) => ({ ...translateEntity(entity, delta), id: 'fixed-copy-' + index }));
+          doc.addEntities(copies, false, { cloneBatches: [cadCloneBatch(entities, copies, cadTranslation(delta))] });
+        } else if (command === 'ERASE') {
+          try { doc.removeEntities(ed.selection); } catch (error) { ed.history.push('Edit canceled: ' + (error as Error).message); }
+        }
+      }),
+    };
+    const fixed = new Function('window', 'return (' + f.renderer + ');')({ editor: ed });
+    const config = { ...pin, input: 'fixed-source', output, outputName: output };
+    const prepared = await fixed({ ...config, stage: 'prepare' });
+    expect(prepared.atomicDeleteRefused).toBe(true);
+    const saving = fixed({ ...config, stage: 'save', signature: prepared.signature });
+    if (mode === 'accepted') {
+      await expect(saving).resolves.toMatchObject({ sourceLossConsent: true, saveAsReopened: true, saveReopened: true });
+      expect(ed.openFile).toHaveBeenCalledTimes(3);
+    } else {
+      await expect(saving).rejects.toThrow(mode === 'wrong-message' ? /unexpected metadata source-consent dialog/ : mode === 'no-consent' ? /required consent missing/ : /unexpected metadata Save import report/);
+      expect(ed.openFile).toHaveBeenCalledTimes(2);
+    }
+    expect(ed.hooks.importReport).toBe(oldReport); expect(ed.ui.confirm).toBe(oldConfirm); expect(ed.hooks.saveError).toBe(oldError);
   });
   it('refuses an ordinary profile before executing renderer code or choosing destinations', async () => {
     const root = profile('jcad-dwg-probe-'); const f = load(root);
