@@ -276,7 +276,7 @@ describe('Canvas context restoration', () => {
       const retired = surface.children[0]!;
       const staleListener = retired.addEventListener.mock.calls.find(([type]) => type === 'contextlost')![1] as EventListener;
       expect(retired.addEventListener).toHaveBeenCalledWith('contextrestored', staleListener);
-      vp.center.x += 1; vp.render(ov);
+      vp.center = { ...vp.center, x: vp.center.x + 1 }; vp.render(ov);
       expect(surface.children).toHaveLength(1); expect(retired.addEventListener).toHaveBeenCalledTimes(2);
       // Main restoration retires this bitmap and creates a new one on its queued frame.
       surface.element.dispatchEvent(new Event('contextrestored')); frames.flush();
@@ -326,7 +326,7 @@ describe('Canvas context restoration', () => {
       const failed = surface.children[0]!;
       const staleListener = failed.addEventListener.mock.calls.find(([type]) => type === 'contextlost')![1] as EventListener;
       failed.context.drawImage = vi.fn(() => { throw new Error('Bitmap copy failed'); });
-      vp.center.x += 1;
+      vp.center = { ...vp.center, x: vp.center.x + 1 };
       expect(() => vp.render(ov)).not.toThrow();
       expect(surface.painted()).toBe(true); expect(drawEntity).toHaveBeenCalledTimes(500);
       expect(failed.removeEventListener).toHaveBeenCalledWith('contextlost', staleListener);
