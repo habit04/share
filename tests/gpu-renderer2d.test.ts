@@ -725,7 +725,9 @@ describe('GPU compiled block and stroke-text integration', () => {
     const definition: BlockDef = { ...block([line, text()]), attributes: [{ tag: 'TAG', prompt: '', default: 'ATTR', position: { x: 0, y: -1 }, height: 1, align: 'left' }] };
     const state = scene([{ ...line, id: 'before' }, insert('B'), { ...line, id: 'after' }], { B: definition });
     const prepared = prepareCompiledZoom2D(state, view, overlay);
-    expect(prepared.entities).toBeNull();
+    expect(prepared.entities).toHaveLength(state.entities.length);
+    prepared.entities!.forEach((entry, index) => expect(entry!.entity).toBe(state.entities[index]));
+    expect(prepared.entities!.map((entry) => entry!.editableLine)).toEqual([true, false, true]);
     expect(prepared.entityCount).toBe(5);
     expect(prepared.batches.map((batch) => batch.id)).toEqual(['before:0', 'owner:1', 'owner:2', 'owner:3', 'after:4']);
     expect(prepared.batches[2]!.count).toBeGreaterThan(6);
@@ -759,15 +761,15 @@ describe('GPU compiled block and stroke-text integration', () => {
     renderer.dispose();
   });
 
-  it('fully rebuilds a same-ID line edit in a compiled scene instead of patching a paint slot', () => {
+  it('patches a certified same-ID top-level line while retaining the compiled scene anchor', () => {
     const { canvas, gl } = rendererFixture();
     const renderer = new Gpu2DRenderer(canvas);
     const before = sealImmutableData(scene([line, insert('B')], { B: block([text()]) }));
     const after = sealImmutableData({ ...before, entities: [{ ...line, a: { x: -2, y: 0.2 }, b: { x: 2, y: 0.2 } }, before.entities[1]!] });
     expect(renderer.render(before, view, overlay).rendered).toBe(true);
-    expect(renderer.render(after, { ...view, scale: 33 }, overlay)).toMatchObject({ rendered: true, cacheReason: 'document', uploadKind: 'full', uploadCalls: 1, subrangeUploadCalls: 0, preparedEntities: 2, editHistoryEntries: 0 });
-    expect(gl.bufferSubData).not.toHaveBeenCalled();
-    expect(gl.bufferVertices).toEqual(prepareZoom2D(after, { ...view, scale: 33 }, overlay).vertices);
+    expect(renderer.render(after, { ...view, scale: 33 }, overlay)).toMatchObject({ rendered: true, cacheReason: 'document-delta', uploadKind: 'subrange', bytes: 168, uploadCalls: 1, subrangeUploadCalls: 1, preparedEntities: 1, reusedEntities: 1, editHistoryEntries: 1 });
+    expect(gl.bufferSubData).toHaveBeenCalledOnce(); expect(gl.bufferData).toHaveBeenCalledOnce();
+    expect(gl.bufferVertices).toEqual(prepareZoom2D(after, view, overlay).vertices);
     expect(renderer.render(after, { ...view, scale: 34 }, overlay)).toMatchObject({ rendered: true, cacheHit: true, bytes: 0, reusedEntities: 2 });
     renderer.dispose();
   });

@@ -7,9 +7,12 @@ import { GpuDevice } from './device';
 import { cssRgb, GPU_ZOOM_VERTEX_STRIDE, prepareZoom2D, prepareZoomLine, replacementZoomBounds, validateGpu2DView, zoomPrecisionSafe, type Gpu2DView, type Gpu2DOverlay, type PreparedZoom2D, type PreparedZoomEntity, type PreparedZoomLine } from './geometry2d';
 
 export type { Gpu2DView, Gpu2DOverlay } from './geometry2d';
-export type Gpu2DCacheReason = 'not-checked' | 'cold' | 'mutable' | 'document' | 'document-delta' | 'view-style' | 'zoom-range' | 'pan-range' | 'precision' | 'hit' | 'refusal-hit';
+export type Gpu2DCacheReason = 'not-checked' | 'cold' | 'mutable' | 'document' | 'document-delta' | 'view-style' | 'zoom-range' | 'pan-range' | 'precision' | 'hit' | 'refusal-hit' | 'admission-deferred';
 export const GPU_EDIT_HISTORY_BYTES = 1024 * 1024;
 export const GPU_EDIT_HISTORY_ENTRIES = 256;
+export const GPU_ADMISSION_IDLE_MS = 100;
+export const GPU_ADMISSION_SLOW_PREPARATION_MS = 50;
+export const GPU_ADMISSION_DEFERRED_REASON = 'GPU admission deferred after a prior slow "Stroke geometry exceeds prototype budget" refusal; retrying the current view after 100 ms idle';
 export interface Gpu2DRenderResult {
   rendered: boolean;
   reason?: string;
@@ -101,6 +104,13 @@ interface GeometryRefusalCache {
 }
 
 class GeometryRefusalMemoError extends Error {}
+class AdmissionDeferredError extends Error {}
+
+interface SlowBudgetAdmission {
+  /** Evidence for a prior admission only, never a certificate for the present view. */
+  state: DrawingState;
+  preparationMs: number;
+}
 
 /** Only deliberate admission errors from pure geometry preparation qualify. Unknown
  * failures keep retrying; native allocation/programming exceptions are never memoized. */
@@ -155,13 +165,16 @@ export class Gpu2DRenderer {
   private generation = 0;
   private cache: PreparationCache | null = null;
   private refusalCache: GeometryRefusalCache | null = null;
+  private slowBudgetAdmission: SlowBudgetAdmission | null = null;
+  private admissionIdleTimer: ReturnType<typeof setTimeout> | null = null;
+  private idleAdmissionAllowed = false;
   private readonly editHistory = new Map<Entity, PreparedZoomLine>();
   private editHistoryBytes = 0;
   private initializationError: string | null = null;
   private viewportLimits: readonly number[] | null = null;
   private stencilAvailable: boolean | null = null;
 
-  constructor(private readonly canvas: HTMLCanvasElement, onStateChange?: () => void) {
+  constructor(private readonly canvas: HTMLCanvasElement, private readonly onStateChange?: () => void) {
     this.device = new GpuDevice(canvas, () => {
       // Handles from a lost context must never be reused, even when GL's object identity stays.
       this.program = null;
@@ -181,8 +194,31 @@ export class Gpu2DRenderer {
     });
   }
 
-  /** Mode changes clear refused admission only; healthy CPU/upload caches remain reusable. */
-  clearRefusalCache(): void { this.refusalCache = null; }
+  /** Mode changes clear refused admission/policy; healthy CPU/upload caches remain reusable. */
+  clearRefusalCache(): void { this.refusalCache = null; this.clearAdmissionDeferral(); }
+
+  private clearAdmissionDeferral(): void {
+    if (this.admissionIdleTimer !== null) clearTimeout(this.admissionIdleTimer);
+    this.admissionIdleTimer = null;
+    this.slowBudgetAdmission = null;
+    this.idleAdmissionAllowed = false;
+  }
+
+  private scheduleAdmissionRetry(): void {
+    if (this.admissionIdleTimer !== null) clearTimeout(this.admissionIdleTimer);
+    const prior = this.slowBudgetAdmission;
+    const timer = setTimeout(() => {
+      if (this.admissionIdleTimer !== timer || this.slowBudgetAdmission !== prior) return;
+      this.admissionIdleTimer = null;
+      try {
+        if (this.device.state !== 'ready' || this.device.gl.isContextLost()) { this.clearAdmissionDeferral(); return; }
+        this.idleAdmissionAllowed = true;
+        // The owner fetches its current drawing/view/overlay, never a captured old pose.
+        this.onStateChange?.();
+      } catch { this.clearAdmissionDeferral(); }
+    }, GPU_ADMISSION_IDLE_MS);
+    this.admissionIdleTimer = timer;
+  }
 
   private clearEditHistory(): void {
     this.editHistory.clear();
@@ -217,7 +253,7 @@ export class Gpu2DRenderer {
     }
     if (index < 0) return null;
     const previous = entries[index], entity = state.entities[index]!;
-    if (!previous || previous.entity !== cache.entities[index] || previous.entity.type !== 'line' || entity.type !== 'line' || entity.layer !== previous.entity.layer) return null;
+    if (!previous || previous.editableLine === false || previous.entity !== cache.entities[index] || previous.entity.type !== 'line' || entity.type !== 'line' || entity.layer !== previous.entity.layer) return null;
     let replacement = this.editHistory.get(entity);
     const memoHit = !!replacement;
     if (!replacement) {
@@ -257,9 +293,11 @@ export class Gpu2DRenderer {
   private prepare(state: DrawingState, view: Gpu2DView, overlay: Gpu2DOverlay, metrics: Gpu2DRenderResult): PreparedFrame {
     const lookupStart = performance.now();
     const refused = this.refusalCache;
-    this.clearRefusalCache(); // Only the immediately preceding exact pose can qualify.
+    this.refusalCache = null; // Only the immediately preceding exact pose can qualify.
     validateGpu2DView(view);
-    if (refused && isImmutableData(state) && refused.state === state && sameRefusalView(refused.view, view) && sameSelection(refused.selection, overlay.selection) && refused.hover === (overlay.hover ?? null) && refused.solidSelection === !!overlay.solidSelection) {
+    const immutable = isImmutableData(state);
+    if (!immutable) this.clearAdmissionDeferral();
+    if (refused && immutable && refused.state === state && sameRefusalView(refused.view, view) && sameSelection(refused.selection, overlay.selection) && refused.hover === (overlay.hover ?? null) && refused.solidSelection === !!overlay.solidSelection) {
       this.refusalCache = refused;
       metrics.cacheReason = 'refusal-hit';
       metrics.cacheLookupMs = Math.max(0, performance.now() - lookupStart);
@@ -291,6 +329,7 @@ export class Gpu2DRenderer {
           if (Number.isFinite(pan.x) && Number.isFinite(pan.y) && Math.abs(pan.x) <= cache.geometry.padding && Math.abs(pan.y) <= cache.geometry.padding) {
             metrics.cacheReason = 'precision';
             if (cache.entities === state.entities && zoomPrecisionSafe(cache.geometry, view, ratio, pan)) {
+              this.clearAdmissionDeferral();
               metrics.cacheHit = true;
               metrics.cacheReason = 'hit';
               metrics.reusedEntities = cache.geometry.entityCount;
@@ -300,6 +339,7 @@ export class Gpu2DRenderer {
             if (cache.entities !== state.entities) {
               const edited = this.prepareEdit(cache, state, view, overlay, pan, ratio, metrics);
               if (edited) {
+                this.clearAdmissionDeferral();
                 metrics.cacheLookupMs = Math.max(0, performance.now() - lookupStart - metrics.partialPreparationMs);
                 return edited;
               }
@@ -309,19 +349,34 @@ export class Gpu2DRenderer {
         }
       }
     }
+    // A failed candidate has already done real geometry work. Keep that measured
+    // work and complete normal admission rather than misreporting a zero-work deferral.
+    if (immutable && this.slowBudgetAdmission && !this.idleAdmissionAllowed && metrics.preparedEntities === 0 && metrics.geometryPreparationMs === 0) {
+      metrics.cacheReason = 'admission-deferred';
+      metrics.cacheLookupMs = Math.max(0, performance.now() - lookupStart);
+      this.scheduleAdmissionRetry();
+      throw new AdmissionDeferredError(GPU_ADMISSION_DEFERRED_REASON);
+    }
+    this.idleAdmissionAllowed = false; // Exactly one fresh admission after an idle callback.
     metrics.cacheLookupMs = Math.max(0, performance.now() - lookupStart - metrics.partialPreparationMs);
     this.clearEditHistory();
     const geometryStart = performance.now();
     let geometry: PreparedZoom2D;
     try { geometry = cacheable ? prepareZoom2D(state, view, overlay) : prepareZoom2D(state, view, overlay, 1, 1, 0); }
     catch (error) {
-      if (isImmutableData(state) && geometryAdmissionRefusal(error)) {
+      const elapsed = Math.max(0, performance.now() - geometryStart);
+      this.clearAdmissionDeferral();
+      if (immutable && geometryAdmissionRefusal(error) && error.message === 'Stroke geometry exceeds prototype budget' && elapsed > GPU_ADMISSION_SLOW_PREPARATION_MS) {
+        this.slowBudgetAdmission = { state, preparationMs: elapsed };
+      }
+      if (immutable && geometryAdmissionRefusal(error)) {
         this.refusalCache = { state, view: { ...view, center: { ...view.center }, lineweights: view.lineweights ?? lineweightDisplay.enabled }, selection: new Set(overlay.selection), hover: overlay.hover ?? null, solidSelection: !!overlay.solidSelection, reason: error.message };
         throw new GeometryRefusalMemoError(error.message);
       }
       throw error;
     }
     finally { metrics.geometryPreparationMs += Math.max(0, performance.now() - geometryStart); }
+    this.clearAdmissionDeferral();
     metrics.preparedEntities += geometry.entityCount;
     const generation = ++this.generation;
     this.cache = cacheable ? { entities: state.entities, layers: state.layers, linetypes, view: { ...view, center: { ...view.center }, lineweights: view.lineweights ?? lineweightDisplay.enabled }, selection: new Set(overlay.selection), hover: overlay.hover ?? null, solidSelection: !!overlay.solidSelection, geometry, generation, immutableState: isImmutableData(state) } : null;
@@ -350,8 +405,8 @@ export class Gpu2DRenderer {
     const metrics = emptyGpu2DRenderResult('');
     let submissionStart: number | null = null;
     const finish = (rendered: boolean, reason?: string): Gpu2DRenderResult => ({ ...metrics, rendered, reason, editHistoryBytes: this.editHistoryBytes, editHistoryEntries: this.editHistory.size, preparationMs: submissionStart === null ? Math.max(0, performance.now() - start) : metrics.preparationMs, submissionMs: submissionStart === null ? 0 : Math.max(0, performance.now() - submissionStart) });
-    const refusal = (reason: string, geometryMemo = false): Gpu2DRenderResult => {
-      if (!geometryMemo) this.clearRefusalCache();
+    const refusal = (reason: string, admissionState = false): Gpu2DRenderResult => {
+      if (!admissionState) this.clearRefusalCache();
       return finish(false, reason);
     };
     if (this.device.state !== 'ready') return refusal(`WebGL2 device is ${this.device.state}`);
@@ -483,7 +538,7 @@ export class Gpu2DRenderer {
       return finish(true);
     } catch (error) {
       if (submissionStart !== null) this.uploadedGeneration = null;
-      return refusal(error instanceof Error ? error.message : 'GPU rendering failed', error instanceof GeometryRefusalMemoError);
+      return refusal(error instanceof Error ? error.message : 'GPU rendering failed', error instanceof GeometryRefusalMemoError || error instanceof AdmissionDeferredError);
     }
   }
 

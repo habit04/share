@@ -536,6 +536,43 @@ pose; clipping can change vertex-budget admission. Refused GPU preparation remai
 separate from successful uploads and GPU completion. Neither drawing substitutes
 for the original mixed schematic.
 
+Clean `10ddc8a9084aa031c447fb4d87b1fee56157e0d9` subsequently passed 3,120
+regressions with 28 conditional skips, all nine local checks and the ordinary
+native checks. Its fresh no-readback cadence phase passed for dense LINEs,
+short-tag compounds and the preserved long-label budget fallback. The complete
+benchmark still failed: the original curved-POLYLINE fixture contains a sharp
+arc-to-LINE join that the new construction guard deliberately refuses. A bounded
+math check found 0.271 physical pixels of selected-miter error at that view,
+exceeding the quarter-pixel limit. Original fixture data must stay intact with
+complete Canvas fallback; distinct isolated-bulge controls will exercise GPU
+selection and recovery. This is a coverage restriction, not a completed GPU fix.
+
+The partial Intel cadence data exposed another failed performance gate:
+short-tag compound edit/undo prepared geometry in 181.2 ms median and 199.7 ms
+maximum, with 4.6 ms median uploads; consecutive rAF intervals had a 200 ms
+median. Sustained-zoom preparation peaked at 197.3 ms. Long-label fallback
+camera retries still spent roughly 105--114 ms median in geometry before Canvas.
+These results are from a failed overall benchmark and do not establish accepted
+speed gains. The next candidate has typed packing, certified top-level LINE
+subrange edits and explicit idle admission retry after a slow budget refusal.
+Its geometry checks passed 105 focused tests; renderer, refusal, compound-delta
+and idle-policy checks passed 273 tests. TypeScript, scoped lint, whitespace and
+independent source review passed. These are local source checks before a fresh
+clean producer; native performance is still unmeasured.
+
+The policy follows a sealed, deliberate vertex-budget refusal whose geometry
+preparation exceeds 50 ms. Healthy uploaded geometry, eligible LINE deltas and
+exact-view refusal reuse take priority. Otherwise a new interaction pose draws
+the complete current Canvas view with zero preparation/uploads and schedules one
+fresh admission after 100 ms without another renderer call. Continued calls reset
+that idle deadline. Mode changes, disposal, context transitions, mutable inputs
+and unrelated failures cancel the policy. A deferred frame is labelled as such;
+it does not certify that the present drawing/view is over budget. Idle retry can
+admit a newly clipped pose, so the budget fixture's moving samples and endpoints
+must report the actual renderer separately. Correctness endpoints force actual
+admission and retain exact Canvas pixels or the existing admitted-GPU coverage
+gate. Fresh full-suite, paired native and exact-commit CI gates remain open.
+
 ### NVIDIA validation on the pinned GPU source
 
 A separate private process using Electron's documented

@@ -264,6 +264,10 @@ export interface PreparedZoomEntity {
   color: [number, number, number];
   width: number;
   alpha: number;
+  /** Compiled owner slots explicitly admit only direct visible top-level LINE edits.
+   * Undefined retains the existing simple-scene line contract. Non-LINE paint style
+   * fields describe its first operation only and must never certify a child edit. */
+  editableLine?: boolean;
   /** Includes original/offscreen points even when no vertices were emitted. */
   sourceBounds: ZoomSourceBounds | null;
 }
@@ -287,16 +291,18 @@ export interface PreparedZoom2D {
   sourceBounds: ZoomSourceBounds;
   /** Retained centerline rectangle; generated butt ends are outside every admitted viewport. */
   extent: Point;
-  /** Original entity indices, including zero-vertex entries; hidden entries are null. */
+  /** Original top-level entity indices, including zero-vertex entries. Simple hidden
+   * entries are null; compiled hidden owners have explicit noneditable zero spans. */
   entities: (PreparedZoomEntity | null)[] | null;
+  /** Visible lowered source leaves, including zero-vertex leaves, not owner certificates. */
   entityCount: number;
   /** Only compiled scenes depend on block definitions and drawing-local text styles. */
   compound?: Pick<Extract<LoweredStrokeScene, { ok: true }>, 'blockDependencies' | 'textStylesDependency'>;
 }
 
 export interface PreparedCompoundZoom2D extends PreparedZoom2D {
-  /** Compound paint slots cannot be patched by the simple-entity edit fast path. */
-  entities: null;
+  /** Bounded unique source-indexed owner certificates; only direct LINE slots are editable. */
+  entities: PreparedZoom2D['entities'];
   entityCount: number;
   compound: NonNullable<PreparedZoom2D['compound']>;
 }
@@ -422,6 +428,61 @@ function zoomStrokeTriangles(source: readonly Point[], closed: boolean, width: n
   });
 }
 
+/** Grow bounded typed storage only for emitted triangles; expose exactly the used bytes. */
+class CompiledTriangleWriter {
+  private data = new Float32Array(0);
+  length = 0;
+
+  private vertex(point: Point, offset: Point, color: readonly [number, number, number]): void {
+    const i = this.length;
+    this.data[i] = point.x; this.data[i + 1] = point.y;
+    this.data[i + 2] = offset.x; this.data[i + 3] = offset.y;
+    this.data[i + 4] = color[0]; this.data[i + 5] = color[1]; this.data[i + 6] = color[2];
+    this.length += GPU_ZOOM_VERTEX_STRIDE;
+  }
+
+  triangle(a: Point, ao: Point, b: Point, bo: Point, c: Point, co: Point, color: readonly [number, number, number]): void {
+    const required = this.length + 3 * GPU_ZOOM_VERTEX_STRIDE;
+    if (required / GPU_ZOOM_VERTEX_STRIDE > MAX_VERTICES) throw new Error('Stroke geometry exceeds prototype budget');
+    if (required > this.data.length) {
+      const limit = Math.floor(MAX_VERTICES / 3) * 3 * GPU_ZOOM_VERTEX_STRIDE;
+      const capacity = Math.min(limit, Math.max(required, this.data.length ? this.data.length * 2 : 1024 * 3 * GPU_ZOOM_VERTEX_STRIDE));
+      const next = new Float32Array(capacity);
+      next.set(this.data);
+      this.data = next;
+    }
+    const first = this.length;
+    this.vertex(a, ao, color); this.vertex(b, bo, color); this.vertex(c, co, color);
+    // Assignment has applied the exact same binary32 conversion as the old final
+    // Float32Array(numbers). Reject overflow before publishing the private buffer.
+    for (let i = first; i < required; i++) if (!Number.isFinite(this.data[i])) throw new Error('Float32 stroke geometry exceeds finite limits');
+  }
+
+  finish(): Float32Array<ArrayBuffer> { return this.length === this.data.length ? this.data : this.data.slice(0, this.length); }
+}
+
+interface CompiledOwnerCertificates {
+  entries: PreparedZoomEntity[];
+  indices: Map<string, number>;
+  operations: Uint32Array;
+}
+
+/** Duplicate/unknown IDs or unbounded owner tables may render, but cannot certify deltas. */
+function compiledOwnerCertificates(state: DrawingState): CompiledOwnerCertificates | null {
+  if (state.entities.length > GPU_EDIT_ENTITY_LIMIT) return null;
+  const indices = new Map<string, number>();
+  const entries: PreparedZoomEntity[] = [];
+  for (let index = 0; index < state.entities.length; index++) {
+    const entity = state.entities[index]!;
+    if (typeof entity.id !== 'string' || !entity.id || indices.has(entity.id)) return null;
+    indices.set(entity.id, index);
+    // Hidden/empty owners never contributed geometry to the full scene. Their null
+    // admitted bounds preserve that behavior, including unsupported hidden entities.
+    entries.push({ entity, first: 0, count: 0, color: [0, 0, 0], width: 1, alpha: 1, editableLine: false, sourceBounds: null });
+  }
+  return { entries, indices, operations: new Uint32Array(entries.length) };
+}
+
 function straightPathSize(source: LocalStrokePath): { points: number; closed: boolean } | null {
   if (source.kind === 'path') return { points: source.points.length, closed: source.closed };
   if (source.entity.type === 'line') return { points: 2, closed: false };
@@ -486,16 +547,38 @@ export function prepareCompiledZoom2D(state: DrawingState, view: Gpu2DView, over
   const magnitude = Math.max(extent.x, extent.y) * maxRatio + padding + Math.max(view.width, view.height) / 2 + extrusion;
   if (!Number.isFinite(magnitude) || magnitude * 12 * 2 ** -23 * view.dpr > ZOOM_FLOAT_PIXEL_ERROR) throw new Error('GPU zoom geometry exceeds Float32 precision budget');
   // Long readable labels can exceed the cap solely with retained straight strokes.
-  // Count their exact emission before allocating the boxed vertex array. This is an
+  // Count their exact emission before growing typed triangle storage. This is an
   // admission preflight only: successful packing/bounds/curve precision stay unchanged.
   if (straightVerticesMayExceedBudget(lowered.operations)) compiledStraightVertexLowerBound(lowered.operations, view, extent);
   const localView = { ...view, center: { x: 0, y: 0 } };
-  const vertices: number[] = [], batches: StrokeBatch[] = [];
+  const writer = new CompiledTriangleWriter(), batches: StrokeBatch[] = [];
   const sourceBounds = { min: { x: Infinity, y: Infinity }, max: { x: -Infinity, y: -Infinity } };
+  let certificates = compiledOwnerCertificates(state), lastOwnerIndex = -1;
+  const hidden = new Set(state.layers.filter((layer) => !layer.visible).map((layer) => layer.name));
   let admittedMinRatio = minRatio;
   for (const operation of lowered.operations) {
-    const first = vertices.length / GPU_ZOOM_VERTEX_STRIDE;
+    const first = writer.length / GPU_ZOOM_VERTEX_STRIDE;
     const color: [number, number, number] = [...operation.color];
+    const ownerIndex = certificates?.indices.get(operation.ownerId);
+    let owner: PreparedZoomEntity | null = null;
+    if (certificates && (ownerIndex === undefined || ownerIndex < lastOwnerIndex || hidden.has(certificates.entries[ownerIndex]!.entity.layer))) certificates = null;
+    if (certificates && ownerIndex !== undefined) {
+      owner = certificates.entries[ownerIndex]!;
+      lastOwnerIndex = ownerIndex;
+      const operationCount = certificates.operations[ownerIndex]! + 1;
+      certificates.operations[ownerIndex] = operationCount;
+      if (operationCount === 1) {
+        owner.first = first;
+        owner.color = color; owner.width = operation.widthCss; owner.alpha = operation.alpha;
+      }
+      if (owner.entity.type === 'line') {
+        // No child/source ID inference: a direct LINE must own exactly its one LINE path.
+        const source = operation.paths[0];
+        if (operationCount !== 1 || operation.sourceId !== owner.entity.id || operation.paths.length !== 1 || source?.kind !== 'entity' || source.entity.type !== 'line' || source.entity.id !== owner.entity.id) {
+          certificates = null; owner = null;
+        } else owner.editableLine = true;
+      }
+    }
     const admitCurve = (radius: number): void => {
       const projectedRadius = radius * view.scale;
       if (!Number.isFinite(projectedRadius)) throw new Error('Invalid curve radius or scale');
@@ -513,20 +596,37 @@ export function prepareCompiledZoom2D(state: DrawingState, view: Gpu2DView, over
           sourceBounds.min[axis] = Math.min(sourceBounds.min[axis], center[axis]);
           sourceBounds.max[axis] = Math.max(sourceBounds.max[axis], center[axis]);
         }
+        if (owner) {
+          if (!owner.sourceBounds) owner.sourceBounds = { min: { ...center }, max: { ...center } };
+          else for (const axis of ['x', 'y'] as const) {
+            owner.sourceBounds.min[axis] = Math.min(owner.sourceBounds.min[axis], center[axis]);
+            owner.sourceBounds.max[axis] = Math.max(owner.sourceBounds.max[axis], center[axis]);
+          }
+        }
         return center;
       });
-      zoomStrokeTriangles(points, path.closed, operation.widthCss, color, extent, vertices);
+      visitZoomStrokeTriangles(points, path.closed, operation.widthCss, extent, (a, ao, b, bo, c, co) => writer.triangle(a, ao, b, bo, c, co, color));
     }
-    const count = vertices.length / GPU_ZOOM_VERTEX_STRIDE - first;
+    const count = writer.length / GPU_ZOOM_VERTEX_STRIDE - first;
+    if (owner) owner.count += count;
     // All glyph subpaths composite together; separate child strokes never share a stencil.
     if (count) batches.push({ id: operation.paintId, first, count, alpha: operation.alpha });
   }
   if (!Number.isFinite(sourceBounds.min.x)) sourceBounds.min = sourceBounds.max = { x: 0, y: 0 };
-  const packed = new Float32Array(vertices);
-  if (!packed.every(Number.isFinite)) throw new Error('Float32 stroke geometry exceeds finite limits');
+  if (certificates) {
+    let cursor = 0;
+    for (let index = 0; index < certificates.entries.length; index++) {
+      const entry = certificates.entries[index]!;
+      if (certificates.operations[index] === 0) entry.first = cursor;
+      if (entry.first !== cursor) { certificates = null; break; }
+      cursor += entry.count;
+    }
+    if (cursor !== writer.length / GPU_ZOOM_VERTEX_STRIDE) certificates = null;
+  }
+  const packed = writer.finish();
   return {
     vertices: packed, batches, minRatio: admittedMinRatio, maxRatio, padding, sourceBounds, extent,
-    entities: null, entityCount: lowered.preparedEntities,
+    entities: certificates?.entries ?? null, entityCount: lowered.preparedEntities,
     compound: { blockDependencies: lowered.blockDependencies, textStylesDependency: lowered.textStylesDependency },
   };
 }
