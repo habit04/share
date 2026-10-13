@@ -25,7 +25,7 @@ completion here does not authorize a release, default switch or merge.
 | --- | --- | --- |
 | 1. GPU diagnostics | Implemented initially at `16abc740`; PR #10 adds bounded collection and clipboard-completion repairs. Combined source `4bad60b2` passed collector/About/copy/report checks and exact-head CI. Adapter activity and unavailable/software states remain explicit. Intel and NVIDIA evidence are recorded below with their source commits. | Require exact CI for each new candidate. Missing adapter data must stay Unknown; capabilities must remain distinct from the renderer actually in use. Stable-branch integration still requires separate approval. |
 | 2. Experimental 2D/simple 3D | The prototype at `2fbae728` and PR #10's pan-cache/recovery milestone have successful source CI. Combined source `4bad60b2` passed both builds, native failure/unavailability, benchmarks and the existing isolated demo checks. See [prototype evidence](GPU-RENDERER-PROTOTYPE.md). | Keep the development flag. Repeat these checks on each changed renderer candidate. Record source SHA, viewport, actual adapter/limits, CPU preparation/submission, completion observations and drawing differences before interpreting speed. |
-| 3. Remaining 2D/reliability | Partly complete: PR #11's pinned batch is integrated in draft PR #12, with seven real Windows batch checks and exact source CI passed. The [remaining checklist](REMAINING-2D-CHECKLIST.md) stays open with its active owners. DWG graph/reader/writer work remains owned by [PR #9](https://github.com/habit04/share/pull/9), whose published `3766b8af` CI and installer test build failed. | Each remaining fix needs regression and relevant import-edit-save-reopen evidence. Require metadata, undo/dirty state, backups/recovery and exact integration CI. Complete the PR #9 transaction/codec review and independent native preservation gates below; a signed-helper-only workflow does not prove an installed application. |
+| 3. Remaining 2D/reliability | Partly complete: PR #11's pinned `3ce7e10a` batch is integrated in draft PR #12, with seven real Windows batch checks and exact source CI passed. PR #11 later advanced to unmerged/conflicted `878655e2`; the [remaining checklist](REMAINING-2D-CHECKLIST.md) stays open with its owners. [PR #9](https://github.com/habit04/share/pull/9) passed exact source CI at `14cb3f9f` and was merged by another task as stable `8dfe1caa`; v0.4.9 has public Windows release assets. Neither later head is integrated into this GPU candidate. | Each remaining fix needs regression and relevant import-edit-save-reopen evidence. Review the new stable transaction/codec baseline and test its combination with the GPU candidate. Release metadata does not prove installation or native preservation in this candidate. Coordinate the active PR #11 owner before integration. |
 | 4. Production GPU renderer | Incomplete. Clean `fd7fac07` passed bounded zoom/redraw reuse, separate CPU preparation/upload and completed-frame measurements, lineweight/large-coordinate gates, cached native recovery and unavailable-context fallback on Intel UHD and NVIDIA RTX A3000. Dense pan/zoom improved in these samples; boundary rebuilds and edits still have 95–133 ms peaks. Current work stays within item 4: reduce those stalls, then incrementally cover block/text, dimensions and common hatches. Broad compatibility, PR #9 integration and more hardware remain open. | Pass every production gate below before considering a default change. Canvas stays default; no general performance or untested hardware claim. |
 | 5. Full 3D development | Already begun on `share/feature/3d-development`, `0f644a7`; [CI passed](https://github.com/habit04/share/actions/runs/38336811063). A separate Open CASCADE/three.js application also exists in [habit04/jcad-3d](https://github.com/habit04/jcad-3d), `c3802fc`, with [successful CI](https://github.com/habit04/jcad-3d/actions/runs/38202841903). | Resolve which architecture owns future 3D integration. Require direct modeling, selection/snapping, dimensions, undo and persistent save/reopen/recovery evidence for the chosen track. Keep stable public 2D independent. Embedded 3D status/validation: [3D-STATUS](https://github.com/habit04/share/blob/feature/3d-development/docs/3D-STATUS.md); separate-app limits: [NOT-TESTED](https://github.com/habit04/jcad-3d/blob/main/docs/NOT-TESTED.md). |
 
@@ -175,9 +175,19 @@ release jobs were skipped. At the later head `3766b8af`,
 [PR CI](https://github.com/habit04/share/actions/runs/38356454447),
 [push CI](https://github.com/habit04/share/actions/runs/38356450414), and
 [installer test build](https://github.com/habit04/share/actions/runs/38356468654)
-failed. The installer workflow passed its two source-check jobs but failed the
+failed at that historical source. The installer workflow passed its two source-check jobs but failed the
 Windows test-build job; build, artifact verification, packaged smoke and release
-were skipped. This snapshot does not imply owner completion or installation proof.
+were skipped. A later read-only snapshot at 10:49 UTC found final PR #9 head
+`14cb3f9fac2be802004dd3e3b23c9e7aec1f81aa` with successful
+[PR CI](https://github.com/habit04/share/actions/runs/38366814199) and
+[push CI](https://github.com/habit04/share/actions/runs/38366809625).
+Another task merged it at 08:18:29 UTC as stable `8dfe1caa9a3b72c87438e8ec5acb995bf62f388c`.
+[v0.4.9](https://github.com/habit04/share/releases/tag/v0.4.9) was published at
+08:46:09 UTC with Windows installer, blockmap and provenance/checksum assets.
+This renderer task did not merge or release. Public release metadata alone is
+not installation or combined GPU/native preservation evidence. PR #11's latest
+`878655e2fdab2c7cb39c8adc3acf7330ea3e2ba2` remains unmerged with conflicts.
+The GPU candidate deliberately retains the tested `3ce7e10a`/pre-merge baseline.
 PR #9 and PR #11 share 14 files, including the same
 `Drawing.transact` hunk. A later integration must preserve PR #9 graph validation,
 reconciliation and edit-intent forwarding through both PR #11 transaction scopes
@@ -362,8 +372,9 @@ Missing or anomalous vendor metadata is not inferred from a preference request.
 ## Production gates still open
 
 1. **Correct 2D baseline:** the pinned PR #10/PR #11 combination passed locally
-   and in exact source CI; complete the remaining owned checklist. Integrate PR #9 only after its owner
-   finishes native preservation and the shared transaction/codec review above.
+   and in exact source CI; complete the remaining owned checklist. Review the
+   now-merged PR #9 transaction/codec baseline and its native preservation evidence
+   before preparing a fresh combined candidate; coordinate PR #11's active owner.
 2. **Renderer coverage:** text/fonts, hatches, blocks, images, dimensions,
    linetypes/weights, layouts, grids, underlays and active editing need faithful
    GPU rendering or explicit complete-view Canvas fallback. No missing subsets.
