@@ -12,6 +12,9 @@ import type { Layout, SpaceRef } from './layouts';
 import { applyPaperEntities, layoutsOf, paperEntities, paperSpaceLayout, sheetBounds, withLayout } from './layouts';
 import { prepareDrawingState } from './geometry-budget';
 import { sealImmutableData } from './immutable-data';
+import { textStylesOf, type TextStyle } from '../io/encoding';
+import { textGeometryForStyles, EMPTY_TEXT_STYLES } from '../render/font-metrics';
+import type { TextGeometryContext } from './text-metrics';
 
 /** A named view (VIEW command): world centre and view height. */
 export interface NamedView {
@@ -121,7 +124,7 @@ export class Drawing {
   /** Current colour for new objects (CECOLOR; Home > Properties colour combo). 'ByLayer' leaves new objects alone. */
   public currentColor: ColorSpec = 'ByLayer';
 
-  constructor(initial?: Partial<DrawingState>) {
+  constructor(initial?: Partial<DrawingState>, private readonly textGeometryProvider: (styles: Readonly<Record<string, TextStyle>>) => TextGeometryContext = textGeometryForStyles) {
     // Every supplied field is kept (header, space, meta, layouts and anything added later);
     // only the four required ones get defaults.
     const { entities, layers, blocks, currentLayer, ...rest } = initial ?? {};
@@ -225,7 +228,9 @@ export class Drawing {
     this.emit();
   }
 
-  readonly lookupBlock: BlockLookup = (name) => this.state.blocks[name];
+  readonly lookupBlock: BlockLookup = Object.defineProperty((name: string) => this.state.blocks[name], 'textGeometry', {
+    get: () => this.textGeometryProvider(this.state.meta?.textStyles ? textStylesOf(this.state) : EMPTY_TEXT_STYLES),
+  });
 
   layer(name: string): Layer | undefined {
     return this.state.layers.find((l) => l.name === name);

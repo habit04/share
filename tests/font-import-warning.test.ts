@@ -23,7 +23,7 @@ describe('font loss reports match the selected renderer', () => {
     expect(warnings).toHaveLength(2);
     const trueType = warnings.find((item) => item.reason.includes('ARIAL'))!.reason;
     expect(trueType).toContain('installed TrueType/OpenType font families and fallbacks');
-    expect(trueType).toContain('bounds and wrapping still use stroke-font metrics');
+    expect(trueType).toContain('matching Windows font metrics or Canvas fallback metrics determine bounds and wrapping');
     expect(trueType).not.toContain('stroke font substitute');
     expect(warnings.find((item) => item.reason.includes('ROMANS'))!.reason).toContain('stroke font substitute');
     expect(textRenderer('ARIAL', textStylesOf(state)).kind).toBe('canvas');

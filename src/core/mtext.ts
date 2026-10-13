@@ -58,9 +58,11 @@ export interface MTextEntity extends EntityBase {
   readonly field?: FieldLink;
   readonly columns?: MTextColumns;
   readonly background?: MTextBackground;
+  readonly style?: string;
 }
 
-export type Measure = (text: string, height: number) => number;
+/** The optional run carries the same formatting that the emitted TEXT piece uses. */
+export type Measure = (text: string, height: number, run?: MTextStyle) => number;
 
 export const LINE_SPACING = 5 / 3;
 
@@ -531,6 +533,7 @@ function layoutMText(m: MTextEntity, measure: Measure): MTextLayout {
       lineWeight: m.lineWeight,
       ...(m.trueColor !== undefined ? { trueColor: m.trueColor } : {}),
       type: 'text',
+      ...(m.style ? { style: m.style } : {}),
       position: g.add(m.position, g.rotate(local, m.rotation)),
       text,
       height: m.height,
@@ -556,10 +559,10 @@ interface Frag {
 
 function fragWidth(f: Omit<Frag, 'width'>, measure: Measure): number {
   const s = f.style;
-  if (f.kind === 'text') return measure(f.text.replace(/ /g, ' '), s.height) * s.widthFactor;
+  if (f.kind === 'text') return measure(f.text.replace(/ /g, ' '), s.height, s) * s.widthFactor;
   const h = s.height * STACK_SCALE;
-  const wt = measure(f.top ?? '', h) * s.widthFactor;
-  const wb = measure(f.bottom ?? '', h) * s.widthFactor;
+  const wt = measure(f.top ?? '', h, s) * s.widthFactor;
+  const wb = measure(f.bottom ?? '', h, s) * s.widthFactor;
   return f.stackType === '#' ? wt + wb + s.height * 0.3 : Math.max(wt, wb);
 }
 
@@ -661,6 +664,7 @@ function positionedLines(m: MTextEntity, lines: readonly MTextLine[], measure: M
       lineWeight: m.lineWeight,
       ...c,
       type: 'text',
+      ...(m.style ? { style: m.style } : {}),
       position: toWorld(x, y),
       text: text.replace(/ /g, ' '),
       height: h,
@@ -691,8 +695,8 @@ function positionedLines(m: MTextEntity, lines: readonly MTextLine[], measure: M
         piece(f.text, x, baseline, s, h);
       } else {
         const sh = h * STACK_SCALE;
-        const wt = measure(f.top ?? '', sh) * s.widthFactor;
-        const wb = measure(f.bottom ?? '', sh) * s.widthFactor;
+        const wt = measure(f.top ?? '', sh, s) * s.widthFactor;
+        const wb = measure(f.bottom ?? '', sh, s) * s.widthFactor;
         if (f.stackType === '/') {
           const bar = baseline + h * 0.5;
           piece(f.top ?? '', x + (f.width - wt) / 2, bar + h * 0.1, s, sh);

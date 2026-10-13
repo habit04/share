@@ -124,10 +124,11 @@ export function onMouseDown(ed: Editor, st: EditorInternals, ev: MouseEvent): un
     const gripTol = 6 * ed.viewport.worldPerPixel();
     for (const e of graphicalSelectionEntities(ed)) {
       if (!ed.selection.has(e.id)) continue;
-      const idx = gripPoints(e).findIndex((gp) => (!clip || clip.contains(gp)) && g.dist(gp, raw) <= gripTol);
+      const grips = gripPoints(e, ed.doc.lookupBlock.textGeometry);
+      const idx = grips.findIndex((gp) => (!clip || clip.contains(gp)) && g.dist(gp, raw) <= gripTol);
       if (idx >= 0) {
         st.gripDrag = { entity: e, index: idx, start: raw };
-        st.overlay.trackFrom = gripPoints(e)[idx]!;
+        st.overlay.trackFrom = grips[idx]!;
         ed.setPrompt('** STRETCH **  Specify stretch point:');
         st.overlay.cursorMode = 'point';
         ed.render();
@@ -153,7 +154,7 @@ export function onMouseUp(ed: Editor, st: EditorInternals, ev: MouseEvent): void
   if (st.gripDrag) {
     const s = ed.screenFromEvent(ev);
     const { world } = resolveCursor(ed, st, s);
-    const original = gripPoints(st.gripDrag.entity)[st.gripDrag.index];
+    const original = gripPoints(st.gripDrag.entity, ed.doc.lookupBlock.textGeometry)[st.gripDrag.index];
     const moved = original && g.dist(original, world) > 1e-9 ? applyGrip(st.gripDrag.entity, st.gripDrag.index, world) : null;
     st.gripDrag = null;
     st.overlay.ghost = [];

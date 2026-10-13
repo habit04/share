@@ -40,6 +40,7 @@ export interface SpatialIndex {
 
 interface GridIndex extends SpatialIndex {
   readonly blockDeps: ReadonlyMap<string, BlockDef | undefined>;
+  readonly metricKey?: object;
 }
 
 const cache = new WeakMap<readonly Entity[], GridIndex>();
@@ -53,8 +54,14 @@ const seen = new WeakSet<readonly Entity[]>();
  * images go through entityBounds every time (inserts use the insert geometry cache).
  */
 const boundsCache = new WeakMap<Entity, Bounds | null>();
-const SELF_CONTAINED = new Set<Entity['type']>(['line', 'circle', 'arc', 'polyline', 'text', 'ellipse', 'point', 'xline', 'ray', 'mtext', 'spline', 'hatch']);
+const textBoundsCache = new WeakMap<Entity, { key?: object; bounds: Bounds | null }>();
+const SELF_CONTAINED = new Set<Entity['type']>(['line', 'circle', 'arc', 'polyline', 'ellipse', 'point', 'xline', 'ray', 'spline', 'hatch']);
 function boundsOf(e: Entity, lookup: BlockLookup): Bounds | null {
+  if (e.type === 'text' || e.type === 'mtext') {
+    const key = lookup.textGeometry?.cacheKey, entry = textBoundsCache.get(e);
+    if (entry && entry.key === key) return entry.bounds;
+    const bounds = entityBounds(e, lookup); textBoundsCache.set(e, { key, bounds }); return bounds;
+  }
   if (!SELF_CONTAINED.has(e.type)) return entityBounds(e, lookup);
   let b = boundsCache.get(e);
   if (b === undefined) {
@@ -151,6 +158,7 @@ function build(entities: readonly Entity[], lookup: BlockLookup): GridIndex {
     lookup,
     bounds,
     blockDeps,
+    metricKey: lookup.textGeometry?.cacheKey,
     maxArcRadius,
     query(box: Bounds): number[] | null {
       const nan = Number.isNaN(box.min.x + box.min.y + box.max.x + box.max.y);
@@ -193,7 +201,7 @@ function build(entities: readonly Entity[], lookup: BlockLookup): GridIndex {
 }
 
 function current(idx: GridIndex, lookup: BlockLookup): boolean {
-  if (idx.lookup !== lookup) return false;
+  if (idx.lookup !== lookup || idx.metricKey !== lookup.textGeometry?.cacheKey) return false;
   for (const [name, def] of idx.blockDeps) if (lookup(name) !== def) return false;
   return true;
 }

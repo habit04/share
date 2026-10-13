@@ -35,7 +35,7 @@ export function activeSelectionClip(state: LayoutHost): ViewportSelectionClip | 
   return clip;
 }
 
-const viewportEntitiesCache = new WeakMap<LayoutHost, { source: readonly Entity[]; lookup: BlockLookup; visible: readonly Entity[] }>();
+const viewportEntitiesCache = new WeakMap<LayoutHost, { source: readonly Entity[]; lookup: BlockLookup; visible: readonly Entity[]; metricKey?: object }>();
 
 /**
  * Exclude fully masked geometry from graphical selection and snaps. Cache by immutable drawing
@@ -46,7 +46,7 @@ export function viewportSelectionEntities(state: LayoutHost, entities: readonly 
   const clip = activeSelectionClip(state);
   if (!clip) return entities;
   const cached = viewportEntitiesCache.get(state);
-  if (cached?.source === entities && cached.lookup === lookup) return cached.visible;
+  if (cached?.source === entities && cached.lookup === lookup && cached.metricKey === lookup.textGeometry?.cacheKey) return cached.visible;
   const visible: Entity[] = [];
   const { order, bounds } = candidates(entities, lookup, clip.bounds);
   const count = order ? order.length : entities.length;
@@ -67,7 +67,7 @@ export function viewportSelectionEntities(state: LayoutHost, entities: readonly 
     // crossing its outline. The ordinary distance test also respects hatch holes.
     if (touches || clip.polygon.some((p) => clip.contains(p) && distanceToEntity(p, e, lookup) <= 1e-9)) visible.push(e);
   }
-  viewportEntitiesCache.set(state, { source: entities, lookup, visible });
+  viewportEntitiesCache.set(state, { source: entities, lookup, visible, metricKey: lookup.textGeometry?.cacheKey });
   return visible;
 }
 
@@ -217,8 +217,8 @@ function boundsEdges(b: Bounds): Array<[Point, Point]> {
 function polygonSegments(e: Entity, lookup: BlockLookup, includeHatchPattern = false): Array<[Point, Point]> {
   const edges = (points: readonly Point[]): Array<[Point, Point]> => points.map((p, i) => [p, points[(i + 1) % points.length]!]);
   switch (e.type) {
-    case 'text': return edges(textCorners(e));
-    case 'mtext': return [...mtextParts(e).flatMap((t) => edges(textCorners(t))), ...mtextDecorations(e).map((l): [Point, Point] => [l.a, l.b]), ...mtextMasks(e).flatMap(edges)];
+    case 'text': return edges(textCorners(e, lookup.textGeometry));
+    case 'mtext': return [...mtextParts(e, lookup.textGeometry).flatMap((t) => edges(textCorners(t, lookup.textGeometry))), ...mtextDecorations(e, lookup.textGeometry).map((l): [Point, Point] => [l.a, l.b]), ...mtextMasks(e, lookup.textGeometry).flatMap(edges)];
     case 'point': return [[e.position, e.position]];
     case 'polyline': {
       if (e.filled || !(e.width || e.widths || e.widthFrame)) return entitySegments(e, lookup);
@@ -230,10 +230,10 @@ function polygonSegments(e: Entity, lookup: BlockLookup, includeHatchPattern = f
     // established boundary tests; viewport visibility also needs the rendered strokes.
     case 'hatch': return [...entitySegments(e, lookup), ...(includeHatchPattern ? hatchGeometry(e).segments : [])];
     case 'insert': return explodeInsert(e, lookup).flatMap((part) => polygonSegments(part, lookup, includeHatchPattern));
-    case 'dimension': return dimensionParts(e).flatMap((part) => polygonSegments(part, lookup, includeHatchPattern));
+    case 'dimension': return dimensionParts(e, lookup.textGeometry).flatMap((part) => polygonSegments(part, lookup, includeHatchPattern));
     case 'leader':
     case 'table':
-    case 'image': return compoundParts(e).flatMap((part) => polygonSegments(part, lookup, includeHatchPattern));
+    case 'image': return compoundParts(e, lookup.textGeometry).flatMap((part) => polygonSegments(part, lookup, includeHatchPattern));
     default: return entitySegments(e, lookup);
   }
 }
@@ -241,14 +241,14 @@ function polygonSegments(e: Entity, lookup: BlockLookup, includeHatchPattern = f
 /** Filled text and wide-polyline areas also accept a crossing window wholly within them. */
 function selectionRegions(e: Entity, lookup: BlockLookup): readonly (readonly Point[])[] {
   switch (e.type) {
-    case 'text': return [textCorners(e)];
-    case 'mtext': return [...mtextParts(e).map(textCorners), ...mtextMasks(e)];
+    case 'text': return [textCorners(e, lookup.textGeometry)];
+    case 'mtext': return [...mtextParts(e, lookup.textGeometry).map((t) => textCorners(t, lookup.textGeometry)), ...mtextMasks(e, lookup.textGeometry)];
     case 'polyline': return e.width || e.widths || e.widthFrame ? polylineWidthGeometry(e).polygons : [];
     case 'insert': return explodeInsert(e, lookup).flatMap((part) => selectionRegions(part, lookup));
-    case 'dimension': return dimensionParts(e).flatMap((part) => selectionRegions(part, lookup));
+    case 'dimension': return dimensionParts(e, lookup.textGeometry).flatMap((part) => selectionRegions(part, lookup));
     case 'leader':
     case 'table':
-    case 'image': return compoundParts(e).flatMap((part) => selectionRegions(part, lookup));
+    case 'image': return compoundParts(e, lookup.textGeometry).flatMap((part) => selectionRegions(part, lookup));
     default: return [];
   }
 }

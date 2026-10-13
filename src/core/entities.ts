@@ -2,7 +2,8 @@ import type { Point, Bounds } from './geometry';
 import * as g from './geometry';
 import { strokeTextWidth } from '../render/hershey';
 import { dimensionGeometry, type DimensionEntity } from './dimension';
-import { mtextLayoutFull, type MTextEntity, type MTextAttachment, type MTextColumns, type MTextBackground } from './mtext';
+import { mtextLayoutFull, type MTextEntity, type MTextAttachment, type MTextColumns, type MTextBackground, type Measure } from './mtext';
+import { metricTextPlacement, type TextGeometryContext } from './text-metrics';
 import { interpolateFitPoints, isValidNurbs, nurbsPoints, type NurbsCurve } from './spline';
 import { findPattern, loopPolygon, patternSegments, pointInLoops, worldPatternLines, type HatchLoop, type WorldPatternLine } from './hatch';
 import { tableGeometry, type TableEntity } from './table';
@@ -370,7 +371,7 @@ export function newId(): string {
   return `e${Date.now().toString(36)}${idCounter.toString(36)}`;
 }
 
-export type BlockLookup = (name: string) => BlockDef | undefined;
+export type BlockLookup = ((name: string) => BlockDef | undefined) & { readonly textGeometry?: TextGeometryContext };
 
 /** Length of the infinite part of XLINE/RAY used for hit testing and bounds (world units). */
 export const INFINITE_LENGTH = 1e4;
@@ -403,7 +404,25 @@ export function textWidth(text: string, height: number): number {
 }
 
 /** Placed text's oriented quadrilateral, including alignment and oblique shear. */
-export function textCorners(t: TextEntity): Point[] {
+export function textCorners(t: TextEntity, context?: TextGeometryContext): Point[] {
+  const appearance = context?.resolve(t);
+  // SHX/unknown fonts keep the existing stroke geometry and explicit entity appearance.
+  if (context && appearance?.kind === 'canvas') {
+    const placed = metricTextPlacement(t, context);
+    t = placed.text;
+    const { metrics } = placed;
+    const widthFactor = t.widthFactor ?? 1;
+    const emptyInk = metrics.left === 0 && metrics.right === 0 && metrics.ascent === 0 && metrics.descent === 0;
+    const left = (placed.offset + (emptyInk ? 0 : metrics.left)) * widthFactor;
+    const right = (placed.offset + (emptyInk ? metrics.advance : metrics.right)) * widthFactor;
+    const ascent = emptyInk ? t.height : metrics.ascent, descent = emptyInk ? 0 : metrics.descent;
+    return [
+      { x: left, y: -descent },
+      { x: right, y: -descent },
+      { x: right, y: ascent },
+      { x: left, y: ascent },
+    ].map((c) => g.add(t.position, g.rotate({ x: c.x + c.y * Math.tan(t.oblique ?? 0), y: c.y }, t.rotation)));
+  }
   t = placedText(t, textWidth);
   const w = textWidth(t.text, t.height) * (t.widthFactor ?? 1);
   const ox = t.align === 'center' ? -w / 2 : t.align === 'right' ? -w : 0;
@@ -415,8 +434,8 @@ export function textCorners(t: TextEntity): Point[] {
   ].map((c) => g.add(t.position, g.rotate({ x: c.x + c.y * Math.tan(t.oblique ?? 0), y: c.y }, t.rotation)));
 }
 
-export function textBounds(t: TextEntity): Bounds {
-  return g.boundsOfPoints(textCorners(t))!;
+export function textBounds(t: TextEntity, context?: TextGeometryContext): Bounds {
+  return g.boundsOfPoints(textCorners(t, context))!;
 }
 
 // ------------------------------------------------------------------ polyline arcs (bulges)
@@ -564,21 +583,49 @@ function rayEndpoints(e: XlineEntity | RayEntity): [Point, Point] {
 
 // ------------------------------------------------------------------ dimension / mtext component geometry
 
-const dimCache = new WeakMap<DimensionEntity, Entity[]>();
+interface GeneratedParts {
+  readonly contextKey?: object;
+  readonly parts: Entity[];
+}
+const dimCache = new WeakMap<DimensionEntity, GeneratedParts>();
 /** Primitive entities (lines, arrow solids, text) that draw a dimension. Cached per entity. */
-export function dimensionParts(d: DimensionEntity): Entity[] {
+export function dimensionParts(d: DimensionEntity, context?: TextGeometryContext): Entity[] {
   const hit = dimCache.get(d);
-  if (hit) return hit;
-  const parts = dimensionGeometry(d, textWidth) as Entity[];
-  dimCache.set(d, parts);
+  if (hit && hit.contextKey === context?.cacheKey) return hit.parts;
+  // The dimension's style object is a DIMSTYLE; only DIMTXSTY names the emitted font.
+  const appearance = context?.resolve({ style: d.style.textStyle });
+  const measure = context && appearance?.kind === 'canvas'
+    ? (text: string, height: number) => context.measure(text, height, appearance).advance * appearance.widthFactor
+    : textWidth;
+  const parts = dimensionGeometry(d, measure) as Entity[];
+  dimCache.set(d, { contextKey: context?.cacheKey, parts });
   return parts;
 }
 
-const mtextCache = new WeakMap<MTextEntity, { texts: TextEntity[]; lines: LineEntity[]; masks: Point[][] }>();
-function mtextRendered(m: MTextEntity): { texts: TextEntity[]; lines: LineEntity[]; masks: Point[][] } {
+interface MTextRendered {
+  readonly contextKey?: object;
+  texts: TextEntity[];
+  lines: LineEntity[];
+  masks: Point[][];
+}
+const mtextCache = new WeakMap<MTextEntity, MTextRendered>();
+function mtextRendered(m: MTextEntity, context?: TextGeometryContext): MTextRendered {
   const hit = mtextCache.get(m);
-  if (hit) return hit;
-  const lay = mtextLayoutFull(m, textWidth);
+  if (hit && hit.contextKey === context?.cacheKey) return hit;
+  const measure: Measure = context ? (text, height, run) => {
+    const runWidth = run?.widthFactor ?? 1;
+    const appearance = context.resolve({
+      ...(m.style ? { style: m.style } : {}),
+      ...(run && Math.abs(runWidth - 1) > 1e-9 ? { widthFactor: runWidth } : {}),
+      ...(run && (run.oblique || run.italic) ? { oblique: run.oblique || g.rad(15) } : {}),
+      ...(run?.bold ? { bold: true } : {}),
+    });
+    if (appearance.kind === 'stroke') return textWidth(text, height);
+    // Layout applies the run's width factor outside the measurement callback. Return the
+    // inherited/effective width divided by that factor so it is applied exactly once.
+    return context.measure(text, height, appearance).advance * appearance.widthFactor / runWidth;
+  } : textWidth;
+  const lay = mtextLayoutFull(m, measure);
   const lines: LineEntity[] = lay.strokes.map((st, i) => ({
     ...appearanceProperties(m),
     id: `${m.id}:s${i}`,
@@ -590,21 +637,22 @@ function mtextRendered(m: MTextEntity): { texts: TextEntity[]; lines: LineEntity
     a: st.a,
     b: st.b,
   }));
-  const entry = { texts: lay.texts, lines, masks: mtextBackgroundPolygons(m, textWidth, lay) };
+  const entry = { contextKey: context?.cacheKey, texts: lay.texts, lines,
+    masks: mtextBackgroundPolygons(m, measure, lay, context ? (text) => textCorners(text, context) : undefined) };
   mtextCache.set(m, entry);
   return entry;
 }
 /** Single-line text pieces that render an MTEXT (word wrapped, format codes applied). Cached per entity. */
-export function mtextParts(m: MTextEntity): TextEntity[] {
-  return mtextRendered(m).texts;
+export function mtextParts(m: MTextEntity, context?: TextGeometryContext): TextEntity[] {
+  return mtextRendered(m, context).texts;
 }
 
-export function mtextMasks(m: MTextEntity): readonly (readonly Point[])[] {
-  return mtextRendered(m).masks;
+export function mtextMasks(m: MTextEntity, context?: TextGeometryContext): readonly (readonly Point[])[] {
+  return mtextRendered(m, context).masks;
 }
 /** Underline / overline / strike-through / fraction-bar strokes of a formatted MTEXT. */
-export function mtextDecorations(m: MTextEntity): LineEntity[] {
-  return mtextRendered(m).lines;
+export function mtextDecorations(m: MTextEntity, context?: TextGeometryContext): LineEntity[] {
+  return mtextRendered(m, context).lines;
 }
 
 // ------------------------------------------------------------------ spline
@@ -689,11 +737,11 @@ export function leaderTextAttachment(e: LeaderEntity): MTextAttachment {
   return last && e.textPosition && e.textPosition.x < last.x ? 3 : 1;
 }
 
-const leaderCache = new WeakMap<LeaderEntity, Entity[]>();
+const leaderCache = new WeakMap<LeaderEntity, GeneratedParts>();
 /** Leader line(s), arrowhead(s) and the attached MTEXT. Cached per entity. */
-export function leaderParts(e: LeaderEntity): Entity[] {
+export function leaderParts(e: LeaderEntity, context?: TextGeometryContext): Entity[] {
   const hit = leaderCache.get(e);
-  if (hit) return hit;
+  if (hit && hit.contextKey === context?.cacheKey) return hit.parts;
   const style = { layer: e.layer, color: e.color, ...appearanceProperties(e), linetype: e.linetype, lineWeight: e.lineWeight };
   const out: Entity[] = [];
   const paths: Point[][] = [leaderPath(e), ...(e.extraPaths ?? []).map((p) => [...p])];
@@ -737,22 +785,22 @@ export function leaderParts(e: LeaderEntity): Entity[] {
       ...(e.textColumns ? { columns: e.textColumns } : {}),
     });
   }
-  leaderCache.set(e, out);
+  leaderCache.set(e, { contextKey: context?.cacheKey, parts: out });
   return out;
 }
 
 // ------------------------------------------------------------------ table
 
-const tableCache = new WeakMap<TableEntity, Entity[]>();
+const tableCache = new WeakMap<TableEntity, GeneratedParts>();
 /** Border lines and cell MTEXTs of a table. Cached per entity. */
-export function tableParts(t: TableEntity): Entity[] {
+export function tableParts(t: TableEntity, context?: TextGeometryContext): Entity[] {
   const hit = tableCache.get(t);
-  if (hit) return hit;
+  if (hit && hit.contextKey === context?.cacheKey) return hit.parts;
   const geo = tableGeometry(t);
   const style = { layer: t.layer, color: t.color, ...appearanceProperties(t), linetype: t.linetype, lineWeight: t.lineWeight };
   const out: Entity[] = geo.lines.map(([a, b], i) => ({ ...style, id: `${t.id}:b${i}`, type: 'line' as const, a, b }));
   out.push(...geo.texts);
-  tableCache.set(t, out);
+  tableCache.set(t, { contextKey: context?.cacheKey, parts: out });
   return out;
 }
 
@@ -940,7 +988,7 @@ function affineCompound(e: Compound, A: Affine): Entity {
 }
 
 /** EXPLODE for the entity types that break into simpler ones; null when the type does not explode here. */
-export function explodeCompound(e: Entity): Entity[] | null {
+export function explodeCompound(e: Entity, context?: TextGeometryContext): Entity[] | null {
   const fresh = <T extends Entity>(x: T): T => ({ ...x, id: newId() });
   switch (e.type) {
     case 'spline': {
@@ -959,9 +1007,9 @@ export function explodeCompound(e: Entity): Entity[] | null {
       return geo.segments.filter(([a, b]) => !g.eq(a, b, 1e-12)).map(([a, b]) => ({ ...style, id: newId(), type: 'line' as const, a, b }));
     }
     case 'leader':
-      return leaderParts(e).map(fresh);
+      return leaderParts(e, context).map(fresh);
     case 'table':
-      return tableParts(e).map(fresh);
+      return tableParts(e, context).map(fresh);
     default:
       return null;
   }
@@ -1202,6 +1250,7 @@ function spendExpansion(budget: ExpansionBudget, work = 1): void {
 
 interface InsertCache {
   block: BlockDef;
+  readonly contextKey?: object;
   /**
    * The definitions the expansion used, nested ones included (and names that were missing): the
    * entry is stale as soon as one of them resolves differently (a nested block redefined, removed,
@@ -1221,13 +1270,21 @@ function cachedInsert(ins: InsertEntity, lookup: BlockLookup): InsertCache | nul
   if (!block) return null;
   const immutable = isImmutableData(ins);
   const hit = immutable ? insertCache.get(ins) : undefined;
-  if (hit && hit.block === block && depsCurrent(hit.deps, lookup)) return hit;
+  if (hit && hit.block === block && depsCurrent(hit.deps, lookup)) {
+    if (hit.contextKey === lookup.textGeometry?.cacheKey) return hit;
+    // A style/font change affects bounds, not the block's transformed source geometry.
+    let bounds: Bounds | null = null;
+    for (const sub of hit.exploded) bounds = g.unionBounds(bounds, entityBounds(sub, lookup));
+    const refreshed = { ...hit, contextKey: lookup.textGeometry?.cacheKey, bounds: bounds ?? g.boundsOfPoints([ins.position]) };
+    insertCache.set(ins, refreshed);
+    return refreshed;
+  }
   const budget = newBudget();
   const exploded: Entity[] = [];
   explodeInto(exploded, ins, lookup, 0, budget);
   let bounds: Bounds | null = null;
   for (const sub of exploded) bounds = g.unionBounds(bounds, entityBounds(sub, lookup));
-  const entry = { block, deps: budget.deps, exploded, bounds: bounds ?? g.boundsOfPoints([ins.position]), limited: budget.truncated || budget.cyclic };
+  const entry = { block, contextKey: lookup.textGeometry?.cacheKey, deps: budget.deps, exploded, bounds: bounds ?? g.boundsOfPoints([ins.position]), limited: budget.truncated || budget.cyclic };
   if (immutable && [...budget.deps.values()].every((definition) => !definition || isImmutableData(definition))) insertCache.set(ins, entry);
   return entry;
 }
@@ -1594,7 +1651,7 @@ export function entityBounds(e: Entity, lookup: BlockLookup): Bounds | null {
       return { min: { x: b.min.x - h, y: b.min.y - h }, max: { x: b.max.x + h, y: b.max.y + h } };
     }
     case 'text':
-      return textBounds(e);
+      return textBounds(e, lookup.textGeometry);
     case 'insert':
       return cachedInsert(e, lookup)?.bounds ?? g.boundsOfPoints([e.position]);
     case 'ellipse':
@@ -1606,14 +1663,14 @@ export function entityBounds(e: Entity, lookup: BlockLookup): Bounds | null {
       return g.boundsOfPoints(rayEndpoints(e));
     case 'mtext': {
       let b: Bounds | null = null;
-      for (const t of mtextParts(e)) b = g.unionBounds(b, textBounds(t));
-      for (const l of mtextDecorations(e)) b = g.unionBounds(b, g.boundsOfPoints([l.a, l.b]));
-      for (const mask of mtextMasks(e)) b = g.unionBounds(b, g.boundsOfPoints(mask));
+      for (const t of mtextParts(e, lookup.textGeometry)) b = g.unionBounds(b, textBounds(t, lookup.textGeometry));
+      for (const l of mtextDecorations(e, lookup.textGeometry)) b = g.unionBounds(b, g.boundsOfPoints([l.a, l.b]));
+      for (const mask of mtextMasks(e, lookup.textGeometry)) b = g.unionBounds(b, g.boundsOfPoints(mask));
       return b ?? { min: e.position, max: e.position };
     }
     case 'dimension': {
       let b: Bounds | null = null;
-      for (const p of dimensionParts(e)) b = g.unionBounds(b, entityBounds(p, lookup));
+      for (const p of dimensionParts(e, lookup.textGeometry)) b = g.unionBounds(b, entityBounds(p, lookup));
       return b ?? g.boundsOfPoints([e.p1, e.p2]);
     }
     case 'spline':
@@ -1627,15 +1684,15 @@ export function entityBounds(e: Entity, lookup: BlockLookup): Bounds | null {
     case 'table':
     case 'image': {
       let b: Bounds | null = null;
-      for (const p of compoundParts(e)) b = g.unionBounds(b, entityBounds(p, lookup));
+      for (const p of compoundParts(e, lookup.textGeometry)) b = g.unionBounds(b, entityBounds(p, lookup));
       return b;
     }
   }
 }
 
 /** Primitive parts of a leader, table or image (for bounds, hit testing, snapping, drawing). */
-export function compoundParts(e: LeaderEntity | TableEntity | ImageEntity): Entity[] {
-  return e.type === 'leader' ? leaderParts(e) : e.type === 'table' ? tableParts(e) : imageParts(e);
+export function compoundParts(e: LeaderEntity | TableEntity | ImageEntity, context?: TextGeometryContext): Entity[] {
+  return e.type === 'leader' ? leaderParts(e, context) : e.type === 'table' ? tableParts(e, context) : imageParts(e);
 }
 
 /** Distance from point to entity outline (world units). */
@@ -1672,7 +1729,7 @@ export function distanceToEntity(p: Point, e: Entity, lookup: BlockLookup): numb
       return Math.max(0, best - (e.width ?? 0) / 2);
     }
     case 'text': {
-      const corners = textCorners(e);
+      const corners = textCorners(e, lookup.textGeometry);
       if (pointInPolygon(p, corners)) return 0;
       return Math.min(...corners.map((a, i) => g.distToSegment(p, a, corners[(i + 1) % corners.length]!)));
     }
@@ -1696,17 +1753,17 @@ export function distanceToEntity(p: Point, e: Entity, lookup: BlockLookup): numb
     }
     case 'mtext': {
       let best = Infinity;
-      for (const mask of mtextMasks(e)) {
+      for (const mask of mtextMasks(e, lookup.textGeometry)) {
         if (hasMTextFill(e) && pointInPolygon(p, mask)) return 0;
         for (let i = 0; i < mask.length; i++) best = Math.min(best, g.distToSegment(p, mask[i]!, mask[(i + 1) % mask.length]!));
       }
-      for (const t of mtextParts(e)) best = Math.min(best, distanceToEntity(p, t, lookup));
-      for (const l of mtextDecorations(e)) best = Math.min(best, g.distToSegment(p, l.a, l.b));
+      for (const t of mtextParts(e, lookup.textGeometry)) best = Math.min(best, distanceToEntity(p, t, lookup));
+      for (const l of mtextDecorations(e, lookup.textGeometry)) best = Math.min(best, g.distToSegment(p, l.a, l.b));
       return best;
     }
     case 'dimension': {
       let best = Infinity;
-      for (const part of dimensionParts(e)) best = Math.min(best, distanceToEntity(p, part, lookup));
+      for (const part of dimensionParts(e, lookup.textGeometry)) best = Math.min(best, distanceToEntity(p, part, lookup));
       return best;
     }
     case 'spline': {
@@ -1728,7 +1785,7 @@ export function distanceToEntity(p: Point, e: Entity, lookup: BlockLookup): numb
     case 'image': {
       if (e.type === 'image' && pointInPolygon(p, imageBoundary(e))) return 0;
       let best = Infinity;
-      for (const part of compoundParts(e)) best = Math.min(best, distanceToEntity(p, part, lookup));
+      for (const part of compoundParts(e, lookup.textGeometry)) best = Math.min(best, distanceToEntity(p, part, lookup));
       return best;
     }
   }
@@ -1823,7 +1880,7 @@ export function mirrorEntityAcross(e: Entity, a: Point, b: Point): Entity {
 }
 
 /** Grip points (AutoCAD-style) for an entity. */
-export function gripPoints(e: Entity): Point[] {
+export function gripPoints(e: Entity, context?: TextGeometryContext): Point[] {
   switch (e.type) {
     case 'line':
       return [e.a, g.mid(e.a, e.b), e.b];
@@ -1856,7 +1913,7 @@ export function gripPoints(e: Entity): Point[] {
     case 'mtext':
       return [e.position];
     case 'dimension': {
-      const textPos = dimensionParts(e).find((p): p is TextEntity => p.type === 'text')?.position ?? e.linePoint;
+      const textPos = dimensionParts(e, context).find((p): p is TextEntity => p.type === 'text')?.position ?? e.linePoint;
       return e.kind === 'angular' && e.center ? [e.p1, e.p2, e.linePoint, e.center, textPos] : [e.p1, e.p2, e.linePoint, textPos];
     }
     case 'spline':
@@ -2034,7 +2091,7 @@ export function snapCandidates(e: Entity, lookup: BlockLookup): SnapCandidate[] 
       return [{ point: e.position, kind: 'insertion' }];
     case 'dimension': {
       const out: SnapCandidate[] = [];
-      for (const part of dimensionParts(e)) {
+      for (const part of dimensionParts(e, lookup.textGeometry)) {
         if (part.type === 'line') out.push({ point: part.a, kind: 'endpoint' }, { point: part.b, kind: 'endpoint' });
         else if (part.type === 'text') out.push({ point: part.position, kind: 'insertion' });
       }
@@ -2058,7 +2115,7 @@ export function snapCandidates(e: Entity, lookup: BlockLookup): SnapCandidate[] 
     }
     case 'table': {
       const out: SnapCandidate[] = [{ point: e.position, kind: 'insertion' }];
-      for (const part of tableParts(e)) if (part.type === 'line') out.push({ point: part.a, kind: 'endpoint' }, { point: part.b, kind: 'endpoint' });
+      for (const part of tableParts(e, lookup.textGeometry)) if (part.type === 'line') out.push({ point: part.a, kind: 'endpoint' }, { point: part.b, kind: 'endpoint' });
       return out;
     }
     case 'image':
@@ -2098,10 +2155,10 @@ export function entitySegments(e: Entity, lookup: BlockLookup): Array<[Point, Po
     case 'ray':
       return [rayEndpoints(e)];
     case 'mtext':
-      return hasMTextFrame(e) ? mtextMasks(e).flatMap((mask) => mask.map((p, i): [Point, Point] => [p, mask[(i + 1) % mask.length]!])) : [];
+      return hasMTextFrame(e) ? mtextMasks(e, lookup.textGeometry).flatMap((mask) => mask.map((p, i): [Point, Point] => [p, mask[(i + 1) % mask.length]!])) : [];
     case 'dimension': {
       const out: Array<[Point, Point]> = [];
-      for (const part of dimensionParts(e)) out.push(...entitySegments(part, lookup));
+      for (const part of dimensionParts(e, lookup.textGeometry)) out.push(...entitySegments(part, lookup));
       return out;
     }
     case 'spline':
@@ -2115,7 +2172,7 @@ export function entitySegments(e: Entity, lookup: BlockLookup): Array<[Point, Po
     case 'table':
     case 'image': {
       const out: Array<[Point, Point]> = [];
-      for (const part of compoundParts(e)) out.push(...entitySegments(part, lookup));
+      for (const part of compoundParts(e, lookup.textGeometry)) out.push(...entitySegments(part, lookup));
       return out;
     }
   }

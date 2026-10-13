@@ -47,10 +47,12 @@ import { renderSettings, clearImageCache } from './render/draw';
 import { bridgeImageLoader } from './render/images';
 import { installOpenProgress, type OpenProgressBridge } from './ui/open-progress';
 import { registerDwgExportCommand } from './app/export-dwg';
+import { fontMetrics } from './render/font-metrics';
 
 declare global {
   interface Window {
     jcad?: {
+      fontMetrics?(request: import('./core/text-metrics').FontMetricsRequest): Promise<import('./core/text-metrics').NativeFontMetrics | null>;
       openDxf(): Promise<{ path: string; text: string } | null>;
       openDrawing(file?: string): Promise<import('./app/editor').OpenResult | null>;
       openProject(file?: string, opts?: { userChosen?: boolean; textOnly?: boolean }): Promise<{ path: string; text: string } | null>;
@@ -338,6 +340,8 @@ function boot(): void {
 
   const canvas = document.getElementById('drawing') as HTMLCanvasElement;
   const canvasWrap = canvas.parentElement as HTMLElement;
+  if (window.jcad?.platform === 'win32' && window.jcad.fontMetrics) fontMetrics.setReader((request) => window.jcad!.fontMetrics!(request));
+  document.fonts?.addEventListener('loadingdone', () => fontMetrics.invalidateFallbacks());
   const editor = new Editor(canvas);
   editor.fileBridge = window.jcad ?? browserFileBridge();
   registerDwgExportCommand(editor);

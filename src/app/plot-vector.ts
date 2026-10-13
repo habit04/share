@@ -30,6 +30,7 @@ import {
 import { deflate, rgbaToRgb } from '../io/pdf';
 import { renderSettings } from '../render/draw';
 import { renderPageToCanvas } from '../render/layouts';
+import { capturedPlotLookup } from './plot-fonts';
 
 export interface PlotChoiceLike {
   options: PlotOptions;
@@ -111,7 +112,7 @@ export async function plotLayoutsOrVector(ed: Editor, choice: PlotChoiceLike): P
   const vector = choice.action === 'pdf' && opts.output !== 'raster';
   const snapshot = ed.doc.snapshot;
   if (!vector && !snapshot.space) return false;
-  const lookup = ed.doc.lookupBlock;
+  const lookup = await capturedPlotLookup(snapshot);
   const state = plottableState(snapshot, lookup);
   const target = vector ? plotTarget(state, opts) : snapshot.space!.layout;
   const pages = plotPages(state, lookup, target, opts);

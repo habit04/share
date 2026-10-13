@@ -6,7 +6,8 @@
  */
 import type { Point, Bounds } from '../core/geometry';
 import * as g from '../core/geometry';
-import type { Entity } from '../core/entities';
+import type { Entity, BlockLookup } from '../core/entities';
+import { textGeometryForStyles, EMPTY_TEXT_STYLES } from './font-metrics';
 import { entityBounds } from '../core/entities';
 import type { PdfPageSpec, PdfDrawingContext, PdfPlotStyle } from '../io/pdf-vector';
 import type { Drawing } from '../core/document';
@@ -204,6 +205,7 @@ export function paintLayout(ctx: CanvasRenderingContext2D, vp: Viewport, ov: Vie
  * the "Raster image" PDF output; monochrome pages draw black.
  */
 export function renderPageToCanvas(canvas: HTMLCanvasElement, page: PdfPageSpec, ctxInfo: PdfDrawingContext, style: PdfPlotStyle, dpi: number): void {
+  const lookup: BlockLookup = Object.assign((name: string) => ctxInfo.lookup(name), { textGeometry: textGeometryForStyles(ctxInfo.textStyles ?? EMPTY_TEXT_STYLES) });
   const s = dpi / 72;
   const W = Math.max(1, Math.round(page.width * s));
   const H = Math.max(1, Math.round(page.height * s));
@@ -239,7 +241,7 @@ export function renderPageToCanvas(canvas: HTMLCanvasElement, page: PdfPageSpec,
       annotationDisplay.hide = !!grp.hideAnnotative;
       for (const e of grp.entities) {
         if (grp.hidden.has(e.layer)) continue;
-        drawEntity(ctx, e, tf, ctxInfo.layers, ctxInfo.lookup, { hidden: grp.hidden, ...(mono ? { strokeOverride: '#000000' } : {}) });
+        drawEntity(ctx, e, tf, ctxInfo.layers, lookup, { hidden: grp.hidden, ...(mono ? { strokeOverride: '#000000' } : {}) });
       }
       ctx.restore();
       for (const f of grp.frames ?? []) {

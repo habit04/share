@@ -8,9 +8,18 @@ import { layoutPage, type PlotOptions } from '../plot';
 import { fileErrorText } from '../file-error-text';
 import { plotLayoutsOrVector } from '../plot-vector';
 import type { Editor } from './editor';
+import { capturedPlotLookup } from '../plot-fonts';
+import { entityBounds } from '../../core/entities';
+import * as geometry from '../../core/geometry';
+import { paperSpaceLayout, paperEntities, sheetBounds } from '../../core/layouts';
 
 export async function renderPlotImage(ed: Editor, opts: PlotOptions): Promise<{ dataUrl: string; landscape: boolean; sheet: { width: number; height: number }; electron?: string; reducedToFit: boolean } | null> {
-  const b = ed.doc.extents();
+  const state = ed.doc.snapshot, lookup = await capturedPlotLookup(state);
+  const hidden = new Set(state.layers.filter((l) => !l.visible).map((l) => l.name));
+  const layout = paperSpaceLayout(state), entities = layout ? paperEntities(layout) : state.entities;
+  let b: geometry.Bounds | null = null;
+  for (const e of entities) if (!hidden.has(e.layer)) b = geometry.unionBounds(b, entityBounds(e, lookup));
+  if (layout) b = geometry.unionBounds(b, sheetBounds(layout));
   if (!b) return null;
   const w = b.max.x - b.min.x;
   const h = b.max.y - b.min.y;
@@ -32,10 +41,9 @@ export async function renderPlotImage(ed: Editor, opts: PlotOptions): Promise<{ 
   const oy = lay.origin.y * px;
   const tf = { scale: k, toScreen: (p: Point) => ({ x: ox + (p.x - b.min.x) * k, y: oy + (b.max.y - p.y) * k }) };
   const { drawEntity } = await import('../../render/draw');
-  const hidden = new Set(ed.doc.layers.filter((l) => !l.visible).map((l) => l.name));
-  for (const e of ed.doc.entities) {
+  for (const e of entities) {
     if (hidden.has(e.layer)) continue;
-    drawEntity(ctx, e, tf, ed.doc.layers, ed.doc.lookupBlock, { strokeOverride: '#000000', lineWidthOverride: Math.max(1, Math.round(px / 100)), hidden });
+    drawEntity(ctx, e, tf, state.layers, lookup, { strokeOverride: '#000000', lineWidthOverride: Math.max(1, Math.round(px / 100)), hidden });
   }
   return { dataUrl: canvas.toDataURL('image/png'), landscape: lay.landscape, sheet: lay.sheet, electron: lay.electron, reducedToFit: lay.reducedToFit };
 }

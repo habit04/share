@@ -7,6 +7,7 @@ import type { SnapResult, TrackPath } from '../core/snap';
 import { drawEntity, renderSettings, annotationDisplay, colorDisplay, lineweightDisplay, type Transform } from './draw';
 import { cannoscaleValue } from '../core/layouts';
 import { setTextStyles } from './hershey';
+import { fontMetrics } from './font-metrics';
 import { textStylesOf } from '../io/encoding';
 import { warmSpatialIndex } from '../core/spatial-index';
 
@@ -116,12 +117,14 @@ export class Viewport {
   /** Called after a devicePixelRatio change (window moved to another monitor, browser zoom) resized the canvas. */
   onDprChange: ((dpr: number) => void) | null = null;
 
-  private baseScene: { state: Drawing['snapshot']; key: string; canvas: HTMLCanvasElement } | null = null;
+  private baseScene: { state: Drawing['snapshot']; key: string; canvas: HTMLCanvasElement; metricKey?: object } | null = null;
+  private readonly disposeFontListener: () => void;
   private imageState: Drawing['snapshot'] | null = null;
   private sceneHasImages = false;
   private warmTimer: ReturnType<typeof setTimeout> | null = null;
   private warmedEntities: Drawing['entities'] | null = null;
   private warmedBlocks: Drawing['blocks'] | null = null;
+  private warmedMetricKey?: object;
 
   private sceneKey(ov: ViewportOverlay): string | null {
     if (this.layoutPainter || this.underlay || this.doc.entities.length < 200 || this.canvas.width * this.canvas.height > 16_000_000) return null;
@@ -144,14 +147,15 @@ export class Viewport {
     const context = canvas.getContext('2d');
     if (!context) return;
     context.drawImage(this.canvas, 0, 0);
-    this.baseScene = { state: this.doc.snapshot, key, canvas };
+    this.baseScene = { state: this.doc.snapshot, key, canvas, metricKey: this.doc.lookupBlock.textGeometry?.cacheKey };
   }
 
   private queueSpatialWarmup(): void {
-    if (this.warmTimer || this.warmedEntities === this.doc.entities && this.warmedBlocks === this.doc.blocks) return;
+    if (this.warmTimer || this.warmedEntities === this.doc.entities && this.warmedBlocks === this.doc.blocks && this.warmedMetricKey === this.doc.lookupBlock.textGeometry?.cacheKey) return;
     this.warmTimer = setTimeout(() => {
       this.warmTimer = null;
       this.warmedEntities = this.doc.entities; this.warmedBlocks = this.doc.blocks;
+      this.warmedMetricKey = this.doc.lookupBlock.textGeometry?.cacheKey;
       warmSpatialIndex(this.doc.entities, this.doc.lookupBlock);
     }, 50);
   }
@@ -161,6 +165,11 @@ export class Viewport {
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error('2D canvas unsupported');
     this.ctx = ctx;
+    this.disposeFontListener = fontMetrics.subscribe(() => {
+      if (this.baseScene) this.baseScene.canvas.width = 1;
+      this.baseScene = null; this.warmedEntities = null;
+      if (this.lastOverlay) this.requestRender(this.lastOverlay);
+    });
     this.watchDevicePixelRatio();
   }
 
@@ -197,6 +206,7 @@ export class Viewport {
 
   /** Stop listening for devicePixelRatio changes (a viewport that is thrown away). */
   dispose(): void {
+    this.disposeFontListener();
     if (this.dprQuery) this.dprQuery.mq.removeEventListener('change', this.dprQuery.handler);
     this.dprQuery = null;
     if (this.warmTimer) clearTimeout(this.warmTimer);
@@ -309,7 +319,7 @@ export class Viewport {
     this.lastOverlay = ov;
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     const key = this.sceneKey(ov);
-    const cached = key && this.baseScene?.state === this.doc.snapshot && this.baseScene.key === key ? this.baseScene : null;
+    const cached = key && this.baseScene?.state === this.doc.snapshot && this.baseScene.key === key && this.baseScene.metricKey === this.doc.lookupBlock.textGeometry?.cacheKey ? this.baseScene : null;
     if (!cached) {
       ctx.fillStyle = this.settings.background;
       ctx.fillRect(0, 0, this.width, this.height);
@@ -372,7 +382,7 @@ export class Viewport {
     if (ov.selection.size > 0 && ov.selection.size <= 400) {
       for (const e of this.doc.entities) {
         if (!ov.selection.has(e.id)) continue;
-        for (const gp of gripPoints(e)) this.drawGrip(this.toScreen(gp), cursorScreen);
+        for (const gp of gripPoints(e, this.doc.lookupBlock.textGeometry)) this.drawGrip(this.toScreen(gp), cursorScreen);
       }
     }
 

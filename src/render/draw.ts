@@ -23,6 +23,7 @@ import { paintOpacityGroup } from './opacity-group';
 import { aciToCss } from './palette';
 import { strokeText, strokeTextWidth, hasStrokeFont, expandControlCodes, drawStyledText } from './hershey';
 import { placedText } from '../core/text-placement';
+import { metricTextPlacement, type TextGeometryContext } from '../core/text-metrics';
 import { hasMTextFill, hasMTextFrame } from '../core/mtext-background';
 import { textStyleOf, withTextStyle } from '../io/encoding';
 import { findLinetype, effectiveLinetype, dashArray, type Linetype } from '../core/linetypes';
@@ -243,9 +244,10 @@ function strokePolyline(ctx: CanvasRenderingContext2D, e: PolylineEntity, tf: Tr
   if (e.closed) ctx.closePath();
 }
 
-function drawText(ctx: CanvasRenderingContext2D, e: TextEntity, tf: Transform): void {
+function drawText(ctx: CanvasRenderingContext2D, e: TextEntity, tf: Transform, geometry?: TextGeometryContext): void {
   const source = e;
-  e = placedText(e, strokeTextWidth);
+  const measured = geometry?.resolve(e).kind === 'canvas' ? metricTextPlacement(e, geometry) : null;
+  e = measured?.text ?? placedText(e, strokeTextWidth);
   const p = tf.toScreen(e.position);
   const px = e.height * tf.scale;
   const wf = e.widthFactor && e.widthFactor > 0 ? e.widthFactor : 1;
@@ -254,10 +256,10 @@ function drawText(ctx: CanvasRenderingContext2D, e: TextEntity, tf: Transform): 
   const text = e.text.includes('%%') ? e.text.replace(/%%[uUoOkK]/g, '') : e.text;
   if (px < 2.5) {
     // too small to read: draw a placeholder bar like AutoCAD's QTEXT
-    const w = text.length * px * 0.8 * wf;
+    const w = measured ? Math.max(measured.metrics.advance, measured.metrics.right) * tf.scale * wf : text.length * px * 0.8 * wf;
     const c = Math.cos(e.rotation);
     const sn = Math.sin(e.rotation);
-    const off = e.align === 'center' ? -w / 2 : e.align === 'right' ? -w : 0;
+    const off = measured ? measured.offset * tf.scale * wf : e.align === 'center' ? -w / 2 : e.align === 'right' ? -w : 0;
     ctx.beginPath();
     ctx.moveTo(p.x + off * c, p.y - off * sn);
     ctx.lineTo(p.x + (off + w) * c, p.y - (off + w) * sn);
@@ -265,7 +267,7 @@ function drawText(ctx: CanvasRenderingContext2D, e: TextEntity, tf: Transform): 
     return;
   }
   // TrueType / OpenType text styles draw with a canvas font stack (SHX and unknown styles fall through to the strokes).
-  if (drawStyledText(ctx, text === source.text ? source : { ...source, text }, tf)) return;
+  if (drawStyledText(ctx, text === source.text ? source : { ...source, text }, tf, textStyleOf(source), geometry)) return;
   if (hasStrokeFont) {
     const plain = wf === 1 && slant === 0;
     const strokes = plain ? strokeText(text, e.position, e.height, e.rotation, e.align) : strokeText(text, { x: 0, y: 0 }, e.height, 0, e.align);
@@ -306,7 +308,8 @@ function drawText(ctx: CanvasRenderingContext2D, e: TextEntity, tf: Transform): 
 
 const styledParts = new WeakMap<MTextEntity, TextEntity[]>();
 /** The pieces of an MTEXT carrying the MTEXT's text style (formatted runs draw with a TrueType style too). */
-function styledMtextParts(e: MTextEntity): TextEntity[] {
+function styledMtextParts(e: MTextEntity, geometry?: TextGeometryContext): TextEntity[] {
+  if (geometry) return mtextParts(e, geometry);
   const style = textStyleOf(e);
   if (!style) return mtextParts(e);
   let hit = styledParts.get(e);
@@ -555,7 +558,7 @@ function drawGeometry(
       break;
     }
     case 'text':
-      drawText(ctx, e, tf);
+      drawText(ctx, e, tf, lookup.textGeometry);
       break;
     case 'insert': {
       for (const sub of explodeInsert(e, lookup)) {
@@ -600,7 +603,7 @@ function drawGeometry(
         ctx.save();
         const background = e.background;
         ctx.fillStyle = background.flags & 2 ? (colorDisplay.paper ? '#ffffff' : colorDisplay.background) : resolveColor({ ...e, color: background.color, trueColor: background.trueColor, colorLayer: background.colorLayer }, layers);
-        for (const mask of mtextMasks(e)) {
+        for (const mask of mtextMasks(e, lookup.textGeometry)) {
           ctx.beginPath();
           tracePoints(ctx, mask, tf, true);
           if (hasMTextFill(e)) ctx.fill();
@@ -608,10 +611,10 @@ function drawGeometry(
         }
         ctx.restore();
       }
-      const pieces = styledMtextParts(e);
-      const lines = mtextDecorations(e);
+      const pieces = styledMtextParts(e, lookup.textGeometry);
+      const lines = mtextDecorations(e, lookup.textGeometry);
       if (lines.length === 0 && pieces.every((t) => t.color === e.color && t.trueColor === e.trueColor)) {
-        for (const t of pieces) drawText(ctx, t, tf);
+        for (const t of pieces) drawText(ctx, t, tf, lookup.textGeometry);
       } else drawParts(ctx, [...pieces, ...lines], tf, layers, lookup, style);
       break;
     }
@@ -620,7 +623,7 @@ function drawGeometry(
       // dimension's own colour (true colour included) already set on the context.
       const ownStroke = ctx.strokeStyle;
       const ownFill = ctx.fillStyle;
-      for (const part of dimensionParts(e)) {
+      for (const part of dimensionParts(e, lookup.textGeometry)) {
         ctx.globalAlpha = (style.alpha ?? 1) * resolveAlpha(part, layers);
         const own = style.strokeOverride !== undefined || part.color === e.color;
         ctx.strokeStyle = own ? ownStroke : resolveColor(part, layers);
@@ -643,10 +646,10 @@ function drawGeometry(
       drawHatch(ctx, e, tf, layers, style);
       break;
     case 'leader':
-      drawParts(ctx, leaderParts(e).filter((p) => !style.hidden?.has(p.layer) && layers.find((l) => l.name === p.layer)?.visible !== false), tf, layers, lookup, style);
+      drawParts(ctx, leaderParts(e, lookup.textGeometry).filter((p) => !style.hidden?.has(p.layer) && layers.find((l) => l.name === p.layer)?.visible !== false), tf, layers, lookup, style);
       break;
     case 'table':
-      drawParts(ctx, tableParts(e), tf, layers, lookup, style);
+      drawParts(ctx, tableParts(e, lookup.textGeometry), tf, layers, lookup, style);
       break;
     case 'image':
       drawImage(ctx, e, tf, layers, lookup, style);

@@ -11,6 +11,7 @@
 import jhf from './fonts/rowmans.jhf?raw';
 import { textStyleOf, type TextStyle } from '../io/encoding';
 import { placedText, type TextJustification } from '../core/text-placement';
+import { metricTextPlacement, type TextGeometryContext } from '../core/text-metrics';
 
 export interface Glyph {
   /** Advance width in normalised units (cap height = 1). */
@@ -167,7 +168,8 @@ export function isTrueTypeStyle(s: Pick<TextStyle, 'font' | 'family'>): boolean 
 const SANS = '"Liberation Sans", Arimo, Helvetica, sans-serif';
 /** Font files AutoCAD drawings commonly name, with metric-compatible free substitutes. */
 const FONT_FAMILIES: Array<[RegExp, string]> = [
-  [/^arial(n|nb|nbi|ni)?(bd|bi|i)?$/, `Arial, ${SANS}`],
+  [/^(arialn|arialnb|arialni|arialnbi)$/, `"Arial Narrow", "Liberation Sans Narrow", ${SANS}`],
+  [/^(arial|arialbd|arialbi|ariali)$/, `Arial, ${SANS}`],
   [/^(times|timesbd|timesbi|timesi)$/, '"Times New Roman", "Liberation Serif", Tinos, Times, serif'],
   [/^(cour|courbd|courbi|couri)$/, '"Courier New", "Liberation Mono", Cousine, monospace'],
   [/^(calibri|calibrib|calibrii|calibriz)$/, `Calibri, Carlito, ${SANS}`],
@@ -175,6 +177,12 @@ const FONT_FAMILIES: Array<[RegExp, string]> = [
   [/^(verdana|verdanab|verdanai|verdanaz)$/, `Verdana, "DejaVu Sans", ${SANS}`],
   [/^(tahoma|tahomabd)$/, `Tahoma, "DejaVu Sans", ${SANS}`],
   [/^(segoeui|segoeuib|segoeuii|segoeuiz)$/, `"Segoe UI", ${SANS}`],
+  [/^(consola|consolab|consolai|consolaz)$/, 'Consolas, "Cascadia Mono", "Liberation Mono", monospace'],
+  [/^(trebuc|trebucbd|trebucit|trebucbi)$/, `"Trebuchet MS", ${SANS}`],
+  [/^(georgia|georgiab|georgiai|georgiaz)$/, 'Georgia, "Liberation Serif", serif'],
+  [/^(comic|comicbd|comici|comicz)$/, `"Comic Sans MS", ${SANS}`],
+  [/^(gothic|gothicb|gothici|gothicbi)$/, `"Century Gothic", ${SANS}`],
+  [/^(pala|palab|palai|palabi)$/, '"Palatino Linotype", "Book Antiqua", Palatino, serif'],
   [/^(isocpeur|isocp|isoct|isoct2|isoct3)$/, `ISOCPEUR, "Liberation Sans Narrow", ${SANS}`],
   [/^(msgothic|msmincho|meiryo|yugoth\w*)$/, '"MS Gothic", "Yu Gothic", "Noto Sans CJK JP", "Noto Sans JP", sans-serif'],
   [/^(simsun|simhei|msyh\w*)$/, 'SimSun, "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", sans-serif'],
@@ -196,9 +204,9 @@ export function fontStack(s: Pick<TextStyle, 'font' | 'family'>): string {
 /** Bold / italic from the style's TrueType flags, else from Windows font file names (arialbd, ariali, arialbi, calibriz). */
 export function fontWeight(s: Pick<TextStyle, 'font' | 'bold' | 'italic'>): { bold: boolean; italic: boolean } {
   if (s.bold !== undefined || s.italic !== undefined) return { bold: !!s.bold, italic: !!s.italic };
-  const m = /^(arial|times|cour|verdana|tahoma|calibri|cambria|segoeui)(bd|bi|i|b|z)$/.exec(fontBase(s.font));
+  const m = /^(arialn|arial|times|cour|verdana|tahoma|calibri|cambria|segoeui|consola|trebuc|georgia|comic|gothic|pala)(bd|bi|it|i|b|z)$/.exec(fontBase(s.font));
   const suffix = m?.[2] ?? '';
-  return { bold: suffix === 'bd' || suffix === 'bi' || suffix === 'b' || suffix === 'z', italic: suffix === 'i' || suffix === 'bi' || suffix === 'z' };
+  return { bold: suffix === 'bd' || suffix === 'bi' || suffix === 'b' || suffix === 'z', italic: suffix === 'i' || suffix === 'it' || suffix === 'bi' || suffix === 'z' };
 }
 
 /** Look a style up by name, ignoring case (AutoCAD style names are case-insensitive). */
@@ -238,6 +246,7 @@ export interface TextCanvas {
   font: string;
   textAlign: CanvasTextAlign;
   textBaseline: CanvasTextBaseline;
+  fontKerning?: CanvasFontKerning;
 }
 
 /**
@@ -264,8 +273,9 @@ export function drawStyledText(
   },
   tf: { toScreen(p: { x: number; y: number }): { x: number; y: number }; scale: number },
   styleName: string | undefined = textStyleOf(e),
+  geometry?: TextGeometryContext,
 ): boolean {
-  const base = textRenderer(styleName);
+  const base = geometry?.resolve({ ...e, style: styleName }) ?? textRenderer(styleName);
   if (base.kind !== 'canvas') return false;
   const r = {
     ...base,
@@ -274,7 +284,9 @@ export function drawStyledText(
     ...(e.bold ? { bold: true } : {}),
   };
   ctx.save();
-  e = placedText({ ...e, widthFactor: r.widthFactor }, (text, height) => {
+  if ('fontKerning' in ctx) ctx.fontKerning = 'none';
+  const measured = geometry ? metricTextPlacement({ ...e, style: styleName }, geometry) : null;
+  e = measured?.text ?? placedText({ ...e, widthFactor: r.widthFactor }, (text, height) => {
     ctx.font = canvasFont(r, height * tf.scale);
     return ctx.measureText ? ctx.measureText(expandControlCodes(text)).width / tf.scale : strokeTextWidth(text, height);
   });
@@ -283,10 +295,17 @@ export function drawStyledText(
   ctx.rotate(-e.rotation);
   if (r.oblique) ctx.transform(1, 0, -Math.tan(r.oblique), 1, 0, 0);
   if (e.widthFactor !== 1) ctx.scale(e.widthFactor ?? 1, 1);
-  ctx.font = canvasFont(r, e.height * tf.scale);
+  ctx.font = geometry?.fontSize ? `${r.italic ? 'italic ' : ''}${r.bold ? 'bold ' : ''}${Number(geometry.fontSize(e.height * tf.scale, r).toFixed(6))}px ${r.family}` : canvasFont(r, e.height * tf.scale);
   ctx.textBaseline = 'alphabetic';
-  ctx.textAlign = e.align;
-  ctx.fillText(expandControlCodes(e.text), 0, 0);
+  ctx.textAlign = measured ? 'left' : e.align;
+  const text = expandControlCodes(e.text);
+  let x = measured ? measured.offset * tf.scale : 0;
+  const advances = geometry?.advances?.(text, e.height * tf.scale, r);
+  if (advances) {
+    // Native TEXT uses unkerned glyph advances; one glyph per draw also avoids ligatures.
+    let i = 0;
+    for (const character of text) { ctx.fillText(character, x, 0); x += advances[i++]!; }
+  } else ctx.fillText(text, x, 0);
   ctx.restore();
   return true;
 }
