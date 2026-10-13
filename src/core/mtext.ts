@@ -534,6 +534,7 @@ function formattedLayout(m: MTextEntity, paras: MTextParagraph[], measure: Measu
     width: number;
     height: number;
     align: 'left' | 'center' | 'right' | 'justify';
+    paragraphEnd: boolean;
   }
   const defaultAlign = mtextAlign(m.attachment);
   const lines: Line[] = [];
@@ -554,9 +555,9 @@ function formattedLayout(m: MTextEntity, paras: MTextParagraph[], measure: Measu
     }
     const align = para.align ?? defaultAlign;
     const lineHeight = (fs: Frag[]) => fs.reduce((h, f) => Math.max(h, f.style.height), 0) || m.height;
-    const finish = (fs: Frag[]) => {
+    const finish = (fs: Frag[], paragraphEnd = false) => {
       while (fs.length && fs[fs.length - 1]!.space) fs.pop();
-      lines.push({ frags: fs, width: fs.reduce((w, f) => w + f.width, 0), height: lineHeight(fs), align });
+      lines.push({ frags: fs, width: fs.reduce((w, f) => w + f.width, 0), height: lineHeight(fs), align, paragraphEnd });
     };
     let cur: Frag[] = [];
     let curW = 0;
@@ -568,6 +569,8 @@ function formattedLayout(m: MTextEntity, paras: MTextParagraph[], measure: Measu
       while (k < frags.length && !frags[k]!.space) word.push(frags[k++]!);
       const ww = word.reduce((w, f) => w + f.width, 0);
       const visible = word.filter((f) => !f.space);
+      // Trailing whitespace is trimmed by finish; it must not trigger a wrap into a new line.
+      if (visible.length === 0) break;
       if (m.width > 0 && cur.some((f) => !f.space) && curW + ww > m.width + 1e-9) {
         finish(cur);
         cur = [...visible];
@@ -577,7 +580,7 @@ function formattedLayout(m: MTextEntity, paras: MTextParagraph[], measure: Measu
         curW += ww;
       }
     }
-    finish(cur);
+    finish(cur, true);
   }
   const spacing = LINE_SPACING * (m.lineSpacing || 1);
   const H = lines.reduce((h, l, i) => h + (i === 0 ? l.height : l.height * spacing), 0);
@@ -626,7 +629,9 @@ function formattedLayout(m: MTextEntity, paras: MTextParagraph[], measure: Measu
     const slack = boxW - line.width;
     let x = boxLeft + (line.align === 'center' ? slack / 2 : line.align === 'right' ? slack : 0);
     const gaps = line.frags.filter((f) => f.space).length;
-    const extra = line.align === 'justify' && gaps > 0 && i < lines.length - 1 && m.width > 0 ? slack / gaps : 0;
+    // Every paragraph's final line keeps its natural spacing. An oversized word can make
+    // slack negative; compressing its gaps would move following fragments backwards.
+    const extra = line.align === 'justify' && gaps > 0 && !line.paragraphEnd && m.width > 0 ? Math.max(0, slack) / gaps : 0;
     for (const f of line.frags) {
       const s = f.style;
       const h = s.height;

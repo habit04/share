@@ -269,8 +269,8 @@ export function drawStyledText(
   if (base.kind !== 'canvas') return false;
   const r = {
     ...base,
-    ...(e.widthFactor !== undefined && e.widthFactor > 0 && e.widthFactor !== 1 ? { widthFactor: e.widthFactor } : {}),
-    ...(e.oblique ? { oblique: e.oblique } : {}),
+    ...(e.widthFactor !== undefined && Number.isFinite(e.widthFactor) && e.widthFactor > 0 ? { widthFactor: e.widthFactor } : {}),
+    ...(e.oblique !== undefined && Number.isFinite(e.oblique) ? { oblique: e.oblique } : {}),
     ...(e.bold ? { bold: true } : {}),
   };
   ctx.save();
