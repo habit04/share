@@ -129,7 +129,7 @@ describe('GPU collector lifecycle', () => {
     app.getGPUInfo.mockResolvedValueOnce({});
     app.emit('gpu-info-update');
     await flush();
-    expect(collector.get().adapters).toEqual([]);
+    expect((await collector.get()).adapters).toEqual([]);
     collector.dispose();
   });
   it('retains independent fields on rejection and timeout', async () => {
@@ -166,6 +166,64 @@ describe('GPU collector lifecycle', () => {
     expect(app.getGPUInfo).toHaveBeenCalledTimes(2);
     expect(collector.get().features.webgl).toBe('disabled_off');
     expect(collector.get().state).toBe('ready');
+    collector.dispose();
+  });
+  it('does not loop on asynchronous GPU-info events after a settled collection', async () => {
+    vi.useFakeTimers();
+    const { app, collector } = setup();
+    app.getGPUInfo.mockImplementation(async () => {
+      setTimeout(() => app.emit('gpu-info-update'), 1);
+      return hardware;
+    });
+    app.emit('gpu-info-update');
+    await flush();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(app.getGPUInfo).toHaveBeenCalledTimes(1);
+    const refreshed = await collector.get();
+    expect(refreshed.state).toBe('ready');
+    await vi.advanceTimersByTimeAsync(500);
+    expect(app.getGPUInfo).toHaveBeenCalledTimes(2);
+    collector.dispose();
+  });
+  it('settles a timed-out retry independently of a dirty follow-up', async () => {
+    vi.useFakeTimers();
+    const { app, collector } = setup();
+    app.getGPUInfo.mockRejectedValueOnce(new Error('private'));
+    app.emit('gpu-info-update');
+    await flush();
+    app.getGPUInfo.mockImplementation(() => new Promise(() => {}));
+    let settled: any;
+    const retry = Promise.resolve(collector.get()).then((value) => { settled = value; });
+    await flush();
+    app.emit('gpu-info-update');
+    await vi.advanceTimersByTimeAsync(101);
+    expect(settled?.state).toBe('unavailable');
+    expect(settled?.features.webgl).toBe('enabled');
+    expect(app.getGPUInfo).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(101);
+    await retry;
+    expect(settled.state).toBe('unavailable');
+    expect(JSON.stringify(settled)).not.toContain('private');
+    collector.dispose();
+  });
+  it('keeps the last settled snapshot available during an event storm and hung refresh', async () => {
+    vi.useFakeTimers();
+    const { app, collector } = setup();
+    app.emit('gpu-info-update');
+    await flush();
+    app.getGPUInfo.mockImplementation(() => new Promise(() => {}));
+    for (let i = 0; i < 100; i++) app.emit('gpu-info-update');
+    const refresh = collector.get();
+    await flush();
+    for (let i = 0; i < 100; i++) app.emit('gpu-info-update');
+    const previous = await collector.get();
+    expect(previous.state).toBe('ready');
+    expect(previous.adapters[0].name).toBe('NVIDIA GPU');
+    expect(app.getGPUInfo).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(101);
+    expect((await refresh).state).toBe('unavailable');
+    await vi.advanceTimersByTimeAsync(101);
+    expect(app.getGPUInfo).toHaveBeenCalledTimes(3);
     collector.dispose();
   });
   it('wires the channel through guarded IPC and exposes the narrow preload method', () => {

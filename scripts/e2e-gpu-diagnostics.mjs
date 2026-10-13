@@ -20,12 +20,28 @@ try {
   page.on('pageerror', (error) => errors.push(error.message));
   await page.waitForFunction(() => !!window.editor);
   let snapshot;
-  for (let attempt = 0; attempt < 15; attempt++) {
-    snapshot = await page.evaluate(() => window.jcad.gpuDiagnostics());
+  const deadline = Date.now() + 20000;
+  while (Date.now() < deadline) {
+    const remaining = deadline - Date.now();
+    let timer;
+    try {
+      snapshot = await Promise.race([
+        page.evaluate(() => window.jcad.gpuDiagnostics()),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error('Windows GPU collection exceeded the 20-second deadline')), remaining);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+    assert.ok(Date.now() <= deadline, 'Windows GPU collection must settle within 20 seconds');
     if (snapshot.state !== 'pending') break;
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(Math.min(300, Math.max(0, deadline - Date.now())));
   }
-  assert.equal(snapshot.state, 'ready', 'Windows GPU collection completed');
+  assert.ok(snapshot && ['ready', 'unavailable'].includes(snapshot.state), 'Windows GPU collection must settle before the deadline');
+  // Hosted Windows or unavailable adapters may provide only a bounded partial result.
+  // The diagnostics UI must remain truthful and usable; hardware coverage is separate.
+  if (snapshot.state === 'unavailable') assert.ok(snapshot.reasons.length > 0, 'Unavailable diagnostics explain their limit');
   assert.ok(snapshot.versions.electron);
   assert.ok(snapshot.versions.chromium);
   assert.ok(snapshot.versions.windows);
@@ -36,6 +52,8 @@ try {
   await copy.waitFor();
   // Exercise the real Windows clipboard, rather than replacing navigator.clipboard.
   await copy.click();
+  // The click starts an asynchronous write; wait for the UI's successful completion.
+  await page.getByText('Diagnostics copied.', { exact: true }).waitFor({ timeout: 10000 });
   const copied = await app.evaluate(({ clipboard }) => clipboard.readText());
   assert.match(copied, /Canvas 2D/);
   assert.match(copied, /Electron/);
@@ -60,7 +78,7 @@ try {
   assert.equal(await page.evaluate(() => window.editor.doc.entities.length), count + 1);
   assert.deepEqual(errors, []);
   writeFileSync(resolve(out, 'diagnostics.json'), JSON.stringify(snapshot, null, 2));
-  console.log(`GPU diagnostics: real Windows collector, About, clipboard and bug-report checks passed (Electron ${snapshot.versions.electron}).`);
+  console.log(`GPU diagnostics: real Windows collector (${snapshot.state}), About, clipboard and bug-report checks passed (Electron ${snapshot.versions.electron}).`);
 } finally {
   await app.evaluate(({ app }) => app.exit(0)).catch(() => {});
   await app.close().catch(() => {});

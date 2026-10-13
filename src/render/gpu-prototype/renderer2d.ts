@@ -2,7 +2,7 @@ import type { DrawingState } from '../../core/document';
 import { isImmutableData } from '../../core/immutable-data';
 import { lineweightDisplay } from '../draw';
 import { GpuDevice } from './device';
-import { cssRgb, prepare2D, type Gpu2DView, type Gpu2DOverlay, type Prepared2D } from './geometry2d';
+import { cssRgb, GPU_PAN_CACHE_BORDER, prepare2D, type Gpu2DView, type Gpu2DOverlay, type Prepared2D } from './geometry2d';
 
 export type { Gpu2DView, Gpu2DOverlay } from './geometry2d';
 export interface Gpu2DRenderResult {
@@ -20,10 +20,12 @@ const VERTEX_SHADER = `#version 300 es
 layout(location = 0) in vec2 a_position;
 layout(location = 1) in vec3 a_color;
 uniform vec2 u_view;
+uniform vec2 u_pan;
 out vec3 v_color;
 void main() {
-  gl_Position = vec4(a_position.x / u_view.x * 2.0 - 1.0,
-                     1.0 - a_position.y / u_view.y * 2.0, 0.0, 1.0);
+  vec2 position = a_position + u_pan;
+  gl_Position = vec4(position.x / u_view.x * 2.0 - 1.0,
+                     1.0 - position.y / u_view.y * 2.0, 0.0, 1.0);
   v_color = a_color;
 }`;
 const FRAGMENT_SHADER = `#version 300 es
@@ -38,8 +40,12 @@ interface PreparationCache {
   layers: DrawingState['layers'];
   linetypes: NonNullable<DrawingState['header']>['linetypes'] | undefined;
   key: string;
+  center: Gpu2DView['center'];
+  padding: number;
   geometry: Prepared2D;
 }
+
+interface PreparedFrame { geometry: Prepared2D; pan: Gpu2DView['center'] }
 
 /** Prototype model-space painter. Refusals leave full Canvas rendering to the caller. */
 export class Gpu2DRenderer {
@@ -47,6 +53,7 @@ export class Gpu2DRenderer {
   private program: WebGLProgram | null = null;
   private buffer: WebGLBuffer | null = null;
   private viewUniform: WebGLUniformLocation | null = null;
+  private panUniform: WebGLUniformLocation | null = null;
   private alphaUniform: WebGLUniformLocation | null = null;
   private uploaded: Prepared2D | null = null;
   private cache: PreparationCache | null = null;
@@ -58,6 +65,7 @@ export class Gpu2DRenderer {
       this.program = null;
       this.buffer = null;
       this.viewUniform = null;
+      this.panUniform = null;
       this.alphaUniform = null;
       this.uploaded = null;
       this.cache = null;
@@ -66,16 +74,28 @@ export class Gpu2DRenderer {
     });
   }
 
-  private prepare(state: DrawingState, view: Gpu2DView, overlay: Gpu2DOverlay): Prepared2D {
-    const key = JSON.stringify([view.width, view.height, view.dpr, view.scale, view.center.x, view.center.y, view.twist, view.lineweights ?? lineweightDisplay.enabled, [...overlay.selection], overlay.hover ?? null, !!overlay.solidSelection]);
+  private prepare(state: DrawingState, view: Gpu2DView, overlay: Gpu2DOverlay): PreparedFrame {
+    // Scale remains part of the key: scaling cached strokes would change pixel widths and curve error.
+    const key = JSON.stringify([view.width, view.height, view.dpr, view.scale, view.twist, view.lineweights ?? lineweightDisplay.enabled, [...overlay.selection], overlay.hover ?? null, !!overlay.solidSelection]);
     const linetypes = state.header?.linetypes;
     // Identity is safe only for snapshots certified immutable by the drawing core.
     const cacheable = isImmutableData(state.entities) && isImmutableData(state.layers) && (!linetypes || isImmutableData(linetypes));
     const cache = this.cache;
-    if (cacheable && cache && cache.entities === state.entities && cache.layers === state.layers && cache.linetypes === linetypes && cache.key === key) return cache.geometry;
-    const geometry = prepare2D(state, view, overlay);
-    this.cache = cacheable ? { entities: state.entities, layers: state.layers, linetypes, key, geometry } : null;
-    return geometry;
+    if (cacheable && cache && cache.entities === state.entities && cache.layers === state.layers && cache.linetypes === linetypes && cache.key === key) {
+      // Subtract world centers in JS doubles before packing only the small screen translation.
+      const dx = cache.center.x - view.center.x, dy = cache.center.y - view.center.y;
+      const c = Math.cos(view.twist), s = Math.sin(view.twist);
+      const pan = { x: (dx * c - dy * s) * view.scale, y: -(dx * s + dy * c) * view.scale };
+      if (Number.isFinite(pan.x) && Number.isFinite(pan.y)
+        && Math.abs(pan.x) <= cache.padding && Math.abs(pan.y) <= cache.padding
+        && Math.abs(pan.x) <= cache.geometry.panPrecisionMargin.x && Math.abs(pan.y) <= cache.geometry.panPrecisionMargin.y) {
+        return { geometry: cache.geometry, pan };
+      }
+    }
+    const padding = cacheable ? GPU_PAN_CACHE_BORDER / Math.max(1, view.dpr) : 0;
+    const geometry = prepare2D(state, view, overlay, padding);
+    this.cache = cacheable ? { entities: state.entities, layers: state.layers, linetypes, key, center: { ...view.center }, padding, geometry } : null;
+    return { geometry, pan: { x: 0, y: 0 } };
   }
 
   private initialize(): void {
@@ -85,8 +105,9 @@ export class Gpu2DRenderer {
       const gl = this.device.gl;
       this.program = this.device.createProgram(VERTEX_SHADER, FRAGMENT_SHADER);
       this.viewUniform = gl.getUniformLocation(this.program, 'u_view');
+      this.panUniform = gl.getUniformLocation(this.program, 'u_pan');
       this.alphaUniform = gl.getUniformLocation(this.program, 'u_alpha');
-      if (this.viewUniform === null || this.alphaUniform === null) throw new Error('WebGL2 stroke shader uniforms unavailable');
+      if (this.viewUniform === null || this.panUniform === null || this.alphaUniform === null) throw new Error('WebGL2 stroke shader uniforms unavailable');
     } catch (error) {
       this.initializationError = error instanceof Error ? error.message : 'WebGL2 stroke initialization failed';
       throw error;
@@ -101,18 +122,19 @@ export class Gpu2DRenderer {
     try {
       const background = cssRgb(view.background);
       if (!background) return refusal('Unsupported GPU background color');
-      const geometry = this.prepare(state, view, overlay);
       const gl = this.device.gl;
       if (gl.isContextLost()) return refusal('WebGL2 context is lost');
-      if (geometry.batches.some((batch) => batch.alpha < 1) && !gl.getContextAttributes()?.stencil) return refusal('Solid selection/hover requires a stencil buffer');
       const width = Math.round(view.width * view.dpr), height = Math.round(view.height * view.dpr);
       const limits = gl.getParameter(gl.MAX_VIEWPORT_DIMS) as Int32Array;
       if (width < 1 || height < 1 || !Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width > limits[0]! || height > limits[1]!) return refusal('GPU viewport exceeds device limits');
+      const { geometry, pan } = this.prepare(state, view, overlay);
+      if (geometry.batches.some((batch) => batch.alpha < 1) && !gl.getContextAttributes()?.stencil) return refusal('Solid selection/hover requires a stencil buffer');
       preparationMs = Math.max(0, performance.now() - start);
       submissionStart = performance.now();
-      this.initialize();
       if (this.canvas.width !== width) this.canvas.width = width;
       if (this.canvas.height !== height) this.canvas.height = height;
+      if (gl.drawingBufferWidth !== width || gl.drawingBufferHeight !== height) return refusal('GPU drawing buffer could not match the requested viewport');
+      this.initialize();
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       gl.bindVertexArray(null);
       gl.useProgram(this.program);
@@ -134,6 +156,7 @@ export class Gpu2DRenderer {
       gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 20, 0);
       gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 20, 8);
       gl.uniform2f(this.viewUniform, view.width, view.height);
+      gl.uniform2f(this.panUniform, pan.x, pan.y);
       gl.viewport(0, 0, width, height);
       gl.disable(gl.DEPTH_TEST);
       gl.disable(gl.CULL_FACE);

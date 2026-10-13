@@ -113,6 +113,7 @@ export class Viewport {
   /** Show the paper-space (triangle) UCS icon. */
   paperUcsIcon = false;
   private raf = 0;
+  private disposed = false;
   private lastOverlay: ViewportOverlay | null = null;
   private dprQuery: { mq: MediaQueryList; handler: () => void } | null = null;
   /** Called after a devicePixelRatio change (window moved to another monitor, browser zoom) resized the canvas. */
@@ -149,6 +150,18 @@ export class Viewport {
     this.baseScene = { state: this.doc.snapshot, key, canvas };
   }
 
+  private discardScene(): void {
+    if (this.baseScene) { this.baseScene.canvas.width = 1; this.baseScene.canvas.height = 1; }
+    this.baseScene = null;
+  }
+
+  private readonly contextRestored = (): void => {
+    if (this.disposed) return;
+    // A GPU-process failure can erase both Canvas bitmaps. Never reuse the saved scene.
+    this.discardScene();
+    if (this.lastOverlay) this.requestRender(this.lastOverlay);
+  };
+
   private queueSpatialWarmup(): void {
     if (this.warmTimer || this.warmedEntities === this.doc.entities && this.warmedBlocks === this.doc.blocks) return;
     this.warmTimer = setTimeout(() => {
@@ -163,6 +176,7 @@ export class Viewport {
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error('2D canvas unsupported');
     this.ctx = ctx;
+    canvas.addEventListener?.('contextrestored', this.contextRestored);
     this.watchDevicePixelRatio();
   }
 
@@ -197,14 +211,15 @@ export class Viewport {
     this.dprQuery = { mq, handler };
   }
 
-  /** Stop listening for devicePixelRatio changes (a viewport that is thrown away). */
+  /** Stop context/DPR listeners and queued work for a viewport that is thrown away. */
   dispose(): void {
+    this.disposed = true;
+    this.canvas.removeEventListener?.('contextrestored', this.contextRestored);
     if (this.dprQuery) this.dprQuery.mq.removeEventListener('change', this.dprQuery.handler);
     this.dprQuery = null;
     if (this.warmTimer) clearTimeout(this.warmTimer);
     this.warmTimer = null;
-    if (this.baseScene) { this.baseScene.canvas.width = 1; this.baseScene.canvas.height = 1; }
-    this.baseScene = null;
+    this.discardScene();
     if (this.raf) cancelAnimationFrame(this.raf);
     this.raf = 0;
   }

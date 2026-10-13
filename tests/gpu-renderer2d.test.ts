@@ -53,20 +53,36 @@ function rendererFixture() {
     createProgram: vi.fn(handle), attachShader: vi.fn(), detachShader: vi.fn(), linkProgram: vi.fn(),
     getProgramParameter: vi.fn(() => true), getProgramInfoLog: vi.fn(() => 'invalid link'),
     deleteShader: vi.fn(), deleteProgram: vi.fn(),
-    createBuffer: vi.fn(handle), bindBuffer: vi.fn(), bufferData: vi.fn(), deleteBuffer: vi.fn(),
+    createBuffer: vi.fn(handle), bindBuffer: vi.fn(), bufferData: vi.fn((_target: number, _data: BufferSource, _usage: number) => {}), deleteBuffer: vi.fn(),
     getParameter: vi.fn((parameter: number) => parameter === 0xd3a ? new Int32Array([16384, 16384]) : null),
     getError: vi.fn(() => 0), getContextAttributes: vi.fn(() => ({ stencil: true })),
     getUniformLocation: vi.fn((_program: unknown, name: string) => ({ name })),
     bindFramebuffer: vi.fn(), bindVertexArray: vi.fn(), useProgram: vi.fn(),
-    enableVertexAttribArray: vi.fn(), vertexAttribPointer: vi.fn(), uniform2f: vi.fn(), uniform1f: vi.fn(),
+    enableVertexAttribArray: vi.fn(), vertexAttribPointer: vi.fn(), uniform2f: vi.fn((_uniform: unknown, _x: number, _y: number) => {}), uniform1f: vi.fn(),
     viewport: vi.fn(), enable: vi.fn(), disable: vi.fn(), colorMask: vi.fn(), depthMask: vi.fn(),
     stencilMask: vi.fn(), clearColor: vi.fn(), clearStencil: vi.fn(), clear: vi.fn(),
     blendEquation: vi.fn(), blendFuncSeparate: vi.fn(), stencilFunc: vi.fn(), stencilOp: vi.fn(), drawArrays: vi.fn(),
+    get drawingBufferWidth(): number { return canvas.width; },
+    get drawingBufferHeight(): number { return canvas.height; },
   };
   const events = new EventTarget();
   const getContext = vi.fn((): WebGL2RenderingContext | null => gl as unknown as WebGL2RenderingContext);
   const canvas = Object.assign(events, { getContext, width: 1, height: 1 }) as unknown as HTMLCanvasElement;
   return { gl, canvas, getContext };
+}
+
+function uploadedGeometry(gl: ReturnType<typeof rendererFixture>['gl']): Prepared2D {
+  return { vertices: gl.bufferData.mock.lastCall![1] as Float32Array<ArrayBuffer>, batches: [], panPrecisionMargin: { x: 0, y: 0 } };
+}
+
+/** Simulate Float32 vertex-shader translation for independent coverage/precision assertions. */
+function translatedGeometry(geometry: Prepared2D, pan: Point): Prepared2D {
+  const vertices = geometry.vertices.slice();
+  for (let i = 0; i < vertices.length; i += 5) {
+    vertices[i] = Math.fround(vertices[i]! + Math.fround(pan.x));
+    vertices[i + 1] = Math.fround(vertices[i + 1]! + Math.fround(pan.y));
+  }
+  return { ...geometry, vertices };
 }
 
 describe('GPU double-precision preparation', () => {
@@ -293,13 +309,180 @@ describe('GPU renderer submission, caching and lifecycle', () => {
     expect(renderer.render(state, view, overlay).bytes).toBe(120);
     expect(renderer.render(state, { ...view }, { selection: new Set() }).bytes).toBe(0);
     expect(gl.bufferData).toHaveBeenCalledOnce();
-    expect(renderer.render(state, { ...view, center: { x: 0.25, y: 0 } }, overlay).bytes).toBe(120);
+    expect(renderer.render(state, { ...view, center: { x: 0.25, y: 0 } }, overlay).bytes).toBe(0);
     const changedLayer = sealImmutableData({ ...state, layers: [{ ...layer, trueColor: 0xff0000 }] });
     expect(renderer.render(changedLayer, view, overlay).bytes).toBe(120);
     const selected = { selection: new Set(['line']), solidSelection: true };
     expect(renderer.render(changedLayer, view, selected).bytes).toBe(120);
     selected.selection.clear();
     expect(renderer.render(changedLayer, view, selected).bytes).toBe(120);
+    renderer.dispose();
+  });
+
+  it('retains clipped border geometry so a warm pan can reveal previously offscreen strokes', () => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas);
+    const entering: LineEntity = { ...line, a: { x: -6, y: -1 }, b: { x: -6, y: 1 } };
+    const spanning: LineEntity = { ...line, id: 'spanning', a: { x: -1e6, y: 2 }, b: { x: 1e6, y: 2 } };
+    const state = sealImmutableData(drawing([entering, spanning]));
+    renderer.render(state, view, overlay);
+    const geometry = uploadedGeometry(gl);
+    expect(covers(geometry, { x: 10, y: 120 })).toBe(false);
+    expect(renderer.render(state, { ...view, center: { x: -1, y: 0 } }, overlay).bytes).toBe(0);
+    expect(gl.uniform2f).toHaveBeenLastCalledWith({ name: 'u_pan' }, 30, -0);
+    const panned = translatedGeometry(geometry, { x: 30, y: 0 });
+    expect(covers(panned, { x: 10, y: 120 })).toBe(true);
+    expect(covers(panned, { x: 1, y: 60 })).toBe(true);
+    expect(covers(panned, { x: 319, y: 60 })).toBe(true);
+    expect(gl.bufferData).toHaveBeenCalledOnce();
+    renderer.dispose();
+  });
+
+  it('anchors cumulative pan bounds to copied camera values and resets translation on rebuild', () => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas);
+    const state = sealImmutableData(drawing());
+    const camera = { ...view, center: { x: 0, y: 0 } };
+    renderer.render(state, camera, overlay);
+    for (const x of [-2, 0, -2, -4]) {
+      camera.center.x = x;
+      expect(renderer.render(state, camera, overlay).bytes).toBe(0);
+      expect(gl.uniform2f.mock.lastCall![1]).toBeCloseTo(-x * view.scale, 12);
+      expect(gl.uniform2f.mock.lastCall![2]).toBeCloseTo(0, 12);
+    }
+    camera.center.x = -6;
+    expect(renderer.render(state, camera, overlay).bytes).toBeGreaterThan(0);
+    expect(gl.uniform2f).toHaveBeenLastCalledWith({ name: 'u_pan' }, 0, 0);
+    camera.center.y = 6;
+    expect(renderer.render(state, camera, overlay).bytes).toBeGreaterThan(0);
+    expect(gl.uniform2f).toHaveBeenLastCalledWith({ name: 'u_pan' }, 0, 0);
+    renderer.dispose();
+  });
+
+  it.each([1, 2, 3])('rebases tiny pans at trillion-unit origins and preserves rotated curves at DPR %s', (dpr) => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas);
+    const center = { x: 1e12, y: -1e12 };
+    const state = sealImmutableData(drawing([
+      { ...line, a: { x: center.x - 1 / 32, y: center.y }, b: { x: center.x + 1 / 32, y: center.y }, lineWeight: 1 },
+      { ...polyline, points: [{ x: center.x - 1 / 32, y: center.y }, { x: center.x + 1 / 32, y: center.y }], bulges: [0.6] },
+    ]));
+    const close = { ...view, center, scale: 1024, twist: 0.63, dpr, lineweights: true };
+    renderer.render(state, close, overlay);
+    const original = uploadedGeometry(gl);
+    const moved = { ...close, center: { x: center.x + 1 / 8192, y: center.y - 1 / 4096 } };
+    expect(renderer.render(state, moved, overlay).bytes).toBe(0);
+    const pan = gl.uniform2f.mock.lastCall!;
+    expect(pan[1]).toBeCloseTo((-Math.cos(close.twist) / 8 - Math.sin(close.twist) / 4), 12);
+    expect(pan[2]).toBeCloseTo((Math.sin(close.twist) / 8 - Math.cos(close.twist) / 4), 12);
+    const actual = translatedGeometry(original, { x: pan[1], y: pan[2] });
+    const fresh = prepare2D(state, moved, overlay);
+    expect(actual.vertices).toHaveLength(fresh.vertices.length);
+    actual.vertices.forEach((value, index) => expect(value).toBeCloseTo(fresh.vertices[index]!, 3));
+    expect(gl.bufferData).toHaveBeenCalledOnce();
+    renderer.dispose();
+  });
+
+  it.each(['x', 'y'] as const)('reuses the exact physical border and rebuilds beyond it on the %s axis', (axis) => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas);
+    const state = sealImmutableData(drawing());
+    const unit = { ...view, scale: 1, dpr: 2 };
+    renderer.render(state, unit, overlay);
+    expect(renderer.render(state, { ...unit, center: { x: 0, y: 0, [axis]: -64 } }, overlay).bytes).toBe(0);
+    expect(renderer.render(state, { ...unit, center: { x: 0, y: 0, [axis]: -64.5 } }, overlay).bytes).toBeGreaterThan(0);
+    expect(gl.uniform2f).toHaveBeenLastCalledWith({ name: 'u_pan' }, 0, 0);
+    renderer.dispose();
+  });
+
+  it('rebuilds on zoom instead of scaling cached pixel lineweights or curve tessellation', () => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas);
+    const state = sealImmutableData(drawing([
+      { ...line, lineWeight: 1 },
+      { ...line, id: 'circle', type: 'circle', center: { x: 0, y: 0 }, radius: 1 },
+    ]));
+    const weighted = { ...view, lineweights: true };
+    renderer.render(state, weighted, overlay);
+    const initial = uploadedGeometry(gl);
+    renderer.render(state, { ...weighted, center: { x: 0.25, y: 0 } }, overlay);
+    expect(gl.uniform2f.mock.lastCall![1]).not.toBe(0);
+    expect(renderer.render(state, { ...weighted, scale: 60 }, overlay).bytes).toBeGreaterThan(0);
+    const zoomed = uploadedGeometry(gl);
+    const lineHeight = (geometry: Prepared2D) => {
+      const points = xy({ ...geometry, vertices: geometry.vertices.slice(0, 30) });
+      return Math.max(...points.map((point) => point.y)) - Math.min(...points.map((point) => point.y));
+    };
+    expect(lineHeight(initial)).toBe(4);
+    expect(lineHeight(zoomed)).toBe(4);
+    expect(zoomed.vertices.length).toBeGreaterThan(initial.vertices.length);
+    expect(gl.uniform2f).toHaveBeenLastCalledWith({ name: 'u_pan' }, 0, 0);
+    renderer.dispose();
+  });
+
+  it.each([
+    { width: 400 }, { height: 300 }, { dpr: 2 }, { twist: 0.4 }, { lineweights: true },
+  ])('invalidates pan geometry for changed view properties: %j', (change) => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas);
+    const state = sealImmutableData(drawing());
+    renderer.render(state, view, overlay);
+    renderer.render(state, { ...view, center: { x: 0.25, y: 0 } }, overlay);
+    expect(renderer.render(state, { ...view, ...change }, overlay).bytes).toBeGreaterThan(0);
+    expect(gl.uniform2f).toHaveBeenLastCalledWith({ name: 'u_pan' }, 0, 0);
+    renderer.dispose();
+  });
+
+  it('invalidates certified geometry, visibility, linetypes and hover before any cached pan', () => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas);
+    const state = sealImmutableData({ ...drawing(), header: { ...DEFAULT_HEADER, linetypes: [] } });
+    renderer.render(state, view, overlay);
+    const moved = { ...view, center: { x: 0.25, y: 0 } };
+    const changed = sealImmutableData({ ...state, entities: [{ ...line, b: { x: 1, y: 0 } }] });
+    expect(renderer.render(changed, moved, overlay).bytes).toBeGreaterThan(0);
+    expect(gl.uniform2f).toHaveBeenLastCalledWith({ name: 'u_pan' }, 0, 0);
+    expect(renderer.render(changed, moved, { ...overlay, hover: 'line' }).bytes).toBeGreaterThan(0);
+    const dashed = sealImmutableData({ ...changed, layers: [{ ...layer, linetype: 'custom' }], header: { ...DEFAULT_HEADER, linetypes: [{ name: 'custom', description: '', pattern: [1, -1] }] } });
+    gl.clear.mockClear(); gl.drawArrays.mockClear();
+    expect(renderer.render(dashed, moved, overlay).reason).toMatch(/dashed/);
+    const unsupported = { ...line, id: 'offscreen', type: 'text', a: { x: 1000, y: 1000 } } as unknown as Entity;
+    expect(renderer.render(sealImmutableData({ ...changed, entities: [line, unsupported] }), moved, overlay).reason).toMatch(/Unsupported entity/);
+    expect(gl.clear).not.toHaveBeenCalled(); expect(gl.drawArrays).not.toHaveBeenCalled();
+    renderer.dispose();
+  });
+
+  it.each([NaN, Infinity, -Infinity])('refuses invalid camera centers on a warm cache: %s', (invalid) => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas);
+    const state = sealImmutableData(drawing());
+    renderer.render(state, view, overlay);
+    gl.clear.mockClear(); gl.drawArrays.mockClear();
+    expect(renderer.render(state, { ...view, center: { x: invalid, y: 0 } }, overlay)).toMatchObject({ rendered: false, bytes: 0, reason: expect.stringContaining('Invalid GPU view') });
+    expect(gl.clear).not.toHaveBeenCalled(); expect(gl.drawArrays).not.toHaveBeenCalled();
+    renderer.dispose();
+  });
+
+  it('rechecks offscreen source precision when a cached pan reaches the original coordinate bound', () => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas);
+    const bound = 2 ** 36;
+    const state = sealImmutableData(drawing([{ ...line, a: { x: 0, y: 0 }, b: { x: bound - view.width / 2 - 1, y: 0 } }]));
+    const unit = { ...view, scale: 1 };
+    expect(renderer.render(state, unit, overlay).rendered).toBe(true);
+    gl.clear.mockClear(); gl.drawArrays.mockClear();
+    expect(renderer.render(state, { ...unit, center: { x: -2, y: 0 } }, overlay)).toMatchObject({ rendered: false, bytes: 0, reason: expect.stringContaining('precision bound') });
+    expect(gl.clear).not.toHaveBeenCalled(); expect(gl.drawArrays).not.toHaveBeenCalled();
+    renderer.dispose();
+  });
+
+  it('refuses an undersized drawing buffer without allocating or submitting GPU geometry', () => {
+    const { canvas, gl } = rendererFixture();
+    Object.defineProperty(gl, 'drawingBufferWidth', { get: () => 0 });
+    const renderer = new Gpu2DRenderer(canvas);
+    expect(renderer.render(sealImmutableData(drawing()), view, overlay)).toMatchObject({ rendered: false, bytes: 0, reason: expect.stringContaining('drawing buffer') });
+    expect(gl.createProgram).not.toHaveBeenCalled(); expect(gl.bufferData).not.toHaveBeenCalled();
+    expect(gl.clear).not.toHaveBeenCalled(); expect(gl.drawArrays).not.toHaveBeenCalled();
     renderer.dispose();
   });
 
@@ -311,6 +494,22 @@ describe('GPU renderer submission, caching and lifecycle', () => {
     renderer.render(state, view, overlay);
     mutable.b.x = 1;
     expect(renderer.render(state, view, overlay).bytes).toBeGreaterThan(0);
+    renderer.dispose();
+  });
+
+  it('refreshes mutable layer and custom-linetype data instead of reusing a warm camera cache', () => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas);
+    const mutableLayer = { ...layer };
+    const linetypes = [{ name: 'custom', description: '', pattern: [] as number[] }];
+    const state = { ...drawing(sealImmutableData([{ ...line, linetype: 'custom' }]), [mutableLayer]), header: { ...DEFAULT_HEADER, linetypes } };
+    renderer.render(state, view, overlay);
+    mutableLayer.trueColor = 0xff0000;
+    expect(renderer.render(state, { ...view, center: { x: 0.25, y: 0 } }, overlay).bytes).toBeGreaterThan(0);
+    linetypes[0]!.pattern.push(1, -1);
+    gl.clear.mockClear(); gl.drawArrays.mockClear();
+    expect(renderer.render(state, view, overlay).reason).toMatch(/dashed/);
+    expect(gl.clear).not.toHaveBeenCalled(); expect(gl.drawArrays).not.toHaveBeenCalled();
     renderer.dispose();
   });
 
@@ -328,12 +527,19 @@ describe('GPU renderer submission, caching and lifecycle', () => {
     const { canvas, gl } = rendererFixture();
     const renderer = new Gpu2DRenderer(canvas);
     const bowtie: PolylineEntity = { ...polyline, points: [{ x: -2, y: -2 }, { x: 2, y: 2 }, { x: -2, y: 2 }, { x: 2, y: -2 }] };
-    const result = renderer.render(drawing([line, bowtie, { ...line, id: 'last' }]), view, { selection: new Set(['polyline']), solidSelection: true });
+    const state = sealImmutableData(drawing([line, bowtie, { ...line, id: 'last' }]));
+    const selected = { selection: new Set(['polyline']), solidSelection: true };
+    const result = renderer.render(state, view, selected);
     expect(result.rendered).toBe(true);
     expect(gl.uniform1f).toHaveBeenCalledWith({ name: 'u_alpha' }, 0.95);
     expect(gl.stencilFunc).toHaveBeenCalledWith(gl.EQUAL, 0, 0xff);
     expect(gl.stencilOp).toHaveBeenCalledWith(gl.KEEP, gl.KEEP, gl.INCR);
     expect(gl.drawArrays).toHaveBeenCalledTimes(3);
+    const initial = uploadedGeometry(gl);
+    expect(renderer.render(state, { ...view, center: { x: 0.25, y: 0 } }, selected).bytes).toBe(0);
+    expect(gl.drawArrays).toHaveBeenCalledTimes(6);
+    expect(gl.uniform1f.mock.calls.filter((call) => (call as unknown[])[1] === 0.95)).toHaveLength(2);
+    expect(uploadedGeometry(gl).vertices).toBe(initial.vertices);
     renderer.dispose();
   });
 
@@ -353,12 +559,14 @@ describe('GPU renderer submission, caching and lifecycle', () => {
     const renderer = new Gpu2DRenderer(canvas, notify);
     const state = sealImmutableData(drawing());
     expect(renderer.render(state, view, overlay).rendered).toBe(true);
+    expect(renderer.render(state, { ...view, center: { x: 0.25, y: 0 } }, overlay).bytes).toBe(0);
     gl.isContextLost.mockReturnValue(true);
     canvas.dispatchEvent(new Event('webglcontextlost', { cancelable: true }));
     expect(renderer.render(state, view, overlay)).toMatchObject({ rendered: false, bytes: 0, submissionMs: 0 });
     gl.isContextLost.mockReturnValue(false);
     canvas.dispatchEvent(new Event('webglcontextrestored'));
     expect(renderer.render(state, view, overlay)).toMatchObject({ rendered: true, bytes: 120 });
+    expect(gl.uniform2f).toHaveBeenLastCalledWith({ name: 'u_pan' }, 0, 0);
     expect(gl.createProgram).toHaveBeenCalledTimes(2); expect(gl.createBuffer).toHaveBeenCalledTimes(2);
     expect(notify).toHaveBeenCalledTimes(2);
     renderer.dispose();

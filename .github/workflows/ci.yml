@@ -156,3 +156,43 @@ jobs:
           name: e2e-electron-${{ matrix.os }}
           path: e2e-output/
           if-no-files-found: warn
+
+  # This checks the development flag and real WebGL lifecycle separately from the
+  # ordinary Windows build. Runner graphics capabilities are recorded, not treated
+  # as proof of consumer hardware support; timing comparisons have no speed gate.
+  gpu-experimental:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+      - run: node node_modules/electron/install.js
+      - run: npm run build
+      - name: Ordinary build keeps Canvas and diagnostics remain usable
+        run: |
+          node scripts/e2e-gpu-default.mjs
+          node scripts/e2e-gpu-diagnostics.mjs
+      - run: npm run build:gpu
+      - name: Unavailable WebGL keeps complete Canvas drawings and DXF persistence
+        run: node scripts/e2e-gpu-unavailable.mjs
+      - name: Private GPU-process failure, Canvas recovery and DXF persistence
+        run: node scripts/e2e-gpu-process.mjs
+      - name: Experimental geometry, pan cache, fallback and context restoration
+        run: npm run bench:gpu
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gpu-experimental-${{ github.sha }}
+          path: e2e-output/
+          if-no-files-found: warn

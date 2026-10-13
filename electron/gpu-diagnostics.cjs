@@ -50,7 +50,7 @@ function projectGPUInfo(raw, status, acceleration, versions) {
 
 /**
  * Register before app readiness. Never await this collector during window startup.
- * A later event or request retries failures; obsolete/hung results cannot overwrite recovery.
+ * Later events mark data dirty for the next request; obsolete/hung results cannot overwrite recovery.
  * @param {Electron.App} app
  * @param {{ versions: Record<string, string>, timeoutMs?: number }} options
  */
@@ -63,7 +63,7 @@ function createGPUCollector(app, { versions, timeoutMs = 5000 }) {
   let disposed = false;
   let generation = 0;
   let dirty = false;
-  /** @type {Promise<void> | null} */
+  /** @type {Promise<ReturnType<typeof projectGPUInfo>> | null} */
   let inFlight = null;
   let finishCurrent = () => {};
   let timer = setTimeout(() => { snapshot = empty('unavailable', 'GPU information timed out.'); }, timeoutMs);
@@ -73,6 +73,7 @@ function createGPUCollector(app, { versions, timeoutMs = 5000 }) {
     collecting = true;
     dirty = false;
     const attempt = ++generation;
+    /** @type {(result: ReturnType<typeof projectGPUInfo>) => void} */
     let resolveDone = () => {};
     inFlight = new Promise((resolve) => { resolveDone = resolve; });
     const completion = inFlight;
@@ -82,16 +83,19 @@ function createGPUCollector(app, { versions, timeoutMs = 5000 }) {
       clearTimeout(timer);
       collecting = false;
       inFlight = null;
+      const refresh = dirty && allowRefresh && !disposed;
+      dirty = false;
+      // Resolve this attempt's settled result before a follow-up can replace shared state.
+      resolveDone(structuredClone(snapshot));
       // At most one follow-up per cycle: getGPUInfo can itself emit updates.
-      if (dirty && allowRefresh && !disposed) void collect(false)?.then(resolveDone);
-      else resolveDone();
+      if (refresh) void collect(false);
     };
     finishCurrent = finish;
-    snapshot = empty('pending', 'GPU information is pending.');
+    let partial = empty('pending', 'GPU information is pending.');
     clearTimeout(timer);
     timer = setTimeout(() => {
       if (attempt !== generation) return;
-      snapshot = { ...snapshot, state: 'unavailable', reasons: [...snapshot.reasons.filter((reason) => reason !== 'GPU information is pending.'), 'GPU information timed out.'] };
+      snapshot = { ...partial, state: 'unavailable', reasons: [...partial.reasons.filter((reason) => reason !== 'GPU information is pending.'), 'GPU information timed out.'] };
       finish();
     }, timeoutMs);
     timer.unref?.();
@@ -102,8 +106,10 @@ function createGPUCollector(app, { versions, timeoutMs = 5000 }) {
       // Independent APIs remain useful even when complete GPUInfo rejects or hangs.
       try { status = app.getGPUFeatureStatus(); } catch { failed = true; }
       try { acceleration = app.isHardwareAccelerationEnabled(); } catch { failed = true; }
-      const partial = projectGPUInfo(null, status, acceleration, safeVersions);
-      if (attempt === generation && !disposed) snapshot = { ...partial, state: 'pending', reasons: [...partial.reasons, 'GPU information is pending.'] };
+      const available = projectGPUInfo(null, status, acceleration, safeVersions);
+      partial = { ...available, state: 'pending', reasons: [...available.reasons, 'GPU information is pending.'] };
+      // Keep a prior ready/unavailable snapshot readable throughout a refresh.
+      if (attempt === generation && !disposed && snapshot.state === 'pending') snapshot = partial;
       let raw;
       try { raw = await app.getGPUInfo('complete'); } catch { failed = true; }
       const result = projectGPUInfo(raw, status, acceleration, safeVersions);
@@ -116,11 +122,18 @@ function createGPUCollector(app, { versions, timeoutMs = 5000 }) {
     });
     return completion;
   }
-  function update() { observed = true; if (collecting) dirty = true; else collect(); }
+  function update() {
+    const first = !observed;
+    observed = true;
+    if (first && !collecting) void collect();
+    else dirty = true;
+    // Late self-emitted events must not start an unbounded event -> request -> event loop.
+    // Consumers request subsequent refreshes, coalescing bursts while preserving settled data.
+  }
   app.on('gpu-info-update', update);
   return {
     get() {
-      if (snapshot.state === 'unavailable' && observed && !disposed) return collect()?.then(() => structuredClone(snapshot));
+      if (!collecting && observed && !disposed && (dirty || snapshot.state === 'unavailable')) return collect();
       return structuredClone(snapshot);
     },
     dispose() { disposed = true; finishCurrent(); generation++; clearTimeout(timer); app.removeListener('gpu-info-update', update); },
