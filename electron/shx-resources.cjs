@@ -7,10 +7,12 @@ const crypto = require('node:crypto');
 const MAX_SHX_BYTES = 8 * 1024 * 1024;
 const MAX_SHX_DIRECTORIES = 16;
 const error = (message) => Object.assign(new Error(message), { code: 'ERR_SHX_RESOURCE' });
-const samePath = (a, b) => process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+// These are canonical realpaths, including the filesystem's stored name spelling.
+// Windows path.relative/toLowerCase can merge distinct Unicode NTFS directories.
+const samePath = (a, b) => a === b;
 const inside = (root, target) => {
-  const relative = path.relative(root, target);
-  return relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+  const prefix = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
+  return target.startsWith(prefix) && target.length > prefix.length;
 };
 const sameFile = (a, b) => a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs;
 
