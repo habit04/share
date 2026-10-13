@@ -286,28 +286,29 @@ export function drawStyledText(
     ...(e.bold ? { bold: true } : {}),
   };
   ctx.save();
-  if ('fontKerning' in ctx) ctx.fontKerning = 'none';
-  const measured = geometry ? metricTextPlacement({ ...e, style: styleName }, geometry) : null;
-  e = measured?.text ?? placedText({ ...e, widthFactor: r.widthFactor }, (text, height) => {
-    ctx.font = canvasFont(r, height * tf.scale);
-    return ctx.measureText ? ctx.measureText(expandControlCodes(text)).width / tf.scale : strokeTextWidth(text, height);
-  });
-  const p = tf.toScreen(e.position);
-  ctx.translate(p.x, p.y);
-  ctx.rotate(-e.rotation);
-  if (r.oblique) ctx.transform(1, 0, -Math.tan(r.oblique), 1, 0, 0);
-  if (e.widthFactor !== 1) ctx.scale(e.widthFactor ?? 1, 1);
-  ctx.font = geometry?.fontSize ? `${r.italic ? 'italic ' : ''}${r.bold ? 'bold ' : ''}${Number(geometry.fontSize(e.height * tf.scale, r).toFixed(6))}px ${r.family}` : canvasFont(r, e.height * tf.scale);
-  ctx.textBaseline = 'alphabetic';
-  ctx.textAlign = measured ? 'left' : e.align;
-  const text = expandControlCodes(e.text);
-  let x = measured ? measured.offset * tf.scale : 0;
-  const advances = geometry?.advances?.(text, e.height * tf.scale, r);
-  if (advances) {
-    // Native TEXT uses unkerned glyph advances; one glyph per draw also avoids ligatures.
-    let i = 0;
-    for (const character of text) { ctx.fillText(character, x, 0); x += advances[i++]!; }
-  } else ctx.fillText(text, x, 0);
-  ctx.restore();
+  try {
+    if ('fontKerning' in ctx) ctx.fontKerning = 'none';
+    const measured = geometry ? metricTextPlacement({ ...e, style: styleName }, geometry) : null;
+    e = measured?.text ?? placedText({ ...e, widthFactor: r.widthFactor }, (text, height) => {
+      ctx.font = canvasFont(r, height * tf.scale);
+      return ctx.measureText ? ctx.measureText(expandControlCodes(text)).width / tf.scale : strokeTextWidth(text, height);
+    });
+    const p = tf.toScreen(e.position);
+    ctx.translate(p.x, p.y);
+    ctx.rotate(-e.rotation);
+    if (r.oblique) ctx.transform(1, 0, -Math.tan(r.oblique), 1, 0, 0);
+    if (e.widthFactor !== 1) ctx.scale(e.widthFactor ?? 1, 1);
+    ctx.font = geometry?.fontSize ? `${r.italic ? 'italic ' : ''}${r.bold ? 'bold ' : ''}${Number(geometry.fontSize(e.height * tf.scale, r).toFixed(6))}px ${r.family}` : canvasFont(r, e.height * tf.scale);
+    ctx.textBaseline = 'alphabetic';
+    ctx.textAlign = measured ? 'left' : e.align;
+    const text = expandControlCodes(e.text);
+    let x = measured ? measured.offset * tf.scale : 0;
+    const advances = geometry?.advances?.(text, e.height * tf.scale, r);
+    if (advances) {
+      // Native TEXT uses unkerned glyph advances; one glyph per draw also avoids ligatures.
+      let i = 0;
+      for (const character of text) { ctx.fillText(character, x, 0); x += advances[i++]!; }
+    } else ctx.fillText(text, x, 0);
+  } finally { ctx.restore(); }
   return true;
 }

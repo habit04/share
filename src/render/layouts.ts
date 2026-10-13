@@ -12,7 +12,9 @@ import { entityBounds } from '../core/entities';
 import type { PdfPageSpec, PdfDrawingContext, PdfPlotStyle } from '../io/pdf-vector';
 import type { Drawing } from '../core/document';
 import type { Viewport, ViewportOverlay } from './viewport';
-import { drawEntity, lineweightDisplay, annotationDisplay, colorDisplay, type Transform } from './draw';
+import { drawEntity, lineweightDisplay, annotationDisplay, colorDisplay, renderSettings, type Transform } from './draw';
+import { plotEntityAppearance, plotRgbCss } from './plot-appearance';
+import { resolveAlpha } from '../core/appearance';
 import {
   activeLayout,
   modelToPaper,
@@ -205,7 +207,7 @@ export function paintLayout(ctx: CanvasRenderingContext2D, vp: Viewport, ov: Vie
  * the "Raster image" PDF output; monochrome pages draw black.
  */
 export function renderPageToCanvas(canvas: HTMLCanvasElement, page: PdfPageSpec, ctxInfo: PdfDrawingContext, style: PdfPlotStyle, dpi: number): void {
-  const lookup: BlockLookup = Object.assign((name: string) => ctxInfo.lookup(name), { textGeometry: textGeometryForStyles(ctxInfo.textStyles ?? EMPTY_TEXT_STYLES) });
+  const lookup: BlockLookup = Object.assign((name: string) => ctxInfo.lookup(name), { textGeometry: ctxInfo.textGeometry ?? ctxInfo.lookup.textGeometry ?? textGeometryForStyles(ctxInfo.textStyles ?? EMPTY_TEXT_STYLES) });
   const s = dpi / 72;
   const W = Math.max(1, Math.round(page.width * s));
   const H = Math.max(1, Math.round(page.height * s));
@@ -214,11 +216,15 @@ export function renderPageToCanvas(canvas: HTMLCanvasElement, page: PdfPageSpec,
   const ctx = canvas.getContext('2d')!;
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, W, H);
-  const mono = style.usePlotStyles && style.mode === 'monochrome';
-  const saved = { lw: { ...lineweightDisplay }, anno: { ...annotationDisplay }, paper: colorDisplay.paper };
+  const plot = style.table ? { table: style.table, namedStyle: style.namedStyle, usePlotStyles: style.usePlotStyles, lineweights: style.lineweights, issues: style.issues } : undefined;
+  const mono = !plot && style.usePlotStyles && style.mode === 'monochrome';
+  const saved = { lw: { ...lineweightDisplay }, anno: { ...annotationDisplay }, paper: colorDisplay.paper,
+    ltscale: renderSettings.ltscale, linetypes: renderSettings.linetypes };
   lineweightDisplay.enabled = style.lineweights;
   lineweightDisplay.pxPerMm = dpi / 25.4;
   colorDisplay.paper = true;
+  renderSettings.ltscale = ctxInfo.ltscale;
+  renderSettings.linetypes = ctxInfo.linetypes;
   try {
     for (const grp of page.groups) {
       const rotation = grp.rotation ?? 0, c = Math.cos(rotation), sn = Math.sin(rotation);
@@ -228,30 +234,37 @@ export function renderPageToCanvas(canvas: HTMLCanvasElement, page: PdfPageSpec,
         toScreen: (p) => ({ x: (grp.k * (c * p.x - sn * p.y) + grp.e) * s, y: H - (grp.k * (sn * p.x + c * p.y) + grp.f) * s }),
       };
       ctx.save();
-      if (grp.clip) {
-        ctx.beginPath();
-        ctx.rect(grp.clip.x * s, H - (grp.clip.y + grp.clip.h) * s, grp.clip.w * s, grp.clip.h * s);
-        ctx.clip();
-      }
-      if (grp.clipPolygon) {
-        polygonPath(ctx, grp.clipPolygon.map((p) => ({ x: p.x * s, y: H - p.y * s })));
-        ctx.clip('evenodd');
-      }
-      annotationDisplay.factor = grp.annoFactor;
-      annotationDisplay.hide = !!grp.hideAnnotative;
-      for (const e of grp.entities) {
-        if (grp.hidden.has(e.layer)) continue;
-        drawEntity(ctx, e, tf, ctxInfo.layers, lookup, { hidden: grp.hidden, ...(mono ? { strokeOverride: '#000000' } : {}) });
-      }
-      ctx.restore();
+      try {
+        if (grp.clip) {
+          ctx.beginPath();
+          ctx.rect(grp.clip.x * s, H - (grp.clip.y + grp.clip.h) * s, grp.clip.w * s, grp.clip.h * s);
+          ctx.clip();
+        }
+        if (grp.clipPolygon) {
+          polygonPath(ctx, grp.clipPolygon.map((p) => ({ x: p.x * s, y: H - p.y * s })));
+          ctx.clip('evenodd');
+        }
+        annotationDisplay.factor = grp.annoFactor;
+        annotationDisplay.hide = !!grp.hideAnnotative;
+        for (const e of grp.entities) {
+          if (grp.hidden.has(e.layer)) continue;
+          drawEntity(ctx, e, tf, ctxInfo.layers, lookup, { hidden: grp.hidden, ...(plot ? { plot } : {}), ...(mono ? { strokeOverride: '#000000' } : {}) });
+        }
+      } finally { ctx.restore(); }
       for (const f of grp.frames ?? []) {
         if (grp.hidden.has(f.layer)) continue;
-        ctx.strokeStyle = '#000000';
-        ctx.lineWidth = Math.max(1, dpi / 100);
-        if (f.polygon) {
-          polygonPath(ctx, f.polygon.map((p) => ({ x: p.x * s, y: H - p.y * s })));
-          ctx.stroke();
-        } else ctx.strokeRect(f.x * s, H - (f.y + f.h) * s, f.w * s, f.h * s);
+        ctx.save();
+        try {
+          const appearance = plot && plotEntityAppearance({ layer: f.layer, color: 'ByLayer' }, ctxInfo.layers, plot.table, plot);
+          for (const issue of appearance?.issues ?? []) plot?.issues?.add(`${issue.path}: ${issue.message}`);
+          ctx.strokeStyle = appearance ? plotRgbCss(appearance.rgb) : '#000000';
+          ctx.lineWidth = appearance ? Math.max(1, appearance.lineweightMm * dpi / 25.4) : Math.max(1, dpi / 100);
+          if (appearance) ctx.globalAlpha *= resolveAlpha({ layer: f.layer }, ctxInfo.layers);
+          if (f.polygon) {
+            polygonPath(ctx, f.polygon.map((p) => ({ x: p.x * s, y: H - p.y * s })));
+            ctx.stroke();
+          } else ctx.strokeRect(f.x * s, H - (f.y + f.h) * s, f.w * s, f.h * s);
+        } finally { ctx.restore(); }
       }
     }
   } finally {
@@ -260,5 +273,7 @@ export function renderPageToCanvas(canvas: HTMLCanvasElement, page: PdfPageSpec,
     annotationDisplay.factor = saved.anno.factor;
     annotationDisplay.hide = saved.anno.hide;
     colorDisplay.paper = saved.paper;
+    renderSettings.ltscale = saved.ltscale;
+    renderSettings.linetypes = saved.linetypes;
   }
 }

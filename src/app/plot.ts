@@ -56,6 +56,11 @@ export interface PlotOptions {
   lineweights?: boolean;
   /** Plot with plot styles (default on). */
   usePlotStyles?: boolean;
+  /** Picked immutable CTB/STB data for this plot only; never drawing or persistent settings data. */
+  styleTable?: import('../core/plot-styles').PlotStyleTable;
+  styleTableName?: string;
+  /** Explicit whole-plot STB selection; omitted uses Normal. */
+  namedStyle?: string;
 }
 
 export interface PageLayout {

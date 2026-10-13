@@ -30,6 +30,7 @@ import {
   imageParts,
   imageBoundary,
   INFINITE_LENGTH,
+  inheritedColor,
 } from '../core/entities';
 import type { Point, Bounds } from '../core/geometry';
 import * as g from '../core/geometry';
@@ -62,6 +63,7 @@ import { layoutPage, type PlotOptions } from '../app/plot';
 import type { DrawingState } from '../core/document';
 import { resolveAlpha } from '../core/appearance';
 import { hasHatchGradient, linearHatchGradientPlan, hatchGradientColorRgb, hatchGradientFrameProblem } from '../core/hatch-gradient';
+import { expandPlotInsert, plotEntityAppearance, plotObjectProperties } from '../render/plot-appearance';
 
 // ---------------------------------------------------------------- page model
 
@@ -126,6 +128,10 @@ export interface PdfPlotStyle {
   readonly lineweights: boolean;
   /** Plot with plot styles; off plots the object colours. */
   readonly usePlotStyles: boolean;
+  readonly table?: import('../core/plot-styles').PlotStyleTable;
+  readonly namedStyle?: string;
+  /** Per-plot diagnostics accumulated only for styles actually used. */
+  readonly issues?: Set<string>;
 }
 
 export interface PdfImageData {
@@ -290,6 +296,8 @@ function objectRgb(color: number | 'ByLayer', trueColor: number | undefined, lay
 /** Apply the plot style to an object colour. */
 export function plotColor(rgb: [number, number, number], style: PdfPlotStyle): [number, number, number] {
   if (!style.usePlotStyles) return rgb;
+  // Table object styles require the source ACI identity; RGB-only resources retain their colors.
+  if (style.table) return rgb;
   switch (style.mode) {
     case 'monochrome':
       return [0, 0, 0];
@@ -443,9 +451,10 @@ class PageWriter {
       const layer = this.ctx.layers.find((l) => l.name === f.layer);
       this.ops.push('q');
       this.resetState();
-      this.setStroke(plotColor(objectRgb('ByLayer', undefined, layer), this.style));
+      const appearance = this.style.table ? this.tableAppearance({ layer: f.layer, color: 'ByLayer' }) : undefined;
+      this.setStroke(appearance ? [...appearance.rgb] : plotColor(objectRgb('ByLayer', undefined, layer), this.style));
       this.setAlpha(resolveAlpha({ layer: f.layer }, this.ctx.layers));
-      this.setWidth(this.style.lineweights ? mmToPt(layer?.lineWeight ?? 0.25) : 0);
+      this.setWidth(this.style.lineweights ? mmToPt(appearance?.lineweightMm ?? layer?.lineWeight ?? 0.25) : 0);
       this.ops.push(f.polygon ? `${this.pagePolygon(f.polygon)} S` : `${n(f.x)} ${n(f.y)} ${n(f.w)} ${n(f.h)} re S`);
       this.pathOps += 1;
       this.ops.push('Q');
@@ -503,14 +512,15 @@ class PageWriter {
     const layer = this.layer(e.layer);
     // Block content arrives resolved from explodeInsert (core/entities.ts inheritedColor): ByBlock
     // objects carry the reference's colour, or `colorLayer` (the reference's layer) when it is ByLayer.
-    const rgb = plotColor(objectRgb(e.color, e.trueColor, e.colorLayer !== undefined ? this.layer(e.colorLayer) : layer), this.style);
+    const appearance = this.style.table ? this.tableAppearance(e, parent ? plotObjectProperties(parent, this.ctx.layers).lineweightMm : undefined) : undefined;
+    const rgb: [number, number, number] = appearance ? [...appearance.rgb] : plotColor(objectRgb(e.color, e.trueColor, e.colorLayer !== undefined ? this.layer(e.colorLayer) : layer), this.style);
     this.setStroke(rgb);
     this.setFill(rgb);
     let mm = e.lineWeight;
     if (mm === -2 && parent) mm = parent.lineWeight;
     if (mm === undefined || mm === -1) mm = layer?.lineWeight ?? 0.25;
     if (mm < 0) mm = 0.25;
-    this.setWidth(this.style.lineweights ? mmToPt(mm) : 0);
+    this.setWidth(this.style.lineweights ? mmToPt(appearance?.lineweightMm ?? mm) : 0);
     let lt = e.linetype;
     if (isByBlock(lt) && parent) lt = parent.linetype;
     const name = effectiveLinetype(lt, layer?.linetype);
@@ -518,9 +528,15 @@ class PageWriter {
     this.setDash(def ? dashPattern(def.pattern, this.ctx.ltscale * (e.ltscale ?? 1) * (this.group?.ltUnit ?? 1)) : []);
   }
 
+  private tableAppearance(entity: Parameters<typeof plotEntityAppearance>[0], inheritedLineweightMm?: number) {
+    const result = plotEntityAppearance(entity, this.ctx.layers, this.style.table!, this.style, inheritedLineweightMm);
+    for (const issue of result.issues) this.style.issues?.add(`${issue.path}: ${issue.message}`);
+    return result;
+  }
+
   private entity(e: Entity, parent: InsertEntity | null, view: Bounds | null): void {
     if (e.type === 'insert') {
-      for (const sub of explodeInsert(e, this.ctx.lookup)) {
+      for (const sub of this.style.table ? expandPlotInsert(e, this.ctx.lookup, this.ctx.layers) : explodeInsert(e, this.ctx.lookup)) {
         if (this.group?.hidden.has(sub.layer)) continue;
         this.entity(sub, e, view);
       }
@@ -533,7 +549,8 @@ class PageWriter {
   /** Sub-parts (dimension, leader, table, formatted MTEXT) keep the parent's colour unless they set their own. */
   private parts(parts: readonly Entity[], owner: Entity, parent: InsertEntity | null, view: Bounds | null): void {
     for (const p of parts) {
-      const styled = p.color === 'ByLayer' && p.trueColor === undefined ? ({ ...p, color: owner.color, trueColor: owner.trueColor, layer: owner.layer, colorLayer: owner.colorLayer, lineWeight: p.lineWeight ?? owner.lineWeight } as Entity) : p;
+      const styled = this.style.table ? (p.color === 0 ? { ...p, ...inheritedColor(p, owner) } as Entity : p)
+        : p.color === 'ByLayer' && p.trueColor === undefined ? ({ ...p, color: owner.color, trueColor: owner.trueColor, layer: owner.layer, colorLayer: owner.colorLayer, lineWeight: p.lineWeight ?? owner.lineWeight } as Entity) : p;
       this.applyStyle(styled, parent);
       this.geometry(styled, parent, view);
     }
@@ -639,7 +656,8 @@ class PageWriter {
     const masks = mtextMasks(e, this.ctx.textGeometry);
     if (!masks.length) return;
     // The drawing-window mask becomes white paper, including under monochrome plotting.
-    const rgb: [number, number, number] = bg.flags & 2 ? [1, 1, 1] : plotColor(objectRgb(bg.color, bg.trueColor, this.layer(bg.colorLayer ?? e.layer)), this.style);
+    const rgb: [number, number, number] = bg.flags & 2 ? [1, 1, 1] : this.style.table ? [...this.tableAppearance({ ...e, color: bg.color, trueColor: bg.trueColor, colorLayer: bg.colorLayer }).rgb]
+      : plotColor(objectRgb(bg.color, bg.trueColor, this.layer(bg.colorLayer ?? e.layer)), this.style);
     this.ops.push(`q ${rgbOp(rgb, 'rg')}`);
     const paint = hasMTextFill(e) ? (hasMTextFrame(e) ? 'B' : 'f') : 'S';
     for (const mask of masks) this.polyPath(mask, true, paint);
@@ -760,6 +778,7 @@ class PageWriter {
       if (!parts.length) return;
       const gradient = linearHatchGradientPlan(e, geo.polys);
       if (gradient) {
+        if (this.style.table && this.style.usePlotStyles) this.style.issues?.add('Gradient hatches retain their stored colors; CTB/STB effects on gradients are not verified.');
         const name = `G${this.gradients.length + 1}`;
         const colors = gradient.colors.map((color) => {
           const rgb = hatchGradientColorRgb(color, (aci) => {

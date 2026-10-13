@@ -62,6 +62,8 @@ export function styleFor(opts: PlotOptions, layout: Layout | undefined): PdfPlot
     screening: opts.screening ?? fromLayout.screening,
     lineweights: opts.lineweights ?? fromLayout.lineweights,
     usePlotStyles: opts.usePlotStyles ?? fromLayout.usePlotStyles,
+    table: opts.styleTable,
+    namedStyle: opts.namedStyle,
   };
 }
 
@@ -109,14 +111,18 @@ const inches = (pt: number) => (pt / 72).toFixed(2);
 
 /** Handle a PLOT / PRINT choice when it involves a layout or vector PDF; false = the caller's raster model path. */
 export async function plotLayoutsOrVector(ed: Editor, choice: PlotChoiceLike): Promise<boolean> {
-  const opts = choice.options;
+  const opts = { ...choice.options };
   const vector = choice.action === 'pdf' && opts.output !== 'raster';
   const snapshot = ed.doc.snapshot;
   const base = ed.fileName().replace(/\.[^.]+$/, '');
-  if (!vector && !snapshot.space) return false;
+  if (!vector && !snapshot.space && !opts.styleTable) return false;
+  if (!vector && opts.styleTable && opts.what === 'layouts') {
+    ed.log('Raster plotting with CTB/STB tables supports one tab at a time. Choose Vector PDF for all layouts.');
+    return true;
+  }
   const initialLookup = await capturedPlotLookup(snapshot);
   const state = plottableState(snapshot, initialLookup);
-  const target = vector ? plotTarget(state, opts) : snapshot.space!.layout;
+  const target = vector || !snapshot.space ? plotTarget(state, opts) : snapshot.space.layout;
   const initialPages = vector ? plotPages(state, initialLookup, target, opts) : [];
   const prepared = vector ? await capturedPdfLookup(state, ed.fileBridge?.platform === 'win32' ? ed.fileBridge.pdfFont?.bind(ed.fileBridge) : undefined, initialPages.flatMap((page) => page.groups)) : null;
   const lookup = prepared?.lookup ?? initialLookup;
@@ -126,7 +132,12 @@ export async function plotLayoutsOrVector(ed: Editor, choice: PlotChoiceLike): P
     return true;
   }
   const layout = target === 'model' || target === 'layouts' ? activeLayout(state) : findLayout(state, target);
-  const style = styleFor(opts, layout);
+  const plotIssues = new Set<string>();
+  const style = { ...styleFor(opts, layout), issues: plotIssues };
+  const reportPlotStyles = () => {
+    const issues = [...plotIssues];
+    if (issues.length) ed.log(`Plot style limitations: ${issues.slice(0, 20).join(' ')}${issues.length > 20 ? ` (${issues.length - 20} additional issues.)` : ''}`);
+  };
   if (vector) {
     const images = await collectImages(pages, lookup);
     const ctx = drawingContext(state, lookup, (p) => images.get(p) ?? null);
@@ -134,6 +145,7 @@ export async function plotLayoutsOrVector(ed: Editor, choice: PlotChoiceLike): P
     Object.assign(ctx, { embeddedFonts: prepared?.fonts, textGeometry: prepared?.geometry, fontFallbacks });
     const title = target === 'model' ? base : target === 'layouts' ? `${base} - layouts` : `${base} - ${target}`;
     const bytes = await vectorPdfCompressed(pages, ctx, style, title, deflate);
+    reportPlotStyles();
     if (fontFallbacks.size) ed.log(`PDF used substitute fonts for ${[...fontFallbacks].join(', ')}. ${prepared?.issues.join(' ') || 'Some glyphs or font formats are unsupported.'}`);
     const save = ed.fileBridge?.savePdf;
     if (!save) {
@@ -154,6 +166,7 @@ export async function plotLayoutsOrVector(ed: Editor, choice: PlotChoiceLike): P
   const maxPx = 12000;
   const dpi = Math.min(150, (maxPx / Math.max(page.width, page.height)) * 72);
   renderPageToCanvas(canvas, page, drawingContext(state, lookup), style, dpi);
+  reportPlotStyles();
   const dataUrl = canvas.toDataURL('image/png');
   const sheet = { width: page.width / 72, height: page.height / 72 };
   const landscape = sheet.width >= sheet.height;
