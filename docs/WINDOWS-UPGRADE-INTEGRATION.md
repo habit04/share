@@ -117,8 +117,22 @@ are unchanged. New full/static/build/app/fresh CI gates remain required before i
 The actual first/second matching-helper/C fixed point is mandatory: MATERIAL is outside
 the native snapshot whitelist, and expanded DXF can populate transient advanced fields.
 This is a qualified dependency, not a confirmed persisted defect or permission to waive
-equivalence. The linked GPU session owns its adapter measurements; heavy local gates wait
-for that timing run to close while source review/remote CI preparation continue.
+equivalence. The linked GPU session owns its adapter measurements; heavy local gates
+are sequenced after its timed run closes.
+
+Exact `6d2c77d` CI passes UI, while both Node jobs fail only the new CRLF-specific
+fixture SHA assertion. In-memory CRLF-to-LF content equals the exact Git blob;
+canonical LF hashing keeps the original raw-byte readback and all semantic assertions.
+Its 215 material/style tests and independent review pass. Windows passes 54 Rust +
+three CLI/containment cases and advances to TABLESTYLE159 common102 order. The literal
+AutoCAD source and C serializer use XD/REACTORS, but the legacy comparison projection
+creates REACTORS/XD. The TABLESTYLE-only symmetric common-prefix repair preserves
+each complete adjacent block, owner, ordered mapped links and unknown carrier/body/XDATA.
+Malformed, duplicate, nested or interleaved framing refuses; other object types and
+the legacy projection/general value checks remain unchanged. All 557 focused tests pass,
+including 38 new framing cases. Fresh combined full/build/app/CI and actual matching
+compiled-helper first/second C validation are still mandatory. Failed-run artifacts
+remain metadata only; no retry or next-stage source adoption is used to clear a failure.
 
 The corrected full local Windows suite passes serially with every original deadline and
 freshness assertion. A private phase trace of the 33-file project case passed in 18.7 seconds;

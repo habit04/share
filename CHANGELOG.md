@@ -73,6 +73,10 @@ messages). The date of each version is the date of the commit that set that vers
 
 ### Fixed
 
+- TABLESTYLE postflight compares complete adjacent reactor/extension-dictionary
+  blocks symmetrically while retaining owner, ordered references and opaque data.
+  Malformed, duplicate, nested or interleaved common framing refuses.
+
 - Native postflight checks expand only verified compact AC1032 built-in materials, checking
   every added default exactly while retaining all six mapper matrices, flags and object links.
   Custom, procedural and unknown payloads keep their existing full comparison/refusal.

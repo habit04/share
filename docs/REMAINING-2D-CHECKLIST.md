@@ -105,8 +105,17 @@ proof that their implementation or external verification has passed.
   refuse ambiguous fields. Full/static/build/app and fresh exact-head CI remain gates for
   this new source. Actual matching-helper first/second-save and independent C comparison
   are mandatory: native typed snapshots do not certify every MATERIAL convenience field.
-  Heavy local gates are held while the linked GPU session performs native adapter timing;
-  review and remote CI preparation continue. No ancestry/3D/GPU adoption has begun.
+  Heavy local gates are sequenced after the linked GPU session's native adapter timing.
+  No ancestry/3D/GPU adoption has begun.
+- Exact `6d2c77d` CI passes UI; both Node jobs fail only a new fixture hash expecting
+  CRLF instead of Git's LF text checkout. Canonical LF bytes equal the exact Git blob;
+  the correction preserves raw input/readback and passes 215 material/style tests.
+  Windows passes 54 Rust + three CLI/containment cases, then refuses TABLESTYLE159
+  common-block order: the legacy comparison projection emits REACTORS/XDICTIONARY,
+  while native C emits XDICTIONARY/REACTORS. The TABLESTYLE-only symmetric repair passes
+  **557 focused tests**, including **38 new framing regressions**, retaining each block,
+  owner, ordered mapped links and opaque data. Full/local/app/fresh CI and actual
+  matching-helper first/second-save C gates remain pending for this source.
 - First combined CI at `e477954` found a Node 22 512-drawing deadline failure, a safely refused
   legacy-to-modern TABLESTYLE difference and a stale browser report check. The recovery failure
   followed the aborted export setup. The correction keeps the original 15-second test and limits

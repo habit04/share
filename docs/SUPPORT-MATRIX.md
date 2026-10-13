@@ -246,6 +246,15 @@ validation and actual matching-helper/C first/second-save equivalence. Material 
 advanced fields are not certified by the native snapshot whitelist; no reader/pin change
 or broader material/3D feature completion is claimed.
 
+The following `6d2c77d` CI exposes a new test-only CRLF/LF hash mismatch and a
+TABLESTYLE common-block ordering refusal after all 54 Rust + three CLI tests pass.
+The canonical LF fixture assertion preserves original raw bytes and all semantic checks.
+TABLESTYLE-only symmetric comparison recognizes complete adjacent common reference
+blocks while retaining owner, ordered mapped links, native carrier, body and XDATA;
+malformed, duplicate, nested or interleaved framing refuses. Its 38 new regressions
+bring focused coverage to 557 passes. Fresh combined local/app/CI and matching-helper
+first/second C validation remain required; no wider common-object relaxation is claimed.
+
 Modern VISUALSTYLE RGB comparisons are confined to its eight typed color slots in a complete
 58-property bag. Valid raw/C2 RGB storage compares all color bytes; a derived palette companion
 belongs to that same color property. Standalone ACI, lighting177, operations, order/count,
