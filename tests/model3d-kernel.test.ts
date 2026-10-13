@@ -15,7 +15,7 @@ import { KernelError, UnavailableKernel, finishResult, packMesh, prepareOperands
 import { MANIFOLD_VERSION, loadManifold, manifoldBoolean } from '../src/model3d/kernel/manifold-core';
 import { ManifoldDirectKernel } from '../src/model3d/kernel/manifold-direct';
 import { ManifoldWorkerKernel, type WorkerLike } from '../src/model3d/kernel/manifold-kernel';
-import type { WorkerBooleanRequest, WorkerControl, WorkerMessage, WorkerRequest } from '../src/model3d/kernel/protocol';
+import type { WorkerBooleanRequest, WorkerMessage, WorkerRequest } from '../src/model3d/kernel/protocol';
 
 const cube = (dx = 0, dy = 0, dz = 0, s = 1): Mesh3D => transformMesh(boxMesh(s, s, s), mat4Translation(dx, dy, dz));
 const open = (m: Mesh3D): Mesh3D => ({ positions: m.positions, indices: m.indices.slice(3) });
@@ -201,8 +201,8 @@ class FakeWorker implements WorkerLike {
     }, 0);
   }
 
-  postMessage(message: WorkerRequest | WorkerControl, transfer: Transferable[]): void {
-    if ('type' in message || !('a' in message)) throw new Error('this fake answers Boolean requests only');
+  postMessage(message: WorkerRequest, transfer: Transferable[]): void {
+    if (!('a' in message)) throw new Error('this fake answers Boolean requests only');
     const msg = structuredClone(message, { transfer });
     this.posted.push({ msg, transfer });
     if (this.mode === 'hang' || this.mode === 'silent') return;

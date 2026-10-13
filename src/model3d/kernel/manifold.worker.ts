@@ -16,13 +16,17 @@
 import wasmUrl from 'manifold-3d/manifold.wasm?url';
 import { MANIFOLD_VERSION, loadManifold } from './manifold-core';
 import { KERNEL_MEMORY_LIMIT_BYTES, memoryScope, setAmbientMemoryLimit } from './memory-guard';
-import type { WorkerControl, WorkerMessage, WorkerRequest } from './protocol';
+import { KERNEL_TEST_HOOKS_WORKER_NAME, type WorkerMessage, type WorkerRequest } from './protocol';
 import { createWorkerHandler } from './worker-core';
 
 const scope = globalThis as unknown as {
-  onmessage: ((event: MessageEvent<WorkerRequest | WorkerControl>) => void) | null;
+  onmessage: ((event: MessageEvent<WorkerRequest>) => void) | null;
   postMessage(message: WorkerMessage, transfer?: Transferable[]): void;
+  readonly name?: string;
 };
+
+// Test probes only for a worker the main thread created with the test-hooks name (read once, now).
+const testHooks = scope.name === KERNEL_TEST_HOOKS_WORKER_NAME;
 
 const errorText = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
@@ -37,5 +41,5 @@ wasm.then(
   (err: unknown) => scope.postMessage({ type: 'init-error', message: errorText(err) }),
 );
 
-const handle = createWorkerHandler(wasm, memory, (message, transfer) => scope.postMessage(message, transfer ?? []));
+const handle = createWorkerHandler(wasm, memory, (message, transfer) => scope.postMessage(message, transfer ?? []), { testHooks });
 scope.onmessage = (event) => handle(event.data);

@@ -8,18 +8,24 @@
  * Emscripten's `growMemory` in manifold.js, which calls `wasmMemory.grow(pages)` from JavaScript
  * (the same test checks this). So the guard replaces `WebAssembly.Memory.prototype.grow` in the
  * realm before the module is instantiated and refuses any growth that would take a memory past the
- * limit: the refused `grow` throws, Emscripten's allocator reports out of memory, and the C++
- * operation fails with an exception (or an abort) that reaches the JavaScript caller.
+ * limit. The refused `grow` throws; Emscripten's `emscripten_resize_heap` catches that and retries
+ * with less headroom (1.2x, then 1.1x, then 1.05x the current size, never below what was asked
+ * for). If a retry fits under the limit, the allocation succeeds and the operation goes on
+ * normally. If every attempt is refused, the allocator reports out of memory and the C++ operation
+ * fails with an exception (or an abort) that reaches the JavaScript caller.
  *
  * The guard does not see a `memory.grow` instruction executed by the WebAssembly code itself;
  * manifold.wasm is an Emscripten JS-runtime build, whose heap growth always calls the imported
  * `emscripten_resize_heap` (checked by the test above, and by the measurements in
  * docs/3D-KERNEL.md, where no operation ever passed the limit).
  *
- * A refusal is recorded in the active `MemoryScope` (`refusedBytes`): whatever the operation did
- * afterwards (threw, aborted, or even returned), the caller treats it as failed and discards the
- * module, because an allocation failure in the middle of C++ code may leave it inconsistent. The
- * worker (manifold.worker.ts) uses one ambient scope for its whole life; the in-process kernel
+ * The active `MemoryScope` records every refusal (`refusedBytes`, `refusals`) and whether the last
+ * growth attempt was refused (`lastRefused`). `memoryLimitStopped` decides a request's fate: the
+ * limit stopped it when it threw after a refusal, or when the last growth attempt was refused (an
+ * allocation that finally failed, even if the code carried on). Then the caller discards the
+ * module, because an allocation failure in the middle of C++ code may leave it inconsistent. A
+ * refusal followed by a successful smaller retry is not a failure. `resetMemoryEvents` starts a
+ * new request. The worker (manifold.worker.ts) uses one ambient scope for its whole life; the in-process kernel
  * (manifold-direct.ts, opt-in) scopes each synchronous Boolean with `runWithMemoryLimit`, so other
  * WebAssembly in the same Node process is not affected outside those calls.
  */
@@ -45,8 +51,12 @@ export function memoryLimitText(bytes: number): string {
 /** What one guarded period saw. */
 export interface MemoryScope {
   readonly limitBytes: number;
-  /** The size a refused growth asked for (bytes), or null while nothing was refused. */
+  /** The largest size a refused growth asked for (bytes) since the last reset, or null. */
   refusedBytes: number | null;
+  /** Refused growth attempts since the last reset. */
+  refusals: number;
+  /** True when the most recent growth attempt was refused (a later permitted growth clears it). */
+  lastRefused: boolean;
   /** The largest memory size reached by a permitted growth in this scope (bytes; 0 = no growth). */
   peakBytes: number;
 }
@@ -54,12 +64,27 @@ export interface MemoryScope {
 /** A fresh scope with `limitBytes` (default KERNEL_MEMORY_LIMIT_BYTES). */
 export function memoryScope(limitBytes: number = KERNEL_MEMORY_LIMIT_BYTES): MemoryScope {
   if (!(limitBytes > 0) || limitBytes % WASM_PAGE_BYTES !== 0) throw new RangeError(`memory limit must be a positive multiple of ${WASM_PAGE_BYTES} bytes`);
-  return { limitBytes, refusedBytes: null, peakBytes: 0 };
+  return { limitBytes, refusedBytes: null, refusals: 0, lastRefused: false, peakBytes: 0 };
 }
 
-/** True once a growth was refused in `scope`. */
+/** Forget the refusals of earlier requests (the peak is kept: memory never shrinks). */
+export function resetMemoryEvents(scope: MemoryScope): void {
+  scope.refusedBytes = null;
+  scope.refusals = 0;
+  scope.lastRefused = false;
+}
+
+/** True when the most recent growth attempt in `scope` was refused. */
 export function memoryLimitReached(scope: MemoryScope): boolean {
-  return scope.refusedBytes !== null;
+  return scope.lastRefused;
+}
+
+/**
+ * Did the memory limit stop the request that just ran in `scope`? `threw`: the operation threw
+ * (or aborted). A refusal that a smaller retry recovered from does not count unless it threw.
+ */
+export function memoryLimitStopped(scope: MemoryScope, threw: boolean): boolean {
+  return scope.lastRefused || (threw && scope.refusals > 0);
 }
 
 type Grow = (this: WebAssembly.Memory, delta: number) => number;
@@ -85,9 +110,12 @@ function installGuard(): void {
     if (Number.isFinite(pages) && pages > 0 && before + pages * WASM_PAGE_BYTES > scope.limitBytes) {
       const asked = before + pages * WASM_PAGE_BYTES;
       scope.refusedBytes = Math.max(scope.refusedBytes ?? 0, asked);
+      scope.refusals++;
+      scope.lastRefused = true;
       throw new RangeError(`WebAssembly.Memory.grow(): refused growth to ${asked} bytes; the 3D kernel memory limit is ${scope.limitBytes} bytes`);
     }
     const result = grow.call(this, delta);
+    scope.lastRefused = false;
     scope.peakBytes = Math.max(scope.peakBytes, this.buffer.byteLength);
     return result;
   }

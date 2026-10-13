@@ -1301,11 +1301,12 @@ back when the file is opened again; the stored mesh is what you see, exactly as 
 The file layout is described in [3D-FILE-FORMAT.md](3D-FILE-FORMAT.md).
 
 - **Save, Save As (DXF) and autosave** keep every 3D object without asking.
-- **Which formats keep the 3D model**: JCad DXF (Save, or Save As and choose DXF) keeps every 3D
-  object with its construction history; the autosave recovery copies (always DXF, also for DWG
-  working files) keep them the same way; DWG keeps none.
+- **Which formats keep the 3D model**: JCad DXF (Save, or Save As and choose DXF) keeps the 3D
+  objects and their construction histories, where they fit the file limits (see the points below
+  and [3D-FILE-FORMAT.md](3D-FILE-FORMAT.md)); the autosave recovery copies (always DXF, also for
+  DWG working files) keep them the same way; DWG keeps none.
 - **DWG** cannot hold them in this version: saving a drawing with 3D objects as DWG, or
-  `EXPORTDWG`, is refused with "DWG files cannot hold 3D objects, so no DWG was written and nothing was removed from the drawing. To keep the 3D model, save as JCad DXF (Save, or Save As and choose DXF): DXF keeps every 3D object with its construction history, and so do the autosave recovery copies. To view or erase the 3D objects, turn on Experimental 3D (Options > Files).".
+  `EXPORTDWG`, is refused with "DWG files cannot hold 3D objects, so no DWG was written and nothing was removed from the drawing. To keep the 3D model, save as JCad DXF (Save, or Save As and choose DXF): DXF keeps the 3D objects and their construction histories (where they fit the file limits; see 3D-FILE-FORMAT), and so do the autosave recovery copies. To view or erase the 3D objects, turn on Experimental 3D (Options > Files).".
   Nothing is written and nothing is removed from the drawing: JCad never deletes or simplifies 3D
   objects to make a DWG save work. Use Save As and choose DXF.
 - A construction history too large for the file (about 15,000 characters of data per object,

@@ -1,8 +1,9 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
-import { join, resolve } from 'node:path';
+import { join, resolve, win32 } from 'node:path';
 const require = createRequire(import.meta.url);
 const { assetPath } = require('../electron/renderer-origin.cjs') as { assetPath(root: string, url: string): string };
 const { appUrlTest } = require('../electron/ipc-guard.cjs') as { appUrlTest(index: string): (url: string) => boolean };
@@ -31,6 +32,7 @@ const origin = require('../electron/renderer-origin.cjs') as {
   assetResponseHeaders(pathname: string): Record<string, string>;
   withAssetHeaders(response: Response, pathname: string): Response;
   rendererStartUrl(env: Record<string, string | undefined>, allowInspection: boolean): string;
+  servedPath(relative: string): string;
   installAssetHandler(deps: { protocol: { handle(scheme: string, fn: Handler): void }; net: { fetch(url: string): Promise<Response> }; root: string }): void;
 };
 
@@ -63,6 +65,7 @@ describe('worker scripts get their own restrictive CSP from the jcad:// handler'
   });
 
   const bundle = mkdtempSync(join(tmpdir(), 'jcad-origin-csp-'));
+  let handler: Handler | null = null;
   afterAll(() => rmSync(bundle, { recursive: true, force: true }));
 
   it('serves a worker script through the real protocol handler with the header, and the page without it', async () => {
@@ -70,7 +73,6 @@ describe('worker scripts get their own restrictive CSP from the jcad:// handler'
     writeFileSync(join(bundle, 'index.html'), '<!doctype html>');
     writeFileSync(join(bundle, 'assets', 'index-a.js'), 'main');
     writeFileSync(join(bundle, 'assets', 'worker', 'manifold.worker-a.js'), 'worker');
-    let handler: Handler | null = null;
     origin.installAssetHandler({
       protocol: { handle: (_scheme, fn) => { handler = fn; } },
       net: { fetch: (url) => Promise.resolve(new Response(readFileSync(new URL(url)), { headers: { 'content-type': url.endsWith('.html') ? 'text/html' : 'text/javascript' } })) },
@@ -87,6 +89,34 @@ describe('worker scripts get their own restrictive CSP from the jcad:// handler'
       expect(r.status, url).toBe(200);
       expect(r.headers.get('content-security-policy'), url).toBeNull();
     }
+  });
+
+  it('decides from the served file: a letter-case alias of the worker still gets the header', async () => {
+    const served = origin.servedPath(join('assets', 'worker', 'manifold.worker-a.js'));
+    expect(served).toBe('/assets/worker/manifold.worker-a.js');
+    expect(origin.assetResponseHeaders(served)).toEqual({ 'Content-Security-Policy': origin.WORKER_CSP });
+    const r = await handler!({ method: 'GET', url: 'jcad://app/ASSETS/Worker/MANIFOLD.WORKER-A.JS' });
+    // Case-insensitive file systems (Windows, default macOS) serve the worker; it must carry the CSP.
+    // A case-sensitive one serves nothing.
+    if (r.status === 200) expect(r.headers.get('content-security-policy')).toBe(origin.WORKER_CSP);
+    else expect(r.status).toBe(404);
+  });
+
+  it.skipIf(process.platform !== 'win32')('decides from the served file: a Windows 8.3 short name of the worker still gets the header', async (ctx) => {
+    const long = join(bundle, 'assets', 'worker', 'manifold.worker-a.js');
+    // %~sI prints the 8.3 short path; with 8.3 names disabled on the volume it prints the long one.
+    const shortName = (p: string): string => win32.basename(spawnSync('cmd.exe', ['/d', '/s', '/c', `"for %I in ("${p}") do @echo %~sI"`], { encoding: 'utf8', windowsVerbatimArguments: true }).stdout.trim());
+    const short = shortName(long);
+    if (!short.includes('~')) { ctx.skip(); return; }
+    expect(short).toMatch(/^MANIFO~\d\.JS$/i);
+    const r = await handler!({ method: 'GET', url: `jcad://app/assets/worker/${short}` });
+    expect(r.status).toBe(200);
+    expect(await r.text()).toBe('worker');
+    expect(r.headers.get('content-security-policy')).toBe(origin.WORKER_CSP);
+    // The short name of the worker folder too.
+    const dirShort = shortName(join(bundle, 'assets', 'worker'));
+    const r2 = await handler!({ method: 'GET', url: `jcad://app/assets/${dirShort}/${short}` });
+    expect(r2.headers.get('content-security-policy')).toBe(origin.WORKER_CSP);
   });
 
   it('matches the Vite worker output pattern', () => {

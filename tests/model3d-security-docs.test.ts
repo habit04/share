@@ -47,6 +47,7 @@ describe('3D kernel security wording', () => {
       const text = read(doc).replace(/\n\s*/g, ' ');
       expect(text, doc).toContain(`"${MODEL3D_DWG_REFUSAL}."`);
       expect(text, doc).toMatch(/construction histor/);
+      expect(text, doc).toContain('where they fit the file limits');
       expect(text, doc).toMatch(/autosave/i);
     }
   });

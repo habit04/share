@@ -39,7 +39,8 @@ profile and sets `JCAD_3D_TEST_HOOKS=1`. Then it:
 7. runs `probe-memory` (Manifold solids allocated inside the WebAssembly module, then freed) up to
    2,048 pages (128 MiB), which must succeed. It then runs it up to 16,385 pages (just over 1 GiB),
    which must fail with the `memory-limit` KernelError and the exact message;
-8. checks that the worker was replaced once and that a follow-up subtraction succeeds, that the
+8. checks that the worker file under another letter case and under its 8.3 short name is either not served or served with the worker CSP;
+9. checks that the worker was replaced once and that a follow-up subtraction succeeds, that the
    renderer still answers, and that there were no page errors.
 
 It exits with 0 only when every check passes. `JCAD_3D_SECURITY_OUT=<file>` also writes the
@@ -94,12 +95,24 @@ npx cross-env JCAD_BENCH=1 vitest run tests/model3d-memory-limit.test.ts --silen
 
 The table lines start with `memlimit |`.
 
+### ASAR and unpacked files
+
+The header is decided from the file that is actually served, after the protocol handler resolves
+the request with `realpath`: `'/' + path.relative(realRoot, realFile)`, not from the requested URL.
+This matters where the bundle is plain files on a Windows disk: in the development build (`electron .`
+serves `dist/`), a URL that uses another letter case or the 8.3 short name (`MANIFO~1.JS`) resolves
+to the worker file and must get the header too. Unit tests cover both aliases with a real short
+name (skipped when the volume has 8.3 names disabled). In packaged builds `dist/` sits inside
+`resources/app.asar` (it is not in `asarUnpack`). The archive has no short names and looks names
+up exactly, so such aliases are not served at all (404). The script checks both kinds of alias in
+each build: they must either be refused or carry the worker CSP.
+
 ## Results
 
 | Date | Build | Result |
 | --- | --- | --- |
-| 2026-10-12 | Development build, `electron .` on `dist/` (Electron 44.7.0, Windows 11 x64) | 18/18 checks passed |
-| 2026-10-12 | Unpacked test build, `npm run dist:test:no-dwg` (ASAR, test fuses, no DWG writer, unsigned) | 19/19 checks passed (fuse check included): worker CSP header present, remote fetch and import blocked, 1 GiB refusal in about 3 s, worker replaced, follow-up Boolean ok |
+| 2026-10-12 | Development build, `electron .` on `dist/` (Electron 44.7.0, Windows 11 x64) | 19/19 checks passed; the letter-case and 8.3 aliases of the worker were served with the worker CSP |
+| 2026-10-12 | Unpacked test build, `npm run dist:test:no-dwg` (ASAR, test fuses, no DWG writer, unsigned) | 20/20 checks passed (fuse check included): worker CSP header present, the aliases not served (404), remote fetch and import blocked, 1 GiB refusal in about 3 s, worker replaced, follow-up Boolean ok |
 
 ## What this does not verify
 

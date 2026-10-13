@@ -146,6 +146,14 @@ try {
   }, csp.url ?? '');
   check(headers.worker.status === 200 && headers.worker.csp === WORKER_CSP, 'the worker script response carries the worker CSP header', headers.worker);
   check(/javascript/.test(headers.worker.type ?? ''), 'the worker script keeps a JavaScript content type', headers.worker);
+  // Aliases of the worker file (another letter case, the Windows 8.3 short name): either nothing is
+  // served (inside the ASAR archive) or the served worker carries the CSP (plain files on disk).
+  const workerFile = String(csp.url ?? '').split('/').pop() ?? '';
+  const aliases = [String(csp.url ?? '').replace('/assets/worker/', '/ASSETS/Worker/').replace(workerFile, workerFile.toUpperCase()), String(csp.url ?? '').replace(workerFile, `${workerFile.slice(0, 6).toUpperCase()}~1.JS`)];
+  const aliased = await page.evaluate(async (urls) => Promise.all(urls.map(async (u) => {
+    try { const r = await fetch(u); return { url: u, status: r.status, csp: r.headers.get('content-security-policy') }; } catch (err) { return { url: u, status: 0, error: String(err) }; }
+  })), aliases);
+  check(aliased.every((r) => r.status !== 200 || r.csp === WORKER_CSP), 'aliases of the worker file (letter case, 8.3 short name) are refused or carry the worker CSP', aliased);
   check(headers.page.status === 200 && headers.page.csp === null, 'the page response carries no CSP header (its meta policy applies)', headers.page);
   check(headers.main !== null && headers.main.status === 200 && headers.main.csp === null, 'the main renderer script response carries no CSP header', headers.main);
   const mainWasm = await page.evaluate(async () => {

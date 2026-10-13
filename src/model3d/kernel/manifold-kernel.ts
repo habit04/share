@@ -43,12 +43,12 @@ import {
   type BooleanOp, type BooleanOptions, type GeometryKernel, type KernelStatus, KernelError, crashError, finishResult, invalidOperand,
   memoryLimitError, opName, packMesh, prepareOperands, timeoutError, unavailableError, unpackMesh,
 } from './kernel';
-import type { ProbeResult, WorkerControl, WorkerMessage, WorkerRequest } from './protocol';
+import type { ProbeResult, WorkerMessage, WorkerRequest } from './protocol';
 import { MANIFOLD_VERSION } from './version';
 
 /** The part of the DOM `Worker` the kernel uses (so tests can inject a fake). */
 export interface WorkerLike {
-  postMessage(message: WorkerRequest | WorkerControl, transfer: Transferable[]): void;
+  postMessage(message: WorkerRequest, transfer: Transferable[]): void;
   terminate(): void;
   onmessage: ((event: MessageEvent<WorkerMessage>) => void) | null;
   onerror: ((event: ErrorEvent) => void) | null;
@@ -65,8 +65,10 @@ export interface ManifoldWorkerKernelOptions {
   /** How long a new worker may take to report `ready` before the kernel gives up (20 000 ms). */
   readonly startTimeoutMs?: number;
   /**
-   * Enable the worker's test probes (`probe()`; protocol.ts `WorkerProbeRequest`). Off by default;
-   * index.ts turns it on only for `?jcad3dTestHooks=1` (scripts/e2e-3d-security.mjs).
+   * Enable the worker's test probes (`probe()`; protocol.ts `WorkerProbeRequest`): the default
+   * worker is then created with the Worker name KERNEL_TEST_HOOKS_WORKER_NAME, which the worker
+   * reads once at start. Off by default; experimental-3d.ts turns it on only when the page was
+   * loaded with `?jcad3dTestHooks=1` (decided once at install; scripts/e2e-3d-security.mjs).
    */
   readonly testHooks?: boolean;
 }
@@ -77,9 +79,13 @@ export type KernelProbe = { readonly op: 'probe-memory'; readonly pages: number 
 /** Default per-call timeout (milliseconds). */
 export const DEFAULT_KERNEL_TIMEOUT_MS = 20_000;
 
-function defaultWorker(): WorkerLike {
-  // Literal `new Worker(new URL(...), { type: 'module' })` so Vite bundles the worker as its own chunk.
-  return new Worker(new URL('./manifold.worker.ts', import.meta.url), { type: 'module' });
+function defaultWorker(testHooks: boolean): WorkerLike {
+  // Literal `new Worker(new URL(...), { ...static options })` so Vite bundles the worker as its own
+  // chunk (both branches are the same chunk). The name must equal KERNEL_TEST_HOOKS_WORKER_NAME
+  // (tests/model3d-memory-limit.test.ts checks it).
+  return testHooks
+    ? new Worker(new URL('./manifold.worker.ts', import.meta.url), { type: 'module', name: 'jcad-kernel-test-hooks' })
+    : new Worker(new URL('./manifold.worker.ts', import.meta.url), { type: 'module' });
 }
 
 interface Pending {
@@ -122,11 +128,12 @@ export class ManifoldWorkerKernel implements GeometryKernel {
   workersCreated = 0;
 
   constructor(opts: ManifoldWorkerKernelOptions = {}) {
-    this.createWorker = opts.createWorker ?? defaultWorker;
+    const testHooks = opts.testHooks === true;
+    this.createWorker = opts.createWorker ?? (() => defaultWorker(testHooks));
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_KERNEL_TIMEOUT_MS;
     this.maxRestarts = opts.maxRestarts ?? 1;
     this.startTimeoutMs = opts.startTimeoutMs ?? DEFAULT_KERNEL_TIMEOUT_MS;
-    this.testHooks = opts.testHooks === true;
+    this.testHooks = testHooks;
   }
 
   ready(): Promise<KernelStatus> {
@@ -240,9 +247,7 @@ export class ManifoldWorkerKernel implements GeometryKernel {
         this.settleStart = null;
         const worker = this.worker, queued = this.queued;
         this.queued = [];
-        if (worker && this.testHooks) {
-          try { worker.postMessage({ type: 'enable-test-hooks' }, []); } catch { /* probes then fail as unknown operations */ }
-        }
+
         // Calls that timed out (or were rejected) while waiting are no longer pending: skip them.
         if (worker) for (const request of queued) if (this.pending.has(request.id)) this.send(worker, request);
       } else {

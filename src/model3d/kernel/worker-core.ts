@@ -3,15 +3,18 @@
  * the Node tests run exactly this code behind a fake Worker (tests/model3d-kernel.test.ts).
  *
  * - Booleans run synchronously on the Manifold module under the kernel's memory limit
- *   (memory-guard.ts). If a growth was refused during a request, the reply is a `memoryLimit`
- *   failure whatever the operation did afterwards, and the handler is poisoned: every later request
- *   gets the same failure. The main thread terminates and replaces the worker on that reply.
- * - Probes (protocol.ts `WorkerProbeRequest`) are answered only after `enable-test-hooks`.
+ *   (memory-guard.ts). If the limit stopped the request (it threw after a refused growth, or its
+ *   last growth attempt was refused), the reply is a `memoryLimit` failure and the handler is
+ *   poisoned: every later request gets the same failure. The main thread terminates and replaces
+ *   the worker on that reply. A refusal that Emscripten's smaller retry recovered from is not a
+ *   failure.
+ * - Probes (protocol.ts `WorkerProbeRequest`) are answered only by a handler created with
+ *   `testHooks: true`.
  */
 import type { Manifold, ManifoldToplevel } from 'manifold-3d';
 import { ManifoldInputError, manifoldBoolean } from './manifold-core';
-import { MANIFOLD_INITIAL_MEMORY_BYTES, type MemoryScope, WASM_PAGE_BYTES, memoryLimitReached, runWithMemoryLimit } from './memory-guard';
-import type { ProbeResult, WorkerControl, WorkerMessage, WorkerRequest } from './protocol';
+import { MANIFOLD_INITIAL_MEMORY_BYTES, type MemoryScope, WASM_PAGE_BYTES, memoryLimitStopped, resetMemoryEvents, runWithMemoryLimit } from './memory-guard';
+import type { ProbeResult, WorkerMessage, WorkerRequest } from './protocol';
 
 export type Post = (message: WorkerMessage, transfer?: Transferable[]) => void;
 
@@ -31,10 +34,10 @@ function probeMemory(wasm: ManifoldToplevel, scope: MemoryScope, targetBytes: nu
   const held: Manifold[] = [];
   const size = (): number => Math.max(scope.peakBytes, MANIFOLD_INITIAL_MEMORY_BYTES);
   try {
-    for (let i = 0; size() < targetBytes && i < MAX_PROBE_ALLOCATIONS; i++) held.push(wasm.Manifold.sphere(1, 128));
+    for (let i = 0; size() < targetBytes && !scope.lastRefused && i < MAX_PROBE_ALLOCATIONS; i++) held.push(wasm.Manifold.sphere(1, 128));
     return size();
   } finally {
-    // After a refused growth the module may be unusable; the handler is poisoned either way.
+    // After a final refusal the module may be unusable; the handler is then poisoned anyway.
     for (const m of held) {
       try { m.delete(); } catch { /* module state lost */ }
     }
@@ -72,22 +75,29 @@ async function probeCsp(): Promise<ProbeResult> {
   return { url: scope.location?.href ?? '', fetchBlocked, importBlocked, violations };
 }
 
+/** Options of `createWorkerHandler`. */
+export interface WorkerHandlerOptions {
+  /**
+   * Answer the test probes. Fixed when the worker is created (manifold.worker.ts reads its Worker
+   * `name`, protocol.ts KERNEL_TEST_HOOKS_WORKER_NAME); no message can turn it on later.
+   */
+  readonly testHooks?: boolean;
+}
+
 /**
  * The worker's message handler: `wasm` is the module being loaded, `memory` the scope its growth
  * is checked against, `post` the reply channel.
  */
-export function createWorkerHandler(wasm: Promise<ManifoldToplevel>, memory: MemoryScope, post: Post): (data: WorkerRequest | WorkerControl) => void {
-  let testHooks = false;
+export function createWorkerHandler(wasm: Promise<ManifoldToplevel>, memory: MemoryScope, post: Post, opts: WorkerHandlerOptions = {}): (data: WorkerRequest) => void {
+  const testHooks = opts.testHooks === true;
   let poisoned = false;
   const limitFailure = (id: number, detail: string): void => {
     poisoned = true;
     post({ id, ok: false, error: `the WebAssembly memory limit was reached (${detail})`, memoryLimit: true });
   };
   return (data) => {
-    if ('type' in data) {
-      if (data.type === 'enable-test-hooks') testHooks = true;
-      return;
-    }
+    // Only requests are accepted; anything else (for example an attempt to switch on test hooks) is ignored.
+    if (!data || typeof data !== 'object' || 'type' in data || typeof data.id !== 'number') return;
     const { id } = data;
     void wasm.then(
       async (module) => {
@@ -100,25 +110,28 @@ export function createWorkerHandler(wasm: Promise<ManifoldToplevel>, memory: Mem
             post({ id, ok: false, error: `unknown operation "${data.op}"` });
             return;
           }
+          resetMemoryEvents(memory);
           try {
             const probe = data.op === 'probe-csp'
               ? await probeCsp()
               : { reachedBytes: runWithMemoryLimit(memory, () => probeMemory(module, memory, Math.max(0, Math.floor(data.pages)) * WASM_PAGE_BYTES)) };
-            if (memoryLimitReached(memory)) limitFailure(id, 'probe');
+            if (memoryLimitStopped(memory, false)) limitFailure(id, 'the last growth attempt was refused');
             else post({ id, ok: true, probe });
           } catch (err) {
-            if (memoryLimitReached(memory)) limitFailure(id, errorText(err));
+            if (memoryLimitStopped(memory, true)) limitFailure(id, errorText(err));
             else post({ id, ok: false, error: errorText(err) });
           }
           return;
         }
+        resetMemoryEvents(memory);
         try {
           const out = runWithMemoryLimit(memory, () => manifoldBoolean(module, data.op, data.a, data.b));
-          // A refused growth fails the operation even if Manifold recovered: its state is suspect.
-          if (memoryLimitReached(memory)) limitFailure(id, 'growth refused during the operation');
+          // A refusal that a smaller retry recovered from is fine; a final refusal is not, even if
+          // Manifold carried on: its state is suspect.
+          if (memoryLimitStopped(memory, false)) limitFailure(id, 'the last growth attempt was refused');
           else post({ id, ok: true, positions: out.positions, indices: out.indices }, [out.positions.buffer, out.indices.buffer]);
         } catch (err) {
-          if (memoryLimitReached(memory)) limitFailure(id, errorText(err));
+          if (memoryLimitStopped(memory, true)) limitFailure(id, errorText(err));
           else post(err instanceof ManifoldInputError ? { id, ok: false, error: err.message, operand: err.operand } : { id, ok: false, error: errorText(err) });
         }
       },

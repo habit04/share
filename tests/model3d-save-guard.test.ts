@@ -81,7 +81,7 @@ describe('save-guard helpers', () => {
     expect(model3dDwgRefusal(plain)).toBeNull();
     expect(model3dDwgRefusal({ ...plain, model3d: { version: 1, solids: [] } })).toBeNull();
     expect(model3dDwgRefusal(withModel3D(plain, addSolids(model3dOf(plain), [solid()])))).toBe(MODEL3D_DWG_REFUSAL);
-    expect(MODEL3D_DWG_REFUSAL).toBe('DWG files cannot hold 3D objects, so no DWG was written and nothing was removed from the drawing. To keep the 3D model, save as JCad DXF (Save, or Save As and choose DXF): DXF keeps every 3D object with its construction history, and so do the autosave recovery copies. To view or erase the 3D objects, turn on Experimental 3D (Options > Files)');
+    expect(MODEL3D_DWG_REFUSAL).toBe('DWG files cannot hold 3D objects, so no DWG was written and nothing was removed from the drawing. To keep the 3D model, save as JCad DXF (Save, or Save As and choose DXF): DXF keeps the 3D objects and their construction histories (where they fit the file limits; see 3D-FILE-FORMAT), and so do the autosave recovery copies. To view or erase the 3D objects, turn on Experimental 3D (Options > Files)');
   });
 
   it('says which formats keep the 3D model, and that nothing was removed', () => {
@@ -89,7 +89,7 @@ describe('save-guard helpers', () => {
     expect(MODEL3D_DWG_REFUSAL).toMatch(/^DWG files cannot hold 3D objects/);
     expect(MODEL3D_DWG_REFUSAL).toContain('nothing was removed from the drawing');
     expect(MODEL3D_DWG_REFUSAL).toContain('save as JCad DXF (Save, or Save As and choose DXF)');
-    expect(MODEL3D_DWG_REFUSAL).toContain('with its construction history');
+    expect(MODEL3D_DWG_REFUSAL).toContain('DXF keeps the 3D objects and their construction histories (where they fit the file limits; see 3D-FILE-FORMAT)');
     expect(MODEL3D_DWG_REFUSAL).toContain('autosave recovery copies');
     // Logged as "Not saved: <reason>." and "DWG export canceled: <reason>.": no final period of its own.
     expect(MODEL3D_DWG_REFUSAL.endsWith('.')).toBe(false);

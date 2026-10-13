@@ -14,7 +14,7 @@
  *
  * Memory limit (opt-in, `memoryLimitBytes`): each Boolean runs under the same WebAssembly growth
  * guard as the worker (memory-guard.ts, scoped to the synchronous call so other WebAssembly in the
- * process is unaffected). A refused growth rejects with the 'memory-limit' KernelError and drops
+ * process is unaffected). When the limit stops a call (memory-guard.ts `memoryLimitStopped`) it rejects with the 'memory-limit' KernelError and drops
  * the module, so the next call loads a fresh instance, as the worker kernel restarts its worker.
  * `lastPeakBytes` reports the largest memory size a growth reached during the last call.
  */
@@ -24,7 +24,7 @@ import {
   type BooleanOp, type BooleanOptions, type GeometryKernel, type KernelStatus, KernelError, finishResult, invalidOperand, memoryLimitError, opName,
   packMesh, prepareOperands, timeoutError, unavailableError, unpackMesh,
 } from './kernel';
-import { memoryLimitReached, memoryScope, runWithMemoryLimit } from './memory-guard';
+import { memoryLimitStopped, memoryScope, runWithMemoryLimit } from './memory-guard';
 import { MANIFOLD_VERSION } from './version';
 
 export interface ManifoldDirectKernelOptions {
@@ -75,14 +75,15 @@ export class ManifoldDirectKernel implements GeometryKernel {
     try {
       raw = scope ? runWithMemoryLimit(scope, () => loaded.core.manifoldBoolean(loaded.wasm, op, pa, pb)) : loaded.core.manifoldBoolean(loaded.wasm, op, pa, pb);
     } catch (err) {
-      if (scope && memoryLimitReached(scope)) throw this.memoryLimitFailure(scope.limitBytes);
+      if (scope && memoryLimitStopped(scope, true)) throw this.memoryLimitFailure(scope.limitBytes);
       if (err instanceof loaded.core.ManifoldInputError) throw invalidOperand(op, err.operand, `the geometry kernel refused it (${err.message})`);
       throw new KernelError('kernel-failure', `The ${opName(op)} failed in the geometry kernel (${err instanceof Error ? err.message : String(err)}).`);
     } finally {
       if (scope) this.lastPeakBytes = scope.peakBytes;
     }
-    // A refused growth fails the call even if Manifold recovered: the module state is suspect.
-    if (scope && memoryLimitReached(scope)) throw this.memoryLimitFailure(scope.limitBytes);
+    // A final refusal fails the call even if Manifold carried on (its state is suspect); a refusal
+    // that Emscripten's smaller retry recovered from does not.
+    if (scope && memoryLimitStopped(scope, false)) throw this.memoryLimitFailure(scope.limitBytes);
     const elapsed = performance.now() - started;
     if (opts.timeoutMs !== undefined && elapsed > opts.timeoutMs) throw timeoutError(op, opts.timeoutMs);
     return finishResult(op, unpackMesh(raw));

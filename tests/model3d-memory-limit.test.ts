@@ -8,6 +8,7 @@
  * it also measures the peak WebAssembly memory of the fixture and performance Booleans under the
  * 1 GiB limit, each on a fresh module; docs/3D-KERNEL.md "Memory limit" has the table.
  */
+import { readFileSync } from 'node:fs';
 import { afterAll, describe, expect, it } from 'vitest';
 import { GeometryBudgetError } from '../src/core/geometry-budget-error';
 import { MAX_SOLID_TRIANGLES } from '../src/model3d/budget';
@@ -15,15 +16,16 @@ import { mat4RotationAxis, mat4Translation } from '../src/model3d/math';
 import { type Mesh3D, mergeMeshes, meshTriangleCount, meshVolume, transformMesh } from '../src/model3d/mesh';
 import { MAX_SEGMENTS, boxMesh, sphereMesh } from '../src/model3d/primitives';
 import { kernelTestHooksRequested } from '../src/model3d/kernel';
-import { type BooleanOp, type GeometryKernel, KernelError, memoryLimitError } from '../src/model3d/kernel/kernel';
-import { MANIFOLD_VERSION, loadManifold } from '../src/model3d/kernel/manifold-core';
+import { type BooleanOp, type GeometryKernel, KernelError, memoryLimitError, packMesh } from '../src/model3d/kernel/kernel';
+import { MANIFOLD_VERSION, loadManifold, manifoldBoolean } from '../src/model3d/kernel/manifold-core';
 import { ManifoldDirectKernel } from '../src/model3d/kernel/manifold-direct';
 import { ManifoldWorkerKernel, type WorkerLike } from '../src/model3d/kernel/manifold-kernel';
 import {
-  KERNEL_MEMORY_LIMIT_BYTES, KERNEL_MEMORY_LIMIT_PAGES, MANIFOLD_INITIAL_MEMORY_BYTES, WASM_PAGE_BYTES, memoryLimitReached, memoryLimitText, memoryScope,
-  runWithMemoryLimit, uninstallMemoryGuard,
+  KERNEL_MEMORY_LIMIT_BYTES, KERNEL_MEMORY_LIMIT_PAGES, MANIFOLD_INITIAL_MEMORY_BYTES, WASM_PAGE_BYTES, memoryLimitReached, memoryLimitStopped, memoryLimitText,
+  memoryScope, resetMemoryEvents, runWithMemoryLimit, uninstallMemoryGuard,
 } from '../src/model3d/kernel/memory-guard';
-import type { WorkerControl, WorkerMessage, WorkerRequest } from '../src/model3d/kernel/protocol';
+import { KERNEL_TEST_HOOKS_WORKER_NAME, type WorkerMessage, type WorkerRequest } from '../src/model3d/kernel/protocol';
+
 import { createWorkerHandler } from '../src/model3d/kernel/worker-core';
 import { cableTraySolids, enclosureSolids } from './helpers/model3d-fixtures';
 
@@ -74,9 +76,26 @@ describe('WebAssembly.Memory grow guard', () => {
     expect(memory.buffer.byteLength).toBe(4 * WASM_PAGE_BYTES);
     expect(scope.refusedBytes).toBe(5 * WASM_PAGE_BYTES);
     expect(memoryLimitReached(scope)).toBe(true);
+    expect(memoryLimitStopped(scope, false)).toBe(true);
     // Outside any scope the guard is transparent.
     memory.grow(4);
     expect(memory.buffer.byteLength).toBe(8 * WASM_PAGE_BYTES);
+  });
+
+  it('does not count a refusal that a later, smaller growth in the same scope recovered from', () => {
+    const memory = new WebAssembly.Memory({ initial: 1, maximum: 64 });
+    const scope = memoryScope(4 * WASM_PAGE_BYTES);
+    // Emscripten's pattern: a generous attempt is refused, a smaller retry fits.
+    expect(() => runWithMemoryLimit(scope, () => memory.grow(5))).toThrow(RangeError);
+    expect(memoryLimitStopped(scope, false)).toBe(true);
+    runWithMemoryLimit(scope, () => memory.grow(2));
+    expect(scope.refusals).toBe(1);
+    expect(memoryLimitReached(scope)).toBe(false);
+    expect(memoryLimitStopped(scope, false)).toBe(false); // completed: not stopped
+    expect(memoryLimitStopped(scope, true)).toBe(true); // threw after a refusal: attributed to the limit
+    resetMemoryEvents(scope);
+    expect(memoryLimitStopped(scope, true)).toBe(false); // a new request that threw for another reason
+    expect(scope.peakBytes).toBe(3 * WASM_PAGE_BYTES);
   });
 
   it('refuses limits that are not whole pages', () => {
@@ -84,7 +103,7 @@ describe('WebAssembly.Memory grow guard', () => {
     expect(() => memoryScope(1000)).toThrow(RangeError);
   });
 
-  it('stops a real Manifold allocation at the limit (the module is unusable afterwards)', async () => {
+  it('stops a real Manifold allocation at the limit once every retry is refused', async () => {
     const wasm = await loadManifold();
     const scope = memoryScope(48 * MiB);
     const held: Array<{ delete(): void }> = [];
@@ -95,7 +114,8 @@ describe('WebAssembly.Memory grow guard', () => {
       failure = err;
     }
     expect(failure).not.toBeNull();
-    expect(memoryLimitReached(scope)).toBe(true);
+    expect(memoryLimitStopped(scope, true)).toBe(true);
+    expect(scope.refusals).toBeGreaterThanOrEqual(2); // the first attempt and Emscripten's smaller retries
     expect(scope.peakBytes).toBeLessThanOrEqual(48 * MiB);
     expect(scope.refusedBytes!).toBeGreaterThan(48 * MiB);
   });
@@ -126,6 +146,85 @@ describe('in-process kernel under a memory limit', () => {
   });
 });
 
+// ---- Emscripten's smaller retry landing under the limit -----------------------------------------
+
+interface GrowAttempt { readonly before: number; readonly asked: number; readonly ok: boolean }
+
+/** Every WebAssembly.Memory.grow call made while `fn` runs: size before, size asked for, outcome. */
+function logGrows<T>(fn: () => T): { value?: T; error?: unknown; attempts: GrowAttempt[] } {
+  runWithMemoryLimit(memoryScope(), () => 0); // the guard is installed: log on top of it
+  const proto = WebAssembly.Memory.prototype;
+  const guarded = proto.grow;
+  const attempts: GrowAttempt[] = [];
+  proto.grow = function (this: WebAssembly.Memory, delta: number): number {
+    const before = this.buffer.byteLength, asked = before + Number(delta) * WASM_PAGE_BYTES;
+    try {
+      const r = guarded.call(this, delta);
+      attempts.push({ before, asked, ok: true });
+      return r;
+    } catch (err) {
+      attempts.push({ before, asked, ok: false });
+      throw err;
+    }
+  };
+  try {
+    return { value: fn(), attempts };
+  } catch (error) {
+    return { error, attempts };
+  } finally {
+    proto.grow = guarded;
+  }
+}
+
+describe('a refused growth whose smaller retry fits under the limit', () => {
+  const a = sphereMesh(1, 250, 101), b = transformMesh(sphereMesh(1, 250, 101), mat4Translation(0.7, 0.3, 0.1));
+  /** One page below the first (1.2x) attempt of the last growth step, measured on a fresh module. */
+  let limit = 0;
+
+  it('completes the Boolean (no memory-limit failure) when Emscripten retries with less headroom', async () => {
+    const wasmA = await loadManifold();
+    const free = logGrows(() => runWithMemoryLimit(memoryScope(KERNEL_MEMORY_LIMIT_BYTES), () => manifoldBoolean(wasmA, 'union', packMesh(a), packMesh(b))));
+    expect(free.error).toBeUndefined();
+    expect(free.attempts.length).toBeGreaterThan(0);
+    expect(free.attempts.every((x) => x.ok)).toBe(true);
+    const last = free.attempts.at(-1)!;
+    limit = last.asked - WASM_PAGE_BYTES;
+    // The same operation (same allocation sequence) on a fresh module under the lower limit.
+    const wasmB = await loadManifold();
+    const scope = memoryScope(limit);
+    const capped = logGrows(() => runWithMemoryLimit(scope, () => manifoldBoolean(wasmB, 'union', packMesh(a), packMesh(b))));
+    expect(capped.error).toBeUndefined();
+    expect(capped.attempts.some((x) => !x.ok && x.asked === last.asked)).toBe(true); // the 1.2x attempt was refused
+    expect(capped.attempts.at(-1)!.ok).toBe(true); // ... and a smaller retry succeeded
+    expect(scope.refusals).toBeGreaterThanOrEqual(1);
+    expect(memoryLimitStopped(scope, false)).toBe(false);
+    expect(scope.peakBytes).toBeLessThanOrEqual(limit);
+    expect(capped.value!.indices.length).toBe(free.value!.indices.length);
+  }, 60_000);
+
+  it('in-process kernel: the result is returned and the module is kept', async () => {
+    expect(limit).toBeGreaterThan(MANIFOLD_INITIAL_MEMORY_BYTES);
+    const k = new ManifoldDirectKernel({ memoryLimitBytes: limit });
+    const m = await k.boolean('union', a, b);
+    expect(meshTriangleCount(m)).toBeGreaterThan(50_000);
+    expect(k.modulesLoaded).toBe(1);
+    expect(k.lastPeakBytes).toBeLessThanOrEqual(limit);
+    expect(meshVolume(await k.boolean('union', cube(), cube(0.5)))).toBeCloseTo(1.5, 9);
+    expect(k.modulesLoaded).toBe(1); // no restart
+    k.dispose();
+  }, 60_000);
+
+  it('worker: the reply is the mesh and the worker is not restarted', async () => {
+    const { k, workers } = coreKernel(limit, false);
+    const m = await k.boolean('union', a, b);
+    expect(meshTriangleCount(m)).toBeGreaterThan(50_000);
+    expect(meshVolume(await k.boolean('union', cube(), cube(0.5)))).toBeCloseTo(1.5, 9);
+    expect(workers).toHaveLength(1);
+    expect(workers[0]!.terminated).toBe(false);
+    k.dispose();
+  }, 60_000);
+});
+
 // ---- the real worker request handler behind a fake Worker -------------------------------------
 
 /** Runs worker-core.ts's handler on a fresh in-process module, with structured-clone messaging. */
@@ -134,18 +233,17 @@ class CoreWorker implements WorkerLike {
   onerror: ((event: ErrorEvent) => void) | null = null;
   onmessageerror: ((event: MessageEvent) => void) | null = null;
   terminated = false;
-  readonly controls: WorkerControl[] = [];
-  private readonly handle: (data: WorkerRequest | WorkerControl) => void;
+  private readonly handle: (data: WorkerRequest) => void;
 
-  constructor(limitBytes: number) {
+  /** `testHooks`: as if created with the Worker name KERNEL_TEST_HOOKS_WORKER_NAME. */
+  constructor(limitBytes: number, testHooks: boolean) {
     const wasm = loadManifold();
-    this.handle = createWorkerHandler(wasm, memoryScope(limitBytes), (msg, transfer = []) => this.emit(msg, transfer));
+    this.handle = createWorkerHandler(wasm, memoryScope(limitBytes), (msg, transfer = []) => this.emit(msg, transfer), { testHooks });
     wasm.then(() => this.emit({ type: 'ready', version: MANIFOLD_VERSION }), (err: unknown) => this.emit({ type: 'init-error', message: String(err) }));
   }
 
-  postMessage(message: WorkerRequest | WorkerControl, transfer: Transferable[]): void {
+  postMessage(message: WorkerRequest, transfer: Transferable[]): void {
     const data = structuredClone(message, { transfer });
-    if ('type' in data) this.controls.push(data);
     setTimeout(() => { if (!this.terminated) this.handle(data); }, 0);
   }
 
@@ -160,7 +258,7 @@ class CoreWorker implements WorkerLike {
 
 function coreKernel(limitBytes: number, testHooks: boolean) {
   const workers: CoreWorker[] = [];
-  const k = new ManifoldWorkerKernel({ createWorker: () => { const w = new CoreWorker(limitBytes); workers.push(w); return w; }, testHooks, timeoutMs: 60_000 });
+  const k = new ManifoldWorkerKernel({ createWorker: () => { const w = new CoreWorker(limitBytes, testHooks); workers.push(w); return w; }, testHooks, timeoutMs: 60_000 });
   return { k, workers };
 }
 
@@ -168,7 +266,7 @@ describe('worker kernel under a memory limit (worker-core.ts behind a fake Worke
   it('turns a refused growth into memory-limit, terminates the worker and restarts it, not counting a crash', async () => {
     const { k, workers } = coreKernel(64 * MiB, true);
     expect(meshVolume(await k.boolean('union', cube(), cube(0.5)))).toBeCloseTo(1.5, 9);
-    expect(workers[0]!.controls).toEqual([{ type: 'enable-test-hooks' }]);
+
     // Under the limit the probe succeeds and reports the size reached.
     const ok = await k.probe({ op: 'probe-memory', pages: 512 });
     expect(ok.reachedBytes!).toBeGreaterThanOrEqual(32 * MiB);
@@ -206,13 +304,30 @@ describe('worker kernel under a memory limit (worker-core.ts behind a fake Worke
     expect(e.code).toBe('unavailable');
     expect(e.message).toMatch(/test hooks are disabled/);
     expect(workers).toHaveLength(0); // refused before a worker was even started
-    // A worker that never received enable-test-hooks refuses a probe it is sent anyway.
+    // A worker started without the test-hooks name refuses a probe it is sent anyway, and no
+    // message can switch the probes on (the former enable message is ignored).
     const replies: WorkerMessage[] = [];
     const handle = createWorkerHandler(loadManifold(), memoryScope(64 * MiB), (msg) => replies.push(msg));
+    (handle as (data: unknown) => void)({ type: 'enable-test-hooks' });
     handle({ id: 7, op: 'probe-memory', pages: 1_000_000 });
+    handle({ id: 8, op: 'probe-csp' });
     await new Promise((r) => setTimeout(r, 200));
-    expect(replies).toEqual([{ id: 7, ok: false, error: 'unknown operation "probe-memory"' }]);
+    expect(replies).toEqual([{ id: 7, ok: false, error: 'unknown operation "probe-memory"' }, { id: 8, ok: false, error: 'unknown operation "probe-csp"' }]);
     k.dispose();
+  });
+
+  it('switches the worker probes on only through the Worker name the kernel chooses at creation', () => {
+    expect(KERNEL_TEST_HOOKS_WORKER_NAME).toBe('jcad-kernel-test-hooks');
+    const src = readFileSync('src/model3d/kernel/manifold-kernel.ts', 'utf8');
+    // Vite needs static Worker options, so the name is a literal there: it must match the constant.
+    expect(src).toContain(`{ type: 'module', name: '${KERNEL_TEST_HOOKS_WORKER_NAME}' }`);
+    const worker = readFileSync('src/model3d/kernel/manifold.worker.ts', 'utf8');
+    expect(worker).toContain('const testHooks = scope.name === KERNEL_TEST_HOOKS_WORKER_NAME;');
+    expect(worker).not.toMatch(/enable-test-hooks/);
+    // Decided once when 3D is installed, never lazily from a later URL.
+    const install = readFileSync('src/app/experimental-3d.ts', 'utf8');
+    expect(install).toContain('const testHooks = kernelTestHooksRequested();');
+    expect(install).toContain('c.kernelFactory = () => createDefaultKernel({ testHooks });');
   });
 
   it('enables the hooks only for ?jcad3dTestHooks=1', () => {

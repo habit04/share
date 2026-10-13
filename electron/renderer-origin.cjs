@@ -18,9 +18,12 @@ const WORKER_CSP = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; co
 const WORKER_SCRIPT = /^\/assets\/worker\/[A-Za-z0-9._-]+\.m?js$/i;
 
 /**
- * Extra response headers for the bundled file at decoded URL path `pathname`: WORKER_CSP for
- * worker scripts, nothing for anything else (the page, its scripts and styles, the wasm).
- * Case-insensitive because the bundle may sit on a case-insensitive file system.
+ * Extra response headers for the bundled file at `pathname`: WORKER_CSP for worker scripts,
+ * nothing for anything else (the page, its scripts and styles, the wasm). The handler passes the
+ * path of the file actually served (its real path relative to the real bundle root), never the
+ * requested URL, so aliases that resolve to a worker file (a Windows 8.3 short name such as
+ * `MANIFO~1.JS`, another letter case) still get the header. Case-insensitive as a second line of
+ * defence for case-insensitive file systems.
  * @param {string} pathname
  * @returns {Record<string, string>}
  */
@@ -64,6 +67,14 @@ function assetPath(root, url) {
   return file;
 }
 
+/**
+ * The served file as a URL-style path: `/` + its real path relative to the real bundle root.
+ * @param {string} relative  path.relative(realRoot, realFile)
+ */
+function servedPath(relative) {
+  return `/${relative.split(path.sep).join('/')}`;
+}
+
 function installAssetHandler({ protocol, net, root }) {
   protocol.handle('jcad', async (request) => {
     try {
@@ -72,7 +83,8 @@ function installAssetHandler({ protocol, net, root }) {
       const [realRoot, realFile] = await Promise.all([fs.realpath(root), fs.realpath(file)]);
       const relative = path.relative(realRoot, realFile);
       if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return new Response('Forbidden', { status: 403 });
-      return withAssetHeaders(await net.fetch(pathToFileURL(realFile).href), decodeURIComponent(new URL(request.url).pathname));
+      // Decide headers from the file that is served, not from the URL that asked for it.
+      return withAssetHeaders(await net.fetch(pathToFileURL(realFile).href), servedPath(relative));
     } catch { return new Response('Not found', { status: 404 }); }
   });
 }
@@ -114,4 +126,4 @@ async function legacyStorage({ BrowserWindow, protocol, indexFile }) {
   }
 }
 
-module.exports = { APP_URL, WORKER_CSP, assetPath, assetResponseHeaders, installAssetHandler, legacyStorage, rendererStartUrl, withAssetHeaders };
+module.exports = { APP_URL, WORKER_CSP, assetPath, assetResponseHeaders, installAssetHandler, legacyStorage, rendererStartUrl, servedPath, withAssetHeaders };

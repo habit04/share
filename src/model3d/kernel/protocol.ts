@@ -15,12 +15,19 @@ export interface WorkerBooleanRequest {
 }
 
 /**
- * Test-only probes (scripts/e2e-3d-security.mjs). The worker answers them only after the main
- * thread sent `enable-test-hooks`, which ManifoldWorkerKernel does only when created with
- * `testHooks: true` (the renderer sets that only for `?jcad3dTestHooks=1`, which the Electron main
- * process adds only for JCAD_3D_TEST_HOOKS=1 in a build that allows inspection). Otherwise they are
- * refused like an unknown operation. They are no security boundary: page script can already make
- * the kernel allocate up to its limit with legitimate Booleans.
+ * The Worker `name` that switches on the test probes. ManifoldWorkerKernel creates its worker with
+ * it only when constructed with `testHooks: true`; the renderer decides that once, when 3D is
+ * installed, from `?jcad3dTestHooks=1`, which the Electron main process adds only for
+ * JCAD_3D_TEST_HOOKS=1 in a build that allows inspection. The worker reads its name once at start;
+ * no message can turn the probes on later.
+ */
+export const KERNEL_TEST_HOOKS_WORKER_NAME = 'jcad-kernel-test-hooks';
+
+/**
+ * Test-only probes (scripts/e2e-3d-security.mjs). A worker started without
+ * KERNEL_TEST_HOOKS_WORKER_NAME refuses them like an unknown operation. They are no security
+ * boundary against page script (which can already make the kernel allocate up to its limit with
+ * legitimate Booleans); the gate keeps them out of normal operation.
  * - `probe-memory`: allocate Manifold solids inside the WebAssembly module until its memory is at
  *   least `pages` pages, then free them (drives growth past the limit on purpose).
  * - `probe-csp`: try a remote `fetch` and `import()` from inside the worker and report the CSP
@@ -32,8 +39,6 @@ export type WorkerProbeRequest =
 
 export type WorkerRequest = WorkerBooleanRequest | WorkerProbeRequest;
 
-/** Control messages from the main thread (no reply). */
-export type WorkerControl = { readonly type: 'enable-test-hooks' };
 
 /** What a probe reports. */
 export interface ProbeResult {

@@ -556,7 +556,7 @@ verified there and what was not. How to repeat the checks: [3D-PACKAGED-TEST.md]
 
 **Status (2026-10-12, branch `feature/3d-security`): mitigated.** Verified: unit tests of the
 header decision and of the real protocol handler (`tests/renderer-origin.test.ts`), and
-`scripts/e2e-3d-security.mjs` (19/19 checks) in Electron against the development build
+`scripts/e2e-3d-security.mjs` (19/19 checks on the development build, 20/20 on the test build, including the worker-file alias check) in Electron against the development build
 (`electron .` on `dist/`) and against an unpacked Windows test build (`npm run dist:test:no-dwg`:
 ASAR, test-build fuses, no DWG writer). **Not yet verified** in an installed, signed release build
 (the script cannot drive one: shipping fuses disable inspection), nor on macOS or Linux.
@@ -606,12 +606,17 @@ JavaScript global scope with its own CSP, not process, memory or crash isolation
 
 **Residual**: the browser edition (`vite build --mode site`, GitHub Pages) and the Vite dev server
 keep Vite's default file layout and serve the worker without the header (static hosting cannot set
-response headers); there the worker has no policy of its own, as before. The test-only probe (`probe-csp` /
-`probe-memory`, `src/model3d/kernel/protocol.ts`) exists in the shipped worker but answers only
-after the main thread enables it, which happens only for `?jcad3dTestHooks=1`, which the main
-process adds only for `JCAD_3D_TEST_HOOKS=1` in a build that allows inspection
-(`rendererStartUrl`, unit-tested); page script could request it in any build, but it gives nothing
-page script cannot already do with large Booleans. If the kernel ever has to run on the main
+response headers); there the worker has no policy of its own, as before. The test-only probes (`probe-csp` /
+`probe-memory`, `src/model3d/kernel/protocol.ts`) exist in the shipped worker but answer only in
+a worker created with the Worker name `KERNEL_TEST_HOOKS_WORKER_NAME`, which the worker reads once
+at start (no message can switch them on). The kernel uses that name only when 3D was installed on a
+page loaded with `?jcad3dTestHooks=1` (decided once at start-up, `kernelTestHooksRequested` in
+`installExperimental3d`, so a later `history.pushState` does not count), and the main process adds
+that query only for `JCAD_3D_TEST_HOOKS=1` in a build that allows inspection (`rendererStartUrl`,
+unit-tested). Residual by design: plugins and any other script in the page run with full renderer
+access (E-10), so they could start their own worker from the same URL with that name and call the
+probes in any build. That gives them nothing they cannot already do: the probes only allocate up to
+the same 1 GiB limit and try requests that the worker CSP blocks. If the kernel ever has to run on the main
 thread (`ManifoldDirectKernel`), that needs `'wasm-unsafe-eval'` in the renderer policy and a new
 review; the default stays the worker (docs/3D-PLAN.md, open decision 1).
 
@@ -643,10 +648,14 @@ not cover it. The worker is therefore not memory or crash isolation; the control
 **Mitigation**: a hard limit of 1 GiB (16,384 pages; one exported constant). Because the module
 owns its memory, a smaller `new WebAssembly.Memory({ initial, maximum })` cannot be supplied; the
 worker instead replaces `WebAssembly.Memory.prototype.grow` before instantiating the module, and
-refuses (throws on) any growth that would take a memory past the limit. A request during which a
-growth was refused is answered as a `memoryLimit` failure whatever the module did afterwards (in
-practice Manifold fails with `RuntimeError: memory access out of bounds` and the module is
-unusable); the worker answers every later request the same way; the main thread rejects the call
+refuses (throws on) any growth that would take a memory past the limit. Emscripten catches a
+refused growth and retries with less headroom (1.2x, then 1.1x, then 1.05x the current size); when
+a retry fits under the limit the allocation succeeds and the operation completes normally, with no
+restart (tested with a real Manifold Boolean). The limit stops a request only when the operation
+threw after a refused growth or its last growth attempt was refused (every retry failed). Such a
+request is answered as a `memoryLimit` failure whatever the module did afterwards (in practice
+Manifold then fails with `RuntimeError: memory access out of bounds`, and the module is treated
+as unusable); the worker answers every later request the same way; the main thread rejects the call
 with KernelError `memory-limit` ("The 3D kernel reached its 1 GiB memory limit; the operation was
 abandoned and the model is unchanged."), terminates the worker, rejects the other pending calls and
 starts a fresh worker for the next call, as after a timeout (not counted as a crash). The existing

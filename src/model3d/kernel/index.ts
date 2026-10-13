@@ -19,6 +19,8 @@ export { KERNEL_MEMORY_LIMIT_BYTES, KERNEL_MEMORY_LIMIT_PAGES } from './memory-g
 /**
  * True when the page was opened with `?jcad3dTestHooks=1` (the Electron main process adds it only
  * for JCAD_3D_TEST_HOOKS=1 in a development or dedicated test build; scripts/e2e-3d-security.mjs).
+ * experimental-3d.ts evaluates it once, when 3D is installed at start-up, so a later change of
+ * the page URL (history.pushState) cannot switch the probes on.
  */
 export function kernelTestHooksRequested(search: string | undefined = globalThis.location?.search): boolean {
   if (typeof search !== 'string' || !search) return false;
@@ -29,7 +31,10 @@ export function kernelTestHooksRequested(search: string | undefined = globalThis
   }
 }
 
-/** The kernel for this environment: worker-based when `Worker` exists, else in-process. */
-export function createDefaultKernel(): GeometryKernel {
-  return typeof Worker !== 'undefined' ? new ManifoldWorkerKernel({ testHooks: kernelTestHooksRequested() }) : new ManifoldDirectKernel();
+/**
+ * The kernel for this environment: worker-based when `Worker` exists, else in-process.
+ * `testHooks` (default off) enables the worker's test probes.
+ */
+export function createDefaultKernel(opts: { readonly testHooks?: boolean } = {}): GeometryKernel {
+  return typeof Worker !== 'undefined' ? new ManifoldWorkerKernel({ testHooks: opts.testHooks === true }) : new ManifoldDirectKernel();
 }

@@ -173,7 +173,7 @@ another program while keeping the data makes JCad show the edited mesh with the 
 ## DWG
 
 The portable DWG writer cannot write these records. Saving a drawing with solids as DWG, and
-`EXPORTDWG`, are refused with "DWG files cannot hold 3D objects, so no DWG was written and nothing was removed from the drawing. To keep the 3D model, save as JCad DXF (Save, or Save As and choose DXF): DXF keeps every 3D object with its construction history, and so do the autosave recovery copies. To view or erase the 3D objects, turn on Experimental 3D (Options > Files)."; nothing is written and no solid is dropped. No save path
+`EXPORTDWG`, are refused with "DWG files cannot hold 3D objects, so no DWG was written and nothing was removed from the drawing. To keep the 3D model, save as JCad DXF (Save, or Save As and choose DXF): DXF keeps the 3D objects and their construction histories (where they fit the file limits; see 3D-FILE-FORMAT), and so do the autosave recovery copies. To view or erase the 3D objects, turn on Experimental 3D (Options > Files)."; nothing is written and no solid is dropped. No save path
 removes or downgrades solids to make a DWG save succeed (`src/model3d/save-guard.ts`,
 `tests/model3d-save-guard.test.ts`).
 

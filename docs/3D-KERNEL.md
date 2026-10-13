@@ -128,11 +128,16 @@ smaller `new WebAssembly.Memory({ initial, maximum })`. Its heap grows only from
 Emscripten's `emscripten_resize_heap` (a function the module imports) calls `growMemory`, which
 calls `wasmMemory.grow(pages)` (`tests/model3d-wasm-memory.test.ts` checks both facts in the
 shipped files). So the worker replaces `WebAssembly.Memory.prototype.grow` before the module is
-instantiated and refuses any growth past the limit. The refused `grow` throws; Emscripten's
+instantiated and refuses any growth past the limit. The refused `grow` throws; Emscripten
+catches that and retries with less headroom (1.2x, then 1.1x, then 1.05x the current size, never
+below what was asked for). If a retry fits under the limit the allocation succeeds and the
+operation completes normally, without a restart (`tests/model3d-memory-limit.test.ts` runs a real
+Boolean under a limit one page below its last 1.2x step). If every attempt is refused, the
 allocator returns null and the C++ code fails (in practice a `RuntimeError: memory access out of
-bounds`, after which the module is unusable). Whatever happens next, a request during which a
-growth was refused is answered with `memoryLimit`, the worker refuses further requests, and the
-main thread replaces it. The user sees: "The 3D kernel reached its 1 GiB memory limit; the
+bounds`; the module is then treated as unusable). The limit stops a request when the operation
+threw after a refused growth, or when its last growth attempt was refused (`memoryLimitStopped`);
+such a request is answered with `memoryLimit`, the worker refuses further requests, and the main
+thread replaces it. The user sees: "The 3D kernel reached its 1 GiB memory limit; the
 operation was abandoned and the model is unchanged." Not covered: a `memory.grow` instruction
 executed by the module itself (Emscripten JS-runtime builds do not use one for the heap; the test
 above fails if manifold.js stops growing through `wasmMemory.grow`). The in-process kernel applies
@@ -207,7 +212,7 @@ server.
 In Electron, `npm run e2e:3d-security` (scripts/e2e-3d-security.mjs, outside CI) checks the
 worker Boolean, the worker CSP header and its effect inside the worker, the unchanged page policy
 and the memory limit with a restart; docs/3D-PACKAGED-TEST.md has the commands. It passed
-(19/19 checks) on 2026-10-12 against the development build (`electron .`) and against an
+(19/19 checks; 20/20 with the fuse check of a packaged build) on 2026-10-12 against the development build (`electron .`) and against an
 unpacked Windows test build (`npm run dist:test:no-dwg`: ASAR, test fuses, no DWG writer); not yet
 against an installed release build.
 
