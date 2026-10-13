@@ -12,8 +12,9 @@ import { evaluateFeature } from '../src/model3d/feature-eval';
 import type { Feature3D, PrimitiveFeature, Solid3D } from '../src/model3d/types';
 import { type GeometryKernel, KernelError } from '../src/model3d/kernel/kernel';
 import {
-  MAX_PARAMETER_ROWS, evaluateLocal, parameterRows, parameterText, parseParameter, solidParameterTool, withParameter,
+  MAX_PARAMETER_ROWS, evaluateLocal, parameterRows, parameterText, parseParameter, setSolidParameter, solidParameterTool, withParameter,
 } from '../src/tools3d/properties-edit';
+import type { Tool } from '../src/tools/types';
 import { directKernel, drive3d, fake3dContext } from './helpers/context3d';
 
 const box = (x0: number, y0: number, z0: number, w: number, d: number, h: number): PrimitiveFeature => ({
@@ -65,11 +66,49 @@ describe('parameterRows', () => {
     expect(() => withParameter(pointedDown, '/topRadius', 0)).toThrow(/base radius or a top radius/);
     expect(() => withParameter({ kind: 'torus', frame: WORLD_XY_FRAME, majorRadius: 3, minorRadius: 1 }, '/minorRadius', 3)).toThrow(/smaller than the torus radius/);
     expect(withParameter({ kind: 'extrude', profile: { frame: WORLD_XY_FRAME, loops: [] }, distance: 2 }, '/distance', -3)).toMatchObject({ distance: -3 });
+    const rev: Feature3D = { kind: 'revolve', profile: { frame: WORLD_XY_FRAME, loops: [] }, axis: { origin: v3(0, 0, 0), dir: v3(0, 1, 0) }, angle: 1 };
+    expect(() => withParameter(rev, '/angle', 400)).toThrow(/at most 360/);
+    expect(() => withParameter(rev, '/angle', 0)).toThrow(/non-zero/);
+    expect(() => withParameter(rev, '/segments', 2.5)).toThrow(/whole number/);
     expect(() => parseParameter('count', '2.5', 'Segments')).toThrow(/whole number/);
     expect(() => parseParameter('count', '1000', 'Segments')).toThrow(/whole number/);
     expect(() => parseParameter('angle', '0', 'Angle')).toThrow(/non-zero/);
     expect(() => parseParameter('length', 'abc', 'Width')).toThrow(/must be a number/);
     expect(parseParameter('length', '1\'-6"', 'Width')).toBe(18);
+  });
+});
+
+describe('setSolidParameter (the palette edit)', () => {
+  const host = (doc: Drawing, tool: Tool | null = null) => {
+    const logs: string[] = [];
+    const started: Tool[] = [];
+    return { logs, started, h: { doc, tool, log: (t: string) => void logs.push(t), startTool: (t: Tool) => void started.push(t) } };
+  };
+
+  it('applies primitives in place without starting a command, even while one runs', () => {
+    const s = solidOf(box(0, 0, 0, 2, 2, 2));
+    const doc = docWith(s);
+    const running = { name: 'LINE' } as Tool;
+    const { h, logs, started } = host(doc, running);
+    expect(setSolidParameter(h, s.id, '/height', '5')).toBe('applied');
+    expect(only(doc)).toMatchObject({ id: s.id, feature: { height: 5 } });
+    expect(started).toEqual([]);
+    expect(setSolidParameter(h, s.id, '/height', 'x')).toBe('refused');
+    expect(logs.at(-1)).toMatch(/must be a number/);
+  });
+
+  it('a Boolean starts the PROPERTIES command, and is refused while another command runs', async () => {
+    const f: Feature3D = { kind: 'boolean', op: 'union', operands: [box(0, 0, 0, 2, 2, 2), box(1, 0, 0, 2, 2, 2)] };
+    const s = newSolid({ mesh: await evaluateFeature(f, directKernel()), feature: f });
+    const doc = docWith(s);
+    const busy = host(doc, { name: 'LINE' } as Tool);
+    expect(setSolidParameter(busy.h, s.id, '0/width', '3')).toBe('refused');
+    expect(busy.logs.at(-1)).toMatch(/finish or cancel the running command/);
+    expect(busy.started).toEqual([]);
+    const idle = host(doc);
+    expect(setSolidParameter(idle.h, s.id, '0/width', '3')).toBe('computing');
+    expect(idle.started.map((t) => t.name)).toEqual(['PROPERTIES']);
+    expect(only(doc)).toBe(s);
   });
 });
 

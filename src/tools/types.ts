@@ -70,6 +70,8 @@ export interface ToolContext {
   readonly kernel?: GeometryKernel;
   /** Solids drawn as a translucent ghost by the 3D view while a tool runs ([] clears). */
   setPreview3d?(solids: readonly Solid3D[]): void;
+  /** False when nothing would draw ghosts (3D mode off): tools may skip building them. */
+  wantsPreview3d?(): boolean;
 }
 
 /** Result of the Insert Component icon menu: the block and the orientation radio (H = as drawn, V = vertical). */

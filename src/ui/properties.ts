@@ -11,7 +11,7 @@ import { isViewportFrame, viewTwist } from '../core/layouts';
 import type { Solid3D } from '../model3d/types';
 import { replaceSolid, solidById } from '../model3d/model';
 import { selectedSolids, solidRows } from '../tools3d/properties';
-import { parameterRows, parameterText, solidParameterTool } from '../tools3d/properties-edit';
+import { parameterRows, parameterText, setSolidParameter } from '../tools3d/properties-edit';
 
 /** Properties palette: shows and edits the current selection (docked right). */
 export class PropertiesPalette {
@@ -387,7 +387,8 @@ export class PropertiesPalette {
       b.appendChild(this.section('Parameters'));
       for (const p of params) {
         b.appendChild(this.row(p.label, this.input(parameterText(p), (v) => {
-          void this.editor.startTool(solidParameterTool(id, p.key, v));
+          // Applied in place (a running command keeps running); a Boolean re-runs as a command.
+          setSolidParameter(this.editor, id, p.key, v);
           // A refused value leaves the model unchanged (no 'change' event): show the stored value.
           this.render();
         })));

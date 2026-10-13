@@ -81,6 +81,21 @@ describe('faceRegion', () => {
     expect(triangleAdjacency(s.mesh).every((t) => t >= 0)).toBe(true);
   });
 
+  it('a Boolean far from the origin still gives one planar top face', async () => {
+    const X = 123456.789, Y = -98765.4321;
+    const f: Feature3D = { kind: 'boolean', op: 'union', operands: [box(X, Y, 50, 2, 2, 2), box(X + 1, Y, 50, 2, 2, 2)] };
+    const s = newSolid({ mesh: await evaluateFeature(f, directKernel()), feature: f });
+    const hit = pickSolid(s, down(X + 1.5, Y + 1))!;
+    const r = faceRegion(s.mesh, hit.triangle);
+    expect(r.area).toBeCloseTo(6, 4);
+    expect(r.perimeter).toBeCloseTo(10, 4);
+    expect(r.loops).toHaveLength(1);
+    expect(r.loops[0]).toHaveLength(4);
+    const snap = snapOnSolid(hit, s.mesh, down(X + 2.95, Y + 1.97), 0.2, ALL)!;
+    expect(snap.kind).toBe('endpoint');
+    expect(snap.point.x).toBeCloseTo(X + 3, 4);
+  });
+
   it('a box with a hole through its top gives an outer loop and a hole loop', async () => {
     const f: Feature3D = { kind: 'boolean', op: 'subtract', operands: [box(0, 0, 0, 4, 4, 1), box(1, 1, -1, 2, 2, 3)] };
     const s = newSolid({ mesh: await evaluateFeature(f, directKernel()), feature: f });
@@ -281,6 +296,39 @@ describe('3D view: snaps, 2D commands and grips (fake viewport)', () => {
     void ed.runCommand('3DDIST');
     expect(c.grips()).toEqual([]);
     ed.cancel();
+  });
+
+  it('Esc during a centre-grip drag abandons it: releasing the button changes nothing', () => {
+    const { ed, c, id } = editorIn3d();
+    ed.selection.add(id);
+    const start = screenOf(5, 5);
+    expect(c.beginGripDrag(start.x, start.y)).toBe(true);
+    const to = screenOf(15, 5);
+    c.gripDragTo(to.x, to.y);
+    expect(c.previewSolids).toHaveLength(1);
+    const before = ed.doc.snapshot;
+    ed.cancel(); // Esc: clears the selection, which ends the drag
+    expect(c.gripDragging).toBe(false);
+    expect(c.previewSolids).toEqual([]);
+    c.endGripDrag(to.x, to.y);
+    expect(ed.doc.snapshot).toBe(before);
+    // A command starting also ends a drag.
+    ed.selection.add(id);
+    expect(c.beginGripDrag(start.x, start.y)).toBe(true);
+    void ed.runCommand('3DDIST');
+    expect(c.gripDragging).toBe(false);
+    ed.cancel();
+  });
+
+  it('keeps no ghosts outside 3D mode; grips are cached per mesh', () => {
+    const { ed, c } = editorIn3d();
+    const s = model3dOf(ed.doc.snapshot).solids[0]!;
+    c.setPreview3d([s]);
+    expect(c.previewSolids).toHaveLength(1);
+    c.viewport = null;
+    c.setPreview3d([s]);
+    expect(c.previewSolids).toEqual([]);
+    expect(solidGrips(s)).toBe(solidGrips(s));
   });
 
   it('DIST measures 3D points in 3D mode and stays the 2D command otherwise', () => {

@@ -38,6 +38,7 @@
 import type { Editor } from './editor';
 import type { Tool, ToolContext } from '../tools/types';
 import type { Point } from '../core/geometry';
+import { GeometryBudgetError } from '../core/geometry-budget-error';
 import { RIBBON, type RibbonTab } from '../ui/ribbon';
 import { type Frame3, type Vec3, WORLD_XY_FRAME, intersectRayPlane, add3, len3, scale3, sub3, v3 } from '../model3d/math';
 import { addSolids, model3dOf, newSolid, solidById, withModel3D } from '../model3d/model';
@@ -62,7 +63,7 @@ import { dim3dTool } from '../tools3d/dim3d';
 import { type Snap3DKind, snapPick3 } from '../tools3d/snap3d';
 import { CENTER_GRIP, gripDragNormal, gripDragPoint, solidGrips } from '../tools3d/grips';
 import { commitSolidEdit, ghostSolids, translationMatrix } from '../tools3d/solid-edit';
-import { solidParameterTool } from '../tools3d/properties-edit';
+import { setSolidParameter } from '../tools3d/properties-edit';
 
 /** The ribbon tab added when the flag is on (exported for tests; never in RIBBON when off). */
 export const RIBBON_3D_TAB: RibbonTab = {
@@ -253,6 +254,8 @@ export class Experimental3d {
 
   /** Ghost solids for the 3D view ([] clears). */
   setPreview3d(solids: readonly Solid3D[]): void {
+    // Nothing draws ghosts outside 3D mode: keep none.
+    if (!this.active) solids = [];
     if (solids.length === 0 && this.previewSolids.length === 0) return;
     this.previewSolids = solids;
     this.render();
@@ -306,6 +309,7 @@ export class Experimental3d {
     pickAt: (p) => this.pickAt(p),
     kernel: () => this.kernel(),
     setPreview3d: (solids) => this.setPreview3d(solids),
+    wantsPreview3d: () => this.active,
   };
 
   /**
@@ -348,7 +352,7 @@ export class Experimental3d {
       const aperture = len3(sub3(v, scale3(d, along)));
       const s = snapPick3(pick, model3dOf(this.editor.doc.snapshot), this.editor.snap, aperture, this.constructionPlane);
       if (s.snap) this.snapMarker = { point: s.point, kind: s.snap };
-      if (prev !== this.snapMarker) this.render();
+      if (!sameMarker(prev, this.snapMarker)) this.render();
       return s;
     }
     if (prev) this.render();
@@ -492,12 +496,12 @@ export class Experimental3d {
   gripSolid(): Solid3D | null {
     const ed = this.editor;
     if (ed.tool || ed.selection.size !== 1) return null;
-    const [id] = ed.selection;
-    return solidById(model3dOf(ed.doc.snapshot), id!) ?? null;
+    for (const id of ed.selection) return solidById(model3dOf(ed.doc.snapshot), id) ?? null;
+    return null;
   }
 
   /** Grip points shown now (the bounding-box corners and centre of `gripSolid`). */
-  grips(): Vec3[] {
+  grips(): readonly Vec3[] {
     const s = this.gripSolid();
     return s ? solidGrips(s) : [];
   }
@@ -552,9 +556,27 @@ export class Experimental3d {
     if (!g || !d || !(len3(d) > 1e-12)) return;
     const ed = this.editor;
     if (solidById(model3dOf(ed.doc.snapshot), g.solid.id) !== g.solid) return;
-    commitSolidEdit({ doc: ed.doc }, { solids: [g.solid], matrix: translationMatrix(d) });
+    try {
+      commitSolidEdit({ doc: ed.doc }, { solids: [g.solid], matrix: translationMatrix(d) });
+    } catch (err) {
+      // Reported like any refused edit (budget, unsupported transform); the drawing is unchanged.
+      if (!(err instanceof GeometryBudgetError) && !(err instanceof RangeError)) throw err;
+      ed.log(`Grip: ${err.message} The drawing is unchanged.`);
+      return;
+    }
     const f = (v: number) => (Math.abs(v) < 5e-5 ? '0.0000' : v.toFixed(4));
     ed.log(`Grip: solid moved by ${f(d.x)}, ${f(d.y)}, ${f(d.z)}.`);
+    this.render();
+  }
+
+  /**
+   * Abandon a centre-grip drag (Esc, a command starting, the selection changing): the ghost goes
+   * and the button release that follows changes nothing.
+   */
+  abortGripDrag(): void {
+    if (!this.gripDrag) return;
+    this.gripDrag = null;
+    this.setPreview3d([]);
     this.render();
   }
 
@@ -563,12 +585,17 @@ export class Experimental3d {
     return this.gripDrag !== null;
   }
 
+  /** Id of the solid whose centre grip is being dragged, or null. */
+  get draggedSolidId(): string | null {
+    return this.gripDrag?.solid.id ?? null;
+  }
+
   /**
-   * Set a solid parameter as the Properties palette does (e2e helper): starts the PROPERTIES edit;
-   * await `idle()` for a Boolean solid.
+   * Set a solid parameter as the Properties palette does (e2e helper): primitives and sweeps at
+   * once, a Boolean as the PROPERTIES command (await `idle()`; refused while a command runs).
    */
   setParameter(id: string, key: string, value: string): void {
-    void this.editor.startTool(solidParameterTool(id, key, value));
+    setSolidParameter(this.editor, id, key, value);
   }
 
   private syncSettings(): void {
@@ -878,6 +905,12 @@ export class Experimental3d {
   }
 }
 
+/** True when two snap markers are the same kind at the same point (or both absent). */
+function sameMarker(a: { point: Vec3; kind: Snap3DKind } | null, b: { point: Vec3; kind: Snap3DKind } | null): boolean {
+  if (!a || !b) return a === b;
+  return a.kind === b.kind && a.point.x === b.point.x && a.point.y === b.point.y && a.point.z === b.point.z;
+}
+
 /** Register the 3D commands on `editor`. */
 function registerCommands(editor: Editor, c: Experimental3d): void {
   const reg = (name: string, aliases: string[], description: string, run: (ed: Editor, arg?: string) => void | Promise<void>, startsTool = false) =>
@@ -981,6 +1014,12 @@ export function installExperimental3d(editor: Editor): Experimental3d | null {
   // its worker and WebAssembly memory as soon as its command ends (3D mode disposes it on exit).
   editor.on('tool', () => {
     if (!editor.tool && !c.active && c.kernelStarted) c.disposeKernel();
+    if (editor.tool) c.abortGripDrag();
+  });
+  // Esc (the editor's cancel path clears the selection) or any other selection change abandons a
+  // centre-grip drag of the solid that is no longer the single selected object.
+  editor.on('selection', () => {
+    if (c.gripDragging && c.gripSolid()?.id !== c.draggedSolidId) c.abortGripDrag();
   });
   if (!RIBBON.some((t) => t.name === RIBBON_3D_TAB.name)) RIBBON.push(RIBBON_3D_TAB);
   if (typeof window !== 'undefined') {

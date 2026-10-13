@@ -563,12 +563,11 @@ export class ScaleTool extends SelectionTool {
     }
     const k = g.dist(this.base, p);
     if (k < 1e-9) return;
-    this.scale(ctx, k);
+    this.scale(ctx, this.base, k);
     ctx.finish();
   }
-  /** Scale the selection by `k` about the base point (solids about the same point on z = 0). */
-  private scale(ctx: ToolContext, k: number): void {
-    const b = this.base!;
+  /** Scale the selection by `k` about `b` (solids about the same point on z = 0). */
+  private scale(ctx: ToolContext, b: Point, k: number): void {
     const scaled = this.entities(ctx).map((e) => scaleEntity(e, b, k));
     if (!commitWithSolids(ctx, this.ids, scalingAbout(v3(b.x, b.y), k), { replace: scaled })) ctx.doc.replaceEntities(scaled);
   }
@@ -586,7 +585,7 @@ export class ScaleTool extends SelectionTool {
   override onText(text: string, ctx: ToolContext): void {
     const k = parseFloat(text);
     if (this.base && Number.isFinite(k) && k > 0) {
-      this.scale(ctx, k);
+      this.scale(ctx, this.base, k);
       ctx.finish();
       return;
     }

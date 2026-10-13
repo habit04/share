@@ -236,7 +236,8 @@ function* rotateScript(ctx: ToolContext): Step3<void> {
     const a = yield* ask3(ctx, st, 'Specify rotation axis [X/Y/Z/2Points] <Z>:', { keywords: ['X', 'Y', 'Z', '2Points'], points: false });
     if (a.kind === 'enter') axis = planeAxis(plane, 'Z', b.point);
     else if (a.kind === 'keyword') {
-      if (a.keyword !== '2POINTS') axis = planeAxis(plane, a.keyword as 'X' | 'Y' | 'Z', b.point);
+      const which = a.keyword === 'X' ? 'X' : a.keyword === 'Y' ? 'Y' : a.keyword === 'Z' ? 'Z' : null;
+      if (which) axis = planeAxis(plane, which, b.point);
       else {
         const p = yield* point3(ctx, st, 'Specify first point on axis:');
         if (!p) continue;

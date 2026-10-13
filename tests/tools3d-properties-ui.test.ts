@@ -89,5 +89,18 @@ describe('Properties palette: solids', () => {
     expect(ed.doc.snapshot).toBe(before);
     expect(ed.history.at(-1)).toBe('PROPERTIES: Width must be positive and finite (got -2). The solid is unchanged.');
     expect(row('Width').value).toBe('4.0000');
+    // A running command keeps running while a parameter is edited.
+    void ed.runCommand('LINE');
+    ed.submitInput('0,0');
+    const lineTool = ed.tool;
+    expect(lineTool?.name).toBe('LINE');
+    const w = row('Width');
+    w.value = '7';
+    w.fire('change');
+    expect(ed.tool).toBe(lineTool);
+    expect(model3dOf(ed.doc.snapshot).solids[0]).toMatchObject({ id, feature: { width: 7 } });
+    ed.submitInput('5,0');
+    ed.submitInput('');
+    expect(ed.doc.entities.filter((e) => e.type === 'line')).toHaveLength(1);
   });
 });

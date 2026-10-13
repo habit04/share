@@ -105,6 +105,8 @@ export class Viewport3D {
   private underlay: { entities: DrawingState['entities']; layers: DrawingState['layers']; blocks: DrawingState['blocks']; batch: LineBatchGpu | null } | null = null;
   private grid: { key: string; spec: GridSpec; batch: LineBatchGpu | null } | null = null;
   private triad: LineBatchGpu | null = null;
+  /** Reused buffer of the screen-space marks (grips, snap marker); rebuilt after a context loss. */
+  private marks: { readonly vao: WebGLVertexArrayObject; readonly vbo: WebGLBuffer } | null = null;
   private idTarget: { fbo: WebGLFramebuffer; color: WebGLRenderbuffer; depth: WebGLRenderbuffer; w: number; h: number; ok: boolean } | null = null;
   private idKey: { cam: string; model: unknown; layers: unknown } | null = null;
   private idSolids: readonly Solid3D[] = [];
@@ -141,6 +143,7 @@ export class Viewport3D {
       this.underlay = null;
       this.grid = null;
       this.triad = null;
+      this.marks = null;
       this.idTarget = null;
       this.idKey = null;
       this.requestRender(this.lastOverlay);
@@ -606,18 +609,26 @@ export class Viewport3D {
         add(markerSegments(snap.kind, s.x, s.y, r), SNAP_MARKER_RGBA);
         add(markerSegments(snap.kind, s.x, s.y, r - this.dpr), SNAP_MARKER_RGBA);
       }
-      const marks = this.uploadLines(mb.build());
-      if (marks) {
+      const built = mb.build();
+      if (built.vertexCount > 0) {
+        // One persistent dynamic buffer for the marks, refilled each frame (no per-frame VAO / VBO).
+        if (!this.marks) {
+          const vbo = this.device.createBuffer(built.data, gl.ARRAY_BUFFER, gl.DYNAMIC_DRAW);
+          this.marks = { vbo, vao: this.device.createVertexArray(vbo, [[ATTR_POSITION, 3], [ATTR_COLOR, 4]]) };
+        } else {
+          gl.bindBuffer(gl.ARRAY_BUFFER, this.marks.vbo);
+          gl.bufferData(gl.ARRAY_BUFFER, built.data, gl.DYNAMIC_DRAW);
+          gl.bindBuffer(gl.ARRAY_BUFFER, null);
+        }
         gl.disable(gl.DEPTH_TEST);
         gl.useProgram(lp.program);
         gl.uniformMatrix4fv(lp.viewProj, false, Float32Array.from(mat4Orthographic(0, W, 0, H, -1, 1)));
         gl.uniform2f(lp.fade, 0, 0);
-        gl.uniform3f(lp.offset, marks.origin.x, marks.origin.y, marks.origin.z);
+        gl.uniform3f(lp.offset, built.origin.x, built.origin.y, built.origin.z);
         gl.uniform4f(lp.tint, 1, 1, 1, 1);
-        gl.bindVertexArray(marks.vao);
-        gl.drawArrays(gl.LINES, 0, marks.count);
+        gl.bindVertexArray(this.marks.vao);
+        gl.drawArrays(gl.LINES, 0, built.vertexCount);
         gl.bindVertexArray(null);
-        this.deleteLines(marks);
         gl.enable(gl.DEPTH_TEST);
       }
     }

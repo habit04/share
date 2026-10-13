@@ -410,6 +410,30 @@ describe('2D MOVE / COPY / ROTATE / SCALE / MIRROR on solids', () => {
     expect(doc.entities).toHaveLength(2);
   });
 
+  it('mixed COPY / MIRROR give copied 2D objects the CECOLOR / CELTYPE defaults of a 2D-only COPY', () => {
+    const s = solidOf(boxFeature(0, 0, 0, 2, 2, 2));
+    const doc = docWith(s);
+    doc.addEntities([line()]);
+    doc.currentColor = 1;
+    doc.setHeader({ celtype: 'DASHED' });
+    const ctx = fake3dContext(doc);
+    drive(new CopyTool(), ctx, [{ select: ['L1', s.id] }, { x: 0, y: 0 }, { x: 0, y: 10 }, { enter: true }]);
+    expect(doc.entities[1]).toMatchObject({ color: 1, linetype: 'DASHED', a: { x: 0, y: 10 } });
+    expect(solidsIn(doc)).toHaveLength(2);
+    // The same defaults as a 2D-only COPY of the line.
+    const doc2 = new Drawing();
+    doc2.addEntities([line()]);
+    doc2.currentColor = 1;
+    doc2.setHeader({ celtype: 'DASHED' });
+    drive(new CopyTool(), fake3dContext(doc2), [{ select: ['L1'] }, { x: 0, y: 0 }, { x: 0, y: 10 }, { enter: true }]);
+    const { id: _a, ...mixed } = doc.entities[1]!;
+    const { id: _b, ...plain } = doc2.entities[1]!;
+    expect(mixed).toEqual(plain);
+    ctx.selection = new Set();
+    drive(new MirrorTool(), ctx, [{ select: ['L1', s.id] }, { x: -1, y: 0 }, { x: -1, y: 5 }]);
+    expect(doc.entities.at(-1)).toMatchObject({ color: 1, linetype: 'DASHED' });
+  });
+
   it('ROTATE turns solids about the world Z axis through the base point', () => {
     const s = solidOf(boxFeature(0, 0, 0, 4, 2, 1));
     const doc = docWith(s);
