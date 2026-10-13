@@ -11,23 +11,47 @@
  * importing this file costs nothing. `timeoutMs` cannot interrupt a synchronous call; it is
  * checked afterwards, and a call that ran longer is still rejected as a timeout so behaviour
  * matches the worker kernel.
+ *
+ * Memory limit (opt-in, `memoryLimitBytes`): each Boolean runs under the same WebAssembly growth
+ * guard as the worker (memory-guard.ts, scoped to the synchronous call so other WebAssembly in the
+ * process is unaffected). A refused growth rejects with the 'memory-limit' KernelError and drops
+ * the module, so the next call loads a fresh instance, as the worker kernel restarts its worker.
+ * `lastPeakBytes` reports the largest memory size a growth reached during the last call.
  */
 import type { ManifoldToplevel } from 'manifold-3d';
 import type { Mesh3D } from '../mesh';
 import {
-  type BooleanOp, type BooleanOptions, type GeometryKernel, type KernelStatus, KernelError, finishResult, invalidOperand, opName, packMesh,
-  prepareOperands, timeoutError, unavailableError, unpackMesh,
+  type BooleanOp, type BooleanOptions, type GeometryKernel, type KernelStatus, KernelError, finishResult, invalidOperand, memoryLimitError, opName,
+  packMesh, prepareOperands, timeoutError, unavailableError, unpackMesh,
 } from './kernel';
+import { memoryLimitReached, memoryScope, runWithMemoryLimit } from './memory-guard';
 import { MANIFOLD_VERSION } from './version';
+
+export interface ManifoldDirectKernelOptions {
+  /** Apply the kernel's WebAssembly memory limit (bytes) to every Boolean; default: no limit. */
+  readonly memoryLimitBytes?: number;
+}
 
 export class ManifoldDirectKernel implements GeometryKernel {
   readonly name = `Manifold ${MANIFOLD_VERSION} (in-process)`;
   private loading: Promise<{ wasm: ManifoldToplevel; core: typeof import('./manifold-core') } | string> | null = null;
   private disposed = false;
+  private readonly memoryLimitBytes: number | undefined;
+  /** Modules loaded so far (a memory-limit failure discards the current one). */
+  modulesLoaded = 0;
+  /** Largest memory size (bytes) a permitted growth reached in the last call with a limit; 0 = no growth. */
+  lastPeakBytes = 0;
+
+  constructor(opts: ManifoldDirectKernelOptions = {}) {
+    this.memoryLimitBytes = opts.memoryLimitBytes;
+  }
 
   private load(): Promise<{ wasm: ManifoldToplevel; core: typeof import('./manifold-core') } | string> {
     this.loading ??= import('./manifold-core').then(
-      async (core) => ({ wasm: await core.loadManifold(), core }),
+      async (core) => {
+        this.modulesLoaded++;
+        return { wasm: await core.loadManifold(), core };
+      },
       (err: unknown) => `the kernel module could not be loaded (${err instanceof Error ? err.message : String(err)})`,
     ).catch((err: unknown) => `the WebAssembly kernel failed to start (${err instanceof Error ? err.message : String(err)})`);
     return this.loading;
@@ -45,16 +69,29 @@ export class ManifoldDirectKernel implements GeometryKernel {
     const loaded = await this.load();
     if (typeof loaded === 'string') throw unavailableError(loaded);
     const started = performance.now();
+    const pa = packMesh(a), pb = packMesh(b);
+    const scope = this.memoryLimitBytes === undefined ? null : memoryScope(this.memoryLimitBytes);
     let raw;
     try {
-      raw = loaded.core.manifoldBoolean(loaded.wasm, op, packMesh(a), packMesh(b));
+      raw = scope ? runWithMemoryLimit(scope, () => loaded.core.manifoldBoolean(loaded.wasm, op, pa, pb)) : loaded.core.manifoldBoolean(loaded.wasm, op, pa, pb);
     } catch (err) {
+      if (scope && memoryLimitReached(scope)) throw this.memoryLimitFailure(scope.limitBytes);
       if (err instanceof loaded.core.ManifoldInputError) throw invalidOperand(op, err.operand, `the geometry kernel refused it (${err.message})`);
       throw new KernelError('kernel-failure', `The ${opName(op)} failed in the geometry kernel (${err instanceof Error ? err.message : String(err)}).`);
+    } finally {
+      if (scope) this.lastPeakBytes = scope.peakBytes;
     }
+    // A refused growth fails the call even if Manifold recovered: the module state is suspect.
+    if (scope && memoryLimitReached(scope)) throw this.memoryLimitFailure(scope.limitBytes);
     const elapsed = performance.now() - started;
     if (opts.timeoutMs !== undefined && elapsed > opts.timeoutMs) throw timeoutError(op, opts.timeoutMs);
     return finishResult(op, unpackMesh(raw));
+  }
+
+  /** Drop the module (the next call loads a fresh one) and return the memory-limit error. */
+  private memoryLimitFailure(limitBytes: number): KernelError {
+    this.loading = null;
+    return memoryLimitError(limitBytes);
   }
 
   dispose(): void {

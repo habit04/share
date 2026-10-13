@@ -1,7 +1,9 @@
 /**
  * The geometry-kernel seam: solid Boolean operations behind an asynchronous interface, so the
  * implementation (Manifold WebAssembly in a worker today, possibly another kernel later) can run
- * off the UI thread and fail without taking the editor with it.
+ * off the UI thread and report failures as KernelErrors. A worker is a thread of the renderer
+ * process, not a separate process: it shares the renderer's memory budget, and a failure that
+ * takes the renderer down (out of memory outside the kernel's own limits) is not contained.
  *
  * Conventions shared by every implementation:
  * - Meshes are `Mesh3D` (mesh.ts): world drawing units, AutoCAD WCS (right-handed, Z toward the
@@ -16,6 +18,7 @@
  */
 import { MAX_SOLID_TRIANGLES } from '../budget';
 import { type Mesh3D, meshIsClosed, meshTriangleCount, meshVolume, validateMesh, weldVertices } from '../mesh';
+import { KERNEL_MEMORY_LIMIT_BYTES, memoryLimitText } from './memory-guard';
 
 /** A solid Boolean operation; `subtract` removes the second operand from the first. */
 export type BooleanOp = 'union' | 'subtract' | 'intersect';
@@ -45,7 +48,7 @@ export interface GeometryKernel {
 }
 
 /** Machine-readable cause of a KernelError. */
-export type KernelErrorCode = 'invalid-input' | 'empty-result' | 'timeout' | 'worker-crash' | 'budget' | 'unavailable' | 'disposed' | 'kernel-failure';
+export type KernelErrorCode = 'invalid-input' | 'empty-result' | 'timeout' | 'worker-crash' | 'memory-limit' | 'budget' | 'unavailable' | 'disposed' | 'kernel-failure';
 
 /** A failed kernel call; `message` is written for the user. */
 export class KernelError extends Error {
@@ -86,6 +89,14 @@ export function timeoutError(op: BooleanOp, ms: number): KernelError {
 /** KernelError for a kernel process or worker that stopped unexpectedly. */
 export function crashError(detail?: string): KernelError {
   return new KernelError('worker-crash', `The geometry kernel stopped unexpectedly${detail ? ` (${detail})` : ''}; the operation was not applied.`);
+}
+
+/**
+ * KernelError for an operation the kernel's hard WebAssembly memory limit stopped
+ * (memory-guard.ts): the kernel is discarded and restarted, nothing is applied.
+ */
+export function memoryLimitError(limitBytes: number = KERNEL_MEMORY_LIMIT_BYTES): KernelError {
+  return new KernelError('memory-limit', `The 3D kernel reached its ${memoryLimitText(limitBytes)} memory limit; the operation was abandoned and the model is unchanged.`);
 }
 
 /** KernelError for an environment without a usable kernel. */
