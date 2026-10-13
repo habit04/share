@@ -6,7 +6,7 @@ import type { Point } from '../src/core/geometry';
 import { sealImmutableData } from '../src/core/immutable-data';
 import { colorDisplay, lineweightDisplay } from '../src/render/draw';
 import { prepare2D, prepareZoom2D, screenPoint, GPU_ZOOM_VERTEX_STRIDE, type Gpu2DView, type Prepared2D } from '../src/render/gpu-prototype/geometry2d';
-import { Gpu2DRenderer } from '../src/render/gpu-prototype/renderer2d';
+import { Gpu2DRenderer, GPU_EDIT_HISTORY_BYTES, GPU_EDIT_HISTORY_ENTRIES } from '../src/render/gpu-prototype/renderer2d';
 
 const layer: Layer = { name: '0', color: 3, visible: true, locked: false, lineWeight: 0.5 };
 const line: LineEntity = { id: 'line', type: 'line', layer: '0', color: 'ByLayer', a: { x: -2, y: 0 }, b: { x: 2, y: 0 } };
@@ -37,6 +37,7 @@ function covers(geometry: Prepared2D, point: Point): boolean {
 
 function rendererFixture() {
   let serial = 0;
+  let bufferVertices = new Float32Array(0);
   const handle = () => ({ serial: ++serial });
   const gl = {
     VERTEX_SHADER: 0x8b31, FRAGMENT_SHADER: 0x8b30, COMPILE_STATUS: 0x8b81, LINK_STATUS: 0x8b82,
@@ -53,7 +54,11 @@ function rendererFixture() {
     createProgram: vi.fn(handle), attachShader: vi.fn(), detachShader: vi.fn(), linkProgram: vi.fn(),
     getProgramParameter: vi.fn(() => true), getProgramInfoLog: vi.fn(() => 'invalid link'),
     deleteShader: vi.fn(), deleteProgram: vi.fn(),
-    createBuffer: vi.fn(handle), bindBuffer: vi.fn(), bufferData: vi.fn((_target: number, _data: BufferSource, _usage: number) => {}), deleteBuffer: vi.fn(),
+    createBuffer: vi.fn(handle), bindBuffer: vi.fn(),
+    bufferData: vi.fn((_target: number, data: BufferSource, _usage: number) => { bufferVertices = (data as Float32Array<ArrayBuffer>).slice(); }),
+    bufferSubData: vi.fn((_target: number, byteOffset: number, data: Float32Array<ArrayBuffer>) => { bufferVertices.set(data, byteOffset / Float32Array.BYTES_PER_ELEMENT); }),
+    deleteBuffer: vi.fn(),
+    get bufferVertices(): Float32Array<ArrayBuffer> { return bufferVertices; },
     getParameter: vi.fn((parameter: number) => parameter === 0xd3a ? new Int32Array([16384, 16384]) : null),
     getError: vi.fn(() => 0), getContextAttributes: vi.fn(() => ({ stencil: true })),
     getUniformLocation: vi.fn((_program: unknown, name: string) => ({ name })),
@@ -73,7 +78,7 @@ function rendererFixture() {
 
 function uploadedGeometry(gl: ReturnType<typeof rendererFixture>['gl']): Prepared2D {
   const size = [...gl.uniform2f.mock.calls].reverse().find((call) => (call[0] as { name: string }).name === 'u_view')!;
-  return zoomToScreen(gl.bufferData.mock.lastCall![1] as Float32Array<ArrayBuffer>, { width: size[1], height: size[2] });
+  return zoomToScreen(gl.bufferVertices, { width: size[1], height: size[2] });
 }
 
 /** Emulate the actual shader's Float32 center, zoom, pan and fixed-offset arithmetic. */
@@ -91,7 +96,7 @@ function drawnGeometry(gl: ReturnType<typeof rendererFixture>['gl']): Prepared2D
   const size = [...gl.uniform2f.mock.calls].reverse().find((call) => (call[0] as { name: string }).name === 'u_view')!;
   const pan = [...gl.uniform2f.mock.calls].reverse().find((call) => (call[0] as { name: string }).name === 'u_pan')!;
   const zoom = [...gl.uniform1f.mock.calls].reverse().find((call) => (call[0] as { name: string }).name === 'u_zoom')!;
-  return zoomToScreen(gl.bufferData.mock.lastCall![1] as Float32Array<ArrayBuffer>, { width: size[1], height: size[2] }, zoom[1], { x: pan[1], y: pan[2] });
+  return zoomToScreen(gl.bufferVertices, { width: size[1], height: size[2] }, zoom[1], { x: pan[1], y: pan[2] });
 }
 
 /** Include shader NDC arithmetic and the viewport roundtrip when checking geometric error. */
@@ -476,7 +481,7 @@ describe('GPU renderer submission, caching and lifecycle', () => {
     const moved = { ...view, center: { x: 0.25, y: 0 } };
     const changed = sealImmutableData({ ...state, entities: [{ ...line, b: { x: 1, y: 0 } }] });
     expect(renderer.render(changed, moved, overlay).bytes).toBeGreaterThan(0);
-    expect(gl.uniform2f).toHaveBeenLastCalledWith({ name: 'u_pan' }, 0, 0);
+    expect(gl.uniform2f).toHaveBeenLastCalledWith({ name: 'u_pan' }, -7.5, -0);
     expect(renderer.render(changed, moved, { ...overlay, hover: 'line' }).bytes).toBeGreaterThan(0);
     const dashed = sealImmutableData({ ...changed, layers: [{ ...layer, linetype: 'custom' }], header: { ...DEFAULT_HEADER, linetypes: [{ name: 'custom', description: '', pattern: [1, -1] }] } });
     gl.clear.mockClear(); gl.drawArrays.mockClear();
@@ -634,6 +639,270 @@ describe('GPU renderer submission, caching and lifecycle', () => {
     gl.getError.mockReturnValueOnce(0).mockReturnValue(gl.OUT_OF_MEMORY);
     expect(renderer.render(drawing(), view, overlay)).toMatchObject({ rendered: false, reason: expect.stringContaining('submission failed'), bytes: 168 });
     renderer.dispose();
+  });
+});
+
+describe('GPU immutable line subrange edits', () => {
+  const nextState = (state: DrawingState, entities: readonly Entity[]): DrawingState => sealImmutableData({ ...state, entities });
+  const shifted = (entity: LineEntity, offset = 0.2): LineEntity => ({ ...entity, a: { x: entity.a.x, y: entity.a.y + offset }, b: { x: entity.b.x, y: entity.b.y + offset } });
+
+  it('uploads only the changed middle slot at the original anchor and preserves painter order', () => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas);
+    const before = sealImmutableData(drawing([line, { ...line, id: 'middle', color: 1 }, { ...line, id: 'last', color: 5 }]));
+    const original = JSON.stringify(before);
+    const after = nextState(before, [before.entities[0]!, shifted(before.entities[1] as LineEntity), before.entities[2]!]);
+    expect(renderer.render(before, view, overlay)).toMatchObject({ rendered: true, uploadKind: 'full', preparedEntities: 3, reusedEntities: 0 });
+    const initial = gl.bufferVertices.slice();
+    const moved = { ...view, scale: 37.5, center: { x: -120 / 37.5, y: 112 / 37.5 } };
+    const result = renderer.render(after, moved, overlay);
+    expect(result).toMatchObject({ rendered: true, cacheHit: false, cacheReason: 'document-delta', uploadKind: 'subrange', bytes: 168, uploadCalls: 1, subrangeUploadCalls: 1, subrangeUploadBytes: 168, preparedEntities: 1, reusedEntities: 2, editMemoHit: false });
+    expect(gl.bufferData).toHaveBeenCalledOnce();
+    expect(gl.bufferSubData).toHaveBeenCalledWith(gl.ARRAY_BUFFER, 168, expect.any(Float32Array));
+    expect(gl.bufferVertices).toEqual(prepareZoom2D(after, view, overlay).vertices);
+    expect(gl.bufferVertices.subarray(0, 42)).toEqual(initial.subarray(0, 42));
+    expect(gl.bufferVertices.subarray(84)).toEqual(initial.subarray(84));
+    expect(gl.drawArrays).toHaveBeenLastCalledWith(gl.TRIANGLES, 0, 18);
+    expect(gl.uniform1f).toHaveBeenCalledWith({ name: 'u_zoom' }, 1.25);
+    expect(gl.uniform2f).toHaveBeenLastCalledWith({ name: 'u_pan' }, 120, 112);
+    const entity = after.entities[1] as LineEntity;
+    expect(covers(drawnGeometry(gl), screenPoint({ x: 0, y: entity.a.y }, moved))).toBe(true);
+    expect(JSON.stringify(before)).toBe(original);
+    renderer.dispose();
+  });
+
+  it('reuses owned undo/redo bytes without retaining aliases into the mutable CPU image', () => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas);
+    const before = sealImmutableData(drawing());
+    const after = nextState(before, [shifted(before.entities[0] as LineEntity)]);
+    renderer.render(before, view, overlay);
+    const first = renderer.render(after, view, overlay);
+    expect(first).toMatchObject({ editMemoHit: false, preparedEntities: 1, editHistoryBytes: 168, editHistoryEntries: 1 });
+    const issued = gl.bufferSubData.mock.lastCall![2], issuedCopy = issued.slice();
+    for (const state of [before, after, before, after]) {
+      expect(renderer.render(state, { ...view, scale: 33 }, overlay)).toMatchObject({ rendered: true, cacheReason: 'document-delta', cacheHit: false, uploadKind: 'subrange', bytes: 168, preparedEntities: 0, reusedEntities: 1, geometryPreparationMs: 0, partialPreparationMs: 0, editMemoHit: true, editHistoryEntries: 1 });
+      expect(gl.bufferVertices).toEqual(prepareZoom2D(state, view, overlay).vertices);
+      expect(issued).toEqual(issuedCopy);
+      expect(renderer.render(state, { ...view, scale: 34 }, overlay)).toMatchObject({ cacheHit: true, uploadKind: 'none', bytes: 0, preparedEntities: 0, reusedEntities: 1 });
+    }
+    expect(gl.bufferData).toHaveBeenCalledOnce();
+    expect(gl.bufferSubData).toHaveBeenCalledTimes(5);
+    expect(() => { ((before.entities[0] as LineEntity).b as { x: number }).x = 10; }).toThrow(TypeError);
+    renderer.dispose();
+  });
+
+  it('keeps selected-entity stencil opacity and separate opaque batches after an edit', () => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas);
+    const before = sealImmutableData(drawing([line, { ...line, id: 'middle' }, { ...line, id: 'last' }]));
+    const selected = { selection: new Set(['middle']), solidSelection: true };
+    renderer.render(before, view, selected);
+    gl.drawArrays.mockClear(); gl.clear.mockClear(); gl.uniform1f.mockClear();
+    const after = nextState(before, [before.entities[0]!, shifted(before.entities[1] as LineEntity), before.entities[2]!]);
+    expect(renderer.render(after, view, selected)).toMatchObject({ rendered: true, uploadKind: 'subrange', bytes: 168 });
+    expect(gl.drawArrays.mock.calls).toEqual([[gl.TRIANGLES, 0, 6], [gl.TRIANGLES, 6, 6], [gl.TRIANGLES, 12, 6]]);
+    expect(gl.uniform1f.mock.calls.filter((call) => (call[0] as { name: string }).name === 'u_alpha').map((call) => call[1])).toEqual([1, 0.95, 1]);
+    expect(gl.clear).toHaveBeenCalledWith(gl.STENCIL_BUFFER_BIT);
+    expect(gl.bufferVertices).toEqual(prepareZoom2D(after, view, selected).vertices);
+    renderer.dispose();
+  });
+
+  it.each([1, 2])('preserves large-coordinate displacement, twist and lineweights during edits at DPR %s', (dpr) => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas);
+    const origin = { x: 1e12, y: -1e12 }, delta = 1 / 8192;
+    const local: LineEntity = { ...line, a: { x: -1 / 32, y: 0 }, b: { x: 1 / 32, y: 0 }, lineWeight: 1 };
+    const translated: LineEntity = { ...local, a: { x: origin.x + local.a.x, y: origin.y }, b: { x: origin.x + local.b.x, y: origin.y } };
+    const close = { ...view, center: origin, scale: 4096, twist: 0.63, dpr, lineweights: true };
+    const before = sealImmutableData(drawing([translated]));
+    renderer.render(before, close, overlay);
+    const after = nextState(before, [shifted(translated, delta)]);
+    expect(renderer.render(after, { ...close, scale: 4505.6 }, overlay)).toMatchObject({ rendered: true, uploadKind: 'subrange', bytes: 168 });
+    const expected = prepareZoom2D(drawing([shifted(local, delta)]), { ...close, center: { x: 0, y: 0 } }, overlay);
+    expect(gl.bufferVertices).toEqual(expected.vertices);
+    const actual = ndcGeometry(drawnGeometry(gl), close);
+    const center = screenPoint({ x: origin.x, y: origin.y + delta }, { ...close, scale: 4505.6 });
+    expect(covers(actual, center)).toBe(true);
+    expect(covers(actual, { x: center.x, y: center.y + 6 })).toBe(false);
+    renderer.dispose();
+  });
+
+  it('updates zero-vertex bounds without an upload and rejects a later unsafe zoom before drawing', () => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas);
+    const unit = { ...view, scale: 1 };
+    const remote: LineEntity = { ...line, id: 'remote', a: { x: 1000, y: 0 }, b: { x: 1001, y: 0 } };
+    const before = sealImmutableData(drawing([remote, line]));
+    renderer.render(before, unit, overlay);
+    const bound = 2 ** 36;
+    const far: LineEntity = { ...remote, a: { x: bound - unit.width / 2 - 3, y: 0 }, b: { x: bound - unit.width / 2 - 2, y: 0 } };
+    const after = nextState(before, [far, before.entities[1]!]);
+    expect(renderer.render(after, unit, overlay)).toMatchObject({ rendered: true, cacheReason: 'document-delta', uploadKind: 'none', bytes: 0, uploadCalls: 0, preparedEntities: 1, reusedEntities: 1 });
+    expect(gl.bufferSubData).not.toHaveBeenCalled(); expect(gl.bufferData).toHaveBeenCalledOnce();
+    gl.clear.mockClear(); gl.drawArrays.mockClear();
+    expect(renderer.render(after, { ...unit, scale: 1.1 }, overlay)).toMatchObject({ rendered: false, bytes: 0, uploadCalls: 0, reason: expect.stringContaining('precision bound') });
+    expect(gl.clear).not.toHaveBeenCalled(); expect(gl.drawArrays).not.toHaveBeenCalled();
+    renderer.dispose();
+  });
+
+  it('rejects a newly unsafe offscreen edit before touching the GPU or admitting a delta', () => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas), before = sealImmutableData(drawing());
+    renderer.render(before, view, overlay);
+    const saved = gl.bufferVertices.slice();
+    const after = nextState(before, [{ ...line, b: { x: 1e12, y: 0 } }]);
+    gl.clear.mockClear(); gl.drawArrays.mockClear();
+    expect(renderer.render(after, view, overlay)).toMatchObject({ rendered: false, uploadKind: 'none', bytes: 0, uploadCalls: 0, reason: expect.stringContaining('precision bound') });
+    expect(gl.bufferVertices).toEqual(saved); expect(gl.bufferSubData).not.toHaveBeenCalled();
+    expect(gl.clear).not.toHaveBeenCalled(); expect(gl.drawArrays).not.toHaveBeenCalled();
+    renderer.dispose();
+  });
+
+  it.each(['enter', 'leave', 'degenerate'] as const)('uses a full upload when a line changes vertex count: %s', (kind) => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas);
+    const remote = { ...line, a: { x: 1000, y: 0 }, b: { x: 1001, y: 0 } };
+    const before = sealImmutableData(drawing([kind === 'enter' ? remote : line, { ...line, id: 'last' }]));
+    const replacement = kind === 'enter' ? line : kind === 'leave' ? remote : { ...line, b: line.a };
+    renderer.render(before, view, overlay);
+    const after = nextState(before, [replacement, before.entities[1]!]);
+    expect(renderer.render(after, view, overlay)).toMatchObject({ rendered: true, uploadKind: 'full', cacheReason: 'document' });
+    expect(gl.bufferSubData).not.toHaveBeenCalled(); expect(gl.bufferData).toHaveBeenCalledTimes(2);
+    expect(gl.bufferVertices).toEqual(prepareZoom2D(after, view, overlay).vertices);
+    renderer.dispose();
+  });
+
+  it.each(['order', 'two-slots', 'color', 'lineweight', 'layers', 'entity-layer', 'linetypes', 'membership', 'unsealed', 'new-id'] as const)('keeps the complete preparation path for incompatible changes: %s', (kind) => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas);
+    const before = sealImmutableData(drawing([line, { ...line, id: 'second' }]));
+    const weighted = { ...view, lineweights: true };
+    let entities: readonly Entity[] = [shifted(before.entities[0] as LineEntity), before.entities[1]!];
+    if (kind === 'order') entities = [before.entities[1]!, before.entities[0]!];
+    if (kind === 'two-slots') entities = before.entities.map((item) => shifted(item as LineEntity));
+    if (kind === 'color') entities = [{ ...line, color: 1 }, before.entities[1]!];
+    if (kind === 'lineweight') entities = [{ ...line, lineWeight: 1 }, before.entities[1]!];
+    if (kind === 'entity-layer') entities = [{ ...line, layer: 'other' }, before.entities[1]!];
+    if (kind === 'membership') entities = [...before.entities, { ...line, id: 'inserted' }];
+    if (kind === 'new-id') entities = [{ ...line, id: 'other' }, before.entities[1]!];
+    const candidate = { ...before, entities: sealImmutableData(entities), ...(kind === 'layers' ? { layers: sealImmutableData([{ ...layer, trueColor: 0xff0000 }]) } : {}), ...(kind === 'linetypes' ? { header: { ...DEFAULT_HEADER, linetypes: [] } } : {}) };
+    const after = kind === 'unsealed' ? candidate : sealImmutableData(candidate);
+    renderer.render(before, weighted, overlay);
+    expect(renderer.render(after, weighted, overlay)).toMatchObject({ rendered: true, uploadKind: 'full', editMemoHit: false, editHistoryEntries: 0 });
+    expect(gl.bufferSubData).not.toHaveBeenCalled(); expect(gl.bufferData).toHaveBeenCalledTimes(2);
+    expect(gl.bufferVertices).toEqual(prepareZoom2D(after, weighted, overlay).vertices);
+    renderer.dispose();
+  });
+
+  it.each(['alpha', 'dash', 'unsupported'] as const)('refuses the complete scene for unsupported edited styles: %s', (kind) => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas), before = sealImmutableData(drawing());
+    renderer.render(before, view, overlay);
+    const entity: Entity = kind === 'alpha' ? { ...line, transparency: 50 } : kind === 'dash' ? { ...line, linetype: 'DASHED' } : { ...polyline, id: line.id, filled: true };
+    const after = nextState(before, [entity]);
+    gl.clear.mockClear(); gl.drawArrays.mockClear();
+    expect(renderer.render(after, view, overlay)).toMatchObject({ rendered: false, bytes: 0, uploadCalls: 0 });
+    expect(gl.bufferSubData).not.toHaveBeenCalled(); expect(gl.bufferData).toHaveBeenCalledOnce();
+    expect(gl.clear).not.toHaveBeenCalled(); expect(gl.drawArrays).not.toHaveBeenCalled();
+    renderer.dispose();
+  });
+
+  it.each(['zoom', 'pan', 'selection'] as const)('clears anchor-dependent history and fully prepares changed camera/style: %s', (kind) => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas), before = sealImmutableData(drawing());
+    const after = nextState(before, [shifted(line)]);
+    renderer.render(before, view, overlay); renderer.render(after, view, overlay);
+    const camera = kind === 'zoom' ? { ...view, scale: 38 } : kind === 'pan' ? { ...view, center: { x: -5, y: 0 } } : view;
+    const selection = kind === 'selection' ? { selection: new Set(['line']), solidSelection: true } : overlay;
+    expect(renderer.render(before, camera, selection)).toMatchObject({ rendered: true, uploadKind: 'full', editMemoHit: false, editHistoryBytes: 0, editHistoryEntries: 0 });
+    expect(gl.bufferData).toHaveBeenCalledTimes(2); expect(gl.bufferSubData).toHaveBeenCalledOnce();
+    renderer.dispose();
+  });
+
+  it.each(['partial-error', 'partial-throw', 'draw-error', 'draw-throw'] as const)('repairs the entire current CPU image after an ambiguous GPU failure: %s', (kind) => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas);
+    const before = sealImmutableData(drawing([line, { ...line, id: 'last', color: 1 }]));
+    const after = nextState(before, [shifted(line), before.entities[1]!]);
+    renderer.render(before, view, overlay);
+    gl.clear.mockClear(); gl.drawArrays.mockClear();
+    if (kind.startsWith('partial')) {
+      gl.bufferSubData.mockImplementationOnce((_target, byteOffset, data) => {
+        gl.bufferVertices.set(data.subarray(0, data.length / 2), byteOffset / 4);
+        if (kind === 'partial-throw') throw new Error('partial upload throw');
+      });
+      if (kind === 'partial-error') gl.getError.mockReturnValueOnce(gl.OUT_OF_MEMORY);
+    } else if (kind === 'draw-error') gl.getError.mockReturnValueOnce(0).mockReturnValueOnce(gl.OUT_OF_MEMORY);
+    else gl.drawArrays.mockImplementationOnce(() => { throw new Error('draw throw'); });
+    expect(renderer.render(after, view, overlay)).toMatchObject({ rendered: false, uploadKind: 'subrange', bytes: 168, subrangeUploadCalls: 1, subrangeUploadBytes: 168 });
+    if (kind.startsWith('partial')) { expect(gl.clear).not.toHaveBeenCalled(); expect(gl.drawArrays).not.toHaveBeenCalled(); }
+    const repair = renderer.render(after, view, overlay);
+    expect(repair).toMatchObject({ rendered: true, cacheHit: true, uploadKind: 'full', bytes: 336, uploadCalls: 1, subrangeUploadCalls: 0, preparedEntities: 0 });
+    expect(gl.bufferVertices).toEqual(prepareZoom2D(after, view, overlay).vertices);
+    expect(gl.createBuffer).toHaveBeenCalledOnce(); expect(gl.bufferData).toHaveBeenCalledTimes(2);
+    expect(renderer.render(before, view, overlay)).toMatchObject({ rendered: true, uploadKind: 'subrange', editMemoHit: true });
+    expect(gl.bufferVertices).toEqual(prepareZoom2D(before, view, overlay).vertices);
+    renderer.dispose(); expect(gl.deleteBuffer).toHaveBeenCalledOnce();
+  });
+
+  it.each([false, true])('repairs context loss during a subrange upload with or without an immediate loss event: %s', (event) => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas), before = sealImmutableData(drawing());
+    const after = nextState(before, [shifted(line)]);
+    renderer.render(before, view, overlay);
+    gl.bufferSubData.mockImplementationOnce(() => {
+      gl.isContextLost.mockReturnValue(true);
+      if (event) canvas.dispatchEvent(new Event('webglcontextlost', { cancelable: true }));
+    });
+    gl.clear.mockClear(); gl.drawArrays.mockClear();
+    expect(renderer.render(after, view, overlay)).toMatchObject({ rendered: false, uploadKind: 'subrange', ...(event ? { editHistoryBytes: 0, editHistoryEntries: 0 } : {}) });
+    expect(gl.clear).not.toHaveBeenCalled(); expect(gl.drawArrays).not.toHaveBeenCalled();
+    gl.isContextLost.mockReturnValue(false);
+    if (event) canvas.dispatchEvent(new Event('webglcontextrestored'));
+    expect(renderer.render(after, view, overlay)).toMatchObject({ rendered: true, cacheReason: event ? 'cold' : 'hit', uploadKind: 'full', bytes: 168, editMemoHit: false });
+    expect(gl.bufferVertices).toEqual(prepareZoom2D(after, view, overlay).vertices);
+    expect(gl.createBuffer).toHaveBeenCalledTimes(event ? 2 : 1);
+    renderer.dispose();
+  });
+
+  it('fully uploads the newest document when an edit arrives after a failed partial upload', () => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas);
+    const before = sealImmutableData(drawing([line, { ...line, id: 'last' }]));
+    const after = nextState(before, [shifted(line), before.entities[1]!]);
+    const latest = nextState(after, [shifted(line, 0.4), after.entities[1]!]);
+    renderer.render(before, view, overlay);
+    gl.getError.mockReturnValueOnce(gl.OUT_OF_MEMORY);
+    expect(renderer.render(after, view, overlay).rendered).toBe(false);
+    expect(renderer.render(latest, view, overlay)).toMatchObject({ rendered: true, uploadKind: 'full', bytes: 336, subrangeUploadCalls: 0, cacheHit: false, editHistoryEntries: 0 });
+    expect(gl.bufferSubData).toHaveBeenCalledOnce();
+    expect(gl.bufferVertices).toEqual(prepareZoom2D(latest, view, overlay).vertices);
+    renderer.dispose();
+  });
+
+  it.each([false, true])('bounds retained undo snapshots including zero-byte line edits: %s', (empty) => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas);
+    const original = empty ? { ...line, b: line.a } : line;
+    const states: DrawingState[] = [sealImmutableData(drawing([original, { ...line, id: 'last' }]))];
+    renderer.render(states[0]!, view, overlay);
+    let last;
+    for (let i = 1; i <= GPU_EDIT_HISTORY_ENTRIES + 3; i++) {
+      const state = nextState(states[0]!, [shifted(original, i / 1000), states[0]!.entities[1]!]);
+      states.push(state);
+      last = renderer.render(state, view, overlay);
+      expect(last.rendered).toBe(true);
+      expect(last.editHistoryBytes).toBeLessThanOrEqual(GPU_EDIT_HISTORY_BYTES);
+      expect(last.editHistoryEntries).toBeLessThanOrEqual(GPU_EDIT_HISTORY_ENTRIES);
+    }
+    expect(last).toMatchObject({ editHistoryEntries: GPU_EDIT_HISTORY_ENTRIES, editHistoryBytes: empty ? 0 : GPU_EDIT_HISTORY_ENTRIES * 168 });
+    // Eviction must prepare old geometry again rather than falsely claiming a memo hit.
+    expect(renderer.render(states[0]!, view, overlay)).toMatchObject({ rendered: true, editMemoHit: false, preparedEntities: 1 });
+    expect(gl.bufferVertices).toEqual(prepareZoom2D(states[0]!, view, overlay).vertices);
+    expect(renderer.render(states.at(-1)!, view, overlay)).toMatchObject({ rendered: true, editMemoHit: true, preparedEntities: 0 });
+    renderer.dispose();
+    expect(renderer.render(states[0]!, view, overlay)).toMatchObject({ rendered: false, editHistoryBytes: 0, editHistoryEntries: 0 });
   });
 });
 
