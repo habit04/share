@@ -245,9 +245,19 @@ export class Drawing {
     for (const l of this.listeners) l(this);
   }
 
-  /** Apply a state transition as one undoable step. */
+  /** Apply an active-space state transition as one undoable step. */
   transact(fn: (s: DrawingState) => DrawingState): void {
-    const next = prepareDrawingState(this.project(fn), this.state);
+    this.commitTransition(this.project(fn));
+  }
+
+  /** Apply a document-wide transition without projecting the active paper layout. */
+  transactDrawing(fn: (s: DrawingState) => DrawingState): void {
+    this.commitTransition(fn(this.state));
+  }
+
+  /** Shared preparation, bounded undo history and dirty notification for both transaction scopes. */
+  private commitTransition(state: DrawingState): void {
+    const next = prepareDrawingState(state, this.state);
     if (next === this.state) return;
     this.undoStack.push(this.state);
     if (this.undoStack.length > this.maxUndo) this.undoStack.shift();

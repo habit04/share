@@ -13,7 +13,7 @@
  */
 import type { Point } from './geometry';
 import * as g from './geometry';
-import type { EntityBase, LineEntity, PolylineEntity, TextEntity, ArcEntity, CircleEntity, ColorSpec } from './entities';
+import type { Entity, EntityBase, BlockDef, LineEntity, PolylineEntity, TextEntity, ArcEntity, CircleEntity, ColorSpec } from './entities';
 import { appearanceProperties } from './appearance';
 import type { DrawingState } from './document';
 import { formatLength, formatAngle, cadPrecision, type LinearUnits } from './units';
@@ -414,13 +414,13 @@ export function dimensionText(d: DimensionEntity): string {
   return out;
 }
 
-/** Start/end angles (CCW) of the arc of an angular dimension, chosen so the arc passes by linePoint. */
-function angularSweep(d: DimensionEntity): [number, number] {
+/** Start/end angles (CCW) and whether the first defining leg starts the selected arc. */
+function angularSweep(d: DimensionEntity): [number, number, boolean] {
   const c = d.center!;
   const a1 = g.angleOf(c, d.p1);
   const a2 = g.angleOf(c, d.p2);
   const ap = g.angleOf(c, d.linePoint);
-  return g.angleInSweep(ap, a1, a2) ? [a1, a2] : [a2, a1];
+  return g.angleInSweep(ap, a1, a2) ? [a1, a2, true] : [a2, a1, false];
 }
 
 // ------------------------------------------------------------------ geometry
@@ -593,8 +593,8 @@ function extents(b: Block, rot: number, lineAngle: number): { along: number; acr
   return { along: cs * b.w + sn * b.h, across: sn * b.w + cs * b.h };
 }
 
-/** Draw the parameter interval [t0, t1] of the line a + dir·t minus the `cuts`. */
-function segments(c: Ctx, a: Point, dir: Point, t0: number, t1: number, cuts: Array<[number, number]>): void {
+/** Remaining portions of a bounded parameter interval after subtracting `cuts`. */
+function intervalPieces(t0: number, t1: number, cuts: Array<[number, number]>): Array<[number, number]> {
   let pieces: Array<[number, number]> = [[t0, t1]];
   for (const [lo, hi] of cuts) {
     const next: Array<[number, number]> = [];
@@ -607,7 +607,12 @@ function segments(c: Ctx, a: Point, dir: Point, t0: number, t1: number, cuts: Ar
     }
     pieces = next;
   }
-  for (const [s, e] of pieces) if (e - s > 1e-9) line(c, g.add(a, g.scale(dir, s)), g.add(a, g.scale(dir, e)));
+  return pieces.filter(([s, e]) => e - s > 1e-9);
+}
+
+/** Draw the parameter interval [t0, t1] of the line a + dir·t minus the `cuts`. */
+function segments(c: Ctx, a: Point, dir: Point, t0: number, t1: number, cuts: Array<[number, number]>): void {
+  for (const [s, e] of intervalPieces(t0, t1, cuts)) line(c, g.add(a, g.scale(dir, s)), g.add(a, g.scale(dir, e)));
 }
 
 type Placement = { textInside: boolean; arrowsInside: boolean };
@@ -795,7 +800,7 @@ function angularParts(c: Ctx): void {
   const center = d.center;
   const r = g.dist(d.linePoint, center);
   if (r < 1e-12) return;
-  const [a1, a2] = angularSweep(d);
+  const [a1, a2, firstAtStart] = angularSweep(d);
   const sweep = g.normAngle(a2 - a1) || 2 * Math.PI;
   const exo = s.extOffset * k;
   const exe = s.extExtend * k;
@@ -822,29 +827,36 @@ function angularParts(c: Ctx): void {
     if (ea - sa < 1e-6) return;
     c.out.push({ ...base(c, ''), id: arcId(), type: 'arc', center, radius: r, startAngle: sa, endAngle: ea });
   };
-  const b1 = arrowBackoff(s.arrow, asz) / r;
-  const b2 = arrowBackoff(s.arrow2, asz) / r;
+  // Choosing the other arc reverses its geometric order, but style options still belong
+  // to the original first/second defining legs (DIMBLK1/2 and DIMSD1/2).
+  const startWhich = firstAtStart ? 1 : 2;
+  const endWhich = firstAtStart ? 2 : 1;
+  const startSuppressed = firstAtStart ? s.suppressDimLine1 : s.suppressDimLine2;
+  const endSuppressed = firstAtStart ? s.suppressDimLine2 : s.suppressDimLine1;
+  const b1 = arrowBackoff(firstAtStart ? s.arrow : s.arrow2, asz) / r;
+  const b2 = arrowBackoff(firstAtStart ? s.arrow2 : s.arrow, asz) / r;
   const half = (block.w / 2 + gap) / r; // half chord angle of the text gap
   const tA = g.angleOf(center, textCenter);
   const onArc = Math.abs(g.dist(textCenter, center) - r) < h && g.angleInSweep(tA, a1, a2);
-  const s0 = a1 + b1;
-  const s1 = a1 + sweep - b2;
-  if (onArc && 2 * half < sweep) {
-    const rel = g.normAngle(tA - a1);
-    pushArc(s0, a1 + rel - half);
-    pushArc(a1 + rel + half, s1);
-  } else pushArc(s0, s1);
+  const rel = onArc ? Math.min(sweep, g.normAngle(tA - a1)) : sweep / 2;
+  const cuts: Array<[number, number]> = [];
+  if (onArc && 2 * half < sweep) cuts.push([rel - half, rel + half]);
+  if (startSuppressed) cuts.push([-Infinity, rel]);
+  if (endSuppressed) cuts.push([rel, Infinity]);
+  // Intersect text gaps and suppression with the drawable arc, including blank-arrow
+  // backoffs; a gap next to an endpoint must not extend the remaining arc under its arrow.
+  for (const [sa, ea] of intervalPieces(b1, sweep - b2, cuts)) pushArc(a1 + sa, a1 + ea);
   const arcLen = r * sweep;
   const startTan = { x: -Math.sin(a1), y: Math.cos(a1) };
   const endTan = { x: -Math.sin(a2), y: Math.cos(a2) };
   const p1 = g.polar(center, a1, r);
   const p2 = g.polar(center, a2, r);
   if (arcLen >= 2 * asz) {
-    arrow(c, 1, p1, g.scale(startTan, -1));
-    arrow(c, 2, p2, endTan);
+    if (!startSuppressed) arrow(c, startWhich, p1, g.scale(startTan, -1));
+    if (!endSuppressed) arrow(c, endWhich, p2, endTan);
   } else {
-    arrow(c, 1, p1, startTan);
-    arrow(c, 2, p2, g.scale(endTan, -1));
+    if (!startSuppressed) arrow(c, startWhich, p1, startTan);
+    if (!endSuppressed) arrow(c, endWhich, p2, g.scale(endTan, -1));
   }
 }
 
@@ -909,19 +921,74 @@ function storedStyles(state: DrawingState): Record<string, DimStyle> {
   return raw && typeof raw === 'object' ? { ...(raw as Record<string, DimStyle>) } : {};
 }
 
+/** Stored dimensions, including unused block definitions; repeated INSERTs do not duplicate usage. */
+function* drawingDimensions(state: DrawingState): Iterable<DimensionEntity> {
+  const lists = [state.entities, ...Object.values(state.blocks).map((b) => b.entities), ...(state.layouts ?? []).map((l) => l.entities)];
+  for (const entities of lists) for (const e of entities) if (e.type === 'dimension') yield e;
+}
+
+/** Retain differences from the previous named style while replacing inherited values. */
+function redefinedDimStyle(effective: DimStyle, previous: ResolvedDimStyle, replacement: DimStyle): DimStyle {
+  const resolved = resolveDimStyle(effective);
+  const oldValues = previous as unknown as Record<string, unknown>;
+  const values = resolved as unknown as Record<string, unknown>;
+  const raw = effective as unknown as Record<string, unknown>;
+  const overrides: Record<string, unknown> = {};
+  for (const key of new Set([...Object.keys(oldValues), ...Object.keys(values)])) {
+    if (key !== 'name' && values[key] !== oldValues[key]) overrides[key] = raw[key] ?? values[key];
+  }
+  return Object.keys(overrides).length ? { ...replacement, ...overrides } : replacement;
+}
+
 /**
  * Save (or redefine) a named style. Dimensions that use a style of that name are
- * updated too, as AutoCAD does when a style is modified; pass `updateDimensions = false` to keep them.
+ * updated throughout model space, blocks and layouts, preserving their value overrides.
+ * Pass `updateDimensions = false` to change only the named record. Use Drawing.transactDrawing
+ * for this document-wide operation while a paper layout is active.
  */
 export function withDimStyle(state: DrawingState, style: DimStyle, updateDimensions = true): DrawingState {
   const styles = storedStyles(state);
+  const key = style.name.toUpperCase();
+  // The current header can contain temporary DIM* overrides. Prefer the actual named
+  // record, including the built-in Standard base when it has not been stored explicitly.
+  const inherited = Object.values(styles).find((s) => s && typeof s.name === 'string' && s.name.toUpperCase() === key)
+    ?? (key === 'STANDARD' ? STANDARD_DIMSTYLE : state.header?.dimStyle.name.toUpperCase() === key ? state.header.dimStyle : undefined);
+  // If the previous named record is unavailable, differences from the new record remain
+  // overrides: registering a missing style must not erase the dimension's existing appearance.
+  const previous = resolveDimStyle(inherited ?? style);
   for (const k of Object.keys(styles)) if (k.toUpperCase() === style.name.toUpperCase()) delete styles[k];
   styles[style.name] = style;
-  const key = style.name.toUpperCase();
-  const entities = updateDimensions
-    ? state.entities.map((e) => (e.type === 'dimension' && e.style.name.toUpperCase() === key && e.style !== style ? { ...e, style } : e))
-    : state.entities;
-  return { ...state, entities, meta: { ...(state.meta ?? {}), [DIMSTYLES_META_KEY]: styles } };
+  const update = (list: readonly Entity[]): readonly Entity[] => {
+    let changed = false;
+    const entities = list.map((e) => {
+      if (e.type !== 'dimension' || e.style.name.toUpperCase() !== key || e.style === style) return e;
+      changed = true;
+      return { ...e, style: redefinedDimStyle(e.style, previous, style) };
+    });
+    return changed ? entities : list;
+  };
+  const entities = updateDimensions ? update(state.entities) : state.entities;
+  let blocks: Record<string, BlockDef> | undefined;
+  let layouts = state.layouts;
+  if (updateDimensions) {
+    for (const [name, block] of Object.entries(state.blocks)) {
+      const entities = update(block.entities);
+      if (entities === block.entities) continue;
+      blocks ??= { ...state.blocks };
+      blocks[name] = { ...block, entities };
+    }
+    if (layouts) {
+      let changed = false;
+      const mapped = layouts.map((layout) => {
+        const entities = update(layout.entities);
+        if (entities === layout.entities) return layout;
+        changed = true;
+        return { ...layout, entities };
+      });
+      if (changed) layouts = mapped;
+    }
+  }
+  return { ...state, entities, blocks: blocks ?? state.blocks, ...(layouts !== state.layouts ? { layouts } : {}), meta: { ...(state.meta ?? {}), [DIMSTYLES_META_KEY]: styles } };
 }
 
 /** Remove a named style (Standard, the current style and styles in use cannot be deleted; returns the state unchanged). */
@@ -938,10 +1005,12 @@ export function withoutDimStyle(state: DrawingState, name: string): DrawingState
   return changed ? { ...state, meta: { ...(state.meta ?? {}), [DIMSTYLES_META_KEY]: styles } } : state;
 }
 
-/** Number of dimensions drawn with the named style. */
+/** Number of stored dimensions using the named style, including blocks and paper layouts. */
 export function dimStyleUsage(state: DrawingState, name: string): number {
   const key = name.toUpperCase();
-  return state.entities.filter((e) => e.type === 'dimension' && e.style.name.toUpperCase() === key).length;
+  let count = 0;
+  for (const dimension of drawingDimensions(state)) if (dimension.style.name.toUpperCase() === key) count += 1;
+  return count;
 }
 
 // ------------------------------------------------------------------ DIM* variables

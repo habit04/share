@@ -662,7 +662,7 @@ export function dimstyleCommandTool(arg?: string): Tool {
           if (yes !== 'YES') return;
         }
         const saved: DimStyle = { ...current, name: existing?.name ?? n };
-        doc.transact((s) => withDimStyle(s, saved));
+        doc.transactDrawing((s) => withDimStyle(s, saved));
         setCurrent(doc, saved);
         ctx.log(`Dimension style "${saved.name}" saved and made current.`);
         return;
