@@ -592,9 +592,69 @@ function sameRetainedLinetype(first,second,source,target,matches,context) {
   if (matches.get(original.record) !== actual.record || matches.get(original.control)!==actual.control) fail(`${context} retained LTYPE reference changed or lost its target`);
 }
 
+// TABLESTYLE's two independently named common reference groups have no
+// relative order: AutoCAD/C emit XD then reactors, while the checked legacy
+// projection emits reactors then XD. Compare their complete retained payloads
+// in one order, without moving them past any owner/scalar/opaque boundary.
+function tableStyleCommonPairs(record, pairs, label) {
+  if (record.section !== 'OBJECTS' || record.type !== 'TABLESTYLE') return pairs;
+  const known = new Map([['{ACAD_REACTORS', 330], ['{ACAD_XDICTIONARY', 360]]);
+  // 100/1001 inside an opaque102 application is application data, not the
+  // object's subclass/XDATA boundary. Its entire payload remains compared.
+  let end = pairs.length, commonDepth = 0, claimedCommon = false;
+  for (let index = 0; index < pairs.length; index++) {
+    const pair = pairs[index];
+    if (!commonDepth && (pair.code === 100 || pair.code === 1001)) { end = index; break; }
+    if (index >= 16384) {
+      if (claimedCommon) fail(`${label} common prefix exceeds its framing budget`);
+      return pairs; // No order equivalence for a large opaque-only raw prefix.
+    }
+    if (pair.code === 102) {
+      const value = pair.value.trim();
+      if (known.has(value)) claimedCommon = true;
+      if (value.startsWith('{')) commonDepth++;
+      else if (value === '}' && commonDepth) commonDepth--;
+    }
+  }
+  const prefix = pairs.slice(0, end);
+  if (!claimedCommon) return pairs;
+  if (prefix.length > 16384) fail(`${label} common prefix exceeds its framing budget`);
+  const blocks = new Map(); let cursor = 0;
+  while (prefix[cursor]?.code === 102 && known.has(prefix[cursor].value.trim())) {
+    const opening = prefix[cursor++], key = opening.value.trim(), code = known.get(key), block = [opening];
+    if (blocks.has(key)) fail(`${label} has duplicated TABLESTYLE common reference groups`);
+    let count = 0;
+    while (cursor < prefix.length && prefix[cursor].code !== 102) {
+      const pair = prefix[cursor++];
+      if (pair.code !== code || handle(pair.value) === '0' || ++count > (code === 330 ? 1024 : 1)) fail(`${label} has invalid TABLESTYLE common reference payload`);
+      block.push(pair);
+    }
+    const closing = prefix[cursor++];
+    if (!count || closing?.code !== 102 || closing.value.trim() !== '}') fail(`${label} has incomplete or nested TABLESTYLE common reference framing`);
+    block.push(closing); blocks.set(key, block);
+  }
+  // The owner remains at its original boundary; known groups cannot migrate
+  // around it, an opaque common application, or any unrelated scalar.
+  const owner = prefix[cursor++];
+  if (owner?.code !== 330) fail(`${label} has interleaved TABLESTYLE common reference framing`);
+  handle(owner.value);
+  const tail = prefix.slice(cursor); let depth = 0;
+  for (const pair of tail) {
+    if (pair.code === 102) {
+      const value = pair.value.trim();
+      if (known.has(value)) fail(`${label} has duplicated or interleaved TABLESTYLE common reference framing`);
+      if (value.startsWith('{') && !depth) depth = 1;
+      else if (value === '}' && depth) depth = 0;
+      else fail(`${label} has nested or malformed TABLESTYLE common application framing`);
+    } else if (!depth && [5, 105, 330, 360].includes(pair.code)) fail(`${label} has ambiguous TABLESTYLE common owner/reference framing`);
+  }
+  if (depth) fail(`${label} has incomplete TABLESTYLE common application framing`);
+  return [...(blocks.get('{ACAD_REACTORS') ?? []), ...(blocks.get('{ACAD_XDICTIONARY') ?? []), owner, ...tail, ...pairs.slice(end)];
+}
+
 function comparePairs(record, actual, sourcePairs, targetPairs, source, target, matches, label) {
-  const firstStyle = retainedStylePairs(record, normalizePairs(record, sourcePairs), source, label);
-  const secondStyle = retainedStylePairs(actual, normalizePairs(actual, targetPairs), target, label);
+  const firstStyle = retainedStylePairs(record, tableStyleCommonPairs(record, normalizePairs(record, sourcePairs), label), source, label);
+  const secondStyle = retainedStylePairs(actual, tableStyleCommonPairs(actual, normalizePairs(actual, targetPairs), label), target, label);
   const first = visualStyleColorPairs(record, firstStyle.pairs, source, label), second = visualStyleColorPairs(actual, secondStyle.pairs, target, label);
   if (first.length !== second.length) fail(`${label} group count changed (${first.length} -> ${second.length})`);
   for (let index = 0; index < first.length; index++) {
