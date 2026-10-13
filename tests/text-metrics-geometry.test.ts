@@ -100,9 +100,10 @@ describe('font context through MTEXT layout, masks and caches', () => {
   });
 
   it('measures bold formatted runs and preserves the existing synthetic italic appearance', () => {
-    const m = mtext('aa {\\fArial|b1|i1;bb}', { width: 5 }), pieces = mtextParts(m, context());
+    const m = mtext('aa {\\fArial|b1|i1;bb}', { width: 5 }), metrics = context(), pieces = mtextParts(m, metrics);
     expect(pieces.map((p) => p.text)).toEqual(['aa', 'bb']);
-    expect(pieces[1]!.position.x).toBe(0); expect(pieces[1]!.position.y).toBeCloseTo(-8 / 3);
+    expect(textBounds(pieces[1]!, metrics).min.x).toBeCloseTo(0);
+    expect(pieces[1]!.position.y).toBeCloseTo(-1.1 - 5 / 3);
     expect(pieces[1]!.bold).toBe(true); expect(pieces[1]!.oblique).toBeCloseTo(Math.PI / 12);
     expect(Object.hasOwn(pieces[1]!, 'italic')).toBe(false);
     expect(pieces.every((p) => p.style === 'FACE')).toBe(true);
@@ -111,7 +112,9 @@ describe('font context through MTEXT layout, masks and caches', () => {
   it('applies inherited and nondefault inline width factors exactly once', () => {
     const m = mtext('a{\\W2;b}c'), metrics = context({ widthFactor: 0.5 });
     const pieces = mtextParts(m, metrics);
-    expect(pieces.map((p) => p.position.x)).toEqual([0, 0.5, 2.5]);
+    expect(pieces[1]!.position.x - pieces[0]!.position.x).toBeCloseTo(0.5);
+    expect(pieces[2]!.position.x - pieces[1]!.position.x).toBeCloseTo(2);
+    expect(textBounds(pieces[0]!, metrics).min.x).toBeCloseTo(0);
     expect(pieces.map((p) => p.widthFactor)).toEqual([undefined, 2, undefined]);
     const plain = mtextParts(mtext('aa bb', { raw: undefined, width: 3 }), metrics);
     expect(plain).toHaveLength(1); expect(plain[0]!.text).toBe('aa bb');
@@ -120,7 +123,9 @@ describe('font context through MTEXT layout, masks and caches', () => {
   it('measures fraction children and decorations with the same bold run and inherited width', () => {
     const m = mtext('\\fArial|b1;\\L\\S1/22;\\l'), metrics = context({ widthFactor: 0.5 });
     const pieces = mtextParts(m, metrics), lines = mtextDecorations(m, metrics);
-    expect(pieces.map((p) => [p.text, p.height, p.position.x])).toEqual([['1', 0.7, 0.35], ['22', 0.7, 0]]);
+    expect(pieces.map((p) => [p.text, p.height])).toEqual([['1', 0.7], ['22', 0.7]]);
+    expect(pieces[0]!.position.x - pieces[1]!.position.x).toBeCloseTo(0.35);
+    expect(textBounds(pieces[1]!, metrics).min.x).toBeCloseTo(0);
     expect(pieces.every((p) => p.bold && p.style === 'FACE')).toBe(true);
     expect(lines).toHaveLength(2);
     expect(lines[0]!.b.x - lines[0]!.a.x).toBeCloseTo(1.4);
@@ -141,9 +146,9 @@ describe('font context through MTEXT layout, masks and caches', () => {
     const m = mtext('a b', { background: { flags: 17, scale: 1, color: 1 } }), metrics = context(), lookup = lookupWith(metrics);
     const masks = mtextMasks(m, metrics);
     expect(masks).toHaveLength(1);
-    expect(masks[0]![0]!.x).toBeCloseTo(-0.2); expect(masks[0]![0]!.y).toBeCloseTo(-1.3);
-    expect(masks[0]![2]!.x).toBeCloseTo(3.1); expect(masks[0]![2]!.y).toBeCloseTo(0.1);
-    expect(entityBounds(m, lookup)?.min.y).toBeCloseTo(-1.3);
+    expect(masks[0]![0]!.x).toBeCloseTo(0); expect(masks[0]![0]!.y).toBeCloseTo(-1.4);
+    expect(masks[0]![2]!.x).toBeCloseTo(3.3); expect(masks[0]![2]!.y).toBeCloseTo(0);
+    expect(entityBounds(m, lookup)?.min.y).toBeCloseTo(-1.4);
     expect(distanceToEntity({ x: 0, y: -1.25 }, m, lookup)).toBe(0);
     expect(entitySegments(m, lookup)).toEqual(masks[0]!.map((p, i) => [p, masks[0]![(i + 1) % 4]!]));
   });
@@ -154,7 +159,7 @@ describe('font context through MTEXT layout, masks and caches', () => {
     const first = mtextParts(m, narrow), second = mtextParts(m, wide);
     expect(first).not.toBe(second); expect(new Set(first.map((p) => p.position.y)).size).toBe(1);
     expect(new Set(second.map((p) => p.position.y)).size).toBe(2);
-    expect(mtextMasks(m, wide)[0]![0]!.y).toBeCloseTo(-1 - 5 / 3 - 0.3);
+    expect(mtextMasks(m, wide)[0]![0]!.y).toBeCloseTo(-1.1 - 5 / 3 - 0.3);
     expect(mtextParts(m, narrow)).toEqual(first);
     expect(m.raw).toBe('aa bb'); expect(m.text).toBe('aa bb'); expect(m.width).toBe(4);
   });
@@ -163,16 +168,16 @@ describe('font context through MTEXT layout, masks and caches', () => {
     const m = mtext('a b c d', { width: 3, columns: { type: 1, count: 2, width: 3, gutter: 2, autoHeight: false, reversed: false, heights: [3, 3] } });
     const narrow = mtextParts(m, context({ unit: 0.5 })), wide = mtextParts(m, context({ unit: 2 }));
     expect(narrow.every((p) => p.id.startsWith('m:col0:'))).toBe(true);
-    expect(wide.map((p) => [p.text, p.position.x])).toEqual([['a', 0], ['b', 0], ['c', 5], ['d', 5]]);
+    expect(wide.map((p) => [p.text, p.position.x])).toEqual([['a', 0.2], ['b', 0.2], ['c', 5.2], ['d', 5.2]]);
     expect(m.columns?.heights).toEqual([3, 3]); expect(m.raw).toBe('a b c d');
   });
 
   it('rotates font-aware masks around the parent attachment point', () => {
     const m = mtext('a b', { rotation: Math.PI / 2, position: { x: 10, y: 20 }, background: { flags: 17, scale: 1, color: 1 } });
     const metrics = context(), mask = mtextMasks(m, metrics)[0]!;
-    expect(mask[0]!.x).toBeCloseTo(11.3); expect(mask[0]!.y).toBeCloseTo(19.8);
-    expect(mask[2]!.x).toBeCloseTo(9.9); expect(mask[2]!.y).toBeCloseTo(23.1);
-    expect(entityBounds(m, lookupWith(metrics))?.min.x).toBeCloseTo(9.9);
+    expect(mask[0]!.x).toBeCloseTo(11.4); expect(mask[0]!.y).toBeCloseTo(20);
+    expect(mask[2]!.x).toBeCloseTo(10); expect(mask[2]!.y).toBeCloseTo(23.3);
+    expect(entityBounds(m, lookupWith(metrics))?.min.x).toBeCloseTo(10);
   });
 
   it('keeps SHX and context-free MTEXT flow, decorations and masks identical', () => {
@@ -215,12 +220,12 @@ describe('generated annotation font contexts', () => {
   it('sizes the Standard TrueType dimension gap with one inherited width factor and refreshes on font change', () => {
     const d = dimension(), narrow = context({ unit: 1, widthFactor: 0.5 }), wide = context({ unit: 2, widthFactor: 0.5 });
     const first = dimensionParts(d, narrow);
-    expect(horizontalLines(d, narrow)).toEqual([[0, 9.25], [10.75, 20]]);
+    expect(horizontalLines(d, narrow)).toEqual([[0, 9.175], [10.825, 20]]);
     expect(dimensionParts(d, narrow)).toBe(first);
-    expect(horizontalLines(d, wide)).toEqual([[0, 8.75], [11.25, 20]]);
+    expect(horizontalLines(d, wide)).toEqual([[0, 8.675], [11.325, 20]]);
     expect(dimensionParts(d, wide)).not.toBe(first);
     expect(entitySegments(d, lookupWith(wide))).toEqual([
-      [{ x: 0, y: 5 }, { x: 8.75, y: 5 }], [{ x: 11.25, y: 5 }, { x: 20, y: 5 }],
+      [{ x: 0, y: 5 }, { x: 8.675, y: 5 }], [{ x: 11.325, y: 5 }, { x: 20, y: 5 }],
     ]);
     expect(distanceToEntity({ x: 8.8, y: 5 }, d, lookupWith(wide))).toBeGreaterThan(0);
     expect(d.style.textHeight).toBe(1); expect(d.style.name).toBe('DIMSTYLE is not a font');
@@ -233,6 +238,20 @@ describe('generated annotation font contexts', () => {
     const pieces = dimensionParts(d, metrics);
     expect(requested[0]).toEqual({ style: 'Named face' });
     expect(pieces.find((p): p is TextEntity => p.type === 'text')!.style).toBe('Named face');
+  });
+
+  it('leaves the requested gap beside an overhanging centered label and moves it outside when ink no longer fits', () => {
+    const d = dimension(), metrics = context({ left: -0.5, overhang: 1.5, widthFactor: 0.5, ascent: 1, descent: 0 });
+    const parts = dimensionParts(d, metrics), label = parts.find((p): p is TextEntity => p.type === 'text')!, bounds = textBounds(label, metrics);
+    expect(horizontalLines(d, metrics)).toEqual([[0, 8.75], [11.25, 20]]);
+    expect(bounds.min.x - 8.75).toBeCloseTo(0.25); expect(11.25 - bounds.max.x).toBeCloseTo(0.25);
+    const short = { ...d, p2: { x: 4, y: 0 }, linePoint: { x: 2, y: 5 } };
+    const ordinary = context({ left: 0, overhang: 0, ascent: 1, descent: 0 });
+    const overhanging = context({ left: -1, overhang: 2, ascent: 1, descent: 0 });
+    const baseline = (ctx: TextGeometryContext) => dimensionParts(short, ctx).find((p): p is TextEntity => p.type === 'text')!.position.y;
+    expect(baseline(ordinary)).toBeCloseTo(4.5);
+    expect(baseline(overhanging)).toBeGreaterThan(baseline(ordinary));
+    expect(short.text).toBe('AB'); expect(short.style.textHeight).toBe(1);
   });
 
   it('keeps text snap/grip placement on the same context as a dimension fit decision', () => {
@@ -249,11 +268,11 @@ describe('generated annotation font contexts', () => {
     const e = leader(), narrow = context({ unit: 0.5 }), wide = context({ unit: 1 });
     const first = leaderParts(e, narrow), m1 = first.find((p): p is MTextEntity => p.type === 'mtext')!;
     expect(m1.style).toBeUndefined(); // The current leader model does not retain a named font.
-    expect(mtextParts(m1, narrow).map((p) => [p.text, p.position])).toEqual([['aa bb', { x: 10, y: 9 }]]);
+    expect(mtextParts(m1, narrow).map((p) => [p.text, p.position])).toEqual([['aa bb', { x: 10.2, y: 8.9 }]]);
     const second = compoundParts(e, wide), m2 = second.find((p): p is MTextEntity => p.type === 'mtext')!;
     expect(second).not.toBe(first); expect(leaderParts(e, wide)).toBe(second);
     expect(mtextParts(m2, wide).map((p) => p.text)).toEqual(['aa', 'bb']);
-    expect(mtextParts(m2, wide)[1]!.position.y).toBeCloseTo(9 - 5 / 3);
+    expect(mtextParts(m2, wide)[1]!.position.y).toBeCloseTo(8.9 - 5 / 3);
     expect(second.filter((p) => p.type !== 'mtext')).toEqual(first.filter((p) => p.type !== 'mtext'));
     expect(explodeCompound(e, wide)?.find((p) => p.type === 'mtext')).toMatchObject({ text: e.text, position: e.textPosition, width: e.textWidth });
     expect(e.textPosition).toEqual({ x: 10, y: 10 }); expect(e.vertices).toEqual([{ x: 0, y: 0 }, { x: 1, y: 1 }]);
@@ -263,11 +282,11 @@ describe('generated annotation font contexts', () => {
     const e = table(), narrow = context({ unit: 0.5 }), wide = context({ unit: 1 });
     const first = tableParts(e, narrow), m1 = first.find((p): p is MTextEntity => p.type === 'mtext')!;
     expect(m1.style).toBeUndefined(); // TABLE cells currently have no named font field.
-    expect(mtextParts(m1, narrow).map((p) => p.position.y)).toEqual([7.5]);
+    expect(mtextParts(m1, narrow).map((p) => p.position.y)).toEqual([7.6]);
     const second = compoundParts(e, wide), m2 = second.find((p): p is MTextEntity => p.type === 'mtext')!;
     expect(second).not.toBe(first); expect(tableParts(e, wide)).toBe(second);
     expect(mtextParts(m2, wide).map((p) => p.text)).toEqual(['aa', 'bb']);
-    expect(mtextParts(m2, wide)[0]!.position.y).toBeCloseTo(8 + (1 + 5 / 3) / 2 - 1);
+    expect(mtextParts(m2, wide)[0]!.position.y).toBeCloseTo(8 + (1.1 + 5 / 3 + 0.3) / 2 - 1.1);
     expect(second.filter((p) => p.type === 'line')).toEqual(first.filter((p) => p.type === 'line'));
     expect(explodeCompound(e, wide)?.find((p) => p.type === 'mtext')).toMatchObject({ text: 'aa bb', position: { x: 2, y: 8 }, width: 4 });
     expect(e.cells[0]![0]!.text).toBe('aa bb'); expect(e.rowHeights).toEqual([4]);

@@ -2,7 +2,7 @@ import type { Point, Bounds } from './geometry';
 import * as g from './geometry';
 import { strokeTextWidth } from '../render/hershey';
 import { dimensionGeometry, type DimensionEntity } from './dimension';
-import { mtextLayoutFull, type MTextEntity, type MTextAttachment, type MTextColumns, type MTextBackground, type Measure } from './mtext';
+import { mtextLayoutFull, type MTextEntity, type MTextAttachment, type MTextColumns, type MTextBackground, type MTextStyle, type Measure, type InkMeasure } from './mtext';
 import { metricTextPlacement, type TextGeometryContext } from './text-metrics';
 import { interpolateFitPoints, isValidNurbs, nurbsPoints, type NurbsCurve } from './spline';
 import { findPattern, loopPolygon, patternSegments, pointInLoops, worldPatternLines, type HatchLoop, type WorldPatternLine } from './hatch';
@@ -595,7 +595,10 @@ export function dimensionParts(d: DimensionEntity, context?: TextGeometryContext
   // The dimension's style object is a DIMSTYLE; only DIMTXSTY names the emitted font.
   const appearance = context?.resolve({ style: d.style.textStyle });
   const measure = context && appearance?.kind === 'canvas'
-    ? (text: string, height: number) => context.measure(text, height, appearance).advance * appearance.widthFactor
+    ? (text: string, height: number) => {
+      const metric = context.measure(text, height, appearance);
+      return (Math.max(metric.advance, metric.right) - Math.min(0, metric.left)) * appearance.widthFactor;
+    }
     : textWidth;
   const parts = dimensionGeometry(d, measure) as Entity[];
   dimCache.set(d, { contextKey: context?.cacheKey, parts });
@@ -612,20 +615,32 @@ const mtextCache = new WeakMap<MTextEntity, MTextRendered>();
 function mtextRendered(m: MTextEntity, context?: TextGeometryContext): MTextRendered {
   const hit = mtextCache.get(m);
   if (hit && hit.contextKey === context?.cacheKey) return hit;
-  const measure: Measure = context ? (text, height, run) => {
+  const runAppearance = (run?: MTextStyle) => {
     const runWidth = run?.widthFactor ?? 1;
-    const appearance = context.resolve({
+    return context?.resolve({
       ...(m.style ? { style: m.style } : {}),
       ...(run && Math.abs(runWidth - 1) > 1e-9 ? { widthFactor: runWidth } : {}),
       ...(run && (run.oblique || run.italic) ? { oblique: run.oblique || g.rad(15) } : {}),
       ...(run?.bold ? { bold: true } : {}),
     });
+  };
+  const measure: Measure = context ? (text, height, run) => {
+    const runWidth = run?.widthFactor ?? 1, appearance = runAppearance(run)!;
     if (appearance.kind === 'stroke') return textWidth(text, height);
     // Layout applies the run's width factor outside the measurement callback. Return the
     // inherited/effective width divided by that factor so it is applied exactly once.
     return context.measure(text, height, appearance).advance * appearance.widthFactor / runWidth;
   } : textWidth;
-  const lay = mtextLayoutFull(m, measure);
+  const ink: InkMeasure | undefined = context && runAppearance()?.kind === 'canvas' ? (text, height, run) => {
+    if (!text.trim()) return null;
+    const appearance = runAppearance(run)!;
+    if (appearance.kind === 'stroke') return null;
+    const metric = context.measure(text, height, appearance), slant = Math.tan(appearance.oblique);
+    if (metric.left === 0 && metric.right === 0 && metric.ascent === 0 && metric.descent === 0) return null;
+    const x0 = -metric.descent * slant, x1 = metric.ascent * slant;
+    return { left: metric.left * appearance.widthFactor + Math.min(x0, x1), right: metric.right * appearance.widthFactor + Math.max(x0, x1), ascent: metric.ascent, descent: metric.descent };
+  } : undefined;
+  const lay = mtextLayoutFull(m, measure, ink);
   const lines: LineEntity[] = lay.strokes.map((st, i) => ({
     ...appearanceProperties(m),
     id: `${m.id}:s${i}`,
