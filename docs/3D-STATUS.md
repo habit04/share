@@ -34,7 +34,28 @@ Baseline on Windows x64, Node 22.23.3: typecheck, lint and 177 test files / 2,21
 
 ## Milestone 2: viewport
 
-Pending.
+- Works: `src/render3d/` Camera3D (orbit, pan, zoom at cursor, orthographic and perspective,
+  AutoCAD named view presets; the top view matches the 2D view exactly including twist),
+  `GpuDevice` (WebGL2 context, programs, capabilities report, context loss and restore with a
+  counter; the seam GPU diagnostics should read), flat-shaded solids, adaptive XY grid, WCS triad,
+  the 2D drawing as an underlay through the `SceneSink` seam, selection and hover highlight, GPU
+  id-buffer picking with CPU BVH picking as the exact path and fallback. Commands (flag on only):
+  3DMODE, 3DORBIT, 3DVIEW <preset>, PLAN, 3DPERSPECTIVE, 3DZOOMEXTENTS; mouse: wheel zoom,
+  middle drag pan, Shift+middle drag orbit, click / Shift+click / empty click selection; a `3D`
+  ribbon tab and an Options checkbox. A failing GPU, shader or frame logs a message and returns
+  to the 2D view; nothing changes when the flag is off (guarded by a test).
+- Tested: 4 new vitest files (camera round trips and presets, 2D parity with twist, BVH vs brute
+  force on 300 rays, scene sink, flag isolation); full suite 188 files / 2,348 tests, typecheck,
+  lint, build green. Verified by the supervisor in Chromium on an Intel GPU: rendering, click and
+  hover selection, GPU and CPU picks agree 240/240 in both projections, undo/redo of the demo
+  scene, WebGL context loss + restore (picking still agrees), a synthetic render failure stops 3D
+  mode cleanly with a log line and 3D mode re-enables afterwards. `scripts/e2e-3d.mjs` (npm run
+  e2e:3d) automates the same checks in headless Chromium but could not be run from the
+  development sandbox on this machine, so it is unverified as a script.
+- Prototype: a left click while a 2D command runs in 3D mode feeds the cursor's z = 0 point to it
+  without snaps or rubber band; no window selection in 3D; the view cube is a text label; all
+  lines 1 px; `3DDEMO` is a development test scene only.
+- Remains: modelling and editing tools (milestones 3 and 4); 3D object snaps; window selection.
 
 ## Milestone 3: modelling
 
