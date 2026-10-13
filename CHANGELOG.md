@@ -13,6 +13,13 @@ messages). The date of each version is the date of the commit that set that vers
 
 ### Added
 
+- Plot dialog loads bounded CTB/STB tables for the current plot. Native ACI/TrueColor rules,
+  grayscale, screening and physical lineweights agree in vector PDF and raster plots;
+  nested ByBlock widths resolve before plot overrides. STB selection explicitly applies one
+  named style to the entire plot. Invalid files keep the valid table, and reopening the dialog
+  resets it. Unsupported device/policy effects are reported. Imported named assignments and
+  exact sheet table bindings remain open; see `PLOT-STYLE-TABLES.md`.
+
 - Native DXF complex linetypes retain ordered text/shape descriptors, literal padded text,
   flags, radians, scales/offsets and remapped STYLE links. Anonymous/unused shape-file resources
   survive export and linetype purge. Missing/malformed resources refuse saving; DWG conversion

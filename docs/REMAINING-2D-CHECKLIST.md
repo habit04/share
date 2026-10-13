@@ -13,7 +13,8 @@ path/save protection. Independent review findings are fixed and covered by regre
 remaining feature/dependency rows below form later batches; no release or installer is implied.
 Later milestones retain native gradient HATCH definitions, render verified unshifted LINEAR
 fills, add Windows font geometry/eligible TrueType PDF embedding, and preserve native complex
-linetype descriptors. The feature/dependency rows remain open where full compatibility is unverified.
+linetype descriptors and apply a verified CTB/STB plotting subset. The feature/dependency rows
+remain open where full compatibility is unverified.
 
 | Priority | Current evidence and status | Ownership / dependency | Completion validation |
 | --- | --- | --- | --- |
@@ -21,7 +22,7 @@ linetype descriptors. The feature/dependency rows remain open where full compati
 | 10 | Confirmed angular suppression, arrow ownership and gap defects corrected; style traversal and paper-space undo/redo implemented. Supported native override presence/value survives matching named styles and later redefinitions; scaling, Match Properties and existing direct-style editing remain compatible. Ordinate/arc-length types still missing. | Dimension agent; native DWG exposure remains #19. | Styles/overrides, every space, native fixture edit/save/reopen, undo/redo, geometry/bounds and plots. |
 | 11 | Windows font metrics, native TEXT placement and ink-based MTEXT attachment/wrapping implemented and tested. Per-drawing geometry drives Canvas, bounds/selection, masks, annotation fitting and captured raster/eligible vector plots. Missing/unsupported faces, bitmap glyphs and unverified origins use Canvas measurement; contextual scripts retain shaping. Tall-glyph MTEXT leading, inline font/tracking and Unicode edge cases remain open. See `WINDOWS-FONT-METRICS.md`. | Text agent and lead; reader-omitted annotation font fields depend on #19. | Retain native/actual Windows IPC/Canvas/raster/STYLE edit/undo/DXF reopen checks; extend tall leading and formatted Unicode fixtures. |
 | 12 | Standalone TrueType slice implemented: confined same-read font programs/metrics, version-aware embedding permissions, full Type0/CIDFontType2 programs, native advances/placement and ToUnicode. Captured plot scope, clip/annotation font budgeting and explicit substitutes tested. TTC/CFF/variable/color fonts, contextual shaping, subsetting and preview/print-only read-only PDFs remain open. See `PDF-FONT-EMBEDDING.md`. | Lead; installed fonts read only, no font programs committed. | Retain resource/extraction/Poppler/native reference/UI plot checks; add fixtures before extending font formats or licensing modes. |
-| 13 | Bounded CTB/STB reader/model implemented with 50 authored regressions and 13 private installed-table reads. Raw/unknown fields retained and reported; supported color/screening/grayscale/weight resolution is available. Plot dialog/Canvas/PDF integration and native plot parity are in progress. Existing filename heuristic discards exact sheet names; native assignment bindings remain unverified. | Independent parser/plotting; exact layout filename/PSTYLEMODE/style-reference integration overlaps active #19/#29. | Native table colors/weights/screens, visible dialog/vector/raster behavior, captured state, named assignments and save/reopen metadata after verified integration. |
+| 13 | Verified plotting subset implemented: bounded reader, ephemeral Plot dialog file selection, native color/screening/grayscale/weight semantics and shared vector/raster appearance. TrueColor CTB bypass, explicit whole-plot STB selection, captured state and nested ByBlock widths tested. Native/actual UI proof passes 1,823 checks. Device and unsupported policy effects are reported. Exact layout filenames and imported native named assignments remain open. See `PLOT-STYLE-TABLES.md`. | Independent parser/plotting; exact layout filename/PSTYLEMODE/style-reference integration overlaps active #19/#29. | Retain native colors/weights/screens and dialog/vector/raster tests; add imported named assignments and save/reopen metadata after verified integration. |
 | 14 | DXF retention milestone implemented: ordered text/shape descriptors, literal padded text, radians/absolute flags, offsets/scales and resolved STYLE resources survive geometry edits, undo/redo and repeated DXF reopen. Unused anonymous shape STYLEs survive purge/export. Canvas sign/phase bug corrected for consecutive gaps/dashes and odd patterns. Missing/malformed resources refuse saving; unverified DWG conversion is guarded. Embedded glyph display remains missing. See `COMPLEX-LINETYPES.md`. | Independent DXF model; #21 for SHX shape display; DWG/extension metadata still #19/#29. | Retain native AUDIT/actual app save-backup-recovery proof; add native text/shape placement and vector/raster fidelity before claiming full rendering. |
 | 15 | Partial: `mtext.ts` honors explicit column breaks/count/width/gutter/reversal; declared-height static/dynamic-manual flow now implemented (26 new tests), with overflow retained. Auto-height balancing remains missing. Native export replaced by `JCAD_MTEXT_COLUMNS` XDATA. | Independent; DWG embedded-object exposure #19. | Auto-flow/static heights, masks, edits, native column fixtures and external CAD reopen. |
 | 16 | Partial milestone implemented: native DXF gradient name/angle/shift/dialog mode/tint/color records and inactive descriptors retained; all nine names and both endpoint shifts externally reopened. Unshifted LINEAR Canvas and vector/raster plotting verified, including holes, opacity, ACI/RGB, direct transforms and affine block instances. HATCHEDIT angle/shift is undoable; explicit SOLID conversion retains an inactive descriptor. Named-pattern conversion is refused because native DXF cannot retain the combination. Nonlinear/nonzero-shift rendering uses a reported solid fallback. Destructive EXPLODE and unverified DWG saving are guarded. See `HATCH-GRADIENTS.md`. | Independent; native DWG fields/conversion still #19. | Complete nonlinear/shifted fields from native reference; native DWG metadata equivalence; retain current DXF/Canvas/PDF/edit/reopen checks. |
@@ -45,6 +46,14 @@ coverage, not rebuild work. #7 was superseded by portable saving. #26 (Mac/Linux
 proof that their implementation or external verification has passed.
 
 ## Validation record
+
+- CTB/STB plotting: **1,823 native/actual Windows source checks** pass, including 266 native
+  RGB samples, 22 Canvas/raster/vector pages, production Plot dialog and real Save PDF IPC.
+  Requested widths match serialization precision; native widths match half the 0.12-point
+  device quantum. Unsupported effects are reported; tables are private and ephemeral.
+  Combined suite: **2,960 passed, 27 conditional skips**, with eight dense benchmarks passing.
+  All three TypeScript projects, broad lint, fixtures and production build pass. This run's
+  passing helper test does not resolve the independently confirmed #24 cache defect.
 
 - Complex linetype milestone: **230 targeted tests in seven suites** pass, including the native
   fixture, undo/redo/repeated saves, missing-resource refusal, signed Canvas dash phase, DWG save
@@ -203,6 +212,8 @@ proof that their implementation or external verification has passed.
   from DWG saving/export until native conversion is proven. A transformed display frame cannot
   be faithfully emitted as a standalone native HATCH angle; export refuses it and the EXPLODE
   command protects such block instances. DXF block definitions plus INSERT remain supported.
-- Next independent milestones: native MTEXT attachment/wrapping and permitted TrueType PDF
-  embedding, followed by complex linetype element preservation. Nonlinear/shifted gradient rendering needs native spatial reference evidence;
-  SHX shape rendering and full capability-isolated plugins need separate architectural work.
+- Native MTEXT ink attachment/wrapping, eligible TrueType PDF embedding, complex linetype
+  retention and the CTB/STB plotting subset are implemented. Next independent work is bounded
+  real SHX font/shape decoding, authorized resource loading and shared drawing/plot geometry.
+  Native spatial references remain required for nonlinear/shifted gradients. Full plugin
+  capability isolation, external-reference loading and other missing rows remain open.
