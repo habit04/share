@@ -1,7 +1,8 @@
 # JCad GPU and 3D roadmap
 
 Evidence snapshot: October 13, 2026. This isolated development branch,
-`feature/windows-gpu-2d-integration`, combines pinned [PR #10](https://github.com/habit04/share/pull/10)
+`feature/windows-gpu-zoom-cache`, extends [draft PR #12](https://github.com/habit04/share/pull/12),
+which combines pinned [PR #10](https://github.com/habit04/share/pull/10)
 head `a0eea698e4af721b7fd0fb4199534d2c9ec46290` with pinned
 [PR #11](https://github.com/habit04/share/pull/11) head
 `3ce7e10a8aade41407c0b38f07b52c113225bbcd`. The local merge is `8e78a036`;
@@ -9,8 +10,12 @@ head `a0eea698e4af721b7fd0fb4199534d2c9ec46290` with pinned
 exact-head CI. Combined source `4bad60b2` passed local ordinary/experimental checks,
 both adapter benchmarks and native cached-scene recovery; its exact-head
 [PR CI passed](https://github.com/habit04/share/actions/runs/38350338690).
-The candidate is [draft PR #12](https://github.com/habit04/share/pull/12), stacked
-on PR #10; every subsequent candidate still requires its own exact-head CI.
+The zoom candidate is [draft PR #13](https://github.com/habit04/share/pull/13), stacked
+on PR #12. Clean renderer source `fd7fac0723a1b7934f08356f21494da29318eac4`
+passed the local and native checks recorded below and all five jobs in
+[push CI](https://github.com/habit04/share/actions/runs/38356361254) and
+[PR CI](https://github.com/habit04/share/actions/runs/38356882557).
+Every subsequent candidate still requires its own exact-head CI.
 Canvas remains the ordinary renderer. Feature branches are review candidates;
 completion here does not authorize a release, default switch or merge.
 
@@ -20,8 +25,8 @@ completion here does not authorize a release, default switch or merge.
 | --- | --- | --- |
 | 1. GPU diagnostics | Implemented initially at `16abc740`; PR #10 adds bounded collection and clipboard-completion repairs. Combined source `4bad60b2` passed collector/About/copy/report checks and exact-head CI. Adapter activity and unavailable/software states remain explicit. Intel and NVIDIA evidence are recorded below with their source commits. | Require exact CI for each new candidate. Missing adapter data must stay Unknown; capabilities must remain distinct from the renderer actually in use. Stable-branch integration still requires separate approval. |
 | 2. Experimental 2D/simple 3D | The prototype at `2fbae728` and PR #10's pan-cache/recovery milestone have successful source CI. Combined source `4bad60b2` passed both builds, native failure/unavailability, benchmarks and the existing isolated demo checks. See [prototype evidence](GPU-RENDERER-PROTOTYPE.md). | Keep the development flag. Repeat these checks on each changed renderer candidate. Record source SHA, viewport, actual adapter/limits, CPU preparation/submission, completion observations and drawing differences before interpreting speed. |
-| 3. Remaining 2D/reliability | Partly complete: PR #11's pinned batch is integrated in draft PR #12, with seven real Windows batch checks and exact source CI passed. The [remaining checklist](REMAINING-2D-CHECKLIST.md) stays open with its active owners. DWG graph/reader/writer work remains owned by [PR #9](https://github.com/habit04/share/pull/9), whose published `b3ddf85a` CI failed. | Each remaining fix needs regression and relevant import-edit-save-reopen evidence. Require metadata, undo/dirty state, backups/recovery and exact integration CI. Complete the PR #9 transaction/codec review and independent native preservation gates below; a signed-helper-only workflow does not prove an installed application. |
-| 4. Production GPU renderer | Incomplete. The corrected first 2D batch plus bounded pan caching, diagnostics, 254-entity cached Canvas recovery and unavailable-context fallback passed on combined source `4bad60b2`. Intel UHD and NVIDIA RTX A3000 benchmarks/native failures passed. Current work is limited to item 4: bounded zoom/redraw caching and separate preparation/upload/completed-frame metrics, then incremental block/text, dimension and common-hatch coverage. Broad compatibility, PR #9 integration and more hardware remain open. | Pass every production gate below before considering a default change. Canvas stays default; no general performance or untested hardware claim. |
+| 3. Remaining 2D/reliability | Partly complete: PR #11's pinned batch is integrated in draft PR #12, with seven real Windows batch checks and exact source CI passed. The [remaining checklist](REMAINING-2D-CHECKLIST.md) stays open with its active owners. DWG graph/reader/writer work remains owned by [PR #9](https://github.com/habit04/share/pull/9), whose published `3766b8af` CI and installer test build failed. | Each remaining fix needs regression and relevant import-edit-save-reopen evidence. Require metadata, undo/dirty state, backups/recovery and exact integration CI. Complete the PR #9 transaction/codec review and independent native preservation gates below; a signed-helper-only workflow does not prove an installed application. |
+| 4. Production GPU renderer | Incomplete. Clean `fd7fac07` passed bounded zoom/redraw reuse, separate CPU preparation/upload and completed-frame measurements, lineweight/large-coordinate gates, cached native recovery and unavailable-context fallback on Intel UHD and NVIDIA RTX A3000. Dense pan/zoom improved in these samples; boundary rebuilds and edits still have 95–133 ms peaks. Current work stays within item 4: reduce those stalls, then incrementally cover block/text, dimensions and common hatches. Broad compatibility, PR #9 integration and more hardware remain open. | Pass every production gate below before considering a default change. Canvas stays default; no general performance or untested hardware claim. |
 | 5. Full 3D development | Already begun on `share/feature/3d-development`, `0f644a7`; [CI passed](https://github.com/habit04/share/actions/runs/38336811063). A separate Open CASCADE/three.js application also exists in [habit04/jcad-3d](https://github.com/habit04/jcad-3d), `c3802fc`, with [successful CI](https://github.com/habit04/jcad-3d/actions/runs/38202841903). | Resolve which architecture owns future 3D integration. Require direct modeling, selection/snapping, dimensions, undo and persistent save/reopen/recovery evidence for the chosen track. Keep stable public 2D independent. Embedded 3D status/validation: [3D-STATUS](https://github.com/habit04/share/blob/feature/3d-development/docs/3D-STATUS.md); separate-app limits: [NOT-TESTED](https://github.com/habit04/jcad-3d/blob/main/docs/NOT-TESTED.md). |
 
 The [October 11 remediation record](REVIEW-FIXES.md) tracks the original **53
@@ -47,10 +52,11 @@ Current code and the owning branch's tests decide each item's status.
   must find no prototype commands/UI and still draw a normal LINE. Experimental
   checks exercise default/fallback behavior, two context-loss cycles and the demo.
 
-The benchmark retains the combined pan/zoom workload and adds pan-only results.
-Zoom deliberately rebuilds: scaling screen-space triangles would also scale line
-widths and violate the curve error budget. Timing has no pass/fail speed target;
-zero uploads, geometric coverage, fallback and recovery are correctness gates.
+The historical pan-cache implementation rebuilt on every zoom. The later bounded
+zoom milestone below separates world-space centerlines from fixed CSS-pixel
+extrusion and constrains reuse by curve and floating-point error budgets.
+Zero uploads, geometric coverage, fallback and recovery remain correctness gates;
+representative workflow responsiveness is a separate production gate.
 
 ### Delly validation
 
@@ -160,12 +166,19 @@ results. Both ordinary and experimental integration builds passed. The later
 `4bad60b2` source's cached native probes, unavailable-context test, paired
 benchmarks and exact-head CI passed, as recorded below.
 
-PR #9 remains an owner-managed dependency. At published head `b3ddf85a`,
+PR #9 remains an owner-managed dependency. The historical head `b3ddf85a`
 [PR CI failed](https://github.com/habit04/share/actions/runs/38347152610) and
 [push CI failed](https://github.com/habit04/share/actions/runs/38347148163) in unit,
 UI and Windows Electron checks. Its successful installer workflow ran only the
 signed portable-helper job; application build, smoke, artifact verification and
-release jobs were skipped. PR #9 and PR #11 share 14 files, including the same
+release jobs were skipped. At the later head `3766b8af`,
+[PR CI](https://github.com/habit04/share/actions/runs/38356454447),
+[push CI](https://github.com/habit04/share/actions/runs/38356450414), and
+[installer test build](https://github.com/habit04/share/actions/runs/38356468654)
+failed. The installer workflow passed its two source-check jobs but failed the
+Windows test-build job; build, artifact verification, packaged smoke and release
+were skipped. This snapshot does not imply owner completion or installation proof.
+PR #9 and PR #11 share 14 files, including the same
 `Drawing.transact` hunk. A later integration must preserve PR #9 graph validation,
 reconciliation and edit-intent forwarding through both PR #11 transaction scopes
 (`commitTransition`/`transactDrawing`). Require owner-completed native repairs,
@@ -232,6 +245,91 @@ and [NVIDIA benchmark](benchmarks/windows-gpu-integration-nvidia-comparison.json
 Fence observations and Canvas flushes are wall measurements, not pure GPU time
 or desktop presentation. These establish a baseline to improve zoom, not a
 general speed gain or production completion.
+
+### Bounded zoom and separate frame-stage milestone
+
+Clean producer `fd7fac0723a1b7934f08356f21494da29318eac4` keeps anchor-relative
+centerlines and fixed CSS-pixel stroke extrusion separately. Geometry is retained
+inside a conservatively clipped 128-physical-pixel pan border and an initial
+0.8–1.25 zoom interval, narrowed where curve correctness requires it. Double
+subtraction precedes float storage and shader transforms. Curve and floating-point
+budgets together remain at most a quarter physical pixel. Source bounds include
+offscreen geometry; immutable document/style/overlay changes invalidate reuse.
+
+The stricter retained-frame comparison found a real wide-circle discrepancy:
+overlapping GPU strips filled a hole retained by Canvas. The scene was preserved
+as `wide-curve-fallback`, and unsafe circle/arc/bulge widths now refuse the entire
+GPU view before drawing. Supported curves near this limit narrow their zoom
+interval. Canvas and its accuracy gates were unchanged.
+
+Local validation passed **2,548 tests with 27 conditional skips**, including 104
+focused GPU tests; all three typechecks, lint, fixtures, eight workflow checks and
+both builds passed. Real ordinary-build Canvas/LINE/no prototype UI, diagnostics
+copy/report and all seven Windows 2D batch checks passed. The strict paired
+benchmarks, cached native GPU-process probes and unavailable-context check passed.
+The exact renderer source passed all five jobs in the push and PR CI linked above.
+
+Both benchmarks ran sequentially on Delly, Windows kernel `10.0.26200`, Electron
+`44.7.0` / Chromium `152.0.7977.130`, 1216 × 552 CSS pixels, DPR 1. Actual WebGL
+strings and diagnostics established Intel UHD `0x4688`, driver `32.0.101.7088`,
+and NVIDIA RTX A3000 12 GB `0x24b9`, driver `32.0.15.9671`; requested preference
+alone was not adapter evidence. Both reported 16,384 maximum texture size and
+32,767 × 32,767 maximum viewport dimensions. These are two adapter/driver samples
+on one host; other activity and OS caches were not controlled.
+
+| Dense 38,000-wire workload, 30 frames: completed workflow median / p95 / maximum | Intel Canvas | Intel GPU | NVIDIA Canvas | NVIDIA GPU |
+| --- | ---: | ---: | ---: | ---: |
+| Combined pan/zoom | 56.3 / 67.8 / 69.3 ms | 11.8 / 16.2 / 21.4 ms | 57.1 / 67.5 / 68.7 ms | 7.7 / 8.5 / 12.7 ms |
+| Bounded zoom | 65.6 / 88.6 / 96.7 ms | 12.6 / 26.9 / 31.4 ms | 51.4 / 60.3 / 61.8 ms | 7.3 / 8.3 / 8.3 ms |
+| Sustained zoom across cache boundaries | 50.8 / 61.8 / 69.2 ms | 12.1 / 94.7 / 95.0 ms | 53.7 / 65.7 / 68.1 ms | 9.0 / 94.1 / 105.2 ms |
+| Maximum-band zoom plus edge pan | 54.1 / 74.7 / 75.6 ms | 11.6 / 15.3 / 24.4 ms | 57.8 / 68.8 / 71.9 ms | 7.8 / 12.3 / 16.4 ms |
+| Visible edit/undo, including document mutation | 66.1 / 75.0 / 76.8 ms | 97.3 / 115.4 / 127.2 ms | 72.0 / 85.3 / 89.8 ms | 98.4 / 129.8 / 132.5 ms |
+
+Warm bounded zoom performed **zero geometry preparation, upload calls and upload
+bytes** on all 30 samples. GPU draw submission medians were 1.1 ms on Intel and
+0.5 ms on NVIDIA. Edits rebuilt every sample: geometry preparation medians were
+65.5 / 66.1 ms, upload issuance medians 1.3 / 1.3 ms, with 6,384,000 bytes each;
+document mutation medians were 12.8 / 13.3 ms. The actual mode-triggered first
+frame prepared geometry in 79.1 / 100.3 ms, issued uploads in 5.3 / 5.6 ms, and
+completed its workflow in 95.2 / 132.0 ms. Resource initialization, cache lookup,
+draw submission and queue delay are recorded separately in the raw evidence.
+Upload issuance measures CPU calls, not completed transfer. Frame completion uses
+mandatory successful fences for GPU frames and Canvas readback for Canvas frames;
+these wall observations do not measure pure GPU time or desktop presentation.
+
+All eight workloads checked renderer identity and frame timing. Five supported
+zoom trajectories compared the actual retained GPU endpoint before camera reset,
+including both band edges and off-center zoom. Supported small scenes
+passed the stricter pixelmatch difference below 0.1% and bidirectional two-pixel
+foreground miss below 0.5%, including fixed lineweights, twist and coordinates
+near `10^12`. Dense raster differences were 3.336% / 3.335%, with geometric
+coverage passing; this does not claim raster parity. Both unsupported scenes
+used complete Canvas on every frame and matched exact RGBA at every endpoint.
+Warm zoom followed by context loss/restoration, repeated restoration, selection,
+the existing isolated demo and disposal also passed.
+
+Current-source native probes proved reuse of the warmed 254-entity Canvas bitmap,
+then safely terminated only the private app's verified GPU child. Main and saved
+cache contexts lost; a healthy current cache and complete Canvas repaint appeared
+before WebGL restoration. LINE and 255-entity DXF save/reopen passed on both
+adapters. Actual unavailable WebGL/WebGL2 contexts retained exact complete Canvas
+for small and 6,500-entity scenes, with 6,501-entity save/reopen passing. Native
+cache-only loss, real driver resets and persistent failure remain untested.
+
+Public producer evidence, with private host paths removed:
+[Intel benchmark](benchmarks/windows-gpu-zoom-intel.json),
+[NVIDIA benchmark](benchmarks/windows-gpu-zoom-nvidia.json),
+[Intel native recovery](benchmarks/windows-gpu-zoom-intel-process.json),
+[NVIDIA native recovery](benchmarks/windows-gpu-zoom-nvidia-process.json), and
+[unavailable context](benchmarks/windows-gpu-zoom-unavailable.json).
+
+This milestone demonstrates useful dense pan/zoom improvement in these samples.
+Small Canvas scenes remain faster in some workloads. Boundary rebuild peaks of
+95–105 ms and edit peaks of 127–133 ms remain unacceptable production concerns.
+The next item-4 gates are reduced edit preparation/uploads and boundary stalls,
+followed by incremental blocks with text/attributes, dimensions and common
+hatches, with full-view fallback wherever correctness is not established.
+Canvas remains the default and stage 4 remains incomplete.
 
 ### NVIDIA validation on the pinned GPU source
 
