@@ -80,16 +80,17 @@ function fileError(err, file, op) {
 }
 
 /**
- * Identity of a resolved path for the containment test: case-folded where the file system usually
- * is case-insensitive (Windows, macOS), Unicode NFC outside Windows. Windows filenames keep
- * their Unicode spelling: composed/decomposed names can identify separate files or folders.
+ * Queue spelling for a resolved destination. Windows existing leaves use native stored spelling;
+ * only ASCII folds here, since JavaScript Unicode folding merges distinct NTFS names.
+ * Missing non-ASCII aliases still require main-owned save admissions before slow producers.
  * @param {string} p
  * @param {string} platform
  */
 function foldPath(p, platform) {
   const resolved = path.resolve(p);
   const r = platform === 'win32' ? resolved : resolved.normalize('NFC');
-  return platform === 'win32' || platform === 'darwin' ? r.toLowerCase() : r;
+  if (platform === 'win32') return r.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+  return platform === 'darwin' ? r.toLowerCase() : r;
 }
 
 /**
@@ -99,6 +100,11 @@ function foldPath(p, platform) {
  * @param {string} [platform]
  */
 function isInsideFolder(dir, child, platform = process.platform) {
+  if (platform === 'win32') {
+    // Both arguments have native realpath spelling. path.relative also folds Unicode.
+    const root = path.resolve(dir), target = path.resolve(child);
+    return target === root || target.startsWith(root.endsWith(path.sep) ? root : `${root}${path.sep}`);
+  }
   const rel = path.relative(foldPath(dir, platform), foldPath(child, platform));
   return rel === '' || (rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
 }
@@ -250,20 +256,58 @@ function createAtomicWriter(fs = fsp, options = {}) {
    * then wrote to the path as given; refusing would make every save on such a drive fail, so the
    * links are resolved one component at a time instead (lstat + readlink), and the checks hold.
    */
-  async function realpathOrNull(p) {
+  async function realpathInfoOrNull(p) {
     try {
-      return await fs.realpath(p);
+      return { actual: await fs.realpath(p), native: true };
     } catch (err) {
       const code = err && err.code;
       if (code === 'ENOENT' || code === 'ENOTDIR') return null;
       if (!realpathFallback || code === 'ELOOP') throw err;
       try {
-        return await realpathFallback(p);
+        return { actual: await realpathFallback(p), native: false };
       } catch (again) {
         if (again && (again.code === 'ENOENT' || again.code === 'ENOTDIR')) return null;
         throw err;
       }
     }
+  }
+
+  async function realpathOrNull(p) { return (await realpathInfoOrNull(p))?.actual ?? null; }
+
+  // Node's link-by-link Windows fallback preserves requested casing. Check actual directory
+  // identities rather than guessing a Unicode case table when native realpath is unavailable.
+  async function fallbackInside(root, child) {
+    const identity = await fs.stat(root, { bigint: true });
+    if (!identity.isDirectory() || typeof identity.ino !== 'bigint' || identity.ino === 0n) return false;
+    let folder = child;
+    for (let depth = 0; depth < 128; depth++) {
+      const stat = await fs.stat(folder, { bigint: true });
+      if (stat.isDirectory() && stat.dev === identity.dev && stat.ino === identity.ino) return true;
+      const parent = path.dirname(folder);
+      if (parent === folder) return false;
+      folder = parent;
+    }
+    return false;
+  }
+
+  async function fallbackStoredLeaf(folder, requested) {
+    const leaf = path.basename(requested), expected = await fs.lstat(requested, { bigint: true });
+    if (typeof expected.ino !== 'bigint' || expected.ino === 0n) throw linkError(requested);
+    /** @type {string | null} */ let match = null;
+    let ambiguous = false, count = 0;
+    const entries = await fs.opendir(folder);
+    for await (const entry of entries) {
+      if (++count > 65536) throw linkError(requested);
+      // An exact entry is unambiguous even if another name is a hard link to it.
+      if (entry.name === leaf) return path.join(folder, leaf);
+      if (!entry.isFile()) continue;
+      const candidate = path.join(folder, entry.name), stat = await fs.lstat(candidate, { bigint: true });
+      if (stat.isFile() && stat.dev === expected.dev && stat.ino === expected.ino) {
+        if (match) ambiguous = true; else match = candidate;
+      }
+    }
+    if (!match || ambiguous) throw linkError(requested);
+    return match;
   }
 
   /**
@@ -275,15 +319,26 @@ function createAtomicWriter(fs = fsp, options = {}) {
    * @returns {Promise<{ dest: string, dir: string | null }>}  dir: the pinned folder (null when missing)
    */
   async function confinedTarget(file, root) {
-    const realDir = await realpathOrNull(path.dirname(file));
+    const dirInfo = await realpathInfoOrNull(path.dirname(file));
+    const realDir = dirInfo?.actual ?? null;
     if (realDir === null) return { dest: file, dir: null };
     if (root) {
-      const realRoot = (await realpathOrNull(root)) ?? path.resolve(root);
-      if (!isInsideFolder(realRoot, realDir, platform)) throw linkError(file);
+      const rootInfo = await realpathInfoOrNull(root);
+      const realRoot = rootInfo?.actual ?? path.resolve(root);
+      if (!isInsideFolder(realRoot, realDir, platform) &&
+          !(platform === 'win32' && (!dirInfo?.native || rootInfo && !rootInfo.native) && await fallbackInside(realRoot, realDir))) throw linkError(file);
     }
-    const dest = path.join(realDir, path.basename(file));
+    let dest = path.join(realDir, path.basename(file));
     const st = await lstatOrNull(dest);
     if (st && st.isSymbolicLink()) throw linkError(file);
+    if (platform === 'win32' && st && st.isFile()) {
+      // Rename through a differently cased alias changes the stored leaf and splits subsequent
+      // queue/backup identities. Preserve the native existing leaf, including Unicode aliases.
+      const existingInfo = await realpathInfoOrNull(dest);
+      const existing = existingInfo?.native ? existingInfo.actual : await fallbackStoredLeaf(realDir, dest);
+      if (!existing || path.dirname(existing) !== realDir) throw linkError(file);
+      dest = existing;
+    }
     return { dest, dir: realDir };
   }
 
