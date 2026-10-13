@@ -23,7 +23,7 @@
  * and other callbacks whose stack points into the plugin's code) are reported the same way.
  */
 import type { Editor } from './editor';
-import { API_VERSION, createApi, pickTextFile, type ApiHandle, type JcadApi } from './api';
+import { API_VERSION, createApi, pickTextFile, pluginErrorMessage, type ApiHandle, type JcadApi } from './api';
 import { modal, button } from '../ui/dialogkit';
 import { esc } from '../ui/dom';
 import { ensureFileLimit, MAX_PLUGIN_FILE_BYTES, MAX_PROJECT_FILE_BYTES } from '../io/file-limits';
@@ -394,7 +394,7 @@ export class PluginHost {
 
   /** Report an error raised outside the plugin's API callbacks (see watchUncaught). */
   reportUncaught(name: string, err: unknown): void {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = pluginErrorMessage(err);
     this.editor.log(`[${name}] ${message}`);
     const e = this.entries.get(name.toUpperCase());
     if (e && e.info.status === 'loaded') e.info.error = message;
@@ -402,8 +402,9 @@ export class PluginHost {
   }
 
   /** Is this code trusted? Asks when unknown or changed; `ask` = false never asks (declined stays declined). */
-  private async trusted(src: PluginSource, reask: boolean): Promise<boolean> {
+  private async trusted(src: PluginSource, reask: boolean, current: () => boolean = () => true): Promise<boolean> {
     const hash = await codeHash(src.code);
+    if (!current()) return false;
     const all = readTrust(this.storage);
     const key = trustKey(src);
     const hit = all[key];
@@ -412,6 +413,7 @@ export class PluginHost {
     const strongHash = /^[0-9a-f]{64}$/.test(hash);
     if (strongHash && hit && hit.hash === hash && (hit.answer === 'yes' || !reask)) return hit.answer === 'yes';
     const yes = await this.confirmFn(src.manifest.name, src.path);
+    if (!current()) return false;
     if (strongHash) all[key] = { answer: yes ? 'yes' : 'no', hash, at: Date.now() };
     else delete all[key];
     writeTrust(this.storage, all);
@@ -438,6 +440,9 @@ export class PluginHost {
    * (an explicit PLUGINLOAD); automatic loading at start-up keeps a "no".
    */
   async load(src: PluginSource, reask = false): Promise<LoadedPlugin> {
+    // Bind confirmation and execution to the same source, even if a caller
+    // changes its input object while hashing/confirmation is outstanding.
+    src = { ...src, manifest: { ...src.manifest } };
     const name = src.manifest.name;
     const info: LoadedPlugin = {
       name,
@@ -450,58 +455,69 @@ export class PluginHost {
       commands: [],
     };
     const key = name.toUpperCase();
+    const entry = { info, handle: null as ApiHandle | null, source: src };
+    this.replace(key, entry);
+    const current = () => this.entries.get(key) === entry;
+    const superseded = () => {
+      info.status = 'error';
+      info.error = 'Loading was superseded or the plugin was unloaded.';
+      return info;
+    };
+    if (!current()) return superseded();
     if ((src.manifest.apiVersion ?? 1) > API_VERSION) {
       info.status = 'error';
       info.error = `needs plugin API version ${src.manifest.apiVersion}; this JCad Electrical provides version ${API_VERSION}`;
       this.editor.log(`Plugin ${name}: ${info.error}.`);
-      this.replace(key, { info, handle: null, source: src });
       return info;
     }
     if (src.code.length > MAX_CODE) {
       info.status = 'error';
       info.error = 'code is larger than 2 MB';
       this.editor.log(`Plugin ${name}: ${info.error}.`);
-      this.replace(key, { info, handle: null, source: src });
       return info;
     }
     let trusted: boolean;
     try {
-      trusted = await this.trusted(src, reask);
+      trusted = await this.trusted(src, reask, current);
     } catch (err) {
+      if (!current()) return superseded();
       info.status = 'error';
-      info.error = `could not confirm the plugin (${err instanceof Error ? err.message : String(err)})`;
+      info.error = `could not confirm the plugin (${pluginErrorMessage(err)})`;
       this.editor.log(`Plugin ${name}: ${info.error}.`);
-      this.replace(key, { info, handle: null, source: src });
       return info;
     }
+    if (!current()) return superseded();
     if (!trusted) {
       this.editor.log(`Plugin ${name} not loaded (not trusted). PLUGINLOAD${src.folder ? ` ${src.folder}` : ''} asks again.`);
-      this.replace(key, { info, handle: null, source: src });
       return info;
     }
     const handle = createApi(this.editor, name);
-    this.replace(key, { info, handle, source: src });
+    entry.handle = handle;
     try {
       // A load that never settles must not hold up the other plugins.
       await withTimeout(Promise.resolve(this.evaluateFn(src.code, handle.api, name)), this.loadTimeoutMs, 'loading');
+      if (!current()) { handle.dispose(); return superseded(); }
       info.status = 'loaded';
       const cmds = this.commandsOf(name);
       this.editor.log(`Plugin ${name}${info.version ? ` ${info.version}` : ''} loaded${cmds.length ? `: ${cmds.join(', ')}` : ''}.`);
     } catch (err) {
+      if (!current()) { handle.dispose(); return superseded(); }
       info.status = 'error';
-      info.error = err instanceof Error ? err.message : String(err);
+      info.error = pluginErrorMessage(err);
+      // Revoke before diagnostics; even a failing page logger must not retain
+      // commands or listeners from a partially loaded plugin.
+      entry.handle = null;
+      handle.dispose();
       this.editor.log(`[${name}] failed to load: ${info.error}`);
       if (typeof console !== 'undefined') console.error(`[jcad plugin ${name}]`, err);
-      // A plugin that failed half-way keeps nothing it registered.
-      handle.dispose();
-      this.entries.set(key, { info, handle: null, source: src });
     }
     return info;
   }
 
   private replace(key: string, entry: { info: LoadedPlugin; handle: ApiHandle | null; source: PluginSource }): void {
-    this.entries.get(key)?.handle?.dispose();
+    const previous = this.entries.get(key);
     this.entries.set(key, entry);
+    previous?.handle?.dispose();
   }
 
   /** Unload a plugin (its commands, listeners and onUnload hooks). */
@@ -509,8 +525,8 @@ export class PluginHost {
     const key = name.toUpperCase();
     const e = this.entries.get(key);
     if (!e) return false;
-    e.handle?.dispose();
     this.entries.delete(key);
+    e.handle?.dispose();
     return true;
   }
 
@@ -558,6 +574,7 @@ export class PluginHost {
     for (const t of targets) {
       try {
         const src = t!.source.origin === 'folder' && t!.source.folder ? await this.readFolder(t!.source.folder) : t!.source;
+        if (this.entries.get(t!.info.name.toUpperCase()) !== t) continue;
         out.push(await this.load(src, true));
       } catch (err) {
         this.editor.log(`Plugin ${t!.info.name}: ${(err as Error).message}.`);
@@ -601,7 +618,8 @@ export class PluginHost {
       this.editor.log(`Script ${fileName} finished.`);
       return true;
     } catch (err) {
-      this.editor.log(`[${owner}] ${err instanceof Error ? err.message : String(err)}`);
+      handle.dispose();
+      this.editor.log(`[${owner}] ${pluginErrorMessage(err)}`);
       if (typeof console !== 'undefined') console.error(`[jcad script ${fileName}]`, err);
       return false;
     }
