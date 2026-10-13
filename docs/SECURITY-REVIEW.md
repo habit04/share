@@ -537,12 +537,14 @@ Experimental > 3D modelling** is on: `src/model3d/**` (including the Manifold ke
 handle) and, for the CSP question, `index.html` and `electron/renderer-origin.cjs`. Same threat
 model as above; the new inputs are DXF files carrying polyface meshes and `JCAD_3D` XDATA, and
 geometry handed to the WebAssembly kernel. File:line references are to that tree. Items marked
-**not verified** were not checked on this branch.
+**not verified** were not checked on this branch. E-19 and E-20 were later updated for branch
+`feature/3d-security` (worker CSP header, 1 GiB WebAssembly memory limit); each states what was
+verified there and what was not. How to repeat the checks: [3D-PACKAGED-TEST.md](3D-PACKAGED-TEST.md).
 
 | Finding | Severity | Status |
 | --- | --- | --- |
-| E-19 WebAssembly kernel in a module Worker: renderer CSP unchanged, worker reach | Low | Accepted with a recommended hardening (CSP header for worker scripts); packaged-app behaviour not verified |
-| E-20 Kernel memory growth and runaway Booleans | Low | Open: timeout and crash containment exist; no engine-enforced memory cap below 4 GiB |
+| E-19 WebAssembly kernel in a module Worker: renderer CSP unchanged, worker reach | Low | Mitigated: the jcad:// handler sends worker scripts (assets/worker/) a restrictive CSP header. Verified in the development build and an unpacked Windows test build (scripts/e2e-3d-security.mjs); not yet verified in an installed release build |
+| E-20 Kernel memory growth and runaway Booleans | Low | Mitigated: hard 1 GiB WebAssembly memory limit in the worker (refusal = KernelError and worker restart), besides the operand limits and the timeout; the worker is not process isolation. Verified in Node and in the development build and an unpacked Windows test build; not yet verified in an installed release build |
 | E-21 `JCAD_3D` payload parsing | Info | Verified: bounded, strict, fuzzed (no finding) |
 | E-22 Triangle and vertex budgets | Info | Verified; main-thread cost of large meshes noted |
 | E-23 Saving files JCad could not reopen | Info | Verified: Save refuses, autosave omits solids and records it |
@@ -552,86 +554,136 @@ geometry handed to the WebAssembly kernel. File:line references are to that tree
 
 ### E-19 (Low). WebAssembly kernel in a module Worker: CSP and what the worker can reach
 
-**Where**: `src/model3d/kernel/manifold-kernel.ts:57-60` creates
+**Status (2026-10-12, branch `feature/3d-security`): mitigated.** Verified: unit tests of the
+header decision and of the real protocol handler (`tests/renderer-origin.test.ts`), and
+`scripts/e2e-3d-security.mjs` (19/19 checks on the development build, 20/20 on the test build, including the worker-file alias check) in Electron against the development build
+(`electron .` on `dist/`) and against an unpacked Windows test build (`npm run dist:test:no-dwg`:
+ASAR, test-build fuses, no DWG writer). **Not yet verified** in an installed, signed release build
+(the script cannot drive one: shipping fuses disable inspection), nor on macOS or Linux.
+
+**Where**: `src/model3d/kernel/manifold-kernel.ts` creates
 `new Worker(new URL('./manifold.worker.ts', import.meta.url), { type: 'module' })`;
-`manifold.worker.ts` loads `manifold-3d` (Apache-2.0) and its `manifold.wasm` (541 KB, emitted by
-Vite into `dist/assets`); `index.html:6` keeps the renderer CSP `default-src 'self'; ...` with no
-`'wasm-unsafe-eval'`.
+`manifold.worker.ts` loads `manifold-3d` (Apache-2.0) and its `manifold.wasm` (541 KB);
+`index.html:6` keeps the renderer CSP `default-src 'self'; ...` with no `'wasm-unsafe-eval'`;
+`electron/renderer-origin.cjs` (`WORKER_CSP`, `assetResponseHeaders`, `withAssetHeaders`) and
+`vite.config.ts` (`worker.rollupOptions.output`).
 
 **Why the renderer CSP is unchanged**: a dedicated worker created from a same-origin script URL
 (not a `blob:` or `data:` URL) is governed by the policy delivered with its own response, not by
-the creating document's `<meta>` policy. The `jcad://` protocol handler
-(`electron/renderer-origin.cjs:19-29`) serves bundled files through `net.fetch(file://...)` and adds
-no headers, so the worker script carries no policy and WebAssembly compiles in the worker while
-main-thread `WebAssembly.compile` stays blocked. This was checked **manually** once, on
-2026-10-12 during milestone 3, in headless Chromium with the renderer's exact meta CSP served over
-HTTP (docs/3D-KERNEL.md: `ready()` reports Manifold 3.5.4, a union of two cubes gives 1.5,
-main-thread compile refused). That probe was not committed, so the check is **not reproducible**
-from the repository and was **not re-run** for this review; it should become a script (outside
-CI, like `scripts/e2e-3d.mjs`) before a release relies on it. **Not verified** inside the
-packaged Electron app under `jcad://app/` (no shipped command starts the kernel yet; nothing in
-`src/` outside `src/model3d` imports `createDefaultKernel`, so `npm run build` contains no kernel
-code or wasm today).
+the creating document's `<meta>` policy. Before this change the `jcad://` handler added no headers,
+so the worker had no policy at all: WebAssembly compiled there (main-thread `WebAssembly.compile`
+stays blocked), but `fetch` and `import()` from the worker could reach any destination.
+
+**Mitigation**: for the Electron renderer build, Vite now emits every worker bundle as
+`assets/worker/<name>-<hash>.js` (the production build has exactly one, `manifold.worker-<hash>.js`, self-contained: it imports no other
+chunk; manifold.wasm stays in `assets/`). The `jcad://app/` handler adds
+`Content-Security-Policy: default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; base-uri 'none'`
+to responses whose decoded path matches `^/assets/worker/[A-Za-z0-9._-]+\.m?js$` (case-insensitive,
+since the bundle may sit on a case-insensitive file system), and to nothing else: the page, its
+scripts, styles and the wasm are served as before. The worker may load bundled scripts, fetch the
+bundled wasm and compile it; remote `fetch` / `import()`, images, fonts, frames and nested workers
+are refused. WebAssembly execution stays in the worker; the renderer policy still refuses it.
+
+What `scripts/e2e-3d-security.mjs` observed in the unpacked test build: the worker is
+`jcad://app/assets/worker/manifold.worker-<hash>.js` and its response carries exactly
+`WORKER_CSP` (content type `text/javascript`); `jcad://app/index.html` and the main script carry no
+CSP header; inside the worker, `fetch('https://jcad-csp-probe.invalid/fetch')` and
+`import('https://jcad-csp-probe.invalid/import.js')` both fail with `securitypolicyviolation`
+events (`connect-src`, `script-src-elem`; the `.invalid` host can never resolve, so nothing left
+the machine either way); the union of two unit cubes through the worker is 1.5; main-thread
+`WebAssembly.compile` fails with the renderer CSP's `'unsafe-eval'` refusal.
 
 **What the worker can reach**: its own global scope only. No DOM, no `window`, no preload bridge
 (`contextBridge` exposes `window.jcad` to the main world of the page, not to workers), no Node
-(`electron/main/window.cjs:240-246`: `sandbox: true`, `nodeIntegration: false`;
-`nodeIntegrationInWorker` is not set, so it is off), no IPC. Its only channel to
-the application is `postMessage`: requests carry typed arrays, and every reply is re-validated on
-the main thread (`kernel.ts` `finishResult`: well-formed, closed, non-empty, positive volume,
-within `MAX_SOLID_TRIANGLES`) before it can enter drawing state; a reply that cannot be read
-counts as a crash (`messageerror`). It can, however, use `fetch` and `import()`: because its
-response has no CSP, nothing restricts their destinations. The worker runs only bundled code
-(manifold.js and the worker chunk); exploiting this needs code execution in the worker first (a
-memory-safety bug in the WebAssembly module cannot call JavaScript beyond its Emscripten imports).
-Whether Electron's session settings block remote requests from workers is **not verified**.
+(`electron/main/window.cjs`: `sandbox: true`, `nodeIntegration: false`;
+`nodeIntegrationInWorker` is not set, so it is off), no IPC. Its only channel to the application is
+`postMessage`: requests carry typed arrays, and every reply is re-validated on the main thread
+(`kernel.ts` `finishResult`: well-formed, closed, non-empty, positive volume, within
+`MAX_SOLID_TRIANGLES`) before it can enter drawing state; a reply that cannot be read counts as a
+crash (`messageerror`). With the header it can no longer use the network or load scripts from
+outside the bundle. A dedicated worker is a thread of the renderer process: it is a separate
+JavaScript global scope with its own CSP, not process, memory or crash isolation (see E-20).
 
-**Recommendation**: have the `jcad://` handler send
-`Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'` with worker
-scripts (or with every `.js` response), which keeps WebAssembly in the worker and removes remote
-`fetch` / `import()` from it, then check it in the packaged app with a committed probe. If the kernel ever has to
-run on the main thread (`ManifoldDirectKernel`), that needs `'wasm-unsafe-eval'` in the renderer
-policy and a new review; the default stays the worker (docs/3D-PLAN.md, open decision 1).
+**Residual**: the browser edition (`vite build --mode site`, GitHub Pages) and the Vite dev server
+keep Vite's default file layout and serve the worker without the header (static hosting cannot set
+response headers); there the worker has no policy of its own, as before. The test-only probes (`probe-csp` /
+`probe-memory`, `src/model3d/kernel/protocol.ts`) exist in the shipped worker but answer only in
+a worker created with the Worker name `KERNEL_TEST_HOOKS_WORKER_NAME`, which the worker reads once
+at start (no message can switch them on). The kernel uses that name only when 3D was installed on a
+page loaded with `?jcad3dTestHooks=1` (decided once at start-up, `kernelTestHooksRequested` in
+`installExperimental3d`, so a later `history.pushState` does not count), and the main process adds
+that query only for `JCAD_3D_TEST_HOOKS=1` in a build that allows inspection (`rendererStartUrl`,
+unit-tested). Residual by design: plugins and any other script in the page run with full renderer
+access (E-10), so they could start their own worker from the same URL with that name and call the
+probes in any build. That gives them nothing they cannot already do: the probes only allocate up to
+the same 1 GiB limit and try requests that the worker CSP blocks. If the kernel ever has to run on the main
+thread (`ManifoldDirectKernel`), that needs `'wasm-unsafe-eval'` in the renderer policy and a new
+review; the default stays the worker (docs/3D-PLAN.md, open decision 1).
 
 ---
 
 ### E-20 (Low). Kernel memory growth and runaway Booleans
 
-**Where**: `node_modules/manifold-3d/manifold.wasm` (memory section) and `manifold.js`
-(`getHeapMax`); `src/model3d/kernel/manifold-kernel.ts` (timeouts, crash handling).
+**Status (2026-10-12, branch `feature/3d-security`): mitigated.** Verified: unit tests
+(`tests/model3d-memory-limit.test.ts`: the constant, the message, the `grow` guard, a refused
+growth becoming a `memory-limit` KernelError and a restart with the in-process kernel and with the
+real worker request handler behind a fake Worker; `tests/model3d-wasm-memory.test.ts`: the module
+grows only through JavaScript), Node measurements of real operations (below), and
+`scripts/e2e-3d-security.mjs` in Electron against the development build and an unpacked Windows
+test build. **Not yet verified** in an installed, signed release build, nor on macOS or Linux, nor
+under real system memory pressure.
 
-**Facts** (read from the shipped files by `tests/model3d-wasm-memory.test.ts`, so they are
-re-checked on every `npm test` and fail when the dependency changes): one linear memory,
-exported, not imported, declared with 256 initial pages (16 MiB) and a maximum of 65,536 pages
-(4 GiB); manifold.js contains Emscripten's heap-growth code with `getHeapMax()` returning
-4,294,901,760 bytes. The Emscripten heap only grows; terminating the worker should release it
-(**not measured**).
-A dedicated worker is a thread of the renderer process, not a separate process: its WebAssembly
-memory counts against the renderer, and V8's JavaScript heap limit does not cover it. Measured in
-Node (in-process kernel): a union of two 499,712-triangle operands (the per-solid limit allows
-500,000) took 3.5 s and the process reached about 820 MB resident; its 776,948-triangle result is
-then refused by the budget, after the work was done.
+**Where**: `src/model3d/kernel/memory-guard.ts` (`KERNEL_MEMORY_LIMIT_BYTES`), `worker-core.ts`,
+`manifold.worker.ts`, `manifold-kernel.ts`, `manifold-direct.ts`; `node_modules/manifold-3d/manifold.wasm`
+and `manifold.js`.
 
-**Containment that exists**: operands are checked before they are sent (`prepareOperands`:
-well-formed, closed, positive volume, at most 500,000 triangles each); every call has a timeout
-(default 20 s): the call rejects with `timeout`, the busy worker is **terminated** (a running
-Boolean cannot be cancelled, so recycling the worker is the only way to stop it, and it frees
-its memory), the other pending calls reject, and the next call starts a fresh worker. An
-out-of-memory abort inside the module fires the worker's `error` event: pending calls reject with
-`worker-crash`, one restart is allowed, a second crash disables Booleans for the session
-(tested with an injected fake worker, `tests/model3d-kernel.test.ts`). **Not verified**: what a
-real allocation failure near 4 GiB does in Chromium (worker abort versus renderer termination),
-and peak memory for the largest accepted operands in the worker.
+**Facts** (read from the shipped files by `tests/model3d-wasm-memory.test.ts` on every `npm
+test`): one linear memory, exported, not imported, declared with 256 initial pages (16 MiB) and a
+maximum of 65,536 pages (4 GiB); manifold.js caps heap growth at 4,294,901,760 bytes, and its only
+growth path is `emscripten_resize_heap` (an import of the module) -> `growMemory` ->
+`wasmMemory.grow(pages)`. A dedicated worker is a thread of the renderer process, not a separate
+process: its WebAssembly memory counts against the renderer, and V8's JavaScript heap limit does
+not cover it. The worker is therefore not memory or crash isolation; the controls below are.
 
-**Impact**: a drawing (or a sequence of user Booleans) at the triangle limits can make the
-renderer allocate gigabytes for up to 20 s; on a machine with little free memory that can end in
-an out-of-memory renderer crash, which recovery copies limit to unsaved work since the last
-autosave. Self-inflicted rather than an attacker gain: a file never triggers a Boolean on open
-(the stored mesh is authoritative, histories are not re-evaluated on load).
+**Mitigation**: a hard limit of 1 GiB (16,384 pages; one exported constant). Because the module
+owns its memory, a smaller `new WebAssembly.Memory({ initial, maximum })` cannot be supplied; the
+worker instead replaces `WebAssembly.Memory.prototype.grow` before instantiating the module, and
+refuses (throws on) any growth that would take a memory past the limit. Emscripten catches a
+refused growth and retries with less headroom (1.2x, then 1.1x, then 1.05x the current size); when
+a retry fits under the limit the allocation succeeds and the operation completes normally, with no
+restart (tested with a real Manifold Boolean). The limit stops a request only when the operation
+threw after a refused growth or its last growth attempt was refused (every retry failed). Such a
+request is answered as a `memoryLimit` failure whatever the module did afterwards (in practice
+Manifold then fails with `RuntimeError: memory access out of bounds`, and the module is treated
+as unusable); the worker answers every later request the same way; the main thread rejects the call
+with KernelError `memory-limit` ("The 3D kernel reached its 1 GiB memory limit; the operation was
+abandoned and the model is unchanged."), terminates the worker, rejects the other pending calls and
+starts a fresh worker for the next call, as after a timeout (not counted as a crash). The existing
+controls stay: operands checked before they are sent (well-formed, closed, positive volume, at most
+500,000 triangles each), a 20 s timeout per call (terminate and restart), one restart after a
+crash, results re-validated on the main thread.
 
-**Recommendation**: as for LibreDWG (E-7), rewrite the memory section's maximum before
-instantiation to an engine-enforced cap (for example 1 GiB), and refuse operand pairs whose
-combined size predicts a result over `MAX_SOLID_TRIANGLES` before calling the kernel.
+**Measured** (peak `memory.buffer.byteLength`, fresh module per operation, Node 22, in-process
+kernel under the same guard; full table in docs/3D-KERNEL.md "Memory limit"): unit cubes 16 MiB
+(no growth); two 50,000-triangle spheres 33-58 MiB; the enclosure and cable-tray fixture builds
+16 MiB; two 499,712-triangle operands 349-503 MiB (union and subtraction then refused by the
+triangle budget, intersection ok); a worst case where the facets of two operands cross nearly
+everywhere 207 MiB at 50,000 triangles, 876 MiB at 249,856 and **1 GiB reached at 499,712**
+(union, subtraction and intersection stopped by the limit after 13-15 s). Without the limit that
+union needs 1,806 MiB and 28.6 s and returns 4,986,730 triangles (ten times the per-solid budget,
+and over the 20 s timeout), so it could not have succeeded anyway. No measured operation whose
+result fits the triangle budget fails at 1 GiB. In the unpacked test build the worker's
+allocation probe reached 150 MB under the limit, was refused past 1 GiB within about 3 s, the
+worker was replaced once and a follow-up Boolean succeeded.
+
+**Residual**: the guard does not see a `memory.grow` instruction executed by the module itself
+(Emscripten's JS runtime grows the heap from JavaScript; the test fails if that changes). The
+renderer can still reach about 1 GiB of WebAssembly memory plus the JavaScript heap for up to 20 s;
+on a machine with little free memory the operating system can still end the renderer process, and
+recovery copies then limit the loss to unsaved work since the last autosave. A file never triggers
+a Boolean on open (stored meshes are authoritative). Not done: refusing operand pairs whose
+predicted result exceeds `MAX_SOLID_TRIANGLES` before calling the kernel (it would stop the
+crossing case earlier than the memory limit does).
 
 ---
 

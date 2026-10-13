@@ -2,10 +2,15 @@
  * The Manifold kernel on the main thread: a `GeometryKernel` that forwards each Boolean to a
  * dedicated module Worker (manifold.worker.ts) and checks inputs and results here (kernel.ts).
  *
- * Why a worker: a worker script loaded from its own URL is governed by its own response's CSP,
+ * Why a worker: a worker script loaded from its own URL is governed by its own response's CSP
+ * (the Electron protocol handler sends a restrictive one, electron/renderer-origin.cjs WORKER_CSP),
  * not the renderer document's strict `default-src 'self'`, so WebAssembly compiles there without
- * relaxing the renderer CSP; a long Boolean never blocks the UI; a crash or out-of-memory abort
- * only kills the worker (docs/3D-PLAN.md, "Geometry kernel evaluation"; docs/3D-KERNEL.md).
+ * relaxing the renderer CSP; a long Boolean never blocks the UI. A worker is a thread of the
+ * renderer process, not a separate process: it is not memory or crash isolation. What bounds the
+ * kernel is its hard 1 GiB WebAssembly memory limit (memory-guard.ts), the per-call timeout and the
+ * restart policy below; an exception or abort inside the module surfaces as a KernelError, but a
+ * failure that takes down the renderer process takes the editor with it (docs/3D-KERNEL.md,
+ * docs/SECURITY-REVIEW.md E-19 / E-20).
  *
  * Behaviour:
  * - The worker is created lazily on the first `ready()` or `boolean()` call. Requests carry
@@ -23,6 +28,10 @@
  *   pending call rejects with a 'worker-crash' KernelError and the next call starts a new worker;
  *   after `maxRestarts` restarts (default 1) a further crash makes the kernel permanently
  *   unavailable for this session.
+ * - If the worker reports that the memory limit stopped an operation (`memoryLimit`), the call
+ *   rejects with a 'memory-limit' KernelError, the worker is terminated (the module may be
+ *   inconsistent after a failed allocation), every other pending call rejects too, and the next
+ *   call starts a fresh worker, exactly like a timeout (not counted as a crash).
  * - Start-up failures are final: the worker script failing to load or erroring before `ready`,
  *   the WebAssembly module failing to start (`init-error`), or no `ready` within
  *   `startTimeoutMs` (default 20 s; the worker is then terminated). The kernel reports itself
@@ -31,10 +40,10 @@
  */
 import type { Mesh3D } from '../mesh';
 import {
-  type BooleanOp, type BooleanOptions, type GeometryKernel, type KernelStatus, KernelError, crashError, finishResult, invalidOperand, opName,
-  packMesh, prepareOperands, timeoutError, unavailableError, unpackMesh,
+  type BooleanOp, type BooleanOptions, type GeometryKernel, type KernelStatus, KernelError, crashError, finishResult, invalidOperand,
+  memoryLimitError, opName, packMesh, prepareOperands, timeoutError, unavailableError, unpackMesh,
 } from './kernel';
-import type { WorkerMessage, WorkerRequest } from './protocol';
+import type { ProbeResult, WorkerMessage, WorkerRequest } from './protocol';
 import { MANIFOLD_VERSION } from './version';
 
 /** The part of the DOM `Worker` the kernel uses (so tests can inject a fake). */
@@ -55,19 +64,34 @@ export interface ManifoldWorkerKernelOptions {
   readonly maxRestarts?: number;
   /** How long a new worker may take to report `ready` before the kernel gives up (20 000 ms). */
   readonly startTimeoutMs?: number;
+  /**
+   * Enable the worker's test probes (`probe()`; protocol.ts `WorkerProbeRequest`): the default
+   * worker is then created with the Worker name KERNEL_TEST_HOOKS_WORKER_NAME, which the worker
+   * reads once at start. Off by default; experimental-3d.ts turns it on only when the page was
+   * loaded with `?jcad3dTestHooks=1` (decided once at install; scripts/e2e-3d-security.mjs).
+   */
+  readonly testHooks?: boolean;
 }
+
+/** A probe request without its id (`ManifoldWorkerKernel.probe`). */
+export type KernelProbe = { readonly op: 'probe-memory'; readonly pages: number } | { readonly op: 'probe-csp' };
 
 /** Default per-call timeout (milliseconds). */
 export const DEFAULT_KERNEL_TIMEOUT_MS = 20_000;
 
-function defaultWorker(): WorkerLike {
-  // Literal `new Worker(new URL(...), { type: 'module' })` so Vite bundles the worker as its own chunk.
-  return new Worker(new URL('./manifold.worker.ts', import.meta.url), { type: 'module' });
+function defaultWorker(testHooks: boolean): WorkerLike {
+  // Literal `new Worker(new URL(...), { ...static options })` so Vite bundles the worker as its own
+  // chunk (both branches are the same chunk). The name must equal KERNEL_TEST_HOOKS_WORKER_NAME
+  // (tests/model3d-memory-limit.test.ts checks it).
+  return testHooks
+    ? new Worker(new URL('./manifold.worker.ts', import.meta.url), { type: 'module', name: 'jcad-kernel-test-hooks' })
+    : new Worker(new URL('./manifold.worker.ts', import.meta.url), { type: 'module' });
 }
 
 interface Pending {
-  readonly op: BooleanOp;
-  readonly resolve: (mesh: Mesh3D) => void;
+  /** The Boolean, or null for a test probe. */
+  readonly op: BooleanOp | null;
+  readonly resolve: (value: Mesh3D | ProbeResult) => void;
   readonly reject: (err: KernelError) => void;
   /** The call's timeout in milliseconds; its timer runs from the moment the request is posted. */
   readonly ms: number;
@@ -86,6 +110,7 @@ export class ManifoldWorkerKernel implements GeometryKernel {
   private readonly timeoutMs: number;
   private readonly maxRestarts: number;
   private readonly startTimeoutMs: number;
+  private readonly testHooks: boolean;
   private worker: WorkerLike | null = null;
   private started: Promise<KernelStatus> | null = null;
   private settleStart: ((status: KernelStatus) => void) | null = null;
@@ -103,10 +128,12 @@ export class ManifoldWorkerKernel implements GeometryKernel {
   workersCreated = 0;
 
   constructor(opts: ManifoldWorkerKernelOptions = {}) {
-    this.createWorker = opts.createWorker ?? defaultWorker;
+    const testHooks = opts.testHooks === true;
+    this.createWorker = opts.createWorker ?? (() => defaultWorker(testHooks));
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_KERNEL_TIMEOUT_MS;
     this.maxRestarts = opts.maxRestarts ?? 1;
     this.startTimeoutMs = opts.startTimeoutMs ?? DEFAULT_KERNEL_TIMEOUT_MS;
+    this.testHooks = testHooks;
   }
 
   ready(): Promise<KernelStatus> {
@@ -126,26 +153,47 @@ export class ManifoldWorkerKernel implements GeometryKernel {
     const pa = packMesh(a), pb = packMesh(b);
     const ms = opts.timeoutMs ?? this.timeoutMs;
     return new Promise<Mesh3D>((resolve, reject) => {
-      this.pending.set(id, { op, resolve, reject, ms, timer: null });
-      const request: WorkerRequest = { id, op, a: pa, b: pb };
-      if (this.workerReady && this.worker) this.send(this.worker, request);
-      else this.queued.push(request);
+      this.pending.set(id, { op, resolve: resolve as (value: Mesh3D | ProbeResult) => void, reject, ms, timer: null });
+      this.enqueue({ id, op, a: pa, b: pb });
     });
+  }
+
+  /**
+   * Run a test probe in the worker (only with `testHooks: true`; otherwise rejects as
+   * unavailable without contacting the worker). A probe that reaches the memory limit rejects with
+   * the same 'memory-limit' KernelError as a Boolean and restarts the worker.
+   */
+  probe(probe: KernelProbe, opts: BooleanOptions = {}): Promise<ProbeResult> {
+    if (!this.testHooks) return Promise.reject(unavailableError('the kernel test hooks are disabled'));
+    if (this.dead) return Promise.reject(this.dead.code === 'disposed' ? disposedError() : unavailableError(this.dead.reason));
+    if (!this.ensureWorker() || !this.worker) return Promise.reject(unavailableError(this.deadReason()));
+    const id = this.nextId++;
+    const ms = opts.timeoutMs ?? this.timeoutMs;
+    return new Promise<ProbeResult>((resolve, reject) => {
+      this.pending.set(id, { op: null, resolve: resolve as (value: Mesh3D | ProbeResult) => void, reject, ms, timer: null });
+      this.enqueue(probe.op === 'probe-memory' ? { id, op: 'probe-memory', pages: probe.pages } : { id, op: 'probe-csp' });
+    });
+  }
+
+  private enqueue(request: WorkerRequest): void {
+    if (this.workerReady && this.worker) this.send(this.worker, request);
+    else this.queued.push(request);
   }
 
   /** Post one request (its operand buffers are transferred); a failed post rejects that call. */
   private send(worker: WorkerLike, request: WorkerRequest): void {
-    const { a, b, id } = request;
+    const { id } = request;
     const call = this.pending.get(id);
     if (!call) return;
     // The timeout measures the Boolean, not the worker's start-up (startTimeoutMs bounds that).
     call.timer = setTimeout(() => this.onTimeout(id, call.ms), call.ms);
     try {
-      worker.postMessage(request, [a.positions.buffer, a.indices.buffer, b.positions.buffer, b.indices.buffer]);
+      const transfer = 'a' in request ? [request.a.positions.buffer, request.a.indices.buffer, request.b.positions.buffer, request.b.indices.buffer] : [];
+      worker.postMessage(request, transfer);
     } catch (err) {
       clearCallTimer(call);
       this.pending.delete(id);
-      call.reject(new KernelError('kernel-failure', `The ${opName(call.op)} could not be sent to the geometry kernel (${err instanceof Error ? err.message : String(err)}).`));
+      call.reject(new KernelError('kernel-failure', `The ${call.op ? opName(call.op) : 'kernel probe'} could not be sent to the geometry kernel (${err instanceof Error ? err.message : String(err)}).`));
     }
   }
 
@@ -199,6 +247,7 @@ export class ManifoldWorkerKernel implements GeometryKernel {
         this.settleStart = null;
         const worker = this.worker, queued = this.queued;
         this.queued = [];
+
         // Calls that timed out (or were rejected) while waiting are no longer pending: skip them.
         if (worker) for (const request of queued) if (this.pending.has(request.id)) this.send(worker, request);
       } else {
@@ -213,15 +262,29 @@ export class ManifoldWorkerKernel implements GeometryKernel {
     this.pending.delete(msg.id);
     clearCallTimer(call);
     if (msg.ok) {
+      if ('probe' in msg) {
+        if (call.op === null) call.resolve(msg.probe);
+        else call.reject(new KernelError('kernel-failure', `The geometry kernel answered the ${opName(call.op)} with a probe result.`));
+        return;
+      }
+      if (call.op === null) {
+        call.reject(new KernelError('kernel-failure', 'The geometry kernel answered a probe with a mesh.'));
+        return;
+      }
       try {
         call.resolve(finishResult(call.op, unpackMesh(msg)));
       } catch (err) {
         call.reject(err instanceof KernelError ? err : new KernelError('kernel-failure', String(err)));
       }
-    } else if (msg.operand) {
+    } else if (msg.memoryLimit) {
+      call.reject(memoryLimitError());
+      // The module may be inconsistent after a refused allocation: replace the worker.
+      this.stopWorker();
+      this.rejectAll(new KernelError('memory-limit', 'The geometry kernel was restarted after an earlier operation reached its memory limit; this operation was not applied.'));
+    } else if (msg.operand && call.op) {
       call.reject(invalidOperand(call.op, msg.operand, `the geometry kernel refused it (${msg.error})`));
     } else {
-      call.reject(new KernelError('kernel-failure', `The ${opName(call.op)} failed in the geometry kernel (${msg.error}).`));
+      call.reject(new KernelError('kernel-failure', `The ${call.op ? opName(call.op) : 'kernel probe'} failed in the geometry kernel (${msg.error}).`));
     }
   }
 
@@ -229,7 +292,7 @@ export class ManifoldWorkerKernel implements GeometryKernel {
     const call = this.pending.get(id);
     if (!call) return;
     this.pending.delete(id);
-    call.reject(timeoutError(call.op, ms));
+    call.reject(call.op ? timeoutError(call.op, ms) : new KernelError('timeout', `The kernel probe took longer than ${Math.round(ms / 100) / 10} s and was stopped.`));
     // The worker is still busy with the runaway operation; replace it.
     this.stopWorker();
     this.rejectAll(new KernelError('timeout', 'The geometry kernel was restarted after an earlier operation timed out; this operation was not applied.'));

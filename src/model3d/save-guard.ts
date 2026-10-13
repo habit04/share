@@ -18,8 +18,14 @@ import { DXF_READ_LIMITS, payloadDegradation } from './file-format';
 import { meshTriangleCount } from './mesh';
 import { EMPTY_MODEL3D, withModel3D } from './model';
 
-/** Why a DWG save or export of a drawing with solids is refused (`Editor.lastFileError` and the log). */
-export const MODEL3D_DWG_REFUSAL = 'DWG files cannot hold 3D objects in this version; save as DXF, or enable Experimental 3D (Options > Files) to view or erase them';
+/**
+ * Why a DWG save or export of a drawing with solids is refused (`Editor.lastFileError` and the log,
+ * which adds "Not saved: " / "DWG export canceled: " and a final period). It says which formats keep
+ * the 3D model: JCad DXF (Save / Save As > DXF) with the construction histories, and the autosave
+ * recovery copies (DXF too); DWG keeps none, and the solids are never removed to make a DWG save
+ * succeed (docs/DWG-SAVING.md, docs/USER-MANUAL.md "Experimental 3D objects in files").
+ */
+export const MODEL3D_DWG_REFUSAL = 'DWG files cannot hold 3D objects, so no DWG was written and nothing was removed from the drawing. To keep the 3D model, save as JCad DXF (Save, or Save As and choose DXF): DXF keeps the 3D objects and their construction histories (where they fit the file limits; see 3D-FILE-FORMAT), and so do the autosave recovery copies. To view or erase the 3D objects, turn on Experimental 3D (Options > Files)';
 
 /** MODEL3D_DWG_REFUSAL when the drawing holds solids, else null (DWG writing may go ahead). */
 export function model3dDwgRefusal(state: DrawingState): string | null {

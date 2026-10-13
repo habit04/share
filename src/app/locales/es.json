@@ -83,7 +83,7 @@
   "options.tab.units": "Unidades",
   "options.experimental.group": "Experimental",
   "options.experimental.3d": "Experimental: modelado 3D (requiere reiniciar)",
-  "options.experimental.3dNote": "Función sin terminar, para pruebas. Tras reiniciar añade la pestaña 3D de la cinta y los comandos 3D. Los objetos 3D aún no se guardan en los archivos.",
+  "options.experimental.3dNote": "Función sin terminar, para pruebas. Tras reiniciar añade la pestaña 3D de la cinta y los comandos 3D. Los objetos 3D se guardan en los archivos DXF de JCad; los archivos DWG no pueden contenerlos.",
   "options.restoreDefaults": "Restablecer valores",
   "options.sizePx": "Tamaño ({min}-{max} px)",
   "options.display.windowElements": "Elementos de ventana",

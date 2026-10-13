@@ -173,8 +173,17 @@ another program while keeping the data makes JCad show the edited mesh with the 
 ## DWG
 
 The portable DWG writer cannot write these records. Saving a drawing with solids as DWG, and
-`EXPORTDWG`, are refused with "DWG files cannot hold 3D objects in this version; save as DXF, or enable Experimental 3D (Options > Files) to view or erase them";
-nothing is written and no solid is dropped.
+`EXPORTDWG`, are refused with "DWG files cannot hold 3D objects, so no DWG was written and nothing was removed from the drawing. To keep the 3D model, save as JCad DXF (Save, or Save As and choose DXF): DXF keeps the 3D objects and their construction histories (where they fit the file limits; see 3D-FILE-FORMAT), and so do the autosave recovery copies. To view or erase the 3D objects, turn on Experimental 3D (Options > Files)."; nothing is written and no solid is dropped. No save path
+removes or downgrades solids to make a DWG save succeed (`src/model3d/save-guard.ts`,
+`tests/model3d-save-guard.test.ts`).
+
+Which formats keep the current 3D model:
+
+| Format | Solids | Construction histories |
+| --- | --- | --- |
+| JCad DXF (Save, Save As > DXF) | Kept | Kept (a history over the 15,000-character payload limit is stored as a plain mesh, with a log line) |
+| Autosave / recovery copy (DXF) | Kept | Kept as in a DXF save; only a model too large for a DXF JCad can reopen is left out of the copy, and the recovery dialog says how many solids are missing |
+| DWG (Save, Save As > DWG, `EXPORTDWG`) | Refused | Refused |
 
 Opening a DWG does not go through the DXF reader: LibreDWG's payload is converted by
 `convertDwg` in `src/io/dwg.ts`, which has no polyface conversion, so a polyface mesh

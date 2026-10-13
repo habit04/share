@@ -45,7 +45,7 @@ import { addSolids, model3dOf, newSolid, solidById, withModel3D } from '../model
 import { primitiveMesh } from '../model3d/primitives';
 import type { PrimitiveFeature, Solid3D } from '../model3d/types';
 import type { GeometryKernel } from '../model3d/kernel/kernel';
-import { createDefaultKernel } from '../model3d/kernel/index';
+import { createDefaultKernel, kernelTestHooksRequested } from '../model3d/kernel/index';
 import { Viewport3D } from '../render3d/viewport3d';
 import { type ViewPresetName, VIEW_PRESETS, applyPreset, cameraFrom2D, matchingPreset, parseViewPreset, setProjection } from '../render3d/camera';
 import type { PickHit } from '../render3d/picking';
@@ -1007,6 +1007,10 @@ function extendSelectionKeywords(editor: Editor): void {
 export function installExperimental3d(editor: Editor): Experimental3d | null {
   if (!editor.settings.experimental3d) return null;
   const c = new Experimental3d(editor);
+  // The kernel's test probes (docs/3D-PACKAGED-TEST.md): decided once, now, from the URL the page
+  // was loaded with; never re-read later.
+  const testHooks = kernelTestHooksRequested();
+  c.kernelFactory = () => createDefaultKernel({ testHooks });
   registerCommands(editor, c);
   editor.toolContextExtension = (ctx) => extendContext3d(ctx, c.source);
   extendSelectionKeywords(editor);

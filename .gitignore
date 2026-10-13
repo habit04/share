@@ -8,6 +8,7 @@ node_modules/
 dist/
 release/
 release-test/
+release-test-no-dwg/
 *.log
 .DS_Store
 screenshots/*.png

@@ -16,6 +16,8 @@ meshes").
 | `src/model3d/kernel/kernel.ts` | `GeometryKernel` interface, `KernelStatus`, `KernelError`, `UnavailableKernel`, operand and result checks shared by every kernel. |
 | `src/model3d/kernel/manifold-core.ts` | Synchronous Booleans on the Manifold WebAssembly module (worker and Node). |
 | `src/model3d/kernel/manifold.worker.ts`, `protocol.ts` | The module Worker and its message types. |
+| `src/model3d/kernel/worker-core.ts` | The worker's request handling (Booleans under the memory limit, test probes), free of worker globals so Node tests run it behind a fake Worker. |
+| `src/model3d/kernel/memory-guard.ts` | The hard 1 GiB WebAssembly memory limit (`KERNEL_MEMORY_LIMIT_BYTES`) and the `WebAssembly.Memory.prototype.grow` guard that enforces it. |
 | `src/model3d/kernel/manifold-kernel.ts` | `ManifoldWorkerKernel`: the main-thread side (ids, timeouts, crash handling). |
 | `src/model3d/kernel/manifold-direct.ts` | `ManifoldDirectKernel`: the same contract in-process (Node tests; documented alternative). |
 | `src/model3d/kernel/index.ts` | `createDefaultKernel()`: worker kernel when `Worker` exists, else in-process. |
@@ -97,13 +99,76 @@ rejects with a `timeout` error saying the kernel was restarted after an earlier 
 out, and the next call starts a fresh worker. Timeouts do not count toward the crash-restart limit. A worker
 `error` event (crash, out-of-memory abort) rejects all pending calls (`worker-crash`); the next
 call starts a new worker once, and a second crash makes the kernel unavailable for the session.
-An unreadable reply (`messageerror`) after start-up counts as a crash. Start-up failures are
+An unreadable reply (`messageerror`) after start-up counts as a crash. When the worker reports
+that the memory limit stopped an operation (below), the call rejects with a `memory-limit`
+KernelError, the worker is terminated, every other pending call rejects, and the next call starts
+a fresh worker, as after a timeout (not counted toward the crash limit). Start-up failures are
 final for the session, each with its own message: the worker script failing to load or erroring
 before `ready`, the WebAssembly module failing to start (`init-error`), or no `ready` within
 `startTimeoutMs` (default 20 s; the worker is terminated). Pending calls then reject as
 `unavailable` and `ready()` reports the reason.
 The constructor takes `createWorker` so tests inject a fake worker
-(`tests/model3d-kernel.test.ts`).
+(`tests/model3d-kernel.test.ts`; `tests/model3d-memory-limit.test.ts` runs the real worker request
+handler, worker-core.ts, behind one).
+
+What the worker is and is not: a dedicated worker is a thread of the renderer process with its
+own JavaScript global scope. It keeps long Booleans off the UI thread and gives the kernel its
+own CSP (below), but it is **not** memory or crash isolation: its WebAssembly memory counts
+against the renderer process, and anything that brings the renderer process down (for example the
+operating system refusing memory to it) takes the editor with it. What bounds the kernel inside
+that process is the hard 1 GiB WebAssembly memory limit, the per-call timeout and the restart
+policy; an exception or abort inside the module becomes a KernelError and nothing is applied.
+
+### Memory limit
+
+`KERNEL_MEMORY_LIMIT_BYTES` (memory-guard.ts) is 1 GiB (16,384 WebAssembly pages), a single
+exported constant. Which mechanism applies: manifold.wasm defines and **exports** its own linear
+memory (256 pages initial, 65,536 maximum) and imports none, so it cannot be instantiated with a
+smaller `new WebAssembly.Memory({ initial, maximum })`. Its heap grows only from JavaScript:
+Emscripten's `emscripten_resize_heap` (a function the module imports) calls `growMemory`, which
+calls `wasmMemory.grow(pages)` (`tests/model3d-wasm-memory.test.ts` checks both facts in the
+shipped files). So the worker replaces `WebAssembly.Memory.prototype.grow` before the module is
+instantiated and refuses any growth past the limit. The refused `grow` throws; Emscripten
+catches that and retries with less headroom (1.2x, then 1.1x, then 1.05x the current size, never
+below what was asked for). If a retry fits under the limit the allocation succeeds and the
+operation completes normally, without a restart (`tests/model3d-memory-limit.test.ts` runs a real
+Boolean under a limit one page below its last 1.2x step). If every attempt is refused, the
+allocator returns null and the C++ code fails (in practice a `RuntimeError: memory access out of
+bounds`; the module is then treated as unusable). The limit stops a request when the operation
+threw after a refused growth, or when its last growth attempt was refused (`memoryLimitStopped`);
+such a request is answered with `memoryLimit`, the worker refuses further requests, and the main
+thread replaces it. The user sees: "The 3D kernel reached its 1 GiB memory limit; the
+operation was abandoned and the model is unchanged." Not covered: a `memory.grow` instruction
+executed by the module itself (Emscripten JS-runtime builds do not use one for the heap; the test
+above fails if manifold.js stops growing through `wasmMemory.grow`). The in-process kernel applies
+the same guard on request (`new ManifoldDirectKernel({ memoryLimitBytes })`, scoped to each
+synchronous Boolean) and reports `lastPeakBytes`.
+
+Peak WebAssembly memory (`memory.buffer.byteLength`), each operation on a fresh module under the
+1 GiB guard, in-process in Node 22 on Windows x64 (`JCAD_BENCH=1` run of
+`tests/model3d-memory-limit.test.ts`, 2026-10-12; 16 MiB is the initial size, i.e. no growth):
+
+| Operation | Operands (triangles) | Peak | Outcome |
+| --- | --- | --- | --- |
+| Union of two half-overlapping unit cubes | 12 + 12 | 16 MiB | ok |
+| Union / subtraction / intersection of two 50,000-triangle spheres (perf case) | 50,000 + 50,000 | 58 / 40 / 33 MiB | ok |
+| Enclosure fixture build (13 Booleans, one module) | 1,964 triangles in the results | 16 MiB | ok |
+| Cable-tray fixture build (2 Booleans) | 624 triangles in the results | 16 MiB | ok |
+| Union, two 499,712-triangle rows of 8 spheres (the per-solid cap is 500,000) | 499,712 + 499,712 | 503 MiB | result refused by the triangle budget (706,112) |
+| Subtraction, same operands | 499,712 + 499,712 | 419 MiB | result refused by the budget (517,152) |
+| Intersection, same operands | 499,712 + 499,712 | 349 MiB | ok (328,192 out) |
+| Subtract a 2,000-triangle sphere from a 499,712-triangle row | 499,712 + 2,000 | 291 MiB | ok |
+| Union, two 249,856-triangle rows | 249,856 + 249,856 | 252 MiB | ok (353,056 out) |
+| Union, two 50,000-triangle spheres, second turned 0.01 rad (facets cross nearly everywhere) | 50,000 + 50,000 | 207 MiB | ok (498,004 out) |
+| Union, the same crossing case with 124,928- / 249,856-triangle rows | 124,928 x 2 / 249,856 x 2 | 452 / 876 MiB | result refused by the budget (1,246,854 / 2,493,516) |
+| Union / subtraction / intersection, crossing case with 499,712-triangle rows | 499,712 + 499,712 | 1,001 / 1,001 / 995 MiB | **stopped by the 1 GiB limit** (memory-limit, after 13-15 s) |
+
+So the limit stops only the crossing case at the operand cap. Without the limit (a one-off run
+with a 4 GiB guard) that union needs 1,806 MiB and 28.6 s and returns 4,986,730 triangles, ten
+times the per-solid budget, so it would be refused afterwards anyway (and its 28.6 s also exceeds
+the 20 s timeout). No operation measured here whose result fits the budget fails at 1 GiB.
+Worker timings differ (the worker reached the limit in about 3 s with the allocation probe of
+scripts/e2e-3d-security.mjs).
 
 ## How the WebAssembly ships and loads
 
@@ -116,22 +181,40 @@ The constructor takes `createWorker` so tests inject a fake worker
   dependencies lose their `import.meta.url`).
 - Instantiation uses `WebAssembly.instantiateStreaming` and falls back to an `ArrayBuffer` if the
   response is not served as `application/wasm`.
-- No change to `vite.config.ts` was needed: `worker: { format: 'es' }` already produces module
-  worker chunks, and no alias is involved. The build prints a harmless warning that `node:module`
-  was externalised: manifold.js imports it only on its Node code path.
-- `index.html` (CSP) and `electron/*.cjs` are unchanged. A dedicated worker loaded from its own
-  URL is not governed by the document's meta CSP; it gets only what its own response carries
-  (nothing), so WebAssembly compiles there while it stays blocked on the renderer main thread.
-- Until a 3D command imports `createDefaultKernel`, `npm run build` contains no kernel code and
-  no wasm (the main bundle is byte-identical to the build without this module). Verified with a
-  probe entry built with the production config: output `manifold-<hash>.wasm` (541 KB),
-  `manifold.worker-<hash>.js` (46 KB) and a lazily loaded `manifold-core-<hash>.js` (46 KB, the
-  in-process fallback, never loaded where `Worker` exists).
+- For the Electron renderer build, `vite.config.ts` emits every worker bundle (entry and chunks)
+  as `assets/worker/<name>-<hash>.js` (`worker.rollupOptions.output`), so worker scripts are
+  recognisable by path. `npm run build` now contains (the 3D commands import
+  `createDefaultKernel`): `assets/worker/manifold.worker-<hash>.js` (48 KB, self-contained:
+  manifold.js is bundled into it, it imports no other chunk), `assets/manifold-<hash>.wasm`
+  (541 KB, referenced from the worker as `../manifold-<hash>.wasm`) and a lazily loaded
+  `assets/manifold-core-<hash>.js` (47 KB, the in-process fallback, never loaded where `Worker`
+  exists). The build prints a harmless warning that `node:module` was externalised: manifold.js
+  imports it only on its Node code path.
+- Worker CSP (docs/SECURITY-REVIEW.md E-19): `index.html`'s renderer CSP is unchanged. A
+  dedicated worker loaded from its own URL is not governed by the document's meta CSP but by its
+  own response's policy, so the `jcad://app/` protocol handler (`electron/renderer-origin.cjs`)
+  sends `WORKER_CSP` = `default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; connect-src
+  'self'; base-uri 'none'` with every `assets/worker/*.js` response (`assetResponseHeaders`, and
+  only those): bundled scripts, fetching the bundled wasm and compiling it are allowed, everything
+  else (remote fetch or import, images, fonts, frames, nested workers) is refused. WebAssembly
+  stays blocked on the renderer main thread.
+- The browser edition (`vite build --mode site`, GitHub Pages) and the Vite dev server keep
+  Vite's default layout (`assets/manifold.worker-<hash>.js`; the site build is otherwise
+  unchanged) and serve the worker without that header: static hosting cannot set response headers.
+  There the worker runs with no CSP of its own (the site page's relaxed policy already allows
+  `'wasm-unsafe-eval'` for LibreDWG); the worker CSP is an Electron-only control.
 
 Verification (2026-10-12, headless Chromium from Playwright, the renderer's exact meta CSP served
 over HTTP): `ready()` reports Manifold 3.5.4; union of two unit cubes = 1.5; main-thread
 `WebAssembly.compile` is refused by the CSP as expected. The same probe works under the Vite dev
-server. Not yet run inside the packaged Electron app (no command uses the kernel).
+server.
+
+In Electron, `npm run e2e:3d-security` (scripts/e2e-3d-security.mjs, outside CI) checks the
+worker Boolean, the worker CSP header and its effect inside the worker, the unchanged page policy
+and the memory limit with a restart; docs/3D-PACKAGED-TEST.md has the commands. It passed
+(19/19 checks; 20/20 with the fuse check of a packaged build) on 2026-10-12 against the development build (`electron .`) and against an
+unpacked Windows test build (`npm run dist:test:no-dwg`: ASAR, test fuses, no DWG writer); not yet
+against an installed release build.
 
 Measured times (Windows x64):
 
@@ -147,9 +230,10 @@ More numbers, budgets and the memory measured for the largest operands: docs/PER
 
 - No UI: the EXTRUDE / REVOLVE / UNION / SUBTRACT / INTERSECT commands, error display and kernel
   start-up on flag enable are milestone 3 UI work.
-- Security review: docs/SECURITY-REVIEW.md "Experimental 3D track" (E-19 to E-24). Open there:
-  a CSP header for worker scripts (E-19) and an engine-enforced cap below the module's declared
-  4 GiB maximum memory (E-20); neither is verified in the packaged Electron app yet.
+- Security review: docs/SECURITY-REVIEW.md "Experimental 3D track" (E-19 to E-24). E-19 (worker
+  CSP header) and E-20 (1 GiB WebAssembly memory limit) are mitigated and verified in the
+  development build and an unpacked Windows test build; not yet in an installed, signed release
+  build.
 - `manifold-3d` is a `devDependency`: Vite bundles manifold.js into the worker chunk and emits
   `manifold.wasm` into `dist/assets`, so the installer needs nothing from `node_modules`. This also
   keeps the package's CLI dependencies (glTF tools, `sharp` with native image libraries,

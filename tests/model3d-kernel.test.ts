@@ -15,7 +15,7 @@ import { KernelError, UnavailableKernel, finishResult, packMesh, prepareOperands
 import { MANIFOLD_VERSION, loadManifold, manifoldBoolean } from '../src/model3d/kernel/manifold-core';
 import { ManifoldDirectKernel } from '../src/model3d/kernel/manifold-direct';
 import { ManifoldWorkerKernel, type WorkerLike } from '../src/model3d/kernel/manifold-kernel';
-import type { WorkerMessage, WorkerRequest } from '../src/model3d/kernel/protocol';
+import type { WorkerBooleanRequest, WorkerMessage, WorkerRequest } from '../src/model3d/kernel/protocol';
 
 const cube = (dx = 0, dy = 0, dz = 0, s = 1): Mesh3D => transformMesh(boxMesh(s, s, s), mat4Translation(dx, dy, dz));
 const open = (m: Mesh3D): Mesh3D => ({ positions: m.positions, indices: m.indices.slice(3) });
@@ -188,10 +188,10 @@ class FakeWorker implements WorkerLike {
   onmessageerror: ((event: MessageEvent) => void) | null = null;
   terminated = false;
   /** What the worker received, and the sender's (now detached) transfer list. */
-  readonly posted: { msg: WorkerRequest; transfer: Transferable[] }[] = [];
+  readonly posted: { msg: WorkerBooleanRequest; transfer: Transferable[] }[] = [];
   /** Buffers the worker transferred back (detached after sending). */
   readonly sent: ArrayBuffer[] = [];
-  private held: WorkerRequest[] = [];
+  private held: WorkerBooleanRequest[] = [];
 
   constructor(private readonly mode: Mode) {
     setTimeout(() => {
@@ -202,6 +202,7 @@ class FakeWorker implements WorkerLike {
   }
 
   postMessage(message: WorkerRequest, transfer: Transferable[]): void {
+    if (!('a' in message)) throw new Error('this fake answers Boolean requests only');
     const msg = structuredClone(message, { transfer });
     this.posted.push({ msg, transfer });
     if (this.mode === 'hang' || this.mode === 'silent') return;
@@ -240,7 +241,7 @@ class FakeWorker implements WorkerLike {
     this.onmessage?.(new MessageEvent('message', { data: cloned }));
   }
 
-  private async reply(msg: WorkerRequest): Promise<void> {
+  private async reply(msg: WorkerBooleanRequest): Promise<void> {
     const wasm = await loadManifold();
     const out = manifoldBoolean(wasm, msg.op, msg.a, msg.b);
     this.sent.push(out.positions.buffer as ArrayBuffer, out.indices.buffer as ArrayBuffer);
@@ -322,7 +323,7 @@ describe('Manifold worker kernel transport', () => {
     const second = k.boolean('union', cube(), cube(0.5), { timeoutMs: 10_000 });
     expect(workers[0]!.posted).toHaveLength(0); // queued until ready
     const w0 = workers[0]!;
-    w0.postMessage = (message) => { w0.posted.push({ msg: message, transfer: [] }); };
+    w0.postMessage = (message) => { w0.posted.push({ msg: message as WorkerBooleanRequest, transfer: [] }); };
     w0.readyNow();
     expect(w0.posted.map((p) => p.msg.id)).toEqual([1, 2]);
     expect((await rejection(first)).message).toMatch(/took longer than/);
