@@ -390,7 +390,8 @@ function comparePairs(record, actual, sourcePairs, targetPairs, source, target, 
 }
 
 const tableProperties = new Map([['APPID', [70]], ['LTYPE', [70]], ['DIMSTYLE', [70]], ['BLOCK_RECORD', [70, 280, 281]], ['LAYER', [70]], ['STYLE', [70, 71, 42]]]);
-const vportScalars = new Set([2, 70, 10, 20, 11, 21, 12, 22, 13, 23, 14, 24, 15, 25, 16, 26, 36, 17, 27, 37, 40, 41, 42, 43, 44, 50, 51, 71, 72, 73, 74, 75, 76, 77, 78, 79, 110, 120, 130, 111, 121, 131, 112, 122, 132, 141, 142, 143, 144, 145, 146, 281, 65, 348, 60, 61, 292, 63, 421, 431, 64, 441, 340, 341, 345, 346]);
+// Autodesk VPORT group282 is the default lighting type (0 one distant light, 1 two).
+const vportScalars = new Set([2, 70, 10, 20, 11, 21, 12, 22, 13, 23, 14, 24, 15, 25, 16, 26, 36, 17, 27, 37, 40, 41, 42, 43, 44, 50, 51, 71, 72, 73, 74, 75, 76, 77, 78, 79, 110, 120, 130, 111, 121, 131, 112, 122, 132, 141, 142, 143, 144, 145, 146, 281, 65, 348, 60, 61, 292, 282, 63, 421, 431, 64, 441, 340, 341, 345, 346]);
 function tablePayload(record) {
   const metadata = new Set(entityMetadata(record)); let common = true;
   return record.groups.filter(pair => {

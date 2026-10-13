@@ -198,6 +198,19 @@ describe('independent raw DWG metadata postflight', () => {
     expect(() => verify(source, source.replace('150\r\nopaque', '150\r\nlost'))).toThrow(/VPORT.*unmodeled.*changed/);
     expect(() => verify(source, source.replace('12\r\n20', '12\r\n25'))).toThrow(/VPORT.*group12/);
   });
+  it.each([0, 1])('preserves explicit VPORT default lighting type%s while allowing documented scalar order', lighting => {
+    const viewport: Pair[] = record('VPORT', '2', [[330, '1'], [100, 'AcDbSymbolTableRecord'], [100, 'AcDbViewportTableRecord'], [2, '*Active'], [70, 0], [292, 1], [282, lighting], [150, 'first opaque'], [151, 'second opaque']]);
+    const source = text([...section('TABLES', [...record('TABLE', '1', [[2, 'VPORT'], [330, '0']]), ...viewport, [0, 'ENDTAB']]), [0, 'EOF']]);
+    const reordered = mutateRecord(source, 'VPORT', groups => [...groups.filter(([code]) => code !== 282), [282, lighting]]);
+    expect(verify(source, reordered).objects).toBe(0);
+    expect(() => verify(source, mutateRecord(reordered, 'VPORT', groups => changeValue(groups, 282, 1 - lighting)))).toThrow(/VPORT.*group282.*changed/);
+    expect(() => verify(source, mutateRecord(reordered, 'VPORT', groups => [...groups, [282, lighting]]))).toThrow(/VPORT.*group282 count changed/);
+    const omitted = mutateRecord(source, 'VPORT', groups => groups.filter(([code]) => code !== 282));
+    expect(() => verify(source, omitted)).toThrow(/VPORT.*group282 count changed/);
+    expect(verify(omitted, reordered).objects).toBe(0);
+    expect(() => verify(source, mutateRecord(reordered, 'VPORT', groups => [...groups, [152, 'new opaque']]))).toThrow(/VPORT.*unmodeled.*group count changed/);
+    expect(() => verify(source, mutateRecord(reordered, 'VPORT', groups => groups.map(pair => pair[0] === 150 ? [151, 'second opaque'] : pair[0] === 151 ? [150, 'first opaque'] : pair)))).toThrow(/VPORT.*unmodeled.*framing\/order/);
+  });
   it('bounds malformed projections and rejects duplicate identities rather than comparing partial data', () => {
     const source = fixture();
     expect(() => verify(source, source.slice(0, -12))).toThrow(DwgMetadataEquivalenceError);
