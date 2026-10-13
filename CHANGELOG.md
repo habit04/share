@@ -9,12 +9,12 @@ The entries for 0.1.0 to 0.3.4 were reconstructed from the Git history (commit s
 messages). The date of each version is the date of the commit that set that version number in
 `package.json`.
 
-## [0.4.9] - 2026-10-12
+## [0.4.9] - 2026-10-13
 
 ### Upgrade notes
 
-Unpublished candidate; packaged-app validation and fresh signed Windows installation
-without AutoCAD proof are pending.
+Windows installer publication requires a signed package and fresh Windows installation
+checks without AutoCAD.
 
 - This update targets Windows x64 and requires no installed AutoCAD. Its bounded metadata
   coverage includes named VIEW cameras and native FIELD relationships. Full camera coordinates
