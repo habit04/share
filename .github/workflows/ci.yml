@@ -184,6 +184,10 @@ jobs:
           node scripts/e2e-gpu-default.mjs
           node scripts/e2e-gpu-diagnostics.mjs
       - run: npm run build:gpu
+      - name: Unavailable WebGL keeps complete Canvas drawings and DXF persistence
+        run: node scripts/e2e-gpu-unavailable.mjs
+      - name: Private GPU-process failure, Canvas recovery and DXF persistence
+        run: node scripts/e2e-gpu-process.mjs
       - name: Experimental geometry, pan cache, fallback and context restoration
         run: npm run bench:gpu
       - uses: actions/upload-artifact@v4
