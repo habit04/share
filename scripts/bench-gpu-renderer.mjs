@@ -301,6 +301,7 @@ try {
         const miss = Math.max(missedForeground(images[0], images[1]), missedForeground(images[1], images[0]));
         assert.ok(miss < 0.005, `${fixture}: ${label} endpoint retains geometry within two pixels`);
         if (fixture === 'mixed-schematic') assert.equal(pixels, 0, `${fixture}: ${label} whole-view fallback matches Canvas exactly`);
+        else if (fixture !== 'dense-lines') assert.ok(pixels / (diff.width * diff.height) < 0.001, `${fixture}: ${label} endpoint retains the existing raster accuracy gate`);
         evidence = { camera, gpuFrame, imageDifferenceFraction: pixels / (diff.width * diff.height), twoPixelCoverageMissFraction: miss, untimedCameraReset: null };
       } finally {
         const reset = await page.evaluate(async (next) => {
