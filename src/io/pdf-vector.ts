@@ -59,6 +59,7 @@ import {
 import { layoutPage, type PlotOptions } from '../app/plot';
 import type { DrawingState } from '../core/document';
 import { resolveAlpha } from '../core/appearance';
+import { hasHatchGradient, linearHatchGradientPlan, hatchGradientColorRgb, hatchGradientFrameProblem } from '../core/hatch-gradient';
 
 // ---------------------------------------------------------------- page model
 
@@ -336,12 +337,18 @@ interface VectorForm {
   height: number;
 }
 
+interface GradientRes {
+  name: string;
+  colors: readonly [[number, number, number], [number, number, number]];
+}
+
 /** Content stream builder for one page. */
 class PageWriter {
   readonly ops: string[] = [];
   readonly images: ImageRes[] = [];
   readonly fonts = new Set<'F1' | 'F2'>();
   readonly forms: VectorForm[] = [];
+  readonly gradients: GradientRes[] = [];
   readonly alphas = new Set<number>();
   private alpha = 255;
   private stroke = '';
@@ -730,7 +737,7 @@ class PageWriter {
 
   private hatch(e: HatchEntity): void {
     const geo = hatchGeometry(e);
-    if (e.solid || geo.dense) {
+    if (e.solid || hasHatchGradient(e) || geo.dense) {
       const parts: string[] = [];
       for (const poly of geo.polys) {
         parts.push(`${this.P(poly[0]!)} m`);
@@ -738,6 +745,29 @@ class PageWriter {
         parts.push('h');
       }
       if (!parts.length) return;
+      const gradient = linearHatchGradientPlan(e, geo.polys);
+      if (gradient) {
+        const name = `G${this.gradients.length + 1}`;
+        const colors = gradient.colors.map((color) => {
+          const rgb = hatchGradientColorRgb(color, (aci) => {
+            const values = objectRgb(aci, undefined, undefined);
+            return (Math.round(values[0] * 255) << 16) | (Math.round(values[1] * 255) << 8) | Math.round(values[2] * 255);
+          })!;
+          return plotColor([((rgb >> 16) & 255) / 255, ((rgb >> 8) & 255) / 255, (rgb & 255) / 255], this.style);
+        }) as [[number, number, number], [number, number, number]];
+        const origin = this.pt(gradient.frame.origin);
+        const x = g.sub(this.pt(g.add(gradient.frame.origin, gradient.frame.x)), origin);
+        const y = g.sub(this.pt(g.add(gradient.frame.origin, gradient.frame.y)), origin);
+        if (hatchGradientFrameProblem({ origin, x, y })) throw new Error('Cannot plot hatch gradient: its page transform exceeds finite or nondegenerate coordinate limits.');
+        const matrix = [x.x, x.y, y.x, y.y, origin.x, origin.y].map(n);
+        const values = matrix.map(Number);
+        const encoded = { x: { x: values[0]!, y: values[1]! }, y: { x: values[2]!, y: values[3]! }, origin: { x: values[4]!, y: values[5]! } };
+        if (matrix.some((value) => /e/i.test(value)) || hatchGradientFrameProblem(encoded)) throw new Error('Cannot plot hatch gradient: its page transform exceeds native PDF numeric precision.');
+        this.gradients.push({ name, colors });
+        this.ops.push(`q ${parts.join(' ')} W* n ${matrix.join(' ')} cm /${name} sh Q`);
+        this.pathOps += 1;
+        return;
+      }
       parts.push('f*');
       this.ops.push(parts.join(' '));
       this.pathOps += 1;
@@ -873,6 +903,8 @@ export interface RenderedPage {
   forms?: readonly VectorForm[];
   /** ExtGState opacity bytes used by both strokes and fills. */
   alphas?: ReadonlySet<number>;
+  /** Smooth native axial gradient resources, clipped by the hatch's even-odd boundary. */
+  gradients?: readonly GradientRes[];
   pathOps: number;
 }
 
@@ -881,7 +913,7 @@ export function renderPdfPages(pages: readonly PdfPageSpec[], ctx: PdfDrawingCon
   return pages.map((page) => {
     const w = new PageWriter(ctx, style, page);
     w.run();
-    return { width: page.width, height: page.height, content: w.ops.join('\n'), images: w.images, fonts: w.fonts, forms: w.forms, alphas: w.alphas, pathOps: w.pathOps };
+    return { width: page.width, height: page.height, content: w.ops.join('\n'), images: w.images, fonts: w.fonts, forms: w.forms, alphas: w.alphas, gradients: w.gradients, pathOps: w.pathOps };
   });
 }
 
@@ -932,7 +964,12 @@ export function assembleVectorPdf(rendered: readonly RenderedPage[], title = 'Dr
       set(num, `<< /Type /ExtGState /CA ${n(alpha / 255)} /ca ${n(alpha / 255)} /BM /Normal >>`);
       return `/A${alpha} ${num} 0 R`;
     });
-    const res = `<< /ProcSet [/PDF /Text /ImageC]${fonts.length ? ` /Font << ${fonts.join(' ')} >>` : ''}${xobjects.length ? ` /XObject << ${xobjects.join(' ')} >>` : ''}${alphaResources.length ? ` /ExtGState << ${alphaResources.join(' ')} >>` : ''} >>`;
+    const gradients = (pg.gradients ?? []).map((gradient) => {
+      const num = reserve();
+      set(num, `<< /ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 0 1 0] /Domain [0 1] /Extend [true true] /Function << /FunctionType 2 /Domain [0 1] /C0 [${gradient.colors[0].map(n).join(' ')}] /C1 [${gradient.colors[1].map(n).join(' ')}] /N 1 >> >>`);
+      return `/${gradient.name} ${num} 0 R`;
+    });
+    const res = `<< /ProcSet [/PDF /Text /ImageC]${fonts.length ? ` /Font << ${fonts.join(' ')} >>` : ''}${xobjects.length ? ` /XObject << ${xobjects.join(' ')} >>` : ''}${alphaResources.length ? ` /ExtGState << ${alphaResources.join(' ')} >>` : ''}${gradients.length ? ` /Shading << ${gradients.join(' ')} >>` : ''} >>`;
     set(pageNum, `<< /Type /Page /Parent ${pagesObj} 0 R /MediaBox [0 0 ${n(pg.width)} ${n(pg.height)}] /Resources ${res} /Contents ${contentNum} 0 R >>`);
     const packed = compressed?.[i] ?? null;
     const body = packed ?? enc.encode(pg.content);

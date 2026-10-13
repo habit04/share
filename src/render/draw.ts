@@ -28,6 +28,7 @@ import { textStyleOf, withTextStyle } from '../io/encoding';
 import { findLinetype, effectiveLinetype, dashArray, type Linetype } from '../core/linetypes';
 import { annotativeEntity } from '../core/layouts';
 import { resolveAlpha } from '../core/appearance';
+import { hasHatchGradient, linearHatchGradientPlan, linearHatchGradientAxis, hatchGradientColorRgb } from '../core/hatch-gradient';
 
 export interface Transform {
   toScreen(p: Point): Point;
@@ -336,12 +337,30 @@ function tracePoints(ctx: CanvasRenderingContext2D, pts: readonly Point[], tf: T
   if (close) ctx.closePath();
 }
 
-function drawHatch(ctx: CanvasRenderingContext2D, e: HatchEntity, tf: Transform, style: DrawStyle): void {
+function drawHatch(ctx: CanvasRenderingContext2D, e: HatchEntity, tf: Transform, layers: readonly Layer[], style: DrawStyle): void {
   const geo = hatchGeometry(e);
-  if (e.solid || geo.dense) {
+  if (e.solid || hasHatchGradient(e) || geo.dense) {
     ctx.beginPath();
     for (const poly of geo.polys) tracePoints(ctx, poly, tf, true);
     ctx.save();
+    const gradient = !style.strokeOverride && linearHatchGradientPlan(e, geo.polys);
+    if (gradient) {
+      const axis = linearHatchGradientAxis(gradient.frame);
+      if (axis) {
+        const start = tf.toScreen(axis.start), end = tf.toScreen(axis.end);
+        if ([start.x, start.y, end.x, end.y].every(Number.isFinite) && g.dist(start, end) > 0) {
+          const fill = ctx.createLinearGradient(start.x, start.y, end.x, end.y);
+          gradient.colors.forEach((color, i) => {
+            const rgb = hatchGradientColorRgb(color, (aci) => {
+              const css = resolveColor({ ...e, color: aci, trueColor: undefined }, layers);
+              return parseInt(css.slice(1), 16);
+            });
+            fill.addColorStop(i, trueColorCss(rgb!));
+          });
+          ctx.fillStyle = fill;
+        }
+      }
+    }
     if (geo.dense) ctx.globalAlpha *= 0.35;
     // Selected: a lighter fill so the dashed boundary shows through.
     else if (style.dashed) ctx.globalAlpha *= 0.55;
@@ -621,7 +640,7 @@ function drawGeometry(
       break;
     }
     case 'hatch':
-      drawHatch(ctx, e, tf, style);
+      drawHatch(ctx, e, tf, layers, style);
       break;
     case 'leader':
       drawParts(ctx, leaderParts(e).filter((p) => !style.hidden?.has(p.layer) && layers.find((l) => l.name === p.layer)?.visible !== false), tf, layers, lookup, style);
