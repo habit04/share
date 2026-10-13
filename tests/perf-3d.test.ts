@@ -41,7 +41,7 @@ const FACTOR = Number(process.env.JCAD_PERF_FACTOR ?? '1') || 1;
 const BUDGET = {
   primitives: 50,
   extrude: 50,
-  revolve: 150,
+  revolve: 250,
   closed500k: 400,
   weld500k: 1500,
   weldExact500k: 400,

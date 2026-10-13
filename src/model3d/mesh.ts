@@ -260,11 +260,13 @@ export function meshSurfaceArea(mesh: Mesh3D): number {
  * and each has exactly one opposite edge (j -> i). Vertex pinches (two surfaces touching at a
  * single shared vertex) are not detected, and coincident but unwelded vertices count as different
  * vertices, so weld first. Says nothing about outward vs inward orientation (use the sign of
- * `meshVolume`) or self-intersection.
+ * `meshVolume`) or self-intersection. A mesh with an index that is not an integer in
+ * [0, vertex count) is not closed.
  */
 export function meshIsClosed(mesh: Mesh3D): boolean {
   const idx = mesh.indices;
   if (idx.length < 3) return false;
+  const vertexCount = meshVertexCount(mesh);
   // Open-addressing hash set of directed edges (from, to) in typed arrays: linear in the
   // triangle count, about 0.1 s for 500,000 triangles (docs/PERFORMANCE.md "3D").
   const edgeCount = 3 * Math.floor(idx.length / 3);
@@ -280,8 +282,8 @@ export function meshIsClosed(mesh: Mesh3D): boolean {
   for (let t = 0; t + 2 < idx.length; t += 3) {
     const a = idx[t]!, b = idx[t + 1]!, c = idx[t + 2]!;
     if (a === b || b === c || a === c) return false;
-    // Not a vertex index at all (an unvalidated mesh): not closed.
-    if ((a | 0) !== a || (b | 0) !== b || (c | 0) !== c || a < 0 || b < 0 || c < 0) return false;
+    // Not a vertex of this mesh (an unvalidated mesh): not closed.
+    if ((a | 0) !== a || (b | 0) !== b || (c | 0) !== c || a < 0 || b < 0 || c < 0 || a >= vertexCount || b >= vertexCount || c >= vertexCount) return false;
     for (let e = 0; e < 3; e++) {
       const i = e === 0 ? a : e === 1 ? b : c, j = e === 0 ? b : e === 1 ? c : a;
       const s = slot(i, j);

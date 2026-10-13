@@ -173,7 +173,7 @@ with a 50 ms floor. "Every run" cases run in `npm test`, the others with `npm ru
 | --- | --- | --- | --- |
 | Tessellate all six primitives at 256 segments x 128 rings (132,628 triangles) | 5.6 - 6.1 ms (12.7 ms with the suite running in parallel) | 50 | every run |
 | Extrude a 200-vertex profile with 10 holes of 16 vertices (1,476 triangles) | 1.2 - 1.9 ms (5.2 ms in the suite) | 50 | every run |
-| Revolve a 100-vertex profile at 256 segments (51,200 triangles) | 8.8 - 13.8 ms (41 ms in the suite) | 150 | every run |
+| Revolve a 100-vertex profile at 256 segments (51,200 triangles; since the review including a `meshIsClosed` check) | 19 - 30 ms with the check (8.8 - 13.8 ms before it; 21 - 41 ms with the suite in parallel) | 250 | every run |
 | `meshIsClosed`, 499,712 triangles | 111 - 124 ms (754 ms before the change below) | 400 | bench:3d |
 | `weldVertices` (tolerance 1e-9) of an unwelded soup of 499,712 triangles / 1.5 M vertices | 306 - 508 ms (6.1 - 9.1 s before) | 1,500 | bench:3d |
 | `weldVertices` exact (tolerance 0), same soup | 85 - 130 ms | 400 | bench:3d |

@@ -86,6 +86,12 @@ name); the geometry is unaffected, and the Save command logs how many objects we
   are all rejected. A rejected or unreadable history keeps the solid with
   `{"kind": "mesh", "source": "imported"}` and adds a **simplified** item to the import report
   ("JCad 3D construction history ignored (...)"). A malformed or duplicate id gets a fresh id.
+- Tessellation counts (`segments` of cylinders, cones, spheres, tori and revolves, `rings` of
+  spheres and tori) must only be finite numbers: the reader does not range-check them (a stored
+  `segments: 1e9` is accepted), because evaluation clamps them (3..256 segments, 2..128 rings, at
+  least 3 rings around a torus tube) and the stored mesh, not the history, is what is shown. Until
+  milestone 6 the reader refused `segments` on a revolve as an unknown field, so revolve histories
+  written by earlier builds of this branch reopened as plain meshes.
 - `v` greater than 1 (a newer JCad): the solid is kept as a mesh (id and name when they look
   valid) and the report gets an **unsupported** item ("written by a newer JCad").
 - Polyfaces written by JCad (with `JCAD_3D`) are read whatever the experimental 3D setting is,

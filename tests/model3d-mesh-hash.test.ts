@@ -6,7 +6,7 @@
  * random meshes: jittered and duplicated vertices, -0, degenerate and repeated triangles, open and
  * inconsistently wound meshes, and both tolerance paths of the weld.
  */
-import { describe, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { len3, mat4Translation, sub3 } from '../src/model3d/math';
 import { type Mesh3D, meshBounds, meshIsClosed, meshVertexCount, mergeMeshes, transformMesh, weldVertices } from '../src/model3d/mesh';
 import { boxMesh, cylinderMesh, sphereMesh, torusMesh } from '../src/model3d/primitives';
@@ -149,5 +149,20 @@ describe('hash-table weldVertices and meshIsClosed match the previous implementa
   it('refuses meshes whose indices are not vertex numbers', () => {
     check(!meshIsClosed({ positions: [0, 0, 0, 1, 0, 0, 0, 1, 0], indices: [0, 1, -1] }), 'negative index');
     check(!meshIsClosed({ positions: [0, 0, 0, 1, 0, 0, 0, 1, 0], indices: [0, 1, 1.5] }), 'fractional index');
+    // Indices beyond the vertex count: the previous implementation said "not closed" too.
+    const outOfRange = { positions: [], indices: [0, 1, 2, 0, 2, 1] };
+    expect(referenceClosed(outOfRange)).toBe(false);
+    expect(meshIsClosed(outOfRange)).toBe(false);
+    expect(meshIsClosed({ positions: [0, 0, 0, 1, 0, 0, 0, 1, 0], indices: [0, 1, 3, 0, 3, 1] })).toBe(false);
+  });
+
+  it('differs from the previous weld only for NaN coordinates (documented, not equivalent)', () => {
+    // Callers weld validated meshes only (validateMesh refuses non-finite coordinates). The old
+    // exact weld keyed vertices by their text, so two NaN vertices ("NaN,0,0") were merged; the
+    // new one compares values, and NaN equals nothing, so they stay apart. Finite inputs,
+    // including -0 and 0, give identical results (the property above).
+    const nanSoup: Mesh3D = { positions: [NaN, 0, 0, 1, 0, 0, 0, 1, 0, NaN, 0, 0, 0, 1, 0, 1, 0, 0], indices: [0, 1, 2, 3, 4, 5] };
+    expect(meshVertexCount(referenceWeld(nanSoup, 0))).toBe(3);
+    expect(meshVertexCount(weldVertices(nanSoup, 0))).toBe(4);
   });
 });

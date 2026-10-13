@@ -14,7 +14,8 @@
  *   import-report item (so nothing disappears silently). Only a file opened with `recover` may lose
  *   its last, incomplete record, and then the report says the file was recovered.
  * - `evaluateFeature` either gives a closed, outward, in-budget mesh or rejects with one of the
- *   documented errors: FeatureEvalError, RangeError, GeometryBudgetError or KernelError.
+ *   documented errors: Model3DInputError (FeatureEvalError is one), GeometryBudgetError or
+ *   KernelError. A plain RangeError, TypeError or Error is a failure.
  */
 import { afterAll, describe, expect, it } from 'vitest';
 import { Drawing, type DrawingState } from '../src/core/document';
@@ -36,6 +37,8 @@ import type { Feature3D, Profile3D, Solid3D } from '../src/model3d/types';
 import { Rng, check, fuzz, fuzzSync, fuzzTimeout } from './helpers/fuzz';
 
 const RUNS = 2000;
+/** Replaying one seed (FUZZ_SEED): the outcome-coverage counts below do not apply. */
+const REPLAY = !!process.env.FUZZ_SEED;
 
 // ------------------------------------------------------------------ corpus
 
@@ -183,6 +186,14 @@ function mutatePayloadJson(rng: Rng, json: string): string {
   return text;
 }
 
+/** `pairs.splice(at, remove, ...items)` without spreading (tens of thousands of 1-character chunks overflow the call stack). */
+function spliceIn(pairs: Pair[], at: number, remove: number, items: readonly Pair[]): void {
+  const tail = pairs.slice(at + remove);
+  pairs.length = at;
+  for (const item of items) pairs.push(item);
+  for (const item of tail) pairs.push(item);
+}
+
 /** Replace the JCAD_3D data groups of the POLYLINE record at `at` with chunks of `payload`. */
 function setPayload(rng: Rng, pairs: Pair[], at: number, payload: string): void {
   let i = at + 1;
@@ -193,7 +204,7 @@ function setPayload(rng: Rng, pairs: Pair[], at: number, payload: string): void 
   const size = rng.pick([250, 250, 255, 256, 400, 1]);
   const chunks: Pair[] = [];
   for (let k = 0; k < payload.length; k += size) chunks.push(['1000', payload.slice(k, k + size)]);
-  pairs.splice(i + 1, j - i - 1, ...chunks);
+  spliceIn(pairs, i + 1, j - i - 1, chunks);
 }
 
 /** The joined 1000 strings after `1001 JCAD_3D` in the record at `at`, or null. */
@@ -258,7 +269,7 @@ function mutate(rng: Rng, pairs: Pair[], payloads: string[]): Mutation {
       if (kind === 0) { // the JCad data twice
         let j = i + 1;
         while (j < hi && pairs[j]![0] === '1000') j++;
-        pairs.splice(j, 0, ...pairs.slice(i, j).map((p) => [...p] as Pair));
+        spliceIn(pairs, j, 0, pairs.slice(i, j).map((p) => [...p] as Pair));
       } else if (kind === 1) pairs.splice(rng.int(i + 1, i + 3), 0, ['1001', 'ACAD'], ['1000', 'x']);
       else if (kind === 2) pairs.splice(rng.int(i + 1, i + 3), 0, [rng.pick(['1002', '1040', '1070', '1005', '1010']), rng.pick(['{', '1.5', 'NaN', '}', 'abc'])]);
       else if (kind === 3) pairs.splice(i, 0, ['1001', 'OTHER_APP'], ['1000', 'data']);
@@ -286,11 +297,11 @@ function mutate(rng: Rng, pairs: Pair[], payloads: string[]): Mutation {
       const [s, e] = rng.pick(inner);
       const kind = rng.int(0, 2);
       if (kind === 0) pairs.splice(s, e - s);
-      else if (kind === 1) pairs.splice(e, 0, ...pairs.slice(s, e).map((p) => [...p] as Pair));
+      else if (kind === 1) spliceIn(pairs, e, 0, pairs.slice(s, e).map((p) => [...p] as Pair));
       else {
         const [s2, e2] = rng.pick(inner);
         const moved = pairs.splice(s2, e2 - s2);
-        pairs.splice(Math.min(s, pairs.length), 0, ...moved);
+        spliceIn(pairs, Math.min(s, pairs.length), 0, moved);
       }
       break;
     }
@@ -400,10 +411,10 @@ describe('fuzzing JCAD_3D payloads and polyface records', () => {
     });
     console.log(`fuzz model3d-dxf-mutation outcomes: ${JSON.stringify(Object.fromEntries(tally))}`);
     // The mutations must actually reach the interesting paths, not just break the file.
-    expect(tally.get('fewer or more solids') ?? 0).toBeGreaterThan(50);
-    expect(tally.get('six solids') ?? 0).toBeGreaterThan(200);
-    expect(tally.get('payload:bad-feature') ?? 0).toBeGreaterThan(50);
-    expect(tally.get('payload:invalid') ?? 0).toBeGreaterThan(20);
+    if (!REPLAY) expect(tally.get('fewer or more solids') ?? 0).toBeGreaterThan(50);
+    if (!REPLAY) expect(tally.get('six solids') ?? 0).toBeGreaterThan(200);
+    if (!REPLAY) expect(tally.get('payload:bad-feature') ?? 0).toBeGreaterThan(50);
+    if (!REPLAY) expect(tally.get('payload:invalid') ?? 0).toBeGreaterThan(20);
   }, fuzzTimeout());
 
   it('decodeSolidPayload never throws on mutated payload text', () => {
@@ -491,7 +502,7 @@ function mutateFeature(rng: Rng, root: Feature3D): unknown {
   return copy;
 }
 
-/** The documented errors (src/model3d/errors.ts); a stack overflow RangeError does not count. */
+/** The documented evaluation errors (src/model3d/errors.ts): Model3DInputError, GeometryBudgetError, KernelError. */
 const DOCUMENTED = (err: unknown): boolean => isModel3DUserError(err);
 
 describe('fuzzing Feature3D trees through evaluateFeature', () => {
@@ -515,9 +526,9 @@ describe('fuzzing Feature3D trees through evaluateFeature', () => {
       }
     });
     console.log(`fuzz model3d-feature-eval outcomes: ${JSON.stringify(Object.fromEntries(tally))}`);
-    expect(tally.get('mesh') ?? 0).toBeGreaterThan(300);
-    expect(tally.get('KernelError') ?? 0).toBeGreaterThan(10);
-    expect(tally.get('RangeError') ?? 0).toBeGreaterThan(100);
-    expect(tally.get('FeatureEvalError') ?? 0).toBeGreaterThan(50);
+    if (!REPLAY) expect(tally.get('mesh') ?? 0).toBeGreaterThan(300);
+    if (!REPLAY) expect(tally.get('KernelError') ?? 0).toBeGreaterThan(10);
+    if (!REPLAY) expect(tally.get('Model3DInputError') ?? 0).toBeGreaterThan(100);
+    if (!REPLAY) expect(tally.get('FeatureEvalError') ?? 0).toBeGreaterThan(50);
   }, fuzzTimeout());
 });

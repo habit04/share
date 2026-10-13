@@ -563,9 +563,12 @@ Vite into `dist/assets`); `index.html:6` keeps the renderer CSP `default-src 'se
 the creating document's `<meta>` policy. The `jcad://` protocol handler
 (`electron/renderer-origin.cjs:19-29`) serves bundled files through `net.fetch(file://...)` and adds
 no headers, so the worker script carries no policy and WebAssembly compiles in the worker while
-main-thread `WebAssembly.compile` stays blocked. Verified on 2026-10-12 in headless Chromium with
-the renderer's exact meta CSP served over HTTP (docs/3D-KERNEL.md: `ready()` reports Manifold
-3.5.4, a union of two cubes gives 1.5, main-thread compile refused). **Not verified** inside the
+main-thread `WebAssembly.compile` stays blocked. This was checked **manually** once, on
+2026-10-12 during milestone 3, in headless Chromium with the renderer's exact meta CSP served over
+HTTP (docs/3D-KERNEL.md: `ready()` reports Manifold 3.5.4, a union of two cubes gives 1.5,
+main-thread compile refused). That probe was not committed, so the check is **not reproducible**
+from the repository and was **not re-run** for this review; it should become a script (outside
+CI, like `scripts/e2e-3d.mjs`) before a release relies on it. **Not verified** inside the
 packaged Electron app under `jcad://app/` (no shipped command starts the kernel yet; nothing in
 `src/` outside `src/model3d` imports `createDefaultKernel`, so `npm run build` contains no kernel
 code or wasm today).
@@ -586,7 +589,7 @@ Whether Electron's session settings block remote requests from workers is **not 
 **Recommendation**: have the `jcad://` handler send
 `Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'` with worker
 scripts (or with every `.js` response), which keeps WebAssembly in the worker and removes remote
-`fetch` / `import()` from it, then re-run the probe in the packaged app. If the kernel ever has to
+`fetch` / `import()` from it, then check it in the packaged app with a committed probe. If the kernel ever has to
 run on the main thread (`ManifoldDirectKernel`), that needs `'wasm-unsafe-eval'` in the renderer
 policy and a new review; the default stays the worker (docs/3D-PLAN.md, open decision 1).
 
@@ -597,9 +600,12 @@ policy and a new review; the default stays the worker (docs/3D-PLAN.md, open dec
 **Where**: `node_modules/manifold-3d/manifold.wasm` (memory section) and `manifold.js`
 (`getHeapMax`); `src/model3d/kernel/manifold-kernel.ts` (timeouts, crash handling).
 
-**Facts** (checked by parsing the shipped wasm): one linear memory, exported, initial 256 pages
-(16 MiB), maximum 65,536 pages (4 GiB); `ALLOW_MEMORY_GROWTH` is on and `getHeapMax()` returns
-4,294,901,760 bytes. The Emscripten heap only grows; it is released when the worker is terminated.
+**Facts** (read from the shipped files by `tests/model3d-wasm-memory.test.ts`, so they are
+re-checked on every `npm test` and fail when the dependency changes): one linear memory,
+exported, not imported, declared with 256 initial pages (16 MiB) and a maximum of 65,536 pages
+(4 GiB); manifold.js contains Emscripten's heap-growth code with `getHeapMax()` returning
+4,294,901,760 bytes. The Emscripten heap only grows; terminating the worker should release it
+(**not measured**).
 A dedicated worker is a thread of the renderer process, not a separate process: its WebAssembly
 memory counts against the renderer, and V8's JavaScript heap limit does not cover it. Measured in
 Node (in-process kernel): a union of two 499,712-triangle operands (the per-solid limit allows

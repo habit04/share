@@ -13,14 +13,13 @@
  * its open front toward +Z (the viewer in plan view), as an electrical panel is drawn front-on.
  */
 import { Drawing, type DrawingState } from '../../src/core/document';
-import type { Layer, PolylineEntity } from '../../src/core/entities';
+import type { ColorSpec, Layer, PolylineEntity } from '../../src/core/entities';
 import type { Point } from '../../src/core/geometry';
 import { evaluateFeature } from '../../src/model3d/feature-eval';
 import type { GeometryKernel } from '../../src/model3d/kernel/kernel';
 import { type Frame3, v3, WORLD_XY_FRAME } from '../../src/model3d/math';
 import { addSolids, model3dOf, newSolid, withModel3D } from '../../src/model3d/model';
 import { profileFromEntities } from '../../src/model3d/sketch';
-import type { ColorSpec } from '../../src/core/entities';
 import type { BoxFeature, CylinderFeature, Feature3D, Profile3D, Solid3D } from '../../src/model3d/types';
 
 /** Names of the committed fixtures (tests/fixtures/3d/<name>.dxf). */
