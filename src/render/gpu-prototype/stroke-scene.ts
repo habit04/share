@@ -12,13 +12,17 @@ import { expandControlCodes, glyphFor, hasStrokeFont, strokeText, strokeTextWidt
 import type { Gpu2DOverlay, Gpu2DView } from './geometry2d';
 import { canvasArcAdmission } from './arc-admission';
 import { assertPrimitiveStrokePrecision, assertStrokePathPrecision, canvasPolylineStrokeProblem } from './stroke-parity';
-import { sourcePrecisionCertificateError, sourceTopologyAdmissionError } from './stroke-precision-error';
+import { sourcePrecisionCertificateError, sourceTopologyAdmissionError, isSourcePrecisionCertificateError, isSourceTopologyAdmissionError } from './stroke-precision-error';
+import { isImmutableData } from '../../core/immutable-data';
+import { lowerHatchStrokes } from './hatch-strokes';
 
 export type LocalStrokeEntity = LineEntity | PolylineEntity | CircleEntity | ArcEntity;
 /** All coordinates are world doubles relative to the copied camera anchor. */
 export type LocalStrokePath =
   | { readonly kind: 'entity'; readonly entity: LocalStrokeEntity }
-  | { readonly kind: 'path'; readonly points: readonly Point[]; readonly closed: boolean };
+  | { readonly kind: 'path'; readonly points: readonly Point[]; readonly closed: boolean;
+      /** Exact canonical WORLD endpoints for hatch provenance, already source-certified. */
+      readonly worldPoints?: readonly [Point, Point] };
 
 /** Exactly one Canvas stroke: glyph subpaths must share a stencil/compositing batch. */
 export interface StrokePaintOperation {
@@ -26,6 +30,8 @@ export interface StrokePaintOperation {
   readonly paintId: string;
   readonly sourceId: string;
   readonly paths: readonly LocalStrokePath[];
+  /** Non-painted original hatch boundaries, in anchor-local doubles. */
+  readonly sourcePoints?: readonly Point[];
   readonly color: readonly [number, number, number];
   readonly alpha: number;
   readonly widthCss: number;
@@ -38,6 +44,8 @@ export interface StrokeSceneOptions {
   readonly maxPoints?: number;
   readonly maxWork?: number;
   readonly maxBlockDepth?: number;
+  /** Retained camera translation in CSS pixels; used by hatch source certification. */
+  readonly panPadding?: number;
 }
 
 export type LoweredStrokeScene =
@@ -106,6 +114,7 @@ function primitiveProblem(entity: Entity, state: DrawingState): string | null {
   if (resolveAlpha(entity, state.layers) !== 1) return `Unsupported transparency (${entity.id})`;
   switch (entity.type) {
     case 'line': return null;
+    case 'hatch': return null; // Original-world phase, opacity and geometry are checked below.
     case 'text': return entity.bold ? `Unsupported bold stroke text (${entity.id})` : null;
     case 'circle': return entity.filled ? `Unsupported filled circle (${entity.id})` : null;
     case 'arc': {
@@ -350,14 +359,38 @@ export function lowerStrokeScene(state: DrawingState, view: Gpu2DView, overlay: 
         const problem = primitiveProblem(leaf, state);
         if (problem) throw new Error(problem);
         let paths: LocalStrokePath[];
+        let sourcePoints: readonly Point[] | undefined;
         if (leaf.type === 'text') paths = textPaths(leaf, local, canvasLeaf as TextEntity, widthCss);
+        else if (leaf.type === 'hatch') {
+          // A transformed block copy would generate a different canonical world phase.
+          // This increment admits only the original top-level immutable source.
+          if (owner !== leaf) throw sourceTopologyAdmissionError(`Hatches inside blocks require Canvas rendering (${leaf.id})`);
+          if (!isImmutableData(leaf)) throw sourceTopologyAdmissionError(`Mutable hatch requires Canvas rendering (${leaf.id})`);
+          const lowered = lowerHatchStrokes(leaf, view, {
+            minRatio, maxRatio, widthCss, alpha: resolveAlpha(leaf, state.layers), selected, hovered,
+            maxPoints: Math.max(0, maxPoints - points), maxWork: Math.max(0, maxWork - work),
+            panPadding: options.panPadding,
+          });
+          if (!lowered.ok) {
+            // Preserve factory identity so a genuine precision refusal can retry its
+            // ordinary interval. Unknown native/allocation errors retain their cause.
+            if (isSourcePrecisionCertificateError(lowered.cause) || isSourceTopologyAdmissionError(lowered.cause)) throw lowered.cause;
+            throw new Error(lowered.reason, { cause: lowered.cause });
+          }
+          minRatio = lowered.minRatio; maxRatio = lowered.maxRatio;
+          // The lowerer preflights this same charge BEFORE canonical generation:
+          // original boundaries plus two local and two copied WORLD points per segment.
+          countPoints(lowered.sourcePoints.length + lowered.paths.length * 4);
+          spend(lowered.preparationWork);
+          paths = [...lowered.paths]; sourcePoints = lowered.sourcePoints;
+        }
         else if (leaf.type === 'line' || leaf.type === 'polyline' || leaf.type === 'circle' || leaf.type === 'arc') {
           countPoints(leaf.type === 'polyline' ? leaf.points.length : 2);
           const entity = localEntity(leaf, local);
           if (owner.type === 'insert' || leaf.type === 'polyline' || leaf.type === 'line') assertPrimitiveStrokePrecision(entity, canvasLeaf as LocalStrokeEntity, widthCss, view, maxRatio);
           paths = [{ kind: 'entity', entity }];
         } else throw new Error(`Unsupported entity: ${leaf.type} (${leaf.id})`);
-        operations.push({ ownerId: owner.id, sourceId: leaf.id, paintId: `${owner.id}:${operations.length}`, paths, color: rgb(resolveColor(leaf, state.layers)), widthCss, alpha: selected || hovered ? 0.95 : 1 });
+        operations.push({ ownerId: owner.id, sourceId: leaf.id, paintId: `${owner.id}:${operations.length}`, paths, ...(sourcePoints ? { sourcePoints } : {}), color: rgb(resolveColor(leaf, state.layers)), widthCss, alpha: selected || hovered ? 0.95 : 1 });
       }
       if (owner.type === 'insert' && sourceIndex !== canvasSources.length) throw new Error(`Canvas native preflight left unmatched block slots (${owner.id})`);
     }

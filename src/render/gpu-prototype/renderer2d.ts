@@ -326,7 +326,7 @@ export class Gpu2DRenderer {
     const cache = this.cache;
     const unchangedScene = cache?.entities === state.entities && cache.layers === state.layers;
     const compiled = unchangedScene ? !!cache.geometry.compound : state.entities.some((entity) =>
-      (entity.type === 'insert' || entity.type === 'text') && !state.layers.some((layer) => layer.name === entity.layer && !layer.visible));
+      (entity.type === 'insert' || entity.type === 'text' || entity.type === 'hatch') && !state.layers.some((layer) => layer.name === entity.layer && !layer.visible));
     const textStyles = compiled ? state.meta?.[TEXT_STYLES_META_KEY] : undefined;
     const compiledImmutable = !compiled || (isImmutableData(state.blocks) && (!textStyles || typeof textStyles !== 'object' || isImmutableData(textStyles)));
     const cacheable = isImmutableData(state.entities) && isImmutableData(state.layers) && (!linetypes || isImmutableData(linetypes)) && compiledImmutable;

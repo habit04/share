@@ -541,11 +541,16 @@ function straightSourceRangeSafe(operations: readonly StrokePaintOperation[], vi
     minX = Math.min(minX, x); maxX = Math.max(maxX, x);
     minY = Math.min(minY, y); maxY = Math.max(maxY, y);
   };
-  for (const operation of operations) for (const source of operation.paths) {
-    if (source.kind === 'path') for (const point of source.points) include(point);
-    else if (source.entity.type === 'line') { include(source.entity.a); include(source.entity.b); }
-    else if (source.entity.type === 'polyline') for (const point of source.entity.points) include(point);
-    else return false;
+  for (const operation of operations) {
+    // Nonpainted hatch boundaries are original source geometry too. Include them
+    // even when every pattern path is empty or later discarded by clipping.
+    for (const point of operation.sourcePoints ?? []) include(point);
+    for (const source of operation.paths) {
+      if (source.kind === 'path') for (const point of source.points) include(point);
+      else if (source.entity.type === 'line') { include(source.entity.a); include(source.entity.b); }
+      else if (source.entity.type === 'polyline') for (const point of source.entity.points) include(point);
+      else return false;
+    }
   }
   if (minX === Infinity) return true; // Empty scene has no original source points.
   // Positive ratios preserve source ordering. Four scene extrema certify all
@@ -600,10 +605,10 @@ export function prepareCompiledZoom2D(state: DrawingState, view: Gpu2DView, over
   const ordinaryMaxRatio = maxRatio;
   // Strict (1,1,0) and custom requests preserve their existing admission contract.
   const stronger = options.certifyStraightZoomIn === true && minRatio === GPU_ZOOM_CACHE_MIN_RATIO && maxRatio === GPU_ZOOM_CACHE_MAX_RATIO && padding === GPU_PAN_CACHE_BORDER / Math.max(1, view.dpr);
-  let lowered = lowerStrokeScene(state, view, overlay, { minRatio, maxRatio: stronger ? GPU_STRAIGHT_ZOOM_CACHE_MAX_RATIO : maxRatio });
+  let lowered = lowerStrokeScene(state, view, overlay, { minRatio, maxRatio: stronger ? GPU_STRAIGHT_ZOOM_CACHE_MAX_RATIO : maxRatio, panPadding: padding });
   // Only a factory-certified deliberate source precision failure may retry. A native
   // exception with identical wording remains the original failure and is never hidden.
-  if (!lowered.ok && stronger && isSourcePrecisionCertificateError(lowered.cause)) lowered = lowerStrokeScene(state, view, overlay, { minRatio, maxRatio });
+  if (!lowered.ok && stronger && isSourcePrecisionCertificateError(lowered.cause)) lowered = lowerStrokeScene(state, view, overlay, { minRatio, maxRatio, panPadding: padding });
   if (!lowered.ok) throw new Error(lowered.reason, { cause: lowered.cause });
   minRatio = lowered.minRatio;
   const straight = stronger && lowered.operations.every((operation) => operation.paths.every((source) => straightPathSize(source) !== null));
@@ -651,6 +656,24 @@ export function prepareCompiledZoom2D(state: DrawingState, view: Gpu2DView, over
         if (operationCount !== 1 || operation.sourceId !== owner.entity.id || operation.paths.length !== 1 || source?.kind !== 'entity' || source.entity.type !== 'line' || source.entity.id !== owner.entity.id) {
           certificates = null; owner = null;
         } else owner.editableLine = true;
+      }
+    }
+    // A hatch may have no painted paths, or lose every path to clipping. Retain
+    // all original anchor-local boundary points before clipping in both the scene
+    // and its noneditable owner slot so later LINE edits cannot erase those bounds.
+    for (const point of operation.sourcePoints ?? []) {
+      const projected = projectLocal(point, localView);
+      const center = checked({ x: projected.x - view.width / 2, y: projected.y - view.height / 2 });
+      for (const axis of ['x', 'y'] as const) {
+        sourceBounds.min[axis] = Math.min(sourceBounds.min[axis], center[axis]);
+        sourceBounds.max[axis] = Math.max(sourceBounds.max[axis], center[axis]);
+      }
+      if (owner) {
+        if (!owner.sourceBounds) owner.sourceBounds = { min: { ...center }, max: { ...center } };
+        else for (const axis of ['x', 'y'] as const) {
+          owner.sourceBounds.min[axis] = Math.min(owner.sourceBounds.min[axis], center[axis]);
+          owner.sourceBounds.max[axis] = Math.max(owner.sourceBounds.max[axis], center[axis]);
+        }
       }
     }
     const admitCurve = (radius: number): void => {
@@ -845,7 +868,7 @@ export function prepareZoom2D(state: DrawingState, view: Gpu2DView, overlay: Gpu
   if (!Number.isFinite(padding) || padding < 0 || padding > GPU_PAN_CACHE_BORDER / Math.max(1, view.dpr)) throw new Error('Invalid GPU pan cache border');
   const hidden = new Set(state.layers.filter((layer) => !layer.visible).map((layer) => layer.name));
   const visible = state.entities.filter((entity) => !hidden.has(entity.layer));
-  if (visible.some((entity) => entity.type === 'insert' || entity.type === 'text')) return prepareCompiledZoom2D(state, view, overlay, minRatio, maxRatio, padding, options);
+  if (visible.some((entity) => entity.type === 'insert' || entity.type === 'text' || entity.type === 'hatch')) return prepareCompiledZoom2D(state, view, overlay, minRatio, maxRatio, padding, options);
   // Validate every layer-visible entity before allowing any GPU submission, even offscreen.
   for (const entity of visible) {
     const problem = styleProblem(entity, state);

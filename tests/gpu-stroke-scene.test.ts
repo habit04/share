@@ -1,8 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { DrawingState } from '../src/core/document';
+import { Drawing, type DrawingState } from '../src/core/document';
 import { DEFAULT_HEADER } from '../src/core/document';
-import type { BlockDef, Entity, InsertEntity, Layer, LineEntity, TextEntity } from '../src/core/entities';
+import type { BlockDef, Entity, HatchEntity, InsertEntity, Layer, LineEntity, TextEntity } from '../src/core/entities';
 import type { Point } from '../src/core/geometry';
+import * as coreEntities from '../src/core/entities';
+import { entityGeometryWork, hatchGeometry } from '../src/core/entities';
+import { lowerHatchStrokes } from '../src/render/gpu-prototype/hatch-strokes';
+import * as hatchLowering from '../src/render/gpu-prototype/hatch-strokes';
+import { readDxf, writeDxf } from '../src/io/dxf';
+import { isSourcePrecisionCertificateError, isSourceTopologyAdmissionError, sourcePrecisionCertificateError } from '../src/render/gpu-prototype/stroke-precision-error';
 import { sealImmutableData } from '../src/core/immutable-data';
 import { STANDARD_TEXT_STYLE } from '../src/io/encoding';
 import { annotationDisplay, colorDisplay, drawEntity, lineweightDisplay } from '../src/render/draw';
@@ -351,5 +357,229 @@ describe('all-or-nothing GPU stroke-scene lowering', () => {
     expect(lowerStrokeScene(drawing([text({ position: { x: Infinity, y: 0 } })]), view, overlay).ok).toBe(false);
     const dashed = { ...drawing([line()]), header: { ...DEFAULT_HEADER, linetypes: [{ name: 'CUSTOM', description: '', pattern: [1, -1] }] } };
     expect(lowerStrokeScene({ ...dashed, entities: [{ ...line(), linetype: 'CUSTOM' }] }, view, overlay).ok).toBe(false);
+  });
+});
+
+
+describe('ordered top-level hatch scene lowering', () => {
+  afterEach(() => vi.restoreAllMocks());
+  const square = (size: number, x = 0, y = 0) => ({ points: [{ x, y }, { x: x + size, y }, { x: x + size, y: y + size }, { x, y: y + size }] });
+  const hatch = (patch: Partial<HatchEntity> = {}): HatchEntity => sealImmutableData({ id: 'hatch', type: 'hatch', layer: '0', color: 'ByLayer', solid: false, pattern: 'LINE', scale: 8, angle: 0, loops: [square(8)], origin: { x: 0.25, y: 0.25 }, ...patch });
+
+  it.each(['LINE', 'NET', 'ANSI31', 'ANSI37'])('matches actual Canvas order, color, width and grouping for %s with overlapping neighbors', (pattern) => {
+    const source = hatch({ pattern, lineWeight: 1, trueColor: 0xabc123, loops: [square(8), square(2, 3, 3)] });
+    const state = sealImmutableData(drawing([line('before'), source, { ...line('after'), color: 1, lineWeight: 2 }]));
+    const camera = { ...view, scale: 100, center: { x: 4, y: 4 }, lineweights: true };
+    const lowered = accepted(lowerStrokeScene(state, camera, overlay));
+    const canvas = canvasScenePaints(state, camera, overlay);
+    expect(lowered.operations.map((operation) => operation.ownerId)).toEqual(['before', 'hatch', 'after']);
+    expect(lowered.operations.map((operation) => operation.paintId)).toEqual(['before:0', 'hatch:1', 'after:2']);
+    expect(lowered.operations).toHaveLength(canvas.length);
+    lowered.operations.forEach((operation, index) => {
+      const reference = canvas[index]!;
+      expect(operation.widthCss).toBe(reference.widthCss); expect(operation.alpha).toBe(reference.alpha);
+      expect(operation.color.map((channel) => Math.round(channel * 255))).toEqual([1, 3, 5].map((offset) => Number.parseInt(reference.color.slice(offset, offset + 2), 16)));
+      expectCanvasPaths(operation.paths.map((path) => path.kind === 'path' ? path.points : path.entity.type === 'line' ? [path.entity.a, path.entity.b] : []), reference.paths, camera.scale);
+    });
+    expect(lowered.operations[1]!.sourcePoints).toEqual(source.loops.flatMap((loop) => loop.points.map((point) => ({ x: point.x - camera.center.x, y: point.y - camera.center.y }))));
+  });
+
+  it('uses complete original file families and concave/island geometry without changing source phase', () => {
+    const source = hatch({ pattern: 'ANSI31', origin: { x: 999, y: 999 }, angle: 1.3, scale: 0.000001, double: true, loops: [{ points: [{ x: 0, y: 0 }, { x: 8, y: 0 }, { x: 8, y: 2 }, { x: 2, y: 2 }, { x: 2, y: 8 }, { x: 0, y: 8 }] }, square(1, 0.5, 3)], patternLines: [
+      { angle: 0, base: { x: 0.25, y: 0.25 }, offset: { x: 0.3, y: 1 }, dashes: [0.8, -0.4] },
+      { angle: Math.PI / 2, base: { x: 0.25, y: 0.25 }, offset: { x: -1, y: 0 }, dashes: [] },
+    ] });
+    const state = sealImmutableData(drawing([source])), before = JSON.stringify(state);
+    const camera = { ...view, scale: 10_000, center: { x: 4, y: 4 } };
+    const lowered = accepted(lowerStrokeScene(state, camera, overlay));
+    expect(lowered.operations[0]!.paths.map((path) => path.kind === 'path' ? path.points : [])).toEqual(hatchGeometry(source).segments.map((segment) => segment.map((point) => ({ x: point.x - 4, y: point.y - 4 }))));
+    expect(JSON.stringify(state)).toBe(before);
+  });
+
+  it('shares hatch preparation work across the scene and refuses the second hatch before its generator runs', () => {
+    const source = hatch();
+    const one = lowerHatchStrokes(source, view);
+    if (!one.ok) throw new Error(one.reason);
+    const allowance = entityGeometryWork(source) + one.preparationWork;
+    const generator = vi.spyOn(coreEntities, 'hatchGeometry');
+    const scene = drawing([sealImmutableData(structuredClone(source)), sealImmutableData({ ...source, id: 'second' })]);
+    expect(lowerStrokeScene(scene, view, overlay, { maxWork: allowance * 2 - 1 })).toMatchObject({ ok: false, reason: expect.stringContaining('preparation-work budget') });
+    expect(generator).toHaveBeenCalledTimes(2); // Original Canvas cache and fresh canonical certificate.
+    expect(lowerStrokeScene(scene, view, overlay, { maxWork: allowance * 2 }).ok).toBe(true);
+    generator.mockClear();
+    expect(lowerStrokeScene(scene, view, overlay, { maxPoints: 3 })).toMatchObject({ ok: false, reason: expect.stringContaining('point budget') });
+    expect(generator).not.toHaveBeenCalled();
+  });
+
+  it('shares retained boundary, local and copied WORLD points across neighboring hatches before allocation', () => {
+    const triangle = { loops: [{ points: [{ x: 0, y: 0 }, { x: 8, y: 0 }, { x: 0, y: 8 }] }], patternLines: [
+      { angle: 0, base: { x: 0, y: 0.5 }, offset: { x: 0, y: 4 }, dashes: [] },
+    ] };
+    const first = hatch({ ...triangle, id: 'first' }), second = hatch({ ...triangle, id: 'second' });
+    const state = drawing([line('neighbor'), first, second]);
+    const original = JSON.stringify(state);
+    const generator = vi.spyOn(coreEntities, 'hatchGeometry');
+    const refused = lowerStrokeScene(state, view, overlay, { maxPoints: 23 });
+    expect(refused).toMatchObject({ ok: false, reason: expect.stringContaining('segment budget') });
+    expect(refused).not.toHaveProperty('operations');
+    expect(generator).toHaveBeenCalledTimes(2);
+    expect(generator.mock.calls.every(([entity]) => entity.id === 'first')).toBe(true);
+    const admitted = accepted(lowerStrokeScene(state, view, overlay, { maxPoints: 24 }));
+    expect(admitted.operations.map((operation) => operation.ownerId)).toEqual(['neighbor', 'first', 'second']);
+    const retained = admitted.operations.slice(1).flatMap((operation) => [
+      ...operation.sourcePoints!, ...operation.paths.flatMap((path) => {
+        if (path.kind !== 'path' || !path.worldPoints) throw new Error('Expected original hatch provenance');
+        return [...path.points, ...path.worldPoints];
+      }),
+    ]);
+    expect(retained).toHaveLength(22);
+    expect(new Set(retained).size).toBe(retained.length);
+    expect(JSON.stringify(state)).toBe(original);
+  });
+
+  it('retains copied exact original-world endpoint provenance while rebasing boundaries only', () => {
+    const source = hatch({ origin: { x: 0.13, y: 0.27 }, angle: 0.17 });
+    const state = drawing([source]); const original = JSON.stringify(state);
+    const camera = { ...view, scale: 100, center: { x: 2.3, y: 3.7 }, dpr: 2 };
+    const result = accepted(lowerStrokeScene(state, camera, overlay));
+    const canonical = hatchGeometry(source);
+    expect(result.operations).toHaveLength(1);
+    result.operations[0]!.paths.forEach((path, index) => {
+      if (path.kind !== 'path' || !path.worldPoints) throw new Error('Expected canonical hatch path');
+      path.worldPoints.forEach((point, endpoint) => {
+        const originalPoint = canonical.segments[index]![endpoint]!;
+        expect(Object.is(point.x, originalPoint.x)).toBe(true); expect(Object.is(point.y, originalPoint.y)).toBe(true);
+        expect(point).not.toBe(originalPoint); expect(point).not.toBe(path.points[endpoint]);
+        expect(path.points[endpoint]).toEqual({ x: originalPoint.x - camera.center.x, y: originalPoint.y - camera.center.y });
+      });
+    });
+    expect(result.operations[0]!.sourcePoints).toHaveLength(source.loops[0]!.points.length);
+    expectCanvasPaths(result.operations[0]!.paths.map((path) => path.kind === 'path' ? path.points : []), canvasScenePaints(state, camera, overlay)[0]!.paths, camera.scale);
+    expect(JSON.stringify(state)).toBe(original);
+  });
+
+  it('passes resolved actual Canvas lineweight and retained pan interval into source certification', () => {
+    const source = hatch({ lineWeight: 0.5 });
+    const state = drawing([source]); const camera = { ...view, lineweights: true };
+    const lowerer = vi.spyOn(hatchLowering, 'lowerHatchStrokes');
+    const result = accepted(lowerStrokeScene(state, camera, overlay, { panPadding: 16 }));
+    const canvas = canvasScenePaints(state, camera, overlay);
+    expect(lowerer).toHaveBeenCalledOnce();
+    expect(lowerer.mock.calls[0]![0]).toBe(source); expect(lowerer.mock.calls[0]![1]).toBe(camera);
+    expect(lowerer.mock.calls[0]![2]).toMatchObject({ widthCss: canvas[0]!.widthCss, panPadding: 16 });
+    expect(result.operations[0]!.widthCss).toBe(canvas[0]!.widthCss);
+  });
+
+  it.each([0.17, 0.23, 0.43, Math.PI / 4])('keeps the original painted twist %s as a complete-view Canvas control', (twist) => {
+    const source = hatch(); const state = drawing([source, line('after')]);
+    const original = JSON.stringify(state); const lowerer = vi.spyOn(hatchLowering, 'lowerHatchStrokes');
+    const result = lowerStrokeScene(state, { ...view, twist }, overlay);
+    expect(lowerer).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({ ok: false, reason: 'Unsupported Canvas stroke construction: native context rotation is unproved' });
+    expect(result).not.toHaveProperty('operations');
+    if (result.ok) throw new Error('Expected native context refusal');
+    expect(isSourceTopologyAdmissionError(result.cause)).toBe(true);
+    expect(isSourcePrecisionCertificateError(result.cause)).toBe(false);
+    expect(JSON.stringify(state)).toBe(original);
+  });
+
+  it('retains a deliberate precision factory identity for the geometry builder interval retry', () => {
+    const source = hatch(); const state = drawing([line('before'), source]);
+    const cause = sourcePrecisionCertificateError('Canvas hatch projection exceeds precision bound');
+    const lowerer = vi.spyOn(hatchLowering, 'lowerHatchStrokes').mockReturnValueOnce({ ok: false, reason: cause.message, cause });
+    const result = lowerStrokeScene(state, view, overlay, { maxRatio: 4 });
+    expect(lowerer).toHaveBeenCalledOnce(); expect(result).not.toHaveProperty('operations');
+    if (result.ok) throw new Error('Expected deliberate precision refusal');
+    expect(result.cause).toBe(cause); expect(isSourcePrecisionCertificateError(result.cause)).toBe(true);
+    expect(isSourceTopologyAdmissionError(result.cause)).toBe(false);
+    expect(lowerStrokeScene(state, view, overlay, { maxRatio: 1.25 }).ok).toBe(true);
+  });
+
+  it.each([new TypeError('Curved hatch boundary requires Canvas'), new RangeError('Canvas hatch projection exceeds precision bound'), { interrupted: true }])('retains an unknown generator failure and retries the same source: %s', (cause) => {
+    const source = hatch(); const state = drawing([line('before'), source]); const original = JSON.stringify(state);
+    const generator = vi.spyOn(coreEntities, 'hatchGeometry').mockImplementationOnce(() => { throw cause; });
+    const result = lowerStrokeScene(state, view, overlay);
+    expect(generator).toHaveBeenCalledOnce(); expect(result).not.toHaveProperty('operations');
+    if (result.ok) throw new Error('Expected unknown generator failure');
+    expect(result.cause).toBeInstanceOf(Error);
+    expect((result.cause as Error).cause).toBe(cause);
+    expect(isSourcePrecisionCertificateError(result.cause)).toBe(false); expect(isSourceTopologyAdmissionError(result.cause)).toBe(false);
+    expect(isSourcePrecisionCertificateError(cause)).toBe(false); expect(isSourceTopologyAdmissionError(cause)).toBe(false);
+    expect(lowerStrokeScene(state, view, overlay).ok).toBe(true);
+    expect(JSON.stringify(state)).toBe(original);
+  });
+
+  it('compiles authored DXF islands and file families through edit, undo, redo and save/reopen', () => {
+    const source = hatch({ loops: [square(8), square(2, 3, 3)], double: true, patternLines: [
+      { angle: 0, base: { x: 0, y: 0.25 }, offset: { x: 0, y: 1 }, dashes: [] },
+      { angle: Math.PI / 2, base: { x: 0.25, y: 0 }, offset: { x: -1, y: 0 }, dashes: [] },
+    ] });
+    const document = new Drawing(); document.addEntities([line('before'), source, line('after')]);
+    const imported = new Drawing(readDxf(writeDxf(document.snapshot)));
+    const before = imported.entities.find((entity): entity is HatchEntity => entity.type === 'hatch')!;
+    const initial = accepted(lowerStrokeScene(imported.snapshot, view, overlay));
+    const initialPaths = initial.operations[1]!.paths;
+    expect(initial.operations).toHaveLength(3); expect(before.loops).toHaveLength(2); expect(before.patternLines).toHaveLength(2);
+    expect(imported.dirty).toBe(false);
+    imported.replaceEntities([{ ...before, patternLines: before.patternLines!.map((family) => ({ ...family, base: { x: family.base.x + 0.25, y: family.base.y + 0.25 } })) }]);
+    const edited = accepted(lowerStrokeScene(imported.snapshot, view, overlay));
+    expect(imported.dirty).toBe(true); expect(edited.operations[1]!.paths).not.toEqual(initialPaths);
+    imported.undo(); expect(imported.entities[1]).toBe(before);
+    expect(accepted(lowerStrokeScene(imported.snapshot, view, overlay)).operations[1]!.paths).toEqual(initialPaths);
+    imported.redo();
+    const reopened = new Drawing(readDxf(writeDxf(imported.snapshot)));
+    const saved = reopened.entities.find((entity): entity is HatchEntity => entity.type === 'hatch')!;
+    expect(saved.loops).toEqual(before.loops); expect(saved.patternLines).toHaveLength(2);
+    const reopenedScene = accepted(lowerStrokeScene(reopened.snapshot, view, overlay));
+    // DXF import assigns new internal entity IDs. Preserve every path property and
+    // geometry while checking each operation belongs to its newly imported owner.
+    const semanticPaths = (scene: typeof edited) => scene.operations.map((operation) => operation.paths.map((path) =>
+      path.kind === 'entity' ? { ...path, entity: { ...path.entity, id: 'imported-owner' } } : path));
+    expect(reopenedScene.operations.map((operation) => operation.ownerId)).toEqual(reopened.entities.map((entity) => entity.id));
+    expect(semanticPaths(reopenedScene)).toEqual(semanticPaths(edited));
+    expect(reopenedScene.operations.map((operation) => operation.sourcePoints)).toEqual(edited.operations.map((operation) => operation.sourcePoints));
+    const canvas = canvasScenePaints(reopened.snapshot, view, overlay);
+    expectCanvasPaths(reopenedScene.operations[1]!.paths.map((path) => path.kind === 'path' ? path.points : []), canvas[1]!.paths, view.scale);
+    expect(saved.patternLines).toEqual((imported.entities[1] as HatchEntity).patternLines);
+  });
+
+  it('narrows the whole scene zoom interval above the Canvas dot decision', () => {
+    const source = hatch({ loops: [{ points: [{ x: 0, y: 0 }, { x: 0.6, y: 0 }, { x: 0.6, y: 2 }, { x: 0, y: 2 }] }], scale: 1, origin: undefined });
+    const result = accepted(lowerStrokeScene(drawing([line(), source]), { ...view, scale: 1, twist: 0, dpr: 2 }, overlay));
+    expect(result.minRatio).toBeGreaterThan((0.5 + 0.0625 / 2) / 0.6); expect(result.minRatio).toBeLessThan(0.886);
+    expect(lowerStrokeScene(drawing([line(), source]), { ...view, scale: 0.8, twist: 0, dpr: 2 }, overlay)).toMatchObject({ ok: false, reason: expect.stringContaining('short strokes') });
+  });
+
+  it('keeps late dots, solid/dense/curved patterns, highlights and inherited transparency on complete-view fallback', () => {
+    for (const source of [hatch({ pattern: 'DOTS' }), hatch({ solid: true }), hatch({ scale: 0.000001 }), hatch({ loops: [{ ...square(8), bulges: [1] }] }), hatch({ transparency: 128 }), hatch({ patternLines: [{ angle: 0, base: { x: 0, y: 0 }, offset: { x: 0, y: 1 }, dashes: [0, -1] }] })]) {
+      const result = lowerStrokeScene(drawing([line('valid-first'), source]), view, overlay);
+      expect(result.ok).toBe(false); expect(result).not.toHaveProperty('operations');
+    }
+    for (const ov of [{ selection: new Set(['hatch']), solidSelection: true }, { selection: new Set<string>(), hover: 'hatch' }]) expect(lowerStrokeScene(drawing([hatch()]), view, ov).ok).toBe(false);
+    expect(lowerStrokeScene(drawing([hatch()], {}, [{ ...layer, transparency: 128 }]), view, overlay).ok).toBe(false);
+    const hidden = hatch({ layer: 'HIDDEN', solid: true });
+    expect(accepted(lowerStrokeScene(drawing([line(), hidden], {}, [layer, { ...layer, name: 'HIDDEN', visible: false }]), view, { selection: new Set(['hatch']) })).operations.map((operation) => operation.ownerId)).toEqual(['line']);
+  });
+
+  it('refuses block hatches instead of generating a phase from an anchor-local transformed copy', () => {
+    const definition: BlockDef = { name: 'H', basePoint: { x: 4, y: 3 }, entities: [line('valid-child'), hatch()], attributes: [] };
+    const result = lowerStrokeScene(drawing([line('before'), insert('H')], { H: definition }), view, overlay);
+    expect(result).toMatchObject({ ok: false, reason: expect.stringContaining('Hatches inside blocks') });
+    expect(result).not.toHaveProperty('operations');
+  });
+
+  it('requires deep runtime hatch certification even when the outer object is frozen', () => {
+    const mutable = structuredClone(hatch());
+    const shallow = Object.freeze(mutable);
+    expect(Object.isFrozen(shallow)).toBe(true);
+    expect(Object.isFrozen(shallow.loops)).toBe(false);
+    const generator = vi.spyOn(coreEntities, 'hatchGeometry');
+    const result = lowerStrokeScene(drawing([line('before'), shallow]), view, overlay);
+    expect(result).toMatchObject({ ok: false, reason: expect.stringContaining('Mutable hatch') });
+    expect(result).not.toHaveProperty('operations');
+    expect(generator).not.toHaveBeenCalled();
+    // A mutable outer view snapshot may still use a deeply certified source safely.
+    const replacement = sealImmutableData(structuredClone(shallow));
+    expect(lowerStrokeScene(drawing([replacement]), view, overlay).ok).toBe(true);
   });
 });
