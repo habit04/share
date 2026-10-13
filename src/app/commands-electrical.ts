@@ -73,6 +73,7 @@ import { projectDrawingIndex, projectEntryFor, resolveDrawingPath, resolveProjec
 import { samePath, shortNames } from './paths';
 import { captureRevision, contentHash, saveQueue } from './savequeue';
 import { SaveAdmission, hasSaveAdmissions, isStaleSaveAdmission, unverifiedImportSource, UNVERIFIED_SOURCE_WARNING } from './save-admission';
+import { ProjectSaveBatch, ProjectBatchChild, hasProjectSaveBatch } from './project-save-batch';
 import { fileErrorText, exportFailed, exportErrorText } from './file-error-text';
 import { fileErrorCode } from './file-errors';
 import { readDxf, writeDxf, DxfReadError } from '../io/dxf';
@@ -555,11 +556,14 @@ export interface LoadedSheet extends ProjectSheet {
   /** Save-queue revision captured when the drawing was read (an older write never replaces a newer one). */
   revision?: number;
   /** Runtime-only host reservation for a writable closed-sheet snapshot. */
-  reservation?: SaveAdmission;
+  reservation?: SaveAdmission | ProjectBatchChild;
+  /** One host order shared by all closed drawings of this calculation. */
+  projectBatch?: ProjectSaveBatch;
 }
 
 async function releaseSheetAdmissions(sheets: readonly LoadedSheet[]): Promise<void> {
   await Promise.all(sheets.map(sheet => sheet.reservation?.close()));
+  await Promise.all([...new Set(sheets.flatMap(sheet => sheet.projectBatch ? [sheet.projectBatch] : []))].map(batch => batch.close()));
 }
 
 async function loadWritableProjectSheets(editor: Editor): Promise<Awaited<ReturnType<typeof loadProjectSheets>> | null> {
@@ -583,6 +587,12 @@ export function canReadProjectFiles(editor: Pick<Editor, 'fileBridge'>): boolean
  * has no drawings, the current drawing alone is used.
  */
 export async function loadProjectSheets(editor: Editor, opts: { files?: boolean; forSave?: boolean } = {}): Promise<{ sheets: LoadedSheet[]; skipped: string[] }> {
+  const bridge = editor.fileBridge;
+  const batch = opts.forSave && opts.files !== false && hasProjectSaveBatch(bridge) && canReadProjectFiles(editor) ? new ProjectSaveBatch(bridge) : undefined;
+  // The parent must reach main before ANY project/session snapshot or drawing producer.
+  // Older hosts retain their original per-file reservations and read-only loads issue none.
+  try {
+  if (batch) await batch.ready;
   const project = editor.project;
   const sessions = editor.sessions.all.map((s) => ({ session: s, id: s.id, filePath: s.filePath, state: s.state, history: { undo: [...s.undo], redo: [...s.redo] }, sessionRevision: s.revision, revision: captureRevision() }));
   const activeId = editor.sessions.current.id;
@@ -592,8 +602,13 @@ export async function loadProjectSheets(editor: Editor, opts: { files?: boolean;
   const skipped: string[] = [];
   // Drawings are identified by full path; equal file names in different folders get their folder added.
   const paths = project.drawings.map((d) => resolveDrawingPath(project, d));
-  const reservations = new Map<number, SaveAdmission>();
-  if (opts.forSave && opts.files !== false && canReadProjectFiles(editor)) {
+  const reservations = new Map<number, SaveAdmission | ProjectBatchChild>();
+  const missing = new Set<number>();
+  if (batch) {
+    const candidates = paths.flatMap((path, index) => !sessions.some(session => samePath(session.filePath, path)) && !/\.dwg$/i.test(path) ? [{ path, index }] : []);
+    const children = await batch.bind(candidates.map(candidate => candidate.path));
+    candidates.forEach((candidate, index) => { const child = children[index]; if (child) reservations.set(candidate.index, child); else missing.add(candidate.index); });
+  } else if (opts.forSave && opts.files !== false && canReadProjectFiles(editor)) {
     for (let i = 0; i < paths.length; i++) if (!sessions.some(session => samePath(session.filePath, paths[i]))) reservations.set(i, new SaveAdmission(editor.fileBridge!, 'drawing'));
     // Reserve the whole writable preparation first. A capacity failure must not
     // leave a partial global calculation that could modify open tabs or files.
@@ -608,6 +623,15 @@ export async function loadProjectSheets(editor: Editor, opts: { files?: boolean;
     catch (error) { await Promise.all([...reservations.values()].map(reservation => reservation.close())); throw error; }
   }
   try {
+  if (opts.forSave) {
+    const openIds = new Set<number>();
+    for (const path of paths) {
+      const open = sessions.find(session => samePath(session.filePath, path));
+      if (!open) continue;
+      if (openIds.has(open.id)) throw new Error('Multiple project entries refer to the same open drawing. Remove duplicate project entries before updating them.');
+      openIds.add(open.id);
+    }
+  }
   const names = shortNames(paths);
   // A detached copy of an open drawing: switching tabs while files load must not change what is calculated.
   // The copy is in model space (a layout tab would hand the calculations the paper entities).
@@ -624,16 +648,20 @@ export async function loadProjectSheets(editor: Editor, opts: { files?: boolean;
     const s = sessions.find((x) => samePath(x.filePath, path));
     if (s) {
       await reservations.get(i)?.close();
-      sheets.push({ ...makeSheet(copyOf(s.state, s.filePath), base), source: s.id === activeId ? 'active' : 'session', sessionId: s.id, session: s.session, sessionRevision: s.sessionRevision, base: s.state, history: s.history, revision: s.revision, projectState });
+      const doc = copyOf(s.state, s.filePath); batch?.budget.addState(doc.snapshot);
+      sheets.push({ ...makeSheet(doc, base), source: s.id === activeId ? 'active' : 'session', sessionId: s.id, session: s.session, sessionRevision: s.sessionRevision, base: s.state, history: s.history, revision: s.revision, projectState, projectBatch: batch });
       continue;
     }
     if (opts.files === false || !canReadProjectFiles(editor)) {
       skipped.push(`${base.name} (not open)`);
       continue;
     }
+    if (batch && /\.dwg$/i.test(path)) { skipped.push(`${base.name} (open this DWG in a tab to update it)`); continue; }
+    if (missing.has(i)) { skipped.push(`${base.name} (file not found, not changed)`); continue; }
     try {
       const revision = captureRevision();
-      const res = await editor.fileBridge!.openDrawing!(path);
+      const reservation = reservations.get(i);
+      const res = reservation instanceof ProjectBatchChild ? await batch!.read(reservation) : await editor.fileBridge!.openDrawing!(path);
       if (!res) {
         await reservations.get(i)?.close();
         skipped.push(base.name);
@@ -648,17 +676,22 @@ export async function loadProjectSheets(editor: Editor, opts: { files?: boolean;
       // A damaged file is not rewritten from a partial read: it is skipped (closedReadError says why).
       doc.load(withByBlockLibrarySymbols(readDxf(res.text, { filePath: path })), path);
       doc.ensureBlocks(LIBRARY_BLOCKS);
-      sheets.push({ ...makeSheet(doc, base), source: 'file', baseHash: contentHash(res.text), revision, projectState, reservation: reservations.get(i) });
+      batch?.budget.addState(doc.snapshot);
+      sheets.push({ ...makeSheet(doc, base), source: 'file', baseHash: contentHash(res.text), revision, projectState, reservation: reservations.get(i), projectBatch: batch });
     } catch (err) {
       await reservations.get(i)?.close();
+      if (batch && /ERR_(?:WINDOWS_|SAVE_|PROJECT_BATCH_|PATH_IDENTITY_)/.test(String((err as { code?: unknown; message?: unknown })?.code ?? '') + String((err as { message?: unknown })?.message ?? ''))) throw err;
       skipped.push(`${base.name} (${closedReadError(err, path)})`);
     }
   }
   if (project.drawings.length === 0) {
-    sheets.push({ ...makeSheet(copyOf(active.state, active.filePath), { name: editor.fileName(), path: active.filePath, index: -1, projectSettings: project.settings }), source: 'active', sessionId: activeId, session: active.session, sessionRevision: active.sessionRevision, base: active.state, history: active.history, revision: active.revision, projectState });
+    const doc = copyOf(active.state, active.filePath); batch?.budget.addState(doc.snapshot);
+    sheets.push({ ...makeSheet(doc, { name: editor.fileName(), path: active.filePath, index: -1, projectSettings: project.settings }), source: 'active', sessionId: activeId, session: active.session, sessionRevision: active.sessionRevision, base: active.state, history: active.history, revision: active.revision, projectState, projectBatch: batch });
   }
+  if (batch && !sheets.length) await batch.close();
   return { sheets, skipped };
   } catch (error) { await Promise.all([...reservations.values()].map(reservation => reservation.close())); throw error; }
+  } catch (error) { await batch?.close(); throw error; }
 }
 
 export interface SheetChange {
@@ -678,6 +711,8 @@ export interface CommitResult {
   conflicts: string[];
   /** Closed drawings left unchanged because the user chose not to save closed files. */
   notSaved: string[];
+  /** A change committed, but a downstream UI notification failed. */
+  warnings?: string[];
 }
 
 /**
@@ -696,9 +731,13 @@ export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[
   // Check every proposed drawing before changing tabs/history or making backups and writes.
   // Background tabs do not pass through the live Drawing's transaction boundary.
   const prepared = new Map<number, DrawingState>();
+  const batches = [...new Set(sheets.flatMap(sheet => sheet.projectBatch ? [sheet.projectBatch] : []))];
+  if (batches.length > 1) throw new Error('Project snapshots from different Windows admissions cannot be combined. Prepare the command again.');
+  const batch = batches[0];
   for (const [index, change] of changes) {
     const sheet = sheets[index]!;
-    prepared.set(index, prepareDrawingState(withSpaceOf(change.state, sheet.base), sheet.base ?? sheet.doc.snapshot));
+    const next = prepareDrawingState(withSpaceOf(change.state, sheet.base), sheet.base ?? sheet.doc.snapshot);
+    batch?.budget.addState(next); prepared.set(index, next);
   }
   const items: AffectedDrawing[] = [...changes].map(([i, c]) => ({ name: sheets[i]!.name, kind: sheets[i]!.source === 'file' ? 'file' : 'open', detail: c.detail }));
   if (items.length === 0) return { open: 0, written: 0, failed: [], conflicts: [], notSaved: [] };
@@ -710,6 +749,7 @@ export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[
     choice = r;
   }
   if (choice.files && hasSaveAdmissions(bridge) && [...changes.keys()].some(index => sheets[index]!.source === 'file' && !sheets[index]!.reservation?.enabled)) throw new Error('This project write was prepared without a Windows save admission. Prepare the project command again before changing drawings.');
+  if (batch) return await commitProjectBatch(editor, sheets, changes, prepared, choice, batch);
   let open = 0;
   let written = 0;
   const failed: string[] = [];
@@ -732,7 +772,7 @@ export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[
         failed.push(`${sh.name} (tab closed or replaced)`);
         continue;
       }
-      if ((sh.base && current.state !== sh.base) || (sh.sessionRevision !== undefined && current.revision !== sh.sessionRevision) || !historyMatches(sh, current) || !samePath(current.filePath, sh.path)) {
+      if ((sh.base && current.state !== sh.base) || (sh.sessionRevision !== undefined && current.revision !== sh.sessionRevision) || !historyMatches(sh, current) || !(current.filePath === sh.path || samePath(current.filePath, sh.path))) {
         conflicts.push(`${sh.name} (edited while the command ran)`);
         continue;
       }
@@ -744,8 +784,7 @@ export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[
         // In a layout tab, transact() maps the change onto the paper entities: apply it in model
         // space (the new state carries the active space of the state it was calculated from).
         const next = prepared.get(i)!;
-        if (editor.doc.space) editor.doc.setSpace(undefined);
-        editor.doc.transact(() => next);
+        editor.doc.transactDrawing(() => next);
         open += 1;
         continue;
       }
@@ -758,7 +797,7 @@ export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[
         conflicts.push(`${sh.name} (edited while the command ran)`);
         continue;
       }
-      s.undo.push(s.state);
+      s.undo = [...s.undo, s.state].slice(-editor.doc.undoLimit);
       s.redo = [];
       s.state = prepared.get(i)!;
       s.dirty = true;
@@ -837,6 +876,168 @@ export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[
   } finally { await releaseSheetAdmissions(sheets); }
 }
 
+/** Preflight the complete source basis before mutating any tab or drawing file. */
+async function commitProjectBatch(editor: Editor, sheets: readonly LoadedSheet[], changes: ReadonlyMap<number, SheetChange>, prepared: ReadonlyMap<number, DrawingState>, choice: ConfirmFilesResult, batch: ProjectSaveBatch): Promise<CommitResult> {
+  const bridge = editor.fileBridge!;
+  const result: CommitResult = { open: 0, written: 0, failed: [], conflicts: [], notSaved: [] };
+  const warnings: string[] = [];
+  const targets = new Map<number, { child: ProjectBatchChild; text: string; withoutBackup: boolean }>();
+  const ownedOpen = new Map<LoadedSheet, { state: DrawingState; revision: number; history: DrawingHistory }>();
+  const projectChanged = (sheet: LoadedSheet) => !!sheet.projectState && (editor.projectState.generation !== sheet.projectState.generation || editor.projectState.revision !== sheet.projectState.revision);
+  const openProblem = (sheet: LoadedSheet): { conflict?: string; failure?: string } | null => {
+    if (projectChanged(sheet)) return { conflict: 'project changed while the command ran' };
+    if (sheet.source === 'file') return editor.sessions.indexOfPath(sheet.path!) >= 0 ? { conflict: 'opened in a tab while the command ran' } : null;
+    const current = editor.sessions.all.find(session => session.id === sheet.sessionId);
+    if (!current || sheet.session && current !== sheet.session) return { failure: 'tab closed or replaced' };
+    const owned = ownedOpen.get(sheet), state = owned?.state ?? sheet.base, revision = owned?.revision ?? sheet.sessionRevision, history = owned?.history ?? sheet.history;
+    if (state && current.state !== state || revision !== undefined && current.revision !== revision || !(current.filePath === sheet.path || samePath(current.filePath, sheet.path)) || history && (history.undo.length !== current.undo.length || history.undo.some((item, index) => item !== current.undo[index]) || history.redo.length !== current.redo.length || history.redo.some((item, index) => item !== current.redo[index]))) return { conflict: 'edited while the command ran' };
+    return null;
+  };
+  const recordProblem = (sheet: LoadedSheet, problem: { conflict?: string; failure?: string }) => {
+    if (problem.conflict) result.conflicts.push(`${sheet.name} (${problem.conflict})`);
+    if (problem.failure) result.failed.push(`${sheet.name} (${problem.failure})`);
+  };
+  const preflightTabs = (): boolean => {
+    let okay = true;
+    // Unchanged sheets can still supply tags/references used in another sheet's result.
+    for (const sheet of sheets) { const problem = openProblem(sheet); if (problem) { recordProblem(sheet, problem); okay = false; } }
+    return okay;
+  };
+  let invalidatedBasis: string | null = null;
+  const changedOpenBasis = (): string | null => {
+    // Accept only the transitions this batch planned, never a listener's newer edits as basis.
+    if (invalidatedBasis) return invalidatedBasis;
+    for (const source of sheets) { const basis = openProblem(source); if (basis) return `source ${source.name}: ${basis.conflict ?? basis.failure}`; }
+    return null;
+  };
+  const changedFile = async (sheet: LoadedSheet): Promise<string | null> => {
+    const basis = changedOpenBasis(); if (basis) return basis;
+    const problem = openProblem(sheet);
+    if (problem) return problem.conflict ?? problem.failure ?? 'changed while the command ran';
+    if (sheet.baseHash !== undefined && bridge.openDrawing) {
+      const current = await bridge.openDrawing(sheet.path!);
+      if (!current || current.kind !== 'dxf' || contentHash(current.text) !== sheet.baseHash) return 'changed on disk since it was read';
+      const lateBasis = changedOpenBasis(); if (lateBasis) return lateBasis;
+      const late = openProblem(sheet); if (late) return late.conflict ?? late.failure ?? 'changed while the command ran';
+    }
+    return null;
+  };
+  if (!preflightTabs()) return result;
+  // Complete serialization and every loss-review decision before backups, tab/history changes
+  // or commits. A codec failure on the last file must not partially update the first tab.
+  try {
+    for (const [index] of changes) {
+      const sheet = sheets[index]!;
+      if (sheet.source !== 'file') continue;
+      if (!choice.files) { result.notSaved.push(sheet.name); continue; }
+      if (!(sheet.reservation instanceof ProjectBatchChild) || sheet.reservation.batch !== batch) throw new Error('Prepare this project command again; its drawing admission is unavailable.');
+      const early = await changedFile(sheet);
+      if (early) { result.conflicts.push(`${sheet.name} (${early})`); return result; }
+      const unverified = await unverifiedImportSource(bridge, sheet.doc.snapshot);
+      const allowed = unverified ? (await projectUi.confirmLoss('Review imported drawing before saving', UNVERIFIED_SOURCE_WARNING) ? 'save' : 'save-as') : await confirmSaveOver(sheet.doc.snapshot, sheet.path!, projectUi.confirmLoss, sheet, () => !projectChanged(sheet) && editor.sessions.indexOfPath(sheet.path!) < 0);
+      if (allowed !== 'save') { result.notSaved.push(sheet.name); await sheet.reservation.close(); continue; }
+      const text = writeDxf(withoutUnusedLibraryBlocks(prepared.get(index)!));
+      batch.budget.addOutput(text); targets.set(index, { child: sheet.reservation, text, withoutBackup: false });
+    }
+    await batch.seal([...targets.values()].map(target => target.child));
+    for (const [index, target] of targets) {
+      const sheet = sheets[index]!;
+      if (!choice.backup || !bridge.backupFile) continue;
+      const outcome = backupOutcome(await bridge.backupFile(sheet.path!, { admission: target.child.ticket }).catch((error: unknown) => { if (isStaleSaveAdmission(error)) throw error; return { ok: false, error: error instanceof Error ? error.message : String(error) }; }));
+      if (outcome.ok) continue;
+      if (!await projectUi.confirmNoBackup(sheet.name, sheet.path!, outcome.error ?? 'unknown error')) {
+        result.failed.push(`${sheet.name} (backup failed: ${outcome.error}; not written)`);
+        targets.delete(index); await target.child.close();
+      } else target.withoutBackup = true;
+    }
+    // Host validates all successfully read source pins, including unchanged sources. It
+    // narrows the reserved write scope when a backup was declined, without issuing new orders.
+    await batch.begin([...targets.values()].map(target => target.child));
+  } catch (error) {
+    const description = error instanceof Error ? error.message : String(error);
+    const names = [...changes.keys()].map(index => sheets[index]!.name).join(', ');
+    if (isStaleSaveAdmission(error)) result.conflicts.push(`${names} (a newer version was saved meanwhile; nothing changed)`);
+    else result.failed.push(`${names} (project preparation failed: ${description}; no drawing or tab changed)`);
+    return result;
+  }
+  // Native preflight and its callbacks can take time; recheck the entire captured tab basis
+  // synchronously before the first mutation, then guard each target against reentrant events.
+  if (!preflightTabs()) return result;
+  let observing = true;
+  const observeBasis = () => {
+    if (!observing || invalidatedBasis) return;
+    const problem = changedOpenBasis();
+    if (problem) { invalidatedBasis = problem; void batch.close(); }
+  };
+  const subscriptions = (['change', 'project', 'file', 'space'] as const).map(event => editor.on(event, observeBasis));
+  // Closing a parked tab only invokes SessionManager.onChange. Preserve that owner's
+  // callback and restore it only if this wrapper still owns the slot.
+  const previousSessionChange = editor.sessions.onChange;
+  const sessionChange = () => { try { previousSessionChange?.(); } finally { observeBasis(); } };
+  editor.sessions.onChange = sessionChange;
+  try {
+  for (const [index] of changes) {
+    const sheet = sheets[index]!;
+    if (sheet.source === 'file') continue;
+    const basisChanged = changedOpenBasis();
+    if (basisChanged) { result.conflicts.push(`${sheet.name} (${basisChanged})`); continue; }
+    const problem = openProblem(sheet); if (problem) { recordProblem(sheet, problem); continue; }
+    const next = prepared.get(index)!;
+    const current = editor.sessions.all.find(session => session.id === sheet.sessionId)!;
+    // Establish the expected transition before notifying, but never adopt the state a
+    // listener might install afterward. Such a state invalidates later outputs.
+    ownedOpen.set(sheet, { state: next, revision: current.revision + 1, history: { undo: [...current.undo, current.state].slice(-editor.doc.undoLimit), redo: [] } });
+    if (editor.sessions.current.id === sheet.sessionId) {
+      const revision = editor.doc.revision;
+      try { editor.doc.transactDrawing(() => next); result.open++; }
+      catch (error) {
+        // Drawing commits state/history/dirty BEFORE notifying listeners. Never restore an
+        // old global snapshot over a listener's newer edit, tab switch or replacement.
+        if (editor.doc.revision > revision) { result.open++; warnings.push(`${sheet.name} (${error instanceof Error ? error.message : String(error)})`); }
+        else { ownedOpen.delete(sheet); result.failed.push(`${sheet.name} (${error instanceof Error ? error.message : String(error)})`); }
+      }
+      observeBasis();
+    } else {
+      const session = editor.sessions.all.find(current => current.id === sheet.sessionId)!;
+      session.undo = [...session.undo, session.state].slice(-editor.doc.undoLimit); session.redo = [];
+      session.state = next; session.dirty = true; session.revision++; result.open++;
+    }
+  }
+  for (const [index, target] of targets) {
+    const sheet = sheets[index]!, path = sheet.path!;
+    try {
+      let late: string | null = null;
+      const saved = await saveQueue.run(path, sheet.revision!, async () => {
+        late = await changedFile(sheet); if (late) return null;
+        const written = await bridge.saveDxf(path, target.text, sheet.name, { backup: false, admission: target.child.ticket });
+        await target.child.confirmSaved(written); return written;
+      });
+      if (saved.status === 'stale') result.conflicts.push(`${sheet.name} (a newer version was saved meanwhile)`);
+      else if (late) result.conflicts.push(`${sheet.name} (${late})`);
+      else if (saved.value) {
+        result.written++;
+        const changed = changedOpenBasis();
+        if (changed) { result.conflicts.push(`${sheet.name} (saved before ${changed}; review this partial project result)`); warnings.push(`${sheet.name}: its write completed while a source changed; no later dependent output was written.`); }
+        if (target.withoutBackup) editor.log(`${sheet.name}: written without a backup as chosen.`);
+      }
+      else result.failed.push(sheet.name);
+    } catch (error) {
+      const changed = changedOpenBasis();
+      if (changed) result.conflicts.push(`${sheet.name} (${changed}; pending save cancelled or unconfirmed: ${error instanceof Error ? error.message : String(error)})`);
+      else if (isStaleSaveAdmission(error)) result.conflicts.push(`${sheet.name} (a newer version was saved meanwhile)`);
+      else result.failed.push(`${sheet.name} (${fileErrorText(error, { action: 'save', path })})`);
+    } finally { await target.child.close(); }
+  }
+  if (result.open) try { editor.notify('file'); } catch (error) { warnings.push(error instanceof Error ? error.message : String(error)); }
+  if (warnings.length) result.warnings = warnings;
+  return result;
+  } finally {
+    observing = false;
+    for (const unsubscribe of subscriptions) unsubscribe();
+    if (editor.sessions.onChange === sessionChange) editor.sessions.onChange = previousSessionChange;
+  }
+}
+
 /** A state calculated from the model-space copy, put back into the layout tab the drawing showed. */
 function withSpaceOf(state: DrawingState, base: DrawingState | undefined): DrawingState {
   if (!base?.space || state.space) return state;
@@ -852,6 +1053,7 @@ function logCommit(editor: Editor, what: string, r: CommitResult | null, skipped
   if (r.failed.length) editor.log(`Not updated: ${r.failed.join(', ')}.`);
   if (r.conflicts.length) editor.log(`Not updated because they changed while the command ran (run it again): ${r.conflicts.join(', ')}.`);
   if (r.notSaved.length) editor.log(`Not updated (closed drawing files were not saved, as chosen): ${r.notSaved.join(', ')}.`);
+  if (r.warnings?.length) editor.log(`Updated with notification problems: ${r.warnings.join(', ')}.`);
   if (skipped.length) editor.log(`Skipped: ${skipped.join(', ')}${canReadProjectFiles(editor) ? '' : ' (open them in tabs, or use the desktop app to update closed drawings)'}.`);
 }
 

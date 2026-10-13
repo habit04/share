@@ -115,15 +115,33 @@ let identityCharacters = 0;
 
 /** Runtime evidence from an authorized host open/bind; never drawing/project data. */
 export function registerWindowsPathIdentity(logical: string, canonical: string): void {
-  for (const value of [logical, canonical]) if (typeof value !== 'string' || !isWindowsPath(value) || !isAbsolutePath(value) || value.length > 4096 || /[\u0000-\u001f\u007f]/.test(value)) throw new Error('Invalid native Windows path identity.');
-  const source = normalizePath(logical), target = normalizePath(canonical), keys = [...new Set([source, target])];
-  for (const key of keys) {
+  registerWindowsPathIdentities([{ logical, canonical }]);
+}
+
+/** Publish a complete native manifest together; a rejected pair cannot leave partial aliases. */
+export function registerWindowsPathIdentities(pairs: readonly { logical: string; canonical: string }[]): void {
+  if (!Array.isArray(pairs) || pairs.length > MAX_WINDOWS_PATH_IDENTITIES) throw new Error('Invalid native Windows path identity manifest.');
+  // Snapshot caller-owned fields before inspecting the registry. Publication itself never
+  // invokes caller code or awaits, so another open cannot consume capacity halfway through.
+  const captured = pairs.map(pair => {
+    if (!pair || typeof pair !== 'object') throw new Error('Invalid native Windows path identity.');
+    const { logical, canonical } = pair;
+    for (const value of [logical, canonical]) if (typeof value !== 'string' || !isWindowsPath(value) || !isAbsolutePath(value) || value.length > 4096 || /[\u0000-\u001f\u007f]/.test(value)) throw new Error('Invalid native Windows path identity.');
+    return { source: normalizePath(logical), target: normalizePath(canonical) };
+  });
+  const candidates = new Map<string, string>();
+  for (const { source, target } of captured) for (const key of new Set([source, target])) {
+    const proposed = candidates.get(key);
+    if (proposed !== undefined && proposed !== target) throw Object.assign(new Error('This file path now resolves to another native file. Choose its actual folder or reopen the drawing before saving.'), { code: 'ERR_PATH_IDENTITY_CHANGED' });
+    candidates.set(key, target);
+  }
+  for (const [key, target] of candidates) {
     const previous = windowsIdentities.get(key);
     if (previous !== undefined && previous !== target) throw Object.assign(new Error('This file path now resolves to another native file. Choose its actual folder or reopen the drawing before saving.'), { code: 'ERR_PATH_IDENTITY_CHANGED' });
   }
-  const additions = keys.filter(key => !windowsIdentities.has(key)), characters = additions.reduce((sum, key) => sum + key.length + target.length, 0);
+  const additions = [...candidates].filter(([key]) => !windowsIdentities.has(key)), characters = additions.reduce((sum, [key, target]) => sum + key.length + target.length, 0);
   if (windowsIdentities.size + additions.length > MAX_WINDOWS_PATH_IDENTITIES || identityCharacters + characters > MAX_IDENTITY_CHARACTERS) throw Object.assign(new Error('Native file identity history is full. Finish pending saves and restart the app before opening more files.'), { code: 'ERR_PATH_IDENTITY_CAPACITY' });
-  for (const key of additions) windowsIdentities.set(key, target);
+  for (const [key, target] of additions) windowsIdentities.set(key, target);
   identityCharacters += characters;
 }
 
