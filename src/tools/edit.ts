@@ -6,6 +6,7 @@ import type { Point } from '../core/geometry';
 import * as g from '../core/geometry';
 import type { Entity, LineEntity, PolylineEntity, ArcEntity, CircleEntity } from '../core/entities';
 import { newId, explodeInsert, insertExpansionLimited, MAX_INSERT_EXPANSION, bakeInheritedColor, entitySegments, arcPoints, mirrorEntityAcross, scaleEntityBy } from '../core/entities';
+import { cadMirror, cadScale, cadCloneBatch, cadTransformIntent } from './cad-edits';
 import { pickEntity } from '../core/selection';
 import type { Tool, ToolContext } from './types';
 
@@ -524,7 +525,8 @@ export class MirrorTool extends SelectionTool {
     }
     if (g.eq(this.a, p)) return;
     const a = this.a;
-    ctx.doc.addEntities(this.entities(ctx).map((e) => ({ ...mirrorEntity(e, a, p), id: newId() })));
+    const entities = this.entities(ctx), copies = entities.map((e) => ({ ...mirrorEntity(e, a, p), id: newId() }));
+    ctx.doc.addEntities(copies, false, { cloneBatches: [cadCloneBatch(entities, copies, cadMirror(a, p))] });
     ctx.finish();
   }
   override onMove(p: Point, ctx: ToolContext): void {
@@ -559,7 +561,8 @@ export class ScaleTool extends SelectionTool {
     const k = g.dist(this.base, p);
     if (k < 1e-9) return;
     const b = this.base;
-    ctx.doc.replaceEntities(this.entities(ctx).map((e) => scaleEntity(e, b, k)));
+    const entities = this.entities(ctx);
+    ctx.doc.replaceEntities(entities.map((e) => scaleEntity(e, b, k)), cadTransformIntent(entities, cadScale(b, k)));
     ctx.finish();
   }
   override onMove(p: Point, ctx: ToolContext): void {
@@ -576,7 +579,8 @@ export class ScaleTool extends SelectionTool {
     const k = parseFloat(text);
     if (this.base && Number.isFinite(k) && k > 0) {
       const b = this.base;
-      ctx.doc.replaceEntities(this.entities(ctx).map((e) => scaleEntity(e, b, k)));
+      const entities = this.entities(ctx);
+      ctx.doc.replaceEntities(entities.map((e) => scaleEntity(e, b, k)), cadTransformIntent(entities, cadScale(b, k)));
       ctx.finish();
       return;
     }

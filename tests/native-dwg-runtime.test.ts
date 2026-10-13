@@ -8,6 +8,7 @@ import { NATIVE_SOURCE, verifyNativeRuntime, wasmMemoryLimits } from '../scripts
 import { readDwgPayload } from '../scripts/dwg-reader.mjs';
 import { convertDwg } from '../src/io/dwg';
 import { readDxf, writeDxf } from '../src/io/dxf';
+import { validateCadState } from '../src/core/cad-graph';
 
 const root = join(__dirname, '..');
 const fixture = join(root, 'tests/fixtures/interchange/r2018-mtext-background.dwg');
@@ -40,8 +41,14 @@ describe('native WASM declaration inspection', () => {
       await expect(verifyNativeRuntime(candidate, fixture, expected, { repairPolicy: 'appearance-arrays' })).rejects.toThrow(/asset contract mismatch/);
     } finally { rmSync(candidate, { recursive: true, force: true }); }
   });
-  it('cannot accept the old appearance runtime as a metadata graph candidate', async () => {
-    await expect(verifyNativeRuntime(join(root, 'vendor/libredwg-web-bg'), fixture, expected, { repairPolicy: 'metadata-graph' })).rejects.toThrow(/asset contract mismatch/);
+  it('cannot accept an incomplete metadata graph artifact', async () => {
+    const candidate = mkdtempSync(join(tmpdir(), 'jcad-native-metadata-policy-'));
+    try {
+      const provenance = JSON.parse(readFileSync(join(root, 'vendor/libredwg-web-bg/provenance.json'), 'utf8'));
+      provenance.assets = provenance.assets.filter((asset: { path: string }) => !['metadata-report.json', 'validate-metadata-fixture.mjs'].includes(asset.path));
+      writeFileSync(join(candidate, 'provenance.json'), JSON.stringify(provenance));
+      await expect(verifyNativeRuntime(candidate, fixture, expected)).rejects.toThrow(/asset contract mismatch/);
+    } finally { rmSync(candidate, { recursive: true, force: true }); }
   });
 });
 
@@ -69,7 +76,8 @@ describe('mandatory repaired native runtime acceptance', () => {
   it('binds the complete vendor artifact to its source, fixture and original memory limits', async () => {
     const verified = await verifyNativeRuntime(join(root, 'vendor/libredwg-web-bg'), fixture, expected);
     expect(verified.source).toEqual(NATIVE_SOURCE);
-    expect(verified.repairPolicy).toBe('appearance-arrays');
+    expect(verified.repairPolicy).toBe('metadata-graph');
+    expect(verified.metadata).toMatchObject({ nativeError: 0, writeError: 0, complete: true, limitedOutputRejected: true });
     expect(verified.appearance).toMatchObject({ cases: [{ kind: 'appearance' }, { kind: 'shipping' }] });
     expect(verified.memory).toEqual({ origin: 'defined', ...memory });
     expect(verified.masks).toHaveLength(7);
@@ -83,5 +91,36 @@ describe('mandatory repaired native runtime acceptance', () => {
     const { state } = convertDwg(payload);
     compareMasks(state.entities as unknown as Mask[], wanted);
     compareMasks(readDxf(writeDxf(state)).entities as unknown as Mask[], wanted);
+  }, 60_000);
+  it.each(['r2018-views-fields', 'r2018-field-object-reference', 'r2018-unicode-metadata'])('joins the real %s DWG metadata by exact source identity', async (name) => {
+    const base = join(root, 'tests/fixtures/interchange', name);
+    const oracle = JSON.parse(readFileSync(base + '.expected.json', 'utf8')) as {
+      records: Array<{ type: string; handle: string }>;
+      opaqueStrings?: Array<{ handle: string; code: number; value: string }>;
+    };
+    const { payload } = await readDwgPayload(readFileSync(base + '.dwg'));
+    const { state, report } = convertDwg(payload, 'C:/Drawings/metadata-site.dwg');
+    expect(state.cadGraph?.sourceFormat).toBe('DWG');
+    expect(report?.counts.CAD_METADATA).toBeUndefined();
+    validateCadState(state);
+    for (const record of oracle.records) expect(state.cadGraph!.nodes.find(node => node.sourceHandle === record.handle), record.handle).toMatchObject({ type: record.type });
+    expect(state.header!.views).toHaveLength(3);
+    expect(state.header!.views[2]?.camera).toMatchObject({ direction: { x: 1, y: 2, z: 3 }, target: { z: 12 } });
+    expect(state.entities.find(entity => entity.type === 'mtext')?.field).toMatchObject({ native: true, value: expect.stringContaining('metadata-site') });
+    const written = writeDxf(state), reopened = readDxf(written);
+    validateCadState(reopened);
+    expect(writeDxf(readDxf(writeDxf(reopened)))).toBe(writeDxf(reopened));
+    for (const literal of oracle.opaqueStrings ?? []) {
+      const source = state.cadGraph!.nodes.find(node => node.sourceHandle === literal.handle)!;
+      const back = reopened.cadGraph!.nodes.find(node => node.sourceHandle === literal.handle)!;
+      expect(source.groups).toContainEqual([literal.code, literal.value]);
+      expect(back.groups).toContainEqual([literal.code, literal.value]);
+    }
+    if (name !== 'r2018-views-fields') {
+      const field = state.cadGraph!.nodes.find(node => node.type === 'FIELD' && node.groups.some(([code, value]) => code === 1 && value === 'AcObjProp'))!;
+      const objectReferences = field.references!.filter(ref => [330, 331].includes(field.groups[ref.groupIndex]![0]) && ref.role !== 'owner');
+      expect(objectReferences).toHaveLength(2);
+      for (const reference of objectReferences) expect(state.cadGraph!.nodes.find(node => node.id === reference.target)).toMatchObject({ type: 'LINE', sourceHandle: '18D' });
+    }
   }, 60_000);
 });

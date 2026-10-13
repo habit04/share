@@ -50,6 +50,7 @@ import { verifyExecutableFuses } from './electron-fuse-policy.mjs';
 import { runCadFidelity } from './e2e-cad-fidelity.mjs';
 import { runViewportRotationChecks } from './e2e-viewport-rotation.mjs';
 import { runPortableDwgChecks } from './e2e-portable-dwg.mjs';
+import { runCadMetadataChecks } from './e2e-cad-metadata.mjs';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, existsSync, lstatSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { deflateSync, crc32 } from 'node:zlib';
@@ -629,6 +630,9 @@ try {
 
   step = 'Portable DWG export';
   await runPortableDwgChecks({ app, page: win, repo, outDir, check, current });
+
+  step = 'Native CAD metadata';
+  await runCadMetadataChecks({ app, page: win, repo, outDir, check, current });
 
   // ------------------------------------------------------------------ PLOT through plot-pdf
   step = 'PLOT';

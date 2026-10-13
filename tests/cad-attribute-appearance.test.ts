@@ -43,7 +43,9 @@ describe('combined native attribute appearance and placement', () => {
     const attributeOnly = native.replace('\n1001\nAcCmTransparency\n1071\n33554560', '').replace('\n440\n33554528', '').replace('\n430\nBook$Reference', '');
     expect(writeDxf(readDxf(attributeOnly))).toContain('AC1024');
     const namesOnly = attributeOnly.replace(/\n440\n\d+/g, '');
-    expect(writeDxf(readDxf(namesOnly))).toContain('AC1018');
+    const namesState = readDxf(namesOnly);
+    expect(writeDxf(namesState)).toContain('AC1024');
+    expect(writeDxf({ ...namesState, cadGraph: undefined })).toContain('AC1018');
   });
 
   it('uses parent alpha only for ByBlock attributes and keeps explicit/constant appearance through transforms', () => {

@@ -6,6 +6,7 @@ import { connectionPoints } from '../src/electrical/attributes';
 import { userLibrary } from '../src/electrical/userlib';
 import { Drawing } from '../src/core/document';
 import type { BlockDef, InsertEntity, LineEntity } from '../src/core/entities';
+import { readDxf, writeDxf } from '../src/io/dxf';
 
 const userBlock = (name: string): BlockDef => {
   const stub: LineEntity = { id: `${name}-l`, layer: '0', color: 'ByLayer', type: 'line', a: { x: -0.375, y: 0 }, b: { x: 0.375, y: 0 } };
@@ -75,6 +76,37 @@ describe('aggregated symbol library', () => {
 });
 
 describe('library blocks in saved drawings', () => {
+  it('keeps uninserted imported block identities and drops only newly added unused library definitions', () => {
+    const original = new Drawing();
+    original.ensureBlocks([findLibrarySymbol('HPB11_NO')!, findLibrarySymbol('HCR1_NO')!]);
+    const imported = readDxf(writeDxf(original.snapshot));
+    const importedNodes = imported.cadGraph!.nodes.filter((node) => node.anchor?.kind === 'table' && node.anchor.table === 'BLOCK_RECORD');
+    expect(importedNodes.map((node) => node.anchor?.kind === 'table' && node.anchor.name).sort()).toEqual(['HCR1_NO', 'HPB11_NO']);
+    const referenced = importedNodes.find((node) => node.anchor?.kind === 'table' && node.anchor.name === 'HPB11_NO')!;
+    // A synthetic external object exercises a dependency invisible to INSERT traversal.
+    const retained = { ...imported, cadGraph: { ...imported.cadGraph!, nodes: [...imported.cadGraph!.nodes, {
+      id: 'library-reference', sourceHandle: 'FFFFFFFE', type: 'XRECORD', section: 'OBJECTS',
+      anchor: { kind: 'raw' as const },
+      groups: [[5, 'FFFFFFFE'], [100, 'AcDbXrecord'], [280, '1'], [340, referenced.sourceHandle!]] as const,
+      references: [{ groupIndex: 3, kind: 'hard-pointer' as const, target: referenced.id }],
+    }] } };
+    const drawing = new Drawing();
+    drawing.load(retained);
+    drawing.ensureBlocks([findLibrarySymbol('HPB12_NC')!]);
+    const slim = withoutUnusedLibraryBlocks(drawing.snapshot);
+    expect(Object.keys(slim.blocks).sort()).toEqual(['HCR1_NO', 'HPB11_NO']);
+    expect(slim.cadGraph).toBe(retained.cadGraph);
+    const reopened = readDxf(writeDxf(slim));
+    expect(Object.keys(reopened.blocks).sort()).toEqual(['HCR1_NO', 'HPB11_NO']);
+    for (const originalNode of importedNodes) {
+      const node = reopened.cadGraph!.nodes.find((candidate) => candidate.sourceHandle === originalNode.sourceHandle);
+      expect(node?.anchor).toEqual(originalNode.anchor);
+      expect(node?.type).toBe(originalNode.type);
+    }
+    const reference = reopened.cadGraph!.nodes.find((node) => node.sourceHandle === 'FFFFFFFE')!.references!.find((edge) => edge.kind === 'hard-pointer')!;
+    expect(reopened.cadGraph!.nodes.find((node) => node.id === reference.target)?.sourceHandle).toBe(referenced.sourceHandle);
+  });
+
   it('drops unreferenced library blocks on write and keeps used and foreign ones', async () => {
     const { Drawing } = await import('../src/core/document');
     const { withoutUnusedLibraryBlocks } = await import('../src/electrical/library');

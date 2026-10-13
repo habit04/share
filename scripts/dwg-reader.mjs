@@ -128,11 +128,12 @@ export function payloadFromDatabase(db, version = '') {
     dimStyles: (db.tables?.DIMSTYLE?.entries ?? []).map((d) => ({ ...d, name: d.name })),
     linetypes: (db.tables?.LTYPE?.entries ?? []).map((t) => ({
       name: t.name,
+      ...(t.handle ? { handle: String(t.handle) } : {}),
       description: t.description,
       standardFlag: t.standardFlag,
       pattern: (t.pattern ?? []).map((x) => ({ elementLength: x.elementLength, elementTypeFlag: x.elementTypeFlag })),
     })),
-    layouts: (db.objects?.LAYOUT ?? []).map((l) => ({ name: l.layoutName, tabOrder: l.tabOrder, blockHandle: String(l.paperSpaceTableId ?? ''), minLimit: l.minLimit, maxLimit: l.maxLimit, ...(l.paperWidth !== undefined ? { plotSettings: l } : {}) })),
+    layouts: (db.objects?.LAYOUT ?? []).map((l) => ({ ...(l.handle ? { handle: String(l.handle) } : {}), name: l.layoutName, tabOrder: l.tabOrder, blockHandle: String(l.paperSpaceTableId ?? ''), minLimit: l.minLimit, maxLimit: l.maxLimit, ...(l.paperWidth !== undefined ? { plotSettings: l } : {}) })),
     omittedObjectTypes: Object.fromEntries(Object.entries(db.objects ?? {}).filter(([kind]) => !['LAYOUT', 'IMAGEDEF', 'IMAGEDEF_REACTOR'].includes(kind)).map(([kind, values]) => [kind, Array.isArray(values) ? values.length : 1])),
   };
 }

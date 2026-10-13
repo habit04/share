@@ -410,6 +410,15 @@ Ignore / Outer / Normal. Hatches from DXF and DWG files keep the pattern lines s
    properties `----`.
 4. `UPDATEFIELD` (Update Fields) re-evaluates the fields in the selected objects.
 
+On Windows, supported imported native FIELD/FIELDLIST records also retain expressions, child
+fields, ordered object references, evaluator settings and cached values. JCad reevaluates its
+supported filename, date and drawing-property expressions, plus supported sheet values when
+available. Other native evaluators keep their imported display/cache; for example, a native field
+for a referenced line's length is retained but is not recomputed after you edit the line.
+`UPDATEFIELD` reports retained caches. Editing the displayed text manually detaches its native
+association and removes only its owned FIELD tree; Undo restores it. Preserving a native field
+does not mean JCad can evaluate every AutoCAD field expression.
+
 ### Images and external references
 
 Drawings from other programs may contain raster images (IMAGE) and external references
@@ -568,6 +577,13 @@ drawing (DIMSTYLE records in DXF) and come back from DXF and DWG files.
 | LWDISPLAY | LW | Show lineweights |
 | CURSORSIZE | | Crosshair size in percent of the screen |
 
+Supported named views keep the full source camera: target and direction including Z, display
+center, width and height, twist, lens, clipping distances and mode flags. **VIEW Restore** displays
+planar orthographic model cameras looking along +Z at their source angle and switches to the
+Model tab. Paper-space, tilted, reversed and perspective cameras remain in retained data, but
+cannot be restored faithfully in this 2D editor. Named model angles and zoom histories survive
+layout and document-tab switches. A future 3D editor is separate work.
+
 ### Selection
 
 | Command | Aliases | Notes |
@@ -640,6 +656,14 @@ as in AutoCAD, and only ByBlock content follows the reference's colour.
 | QPMODE | QP | Quick Properties on selection |
 | WORKSPACE | WSCURRENT | `drafting` or `electrical` |
 | TEXTSCR | F2, TEXTWINDOW | Text window |
+
+Copies of a connected selection remap typed CAD references inside each copy and clone owned
+dictionaries and FIELD trees, including clipboard transfers between drawings. Deleting an
+object that retained metadata still requires through a hard reference refuses the edit without
+changing the drawing. Include connected dependencies in the operation when appropriate.
+Cross-document soft references whose targets were not transferred are removed and reported.
+Undo and Redo include the retained graph. Strings and binary data are opaque; file handles can
+change on save, so references from another file to specific handles are not guaranteed.
 
 ---
 
@@ -1300,16 +1324,18 @@ space, a layout, a block) and the reason; **Copy Report** copies the complete li
 `IMPORTREPORT` shows it again.
 
 - **Dropped**: not imported (for example wipeouts, multilines, polyface meshes, attribute
-  definitions outside a block, object groups, objects with invalid geometry).
-- **Simplified**: imported with some of its data left out (a MINSERT array keeps its first copy,
-  a multileader its leader and text, extended data of other applications is not kept, a 3D
-  polyline is flattened, a viewport loses its clipping boundary).
+  definitions outside a block, objects with invalid geometry).
+- **Simplified**: imported with some of its data left out (a multileader keeps its leader and
+  text, a 3D polyline is flattened, a viewport loses its clipping boundary). Unsupported or
+  unreadable application data is reported; exposed groups, dictionaries, XRECORDs and XDATA
+  can remain in the checked retained graph.
 - **Kept (not shown)**: 3D faces, and 3D solids, regions and bodies with their data stored in
   the object (DXF files up to AutoCAD 2010) cannot be shown or edited, but stay in the drawing
-  exactly as they were and are written back, on their layer, at the end of the drawing's
+  as retained records and are written back, on their layer, at the end of the drawing's
   entities when you save DXF (also when a project-wide command rewrites the file). The portable
   DWG writer refuses retained 3D/ACIS records that it cannot safely convert; use Save As to DXF
-  in that case. Their links to other objects and their extended data are not kept.
+  in that case. Available identities, typed links and application data remain in the checked
+  graph; unavailable data is reported. This is not support for editing or rendering 3D solids.
 - **Kept** (blocks): a block whose references would expand, through the blocks nested in it, to
   more than 2,000,000 objects, and a block that inserts itself (directly or through other
   blocks). The reader retains their definitions. Before a drawing opens or an edit is accepted,
@@ -1361,6 +1387,14 @@ limits. Also brought in: paper-space **layouts** with their entities and floatin
 **ByBlock** colours (so block content takes the block reference's colour), and the layers'
 lock, freeze and plot settings.
 
+The Windows native metadata reader also supplies a bounded DXF projection with an object
+inventory. Supported named VIEW records keep full cameras, and native FIELD/FIELDLIST,
+dictionaries, XRECORDs, reactor/extension links and XDATA retain exposed relationships.
+XRECORD 64-bit integers and binary values remain exact; opaque strings, including literal text
+such as `\U+0041` or escaped JSON, are preserved without interpreting them as display escapes or
+object references. The three independent metadata fixtures cover named cameras, connected
+fields/references and Unicode literals; they do not certify every proprietary DWG class.
+
 The Import Report lists missing data and approximations, including incomplete layout page
 setups, unresolved viewport layer references, font substitutions, and unsupported text or shape
 elements in complex linetypes. Exposed text-style properties and viewport frozen-layer handles
@@ -1382,15 +1416,21 @@ it was. DXF files and projects have size limits too (128 MiB and 8 MiB).
 On Windows, a drawing opened from DWG keeps its DWG destination when portable saving is available.
 **SAVE** writes there; **SAVEAS** offers DXF or DWG and lets you choose a new destination.
 The bundled writer creates AutoCAD 2018-format DWG (`AC1032`) without installed AutoCAD.
-It converts a captured DXF snapshot, reopens the result for validation, then replaces the
-destination atomically with a backup. Only the saved revision becomes clean; edits made while
+It converts a captured DXF snapshot privately and reopens the result to check supported geometry
+and the typed metadata graph. A mandatory independent LibreDWG reader check then compares the
+emitted DWG's retained OBJECTS records, named VIEW cameras, common application/reference data
+and nonvolatile source header values against that snapshot. Unsupported source schemas,
+incomplete native projection, read/write errors or changed values refuse the save. Only accepted
+output replaces the destination atomically with a backup. Only the saved revision becomes clean; edits made while
 conversion runs remain unsaved. Canceling or a failed conversion keeps the destination and recovery copy.
 
 **J menu > Export > DWG copy** or **EXPORTDWG** creates a separate DWG copy. It keeps your working
 destination, dirty state, undo history and recovery checkpoint. Use Save to save the working drawing
 separately. Saving or exporting cannot restore content lost during import; review IMPORTREPORT and
-use a new destination to preserve the original. Unsupported retained 3D/ACIS objects and detected
-conversion differences refuse DWG output. See [DWG saving](DWG-SAVING.md) for supported content and
+use a new destination to preserve the original. Unsupported retained classes or fields, 3D/ACIS
+objects and detected conversion differences refuse DWG output. DXF can retain supported raw
+records when native DWG encoding is refused; neither format restores unreadable or dropped source
+content. See [DWG saving](DWG-SAVING.md) for supported content and
 memory/file limits. The browser and other desktop editions save DXF copies; macOS and Linux desktop
 updates are paused at 0.4.5.
 

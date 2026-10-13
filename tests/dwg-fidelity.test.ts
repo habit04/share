@@ -302,7 +302,7 @@ describe('DWG payload twins carry the table data', () => {
     expect(node.layers[0]).toMatchObject({ color: 0x123456, standardFlag: 16, plotFlag: 1 });
     expect(node.styles).toEqual([{ name: 'NOTES', handle: '40', standardFlag: 0, fixedTextHeight: 0, widthFactor: 0.8, obliqueAngle: 0.1, textGenerationFlag: 0, font: 'romans.shx', bigFont: '' }]);
     expect(node.linetypes[0].pattern).toEqual([{ elementLength: 12, elementTypeFlag: 0 }, { elementLength: -3, elementTypeFlag: 0 }]);
-    expect(node.layouts).toEqual([{ name: 'Layout1', tabOrder: 1, blockHandle: '50', minLimit: { x: 0, y: 0 }, maxLimit: { x: 10, y: 5 } }]);
+    expect(node.layouts).toEqual([{ handle: '51', name: 'Layout1', tabOrder: 1, blockHandle: '50', minLimit: { x: 0, y: 0 }, maxLimit: { x: 10, y: 5 } }]);
     expect(node.dimStyles[0]).toMatchObject({ name: 'MECH', DIMTXT: 3.5 });
   });
 });

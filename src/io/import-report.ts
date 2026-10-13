@@ -87,6 +87,21 @@ export class ImportReportBuilder {
     if (!this.notes.includes(text)) this.notes.push(text);
   }
 
+  /** Correct recorded losses after a checked graph proves the source data was retained. */
+  retainItems(matches: (item: ImportReportItem) => boolean, reason: (item: ImportReportItem) => string): void {
+    for (let index = 0; index < this.items.length; index++) {
+      const item = this.items[index]!;
+      if (item.action === 'kept' || !matches(item)) continue;
+      const counts = this.counts[item.type]!;
+      const remaining = (counts[item.action] ?? 0) - 1;
+      if (remaining) counts[item.action] = remaining;
+      else delete counts[item.action];
+      counts.kept = (counts.kept ?? 0) + 1;
+      this.items[index] = { ...item, action: 'kept', reason: reason(item) };
+    }
+    // Unlisted items remain conservative: their exact source property is unavailable.
+  }
+
   get empty(): boolean {
     return this.items.length === 0 && this.omitted === 0 && this.notes.length === 0 && !this.recovered;
   }

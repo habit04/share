@@ -192,7 +192,7 @@ export function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonl
       break;
     case 'text': {
       writeEntityCommon(w, e, owner, 'TEXT', 'AcDbText');
-      writeTextLike(w, e.position, e.height, e.field && e.field.value === e.text ? e.field.code : e.text, e.rotation, e.align, e);
+      writeTextLike(w, e.position, e.height, e.field && !e.field.native && e.field.value === e.text ? e.field.code : e.text, e.rotation, e.align, e);
       if (textStyleOf(e)) w.pair(7, textStyleOf(e)!);
       if (e.widthFactor !== undefined && Math.abs(e.widthFactor - 1) > 1e-12) w.pair(41, e.widthFactor);
       if (e.oblique) w.pair(51, g.deg(e.oblique));
@@ -291,6 +291,7 @@ export function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonl
           // Attribute position in world space
           const label = attributeText(e, block, a, value, false);
           writeEntityCommon(w, label, owner, 'ATTRIB', 'AcDbText');
+          w.anchor(w.lastHandle().toString(16).toUpperCase(), { kind: 'entity', id: e.id, part: `attribute:${a.tag}` });
           writeTextLike(w, label.position, label.height, value, label.rotation, label.align, label);
           writeTextStyle(w, label);
           w.pair(100, 'AcDbAttribute');
@@ -300,6 +301,7 @@ export function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonl
         }
         w.pair(0, 'SEQEND');
         w.pair(5, w.nextHandle());
+        w.anchor(w.lastHandle().toString(16).toUpperCase(), { kind: 'entity', id: e.id, part: 'sequence-end' });
         w.pair(330, owner);
         w.pair(100, 'AcDbEntity');
         w.pair(8, e.layer);

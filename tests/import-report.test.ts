@@ -82,24 +82,24 @@ describe('import report of unsupported DXF content', () => {
     expect(item('POLYLINE', '107')).toMatchObject({ action: 'dropped', reason: expect.stringMatching(/polyface/) });
     expect(item('INSERT', '106')).toBeUndefined();
     expect(state.entities.find((e) => e.type === 'insert' && e.columns === 3 && e.rows === 2)).toBeDefined();
-    expect(item('LINE', '100')).toMatchObject({ action: 'simplified', layer: 'WIRES', reason: expect.stringMatching(/VIA_WD_WIRE/) });
+    expect(item('LINE', '100')).toMatchObject({ action: 'kept', layer: 'WIRES', reason: expect.stringMatching(/VIA_WD_WIRE/) });
     expect(item('TEXT', '10E')).toMatchObject({ action: 'simplified', reason: expect.stringMatching(/extrusion/) });
     expect(item('REGION', '103')).toMatchObject({ action: 'dropped', reason: expect.stringMatching(/stored outside the object/) });
     expect(item('3DFACE', '60')).toMatchObject({ action: 'dropped', where: 'block "HAS3D"' });
     expect(item('3DFACE', '10F')).toMatchObject({ action: 'dropped', where: 'layout "Layout1"' });
-    expect(item('GROUP', '2B0')).toMatchObject({ action: 'dropped', reason: expect.stringMatching(/Motor feed/) });
+    expect(item('GROUP', '2B0')).toMatchObject({ action: 'kept', reason: expect.stringMatching(/Motor feed/) });
     expect(item('3DFACE', '101')).toMatchObject({ action: 'kept', layer: 'SOLIDS' });
     expect(item('3DSOLID', '102')).toMatchObject({ action: 'kept', layer: 'SOLIDS' });
     expect(item('WIPEOUT', '104')!.line).toBeGreaterThan(1);
     expect(report.counts['3DFACE']).toEqual({ dropped: 2, kept: 1 });
-    expect(lossCount(report)).toBe(9);
-    expect(countOf(report, 'kept')).toBe(2);
+    expect(lossCount(report)).toBe(7);
+    expect(countOf(report, 'kept')).toBe(4);
   });
 
   it('the copied report lists counts and every item', () => {
     const text = formatImportReport(report, 'plant.dxf');
     expect(text).toMatch(/DXF import report: plant\.dxf/);
-    expect(text).toMatch(/9 object\(s\) dropped or simplified, 2 kept/);
+    expect(text).toMatch(/7 object\(s\) dropped or simplified, 4 kept/);
     expect(text).toMatch(/3DFACE: 2 dropped, 1 kept/);
     expect(text).toMatch(/WIPEOUT dropped \(handle 104, layer "0", model space, line \d+\)/);
   });
@@ -119,10 +119,10 @@ describe('import report of unsupported DXF content', () => {
     const keptOnly = readDxf(writeDxf(state));
     const r = importReportOf(keptOnly)!;
     expect(lossCount(r)).toBe(0);
-    expect(countOf(r, 'kept')).toBe(2);
+    expect(countOf(r, 'kept')).toBe(4);
     expect(reportNeedsAttention(r)).toBe(false);
     expect(reportNeedsAttention(report)).toBe(true);
-    expect(importReportLog(report).join('\n')).toMatch(/9 object\(s\) dropped or simplified, 2 kept/);
+    expect(importReportLog(report).join('\n')).toMatch(/7 object\(s\) dropped or simplified, 4 kept/);
   });
   it('reports malformed table cell metadata without throwing during format validation', () => {
     const metadata = JSON.stringify({ position: { x: 0, y: 0 }, rowHeights: [1], columnWidths: [1], cells: [[null]], textHeight: 1 });
@@ -147,19 +147,26 @@ describe('retained raw records', () => {
     expect(raw[1]!.groups).toContainEqual([1, 'mnnmi mi ofoo jl ofoo jl']);
   });
 
-  it('writes them back verbatim at the end of the ENTITIES section, on their layer, with new handles', () => {
+  it('writes retained geometry with stable identities and remapped model-space owners', () => {
     const out = writeDxf(state);
     const kinds = entityKinds(out);
-    expect(kinds.slice(-2)).toEqual(['3DFACE', '3DSOLID']);
+    expect(kinds.filter(kind => ['3DFACE', '3DSOLID'].includes(kind)).sort()).toEqual(['3DFACE', '3DSOLID']);
     const sec = entitiesSection(out);
     const at = sec.findIndex(([c, v]) => c === 0 && v === '3DFACE');
     const face = sec.slice(at + 1, sec.findIndex(([c], k) => k > at && c === 0));
     expect(face[0]![0]).toBe(5);
-    expect(face[0]![1]).not.toBe('101');
-    expect(face[1]).toEqual([330, '1F']);
-    expect(face.slice(2)).toEqual(rawEntitiesOf(state)[0]!.groups);
+    expect(face[0]![1]).toBe('101');
+    const modelHandle = readDxf(out).cadGraph!.nodes.find(node => node.type === 'BLOCK_RECORD' && node.groups.some(([code, value]) => code === 2 && value === '*Model_Space'))?.sourceHandle;
+    expect(modelHandle).toBeDefined();
+    expect(face[1]).toEqual([330, modelHandle]);
+    const geometryStart = face.findIndex(([code, value]) => code === 100 && value === 'AcDbEntity');
+    const applicationStart = face.findIndex(([code]) => code === 1001);
+    expect(face.slice(geometryStart, applicationStart)).toEqual(rawEntitiesOf(state)[0]!.groups);
+    expect(face).toContainEqual([102, '{ACAD_REACTORS']);
+    expect(face).toContainEqual([1001, 'SOMEAPP']);
+    expect(face).toContainEqual([1000, 'lost']);
     // The linetype it names exists in the LTYPE table and its layer in the LAYER table.
-    expect(out).toMatch(/\r\nLTYPE\r\n5\r\n[0-9A-F]+\r\n330\r\n5\r\n100\r\nAcDbSymbolTableRecord\r\n100\r\nAcDbLinetypeTableRecord\r\n2\r\nHIDDEN2\r\n/);
+    expect(out).toMatch(/\r\nLTYPE\r\n5\r\n[0-9A-F]+\r\n330\r\n[0-9A-F]+\r\n100\r\nAcDbSymbolTableRecord\r\n100\r\nAcDbLinetypeTableRecord\r\n2\r\nHIDDEN2\r\n/);
     expect(out).toMatch(/AcDbLayerTableRecord\r\n2\r\nSOLIDS\r\n/);
   });
 
@@ -253,7 +260,7 @@ describe('project-wide rewrite keeps the retained records', () => {
 describe('Save over the source file', () => {
   it('warns while the drawing came from that file and content was lost', () => {
     const w = saveOverwriteWarning(state, SOURCE);
-    expect(w).toMatch(/plant\.dxf contained 9 object\(s\) JCad cannot keep/);
+    expect(w).toMatch(/plant\.dxf contained 7 object\(s\) JCad cannot keep/);
     expect(w).toMatch(/Save As/);
     expect(saveOverwriteWarning(state, '/drawings/copy.dxf')).toBeNull();
     expect(saveOverwriteWarning(state, null)).toBeNull();

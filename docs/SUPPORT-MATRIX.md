@@ -8,7 +8,8 @@ AutoCAD 2007, `AC1021`, transparency uses AutoCAD 2010, `AC1024`, RGB/named colo
 DWG opens through LibreDWG (versions R14 to 2018, files up to 128 MiB). On Windows, **SAVE** keeps
 an opened DWG's destination when the portable writer is available; **SAVEAS** offers DXF or DWG.
 The bundled offline writer emits AC1032 (AutoCAD 2018) from the current supported 2D state without
-installed AutoCAD, validates the result and saves atomically with a backup. **EXPORTDWG** / **Export >
+installed AutoCAD. It requires both the writer's reopen checks and a separate LibreDWG metadata
+postflight before saving atomically with a backup. **EXPORTDWG** / **Export >
 DWG copy** writes a copy without changing the working destination or saved state. Other editions
 save DXF copies. Closed project DWGs are skipped by batch updates; open them in tabs to update them.
 External DWG import retains all the limits below. Saving cannot recover content lost on import;
@@ -49,7 +50,7 @@ the fixtures in `fixtures/` and `tests/fixtures/`.
 | ACAD_TABLE | partly | partly | as INSERT + XDATA | DXF TABLESTYLE supplies title/header/data heights, alignment and margins; cell overrides win. JCad exports a picture block with cell data in `JCAD_TABLE` XDATA. External CAD sees a block. DWG unreadable cells fall back to the anonymous picture; estimated positions and editing/metadata losses are listed in the import report. Formulas, advanced borders and fills are not modeled. *Verified:* `interchange/r2018-table.dxf`. |
 | VIEWPORT (paper space) | partly | partly | yes | Rectangular scale, model view center, planar orthographic +Z view rotation, lock/off and frozen layer names survive DXF and Windows portable DWG saving. Rotation applies to display, selection, coordinate conversion, pan/zoom and vector/raster plotting without changing model geometry. VPTWIST and the selected frame's Properties > View rotation set angles in degrees on unlocked views. DWG frozen layer handles are resolved when exposed; missing/unresolved handles are reported. Perspective views, tilted/reversed view directions and non-rectangular clipping remain approximated and reported when exposed. *Verified:* layout/image fixtures, viewport IO and rotated display/PDF regressions, and DWG payload tests. |
 | External references (xref blocks) | yes | partly | yes | Attach/overlay references and xref-dependent layer flags 16/32 survive. References display a named frame; external files are not loaded. DWG missing file paths are explicitly reported when the block name substitutes for the path. *Verified:* `interchange/r2000-nested-blocks-xref.dxf`. |
-| 3DFACE, 3DSOLID, REGION, BODY | partly | no | retained raw groups | Unknown model-space records with self-contained data are retained without rendering/editing. Original handles, reactors, cross-object links and XDATA are removed; newer solids whose data is external to the record cannot be retained. The report distinguishes retained records from losses. |
+| 3DFACE, 3DSOLID, REGION, BODY | partly | checked native projection only | retained raw groups | Model-space records with self-contained data are retained without rendering/editing. The checked object graph retains available identities, application data and typed links; model owners and references are remapped on save. Newer solids whose data is external to the record cannot be retained. Portable DWG saving refuses unsupported ACIS records; DXF can retain them. |
 | WIPEOUT, MESH, MLINE, TOLERANCE, OLE2FRAME, SURFACE, LIGHT, UNDERLAY (PDF / DGN / DWF) | no | no | no | Dropped and reported. Unsupported block/paper-space records are reported rather than silently claimed to survive. |
 
 Nonuniform transforms preserve wide-polyline geometry directionally. An exploded affine wide
@@ -64,17 +65,17 @@ do not change native widths saved inside an existing nonuniform block reference.
 | Item | DXF read | DWG read | DXF write | Known losses |
 | --- | --- | --- | --- | --- |
 | Layers | yes | partly | yes | ACI/RGB and named-color identity, linetype, lineweight, on/off, frozen, locked and no-plot (DXF) survive. DXF layer opacity uses registered `AcCmTransparency` XDATA; layer group 440 is also accepted on read. DWG keeps unambiguous exposed alpha, but the converter can omit the layer method/XDATA, so a default zero byte cannot safely distinguish an opaque layer from an explicitly transparent one; this is reported. *Verified:* `interchange/r2018-truecolor-linetypes.dxf`, `interchange/r2010-appearance.dxf` and appearance regressions. The Default lineweight -3 is written back as 0.25 mm. |
-| Linetypes (LTYPE) | yes | yes | yes | Dash patterns (group 49). Text or shapes embedded in complex linetypes are not drawn; only the dashes are. *Verified by fixtures:* `interchange/r2018-truecolor-linetypes.dxf` (GAS_LINE, FENCELINE1: dashes kept, text and shape not written). |
+| Linetypes (LTYPE) | yes | yes | yes | Dash patterns (group 49). Complex text/shape definitions and their style references are retained while the editor draws the dashes. Editing their dash pattern refuses saving until native complex regeneration is supported. *Verified:* `interchange/r2018-truecolor-linetypes.dxf` and graph annotation regressions. |
 | Text styles (STYLE) | yes | yes | yes | Name, font file / TrueType family, big font, height, width factor, oblique, flags. |
 | Dimension styles (DIMSTYLE) | partly | partly | partly | Supported DIM variables include DIMDSEP decimal commas, DIMTXSTY resolved STYLE handles, DIMTZIN independent tolerance suppression, DIMLWD/E lineweights and DIMAPOST `[]` substitution. DIMADEC -1 inherits DIMDEC. Arrow names/basic tolerances/alternate placement use `JCAD_DIMSTYLE` XDATA, so external readers may use their defaults; dimension picture geometry preserves the appearance. Unsupported non-default native style/header variables and unmodeled `ACAD_DSTYLE_*` metadata are reported. *Verified:* both dimension fixtures and active regression tests. |
-| Blocks and attributes | yes | yes | yes | Nested blocks, base point, description. Unused library blocks are left out on save. *Verified by fixtures:* `interchange/r2000-nested-blocks-xref.dxf`, `interchange/r2000-layouts-titleblock.dxf`. |
-| Named views (VIEW) | yes | no | yes | |
-| Header variables | partly | partly | partly | Kept: $INSUNITS, $LUNITS / $LUPREC, $AUNITS / $AUPREC, $LIMMIN / $LIMMAX, $LTSCALE, $CELTYPE / $CELTSCALE, $CELWEIGHT, $TEXTSTYLE, $CLAYER, $PDMODE / $PDSIZE, $DIMSTYLE and the current style's supported $DIM* variables. DXF retains valid source angular formats, current entity linetype scale and current text style; DWG retains the values exposed by its reader, including resolved style names. Absent values default to 0, 1 and Standard on export. JCad's angle display remains decimal degrees; new entities do not yet inherit $CELTSCALE / $TEXTSTYLE. $CANNOSCALE / $ANNOALLVISIBLE are read for JCad annotation display but are not valid AutoCAD 2000 header variables; $TDCREATE / $TDUPDATE are read as document timestamps. $DWGCODEPAGE decodes older files. Other header variables are dropped. *Verified:* `tests/interchange-header-settings.test.ts` and interchange fixtures. |
+| Blocks and attributes | yes | yes | yes | Nested blocks, base point, description. Imported definitions referenced by retained metadata stay in the drawing even without visible INSERTs; newly added unused library blocks can be left out. *Verified by fixtures:* `interchange/r2000-nested-blocks-xref.dxf`, `interchange/r2000-layouts-titleblock.dxf`; graph-backed library regressions. |
+| Named views (VIEW) | yes | Windows native subset | yes | Supported records retain full target/direction including Z, DCS center, width/height, twist, lens, clips and mode flags. Restore supports planar orthographic +Z model cameras in the Model tab. Paper-space, tilted, reversed and perspective cameras remain retained without faithful 2D restoration; future 3D editing is separate work. Independent `interchange/r2018-views-fields`, `r2018-field-object-reference` and `r2018-unicode-metadata` DWG/DXF fixtures cover full cameras and Unicode names. |
+| Header variables | partly | partly | retained or refused | Modeled settings include $INSUNITS, $LUNITS / $LUPREC, $AUNITS / $AUPREC, $LIMMIN / $LIMMAX, $LTSCALE, $CELTYPE / $CELTSCALE, $CELWEIGHT, $TEXTSTYLE, $CLAYER, $PDMODE / $PDSIZE, $DIMSTYLE and supported $DIM* variables. Unmodeled source groups remain in the checked DXF graph when available. Portable DWG preflight refuses unknown/unconsumed header schemas and unsupported nondefault values; independent postflight checks nonvolatile source variables, including symbol references. This does not promise arbitrary header encoding. Absent modeled values use defaults. JCad displays decimal degrees; new entities do not yet inherit $CELTSCALE / $TEXTSTYLE. $CANNOSCALE / $ANNOALLVISIBLE support JCad annotation display, $TDCREATE / $TDUPDATE supply timestamps and $DWGCODEPAGE decodes older files. *Verified:* `tests/interchange-header-settings.test.ts`, graph/header refusal tests and interchange fixtures. |
 | Layouts (paper space) | yes | yes | yes | `*Paper_Space` blocks, LAYOUT objects in `ACAD_LAYOUT` (paper size, margins, plot scale); from DWG the LAYOUT objects and their paper-space blocks (a lone, untouched Layout1 is not kept). A drawing always opens in the Model tab. Plot style tables (CTB / STB) are not read. *Verified by fixtures:* `interchange/r2000-layouts-titleblock.dxf` (two layouts, `*Paper_Space0`, plot scale 1:2, saved with $TILEMODE 0), `interchange/r2018-image-inches.dxf` (inch paper, plot rotation). |
 | Annotative objects | yes | no | yes | `AcadAnnotative` XDATA; one annotation scale per object. |
-| Fields | yes | partly | yes | Evaluated on open, written back as field codes; DWG keeps most fields in FIELD objects, which are read as their last displayed value. |
-| Groups, object data, other XDATA / XRECORDs | no | no | no | Unmodeled DXF application data and object metadata are reported as losses, including ACAD-prefixed data. DWG import reports exposed omitted object types and a conservative reader-limit warning because the reader may omit XDATA/dictionaries/fields entirely. Estimated positions/shape approximations are included in the structured report and notes. |
-| Handles | no | no | new | Handles are reassigned on save; references from outside the file to object handles do not survive. |
+| Fields | partly | Windows native subset | yes | Native FIELD/FIELDLIST objects retain expressions, children, ordered reference vectors, evaluator settings and caches. JCad reevaluates supported filename/date/drawing-property expressions and available supported sheet values. Unsupported native evaluators, including AcObjProp object properties, keep the imported display/cache even after geometry changes; UPDATEFIELD reports this. Native expressions stay in their FIELD graph, while inline-only fields retain their text-code format. Manual text overrides remove only the affected owned FIELD tree; Undo restores it. Independent metadata fixtures and field-reference tests cover retained associations. |
+| Groups, object data, other XDATA / XRECORDs | retained | Windows native subset | retained or refused | Exposed dictionaries, groups, ordered typed values, exact 64-bit integers/binary, application records and reactor/extension links are retained in the checked graph. Owned metadata follows copies and undo; typed references remap within connected copy sets, including clipboard transfers. Deleting a hard referenced object refuses atomically; missing hard dependencies also refuse saving. Absent cross-document soft references are removed and reported. Opaque string literals are not Unicode-decoded or searched for handles. Unknown classes/unconsumed fields or any independent postflight difference can refuse DWG output; DXF retention does not certify native encoding. Native inventory and the three independent metadata fixtures define tested coverage; fallback imports still report unreadable data. |
+| Handles | retained identities | typed graph | remapped consistently | Document identities are separate from file handles. DXF prefers original handles where available and assigns fresh handles to copies; all typed reference edges remap together. Arbitrary 320–329 handles, strings and binary are opaque. References from another file to particular handles are not guaranteed. |
 
 ## Colours
 
@@ -114,11 +115,20 @@ DXF numbers must consume the complete value; garbage suffixes never become valid
 prefixes. Rejected geometry carries its source handle, layer, space and line/group context;
 invalid numeric headers are rejected with the variable and value line.
 Display precision is limited to 0–8, with -1 also accepted for DIMADEC; damaged direct-call
-settings are bounded before numeric formatting. DXF integer values must be safe finite integers
-and group codes must be in 0–1071. Default budgets are
+settings are bounded before numeric formatting. Modeled numeric integers must be safe finite
+integers; retained XRECORD 64-bit integers use exact decimal storage. Group codes must be in
+0–1071. Default budgets are
 128 million source characters, 2 million pairs, 250,000 records and 1 MiB per string. Line/string
 budgets are checked before splitting the source into arrays. DWG conversion also limits
 records, string lengths, total string data, metadata nodes and nesting depth.
+
+Windows DWG output also requires an independent LibreDWG postflight of the emitted bytes.
+It compares retained OBJECTS payloads, full named VIEW cameras, common reactor/extension/XDATA
+groups and nonvolatile source header values against the source DXF, with logical reference
+targets checked across handle changes. Incomplete projection, native warnings/errors, missing
+identities or changed values refuse output before the destination is replaced. The native
+projection is bounded to 32 MiB and 100,000 inventory objects. These guards establish the
+tested subset and safe refusal; they do not make arbitrary DWG metadata lossless.
 
 Installed AutoCAD 2027 validation opens JCad exports, runs AUDIT and DXFOUT, then reimports
 the normalized result. The dimension, hatch, layout, MTEXT, table and sample exports passed
@@ -146,7 +156,8 @@ Electrical, so it survives a round trip through other programs that keep blocks 
 ## Not supported at all
 
 - DWG saving outside the Windows desktop edition, or lossless preservation of every original DWG object and metadata field.
-- 3D geometry and 3D views (only the XY projection of 2D-capable entities is read).
+- Editing/rendering 3D geometry or restoring tilted, reversed and perspective cameras in 3D.
+  Supported named-view camera data is retained; the editor still uses the XY drawing plane.
 - Parametric constraints, dynamic-block actions, sheet sets, data links, digital signatures.
 
 ## Platforms

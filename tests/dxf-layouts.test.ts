@@ -129,7 +129,7 @@ describe('DXF layouts: round trip', () => {
   });
   it('a second round trip is stable', () => {
     const again = readDxf(writeDxf(back));
-    const strip = (l: Layout) => ({ ...l, entities: l.entities.map((e) => ({ ...e, id: '' })), viewports: l.viewports.map((v) => ({ ...v, id: '' })) });
+    const strip = (l: Layout) => ({ ...l, entities: l.entities.map((e) => ({ ...e, id: '', cadIdentity: '' })), viewports: l.viewports.map((v) => ({ ...v, id: '' })) });
     expect(again.layouts!.map(strip)).toEqual(back.layouts!.map(strip));
   });
   it('a drawing that never used layouts writes Layout1 and reads back without layouts', () => {

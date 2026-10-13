@@ -8,6 +8,7 @@ import * as g from '../../core/geometry';
 import { STANDARD_DIMSTYLE } from '../../core/dimension';
 import type { TextPlacement } from '../../core/text-placement';
 import { transparencyToDxf, validColorName } from '../../core/appearance';
+import type { CadAnchor } from '../../core/cad-graph';
 
 // ---------------------------------------------------------------- writing
 
@@ -22,6 +23,8 @@ export class Writer {
   private handle = 0x100;
   readonly textStyleHandles = new Map<string, string>();
   readonly dimensionStyles = new Map<string, DimStyle>();
+  readonly cadAnchors = new Map<string, CadAnchor>();
+  anchor(handle: string, anchor: CadAnchor): void { this.cadAnchors.set(handle, anchor); }
   pair(code: number, value: string | number): void {
     this.out.push(String(code), typeof value === 'number' ? fmt(value) : value);
   }
@@ -56,6 +59,7 @@ export function writeAnnotativeXdata(w: Writer): void {
 export function writeEntityCommon(w: Writer, e: Entity, owner: string, kind: string, subclass: string): void {
   w.pair(0, kind);
   w.pair(5, w.nextHandle());
+  w.anchor(w.lastHandle().toString(16).toUpperCase(), { kind: 'entity', id: e.id });
   w.pair(330, owner);
   w.pair(100, 'AcDbEntity');
   if (paperOwners.has(owner)) w.pair(67, 1);
