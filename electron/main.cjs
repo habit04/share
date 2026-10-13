@@ -118,6 +118,10 @@ registerMenuIpc(ctx);
 registerUpdatesIpc(ctx);
 const fontMetricsHost = process.platform === 'win32' ? createFontMetricsHost() : null;
 if (fontMetricsHost) ipcMain.handle('font-metrics', (_event, request) => fontMetricsHost.read(request).catch(() => null));
+if (fontMetricsHost) ipcMain.handle('pdf-font', async (_event, request) => {
+  try { return { font: await fontMetricsHost.readPdf(request) }; }
+  catch (error) { return { font: null, problem: String(error?.message || 'Installed font embedding unavailable.') }; }
+});
 app.on('will-quit', () => { void fontMetricsHost?.dispose(); });
 
 // Headless probe used by packaging smoke tests:  jcad --probe-dwg <file.dwg>

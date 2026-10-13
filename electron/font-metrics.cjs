@@ -470,9 +470,9 @@ function unchanged(a, b) { return sameFile(a, b) && a.size === b.size && a.mtime
  * for private tests/main-process configuration; it must never be accepted from renderer IPC.
  * @param {FontMetricsRequest} request
  * @param {{ fontsDirectory?: string }} [options]
- * @returns {Promise<NativeFontMetrics & { resolvedFilename: string }>}
+ * @returns {Promise<{ metrics: NativeFontMetrics & { resolvedFilename: string }, bytes: Uint8Array }>}
  */
-async function readWindowsFontMetrics(request, { fontsDirectory } = {}) {
+async function readWindowsFontData(request, { fontsDirectory } = {}) {
   const { filename, expectedFamily } = fontRequest(request);
   if (fontsDirectory === undefined) {
     if (process.platform !== 'win32') fail('installed Windows font metrics are unavailable on this platform');
@@ -498,8 +498,15 @@ async function readWindowsFontMetrics(request, { fontsDirectory } = {}) {
     const metrics = parseFontMetrics(data);
     if (expectedFamily && familyKey(metrics.family) !== familyKey(expectedFamily)) fail('installed font family does not match the requested family');
     if (request.bold !== undefined && metrics.bold !== request.bold || request.italic !== undefined && metrics.italic !== request.italic) fail('installed font style does not match the requested style flags');
-    return { ...metrics, resolvedFilename: path.basename(resolved) };
+    return { metrics: { ...metrics, resolvedFilename: path.basename(resolved) }, bytes: data };
   } finally { await handle.close(); }
 }
 
-module.exports = { parseFontMetrics, readWindowsFontMetrics, MAX_FONT_BYTES };
+/**
+ * Metadata-only callers never receive the installed font program.
+ * @param {FontMetricsRequest} request @param {{ fontsDirectory?: string }} [options]
+ * @returns {Promise<NativeFontMetrics & { resolvedFilename: string }>}
+ */
+async function readWindowsFontMetrics(request, options) { return (await readWindowsFontData(request, options)).metrics; }
+
+module.exports = { parseFontMetrics, readWindowsFontMetrics, readWindowsFontData, MAX_FONT_BYTES };

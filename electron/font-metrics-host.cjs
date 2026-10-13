@@ -48,10 +48,11 @@ function createFontMetricsHost({ workerFactory = (request) => new Worker(path.jo
       worker.once('exit', () => { exited = true; if (settled) release(); else void finish(new Error('Font metric worker exited before returning metrics.'), null); });
     }
   }
-  return {
-    read(value) {
+  function read(value, pdf = false) {
+      /** @type {ReturnType<typeof fontRequest> & {usage?: string}} */
       let request;
       try { request = fontRequest(value); } catch (error) { return Promise.reject(error); }
+      if (pdf) request = { ...request, usage: 'pdf' };
       if (disposed) return Promise.reject(new Error('Font metric reader is closed.'));
       const key = JSON.stringify(request), existing = pending.get(key);
       if (existing) return existing;
@@ -60,7 +61,10 @@ function createFontMetricsHost({ workerFactory = (request) => new Worker(path.jo
       pending.set(key, promise);
       void promise.finally(() => { pending.delete(key); }).catch(() => {});
       pump(); return promise;
-    },
+  }
+  return {
+    read: (value) => read(value),
+    readPdf: (value) => read(value, true),
     async dispose() {
       disposed = true;
       for (const item of queue.splice(0)) item.reject(new Error('Font metric reader is closed.'));

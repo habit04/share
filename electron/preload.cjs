@@ -51,6 +51,7 @@ contextBridge.exposeInMainWorld('jcad', {
   // Windows portable DWG saving and separate DWG copies.
   ...(process.platform === 'win32' ? {
     fontMetrics: (request) => ipcRenderer.invoke('font-metrics', request),
+    pdfFont: (request) => ipcRenderer.invoke('pdf-font', request),
     dwgExportStatus: () => ipcRenderer.invoke('dwg-export-status'),
     saveDwg: (path, text) => ipcRenderer.invoke('save-dwg', path, text),
     chooseDwgPath: (suggestName) => ipcRenderer.invoke('choose-dwg-path', String(suggestName || '')),

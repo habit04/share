@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import type { FontMetricsRequest, NativeFontMetrics } from '../src/core/text-metrics';
 
 const require = createRequire(import.meta.url);
-type Host = { read(request: unknown): Promise<unknown>; dispose(): Promise<void> };
+type Host = { read(request: unknown): Promise<unknown>; readPdf(request: unknown): Promise<unknown>; dispose(): Promise<void> };
 const { createFontMetricsHost, fontRequest } = require('../electron/font-metrics-host.cjs') as {
   createFontMetricsHost(options?: { workerFactory?: (request: FontMetricsRequest) => FakeWorker; timeoutMs?: number }): Host;
   fontRequest(request: unknown): FontMetricsRequest;
@@ -271,6 +271,15 @@ describe('font metric worker scheduling and containment', () => {
 
 const installedBoldArial = join(process.env.WINDIR || process.env.SystemRoot || 'C:\\Windows', 'Fonts', 'arialbd.ttf');
 describe('actual Windows font metric worker', () => {
+  it.runIf(process.platform === 'win32' && existsSync(installedBoldArial))('keeps metric usage spoofing metadata-only and reads PDF bytes only through the separate host method', async () => {
+    const host = createFontMetricsHost({ timeoutMs: 10_000 }); hosts.push(host);
+    const request = { font: 'arialbd.ttf', family: 'Arial', bold: true, usage: 'pdf' };
+    const metadata = await host.read(request);
+    expect(metadata).not.toHaveProperty('bytes'); expect(metadata).toHaveProperty('family', 'Arial');
+    const program = await host.readPdf(request) as { bytes: Uint8Array; metrics: NativeFontMetrics; postscriptName: string };
+    expect(program.bytes).toBeInstanceOf(Uint8Array); expect(program.bytes.byteLength).toBeGreaterThan(12);
+    expect(program.metrics.bold).toBe(true); expect(program.postscriptName).toBe('Arial-BoldMT');
+  }, 15_000);
   it.runIf(process.platform === 'win32' && existsSync(installedBoldArial))('reads installed bold Arial in the real worker without substituting the regular face or returning font bytes', async () => {
     const host = createFontMetricsHost({ timeoutMs: 10_000 }); hosts.push(host);
     const value = await read(host, { font: 'arialbd.ttf', family: 'Arial' }) as NativeFontMetrics & { resolvedFilename: string };
