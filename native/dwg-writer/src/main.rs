@@ -2202,16 +2202,73 @@ mod tests {
             source.object_xdata[&Handle::new(0x155)].records(),
             dxf_reopened.object_xdata[&Handle::new(0x155)].records()
         );
-        let before = metadata_snapshot(&source).unwrap()["xdata"].clone();
-        assert!(!before.as_object().unwrap().is_empty());
+        assert_eq!(
+            metadata_snapshot(&source).unwrap_err(),
+            "Drawing metadata contains an unresolved reference."
+        );
+        // This small fixture omits constructor context. Complete only a test
+        // clone; the incomplete imported source must remain refused.
+        assert!(!text.contains("\n9\n$DIMTXSTY\n"));
+        assert!(!text.contains("\n0\nMLEADERSTYLE\n"));
+        let imported_style = source.objects[&Handle::new(0x155)].clone();
+        let imported_xdata = source.object_xdata[&Handle::new(0x155)].records().to_vec();
+        let standard = source.text_styles.get("Standard").unwrap().handle;
+        assert_eq!(standard, Handle::new(0x10B));
+        let constructor = CadDocument::new();
+        let missing_standard = constructor.header.dim_text_style_handle;
+        assert_eq!(source.header.dim_text_style_handle, missing_standard);
+        let aliases = metadata_aliases(&source).unwrap();
+        assert!(!aliases.contains_key(&missing_standard.value()));
+        let mut completed = source.clone();
+        completed.header.dim_text_style_handle = standard;
+        let mut completed_styles = 0;
+        for object in completed.objects.values_mut() {
+            if let ObjectType::MultiLeaderStyle(style) = object {
+                assert_eq!(style.name, "Standard");
+                assert_eq!(style.text_style_handle, Some(missing_standard));
+                style.text_style_handle = Some(standard);
+                completed_styles += 1;
+            }
+        }
+        assert_eq!(completed_styles, 1);
+        assert_eq!(completed.objects[&Handle::new(0x155)], imported_style);
+        assert_eq!(
+            completed.object_xdata[&Handle::new(0x155)].records(),
+            imported_xdata.as_slice()
+        );
+        verify_source_literals(&completed, &literals).unwrap();
+        assert!(metadata_snapshot(&source).is_err());
+        let before = metadata_snapshot(&completed).unwrap();
+        assert!(!before["xdata"].as_object().unwrap().is_empty());
         let mut output = std::io::Cursor::new(Vec::new());
-        DwgWriter::write_to_writer(&mut output, &source).unwrap();
+        DwgWriter::write_to_writer(&mut output, &completed).unwrap();
         output.set_position(0);
         let reopened = DwgReader::from_stream(output).read().unwrap();
+        let reopened_standard = reopened.text_styles.get("Standard").unwrap().handle;
+        assert_eq!(reopened.header.dim_text_style_handle, reopened_standard);
+        let reopened_styles = reopened
+            .objects
+            .values()
+            .filter_map(|object| match object {
+                ObjectType::MultiLeaderStyle(style) => Some(style),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(reopened_styles.len(), 1);
+        assert_eq!(reopened_styles[0].text_style_handle, Some(reopened_standard));
+        // Both full snapshots require all references to resolve. Compare the
+        // complete XDATA payload and the completed header reference context.
+        let after = metadata_snapshot(&reopened).unwrap();
         equivalent(
-            &before,
-            &metadata_snapshot(&reopened).unwrap()["xdata"],
+            &before["xdata"],
+            &after["xdata"],
             "TABLESTYLE XDATA DWG",
+        )
+        .unwrap();
+        equivalent(
+            &before["header"],
+            &after["header"],
+            "completed test constructor HEADER DWG",
         )
         .unwrap();
     }
