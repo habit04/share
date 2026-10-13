@@ -14,9 +14,10 @@ const fail = (code, message) => Object.assign(new Error(message), { code });
 /** @typedef {{captureWriteTarget:(path:string,root?:string)=>Promise<WriteTarget>, revalidate:(pin:WriteTarget,options?:{preserveLeaf?:boolean,preserveVersion?:boolean})=>Promise<WriteTarget>}} PathIdentity */
 /** @typedef {{logicalPath:string,destinationPath:string,canonicalPath:string,root?:string,signal:AbortSignal,guard:()=>Promise<void>,guardParents:()=>Promise<void>,markCommitted:()=>Promise<void>}} WriterContext */
 /** @typedef {(payload:string|Uint8Array,context:WriterContext)=>Promise<unknown>} SaveWriter */
+/** @typedef {{logicalPath:string,destinationPath:string,canonicalPath:string,root?:string,signal:AbortSignal,guard:()=>Promise<void>,guardParents:()=>Promise<void>}} PreparationContext */
 /** @typedef {{signal:AbortSignal, target:WriteTarget, commit:(payload:string|Uint8Array,writer:SaveWriter)=>Promise<unknown>}} SaveScope */
 /** @typedef {{order:bigint, after:string|null, origins:Set<string|null>,parentPath:string,targetPath:string}} LedgerEntry */
-/** @typedef {{ticket:string,owner:object,kind:string,order:bigint,deadline:number,state:'issued'|'binding'|'bound'|'running',abort:AbortController,pin?:WriteTarget,root?:string,task?:Promise<unknown>}} Admission */
+/** @typedef {{ticket:string,owner:object,kind:string,order:bigint,deadline:number,state:'issued'|'binding'|'bound'|'preparing'|'running',abort:AbortController,pin?:WriteTarget,root?:string,task?:Promise<unknown>}} Admission */
 
 /**
  * Tickets must be issued before serialization/conversion begins. The owner is a
@@ -104,6 +105,7 @@ function createSaveAdmissions(options) {
     })();
     entry.task = task; return task;
   }
+  /** @template T @param {string} key @param {()=>Promise<T>} job @returns {Promise<T>} */
   function enqueue(key, job) {
     const previous = tails.get(key) || Promise.resolve();
     const result = previous.then(job, job), tail = result.then(() => undefined, () => undefined);
@@ -137,6 +139,60 @@ function createSaveAdmissions(options) {
   function annotate(error, committed) {
     const out = fail(error?.code || 'ERR_SAVE_OPERATION', error?.message || 'The save failed.');
     return Object.assign(out, { cause: error, committed });
+  }
+  /**
+   * Copy preparation (such as a bulk command's backup) uses the same namespace
+   * queue as its subsequent save, without consuming the ticket or claiming that
+   * the original file was saved. A failed copy keeps a noncancelled ticket bound
+   * so the caller can explicitly continue without a backup. No observed outside
+   * edit becomes an own version transition. The callback must await guard before
+   * replacing its backup, and join all its cleanup before returning/rejecting.
+   * @param {string} ticket @param {object} owner @param {string} kind @param {string} value
+   * @param {(context:PreparationContext)=>Promise<unknown>} operation
+   * @returns {Promise<Readonly<{status:'prepared',value:unknown}|{status:'stale',committed:false}>>}
+   */
+  function prepare(ticket, owner, kind, value, operation) {
+    const entry = get(ticket, owner, kind);
+    if (entry.state !== 'bound' || typeof operation !== 'function') throw fail('ERR_SAVE_TICKET', 'A bound ticket and copy preparation are required.');
+    const initial = samePath(entry, value);
+    entry.state = 'preparing';
+    const task = (async () => {
+      try {
+        abortCheck(entry); await permission(entry, initial.logicalPath); abortCheck(entry);
+        return await enqueue(initial.queueKey, async () => {
+          abortCheck(entry); await permission(entry, initial.logicalPath); abortCheck(entry);
+          const current = await identity.revalidate(initial);
+          if (!current.parentExists) throw fail('ENOENT', 'The save parent does not exist.');
+          const checkOrder = (target) => {
+            const previous = ledger.get(target.targetKey);
+            if (previous && previous.order > entry.order) throw fail('ERR_SAVE_STALE', 'A newer host save has already reached this file.');
+            return previous;
+          };
+          checkVersion(initial, current, checkOrder(current));
+          let active = true;
+          const activeCheck = () => { if (!active || entry.state !== 'preparing' || pending.get(entry.ticket) !== entry) throw fail('ERR_SAVE_TICKET', 'The backup preparation is no longer active.'); };
+          const guardParents = async () => { activeCheck(); await identity.revalidate(current, { preserveLeaf: true }); };
+          const guard = async () => {
+            activeCheck(); abortCheck(entry); await permission(entry, initial.logicalPath); abortCheck(entry);
+            const target = await identity.revalidate(current, { preserveLeaf: true, preserveVersion: true });
+            checkOrder(target);
+          };
+          try {
+            await guard();
+            const result = await operation(Object.freeze({ logicalPath: initial.logicalPath, destinationPath: current.destinationPath, canonicalPath: current.canonicalPath,
+              ...(entry.root === undefined ? {} : { root: entry.root }), signal: entry.abort.signal, guard, guardParents }));
+            await guard(); return Object.freeze({ status: /** @type {'prepared'} */ ('prepared'), value: result });
+          } finally { active = false; }
+        });
+      } catch (error) {
+        if (error?.code === 'ERR_SAVE_STALE' && !entry.abort.signal.aborted) return Object.freeze({ status: 'stale', committed: false });
+        throw annotate(error, false);
+      } finally {
+        if (entry.abort.signal.aborted) finish(entry);
+        else { entry.state = 'bound'; entry.deadline = now() + ttlMs; prune(); }
+      }
+    })();
+    entry.task = task; return task;
   }
   function run(ticket, owner, kind, value, operation) {
     const entry = get(ticket, owner, kind);
@@ -241,6 +297,6 @@ function createSaveAdmissions(options) {
     prune(); await Promise.allSettled(tasks); prune();
   }
   const stats = () => Object.freeze({ pending: pending.size, ledger: ledger.size, queuedBytes, queues: tails.size });
-  return Object.freeze({ issue, bind, run, cancel, retireOwner, dispose, stats });
+  return Object.freeze({ issue, bind, prepare, run, cancel, retireOwner, dispose, stats });
 }
 module.exports = { SAVE_KINDS, SAVE_ADMISSION_LIMITS: LIMITS, createSaveAdmissions };

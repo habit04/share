@@ -8,6 +8,7 @@ const { createWindowsPathIdentity } = require('../electron/windows-path-identity
 const { createSaveAdmissions, SAVE_ADMISSION_LIMITS } = require('../electron/save-admissions.cjs');
 const { createAtomicWriter } = require('../electron/atomic-write.cjs');
 type WriterContext = { destinationPath: string; logicalPath: string; canonicalPath: string; root?: string; signal: AbortSignal; guard(): Promise<void>; guardParents(): Promise<void>; markCommitted(): Promise<void> };
+type PreparationContext = Omit<WriterContext, 'markCommitted'>;
 type Scope = { signal: AbortSignal; commit(data: string | Uint8Array, writer: (data: string | Uint8Array, ctx: WriterContext) => Promise<unknown>): Promise<unknown> };
 const privateRoot = path.resolve('.codex-local/save-admission-tests'), roots: string[] = [], hosts: any[] = [];
 function deferred<T = void>() { let resolve!: (value: T | PromiseLike<T>) => void; const promise = new Promise<T>((done) => { resolve = done; }); return { promise, resolve }; }
@@ -23,6 +24,18 @@ async function write(data: string | Uint8Array, ctx: WriterContext) {
   const writer = createAtomicWriter(undefined, { hooks: { beforeRename: () => ctx.guard() } });
   const result = await writer.atomicWriteFile(ctx.destinationPath, data, { backup: true, root: ctx.root });
   await ctx.markCommitted(); return result;
+}
+async function copyBackup(ctx: PreparationContext, beforeRename?: () => Promise<void>) {
+  const temporary = `${ctx.destinationPath}.backup-preparation.tmp`, backup = `${ctx.destinationPath}.bak`; let created = false;
+  try {
+    await ctx.guard(); await fs.copyFile(ctx.destinationPath, temporary, fs.constants.COPYFILE_EXCL); created = true;
+    if (beforeRename) await beforeRename();
+    await ctx.guard(); await fs.rename(temporary, backup); created = false; await ctx.guardParents(); return backup;
+  } finally { if (created) { await ctx.guardParents(); await fs.rm(temporary); } }
+}
+async function writeWithoutBackup(data: string | Uint8Array, ctx: WriterContext) {
+  const writer = createAtomicWriter(undefined, { hooks: { beforeRename: () => ctx.guard() } });
+  const result = await writer.atomicWriteFile(ctx.destinationPath, data, { backup: false, root: ctx.root }); await ctx.markCommitted(); return result;
 }
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -249,5 +262,91 @@ describe.runIf(process.platform === 'win32')('Native Windows admitted saves', ()
     f.host.retireOwner(f.owner); expect(() => f.host.issue(f.owner, 'drawing')).toThrow(); expect(() => f.host.issue({}, 'drawing')).toThrowError(/Too many/);
     let disposed = false; const disposing = f.host.dispose().then(() => { disposed = true; }); await Promise.resolve(); expect(disposed).toBe(false); gate.resolve(); await rejected; await disposing;
     expect(disposed).toBe(true); expect(f.host.stats()).toMatchObject({ pending: 0, queuedBytes: 0 }); expect(() => f.host.issue({}, 'drawing')).toThrow();
+  });
+});
+
+describe.runIf(process.platform === 'win32')('Non-consuming guarded backup preparation', () => {
+  it('copies the native stored-case file and reuses its ticket for a save without replacing the prepared backup', async () => {
+    const f = await setup(), stored = path.join(f.root, 'Case.dxf'), alias = path.join(f.root, 'case.dxf'); await fs.writeFile(stored, 'before bulk edit');
+    const ticket = await f.ticket(alias), copy = vi.fn(copyBackup);
+    expect(await f.host.prepare(ticket, f.owner, 'drawing', alias, copy)).toEqual({ status: 'prepared', value: `${stored}.bak` });
+    expect(copy.mock.calls[0]![0].destinationPath).toBe(stored); expect(f.host.stats()).toMatchObject({ pending: 1, ledger: 0 });
+    expect(await fs.readFile(`${stored}.bak`, 'utf8')).toBe('before bulk edit'); expect(await fs.readFile(stored, 'utf8')).toBe('before bulk edit');
+    expect((await f.run(ticket, alias, async (scope) => scope.commit('after bulk edit', writeWithoutBackup))).status).toBe('saved');
+    expect(await fs.readFile(stored, 'utf8')).toBe('after bulk edit'); expect(await fs.readFile(`${stored}.bak`, 'utf8')).toBe('before bulk edit');
+    expect(await fs.readdir(f.root)).toEqual(['Case.dxf', 'Case.dxf.bak']);
+  });
+  it.each([false, true])('refuses a stale native alias backup without changing .bak (previous file=%j)', async (exists) => {
+    const f = await setup(), oldFile = path.join(f.root, '\u1f80.dxf'), newerFile = path.join(f.root, '\u1f88.dxf');
+    if (exists) await fs.writeFile(oldFile, 'original'); const old = await f.ticket(oldFile), newer = await f.ticket(newerFile);
+    await f.run(newer, newerFile, async (scope) => scope.commit('newest', write)); const entries = await fs.readdir(f.root), copy = vi.fn(copyBackup);
+    const backup = exists ? await fs.readFile(`${oldFile}.bak`, 'utf8') : undefined;
+    expect(await f.host.prepare(old, f.owner, 'drawing', oldFile, copy)).toEqual({ status: 'stale', committed: false });
+    expect(copy).not.toHaveBeenCalled(); expect(await fs.readdir(f.root)).toEqual(entries); if (exists) expect(await fs.readFile(`${oldFile}.bak`, 'utf8')).toBe(backup);
+    expect((await f.run(old, oldFile, async (scope) => scope.commit('older', writeWithoutBackup))).status).toBe('stale'); expect(await fs.readFile(oldFile, 'utf8')).toBe('newest');
+  });
+  it('serializes an in-progress backup and another ticket save in the same parent queue', async () => {
+    const f = await setup(); await fs.writeFile(f.file, 'original'); const old = await f.ticket(), newer = await f.ticket(), gate = deferred(), entered = deferred(); let writerEntered = false;
+    const preparing = f.host.prepare(old, f.owner, 'drawing', f.file, (ctx: PreparationContext) => copyBackup(ctx, async () => { entered.resolve(); await gate.promise; })); await entered.promise;
+    const saving = f.run(newer, f.file, async (scope) => scope.commit('newer', async (data, ctx) => { writerEntered = true; return await writeWithoutBackup(data, ctx); }));
+    await vi.waitFor(() => expect(f.host.stats().queuedBytes).toBe(5)); expect(writerEntered).toBe(false); gate.resolve(); expect((await preparing).status).toBe('prepared'); expect((await saving).status).toBe('saved');
+    expect(await fs.readFile(`${f.file}.bak`, 'utf8')).toBe('original'); expect((await f.run(old, f.file, async (scope) => scope.commit('old', writeWithoutBackup))).status).toBe('stale');
+  });
+  it('copies a proven earlier own replacement without advancing its original-file ledger or consuming the newer ticket', async () => {
+    const f = await setup(); await fs.writeFile(f.file, 'zero'); const earlier = await f.ticket(), newer = await f.ticket();
+    await f.run(earlier, f.file, async (scope) => scope.commit('one', write)); expect(f.host.stats().ledger).toBe(1);
+    expect((await f.host.prepare(newer, f.owner, 'drawing', f.file, copyBackup)).status).toBe('prepared');
+    expect(f.host.stats()).toMatchObject({ pending: 1, ledger: 1 }); expect(await fs.readFile(f.file, 'utf8')).toBe('one'); expect(await fs.readFile(`${f.file}.bak`, 'utf8')).toBe('one');
+    expect((await f.run(newer, f.file, async (scope) => scope.commit('two', writeWithoutBackup))).status).toBe('saved'); expect(await fs.readFile(`${f.file}.bak`, 'utf8')).toBe('one'); expect(f.host.stats().ledger).toBe(0);
+  });
+  it('rejects concurrent prepare/run and late retained guards while preserving successful bound-ticket reuse', async () => {
+    const f = await setup(); await fs.writeFile(f.file, 'original'); const ticket = await f.ticket(), gate = deferred(), entered = deferred(); let retained!: PreparationContext;
+    const preparing = f.host.prepare(ticket, f.owner, 'drawing', f.file, async (ctx: PreparationContext) => { retained = ctx; entered.resolve(); await gate.promise; return await copyBackup(ctx); }); await entered.promise;
+    expect(() => f.host.prepare(ticket, f.owner, 'drawing', f.file, copyBackup)).toThrow(); expect(() => f.run(ticket, f.file, async (scope) => scope.commit('concurrent', write))).toThrow();
+    gate.resolve(); await preparing; await expect(retained.guard()).rejects.toMatchObject({ code: 'ERR_SAVE_TICKET' }); await expect(retained.guardParents()).rejects.toMatchObject({ code: 'ERR_SAVE_TICKET' });
+    expect((await f.host.prepare(ticket, f.owner, 'drawing', f.file, copyBackup)).status).toBe('prepared');
+    expect((await f.run(ticket, f.file, async (scope) => scope.commit('after', writeWithoutBackup))).status).toBe('saved');
+    expect(() => f.host.prepare(ticket, f.owner, 'drawing', f.file, copyBackup)).toThrow();
+  });
+  it('retains the cancelled preparing slot through copy cleanup and refuses its final backup rename', async () => {
+    let clock = 0; const f = await setup({ maxPending: 1, ttlMs: 5, now: () => clock }); await fs.writeFile(f.file, 'original'); await fs.writeFile(`${f.file}.bak`, 'prior backup');
+    const ticket = await f.ticket(), gate = deferred(), entered = deferred();
+    const preparing = f.host.prepare(ticket, f.owner, 'drawing', f.file, (ctx: PreparationContext) => copyBackup(ctx, async () => { entered.resolve(); await gate.promise; })); const rejected = expect(preparing).rejects.toMatchObject({ code: 'ERR_SAVE_CANCELLED', committed: false }); await entered.promise;
+    clock = 100; f.host.cancel(ticket, f.owner, 'drawing'); expect(() => f.host.issue(f.owner, 'drawing')).toThrowError(/Too many/); expect(f.host.stats().pending).toBe(1);
+    gate.resolve(); await rejected; expect(f.host.stats().pending).toBe(0); expect(await fs.readFile(`${f.file}.bak`, 'utf8')).toBe('prior backup'); expect(await fs.readdir(f.root)).toEqual(['file.dxf', 'file.dxf.bak']);
+  });
+  it('allows explicit Continue Without Backup after a copy failure and never marks the original saved', async () => {
+    const f = await setup(); await fs.writeFile(f.file, 'original'); await fs.writeFile(`${f.file}.bak`, 'prior backup'); const ticket = await f.ticket();
+    await expect(f.host.prepare(ticket, f.owner, 'drawing', f.file, async () => { throw Object.assign(new Error('Backup disk full'), { code: 'ENOSPC' }); })).rejects.toMatchObject({ code: 'ENOSPC', committed: false });
+    expect(f.host.stats()).toMatchObject({ pending: 1, ledger: 0 }); expect(await fs.readFile(f.file, 'utf8')).toBe('original');
+    expect((await f.run(ticket, f.file, async (scope) => scope.commit('continued explicitly', writeWithoutBackup))).status).toBe('saved'); expect(await fs.readFile(`${f.file}.bak`, 'utf8')).toBe('prior backup');
+  });
+  it('does not adopt an outside edit observed during failed copy preparation or replace its backup', async () => {
+    const f = await setup(); await fs.writeFile(f.file, 'original'); await fs.writeFile(`${f.file}.bak`, 'prior backup'); const ticket = await f.ticket();
+    await expect(f.host.prepare(ticket, f.owner, 'drawing', f.file, (ctx: PreparationContext) => copyBackup(ctx, async () => { await fs.writeFile(f.file, 'external original edit'); }))).rejects.toMatchObject({ code: 'ERR_WINDOWS_PATH_CHANGED', committed: false });
+    expect(f.host.stats()).toMatchObject({ pending: 1, ledger: 0 }); expect(await fs.readFile(`${f.file}.bak`, 'utf8')).toBe('prior backup');
+    await expect(f.run(ticket, f.file, async (scope) => scope.commit('stale edited drawing', writeWithoutBackup))).rejects.toMatchObject({ code: 'ERR_WINDOWS_PATH_CHANGED', committed: false });
+    expect(await fs.readFile(f.file, 'utf8')).toBe('external original edit');
+  });
+  it('refuses a root junction retarget during copy and does not rename or clean up through the new root', async () => {
+    const f = await setup(), inside = path.join(f.root, '\u0130'), outside = path.join(f.root, 'I\u0307'), picked = path.join(f.root, 'Picked');
+    await fs.mkdir(inside); await fs.mkdir(outside); await fs.writeFile(path.join(inside, 'x.dxf'), 'inside original'); await fs.writeFile(path.join(outside, 'x.dxf'), 'outside original'); await fs.writeFile(path.join(outside, 'x.dxf.bak'), 'outside backup'); await fs.symlink(inside, picked, 'junction');
+    const host = createSaveAdmissions({ identity: createWindowsPathIdentity(), authorize: () => ({ allowed: true, root: picked }) }); hosts.push(host);
+    const ticket = host.issue(f.owner, 'drawing'), file = path.join(picked, 'x.dxf'); await host.bind(ticket, f.owner, 'drawing', file);
+    await expect(host.prepare(ticket, f.owner, 'drawing', file, (ctx: PreparationContext) => copyBackup(ctx, async () => { await fs.unlink(picked); await fs.symlink(outside, picked, 'junction'); }))).rejects.toMatchObject({ code: 'ERR_WINDOWS_PATH_CHANGED', committed: false });
+    expect(await fs.readFile(path.join(outside, 'x.dxf'), 'utf8')).toBe('outside original'); expect(await fs.readFile(path.join(outside, 'x.dxf.bak'), 'utf8')).toBe('outside backup'); expect(await fs.readdir(outside)).toEqual(['x.dxf', 'x.dxf.bak']);
+    expect(await fs.readdir(inside)).toContain('x.dxf.backup-preparation.tmp');
+  });
+  it('checks current authorization before backup replacement and keeps a safely reusable ticket for a retry', async () => {
+    let allowed = true; const f = await setup({ authorize: () => ({ allowed }) }); await fs.writeFile(f.file, 'original'); const ticket = await f.ticket();
+    await expect(f.host.prepare(ticket, f.owner, 'drawing', f.file, (ctx: PreparationContext) => copyBackup(ctx, async () => { allowed = false; }))).rejects.toMatchObject({ code: 'ERR_SAVE_AUTHORIZATION' });
+    expect(await fs.readdir(f.root)).toEqual(['file.dxf']); allowed = true;
+    expect((await f.host.prepare(ticket, f.owner, 'drawing', f.file, copyBackup)).status).toBe('prepared'); expect((await f.run(ticket, f.file, async (scope) => scope.commit('retry', writeWithoutBackup))).status).toBe('saved');
+  });
+  it('disposal joins preparing callback cleanup without releasing its reservation early', async () => {
+    const f = await setup(); await fs.writeFile(f.file, 'original'); const ticket = await f.ticket(), gate = deferred(), entered = deferred();
+    const preparing = f.host.prepare(ticket, f.owner, 'drawing', f.file, async (ctx: PreparationContext) => { entered.resolve(); await gate.promise; await ctx.guardParents(); await ctx.guard(); }); const rejected = expect(preparing).rejects.toMatchObject({ code: 'ERR_SAVE_CANCELLED' }); await entered.promise;
+    let settled = false; const disposing = f.host.dispose().then(() => { settled = true; }); await Promise.resolve(); expect(settled).toBe(false); expect(f.host.stats().pending).toBe(1);
+    gate.resolve(); await rejected; await disposing; expect(settled).toBe(true); expect(f.host.stats().pending).toBe(0); expect(await fs.readdir(f.root)).toEqual(['file.dxf']);
   });
 });
