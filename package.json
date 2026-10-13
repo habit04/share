@@ -21,6 +21,7 @@
     "test": "vitest run",
     "check:fixtures": "node scripts/check-fixtures.mjs",
     "check:autocad": "node scripts/check-autocad.mjs",
+    "check:autocad:3d": "node scripts/check-autocad-3d.mjs",
     "check:dwg-containment": "node scripts/check-dwg-containment.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "typecheck:electron": "tsc -p tsconfig.electron.json",

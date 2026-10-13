@@ -136,7 +136,9 @@ Baseline on Windows x64, Node 22.23.3: typecheck, lint and 177 test files / 2,21
   confirmed identical output and import reports for all 25 fixture drawings. Full suite
   195 files / 2,465 tests green.
 - Unsupported: reading solids from DWG files (the DWG converter drops polyface meshes and
-  reports them); opening the files in AutoCAD or other programs has not been verified.
+  reports them). AutoCAD 2027 Core Console verification (2026-10-13, `npm run check:autocad:3d`):
+  AUDIT 0 / 0 on every 3D fixture, 45/45 polyfaces matched, DXF and DWG round trips keep ids,
+  names and histories; other programs and on-screen display are not verified.
 - Known: split meshes (over 32,767 vertices or faces) weld exact-duplicate vertices on read;
   negative zero reads as 0; solids keep an ACI colour only.
 
@@ -218,8 +220,10 @@ Baseline on Windows x64, Node 22.23.3: typecheck, lint and 177 test files / 2,21
   files / 2,757 tests on the dimension branch, 215 / 2,732 on the security branch; the merged
   result is recorded below under "Final verification".
 - Prototype / known: no grips on dimensions; the 2D view and plots do not show 3D dimensions;
-  stroke text reads mirrored from behind; no associativity with solids; opening the DXF records
-  in AutoCAD is unverified; the residual E-19 note that in-page plugin code could request the
+  stroke text reads mirrored from behind; no associativity with solids; AutoCAD 2027 Core Console
+  verified 22/22 measurements, round trips and XDATA survival (angular arc points are rewritten
+  by AutoCAD, angle unchanged; elevation of +Z-plane dimensions is lost only if another program
+  strips the XDATA); the residual E-19 note that in-page plugin code could request the
   test hooks (no privilege gained) remains documented.
 - 2D change to note: command-line option clicks now send the option's capital letters, which
   fixes pre-existing prompts whose click picked the wrong option (ON/OFF, eXit, WPolygon,
@@ -241,7 +245,8 @@ Baseline on Windows x64, Node 22.23.3: typecheck, lint and 177 test files / 2,21
   Reading solids from DWG files is unsupported (polyface meshes are dropped and reported).
 - Models whose DXF would exceed the reader's limits cannot be saved; reduce the model.
 - Reading `3DSOLID`, `REGION`, `BODY` (ACIS) bodies is unsupported; they stay retained raw records.
-- Opening JCad's polyface files in AutoCAD or other programs has not been verified.
+- Polyface and 3D DIMENSION records are verified with AutoCAD 2027 Core Console only; other
+  programs, other AutoCAD versions and on-screen display are not verified.
 - 3D dimensions (DIM3D) are not shown in the 2D view or plots and have no grips; 3DDIM remains
   an interim 2D-dimension prototype that labels projected measurements. No fillets, chamfers,
   shells, surfaces, assemblies or drafting views.

@@ -135,8 +135,7 @@ dimension (`dimension3dTo2d`).
 
 Written by `src/io/dxf/dim3d-write.ts` at the end of ENTITIES (after the solids); a drawing without
 3D dimensions writes none of this (`tests/dxf-3d-identity.test.ts`). The `DIMENSION` follows the
-DXF reference's OCS convention for an extrusion direction; the records have **not been verified in
-AutoCAD** or other programs.
+DXF reference's OCS convention for an extrusion direction; the records were verified with AutoCAD 2027 Core Console on 2026-10-13 (`npm run check:autocad:3d`, see 3D-AUTOCAD-VALIDATION.md): AUDIT 0 / 0, every mesh and dimension read back, DXF and DWG round trips keep the JCAD_3D data; other programs and interactive display are not verified. AutoCAD rewrites the angular arc point (group 10) to one third of the sweep on load; radius, plane, side and angle are unchanged.
 
 | Group | Value |
 | --- | --- |
@@ -219,7 +218,9 @@ for real 3D dimensions.
 - The 2D view, plots and PDF output do not show 3D dimensions (model space in 3D mode only).
 - Text is drawn with the built-in stroke font whatever the text style (as the 3D underlay), always
   readable from the normal side of the plane (seen from behind it is mirrored).
-- Not verified in AutoCAD or other CAD programs (the DXF follows the reference).
+- Verified with AutoCAD 2027 Core Console (measurements equal within 1e-15 relative, round trips
+  through DXF and DWG); other CAD programs, interactive editing and other AutoCAD versions are not
+  verified. Without the JCAD_3D XDATA, dimensions in a +Z plane at an elevation read back flat.
 
 ## Replaying in a browser (supervisor checks)
 

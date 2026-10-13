@@ -12,8 +12,7 @@ in this version (see [the last section](#dwg)).
 Each solid is written in the model-space `ENTITIES` section, after the 2D entities and any
 retained raw records, as one DXF **polyface mesh**: a `POLYLINE` with flag 64, its mesh vertices,
 its face records and a `SEQEND`. This entity exists in every DXF version JCad writes (AC1015 and
-later). The records follow the DXF reference polyface layout; they have not been verified in
-AutoCAD or other programs. A drawing without solids and 3D dimensions writes none
+later). The records follow the DXF reference polyface layout and were verified with AutoCAD 2027 Core Console on 2026-10-13 (`npm run check:autocad:3d`, see 3D-AUTOCAD-VALIDATION.md): AUDIT 0 / 0, every mesh and dimension read back, DXF and DWG round trips keep the JCAD_3D data; other programs and interactive display are not verified. A drawing without solids and 3D dimensions writes none
 of this and no extra `APPID` record: its DXF is byte-identical to the one earlier versions wrote
 (guarded by `tests/dxf-3d-identity.test.ts` against golden outputs in `tests/golden/dxf-3d/`).
 
@@ -150,8 +149,9 @@ total. JCad never writes a file it cannot open again:
   polyfaces are not kept (reported). Polyfaces inside blocks or on layouts are dropped and
   reported. The payload is capped at 15,000 characters per record (larger histories are stored as
   meshes).
-- Not verified in AutoCAD or any other program. No edge is marked invisible, so a program that
-  draws polyface edges will show every triangle edge.
+- Verified with AutoCAD 2027 Core Console (AUDIT 0 / 0, meshes and XDATA round-trip through DXF
+  and DWG); other programs and on-screen display are not verified. No edge is marked invisible,
+  so a program that draws polyface edges will show every triangle edge.
 - Empty solids (no triangles) cannot exist: `newSolid`, `addSolids` and `replaceSolid` throw, and
   the writer refuses one in a hand-made state.
 
@@ -194,7 +194,8 @@ the unchanged 2D path. Re-saving what was read is byte-identical
 
 ## What other programs see
 
-Expected (following the DXF reference; not verified in AutoCAD or other programs): a mesh per
+Expected (following the DXF reference; AutoCAD 2027 Core Console accepts the records, display
+not verified): a mesh per
 solid on its layer, in its colour (ACI; ByLayer when the solid uses ByLayer), with every triangle
 edge visible because no edge is marked invisible. The `JCAD_3D` data is expected to be ignored by programs that do not know it, and is lost if such a program
 rewrites the object (JCad then imports the mesh as a foreign polyface). Editing the mesh in
