@@ -1,7 +1,12 @@
 # JCad GPU and 3D roadmap
 
 Evidence snapshot: October 13, 2026. This isolated development branch,
-`feature/windows-gpu-fast-preparation`, extends [draft PR #14](https://github.com/habit04/share/pull/14),
+`feature/windows-gpu-compound-coverage`, extends the published
+[draft PR #15](https://github.com/habit04/share/pull/15) candidate `47625347`.
+Its direct-LINE preparation producer is `72d70630`; all five jobs passed in
+[push CI](https://github.com/habit04/share/actions/runs/38394823874) and
+[PR CI](https://github.com/habit04/share/actions/runs/38394973565).
+PR #15 extends [draft PR #14](https://github.com/habit04/share/pull/14),
 whose measured edit producer is `fe653933`. PR #14 extends
 [draft PR #13](https://github.com/habit04/share/pull/13),
 whose published zoom evidence head is `734de794`. PR #13 extends
@@ -29,8 +34,8 @@ completion here does not authorize a release, default switch or merge.
 | --- | --- | --- |
 | 1. GPU diagnostics | Implemented initially at `16abc740`; PR #10 adds bounded collection and clipboard-completion repairs. Combined source `4bad60b2` passed collector/About/copy/report checks and exact-head CI. Adapter activity and unavailable/software states remain explicit. Intel and NVIDIA evidence are recorded below with their source commits. | Require exact CI for each new candidate. Missing adapter data must stay Unknown; capabilities must remain distinct from the renderer actually in use. Stable-branch integration still requires separate approval. |
 | 2. Experimental 2D/simple 3D | The prototype at `2fbae728` and PR #10's pan-cache/recovery milestone have successful source CI. Combined source `4bad60b2` passed both builds, native failure/unavailability, benchmarks and the existing isolated demo checks. See [prototype evidence](GPU-RENDERER-PROTOTYPE.md). | Keep the development flag. Repeat these checks on each changed renderer candidate. Record source SHA, viewport, actual adapter/limits, CPU preparation/submission, completion observations and drawing differences before interpreting speed. |
-| 3. Remaining 2D/reliability | Partly complete: PR #11's pinned `3ce7e10a` batch is integrated in draft PR #12, with seven real Windows batch checks and exact source CI passed. PR #11 later advanced to unmerged/conflicted `878655e2`; the [remaining checklist](REMAINING-2D-CHECKLIST.md) stays open with its owners. [PR #9](https://github.com/habit04/share/pull/9) passed exact source CI at `14cb3f9f` and was merged by another task as stable `8dfe1caa`; v0.4.9 has public Windows release assets. Neither later head is integrated into this GPU candidate. | Each remaining fix needs regression and relevant import-edit-save-reopen evidence. Review the new stable transaction/codec baseline and test its combination with the GPU candidate. Release metadata does not prove installation or native preservation in this candidate. Coordinate the active PR #11 owner before integration. |
-| 4. Production GPU renderer | Incomplete. Clean `fd7fac07` passed bounded zoom reuse; `fe653933` passed eligible line subrange edits. Clean `72d70630` reduces full LINE preparation while preserving the zoom envelope, all eight retained trajectories, edited/undo/redo image proof and native recovery/unavailability on both tested adapters. Dense edit/undo measures 24.1/23.3 ms medians with 35.4/36.9 ms peaks; sustained-zoom boundaries peak at 53.6/48.3 ms. Item 4 continues with incremental block/text, dimensions and common hatches. New stable-baseline compatibility is under isolated review; broader hardware remains open. | Pass every production gate below before considering a default change. Canvas stays default; no general performance or untested hardware claim. |
+| 3. Remaining 2D/reliability | Partly complete: PR #11's pinned `3ce7e10a` batch is integrated in draft PR #12, with seven real Windows batch checks and exact source CI passed. PR #11 later advanced to unmerged/conflicted `878655e2`; the [remaining checklist](REMAINING-2D-CHECKLIST.md) stays open with its owners. [PR #9](https://github.com/habit04/share/pull/9) passed exact source CI at `14cb3f9f` and was merged by another task as stable `8dfe1caa`; v0.4.9 has public Windows release assets. Stable `8dfe1caa` is integrated in this isolated candidate alongside the pinned batch. Clean `455b2662` passed the combined regression suite and all seven real Windows 2D batch checks; its new compound native benchmark remains unaccepted. The later active PR #11 head is not integrated. | Each remaining fix needs regression and relevant import-edit-save-reopen evidence. Require exact-head CI and source-specific native checks for each new combination. Release metadata does not prove installation. Coordinate the active PR #11 owner before integrating unfinished font/project/dimension work. |
+| 4. Production GPU renderer | Incomplete. Clean `fd7fac07` passed bounded zoom reuse; `fe653933` passed eligible line subrange edits. Published PR #15's clean `72d70630` reduces full LINE preparation while preserving the zoom envelope, all eight retained trajectories, edited/undo/redo image proof and native recovery/unavailability on both tested adapters. Dense edit/undo measures 24.1/23.3 ms medians with 35.4/36.9 ms peaks; sustained-zoom boundaries peak at 53.6/48.3 ms. Incremental block/TEXT/ATTRIB coverage is undergoing native accuracy and performance validation; no new performance acceptance is claimed. Short-segment world-coordinate stroke parity and a Canvas-reference stability issue must be resolved before that milestone. Dimensions and common hatches remain on separate integration branches. | Pass every production gate below before considering a default change. Canvas stays default; no general performance or untested hardware claim. Record geometry preparation, upload issuance and completed-frame observations separately, and supplement repeated-readback comparisons with ordinary frame-cadence measurements. |
 | 5. Full 3D development | Already begun on `share/feature/3d-development`, `0f644a7`; [CI passed](https://github.com/habit04/share/actions/runs/38336811063). A separate Open CASCADE/three.js application also exists in [habit04/jcad-3d](https://github.com/habit04/jcad-3d), `c3802fc`, with [successful CI](https://github.com/habit04/jcad-3d/actions/runs/38202841903). | Resolve which architecture owns future 3D integration. Require direct modeling, selection/snapping, dimensions, undo and persistent save/reopen/recovery evidence for the chosen track. Keep stable public 2D independent. Embedded 3D status/validation: [3D-STATUS](https://github.com/habit04/share/blob/feature/3d-development/docs/3D-STATUS.md); separate-app limits: [NOT-TESTED](https://github.com/habit04/jcad-3d/blob/main/docs/NOT-TESTED.md). |
 
 The [October 11 remediation record](REVIEW-FIXES.md) tracks the original **53
@@ -463,12 +468,53 @@ Source-specific evidence: [Intel](benchmarks/windows-gpu-preparation-intel.json)
 [Intel recovery](benchmarks/windows-gpu-preparation-intel-process.json),
 [NVIDIA recovery](benchmarks/windows-gpu-preparation-nvidia-process.json), and
 [unavailable device](benchmarks/windows-gpu-preparation-unavailable.json).
-The published evidence candidate requires fresh exact-head CI. These measurements
-show useful improvements in representative dense pan/zoom/edit workflows on the
-two tested adapters, with remaining first-frame and boundary work reported.
+Published evidence head `47625347` passed all five jobs in its exact-head push
+and PR CI, linked above. These completed-frame observations include repeated
+Canvas readback; readback can change a Canvas context's acceleration behavior.
+They retain their measured values and do not establish ordinary desktop frame
+cadence. The next candidate adds a separate pan/zoom/edit pass without per-frame
+Canvas readback. Remaining first-frame and boundary work stays explicit.
 Block/text native acceptance, wired dimension/hatch coverage, final combined
 stable-baseline validation and wider hardware/failure coverage remain open.
 Canvas stays default and stage 4 is incomplete.
+
+### Block, attribute and stroke-TEXT milestone in progress
+
+Clean source `455b2662d64155e6205cd5f88f136269c809a241` combines the reviewed
+stable `8dfe1caa` transaction/codec baseline, pinned `3ce7e10a` 2D batch and
+published PR #15 preparation changes. It passed 3,081 regressions with 28
+conditional skips, all three typechecks, full lint, fixture/workflow checks,
+ordinary/experimental builds, ordinary default/diagnostics checks and all seven
+real Windows 2D batch checks. The initial sandbox-only run's 11 junction-permission
+failures were archived; the approved full run passed. These are historical checks
+for that source, not acceptance of subsequent changes.
+
+The new native benchmark is **not accepted**. Its first ARC full-circle preflight
+passed actual native Canvas command/cardinal coverage and the unchanged strict
+raster gate. An exact-RGBA fallback check then failed. A separate private repro
+showed the same 2,142-pixel difference (maximum channel difference 53) during a
+Canvas-to-Canvas redraw before any GPU attempt; subsequent Canvas redraws and
+requested-GPU fallbacks were raw-identical. This demonstrates a Canvas-reference
+stability issue; it does not prove a particular acceleration-backend transition.
+The next harness must record bounded Canvas self-consistency checks before using
+that reference, while keeping exact fallback and geometric coverage gates.
+
+A source/math audit also found short block-POLYLINE and narrow TEXT/ATTRIB cases
+where native world construction collapses a segment but rebased GPU construction
+retains a visible miter. Position error alone does not bound stroke normals or
+join branches. Native world stroke parity must fit the existing construction
+reserve, with complete-view Canvas refusal where it cannot be proved. Dedicated
+native counterexamples, selected/hovered opacity probes, visibly distinct native
+attribute placement overrides and actual save/reopen checks remain required.
+
+The historical mixed schematic keeps its original tiny circle and uses Canvas at
+its fitted zoom. A distinct admitted compound stress input supplies readable text
+and straight symbol geometry; it must not replace or relabel the original input.
+Compound edits currently prepare/upload the full scene. Their latency, along with
+preparation, upload issuance, fence/readback completion and the separate ordinary
+frame-cadence supplement, must be reported before any performance acceptance.
+Dimension and hatch modules have separate focused-test evidence and are undergoing
+incremental integration; they are not admitted by this recorded source.
 
 ### NVIDIA validation on the pinned GPU source
 
@@ -501,9 +547,11 @@ Missing or anomalous vendor metadata is not inferred from a preference request.
 ## Production gates still open
 
 1. **Correct 2D baseline:** the pinned PR #10/PR #11 combination passed locally
-   and in exact source CI; complete the remaining owned checklist. Review the
-   now-merged PR #9 transaction/codec baseline and its native preservation evidence
-   before preparing a fresh combined candidate; coordinate PR #11's active owner.
+   and in exact source CI; complete the remaining owned checklist. The merged
+   PR #9 transaction/codec baseline is integrated in this isolated candidate;
+   combined source `455b2662` passed regressions and real native 2D preservation
+   checks. Require fresh native/CI evidence for the final candidate and coordinate
+   PR #11's active owner before integrating unfinished work.
 2. **Renderer coverage:** text/fonts, hatches, blocks, images, dimensions,
    linetypes/weights, layouts, grids, underlays and active editing need faithful
    GPU rendering or explicit complete-view Canvas fallback. No missing subsets.

@@ -11,6 +11,7 @@ import { colorDisplay, lineweightDisplay, resolveColor, resolveLineWidth } from 
 import { expandControlCodes, glyphFor, hasStrokeFont, strokeText, strokeTextWidth, textRenderer } from '../hershey';
 import type { Gpu2DOverlay, Gpu2DView } from './geometry2d';
 import { canvasArcAdmission } from './arc-admission';
+import { assertPrimitiveStrokePrecision, assertStrokePathPrecision, canvasPolylineStrokeProblem } from './stroke-parity';
 
 export type LocalStrokeEntity = LineEntity | PolylineEntity | CircleEntity | ArcEntity;
 /** All coordinates are world doubles relative to the copied camera anchor. */
@@ -111,6 +112,8 @@ function primitiveProblem(entity: Entity, state: DrawingState): string | null {
       return admission.ok ? null : `${admission.reason} (${entity.id})`;
     }
     case 'polyline': {
+      const strokeProblem = canvasPolylineStrokeProblem(entity);
+      if (strokeProblem) return `${strokeProblem} (${entity.id})`;
       const problem = polylineWidthProblem(entity);
       if (problem) return `${problem} (${entity.id})`;
       return entity.filled || entity.widthFrame || (entity.width ?? 0) !== 0 || entity.widths?.some((width) => width.start !== 0 || width.end !== 0)
@@ -166,13 +169,12 @@ export function lowerStrokeScene(state: DrawingState, view: Gpu2DView, overlay: 
     };
     // Preflight all reference paths: core expansion can silently skip missing/deep references.
     // Do not prune an insert on a hidden layer: explicit-layer descendants can remain visible.
-    // Follow native world transforms only for references and text, while the ordinary
-    // expansion produces the rebased geometry. This avoids a second full expansion and
-    // keeps the exact Canvas TEXT/ATTRIB anchor arithmetic available for parity checks.
-    let canvasTexts: TextEntity[] = [];
-    const canvasText = (entity: TextEntity): void => {
-      if (canvasTexts.length >= maxEntities) throw new Error('Stroke-scene text preflight exceeds entity budget');
-      canvasTexts.push(entity);
+    // Keep native construction in expansion order. Point displacement alone cannot prove
+    // stroke normals/joins when world rounding collapses a short segment.
+    let canvasSources: Entity[] = [];
+    const canvasSource = (entity: Entity): void => {
+      if (canvasSources.length >= maxEntities) throw new Error('Stroke-scene native preflight exceeds entity budget');
+      canvasSources.push(entity);
     };
     const preflightInsert = (insert: InsertEntity, chain: readonly string[]): void => {
       if (++visits > maxEntities) throw new Error('Stroke-scene expansion exceeds reference budget');
@@ -196,17 +198,17 @@ export function lowerStrokeScene(state: DrawingState, view: Gpu2DView, overlay: 
         const constructionMagnitude = pointMagnitude(insert.position) + 2 * insert.scale * (pointMagnitude(block.basePoint) + sourceCoordinateMagnitude(child));
         const precisionProblem = canvasWorldCoordinatePrecisionProblem(constructionMagnitude, view, maxRatio, 16 * (chain.length + 1));
         if (precisionProblem) throw new Error(`${precisionProblem} in INSERT (${insert.id})`);
-        if (child.type === 'insert' || child.type === 'text') {
+        if (child.type === 'insert' || child.type === 'text' || child.type === 'line' || child.type === 'polyline' || child.type === 'circle' || child.type === 'arc') {
           const moved = similarityTransform(child, transform, insert.rotation, insert.scale);
           if (moved.type === 'insert') preflightInsert(moved, [...chain, insert.block]);
-          else if (moved.type === 'text') canvasText(moved);
+          else canvasSource(moved);
         }
       }
       for (const attribute of block.attributes) {
         spend(1 + attribute.default.length);
         if (attribute.invisible || insert.hiddenAttributes?.includes(attribute.tag)) continue;
         const value = insert.attributes[attribute.tag] ?? attribute.default;
-        if (value) canvasText(attributeText(insert, block, attribute, value));
+        if (value) canvasSource(attributeText(insert, block, attribute, value));
       }
     };
     colorDisplay.paper = false;
@@ -217,7 +219,7 @@ export function lowerStrokeScene(state: DrawingState, view: Gpu2DView, overlay: 
     const rebase = (point: Point): Point => finitePoint({ x: point.x - view.center.x, y: point.y - view.center.y });
     const alreadyLocal = (point: Point): Point => finitePoint({ ...point });
 
-    const textPaths = (source: TextEntity, local: (point: Point) => Point, canvasSource: TextEntity): LocalStrokePath[] => {
+    const textPaths = (source: TextEntity, local: (point: Point) => Point, canvasSource: TextEntity, widthCss: number): LocalStrokePath[] => {
       const rebased = transformedTextAnchors(source, local);
       const problem = textPlacementProblem(rebased);
       if (problem) throw new Error(`${problem} (${source.id})`);
@@ -262,7 +264,13 @@ export function lowerStrokeScene(state: DrawingState, view: Gpu2DView, overlay: 
         const offset = placed.align === 'center' ? -width / 2 : placed.align === 'right' ? -width : 0;
         parity(text.length * 0.8, 0, true);
         countPoints(2);
-        return [{ kind: 'path', points: [at(offset, 0), at(offset + width, 0)], closed: false }];
+        const points = [at(offset, 0), at(offset + width, 0)];
+        const nativeWidth = text.length * canvasPlaced.height * 0.8 * (canvasPlaced.widthFactor ?? 1);
+        const nativeOffset = canvasPlaced.align === 'center' ? -nativeWidth / 2 : canvasPlaced.align === 'right' ? -nativeWidth : 0;
+        const cc = Math.cos(canvasPlaced.rotation), cs = Math.sin(canvasPlaced.rotation);
+        const nativeAt = (x: number): Point => ({ x: canvasPlaced.position.x - view.center.x + x * cc, y: canvasPlaced.position.y - view.center.y + x * cs });
+        assertStrokePathPrecision(points, [nativeAt(nativeOffset), nativeAt(nativeOffset + nativeWidth)], false, widthCss, view, maxRatio, true);
+        return [{ kind: 'path', points, closed: false }];
       }
       // New-scale multiplication can round differently from a cached ratio division.
       // A small reserve rebuilds before that ambiguity; the current readable frame stays valid.
@@ -283,6 +291,30 @@ export function lowerStrokeScene(state: DrawingState, view: Gpu2DView, overlay: 
         }
       }
       parity(maxX, maxY, false);
+      // Compare one transient glyph subpath at a time, before strokeText allocates the
+      // complete output. Use Canvas's exact world-add order rather than lifting local points.
+      const alignedOffset = (height: number, align: TextEntity['align']): number => {
+        const width = strokeTextWidth(text, height);
+        return align === 'center' ? -width / 2 : align === 'right' ? -width : 0;
+      };
+      let localPen = alignedOffset(placed.height, placed.align), nativePen = alignedOffset(canvasPlaced.height, canvasPlaced.align);
+      const cc = Math.cos(canvasPlaced.rotation), cs = Math.sin(canvasPlaced.rotation);
+      const nwf = canvasPlaced.widthFactor && canvasPlaced.widthFactor > 0 ? canvasPlaced.widthFactor : 1;
+      const nslant = canvasPlaced.oblique ? Math.tan(canvasPlaced.oblique) : 0;
+      for (const character of expandControlCodes(text)) {
+        const glyph = glyphFor(character) ?? glyphFor('?');
+        if (!glyph) continue;
+        for (const stroke of glyph.strokes) {
+          const localPoints = stroke.map(([x, y]) => { const lx = localPen + x * placed.height, ly = y * placed.height; return at(lx * wf + ly * slant, ly); });
+          const nativePoints = stroke.map(([x, y]) => {
+            const lx = nativePen + x * canvasPlaced.height, ly = y * canvasPlaced.height;
+            const sx = lx * nwf + ly * nslant;
+            return { x: canvasPlaced.position.x + sx * cc - ly * cs, y: canvasPlaced.position.y + sx * cs + ly * cc };
+          });
+          assertStrokePathPrecision(localPoints, nativePoints, false, widthCss, view, maxRatio);
+        }
+        localPen += glyph.advance * placed.height; nativePen += glyph.advance * canvasPlaced.height;
+      }
       const strokes = strokeText(text, { x: 0, y: 0 }, placed.height, 0, placed.align);
       return strokes.map((stroke) => {
         return { kind: 'path', points: stroke.map((point) => at(point.x * wf + point.y * slant, point.y)), closed: false };
@@ -298,8 +330,8 @@ export function lowerStrokeScene(state: DrawingState, view: Gpu2DView, overlay: 
       if (!Number.isFinite(widthCss) || widthCss <= 0) throw new Error(`Invalid lineweight (${owner.id})`);
       let leaves: readonly Entity[] = [owner];
       let local = rebase;
-      canvasTexts = [];
-      let textIndex = 0;
+      canvasSources = [];
+      let sourceIndex = 0;
       if (owner.type === 'insert') {
         preflightInsert(owner, []);
         // Base-point subtraction and every nested transform now happen in anchor-local doubles.
@@ -309,20 +341,24 @@ export function lowerStrokeScene(state: DrawingState, view: Gpu2DView, overlay: 
         local = alreadyLocal;
       }
       for (const leaf of leaves) {
-        const canvasLeaf = leaf.type === 'text' && owner.type === 'insert' ? canvasTexts[textIndex++] : leaf;
-        if (leaf.type === 'text' && (!canvasLeaf || canvasLeaf.type !== 'text' || canvasLeaf.id !== leaf.id)) throw new Error(`Canvas text preflight does not match block expansion (${owner.id})`);
+        const paired = leaf.type === 'text' || leaf.type === 'line' || leaf.type === 'polyline' || leaf.type === 'circle' || leaf.type === 'arc';
+        const canvasLeaf = paired && owner.type === 'insert' ? canvasSources[sourceIndex++] : leaf;
+        if (paired && (!canvasLeaf || canvasLeaf.type !== leaf.type || canvasLeaf.id !== leaf.id)) throw new Error(`Canvas native preflight does not match block expansion (${owner.id})`);
         if (hidden.has(leaf.layer)) continue;
         if (++preparedEntities > maxEntities) throw new Error('Stroke-scene expansion exceeds entity budget');
         const problem = primitiveProblem(leaf, state);
         if (problem) throw new Error(problem);
         let paths: LocalStrokePath[];
-        if (leaf.type === 'text') paths = textPaths(leaf, local, canvasLeaf as TextEntity);
+        if (leaf.type === 'text') paths = textPaths(leaf, local, canvasLeaf as TextEntity, widthCss);
         else if (leaf.type === 'line' || leaf.type === 'polyline' || leaf.type === 'circle' || leaf.type === 'arc') {
           countPoints(leaf.type === 'polyline' ? leaf.points.length : 2);
-          paths = [{ kind: 'entity', entity: localEntity(leaf, local) }];
+          const entity = localEntity(leaf, local);
+          if (owner.type === 'insert' || leaf.type === 'polyline' && leaf.bulges?.some((bulge) => Math.abs(bulge) >= 1e-12)) assertPrimitiveStrokePrecision(entity, canvasLeaf as LocalStrokeEntity, widthCss, view, maxRatio);
+          paths = [{ kind: 'entity', entity }];
         } else throw new Error(`Unsupported entity: ${leaf.type} (${leaf.id})`);
         operations.push({ ownerId: owner.id, sourceId: leaf.id, paintId: `${owner.id}:${operations.length}`, paths, color: rgb(resolveColor(leaf, state.layers)), widthCss, alpha: selected || hovered ? 0.95 : 1 });
       }
+      if (owner.type === 'insert' && sourceIndex !== canvasSources.length) throw new Error(`Canvas native preflight left unmatched block slots (${owner.id})`);
     }
     return { ok: true, operations, minRatio, maxRatio, blockDependencies: dependencies, textStylesDependency: state.meta?.[TEXT_STYLES_META_KEY], preparedEntities };
   } catch (error) {

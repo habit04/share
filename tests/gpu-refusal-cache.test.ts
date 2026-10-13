@@ -75,6 +75,54 @@ describe('GPU exact immutable geometry refusal memo', () => {
     renderer.dispose();
   });
 
+  it('memoizes deliberate native stroke-construction refusal while preserving the last healthy upload', () => {
+    const preparation = vi.spyOn(geometry, 'prepareZoom2D');
+    const valid = sealed([line]);
+    const block: BlockDef = { name: 'repeated', basePoint: { x: 0, y: 0 }, attributes: [], entities: [{
+      ...line, type: 'polyline', closed: false,
+      points: [{ x: -2, y: 0 }, { x: -1, y: 0 }, { x: -1, y: 0 }, { x: 0, y: 1 }, { x: 1, y: 0 }, { x: 2, y: 0 }],
+    }] };
+    const state = sealImmutableData({ ...valid, entities: [line, { ...line, id: 'owner', type: 'insert' as const, block: block.name, position: { x: 0, y: 0 }, scale: 1, rotation: 0, attributes: {} }], blocks: { [block.name]: block } });
+    const { renderer, gl } = rendererFixture();
+    expect(renderer.render(valid, view, overlay).rendered).toBe(true);
+    const original = JSON.stringify(state);
+    const first = renderer.render(state, view, overlay);
+    expect(first).toMatchObject({ rendered: false, reason: 'Unsupported Canvas stroke construction: internal degenerate join is unproved', cacheHit: false, uploadKind: 'none', bytes: 0, uploadCalls: 0 });
+    for (let i = 0; i < 3; i++) expect(renderer.render(state, view, overlay)).toMatchObject({
+      rendered: false, reason: first.reason, cacheReason: 'refusal-hit', cacheHit: false,
+      geometryPreparationMs: 0, partialPreparationMs: 0, preparedEntities: 0,
+      uploadKind: 'none', bytes: 0, uploadCalls: 0, submissionMs: 0,
+    });
+    expect(preparation).toHaveBeenCalledTimes(2);
+    expect(gl.bufferData).toHaveBeenCalledOnce(); expect(gl.bufferSubData).not.toHaveBeenCalled();
+    expect(gl.clear).toHaveBeenCalledOnce(); expect(gl.drawArrays).toHaveBeenCalledOnce();
+    expect(renderer.render(valid, view, overlay)).toMatchObject({ rendered: true, cacheHit: true, cacheReason: 'hit', geometryPreparationMs: 0, uploadKind: 'none', bytes: 0, uploadCalls: 0 });
+    expect(preparation).toHaveBeenCalledTimes(2); expect(gl.bufferData).toHaveBeenCalledOnce();
+    expect(JSON.stringify(state)).toBe(original);
+    renderer.dispose();
+  });
+
+  it.each([TypeError, RangeError])('retries wrapped native %s with the stroke-construction prefix and preserves the healthy upload', (NativeError) => {
+    const preparation = vi.spyOn(geometry, 'prepareZoom2D');
+    const valid = sealed([line]), { renderer, gl } = rendererFixture();
+    expect(renderer.render(valid, view, overlay).rendered).toBe(true);
+    const error = new NativeError('Unsupported Canvas stroke construction: unexpected native failure');
+    const expansion = vi.spyOn(entities, 'expandInsert').mockImplementation(() => { throw error; });
+    const block: BlockDef = { name: 'B', basePoint: { x: 0, y: 0 }, attributes: [], entities: [line] };
+    const state = sealImmutableData({ ...valid, entities: [{ ...line, id: 'owner', type: 'insert' as const, block: 'B', position: { x: 0, y: 0 }, scale: 1, rotation: 0, attributes: {} }], blocks: { B: block } });
+    for (let i = 0; i < 3; i++) {
+      const refused = renderer.render(state, view, overlay);
+      expect(refused).toMatchObject({ rendered: false, reason: error.message, uploadKind: 'none', bytes: 0, uploadCalls: 0 });
+      expect(refused.cacheReason).not.toBe('refusal-hit');
+    }
+    expect(expansion).toHaveBeenCalledTimes(3); expect(preparation).toHaveBeenCalledTimes(4);
+    expect(gl.bufferData).toHaveBeenCalledOnce(); expect(gl.bufferSubData).not.toHaveBeenCalled();
+    expect(gl.clear).toHaveBeenCalledOnce(); expect(gl.drawArrays).toHaveBeenCalledOnce();
+    expect(renderer.render(valid, view, overlay)).toMatchObject({ rendered: true, cacheHit: true, cacheReason: 'hit', geometryPreparationMs: 0, uploadKind: 'none', bytes: 0, uploadCalls: 0 });
+    expect(preparation).toHaveBeenCalledTimes(4); expect(gl.bufferData).toHaveBeenCalledOnce();
+    renderer.dispose();
+  });
+
   it.each(['width', 'height', 'dpr', 'scale', 'center-x', 'center-y', 'twist', 'background', 'lineweights'] as const)('retries every exact camera/style change and retains only the most recent refused pose: %s', (key) => {
     const preparation = vi.spyOn(geometry, 'prepareZoom2D'), state = sealed();
     const { renderer } = rendererFixture();
@@ -181,7 +229,7 @@ describe('GPU exact immutable geometry refusal memo', () => {
     renderer.dispose();
   });
 
-  it.each([new TypeError('Unsupported entity: broken getter'), new RangeError('Stroke geometry allocation failed'), new Error('Unexpected graph exception'), new Error(`Unsupported entity: ${'x'.repeat(4096)}`), new Error('WebGL2 transient error')])('does not memoize allocation/programming/unknown errors: %s', (error) => {
+  it.each([new TypeError('Unsupported entity: broken getter'), new RangeError('Stroke geometry allocation failed'), new Error('Unexpected graph exception'), new Error(`Unsupported entity: ${'x'.repeat(4096)}`), new Error('WebGL2 transient error'), new Error('Unsupported Canvas stroke construction without colon'), new Error('Unsupported Canvas stroke constructionx: unknown admission')])('does not memoize allocation/programming/unknown errors: %s', (error) => {
     const preparation = vi.spyOn(geometry, 'prepareZoom2D').mockImplementation(() => { throw error; });
     const state = sealed([line]), { renderer } = rendererFixture();
     for (let i = 0; i < 3; i++) expect(renderer.render(state, view, overlay).cacheReason).not.toBe('refusal-hit');

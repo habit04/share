@@ -8,6 +8,7 @@ import { polylineWidthProblem } from '../../core/polyline-widths';
 import { colorDisplay, lineweightDisplay, resolveColor, resolveLineWidth } from '../draw';
 import { lowerStrokeScene, type LoweredStrokeScene } from './stroke-scene';
 import { canvasArcAdmission } from './arc-admission';
+import { assertPrimitiveStrokePrecision, canvasPolylineStrokeProblem } from './stroke-parity';
 
 export interface Gpu2DView {
   width: number;
@@ -138,6 +139,12 @@ function entityPath(entity: Entity, view: Gpu2DView, curveScale = view.scale, pi
     case 'polyline': {
       // Rebase BEFORE bulgeArc computes its midpoint/center, preserving close-zoom arcs.
       const rebased: PolylineEntity = { ...entity, points: entity.points.map(local) };
+      if (entity.bulges?.some((bulge) => Math.abs(bulge) >= 1e-12)) {
+        // Native Canvas computes bulge centers at the source's world origin. Reserve
+        // that construction difference, including cap directions, before tessellation.
+        assertPrimitiveStrokePrecision(rebased, entity, strokeWidth, view, curveScale / view.scale);
+        pixelError = Math.min(pixelError, COMPILED_CURVE_PIXEL_ERROR);
+      }
       const points: Point[] = rebased.points.length ? [projectLocal(rebased.points[0]!, view)] : [];
       for (const segment of polylineSegments(rebased)) {
         if (!Number.isFinite(segment.bulge)) throw new Error('Invalid polyline bulge');
@@ -235,6 +242,8 @@ function styleProblem(entity: Entity, state: DrawingState): string | null {
     if (!admission.ok) return `${admission.reason} (${entity.id})`;
   }
   if (entity.type === 'polyline') {
+    const strokeProblem = canvasPolylineStrokeProblem(entity);
+    if (strokeProblem) return `${strokeProblem} (${entity.id})`;
     const problem = polylineWidthProblem(entity);
     if (problem) return `${problem} (${entity.id})`;
     if (entity.filled || entity.widthFrame || (entity.width ?? 0) !== 0 || entity.widths?.some((width) => width.start !== 0 || width.end !== 0)) return `Unsupported polyline width or fill (${entity.id})`;
@@ -676,7 +685,7 @@ export function prepare2D(state: DrawingState, view: Gpu2DView, overlay: Gpu2DOv
       if (!color) throw new Error(`Unsupported display color (${entity.id})`);
       const width = selected ? 2.5 : hovered ? 2 : resolveLineWidth(entity, state.layers, { scale: view.scale, toScreen: (point) => screenPoint(point, view) });
       const first = vertices.length / STRIDE;
-      const path = entityPath(entity, view);
+      const path = entityPath(entity, view, view.scale, PIXEL_ERROR, width);
       // Include offscreen source points: clipping must not hide a later precision refusal.
       for (const point of path.points) {
         panPrecisionMargin.x = Math.min(panPrecisionMargin.x, precisionBound - Math.abs(point.x));

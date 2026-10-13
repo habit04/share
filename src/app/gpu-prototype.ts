@@ -10,6 +10,7 @@ import { DEFAULT_HEADER } from '../core/document';
 import type { BlockDef, Entity, TextEntity } from '../core/entities';
 import type { Point } from '../core/geometry';
 import { STANDARD_TEXT_STYLE } from '../io/encoding';
+import { glyphFor } from '../render/hershey';
 
 interface FixtureMetadata {
   name: string;
@@ -17,6 +18,8 @@ interface FixtureMetadata {
   nearOriginReference?: string;
   block?: string;
   textStyle?: string;
+  highlightProbes?: readonly { owner: string; label: string; point: Point; rgb: readonly number[]; region: readonly Point[] }[];
+  curveConstructionReference?: { origin: Point; unit: number; localCenter: Point; roundedWorldCenter: Point; radius: number };
 }
 
 /** Separate admitted stress input; the historical PERF_SYM and mixed fixture stay intact. */
@@ -34,6 +37,38 @@ function denseCompoundFixture(): DrawingState {
     attributes: [{ tag: 'TAG1', prompt: 'Tag', default: 'X', position: { x: 0, y: 0.25 }, height: 1.25, align: 'center' }],
   };
   return { ...source, blocks: { [block.name]: block }, entities: source.entities.map((entity) => entity.type === 'insert' ? { ...entity, block: block.name } : entity.type === 'text' ? { ...entity, height: 2 } : entity) };
+}
+
+/** Source/math counterexamples: absolute Canvas addition collapses tiny edges. */
+function collapsedWorldFixture(name: string): { state: DrawingState; metadata: FixtureMetadata; center: Point } {
+  const base = bigDrawing(0, 0, 0), center = { x: 1e12, y: 1e12 };
+  const p = (x: number, y: number): Point => ({ x: center.x + x, y: center.y + y });
+  const common = { layer: '0', color: 7, lineWeight: 1 } as const;
+  const entities: Entity[] = [{ ...common, id: 'COLLAPSE-EDIT', type: 'line', a: p(-30, -20), b: p(-10, -20) }];
+  const blocks: Record<string, BlockDef> = {};
+  if (name === 'collapse-polyline-fallback') {
+    blocks['GPU-COLLAPSED-POLYLINE'] = { name: 'GPU-COLLAPSED-POLYLINE', basePoint: { x: 0, y: 0 }, attributes: [], entities: [{ ...common, id: 'collapsed-child', type: 'polyline', points: [{ x: -1e-5, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 10 }], closed: false }] };
+    entities.push({ ...common, id: 'COLLAPSE-OWNER', type: 'insert', block: 'GPU-COLLAPSED-POLYLINE', position: center, rotation: 0, scale: 1, attributes: {} });
+  } else if (name === 'collapse-text-fallback') {
+    entities.push({ ...common, id: 'COLLAPSE-TEXT', type: 'text', text: 'J', position: center, height: 21, widthFactor: 1e-6, rotation: 0, align: 'left' });
+  } else {
+    blocks['GPU-COLLAPSED-ATTRIB'] = { name: 'GPU-COLLAPSED-ATTRIB', basePoint: { x: 0, y: 0 }, entities: [], attributes: [{ tag: 'NARROW', prompt: '', default: 'J', position: { x: 0, y: 0 }, height: 21, widthFactor: 1e-6, align: 'left' }] };
+    entities.push({ ...common, id: 'COLLAPSE-OWNER', type: 'insert', block: 'GPU-COLLAPSED-ATTRIB', position: center, rotation: 0, scale: 1, attributes: { NARROW: 'J' } });
+  }
+  return { state: { ...base, entities, blocks }, center, metadata: { name, probes: name === 'collapse-polyline-fallback' ? [{ label: 'Canvas collapsed edge has no below-cap miter spur', point: p(1, -1), rgb: [33, 40, 48] }] : [] } };
+}
+
+/** Preserve the native Canvas negative-bulge arc's implicit A-to-B connector. */
+function negativeBulgeFixture(name: string): { state: DrawingState; metadata: FixtureMetadata } {
+  const base = bigDrawing(0, 0, 0), common = { layer: '0', color: 7 } as const;
+  const polyline: Entity = { ...common, id: 'NEGATIVE-BULGE', type: 'polyline', points: [{ x: -2, y: 0 }, { x: 2, y: 0 }], bulges: [-0.5], closed: false, trueColor: 0x22cc66 };
+  const entities: Entity[] = [{ ...common, id: 'NEGATIVE-EDIT', type: 'line', a: { x: -3, y: -3 }, b: { x: 3, y: -3 } }];
+  const blocks: Record<string, BlockDef> = {};
+  if (name === 'negative-bulge-compound-fallback') {
+    blocks['GPU-NEGATIVE-BULGE'] = { name: 'GPU-NEGATIVE-BULGE', basePoint: { x: 0, y: 0 }, attributes: [], entities: [polyline] };
+    entities.push({ ...common, id: 'NEGATIVE-OWNER', type: 'insert', block: 'GPU-NEGATIVE-BULGE', position: { x: 0, y: 0 }, scale: 1, rotation: 0, attributes: {} });
+  } else entities.push(polyline);
+  return { state: { ...base, entities, blocks }, metadata: { name, probes: [{ label: 'Actual Canvas implicit A-to-B connector midpoint', point: { x: 0, y: 0 }, rgb: [34, 204, 102] }] } };
 }
 
 /** Ordered native primitives; no renderer-specific glyph or placement formula. */
@@ -59,6 +94,7 @@ function compoundFixture(name: string): { state: DrawingState; center: Point; sc
     entities: [
       { ...common, id: 'ordered-wire', type: 'line', color: 0, a: local(4, 3), b: local(4, 7), lineWeight: 10 },
       { ...common, id: 'ordered-label', type: 'text', trueColor: 0x44ddff, position: local(4.35, 5.6), text: 'Ag%%uB%%k', height: 0.4 * unit, rotation: 0, align: 'left', widthFactor: 1.25, oblique: 0.18, style: 'GPU-STROKE' },
+      { ...common, id: 'ordered-alpha-cross', type: 'text', trueColor: 0xffcc44, position: local(5.5, 6.3), text: 'X', height: 0.8 * unit, rotation: 0, align: 'left', style: 'GPU-STROKE' },
       { ...common, id: 'hidden-child', type: 'text', layer: 'GPU-HIDDEN', position: local(4, 5), text: 'HIDDEN', height: unit, rotation: 0, align: 'left' },
     ],
     attributes: [
@@ -78,9 +114,10 @@ function compoundFixture(name: string): { state: DrawingState; center: Point; sc
   const entities: Entity[] = [
     { ...common, id: 'ORDER-BEFORE', type: 'line', trueColor: 0xee3344, a: p(-3, 0), b: p(3, 0), lineWeight: 2.5 },
     { ...common, id: 'BLOCK-OWNER', type: 'insert', block: ordered.name, position: p(0, 0), rotation: 0, scale: 1, attributes: { TAG: 'ATTR' }, hiddenAttributes: ['HIDDEN'], trueColor: 0x22aaff, lineWeight: 1,
-      attributePlacements: { NATIVE: { position: local(4.5, 4), alignmentPoint: local(6.5, 4), firstAlignmentPoint: local(4.5, 4), justification: { horizontal: 5, vertical: 0 }, height: 0.3 * unit, align: 'left', widthFactor: 1.2, oblique: 0.1 } } },
+      attributePlacements: { NATIVE: { position: local(4.25, 3.5), alignmentPoint: local(7, 3.5), firstAlignmentPoint: local(4.25, 3.5), justification: { horizontal: 5, vertical: 0 }, height: 0.5 * unit, align: 'left', widthFactor: 1.5, oblique: Math.PI / 6 } } },
     { ...common, id: 'NESTED-OWNER', type: 'insert', block: complex.name, position: p(-5, -2), rotation: 0.22, scale: 1, attributes: {}, trueColor: 0xffdd33, lineWeight: 0.5 },
     text('TEXT-CONTROLS', 'A%%uB%%oC%%k %%d %%p %%c', -6, 3, { rotation: 0.07, widthFactor: 1.3, oblique: 0.2, trueColor: 0xbb77ee }),
+    text('TEXT-ALPHA-CROSS', 'X', 4, 1.2, { height: 0.8 * unit, trueColor: 0xffcc44, lineWeight: 1 }),
     text('TEXT-FIT', 'FIT TEXT', -6, 2, { alignmentPoint: p(-2, 2.5), firstAlignmentPoint: p(-6, 2), justification: { horizontal: 5, vertical: 0 }, widthFactor: 1.2, oblique: 0.15 }),
     text('TEXT-ALIGNED', 'ALIGN', -6, 1, { alignmentPoint: p(-3, 1.3), firstAlignmentPoint: p(-6, 1), justification: { horizontal: 3, vertical: 0 }, trueColor: 0xeeaacc }),
     text('TEXT-CENTER', 'CENTER', 4, -1.8, { align: 'center', rotation: -0.18, widthFactor: 0.8, trueColor: 0x99ccff }),
@@ -93,6 +130,15 @@ function compoundFixture(name: string): { state: DrawingState; center: Point; sc
   ];
   const blocks: Record<string, BlockDef> = { [nested.name]: nested, [ordered.name]: ordered, [complex.name]: complex };
   const styles = { Standard: STANDARD_TEXT_STYLE, 'GPU-STROKE': { ...STANDARD_TEXT_STYLE, name: 'GPU-STROKE', font: 'romans.shx' }, 'GPU-UNSAFE': { ...STANDARD_TEXT_STYLE, name: 'GPU-UNSAFE', font: 'arial.ttf' } };
+  // Derive the intersection from the public-domain font data independently of
+  // the GPU mesh. Both X subpaths overlap here, well away from insertion grips.
+  const xGlyph = glyphFor('X');
+  const a = xGlyph?.strokes[0]?.[0], b = xGlyph?.strokes[0]?.[1], c = xGlyph?.strokes[1]?.[0], d = xGlyph?.strokes[1]?.[1];
+  if (!xGlyph || !a || !b || !c || !d || xGlyph.strokes.length !== 2 || xGlyph.strokes.some((stroke) => stroke.length !== 2)) throw new Error('Alpha probe requires the two straight native Hershey X strokes');
+  const ux = b[0] - a[0], uy = b[1] - a[1], vx = d[0] - c[0], vy = d[1] - c[1];
+  const t = ((c[0] - a[0]) * vy - (c[1] - a[1]) * vx) / (ux * vy - uy * vx);
+  const crossing = { x: a[0] + t * ux, y: a[1] + t * uy };
+  const highlightProbes = [{ owner: 'TEXT-ALPHA-CROSS', x: 4, y: 1.2 }, { owner: 'BLOCK-OWNER', x: 1.5, y: 1.3 }].map(({ owner, x, y }) => ({ owner, label: `${owner} crossing composites both glyph subpaths once`, point: p(x + crossing.x * 0.8, y + crossing.y * 0.8), rgb: [255, 204, 68], region: [p(x + 0.15, y + 0.15), p(x + 0.6, y + 0.65)] }));
   if (name.startsWith('compound-fallback-')) {
     let unsafe: Entity = { ...common, id: 'late-ttf', type: 'text', position: local(0, 0), text: 'TTF', height: 0.5 * unit, rotation: 0, align: 'left', style: 'GPU-UNSAFE' };
     if (name.endsWith('-mtext')) unsafe = { ...common, id: 'late-mtext', type: 'mtext', position: local(0, 0), text: 'MTEXT\nLATE', height: 0.5 * unit, width: 3 * unit, rotation: 0, attachment: 1, lineSpacing: 1 };
@@ -105,7 +151,7 @@ function compoundFixture(name: string): { state: DrawingState; center: Point; sc
   return {
     state: { ...base, entities, blocks, layers: [...base.layers, { name: 'GPU-HIDDEN', color: 1, visible: false, locked: false, lineWeight: 0.5 }], meta: { textStyles: styles }, header: { ...DEFAULT_HEADER, linetypes: [{ name: 'DASHED', description: 'Native benchmark dashed refusal', pattern: [0.5 * unit, -0.25 * unit] }] } },
     center, scale: 64 / unit, twist: 0,
-    metadata: { name, block: ordered.name, textStyle: 'GPU-STROKE', nearOriginReference: far ? 'compound-trillion-reference' : undefined, probes: [{ label: 'later top-level line covers block', point: p(0, 0), rgb: [255, 170, 34] }, { label: 'ByBlock truecolor and root width', point: p(0, 0.5), rgb: [34, 170, 255] }, { label: 'earlier line remains outside later stroke', point: p(2.5, 0), rgb: [238, 51, 68] }] },
+    metadata: { name, block: ordered.name, textStyle: 'GPU-STROKE', highlightProbes, nearOriginReference: far ? 'compound-trillion-reference' : undefined, probes: [{ label: 'later top-level line covers block', point: p(0, 0), rgb: [255, 170, 34] }, { label: 'ByBlock truecolor and root width', point: p(0, 0.5), rgb: [34, 170, 255] }, { label: 'earlier line remains outside later stroke', point: p(2.5, 0), rgb: [238, 51, 68] }] },
   };
 }
 
@@ -194,7 +240,26 @@ export function installGpuPrototype(editor: Editor): void {
     loadFixture: (name: string) => {
       fixtureMetadata = null;
       const base = bigDrawing(name === 'dense-lines' ? 38000 : 5000, name === 'mixed-schematic' ? 1000 : 0, name === 'mixed-schematic' ? 500 : 0);
-      if (name === 'arc-full-huge' || name === 'arc-sweep-fallback' || name === 'arc-angle-fallback') {
+      if (name === 'positive-bulge-precision-fallback') {
+        const origin = { x: 1e12, y: 1e12 }, unit = 2 ** -13, common = { layer: '0', color: 7 } as const;
+        const p = (x: number, y: number): Point => ({ x: origin.x + x * unit, y: origin.y + y * unit });
+        editor.loadState({ ...base, entities: [
+          { ...common, id: 'POSITIVE-EDIT', type: 'line', a: p(-12, -10), b: p(-8, -10) },
+          { ...common, id: 'POSITIVE-BULGE', type: 'polyline', points: [p(-2, 0), p(2, 0)], bulges: [0.5], closed: false, trueColor: 0x22cc66 },
+        ] }, null);
+        view.center = origin; view.scale = 16384; view.twist = 0;
+        fixtureMetadata = { name, probes: [], curveConstructionReference: { origin, unit, localCenter: { x: 0, y: 1.5 * unit }, roundedWorldCenter: { x: origin.x, y: origin.y + 1.5 * unit }, radius: 2.5 * unit } };
+      } else if (name.startsWith('negative-bulge-')) {
+        const fixture = negativeBulgeFixture(name);
+        editor.loadState(fixture.state, null);
+        view.center = { x: 0, y: 0 }; view.scale = 64; view.twist = 0;
+        fixtureMetadata = fixture.metadata;
+      } else if (name.startsWith('collapse-')) {
+        const fixture = collapsedWorldFixture(name);
+        editor.loadState(fixture.state, null);
+        view.center = fixture.center; view.scale = 1; view.twist = 0;
+        fixtureMetadata = fixture.metadata;
+      } else if (name === 'arc-full-huge' || name === 'arc-sweep-fallback' || name === 'arc-angle-fallback') {
         const startAngle = name === 'arc-full-huge' ? 1e20 : name === 'arc-angle-fallback' ? 1e12 : 0;
         const endAngle = name === 'arc-full-huge' ? startAngle : name === 'arc-angle-fallback' ? startAngle + Math.PI / 2 : 5 * Math.PI / 2;
         const style = { layer: '0', color: 7 };
@@ -250,7 +315,7 @@ export function installGpuPrototype(editor: Editor): void {
         ] }, null);
       } else editor.loadState(base, null);
       // Fixture-local display state must not leak into the ordinary comparison scenes.
-      lineweightDisplay.enabled = name === 'lineweights' || name === 'wide-curve-fallback' || (name.startsWith('compound-') && name !== 'compound-dense');
+      lineweightDisplay.enabled = name === 'lineweights' || name === 'wide-curve-fallback' || name.startsWith('collapse-') || (name.startsWith('compound-') && name !== 'compound-dense');
       lineweightDisplay.pxPerMm = undefined;
       editor.viewport.settings.gridVisible = false;
       editor.viewport.renderCurrent();
