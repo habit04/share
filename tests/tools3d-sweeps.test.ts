@@ -136,3 +136,22 @@ describe('REVOLVE', () => {
     expect(solids(ctx)).toHaveLength(1);
   });
 });
+
+describe('triangle budget', () => {
+  it('REVOLVE of a huge profile: a full turn is refused with the budget message, a half turn fits', async () => {
+    // 8,000 points on a circle of radius 100 around (200, 0): 2 x 8,000 x 32 = 512,000 triangles
+    // for a full turn (over MAX_SOLID_TRIANGLES), about 272,000 for half a turn.
+    const n = 8000;
+    const pts: [number, number][] = [];
+    for (let i = 0; i < n; i++) pts.push([200 + 100 * Math.cos((2 * Math.PI * i) / n), 100 * Math.sin((2 * Math.PI * i) / n)]);
+    const ring = pline(pts);
+    const ctx = withEntities(ring);
+    await drive3d(revolveTool(), ctx, [{ select: [ring.id] }, 'Y', '', '180']);
+    expect(ctx.logs.some((l) => /^REVOLVE: The revolution would have 512,000 triangles; the safe limit is 500,000 per solid\. Try a smaller angle/.test(l))).toBe(true);
+    // The axis was kept: only the angle was asked again.
+    expect(ctx.prompts.filter((p) => p.startsWith('Specify axis start point'))).toHaveLength(1);
+    expect(ctx.prompts.filter((p) => p.startsWith('Specify angle of revolution'))).toHaveLength(2);
+    expect(solids(ctx)).toHaveLength(1);
+    expect(meshIsClosed(solids(ctx)[0]!.mesh)).toBe(true);
+  }, 30_000);
+});

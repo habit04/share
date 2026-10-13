@@ -103,4 +103,10 @@ export interface Tool {
   readonly acceptsDistance?: boolean;
   /** When true, typed input is passed to onText verbatim (no point parsing, Space is a character). */
   acceptsFreeText?(): boolean;
+  /**
+   * When true, typed input is passed to onText (trimmed) without being parsed into a point
+   * ("x,y", "@dx,dy", "d<a" stay text) or used for direct distance entry; unlike
+   * `acceptsFreeText`, Space still submits. Experimental 3D tools parse 3D points themselves.
+   */
+  acceptsRawPoints?(): boolean;
 }

@@ -289,6 +289,14 @@ export class Editor {
     return prompter.makeContext(this, this.internals);
   }
 
+  /**
+   * Hand a point to the running tool as a picked point (what a click on the 2D canvas does after
+   * snapping), without going through typed input. Used by the experimental 3D view.
+   */
+  acceptPoint(p: Point): void {
+    this.geometryAction(() => prompter.acceptPoint(this, this.internals, p), undefined);
+  }
+
   /** True while a tool waits on "Select objects:". */
   get selectionPending(): boolean {
     return this.internals.selReq !== null;

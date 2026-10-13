@@ -196,12 +196,52 @@ describe('modelling commands typed at the command line', () => {
     expect(c.solidIds()).toEqual([a]);
     expect(meshVolume(solids(ed)[0]!.mesh)).toBeCloseTo(12 - 2, 6);
     expect(ed.tool).toBeNull();
-    expect(c.kernelStarted).toBe(true);
+    // Outside 3D mode the kernel is released as soon as the command ends.
+    expect(c.kernelStarted).toBe(false);
     // Undo the subtraction: both operands are back.
     ed.doc.undo();
     expect(c.solidIds()).toEqual([a, cut]);
-    c.disposeKernel();
-    expect(c.kernelStarted).toBe(false);
+  });
+
+  it('a 3D-view click on a face top hands over the 3D point; typed @dx,dy keeps its height', () => {
+    const { ed, c } = editor3d();
+    void ed.runCommand('BOX');
+    type(ed, '0,0', '2,2', '5');
+    const [boxId] = c.solidIds();
+    void ed.runCommand('CYLINDER');
+    // What Experimental3d.click does after pick3At: the face hit on the box top at z = 5.
+    c.deliverClick({ p2: { x: 1, y: 1 }, point: { x: 1, y: 1, z: 5 }, ray: { origin: { x: 1, y: 1, z: 50 }, dir: { x: 0, y: 0, z: -1 } }, hit: { id: boxId!, t: 45, point: { x: 1, y: 1, z: 5 }, normal: { x: 0, y: 0, z: 1 }, triangle: 0 } });
+    expect(ed.history).toContain('Specify center point of base: 1,1');
+    expect(ed.lastPoint).toEqual({ x: 1, y: 1 });
+    type(ed, '1', 'A', '@3,0');
+    const cyl = solids(ed).at(-1)!;
+    expect(cyl.feature).toMatchObject({ kind: 'cylinder', radius: 1, height: 3, frame: { origin: { x: 1, y: 1, z: 5 }, zAxis: { x: 1, y: 0, z: 0 } } });
+    // The axis endpoint was (4, 1, 5).
+    const b = meshBounds(cyl.mesh)!;
+    expect(b.min.x).toBeCloseTo(1, 12);
+    expect(b.max.x).toBeCloseTo(4, 12);
+    expect((b.min.z + b.max.z) / 2).toBeCloseTo(5, 12);
+  });
+
+  it('a typed coordinate equal to the last cursor position does not pick up the cursor 3D point', () => {
+    const { ed, c } = editor3d();
+    void ed.runCommand('CYLINDER');
+    // The cursor moved over a face at z = 5 whose plane coordinates are (1, 1) ...
+    c.deliverMove({ p2: { x: 1, y: 1 }, point: { x: 1, y: 1, z: 5 }, ray: { origin: { x: 1, y: 1, z: 50 }, dir: { x: 0, y: 0, z: -1 } }, hit: null });
+    // ... and then exactly "1,1" is typed: a point on the plane, z = 0.
+    type(ed, '1,1', '1', '1');
+    expect(solids(ed).at(-1)!.feature).toMatchObject({ kind: 'cylinder', frame: { origin: { x: 1, y: 1, z: 0 } } });
+    expect(c.pickAt({ x: 1, y: 1 })).toBeNull();
+  });
+
+  it('keywords, numbers and points all reach 3D commands as typed text', () => {
+    const { ed } = editor3d();
+    void ed.runCommand('BOX');
+    // Not free text (Space keeps submitting), but points stay raw text for the 3D parser.
+    expect(ed.acceptsFreeText()).toBe(false);
+    expect(ed.tool?.acceptsRawPoints?.()).toBe(true);
+    type(ed, '0,0,1', 'L', '3', '2', '1');
+    expect(meshBounds(solids(ed).at(-1)!.mesh)).toEqual({ min: { x: 0, y: 0, z: 1 }, max: { x: 3, y: 2, z: 2 } });
   });
 
   it('ALL at "Select objects:" takes the solids; ERASE removes them in one step, 2D-only ERASE is unchanged', () => {

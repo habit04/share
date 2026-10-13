@@ -21,7 +21,8 @@
  * extends every tool context with the 3D members (src/tools3d/context.ts): the construction plane
  * (WCS XY whenever 3D mode is off), `point3` (in 3D mode a click or the cursor gives the solid face
  * under it, else the point on the construction plane), the kernel (created on first use, disposed
- * when 3D mode ends or the window unloads) and ghost solids drawn by the 3D viewport. In 3D mode a
+ * when 3D mode ends, when a command ends outside 3D mode, or when the window unloads) and ghost
+ * solids drawn by the 3D viewport. In 3D mode a
  * click while "Select objects:" is pending picks the solid under the cursor, else the 2D object
  * where the cursor ray meets z = 0; typing ALL also takes the visible solids, and typing a solid's
  * id takes that solid.
@@ -75,7 +76,7 @@ export const RIBBON_3D_TAB: RibbonTab = {
     },
     {
       title: 'Plane',
-      buttons: [{ label: 'Plane', icon: 'grid', command: '3DPLANE', size: 'large', tooltip: 'Construction plane: World, XY, XZ, YZ, Face or Origin (3DPLANE)' }],
+      buttons: [{ label: 'Plane', icon: 'grid', command: '3DPLANE', size: 'large', tooltip: 'Construction plane: World, Top (XY), Front (XZ), Right (YZ), Solid face or Origin (3DPLANE)' }],
     },
     {
       title: 'View',
@@ -148,7 +149,7 @@ export class Experimental3d {
   private kernelInstance: GeometryKernel | null = null;
   /** Ghost solids of the running 3D command. */
   previewSolids: readonly Solid3D[] = [];
-  /** The 3D pick of the click being handed to a 3D command, and of the cursor. */
+  /** The 3D pick of the click / cursor move being handed to a 3D command (set only during that call). */
   private clickPick: Pick3 | null = null;
   private cursorPick: Pick3 | null = null;
   /** Makes the geometry kernel on first use (tests may replace it). */
@@ -211,12 +212,44 @@ export class Experimental3d {
     this.render();
   }
 
-  /** The 3D pick recorded for this tool point (a click being handed over, or the cursor). */
-  pickAt(p: Point): Pick3 | null {
-    for (const k of [this.clickPick, this.cursorPick]) {
-      if (k && Math.abs(k.p2.x - p.x) <= 1e-6 * Math.max(1, Math.abs(p.x)) && Math.abs(k.p2.y - p.y) <= 1e-6 * Math.max(1, Math.abs(p.y))) return k;
+  /**
+   * The 3D pick of the click or cursor move being handed to the tool right now (`deliverClick`,
+   * `deliverMove`); null at any other time, so typed points never pick up a 3D hit. The point
+   * argument is not compared: the pick exists only while the tool handles that very input.
+   */
+  pickAt(_p: Point): Pick3 | null {
+    return this.clickPick ?? this.cursorPick;
+  }
+
+  /**
+   * Give a running 3D command a click: echo the plane coordinates on the command line, hand the
+   * point over directly (`Editor.acceptPoint`, no typed-input round trip) with the exact 3D pick
+   * available to `point3` / `ray3` / `face3` for exactly that call. Afterwards the editor's last
+   * point is the picked point's world x, y (what the 2D status bar and 2D commands read).
+   */
+  deliverClick(pick: Pick3): void {
+    const ed = this.editor;
+    if (!(ed.tool instanceof Script3DTool)) return;
+    ed.log(`${ed.prompt} ${typedCoordinate(pick.p2, ed.settings.precision)}`);
+    this.clickPick = pick;
+    try {
+      ed.acceptPoint(pick.p2);
+    } finally {
+      this.clickPick = null;
     }
-    return null;
+    ed.lastPoint = { x: pick.point.x, y: pick.point.y };
+  }
+
+  /** Give a running 3D command a cursor move (ghost preview), the 3D pick available for that call only. */
+  deliverMove(pick: Pick3): void {
+    const ed = this.editor;
+    if (!(ed.tool instanceof Script3DTool) || ed.selectionPending) return;
+    this.cursorPick = pick;
+    try {
+      ed.tool.onMove(pick.p2, ed.toolContext());
+    } finally {
+      this.cursorPick = null;
+    }
   }
 
   /** What the tool context extension reads (src/tools3d/context.ts). */
@@ -314,10 +347,7 @@ export class Experimental3d {
       ed.on('change', redraw),
       ed.on('selection', redraw),
       ed.on('tool', () => {
-        if (!ed.tool) {
-          this.cursorPick = null;
-          this.setPreview3d([]);
-        }
+        if (!ed.tool) this.setPreview3d([]);
       }),
       ed.on('snap', () => { this.syncSettings(); this.render(); }),
       ed.on('view', () => this.resizeIfNeeded()),
@@ -351,8 +381,6 @@ export class Experimental3d {
     this.viewport = null;
     this.drag = null;
     this.hover = null;
-    this.clickPick = null;
-    this.cursorPick = null;
     this.previewSolids = [];
     // The kernel's worker and WebAssembly memory go with 3D mode (a Boolean still running is
     // rejected and changes nothing); the next Boolean starts a new kernel.
@@ -513,9 +541,7 @@ export class Experimental3d {
     const ed = this.editor;
     if (!this.viewport || !(ed.tool instanceof Script3DTool) || ed.selectionPending) return;
     const pick = this.pick3At(x, y);
-    if (!pick) return;
-    this.cursorPick = pick;
-    ed.tool.onMove(pick.p2, ed.toolContext());
+    if (pick) this.deliverMove(pick);
   }
 
   // ---------------------------------------------------------------- mouse
@@ -621,15 +647,8 @@ export class Experimental3d {
       return;
     }
     if (ed.tool instanceof Script3DTool) {
-      // The exact 3D pick travels with the typed coordinates (plane-local), see `pickAt`.
       const pick = this.pick3At(x, y);
-      if (!pick) return;
-      this.clickPick = pick;
-      try {
-        ed.submitInput(typedCoordinate(pick.p2, ed.settings.precision));
-      } finally {
-        this.clickPick = null;
-      }
+      if (pick) this.deliverClick(pick);
       return;
     }
     if (ed.tool && !(ed.tool instanceof Orbit3DTool)) {
@@ -699,7 +718,7 @@ function registerCommands(editor: Editor, c: Experimental3d): void {
   tool('UNION', ['UNI'], 'join solids into one', unionTool);
   tool('SUBTRACT', ['SU'], 'subtract solids from solids', subtractTool);
   tool('INTERSECT', ['IN'], 'keep the common volume of solids', intersectTool);
-  tool('3DPLANE', [], 'construction plane for 3D commands [World/XY/XZ/YZ/Face/Origin]', planeTool);
+  tool('3DPLANE', [], 'construction plane for 3D commands [World/Top/Front/Right/Solid face/Origin] (XY/XZ/YZ/Face typed)', planeTool);
 }
 
 /**
@@ -739,6 +758,11 @@ export function installExperimental3d(editor: Editor): Experimental3d | null {
   registerCommands(editor, c);
   editor.toolContextExtension = (ctx) => extendContext3d(ctx, c.source);
   extendSelectionKeywords(editor);
+  // Outside 3D mode nothing else ends the kernel's life, so a Boolean run from the 2D view releases
+  // its worker and WebAssembly memory as soon as its command ends (3D mode disposes it on exit).
+  editor.on('tool', () => {
+    if (!editor.tool && !c.active && c.kernelStarted) c.disposeKernel();
+  });
   if (!RIBBON.some((t) => t.name === RIBBON_3D_TAB.name)) RIBBON.push(RIBBON_3D_TAB);
   if (typeof window !== 'undefined') {
     window.jcad3d = c;
