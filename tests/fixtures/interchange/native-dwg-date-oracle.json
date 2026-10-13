@@ -1,0 +1,119 @@
+{
+  "schemaVersion": 1,
+  "software": "AutoCAD 2027 Core Engine X.60.0.0; .NET 10.0 detached Database read",
+  "oracle": "native-dwg-date-oracle.cs",
+  "procedure": "ReadDwgFile on isolated byte-identical private copies; never save; verify original and copy SHA256 before/after; reflection copies stored DateTime/TimeSpan properties",
+  "cases": [
+    {
+      "stem": "r2018-views-fields",
+      "values": {
+        "TDUSRTIMER": {
+          "ticks": "30000000",
+          "days": "3.472222222222222E-05"
+        },
+        "TDINDWG": {
+          "ticks": "30000000",
+          "days": "3.472222222222222E-05"
+        },
+        "TDUUPDATE": {
+          "iso": "2026-10-12T22:32:17.0000000",
+          "ticks": "639274411370000000",
+          "julian": "2461326.939085648"
+        },
+        "TDUCREATE": {
+          "iso": "2026-10-12T01:17:54.0000000",
+          "ticks": "639273646740000000",
+          "julian": "2461326.054097222"
+        },
+        "TDUPDATE": {
+          "iso": "2026-10-12T17:32:17.0000000",
+          "ticks": "639274231370000000",
+          "julian": "2461326.730752315"
+        },
+        "TDCREATE": {
+          "iso": "2026-10-11T20:17:54.0000000",
+          "ticks": "639273466740000000",
+          "julian": "2461325.8457638887"
+        }
+      },
+      "software": "AutoCAD 2027 Core Engine X.60.0.0; detached .NET Database read",
+      "sourceDwgSha256": "5f5a9bd4a0ffd2e545f6f5404bed9edb27f2c41411c3b26a264f0696a649f105",
+      "sourceAndCopyUnchanged": true,
+      "readOnly": true
+    },
+    {
+      "stem": "r2018-field-object-reference",
+      "values": {
+        "TDUSRTIMER": {
+          "ticks": "20000000",
+          "days": "2.3148148148148147E-05"
+        },
+        "TDINDWG": {
+          "ticks": "20000000",
+          "days": "2.3148148148148147E-05"
+        },
+        "TDUUPDATE": {
+          "iso": "2026-10-12T22:57:56.0000000",
+          "ticks": "639274426760000000",
+          "julian": "2461326.956898148"
+        },
+        "TDUCREATE": {
+          "iso": "2026-10-12T01:17:54.0000000",
+          "ticks": "639273646740000000",
+          "julian": "2461326.054097222"
+        },
+        "TDUPDATE": {
+          "iso": "2026-10-12T17:57:56.0000000",
+          "ticks": "639274246760000000",
+          "julian": "2461326.7485648147"
+        },
+        "TDCREATE": {
+          "iso": "2026-10-11T20:17:54.0000000",
+          "ticks": "639273466740000000",
+          "julian": "2461325.8457638887"
+        }
+      },
+      "software": "AutoCAD 2027 Core Engine X.60.0.0; detached .NET Database read",
+      "sourceDwgSha256": "78f2e61f66e84f2e24d589071faf0afe3a68d0127405e7a53fbd5ebc020749c6",
+      "sourceAndCopyUnchanged": true,
+      "readOnly": true
+    },
+    {
+      "stem": "r2018-unicode-metadata",
+      "values": {
+        "TDUSRTIMER": {
+          "ticks": "40000000",
+          "days": "4.6296296296296294E-05"
+        },
+        "TDINDWG": {
+          "ticks": "40000000",
+          "days": "4.6296296296296294E-05"
+        },
+        "TDUUPDATE": {
+          "iso": "2026-10-12T23:13:35.0000000",
+          "ticks": "639274436150000000",
+          "julian": "2461326.967766204"
+        },
+        "TDUCREATE": {
+          "iso": "2026-10-12T01:17:54.0000000",
+          "ticks": "639273646740000000",
+          "julian": "2461326.054097222"
+        },
+        "TDUPDATE": {
+          "iso": "2026-10-12T18:13:35.0000000",
+          "ticks": "639274256150000000",
+          "julian": "2461326.7594328704"
+        },
+        "TDCREATE": {
+          "iso": "2026-10-11T20:17:54.0000000",
+          "ticks": "639273466740000000",
+          "julian": "2461325.8457638887"
+        }
+      },
+      "software": "AutoCAD 2027 Core Engine X.60.0.0; detached .NET Database read",
+      "sourceDwgSha256": "cf75bd2670ad88b29694fa4f96db4309fc2f8689f7bfa63cf9d0906447cb54f6",
+      "sourceAndCopyUnchanged": true,
+      "readOnly": true
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 const MAX_NATIVE_METADATA_DXF_BYTES = 32 * 1024 * 1024;
 
@@ -129,7 +129,7 @@ function classCountDifferences(definitions, originals) {
 }
 
 /** Independent header/time/color and complete VISUALSTYLE property checks against AutoCAD DXF. */
-export function validateNativeSourceScalarOracle(metadata, originalDxf, timezoneOffsetMinutes = new Date().getTimezoneOffset()) {
+export function validateNativeSourceScalarOracle(metadata, originalDxf, timezoneOffsetMinutes = new Date().getTimezoneOffset(), nativeDateOracle) {
   assert.ok(Number.isInteger(timezoneOffsetMinutes) && Math.abs(timezoneOffsetMinutes) <= 1440, 'Invalid host timezone offset.');
   const original = metadataDxfRecords(originalDxf), projected = metadataDxfRecords(metadata.dxf);
   const header = records => {
@@ -151,13 +151,16 @@ export function validateNativeSourceScalarOracle(metadata, originalDxf, timezone
   const dates = new Map([['$TDUCREATE', '$TDUCREATE'], ['$TDCREATE', '$TDUCREATE'], ['$TDUUPDATE', '$TDUUPDATE'], ['$TDUPDATE', '$TDUUPDATE'], ['$TDINDWG', '$TDINDWG'], ['$TDUSRTIMER', '$TDUSRTIMER']]);
   for (const [variable, sourceVariable] of dates) {
     if (!sourceHeader.has(sourceVariable)) continue;
-    const source = one(sourceHeader, sourceVariable, 40);
+    const sourceDxf = one(sourceHeader, sourceVariable, 40);
+    const clock = nativeDateOracle?.values?.[sourceVariable.slice(1)];
+    const source = nativeDateOracle ? Number(clock?.julian ?? clock?.days) : sourceDxf;
+    assert.ok(Number.isFinite(source), 'The independent stored DWG date is missing or non-finite.');
     // DWG stores UTC; the local DATE variables are derived using the host's timezone.
     // Preserve absent dates. The %.09f serialization rounds the last decimal place of a day.
     const wanted = source && variable !== sourceVariable ? source - timezoneOffsetMinutes / 1440 : source;
     const actual = one(nativeHeader, variable, 40);
     assert.ok(Math.abs(actual - wanted) <= Math.max(1e-9, 8 * Number.EPSILON * Math.max(1, Math.abs(wanted))), `Independent HEADER ${variable} changed: ${actual} != ${wanted}.`);
-    dateValues.push({ variable, sourceVariable, source, expected: wanted, actual });
+    dateValues.push({ variable, sourceVariable, source, ...(nativeDateOracle ? { sourceDxf } : {}), expected: wanted, actual });
   }
   for (const [variable, code] of [['$CECOLOR', 62], ['$INTERFERECOLOR', 62], ['$DIMCLRD', 70], ['$DIMCLRE', 70], ['$DIMCLRT', 70], ['$DIMTFILLCLR', 70]]) {
     if (!sourceHeader.has(variable)) continue;
@@ -219,6 +222,24 @@ export function validateNativeSourceScalarOracle(metadata, originalDxf, timezone
   }
   assert.ok(dateValues.some(value => value.variable === '$TDUCREATE') && colorValues.some(value => value.variable === '$INTERFERECOLOR') && visualStyles.length, 'Independent source scalar oracle lacks date/color/visual-style coverage.');
   return { timezoneOffsetMinutes, dateValues, colorValues, dimstyleColors, explicitDimensionDefaults, visualStyles, lightingRepresentations };
+}
+
+export async function loadNativeDateOracle(expectedPath, dwgSha256) {
+  const oracle = JSON.parse(await readFile(resolve(dirname(expectedPath), 'native-dwg-date-oracle.json'), 'utf8'));
+  assert.equal(oracle.schemaVersion, 1); assert.match(oracle.software, /AutoCAD/);
+  assert.ok(Array.isArray(oracle.cases) && oracle.cases.length === 3, 'Invalid independent DWG clock inventory.');
+  const cases = oracle.cases.filter(value => value.sourceDwgSha256 === dwgSha256);
+  assert.equal(cases.length, 1, 'Independent DWG clock hash is missing or duplicated.');
+  const record = cases[0]; assert.equal(record.readOnly, true); assert.equal(record.sourceAndCopyUnchanged, true);
+  assert.match(record.software, /AutoCAD.*detached/);
+  assert.deepEqual(Object.keys(record.values).sort(), ['TDCREATE', 'TDINDWG', 'TDUPDATE', 'TDUCREATE', 'TDUSRTIMER', 'TDUUPDATE'].sort());
+  for (const [name, value] of Object.entries(record.values)) {
+    assert.match(value.ticks, /^\d{1,19}$/); const ticks = BigInt(value.ticks), dayTicks = 864000000000n;
+    const wanted = name === 'TDINDWG' || name === 'TDUSRTIMER' ? Number(ticks) / Number(dayTicks)
+      : Number(ticks / dayTicks) + 1721426 + Number(ticks % dayTicks) / Number(dayTicks);
+    const actual = Number(value.julian ?? value.days); assert.ok(Number.isFinite(actual) && Math.abs(actual - wanted) <= 1e-9, 'Independent DWG clock differs from its exact .NET ticks.');
+  }
+  return record;
 }
 
 function tableStyleParts(record) {
@@ -420,7 +441,7 @@ export function validateMetadataOracle(metadata, expected) {
 }
 
 /** Verify copied report records against local ground truth without executing artifact code. */
-export function validateMetadataReport(report, expected, originalDxf) {
+export function validateMetadataReport(report, expected, originalDxf, nativeDateOracle) {
   assert.equal(report.schemaVersion, 1);
   assert.equal(report.nativeError, 0);
   assert.equal(report.writeError, 0);
@@ -465,7 +486,9 @@ export function validateMetadataReport(report, expected, originalDxf) {
     assert.equal(report.sourceScalarOracleVerified, true, 'Independent native date/color/VISUALSTYLE proof is required.');
     assert.equal(report.sourceTableStyleOracleVerified, true, 'Independent ordered TABLESTYLE proof is required.');
     const captured = { dxf: sourceOracleDxf(report.sourceOracleRecords) };
-    const scalar = validateNativeSourceScalarOracle(captured, originalDxf, report.sourceScalarSummary?.timezoneOffsetMinutes);
+    assert.equal(nativeDateOracle?.sourceDwgSha256, expected.source.dwgSha256, 'Independent stored DWG clock proof is required.');
+    assert.deepEqual(report.sourceDateOracle, nativeDateOracle, 'Independent stored DWG clock evidence changed.');
+    const scalar = validateNativeSourceScalarOracle(captured, originalDxf, report.sourceScalarSummary?.timezoneOffsetMinutes, nativeDateOracle);
     assert.deepEqual(report.sourceScalarSummary, scalarSummary(scalar), 'Independent source scalar evidence was not reported accurately.');
     const styles = validateNativeTableStyleOracle(captured, originalDxf, report.tableStyleInventory);
     assert.deepEqual(report.sourceTableStyleSummary, styles, 'Independent TABLESTYLE evidence was not reported accurately.');
@@ -521,7 +544,8 @@ export async function validateMetadataFixture(factory, wasmPath, fixturePath, ex
     const classInventory = Array.from({ length: nativeClassCount }, (_, index) => module.dwg_get_class(pointer, index));
     const classDefinitions = validateNativeClassProjection(metadata, classInventory);
     const originalClasses = validateNativeClassOracle(metadata, originalDxf);
-    const scalar = validateNativeSourceScalarOracle(metadata, originalDxf);
+    const sourceDateOracle = await loadNativeDateOracle(expectedPath, expected.source.dwgSha256);
+    const scalar = validateNativeSourceScalarOracle(metadata, originalDxf, undefined, sourceDateOracle);
     const tableStyleInventory = copyNativeTableStyleInventory(module, pointer, metadata);
     const styles = validateNativeTableStyleOracle(metadata, originalDxf, tableStyleInventory);
     const report = { schemaVersion: 1, nativeError: readError, writeError: metadata.writeError,
@@ -531,7 +555,7 @@ export async function validateMetadataFixture(factory, wasmPath, fixturePath, ex
       classProjectionVerified: true, nativeClassCount, classInventory, classDefinitions,
       classOracleVerified: true, sourceDxfSha256, declaredClassCount: originalClasses.length,
       classCountDifferences: classCountDifferences(classDefinitions, originalClasses),
-      sourceScalarOracleVerified: true, sourceOracleRecords: sourceOracleRecords(metadata), sourceScalarSummary: scalarSummary(scalar),
+      sourceScalarOracleVerified: true, sourceDateOracle, sourceOracleRecords: sourceOracleRecords(metadata), sourceScalarSummary: scalarSummary(scalar),
       sourceTableStyleOracleVerified: true, tableStyleInventory, sourceTableStyleSummary: styles };
     if (output) await writeFile(output, JSON.stringify(report, null, 2) + '\n', { flag: 'wx' });
     return report;

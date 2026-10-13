@@ -6,7 +6,7 @@ import { resolve, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { wasmMemoryLimits } from './dwg-wasm-memory.mjs';
 import { checkedNativeColor, encodedNativeAlpha, validateBookColorProjectionReport } from './native-dwg-build/validate-appearance-fixture.mjs';
-import { metadataDxfRecords, validateMetadataReport } from './native-dwg-build/validate-metadata-fixture.mjs';
+import { metadataDxfRecords, validateMetadataReport, loadNativeDateOracle } from './native-dwg-build/validate-metadata-fixture.mjs';
 export { wasmMemoryLimits } from './dwg-wasm-memory.mjs';
 
 export const NATIVE_SOURCE = Object.freeze({ repository: 'https://github.com/mlightcad/libredwg-web', tag: 'v0.7.14', commit: '1dd682f46339f37b67c5ff1085d10d04a8c16d7e' });
@@ -178,7 +178,8 @@ export async function verifyNativeRuntime(directory, fixturePath, expectedPath, 
     assert.equal(metadata.wasmSha256, report.wasmSha256);
     assert.equal(metadata.fixtureSha256, digest(fixture));
     assert.equal(metadata.expectedSha256, digest(Buffer.from(expectedBytes.toString('utf8').replace(/\r\n/g, '\n'))));
-    validateMetadataReport(metadata, wanted, originalDxf);
+    const nativeDateOracle = await loadNativeDateOracle(resolve(sourceRoot, pins.metadataExpected), wanted.source.dwgSha256);
+    validateMetadataReport(metadata, wanted, originalDxf, nativeDateOracle);
     assert.deepEqual(provenance.validation?.metadata, { report: 'metadata-report.json', fixtureSha256: metadata.fixtureSha256, expectedSha256: metadata.expectedSha256,
       nativeError: 0, writeError: 0, complete: true, recordCount: wanted.records.length, maxOutputBytes: metadata.maxOutputBytes, limitedOutputRejected: true,
       classProjectionVerified: true, nativeClassCount: metadata.nativeClassCount,

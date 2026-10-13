@@ -277,9 +277,16 @@ byte flag. This extension records stored fields absent from the ordinary DXF pro
 regenerated from decoded native fields on every read, and requires no APPID. It does not infer
 keys from style identities or copy retained wrapper text into the native proof.
 
-The independent source gate compares stored UTC dates, normalized host-local dates, header ACI
-colors, declared DIMSTYLE colors, all 58 VISUALSTYLE selectors and their complete property
-sequence, and every ordered TABLESTYLE format against the original AutoCAD DXF. It reports
+The independent source gate compares stored UTC dates and timers against the DWG-hash-bound
+`native-dwg-date-oracle.json`. Its reproducible C# command reads detached AutoCAD databases on
+isolated copies without saving, captures exact DateTime/TimeSpan ticks, and verifies unchanged
+original/copy hashes. AutoCAD DATE uses the calendar Julian day number at midnight plus the
+day fraction. Derived host-local dates are checked using the reported timezone. The Unicode
+DWG's later update clock and four-second stored timer reflect a save after its companion DXF;
+both source clocks are recorded, and no date comparison is waived.
+
+Header ACI colors, declared DIMSTYLE colors, all 58 VISUALSTYLE selectors and their complete
+property sequence, and every ordered TABLESTYLE format match the original AutoCAD DXF. The gate reports
 explicit ByBlock-zero DIMSTYLE defaults omitted by DXFOUT, host timezone offset, and the pinned
 VISUALSTYLE binary lighting representation 2 versus AutoCAD's DXF representation 3. Color
 comparison uses the exact RGB bytes when a C2 packed method and its ordinary DXF RGB represent

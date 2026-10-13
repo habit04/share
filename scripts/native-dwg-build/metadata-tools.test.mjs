@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { metadataDxfRecords, validateMetadataOracle, validateMetadataReport, validateNativeClassProjection, validateNativeClassOracle, validateNativeSourceScalarOracle, validateNativeTableStyleOracle, copyNativeTableStyleInventory } from './validate-metadata-fixture.mjs';
+import { metadataDxfRecords, validateMetadataOracle, validateMetadataReport, validateNativeClassProjection, validateNativeClassOracle, validateNativeSourceScalarOracle, validateNativeTableStyleOracle, copyNativeTableStyleInventory, loadNativeDateOracle } from './validate-metadata-fixture.mjs';
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 // Synthetic tokens exercise the validator boundary. They do not establish native
 // DWG fidelity or replace the independently authored CAD fixture acceptance gate.
@@ -29,6 +30,23 @@ function sourceProjection(timezoneOffsetMinutes = 300) {
     styles: [{ id: 4, type: 2, name: 'Table' }, { id: 1, type: 1, name: '_TITLE' }, { id: 2, type: 1, name: '_HEADER' }, { id: 3, type: 2, name: '_DATA' }] }];
   return { original, records, metadata: { dxf: dxf(records) }, inventory, timezoneOffsetMinutes };
 }
+
+test('stored DWG clocks are hash-bound and retain the independently proven Unicode post-DXF save timestamp', async () => {
+  const expectedPath = fileURLToPath(new URL('../../tests/fixtures/interchange/r2018-unicode-metadata.expected.json', import.meta.url));
+  const expected = JSON.parse(readFileSync(expectedPath, 'utf8')), oracle = await loadNativeDateOracle(expectedPath, expected.source.dwgSha256);
+  await assert.rejects(loadNativeDateOracle(expectedPath, '00'.repeat(32)), /clock hash is missing/);
+  const original = readFileSync(expectedPath.replace(/\.expected\.json$/, '.dxf'), 'utf8');
+  const records = metadataDxfRecords(original).filter(record => record.type !== 'EOF'), header = records.find(record => record.type === 'SECTION' && record.groups[0]?.value === 'HEADER');
+  for (const [name, value] of Object.entries(oracle.values)) header.groups[header.groups.findIndex(pair => pair.code === 9 && pair.value === '$' + name) + 1].value = value.julian ?? value.days;
+  const metadata = { dxf: dxf(records) };
+  assert.throws(() => validateNativeSourceScalarOracle(metadata, original, 300), /TDUUPDATE changed/);
+  const verified = validateNativeSourceScalarOracle(metadata, original, 300, oracle);
+  const updated = verified.dateValues.find(pair => pair.variable === '$TDUUPDATE');
+  assert.ok(Math.abs((updated.source - updated.sourceDxf) * 86400 - 181) < 0.0001);
+  assert.equal(verified.dateValues.find(pair => pair.variable === '$TDINDWG').expected, 4 / 86400);
+  header.groups[header.groups.findIndex(pair => pair.code === 9 && pair.value === '$TDCREATE') + 1].value = '2461368.816412960';
+  assert.throws(() => validateNativeSourceScalarOracle({ dxf: dxf(records) }, original, 300, oracle), /TDCREATE changed/);
+});
 
 test('independent source scalar oracle checks UTC dates, normalized host dates, colors and all 58 visual-style selectors', () => {
   for (const offset of [0, 300, -345]) {
@@ -477,7 +495,7 @@ test('report acceptance requires native success, completeness and the exercised 
   assert.doesNotThrow(() => validateMetadataReport(boundary, fixture.expected));
 });
 
-test('report acceptance requires an independent original class proof whenever the committed oracle includes it', () => {
+test('report acceptance requires an independent original class proof whenever the committed oracle includes it', async () => {
   const { report, fixture } = mockReport();
   const original = readFileSync(new URL('../../tests/fixtures/interchange/r2018-views-fields.expected.json', import.meta.url), 'utf8'), expectedClasses = JSON.parse(original);
   const expected = { ...fixture.expected, source: expectedClasses.source, classDefinitions: expectedClasses.classDefinitions };
@@ -485,35 +503,36 @@ test('report acceptance requires an independent original class proof whenever th
     const value = code => record.groups.find(group => group.code === code)?.value.trim();
     return { dxfname: value(1), cppname: value(2), appname: value(3), proxyflag: Number(value(90)), is_zombie: Number(value(280)), item_class_id: Number(value(281)) ? 0x1f2 : 0x1f3, num_instances: Number(value(91)) };
   });
-  const projection = sourceProjection(), scalar = validateNativeSourceScalarOracle(projection.metadata, projection.original, 300);
+  const projection = sourceProjection(), nativeDateOracle = await loadNativeDateOracle(fileURLToPath(new URL('../../tests/fixtures/interchange/r2018-views-fields.expected.json', import.meta.url)), expected.source.dwgSha256);
+  const scalar = validateNativeSourceScalarOracle(projection.metadata, projection.original, 300, nativeDateOracle);
   const valid = { ...report, classDefinitions: definitions, nativeClassCount: inventory.length, classInventory: inventory, classOracleVerified: true, sourceDxfSha256: expectedClasses.source.dxfSha256, declaredClassCount: definitions.length,
-    sourceScalarOracleVerified: true, sourceTableStyleOracleVerified: true, tableStyleInventory: projection.inventory,
+    sourceScalarOracleVerified: true, sourceDateOracle: nativeDateOracle, sourceTableStyleOracleVerified: true, tableStyleInventory: projection.inventory,
     sourceOracleRecords: projection.records.filter(record => ['DIMSTYLE', 'VISUALSTYLE', 'TABLESTYLE'].includes(record.type) || record.type === 'SECTION' && record.groups[0]?.value === 'HEADER'),
     sourceScalarSummary: { ...scalar, visualStyles: scalar.visualStyles.map(({ handle, selectors }) => ({ handle, selectors })) },
     sourceTableStyleSummary: validateNativeTableStyleOracle(projection.metadata, projection.original, projection.inventory) };
-  assert.doesNotThrow(() => validateMetadataReport(valid, expected, projection.original));
+  assert.doesNotThrow(() => validateMetadataReport(valid, expected, projection.original, nativeDateOracle));
   assert.throws(() => validateMetadataReport(valid, expected), /original source DXF is required/);
-  for (const key of ['classOracleVerified', 'sourceDxfSha256', 'declaredClassCount', 'sourceScalarOracleVerified', 'sourceTableStyleOracleVerified', 'sourceOracleRecords', 'sourceScalarSummary', 'tableStyleInventory', 'sourceTableStyleSummary']) {
-    const missing = { ...valid }; delete missing[key]; assert.throws(() => validateMetadataReport(missing, expected, projection.original), `Missing ${key}`);
+  for (const key of ['classOracleVerified', 'sourceDxfSha256', 'declaredClassCount', 'sourceScalarOracleVerified', 'sourceDateOracle', 'sourceTableStyleOracleVerified', 'sourceOracleRecords', 'sourceScalarSummary', 'tableStyleInventory', 'sourceTableStyleSummary']) {
+    const missing = { ...valid }; delete missing[key]; assert.throws(() => validateMetadataReport(missing, expected, projection.original, nativeDateOracle), `Missing ${key}`);
   }
   const changed = structuredClone(valid), cls = changed.classInventory.find(cls => cls.dxfname === 'FIELD');
   cls.proxyflag = 0;
   changed.classDefinitions.find(record => record.groups.some(group => group.code === 1 && group.value === 'FIELD')).groups.find(group => group.code === 90).value = '0';
-  assert.throws(() => validateMetadataReport(changed, expected, projection.original), /Independent AutoCAD class FIELD group90 changed/);
+  assert.throws(() => validateMetadataReport(changed, expected, projection.original, nativeDateOracle), /Independent AutoCAD class FIELD group90 changed/);
   const cached = structuredClone(valid);
   cached.classInventory.find(cls => cls.dxfname === 'CELLSTYLEMAP').num_instances = 0;
   cached.classDefinitions.find(record => record.groups.some(group => group.code === 1 && group.value === 'CELLSTYLEMAP')).groups.find(group => group.code === 91).value = '0';
-  assert.throws(() => validateMetadataReport(cached, expected, projection.original), /counter differences were not reported accurately/);
+  assert.throws(() => validateMetadataReport(cached, expected, projection.original, nativeDateOracle), /counter differences were not reported accurately/);
   cached.classCountDifferences = [{ dxfname: 'CELLSTYLEMAP', nativeCount: 0, sourceDxfCount: 1 }];
-  assert.doesNotThrow(() => validateMetadataReport(cached, expected, projection.original));
-  assert.throws(() => validateMetadataReport({ ...cached, classCountDifferences: [] }, expected, projection.original), /counter differences were not reported accurately/);
+  assert.doesNotThrow(() => validateMetadataReport(cached, expected, projection.original, nativeDateOracle));
+  assert.throws(() => validateMetadataReport({ ...cached, classCountDifferences: [] }, expected, projection.original, nativeDateOracle), /counter differences were not reported accurately/);
   const dishonest = structuredClone(cached); dishonest.classCountDifferences[0].sourceDxfCount = 0;
-  assert.throws(() => validateMetadataReport(dishonest, expected, projection.original), /counter differences were not reported accurately/);
+  assert.throws(() => validateMetadataReport(dishonest, expected, projection.original, nativeDateOracle), /counter differences were not reported accurately/);
   const dishonestScalar = structuredClone(valid); dishonestScalar.sourceScalarSummary.colorValues[0].actual = 0;
-  assert.throws(() => validateMetadataReport(dishonestScalar, expected, projection.original), /scalar evidence was not reported accurately/);
+  assert.throws(() => validateMetadataReport(dishonestScalar, expected, projection.original, nativeDateOracle), /scalar evidence was not reported accurately/);
   const changedCaptured = structuredClone(valid), visual = changedCaptured.sourceOracleRecords.find(record => record.type === 'VISUALSTYLE');
   visual.groups.find(pair => pair.code === 290).value = '2';
-  assert.throws(() => validateMetadataReport(changedCaptured, expected, projection.original), /Metadata group 290 changed/);
+  assert.throws(() => validateMetadataReport(changedCaptured, expected, projection.original, nativeDateOracle), /Metadata group 290 changed/);
 });
 
 test('report acceptance refuses missing, duplicate, malformed and inconsistent inventory identities', () => {
