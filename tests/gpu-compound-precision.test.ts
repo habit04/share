@@ -8,6 +8,8 @@ import * as hershey from '../src/render/hershey';
 import { GPU_ZOOM_VERTEX_STRIDE, prepareCompiledZoom2D, prepareZoom2D, type Gpu2DView } from '../src/render/gpu-prototype/geometry2d';
 import { Gpu2DRenderer } from '../src/render/gpu-prototype/renderer2d';
 import { canvasWorldCoordinatePrecisionProblem, lowerStrokeScene, type LoweredStrokeScene } from '../src/render/gpu-prototype/stroke-scene';
+import { nativeFloatCurveBound } from '../src/render/gpu-prototype/native-float-curve-bound';
+import { isSourcePrecisionCertificateError, isSourceTopologyAdmissionError } from '../src/render/gpu-prototype/stroke-precision-error';
 
 const layer: Layer = { name: '0', color: 3, visible: true, locked: false, lineWeight: 0.5 };
 const origin = { x: 1e12, y: -1e12 };
@@ -244,12 +246,44 @@ describe('Canvas world-coordinate parity for compiled GPU scenes', () => {
     expect(glyphs).not.toHaveBeenCalled();
   });
 
-  it.each([1, 2])('keeps compiled curve, Canvas construction and Float32 error inside the existing joint quarter-pixel budget at DPR %s', (dpr) => {
+  it.each([1, 2])('preserves the original rotated compiled-circle world reserve with signed full fallback at DPR %s', (dpr) => {
     const anchor = { x: 1e9, y: -1e9 };
     const circle: Entity = { id: 'circle', type: 'circle', layer: '0', color: 3, center: { x: 0.12345, y: -0.23456 }, radius: 5 };
     const definition = block('C', [circle]);
     const state = drawing([insert('C', { position: anchor })], { C: definition });
     const camera = { ...view, scale: 10, center: anchor, dpr, twist: 0.4 };
+    const lowered = accepted(lowerStrokeScene(state, camera, overlay));
+    const path = lowered.operations[0]!.paths[0]!;
+    if (path.kind !== 'entity' || path.entity.type !== 'circle') throw new Error('Expected compiled circle');
+    const c = Math.cos(camera.twist), s = Math.sin(camera.twist), local = path.entity.center;
+    const center = { x: (local.x * c - local.y * s) * camera.scale, y: -(local.x * s + local.y * c) * camera.scale };
+    const canvasArc = canvasPaths(state, camera).arcs[0]!;
+    const constructionError = Math.hypot(canvasArc.center.x - camera.width / 2 - center.x, canvasArc.center.y - camera.height / 2 - center.y) * 1.25 * dpr;
+    expect(constructionError).toBeLessThanOrEqual(0.0625);
+    // The original world measurement still fits its source reserve. It cannot
+    // certify native context rotation, so no packed GPU accuracy is claimed.
+    expect(0.125 + constructionError + 0.0625).toBeLessThanOrEqual(0.25);
+    const before = JSON.stringify(state);
+    let failure: unknown;
+    try { prepareCompiledZoom2D(state, camera, overlay); } catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toBe(rotationReason);
+    expect(isSourceTopologyAdmissionError(failure)).toBe(true);
+    expect(isSourcePrecisionCertificateError(failure)).toBe(false);
+    const { gl, renderer } = refusalFixture();
+    expect(renderer.render(state, camera, overlay)).toMatchObject({ rendered: false, reason: rotationReason, uploadCalls: 0, bytes: 0 });
+    for (const call of [gl.createShader, gl.createBuffer, gl.bufferData, gl.bufferSubData, gl.clear, gl.drawArrays]) expect(call).not.toHaveBeenCalled();
+    expect(JSON.stringify(state)).toBe(before);
+    renderer.dispose();
+    expect(canvasWorldCoordinatePrecisionProblem(1e12, { scale: 4096, dpr }, 1.25, 16)).toMatch(/precision budget/);
+  });
+
+  it.each([1, 2])('keeps zero-twist compiled-circle packed sagitta, world construction and Float32 inside the original joint .25 budget at DPR %s', (dpr) => {
+    const anchor = { x: 1e9, y: -1e9 };
+    const circle: Entity = { id: 'circle', type: 'circle', layer: '0', color: 3, center: { x: 0.12345, y: -0.23456 }, radius: 5 };
+    const definition = block('C', [circle]);
+    const state = drawing([insert('C', { position: anchor })], { C: definition });
+    const camera = { ...view, scale: 10, center: anchor, dpr, twist: 0 };
     const lowered = accepted(lowerStrokeScene(state, camera, overlay));
     const path = lowered.operations[0]!.paths[0]!;
     if (path.kind !== 'entity' || path.entity.type !== 'circle') throw new Error('Expected compiled circle');
@@ -271,6 +305,11 @@ describe('Canvas world-coordinate parity for compiled GPU scenes', () => {
     const curveError = (radius + Math.SQRT2 * halfWidth) * (1 - Math.cos(largestStep / 2)) * dpr;
     expect(curveError).toBeLessThanOrEqual(0.125 + 1e-5);
     expect(curveError + constructionError + 0.0625).toBeLessThanOrEqual(0.25);
+    const nativeParameters = nativeFloatCurveBound({ x: camera.width / 2 + center.x, y: camera.height / 2 + center.y }, path.entity.radius * camera.scale, lowered.operations[0]!.widthCss, camera, geometry.maxRatio, { minRatio: geometry.minRatio, panPhysical: geometry.padding * Math.max(1, dpr), nativeParameterUncertaintyCss: 0.0625 / dpr });
+    expect(nativeParameters.problem).toBeNull();
+    // Parameter repair is deducted from tessellation, never paid as a fifth
+    // allowance: independent packed sagitta must leave room for its actual bound.
+    expect(curveError + nativeParameters.errorCss * dpr + constructionError + 0.0625).toBeLessThanOrEqual(0.25);
     expect(canvasWorldCoordinatePrecisionProblem(1e12, { scale: 4096, dpr }, 1.25, 16)).toMatch(/precision budget/);
   });
 });
