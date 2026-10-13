@@ -169,6 +169,8 @@ export function validateNativeSourceScalarOracle(metadata, originalDxf, timezone
     const matches = projected.filter(value => value.type === record.type && identity(value) === identity(record));
     assert.equal(matches.length, 1, `Independent ${record.type} ${identity(record)} must project once.`); return matches[0];
   };
+  for (const type of ['DIMSTYLE', 'VISUALSTYLE']) assert.equal(projected.filter(record => record.type === type).length,
+    original.filter(record => record.type === type).length, `Independent ${type} record coverage changed.`);
   let dimstyleColors = 0; const explicitDimensionDefaults = [];
   for (const record of original.filter(value => value.type === 'DIMSTYLE')) {
     const native = matched(record);

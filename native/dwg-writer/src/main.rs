@@ -1782,7 +1782,7 @@ mod tests {
             .join("\n");
         assert_ne!(changed, text);
         assert!(
-            DxfReader::from_reader(std::io::Cursor::new(changed.as_bytes()))
+            DxfReader::from_reader(std::io::Cursor::new(changed.as_bytes().to_vec()))
                 .unwrap()
                 .read()
                 .is_err()
@@ -1803,7 +1803,7 @@ mod tests {
             .unwrap();
         lines[flag + 1] = "1907".to_string();
         let changed = lines.join("\n");
-        let mut source = DxfReader::from_reader(std::io::Cursor::new(changed.as_bytes()))
+        let mut source = DxfReader::from_reader(std::io::Cursor::new(changed.as_bytes().to_vec()))
             .unwrap()
             .read()
             .unwrap();
@@ -1958,7 +1958,7 @@ mod tests {
         ] {
             assert_ne!(changed, text);
             assert!(
-                DxfReader::from_reader(std::io::Cursor::new(changed.as_bytes()))
+                DxfReader::from_reader(std::io::Cursor::new(changed.as_bytes().to_vec()))
                     .unwrap()
                     .read()
                     .is_err()
@@ -1990,7 +1990,7 @@ mod tests {
         );
         let invalid = legacy.replace("257", "258");
         assert!(
-            DxfReader::from_reader(std::io::Cursor::new(invalid.as_bytes()))
+            DxfReader::from_reader(std::io::Cursor::new(invalid.as_bytes().to_vec()))
                 .unwrap()
                 .read()
                 .is_err()
@@ -2001,7 +2001,7 @@ mod tests {
             "1001\nJCAD_STYLE_PROOF\n1000\nLiteral \\U+0041 Δ\n1070\n7\n0\nENDSEC\n0\nEOF\n",
         );
         assert_ne!(text, original);
-        let mut source = DxfReader::from_reader(std::io::Cursor::new(text.as_bytes()))
+        let mut source = DxfReader::from_reader(std::io::Cursor::new(text.as_bytes().to_vec()))
             .unwrap()
             .read()
             .unwrap();
