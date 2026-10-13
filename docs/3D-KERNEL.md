@@ -86,7 +86,10 @@ because `prepareOperands` already refuses open meshes.
 ### Worker transport
 
 `ManifoldWorkerKernel` creates `new Worker(new URL('./manifold.worker.ts', import.meta.url),
-{ type: 'module' })` lazily. Requests carry increasing ids and replies are matched by id; meshes
+{ type: 'module' })` lazily. Requests are posted only after the worker reports `ready` (earlier
+calls wait in a queue, and a result message before `ready` is ignored), so a worker that fails
+to start rejects every call with its start-up reason whatever order its events arrive in.
+Requests carry increasing ids and replies are matched by id; meshes
 travel as `Float64Array` / `Uint32Array` with their buffers transferred. Per-call timeout
 (default 20 s): the call rejects (`timeout`), the busy worker is terminated (a running Boolean
 cannot be cancelled, so recycling the worker is the only way to stop it), every other pending call
