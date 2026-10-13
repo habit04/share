@@ -151,3 +151,22 @@ describe('Boolean error paths', () => {
     expect(ctx.logs.at(-1)).toMatch(/abandoned/);
   });
 });
+
+describe('SUBTRACT with several solids to subtract from', () => {
+  it('unites the first set, then subtracts: ((a + b) - c), one result, one undo step', async () => {
+    const a = box(0), b = box(1), c = box(0.5, {});
+    // c: a 1 x 1 x 4 post through the middle of a + b.
+    const feature: BoxFeature = { kind: 'box', frame: { ...WORLD_XY_FRAME, origin: v3(0.5, 0, -1) }, width: 1, depth: 1, height: 4 };
+    const post: Solid3D = { ...c, feature, mesh: primitiveMesh(feature) };
+    const ctx = setup([a, b, post]);
+    await drive3d(subtractTool(), ctx, [{ select: [a.id, b.id] }, { select: [post.id] }]);
+    const [r, ...rest] = model(ctx).solids;
+    expect(rest).toHaveLength(0);
+    expect(r!.id).toBe(a.id);
+    expect(r!.feature).toEqual({ kind: 'boolean', op: 'subtract', operands: [{ kind: 'boolean', op: 'union', operands: [a.feature, b.feature] }, post.feature] });
+    expect(meshVolume(r!.mesh)).toBeCloseTo(12 - 2, 6);
+    expect(meshIsClosed(r!.mesh)).toBe(true);
+    ctx.doc.undo();
+    expect(model(ctx).solids).toEqual([a, b, post]);
+  });
+});

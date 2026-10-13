@@ -175,6 +175,8 @@ export function submitInput(ed: Editor, st: EditorInternals, raw: string): unkno
     if (ed.acceptsFreeText()) {
       return ed.tool.onText(raw, makeContext(ed, st));
     }
+    // Tools that parse points themselves (experimental 3D) get the text as typed.
+    if (ed.tool.acceptsRawPoints?.()) return ed.tool.onText(text, makeContext(ed, st));
     const p = ed.parsePoint(text);
     if (p) {
       return acceptPoint(ed, st, p);

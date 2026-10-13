@@ -101,7 +101,8 @@ function cursorHeight(ctx: ToolContext, cursor: Point, base: Vec3, normal: Vec3)
   return pickedHeight(ctx, cursor, point3Of(ctx, cursor), base, normal);
 }
 
-type Sized = { value: number } | { keyword: string } | null;
+/** A size or a chosen option keyword (Esc ends the command, so there is no "nothing"). */
+type Sized = { value: number } | { keyword: string };
 
 interface SizeOptions {
   readonly keywords?: readonly string[];
@@ -216,8 +217,10 @@ export function boxFeature(kind: 'box' | 'wedge', at: Frame3, dx: number, dy: nu
   const w = Math.abs(dx), d = Math.abs(dy), hh = Math.abs(h);
   let frame: Frame3;
   if (centered) {
-    frame = frameAt(at, planeToWorld(at, { x: 0, y: 0 }, -hh / 2));
+    // Upside down for a negative height (matters for the wedge's slope): base at the top.
+    frame = frameAt(at, planeToWorld(at, { x: 0, y: 0 }, h < 0 ? hh / 2 : -hh / 2));
     if (kind === 'wedge' && dx < 0) frame = turnFrame(frame);
+    if (h < 0) frame = flipFrame(frame);
   } else {
     frame = frameAt(at, planeToWorld(at, { x: dx / 2, y: dy / 2 }));
     if (kind === 'wedge' && dx < 0) frame = turnFrame(frame);
@@ -278,15 +281,15 @@ function* boxScript(ctx: ToolContext, kind: 'box' | 'wedge'): Step3<void> {
     const measure = (q: Vec3) => planarDistance(at, first, q) * (centered ? 2 : 1);
     if (a.keyword === 'CUBE') {
       const L = yield* size(ctx, st, 'Specify length', null, { measure, preview: (v) => boxFeature(kind, at, v, v, v, centered) });
-      if (!L || !('value' in L)) return;
+      if (!('value' in L)) return;
       dx = dy = L.value;
       h = L.value;
       break;
     }
     const L = yield* size(ctx, st, 'Specify length', null, { measure, preview: (v) => boxFeature(kind, at, v, thin(v) * 10, thin(v), centered) });
-    if (!L || !('value' in L)) return;
+    if (!('value' in L)) return;
     const W = yield* size(ctx, st, 'Specify width', null, { measure, preview: (v) => boxFeature(kind, at, L.value, v, thin(Math.max(v, L.value)), centered) });
-    if (!W || !('value' in W)) return;
+    if (!('value' in W)) return;
     dx = L.value;
     dy = W.value;
     break;
@@ -294,7 +297,7 @@ function* boxScript(ctx: ToolContext, kind: 'box' | 'wedge'): Step3<void> {
   if (h === null) {
     const baseCenter = centered ? first : planeToWorld(at, { x: dx / 2, y: dy / 2 });
     const r = yield* height(ctx, st, baseCenter, n, { pickScale: centered ? 2 : 1, preview: (v) => boxFeature(kind, at, dx, dy, v, centered) });
-    if (!r || !('value' in r)) return;
+    if (!('value' in r)) return;
     h = r.value;
   }
   if (commitPrimitive(ctx, NAME, boxFeature(kind, at, dx, dy, h, centered))) modellingDefaults.height = Math.abs(h);
@@ -327,7 +330,6 @@ function* roundScript(ctx: ToolContext, kind: 'cylinder' | 'cone'): Step3<void> 
     const a = yield* size(ctx, st, 'Specify base radius', modellingDefaults.radius, {
       keywords: ['Diameter'], measure, preview: (v) => make(at, v, dh ?? thin(v)),
     });
-    if (!a) return;
     if ('value' in a) {
       r = a.value;
       break;
@@ -335,13 +337,12 @@ function* roundScript(ctx: ToolContext, kind: 'cylinder' | 'cone'): Step3<void> 
     const d = yield* size(ctx, st, 'Specify diameter', modellingDefaults.radius !== null ? 2 * modellingDefaults.radius : null, {
       measure: (q) => 2 * measure(q), preview: (v) => make(at, v / 2, dh ?? thin(v)),
     });
-    if (d && 'value' in d) r = d.value / 2;
+    if ('value' in d) r = d.value / 2;
   }
   const radius = r;
   const extra = kind === 'cone' ? ['Axis endpoint', 'Top radius'] : ['Axis endpoint'];
   for (;;) {
     const hr = yield* height(ctx, st, center, plane.zAxis, { keywords: extra, preview: (v) => make(at, radius, v) });
-    if (!hr) return;
     if ('value' in hr) {
       if (commitPrimitive(ctx, NAME, make(at, radius, hr.value))) {
         modellingDefaults.height = Math.abs(hr.value);
@@ -351,7 +352,7 @@ function* roundScript(ctx: ToolContext, kind: 'cylinder' | 'cone'): Step3<void> 
     }
     if (hr.keyword === 'TOP RADIUS') {
       const t = yield* size(ctx, st, 'Specify top radius', top, { allowZero: true, measure, preview: (v) => ({ kind: 'cone', frame: at, baseRadius: radius, topRadius: v, height: modellingDefaults.height ?? radius }) });
-      if (t && 'value' in t) {
+      if ('value' in t) {
         top = t.value;
         modellingDefaults.topRadius = top;
       }
@@ -395,12 +396,11 @@ function* sphereScript(ctx: ToolContext): Step3<void> {
   const measure = (q: Vec3) => dist3(c.point, q);
   for (;;) {
     const a = yield* size(ctx, st, 'Specify radius', modellingDefaults.radius, { keywords: ['Diameter'], measure, preview: make });
-    if (!a) return;
     let r: number;
     if ('value' in a) r = a.value;
     else {
       const d = yield* size(ctx, st, 'Specify diameter', modellingDefaults.radius !== null ? 2 * modellingDefaults.radius : null, { measure: (q) => 2 * measure(q), preview: (v) => make(v / 2) });
-      if (!d || !('value' in d)) continue;
+      if (!('value' in d)) continue;
       r = d.value / 2;
     }
     if (commitPrimitive(ctx, 'SPHERE', make(r))) modellingDefaults.radius = r;
@@ -427,23 +427,21 @@ function* torusScript(ctx: ToolContext): Step3<void> {
   let R: number | null = null;
   while (R === null) {
     const a = yield* size(ctx, st, 'Specify radius', modellingDefaults.radius, { keywords: ['Diameter'], measure, preview: (v) => make(v, guessTube(v)) });
-    if (!a) return;
     if ('value' in a) R = a.value;
     else {
       const d = yield* size(ctx, st, 'Specify diameter', modellingDefaults.radius !== null ? 2 * modellingDefaults.radius : null, { measure: (q) => 2 * measure(q), preview: (v) => make(v / 2, guessTube(v / 2)) });
-      if (d && 'value' in d) R = d.value / 2;
+      if ('value' in d) R = d.value / 2;
     }
   }
   const major = R;
   const tubeMeasure = (q: Vec3) => Math.abs(measure(q) - major);
   for (;;) {
     const a = yield* size(ctx, st, 'Specify tube radius', modellingDefaults.tubeRadius, { keywords: ['2Point', 'Diameter'], measure: tubeMeasure, preview: (v) => make(major, v) });
-    if (!a) return;
     let r: number;
     if ('value' in a) r = a.value;
     else if (a.keyword === 'DIAMETER') {
       const d = yield* size(ctx, st, 'Specify tube diameter', modellingDefaults.tubeRadius !== null ? 2 * modellingDefaults.tubeRadius : null, { measure: (q) => 2 * tubeMeasure(q), preview: (v) => make(major, v / 2) });
-      if (!d || !('value' in d)) continue;
+      if (!('value' in d)) continue;
       r = d.value / 2;
     } else {
       const p = yield* point3(ctx, st, 'Specify first point:');

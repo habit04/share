@@ -223,3 +223,49 @@ describe('SPHERE and TORUS', () => {
     expect(ctx.prompts).toContain('Specify tube radius or [2Point/Diameter]:');
   });
 });
+
+describe('review follow-ups', () => {
+  it('a centered WEDGE with a negative height is the positive one turned upside down', async () => {
+    const ctx = fake3dContext();
+    await drive3d(wedgeTool(), ctx, ['C', '0,0,10', '2,3', '-4']);
+    const s = only(ctx);
+    expect(bounds(s)).toEqual({ min: v3(-2, -3, 8), max: v3(2, 3, 12) });
+    near(meshVolume(s.mesh), 4 * 6 * 4 / 2);
+    // Base (4 vertices) on top at z = 12, the tall edge (2 vertices) at the bottom, at x = -2.
+    const p = s.mesh.positions;
+    const at = (z: number) => {
+      const xs: number[] = [];
+      for (let i = 0; i < p.length; i += 3) if (Math.abs(p[i + 2]! - z) < 1e-9) xs.push(p[i]!);
+      return xs;
+    };
+    expect(at(12)).toHaveLength(4);
+    expect(at(8).map((x) => Math.round(x * 1e9) / 1e9)).toEqual([-2, -2]);
+  });
+
+  it('TORUS tube radius by 2Point and by Diameter', async () => {
+    const ctx = fake3dContext();
+    await drive3d(torusTool(), ctx, ['0,0', '5', '2P', '0,0,0', '0,0,1.5']);
+    await drive3d(torusTool(), ctx, ['20,0', 'D', '8', 'D', '1']);
+    const [a, b] = solids(ctx);
+    expect(a!.feature).toMatchObject({ kind: 'torus', majorRadius: 5, minorRadius: 1.5 });
+    expect(b!.feature).toMatchObject({ kind: 'torus', majorRadius: 4, minorRadius: 0.5 });
+    expect(ctx.prompts).toContain('Specify tube diameter <3.0000>:');
+  });
+
+  it('CONE: a negative top radius is refused; a top radius above the base gives an inverted frustum', async () => {
+    const ctx = fake3dContext();
+    await drive3d(coneTool(), ctx, ['0,0', '1', 'T', '-1', '3', '2']);
+    expect(ctx.logs.some((l) => /Value must be zero or positive and finite \(got -1\)/.test(l))).toBe(true);
+    const s = only(ctx);
+    expect(s.feature).toMatchObject({ kind: 'cone', baseRadius: 1, topRadius: 3, height: 2 });
+    expect(bounds(s).max.x).toBeCloseTo(3, 9);
+  });
+
+  it('a point at a keyword-only prompt is an invalid option keyword', async () => {
+    const { planeTool } = await import('../src/tools3d/plane');
+    const ctx = fake3dContext();
+    await drive3d(planeTool(), ctx, [{ x: 1, y: 2 }, 'XY']);
+    expect(ctx.logs).toContain('Invalid option keyword.');
+    expect(ctx.planeName).toBe('XY');
+  });
+});
