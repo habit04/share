@@ -28,8 +28,9 @@ import {
   normalize3, scale3, sub3, transformDirection, transformPoint, v3,
 } from '../model3d/math';
 import { transformMesh } from '../model3d/mesh';
-import { addSolids, model3dOf, replaceSolid, solidById, withModel3D } from '../model3d/model';
-import type { Feature3D, Profile3D, Solid3D } from '../model3d/types';
+import { addDimensions3D, addSolids, dimensionById, model3dOf, replaceDimension3D, replaceSolid, solidById, withModel3D } from '../model3d/model';
+import { dimension3dSpec, makeDimension3D } from '../model3d/dimension3d';
+import type { Dimension3D, Feature3D, Profile3D, Solid3D } from '../model3d/types';
 import type { ToolContext } from '../tools/types';
 
 /** The scale factor and handedness of a similarity matrix. */
@@ -142,6 +143,27 @@ export function transformSolid(solid: Solid3D, m: Mat4, id?: string): Solid3D {
   return { ...solid, id: id ?? solid.id, mesh: transformMesh(solid.mesh, m), feature: transformFeature(solid.feature, m, sim) };
 }
 
+/**
+ * A 3D dimension mapped by the similarity `m` (`id` gives it a new id: COPY, MIRROR): its plane
+ * frame (`transformFrame`, right-handed after a mirror), definition points and dimension-line
+ * location are mapped and the dimension is rebuilt with `makeDimension3D`, so the offset, the leg
+ * order of an angular dimension (a mirror reverses the turning sense) and the projected flag follow.
+ * Text sizes come from the style and do not scale (as 2D SCALE leaves dimension text alone).
+ */
+export function transformDimension3D(dim: Dimension3D, m: Mat4, id?: string): Dimension3D {
+  const sim = similarityOf(m);
+  const spec = dimension3dSpec(dim);
+  return makeDimension3D({
+    ...spec,
+    id: id ?? dim.id,
+    plane: transformFrame(dim.plane, m, sim),
+    p1: transformPoint(m, dim.p1),
+    p2: transformPoint(m, dim.p2),
+    ...(dim.vertex ? { vertex: transformPoint(m, dim.vertex) } : {}),
+    location: transformPoint(m, spec.location),
+  });
+}
+
 // ------------------------------------------------------------------ matrices
 
 /** Translation by `d` (world units). */
@@ -199,10 +221,28 @@ export function solidsInSelection(ctx: ToolContext, ids: Iterable<string>): Soli
   return out;
 }
 
+/** The 3D dimensions (model space) among `ids`, in selection order; [] in a paper-space layout. */
+export function dimensionsInSelection(ctx: ToolContext, ids: Iterable<string>): Dimension3D[] {
+  if (ctx.doc.space) return [];
+  const model = ctx.solids ? ctx.solids() : model3dOf(ctx.doc.snapshot);
+  if (!model.dimensions?.length) return [];
+  const out: Dimension3D[] = [];
+  const seen = new Set<string>();
+  for (const id of ids) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const d = dimensionById(model, id);
+    if (d) out.push(d);
+  }
+  return out;
+}
+
 /** What one edit changes, applied as a single undo step by `commitSolidEdit`. */
 export interface SolidEdit {
   /** Solids to transform (their current state). */
   readonly solids: readonly Solid3D[];
+  /** 3D dimensions to transform with them (their current state; absent = none). */
+  readonly dimensions?: readonly Dimension3D[];
   readonly matrix: Mat4;
   /** Add transformed copies with new ids instead of replacing the solids (COPY, MIRROR). */
   readonly copy?: boolean;
@@ -222,6 +262,7 @@ export interface SolidEdit {
  */
 export function commitSolidEdit(ctx: Pick<ToolContext, 'doc'>, edit: SolidEdit): Solid3D[] {
   const out = edit.solids.map((s) => transformSolid(s, edit.matrix, edit.copy ? newId() : undefined));
+  const dims = (edit.dimensions ?? []).map((d) => transformDimension3D(d, edit.matrix, edit.copy ? newId() : undefined));
   const repl = new Map((edit.replaceEntities ?? []).map((e) => [e.id, e]));
   const adds = edit.addEntities?.length ? ctx.doc.withEntityDefaults(edit.addEntities) : [];
   ctx.doc.transact((st) => {
@@ -229,8 +270,11 @@ export function commitSolidEdit(ctx: Pick<ToolContext, 'doc'>, edit: SolidEdit):
     if (repl.size) entities = entities.map((e) => repl.get(e.id) ?? e);
     if (adds.length) entities = [...entities, ...adds];
     let model = model3dOf(st);
-    if (edit.copy) model = addSolids(model, out);
-    else for (const s of out) model = replaceSolid(model, s);
+    if (edit.copy) model = addDimensions3D(addSolids(model, out), dims);
+    else {
+      for (const s of out) model = replaceSolid(model, s);
+      for (const d of dims) model = replaceDimension3D(model, d);
+    }
     return withModel3D(entities === st.entities ? st : { ...st, entities }, model);
   });
   return out;
@@ -243,9 +287,10 @@ export function commitSolidEdit(ctx: Pick<ToolContext, 'doc'>, edit: SolidEdit):
  */
 export function commitWithSolids(ctx: ToolContext, ids: Iterable<string>, matrix: Mat4, entities: { replace?: readonly Entity[]; add?: readonly Entity[]; copy?: boolean }): boolean {
   const solids = solidsInSelection(ctx, ids);
-  if (solids.length === 0) return false;
+  const dimensions = dimensionsInSelection(ctx, ids);
+  if (solids.length === 0 && dimensions.length === 0) return false;
   try {
-    commitSolidEdit(ctx, { solids, matrix, copy: entities.copy, replaceEntities: entities.replace, addEntities: entities.add });
+    commitSolidEdit(ctx, { solids, ...(dimensions.length ? { dimensions } : {}), matrix, copy: entities.copy, replaceEntities: entities.replace, addEntities: entities.add });
   } catch (err) {
     if (!(err instanceof RangeError)) throw err;
     ctx.log(`${err.message} The drawing is unchanged.`);

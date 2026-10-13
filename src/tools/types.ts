@@ -3,7 +3,7 @@ import type { Entity } from '../core/entities';
 import type { Drawing } from '../core/document';
 import type { SnapSettings } from '../core/snap';
 import type { Frame3, Ray, Vec3 } from '../model3d/math';
-import type { Model3D, Solid3D } from '../model3d/types';
+import type { Dimension3D, Model3D, Solid3D } from '../model3d/types';
 import type { GeometryKernel } from '../model3d/kernel/kernel';
 import type { PickHit } from '../render3d/picking';
 
@@ -72,6 +72,8 @@ export interface ToolContext {
   setPreview3d?(solids: readonly Solid3D[]): void;
   /** False when nothing would draw ghosts (3D mode off): tools may skip building them. */
   wantsPreview3d?(): boolean;
+  /** 3D dimensions drawn by the 3D view as the rubber band of a running DIM3D ([] clears). */
+  setPreviewDimensions3d?(dims: readonly Dimension3D[]): void;
 }
 
 /** Result of the Insert Component icon menu: the block and the orientation radio (H = as drawn, V = vertical). */

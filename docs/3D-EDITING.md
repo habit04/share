@@ -17,12 +17,13 @@ before, and the ribbon has no 3D tab (`tests/experimental-3d-flag.test.ts`). The
 | `3DDIST` | first point · second point |
 | `3DMASSPROP` | Select objects |
 | `3DAREA` | Select a face of a solid |
-| `3DDIM` | first extension line origin · second extension line origin · dimension line location <offset to the left> **(prototype)** |
+| `3DDIM` | first extension line origin · second extension line origin · dimension line location <offset to the left> **(interim prototype: a 2D dimension of the projected points, labelled "(projected)")** |
+| `DIM3D` | true 3D dimension in its measurement plane: aligned / linear / angular [Plane: Current / Face / 3Points] [Text]; see [3D-DIMENSIONS.md](3D-DIMENSIONS.md) |
 | `DIST` (`DI`) | unchanged in the 2D view; **in 3D mode** it runs as 3DDIST (two 3D points) |
 
 Ribbon tab **3D**: new **Edit** panel (3D Move, 3D Rotate, 3D Scale) after Modelling and
-**Measure** panel (3D Distance, Mass Properties, Face Area, 3D Dimension) after View. `HELP` lists
-the commands.
+**Measure** panel (3D Distance, Mass Properties, Face Area, 3D Dimension = DIM3D, Projected Dim =
+3DDIM) after View. `HELP` lists the commands.
 
 ### Points
 
@@ -34,8 +35,10 @@ cursor, **snapped** (below), handed to the command directly (`Editor.acceptPoint
 
 ### Transforms
 
-- 3DMOVE / 3DROTATE / 3DSCALE take the solids of the selection (pick-first selections are used);
-  2D objects in it are reported (`1 object is not a 3D solid and was ignored.`) and left alone.
+- 3DMOVE / 3DROTATE / 3DSCALE take the solids and true 3D dimensions (DIM3D) of the selection
+  (pick-first selections are used); 2D objects in it are reported (`1 object is not a 3D solid and
+  was ignored.`) and left alone. With dimensions the result line counts them too
+  (`3DMOVE: 1 solid and 2 dimensions moved.`).
   The selection is cleared when the command ends.
 - 3DROTATE axes: X / Y / Z are the construction plane's axes through the base point; angles follow
   the right-hand rule about the axis (positive = counter-clockwise looking down the axis). A picked
@@ -121,15 +124,25 @@ typed input during the drag, no hover colour.
   holes count in the perimeter), and the face's triangle count, outline loops and normal. Typed
   points pick the face seen looking down the plane normal.
 
-### 3DDIM (prototype)
+### 3DDIM (interim prototype)
+
+**True 3D dimensions are DIM3D** ([3D-DIMENSIONS.md](3D-DIMENSIONS.md)): dimensions in their own
+measurement plane, saved as DXF DIMENSIONs in that plane. 3DDIM stays as an interim command:
 
 3DDIM writes an **ordinary 2D aligned dimension** (current layer and dimension style): both points
 are projected onto the construction plane along its normal, and the dimension measures the
 projected distance. If either point is off the plane by more than the tolerance (1e-6 relative)
 the command logs `... the dimension measures the projected distance P. True 3D distance: T.` The
 construction plane must be parallel to WCS XY (World, or XY at any origin): 2D entities have no
-elevation, so the dimension is drawn on z = 0 (a raised XY plane says so); other planes are refused.
-**True 3D dimension entities (dimensions in arbitrary planes in space) are not supported.**
+elevation, so the dimension is drawn on z = 0 (a raised XY plane says so); other planes are refused
+(the message points to DIM3D).
+
+**Projected measurements are identified**: when either point is off the drawing plane (z = 0, where
+the 2D dimension lies; also for points on a raised XY plane) the dimension gets the text override
+`<> (projected)` and shows e.g. `5.0000 (projected)`, and the log adds the true 3D distance:
+`Dimension text = 5.0000 (projected) (measured 5.0000, projected; true 3D distance 5.3852)`
+(points on the drawing plane get no override). The first log line, the command description and
+the ribbon button (**Projected Dim**) say that it is a projection.
 
 ### Properties palette
 
@@ -202,6 +215,7 @@ run('3DAREA', '42,1');                              // Area = 12.0000, Perimeter
 // 3DDIM (prototype)
 run('3DDIM', '40,0', '44,0', '42,-2');              // Dimension text = 4.0000 (measured 4.0000)
 run('3DDIM', '40,0,0', '44,3,2', '');               // "... projected distance 5.0000. True 3D distance: 5.3852."
+//   Dimension text = 5.0000 (projected) (measured 5.0000, projected; true 3D distance 5.3852)
 
 // Properties palette edit (what the Width row does), then a refused value
 jcad3d.setParameter(m, '/width', '6');              // same id, x 39..45, volume 36
@@ -277,7 +291,8 @@ plan-view viewport in Node; the WebGL drawing of markers and grips is only visib
 | `src/tools3d/snap3d.ts` | Face regions, END / MID / CEN / NEA snaps (`snapOnSolid`, `snapPick3`). |
 | `src/tools3d/grips.ts` | Grip points and the centre-grip drag plane. |
 | `src/tools3d/measure.ts` | 3DDIST (and DIST in 3D mode), 3DMASSPROP, 3DAREA. |
-| `src/tools3d/dim3d.ts` | 3DDIM prototype. |
+| `src/tools3d/dim3d.ts` | 3DDIM interim prototype (labels projections). |
+| `src/tools3d/dimension3d-tool.ts` | DIM3D, true 3D dimensions (code map in [3D-DIMENSIONS.md](3D-DIMENSIONS.md)). |
 | `src/tools3d/properties-edit.ts` | Parameter rows, validation, re-evaluation (`solidParameterTool`). |
 | `src/render3d/markers.ts` | Snap-marker and grip shapes in screen pixels. |
 | `src/render3d/viewport3d.ts` | `Viewport3DOverlay.grips3d` / `gripSize` / `snap3d`, drawn in a pixel projection on top. |
@@ -288,9 +303,10 @@ plan-view viewport in Node; the WebGL drawing of markers and grips is only visib
 
 ## Prototype-only and not supported
 
-- **3DDIM** writes 2D dimensions on the drawing plane; true 3D dimension entities are unsupported,
-  and planes not parallel to WCS XY are refused. Its rubber band (the dimension following the
-  cursor) shows in the 2D view only; in 3D mode the dimension appears when it is placed.
+- **3DDIM** (interim) writes 2D dimensions on the drawing plane, labelled "(projected)" when a point
+  is off it; planes not parallel to WCS XY are refused. Its rubber band (the dimension following
+  the cursor) shows in the 2D view only; in 3D mode the dimension appears when it is placed. True
+  3D dimensions are DIM3D (its limits are in [3D-DIMENSIONS.md](3D-DIMENSIONS.md#limits-prototype-only-or-not-supported)).
 - **Grips**: only the centre grip does anything (move); no stretch, no snap during the drag.
 - No transform gizmo (the plan's "gizmo"): transforms are prompt-driven with ghosts.
 - 3D snaps cover END / MID / CEN / NEA on the face under the cursor only (no intersection,

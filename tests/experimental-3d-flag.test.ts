@@ -24,6 +24,8 @@ const THREE_D_COMMANDS = [
   'UNION', 'UNI', 'SUBTRACT', 'SU', 'INTERSECT', 'IN', '3DPLANE',
   // Editing and measurement (milestone 4); DIST keeps its name and is wrapped, not added.
   '3DMOVE', '3M', '3DROTATE', '3R', '3DSCALE', '3DDIST', '3DMASSPROP', '3DAREA', '3DDIM',
+  // True 3D dimensions (docs/3D-DIMENSIONS.md).
+  'DIM3D',
 ];
 
 afterEach(() => {

@@ -12,6 +12,8 @@ import { meshTriangleCount, meshVertexCount } from './mesh';
 export const MAX_SOLID_TRIANGLES = 500_000;
 /** Most triangles across every solid of a drawing. */
 export const MAX_MODEL3D_TRIANGLES = 2_000_000;
+/** Most true 3D dimensions in a drawing (each is a handful of numbers plus its style). */
+export const MAX_DIMENSIONS3D = 100_000;
 
 /**
  * Throw a GeometryBudgetError when a solid or the whole model exceeds the triangle limits, or
@@ -26,6 +28,10 @@ export function validateModel3DBudget(state: DrawingState): void {
   const model = state.model3d;
   if (model === undefined) return;
   if (!model || !Array.isArray(model.solids)) throw new GeometryBudgetError('The 3D model is malformed.');
+  if (model.dimensions !== undefined) {
+    if (!Array.isArray(model.dimensions)) throw new GeometryBudgetError('The 3D model is malformed.');
+    if (model.dimensions.length > MAX_DIMENSIONS3D) throw new GeometryBudgetError(`The drawing has ${model.dimensions.length.toLocaleString('en-US')} 3D dimensions; the safe limit is ${MAX_DIMENSIONS3D.toLocaleString('en-US')}.`);
+  }
   let triangles = 0, vertices = 0;
   for (const solid of model.solids) {
     const mesh = solid?.mesh;

@@ -18,7 +18,7 @@ import {
   type Frame3, type Ray, type Vec3, WORLD_XY_FRAME, add3, aabbCenter, aabbSize, dot3, len3, normalize3, scale3, sub3, v3,
 } from '../model3d/math';
 import { model3dBounds, model3dOf } from '../model3d/model';
-import type { Model3D, Solid3D } from '../model3d/types';
+import type { Dimension3D, Model3D, Solid3D } from '../model3d/types';
 import type { GeometryKernel } from '../model3d/kernel/kernel';
 import { type PickHit, pickSolids } from '../render3d/picking';
 import { hiddenLayerNames } from '../render3d/scene-sink';
@@ -53,6 +53,8 @@ export interface Context3DSource {
   setPreview3d(solids: readonly Solid3D[]): void;
   /** False when ghosts would not be drawn (3D mode off); absent = always draw. */
   wantsPreview3d?(): boolean;
+  /** Rubber-band 3D dimensions of a running DIM3D ([] clears); absent = not drawn. */
+  setPreviewDimensions3d?(dims: readonly Dimension3D[]): void;
 }
 
 /** Plane axes by name (AutoCAD UCS orientation: XZ is the Front view plane, YZ the Right one). */
@@ -215,5 +217,6 @@ export function extendContext3d(ctx: ToolContext, src: Context3DSource): ToolCon
   ctx.solids = () => model3dOf(ctx.doc.snapshot);
   ctx.setPreview3d = (solids) => src.setPreview3d(solids);
   ctx.wantsPreview3d = () => src.wantsPreview3d?.() ?? true;
+  ctx.setPreviewDimensions3d = (dims) => src.setPreviewDimensions3d?.(dims);
   return ctx;
 }

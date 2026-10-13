@@ -5,7 +5,7 @@
 import { describe, expect, it } from 'vitest';
 import { Drawing } from '../src/core/document';
 import type { DimensionEntity } from '../src/core/entities';
-import { dimensionMeasurement } from '../src/core/dimension';
+import { dimensionMeasurement, dimensionText } from '../src/core/dimension';
 import { v3 } from '../src/model3d/math';
 import { axesFrame } from '../src/tools3d/context';
 import { dim3dTool } from '../src/tools3d/dim3d';
@@ -61,6 +61,25 @@ describe('3DDIM', () => {
     await drive3d(dim3dTool(), ctx2, ['1,1,0', '1,1,9']);
     expect(ctx2.logs.at(-1)).toBe('3DDIM: the points coincide on the construction plane; nothing to dimension (3D distance 9.0000).');
     expect(dims(doc)).toHaveLength(0);
+  });
+
+  it('labels projected measurements: "(projected)" in the dimension text, the true distance in the log', async () => {
+    const doc = new Drawing();
+    const ctx = fake3dContext(doc);
+    await drive3d(dim3dTool(), ctx, ['40,0,0', '44,3,2', '']);
+    const [d] = dims(doc);
+    expect(d!.text).toBe('<> (projected)');
+    expect(dimensionText(d!)).toBe('5.0000 (projected)');
+    expect(ctx.logs[0]).toBe('3DDIM (prototype): writes an aligned 2D dimension of the points projected onto the drawing plane, labelled "(projected)" when a point is off it; DIM3D makes true 3D dimensions.');
+    expect(ctx.logs.at(-1)).toBe('Dimension text = 5.0000 (projected) (measured 5.0000, projected; true 3D distance 5.3852)');
+    // Points on a raised XY plane are off the drawing plane too: labelled, with the true distance.
+    const ctx2 = fake3dContext(doc, { plane: axesFrame('XY', v3(0, 0, 5)) });
+    await drive3d(dim3dTool(), ctx2, ['0,0', '0,7', '3,3']);
+    expect(dims(doc)[1]!.text).toBe('<> (projected)');
+    expect(ctx2.logs).toContain('3DDIM: the points are off the drawing plane (z = 0); the 2D dimension shows their projection onto it. True 3D distance: 7.0000.');
+    // On the drawing plane nothing is labelled.
+    await drive3d(dim3dTool(), fake3dContext(doc), ['0,0', '2,0', '1,1']);
+    expect(dims(doc)[2]!.text).toBeUndefined();
   });
 
   it('uses the current layer and dimension style', async () => {

@@ -3,7 +3,9 @@
 How JCad Electrical stores its experimental 3D solids (`DrawingState.model3d`) in a DXF file, how
 it reads them back, and what other programs see. Code: `src/io/dxf/mesh3d-write.ts` (writing),
 `src/io/dxf/mesh3d-read.ts` (reading), `src/model3d/file-format.ts` (the versioned payload and its
-validator). DWG files cannot hold 3D objects in this version (see [the last section](#dwg)).
+validator). True 3D dimensions (DIM3D) are DXF `DIMENSION` entities in their plane with a
+`JCAD_3D` payload of their own ([3D dimensions](#3d-dimensions)). DWG files cannot hold 3D objects
+in this version (see [the last section](#dwg)).
 
 ## Record layout
 
@@ -11,7 +13,7 @@ Each solid is written in the model-space `ENTITIES` section, after the 2D entiti
 retained raw records, as one DXF **polyface mesh**: a `POLYLINE` with flag 64, its mesh vertices,
 its face records and a `SEQEND`. This entity exists in every DXF version JCad writes (AC1015 and
 later). The records follow the DXF reference polyface layout; they have not been verified in
-AutoCAD or other programs. A drawing without solids writes none
+AutoCAD or other programs. A drawing without solids and 3D dimensions writes none
 of this and no extra `APPID` record: its DXF is byte-identical to the one earlier versions wrote
 (guarded by `tests/dxf-3d-identity.test.ts` against golden outputs in `tests/golden/dxf-3d/`).
 
@@ -36,7 +38,7 @@ of this and no extra `APPID` record: its DXF is byte-identical to the one earlie
   written (triangles only).
 - Handles follow the writer's single counter; `VERTEX` and `SEQEND` are owned (330) by their
   `POLYLINE`, following the DXF reference's owner rules for sub-entities.
-- The `APPID` table gains one record, `JCAD_3D`, when the drawing has at least one solid.
+- The `APPID` table gains one record, `JCAD_3D`, when the drawing has at least one solid or 3D dimension.
 - **Large meshes.** Polyface counts and face vertex numbers are 16-bit DXF integers, so one record
   holds at most 32,767 vertices and 32,767 faces. A larger mesh is cut into several polyface
   records (runs of consecutive triangles, each with the vertices it uses). The first record
@@ -131,7 +133,7 @@ total. JCad never writes a file it cannot open again:
   nothing is written, `lastFileError` and the log give the triangle count, the limit exceeded
   and "Reduce the 3D model (fewer objects or less mesh detail) and save again"; the drawing stays
   modified. (A 2D-only drawing is not checked here; its behaviour is unchanged.)
-- **Autosave** then writes the recovery copy **without the solids** and records their number as
+- **Autosave** then writes the recovery copy **without the solids** (3D dimensions stay in it) and records their number as
   `omitted3d` in the autosave index; the Drawing Recovery Manager shows it on the row and logs it
   when the copy is opened. The open drawing keeps its solids.
 - **EXPORTDWG / DWG Save** never write solids at all (see [DWG](#dwg)).
@@ -153,6 +155,34 @@ total. JCad never writes a file it cannot open again:
 - Empty solids (no triangles) cannot exist: `newSolid`, `addSolids` and `replaceSolid` throw, and
   the writer refuses one in a hand-made state.
 
+## 3D dimensions
+
+Each `Dimension3D` (DIM3D, [3D-DIMENSIONS.md](3D-DIMENSIONS.md#dxf-mapping) has the full table) is
+written after the solids as a `DIMENSION` in its measurement plane, by the DXF OCS convention:
+210 / 220 / 230 = the plane normal; 10, 13, 14, 15 = world (WCS) definition points as the DXF
+reference specifies them; 11 = the text midpoint in the OCS (Arbitrary Axis Algorithm,
+`frameFromPlane`) with the plane's elevation; 70 = type (aligned 1, linear 0 with 50 = the measured
+axis's OCS angle, three-point angular 5) + 32; 1 = the text override (with ` (projected)` when it
+measures a projection); 3 = the style with the 2D writer's DSTYLE / JCAD_DIMSTYLE overrides; 2 = an
+anonymous `*D<n>` picture block (numbered after the 2D dimensions' blocks) holding the geometry in
+the plane. Exact decimals (`exactReal`) are used for 10, 13, 14, 15 and 210.
+
+The `JCAD_3D` payload (same encoding and chunking as for solids) is
+`{"v":1,"id":"...","kind":"dimension3d","plane":{"origin":{...},"xAxis":{...},"yAxis":{...},"zAxis":{...}},"offset":n,"projected":true}`
+(`projected` only when true): the id, the plane frame (DXF keeps only the normal), the exact
+dimension-line offset and the projected flag. `kind` tells it from a solid's payload. The
+validator is strict (unknown fields, a frame that is not orthonormal and right-handed within 1e-6,
+a non-finite offset, `projected` other than `true` make the data invalid); invalid data keeps the
+dimension from its DXF groups (fresh id, plane from the extrusion) and is reported; a newer `v` is
+reported as unsupported.
+
+Reading: a model-space DIMENSION with `JCAD_3D` data is a 3D dimension whatever the experimental
+setting (with the setting off the report notes it is kept but hidden). Another program's DIMENSION
+whose extrusion is not (0, 0, +-1) becomes a 3D dimension only when 3D reading is enabled
+(`DxfReadOptions.model3d`); every other DIMENSION, and every one in a block or on a layout, takes
+the unchanged 2D path. Re-saving what was read is byte-identical
+(`tests/model3d-dxf-dimension3d.test.ts`); `tests/fuzz-model3d-file.test.ts` fuzzes the records.
+
 ## Version policy
 
 - `MODEL3D_FILE_VERSION` changes whenever the payload or the record layout changes in a way a
@@ -172,7 +202,7 @@ another program while keeping the data makes JCad show the edited mesh with the 
 
 ## DWG
 
-The portable DWG writer cannot write these records. Saving a drawing with solids as DWG, and
+The portable DWG writer cannot write these records. Saving a drawing with solids or 3D dimensions as DWG, and
 `EXPORTDWG`, are refused with "DWG files cannot hold 3D objects in this version; save as DXF, or enable Experimental 3D (Options > Files) to view or erase them";
 nothing is written and no solid is dropped.
 

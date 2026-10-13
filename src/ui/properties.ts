@@ -8,9 +8,9 @@ import { aciToCss, ACI_NAMES } from '../render/palette';
 import { icon } from './icons';
 import { GeometryBudgetError } from '../core/geometry-budget-error';
 import { isViewportFrame, viewTwist } from '../core/layouts';
-import type { Solid3D } from '../model3d/types';
-import { replaceSolid, solidById } from '../model3d/model';
-import { selectedSolids, solidRows } from '../tools3d/properties';
+import type { Dimension3D, Solid3D } from '../model3d/types';
+import { dimensionById, replaceDimension3D, replaceSolid, solidById } from '../model3d/model';
+import { dimension3dRows, selectedDimensions3D, selectedSolids, setDimension3DText, solidRows } from '../tools3d/properties';
 import { parameterRows, parameterText, setSolidParameter } from '../tools3d/properties-edit';
 
 /** Properties palette: shows and edits the current selection (docked right). */
@@ -118,6 +118,12 @@ export class PropertiesPalette {
     const solids = sel.length === 0 && doc.snapshot.model3d ? selectedSolids(doc.snapshot.model3d.solids, this.editor.selection) : [];
     if (solids.length > 0) {
       this.renderSolids(solids, layers, colors);
+      return;
+    }
+    // Experimental 3D: a selection of 3D dimensions only shows their rows.
+    const dims3d = sel.length === 0 ? selectedDimensions3D(doc.snapshot.model3d?.dimensions, this.editor.selection) : [];
+    if (dims3d.length > 0) {
+      this.renderDimensions3D(dims3d, layers, colors);
       return;
     }
 
@@ -396,6 +402,51 @@ export class PropertiesPalette {
     }
     b.appendChild(this.section('Geometry'));
     for (const r of rows) if (!r.edit && r.label !== 'Type') b.appendChild(this.row(r.label, r.value));
+  }
+
+  /**
+   * Experimental 3D dimensions (rows from src/tools3d/properties.ts): layer and colour for all of
+   * them; kind, measurement, text override (editable), shown text and plane for a single one. Each
+   * edit is one undoable step.
+   */
+  private renderDimensions3D(dims: Dimension3D[], layers: Array<[string, string]>, colors: Array<[string, string]>): void {
+    const b = this.bodyEl;
+    const doc = this.editor.doc;
+    const header = document.createElement('div');
+    header.className = 'prop-header';
+    header.textContent = dims.length === 1 ? '3D Dimension' : `3D Dimensions (${dims.length})`;
+    b.appendChild(header);
+    const update = (fn: (d: Dimension3D) => Dimension3D) => {
+      doc.updateModel3D((m) => dims.reduce((acc, d) => {
+        const cur = dimensionById(acc, d.id);
+        return cur ? replaceDimension3D(acc, fn(cur)) : acc;
+      }, m));
+    };
+    const common = (key: 'layer' | 'color') => {
+      const first = String(dims[0]![key]);
+      return dims.every((d) => String(d[key]) === first) ? first : '*VARIES*';
+    };
+    const rows = dimension3dRows(dims[0]!, doc.header.units);
+    b.appendChild(this.section('General'));
+    const layerVal = common('layer');
+    b.appendChild(this.row('Layer', this.select(layerVal === '*VARIES*' ? [['*VARIES*', '*VARIES*'], ...layers] : layers, layerVal, (v) => {
+      if (v !== '*VARIES*') update((d) => ({ ...d, layer: v }));
+    })));
+    const colorVal = common('color');
+    b.appendChild(this.row('Color', this.select(colorVal === '*VARIES*' ? [['*VARIES*', '*VARIES*'], ...colors] : colors, colorVal, (v) => {
+      if (v !== '*VARIES*') update((d) => ({ ...d, color: v === 'ByLayer' ? 'ByLayer' : parseInt(v, 10) }));
+    })));
+    if (dims.length !== 1) return;
+    b.appendChild(this.section('Dimension'));
+    for (const r of rows) {
+      if (r.edit === 'layer' || r.edit === 'color') continue;
+      if (r.edit === 'text') {
+        const id = dims[0]!.id;
+        b.appendChild(this.row(r.label, this.input(r.value, (v) => {
+          if (!setDimension3DText(doc, id, v)) this.render();
+        })));
+      } else b.appendChild(this.row(r.label, r.value));
+    }
   }
 }
 

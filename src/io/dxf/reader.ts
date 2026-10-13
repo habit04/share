@@ -173,6 +173,9 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
   // Experimental 3D solids from the model-space polyface meshes (their layers must exist too).
   const solids = ctx.solids!.build();
   for (const s of solids) ensure(s.layer);
+  // True 3D dimensions (model-space DIMENSIONs in their own plane), ids unique among the solids'.
+  const dims3d = ctx.solids!.buildDimensions(new Set(solids.map((s) => s.id)));
+  for (const d of dims3d) ensure(d.layer);
   ensure(currentLayer);
 
   const header = drawingHeader(headerVars, ctx.dimStyle, linetypes, views);
@@ -209,5 +212,5 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
     if (name && !styleNames.has(name.toUpperCase())) { report.add({ type: 'STYLE', action: 'unsupported', reason: `referenced text style "${name}" has no STYLE definition; its name is kept with a default stroke-font substitute`, layer: entity.layer }); styleNames.add(name.toUpperCase()); }
   }
   const styleMeta = textStylesMeta(textStyles);
-  return { entities, layers, blocks, currentLayer, header, ...(styleMeta ? { meta: styleMeta } : {}), ...(layouts ? { layouts } : {}), ...(solids.length ? { model3d: { ...EMPTY_MODEL3D, solids } } : {}) };
+  return { entities, layers, blocks, currentLayer, header, ...(styleMeta ? { meta: styleMeta } : {}), ...(layouts ? { layouts } : {}), ...(solids.length || dims3d.length ? { model3d: { ...EMPTY_MODEL3D, solids, ...(dims3d.length ? { dimensions: dims3d } : {}) } } : {}) };
 }

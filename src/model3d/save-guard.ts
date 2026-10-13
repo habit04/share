@@ -21,9 +21,9 @@ import { EMPTY_MODEL3D, withModel3D } from './model';
 /** Why a DWG save or export of a drawing with solids is refused (`Editor.lastFileError` and the log). */
 export const MODEL3D_DWG_REFUSAL = 'DWG files cannot hold 3D objects in this version; save as DXF, or enable Experimental 3D (Options > Files) to view or erase them';
 
-/** MODEL3D_DWG_REFUSAL when the drawing holds solids, else null (DWG writing may go ahead). */
+/** MODEL3D_DWG_REFUSAL when the drawing holds solids or 3D dimensions, else null (DWG writing may go ahead). */
 export function model3dDwgRefusal(state: DrawingState): string | null {
-  return (state.model3d?.solids.length ?? 0) > 0 ? MODEL3D_DWG_REFUSAL : null;
+  return (state.model3d?.solids.length ?? 0) > 0 || (state.model3d?.dimensions?.length ?? 0) > 0 ? MODEL3D_DWG_REFUSAL : null;
 }
 
 /** Total triangles of the drawing's solids. */
@@ -74,5 +74,6 @@ export function model3dDxfSaveNotes(state: DrawingState): string[] {
 export function recoveryDxf(prepared: DrawingState): { readonly text: string; readonly omitted3d: number } {
   const text = writeDxf(prepared);
   if (!model3dDxfLimitRefusal(prepared, text)) return { text, omitted3d: 0 };
-  return { text: writeDxf(withModel3D(prepared, EMPTY_MODEL3D)), omitted3d: prepared.model3d?.solids.length ?? 0 };
+  // 3D dimensions are small: they stay in the copy, only the solids are left out.
+  return { text: writeDxf(withModel3D(prepared, { ...(prepared.model3d ?? EMPTY_MODEL3D), solids: [] })), omitted3d: prepared.model3d?.solids.length ?? 0 };
 }
