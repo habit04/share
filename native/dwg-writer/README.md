@@ -18,6 +18,8 @@ INSERT retains a declared SEQEND identity and its explicit parent owner. Reactor
 
 Default dictionaries and their placeholders retain explicitly declared ordered reactors and extension dictionaries through the existing common-object caches. Those links are parsed separately from owner and default-entry pointers. Native regressions inspect the encoded common fields, complete snapshots and reopened links; the independent C postflight remains required before saving.
 
+Named entity and ATTRIB colors receive their required DBCOLOR records before the checked baseline through the pinned encoder's existing preparation. The exact RGB, Unicode book/name fields, native owner and entity references are checked after binary encoding and reopening. Matching records are reused; declared references with a missing or wrong class, conflicting names/RGB, or ambiguous split book/name fields refuse without replacing retained data. Generated records must be absent from the source OBJECTS inventory, and endpoint/object counts remain bounded. The full metadata and independent C comparisons remain required.
+
 Run `cargo test --locked` after preparation. Release packaging must use the staged binary and matching integrity manifest; any signing or binary mutation must happen before the final manifest is generated.
 
 The standalone source archive already includes the verified patched `vendor/acadrust` tree. To rebuild its helper without the full application's Node tooling, install the pinned **Rust 1.99.0 GNU** toolchain with target `x86_64-pc-windows-gnu`, open a terminal in `native/dwg-writer`, and run:

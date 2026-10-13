@@ -1,8 +1,8 @@
 //! Source coverage before the native parser establishes its typed baseline.
 //! Known opaque object schemas reject unconsumed groups. All OBJECTS identities
 //! must survive import; the independent C postflight checks other typed classes.
-use acadrust::{objects::ObjectType, tables::TableEntry, types::Handle, CadDocument};
-use std::collections::BTreeMap;
+use acadrust::{objects::ObjectType, tables::TableEntry, types::Handle, CadDocument, DwgWriter};
+use std::collections::{BTreeMap, BTreeSet};
 
 fn root_dictionary(document: &mut CadDocument) -> Result<Handle, String> {
     let known = document.header.named_objects_dict_handle;
@@ -511,6 +511,22 @@ impl SourceSchema {
             };
             if !compatible {
                 return Err(refusal("source object class changed during import"));
+            }
+        }
+        // A named entity color needs a native DBCOLOR record. The pinned writer
+        // otherwise creates it only on its private output copy, after baseline.
+        // Reuse that exact preparation before baseline; declared references and
+        // existing color objects are validated without replacing their payloads.
+        let previous: BTreeSet<_> = document.objects.keys().copied().collect();
+        DwgWriter::prepare_book_colors(document).map_err(|detail| refusal(&detail.to_string()))?;
+        for (handle, object) in &document.objects {
+            if !previous.contains(handle)
+                && (self.objects.contains_key(&handle.value())
+                    || !matches!(object, ObjectType::BookColor(value)
+                        if value.handle == *handle
+                            && value.owner == document.header.named_objects_dict_handle))
+            {
+                return Err(refusal("generated book-color identity/class/owner"));
             }
         }
         // The constructor adds native defaults absent from the input OBJECTS

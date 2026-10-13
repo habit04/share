@@ -4,7 +4,7 @@ The Windows DXF-to-DWG helper links acadrust 0.6.4, pinned by its published crat
 SHA-256 and matching upstream commit in `pins.json`. It is MPL-2.0 licensed; the
 unmodified full license is included here. The helper itself is GPL-3.0-only.
 
-Ninety-five exact source replacements in fifteen files correct standalone MTEXT frame
+Ninety-six exact source replacements in fifteen files correct standalone MTEXT frame
 output, its matching private validator, owned ATTRIB parent relationships,
 MINSERT's owned-attribute count before array fields, FIELD/FIELDLIST common DXF
 groups, the VIEW front-clipping mode bit, opaque DXF metadata strings, MLEADERSTYLE
@@ -44,6 +44,18 @@ fields and native reopening for both records. Its private variant gives both
 objects distinct ordered reactors and owned extension dictionaries, with a second
 ordinary child dictionary to prevent ownership inference from hiding a lost link.
 No owner reactor is synthesized, and the independent C comparison stays mandatory.
+Named entity and ATTRIB colors use the unchanged pinned encoder preparation
+through a public checked wrapper before the helper's baseline. Required DBCOLOR
+records are materialized with their exact book/name/RGB fields and NOD owner;
+matching records are reused and entity links are stored before comparison.
+Declared references with a missing/wrong class or conflicting identity/value
+refuse unchanged. A joined name whose existing fields disagree with the encoder's
+split also refuses instead of creating a second record. The wrapper bounds
+endpoint/object counts and commits the existing private output copy only after
+validation succeeds. A native regression checks escaped Unicode, shared records,
+ordered ATTRIBs, actual encoded DBCOLOR bodies and entity pointers, full reopened
+snapshots, idempotency and strict conflict/mutation refusal. It does not exempt
+new objects from the preservation comparison or change the independent C guard.
 The INSERT decoder retains the declared SEQEND handle, which the existing binary
 writer already reuses. An explicit wrong INSERT owner or SEQEND reactor,
 extension dictionary or XDATA refuses: this repair stores identity only, and

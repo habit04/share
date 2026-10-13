@@ -1217,6 +1217,212 @@ mod tests {
     use super::*;
 
     #[test]
+    fn admitted_named_entity_colors_materialize_exact_native_records_before_baseline() {
+        use acadrust::entities::EntityType;
+        use acadrust::io::dwg::dwg_stream_readers::{
+            handle_reader::read_handles,
+            object_reader::{objects::read_book_color, DwgObjectReader},
+        };
+        use acadrust::types::Color;
+
+        // The appearance fixture supplies this RGB/name on an entity without
+        // any DBCOLOR OBJECTS record. Include escaped Unicode and two ordered
+        // ATTRIBs so the same preparation covers both native endpoint forms.
+        let pearl = r"Studio\U+0020Book$Pearl \U+0394";
+        let teal = r"Studio Book$Teal \U+96F7";
+        let line = |handle: &str, rgb: u32, name: &str| format!(
+            "0\nLINE\n5\n{handle}\n100\nAcDbEntity\n8\n0\n62\n1\n420\n{rgb}\n430\n{name}\n100\nAcDbLine\n10\n0\n20\n0\n30\n0\n11\n1\n21\n1\n31\n0\n"
+        );
+        let attribute = |handle: &str, tag: &str, rgb: u32, name: &str| format!(
+            "0\nATTRIB\n5\n{handle}\n330\nB0\n100\nAcDbEntity\n8\n0\n62\n1\n420\n{rgb}\n430\n{name}\n100\nAcDbText\n10\n0\n20\n0\n30\n0\n40\n1\n1\n{tag}\n7\nStandard\n100\nAcDbAttribute\n2\n{tag}\n70\n0\n"
+        );
+        let text = format!(
+            "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1032\n0\nENDSEC\n0\nSECTION\n2\nBLOCKS\n0\nBLOCK\n5\nD0\n8\n0\n2\nBOOK\n70\n0\n10\n0\n20\n0\n30\n0\n3\nBOOK\n0\nENDBLK\n5\nD1\n8\n0\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n{}{}{}0\nINSERT\n5\nB0\n100\nAcDbEntity\n8\n0\n100\nAcDbBlockReference\n2\nBOOK\n10\n0\n20\n0\n30\n0\n66\n1\n{}{}0\nSEQEND\n5\nB3\n330\nB0\n8\n0\n0\nENDSEC\n0\nEOF\n",
+            line("A0", 0xABCDEF, pearl), line("A1", 0xABCDEF, pearl),
+            line("A2", 0x123456, teal),
+            attribute("B1", "PEARL", 0xABCDEF, pearl),
+            attribute("B2", "TEAL", 0x123456, teal),
+        );
+        validation::validate(&text).unwrap();
+        let mut source = DxfReader::from_reader(std::io::Cursor::new(text.as_bytes().to_vec()))
+            .unwrap().read().unwrap();
+        no_notifications(&source, "import").unwrap();
+        let previous_objects = source.objects.clone();
+        assert!(!previous_objects.values().any(|value| matches!(value, ObjectType::BookColor(_))));
+        let schema = source_schema::capture(&text).unwrap();
+        schema.verify(&mut source).unwrap();
+        let root = source.header.named_objects_dict_handle;
+        let colors: Vec<_> = source.objects.iter().filter_map(|(handle, value)| {
+            if let ObjectType::BookColor(color) = value { Some((*handle, color.clone())) } else { None }
+        }).collect();
+        assert_eq!(colors.len(), 2, "equal entity/attribute identities must reuse one record");
+        for (handle, color) in &colors {
+            assert!(!previous_objects.contains_key(handle));
+            assert_eq!(color.handle, *handle);
+            assert_eq!(color.owner, root);
+            assert_eq!(color.book_name, "Studio Book");
+            assert_eq!(color.color, if color.color_name == "Pearl Δ" {
+                Color::from_rgb(0xAB, 0xCD, 0xEF)
+            } else {
+                assert_eq!(color.color_name, "Teal 雷");
+                Color::from_rgb(0x12, 0x34, 0x56)
+            });
+        }
+        let pearl_handle = colors.iter().find(|(_, value)| value.color_name == "Pearl Δ").unwrap().0;
+        let teal_handle = colors.iter().find(|(_, value)| value.color_name == "Teal 雷").unwrap().0;
+        let expected = [
+            (Handle::new(0xA0), pearl_handle), (Handle::new(0xA1), pearl_handle),
+            (Handle::new(0xA2), teal_handle), (Handle::new(0xB1), pearl_handle),
+            (Handle::new(0xB2), teal_handle),
+        ];
+        let endpoints = |document: &CadDocument| {
+            let mut values = BTreeMap::new();
+            for entity in document.entities() {
+                values.insert(entity.common().handle, entity.common().clone());
+                if let EntityType::Insert(insert) = entity {
+                    for attribute in &insert.attributes {
+                        values.insert(attribute.common.handle, attribute.common.clone());
+                    }
+                }
+            }
+            values
+        };
+        let admitted_endpoints = endpoints(&source);
+        for (entity, color) in &expected {
+            assert_eq!(admitted_endpoints[entity].color_book_handle, Some(*color));
+        }
+        let EntityType::Insert(insert) = source.get_entity(Handle::new(0xB0)).unwrap() else {
+            unreachable!()
+        };
+        assert_eq!(insert.attributes.iter().map(|value| value.tag.as_str()).collect::<Vec<_>>(), ["PEARL", "TEAL"]);
+        let baseline = metadata_snapshot(&source).unwrap();
+        let admitted = serde_json::to_value(&source).unwrap();
+        schema.verify(&mut source).unwrap();
+        assert_eq!(serde_json::to_value(&source).unwrap(), admitted, "preparation must be idempotent");
+        let mut output = std::io::Cursor::new(Vec::new());
+        DwgWriter::write_to_writer(&mut output, &source).unwrap();
+        let bytes = output.into_inner();
+        let mut raw = DwgReader::from_stream(std::io::Cursor::new(bytes.clone()));
+        let info = raw.read_file_header().unwrap();
+        let handles = read_handles(&raw.get_section_buffer("AcDb:Handles", &info).unwrap()).unwrap();
+        let objects = raw.get_section_buffer("AcDb:AcDbObjects", &info).unwrap();
+        let reader = DwgObjectReader::new(objects, DxfVersion::AC1032, handles).unwrap();
+        // These assertions read actual body/reference fields before the document
+        // builder resolves book names from DBCOLOR objects.
+        for (handle, expected) in &colors {
+            let offset = usize::try_from(reader.offset_for(handle.value()).unwrap()).unwrap();
+            let (kind, mut data) = reader.read_record_at(offset).unwrap();
+            let common = reader.read_common_non_entity_data(&mut data, kind);
+            assert_eq!(common.common.handle, handle.value());
+            assert_eq!(common.owner_handle, root.value());
+            let actual = read_book_color(&mut data);
+            assert_eq!(actual.color, expected.color);
+            assert_eq!(actual.color_name, expected.color_name);
+            assert_eq!(actual.book_name, expected.book_name);
+        }
+        for (entity, expected) in &expected {
+            let offset = usize::try_from(reader.offset_for(entity.value()).unwrap()).unwrap();
+            let (kind, mut data) = reader.read_record_at(offset).unwrap();
+            let common = reader.read_common_entity_data(&mut data, kind);
+            assert_eq!(common.color_book_handle, Some(expected.value()));
+        }
+        let reopened = DwgReader::from_stream(std::io::Cursor::new(bytes)).read().unwrap();
+        equivalent(&baseline, &metadata_snapshot(&reopened).unwrap(), "admitted book colors").unwrap();
+        verify_reopening(&source, &reopened).unwrap();
+        let reopened_endpoints = endpoints(&reopened);
+        for (entity, expected) in &expected {
+            assert_eq!(reopened_endpoints[entity].color_book_handle, Some(*expected));
+            assert_eq!(reopened_endpoints[entity].color_name, admitted_endpoints[entity].color_name);
+            assert_eq!(reopened_endpoints[entity].color, admitted_endpoints[entity].color);
+        }
+        let EntityType::Insert(insert) = reopened.get_entity(Handle::new(0xB0)).unwrap() else {
+            unreachable!()
+        };
+        assert_eq!(insert.attributes.iter().map(|value| value.tag.as_str()).collect::<Vec<_>>(), ["PEARL", "TEAL"]);
+
+        // Existing source-declared DBCOLOR records are never rewritten to satisfy
+        // an entity. A wrong pointer, class, name or RGB must refuse unchanged.
+        let declared = format!("0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1032\n0\nENDSEC\n0\nSECTION\n2\nOBJECTS\n0\nDBCOLOR\n5\n{:X}\n330\n{:X}\n100\nAcDbColor\n1\nPearl Δ\n2\nStudio Book\n420\n11259375\n0\nENDSEC\n0\nEOF\n", pearl_handle.value(), root.value());
+        let explicit = source_schema::capture(&declared).unwrap();
+        let mut matching = source.clone();
+        let matching_before = serde_json::to_value(&matching).unwrap();
+        explicit.verify(&mut matching).unwrap();
+        assert_eq!(serde_json::to_value(&matching).unwrap(), matching_before,
+            "a matching explicit DBCOLOR must preserve its complete payload and object count");
+        let mut duplicate = source.clone();
+        let duplicate_handle = duplicate.allocate_handle();
+        let ObjectType::BookColor(mut duplicate_color) = duplicate.objects[&pearl_handle].clone() else {
+            unreachable!()
+        };
+        duplicate_color.handle = duplicate_handle;
+        duplicate.objects.insert(duplicate_handle, ObjectType::BookColor(duplicate_color));
+        duplicate.get_entity_mut(Handle::new(0xA0)).unwrap().common_mut().color_book_handle = None;
+        let duplicate_record = format!("0\nDBCOLOR\n5\n{:X}\n330\n{:X}\n100\nAcDbColor\n1\nPearl Δ\n2\nStudio Book\n420\n11259375\n", duplicate_handle.value(), root.value());
+        let duplicate_source = declared.replace("0\nENDSEC\n0\nEOF", &format!("{duplicate_record}0\nENDSEC\n0\nEOF"));
+        let duplicate_before = serde_json::to_value(&duplicate).unwrap();
+        assert!(source_schema::capture(&duplicate_source).unwrap().verify(&mut duplicate)
+            .unwrap_err().contains("ambiguous"));
+        assert_eq!(serde_json::to_value(&duplicate).unwrap(), duplicate_before,
+            "ambiguous explicit records must refuse without linking or replacing either record");
+        for change in ["rgb", "name", "type", "dangling", "missing-name", "split-identity"] {
+            let mut changed = source.clone();
+            match change {
+                "rgb" | "name" => {
+                    let ObjectType::BookColor(color) = changed.objects.get_mut(&pearl_handle).unwrap() else { unreachable!() };
+                    if change == "rgb" { color.color = Color::from_rgb(1, 2, 3); }
+                    else { color.color_name.push('!'); }
+                }
+                "type" => {
+                    let mut record = acadrust::objects::XRecord::new();
+                    record.handle = pearl_handle;
+                    record.owner = root;
+                    changed.objects.insert(pearl_handle, ObjectType::XRecord(record));
+                }
+                "dangling" => { changed.objects.remove(&pearl_handle); }
+                "missing-name" => { changed.get_entity_mut(Handle::new(0xA0)).unwrap().common_mut().color_name = None; }
+                "split-identity" => {
+                    let ObjectType::BookColor(color) = changed.objects.get_mut(&pearl_handle).unwrap() else { unreachable!() };
+                    color.book_name = "Studio$Book".into();
+                    color.color_name = "Pearl Δ".into();
+                    for entity in changed.entities_mut() {
+                        if entity.common().color_book_handle == Some(pearl_handle) {
+                            entity.common_mut().color_name = Some("Studio$Book$Pearl Δ".into());
+                        }
+                        if let EntityType::Insert(insert) = entity {
+                            for attribute in &mut insert.attributes {
+                                if attribute.common.color_book_handle == Some(pearl_handle) {
+                                    attribute.common.color_name = Some("Studio$Book$Pearl Δ".into());
+                                }
+                            }
+                        }
+                    }
+                    let common = changed.get_entity_mut(Handle::new(0xA0)).unwrap().common_mut();
+                    common.color_book_handle = None;
+                }
+                _ => unreachable!(),
+            }
+            let before = serde_json::to_value(&changed).unwrap();
+            let error = explicit.verify(&mut changed).unwrap_err();
+            if change == "split-identity" { assert!(error.contains("ambiguous"), "{error}"); }
+            assert_eq!(serde_json::to_value(&changed).unwrap(), before, "{change} changed retained input");
+        }
+        for change in ["rgb", "name", "owner", "remove"] {
+            let mut changed = reopened.clone();
+            if change == "remove" { changed.objects.remove(&pearl_handle); }
+            else {
+                let ObjectType::BookColor(color) = changed.objects.get_mut(&pearl_handle).unwrap() else { unreachable!() };
+                match change {
+                    "rgb" => color.color = Color::from_rgb(1, 2, 3),
+                    "name" => color.book_name.push('!'),
+                    "owner" => color.owner = Handle::NULL,
+                    _ => unreachable!(),
+                }
+            }
+            assert!(equivalent(&baseline, &metadata_snapshot(&changed).unwrap(), "book-color mutation").is_err(), "{change}");
+        }
+    }
+
+    #[test]
     fn secondary_paper_space_encodes_full_names_and_explicit_marker_and_geometry_owners() {
         use acadrust::entities::{EntityType, Line, Viewport};
         use acadrust::io::dwg::dwg_stream_readers::{
