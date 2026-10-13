@@ -153,6 +153,93 @@ describe('stable confined plugin files', () => {
     });
     await expect(readPluginSource(f.root, f.folder)).rejects.toThrow(/changed/);
   });
+  it.each(['manifest', 'code', 'raw-code'] as const)('rejects changed actual %s bytes even when all five native stat fields collide', async kind => {
+    const f = await fixture({ code: 'original plugin code' }), target = kind === 'manifest' ? path.join(f.directory, 'plugin.json') : f.file;
+    if (kind === 'raw-code') await fs.writeFile(target, new Uint8Array([0xff]));
+    const beforeBytes = await fs.readFile(target), replacement = kind === 'manifest' ? Buffer.from(f.manifest.replace('"test"', '"evil"')) : kind === 'raw-code' ? Buffer.from([0xfe]) : Buffer.from('external plugin code');
+    expect(replacement.byteLength).toBe(beforeBytes.byteLength); expect(replacement.equals(beforeBytes)).toBe(false);
+    if (kind === 'raw-code') expect(beforeBytes.toString('utf8')).toBe(replacement.toString('utf8'));
+    const stat = nativeFs.stat.bind(nativeFs), open = nativeFs.open.bind(nativeFs), original = await stat(target, { bigint: true });
+    const masked = (value: any) => new Proxy(value, { get(record, key) {
+      if (['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].includes(String(key))) return Reflect.get(original, key);
+      const property = Reflect.get(record, key); return typeof property === 'function' ? property.bind(record) : property;
+    } });
+    const selected = (value: unknown) => typeof value === 'string' && path.resolve(value) === target;
+    vi.spyOn(nativeFs, 'stat').mockImplementation((async (...args: any[]) => { const value = await (stat as any)(...args); return selected(args[0]) ? masked(value) : value; }) as typeof nativeFs.stat);
+    let modified = false, held = 0, reads = 0;
+    vi.spyOn(nativeFs, 'open').mockImplementation(async (...args) => {
+      const handle = await open(...args);
+      if (!selected(args[0])) return handle;
+      held++; const read = handle.read.bind(handle), handleStat = handle.stat.bind(handle), close = handle.close.bind(handle);
+      handle.stat = (async (...values: any[]) => masked(await (handleStat as any)(...values))) as typeof handle.stat;
+      handle.read = (async (...values: any[]) => {
+        const result = await (read as any)(...values); reads++;
+        if (!modified && result.bytesRead > 0) { modified = true; await fs.writeFile(target, replacement); await fs.utimes(target, Number(original.atimeMs) / 1000, Number(original.mtimeMs) / 1000); }
+        return result;
+      }) as typeof handle.read;
+      handle.close = async () => { await close(); held--; }; return handle;
+    });
+    const operation = kind === 'manifest' ? readPluginManifest(f.root, f.folder) : readPluginSource(f.root, f.folder);
+    await expect(operation).rejects.toMatchObject({ code: 'ERR_PLUGIN_CHANGED' });
+    expect(modified).toBe(true); expect(reads).toBeGreaterThan(1); expect(held).toBe(0); expect(await fs.readFile(target)).toEqual(replacement);
+  });
+  it('compares every byte across partial maximum-sized reads using a single bounded verification buffer', async () => {
+    const f = await fixture({ manifest: '{}' + ' '.repeat(MAX_PLUGIN_MANIFEST_BYTES - 2), code: 'x'.repeat(MAX_PLUGIN_CODE_BYTES) });
+    const open = nativeFs.open.bind(nativeFs), verificationBuffers = new Set<Uint8Array>(), captureSpans: Array<[number, number]> = [], verificationSpans: Array<[number, number]> = [];
+    let held = 0;
+    vi.spyOn(nativeFs, 'open').mockImplementation(async (...args) => {
+      const handle = await open(...args); if (String(args[0]) !== f.file) return handle;
+      held++; const read = handle.read.bind(handle), close = handle.close.bind(handle); let originalBuffer: Uint8Array | undefined;
+      handle.read = (async (buffer: Uint8Array, offset: number, length: number, position: number) => {
+        originalBuffer ??= buffer;
+        const result = await read(buffer, offset, Math.min(length, 32767), position);
+        if (length > 1) {
+          if (buffer === originalBuffer) captureSpans.push([position, result.bytesRead]);
+          else { verificationBuffers.add(buffer); verificationSpans.push([position, result.bytesRead]); }
+        }
+        return result;
+      }) as typeof handle.read;
+      handle.close = async () => { await close(); held--; }; return handle;
+    });
+    expect(await readPluginSource(f.root, f.folder)).toEqual({ manifest: f.manifest, code: f.code, path: f.file });
+    for (const spans of [captureSpans, verificationSpans]) {
+      expect(spans.length).toBeGreaterThan(32); let position = 0;
+      for (const [start, bytes] of spans) { expect(start).toBe(position); expect(bytes).toBeGreaterThan(0); position += bytes; }
+      expect(position).toBe(MAX_PLUGIN_CODE_BYTES);
+    }
+    expect(verificationBuffers.size).toBe(1); expect([...verificationBuffers][0]!.byteLength).toBe(64 * 1024); expect(held).toBe(0);
+  });
+  it.each(['comparison', 'final-EOF'] as const)('closes its held handle on a %s verification read error', async stage => {
+    const f = await fixture(), open = nativeFs.open.bind(nativeFs); let closed = false, originalBuffer: Uint8Array | undefined, compared = false;
+    vi.spyOn(nativeFs, 'open').mockImplementation(async (...args) => {
+      const handle = await open(...args); if (String(args[0]) !== f.file) return handle;
+      const read = handle.read.bind(handle), close = handle.close.bind(handle);
+      handle.read = (async (...values: any[]) => {
+        originalBuffer ??= values[0];
+        if (values[0] !== originalBuffer && values[2] > 1) { compared = true; if (stage === 'comparison') throw Object.assign(new Error('verification read failed'), { code: 'EIO' }); }
+        if (compared && stage === 'final-EOF' && values[2] === 1 && values[3] === Buffer.byteLength(f.code)) throw Object.assign(new Error('final EOF failed'), { code: 'EIO' });
+        return (read as any)(...values);
+      }) as typeof handle.read;
+      handle.close = async () => { await close(); closed = true; }; return handle;
+    });
+    await expect(readPluginSource(f.root, f.folder)).rejects.toMatchObject({ code: 'EIO' }); expect(compared).toBe(true); expect(closed).toBe(true);
+  });
+  it('preserves raw invalid-UTF8 replacement behavior for a stable file and detects growth at final EOF', async () => {
+    const f = await fixture(); await fs.writeFile(f.file, new Uint8Array([0xff, 65, 0xfe]));
+    expect(await readPluginSource(f.root, f.folder)).toMatchObject({ code: '\ufffdA\ufffd' });
+    const open = nativeFs.open.bind(nativeFs); let compared = false, grew = false, closed = false, originalBuffer: Uint8Array | undefined;
+    vi.spyOn(nativeFs, 'open').mockImplementation(async (...args) => {
+      const handle = await open(...args); if (String(args[0]) !== f.file) return handle;
+      const read = handle.read.bind(handle), close = handle.close.bind(handle);
+      handle.read = (async (...values: any[]) => {
+        originalBuffer ??= values[0]; if (values[0] !== originalBuffer && values[2] > 1) compared = true;
+        if (compared && !grew && values[2] === 1 && values[3] === 3) { grew = true; await fs.appendFile(f.file, 'X'); }
+        return (read as any)(...values);
+      }) as typeof handle.read;
+      handle.close = async () => { await close(); closed = true; }; return handle;
+    });
+    await expect(readPluginSource(f.root, f.folder)).rejects.toMatchObject({ code: 'ERR_PLUGIN_CHANGED' }); expect(grew).toBe(true); expect(closed).toBe(true);
+  });
 });
 
 describe('actual plugin IPC callback with native filesystem', () => {

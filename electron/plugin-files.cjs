@@ -5,6 +5,7 @@ const { constants } = require('node:fs');
 
 const MAX_PLUGIN_MANIFEST_BYTES = 64 * 1024;
 const MAX_PLUGIN_CODE_BYTES = 2 * 1024 * 1024;
+const VERIFY_CHUNK_BYTES = 64 * 1024;
 const FOLDER_RE = /^[A-Za-z0-9._-]{1,64}$/;
 const MAIN_RE = /^[A-Za-z0-9._-]+\.js$/;
 const READ_FLAGS = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0);
@@ -49,12 +50,30 @@ async function readStablePluginFile(root, file, maximum, options) {
     const bytes = Buffer.alloc(Number(opened.size));
     let length = 0;
     while (length < bytes.length) {
-      const { bytesRead } = await handle.read(bytes, length, bytes.length - length, length);
-      if (!bytesRead) throw changed();
+      const remaining = bytes.length - length;
+      const { bytesRead } = await handle.read(bytes, length, remaining, length);
+      if (!Number.isInteger(bytesRead) || bytesRead < 1 || bytesRead > remaining) throw changed();
       length += bytesRead;
     }
     const extra = Buffer.alloc(1);
-    if ((await handle.read(extra, 0, 1, length)).bytesRead || !sameFile(opened, await handle.stat({ bigint: true })) || !sameFile(opened, await fs.stat(realFile, { bigint: true })) || !samePath(await fs.realpath(file), realFile) || !samePath(await fs.realpath(root), realRoot) || !sameIdentity(rootBefore, await fs.stat(realRoot, { bigint: true }))) throw changed();
+    const check = async () => {
+      if (!sameFile(opened, await handle.stat({ bigint: true })) || !sameFile(opened, await fs.stat(realFile, { bigint: true })) || !samePath(await fs.realpath(file), realFile) || !samePath(await fs.realpath(root), realRoot) || !sameIdentity(rootBefore, await fs.stat(realRoot, { bigint: true }))) throw changed();
+    };
+    if ((await handle.read(extra, 0, 1, length)).bytesRead) throw changed();
+    await check();
+    // Native Windows stat timestamps can collide after a same-size edit. Compare
+    // the captured raw bytes against a fresh explicit-position pass through the
+    // same held descriptor, with at most 64 KiB extra memory (never another 2 MiB).
+    const scratch = Buffer.allocUnsafe(Math.min(VERIFY_CHUNK_BYTES, Math.max(1, length)));
+    let position = 0;
+    while (position < length) {
+      const count = Math.min(scratch.length, length - position);
+      const { bytesRead } = await handle.read(scratch, 0, count, position);
+      if (!Number.isInteger(bytesRead) || bytesRead < 1 || bytesRead > count || !bytes.subarray(position, position + bytesRead).equals(scratch.subarray(0, bytesRead))) throw changed();
+      position += bytesRead;
+    }
+    if ((await handle.read(extra, 0, 1, length)).bytesRead) throw changed();
+    await check();
     return bytes.toString('utf8');
   } catch (error) {
     if (verified && error && (error.code === 'ENOENT' || error.code === 'ENOTDIR')) throw changed();
