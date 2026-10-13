@@ -169,11 +169,62 @@ Baseline on Windows x64, Node 22.23.3: typecheck, lint and 177 test files / 2,21
   build green on the final commit.
 - Remains / known: sealing and the first-pick BVH build run on the UI thread (a 2M-triangle
   model pauses for about a second); closedness and weld checks of large Boolean operands run on
-  the main thread; the WebAssembly worker is served without its own CSP header and its memory
-  may grow to 4 GiB inside the renderer (E-19/E-20, not verified in the packaged app); an
-  over-budget Boolean is refused only after it was computed; `bench:3d` is not wired into CI;
+  the main thread; an over-budget Boolean is refused only after it was computed; `bench:3d` is not wired into CI;
   `scripts/e2e-3d.mjs` could not be run from the development sandbox, so it is unverified as a
   script (its checks were performed by hand in Chromium instead).
+
+## Milestone 7: true 3D dimensions and the owner's decisions (2026-10-13)
+
+- Works: `DIM3D` creates aligned, linear (X or Y of the plane) and angular dimension entities
+  in a measurement plane (the current construction plane, a solid face, or three points) with
+  a text override option; they are drawn with the 2D dimension geometry mapped into the plane,
+  selectable and hover-highlighted (depth-aware against solids), carried by ERASE, 3DMOVE /
+  3DROTATE / 3DSCALE and the 2D modify commands, editable in Properties (kind, measurement,
+  text, layer, colour, plane; mixed selections edited together), one undo step per command.
+  Saved as real DXF `DIMENSION` records in their plane (extrusion normal, OCS text point, own
+  `*D` block, `JCAD_3D` data for the id and projected flag); exact round trips in seven planes
+  including negative normals; re-saves byte-identical; 2D files unchanged (golden tests).
+  Foreign dimensions with a (0,0,-1) normal read correctly when 3D is on. The interim `3DDIM`
+  prototype labels projected measurements (`<> (projected)`) and logs the true 3D distance.
+- E-19 mitigated: the Electron build serves the kernel worker from `assets/worker/` with its
+  own CSP (`default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self';
+  base-uri 'none'`) decided from the served real path; the renderer CSP is unchanged.
+- E-20 mitigated: the worker refuses WebAssembly memory growth past `KERNEL_MEMORY_LIMIT_BYTES`
+  (1 GiB); a refusal that Emscripten's smaller retry recovers from is not an error; a final
+  refusal is a `memory-limit` KernelError, the worker is replaced and the model unchanged; the
+  500k-triangle operand limit, the per-request timeout and the single restart are retained.
+  Measured peak heap: unit cubes and the fixtures 16 MiB, two 50k-triangle spheres 33-58 MiB,
+  two 499,712-triangle operands up to 503 MiB (union and subtract refused by the result budget,
+  intersect fine), facets crossing everywhere at 250k operands 876 MiB (result over budget);
+  only a pathological 499,712-triangle everything-crossing union hits the cap (uncapped it needs
+  1.8 GiB, 28.6 s and 4.99M triangles, over the budget and the timeout anyway). No operation
+  whose result fits the budget fails at 1 GiB.
+- Verified: `npm run e2e:3d-security` against the development build (19/19, also on the final
+  merged commit) and against an unpacked Windows test build made without the Rust DWG helper
+  (`npm run dist:test:no-dwg`, electron-builder directory output, no installer) at the security
+  branch state: 20/20, run by the implementer and again by the supervisor. A rebuild of that
+  test build from the final merged commit could not be launched on the development machine:
+  Windows Application Control blocked the newly built unsigned executable ("An Application
+  Control policy has blocked this file"), a machine policy that was left untouched. The merge
+  added only the dimension work and documentation, none of the kernel, worker, CSP or packaging
+  code, so the packaged result stands for the same control code; rerun the packaged check on a
+  machine that allows the test build before any release. An installed, signed release build,
+  macOS and Linux are not verified.
+- Wording: a worker shares the renderer process; it is not memory or crash isolation (a docs
+  test guards this). DWG saves of drawings with solids or 3D dimensions stay refused and the
+  message states that JCad DXF and recovery copies keep the model (within the file limits).
+- Tested: 4 new test files for dimensions (analytic measurements in tilted planes, DXF subclass
+  sequences, OCS round trips, foreign rotated records, fuzzing), memory-limit and security-docs
+  tests, a test that every `[A/B]` prompt option click selects its own option. Full suite 217
+  files / 2,757 tests on the dimension branch, 215 / 2,732 on the security branch; the merged
+  result is recorded below under "Final verification".
+- Prototype / known: no grips on dimensions; the 2D view and plots do not show 3D dimensions;
+  stroke text reads mirrored from behind; no associativity with solids; opening the DXF records
+  in AutoCAD is unverified; the residual E-19 note that in-page plugin code could request the
+  test hooks (no privilege gained) remains documented.
+- 2D change to note: command-line option clicks now send the option's capital letters, which
+  fixes pre-existing prompts whose click picked the wrong option (ON/OFF, eXit, WPolygon,
+  FILLET Multiple and others); `?` now sends itself instead of Enter.
 
 ## How to try it
 
@@ -192,8 +243,9 @@ Baseline on Windows x64, Node 22.23.3: typecheck, lint and 177 test files / 2,21
 - Models whose DXF would exceed the reader's limits cannot be saved; reduce the model.
 - Reading `3DSOLID`, `REGION`, `BODY` (ACIS) bodies is unsupported; they stay retained raw records.
 - Opening JCad's polyface files in AutoCAD or other programs has not been verified.
-- True 3D dimension entities are unsupported; 3DDIM writes a 2D aligned dimension on the
-  drawing plane. No fillets, chamfers, shells, surfaces, assemblies or drafting views.
+- 3D dimensions (DIM3D) are not shown in the 2D view or plots and have no grips; 3DDIM remains
+  an interim 2D-dimension prototype that labels projected measurements. No fillets, chamfers,
+  shells, surfaces, assemblies or drafting views.
 - Only the centre grip moves a solid; there is no transform gizmo; 2D modify commands transform
   solids in the WCS XY plane; snaps on curved faces land on tessellation vertices.
 - Solids keep an ACI colour only; new solids take the current layer and colour.
