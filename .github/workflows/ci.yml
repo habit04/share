@@ -205,7 +205,7 @@ jobs:
         run: node scripts/e2e-gpu-process.mjs --cached-scene
       - name: Experimental geometry, pan cache, fallback and context restoration
         run: |
-          node --test scripts/gpu-edit-candidate.test.mjs scripts/gpu-fallback-restoration.test.mjs
+          node --test scripts/gpu-edit-candidate.test.mjs scripts/gpu-fallback-restoration.test.mjs scripts/gpu-benchmark-fallback.test.mjs
           npm run bench:gpu
       - uses: actions/upload-artifact@v4
         if: always()

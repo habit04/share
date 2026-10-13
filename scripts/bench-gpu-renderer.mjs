@@ -11,6 +11,7 @@ import pixelmatch from 'pixelmatch';
 import { applicationWindow } from './electron-window.mjs';
 import { chooseBenchmarkLineEdit } from './gpu-edit-candidate.mjs';
 import { analyzeFallbackRestoration } from './gpu-fallback-restoration.mjs';
+import { matchesBenchmarkFallbackReason, mixedSchematicFallbackReasons } from './gpu-benchmark-fallback.mjs';
 
 const cliArgs = process.argv.slice(2);
 assert.ok(cliArgs.length <= 1 && cliArgs.every((argument) => argument === '--high-performance'), 'Usage: node scripts/bench-gpu-renderer.mjs [--high-performance]');
@@ -898,7 +899,7 @@ try {
       const gpuImage = async (label, frame) => {
         assert.equal(frame.rendered, supportsGPU, `${fixture}: original-camera edit certificate preserves its actual renderer`);
         assert.notEqual(frame.cacheReason, 'admission-deferred', 'Original-camera edit correctness requires actual admission');
-        if (!supportsGPU) { assert.ok(frame.reason?.includes(fallbackReason)); assert.equal(frame.bytes, 0); assert.equal(frame.uploadCalls, 0); }
+        if (!supportsGPU) { assert.ok(matchesBenchmarkFallbackReason(fixture, fallbackReason, frame.reason)); assert.equal(frame.bytes, 0); assert.equal(frame.uploadCalls, 0); }
         const path = resolve(out, `${fixture}-timed-edit-${label}-gpu.png`);
         await page.locator('#drawing').screenshot({ path });
         certificate.gpuStages[label] = { frame, actualRenderer: frame.rendered ? 'gpu' : 'canvas', context: await prototypeContext(page) };
@@ -1197,7 +1198,7 @@ try {
     if (supportsGPU) await page.locator('#drawing').screenshot({ path: resolve(out, `${fixture}-canvas.png`) });
     else await stableCanvasReference(`${fixture}-centered-reference`, resolve(out, `${fixture}-canvas.png`));
     const gpuResult = await measure('gpu', 'pan-zoom', true);
-    if (fallbackReason) assert.ok(gpuResult.firstFrame.reason?.includes(fallbackReason), `${fixture}: admission refuses with '${fallbackReason}', actual: ${gpuResult.firstFrame.reason ?? 'none'}`);
+    if (fallbackReason) assert.ok(matchesBenchmarkFallbackReason(fixture, fallbackReason, gpuResult.firstFrame.reason), `${fixture}: admission refuses with '${fallbackReason}', actual: ${gpuResult.firstFrame.reason ?? 'none'}`);
     const panZoomImage = await compareTrajectoryEnd('pan-zoom', gpuResult.camera.last, gpuResult.camera.initial);
     if (poseDependentBudget) { await modeFrame(page, 'canvas'); await modeFrame(page, 'gpu'); }
     const centeredGpuFrame = await page.evaluate(() => window.gpuPrototype.renderStats());
@@ -1437,7 +1438,7 @@ try {
     }
     result.comparisons[fixture] = { expectedSupportsGPU: supportsGPU, poseDependentBudgetAdmission: poseDependentBudget, aggregateRendererScope: poseDependentBudget ? 'Baseline budget refusal; requested-GPU workflows may mix actual GPU/Canvas/deferred policy, with per-frame and by-renderer metrics' : 'Fixed fixture admission classification', canvas: canvasResult, gpu: gpuResult, prototypeContext: context, panOnly: { canvas: panCanvas, gpu: panGpu, endpoint: panImage }, boundedZoom: { canvas: boundedCanvas, gpu: boundedGpu, endpoint: boundedImage }, sustainedZoom: { canvas: sustainedCanvas, gpu: sustainedGpu, endpoint: sustainedImage }, offCenterZoom: { canvas: offCenterCanvas, gpu: offCenterGpu, endpoint: offCenterImage }, cacheEnvelopeEdges: { min: { canvas: minEdgeCanvas, gpu: minEdgeGpu, endpoint: minEdgeImage }, max: { canvas: maxEdgeCanvas, gpu: maxEdgeGpu, endpoint: maxEdgeImage } }, editUndo: { canvas: editCanvas, gpu: editGpu, endpoint: editImage, correctness: editCorrectness }, trajectoryEndpoints, wholeViewFallbackEndpoints: poseDependentBudget ? Object.fromEntries(Object.entries(trajectoryEndpoints).filter(([, endpoint]) => !endpoint.gpuFrame.rendered)) : supportsGPU ? null : trajectoryEndpoints, imageDifferenceFraction: pixels / (a.width * a.height), twoPixelCoverageMissFraction: coverageMiss };
     Object.assign(result.comparisons[fixture], { originalCameraEditCertificate });
-    Object.assign(result.comparisons[fixture], { fixtureDescription, expectedSupportsDeltas: supportsDeltas, expectedFallbackReason: fallbackReason, centeredActualAdmission: centeredGpuFrame, rasterGate: poseDependentBudget ? 'Exact RGBA whenever Canvas; when actually GPU-admitted, dense raster difference reported with unchanged bidirectional two-pixel coverage gate' : denseRaster ? 'Dense raster difference reported; unchanged bidirectional two-pixel coverage gate' : supportsGPU ? 'Strict pixelmatch fraction <0.001 and bidirectional two-pixel miss <0.005' : 'Complete-view Canvas with identical RGBA pixels' });
+    Object.assign(result.comparisons[fixture], { fixtureDescription, expectedSupportsDeltas: supportsDeltas, expectedFallbackReason: fallbackReason, expectedFallbackReasons: fixture === 'mixed-schematic' ? mixedSchematicFallbackReasons : null, centeredActualAdmission: centeredGpuFrame, rasterGate: poseDependentBudget ? 'Exact RGBA whenever Canvas; when actually GPU-admitted, dense raster difference reported with unchanged bidirectional two-pixel coverage gate' : denseRaster ? 'Dense raster difference reported; unchanged bidirectional two-pixel coverage gate' : supportsGPU ? 'Strict pixelmatch fraction <0.001 and bidirectional two-pixel miss <0.005' : 'Complete-view Canvas with identical RGBA pixels' });
     for (const [name, canvas, gpu] of [['pan/zoom', canvasResult, gpuResult], ['pan', panCanvas, panGpu], ['bounded zoom', boundedCanvas, boundedGpu], ['sustained zoom', sustainedCanvas, sustainedGpu], ['off-center zoom', offCenterCanvas, offCenterGpu], ['minimum zoom with edge pan', minEdgeCanvas, minEdgeGpu], ['maximum zoom with edge pan', maxEdgeCanvas, maxEdgeGpu], ['edit/undo', editCanvas, editGpu]]) {
       assert.deepEqual(canvas.camera.initial, gpu.camera.initial, `${fixture}: ${name} pairs start at identical cameras`);
       assert.ok([canvas.firstFrame, ...canvas.warmRedraw.samples, ...canvas.frameSamples].every((frame) => frame.rendered === false), `${fixture}: ${name} baseline samples must use Canvas`);
@@ -1449,7 +1450,14 @@ try {
         assert.equal(workload.firstFrame.reason, 'Stroke geometry exceeds prototype budget', `${fixture}: ${name} cold frame records actual exact budget refusal`);
       }
       if (!poseDependentBudget) assert.ok(completedSamples.every((frame) => frame.rendered === supportsGPU), `${fixture}: ${name} samples must not silently mix GPU and Canvas renderers; refusal: ${completedSamples.find((frame) => frame.rendered !== supportsGPU)?.reason ?? 'none'}`);
-      if (fallbackReason) assert.ok(completedSamples.filter((frame) => !frame.rendered).every((frame) => frame.reason?.includes(fallbackReason)), `${fixture}: ${name} actual fallback frames keep their safety reason; actual: ${completedSamples.find((frame) => !frame.rendered && !frame.reason?.includes(fallbackReason))?.reason ?? 'none'}`);
+      if (fallbackReason) assert.ok(completedSamples.filter((frame) => !frame.rendered).every((frame) => matchesBenchmarkFallbackReason(fixture, fallbackReason, frame.reason)), `${fixture}: ${name} actual fallback frames keep their safety reason; actual: ${completedSamples.find((frame) => !frame.rendered && !matchesBenchmarkFallbackReason(fixture, fallbackReason, frame.reason))?.reason ?? 'none'}`);
+      if (fixture === 'mixed-schematic') for (const frame of completedSamples) {
+        assert.equal(frame.actualRenderer, 'canvas');
+        assert.equal(frame.gpuAttempt.uploadKind, 'none');
+        assert.equal(frame.gpuAttempt.requestedUploadBytes, 0);
+        assert.equal(frame.gpuAttempt.uploadCalls, 0);
+        assert.equal(frame.gpuAttempt.drawSubmissionMs, 0);
+      }
       if (supportsGPU) assert.equal(workload.firstFrame.cacheReason, 'cold', `${fixture}: ${name} mode-triggered first frame includes cold geometry work`);
     }
     if (fixture === 'mixed-schematic') {
@@ -1478,7 +1486,7 @@ try {
               assert.notEqual(frame.gpuAttempt.cacheReason, 'refusal-hit', `${fixture}: ${label} changed camera retries instead of reusing a stale refusal`);
               assert.ok(frame.gpuAttempt.geometryPreparationMs > 0, `${fixture}: ${label} retry measures actual geometry preparation`);
               assert.equal(frame.actualRenderer, 'canvas');
-              assert.ok(frame.reason?.includes(fallbackReason));
+              assert.ok(matchesBenchmarkFallbackReason(fixture, fallbackReason, frame.reason));
               assert.equal(frame.gpuAttempt.requestedUploadBytes, 0);
               assert.equal(frame.gpuAttempt.uploadCalls, 0);
               changedPoses++;

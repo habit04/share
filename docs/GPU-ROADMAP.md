@@ -895,6 +895,19 @@ wall time; a genuine fourfold crossing took 62.9 ms preparation and 71.2 ms comp
 wall time. Preserve these costs and the failed source; no aggregate acceptance or
 general responsiveness claim follows from the provisional improvement.
 
+Clean 433e8c52 passed all ten local checks and five native preflight checks;
+both CI runs passed Node22/24, UI and Windows Electron. The complete Intel
+benchmark and both experimental GPU jobs then stopped at the mixed-schematic
+minimum-edge fallback-reason assertion. Dense boundary restoration now passed,
+with its original drawing and camera unchanged. Native min-edge evidence records
+46 complete Canvas samples: 36 tiny-circle overlap refusals, two native parameter
+precision refusals, one native oval-topology refusal and seven native radius
+refusals. Every sample requested/submitted no GL work and its endpoint matched
+Canvas exactly. A fixture-specific exact-message policy retains these four known
+safety causes, rejects unrelated errors, and leaves poses, precision/image limits,
+refusal memoization and document/history invariants unchanged. Fresh complete
+native benchmarks and exact-head CI remain required; no failed timing is accepted.
+
 ### NVIDIA validation on the pinned GPU source
 
 A separate private process using Electron's documented
