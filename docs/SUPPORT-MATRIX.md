@@ -96,8 +96,11 @@ and frames retain their native groups.
 ## Fonts and text
 
 TrueType/OpenType styles render on screen through installed CSS font families and fallback stacks.
-SHX and unknown styles use a single-stroke vector font (Hershey Roman Simplex,
-`src/render/fonts/rowmans.jhf`). Windows desktop TrueType styles use verified installed font metrics
+Windows `SHXFONT`/`SHXLOAD` explicitly loads read-only font/shape resources for one drawing tab.
+Supported horizontal SHX glyphs use native paths and metrics; missing/unsupported runs and unknown
+styles retain Hershey Roman Simplex (`src/render/fonts/rowmans.jhf`). Runtime resources stay outside
+saved drawings, and fresh reopen requires explicit loading; see `SHX-FONTS.md`.
+Windows desktop TrueType styles use verified installed font metrics
 for drawing height, advances and bearings; unsupported faces/glyphs use Canvas measurement.
 Bounds, selection, wrapping, masks and raster plots share a per-drawing font context. Native MTEXT
 attachment uses ink bearings; tall-glyph leading and unsupported glyph cases remain approximate;
@@ -106,7 +109,9 @@ The style's font file / TrueType family is kept and written back. In vector PDF 
 Windows embeds permitted installed standalone TrueType programs, native advances and Unicode maps.
 Missing/restricted faces, unsupported font formats/glyph origins and contextual shaping use a
 reported Helvetica or stroke substitute. Browser PDF retains its legacy substitution. Collections,
-CFF/variable/color font embedding and real SHX rendering remain open; see `PDF-FONT-EMBEDDING.md`.
+CFF/variable/color font embedding remain open; see `PDF-FONT-EMBEDDING.md`. Eligible type-0 Unicode
+SHX fonts plot as vector outlines; other headers retain a reported substitute. BigFont, vertical
+and mirrored generation, missing glyphs and complex-linetype glyph placement remain open.
 Text in pre-2007 DXF
 files is decoded from `$DWGCODEPAGE`; older exports use pure ASCII with `\U+XXXX` escapes,
 while AutoCAD 2007 and later exports use UTF-8. Supplementary Unicode stays intact across

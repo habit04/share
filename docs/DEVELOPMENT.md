@@ -407,6 +407,7 @@ hands them to the modules in one context (`context.cjs`). No module requires Ele
 | `dwg.cjs` | 76 | DXF decoding, isolated DWG reading with progress and cancel |
 | `ipc-drawings.cjs` | 292 | open / save drawings and projects, Save As paths, backups, IMAGE files |
 | `ipc-plot.cjs` | 99 | plot to PDF, vector PDF, print |
+| `ipc-shx.cjs` | — | guarded one-use Windows SHX font/shape picker, without general file grants |
 | `ipc-stores.cjs` | 178 | autosave, user library, plugins, catalog packs |
 | `updates.cjs` | 45 | app info, external links, update checks and status |
 | `handover.cjs` | 86 | files handed over by the OS and by a second launch |

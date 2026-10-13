@@ -13,6 +13,12 @@ messages). The date of each version is the date of the commit that set that vers
 
 ### Added
 
+- Windows SHXFONT/SHXLOAD reads selected SHX fonts/shapes through a confined native picker.
+  Supported horizontal glyph paths and native metrics are local to each drawing tab, with
+  captured raster/vector plotting and reported unsupported runs. Work, decoded data, pending
+  hashing and caches are bounded. Eligible type-0 Unicode fonts plot as vector outlines;
+  BigFont, vertical/mirrored text and complex-linetype glyph display remain open.
+
 - Plot dialog loads bounded CTB/STB tables for the current plot. Native ACI/TrueColor rules,
   grayscale, screening and physical lineweights agree in vector PDF and raster plots;
   nested ByBlock widths resolve before plot overrides. STB selection explicitly applies one
@@ -31,7 +37,7 @@ messages). The date of each version is the date of the commit that set that vers
   Missing/unsupported font structures and glyph origins use Canvas fallback measurement; source
   STYLE data is retained. Font arrival and STYLE edits refresh caches without dirty/history changes.
   Pending plots await metrics and retain captured drawing definitions. Tall-glyph MTEXT leading,
-  inline font changes and SHX decoding remain open.
+  inline font changes remain open; SHX has a separate validated subset in `SHX-FONTS.md`.
 - Windows vector PDF embeds permitted installed standalone TrueType programs with exact native
   advances, placement and Unicode maps. Font resources stay local to the captured plot, with
   eight-face/128 MiB limits and the same clip/layer/annotation culling as PDF painting. Missing,
@@ -60,6 +66,13 @@ messages). The date of each version is the date of the commit that set that vers
   report a plotting error instead of emitting corrupt shading matrices.
 
 ### Fixed
+
+- Native omitted TEXT/ATTDEF/ATTRIB width/slant groups mean entity defaults 1/0, rather than
+  STYLE creation defaults. Generated labels and attributes emit canonical defaults on their
+  first export, keeping repeated DXF exports consistent.
+- SHX and plugin reads compare exact canonical filesystem paths, refusing Unicode sibling
+  escapes and pre/post-read junction retargets. Plugin manifests/code use bounded held
+  descriptors so path checks cannot be bypassed before opening a different file.
 
 - Canvas linetypes follow signed lengths, merging consecutive gaps/dashes without inverting
   the next repetition. Leading gaps, dots and terminal dashes keep their phase; positive-only
