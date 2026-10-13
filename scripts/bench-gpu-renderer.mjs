@@ -97,6 +97,7 @@ function changedRgbaPixels(a, b) {
   }
   return changed;
 }
+let benchmarkPage = null, activeFixture = null;
 try {
   result.scope = await app.evaluate(({ app }, expected) => {
     const path = process.getBuiltinModule('node:path');
@@ -105,6 +106,7 @@ try {
   }, profile);
   assert.equal(result.scope.highPerformanceSwitchPresent, highPerformance, 'Private app GPU preference switch must match the requested CLI mode');
   const page = await applicationWindow(app);
+  benchmarkPage = page;
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
   await page.waitForFunction(() => !!window.editor && !!window.gpuPrototype);
@@ -129,9 +131,11 @@ try {
     { name: 'precision-trillion', supportsGPU: true },
     { name: 'lineweights', supportsGPU: true },
     { name: 'dense-lines', supportsGPU: true },
-    // Original 6,500 entities are unchanged: newly admitted blocks/attributes/TEXT.
-    { name: 'mixed-schematic', supportsGPU: true, supportsDeltas: false },
+    // Historical 6,500-entity input retains its tiny PERF_SYM circle. Its fitted
+    // radius is inside the stroke/precision margin, so the whole view uses Canvas.
+    { name: 'mixed-schematic', supportsGPU: false, supportsDeltas: false, fallbackReason: 'Curve stroke overlap or precision margin requires Canvas rendering' },
     { name: 'wide-curve-fallback', supportsGPU: false },
+    { name: 'compound-dense', supportsGPU: true, supportsDeltas: false },
     { name: 'compound-ordered', supportsGPU: true, supportsDeltas: false },
     { name: 'compound-trillion-reference', supportsGPU: true, supportsDeltas: false },
     // Canvas's absolute glyph/block offsets may quantize at this origin; preserve
@@ -139,10 +143,22 @@ try {
     { name: 'compound-trillion', supportsGPU: false, supportsDeltas: false },
     ...['ttf', 'mtext', 'dash', 'alpha', 'geometry'].map((kind) => ({ name: `compound-fallback-${kind}`, supportsGPU: false, supportsDeltas: false })),
   ];
-  for (const { name: fixture, supportsGPU, supportsDeltas = supportsGPU } of fixtures) {
-    const denseRaster = fixture === 'dense-lines' || fixture === 'mixed-schematic';
+  for (const { name: fixture, supportsGPU, supportsDeltas = supportsGPU, fallbackReason = null } of fixtures) {
+    activeFixture = fixture;
+    const denseRaster = fixture === 'dense-lines' || fixture === 'compound-dense';
     await page.evaluate((name) => { window.gpuPrototype.setMode('canvas'); window.editor.viewport.twist = 0; window.gpuPrototype.loadFixture(name); }, fixture);
     await page.waitForTimeout(100);
+    const fixtureDescription = await page.evaluate(() => {
+      const state = window.editor.doc.snapshot, scale = window.editor.viewport.scale;
+      const counts = state.entities.reduce((counts, entity) => { counts[entity.type] = (counts[entity.type] ?? 0) + 1; return counts; }, {});
+      return { entityCount: state.entities.length, counts, metadata: window.gpuPrototype.fixtureMetadata(), blocks: Object.values(state.blocks).map((block) => ({ name: block.name, childTypes: block.entities.map((entity) => entity.type), attributeCount: block.attributes.length })), textPixels: state.entities.filter((entity) => entity.type === 'text').map((entity) => entity.height * scale), attributePixels: Object.values(state.blocks).flatMap((block) => block.attributes.map((attribute) => attribute.height * scale)) };
+    });
+    if (fixture === 'compound-dense') {
+      assert.equal(fixtureDescription.entityCount, 6500);
+      assert.deepEqual(fixtureDescription.counts, { line: 5000, insert: 1000, text: 500 });
+      assert.deepEqual(fixtureDescription.blocks, [{ name: 'GPU-DENSE-SYM', childTypes: ['line', 'line', 'line', 'line'], attributeCount: 1 }]);
+      assert.ok([...fixtureDescription.textPixels, ...fixtureDescription.attributePixels].every((pixels) => pixels * 0.8 > 2.5), 'Distinct dense compound glyphs remain readable inside the admitted minimum zoom band');
+    }
     const measure = async (mode, motion = 'pan-zoom', retainEndCamera = false) => page.evaluate(async ({ mode, samples, motion, retainEndCamera }) => {
       const ed = window.editor, api = window.gpuPrototype, v = ed.viewport;
       const canvas = /** @type {HTMLCanvasElement} */ (document.getElementById('drawing'));
@@ -324,7 +340,7 @@ try {
           if (mode === 'gpu') {
             gpuFrame = frame;
             if (supportsGPU) {
-              assert.equal(frame.rendered, true, `${fixture}: ${label} comparison uses GPU`);
+              assert.equal(frame.rendered, true, `${fixture}: ${label} comparison uses GPU; refusal: ${frame.reason ?? 'none'}`);
               assert.equal(frame.bytes, 0, `${fixture}: ${label} comparison reuses the terminal geometry bytes`);
               assert.equal(frame.uploadCalls, 0, `${fixture}: ${label} comparison makes no upload calls`);
             } else assert.equal(frame.rendered, false, `${fixture}: ${label} comparison preserves whole-view fallback`);
@@ -364,6 +380,7 @@ try {
     const canvasResult = await measure('canvas');
     await page.locator('#drawing').screenshot({ path: resolve(out, `${fixture}-canvas.png`) });
     const gpuResult = await measure('gpu', 'pan-zoom', true);
+    if (fallbackReason) assert.ok(gpuResult.firstFrame.reason?.includes(fallbackReason), `${fixture}: original tiny-circle admission refuses with '${fallbackReason}', actual: ${gpuResult.firstFrame.reason ?? 'none'}`);
     const panZoomImage = await compareTrajectoryEnd('pan-zoom', gpuResult.camera.last, gpuResult.camera.initial);
     const context = await prototypeContext(page);
     await page.locator('#drawing').screenshot({ path: resolve(out, `${fixture}-gpu.png`) });
@@ -553,12 +570,15 @@ try {
       }, { camera: proofBaseline.camera, baselineDocument: proofBaseline.document });
     }
     result.comparisons[fixture] = { expectedSupportsGPU: supportsGPU, canvas: canvasResult, gpu: gpuResult, prototypeContext: context, panOnly: { canvas: panCanvas, gpu: panGpu, endpoint: panImage }, boundedZoom: { canvas: boundedCanvas, gpu: boundedGpu, endpoint: boundedImage }, sustainedZoom: { canvas: sustainedCanvas, gpu: sustainedGpu, endpoint: sustainedImage }, offCenterZoom: { canvas: offCenterCanvas, gpu: offCenterGpu, endpoint: offCenterImage }, cacheEnvelopeEdges: { min: { canvas: minEdgeCanvas, gpu: minEdgeGpu, endpoint: minEdgeImage }, max: { canvas: maxEdgeCanvas, gpu: maxEdgeGpu, endpoint: maxEdgeImage } }, editUndo: { canvas: editCanvas, gpu: editGpu, endpoint: editImage, correctness: editCorrectness }, trajectoryEndpoints, wholeViewFallbackEndpoints: supportsGPU ? null : trajectoryEndpoints, imageDifferenceFraction: pixels / (a.width * a.height), twoPixelCoverageMissFraction: coverageMiss };
+    Object.assign(result.comparisons[fixture], { fixtureDescription, expectedSupportsDeltas: supportsDeltas, expectedFallbackReason: fallbackReason, rasterGate: denseRaster ? 'Dense raster difference reported; unchanged bidirectional two-pixel coverage gate' : supportsGPU ? 'Strict pixelmatch fraction <0.001 and bidirectional two-pixel miss <0.005' : 'Complete-view Canvas with identical RGBA pixels' });
     for (const [name, canvas, gpu] of [['pan/zoom', canvasResult, gpuResult], ['pan', panCanvas, panGpu], ['bounded zoom', boundedCanvas, boundedGpu], ['sustained zoom', sustainedCanvas, sustainedGpu], ['off-center zoom', offCenterCanvas, offCenterGpu], ['minimum zoom with edge pan', minEdgeCanvas, minEdgeGpu], ['maximum zoom with edge pan', maxEdgeCanvas, maxEdgeGpu], ['edit/undo', editCanvas, editGpu]]) {
       assert.deepEqual(canvas.camera.initial, gpu.camera.initial, `${fixture}: ${name} pairs start at identical cameras`);
       assert.ok([canvas.firstFrame, ...canvas.warmRedraw.samples, ...canvas.frameSamples].every((frame) => frame.rendered === false), `${fixture}: ${name} baseline samples must use Canvas`);
     }
     for (const [name, workload] of [['pan/zoom', gpuResult], ['pan', panGpu], ['bounded zoom', boundedGpu], ['sustained zoom', sustainedGpu], ['off-center zoom', offCenterGpu], ['minimum zoom with edge pan', minEdgeGpu], ['maximum zoom with edge pan', maxEdgeGpu], ['edit/undo', editGpu]]) {
-      assert.ok([workload.firstFrame, ...workload.warmRedraw.samples, ...workload.frameSamples].every((frame) => frame.rendered === supportsGPU), `${fixture}: ${name} samples must not silently mix GPU and Canvas renderers`);
+      const completedSamples = [workload.firstFrame, ...workload.warmRedraw.samples, ...workload.frameSamples];
+      assert.ok(completedSamples.every((frame) => frame.rendered === supportsGPU), `${fixture}: ${name} samples must not silently mix GPU and Canvas renderers; refusal: ${completedSamples.find((frame) => frame.rendered !== supportsGPU)?.reason ?? 'none'}`);
+      if (fallbackReason) assert.ok(completedSamples.every((frame) => frame.reason?.includes(fallbackReason)), `${fixture}: ${name} keeps the original tiny-circle safety refusal; actual: ${completedSamples.find((frame) => !frame.reason?.includes(fallbackReason))?.reason ?? 'none'}`);
       if (supportsGPU) assert.equal(workload.firstFrame.cacheReason, 'cold', `${fixture}: ${name} mode-triggered first frame includes cold geometry work`);
     }
     if (!supportsGPU) {
@@ -613,6 +633,7 @@ try {
     result.comparisons[fixture].pannedTwoPixelCoverageMissFraction = panMiss;
     assert.ok(panMiss < 0.005, `${fixture}: cached panned frame matches geometry within two pixels`);
   }
+  activeFixture = 'compound-untimed-correctness';
   // Compound checks use the application's painter, Drawing transactions, codecs,
   // preload/IPC and atomic saves. Only native file-dialog answers are queued.
   const compoundEvidence = { comparisons: {}, interiorProbes: [], dependencyTransitions: [], contextRecovery: null, largeCoordinates: null, saveReopen: null };
@@ -623,7 +644,7 @@ try {
       const frame = await modeFrame(page, mode);
       if (mode === 'gpu') {
         gpuFrame = frame;
-        assert.equal(frame.rendered, expectedGPU, `${label}: expected actual renderer`);
+        assert.equal(frame.rendered, expectedGPU, `${label}: expected actual renderer; refusal: ${frame.reason ?? 'none'}`);
         if (expectedGPU && requireWarm) {
           assert.equal(frame.cacheHit, true, `${label}: comparison retains prepared compound scene`);
           assert.equal(frame.uploadKind, 'none', `${label}: comparison retains uploaded compound scene`);
@@ -990,6 +1011,19 @@ try {
   assert.deepEqual(errors, []);
   writeFileSync(resolve(out, 'comparison.json'), JSON.stringify(result, null, 2));
   console.log('GPU renderer Windows prototype checks passed.');
+} catch (error) {
+  // Keep failures explicit and separate from successful comparison.json evidence.
+  // A refused admission must remain visible even if it happened before a fixture
+  // completed all measured workflows and therefore has no published summary.
+  let current = null;
+  try {
+    current = await benchmarkPage?.evaluate(() => {
+      const v = window.editor?.viewport;
+      return { renderer: window.gpuPrototype?.renderStats(), camera: v ? { center: { ...v.center }, scale: v.scale, twist: v.twist, dpr: v.dpr } : null, fixture: window.gpuPrototype?.fixtureMetadata(), entityCount: window.editor?.doc.entities.length };
+    });
+  } catch { /* The primary benchmark error remains authoritative after an app failure. */ }
+  writeFileSync(resolve(out, 'failure.json'), JSON.stringify({ outcome: 'failed', sourceSha, worktreeModified, activeFixture, error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : String(error), current, partialResult: result }, null, 2));
+  throw error;
 } finally {
   await app.evaluate(({ app }) => app.exit(0)).catch(() => {});
   await app.close().catch(() => {});

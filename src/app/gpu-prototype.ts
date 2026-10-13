@@ -19,6 +19,23 @@ interface FixtureMetadata {
   textStyle?: string;
 }
 
+/** Separate admitted stress input; the historical PERF_SYM and mixed fixture stay intact. */
+function denseCompoundFixture(): DrawingState {
+  const source = bigDrawing(5000, 1000, 500);
+  const block: BlockDef = {
+    name: 'GPU-DENSE-SYM', basePoint: { x: 0, y: 0 },
+    entities: [
+      { id: 'dense-left', layer: '0', color: 'ByLayer', type: 'line', a: { x: -0.25, y: 0 }, b: { x: -0.05, y: 0 } },
+      { id: 'dense-right', layer: '0', color: 'ByLayer', type: 'line', a: { x: 0.05, y: 0 }, b: { x: 0.25, y: 0 } },
+      { id: 'dense-post-left', layer: '0', color: 'ByLayer', type: 'line', a: { x: -0.05, y: -0.1 }, b: { x: -0.05, y: 0.1 } },
+      { id: 'dense-post-right', layer: '0', color: 'ByLayer', type: 'line', a: { x: 0.05, y: -0.1 }, b: { x: 0.05, y: 0.1 } },
+    ],
+    // Visible glyphs stay well above QTEXT throughout the standard .8..1.25 band.
+    attributes: [{ tag: 'TAG1', prompt: 'Tag', default: 'X', position: { x: 0, y: 0.25 }, height: 1.25, align: 'center' }],
+  };
+  return { ...source, blocks: { [block.name]: block }, entities: source.entities.map((entity) => entity.type === 'insert' ? { ...entity, block: block.name } : entity.type === 'text' ? { ...entity, height: 2 } : entity) };
+}
+
 /** Ordered native primitives; no renderer-specific glyph or placement formula. */
 function compoundFixture(name: string): { state: DrawingState; center: Point; scale: number; twist: number; metadata: FixtureMetadata } {
   const far = name === 'compound-trillion';
@@ -171,7 +188,10 @@ export function installGpuPrototype(editor: Editor): void {
     loadFixture: (name: string) => {
       fixtureMetadata = null;
       const base = bigDrawing(name === 'dense-lines' ? 38000 : 5000, name === 'mixed-schematic' ? 1000 : 0, name === 'mixed-schematic' ? 500 : 0);
-      if (name.startsWith('compound-')) {
+      if (name === 'compound-dense') {
+        editor.loadState(denseCompoundFixture(), null);
+        fixtureMetadata = { name, block: 'GPU-DENSE-SYM', probes: [] };
+      } else if (name.startsWith('compound-')) {
         const fixture = compoundFixture(name);
         editor.loadState(fixture.state, null);
         view.center = fixture.center; view.scale = fixture.scale; view.twist = fixture.twist;
@@ -214,7 +234,7 @@ export function installGpuPrototype(editor: Editor): void {
         ] }, null);
       } else editor.loadState(base, null);
       // Fixture-local display state must not leak into the ordinary comparison scenes.
-      lineweightDisplay.enabled = name === 'lineweights' || name === 'wide-curve-fallback' || name.startsWith('compound-');
+      lineweightDisplay.enabled = name === 'lineweights' || name === 'wide-curve-fallback' || (name.startsWith('compound-') && name !== 'compound-dense');
       lineweightDisplay.pxPerMm = undefined;
       editor.viewport.settings.gridVisible = false;
       editor.viewport.renderCurrent();
