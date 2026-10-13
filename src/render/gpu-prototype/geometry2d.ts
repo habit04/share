@@ -30,8 +30,12 @@ export interface Prepared2D {
   /** Interleaved CSS-pixel screen XY and RGB. World doubles are rebased before conversion. */
   vertices: Float32Array<ArrayBuffer>;
   batches: StrokeBatch[];
+  /** Conservative CSS-pixel translation allowance before a source point exceeds precision limits. */
+  panPrecisionMargin: Point;
 }
 
+/** Bounded physical-pixel border retained for camera translation, never a zoom allowance. */
+export const GPU_PAN_CACHE_BORDER = 128;
 const MAX_CURVE_SEGMENTS = 32768;
 const MAX_VERTICES = 1_000_000;
 const PIXEL_ERROR = 0.25; // Physical pixels, including high-DPI views.
@@ -129,9 +133,9 @@ function entityPath(entity: Entity, view: Gpu2DView): { points: Point[]; closed:
 }
 
 /** Clip in doubles before upload, so remote endpoints cannot consume Float32 precision. */
-function clippedTriangle(triangle: Point[], width: number, height: number): Point[] {
+function clippedTriangle(triangle: Point[], width: number, height: number, padding: number): Point[] {
   let polygon = triangle;
-  for (const [axis, limit, greater] of [['x', 0, true], ['x', width, false], ['y', 0, true], ['y', height, false]] as const) {
+  for (const [axis, limit, greater] of [['x', -padding, true], ['x', width + padding, false], ['y', -padding, true], ['y', height + padding, false]] as const) {
     const input = polygon;
     polygon = [];
     if (!input.length) break;
@@ -152,12 +156,12 @@ function clippedTriangle(triangle: Point[], width: number, height: number): Poin
   return polygon;
 }
 
-function strokeTriangles(source: readonly Point[], closed: boolean, width: number, color: [number, number, number], view: Gpu2DView, output: number[]): void {
+function strokeTriangles(source: readonly Point[], closed: boolean, width: number, color: [number, number, number], view: Gpu2DView, output: number[], padding: number): void {
   if (!Number.isFinite(width) || width <= 0) throw new Error('Invalid lineweight');
   const points = source.filter((point, index) => index === 0 || point.x !== source[index - 1]!.x || point.y !== source[index - 1]!.y);
   if (points.length < 2) return; // Canvas butt-capped degenerate paths paint nothing.
   const triangle = (a: Point, b: Point, c: Point): void => {
-    const polygon = clippedTriangle([checked(a), checked(b), checked(c)], view.width, view.height);
+    const polygon = clippedTriangle([checked(a), checked(b), checked(c)], view.width, view.height, padding);
     for (let i = 1; i + 1 < polygon.length; i++) {
       for (const p of [polygon[0]!, polygon[i]!, polygon[i + 1]!]) output.push(p.x, p.y, ...color);
     }
@@ -209,9 +213,10 @@ function styleProblem(entity: Entity, state: DrawingState): string | null {
   return null;
 }
 
-/** All-or-nothing preparation. A refusal never exposes a partial drawing. */
-export function prepare2D(state: DrawingState, view: Gpu2DView, overlay: Gpu2DOverlay): Prepared2D {
+/** All-or-nothing preparation. clipPadding retains a bounded CSS-pixel border for pure pans. */
+export function prepare2D(state: DrawingState, view: Gpu2DView, overlay: Gpu2DOverlay, clipPadding = 0): Prepared2D {
   if (![view.width, view.height, view.dpr, view.scale, view.center.x, view.center.y, view.twist].every(Number.isFinite) || view.width <= 0 || view.height <= 0 || view.dpr <= 0 || view.scale <= 0) throw new Error('Invalid GPU view');
+  if (!Number.isFinite(clipPadding) || clipPadding < 0 || clipPadding > GPU_PAN_CACHE_BORDER / Math.max(1, view.dpr)) throw new Error('Invalid GPU pan cache border');
   // Match the viewport: LAYON can make an imported frozen layer visible again.
   const hidden = new Set(state.layers.filter((layer) => !layer.visible).map((layer) => layer.name));
   const visible = state.entities.filter((entity) => !hidden.has(entity.layer));
@@ -222,6 +227,8 @@ export function prepare2D(state: DrawingState, view: Gpu2DView, overlay: Gpu2DOv
     if (overlay.selection.has(entity.id) && !overlay.solidSelection) throw new Error(`Dashed selection requires canvas rendering (${entity.id})`);
   }
   const vertices: number[] = [], batches: StrokeBatch[] = [];
+  const precisionBound = MAX_PROJECTED_COORDINATE / Math.max(1, view.dpr);
+  const panPrecisionMargin = { x: precisionBound, y: precisionBound };
   const previousPaper = colorDisplay.paper;
   const previousWeights = { ...lineweightDisplay };
   colorDisplay.paper = false;
@@ -235,7 +242,12 @@ export function prepare2D(state: DrawingState, view: Gpu2DView, overlay: Gpu2DOv
       const width = selected ? 2.5 : hovered ? 2 : resolveLineWidth(entity, state.layers, { scale: view.scale, toScreen: (point) => screenPoint(point, view) });
       const first = vertices.length / STRIDE;
       const path = entityPath(entity, view);
-      strokeTriangles(path.points, path.closed, width, color, view, vertices);
+      // Include offscreen source points: clipping must not hide a later precision refusal.
+      for (const point of path.points) {
+        panPrecisionMargin.x = Math.min(panPrecisionMargin.x, precisionBound - Math.abs(point.x));
+        panPrecisionMargin.y = Math.min(panPrecisionMargin.y, precisionBound - Math.abs(point.y));
+      }
+      strokeTriangles(path.points, path.closed, width, color, view, vertices, clipPadding);
       const count = vertices.length / STRIDE - first;
       if (count) batches.push({ id: entity.id, first, count, alpha: selected || hovered ? 0.95 : 1 });
     }
@@ -245,5 +257,9 @@ export function prepare2D(state: DrawingState, view: Gpu2DView, overlay: Gpu2DOv
   }
   const packed = new Float32Array(vertices);
   if (!packed.every(Number.isFinite)) throw new Error('Float32 stroke geometry exceeds finite limits');
-  return { vertices: packed, batches };
+  // Reserve a physical pixel for double-rounding and discarded curve seam samples near the bound.
+  const reserve = 1 / Math.max(1, view.dpr);
+  panPrecisionMargin.x = Math.max(0, panPrecisionMargin.x - reserve);
+  panPrecisionMargin.y = Math.max(0, panPrecisionMargin.y - reserve);
+  return { vertices: packed, batches, panPrecisionMargin };
 }

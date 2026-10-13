@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { _electron as electron } from 'playwright';
 import { PNG } from 'pngjs';
 import pixelmatch from 'pixelmatch';
@@ -14,9 +15,11 @@ mkdirSync(out, { recursive: true });
 const env = { ...process.env };
 delete env.ELECTRON_RUN_AS_NODE;
 delete env.VITE_DEV_SERVER_URL;
+const sourceSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+const worktreeModified = !!execFileSync('git', ['status', '--porcelain', '--untracked-files=no'], { cwd: root, encoding: 'utf8' }).trim();
 const started = performance.now();
 const app = await electron.launch({ args: ['.', `--user-data-dir=${resolve(out, `profile-${Date.now()}`)}`], cwd: root, env, timeout: 60000 });
-const result = { applicationLaunchMs: 0, hardware: null, viewport: null, comparisons: {}, validation: [], limitations: ['Single Windows machine; OS caches not purged.', 'GPU fence wall waits include driver/CPU scheduling and exclude final desktop presentation.', 'Canvas readback completion is not a pure GPU timer.', 'GPU memory is uploaded buffer bytes only; JS heap is approximate and shared with the whole application.'] };
+const result = { sourceSha, worktreeModified, platform: process.platform, arch: process.arch, applicationLaunchMs: 0, hardware: null, viewport: null, comparisons: {}, validation: [], limitations: ['Single Windows machine or CI runner; OS caches not purged.', 'GPU fence wall waits include driver/CPU scheduling and exclude final desktop presentation.', 'Canvas readback completion is not a pure GPU timer.', 'GPU memory is uploaded buffer bytes only; JS heap is approximate and shared with the whole application.'] };
 // Compare geometric coverage with a two-pixel rasterization allowance. Pixelmatch
 // still reports color/AA differences; coverage does not pretend they are equivalent.
 function missedForeground(a, b) {
@@ -54,7 +57,7 @@ try {
   for (const fixture of ['curves', 'precision', 'dense-lines', 'mixed-schematic']) {
     await page.evaluate((name) => { window.gpuPrototype.setMode('canvas'); window.gpuPrototype.loadFixture(name); }, fixture);
     await page.waitForTimeout(100);
-    const measure = async (mode) => page.evaluate(async ({ mode, samples }) => {
+    const measure = async (mode, motion = 'pan-zoom') => page.evaluate(async ({ mode, samples, motion }) => {
       const ed = window.editor, api = window.gpuPrototype, v = ed.viewport;
       const canvas = /** @type {HTMLCanvasElement} */ (document.getElementById('drawing'));
       const ctx = canvas.getContext('2d');
@@ -72,15 +75,16 @@ try {
         redrawTotal.push(performance.now() - start);
         await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
       }
-      const frameTimes = [], cpu = [], complete = [], prepare = [], intervals = [];
+      const frameTimes = [], cpu = [], complete = [], prepare = [], intervals = [], uploadedBytes = [];
       const center = { ...v.center }, scale = v.scale;
       for (let i = 0; i < samples; i++) {
         v.panByPixels(i % 2 ? -2 : 2, i % 2 ? -1 : 1);
-        v.zoomAt({ x: v.width / 2, y: v.height / 2 }, i % 2 ? 1 / 1.005 : 1.005);
+        if (motion === 'pan-zoom') v.zoomAt({ x: v.width / 2, y: v.height / 2 }, i % 2 ? 1 / 1.005 : 1.005);
         const start = performance.now();
         const status = api.renderNow();
         cpu.push(performance.now() - start);
         prepare.push(status.rendered ? status.preparationMs : null);
+        uploadedBytes.push(status.rendered ? status.bytes : null);
         if (status.rendered) complete.push(await api.completed());
         else { const flush = performance.now(); ctx.getImageData(0, 0, 1, 1); complete.push(performance.now() - flush); }
         frameTimes.push(performance.now() - start);
@@ -91,8 +95,8 @@ try {
       v.center = center; v.scale = scale; api.renderNow();
       const median = (a) => a.filter((x) => x !== null).sort((a, b) => a - b)[Math.floor(a.filter((x) => x !== null).length / 2)] ?? null;
       const heap = /** @type {any} */ (performance).memory?.usedJSHeapSize ?? null;
-      return { firstSubmissionMs, first, redrawCpuMedianMs: median(redrawCpu), redrawTotalMedianMs: median(redrawTotal), cpuSubmissionMedianMs: median(cpu), completionWaitMedianMs: median(complete), totalRenderMedianMs: median(frameTimes), preparationMedianMs: median(prepare), rafWaitMedianMs: median(intervals), samples, heapBytes: heap, status: api.status() };
-    }, { mode, samples: 30 });
+      return { firstSubmissionMs, first, redrawCpuMedianMs: median(redrawCpu), redrawTotalMedianMs: median(redrawTotal), cpuSubmissionMedianMs: median(cpu), completionWaitMedianMs: median(complete), totalRenderMedianMs: median(frameTimes), preparationMedianMs: median(prepare), rafWaitMedianMs: median(intervals), uploadedBytes, samples, motion, heapBytes: heap, status: api.status() };
+    }, { mode, samples: 30, motion });
     const canvasResult = await measure('canvas');
     await page.locator('#drawing').screenshot({ path: resolve(out, `${fixture}-canvas.png`) });
     const gpuResult = await measure('gpu');
@@ -104,16 +108,37 @@ try {
     const pixels = pixelmatch(a.data, b.data, diff.data, a.width, a.height, { threshold: 0.15 });
     writeFileSync(resolve(out, `${fixture}-diff.png`), PNG.sync.write(diff));
     const coverageMiss = Math.max(missedForeground(a, b), missedForeground(b, a));
-    result.comparisons[fixture] = { canvas: canvasResult, gpu: gpuResult, imageDifferenceFraction: pixels / (a.width * a.height), twoPixelCoverageMissFraction: coverageMiss };
+    const panCanvas = await measure('canvas', 'pan');
+    const panGpu = await measure('gpu', 'pan');
+    result.comparisons[fixture] = { canvas: canvasResult, gpu: gpuResult, panOnly: { canvas: panCanvas, gpu: panGpu }, imageDifferenceFraction: pixels / (a.width * a.height), twoPixelCoverageMissFraction: coverageMiss };
     if (fixture === 'mixed-schematic') {
       assert.equal(gpuResult.status.rendered, false, 'unsupported full schematic must fall back');
       assert.equal(pixels, 0, 'whole-view fallback must match Canvas exactly');
     } else {
       assert.equal(gpuResult.status.rendered, true, `${fixture} uses GPU`);
+      assert.ok(panGpu.uploadedBytes.every((bytes) => bytes === 0), `${fixture}: bounded pan reuses uploaded geometry`);
       assert.ok(coverageMiss < 0.005, `${fixture}: supported geometry matches within two pixels`);
       if (fixture !== 'dense-lines') assert.ok(pixels / (a.width * a.height) < 0.001, `${fixture}: bounded raster differences`);
     }
     console.log(`${fixture}: Canvas ${canvasResult.totalRenderMedianMs.toFixed(2)} ms, requested GPU ${gpuResult.totalRenderMedianMs.toFixed(2)} ms; image difference ${(100 * pixels / (a.width * a.height)).toFixed(3)}%; ${gpuResult.status.reason ?? 'GPU'}`);
+    console.log(`${fixture} pan only: Canvas ${panCanvas.totalRenderMedianMs.toFixed(2)} ms, requested GPU ${panGpu.totalRenderMedianMs.toFixed(2)} ms; GPU CPU ${panGpu.cpuSubmissionMedianMs.toFixed(2)} ms, uploads ${panGpu.uploadedBytes.filter((bytes) => bytes > 0).length}/${panGpu.samples}`);
+    // Compare a translated cached frame too: a centered image alone cannot detect missing
+    // strokes that entered through the cache's overscan border or a wrong translation sign.
+    await page.evaluate(() => { const v = window.editor.viewport; v.panByPixels(24 / v.dpr, -17 / v.dpr); });
+    const pannedImages = [];
+    for (const mode of ['canvas', 'gpu']) {
+      const status = await page.evaluate((next) => { window.gpuPrototype.setMode(next); return window.gpuPrototype.renderNow(); }, mode);
+      if (mode === 'gpu' && fixture !== 'mixed-schematic') {
+        assert.equal(status.rendered, true, `${fixture}: panned comparison uses GPU`);
+        assert.equal(status.bytes, 0, `${fixture}: panned comparison reuses uploaded geometry`);
+      }
+      const path = resolve(out, `${fixture}-pan-${mode}.png`);
+      await page.locator('#drawing').screenshot({ path });
+      pannedImages.push(PNG.sync.read(readFileSync(path)));
+    }
+    const panMiss = Math.max(missedForeground(pannedImages[0], pannedImages[1]), missedForeground(pannedImages[1], pannedImages[0]));
+    result.comparisons[fixture].pannedTwoPixelCoverageMissFraction = panMiss;
+    assert.ok(panMiss < 0.005, `${fixture}: cached panned frame matches geometry within two pixels`);
   }
   // Existing selection logic is unchanged; solid highlight uses the GPU scene and Canvas grips.
   await page.evaluate(() => { const ed = window.editor; window.gpuPrototype.loadFixture('curves'); ed.viewport.settings.selectionEffect = 'solid'; ed.selection.add('L'); ed.render(); });
