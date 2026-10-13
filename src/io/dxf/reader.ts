@@ -10,10 +10,10 @@ import { ImportReportBuilder, reportBlockExpansion, withImportData } from '../im
 import type { RawDxfEntity } from '../import-report';
 import { diffDimStyles, STANDARD_DIMSTYLE, DIMSTYLES_META_KEY } from '../../core/dimension';
 import { DxfReadError, tokenize, objects, has, str } from './groups';
-import { decodeUnicodeEscapes, textStyleOf, textStylesMeta } from '../encoding';
+import { decodeUnicodeEscapes, textStyleOf, textStylesMeta, shapeStylesMeta } from '../encoding';
 import type { TextStyle } from '../encoding';
 import type { Pair } from './groups';
-import type { Linetype } from '../../core/linetypes';
+import type { Linetype, LinetypeShapeStyle } from '../../core/linetypes';
 import type { ReadContext } from './read-core';
 import { LayoutReader } from '../dxf-layouts';
 import { readTableStyle, type TableStyleData } from './read-annotations';
@@ -86,6 +86,7 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
   if (text.length > (opts.maxSourceLength ?? 128 * 1024 * 1024)) throw new DxfReadError('DXF exceeds the source text size limit.', 1);
   const pairs = tokenize(decodeUnicodeEscapes(text), opts.recover, report, opts);
   const textStyles: Record<string, TextStyle> = {};
+  const shapeStyles: Record<string, LinetypeShapeStyle> = {};
   const layers: Layer[] = [];
   const blocks: Record<string, BlockDef> = {};
   let entities: Entity[] = [];
@@ -124,7 +125,7 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
       } else if (name === 'OBJECTS') {
         readObjectsSection(objs, imageDefs, layoutReader, report);
       } else if (name === 'TABLES') {
-        readTablesSection(objs, { layers, linetypes, views, textStyles }, dimStyles, headerVars, ctx, layoutReader);
+        readTablesSection(objs, { layers, linetypes, views, textStyles, shapeStyles }, dimStyles, headerVars, ctx, layoutReader);
       } else if (name === 'BLOCKS') {
         readBlocksSection(objs, blocks, ctx, layoutReader);
       } else if (name === 'ENTITIES') {
@@ -194,6 +195,7 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
     const name = entity.type === 'dimension' ? entity.style.textStyle : textStyleOf(entity);
     if (name && !styleNames.has(name.toUpperCase())) { report.add({ type: 'STYLE', action: 'unsupported', reason: `referenced text style "${name}" has no STYLE definition; its name is kept with a default stroke-font substitute`, layer: entity.layer }); styleNames.add(name.toUpperCase()); }
   }
-  const styleMeta = textStylesMeta(textStyles);
+  const textMeta = textStylesMeta(textStyles), shapeMeta = shapeStylesMeta(shapeStyles);
+  const styleMeta = textMeta || shapeMeta ? { ...textMeta, ...shapeMeta } : undefined;
   return { entities, layers, blocks, currentLayer, header, ...(styleMeta ? { meta: styleMeta } : {}), ...(layouts ? { layouts } : {}) };
 }

@@ -8,6 +8,90 @@ export interface Linetype {
   readonly name: string;
   readonly description: string;
   readonly pattern: readonly number[];
+  /** Retained native complex elements; display keeps the dash pattern until glyph support. */
+  readonly complex?: ComplexLinetype;
+}
+
+/** STYLE flag1 resources have independent identities; their names can legitimately be empty. */
+export interface LinetypeShapeStyle {
+  readonly name: string;
+  readonly flags: number;
+  readonly font: string;
+  readonly bigFont: string;
+  readonly height: number;
+  readonly widthFactor: number;
+  /** STYLE50 is in degrees, unlike complex-element50. */
+  readonly oblique: number;
+  readonly generation: number;
+  readonly lastHeight: number;
+}
+
+export type LinetypeStyleReference =
+  | { readonly kind: 'text'; readonly name: string; readonly sourceHandle?: string }
+  | { readonly kind: 'shape'; readonly sourceId: string }
+  | { readonly kind: 'unresolved'; readonly sourceHandle: string };
+
+export interface ComplexLinetypeElement {
+  /** Native74 bit flags retained without guessing undocumented semantics. */
+  readonly flags: number;
+  readonly shapeNumber?: number;
+  readonly style?: LinetypeStyleReference;
+  readonly scale?: number;
+  /** Native LTYPE50 is in radians. */
+  readonly rotation?: number;
+  readonly offsetX?: number;
+  readonly offsetY?: number;
+  readonly text?: string;
+}
+export interface ComplexLinetype {
+  readonly flags?: number;
+  readonly alignment?: number;
+  readonly totalPatternLength?: number;
+  /** One element per retained group49, in native order. */
+  readonly elements: readonly ComplexLinetypeElement[];
+}
+
+export const MAX_LINETYPE_ELEMENTS = 1024;
+export const MAX_LINETYPE_TEXT = 4096;
+const boundedString = (value: unknown, max: number, empty = true): value is string => typeof value === 'string' && value.length <= max && (empty || value.length > 0) && !/[\u0000\r\n]/.test(value);
+const nativeInteger = (value: unknown): value is number => Number.isInteger(value) && Number(value) >= -32768 && Number(value) <= 65535;
+const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
+
+/** Reject malformed authored definitions before Writer can coerce NaN/Infinity to zero. */
+export function complexLinetypeProblem(lt: Linetype): string | null {
+  const native = lt.complex;
+  if (!native) return null;
+  if (!boundedString(lt.name, 255, false) || !boundedString(lt.description, MAX_LINETYPE_TEXT)) return 'invalid complex linetype name or description';
+  if (/^(BYLAYER|BYBLOCK|CONTINUOUS)$/i.test(lt.name)) return 'complex data on a reserved linetype cannot be exported safely';
+  if (!Array.isArray(lt.pattern) || lt.pattern.length > MAX_LINETYPE_ELEMENTS || !Array.isArray(native.elements) || native.elements.length !== lt.pattern.length) return 'invalid complex linetype element count';
+  if (native.flags !== undefined && !nativeInteger(native.flags) || native.alignment !== undefined && !nativeInteger(native.alignment) || native.totalPatternLength !== undefined && (!finite(native.totalPatternLength) || native.totalPatternLength < 0)) return 'invalid complex linetype header';
+  for (let i = 0; i < lt.pattern.length; i++) {
+    const element = native.elements[i];
+    if (!finite(lt.pattern[i]) || !element || !nativeInteger(element.flags)) return 'invalid complex linetype element';
+    if (element.shapeNumber !== undefined && (!Number.isInteger(element.shapeNumber) || element.shapeNumber < 0 || element.shapeNumber > 65535)) return 'invalid complex linetype shape number';
+    for (const field of ['scale', 'rotation', 'offsetX', 'offsetY'] as const) if (element[field] !== undefined && !finite(element[field])) return 'invalid complex linetype transform';
+    if (element.text !== undefined && !boundedString(element.text, MAX_LINETYPE_TEXT)) return 'invalid complex linetype text';
+    if ((element.flags & 2) && element.text === undefined) return 'complex linetype text is missing';
+    const reference = element.style;
+    if (reference) {
+      if (reference.kind === 'text') {
+        if (!boundedString(reference.name, 255, false) || reference.sourceHandle !== undefined && !boundedString(reference.sourceHandle, 255, false)) return 'invalid complex linetype text style';
+      } else if (reference.kind === 'shape') {
+        if (!boundedString(reference.sourceId, 255, false)) return 'invalid complex linetype shape style';
+      } else if (reference.kind === 'unresolved') {
+        return `unresolved complex linetype STYLE reference ${reference.sourceHandle || '(missing)'}`;
+      } else return 'invalid complex linetype STYLE reference';
+    }
+    if (element.flags !== 0 && !reference) return 'complex linetype STYLE reference is missing';
+  }
+  return null;
+}
+
+export function linetypeShapeStyleProblem(style: LinetypeShapeStyle): string | null {
+  if (!style || !boundedString(style.name, 255) || !boundedString(style.font, MAX_LINETYPE_TEXT, false) || !boundedString(style.bigFont, MAX_LINETYPE_TEXT)) return 'invalid shape STYLE name or font';
+  if (!nativeInteger(style.flags) || !(style.flags & 1) || !nativeInteger(style.generation)) return 'invalid shape STYLE flags';
+  for (const field of ['height', 'widthFactor', 'oblique', 'lastHeight'] as const) if (!finite(style[field])) return 'invalid shape STYLE metrics';
+  return null;
 }
 
 export const CONTINUOUS = 'Continuous';
@@ -58,18 +142,26 @@ export function effectiveLinetype(entityLinetype: string | undefined, layerLinet
 export function dashArray(pattern: readonly number[], ltscale: number, pxPerUnit: number, minPeriodPx = 3): number[] {
   if (pattern.length === 0) return [];
   const k = ltscale * pxPerUnit;
-  const out: number[] = [];
+  if (!Number.isFinite(k) || k <= 0) return [];
+  const runs: Array<{ dash: boolean; length: number }> = [];
   let period = 0;
   for (const seg of pattern) {
+    if (!Number.isFinite(seg)) return [];
     const px = Math.abs(seg) * k;
     period += px;
-    if (seg === 0) out.push(1); // dot
-    else if (seg > 0) out.push(Math.max(px, 1));
-    else out.push(px);
+    if (!Number.isFinite(period)) return [];
+    const dash = seg >= 0, last = runs[runs.length - 1];
+    if (last?.dash === dash) last.length += px;
+    else runs.push({ dash, length: px });
   }
   if (period < minPeriodPx) return [];
-  // Canvas requires an even number of entries to alternate dash/gap correctly.
-  if (out.length % 2 === 1) return [...out, ...out];
+  // Native lengths carry their own signs; Canvas alternates array positions. Merge
+  // same-kind runs before converting, keeping co-located dots as one minimum-pixel mark.
+  const out = runs.map((run) => run.dash ? Math.max(run.length, 1) : run.length);
+  if (!runs[0]!.dash) out.unshift(0);
+  // A zero gap joins terminal/initial dashes across repetitions without shifting phase.
+  // Duplicating an odd array instead would invert all signs in the second repetition.
+  if (out.length % 2 === 1) out.push(0);
   return out;
 }
 

@@ -7,14 +7,15 @@ import type { DrawingState } from '../../core/document';
 import type { Linetype } from '../../core/linetypes';
 import type { Entity, DimensionEntity, Layer, AttributeAppearance } from '../../core/entities';
 import { rawEntitiesOf } from '../import-report';
-import { findLinetype, patternLength, STANDARD_LINETYPES } from '../../core/linetypes';
+import { findLinetype, patternLength, STANDARD_LINETYPES, complexLinetypeProblem, linetypeShapeStyleProblem } from '../../core/linetypes';
 import { Writer, setPaperOwners, emptyExtras, writeTextLike, writeEntityCommon } from './write-core';
 import { DEFAULT_HEADER } from '../../core/document';
 import { planLayouts, writeLayoutHeader, extraBlockRecords, layoutHandleOf, writeLayoutContent, writeLayoutObjects } from '../dxf-layouts';
 import type { WriteExtras } from './write-core';
 import * as g from '../../core/geometry';
 import { dimHeaderVars, dimStylesToWrite, dimStyleXdata } from './dimstyles';
-import { textStylesForWrite, textStyleOf, STANDARD_TEXT_STYLE, textStyleGroups, encodeDxfText } from '../encoding';
+import { textStylesForWrite, textStyleOf, STANDARD_TEXT_STYLE, textStyleGroups, encodeDxfText, shapeStylesOf, shapeStyleGroups } from '../encoding';
+import { writeComplexLinetypeElements } from './complex-linetypes';
 import { DIMSTYLE_APP, TABLE_APP, ANNO_APP, MTEXT_COLUMNS_APP, MTEXT_BACKGROUND_APP } from './codes';
 import { dimStyleRecordPairs } from '../../core/dimension';
 import { writeEntityAnno, writeEntity } from './write-entities';
@@ -83,6 +84,27 @@ export function writeDxf(state: DrawingState): string {
   const extras: WriteExtras = { ...emptyExtras(), arrowSize: ds.arrowSize * (ds.scale || 1) };
   const allEntities: Entity[] = [...state.entities, ...layoutPlan.entities];
   for (const b of blockList) allEntities.push(...b.entities);
+  // LTYPE340 points forward to STYLE. Reserve real target handles before writing LTYPE.
+  const textStyles = textStylesForWrite(state), shapeStyles = Object.entries(shapeStylesOf(state));
+  for (const lt of linetypes) {
+    const problem = complexLinetypeProblem(lt);
+    if (problem) throw new Error(`Cannot preserve complex linetype "${lt.name}": ${problem}.`);
+    for (const element of lt.complex?.elements ?? []) {
+      const reference = element.style;
+      if (reference?.kind === 'text' && !textStyles.some((style) => style.name.toUpperCase() === reference.name.toUpperCase())) {
+        throw new Error(`Cannot preserve complex linetype "${lt.name}": text STYLE "${reference.name}" is missing.`);
+      }
+    }
+  }
+  const requiredTextStyles = new Set([header.textStyle, ds.textStyle, ...allEntities.map((e) => e.type === 'dimension' ? e.style.textStyle : textStyleOf(e))].filter((n): n is string => !!n));
+  for (const name of requiredTextStyles) if (!textStyles.some((style) => style.name.toUpperCase() === name.toUpperCase())) textStyles.push({ ...STANDARD_TEXT_STYLE, name });
+  for (const style of textStyles) w.textStyleHandles.set(style.name.toUpperCase(), w.nextHandle());
+  const shapeHandles = new Map<string, string>();
+  for (const [sourceId, shape] of shapeStyles) {
+    const problem = linetypeShapeStyleProblem(shape);
+    if (!sourceId || sourceId.length > 255 || /[\u0000\r\n]/.test(sourceId) || problem) throw new Error(`Cannot preserve shape STYLE resource "${sourceId}": ${problem || 'invalid identity'}.`);
+    shapeHandles.set(sourceId, w.nextHandle());
+  }
   // Choose the highest native format required anywhere, including associated text/attributes.
   const appearances = [...allEntities, ...state.layers, ...blockList.flatMap((b) => b.attributes),
     ...allEntities.flatMap<AttributeAppearance>((e) => e.type === 'insert' ? Object.values(e.attributePlacements ?? {}) : e.type === 'leader' && e.textAppearance ? [e.textAppearance] : [])];
@@ -188,9 +210,9 @@ export function writeDxf(state: DrawingState): string {
     body();
     w.pair(0, 'ENDTAB');
   };
-  const record = (kind: string, owner: string, subclass: string, name: string, flags = 0) => {
+  const record = (kind: string, owner: string, subclass: string, name: string, flags = 0, reservedHandle?: string) => {
     w.pair(0, kind);
-    w.pair(5, w.nextHandle());
+    w.pair(5, reservedHandle ?? w.nextHandle());
     w.pair(330, owner);
     w.pair(100, 'AcDbSymbolTableRecord');
     w.pair(100, subclass);
@@ -212,15 +234,12 @@ export function writeDxf(state: DrawingState): string {
   });
   table('LTYPE', '5', 3 + linetypes.length, () => {
     const ltRecord = (lt: Linetype) => {
-      record('LTYPE', '5', 'AcDbLinetypeTableRecord', lt.name);
+      record('LTYPE', '5', 'AcDbLinetypeTableRecord', lt.name, lt.complex?.flags ?? 0);
       w.pair(3, lt.description);
-      w.pair(72, 65);
+      w.pair(72, lt.complex?.alignment ?? 65);
       w.pair(73, lt.pattern.length);
-      w.pair(40, patternLength(lt.pattern));
-      for (const seg of lt.pattern) {
-        w.pair(49, seg);
-        w.pair(74, 0);
-      }
+      w.pair(40, lt.complex?.totalPatternLength ?? patternLength(lt.pattern));
+      writeComplexLinetypeElements(w, lt, shapeHandles);
     };
     ltRecord({ name: 'ByBlock', description: '', pattern: [] });
     ltRecord({ name: 'ByLayer', description: '', pattern: [] });
@@ -253,14 +272,14 @@ export function writeDxf(state: DrawingState): string {
       }
     }
   });
-  const textStyles = textStylesForWrite(state);
-  const requiredTextStyles = new Set([header.textStyle, ds.textStyle, ...allEntities.map((e) => e.type === 'dimension' ? e.style.textStyle : textStyleOf(e))].filter((n): n is string => !!n));
-  for (const name of requiredTextStyles) if (!textStyles.some((s) => s.name.toUpperCase() === name.toUpperCase())) textStyles.push({ ...STANDARD_TEXT_STYLE, name });
-  table('STYLE', '3', textStyles.length, () => {
+  table('STYLE', '3', textStyles.length + shapeStyles.length, () => {
     for (const ts of textStyles) {
-      record('STYLE', '3', 'AcDbTextStyleTableRecord', encodeDxfText(ts.name), ts.flags);
-      w.textStyleHandles.set(ts.name.toUpperCase(), w.lastHandle().toString(16).toUpperCase());
+      record('STYLE', '3', 'AcDbTextStyleTableRecord', encodeDxfText(ts.name), ts.flags, w.textStyleHandles.get(ts.name.toUpperCase()));
       for (const [code, value] of textStyleGroups(ts)) w.pair(code, value);
+    }
+    for (const [sourceId, shape] of shapeStyles) {
+      record('STYLE', '3', 'AcDbTextStyleTableRecord', encodeDxfText(shape.name), shape.flags, shapeHandles.get(sourceId));
+      for (const [code, value] of shapeStyleGroups(shape)) w.pair(code, value);
     }
   });
   table('VIEW', '6', header.views.length, () => {

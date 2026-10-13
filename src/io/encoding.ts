@@ -19,6 +19,7 @@
  * The STYLE table helpers at the end live here because the DXF reader/writer
  * use them next to the encoding hooks; rendering choices are in render/hershey.ts.
  */
+import type { LinetypeShapeStyle } from '../core/linetypes';
 
 /** $DWGCODEPAGE value -> WHATWG encoding label understood by TextDecoder. */
 export const CODEPAGE_ENCODINGS: Readonly<Record<string, string>> = {
@@ -226,6 +227,8 @@ export const STANDARD_TEXT_STYLE: TextStyle = { name: 'Standard', font: 'txt', b
 
 /** Key of the style map in DrawingState.meta (the header has no field for it). */
 export const TEXT_STYLES_META_KEY = 'textStyles';
+/** Shape-file STYLE resources are kept outside normal text styles and font registration. */
+export const SHAPE_STYLES_META_KEY = 'shapeStyles';
 
 /** XDATA 1071 font flags of a TrueType style (AutoCAD): italic and bold bits. */
 const TT_ITALIC = 0x1000000;
@@ -275,6 +278,31 @@ export function textStyleGroups(s: TextStyle): Array<[number, string | number]> 
     out.push([1001, 'ACAD'], [1000, s.family ?? ''], [1071, (s.bold ? TT_BOLD : 0) | (s.italic ? TT_ITALIC : 0) | 0x22]);
   }
   return out;
+}
+
+/** Native flag1 STYLE entries can be unnamed; all emitted numeric fields remain retained. */
+export function shapeStyleFromGroups(groups: ReadonlyArray<{ code: number; value: string }>): LinetypeShapeStyle | null {
+  const first = (code: number) => groups.find((group) => group.code === code)?.value;
+  const number = (code: number, fallback: number) => first(code) === undefined ? fallback : Number(first(code));
+  const flags = number(70, 0);
+  if (!Number.isInteger(flags) || !(flags & 1)) return null;
+  return { name: first(2) ?? '', flags, font: first(3) ?? '', bigFont: first(4) ?? '',
+    height: number(40, 0), widthFactor: number(41, 1), oblique: number(50, 0),
+    generation: number(71, 0), lastHeight: number(42, 0.2) };
+}
+
+export function shapeStyleGroups(style: LinetypeShapeStyle): Array<[number, string | number]> {
+  return [[40, style.height], [41, style.widthFactor], [50, style.oblique], [71, style.generation],
+    [42, style.lastHeight], [3, encodeDxfText(style.font)], [4, encodeDxfText(style.bigFont)]];
+}
+
+export function shapeStylesOf(state: { readonly meta?: Readonly<Record<string, unknown>> }): Readonly<Record<string, LinetypeShapeStyle>> {
+  const value = state.meta?.[SHAPE_STYLES_META_KEY];
+  return value && typeof value === 'object' ? value as Record<string, LinetypeShapeStyle> : {};
+}
+
+export function shapeStylesMeta(styles: Readonly<Record<string, LinetypeShapeStyle>>): Record<string, unknown> | undefined {
+  return Object.keys(styles).length ? { [SHAPE_STYLES_META_KEY]: styles } : undefined;
 }
 
 /** A style that is exactly the default Standard (not worth keeping in the document). */

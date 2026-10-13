@@ -73,6 +73,7 @@ export function tokenize(text: string, recover = false, report?: ImportReportBui
   /** A group code on the last line of a file that ends early, without its value (0 = a new object was starting). */
   let danglingCode: number | null = null;
   let records = 0;
+  let recordKind = '';
   for (; i + 1 < lines.length; i += 2) {
     const rawCode = lines[i]!.trim();
     const code = Number(rawCode);
@@ -88,7 +89,9 @@ export function tokenize(text: string, recover = false, report?: ImportReportBui
     if (raw.length > (limits.maxStringLength ?? 1024 * 1024)) throw new DxfReadError(`Line ${i + 2}: DXF value exceeds the string length limit.`, i + 2);
     if (pairs.length >= (limits.maxPairs ?? 2_000_000)) throw new DxfReadError(`Line ${i + 1}: DXF exceeds the group pair limit.`, i + 1);
     if (code === 0 && ++records > (limits.maxRecords ?? 250_000)) throw new DxfReadError(`Line ${i + 1}: DXF exceeds the record limit.`, i + 1);
-    const value = code === 1 || code === 3 || code === 304 ? raw : raw.trimEnd();
+    // Complex LTYPE9 is literal embedded text; trailing spaces affect its glyph placement.
+    const value = code === 1 || code === 3 || code === 304 || code === 9 && recordKind === 'LTYPE' ? raw : raw.trimEnd();
+    if (code === 0) recordKind = value.trim();
     pairs.push({ code, value, line: i + 1 });
     if (code === 0 && value.trim() === 'EOF') {
       eof = true;

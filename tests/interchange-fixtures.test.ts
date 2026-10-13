@@ -749,9 +749,9 @@ describe('r2000-hatch-curves.dxf: HATCH (ANSI31 with bulges, SOLID with island),
 /*
  * Survives: layer and entity true colours (420) with their ACI, layer lineweights, entity
  * lineweights (explicit, ByBlock -2; ByLayer -1 as inherit), linetype scale, layer linetypes,
- * off / frozen / locked / no-plot; complex linetypes as their dash patterns; SOLID hatch colour.
+ * off / frozen / locked / no-plot; complex linetype definitions and STYLE links; SOLID hatch colour.
  * Survives: colour-book names (430) and transparency (440, layer AcCmTransparency XDATA).
- * Lost (matrix): text and shapes embedded in complex linetypes ("only the dashes are" drawn and written).
+ * Display limit: embedded text/shapes remain a reported dash-only fallback.
  */
 describe('r2018-truecolor-linetypes.dxf: true colours, colour book, transparency, lineweights, complex linetypes (AC1032)', () => {
   const f = fixture('r2018-truecolor-linetypes.dxf');
@@ -769,11 +769,15 @@ describe('r2018-truecolor-linetypes.dxf: true colours, colour book, transparency
       expect(s.header?.ltscale).toBe(2);
     });
 
-    it('complex linetypes keep their dashes; the text and shape elements read as gaps', () => {
-      expect(s.header?.linetypes).toEqual([
+    it('complex linetypes keep their native descriptors while displaying the dash fallback', () => {
+      expect(s.header?.linetypes).toMatchObject([
         { name: 'GAS_LINE', description: 'Gas line ----GAS----GAS----GAS----GAS----GAS----GAS--', pattern: [12.7, -5.08, -6.35] },
         { name: 'FENCELINE1', description: 'Fenceline circle ----0-----0----0-----0----0-----0--', pattern: [6.35, -2.54, -2.54, 25.4] },
       ]);
+      expect(s.header!.linetypes[0]!.complex!.elements[1]).toMatchObject({ flags: 2, shapeNumber: 0,
+        scale: 2.54, rotation: 0, offsetX: -2.54, offsetY: -1.27, text: 'GAS', style: { kind: 'text', name: 'Standard' } });
+      expect(s.header!.linetypes[1]!.complex!.elements[1]).toMatchObject({ flags: 4, shapeNumber: 133,
+        scale: 2.54, rotation: 0, offsetX: -2.54, offsetY: 0, style: { kind: 'shape' } });
       // The STYLE record of the shape file (flag 1) is not a text style.
       expect(Object.keys(textStylesOf(s))).toEqual(['Standard']);
       expect(textStylesOf(s).Standard).toMatchObject({ font: 'arial.ttf', family: 'Arial' });
@@ -800,7 +804,7 @@ describe('r2018-truecolor-linetypes.dxf: true colours, colour book, transparency
     });
   });
 
-  it('writes native color-book identity and opacity while complex linetype text/shapes remain unsupported', () => {
+  it('writes color-book identity, opacity and native complex linetype resources', () => {
     const identity = 'PANTONE+ Solid Coated$PANTONE 355 C';
     expect(group(records(f.written, 'TEXT')[0], 430)).toBe(identity);
     expect(group(records(f.written, 'LAYER').find((r) => group(r, 2) === 'BOOK'), 430)).toBe(identity);
@@ -815,9 +819,11 @@ describe('r2018-truecolor-linetypes.dxf: true colours, colour book, transparency
     }
     const gas = records(f.written, 'LTYPE').find((r) => group(r, 2) === 'GAS_LINE')!;
     expect(gas.filter(([c]) => c === 49).map(([, v]) => Number(v))).toEqual([12.7, -5.08, -6.35]);
-    expect(gas.some(([c]) => c === 9)).toBe(false);
-    expect(gas.filter(([c]) => c === 74).every(([, v]) => Number(v) === 0)).toBe(true);
-    expect(f.written).not.toContain('ltypeshp.shx');
+    expect(group(gas, 9)).toBe('GAS');
+    expect(gas.filter(([c]) => c === 74).map(([, v]) => Number(v))).toEqual([0, 2, 0]);
+    const styleHandle = group(gas, 340);
+    expect(group(records(f.written, 'STYLE').find((record) => group(record, 5) === styleHandle), 2)).toBe('Standard');
+    expect(f.written).toContain('ltypeshp.shx');
   });
 
   it('the Default layer lineweight (370 = -3) reads as 0.25 mm and is written back as an explicit 25', () => {
