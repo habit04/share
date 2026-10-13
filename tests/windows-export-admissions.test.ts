@@ -153,10 +153,13 @@ describe.runIf(process.platform === 'win32')('Windows generic export owner/order
     await Promise.all([pdfStarted.promise, textStarted.promise]); expect(f.host.stats()).toMatchObject({ queuedBytes: 17, ordinaryQueuedBytes: 8, pdfQueuedBytes: 9 });
     release.resolve(); await Promise.all([first, second]); expect(f.host.stats()).toMatchObject({ queuedBytes: 0, ordinaryQueuedBytes: 0, pdfQueuedBytes: 0 });
   });
-  it('requires explicit PDF eligibility for an existing sparse file beyond128MiB, keeps256KiB hash scratch, and preserves ordinary refusal', async () => {
-    const file = path.join(dir, 'large-existing.pdf'), handle = await fs.open(file, 'wx');
+  it('requires explicit PDF eligibility for an extended file beyond 128 MiB, keeps 256 KiB hash scratch, and preserves ordinary refusal', async () => {
+    const file = path.join(dir, 'large-existing.pdf'); let created = false, heldDescriptors = 0;
+    let owned: ReturnType<typeof manager> | undefined;
+    try {
+    const handle = await fs.open(file, 'wx'); created = true;
     try { await handle.write('%PDF-1.4\n'); await handle.truncate(MAX_CONTENT_BYTES + 1); } finally { await handle.close(); }
-    const reads: number[] = []; let heldDescriptors = 0;
+    const reads: number[] = [];
     const wrapped = { ...native, open: async (...args: any[]) => {
       const fd = await (native.open as any)(...args); heldDescriptors++; let closed = false;
       return new Proxy(fd, { get(target, key) {
@@ -166,7 +169,7 @@ describe.runIf(process.platform === 'win32')('Windows generic export owner/order
       } });
     } };
     await expect(coherentFileDigest(file, { fs: wrapped, maxBytes: MAX_PDF_CONTENT_BYTES })).rejects.toMatchObject({ code: 'ERR_WINDOWS_CONTENT_LIMIT' }); expect(reads).toEqual([]);
-    const identity = createWindowsPathIdentity({ fs: wrapped }), f = manager({ identity });
+    const identity = createWindowsPathIdentity({ fs: wrapped }), f = manager({ identity }); owned = f;
     for (const kind of ['drawing', 'project', 'text-export'] as const) {
       const ticket = f.host.issue(f.owner, kind); await expect(f.host.bind(ticket, f.owner, kind, file)).rejects.toMatchObject({ code: 'ERR_WINDOWS_CONTENT_LIMIT' });
     }
@@ -174,13 +177,24 @@ describe.runIf(process.platform === 'win32')('Windows generic export owner/order
     const pinned = f.host.assertBound(ticket, f.owner, 'pdf-export', file); expect(pinned.contentLimit).toBe(MAX_PDF_CONTENT_BYTES);
     const checked = await identity.revalidate(pinned, { preserveVersion: true }); expect(checked.contentLimit).toBe(MAX_PDF_CONTENT_BYTES);
     expect(Math.max(...reads)).toBe(HASH_CHUNK_BYTES); expect((await fs.stat(file)).size).toBe(MAX_CONTENT_BYTES + 1);
-    f.host.cancel(ticket, f.owner, 'pdf-export');
+    await f.host.cancelJoined(ticket, f.owner, 'pdf-export');
     expect(heldDescriptors).toBe(0); const completedReads = reads.length, enlarge = await fs.open(file, 'r+');
     try { await enlarge.truncate(MAX_PDF_CONTENT_BYTES + 1); } finally { await enlarge.close(); }
     expect((await fs.stat(file)).size).toBe(MAX_PDF_CONTENT_BYTES + 1);
     const oversized = f.host.issue(f.owner, 'pdf-export'); await expect(f.host.bind(oversized, f.owner, 'pdf-export', file)).rejects.toMatchObject({ code: 'ERR_WINDOWS_CONTENT_LIMIT' });
     expect(reads).toHaveLength(completedReads); expect(heldDescriptors).toBe(0);
     expect(f.host.stats()).toMatchObject({ pending: 0, queuedBytes: 0, ordinaryQueuedBytes: 0, pdfQueuedBytes: 0 });
+    } finally {
+      // Join all owned readers before altering the fixture. Deallocate its large
+      // extent within this test's existing body deadline; the shared 10s cleanup
+      // hook should only remove an empty file and its private directory.
+      await owned?.host.dispose(); expect(heldDescriptors).toBe(0);
+      if (owned) expect(owned.host.stats()).toMatchObject({ pending: 0, queuedBytes: 0, ordinaryQueuedBytes: 0, pdfQueuedBytes: 0, queues: 0, metadataActive: 0, metadataQueued: 0 });
+      if (created) {
+        const reset = await fs.open(file, 'r+'); try { await reset.truncate(0); } finally { await reset.close(); }
+        expect((await fs.stat(file)).size).toBe(0);
+      }
+    }
   }, 60000);
 });
 
