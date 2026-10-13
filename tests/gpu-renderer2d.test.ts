@@ -663,7 +663,7 @@ describe('GPU compiled block and stroke-text integration', () => {
     expect(prepareZoom2D(drawing(), view, overlay).compound).toBeUndefined();
   });
 
-  it.each([1, 2])('packs trillion-coordinate blocks and native text anchors like an independent near-origin scene at DPR %s', (dpr) => {
+  it.each([1, 2])('preserves near-origin compound preparation and refuses unsafe trillion-coordinate Canvas construction at DPR %s', (dpr) => {
     const unit = 1 / 8192;
     const definition = { ...block([{ ...line, a: { x: unit, y: unit }, b: { x: 5 * unit, y: unit } }, text({ height: unit, position: { x: unit, y: unit }, alignmentPoint: { x: 5 * unit, y: 2 * unit }, firstAlignmentPoint: { x: unit, y: unit }, justification: { horizontal: 5, vertical: 0 } })]), basePoint: { x: unit, y: unit } };
     const near = insert('B', { position: { x: 3 * unit, y: -2 * unit }, rotation: 0.3 });
@@ -671,9 +671,8 @@ describe('GPU compiled block and stroke-text integration', () => {
     const far = { ...near, position: { x: origin.x + near.position.x, y: origin.y + near.position.y } };
     const camera = { ...view, scale: 65536, twist: 0.63, dpr };
     const baseline = prepareZoom2D(scene([near], { B: definition }), camera, overlay);
-    const translated = prepareZoom2D(scene([far], { B: definition }), { ...camera, center: origin }, overlay);
-    expect(translated.vertices).toEqual(baseline.vertices);
-    expect(translated.sourceBounds).toEqual(baseline.sourceBounds);
+    expect(baseline.vertices.length).toBeGreaterThan(0);
+    expect(() => prepareZoom2D(scene([far], { B: definition }), { ...camera, center: origin }, overlay)).toThrow(/world-coordinate quantization/);
   });
 
   it('reuses immutable compiled scenes for redraw, pan and bounded zoom with absent styles', () => {

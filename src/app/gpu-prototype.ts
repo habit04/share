@@ -5,6 +5,92 @@ import { modal, button } from '../ui/dialogkit';
 import { lineweightDisplay } from '../render/draw';
 import { bigDrawing } from '../../tests/helpers/big-drawing';
 import { setDiagnosticRenderer } from './gpu-diagnostics';
+import type { DrawingState } from '../core/document';
+import { DEFAULT_HEADER } from '../core/document';
+import type { BlockDef, Entity, TextEntity } from '../core/entities';
+import type { Point } from '../core/geometry';
+import { STANDARD_TEXT_STYLE } from '../io/encoding';
+
+interface FixtureMetadata {
+  name: string;
+  probes: readonly { label: string; point: Point; rgb: readonly number[] }[];
+  nearOriginReference?: string;
+  block?: string;
+  textStyle?: string;
+}
+
+/** Ordered native primitives; no renderer-specific glyph or placement formula. */
+function compoundFixture(name: string): { state: DrawingState; center: Point; scale: number; twist: number; metadata: FixtureMetadata } {
+  const far = name === 'compound-trillion';
+  const unit = far || name === 'compound-trillion-reference' ? 1 / 64 : 1;
+  const center = far ? { x: 1e12, y: -1e12 } : { x: 0, y: 0 };
+  const p = (x: number, y: number): Point => ({ x: center.x + x * unit, y: center.y + y * unit });
+  const local = (x: number, y: number): Point => ({ x: x * unit, y: y * unit });
+  const base = bigDrawing(0, 0, 0);
+  const common = { layer: '0', color: 7 } as const;
+  const text = (id: string, value: string, x: number, y: number, patch: Partial<TextEntity> = {}): TextEntity => ({ ...common, id, type: 'text', position: p(x, y), text: value, height: 0.45 * unit, rotation: 0, align: 'left', style: 'GPU-STROKE', ...patch });
+  const nested: BlockDef = {
+    name: 'GPU-NESTED', basePoint: local(1, 2), attributes: [],
+    entities: [
+      { ...common, id: 'nested-wire', type: 'line', color: 0, a: local(1, 2), b: local(2.5, 2), lineWeight: 10 },
+      { ...common, id: 'nested-text', type: 'text', color: 0, position: local(1, 2.4), text: 'NEST', height: 0.35 * unit, rotation: 0.1, align: 'left', style: 'GPU-STROKE' },
+      { ...common, id: 'explicit-text', type: 'text', trueColor: 0x33ee88, position: local(1, 3), text: 'TRUE', height: 0.3 * unit, rotation: 0, align: 'left' },
+    ],
+  };
+  const ordered: BlockDef = {
+    name: 'GPU-ORDERED', basePoint: local(4, 5),
+    entities: [
+      { ...common, id: 'ordered-wire', type: 'line', color: 0, a: local(4, 3), b: local(4, 7), lineWeight: 10 },
+      { ...common, id: 'ordered-label', type: 'text', trueColor: 0x44ddff, position: local(4.35, 5.6), text: 'Ag%%uB%%k', height: 0.4 * unit, rotation: 0, align: 'left', widthFactor: 1.25, oblique: 0.18, style: 'GPU-STROKE' },
+      { ...common, id: 'hidden-child', type: 'text', layer: 'GPU-HIDDEN', position: local(4, 5), text: 'HIDDEN', height: unit, rotation: 0, align: 'left' },
+    ],
+    attributes: [
+      { tag: 'TAG', prompt: 'Tag', default: 'DEFAULT', position: local(4.5, 4.4), height: 0.35 * unit, align: 'left', color: 0, style: 'GPU-STROKE' },
+      { tag: 'NATIVE', prompt: '', default: 'FIT', position: local(4.5, 4), alignmentPoint: local(6.5, 4), justification: { horizontal: 5, vertical: 0 }, height: 0.3 * unit, align: 'left', widthFactor: 1.2, oblique: 0.1 },
+      { tag: 'INVISIBLE', prompt: '', default: 'INVISIBLE', position: local(4, 5), height: unit, align: 'left', invisible: true },
+      { tag: 'HIDDEN', prompt: '', default: 'HIDDEN', position: local(4, 5), height: unit, align: 'left' },
+    ],
+  };
+  const complex: BlockDef = {
+    name: 'GPU-COMPLEX', basePoint: local(4, 5), attributes: [],
+    entities: [
+      { ...common, id: 'complex-wire', type: 'line', color: 0, a: local(4, 5), b: local(7, 5), lineWeight: 8 },
+      { ...common, id: 'nested-owner', type: 'insert', block: nested.name, position: local(4.5, 5.4), rotation: 0.28, scale: 1, attributes: {}, color: 0 },
+    ],
+  };
+  const entities: Entity[] = [
+    { ...common, id: 'ORDER-BEFORE', type: 'line', trueColor: 0xee3344, a: p(-3, 0), b: p(3, 0), lineWeight: 2.5 },
+    { ...common, id: 'BLOCK-OWNER', type: 'insert', block: ordered.name, position: p(0, 0), rotation: 0, scale: 1, attributes: { TAG: 'ATTR' }, hiddenAttributes: ['HIDDEN'], trueColor: 0x22aaff, lineWeight: 1,
+      attributePlacements: { NATIVE: { position: local(4.5, 4), alignmentPoint: local(6.5, 4), firstAlignmentPoint: local(4.5, 4), justification: { horizontal: 5, vertical: 0 }, height: 0.3 * unit, align: 'left', widthFactor: 1.2, oblique: 0.1 } } },
+    { ...common, id: 'NESTED-OWNER', type: 'insert', block: complex.name, position: p(-5, -2), rotation: 0.22, scale: 1, attributes: {}, trueColor: 0xffdd33, lineWeight: 0.5 },
+    text('TEXT-CONTROLS', 'A%%uB%%oC%%k %%d %%p %%c', -6, 3, { rotation: 0.07, widthFactor: 1.3, oblique: 0.2, trueColor: 0xbb77ee }),
+    text('TEXT-FIT', 'FIT TEXT', -6, 2, { alignmentPoint: p(-2, 2.5), firstAlignmentPoint: p(-6, 2), justification: { horizontal: 5, vertical: 0 }, widthFactor: 1.2, oblique: 0.15 }),
+    text('TEXT-ALIGNED', 'ALIGN', -6, 1, { alignmentPoint: p(-3, 1.3), firstAlignmentPoint: p(-6, 1), justification: { horizontal: 3, vertical: 0 }, trueColor: 0xeeaacc }),
+    text('TEXT-CENTER', 'CENTER', 4, -1.8, { align: 'center', rotation: -0.18, widthFactor: 0.8, trueColor: 0x99ccff }),
+    text('TEXT-RIGHT', 'RIGHT', 6, -2.6, { align: 'right', rotation: 0.12, trueColor: 0x77ffaa }),
+    text('TEXT-QTEXT', '%%uQTEXT%%k', 3, -3.1, { height: 0.02 * unit, widthFactor: 1.3, rotation: 0.2 }),
+    { ...common, id: 'EDGE-L', type: 'line', trueColor: 0x44bb55, a: p(-12, -1), b: p(-7.9, 1), lineWeight: 1 },
+    text('EDGE-TEXT', 'CLIP', 8.5, 2.4, { rotation: 0.1 }),
+    { ...common, id: 'ORDER-AFTER', type: 'line', trueColor: 0xffaa22, a: p(-1, 0), b: p(1, 0), lineWeight: 2 },
+    { ...common, id: 'EDIT-L', type: 'line', trueColor: 0xffffff, a: p(-5, -3), b: p(-2, -3), lineWeight: 0.5 },
+  ];
+  const blocks: Record<string, BlockDef> = { [nested.name]: nested, [ordered.name]: ordered, [complex.name]: complex };
+  const styles = { Standard: STANDARD_TEXT_STYLE, 'GPU-STROKE': { ...STANDARD_TEXT_STYLE, name: 'GPU-STROKE', font: 'romans.shx' }, 'GPU-UNSAFE': { ...STANDARD_TEXT_STYLE, name: 'GPU-UNSAFE', font: 'arial.ttf' } };
+  if (name.startsWith('compound-fallback-')) {
+    let unsafe: Entity = { ...common, id: 'late-ttf', type: 'text', position: local(0, 0), text: 'TTF', height: 0.5 * unit, rotation: 0, align: 'left', style: 'GPU-UNSAFE' };
+    if (name.endsWith('-mtext')) unsafe = { ...common, id: 'late-mtext', type: 'mtext', position: local(0, 0), text: 'MTEXT\nLATE', height: 0.5 * unit, width: 3 * unit, rotation: 0, attachment: 1, lineSpacing: 1 };
+    if (name.endsWith('-dash')) unsafe = { ...common, id: 'late-dash', type: 'line', a: local(-1, 0), b: local(1, 0), linetype: 'DASHED' };
+    if (name.endsWith('-alpha')) unsafe = { ...common, id: 'late-alpha', type: 'line', a: local(-1, 0), b: local(1, 0), transparency: 128 };
+    if (name.endsWith('-geometry')) unsafe = { ...common, id: 'late-fill', type: 'polyline', points: [local(-1, 0), local(1, 0), local(0, 1)], closed: true, filled: true };
+    blocks['GPU-LATE-UNSAFE'] = { name: 'GPU-LATE-UNSAFE', basePoint: local(0, 0), attributes: [], entities: [{ ...common, id: 'late-valid', type: 'line', a: local(-1, -1), b: local(1, -1) }, unsafe] };
+    entities.push({ ...common, id: 'LATE-OWNER', type: 'insert', block: 'GPU-LATE-UNSAFE', position: p(4, 0), rotation: 0.1, scale: 1, attributes: {} });
+  }
+  return {
+    state: { ...base, entities, blocks, layers: [...base.layers, { name: 'GPU-HIDDEN', color: 1, visible: false, locked: false, lineWeight: 0.5 }], meta: { textStyles: styles }, header: { ...DEFAULT_HEADER, linetypes: [{ name: 'DASHED', description: 'Native benchmark dashed refusal', pattern: [0.5 * unit, -0.25 * unit] }] } },
+    center, scale: 64 / unit, twist: 0,
+    metadata: { name, block: ordered.name, textStyle: 'GPU-STROKE', nearOriginReference: far ? 'compound-trillion-reference' : undefined, probes: [{ label: 'later top-level line covers block', point: p(0, 0), rgb: [255, 170, 34] }, { label: 'ByBlock truecolor and root width', point: p(0, 0.5), rgb: [34, 170, 255] }, { label: 'earlier line remains outside later stroke', point: p(2.5, 0), rgb: [238, 51, 68] }] },
+  };
+}
 
 /** Inert in default builds; all state is ephemeral and outside Drawing/saving. */
 export function installGpuPrototype(editor: Editor): void {
@@ -18,6 +104,7 @@ export function installGpuPrototype(editor: Editor): void {
   let lossControl: WEBGL_lose_context | null = null;
   let resettingRenderer = false;
   let last: Gpu2DRenderResult = emptyGpu2DRenderResult('Canvas 2D selected');
+  let fixtureMetadata: FixtureMetadata | null = null;
   const indicator = document.createElement('button');
   indicator.dataset.gpuPrototype = 'indicator';
   indicator.textContent = 'Experimental: Canvas 2D';
@@ -82,8 +169,14 @@ export function installGpuPrototype(editor: Editor): void {
       canvas.style.display = 'none';
     },
     loadFixture: (name: string) => {
+      fixtureMetadata = null;
       const base = bigDrawing(name === 'dense-lines' ? 38000 : 5000, name === 'mixed-schematic' ? 1000 : 0, name === 'mixed-schematic' ? 500 : 0);
-      if (name === 'precision-trillion') {
+      if (name.startsWith('compound-')) {
+        const fixture = compoundFixture(name);
+        editor.loadState(fixture.state, null);
+        view.center = fixture.center; view.scale = fixture.scale; view.twist = fixture.twist;
+        fixtureMetadata = fixture.metadata;
+      } else if (name === 'precision-trillion') {
         const origin = { x: 1e12, y: -1e12 };
         const p = (x: number, y: number) => ({ x: origin.x + x, y: origin.y + y });
         const style = { layer: '0', color: 7 };
@@ -121,11 +214,12 @@ export function installGpuPrototype(editor: Editor): void {
         ] }, null);
       } else editor.loadState(base, null);
       // Fixture-local display state must not leak into the ordinary comparison scenes.
-      lineweightDisplay.enabled = name === 'lineweights' || name === 'wide-curve-fallback';
+      lineweightDisplay.enabled = name === 'lineweights' || name === 'wide-curve-fallback' || name.startsWith('compound-');
       lineweightDisplay.pxPerMm = undefined;
       editor.viewport.settings.gridVisible = false;
       editor.viewport.renderCurrent();
     },
+    fixtureMetadata: () => fixtureMetadata,
     status: () => ({ mode, ...last, device: renderer?.device.state ?? 'not-created', capabilities: renderer?.device.capabilities() ?? null, demo: demoHandle?.status() ?? null }),
     renderStats: () => ({ ...last }),
     renderNow: () => { editor.viewport.renderCurrent(); return { ...last }; },

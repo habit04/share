@@ -5,7 +5,7 @@ import type { BlockDef, Entity, InsertEntity, Layer, LineEntity, TextEntity } fr
 import type { Point } from '../src/core/geometry';
 import { sealImmutableData } from '../src/core/immutable-data';
 import { STANDARD_TEXT_STYLE } from '../src/io/encoding';
-import { colorDisplay, drawEntity, lineweightDisplay } from '../src/render/draw';
+import { annotationDisplay, colorDisplay, drawEntity, lineweightDisplay } from '../src/render/draw';
 import { setTextStyles, textStyleRegistry } from '../src/render/hershey';
 import * as hershey from '../src/render/hershey';
 import type { Gpu2DOverlay, Gpu2DView } from '../src/render/gpu-prototype/geometry2d';
@@ -56,18 +56,18 @@ function expectCanvasPaths(actual: readonly (readonly Point[])[], expected: read
 
 /** Record actual Canvas strokes, preserving save/restore and per-child paint settings. */
 function canvasScenePaints(state: DrawingState, camera: Gpu2DView, ov: Gpu2DOverlay) {
-  const output: Array<{ paths: Point[][]; color: string; alpha: number; widthCss: number }> = [];
+  const output: Array<{ paths: Point[][]; color: string; alpha: number; widthCss: number; dash: number[] }> = [];
   let current: Point[][] = [];
-  const stack: Array<{ globalAlpha: number; lineWidth: number; strokeStyle: string; fillStyle: string }> = [];
+  const stack: Array<{ globalAlpha: number; lineWidth: number; strokeStyle: string; fillStyle: string; dash: number[] }> = [];
   const context = {
-    globalAlpha: 1, lineWidth: 1, strokeStyle: '', fillStyle: '', lineCap: 'butt', lineJoin: 'miter',
-    save() { stack.push({ globalAlpha: this.globalAlpha, lineWidth: this.lineWidth, strokeStyle: this.strokeStyle, fillStyle: this.fillStyle }); },
+    globalAlpha: 1, lineWidth: 1, strokeStyle: '', fillStyle: '', lineCap: 'butt', lineJoin: 'miter', dash: [] as number[],
+    save() { stack.push({ globalAlpha: this.globalAlpha, lineWidth: this.lineWidth, strokeStyle: this.strokeStyle, fillStyle: this.fillStyle, dash: [...this.dash] }); },
     restore() { Object.assign(this, stack.pop()!); },
-    setLineDash() {},
+    setLineDash(value: number[]) { this.dash = [...value]; },
     beginPath() { current = []; },
     moveTo(x: number, y: number) { current.push([{ x: x / camera.scale, y: -y / camera.scale }]); },
     lineTo(x: number, y: number) { current[current.length - 1]!.push({ x: x / camera.scale, y: -y / camera.scale }); },
-    stroke() { output.push({ paths: current, color: this.strokeStyle, alpha: this.globalAlpha, widthCss: this.lineWidth }); },
+    stroke() { output.push({ paths: current, color: this.strokeStyle, alpha: this.globalAlpha, widthCss: this.lineWidth, dash: [...this.dash] }); },
   };
   const hidden = new Set(state.layers.filter((entry) => !entry.visible).map((entry) => entry.name));
   const previousWeights = { ...lineweightDisplay };
@@ -85,7 +85,8 @@ function canvasScenePaints(state: DrawingState, camera: Gpu2DView, ov: Gpu2DOver
 }
 
 const oldStyles = textStyleRegistry.styles;
-afterEach(() => { setTextStyles(oldStyles); colorDisplay.paper = false; lineweightDisplay.enabled = false; lineweightDisplay.pxPerMm = undefined; });
+const oldAnnotation = { ...annotationDisplay };
+afterEach(() => { setTextStyles(oldStyles); Object.assign(annotationDisplay, oldAnnotation); colorDisplay.paper = false; lineweightDisplay.enabled = false; lineweightDisplay.pxPerMm = undefined; });
 
 describe('all-or-nothing GPU stroke-scene lowering', () => {
   it.each(Array.from({ length: 15 }, (_, index) => index < 6 ? [index, 0] : [index % 3, Math.floor((index - 6) / 3) + 1]))('matches Canvas native justification %i/%i and never changes source anchors', (horizontal, vertical) => {
@@ -106,13 +107,15 @@ describe('all-or-nothing GPU stroke-scene lowering', () => {
     expect(result.operations[0]!.paths.length).toBeGreaterThan(10);
   });
 
-  it('rebases every native text anchor before FIT/ALIGNED placement and glyph offsets at trillion coordinates', () => {
+  it('keeps the independent near-origin FIT/ALIGNED proof and refuses unsafe Canvas world quantization', () => {
     for (const horizontal of [3, 5] as const) {
       const near = text({ height: 1 / 8192, position: { x: 1 / 8192, y: -2 / 8192 }, alignmentPoint: { x: 9 / 8192, y: 5 / 8192 }, firstAlignmentPoint: { x: -3 / 8192, y: 4 / 8192 }, justification: { horizontal, vertical: 0 }, widthFactor: 1.2, oblique: 0.22 });
       const center = { x: 1e12, y: -1e12 };
       const moved = { ...near, position: { x: center.x + near.position.x, y: center.y + near.position.y }, alignmentPoint: { x: center.x + near.alignmentPoint!.x, y: center.y + near.alignmentPoint!.y }, firstAlignmentPoint: { x: center.x + near.firstAlignmentPoint!.x, y: center.y + near.firstAlignmentPoint!.y } };
       const localView = { ...view, scale: 65536 };
-      expect(strokePoints(lowerStrokeScene(drawing([moved]), { ...localView, center }, overlay))).toEqual(strokePoints(lowerStrokeScene(drawing([near]), localView, overlay)));
+      const reference = lowerStrokeScene(drawing([near]), localView, overlay);
+      expectCanvasPaths(strokePoints(reference), canvasTextPaths(near, drawing([near]), localView.scale), localView.scale);
+      expect(lowerStrokeScene(drawing([moved]), { ...localView, center }, overlay)).toEqual({ ok: false, reason: expect.stringContaining('world-coordinate quantization') });
     }
   });
 
@@ -176,7 +179,8 @@ describe('all-or-nothing GPU stroke-scene lowering', () => {
     const near = insert('SMALL', { position: { x: 3 * unit, y: -4 * unit }, scale: 1, rotation: 0.3, attributePlacements: { LABEL: { position: { x: 8 * unit, y: 9 * unit }, alignmentPoint: { x: 11 * unit, y: 14 * unit }, firstAlignmentPoint: { x: 8 * unit, y: 9 * unit }, justification: { horizontal: 5, vertical: 0 }, height: unit, align: 'left' } } });
     const center = { x: 1e12, y: -1e12 }, localView = { ...view, scale: 65536 };
     const far = { ...near, position: { x: center.x + near.position.x, y: center.y + near.position.y } };
-    expect(accepted(lowerStrokeScene(drawing([far], { SMALL: block }), { ...localView, center }, overlay)).operations).toEqual(accepted(lowerStrokeScene(drawing([near], { SMALL: block }), localView, overlay)).operations);
+    expect(accepted(lowerStrokeScene(drawing([near], { SMALL: block }), localView, overlay)).operations.length).toBeGreaterThan(0);
+    expect(lowerStrokeScene(drawing([far], { SMALL: block }), { ...localView, center }, overlay)).toEqual({ ok: false, reason: expect.stringContaining('world-coordinate quantization') });
   });
 
   it('does not prune visible explicit-layer descendants of a nested insert whose own layer is hidden', () => {
@@ -233,6 +237,47 @@ describe('all-or-nothing GPU stroke-scene lowering', () => {
     const leaf: BlockDef = { name: 'LEAF', basePoint: { x: 0, y: 0 }, entities: [line()], attributes: [] };
     const root: BlockDef = { name: 'ROOT', basePoint: { x: 0, y: 0 }, entities: [line('valid-first'), insert('LEAF', patch)], attributes: [] };
     expect(lowerStrokeScene(drawing([insert('ROOT')], { ROOT: root, LEAF: leaf }), view, overlay).ok).toBe(false);
+  });
+
+  it.each([false, true])('refuses the complete scene when the outer Canvas annotation wrapper scales or hides a root INSERT: %s', (hide) => {
+    const block: BlockDef = { name: 'B', basePoint: { x: 0, y: 0 }, entities: [line('child')], attributes: [] };
+    const owner = insert('B', { id: 'annotative-owner', annotative: true });
+    const state = sealImmutableData(drawing([line('valid-first'), owner], { B: block }));
+    Object.assign(annotationDisplay, { factor: 2, hide });
+    const painted = canvasScenePaints(state, view, overlay);
+    if (hide) expect(painted).toHaveLength(1);
+    else {
+      expect(painted).toHaveLength(2);
+      expect(painted[1]!.paths).toEqual([[{ x: -1, y: 11 }, { x: 15, y: 11 }]]);
+    }
+    const refused = lowerStrokeScene(state, view, overlay);
+    expect(refused).toEqual({ ok: false, reason: 'Unsupported annotative block (annotative-owner)' });
+    expect(refused).not.toHaveProperty('operations');
+    expect(annotationDisplay).toEqual({ factor: 2, hide });
+  });
+
+  it('refuses a nested annotative INSERT before exposing earlier ordered strokes', () => {
+    const leaf: BlockDef = { name: 'LEAF', basePoint: { x: 0, y: 0 }, entities: [line('leaf')], attributes: [] };
+    const root: BlockDef = { name: 'ROOT', basePoint: { x: 0, y: 0 }, entities: [line('first-child'), insert('LEAF', { id: 'nested-annotation', annotative: true })], attributes: [] };
+    const refused = lowerStrokeScene(drawing([line('valid-first'), insert('ROOT')], { ROOT: root, LEAF: leaf }), view, overlay);
+    expect(refused).toEqual({ ok: false, reason: 'Unsupported annotative block (nested-annotation)' });
+    expect(refused).not.toHaveProperty('operations');
+  });
+
+  it('matches child dash inheritance rather than multiplying a root INSERT dash across explicit continuous children', () => {
+    const continuous: BlockDef = { name: 'B', basePoint: { x: 0, y: 0 }, entities: [{ ...line('child'), linetype: 'Continuous' }], attributes: [] };
+    const state = drawing([insert('B', { linetype: 'DASHED' })], { B: continuous });
+    const painted = canvasScenePaints(state, view, overlay);
+    expect(painted).toHaveLength(1);
+    expect(painted[0]!.dash).toEqual([]);
+    const acceptedScene = accepted(lowerStrokeScene(state, view, overlay));
+    const path = acceptedScene.operations[0]!.paths[0]!;
+    if (path.kind !== 'entity' || path.entity.type !== 'line') throw new Error('Expected continuous block line');
+    expectCanvasPaths([[path.entity.a, path.entity.b]], painted[0]!.paths);
+    const inherited: BlockDef = { ...continuous, entities: [{ ...line('child'), linetype: 'ByBlock' }] };
+    const refused = lowerStrokeScene({ ...state, blocks: { B: inherited } }, view, overlay);
+    expect(refused).toEqual({ ok: false, reason: expect.stringContaining('Unsupported dashed linetype: DASHED') });
+    expect(refused).not.toHaveProperty('operations');
   });
 
   it('refuses deep and excessive expansion before allowing core to silently truncate it', () => {

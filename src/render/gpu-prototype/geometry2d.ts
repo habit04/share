@@ -49,6 +49,9 @@ const PIXEL_ERROR = 0.25; // Physical pixels, including high-DPI views.
 // Leave part of the existing quarter-pixel curve budget for Float32 shader arithmetic.
 const ZOOM_CURVE_PIXEL_ERROR = 0.1875;
 const ZOOM_FLOAT_PIXEL_ERROR = PIXEL_ERROR - ZOOM_CURVE_PIXEL_ERROR;
+// Compiled INSERT primitives also reserve .0625 for Canvas world construction.
+// .125 curve + .0625 construction + .0625 Float32 stays inside the existing .25.
+const COMPILED_CURVE_PIXEL_ERROR = 0.125;
 const STRIDE = 5;
 // Beyond this, adding subpixel stroke offsets to a projected double becomes unreliable.
 // Refuse the entire scene rather than clipping an already distorted triangle strip.
@@ -430,7 +433,7 @@ export function prepareCompiledZoom2D(state: DrawingState, view: Gpu2DView, over
     };
     for (const source of operation.paths) {
       const path = source.kind === 'entity'
-        ? entityPath(source.entity, localView, view.scale * maxRatio, ZOOM_CURVE_PIXEL_ERROR, operation.widthCss, admitCurve)
+        ? entityPath(source.entity, localView, view.scale * maxRatio, COMPILED_CURVE_PIXEL_ERROR, operation.widthCss, admitCurve)
         : { points: source.points.map((point) => projectLocal(point, localView)), closed: source.closed };
       const points = path.points.map((point) => {
         const center = checked({ x: point.x - view.width / 2, y: point.y - view.height / 2 });

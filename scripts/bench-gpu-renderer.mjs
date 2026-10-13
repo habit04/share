@@ -129,10 +129,18 @@ try {
     { name: 'precision-trillion', supportsGPU: true },
     { name: 'lineweights', supportsGPU: true },
     { name: 'dense-lines', supportsGPU: true },
-    { name: 'mixed-schematic', supportsGPU: false },
+    // Original 6,500 entities are unchanged: newly admitted blocks/attributes/TEXT.
+    { name: 'mixed-schematic', supportsGPU: true, supportsDeltas: false },
     { name: 'wide-curve-fallback', supportsGPU: false },
+    { name: 'compound-ordered', supportsGPU: true, supportsDeltas: false },
+    { name: 'compound-trillion-reference', supportsGPU: true, supportsDeltas: false },
+    // Canvas's absolute glyph/block offsets may quantize at this origin; preserve
+    // complete Canvas until parity is proved rather than relaxing the image gate.
+    { name: 'compound-trillion', supportsGPU: false, supportsDeltas: false },
+    ...['ttf', 'mtext', 'dash', 'alpha', 'geometry'].map((kind) => ({ name: `compound-fallback-${kind}`, supportsGPU: false, supportsDeltas: false })),
   ];
-  for (const { name: fixture, supportsGPU } of fixtures) {
+  for (const { name: fixture, supportsGPU, supportsDeltas = supportsGPU } of fixtures) {
+    const denseRaster = fixture === 'dense-lines' || fixture === 'mixed-schematic';
     await page.evaluate((name) => { window.gpuPrototype.setMode('canvas'); window.editor.viewport.twist = 0; window.gpuPrototype.loadFixture(name); }, fixture);
     await page.waitForTimeout(100);
     const measure = async (mode, motion = 'pan-zoom', retainEndCamera = false) => page.evaluate(async ({ mode, samples, motion, retainEndCamera }) => {
@@ -334,7 +342,7 @@ try {
         if (!supportsGPU) {
           assert.equal(pixels, 0, `${fixture}: ${label} whole-view fallback matches Canvas exactly`);
           assert.equal(Buffer.compare(images[0].data, images[1].data), 0, `${fixture}: ${label} whole-view fallback has identical RGBA pixels`);
-        } else if (fixture !== 'dense-lines') assert.ok(pixels / (diff.width * diff.height) < 0.001, `${fixture}: ${label} endpoint retains the existing raster accuracy gate`);
+        } else if (!denseRaster) assert.ok(pixels / (diff.width * diff.height) < 0.001, `${fixture}: ${label} endpoint retains the existing raster accuracy gate`);
         evidence = { camera, gpuFrame, imageDifferenceFraction: pixels / (diff.width * diff.height), twoPixelCoverageMissFraction: miss, untimedCameraReset: null };
       } finally {
         const reset = await page.evaluate(async (next) => {
@@ -468,7 +476,7 @@ try {
         if (!supportsGPU) {
           assert.equal(pixels, 0, `${fixture}: ${label} fallback matches Canvas exactly`);
           assert.equal(Buffer.compare(images[0].data, images[1].data), 0, `${fixture}: ${label} fallback has identical RGBA pixels`);
-        } else if (fixture !== 'dense-lines') assert.ok(pixels / (diff.width * diff.height) < 0.001, `${fixture}: ${label} preserves the raster accuracy gate`);
+        } else if (!denseRaster) assert.ok(pixels / (diff.width * diff.height) < 0.001, `${fixture}: ${label} preserves the raster accuracy gate`);
         assert.deepEqual(await page.evaluate(() => { const v = window.editor.viewport; return { center: { ...v.center }, scale: v.scale, twist: v.twist }; }), setup.camera, `${fixture}: ${label} comparison keeps the original warm edit camera`);
         proofImages[label] = images;
         editCorrectness.comparisons[label] = { gpuFrame, imageDifferenceFraction: pixels / (diff.width * diff.height), twoPixelCoverageMissFraction: miss };
@@ -493,7 +501,7 @@ try {
           return { frame, completionMs, actualLine: expected };
         }, { action, edited: setup.edited, original: setup.original });
         assert.equal(proof.frame.rendered, supportsGPU, `${fixture}: ${action} proof preserves actual renderer`);
-        if (supportsGPU) {
+        if (supportsGPU && supportsDeltas) {
           assert.equal(proof.frame.cacheReason, 'document-delta', `${fixture}: ${action} uses partial scene preparation`);
           assert.equal(proof.frame.uploadKind, 'subrange', `${fixture}: ${action} updates the live GPU buffer`);
           assert.equal(proof.frame.bytes, 168, `${fixture}: ${action} uploads only six line vertices`);
@@ -502,6 +510,12 @@ try {
           assert.equal(proof.frame.subrangeUploadCalls, 1);
           assert.ok(proof.frame.preparedEntities <= 1);
           if (action !== 'edit') assert.equal(proof.frame.editMemoHit, true, `${fixture}: ${action} reuses owned prior line geometry`);
+        } else if (supportsGPU) {
+          assert.equal(proof.frame.cacheReason, 'document', `${fixture}: ${action} prepares the complete compound scene`);
+          assert.equal(proof.frame.uploadKind, 'full', `${fixture}: ${action} cannot patch an uncertified compound slot`);
+          assert.equal(proof.frame.subrangeUploadBytes, 0);
+          assert.equal(proof.frame.subrangeUploadCalls, 0);
+          assert.equal(proof.frame.editMemoHit, false);
         }
         editCorrectness.transitions[action] = proof;
       };
@@ -559,12 +573,18 @@ try {
         assert.ok(workload.frameSamples.every((frame) => frame.rendered && frame.cacheHit === true && frame.uploadBytes === 0 && frame.uploadCalls === 0), `${fixture}: ${name} reuses geometry without uploads for all 30 frames`);
       }
       assert.ok(sustainedGpu.frameSamples.some((frame) => frame.cacheReason === 'zoom-range' && frame.uploadCalls > 0), `${fixture}: sustained zoom reports cache-envelope rebuild frames`);
-      assert.ok(editGpu.frameSamples.every((frame) => frame.cacheReason === 'document-delta' && frame.uploadKind === 'subrange' && frame.uploadBytes === 168 && frame.uploadCalls === 1 && frame.subrangeUploadBytes === 168 && frame.subrangeUploadCalls === 1 && frame.preparedEntities <= 1), `${fixture}: all 30 visible edit/undo frames update one six-vertex subrange`);
-      assert.equal(editGpu.summary.rebuildFrameIndices.length, 0, `${fixture}: delta updates must not be counted as full-scene rebuilds`);
-      assert.equal(editGpu.summary.fullUploadFrameIndices.length, 0, `${fixture}: valid edit/undo workloads do not upload the full scene`);
-      assert.ok(editGpu.frameSamples.filter((frame) => frame.label === 'undo-line-edit').every((frame) => frame.editMemoHit === true && frame.preparedEntities === 0 && frame.partialPreparationMs === 0), `${fixture}: timed undo frames reuse memoized owned line geometry`);
+      if (supportsDeltas) {
+        assert.ok(editGpu.frameSamples.every((frame) => frame.cacheReason === 'document-delta' && frame.uploadKind === 'subrange' && frame.uploadBytes === 168 && frame.uploadCalls === 1 && frame.subrangeUploadBytes === 168 && frame.subrangeUploadCalls === 1 && frame.preparedEntities <= 1), `${fixture}: all 30 visible edit/undo frames update one six-vertex subrange`);
+        assert.equal(editGpu.summary.rebuildFrameIndices.length, 0, `${fixture}: delta updates must not be counted as full-scene rebuilds`);
+        assert.equal(editGpu.summary.fullUploadFrameIndices.length, 0, `${fixture}: valid edit/undo workloads do not upload the full scene`);
+        assert.ok(editGpu.frameSamples.filter((frame) => frame.label === 'undo-line-edit').every((frame) => frame.editMemoHit === true && frame.preparedEntities === 0 && frame.partialPreparationMs === 0), `${fixture}: timed undo frames reuse memoized owned line geometry`);
+      } else {
+        assert.ok(editGpu.frameSamples.every((frame) => frame.cacheReason === 'document' && frame.uploadKind === 'full' && frame.subrangeUploadBytes === 0 && frame.subrangeUploadCalls === 0), `${fixture}: all 30 compound edit/undo frames use complete preparation/uploads`);
+        assert.equal(editGpu.summary.rebuildFrameIndices.length, 30);
+        assert.equal(editGpu.summary.subrangeUploadFrameIndices.length, 0);
+      }
       assert.ok(coverageMiss < 0.005, `${fixture}: supported geometry matches within two pixels`);
-      if (fixture !== 'dense-lines') assert.ok(pixels / (a.width * a.height) < 0.001, `${fixture}: bounded raster differences`);
+      if (!denseRaster) assert.ok(pixels / (a.width * a.height) < 0.001, `${fixture}: bounded raster differences`);
     }
     console.log(`${fixture}: Canvas ${canvasResult.totalRenderMedianMs.toFixed(2)} ms, requested GPU ${gpuResult.totalRenderMedianMs.toFixed(2)} ms (actual ${gpuResult.firstFrame.actualRenderer}); image difference ${(100 * pixels / (a.width * a.height)).toFixed(3)}%; ${gpuResult.status.reason ?? 'GPU'}`);
     console.log(`${fixture} pan only: Canvas ${panCanvas.totalRenderMedianMs.toFixed(2)} ms, requested GPU ${panGpu.totalRenderMedianMs.toFixed(2)} ms (actual ${panGpu.firstFrame.actualRenderer}); requested-GPU viewport CPU ${panGpu.cpuSubmissionMedianMs.toFixed(2)} ms, uploads ${panGpu.uploadedBytes.filter((bytes) => bytes > 0).length}/${panGpu.samples}`);
@@ -593,6 +613,268 @@ try {
     result.comparisons[fixture].pannedTwoPixelCoverageMissFraction = panMiss;
     assert.ok(panMiss < 0.005, `${fixture}: cached panned frame matches geometry within two pixels`);
   }
+  // Compound checks use the application's painter, Drawing transactions, codecs,
+  // preload/IPC and atomic saves. Only native file-dialog answers are queued.
+  const compoundEvidence = { comparisons: {}, interiorProbes: [], dependencyTransitions: [], contextRecovery: null, largeCoordinates: null, saveReopen: null };
+  const pairAtCurrent = async (label, expectedGPU, requireWarm = false) => {
+    const images = [];
+    let gpuFrame;
+    for (const mode of ['canvas', 'gpu']) {
+      const frame = await modeFrame(page, mode);
+      if (mode === 'gpu') {
+        gpuFrame = frame;
+        assert.equal(frame.rendered, expectedGPU, `${label}: expected actual renderer`);
+        if (expectedGPU && requireWarm) {
+          assert.equal(frame.cacheHit, true, `${label}: comparison retains prepared compound scene`);
+          assert.equal(frame.uploadKind, 'none', `${label}: comparison retains uploaded compound scene`);
+          assert.equal(frame.bytes, 0); assert.equal(frame.uploadCalls, 0);
+        }
+      }
+      const path = resolve(out, `${label}-${mode}.png`);
+      await page.locator('#drawing').screenshot({ path });
+      images.push(PNG.sync.read(readFileSync(path)));
+    }
+    assert.equal(images[0].width, images[1].width); assert.equal(images[0].height, images[1].height);
+    const diff = new PNG({ width: images[0].width, height: images[0].height });
+    const pixels = pixelmatch(images[0].data, images[1].data, diff.data, diff.width, diff.height, { threshold: 0.15 });
+    const miss = Math.max(missedForeground(images[0], images[1]), missedForeground(images[1], images[0]));
+    writeFileSync(resolve(out, `${label}-diff.png`), PNG.sync.write(diff));
+    assert.ok(miss < 0.005, `${label}: complete geometric coverage`);
+    if (expectedGPU) assert.ok(pixels / (diff.width * diff.height) < 0.001, `${label}: unchanged strict compound raster gate`);
+    else {
+      assert.equal(pixels, 0, `${label}: complete-view fallback matches Canvas exactly`);
+      assert.equal(Buffer.compare(images[0].data, images[1].data), 0, `${label}: fallback has identical RGBA pixels`);
+    }
+    const evidence = { gpuFrame, imageDifferenceFraction: pixels / (diff.width * diff.height), twoPixelCoverageMissFraction: miss, rawDifferentPixels: changedRgbaPixels(images[0], images[1]) };
+    compoundEvidence.comparisons[label] = evidence;
+    return { images, evidence };
+  };
+  await page.evaluate(() => { window.gpuPrototype.setMode('canvas'); window.editor.selection.clear(); window.editor.setHover(null); window.gpuPrototype.loadFixture('compound-ordered'); });
+  const ordinaryCompound = await pairAtCurrent('compound-order-interiors', true);
+  const probePositions = await page.evaluate(() => {
+    const v = window.editor.viewport;
+    return window.gpuPrototype.fixtureMetadata().probes.map((probe) => ({ ...probe, screen: v.toScreen(probe.point), viewport: { width: v.width, height: v.height } }));
+  });
+  for (const probe of probePositions) {
+    const colors = ordinaryCompound.images.map((image) => {
+      const x = Math.round(probe.screen.x * image.width / probe.viewport.width), y = Math.round(probe.screen.y * image.height / probe.viewport.height);
+      assert.ok(x > 0 && y > 0 && x < image.width - 1 && y < image.height - 1, `${probe.label}: visible interior probe`);
+      const index = (y * image.width + x) * 4;
+      return [...image.data.subarray(index, index + 4)];
+    });
+    for (const rgba of colors) {
+      assert.ok(probe.rgb.every((value, index) => Math.abs(value - rgba[index]) <= 2), `${probe.label}: interior preserves drawing order/truecolor`);
+      assert.equal(rgba[3], 255);
+    }
+    compoundEvidence.interiorProbes.push({ label: probe.label, screen: probe.screen, expectedRgb: probe.rgb, canvasRgba: colors[0], gpuRgba: colors[1] });
+  }
+  for (const owner of ['TEXT-CONTROLS', 'BLOCK-OWNER']) {
+    await page.evaluate((id) => { const ed = window.editor; ed.viewport.settings.selectionEffect = 'solid'; ed.selection.add(id); ed.render(); }, owner);
+    await pairAtCurrent(`compound-${owner}-selected`, true);
+    await page.evaluate((id) => { const ed = window.editor; ed.selection.clear(); ed.setHover(id); }, owner);
+    await pairAtCurrent(`compound-${owner}-hovered`, true);
+    await page.evaluate(() => { window.editor.setHover(null); window.editor.selection.clear(); window.editor.render(); });
+  }
+  const qtextBaseline = await page.evaluate(() => { const ed = window.editor, v = ed.viewport; return { document: JSON.stringify(ed.doc.snapshot), camera: { center: { ...v.center }, scale: v.scale, twist: v.twist } }; });
+  const qtextTransitions = [];
+  try {
+    for (const pixels of [2.49, 2.5, 2.51]) {
+      const transition = await page.evaluate(async (pixels) => {
+        const ed = window.editor, v = ed.viewport, api = window.gpuPrototype;
+        const entity = ed.doc.entities.find((entity) => entity.id === 'TEXT-QTEXT');
+        ed.doc.replaceEntities([{ ...entity, height: pixels / v.scale }]);
+        const frame = api.renderNow(), completionMs = frame.rendered ? await api.completed() : null;
+        if (frame.rendered && !(typeof completionMs === 'number' && Number.isFinite(completionMs) && completionMs >= 0)) throw new Error('QTEXT transition GPU completion was not observed');
+        return { requestedPixels: pixels, actualPixels: ed.doc.entities.find((entity) => entity.id === 'TEXT-QTEXT').height * v.scale, frame, completionMs };
+      }, pixels);
+      assert.equal(transition.frame.rendered, true, 'QTEXT native thresholds are supported at ordinary coordinates');
+      assert.equal(transition.frame.uploadKind, 'full', 'Compound QTEXT edit prepares/uploads the changed scene');
+      const pair = await pairAtCurrent(`compound-qtext-${String(pixels).replace('.', '-')}`, true, true);
+      qtextTransitions.push({ ...transition, accuracy: pair.evidence });
+    }
+    // A real camera zoom crosses the current glyph/placeholder decision. Record
+    // that rebuild, rather than incorrectly requiring every narrow-band zoom to hit.
+    const crossing = await page.evaluate(async () => {
+      const v = window.editor.viewport, api = window.gpuPrototype;
+      v.zoomAt({ x: v.width / 2, y: v.height / 2 }, 2.49 / 2.51);
+      const frame = api.renderNow(), completionMs = frame.rendered ? await api.completed() : null;
+      if (frame.rendered && !(typeof completionMs === 'number' && Number.isFinite(completionMs) && completionMs >= 0)) throw new Error('QTEXT camera crossing completion was not observed');
+      return { actualPixels: window.editor.doc.entities.find((entity) => entity.id === 'TEXT-QTEXT').height * v.scale, frame, completionMs };
+    });
+    assert.equal(crossing.frame.rendered, true);
+    assert.equal(crossing.frame.cacheReason, 'zoom-range', 'QTEXT camera crossing rebuilds before stale glyph reuse');
+    assert.equal(crossing.frame.uploadKind, 'full');
+    qtextTransitions.push({ ...crossing, accuracy: (await pairAtCurrent('compound-qtext-camera-crossing', true, true)).evidence });
+  } finally {
+    await page.evaluate(async (baseline) => {
+      const ed = window.editor, v = ed.viewport, api = window.gpuPrototype;
+      for (let count = 0; JSON.stringify(ed.doc.snapshot) !== baseline.document && count < 3; count++) if (!ed.doc.undo()) throw new Error('QTEXT owned edits could not be undone');
+      if (JSON.stringify(ed.doc.snapshot) !== baseline.document) throw new Error('QTEXT cleanup did not restore its exact snapshot');
+      v.center = baseline.camera.center; v.scale = baseline.camera.scale; v.twist = baseline.camera.twist;
+      const frame = api.renderNow();
+      if (frame.rendered) { const completed = await api.completed(); if (!(typeof completed === 'number' && Number.isFinite(completed) && completed >= 0)) throw new Error('QTEXT cleanup completion was not observed'); }
+    }, qtextBaseline);
+  }
+  Object.assign(compoundEvidence, { qtextTransitions });
+  const compoundBaseline = await page.evaluate(() => {
+    const ed = window.editor, v = ed.viewport;
+    return { document: JSON.stringify(ed.doc.snapshot), camera: { center: { ...v.center }, scale: v.scale, twist: v.twist } };
+  });
+  const baselinePair = await pairAtCurrent('compound-dependency-baseline', true);
+  const mutateDependency = async (action, undoOf = null) => {
+    const transition = await page.evaluate(async (action) => {
+      const ed = window.editor, api = window.gpuPrototype, metadata = api.fixtureMetadata();
+      const before = ed.doc.snapshot;
+      if (action === 'block-redefine') {
+        const block = ed.doc.snapshot.blocks[metadata.block];
+        ed.doc.defineBlock({ ...block, entities: block.entities.map((entity) => entity.id === 'ordered-wire' ? { ...entity, a: { x: entity.a.x + 0.25, y: entity.a.y }, b: { x: entity.b.x + 0.25, y: entity.b.y }, trueColor: 0xaa44ff } : entity) });
+      } else if (action === 'style-to-ttf') {
+        ed.doc.transact((state) => {
+          const styles = state.meta.textStyles;
+          return { ...state, meta: { ...state.meta, textStyles: { ...styles, [metadata.textStyle]: { ...styles[metadata.textStyle], font: 'arial.ttf' } } } };
+        });
+      } else if (action === 'undo') { if (!ed.doc.undo()) throw new Error('Compound dependency change cannot be undone'); }
+      else throw new Error(`Unknown compound dependency action ${action}`);
+      if (ed.doc.snapshot === before) throw new Error(`${action}: dependency edit was a no-op`);
+      const frame = api.renderNow();
+      let completionMs = null;
+      if (frame.rendered) {
+        completionMs = await api.completed();
+        if (!(typeof completionMs === 'number' && Number.isFinite(completionMs) && completionMs >= 0)) throw new Error(`${action}: compound GPU completion was not observed`);
+      } else /** @type {HTMLCanvasElement} */ (document.getElementById('drawing')).getContext('2d').getImageData(0, 0, 1, 1);
+      return { action, frame, completionMs, camera: { center: { ...ed.viewport.center }, scale: ed.viewport.scale, twist: ed.viewport.twist } };
+    }, action);
+    assert.deepEqual(transition.camera, compoundBaseline.camera, `${action}: dependency mutation keeps the actual camera/renderer owner`);
+    assert.equal(transition.frame.subrangeUploadCalls, 0, `${action}: dependency edits cannot patch primitive slots`);
+    if (action === 'style-to-ttf') {
+      assert.equal(transition.frame.rendered, false, 'Unsupported STYLE change falls back before partial submission');
+      assert.equal(transition.frame.uploadCalls, 0);
+    } else {
+      assert.equal(transition.frame.rendered, true, `${action}: supported compound scene renders`);
+      if (action === 'undo' && undoOf === 'style-refusal') {
+        // The refused STYLE produced no GL upload. Restoring the exact previous
+        // immutable dependencies can therefore reuse its still-valid GPU scene.
+        // A full repair is valid too; neither path may patch compound slots.
+        assert.ok(['none', 'full'].includes(transition.frame.uploadKind), 'STYLE-refusal undo uses a valid warm scene or full repair');
+        if (transition.frame.uploadKind === 'none') {
+          assert.equal(transition.frame.cacheHit, true, 'Zero-upload STYLE undo retains the prior valid prepared scene');
+          assert.equal(transition.frame.bytes, 0);
+          assert.equal(transition.frame.uploadCalls, 0);
+        } else assert.ok(transition.frame.uploadCalls > 0, 'Full STYLE-undo repair reports actual upload issuance');
+      } else assert.equal(transition.frame.uploadKind, 'full', `${action}: changed block geometry invalidates the uploaded scene`);
+    }
+    Object.assign(transition, { undoOf });
+    compoundEvidence.dependencyTransitions.push(transition);
+    return transition;
+  };
+  await mutateDependency('block-redefine');
+  const redefinedPair = await pairAtCurrent('compound-block-redefined', true, true);
+  const blockChangedCanvas = changedRgbaPixels(baselinePair.images[0], redefinedPair.images[0]);
+  const blockChangedGpu = changedRgbaPixels(baselinePair.images[1], redefinedPair.images[1]);
+  assert.ok(blockChangedCanvas > 0 && blockChangedGpu > 0, 'Block redefinition visibly changes both current completed images');
+  compoundEvidence.dependencyTransitions.at(-1).rawChangedPixels = { canvas: blockChangedCanvas, gpu: blockChangedGpu };
+  await mutateDependency('undo', 'block-redefine');
+  const blockUndo = await pairAtCurrent('compound-block-undo', true, true);
+  assert.equal(Buffer.compare(baselinePair.images[1].data, blockUndo.images[1].data), 0, 'Block undo restores exact original GPU image');
+  await mutateDependency('style-to-ttf');
+  const ttfPair = await pairAtCurrent('compound-style-ttf-fallback', false);
+  assert.ok(changedRgbaPixels(baselinePair.images[0], ttfPair.images[0]) > 0, 'STYLE change visibly changes actual Canvas text');
+  await mutateDependency('undo', 'style-refusal');
+  const styleUndo = await pairAtCurrent('compound-style-undo', true, true);
+  assert.equal(Buffer.compare(baselinePair.images[1].data, styleUndo.images[1].data), 0, 'STYLE undo restores exact original GPU image');
+  assert.equal(await page.evaluate(() => JSON.stringify(window.editor.doc.snapshot)), compoundBaseline.document, 'Both dependency edits/undos preserve the original complete snapshot');
+  // Recovery after compound dependency invalidations exercises the same current
+  // scene, camera and renderer owner. This is WebGL-loss proof, not GPU-process proof.
+  const compoundWarm = await page.evaluate(async () => {
+    const v = window.editor.viewport, api = window.gpuPrototype;
+    v.zoomAt({ x: v.width / 2, y: v.height / 2 }, 1.05); v.panByPixels(18 / v.dpr, -12 / v.dpr);
+    const frame = api.renderNow(), completionMs = await api.completed();
+    if (!(typeof completionMs === 'number' && Number.isFinite(completionMs) && completionMs >= 0)) throw new Error('Warm compound recovery completion was not observed');
+    return { frame, completionMs, document: JSON.stringify(window.editor.doc.snapshot), camera: { center: { ...v.center }, scale: v.scale, twist: v.twist } };
+  });
+  assert.equal(compoundWarm.frame.rendered, true); assert.equal(compoundWarm.frame.cacheHit, true); assert.equal(compoundWarm.frame.bytes, 0); assert.equal(compoundWarm.frame.uploadCalls, 0);
+  const warmCompoundPair = await pairAtCurrent('compound-recovery-warm', true, true);
+  const compoundBefore = await prototypeContext(page);
+  await page.evaluate(() => window.gpuPrototype.loseContext());
+  await page.waitForFunction(() => window.gpuPrototype.status().device === 'lost');
+  const lostCompoundPair = await pairAtCurrent('compound-recovery-lost-full-fallback', false);
+  await page.evaluate(() => window.gpuPrototype.restoreContext());
+  await page.waitForFunction(() => window.gpuPrototype.status().device === 'ready');
+  const restoredCompound = await modeFrame(page, 'gpu');
+  assert.equal(restoredCompound.rendered, true);
+  const restoredCompoundPair = await pairAtCurrent('compound-recovery-restored', true, true);
+  assert.equal(await page.evaluate(() => JSON.stringify(window.editor.doc.snapshot)), compoundWarm.document);
+  assert.deepEqual(await page.evaluate(() => { const v = window.editor.viewport; return { center: { ...v.center }, scale: v.scale, twist: v.twist }; }), compoundWarm.camera);
+  compoundEvidence.contextRecovery = { warm: compoundWarm, before: compoundBefore, lost: lostCompoundPair.evidence, restored: restoredCompound, after: await prototypeContext(page), accuracy: restoredCompoundPair.evidence, warmAccuracy: warmCompoundPair.evidence, documentUnchanged: true, cameraUnchanged: true, scope: 'Actual WebGL context loss/restoration after warm block redefinition and STYLE undo; no compound GPU-process recovery claim.' };
+  // Independent near-origin input has the same representable native anchors and
+  // block definitions. Record Canvas quantization separately; far fallback does
+  // not claim that its geometry matches the near-origin mathematical reference.
+  await page.evaluate(() => { window.gpuPrototype.setMode('canvas'); window.gpuPrototype.loadFixture('compound-trillion-reference'); });
+  const nearCompound = await pairAtCurrent('compound-trillion-near-origin-reference', true);
+  await page.evaluate(() => { window.gpuPrototype.setMode('canvas'); window.gpuPrototype.loadFixture('compound-trillion'); });
+  const farCompound = await pairAtCurrent('compound-trillion-precision-fallback', false);
+  const farCanvasDiff = pixelmatch(nearCompound.images[0].data, farCompound.images[0].data, null, nearCompound.images[0].width, nearCompound.images[0].height, { threshold: 0.15 });
+  compoundEvidence.largeCoordinates = { nearOrigin: nearCompound.evidence, farOrigin: farCompound.evidence, canvasNearVsFarImageDifferenceFraction: farCanvasDiff / (nearCompound.images[0].width * nearCompound.images[0].height), canvasNearVsFarRawDifferentPixels: changedRgbaPixels(nearCompound.images[0], farCompound.images[0]), parityUnprovenUsesCompleteCanvas: true, origin: { x: 1e12, y: -1e12 }, scale: 4096, nativeAnchorUnit: 1 / 64 };
+  // Real save and reopen of the supported compound scene, using the current
+  // codecs/IPC. Renderer resources are retained across the file operation.
+  await page.evaluate(() => { window.gpuPrototype.setMode('canvas'); window.gpuPrototype.loadFixture('compound-ordered'); });
+  const beforeSavePair = await pairAtCurrent('compound-before-save', true);
+  const saveCamera = await page.evaluate(() => { const v = window.editor.viewport; return { center: { ...v.center }, scale: v.scale, twist: v.twist }; });
+  const savedPath = resolve(out, 'compound-native-save-reopen.dxf');
+  await app.evaluate(({ dialog }, path) => {
+    const state = /** @type {any} */ (globalThis);
+    const nativeDialogs = /** @type {any} */ (dialog);
+    state.__compoundDialogs = { save: [path], open: [path], events: [], originalSave: nativeDialogs.showSaveDialog, originalOpen: nativeDialogs.showOpenDialog };
+    nativeDialogs.showSaveDialog = async (_window, options) => {
+      const next = state.__compoundDialogs.save.shift(); state.__compoundDialogs.events.push({ kind: 'save', title: options?.title, path: next ?? null });
+      return next ? { canceled: false, filePath: next } : { canceled: true };
+    };
+    nativeDialogs.showOpenDialog = async (_window, options) => {
+      const next = state.__compoundDialogs.open.shift(); state.__compoundDialogs.events.push({ kind: 'open', title: options?.title, path: next ?? null });
+      return next ? { canceled: false, filePaths: [next] } : { canceled: true, filePaths: [] };
+    };
+  }, savedPath);
+  try {
+    assert.equal(await page.evaluate(() => window.editor.saveFile(true, 'dxf')), true, 'Compound Save As uses real IPC/DXF/atomic write');
+    const savedText = readFileSync(savedPath, 'utf8');
+    for (const nativeKind of ['BLOCK', 'ATTDEF', 'ATTRIB', 'TEXT', 'STYLE']) assert.ok(new RegExp(`(?:^|\\r?\\n)[ \\t]*0\\r?\\n${nativeKind}(?:\\r?\\n|$)`).test(savedText), `Saved native ${nativeKind} records exist`);
+    for (const value of ['GPU-ORDERED', 'GPU-NESTED', 'GPU-STROKE', 'ATTR', 'FIT TEXT', 'ALIGN']) assert.ok(savedText.includes(value), `Saved native compound data includes ${value}`);
+    const priorIds = await page.evaluate(() => window.editor.doc.entities.map((entity) => entity.id));
+    assert.equal(await page.evaluate(() => window.editor.openFile()), true, 'Compound reopen uses actual reader/IPC');
+    for (let attempts = 0; attempts < 8 && await page.locator('.import-report-dialog').count(); attempts++) await page.locator('.import-report-dialog .modal-footer button').filter({ hasText: /^Close$/ }).first().click();
+    assert.equal(await page.locator('.modal').count(), 0, 'Compound reopen has no remaining dialog');
+    const reopened = await page.evaluate((camera) => {
+      const ed = window.editor, v = ed.viewport;
+      v.center = camera.center; v.scale = camera.scale; v.twist = camera.twist;
+      return { ids: ed.doc.entities.map((entity) => entity.id), path: ed.doc.filePath, dirty: ed.doc.dirty, blocks: Object.keys(ed.doc.snapshot.blocks), nativeTexts: ed.doc.entities.filter((entity) => entity.type === 'text').map((entity) => ({ text: entity.text, justification: entity.justification, position: entity.position, alignmentPoint: entity.alignmentPoint, widthFactor: entity.widthFactor, oblique: entity.oblique })), owner: ed.doc.entities.find((entity) => entity.type === 'insert' && entity.block === 'GPU-ORDERED') };
+    }, saveCamera);
+    assert.ok(reopened.ids.every((id) => !priorIds.includes(id)), 'Compound reopen parses fresh entity identities');
+    assert.equal(reopened.path, savedPath); assert.equal(reopened.dirty, false);
+    assert.ok(reopened.blocks.includes('GPU-ORDERED') && reopened.blocks.includes('GPU-NESTED'));
+    assert.equal(reopened.owner.attributes.TAG, 'ATTR');
+    assert.ok(reopened.owner.hiddenAttributes.includes('HIDDEN'));
+    assert.equal(reopened.nativeTexts.find((entity) => entity.text === 'FIT TEXT').justification.horizontal, 5);
+    assert.equal(reopened.nativeTexts.find((entity) => entity.text === 'ALIGN').justification.horizontal, 3);
+    const reopenPair = await pairAtCurrent('compound-after-real-save-reopen', true);
+    // Both renderers agreeing after import does not prove the codec preserved the
+    // drawing: a lost placement/style could be wrong in both. Check appearance
+    // independently against the pre-save Canvas image at the identical camera.
+    const roundTripDiff = new PNG({ width: beforeSavePair.images[0].width, height: beforeSavePair.images[0].height });
+    assert.equal(reopenPair.images[0].width, roundTripDiff.width); assert.equal(reopenPair.images[0].height, roundTripDiff.height);
+    const roundTripPixels = pixelmatch(beforeSavePair.images[0].data, reopenPair.images[0].data, roundTripDiff.data, roundTripDiff.width, roundTripDiff.height, { threshold: 0.15 });
+    const roundTripMiss = Math.max(missedForeground(beforeSavePair.images[0], reopenPair.images[0]), missedForeground(reopenPair.images[0], beforeSavePair.images[0]));
+    assert.ok(roundTripPixels / (roundTripDiff.width * roundTripDiff.height) < 0.001, 'Native save/reopen preserves the pre-save Canvas raster accuracy gate');
+    assert.ok(roundTripMiss < 0.005, 'Native save/reopen preserves pre-save geometry coverage');
+    writeFileSync(resolve(out, 'compound-native-save-reopen-roundtrip-diff.png'), PNG.sync.write(roundTripDiff));
+    assert.equal(Buffer.compare(readFileSync(savedPath), Buffer.from(savedText)), 0, 'Reading/reopening never changes the saved native bytes');
+    const dialogs = await app.evaluate(() => { const d = /** @type {any} */ (globalThis).__compoundDialogs; return { remainingSave: d.save.length, remainingOpen: d.open.length, events: d.events }; });
+    assert.equal(dialogs.remainingSave, 0); assert.equal(dialogs.remainingOpen, 0);
+    compoundEvidence.saveReopen = { actualIpc: true, atomicSaveSucceeded: true, freshReadIds: true, nativeRecordKinds: ['BLOCK', 'ATTDEF', 'ATTRIB', 'TEXT', 'STYLE'], nativeBytes: Buffer.byteLength(savedText), drawing: reopened, dialogs, accuracy: reopenPair.evidence, canvasRoundTrip: { imageDifferenceFraction: roundTripPixels / (roundTripDiff.width * roundTripDiff.height), twoPixelCoverageMissFraction: roundTripMiss, rawDifferentPixels: changedRgbaPixels(beforeSavePair.images[0], reopenPair.images[0]) }, rendererResourcesReset: false };
+  } finally {
+    await app.evaluate(({ dialog }) => { const d = /** @type {any} */ (globalThis).__compoundDialogs; const nativeDialogs = /** @type {any} */ (dialog); nativeDialogs.showSaveDialog = d.originalSave; nativeDialogs.showOpenDialog = d.originalOpen; delete /** @type {any} */ (globalThis).__compoundDialogs; });
+  }
+  Object.assign(result, { compoundCoverage: compoundEvidence });
+  result.validation.push('Ordered nested blocks/ATTRIB/stroke TEXT: strict raster, color interiors, selected/hovered whole glyph batches, block/STYLE dependency edit+undo, same-scene WebGL recovery, independent trillion reference/refusal, and actual DXF IPC save/reopen');
   // Lose the actual device after a proved zoom-cache hit, then verify the restored
   // scene at that same camera before the pre-existing repeated recovery checks.
   await page.evaluate(() => { window.gpuPrototype.setMode('canvas'); window.editor.viewport.twist = 0; window.gpuPrototype.loadFixture('lineweights'); });
