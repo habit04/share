@@ -187,31 +187,33 @@ a future shared 2D/3D renderer should plug into, without implementing the 2D sid
 
 ## Persistence (DXF and DWG)
 
-Until milestone 5 lands, 3D objects are **not written to any file**. From milestone 1 the save
-flow warns ("this drawing contains N experimental 3D objects which are not saved in this version;
-save without them?") and cancels by default. Recovery snapshots omit 3D objects (documented).
-
-Milestone 5 design:
+Implemented in milestone 5 (details and limits in [3D-FILE-FORMAT.md](3D-FILE-FORMAT.md)):
 
 - Each solid is written as a DXF **polyface mesh** (`POLYLINE` flag 64 with `VERTEX` records):
-  valid in every DXF version JCad writes (AC1015+), opened by AutoCAD and other programs as a
-  mesh. The `MESH` (`AcDbSubDMesh`) entity would need AC1024; polyface is the compatible choice.
+  valid in every DXF version JCad writes (AC1015+) and the layout the DXF reference describes.
+  The `MESH` (`AcDbSubDMesh`) entity would need AC1024; polyface is the compatible choice. Opening
+  these files in AutoCAD or other programs has not been verified on this branch.
 - Each polyface carries registered XDATA `JCAD_3D` (an `APPID` record, like `JCAD_TABLE`) with a
-  bounded JSON payload: schema version, the solid's id, name, and its `Feature3D` history, so a
-  newer JCad can refuse or upgrade older payloads explicitly.
-- Reading: a polyface with valid `JCAD_3D` XDATA becomes a `Solid3D` (the mesh is re-tessellated
-  from the feature and compared with the stored faces; on mismatch the stored mesh wins and the
-  import report records "feature history ignored"). A polyface **without** JCad data is imported
-  as a `mesh`-feature solid when the flag is on and reported as "imported mesh; not editable
-  parametrically". When the flag is off, behaviour is unchanged (dropped and reported) so 2D users
-  see exactly what they see today.
-- DWG saving: the Rust writer refuses unknown records. Until it is taught polyface + XDATA, a
-  drawing with solids reports "DWG saving does not support 3D objects yet; save DXF" through the
-  existing refusal path. **It never drops them silently.** Teaching the writer is out of scope for
-  this branch unless the owner asks (it is a Rust change with its own review).
-- Round-trip tests: write, read back, compare ids, features, meshes (exact for stored faces),
-  layers and colours; 2D-only drawings produce byte-identical DXF to the starting commit (a
-  regression test guards this).
+  bounded, versioned JSON payload: schema version, the solid's id, name and its `Feature3D`
+  history, so a newer JCad can refuse or upgrade older payloads explicitly.
+- Reading: the stored faces are authoritative (the feature history is never re-evaluated on
+  load). A polyface with valid `JCAD_3D` data becomes a `Solid3D` with its history; malformed or
+  newer payloads keep the mesh and record an import-report item. Solids JCad wrote are read back
+  even when the experimental setting is off (they are hidden, never lost, and written back on
+  save; the import report says so). A polyface **without** JCad data is imported as a
+  `mesh`-feature solid only when 3D reading is enabled and reported as "not editable
+  parametrically"; otherwise behaviour is unchanged (dropped and reported) so 2D users see exactly
+  what they see today. DWG opens convert through LibreDWG into the same reader, so DWG polyfaces
+  follow the same rules.
+- A file JCad could not reopen is never written: when the solids would exceed the DXF reader's
+  default limits, Save and Save As refuse with the triangle count and the limit, and autosave
+  writes the recovery copy without the solids and records the omission for the recovery dialog.
+- DWG saving: the Rust writer refuses unknown records. DWG Save, Save As and EXPORTDWG of a
+  drawing with solids are refused with a message to save DXF instead. **Solids are never dropped
+  silently.** Teaching the writer is out of scope for this branch unless the owner asks (it is a
+  Rust change with its own review).
+- Round-trip tests cover ids, features, meshes (exact), layers and colours; 2D-only drawings
+  produce byte-identical DXF to the starting commit (golden outputs guard this).
 
 ## Feature flag and isolation
 
