@@ -141,7 +141,11 @@ three TypeScript checks, broad lint, fixtures and production build. Final source
 Native destination answers and a controlled post-rename outside edit are the app test injections;
 codecs, IPC, files, backup/recovery and ordinary UI behavior are real. Owned processes are closed.
 
-The completed-open milestone subsequently passes 3,544 tests / 28 conditional skips, all three
+The completed-open milestone subsequently passes 3,546 tests / 28 conditional skips, all three
 TypeScript checks, broad lint, fixtures and production build. Its rebuilt desktop passes the
 14 new workflows plus the existing seven 2D workflows described above, with production hashes
 unchanged and owned processes closed. These are separate from the earlier 33-workflow run.
+Nine additional actual Windows checks validate the corrected general-E2E proof/backup harness;
+the DWG IPC unit suite explicitly labels POSIX identity protocol doubles and retains real native
+Windows checks. Full local general E2E needs a matching native helper, absent in this worktree;
+the corrected-head full Windows CI run must pass separately.

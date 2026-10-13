@@ -4,6 +4,11 @@ Baseline: `83aedbcc7b145ff87293a35d9001cb56f127a2b0` (Windows v0.4.8).
 Worktree: `C:\Users\justi\Chad\jcad-2d-reliability`, branch `feature/remaining-2d-reliability`.
 This is development work; no release, installer, signing or GPU renderer changes.
 
+The full PR/branch history, delivered GPU milestones and proposed combined Windows
+upgrade are recorded in [WINDOWS-UPGRADE-INTEGRATION.md](WINDOWS-UPGRADE-INTEGRATION.md).
+GPU milestones remain owned by their separate workstreams; this checklist is not
+the complete inventory of all JCad work.
+
 Status distinguishes a tested correction from completion of the entire priority. Source evidence
 is the current branch and `SUPPORT-MATRIX.md`, rather than an earlier planning list.
 
@@ -49,7 +54,7 @@ proof that their implementation or external verification has passed.
 
 ## Current validation and integration
 
-- Latest combined branch: **3,544 tests / 28 conditional skips**, all three TypeScript projects,
+- Latest combined branch: **3,546 tests / 28 conditional skips**, all three TypeScript projects,
   broad lint, fixtures and production build pass. The rebuilt source Electron passes **14 new
   opened-source/recovery workflows + 7 existing tracked 2D workflows**, with unchanged production
   source/bundle hashes and closed owned processes. The prior byte-digest milestone passed
@@ -59,6 +64,10 @@ proof that their implementation or external verification has passed.
   cases**, and **six independent native protocol probes**. The DWG IPC contract uses mock native
   conversion; actual desktop checks use authored private DXFs. Two refused outside-edit saves
   preserve the exact original backup, file bytes and recovery; own/copy/overlap/project saves pass.
+- CI follow-up keeps all existing DWG IPC assertions and explicitly separates native Windows
+  identity checks from POSIX protocol doubles. Nine additional actual Windows checks verify the
+  corrected standalone-backup/unused-proof/clean-tab-close harness paths. Full local general
+  Electron E2E is unavailable without its matching native helper; corrected-head CI is required.
 - Ordinate: **42 regressions**, **263 native save/reopen comparisons**, two zero-error AUDITs,
   **214 geometry + 19 scaling comparisons** at 1e-8, and **66 Canvas/raster/Poppler checks**.
   Cross-renderer bounds use two pixels; they are not native PDF pixel equality.
