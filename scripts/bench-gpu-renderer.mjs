@@ -9,6 +9,9 @@ import { PNG } from 'pngjs';
 import pixelmatch from 'pixelmatch';
 import { applicationWindow } from './electron-window.mjs';
 
+const cliArgs = process.argv.slice(2);
+assert.ok(cliArgs.length <= 1 && cliArgs.every((argument) => argument === '--high-performance'), 'Usage: node scripts/bench-gpu-renderer.mjs [--high-performance]');
+const highPerformance = cliArgs.includes('--high-performance');
 const root = resolve(import.meta.dirname, '..');
 const out = resolve(root, 'e2e-output/gpu-renderer');
 mkdirSync(out, { recursive: true });
@@ -18,8 +21,32 @@ delete env.VITE_DEV_SERVER_URL;
 const sourceSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
 const worktreeModified = !!execFileSync('git', ['status', '--porcelain', '--untracked-files=no'], { cwd: root, encoding: 'utf8' }).trim();
 const started = performance.now();
-const app = await electron.launch({ args: ['.', `--user-data-dir=${resolve(out, `profile-${Date.now()}`)}`], cwd: root, env, timeout: 60000 });
-const result = { sourceSha, worktreeModified, platform: process.platform, arch: process.arch, applicationLaunchMs: 0, hardware: null, viewport: null, comparisons: {}, validation: [], limitations: ['Single Windows machine or CI runner; OS caches not purged.', 'Drawing pointer input is disabled during comparisons so hover changes cannot alter the measured scene; hover invalidation is covered by regression tests.', 'GPU fence wall waits include driver/CPU scheduling and exclude final desktop presentation.', 'Canvas readback completion is not a pure GPU timer.', 'GPU memory is uploaded buffer bytes only; JS heap is approximate and shared with the whole application.'] };
+const profile = resolve(out, `profile-${Date.now()}`);
+const app = await electron.launch({ args: ['.', `--user-data-dir=${profile}`, ...(highPerformance ? ['--force_high_performance_gpu'] : [])], cwd: root, env, timeout: 60000 });
+const result = { sourceSha, worktreeModified, platform: process.platform, arch: process.arch, applicationLaunchMs: 0, hardware: null, viewport: null, comparisons: {}, contextRecovery: [], validation: [], scope: null, gpuPreference: { requested: highPerformance ? 'high-performance' : 'default', electronSwitch: highPerformance ? '--force_high_performance_gpu' : null, scope: 'Private launched app only; requested preference is not proof of active hardware.' }, limitations: ['Single Windows machine or CI runner; OS caches not purged.', 'Drawing pointer input is disabled during comparisons so hover changes cannot alter the measured scene; hover invalidation is covered by regression tests.', 'GPU fence wall waits include driver/CPU scheduling and exclude final desktop presentation.', 'Canvas readback completion is not a pure GPU timer.', 'GPU memory is uploaded buffer bytes only; JS heap is approximate and shared with the whole application.'] };
+
+/** Inspect only an owner-created, currently rendering context; missing proof remains Unknown. */
+async function prototypeContext(page) {
+  return page.evaluate(() => {
+    const status = window.gpuPrototype.status();
+    const proof = { state: status.device, rendered: status.rendered, unmaskedVendor: 'Unknown', unmaskedRenderer: 'Unknown' };
+    if (status.device === 'ready' && status.rendered) {
+      try {
+        const canvas = /** @type {HTMLCanvasElement} */ (document.querySelector('[data-gpu-prototype="2d"]'));
+        const gl = canvas?.getContext('webgl2');
+        if (gl && !gl.isContextLost()) {
+          const debug = gl.getExtension('WEBGL_debug_renderer_info');
+          const text = (value) => typeof value === 'string' && value.trim() ? value.slice(0, 240) : 'Unknown';
+          if (debug) {
+            proof.unmaskedVendor = text(gl.getParameter(debug.UNMASKED_VENDOR_WEBGL));
+            proof.unmaskedRenderer = text(gl.getParameter(debug.UNMASKED_RENDERER_WEBGL));
+          }
+        }
+      } catch { /* Metadata does not replace the existing correctness gates. */ }
+    }
+    return proof;
+  });
+}
 // Compare geometric coverage with a two-pixel rasterization allowance. Pixelmatch
 // still reports color/AA differences; coverage does not pretend they are equivalent.
 function missedForeground(a, b) {
@@ -39,6 +66,12 @@ function missedForeground(a, b) {
   return count ? missing / count : 0;
 }
 try {
+  result.scope = await app.evaluate(({ app }, expected) => {
+    const path = process.getBuiltinModule('node:path');
+    if (path.resolve(app.getPath('userData')).toLowerCase() !== path.resolve(expected).toLowerCase()) throw new Error('Private benchmark profile could not be verified');
+    return { privateProfileVerified: true, highPerformanceSwitchPresent: app.commandLine.hasSwitch('force_high_performance_gpu') };
+  }, profile);
+  assert.equal(result.scope.highPerformanceSwitchPresent, highPerformance, 'Private app GPU preference switch must match the requested CLI mode');
   const page = await applicationWindow(app);
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
@@ -104,6 +137,7 @@ try {
     const canvasResult = await measure('canvas');
     await page.locator('#drawing').screenshot({ path: resolve(out, `${fixture}-canvas.png`) });
     const gpuResult = await measure('gpu');
+    const context = await prototypeContext(page);
     await page.locator('#drawing').screenshot({ path: resolve(out, `${fixture}-gpu.png`) });
     const a = PNG.sync.read(readFileSync(resolve(out, `${fixture}-canvas.png`)));
     const b = PNG.sync.read(readFileSync(resolve(out, `${fixture}-gpu.png`)));
@@ -114,7 +148,7 @@ try {
     const coverageMiss = Math.max(missedForeground(a, b), missedForeground(b, a));
     const panCanvas = await measure('canvas', 'pan');
     const panGpu = await measure('gpu', 'pan');
-    result.comparisons[fixture] = { canvas: canvasResult, gpu: gpuResult, panOnly: { canvas: panCanvas, gpu: panGpu }, imageDifferenceFraction: pixels / (a.width * a.height), twoPixelCoverageMissFraction: coverageMiss };
+    result.comparisons[fixture] = { canvas: canvasResult, gpu: gpuResult, prototypeContext: context, panOnly: { canvas: panCanvas, gpu: panGpu }, imageDifferenceFraction: pixels / (a.width * a.height), twoPixelCoverageMissFraction: coverageMiss };
     if (fixture === 'mixed-schematic') {
       assert.equal(gpuResult.status.rendered, false, 'unsupported full schematic must fall back');
       assert.equal(pixels, 0, 'whole-view fallback must match Canvas exactly');
@@ -152,12 +186,14 @@ try {
   result.validation.push('Selection highlight and grips');
   await page.evaluate(() => window.editor.selection.clear());
   for (let cycle = 0; cycle < 2; cycle++) {
+    const before = await prototypeContext(page);
     await page.evaluate(() => window.gpuPrototype.loseContext());
     await page.waitForFunction(() => window.gpuPrototype.status().device === 'lost');
     assert.equal(await page.evaluate(() => window.gpuPrototype.renderNow().rendered), false);
     await page.evaluate(() => window.gpuPrototype.restoreContext());
     await page.waitForFunction(() => window.gpuPrototype.status().device === 'ready');
     assert.equal(await page.evaluate(() => window.gpuPrototype.renderNow().rendered), true);
+    result.contextRecovery.push({ cycle: cycle + 1, before, after: await prototypeContext(page) });
   }
   await page.evaluate(() => window.editor.viewport.settings.gridVisible = true);
   assert.equal(await page.evaluate(() => window.gpuPrototype.renderNow().rendered), false, 'grid layering preserved through full Canvas fallback');

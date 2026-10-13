@@ -10,6 +10,9 @@ import { PNG } from 'pngjs';
 import pixelmatch from 'pixelmatch';
 import { applicationWindow } from './electron-window.mjs';
 
+const cliArgs = process.argv.slice(2);
+assert.ok(cliArgs.length <= 1 && cliArgs.every((argument) => argument === '--high-performance'), 'Usage: node scripts/e2e-gpu-process.mjs [--high-performance]');
+const highPerformance = cliArgs.includes('--high-performance');
 assert.equal(process.platform, 'win32', 'This native GPU-process probe currently supports Windows only');
 const root = resolve(import.meta.dirname, '..');
 const out = resolve(root, 'e2e-output/gpu-process');
@@ -26,9 +29,10 @@ const result = /** @type {any} */ ({
   worktreeModified: !!execFileSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' }).trim(),
   platform: process.platform, arch: process.arch, outcome: 'running', scope: null,
   termination: null, nativeEvents: [], observation: null, restoration: null, checks: [],
+  gpuPreference: { requested: highPerformance ? 'high-performance' : 'default', electronSwitch: highPerformance ? '--force_high_performance_gpu' : null, scope: 'Private launched app only; requested preference is not proof of active hardware.' },
   limitations: [
     'One Windows runtime and one app-owned GPU-process termination; no hardware coverage matrix.',
-    'No driver reset, persistent GPU disablement, adapter switch, or hardware-acceleration setting changes.',
+    'No driver reset, persistent GPU disablement, system-wide adapter preference, or hardware-acceleration setting changes.',
     'Canvas 2D may itself use Chromium GPU acceleration; Canvas fallback does not prove CPU-only drawing.',
     'Renderer restart, application restart, and forced WebGL restoration are not used to claim native recovery.',
   ],
@@ -36,6 +40,54 @@ const result = /** @type {any} */ ({
 let launched;
 let verifiedProfile = false;
 const errors = [];
+
+/** Optional proof only. Use the bounded preload projection; never request raw GPUInfo. */
+async function captureGraphics(page, timeoutMs = 2000) {
+  if (timeoutMs <= 0) return {
+    observedAt: null,
+    prototype: { state: 'unknown', rendered: false, unmaskedVendor: 'Unknown', unmaskedRenderer: 'Unknown' },
+    diagnostics: { state: 'unavailable', reason: 'Optional graphics metadata deadline elapsed; no inspection attempted.' },
+    diagnosticsSource: 'Bounded preload projection; may be cached.', metadataDeadlineMs: 0,
+  };
+  let budgetTimer;
+  try { return await Promise.race([page.evaluate(async (deadlineMs) => {
+    const status = window.gpuPrototype.status();
+    const prototype = { state: status.device, rendered: status.rendered, unmaskedVendor: 'Unknown', unmaskedRenderer: 'Unknown' };
+    // A lazy prototype canvas must retain the attributes requested by its actual owner.
+    if (status.device === 'ready' && status.rendered) {
+      try {
+        const canvas = /** @type {HTMLCanvasElement} */ (document.querySelector('[data-gpu-prototype="2d"]'));
+        const gl = canvas?.getContext('webgl2');
+        if (gl && !gl.isContextLost()) {
+          const debug = gl.getExtension('WEBGL_debug_renderer_info');
+          const text = (value) => typeof value === 'string' && value.trim() ? value.slice(0, 240) : 'Unknown';
+          if (debug) {
+            prototype.unmaskedVendor = text(gl.getParameter(debug.UNMASKED_VENDOR_WEBGL));
+            prototype.unmaskedRenderer = text(gl.getParameter(debug.UNMASKED_RENDERER_WEBGL));
+          }
+        }
+      } catch { /* Unknown is evidence of unavailability, not a failed rendering gate. */ }
+    }
+    let timer;
+    let diagnostics = { state: 'unavailable', reason: 'Optional diagnostics unavailable or metadata deadline reached.' };
+    try {
+      if (deadlineMs > 0 && typeof window.jcad?.gpuDiagnostics === 'function') {
+        diagnostics = await Promise.race([
+          window.jcad.gpuDiagnostics(),
+          new Promise((resolve) => { timer = setTimeout(() => resolve(diagnostics), deadlineMs); }),
+        ]);
+      }
+    } catch { /* Keep the available context proof even if diagnostics cannot be collected. */ }
+    finally { clearTimeout(timer); }
+    return { observedAt: Date.now(), prototype, diagnostics, diagnosticsSource: 'Bounded preload projection; may be cached.', metadataDeadlineMs: deadlineMs };
+  }, timeoutMs), new Promise((resolve) => { budgetTimer = setTimeout(() => resolve({
+    observedAt: null,
+    prototype: { state: 'unknown', rendered: false, unmaskedVendor: 'Unknown', unmaskedRenderer: 'Unknown' },
+    diagnostics: { state: 'unavailable', reason: 'Optional graphics inspection exceeded its deadline.' },
+    diagnosticsSource: 'Bounded preload projection; may be cached.', metadataDeadlineMs: timeoutMs,
+  }), timeoutMs); })]); }
+  finally { clearTimeout(budgetTimer); }
+}
 
 // The established GPU benchmark allows two physical pixels of rasterizer coverage
 // variation. Pixelmatch separately bounds visible differences; opacity rejects a
@@ -60,15 +112,16 @@ function missedForeground(a, b, background) {
 }
 
 try {
-  launched = await electron.launch({ args: ['.', `--user-data-dir=${profile}`], cwd: root, env, timeout: 60000 });
+  launched = await electron.launch({ args: ['.', `--user-data-dir=${profile}`, ...(highPerformance ? ['--force_high_performance_gpu'] : [])], cwd: root, env, timeout: 60000 });
   // This is the first main-process operation after launch, before any test mutation.
   result.scope = await launched.evaluate(({ app }, expected) => {
     const path = process.getBuiltinModule('node:path');
     const actual = path.resolve(app.getPath('userData'));
     if (actual.toLowerCase() !== path.resolve(expected).toLowerCase()) throw new Error('Private userData scope could not be verified');
-    return { privateProfileVerified: true, mainPid: process.pid, versions: process.versions };
+    return { privateProfileVerified: true, mainPid: process.pid, versions: process.versions, highPerformanceSwitchPresent: app.commandLine.hasSwitch('force_high_performance_gpu') };
   }, profile);
   verifiedProfile = true;
+  assert.equal(result.scope.highPerformanceSwitchPresent, highPerformance, 'Private app GPU preference switch must match the requested CLI mode');
   const page = await applicationWindow(launched);
   page.on('pageerror', (error) => errors.push(error.message));
   await page.waitForFunction(() => !!window.editor && !!window.gpuPrototype);
@@ -138,6 +191,7 @@ try {
   assert.equal(before.device, 'ready');
   assert.notEqual(await page.evaluate(() => window.gpuPrototype.completed()), null, 'Initial GPU submission must complete');
   result.before = before;
+  result.graphics = { before: await captureGraphics(page) };
   await page.screenshot({ path: resolve(run, 'before.png') });
   result.referenceInput = await page.evaluate(() => /** @type {any} */ (window).__gpuProcessProbe.referenceInput);
   const beforeKillInput = await page.evaluate(() => {
@@ -230,6 +284,8 @@ try {
   const usableFallback = result.automaticFallbackComparisons.some((comparison) => comparison.fullyOpaque && comparison.referenceForegroundPixels > 0 && comparison.recoveredForegroundPixels > 0 && comparison.imageDifferenceFraction < 0.005 && comparison.twoPixelCoverageMissFraction < 0.005);
   if (usableFallback) result.checks.push('Automatic whole-view Canvas fallback while WebGL remains lost; opacity and bounded raster/coverage comparison passed');
   result.afterMetrics = await launched.evaluate(({ app }) => app.getAppMetrics().filter((metric) => metric.type === 'GPU').map((metric) => ({ pid: metric.pid, creationTime: metric.creationTime, type: metric.type })));
+  // Optional post-failure metadata cannot extend the 20-second recovery observation budget.
+  result.graphics.after = await captureGraphics(page, Math.max(0, Math.min(2000, 20000 - (Date.now() - result.termination.at))));
   if (restored) {
     assert.ok(result.afterMetrics.some((metric) => metric.pid !== result.termination.pid || metric.creationTime !== result.termination.creationTime), 'Recovery must use a replacement app-owned GPU process');
     result.checks.push('Automatic WebGL2 restoration rendered and completed a frame');
