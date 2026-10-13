@@ -12,6 +12,7 @@ import type { Layout, SpaceRef } from './layouts';
 import { applyPaperEntities, layoutsOf, paperEntities, paperSpaceLayout, sheetBounds, withLayout } from './layouts';
 import { prepareDrawingState } from './geometry-budget';
 import { sealImmutableData } from './immutable-data';
+import type { Model3D } from '../model3d/types';
 
 /** A named view (VIEW command): world centre and view height. */
 export interface NamedView {
@@ -78,6 +79,13 @@ export interface DrawingState {
   readonly layouts?: readonly Layout[];
   /** Active space (CTAB / MSPACE): absent = the Model tab. */
   readonly space?: SpaceRef;
+  /**
+   * Experimental 3D solids (src/model3d), kept apart from the 2D `entities` so no 2D code path
+   * sees them; behind the `experimental3d` setting. Undoable like geometry and checked by the
+   * geometry budget. Not written to DXF / DWG yet (saving asks first, see
+   * model3d/save-guard.ts); absent for ordinary drawings and removed again when the last solid goes.
+   */
+  readonly model3d?: Model3D;
 }
 
 export type DocListener = (doc: Drawing) => void;

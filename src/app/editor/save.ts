@@ -15,6 +15,14 @@ import { hasDwgSave } from '../drawing-save';
 import type { Editor } from './editor';
 import { fallbackUi, type EditorInternals } from './internals';
 import { rememberRecent } from './documents';
+import { model3dSaveWarning, MODEL3D_SAVE_TITLE } from '../../model3d/save-guard';
+import type { DrawingState } from '../../core/document';
+
+/**
+ * Snapshots whose 3D loss the user accepted. States are immutable, so the answer stays valid for
+ * the Save As / Retry re-entries of the same save (and for saving that unchanged state again).
+ */
+const model3dLossAccepted = new WeakSet<DrawingState>();
 
 export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean, format?: 'dxf'): Promise<boolean> {
   if (!ed.fileBridge) {
@@ -45,6 +53,18 @@ export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean,
     return false;
   };
   ed.lastFileError = null;
+  // DXF and DWG files cannot hold the experimental 3D solids yet: ask before dropping them, the
+  // same confirm the import-loss warning uses (No cancels the save; the drawing stays modified).
+  const loss3d = model3dLossAccepted.has(savedState) ? null : model3dSaveWarning(savedState);
+  if (loss3d) {
+    const ok = await (ed.ui ?? fallbackUi).confirm(MODEL3D_SAVE_TITLE, loss3d);
+    if (!stillCurrent()) return changed();
+    if (!ok) {
+      ed.log('Not saved: the drawing contains 3D objects that DXF and DWG files cannot hold in this version.');
+      return false;
+    }
+    model3dLossAccepted.add(savedState);
+  }
   let path: string | null;
   try {
     const text = writeDxf(withoutUnusedLibraryBlocks(savedState));

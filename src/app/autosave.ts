@@ -227,6 +227,9 @@ export class Autosaver {
     let n = 0;
     for (const job of jobs) {
       try {
+        // Recovery copies are DXF and omit experimental 3D solids (state.model3d) until milestone 5
+        // adds a 3D-aware format. writeDxf ignores the field, so this never blocks or fails, and
+        // autosave must not raise the interactive "save without 3D objects?" question.
         const text = writeDxf(withoutUnusedLibraryBlocks(job.state));
         await this.store.write(job.name, text, { originalPath: job.originalPath, title: job.title, savedAt: job.savedAt });
         this.backedUp.set(job.id, job.state);

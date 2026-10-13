@@ -3,22 +3,35 @@ import { entityGeometryWork, MAX_BLOCK_EXPANSION_WORK } from './entities';
 import { isImmutableData, sealImmutableData } from './immutable-data';
 import { GeometryBudgetError } from './geometry-budget-error';
 import { insertArrayCount } from './insert-array';
+import { validateModel3DBudget } from '../model3d/budget';
 
 /** Limit aggregate work before imported or edited block references allocate expanded geometry. */
 export const MAX_DRAWING_EXPANSION_WORK = 1_000_000;
 const checked = new WeakSet<DrawingState>();
 
-/** Settings and viewport pans do not change the geometry held by an immutable snapshot. */
-function sameGeometry(state: DrawingState, previous: DrawingState): boolean {
+/** Settings and viewport pans do not change the 2D geometry held by an immutable snapshot. */
+function same2DGeometry(state: DrawingState, previous: DrawingState): boolean {
   if (state.entities !== previous.entities || state.blocks !== previous.blocks) return false;
   if (state.layouts === previous.layouts) return true;
   const a = state.layouts ?? [], b = previous.layouts ?? [];
   return a.length === b.length && a.every((layout, index) => layout.entities === b[index]!.entities);
 }
 
+/** Unchanged geometry, 2D and 3D: the previous accepted snapshot's verdict carries over. */
+function sameGeometry(state: DrawingState, previous: DrawingState): boolean {
+  return state.model3d === previous.model3d && same2DGeometry(state, previous);
+}
+
 export function validateGeometryBudget(state: DrawingState, previous?: DrawingState): void {
   if (isImmutableData(state) && checked.has(state)) return;
-  if (previous && isImmutableData(previous) && checked.has(previous) && sameGeometry(state, previous)) {
+  const accepted = !!previous && isImmutableData(previous) && checked.has(previous);
+  if (accepted && sameGeometry(state, previous)) {
+    if (isImmutableData(state)) checked.add(state);
+    return;
+  }
+  // The accepted previous snapshot's verdict still covers whichever half (2D or 3D) is unchanged.
+  if (!accepted || state.model3d !== previous.model3d) validateModel3DBudget(state);
+  if (accepted && same2DGeometry(state, previous)) {
     if (isImmutableData(state)) checked.add(state);
     return;
   }

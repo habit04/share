@@ -10,6 +10,7 @@ import { captureRevision, saveQueue } from './savequeue';
 import { describeFileError } from './file-errors';
 import type { Editor, FileBridge } from './editor';
 import type { DrawingState } from '../core/document';
+import { model3dSaveWarning, MODEL3D_SAVE_TITLE } from '../model3d/save-guard';
 
 type DwgExportBridge = FileBridge & Required<Pick<FileBridge, 'dwgExportStatus' | 'chooseDwgPath' | 'exportDwg'>>;
 
@@ -60,6 +61,20 @@ export async function exportDwgCopy(ed: Editor): Promise<boolean> {
     return false;
   };
   let target: string | null = null;
+  // The DWG copy cannot hold experimental 3D solids yet: ask first, like Save (No cancels).
+  const loss3d = model3dSaveWarning(state);
+  if (loss3d) {
+    if (!ed.ui) {
+      ed.log('DWG export canceled: the drawing contains 3D objects that DWG files cannot hold in this version, and dropping them requires confirmation in the desktop interface.');
+      return false;
+    }
+    const ok = await ed.ui.confirm(MODEL3D_SAVE_TITLE, loss3d);
+    if (!unchanged()) return changed();
+    if (!ok) {
+      ed.log('DWG export canceled: the drawing contains 3D objects that DWG files cannot hold in this version.');
+      return false;
+    }
+  }
   try {
     const status = await bridge.dwgExportStatus();
     if (!unchanged()) return changed();
