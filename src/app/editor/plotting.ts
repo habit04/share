@@ -12,9 +12,11 @@ import { capturedPlotLookup } from '../plot-fonts';
 import { entityBounds } from '../../core/entities';
 import * as geometry from '../../core/geometry';
 import { paperSpaceLayout, paperEntities, sheetBounds } from '../../core/layouts';
+import { textStylesOf } from '../../io/encoding';
 
 export async function renderPlotImage(ed: Editor, opts: PlotOptions): Promise<{ dataUrl: string; landscape: boolean; sheet: { width: number; height: number }; electron?: string; reducedToFit: boolean } | null> {
-  const state = ed.doc.snapshot, lookup = await capturedPlotLookup(state);
+  const state = ed.doc.snapshot, capturedGeometry = ed.shxResources?.for(ed.sessions.current).capture(textStylesOf(state));
+  const lookup = await capturedPlotLookup(state, capturedGeometry);
   const hidden = new Set(state.layers.filter((l) => !l.visible).map((l) => l.name));
   const layout = paperSpaceLayout(state), entities = layout ? paperEntities(layout) : state.entities;
   let b: geometry.Bounds | null = null;

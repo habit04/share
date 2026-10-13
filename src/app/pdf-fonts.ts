@@ -16,9 +16,10 @@ export const pdfFontKey = textFontKey;
 const familyName = (face: Extract<TextAppearance, { kind: 'canvas' }>) => face.family.split(',')[0]!.trim().replace(/^"|"$/g, '');
 
 /** Programs and matching geometry stay local to a captured PDF, outside global font caches. */
-export async function capturedPdfLookup(state: DrawingState, reader?: PdfFontReader, groups?: readonly PdfDrawGroup[]) {
-  const initialLookup = await capturedPlotLookup(state);
-  if (!reader) return { lookup: initialLookup, fonts: undefined, geometry: undefined, issues: [] as string[] };
+export async function capturedPdfLookup(state: DrawingState, reader?: PdfFontReader, groups?: readonly PdfDrawGroup[], capturedLookup?: BlockLookup) {
+  const initialLookup = capturedLookup ?? await capturedPlotLookup(state);
+  const strokeGeometry = initialLookup.textGeometry?.shxRun ? initialLookup.textGeometry : undefined;
+  if (!reader) return { lookup: initialLookup, fonts: undefined, geometry: strokeGeometry, issues: [] as string[] };
   const styles = textStylesOf(state), metrics = new FontMetricsRegistry(), native = createTextGeometryContext(styles, metrics);
   const wanted = new Map<string, { face: Extract<TextAppearance, { kind: 'canvas' }>; request: FontMetricsRequest }>();
   const discover = (input: Parameters<TextGeometryContext['resolve']>[0]) => {
@@ -70,9 +71,15 @@ export async function capturedPdfLookup(state: DrawingState, reader?: PdfFontRea
     } catch (error) { issues.push(`Font ${request.family}: ${error instanceof Error ? error.message : 'font unavailable'}`); }
   }
   const fonts = new PdfFontRegistry(faces);
-  const geometry: TextGeometryContext | undefined = faces.length ? {
-    get cacheKey() { return native.cacheKey; }, resolve: (input) => native.resolve(input),
+  let oldNative: object | undefined, oldStroke: object | undefined, geometryKey = {};
+  const geometry: TextGeometryContext | undefined = faces.length || strokeGeometry ? {
+    get cacheKey() {
+      if (oldNative !== native.cacheKey || oldStroke !== strokeGeometry?.cacheKey) { oldNative = native.cacheKey; oldStroke = strokeGeometry?.cacheKey; geometryKey = {}; }
+      return geometryKey;
+    },
+    resolve(input) { const face = strokeGeometry?.resolve(input); return face?.kind === 'stroke' ? face : native.resolve(input); },
     measure(text, height, face) {
+      if (face.kind === 'stroke' && strokeGeometry) return strokeGeometry.measure(text, height, face);
       const plain = expandControlCodes(text.replace(/%%[uUoOkK]/g, ''));
       if (face.kind === 'canvas' && fonts.face(pdfFontKey(face)) && native.advances?.(plain, height, face) !== null) return native.measure(plain, height, face);
       const advance = strokeTextWidth(plain, height);
@@ -80,7 +87,9 @@ export async function capturedPdfLookup(state: DrawingState, reader?: PdfFontRea
     },
     fontSize: (height, face) => native.fontSize!(height, face),
     advances: (text, height, face) => native.advances!(text, height, face),
-    baselineDescent: (height, face) => native.baselineDescent!(height, face),
+    baselineDescent: (height, face) => face.kind === 'stroke' && strokeGeometry ? strokeGeometry.baselineDescent!(height, face) : native.baselineDescent!(height, face),
+    shxRun: strokeGeometry?.shxRun,
+    fontIssues: strokeGeometry?.fontIssues,
   } : undefined;
   const lookup: BlockLookup = Object.assign((name: string) => state.blocks[name], { textGeometry: geometry });
   return { lookup, fonts, geometry, issues };

@@ -407,7 +407,7 @@ export function textWidth(text: string, height: number): number {
 export function textCorners(t: TextEntity, context?: TextGeometryContext): Point[] {
   const appearance = context?.resolve(t);
   // SHX/unknown fonts keep the existing stroke geometry and explicit entity appearance.
-  if (context && appearance?.kind === 'canvas') {
+  if (context && (appearance?.kind === 'canvas' || appearance?.kind === 'stroke' && appearance.shxResourceId && context.shxRun?.(t.text, t.height, appearance)?.ok)) {
     const placed = metricTextPlacement(t, context);
     t = placed.text;
     const { metrics } = placed;
@@ -594,7 +594,7 @@ export function dimensionParts(d: DimensionEntity, context?: TextGeometryContext
   if (hit && hit.contextKey === context?.cacheKey) return hit.parts;
   // The dimension's style object is a DIMSTYLE; only DIMTXSTY names the emitted font.
   const appearance = context?.resolve({ style: d.style.textStyle });
-  const measure = context && appearance?.kind === 'canvas'
+  const measure = context && (appearance?.kind === 'canvas' || appearance?.kind === 'stroke' && appearance.shxResourceId)
     ? (text: string, height: number) => {
       const metric = context.measure(text, height, appearance);
       return (Math.max(metric.advance, metric.right) - Math.min(0, metric.left)) * appearance.widthFactor;
@@ -626,15 +626,16 @@ function mtextRendered(m: MTextEntity, context?: TextGeometryContext): MTextRend
   };
   const measure: Measure = context ? (text, height, run) => {
     const runWidth = run?.widthFactor ?? 1, appearance = runAppearance(run)!;
-    if (appearance.kind === 'stroke') return textWidth(text, height);
+    if (appearance.kind === 'stroke' && !appearance.shxResourceId) return textWidth(text, height);
     // Layout applies the run's width factor outside the measurement callback. Return the
     // inherited/effective width divided by that factor so it is applied exactly once.
     return context.measure(text, height, appearance).advance * appearance.widthFactor / runWidth;
   } : textWidth;
-  const ink: InkMeasure | undefined = context && runAppearance()?.kind === 'canvas' ? (text, height, run) => {
+  const baseAppearance = runAppearance();
+  const ink: InkMeasure | undefined = context && (baseAppearance?.kind === 'canvas' || baseAppearance?.kind === 'stroke' && baseAppearance.shxResourceId) ? (text, height, run) => {
     if (!text.trim()) return null;
     const appearance = runAppearance(run)!;
-    if (appearance.kind === 'stroke') return null;
+    if (appearance.kind === 'stroke' && !appearance.shxResourceId) return null;
     const metric = context.measure(text, height, appearance), slant = Math.tan(appearance.oblique);
     if (metric.left === 0 && metric.right === 0 && metric.ascent === 0 && metric.descent === 0) return null;
     const x0 = -metric.descent * slant, x1 = metric.ascent * slant;

@@ -51,6 +51,8 @@ export type SaveErrorChoice = 'retry' | 'saveas' | 'cancel';
 export interface FileBridge {
   /** Desktop platform; absent for the browser file bridge. */
   platform?: string;
+  /** Native picker: no renderer-supplied file path or search root. */
+  openShxFont?(): Promise<import('../../render/shx-fonts').ShxResource | null>;
   /** Windows only: licensed installed programs for this PDF plot, never drawing data. */
   pdfFont?(request: import('../../core/text-metrics').FontMetricsRequest): Promise<import('../pdf-fonts').PdfFontResult>;
   openDxf(): Promise<{ path: string; text: string } | null>;

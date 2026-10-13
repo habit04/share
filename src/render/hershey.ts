@@ -138,7 +138,7 @@ export const hasStrokeFont = glyphs.size > 0;
 
 /** How a text style is drawn: SHX fonts map to the Hershey strokes, TrueType fonts to a canvas font stack. */
 export type TextRenderer =
-  | { readonly kind: 'stroke'; readonly widthFactor: number; readonly oblique: number }
+  | { readonly kind: 'stroke'; readonly widthFactor: number; readonly oblique: number; readonly shxResourceId?: string }
   | {
       readonly kind: 'canvas';
       /** CSS font-family list, most specific first. */

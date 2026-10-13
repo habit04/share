@@ -32,6 +32,7 @@ import { renderSettings } from '../render/draw';
 import { renderPageToCanvas } from '../render/layouts';
 import { capturedPlotLookup } from './plot-fonts';
 import { capturedPdfLookup } from './pdf-fonts';
+import { textStylesOf } from '../io/encoding';
 
 export interface PlotChoiceLike {
   options: PlotOptions;
@@ -120,11 +121,12 @@ export async function plotLayoutsOrVector(ed: Editor, choice: PlotChoiceLike): P
     ed.log('Raster plotting with CTB/STB tables supports one tab at a time. Choose Vector PDF for all layouts.');
     return true;
   }
-  const initialLookup = await capturedPlotLookup(snapshot);
+  const capturedGeometry = ed.shxResources?.for(ed.sessions.current).capture(textStylesOf(snapshot), vector);
+  const initialLookup = await capturedPlotLookup(snapshot, capturedGeometry);
   const state = plottableState(snapshot, initialLookup);
   const target = vector || !snapshot.space ? plotTarget(state, opts) : snapshot.space.layout;
   const initialPages = vector ? plotPages(state, initialLookup, target, opts) : [];
-  const prepared = vector ? await capturedPdfLookup(state, ed.fileBridge?.platform === 'win32' ? ed.fileBridge.pdfFont?.bind(ed.fileBridge) : undefined, initialPages.flatMap((page) => page.groups)) : null;
+  const prepared = vector ? await capturedPdfLookup(state, ed.fileBridge?.platform === 'win32' ? ed.fileBridge.pdfFont?.bind(ed.fileBridge) : undefined, initialPages.flatMap((page) => page.groups), initialLookup) : null;
   const lookup = prepared?.lookup ?? initialLookup;
   const pages = plotPages(state, lookup, target, opts);
   if (pages.length === 0 || pages.every((p) => p.groups.every((grp) => grp.entities.length === 0 && !(grp.frames?.length)))) {
@@ -135,6 +137,7 @@ export async function plotLayoutsOrVector(ed: Editor, choice: PlotChoiceLike): P
   const plotIssues = new Set<string>();
   const style = { ...styleFor(opts, layout), issues: plotIssues };
   const reportPlotStyles = () => {
+    if (lookup.textGeometry?.fontIssues?.size) ed.log(`Font substitutes: ${[...lookup.textGeometry.fontIssues].slice(0, 20).join(' ')}`);
     const issues = [...plotIssues];
     if (issues.length) ed.log(`Plot style limitations: ${issues.slice(0, 20).join(' ')}${issues.length > 20 ? ` (${issues.length - 20} additional issues.)` : ''}`);
   };

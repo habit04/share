@@ -20,8 +20,10 @@ import { registerLayoutCommands } from '../../tools/layouts';
 import type { CommandDef } from './types';
 import type { Editor } from './editor';
 import { fallbackUi } from './internals';
+import { registerShxCommand } from '../shx-resources';
 
 export function registerBuiltinCommands(ed: Editor): void {
+  registerShxCommand(ed);
   const reg = (name: string, aliases: string[], description: string, run: (ed: Editor, arg?: string) => void) =>
     ed.register({ name, aliases, description, run });
 

@@ -64,6 +64,7 @@ import type { DrawingState } from '../core/document';
 import { resolveAlpha } from '../core/appearance';
 import { hasHatchGradient, linearHatchGradientPlan, hatchGradientColorRgb, hatchGradientFrameProblem } from '../core/hatch-gradient';
 import { expandPlotInsert, plotEntityAppearance, plotObjectProperties } from '../render/plot-appearance';
+import { shxTextPaths } from '../render/shx-paths';
 
 // ---------------------------------------------------------------- page model
 
@@ -841,6 +842,25 @@ class PageWriter {
     if (!text.trim()) return;
     const r = textRenderer(textStyleOf(e), this.ctx.textStyles);
     const appearance = this.ctx.textGeometry?.resolve(e);
+    const shx = appearance && this.ctx.textGeometry?.shxRun?.(raw, e.height, appearance);
+    if (shx?.ok) {
+      const placed = metricTextPlacement(e, this.ctx.textGeometry!);
+      const fitted = this.ctx.textGeometry!.shxRun!(raw, placed.text.height, placed.appearance);
+      if (fitted?.ok) {
+        const paths = shxTextPaths(fitted, placed.text, placed.offset), parts: string[] = [];
+        for (const path of paths) {
+          parts.push(`${this.P(path.from)} m`);
+          parts.push(path.controls ? `${this.P(path.controls[0])} ${this.P(path.controls[1])} ${this.P(path.to)} c` : `${this.P(path.to)} l`);
+        }
+        if (parts.length) {
+          this.setDash([]);
+          if (e.bold) this.ops.push(`q ${n(Math.max(0.5, (placed.text.height * this.tf.k) / 12))} w ${parts.join(' ')} S Q`);
+          else this.ops.push(`${parts.join(' ')} S`);
+          this.pathOps += 1;
+        }
+        return;
+      }
+    }
     if (appearance?.kind === 'canvas' && this.ctx.embeddedFonts) {
       const key = textFontKey(appearance), face = this.ctx.embeddedFonts.face(key);
       const run = this.ctx.embeddedFonts.encode(key, text);

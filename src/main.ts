@@ -52,6 +52,7 @@ import { fontMetrics } from './render/font-metrics';
 declare global {
   interface Window {
     jcad?: {
+      openShxFont?(): Promise<import('./render/shx-fonts').ShxResource | null>;
       fontMetrics?(request: import('./core/text-metrics').FontMetricsRequest): Promise<import('./core/text-metrics').NativeFontMetrics | null>;
       pdfFont?(request: import('./core/text-metrics').FontMetricsRequest): Promise<import('./app/pdf-fonts').PdfFontResult>;
       openDxf(): Promise<{ path: string; text: string } | null>;

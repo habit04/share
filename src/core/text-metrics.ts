@@ -43,21 +43,29 @@ export interface TextGeometryContext {
   /** Unshaped native glyph advances; null keeps complex/fallback runs on Canvas shaping. */
   advances?(text: string, height: number, appearance: TextAppearance): readonly number[] | null;
   baselineDescent?(height: number, appearance: TextAppearance): number;
+  /** Runtime SHX geometry, outside drawing/export data; null retains the existing substitute. */
+  shxRun?(text: string, height: number, appearance: TextAppearance): import('../render/shx-fonts').ShxTextRun | null;
+  /** Problems encountered by display-only resource geometry, used by captured plots. */
+  readonly fontIssues?: ReadonlySet<string>;
 }
 
 /** Native TrueType fitting uses the right ink overhang; centering also includes left bearings. */
 export function metricTextPlacement<T extends TextPlacement & TextMetricStyle & { readonly text: string }>(source: T, context: TextGeometryContext) {
   const appearance = context.resolve(source);
+  const strokeRun = appearance.kind === 'stroke' && appearance.shxResourceId ? context.shxRun?.(source.text, source.height, appearance) : null;
+  const nativeStroke = strokeRun?.ok === true;
+  const terminalSpace = strokeRun?.ok === true && strokeRun.terminalSpace;
   const text = placedText({ ...source, widthFactor: source.widthFactor ?? appearance.widthFactor, oblique: source.oblique ?? appearance.oblique }, (value, height) => {
     const metric = context.measure(value, height, appearance);
-    return Math.max(metric.advance, metric.right);
+    return nativeStroke ? terminalSpace ? metric.advance : metric.right || metric.advance : Math.max(metric.advance, metric.right);
   });
   const metrics = context.measure(text.text, text.height, appearance);
   const justification = source.justification;
   const raise = justification?.horizontal === 4 ? text.height / 2 - (metrics.ascent - metrics.descent) / 2
     : justification?.vertical === 1 ? context.baselineDescent?.(text.height, appearance) ?? 0 : 0;
   const placed = raise ? { ...text, position: { x: text.position.x - Math.sin(text.rotation) * raise, y: text.position.y + Math.cos(text.rotation) * raise } } : text;
-  const right = Math.max(metrics.advance, metrics.right), left = Math.min(0, metrics.left);
+  const right = nativeStroke ? terminalSpace ? metrics.advance : metrics.right || metrics.advance : Math.max(metrics.advance, metrics.right);
+  const left = nativeStroke ? terminalSpace ? 0 : metrics.left : Math.min(0, metrics.left);
   const offset = text.align === 'center' ? -(left + right) / 2 : text.align === 'right' ? -right : 0;
   return { text: placed, appearance, metrics, offset };
 }

@@ -33,6 +33,7 @@ import { annotativeEntity } from '../core/layouts';
 import { resolveAlpha } from '../core/appearance';
 import { hasHatchGradient, linearHatchGradientPlan, linearHatchGradientAxis, hatchGradientColorRgb } from '../core/hatch-gradient';
 import { expandPlotInsert, plotEntityAppearance, plotObjectProperties, plotRgbCss } from './plot-appearance';
+import { shxTextPaths } from './shx-paths';
 
 export interface Transform {
   toScreen(p: Point): Point;
@@ -272,7 +273,9 @@ function strokePolyline(ctx: CanvasRenderingContext2D, e: PolylineEntity, tf: Tr
 
 function drawText(ctx: CanvasRenderingContext2D, e: TextEntity, tf: Transform, geometry?: TextGeometryContext): void {
   const source = e;
-  const measured = geometry?.resolve(e).kind === 'canvas' ? metricTextPlacement(e, geometry) : null;
+  const appearance = geometry?.resolve(e);
+  const nativeStroke = appearance?.kind === 'stroke' && appearance.shxResourceId && geometry?.shxRun?.(e.text, e.height, appearance)?.ok;
+  const measured = geometry && (appearance?.kind === 'canvas' || nativeStroke) ? metricTextPlacement(e, geometry) : null;
   e = measured?.text ?? placedText(e, strokeTextWidth);
   const p = tf.toScreen(e.position);
   const px = e.height * tf.scale;
@@ -294,6 +297,24 @@ function drawText(ctx: CanvasRenderingContext2D, e: TextEntity, tf: Transform, g
   }
   // TrueType / OpenType text styles draw with a canvas font stack (SHX and unknown styles fall through to the strokes).
   if (drawStyledText(ctx, text === source.text ? source : { ...source, text }, tf, textStyleOf(source), geometry)) return;
+  const run = measured && geometry?.shxRun?.(text, e.height, measured.appearance);
+  if (run?.ok) {
+    const paths = shxTextPaths(run, e, measured!.offset);
+    canvasSave(ctx, () => {
+      ctx.setLineDash([]); ctx.beginPath();
+      for (const path of paths) {
+        const from = tf.toScreen(path.from), to = tf.toScreen(path.to);
+        ctx.moveTo(from.x, from.y);
+        if (path.controls) {
+          const first = tf.toScreen(path.controls[0]), second = tf.toScreen(path.controls[1]);
+          ctx.bezierCurveTo(first.x, first.y, second.x, second.y, to.x, to.y);
+        } else ctx.lineTo(to.x, to.y);
+      }
+      if (e.bold) ctx.lineWidth += Math.max(1, px / 12);
+      if (paths.length) ctx.stroke();
+    });
+    return;
+  }
   if (hasStrokeFont) {
     const plain = wf === 1 && slant === 0;
     const strokes = plain ? strokeText(text, e.position, e.height, e.rotation, e.align) : strokeText(text, { x: 0, y: 0 }, e.height, 0, e.align);

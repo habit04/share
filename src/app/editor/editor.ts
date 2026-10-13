@@ -19,6 +19,8 @@
 import type { Point } from '../../core/geometry';
 import type { Entity } from '../../core/entities';
 import { Drawing } from '../../core/document';
+import { textGeometryForStyles } from '../../render/font-metrics';
+import { SessionShxResources } from '../shx-resources';
 import type { DrawingState } from '../../core/document';
 import { GeometryBudgetError } from '../../core/geometry-budget-error';
 import { defaultSnapSettings, type SnapSettings } from '../../core/snap';
@@ -52,7 +54,8 @@ import * as plotting from './plotting';
 const VERSION: string = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : 'dev';
 
 export class Editor {
-  readonly doc = new Drawing();
+  readonly shxResources = new SessionShxResources((session) => { if (this.sessions.current === session) this.render(); });
+  readonly doc = new Drawing(undefined, (styles) => this.sessions ? this.shxResources.for(this.sessions.current).geometry(styles) : textGeometryForStyles(styles));
   // ---- UI/workflow extensions (file tabs, Properties panel) — logic lives in app/sessions.ts / src/ui.
   /** Open drawings ("file tabs"); the active one is `doc`. */
   readonly sessions: SessionManager = new SessionManager(this);
