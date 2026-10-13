@@ -109,13 +109,11 @@ async function verifyPortableWriter(locations, fileSystem = fs) {
     for (const item of verified) {
       const stat = await fileSystem.lstat(item.file);
       if (!stat.isFile() || stat.isSymbolicLink() || stat.dev !== item.dev || stat.ino !== item.ino || stat.size !== item.size) throw new Error('DWG writer changed after its integrity check.');
-      if (fileIdentity(stat) !== item.identity) {
-        // Windows can update executable metadata on first use without changing its contents.
-        // A timestamp change permits only a fresh bounded hash of the same regular file.
-        const result = await hashHelper(item.file, item.size, fileSystem);
-        if (result.dev !== item.dev || result.ino !== item.ino || result.sha256 !== item.sha256) throw new Error('DWG writer changed after its integrity check.');
-        item.identity = result.identity;
-      }
+      // Windows timestamps can collide or be restored after a same-size edit. Each admission
+      // checks actual bounded bytes; harmless executable timestamp changes still pass.
+      const result = await hashHelper(item.file, item.size, fileSystem);
+      if (result.dev !== item.dev || result.ino !== item.ino || result.sha256 !== item.sha256) throw new Error('DWG writer changed after its integrity check.');
+      item.identity = result.identity;
     }
     if ((await fileSystem.readdir(directory)).some((name) => name !== 'integrity.json' && !names.has(name.toLowerCase()))) throw new Error('DWG writer bundle contains an unverified file.');
   };
