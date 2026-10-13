@@ -263,6 +263,25 @@ mesh modules exist; 5's writer can start with 1's types. Milestone 4 waits for 2
   2 M-triangle scene) with `JCAD_PERF_FACTOR`; a `bench:3d` phase in `scripts/bench.mjs` for frame
   time once the viewport exists.
 
+## Owner decisions (2026-10-13)
+
+1. **Kernel:** Manifold stays in the worker; the renderer CSP is unchanged; the worker gets its
+   own restrictive CSP (bundled scripts and WASM only, no external loads). WASM never runs in
+   the renderer thread. A worker shares the renderer process and is not described as complete
+   memory or crash isolation.
+2. **DWG:** DWG saves of drawings with solids stay refused; the Rust writer is not extended in
+   this milestone; solids are never removed or downgraded to make a save succeed; the refusal
+   explains that JCad DXF (Save / Save As DXF, autosave and recovery) preserves the model. DWG
+   solid support, matching import and round-trip validation are a separate decision.
+3. **Dimensions:** true 3D dimension entities with their measurement plane, correct
+   measurements, saving/loading and undo/redo (`DIM3D`); the `3DDIM` prototype remains as an
+   interim feature that clearly identifies projected measurements.
+4. **E-19 / E-20 before any 3D release:** worker CSP implemented and verified; a hard WASM
+   linear-memory maximum of 1 GiB with the operation limits, timeouts and graceful failures
+   retained; operations the limit prevents are reported and the limit is only raised on request;
+   both verified in a packaged (unpacked directory) Windows test build. No installer or
+   publication yet; further work only on request.
+
 ## Decisions that need the owner's input
 
 These do not block the milestones; defaults are stated and used until told otherwise.
