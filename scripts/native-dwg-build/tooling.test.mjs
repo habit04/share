@@ -100,6 +100,15 @@ test('metadata projection retains stored builtin class definitions and their act
   assert.match(application.before, /SPATIAL_INDEX[\s\S]*VALUE_TFF \("AutoCAD 2000", 3\)/);
   assert.match(application.after, /VALUE_T \(dwg->dwg_class\[j\]\.appname, 3\)/);
   assert.doesNotMatch(application.after, /AutoCAD 2000|VALUE_TFF/);
+  const getters = patch.files.find(file => file.path === 'bindings/javascript/embind/binding_func.cpp');
+  const copied = getters.replacements.find(replacement => replacement.after.includes('const auto class_text'));
+  assert.ok(copied); assert.equal(copied.count, 1);
+  assert.match(copied.after, /IS_FROM_TU_DWG\(dwg\)/);
+  assert.match(copied.after, /length < 1025[\s\S]*length > 1024/);
+  assert.match(copied.after, /unique_ptr<char, decltype\(&free\)> utf8\(bit_convert_TU\(text\), &free\)/);
+  assert.match(copied.after, /"appname", class_text\(cls->appname\)/);
+  assert.match(copied.after, /"cppname", class_text\(cls->cppname\)/);
+  assert.doesNotMatch(copied.after, /reinterpret_cast<uintptr_t>|class_ptr/);
 });
 
 test('native candidate upload is gated by exact color and MINSERT acceptance', () => {

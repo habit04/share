@@ -203,7 +203,17 @@
         },
         {
           "before": "#include \"binding_common.h\"",
-          "after": "#include \"binding_common.h\"\n#include <cstdio>\n#include <cstdlib>\n#include <cstring>\n#include <memory>",
+          "after": "#include \"binding_common.h\"\n#include <cstdio>\n#include <cstdlib>\n#include <cstring>\n#include <memory>\n#include <stdexcept>",
+          "count": 1
+        },
+        {
+          "before": "#ifndef DISABLE_DXF\n#include \"bits.h\"\n#include \"out_dxf.h\"\n#endif",
+          "after": "#include \"bits.h\"\n#ifndef DISABLE_DXF\n#include \"out_dxf.h\"\n#endif",
+          "count": 1
+        },
+        {
+          "before": "  if (cls) {\n    emscripten::val result = emscripten::val::object();\n    result.set(\"num\", cls->number);\n    result.set(\"proxyflag\", cls->proxyflag);\n    result.set(\"appname\", std::string(cls->appname));\n    result.set(\"cppname\", std::string(cls->cppname));",
+          "after": "  if (cls) {\n    // R2007+ class application/CPP names are TU; dxfname is already TV.\n    // Return bounded owned UTF-8 strings, never a borrowed class/string pointer.\n    const auto class_text = [dwg](const char* raw) -> std::string {\n      if (!raw) return std::string();\n      if (IS_FROM_TU_DWG(dwg)) {\n        const BITCODE_TU text = reinterpret_cast<BITCODE_TU>(const_cast<char*>(raw));\n        size_t length = 0;\n        while (length < 1025 && text[length]) ++length;\n        if (length > 1024) throw std::length_error(\"Native class name exceeds its limit.\");\n        std::unique_ptr<char, decltype(&free)> utf8(bit_convert_TU(text), &free);\n        return utf8 ? std::string(utf8.get()) : std::string();\n      }\n      if (strnlen(raw, 1025) > 1024) throw std::length_error(\"Native class name exceeds its limit.\");\n      return std::string(raw);\n    };\n    emscripten::val result = emscripten::val::object();\n    result.set(\"num\", cls->number);\n    result.set(\"proxyflag\", cls->proxyflag);\n    result.set(\"appname\", class_text(cls->appname));\n    result.set(\"cppname\", class_text(cls->cppname));",
           "count": 1
         },
         {

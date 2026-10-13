@@ -203,7 +203,9 @@ artifact name. This gate establishes the fixture's native decoding, not complete
 all DWG versions, browser adapter behavior, or final signed installer behavior.
 
 The metadata gate also compares every projected CLASS definition against copied native values
-from the existing `dwg_get_class` getter, within the same live read. It checks complete class
+from the existing `dwg_get_class` getter, within the same live read. Its application/CPP string
+getter converts R2007+ UTF-16 using the owning file version, with bounded null-safe owned values.
+The original getter truncated those names at the first UTF-16 null byte. It checks complete class
 coverage, DXF/CPP/application names, proxy flags, zombie/entity discriminators and stored counts.
 The private `out_dxf.c` repair retains the native ACDBPLACEHOLDER/LAYOUT definitions that modern
 DXF export otherwise omits, and keeps the stored SPATIAL_INDEX application name. DATATABLE's
