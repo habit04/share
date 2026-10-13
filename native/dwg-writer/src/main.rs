@@ -1,4 +1,5 @@
 //! Offline Windows DWG copies with strict protocol, preflight, OS budget, and reopening checks.
+mod source_schema;
 mod spline_packet;
 mod validation;
 mod windows_job;
@@ -241,7 +242,19 @@ fn equivalent(before: &Value, after: &Value, location: &str) -> Result<(), Strin
         }
         (Value::Object(a), Value::Object(b)) => {
             if a.len() != b.len() {
-                return Err(format!("DWG reopening changed {location} fields."));
+                let removed: Vec<_> = a
+                    .keys()
+                    .filter(|key| !b.contains_key(*key))
+                    .take(4)
+                    .map(|key| key.chars().take(120).collect::<String>())
+                    .collect();
+                let added: Vec<_> = b
+                    .keys()
+                    .filter(|key| !a.contains_key(*key))
+                    .take(4)
+                    .map(|key| key.chars().take(120).collect::<String>())
+                    .collect();
+                return Err(format!("DWG reopening changed {location} fields (missing: {removed:?}; added: {added:?})."));
             }
             for (key, a) in a {
                 equivalent(
@@ -315,6 +328,11 @@ fn retained_metadata(object: &ObjectType) -> bool {
             | ObjectType::Field(_)
             | ObjectType::FieldList(_)
             | ObjectType::XRecord(_)
+            | ObjectType::Group(_)
+            | ObjectType::BookColor(_)
+            | ObjectType::MultiLeaderStyle(_)
+            | ObjectType::DictionaryVariable(_)
+            | ObjectType::Scale(_)
     )
 }
 
@@ -471,7 +489,7 @@ fn canonicalize_metadata(value: &mut Value, aliases: &BTreeMap<u64, String>) -> 
                     canonical_handle(child, aliases)?;
                 } else if matches!(
                     key.as_str(),
-                    "reactors" | "child_fields" | "referenced_objects" | "fields"
+                    "reactors" | "child_fields" | "referenced_objects" | "fields" | "entities"
                 ) {
                     for handle in child
                         .as_array_mut()
@@ -568,6 +586,14 @@ fn typed_metadata_value(object: &ObjectType) -> Result<Value, String> {
     }
     let mut value =
         serde_json::to_value(object).map_err(|_| "Cannot verify typed metadata fields.")?;
+    // GROUP and MLEADERSTYLE names live in their owning dictionary keys, which
+    // the graph compares separately. Their binary records have no name slot;
+    // the native reader may populate this derived convenience field differently.
+    for kind in ["Group", "MultiLeaderStyle", "DictionaryVariable"] {
+        if let Some(fields) = value.get_mut(kind).and_then(Value::as_object_mut) {
+            fields.remove("name");
+        }
+    }
     if let Some(fields) = value.get_mut("XRecord").and_then(Value::as_object_mut) {
         // These fields describe binary storage, not decoded XRECORD values or
         // reference kinds. Completeness and all typed entries remain mandatory.
@@ -606,6 +632,16 @@ fn checked_metadata_object(doc: &CadDocument, object: &ObjectType) -> Result<(),
                 .any(|handle| !matches!(doc.objects.get(handle), Some(ObjectType::Field(_))))
             {
                 return Err("FIELDLIST references a missing or non-FIELD object.".into());
+            }
+            None
+        }
+        ObjectType::Group(value) => {
+            if value
+                .entities
+                .iter()
+                .any(|handle| doc.get_entity(*handle).is_none())
+            {
+                return Err("GROUP references a missing or non-entity member.".into());
             }
             None
         }
@@ -691,7 +727,52 @@ fn metadata_snapshot(doc: &CadDocument) -> Result<Value, String> {
         }
         xdata.insert(identity, value);
     }
-    Ok(serde_json::json!({ "views": views, "objects": graph, "common": common, "xdata": xdata }))
+    let header = &doc.header;
+    let mut repaired_header = serde_json::json!({
+        "dim_fixed_extension_length": header.dim_fixed_extension_length,
+        "dim_jog_angle": header.dim_jog_angle,
+        "dim_text_fill": header.dim_text_fill,
+        "dim_text_fill_color": header.dim_text_fill_color,
+        "dim_arc_symbol": header.dim_arc_symbol,
+        "dim_fixed_extension_line": header.dim_fixed_extension_line,
+        "dim_text_direction": header.dim_text_direction,
+        "dwf_3d_precision": header.dwf_3d_precision,
+        "polysolid_width": header.polysolid_width,
+        "polysolid_height": header.polysolid_height,
+        "light_glyph_display": header.light_glyph_display,
+        "tilemode_light_sync": header.tilemode_light_sync,
+        "real_world_scale": header.real_world_scale,
+        "interference_color": header.interference_color,
+        "interference_object_style_handle": header.interference_object_style_handle,
+        "interference_viewport_style_handle": header.interference_viewport_style_handle,
+        "drag_visual_style_handle": header.drag_visual_style_handle,
+        "shadow_mode": header.shadow_mode,
+        "current_material_handle": header.current_material_handle,
+        "dim_text_style_handle": header.dim_text_style_handle,
+    });
+    canonicalize_metadata(&mut repaired_header, &aliases)?;
+    let mut classes = BTreeMap::new();
+    for class in doc.classes.iter() {
+        // Class numbers and DWG version words are storage details, not DXF
+        // declaration properties. Only the instance count is derived in DXF.
+        let definition = serde_json::json!({
+            "name": class.dxf_name,
+            "cpp_name": class.cpp_class_name,
+            "application": class.application_name,
+            "proxy_flags": class.proxy_flags,
+            "was_zombie": class.was_zombie,
+            "is_entity": class.is_an_entity,
+        });
+        if classes
+            .insert(class.dxf_name.to_uppercase(), definition)
+            .is_some()
+        {
+            return Err("Duplicate native CLASS declaration cannot be verified.".into());
+        }
+    }
+    Ok(
+        serde_json::json!({ "header": repaired_header, "classes": classes, "views": views, "objects": graph, "common": common, "xdata": xdata }),
+    )
 }
 
 #[derive(Default, Debug)]
@@ -967,6 +1048,7 @@ fn convert() -> Result<Report, String> {
     let text = std::str::from_utf8(&bytes)
         .map_err(|_| "DWG export expects UTF-8 DXF interchange input.")?;
     let preflight = validation::validate(text)?;
+    let source_schema = source_schema::capture(text)?;
     let literal_source = source_literals(text)?;
     let layers = preflight
         .layers
@@ -979,6 +1061,7 @@ fn convert() -> Result<Report, String> {
         .map_err(|error| error.to_string())?
         .read()
         .map_err(|error| error.to_string())?;
+    source_schema.verify(&mut document)?;
     no_notifications(&document, "import")?;
     // A parser-normalized baseline must not hide a changed literal payload.
     // This runs before any output is created; reopening compares these verified
@@ -1392,6 +1475,382 @@ mod tests {
             "metadata"
         )
         .is_ok());
+    }
+
+    fn metadata_style_document() -> CadDocument {
+        use acadrust::entities::{EntityType, Line};
+        use acadrust::objects::{BookColor, Group, MultiLeaderStyle, TextAttachmentType};
+        let mut doc = metadata_document(0);
+        let root = Handle::new(0x200);
+        let mut members = Vec::new();
+        for handle in [0x300, 0x301] {
+            let mut line = Line::from_coords(0.0, 0.0, 0.0, 10.0, 0.0, 0.0);
+            line.common.handle = Handle::new(handle);
+            members.push(doc.add_entity(EntityType::Line(line)).unwrap());
+        }
+        let mut group = Group::new("OWNED_LINES");
+        group.handle = Handle::new(0x207);
+        group.owner = root;
+        group.description = "Ordered native group Δ 雷".into();
+        group.entities = members;
+        let mut color = BookColor::new();
+        color.handle = Handle::new(0x208);
+        color.owner = root;
+        color.color = acadrust::types::Color::Rgb {
+            r: 0x12,
+            g: 0x34,
+            b: 0x56,
+        };
+        color.book_name = "Studio Book".into();
+        color.color_name = "Teal 雷".into();
+        let mut style = MultiLeaderStyle::new("NATIVE_STYLE");
+        style.handle = Handle::new(0x209);
+        style.owner_handle = root;
+        style.align_space = 0.18;
+        style.enable_block_scale = true;
+        style.enable_block_rotation = true;
+        style.text_top_attachment = TextAttachmentType::CenterOfText;
+        style.text_bottom_attachment = TextAttachmentType::CenterOfText;
+        style.unknown_flag_298 = true;
+        let ObjectType::Dictionary(dictionary) = doc.objects.get_mut(&root).unwrap() else {
+            unreachable!()
+        };
+        dictionary.add_entry("OWNED_LINES", group.handle);
+        dictionary.add_entry("TEAL", color.handle);
+        dictionary.add_entry("NATIVE_STYLE", style.handle);
+        doc.objects.insert(group.handle, ObjectType::Group(group));
+        doc.objects
+            .insert(color.handle, ObjectType::BookColor(color));
+        doc.objects
+            .insert(style.handle, ObjectType::MultiLeaderStyle(style));
+        doc
+    }
+
+    #[test]
+    fn metadata_graph_rejects_changed_group_membership_color_books_and_mleaderstyle_fields() {
+        let source = metadata_style_document();
+        let snapshot = metadata_snapshot(&source).unwrap();
+        for change in [
+            "group-order",
+            "group-member",
+            "group-description",
+            "group-selectable",
+            "group-unnamed",
+            "book-color",
+            "book-name",
+            "color-name",
+            "align-space",
+            "block-scale",
+            "block-rotation",
+            "top-attachment",
+            "bottom-attachment",
+            "flag298",
+        ] {
+            let mut changed = source.clone();
+            match change {
+                "group-order" | "group-member" | "group-description" | "group-selectable"
+                | "group-unnamed" => {
+                    let ObjectType::Group(group) =
+                        changed.objects.get_mut(&Handle::new(0x207)).unwrap()
+                    else {
+                        unreachable!()
+                    };
+                    match change {
+                        "group-order" => group.entities.reverse(),
+                        "group-member" => group.entities[1] = group.entities[0],
+                        "group-description" => group.description.push('!'),
+                        "group-selectable" => group.selectable = !group.selectable,
+                        _ => group.unnamed = !group.unnamed,
+                    }
+                }
+                "book-color" | "book-name" | "color-name" => {
+                    let ObjectType::BookColor(color) =
+                        changed.objects.get_mut(&Handle::new(0x208)).unwrap()
+                    else {
+                        unreachable!()
+                    };
+                    match change {
+                        "book-color" => color.color = acadrust::types::Color::from_index(2),
+                        "book-name" => color.book_name.push('!'),
+                        _ => color.color_name.push('!'),
+                    }
+                }
+                _ => {
+                    let ObjectType::MultiLeaderStyle(style) =
+                        changed.objects.get_mut(&Handle::new(0x209)).unwrap()
+                    else {
+                        unreachable!()
+                    };
+                    match change {
+                        "align-space" => style.align_space = 0.0,
+                        "block-scale" => style.enable_block_scale = false,
+                        "block-rotation" => style.enable_block_rotation = false,
+                        "top-attachment" => {
+                            style.text_top_attachment =
+                                acadrust::objects::TextAttachmentType::TopOfTopLine
+                        }
+                        "bottom-attachment" => {
+                            style.text_bottom_attachment =
+                                acadrust::objects::TextAttachmentType::BottomOfBottomLine
+                        }
+                        _ => style.unknown_flag_298 = false,
+                    }
+                }
+            }
+            assert!(
+                metadata_snapshot(&changed)
+                    .and_then(|changed| equivalent(&snapshot, &changed, "metadata"))
+                    .is_err(),
+                "{change}"
+            );
+        }
+    }
+
+    #[test]
+    fn original_autocad_mleaderstyle_preserves_every_previously_omitted_typed_property() {
+        let text = include_str!("../tests/fixtures/autocad-mleaderstyle.dxf");
+        let doc = DxfReader::from_reader(std::io::Cursor::new(text.as_bytes()))
+            .unwrap()
+            .read()
+            .unwrap();
+        let Some(ObjectType::MultiLeaderStyle(style)) = doc.objects.get(&Handle::new(0x16B)) else {
+            panic!("Original MLEADERSTYLE identity was lost")
+        };
+        assert_eq!(style.align_space, 0.18);
+        assert!(style.enable_block_scale);
+        assert!(style.enable_block_rotation);
+        assert_eq!(
+            style.text_bottom_attachment,
+            acadrust::objects::TextAttachmentType::CenterOfText
+        );
+        assert_eq!(
+            style.text_top_attachment,
+            acadrust::objects::TextAttachmentType::CenterOfText
+        );
+        assert!(style.unknown_flag_298);
+        assert_eq!(
+            style.multileader_draw_order,
+            acadrust::objects::MultiLeaderDrawOrderType::LeaderFirst
+        );
+        assert_eq!(style.line_color, acadrust::types::Color::ByBlock);
+        assert_eq!(style.text_color, acadrust::types::Color::ByBlock);
+        assert_eq!(style.block_content_color, acadrust::types::Color::ByBlock);
+        assert_eq!(doc.object_reactors(style.handle), vec![Handle::new(0x16A)]);
+        assert_eq!(doc.object_owner(style.handle), Some(Handle::new(0x16A)));
+    }
+
+    #[test]
+    fn original_autocad_header_values_survive_the_actual_binary_header_codec() {
+        let text = include_str!("../tests/fixtures/autocad-header.dxf");
+        let doc = DxfReader::from_reader(std::io::Cursor::new(text.as_bytes()))
+            .unwrap()
+            .read()
+            .unwrap();
+        assert_eq!(doc.header.polysolid_width, 0.25);
+        assert_eq!(doc.header.polysolid_height, 4.0);
+        assert_eq!(doc.header.light_glyph_display, 1);
+        assert_eq!(doc.header.dim_fixed_extension_length, 1.0);
+        assert_eq!(doc.header.dim_jog_angle, std::f64::consts::FRAC_PI_4);
+        assert!(doc.header.real_world_scale);
+        assert_eq!(doc.header.current_material_handle, Handle::new(0x122));
+        assert_eq!(
+            doc.header.interference_object_style_handle,
+            Handle::new(0x144)
+        );
+        assert_eq!(
+            doc.header.interference_viewport_style_handle,
+            Handle::new(0x141)
+        );
+        let written = acadrust::io::dwg::dwg_stream_writers::header_writer::write_header(
+            DxfVersion::AC1032,
+            &doc.header,
+            0,
+        );
+        let reopened = acadrust::io::dwg::dwg_stream_readers::header_reader::read_header(
+            &written,
+            DxfVersion::AC1032,
+            0,
+        )
+        .unwrap();
+        let value = |header: &acadrust::document::HeaderVariables| {
+            serde_json::json!({
+                "width": header.polysolid_width, "height": header.polysolid_height,
+                "glyphs": header.light_glyph_display, "fixed_length": header.dim_fixed_extension_length,
+                "jog": header.dim_jog_angle, "real_world": header.real_world_scale,
+                "material": header.current_material_handle, "object_style": header.interference_object_style_handle,
+                "viewport_style": header.interference_viewport_style_handle,
+                "interference_color": header.interference_color,
+            })
+        };
+        equivalent(&value(&doc.header), &value(&reopened), "original HEADER").unwrap();
+    }
+
+    #[test]
+    fn source_schema_rejects_unencoded_header_and_unconsumed_object_properties() {
+        for body in [
+            "9\n$PRIVATE_HEADER\n1\nsecret\n",
+            "9\n$UNITMODE\n70\n1\n",
+            "9\n$UCSORGTOP\n10\n1\n20\n0\n30\n0\n",
+            "9\n$PSOLHEIGHT\n40\n0\n",
+        ] {
+            let text =
+                format!("0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1032\n{body}0\nENDSEC\n0\nEOF\n");
+            assert!(source_schema::capture(&text).is_err());
+        }
+        for kind in [
+            "GROUP",
+            "DBCOLOR",
+            "MLEADERSTYLE",
+            "DICTIONARY",
+            "DICTIONARYVAR",
+            "SCALE",
+        ] {
+            let text = format!("0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1032\n0\nENDSEC\n0\nSECTION\n2\nOBJECTS\n0\n{kind}\n5\n200\n100\nAcDbObject\n309\nlost property\n0\nENDSEC\n0\nEOF\n");
+            assert!(source_schema::capture(&text).is_err(), "{kind}");
+        }
+        source_schema::capture(include_str!("../tests/fixtures/autocad-header.dxf")).unwrap();
+        source_schema::capture(include_str!("../tests/fixtures/autocad-mleaderstyle.dxf")).unwrap();
+    }
+
+    #[test]
+    fn source_class_definitions_survive_default_pool_and_native_reopening() {
+        // These declarations are the stock definitions used by JCad's fresh
+        // DXF drawings; the placeholder is intentionally unused.
+        let text = "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1032\n0\nENDSEC\n0\nSECTION\n2\nCLASSES\n0\nCLASS\n1\nACDBDICTIONARYWDFLT\n2\nAcDbDictionaryWithDefault\n3\nISM\n90\n0\n91\n0\n280\n0\n281\n0\n0\nCLASS\n1\nACDBPLACEHOLDER\n2\nAcDbPlaceHolder\n3\nISM\n90\n0\n91\n0\n280\n0\n281\n0\n0\nENDSEC\n0\nEOF\n";
+        // Keep declarations required by the library's generated standard
+        // objects, while replacing the two declarations under test.
+        let defaults = CadDocument::new();
+        let mut extra = String::new();
+        for class in defaults.classes.iter().filter(|class| {
+            !matches!(
+                class.dxf_name.as_str(),
+                "ACDBDICTIONARYWDFLT" | "ACDBPLACEHOLDER"
+            )
+        }) {
+            extra.push_str(&format!(
+                "0\nCLASS\n1\n{}\n2\n{}\n3\n{}\n90\n{}\n91\n0\n280\n{}\n281\n{}\n",
+                class.dxf_name,
+                class.cpp_class_name,
+                class.application_name,
+                class.proxy_flags.0,
+                i32::from(class.was_zombie),
+                i32::from(class.is_an_entity)
+            ));
+        }
+        let text = text.replace(
+            "0\nENDSEC\n0\nEOF\n",
+            &format!("{extra}0\nENDSEC\n0\nEOF\n"),
+        );
+        let document = DxfReader::from_reader(std::io::Cursor::new(text.into_bytes()))
+            .unwrap()
+            .read()
+            .unwrap();
+        for name in ["ACDBDICTIONARYWDFLT", "ACDBPLACEHOLDER"] {
+            assert_eq!(
+                document.classes.get_by_name(name).unwrap().application_name,
+                "ISM"
+            );
+        }
+        let before = metadata_snapshot(&document).unwrap()["classes"].clone();
+        let mut output = Vec::new();
+        DwgWriter::write_to_writer(&mut output, &document).unwrap();
+        let reopened = DwgReader::from_stream(std::io::Cursor::new(output))
+            .read()
+            .unwrap();
+        equivalent(
+            &before,
+            &metadata_snapshot(&reopened).unwrap()["classes"],
+            "source CLASS",
+        )
+        .unwrap();
+        for change in ["app", "cpp", "proxy", "zombie", "entity", "missing"] {
+            let mut changed = document.clone();
+            if change == "missing" {
+                changed.classes.clear();
+            } else {
+                let mut definitions: Vec<_> = changed.classes.iter().cloned().collect();
+                let class = definitions
+                    .iter_mut()
+                    .find(|class| class.dxf_name == "ACDBPLACEHOLDER")
+                    .unwrap();
+                match change {
+                    "app" => class.application_name = "ObjectDBX Classes".into(),
+                    "cpp" => class.cpp_class_name = "AcDbOther".into(),
+                    "proxy" => class.proxy_flags = acadrust::classes::ProxyFlags::ERASE_ALLOWED,
+                    "zombie" => class.was_zombie = true,
+                    "entity" => class.is_an_entity = true,
+                    _ => unreachable!(),
+                }
+                changed.classes.clear();
+                for class in definitions {
+                    changed.classes.add_or_update(class);
+                }
+            }
+            assert!(
+                equivalent(
+                    &before,
+                    &metadata_snapshot(&changed).unwrap()["classes"],
+                    "CLASS mutation"
+                )
+                .is_err(),
+                "{change}"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_annotation_headers_materialize_owned_objects_and_refuse_retained_conflicts() {
+        let text = "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1032\n9\n$CANNOSCALE\n2\n1:4\n9\n$ANNOALLVISIBLE\n70\n0\n0\nENDSEC\n0\nEOF\n";
+        let source = source_schema::capture(text).unwrap();
+        let mut document = DxfReader::from_reader(std::io::Cursor::new(text.as_bytes()))
+            .unwrap()
+            .read()
+            .unwrap();
+        source.verify(&mut document).unwrap();
+        let ObjectType::Dictionary(root) =
+            &document.objects[&document.header.named_objects_dict_handle]
+        else {
+            unreachable!()
+        };
+        let vars_handle = root.get("AcDbVariableDictionary").unwrap();
+        let ObjectType::Dictionary(vars) = &document.objects[&vars_handle] else {
+            unreachable!()
+        };
+        let scale_var = vars.get("CANNOSCALE").unwrap();
+        let visible_var = vars.get("ANNOALLVISIBLE").unwrap();
+        assert!(
+            matches!(&document.objects[&scale_var], ObjectType::DictionaryVariable(value) if value.value == "1:4" && value.owner_handle == vars_handle)
+        );
+        assert!(
+            matches!(&document.objects[&visible_var], ObjectType::DictionaryVariable(value) if value.value == "0" && value.owner_handle == vars_handle)
+        );
+        assert!(document.objects.values().any(|object| matches!(object, ObjectType::Scale(value) if value.name == "1:4" && value.paper_units == 1.0 && value.drawing_units == 4.0)));
+        assert_eq!(document.header.annotation_scale_value, 0.25);
+        let before = metadata_snapshot(&document).unwrap();
+        source.verify(&mut document).unwrap();
+        equivalent(
+            &before,
+            &metadata_snapshot(&document).unwrap(),
+            "idempotent annotations",
+        )
+        .unwrap();
+        for (paper, drawing) in [(f64::MAX, f64::MIN_POSITIVE), (f64::MIN_POSITIVE, f64::MAX)] {
+            let mut invalid = document.clone();
+            for object in invalid.objects.values_mut() {
+                if let ObjectType::Scale(value) = object {
+                    if value.name == "1:4" {
+                        value.paper_units = paper;
+                        value.drawing_units = drawing;
+                    }
+                }
+            }
+            assert!(source.verify(&mut invalid).is_err());
+        }
+        let conflicting = source_schema::capture(&text.replace("1:4", "1:2")).unwrap();
+        assert!(conflicting
+            .verify(&mut document)
+            .unwrap_err()
+            .contains("contradicts"));
     }
 
     #[test]
