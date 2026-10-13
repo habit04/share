@@ -12,6 +12,10 @@ Dependencies are exact versions with a Cargo lockfile. `scripts/prepare-dwg-writ
 
 The private patched DWG reader is used only to verify files just emitted by this helper. It must not read external DWGs: its frame-only MTEXT storage assumptions match this writer and can differ from AutoCAD-authored files. JCad's external DWG import continues to use its existing isolated LibreDWG reader.
 
+Paper-space BLOCK markers preserve full logical names while their BLOCK_HEADER names keep the abbreviated binary convention. Only primary paper-space owners use implicit mode1; secondary sheet markers and geometry encode their actual owner in mode0, even when DXF group67 marks them as paper space. Native regressions inspect encoded object fields before private-reader name/ownership restoration and then require full snapshots and layout closure. Explicit source layouts also suppress an unreferenced source-absent constructor Layout1; source layouts and source references are never removed to make that cleanup pass.
+
+INSERT retains a declared SEQEND identity and its explicit parent owner. Reactor, extension-dictionary and XDATA payloads on a SEQEND remain unsupported, and incoming metadata pointers still refuse when that marker lacks a registered metadata identity. Identity retention does not certify those unsupported payloads.
+
 Run `cargo test --locked` after preparation. Release packaging must use the staged binary and matching integrity manifest; any signing or binary mutation must happen before the final manifest is generated.
 
 The standalone source archive already includes the verified patched `vendor/acadrust` tree. To rebuild its helper without the full application's Node tooling, install the pinned **Rust 1.99.0 GNU** toolchain with target `x86_64-pc-windows-gnu`, open a terminal in `native/dwg-writer`, and run:

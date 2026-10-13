@@ -4,7 +4,7 @@ The Windows DXF-to-DWG helper links acadrust 0.6.4, pinned by its published crat
 SHA-256 and matching upstream commit in `pins.json`. It is MPL-2.0 licensed; the
 unmodified full license is included here. The helper itself is GPL-3.0-only.
 
-Eighty-two exact source replacements in fourteen files correct standalone MTEXT frame
+Eighty-nine exact source replacements in fifteen files correct standalone MTEXT frame
 output, its matching private validator, owned ATTRIB parent relationships,
 MINSERT's owned-attribute count before array fields, FIELD/FIELDLIST common DXF
 groups, the VIEW front-clipping mode bit, opaque DXF metadata strings, MLEADERSTYLE
@@ -14,6 +14,28 @@ original and patched files. `scripts/prepare-dwg-writer.mjs` verifies the origin
 crate, extracts it inside the ignored build directory and applies only these replacements.
 No prebuilt executable is committed. The released bundle includes the helper and
 modified crate source, Cargo.lock and third-party license notices.
+
+Synthesized BLOCK begin markers retain full logical names, including paper-space
+and anonymous suffixes; BLOCK_HEADER continues to use its abbreviated DWG name.
+Only the header-designated primary paper space uses implicit entity mode1.
+Secondary paper-space markers, LINEs and VIEWPORTs encode mode0 with their actual
+BLOCK_RECORD owner. A native regression reads these encoded fields before the
+private reader can restore names or ownership from block lists, then requires
+full metadata snapshots and distinct layout/reference closure after reopening.
+The source schema removes only the known constructor Layout1 when explicit source
+layouts exist and that constructor identity is absent from every source object
+and reference. Source layouts and explicit source references remain protected;
+the candidate must retain full closure before it becomes the writer baseline.
+The INSERT decoder retains the declared SEQEND handle, which the existing binary
+writer already reuses. An explicit wrong INSERT owner or SEQEND reactor,
+extension dictionary or XDATA refuses: this repair stores identity only, and
+does not claim a complete typed SEQEND metadata representation. Incoming retained
+object references to a SEQEND still require a registered metadata identity;
+the existing native closure guard refuses them when that identity is unavailable.
+The retained terminator raises HANDSEED with checked arithmetic during DXF import,
+before post-read repair or output allocation. Its regression uses a SEQEND above
+every other source identity and checks both subsequent allocation and the actual
+encoded header seed; an exhausted handle range refuses.
 
 MLINESTYLE now decodes actual DXF flags and retains its ordered reactor/extension
 links in the common cache. The binary common writer already uses that cache.

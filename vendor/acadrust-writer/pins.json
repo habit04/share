@@ -79,7 +79,7 @@
     {
       "path": "src/io/dxf/reader/section_reader.rs",
       "beforeSha256": "bb6654d7282300e54ea568efda7824149037a6b33a01d4fd287d7c8a2c9ac45b",
-      "afterSha256": "207689f6015207163fa8dbce0e24b4b2dfac1a6a8543575e62de9af3399003b1",
+      "afterSha256": "1894bb3644798119b643962c61680e534843430610bbd2caeaa67b11be05692b",
       "replacements": [
         {
           "before": "let obj = self.read_field_object_dxf(document.version)?;",
@@ -210,6 +210,26 @@
           "before": "                .is_some_and(crate::io::dxf::object_has_own_dxf_xdata)",
           "after": "                .is_some_and(|object| {\n                    // TABLESTYLE owns its raw DXF tail, but native common data\n                    // needs the same full typed XDATA registry. Keep the DXF\n                    // writer's own-tail suppression unchanged to avoid duplicates.\n                    crate::io::dxf::object_has_own_dxf_xdata(object)\n                        && !matches!(object, ObjectType::TableStyle(_))\n                })",
           "count": 1
+        },
+        {
+          "before": "                            \"SEQEND\" => {\r\n                                // Consume SEQEND contents and stop\r\n                                self.skip_entity()?;\r\n                                break;\r\n                            }",
+          "after": "                            \"SEQEND\" => {\r\n                                // Retain the declared owned terminator identity. The\r\n                                // DWG INSERT writer already reuses seqend_handle;\r\n                                // skipping this record silently allocated a new one.\r\n                                let mut common = EntityCommon::new();\r\n                                while let Some(pair) = self.reader.read_pair()? {\r\n                                    if pair.code == 0 {\r\n                                        self.reader.push_back(pair);\r\n                                        break;\r\n                                    }\r\n                                    self.try_read_common_entity_code(&pair, &mut common)?;\r\n                                }\r\n                                if !common.owner_handle.is_null()\r\n                                    && common.owner_handle != insert.common.handle\r\n                                {\r\n                                    return Err(DxfError::Custom(\r\n                                        \"SEQEND owner does not name its INSERT\".into(),\r\n                                    ));\r\n                                }\r\n                                // There is no typed SEQEND metadata slot on INSERT.\r\n                                // Do not certify decoded application/reference data\r\n                                // that the writer cannot retain on this marker.\r\n                                if !common.reactors.is_empty()\r\n                                    || common.xdictionary_handle.is_some()\r\n                                    || !common.extended_data.records().is_empty()\r\n                                {\r\n                                    return Err(DxfError::Custom(\r\n                                        \"Unsupported retained SEQEND metadata\".into(),\r\n                                    ));\r\n                                }\r\n                                if !common.handle.is_null() {\r\n                                    let next = common.handle.value().checked_add(1).ok_or_else(|| {\r\n                                        DxfError::Custom(\"SEQEND identity exhausts handle allocation\".into())\r\n                                    })?;\r\n                                    // This marker is not a standalone document entity.\r\n                                    // Protect it before post-read repairs or the writer\r\n                                    // allocate any new structural record identities.\r\n                                    document.header.handle_seed = document.header.handle_seed.max(next);\r\n                                    insert.seqend_handle = Some(common.handle);\r\n                                }\r\n                                break;\r\n                            }",
+          "count": 1
+        },
+        {
+          "before": "    fn read_insert(&mut self) -> Result<Option<Insert>> {",
+          "after": "    fn read_insert(&mut self, document: &mut CadDocument) -> Result<Option<Insert>> {",
+          "count": 1
+        },
+        {
+          "before": "                        if let Some(entity) = self.read_insert()? {\r\n                            block_entities.push(EntityType::Insert(entity));",
+          "after": "                        if let Some(entity) = self.read_insert(document)? {\r\n                            block_entities.push(EntityType::Insert(entity));",
+          "count": 1
+        },
+        {
+          "before": "                        if let Some(entity) = self.read_insert()? {\r\n                            let _ = document.add_entity(EntityType::Insert(entity));",
+          "after": "                        if let Some(entity) = self.read_insert(document)? {\r\n                            let _ = document.add_entity(EntityType::Insert(entity));",
+          "count": 1
         }
       ]
     },
@@ -228,11 +248,16 @@
     {
       "path": "src/io/dwg/dwg_stream_writers/object_writer/mod.rs",
       "beforeSha256": "a0cd00ba6c0552e8caecff602f0cc58e04b97405021ea696bff1ac926253bcca",
-      "afterSha256": "77e25d687ce2c6c33f83a3b979627f40c6314db00f921989e0509a66fa2802c2",
+      "afterSha256": "42731b3255a6d1da2073857b24cf464af02e13d7008d96e33b00e13d7182c44a",
       "replacements": [
         {
           "before": "        self.writer.write_bit(view.front_clip_at_eye);",
           "after": "        // ODA 5.4.1 VIEW front-clip-Z is the opposite of DXF 71 front-clip-at-eye.\r\n        self.writer.write_bit(!view.front_clip_at_eye);",
+          "count": 1
+        },
+        {
+          "before": "        } else {\r\n            (record.block_entity_handle, record.name.as_str(), false)\r\n        };",
+          "after": "        } else {\r\n            // BLOCK_HEADER stores the abbreviated binary symbol, but the BLOCK\r\n            // marker must carry its full logical name, including a paper-space\r\n            // or anonymous suffix. Independent DXF readers recover the table\r\n            // name from this marker before any private-reader deduplication.\r\n            (record.block_entity_handle, record.name.as_str(), true)\r\n        };",
           "count": 1
         }
       ]
@@ -519,6 +544,23 @@
         {
           "before": "fn julian_from_f64(julian: f64) -> (i32, i32) {\r\n    let day = julian as i32;\r\n    let fraction = julian - day as f64;\r\n    let ms = (fraction * 86_400_000.0) as i32;\r\n    (day, ms)\r\n}",
           "after": "fn julian_from_f64(julian: f64) -> (i32, i32) {\r\n    let day = julian as i32;\r\n    let fraction = julian - day as f64;\r\n    // Stored dates use integer milliseconds. Truncation loses a millisecond\r\n    // when a decoded Julian double lies just below its exact stored value.\r\n    let ms = (fraction * 86_400_000.0).round() as i32;\r\n    if ms == 86_400_000 {\r\n        (day.saturating_add(1), 0)\r\n    } else {\r\n        (day, ms)\r\n    }\r\n}",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "path": "src/io/dwg/dwg_stream_writers/object_writer/common.rs",
+      "beforeSha256": "5d083c5544390759ee12aeeddea551898a04541b3d8f9e597da1a15d4feeb6c8",
+      "afterSha256": "6ef3c6f60866758e23501c94d2e8d37dc8ce56819c4ac3dd451b8542f80a12ed",
+      "replacements": [
+        {
+          "before": "    // ── entity-mode helper ──────────────────────────────────────────\r\n    /// Returns the 2-bit entity-mode value (per ODA spec §19.4.4):\r\n    /// - 0 = owned (owner handle present) — VERTEX, ATTRIB, SEQEND,\r\n    ///       or entity inside a named block\r\n    /// - 1 = paper-space entity (BB 01 → any *Paper_Space block)\r\n    /// - 2 = model-space entity (BB 10 → *Model_Space)\r\n    ///\r\n    /// AutoCAD uses entmode=1 for entities in ALL paper-space blocks,\r\n    /// not just the canonical `*Paper_Space`.  Additional layouts like\r\n    /// `*Paper_Space0`, `*Paper_Space1`, … also get entmode=1.  The\r\n    /// correct owner is determined by the BLOCK_HEADER's entity_handles\r\n    /// list, not by the entity's owner handle (which is omitted for\r\n    /// entmode != 0).\r\n    fn get_entity_mode(&self, owner_handle: &Handle) -> u8 {\r\n        for br in self.document.block_records.iter() {\r\n            if br.handle == *owner_handle {\r\n                let upper = br.name.to_ascii_uppercase();\r\n                if upper == \"*MODEL_SPACE\" {\r\n                    return 2; // model space (BB 10)\r\n                }\r\n                if upper == \"*PAPER_SPACE\"\r\n                    || (upper.starts_with(\"*PAPER_SPACE\")\r\n                        && upper.len() > 12\r\n                        && upper[12..].bytes().all(|b| b.is_ascii_digit()))\r\n                {\r\n                    return 1; // paper space (BB 01)\r\n                }\r\n                return 0; // named block → owned\r\n            }\r\n        }\r\n        0\r\n    }",
+          "after": "    /// Only the header-designated primary paper space has implicit mode1.\r\n    /// Secondary sheets must encode their actual block-record owner with mode0;\r\n    /// otherwise independent readers attach markers and geometry to the primary\r\n    /// sheet even when the private builder recovers membership from block lists.\r\n    fn get_entity_mode(&self, owner_handle: &Handle) -> u8 {\r\n        for br in self.document.block_records.iter() {\r\n            if br.handle == *owner_handle {\r\n                if br.name.eq_ignore_ascii_case(\"*Model_Space\") {\r\n                    return 2; // model space (BB 10)\r\n                }\r\n                if br.handle == self.document.header.paper_space_block_handle {\r\n                    return 1; // primary paper space (BB 01)\r\n                }\r\n                return 0; // secondary paper space or named block: explicit owner\r\n            }\r\n        }\r\n        0\r\n    }",
+          "count": 1
+        },
+        {
+          "before": "        let entmode = entity_mode_override.unwrap_or_else(|| self.get_entity_mode(&owner_handle));",
+          "after": "        // DXF group67 describes paper-space placement, not permission to omit\r\n        // an explicit secondary-sheet or child owner. Mode1 is implicit only\r\n        // for the header-designated primary paper-space block.\r\n        let entmode = entity_mode_override\r\n            .filter(|mode| *mode != 1 || owner_handle == self.document.header.paper_space_block_handle)\r\n            .unwrap_or_else(|| self.get_entity_mode(&owner_handle));",
           "count": 1
         }
       ]

@@ -2,7 +2,7 @@
 //! Known opaque object schemas reject unconsumed groups. All OBJECTS identities
 //! must survive import; the independent C postflight checks other typed classes.
 use acadrust::{objects::ObjectType, tables::TableEntry, types::Handle, CadDocument};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 fn root_dictionary(document: &mut CadDocument) -> Result<Handle, String> {
     let known = document.header.named_objects_dict_handle;
@@ -202,6 +202,7 @@ fn annotation_scale(document: &mut CadDocument, root: Handle, name: &str) -> Res
 pub struct SourceSchema {
     headers: BTreeMap<String, Vec<(i32, String)>>,
     objects: BTreeMap<u64, String>,
+    references: BTreeSet<u64>,
 }
 
 fn refusal(detail: &str) -> String {
@@ -402,6 +403,14 @@ pub fn capture(text: &str) -> Result<SourceSchema, String> {
         if work > 2_000_000 {
             return Err(refusal("source work budget"));
         }
+        if (330..=369).contains(&code)
+            || (390..=399).contains(&code)
+            || matches!(code, 480 | 481 | 1005)
+        {
+            let target = u64::from_str_radix(value.trim(), 16)
+                .map_err(|_| refusal("source reference handle"))?;
+            source.references.insert(target);
+        }
         if code == 0 {
             finish(&kind, handle, &context, &mut source)?;
             kind.clear();
@@ -494,6 +503,75 @@ pub fn capture(text: &str) -> Result<SourceSchema, String> {
 }
 
 impl SourceSchema {
+    fn prune_absent_constructor_layout(&self, document: &mut CadDocument) -> Result<(), String> {
+        if !self.objects.values().any(|kind| kind == "LAYOUT") {
+            return Ok(());
+        }
+        // The exact pinned constructor creates this one paper layout. A decoded
+        // source layout, even another Layout1, is protected by its original handle.
+        let constructor = CadDocument::new();
+        let handle = constructor
+            .objects
+            .iter()
+            .find_map(|(handle, object)| match object {
+                ObjectType::Layout(layout) if layout.name == "Layout1" => Some(*handle),
+                _ => None,
+            })
+            .ok_or_else(|| refusal("constructor paper layout identity"))?;
+        if self.objects.contains_key(&handle.value()) {
+            return Ok(());
+        }
+        if !matches!(document.objects.get(&handle), Some(ObjectType::Layout(layout)) if layout.name == "Layout1" && layout.tab_order == 1)
+        {
+            return Ok(());
+        }
+        // Do not repair or waive an imported reference, including table/entity
+        // references outside OBJECTS. Only constructor-added links may disappear.
+        if self.references.contains(&handle.value()) {
+            return Err(refusal("source references an absent constructor Layout1"));
+        }
+        if !document.object_reactors(handle).is_empty()
+            || document.extension_dictionary_handle(handle).is_some()
+            || document.object_xdata.get(&handle).is_some_and(|data| !data.records().is_empty())
+        {
+            return Err(refusal("unexpected constructor Layout1 common metadata"));
+        }
+        if document.block_records.iter().any(|record| record.layout == handle)
+            || document.entities().any(|entity| entity.common().owner_handle == handle)
+            || document.objects.keys().any(|other| {
+                *other != handle
+                    && (document.object_owner(*other) == Some(handle)
+                        || document.object_reactors(*other).contains(&handle)
+                        || document.extension_dictionary_handle(*other) == Some(handle))
+            })
+        {
+            return Err(refusal("unexpected constructor Layout1 incoming reference"));
+        }
+        let mut candidate = document.clone();
+        for object in candidate.objects.values_mut() {
+            if let ObjectType::Dictionary(dictionary) = object {
+                let keys: Vec<_> = dictionary
+                    .entries
+                    .iter()
+                    .filter(|(_, target)| *target == handle)
+                    .map(|(key, _)| key.clone())
+                    .collect();
+                if keys.iter().any(|key| key != "Layout1") {
+                    return Err(refusal("unexpected constructor Layout1 dictionary key"));
+                }
+                dictionary.entries.retain(|(_, target)| *target != handle);
+                dictionary.hard_owner_entries.retain(|key| !keys.contains(key));
+            }
+        }
+        candidate.objects.remove(&handle);
+        candidate.object_xdata.remove(&handle);
+        // Full closure must remain valid before this source-absent context change
+        // becomes the baseline. A dangling imported edge still refuses saving.
+        crate::metadata_snapshot(&candidate).map_err(|detail| refusal(&detail))?;
+        *document = candidate;
+        Ok(())
+    }
+
     pub fn verify(&self, document: &mut CadDocument) -> Result<(), String> {
         for (handle, kind) in &self.objects {
             let object = document.objects.get(&Handle::new(*handle)).ok_or_else(|| {
@@ -506,6 +584,7 @@ impl SourceSchema {
                 "DICTIONARYVAR" => matches!(object, ObjectType::DictionaryVariable(_)),
                 "SCALE" => matches!(object, ObjectType::Scale(_)),
                 "TABLESTYLE" => matches!(object, ObjectType::TableStyle(_)),
+                "LAYOUT" => matches!(object, ObjectType::Layout(_)),
                 _ => true,
             };
             if !compatible {
@@ -644,7 +723,7 @@ impl SourceSchema {
                 )));
             }
         }
-        Ok(())
+        self.prune_absent_constructor_layout(document)
     }
 }
 

@@ -1216,6 +1216,300 @@ fn main() {
 mod tests {
     use super::*;
 
+    #[test]
+    fn secondary_paper_space_encodes_full_names_and_explicit_marker_and_geometry_owners() {
+        use acadrust::entities::{EntityType, Line, Viewport};
+        use acadrust::io::dwg::dwg_stream_readers::{
+            handle_reader::read_handles, object_reader::DwgObjectReader,
+        };
+        use acadrust::types::Vector3;
+
+        let mut source = CadDocument::with_version(DxfVersion::AC1032);
+        let second_layout = source.add_layout("SecondSheet").unwrap();
+        let primary = source.header.paper_space_block_handle;
+        let secondary = source.block_records.get("*Paper_Space0").unwrap().handle;
+        assert_ne!(primary, secondary);
+        let model_line = source
+            .add_entity(EntityType::Line(Line::from_coords(0.0, 0.0, 0.0, 1.0, 1.0, 0.0)))
+            .unwrap();
+        let first_line = source
+            .add_entity_to_layout(
+                EntityType::Line(Line::from_coords(10.0, 20.0, 0.0, 15.0, 25.0, 0.0)),
+                "Layout1",
+            )
+            .unwrap();
+        let second_line = source
+            .add_entity_to_layout(
+                EntityType::Line(Line::from_coords(100.0, 200.0, 0.0, 110.0, 220.0, 0.0)),
+                "SecondSheet",
+            )
+            .unwrap();
+        let mut viewport = Viewport::new();
+        viewport.id = 1;
+        viewport.center = Vector3::new(10.0, 20.0, 0.0);
+        viewport.width = 10.0;
+        viewport.height = 8.0;
+        viewport.view_height = 20.0;
+        let first_viewport = source
+            .add_entity_to_layout(EntityType::Viewport(Box::new(viewport)), "Layout1")
+            .unwrap();
+        let second_viewport = match &source.objects[&second_layout] {
+            ObjectType::Layout(layout) => layout.viewport,
+            _ => unreachable!(),
+        };
+        let Some(EntityType::Viewport(viewport)) = source.get_entity_mut(second_viewport) else {
+            panic!("secondary overall viewport missing")
+        };
+        viewport.center = Vector3::new(100.0, 200.0, 0.0);
+        viewport.width = 30.0;
+        viewport.height = 24.0;
+        viewport.view_height = 60.0;
+        // Actual DXF group67 marks both sheets as paper space. That placement
+        // flag cannot omit the secondary sheet's explicit native owner.
+        source.get_entity_mut(second_line).unwrap().common_mut().entity_mode = Some(1);
+        source.get_entity_mut(second_viewport).unwrap().common_mut().entity_mode = Some(1);
+        source_schema::capture("0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1032\n0\nENDSEC\n0\nEOF\n")
+            .unwrap()
+            .verify(&mut source)
+            .unwrap();
+        let snapshot = metadata_snapshot(&source).unwrap();
+        let mut output = std::io::Cursor::new(Vec::new());
+        DwgWriter::write_to_writer(&mut output, &source).unwrap();
+        let bytes = output.into_inner();
+
+        // Inspect the encoded object fields before DwgDocumentBuilder restores
+        // block membership and deduplicates names. Logical reopening alone hid
+        // both the bare BLOCK name and the implicit primary-paper-space owner.
+        let mut raw = DwgReader::from_stream(std::io::Cursor::new(bytes.clone()));
+        let info = raw.read_file_header().unwrap();
+        assert_eq!(info.objects_base_offset, 0);
+        let handles = read_handles(&raw.get_section_buffer("AcDb:Handles", &info).unwrap()).unwrap();
+        let objects = raw.get_section_buffer("AcDb:AcDbObjects", &info).unwrap();
+        let reader = DwgObjectReader::new(objects, DxfVersion::AC1032, handles).unwrap();
+        let offset = usize::try_from(reader.offset_for(model_line.value()).unwrap()).unwrap();
+        let (kind, mut data) = reader.read_record_at(offset).unwrap();
+        let common = reader.read_common_entity_data(&mut data, kind);
+        assert_eq!(common.entity_mode, 2);
+        assert_eq!(common.owner_handle, 0);
+        for (name, owner, mode, line, viewport) in [
+            ("*Paper_Space", primary, 1, first_line, first_viewport),
+            ("*Paper_Space0", secondary, 0, second_line, second_viewport),
+        ] {
+            let record = source.block_records.get(name).unwrap();
+            assert_eq!(record.entity_handles.len(), 2);
+            assert!(source.get_entity(record.block_entity_handle).is_none());
+            for (handle, marker) in [
+                (record.block_entity_handle, Some(4)),
+                (record.block_end_handle, Some(5)),
+                (line, None),
+                (viewport, None),
+            ] {
+                let offset = usize::try_from(reader.offset_for(handle.value()).unwrap()).unwrap();
+                let (kind, mut data) = reader.read_record_at(offset).unwrap();
+                if let Some(expected) = marker {
+                    assert_eq!(kind, expected);
+                }
+                let common = reader.read_common_entity_data(&mut data, kind);
+                assert_eq!(common.entity_mode, mode);
+                assert_eq!(common.owner_handle, if mode == 0 { owner.value() } else { 0 });
+                if marker == Some(4) {
+                    assert_eq!(data.read_variable_text(), name);
+                }
+            }
+        }
+        let reopened = DwgReader::from_stream(std::io::Cursor::new(bytes))
+            .read()
+            .unwrap();
+        equivalent(
+            &snapshot,
+            &metadata_snapshot(&reopened).unwrap(),
+            "two paper-space full snapshot",
+        )
+        .unwrap();
+        verify_reopening(&source, &reopened).unwrap();
+        for (name, owner) in [("*Paper_Space", primary), ("*Paper_Space0", secondary)] {
+            let record = reopened.block_records.get(name).unwrap();
+            assert_eq!(record.handle, owner);
+            assert_eq!(record.entity_handles.len(), 2);
+            let ObjectType::Layout(layout) = &reopened.objects[&record.layout] else {
+                panic!("paper block layout missing")
+            };
+            assert_eq!(layout.block_record, owner);
+            for handle in &record.entity_handles {
+                assert_eq!(
+                    reopened.get_entity(*handle).unwrap().common().owner_handle,
+                    owner,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_layouts_prune_only_the_unreferenced_source_absent_constructor_layout() {
+        let constructor = CadDocument::new();
+        let old_layout = constructor
+            .objects
+            .iter()
+            .find_map(|(handle, object)| match object {
+                ObjectType::Layout(layout) if layout.name == "Layout1" => Some(*handle),
+                _ => None,
+            })
+            .unwrap();
+        let model_layout = constructor.block_records.get("*Model_Space").unwrap().layout;
+        let dictionary = constructor.header.acad_layout_dict_handle;
+        let paper = constructor.header.paper_space_block_handle;
+        for name in ["OnlySheet", "Layout1"] {
+            let text = format!(
+                "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1032\n0\nENDSEC\n0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nBLOCK_RECORD\n70\n1\n0\nBLOCK_RECORD\n5\n{:X}\n100\nAcDbSymbolTableRecord\n100\nAcDbBlockTableRecord\n2\n*Paper_Space\n340\n400\n70\n0\n280\n1\n281\n0\n0\nENDTAB\n0\nENDSEC\n0\nSECTION\n2\nOBJECTS\n0\nDICTIONARY\n5\n{:X}\n330\n{:X}\n100\nAcDbDictionary\n281\n1\n3\nModel\n350\n{:X}\n3\n{name}\n350\n400\n0\nLAYOUT\n5\n400\n330\n{:X}\n100\nAcDbPlotSettings\n100\nAcDbLayout\n1\n{name}\n70\n1\n71\n1\n330\n{:X}\n0\nENDSEC\n0\nEOF\n",
+                paper.value(), dictionary.value(), constructor.header.named_objects_dict_handle.value(),
+                model_layout.value(), dictionary.value(), paper.value(),
+            );
+            // This isolated fixture explicitly supplies the paper layout and
+            // relies on constructor context for other standard database objects.
+            let mut source = DxfReader::from_reader(std::io::Cursor::new(text.as_bytes().to_vec()))
+                .unwrap()
+                .read()
+                .unwrap();
+            assert!(matches!(&source.objects[&old_layout], ObjectType::Layout(layout) if layout.name == "Layout1"));
+            let imported = serde_json::to_value(&source.objects[&Handle::new(0x400)]).unwrap();
+            let schema = source_schema::capture(&text).unwrap();
+            schema.verify(&mut source).unwrap();
+            assert!(!source.objects.contains_key(&old_layout));
+            assert_eq!(
+                serde_json::to_value(&source.objects[&Handle::new(0x400)]).unwrap(),
+                imported,
+            );
+            assert_eq!(
+                source.objects.values().filter(|object| matches!(object, ObjectType::Layout(_))).count(),
+                2,
+            );
+            let ObjectType::Dictionary(entries) = &source.objects[&dictionary] else {
+                unreachable!()
+            };
+            assert_eq!(entries.get(name), Some(Handle::new(0x400)));
+            assert!(!entries.entries.iter().any(|(_, target)| *target == old_layout));
+            let snapshot = metadata_snapshot(&source).unwrap();
+            let mut output = std::io::Cursor::new(Vec::new());
+            DwgWriter::write_to_writer(&mut output, &source).unwrap();
+            output.set_position(0);
+            let reopened = DwgReader::from_stream(output).read().unwrap();
+            equivalent(
+                &snapshot,
+                &metadata_snapshot(&reopened).unwrap(),
+                "source-only paper layout",
+            )
+            .unwrap();
+            verify_reopening(&source, &reopened).unwrap();
+            assert_eq!(
+                reopened.objects.values().filter(|object| matches!(object, ObjectType::Layout(_))).count(),
+                2,
+            );
+
+            // An explicit source edge is never removed to make pruning work.
+            let referenced = text.replace("340\n400\n", &format!("340\n{:X}\n", old_layout.value()));
+            let mut refused = DxfReader::from_reader(std::io::Cursor::new(referenced.as_bytes().to_vec()))
+                .unwrap()
+                .read()
+                .unwrap();
+            assert!(source_schema::capture(&referenced).unwrap().verify(&mut refused).is_err());
+            assert!(refused.objects.contains_key(&old_layout));
+        }
+    }
+
+    #[test]
+    fn insert_seqend_identity_survives_decoding_and_encoded_parent_ownership() {
+        use acadrust::entities::EntityType;
+        use acadrust::io::dwg::dwg_stream_readers::{
+            handle_reader::read_handles, object_reader::DwgObjectReader,
+        };
+
+        let text = "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1032\n0\nENDSEC\n0\nSECTION\n2\nBLOCKS\n0\nBLOCK\n5\n10010\n100\nAcDbEntity\n8\n0\n100\nAcDbBlockBegin\n2\nSEQEND_PROOF\n70\n0\n10\n0\n20\n0\n30\n0\n3\nSEQEND_PROOF\n0\nENDBLK\n5\n10011\n100\nAcDbEntity\n8\n0\n100\nAcDbBlockEnd\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nINSERT\n5\n10000\n100\nAcDbEntity\n8\n0\n100\nAcDbBlockReference\n2\nSEQEND_PROOF\n66\n1\n10\n0\n20\n0\n30\n0\n0\nATTRIB\n5\n10001\n330\n10000\n100\nAcDbEntity\n8\n0\n100\nAcDbText\n10\n0\n20\n0\n30\n0\n40\n1\n1\nPreserved tag\n100\nAcDbAttribute\n2\nTAG1\n70\n0\n0\nSEQEND\n5\n20000\n330\n10000\n100\nAcDbEntity\n8\n0\n100\nAcDbSequenceEnd\n0\nENDSEC\n0\nEOF\n";
+        let mut source = DxfReader::from_reader(std::io::Cursor::new(text.as_bytes().to_vec()))
+            .unwrap()
+            .read()
+            .unwrap();
+        source_schema::capture(text).unwrap().verify(&mut source).unwrap();
+        // The terminator is above every other declared identity. It must raise
+        // the allocation floor even though it is not a standalone entity.
+        assert!(source.objects.keys().all(|handle| handle.value() < 0x20000));
+        assert!(source.entities().all(|entity| entity.common().handle.value() < 0x20000));
+        assert!(source.header.handle_seed > 0x20000);
+        assert!(source.allocate_handle().value() > 0x20000);
+        let Some(EntityType::Insert(insert)) = source.get_entity(Handle::new(0x10000)) else {
+            panic!("source INSERT missing")
+        };
+        assert_eq!(insert.seqend_handle, Some(Handle::new(0x20000)));
+        assert_eq!(insert.attributes.len(), 1);
+        let snapshot = metadata_snapshot(&source).unwrap();
+        let mut output = std::io::Cursor::new(Vec::new());
+        DwgWriter::write_to_writer(&mut output, &source).unwrap();
+        let bytes = output.into_inner();
+        let mut raw = DwgReader::from_stream(std::io::Cursor::new(bytes.clone()));
+        let info = raw.read_file_header().unwrap();
+        let handles = read_handles(&raw.get_section_buffer("AcDb:Handles", &info).unwrap()).unwrap();
+        let objects = raw.get_section_buffer("AcDb:AcDbObjects", &info).unwrap();
+        let reader = DwgObjectReader::new(objects, DxfVersion::AC1032, handles).unwrap();
+        let offset = usize::try_from(reader.offset_for(0x20000).unwrap()).unwrap();
+        let (kind, mut data) = reader.read_record_at(offset).unwrap();
+        assert_eq!(kind, 6);
+        let common = reader.read_common_entity_data(&mut data, kind);
+        assert_eq!(common.entity_mode, 0);
+        assert_eq!(common.owner_handle, 0x10000);
+        let header = acadrust::io::dwg::dwg_stream_readers::header_reader::read_header(
+            &raw.get_section_buffer("AcDb:Header", &info).unwrap(),
+            DxfVersion::AC1032,
+            0,
+        )
+        .unwrap();
+        assert!(header.handle_seed > 0x20000);
+        let reopened = DwgReader::from_stream(std::io::Cursor::new(bytes)).read().unwrap();
+        let Some(EntityType::Insert(insert)) = reopened.get_entity(Handle::new(0x10000)) else {
+            panic!("reopened INSERT missing")
+        };
+        assert_eq!(insert.seqend_handle, Some(Handle::new(0x20000)));
+        equivalent(
+            &snapshot,
+            &metadata_snapshot(&reopened).unwrap(),
+            "retained INSERT SEQEND identity",
+        )
+        .unwrap();
+        verify_reopening(&source, &reopened).unwrap();
+        let mut linked = source.clone();
+        let root = linked.header.named_objects_dict_handle;
+        let mut record = acadrust::objects::XRecord::named("SEQEND_REFERENCE_PROOF");
+        record.handle = Handle::new(0x400);
+        record.owner = root;
+        record.add_handle(340, Handle::new(0x20000));
+        linked.objects.insert(record.handle, ObjectType::XRecord(record));
+        let ObjectType::Dictionary(dictionary) = linked.objects.get_mut(&root).unwrap() else {
+            unreachable!()
+        };
+        dictionary.add_entry("SEQEND_REFERENCE_PROOF", Handle::new(0x400));
+        // Identity retention does not invent a typed standalone metadata slot.
+        // An incoming object pointer still refuses until that identity is registered.
+        assert!(metadata_snapshot(&linked).is_err());
+        for metadata in [
+            "102\n{ACAD_REACTORS\n330\n10000\n102\n}\n",
+            "102\n{ACAD_XDICTIONARY\n360\nF0\n102\n}\n",
+            "1001\nJCAD_END_PROOF\n1000\nOpaque payload\n",
+            "330\n10010\n",
+        ] {
+            let changed = text.replace(
+                "100\nAcDbSequenceEnd\n0\nENDSEC",
+                &format!("100\nAcDbSequenceEnd\n{metadata}0\nENDSEC"),
+            );
+            assert!(DxfReader::from_reader(std::io::Cursor::new(changed.into_bytes()))
+                .unwrap()
+                .read()
+                .is_err());
+        }
+        let exhausted = text.replace("5\n20000\n", "5\nFFFFFFFFFFFFFFFF\n");
+        assert!(DxfReader::from_reader(std::io::Cursor::new(exhausted.into_bytes()))
+            .unwrap()
+            .read()
+            .is_err());
+    }
+
     fn literal_document() -> (String, CadDocument) {
         let literal =
             r#"Δ 雷 literal \U+0041 JSON {"literal":"\\U+0041","newline":"\n","caret":"^J^M^I^ "}"#;
