@@ -14,5 +14,6 @@
  * @property {Electron.BrowserWindow | null} mainWindow  the application window (window.cjs creates it)
  * @property {Set<string>} handedOverProjects  one-use project grants made only by OS hand-over or the native Recent menu
  * @property {boolean} openFilesReady  the page asked for the files handed over (take-open-files); false while a new page loads
+ * @property {ReturnType<typeof import('./save-order.cjs').registerSaveOrder>|null} [saveOrder] Windows drawing/export owner and ordering service, registered before plot handlers
  */
 module.exports = {};

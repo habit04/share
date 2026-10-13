@@ -59,12 +59,12 @@ export interface FileBridge {
   /** Desktop platform; absent for the browser file bridge. */
   platform?: string;
   /** Windows host order, captured before slow serialization, pickers or conversion. */
-  issueSaveAdmission?(kind: 'drawing' | 'project' | 'export-copy'): Promise<string>;
+  issueSaveAdmission?(kind: 'drawing' | 'project' | 'export-copy' | 'text-export' | 'pdf-export'): Promise<string>;
   /** Missing leaves are provisional candidates, rather than immutable native alias evidence. */
-  bindSaveAdmission?(ticket: string, kind: 'drawing' | 'project' | 'export-copy', path: string, source?: OpenedSourceHint): Promise<string | { identityPath: string; exists: boolean }>;
+  bindSaveAdmission?(ticket: string, kind: 'drawing' | 'project' | 'export-copy' | 'text-export' | 'pdf-export', path: string, source?: OpenedSourceHint): Promise<string | { identityPath: string; exists: boolean }>;
   /** Release unused/closed runtime read evidence; presence identifies a source-proof-capable host. */
   releaseOpenedSourceProof?(proof: string): Promise<void>;
-  cancelSaveAdmission?(ticket: string, kind: 'drawing' | 'project' | 'export-copy'): Promise<void>;
+  cancelSaveAdmission?(ticket: string, kind: 'drawing' | 'project' | 'export-copy' | 'text-export' | 'pdf-export'): Promise<void>;
   /** Resolve only a path already readable through native/project grants. */
   resolvePathIdentity?(path: string): Promise<string | null>;
   /** Consume host-proven identity from this completed commit; no fresh path lookup. */
@@ -109,7 +109,7 @@ export interface FileBridge {
    * `textOnly`: the dialog reads a JSON file for its text.
    */
   openProject?(file?: string, opts?: { userChosen?: boolean; textOnly?: boolean }): Promise<{ path: string; text: string } | null>;
-  saveText?(suggestName: string, text: string, filterName: string, ext: string): Promise<string | null>;
+  saveText?(suggestName: string, text: string, filterName: string, ext: string, opts?: { admission?: string }): Promise<string | null>;
   /**
    * Desktop only: copy a drawing/project file to `<path>.bak` before it is rewritten. Answers
    * `{ ok, path }` / `{ ok: false, error }`; older builds answered the copy's path (or null on failure).
@@ -119,11 +119,12 @@ export interface FileBridge {
   chooseProjectPath?(suggestName: string): Promise<string | null>;
   /** Desktop only: write the project file to a path chosen before (no dialog); returns the path written. */
   saveProject?(path: string, text: string, admission?: string): Promise<string | null>;
-  plotPdf?(dataUrl: string, suggestName: string, landscape: boolean, sheet?: PlotSheet): Promise<string | null>;
+  choosePdfPath?(suggestName: string, admission?: string): Promise<string | null>;
+  plotPdf?(dataUrl: string, suggestName: string, landscape: boolean, sheet?: PlotSheet, opts?: { path?: string; admission?: string }): Promise<string | null>;
   /** Print the rendered sheet through the system print dialog; resolves true when a job was sent. */
   printDrawing?(dataUrl: string, title: string, landscape: boolean, sheet?: PlotSheet): Promise<boolean>;
   /** Save finished PDF bytes (vector plot, app/plot-vector.ts); resolves the written path or null. */
-  savePdf?(bytes: Uint8Array, suggestName: string): Promise<string | null>;
+  savePdf?(bytes: Uint8Array, suggestName: string, opts?: { path?: string; admission?: string }): Promise<string | null>;
 }
 
 /** What older desktop builds answered from `backup-file`: the .bak path, or null / false on failure. */

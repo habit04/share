@@ -43,8 +43,8 @@ const OUTPUT = Buffer.concat([Buffer.from('AC1032'), Buffer.alloc(130)]);
 function protocolHostModules() {
   const native = sourceRequire('../windows-path-identity.cjs');
   type Version = { dev: string; ino: string; size: string; mtimeNs: string; ctimeNs: string; sha256?: string };
-  type Pin = { logicalPath: string; destinationPath: string; canonicalPath: string; canonicalParent: string; parentExists: boolean; parentIdentity: Version; queueKey: string; targetKey: string; exists: boolean; fileVersion: Version | null; root?: string; canonicalRoot?: string; rootIdentity?: Version; hashContent?: boolean };
-  type Guard = { signal?: AbortSignal; metadataOnly?: boolean; preserveLeaf?: boolean; preserveVersion?: boolean };
+  type Pin = { logicalPath: string; destinationPath: string; canonicalPath: string; canonicalParent: string; parentExists: boolean; parentIdentity: Version; queueKey: string; targetKey: string; exists: boolean; fileVersion: Version | null; root?: string; canonicalRoot?: string; rootIdentity?: Version; hashContent?: boolean; contentLimit?: number };
+  type Guard = { signal?: AbortSignal; metadataOnly?: boolean; preserveLeaf?: boolean; preserveVersion?: boolean; maxBytes?: number };
   const fail = (code: string) => Object.assign(new Error(code), { code });
   const absolute = (value: unknown) => {
     if (typeof value !== 'string' || !path.isAbsolute(value) || value.length > native.MAX_PATH_LENGTH || /[\u0000-\u001f\u007f]/.test(value)) throw fail('ERR_WINDOWS_PATH');
@@ -98,16 +98,19 @@ function protocolHostModules() {
         let fresh = await captureWriteTarget(pin.logicalPath, pin.root);
         if (fresh.canonicalParent !== pin.canonicalParent || !sameIdentity(fresh.parentIdentity, pin.parentIdentity) || fresh.canonicalRoot !== pin.canonicalRoot || pin.rootIdentity && (!fresh.rootIdentity || !sameIdentity(fresh.rootIdentity, pin.rootIdentity)) || opts.preserveLeaf && fresh.canonicalPath !== pin.canonicalPath) throw fail('ERR_WINDOWS_PATH_CHANGED');
         if (pin.hashContent && !opts.metadataOnly) {
-          const content = fresh.exists ? await digest(fresh.logicalPath, { signal: opts.signal, expectedCanonicalPath: fresh.canonicalPath, expectedVersion: fresh.fileVersion! }) : null;
-          fresh = seal({ ...fresh, hashContent: true, fileVersion: content ? Object.freeze({ ...content.version, sha256: content.sha256 }) : null });
+          const contentLimit = pin.contentLimit ?? native.MAX_CONTENT_BYTES;
+          const content = fresh.exists ? await digest(fresh.logicalPath, { signal: opts.signal, maxBytes: contentLimit, expectedCanonicalPath: fresh.canonicalPath, expectedVersion: fresh.fileVersion! }) : null;
+          fresh = seal({ ...fresh, hashContent: true, contentLimit, fileVersion: content ? Object.freeze({ ...content.version, sha256: content.sha256 }) : null });
         }
         if (opts.preserveVersion && native.fileVersionKey(fresh.fileVersion) !== native.fileVersionKey(pin.fileVersion)) throw fail('ERR_WINDOWS_PATH_CHANGED');
         abort(opts.signal); return fresh;
       };
       const captureContentTarget = async (pin: Pin, opts: Guard = {}) => {
+        const contentLimit = opts.maxBytes ?? native.MAX_CONTENT_BYTES;
+        if (contentLimit !== native.MAX_CONTENT_BYTES && contentLimit !== native.MAX_PDF_CONTENT_BYTES) throw fail('ERR_WINDOWS_CONTENT_LIMIT');
         const fresh = await revalidate(pin, { ...opts, metadataOnly: true, preserveLeaf: true, preserveVersion: true });
-        const content = fresh.exists ? await digest(fresh.logicalPath, { signal: opts.signal, expectedCanonicalPath: fresh.canonicalPath, expectedVersion: fresh.fileVersion! }) : null;
-        return seal({ ...fresh, hashContent: true, fileVersion: content ? Object.freeze({ ...content.version, sha256: content.sha256 }) : null });
+        const content = fresh.exists ? await digest(fresh.logicalPath, { signal: opts.signal, maxBytes: contentLimit, expectedCanonicalPath: fresh.canonicalPath, expectedVersion: fresh.fileVersion! }) : null;
+        return seal({ ...fresh, hashContent: true, contentLimit, fileVersion: content ? Object.freeze({ ...content.version, sha256: content.sha256 }) : null });
       };
       return { captureWriteTarget, captureContentTarget, revalidate };
     },

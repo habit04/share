@@ -59,12 +59,13 @@ declare global {
       releaseOpenedSourceProof?(proof: string): Promise<void>;
       openDrawing(file?: string): Promise<import('./app/editor').OpenResult | null>;
       openProject(file?: string, opts?: { userChosen?: boolean; textOnly?: boolean }): Promise<{ path: string; text: string } | null>;
-      saveText(suggestName: string, text: string, filterName: string, ext: string): Promise<string | null>;
+      saveText(suggestName: string, text: string, filterName: string, ext: string, opts?: { admission?: string }): Promise<string | null>;
       backupFile?(file: string): Promise<import('./app/editor').BackupResult>;
-      plotPdf(dataUrl: string, suggestName: string, landscape: boolean, sheet?: { width: number; height: number; electron?: string }): Promise<string | null>;
+      choosePdfPath?(suggestName: string, admission?: string): Promise<string | null>;
+      plotPdf(dataUrl: string, suggestName: string, landscape: boolean, sheet?: { width: number; height: number; electron?: string }, opts?: { path?: string; admission?: string }): Promise<string | null>;
       printDrawing?(dataUrl: string, title: string, landscape: boolean, sheet?: { width: number; height: number; electron?: string }): Promise<boolean>;
       /** Track E: write vector PDF bytes (save-pdf IPC). */
-      savePdf?(bytes: Uint8Array, suggestName: string): Promise<string | null>;
+      savePdf?(bytes: Uint8Array, suggestName: string, opts?: { path?: string; admission?: string }): Promise<string | null>;
       saveDxf(path: string | null, text: string, suggestName: string, opts?: { backup?: boolean }): Promise<string | null>;
       chooseDrawingPath?(suggestName: string): Promise<string | null>;
       dwgExportStatus?(): Promise<{ available: boolean; reason?: string }>;

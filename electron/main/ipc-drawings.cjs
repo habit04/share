@@ -37,11 +37,13 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
     return process.platform === 'win32' ? resolved.replace(/[A-Z]/g, (letter) => letter.toLowerCase()) : resolved.normalize('NFC').toLowerCase();
   };
   const saveOrder = process.platform === 'win32' ? registerSaveOrder(ctx, (_owner, kind, file) => {
-    const type = kind === 'project' ? PROJECT_FILE : kind === 'export-copy' ? DWG_FILE : /\.(dxf|dwg)$/i;
+    const type = kind === 'project' ? PROJECT_FILE : kind === 'export-copy' ? DWG_FILE : kind === 'text-export' || kind === 'pdf-export' ? /./ : /\.(dxf|dwg)$/i;
     const allowed = pathPolicy.writable(file, 'save-admission', type) !== null && (kind !== 'export-copy' || dwgDestinations.has(dwgKey(file)));
     const root = registry.writeRoot(file);
     return allowed ? { allowed: true, ...(root ? { root } : {}) } : { allowed: false };
   }) : null;
+  // Plot and drawing writes must share the same owner, target ledger and source proofs.
+  ctx.saveOrder = saveOrder;
 
   async function identityPath(file) {
     if (process.platform !== 'win32') return undefined;
@@ -228,25 +230,32 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
   });
 
   /** Save arbitrary text (CSV report, project file) through a save dialog. */
-  ipcMain.handle('save-text', async (ev, suggestName, text, filterName, ext) => {
+  ipcMain.handle('save-text', async (ev, suggestName, text, filterName, ext, opts) => {
     const win = senderWindow(ev);
     if (typeof text !== 'string') throw new Error('Invalid payload');
-    const captured = saveOrder?.capture(ev, 'project');
+    if (opts !== undefined && (!opts || typeof opts !== 'object' || Array.isArray(opts) || Object.keys(opts).some(key => key !== 'admission') || opts.admission !== undefined && (typeof opts.admission !== 'string' || !opts.admission))) throw new Error('Invalid text export admission options');
+    if (opts?.admission !== undefined && !saveOrder) throw new Error('A Windows text export admission is required.');
+    const projectIntent = /\.jcadproj\.json$/i.test(String(suggestName)) || String(filterName) === 'JCad Electrical Project';
+    const kind = projectIntent ? 'project' : 'text-export';
+    const captured = kind === 'text-export' ? saveOrder?.capturePicked(ev, kind, opts?.admission) : saveOrder?.capture(ev, kind, opts?.admission);
     try {
+    if (captured) saveOrder?.assertPicked(ev, kind, captured);
     const res = await dialog.showSaveDialog(win, {
       title: 'Save',
       defaultPath: String(suggestName || 'export.txt'),
       filters: [{ name: String(filterName || 'Text'), extensions: [String(ext || 'txt')] }],
     });
     if (res.canceled || !res.filePath) return null;
-    if (captured) saveOrder?.assertCurrent(ev, captured);
+    if (captured) saveOrder?.assertPicked(ev, kind, captured);
     // Crash-safe for every export; only a project file keeps its previous version as <name>.bak
     // (a .bak next to a CSV or text export would only clutter the user's folder).
     const isProject = /\.jcadproj\.json$/i.test(res.filePath) || String(filterName) === 'JCad Electrical Project';
     if (isProject) validateTextSize(text, MAX_PROJECT_BYTES, 'project');
-    if (isProject && saveOrder) {
+    if (saveOrder && captured) {
       registry.grant(res.filePath);
-      return await writeAdmittedText(ev, 'project', res.filePath, text, true, captured);
+      if (!isProject) validateTextSize(text, MAX_DRAWING_BYTES, 'text export');
+      if (kind === 'text-export') await saveOrder.bindPicked(ev, kind, res.filePath, captured);
+      return await writeAdmittedText(ev, kind, res.filePath, text, isProject, captured);
     }
     await writeUserFile(res.filePath, text, { backup: isProject });
     registry.grant(res.filePath);

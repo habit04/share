@@ -35,15 +35,16 @@ contextBridge.exposeInMainWorld('jcad', {
   openDrawing: (file) => ipcRenderer.invoke('open-drawing', file),
   // Project access is authorized in the main process; opts.textOnly reads JSON without granting its entries.
   openProject: (file, opts) => ipcRenderer.invoke('open-project', file, opts && typeof opts === 'object' ? { userChosen: opts.userChosen === true, textOnly: opts.textOnly === true } : undefined),
-  saveText: (suggestName, text, filterName, ext) => ipcRenderer.invoke('save-text', suggestName, text, filterName, ext),
+  saveText: (suggestName, text, filterName, ext, opts) => ipcRenderer.invoke('save-text', suggestName, text, filterName, ext, opts && typeof opts === 'object' ? { admission: opts.admission } : undefined),
   // Project Save As: pick the destination first (the renderer rebases relative paths), then write it.
   chooseProjectPath: (suggestName) => ipcRenderer.invoke('choose-project-path', String(suggestName || '')),
   saveProject: (file, text, admission) => ipcRenderer.invoke('save-project', file, text, admission),
   backupFile: (file, opts) => ipcRenderer.invoke('backup-file', file, opts && typeof opts === 'object' ? { admission: opts.admission } : undefined),
-  plotPdf: (dataUrl, suggestName, landscape, sheet) => ipcRenderer.invoke('plot-pdf', dataUrl, suggestName, landscape, sheet),
+  choosePdfPath: (suggestName, admission) => ipcRenderer.invoke('choose-pdf-path', suggestName, admission),
+  plotPdf: (dataUrl, suggestName, landscape, sheet, opts) => ipcRenderer.invoke('plot-pdf', dataUrl, suggestName, landscape, sheet, opts),
   printDrawing: (dataUrl, title, landscape, sheet) => ipcRenderer.invoke('print-drawing', dataUrl, title, landscape, sheet),
   // Vector PLOT: the renderer's PDF bytes, saved through a Save dialog in the main process.
-  savePdf: (bytes, suggestName) => ipcRenderer.invoke('save-pdf', bytes, suggestName),
+  savePdf: (bytes, suggestName, opts) => ipcRenderer.invoke('save-pdf', bytes, suggestName, opts),
   // opts.backup === false: no <name>.bak copy (a project-wide command made its own, or the user declined one)
   saveDxf: (path, text, suggestName, opts) => ipcRenderer.invoke('save-dxf', path, text, suggestName, opts && typeof opts === 'object' ? { ...(opts.backup === false ? { backup: false } : {}), ...(opts.admission !== undefined ? { admission: opts.admission } : {}) } : undefined),
   // Drawing Save As: pick the format and destination before writing in save-queue order.

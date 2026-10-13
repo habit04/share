@@ -5,7 +5,7 @@ import { countOf, importReportOf, lossCount } from '../io/import-report';
 import { registerWindowsPathIdentity } from './paths';
 import { hasOpenedSourceProofs, releaseOpenedSourceProof, validOpenedSourceProof, type OpenedSourceHint } from './opened-source-proof';
 
-export type SaveAdmissionKind = 'drawing' | 'project' | 'export-copy';
+export type SaveAdmissionKind = 'drawing' | 'project' | 'export-copy' | 'text-export' | 'pdf-export';
 type IdentityBridge = FileBridge & { resolvePathIdentity?(path: string): Promise<string | null> };
 
 export const UNVERIFIED_COMMITTED_SAVE_WARNING = 'The file was replaced, but final save verification failed. Review the destination before saving again.';
@@ -44,15 +44,19 @@ export class SaveAdmission {
   }
 
   get ticket(): string | undefined { return this.value; }
+  private get recordsDrawingIdentity(): boolean { return this.kind !== 'text-export' && this.kind !== 'pdf-export'; }
   async bind(path: string, source?: OpenedSourceHint): Promise<void> {
     await this.ready;
     if (!this.enabled) return;
     if (this.closed) throw new Error('This save admission has already been released.');
     if (this.bound !== undefined) { if (this.bound !== path) throw new Error('A save admission cannot be transferred to another destination.'); return; }
     const result = source ? await this.bridge.bindSaveAdmission!(this.value!, this.kind, path, source) : await this.bridge.bindSaveAdmission!(this.value!, this.kind, path);
-    if (typeof result === 'string') registerWindowsPathIdentity(path, result);
+    if (typeof result === 'string') {
+      if (!result) throw new Error('The Windows save host returned an invalid path identity.');
+      if (this.recordsDrawingIdentity) registerWindowsPathIdentity(path, result);
+    }
     else if (result && typeof result.identityPath === 'string' && typeof result.exists === 'boolean') {
-      if (result.exists) registerWindowsPathIdentity(path, result.identityPath);
+      if (result.exists && this.recordsDrawingIdentity) registerWindowsPathIdentity(path, result.identityPath);
     } else throw new Error('The Windows save host returned an invalid path identity.');
     this.bound = path;
     this.sourceContext = this.kind === 'drawing' && source !== undefined;
@@ -65,9 +69,9 @@ export class SaveAdmission {
     if (this.bridge.saveAdmissionResult) {
       const receipt = await this.bridge.saveAdmissionResult(this.value!);
       unusedProof = receipt?.openedSourceProof;
-      if (!receipt || receipt.path !== path) throw committedSaveAdmissionError('Its committed native identity receipt is unavailable. The drawing remains modified.');
+      if (!receipt || receipt.path !== path || typeof receipt.identityPath !== 'string' || !receipt.identityPath) throw committedSaveAdmissionError('Its committed native identity receipt is unavailable. The drawing remains modified.');
       if (this.sourceContext && hasOpenedSourceProofs(this.bridge) && !validOpenedSourceProof(unusedProof)) throw committedSaveAdmissionError('Its verified opened-source proof is unavailable. The drawing remains modified.');
-      registerWindowsPathIdentity(path, receipt.identityPath);
+      if (this.recordsDrawingIdentity) registerWindowsPathIdentity(path, receipt.identityPath);
       if (this.sourceContext) return unusedProof;
       await releaseOpenedSourceProof(this.bridge, unusedProof);
       return;
@@ -75,7 +79,7 @@ export class SaveAdmission {
     if (this.sourceContext && hasOpenedSourceProofs(this.bridge)) throw committedSaveAdmissionError('Its committed native identity receipt and opened-source proof are unavailable. The drawing remains modified.');
     // Compatibility with earlier experimental bridges; the current Windows
     // host always supplies a receipt captured from the actual writer context.
-    if (!this.bridge.resolvePathIdentity) return;
+    if (!this.recordsDrawingIdentity || !this.bridge.resolvePathIdentity) return;
     const canonical = await this.bridge.resolvePathIdentity(path);
     if (canonical) registerWindowsPathIdentity(path, canonical);
     } catch (error) {

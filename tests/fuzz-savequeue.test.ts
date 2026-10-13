@@ -201,13 +201,36 @@ describe('save queue fuzzing regressions', () => {
     expect(wrote).toBe(true);
     expect(logs).toEqual([]);
   });
-  it('the IPC save channels use the shared user-file writer', () => {
-    // Queue ordering and aliases are exercised through app-data.cjs in main-write-queue.test.ts.
+  it('the IPC save channels use shared admission and user-file queues, including delegated PDF production', () => {
+    // Native ordering/aliases are also exercised in main-write-queue.test.ts and
+    // windows-export-ipc.test.ts. Keep these architecture checks scoped to the
+    // actual handlers/helper: delegating must not create a direct-write bypass.
     const handler = ipcHandlerSource;
-    for (const name of ['save-dxf', 'save-project', 'save-text', 'save-pdf']) {
+    for (const name of ['save-dxf', 'save-project', 'save-text']) {
       expect(handler(name), name).toMatch(/(?:await writeUserFile|(?:await|return) writeAdmittedText)\(/);
-      expect(handler(name), name).not.toMatch(/await atomicWriteFile\(/);
     }
+    for (const name of ['save-dxf', 'save-project', 'save-text', 'save-pdf', 'plot-pdf']) expect(handler(name), name).not.toMatch(/\b(?:atomicWriteFile|fs\.writeFile|fs\.writeFileSync)\(/);
+    for (const name of ['save-pdf', 'plot-pdf']) {
+      expect(handler(name), name).toMatch(/return await producePdf\(ev, file, captured,/);
+      expect(handler(name), name).not.toMatch(/\bwriteUserFile\(/);
+    }
+    const plot = readFileSync(new URL('../electron/main/ipc-plot.cjs', import.meta.url), 'utf8');
+    const start = plot.indexOf('async function producePdf('), end = plot.indexOf("ipcMain.handle('plot-pdf'", start);
+    expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
+    const helper = plot.slice(start, end), admitted = helper.slice(helper.indexOf('return saveOrder.run('));
+    expect(helper).toMatch(/if \(!saveOrder\) \{ await writeUserFile\(file, await producer\(\)\); return file; \}/);
+    expect(admitted).toMatch(/return saveOrder\.run\(ev, 'pdf-export', file, captured, async \(scope\) =>/);
+    expect(admitted).toMatch(/return scope\.commit\(pdf, \(snapshot, target\) => enqueueWrite\(target\.destinationPath, async \(key\) =>/);
+    expect(admitted).toMatch(/createAtomicWriter\(undefined, \{ hooks: \{ beforeAttempt: target\.guard \} \}\)/);
+    expect(admitted).toMatch(/await writer\.atomicWriteFile\(target\.destinationPath, snapshot, \{ backup: false, root: target\.root, expectedDestination: key \}\)/);
+    expect(admitted).toMatch(/await target\.markCommitted\(\)/); expect(admitted).not.toMatch(/\b(?:writeUserFile|fs\.writeFile|fs\.writeFileSync)\(/);
+    const facade = readFileSync(new URL('../electron/main/save-order.cjs', import.meta.url), 'utf8');
+    const runStart = facade.indexOf('async function run('), runEnd = facade.indexOf('async function prepare(', runStart);
+    expect(runStart).toBeGreaterThan(0); expect(runEnd).toBeGreaterThan(runStart);
+    expect(facade.slice(runStart, runEnd)).toMatch(/await admissions\.run\(captured\.ticket, captured\.owner, kind, file, operation\)/);
+    const appData = readFileSync(new URL('../electron/main/app-data.cjs', import.meta.url), 'utf8');
+    expect(appData).toMatch(/const enqueueWrite = createCanonicalWriteQueue\(\)/);
+    expect(appData).toMatch(/return enqueueWrite\(file, \(key\) => atomicWriteFile\(file, data, \{ \.\.\.opts, expectedDestination: key \}\)\)/);
   });
   it('Save As asks for the file first (choose-drawing-path) and writes nothing itself; the preload exposes it', () => {
     const src = mainProcessSource();

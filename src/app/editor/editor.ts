@@ -420,8 +420,8 @@ export class Editor {
    * Render the drawing extents onto the chosen paper (white sheet, black lines, hidden
    * layers left out) for plotting / printing. The image has exactly the sheet's proportions.
    */
-  renderPlotImage(opts: PlotOptions): Promise<{ dataUrl: string; landscape: boolean; sheet: { width: number; height: number }; electron?: string; reducedToFit: boolean } | null> {
-    return plotting.renderPlotImage(this, opts);
+  renderPlotImage(opts: PlotOptions, captured?: import('../export-admission').CapturedPlot): Promise<{ dataUrl: string; landscape: boolean; sheet: { width: number; height: number }; electron?: string; reducedToFit: boolean } | null> {
+    return plotting.renderPlotImage(this, opts, captured);
   }
 
   /** PLOT: open the Plot / Print dialog (default: PDF) and run the chosen output. */
