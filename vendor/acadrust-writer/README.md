@@ -56,6 +56,14 @@ validation succeeds. A native regression checks escaped Unicode, shared records,
 ordered ATTRIBs, actual encoded DBCOLOR bodies and entity pointers, full reopened
 snapshots, idempotency and strict conflict/mutation refusal. It does not exempt
 new objects from the preservation comparison or change the independent C guard.
+The helper also appends the exact pinned DBCOLOR/AcDbColor CLASS recipe when any
+BookColor will be emitted and its class is absent. Registration follows admitted
+annotation classes, preserving their positional numbers. Required existing class
+identity/type and positional agreement are checked before the color copy commits;
+proxy flags and schema metadata are retained verbatim. A compact real source class
+table and a standalone explicit color regression verify raw record/class-number
+correlation before the private document builder can interpret the internal type129
+fallback. That fallback is not a valid substitute for a declared native class.
 The INSERT decoder retains the declared SEQEND handle, which the existing binary
 writer already reuses. An explicit wrong INSERT owner or SEQEND reactor,
 extension dictionary or XDATA refuses: this repair stores identity only, and

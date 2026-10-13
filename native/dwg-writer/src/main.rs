@@ -1220,6 +1220,7 @@ mod tests {
     fn admitted_named_entity_colors_materialize_exact_native_records_before_baseline() {
         use acadrust::entities::EntityType;
         use acadrust::io::dwg::dwg_stream_readers::{
+            classes_reader::read_classes,
             handle_reader::read_handles,
             object_reader::{objects::read_book_color, DwgObjectReader},
         };
@@ -1304,6 +1305,14 @@ mod tests {
         let bytes = output.into_inner();
         let mut raw = DwgReader::from_stream(std::io::Cursor::new(bytes.clone()));
         let info = raw.read_file_header().unwrap();
+        let encoded_classes = read_classes(&raw.get_section_buffer("AcDb:Classes", &info).unwrap(),
+            DxfVersion::AC1032, info.acad_maintenance_version).unwrap();
+        let (color_index, color_class) = encoded_classes.iter().enumerate()
+            .find(|(_, class)| class.dxf_name == "DBCOLOR").unwrap();
+        assert_eq!(color_class.class_number as usize, 500 + color_index);
+        assert_eq!(color_class.cpp_class_name, "AcDbColor");
+        assert_eq!(color_class.item_class_id, 499);
+        assert!(!color_class.is_an_entity);
         let handles = read_handles(&raw.get_section_buffer("AcDb:Handles", &info).unwrap()).unwrap();
         let objects = raw.get_section_buffer("AcDb:AcDbObjects", &info).unwrap();
         let reader = DwgObjectReader::new(objects, DxfVersion::AC1032, handles).unwrap();
@@ -1312,6 +1321,7 @@ mod tests {
         for (handle, expected) in &colors {
             let offset = usize::try_from(reader.offset_for(handle.value()).unwrap()).unwrap();
             let (kind, mut data) = reader.read_record_at(offset).unwrap();
+            assert_eq!(kind, color_class.class_number, "BookColor must use its actual positional CLASS");
             let common = reader.read_common_non_entity_data(&mut data, kind);
             assert_eq!(common.common.handle, handle.value());
             assert_eq!(common.owner_handle, root.value());
@@ -1420,6 +1430,98 @@ mod tests {
             }
             assert!(equivalent(&baseline, &metadata_snapshot(&changed).unwrap(), "book-color mutation").is_err(), "{change}");
         }
+
+        // Explicit source CLASSES clear the constructor pool. This complete
+        // native fixture supplies the actual compact class table, so the writer
+        // cannot accidentally rely on its internal fallback type129.
+        let compact = include_str!("../tests/fixtures/autocad-multilayout-app.dxf").replace("\r\n", "\n");
+        let compact_schema = source_schema::capture(&compact).unwrap();
+        let mut empty = DxfReader::from_reader(std::io::Cursor::new(compact.as_bytes().to_vec()))
+            .unwrap().read().unwrap();
+        compact_schema.verify(&mut empty).unwrap();
+        assert!(!empty.classes.contains("DBCOLOR"));
+        let no_book_classes = empty.classes.clone();
+        DwgWriter::prepare_book_color_class(&mut empty).unwrap();
+        assert_eq!(empty.classes, no_book_classes, "no BookColor must add no class");
+        let standalone_handle = Handle::new(0x20000);
+        let compact_root = empty.header.named_objects_dict_handle;
+        let record = format!("0\nDBCOLOR\n5\n20000\n330\n{:X}\n100\nAcDbColor\n1\nPearl Δ\n2\nStudio Book\n420\n11259375\n", compact_root.value());
+        let standalone_text = compact.replace("0\nENDSEC\n0\nEOF", &format!("{record}0\nENDSEC\n0\nEOF"));
+        let standalone_schema = source_schema::capture(&standalone_text).unwrap();
+        let mut standalone = DxfReader::from_reader(std::io::Cursor::new(standalone_text.as_bytes().to_vec()))
+            .unwrap().read().unwrap();
+        assert!(!standalone.classes.contains("DBCOLOR"));
+        standalone_schema.verify(&mut standalone).unwrap();
+        let class_values: Vec<_> = standalone.classes.iter().cloned().collect();
+        assert_eq!(class_values.len(), no_book_classes.len() + 1);
+        assert_eq!(&class_values[..no_book_classes.len()], no_book_classes.iter().cloned().collect::<Vec<_>>());
+        let generated_class = class_values.last().unwrap();
+        assert_eq!(generated_class.dxf_name, "DBCOLOR");
+        assert_eq!(generated_class.cpp_class_name, "AcDbColor");
+        assert_eq!(generated_class.class_number as usize, 500 + no_book_classes.len());
+        assert_eq!(generated_class.proxy_flags, acadrust::classes::ProxyFlags(1025));
+        let standalone_baseline = metadata_snapshot(&standalone).unwrap();
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        DwgWriter::write_to_writer(&mut encoded, &standalone).unwrap();
+        let bytes = encoded.into_inner();
+        let mut raw = DwgReader::from_stream(std::io::Cursor::new(bytes.clone()));
+        let info = raw.read_file_header().unwrap();
+        let classes = read_classes(&raw.get_section_buffer("AcDb:Classes", &info).unwrap(),
+            DxfVersion::AC1032, info.acad_maintenance_version).unwrap();
+        let class = classes.iter().nth(no_book_classes.len()).unwrap();
+        assert_eq!(class.dxf_name, "DBCOLOR");
+        assert_eq!(class.cpp_class_name, "AcDbColor");
+        assert_eq!(class.class_number as usize, 500 + no_book_classes.len());
+        let handles = read_handles(&raw.get_section_buffer("AcDb:Handles", &info).unwrap()).unwrap();
+        let reader = DwgObjectReader::new(raw.get_section_buffer("AcDb:AcDbObjects", &info).unwrap(), DxfVersion::AC1032, handles).unwrap();
+        let (kind, mut data) = reader.read_record_at(reader.offset_for(standalone_handle.value()).unwrap() as usize).unwrap();
+        assert_eq!(kind, class.class_number);
+        let common = reader.read_common_non_entity_data(&mut data, kind);
+        assert_eq!(common.owner_handle, compact_root.value());
+        let color = read_book_color(&mut data);
+        assert_eq!(color.color, Color::from_rgb(0xAB, 0xCD, 0xEF));
+        assert_eq!(color.book_name, "Studio Book");
+        assert_eq!(color.color_name, "Pearl Δ");
+        let reopened = DwgReader::from_stream(std::io::Cursor::new(bytes)).read().unwrap();
+        equivalent(&standalone_baseline, &metadata_snapshot(&reopened).unwrap(), "standalone color CLASS").unwrap();
+        verify_reopening(&standalone, &reopened).unwrap();
+        for change in ["cpp", "entity", "number", "duplicate"] {
+            let mut changed = standalone.clone();
+            changed.classes.clear();
+            for mut class in class_values.clone() {
+                if class.dxf_name == "DBCOLOR" {
+                    match change {
+                        "cpp" => class.cpp_class_name = "DifferentColorClass".into(),
+                        "entity" => { class.is_an_entity = true; class.item_class_id = 498; },
+                        "number" => class.class_number += 1,
+                        _ => {},
+                    }
+                }
+                changed.classes.add_or_update(class);
+            }
+            let schema = if change == "duplicate" {
+                source_schema::capture(&standalone_text.replace("2\nCLASSES\n", "2\nCLASSES\n0\nCLASS\n1\nDBCOLOR\n2\nAcDbColor\n0\nCLASS\n1\nDBCOLOR\n2\nDifferentColorClass\n")).unwrap()
+            } else { source_schema::capture(&standalone_text).unwrap() };
+            let before = serde_json::to_value(&changed).unwrap();
+            assert!(schema.verify(&mut changed).is_err(), "class {change}");
+            assert_eq!(serde_json::to_value(&changed).unwrap(), before, "class {change} changed the admitted source");
+        }
+        let mut retained_class = standalone.clone();
+        retained_class.classes.clear();
+        for mut class in class_values {
+            if class.dxf_name == "DBCOLOR" {
+                class.proxy_flags = acadrust::classes::ProxyFlags(7);
+                class.application_name = "Original color application".into();
+                class.dwg_version = 27;
+                class.maintenance_version = 45;
+                class.unknown1 = 12;
+                class.unknown2 = 34;
+            }
+            retained_class.classes.add_or_update(class);
+        }
+        let before = serde_json::to_value(&retained_class).unwrap();
+        standalone_schema.verify(&mut retained_class).unwrap();
+        assert_eq!(serde_json::to_value(&retained_class).unwrap(), before, "existing valid CLASS fields must stay exact");
     }
 
     #[test]

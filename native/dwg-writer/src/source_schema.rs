@@ -202,6 +202,7 @@ fn annotation_scale(document: &mut CadDocument, root: Handle, name: &str) -> Res
 pub struct SourceSchema {
     headers: BTreeMap<String, Vec<(i32, String)>>,
     objects: BTreeMap<u64, String>,
+    classes: Vec<String>,
 }
 
 fn refusal(detail: &str) -> String {
@@ -390,6 +391,7 @@ pub fn capture(text: &str) -> Result<SourceSchema, String> {
         Ok(())
     };
     let mut work = 0usize;
+    let mut class_record = false;
     while let Some(raw_code) = lines.next() {
         let value = lines
             .next()
@@ -403,6 +405,7 @@ pub fn capture(text: &str) -> Result<SourceSchema, String> {
             return Err(refusal("source work budget"));
         }
         if code == 0 {
+            class_record = section == "CLASSES" && value == "CLASS";
             finish(&kind, handle, &context, &mut source)?;
             kind.clear();
             handle = None;
@@ -426,7 +429,12 @@ pub fn capture(text: &str) -> Result<SourceSchema, String> {
             pending_section = false;
             continue;
         }
-        if section == "HEADER" {
+        if class_record && code == 1 {
+            if value.len() > 255 || source.classes.len() >= i16::MAX as usize - 499 {
+                return Err(refusal("CLASS identity/number budget"));
+            }
+            source.classes.push(value.trim().to_ascii_uppercase());
+        } else if section == "HEADER" {
             if code == 9 {
                 if value.len() > 64
                     || source.headers.len() >= 512
@@ -495,6 +503,12 @@ pub fn capture(text: &str) -> Result<SourceSchema, String> {
 
 impl SourceSchema {
     pub fn verify(&self, document: &mut CadDocument) -> Result<(), String> {
+        let declared_color_classes = self.classes.iter().filter(|name| name.as_str() == "DBCOLOR").count();
+        if declared_color_classes > 1
+            || declared_color_classes == 1 && !document.classes.contains("DBCOLOR")
+        {
+            return Err(refusal("source DBCOLOR CLASS is ambiguous or disappeared during import"));
+        }
         for (handle, kind) in &self.objects {
             let object = document.objects.get(&Handle::new(*handle)).ok_or_else(|| {
                 refusal(&format!("{kind} source identity disappeared during import"))
@@ -602,6 +616,11 @@ impl SourceSchema {
                 }
             }
         }
+        // Append after the other admitted native registries so their existing
+        // positional class numbers remain intact. A source declaration can
+        // never be replaced by the generated default recipe.
+        DwgWriter::prepare_book_color_class(document)
+            .map_err(|detail| refusal(&detail.to_string()))?;
         if let Some(groups) = self.headers.get("$DIMTXSTY") {
             let name = scalar(groups, 7)?;
             document.header.dim_text_style_handle = document
