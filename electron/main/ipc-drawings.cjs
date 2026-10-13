@@ -12,6 +12,7 @@ const { writeUserFile, enqueueWrite } = require('./app-data.cjs');
 const { createPortableDwgExporter } = require('../portable-dwg.cjs');
 const { decodeDxf, readDwgWithProgress } = require('./dwg.cjs');
 const { MAX_DRAWING_BYTES, MAX_PROJECT_BYTES, readLimitedFile, validateTextSize } = require('../resource-limits.cjs');
+const { registerSaveOrder } = require('./save-order.cjs');
 
 /** @typedef {import('./context.cjs').MainContext} MainContext */
 
@@ -31,8 +32,64 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
   const dwgDestinations = new Set();
   const dwgKey = (file) => {
     const resolved = path.resolve(file);
-    return process.platform === 'win32' ? resolved.toLowerCase() : resolved.normalize('NFC').toLowerCase();
+    return process.platform === 'win32' ? resolved.replace(/[A-Z]/g, (letter) => letter.toLowerCase()) : resolved.normalize('NFC').toLowerCase();
   };
+  const saveOrder = process.platform === 'win32' ? registerSaveOrder(ctx, (_owner, kind, file) => {
+    const type = kind === 'project' ? PROJECT_FILE : kind === 'export-copy' ? DWG_FILE : /\.(dxf|dwg)$/i;
+    const allowed = pathPolicy.writable(file, 'save-admission', type) !== null && (kind !== 'export-copy' || dwgDestinations.has(dwgKey(file)));
+    const root = registry.writeRoot(file);
+    return allowed ? { allowed: true, ...(root ? { root } : {}) } : { allowed: false };
+  }) : null;
+
+  async function identityPath(file) {
+    if (process.platform !== 'win32') return undefined;
+    try { return await fs.realpath(file); } catch { return undefined; }
+  }
+  /** Couple returned bytes and identity to the same held descriptor, then recheck after close. */
+  async function readDrawingBytes(file) {
+    if (process.platform !== 'win32') return { bytes: await readLimitedFile(fs, file, MAX_DRAWING_BYTES), identityPath: undefined };
+    const changed = () => Object.assign(new Error('ERR_WINDOWS_PATH_CHANGED: the drawing changed while it was opened. Open it again.'), { code: 'ERR_WINDOWS_PATH_CHANGED' });
+    const version = (stat) => [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].map(String).join(':');
+    /** @type {{version:string,size:bigint,identityPath:string|undefined}|undefined} */ let captured;
+    const observe = async () => {
+      const stat = await fs.stat(file, { bigint: true }), canonical = await identityPath(file);
+      if (canonical && (version(await fs.stat(canonical, { bigint: true })) !== version(stat) || await identityPath(file) !== canonical)) throw changed();
+      return { version: version(stat), size: stat.size, identityPath: canonical };
+    };
+    const check = async () => {
+      if (!captured) throw changed();
+      const current = await observe();
+      if (current.version !== captured.version || current.identityPath !== captured.identityPath) throw changed();
+    };
+    const bytes = await readLimitedFile(fs, file, MAX_DRAWING_BYTES, undefined, {
+      async beforeRead(handle) {
+        const held = await handle.stat({ bigint: true }), current = await observe();
+        if (version(held) !== current.version) throw changed();
+        captured = current;
+      },
+      async afterRead(handle, content) {
+        if (!captured || version(await handle.stat({ bigint: true })) !== captured.version || BigInt(content.byteLength) !== captured.size) throw changed();
+        await check();
+      },
+    });
+    await check();
+    return { bytes, identityPath: captured?.identityPath, check };
+  }
+  if (saveOrder) ipcMain.handle('resolve-path-identity', async (_ev, file) => {
+    if (!pathPolicy.known(file, 'resolve-path-identity')) return null;
+    return (await identityPath(file)) ?? null;
+  });
+
+  async function writeAdmittedText(ev, kind, file, text, backup, ticket) {
+    if (!saveOrder) { await writeUserFile(file, text, { backup, root: registry.writeRoot(file) ?? undefined }); return file; }
+    return saveOrder.run(ev, kind, file, ticket, (scope) => scope.commit(text, (snapshot, target) => enqueueWrite(target.destinationPath, async (key) => {
+      const writer = createAtomicWriter(undefined, { hooks: { beforeAttempt: target.guard } });
+      await writer.atomicWriteFile(target.destinationPath, snapshot, { backup, root: target.root, expectedDestination: key });
+      await target.markCommitted();
+      // Keep the bound logical spelling: renderer identity and relative references use it.
+      return { path: target.logicalPath, identityPath: target.canonicalPath };
+    })));
+  }
 
   /**
    * Open a DXF or DWG. Returns { path, kind: 'dxf', text } or { path, kind: 'dwg', payload, version } or null.
@@ -64,15 +121,18 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
       const twin = file.replace(/\.dwg$/i, '.dxf');
       registry.grantDerived(twin, file);
       // At most 128 MiB, read through one nonblocking handle (E-7).
-      const bytes = /** @type {Buffer} */ (await readLimitedFile(fs, file, MAX_DRAWING_BYTES));
+      const read = await readDrawingBytes(file), bytes = /** @type {Buffer} */ (read.bytes);
       const { payload, version } = await readDwgWithProgress(win, file, bytes);
+      if (read.check) await read.check();
       pathPolicy.rememberImages(file, (payload.imageDefs || []).map((d) => d && d.fileName));
-      return { path: file, kind: 'dwg', payload, version };
+      return { path: file, identityPath: read.identityPath, kind: 'dwg', payload, version };
     }
     // Read bytes, not a UTF-8 string: pre-2007 DXF files are in the $DWGCODEPAGE code page.
-    const { text, encoding } = await decodeDxf(/** @type {Buffer} */ (await readLimitedFile(fs, file, MAX_DRAWING_BYTES)));
+    const read = await readDrawingBytes(file);
+    const { text, encoding } = await decodeDxf(/** @type {Buffer} */ (read.bytes));
+    if (read.check) await read.check();
     pathPolicy.rememberImages(file, dxfImageNames(text));
-    return { path: file, kind: 'dxf', text, encoding };
+    return { path: file, identityPath: read.identityPath, kind: 'dxf', text, encoding };
   }
 
   ipcMain.handle('open-drawing', async (ev, file) => {
@@ -131,19 +191,27 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
   ipcMain.handle('save-text', async (ev, suggestName, text, filterName, ext) => {
     const win = senderWindow(ev);
     if (typeof text !== 'string') throw new Error('Invalid payload');
+    const captured = saveOrder?.capture(ev, 'project');
+    try {
     const res = await dialog.showSaveDialog(win, {
       title: 'Save',
       defaultPath: String(suggestName || 'export.txt'),
       filters: [{ name: String(filterName || 'Text'), extensions: [String(ext || 'txt')] }],
     });
     if (res.canceled || !res.filePath) return null;
+    if (captured) saveOrder?.assertCurrent(ev, captured);
     // Crash-safe for every export; only a project file keeps its previous version as <name>.bak
     // (a .bak next to a CSV or text export would only clutter the user's folder).
     const isProject = /\.jcadproj\.json$/i.test(res.filePath) || String(filterName) === 'JCad Electrical Project';
     if (isProject) validateTextSize(text, MAX_PROJECT_BYTES, 'project');
+    if (isProject && saveOrder) {
+      registry.grant(res.filePath);
+      return await writeAdmittedText(ev, 'project', res.filePath, text, true, captured);
+    }
     await writeUserFile(res.filePath, text, { backup: isProject });
     registry.grant(res.filePath);
     return res.filePath;
+    } finally { saveOrder?.discard(captured); }
   });
 
   /**
@@ -249,7 +317,18 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
    * @param {string} text
    * @param {string | undefined} [root]
    */
-  async function writePortableDwg(win, target, text, root) {
+  async function writePortableDwg(win, target, text, ev, ticket, kind, root) {
+    if (saveOrder) {
+      const result = await saveOrder.run(ev, kind, target, ticket, (scope) => dwgExporter.export(target, text, (_destination, bytes, check) => scope.commit(bytes, (snapshot, admitted) => enqueueWrite(admitted.destinationPath, async (key) => {
+        const guard = async () => { await check(); await admitted.guard(); };
+        const writer = createAtomicWriter(undefined, { hooks: { beforeAttempt: guard } });
+        await writer.atomicWriteFile(admitted.destinationPath, snapshot, { backup: true, expectedDestination: key, root: admitted.root });
+        await admitted.markCommitted();
+        return { path: admitted.logicalPath, identityPath: admitted.canonicalPath };
+      })), scope.signal));
+      pathPolicy.rememberImages(target, dxfImageNames(text));
+      return result;
+    }
     const controller = new AbortController();
     const cancel = () => controller.abort();
     win.once('closed', cancel);
@@ -271,34 +350,33 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
     }
   }
 
-  ipcMain.handle('export-dwg', async (ev, file, text) => {
+  ipcMain.handle('export-dwg', async (ev, file, text, admission) => {
     const win = senderWindow(ev);
     validateTextSize(text, MAX_DRAWING_BYTES, 'DXF');
     const target = pathPolicy.writable(file, 'export-dwg', DWG_FILE);
     if (!target || !dwgDestinations.has(dwgKey(target))) throw new Error('Choose the DWG export destination using its Save dialog first.');
-    return writePortableDwg(win, target, text);
+    return writePortableDwg(win, target, text, ev, admission, 'export-copy', undefined);
   });
 
   /** Save an authorized .dwg in place; read-only or unknown drawings must use Save As first. */
-  ipcMain.handle('save-dwg', async (ev, file, text) => {
+  ipcMain.handle('save-dwg', async (ev, file, text, admission) => {
     const win = senderWindow(ev);
     if (process.platform !== 'win32') throw new Error('DWG saving is available on Windows only.');
     validateTextSize(text, MAX_DRAWING_BYTES, 'DXF');
     const target = pathPolicy.writable(file, 'save-dwg', DWG_FILE);
     if (!target) throw new Error('Choose a writable DWG destination using Save As first.');
-    return writePortableDwg(win, target, text, registry.writeRoot(target) ?? undefined);
+    return writePortableDwg(win, target, text, ev, admission, 'drawing', registry.writeRoot(target) ?? undefined);
   });
 
   /**
    * Write the project file to a path that came from our own dialogs (Open Project / Save Project As /
    * recent list): a .json file the user may write (a catalog file named by a project may not be).
    */
-  ipcMain.handle('save-project', async (_ev, file, text) => {
+  ipcMain.handle('save-project', async (ev, file, text, admission) => {
     validateTextSize(text, MAX_PROJECT_BYTES, 'project');
     if (!pathPolicy.writable(file, 'save-project', PROJECT_FILE)) throw new Error('Unknown project path');
     // Temporary file + fsync + rename, previous version kept as <name>.bak (electron/atomic-write.cjs).
-    await writeUserFile(file, text, { backup: true });
-    return file;
+    return writeAdmittedText(ev, 'project', file, text, true, admission);
   });
 
   /**
@@ -310,19 +388,27 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
    * { ok: true, path } or { ok: false, code, error } with a message for the user; it never throws
    * and never reports success without a complete copy.
    */
-  ipcMain.handle('backup-file', (_ev, file) =>
-    backupFile(
+  ipcMain.handle('backup-file', async (ev, file, opts) => {
+    if (saveOrder && pathPolicy.writable(file, 'backup-file', BACKUP_FILE)) {
+      try {
+        return await saveOrder.prepare(ev, /\.json$/i.test(file) ? 'project' : 'drawing', file, opts?.admission, (target) => {
+          const writer = createAtomicWriter();
+          return backupFile(target.destinationPath, (src, dest) => writer.copyFileAtomic(src, dest, { root: target.root, beforeRename: target.guard }), () => true);
+        });
+      } catch (error) { return { ok: false, code: error?.code || 'ERR_SAVE_OPERATION', error: error?.message || 'The backup could not be made.' }; }
+    }
+    return backupFile(
       file,
       // A drawing a project opened by name made writable is copied only from inside the project's folder (E-5).
       (src, dest) => copyFileAtomic(src, dest, { root: registry.writeRoot(src) ?? undefined }),
       (p) => pathPolicy.writable(p, 'backup-file', BACKUP_FILE) !== null,
-    ),
-  );
+    );
+  });
 
   ipcMain.handle('open-dxf', async (ev) => {
     const win = senderWindow(ev);
     const r = await openDrawingFile(win);
-    return r && r.kind === 'dxf' ? { path: r.path, text: r.text } : null;
+    return r && r.kind === 'dxf' ? { path: r.path, identityPath: r.identityPath, text: r.text } : null;
   });
 
   /**
@@ -335,6 +421,9 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
   ipcMain.handle('save-dxf', async (ev, existingPath, text, suggestName, opts) => {
     const win = senderWindow(ev);
     validateTextSize(text, MAX_DRAWING_BYTES, 'DXF');
+    // A compatibility caller still belongs to the document that opened its picker.
+    const captured = saveOrder?.capture(ev, 'drawing', opts?.admission);
+    try {
     let target = existingPath == null ? null : pathPolicy.writable(existingPath, 'save-dxf', DXF_FILE);
     // Saved by name: a drawing a project opened by name made writable stays inside the project's folder.
     const root = (target && registry.writeRoot(target)) ?? undefined;
@@ -352,16 +441,18 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
       if (res.canceled || !res.filePath) return null;
       target = await completeSavePath(win, res.filePath, DXF_FILE, '.dxf');
       if (!target) return null;
+      registry.grant(target);
     }
     // Temporary file + fsync + rename, previous version kept as <name>.dxf.bak (electron/atomic-write.cjs)
     // unless the renderer says no (a project-wide command made the .bak itself or was told to write without one).
     // A symbolic link that leads out of the file's folder (or, for a drawing a project opened by
     // name made writable, out of the project's folder) is refused with ELOOP (E-5).
     // A failure is thrown as "CODE: reason, write '<target>'"; the renderer maps it to a message.
-    await writeUserFile(target, text, { backup: !(opts && opts.backup === false), root });
+    const saved = await writeAdmittedText(ev, 'drawing', target, text, !(opts && opts.backup === false), captured ?? opts?.admission);
     // (A confined drawing is writable already; granting it would lift the confinement.)
     if (!root) registry.grant(target);
-    return target;
+    return saved;
+    } finally { saveOrder?.discard(captured); }
   });
 
   // ------------------------------------------------------------------ raster images of IMAGE entities (read-image)

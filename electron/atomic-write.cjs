@@ -213,11 +213,14 @@ function createAtomicWriter(fs = fsp, options = {}) {
   }
 
   /** Rename with retries for sharing violations; never truncate the destination. */
-  async function replace(tmp, dest, check) {
+  async function replace(tmp, dest, check, beforeAttempt, beforePathCheck) {
     let lastErr = null;
     for (let attempt = 0; attempt <= delays.length; attempt += 1) {
+      // A refused admission is not a sharing violation. Retry only an OS rename failure.
+      if (beforePathCheck) await beforePathCheck(tmp, dest);
+      if (check) await check(tmp);
+      if (beforeAttempt) await beforeAttempt(tmp, dest);
       try {
-        if (check) await check(tmp);
         await fs.rename(tmp, dest);
         return 'rename';
       } catch (err) {
@@ -401,7 +404,7 @@ function createAtomicWriter(fs = fsp, options = {}) {
    * use. Linked destinations and changed folders fail without a direct copy. Errors name
    * `src` or `dest`.
    */
-  async function copyThroughTemp(src, from, dest, check) {
+  async function copyThroughTemp(src, from, dest, check, beforeRename) {
     const tmp = tempNameFor(dest);
     let exists = false;
     try {
@@ -419,7 +422,7 @@ function createAtomicWriter(fs = fsp, options = {}) {
       } finally {
         await fh.close();
       }
-      await replace(tmp, dest, check);
+      await replace(tmp, dest, check, beforeRename);
       await syncDir(path.dirname(dest));
       return dest;
     } catch (err) {
@@ -435,7 +438,7 @@ function createAtomicWriter(fs = fsp, options = {}) {
    * from elsewhere into the folder or write outside it.
    * @param {string} src
    * @param {string} dest
-   * @param {{ root?: string }} [opts]
+   * @param {{ root?: string, beforeRename?: () => Promise<void> }} [opts]
    */
   async function copyFileAtomic(src, dest, opts = {}) {
     let source;
@@ -447,7 +450,7 @@ function createAtomicWriter(fs = fsp, options = {}) {
     try {
       const target = await guardPath(dest, opts.root);
       const check = async (tmp) => { await source.check(); await target.check(tmp); };
-      return await copyThroughTemp(src, source.dest, target.dest, check);
+      return await copyThroughTemp(src, source.dest, target.dest, check, opts.beforeRename);
     } catch (err) {
       throw fileError(err, dest, 'copy');
     }
@@ -491,8 +494,8 @@ function createAtomicWriter(fs = fsp, options = {}) {
         await fs.chmod(tmp, before.mode & 0o7777).catch(() => {});
       }
       if (before && opts.backup) backup = await copyFileAtomic(dest, `${dest}.bak`, opts);
-      if (hooks.beforeRename) await hooks.beforeRename(tmp, dest);
-      const method = await replace(tmp, dest, check);
+      // Sharing retries must repeat the admission/version check. Keep cleanup separate.
+      const method = await replace(tmp, dest, check, hooks.beforeAttempt, hooks.beforeRename);
       tmpCreated.yes = false;
       await syncDir(path.dirname(dest));
       return { path: dest, backup, method };

@@ -11,7 +11,7 @@ import { LIBRARY_SYMBOLS, withByBlockLibrarySymbols } from '../../electrical/lib
 import { TITLE_BLOCK } from '../../electrical/templates';
 import { SOURCE_ARROW, DEST_ARROW } from '../../tools/plc';
 import { convertDwg } from '../../io/dwg';
-import { isAbsolutePath } from '../paths';
+import { isAbsolutePath, registerWindowsPathIdentity } from '../paths';
 import { saveSettings, pushRecent } from '../settings';
 import { describeFileError } from '../file-errors';
 import { readDxfForOpen, reportNeedsAttention, importReportLog, importReportOf } from '../import-open';
@@ -91,6 +91,7 @@ export async function openFile(ed: Editor, file?: string): Promise<boolean> {
       ed.log(file ? `Opening ${file} ...` : 'Opening ...');
       const res = await ed.fileBridge.openDrawing(file);
       if (!res) return false;
+      if (ed.fileBridge.platform === 'win32' && res.identityPath) registerWindowsPathIdentity(res.path, res.identityPath);
       const writableDwg = res.kind === 'dwg' && hasDwgSave(ed.fileBridge);
       if ((res.kind === 'dxf' || writableDwg) && showAlreadyOpen(ed, res.path, targetId, before)) return true;
       if (res.kind === 'dwg') {
@@ -124,6 +125,7 @@ export async function openFile(ed: Editor, file?: string): Promise<boolean> {
     }
     const res = await ed.fileBridge.openDxf();
     if (!res) return false;
+    if (ed.fileBridge.platform === 'win32' && res.identityPath) registerWindowsPathIdentity(res.path, res.identityPath);
     const state = await ed.readDxfText(res.text, res.path);
     if (!state) {
       ed.log(`Not opened: ${res.path} is damaged.`);

@@ -298,7 +298,7 @@ describe('readable / writable paths (electron/path-registry.cjs)', () => {
   it('save-dxf (by name) and backup-file hand the write root to the atomic writer; a confined save does not lift it', () => {
     const save = ipcHandlerSource('save-dxf');
     expect(save).toMatch(/const root = \(target && registry\.writeRoot\(target\)\) \?\? undefined;/);
-    expect(save).toMatch(/await writeUserFile\(target, text, \{ backup: [^}]*, root \}\);\s*\/\/[^\n]*\n\s*if \(!root\) registry\.grant\(target\);/);
+    expect(save).toMatch(/await writeAdmittedText\(ev, 'drawing', target, text,[^;]*;\s*\/\/[^\n]*\n\s*if \(!root\) registry\.grant\(target\);/);
     expect(ipcHandlerSource('backup-file')).toMatch(/\(src, dest\) => copyFileAtomic\(src, dest, \{ root: registry\.writeRoot\(src\) \?\? undefined \}\)/);
   });
 

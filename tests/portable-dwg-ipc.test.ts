@@ -48,7 +48,7 @@ async function setup(platform: NodeJS.Platform = 'win32') {
   const reject = vi.fn();
   const pathPolicy = createPathPolicy({ isKnownPath: (p: string) => registry.isKnown(p), isWritablePath: (p: string) => registry.isWritable(p), knownPaths: () => registry.paths(), log: { reject } });
   const rememberImages = vi.spyOn(pathPolicy, 'rememberImages');
-  const webContents = new EventEmitter();
+  const webContents = Object.assign(new EventEmitter(), { isDestroyed: () => false });
   const win = Object.assign(new EventEmitter(), { webContents });
   const status = vi.fn(async () => ({ available: true, reason: undefined as string | undefined }));
   const exportCall = vi.fn(async (file: string, _text: string, commit: (file: string, bytes: Buffer, check: () => Promise<void>) => Promise<void>, signal: AbortSignal) => {
@@ -114,11 +114,12 @@ describe('portable DWG IPC', () => {
     expect(await f.invoke('export-dwg', f.target, DXF)).toBe(f.target);
     expect(await fs.readFile(f.target)).toEqual(OUTPUT);
     expect(await fs.readFile(`${f.target}.bak`, 'utf8')).toBe('original DWG bytes');
-    expect(f.writerFactory).toHaveBeenCalledWith(undefined, expect.objectContaining({ hooks: { beforeRename: expect.any(Function) } }));
+    expect(f.writerFactory).toHaveBeenCalledWith(undefined, expect.objectContaining({ hooks: { beforeAttempt: expect.any(Function) } }));
     expect(f.rememberImages).toHaveBeenCalledWith(f.target, dxfImageNames(DXF));
-    expect(f.win.listenerCount('closed')).toBe(0);
-    expect(f.win.webContents.listenerCount('destroyed')).toBe(0);
-    expect(f.win.webContents.listenerCount('render-process-gone')).toBe(0);
+    // One owner-lifetime watcher remains; individual saves do not accumulate listeners.
+    expect(f.win.listenerCount('closed')).toBe(1);
+    expect(f.win.webContents.listenerCount('destroyed')).toBe(1);
+    expect(f.win.webContents.listenerCount('render-process-gone')).toBe(1);
   });
 
   it.each(['export-dwg', 'save-dwg'])('%s cancels when the caller closes, keeping the original and clearing listeners', async (channel) => {
@@ -268,7 +269,7 @@ describe('portable DWG IPC', () => {
   it('saves a DWG opened through the native dialog using the verified writer and an atomic backup', async () => {
     const f = await setup();
     await fs.writeFile(f.target, 'original');
-    expect(await f.invoke('open-drawing')).toEqual({ path: f.target, kind: 'dwg', payload: { imageDefs: [] }, version: 'AC1032' });
+    expect(await f.invoke('open-drawing')).toEqual({ path: f.target, identityPath: await fs.realpath(f.target), kind: 'dwg', payload: { imageDefs: [] }, version: 'AC1032' });
     expect(await f.invoke('save-dwg', f.target, DXF)).toBe(f.target);
     expect(await fs.readFile(f.target)).toEqual(OUTPUT);
     expect(await fs.readFile(`${f.target}.bak`, 'utf8')).toBe('original');

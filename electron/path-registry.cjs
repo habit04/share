@@ -38,7 +38,8 @@ const DRAWING_RE = /\.(dxf|dwg)$/i;
 /**
  * Identity key of a path, the twin of src/app/paths.ts pathKey: absolute only, "." / ".." and
  * separators resolved, Unicode NFC outside Windows (macOS hands out decomposed names),
- * case-folded on Windows. Windows composed/decomposed filenames can be different real files.
+ * ASCII-folded on Windows. Native Unicode aliases require verified canonical identity rather
+ * than JavaScript case folding, which merges distinct real files.
  * A relative path or one with a NUL byte has no key and is never "known". (Self-contained apart from
  * `path` and `process`: tests/fuzz-paths.test.ts evaluates its source text per platform.)
  * @param {unknown} p
@@ -47,7 +48,7 @@ const DRAWING_RE = /\.(dxf|dwg)$/i;
 function pathKey(p) {
   if (typeof p !== 'string' || !p || p.length > 4096 || p.includes('\0') || !path.isAbsolute(p)) return null;
   const k = path.resolve(p);
-  return process.platform === 'win32' ? k.toLowerCase() : k.normalize('NFC');
+  return process.platform === 'win32' ? k.replace(/[A-Z]/g, (letter) => letter.toLowerCase()) : k.normalize('NFC');
 }
 
 /**
@@ -81,6 +82,11 @@ function streamName(p) {
  * @param {string} child
  */
 function isInside(dir, child) {
+  if (process.platform === 'win32') {
+    const root = pathKey(dir), target = pathKey(child);
+    if (root === null || target === null) return false;
+    return target === root || target.startsWith(root.endsWith(path.sep) ? root : `${root}${path.sep}`);
+  }
   const rel = path.relative(path.resolve(dir), path.resolve(child));
   return rel === '' || (rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
 }

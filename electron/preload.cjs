@@ -38,25 +38,30 @@ contextBridge.exposeInMainWorld('jcad', {
   saveText: (suggestName, text, filterName, ext) => ipcRenderer.invoke('save-text', suggestName, text, filterName, ext),
   // Project Save As: pick the destination first (the renderer rebases relative paths), then write it.
   chooseProjectPath: (suggestName) => ipcRenderer.invoke('choose-project-path', String(suggestName || '')),
-  saveProject: (file, text) => ipcRenderer.invoke('save-project', file, text),
-  backupFile: (file) => ipcRenderer.invoke('backup-file', file),
+  saveProject: (file, text, admission) => ipcRenderer.invoke('save-project', file, text, admission),
+  backupFile: (file, opts) => ipcRenderer.invoke('backup-file', file, opts && typeof opts === 'object' ? { admission: opts.admission } : undefined),
   plotPdf: (dataUrl, suggestName, landscape, sheet) => ipcRenderer.invoke('plot-pdf', dataUrl, suggestName, landscape, sheet),
   printDrawing: (dataUrl, title, landscape, sheet) => ipcRenderer.invoke('print-drawing', dataUrl, title, landscape, sheet),
   // Vector PLOT: the renderer's PDF bytes, saved through a Save dialog in the main process.
   savePdf: (bytes, suggestName) => ipcRenderer.invoke('save-pdf', bytes, suggestName),
   // opts.backup === false: no <name>.bak copy (a project-wide command made its own, or the user declined one)
-  saveDxf: (path, text, suggestName, opts) => ipcRenderer.invoke('save-dxf', path, text, suggestName, opts && opts.backup === false ? { backup: false } : undefined),
+  saveDxf: (path, text, suggestName, opts) => ipcRenderer.invoke('save-dxf', path, text, suggestName, opts && typeof opts === 'object' ? { ...(opts.backup === false ? { backup: false } : {}), ...(opts.admission !== undefined ? { admission: opts.admission } : {}) } : undefined),
   // Drawing Save As: pick the format and destination before writing in save-queue order.
   chooseDrawingPath: (suggestName, format) => ipcRenderer.invoke('choose-drawing-path', String(suggestName || ''), format),
   // Windows portable DWG saving and separate DWG copies.
   ...(process.platform === 'win32' ? {
+    issueSaveAdmission: (kind) => ipcRenderer.invoke('issue-save-admission', kind),
+    bindSaveAdmission: (ticket, kind, path) => ipcRenderer.invoke('bind-save-admission', ticket, kind, path),
+    cancelSaveAdmission: (ticket, kind) => ipcRenderer.invoke('cancel-save-admission', ticket, kind),
+    resolvePathIdentity: (path) => ipcRenderer.invoke('resolve-path-identity', path),
+    saveAdmissionResult: (ticket) => ipcRenderer.invoke('save-admission-result', ticket),
     fontMetrics: (request) => ipcRenderer.invoke('font-metrics', request),
     pdfFont: (request) => ipcRenderer.invoke('pdf-font', request),
     openShxFont: () => ipcRenderer.invoke('open-shx-font'),
     dwgExportStatus: () => ipcRenderer.invoke('dwg-export-status'),
-    saveDwg: (path, text) => ipcRenderer.invoke('save-dwg', path, text),
+    saveDwg: (path, text, admission) => ipcRenderer.invoke('save-dwg', path, text, admission),
     chooseDwgPath: (suggestName) => ipcRenderer.invoke('choose-dwg-path', String(suggestName || '')),
-    exportDwg: (path, text) => ipcRenderer.invoke('export-dwg', path, text),
+    exportDwg: (path, text, admission) => ipcRenderer.invoke('export-dwg', path, text, admission),
   } : {}),
   // Progress of a large DWG read (the main process parses it in a worker thread) and its Cancel button
   onOpenProgress: (cb) => {

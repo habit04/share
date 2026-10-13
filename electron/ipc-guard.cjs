@@ -168,7 +168,8 @@ function appUrlTest(indexFile, devUrl) {
   const fold = (/** @type {string} */ p) => {
     const resolved = path.resolve(p);
     const r = process.platform === 'win32' ? resolved : resolved.normalize('NFC');
-    return process.platform === 'win32' || process.platform === 'darwin' ? r.toLowerCase() : r;
+    if (process.platform === 'win32') return r.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+    return process.platform === 'darwin' ? r.toLowerCase() : r;
   };
   const target = fold(indexFile);
   const devOrigin = devUrl ? new URL(devUrl).origin : null;
@@ -210,9 +211,10 @@ function createPathPolicy({ isKnownPath, isWritablePath = isKnownPath, knownPath
     // together would extend the image permission into a different directory or reference.
     const resolved = path.resolve(p);
     const r = process.platform === 'win32' ? resolved : resolved.normalize('NFC');
-    return process.platform === 'win32' || process.platform === 'darwin' ? r.toLowerCase() : r;
+    if (process.platform === 'win32') return r.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+    return process.platform === 'darwin' ? r.toLowerCase() : r;
   };
-  const netKey = (/** @type {string} */ p) => norm(p).toLowerCase();
+  const netKey = (/** @type {string} */ p) => process.platform === 'win32' ? norm(p) : norm(p).toLowerCase();
   const remember = (/** @type {Set<string>} */ set, /** @type {string} */ key) => {
     set.add(key);
     if (set.size > 5000) set.delete(/** @type {string} */ (set.values().next().value));
@@ -246,6 +248,7 @@ function createPathPolicy({ isKnownPath, isWritablePath = isKnownPath, knownPath
 
   /** Is `child` the folder `dir` or inside it? */
   const inside = (/** @type {string} */ dir, /** @type {string} */ child) => {
+    if (process.platform === 'win32') return child === dir || child.startsWith(dir.endsWith(path.sep) ? dir : `${dir}${path.sep}`);
     const rel = path.relative(dir, child);
     return rel === '' || (rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
   };
@@ -355,7 +358,7 @@ function createPathPolicy({ isKnownPath, isWritablePath = isKnownPath, knownPath
             if (err && (err.code === 'ENOENT' || err.code === 'ENOTDIR')) continue;
             throw err;
           }
-          if (networkHost(realDir) === host && inside(norm(realDir), target)) return actual;
+          if (networkHost(realDir) === host && (process.platform === 'win32' ? inside(realDir, actual) : inside(norm(realDir), target))) return actual;
         }
       }
       throw imagePathError('Image resolves outside the permitted drawing folders');

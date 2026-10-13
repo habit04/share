@@ -162,8 +162,11 @@ describe('actual plugin IPC callback with native filesystem', () => {
     await fs.writeFile(path.join(target, 'plugin.json'), '{}'); await fs.writeFile(path.join(target, 'main.js'), 'outside Unicode sibling sentinel');
     await fs.symlink(target, path.join(root, 'test'), 'junction');
     const app = stores(appBase);
-    await expect(app.invoke('plugins-read', 'test')).rejects.toThrow(/outside.*root/);
+    const opened = vi.spyOn(nativeFs, 'open');
+    // Either the shared policy or the held-descriptor reader may refuse first.
+    await expect(app.invoke('plugins-read', 'test')).rejects.toThrow();
     expect(await app.invoke('plugins-list')).toEqual([]);
+    expect(opened).not.toHaveBeenCalled();
   });
   it('retains listing/error behavior and source paths through the checked sender boundary', async () => {
     const f = await fixture(), app = stores(f.base); expect(await app.invoke('plugins-read', f.folder)).toEqual({ manifest: f.manifest, code: f.code, path: f.file });

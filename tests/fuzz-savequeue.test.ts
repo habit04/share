@@ -205,7 +205,7 @@ describe('save queue fuzzing regressions', () => {
     // Queue ordering and aliases are exercised through app-data.cjs in main-write-queue.test.ts.
     const handler = ipcHandlerSource;
     for (const name of ['save-dxf', 'save-project', 'save-text', 'save-pdf']) {
-      expect(handler(name), name).toMatch(/await writeUserFile\(/);
+      expect(handler(name), name).toMatch(/(?:await writeUserFile|(?:await|return) writeAdmittedText)\(/);
       expect(handler(name), name).not.toMatch(/await atomicWriteFile\(/);
     }
   });
