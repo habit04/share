@@ -99,8 +99,10 @@ export function writeTextLike(w: Writer, position: g.Point, height: number, text
 
 export function writeTextStyle(w: Writer, placement: TextPlacement & { readonly style?: string }): void {
   if (placement.style) w.pair(7, placement.style);
-  if (placement.widthFactor !== undefined) w.pair(41, placement.widthFactor);
-  if (placement.oblique !== undefined) w.pair(51, g.deg(placement.oblique));
+  // Canonical entity defaults also cover generated labels/attributes on their first export.
+  // The native reader materializes omitted 1/0, so later exports must not add new fields.
+  w.pair(41, placement.widthFactor ?? 1);
+  w.pair(51, g.deg(placement.oblique ?? 0));
 }
 
 /** Handles and names the writer allocates before the entity pass (images, tables). */

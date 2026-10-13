@@ -8,7 +8,7 @@ import type { Linetype } from '../../core/linetypes';
 import type { Entity, DimensionEntity, Layer, AttributeAppearance } from '../../core/entities';
 import { rawEntitiesOf } from '../import-report';
 import { findLinetype, patternLength, STANDARD_LINETYPES, complexLinetypeProblem, linetypeShapeStyleProblem } from '../../core/linetypes';
-import { Writer, setPaperOwners, emptyExtras, writeTextLike, writeEntityCommon } from './write-core';
+import { Writer, setPaperOwners, emptyExtras, writeTextLike, writeTextStyle, writeEntityCommon } from './write-core';
 import { DEFAULT_HEADER } from '../../core/document';
 import { planLayouts, writeLayoutHeader, extraBlockRecords, layoutHandleOf, writeLayoutContent, writeLayoutObjects } from '../dxf-layouts';
 import type { WriteExtras } from './write-core';
@@ -400,9 +400,7 @@ export function writeDxf(state: DrawingState): string {
       for (const a of b.attributes) {
         writeEntityCommon(w, { ...a, id: a.tag, type: 'text', text: a.default, rotation: a.rotation ?? 0, color: a.color ?? 'ByLayer', layer: a.layer ?? '0' }, owner, 'ATTDEF', 'AcDbText');
         writeTextLike(w, a.position, a.height, a.default, a.rotation ?? 0, a.align, a);
-        if (a.style) w.pair(7, a.style);
-        if (a.widthFactor !== undefined) w.pair(41, a.widthFactor);
-        if (a.oblique !== undefined) w.pair(51, g.deg(a.oblique));
+        writeTextStyle(w, a);
         w.pair(100, 'AcDbAttributeDefinition');
         w.pair(3, a.prompt);
         w.pair(2, a.tag);
