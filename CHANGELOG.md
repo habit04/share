@@ -77,8 +77,14 @@ messages). The date of each version is the date of the commit that set that vers
   edits even when native timestamps collide. Returned drawing bytes match their original pins,
   and post-decode checks retain coherent opens. Own committed versions must match the exact write
   payload; unverified replacements retain dirty/recovery state, require destination review and
-  stop dependent project writes. This protects in-flight saves; completed-open source protection
-  against external edits before a later Save begins remains open.
+  stop dependent project writes.
+
+- Windows Open retains bounded source-byte evidence for its drawing tab. A later normal Save
+  refuses outside edits made since Open before replacing the original or its backup, preserving
+  dirty state and recovery. Verified own saves advance the source; Save As to a separate file
+  starts a new source. Duplicate opens, native aliases, reloads, overlapping saves and omitted
+  proof contexts cannot silently refresh the baseline. Source evidence is runtime-only, with
+  explicit capacity refusal; remaining filesystem provider and final OS race limits still apply.
 
 - Project calculations capture one Windows save order before snapshots, bind all sources before
   reading and check the complete calculation basis before backups and every write. Bounded

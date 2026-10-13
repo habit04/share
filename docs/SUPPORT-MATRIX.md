@@ -17,6 +17,12 @@ conversion differences refuse DWG saving. The tables below describe DXF writing;
 conversion has the additional checks and limits described in
 [DWG saving](DWG-SAVING.md), including working-file behavior.
 
+Windows drawing tabs retain completed-open byte/version evidence. Normal Save refuses outside
+changes made since Open before replacing the original or its backup; failed/unverified saves
+retain dirty state and recovery. Verified own saves advance that source, and separate Save As
+starts a new one. Evidence is bounded and runtime-only; filesystem provider and final OS race
+limits remain in [Windows save admissions](WINDOWS-SAVE-ADMISSIONS.md).
+
 Legend: **yes** = kept; **partly** = kept with the limits in the last column; **no** = not read or
 not written (the object is dropped; on DWG import the dropped types are counted in the "Skipped
 unsupported" line on the command line). Sources: `src/io/dxf/` (the reader is `reader.ts` and

@@ -89,12 +89,38 @@ hold those native fields constant rather than relying on a timing collision in C
 native trials refuse all 64 ordinary and 64 project outside edits. A separate 64-trial native
 probe refuses a real five-field collision. Both leave all host resources at zero after cleanup.
 
-One separate confirmed requirement remains: a document opened earlier has no retained source
-version for a later ordinary Save. A fresh admission protects the version found at that later
-bind, allowing an external edit made before bind to be overwritten. A private actual Electron
-case also proved that a second own save rotates away the first external-byte backup after
-recovery has been cleared. Owner-bound completed-open evidence is the next reliability slice;
-the in-flight admission checks do not certify this earlier-open baseline.
+## Completed-open source protection
+
+Open now returns an opaque main-owned proof for the exact completed held-descriptor bytes and
+native version. A tab retains that proof outside drawing data, undo/history, DXF, project files
+and recovery documents. Normal Save checks that original lineage before backup preparation and
+each write guard. An outside edit made before a later admission refuses without replacing the
+file or backup; two consecutive refused Saves retain dirty state and recovery. Reopening to
+activate an existing tab releases its unused new proof instead of refreshing the old baseline.
+
+Verified own commits advance the physical lineage with immutable owner/order evidence. A
+successful one-use receipt updates only the matching saving session/content generation. Older
+results cannot replace a newer Save As binding. A separate Save As creates its own lineage;
+source aliases and hardlinks must still match the protected version. Missing/recovered source
+evidence requires a separate copy or reopening. Omitted and null source contexts cannot freshly
+adopt an active protected original. Earlier hosts without this protocol retain the old contract.
+
+The registry reserves space before reads, backup or writes: 256 records globally, 128 per owner,
+32 pending and 4 MiB retained characters (the combined character budget may refuse earlier).
+No live baseline is evicted. Borrowed proofs and retired pending reservations stay charged until
+their read/write cleanup joins. Each lineage retains one latest snapshot, rather than a growing
+chain of previous saves. A producer error after verified replacement releases its unused token;
+the physical own-byte lineage remains known, while the renderer keeps dirty/recovery state.
+
+Validation includes 31 backend and 28 renderer regressions, 16 production IPC cases on actual
+Windows files, and the existing DWG IPC contract using mock conversion. The actual rebuilt
+desktop passes 14 new Open/edit/save/recovery workflows, including real rename overlap and a
+public three-sheet project update followed by Undo/Redo and normal Save. The existing seven
+2D workflows also pass with this protocol. Native picker answers and controlled private outside
+edits are test injections; IPC, codecs, files, backups and recovery are real. Independent native
+protocol probes cover 32-save constant retention, failed producers and late hardlink lineages.
+These checks do not certify a native DWG converter, installed build, every provider or freedom
+from Node's final check-to-rename race.
 
 The portable-writer integrity repair is the completed eight-line admission loop from merged
 PR #9 commit `b7c930447d0d081ae241fba2b58fac4b5271e85b`, integrated as `05feb08`.
@@ -114,3 +140,8 @@ three TypeScript checks, broad lint, fixtures and production build. Final source
 9 project, 17 save/recovery and 7 tracked 2D workflows with unchanged source/bundle hashes.
 Native destination answers and a controlled post-rename outside edit are the app test injections;
 codecs, IPC, files, backup/recovery and ordinary UI behavior are real. Owned processes are closed.
+
+The completed-open milestone subsequently passes 3,544 tests / 28 conditional skips, all three
+TypeScript checks, broad lint, fixtures and production build. Its rebuilt desktop passes the
+14 new workflows plus the existing seven 2D workflows described above, with production hashes
+unchanged and owned processes closed. These are separate from the earlier 33-workflow run.
