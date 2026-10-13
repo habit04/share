@@ -44,10 +44,10 @@ describe('native explicit TEXT/attribute default overrides', () => {
 
   it.each([
     { label: 'both defaults', groups: [41, 1, 51, 0], widthFactor: 1, oblique: 0 },
-    { label: 'width only', groups: [41, 1], widthFactor: 1, oblique: undefined },
-    { label: 'oblique only', groups: [51, 0], widthFactor: undefined, oblique: 0 },
-    { label: 'neither supplied', groups: [], widthFactor: undefined, oblique: undefined },
-  ])('preserves $label presence for TEXT, ATTDEF and ATTRIB across repeated save/reopen', ({ groups, widthFactor, oblique }) => {
+    { label: 'width only', groups: [41, 1], widthFactor: 1, oblique: 0 },
+    { label: 'oblique only', groups: [51, 0], widthFactor: 1, oblique: 0 },
+    { label: 'neither supplied', groups: [], widthFactor: 1, oblique: 0 },
+  ])('preserves $label native defaults for TEXT, ATTDEF and ATTRIB across repeated save/reopen', ({ groups, widthFactor, oblique }) => {
     let state = readDxf(source(groups));
     for (let round = 0; round < 3; round++) {
       for (const placement of [text(state), state.blocks.LABEL!.attributes[0]!, insert(state).attributePlacements!.TAG!]) {
@@ -76,13 +76,13 @@ describe('native explicit TEXT/attribute default overrides', () => {
   });
 
   it('preserves newly explicit defaults after an edit, undo/redo, movement and saving', () => {
-    const state = readDxf(source([]));
+    const state = readDxf(source([41, 2, 51, 10]));
     const drawing = new Drawing(state);
     const original = text(state);
     drawing.replaceEntities([{ ...original, widthFactor: 1, oblique: 0 }]);
     expect(drawing.dirty).toBe(true);
     drawing.undo();
-    expect((drawing.entity(original.id) as TextEntity).widthFactor).toBeUndefined();
+    expect((drawing.entity(original.id) as TextEntity).widthFactor).toBe(2);
     drawing.redo();
     drawing.replaceEntities([translateEntity(drawing.entity(original.id)!, { x: 3, y: 4 })]);
     const reopened = text(readDxf(writeDxf(drawing.snapshot)));
@@ -90,7 +90,7 @@ describe('native explicit TEXT/attribute default overrides', () => {
   });
 
   it('saves explicit defaults added while editing an attribute definition and inserted label', () => {
-    const drawing = new Drawing(readDxf(source([])));
+    const drawing = new Drawing(readDxf(source([41, 2, 51, 10])));
     drawing.transact((state) => ({
       ...state,
       blocks: { ...state.blocks, LABEL: { ...state.blocks.LABEL!, attributes: state.blocks.LABEL!.attributes.map((a) => ({ ...a, widthFactor: 1, oblique: 0 })) } },
@@ -100,7 +100,7 @@ describe('native explicit TEXT/attribute default overrides', () => {
       } : e),
     }));
     drawing.undo();
-    expect(drawing.blocks.LABEL!.attributes[0]!.widthFactor).toBeUndefined();
+    expect(drawing.blocks.LABEL!.attributes[0]!.widthFactor).toBe(2);
     drawing.redo();
     const reopened = readDxf(writeDxf(drawing.snapshot));
     expect(reopened.blocks.LABEL!.attributes[0]!).toMatchObject({ widthFactor: 1, oblique: 0 });
@@ -110,7 +110,8 @@ describe('native explicit TEXT/attribute default overrides', () => {
 
   it.each([true, false])('keeps Canvas/PDF style resolution and anchors after reopen (explicit=%s)', (explicit) => {
     const state = readDxf(writeDxf(readDxf(source(explicit ? [41, 1, 51, 0] : []))));
-    const expectedWidth = explicit ? 1 : 0.5, expectedSlant = explicit ? 0 : Math.tan(0.2);
+    // AutoCAD DXFOUT removes 1/0 even with STYLE creation defaults of .5/.2 radians.
+    const expectedWidth = 1, expectedSlant = 0;
     const label = attributeText(insert(state), state.blocks.LABEL!, state.blocks.LABEL!.attributes[0]!);
     setTextStyles(textStylesOf(state));
     for (const entity of [text(state), label]) {
