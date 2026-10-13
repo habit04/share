@@ -10,6 +10,7 @@ export interface TextMetricStyle {
   readonly italic?: boolean;
 }
 export type TextAppearance = TextRenderer;
+export const textFontKey = (face: Extract<TextAppearance, { kind: 'canvas' }>): string => JSON.stringify([face.family, face.bold, face.italic]);
 
 /** Conservative direct-glyph subset; other scripts retain whole-run Canvas shaping. */
 export function supportsNativeTextRun(text: string): boolean {

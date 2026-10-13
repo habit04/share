@@ -53,6 +53,7 @@ declare global {
   interface Window {
     jcad?: {
       fontMetrics?(request: import('./core/text-metrics').FontMetricsRequest): Promise<import('./core/text-metrics').NativeFontMetrics | null>;
+      pdfFont?(request: import('./core/text-metrics').FontMetricsRequest): Promise<import('./app/pdf-fonts').PdfFontResult>;
       openDxf(): Promise<{ path: string; text: string } | null>;
       openDrawing(file?: string): Promise<import('./app/editor').OpenResult | null>;
       openProject(file?: string, opts?: { userChosen?: boolean; textOnly?: boolean }): Promise<{ path: string; text: string } | null>;

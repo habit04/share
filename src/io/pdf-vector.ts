@@ -37,6 +37,8 @@ import { polylineWidthGeometry, strokeOutlinePolygons } from '../core/polyline-w
 import { aciToCss } from '../render/palette';
 import { strokeText, strokeTextWidth, expandControlCodes, textRenderer, CAP_HEIGHT_EM } from '../render/hershey';
 import { placedText } from '../core/text-placement';
+import { metricTextPlacement, textFontKey, type TextGeometryContext } from '../core/text-metrics';
+import { PdfFontRegistry, writePdfFontResources } from './pdf-fonts';
 import { hasMTextFill, hasMTextFrame } from '../core/mtext-background';
 import { findLinetype, effectiveLinetype, isByBlock, type Linetype } from '../core/linetypes';
 import type { TextStyle } from './encoding';
@@ -86,6 +88,28 @@ export interface PdfDrawGroup {
   readonly frames?: ReadonlyArray<{ x: number; y: number; w: number; h: number; layer: string; polygon?: readonly Point[] }>;
 }
 
+/** Conservative model-space bounds of a group's page clip, shared with font discovery. */
+export function pdfGroupView(group: PdfDrawGroup): Bounds | null {
+  const r = group.clip;
+  if (!r) return null;
+  const c = Math.cos(group.rotation ?? 0), s = Math.sin(group.rotation ?? 0);
+  const inverse = (x: number, y: number): Point => {
+    const dx = (x - group.e) / group.k, dy = (y - group.f) / group.k;
+    return { x: c * dx + s * dy, y: -s * dx + c * dy };
+  };
+  return g.boundsOfPoints([inverse(r.x, r.y), inverse(r.x + r.w, r.y), inverse(r.x + r.w, r.y + r.h), inverse(r.x, r.y + r.h)])!;
+}
+
+/** The same top-level culling must apply before reserving bounded PDF font resources. */
+export function pdfGroupEntityVisible(entity: Entity, group: PdfDrawGroup, lookup: BlockLookup, view = pdfGroupView(group)): boolean {
+  if (group.hidden.has(entity.layer) || (entity.annotative && group.hideAnnotative)) return false;
+  if (view && entity.type !== 'xline' && entity.type !== 'ray') {
+    const bounds = entityBounds(entity, lookup);
+    if (bounds && !g.boundsIntersect(bounds, view)) return false;
+  }
+  return true;
+}
+
 export interface PdfPageSpec {
   /** Page size in points (72 per inch). */
   readonly width: number;
@@ -119,6 +143,10 @@ export interface PdfDrawingContext {
   readonly ltscale: number;
   readonly linetypes: readonly Linetype[];
   readonly textStyles?: Readonly<Record<string, TextStyle>>;
+  /** Licensed programs and matching metrics local to this captured vector plot. */
+  readonly embeddedFonts?: PdfFontRegistry;
+  readonly textGeometry?: TextGeometryContext;
+  readonly fontFallbacks?: Set<string>;
   /** Bitmap of an IMAGE entity's file (null: the frame and file name are plotted instead). */
   readonly image?: (path: string) => PdfImageData | null;
 }
@@ -346,7 +374,7 @@ interface GradientRes {
 class PageWriter {
   readonly ops: string[] = [];
   readonly images: ImageRes[] = [];
-  readonly fonts = new Set<'F1' | 'F2'>();
+  readonly fonts = new Set<string>();
   readonly forms: VectorForm[] = [];
   readonly gradients: GradientRes[] = [];
   readonly alphas = new Set<number>();
@@ -398,14 +426,9 @@ class PageWriter {
       this.resetState();
       if (grp.clip) this.ops.push(`${n(grp.clip.x)} ${n(grp.clip.y)} ${n(grp.clip.w)} ${n(grp.clip.h)} re W n`);
       if (grp.clipPolygon) this.ops.push(`${this.pagePolygon(grp.clipPolygon)} W* n`);
-      const view = grp.clip ? this.modelRect(grp.clip) : null;
+      const view = pdfGroupView(grp);
       for (const e of grp.entities) {
-        if (grp.hidden.has(e.layer)) continue;
-        if (e.annotative && grp.hideAnnotative) continue;
-        if (view && e.type !== 'xline' && e.type !== 'ray') {
-          const b = entityBounds(e, this.ctx.lookup);
-          if (b && !g.boundsIntersect(b, view)) continue;
-        }
+        if (!pdfGroupEntityVisible(e, grp, this.ctx.lookup, view)) continue;
         const shown = e.annotative && grp.annoFactor !== 1 ? annotativeEntity(e, grp.annoFactor) : e;
         this.entity(shown, null, view);
       }
@@ -431,16 +454,6 @@ class PageWriter {
 
   private pagePolygon(points: readonly Point[]): string {
     return points.map((p, i) => `${n(p.x)} ${n(p.y)} ${i ? 'l' : 'm'}`).join(' ') + ' h';
-  }
-
-  /** Conservative model-space bounds of all four inverse-mapped clip corners. */
-  private modelRect(r: { x: number; y: number; w: number; h: number }): Bounds {
-    const { k, e, f, c, s } = this.tf;
-    const inverse = (x: number, y: number): Point => {
-      const dx = (x - e) / k, dy = (y - f) / k;
-      return { x: c * dx + s * dy, y: -s * dx + c * dy };
-    };
-    return g.boundsOfPoints([inverse(r.x, r.y), inverse(r.x + r.w, r.y), inverse(r.x + r.w, r.y + r.h), inverse(r.x, r.y + r.h)])!;
   }
 
   private setStroke(c: [number, number, number]): void {
@@ -562,16 +575,16 @@ class PageWriter {
         break;
       case 'mtext':
         this.mtextBackground(e);
-        this.parts([...mtextParts(e), ...mtextDecorations(e)], e, parent, view);
+        this.parts([...mtextParts(e, this.ctx.textGeometry), ...mtextDecorations(e, this.ctx.textGeometry)], e, parent, view);
         break;
       case 'dimension':
-        this.parts(dimensionParts(e), e, parent, view);
+        this.parts(dimensionParts(e, this.ctx.textGeometry), e, parent, view);
         break;
       case 'leader':
-        for (const part of leaderParts(e)) if (!this.group?.hidden.has(part.layer)) this.entity(part, parent, view);
+        for (const part of leaderParts(e, this.ctx.textGeometry)) if (!this.group?.hidden.has(part.layer)) this.entity(part, parent, view);
         break;
       case 'table':
-        this.parts(tableParts(e), e, parent, view);
+        this.parts(tableParts(e, this.ctx.textGeometry), e, parent, view);
         break;
       case 'hatch':
         this.hatch(e);
@@ -623,7 +636,7 @@ class PageWriter {
   private mtextBackground(e: MTextEntity): void {
     const bg = e.background;
     if (!bg) return;
-    const masks = mtextMasks(e);
+    const masks = mtextMasks(e, this.ctx.textGeometry);
     if (!masks.length) return;
     // The drawing-window mask becomes white paper, including under monochrome plotting.
     const rgb: [number, number, number] = bg.flags & 2 ? [1, 1, 1] : plotColor(objectRgb(bg.color, bg.trueColor, this.layer(bg.colorLayer ?? e.layer)), this.style);
@@ -808,6 +821,27 @@ class PageWriter {
     const text = expandControlCodes(raw);
     if (!text.trim()) return;
     const r = textRenderer(textStyleOf(e), this.ctx.textStyles);
+    const appearance = this.ctx.textGeometry?.resolve(e);
+    if (appearance?.kind === 'canvas' && this.ctx.embeddedFonts) {
+      const key = textFontKey(appearance), face = this.ctx.embeddedFonts.face(key);
+      const run = this.ctx.embeddedFonts.encode(key, text);
+      if (face && run) {
+        const placed = metricTextPlacement(e, this.ctx.textGeometry!);
+        const t = placed.text, wf = t.widthFactor ?? 1, slant = Math.tan(t.oblique ?? 0);
+        const size = t.height * this.tf.k * face.metrics.unitsPerEm / face.metrics.capitalHeight;
+        const c = Math.cos(t.rotation + this.tf.rotation), s = Math.sin(t.rotation + this.tf.rotation);
+        const p = this.pt(t.position), off = placed.offset * wf * this.tf.k;
+        const values = [size, wf * c, wf * s, slant * c - s, slant * s + c, p.x + off * c, p.y + off * s];
+        const numbers = values.map((value) => {
+          if (!Number.isFinite(value) || Math.abs(value) >= 1e21) throw new Error('PDF text transform exceeds the supported numeric range.');
+          const result = value.toFixed(6).replace(/\.?0+$/, ''); return result === '-0' || !result ? '0' : result;
+        });
+        this.fonts.add(run.resourceName);
+        this.ops.push(`BT /${run.resourceName} ${numbers[0]} Tf ${numbers.slice(1).join(' ')} Tm <${run.hex}> Tj ET`);
+        return;
+      }
+    }
+    if (r.kind === 'canvas' && this.ctx.fontFallbacks) this.ctx.fontFallbacks.add(r.family.split(',')[0]!);
     const initialWidthFactor = e.widthFactor !== undefined && Number.isFinite(e.widthFactor) && e.widthFactor > 0 ? e.widthFactor : r.widthFactor;
     e = placedText({ ...e, widthFactor: initialWidthFactor }, r.kind === 'canvas' && isWinAnsi(text) ? (_text, height) => helveticaWidth(text, r.bold || !!e.bold) * height / CAP_HEIGHT_EM : strokeTextWidth);
     const wf = e.widthFactor ?? 1;
@@ -898,7 +932,8 @@ export interface RenderedPage {
   height: number;
   content: string;
   images: ImageRes[];
-  fonts: ReadonlySet<'F1' | 'F2'>;
+  fonts: ReadonlySet<string>;
+  embeddedFonts?: PdfFontRegistry;
   /** Isolated vector paint groups for translucent dash masks and mixed device hairlines. */
   forms?: readonly VectorForm[];
   /** ExtGState opacity bytes used by both strokes and fills. */
@@ -913,7 +948,7 @@ export function renderPdfPages(pages: readonly PdfPageSpec[], ctx: PdfDrawingCon
   return pages.map((page) => {
     const w = new PageWriter(ctx, style, page);
     w.run();
-    return { width: page.width, height: page.height, content: w.ops.join('\n'), images: w.images, fonts: w.fonts, forms: w.forms, alphas: w.alphas, gradients: w.gradients, pathOps: w.pathOps };
+    return { width: page.width, height: page.height, content: w.ops.join('\n'), images: w.images, fonts: w.fonts, embeddedFonts: ctx.embeddedFonts, forms: w.forms, alphas: w.alphas, gradients: w.gradients, pathOps: w.pathOps };
   });
 }
 
@@ -936,6 +971,8 @@ export function assembleVectorPdf(rendered: readonly RenderedPage[], title = 'Dr
   const f2 = reserve();
   set(f1, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>');
   set(f2, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>');
+  const fontObjects = new Map<PdfFontRegistry, ReadonlyMap<string, number>>();
+  for (const pg of rendered) if (pg.embeddedFonts && !fontObjects.has(pg.embeddedFonts)) fontObjects.set(pg.embeddedFonts, writePdfFontResources(pg.embeddedFonts, { reserve, set }));
   const kids: number[] = [];
   rendered.forEach((pg, i) => {
     const pageNum = reserve();
@@ -958,7 +995,11 @@ export function assembleVectorPdf(rendered: readonly RenderedPage[], title = 'Dr
         xobjects.push(`/${form.name} ${num} 0 R`);
       }
     }
-    const fonts = [...pg.fonts].map((f) => `/${f} ${f === 'F1' ? f1 : f2} 0 R`);
+    const fonts = [...pg.fonts].map((f) => {
+      const object = f === 'F1' ? f1 : f === 'F2' ? f2 : pg.embeddedFonts ? fontObjects.get(pg.embeddedFonts)?.get(f) : undefined;
+      if (!object) throw new Error('Missing PDF font resource.');
+      return `/${f} ${object} 0 R`;
+    });
     const alphaResources = [...(pg.alphas ?? [])].map((alpha) => {
       const num = reserve();
       set(num, `<< /Type /ExtGState /CA ${n(alpha / 255)} /ca ${n(alpha / 255)} /BM /Normal >>`);

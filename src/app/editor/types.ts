@@ -51,6 +51,8 @@ export type SaveErrorChoice = 'retry' | 'saveas' | 'cancel';
 export interface FileBridge {
   /** Desktop platform; absent for the browser file bridge. */
   platform?: string;
+  /** Windows only: licensed installed programs for this PDF plot, never drawing data. */
+  pdfFont?(request: import('../../core/text-metrics').FontMetricsRequest): Promise<import('../pdf-fonts').PdfFontResult>;
   openDxf(): Promise<{ path: string; text: string } | null>;
   /** Desktop only: open DXF or DWG (DWG parsed by LibreDWG in the main process). */
   openDrawing?(file?: string): Promise<OpenResult | null>;

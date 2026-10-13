@@ -31,6 +31,7 @@ import { deflate, rgbaToRgb } from '../io/pdf';
 import { renderSettings } from '../render/draw';
 import { renderPageToCanvas } from '../render/layouts';
 import { capturedPlotLookup } from './plot-fonts';
+import { capturedPdfLookup } from './pdf-fonts';
 
 export interface PlotChoiceLike {
   options: PlotOptions;
@@ -111,10 +112,14 @@ export async function plotLayoutsOrVector(ed: Editor, choice: PlotChoiceLike): P
   const opts = choice.options;
   const vector = choice.action === 'pdf' && opts.output !== 'raster';
   const snapshot = ed.doc.snapshot;
+  const base = ed.fileName().replace(/\.[^.]+$/, '');
   if (!vector && !snapshot.space) return false;
-  const lookup = await capturedPlotLookup(snapshot);
-  const state = plottableState(snapshot, lookup);
+  const initialLookup = await capturedPlotLookup(snapshot);
+  const state = plottableState(snapshot, initialLookup);
   const target = vector ? plotTarget(state, opts) : snapshot.space!.layout;
+  const initialPages = vector ? plotPages(state, initialLookup, target, opts) : [];
+  const prepared = vector ? await capturedPdfLookup(state, ed.fileBridge?.platform === 'win32' ? ed.fileBridge.pdfFont?.bind(ed.fileBridge) : undefined, initialPages.flatMap((page) => page.groups)) : null;
+  const lookup = prepared?.lookup ?? initialLookup;
   const pages = plotPages(state, lookup, target, opts);
   if (pages.length === 0 || pages.every((p) => p.groups.every((grp) => grp.entities.length === 0 && !(grp.frames?.length)))) {
     ed.log(target === 'model' ? 'Nothing to plot: this tab has no visible objects.' : 'Nothing to plot: the layout is empty.');
@@ -122,12 +127,14 @@ export async function plotLayoutsOrVector(ed: Editor, choice: PlotChoiceLike): P
   }
   const layout = target === 'model' || target === 'layouts' ? activeLayout(state) : findLayout(state, target);
   const style = styleFor(opts, layout);
-  const base = ed.fileName().replace(/\.[^.]+$/, '');
   if (vector) {
     const images = await collectImages(pages, lookup);
     const ctx = drawingContext(state, lookup, (p) => images.get(p) ?? null);
+    const fontFallbacks = new Set<string>();
+    Object.assign(ctx, { embeddedFonts: prepared?.fonts, textGeometry: prepared?.geometry, fontFallbacks });
     const title = target === 'model' ? base : target === 'layouts' ? `${base} - layouts` : `${base} - ${target}`;
     const bytes = await vectorPdfCompressed(pages, ctx, style, title, deflate);
+    if (fontFallbacks.size) ed.log(`PDF used substitute fonts for ${[...fontFallbacks].join(', ')}. ${prepared?.issues.join(' ') || 'Some glyphs or font formats are unsupported.'}`);
     const save = ed.fileBridge?.savePdf;
     if (!save) {
       ed.log('Plotting is not available here.');
