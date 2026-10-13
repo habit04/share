@@ -7,6 +7,7 @@ const path = require('node:path').win32;
 const MAX_PATH_LENGTH = 4096;
 const MAX_PARENT_DEPTH = 128;
 const MAX_CONTENT_BYTES = 128 * 1024 * 1024;
+const MAX_PDF_CONTENT_BYTES = 512 * 1024 * 1024;
 const HASH_CHUNK_BYTES = 256 * 1024;
 const fail = (code, message) => Object.assign(new Error(message), { code });
 const asciiCaseFold = (value) => value.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
@@ -47,17 +48,17 @@ const abortCheck = (signal) => { if (signal?.aborted) throw fail('ERR_SAVE_CANCE
 
 /** @typedef {{readonly dev:string, readonly ino:string}} FileIdentity */
 /** @typedef {FileIdentity & {readonly size:string, readonly mtimeNs:string, readonly ctimeNs:string, readonly sha256?:string}} FileVersion */
-/** @typedef {{readonly logicalPath:string, readonly destinationPath:string, readonly canonicalPath:string, readonly canonicalParent:string, readonly parentExists:boolean, readonly parentIdentity:FileIdentity, readonly ancestorLogicalPath:string, readonly canonicalAncestor:string, readonly missingParents:readonly string[], readonly queueKey:string, readonly targetKey:string, readonly exists:boolean, readonly fileVersion:FileVersion|null, readonly hashContent?:boolean, readonly root?:string, readonly canonicalRoot?:string, readonly rootIdentity?:FileIdentity}} WindowsWriteTarget */
+/** @typedef {{readonly logicalPath:string, readonly destinationPath:string, readonly canonicalPath:string, readonly canonicalParent:string, readonly parentExists:boolean, readonly parentIdentity:FileIdentity, readonly ancestorLogicalPath:string, readonly canonicalAncestor:string, readonly missingParents:readonly string[], readonly queueKey:string, readonly targetKey:string, readonly exists:boolean, readonly fileVersion:FileVersion|null, readonly hashContent?:boolean, readonly contentLimit?:number, readonly root?:string, readonly canonicalRoot?:string, readonly rootIdentity?:FileIdentity}} WindowsWriteTarget */
 
 /** Hash fresh bytes through one held descriptor. Caller must authorize before calling.
  * Regular file symlinks are supported here for standalone opens; save pins impose their own policy.
  * @param {string} value
- * @param {{fs?:typeof fsp,maxBytes?:number,signal?:AbortSignal,expectedCanonicalPath?:string,expectedVersion?:FileVersion}} [options]
+ * @param {{fs?:typeof fsp,maxBytes?:number,pdfExport?:boolean,signal?:AbortSignal,expectedCanonicalPath?:string,expectedVersion?:FileVersion}} [options]
  * @returns {Promise<{sha256:string,bytes:number,canonicalPath:string,version:FileVersion}>}
  */
-async function coherentFileDigest(value, { fs = fsp, maxBytes = MAX_CONTENT_BYTES, signal, expectedCanonicalPath, expectedVersion } = {}) {
+async function coherentFileDigest(value, { fs = fsp, maxBytes = MAX_CONTENT_BYTES, pdfExport = false, signal, expectedCanonicalPath, expectedVersion } = {}) {
   const file = absoluteWindowsPath(value);
-  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_CONTENT_BYTES) throw fail('ERR_WINDOWS_CONTENT_LIMIT', 'A bounded file-content limit is required.');
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > (pdfExport === true ? MAX_PDF_CONTENT_BYTES : MAX_CONTENT_BYTES)) throw fail('ERR_WINDOWS_CONTENT_LIMIT', 'A bounded file-content limit is required.');
   const changed = () => fail('ERR_WINDOWS_PATH_CHANGED', 'The file changed during its content check.');
   abortCheck(signal);
   const canonicalPath = await fs.realpath(file);
@@ -190,28 +191,31 @@ function createWindowsPathIdentity({ fs = fsp } = {}) {
     let current = await captureWriteTarget(pin.logicalPath, pin.root);
     if (current.canonicalParent !== pin.canonicalParent || pin.parentExists && (!current.parentExists || current.queueKey !== pin.queueKey) || pin.canonicalRoot !== current.canonicalRoot || pin.rootIdentity && (!current.rootIdentity || !sameIdentity(pin.rootIdentity, current.rootIdentity))) throw changed();
     if (preserveLeaf && current.canonicalPath !== pin.canonicalPath) throw changed();
-    if (pin.hashContent && !metadataOnly) current = await captureContentTarget(current, { signal });
+    if (pin.hashContent && !metadataOnly) current = await captureContentTarget(current, { signal, maxBytes: pin.contentLimit ?? MAX_CONTENT_BYTES });
     if (preserveVersion && fileVersionKey(current.fileVersion) !== fileVersionKey(pin.fileVersion)) throw changed();
     abortCheck(signal);
     return current;
   }
   /** Add fresh content evidence without rebinding the captured native namespace.
-   * @param {WindowsWriteTarget} pin @param {{signal?:AbortSignal}} [options]
+   * A larger budget is selected only by trusted main PDF-export code; all normal
+   * drawings/readers use the unchanged 128 MiB default. The branded pin seals it.
+   * @param {WindowsWriteTarget} pin @param {{signal?:AbortSignal,maxBytes?:number}} [options]
    * @returns {Promise<WindowsWriteTarget>}
    */
-  async function captureContentTarget(pin, { signal } = {}) {
+  async function captureContentTarget(pin, { signal, maxBytes = MAX_CONTENT_BYTES } = {}) {
+    if (maxBytes !== MAX_CONTENT_BYTES && maxBytes !== MAX_PDF_CONTENT_BYTES) throw fail('ERR_WINDOWS_CONTENT_LIMIT', 'An explicit drawing or PDF content budget is required.');
     const before = await revalidate(pin, { preserveLeaf: true, metadataOnly: true, signal });
     if ((before.fileVersion === null) !== (pin.fileVersion === null) || before.fileVersion && pin.fileVersion && statVersionKey(before.fileVersion) !== statVersionKey(pin.fileVersion)) throw changed();
     let fileVersion = pin.fileVersion;
     if (fileVersion !== null) {
-      const digest = await coherentFileDigest(pin.logicalPath, { fs, signal, expectedCanonicalPath: pin.canonicalPath, expectedVersion: fileVersion });
+      const digest = await coherentFileDigest(pin.logicalPath, { fs, signal, maxBytes, pdfExport: maxBytes === MAX_PDF_CONTENT_BYTES, expectedCanonicalPath: pin.canonicalPath, expectedVersion: fileVersion });
       fileVersion = Object.freeze({ ...fileVersion, sha256: digest.sha256 });
     }
     await revalidate(before, { preserveLeaf: true, preserveVersion: true, signal });
-    const content = Object.freeze({ ...pin, hashContent: true, fileVersion });
+    const content = Object.freeze({ ...pin, hashContent: true, contentLimit: maxBytes, fileVersion });
     pins.add(content); return content;
   }
   return Object.freeze({ captureWriteTarget, captureContentTarget, revalidate });
 }
 
-module.exports = { MAX_PATH_LENGTH, MAX_PARENT_DEPTH, MAX_CONTENT_BYTES, HASH_CHUNK_BYTES, asciiCaseFold, absoluteWindowsPath, canonicalInside, fileVersionKey, coherentFileDigest, createWindowsPathIdentity };
+module.exports = { MAX_PATH_LENGTH, MAX_PARENT_DEPTH, MAX_CONTENT_BYTES, MAX_PDF_CONTENT_BYTES, HASH_CHUNK_BYTES, asciiCaseFold, absoluteWindowsPath, canonicalInside, fileVersionKey, coherentFileDigest, createWindowsPathIdentity };

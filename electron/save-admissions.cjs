@@ -1,13 +1,14 @@
 /** Host-owned save ordering. Authorization and the atomic writer remain caller-owned. */
 'use strict';
 const { randomBytes, createHash } = require('node:crypto');
-const { absoluteWindowsPath, fileVersionKey } = require('./windows-path-identity.cjs');
+const { absoluteWindowsPath, fileVersionKey, MAX_CONTENT_BYTES, MAX_PDF_CONTENT_BYTES } = require('./windows-path-identity.cjs');
 const byteLengthDescriptor = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), 'byteLength');
 if (!byteLengthDescriptor || typeof byteLengthDescriptor.get !== 'function') throw new Error('Native typed-array byte lengths are required.');
 const typedByteLength = byteLengthDescriptor.get;
 
-const SAVE_KINDS = Object.freeze(['drawing', 'project', 'export-copy']);
+const SAVE_KINDS = Object.freeze(['drawing', 'project', 'export-copy', 'text-export', 'pdf-export']);
 const LIMITS = Object.freeze({ pending: 32, ledger: 640, payload: 128 * 1024 * 1024, queuedBytes: 256 * 1024 * 1024, ttlMs: 120000,
+  pdfPayload: 512 * 1024 * 1024, pdfQueuedBytes: 512 * 1024 * 1024, sharedQueuedBytes: 768 * 1024 * 1024,
   batchParents: 2, batchChildren: 512, batchInputBytes: 128 * 1024 * 1024, batchPinChars: 16 * 1024 * 1024, batchHardLifeMs: 600000 });
 const fail = (code, message) => Object.assign(new Error(message), { code });
 const verifiedCommits = new WeakMap();
@@ -25,7 +26,7 @@ function verifiedCommitOrder(evidence, owner) {
 }
 /** @typedef {import('./windows-path-identity.cjs').WindowsWriteTarget} WriteTarget */
 /** @typedef {{allowed:true, root?:string}|{allowed:false}} Authorization */
-/** @typedef {{captureWriteTarget:(path:string,root?:string)=>Promise<WriteTarget>, captureContentTarget?:(pin:WriteTarget,options?:{signal?:AbortSignal})=>Promise<WriteTarget>, revalidate:(pin:WriteTarget,options?:{preserveLeaf?:boolean,preserveVersion?:boolean,signal?:AbortSignal,metadataOnly?:boolean})=>Promise<WriteTarget>}} PathIdentity */
+/** @typedef {{captureWriteTarget:(path:string,root?:string)=>Promise<WriteTarget>, captureContentTarget?:(pin:WriteTarget,options?:{signal?:AbortSignal,maxBytes?:number})=>Promise<WriteTarget>, revalidate:(pin:WriteTarget,options?:{preserveLeaf?:boolean,preserveVersion?:boolean,signal?:AbortSignal,metadataOnly?:boolean})=>Promise<WriteTarget>}} PathIdentity */
 /** @typedef {{logicalPath:string,destinationPath:string,canonicalPath:string,root?:string,signal:AbortSignal,guard:()=>Promise<void>,guardParents:()=>Promise<void>,markCommitted:()=>Promise<void>}} WriterContext */
 /** @typedef {(payload:string|Uint8Array,context:WriterContext)=>Promise<unknown>} SaveWriter */
 /** @typedef {{logicalPath:string,destinationPath:string,canonicalPath:string,root?:string,signal:AbortSignal,guard:()=>Promise<void>,guardParents:()=>Promise<void>}} PreparationContext */
@@ -48,15 +49,16 @@ function verifiedCommitOrder(evidence, owner) {
  * guardParents is for cleanup/verification and never relaxes junction/root pins.
  * No portable Node API can eliminate the last check-to-rename race with an
  * adversarial local process. Existing versions include fresh held-FD SHA256 evidence.
- * @param {{identity:PathIdentity, authorize:(owner:object,kind:string,path:string)=>Authorization|Promise<Authorization>, maxPending?:number,maxLedger?:number,maxPayloadBytes?:number,maxQueuedBytes?:number,ttlMs?:number,maxBatchParents?:number,maxBatchChildren?:number,maxBatchInputBytes?:number,maxBatchPinChars?:number,batchHardLifeMs?:number,now?:()=>number}} options
+ * @param {{identity:PathIdentity, authorize:(owner:object,kind:string,path:string)=>Authorization|Promise<Authorization>, maxPending?:number,maxLedger?:number,maxPayloadBytes?:number,maxQueuedBytes?:number,maxPdfPayloadBytes?:number,maxPdfQueuedBytes?:number,maxSharedQueuedBytes?:number,ttlMs?:number,maxBatchParents?:number,maxBatchChildren?:number,maxBatchInputBytes?:number,maxBatchPinChars?:number,batchHardLifeMs?:number,now?:()=>number}} options
  */
 function createSaveAdmissions(options) {
   if (!options || !options.identity || typeof options.authorize !== 'function') throw fail('ERR_SAVE_CONFIGURATION', 'Native identity and explicit main-owned authorization are required.');
   const { identity, authorize, now = () => performance.now() } = options;
-  async function contentPin(pin, signal) {
+  async function contentPin(pin, signal, kind = 'drawing') {
     if (typeof identity.captureContentTarget !== 'function') throw fail('ERR_SAVE_CONFIGURATION', 'Fresh native file-content evidence is required.');
-    const captured = await identity.captureContentTarget(pin, { signal });
-    if (captured.hashContent !== true || captured.exists && !/^[a-f0-9]{64}$/.test(captured.fileVersion?.sha256 ?? '')) throw fail('ERR_SAVE_CONFIGURATION', 'Fresh native file-content evidence is required.');
+    const maxBytes = kind === 'pdf-export' ? MAX_PDF_CONTENT_BYTES : MAX_CONTENT_BYTES;
+    const captured = await identity.captureContentTarget(pin, { signal, maxBytes });
+    if (captured.hashContent !== true || captured.contentLimit !== maxBytes || captured.exists && !/^[a-f0-9]{64}$/.test(captured.fileVersion?.sha256 ?? '')) throw fail('ERR_SAVE_CONFIGURATION', 'Fresh native file-content evidence with its sealed budget is required.');
     return captured;
   }
   function limit(value, fallback, ceiling) {
@@ -66,6 +68,8 @@ function createSaveAdmissions(options) {
   }
   const maxPending = limit(options.maxPending, LIMITS.pending, LIMITS.pending), maxLedger = limit(options.maxLedger, LIMITS.ledger, LIMITS.ledger);
   const maxPayloadBytes = limit(options.maxPayloadBytes, LIMITS.payload, LIMITS.payload), maxQueuedBytes = limit(options.maxQueuedBytes, LIMITS.queuedBytes, LIMITS.queuedBytes);
+  const maxPdfPayloadBytes = limit(options.maxPdfPayloadBytes, LIMITS.pdfPayload, LIMITS.pdfPayload), maxPdfQueuedBytes = limit(options.maxPdfQueuedBytes, LIMITS.pdfQueuedBytes, LIMITS.pdfQueuedBytes);
+  const maxSharedQueuedBytes = limit(options.maxSharedQueuedBytes, LIMITS.sharedQueuedBytes, LIMITS.sharedQueuedBytes);
   const ttlMs = limit(options.ttlMs, LIMITS.ttlMs, 600000);
   const maxBatchParents = limit(options.maxBatchParents, LIMITS.batchParents, LIMITS.batchParents), maxBatchChildren = limit(options.maxBatchChildren, LIMITS.batchChildren, LIMITS.batchChildren);
   const maxBatchInputBytes = limit(options.maxBatchInputBytes, LIMITS.batchInputBytes, LIMITS.batchInputBytes), maxBatchPinChars = limit(options.maxBatchPinChars, LIMITS.batchPinChars, LIMITS.batchPinChars);
@@ -76,7 +80,7 @@ function createSaveAdmissions(options) {
   /** @type {Map<string,ProjectBatch>} */ const batches = new Map();
   /** @type {Map<string,Set<ProjectBatch>>} */ const reservedTargets = new Map();
   const retired = new WeakSet();
-  let order = 0n, queuedBytes = 0, disposed = false, batchActive = 0, batchChildren = 0, batchInputs = 0, batchPinChars = 0, metadataActive = 0;
+  let order = 0n, queuedBytes = 0, ordinaryQueuedBytes = 0, pdfQueuedBytes = 0, disposed = false, batchActive = 0, batchChildren = 0, batchInputs = 0, batchPinChars = 0, metadataActive = 0;
   /** @type {Array<()=>void>} */ const metadataWaiters = [];
   async function withBatchMetadata(operation) {
     if (metadataActive >= 8) await new Promise((resolve) => metadataWaiters.push(() => resolve(undefined)));
@@ -175,7 +179,7 @@ function createSaveAdmissions(options) {
         const root = await permission(entry, logicalPath, true); abortCheck(entry);
         let pin = await identity.captureWriteTarget(logicalPath, root); abortCheck(entry);
         if (!pin.parentExists) throw fail('ENOENT', 'The save parent does not exist.');
-        pin = await contentPin(pin, entry.abort.signal); abortCheck(entry);
+        pin = await contentPin(pin, entry.abort.signal, kind); abortCheck(entry);
         if (callbacks?.validateSource) {
           const validateSource = callbacks.validateSource;
           try { await validateSource(pin); }
@@ -304,7 +308,7 @@ function createSaveAdmissions(options) {
           const root = await permission(entry, paths[index], true); batchCheck(batch);
           const pin = await identity.captureWriteTarget(paths[index], root); batchCheck(batch);
           if (!pin.parentExists) throw fail('ENOENT', 'A project source parent does not exist.');
-          const retainedChars = JSON.stringify(pin.exists ? { ...pin, hashContent: true, fileVersion: { ...pin.fileVersion, sha256: '0'.repeat(64) } } : pin).length;
+          const retainedChars = JSON.stringify(pin.exists ? { ...pin, hashContent: true, contentLimit: MAX_CONTENT_BYTES, fileVersion: { ...pin.fileVersion, sha256: '0'.repeat(64) } } : pin).length;
           if (retainedChars > maxBatchPinChars - batchPinChars) throw fail('ERR_SAVE_BATCH_LIMIT', 'The project native-pin character budget is exhausted.');
           batch.pinChars += retainedChars; batchPinChars += retainedChars;
           if (!pin.exists) { manifest.push(Object.freeze({ index, path: paths[index], missing: true })); continue; }
@@ -533,8 +537,10 @@ function createSaveAdmissions(options) {
         await permission(entry, initial.logicalPath); abortCheck(entry);
         if (typeof writer !== 'function' || !(typeof payload === 'string' || payload instanceof Uint8Array)) throw fail('ERR_SAVE_PAYLOAD', 'A text or byte payload and atomic writer are required.');
         const bytes = typeof payload === 'string' ? Buffer.byteLength(payload, 'utf8') : typedByteLength.call(payload);
-        if (bytes > maxPayloadBytes || bytes > maxQueuedBytes - queuedBytes) throw fail('ERR_SAVE_PAYLOAD_LIMIT', 'The pending save payload budget is exhausted.');
+        const pdf = entry.kind === 'pdf-export';
+        if (bytes > (pdf ? maxPdfPayloadBytes : maxPayloadBytes) || bytes > (pdf ? maxPdfQueuedBytes - pdfQueuedBytes : maxQueuedBytes - ordinaryQueuedBytes) || bytes > maxSharedQueuedBytes - queuedBytes) throw fail('ERR_SAVE_PAYLOAD_LIMIT', 'The pending save payload budget is exhausted.');
         queuedBytes += bytes;
+        if (pdf) pdfQueuedBytes += bytes; else ordinaryQueuedBytes += bytes;
         try {
           // Copy only after authorization and reserve before allocation/queueing.
           const snapshot = typeof payload === 'string' ? payload : new Uint8Array(payload);
@@ -590,7 +596,7 @@ function createSaveAdmissions(options) {
               // order, but never adopt an external edit as an own transition.
             }
           });
-        } finally { queuedBytes -= bytes; }
+        } finally { queuedBytes -= bytes; if (pdf) pdfQueuedBytes -= bytes; else ordinaryQueuedBytes -= bytes; }
       })();
       // The producer can throw/return without awaiting its callback; run still joins
       // the writer and its cleanup, and an early rejection is never unhandled.
@@ -638,6 +644,27 @@ function createSaveAdmissions(options) {
     if (entry.state === 'issued' || entry.state === 'bound') finish(entry);
     return true;
   }
+  /** Export IPC cancellation joins the held descriptor/producer/writer cleanup.
+   * Ordinary callers retain their existing synchronous cancel contract.
+   */
+  async function cancelJoined(ticket, owner, kind) {
+    if (kind !== 'text-export' && kind !== 'pdf-export') throw fail('ERR_SAVE_TICKET', 'Joined cancellation requires a generic export kind.');
+    const entry = get(ticket, owner, kind), task = entry.task;
+    entry.abort.abort();
+    if (entry.state === 'issued' || entry.state === 'bound') finish(entry);
+    if (task) await task.then(() => undefined, () => undefined);
+  }
+  /** No filesystem work: validate the owner before a picker or expensive export producer. */
+  function assertIssued(ticket, owner, kind) {
+    const entry = get(ticket, owner, kind);
+    if (entry.state !== 'issued') throw fail('ERR_SAVE_TICKET', 'An unbound, issued save ticket is required.');
+    return true;
+  }
+  function assertBound(ticket, owner, kind, value) {
+    const entry = get(ticket, owner, kind);
+    if (entry.state !== 'bound') throw fail('ERR_SAVE_TICKET', 'An active bound save ticket is required.');
+    return samePath(entry, value);
+  }
   function retireOwner(owner) {
     if (!owner || typeof owner !== 'object') throw fail('ERR_SAVE_TICKET', 'A main-owned save owner is required.');
     retired.add(owner);
@@ -652,9 +679,9 @@ function createSaveAdmissions(options) {
     for (const entry of pending.values()) { entry.abort.abort(); if (entry.state === 'issued' || entry.state === 'bound') finish(entry); else if (entry.task) tasks.push(entry.task); }
     prune(); await Promise.allSettled(tasks); prune();
   }
-  const stats = () => Object.freeze({ pending: ordinaryPending(), ledger: ledger.size, queuedBytes, queues: tails.size,
+  const stats = () => Object.freeze({ pending: ordinaryPending(), ledger: ledger.size, queuedBytes, ordinaryQueuedBytes, pdfQueuedBytes, queues: tails.size,
     batchParents: batches.size, batchChildren, batchInputBytes: batchInputs, batchPinChars, activeBatchOperations: batchActive, metadataActive, metadataQueued: metadataWaiters.length, reservedTargets: reservedTargets.size, orderingSlots: orderingSlots() });
-  return Object.freeze({ issue, bind, prepare, run, cancel, retireOwner, dispose, stats,
+  return Object.freeze({ issue, bind, prepare, run, cancel, cancelJoined, assertIssued, assertBound, retireOwner, dispose, stats,
     issueProjectBatch, bindProjectBatch, readProjectBatch, sealProjectBatch, beginProjectBatchCommit, cancelProjectBatch });
 }
 module.exports = { SAVE_KINDS, SAVE_ADMISSION_LIMITS: LIMITS, createSaveAdmissions, verifiedCommitTarget, verifiedCommitOrder };

@@ -32,6 +32,7 @@ function registerSaveOrder(ctx, authorize) {
   /** @type {WeakMap<Electron.WebContents,object>} */ const owners = new WeakMap();
   const watched = new WeakSet();
   const captures = new WeakSet();
+  const pickedBindings = new WeakSet();
   const readCaptures = new WeakSet();
   /** @type {Map<string,{owner:object,proof?:string}>} */ const sourceBinds = new Map();
   /** @type {WeakMap<object,Map<string,{path:string,identityPath:string,openedSourceProof?:string}>>} */ const receipts = new WeakMap();
@@ -123,7 +124,12 @@ function registerSaveOrder(ctx, authorize) {
   }
   function cancelRead(captured, reservation) { if (captured && readCaptures.has(captured) && reservation) sourceProofs.cancelReservation(reservation, captured.owner); }
   function releaseRead(ev, proof) { return sourceProofs.release(proof, owner(ev)); }
-  ipcMain.handle('cancel-save-admission', (ev, ticket, kind) => { admissions.cancel(ticket, owner(ev), kind); });
+  ipcMain.handle('cancel-save-admission', async (ev, ticket, kind) => {
+    try {
+      if (kind === 'text-export' || kind === 'pdf-export') await admissions.cancelJoined(ticket, owner(ev), kind);
+      else admissions.cancel(ticket, owner(ev), kind);
+    } catch (error) { throw transportError(error); }
+  });
   ipcMain.handle('save-admission-result', (ev, ticket) => {
     const saved = receipts.get(owner(ev));
     if (typeof ticket !== 'string' || !saved?.has(ticket)) return null;
@@ -169,12 +175,57 @@ function registerSaveOrder(ctx, authorize) {
     return captured;
   }
   function assertCurrent(ev, captured) { currentCapture(ev, captured.kind, captured); }
+  /** Native selection is caller-owned. No renderer path can acquire a grant here. */
+  function capturePicked(ev, kind, ticket = undefined) {
+    if (kind !== 'text-export' && kind !== 'pdf-export') throw transportError(Object.assign(new Error('A supported generic export kind is required.'), { code: 'ERR_SAVE_TICKET' }));
+    const captured = capture(ev, kind, ticket);
+    try { admissions.assertIssued(captured.ticket, captured.owner, kind); return captured; }
+    catch (error) { discard(captured); throw transportError(error); }
+  }
+  function pickedCapture(ev, kind, captured) {
+    if (!captured || typeof captured !== 'object' || !captures.has(captured)) throw Object.assign(new Error('A main-owned export capture is required.'), { code: 'ERR_SAVE_TICKET' });
+    return currentCapture(ev, kind, captured);
+  }
+  /** Recheck an issued private capture after a native dialog and before granting its result.
+   * Also supports existing project captures, without changing their save kind.
+   */
+  function assertPicked(ev, kind, capture) {
+    try {
+      const captured = pickedCapture(ev, kind, capture);
+      admissions.assertIssued(captured.ticket, captured.owner, kind);
+    } catch (error) { throw transportError(error); }
+  }
+  /** Picked paths must already have the native dialog's main-owned grant. */
+  async function bindPicked(ev, kind, file, capture) {
+    let captured;
+    try {
+      captured = pickedCapture(ev, kind, capture);
+      if (kind !== 'text-export' && kind !== 'pdf-export') throw Object.assign(new Error('A supported generic export kind is required.'), { code: 'ERR_SAVE_TICKET' });
+      admissions.assertIssued(captured.ticket, captured.owner, kind);
+      const pin = await admissions.bind(captured.ticket, captured.owner, kind, absoluteWindowsPath(file), {
+        validateSource: target => sourceProofs.assertUnprotectedDestination(captured.owner, target),
+      });
+      pickedBindings.add(captured);
+      return Object.freeze({ identityPath: pin.canonicalPath, exists: pin.exists });
+    } catch (error) { discard(captured); throw transportError(error); }
+  }
+  /** Assert supplied modern tickets without inspecting files or running a producer. */
+  function assertBound(ev, kind, file, capture) {
+    try {
+      const captured = pickedCapture(ev, kind, capture);
+      return admissions.assertBound(captured.ticket, captured.owner, kind, file);
+    } catch (error) { throw transportError(error); }
+  }
+  async function admitPicked(ev, kind, file, capture, operation) {
+    try { await bindPicked(ev, kind, file, capture); return await run(ev, kind, file, capture, operation); }
+    finally { discard(capture); }
+  }
   /** Supplied tickets must already be bound; compatibility calls receive an order before conversion. */
   async function run(ev, kind, file, ticket, operation) {
     let captured;
     try {
       captured = currentCapture(ev, kind, ticket);
-      if (captured.implicit) await admissions.bind(captured.ticket, captured.owner, kind, file, {
+      if (captured.implicit && !pickedBindings.has(captured)) await admissions.bind(captured.ticket, captured.owner, kind, file, {
         validateSource: target => sourceProofs.assertUnprotectedDestination(captured.owner, target),
       });
       const result = await admissions.run(captured.ticket, captured.owner, kind, file, operation);
@@ -203,7 +254,7 @@ function registerSaveOrder(ctx, authorize) {
   async function prepare(ev, kind, file, ticket, operation) {
     const captured = currentCapture(ev, kind, ticket);
     try {
-      if (captured.implicit) await admissions.bind(captured.ticket, captured.owner, kind, file, {
+      if (captured.implicit && !pickedBindings.has(captured)) await admissions.bind(captured.ticket, captured.owner, kind, file, {
         validateSource: target => sourceProofs.assertUnprotectedDestination(captured.owner, target),
       });
       const result = await admissions.prepare(captured.ticket, captured.owner, kind, file, operation);
@@ -212,7 +263,7 @@ function registerSaveOrder(ctx, authorize) {
     } catch (error) { throw transportError(error); }
     finally { discard(captured); }
   }
-  return Object.freeze({ capture, discard, assertCurrent, captureRead, reserveRead, completeRead, cancelRead, releaseRead, run, prepare, readBatch,
+  return Object.freeze({ capture, discard, assertCurrent, capturePicked, assertPicked, bindPicked, admitPicked, assertBound, captureRead, reserveRead, completeRead, cancelRead, releaseRead, run, prepare, readBatch,
     stats: () => Object.freeze({ ...admissions.stats(), openedSources: sourceProofs.stats() }) });
 }
 module.exports = { registerSaveOrder };
