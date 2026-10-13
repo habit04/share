@@ -4,3 +4,4 @@ declare module '*.jhf?raw' {
   export default content;
 }
 declare const __APP_VERSION__: string | undefined;
+declare const __JCAD_GPU_EXPERIMENTAL__: boolean;

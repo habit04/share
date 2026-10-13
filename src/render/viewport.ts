@@ -84,6 +84,8 @@ export interface ViewSettings {
 export class Viewport {
   readonly canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
+  /** Experimental development seam: true means the sibling GPU canvas painted the whole base scene. */
+  experimentalSceneRenderer: ((view: Viewport, overlay: ViewportOverlay) => boolean) | null = null;
   /** px per world unit */
   scale = 80;
   /** world coordinate at canvas centre */
@@ -304,15 +306,25 @@ export class Viewport {
     });
   }
 
+  /** Synchronous redraw of the most recent overlay for development comparisons. */
+  renderCurrent(): void {
+    if (this.raf) { cancelAnimationFrame(this.raf); this.raf = 0; }
+    if (this.lastOverlay) this.render(this.lastOverlay);
+  }
+
   render(ov: ViewportOverlay): void {
     const { ctx } = this;
     this.lastOverlay = ov;
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-    const key = this.sceneKey(ov);
+    const gpuScene = this.experimentalSceneRenderer?.(this, ov) ?? false;
+    const key = gpuScene ? null : this.sceneKey(ov);
     const cached = key && this.baseScene?.state === this.doc.snapshot && this.baseScene.key === key ? this.baseScene : null;
     if (!cached) {
-      ctx.fillStyle = this.settings.background;
-      ctx.fillRect(0, 0, this.width, this.height);
+      if (gpuScene) ctx.clearRect(0, 0, this.width, this.height);
+      else {
+        ctx.fillStyle = this.settings.background;
+        ctx.fillRect(0, 0, this.width, this.height);
+      }
       if (this.settings.gridVisible && !this.layoutPainter) this.drawGrid();
       if (this.underlay) {
         ctx.save();
@@ -345,7 +357,7 @@ export class Viewport {
         this.layoutPainter(ctx, this, ov);
         ctx.restore();
       }
-      for (const e of this.layoutPainter ? [] : this.doc.entities) {
+      for (const e of this.layoutPainter || gpuScene ? [] : this.doc.entities) {
         if (hidden.has(e.layer)) continue;
         const selected = ov.selection.has(e.id);
         const hovered = ov.hover === e.id && !selected;

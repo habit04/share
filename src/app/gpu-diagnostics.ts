@@ -20,6 +20,10 @@ export function emptyGpuDiagnostics(state: GpuDiagnostics['state'] = 'pending', 
 }
 
 /** Only the summary schema is formatted; raw GPU info and unexpected properties are never copied. */
+let currentRenderer = () => 'Canvas 2D';
+/** Optional development renderer seam; capabilities remain separate from actual usage. */
+export function setDiagnosticRenderer(provider: () => string): void { currentRenderer = provider; }
+
 export function gpuDiagnosticsLines(d: GpuDiagnostics): string[] {
   const value = (s: unknown): string => typeof s === 'string' && s.trim() ? redactLocalPaths(s).replace(/[\r\n\t]+/g, ' ').slice(0, 240) : 'Unknown';
   const flag = (b: unknown): string => b === true ? 'Yes' : b === false ? 'No' : 'Unknown';
@@ -27,7 +31,7 @@ export function gpuDiagnosticsLines(d: GpuDiagnostics): string[] {
   return [
     'GPU diagnostics',
     `Status: ${d.state === 'ready' ? 'Ready' : d.state === 'pending' ? 'Pending (retry available)' : 'Unavailable'}`,
-    'JCad renderer: Canvas 2D',
+    `JCad renderer: ${value(currentRenderer())}`,
     'Chromium capabilities below do not establish which GPU JCad uses.',
     `Chromium hardware acceleration enabled: ${flag(d.hardwareAcceleration)}`,
     ...(d.driver ? [`Chromium driver: ${value(d.driver.vendor)} ${value(d.driver.version)}`] : []),

@@ -1,6 +1,7 @@
 import './styles/app.css';
 import './styles/parity.css';
 import { Editor, type FileBridge } from './app/editor';
+import { installGpuPrototype } from './app/gpu-prototype';
 import { Ribbon, ELECTRICAL_TABS } from './ui/ribbon';
 import { CommandLine } from './ui/commandline';
 import { StatusBar } from './ui/statusbar';
@@ -339,6 +340,7 @@ function boot(): void {
   const canvas = document.getElementById('drawing') as HTMLCanvasElement;
   const canvasWrap = canvas.parentElement as HTMLElement;
   const editor = new Editor(canvas);
+  if (__JCAD_GPU_EXPERIMENTAL__) installGpuPrototype(editor);
   editor.fileBridge = window.jcad ?? browserFileBridge();
   registerDwgExportCommand(editor);
   editor.ui = {

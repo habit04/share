@@ -12,6 +12,9 @@
   },
   "scripts": {
     "dev": "vite",
+    "dev:gpu": "vite --mode gpu-experimental --port 5189",
+    "build:gpu": "tsc --noEmit -p tsconfig.json && vite build --mode gpu-experimental",
+    "bench:gpu": "node scripts/bench-gpu-renderer.mjs",
     "build": "tsc --noEmit -p tsconfig.json && vite build",
     "build:dwg-writer": "node scripts/build-dwg-writer.mjs",
     "build:site": "node scripts/build-site.mjs",
