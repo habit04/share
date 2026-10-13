@@ -4,7 +4,7 @@ The Windows DXF-to-DWG helper links acadrust 0.6.4, pinned by its published crat
 SHA-256 and matching upstream commit in `pins.json`. It is MPL-2.0 licensed; the
 unmodified full license is included here. The helper itself is GPL-3.0-only.
 
-Seventy-one exact source replacements in eleven files correct standalone MTEXT frame
+Seventy-eight exact source replacements in twelve files correct standalone MTEXT frame
 output, its matching private validator, owned ATTRIB parent relationships,
 MINSERT's owned-attribute count before array fields, FIELD/FIELDLIST common DXF
 groups, the VIEW front-clipping mode bit, opaque DXF metadata strings, MLEADERSTYLE
@@ -15,6 +15,36 @@ crate, extracts it inside the ignored build directory and applies only these rep
 No prebuilt executable is committed. The released bundle includes the helper and
 modified crate source, Cargo.lock and third-party license notices.
 
+MLINESTYLE now decodes actual DXF flags and retains its ordered reactor/extension
+links in the common cache. The binary common writer already uses that cache.
+VISUALSTYLE's declared R2013+ property bag must contain all 58 typed values and
+selectors; incomplete input refuses rather than replacing extension properties
+with defaults. Native preservation snapshots compare both style types, including
+property values, inherited/enabled selectors and common references.
+The native `autocad-stock-styles.dxf` test fixture contains the unchanged original
+style and owner-dictionary records from `r2018-views-fields.dxf`, with a small
+controlled root wrapper. It exercises actual binary readback and selector/flag
+mutations; it is derived from the independently authored AutoCAD oracle.
+
+Modern TABLESTYLE consumes complete ordered table/content/margin/grid formats
+and an explicit `{JCAD_TABLESTYLE_NATIVE_V1` application-defined 102 block before
+its subclass marker. The block carries the original native header words, owned
+cell-style reference, override count and ordered keys; no key or constructor
+default is inferred. [Autodesk's object group-code specification](https://help.autodesk.com/cloudhelp/2024/ENU/AutoCAD-DXF/files/GUID-6939D69E-04CB-4F4C-87B2-67BC540FCF58.htm)
+permits application-defined codes within 102 groups. This is JCad's versioned
+native interchange payload; it is regenerated from actual typed DWG values by
+the independent C reader. Unknown or incomplete wrappers, more than 64 overrides,
+more than six grid entries, unsupported colors/lineweights, malformed formats
+and nonfinite values refuse export. Indexed color 257 keeps the actual None
+method in both modern and legacy style parsing. Explicit zero override lists
+remain empty, and retained full native flag words are not truncated or masked.
+The helper compares actual modern TABLESTYLE slots and typed references after
+binary reopening. Legacy row/margin convenience fields are derived from those
+formats; constructor-generated legacy templates remain covered by the mandatory
+independent raw-DXF host comparison. The controlled `projected-table-style.dxf`
+unit fixture exercises grammar and one supplied override; it does not replace
+the complete independent three-override source/readback fixture proof.
+
 The FIELD/FIELDLIST DXF repair consumes `{ACAD_REACTORS}` and
 `{ACAD_XDICTIONARY}` groups separately from the object's owner and field list.
 It stores their ordered references in the library's existing common-object
@@ -22,12 +52,18 @@ caches, which the DWG writer already emits. A read-only reactor accessor lets
 the helper verify those references after reopening. No native pointers or raw
 object bytes become part of this interchange contract.
 
+An explicit LASTSAVEDBY DXF header value is synchronized to the native SummaryInfo
+stream before the checked baseline. Its bounded Unicode string is compared again
+after native reopening; the unused duplicate header field cannot hide loss.
+
 The same common-link decoding applies to GROUP, DBCOLOR, MLEADERSTYLE,
 DICTIONARYVAR and SCALE. MLEADERSTYLE now consumes the source's alignment space,
 block scale/rotation switches, attachment direction and top/bottom attachment,
 draw order, break gap, block transform and color method rather than replacing
 them with constructor defaults. GROUP membership remains ordered and must refer
 to existing entities; DBCOLOR retains its RGB/method, book and color names.
+MLEADERSTYLE groups 3 and 300 populate the actual native description and default
+text slots, rather than treating the description as its dictionary-derived name.
 The common-link accessor also reads CLASS-backed objects' stored reactors and
 extension dictionary; the native DICTIONARY builder populates those same fields
 from its decoded common stream rather than leaving empty duplicate struct fields.
@@ -81,7 +117,7 @@ and arbitrary opaque native object records remain outside its input contract.
 
 The helper separately compares full typed named VIEW parameters and the retained
 DICTIONARY, DICTIONARYWDFLT, FIELD, FIELDLIST, XRECORD, GROUP, DBCOLOR,
-MLEADERSTYLE, DICTIONARYVAR and SCALE graph, source CLASS definitions and the
+MLEADERSTYLE, MLINESTYLE, VISUALSTYLE, modern TABLESTYLE, DICTIONARYVAR and SCALE graph, source CLASS definitions and the
 repaired header fields. It preserves
 reference kind, order, ownership, common reactors/extension dictionaries and
 typed XDATA. Symbol names/control roles and dictionary-key/field-child paths

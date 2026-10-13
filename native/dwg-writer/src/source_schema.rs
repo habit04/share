@@ -287,13 +287,24 @@ fn object_group(
             context.clear();
             return Ok(());
         }
-        if !context.is_empty() || !matches!(value, "{ACAD_REACTORS" | "{ACAD_XDICTIONARY") {
+        if !context.is_empty()
+            || !(matches!(value, "{ACAD_REACTORS" | "{ACAD_XDICTIONARY")
+                || kind == "TABLESTYLE" && value == "{JCAD_TABLESTYLE_NATIVE_V1")
+        {
             return Err(refusal("unknown or nested common object group"));
         }
         *context = value.into();
         return Ok(());
     }
     if !context.is_empty() {
+        if context == "{JCAD_TABLESTYLE_NATIVE_V1" {
+            // The typed decoder validates exact order, count, ranges and keys.
+            return if matches!(code, 90..=93 | 360) {
+                Ok(())
+            } else {
+                Err(refusal("TABLESTYLE native wrapper property"))
+            };
+        }
         let expected = if context == "{ACAD_REACTORS" {
             330
         } else {
@@ -328,6 +339,18 @@ fn object_group(
             matches!(code, 3 | 300 | 304 | 40..=47 | 49 | 90..=94 | 140..=143 | 170..=178 | 271..=273 | 290..=298 | 340..=343)
                 || code == 179 && value.trim().parse::<i32>() == Ok(2)
         } // binary writer's fixed R2010 class version
+        "MLINESTYLE" => {
+            matches!(code, 2 | 3 | 6 | 49 | 51 | 52 | 62 | 420)
+                || code == 70
+                    && value
+                        .trim()
+                        .parse::<i32>()
+                        .is_ok_and(|flags| flags >= 0 && flags & !0x773 == 0)
+                || code == 71 && value.trim().parse::<u8>().is_ok()
+        }
+        "VISUALSTYLE" => {
+            matches!(code, 1 | 2 | 40..=45 | 62..=67 | 70..=79 | 90..=93 | 170..=177 | 290 | 291 | 420..=427)
+        }
         _ => true, // independently compared by the bundled C postflight before commit
     };
     if supported {
@@ -546,6 +569,16 @@ impl SourceSchema {
                 .get("Standard")
                 .ok_or_else(|| refusal("default dimension text style is missing"))?
                 .handle();
+        }
+        if let Some(groups) = self.headers.get("$LASTSAVEDBY") {
+            scalar(groups, 1)?;
+            if document.header.last_saved_by.encode_utf16().count() > 32_767 {
+                return Err(refusal("LASTSAVEDBY native summary string budget"));
+            }
+            // This string belongs to the native SummaryInfo stream. The DXF
+            // decoder exposes it on HeaderVariables, while the binary writer
+            // emits SummaryInfo; synchronize the declared value before baseline.
+            document.summary_info.last_saved_by = document.header.last_saved_by.clone();
         }
         let typed =
             serde_json::to_value(&document.header).map_err(|_| refusal("HEADER serialization"))?;

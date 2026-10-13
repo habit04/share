@@ -321,6 +321,12 @@ fn canonicalize_names(value: &mut Value, aliases: &BTreeMap<String, String>) {
 /// in the bounded interchange contract. Unknown records are never certified by
 /// stripping their raw fields or treating their handles as harmless storage.
 fn retained_metadata(object: &ObjectType) -> bool {
+    if let ObjectType::TableStyle(style) = object {
+        // Modern retained TABLESTYLE data is authoritative. Constructor-generated
+        // legacy templates have no such source payload and remain covered by the
+        // mandatory independent raw-DXF postflight.
+        return style.modern_style.is_some();
+    }
     matches!(
         object,
         ObjectType::Dictionary(_)
@@ -333,6 +339,8 @@ fn retained_metadata(object: &ObjectType) -> bool {
             | ObjectType::MultiLeaderStyle(_)
             | ObjectType::DictionaryVariable(_)
             | ObjectType::Scale(_)
+            | ObjectType::MLineStyle(_)
+            | ObjectType::VisualStyle(_)
     )
 }
 
@@ -483,8 +491,10 @@ fn canonicalize_metadata(value: &mut Value, aliases: &BTreeMap<u64, String>) -> 
     match value {
         Value::Object(fields) => {
             for (key, child) in fields {
-                if matches!(key.as_str(), "handle" | "owner" | "Handle" | "handle_value")
-                    || key.ends_with("_handle")
+                if matches!(
+                    key.as_str(),
+                    "handle" | "owner" | "Handle" | "handle_value" | "text_style" | "line_type"
+                ) || key.ends_with("_handle")
                 {
                     canonical_handle(child, aliases)?;
                 } else if matches!(
@@ -584,14 +594,44 @@ fn typed_metadata_value(object: &ObjectType) -> Result<Value, String> {
     if let ObjectType::XRecord(value) = object {
         checked_xrecord(value)?;
     }
-    let mut value =
-        serde_json::to_value(object).map_err(|_| "Cannot verify typed metadata fields.")?;
+    let mut value = if let ObjectType::TableStyle(style) = object {
+        // Compare actual native slots. Legacy row/margin convenience fields are
+        // derived from these formats and do not have independent modern slots.
+        serde_json::json!({ "TableStyle": {
+            "handle": style.handle,
+            "owner_handle": style.owner_handle,
+            "name": style.name,
+            "modern_unknown_byte": style.modern_unknown_byte,
+            "modern_unknown_long1": style.modern_unknown_long1,
+            "modern_unknown_long2": style.modern_unknown_long2,
+            "modern_cell_style_handle": style.modern_cell_style_handle,
+            "modern_style": style.modern_style,
+            "modern_overrides": style.modern_overrides,
+        } })
+    } else {
+        serde_json::to_value(object).map_err(|_| "Cannot verify typed metadata fields.")?
+    };
     // GROUP and MLEADERSTYLE names live in their owning dictionary keys, which
     // the graph compares separately. Their binary records have no name slot;
     // the native reader may populate this derived convenience field differently.
     for kind in ["Group", "MultiLeaderStyle", "DictionaryVariable"] {
         if let Some(fields) = value.get_mut(kind).and_then(Value::as_object_mut) {
             fields.remove("name");
+        }
+    }
+    if let Some(elements) = value
+        .get_mut("MLineStyle")
+        .and_then(|fields| fields.get_mut("elements"))
+        .and_then(Value::as_array_mut)
+    {
+        // These strings identify entries in a case-insensitive symbol table;
+        // they are references, unlike the style's literal name/description.
+        for element in elements {
+            if let Some(name) = element.get_mut("linetype") {
+                if let Some(text) = name.as_str() {
+                    *name = Value::String(text.to_uppercase());
+                }
+            }
         }
     }
     if let Some(fields) = value.get_mut("XRecord").and_then(Value::as_object_mut) {
@@ -749,6 +789,7 @@ fn metadata_snapshot(doc: &CadDocument) -> Result<Value, String> {
         "shadow_mode": header.shadow_mode,
         "current_material_handle": header.current_material_handle,
         "dim_text_style_handle": header.dim_text_style_handle,
+        "last_saved_by": doc.summary_info.last_saved_by,
     });
     canonicalize_metadata(&mut repaired_header, &aliases)?;
     let mut classes = BTreeMap::new();
@@ -1617,6 +1658,8 @@ mod tests {
             panic!("Original MLEADERSTYLE identity was lost")
         };
         assert_eq!(style.align_space, 0.18);
+        assert_eq!(style.description, "Standard");
+        assert_eq!(style.default_text, "");
         assert!(style.enable_block_scale);
         assert!(style.enable_block_rotation);
         assert_eq!(
@@ -1637,6 +1680,382 @@ mod tests {
         assert_eq!(style.block_content_color, acadrust::types::Color::ByBlock);
         assert_eq!(doc.object_reactors(style.handle), vec![Handle::new(0x16A)]);
         assert_eq!(doc.object_owner(style.handle), Some(Handle::new(0x16A)));
+        let changed = text
+            .replace("\r\n", "\n")
+            .replace("\n300\n\n", "\n300\nNative text Δ 雷\n");
+        assert!(changed.contains("Native text Δ 雷"));
+        let changed = DxfReader::from_reader(std::io::Cursor::new(changed.into_bytes()))
+            .unwrap()
+            .read()
+            .unwrap();
+        let ObjectType::MultiLeaderStyle(style) = &changed.objects[&Handle::new(0x16B)] else {
+            unreachable!()
+        };
+        assert_eq!(style.description, "Standard");
+        assert_eq!(style.default_text, "Native text Δ 雷");
+    }
+
+    #[test]
+    fn original_autocad_stock_styles_keep_native_properties_selectors_and_common_links() {
+        // Exact style/dictionary records extracted from the independent AutoCAD
+        // r2018-views-fields DXF, inside a minimal controlled root wrapper.
+        let text = include_str!("../tests/fixtures/autocad-stock-styles.dxf");
+        let mut source = DxfReader::from_reader(std::io::Cursor::new(text.as_bytes()))
+            .unwrap()
+            .read()
+            .unwrap();
+        source_schema::capture(text)
+            .unwrap()
+            .verify(&mut source)
+            .unwrap();
+        for handle in [0x140, 0x150, 0x151, 0x152] {
+            let ObjectType::VisualStyle(style) = &source.objects[&Handle::new(handle)] else {
+                unreachable!()
+            };
+            assert_eq!(style.properties.len(), 58);
+            if handle == 0x140 {
+                assert!(style
+                    .properties
+                    .iter()
+                    .any(|property| property.enabled == 1));
+            } else {
+                assert!(style
+                    .properties
+                    .iter()
+                    .all(|property| property.enabled == 0));
+            }
+        }
+        assert_eq!(
+            source.object_reactors(Handle::new(0x157)),
+            vec![Handle::new(0x156)]
+        );
+        let mut output = std::io::Cursor::new(Vec::new());
+        DwgWriter::write_to_writer(&mut output, &source).unwrap();
+        output.set_position(0);
+        let mut reopened = DwgReader::from_stream(output).read().unwrap();
+        for (handle, object) in &source.objects {
+            if !matches!(
+                object,
+                ObjectType::VisualStyle(_) | ObjectType::MLineStyle(_)
+            ) {
+                continue;
+            }
+            equivalent(
+                &typed_metadata_value(object).unwrap(),
+                &typed_metadata_value(&reopened.objects[handle]).unwrap(),
+                "original stock styles",
+            )
+            .unwrap();
+            assert_eq!(
+                source.object_reactors(*handle),
+                reopened.object_reactors(*handle)
+            );
+        }
+        let ObjectType::VisualStyle(style) = reopened.objects.get_mut(&Handle::new(0x150)).unwrap()
+        else {
+            unreachable!()
+        };
+        style.properties[31].enabled = 1;
+        assert!(equivalent(
+            &typed_metadata_value(&source.objects[&Handle::new(0x150)]).unwrap(),
+            &typed_metadata_value(&reopened.objects[&Handle::new(0x150)]).unwrap(),
+            "selector mutation"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn incomplete_visual_style_bags_refuse_instead_of_materializing_defaults() {
+        let text = include_str!("../tests/fixtures/autocad-stock-styles.dxf");
+        // Remove one actual typed selector; the remaining boolean must not
+        // overwrite its predecessor and trigger default extension synthesis.
+        let lines: Vec<_> = text.lines().collect();
+        let index = (0..lines.len())
+            .step_by(2)
+            .find(|index| lines[*index].trim() == "176")
+            .unwrap();
+        let changed = lines[..index]
+            .iter()
+            .chain(lines[index + 2..].iter())
+            .copied()
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_ne!(changed, text);
+        assert!(
+            DxfReader::from_reader(std::io::Cursor::new(changed.as_bytes()))
+                .unwrap()
+                .read()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn multiline_flags_are_decoded_before_baseline_and_survive_binary_storage() {
+        let text = include_str!("../tests/fixtures/autocad-stock-styles.dxf");
+        let mut lines: Vec<_> = text.lines().map(str::to_owned).collect();
+        let start = (0..lines.len())
+            .step_by(2)
+            .find(|index| lines[*index].trim() == "0" && lines[*index + 1] == "MLINESTYLE")
+            .unwrap();
+        let flag = (start + 2..lines.len())
+            .step_by(2)
+            .find(|index| lines[*index].trim() == "70")
+            .unwrap();
+        lines[flag + 1] = "1907".to_string();
+        let changed = lines.join("\n");
+        let mut source = DxfReader::from_reader(std::io::Cursor::new(changed.as_bytes()))
+            .unwrap()
+            .read()
+            .unwrap();
+        source_schema::capture(&changed)
+            .unwrap()
+            .verify(&mut source)
+            .unwrap();
+        let ObjectType::MLineStyle(style) = &source.objects[&Handle::new(0x157)] else {
+            unreachable!()
+        };
+        assert_eq!(style.flags.to_bits(), 1907);
+        let before = typed_metadata_value(&source.objects[&style.handle]).unwrap();
+        let mut output = std::io::Cursor::new(Vec::new());
+        DwgWriter::write_to_writer(&mut output, &source).unwrap();
+        output.set_position(0);
+        let reopened = DwgReader::from_stream(output).read().unwrap();
+        equivalent(
+            &before,
+            &typed_metadata_value(&reopened.objects[&Handle::new(0x157)]).unwrap(),
+            "multiline flags DWG",
+        )
+        .unwrap();
+        lines[flag + 1] = "4".to_string();
+        assert!(source_schema::capture(&lines.join("\n")).is_err());
+    }
+
+    #[test]
+    fn dimstyle_second_group70_is_fill_color_not_the_symbol_table_flag() {
+        let text = "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1032\n0\nENDSEC\n0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nDIMSTYLE\n70\n1\n0\nDIMSTYLE\n105\n200\n330\nA\n100\nAcDbSymbolTableRecord\n100\nAcDbDimStyleTableRecord\n2\nControlled\n70\n16\n69\n2\n70\n3\n0\nENDTAB\n0\nENDSEC\n0\nEOF\n";
+        let document = DxfReader::from_reader(std::io::Cursor::new(text.as_bytes()))
+            .unwrap()
+            .read()
+            .unwrap();
+        let style = document.dim_styles.get("Controlled").unwrap();
+        assert!(style.xref_dependent);
+        assert!(!style.xref_resolved);
+        assert!(!style.xref_reference);
+        assert_eq!(style.dimtfill, 2);
+        assert_eq!(style.dimtfillclr, 3);
+    }
+
+    #[test]
+    fn projected_table_style_formats_and_native_wrapper_survive_binary_storage() {
+        // Controlled one-override fixture uses the actual projected base/title
+        // frames. Complete three-override source proof runs through the separate
+        // independent C fixture/readback gate after its decoder rebuild.
+        let text = include_str!("../tests/fixtures/projected-table-style.dxf");
+        let mut source = DxfReader::from_reader(std::io::Cursor::new(text.as_bytes()))
+            .unwrap()
+            .read()
+            .unwrap();
+        source_schema::capture(text)
+            .unwrap()
+            .verify(&mut source)
+            .unwrap();
+        let handle = Handle::new(0x155);
+        let ObjectType::TableStyle(style) = &source.objects[&handle] else {
+            unreachable!()
+        };
+        assert_eq!(style.modern_unknown_long2, 101);
+        assert_eq!(style.modern_overrides.len(), 1);
+        assert_eq!(style.modern_overrides[0].0, 1);
+        assert_eq!(
+            style.modern_overrides[0]
+                .1
+                .cell_style
+                .content_format
+                .cell_alignment,
+            5
+        );
+        assert_eq!(
+            style.modern_overrides[0]
+                .1
+                .cell_style
+                .content_format
+                .text_style,
+            Handle::new(0x10B)
+        );
+        assert_eq!(
+            style
+                .modern_style
+                .as_ref()
+                .unwrap()
+                .cell_style
+                .background_color,
+            acadrust::types::Color::None
+        );
+        assert_eq!(
+            style
+                .modern_style
+                .as_ref()
+                .unwrap()
+                .cell_style
+                .margin_override_flags,
+            0
+        );
+        assert!(style.modern_overrides[0].1.cell_style.borders.is_empty());
+        assert_eq!(source.object_reactors(handle), vec![Handle::new(0x154)]);
+        let before = typed_metadata_value(&source.objects[&handle]).unwrap();
+        let mut output = std::io::Cursor::new(Vec::new());
+        DwgWriter::write_to_writer(&mut output, &source).unwrap();
+        output.set_position(0);
+        let reopened = DwgReader::from_stream(output).read().unwrap();
+        equivalent(
+            &before,
+            &typed_metadata_value(&reopened.objects[&handle]).unwrap(),
+            "modern TABLESTYLE DWG",
+        )
+        .unwrap();
+        assert_eq!(
+            source.object_reactors(handle),
+            reopened.object_reactors(handle)
+        );
+        // An explicitly empty modern override list is actual source data.
+        // It must not invoke generation of the three default legacy rows.
+        let ObjectType::TableStyle(style) = source.objects.get_mut(&handle).unwrap() else {
+            unreachable!()
+        };
+        style.modern_overrides.clear();
+        style.modern_unknown_long1 = 0x10008;
+        let before = typed_metadata_value(&source.objects[&handle]).unwrap();
+        let mut output = std::io::Cursor::new(Vec::new());
+        DwgWriter::write_to_writer(&mut output, &source).unwrap();
+        output.set_position(0);
+        let mut reopened = DwgReader::from_stream(output).read().unwrap();
+        equivalent(
+            &before,
+            &typed_metadata_value(&reopened.objects[&handle]).unwrap(),
+            "empty TABLESTYLE overrides and native flag bits",
+        )
+        .unwrap();
+        let ObjectType::TableStyle(style) = reopened.objects.get_mut(&handle).unwrap() else {
+            unreachable!()
+        };
+        style.modern_unknown_long2 += 1;
+        assert!(equivalent(
+            &before,
+            &typed_metadata_value(&reopened.objects[&handle]).unwrap(),
+            "TABLESTYLE native counter mutation"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn table_style_native_wrapper_and_format_budget_are_not_optional() {
+        let text = include_str!("../tests/fixtures/projected-table-style.dxf");
+        for changed in [
+            text.replace("{JCAD_TABLESTYLE_NATIVE_V1", "{JCAD_TABLESTYLE_NATIVE_V2"),
+            text.replace("92\n1\n93\n1\n102\n}", "92\n2\n93\n1\n102\n}"),
+            text.replace("92\n1\n93\n1\n102\n}", "92\n65\n93\n1\n102\n}"),
+            text.replace("CONTENTFORMAT_END", "UNKNOWNFORMAT_END"),
+        ] {
+            assert_ne!(changed, text);
+            assert!(
+                DxfReader::from_reader(std::io::Cursor::new(changed.as_bytes()))
+                    .unwrap()
+                    .read()
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn table_style_legacy_none_colors_and_trailing_xdata_are_preserved_or_refused() {
+        let legacy = "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1032\n0\nENDSEC\n0\nSECTION\n2\nOBJECTS\n0\nTABLESTYLE\n5\n200\n330\nC\n100\nAcDbTableStyle\n3\nControlled\n70\n0\n71\n0\n7\nStandard\n62\n257\n63\n257\n64\n257\n0\nENDSEC\n0\nEOF\n";
+        let document = DxfReader::from_reader(std::io::Cursor::new(legacy.as_bytes()))
+            .unwrap()
+            .read()
+            .unwrap();
+        let ObjectType::TableStyle(style) = &document.objects[&Handle::new(0x200)] else {
+            unreachable!()
+        };
+        assert_eq!(
+            style.data_row_style.text_color,
+            acadrust::types::Color::None
+        );
+        assert_eq!(
+            style.data_row_style.fill_color,
+            acadrust::types::Color::None
+        );
+        assert_eq!(
+            style.data_row_style.top_border.color,
+            acadrust::types::Color::None
+        );
+        let invalid = legacy.replace("257", "258");
+        assert!(
+            DxfReader::from_reader(std::io::Cursor::new(invalid.as_bytes()))
+                .unwrap()
+                .read()
+                .is_err()
+        );
+        let original = include_str!("../tests/fixtures/projected-table-style.dxf");
+        let text = original.replace(
+            "0\nENDSEC\n0\nEOF\n",
+            "1001\nJCAD_STYLE_PROOF\n1000\nLiteral \\U+0041 Δ\n1070\n7\n0\nENDSEC\n0\nEOF\n",
+        );
+        assert_ne!(text, original);
+        let mut source = DxfReader::from_reader(std::io::Cursor::new(text.as_bytes()))
+            .unwrap()
+            .read()
+            .unwrap();
+        source_schema::capture(&text)
+            .unwrap()
+            .verify(&mut source)
+            .unwrap();
+        let literals = source_literals(&text).unwrap();
+        verify_source_literals(&source, &literals).unwrap();
+        let before = metadata_snapshot(&source).unwrap()["xdata"].clone();
+        assert!(!before.as_object().unwrap().is_empty());
+        let mut output = std::io::Cursor::new(Vec::new());
+        DwgWriter::write_to_writer(&mut output, &source).unwrap();
+        output.set_position(0);
+        let reopened = DwgReader::from_stream(output).read().unwrap();
+        equivalent(
+            &before,
+            &metadata_snapshot(&reopened).unwrap()["xdata"],
+            "TABLESTYLE XDATA DWG",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn declared_last_saved_by_survives_the_native_summary_stream() {
+        let text = "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1032\n9\n$LASTSAVEDBY\n1\nOwner Δ 雷\n0\nENDSEC\n0\nEOF\n";
+        let mut document = DxfReader::from_reader(std::io::Cursor::new(text.as_bytes()))
+            .unwrap()
+            .read()
+            .unwrap();
+        source_schema::capture(text)
+            .unwrap()
+            .verify(&mut document)
+            .unwrap();
+        assert_eq!(document.summary_info.last_saved_by, "Owner Δ 雷");
+        let baseline = metadata_snapshot(&document).unwrap();
+        let mut output = std::io::Cursor::new(Vec::new());
+        DwgWriter::write_to_writer(&mut output, &document).unwrap();
+        output.set_position(0);
+        let mut reopened = DwgReader::from_stream(output).read().unwrap();
+        assert_eq!(reopened.summary_info.last_saved_by, "Owner Δ 雷");
+        equivalent(
+            &baseline,
+            &metadata_snapshot(&reopened).unwrap(),
+            "LASTSAVEDBY DWG",
+        )
+        .unwrap();
+        reopened.summary_info.last_saved_by.clear();
+        assert!(equivalent(
+            &baseline,
+            &metadata_snapshot(&reopened).unwrap(),
+            "summary mutation"
+        )
+        .is_err());
     }
 
     #[test]
