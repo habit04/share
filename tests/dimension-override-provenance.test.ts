@@ -212,6 +212,14 @@ describe('dimension override presence across named style redefinitions', () => {
     expect(resolveDimStyle((next.entities[0] as DimensionEntity).style)).toMatchObject({ tolerance: 'limits', altPlacement: 'below', arrow: 'dot' });
   });
 
+  it('does not treat object prototype names as supported native override variables', () => {
+    const d = dimension(named, { styleOverrides: JSON.parse('{"toString":"unknown","__proto__":"unknown"}') as Record<string, string> });
+    const next = withDimStyle(drawing(d), { ...named, textHeight: 3 });
+    expect((next.entities[0] as DimensionEntity).styleOverrides).toEqual({});
+    expect((next.entities[0] as DimensionEntity).style.textHeight).toBe(3);
+    expect(dstylePairs(nativeDimensions(writeDxf(next))[0]!)).toEqual([]);
+  });
+
   it.each(['scale', 'block'] as const)('records a %s transform scale override and preserves it through matching/redefined styles', (mode) => {
     const original = native([]);
     const scaled = (mode === 'scale' ? scaleEntityBy(original, { x: 0, y: 0 }, 2) : blockTransform(original, (p) => ({ x: p.x * 2, y: p.y * 2 }), 0, 2, 2, false)) as DimensionEntity;

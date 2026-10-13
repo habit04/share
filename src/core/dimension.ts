@@ -1132,7 +1132,8 @@ export const DIM_VARIABLES: readonly DimVar[] = [
 const DERIVED_OVERRIDE_CODES: Readonly<Record<string, number>> = { DIMTOL: 71, DIMLIM: 72, DIMTIH: 73, DIMTOH: 74, DIMZIN: 78, DIMTXSTY: 340 };
 
 export function dimStyleOverrideCode(name: string): number | undefined {
-  return DERIVED_OVERRIDE_CODES[name] ?? DIM_VARIABLES.find((v) => v.name === name)?.code;
+  return (Object.hasOwn(DERIVED_OVERRIDE_CODES, name) ? DERIVED_OVERRIDE_CODES[name] : undefined)
+    ?? DIM_VARIABLES.find((v) => v.name === name)?.code;
 }
 
 /** Supported native variable corresponding to a DSTYLE code, or undefined for unmodeled data. */
