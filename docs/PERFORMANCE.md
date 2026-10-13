@@ -11,6 +11,7 @@ change, and what is still slow.
 | `npm run bench:node` (`tests/perf-dense.test.ts`, `JCAD_BENCH=1`) | Node, a separate CI step (alone, so it neither disturbs nor is disturbed by other tests) | A **dense drawing of 50,000 entities** (38,000 wires, 8,000 symbol inserts, 4,000 labels on a 200 x 150 sheet): spatial-index build and rebuild, pick, window / crossing / fence / polygon selection and object snap, each **with the index off (linear scan) and on**; and a **project of 20 drawings** (3,900 entities and 600 tagged components each, read from DXF text) running all twelve project-wide reports. Budgets: a frame (16 ms) for pick, snap and window / crossing selection. |
 | `npm run build && npm run bench` (`scripts/bench.mjs`) | Headless Chromium on the built renderer; CI `ui` and release checks assert budgets with `JCAD_BENCH_ASSERT=1`; JSON in the artifact | The same 50,000-entity drawing in the real editor: first state acceptance, first extents/geometry construction and first render before idle warmup, then warmed load/ZOOM E, redraw, hover and selection. Cold render includes a 1-pixel read-back. These phases exclude file I/O and parsing. |
 | `npm run bench:project` (`scripts/bench-project.mjs`) | Node, CI and release checks | Writes 20 synthetic DXF sheets to temporary files, reads them through the normal project path, measures disk reads separately from parsing/state preparation, and runs all twelve reports. JSON records workload, bytes and per-report timings. Newly written files can be in the OS cache; this does not measure a physical cold disk. |
+| `npm test` / `npm run bench:3d` (`tests/perf-3d.test.ts`, heavy cases with `JCAD_BENCH=1`) | Node; the heavy cases alone, like `bench:node` | Experimental 3D core: tessellation, extrusion and revolution on every run; with `bench:3d` also mesh checks on 500,000 triangles, CPU picking on 2,000,000 triangles, a 100,000-triangle DXF round trip, state sealing of 2,000,000 triangles and a Manifold union. See [3D](#3d). |
 | `tests/spatial-index.test.ts` | every `npm test` | Correctness: the index gives exactly the linear scan's results (same entities, order and tie-breaks) for pick, all selection modes and snapping, including stray far-away objects, construction lines, hidden and locked layers, and a redefined block. |
 | `tests/spatial-index-random.test.ts` | every `npm test` | Property-style check on a randomized drawing of 2,000 mixed entities (lines, circles, arcs, text, polylines, inserts; hidden and locked layers): 200 random queries of every kind agree with the linear scan, and keep agreeing after replace, add, remove, undo, redo, a block redefinition and a layout switch. |
 
@@ -156,6 +157,58 @@ window event. Desktop reads now use a fresh Electron utility process containing 
 
 LibreDWG reports no percentage, so the bar is indeterminate. Converting the parsed DWG into a
 drawing (`convertDwg`) still runs in the renderer after the read; it was not measured separately.
+
+## 3D
+
+Experimental 3D core (docs/3D-PLAN.md milestone 6), measured on 2026-10-12 on the development
+machine: Windows 11 x64, Intel Core i7-12850HX (16 cores / 24 threads), 32 GB, Node 22.23.3; the
+GPU is an Intel UHD 770-class integrated GPU, which none of these Node measurements use (no frame
+times yet: the viewport frame-time phase of `scripts/bench.mjs` is still to come). Best of 2-5
+runs per measurement, four runs of the file; ranges are the spread between runs. Budgets
+(`tests/perf-3d.test.ts`, milliseconds before `JCAD_PERF_FACTOR`) are about 3x the slowest run,
+with a 50 ms floor. "Every run" cases run in `npm test`, the others with `npm run bench:3d`
+(`JCAD_BENCH=1`, alone).
+
+| Operation | Measured | Budget | Runs |
+| --- | --- | --- | --- |
+| Tessellate all six primitives at 256 segments x 128 rings (132,628 triangles) | 5.6 - 6.1 ms (12.7 ms with the suite running in parallel) | 50 | every run |
+| Extrude a 200-vertex profile with 10 holes of 16 vertices (1,476 triangles) | 1.2 - 1.9 ms (5.2 ms in the suite) | 50 | every run |
+| Revolve a 100-vertex profile at 256 segments (51,200 triangles) | 8.8 - 13.8 ms (41 ms in the suite) | 150 | every run |
+| `meshIsClosed`, 499,712 triangles | 111 - 124 ms (754 ms before the change below) | 400 | bench:3d |
+| `weldVertices` (tolerance 1e-9) of an unwelded soup of 499,712 triangles / 1.5 M vertices | 306 - 508 ms (6.1 - 9.1 s before) | 1,500 | bench:3d |
+| `weldVertices` exact (tolerance 0), same soup | 85 - 130 ms | 400 | bench:3d |
+| `meshVolume`, 499,712 triangles | 30 - 67 ms | 250 | bench:3d |
+| BVH build for CPU picking, 32 solids / 1,998,848 triangles (first pick) | 4.3 - 6.8 s | 21,000 | bench:3d |
+| `pickSolids`, one ray against that scene (200 random rays, BVHs built) | 0.010 - 0.022 ms | 0.25 per ray | bench:3d |
+| `writeDxf`, 100 solids / 100,000 triangles (21.3 MB of DXF) | 398 - 573 ms | 1,800 | bench:3d |
+| `readDxf` of that file | 917 - 1,399 ms | 4,500 | bench:3d |
+| `prepareDrawingState` sealing a 2,000,000-triangle model | 954 - 1,774 ms | 5,500 | bench:3d |
+| Manifold union of two 50,000-triangle spheres, in-process, including operand and result checks (77,938 triangles out) | 280 - 373 ms (552 ms before) | 1,700 | bench:3d |
+
+Also measured (not budgeted): a Manifold union of two 499,712-triangle operands in-process takes
+3.5 s and the process grows to about 820 MB resident; the result (776,948 triangles) is then
+refused by the per-solid budget. The worker kernel adds transfer and the main-thread checks.
+
+What these numbers mean:
+
+- **Weld and closedness.** `weldVertices` and `meshIsClosed` used string-keyed Maps and a Set of
+  numeric edge keys. Both run on every Boolean (operands and result, on the calling thread) and
+  for every foreign polyface read. They now use typed-array hash tables with the same results
+  (`tests/model3d-mesh-hash.test.ts`): 12-20x and 6x faster.
+- **Sealing cost (open concern).** `prepareDrawingState` deep-freezes every array of the state,
+  visiting each number of the meshes: 0.95-1.8 s for 2,000,000 triangles (about 0.5-0.9 us per
+  triangle). It runs once per new mesh object (sealed objects are skipped later, so edits that
+  keep other solids are cheap), but an open, an undo of a large Boolean or a whole-model
+  transform pays it in full on the UI thread. The sealer is in `src/core/immutable-data.ts`;
+  freezing a numeric array without visiting its elements would remove almost all of it.
+- **BVH build (open concern).** The CPU picking BVH is built lazily on the first pick of each
+  mesh with a comparator sort per node (`src/render3d/picking.ts`): an estimated 1-2 s for one
+  500,000-triangle solid, 4.3-6.8 s measured for a 2,000,000-triangle scene, on the UI thread at the first
+  hover. Picking itself is negligible afterwards (0.01-0.02 ms per ray). A partition-based build
+  (nth-element on typed arrays) or building in idle time would fix it.
+- **DXF size.** Polyface records cost about 213 bytes per triangle, so the reader's limits
+  (2,000,000 group pairs, 250,000 records) cap a file at roughly 100,000 triangles; the
+  100,000-triangle file above is 21.3 MB and within them.
 
 ## Historical slow spots and remaining follow-ups
 

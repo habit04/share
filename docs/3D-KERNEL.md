@@ -46,6 +46,14 @@ meshes").
   zero-area cap triangles from the triangulator's fallback; they keep the mesh closed.
 - Limits: 20 000 profile points; every sweep checks `MAX_SOLID_TRIANGLES` before building;
   feature trees at most 32 deep and 1 024 features (checked iteratively before any work).
+- Every builder result must have finite coordinates and a finite, positive volume once placed
+  (`requireSolidMesh`, primitives.ts): a part whose size is below the precision of its position
+  (a 1 mm sphere at 1e300) or whose volume overflows is refused with a RangeError, never returned
+  as a degenerate mesh. A cap the triangulator cannot build (a valid profile collapsed in the
+  revolution plane) is a RangeError too. Both were found by fuzzing (docs/3D-TESTING.md).
+- Errors: builders throw RangeError (and GeometryBudgetError for the budget), `evaluateFeature`
+  FeatureEvalError, the kernel KernelError; `describeModel3DError` (src/model3d/errors.ts) is how
+  a command turns any of them into a command-line message (docs/3D-TESTING.md, error audit).
 
 ## Booleans and the kernel
 
@@ -128,13 +136,17 @@ Measured times (Windows x64):
 | --- | --- | --- |
 | Union of two half-overlapping unit cubes | 0.7 ms | 8-16 ms (first call) |
 | Union of two 256 x 50 spheres (50 176 triangles in) | 187 ms | 156-255 ms |
+| Union of two 250 x 101 spheres (100 000 triangles in, 77 938 out; milestone 6, after the faster weld and closedness checks) | 280-373 ms | not measured |
+
+More numbers, budgets and the memory measured for the largest operands: docs/PERFORMANCE.md "3D".
 
 ## Prototype-only and open points
 
 - No UI: the EXTRUDE / REVOLVE / UNION / SUBTRACT / INTERSECT commands, error display and kernel
   start-up on flag enable are milestone 3 UI work.
-- The security review must gain a section for the WebAssembly worker before any release (plan,
-  open decision 1).
+- Security review: docs/SECURITY-REVIEW.md "Experimental 3D track" (E-19 to E-24). Open there:
+  a CSP header for worker scripts (E-19) and an engine-enforced cap below the module's declared
+  4 GiB maximum memory (E-20); neither is verified in the packaged Electron app yet.
 - `manifold-3d` is a `devDependency`: Vite bundles manifold.js into the worker chunk and emits
   `manifold.wasm` into `dist/assets`, so the installer needs nothing from `node_modules`. This also
   keeps the package's CLI dependencies (glTF tools, `sharp` with native image libraries,

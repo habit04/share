@@ -115,11 +115,15 @@ export function invertWinding(mesh: Mesh3D): Mesh3D {
 
 /**
  * Merge vertices closer than `tol` times the mesh's bounding-box diagonal (a relative tolerance,
- * so the same value works for a 1 mm part and a 100 m building; 0 merges only exact duplicates).
- * Each vertex snaps to the first earlier *kept* vertex within the tolerance (per axis); chains
- * are not merged transitively, so A-B-C spaced just under the tolerance can keep A and C apart.
- * Triangles that collapse (two equal indices) are dropped and unreferenced vertices removed.
- * Winding is unchanged.
+ * so the same value works for a 1 mm part and a 100 m building; 0 merges only exact duplicates,
+ * with -0 equal to 0). Each vertex snaps to the first earlier *kept* vertex within the tolerance
+ * (per axis), searching the 27 grid cells around it in a fixed order; chains are not merged
+ * transitively, so A-B-C spaced just under the tolerance can keep A and C apart. Triangles that
+ * collapse (two equal indices) are dropped and unreferenced vertices removed. Winding is
+ * unchanged. Coordinates must be finite (`validateMesh`).
+ *
+ * Cost: linear in the vertex count (a hash table of typed arrays, no string keys); 0.3-0.5 s
+ * for an unwelded soup of 500,000 triangles (1.5 million vertices), see docs/PERFORMANCE.md "3D".
  */
 export function weldVertices(mesh: Mesh3D, tol = 1e-9): Mesh3D {
   const n = meshVertexCount(mesh);
@@ -128,10 +132,23 @@ export function weldVertices(mesh: Mesh3D, tol = 1e-9): Mesh3D {
   const abs = Math.max(0, tol) * diag;
   const p = mesh.positions;
   const remap = new Int32Array(n);
-  const kept: number[] = [];
+  // Kept vertices: their source vertex, and a hash chain per bucket in insertion order.
+  const kept = new Int32Array(n);
+  let keptCount = 0;
+  let size = 16;
+  while (size < 2 * n) size *= 2;
+  const mask = size - 1;
+  const head = new Int32Array(size).fill(-1), tail = new Int32Array(size).fill(-1), next = new Int32Array(n).fill(-1);
+  const append = (bucket: number, k: number): void => {
+    if (head[bucket] === -1) head[bucket] = k; else next[tail[bucket]!] = k;
+    tail[bucket] = k;
+  };
   if (abs > 0) {
-    // Uniform grid with cells of size `abs`: any vertex within `abs` lies in one of the 27 cells around it.
-    const grid = new Map<string, number[]>();
+    // Uniform grid with cells of size `abs`: any vertex within `abs` lies in one of the 27 cells
+    // around it. Cells are hashed; a bucket may hold several cells, so members are filtered by
+    // their own cell coordinates, which keeps each cell's members in insertion order.
+    const cellOf = new Float64Array(3 * n);
+    const hash = (cx: number, cy: number, cz: number): number => (Math.imul(cx | 0, 73856093) ^ Math.imul(cy | 0, 19349663) ^ Math.imul(cz | 0, 83492791)) & mask;
     for (let i = 0; i < n; i++) {
       const x = p[3 * i]!, y = p[3 * i + 1]!, z = p[3 * i + 2]!;
       const cx = Math.floor(x / abs), cy = Math.floor(y / abs), cz = Math.floor(z / abs);
@@ -139,9 +156,9 @@ export function weldVertices(mesh: Mesh3D, tol = 1e-9): Mesh3D {
       for (let dx = -1; dx <= 1 && found < 0; dx++) {
         for (let dy = -1; dy <= 1 && found < 0; dy++) {
           for (let dz = -1; dz <= 1 && found < 0; dz++) {
-            const cell = grid.get(`${cx + dx},${cy + dy},${cz + dz}`);
-            if (!cell) continue;
-            for (const k of cell) {
+            const qx = cx + dx, qy = cy + dy, qz = cz + dz;
+            for (let k = head[hash(qx, qy, qz)]!; k !== -1; k = next[k]!) {
+              if (cellOf[3 * k] !== qx || cellOf[3 * k + 1] !== qy || cellOf[3 * k + 2] !== qz) continue;
               const q = kept[k]!;
               if (Math.abs(p[3 * q]! - x) <= abs && Math.abs(p[3 * q + 1]! - y) <= abs && Math.abs(p[3 * q + 2]! - z) <= abs) { found = k; break; }
             }
@@ -149,21 +166,34 @@ export function weldVertices(mesh: Mesh3D, tol = 1e-9): Mesh3D {
         }
       }
       if (found < 0) {
-        found = kept.length;
-        kept.push(i);
-        const key = `${cx},${cy},${cz}`;
-        const cell = grid.get(key);
-        if (cell) cell.push(found); else grid.set(key, [found]);
+        found = keptCount++;
+        kept[found] = i;
+        cellOf[3 * found] = cx; cellOf[3 * found + 1] = cy; cellOf[3 * found + 2] = cz;
+        append(hash(cx, cy, cz), found);
       }
       remap[i] = found;
     }
   } else {
-    const exact = new Map<string, number>();
+    // Exact duplicates: hash the coordinates' bit patterns (-0 normalised to 0), compare values.
+    const f = new Float64Array(1), u = new Uint32Array(f.buffer);
+    const mix = (h: number, v: number): number => {
+      f[0] = v + 0;
+      return Math.imul(Math.imul(h ^ u[0]!, 0x9e3779b1) ^ u[1]!, 0x85ebca6b);
+    };
     for (let i = 0; i < n; i++) {
-      const key = `${p[3 * i]},${p[3 * i + 1]},${p[3 * i + 2]}`;
-      let k = exact.get(key);
-      if (k === undefined) { k = kept.length; kept.push(i); exact.set(key, k); }
-      remap[i] = k;
+      const x = p[3 * i]!, y = p[3 * i + 1]!, z = p[3 * i + 2]!;
+      const bucket = (mix(mix(mix(0x811c9dc5, x), y), z) >>> 7) & mask;
+      let found = -1;
+      for (let k = head[bucket]!; k !== -1; k = next[k]!) {
+        const q = kept[k]!;
+        if (p[3 * q] === x && p[3 * q + 1] === y && p[3 * q + 2] === z) { found = k; break; }
+      }
+      if (found < 0) {
+        found = keptCount++;
+        kept[found] = i;
+        append(bucket, found);
+      }
+      remap[i] = found;
     }
   }
   const indices: number[] = [];
@@ -173,7 +203,7 @@ export function weldVertices(mesh: Mesh3D, tol = 1e-9): Mesh3D {
     if (a !== b && b !== c && a !== c) indices.push(a, b, c);
   }
   // Drop vertices no surviving triangle references, keeping first-use order stable.
-  const used = new Int32Array(kept.length).fill(-1);
+  const used = new Int32Array(keptCount).fill(-1);
   const positions: number[] = [];
   for (let j = 0; j < indices.length; j++) {
     const k = indices[j]!;
@@ -235,20 +265,34 @@ export function meshSurfaceArea(mesh: Mesh3D): number {
 export function meshIsClosed(mesh: Mesh3D): boolean {
   const idx = mesh.indices;
   if (idx.length < 3) return false;
-  const n = meshVertexCount(mesh);
-  const edges = new Set<number>();
+  // Open-addressing hash set of directed edges (from, to) in typed arrays: linear in the
+  // triangle count, about 0.1 s for 500,000 triangles (docs/PERFORMANCE.md "3D").
+  const edgeCount = 3 * Math.floor(idx.length / 3);
+  let size = 16;
+  while (size < 2 * edgeCount) size *= 2;
+  const mask = size - 1;
+  const from = new Int32Array(size).fill(-1), to = new Int32Array(size);
+  const slot = (i: number, j: number): number => {
+    let s = (Math.imul(i, 0x9e3779b1) ^ Math.imul(j, 0x85ebca6b)) & mask;
+    while (from[s] !== -1 && (from[s] !== i || to[s] !== j)) s = (s + 1) & mask;
+    return s;
+  };
   for (let t = 0; t + 2 < idx.length; t += 3) {
     const a = idx[t]!, b = idx[t + 1]!, c = idx[t + 2]!;
     if (a === b || b === c || a === c) return false;
-    for (const [i, j] of [[a, b], [b, c], [c, a]] as const) {
-      const key = i * n + j;
-      if (edges.has(key)) return false;
-      edges.add(key);
+    // Not a vertex index at all (an unvalidated mesh): not closed.
+    if ((a | 0) !== a || (b | 0) !== b || (c | 0) !== c || a < 0 || b < 0 || c < 0) return false;
+    for (let e = 0; e < 3; e++) {
+      const i = e === 0 ? a : e === 1 ? b : c, j = e === 0 ? b : e === 1 ? c : a;
+      const s = slot(i, j);
+      if (from[s] !== -1) return false; // the directed edge occurs twice
+      from[s] = i;
+      to[s] = j;
     }
   }
-  for (const key of edges) {
-    const i = Math.floor(key / n), j = key - i * n;
-    if (!edges.has(j * n + i)) return false;
+  for (let s = 0; s < size; s++) {
+    const i = from[s]!;
+    if (i !== -1 && from[slot(to[s]!, i)] === -1) return false;
   }
   return true;
 }

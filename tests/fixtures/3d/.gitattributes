@@ -1,0 +1,3 @@
+# The DXF writer emits CRLF; keep these fixtures byte-for-byte so tests/model3d-fixtures.test.ts
+# can check that rewriting a file JCad read gives exactly the same bytes.
+*.dxf -text

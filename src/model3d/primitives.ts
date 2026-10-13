@@ -13,7 +13,7 @@
  * clamped (see `clampSegments`), never rejected.
  */
 import { frameToWorld, isOrthonormalFrame } from './math';
-import { type Mesh3D, transformMesh } from './mesh';
+import { type Mesh3D, meshVolume, transformMesh, validateMesh } from './mesh';
 import type { PrimitiveFeature } from './types';
 
 /** Default and limits for divisions around a circle. */
@@ -202,10 +202,25 @@ export function torusMesh(R: number, r: number, segs = DEFAULT_SEGMENTS, rings =
 }
 
 /**
+ * Throw a RangeError unless a finished world-space mesh is usable as a solid: finite coordinates
+ * and a positive volume. Sizes that are valid on their own can still fail here once placed: a part
+ * far from the origin whose size is below the precision of its coordinates (a 1 mm sphere at
+ * 1e300) collapses to zero volume, and huge sizes or offsets overflow to Infinity. Found by
+ * tests/fuzz-model3d-file.test.ts; before this check such meshes reached the caller.
+ */
+export function requireSolidMesh(what: string, mesh: Mesh3D): Mesh3D {
+  if (validateMesh(mesh) !== null) throw new RangeError(`The ${what} has coordinates that are not finite numbers at this size and position.`);
+  const volume = meshVolume(mesh);
+  if (!(volume > 0) || !Number.isFinite(volume)) throw new RangeError(`The ${what} has no usable volume at this size and position (sizes too small, or sizes or coordinates too large, for double precision).`);
+  return mesh;
+}
+
+/**
  * Evaluate a primitive feature to a world-space mesh: build it in frame-local coordinates per the
  * module convention, then place it with `frameToWorld(feature.frame)`. Throws RangeError for
- * invalid dimensions (see the individual builders) and for a frame that is not orthonormal and
- * right-handed (`isOrthonormalFrame`), which would shear, scale or mirror the solid.
+ * invalid dimensions (see the individual builders), for a frame that is not orthonormal and
+ * right-handed (`isOrthonormalFrame`), which would shear, scale or mirror the solid, and for a
+ * placed mesh without finite coordinates and a finite positive volume (`requireSolidMesh`).
  */
 export function primitiveMesh(feature: PrimitiveFeature): Mesh3D {
   if (!feature.frame || !isOrthonormalFrame(feature.frame)) throw new RangeError(`The ${feature.kind} placement frame must be orthonormal and right-handed.`);
@@ -218,5 +233,5 @@ export function primitiveMesh(feature: PrimitiveFeature): Mesh3D {
     case 'sphere': local = sphereMesh(feature.radius, feature.segments, feature.rings); break;
     case 'torus': local = torusMesh(feature.majorRadius, feature.minorRadius, feature.segments, feature.rings); break;
   }
-  return transformMesh(local, frameToWorld(feature.frame));
+  return requireSolidMesh(feature.kind, transformMesh(local, frameToWorld(feature.frame)));
 }

@@ -203,7 +203,8 @@ describe('3D solids round trip through DXF', () => {
     expect(meshTriangleCount(read.model3d!.solids[0]!.mesh)).toBe(faces);
     expect(() => prepareDrawingState(read)).toThrow(GeometryBudgetError);
     expect(() => new Drawing().load(read)).toThrow(GeometryBudgetError);
-  });
+    // Two reads of a 2.5-million-pair file: about 4 s alone, more with the suite in parallel.
+  }, 30_000);
 
   it('refuses to write a solid without triangles instead of dropping it', () => {
     // The model helpers never build one (model3d-model.test.ts); a hand-made state still fails loudly.

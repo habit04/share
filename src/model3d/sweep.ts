@@ -22,7 +22,7 @@ import type { Point } from '../core/geometry';
 import { MAX_SOLID_TRIANGLES } from './budget';
 import { type Vec3, cross3, dot3, frameToWorld, len3, normalize3, scale3, sub3, transformPoint } from './math';
 import { type Mesh3D, invertWinding, meshVolume, transformMesh } from './mesh';
-import { DEFAULT_SEGMENTS, MAX_SEGMENTS, MIN_SEGMENTS, clampSegments } from './primitives';
+import { DEFAULT_SEGMENTS, MAX_SEGMENTS, MIN_SEGMENTS, clampSegments, requireSolidMesh } from './primitives';
 import { validateProfile } from './sketch';
 import { loopSignedArea2, triangulatePolygon } from './triangulate';
 import type { Profile3D } from './types';
@@ -34,6 +34,21 @@ function profilePointCount(profile: Profile3D): number {
 function checkBudget(what: string, triangles: number): void {
   if (triangles > MAX_SOLID_TRIANGLES) {
     throw new GeometryBudgetError(`The ${what} would have ${triangles.toLocaleString('en-US')} triangles; the safe limit is ${MAX_SOLID_TRIANGLES.toLocaleString('en-US')} per solid.`);
+  }
+}
+
+/**
+ * Cap triangles of a validated profile. The triangulator's plain Error becomes a RangeError like
+ * every other refusal here: a valid profile can still fail after it is mapped into the revolution
+ * plane, when its points are below the precision of their distance to the axis (found by
+ * tests/fuzz-model3d-file.test.ts: an axis 1e300 away collapsed every loop to zero area).
+ */
+function capTriangles(what: string, loops: readonly (readonly Point[])[]): number[] {
+  try {
+    return triangulatePolygon(loops);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message.replace(/\.$/, '') : String(err);
+    throw new RangeError(`Cannot ${what}: the profile cannot be triangulated (${detail}).`);
   }
 }
 
@@ -56,7 +71,7 @@ export function extrudeMesh(profile: Profile3D, distance: number): Mesh3D {
   // About 4 triangles per profile point: unreachable while MAX_PROFILE_POINTS (20 000) bounds the
   // profile, kept so the budget still holds if that limit is ever raised.
   checkBudget('extrusion', 2 * (n + 2 * holes - 2) + 2 * n);
-  const cap = triangulatePolygon(profile.loops);
+  const cap = capTriangles('extrude', profile.loops);
   const positions: number[] = [];
   for (const loop of profile.loops) for (const p of loop) positions.push(p.x, p.y, 0);
   for (const loop of profile.loops) for (const p of loop) positions.push(p.x, p.y, distance);
@@ -76,7 +91,7 @@ export function extrudeMesh(profile: Profile3D, distance: number): Mesh3D {
   }
   // Built for distance > 0; a negative distance mirrors the solid through the profile plane.
   const local: Mesh3D = distance > 0 ? { positions, indices } : invertWinding({ positions, indices });
-  return transformMesh(local, frameToWorld(profile.frame));
+  return requireSolidMesh('extrusion', transformMesh(local, frameToWorld(profile.frame)));
 }
 
 /** Axis of revolution in world coordinates; `dir` need not be unit length. */
@@ -196,7 +211,7 @@ export function revolveMesh(profile: Profile3D, axis: RevolveAxis, angle: number
   if (!full) {
     // Caps: the profile at angle 0 faces back along the rotation (triangles as computed in the
     // CCW (r, h) plane, whose normal e1 x u = -e2), the profile at the final angle faces forward.
-    const cap = triangulatePolygon(rh);
+    const cap = capTriangles('revolve', rh);
     const flat: [number, number][] = [];
     for (const [l, loop] of rh.entries()) for (let i = 0; i < loop.length; i++) flat.push([l, i]);
     const at = (t: number, k: number) => { const [l, i] = flat[cap[t]!]!; return vert(l, i, k); };
@@ -209,5 +224,5 @@ export function revolveMesh(profile: Profile3D, axis: RevolveAxis, angle: number
   // and is always built with the positive orientation.
   if (angle < 0 && !full) mesh = invertWinding(mesh);
   if (!(meshVolume(mesh) > 0)) throw new RangeError('Cannot revolve: the profile produced a solid without volume.');
-  return mesh;
+  return requireSolidMesh('revolution', mesh);
 }
