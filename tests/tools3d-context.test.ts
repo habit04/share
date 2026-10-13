@@ -66,14 +66,14 @@ describe('3DPLANE', () => {
     expect(ctx.plane.origin).toEqual(v3(0, -5, 0));
     await drive3d(planeTool(), ctx, ['']);
     expect(ctx.plane).toBe(WORLD_XY_FRAME);
-    expect(ctx.prompts).toContain('Specify construction plane [World/XY/XZ/YZ/Face/Origin] <World>:');
+    expect(ctx.prompts).toContain('Specify construction plane [World/Top/Front/Right/Solid face/Origin] <World>:');
   });
 
   it('Face: the plane of the solid face picked (from the plan view: looking down)', async () => {
     const doc = new Drawing();
     doc.updateModel3D((m) => addSolids(m, [boxSolid()]));
     const ctx = fake3dContext(doc);
-    await drive3d(planeTool(), ctx, ['F', '10,10', '1,1']);
+    await drive3d(planeTool(), ctx, ['S', '10,10', '1,1']);
     expect(ctx.logs).toContain('No solid face there; pick a face of a solid.');
     expect(ctx.planeName).toBe('Face');
     expect(ctx.plane.origin).toEqual(v3(1, 1, 2));

@@ -24,7 +24,7 @@ import { type PickHit, pickSolids } from '../render3d/picking';
 import { hiddenLayerNames } from '../render3d/scene-sink';
 import type { ToolContext } from '../tools/types';
 
-/** A 3D pick recorded by the 3D view for one tool point (a click or the cursor). */
+/** A 3D pick made by the 3D view for one click or cursor move. */
 export interface Pick3 {
   /** The tool point (plane-local 2D coordinates) handed to the tool. */
   readonly p2: Point;
@@ -42,7 +42,11 @@ export interface Context3DSource {
   plane(): Frame3;
   planeName(): string;
   setPlane(frame: Frame3, name: string): void;
-  /** The 3D pick recorded for this tool point, if it came from the 3D view. */
+  /**
+   * The 3D pick of the input being handed to the tool right now (a click or cursor move in the 3D
+   * view), else null. The editor keeps it only for the duration of that call; `p` is the tool
+   * point being converted (test sources may match on it).
+   */
   pickAt(p: Point): Pick3 | null;
   /** The kernel (created on first call). */
   kernel(): GeometryKernel;

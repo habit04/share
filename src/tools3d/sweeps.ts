@@ -14,6 +14,7 @@
  * current layer with the current colour.
  */
 import type { Point } from '../core/geometry';
+import { GeometryBudgetError } from '../core/geometry-budget-error';
 import { type Frame3, type Vec3, WORLD_XY_FRAME, sub3 } from '../model3d/math';
 import { addSolids, newSolid } from '../model3d/model';
 import { profileFromEntities } from '../model3d/sketch';
@@ -156,7 +157,16 @@ function* extrudeScript(ctx: ToolContext): Step3<void> {
     h = v;
     break;
   }
-  const solid = sweptSolid(ctx, extrudeMesh(profile, h), { kind: 'extrude', profile, distance: h });
+  let mesh: Solid3D['mesh'];
+  try {
+    mesh = extrudeMesh(profile, h);
+  } catch (err) {
+    // The triangle count depends on the profile only, so another height would not help.
+    if (!(err instanceof RangeError || err instanceof GeometryBudgetError)) throw err;
+    ctx.log(`${NAME}: ${err.message} The drawing is unchanged.`);
+    return;
+  }
+  const solid = sweptSolid(ctx, mesh, { kind: 'extrude', profile, distance: h });
   ctx.doc.updateModel3D((m) => addSolids(m, [solid]), del ? src.ids : undefined);
   sweepDefaults.height = h;
 }
@@ -180,9 +190,13 @@ function* revolveScript(ctx: ToolContext): Step3<void> {
     const angle = (deg * Math.PI) / 180 * (reversed ? -1 : 1);
     return { mesh: revolveMesh(profile, axis, angle), feature: { kind: 'revolve' as const, profile, axis, angle } };
   };
+  // After a triangle-budget refusal the axis is kept and only the angle is asked again (a partial
+  // turn has fewer steps); any other refusal asks for the axis again.
+  let keepAxis: RevolveAxis | null = null;
   for (;;) {
     // Axis: two points, or an axis of the construction plane through its origin.
-    let axis: RevolveAxis | null = null;
+    let axis: RevolveAxis | null = keepAxis;
+    keepAxis = null;
     while (!axis) {
       const a = yield* ask3(ctx, st, 'Specify axis start point or define axis by [X/Y/Z]:', { keywords: ['X', 'Y', 'Z'] });
       if (a.kind === 'enter') return;
@@ -202,7 +216,7 @@ function* revolveScript(ctx: ToolContext): Step3<void> {
       }
       axis = { origin: start, dir };
     }
-    const ax = axis;
+    const ax: RevolveAxis = axis;
     let deg: number | null = null;
     while (deg === null) {
       const kw: string[] = ['Reverse', del ? 'Keep' : 'Delete'];
@@ -230,6 +244,11 @@ function* revolveScript(ctx: ToolContext): Step3<void> {
     try {
       built = make(ax, deg);
     } catch (err) {
+      if (err instanceof GeometryBudgetError) {
+        ctx.log(`${NAME}: ${err.message} Try a smaller angle or a simpler profile.`);
+        keepAxis = ax;
+        continue;
+      }
       if (!(err instanceof RangeError)) throw err;
       ctx.log(`${NAME}: ${err.message}`);
       continue;

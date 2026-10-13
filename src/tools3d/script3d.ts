@@ -36,8 +36,6 @@ export function errorText(err: unknown): string {
 
 /** A Tool that runs a 3D script. */
 export class Script3DTool implements Tool {
-  /** Marks tools that take construction-plane points (the 3D view routes clicks accordingly). */
-  readonly uses3d = true;
   readonly acceptsDistance = false;
   private gen: Step3<void> | null = null;
   private current: Request3D | null = null;
@@ -67,8 +65,18 @@ export class Script3DTool implements Tool {
     while (this.busy) await this.busy;
   }
 
+  /** Free text (Space as a character) only for a request that asks for it; none of the 3D commands do. */
   acceptsFreeText(): boolean {
     return this.current?.free ?? false;
+  }
+
+  /**
+   * Always true: typed points reach the script as text, so `ask3` parses them itself ("x,y,z",
+   * "@dx,dy" relative to the last 3D point, keeping its height) instead of the command line
+   * turning "x,y" into a 2D point first. Space still submits, as at every prompt.
+   */
+  acceptsRawPoints(): boolean {
+    return true;
   }
 
   start(ctx: ToolContext): void {
@@ -235,7 +243,7 @@ export function* ask3(ctx: ToolContext, st: InputState, prompt: string, opts: As
     if (a.type === 'select') continue;
     if (a.type === 'point') {
       if (!points) {
-        ctx.log('Requires a numeric value.');
+        ctx.log(opts.numbers ? 'Requires a numeric value.' : 'Invalid option keyword.');
         continue;
       }
       const point = point3Of(ctx, a.p);
@@ -284,7 +292,8 @@ export function* compute<T>(prompt: string, promise: Promise<T>): Step3<{ ok: tr
     (error: unknown) => void (box.outcome = { ok: false, error }),
   );
   yield { prompt, distance: false, wait };
-  return box.outcome ?? { ok: false, error: new Error('The operation was interrupted.') };
+  // `wait` resolves only after one of the callbacks above has run.
+  return box.outcome!;
 }
 
 /**

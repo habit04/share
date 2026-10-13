@@ -23,7 +23,7 @@ parameter rows (milestone 4) are in [3D-EDITING.md](3D-EDITING.md).
 | `UNION` (`UNI`) | Select objects (two or more solids) |
 | `SUBTRACT` (`SU`) | Select solids to subtract from (Enter) · Select solids to subtract (Enter) |
 | `INTERSECT` (`IN`) | Select objects (two or more solids) |
-| `3DPLANE` | construction plane [World/XY/XZ/YZ/Face/Origin] <World>; `3DPLANE XZ` answers directly |
+| `3DPLANE` | construction plane [World/Top/Front/Right/Solid face/Origin] <World> (XY / XZ / YZ / Face also typed); `3DPLANE XZ` answers directly |
 
 Ribbon tab **3D**: Modelling (Box, Wedge, Cylinder, Cone, Sphere, Torus, Extrude, Revolve),
 Boolean (Union, Subtract, Intersect), Plane (3DPLANE), View and Test as before. `HELP` lists the
@@ -33,11 +33,19 @@ layer and the current colour (Home > Properties). 3D commands refuse paper-space
 ### Points, sizes and the construction plane
 
 - Typed points are construction-plane coordinates: `x,y` (on the plane), `x,y,z`, `@dx,dy`,
-  `@dx,dy,dz` (relative to the last point of the command), `d<a`. With the default plane (World)
-  they are world coordinates.
+  `@dx,dy,dz` (relative to the last point of the command; `@dx,dy` keeps that point's height
+  above the plane), `d<a`. With the default plane (World) they are world coordinates. 3D commands
+  get typed points as text (the optional `Tool.acceptsRawPoints`: the command line does not turn
+  `x,y` / `@dx,dy` / `d<a` into a 2D point first) and parse points, numbers and option keywords
+  themselves, so relative input is measured from the true 3D point. Space still submits like
+  Enter, as at every other prompt.
 - In 3D mode a click gives the 3D point under the cursor: a point on a solid face when the cursor
   is over a solid, else where the cursor ray meets the construction plane. The ghost of the solid
-  being built follows the cursor (translucent faces, yellow edges).
+  being built follows the cursor (translucent faces, yellow edges). The click goes to the command
+  directly (`Editor.acceptPoint`, echoed on the command line as plane coordinates); the 3D hit is
+  available to the command only while it handles that click or cursor move, so a typed point is
+  always exactly the typed coordinates. After a click the editor's last point is the picked point's
+  world x, y.
 - Sizes can be typed or picked. Radii: distance in the plane through the base point. Heights:
   typed (negative = below the plane); picked in the 3D view = where the cursor ray passes the
   normal line through the base; a typed `x,y,z` = its offset along the normal; a point on the
@@ -46,9 +54,13 @@ layer and the current colour (Home > Properties). 3D commands refuse paper-space
   base plane.
 - Zero, negative (where not allowed) or non-finite sizes are reported (`Value must be positive and
   finite`, `Height must be a non-zero finite number`, ...) and the prompt repeats.
-- `3DPLANE`: World = WCS; XY / XZ / YZ = world-parallel planes through the current origin (XZ is
-  AutoCAD's Front orientation, normal -Y; YZ the Right one, normal +X); Face = the plane of a
-  picked solid face (in the plan view: the face seen looking down); Origin = same axes, new origin.
+- `3DPLANE`: World = WCS; Top / Front / Right (typed also XY / XZ / YZ) = the world-parallel
+  planes XY / XZ / YZ through the current origin (Front: X right, Y up the world Z, normal -Y;
+  Right: normal +X); Solid face (typed also Face) = the plane of a picked solid face (in the plan
+  view: the face seen looking down); Origin = same axes, new origin (typed in the current plane's
+  coordinates; the prompt `<0,0,0 (world x,y,z)>` shows the current origin both ways and Enter
+  keeps it). Clicking an option in the command line sends its first letter (as at 2D prompts), so
+  every 3D prompt shows options with distinct first letters.
   The plane shows in the status bar and in the view label. **While 3D mode is off, every 3D
   command uses WCS XY** (z = 0), whatever 3DPLANE set; the plane applies again in 3D mode.
 
@@ -64,11 +76,16 @@ layer and the current colour (Home > Properties). 3D commands refuse paper-space
 - REVOLVE axis: two points, or X / Y / Z of the construction plane through its origin. The axis
   must lie in the profile plane with the profile on one side (`Cannot revolve: ...` otherwise, and
   the axis is asked again). Angles in degrees, non-zero, at most 360; `Reverse` turns the other way.
+- Triangle budget (`MAX_SOLID_TRIANGLES`): a REVOLVE over it prints the budget message and asks
+  for the angle again with the same axis (a partial turn has fewer steps); an EXTRUDE over it
+  prints the message and ends (its size depends on the profile only). The drawing is unchanged.
 
 ### Booleans
 
 - The kernel (Manifold; a module worker in the app, in-process in Node) is created on the first
-  Boolean and disposed when 3D mode ends or the window unloads (`pagehide`). While it runs the
+  Boolean and disposed when 3D mode ends, when the command ends while 3D mode is off (nothing else
+  would release it there; the next Boolean starts a new kernel, paying the WebAssembly start-up
+  again), or when the window unloads (`pagehide`). While it runs the
   prompt reads `Computing the union… (Esc abandons it)` and other input is refused with a message;
   Esc or another command abandons the result.
 - Errors are printed verbatim with the command name (`UNION: The second solid cannot be used in
@@ -190,7 +207,8 @@ off, the in-process kernel), so they are known to produce the stated results.
 | `src/render3d/viewport3d.ts` | `Viewport3DOverlay.previewSolids`: ghost solids. |
 
 Changes to 2D files are additive: optional `ToolContext` members, `Editor.toolContextExtension` /
-`toolContext()` / `selectionPending` / `pickIds()` (null / unused with the flag off), the solid
+`toolContext()` / `acceptPoint()` / `selectionPending` / `pickIds()`, the optional
+`Tool.acceptsRawPoints` honoured by the prompter (null / unused with the flag off), the solid
 branch of ERASE (only when the selection holds solid ids) and of the Properties palette (only for
 a solids-only selection).
 

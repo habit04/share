@@ -75,13 +75,8 @@ function* runBoolean(ctx: ToolContext, NAME: string, op: BooleanOp, first: Solid
     for (const s of steps) acc = await kernel.boolean(s.op, acc, s.solid.mesh);
     return acc;
   };
-  let promise: Promise<Mesh3D>;
-  try {
-    promise = run();
-  } catch (err) {
-    promise = Promise.reject(err);
-  }
-  const r = yield* compute(`Computing the ${NOUN[op]}… (Esc abandons it)`, promise);
+  // An async function never throws synchronously: every failure arrives as a rejection.
+  const r = yield* compute(`Computing the ${NOUN[op]}… (Esc abandons it)`, run());
   if (!r.ok) {
     ctx.log(`${NAME}: ${errorText(r.error)}`);
     ctx.log(`${NAME}: the drawing is unchanged.`);

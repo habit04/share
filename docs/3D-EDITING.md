@@ -28,9 +28,9 @@ the commands.
 
 As in milestone 3: typed points are construction-plane coordinates `x,y`, `x,y,z`, `@dx,dy,dz`
 (relative to the command's last 3D point), `@dx,dy`, `d<a`; with the default plane (World) they
-are world coordinates. Use three coordinates (`@dx,dy,dz`) for a relative point from a point above
-the plane: the two-coordinate forms are resolved by the 2D command line on the plane itself. In 3D
-mode a click gives the 3D point under the cursor, **snapped** (below).
+are world coordinates. 3D commands parse typed points themselves (`acceptsRawPoints`), so
+`@dx,dy` keeps the height of the last 3D point. In 3D mode a click gives the 3D point under the
+cursor, **snapped** (below), handed to the command directly (`Editor.acceptPoint`) with its 3D pick.
 
 ### Transforms
 
