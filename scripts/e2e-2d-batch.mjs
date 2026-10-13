@@ -246,7 +246,8 @@ try {
     const defaults = await textSignature();
     assert.equal(defaults.entities.find((e) => e.text === 'Explicit defaults').widthFactor, 1);
     assert.equal(defaults.entities.find((e) => e.text === 'Explicit defaults').oblique, 0);
-    assert.equal(Object.hasOwn(defaults.entities.find((e) => e.text === 'Absent defaults'), 'widthFactor'), false);
+    assert.equal(defaults.entities.find((e) => e.text === 'Absent defaults').widthFactor, 1);
+    assert.equal(defaults.entities.find((e) => e.text === 'Absent defaults').oblique, 0);
     await page.evaluate(() => {
       const ed = window.editor, replacements = ed.doc.entities.map((e) => e.type === 'text' ? { ...e, text: e.text + ' edited', position: { x: e.position.x + 2, y: e.position.y + 3 } }
         : e.type === 'insert' ? { ...e, attributes: { ...e.attributes, TAG: 'Attribute edited' } } : e);
@@ -263,10 +264,10 @@ try {
       assert.equal(valueOf(record, 51), '0', `${kind}: explicit native oblique0 survives`);
     }
     const absent = textNative.find((r) => r.kind === 'TEXT' && valueOf(r, 1) === 'Absent defaults edited');
-    assert.equal(valueOf(absent, 41), undefined); assert.equal(valueOf(absent, 51), undefined);
+    assert.equal(valueOf(absent, 41), '1'); assert.equal(valueOf(absent, 51), '0');
     await reopen(textSaved); assert.deepEqual(await textSignature(), editedText);
     assert.equal(readFileSync(textSource, 'utf8'), defaultsSource);
-    ok('TEXT/ATTDEF/ATTRIB: explicit1/0 versus absent overrides, real edits, undo/redo, native records and IPC save/reopen');
+    ok('TEXT/ATTDEF/ATTRIB: explicit and omitted native1/0 defaults, real edits, undo/redo, canonical records and IPC save/reopen');
 
     step = 'native MTEXT manual column edit/save/reopen';
     const mtextSource = join(workspace, 'mtext-source.dxf'), mtextSaved = join(workspace, 'mtext-saved.dxf');
