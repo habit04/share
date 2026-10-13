@@ -255,6 +255,15 @@ malformed, duplicate, nested or interleaved framing refuses. Its 38 new regressi
 bring focused coverage to 557 passes. Fresh combined local/app/CI and matching-helper
 first/second C validation remain required; no wider common-object relaxation is claimed.
 
+Current `db7203a` passes 4,351 normal local tests / 28 skips and all 32 source-desktop
+workflows, plus broad static/build checks. Correct native execution permissions clear
+52 earlier filesystem failures; both earlier timed cases also pass unchanged, with cause
+unproven. Both Node jobs/UI pass; Windows safely refuses a local creation-time difference
+after 54 Rust + three CLI/containment passes. The UTC instant agrees, but original stored
+Aux local data remains unmeasured because the existing decoder exposes no raw Aux API.
+A development diagnostic must qualify that evidence before any producer/reader date fix.
+Current source-desktop passes do not certify the matching compiled writer/C fixed point.
+
 Modern VISUALSTYLE RGB comparisons are confined to its eight typed color slots in a complete
 58-property bag. Valid raw/C2 RGB storage compares all color bytes; a derived palette companion
 belongs to that same color property. Standalone ACI, lighting177, operations, order/count,

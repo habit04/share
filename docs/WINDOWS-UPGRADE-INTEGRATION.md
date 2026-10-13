@@ -134,6 +134,27 @@ including 38 new framing cases. Fresh combined full/build/app/CI and actual matc
 compiled-helper first/second C validation are still mandatory. Failed-run artifacts
 remain metadata only; no retry or next-stage source adoption is used to clear a failure.
 
+Normal `db7203a` validation now passes 4,351 tests / 28 skips and all 32 actual
+source-desktop workflows. All 918 source hashes, the built renderer and 20 native assets
+remain fixed; owned processes close without fallback termination. The earlier restricted
+run's 52 filesystem failures are reproduced by a confined junction/hard-link probe and
+cleared in the approved native test context. Two independent timeouts remain retained
+with unproven cause; the same original 33-file/PDF cases then pass in 17,772 ms/294 ms.
+Exact CI passes both Node jobs/UI; Windows passes 54 Rust + three CLI/containment checks,
+then refuses `$TDCREATE` shifted by five hours. The source UTC creation value agrees with
+the C result; C derives local creation dates using its host timezone. This alone cannot
+prove either creation-instant loss or retention of an independently stored local Aux tuple.
+Four SHA-unchanged original DWGs read successfully, but the binary has no raw Aux/JSON/trace
+API. Production reader/writer/pins and strict date guards remain unchanged. An authenticated,
+isolated development C diagnostic must measure actual main/Aux tuples before a date repair;
+matching-helper first/second C gates and all-green CI still block integration.
+
+The isolated diagnostic passes 14 source/protocol/tooling tests and 77 workflow regressions.
+Source preparation verifies 583 decoder source hashes and four original/private-copy hashes
+and byte counts. Two independent source reviews pass. The feature-branch diagnostic workflow
+must still compile the native GCC decoder and read both zones; these preparation checks do
+not certify native date semantics or the shipped Emscripten reader.
+
 The corrected full local Windows suite passes serially with every original deadline and
 freshness assertion. A private phase trace of the 33-file project case passed in 18.7 seconds;
 backup/write guards account for most elapsed time. Parallel native-filesystem contention and

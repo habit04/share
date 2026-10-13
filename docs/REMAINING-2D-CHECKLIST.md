@@ -116,6 +116,17 @@ proof that their implementation or external verification has passed.
   **557 focused tests**, including **38 new framing regressions**, retaining each block,
   owner, ordered mapped links and opaque data. Full/local/app/fresh CI and actual
   matching-helper first/second-save C gates remain pending for this source.
+- Current `db7203a` normal full validation passes **4,351 / 28 skips** and all
+  **32 source-desktop workflows**; typechecks, broad lint, fixtures and build pass.
+  A restricted-context run retained 52 qualified filesystem permission failures and
+  two timeouts; a confined capability probe and native-context run clear the tests
+  with original assertions/deadlines. Timeout cause remains unproven. Exact CI passes
+  both Node jobs and UI; Windows passes 54 Rust + three CLI/containment checks, then
+  refuses a five-hour `$TDCREATE` difference. C derives this local field from UTC and
+  host timezone, so creation-instant loss is not established. Four unchanged originals
+  expose no raw Aux API in the current binary. The isolated source-built diagnostic passes
+  14 tooling and 77 workflow regressions; native compilation/raw date measurement is pending.
+  Production dates, strict comparison and pins remain unchanged.
 - First combined CI at `e477954` found a Node 22 512-drawing deadline failure, a safely refused
   legacy-to-modern TABLESTYLE difference and a stale browser report check. The recovery failure
   followed the aborted export setup. The correction keeps the original 15-second test and limits
