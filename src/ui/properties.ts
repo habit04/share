@@ -8,6 +8,9 @@ import { aciToCss, ACI_NAMES } from '../render/palette';
 import { icon } from './icons';
 import { GeometryBudgetError } from '../core/geometry-budget-error';
 import { isViewportFrame, viewTwist } from '../core/layouts';
+import type { Solid3D } from '../model3d/types';
+import { replaceSolid, solidById } from '../model3d/model';
+import { selectedSolids, solidRows } from '../tools3d/properties';
 
 /** Properties palette: shows and edits the current selection (docked right). */
 export class PropertiesPalette {
@@ -109,6 +112,13 @@ export class PropertiesPalette {
     const doc = this.editor.doc;
     const layers = doc.layers.map((l): [string, string] => [l.name, l.name]);
     const colors: Array<[string, string]> = [['ByLayer', 'ByLayer'], ...Object.entries(ACI_NAMES).map(([k, v]): [string, string] => [k, v])];
+
+    // Experimental 3D: a selection of solids only (no 2D objects) shows the solid rows.
+    const solids = sel.length === 0 && doc.snapshot.model3d ? selectedSolids(doc.snapshot.model3d.solids, this.editor.selection) : [];
+    if (solids.length > 0) {
+      this.renderSolids(solids, layers, colors);
+      return;
+    }
 
     const header = document.createElement('div');
     header.className = 'prop-header';
@@ -322,6 +332,53 @@ export class PropertiesPalette {
         b.appendChild(this.row('Clipped', e.clipOn ? 'Yes' : 'No'));
         break;
     }
+  }
+
+  /**
+   * Experimental 3D solids (rows from src/tools3d/properties.ts): layer and colour for all of
+   * them, name and the read-only geometry for a single one. Edits are one undoable step each.
+   */
+  private renderSolids(solids: Solid3D[], layers: Array<[string, string]>, colors: Array<[string, string]>): void {
+    const b = this.bodyEl;
+    const doc = this.editor.doc;
+    const header = document.createElement('div');
+    header.className = 'prop-header';
+    header.textContent = solids.length === 1 ? '3D Solid' : `3D Solids (${solids.length})`;
+    b.appendChild(header);
+    const update = (fn: (s: Solid3D) => Solid3D) => {
+      try {
+        doc.updateModel3D((m) => solids.reduce((acc, s) => {
+          const cur = solidById(acc, s.id);
+          return cur ? replaceSolid(acc, fn(cur)) : acc;
+        }, m));
+      } catch (error) {
+        if (!(error instanceof GeometryBudgetError)) throw error;
+        this.editor.log(error.message);
+        this.render();
+      }
+    };
+    const common = (key: 'layer' | 'color') => {
+      const first = String(solids[0]![key]);
+      return solids.every((s) => String(s[key]) === first) ? first : '*VARIES*';
+    };
+    const rows = solidRows(solids[0]!);
+    b.appendChild(this.section('General'));
+    if (solids.length === 1) b.appendChild(this.row('Type', rows[0]!.value));
+    const layerVal = common('layer');
+    b.appendChild(this.row('Layer', this.select(layerVal === '*VARIES*' ? [['*VARIES*', '*VARIES*'], ...layers] : layers, layerVal, (v) => {
+      if (v !== '*VARIES*') update((s) => ({ ...s, layer: v }));
+    })));
+    const colorVal = common('color');
+    b.appendChild(this.row('Color', this.select(colorVal === '*VARIES*' ? [['*VARIES*', '*VARIES*'], ...colors] : colors, colorVal, (v) => {
+      if (v !== '*VARIES*') update((s) => ({ ...s, color: v === 'ByLayer' ? 'ByLayer' : parseInt(v, 10) }));
+    })));
+    if (solids.length !== 1) return;
+    b.appendChild(this.row('Name', this.input(solids[0]!.name ?? '', (v) => update((s) => {
+      const { name: _old, ...rest } = s;
+      return v.trim() ? { ...rest, name: v.trim() } : rest;
+    }))));
+    b.appendChild(this.section('Geometry'));
+    for (const r of rows) if (!r.edit && r.label !== 'Type') b.appendChild(this.row(r.label, r.value));
   }
 }
 

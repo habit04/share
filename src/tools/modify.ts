@@ -3,6 +3,7 @@ import * as g from '../core/geometry';
 import type { Entity } from '../core/entities';
 import { newId, translateEntity, rotateEntity } from '../core/entities';
 import type { Tool, ToolContext } from './types';
+import { removeSolids } from '../model3d/model';
 
 const fmt = (p: Point) => `${p.x.toFixed(4)}, ${p.y.toFixed(4)}`;
 
@@ -52,7 +53,12 @@ abstract class SelectionTool implements Tool {
 export class EraseTool extends SelectionTool {
   readonly name = 'ERASE';
   protected begin(ctx: ToolContext): void {
-    ctx.doc.removeEntities(this.ids);
+    // Experimental 3D: selected solids (DrawingState.model3d) go in the same undo step; a
+    // selection without solids takes exactly the 2D path it always took.
+    const ids = new Set(this.ids);
+    const solids = (ctx.doc.snapshot.model3d?.solids ?? []).filter((s) => ids.has(s.id));
+    if (solids.length === 0) ctx.doc.removeEntities(this.ids);
+    else ctx.doc.updateModel3D((m) => removeSolids(m, solids.map((s) => s.id)), this.ids);
     ctx.selection = new Set();
     ctx.finish();
   }
