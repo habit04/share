@@ -261,6 +261,16 @@
           "before": "          VALUE_TV (name, dxf + 430 - 62);\n        }\n      else if (color->flag & 1 && color->name)",
           "after": "          /* TU components were already converted to UTF-8 above. */\n          if (IS_FROM_TU (dat))\n            dxf_fixup_string (dat, name, 1, dxf + 430 - 62);\n          else\n            VALUE_TV (name, dxf + 430 - 62);\n        }\n      else if (color->flag & 1 && color->name)",
           "count": 1
+        },
+        {
+          "before": "  VALUE_RS (dwg->header_vars.nam.index, dxf)",
+          "after": "  /* Method C3 stores its ACI in packed RGB when the index is 0/256. */       \\\n  VALUE_RS ((dwg->header_vars.nam.method == 0xc3                               \\\n             && (abs (dwg->header_vars.nam.index) == 0                       \\\n                 || abs (dwg->header_vars.nam.index) >= 256))                 \\\n                ? dwg->header_vars.nam.rgb & 0xff                            \\\n                : dwg->header_vars.nam.index, dxf)",
+          "count": 1
+        },
+        {
+          "before": "      if (dxf >= 90)\n        {\n          VALUE_RLd (color->rgb, dxf);\n          return;\n        }",
+          "after": "      /* Only DIMSTYLE uses CMC group176..178. Its ACI methods are indices;\n         VISUALSTYLE group91/93 and truecolor methods retain packed storage. */\n      if (dxf >= 176 && dxf <= 178\n          && (color->method == 0xc0 || color->method == 0xc1\n              || color->method == 0xc3))\n        {\n          const int aci = color->method == 0xc0 ? 256\n            : color->method == 0xc1 ? 0\n            : abs (color->index) > 0 && abs (color->index) < 256\n              ? color->index : color->rgb & 0xff;\n          VALUE_RS (aci, dxf);\n          return;\n        }\n      if (dxf >= 90)\n        {\n          VALUE_RLd (color->rgb, dxf);\n          return;\n        }",
+          "count": 1
         }
       ]
     },
@@ -287,6 +297,75 @@
         {
           "before": "dwg->dwg_class[i].maint_version = bit_read_BS (&sec_dat);",
           "after": "dwg->dwg_class[i].maint_version = bit_read_BL (&sec_dat);",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "path": "src/bits.c",
+      "gitBlob": "30b2e9e486cf4e4887c802783a7d12d7fec60e33",
+      "replacements": [
+        {
+          "before": "  date.value = date.days + (date.ms * 1e-8);",
+          "after": "  /* TIMEBLL/TIMERLL store milliseconds since midnight, not decimal day digits. */\n  date.value = date.days + ((double)date.ms / 86400000.0);",
+          "count": 2
+        }
+      ]
+    },
+    {
+      "path": "src/header_variables.spec",
+      "gitBlob": "da34d2567fcf56d5d7a148485e61f7060d40768e",
+      "replacements": [
+        {
+          "before": "    if (!_obj->TDCREATE.days) {",
+          "after": "    if (!_obj->TDCREATE.days && _obj->TDUCREATE.days) {",
+          "count": 1
+        },
+        {
+          "before": "      _obj->TDCREATE.days  = _obj->TDUCREATE.days;\n      // adjust for timezone offset\n      _obj->TDCREATE.ms    = _obj->TDUCREATE.ms + off;\n      _obj->TDCREATE.value = _obj->TDCREATE.days + (_obj->TDCREATE.ms * 1e-8);",
+          "after": "      /* Normalize the signed timezone shift before assigning unsigned milliseconds. */\n      const int64_t tdcreate_ms = (int64_t)_obj->TDUCREATE.ms + off;\n      int64_t tdcreate_days = tdcreate_ms / 86400000;\n      if (tdcreate_ms < 0 && tdcreate_ms % 86400000)\n        tdcreate_days--;\n      _obj->TDCREATE.days = _obj->TDUCREATE.days + tdcreate_days;\n      _obj->TDCREATE.ms = (BITCODE_BL)(tdcreate_ms - tdcreate_days * 86400000);\n      _obj->TDCREATE.value = _obj->TDCREATE.days + ((double)_obj->TDCREATE.ms / 86400000.0);",
+          "count": 1
+        },
+        {
+          "before": "      _obj->TDUPDATE.days  = _obj->TDUUPDATE.days;\n      _obj->TDUPDATE.ms    = _obj->TDUUPDATE.ms + off;\n      _obj->TDUPDATE.value = _obj->TDUPDATE.days + (_obj->TDUPDATE.ms * 1e-8);",
+          "after": "      if (_obj->TDUUPDATE.days) {\n        /* Normalize the signed timezone shift before assigning unsigned milliseconds. */\n        const int64_t tdupdate_ms = (int64_t)_obj->TDUUPDATE.ms + off;\n        int64_t tdupdate_days = tdupdate_ms / 86400000;\n        if (tdupdate_ms < 0 && tdupdate_ms % 86400000)\n          tdupdate_days--;\n        _obj->TDUPDATE.days = _obj->TDUUPDATE.days + tdupdate_days;\n        _obj->TDUPDATE.ms = (BITCODE_BL)(tdupdate_ms - tdupdate_days * 86400000);\n        _obj->TDUPDATE.value = _obj->TDUPDATE.days + ((double)_obj->TDUPDATE.ms / 86400000.0);\n      }",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "path": "src/header_variables_r11.spec",
+      "gitBlob": "18a734e2ca3ebab205e92dbbcc52c9c750986766",
+      "replacements": [
+        {
+          "before": "    if (!_obj->TDUCREATE.days && dat->version >= R_13) {",
+          "after": "    if (!_obj->TDUCREATE.days && _obj->TDCREATE.days && dat->version >= R_13) {",
+          "count": 1
+        },
+        {
+          "before": "      _obj->TDUCREATE.days  = _obj->TDCREATE.days;\n      // adjust for timezone offset\n      _obj->TDUCREATE.ms    = _obj->TDUCREATE.ms - off;\n      _obj->TDUCREATE.value = _obj->TDUCREATE.days + (_obj->TDUCREATE.ms * 1e-8);",
+          "after": "      /* Normalize the signed timezone shift before assigning unsigned milliseconds. */\n      const int64_t tducreate_ms = (int64_t)_obj->TDCREATE.ms - off;\n      int64_t tducreate_days = tducreate_ms / 86400000;\n      if (tducreate_ms < 0 && tducreate_ms % 86400000)\n        tducreate_days--;\n      _obj->TDUCREATE.days = _obj->TDCREATE.days + tducreate_days;\n      _obj->TDUCREATE.ms = (BITCODE_BL)(tducreate_ms - tducreate_days * 86400000);\n      _obj->TDUCREATE.value = _obj->TDUCREATE.days + ((double)_obj->TDUCREATE.ms / 86400000.0);",
+          "count": 1
+        },
+        {
+          "before": "      _obj->TDUUPDATE.days  = _obj->TDUPDATE.days;\n      _obj->TDUUPDATE.ms    = _obj->TDUPDATE.ms - off;\n      _obj->TDUUPDATE.value = _obj->TDUPDATE.days + (_obj->TDUPDATE.ms * 1e-8);",
+          "after": "      if (_obj->TDUPDATE.days) {\n        /* Normalize the signed timezone shift before assigning unsigned milliseconds. */\n        const int64_t tduupdate_ms = (int64_t)_obj->TDUPDATE.ms - off;\n        int64_t tduupdate_days = tduupdate_ms / 86400000;\n        if (tduupdate_ms < 0 && tduupdate_ms % 86400000)\n          tduupdate_days--;\n        _obj->TDUUPDATE.days = _obj->TDUPDATE.days + tduupdate_days;\n        _obj->TDUUPDATE.ms = (BITCODE_BL)(tduupdate_ms - tduupdate_days * 86400000);\n        _obj->TDUUPDATE.value = _obj->TDUUPDATE.days + ((double)_obj->TDUUPDATE.ms / 86400000.0);\n      }",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "path": "src/dwg2.spec",
+      "gitBlob": "c23b82adc6767feb65921c659ec42c714201245d",
+      "replacements": [
+        {
+          "before": "FIELD_BS (b_prop1f_int, 0);",
+          "after": "FIELD_BS (b_prop1f_int, 176);",
+          "count": 1
+        },
+        {
+          "before": "FIELD_BS (b_prop21_int, 0);",
+          "after": "FIELD_BS (b_prop21_int, 176);",
           "count": 1
         }
       ]

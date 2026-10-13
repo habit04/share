@@ -248,6 +248,19 @@ The report retains both the copied native values and projected class groups; pro
 their verification before accepting the factory/WASM pair. This does not certify unexposed
 class-maintenance/version fields or opaque native object bytes.
 
+The native date projection uses Julian days plus milliseconds divided by 86,400,000.
+Both compacted TIMEBLL and uncompressed TIMERLL readers follow that unit. Derived local/UTC
+dates normalize signed timezone shifts across midnight before storing unsigned milliseconds;
+an absent source date remains absent. The pre-R13 reverse conversion takes milliseconds from
+the actual local source date. These changes prevent the verified 32-bit underflow which turned
+UTC 01:17:54 into a local creation date 42 days in the future.
+
+Header method-C3 colors recover the packed ACI when the native index is 0/256. DIMSTYLE color
+groups 176–178 serialize ByLayer, ByBlock and indexed colors as ACI; other CMC groups retain
+their existing packed representation. The two omitted VISUALSTYLE property selectors now emit
+group176, restoring the independently exported 58-property sequence. Every additional native
+file has a complete pinned Git-blob preimage and repeated patch application is refused.
+
 ## License and primary sources
 
 The npm package declares GPL-3.0; native source headers grant GPL-3.0-or-later. Keep `COPYING`,

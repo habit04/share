@@ -14,7 +14,7 @@ const SDK = { version: '4.0.23', commit: 'c0bb220cb6e6f4e0fabb6f6db9efd53390ef5e
 const DECLARATION = { name: 'typescript', version: '5.7.3', resolved: 'https://registry.npmjs.org/typescript/-/typescript-5.7.3.tgz', integrity: 'sha512-84MVSjMEHP+FQRPy3pX9sTVV/INIex71s9TL2Gm5FG/WG1SqXeKyZ0k7/blY/4FdOzI12CBy1vGc4og/eus0fw==' };
 const PATCH_SHA256 = 'f666e69a0316536df7e344efe2b0a9c550918d06ad57b65ecbc4c523540f8cf6';
 const APPEARANCE_PATCH_SHA256 = '98c701b374f44baeebf36aca079b9258da87b6ecef13784b7e1a6d294e222aae';
-const METADATA_PATCH_SHA256 = '3d346e6b394845ece1e7495171d39d06016c0bacf4514fd83ad4091cb48fc89b';
+const METADATA_PATCH_SHA256 = '77c8351a8c240b48089d89397d5d3dea9513c2f7acb528c85d4a78b2eeeaea66';
 const ASSETS = ['factory/libredwg-web.js', 'factory/libredwg-web.wasm', 'factory/package.json', 'modified-source.tar.gz', 'COPYING', 'pins.json', 'mtext-background-scale.patch.json', 'README.md', 'patch-source.mjs', 'validate-fixture.mjs', 'write-provenance.mjs', 'patch-report.json', 'fixture-report.json', 'declaration-tools/package.json', 'declaration-tools/package-lock.json'];
 const APPEARANCE_ASSETS = [...ASSETS, 'validate-appearance-fixture.mjs', 'appearance-report.json'];
 const METADATA_ASSETS = [...APPEARANCE_ASSETS, 'validate-metadata-fixture.mjs', 'metadata-report.json'];
@@ -80,7 +80,7 @@ export async function verifyNativeRuntime(directory, fixturePath, expectedPath, 
   const submodules = [{ path: 'jsmn', repository: 'https://github.com/zserge/jsmn', commit: '85695f3d5903b1cd5b4030efe50db3b4f5f3c928' }];
   assert.deepEqual(pins.submodules, submodules); assert.deepEqual(provenance.submodules, submodules);
   const patch = await json('patch-report.json'); assert.deepEqual(patch.source, NATIVE_SOURCE); assert.equal(patch.patchSha256, checkedPatchHash);
-  const fileCount = metadataPolicy ? 15 : appearancePolicy ? 11 : 6;
+  const fileCount = metadataPolicy ? 19 : appearancePolicy ? 11 : 6;
   assert.equal(patch.files?.length, fileCount); assert.equal(provenance.patchedFiles?.length, fileCount);
   const checkedPatch = await json('mtext-background-scale.patch.json');
   assert.deepEqual(patch.files.map((file) => file.path).sort(), checkedPatch.files.map((file) => file.path).sort());
