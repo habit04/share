@@ -115,7 +115,7 @@ describe('independent raw DWG metadata postflight', () => {
     expect(() => verify(source, source.replace('{retained}', '{different}'))).toThrow(/FINGERPRINTGUID/);
   });
   it.each(['$TDCREATE', '$TDUCREATE'])('retains real file creation time %s for native CreateDate field semantics', variable => {
-    const source = oracle('views-fields'), all = pairs(source), at = all.findIndex(([code, value]) => code === 9 && value.trim() === variable);
+    const source = oracle('views-fields'), all = pairs(source), at = all.findIndex(([code, value]) => code === 9 && String(value).trim() === variable);
     expect(at).toBeGreaterThan(0); const stored = all[at + 1]!;
     all[at + 1] = [stored[0], String(Number(stored[1]) + 1)];
     expect(() => verify(source, text(all))).toThrow(new RegExp(`HEADER.\\${variable}.*changed`));
