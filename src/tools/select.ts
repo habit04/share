@@ -6,7 +6,7 @@ import type { Point } from '../core/geometry';
 import * as g from '../core/geometry';
 import type { Entity, ColorSpec } from '../core/entities';
 import { entityTypeName } from '../core/entities';
-import { selectByBox, selectByFence, selectByPolygon, pickEntity } from '../core/selection';
+import { activeSelectionClip, viewportSelectionEntities, selectByBox, selectByFence, selectByPolygon, pickEntity } from '../core/selection';
 import type { Tool, ToolContext } from './types';
 import { scriptTool, point, pointOrKeyword, type Step } from './script';
 import { activeViewport } from '../core/layouts';
@@ -74,17 +74,18 @@ export function* selectByMode(ctx: ToolContext, mode: string): Step<string[] | n
       if (!b) return [];
       const twist = ctx.viewTwist ?? 0;
       const m = mode === 'BOX' ? (g.rotate(g.sub(b, a), twist).x >= 0 ? 'window' : 'crossing') : mode === 'WINDOW' ? 'window' : 'crossing';
-      const found = twist === 0 ? selectByBox(g.boundsOfPoints([a, b])!, m, ents, look, hidden, locked) : selectByPolygon(g.viewBoxCorners(a, b, twist), m, ents, look, hidden, locked);
+      const visible = viewportSelectionEntities(ctx.doc.snapshot, ents, look);
+      const found = twist === 0 ? selectByBox(g.boundsOfPoints([a, b])!, m, visible, look, hidden, locked) : selectByPolygon(g.viewBoxCorners(a, b, twist), m, visible, look, hidden, locked);
       return found.map((e) => e.id);
     }
     case 'FENCE': {
       const pts = yield* collectPoints(ctx, 'fence');
-      return selectByFence(pts, ents, look, hidden, locked).map((e) => e.id);
+      return selectByFence(pts, viewportSelectionEntities(ctx.doc.snapshot, ents, look), look, hidden, locked).map((e) => e.id);
     }
     case 'WPOLYGON':
     case 'CPOLYGON': {
       const pts = yield* collectPoints(ctx, mode === 'WPOLYGON' ? 'window' : 'crossing');
-      return selectByPolygon(pts, mode === 'WPOLYGON' ? 'window' : 'crossing', ents, look, hidden, locked).map((e) => e.id);
+      return selectByPolygon(pts, mode === 'WPOLYGON' ? 'window' : 'crossing', viewportSelectionEntities(ctx.doc.snapshot, ents, look), look, hidden, locked).map((e) => e.id);
     }
     default:
       return null;
@@ -109,7 +110,9 @@ export function selectTool(): Tool {
       if (!r) break;
       if ('point' in r) {
         const { hidden, locked } = visibility(ctx);
-        const hit = pickEntity(r.point, ctx.doc.entities, ctx.doc.lookupBlock, ctx.aperture(), hidden, locked);
+        const clip = activeSelectionClip(ctx.doc.snapshot);
+        if (clip && !clip.contains(r.point)) continue;
+        const hit = pickEntity(r.point, viewportSelectionEntities(ctx.doc.snapshot, ctx.doc.entities, ctx.doc.lookupBlock), ctx.doc.lookupBlock, ctx.aperture(), hidden, locked);
         if (hit) apply([hit.id]);
         else {
           // Empty pick starts an implied window (BOX).

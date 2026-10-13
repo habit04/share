@@ -194,8 +194,8 @@ export function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonl
       writeEntityCommon(w, e, owner, 'TEXT', 'AcDbText');
       writeTextLike(w, e.position, e.height, e.field && e.field.value === e.text ? e.field.code : e.text, e.rotation, e.align, e);
       if (textStyleOf(e)) w.pair(7, textStyleOf(e)!);
-      if (e.widthFactor !== undefined && Math.abs(e.widthFactor - 1) > 1e-12) w.pair(41, e.widthFactor);
-      if (e.oblique) w.pair(51, g.deg(e.oblique));
+      if (e.widthFactor !== undefined) w.pair(41, e.widthFactor);
+      if (e.oblique !== undefined) w.pair(51, g.deg(e.oblique));
       w.pair(100, 'AcDbText');
       if (e.justification?.vertical) w.pair(73, e.justification.vertical);
       break;

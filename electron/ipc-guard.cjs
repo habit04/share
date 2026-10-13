@@ -166,7 +166,8 @@ function guardIpc(ipcMain, { getWindow, isAppUrl, log }) {
 function appUrlTest(indexFile, devUrl) {
   const { fileURLToPath } = require('node:url');
   const fold = (/** @type {string} */ p) => {
-    const r = path.resolve(p).normalize('NFC');
+    const resolved = path.resolve(p);
+    const r = process.platform === 'win32' ? resolved : resolved.normalize('NFC');
     return process.platform === 'win32' || process.platform === 'darwin' ? r.toLowerCase() : r;
   };
   const target = fold(indexFile);
@@ -205,7 +206,10 @@ function createPathPolicy({ isKnownPath, isWritablePath = isKnownPath, knownPath
   /** The same for network paths (\\server\share\...), only those on the server of the drawing naming them. */
   const referencedNetwork = new Set();
   const norm = (/** @type {string} */ p) => {
-    const r = path.resolve(p).normalize('NFC');
+    // Windows keeps composed/decomposed names as separate files and folders. Folding them
+    // together would extend the image permission into a different directory or reference.
+    const resolved = path.resolve(p);
+    const r = process.platform === 'win32' ? resolved : resolved.normalize('NFC');
     return process.platform === 'win32' || process.platform === 'darwin' ? r.toLowerCase() : r;
   };
   const netKey = (/** @type {string} */ p) => norm(p).toLowerCase();

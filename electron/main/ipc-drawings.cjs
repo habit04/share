@@ -29,7 +29,10 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
   const dwgExporter = createPortableDwgExporter();
   // Export Copy requires its dedicated picker even when normal Save may write an opened DWG.
   const dwgDestinations = new Set();
-  const dwgKey = (file) => path.resolve(file).normalize('NFC').toLowerCase();
+  const dwgKey = (file) => {
+    const resolved = path.resolve(file);
+    return process.platform === 'win32' ? resolved.toLowerCase() : resolved.normalize('NFC').toLowerCase();
+  };
 
   /**
    * Open a DXF or DWG. Returns { path, kind: 'dxf', text } or { path, kind: 'dwg', payload, version } or null.

@@ -131,7 +131,7 @@ describe('non-ASCII file names', () => {
     expect(() => safeAutosaveName('../x.sv.dxf')).toThrow();
   });
 
-  it('reads encoded DXF bytes from a Unicode file path and compares grants in NFC', async () => {
+  it('reads encoded DXF bytes from a Unicode file path and preserves platform filename identity', async () => {
     const require = createRequire(import.meta.url);
     const { readLimitedFile } = require('../electron/resource-limits.cjs');
     const { createPathRegistry } = require('../electron/path-registry.cjs');
@@ -142,7 +142,18 @@ describe('non-ASCII file names', () => {
       const decoded = decodeDxfBytesNode(await readLimitedFile(fs, file, 1024 * 1024));
       expect(readDxf(decoded.text).entities[0]).toMatchObject({ type: 'text', text: 'Café' });
       const registry = createPathRegistry(); registry.grant(file);
-      expect(registry.isKnown(file.normalize('NFD'))).toBe(true);
+      const decomposed = file.normalize('NFD');
+      expect(registry.isKnown(file)).toBe(true);
+      expect(registry.isWritable(file)).toBe(true);
+      expect(registry.isKnown(decomposed)).toBe(process.platform !== 'win32');
+      if (process.platform === 'win32') {
+        // NTFS can store both names. Remembering the second as readable must not copy the
+        // first file's native write grant to it.
+        registry.grantRead(decomposed);
+        expect(registry.isKnown(decomposed)).toBe(true);
+        expect(registry.isWritable(decomposed)).toBe(false);
+        expect(registry.isWritable(file)).toBe(true);
+      }
     } finally {
       if (root.startsWith(join(tmpdir(), 'jcad-encoding-'))) await fs.rm(root, { recursive: true, force: true });
     }

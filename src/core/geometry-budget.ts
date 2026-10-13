@@ -13,7 +13,7 @@ function sameGeometry(state: DrawingState, previous: DrawingState): boolean {
   if (state.entities !== previous.entities || state.blocks !== previous.blocks) return false;
   if (state.layouts === previous.layouts) return true;
   const a = state.layouts ?? [], b = previous.layouts ?? [];
-  return a.length === b.length && a.every((layout, index) => layout.entities === b[index]!.entities);
+  return a.length === b.length && a.every((layout, index) => layout.entities === b[index]!.entities && layout.viewports.length === b[index]!.viewports.length && layout.viewports.every((v, i) => v.clipBoundary === b[index]!.viewports[i]!.clipBoundary));
 }
 
 export function validateGeometryBudget(state: DrawingState, previous?: DrawingState): void {
@@ -45,7 +45,7 @@ export function validateGeometryBudget(state: DrawingState, previous?: DrawingSt
     return work;
   };
   let total = 0;
-  for (const entities of [state.entities, ...(state.layouts ?? []).map((layout) => layout.entities)]) {
+  for (const entities of [state.entities, ...(state.layouts ?? []).flatMap((layout) => [layout.entities, layout.viewports.flatMap((v) => v.clipBoundary ? [v.clipBoundary] : [])])]) {
     for (const entity of entities) {
       const expanded = entityGeometryWork(entity) + (entity.type === 'insert' ? insertArrayCount(entity) * cost(entity.block, 0) : 0);
       if (entity.type === 'insert' && expanded > MAX_BLOCK_EXPANSION_WORK) throw new GeometryBudgetError('Block expansion exceeds the safe geometry budget.');

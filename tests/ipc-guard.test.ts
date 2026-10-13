@@ -72,6 +72,14 @@ describe('IPC caller validation (electron/ipc-guard.cjs)', () => {
     expect(dev('http://localhost:5174/')).toBe(false);
   });
 
+  it.runIf(!posix)('Windows: a Unicode-equivalent foreign application path is still refused', () => {
+    const composed = abs('app', 'Jos\u00e9', 'index.html');
+    const decomposed = abs('app', 'Jose\u0301', 'index.html');
+    const test = guard.appUrlTest(composed);
+    expect(test(pathToFileURL(composed).href)).toBe(true);
+    expect(test(pathToFileURL(decomposed).href)).toBe(false);
+  });
+
   it('refuses other windows, sub-frames and foreign pages', () => {
     const { win, mainFrame, webContents } = fakeWindow(appUrl);
     expect(guard.untrustedReason({ sender: webContents, senderFrame: mainFrame }, win, isApp)).toBeNull();
@@ -145,6 +153,50 @@ describe('file path allow lists (electron/ipc-guard.cjs)', () => {
     policy.rememberImages(abs('work', 'job', 'sheet1.dxf'), [abs('company', 'logos', 'mark.png'), '..\\shared\\stamp.bmp', 'notes.txt']);
     expect(policy.imageProblem(abs('company', 'logos', 'mark.png'))).toBeNull();
     expect(policy.imageProblem(abs('company', 'logos', 'other.png'))).toMatch(/not next to a drawing/);
+  });
+
+  it('Windows: Unicode-equivalent image folders and reference names keep separate permissions', async () => {
+    const drawing = 'C:\\Jobs\\Jos\u00e9\\drawing.dxf';
+    const allowed = 'C:\\Jobs\\Jos\u00e9\\logo.png';
+    const outside = 'C:\\Jobs\\Jose\u0301\\logo.png';
+    const referenced = 'C:\\Library\\Jos\u00e9.png';
+    const unreferenced = 'C:\\Library\\Jose\u0301.png';
+    const { policy } = windowsImagePolicy([drawing], {
+      'C:\\Jobs\\Jos\u00e9': 'C:\\Jobs\\Jos\u00e9',
+      [allowed]: allowed,
+      [outside]: outside,
+      [referenced]: referenced,
+      [unreferenced]: unreferenced,
+    });
+    expect(policy.imageProblem(allowed)).toBeNull();
+    expect(policy.imageProblem(outside)).toMatch(/not next to a drawing/);
+    await expect(policy.imagePath(outside)).rejects.toMatchObject({ code: 'ERR_IMAGE_PATH' });
+    policy.rememberImages(drawing, [referenced]);
+    expect(policy.imageProblem(referenced)).toBeNull();
+    expect(policy.imageProblem(unreferenced)).toMatch(/not next to a drawing/);
+    await expect(policy.imagePath(unreferenced)).rejects.toMatchObject({ code: 'ERR_IMAGE_PATH' });
+  });
+
+  it.runIf(!posix)('Windows: actual Unicode-equivalent sibling image folders stay outside the drawing scope', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'jcad-unicode-image-guard-'));
+    if (!root.startsWith(join(tmpdir(), 'jcad-unicode-image-guard-'))) throw new Error('Unexpected test folder');
+    try {
+      const composed = join(root, 'Jos\u00e9');
+      const decomposed = join(root, 'Jose\u0301');
+      mkdirSync(composed);
+      mkdirSync(decomposed);
+      const allowed = join(composed, 'logo.png');
+      const outside = join(decomposed, 'logo.png');
+      writeFileSync(allowed, 'ALLOWED');
+      writeFileSync(outside, 'OUTSIDE');
+      const known = new Set([join(composed, 'drawing.dxf')]);
+      const policy = guard.createPathPolicy({ isKnownPath: (p: string) => known.has(p), knownPaths: () => known, log: { reject: () => {} } });
+      await expect(policy.imagePath(allowed)).resolves.toBe(allowed);
+      await expect(policy.imagePath(outside)).rejects.toMatchObject({ code: 'ERR_IMAGE_PATH' });
+      expect(readFileSync(outside, 'utf8')).toBe('OUTSIDE');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('imageProblem(): never a network share named by a drawing elsewhere (no automatic connection)', () => {

@@ -33,6 +33,10 @@ function usedLinetypes(state: DrawingState): Linetype[] {
   };
   scan(state.entities);
   for (const b of Object.values(state.blocks)) scan(b.entities);
+  for (const l of state.layouts ?? []) {
+    scan(l.entities);
+    for (const v of l.viewports) if (v.clipBoundary) scan([v.clipBoundary]);
+  }
   // Retained raw records name their linetype in group 6: it must exist in the LTYPE table.
   for (const r of rawEntitiesOf(state)) for (const [code, value] of r.groups) if (code === 6 && value.trim()) names.add(value.trim().toUpperCase());
   const extra = state.header?.linetypes ?? [];
@@ -378,8 +382,8 @@ export function writeDxf(state: DrawingState): string {
         writeEntityCommon(w, { ...a, id: a.tag, type: 'text', text: a.default, rotation: a.rotation ?? 0, color: a.color ?? 'ByLayer', layer: a.layer ?? '0' }, owner, 'ATTDEF', 'AcDbText');
         writeTextLike(w, a.position, a.height, a.default, a.rotation ?? 0, a.align, a);
         if (a.style) w.pair(7, a.style);
-        if (a.widthFactor !== undefined && a.widthFactor !== 1) w.pair(41, a.widthFactor);
-        if (a.oblique) w.pair(51, g.deg(a.oblique));
+        if (a.widthFactor !== undefined) w.pair(41, a.widthFactor);
+        if (a.oblique !== undefined) w.pair(51, g.deg(a.oblique));
         w.pair(100, 'AcDbAttributeDefinition');
         w.pair(3, a.prompt);
         w.pair(2, a.tag);

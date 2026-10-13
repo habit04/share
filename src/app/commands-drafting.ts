@@ -719,7 +719,7 @@ function dimstyleTool(ed: Editor, arg?: string): Tool {
         const ids = yield* select(ctx);
         const set = new Set(ids);
         const dims = ed.doc.entities.filter((e) => set.has(e.id) && e.type === 'dimension');
-        ed.doc.replaceEntities(dims.map((d) => (d.type === 'dimension' ? { ...d, style: ds } : d)));
+        ed.doc.replaceEntities(dims.map((d) => (d.type === 'dimension' ? { ...d, style: ds, styleOverrides: undefined } : d)));
         ctx.log(`${dims.length} dimension(s) updated to style ${ds.name}.`);
         return;
       }

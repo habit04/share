@@ -40,6 +40,7 @@ import { importViewportView } from './viewport-view';
 export interface DxfSink {
   pair(code: number, value: string | number): void;
   nextHandle(): string;
+  reserveEntityHandle(entity: Entity): string;
 }
 
 interface Pair {
@@ -90,7 +91,7 @@ export function planLayouts(state: LayoutHost, w: DxfSink, paperSpaceRecord: str
     records,
     modelLayout: w.nextHandle(),
     dictionary: w.nextHandle(),
-    entities: layouts.flatMap((l) => [...l.entities]),
+    entities: layouts.flatMap((l) => [...l.entities, ...l.viewports.flatMap((v) => v.clipBoundary ? [v.clipBoundary] : [])]),
     paperOwners: new Set(records.map((r) => r.blockRecord)),
   };
   return plan;
@@ -113,7 +114,7 @@ export function layoutHandleOf(plan: LayoutPlan, blockRecord: string, modelRecor
   return plan.records.find((r) => r.blockRecord === blockRecord)?.handle;
 }
 
-function writeViewport(w: DxfSink, owner: string, v: { center: Point; width: number; height: number; viewCenter: Point; viewHeight: number; twist?: number; layer: string; status: number; id: number; flags: number; frozen: string[] }): string {
+function writeViewport(w: DxfSink, owner: string, v: { center: Point; width: number; height: number; viewCenter: Point; viewHeight: number; twist?: number; layer: string; status: number; id: number; flags: number; frozen: string[]; clipHandle?: string }): string {
   const h = w.nextHandle();
   w.pair(0, 'VIEWPORT');
   w.pair(5, h);
@@ -152,6 +153,7 @@ function writeViewport(w: DxfSink, owner: string, v: { center: Point; width: num
   w.pair(72, 1000);
   for (const f of v.frozen) w.pair(331, f);
   w.pair(90, v.flags);
+  if (v.clipHandle) w.pair(340, v.clipHandle);
   w.pair(1, '');
   w.pair(281, 0);
   w.pair(71, 1);
@@ -194,6 +196,11 @@ export function writeLayoutContent(w: DxfSink, rec: LayoutRecord, writeEntity: (
     frozen: [],
   });
   lay.viewports.forEach((v, i) => {
+    if (v.clipBoundary && !supportedViewportClip(v.clipBoundary)) throw new Error('Cannot save an invalid or curved viewport clip boundary.');
+    // Layout/viewport copies may share immutable source geometry. Each emitted boundary
+    // needs its own handle and owner, even when its source object is shared.
+    const boundary = v.clipBoundary ? { ...v.clipBoundary } : undefined;
+    const clipHandle = boundary ? w.reserveEntityHandle(boundary) : undefined;
     const frozen = (v.frozenLayers ?? []).map((n) => layerHandles.get(n)).filter((h): h is string => !!h);
     const twist = viewTwist(v.view) % (2 * Math.PI);
     const cos = Math.cos(twist), sin = Math.sin(twist);
@@ -208,9 +215,11 @@ export function writeLayoutContent(w: DxfSink, rec: LayoutRecord, writeEntity: (
       layer: v.layer,
       status: v.on ? i + 2 : 0,
       id: i + 2,
-      flags: 32768 | 32 | (v.view.locked ? VP_LOCKED : 0) | (v.on ? 0 : VP_OFF),
+      flags: 32768 | 32 | (v.view.locked ? VP_LOCKED : 0) | (v.on ? 0 : VP_OFF) | (clipHandle && v.clipOn !== false ? VP_NONRECT_CLIP : 0),
       frozen,
+      clipHandle,
     });
+    if (boundary) writeEntity(boundary, rec.blockRecord);
   });
   for (const e of lay.entities) writeEntity(e, rec.blockRecord);
 }
@@ -346,6 +355,18 @@ const before = (o: Obj, subclass: string): Obj => {
 /** VIEWPORT 90 flag: clipped by a non-rectangular boundary (group 340). */
 const VP_NONRECT_CLIP = 65536;
 
+function supportedViewportClip(entity: Entity): entity is import('../core/entities').PolylineEntity {
+  if (entity.type !== 'polyline' || !entity.closed || entity.filled || entity.widthFrame || entity.points.length < 3 || entity.points.length > 8192 || entity.bulges?.some((b) => b !== 0)) return false;
+  if (!entity.points.every((p) => Number.isFinite(p.x) && Number.isFinite(p.y))) return false;
+  const origin = entity.points[0]!;
+  let area = 0;
+  for (let i = 1; i < entity.points.length - 1; i += 1) {
+    const a = entity.points[i]!, b = entity.points[i + 1]!;
+    area += (a.x - origin.x) * (b.y - origin.y) - (a.y - origin.y) * (b.x - origin.x);
+  }
+  return Number.isFinite(area) && Math.abs(area) > 1e-12;
+}
+
 /** Reads the entities of a layout; `where` names the layout for the import report. */
 export type LayoutEntityReader = (objs: Obj[], where: string) => Entity[];
 
@@ -464,6 +485,8 @@ export class LayoutReader {
     // The overall paper-space viewport has id 1 (else: the first VIEWPORT in the list).
     const overall = vps.find((o) => Math.trunc(num(o, 69)) === 1) ?? vps[0];
     const viewports: LayoutViewport[] = [];
+    const clipObjects = new Set<Obj>();
+    const byHandle = new Map(rest.map((o) => [str(o, 5).toUpperCase(), o]));
     for (const o of vps) {
       if (o === overall) continue;
       const v = after(o, 'AcDbViewport');
@@ -478,9 +501,6 @@ export class LayoutReader {
         continue;
       }
       const flags = Math.trunc(num(v, 90, 0));
-      if (flags & VP_NONRECT_CLIP || v.groups.some((x) => x.code === 340 && x.value.trim() !== '' && x.value.trim() !== '0')) {
-        this.report?.add({ ...item, action: 'simplified', reason: 'its clipping boundary is not kept: the viewport shows its whole rectangle' });
-      }
       const optionalNum = (code: number, fallback = 0) => v.groups.some((p) => p.code === code) ? num(v, code, NaN) : fallback;
       const degrees = optionalNum(51);
       const view = importViewportView(
@@ -497,6 +517,14 @@ export class LayoutReader {
         continue;
       }
       for (const reason of view.warnings) this.report?.add({ ...item, action: 'simplified', reason });
+      const clipHandle = str(v, 340).trim().toUpperCase();
+      const clipObject = clipHandle && clipHandle !== '0' ? byHandle.get(clipHandle) : undefined;
+      const boundary = clipObject?.kind === 'LWPOLYLINE' ? readEntities([clipObject], where)[0] : undefined;
+      const clipBoundary = boundary && supportedViewportClip(boundary) ? translateEntity(boundary, offset) as import('../core/entities').PolylineEntity : undefined;
+      if (clipBoundary && clipObject) clipObjects.add(clipObject);
+      else if (flags & VP_NONRECT_CLIP || clipHandle && clipHandle !== '0') {
+        this.report?.add({ ...item, action: 'simplified', reason: 'its clipping boundary is not a supported closed straight polyline: the viewport shows its whole rectangle; readable boundary geometry is kept' });
+      }
       const status = Math.trunc(num(v, 68, 1));
       const frozen = v.groups.filter((x) => x.code === 331).map((x) => this.layerNames.get(x.value.toUpperCase())).filter((x): x is string => !!x);
       viewports.push({
@@ -508,9 +536,10 @@ export class LayoutReader {
         layer: str(o, 8, '0'),
         on: status !== 0 && !(flags & VP_OFF),
         ...(frozen.length ? { frozenLayers: frozen } : {}),
+        ...(clipBoundary ? { clipBoundary, ...(!(flags & VP_NONRECT_CLIP) ? { clipOn: false } : {}) } : {}),
       });
     }
-    const read = readEntities(rest, `layout "${base.name}"`);
+    const read = readEntities(rest.filter((o) => !clipObjects.has(o)), `layout "${base.name}"`);
     const entities = offset.x || offset.y ? read.map((e) => translateEntity(e, offset)) : read;
     return { ...base, entities, viewports };
   }

@@ -860,7 +860,7 @@ export function matchProperties(source: Entity, target: Entity): Entity {
   if (source.type === 'mtext' && out.type === 'mtext') out = { ...out, height: source.height, lineSpacing: source.lineSpacing };
   if (source.type === 'text' && out.type === 'mtext') out = { ...out, height: source.height };
   if (source.type === 'mtext' && out.type === 'text') out = { ...out, height: source.height };
-  if (source.type === 'dimension' && out.type === 'dimension') out = { ...out, style: source.style };
+  if (source.type === 'dimension' && out.type === 'dimension') out = { ...out, style: source.style, styleOverrides: source.styleOverrides };
   if (source.type === 'polyline' && out.type === 'polyline') out = { ...out, width: source.width };
   return out;
 }
