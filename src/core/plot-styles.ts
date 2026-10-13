@@ -23,6 +23,7 @@ export interface PlotStyleEntry {
   readonly linepatternSize: number;
   readonly linetype: number;
   readonly adaptiveLinetype: boolean;
+  /** 0 uses object lineweight; N > 0 addresses native lineweightsMm[N - 1]. */
   readonly lineweightIndex: number;
   readonly fillStyle: number;
   readonly endStyle: number;
@@ -34,7 +35,7 @@ export interface PlotStyleTable {
   readonly kind: 'ctb' | 'stb';
   readonly description: string;
   readonly styles: readonly PlotStyleEntry[];
-  /** Native table values are always millimetres, even with inch display units. Index 0 means object. */
+  /** Native table values are always millimetres, even with inch display units. */
   readonly lineweightsMm: readonly number[];
   readonly scaleFactor: number;
   readonly applyFactor: boolean;
@@ -66,14 +67,13 @@ const OBJECT_COLORS = new Set([-1, -1006632961, 0xffffffff, 0xc3ffffff]);
 
 /** Decode supported native RGB colour words. Unknown colour models are preserved and reported. */
 function styleRgb(style: PlotStyleEntry): readonly [number, number, number] | null | undefined {
-  // The native object's colour sentinels take priority even when mode_color is present.
-  // mode_color carries the actual RGB only for an explicit colour override.
-  if (OBJECT_COLORS.has(style.color)) return null;
-  const color = style.modeColor ?? style.color;
-  if (OBJECT_COLORS.has(color)) return undefined;
+  // A native initialized mode word is authoritative, including its object-colour sentinel.
+  // FFffffff (-1) is an uninitialized mode word and falls back to the legacy colour field.
+  const initializedMode = style.modeColor !== undefined && style.modeColor !== -1 && style.modeColor !== 0xffffffff;
+  const color = initializedMode ? style.modeColor! : style.color;
+  if (OBJECT_COLORS.has(color)) return null;
   const tag = color >>> 24;
-  // Native older CTBs use FF; newer mode_color values and STBs use C2/C3 RGB words.
-  if (tag !== 0xff && tag !== 0xc2 && tag !== 0xc3) return undefined;
+  if (initializedMode ? tag !== 0xc2 && tag !== 0xc3 : tag !== 0xff || !(style.colorPolicy & 4)) return undefined;
   return [((color >>> 16) & 255) / 255, ((color >>> 8) & 255) / 255, (color & 255) / 255];
 }
 
@@ -99,26 +99,37 @@ export function resolvePlotStyle(
     style = table.styles[object.aci! - 1];
   } else {
     const name = object.plotStyleName ?? 'Normal';
-    style = table.styles.find((entry) => entry.name === name);
+    const matches = table.styles.filter((entry) => entry.name === name || entry.localizedName === name);
+    if (matches.length > 1) return unchanged([{ path: 'object.plotStyleName', message: `Named plot style ${JSON.stringify(name)} has ambiguous aliases; object properties are used.` }]);
+    style = matches[0];
     if (!style) return unchanged([{ path: 'object.plotStyleName', message: `Named plot style ${JSON.stringify(name)} is absent; object properties are used.` }]);
     // Normal is immutable in native STBs and never overrides object properties.
     if (style.index === 0) return unchanged([...table.issues, ...style.issues]);
   }
   if (!style) return unchanged([{ path: 'plot_style', message: 'Requested plot style is absent; object properties are used.' }]);
   const issues = [...table.issues, ...style.issues];
+  const lineweightMm = options.plotLineweights === false ? 0 : style.lineweightIndex === 0 ? object.lineweightMm : table.lineweightsMm[style.lineweightIndex - 1]!;
+  const initializedMode = style.modeColor !== undefined && style.modeColor !== -1 && style.modeColor !== 0xffffffff;
+  const conflictingPolicy = style.colorPolicy === 6 || style.colorPolicy === 7 || style.colorPolicy === 1 && initializedMode && !OBJECT_COLORS.has(style.modeColor!);
+  if (conflictingPolicy) {
+    issues.push({ path: `plot_style.${style.index}.color_policy`, message: 'Conflicting native colour-policy/mode combination is retained; object colour is used.' });
+    return { rgb: object.rgb, lineweightMm, applied: true, styleName: style.name, issues };
+  }
   const override = styleRgb(style);
   let rgb = override ?? object.rgb;
-  if (override === undefined) issues.push({ path: `plot_style.${style.index}.color`, message: 'Unsupported plot colour model; object colour is used.' });
+  if (override === undefined) {
+    issues.push({ path: `plot_style.${style.index}.color`, message: 'Unsupported plot colour model; object colour is used.' });
+    return { rgb: object.rgb, lineweightMm, applied: true, styleName: style.name, issues };
+  }
   if (style.colorPolicy & 2) {
-    const y = 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2];
+    const y = (Math.floor(0.299 * Math.round(rgb[0] * 255)) + Math.floor(0.587 * Math.round(rgb[1] * 255)) + Math.floor(0.114 * Math.round(rgb[2] * 255))) / 255;
     rgb = [y, y, y];
   }
-  // Autodesk documents that screening requires dithering. PDF/Canvas retain continuous colour;
-  // physical pen-device palette quantisation is a separate, reported capability.
-  if (style.colorPolicy & 1 && style.screening !== 100) {
+  // Native PDF evidence applies screening with dithering disabled too. Physical pen-device
+  // palette quantisation remains a separate reported capability.
+  if (style.screening !== 100) {
     const s = style.screening / 100;
-    rgb = [1 - (1 - rgb[0]) * s, 1 - (1 - rgb[1]) * s, 1 - (1 - rgb[2]) * s];
+    rgb = rgb.map((c) => (255 - Math.floor((255 - Math.round(c * 255)) * s)) / 255) as [number, number, number];
   }
-  const lineweightMm = options.plotLineweights === false ? 0 : style.lineweightIndex === 0 ? object.lineweightMm : table.lineweightsMm[style.lineweightIndex]!;
   return { rgb, lineweightMm, applied: true, styleName: style.name, issues };
 }

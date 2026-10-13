@@ -167,7 +167,7 @@ describe('bounded native plot style tables', () => {
 
 describe('per-object plot style subset', () => {
   it('selects ACI 1 and 255 after inheritance resolution and leaves unmodified object styles intact', async () => {
-    const table = await read({ entries: { 0: { color: '-16777216', color_policy: '5', lineweight: '2' }, 254: { color: String(0xc20000ff | 0) } } });
+    const table = await read({ entries: { 0: { color: '-16777216', color_policy: '5', lineweight: '3' }, 254: { mode_color: String(0xc20000ff | 0), color_policy: '5' } } });
     expect(resolvePlotStyle(table, object)).toMatchObject({ rgb: [0, 0, 0], lineweightMm: 0.5, applied: true });
     expect(resolvePlotStyle(table, { ...object, aci: 255 }).rgb).toEqual([0, 0, 1]);
     expect(resolvePlotStyle(table, { ...object, aci: 2 })).toMatchObject({ rgb: [1, 0, 0], lineweightMm: 0.18 });
@@ -175,7 +175,7 @@ describe('per-object plot style subset', () => {
   });
 
   it('bypasses CTB for explicit and inherited TrueColor instead of guessing an ACI from RGB', async () => {
-    const table = await read({ entries: { 0: { color: '-16777216', lineweight: '2' } } });
+    const table = await read({ entries: { 0: { mode_color: String(0xc2000000 | 0), color_policy: '5', lineweight: '3' } } });
     const explicit = { rgb: [1, 0, 0] as const, lineweightMm: 0.35 };
     const inherited = { rgb: [1, 0, 0] as const, lineweightMm: 0.7 };
     expect(resolvePlotStyle(table, explicit)).toMatchObject({ ...explicit, applied: false });
@@ -184,10 +184,10 @@ describe('per-object plot style subset', () => {
   });
 
   it('honours mode_color over a legacy approximation, and both native object-colour sentinels', async () => {
-    const table = await read({ entries: { 0: { color: '-16777216', mode_color: String(0xc2ff0000 | 0) }, 1: { color: '-1006632961', mode_color: '-1' }, 2: { color: '-1', mode_color: String(0xc2ff0000 | 0) } } });
+    const table = await read({ entries: { 0: { color: '-16777216', mode_color: String(0xc2ff0000 | 0), color_policy: '5' }, 1: { color: '-1006632961', mode_color: '-1' }, 2: { color: '-1', mode_color: String(0xc2ff0000 | 0), color_policy: '5' } } });
     expect(resolvePlotStyle(table, object).rgb).toEqual([1, 0, 0]);
     expect(resolvePlotStyle(table, { ...object, aci: 2, rgb: [0, 0, 1] }).rgb).toEqual([0, 0, 1]);
-    expect(resolvePlotStyle(table, { ...object, aci: 3, rgb: [0, 1, 0] }).rgb).toEqual([0, 1, 0]);
+    expect(resolvePlotStyle(table, { ...object, aci: 3, rgb: [0, 1, 0] }).rgb).toEqual([1, 0, 0]);
   });
 
   it('retains and reports named-colour policy while applying the available native RGB override', async () => {
@@ -196,20 +196,47 @@ describe('per-object plot style subset', () => {
     expect(resolvePlotStyle(table, object)).toMatchObject({ rgb: [0, 0, 0], issues: [{ path: 'plot_style.0.color_policy' }] });
   });
 
-  it('converts grayscale before screening, includes 0/100 endpoints and respects dithering', async () => {
+  it('matches native 8-bit grayscale/screen rounding and applies screening even with dithering off', async () => {
     const table = await read({ entries: { 0: { color_policy: '3', screen: '50' }, 1: { screen: '0' }, 2: { screen: '0', color_policy: '0' } } });
-    expect(resolvePlotStyle(table, object).rgb[0]).toBeCloseTo(0.6495);
-    expect(resolvePlotStyle(table, object).rgb[1]).toBeCloseTo(0.6495);
+    expect(resolvePlotStyle(table, object).rgb[0]).toBe(166 / 255);
+    expect(resolvePlotStyle(table, object).rgb[1]).toBe(166 / 255);
     expect(resolvePlotStyle(table, { ...object, aci: 2 }).rgb).toEqual([1, 1, 1]);
-    expect(resolvePlotStyle(table, { ...object, aci: 3 })).toMatchObject({ rgb: [1, 0, 0], issues: [{ path: 'plot_style.2.color_policy' }] });
+    expect(resolvePlotStyle(table, { ...object, aci: 3 })).toMatchObject({ rgb: [1, 1, 1], issues: [{ path: 'plot_style.2.color_policy' }] });
     expect(resolvePlotStyle(table, { ...object, aci: 4 }).rgb).toEqual([1, 0, 0]);
   });
 
   it('uses named STB assignments independently of ACI and keeps Normal in colour', async () => {
-    const table = await read({ kind: 'stb', entries: { 1: { color: '-16777216', color_policy: '5', lineweight: '1' } } });
+    const table = await read({ kind: 'stb', entries: { 1: { color: '-16777216', color_policy: '5', lineweight: '2' } } });
     expect(resolvePlotStyle(table, object)).toMatchObject({ rgb: [1, 0, 0], lineweightMm: 0.18, applied: false });
     expect(resolvePlotStyle(table, { ...object, aci: undefined, plotStyleName: 'Style_1' })).toMatchObject({ rgb: [0, 0, 0], lineweightMm: 0.25, applied: true });
     expect(resolvePlotStyle(table, { ...object, plotStyleName: 'Missing' })).toMatchObject({ rgb: object.rgb, applied: false, issues: [{ path: 'object.plotStyleName' }] });
+  });
+
+  it('accepts native localized STB aliases and refuses ambiguous aliases without selecting a first row', async () => {
+    const source = await read({ kind: 'stb', count: 3, entries: {
+      1: { name: '"30%_Screen', localized_name: '"30% Screen', mode_color: String(0xc2000000 | 0), color_policy: '5', screen: '30' },
+      2: { name: '"Second', localized_name: '"30% Screen' },
+    } });
+    expect(resolvePlotStyle(source, { ...object, plotStyleName: '30%_Screen' }).rgb).toEqual([179 / 255, 179 / 255, 179 / 255]);
+    const result = resolvePlotStyle(source, { ...object, plotStyleName: '30% Screen' });
+    expect(result).toMatchObject({ rgb: object.rgb, applied: false });
+    expect(result.issues[0]?.message).toContain('ambiguous');
+    const unique = await read({ kind: 'stb', entries: { 1: { name: '"30%_Screen', localized_name: '"30% Screen', mode_color: String(0xc2000000 | 0), color_policy: '3', screen: '30' } } });
+    expect(resolvePlotStyle(unique, { ...object, plotStyleName: '30% Screen' }).rgb).toEqual([179 / 255, 179 / 255, 179 / 255]);
+  });
+
+  it('matches native Autodesk-Color STB object-mode 30/50 screening for TrueColor', async () => {
+    // Actual assigned native styles: stb-1791881246561/native-pdf-values.json.
+    const source = await read({ kind: 'stb', count: 3, entries: {
+      1: { color: '-1006632961', mode_color: '-1006632961', color_policy: '1', screen: '30' },
+      2: { color: '-1006632961', mode_color: '-1006632961', color_policy: '1', screen: '50' },
+    } });
+    const trueColor = { rgb: [18 / 255, 52 / 255, 86 / 255] as const, lineweightMm: 0.25 };
+    for (const [plotStyleName, expected] of [['Style_1', [184, 195, 205]], ['Style_2', [137, 154, 171]]] as const) {
+      const result = resolvePlotStyle(source, { ...trueColor, plotStyleName });
+      expect(result.rgb.map((value) => Math.round(value * 255))).toEqual(expected);
+      expect(result.issues.some((issue) => issue.message.startsWith('Conflicting'))).toBe(false);
+    }
   });
 
   it('reports authored Normal overrides instead of silently applying an invalid native STB default', async () => {
@@ -220,16 +247,57 @@ describe('per-object plot style subset', () => {
   });
 
   it('independently honours disabled plot styles and disabled lineweights', async () => {
-    const table = await read({ entries: { 0: { color: '-16777216', lineweight: '2' } } });
+    const table = await read({ entries: { 0: { mode_color: String(0xc2000000 | 0), color_policy: '5', lineweight: '3' } } });
     expect(resolvePlotStyle(table, object, { usePlotStyles: false })).toMatchObject({ rgb: object.rgb, lineweightMm: 0.18, applied: false });
     expect(resolvePlotStyle(table, object, { plotLineweights: false })).toMatchObject({ rgb: [0, 0, 0], lineweightMm: 0, applied: true });
     expect(resolvePlotStyle(table, object, { usePlotStyles: false, plotLineweights: false }).lineweightMm).toBe(0);
   });
 
-  it('retains nonzero native weight-table slot 0 and reports its ambiguity instead of rejecting the table', async () => {
-    const table = await read({ weights: [0.254, 0.05] });
+  it('uses one-based native weight selectors, including the final entry, with zero always meaning object', async () => {
+    const table = await read({ weights: [0.254, 0.05], entries: { 0: { lineweight: '0' }, 1: { lineweight: '1' }, 2: { lineweight: '2' } } });
     expect(table.lineweightsMm).toEqual([0.254, 0.05]);
-    expect(resolvePlotStyle(table, object)).toMatchObject({ lineweightMm: object.lineweightMm, issues: [{ path: 'custom_lineweight_table.0' }] });
+    expect(resolvePlotStyle(table, object)).toMatchObject({ lineweightMm: object.lineweightMm, issues: [] });
+    expect(resolvePlotStyle(table, { ...object, aci: 2 }).lineweightMm).toBe(0.254);
+    expect(resolvePlotStyle(table, { ...object, aci: 3 }).lineweightMm).toBe(0.05);
+    await expect(read({ weights: [0.254, 0.05], entries: { 0: { lineweight: '3' } } })).rejects.toThrow('lineweight');
+  });
+
+  it('keeps a native zero-valued table weight as a real hairline separate from object weight', async () => {
+    const table = await read({ weights: [0], entries: { 0: { lineweight: '1' } } });
+    expect(resolvePlotStyle(table, object).lineweightMm).toBe(0);
+    expect(resolvePlotStyle(table, { ...object, aci: 2 }).lineweightMm).toBe(0.18);
+  });
+
+  it('uses initialized mode_color even over a legacy object sentinel and supports authoritative object mode', async () => {
+    const table = await read({ entries: { 0: { color: '-1', mode_color: String(0xc20000ff | 0), color_policy: '5' }, 1: { color: '-16777216', mode_color: String(0xc3ffffff | 0), color_policy: '5' }, 2: { color: '-16777216', mode_color: '-1', color_policy: '5' } } });
+    expect(resolvePlotStyle(table, object).rgb).toEqual([0, 0, 1]);
+    expect(resolvePlotStyle(table, { ...object, aci: 2 }).rgb).toEqual(object.rgb);
+    expect(resolvePlotStyle(table, { ...object, aci: 3 }).rgb).toEqual([0, 0, 0]);
+  });
+
+  it('preserves unresolved legacy FF/policy1 colours and reports object fallback rather than guessing', async () => {
+    const table = await read({ entries: { 0: { color: '-16777216', color_policy: '1' } } });
+    expect(resolvePlotStyle(table, object)).toMatchObject({ rgb: object.rgb, issues: [{ path: 'plot_style.0.color' }] });
+    expect((table.raw.plot_style as Record<string, Record<string, string>>)[0]?.color).toBe('-16777216');
+  });
+
+  it('matches AutoCAD2027 PDF grayscale channel truncation and screened byte rounding', async () => {
+    // Independent native PDF results, not generated through this resolver: mode-gray rows
+    // native-1791880680464/native-pdf-values.json. Each weighted channel truncates separately.
+    const samples = [[18, 52, 86, 2, 100, [44, 44, 44]], [18, 52, 86, 3, 50, [150, 150, 150]],
+      [1, 2, 50, 2, 100, [6, 6, 6]], [5, 76, 93, 3, 100, [55, 55, 55]],
+      [251, 244, 15, 2, 100, [219, 219, 219]], [6, 55, 219, 5, 50, [131, 155, 237]]] as const;
+    const entries = Object.fromEntries(samples.map(([r, g, b, policy, screen], index) => [index, { mode_color: String((0xc2000000 | r << 16 | g << 8 | b) | 0), color_policy: String(policy), screen: String(screen) }]));
+    const source = await read({ entries });
+    samples.forEach(([, , , , , expected], index) => expect(resolvePlotStyle(source, { ...object, aci: index + 1 }).rgb.map((c) => Math.round(c * 255))).toEqual(expected));
+  });
+
+  it.each([1, 6, 7])('retains conflicting initialized native policy%s with explicit object-colour fallback', async (policy) => {
+    const source = await read({ entries: { 0: { mode_color: String(0xc2000000 | 0), color_policy: String(policy), screen: '50' } } });
+    const result = resolvePlotStyle(source, object);
+    expect(result.rgb).toEqual(object.rgb);
+    expect(result.issues.some((issue) => issue.message.startsWith('Conflicting native'))).toBe(true);
+    expect(source.styles[0]?.colorPolicy).toBe(policy);
   });
 
   it('reports unsupported active overrides while retaining original values and inactive entry diagnostics', async () => {

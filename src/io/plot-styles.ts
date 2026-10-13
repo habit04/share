@@ -150,7 +150,6 @@ function model(raw: PlotStyleRawSection, kind: 'ctb' | 'stb'): PlotStyleTable {
   const count = Object.keys(weights).length;
   if (!count || count > MAX_LINEWEIGHTS) fail('invalid lineweight table count');
   const lineweightsMm = Object.freeze(Array.from({ length: count }, (_, index) => numeric(weights, String(index), 'custom_lineweight_table', 0, 100, false, issues)));
-  if (lineweightsMm[0] !== 0) issues.push({ path: 'custom_lineweight_table.0', message: 'Nonzero reserved lineweight-table entry is retained; style index 0 still uses object lineweight.' });
   const sourceStyles = denseSections(section(raw, 'plot_style', 'table'), kind === 'ctb' ? 255 : MAX_STYLES, 'plot_style');
   if (kind === 'ctb' && sourceStyles.length !== 255) fail('CTB must have 255 dense ACI entries');
   let aciNames: readonly string[] | undefined;
@@ -180,7 +179,7 @@ function model(raw: PlotStyleRawSection, kind: 'ctb' | 'stb'): PlotStyleTable {
       linepatternSize: num('linepattern_size', 0.000001, 1000000, false),
       linetype: num('linetype', 0, 31),
       adaptiveLinetype: booleanValue(source, 'adaptive_linetype', path),
-      lineweightIndex: num('lineweight', 0, lineweightsMm.length - 1),
+      lineweightIndex: num('lineweight', 0, lineweightsMm.length),
       fillStyle: num('fill_style', 64, 73),
       endStyle: num('end_style', 0, 4),
       joinStyle: num('join_style', 0, 5),
@@ -192,7 +191,7 @@ function model(raw: PlotStyleRawSection, kind: 'ctb' | 'stb'): PlotStyleTable {
       ['end_style', entry.endStyle !== 4], ['join_style', entry.joinStyle !== 5],
       ['adaptive_linetype', !entry.adaptiveLinetype], ['linepattern_size', entry.linepatternSize !== 0.5],
     ] as const) if (overridden) entryIssues.push({ path: `${path}.${key}`, message: 'Plot style override is retained but is not applied by the supported colour/lineweight subset.' });
-    if (!(entry.colorPolicy & 1)) entryIssues.push({ path: `${path}.color_policy`, message: 'Device palette quantisation with dithering disabled is not simulated; screening remains disabled.' });
+    if (!(entry.colorPolicy & 1)) entryIssues.push({ path: `${path}.color_policy`, message: 'Device palette quantisation with dithering disabled is not simulated.' });
     if (entry.colorPolicy & 4) entryIssues.push({ path: `${path}.color_policy`, message: 'Named colour policy is retained; colour-book/device-specific treatment is not implemented.' });
     if (kind === 'stb' && index === 0 && (
       ![-1, -1006632961, 0xffffffff, 0xc3ffffff].includes(entry.color) || entry.colorPolicy !== 1 ||
