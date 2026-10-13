@@ -205,6 +205,12 @@ class FakeWorker implements WorkerLike {
     const msg = structuredClone(message, { transfer });
     this.posted.push({ msg, transfer });
     if (this.mode === 'hang' || this.mode === 'silent') return;
+    if (this.mode === 'manual') {
+      // Answer at once with a unit cube (no WebAssembly, so timing does not depend on machine load).
+      const cubeMesh = packMesh(boxMesh(1, 1, 1));
+      queueMicrotask(() => this.emit({ id: msg.id, ok: true, positions: cubeMesh.positions, indices: cubeMesh.indices }, [cubeMesh.positions.buffer, cubeMesh.indices.buffer]));
+      return;
+    }
     if (this.mode === 'crash') { setTimeout(() => this.fail('RuntimeError: memory access out of bounds'), 0); return; }
     if (this.mode === 'messageerror') { setTimeout(() => { if (!this.terminated) this.onmessageerror?.(new MessageEvent('messageerror')); }, 0); return; }
     if (this.mode === 'reverse') {
@@ -301,9 +307,39 @@ describe('Manifold worker kernel transport', () => {
     expect(other.code).toBe('timeout');
     expect(other.message).toMatch(/restarted after an earlier operation timed out/);
     expect(workers[0]!.terminated).toBe(true);
-    const m = await k.boolean('union', cube(), cube(0.5));
+    // The next call starts a fresh worker. Generous timeout: the fake runs the real Manifold
+    // in-process (a WebAssembly instantiation per reply), which can take tens of ms under load.
+    const m = await k.boolean('union', cube(), cube(0.5), { timeoutMs: 10_000 });
     expect(meshVolume(m)).toBeCloseTo(1.5, 9);
     expect(workers).toHaveLength(2);
+    k.dispose();
+  });
+
+  it('after a timeout the fresh worker goes through the ready gate, and start-up does not count toward the timeout', async () => {
+    const { k, workers } = fakeKernel(['manual', 'manual'], { timeoutMs: 30 });
+    // Never answered: the first worker is made busy by swallowing its requests.
+    const first = k.boolean('union', cube(), cube(0.5));
+    const second = k.boolean('union', cube(), cube(0.5), { timeoutMs: 10_000 });
+    expect(workers[0]!.posted).toHaveLength(0); // queued until ready
+    const w0 = workers[0]!;
+    w0.postMessage = (message) => { w0.posted.push({ msg: message, transfer: [] }); };
+    w0.readyNow();
+    expect(w0.posted.map((p) => p.msg.id)).toEqual([1, 2]);
+    expect((await rejection(first)).message).toMatch(/took longer than/);
+    expect((await rejection(second)).message).toMatch(/restarted after an earlier operation timed out/);
+    expect(w0.terminated).toBe(true);
+    // The next call waits for the new worker's ready (posted nothing yet), longer than its own
+    // 30 ms timeout without timing out, and succeeds once the worker is ready.
+    let settled = false;
+    const third = k.boolean('union', cube(), cube(0.5));
+    void third.then(() => { settled = true; }, () => { settled = true; });
+    expect(workers).toHaveLength(2);
+    await new Promise((r) => setTimeout(r, 80));
+    expect(settled).toBe(false);
+    expect(workers[1]!.posted).toHaveLength(0);
+    workers[1]!.readyNow();
+    expect(workers[1]!.posted).toHaveLength(1);
+    expect(meshVolume(await third)).toBe(1);
     k.dispose();
   });
 
@@ -400,7 +436,7 @@ describe('Manifold worker kernel transport', () => {
       expect(workers[0]!.posted).toHaveLength(0);
       workers[0]!.readyNow();
       expect(workers[0]!.posted).toHaveLength(1);
-      expect(meshVolume(await call)).toBeCloseTo(1.5, 9);
+      expect(meshVolume(await call)).toBe(1); // the manual fake answers with a unit cube
       k.dispose();
     }
   });
