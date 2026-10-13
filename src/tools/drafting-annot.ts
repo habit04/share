@@ -7,6 +7,7 @@ import * as g from '../core/geometry';
 import type { Entity, HatchEntity, LeaderEntity, TableEntity, TextEntity, MTextEntity, HatchLoop, MTextAttachment } from '../core/entities';
 import { newId, ellipsePoints, isFullEllipse, splinePoints, hatchGeometry } from '../core/entities';
 import { HATCH_PATTERNS, findPattern, loopPolygon, pointInLoops, polygonArea } from '../core/hatch';
+import { hasHatchGradient, hatchGradientRenderProblem } from '../core/hatch-gradient';
 import { newTable, cellAt, setCellText, TABLE_DEFAULTS } from '../core/table';
 import { mtextFromDxf, hasFormatting } from '../core/mtext';
 import { evaluateFields, acVarField, ACVAR_FIELDS, type FieldContext } from '../core/fields';
@@ -230,11 +231,30 @@ export function hatchEditTool(): Tool {
     ctx.selection = new Set();
     const opt = yield* keyword(ctx, 'Enter hatch option [Disassociate/Style/Properties/Origin] <Properties>:', ['Disassociate', 'Style', 'Properties', 'Origin'], 'Properties');
     if (opt === 'PROPERTIES') {
+      if (hasHatchGradient(h)) {
+        const gradient = h.gradient!;
+        const property = yield* keyword(ctx, 'Enter gradient option [Angle/Shift/Pattern] <Angle>:', ['Angle', 'Shift', 'Pattern'], 'Angle');
+        if (!property) return;
+        if (property !== 'PATTERN') {
+          const angle = property === 'ANGLE';
+          const value = yield* number(ctx, angle ? 'Specify gradient angle in degrees:' : 'Specify gradient shift (0 to 1):', angle ? g.deg(gradient.angle) : gradient.shift, { allowZero: true, allowNegative: angle, from: null });
+          if (!value || !('value' in value)) return;
+          if (!angle && (value.value < 0 || value.value > 1)) { ctx.log('Gradient shift must be between 0 and 1.'); return; }
+          const updated = { ...gradient, ...(angle ? { angle: g.rad(value.value) } : { shift: value.value }) };
+          ctx.doc.replaceEntities([{ ...h, gradient: updated, gradientFrame: undefined }]);
+          const problem = hatchGradientRenderProblem(updated);
+          if (problem) ctx.log(`${problem}; settings are retained and a solid fill is displayed.`);
+          return;
+        }
+      }
       const p = yield* patternProperties(ctx, { pattern: h.solid ? 'SOLID' : h.pattern, scale: h.scale, angle: g.deg(h.angle) });
       if (!p) return;
       const solid = p.pattern === 'SOLID';
+      if (h.gradient && !solid) { ctx.log('Native DXF cannot retain gradient settings on a pattern hatch; the hatch is unchanged. Choose SOLID to retain inactive gradient data.'); return; }
       const { patternLines: _drop, ...rest } = h;
-      ctx.doc.replaceEntities([{ ...rest, pattern: p.pattern, solid, scale: p.scale, angle: g.rad(p.angle), patternType: 1 }]);
+      ctx.doc.replaceEntities([{ ...rest, pattern: p.pattern, solid, scale: p.scale, angle: g.rad(p.angle), patternType: 1,
+        ...(h.gradient ? { gradient: { ...h.gradient, kind: 0 }, gradientFrame: undefined } : {}) }]);
+      if (h.gradient) ctx.log('Hatch pattern changed; previous gradient settings are retained as inactive data.');
     } else if (opt === 'ORIGIN') {
       const o = yield* point(ctx, 'Specify origin point:');
       if (o) ctx.doc.replaceEntities([{ ...h, origin: o }]);
