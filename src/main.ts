@@ -47,9 +47,12 @@ import { renderSettings, clearImageCache } from './render/draw';
 import { bridgeImageLoader } from './render/images';
 import { installOpenProgress, type OpenProgressBridge } from './ui/open-progress';
 import { registerDwgExportCommand } from './app/export-dwg';
+import { installExperimental3d } from './app/experimental-3d';
 
 declare global {
   interface Window {
+    /** Experimental 3D debug handle (src/app/experimental-3d.ts); set only when the flag is on. */
+    jcad3d?: import('./app/experimental-3d').Experimental3d;
     jcad?: {
       openDxf(): Promise<{ path: string; text: string } | null>;
       openDrawing(file?: string): Promise<import('./app/editor').OpenResult | null>;
@@ -508,6 +511,9 @@ function boot(): void {
     symbolBuilder: createSymbolBuilderUi(editor, document.getElementById('symbol-builder')!),
     importReport: (report, fileName) => importReportDialog(report, fileName),
   };
+
+  // Experimental 3D (inert unless Options > Experimental > 3D modelling was on at startup).
+  installExperimental3d(editor);
 
   // ------------------------------------------------------------ chrome
   buildTitleBar(editor, document.getElementById('titlebar')!, (anchor) => showAppMenu(editor, anchor, { exit: () => (window.jcad?.quit ? window.jcad.quit() : window.close()) }));
