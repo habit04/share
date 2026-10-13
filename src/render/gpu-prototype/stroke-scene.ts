@@ -12,6 +12,7 @@ import { expandControlCodes, glyphFor, hasStrokeFont, strokeText, strokeTextWidt
 import type { Gpu2DOverlay, Gpu2DView } from './geometry2d';
 import { canvasArcAdmission } from './arc-admission';
 import { assertPrimitiveStrokePrecision, assertStrokePathPrecision, canvasPolylineStrokeProblem } from './stroke-parity';
+import { sourcePrecisionCertificateError, sourceTopologyAdmissionError } from './stroke-precision-error';
 
 export type LocalStrokeEntity = LineEntity | PolylineEntity | CircleEntity | ArcEntity;
 /** All coordinates are world doubles relative to the copied camera anchor. */
@@ -113,7 +114,7 @@ function primitiveProblem(entity: Entity, state: DrawingState): string | null {
     }
     case 'polyline': {
       const strokeProblem = canvasPolylineStrokeProblem(entity);
-      if (strokeProblem) return `${strokeProblem} (${entity.id})`;
+      if (strokeProblem) throw sourceTopologyAdmissionError(`${strokeProblem} (${entity.id})`);
       const problem = polylineWidthProblem(entity);
       if (problem) return `${problem} (${entity.id})`;
       return entity.filled || entity.widthFrame || (entity.width ?? 0) !== 0 || entity.widths?.some((width) => width.start !== 0 || width.end !== 0)
@@ -197,7 +198,7 @@ export function lowerStrokeScene(state: DrawingState, view: Gpu2DView, overlay: 
         // existing double-subtraction proof without any added origin restriction.
         const constructionMagnitude = pointMagnitude(insert.position) + 2 * insert.scale * (pointMagnitude(block.basePoint) + sourceCoordinateMagnitude(child));
         const precisionProblem = canvasWorldCoordinatePrecisionProblem(constructionMagnitude, view, maxRatio, 16 * (chain.length + 1));
-        if (precisionProblem) throw new Error(`${precisionProblem} in INSERT (${insert.id})`);
+        if (precisionProblem) throw sourcePrecisionCertificateError(`${precisionProblem} in INSERT (${insert.id})`);
         if (child.type === 'insert' || child.type === 'text' || child.type === 'line' || child.type === 'polyline' || child.type === 'circle' || child.type === 'arc') {
           const moved = similarityTransform(child, transform, insert.rotation, insert.scale);
           if (moved.type === 'insert') preflightInsert(moved, [...chain, insert.block]);
@@ -254,7 +255,7 @@ export function lowerStrokeScene(state: DrawingState, view: Gpu2DView, overlay: 
         const magnitude = Math.max(Math.abs(canvasPlaced.position.x), Math.abs(canvasPlaced.position.y)) + maxX * Math.max(Math.abs(b[0]), Math.abs(b[2])) + maxY * Math.max(Math.abs(b[1]), Math.abs(b[3]));
         const rounding = placeholder ? 0 : magnitude * Number.EPSILON * 8;
         const physical = (Math.max(tc * dx + ts * dy, ts * dx + tc * dy) + rounding) * view.scale * maxRatio * view.dpr;
-        if (!Number.isFinite(physical) || physical > CANVAS_WORLD_PIXEL_ERROR) throw new Error(`Canvas world-coordinate quantization exceeds TEXT precision budget (${source.id})`);
+        if (!Number.isFinite(physical) || physical > CANVAS_WORLD_PIXEL_ERROR) throw sourcePrecisionCertificateError(`Canvas world-coordinate quantization exceeds TEXT precision budget (${source.id})`);
       };
       if (px < QTEXT_PIXELS) {
         // Keep every reused frame strictly on this side of Canvas's '< 2.5' decision.
@@ -353,7 +354,7 @@ export function lowerStrokeScene(state: DrawingState, view: Gpu2DView, overlay: 
         else if (leaf.type === 'line' || leaf.type === 'polyline' || leaf.type === 'circle' || leaf.type === 'arc') {
           countPoints(leaf.type === 'polyline' ? leaf.points.length : 2);
           const entity = localEntity(leaf, local);
-          if (owner.type === 'insert' || leaf.type === 'polyline' && leaf.bulges?.some((bulge) => Math.abs(bulge) >= 1e-12)) assertPrimitiveStrokePrecision(entity, canvasLeaf as LocalStrokeEntity, widthCss, view, maxRatio);
+          if (owner.type === 'insert' || leaf.type === 'polyline' || leaf.type === 'line') assertPrimitiveStrokePrecision(entity, canvasLeaf as LocalStrokeEntity, widthCss, view, maxRatio);
           paths = [{ kind: 'entity', entity }];
         } else throw new Error(`Unsupported entity: ${leaf.type} (${leaf.id})`);
         operations.push({ ownerId: owner.id, sourceId: leaf.id, paintId: `${owner.id}:${operations.length}`, paths, color: rgb(resolveColor(leaf, state.layers)), widthCss, alpha: selected || hovered ? 0.95 : 1 });

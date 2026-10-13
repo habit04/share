@@ -56,7 +56,7 @@ beforeEach(() => vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'perf
 afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe('bounded admission deferral after a measured slow immutable stroke-budget refusal', () => {
-  it('keeps exact refusal hits but freshly admits the latest drawing/view/overlay once after idle', () => {
+  it.each([0.2, 0])('keeps exact refusal hits and freshly evaluates the latest idle request at twist %s', (twist) => {
     const prepare = slowRefusalOnce();
     let currentState = scene(), currentView = view, currentOverlay = overlay;
     const completed: Gpu2DRenderResult[] = [];
@@ -74,13 +74,16 @@ describe('bounded admission deferral after a measured slow immutable stroke-budg
     // The owner must read present state when notified, even if it changed without a render.
     currentState = scene([{ ...line, b: { x: 3, y: 0 } }]);
     currentOverlay = { selection: new Set(['line']), solidSelection: true };
-    currentView = { ...currentView, center: { x: 0.2, y: 0.1 }, twist: 0.2 };
+    currentView = { ...currentView, center: { x: 0.2, y: 0.1 }, twist };
     vi.advanceTimersByTime(1);
-    expect(onChange).toHaveBeenCalledOnce(); expect(completed[0]).toMatchObject({ rendered: true, uploadKind: 'full' });
+    expect(onChange).toHaveBeenCalledOnce();
+    expect(completed[0]).toMatchObject(twist === 0 ? { rendered: true, uploadKind: 'full' } : { rendered: false, reason: 'Unsupported Canvas stroke construction: native context rotation is unproved', uploadKind: 'none', bytes: 0, uploadCalls: 0 });
     expect(prepare).toHaveBeenCalledTimes(2); expect(prepare.mock.calls[1]!.slice(0, 3)).toEqual([currentState, currentView, currentOverlay]);
-    expect(gl.bufferData).toHaveBeenCalledOnce(); expect(vi.getTimerCount()).toBe(0);
+    if (twist === 0) expect(gl.bufferData).toHaveBeenCalledOnce();
+    else for (const method of [gl.createShader, gl.createBuffer, gl.bufferData, gl.bufferSubData, gl.clear, gl.drawArrays]) expect(method).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
     vi.advanceTimersByTime(1000); expect(onChange).toHaveBeenCalledOnce();
-    expect(renderer.render(currentState, currentView, currentOverlay)).toMatchObject({ rendered: true, cacheHit: true, geometryPreparationMs: 0, uploadKind: 'none' });
+    expect(renderer.render(currentState, currentView, currentOverlay)).toMatchObject(twist === 0 ? { rendered: true, cacheHit: true, geometryPreparationMs: 0, uploadKind: 'none' } : { rendered: false, reason: 'Unsupported Canvas stroke construction: native context rotation is unproved', cacheReason: 'refusal-hit', geometryPreparationMs: 0, uploadKind: 'none', uploadCalls: 0 });
     renderer.dispose();
   });
 

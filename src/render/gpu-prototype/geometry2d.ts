@@ -9,6 +9,7 @@ import { colorDisplay, lineweightDisplay, resolveColor, resolveLineWidth } from 
 import { lowerStrokeScene, type LocalStrokePath, type LoweredStrokeScene, type StrokePaintOperation } from './stroke-scene';
 import { canvasArcAdmission } from './arc-admission';
 import { assertPrimitiveStrokePrecision, canvasPolylineStrokeProblem } from './stroke-parity';
+import { isSourcePrecisionCertificateError, sourceTopologyAdmissionError } from './stroke-precision-error';
 
 export interface Gpu2DView {
   width: number;
@@ -41,6 +42,9 @@ export const GPU_PAN_CACHE_BORDER = 128;
 /** A copied camera anchor owns this entire interval; crossing it prepares a new mesh. */
 export const GPU_ZOOM_CACHE_MIN_RATIO = 0.8;
 export const GPU_ZOOM_CACHE_MAX_RATIO = 1.25;
+/** Optional, proved zoom-IN interval for an entirely straight compiled scene. */
+export const GPU_STRAIGHT_ZOOM_CACHE_MAX_RATIO = 4;
+export interface ZoomPreparationOptions { readonly certifyStraightZoomIn?: boolean }
 export const GPU_ZOOM_VERTEX_STRIDE = 7;
 /** Optional edit metadata must not grow with arbitrarily large zero-vertex scenes. */
 export const GPU_EDIT_ENTITY_LIMIT = 100_000;
@@ -125,7 +129,10 @@ function arcPath(center: Point, radius: number, start: number, sweep: number, vi
 function entityPath(entity: Entity, view: Gpu2DView, curveScale = view.scale, pixelError = PIXEL_ERROR, strokeWidth = 0, onCurve?: (radius: number) => void): { points: Point[]; closed: boolean } {
   const local = (point: Point): Point => checked({ x: point.x - view.center.x, y: point.y - view.center.y });
   switch (entity.type) {
-    case 'line': return { points: [screenPoint(entity.a, view), screenPoint(entity.b, view)], closed: false };
+    case 'line': {
+      assertPrimitiveStrokePrecision({ ...entity, a: local(entity.a), b: local(entity.b) }, entity, strokeWidth, view, curveScale / view.scale);
+      return { points: [screenPoint(entity.a, view), screenPoint(entity.b, view)], closed: false };
+    }
     case 'circle': {
       const points = arcPath(local(entity.center), entity.radius, 0, Math.PI * 2, view, curveScale, pixelError, strokeWidth, false, onCurve);
       points.pop();
@@ -139,10 +146,11 @@ function entityPath(entity: Entity, view: Gpu2DView, curveScale = view.scale, pi
     case 'polyline': {
       // Rebase BEFORE bulgeArc computes its midpoint/center, preserving close-zoom arcs.
       const rebased: PolylineEntity = { ...entity, points: entity.points.map(local) };
+      // Native float path construction also affects straight original-vertex joins.
+      assertPrimitiveStrokePrecision(rebased, entity, strokeWidth, view, curveScale / view.scale);
       if (entity.bulges?.some((bulge) => Math.abs(bulge) >= 1e-12)) {
         // Native Canvas computes bulge centers at the source's world origin. Reserve
         // that construction difference, including cap directions, before tessellation.
-        assertPrimitiveStrokePrecision(rebased, entity, strokeWidth, view, curveScale / view.scale);
         pixelError = Math.min(pixelError, COMPILED_CURVE_PIXEL_ERROR);
       }
       const points: Point[] = rebased.points.length ? [projectLocal(rebased.points[0]!, view)] : [];
@@ -243,7 +251,7 @@ function styleProblem(entity: Entity, state: DrawingState): string | null {
   }
   if (entity.type === 'polyline') {
     const strokeProblem = canvasPolylineStrokeProblem(entity);
-    if (strokeProblem) return `${strokeProblem} (${entity.id})`;
+    if (strokeProblem) throw sourceTopologyAdmissionError(`${strokeProblem} (${entity.id})`);
     const problem = polylineWidthProblem(entity);
     if (problem) return `${problem} (${entity.id})`;
     if (entity.filled || entity.widthFrame || (entity.width ?? 0) !== 0 || entity.widths?.some((width) => width.start !== 0 || width.end !== 0)) return `Unsupported polyline width or fill (${entity.id})`;
@@ -490,6 +498,40 @@ function straightPathSize(source: LocalStrokePath): { points: number; closed: bo
   return null; // Curved paths are packed normally; never estimate their retained geometry.
 }
 
+function zoomFloatRangeSafe(view: Gpu2DView, extent: Point, padding: number, extrusion: number, maxRatio: number): boolean {
+  const magnitude = Math.max(extent.x, extent.y) * maxRatio + padding + Math.max(view.width, view.height) / 2 + extrusion;
+  return Number.isFinite(magnitude) && magnitude * 12 * 2 ** -23 * view.dpr <= ZOOM_FLOAT_PIXEL_ERROR;
+}
+
+/** The larger interval must include every original point, even discarded geometry.
+ * Check both ratio endpoints and both pan extrema before allocating triangle storage.
+ * A linear projection reaches its extrema at these corners of the certified interval.
+ */
+function straightSourceRangeSafe(operations: readonly StrokePaintOperation[], view: Gpu2DView, minRatio: number, maxRatio: number, padding: number): boolean {
+  const bound = (MAX_PROJECTED_COORDINATE - 1) / Math.max(1, view.dpr);
+  const c = Math.cos(view.twist), s = Math.sin(view.twist), halfX = view.width / 2, halfY = view.height / 2;
+  const within = (value: number): boolean => Number.isFinite(value) && Math.abs(value) <= bound;
+  const axisSafe = (center: number, half: number): boolean => within(center * minRatio - padding + half) && within(center * minRatio + padding + half) && within(center * maxRatio - padding + half) && within(center * maxRatio + padding + half);
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  const include = (point: Point): void => {
+    // Match the packer's add/subtract sequence without per-point scratch arrays.
+    const x = halfX + (point.x * c - point.y * s) * view.scale - halfX;
+    const y = halfY - (point.x * s + point.y * c) * view.scale - halfY;
+    minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+    minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+  };
+  for (const operation of operations) for (const source of operation.paths) {
+    if (source.kind === 'path') for (const point of source.points) include(point);
+    else if (source.entity.type === 'line') { include(source.entity.a); include(source.entity.b); }
+    else if (source.entity.type === 'polyline') for (const point of source.entity.points) include(point);
+    else return false;
+  }
+  if (minX === Infinity) return true; // Empty scene has no original source points.
+  // Positive ratios preserve source ordering. Four scene extrema certify all
+  // source points, avoiding a separate interval-corner test for every glyph point.
+  return axisSafe(minX, halfX) && axisSafe(maxX, halfX) && axisSafe(minY, halfY) && axisSafe(maxY, halfY);
+}
+
 /** A cheap upper bound avoids traversing admitted small scenes a second time. */
 function straightVerticesMayExceedBudget(operations: readonly StrokePaintOperation[]): boolean {
   let upperBound = 0;
@@ -529,23 +571,34 @@ export function compiledStraightVertexLowerBound(operations: readonly StrokePain
 }
 
 /** Compile ordered Canvas strokes, then share the tested zoom projection and stroke packing. */
-export function prepareCompiledZoom2D(state: DrawingState, view: Gpu2DView, overlay: Gpu2DOverlay, minRatio = GPU_ZOOM_CACHE_MIN_RATIO, maxRatio = GPU_ZOOM_CACHE_MAX_RATIO, padding = GPU_PAN_CACHE_BORDER / Math.max(1, view.dpr)): PreparedCompoundZoom2D {
+export function prepareCompiledZoom2D(state: DrawingState, view: Gpu2DView, overlay: Gpu2DOverlay, minRatio = GPU_ZOOM_CACHE_MIN_RATIO, maxRatio = GPU_ZOOM_CACHE_MAX_RATIO, padding = GPU_PAN_CACHE_BORDER / Math.max(1, view.dpr), options: ZoomPreparationOptions = {}): PreparedCompoundZoom2D {
   validateGpu2DView(view);
   if (!Number.isFinite(minRatio) || !Number.isFinite(maxRatio) || minRatio < GPU_ZOOM_CACHE_MIN_RATIO || minRatio > 1 || maxRatio < 1 || maxRatio > GPU_ZOOM_CACHE_MAX_RATIO) throw new Error('Invalid GPU zoom cache interval');
   if (!Number.isFinite(padding) || padding < 0 || padding > GPU_PAN_CACHE_BORDER / Math.max(1, view.dpr)) throw new Error('Invalid GPU pan cache border');
   // Nothing is uploaded or cleared until every visible expansion/font/style has passed.
-  const lowered = lowerStrokeScene(state, view, overlay, { minRatio, maxRatio });
+  const ordinaryMaxRatio = maxRatio;
+  // Strict (1,1,0) and custom requests preserve their existing admission contract.
+  const stronger = options.certifyStraightZoomIn === true && minRatio === GPU_ZOOM_CACHE_MIN_RATIO && maxRatio === GPU_ZOOM_CACHE_MAX_RATIO && padding === GPU_PAN_CACHE_BORDER / Math.max(1, view.dpr);
+  let lowered = lowerStrokeScene(state, view, overlay, { minRatio, maxRatio: stronger ? GPU_STRAIGHT_ZOOM_CACHE_MAX_RATIO : maxRatio });
+  // Only a factory-certified deliberate source precision failure may retry. A native
+  // exception with identical wording remains the original failure and is never hidden.
+  if (!lowered.ok && stronger && isSourcePrecisionCertificateError(lowered.cause)) lowered = lowerStrokeScene(state, view, overlay, { minRatio, maxRatio });
   if (!lowered.ok) throw new Error(lowered.reason, { cause: lowered.cause });
   minRatio = lowered.minRatio;
-  maxRatio = lowered.maxRatio;
+  const straight = stronger && lowered.operations.every((operation) => operation.paths.every((source) => straightPathSize(source) !== null));
+  // Native source checks covered the requested larger ratio; curves retain exactly
+  // their old envelope and tessellation density, even when stronger source checks pass.
+  maxRatio = straight ? lowered.maxRatio : Math.min(ordinaryMaxRatio, lowered.maxRatio);
   const extrusion = lowered.operations.reduce((maximum, operation) => Math.max(maximum, operation.widthCss * 5), 0);
   const guard = 1 / Math.max(1, view.dpr);
   const extent = {
     x: (view.width / 2 + padding + extrusion + guard) / minRatio,
     y: (view.height / 2 + padding + extrusion + guard) / minRatio,
   };
-  const magnitude = Math.max(extent.x, extent.y) * maxRatio + padding + Math.max(view.width, view.height) / 2 + extrusion;
-  if (!Number.isFinite(magnitude) || magnitude * 12 * 2 ** -23 * view.dpr > ZOOM_FLOAT_PIXEL_ERROR) throw new Error('GPU zoom geometry exceeds Float32 precision budget');
+  // Failure of either larger numeric certificate keeps the ordinary valid interval.
+  // The retained rectangle and straight mesh are independent of the upper ratio.
+  if (maxRatio > ordinaryMaxRatio && (!zoomFloatRangeSafe(view, extent, padding, extrusion, maxRatio) || !straightSourceRangeSafe(lowered.operations, view, minRatio, maxRatio, padding))) maxRatio = Math.min(ordinaryMaxRatio, lowered.maxRatio);
+  if (!zoomFloatRangeSafe(view, extent, padding, extrusion, maxRatio)) throw new Error('GPU zoom geometry exceeds Float32 precision budget');
   // Long readable labels can exceed the cap solely with retained straight strokes.
   // Count their exact emission before growing typed triangle storage. This is an
   // admission preflight only: successful packing/bounds/curve precision stay unchanged.
@@ -632,7 +685,7 @@ export function prepareCompiledZoom2D(state: DrawingState, view: Gpu2DView, over
 }
 
 /** Prepare one line at an existing scene's original anchor and retention rectangle. */
-export function prepareZoomLine(entity: LineEntity, state: DrawingState, anchor: Gpu2DView, overlay: Gpu2DOverlay, extent: Point): PreparedZoomLine {
+export function prepareZoomLine(entity: LineEntity, state: DrawingState, anchor: Gpu2DView, overlay: Gpu2DOverlay, extent: Point, maxRatio = GPU_ZOOM_CACHE_MAX_RATIO): PreparedZoomLine {
   validateGpu2DView(anchor);
   if (![extent.x, extent.y].every(Number.isFinite) || extent.x <= 0 || extent.y <= 0) throw new Error('Invalid GPU line retention extent');
   const problem = styleProblem(entity, state);
@@ -644,7 +697,7 @@ export function prepareZoomLine(entity: LineEntity, state: DrawingState, anchor:
   lineweightDisplay.pxPerMm = undefined;
   try {
     const style = zoomStrokeStyle(entity, state, anchor, overlay);
-    const path = entityPath(entity, anchor);
+    const path = entityPath(entity, anchor, anchor.scale * maxRatio, ZOOM_CURVE_PIXEL_ERROR, style.width);
     const { points, bounds } = zoomLocalPoints(path.points, anchor);
     const output: number[] = [];
     zoomStrokeTriangles(points, path.closed, style.width, style.color, extent, output);
@@ -705,6 +758,7 @@ function prepareZoomLines(state: DrawingState, view: Gpu2DView, styled: readonly
   const precisionBound = MAX_PROJECTED_COORDINATE / Math.max(1, view.dpr);
   let sourceIndex = 0;
   for (const { entity, color, width, alpha } of styled) {
+    assertPrimitiveStrokePrecision({ ...entity, a: { x: entity.a.x - view.center.x, y: entity.a.y - view.center.y }, b: { x: entity.b.x - view.center.x, y: entity.b.y - view.center.y } }, entity, width, view, maxRatio);
     const adx = entity.a.x - view.center.x, ady = entity.a.y - view.center.y;
     const bdx = entity.b.x - view.center.x, bdy = entity.b.y - view.center.y;
     // Keep screenPoint's addition and zoomLocalPoints's subtraction in their original
@@ -741,13 +795,13 @@ function prepareZoomLines(state: DrawingState, view: Gpu2DView, styled: readonly
  * normal/miter offsets stay in CSS pixels. A minimum-scale rectangle retains entering strokes,
  * and maximum-scale tessellation bounds curve error at every reused frame.
  */
-export function prepareZoom2D(state: DrawingState, view: Gpu2DView, overlay: Gpu2DOverlay, minRatio = GPU_ZOOM_CACHE_MIN_RATIO, maxRatio = GPU_ZOOM_CACHE_MAX_RATIO, padding = GPU_PAN_CACHE_BORDER / Math.max(1, view.dpr)): PreparedZoom2D {
+export function prepareZoom2D(state: DrawingState, view: Gpu2DView, overlay: Gpu2DOverlay, minRatio = GPU_ZOOM_CACHE_MIN_RATIO, maxRatio = GPU_ZOOM_CACHE_MAX_RATIO, padding = GPU_PAN_CACHE_BORDER / Math.max(1, view.dpr), options: ZoomPreparationOptions = {}): PreparedZoom2D {
   validateGpu2DView(view);
   if (!Number.isFinite(minRatio) || !Number.isFinite(maxRatio) || minRatio < GPU_ZOOM_CACHE_MIN_RATIO || minRatio > 1 || maxRatio < 1 || maxRatio > GPU_ZOOM_CACHE_MAX_RATIO) throw new Error('Invalid GPU zoom cache interval');
   if (!Number.isFinite(padding) || padding < 0 || padding > GPU_PAN_CACHE_BORDER / Math.max(1, view.dpr)) throw new Error('Invalid GPU pan cache border');
   const hidden = new Set(state.layers.filter((layer) => !layer.visible).map((layer) => layer.name));
   const visible = state.entities.filter((entity) => !hidden.has(entity.layer));
-  if (visible.some((entity) => entity.type === 'insert' || entity.type === 'text')) return prepareCompiledZoom2D(state, view, overlay, minRatio, maxRatio, padding);
+  if (visible.some((entity) => entity.type === 'insert' || entity.type === 'text')) return prepareCompiledZoom2D(state, view, overlay, minRatio, maxRatio, padding, options);
   // Validate every layer-visible entity before allowing any GPU submission, even offscreen.
   for (const entity of visible) {
     const problem = styleProblem(entity, state);

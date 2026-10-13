@@ -604,9 +604,17 @@ issuance and 172.1 ms workflow CPU at an envelope boundary; the maximum consecut
 rAF interval was 166.7 ms. This redraw-delay gate remains open. Complete long-label
 Canvas fallback avoided repeated preparation during those moving samples.
 
-NVIDIA, cached-process recovery/unavailability and exact published-head CI have
-not run for this checkpoint. Native timing and correctness must be repeated for
-the next clean producer after the harness and redraw-delay issues are resolved.
+NVIDIA and new-source cached-process recovery/unavailability have not run for
+this checkpoint. Published evidence head `a2eac656` subsequently failed exact CI:
+the [push run](https://github.com/habit04/share/actions/runs/38436234354) passed
+UI and Windows E2E but failed Node22, Node24 and GPU; the
+[PR run](https://github.com/habit04/share/actions/runs/38436377594) passed UI,
+Windows E2E and Node24 but failed Node22 and GPU. GPU failed the same dense
+edit-visibility assertion. Node failures were 5-second reopened DWG retained-graph
+clip save/export lifecycle timeouts; the active 2D owner has been notified.
+No timeout or correctness threshold has been relaxed. Native timing and
+correctness must be repeated for the next clean producer after these issues
+are resolved.
 
 Two additional Intel native audits used the unchanged compiled `9df70df0`
 assets, with current working source explicitly labelled modified. Asset hashes
@@ -638,6 +646,41 @@ certification must include native Float32 point/direction/join effects in the
 existing 0.0625 construction reserve, before admitting or reusing a mesh. Direct
 ARC/CIRCLE controls remain distinct. These gates block compound milestone
 acceptance and any production/default change, even if ordinary CI passes.
+
+A third Intel audit on the same unchanged compiled `9df70df0` assets confirmed
+a [fractional-DPR mapping defect](benchmarks/windows-gpu-9df-fractional-dpr-intel-audit.json). With logical CSS size 1218 x 551, synthetic
+DPR 1.25 and actual backing 1523 x 689, stable width-2.5 and width-16 strokes
+were displaced by 0.5 physical pixels relative to Canvas. Synthetic DPR 1.2
+(native Float32 coefficient 1.2000000476837158, backing 1462 x 661) displaced
+the same cases by about 0.40 pixels. Canvas matched an independent physical
+reference exactly. Width-1 repeat instability remains inconclusive. The actual
+window DPR was 1; these synthetic viewport tests do not claim Windows scale
+or multi-monitor coverage.
+
+The same audit found incomplete Canvas background coverage at the rounded
+backing edge: at DPR 1.25, final-column alpha accumulated 128, 192, 224, 240,
+248 across redraws, while GPU clear stayed opaque. This blocks full-view parity.
+The follow-up must use the native DPR coefficient and actual backing dimensions
+for GPU mapping, paint/clear the complete physical Canvas backing, and copy
+cached backing bitmaps without resampling. Source tests alone do not complete
+these native raster gates. Canvas remains the default throughout.
+
+The isolated repair candidate now includes those physical-backing changes,
+complete-view refusal for unproved bulged-polylines/native float topology,
+and an optional fourfold zoom-in cache interval for fully straight immutable
+compiled scenes. Every original point, native construction reserve, QTEXT
+transition and shader envelope is checked before that interval is retained;
+curves keep the ordinary interval. LINE edits certify the stored interval.
+The benchmark preserves original drawings and poses, selecting one deterministic
+visible LINE before timing and proving the same edit independently afterward.
+Full checks, native raster/performance, recovery and replacement exact-head CI
+remain pending for this candidate.
+
+The straight construction bounds target the pinned experimental
+Electron 44.7/Chromium 152/Skia path and assume its IEEE arithmetic. Actual binary
+lowering, rounding modes and every native CPU/GPU stroker dispatch have not been
+audited; runtime versions are not enforced by these helpers. These are limits
+on general production claims, not evidence of broad driver/browser coverage.
 
 ### NVIDIA validation on the pinned GPU source
 

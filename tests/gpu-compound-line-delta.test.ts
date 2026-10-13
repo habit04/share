@@ -94,20 +94,32 @@ describe('compiled source-owner LINE subrange edits', () => {
     renderer.dispose();
   });
 
-  it('preserves offscreen TEXT owner bounds after a visible LINE edit and refuses the next unsafe zoom before drawing', () => {
+  it('refuses the original Float32-collapsed remote TEXT before any LINE delta or GL submission', () => {
     const bound = 2 ** 36, unitView = { ...view, scale: 1, lineweights: false };
     const farText = text('far-text', { position: { x: bound - view.width / 2 - 10, y: 0 }, height: 1 });
+    const before = scene(line, { entities: [farText, line, owner] }), after = replace(before, shifted(line));
+    const x = unitView.width / 2 + farText.position.x;
+    expect(Math.fround(x)).toBe(Math.fround(x + 0.8));
+    const { renderer, gl } = rendererFixture();
+    for (const state of [before, after]) for (const scale of [1, 1.1]) expect(renderer.render(state, { ...unitView, scale }, overlay)).toMatchObject({ rendered: false, reason: 'Unsupported Canvas stroke construction: native float segment topology is unproved', uploadKind: 'none', bytes: 0, uploadCalls: 0 });
+    for (const method of [gl.createShader, gl.createBuffer, gl.bufferData, gl.bufferSubData, gl.clear, gl.drawArrays]) expect(method).not.toHaveBeenCalled();
+    renderer.dispose();
+  });
+
+  it('preserves safely certified offscreen TEXT bounds after a visible LINE delta and rejects an unsafe fresh zoom', () => {
+    const unitView = { ...view, scale: 1, lineweights: false };
+    const farText = text('far-text', { position: { x: 65536, y: 0 }, height: 1 });
     const before = scene(line, { entities: [farText, line, owner] }), after = replace(before, shifted(line));
     const prepare = vi.spyOn(geometry, 'prepareZoom2D'), { renderer, gl } = rendererFixture();
     expect(renderer.render(before, unitView, overlay).rendered).toBe(true);
     const prepared = prepare.mock.results[0]!.value as PreparedZoom2D, originalFar = structuredClone(patchSlot(prepared, 0).sourceBounds);
     expect(patchSlot(prepared, 0)).toMatchObject({ editableLine: false, count: 0 });
-    expect(originalFar!.max.x).toBeGreaterThan(bound - 200);
+    expect(originalFar!.max.x).toBeGreaterThan(65536);
     expect(renderer.render(after, unitView, overlay)).toMatchObject({ rendered: true, uploadKind: 'subrange', preparedEntities: 1 });
     expect(patchSlot(prepared, 0).sourceBounds).toEqual(originalFar);
     expect(prepared.sourceBounds.max.x).toBe(originalFar!.max.x);
     gl.clear.mockClear(); gl.drawArrays.mockClear();
-    expect(renderer.render(after, { ...unitView, scale: 1.1 }, overlay)).toMatchObject({ rendered: false, uploadKind: 'none', bytes: 0, uploadCalls: 0, reason: expect.stringContaining('precision') });
+    expect(renderer.render(after, { ...unitView, scale: 4.1 }, overlay)).toMatchObject({ rendered: false, uploadKind: 'none', bytes: 0, uploadCalls: 0, reason: 'Unsupported Canvas stroke construction: native float point, normal or miter exceeds precision budget' });
     expect(gl.clear).not.toHaveBeenCalled(); expect(gl.drawArrays).not.toHaveBeenCalled(); expect(gl.bufferData).toHaveBeenCalledOnce();
     renderer.dispose();
   });
@@ -180,10 +192,22 @@ describe('compiled source-owner LINE subrange edits', () => {
     renderer.dispose();
   });
 
-  it.each([1, 2, 3])('preserves rebased compiled bytes, fixed weights and twist at a trillion-unit origin, DPR %s', (dpr) => {
+  it.each([1, 2, 3])('keeps the original twisted trillion-coordinate LINE edit on complete Canvas, DPR %s', (dpr) => {
     const origin = { x: 1e12, y: -1e12 }, target: LineEntity = { ...line, a: { x: origin.x - 32, y: origin.y }, b: { x: origin.x + 32, y: origin.y }, lineWeight: 1 };
     const before = scene(target, { entities: [text('before', { position: { x: origin.x - 4, y: origin.y + 4 }, height: 4 }), target, { ...owner, position: { x: origin.x + 2, y: origin.y - 4 } }] });
     const camera = { ...view, center: origin, scale: 1, twist: 0.63, dpr }, after = replace(before, shifted(target, 1 / 8192));
+    const { renderer, gl } = rendererFixture();
+    expect(renderer.render(before, camera, overlay)).toMatchObject({ rendered: false, reason: 'Unsupported Canvas stroke construction: native context rotation is unproved', uploadKind: 'none', bytes: 0, uploadCalls: 0 });
+    const moved = { ...camera, center: { x: origin.x + 1 / 8192, y: origin.y - 1 / 4096 }, scale: 1.1 };
+    expect(renderer.render(after, moved, overlay)).toMatchObject({ rendered: false, reason: 'Unsupported Canvas stroke construction: native context rotation is unproved', uploadKind: 'none', bytes: 0, uploadCalls: 0 });
+    for (const method of [gl.createShader, gl.createBuffer, gl.bufferData, gl.bufferSubData, gl.clear, gl.drawArrays]) expect(method).not.toHaveBeenCalled();
+    renderer.dispose();
+  });
+
+  it.each([1, 2, 3])('preserves independently admitted zero-twist compiled bytes and fixed weights at a trillion-unit origin, DPR %s', (dpr) => {
+    const origin = { x: 1e12, y: -1e12 }, target: LineEntity = { ...line, a: { x: origin.x - 32, y: origin.y }, b: { x: origin.x + 32, y: origin.y }, lineWeight: 1 };
+    const before = scene(target, { entities: [text('before', { position: { x: origin.x - 4, y: origin.y + 4 }, height: 4 }), target, { ...owner, position: { x: origin.x + 2, y: origin.y - 4 } }] });
+    const camera = { ...view, center: origin, scale: 1, dpr }, after = replace(before, shifted(target, 1 / 8192));
     const { renderer, gl } = rendererFixture();
     expect(renderer.render(before, camera, overlay).rendered).toBe(true);
     const moved = { ...camera, center: { x: origin.x + 1 / 8192, y: origin.y - 1 / 4096 }, scale: 1.1 };

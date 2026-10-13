@@ -4,6 +4,7 @@ import { isImmutableData } from '../../core/immutable-data';
 import { TEXT_STYLES_META_KEY } from '../../io/encoding';
 import { lineweightDisplay } from '../draw';
 import { GpuDevice } from './device';
+import { isSourcePrecisionCertificateError, isSourceTopologyAdmissionError } from './stroke-precision-error';
 import { cssRgb, GPU_ZOOM_VERTEX_STRIDE, prepareZoom2D, prepareZoomLine, replacementZoomBounds, validateGpu2DView, zoomPrecisionSafe, type Gpu2DView, type Gpu2DOverlay, type PreparedZoom2D, type PreparedZoomEntity, type PreparedZoomLine } from './geometry2d';
 
 export type { Gpu2DView, Gpu2DOverlay } from './geometry2d';
@@ -45,6 +46,9 @@ export interface Gpu2DRenderResult {
   /** CPU state/uniform/clear/draw commands and error checking, excluding uploads/initialization. */
   drawSubmissionMs: number;
   geometryVertices: number;
+  /** Actual certified ratios relative to the stored mesh's copied camera anchor. */
+  cacheMinRatio: number | null;
+  cacheMaxRatio: number | null;
   cacheHit: boolean;
   cacheReason: Gpu2DCacheReason;
   /** Requested upload bytes (confirmed on success); a warm geometry/buffer cache reports zero. */
@@ -52,7 +56,7 @@ export interface Gpu2DRenderResult {
 }
 
 export function emptyGpu2DRenderResult(reason: string): Gpu2DRenderResult {
-  return { rendered: false, reason, preparationMs: 0, submissionMs: 0, cacheLookupMs: 0, geometryPreparationMs: 0, partialPreparationMs: 0, preparedEntities: 0, reusedEntities: 0, editMemoHit: false, editHistoryBytes: 0, editHistoryEntries: 0, initializationMs: 0, uploadMs: 0, uploadCalls: 0, uploadKind: 'none', subrangeUploadMs: 0, subrangeUploadCalls: 0, subrangeUploadBytes: 0, drawSubmissionMs: 0, geometryVertices: 0, cacheHit: false, cacheReason: 'not-checked', bytes: 0 };
+  return { rendered: false, reason, preparationMs: 0, submissionMs: 0, cacheLookupMs: 0, geometryPreparationMs: 0, partialPreparationMs: 0, preparedEntities: 0, reusedEntities: 0, editMemoHit: false, editHistoryBytes: 0, editHistoryEntries: 0, initializationMs: 0, uploadMs: 0, uploadCalls: 0, uploadKind: 'none', subrangeUploadMs: 0, subrangeUploadCalls: 0, subrangeUploadBytes: 0, drawSubmissionMs: 0, geometryVertices: 0, cacheMinRatio: null, cacheMaxRatio: null, cacheHit: false, cacheReason: 'not-checked', bytes: 0 };
 }
 
 const VERTEX_SHADER = `#version 300 es
@@ -61,13 +65,18 @@ layout(location = 0) in vec2 a_center;
 layout(location = 1) in vec3 a_color;
 layout(location = 2) in vec2 a_offset;
 uniform vec2 u_view;
+uniform vec2 u_backing;
+uniform float u_nativeDPR;
 uniform vec2 u_pan;
 uniform float u_zoom;
 out vec3 v_color;
 void main() {
   vec2 position = a_center * u_zoom + u_pan + u_view * 0.5 + a_offset;
-  gl_Position = vec4(position.x / u_view.x * 2.0 - 1.0,
-                     1.0 - position.y / u_view.y * 2.0, 0.0, 1.0);
+  // Canvas uses a Float32 scale coefficient, while the backing size is rounded
+  // independently. Keep the logical origin and fixed CSS extrusion unchanged.
+  vec2 physical = position * u_nativeDPR;
+  gl_Position = vec4(physical.x / u_backing.x * 2.0 - 1.0,
+                     1.0 - physical.y / u_backing.y * 2.0, 0.0, 1.0);
   v_color = a_color;
 }`;
 const FRAGMENT_SHADER = `#version 300 es
@@ -119,12 +128,17 @@ function geometryAdmissionRefusal(error: unknown): error is Error {
     !/^(?:Unsupported (?:entity:|annotative|dashed linetype:|transparency|filled circle|polyline|display color|Canvas (?:font|ARC|stroke construction:)|block (?:transform|array)|external reference:|bold stroke text|stroke-scene display color)|Dashed selection |Nonfinite |Projected coordinates |Invalid (?:curve|arc|ARC|polyline|TEXT|placed TEXT|lineweight)|Curve |Stroke (?:geometry|length)|Polyline |GPU zoom geometry|Float32 stroke geometry|Stroke-scene (?:expansion|geometry|text preflight|block nesting)|Cyclic block reference:|Missing block definition:|Incomplete block expansion|Canvas (?:world|text preflight|ARC)|TEXT is too close)/.test(error.message)) return false;
   // The compound lowerer wraps its original failure. Reject non-admission native
   // exceptions rather than allowing the wrapper to erase their provenance.
+  const needsPrecisionCertificate = error.message.startsWith('Canvas world-coordinate quantization ');
+  const needsSourceCertificate = needsPrecisionCertificate ||
+    error.message.startsWith('Unsupported Canvas stroke construction: ');
+  let certifiedSource = false;
   let source: unknown = error;
   for (let depth = 0; depth < 4; depth++) {
     if (!(source instanceof Error) || Object.getPrototypeOf(source) !== Error.prototype) return false;
+    certifiedSource ||= source.message === error.message && (isSourcePrecisionCertificateError(source) || (!needsPrecisionCertificate && isSourceTopologyAdmissionError(source)));
     const descriptor = Object.getOwnPropertyDescriptor(source, 'cause');
     if (descriptor && !('value' in descriptor)) return false;
-    if (!descriptor || descriptor.value === undefined) return true;
+    if (!descriptor || descriptor.value === undefined) return !needsSourceCertificate || certifiedSource;
     source = descriptor.value;
   }
   return false;
@@ -158,6 +172,8 @@ export class Gpu2DRenderer {
   private program: WebGLProgram | null = null;
   private buffer: WebGLBuffer | null = null;
   private viewUniform: WebGLUniformLocation | null = null;
+  private backingUniform: WebGLUniformLocation | null = null;
+  private nativeDPRUniform: WebGLUniformLocation | null = null;
   private panUniform: WebGLUniformLocation | null = null;
   private zoomUniform: WebGLUniformLocation | null = null;
   private alphaUniform: WebGLUniformLocation | null = null;
@@ -180,6 +196,8 @@ export class Gpu2DRenderer {
       this.program = null;
       this.buffer = null;
       this.viewUniform = null;
+      this.backingUniform = null;
+      this.nativeDPRUniform = null;
       this.panUniform = null;
       this.zoomUniform = null;
       this.alphaUniform = null;
@@ -259,7 +277,7 @@ export class Gpu2DRenderer {
     if (!replacement) {
       const partialStart = performance.now();
       metrics.preparedEntities++;
-      try { replacement = prepareZoomLine(entity, state, cache.view, overlay, cache.geometry.extent); }
+      try { replacement = prepareZoomLine(entity, state, cache.view, overlay, cache.geometry.extent, cache.geometry.maxRatio); }
       catch { return null; } // Normal full-scene preparation decides the complete-view refusal.
       finally {
         const elapsed = Math.max(0, performance.now() - partialStart);
@@ -362,7 +380,11 @@ export class Gpu2DRenderer {
     this.clearEditHistory();
     const geometryStart = performance.now();
     let geometry: PreparedZoom2D;
-    try { geometry = cacheable ? prepareZoom2D(state, view, overlay) : prepareZoom2D(state, view, overlay, 1, 1, 0); }
+    try {
+      geometry = !cacheable ? prepareZoom2D(state, view, overlay, 1, 1, 0)
+        : immutable ? prepareZoom2D(state, view, overlay, undefined, undefined, undefined, { certifyStraightZoomIn: true })
+          : prepareZoom2D(state, view, overlay);
+    }
     catch (error) {
       const elapsed = Math.max(0, performance.now() - geometryStart);
       this.clearAdmissionDeferral();
@@ -390,10 +412,12 @@ export class Gpu2DRenderer {
       const gl = this.device.gl;
       this.program = this.device.createProgram(VERTEX_SHADER, FRAGMENT_SHADER);
       this.viewUniform = gl.getUniformLocation(this.program, 'u_view');
+      this.backingUniform = gl.getUniformLocation(this.program, 'u_backing');
+      this.nativeDPRUniform = gl.getUniformLocation(this.program, 'u_nativeDPR');
       this.panUniform = gl.getUniformLocation(this.program, 'u_pan');
       this.zoomUniform = gl.getUniformLocation(this.program, 'u_zoom');
       this.alphaUniform = gl.getUniformLocation(this.program, 'u_alpha');
-      if (this.viewUniform === null || this.panUniform === null || this.zoomUniform === null || this.alphaUniform === null) throw new Error('WebGL2 stroke shader uniforms unavailable');
+      if (this.viewUniform === null || this.backingUniform === null || this.nativeDPRUniform === null || this.panUniform === null || this.zoomUniform === null || this.alphaUniform === null) throw new Error('WebGL2 stroke shader uniforms unavailable');
     } catch (error) {
       this.initializationError = error instanceof Error ? error.message : 'WebGL2 stroke initialization failed';
       throw error;
@@ -419,6 +443,10 @@ export class Gpu2DRenderer {
         return refusal('WebGL2 context is lost');
       }
       const width = Math.round(view.width * view.dpr), height = Math.round(view.height * view.dpr);
+      const nativeDPR = Math.fround(view.dpr);
+      // Outside the representable positive coefficient range no shared Canvas
+      // transform can be certified; ordinary fractional Windows DPRs stay valid.
+      if (!Number.isFinite(nativeDPR) || nativeDPR <= 0) return refusal('GPU DPR cannot match the Canvas Float32 coefficient');
       // Limits belong to this live context and cannot change until its handles are invalidated.
       if (!this.viewportLimits) {
         const reported = gl.getParameter(gl.MAX_VIEWPORT_DIMS) as Int32Array | null;
@@ -429,6 +457,8 @@ export class Gpu2DRenderer {
       if (width < 1 || height < 1 || !Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width > limits[0]! || height > limits[1]!) return refusal('GPU viewport exceeds device limits');
       const { geometry, pan, ratio, generation, delta } = this.prepare(state, view, overlay, metrics);
       metrics.geometryVertices = geometry.vertices.length / GPU_ZOOM_VERTEX_STRIDE;
+      metrics.cacheMinRatio = geometry.minRatio;
+      metrics.cacheMaxRatio = geometry.maxRatio;
       if (geometry.batches.some((batch) => batch.alpha < 1)) {
         this.stencilAvailable ??= gl.getContextAttributes()?.stencil ?? false;
         if (!this.stencilAvailable) return refusal('Solid selection/hover requires a stencil buffer');
@@ -488,6 +518,8 @@ export class Gpu2DRenderer {
         gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 28, 16);
         gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 28, 8);
         gl.uniform2f(this.viewUniform, view.width, view.height);
+        gl.uniform2f(this.backingUniform, width, height);
+        gl.uniform1f(this.nativeDPRUniform, nativeDPR);
         gl.uniform2f(this.panUniform, pan.x, pan.y);
         gl.uniform1f(this.zoomUniform, ratio);
         gl.viewport(0, 0, width, height);

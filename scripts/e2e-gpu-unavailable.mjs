@@ -88,8 +88,8 @@ try {
   assert.ok(!JSON.stringify(result.diagnostics).includes(profile), 'Diagnostic summary does not disclose the private profile');
   result.checks.push('Diagnostics settled with reasons, feature status and versions recorded');
 
-  for (const fixture of ['curve-control', 'curves', 'precision', 'precision-trillion', 'lineweights', 'mixed-schematic']) {
-    const deviceFailureRequired = fixture === 'curve-control';
+  for (const fixture of ['direct-arc-control', 'curves', 'precision', 'precision-trillion', 'lineweights', 'mixed-schematic', 'curve-control', 'precision-control', 'lineweights-control']) {
+    const deviceFailureRequired = fixture === 'direct-arc-control';
     await page.evaluate((name) => {
       const api = window.gpuPrototype, ed = window.editor;
       api.setMode('canvas'); api.loadFixture(name); ed.selection.clear(); ed.setHover(null);
@@ -125,15 +125,15 @@ try {
     saveImage(`${fixture}-canvas-reference.png`, observation.referenceImage);
     saveImage(`${fixture}-gpu-unavailable-fallback.png`, observation.fallbackImage);
     delete observation.referenceImage; delete observation.fallbackImage;
-    result.cases.push({ fixture, deviceFailureRequired, expectedAdmissionWithAvailableDevice: deviceFailureRequired, evidenceCategory: deviceFailureRequired ? 'Isolated positive-bulge GPU eligibility control: actual WebGL initialization failure required' : 'Preserved original geometry-fallback input: exact whole Canvas required; geometry refusal is not device-failure proof', ...observation });
+    result.cases.push({ fixture, deviceFailureRequired, expectedAdmissionWithAvailableDevice: deviceFailureRequired, evidenceCategory: deviceFailureRequired ? 'Direct-ARC control: actual WebGL initialization failure required' : 'Preserved geometry-fallback input: exact whole Canvas required; the failed device may refuse before geometry admission, so this case does not prove the geometry-specific reason', ...observation });
     assert.deepEqual(observation.afterInput, observation.beforeInput, `${fixture}: fixed camera, settings and overlay inputs`);
     assert.equal(observation.documentUnchanged, true, `${fixture}: fallback cannot change the document`);
     assert.equal(observation.status.mode, 'gpu'); assert.equal(observation.status.rendered, false);
     if (deviceFailureRequired) {
-      assert.equal(observation.fixtureMetadata.name, 'curve-control');
-      assert.equal(observation.fixtureMetadata.controlPolyline.points.length, 2);
-      assert.equal(observation.entityCount, 4);
-      assert.deepEqual(observation.entityKinds, ['line', 'circle', 'arc', 'polyline']);
+      assert.equal(observation.fixtureMetadata.name, 'direct-arc-control');
+      assert.equal(observation.fixtureMetadata.controlArc.initialMoveTo, false);
+      assert.equal(observation.entityCount, 3);
+      assert.deepEqual(observation.entityKinds, ['line', 'circle', 'arc']);
       assert.equal(observation.status.device, 'failed'); assert.match(observation.status.reason, /failed|unavailable/i);
       result.checks.push('Distinct GPU eligibility control reaches actual WebGL initialization failure; geometry refusal cannot substitute for this device proof');
     } else assert.ok(typeof observation.status.reason === 'string' && observation.status.reason.trim(), `${fixture}: preserved whole-view fallback explains its reason without claiming isolated device failure`);

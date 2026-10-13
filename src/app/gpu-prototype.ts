@@ -21,6 +21,8 @@ interface FixtureMetadata {
   highlightProbes?: readonly { owner: string; label: string; point: Point; rgb: readonly number[]; region: readonly Point[] }[];
   curveConstructionReference?: { origin: Point; unit: number; localCenter: Point; roundedWorldCenter: Point; radius: number };
   controlPolyline?: { points: readonly Point[]; bulge: number; color: string; rgb: readonly number[]; expectedCssLineWidth: number };
+  controlArc?: { id: string; center: Point; radius: number; startAngle: number; endAngle: number; color: string; rgb: readonly number[]; expectedCssLineWidth: number; sourceFixture: string; initialMoveTo: false };
+  nativeConnectionReference?: { width: number; height: number; dpr: number; roi: { x: number; y: number; width: number; height: number }; expectedCssLineWidth: number };
 }
 
 /** Distinct long-label budget input and short-tag stress input; historical data stays intact. */
@@ -242,7 +244,25 @@ export function installGpuPrototype(editor: Editor): void {
     loadFixture: (name: string) => {
       fixtureMetadata = null;
       const base = bigDrawing(name === 'dense-lines' ? 38000 : 5000, name === 'mixed-schematic' ? 1000 : 0, name === 'mixed-schematic' ? 500 : 0);
-      if (name === 'positive-bulge-precision-fallback') {
+      if (name === 'straight-microedge-native-fallback') {
+        const common = { layer: '0', color: 7 } as const;
+        editor.loadState({ ...base, entities: [
+          { ...common, id: 'MICROEDGE-EDIT', type: 'line', a: { x: -20, y: -20 }, b: { x: -10, y: -20 }, lineWeight: 0.25 },
+          { ...common, id: 'MICROEDGE-P', type: 'polyline', points: [{ x: -1e-6, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 10 }], closed: false, trueColor: 0x44bb55, lineWeight: 4 },
+        ] }, null);
+        view.center = { x: 0, y: 0 }; view.scale = 10; view.twist = 0;
+        fixtureMetadata = { name, probes: [{ label: 'Actual native collapsed microedge has no below-cap spur', point: { x: 0.5, y: -0.5 }, rgb: [33, 40, 48] }] };
+      } else if (name === 'positive-bulge-native-connection-fallback') {
+        // Distinct input from the verified 8192x800 native command audit. The
+        // benchmark owns synthetic backing dimensions, outside normal timings.
+        const common = { layer: '0', color: 7 } as const;
+        editor.loadState({ ...base, entities: [
+          { ...common, id: 'NATIVE-CONNECTION-EDIT', type: 'line', a: { x: -100, y: -100 }, b: { x: 100, y: -100 }, lineWeight: 0.25 },
+          { ...common, id: 'NATIVE-CONNECTION-P', type: 'polyline', points: [{ x: 0.00015, y: 0 }, { x: 2000.00035, y: 0 }], bulges: [1], closed: false, trueColor: 0x44bb55, lineWeight: 4 },
+        ] }, null);
+        view.center = { x: 0, y: 0 }; view.scale = 1; view.twist = 0;
+        fixtureMetadata = { name, probes: [], nativeConnectionReference: { width: 8192, height: 800, dpr: 1, roi: { x: 4072, y: 376, width: 48, height: 48 }, expectedCssLineWidth: 16 } };
+      } else if (name === 'positive-bulge-precision-fallback') {
         const origin = { x: 1e12, y: 1e12 }, unit = 2 ** -13, common = { layer: '0', color: 7 } as const;
         const p = (x: number, y: number): Point => ({ x: origin.x + x * unit, y: origin.y + y * unit });
         editor.loadState({ ...base, entities: [
@@ -294,6 +314,29 @@ export function installGpuPrototype(editor: Editor): void {
         view.center = origin;
         view.scale = 4096;
         view.twist = 0.63;
+      } else if (name === 'direct-arc-lineweights-control') {
+        // Existing L/X/C/A values are retained in a separately named control.
+        // Historical lineweights-control and its bulged P remain unchanged.
+        const style = { layer: '0', color: 7 };
+        editor.loadState({ ...base, entities: [
+          { ...style, id: 'L', type: 'line', a: { x: -4, y: -1 }, b: { x: 4, y: 1 }, lineWeight: 1 },
+          { ...style, color: 1, id: 'X', type: 'line', a: { x: -4, y: 1 }, b: { x: 4, y: -1 }, lineWeight: 2 },
+          { ...style, color: 3, id: 'C', type: 'circle', center: { x: -2, y: 1.5 }, radius: 0.4, lineWeight: 10 },
+          { ...style, color: 5, id: 'A', type: 'arc', center: { x: 2, y: 1 }, radius: 0.3, startAngle: 0.2, endAngle: 3.8, lineWeight: 6 },
+        ] }, null);
+        view.center = { x: 0, y: 0 }; view.scale = 80; view.twist = 0;
+        fixtureMetadata = { name, probes: [], controlArc: { id: 'A', center: { x: 2, y: 1 }, radius: 0.3, startAngle: 0.2, endAngle: 3.8, color: '#0000ff', rgb: [0, 0, 255], expectedCssLineWidth: 24, sourceFixture: 'lineweights-control', initialMoveTo: false } };
+      } else if (name === 'direct-arc-control' || name === 'direct-arc-precision-control') {
+        const shift = name === 'direct-arc-precision-control' ? 1e9 : 0;
+        const p = (x: number, y: number): Point => ({ x: shift + x, y: shift + y });
+        const style = { layer: '0', color: 7 };
+        view.twist = 0;
+        editor.loadState({ ...base, entities: [
+          { ...style, id: 'L', type: 'line', a: p(0, 0), b: p(7, 5) },
+          { ...style, color: 1, id: 'C', type: 'circle', center: p(3, 3), radius: 1 },
+          { ...style, color: 3, id: 'A', type: 'arc', center: p(5, 2), radius: 1.5, startAngle: 0.2, endAngle: 3.8 },
+        ] }, null);
+        fixtureMetadata = { name, probes: [], controlArc: { id: 'A', center: p(5, 2), radius: 1.5, startAngle: 0.2, endAngle: 3.8, color: '#00ff00', rgb: [0, 255, 0], expectedCssLineWidth: 1, sourceFixture: name === 'direct-arc-precision-control' ? 'precision-control' : 'curve-control', initialMoveTo: false } };
       } else if (name === 'lineweights-control') {
         const style = { layer: '0', color: 7 }, points = [{ x: -2, y: -1.5 }, { x: -1, y: -1.5 }];
         editor.loadState({ ...base, entities: [
@@ -341,7 +384,7 @@ export function installGpuPrototype(editor: Editor): void {
         ] }, null);
       } else editor.loadState(base, null);
       // Fixture-local display state must not leak into the ordinary comparison scenes.
-      lineweightDisplay.enabled = name === 'lineweights' || name === 'lineweights-control' || name === 'wide-curve-fallback' || name.startsWith('collapse-') || (name.startsWith('compound-') && name !== 'compound-dense' && name !== 'compound-tags');
+      lineweightDisplay.enabled = name === 'lineweights' || name === 'lineweights-control' || name === 'direct-arc-lineweights-control' || name === 'positive-bulge-native-connection-fallback' || name === 'straight-microedge-native-fallback' || name === 'wide-curve-fallback' || name.startsWith('collapse-') || (name.startsWith('compound-') && name !== 'compound-dense' && name !== 'compound-tags');
       lineweightDisplay.pxPerMm = undefined;
       editor.viewport.settings.gridVisible = false;
       editor.viewport.renderCurrent();

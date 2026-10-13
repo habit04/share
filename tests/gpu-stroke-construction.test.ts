@@ -43,7 +43,7 @@ function canvasPaths(entity: Entity, state: DrawingState, camera = view, arcs: C
 }
 
 /** Independent point-in-triangle oracle for the old near-origin strip's spur. */
-function covers(geometry: PreparedZoom2D, point: Point): boolean {
+function covers(geometry: Pick<PreparedZoom2D, 'vertices'>, point: Point): boolean {
   const vertex = (index: number): Point => {
     const offset = index * GPU_ZOOM_VERTEX_STRIDE;
     return { x: 160 + geometry.vertices[offset]! + geometry.vertices[offset + 2]!, y: 120 + geometry.vertices[offset + 1]! + geometry.vertices[offset + 3]! };
@@ -75,7 +75,10 @@ describe('actual Canvas stroke construction parity', () => {
     const reference = owner('B'), state = drawing([reference], { B: block('B', [local]) });
     const native = canvasPaths(reference, state)[0]!;
     expect(native).toEqual([{ x: 160, y: 120 }, { x: 160, y: 120 }, { x: 160, y: 110 }]);
-    const before = prepareZoom2D(drawing([local]), { ...view, center: { x: 0, y: 0 } }, overlay);
+    // Independent ideal two-direction miter: incoming normal (0,1), outgoing
+    // (1,0), halfwidth2 gives tip(2,2). Production now refuses this unsafe source
+    // before packing; retain the original spur proof without bypassing its guard.
+    const before = { vertices: new Float32Array([0, 0, 0, 2, 0, 1, 0, 0, 0, 2, 2, 0, 1, 0, 0, 0, 2, 0, 0, 1, 0]) };
     // Native's recorded path is a vertical butt-capped strip at y<=120. Its actual
     // collapsed first segment adds no join. The old rebased strip covers this whole pixel.
     const pixelCenter = { x: 161.5, y: 121.5 };
@@ -96,7 +99,10 @@ describe('actual Canvas stroke construction parity', () => {
     const source = polyline([{ x: 0, y: 0 }, { x: 5, y: 0 }, { x: 5, y: 10 }]);
     const state = sealImmutableData(drawing([owner('B')], { B: block('B', [source, line()]) }));
     const snapshot = JSON.stringify(state);
-    for (const dpr of [1, 2]) for (const twist of [0, 0.43]) expect(lowerStrokeScene(state, { ...view, dpr, twist }, overlay).ok).toBe(true);
+    for (const dpr of [1, 2]) {
+      expect(lowerStrokeScene(state, { ...view, dpr }, overlay).ok).toBe(true);
+      expect(lowerStrokeScene(state, { ...view, dpr, twist: 0.43 }, overlay)).toMatchObject({ ok: false, reason: expect.stringContaining('native context rotation is unproved') });
+    }
     const direct = line({ a: { x: origin.x - 1 / 8192, y: origin.y }, b: { x: origin.x + 1 / 8192, y: origin.y } });
     const near = { ...direct, a: { x: -1 / 8192, y: 0 }, b: { x: 1 / 8192, y: 0 } };
     const close = { ...view, scale: 4096 };
@@ -114,14 +120,14 @@ describe('actual Canvas stroke construction parity', () => {
     expect(() => assertPrimitiveStrokePrecision(before, after, 4, { ...view, center: { x: 0, y: 0 } }, 1.25)).toThrow(/miter or bevel branch/);
   });
 
-  it('compares native bulge geometry and retains a safe open arc while refusing unproved sharp curved joins', () => {
+  it('retains complete Canvas rendering for open and sharp positive-bulge connection topology', () => {
     const points = [{ x: -2, y: 0 }, { x: 2, y: 0 }];
     const source = polyline(points, { bulges: [0.5] });
     const nearOrigin = { x: 30, y: -20 }, camera = { ...view, center: nearOrigin, scale: 20, twist: 0.4 };
     const state = drawing([owner('B', { position: nearOrigin })], { B: block('B', [source]) });
-    expect(lowerStrokeScene(state, camera, overlay).ok).toBe(true);
+    expect(lowerStrokeScene(state, camera, overlay)).toEqual({ ok: false, reason: expect.stringContaining('native float arc connection is unproved') });
     const sharp = polyline([...points, { x: 3, y: 2 }], { bulges: [0.5, 0] });
-    expect(lowerStrokeScene(drawing([owner('B', { position: nearOrigin })], { B: block('B', [sharp]) }), camera, overlay)).toEqual({ ok: false, reason: expect.stringContaining('nonsmooth curved join') });
+    expect(lowerStrokeScene(drawing([owner('B', { position: nearOrigin })], { B: block('B', [sharp]) }), camera, overlay)).toEqual({ ok: false, reason: expect.stringContaining('native float arc connection is unproved') });
     const collapsed = polyline([{ x: 0, y: 0 }, { x: 1e-5, y: 0 }], { bulges: [0.5] });
     expect(lowerStrokeScene(drawing([owner('B')], { B: block('B', [collapsed]) }), view, overlay).ok).toBe(false);
   });
@@ -158,9 +164,9 @@ describe('actual Canvas stroke construction parity', () => {
     expect(covers(prepareZoom2D(drawing([sameCurve]), camera, overlay), { x: 160, y: 120 })).toBe(false);
     expect(() => prepareZoom2D(drawing([entity]), camera, overlay)).toThrow(/negative bulge has native connector/);
     const positive = { ...entity, bulges: [0.5] };
-    expect(canvasPolylineStrokeProblem(positive)).toBeNull();
-    expect(() => prepareZoom2D(drawing([positive]), camera, overlay)).not.toThrow();
-    expect(lowerStrokeScene(drawing([owner('B', { position: { x: 0, y: 0 } })], { B: block('B', [positive]) }), camera, overlay).ok).toBe(true);
+    expect(canvasPolylineStrokeProblem(positive)).toContain('native float arc connection is unproved');
+    expect(() => prepareZoom2D(drawing([positive]), camera, overlay)).toThrow(/native float arc connection is unproved/);
+    expect(lowerStrokeScene(drawing([owner('B', { position: { x: 0, y: 0 } })], { B: block('B', [positive]) }), camera, overlay)).toMatchObject({ ok: false, reason: expect.stringContaining('native float arc connection is unproved') });
     expect(canvasPolylineStrokeProblem({ ...entity, bulges: [-1e-15] })).toBeNull();
     expect(canvasPolylineStrokeProblem({ ...entity, bulges: [-Infinity, NaN] })).toBeNull();
   });
@@ -191,7 +197,7 @@ describe('actual Canvas stroke construction parity', () => {
     expect(() => prepareZoom2D(drawing([entity]), camera, overlay)).toThrow(/Unsupported Canvas stroke construction:/);
     const harmlessText = narrow({ id: 'safe-qtext', height: 1 / 8192, widthFactor: 1 });
     expect(lowerStrokeScene(drawing([harmlessText, entity]), camera, overlay)).toMatchObject({ ok: false, reason: expect.stringContaining('Unsupported Canvas stroke construction:') });
-    expect(() => prepareZoom2D(drawing([local]), { ...camera, center: { x: 0, y: 0 } }, overlay)).not.toThrow();
+    expect(() => prepareZoom2D(drawing([local]), { ...camera, center: { x: 0, y: 0 } }, overlay)).toThrow(/native float arc connection is unproved/);
     const { renderer, gl } = refusalRenderer();
     expect(renderer.render(drawing([line({ a: origin, b: { x: origin.x + 1, y: origin.y } }), entity]), camera, overlay)).toMatchObject({ rendered: false, bytes: 0, uploadCalls: 0 });
     for (const method of [gl.createShader, gl.createBuffer, gl.bufferData, gl.bufferSubData, gl.clear, gl.drawArrays]) expect(method).not.toHaveBeenCalled();
@@ -203,7 +209,8 @@ describe('actual Canvas stroke construction parity', () => {
     const nested = owner('LEAF', { id: 'nested', position: { x: 1, y: 1 }, rotation: 0.2 });
     const root = block('ROOT', [nested, { ...nested, position: { x: 3, y: -1 } }]);
     const state = { ...drawing([owner('ROOT', { position: { x: 30, y: -20 }, rotation: 0.3 })], { ROOT: root, LEAF: leaf }), layers: [layer, { ...layer, name: 'OFF', visible: false }] };
-    const result = lowerStrokeScene(state, { ...view, center: { x: 30, y: -20 }, scale: 20, twist: 0.4 }, overlay);
+    expect(lowerStrokeScene(state, { ...view, center: { x: 30, y: -20 }, scale: 20, twist: 0.4 }, overlay)).toMatchObject({ ok: false, reason: expect.stringContaining('native context rotation is unproved') });
+    const result = lowerStrokeScene(state, { ...view, center: { x: 30, y: -20 }, scale: 20 }, overlay);
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(result.reason);
     expect(result.operations.map((operation) => operation.sourceId)).toEqual(['same', 'same']);
@@ -229,8 +236,9 @@ describe('actual Canvas stroke construction parity', () => {
   });
 
   it('retains safely constructed readable text, oblique text and QTEXT at giant origins', () => {
-    for (const entity of [narrow({ widthFactor: 1 }), narrow({ widthFactor: 1.2, oblique: 0.5 }), narrow({ height: 1, widthFactor: 1.3 })]) expect(lowerStrokeScene(drawing([entity]), view, overlay).ok).toBe(true);
-    expect(lowerStrokeScene(drawing([narrow({ position: { x: 0, y: 0 }, widthFactor: 1.2, oblique: Math.atan(1000) })]), { ...view, center: { x: 0, y: 0 } }, overlay).ok).toBe(true);
+    for (const entity of [narrow({ widthFactor: 1 }), narrow({ widthFactor: 1.2, oblique: 0.5 }), narrow({ height: 1, widthFactor: 1.3 })]) expect(lowerStrokeScene(drawing([entity]), view, overlay), JSON.stringify(entity)).toMatchObject({ ok: true });
+    expect(lowerStrokeScene(drawing([narrow({ position: { x: 0, y: 0 }, widthFactor: 1.2, oblique: Math.atan(1000) })]), { ...view, center: { x: 0, y: 0 } }, overlay)).toMatchObject({ ok: false, reason: expect.stringContaining('near-reversal join is unproved') });
+    expect(lowerStrokeScene(drawing([narrow({ position: { x: 0, y: 0 }, widthFactor: 1.2, oblique: 0.5 })]), { ...view, center: { x: 0, y: 0 } }, overlay).ok).toBe(true);
   });
 
   it.each(['polyline', 'text', 'attribute'] as const)('refuses late unsafe %s without GL allocation, upload, clearing or drawing', (kind) => {

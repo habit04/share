@@ -223,6 +223,7 @@ describe('Canvas context restoration', () => {
       id: `current-${i}`, type: 'line', layer: '0', color: 'ByLayer', a: { x: 10 + i / 10, y: 20 }, b: { x: 11 + i / 10, y: 20 },
     })) }));
     vp.width = 480; vp.height = 320; vp.dpr = 2; vp.center = { x: 24, y: 20 }; vp.scale = 3; vp.twist = 0.5;
+    surface.element.width = 960; surface.element.height = 640;
     vp.settings.background = '#123456'; vp.settings.selectionEffect = 'solid';
     const state = doc.snapshot, render = vi.spyOn(vp, 'render');
     vi.mocked(drawEntity).mockClear(); vi.mocked(surface.context.fillRect).mockClear();
@@ -232,8 +233,8 @@ describe('Canvas context restoration', () => {
     frames.flush();
     expect(render).toHaveBeenCalledExactlyOnceWith(latest);
     expect(surface.context.setTransform).toHaveBeenLastCalledWith(2, 0, 0, 2, 0, 0);
-    expect(surface.context.fillRect).toHaveBeenCalledWith(0, 0, 480, 320);
-    expect(surface.fills[0]).toEqual({ color: '#123456', rect: [0, 0, 480, 320] });
+    expect(surface.context.fillRect).toHaveBeenCalledWith(0, 0, 960, 640);
+    expect(surface.fills[0]).toEqual({ color: '#123456', rect: [0, 0, 960, 640] });
     expect(drawEntity).toHaveBeenCalledTimes(251);
     expect(vi.mocked(drawEntity).mock.calls[0]![1]).toBe(doc.entities[0]);
     expect(vi.mocked(drawEntity).mock.calls[0]![2]).toMatchObject({ scale: 3, rotation: 0.5 });

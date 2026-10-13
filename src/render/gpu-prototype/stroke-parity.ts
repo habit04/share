@@ -4,16 +4,24 @@ import type { Point } from '../../core/geometry';
 import { normAngle } from '../../core/geometry';
 import type { Gpu2DView } from './geometry2d';
 import { canvasArcAdmission } from './arc-admission';
+import { sourcePrecisionCertificateError, sourceTopologyAdmissionError } from './stroke-precision-error';
+import { nativeFloatStrokeBound } from './native-float-stroke-bound';
 
 type Primitive = LineEntity | PolylineEntity | CircleEntity | ArcEntity;
 const RESERVE = 0.0625;
 const TAU = Math.PI * 2;
-function fail(reason: string): never { throw new Error(`Unsupported Canvas stroke construction: ${reason}`); }
+function fail(reason: string): never { throw sourceTopologyAdmissionError(`Unsupported Canvas stroke construction: ${reason}`); }
+function precisionFail(reason: string): never { throw sourcePrecisionCertificateError(`Unsupported Canvas stroke construction: ${reason}`); }
 
-/** Canvas's swapped negative-bulge arc adds a connector absent from GPU tessellation. */
+/** Native float arc connection topology is unproved for every curved polyline. */
 export function canvasPolylineStrokeProblem(entity: PolylineEntity): string | null {
-  return entity.bulges?.some((bulge) => Number.isFinite(bulge) && bulge <= -1e-12)
-    ? 'Unsupported Canvas stroke construction: negative bulge has native connector' : null;
+  if (entity.bulges?.some((bulge) => Number.isFinite(bulge) && bulge <= -1e-12)) return 'Unsupported Canvas stroke construction: negative bulge has native connector';
+  // strokePolyline begins at the authoritative vertex before calling ctx.arc.
+  // Chromium/Skia float path construction can add an implicit connector whose
+  // direction changes the cap/join even for a positive, single open bulge. A
+  // small double-coordinate endpoint distance cannot certify that topology.
+  return entity.bulges?.some((bulge) => Number.isFinite(bulge) && bulge >= 1e-12)
+    ? 'Unsupported Canvas stroke construction: native float arc connection is unproved' : null;
 }
 const distance = (a: Point, b: Point): number => Math.hypot(a.x - b.x, a.y - b.y);
 const magnitude = (point: Point): number => Math.max(Math.abs(point.x), Math.abs(point.y));
@@ -95,10 +103,10 @@ function offsetsProblem(local: readonly Direction[], native: readonly Direction[
     const a = join(a0.normal, a1.normal, half), b = join(b0.normal, b1.normal, half);
     if (a.kind !== b.kind) fail('miter or bevel branch changes');
     const uncertainty = (a0.uncertainty + a1.uncertainty + b0.uncertainty + b1.uncertainty) * half * 200;
-    if (Math.min(a.limitMargin, b.limitMargin) <= uncertainty) fail('miter limit is within arithmetic uncertainty');
+    if (Math.min(a.limitMargin, b.limitMargin) <= uncertainty) precisionFail('miter limit is within arithmetic uncertainty');
     error = Math.max(error, pointError * maxRatio + distance(a.offset, b.offset) + uncertainty);
   }
-  if (!Number.isFinite(error) || error * view.dpr > RESERVE) fail('point, normal or miter exceeds precision budget');
+  if (!Number.isFinite(error) || error * view.dpr > RESERVE) precisionFail('point, normal or miter exceeds precision budget');
 }
 
 /** Points in GPU anchor-local doubles versus actual Canvas world construction. */
@@ -106,11 +114,14 @@ export function assertStrokePathPrecision(localPoints: readonly Point[], nativeP
   if (localPoints.length !== nativePoints.length) fail('point topology changes');
   const a = localPoints.map((point) => project(finite(point), view));
   const b = nativePoints.map((point) => project(nativeIsLocal ? finite(point) : subtract(point, view.center), view));
-  let error = 0;
-  for (let index = 0; index < a.length; index++) error = Math.max(error, distance(a[index]!, b[index]!));
-  const count = closed ? a.length : Math.max(0, a.length - 1);
-  const directions = (points: readonly Point[]) => Array.from({ length: count }, (_, index) => linearDirection(points[index]!, points[(index + 1) % points.length]!, view, maxRatio));
-  offsetsProblem(directions(a), directions(b), closed, error, widthCss, view, maxRatio);
+  const proof = nativeFloatStrokeBound(a, b, closed, widthCss, view, maxRatio);
+  if (proof.problem) {
+    if (proof.failure === 'topology') fail(proof.problem);
+    precisionFail(proof.problem);
+  }
+  // World construction, native input casts, directions and joins share this ONE
+  // source reserve. Shader Float32 and curve reserves are accounted separately.
+  if (!Number.isFinite(proof.errorCss) || proof.errorCss * view.dpr > RESERVE) precisionFail('native float point, normal or miter exceeds precision budget');
 }
 
 interface Curve { center: Point; radius: number; startAngle: number; endAngle: number }
@@ -128,7 +139,7 @@ function curveError(local: Curve, native: Curve, view: Gpu2DView, widthCss: numb
   const angle = a.fullCircle ? 0 : angleDistance(a.startAngle, b.startAngle) + Math.abs(a.sweep - b.sweep);
   const geometry = distance(local.center, subtract(native.center, view.center)) + Math.abs(local.radius - native.radius) + Math.max(local.radius, native.radius) * angle;
   const error = geometry * view.scale * maxRatio + widthCss / 2 * Math.min(2, angle);
-  if (!Number.isFinite(error) || error * view.dpr > RESERVE) fail('native curve construction exceeds precision budget');
+  if (!Number.isFinite(error) || error * view.dpr > RESERVE) precisionFail('native curve construction exceeds precision budget');
   return error / maxRatio;
 }
 
@@ -141,8 +152,8 @@ export function assertPrimitiveStrokePrecision(local: Primitive, native: Primiti
   }
   if (local.type !== 'polyline' || native.type !== 'polyline' || local.closed !== native.closed || local.points.length !== native.points.length) fail('polyline topology changes');
   const problem = canvasPolylineStrokeProblem(local) ?? canvasPolylineStrokeProblem(native);
-  if (problem) fail('negative bulge has native connector');
-  if (!local.bulges?.some((value) => value !== 0) && !native.bulges?.some((value) => value !== 0)) return assertStrokePathPrecision(local.points, native.points, local.closed, widthCss, view, maxRatio);
+  if (problem) throw sourceTopologyAdmissionError(problem);
+  if (!local.bulges?.some((value) => Math.abs(value) >= 1e-12) && !native.bulges?.some((value) => Math.abs(value) >= 1e-12)) return assertStrokePathPrecision(local.points, native.points, local.closed, widthCss, view, maxRatio);
   const a = polylineSegments(local), b = polylineSegments(native);
   if (a.length !== b.length) fail('bulge topology changes');
   let error = 0;

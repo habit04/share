@@ -1,8 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DrawingState } from '../src/core/document';
 import type { BlockDef, Entity, InsertEntity, Layer, LineEntity, TextEntity } from '../src/core/entities';
 import { sealImmutableData } from '../src/core/immutable-data';
 import { GPU_EDIT_ENTITY_LIMIT, GPU_ZOOM_VERTEX_STRIDE, prepareCompiledZoom2D, prepareZoomLine, replacementZoomBounds, type Gpu2DView } from '../src/render/gpu-prototype/geometry2d';
+import { Gpu2DRenderer } from '../src/render/gpu-prototype/renderer2d';
+import { isSourcePrecisionCertificateError, isSourceTopologyAdmissionError } from '../src/render/gpu-prototype/stroke-precision-error';
 
 const layer: Layer = { name: '0', color: 3, visible: true, locked: false, lineWeight: 1 };
 const view: Gpu2DView = { width: 320, height: 240, dpr: 1, scale: 20, center: { x: 0, y: 0 }, twist: 0, background: '#212830', lineweights: false };
@@ -11,11 +13,43 @@ const line: LineEntity = { id: 'line', type: 'line', layer: '0', color: 'ByLayer
 const text: TextEntity = { id: 'text', type: 'text', layer: '0', color: 1, position: { x: 0, y: 0 }, text: 'TAG A1', height: 1, rotation: 0, align: 'left' };
 const drawing = (entities: readonly Entity[], blocks: Readonly<Record<string, BlockDef>> = {}, layers: readonly Layer[] = [layer]): DrawingState => ({ entities, blocks, layers, currentLayer: '0' });
 
+function refusalRenderer() {
+  const gl = {
+    MAX_VIEWPORT_DIMS: 0xd3a,
+    isContextLost: vi.fn(() => false),
+    getParameter: vi.fn(() => new Int32Array([16384, 16384])),
+    createShader: vi.fn(), createProgram: vi.fn(), createBuffer: vi.fn(),
+    bufferData: vi.fn(), bufferSubData: vi.fn(), clear: vi.fn(), drawArrays: vi.fn(),
+  };
+  const canvas = Object.assign(new EventTarget(), { getContext: vi.fn(() => gl as unknown as WebGL2RenderingContext), width: 1, height: 1 }) as unknown as HTMLCanvasElement;
+  return { renderer: new Gpu2DRenderer(canvas), gl };
+}
+
+afterEach(() => vi.restoreAllMocks());
+
 describe('compiled typed packing and original owner certificates', () => {
+  it.each([1, 2])('preserves the original twisted 600-LINE input as Canvas before triangle storage, DPR%s', (dpr) => {
+    const lines = Array.from({ length: 600 }, (_, index): LineEntity => ({ ...line, id: `line-${index}`, color: index % 2 ? 2 : 4, a: { x: -20 + index % 4, y: -2 + index % 5 }, b: { x: 20, y: 2 - index % 5 } }));
+    const state = drawing([...lines, text]), camera = { ...view, dpr, twist: 0.2, lineweights: true };
+    const snapshot = JSON.stringify(state), allocation = vi.spyOn(globalThis, 'Float32Array');
+    let failure: unknown;
+    try { prepareCompiledZoom2D(state, camera, overlay); } catch (error) { failure = error; }
+    expect((failure as Error).message).toBe('Unsupported Canvas stroke construction: native context rotation is unproved');
+    expect(isSourceTopologyAdmissionError((failure as Error).cause)).toBe(true);
+    expect(isSourcePrecisionCertificateError((failure as Error).cause)).toBe(false);
+    expect(allocation).not.toHaveBeenCalled();
+    allocation.mockRestore();
+    const { renderer, gl } = refusalRenderer(), result = renderer.render(state, camera, overlay);
+    expect(result).toMatchObject({ rendered: false, reason: (failure as Error).message, bytes: 0, uploadCalls: 0, uploadKind: 'none' });
+    for (const operation of [gl.createShader, gl.createProgram, gl.createBuffer, gl.bufferData, gl.bufferSubData, gl.clear, gl.drawArrays]) expect(operation).not.toHaveBeenCalled();
+    renderer.dispose();
+    expect(JSON.stringify(state)).toBe(snapshot);
+  });
+
   it.each([1, 2])('grows beyond initial typed storage and preserves old LINE-emitter bytes at DPR%s', (dpr) => {
     const lines = Array.from({ length: 600 }, (_, index): LineEntity => ({ ...line, id: `line-${index}`, color: index % 2 ? 2 : 4, a: { x: -20 + index % 4, y: -2 + index % 5 }, b: { x: 20, y: 2 - index % 5 } }));
     const state = drawing([...lines, text]);
-    const camera = { ...view, dpr, twist: 0.2, lineweights: true };
+    const camera = { ...view, dpr, lineweights: true };
     const result = prepareCompiledZoom2D(state, camera, overlay);
     const oldLineParts = lines.map((entity) => prepareZoomLine(entity, state, camera, overlay, result.extent).vertices);
     const textPart = prepareCompiledZoom2D(drawing([text]), camera, overlay).vertices;
@@ -94,8 +128,23 @@ describe('compiled typed packing and original owner certificates', () => {
     expect(result.entities![0]).toMatchObject({ editableLine: true, first: 0, count: 0, sourceBounds: { min: { x: 0, y: 0 }, max: { x: 0, y: 0 } } });
   });
 
-  it('retains the old Float32 finite refusal before an overflowed extrusion can be published', () => {
+  it('preserves the original 1e40 extrusion input as an earlier native Float32 refusal before storage or upload', () => {
     const extreme = { ...line, lineWeight: 1e40 };
-    expect(() => prepareCompiledZoom2D(drawing([extreme, { ...text, text: '' }]), { ...view, dpr: 1e-40, lineweights: true }, overlay)).toThrow('Float32 stroke geometry exceeds finite limits');
+    const state = drawing([extreme, { ...text, text: '' }]), camera = { ...view, dpr: 1e-40, lineweights: true };
+    const snapshot = JSON.stringify(state), allocation = vi.spyOn(globalThis, 'Float32Array');
+    let failure: unknown;
+    try { prepareCompiledZoom2D(state, camera, overlay); } catch (error) { failure = error; }
+    expect((failure as Error).message).toBe('Unsupported Canvas stroke construction: native Float32 segment direction is unproved');
+    expect(isSourcePrecisionCertificateError((failure as Error).cause)).toBe(true);
+    expect(allocation).not.toHaveBeenCalled();
+    allocation.mockRestore();
+    const { renderer, gl } = refusalRenderer();
+    // The original tiny-DPR view also fails safely before geometry; a distinct
+    // valid viewport rejects the same extreme-width source through the native guard.
+    expect(renderer.render(state, camera, overlay)).toMatchObject({ rendered: false, bytes: 0, uploadCalls: 0, uploadKind: 'none' });
+    expect(renderer.render(state, { ...camera, dpr: 1 }, overlay)).toMatchObject({ rendered: false, reason: 'Unsupported Canvas stroke construction: nonfinite native Float32 construction bound', bytes: 0, uploadCalls: 0, uploadKind: 'none' });
+    for (const operation of [gl.createShader, gl.createProgram, gl.createBuffer, gl.bufferData, gl.bufferSubData, gl.clear, gl.drawArrays]) expect(operation).not.toHaveBeenCalled();
+    renderer.dispose();
+    expect(JSON.stringify(state)).toBe(snapshot);
   });
 });
