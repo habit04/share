@@ -999,10 +999,23 @@ The next independently reviewable increment retains these gates:
   nonpainted boundary bounds through clipping and adjacent LINE deltas; charge
   boundaries plus four retained endpoints per segment before generation. Source
   `7ec17082` passes410 existing/scene checks and12 new mocked-GL cache regressions.
-  Native hatch image acceptance remains pending.
-- [ ] Freeze the combined hatch source; pass full checks, native Canvas/GPU images,
-  warm cache, edit/undo/redo, private DXF save/reopen and recovery on proven adapters,
-  followed by exact-head CI. Unsupported/uncertain hatches require complete Canvas.
+  Native hatch image acceptance passed on both recorded adapters at source2bf.
+- [x] Freeze and validate the combined hatch runtime at `2bfe98df`:3,530 tests,
+  28 conditional skips, all ten local checks and five native preflights passed.
+  Each actual Intel/NVIDIA hatch probe passed40 comparisons (18GPU,22exact
+  zero-GL Canvas),10 independent interiors,12 edit/undo/redo transitions,
+  private edited DXF save/reopen and automatic same-scene context restoration.
+  The push CI passed all five jobs. The PR GPU job was cancelled after roughly
+  20minutes without an assertion failure; timeout is inferred from timing.
+  CI-only `861ba3d9` raises the macro job budget to30minutes without changing
+  individual deadlines/assertions. Its runtime/script/test trees are identical
+  to2bf; all five jobs passed in both [PR CI](https://github.com/habit04/share/actions/runs/38482863074)
+  and [push CI](https://github.com/habit04/share/actions/runs/38482856868), first attempts.
+  See [source-bound hatch evidence](benchmarks/windows-gpu-hatch-2bf-checkpoint.json).
+- [ ] Adopt the permanent untimed native hatch gate in the existing benchmark;
+  prove actual caller cleanup and subsequent gates on both recorded adapters,
+  then require fresh exact-head CI. The earlier focused runner was private.
+  Unsupported/uncertain hatches continue to require complete Canvas.
 - [ ] Port the separately audited dimension increment only with current native
   fill/topology certificates and source-specific native evidence. Frozen978384bc
   is reuse material, not an accepted integration result.
