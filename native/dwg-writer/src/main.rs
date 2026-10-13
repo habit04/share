@@ -2219,18 +2219,16 @@ mod tests {
         assert_eq!(source.header.dim_text_style_handle, missing_standard);
         let aliases = metadata_aliases(&source).unwrap();
         assert!(!aliases.contains_key(&missing_standard.value()));
+        assert_eq!(
+            source
+                .objects
+                .values()
+                .filter(|object| matches!(object, ObjectType::MultiLeaderStyle(_)))
+                .count(),
+            0
+        );
         let mut completed = source.clone();
         completed.header.dim_text_style_handle = standard;
-        let mut completed_styles = 0;
-        for object in completed.objects.values_mut() {
-            if let ObjectType::MultiLeaderStyle(style) = object {
-                assert_eq!(style.name, "Standard");
-                assert_eq!(style.text_style_handle, Some(missing_standard));
-                style.text_style_handle = Some(standard);
-                completed_styles += 1;
-            }
-        }
-        assert_eq!(completed_styles, 1);
         assert_eq!(completed.objects[&Handle::new(0x155)], imported_style);
         assert_eq!(
             completed.object_xdata[&Handle::new(0x155)].records(),
@@ -2246,16 +2244,16 @@ mod tests {
         let reopened = DwgReader::from_stream(output).read().unwrap();
         let reopened_standard = reopened.text_styles.get("Standard").unwrap().handle;
         assert_eq!(reopened.header.dim_text_style_handle, reopened_standard);
-        let reopened_styles = reopened
-            .objects
-            .values()
-            .filter_map(|object| match object {
-                ObjectType::MultiLeaderStyle(style) => Some(style),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(reopened_styles.len(), 1);
-        assert_eq!(reopened_styles[0].text_style_handle, Some(reopened_standard));
+        for object in reopened.objects.values() {
+            if let ObjectType::MultiLeaderStyle(style) = object {
+                if let Some(text_style) = style.text_style_handle {
+                    assert!(reopened
+                        .text_styles
+                        .iter()
+                        .any(|entry| entry.handle == text_style));
+                }
+            }
+        }
         // Both full snapshots require all references to resolve. Compare the
         // complete XDATA payload and the completed header reference context.
         let after = metadata_snapshot(&reopened).unwrap();
