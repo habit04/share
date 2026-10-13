@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased (feature/3d-development)
+
+- Experimental 3D modelling behind Options > Files > Experimental (off by default): a WebGL2
+  viewport with orbit, pan, zoom, parallel and perspective views; BOX, WEDGE, CYLINDER, CONE,
+  SPHERE, TORUS, EXTRUDE, REVOLVE, UNION, SUBTRACT, INTERSECT, 3DPLANE, 3DMOVE, 3DROTATE,
+  3DSCALE, 3DDIST, 3DMASSPROP, 3DAREA and a 3DDIM prototype; 3D object snaps and grips; solids
+  saved in DXF as polyface meshes with JCad history (`JCAD_3D`); DWG saves of drawings with
+  solids are refused. 2D behaviour and files are unchanged with the setting off. See
+  docs/3D-STATUS.md.
+
 All notable changes to JCad Electrical are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this

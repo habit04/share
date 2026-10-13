@@ -142,10 +142,58 @@ Baseline on Windows x64, Node 22.23.3: typecheck, lint and 177 test files / 2,21
 
 ## Milestone 6: hardening
 
-Pending.
+- Works: `tests/perf-3d.test.ts` with budgets scaled by `JCAD_PERF_FACTOR` (heavy cases behind
+  `JCAD_BENCH`, `npm run bench:3d`); deterministic realistic fixtures under `tests/fixtures/3d/`
+  (an electrical enclosure with shell, door, mounting holes, DIN rails and 40 components built
+  with the kernel; a cable tray; the demo schematic with solids) checked for closedness, volumes
+  and byte-identical rewrite; seeded mutation fuzzing of `JCAD_3D` payloads and polyface records
+  (only `DxfReadError` escapes, every drop is reported, states stay sealed and within budget) and
+  of feature trees fed to the evaluator; `Model3DInputError` separates user input errors from
+  engine errors; `describeModel3DError` for the command line; the kernel worker queues requests
+  until ready and times out per request; `weldVertices` and `meshIsClosed` use hash tables
+  (12-20x and 6x faster, equivalence-tested); WASM memory facts covered by a test;
+  SECURITY-REVIEW E-19 / E-20 and a PERFORMANCE 3D section; [3D-TESTING.md](3D-TESTING.md)
+  lists which errors reach the user. Bugs found and fixed on the way: saved revolves with a
+  segment count reopened as plain meshes; out-of-range primitives produced zero- or
+  infinite-volume meshes silently; a null profile frame threw a TypeError; a point near the
+  revolve axis produced an open mesh; a race in the worker transport test.
+- Measured (i7-12850HX, Node 22): all primitives at maximum detail 6-13 ms; extrude with 10
+  holes 1-5 ms; revolve 100 x 256 9-41 ms; closedness / weld / volume on 500k triangles
+  111-137 / 306-508 / 30-67 ms; BVH build for 2M triangles 4.3-6.8 s (first pick only);
+  pick 0.01-0.02 ms per ray; DXF write / read of 100k triangles 0.4-0.6 / 0.9-1.4 s; sealing a
+  2M-triangle model 0.95-1.8 s; Manifold union of two 50k-triangle spheres 280-373 ms.
+- 2D regression: the whole existing suite, the golden DXF outputs and the screenshot /
+  UI-click / Electron end-to-end jobs in CI (run on every push of this branch) pass with the
+  flag off; CI run 38336811063 and later are green.
+- Tested: full suite 213 files / 2,698 tests, three typechecks, lint, fixtures, workflows and
+  build green on the final commit.
+- Remains / known: sealing and the first-pick BVH build run on the UI thread (a 2M-triangle
+  model pauses for about a second); closedness and weld checks of large Boolean operands run on
+  the main thread; the WebAssembly worker is served without its own CSP header and its memory
+  may grow to 4 GiB inside the renderer (E-19/E-20, not verified in the packaged app); an
+  over-budget Boolean is refused only after it was computed; `bench:3d` is not wired into CI;
+  `scripts/e2e-3d.mjs` could not be run from the development sandbox, so it is unverified as a
+  script (its checks were performed by hand in Chromium instead).
+
+## How to try it
+
+1. `npm ci`, `npm run build`, `npm start` (or `npm run dev` for the browser edition).
+2. Options > Files > Experimental: tick "3D modelling", restart.
+3. Ribbon tab **3D** or type `3DMODE`, then `BOX`, `CYLINDER`, `EXTRUDE`, `UNION`, `3DMOVE` and
+   so on; `3DDEMO` adds a test scene. Input sequences: [3D-MODELLING.md](3D-MODELLING.md) and
+   [3D-EDITING.md](3D-EDITING.md). File format: [3D-FILE-FORMAT.md](3D-FILE-FORMAT.md).
+
 
 ## Known limitations (always current)
 
+- Everything is behind the `experimental3d` setting (default off) and labelled experimental.
 - DWG files are never written with 3D objects (Save, Save As and EXPORTDWG refuse; save DXF).
+  Reading solids from DWG files is unsupported (polyface meshes are dropped and reported).
 - Models whose DXF would exceed the reader's limits cannot be saved; reduce the model.
 - Reading `3DSOLID`, `REGION`, `BODY` (ACIS) bodies is unsupported; they stay retained raw records.
+- Opening JCad's polyface files in AutoCAD or other programs has not been verified.
+- True 3D dimension entities are unsupported; 3DDIM writes a 2D aligned dimension on the
+  drawing plane. No fillets, chamfers, shells, surfaces, assemblies or drafting views.
+- Only the centre grip moves a solid; there is no transform gizmo; 2D modify commands transform
+  solids in the WCS XY plane; snaps on curved faces land on tessellation vertices.
+- Solids keep an ACI colour only; new solids take the current layer and colour.

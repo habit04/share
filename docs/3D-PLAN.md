@@ -1,6 +1,6 @@
 # JCad 3D: architecture and implementation plan
 
-Status: **experimental, in development** on branch `feature/3d-development`. Nothing in this
+Status: **experimental; milestones 0-6 delivered** on branch `feature/3d-development` (see [3D-STATUS.md](3D-STATUS.md) for what works, what is prototype-only and what remains). Nothing in this
 document describes a shipping feature. The 3D code is compiled into the application but is inert
 unless the user enables **Options > Experimental > 3D modelling** (setting `experimental3d`,
 default off). This file is the working plan; [3D-STATUS.md](3D-STATUS.md) records what each
