@@ -10,6 +10,19 @@ const SAVE_KINDS = Object.freeze(['drawing', 'project', 'export-copy']);
 const LIMITS = Object.freeze({ pending: 32, ledger: 640, payload: 128 * 1024 * 1024, queuedBytes: 256 * 1024 * 1024, ttlMs: 120000,
   batchParents: 2, batchChildren: 512, batchInputBytes: 128 * 1024 * 1024, batchPinChars: 16 * 1024 * 1024, batchHardLifeMs: 600000 });
 const fail = (code, message) => Object.assign(new Error(message), { code });
+const verifiedCommits = new WeakMap();
+/** Trusted main code only: IPC-cloned or caller-authored objects have no authority.
+ * @param {unknown} evidence @param {object} owner @returns {WriteTarget|null}
+ */
+function verifiedCommitTarget(evidence, owner) {
+  const recorded = evidence && typeof evidence === 'object' ? verifiedCommits.get(evidence) : undefined;
+  return recorded?.owner === owner ? recorded.pin : null;
+}
+/** @param {unknown} evidence @param {object} owner @returns {bigint|null} */
+function verifiedCommitOrder(evidence, owner) {
+  const recorded = evidence && typeof evidence === 'object' ? verifiedCommits.get(evidence) : undefined;
+  return recorded?.owner === owner ? recorded.order : null;
+}
 /** @typedef {import('./windows-path-identity.cjs').WindowsWriteTarget} WriteTarget */
 /** @typedef {{allowed:true, root?:string}|{allowed:false}} Authorization */
 /** @typedef {{captureWriteTarget:(path:string,root?:string)=>Promise<WriteTarget>, captureContentTarget?:(pin:WriteTarget,options?:{signal?:AbortSignal})=>Promise<WriteTarget>, revalidate:(pin:WriteTarget,options?:{preserveLeaf?:boolean,preserveVersion?:boolean,signal?:AbortSignal,metadataOnly?:boolean})=>Promise<WriteTarget>}} PathIdentity */
@@ -19,7 +32,8 @@ const fail = (code, message) => Object.assign(new Error(message), { code });
 /** @typedef {{signal:AbortSignal, target:WriteTarget, commit:(payload:string|Uint8Array,writer:SaveWriter)=>Promise<unknown>}} SaveScope */
 /** @typedef {{order:bigint, after:string|null, origins:Set<string|null>,parentPath:string,targetPath:string}} LedgerEntry */
 /** @typedef {{pin:WriteTarget,signal:AbortSignal,inputBytes:number,guard:()=>Promise<void>}} ProjectBatchReadScope */
-/** @typedef {{ticket:string,owner:object,kind:string,order:bigint,deadline:number,state:'issued'|'binding'|'bound'|'reading'|'preparing'|'running',abort:AbortController,pin?:WriteTarget,root?:string,task?:Promise<unknown>,batch?:ProjectBatch,readDone?:boolean}} Admission */
+/** @typedef {{validateSource?:(pin:WriteTarget)=>void|Promise<void>,onVerifiedCommit?:(evidence:object)=>void,onFinish?:()=>void}} BindLifecycle */
+/** @typedef {{ticket:string,owner:object,kind:string,order:bigint,deadline:number,state:'issued'|'binding'|'bound'|'reading'|'preparing'|'running',abort:AbortController,pin?:WriteTarget,root?:string,task?:Promise<unknown>,batch?:ProjectBatch,readDone?:boolean,lifecycle?:BindLifecycle,finished?:boolean}} Admission */
 /** @typedef {{ticket:string,owner:object,order:bigint,deadline:number,hardDeadline:number,state:'issued'|'binding'|'bound'|'sealing'|'sealed'|'beginning'|'committing'|'closing',abort:AbortController,children:Map<string,Admission>,selected:Set<string>,reserved:Set<string>,transitions:Map<string,string|null>,declarations:number,pinChars:number,inputBytes:number,task?:Promise<unknown>,closing?:Promise<void>}} ProjectBatch */
 
 /**
@@ -105,10 +119,18 @@ function createSaveAdmissions(options) {
       if (!unknown && !needed) ledger.delete(key);
     }
   }
-  function finish(entry) { pending.delete(entry.ticket); prune(); }
+  function finish(entry) {
+    pending.delete(entry.ticket);
+    if (!entry.finished) {
+      entry.finished = true;
+      // Cleanup callbacks cannot resurrect tickets or prevent capacity cleanup.
+      try { entry.lifecycle?.onFinish?.(); } catch { /* Caller-owned cleanup must be idempotent. */ }
+    }
+    prune();
+  }
   function reap() {
     const time = now();
-    for (const entry of pending.values()) if (!entry.batch && (entry.state === 'issued' || entry.state === 'bound') && entry.deadline <= time) { entry.abort.abort(); pending.delete(entry.ticket); }
+    for (const entry of pending.values()) if (!entry.batch && (entry.state === 'issued' || entry.state === 'bound') && entry.deadline <= time) { entry.abort.abort(); finish(entry); }
     for (const batch of batches.values()) {
       const idle = [...batch.children.values()].every((child) => child.state === 'bound');
       if (batch.state !== 'closing' && (time >= batch.hardDeadline || (idle && (batch.state === 'issued' || batch.state === 'bound' || batch.state === 'sealed') && time >= batch.deadline))) void closeProjectBatch(batch);
@@ -139,10 +161,14 @@ function createSaveAdmissions(options) {
     pending.set(ticket, { ticket, owner, kind, order: ++order, deadline: now() + ttlMs, state: 'issued', abort: new AbortController() });
     return ticket;
   }
-  function bind(ticket, owner, kind, value) {
+  /** @param {BindLifecycle} [lifecycle] */
+  function bind(ticket, owner, kind, value, lifecycle) {
     const entry = get(ticket, owner, kind);
     if (entry.state !== 'issued') throw fail('ERR_SAVE_TICKET', 'A save ticket can be bound only once.');
     const logicalPath = absoluteWindowsPath(value);
+    if (lifecycle !== undefined && (!lifecycle || typeof lifecycle !== 'object' || ['validateSource', 'onVerifiedCommit', 'onFinish'].some((key) => lifecycle[key] !== undefined && typeof lifecycle[key] !== 'function'))) throw fail('ERR_SAVE_CONFIGURATION', 'Bind lifecycle callbacks must be trusted main functions.');
+    const callbacks = lifecycle === undefined ? undefined : Object.freeze({ validateSource: lifecycle.validateSource, onVerifiedCommit: lifecycle.onVerifiedCommit, onFinish: lifecycle.onFinish });
+    entry.lifecycle = callbacks;
     entry.state = 'binding';
     const task = (async () => {
       try {
@@ -150,6 +176,21 @@ function createSaveAdmissions(options) {
         let pin = await identity.captureWriteTarget(logicalPath, root); abortCheck(entry);
         if (!pin.parentExists) throw fail('ENOENT', 'The save parent does not exist.');
         pin = await contentPin(pin, entry.abort.signal); abortCheck(entry);
+        if (callbacks?.validateSource) {
+          const validateSource = callbacks.validateSource;
+          try { await validateSource(pin); }
+          catch (error) {
+            // Join a known host writer's final verification/lineage hook, then
+            // compare the same borrowed source against fresh native evidence.
+            if (error?.code !== 'ERR_OPENED_SOURCE_CHANGED' || !tails.has(pin.queueKey)) throw error;
+            pin = await enqueue(pin.queueKey, async () => {
+              abortCheck(entry); if (await permission(entry, logicalPath, true) !== root) throw fail('ERR_SAVE_AUTHORIZATION', 'The save authorization scope changed.'); abortCheck(entry);
+              const current = await identity.revalidate(pin, { signal: entry.abort.signal });
+              await validateSource(current); abortCheck(entry); return current;
+            });
+          }
+          abortCheck(entry);
+        }
         entry.pin = pin; entry.root = root; entry.deadline = now() + ttlMs; entry.state = 'bound';
         return pin;
       } catch (error) { finish(entry); throw error; }
@@ -435,6 +476,8 @@ function createSaveAdmissions(options) {
           abortCheck(entry); await permission(entry, initial.logicalPath); abortCheck(entry);
           const current = await identity.revalidate(initial, { signal: entry.abort.signal });
           if (!current.parentExists) throw fail('ENOENT', 'The save parent does not exist.');
+          await entry.lifecycle?.validateSource?.(current); abortCheck(entry);
+          if (entry.lifecycle?.validateSource) await identity.revalidate(current, { preserveLeaf: true, preserveVersion: true, signal: entry.abort.signal });
           const checkOrder = (target) => {
             const previous = ledger.get(target.targetKey);
             if (previous && previous.order > entry.order) throw fail('ERR_SAVE_STALE', 'A newer host save has already reached this file.');
@@ -449,6 +492,9 @@ function createSaveAdmissions(options) {
             if (entry.batch) await guardProjectBasis(entry.batch);
             abortCheck(entry); await permission(entry, initial.logicalPath); abortCheck(entry);
             const target = await identity.revalidate(current, { preserveLeaf: true, preserveVersion: true, signal: entry.abort.signal });
+            await entry.lifecycle?.validateSource?.(target); abortCheck(entry);
+            // Native root/version/content checks stay last after async source work.
+            if (entry.lifecycle?.validateSource) await identity.revalidate(current, { preserveLeaf: true, preserveVersion: true, signal: entry.abort.signal });
             checkOrder(target);
           };
           try {
@@ -476,7 +522,7 @@ function createSaveAdmissions(options) {
     const initial = samePath(entry, value);
     const release = entry.batch ? claimBatchOperation() : () => {};
     entry.state = 'running';
-    let attempted = false, committed = false, stale = false, writeResult;
+    let attempted = false, committed = false, stale = false, writeResult, commitEvidence;
     /** @type {Promise<unknown>|undefined} */ let commitTask;
     const commit = (payload, writer) => {
       if (entry.state !== 'running' || pending.get(entry.ticket) !== entry) return Promise.reject(fail('ERR_SAVE_TICKET', 'The save callback is no longer active.'));
@@ -497,6 +543,8 @@ function createSaveAdmissions(options) {
             abortCheck(entry); await permission(entry, initial.logicalPath); abortCheck(entry);
             const current = await identity.revalidate(initial, { signal: entry.abort.signal });
             if (!current.parentExists) throw fail('ENOENT', 'The save parent does not exist.');
+            await entry.lifecycle?.validateSource?.(current); abortCheck(entry);
+            if (entry.lifecycle?.validateSource) await identity.revalidate(current, { preserveLeaf: true, preserveVersion: true, signal: entry.abort.signal });
             const previous = ledger.get(current.targetKey);
             if (previous && previous.order > entry.order) { stale = true; throw fail('ERR_SAVE_STALE', 'A newer host save has already reached this file.'); }
             checkVersion(initial, current, previous);
@@ -509,7 +557,9 @@ function createSaveAdmissions(options) {
               abortCheck(entry);
               if (entry.batch) await guardProjectBasis(entry.batch);
               abortCheck(entry); await permission(entry, initial.logicalPath); abortCheck(entry);
-              await identity.revalidate(current, { preserveLeaf: true, preserveVersion: true, signal: entry.abort.signal });
+              const target = await identity.revalidate(current, { preserveLeaf: true, preserveVersion: true, signal: entry.abort.signal });
+              await entry.lifecycle?.validateSource?.(target); abortCheck(entry);
+              if (entry.lifecycle?.validateSource) await identity.revalidate(current, { preserveLeaf: true, preserveVersion: true, signal: entry.abort.signal });
             };
             /** @type {Promise<void>|undefined} */ let markTask;
             const markCommitted = () => {
@@ -530,6 +580,9 @@ function createSaveAdmissions(options) {
               await markCommitted();
               const verified = await identity.revalidate(current, { preserveLeaf: true });
               if (fileVersionKey(verified.fileVersion) !== record.after) throw targetChanged();
+              commitEvidence = Object.freeze({ target: verified });
+              verifiedCommits.set(commitEvidence, { owner: entry.owner, pin: verified, order: entry.order });
+              entry.lifecycle?.onVerifiedCommit?.(commitEvidence);
               writeResult = result; return result;
             } finally {
               if (markTask) await markTask;
@@ -553,6 +606,8 @@ function createSaveAdmissions(options) {
           await permission(entry, initial.logicalPath); abortCheck(entry);
           const current = await identity.revalidate(initial, { signal: entry.abort.signal });
           if (!current.parentExists) throw fail('ENOENT', 'The save parent does not exist.');
+          await entry.lifecycle?.validateSource?.(current); abortCheck(entry);
+          if (entry.lifecycle?.validateSource) await identity.revalidate(current, { preserveLeaf: true, preserveVersion: true, signal: entry.abort.signal });
           const previous = ledger.get(current.targetKey);
           if (previous && previous.order > entry.order) { stale = true; return; }
           checkVersion(initial, current, previous);
@@ -572,7 +627,7 @@ function createSaveAdmissions(options) {
         if (stale) return Object.freeze({ status: 'stale', committed: false });
         if (hasError) throw annotate(error, committed);
         if (!committed) { abortCheck(entry); throw fail('ERR_SAVE_NO_COMMIT', 'The save operation finished without committing a file.'); }
-        return Object.freeze({ status: 'saved', committed: true, cancelledAfterCommit: entry.abort.signal.aborted, value: result, writeResult });
+        return Object.freeze({ status: 'saved', committed: true, cancelledAfterCommit: entry.abort.signal.aborted, value: result, writeResult, commitEvidence });
       } catch (failure) { throw annotate(failure, committed); }
       finally { finish(entry); release(); }
     })();
@@ -587,14 +642,14 @@ function createSaveAdmissions(options) {
     if (!owner || typeof owner !== 'object') throw fail('ERR_SAVE_TICKET', 'A main-owned save owner is required.');
     retired.add(owner);
     for (const batch of batches.values()) if (batch.owner === owner) void closeProjectBatch(batch);
-    for (const entry of pending.values()) if (entry.owner === owner) { entry.abort.abort(); if (entry.state === 'issued' || entry.state === 'bound') pending.delete(entry.ticket); }
+    for (const entry of pending.values()) if (entry.owner === owner) { entry.abort.abort(); if (entry.state === 'issued' || entry.state === 'bound') finish(entry); }
     prune();
   }
   async function dispose() {
     disposed = true;
     const tasks = [];
     for (const batch of batches.values()) tasks.push(closeProjectBatch(batch));
-    for (const entry of pending.values()) { entry.abort.abort(); if (entry.state === 'issued' || entry.state === 'bound') pending.delete(entry.ticket); else if (entry.task) tasks.push(entry.task); }
+    for (const entry of pending.values()) { entry.abort.abort(); if (entry.state === 'issued' || entry.state === 'bound') finish(entry); else if (entry.task) tasks.push(entry.task); }
     prune(); await Promise.allSettled(tasks); prune();
   }
   const stats = () => Object.freeze({ pending: ordinaryPending(), ledger: ledger.size, queuedBytes, queues: tails.size,
@@ -602,4 +657,4 @@ function createSaveAdmissions(options) {
   return Object.freeze({ issue, bind, prepare, run, cancel, retireOwner, dispose, stats,
     issueProjectBatch, bindProjectBatch, readProjectBatch, sealProjectBatch, beginProjectBatchCommit, cancelProjectBatch });
 }
-module.exports = { SAVE_KINDS, SAVE_ADMISSION_LIMITS: LIMITS, createSaveAdmissions };
+module.exports = { SAVE_KINDS, SAVE_ADMISSION_LIMITS: LIMITS, createSaveAdmissions, verifiedCommitTarget, verifiedCommitOrder };
