@@ -93,7 +93,9 @@ describe('mandatory repaired native runtime acceptance', () => {
     compareMasks(state.entities as unknown as Mask[], wanted);
     compareMasks(readDxf(writeDxf(state)).entities as unknown as Mask[], wanted);
   }, 60_000);
-  it.each(['r2018-views-fields', 'r2018-field-object-reference', 'r2018-unicode-metadata'])('joins the real %s DWG metadata by exact source identity', async (name) => {
+  // The production metadata join is Windows-only; direct native fixture acceptance
+  // above still runs everywhere, and the Windows installed probe requires all three joins.
+  it.runIf(process.platform === 'win32').each(['r2018-views-fields', 'r2018-field-object-reference', 'r2018-unicode-metadata'])('joins the real %s DWG metadata by exact source identity', async (name) => {
     const base = join(root, 'tests/fixtures/interchange', name);
     const oracle = JSON.parse(readFileSync(base + '.expected.json', 'utf8')) as {
       records: Array<{ type: string; handle: string }>;
