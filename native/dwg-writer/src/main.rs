@@ -2319,7 +2319,7 @@ mod tests {
             let text = format!(
                 "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1032\n9\n$TDCREATE\n40\n{local}\n9\n$TDUCREATE\n40\n{utc}\n0\nENDSEC\n0\nEOF\n"
             );
-            let document = DxfReader::from_reader(std::io::Cursor::new(text.as_bytes()))
+            let document = DxfReader::from_reader(std::io::Cursor::new(text.into_bytes()))
                 .unwrap()
                 .read()
                 .unwrap();
