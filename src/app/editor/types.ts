@@ -32,8 +32,15 @@ export interface SelectionRequest {
 
 export type OpenResult =
   /** `encoding`: the code page the DXF bytes were decoded from ($DWGCODEPAGE / BOM), when the desktop build detected one. */
-  | { path: string; identityPath?: string; kind: 'dxf'; text: string; encoding?: string }
-  | { path: string; identityPath?: string; kind: 'dwg'; payload: DwgImportPayload; version?: string };
+  | { path: string; identityPath?: string; openedSourceProof?: string; kind: 'dxf'; text: string; encoding?: string }
+  | { path: string; identityPath?: string; openedSourceProof?: string; kind: 'dwg'; payload: DwgImportPayload; version?: string };
+
+/** Runtime source context; authoritative byte/version evidence stays in the Windows host. */
+export interface OpenedSourceHint {
+  proof: string | null;
+  path: string | null;
+  mode: 'in-place' | 'save-as';
+}
 
 /** Sheet size in inches (already oriented) plus Electron's named page size when there is one. */
 export interface PlotSheet {
@@ -54,12 +61,14 @@ export interface FileBridge {
   /** Windows host order, captured before slow serialization, pickers or conversion. */
   issueSaveAdmission?(kind: 'drawing' | 'project' | 'export-copy'): Promise<string>;
   /** Missing leaves are provisional candidates, rather than immutable native alias evidence. */
-  bindSaveAdmission?(ticket: string, kind: 'drawing' | 'project' | 'export-copy', path: string): Promise<string | { identityPath: string; exists: boolean }>;
+  bindSaveAdmission?(ticket: string, kind: 'drawing' | 'project' | 'export-copy', path: string, source?: OpenedSourceHint): Promise<string | { identityPath: string; exists: boolean }>;
+  /** Release unused/closed runtime read evidence; presence identifies a source-proof-capable host. */
+  releaseOpenedSourceProof?(proof: string): Promise<void>;
   cancelSaveAdmission?(ticket: string, kind: 'drawing' | 'project' | 'export-copy'): Promise<void>;
   /** Resolve only a path already readable through native/project grants. */
   resolvePathIdentity?(path: string): Promise<string | null>;
   /** Consume host-proven identity from this completed commit; no fresh path lookup. */
-  saveAdmissionResult?(ticket: string): Promise<{ path: string; identityPath: string } | null>;
+  saveAdmissionResult?(ticket: string): Promise<{ path: string; identityPath: string; openedSourceProof?: string } | null>;
   /** One Windows host order covers a bounded project calculation before any snapshots or reads. */
   issueProjectSaveBatch?(): Promise<string>;
   bindProjectSaveBatch?(batch: string, paths: string[]): Promise<import('../project-save-batch').ProjectBatchBinding[]>;
@@ -73,7 +82,7 @@ export interface FileBridge {
   openShxFont?(): Promise<import('../../render/shx-fonts').ShxResource | null>;
   /** Windows only: licensed installed programs for this PDF plot, never drawing data. */
   pdfFont?(request: import('../../core/text-metrics').FontMetricsRequest): Promise<import('../pdf-fonts').PdfFontResult>;
-  openDxf(): Promise<{ path: string; identityPath?: string; text: string } | null>;
+  openDxf(): Promise<{ path: string; identityPath?: string; openedSourceProof?: string; text: string } | null>;
   /** Desktop only: open DXF or DWG (DWG parsed by LibreDWG in the main process). */
   openDrawing?(file?: string): Promise<OpenResult | null>;
   /**

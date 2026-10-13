@@ -51,7 +51,8 @@ contextBridge.exposeInMainWorld('jcad', {
   // Windows portable DWG saving and separate DWG copies.
   ...(process.platform === 'win32' ? {
     issueSaveAdmission: (kind) => ipcRenderer.invoke('issue-save-admission', kind),
-    bindSaveAdmission: (ticket, kind, path) => ipcRenderer.invoke('bind-save-admission', ticket, kind, path),
+    bindSaveAdmission: (ticket, kind, path, source) => ipcRenderer.invoke('bind-save-admission', ticket, kind, path, source),
+    releaseOpenedSourceProof: (proof) => ipcRenderer.invoke('release-opened-source-proof', proof),
     cancelSaveAdmission: (ticket, kind) => ipcRenderer.invoke('cancel-save-admission', ticket, kind),
     resolvePathIdentity: (path) => ipcRenderer.invoke('resolve-path-identity', path),
     saveAdmissionResult: (ticket) => ipcRenderer.invoke('save-admission-result', ticket),

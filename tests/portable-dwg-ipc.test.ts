@@ -266,15 +266,30 @@ describe('portable DWG IPC', () => {
     expect(f.exportCall).not.toHaveBeenCalled();
   });
 
-  it('saves a DWG opened through the native dialog using the verified writer and an atomic backup', async () => {
+  it('saves a chosen DWG through its completed-open proof, mock conversion and an atomic backup', async () => {
     const f = await setup();
     await fs.writeFile(f.target, 'original');
-    expect(await f.invoke('open-drawing')).toEqual({ path: f.target, identityPath: await fs.realpath(f.target), kind: 'dwg', payload: { imageDefs: [] }, version: 'AC1032' });
-    expect(await f.invoke('save-dwg', f.target, DXF)).toBe(f.target);
+    const opened = await f.invoke('open-drawing') as { openedSourceProof: string };
+    expect(opened).toEqual({ path: f.target, identityPath: await fs.realpath(f.target), openedSourceProof: expect.stringMatching(/^[a-f0-9]{48}$/), kind: 'dwg', payload: { imageDefs: [] }, version: 'AC1032' });
+    const ticket = await f.invoke('issue-save-admission', 'drawing');
+    await f.invoke('bind-save-admission', ticket, 'drawing', f.target, { proof: opened.openedSourceProof, path: f.target, mode: 'in-place' });
+    expect(await f.invoke('save-dwg', f.target, DXF, ticket)).toBe(f.target);
+    const receipt = await f.invoke('save-admission-result', ticket) as { openedSourceProof: string };
+    expect(receipt).toEqual({ path: f.target, identityPath: await fs.realpath(f.target), openedSourceProof: expect.stringMatching(/^[a-f0-9]{48}$/) });
+    expect(receipt.openedSourceProof).not.toBe(opened.openedSourceProof);
     expect(await fs.readFile(f.target)).toEqual(OUTPUT);
     expect(await fs.readFile(`${f.target}.bak`, 'utf8')).toBe('original');
     await expect(f.invoke('export-dwg', f.target, DXF)).rejects.toThrow(/Save dialog first/);
     expect(f.exportCall).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a changed opened DWG before conversion or backup without inferring a fresh baseline', async () => {
+    const f = await setup(); await fs.writeFile(f.target, 'original'); await fs.writeFile(`${f.target}.bak`, 'KEEP');
+    const opened = await f.invoke('open-drawing') as { openedSourceProof: string }; await fs.writeFile(f.target, 'outside');
+    const ticket = await f.invoke('issue-save-admission', 'drawing');
+    await expect(f.invoke('bind-save-admission', ticket, 'drawing', f.target, { proof: opened.openedSourceProof, path: f.target, mode: 'in-place' })).rejects.toThrow(/ERR_OPENED_SOURCE_CHANGED/);
+    await expect(f.invoke('save-dwg', f.target, DXF)).rejects.toThrow(/ERR_OPENED_SOURCE_PROOF/);
+    expect(f.exportCall).not.toHaveBeenCalled(); expect(await fs.readFile(f.target, 'utf8')).toBe('outside'); expect(await fs.readFile(`${f.target}.bak`, 'utf8')).toBe('KEEP');
   });
 
   it('refuses unknown, read-only, wrong-format and invalid DWG Save requests without launching a writer', async () => {

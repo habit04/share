@@ -17,6 +17,8 @@ import type { Editor } from './editor';
 import { fallbackUi, type EditorInternals } from './internals';
 import { rememberRecent } from './documents';
 import { SaveAdmission, isStaleSaveAdmission, isCommittedSaveAdmissionError, isSaveAdmissionAuthorizationError, unverifiedImportSource, UNVERIFIED_SOURCE_WARNING } from '../save-admission';
+import { adoptOpenedSourceProof, captureOpenedSourceProof, releaseOpenedSourceProof } from '../opened-source-proof';
+import { importReportOf } from '../../io/import-report';
 
 export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean, format?: 'dxf'): Promise<boolean> {
   if (!ed.fileBridge) {
@@ -32,6 +34,9 @@ export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean,
   const sessionRevision = session.revision;
   const contentGeneration = session.contentGeneration;
   const savedState = ed.doc.snapshot;
+  const source = captureOpenedSourceProof(session, bridge, session.filePath ?? importReportOf(savedState)?.sourcePath ?? null, saveAs || format === 'dxf' || !session.filePath ? 'save-as' : 'in-place');
+  let savedProof: string | undefined;
+  let completed = false;
   let compatibilityProblem: string | null = null;
   const revision = captureRevision();
   let target = saveAs || format === 'dxf' ? null : ed.doc.filePath;
@@ -40,6 +45,7 @@ export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean,
   // A recovered Windows DWG can be opened in an edition that only writes DXF.
   // Keep that edition's Save behavior: choose a DXF destination for the copy.
   if (target && /\.dwg$/i.test(target) && !canSaveDwg) target = null;
+  const sourceMode = target ? 'in-place' as const : 'save-as' as const;
   const suggest = (ed.suggestedName ?? fileName).replace(/\.dwg$/i, canSaveDwg ? '.dwg' : '.dxf');
   const sessionExists = () => ed.sessions.all.some((s) => s === session && s.contentGeneration === contentGeneration);
   const stillCurrent = () => sessionExists() && session.state === savedState && session.revision === sessionRevision;
@@ -52,6 +58,7 @@ export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean,
   let path: string | null;
   try {
     await admission.ready;
+    if (source && !admission.enabled) throw new Error('The Windows opened-source proof requires a guarded save admission. Reload the drawing or use a supported desktop bridge.');
     compatibilityProblem = dwgCompatibilityProblem(savedState);
     // Save As picks the file first and then queues the write behind any save of that file still on its way.
     if (!target && bridge.chooseDrawingPath) {
@@ -60,7 +67,7 @@ export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean,
     }
     if (admission.enabled && !target) throw new Error('The Windows bridge must choose a destination before preparing this save.');
     if (target) {
-      try { await admission.bind(target); }
+      try { await admission.bind(target, source ? { ...source.hint, mode: sourceMode } : undefined); }
       catch (error) {
         if (!saveAs && bridge.chooseDrawingPath && isSaveAdmissionAuthorizationError(error)) { await admission.close(); return ed.saveFile(true, format); }
         throw error;
@@ -86,13 +93,13 @@ export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean,
         if ((needsReview && !stillCurrent()) || (dwg && !sessionExists())) return null;
         if (!dwg) {
           const saved = admission.ticket ? await bridge.saveDxf(target, text, suggest, { admission: admission.ticket }) : await bridge.saveDxf(target, text, suggest);
-          await admission.confirmSaved(saved); return saved;
+          savedProof = await admission.confirmSaved(saved); return saved;
         }
         const status = await bridge.dwgExportStatus!();
         if (!sessionExists() || (needsReview && !stillCurrent())) return null;
         if (!status.available) throw new Error(`DWG saving is unavailable: ${status.reason || 'the portable DWG writer could not be loaded.'} Use Save As to save a DXF copy.`);
         const saved = admission.ticket ? await bridge.saveDwg!(target!, text, admission.ticket) : await bridge.saveDwg!(target!, text);
-        await admission.confirmSaved(saved); return saved;
+        savedProof = await admission.confirmSaved(saved); return saved;
       });
       if (r.status === 'stale') {
         ed.lastFileError = `a newer version of ${target} was saved meanwhile`;
@@ -104,6 +111,7 @@ export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean,
       path = await bridge.saveDxf(null, writeDxf(withoutUnusedLibraryBlocks(savedState)), suggest);
       if (path) saveQueue.markCompleted(path, revision);
     }
+    completed = true;
   } catch (err) {
     const unverifiedCommit = isCommittedSaveAdmissionError(err);
     if (!unverifiedCommit && isStaleSaveAdmission(err)) { ed.lastFileError = `a newer version of ${target} was saved meanwhile`; return false; }
@@ -117,22 +125,30 @@ export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean,
     if (choice === 'cancel' || ed.sessions.current.id !== sessionId || !sessionExists()) return false;
     await admission.close();
     return ed.saveFile(choice === 'saveas' ? true : saveAs, choice === 'saveas' && compatibilityProblem ? 'dxf' : format);
-  } finally { await admission.close(); }
-  if (!path) return false;
+  } finally {
+    await admission.close();
+    await source?.release();
+    if (!completed) await releaseOpenedSourceProof(bridge, savedProof);
+  }
+  if (!path) { await releaseOpenedSourceProof(bridge, savedProof); return false; }
   if ((st.savedRevisions.get(sessionId) ?? 0) > revision) {
     // A newer revision of this drawing was saved while this (slower) save ran, possibly to another
     // file: the drawing stays bound to that newer save - its file and its clean / modified state.
     ed.log(`Saved ${path} (an older revision: the drawing was saved again meanwhile and keeps that file).`);
+    await releaseOpenedSourceProof(bridge, savedProof);
     rememberRecent(ed, path);
     return true;
   }
   st.savedRevisions.set(sessionId, revision);
   const outcome = applySaveResult(ed.sessions, ed, sessionId, savedState, path, contentGeneration);
   if (outcome === 'replaced') {
+    await releaseOpenedSourceProof(bridge, savedProof);
     ed.log(`Saved ${path} (another drawing replaced this tab while saving; it keeps its current file).`);
     rememberRecent(ed, path);
     return true;
   }
+  if (outcome === 'closed' || !ed.sessions.all.includes(session)) await releaseOpenedSourceProof(bridge, savedProof);
+  else if (savedProof) adoptOpenedSourceProof(session, contentGeneration, bridge, savedProof, path);
   if (outcome === 'clean' && ed.sessions.current.id === sessionId) ed.suggestedName = null;
   ed.log(outcome === 'newer-edits' ? `Saved ${path} (edits made during the save are still unsaved).` : `Saved ${path}`);
   rememberRecent(ed, path);

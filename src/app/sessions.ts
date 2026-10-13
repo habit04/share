@@ -10,6 +10,7 @@ import { Drawing, type DrawingState } from '../core/document';
 import type { Point } from '../core/geometry';
 import { fileBaseName, samePath, shortNames } from './paths';
 import { prepareDrawingState, validateGeometryBudget } from '../core/geometry-budget';
+import { forgetOpenedSourceProof } from './opened-source-proof';
 
 export interface DocumentSession {
   readonly id: number;
@@ -149,6 +150,7 @@ export class SessionManager {
     if (!s) return;
     const { doc, viewport } = this.host;
     if (doc.loadCount !== this.observedDocumentLoadCount) {
+      forgetOpenedSourceProof(s);
       s.contentGeneration += 1;
       this.observedDocumentLoadCount = doc.loadCount;
     }
@@ -240,6 +242,7 @@ export class SessionManager {
     const restores = i === this.activeIndex || target !== (i < this.activeIndex ? this.activeIndex - 1 : this.activeIndex);
     // A rejected target must leave the outgoing tab and active index untouched.
     if (remaining.length && restores) validateGeometryBudget(remaining[target]!.state);
+    forgetOpenedSourceProof(this.list[i]!);
     this.list.splice(i, 1);
     if (this.list.length === 0) {
       // AutoCAD shows an empty application; we keep one blank drawing so the UI always has a document.
@@ -284,9 +287,11 @@ export class SessionManager {
     if (i === this.activeIndex) {
       this.host.loadState(state, filePath);
       this.host.doc.dirty = dirty;
+      this.sync();
       return true;
     }
     const s = this.list[i]!;
+    forgetOpenedSourceProof(s);
     s.revision += 1;
     s.contentGeneration += 1;
     s.state = state;

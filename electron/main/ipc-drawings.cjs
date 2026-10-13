@@ -53,11 +53,12 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
     if (process.platform !== 'win32') return { bytes: await readLimitedFile(fs, file, MAX_DRAWING_BYTES), identityPath: undefined };
     const changed = () => Object.assign(new Error('ERR_WINDOWS_PATH_CHANGED: the drawing changed while it was opened. Open it again.'), { code: 'ERR_WINDOWS_PATH_CHANGED' });
     const version = (stat) => [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].map(String).join(':');
-    /** @type {{version:string,size:bigint,identityPath:string|undefined,sha256?:string}|undefined} */ let captured;
+    const nativeVersion = (stat) => Object.freeze({ dev: String(stat.dev), ino: String(stat.ino), size: String(stat.size), mtimeNs: String(stat.mtimeNs), ctimeNs: String(stat.ctimeNs) });
+    /** @type {{version:string,size:bigint,identityPath:string|undefined,fileVersion:import('../windows-path-identity.cjs').FileVersion,sha256?:string}|undefined} */ let captured;
     const observe = async () => {
       const stat = await fs.stat(file, { bigint: true }), canonical = await identityPath(file);
       if (canonical && (version(await fs.stat(canonical, { bigint: true })) !== version(stat) || await identityPath(file) !== canonical)) throw changed();
-      return { version: version(stat), size: stat.size, identityPath: canonical };
+      return { version: version(stat), size: stat.size, identityPath: canonical, fileVersion: nativeVersion(stat) };
     };
     const check = async () => {
       if (!captured) throw changed();
@@ -92,7 +93,9 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
       },
     });
     await check();
-    return { bytes, identityPath: captured?.identityPath, check };
+    if (!captured?.identityPath || !captured.sha256) throw changed();
+    const sourceEvidence = Object.freeze({ canonicalPath: captured.identityPath, fileVersion: Object.freeze({ ...captured.fileVersion, sha256: captured.sha256 }) });
+    return { bytes, identityPath: captured.identityPath, sourceEvidence, check };
   }
   if (saveOrder) ipcMain.handle('resolve-path-identity', async (_ev, file) => {
     if (!pathPolicy.known(file, 'resolve-path-identity')) return null;
@@ -127,7 +130,8 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
    * A file chosen in the dialog becomes readable and writable by name; opening a known file by name
    * (Recent Documents, a project's drawing) reads it and leaves its access as it was.
    */
-  async function openDrawingFile(win, file) {
+  async function openDrawingFile(win, file, ev) {
+    const opening = saveOrder?.captureRead(ev);
     const chosen = !file;
     if (!file) {
       const res = await dialog.showOpenDialog(win, {
@@ -147,6 +151,8 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
       throw new Error('Unknown file path');
     }
     if (chosen) registry.grant(file);
+    const reservation = opening && saveOrder?.reserveRead(ev, opening, file);
+    try {
     if (file.toLowerCase().endsWith('.dwg')) {
       // The DXF working copy gets the DWG's access; Export Copy still needs its own Save dialog.
       const twin = file.replace(/\.dwg$/i, '.dxf');
@@ -156,20 +162,23 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
       const { payload, version } = await readDwgWithProgress(win, file, bytes);
       if (read.check) await read.check();
       pathPolicy.rememberImages(file, (payload.imageDefs || []).map((d) => d && d.fileName));
-      return { path: file, identityPath: read.identityPath, kind: 'dwg', payload, version };
+      const openedSourceProof = reservation ? saveOrder?.completeRead(ev, opening, reservation, read.sourceEvidence) : undefined;
+      return { path: file, identityPath: read.identityPath, openedSourceProof, kind: 'dwg', payload, version };
     }
     // Read bytes, not a UTF-8 string: pre-2007 DXF files are in the $DWGCODEPAGE code page.
     const read = await readDrawingBytes(file);
     const { text, encoding } = await decodeDxf(/** @type {Buffer} */ (read.bytes));
     if (read.check) await read.check();
     pathPolicy.rememberImages(file, dxfImageNames(text));
-    return { path: file, identityPath: read.identityPath, kind: 'dxf', text, encoding };
+    const openedSourceProof = reservation ? saveOrder?.completeRead(ev, opening, reservation, read.sourceEvidence) : undefined;
+    return { path: file, identityPath: read.identityPath, openedSourceProof, kind: 'dxf', text, encoding };
+    } finally { if (opening && reservation) saveOrder?.cancelRead(opening, reservation); }
   }
 
   ipcMain.handle('open-drawing', async (ev, file) => {
     const win = senderWindow(ev);
     if (file !== undefined && typeof file !== 'string') throw new Error('Invalid path');
-    return openDrawingFile(win, file);
+    return openDrawingFile(win, file, ev);
   });
 
   /**
@@ -438,8 +447,9 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
 
   ipcMain.handle('open-dxf', async (ev) => {
     const win = senderWindow(ev);
-    const r = await openDrawingFile(win);
-    return r && r.kind === 'dxf' ? { path: r.path, identityPath: r.identityPath, text: r.text } : null;
+    const r = await openDrawingFile(win, undefined, ev);
+    if (r && r.kind !== 'dxf' && r.openedSourceProof) saveOrder?.releaseRead(ev, r.openedSourceProof);
+    return r && r.kind === 'dxf' ? { path: r.path, identityPath: r.identityPath, openedSourceProof: r.openedSourceProof, text: r.text } : null;
   });
 
   /**

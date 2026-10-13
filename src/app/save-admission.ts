@@ -3,6 +3,7 @@ import type { FileBridge } from './editor';
 import type { DrawingState } from '../core/document';
 import { countOf, importReportOf, lossCount } from '../io/import-report';
 import { registerWindowsPathIdentity } from './paths';
+import { hasOpenedSourceProofs, releaseOpenedSourceProof, validOpenedSourceProof, type OpenedSourceHint } from './opened-source-proof';
 
 export type SaveAdmissionKind = 'drawing' | 'project' | 'export-copy';
 type IdentityBridge = FileBridge & { resolvePathIdentity?(path: string): Promise<string | null> };
@@ -28,6 +29,7 @@ export class SaveAdmission {
   private value: string | undefined;
   private closed = false;
   private bound: string | undefined;
+  private sourceContext = false;
 
   constructor(private readonly bridge: FileBridge, readonly kind: SaveAdmissionKind) {
     this.enabled = hasSaveAdmissions(bridge);
@@ -42,34 +44,42 @@ export class SaveAdmission {
   }
 
   get ticket(): string | undefined { return this.value; }
-  async bind(path: string): Promise<void> {
+  async bind(path: string, source?: OpenedSourceHint): Promise<void> {
     await this.ready;
     if (!this.enabled) return;
     if (this.closed) throw new Error('This save admission has already been released.');
     if (this.bound !== undefined) { if (this.bound !== path) throw new Error('A save admission cannot be transferred to another destination.'); return; }
-    const result = await this.bridge.bindSaveAdmission!(this.value!, this.kind, path);
+    const result = source ? await this.bridge.bindSaveAdmission!(this.value!, this.kind, path, source) : await this.bridge.bindSaveAdmission!(this.value!, this.kind, path);
     if (typeof result === 'string') registerWindowsPathIdentity(path, result);
     else if (result && typeof result.identityPath === 'string' && typeof result.exists === 'boolean') {
       if (result.exists) registerWindowsPathIdentity(path, result.identityPath);
     } else throw new Error('The Windows save host returned an invalid path identity.');
     this.bound = path;
+    this.sourceContext = this.kind === 'drawing' && source !== undefined;
   }
   /** Missing destinations become aliases only after the host created the actual leaf. */
-  async confirmSaved(path: string | null): Promise<void> {
+  async confirmSaved(path: string | null): Promise<string | undefined> {
     if (!path || !this.enabled) return;
+    let unusedProof: string | undefined;
     try {
     if (this.bridge.saveAdmissionResult) {
       const receipt = await this.bridge.saveAdmissionResult(this.value!);
+      unusedProof = receipt?.openedSourceProof;
       if (!receipt || receipt.path !== path) throw committedSaveAdmissionError('Its committed native identity receipt is unavailable. The drawing remains modified.');
+      if (this.sourceContext && hasOpenedSourceProofs(this.bridge) && !validOpenedSourceProof(unusedProof)) throw committedSaveAdmissionError('Its verified opened-source proof is unavailable. The drawing remains modified.');
       registerWindowsPathIdentity(path, receipt.identityPath);
+      if (this.sourceContext) return unusedProof;
+      await releaseOpenedSourceProof(this.bridge, unusedProof);
       return;
     }
+    if (this.sourceContext && hasOpenedSourceProofs(this.bridge)) throw committedSaveAdmissionError('Its committed native identity receipt and opened-source proof are unavailable. The drawing remains modified.');
     // Compatibility with earlier experimental bridges; the current Windows
     // host always supplies a receipt captured from the actual writer context.
     if (!this.bridge.resolvePathIdentity) return;
     const canonical = await this.bridge.resolvePathIdentity(path);
     if (canonical) registerWindowsPathIdentity(path, canonical);
     } catch (error) {
+      await releaseOpenedSourceProof(this.bridge, unusedProof);
       if (isCommittedSaveAdmissionError(error)) throw error;
       throw committedSaveAdmissionError(error instanceof Error ? error.message : String(error));
     }

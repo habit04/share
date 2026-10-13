@@ -18,6 +18,8 @@ import { readDxfForOpen, reportNeedsAttention, importReportLog, importReportOf }
 import { hasDwgSave } from '../drawing-save';
 import type { Editor } from './editor';
 import { fallbackUi } from './internals';
+import type { DocumentSession } from '../sessions';
+import { adoptOpenedSourceProof, releaseOpenedSourceProof } from '../opened-source-proof';
 
 /**
  * Why an open failed: file errors in plain words ("... could not be read: the folder is not
@@ -86,17 +88,24 @@ export async function openFile(ed: Editor, file?: string): Promise<boolean> {
   const target = ed.sessions.current;
   const targetId = target.id;
   const before = target.state;
+  const bridge = ed.fileBridge;
+  let unusedProof: string | undefined;
+  const acceptProof = (path: string) => (session: DocumentSession, generation: number) => {
+    if (!unusedProof || !ed.sessions.all.includes(session) || session.contentGeneration !== generation) return;
+    if (adoptOpenedSourceProof(session, generation, bridge, unusedProof, path)) unusedProof = undefined;
+  };
   try {
     if (ed.fileBridge.openDrawing) {
       ed.log(file ? `Opening ${file} ...` : 'Opening ...');
       const res = await ed.fileBridge.openDrawing(file);
       if (!res) return false;
+      unusedProof = res.openedSourceProof;
       if (ed.fileBridge.platform === 'win32' && res.identityPath) registerWindowsPathIdentity(res.path, res.identityPath);
       const writableDwg = res.kind === 'dwg' && hasDwgSave(ed.fileBridge);
       if ((res.kind === 'dxf' || writableDwg) && showAlreadyOpen(ed, res.path, targetId, before)) return true;
       if (res.kind === 'dwg') {
         const { state, skipped, notes } = convertDwg(res.payload, res.path);
-        const where = deliverOpened(ed, targetId, before, state, writableDwg ? res.path : null, !writableDwg);
+        const where = deliverOpened(ed, targetId, before, state, writableDwg ? res.path : null, !writableDwg, acceptProof(res.path));
         rememberRecent(ed, res.path);
         if (where === 'active' || where === 'new-tab') ed.suggestedName = writableDwg ? null : res.path.replace(/\.dwg$/i, '.dxf').split(/[\\/]/).pop() ?? null;
         const skippedText = Object.keys(skipped).length
@@ -117,7 +126,7 @@ export async function openFile(ed: Editor, file?: string): Promise<boolean> {
       // The same file may have finished opening in another tab while this one was read (RECENT twice).
       if (showAlreadyOpen(ed, res.path, targetId, before)) return true;
       // A recovered (truncated) file opens modified: Save As keeps it under a new name.
-      const where = deliverOpened(ed, targetId, before, state, res.path, !!importReportOf(state)?.recovered);
+      const where = deliverOpened(ed, targetId, before, state, res.path, !!importReportOf(state)?.recovered, acceptProof(res.path));
       rememberRecent(ed, res.path);
       ed.log(`Opened ${res.path}: ${state.entities.length} entities, ${state.layers.length} layers, ${Object.keys(state.blocks).length} blocks.${res.encoding ? ` Encoding: ${res.encoding}.` : ''}${OPENED_WHERE[where]}`);
       showOpenedReport(ed, where, state, res.path);
@@ -125,6 +134,7 @@ export async function openFile(ed: Editor, file?: string): Promise<boolean> {
     }
     const res = await ed.fileBridge.openDxf();
     if (!res) return false;
+    unusedProof = res.openedSourceProof;
     if (ed.fileBridge.platform === 'win32' && res.identityPath) registerWindowsPathIdentity(res.path, res.identityPath);
     const state = await ed.readDxfText(res.text, res.path);
     if (!state) {
@@ -132,7 +142,7 @@ export async function openFile(ed: Editor, file?: string): Promise<boolean> {
       return false;
     }
     if (showAlreadyOpen(ed, res.path, targetId, before)) return true;
-    const where = deliverOpened(ed, targetId, before, state, res.path, !!importReportOf(state)?.recovered);
+    const where = deliverOpened(ed, targetId, before, state, res.path, !!importReportOf(state)?.recovered, acceptProof(res.path));
     ed.log(`Opened ${res.path}: ${state.entities.length} entities, ${state.layers.length} layers, ${Object.keys(state.blocks).length} blocks.`);
     showOpenedReport(ed, where, state, res.path);
     return true;
@@ -140,7 +150,7 @@ export async function openFile(ed: Editor, file?: string): Promise<boolean> {
     ed.lastFileError = openErrorText(err, file);
     ed.log(`Failed to open drawing: ${ed.lastFileError}`);
     return false;
-  }
+  } finally { await releaseOpenedSourceProof(bridge, unusedProof); }
 }
 
 export function showImportReport(ed: Editor, force: boolean, state: DrawingState, name: string): void {
@@ -187,21 +197,28 @@ export function showAlreadyOpen(ed: Editor, path: string, targetId: number, befo
  * only brought to the front when the user is still on the tab the open started from: someone
  * working in another tab meanwhile keeps working there (no command or click lands in the new one).
  */
-export function deliverOpened(ed: Editor, targetId: number, before: DrawingState, state: DrawingState, path: string | null, dirty: boolean): OpenedWhere {
+export function deliverOpened(ed: Editor, targetId: number, before: DrawingState, state: DrawingState, path: string | null, dirty: boolean, accepted?: (session: DocumentSession, generation: number) => void): OpenedWhere {
   const cur = ed.sessions.current;
   if (cur.id === targetId && cur.state === before) {
+    const expectedLoad = ed.doc.loadCount + 1, generation = cur.contentGeneration + 1;
     ed.loadState(state, path);
-    ed.doc.dirty = dirty;
+    const current = ed.sessions.current;
+    if (current === cur && ed.doc.loadCount === expectedLoad && current.contentGeneration === generation) {
+      ed.doc.dirty = dirty;
+      accepted?.(current, generation);
+    }
     return 'active';
   }
   const i = ed.sessions.indexOfId(targetId);
   const s = i >= 0 ? ed.sessions.all[i] : undefined;
   if (s && s.state === before) {
+    const generation = s.contentGeneration + 1;
     const d = new Drawing();
     // Same preparation as loadState: older library symbols keep taking the reference's colour.
     d.load(withByBlockLibrarySymbols(state), path);
     d.ensureBlocks([...LIBRARY_SYMBOLS, TITLE_BLOCK, SOURCE_ARROW, DEST_ARROW, WIRE_DOT]);
     ed.sessions.loadInto(targetId, d.snapshot, path, dirty);
+    if (ed.sessions.all.includes(s) && s.contentGeneration === generation) accepted?.(s, generation);
     ed.notify('file');
     return 'background';
   }
@@ -209,12 +226,17 @@ export function deliverOpened(ed: Editor, targetId: number, before: DrawingState
     const d = new Drawing();
     d.load(withByBlockLibrarySymbols(state), path);
     d.ensureBlocks([...LIBRARY_SYMBOLS, TITLE_BLOCK, SOURCE_ARROW, DEST_ARROW, WIRE_DOT]);
+    const previous = new Set(ed.sessions.all);
     ed.sessions.addInBackground(d.snapshot, path, dirty);
+    const added = ed.sessions.all.filter(session => !previous.has(session));
+    if (added.length === 1 && added[0]!.contentGeneration === 0 && added[0]!.filePath === path) accepted?.(added[0]!, 0);
     ed.notify('file');
     return 'new-background-tab';
   }
+  const previous = new Set(ed.sessions.all);
   ed.sessions.add(state, path, dirty);
-  ed.doc.dirty = dirty;
+  const added = ed.sessions.all.filter(session => !previous.has(session));
+  if (added.length === 1 && added[0]!.contentGeneration === 0 && added[0]!.filePath === path) accepted?.(added[0]!, 0);
   return 'new-tab';
 }
 

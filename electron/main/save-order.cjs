@@ -1,7 +1,8 @@
 /** Guarded Windows save tickets belong to one live main-frame document. */
 'use strict';
-const { createWindowsPathIdentity } = require('../windows-path-identity.cjs');
+const { createWindowsPathIdentity, absoluteWindowsPath, asciiCaseFold } = require('../windows-path-identity.cjs');
 const { createSaveAdmissions } = require('../save-admissions.cjs');
+const { createOpenedSourceProofs } = require('../opened-source-proofs.cjs');
 
 // Electron does not transport arbitrary Error.code properties. Keep the code in its message
 // so existing file-error guidance still identifies confinement, cancellation and stale saves.
@@ -26,11 +27,14 @@ function receiptOf(value) {
  */
 function registerSaveOrder(ctx, authorize) {
   const { ipcMain, senderWindow } = ctx;
-  const admissions = createSaveAdmissions({ identity: createWindowsPathIdentity(), authorize });
+  const identity = createWindowsPathIdentity(), admissions = createSaveAdmissions({ identity, authorize });
+  const sourceProofs = createOpenedSourceProofs();
   /** @type {WeakMap<Electron.WebContents,object>} */ const owners = new WeakMap();
   const watched = new WeakSet();
   const captures = new WeakSet();
-  /** @type {WeakMap<object,Map<string,{path:string,identityPath:string}>>} */ const receipts = new WeakMap();
+  const readCaptures = new WeakSet();
+  /** @type {Map<string,{owner:object,proof?:string}>} */ const sourceBinds = new Map();
+  /** @type {WeakMap<object,Map<string,{path:string,identityPath:string,openedSourceProof?:string}>>} */ const receipts = new WeakMap();
   function owner(ev) {
     const win = senderWindow(ev), contents = win.webContents;
     if (contents.isDestroyed()) throw new Error('The saving document is closed.');
@@ -38,7 +42,8 @@ function registerSaveOrder(ctx, authorize) {
       watched.add(contents);
       const retire = () => {
         const previous = owners.get(contents);
-        if (previous) { admissions.retireOwner(previous); receipts.delete(previous); }
+        if (previous) { admissions.retireOwner(previous); sourceProofs.retireOwner(previous); receipts.delete(previous); }
+        for (const [ticket, source] of sourceBinds) if (source.owner === previous) sourceBinds.delete(ticket);
         owners.delete(contents);
       };
       contents.on('did-start-navigation', (_event, _url, inPlace, mainFrame) => { if (mainFrame && !inPlace) retire(); });
@@ -51,13 +56,73 @@ function registerSaveOrder(ctx, authorize) {
     return current;
   }
   ipcMain.handle('issue-save-admission', (ev, kind) => admissions.issue(owner(ev), kind));
-  ipcMain.handle('bind-save-admission', async (ev, ticket, kind, file) => {
+  ipcMain.handle('bind-save-admission', async (ev, ticket, kind, file, source) => {
     try {
-      const pin = await admissions.bind(ticket, owner(ev), kind, file);
-      return { identityPath: pin.canonicalPath, exists: pin.exists };
+      const current = owner(ev);
+      if (sourceBinds.has(ticket)) throw Object.assign(new Error('This source admission is already bound.'), { code: 'ERR_SAVE_TICKET' });
+      if (source === undefined) {
+        const pin = await admissions.bind(ticket, current, kind, file, {
+          validateSource: target => sourceProofs.assertUnprotectedDestination(current, target),
+        });
+        return { identityPath: pin.canonicalPath, exists: pin.exists };
+      }
+      if (kind !== 'drawing' || !source || typeof source !== 'object' || !['in-place', 'save-as'].includes(source.mode)
+        || source.proof !== null && typeof source.proof !== 'string' || source.path !== null && typeof source.path !== 'string') throw Object.assign(new Error('A valid opened drawing source context is required.'), { code: 'ERR_OPENED_SOURCE_CONTEXT' });
+      const sourcePath = source.path === null ? null : absoluteWindowsPath(source.path);
+      const lease = source.proof === null ? undefined : sourceProofs.borrow(current, source.proof);
+      let reservation;
+      try { reservation = sourceProofs.reserve(current, file, lease, source.mode); }
+      catch (error) { if (lease) sourceProofs.releaseBorrow(lease); throw error; }
+      /** @type {{owner:object,proof?:string}} */ const context = { owner: current };
+      sourceBinds.set(ticket, context);
+      /** @type {'source'|'copy'} */ let relation = 'copy';
+      const cleanup = () => {
+        sourceProofs.cancelReservation(reservation, current);
+        if (lease) sourceProofs.releaseBorrow(lease);
+        if (!context.proof) sourceBinds.delete(ticket);
+      };
+      try {
+        const pin = await admissions.bind(ticket, current, kind, file, {
+          async validateSource(target) {
+            if (lease) { relation = sourceProofs.validateDestination(lease, current, target, source.mode); return; }
+            if (sourcePath === null) {
+              if (source.mode !== 'save-as') throw Object.assign(new Error('An unsaved drawing requires a chosen destination.'), { code: 'ERR_OPENED_SOURCE_CONTEXT' });
+              sourceProofs.assertUnprotectedDestination(current, target);
+              return;
+            }
+            const refuse = () => Object.assign(new Error('The original opened version is unavailable. Preserve this drawing with Save As to a new separate file, or reopen the original.'), { code: 'ERR_OPENED_SOURCE_PROOF' });
+            if (source.mode === 'in-place' || asciiCaseFold(target.logicalPath) === asciiCaseFold(sourcePath)) throw refuse();
+            const permission = await authorize(current, kind, sourcePath);
+            if (permission.allowed) {
+              const original = await identity.captureWriteTarget(sourcePath, permission.root);
+              if (original.canonicalPath === target.canonicalPath || original.fileVersion && target.fileVersion && original.fileVersion.dev === target.fileVersion.dev && original.fileVersion.ino === target.fileVersion.ino) throw refuse();
+            } else if (target.exists) throw refuse();
+            sourceProofs.assertUnprotectedDestination(current, target);
+          },
+          onVerifiedCommit(evidence) { context.proof = sourceProofs.completeCommit(reservation, current, evidence, relation); },
+          onFinish: cleanup,
+        });
+        return { identityPath: pin.canonicalPath, exists: pin.exists };
+      } catch (error) { cleanup(); sourceBinds.delete(ticket); throw error; }
     }
     catch (error) { throw transportError(error); }
   });
+  ipcMain.handle('release-opened-source-proof', (ev, proof) => sourceProofs.release(proof, owner(ev)));
+
+  /** Capture the original main document before a picker/read can await. */
+  function captureRead(ev) { const captured = Object.freeze({ owner: owner(ev) }); readCaptures.add(captured); return captured; }
+  function readOwner(ev, captured) {
+    if (!captured || !readCaptures.has(captured) || owner(ev) !== captured.owner) throw Object.assign(new Error('The original opening document is no longer active.'), { code: 'ERR_OPENED_SOURCE_RETIRED' });
+    return captured.owner;
+  }
+  function reserveRead(ev, captured, file) {
+    try { return sourceProofs.reserve(readOwner(ev, captured), file); } catch (error) { throw transportError(error); }
+  }
+  function completeRead(ev, captured, reservation, evidence) {
+    try { return sourceProofs.completeRead(reservation, readOwner(ev, captured), evidence); } catch (error) { throw transportError(error); }
+  }
+  function cancelRead(captured, reservation) { if (captured && readCaptures.has(captured) && reservation) sourceProofs.cancelReservation(reservation, captured.owner); }
+  function releaseRead(ev, proof) { return sourceProofs.release(proof, owner(ev)); }
   ipcMain.handle('cancel-save-admission', (ev, ticket, kind) => { admissions.cancel(ticket, owner(ev), kind); });
   ipcMain.handle('save-admission-result', (ev, ticket) => {
     const saved = receipts.get(owner(ev));
@@ -109,32 +174,45 @@ function registerSaveOrder(ctx, authorize) {
     let captured;
     try {
       captured = currentCapture(ev, kind, ticket);
-      if (captured.implicit) await admissions.bind(captured.ticket, captured.owner, kind, file);
+      if (captured.implicit) await admissions.bind(captured.ticket, captured.owner, kind, file, {
+        validateSource: target => sourceProofs.assertUnprotectedDestination(captured.owner, target),
+      });
       const result = await admissions.run(captured.ticket, captured.owner, kind, file, operation);
       if (result.status === 'stale') throw Object.assign(new Error('ERR_SAVE_STALE: a newer save already reached this file. The older snapshot was not written.'), { code: 'ERR_SAVE_STALE' });
       const written = receiptOf(result.writeResult);
       if (written) {
         let saved = receipts.get(captured.owner);
         if (!saved) { saved = new Map(); receipts.set(captured.owner, saved); }
-        if (saved.size >= 64) { const oldest = saved.keys().next().value; if (oldest !== undefined) saved.delete(oldest); }
-        saved.set(captured.ticket, Object.freeze({ path: written.path, identityPath: written.identityPath }));
+        if (saved.size >= 64) {
+          const oldest = saved.keys().next().value;
+          if (oldest !== undefined) { const prior = saved.get(oldest); if (prior?.openedSourceProof) sourceProofs.release(prior.openedSourceProof, captured.owner); saved.delete(oldest); }
+        }
+        const source = sourceBinds.get(captured.ticket);
+        saved.set(captured.ticket, Object.freeze({ path: written.path, identityPath: written.identityPath, ...(source?.proof ? { openedSourceProof: source.proof } : {}) }));
+        sourceBinds.delete(captured.ticket);
         return written.path;
       }
       return result.value;
     } catch (error) {
+      const source = captured && sourceBinds.get(captured.ticket);
+      if (source?.proof) { try { sourceProofs.release(source.proof, source.owner); } catch { /* Owner retirement already removed it. */ } }
+      if (captured) sourceBinds.delete(captured.ticket);
       throw transportError(error);
     } finally { discard(captured); }
   }
   async function prepare(ev, kind, file, ticket, operation) {
     const captured = currentCapture(ev, kind, ticket);
     try {
-      if (captured.implicit) await admissions.bind(captured.ticket, captured.owner, kind, file);
+      if (captured.implicit) await admissions.bind(captured.ticket, captured.owner, kind, file, {
+        validateSource: target => sourceProofs.assertUnprotectedDestination(captured.owner, target),
+      });
       const result = await admissions.prepare(captured.ticket, captured.owner, kind, file, operation);
       if (result.status === 'stale') throw Object.assign(new Error('ERR_SAVE_STALE: a newer save already reached this file; its backup is kept.'), { code: 'ERR_SAVE_STALE' });
       return result.value;
     } catch (error) { throw transportError(error); }
     finally { discard(captured); }
   }
-  return Object.freeze({ capture, discard, assertCurrent, run, prepare, readBatch, stats: admissions.stats });
+  return Object.freeze({ capture, discard, assertCurrent, captureRead, reserveRead, completeRead, cancelRead, releaseRead, run, prepare, readBatch,
+    stats: () => Object.freeze({ ...admissions.stats(), openedSources: sourceProofs.stats() }) });
 }
 module.exports = { registerSaveOrder };
