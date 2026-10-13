@@ -108,6 +108,7 @@ export function findObjectSnap(
   aperture: number,
   basePoint: Point | null,
   hiddenLayers: ReadonlySet<string>,
+  pointAllowed?: (point: Point) => boolean,
 ): SnapResult | null {
   if (!settings.osnap) return null;
   let best: SnapResult | null = null;
@@ -126,6 +127,7 @@ export function findObjectSnap(
     grid: 5,
   };
   const consider = (r: SnapResult) => {
+    if (pointAllowed && !pointAllowed(r.point)) return;
     const d = g.dist(cursor, r.point);
     if (d > aperture) return;
     // Weight by priority so endpoints win over "nearest" at similar distance.

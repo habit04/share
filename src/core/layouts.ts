@@ -63,6 +63,10 @@ export interface LayoutViewport {
   readonly on: boolean;
   /** Layers frozen in this viewport only (VPLAYER / DXF 331). */
   readonly frozenLayers?: readonly string[];
+  /** Native, closed straight-polyline clip in paper coordinates. Curved clips remain reported. */
+  readonly clipBoundary?: PolylineEntity;
+  /** A retained native boundary may be disabled; omitted means enabled. */
+  readonly clipOn?: boolean;
 }
 
 export type PlotStyleMode = 'monochrome' | 'grayscale' | 'color' | 'screening';
@@ -353,8 +357,18 @@ export function viewportModelBounds(vp: LayoutViewport): Bounds {
   return { min: { x: vp.view.center.x - hw, y: vp.view.center.y - hh }, max: { x: vp.view.center.x + hw, y: vp.view.center.y + hh } };
 }
 
-export function pointInViewport(vp: Pick<LayoutViewport, 'center' | 'width' | 'height'>, p: Point): boolean {
-  return Math.abs(p.x - vp.center.x) <= vp.width / 2 && Math.abs(p.y - vp.center.y) <= vp.height / 2;
+export function pointInViewport(vp: Pick<LayoutViewport, 'center' | 'width' | 'height' | 'clipBoundary' | 'clipOn'>, p: Point): boolean {
+  const tolerance = vp.clipBoundary && vp.clipOn !== false ? 1e-9 : 0;
+  if (Math.abs(p.x - vp.center.x) > vp.width / 2 + tolerance || Math.abs(p.y - vp.center.y) > vp.height / 2 + tolerance) return false;
+  const points = vp.clipOn === false ? undefined : vp.clipBoundary?.points;
+  if (!points) return true;
+  let inside = false;
+  for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+    const a = points[j]!, b = points[i]!;
+    if (g.distToSegment(p, a, b) <= 1e-9) return true;
+    if ((a.y > p.y) !== (b.y > p.y) && p.x < a.x + (p.y - a.y) * (b.x - a.x) / (b.y - a.y)) inside = !inside;
+  }
+  return inside;
 }
 
 /** The topmost (last) viewport under a paper point. */
@@ -413,12 +427,13 @@ export function viewportFrame(vp: LayoutViewport): ViewportFrame {
   if (!f) {
     const b = viewportPaperBounds(vp);
     f = {
+      ...(vp.clipOn !== false ? vp.clipBoundary : undefined),
       id: vp.id,
       type: 'polyline',
-      layer: vp.layer,
-      color: 'ByLayer',
+      layer: vp.clipOn !== false && vp.clipBoundary ? vp.clipBoundary.layer : vp.layer,
+      color: vp.clipOn !== false && vp.clipBoundary ? vp.clipBoundary.color : 'ByLayer',
       closed: true,
-      points: [b.min, { x: b.max.x, y: b.min.y }, b.max, { x: b.min.x, y: b.max.y }],
+      points: (vp.clipOn !== false ? vp.clipBoundary?.points : undefined) ?? [b.min, { x: b.max.x, y: b.min.y }, b.max, { x: b.min.x, y: b.max.y }],
       vport: vp,
     };
     frameCache.set(vp, f);
@@ -442,6 +457,22 @@ export function paperEntities(layout: Layout): readonly Entity[] {
 function viewportFromFrame(f: ViewportFrame): LayoutViewport {
   const vp = f.vport;
   if (f === frameCache.get(vp)) return vp;
+  if (vp.clipBoundary && vp.clipOn !== false) {
+    // A move carries the rectangle and view. A reshape updates the enclosing rectangle
+    // while keeping model content anchored at the same paper coordinates.
+    const old = g.boundsOfPoints(vp.clipBoundary.points)!;
+    const next = g.boundsOfPoints(f.points)!;
+    const moved = f.points.length === vp.clipBoundary.points.length && f.points.every((p, i) => {
+      const original = vp.clipBoundary!.points[i]!;
+      return Math.abs(p.x - original.x - (next.min.x - old.min.x)) < 1e-9 && Math.abs(p.y - original.y - (next.min.y - old.min.y)) < 1e-9;
+    });
+    const center = moved ? g.add(vp.center, g.sub(next.min, old.min)) : g.mid(next.min, next.max);
+    const delta = g.scale(g.sub(center, vp.center), 1 / vp.view.scale);
+    const angle = viewTwist(vp.view);
+    const view = moved ? vp.view : { ...vp.view, center: g.add(vp.view.center, angle ? g.rotate(delta, -angle) : delta) };
+    const { vport: _view, ...outline } = f;
+    return { ...vp, id: f.id, center, view, ...(!moved ? { width: Math.max(next.max.x - next.min.x, 1e-6), height: Math.max(next.max.y - next.min.y, 1e-6) } : {}), clipBoundary: { ...outline, id: vp.clipBoundary.id } };
+  }
   let minX = Infinity;
   let minY = Infinity;
   let maxX = -Infinity;
@@ -460,7 +491,8 @@ function viewportFromFrame(f: ViewportFrame): LayoutViewport {
   const delta = g.scale(g.sub(center, vp.center), 1 / vp.view.scale);
   const angle = viewTwist(vp.view);
   const view = resized ? { ...vp.view, center: g.add(vp.view.center, angle ? g.rotate(delta, -angle) : delta) } : vp.view;
-  return { ...vp, id: f.id, layer: f.layer, center, width, height, view };
+  const clipBoundary = vp.clipBoundary ? { ...vp.clipBoundary, points: vp.clipBoundary.points.map((p) => ({ x: center.x + (p.x - vp.center.x) * width / vp.width, y: center.y + (p.y - vp.center.y) * height / vp.height })) } : undefined;
+  return { ...vp, id: f.id, layer: f.layer, center, width, height, view, ...(clipBoundary ? { clipBoundary } : {}) };
 }
 
 /** Fold an edited paper-space entity list (see `paperEntities`) back into the layout. */

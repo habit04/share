@@ -72,6 +72,8 @@ export interface PdfDrawGroup {
   readonly rotation?: number;
   /** Clip rectangle in page points. */
   readonly clip?: { x: number; y: number; w: number; h: number };
+  /** Additional native viewport polygon clip in page points (intersected with clip). */
+  readonly clipPolygon?: readonly Point[];
   /** Layers left out (off, frozen, no-plot, frozen in this viewport). */
   readonly hidden: ReadonlySet<string>;
   /** Points per linetype pattern unit (model: k; layout viewports: paper units, like PSLTSCALE 1). */
@@ -80,7 +82,7 @@ export interface PdfDrawGroup {
   readonly annoFactor: number;
   readonly hideAnnotative?: boolean;
   /** Frames of floating viewports (drawn as rectangles when their layer plots). */
-  readonly frames?: ReadonlyArray<{ x: number; y: number; w: number; h: number; layer: string }>;
+  readonly frames?: ReadonlyArray<{ x: number; y: number; w: number; h: number; layer: string; polygon?: readonly Point[] }>;
 }
 
 export interface PdfPageSpec {
@@ -194,11 +196,12 @@ export function layoutPageSpec(state: DrawingState, layout: Layout, lookup: Bloc
   const hidden = hiddenLayers(state.layers);
   const canno = cannoscaleValue(state.header?.cannoscale);
   const groups: PdfDrawGroup[] = [];
-  const frames: Array<{ x: number; y: number; w: number; h: number; layer: string }> = [];
+  const frames: Array<{ x: number; y: number; w: number; h: number; layer: string; polygon?: readonly Point[] }> = [];
   for (const v of layout.viewports) {
     const vb = viewportPaperBounds(v);
     const rect = { x: pe + pk * vb.min.x, y: pf + pk * vb.min.y, w: pk * v.width, h: pk * v.height };
-    frames.push({ ...rect, layer: v.layer });
+    const polygon = v.clipOn !== false ? v.clipBoundary?.points.map((p) => ({ x: pe + pk * p.x, y: pf + pk * p.y })) : undefined;
+    if (!polygon) frames.push({ ...rect, layer: v.layer });
     if (!v.on) continue;
     const s = v.view.scale;
     const rotation = viewTwist(v.view);
@@ -210,13 +213,15 @@ export function layoutPageSpec(state: DrawingState, layout: Layout, lookup: Bloc
       f: pf + pk * origin.y,
       ...(rotation ? { rotation } : {}),
       clip: rect,
+      ...(polygon ? { clipPolygon: polygon } : {}),
       hidden: new Set([...hidden, ...(v.frozenLayers ?? [])]),
       ltUnit: pk,
       annoFactor: 1 / s,
       hideAnnotative: state.header?.annoAllVisible === false && Math.abs(s - canno) > 1e-9,
     });
   }
-  groups.push({ entities: layout.entities, k: pk, e: pe, f: pf, hidden, ltUnit: pk, annoFactor: 1, frames });
+  const paperEntities = [...layout.entities, ...layout.viewports.flatMap((v) => v.clipBoundary ? [v.clipBoundary] : [])];
+  groups.push({ entities: paperEntities, k: pk, e: pe, f: pf, hidden, ltUnit: pk, annoFactor: 1, frames });
   return { width: sheet.width * u, height: sheet.height * u, groups, label: layout.name };
 }
 
@@ -385,6 +390,7 @@ class PageWriter {
       this.ops.push('q');
       this.resetState();
       if (grp.clip) this.ops.push(`${n(grp.clip.x)} ${n(grp.clip.y)} ${n(grp.clip.w)} ${n(grp.clip.h)} re W n`);
+      if (grp.clipPolygon) this.ops.push(`${this.pagePolygon(grp.clipPolygon)} W* n`);
       const view = grp.clip ? this.modelRect(grp.clip) : null;
       for (const e of grp.entities) {
         if (grp.hidden.has(e.layer)) continue;
@@ -410,10 +416,14 @@ class PageWriter {
       this.setStroke(plotColor(objectRgb('ByLayer', undefined, layer), this.style));
       this.setAlpha(resolveAlpha({ layer: f.layer }, this.ctx.layers));
       this.setWidth(this.style.lineweights ? mmToPt(layer?.lineWeight ?? 0.25) : 0);
-      this.ops.push(`${n(f.x)} ${n(f.y)} ${n(f.w)} ${n(f.h)} re S`);
+      this.ops.push(f.polygon ? `${this.pagePolygon(f.polygon)} S` : `${n(f.x)} ${n(f.y)} ${n(f.w)} ${n(f.h)} re S`);
       this.pathOps += 1;
       this.ops.push('Q');
     }
+  }
+
+  private pagePolygon(points: readonly Point[]): string {
+    return points.map((p, i) => `${n(p.x)} ${n(p.y)} ${i ? 'l' : 'm'}`).join(' ') + ' h';
   }
 
   /** Conservative model-space bounds of all four inverse-mapped clip corners. */

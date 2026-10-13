@@ -8,12 +8,12 @@ import * as g from '../../core/geometry';
 import type { Entity } from '../../core/entities';
 import { gripPoints, moveGrip } from '../../core/entities';
 import { findObjectSnap, constrainDirection, snapToGrid, trackFromPoints, type SnapResult } from '../../core/snap';
-import { pickEntity, selectByBox, selectByPolygon } from '../../core/selection';
+import { activeSelectionClip, pickEntity, selectByBox, selectByPolygon } from '../../core/selection';
 import { PanTool } from '../../tools/edit';
 import type { Editor } from './editor';
 import { fallbackUi, type EditorInternals } from './internals';
 import { makeContext, acceptPoint, updateCursorMode } from './prompter';
-import { toggleSelect, hiddenLayers, lockedLayers, pickAperture } from './selection';
+import { toggleSelect, hiddenLayers, lockedLayers, pickAperture, graphicalSelectionEntities } from './selection';
 
 export function screenFromEvent(ed: Editor, ev: MouseEvent): Point {
   const r = ed.viewport.canvas.getBoundingClientRect();
@@ -26,8 +26,10 @@ export function resolveCursor(ed: Editor, st: EditorInternals, screen: Point): {
   // Object snap target box: Options > Drafting > Aperture Size (px, full box; default 10 -> 7 px reach).
   const aperture = (ed.settings.apertureSize / 2 + 2) * ed.viewport.worldPerPixel();
   const wantSnap = (ed.tool !== null || st.gripDrag !== null) && !st.selReq;
-  const snap = wantSnap
-    ? findObjectSnap(raw, ed.doc.entities, ed.doc.lookupBlock, ed.snap, aperture, st.overlay.trackFrom, hiddenLayers(ed))
+  const clip = activeSelectionClip(ed.doc.snapshot);
+  const inside = !clip || clip.contains(raw);
+  const snap = wantSnap && inside
+    ? findObjectSnap(raw, graphicalSelectionEntities(ed), ed.doc.lookupBlock, ed.snap, aperture, st.overlay.trackFrom, hiddenLayers(ed), clip?.contains)
     : null;
   st.overlay.trackPaths = undefined;
   if (snap) {
@@ -39,10 +41,10 @@ export function resolveCursor(ed: Editor, st: EditorInternals, screen: Point): {
     return { world: snap.point, snap };
   }
   let p = raw;
-  if (ed.snap.otrack && wantSnap) {
-    const bases = st.overlay.trackFrom ? [...st.acquired, st.overlay.trackFrom] : st.acquired;
+  if (ed.snap.otrack && wantSnap && inside) {
+    const bases = (st.overlay.trackFrom ? [...st.acquired, st.overlay.trackFrom] : st.acquired).filter((p) => !clip || clip.contains(p));
     const tr = trackFromPoints(raw, bases, ed.snap, aperture);
-    if (tr) {
+    if (tr && (!clip || clip.contains(tr.point))) {
       st.overlay.trackPaths = tr.paths;
       return { world: tr.point, snap: { point: tr.point, kind: 'tracking' } };
     }
@@ -66,6 +68,9 @@ export function onMouseMove(ed: Editor, st: EditorInternals, ev: MouseEvent): un
   st.cursorWorld = world;
   st.overlay.cursor = world;
   st.overlay.snap = snap;
+  const clip = activeSelectionClip(ed.doc.snapshot);
+  const inside = !clip || clip.contains(ed.viewport.toWorld(s));
+  if (!inside) st.overlay.hover = null;
   let result: unknown;
 
   if (st.gripDrag) {
@@ -82,12 +87,12 @@ export function onMouseMove(ed: Editor, st: EditorInternals, ev: MouseEvent): un
       st.overlay.selectionBox = { a: st.dragWorld, b: raw, mode: s.x >= st.dragStart.x ? 'window' : 'crossing' };
     }
   } else if (ed.tool) {
-    result = ed.tool.onMove(world, makeContext(ed, st));
-  } else if (ed.layoutInput.hoverBlocked?.(s)) {
+    if (inside) result = ed.tool.onMove(world, makeContext(ed, st));
+  } else if (!inside || ed.layoutInput.hoverBlocked?.(s)) {
     st.overlay.hover = null;
   } else {
     // rollover highlight
-    const hit = pickEntity(ed.viewport.toWorld(s), ed.doc.entities, ed.doc.lookupBlock, pickAperture(ed), hiddenLayers(ed), lockedLayers(ed));
+    const hit = pickEntity(ed.viewport.toWorld(s), graphicalSelectionEntities(ed), ed.doc.lookupBlock, pickAperture(ed), hiddenLayers(ed), lockedLayers(ed));
     st.overlay.hover = hit?.id ?? null;
     st.overlay.dynText = [];
   }
@@ -106,18 +111,20 @@ export function onMouseDown(ed: Editor, st: EditorInternals, ev: MouseEvent): un
   }
   if (ev.button !== 0) return;
   if (!st.selReq && ed.layoutInput.mouseDown?.(s)) return;
+  const raw = ed.viewport.toWorld(s);
+  const clip = activeSelectionClip(ed.doc.snapshot);
+  if (clip && !clip.contains(raw)) return;
   const { world } = resolveCursor(ed, st, s);
   if (ed.tool && !st.selReq) {
     return acceptPoint(ed, st, world);
   }
   // Selection (default tool or selection request)
-  const raw = ed.viewport.toWorld(s);
   // Grip editing: press on a grip of a selected entity to stretch it.
   if (!st.selReq && ed.selection.size > 0) {
     const gripTol = 6 * ed.viewport.worldPerPixel();
-    for (const e of ed.doc.entities) {
+    for (const e of graphicalSelectionEntities(ed)) {
       if (!ed.selection.has(e.id)) continue;
-      const idx = gripPoints(e).findIndex((gp) => g.dist(gp, raw) <= gripTol);
+      const idx = gripPoints(e).findIndex((gp) => (!clip || clip.contains(gp)) && g.dist(gp, raw) <= gripTol);
       if (idx >= 0) {
         st.gripDrag = { entity: e, index: idx, start: raw };
         st.overlay.trackFrom = gripPoints(e)[idx]!;
@@ -128,7 +135,7 @@ export function onMouseDown(ed: Editor, st: EditorInternals, ev: MouseEvent): un
       }
     }
   }
-  const hit = pickEntity(raw, ed.doc.entities, ed.doc.lookupBlock, pickAperture(ed), hiddenLayers(ed), lockedLayers(ed));
+  const hit = pickEntity(raw, graphicalSelectionEntities(ed), ed.doc.lookupBlock, pickAperture(ed), hiddenLayers(ed), lockedLayers(ed));
   if (hit) {
     toggleSelect(ed, st, [hit.id], ev.shiftKey);
     return;
@@ -162,9 +169,10 @@ export function onMouseUp(ed: Editor, st: EditorInternals, ev: MouseEvent): void
     const s = ed.screenFromEvent(ev);
     if (st.overlay.selectionBox) {
       const box = st.overlay.selectionBox;
+      const entities = graphicalSelectionEntities(ed);
       const found = ed.viewport.twist === 0
-        ? selectByBox(g.boundsOfPoints([box.a, box.b])!, box.mode, ed.doc.entities, ed.doc.lookupBlock, hiddenLayers(ed), lockedLayers(ed))
-        : selectByPolygon(g.viewBoxCorners(box.a, box.b, ed.viewport.twist), box.mode, ed.doc.entities, ed.doc.lookupBlock, hiddenLayers(ed), lockedLayers(ed));
+        ? selectByBox(g.boundsOfPoints([box.a, box.b])!, box.mode, entities, ed.doc.lookupBlock, hiddenLayers(ed), lockedLayers(ed))
+        : selectByPolygon(g.viewBoxCorners(box.a, box.b, ed.viewport.twist), box.mode, entities, ed.doc.lookupBlock, hiddenLayers(ed), lockedLayers(ed));
       toggleSelect(ed, st, found.map((e) => e.id), ev.shiftKey);
     } else if (g.dist(s, st.dragStart) <= 3 && !st.selReq && !ev.shiftKey) {
       // click on empty space clears selection
@@ -188,7 +196,9 @@ export function onDoubleClick(ed: Editor, ev: MouseEvent): void | Promise<void> 
   if (ev.button !== 0 || ed.tool) return;
   if (ed.layoutInput.doubleClick?.(ed.screenFromEvent(ev))) return;
   const raw = ed.viewport.toWorld(ed.screenFromEvent(ev));
-  const hit = pickEntity(raw, ed.doc.entities, ed.doc.lookupBlock, pickAperture(ed), hiddenLayers(ed), lockedLayers(ed));
+  const clip = activeSelectionClip(ed.doc.snapshot);
+  if (clip && !clip.contains(raw)) return;
+  const hit = pickEntity(raw, graphicalSelectionEntities(ed), ed.doc.lookupBlock, pickAperture(ed), hiddenLayers(ed), lockedLayers(ed));
   if (!hit) return;
   const ui = ed.ui ?? fallbackUi;
   if (hit.type === 'text') {

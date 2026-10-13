@@ -1851,7 +1851,8 @@ export function gripPoints(e: Entity): Point[] {
 /** Move grip `index` of an entity to `p` (AutoCAD grip stretch semantics). */
 export function moveGrip(e: Entity, index: number, p: Point): Entity | null {
   // Layout viewport frames (core/layouts.ts ViewportFrame) stretch as rectangles: the opposite corner stays.
-  if (e.type === 'polyline' && (e as { vport?: unknown }).vport && e.points.length === 4 && index >= 0 && index < 4) {
+  const viewportFrame = (e as { vport?: { clipBoundary?: unknown; clipOn?: boolean } }).vport;
+  if (e.type === 'polyline' && viewportFrame && (!viewportFrame.clipBoundary || viewportFrame.clipOn === false) && e.points.length === 4 && index >= 0 && index < 4) {
     const o = e.points[(index + 2) % 4]!;
     const lo = { x: Math.min(o.x, p.x), y: Math.min(o.y, p.y) };
     const hi = { x: Math.max(o.x, p.x), y: Math.max(o.y, p.y) };

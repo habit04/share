@@ -22,6 +22,14 @@ export class Writer {
   private handle = 0x100;
   readonly textStyleHandles = new Map<string, string>();
   readonly dimensionStyles = new Map<string, DimStyle>();
+  readonly reservedEntityHandles = new WeakMap<Entity, string>();
+  reserveEntityHandle(entity: Entity): string {
+    const known = this.reservedEntityHandles.get(entity);
+    if (known) return known;
+    const handle = this.nextHandle();
+    this.reservedEntityHandles.set(entity, handle);
+    return handle;
+  }
   pair(code: number, value: string | number): void {
     this.out.push(String(code), typeof value === 'number' ? fmt(value) : value);
   }
@@ -55,7 +63,7 @@ export function writeAnnotativeXdata(w: Writer): void {
 
 export function writeEntityCommon(w: Writer, e: Entity, owner: string, kind: string, subclass: string): void {
   w.pair(0, kind);
-  w.pair(5, w.nextHandle());
+  w.pair(5, w.reservedEntityHandles.get(e) ?? w.nextHandle());
   w.pair(330, owner);
   w.pair(100, 'AcDbEntity');
   if (paperOwners.has(owner)) w.pair(67, 1);
