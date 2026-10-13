@@ -63,6 +63,15 @@ const metadataRenderer = [
   "  assert.equal(graph?.schema, 1, 'A complete retained graph is mandatory');",
   "  const nodes = new Map(graph.nodes.map(node => [node.id, node]));",
   "  const entities = new Map(state.entities.map(entity => [entity.id, entity]));",
+  "  const otherEntities = new Map();",
+  "  for (const [name, block] of Object.entries(state.blocks ?? {})) block.entities.forEach((entity, index) => {",
+  "    assert.ok(!entities.has(entity.id) && !otherEntities.has(entity.id), 'Block entity identities are unique');",
+  "    otherEntities.set(entity.id, { entity, label: 'block:' + JSON.stringify(name) + '/entity:' + index });",
+  "  });",
+  "  for (const layout of state.layouts ?? []) layout.entities.forEach((entity, index) => {",
+  "    assert.ok(!entities.has(entity.id) && !otherEntities.has(entity.id), 'Layout entity identities are unique');",
+  "    otherEntities.set(entity.id, { entity, label: 'layout:' + JSON.stringify(layout.name) + '/entity:' + index });",
+  "  });",
   "  const labels = new Map(), selected = new Set(), queue = [];",
   "  const assign = (node, label, retain = false) => {",
   "    if (!labels.has(node.id)) { labels.set(node.id, label); queue.push(node); }",
@@ -71,10 +80,13 @@ const metadataRenderer = [
   "  for (const node of graph.nodes) {",
   "    const anchor = node.anchor;",
   "    if (anchor?.kind === 'entity' && !anchor.part) {",
-  "      const entity = entities.get(anchor.id); assert.ok(entity, 'Retained entity anchor resolves to live geometry');",
+  "      const modelEntity = entities.get(anchor.id), other = otherEntities.get(anchor.id);",
+  "      const entity = modelEntity ?? other?.entity; assert.ok(entity, 'Retained entity anchor resolves to live geometry');",
   "      const geometry = entity.type === 'line' ? [entity.a, entity.b] : entity.position;",
-  "      assign(node, 'entity:' + entity.type + ':' + JSON.stringify(geometry), true);",
-  "      assert.equal(entity.cadIdentity, node.id, 'Metadata-bearing fixture entities carry their own unique identities');",
+  "      // These independent fixtures compare model metadata. Generated default blocks",
+  "      // still require live anchors; their full records are checked by native postflight.",
+  "      assign(node, modelEntity ? 'entity:' + entity.type + ':' + JSON.stringify(geometry) : other.label, !!modelEntity);",
+  "      if (modelEntity || entity.cadIdentity) assert.equal(entity.cadIdentity, node.id, 'Metadata-bearing fixture entities carry their own unique identities');",
   "    } else if (anchor?.kind === 'table') assign(node, `table:${anchor.table}:${anchor.name}`);",
   "    else if (anchor?.kind === 'dictionary') assign(node, 'dictionary:' + JSON.stringify(anchor.path), anchor.path[0]?.startsWith('JCAD_METADATA_ORACLE'));",
   "    if (node.type === 'FIELDLIST') { assign(node, 'field-list', true); }",
@@ -146,7 +158,7 @@ const metadataRenderer = [
   "}",
   "",
   "",
-  "  const capture = () => JSON.parse(JSON.stringify({ entities: ed.doc.snapshot.entities, views: ed.doc.snapshot.header?.views || [], graph: ed.doc.snapshot.cadGraph, annotationSettings: { cannoscale: ed.doc.snapshot.header?.cannoscale ?? '1:1', annoAllVisible: ed.doc.snapshot.header?.annoAllVisible !== false } }));",
+  "  const capture = () => JSON.parse(JSON.stringify({ entities: ed.doc.snapshot.entities, blocks: ed.doc.snapshot.blocks, layouts: ed.doc.snapshot.layouts, views: ed.doc.snapshot.header?.views || [], graph: ed.doc.snapshot.cadGraph, annotationSettings: { cannoscale: ed.doc.snapshot.header?.cannoscale ?? '1:1', annoAllVisible: ed.doc.snapshot.header?.annoAllVisible !== false } }));",
   "  const need = (value, message) => { if (!value) throw new Error(config.name + ': ' + message); };",
   "  const fields = state => state.graph.nodes.filter(node => node.type === 'FIELD');",
   "  function validate(state, copies) {",
@@ -248,6 +260,18 @@ function metadataBytes(profile, file) {
   return bytes;
 }
 
+
+// The fixed generated sheet has two layouts and two viewports. Its actual native
+// readback reports only the three known reader limitations, with no object loss.
+function normalSaveImportReportExpected(report, sourcePath) {
+  /** @type {Array<Record<string, number>>} */
+  const counts = Object.values(report?.counts || {});
+  return report?.format === 'DWG' && report.sourcePath === sourcePath && !report.recovered && report.omitted === 0
+    && counts.every(count => count && typeof count === 'object' && Object.values(count).every(value => Number.isInteger(value) && value >= 0))
+    && counts.reduce((sum, count) => sum + (count.dropped || 0) + (count.simplified || 0), 0) === 0
+    && counts.reduce((sum, count) => sum + (count.unsupported || 0), 0) === 3
+    && report.counts.LAYOUT?.unsupported === 2 && report.counts.VIEWPORT?.unsupported === 1;
+}
 
 /** @param {import('./context.cjs').MainContext} ctx */
 async function runShippingDwgProbe(ctx, testBuild) {
@@ -409,15 +433,17 @@ async function runShippingDwgProbe(ctx, testBuild) {
       const savedAsState=ed.doc.snapshot;
       if (!await ed.openFile(saveTarget) || ed.doc.snapshot===savedAsState || ed.doc.filePath!==saveTarget || ed.doc.dirty) throw new Error('DWG Save As did not freshly reopen');
       assertRotatedCanvas(ed,'Reopened DWG Save As');
+      const report=ed.doc.snapshot.meta?.importReport;
+      if (!(${normalSaveImportReportExpected.toString()})(report,saveTarget)) throw new Error('Unexpected import report for the fixed normal DWG Save');
       ed.doc.addEntities([{id:'normal-save-line',type:'line',layer:'0',color:'ByLayer',a:{x:73,y:29},b:{x:79,y:31}}]);
-      const savingState=ed.doc.snapshot, savingSession=ed.sessions.activeId;
+      const savingState=ed.doc.snapshot, savingSession=ed.sessions.activeId, savingRevision=ed.doc.revision;
       const savedHook=ed.hooks.drawingSaved; if (typeof savedHook!=='function') throw new Error('Drawing recovery save hook is missing');
       const savedConfirm=ed.ui?.confirm, savedSaveError=ed.hooks.saveError;
       if (typeof savedConfirm!=='function') throw new Error('Fixed DWG probe requires the normal loss-confirmation interface');
-      const expectedLossWarning=${JSON.stringify('shipping-normal-save.dwg contained 41 object(s) JCad cannot keep (see the import report). Saving over it removes them from the file. Use Save As to keep the original. Save over it anyway?\n\nYes saves over it; No opens Save As.')};
+      const expectedLossWarning=${JSON.stringify('shipping-normal-save.dwg contains properties JCad cannot read (see the import report). Saving the current drawing cannot restore them and may remove them from the original file. Use Save As to keep the original. Save over it anyway?\n\nYes saves over it; No opens Save As.')};
       let notified=false, normalSaveLossConsent=false;
       ed.ui.confirm=async(title,message)=>{
-        if (title!=='Save over the original file?' || message!==expectedLossWarning || ed.doc.filePath!==saveTarget || ed.sessions.activeId!==savingSession || ed.doc.snapshot!==savingState || normalSaveLossConsent) throw new Error('Unexpected loss dialog during fixed private-profile DWG Save: '+JSON.stringify({title,message,pathMatches:ed.doc.filePath===saveTarget,sessionMatches:ed.sessions.activeId===savingSession,stateMatches:ed.doc.snapshot===savingState,alreadyConsented:normalSaveLossConsent}));
+        if (title!=='Save over the original file?' || message!==expectedLossWarning || ed.doc.filePath!==saveTarget || ed.sessions.activeId!==savingSession || ed.doc.snapshot!==savingState || ed.doc.revision!==savingRevision || ed.doc.snapshot.meta?.importReport!==report || normalSaveLossConsent) throw new Error('Unexpected loss dialog during fixed private-profile DWG Save: '+JSON.stringify({title,message,pathMatches:ed.doc.filePath===saveTarget,sessionMatches:ed.sessions.activeId===savingSession,stateMatches:ed.doc.snapshot===savingState,revisionMatches:ed.doc.revision===savingRevision,reportMatches:ed.doc.snapshot.meta?.importReport===report,alreadyConsented:normalSaveLossConsent}));
         normalSaveLossConsent=true;
         return true;
       };
@@ -428,7 +454,7 @@ async function runShippingDwgProbe(ctx, testBuild) {
         notified=true; savedHook(id,state,file);
       };
       try {
-        if (!await ed.saveFile(false) || ed.doc.filePath!==saveTarget || ed.doc.dirty || ed.sessions.current.filePath!==saveTarget || ed.sessions.current.dirty || !notified) throw new Error('Normal DWG Save did not finish cleanly and notify recovery');
+        if (!await ed.saveFile(false) || !normalSaveLossConsent || ed.doc.filePath!==saveTarget || ed.doc.dirty || ed.sessions.current.filePath!==saveTarget || ed.sessions.current.dirty || !notified) throw new Error('Normal DWG Save did not finish cleanly, confirm reader limitations and notify recovery');
       } finally { ed.hooks.drawingSaved=savedHook; ed.ui.confirm=savedConfirm; ed.hooks.saveError=savedSaveError; }
       const beforeReload=ed.doc.snapshot;
       if (!await ed.openFile(saveTarget) || ed.doc.snapshot===beforeReload || ed.doc.filePath!==saveTarget || ed.doc.dirty) throw new Error('Normally saved DWG did not freshly reopen through isolated reader');

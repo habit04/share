@@ -1,6 +1,7 @@
 /** Fixed production diagnostics must never modify a normal profile, linked source or pre-existing destination. */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRequire } from 'node:module';
+import assert from 'node:assert/strict';
 import { dirname, join, resolve } from 'node:path';
 import { mkdtempSync, readFileSync, writeFileSync, rmSync, symlinkSync, copyFileSync, existsSync, openSync, ftruncateSync, closeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -27,11 +28,38 @@ function profile(prefix = 'jcad-shipping-smoke-') {
 function load(root: string, version = '0.4.8') {
   const dialog = { showSaveDialog: vi.fn() };
   const executeJavaScript = vi.fn();
-  const module = { exports: {} as { runShippingDwgProbe(ctx: unknown, testBuild: boolean): Promise<unknown>; renderer: string; pins: Array<{ name: string; file: string; sha256: string; entities: number; fields: number; unicode: boolean; literal: string }> } };
-  new Function('require', 'module', '__dirname', 'process', source + '\nmodule.exports.renderer=metadataRenderer;module.exports.pins=metadataPins;')((name: string) => name === 'electron' ? { app: { getPath: () => root, getVersion: () => version }, dialog } : originalRequire(name), module, dirname(sourceFile), { platform: 'win32' });
-  return { run: () => module.exports.runShippingDwgProbe({ mainWindow: { isDestroyed: () => false, webContents: { executeJavaScript } } }, false), dialog, executeJavaScript, renderer: module.exports.renderer, pins: module.exports.pins };
+  const module = { exports: {} as { runShippingDwgProbe(ctx: unknown, testBuild: boolean): Promise<unknown>; renderer: string; pins: Array<{ name: string; file: string; sha256: string; entities: number; fields: number; unicode: boolean; literal: string }>; normalReportExpected(report: unknown, sourcePath: string): boolean } };
+  new Function('require', 'module', '__dirname', 'process', source + '\nmodule.exports.renderer=metadataRenderer;module.exports.pins=metadataPins;module.exports.normalReportExpected=normalSaveImportReportExpected;')((name: string) => name === 'electron' ? { app: { getPath: () => root, getVersion: () => version }, dialog } : originalRequire(name), module, dirname(sourceFile), { platform: 'win32' });
+  return { run: () => module.exports.runShippingDwgProbe({ mainWindow: { isDestroyed: () => false, webContents: { executeJavaScript } } }, false), dialog, executeJavaScript, renderer: module.exports.renderer, pins: module.exports.pins, normalReportExpected: module.exports.normalReportExpected };
 }
 describe('fixed DWG shipping probe confinement', () => {
+  it('resolves block anchors and still refuses orphaned or duplicate live identities', () => {
+    const f = load(profile());
+    const body = f.renderer.slice(f.renderer.indexOf('function entityShape(entity) {'), f.renderer.indexOf('function same(actual, expected, label) {'));
+    const signature = new Function('assert', 'unicode', 'metadataTypes', 'canonicalHandle', body + '; return metadataSignature;')(assert, (text: string) => text, new Set(), (text: string) => text);
+    const entity = { id: 'block-line', type: 'line', a: { x: 0, y: 0 }, b: { x: 1, y: 2 } };
+    const node = { id: 'block-node', type: 'LINE', anchor: { kind: 'entity', id: entity.id }, groups: [] };
+    const state = { entities: [], blocks: { FIXED_BLOCK: { entities: [entity] } }, views: [], graph: { schema: 1, nodes: [node] }, annotationSettings: {} };
+    expect(() => signature(state)).not.toThrow();
+    expect(() => signature({ ...state, blocks: {} })).toThrow(/anchor resolves to live geometry/);
+    expect(() => signature({ ...state, blocks: { ...state.blocks, DUPLICATE: { entities: [entity] } } })).toThrow(/identities are unique/);
+    expect(() => signature({ ...state, blocks: { FIXED_BLOCK: { entities: [{ ...entity, cadIdentity: 'wrong-node' }] } } })).toThrow(/carry their own unique identities/);
+  });
+  it('admits only the observed normal-save reader limitations without object loss', () => {
+    // The real source runtime produced these counts. This boundary test is not installed-app proof.
+    const f = load(profile()), sourcePath = 'fixed-profile/shipping-normal-save.dwg';
+    const report = { format: 'DWG', sourcePath, omitted: 0, counts: { HEADER: { kept: 7 }, DIMSTYLE: { kept: 2 }, LAYOUT: { unsupported: 2 }, VIEWPORT: { unsupported: 1 }, DICTIONARYVAR: { kept: 2 }, SCALE: { kept: 1 } } };
+    expect(f.normalReportExpected(report, sourcePath)).toBe(true);
+    for (const changed of [
+      { ...report, sourcePath: 'another.dwg' }, { ...report, recovered: true }, { ...report, omitted: 1 },
+      { ...report, counts: { ...report.counts, LINE: { dropped: 1 } } },
+      { ...report, counts: { ...report.counts, LINE: { simplified: 1 } } },
+      { ...report, counts: { ...report.counts, FIELD: { unsupported: 1 } } },
+      { ...report, counts: { ...report.counts, LAYOUT: { unsupported: 1 }, VIEWPORT: { unsupported: 2 } } },
+      { ...report, counts: { ...report.counts, FIELD: { kept: -1 } } },
+      { ...report, counts: { ...report.counts, FIELD: { kept: 1.5 } } },
+    ]) expect(f.normalReportExpected(changed, sourcePath)).toBe(false);
+  });
   it('requires pinned regular metadata files before renderer execution or destination writes', async () => {
     const root = profile(); writeFileSync(join(root, 'shipping-startup.dxf'), 'fixture');
     const f = load(root, '0.4.9'); await expect(f.run()).rejects.toMatchObject({ code: 'ENOENT' });
@@ -133,7 +161,9 @@ describe('fixed DWG shipping probe confinement', () => {
     // Actual core graph edits with simulated file transport; this is not native/app proof.
     const f = load(profile()), pin = f.pins[2]!;
     const imported = structuredClone(readDxf(readFileSync(join('tests/fixtures/interchange', pin.name + '.dxf'), 'utf8')));
-    const doc = new Drawing({ ...imported, cadGraph: { ...imported.cadGraph!, sourceFormat: 'DWG' as const } });
+    const blockEntity = { id: 'fixed-block-line', type: 'line' as const, layer: '0', color: 'ByLayer' as const, a: { x: 0, y: 0 }, b: { x: 1, y: 2 } };
+    const blockNode = { id: 'fixed-block-node', type: 'LINE', sourceHandle: 'FFFFFF', section: 'BLOCKS' as const, groups: [[0, 'LINE'], [5, 'FFFFFF'], [8, '0']] as const, anchor: { kind: 'entity' as const, id: blockEntity.id } };
+    const doc = new Drawing({ ...imported, blocks: { ...imported.blocks, FIXED_BLOCK: { name: 'FIXED_BLOCK', basePoint: { x: 0, y: 0 }, attributes: [], entities: [blockEntity] } }, cadGraph: { ...imported.cadGraph!, sourceFormat: 'DWG' as const, nodes: [...imported.cadGraph!.nodes, blockNode] } });
     const output = 'fixed-copy.dwg', oldReport = vi.fn(), oldConfirm = vi.fn(async (_title: string, _message: string) => false), oldError = vi.fn();
     const report = { format: 'DWG', sourcePath: output, counts: { LAYOUT: { unsupported: 1, ...(mode === 'wrong-report' ? { dropped: 1 } : {}) } }, items: [], omitted: 0, notes: [] };
     const warning = output + ' contains properties JCad cannot read (see the import report). Saving the current drawing cannot restore them and may remove them from the original file. Use Save As to keep the original. Save over it anyway?\n\nYes saves over it; No opens Save As.';

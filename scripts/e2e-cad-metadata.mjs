@@ -25,6 +25,15 @@ function metadataSignature(state) {
   assert.equal(graph?.schema, 1, 'A complete retained graph is mandatory');
   const nodes = new Map(graph.nodes.map(node => [node.id, node]));
   const entities = new Map(state.entities.map(entity => [entity.id, entity]));
+  const otherEntities = new Map();
+  for (const [name, block] of Object.entries(state.blocks ?? {})) block.entities.forEach((entity, index) => {
+    assert.ok(!entities.has(entity.id) && !otherEntities.has(entity.id), 'Block entity identities are unique');
+    otherEntities.set(entity.id, { entity, label: 'block:' + JSON.stringify(name) + '/entity:' + index });
+  });
+  for (const layout of state.layouts ?? []) layout.entities.forEach((entity, index) => {
+    assert.ok(!entities.has(entity.id) && !otherEntities.has(entity.id), 'Layout entity identities are unique');
+    otherEntities.set(entity.id, { entity, label: 'layout:' + JSON.stringify(layout.name) + '/entity:' + index });
+  });
   const labels = new Map(), selected = new Set(), queue = [];
   const assign = (node, label, retain = false) => {
     if (!labels.has(node.id)) { labels.set(node.id, label); queue.push(node); }
@@ -33,10 +42,13 @@ function metadataSignature(state) {
   for (const node of graph.nodes) {
     const anchor = node.anchor;
     if (anchor?.kind === 'entity' && !anchor.part) {
-      const entity = entities.get(anchor.id); assert.ok(entity, 'Retained entity anchor resolves to live geometry');
+      const modelEntity = entities.get(anchor.id), other = otherEntities.get(anchor.id);
+      const entity = modelEntity ?? other?.entity; assert.ok(entity, 'Retained entity anchor resolves to live geometry');
       const geometry = entity.type === 'line' ? [entity.a, entity.b] : entity.position;
-      assign(node, 'entity:' + entity.type + ':' + JSON.stringify(geometry), true);
-      assert.equal(entity.cadIdentity, node.id, 'Metadata-bearing fixture entities carry their own unique identities');
+      // These independent fixtures compare model metadata. Generated default blocks
+      // still require live anchors; their full records are checked by native postflight.
+      assign(node, modelEntity ? 'entity:' + entity.type + ':' + JSON.stringify(geometry) : other.label, !!modelEntity);
+      if (modelEntity || entity.cadIdentity) assert.equal(entity.cadIdentity, node.id, 'Metadata-bearing fixture entities carry their own unique identities');
     } else if (anchor?.kind === 'table') assign(node, `table:${anchor.table}:${anchor.name}`);
     else if (anchor?.kind === 'dictionary') assign(node, 'dictionary:' + JSON.stringify(anchor.path), anchor.path[0]?.startsWith('JCAD_METADATA_ORACLE'));
     if (node.type === 'FIELDLIST') { assign(node, 'field-list', true); }
@@ -130,7 +142,7 @@ export async function runCadMetadataChecks({ app, page, repo, outDir, check, cur
   };
   const inspect = () => page.evaluate(() => {
     const ed = window.editor, state = ed.doc.snapshot;
-    return JSON.parse(JSON.stringify({ entities: state.entities, views: state.header?.views ?? [], graph: state.cadGraph,
+    return JSON.parse(JSON.stringify({ entities: state.entities, blocks: state.blocks, layouts: state.layouts, views: state.header?.views ?? [], graph: state.cadGraph,
       annotationSettings: { cannoscale: state.header?.cannoscale ?? '1:1', annoAllVisible: state.header?.annoAllVisible !== false },
       report: state.meta?.importReport, dirty: ed.doc.dirty, path: ed.doc.filePath }));
   });
