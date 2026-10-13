@@ -1,6 +1,6 @@
 {
   "name": "jcad-electrical",
-  "version": "0.4.8",
+  "version": "0.4.9",
   "description": "2D electrical schematic drafting application (desktop)",
   "author": "JCad Electrical contributors",
   "license": "GPL-3.0-only",
@@ -66,6 +66,8 @@
       "electron/**",
       "scripts/dwg-reader.mjs",
       "scripts/dwg-native-read.mjs",
+      "scripts/dwg-native-metadata.mjs",
+      "scripts/dwg-metadata-equivalence.mjs",
       "scripts/dwg-mtext-background.mjs",
       "scripts/dwg-array-conversion.mjs",
       "scripts/dwg-appearance-conversion.mjs",

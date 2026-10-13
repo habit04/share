@@ -56,6 +56,10 @@ import { importViewportView } from './viewport-view';
 import type { LinearUnits } from '../core/units';
 import { cadPrecision } from '../core/units';
 import { explicitAlpha, transparencyFromDxf, validColorName, type TransparencySpec } from '../core/appearance';
+import { readDxf } from './dxf/reader';
+import { importReportOf, rawEntitiesOf } from './import-report';
+import { validateNativeMetadata } from '../../scripts/dwg-native-metadata.mjs';
+import { mergeDwgCadGraph } from './cad-graph-dwg';
 
 /** Subset of DwgDatabase we actually need (what the main process sends over IPC). */
 export interface DwgImportPayload {
@@ -77,6 +81,8 @@ export interface DwgImportPayload {
   layouts?: DwgPayloadLayout[];
   /** Object metadata omitted from the drawing model, summarized for loss reporting. */
   omittedObjectTypes?: Record<string, number>;
+  /** Windows native DXF projection, with exact source identities and completeness status. */
+  nativeMetadata?: import('../../scripts/dwg-native-metadata.mjs').NativeDwgMetadata;
 }
 
 export interface DwgPayloadStyle {
@@ -92,12 +98,14 @@ export interface DwgPayloadStyle {
   bigFont?: string;
 }
 export interface DwgPayloadLinetype {
+  handle?: string;
   name: string;
   description?: string;
   standardFlag?: number;
   pattern?: Array<{ elementLength: number; elementTypeFlag?: number }>;
 }
 export interface DwgPayloadLayout {
+  handle?: string;
   name: string;
   tabOrder: number;
   /** Handle of the layout's *Paper_Space BLOCK_RECORD. */
@@ -152,11 +160,12 @@ export function toImportPayload(db: DwgDatabase, version?: string): DwgImportPay
     dimStyles: (db.tables?.DIMSTYLE?.entries ?? []).map((d) => ({ ...(d as unknown as Record<string, unknown>), name: d.name })),
     linetypes: (db.tables?.LTYPE?.entries ?? []).map((t) => ({
       name: t.name,
+      ...((t as { handle?: string }).handle ? { handle: String((t as { handle?: string }).handle) } : {}),
       description: t.description,
       standardFlag: t.standardFlag,
       pattern: (t.pattern ?? []).map((x) => ({ elementLength: x.elementLength, elementTypeFlag: x.elementTypeFlag })),
     })),
-    layouts: (db.objects?.LAYOUT ?? []).map((l) => ({ name: l.layoutName, tabOrder: l.tabOrder, blockHandle: String(l.paperSpaceTableId ?? ''), minLimit: l.minLimit, maxLimit: l.maxLimit, ...((l as unknown as { paperWidth?: number }).paperWidth !== undefined ? { plotSettings: l as unknown as DwgPayloadLayout['plotSettings'] } : {}) })),
+    layouts: (db.objects?.LAYOUT ?? []).map((l) => ({ ...((l as { handle?: string }).handle ? { handle: String((l as { handle?: string }).handle) } : {}), name: l.layoutName, tabOrder: l.tabOrder, blockHandle: String(l.paperSpaceTableId ?? ''), minLimit: l.minLimit, maxLimit: l.maxLimit, ...((l as unknown as { paperWidth?: number }).paperWidth !== undefined ? { plotSettings: l as unknown as DwgPayloadLayout['plotSettings'] } : {}) })),
     omittedObjectTypes: Object.fromEntries(Object.entries(db.objects ?? {}).filter(([kind]) => !['LAYOUT', 'IMAGEDEF', 'IMAGEDEF_REACTOR'].includes(kind)).map(([kind, values]) => [kind, Array.isArray(values) ? values.length : 1])),
   };
 }
@@ -195,7 +204,7 @@ function dwgTransparency(e: { transparency?: number; transparencyType?: number }
 }
 
 function baseProps(e: DwgEntity): import('../core/entities').EntityBase {
-  const out: { id: string; layer: string; color: ColorSpec; linetype?: string; lineWeight?: number; ltscale?: number; trueColor?: number; colorName?: string; transparency?: TransparencySpec } = { id: newId(), layer: e.layer || '0', color: color(e) };
+  const out: { id: string; cadIdentity?: string; layer: string; color: ColorSpec; linetype?: string; lineWeight?: number; ltscale?: number; trueColor?: number; colorName?: string; transparency?: TransparencySpec } = { id: newId(), ...(e.handle ? { cadIdentity: String(e.handle) } : {}), layer: e.layer || '0', color: color(e) };
   const tc = trueColorOf(e);
   if (tc !== undefined) out.trueColor = tc;
   if (validColorName(e.colorName)) out.colorName = e.colorName;
@@ -1014,6 +1023,7 @@ function convertLayouts(
   convert: (e: DwgEntity, where: string) => Entity | null,
   host: { entities: readonly Entity[]; header: DrawingHeader },
   report: ImportReportBuilder,
+  viewportHandles?: Map<string, string>,
 ): Layout[] | undefined {
   const units = unitsOfHost(host);
   const out: Array<{ layout: Layout; tab: number }> = [];
@@ -1071,8 +1081,10 @@ function convertLayouts(
         const frozen = v.frozenLayers ?? v.frozenLayerIds?.map((id) => layerNames.get(String(id).toUpperCase()) ?? (payload.layers.some((l) => l.name === id) ? id : undefined)).filter((n): n is string => !!n);
         if (!v.frozenLayers && !v.frozenLayerIds) unknownFrozen += 1;
         else if (v.frozenLayerIds && frozen?.length !== v.frozenLayerIds.length) report.add({ ...item, action: 'simplified', reason: 'some frozen layer handles could not be resolved; the resolved frozen layers are kept' });
+        const id = newViewportId();
+        if (e.handle) viewportHandles?.set(String(e.handle).toUpperCase(), id);
         viewports.push({
-          id: newViewportId(),
+          id,
           center,
           width: vw,
           height: vh,
@@ -1105,7 +1117,8 @@ function convertLayouts(
   out.sort((a, b) => a.tab - b.tab);
   const layouts = out.map((o) => o.layout);
   if (layouts.length === 0) return undefined;
-  if (layouts.length === 1 && layouts[0]!.pristine && /^layout1$/i.test(layouts[0]!.name)) return undefined;
+  // Keep declared pristine layouts explicit: retained object references must
+  // still name their own sheet when another layout is added later.
   return layouts;
 }
 
@@ -1176,17 +1189,48 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
   for (const block of payload.blocks) records += block.entities.length;
   if (records > 250_000) throw new Error('DWG exceeds the import record limit (250000).');
   let metadataNodes = 0, stringLength = 0;
-  const checkStrings = (value: unknown, depth = 0): void => {
+  const checkStrings = (value: unknown, depth = 0, path = ''): void => {
     if (++metadataNodes > 2_000_000) throw new Error('DWG metadata exceeds the import allocation budget.');
-    if (typeof value === 'string' && value.length > 1024 * 1024) throw new Error('DWG value exceeds the import string length limit (1048576).');
+    const limit = path === '/nativeMetadata/dxf' && payload.nativeMetadata?.schemaVersion === 1 ? 32 * 1024 * 1024 : 1024 * 1024;
+    if (typeof value === 'string' && value.length > limit) throw new Error(`DWG value exceeds the import string length limit (${limit}).`);
     if (typeof value === 'string' && (stringLength += value.length) > 64 * 1024 * 1024) throw new Error('DWG strings exceed the total import size limit.');
     if (depth > 64) throw new Error('DWG metadata nesting exceeds the import limit.');
-    if (value && typeof value === 'object') for (const entry of Object.values(value)) checkStrings(entry, depth + 1);
+    if (value && typeof value === 'object') for (const [key, entry] of Object.entries(value)) checkStrings(entry, depth + 1, `${path}/${key}`);
   };
   checkStrings(payload);
+  let metadataFailure: string | undefined;
+  let nativeProjected: DrawingState | undefined;
+  let projectionNotes: string[] = [];
+  if (payload.nativeMetadata?.complete) {
+    try {
+      const metadata = validateNativeMetadata(payload.nativeMetadata, payload.nativeMetadata.readError);
+      if (!metadata.complete) throw new Error('The native reader or metadata writer reported compatibility errors.');
+      const byHandle = new Map<string, { type: string; tableName?: string }>();
+      const projected = readDxf(metadata.dxf, { filePath: sourcePath, maxSourceLength: 32 * 1024 * 1024,
+        recordInventory(handle, type, tableName) { if (byHandle.has(handle)) throw new Error(`Duplicate native metadata handle ${handle}.`); byHandle.set(handle, { type, tableName }); } });
+      const missing = metadata.objects.filter(object => {
+        const node = byHandle.get(object.handle);
+        if (!node) return true;
+        // DWG's block table uses BLOCK_CONTROL/BLOCK_HEADER; DXF names both
+        // the table and its individual symbol records BLOCK_RECORD.
+        const nativeType = object.dxfType.toUpperCase();
+        const dxfAliases: Readonly<Record<string, string>> = { BLOCK_HEADER: 'BLOCK_RECORD', MINSERT: 'INSERT' };
+        const expected = (dxfAliases[nativeType] ?? nativeType).replace(/^ACDB/, '');
+        if (node.type.replace(/^ACDB/, '') === expected) return false;
+        const tableTypes = [object.type, object.dxfType].map(type => type.toUpperCase() === 'BLOCK_CONTROL' ? 'BLOCK_RECORD' : type.replace(/_CONTROL$/, ''));
+        return !(node.type === 'TABLE' && tableTypes.some(type => node.tableName?.toUpperCase() === type.toUpperCase()));
+      });
+      if (missing.length) throw new Error(`${missing.length} source object(s) are absent or have a different type in the native metadata projection (${missing.slice(0, 6).map(object => `${object.type} ${object.handle}`).join(', ')}).`);
+      nativeProjected = projected;
+      projectionNotes = metadata.notes;
+    } catch (error) { metadataFailure = error instanceof Error ? error.message : 'Native metadata could not be interpreted.'; }
+  }
   const skipped: Record<string, number> = {};
   const notes: string[] = [];
   const report = new ImportReportBuilder();
+  if (payload.nativeMetadata && !nativeProjected) {
+    report.add({ type: 'CAD_METADATA', action: 'unsupported', reason: `The native DWG metadata projection is incomplete; supported geometry was imported through the fallback reader. ${metadataFailure ?? payload.nativeMetadata.notes.slice(0, 4).join(' ')}` });
+  }
   for (const source of [payload.header, ...(payload.dimStyles ?? [])]) for (const name of ['DIMDEC', 'DIMADEC', 'DIMALTD', 'DIMTDEC', 'LUPREC', 'AUPREC']) {
     if (source[name] === undefined) continue;
     const value = Number(source[name]);
@@ -1197,8 +1241,10 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
     const unsupported = Object.entries(source).filter(([name, value]) => name.startsWith('DIM') && !supportedDimNames.has(name) && value !== '' && Number(value) !== 0).map(([name]) => name);
     if (unsupported.length) report.add({ type: source === payload.header ? 'HEADER' : 'DIMSTYLE', action: 'simplified', reason: `${unsupported.join(', ')} settings exposed by the DWG reader are not modeled or written back; supported dimension variables are kept` });
   }
-  report.add({ type: 'XDATA', action: 'unsupported', reason: 'the DWG reader may omit application XDATA (including layer transparency), the color-book portion of a color name, extension dictionaries, fields and dynamic parameters; these cannot be guaranteed on DXF save. Compare a source DXF export when metadata fidelity matters' });
-  for (const [type, count] of Object.entries(payload.omittedObjectTypes ?? {})) if (count > 0) report.add({ type, action: 'dropped', reason: `${count} object metadata record(s) exposed by the DWG reader are not retained in the drawing model` });
+  if (!nativeProjected) {
+    report.add({ type: 'XDATA', action: 'unsupported', reason: 'the DWG reader may omit application XDATA (including layer transparency), the color-book portion of a color name, extension dictionaries, fields and dynamic parameters; these cannot be guaranteed on DXF save. Compare a source DXF export when metadata fidelity matters' });
+    for (const [type, count] of Object.entries(payload.omittedObjectTypes ?? {})) if (count > 0) report.add({ type, action: 'dropped', reason: `${count} object metadata record(s) exposed by the DWG reader are not retained in the drawing model` });
+  }
   const currentStyleName = typeof payload.header.DIMSTYLE === 'string' ? payload.header.DIMSTYLE : 'Standard';
   const currentStyleRecord = payload.dimStyles?.find((s) => s.name.toUpperCase() === currentStyleName.toUpperCase());
   const styleByHandle = new Map((payload.styles ?? []).flatMap((s) => s.handle ? [[s.handle.toUpperCase(), s.name] as const] : []));
@@ -1241,9 +1287,9 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
     if (!bad) {
       const item = { type: e.type, ...(e.handle ? { handle: String(e.handle) } : {}), layer: e.layer || '0', where };
       for (const note of extras.notes.slice(previousNotes)) report.add({ ...item, action: 'simplified', reason: note });
-      if (e.xdata) report.add({ ...item, action: 'simplified', reason: `application XDATA (${e.xdata.appName || 'unnamed'}) is not written back; supported DSTYLE values are applied to dimensions` });
+      if (!nativeProjected && e.xdata && (!Array.isArray(e.xdata) || e.xdata.length > 0)) report.add({ ...item, action: 'simplified', reason: `application XDATA (${e.xdata.appName || 'unnamed'}) is not written back; supported DSTYLE values are applied to dimensions` });
       if ((e.transparency !== undefined || e.transparencyType !== undefined) && dwgTransparency(e) === undefined) report.add({ ...item, action: 'simplified', reason: 'invalid or unexposed DWG transparency method/alpha is not kept; ByLayer is used' });
-      if (e.colorName !== undefined && !validColorName(e.colorName)) report.add({ ...item, action: 'simplified', reason: 'invalid named/color-book identity is not kept; RGB/ACI color is kept' });
+      if (e.colorName && !validColorName(e.colorName)) report.add({ ...item, action: 'simplified', reason: 'invalid named/color-book identity is not kept; RGB/ACI color is kept' });
       if (c.type === 'mtext' && c.columns) report.add({ ...item, action: 'simplified', reason: 'MTEXT column definitions are kept in JCAD_MTEXT_COLUMNS for JCad reimport; external CAD displays one column in AutoCAD 2000 export' });
       if (e.type === 'POLYLINE3D') report.add({ type: e.type, action: 'simplified', reason: '3D polyline: flattened to its XY projection', ...(e.handle ? { handle: String(e.handle) } : {}), layer: e.layer || '0', where });
       return c;
@@ -1446,8 +1492,8 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
     }
   }
 
-  // The DWG reader's own `locked` is unreliable (reported for every layer); bit 4 of the layer flags
-  // is the lock in every DWG version (R14: 64 + 4 + 1, R2000+: 16 + 4 + 1 for a frozen locked layer).
+  // Without complete metadata, retain the legacy facade's layer heuristics. Its standardFlag
+  // also contains internal DWG bits; the exact native DXF70 join below repairs structural flags.
   // Plot flags exist from R2000 on: an R14 file reports 0 for every layer.
   const plotFlags = payload.layers.some((l) => l.plotFlag === 1);
   const layers: Layer[] = payload.layers
@@ -1486,11 +1532,13 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
     '0';
 
   // Paper space: layouts with their entities and viewports.
+  const viewportHandles = new Map<string, string>();
   const layouts = convertLayouts(
     payload,
     (e, where) => convertChecked(e, where, blocks, mx),
     { entities, header },
     report,
+    viewportHandles,
   );
   for (const l of layouts ?? []) {
     for (const e of l.entities) ensureEntityLayers(e);
@@ -1506,7 +1554,31 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
   const styleMeta = textStylesMeta(convertStyles(payload.styles ?? [], report));
   const named = [...dimStyles.values()].filter((d) => !(d.name.toUpperCase() === 'STANDARD' && diffDimStyles(d, STANDARD_DIMSTYLE).length === 0));
   const meta: Record<string, unknown> = { ...(styleMeta ?? {}), ...(named.length ? { [DIMSTYLES_META_KEY]: Object.fromEntries(named.map((d) => [d.name, d])) } : {}) };
-  const base: DrawingState = { entities, layers, blocks, currentLayer, header, ...(Object.keys(meta).length ? { meta } : {}), ...(layouts ? { layouts } : {}) };
+  let base: DrawingState = { entities, layers, blocks, currentLayer, header, ...(Object.keys(meta).length ? { meta } : {}), ...(layouts ? { layouts } : {}) };
+  if (nativeProjected) {
+    try {
+      const tableHandles = new Map<string, { table: string; name: string }>();
+      for (const [table, values] of [['LAYER', payload.layers], ['BLOCK_RECORD', payload.blocks], ['STYLE', payload.styles ?? []], ['LTYPE', payload.linetypes ?? []], ['DIMSTYLE', payload.dimStyles ?? []]] as const) {
+        for (const value of values) if (typeof value.handle === 'string') tableHandles.set(value.handle.toUpperCase(), { table, name: value.name });
+      }
+      const layoutHandles = new Map((payload.layouts ?? []).flatMap(layout => layout.handle ? [[layout.handle.toUpperCase(), layout.name] as const] : []));
+      const entityTypes = new Map([...payload.entities, ...payload.blocks.flatMap(block => block.entities)].flatMap(entity => entity.handle ? [[String(entity.handle).toUpperCase(), entity.type] as const] : []));
+      const layerOff = new Map(payload.layers.flatMap(layer => layer.handle ? [[layer.handle.toUpperCase(), layer.off] as const] : []));
+      base = mergeDwgCadGraph(base, nativeProjected, { viewportHandles, tableHandles, layoutHandles, entityTypes, layerOff });
+      report.retainItems(item => ['HEADER', 'DIMSTYLE'].includes(item.type) && item.reason.includes('not modeled or written back'),
+        item => item.reason.replace('not modeled or written back', 'retained as source metadata; these settings are not modeled by the editor'));
+      const imported = importReportOf(nativeProjected);
+      for (const item of imported?.items ?? []) if (item.action === 'kept' || item.type === 'FIELD') report.add(item);
+      for (const note of [...(imported?.notes ?? []), ...projectionNotes]) report.note(note);
+    } catch (error) {
+      report.add({ type: 'CAD_METADATA', action: 'unsupported', reason: `Retained metadata could not be matched safely to the native drawing: ${error instanceof Error ? error.message : 'unknown source identity'}` });
+      nativeProjected = undefined;
+    }
+  }
+  if (!nativeProjected) {
+    const clear = (list: readonly Entity[]) => list.map(entity => { const { cadIdentity: _sourceHandle, ...rest } = entity; return rest as Entity; });
+    base = { ...base, entities: clear(base.entities), blocks: Object.fromEntries(Object.entries(base.blocks).map(([name, block]) => [name, { ...block, entities: clear(block.entities) }])), ...(base.layouts ? { layouts: base.layouts.map(layout => ({ ...layout, entities: clear(layout.entities) })) } : {}) };
+  }
   const built = report.empty ? null : report.build('DWG', sourcePath);
-  return { state: withImportData(base, built), skipped, notes, report: built };
+  return { state: withImportData(base, built, nativeProjected ? rawEntitiesOf(nativeProjected) : []), skipped, notes, report: built };
 }

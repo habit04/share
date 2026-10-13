@@ -17,6 +17,7 @@ import { aciToCss } from '../src/render/palette';
 import { namedDimStyles, dimensionText } from '../src/core/dimension';
 import { textStylesOf } from '../src/io/encoding';
 import type { DrawingState } from '../src/core/document';
+import { defaultLayout } from '../src/core/layouts';
 // @ts-expect-error plain JS helper shared with Electron main / CLI
 import { readDwgPayload, payloadFromDatabase } from '../scripts/dwg-reader.mjs';
 
@@ -24,6 +25,23 @@ const fixtures = join(__dirname, '..', 'fixtures');
 const dwg = async (f: string) => convertDwg((await readDwgPayload(readFileSync(join(fixtures, f)), 'dwg')).payload, f);
 
 describe('DWG fixtures against their DXF equivalent', () => {
+  // The native metadata reader is enabled only for the Windows update. The DXF
+  // layout identity regression also runs on CI's other operating systems.
+  it.skipIf(process.platform !== 'win32')('retains an AutoCAD-authored pristine Layout1 when a second sheet is added', async () => {
+    const original = readFileSync(join(__dirname, 'fixtures', 'interchange', 'r2018-mtext-background.dwg'));
+    const { payload } = await readDwgPayload(original);
+    const { state } = convertDwg(payload);
+    expect(state.layouts).toHaveLength(1);
+    expect(state.layouts![0]).toMatchObject({ name: 'Layout1', pristine: true, entities: [], viewports: [] });
+    expect(state.cadGraph!.nodes.some(node => node.type === 'LAYOUT' && node.anchor?.kind === 'layout' && node.anchor.name === 'Layout1')).toBe(true);
+    const second = { ...defaultLayout('Second sheet'), pristine: undefined,
+      entities: [{ id: 'second-paper-circle', type: 'circle' as const, layer: '0', color: 'ByLayer' as const, center: { x: 2, y: 3 }, radius: 1 }],
+    };
+    const reopened = readDxf(writeDxf({ ...state, layouts: [...state.layouts!, second] }));
+    expect(reopened.layouts!.map(layout => [layout.name, layout.entities.length, layout.viewports.length])).toEqual([['Layout1', 0, 0], ['Second sheet', 1, 0]]);
+    expect(reopened.entities.map(entity => entity.type)).toEqual(state.entities.map(entity => entity.type));
+    expect(readFileSync(join(__dirname, 'fixtures', 'interchange', 'r2018-mtext-background.dwg'))).toEqual(original);
+  }, 60000);
   it('layouts, dimension styles and layers match the DXF saved from the same drawing', async () => {
     const { state } = await dwg('example_2000.dwg');
     const dxf = readDxf(readFileSync(join(fixtures, 'example_2000.dxf'), 'latin1'));
@@ -302,7 +320,7 @@ describe('DWG payload twins carry the table data', () => {
     expect(node.layers[0]).toMatchObject({ color: 0x123456, standardFlag: 16, plotFlag: 1 });
     expect(node.styles).toEqual([{ name: 'NOTES', handle: '40', standardFlag: 0, fixedTextHeight: 0, widthFactor: 0.8, obliqueAngle: 0.1, textGenerationFlag: 0, font: 'romans.shx', bigFont: '' }]);
     expect(node.linetypes[0].pattern).toEqual([{ elementLength: 12, elementTypeFlag: 0 }, { elementLength: -3, elementTypeFlag: 0 }]);
-    expect(node.layouts).toEqual([{ name: 'Layout1', tabOrder: 1, blockHandle: '50', minLimit: { x: 0, y: 0 }, maxLimit: { x: 10, y: 5 } }]);
+    expect(node.layouts).toEqual([{ handle: '51', name: 'Layout1', tabOrder: 1, blockHandle: '50', minLimit: { x: 0, y: 0 }, maxLimit: { x: 10, y: 5 } }]);
     expect(node.dimStyles[0]).toMatchObject({ name: 'MECH', DIMTXT: 3.5 });
   });
 });

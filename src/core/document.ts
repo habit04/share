@@ -10,8 +10,15 @@ import { DEFAULT_UNITS } from './units';
 // Paper-space layouts (Track E): the layout model and the paper-space entity projection.
 import type { Layout, SpaceRef } from './layouts';
 import { applyPaperEntities, layoutsOf, paperEntities, paperSpaceLayout, sheetBounds, withLayout } from './layouts';
-import { prepareDrawingState } from './geometry-budget';
+import { prepareDrawingState as prepareGeometryState } from './geometry-budget';
 import { sealImmutableData } from './immutable-data';
+import type { NativeViewCamera } from './named-view';
+import { reconcileCadGraph, validateCadState, type CadGraph, type CadGraphEditIntent } from './cad-graph';
+
+function prepareDrawingState(state: DrawingState, previous?: DrawingState): DrawingState {
+  validateCadState(state);
+  return prepareGeometryState(state, previous);
+}
 
 /** A named view (VIEW command): world centre and view height. */
 export interface NamedView {
@@ -19,6 +26,11 @@ export interface NamedView {
   readonly center: Point;
   /** Visible height in drawing units. */
   readonly height: number;
+  /** Width and rotation of the view, independent of model geometry. */
+  readonly width?: number;
+  readonly twist?: number;
+  /** Complete native 3D camera; unsupported projections are retained for interchange. */
+  readonly camera?: NativeViewCamera;
 }
 
 /** Drawing-wide settings that AutoCAD keeps as header variables. */
@@ -74,6 +86,8 @@ export interface DrawingState {
    * them like geometry). Not written to DXF; absent for ordinary drawings.
    */
   readonly meta?: Readonly<Record<string, unknown>>;
+  /** Native CAD metadata and typed references, shared with geometry in undo/redo snapshots. */
+  readonly cadGraph?: CadGraph;
   /** Paper-space layouts (see core/layouts.ts); absent = the implicit Layout1. */
   readonly layouts?: readonly Layout[];
   /** Active space (CTAB / MSPACE): absent = the Model tab. */
@@ -143,9 +157,9 @@ export class Drawing {
    * it does not apply).
    */
   private outsideHistory(fn: (s: DrawingState) => DrawingState, current = fn(this.state)): void {
-    const next = prepareDrawingState(current, this.state);
-    const undo = this.undoStack.map((s) => prepareDrawingState(fn(s), s));
-    const redo = this.redoStack.map((s) => prepareDrawingState(fn(s), s));
+    const next = prepareDrawingState(reconcileCadGraph(this.state, current), this.state);
+    const undo = this.undoStack.map((s) => prepareDrawingState(reconcileCadGraph(s, fn(s)), s));
+    const redo = this.redoStack.map((s) => prepareDrawingState(reconcileCadGraph(s, fn(s)), s));
     // A failure in any history entry must leave the complete document untouched.
     this.state = next;
     this.undoStack = undo;
@@ -246,8 +260,8 @@ export class Drawing {
   }
 
   /** Apply a state transition as one undoable step. */
-  transact(fn: (s: DrawingState) => DrawingState): void {
-    const next = prepareDrawingState(this.project(fn), this.state);
+  transact(fn: (s: DrawingState) => DrawingState, intent?: CadGraphEditIntent): void {
+    const next = prepareDrawingState(reconcileCadGraph(this.state, this.project(fn), intent), this.state);
     if (next === this.state) return;
     this.undoStack.push(this.state);
     if (this.undoStack.length > this.maxUndo) this.undoStack.shift();
@@ -349,7 +363,7 @@ export class Drawing {
    * and the current colour (CECOLOR) when they were created ByLayer;
    * pass `applyDefaults = false` for copies that must keep their own properties.
    */
-  addEntities(entities: readonly Entity[], applyDefaults = true): void {
+  addEntities(entities: readonly Entity[], applyDefaults = true, intent?: CadGraphEditIntent): void {
     if (entities.length === 0) return;
     const h = this.header;
     const wantLt = applyDefaults && h.celtype && h.celtype.toUpperCase() !== 'BYLAYER';
@@ -364,13 +378,13 @@ export class Drawing {
           return out;
         })
       : entities;
-    this.transact((s) => ({ ...s, entities: [...s.entities, ...list] }));
+    this.transact((s) => ({ ...s, entities: [...s.entities, ...list] }), intent);
   }
 
   /** Remove some entities and add others in a single undo step. */
-  replaceWith(removeIds: Iterable<string>, add: readonly Entity[]): void {
+  replaceWith(removeIds: Iterable<string>, add: readonly Entity[], intent?: CadGraphEditIntent): void {
     const set = new Set(removeIds);
-    this.transact((s) => ({ ...s, entities: [...s.entities.filter((e) => !set.has(e.id)), ...add] }));
+    this.transact((s) => ({ ...s, entities: [...s.entities.filter((e) => !set.has(e.id)), ...add] }), intent);
   }
 
   removeEntities(ids: Iterable<string>): void {
@@ -383,7 +397,7 @@ export class Drawing {
   }
 
   /** Replace entities by id (used by move/rotate/edit). */
-  replaceEntities(replacements: readonly Entity[]): void {
+  replaceEntities(replacements: readonly Entity[], intent?: CadGraphEditIntent): void {
     if (replacements.length === 0) return;
     const map = new Map(replacements.map((e) => [e.id, e]));
     this.transact((s) => {
@@ -397,7 +411,7 @@ export class Drawing {
         return e;
       });
       return changed ? { ...s, entities } : s;
-    });
+    }, intent);
   }
 
   setCurrentLayer(name: string): void {

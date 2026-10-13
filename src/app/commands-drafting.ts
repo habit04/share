@@ -23,6 +23,7 @@ import { hatchTool, hatchEditTool, leaderTool, mleaderTool, tableTool, tableEdit
 import { blockTool, insertTool, referencedBlocks, unusedLayers, unusedLinetypes } from '../tools/blocks';
 import { distTool, idTool, areaTool, listTool } from '../tools/inquiry';
 import { selectTool, qselectTool, selectionKeyword, selectionHistory } from '../tools/select';
+import { layoutController } from '../tools/layouts';
 
 type Reg = (name: string, aliases: string[], description: string, run: (ed: Editor, arg?: string) => void, startsTool?: boolean) => void;
 
@@ -240,10 +241,15 @@ function viewTool(ed: Editor, arg?: string): Tool {
         return;
       case 'SAVE':
       case 'WINDOW': {
+        if (ed.doc.space && !ed.doc.space.viewport) {
+          ctx.log('Enter Model or a floating viewport to save a named model view.');
+          return;
+        }
         const n = yield* askName('Enter view name to save:');
         if (!n) return;
-        let center = vp.center;
-        let height = vp.viewHeight;
+        const frame = vp.fitRect, width = frame?.w ?? vp.width, frameHeight = frame?.h ?? vp.height;
+        let center = frame ? vp.toWorld({ x: frame.x + frame.w / 2, y: frame.y + frame.h / 2 }) : vp.center;
+        let height = frameHeight / vp.scale;
         if (opt === 'WINDOW') {
           const a = yield* point(ctx, 'Specify first corner:');
           if (!a) return;
@@ -251,9 +257,9 @@ function viewTool(ed: Editor, arg?: string): Tool {
           if (!b) return;
           const d = g.rotate(g.sub(b, a), vp.twist);
           center = g.mid(a, b);
-          height = Math.max(Math.abs(d.y), (Math.abs(d.x) * vp.height) / Math.max(1, vp.width));
+          height = Math.max(Math.abs(d.y), (Math.abs(d.x) * frameHeight) / Math.max(1, width));
         }
-        ed.doc.setHeader({ views: [...views.filter((v) => v.name.toUpperCase() !== n.toUpperCase()), { name: n, center, height }] });
+        ed.doc.setHeader({ views: [...views.filter((v) => v.name.toUpperCase() !== n.toUpperCase()), { name: n, center, height, width: height * width / Math.max(1, frameHeight), twist: vp.twist }] });
         ctx.log(`View "${n}" saved.`);
         return;
       }
@@ -265,8 +271,18 @@ function viewTool(ed: Editor, arg?: string): Tool {
           ctx.log(`Cannot find view "${n}".`);
           return;
         }
+        if (v.camera && v.camera.flags & 1) {
+          ctx.log(`View "${v.name}" retains a paper-space camera whose sheet association is not supported by the current editor.`);
+          return;
+        }
+        if (v.camera && (v.camera.direction.z <= 0 || Math.abs(v.camera.direction.x / v.camera.direction.z) > 1e-9 || Math.abs(v.camera.direction.y / v.camera.direction.z) > 1e-9 || v.camera.mode & 1)) {
+          ctx.log(`View "${v.name}" retains a 3D or perspective camera that the current planar editor cannot display.`);
+          return;
+        }
+        layoutController(ed).activate(null, true);
         vp.pushView();
         vp.center = v.center;
+        vp.twist = v.twist ?? v.camera?.twist ?? 0;
         vp.viewHeight = v.height;
         ed.render();
         ed.notify('view');

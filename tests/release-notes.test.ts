@@ -29,6 +29,17 @@ const changelog = `# Changelog
 `;
 
 describe('release notes from CHANGELOG.md', () => {
+  it('labels an unpublished Windows candidate as a planned artifact until its pending status is removed', () => {
+    const pending = '# Changelog\n\n## [0.4.9] - 2026-10-13\n\n### Upgrade notes\n\nUnpublished candidate; Windows installation proof is pending.\n';
+    const candidate = releaseNotes(pending, 'v0.4.9', undefined, { releasePolicy: 'windows-only' });
+    expect(candidate).toContain('**Planned Windows artifact:** `jcad-electrical-0.4.9-win-x64.exe`');
+    expect(candidate).toContain('History when published:');
+    expect(candidate).not.toContain('**Downloads:**');
+    const ready = releaseNotes(pending.replace('Unpublished candidate; Windows installation proof is pending.', 'Windows installation proof passed.'), 'v0.4.9', undefined, { releasePolicy: 'windows-only' });
+    expect(ready).toContain('**Downloads:** Windows `jcad-electrical-0.4.9-win-x64.exe`');
+    expect(ready).toContain('Full history:');
+    expect(ready).not.toContain('Planned Windows artifact');
+  });
   it('renders signed Windows-only provenance without inventing new Mac or Linux installers', () => {
     const dir = mkdtempSync(join(tmpdir(), 'jcad-windows-notes-'));
     try {

@@ -11,4 +11,4 @@ export interface NativeDwgModule {
 }
 export const DWG_CRITICAL_ERROR: 128;
 /** Transfers successful pointer ownership to caller; failed pointer and native FS input are released. */
-export function readNativeDwg(module: NativeDwgModule, input: Uint8Array | ArrayBuffer, kind?: 'dwg' | 'dxf'): number;
+export function readNativeDwg(module: NativeDwgModule, input: Uint8Array | ArrayBuffer, kind?: 'dwg' | 'dxf', onReadStatus?: (error: number) => void): number;

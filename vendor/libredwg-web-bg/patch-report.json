@@ -5,31 +5,31 @@
     "tag": "v0.7.14",
     "commit": "1dd682f46339f37b67c5ff1085d10d04a8c16d7e"
   },
-  "patchSha256": "98c701b374f44baeebf36aca079b9258da87b6ecef13784b7e1a6d294e222aae",
+  "patchSha256": "de07b26d5371f5807504c12a03faa34206745327faf2b71e100f444171f4a50b",
   "files": [
     {
       "path": "include/dwg.h",
       "beforeSha256": "5343c827df7c305ad21c3f534ced72a79f5885eb50119a25fb9ae40cf8a69696",
-      "afterSha256": "717114dc4bc732cef58eaa3eccb04b2285461047dc23df27a998f8a942453edd",
-      "replacements": 2
+      "afterSha256": "f5335fd2c5f42f9978cd1820e09e1e47f5a776911b4cd32d466a1476e9bff665",
+      "replacements": 4
     },
     {
       "path": "src/dwg.spec",
       "beforeSha256": "c3c6dec791321721b0ff75854d3ac2e8832986b62fce832cc053e2ac85f2e9fd",
-      "afterSha256": "b71557ff995822c2314d57d3728fd9a56ffa68a090f4932b921e58fe4fc1d1f7",
-      "replacements": 2
+      "afterSha256": "958492c150f41a9bb999aaf92b40aae49b139e09e0f04b10d118e5acb6311a49",
+      "replacements": 5
     },
     {
       "path": "src/dwg_spec_shared.h",
       "beforeSha256": "fce80dd4c234293ef9a5bf3acc3ffeb13efce67bd60bb127a961bba0b06ef91c",
-      "afterSha256": "35e6758075cf1c2e315aaed0574695d47b949f1eee86027dd6202b5914b48656",
-      "replacements": 1
+      "afterSha256": "62fbfa43598d95b30c915284d46e7e4945e7bf2a5d51cd6f07dba3554d2f5951",
+      "replacements": 4
     },
     {
       "path": "src/dynapi.c",
       "beforeSha256": "7f605d7de91f8a9e216a71cd40df8851930279b00a47afa754f0417d1a982f35",
-      "afterSha256": "7f889f4d0cf231c332a5bf7e8de7efa1f35ec9166dfce3f3ae77dfafeb4115a3",
-      "replacements": 2
+      "afterSha256": "150ab161b7f07aa4eca7fc0db11ddad12cee30e71f8c947fa9dace8162a400ac",
+      "replacements": 4
     },
     {
       "path": "test/unit-testing/mtext.c",
@@ -64,14 +64,62 @@
     {
       "path": "src/decode.c",
       "beforeSha256": "8350a8b648a4cc2e817b539da2273adac7f6d801020467cfb083111135428eb2",
-      "afterSha256": "3b0805c4a7448ffde977d66ecadf19d5bff21d6327df5ea0b9b54fed9ad0faa3",
-      "replacements": 1
+      "afterSha256": "be1fa5ba174fee1a513de35c7a32a2344a009e00a45c39a7480fb444cf10829a",
+      "replacements": 4
     },
     {
       "path": "src/common_entity_handle_data.spec",
       "beforeSha256": "288858df07e8a37b6fb0cccceeca2cf153cccc8a6784d3b0cd9962f770768a8d",
       "afterSha256": "1140eedbd1a93824dc9a7f0dbae23c182b1342bc939005b6a2427da97a45ca2a",
       "replacements": 1
+    },
+    {
+      "path": "bindings/javascript/embind/binding_func.cpp",
+      "beforeSha256": "772a7321760ccc6acb87a591a14feb9a5764b5ce8011199d02ac0528217d03c5",
+      "afterSha256": "daed8b9d3eb0c870124d5061c84a70607ac09ef7f40f2d90118e6d4d4c8421d3",
+      "replacements": 5
+    },
+    {
+      "path": "src/out_dxf.c",
+      "beforeSha256": "91c12ce650f9c072b6e487418247bd8ed6075e55cfac0510d885faaf61b4f079",
+      "afterSha256": "a71f7f67c1a4db977cabcccb3fc511ad5774fe86dc0e391f78fc4fe631ccedf2",
+      "replacements": 7
+    },
+    {
+      "path": "src/header_variables_dxf.spec",
+      "beforeSha256": "4b619e37ee8f01ad8066e54d9466d905fab825d1596385834f3edb1c1ee5818b",
+      "afterSha256": "afe664204275f1d13223881dd56b6a3e838c72e7d3b2267df6cd16d3b5064357",
+      "replacements": 1
+    },
+    {
+      "path": "src/decode_r2007.c",
+      "beforeSha256": "f7e0c5b8620001801e84e8e7cae93d16957920ba0db6560f13ac623442e1fb76",
+      "afterSha256": "652e1cfb470996dc9cc486f27ef5dd045ed6e1c3ef3891a725fc904c275fd793",
+      "replacements": 2
+    },
+    {
+      "path": "src/bits.c",
+      "beforeSha256": "64a6025d323d78f90348ca8ca477a1a77a4d77972df33cb94513993539184bcb",
+      "afterSha256": "6f6d03075b86bac9bc66fce9353fe9e9c2ac65732ed19cb95cc88d1f91a4ff83",
+      "replacements": 2
+    },
+    {
+      "path": "src/header_variables.spec",
+      "beforeSha256": "129251c47997c7be273b2264bbeff1e3526a6e88dd2310742efc9375dc7b3f58",
+      "afterSha256": "e90f4fd3798e98debde513aa5b5a611efe1ffb4323643f9f5745a7f54674e54b",
+      "replacements": 3
+    },
+    {
+      "path": "src/header_variables_r11.spec",
+      "beforeSha256": "3cd32295da413cbd77b3d32d3e4faf333bf7753b97b609977db41f006c793ed0",
+      "afterSha256": "0ef0ac122c2b5eb9136c9ce98fd8b7fb253d8c6a4d6a132e02843fadd9a6a3ed",
+      "replacements": 3
+    },
+    {
+      "path": "src/dwg2.spec",
+      "beforeSha256": "2bb3602b2867277868ebb488ea236b07d7cdf605128987f767114d68dd501499",
+      "afterSha256": "b314ff4ca8912ad0438d161fb01a497a7a131efeffd714b4361c75b0fcf743ab",
+      "replacements": 6
     }
   ]
 }

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { checkedReplacement, validateReplacementText, patch, pins } from './patch-source.mjs';
-import { checkedNativeColor, encodedNativeAlpha } from './validate-appearance-fixture.mjs';
+import { checkedNativeColor, encodedNativeAlpha, checkedBookColorProjection, validateBookColorProjectionReport } from './validate-appearance-fixture.mjs';
 
 const before = Buffer.from('#include "binding_common.h"\nFIELD_BL (bg_fill_scale, 45);\n');
 const entry = {
@@ -68,12 +68,80 @@ test('native color gate refuses unresolved references and impossible pointers', 
   assert.equal(encodedNativeAlpha({ alpha_type: 0, alpha: 255 }), 0);
 });
 
+test('metadata native patch uses one owned bounded stream and copied identities without output paths', () => {
+  const entry = patch.files.find((file) => file.path === 'bindings/javascript/embind/binding_func.cpp');
+  assert.ok(entry?.gitBlob, 'Metadata export must have a complete pinned-file preimage.');
+  const after = entry.replacements.find((replacement) => replacement.after.includes('jcad_dwg_export_metadata_wrapper')).after;
+  assert.match(after, /uint32_t max_bytes/);
+  assert.match(after, /32u \* 1024u \* 1024u/);
+  assert.match(after, /dwg->num_objects > 100000/);
+  assert.match(after, /fmemopen\(buffer\.get\(\), static_cast<size_t>\(max_bytes\) \+ 1u, "w"\)/);
+  assert.match(after, /fflush\(stream\)/);
+  assert.match(after, /ferror\(stream\)/);
+  assert.match(after, /fclose\(stream\)/);
+  assert.match(after, /"%llX"/);
+  // Every note, including the two invalid-class refusals, uses the copied string binding.
+  assert.equal((after.match(/notes\.call<void>\("push", std::string\(/g) ?? []).length, 10);
+  assert.doesNotMatch(after, /notes\.call<void>\("push", (?:"|over_limit)/);
+  assert.doesNotMatch(after, /FS\.|input_filename|output_filename|reinterpret_cast<uintptr_t>\(obj/);
+  const values = patch.files.find((file) => file.path === 'src/dwg_spec_shared.h').replacements.find((replacement) => replacement.after.includes('JCAD_TABLE_VALUE_BODY_FLAGS 1')).after;
+  assert.match(values, /# if defined\(IS_DXF\) \|\| defined\(IS_FREE\)\n# {2}define JCAD_TABLE_VALUE_BODY_FLAGS 1/);
+  assert.match(values, /# else\n# {2}define JCAD_TABLE_VALUE_BODY_FLAGS 3/);
+});
+
+test('metadata projection retains stored builtin class definitions and their actual application names', () => {
+  const classes = patch.files.find(file => file.path === 'src/out_dxf.c');
+  assert.ok(classes?.gitBlob, 'Class projection requires the complete pinned native-file preimage.');
+  const builtins = classes.replacements.find(replacement => replacement.before.includes('// some classes are now builtin'));
+  assert.ok(builtins); assert.equal(builtins.count, 1);
+  assert.match(builtins.before, /ACDBPLACEHOLDER[\s\S]*LAYOUT[\s\S]*continue;/);
+  assert.doesNotMatch(builtins.after, /continue|return/);
+  const application = classes.replacements.find(replacement => replacement.before.includes('special-cased for DXF'));
+  assert.ok(application); assert.equal(application.count, 1);
+  assert.match(application.before, /SPATIAL_INDEX[\s\S]*VALUE_TFF \("AutoCAD 2000", 3\)/);
+  assert.match(application.after, /VALUE_T \(dwg->dwg_class\[j\]\.appname, 3\)/);
+  assert.doesNotMatch(application.after, /AutoCAD 2000|VALUE_TFF/);
+  const getters = patch.files.find(file => file.path === 'bindings/javascript/embind/binding_func.cpp');
+  const copied = getters.replacements.find(replacement => replacement.after.includes('const auto class_text'));
+  assert.ok(copied); assert.equal(copied.count, 1);
+  assert.match(copied.after, /IS_FROM_TU_DWG\(dwg\)/);
+  assert.match(copied.after, /length < 1025[\s\S]*length > 1024/);
+  assert.match(copied.after, /unique_ptr<char, decltype\(&free\)> utf8\(bit_convert_TU\(text\), &free\)/);
+  assert.match(copied.after, /"appname", class_text\(cls->appname\)/);
+  assert.match(copied.after, /"cppname", class_text\(cls->cppname\)/);
+  assert.doesNotMatch(copied.after, /reinterpret_cast<uintptr_t>|class_ptr/);
+});
+
 test('native candidate upload is gated by exact color and MINSERT acceptance', () => {
   const workflow = readFileSync(new URL('../../.github/workflows/native-dwg-background.yml', import.meta.url), 'utf8');
   assert.match(workflow, /timeout 90s node scripts\/native-dwg-build\/validate-appearance-fixture\.mjs/);
   assert.ok(workflow.indexOf('Exact native color reference and MINSERT attribute gate') > workflow.indexOf('Compile matching factory glue'));
   assert.ok(workflow.indexOf('Exact native color reference and MINSERT attribute gate') < workflow.indexOf('Package corresponding source'));
   assert.match(workflow, /r2018-portable-appearance\.dwg.*r2018-native-shipping\.dwg.*appearance-report\.json/);
+});
+
+test('metadata candidate provenance requires the independent native oracle before packaging', () => {
+  const workflow = readFileSync(new URL('../../.github/workflows/native-dwg-background.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /timeout 90s node scripts\/native-dwg-build\/validate-metadata-fixture\.mjs/);
+  assert.ok(workflow.indexOf('Exact native VIEW FIELD and typed metadata oracle gate') > workflow.indexOf('Exact native color reference and MINSERT attribute gate'));
+  assert.ok(workflow.indexOf('Exact native VIEW FIELD and typed metadata oracle gate') < workflow.indexOf('Package corresponding source'));
+  assert.match(workflow, /r2018-views-fields\.dwg.*r2018-views-fields\.expected\.json.*metadata-report\.json/);
+  const provenance = readFileSync(new URL('./write-provenance.mjs', import.meta.url), 'utf8');
+  assert.match(provenance, /validateMetadataReport\(metadata, metadataExpected, metadataOriginalDxf, nativeDateOracle\)/);
+  assert.match(provenance, /metadata\.factorySha256, fixture\.factorySha256/);
+  assert.match(provenance, /metadata\.wasmSha256, fixture\.wasmSha256/);
+});
+
+test('normal CI checks the accepted native bytes against all three independent metadata fixtures', () => {
+  const workflow = readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /name: Accepted native reader matches all three independent metadata fixtures\r?\n {8}if: matrix\.node == 24\r?\n {8}run: \|/);
+  assert.match(workflow, /node --test scripts\/native-dwg-build\/tooling\.test\.mjs scripts\/native-dwg-build\/metadata-tools\.test\.mjs/);
+  assert.match(workflow, /node scripts\/native-dwg-build\/validate-vendored-metadata\.mjs native-metadata-output/);
+  assert.match(workflow, /name: native-metadata-fixtures\r?\n {10}path: native-metadata-output\/\r?\n {10}if-no-files-found: error/);
+  const gate = readFileSync(new URL('./validate-vendored-metadata.mjs', import.meta.url), 'utf8');
+  for (const stem of ['r2018-views-fields', 'r2018-field-object-reference', 'r2018-unicode-metadata']) assert.ok(gate.includes(`'${stem}'`));
+  assert.match(gate, /repairPolicy: 'metadata-graph'/);
+  assert.doesNotMatch(gate, /execFile|spawn|build:|copyFile/);
 });
 
 test('native workflow initializes runner paths inside steps, not unavailable job env context', () => {
@@ -103,4 +171,39 @@ test('declaration generation uses an isolated version/integrity pin before uncha
   assert.match(workflow, /tsc" --outFile "\$NATIVE_DECLARATION_TOOLS\/probe\.d\.ts" --skipLibCheck --declaration --emitDeclarationOnly --allowJs/);
   assert.ok(workflow.indexOf('Install integrity-pinned declaration compiler') < workflow.indexOf('Compile matching factory glue'));
   assert.match(workflow, /npm run build:prepare && npm run build:obj && npm run build:wasm/);
+});
+
+test('book-color projection boundary retains the observed source identity, Unicode and encoded RGB', () => {
+  // Token boundary only; validateAppearanceFixtures supplies actual compiled/native proof.
+  const expected = { handle: '14F', name: 'Studio Book$Pearl Δ', rgb: 0xabcdef };
+  const dxf = '0\nSECTION\n2\nOBJECTS\n0\nDBCOLOR\n5\n14F\n330\nC\n100\nAcDbColor\n62\n256\n420\n-1028928017\n430\nStudio Book$Pearl Δ\n0\nENDSEC\n0\nEOF\n';
+  const metadata = { schemaVersion: 1, complete: true, writeError: 0, objects: [{ handle: '14F', type: 'DBCOLOR', dxfType: 'DBCOLOR', supertype: 'object' }], dxf };
+  const record = checkedBookColorProjection(metadata, expected);
+  assert.equal(record.handle, '14F'); assert.equal(record.type, 'DBCOLOR'); assert.equal(record.name, expected.name); assert.equal(record.rgb, expected.rgb);
+  assert.ok(record.outputBytes > dxf.length); assert.ok(record.groups.some(([code, value]) => code === 420 && value === '-1028928017'));
+  assert.equal(validateBookColorProjectionReport(record, expected), record);
+  for (const changed of [undefined, { ...record, name: 'Studio Book$Pearl Î”' }, { ...record, complete: false },
+    { ...record, writeError: 1 }, { ...record, outputBytes: 1 }, { ...record, inventoryCount: 0 },
+    { ...record, groups: record.groups.map(([code, value]) => [code, code === 430 ? 'Studio Book$Pearl Î”' : value]) }]) {
+    assert.throws(() => validateBookColorProjectionReport(changed, expected));
+  }
+  assert.throws(() => checkedBookColorProjection({ ...metadata, dxf: dxf.replace('Pearl Δ', 'Pearl Î”') }, expected), /Unicode color-book projection changed/);
+  assert.throws(() => checkedBookColorProjection({ ...metadata, dxf: dxf.replace('-1028928017', '11259375') }, expected), /true-color method changed/);
+  assert.throws(() => checkedBookColorProjection({ ...metadata, dxf: dxf.replace('-1028928017', '-1028928018') }, expected), /projection RGB changed/);
+});
+
+test('book-color projection boundary refuses missing, ambiguous, incomplete or erroneous native evidence', () => {
+  const expected = { handle: '14F', name: 'Studio Book$Pearl Δ', rgb: 0xabcdef };
+  const object = { handle: '14F', type: 'DBCOLOR', dxfType: 'DBCOLOR', supertype: 'object' };
+  const record = '0\nDBCOLOR\n5\n14F\n100\nAcDbColor\n420\n-1028928017\n430\nStudio Book$Pearl Δ\n';
+  const metadata = { schemaVersion: 1, complete: true, writeError: 0, objects: [object], dxf: '0\nSECTION\n2\nOBJECTS\n' + record + '0\nENDSEC\n0\nEOF\n' };
+  for (const broken of [
+    { ...metadata, complete: false }, { ...metadata, writeError: 1 }, { ...metadata, objects: [] },
+    { ...metadata, objects: [object, object] }, { ...metadata, objects: [{ ...object, type: 'LINE' }] },
+    { ...metadata, dxf: metadata.dxf.replace('5\n14F', '5\n150') },
+    { ...metadata, dxf: metadata.dxf.replace('0\nDBCOLOR', '0\nXRECORD') },
+    { ...metadata, dxf: metadata.dxf.replace(record, record + record) },
+    { ...metadata, dxf: metadata.dxf.replace('430\nStudio Book$Pearl Δ\n', '') },
+    { ...metadata, dxf: metadata.dxf.replace('0\nEOF\n', '') },
+  ]) assert.throws(() => checkedBookColorProjection(broken, expected));
 });

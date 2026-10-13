@@ -10,11 +10,17 @@ const require = createRequire(import.meta.url);
 const { PROTOCOL_VERSION, DWG_PROTOCOL_VERSION, MAX_DWG_INPUT_BYTES, MAX_DWG_PAYLOAD_BYTES,
   MAX_DWG_CHUNK_BYTES, MAX_DWG_MESSAGE_CHARS, WORKER_RESOURCE_LIMITS, MAX_METADATA_NODES,
   MAX_METADATA_DEPTH, MAX_STRING_CHARS, MAX_TOTAL_STRING_CHARS, MAX_DWG_RECORDS,
+  MAX_NATIVE_METADATA_DXF_CHARS, MAX_NATIVE_METADATA_OBJECTS,
   validRequestId, validByteLength, validOffset, validateResourceLimits, validateChunk,
   boundedErrorMessage, validateDwgPayload } = require('../electron/dwg-protocol.cjs');
 
 function payload(extra: Record<string, unknown> = {}) {
   return { header: {}, entities: [], layers: [], blocks: [], ...extra };
+}
+
+function nativeMetadata(extra: Record<string, unknown> = {}) {
+  return { schemaVersion: 1, dxf: '0\nEOF\n', objects: [{ handle: 'A1', type: 'FIELD', dxfType: 'FIELD', supertype: 'object' }],
+    readError: 0, writeError: 0, complete: true, notes: [], ...extra };
 }
 
 describe('DWG process transport metadata', () => {
@@ -67,6 +73,122 @@ describe('DWG process transport metadata', () => {
     expect(boundedErrorMessage(new Error('bad drawing'))).toBe('bad drawing');
     expect(boundedErrorMessage('x'.repeat(MAX_DWG_MESSAGE_CHARS + 20))).toHaveLength(MAX_DWG_MESSAGE_CHARS);
     expect(boundedErrorMessage(undefined)).toBe('The DWG reader failed.');
+  });
+});
+
+describe('DWG native metadata projection transport', () => {
+  it('accepts the data-only schema and keeps the existing transport budgets', () => {
+    expect(MAX_NATIVE_METADATA_DXF_CHARS).toBe(32 * 1024 * 1024);
+    expect(MAX_NATIVE_METADATA_OBJECTS).toBe(100_000);
+    expect(MAX_STRING_CHARS).toBe(1024 * 1024);
+    expect(MAX_TOTAL_STRING_CHARS).toBe(64 * 1024 * 1024);
+    expect(MAX_DWG_PAYLOAD_BYTES).toBe(64 * 1024 * 1024);
+    for (const supertype of ['entity', 'object', 'unknown']) {
+      const input = payload({ nativeMetadata: nativeMetadata({ objects: [{ handle: 'FFFFFFFFFFFFFFFF', type: 'VIEW', dxfType: 'VIEW', supertype }] }) });
+      expect(() => validateDwgPayload(input, 'r2018')).not.toThrow();
+      const bytes = serialize(input);
+      expect(bytes.byteLength).toBeLessThanOrEqual(MAX_DWG_PAYLOAD_BYTES);
+      expect(deserialize(bytes)).toEqual(input);
+    }
+    expect(() => validateDwgPayload(payload({ nativeMetadata: nativeMetadata({ dxf: '', objects: [], readError: 0x3fff,
+      writeError: null, complete: false, notes: ['Native DXF is unavailable.'] }) }))).not.toThrow();
+  });
+
+  it('raises only the exact root nativeMetadata.dxf value limit', () => {
+    const large = 'x'.repeat(MAX_STRING_CHARS + 1);
+    expect(() => validateDwgPayload(payload({ nativeMetadata: nativeMetadata({ dxf: large }) }))).not.toThrow();
+    for (const extra of [
+      { dxf: large }, { 'nativeMetadata.dxf': large }, { header: { nativeMetadata: { dxf: large } } },
+      { entities: [{ nativeMetadata: { dxf: large } }] }, { data: { nativeMetadata: nativeMetadata({ dxf: large }) } },
+      { nativeMetadata: nativeMetadata({ notes: [large] }) },
+      { nativeMetadata: nativeMetadata({ dxf: { dxf: large } }) },
+    ]) expect(() => validateDwgPayload(payload(extra))).toThrow(/string length/);
+    const shared = nativeMetadata({ dxf: large });
+    expect(() => validateDwgPayload(payload({ nativeMetadata: shared, header: { nativeMetadata: shared } }))).toThrow(/string length/);
+  });
+
+  it('bounds the reserved DXF at exactly 32 MiB characters', () => {
+    const input = payload({ nativeMetadata: nativeMetadata({ dxf: 'x'.repeat(MAX_NATIVE_METADATA_DXF_CHARS) }) });
+    expect(() => validateDwgPayload(input)).not.toThrow();
+    expect(serialize(input).byteLength).toBeLessThanOrEqual(MAX_DWG_PAYLOAD_BYTES);
+    expect(() => validateDwgPayload(payload({ nativeMetadata: nativeMetadata({ dxf: 'x'.repeat(MAX_NATIVE_METADATA_DXF_CHARS + 1) }) }))).toThrow(/string length limit \(33554432\)/);
+  });
+
+  it('includes reserved DXF characters in the unchanged total string budget', () => {
+    const dxf = 'd'.repeat(MAX_NATIVE_METADATA_DXF_CHARS), ordinary = 's'.repeat(MAX_STRING_CHARS);
+    expect(() => validateDwgPayload(payload({ nativeMetadata: nativeMetadata({ dxf }), values: Array(31).fill(ordinary) }))).not.toThrow();
+    expect(() => validateDwgPayload(payload({ nativeMetadata: nativeMetadata({ dxf }), values: Array(32).fill(ordinary) }))).toThrow(/total import size/);
+  });
+
+  it('requires the complete closed schema and rejects pointer-like extra fields', () => {
+    for (const metadata of [null, undefined, [], {}, nativeMetadata({ schemaVersion: 0 }), nativeMetadata({ schemaVersion: '1' }),
+      nativeMetadata({ dxf: new Uint8Array([1]) }), nativeMetadata({ complete: 1 }), nativeMetadata({ notes: null }),
+      nativeMetadata({ notes: [1] }), nativeMetadata({ pointer: 1234 }), nativeMetadata({ objects: [
+        { handle: 'A', type: 'FIELD', dxfType: 'FIELD', supertype: 'object', address: 1234 },
+      ] })]) expect(() => validateDwgPayload(payload({ nativeMetadata: metadata }))).toThrow(/native metadata/);
+    for (const field of Object.keys(nativeMetadata())) {
+      const metadata: Record<string, unknown> = nativeMetadata(); delete metadata[field];
+      expect(() => validateDwgPayload(payload({ nativeMetadata: metadata }))).toThrow(/native metadata/);
+    }
+  });
+
+  it('rejects reserved accessors or hidden fields without invoking getters', () => {
+    let calls = 0;
+    const root = payload(); Object.defineProperty(root, 'nativeMetadata', { get() { calls++; return nativeMetadata(); } });
+    const metadata = nativeMetadata(); Object.defineProperty(metadata, 'dxf', { enumerable: true, get() { calls++; return 'must not execute'; } });
+    const hidden = nativeMetadata(); Object.defineProperty(hidden, 'complete', { value: true, enumerable: false });
+    const extraHidden = nativeMetadata(); Object.defineProperty(extraHidden, 'pointer', { value: 42 });
+    const object = { handle: 'A', type: 'FIELD', dxfType: 'FIELD', supertype: 'object' };
+    Object.defineProperty(object, 'type', { enumerable: true, get() { calls++; return 'must not execute'; } });
+    for (const input of [root, payload({ nativeMetadata: metadata }), payload({ nativeMetadata: hidden }),
+      payload({ nativeMetadata: extraHidden }), payload({ nativeMetadata: nativeMetadata({ objects: [object] }) })]) {
+      expect(() => validateDwgPayload(input)).toThrow(/native metadata|unsupported metadata/);
+    }
+    expect(calls).toBe(0);
+  });
+
+  it('requires dense ordinary arrays with no custom properties in the native schema', () => {
+    const decorated = Object.assign([], { pointer: 42 });
+    class CustomArray extends Array {}
+    for (const metadata of [nativeMetadata({ objects: new Array(1) }), nativeMetadata({ notes: new Array(1) }),
+      nativeMetadata({ objects: decorated }), nativeMetadata({ notes: decorated }), nativeMetadata({ objects: new CustomArray() })]) {
+      expect(() => validateDwgPayload(payload({ nativeMetadata: metadata }))).toThrow(/native metadata|unsupported metadata/);
+    }
+  });
+
+  it('requires canonical nonzero uppercase 64-bit handles and bounded type names', () => {
+    const object = { handle: 'A1', type: 'FIELD', dxfType: 'ACDBFIELD', supertype: 'object' };
+    for (const handle of ['1', 'A', 'FFFFFFFFFFFFFFFF']) expect(() => validateDwgPayload(payload({ nativeMetadata: nativeMetadata({ objects: [{ ...object, handle }] }) }))).not.toThrow();
+    for (const handle of ['', '0', '00', '01', 'a', 'A1b', '0xA', ' A', '1'.repeat(17), 10, 10n, null]) {
+      expect(() => validateDwgPayload(payload({ nativeMetadata: nativeMetadata({ objects: [{ ...object, handle }] }) }))).toThrow(/native metadata/);
+    }
+    for (const key of ['type', 'dxfType']) {
+      expect(() => validateDwgPayload(payload({ nativeMetadata: nativeMetadata({ objects: [{ ...object, [key]: 'X'.repeat(256) }] }) }))).not.toThrow();
+      for (const value of ['', 'X'.repeat(257), 1, null, undefined]) expect(() => validateDwgPayload(payload({ nativeMetadata: nativeMetadata({ objects: [{ ...object, [key]: value }] }) }))).toThrow(/native metadata/);
+    }
+    for (const supertype of ['', 'Entity', 'table', 0, null]) expect(() => validateDwgPayload(payload({ nativeMetadata: nativeMetadata({ objects: [{ ...object, supertype }] }) }))).toThrow(/native metadata/);
+  });
+
+  it('accepts only bounded integer native error flags and a nullable write flag', () => {
+    for (const error of [0, 1, 0x3fff]) expect(() => validateDwgPayload(payload({ nativeMetadata: nativeMetadata({ readError: error, writeError: error }) }))).not.toThrow();
+    for (const error of [-1, 0x4000, 0.5, NaN, Infinity, '0', null, undefined]) {
+      expect(() => validateDwgPayload(payload({ nativeMetadata: nativeMetadata({ readError: error }) }))).toThrow(/native metadata/);
+      if (error !== null) expect(() => validateDwgPayload(payload({ nativeMetadata: nativeMetadata({ writeError: error }) }))).toThrow(/native metadata/);
+    }
+  });
+
+  it('bounds the native object inventory even below the generic node budget', () => {
+    const object = { handle: 'A', type: 'FIELD', dxfType: 'FIELD', supertype: 'object' };
+    expect(() => validateDwgPayload(payload({ nativeMetadata: nativeMetadata({ objects: Array(MAX_NATIVE_METADATA_OBJECTS).fill(object) }) }))).not.toThrow();
+    expect(() => validateDwgPayload(payload({ nativeMetadata: nativeMetadata({ objects: Array(MAX_NATIVE_METADATA_OBJECTS + 1).fill(object) }) }))).toThrow(/object limit/);
+  });
+
+  it('counts the native inventory with all other lists in the existing record budget', () => {
+    const object = { handle: 'A', type: 'FIELD', dxfType: 'FIELD', supertype: 'object' };
+    const input = payload({ entities: new Array(MAX_DWG_RECORDS - MAX_NATIVE_METADATA_OBJECTS),
+      nativeMetadata: nativeMetadata({ objects: Array(MAX_NATIVE_METADATA_OBJECTS).fill(object) }) });
+    expect(() => validateDwgPayload(input)).not.toThrow();
+    expect(() => validateDwgPayload({ ...input, layers: [null] })).toThrow(/record limit/);
   });
 });
 

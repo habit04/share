@@ -31,6 +31,8 @@ export const BYBLOCK = 0;
 
 export interface EntityBase {
   readonly id: string;
+  /** Stable document-local identity of imported CAD data; file handles remain in cadGraph. */
+  readonly cadIdentity?: string;
   readonly layer: string;
   readonly color: ColorSpec;
   /** Linetype name (DXF code 6). Undefined or 'ByLayer' inherits from the layer. */
@@ -60,6 +62,8 @@ export interface EntityBase {
 
 /** A field expression behind a text value (%<\AcVar Date>% ...): `value` is what the code evaluated to. */
 export interface FieldLink {
+  /** The expression is carried by retained native FIELD objects, including their reference vectors. */
+  readonly native?: boolean;
   /** Text (or DXF MTEXT content) with the field expressions. */
   readonly code: string;
   /** The evaluated text; the link is stale once the entity's text no longer equals it. */

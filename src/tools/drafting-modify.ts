@@ -11,6 +11,8 @@ import type { Tool, ToolContext } from './types';
 import { scriptTool, point, pointOrKeyword, number, keyword, select, dflt, type Step } from './script';
 import { pickAt } from './dimension';
 import { ExplodeTool } from './edit';
+import type { CadAffineTransform, CadCloneBatch } from '../core/cad-graph';
+import { cadTranslation, cadRotation, cadCloneBatch, cadTransformIntent } from './cad-edits';
 
 export const modifyDefaults = {
   filletRadius: 0.5,
@@ -275,7 +277,11 @@ export function chamferTool(): Tool {
 
 // ------------------------------------------------------------------ ARRAY
 
-export function rectangularArray(entities: readonly Entity[], rows: number, cols: number, rowOffset: number, colOffset: number, angle = 0): Entity[] {
+export interface ArrayCadIntent {
+  cloneBatches: CadCloneBatch[];
+  transforms: { entityIds: readonly string[]; transform: CadAffineTransform }[];
+}
+export function rectangularArray(entities: readonly Entity[], rows: number, cols: number, rowOffset: number, colOffset: number, angle = 0, intent?: ArrayCadIntent): Entity[] {
   const out: Entity[] = [];
   const u = { x: Math.cos(angle), y: Math.sin(angle) };
   const v = { x: -Math.sin(angle), y: Math.cos(angle) };
@@ -283,29 +289,36 @@ export function rectangularArray(entities: readonly Entity[], rows: number, cols
     for (let c = 0; c < cols; c += 1) {
       if (r === 0 && c === 0) continue;
       const d = g.add(g.scale(u, c * colOffset), g.scale(v, r * rowOffset));
-      for (const e of entities) out.push({ ...translateEntity(e, d), id: newId() });
+      const copies = entities.map(e => ({ ...translateEntity(e, d), id: newId() }));
+      out.push(...copies);
+      intent?.cloneBatches.push(cadCloneBatch(entities, copies, cadTranslation(d)));
     }
   }
   return out;
 }
 
-export function polarArray(entities: readonly Entity[], center: Point, items: number, fillAngle: number, rotateItems: boolean): Entity[] {
+export function polarArray(entities: readonly Entity[], center: Point, items: number, fillAngle: number, rotateItems: boolean, intent?: ArrayCadIntent): Entity[] {
   const out: Entity[] = [];
   if (items < 2) return out;
   const full = Math.abs(Math.abs(fillAngle) - 2 * Math.PI) < 1e-9;
   const step = full ? fillAngle / items : fillAngle / (items - 1);
   for (let i = 1; i < items; i += 1) {
     const a = step * i;
+    const copies: Entity[] = [];
     for (const e of entities) {
-      if (rotateItems) out.push({ ...rotateEntity(e, center, a), id: newId() });
+      if (rotateItems) copies.push({ ...rotateEntity(e, center, a), id: newId() });
       else {
         // Move along the arc but keep orientation: rotate the entity's reference point only.
         const b = entityBounds(e, () => undefined);
         const ref = b ? g.mid(b.min, b.max) : center;
         const moved = g.rotate(ref, a, center);
-        out.push({ ...translateEntity(e, g.sub(moved, ref)), id: newId() });
+        const d = g.sub(moved, ref), copy = { ...translateEntity(e, d), id: newId() };
+        copies.push(copy);
+        intent?.transforms.push({ entityIds: [copy.id], transform: cadTranslation(d) });
       }
     }
+    out.push(...copies);
+    intent?.cloneBatches.push(cadCloneBatch(entities, copies, rotateItems ? cadRotation(center, a) : undefined));
   }
   return out;
 }
@@ -340,8 +353,9 @@ export function arrayRectTool(): Tool {
     modifyDefaults.arrayCols = cols.value;
     modifyDefaults.arrayRowOffset = rowOff;
     modifyDefaults.arrayColOffset = colOff;
-    const copies = rectangularArray(ents, rows.value, cols.value, rowOff, colOff);
-    ctx.doc.addEntities(copies, false);
+    const intent: ArrayCadIntent = { cloneBatches: [], transforms: [] };
+    const copies = rectangularArray(ents, rows.value, cols.value, rowOff, colOff, 0, intent);
+    ctx.doc.addEntities(copies, false, intent);
     ctx.selection = new Set([...ids, ...copies.map((e) => e.id)]);
     ctx.log(`${copies.length} object(s) arrayed.`);
   });
@@ -362,8 +376,9 @@ export function arrayPolarTool(): Tool {
     const rot = yield* keyword(ctx, 'Rotate arrayed objects? [Yes/No] <Y>:', ['Yes', 'No'], 'Yes');
     modifyDefaults.polarItems = n.value;
     modifyDefaults.polarAngle = fill.value;
-    const copies = polarArray(ents, c, n.value, g.rad(fill.value), rot !== 'NO');
-    ctx.doc.addEntities(copies, false);
+    const intent: ArrayCadIntent = { cloneBatches: [], transforms: [] };
+    const copies = polarArray(ents, c, n.value, g.rad(fill.value), rot !== 'NO', intent);
+    ctx.doc.addEntities(copies, false, intent);
     ctx.selection = new Set([...ids, ...copies.map((e) => e.id)]);
     ctx.log(`${copies.length} object(s) arrayed.`);
   });
@@ -828,6 +843,13 @@ export function alignTransform(s1: Point, d1: Point, s2: Point | null, d2: Point
     return out;
   };
 }
+export function alignCadTransform(s1: Point, d1: Point, s2: Point | null, d2: Point | null, scaleToo: boolean): CadAffineTransform {
+  if (!s2 || !d2) return cadTranslation(g.sub(d1, s1));
+  const angle = g.angleOf(d1, d2) - g.angleOf(s1, s2);
+  const k = scaleToo && g.dist(s1, s2) > 1e-12 ? g.dist(d1, d2) / g.dist(s1, s2) : 1;
+  const matrix = cadRotation({ x: 0, y: 0 }, angle, k);
+  return { ...matrix, tx: d1.x - matrix.xx * s1.x - matrix.xy * s1.y, ty: d1.y - matrix.yx * s1.x - matrix.yy * s1.y };
+}
 
 export function alignTool(): Tool {
   return scriptTool('ALIGN', function* (ctx) {
@@ -841,14 +863,14 @@ export function alignTool(): Tool {
     if (!d1) return;
     const s2 = yield* point(ctx, 'Specify second source point or <continue>:', { trackFrom: null, ghost: () => ents.map(alignTransform(s1, d1, null, null, false)) });
     if (!s2) {
-      ctx.doc.replaceEntities(ents.map(alignTransform(s1, d1, null, null, false)));
+      ctx.doc.replaceEntities(ents.map(alignTransform(s1, d1, null, null, false)), cadTransformIntent(ents, alignCadTransform(s1, d1, null, null, false)));
       return;
     }
     const d2 = yield* point(ctx, 'Specify second destination point:', { trackFrom: s2, ghost: (c) => ents.map(alignTransform(s1, d1, s2, c, false)) });
     if (!d2) return;
     yield* point(ctx, 'Specify third source point or <continue>:', { trackFrom: null, ghost: () => ents.map(alignTransform(s1, d1, s2, d2, false)) });
     const sc = yield* keyword(ctx, 'Scale objects based on alignment points? [Yes/No] <N>:', ['Yes', 'No'], 'No');
-    ctx.doc.replaceEntities(ents.map(alignTransform(s1, d1, s2, d2, sc === 'YES')));
+    ctx.doc.replaceEntities(ents.map(alignTransform(s1, d1, s2, d2, sc === 'YES')), cadTransformIntent(ents, alignCadTransform(s1, d1, s2, d2, sc === 'YES')));
   });
 }
 

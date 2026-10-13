@@ -14,6 +14,16 @@
           "before": "BITCODE_BL bg_fill_scale;",
           "after": "BITCODE_BD bg_fill_scale;",
           "count": 2
+        },
+        {
+          "before": "  struct _dwg_CellStyle cellstyle;\n} Dwg_TABLESTYLE_CellStyle;",
+          "after": "  struct _dwg_CellStyle cellstyle;\n  BITCODE_BL key; /* Ordered TABLESTYLE override key; CELLSTYLEMAP does not serialize it. */\n} Dwg_TABLESTYLE_CellStyle;",
+          "count": 1
+        },
+        {
+          "before": "  Dwg_TABLESTYLE_CellStyle ovr;  // ??",
+          "after": "  Dwg_TABLESTYLE_CellStyle ovr;  // legacy first-override scalar convenience\n  Dwg_TABLESTYLE_CellStyle *overrides; // owned ordered R2010+ override array",
+          "count": 1
         }
       ]
     },
@@ -30,6 +40,21 @@
           "before": "    // XRECORD subclass\n    SINCE (R_2010b) {\n      FIELD_RC (keep_duplicate_records, 0);\n      VALUEOUTOFBOUNDS (keep_duplicate_records, 1)\n    }\n  }\n  COMMON_ENTITY_HANDLE_DATA;\n  SINCE (R_13b1) {\n    FIELD_HANDLE (style, 5, 0); // unexpected here in DXF\n  }",
           "after": "    // A DWG ATTRIB ends at lock_position_flag (ODA 20.4.4).\n    // Preserve the DXF/export projection without decoding an extra byte.\n#ifndef IS_DECODER\n    // XRECORD subclass\n    SINCE (R_2010b) {\n      FIELD_RC (keep_duplicate_records, 0);\n      VALUEOUTOFBOUNDS (keep_duplicate_records, 1)\n    }\n#endif\n  }\n  COMMON_ENTITY_HANDLE_DATA;\n  SINCE (R_13b1) {\n    FIELD_HANDLE (style, 5, 0); // unexpected here in DXF\n  }",
           "count": 1
+        },
+        {
+          "before": "    FIELD_BD (twist_angle, 50);\n    FIELD_BD (lens_length, 42);\n    FIELD_BD (front_clip_z, 43);\n    FIELD_BD (back_clip_z, 44);\n    FIELD_4BITS (VIEWMODE, 71);",
+          "after": "    FIELD_BD (twist_angle, 50);\n    FIELD_BD (lens_length, 42);\n    FIELD_BD (front_clip_z, 43);\n    FIELD_BD (back_clip_z, 44);\n    FIELD_4BITS (VIEWMODE, 71);\n    DECODER {\n      // ODA VIEW: stream bits 0/1/2 map to DXF masks 1/2/4;\n      // stream bit 3 is the opposite of the DXF front-at-eye mask 16.\n      const BITCODE_4BITS packed_mode = FIELD_VALUE (VIEWMODE);\n      FIELD_VALUE (VIEWMODE) = ((packed_mode & 8) >> 3)\n        | ((packed_mode & 4) >> 1) | ((packed_mode & 2) << 1)\n        | ((packed_mode & 1) ? 0 : 16);\n    }",
+          "count": 1
+        },
+        {
+          "before": "  TABLE_value_fields (value)\n  if (error & DWG_ERR_INVALIDTYPE)\n    return error;",
+          "after": "#ifndef IS_DXF\n  TABLE_value_fields (value)\n  if (error & DWG_ERR_INVALIDTYPE)\n    return error;\n#endif",
+          "count": 1
+        },
+        {
+          "before": "      SET_PARENT_OBJ (childval[rcount1]);\n  END_REPEAT_BLOCK\n  END_REPEAT (childval)\n  DXF {\n    FIELD_T (value_string, 301);",
+          "after": "      SET_PARENT_OBJ (childval[rcount1]);\n#ifdef IS_DXF\n      VALUE_TVc (\"ACVALUE_END\", 304);\n#endif\n  END_REPEAT_BLOCK\n  END_REPEAT (childval)\n  DXF {\n#ifdef IS_DXF\n    VALUE_TVc (\"ACFD_FIELD_VALUE\", 7);\n    TABLE_value_fields (value)\n    VALUE_TVc (\"ACVALUE_END\", 304);\n#endif\n    FIELD_T (value_string, 301);",
+          "count": 1
         }
       ]
     },
@@ -40,6 +65,21 @@
         {
           "before": "SUB_FIELD_BL (mtext, bg_fill_scale, 45)",
           "after": "SUB_FIELD_BD (mtext, bg_fill_scale, 45)",
+          "count": 1
+        },
+        {
+          "before": "#define TABLE_value_fields(value)",
+          "after": "// AcValue strings are byte-counted main-stream data, not T string-stream fields.\n#ifdef IS_DECODER\n# define JCAD_TABLE_VALUE_BODY_FLAGS 1\n# define JCAD_TABLE_VALUE_STRING(value)                                       \\\n  FIELD_BL (value.data_size, 0);                                            \\\n  VALUEOUTOFBOUNDS (value.data_size, 1048576)                                \\\n  if (!FIELD_VALUE (value.data_size))                                       \\\n    {                                                                       \\\n      FIELD_VALUE (value.data_string) = (BITCODE_T)calloc (2, 1);            \\\n      if (!FIELD_VALUE (value.data_string))                                 \\\n        return DWG_ERR_OUTOFMEM;                                            \\\n    }                                                                       \\\n  else                                                                      \\\n    {                                                                       \\\n      if (dat->from_version >= R_2007                                       \\\n          && (FIELD_VALUE (value.data_size) < 2                             \\\n              || (FIELD_VALUE (value.data_size) & 1)))                     \\\n        return DWG_ERR_VALUEOUTOFBOUNDS;                                    \\\n      FIELD_TF (value.data_string, FIELD_VALUE (value.data_size), 0);        \\\n      if (dat->from_version >= R_2007                                       \\\n          && (FIELD_VALUE (value.data_string)[FIELD_VALUE (value.data_size) - 1] \\\n              || FIELD_VALUE (value.data_string)[FIELD_VALUE (value.data_size) - 2])) \\\n        return DWG_ERR_VALUEOUTOFBOUNDS;                                    \\\n    }\n#else\n# if defined(IS_DXF) || defined(IS_FREE)\n#  define JCAD_TABLE_VALUE_BODY_FLAGS 1\n# else\n#  define JCAD_TABLE_VALUE_BODY_FLAGS 3\n# endif\n# define JCAD_TABLE_VALUE_STRING(value) FIELD_T (value.data_string, 1);\n#endif\n\n#define TABLE_value_fields(value)",
+          "count": 1
+        },
+        {
+          "before": "(FIELD_VALUE (value.format_flags) & 3)))",
+          "after": "(FIELD_VALUE (value.format_flags) & JCAD_TABLE_VALUE_BODY_FLAGS)))",
+          "count": 1
+        },
+        {
+          "before": "          FIELD_T (value.data_string, 1); /* and 2. TODO multiple lines */",
+          "after": "          JCAD_TABLE_VALUE_STRING (value) /* and 2. TODO multiple lines */",
           "count": 1
         }
       ]
@@ -52,6 +92,16 @@
           "before": "\"bg_fill_scale\",\t\"BL\", sizeof (BITCODE_BL)",
           "after": "\"bg_fill_scale\",\t\"BD\", sizeof (BITCODE_BD)",
           "count": 2
+        },
+        {
+          "before": "  { \"num_rowstyles\",\t\"BL\", sizeof (BITCODE_BL),  OFF (struct _dwg_object_TABLESTYLE, num_rowstyles),",
+          "after": "  { \"overrides\",\t\"Dwg_TABLESTYLE_CellStyle*\", sizeof (Dwg_TABLESTYLE_CellStyle*),  OFF (struct _dwg_object_TABLESTYLE, overrides),\n    1,1,0, 0 },\n  { \"num_rowstyles\",\t\"BL\", sizeof (BITCODE_BL),  OFF (struct _dwg_object_TABLESTYLE, num_rowstyles),",
+          "count": 1
+        },
+        {
+          "before": "  { \"cellstyle\",\t\"struct _dwg_CellStyle\", sizeof (struct _dwg_CellStyle),  OFF (struct _dwg_TABLESTYLE_CellStyle, cellstyle),\n    1,0,0, 0 },\n",
+          "after": "  { \"cellstyle\",\t\"struct _dwg_CellStyle\", sizeof (struct _dwg_CellStyle),  OFF (struct _dwg_TABLESTYLE_CellStyle, cellstyle),\n    1,0,0, 0 },\n  { \"key\",\t\"BL\", sizeof (BITCODE_BL),  OFF (struct _dwg_TABLESTYLE_CellStyle, key),\n    0,0,0, 0 },\n",
+          "count": 1
         }
       ]
     },
@@ -148,6 +198,21 @@
           "before": "  // deferred from common_entity_data, which has no hdl_dat\n  if (dat->from_version >= R_2007 && _ent->color.flag & 0x40)\n    FIELD_HANDLE (color.handle, 0, 430);\n",
           "after": "  // The shared handle spec consumes the color reference once, after the\n  // owner/reactors/xdic prefix and before the R2000+ layer reference.\n",
           "count": 1
+        },
+        {
+          "before": "dwg->dwg_class[i].dwg_version = bit_read_BS (&sec_dat);",
+          "after": "dwg->dwg_class[i].dwg_version = dat->from_version >= R_2007 ? bit_read_BL (&sec_dat) : bit_read_BS (&sec_dat);",
+          "count": 1
+        },
+        {
+          "before": "dwg->dwg_class[i].maint_version = bit_read_BS (&sec_dat);",
+          "after": "dwg->dwg_class[i].maint_version = dat->from_version >= R_2007 ? bit_read_BL (&sec_dat) : bit_read_BS (&sec_dat);",
+          "count": 1
+        },
+        {
+          "before": "dwg->dwg_class[i].unknown_1 = bit_read_BL (&sec_dat);\n          dwg->dwg_class[i].unknown_1 = bit_read_BL (&sec_dat);",
+          "after": "dwg->dwg_class[i].unknown_1 = bit_read_BL (&sec_dat);\n          dwg->dwg_class[i].unknown_2 = bit_read_BL (&sec_dat);",
+          "count": 1
         }
       ]
     },
@@ -158,6 +223,194 @@
         {
           "before": "  SINCE (R_2000b)\n    {\n      FIELD_HANDLE (layer, 5, 8);",
           "after": "#ifdef IS_DECODER\n  // R2004+ ENC references follow owner/reactors/xdic and legacy handles.\n  // Consume exactly once before the R2000+ layer reference.\n  SINCE (R_2004a)\n    {\n      if (_ent->color.flag & 0x40)\n        FIELD_HANDLE (color.handle, 0, 430);\n    }\n#endif\n\n  SINCE (R_2000b)\n    {\n      FIELD_HANDLE (layer, 5, 8);",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "path": "bindings/javascript/embind/binding_func.cpp",
+      "gitBlob": "ca0637950a4f304f290f3313ead3c7b52a3a0f19",
+      "replacements": [
+        {
+          "before": "#include <emscripten/bind.h>",
+          "after": "#ifndef _GNU_SOURCE\n#define _GNU_SOURCE\n#endif\n#include <emscripten/bind.h>",
+          "count": 1
+        },
+        {
+          "before": "#include \"binding_common.h\"",
+          "after": "#include \"binding_common.h\"\n#include <cstdio>\n#include <cstdlib>\n#include <cstring>\n#include <memory>\n#include <stdexcept>",
+          "count": 1
+        },
+        {
+          "before": "#ifndef DISABLE_DXF\n#include \"bits.h\"\n#include \"out_dxf.h\"\n#endif",
+          "after": "#include \"bits.h\"\n#ifndef DISABLE_DXF\n#include \"out_dxf.h\"\n#endif",
+          "count": 1
+        },
+        {
+          "before": "  if (cls) {\n    emscripten::val result = emscripten::val::object();\n    result.set(\"num\", cls->number);\n    result.set(\"proxyflag\", cls->proxyflag);\n    result.set(\"appname\", std::string(cls->appname));\n    result.set(\"cppname\", std::string(cls->cppname));",
+          "after": "  if (cls) {\n    // R2007+ class application/CPP names are TU; dxfname is already TV.\n    // Return bounded owned UTF-8 strings, never a borrowed class/string pointer.\n    const auto class_text = [dwg](const char* raw) -> std::string {\n      if (!raw) return std::string();\n      if (IS_FROM_TU_DWG(dwg)) {\n        const BITCODE_TU text = reinterpret_cast<BITCODE_TU>(const_cast<char*>(raw));\n        size_t length = 0;\n        while (length < 1025 && text[length]) ++length;\n        if (length > 1024) throw std::length_error(\"Native class name exceeds its limit.\");\n        std::unique_ptr<char, decltype(&free)> utf8(bit_convert_TU(text), &free);\n        return utf8 ? std::string(utf8.get()) : std::string();\n      }\n      if (strnlen(raw, 1025) > 1024) throw std::length_error(\"Native class name exceeds its limit.\");\n      return std::string(raw);\n    };\n    emscripten::val result = emscripten::val::object();\n    result.set(\"num\", cls->number);\n    result.set(\"proxyflag\", cls->proxyflag);\n    result.set(\"appname\", class_text(cls->appname));\n    result.set(\"cppname\", class_text(cls->cppname));",
+          "count": 1
+        },
+        {
+          "before": "int dwg_get_version_type_wrapper(uintptr_t dwg_ptr) {",
+          "after": "\n// Bounded, copied metadata projection. No output paths or native pointers cross JS.\nemscripten::val jcad_dwg_export_metadata_wrapper(uintptr_t dwg_ptr,\n                                                uint32_t max_bytes) {\n  emscripten::val result = emscripten::val::object();\n  emscripten::val objects = emscripten::val::array();\n  emscripten::val notes = emscripten::val::array();\n  result.set(\"schemaVersion\", 1);\n  result.set(\"dxf\", std::string());\n  result.set(\"objects\", objects);\n  result.set(\"writeError\", DWG_ERR_IOERROR);\n  result.set(\"complete\", false);\n  result.set(\"notes\", notes);\n  if (!dwg_ptr || !max_bytes || max_bytes > 32u * 1024u * 1024u) {\n    notes.call<void>(\"push\", std::string(\"Invalid native metadata projection limit.\"));\n    return result;\n  }\n  Dwg_Data* dwg = reinterpret_cast<Dwg_Data*>(dwg_ptr);\n  if (dwg->num_objects > 100000) {\n    notes.call<void>(\"push\", std::string(\"Native object inventory exceeds the 100000-record limit.\"));\n    return result;\n  }\n  // A corrupt class scalar stream must never be retained as apparently valid metadata.\n  if (dwg->num_classes > 100000 || (dwg->num_classes && !dwg->dwg_class)) {\n    result.set(\"writeError\", DWG_ERR_VALUEOUTOFBOUNDS);\n    notes.call<void>(\"push\", std::string(\"Native class inventory is missing or exceeds its limit.\"));\n    return result;\n  }\n  for (BITCODE_BL i = 0; i < dwg->num_classes; i++) {\n    const Dwg_Class* cls = &dwg->dwg_class[i];\n    if (cls->number < 500 ||\n        (cls->item_class_id != 0x1f2 && cls->item_class_id != 0x1f3) ||\n        cls->is_zombie > 1 || !cls->dxfname ||\n        !cls->dxfname[0] || strnlen(cls->dxfname, 257) > 256) {\n      result.set(\"writeError\", DWG_ERR_VALUEOUTOFBOUNDS);\n      notes.call<void>(\"push\", std::string(\"A native class has an invalid identity or entity/object discriminator.\"));\n      return result;\n    }\n  }\n  bool inventory_complete = true;\n  for (BITCODE_BL i = 0; i < dwg->num_objects; i++) {\n    const Dwg_Object* obj = &dwg->object[i];\n    if (!obj->handle.value) {\n      inventory_complete = false;\n      continue;\n    }\n    const char* name = obj->name ? obj->name : \"UNKNOWN\";\n    const char* dxfname = obj->dxfname ? obj->dxfname : name;\n    if (strnlen(name, 257) > 256 || strnlen(dxfname, 257) > 256) {\n      inventory_complete = false;\n      continue;\n    }\n    char handle[17];\n    std::snprintf(handle, sizeof(handle), \"%llX\",\n                  static_cast<unsigned long long>(obj->handle.value));\n    emscripten::val item = emscripten::val::object();\n    item.set(\"handle\", std::string(handle));\n    item.set(\"type\", std::string(name));\n    item.set(\"dxfType\", std::string(dxfname));\n    item.set(\"supertype\", std::string(\n      obj->supertype == DWG_SUPERTYPE_ENTITY ? \"entity\" :\n      obj->supertype == DWG_SUPERTYPE_OBJECT ? \"object\" : \"unknown\"));\n    objects.call<void>(\"push\", item);\n    if (obj->fixedtype == DWG_TYPE_UNKNOWN_ENT ||\n        obj->fixedtype == DWG_TYPE_UNKNOWN_OBJ ||\n        (obj->supertype != DWG_SUPERTYPE_ENTITY &&\n         obj->supertype != DWG_SUPERTYPE_OBJECT))\n      inventory_complete = false;\n  }\n  if (!inventory_complete)\n    notes.call<void>(\"push\", std::string(\"Some native objects have no complete DXF projection identity.\"));\n#ifdef DISABLE_DXF\n  result.set(\"writeError\", DWG_ERR_NOTYETSUPPORTED);\n  notes.call<void>(\"push\", std::string(\"This native runtime does not include DXF projection.\"));\n  return result;\n#else\n  // A fixed memory stream stops writes at the limit, before MEMFS can grow.\n  // The extra byte permits an exact-limit output and its terminating NUL.\n  std::unique_ptr<char, decltype(&free)> buffer(\n    static_cast<char*>(calloc(static_cast<size_t>(max_bytes) + 1u, 1)), &free);\n  if (!buffer) {\n    result.set(\"writeError\", DWG_ERR_OUTOFMEM);\n    notes.call<void>(\"push\", std::string(\"Native metadata projection allocation failed.\"));\n    return result;\n  }\n  FILE* stream = fmemopen(buffer.get(), static_cast<size_t>(max_bytes) + 1u, \"w\");\n  if (!stream) {\n    notes.call<void>(\"push\", std::string(\"Native metadata projection stream could not be opened.\"));\n    return result;\n  }\n  Bit_Chain dat = {};\n  dat.version = dwg->header.version;\n  dat.from_version = dwg->header.from_version;\n  dat.codepage = dwg->header.codepage;\n  dat.fh = stream;\n  const int native_error = dwg_write_dxf(&dat, dwg);\n  const int flush_error = fflush(stream);\n  const long length = ftell(stream);\n  const bool stream_error = ferror(stream) != 0;\n  const int close_error = fclose(stream);\n  const bool over_limit = length < 0 ||\n    static_cast<unsigned long>(length) > max_bytes;\n  const int write_error = native_error |\n    ((flush_error || stream_error || close_error || over_limit)\n      ? DWG_ERR_IOERROR : 0);\n  result.set(\"writeError\", write_error);\n  if (write_error) {\n    notes.call<void>(\"push\", std::string(over_limit || stream_error\n      ? \"Native metadata projection exceeded its output limit or failed to write.\"\n      : \"Native metadata DXF projection returned an error.\"));\n    return result;\n  }\n  result.set(\"dxf\", std::string(buffer.get(), static_cast<size_t>(length)));\n  // This is only the native projection's precondition. The app must reconcile\n  // every source inventory identity against DXF records before retaining a graph:\n  // LibreDWG's top-level exporter does not propagate every skipped-class flag.\n  result.set(\"complete\", inventory_complete);\n  notes.call<void>(\"push\", std::string(\"Source inventory and DXF graph coverage must be reconciled.\"));\n  return result;\n#endif\n}\n\nEMSCRIPTEN_BINDINGS(jcad_metadata_projection) {\n  function(\"jcad_dwg_export_metadata\", &jcad_dwg_export_metadata_wrapper);\n}\n\nint dwg_get_version_type_wrapper(uintptr_t dwg_ptr) {",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "path": "src/out_dxf.c",
+      "gitBlob": "9cddc0d539f23af7f46a7fe0a52277cdf5b50363",
+      "replacements": [
+        {
+          "before": "  if (160 <= code && code <= 169)\n    return \"%12li\";",
+          "after": "  if (160 <= code && code <= 169)\n    return \"%12\" PRId64;",
+          "count": 1
+        },
+        {
+          "before": "      // some classes are now builtin\n      if (dat->version >= R_2004\n          && (strEQc (dxfname, \"ACDBPLACEHOLDER\")\n              || strEQc (dxfname, \"LAYOUT\")))\n        continue;",
+          "after": "      // JCad's bounded metadata projection must expose every stored class\n      // definition, including classes which modern DXF exporters omit as builtin.",
+          "count": 1
+        },
+        {
+          "before": "      if (strEQc (dxfname, \"SPATIAL_INDEX\"))\n        VALUE_TFF (\"AutoCAD 2000\", 3) // special-cased for DXF\n      else\n        VALUE_T (dwg->dwg_class[j].appname, 3)",
+          "after": "      // Preserve the stored class application rather than a display/export alias.\n      VALUE_T (dwg->dwg_class[j].appname, 3)",
+          "count": 1
+        },
+        {
+          "before": "          VALUE_TV (name, dxf + 430 - 62);\n        }\n      else if (color->flag & 1 && color->name)",
+          "after": "          /* TU components were already converted to UTF-8 above. */\n          if (IS_FROM_TU (dat))\n            dxf_fixup_string (dat, name, 1, dxf + 430 - 62);\n          else\n            VALUE_TV (name, dxf + 430 - 62);\n        }\n      else if (color->flag & 1 && color->name)",
+          "count": 1
+        },
+        {
+          "before": "  VALUE_RS (dwg->header_vars.nam.index, dxf)",
+          "after": "  /* C0/C1 are ByLayer/ByBlock; C3 may store its ACI in packed RGB. */       \\\n  VALUE_RS (dwg->header_vars.nam.method == 0xc0 ? 256                         \\\n            : dwg->header_vars.nam.method == 0xc1 ? 0                         \\\n            : (dwg->header_vars.nam.method == 0xc3                            \\\n               && (abs (dwg->header_vars.nam.index) == 0                     \\\n                   || abs (dwg->header_vars.nam.index) >= 256))               \\\n                ? dwg->header_vars.nam.rgb & 0xff                            \\\n                : dwg->header_vars.nam.index, dxf)",
+          "count": 1
+        },
+        {
+          "before": "      if (!opt || color->index || color->method == 0xc1)\n        {\n          VALUE_RSd (color->index, dxf);\n        }",
+          "after": "      if (color->method == 0xc0 || color->method == 0xc1)\n        {\n          VALUE_RS (color->method == 0xc0 ? 256 : 0, dxf);\n          return;\n        }\n      if (!opt || color->index)\n        {\n          VALUE_RSd (color->index, dxf);\n        }",
+          "count": 1
+        },
+        {
+          "before": "      if (dxf >= 90)\n        {\n          VALUE_RLd (color->rgb, dxf);\n          return;\n        }",
+          "after": "      /* Only DIMSTYLE uses CMC group176..178. Its ACI methods are indices;\n         VISUALSTYLE group91/93 and truecolor methods retain packed storage. */\n      if (dxf >= 176 && dxf <= 178\n          && (color->method == 0xc0 || color->method == 0xc1\n              || color->method == 0xc3))\n        {\n          const int aci = color->method == 0xc0 ? 256\n            : color->method == 0xc1 ? 0\n            : abs (color->index) > 0 && abs (color->index) < 256\n              ? color->index : color->rgb & 0xff;\n          VALUE_RS (aci, dxf);\n          return;\n        }\n      if (dxf >= 90)\n        {\n          VALUE_RLd (color->rgb, dxf);\n          return;\n        }",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "path": "src/header_variables_dxf.spec",
+      "gitBlob": "8e0ef1377b45e11db34b352a7688ca24e644cbfb",
+      "replacements": [
+        {
+          "before": "  HEADER_RS (AXISMODE, 70);\n  HEADER_2D (AXISUNIT);",
+          "after": "  /* These legacy axis values exist only in the pre-R13 binary header. */\n  PRE (R_13b1) {\n    HEADER_RS (AXISMODE, 70);\n    HEADER_2D (AXISUNIT);\n  }",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "path": "src/decode_r2007.c",
+      "gitBlob": "467ca11db5f29f09825ccf28cbb86d4ad9862e77",
+      "replacements": [
+        {
+          "before": "dwg->dwg_class[i].dwg_version = bit_read_BS (&sec_dat);",
+          "after": "dwg->dwg_class[i].dwg_version = bit_read_BL (&sec_dat);",
+          "count": 1
+        },
+        {
+          "before": "dwg->dwg_class[i].maint_version = bit_read_BS (&sec_dat);",
+          "after": "dwg->dwg_class[i].maint_version = bit_read_BL (&sec_dat);",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "path": "src/bits.c",
+      "gitBlob": "30b2e9e486cf4e4887c802783a7d12d7fec60e33",
+      "replacements": [
+        {
+          "before": "  date.value = date.days + (date.ms * 1e-8);",
+          "after": "  /* TIMEBLL/TIMERLL store milliseconds since midnight, not decimal day digits. */\n  date.value = date.days + ((double)date.ms / 86400000.0);",
+          "count": 2
+        }
+      ]
+    },
+    {
+      "path": "src/header_variables.spec",
+      "gitBlob": "da34d2567fcf56d5d7a148485e61f7060d40768e",
+      "replacements": [
+        {
+          "before": "    if (!_obj->TDCREATE.days) {",
+          "after": "    if (!_obj->TDCREATE.days && _obj->TDUCREATE.days) {",
+          "count": 1
+        },
+        {
+          "before": "      _obj->TDCREATE.days  = _obj->TDUCREATE.days;\n      // adjust for timezone offset\n      _obj->TDCREATE.ms    = _obj->TDUCREATE.ms + off;\n      _obj->TDCREATE.value = _obj->TDCREATE.days + (_obj->TDCREATE.ms * 1e-8);",
+          "after": "      /* Normalize the signed timezone shift before assigning unsigned milliseconds. */\n      const int64_t tdcreate_ms = (int64_t)_obj->TDUCREATE.ms + off;\n      int64_t tdcreate_days = tdcreate_ms / 86400000;\n      if (tdcreate_ms < 0 && tdcreate_ms % 86400000)\n        tdcreate_days--;\n      _obj->TDCREATE.days = _obj->TDUCREATE.days + tdcreate_days;\n      _obj->TDCREATE.ms = (BITCODE_BL)(tdcreate_ms - tdcreate_days * 86400000);\n      _obj->TDCREATE.value = _obj->TDCREATE.days + ((double)_obj->TDCREATE.ms / 86400000.0);",
+          "count": 1
+        },
+        {
+          "before": "      _obj->TDUPDATE.days  = _obj->TDUUPDATE.days;\n      _obj->TDUPDATE.ms    = _obj->TDUUPDATE.ms + off;\n      _obj->TDUPDATE.value = _obj->TDUPDATE.days + (_obj->TDUPDATE.ms * 1e-8);",
+          "after": "      if (_obj->TDUUPDATE.days) {\n        /* Normalize the signed timezone shift before assigning unsigned milliseconds. */\n        const int64_t tdupdate_ms = (int64_t)_obj->TDUUPDATE.ms + off;\n        int64_t tdupdate_days = tdupdate_ms / 86400000;\n        if (tdupdate_ms < 0 && tdupdate_ms % 86400000)\n          tdupdate_days--;\n        _obj->TDUPDATE.days = _obj->TDUUPDATE.days + tdupdate_days;\n        _obj->TDUPDATE.ms = (BITCODE_BL)(tdupdate_ms - tdupdate_days * 86400000);\n        _obj->TDUPDATE.value = _obj->TDUPDATE.days + ((double)_obj->TDUPDATE.ms / 86400000.0);\n      }",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "path": "src/header_variables_r11.spec",
+      "gitBlob": "18a734e2ca3ebab205e92dbbcc52c9c750986766",
+      "replacements": [
+        {
+          "before": "    if (!_obj->TDUCREATE.days && dat->version >= R_13) {",
+          "after": "    if (!_obj->TDUCREATE.days && _obj->TDCREATE.days && dat->version >= R_13) {",
+          "count": 1
+        },
+        {
+          "before": "      _obj->TDUCREATE.days  = _obj->TDCREATE.days;\n      // adjust for timezone offset\n      _obj->TDUCREATE.ms    = _obj->TDUCREATE.ms - off;\n      _obj->TDUCREATE.value = _obj->TDUCREATE.days + (_obj->TDUCREATE.ms * 1e-8);",
+          "after": "      /* Normalize the signed timezone shift before assigning unsigned milliseconds. */\n      const int64_t tducreate_ms = (int64_t)_obj->TDCREATE.ms - off;\n      int64_t tducreate_days = tducreate_ms / 86400000;\n      if (tducreate_ms < 0 && tducreate_ms % 86400000)\n        tducreate_days--;\n      _obj->TDUCREATE.days = _obj->TDCREATE.days + tducreate_days;\n      _obj->TDUCREATE.ms = (BITCODE_BL)(tducreate_ms - tducreate_days * 86400000);\n      _obj->TDUCREATE.value = _obj->TDUCREATE.days + ((double)_obj->TDUCREATE.ms / 86400000.0);",
+          "count": 1
+        },
+        {
+          "before": "      _obj->TDUUPDATE.days  = _obj->TDUPDATE.days;\n      _obj->TDUUPDATE.ms    = _obj->TDUPDATE.ms - off;\n      _obj->TDUUPDATE.value = _obj->TDUPDATE.days + (_obj->TDUPDATE.ms * 1e-8);",
+          "after": "      if (_obj->TDUPDATE.days) {\n        /* Normalize the signed timezone shift before assigning unsigned milliseconds. */\n        const int64_t tduupdate_ms = (int64_t)_obj->TDUPDATE.ms - off;\n        int64_t tduupdate_days = tduupdate_ms / 86400000;\n        if (tduupdate_ms < 0 && tduupdate_ms % 86400000)\n          tduupdate_days--;\n        _obj->TDUUPDATE.days = _obj->TDUPDATE.days + tduupdate_days;\n        _obj->TDUUPDATE.ms = (BITCODE_BL)(tduupdate_ms - tduupdate_days * 86400000);\n        _obj->TDUUPDATE.value = _obj->TDUUPDATE.days + ((double)_obj->TDUUPDATE.ms / 86400000.0);\n      }",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "path": "src/dwg2.spec",
+      "gitBlob": "c23b82adc6767feb65921c659ec42c714201245d",
+      "replacements": [
+        {
+          "before": "FIELD_BS (b_prop1f_int, 0);",
+          "after": "FIELD_BS (b_prop1f_int, 176);",
+          "count": 1
+        },
+        {
+          "before": "FIELD_BS (b_prop21_int, 0);",
+          "after": "FIELD_BS (b_prop21_int, 176);",
+          "count": 1
+        },
+        {
+          "before": "DWG_OBJECT (TABLESTYLE)\n  HANDLE_UNKNOWN_BITS;\n  SUBCLASS (AcDbTableStyle)",
+          "after": "DWG_OBJECT (TABLESTYLE)\n  HANDLE_UNKNOWN_BITS;\n  DXF {\n    if (dwg->header.version > R_2007) {\n      if (_obj->numoverrides > 64 || (_obj->numoverrides && !_obj->overrides))\n        return DWG_ERR_VALUEOUTOFBOUNDS;\n      /* Application-defined native interchange data; regenerate from decoded DWG fields. */\n      VALUE_TFF (\"{JCAD_TABLESTYLE_NATIVE_V1\", 102);\n      VALUE_BL (_obj->unknown_bl1, 90);\n      VALUE_BL (_obj->unknown_bl2, 91);\n      FIELD_HANDLE (cellstyle, DWG_HDL_HARDOWN, 360);\n      VALUE_BL (_obj->numoverrides, 92);\n      for (BITCODE_BL jcad_override = 0; jcad_override < _obj->numoverrides; jcad_override++) {\n        VALUE_BL (_obj->overrides[jcad_override].key, 93);\n      }\n      VALUE_TFF (\"}\", 102);\n    }\n  }\n  SUBCLASS (AcDbTableStyle)",
+          "count": 1
+        },
+        {
+          "before": "    FIELD_BL (numoverrides, 0);\n    // FIXME style overrides for 0-6\n    if (FIELD_VALUE (numoverrides))\n      {\n        FIELD_BL (unknown_bl3, 0);\n        CellStyle_fields (ovr.cellstyle);\n        DXF { VALUE_TFF (\"CELLSTYLE_BEGIN\", 1) }\n        FIELD_BL0 (ovr.id, 90);\n        FIELD_BL0 (ovr.type, 91);\n        FIELD_T0 (ovr.name, 300);\n        DXF { VALUE_TFF (\"CELLSTYLE_END\", 309) }\n        LOG_WARN (\"TODO TABLESTYLE r2010+ missing fields\");\n      }",
+          "after": "    FIELD_BL (numoverrides, 0);\n    VALUEOUTOFBOUNDS (numoverrides, 64);\n    DECODER {\n      /* Five mandatory BL/BS fields consume at least ten main-stream bits per record.\n         The usual sizeof(type)-in-bits repeat heuristic rejects valid compact cell styles. */\n      if (AVAIL_BITS (dat) < 0 || (uint64_t)_obj->numoverrides * 10 > (uint64_t)AVAIL_BITS (dat)) {\n        _obj->numoverrides = 0;\n        RETURN_VALUEOUTOFBOUNDS;\n      }\n    }\n    REPEAT_C (numoverrides, overrides, Dwg_TABLESTYLE_CellStyle)\n    REPEAT_BLOCK\n      DECODER { if (!_obj->overrides) return DWG_ERR_OUTOFMEM; }\n      SUB_FIELD_BL (overrides[rcount1], key, 0);\n      CellStyle_fields (overrides[rcount1].cellstyle);\n      DXF { VALUE_TFF (\"CELLSTYLE_BEGIN\", 1) }\n      SUB_FIELD_BL0 (overrides[rcount1], id, 90);\n      SUB_FIELD_BL0 (overrides[rcount1], type, 91);\n      FIELD_T0 (overrides[rcount1].name, 300);\n      DXF { VALUE_TFF (\"CELLSTYLE_END\", 309) }\n      SET_PARENT_OBJ (overrides[rcount1]);\n      DECODER {\n        if (!rcount1) {\n          /* Scalar compatibility only: never alias owned strings or border arrays. */\n          _obj->unknown_bl3 = _obj->overrides[0].key;\n          _obj->ovr.id = _obj->overrides[0].id;\n          _obj->ovr.type = _obj->overrides[0].type;\n        }\n      }\n    END_REPEAT_BLOCK\n    END_REPEAT (overrides);",
+          "count": 1
+        },
+        {
+          "before": "\tDXF {\t\t\t\t\t\t\t\t\\\n\t  if (FIELD_VALUE (sty.borders[rcount2].index_mask))\t\t\\\n\t    {\t\t\t\t\t\t\t\t\\\n\t      SUB_FIELD_BL (sty.borders[rcount2],index_mask, 95);\t\\\n\t      VALUE_TFF (\"GRIDFORMAT\", 302);\t\t\t\t\\\n\t      VALUE_TFF (\"GRIDFORMAT_BEGIN\", 1);\t\t\t\\\n\t    }\t\t\t\t\t\t\t\t\\\n\t}\t\t\t\t\t\t\t\t\\\n",
+          "after": "\tDXF { \\\n\t  SUB_FIELD_BL (sty.borders[rcount2],index_mask, 95); \\\n\t  VALUE_TFF (\"GRIDFORMAT\", 302); \\\n\t  VALUE_TFF (\"GRIDFORMAT_BEGIN\", 1); \\\n\t} \\\n",
+          "count": 1
+        },
+        {
+          "before": "\tDXF { VALUE_TFF (\"GRIDFORMAT_END\", 309) }",
+          "after": "\tSET_PARENT (sty.borders[rcount2], &FIELD_VALUE (sty)); \\\n\tDXF { VALUE_TFF (\"GRIDFORMAT_END\", 309) }",
           "count": 1
         }
       ]

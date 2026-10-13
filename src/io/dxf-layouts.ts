@@ -40,6 +40,7 @@ import { importViewportView } from './viewport-view';
 export interface DxfSink {
   pair(code: number, value: string | number): void;
   nextHandle(): string;
+  anchor?(handle: string, anchor: import('../core/cad-graph').CadAnchor): void;
 }
 
 interface Pair {
@@ -197,7 +198,7 @@ export function writeLayoutContent(w: DxfSink, rec: LayoutRecord, writeEntity: (
     const frozen = (v.frozenLayers ?? []).map((n) => layerHandles.get(n)).filter((h): h is string => !!h);
     const twist = viewTwist(v.view) % (2 * Math.PI);
     const cos = Math.cos(twist), sin = Math.sin(twist);
-    writeViewport(w, rec.blockRecord, {
+    const handle = writeViewport(w, rec.blockRecord, {
       center: v.center,
       width: v.width,
       height: v.height,
@@ -211,6 +212,7 @@ export function writeLayoutContent(w: DxfSink, rec: LayoutRecord, writeEntity: (
       flags: 32768 | 32 | (v.view.locked ? VP_LOCKED : 0) | (v.on ? 0 : VP_OFF),
       frozen,
     });
+    w.anchor?.(handle, { kind: 'viewport', id: v.id });
   });
   for (const e of lay.entities) writeEntity(e, rec.blockRecord);
 }
@@ -351,6 +353,7 @@ export type LayoutEntityReader = (objs: Obj[], where: string) => Entity[];
 
 /** Collects paper-space data while io/dxf/reader.ts walks the sections, then builds the layouts. */
 export class LayoutReader {
+  readonly viewportHandles = new Map<string, string>();
   /** `report` receives viewports that are dropped or simplified. */
   constructor(private readonly report?: ImportReportBuilder) {}
   private recordNames = new Map<string, string>();
@@ -391,7 +394,7 @@ export class LayoutReader {
     for (const o of objs) if (o.kind === 'LAYOUT') this.layoutObjs.push(o);
   }
 
-  /** Build the layouts; `readEntities` is the DXF reader's entity parser. Undefined = only an untouched Layout1. */
+  /** Build declared layouts; `readEntities` is the DXF reader's entity parser. */
   build(readEntities: LayoutEntityReader, host: LayoutHost): Layout[] | undefined {
     const units = unitsOfHost(host);
     const out: Array<{ layout: Layout; tab: number }> = [];
@@ -412,7 +415,8 @@ export class LayoutReader {
     out.sort((a, b) => a.tab - b.tab);
     const layouts = out.map((o) => o.layout);
     if (layouts.length === 0) return undefined;
-    if (layouts.length === 1 && layouts[0]!.pristine && /^layout1$/i.test(layouts[0]!.name)) return undefined;
+    // Even an untouched source Layout1 has its own retained LAYOUT/BLOCK_RECORD
+    // identities. Keep it explicit so a newly added sheet gets a distinct block.
     return layouts;
   }
 
@@ -499,8 +503,10 @@ export class LayoutReader {
       for (const reason of view.warnings) this.report?.add({ ...item, action: 'simplified', reason });
       const status = Math.trunc(num(v, 68, 1));
       const frozen = v.groups.filter((x) => x.code === 331).map((x) => this.layerNames.get(x.value.toUpperCase())).filter((x): x is string => !!x);
+      const id = newViewportId();
+      if (str(o, 5)) this.viewportHandles.set(str(o, 5).trim().toUpperCase(), id);
       viewports.push({
-        id: newViewportId(),
+        id,
         center,
         width,
         height,
