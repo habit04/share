@@ -5,7 +5,7 @@ import type { Entity, Layer, LineEntity, PolylineEntity } from '../src/core/enti
 import type { Point } from '../src/core/geometry';
 import { sealImmutableData } from '../src/core/immutable-data';
 import { colorDisplay, lineweightDisplay } from '../src/render/draw';
-import { prepare2D, screenPoint, type Gpu2DView, type Prepared2D } from '../src/render/gpu-prototype/geometry2d';
+import { prepare2D, prepareZoom2D, screenPoint, GPU_ZOOM_VERTEX_STRIDE, type Gpu2DView, type Prepared2D } from '../src/render/gpu-prototype/geometry2d';
 import { Gpu2DRenderer } from '../src/render/gpu-prototype/renderer2d';
 
 const layer: Layer = { name: '0', color: 3, visible: true, locked: false, lineWeight: 0.5 };
@@ -58,7 +58,7 @@ function rendererFixture() {
     getError: vi.fn(() => 0), getContextAttributes: vi.fn(() => ({ stencil: true })),
     getUniformLocation: vi.fn((_program: unknown, name: string) => ({ name })),
     bindFramebuffer: vi.fn(), bindVertexArray: vi.fn(), useProgram: vi.fn(),
-    enableVertexAttribArray: vi.fn(), vertexAttribPointer: vi.fn(), uniform2f: vi.fn((_uniform: unknown, _x: number, _y: number) => {}), uniform1f: vi.fn(),
+    enableVertexAttribArray: vi.fn(), vertexAttribPointer: vi.fn(), uniform2f: vi.fn((_uniform: unknown, _x: number, _y: number) => {}), uniform1f: vi.fn((_uniform: unknown, _value: number) => {}),
     viewport: vi.fn(), enable: vi.fn(), disable: vi.fn(), colorMask: vi.fn(), depthMask: vi.fn(),
     stencilMask: vi.fn(), clearColor: vi.fn(), clearStencil: vi.fn(), clear: vi.fn(),
     blendEquation: vi.fn(), blendFuncSeparate: vi.fn(), stencilFunc: vi.fn(), stencilOp: vi.fn(), drawArrays: vi.fn(),
@@ -72,7 +72,38 @@ function rendererFixture() {
 }
 
 function uploadedGeometry(gl: ReturnType<typeof rendererFixture>['gl']): Prepared2D {
-  return { vertices: gl.bufferData.mock.lastCall![1] as Float32Array<ArrayBuffer>, batches: [], panPrecisionMargin: { x: 0, y: 0 } };
+  const size = [...gl.uniform2f.mock.calls].reverse().find((call) => (call[0] as { name: string }).name === 'u_view')!;
+  return zoomToScreen(gl.bufferData.mock.lastCall![1] as Float32Array<ArrayBuffer>, { width: size[1], height: size[2] });
+}
+
+/** Emulate the actual shader's Float32 center, zoom, pan and fixed-offset arithmetic. */
+function zoomToScreen(source: Float32Array<ArrayBuffer>, size: { width: number; height: number }, ratio = 1, pan: Point = { x: 0, y: 0 }): Prepared2D {
+  const vertices = new Float32Array(source.length / GPU_ZOOM_VERTEX_STRIDE * 5);
+  for (let i = 0, j = 0; i < source.length; i += GPU_ZOOM_VERTEX_STRIDE, j += 5) {
+    vertices[j] = Math.fround(Math.fround(Math.fround(Math.fround(source[i]! * Math.fround(ratio)) + Math.fround(pan.x)) + Math.fround(size.width / 2)) + source[i + 2]!);
+    vertices[j + 1] = Math.fround(Math.fround(Math.fround(Math.fround(source[i + 1]! * Math.fround(ratio)) + Math.fround(pan.y)) + Math.fround(size.height / 2)) + source[i + 3]!);
+    vertices.set(source.subarray(i + 4, i + 7), j + 2);
+  }
+  return { vertices, batches: [], panPrecisionMargin: { x: 0, y: 0 } };
+}
+
+function drawnGeometry(gl: ReturnType<typeof rendererFixture>['gl']): Prepared2D {
+  const size = [...gl.uniform2f.mock.calls].reverse().find((call) => (call[0] as { name: string }).name === 'u_view')!;
+  const pan = [...gl.uniform2f.mock.calls].reverse().find((call) => (call[0] as { name: string }).name === 'u_pan')!;
+  const zoom = [...gl.uniform1f.mock.calls].reverse().find((call) => (call[0] as { name: string }).name === 'u_zoom')!;
+  return zoomToScreen(gl.bufferData.mock.lastCall![1] as Float32Array<ArrayBuffer>, { width: size[1], height: size[2] }, zoom[1], { x: pan[1], y: pan[2] });
+}
+
+/** Include shader NDC arithmetic and the viewport roundtrip when checking geometric error. */
+function ndcGeometry(geometry: Prepared2D, size: { width: number; height: number }): Prepared2D {
+  const vertices = geometry.vertices.slice();
+  for (let i = 0; i < vertices.length; i += 5) {
+    const x = Math.fround(Math.fround(Math.fround(vertices[i]! / Math.fround(size.width)) * 2) - 1);
+    const y = Math.fround(1 - Math.fround(Math.fround(vertices[i + 1]! / Math.fround(size.height)) * 2));
+    vertices[i] = (x + 1) * size.width / 2;
+    vertices[i + 1] = (1 - y) * size.height / 2;
+  }
+  return { ...geometry, vertices };
 }
 
 /** Simulate Float32 vertex-shader translation for independent coverage/precision assertions. */
@@ -282,7 +313,7 @@ describe('GPU renderer submission, caching and lifecycle', () => {
     const { canvas, gl } = rendererFixture();
     const renderer = new Gpu2DRenderer(canvas);
     const result = renderer.render(drawing(), { ...view, dpr: 2 }, overlay);
-    expect(result).toMatchObject({ rendered: true, bytes: 120 });
+    expect(result).toMatchObject({ rendered: true, bytes: 168 });
     expect(result.preparationMs).toBeGreaterThanOrEqual(0); expect(result.submissionMs).toBeGreaterThanOrEqual(0);
     expect(canvas.width).toBe(640); expect(canvas.height).toBe(480);
     expect(gl.viewport).toHaveBeenCalledWith(0, 0, 640, 480);
@@ -306,16 +337,16 @@ describe('GPU renderer submission, caching and lifecycle', () => {
     const { canvas, gl } = rendererFixture();
     const renderer = new Gpu2DRenderer(canvas);
     const state = sealImmutableData(drawing());
-    expect(renderer.render(state, view, overlay).bytes).toBe(120);
+    expect(renderer.render(state, view, overlay).bytes).toBe(168);
     expect(renderer.render(state, { ...view }, { selection: new Set() }).bytes).toBe(0);
     expect(gl.bufferData).toHaveBeenCalledOnce();
     expect(renderer.render(state, { ...view, center: { x: 0.25, y: 0 } }, overlay).bytes).toBe(0);
     const changedLayer = sealImmutableData({ ...state, layers: [{ ...layer, trueColor: 0xff0000 }] });
-    expect(renderer.render(changedLayer, view, overlay).bytes).toBe(120);
+    expect(renderer.render(changedLayer, view, overlay).bytes).toBe(168);
     const selected = { selection: new Set(['line']), solidSelection: true };
-    expect(renderer.render(changedLayer, view, selected).bytes).toBe(120);
+    expect(renderer.render(changedLayer, view, selected).bytes).toBe(168);
     selected.selection.clear();
-    expect(renderer.render(changedLayer, view, selected).bytes).toBe(120);
+    expect(renderer.render(changedLayer, view, selected).bytes).toBe(168);
     renderer.dispose();
   });
 
@@ -376,7 +407,7 @@ describe('GPU renderer submission, caching and lifecycle', () => {
     expect(pan[1]).toBeCloseTo((-Math.cos(close.twist) / 8 - Math.sin(close.twist) / 4), 12);
     expect(pan[2]).toBeCloseTo((Math.sin(close.twist) / 8 - Math.cos(close.twist) / 4), 12);
     const actual = translatedGeometry(original, { x: pan[1], y: pan[2] });
-    const fresh = prepare2D(state, moved, overlay);
+    const fresh = zoomToScreen(prepareZoom2D(state, moved, overlay).vertices, moved);
     expect(actual.vertices).toHaveLength(fresh.vertices.length);
     actual.vertices.forEach((value, index) => expect(value).toBeCloseTo(fresh.vertices[index]!, 3));
     expect(gl.bufferData).toHaveBeenCalledOnce();
@@ -395,7 +426,7 @@ describe('GPU renderer submission, caching and lifecycle', () => {
     renderer.dispose();
   });
 
-  it('rebuilds on zoom instead of scaling cached pixel lineweights or curve tessellation', () => {
+  it('reuses bounded zoom without scaling lineweights and rebuilds beyond the curve interval', () => {
     const { canvas, gl } = rendererFixture();
     const renderer = new Gpu2DRenderer(canvas);
     const state = sealImmutableData(drawing([
@@ -407,6 +438,9 @@ describe('GPU renderer submission, caching and lifecycle', () => {
     const initial = uploadedGeometry(gl);
     renderer.render(state, { ...weighted, center: { x: 0.25, y: 0 } }, overlay);
     expect(gl.uniform2f.mock.lastCall![1]).not.toBe(0);
+    const bounded = renderer.render(state, { ...weighted, scale: 37.5 }, overlay);
+    expect(bounded).toMatchObject({ rendered: true, bytes: 0, uploadCalls: 0, geometryPreparationMs: 0, cacheHit: true, cacheReason: 'hit' });
+    const boundedGeometry = drawnGeometry(gl);
     expect(renderer.render(state, { ...weighted, scale: 60 }, overlay).bytes).toBeGreaterThan(0);
     const zoomed = uploadedGeometry(gl);
     const lineHeight = (geometry: Prepared2D) => {
@@ -414,6 +448,7 @@ describe('GPU renderer submission, caching and lifecycle', () => {
       return Math.max(...points.map((point) => point.y)) - Math.min(...points.map((point) => point.y));
     };
     expect(lineHeight(initial)).toBe(4);
+    expect(lineHeight(boundedGeometry)).toBe(4);
     expect(lineHeight(zoomed)).toBe(4);
     expect(zoomed.vertices.length).toBeGreaterThan(initial.vertices.length);
     expect(gl.uniform2f).toHaveBeenLastCalledWith({ name: 'u_pan' }, 0, 0);
@@ -535,11 +570,11 @@ describe('GPU renderer submission, caching and lifecycle', () => {
     expect(gl.stencilFunc).toHaveBeenCalledWith(gl.EQUAL, 0, 0xff);
     expect(gl.stencilOp).toHaveBeenCalledWith(gl.KEEP, gl.KEEP, gl.INCR);
     expect(gl.drawArrays).toHaveBeenCalledTimes(3);
-    const initial = uploadedGeometry(gl);
+    const initial = gl.bufferData.mock.lastCall![1];
     expect(renderer.render(state, { ...view, center: { x: 0.25, y: 0 } }, selected).bytes).toBe(0);
     expect(gl.drawArrays).toHaveBeenCalledTimes(6);
     expect(gl.uniform1f.mock.calls.filter((call) => (call as unknown[])[1] === 0.95)).toHaveLength(2);
-    expect(uploadedGeometry(gl).vertices).toBe(initial.vertices);
+    expect(gl.bufferData.mock.lastCall![1]).toBe(initial);
     renderer.dispose();
   });
 
@@ -565,7 +600,7 @@ describe('GPU renderer submission, caching and lifecycle', () => {
     expect(renderer.render(state, view, overlay)).toMatchObject({ rendered: false, bytes: 0, submissionMs: 0 });
     gl.isContextLost.mockReturnValue(false);
     canvas.dispatchEvent(new Event('webglcontextrestored'));
-    expect(renderer.render(state, view, overlay)).toMatchObject({ rendered: true, bytes: 120 });
+    expect(renderer.render(state, view, overlay)).toMatchObject({ rendered: true, bytes: 168 });
     expect(gl.uniform2f).toHaveBeenLastCalledWith({ name: 'u_pan' }, 0, 0);
     expect(gl.createProgram).toHaveBeenCalledTimes(2); expect(gl.createBuffer).toHaveBeenCalledTimes(2);
     expect(notify).toHaveBeenCalledTimes(2);
@@ -597,7 +632,255 @@ describe('GPU renderer submission, caching and lifecycle', () => {
     gl.getError.mockReturnValue(gl.OUT_OF_MEMORY);
     expect(renderer.render(drawing(), view, overlay).reason).toMatch(/upload failed/);
     gl.getError.mockReturnValueOnce(0).mockReturnValue(gl.OUT_OF_MEMORY);
-    expect(renderer.render(drawing(), view, overlay)).toMatchObject({ rendered: false, reason: expect.stringContaining('submission failed'), bytes: 120 });
+    expect(renderer.render(drawing(), view, overlay)).toMatchObject({ rendered: false, reason: expect.stringContaining('submission failed'), bytes: 168 });
+    renderer.dispose();
+  });
+});
+
+describe('GPU bounded zoom correctness and separate CPU telemetry', () => {
+  it('restores after a warm zoom hit with fresh device limits/stencil, uploads and a unit zoom anchor', () => {
+    const { canvas, gl } = rendererFixture();
+    const notify = vi.fn();
+    const renderer = new Gpu2DRenderer(canvas, notify), state = sealImmutableData(drawing());
+    const selected = { selection: new Set(['line']), solidSelection: true };
+    expect(renderer.render(state, view, selected)).toMatchObject({ rendered: true, cacheReason: 'cold', bytes: 168 });
+    const zoomed = { ...view, scale: 33, center: { x: 0.25, y: -0.25 } };
+    expect(renderer.render(state, zoomed, selected)).toMatchObject({ rendered: true, cacheHit: true, bytes: 0, uploadCalls: 0 });
+    expect(gl.uniform1f).toHaveBeenCalledWith({ name: 'u_zoom' }, 1.1);
+    expect(gl.getParameter.mock.calls.filter((call) => call[0] === gl.MAX_VIEWPORT_DIMS)).toHaveLength(1);
+    expect(gl.getContextAttributes).toHaveBeenCalledOnce();
+
+    gl.isContextLost.mockReturnValue(true);
+    canvas.dispatchEvent(new Event('webglcontextlost', { cancelable: true }));
+    gl.clear.mockClear(); gl.drawArrays.mockClear(); gl.uniform1f.mockClear();
+    expect(renderer.render(state, zoomed, selected)).toMatchObject({ rendered: false, bytes: 0, uploadCalls: 0, submissionMs: 0 });
+    expect(gl.clear).not.toHaveBeenCalled(); expect(gl.drawArrays).not.toHaveBeenCalled();
+    // A restored live context can have different limits; the old metadata must not survive.
+    gl.getParameter.mockImplementation((parameter) => parameter === gl.MAX_VIEWPORT_DIMS ? new Int32Array([1024, 1024]) : null);
+    gl.isContextLost.mockReturnValue(false);
+    canvas.dispatchEvent(new Event('webglcontextrestored'));
+    expect(renderer.render(state, zoomed, selected)).toMatchObject({ rendered: true, cacheHit: false, cacheReason: 'cold', uploadCalls: 1, bytes: 168 });
+    expect(gl.uniform1f).toHaveBeenCalledWith({ name: 'u_zoom' }, 1);
+    expect(gl.uniform2f).toHaveBeenLastCalledWith({ name: 'u_pan' }, 0, 0);
+    expect(gl.getParameter.mock.calls.filter((call) => call[0] === gl.MAX_VIEWPORT_DIMS)).toHaveLength(2);
+    expect(gl.getContextAttributes).toHaveBeenCalledTimes(2);
+    expect(gl.createProgram).toHaveBeenCalledTimes(2); expect(gl.createBuffer).toHaveBeenCalledTimes(2);
+    expect(gl.bufferData).toHaveBeenCalledTimes(2);
+    expect(renderer.render(state, { ...zoomed, scale: 36.3 }, selected)).toMatchObject({ rendered: true, cacheHit: true, bytes: 0 });
+    gl.clear.mockClear(); gl.drawArrays.mockClear();
+    expect(renderer.render(state, { ...zoomed, width: 2048 }, selected)).toMatchObject({ rendered: false, bytes: 0, uploadCalls: 0, reason: expect.stringContaining('device limits') });
+    expect(gl.clear).not.toHaveBeenCalled(); expect(gl.drawArrays).not.toHaveBeenCalled();
+    expect(notify).toHaveBeenCalledTimes(2);
+    expect(state.entities[0]).toEqual(line);
+    renderer.dispose();
+  });
+
+  it('reports preparation, upload and draw phases and performs no warm geometry work', () => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas), state = sealImmutableData(drawing());
+    const first = renderer.render(state, view, overlay);
+    expect(first).toMatchObject({ rendered: true, cacheHit: false, cacheReason: 'cold', geometryVertices: 6, bytes: 168, uploadCalls: 1 });
+    for (const name of ['cacheLookupMs', 'geometryPreparationMs', 'initializationMs', 'uploadMs', 'drawSubmissionMs', 'preparationMs', 'submissionMs'] as const) {
+      expect(Number.isFinite(first[name])).toBe(true);
+      expect(first[name]).toBeGreaterThanOrEqual(0);
+    }
+    for (const scale of [view.scale, 24, 25.7, 33, 37.5]) {
+      expect(renderer.render(state, { ...view, scale }, overlay)).toMatchObject({ rendered: true, bytes: 0, uploadCalls: 0, uploadMs: 0, geometryPreparationMs: 0, initializationMs: 0, geometryVertices: 6, cacheHit: true, cacheReason: 'hit' });
+    }
+    expect(gl.bufferData).toHaveBeenCalledOnce();
+    expect(gl.drawArrays).toHaveBeenCalledTimes(6);
+    expect(gl.vertexAttribPointer).toHaveBeenCalledWith(0, 2, gl.FLOAT, false, 28, 0);
+    expect(gl.vertexAttribPointer).toHaveBeenCalledWith(1, 3, gl.FLOAT, false, 28, 16);
+    expect(gl.vertexAttribPointer).toHaveBeenCalledWith(2, 2, gl.FLOAT, false, 28, 8);
+    renderer.dispose();
+  });
+
+  it('copies the scale anchor, admits both exact boundaries and rebuilds after crossing either', () => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas), state = sealImmutableData(drawing());
+    const camera = { ...view, center: { ...view.center } };
+    renderer.render(state, camera, overlay);
+    for (const scale of [33, 24, 37.5, 30]) {
+      camera.scale = scale;
+      expect(renderer.render(state, camera, overlay)).toMatchObject({ rendered: true, bytes: 0, cacheReason: 'hit' });
+    }
+    camera.scale = 37.5001;
+    expect(renderer.render(state, camera, overlay)).toMatchObject({ rendered: true, bytes: 168, cacheReason: 'zoom-range' });
+    expect(gl.uniform1f).toHaveBeenCalledWith({ name: 'u_zoom' }, 1);
+    camera.scale = 30;
+    expect(renderer.render(state, camera, overlay)).toMatchObject({ rendered: true, bytes: 168, cacheReason: 'zoom-range' });
+    expect(gl.bufferData).toHaveBeenCalledTimes(3);
+    renderer.dispose();
+  });
+
+  it('treats selection as membership, preserves batch order and updates only real membership changes', () => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas);
+    const state = sealImmutableData(drawing([line, { ...line, id: 'second', color: 1 }]));
+    const selection = { selection: new Set(['line', 'second']), solidSelection: true };
+    renderer.render(state, view, selection);
+    const calls = gl.drawArrays.mock.calls.map((call) => [...call]);
+    expect(renderer.render(state, { ...view, scale: 33 }, { ...selection, selection: new Set(['second', 'line']) })).toMatchObject({ rendered: true, bytes: 0, cacheHit: true });
+    expect(gl.drawArrays.mock.calls.slice(2)).toEqual(calls);
+    expect(gl.stencilFunc).toHaveBeenCalledTimes(4);
+    selection.selection.delete('second');
+    expect(renderer.render(state, view, selection)).toMatchObject({ rendered: true, bytes: 336, cacheReason: 'view-style' });
+    renderer.dispose();
+  });
+
+  it.each([NaN, Infinity, -Infinity, 0, -1])('refuses invalid warm-cache zoom %s without clearing or submitting', (scale) => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas), state = sealImmutableData(drawing());
+    renderer.render(state, view, overlay);
+    gl.clear.mockClear(); gl.drawArrays.mockClear();
+    expect(renderer.render(state, { ...view, scale }, overlay)).toMatchObject({ rendered: false, bytes: 0, uploadCalls: 0, submissionMs: 0, reason: expect.stringContaining('Invalid GPU view') });
+    expect(gl.clear).not.toHaveBeenCalled(); expect(gl.drawArrays).not.toHaveBeenCalled();
+    renderer.dispose();
+  });
+
+  it('refuses offscreen original endpoints that cross the source precision bound inside the zoom band', () => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas);
+    const unit = { ...view, scale: 1, dpr: 2 };
+    const bound = 2 ** 36 / unit.dpr;
+    const state = sealImmutableData(drawing([{ ...line, a: { x: 0, y: 0 }, b: { x: bound - unit.width / 2 - 2, y: 0 } }]));
+    expect(renderer.render(state, unit, overlay).rendered).toBe(true);
+    expect(renderer.render(state, { ...unit, scale: 0.8 }, overlay)).toMatchObject({ rendered: true, bytes: 0 });
+    gl.clear.mockClear(); gl.drawArrays.mockClear();
+    expect(renderer.render(state, { ...unit, scale: 1.1 }, overlay)).toMatchObject({ rendered: false, cacheReason: 'precision', bytes: 0, uploadCalls: 0, submissionMs: 0, reason: expect.stringContaining('precision bound') });
+    expect(gl.bufferData).toHaveBeenCalledOnce();
+    expect(gl.clear).not.toHaveBeenCalled(); expect(gl.drawArrays).not.toHaveBeenCalled();
+    renderer.dispose();
+  });
+
+  it('refuses huge lineweights rather than losing pixel offsets through Float32 cancellation', () => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas);
+    expect(renderer.render(sealImmutableData(drawing([{ ...line, lineWeight: 1e7 }])), { ...view, lineweights: true }, overlay)).toMatchObject({ rendered: false, bytes: 0, uploadCalls: 0, submissionMs: 0, reason: expect.stringContaining('Float32 precision budget') });
+    expect(gl.createBuffer).not.toHaveBeenCalled(); expect(gl.clear).not.toHaveBeenCalled();
+    renderer.dispose();
+  });
+
+  it.each([1, 1.25, 2, 3])('preserves fixed lineweights and tiny rotated offsets at trillion-unit origins, DPR %s', (dpr) => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas);
+    const center = { x: 1e12, y: -1e12 };
+    const translated: LineEntity = { ...line, a: { x: center.x - 1 / 32, y: center.y + 1 / 8192 }, b: { x: center.x + 1 / 32, y: center.y + 1 / 8192 }, lineWeight: 1 };
+    const state = sealImmutableData(drawing([translated]));
+    const close = { ...view, scale: 1024, center, twist: 0.63, dpr, lineweights: true };
+    renderer.render(state, close, overlay);
+    for (const ratio of [0.8, 1.037, 1.25]) {
+      const moved = { ...close, scale: close.scale * ratio, center: { x: center.x + 1 / 8192, y: center.y - 1 / 4096 } };
+      expect(renderer.render(state, moved, overlay)).toMatchObject({ rendered: true, cacheHit: true, bytes: 0 });
+      const actual = ndcGeometry(drawnGeometry(gl), moved);
+      const reference = prepare2D(state, moved, overlay);
+      expect(actual.vertices).toHaveLength(reference.vertices.length);
+      actual.vertices.forEach((value, index) => {
+        if (index % 5 < 2) expect(Math.abs(value - reference.vertices[index]!) * dpr).toBeLessThan(0.0625);
+      });
+      const points = xy(actual);
+      expect(Math.hypot(points[0]!.x - points[5]!.x, points[0]!.y - points[5]!.y)).toBeCloseTo(4, 3);
+      expect(covers(actual, screenPoint({ x: center.x, y: center.y + 1 / 8192 }, moved))).toBe(true);
+    }
+    expect(gl.bufferData).toHaveBeenCalledOnce();
+    renderer.dispose();
+  });
+
+  it.each([1, 2, 3])('retains all edge-entering and remote spanning strokes at zoom/pan extremes, DPR %s', (dpr) => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas);
+    const padding = 128 / dpr;
+    const x = (view.width / 2 + padding - 10) / 0.8 / view.scale;
+    const y = (view.height / 2 + padding - 10) / 0.8 / view.scale;
+    const state = sealImmutableData(drawing([
+      ...[-x, x].map((value, index): LineEntity => ({ ...line, id: `vertical${index}`, a: { x: value, y: -1e8 }, b: { x: value, y: 1e8 } })),
+      ...[-y, y].map((value, index): LineEntity => ({ ...line, id: `horizontal${index}`, a: { x: -1e8, y: value }, b: { x: 1e8, y: value } })),
+      { ...line, id: 'diagonal', a: { x: -1e8, y: -1e8 }, b: { x: 1e8, y: 1e8 } },
+    ]));
+    const anchor = { ...view, dpr };
+    renderer.render(state, anchor, overlay);
+    let enteringSamples = 0;
+    for (const ratio of [0.8, 1.25]) for (const signX of [-1, 1]) for (const signY of [-1, 1]) {
+      const pan = { x: signX * padding, y: signY * padding };
+      const next = { ...anchor, scale: view.scale * ratio, center: { x: -pan.x / (view.scale * ratio), y: pan.y / (view.scale * ratio) } };
+      expect(renderer.render(state, next, overlay)).toMatchObject({ rendered: true, bytes: 0, cacheHit: true });
+      const actual = ndcGeometry(drawnGeometry(gl), next);
+      for (const value of [-x, x]) {
+        const sx = view.width / 2 + pan.x + value * next.scale;
+        if (sx <= 0 || sx >= view.width) continue;
+        enteringSamples++;
+        for (const sy of [0.5, 40, 120, view.height - 0.5]) expect(covers(actual, { x: sx, y: sy })).toBe(true);
+      }
+      for (const value of [-y, y]) {
+        const sy = view.height / 2 + pan.y - value * next.scale;
+        if (sy <= 0 || sy >= view.height) continue;
+        enteringSamples++;
+        for (const sx of [0.5, 40, 160, view.width - 0.5]) expect(covers(actual, { x: sx, y: sy })).toBe(true);
+      }
+      for (let sx = 5; sx < view.width - 5; sx += 10) {
+        const sy = view.height / 2 + pan.y + view.width / 2 + pan.x - sx;
+        if (sy > 0.5 && sy < view.height - 0.5) expect(covers(actual, { x: sx, y: sy })).toBe(true);
+      }
+    }
+    expect(enteringSamples).toBeGreaterThanOrEqual(8);
+    expect(gl.bufferData).toHaveBeenCalledOnce();
+    renderer.dispose();
+  });
+
+  it.each([1, 1.25, 2, 3])('bounds thin and wide native circle envelopes throughout zoom at DPR %s', (dpr) => {
+    for (const { radius, weight } of [{ radius: 2, weight: 0.25 }, { radius: 0.1, weight: 10 }]) {
+      const circle: Entity = { ...line, type: 'circle', center: { x: 0, y: 0 }, radius, lineWeight: weight };
+      const weighted = { ...view, dpr, lineweights: true };
+      const geometry = prepareZoom2D(drawing([circle]), weighted, overlay);
+      const half = weight / 0.25 / 2;
+      for (const ratio of [0.8, 1.037, 1.25]) {
+        const actual = ndcGeometry(zoomToScreen(geometry.vertices, weighted, ratio), weighted);
+        const r = radius * view.scale * ratio, allowance = 0.25 / dpr;
+        for (let i = 0; i < 180; i++) {
+          const angle = (i + 0.5) * Math.PI * 2 / 180;
+          const at = (distance: number): Point => ({ x: view.width / 2 + Math.cos(angle) * distance, y: view.height / 2 - Math.sin(angle) * distance });
+          expect(covers(actual, at(r + half - allowance))).toBe(true);
+          expect(covers(actual, at(r + half + allowance))).toBe(false);
+          if (r > half + allowance) expect(covers(actual, at(r - half - allowance))).toBe(false);
+          else if (r < half - allowance) expect(covers(actual, { x: view.width / 2, y: view.height / 2 })).toBe(true);
+        }
+      }
+    }
+  });
+
+  it.each([1, 2, 3])('bounds wide open-arc butt-cap tangent error independently at DPR %s', (dpr) => {
+    const arc: Entity = { ...line, type: 'arc', center: { x: 0, y: 0 }, radius: 2, startAngle: 0.2, endAngle: 3.8, lineWeight: 10 };
+    const weighted = { ...view, dpr, twist: 0.4, lineweights: true };
+    const prepared = prepareZoom2D(drawing([arc]), weighted, overlay);
+    for (const angle of [arc.startAngle, arc.endAngle]) {
+      const rotated = angle + weighted.twist;
+      const endpoint = { x: Math.cos(rotated) * arc.radius * weighted.scale, y: -Math.sin(rotated) * arc.radius * weighted.scale };
+      const tangent = { x: -Math.sin(rotated), y: -Math.cos(rotated) };
+      let samples = 0;
+      for (let i = 0; i < prepared.vertices.length; i += GPU_ZOOM_VERTEX_STRIDE) {
+        if (Math.hypot(prepared.vertices[i]! - endpoint.x, prepared.vertices[i + 1]! - endpoint.y) > 0.0001) continue;
+        samples++;
+        const error = Math.abs(prepared.vertices[i + 2]! * tangent.x + prepared.vertices[i + 3]! * tangent.y) * dpr;
+        expect(error).toBeLessThan(0.25);
+      }
+      expect(samples).toBeGreaterThan(0);
+    }
+  });
+
+  it('rebuilds immutable edits and preserves warm reuse after edit, undo and redo', () => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas), before = sealImmutableData(drawing());
+    const after = sealImmutableData(drawing([{ ...line, b: { x: 1, y: 1 } }]));
+    renderer.render(before, view, overlay);
+    for (const state of [after, before, after]) {
+      expect(renderer.render(state, { ...view, scale: 33 }, overlay)).toMatchObject({ rendered: true, cacheReason: 'document', bytes: 168 });
+      const actual = ndcGeometry(drawnGeometry(gl), view);
+      const entity = state.entities[0] as LineEntity;
+      const middle = { x: (entity.a.x + entity.b.x) / 2, y: (entity.a.y + entity.b.y) / 2 };
+      expect(covers(actual, screenPoint(middle, { ...view, scale: 33 }))).toBe(true);
+      expect(renderer.render(state, { ...view, scale: 34 }, overlay)).toMatchObject({ rendered: true, bytes: 0, geometryPreparationMs: 0, cacheHit: true });
+    }
+    expect(gl.bufferData).toHaveBeenCalledTimes(4);
     renderer.dispose();
   });
 });

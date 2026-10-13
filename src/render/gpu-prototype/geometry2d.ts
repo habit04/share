@@ -36,9 +36,16 @@ export interface Prepared2D {
 
 /** Bounded physical-pixel border retained for camera translation, never a zoom allowance. */
 export const GPU_PAN_CACHE_BORDER = 128;
+/** A copied camera anchor owns this entire interval; crossing it prepares a new mesh. */
+export const GPU_ZOOM_CACHE_MIN_RATIO = 0.8;
+export const GPU_ZOOM_CACHE_MAX_RATIO = 1.25;
+export const GPU_ZOOM_VERTEX_STRIDE = 7;
 const MAX_CURVE_SEGMENTS = 32768;
 const MAX_VERTICES = 1_000_000;
 const PIXEL_ERROR = 0.25; // Physical pixels, including high-DPI views.
+// Leave part of the existing quarter-pixel curve budget for Float32 shader arithmetic.
+const ZOOM_CURVE_PIXEL_ERROR = 0.1875;
+const ZOOM_FLOAT_PIXEL_ERROR = PIXEL_ERROR - ZOOM_CURVE_PIXEL_ERROR;
 const STRIDE = 5;
 // Beyond this, adding subpixel stroke offsets to a projected double becomes unreliable.
 // Refuse the entire scene rather than clipping an already distorted triangle strip.
@@ -71,22 +78,28 @@ function projectLocal(point: Point, view: Gpu2DView): Point {
   return screen;
 }
 
-function curveCount(radius: number, sweep: number, view: Gpu2DView): number {
-  const pixels = radius * view.scale * view.dpr;
+function curveCount(radius: number, sweep: number, view: Gpu2DView, pixelError = PIXEL_ERROR, radiusPadding = 0, capHalfWidth = 0): number {
+  const pixels = (radius * view.scale + radiusPadding) * view.dpr;
   if (!Number.isFinite(pixels) || radius < 0) throw new Error('Invalid curve radius or scale');
   if (pixels === 0) return 1;
   // Stable sagitta formula, even when the radius dwarfs the pixel tolerance.
-  const step = Math.min(Math.PI / 2, 4 * Math.asin(Math.sqrt(Math.min(1, PIXEL_ERROR / pixels / 2))));
+  const sagittaStep = 4 * Math.asin(Math.sqrt(Math.min(1, pixelError / pixels / 2)));
+  const capStep = capHalfWidth > 0 ? 2 * Math.asin(Math.min(1, pixelError / (capHalfWidth * view.dpr))) : Math.PI / 2;
+  const step = Math.min(Math.PI / 2, sagittaStep, capStep);
   const count = Math.max(1, Math.ceil(Math.abs(sweep) / step));
   if (!Number.isFinite(count) || count > MAX_CURVE_SEGMENTS) throw new Error('Curve tessellation exceeds prototype budget');
   return count;
 }
 
-function arcPath(center: Point, radius: number, start: number, sweep: number, view: Gpu2DView): Point[] {
+function arcPath(center: Point, radius: number, start: number, sweep: number, view: Gpu2DView, curveScale = view.scale, pixelError = PIXEL_ERROR, strokeWidth = 0, buttCaps = false): Point[] {
   checked(center);
   if (![radius, start, sweep].every(Number.isFinite)) throw new Error('Invalid arc geometry');
-  const count = curveCount(radius, sweep, view);
+  // At steps <= pi/2, outer miter excess h*(sec(step/2)-1) is bounded by
+  // sqrt(2)*h*(1-cos(step/2)). Wide strokes need this budget as well as center sagitta.
+  const count = curveCount(radius, sweep, { ...view, scale: curveScale }, pixelError, Math.SQRT2 * strokeWidth / 2, buttCaps ? strokeWidth / 2 : 0);
   const path: Point[] = [];
+  // Open curves also bound h*sin(step/2): their first/last strip approximates native
+  // butt-cap tangents. Uniform refinement prevents a nearby coarse strip crossing the cap.
   for (let i = 0; i <= count; i++) {
     const angle = start + sweep * i / count;
     // center is already relative to the camera: never add small offsets to world coordinates.
@@ -95,12 +108,12 @@ function arcPath(center: Point, radius: number, start: number, sweep: number, vi
   return path;
 }
 
-function entityPath(entity: Entity, view: Gpu2DView): { points: Point[]; closed: boolean } {
+function entityPath(entity: Entity, view: Gpu2DView, curveScale = view.scale, pixelError = PIXEL_ERROR, strokeWidth = 0): { points: Point[]; closed: boolean } {
   const local = (point: Point): Point => checked({ x: point.x - view.center.x, y: point.y - view.center.y });
   switch (entity.type) {
     case 'line': return { points: [screenPoint(entity.a, view), screenPoint(entity.b, view)], closed: false };
     case 'circle': {
-      const points = arcPath(local(entity.center), entity.radius, 0, Math.PI * 2, view);
+      const points = arcPath(local(entity.center), entity.radius, 0, Math.PI * 2, view, curveScale, pixelError, strokeWidth);
       points.pop();
       return { points, closed: true };
     }
@@ -108,7 +121,7 @@ function entityPath(entity: Entity, view: Gpu2DView): { points: Point[]; closed:
       if (![entity.startAngle, entity.endAngle].every(Number.isFinite)) throw new Error('Invalid arc angles');
       let sweep = normAngle(entity.endAngle - entity.startAngle);
       if (sweep < EPS) sweep = Math.PI * 2;
-      return { points: arcPath(local(entity.center), entity.radius, entity.startAngle, sweep, view), closed: false };
+      return { points: arcPath(local(entity.center), entity.radius, entity.startAngle, sweep, view, curveScale, pixelError, strokeWidth, true), closed: false };
     }
     case 'polyline': {
       // Rebase BEFORE bulgeArc computes its midpoint/center, preserving close-zoom arcs.
@@ -118,7 +131,7 @@ function entityPath(entity: Entity, view: Gpu2DView): { points: Point[]; closed:
         if (!Number.isFinite(segment.bulge)) throw new Error('Invalid polyline bulge');
         if (segment.arc) {
           const arc = segment.arc;
-          const curve = arcPath(arc.center, arc.radius, arc.sweep > 0 ? arc.startAngle : arc.endAngle, arc.sweep, view);
+          const curve = arcPath(arc.center, arc.radius, arc.sweep > 0 ? arc.startAngle : arc.endAngle, arc.sweep, view, curveScale, pixelError, strokeWidth, true);
           // Native endpoints are authoritative; avoid accumulating trigonometric seam errors.
           curve[curve.length - 1] = projectLocal(segment.b, view);
           points.push(...curve.slice(1));
@@ -213,9 +226,170 @@ function styleProblem(entity: Entity, state: DrawingState): string | null {
   return null;
 }
 
+export function validateGpu2DView(view: Gpu2DView): void {
+  if (![view.width, view.height, view.dpr, view.scale, view.center.x, view.center.y, view.twist].every(Number.isFinite) || view.width <= 0 || view.height <= 0 || view.dpr <= 0 || view.scale <= 0) throw new Error('Invalid GPU view');
+}
+
+export interface PreparedZoom2D {
+  /** Anchor-local center XY, fixed CSS-pixel extrusion XY, RGB. Never world Float32s. */
+  vertices: Float32Array<ArrayBuffer>;
+  batches: StrokeBatch[];
+  minRatio: number;
+  maxRatio: number;
+  padding: number;
+  /** Original projected centers, including discarded/offscreen points, in anchor-local doubles. */
+  sourceBounds: { min: Point; max: Point };
+  /** Retained centerline rectangle; generated butt ends are outside every admitted viewport. */
+  extent: Point;
+}
+
+/** Recheck the entire source, not just its clipped/uploaded subset, on each camera change. */
+export function zoomPrecisionSafe(geometry: PreparedZoom2D, view: Gpu2DView, ratio: number, pan: Point): boolean {
+  const bound = (MAX_PROJECTED_COORDINATE - 1) / Math.max(1, view.dpr);
+  for (const axis of ['x', 'y'] as const) {
+    const half = (axis === 'x' ? view.width : view.height) / 2;
+    for (const value of [geometry.sourceBounds.min[axis], geometry.sourceBounds.max[axis]]) {
+      const projected = value * ratio + pan[axis] + half;
+      if (!Number.isFinite(projected) || Math.abs(projected) > bound) return false;
+    }
+  }
+  return true;
+}
+
+/** Clip centers in doubles while retaining original segment normals and original path joins. */
+function clippedCenterSegment(a: Point, b: Point, extent: Point): [Point, Point] | null {
+  let first = 0, last = 1;
+  const delta = { x: b.x - a.x, y: b.y - a.y };
+  for (const axis of ['x', 'y'] as const) {
+    if (delta[axis] === 0) {
+      if (Math.abs(a[axis]) > extent[axis]) return null;
+      continue;
+    }
+    const t1 = (-extent[axis] - a[axis]) / delta[axis];
+    const t2 = (extent[axis] - a[axis]) / delta[axis];
+    first = Math.max(first, Math.min(t1, t2));
+    last = Math.min(last, Math.max(t1, t2));
+    if (first > last) return null;
+  }
+  const at = (t: number): Point => checked({
+    x: Math.max(-extent.x, Math.min(extent.x, a.x + delta.x * t)),
+    y: Math.max(-extent.y, Math.min(extent.y, a.y + delta.y * t)),
+  });
+  return [at(first), at(last)];
+}
+
+function zoomStrokeTriangles(source: readonly Point[], closed: boolean, width: number, color: [number, number, number], extent: Point, output: number[]): void {
+  const points = source.filter((point, index) => index === 0 || point.x !== source[index - 1]!.x || point.y !== source[index - 1]!.y);
+  if (points.length < 2) return;
+  const vertex = (point: Point, offset: Point): void => { output.push(point.x, point.y, offset.x, offset.y, ...color); };
+  const triangle = (a: Point, ao: Point, b: Point, bo: Point, c: Point, co: Point): void => {
+    vertex(a, ao); vertex(b, bo); vertex(c, co);
+    if (output.length / GPU_ZOOM_VERTEX_STRIDE > MAX_VERTICES) throw new Error('Stroke geometry exceeds prototype budget');
+  };
+  const half = width / 2, count = closed ? points.length : points.length - 1;
+  const normals: Point[] = [];
+  for (let i = 0; i < count; i++) {
+    const a = points[i]!, b = points[(i + 1) % points.length]!;
+    const dx = b.x - a.x, dy = b.y - a.y, length = Math.hypot(dx, dy);
+    if (!Number.isFinite(length)) throw new Error('Stroke length exceeds finite limits');
+    const normal = length ? { x: -dy / length, y: dx / length } : { x: 0, y: 0 };
+    normals.push(normal);
+    const clipped = clippedCenterSegment(a, b, extent);
+    if (!clipped) continue;
+    const [ca, cb] = clipped;
+    const left = { x: normal.x * half, y: normal.y * half };
+    const right = { x: -left.x, y: -left.y };
+    triangle(ca, left, cb, left, cb, right);
+    triangle(ca, left, cb, right, ca, right);
+  }
+  for (let i = closed ? 0 : 1; i < count; i++) {
+    const p = points[i]!;
+    // A join's entire extrusion is covered by the rectangle's ten-half-width guard.
+    if (Math.abs(p.x) > extent.x || Math.abs(p.y) > extent.y) continue;
+    const previous = normals[(i + count - 1) % count]!, next = normals[i]!;
+    const cross = previous.x * next.y - previous.y * next.x;
+    if (Math.abs(cross) < 1e-12) continue;
+    const side = cross > 0 ? -1 : 1;
+    const a = { x: previous.x * side * half, y: previous.y * side * half };
+    const b = { x: next.x * side * half, y: next.y * side * half };
+    triangle(p, { x: 0, y: 0 }, p, a, p, b);
+    const denominator = 1 + previous.x * next.x + previous.y * next.y;
+    if (denominator <= 1e-12) continue;
+    const miter = { x: (previous.x + next.x) * side * half / denominator, y: (previous.y + next.y) * side * half / denominator };
+    if (Math.hypot(miter.x, miter.y) <= half * 10) triangle(p, a, p, miter, p, b);
+  }
+}
+
+/**
+ * Prepare once for a bounded camera interval. Uniform zoom acts only on center positions;
+ * normal/miter offsets stay in CSS pixels. A minimum-scale rectangle retains entering strokes,
+ * and maximum-scale tessellation bounds curve error at every reused frame.
+ */
+export function prepareZoom2D(state: DrawingState, view: Gpu2DView, overlay: Gpu2DOverlay, minRatio = GPU_ZOOM_CACHE_MIN_RATIO, maxRatio = GPU_ZOOM_CACHE_MAX_RATIO, padding = GPU_PAN_CACHE_BORDER / Math.max(1, view.dpr)): PreparedZoom2D {
+  validateGpu2DView(view);
+  if (!Number.isFinite(minRatio) || !Number.isFinite(maxRatio) || minRatio < GPU_ZOOM_CACHE_MIN_RATIO || minRatio > 1 || maxRatio < 1 || maxRatio > GPU_ZOOM_CACHE_MAX_RATIO) throw new Error('Invalid GPU zoom cache interval');
+  if (!Number.isFinite(padding) || padding < 0 || padding > GPU_PAN_CACHE_BORDER / Math.max(1, view.dpr)) throw new Error('Invalid GPU pan cache border');
+  const hidden = new Set(state.layers.filter((layer) => !layer.visible).map((layer) => layer.name));
+  const visible = state.entities.filter((entity) => !hidden.has(entity.layer));
+  // Validate every layer-visible entity before allowing any GPU submission, even offscreen.
+  for (const entity of visible) {
+    const problem = styleProblem(entity, state);
+    if (problem) throw new Error(problem);
+    if (overlay.selection.has(entity.id) && !overlay.solidSelection) throw new Error(`Dashed selection requires canvas rendering (${entity.id})`);
+  }
+  const previousPaper = colorDisplay.paper, previousWeights = { ...lineweightDisplay };
+  colorDisplay.paper = false;
+  lineweightDisplay.enabled = view.lineweights ?? previousWeights.enabled;
+  lineweightDisplay.pxPerMm = undefined;
+  try {
+    const styled = visible.map((entity) => {
+      const selected = overlay.selection.has(entity.id), hovered = overlay.hover === entity.id && !selected;
+      const color = cssRgb(resolveColor(entity, state.layers));
+      if (!color) throw new Error(`Unsupported display color (${entity.id})`);
+      const width = selected ? 2.5 : hovered ? 2 : resolveLineWidth(entity, state.layers, { scale: view.scale, toScreen: (point) => screenPoint(point, view) });
+      if (!Number.isFinite(width) || width <= 0) throw new Error('Invalid lineweight');
+      return { entity, color, width, alpha: selected || hovered ? 0.95 : 1 };
+    });
+    const extrusion = styled.reduce((maximum, item) => Math.max(maximum, item.width * 5), 0);
+    const guard = 1 / Math.max(1, view.dpr);
+    const extent = {
+      x: (view.width / 2 + padding + extrusion + guard) / minRatio,
+      y: (view.height / 2 + padding + extrusion + guard) / minRatio,
+    };
+    // Bound packing, uniform rounding, center projection and NDC/viewport arithmetic.
+    // Huge lineweights/retention regions must fall back instead of cancelling large Float32s.
+    const magnitude = Math.max(extent.x, extent.y) * maxRatio + padding + Math.max(view.width, view.height) / 2 + extrusion;
+    if (!Number.isFinite(magnitude) || magnitude * 12 * 2 ** -23 * view.dpr > ZOOM_FLOAT_PIXEL_ERROR) throw new Error('GPU zoom geometry exceeds Float32 precision budget');
+    const vertices: number[] = [], batches: StrokeBatch[] = [];
+    const sourceBounds = { min: { x: Infinity, y: Infinity }, max: { x: -Infinity, y: -Infinity } };
+    for (const { entity, color, width, alpha } of styled) {
+      const path = entityPath(entity, view, view.scale * maxRatio, ZOOM_CURVE_PIXEL_ERROR, width);
+      const points = path.points.map((point) => {
+        const center = checked({ x: point.x - view.width / 2, y: point.y - view.height / 2 });
+        for (const axis of ['x', 'y'] as const) {
+          sourceBounds.min[axis] = Math.min(sourceBounds.min[axis], center[axis]);
+          sourceBounds.max[axis] = Math.max(sourceBounds.max[axis], center[axis]);
+        }
+        return center;
+      });
+      const first = vertices.length / GPU_ZOOM_VERTEX_STRIDE;
+      zoomStrokeTriangles(points, path.closed, width, color, extent, vertices);
+      const count = vertices.length / GPU_ZOOM_VERTEX_STRIDE - first;
+      if (count) batches.push({ id: entity.id, first, count, alpha });
+    }
+    if (!Number.isFinite(sourceBounds.min.x)) sourceBounds.min = sourceBounds.max = { x: 0, y: 0 };
+    const packed = new Float32Array(vertices);
+    if (!packed.every(Number.isFinite)) throw new Error('Float32 stroke geometry exceeds finite limits');
+    return { vertices: packed, batches, minRatio, maxRatio, padding, sourceBounds, extent };
+  } finally {
+    colorDisplay.paper = previousPaper;
+    Object.assign(lineweightDisplay, previousWeights);
+  }
+}
+
 /** All-or-nothing preparation. clipPadding retains a bounded CSS-pixel border for pure pans. */
 export function prepare2D(state: DrawingState, view: Gpu2DView, overlay: Gpu2DOverlay, clipPadding = 0): Prepared2D {
-  if (![view.width, view.height, view.dpr, view.scale, view.center.x, view.center.y, view.twist].every(Number.isFinite) || view.width <= 0 || view.height <= 0 || view.dpr <= 0 || view.scale <= 0) throw new Error('Invalid GPU view');
+  validateGpu2DView(view);
   if (!Number.isFinite(clipPadding) || clipPadding < 0 || clipPadding > GPU_PAN_CACHE_BORDER / Math.max(1, view.dpr)) throw new Error('Invalid GPU pan cache border');
   // Match the viewport: LAYON can make an imported frozen layer visible again.
   const hidden = new Set(state.layers.filter((layer) => !layer.visible).map((layer) => layer.name));
