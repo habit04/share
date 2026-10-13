@@ -1752,11 +1752,10 @@ mod tests {
             );
         }
         let before = metadata_snapshot(&document).unwrap()["classes"].clone();
-        let mut output = Vec::new();
+        let mut output = std::io::Cursor::new(Vec::new());
         DwgWriter::write_to_writer(&mut output, &document).unwrap();
-        let reopened = DwgReader::from_stream(std::io::Cursor::new(output))
-            .read()
-            .unwrap();
+        output.set_position(0);
+        let reopened = DwgReader::from_stream(output).read().unwrap();
         equivalent(
             &before,
             &metadata_snapshot(&reopened).unwrap()["classes"],
