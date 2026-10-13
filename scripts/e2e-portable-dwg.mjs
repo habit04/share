@@ -121,11 +121,29 @@ export async function runPortableDwgChecks({ app, page, repo, outDir, check, cur
     await warning.locator('button', { hasText: /^Yes$/ }).click();
     assert.equal(await overwrite, true, 'Normal DWG source overwrite requires and accepts loss consent');
     const explicitDxf = join(directory, 'explicit-dxf-copy.dxf');
+    const expectedDxf = await signature();
+    const dxfSource = await page.evaluate(() => ({ version: window.editor.doc.snapshot.cadGraph?.sourceVersion,
+      ids: window.editor.doc.entities.map(entity => entity.id) }));
+    assert.equal(dxfSource.version, 'AC1032', 'Reopened native DWG supplies the retained DXF header version');
+    const sourceDwg = readFileSync(working), sourceBackup = readFileSync(working + '.bak');
     await app.evaluate((_e, p) => globalThis.__e2e.savePaths.push(p), explicitDxf);
     assert.equal(await page.evaluate(() => window.editor.saveFile(true, 'dxf')), true, 'Explicit DXF export from DWG uses DXF Save As');
-    assert.match(readFileSync(explicitDxf, 'utf8'), /AC1015/);
-    assert.equal(await page.evaluate(() => window.editor.doc.filePath), explicitDxf);
-    check(true, 'Normal DWG Save As and in-place Save preserve semantics and exact backups, source overwrite requires loss consent, and explicit DXF stays DXF');
+    const dxfBytes = readFileSync(explicitDxf), dxfText = dxfBytes.toString('utf8');
+    assert.match(dxfText, /^0\r?\nSECTION\r?\n2\r?\nHEADER\r?\n/, 'Explicit DXF begins with a HEADER section');
+    assert.match(dxfText, /\r?\n9\r?\n\$ACADVER\r?\n1\r?\nAC1032\r?\n/, 'Explicit DXF preserves the imported AC1032 header');
+    assert.match(dxfText, /\r?\n0\r?\nEOF\s*$/, 'Explicit DXF ends with the complete EOF record');
+    assert.deepEqual(await page.evaluate(() => ({ path: window.editor.doc.filePath, dirty: window.editor.doc.dirty })),
+      { path: explicitDxf, dirty: false }, 'DXF Save As becomes the clean working file');
+    assert.equal(await page.evaluate(p => window.editor.openFile(p), explicitDxf), true, 'Explicit DXF reopens from disk through real IPC'); await closeReports();
+    assert.deepEqual(await page.evaluate(() => ({ schema: window.editor.doc.snapshot.cadGraph?.schema,
+      format: window.editor.doc.snapshot.cadGraph?.sourceFormat, version: window.editor.doc.snapshot.cadGraph?.sourceVersion })),
+      { schema: 1, format: 'DXF', version: dxfSource.version }, 'Fresh DXF parser retains the exact source header version');
+    assert.ok(await page.evaluate(ids => window.editor.doc.entities.every(entity => !ids.includes(entity.id)), dxfSource.ids), 'DXF reopen parses fresh entities rather than showing the saved tab');
+    approximate(await signature(), expectedDxf, 'Explicit DXF semantic round trip');
+    assert.deepEqual(readFileSync(explicitDxf), dxfBytes, 'Fresh DXF read leaves the saved file unchanged');
+    assert.deepEqual(readFileSync(working), sourceDwg, 'Explicit DXF Save As preserves the prior DWG');
+    assert.deepEqual(readFileSync(working + '.bak'), sourceBackup, 'Explicit DXF Save As preserves the prior DWG backup');
+    check(true, 'Normal DWG Save As and in-place Save preserve semantics and exact backups, source overwrite requires loss consent, and explicit DXF preserves AC1032 through a fresh semantic reopen');
     const prior = readFileSync(selectedTarget), backup = readFileSync(selectedTarget + '.bak');
     for (const [label, text] of [['malformed', 'not DXF'], ['unsupported 3D', '0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1032\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\n3DSOLID\n5\n101\n100\nAcDbEntity\n8\n0\n100\nAcDbModelerGeometry\n70\n1\n1\nunsupported ACIS\n0\nENDSEC\n0\nEOF\n']]) {
       const refused = await page.evaluate(([p, text]) => window.jcad.exportDwg(p, text).then(() => false, () => true), [selectedTarget, text]);
