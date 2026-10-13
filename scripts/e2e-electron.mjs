@@ -319,6 +319,7 @@ try {
   // added since; checks of those are skipped for it. JCAD_E2E_EXPECT_VERSION names its version.
   const expectVersion = process.env.JCAD_E2E_EXPECT_VERSION || pkg.version;
   const current = info.version === pkg.version;
+  const protectedOpenedSources = bridge?.platform === 'win32' && bridge.keys.includes('releaseOpenedSourceProof');
   const newKeys = ['onOpenProgress', 'cancelOpen', 'onCloseRequest', 'chooseProjectPath', 'chooseDrawingPath', 'saveProject', 'takeOpenFiles', 'onOpenFiles'];
   for (const k of ['openDrawing', 'openDxf', 'saveDxf', 'plotPdf', 'printDrawing', 'appInfo', 'checkForUpdates', 'onMenuCommand', 'backupFile', 'autosaveWrite', 'userLibraryRead', 'packsList', 'readImage', ...(current ? newKeys : [])]) check(bridge?.keys.includes(k), `bridge exposes ${k}`);
   if (!current) ok(`release ${info.version} is older than these checks (${pkg.version}): progress / Cancel, image allow list and IPC guard checks skipped`);
@@ -939,6 +940,12 @@ try {
     check(byNameSave.ok && byNameSave.r === null && asked.includes('save:Save Drawing As') && readFileSync(outsideB, 'utf8') === tinyDxf, `such a drawing is saved only through the Save As dialog (cancelled here: ${JSON.stringify(byNameSave.r)}, ${asked.join(' ; ')})`);
     const readBack = await tryCall('openDrawing', [outsideB]);
     check(readBack.ok && readBack.r && readBack.r.kind === 'dxf', 'that drawing can still be opened (read) by name');
+    // This permission probe never installs its bytes in an Editor tab. Release
+    // only its unused raw-read token; actual Editor-owned proofs stay live.
+    if (protectedOpenedSources && readBack.ok && typeof readBack.r?.openedSourceProof === 'string') {
+      await win.evaluate((proof) => window.jcad.releaseOpenedSourceProof(proof), readBack.r.openedSourceProof);
+      check(readFileSync(outsideB, 'utf8') === tinyDxf && !existsSync(`${outsideB}.bak`), 'releasing the unused raw-read proof leaves the drawing and its backup untouched');
+    }
     // A renderer's claimed Recent Documents click cannot elevate project permissions.
     const fromRecent = await tryCall('openProject', [byNameProject, { userChosen: true }]);
     const recentBackup = await tryCall('backupFile', [outsideB]);
@@ -1200,21 +1207,34 @@ try {
 
   // backup-file: { ok, path } or { ok: false, error }, never a silent success.
   const sourceBeforeBackup = readFileSync(good);
-  const b1 = await win.evaluate((p) => window.jcad.backupFile(p), good);
+  let backupSource = good;
+  if (protectedOpenedSources) {
+    const priorBackup = readFileSync(`${good}.bak`);
+    const protectedBackup = await win.evaluate((p) => window.jcad.backupFile(p), good);
+    check(protectedBackup?.ok === false && protectedBackup.code === 'ERR_OPENED_SOURCE_PROOF' && readFileSync(good).equals(sourceBeforeBackup) && readFileSync(`${good}.bak`).equals(priorBackup), `raw backup of the live opened drawing requires its source proof and preserves both files (${JSON.stringify(protectedBackup)})`);
+    // Keep the successful standalone backup/missing-file gate on a separately
+    // chosen closed copy, without releasing the active drawing's proof.
+    backupSource = join(saveDir, 'closed-backup.dxf');
+    await app.evaluate((_e, p) => globalThis.__e2e.savePaths.push(p), backupSource);
+    const copied = await win.evaluate((text) => window.jcad.saveDxf(null, text, 'closed-backup.dxf'), sourceBeforeBackup.toString('utf8'));
+    const copyMessages = await messages();
+    check(copied === backupSource && copyMessages.includes('save:Save Drawing As') && readFileSync(backupSource).equals(sourceBeforeBackup) && await win.evaluate((p) => window.editor.doc.filePath === p && !window.editor.doc.dirty, good), 'a separate native-chosen closed copy keeps exact bytes and leaves the Editor drawing bound and clean');
+  }
+  const b1 = await win.evaluate((p) => window.jcad.backupFile(p), backupSource);
   let backupMatches = false;
   /** @type {Record<string, unknown>} */
-  const backupDetails = { reply: b1, expectedPath: `${good}.bak` };
+  const backupDetails = { reply: b1, expectedPath: `${backupSource}.bak` };
   try {
     if (!b1 || b1.ok !== true || typeof b1.path !== 'string') throw new Error('backup-file did not return a successful destination');
     // The writer returns its pinned destination: Windows 8.3 names and macOS /var aliases
     // can differ from the dialog's spelling while naming exactly the same backup file.
-    const expectedPath = realpathSync.native(`${good}.bak`);
+    const expectedPath = realpathSync.native(`${backupSource}.bak`);
     const returnedPath = realpathSync.native(b1.path);
-    const expectedBytes = readFileSync(`${good}.bak`);
+    const expectedBytes = readFileSync(`${backupSource}.bak`);
     const returnedBytes = readFileSync(b1.path);
-    const sourceAfterBackup = readFileSync(good);
+    const sourceAfterBackup = readFileSync(backupSource);
     const sameDestination = expectedPath === returnedPath;
-    const regularFiles = lstatSync(`${good}.bak`).isFile() && lstatSync(b1.path).isFile();
+    const regularFiles = lstatSync(`${backupSource}.bak`).isFile() && lstatSync(b1.path).isFile();
     const expectedBytesMatch = expectedBytes.equals(sourceBeforeBackup);
     const returnedBytesMatch = returnedBytes.equals(sourceBeforeBackup);
     const sourceUnchanged = sourceAfterBackup.equals(sourceBeforeBackup);
@@ -1228,10 +1248,11 @@ try {
   const b2 = await win.evaluate((p) => window.jcad.backupFile(p), join(saveDir, 'stranger.dxf'));
   check(b2 && b2.ok === false && b2.code === 'EINVAL' && /^The backup copy of "stranger\.dxf" could not be made: only drawings and project files you opened or saved yourself/.test(b2.error), `backup-file refuses a path outside the allow-list (${JSON.stringify(b2)})`);
   // A known path whose file is gone: a clear message, no .bak.
-  renameSync(good, `${good}.moved`);
-  const b2b = await win.evaluate((p) => window.jcad.backupFile(p), good);
-  renameSync(`${good}.moved`, good);
-  check(b2b && b2b.ok === false && b2b.code === 'ENOENT' && /^The backup copy of "recovered\.dxf" could not be made: .*is not available/.test(b2b.error), `backup-file reports a missing file (${JSON.stringify(b2b)})`);
+  renameSync(backupSource, `${backupSource}.moved`);
+  const b2b = await win.evaluate((p) => window.jcad.backupFile(p), backupSource);
+  renameSync(`${backupSource}.moved`, backupSource);
+  const missingBackupName = protectedOpenedSources ? 'closed-backup.dxf' : 'recovered.dxf';
+  check(b2b && b2b.ok === false && b2b.code === 'ENOENT' && b2b.error.startsWith(`The backup copy of "${missingBackupName}" could not be made:`) && /is not available/.test(b2b.error), `backup-file reports a missing file (${JSON.stringify(b2b)})`);
   const b3 = await win.evaluate(() => window.jcad.backupFile('relative.dxf'));
   check(b3 && b3.ok === false && b3.code === 'EINVAL', `backup-file refuses relative paths (${JSON.stringify(b3)})`);
 
@@ -1296,8 +1317,21 @@ try {
   check(JSON.stringify(savedProject?.drawings.map((d) => d.file)) === JSON.stringify(['../proj/dwg/a.dxf', '../proj/b.dxf']), `relative paths recalculated for the new folder: ${JSON.stringify(savedProject?.drawings)}`);
   check(await win.evaluate((p) => window.editor.project.path === p && !window.editor.projectDirty, projectCopy), 'the project now lives at the new path, unmodified');
   // The backup channel uses the same path identity: a project drawing named with "." / ".." segments is known.
-  const bProj = await win.evaluate((p) => window.jcad.backupFile(p), `${projDir}/proj/./dwg/../b.dxf`);
+  const projectDrawing = join(projDir, 'proj', 'b.dxf'), projectAlias = `${projDir}/proj/./dwg/../b.dxf`;
+  if (protectedOpenedSources) {
+    const sourceBytes = readFileSync(projectDrawing), priorBackup = existsSync(`${projectDrawing}.bak`) ? readFileSync(`${projectDrawing}.bak`) : null;
+    const protectedAlias = await win.evaluate((p) => window.jcad.backupFile(p), projectAlias);
+    check(protectedAlias?.ok === false && protectedAlias.code === 'ERR_OPENED_SOURCE_PROOF' && readFileSync(projectDrawing).equals(sourceBytes) && (priorBackup === null ? !existsSync(`${projectDrawing}.bak`) : readFileSync(`${projectDrawing}.bak`).equals(priorBackup)), `raw project alias backup retains the open drawing's source protection and exact prior bytes (${JSON.stringify(protectedAlias)})`);
+    const closed = await win.evaluate((p) => {
+      const sessions = window.editor.sessions, index = sessions.indexOfPath(p);
+      if (index < 0 || sessions.isDirty(index)) return false;
+      sessions.close(index); return sessions.indexOfPath(p) < 0;
+    }, projectDrawing);
+    check(closed, 'normal closure of the clean project drawing releases its Editor-owned proof');
+  }
+  const bProj = await win.evaluate((p) => window.jcad.backupFile(p), projectAlias);
   check(bProj && bProj.ok === true && existsSync(join(projDir, 'proj', 'b.dxf.bak')), `backup-file accepts another spelling of a project drawing (${JSON.stringify(bProj)})`);
+  if (bProj?.ok === true) check(readFileSync(`${projectDrawing}.bak`).equals(readFileSync(projectDrawing)) && readFileSync(projectDrawing).equals(readFileSync(fixtures.dxf)), 'project alias backup contains the complete exact source and leaves the drawing unchanged');
   // Opening another project while this one has unsaved changes asks first; Cancel keeps it.
   await win.evaluate(() => window.editor.updateProject({ ...window.editor.project, description: 'pending' }));
   await win.evaluate(() => void window.editor.runCommand('OPENPROJECT'));
@@ -1639,6 +1673,7 @@ const provoked = [
   /read-image: (not next to a drawing the user opened|relative path|not an image file|network path not next to a file the user opened on that server|device path): /,
   /read-image: Image resolves outside the permitted drawing folders: .*jcad-e2e-img-[^\\/]+[\\/]logo\.png$/,
   /backup-file: not a file chosen by the user: .*stranger\.dxf/,
+  /backup-file: relative path: relative\.dxf$/,
   /save-project: read-only \(named by a project file, not chosen by the user\): .*package\.json/,
   /save-dxf: wrong file type: .*(package\.json|listing\.jcadproj\.json)/,
   /(backup-file|save-dxf): read-only \(named by a project file, not chosen by the user\): .*elsewhere-b\.dxf/,
