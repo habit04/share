@@ -1,5 +1,5 @@
 import type { Editor } from './editor';
-import { Gpu2DRenderer, type Gpu2DRenderResult } from '../render/gpu-prototype/renderer2d';
+import { Gpu2DRenderer, emptyGpu2DRenderResult, type Gpu2DRenderResult } from '../render/gpu-prototype/renderer2d';
 import { mountGpuDemo } from '../render/gpu-prototype/demo3d';
 import { modal, button } from '../ui/dialogkit';
 import { lineweightDisplay } from '../render/draw';
@@ -16,7 +16,8 @@ export function installGpuPrototype(editor: Editor): void {
   let mode: 'canvas' | 'gpu' = 'canvas';
   let renderer: Gpu2DRenderer | null = null;
   let lossControl: WEBGL_lose_context | null = null;
-  let last: Gpu2DRenderResult = { rendered: false, reason: 'Canvas 2D selected', preparationMs: 0, submissionMs: 0, bytes: 0 };
+  let resettingRenderer = false;
+  let last: Gpu2DRenderResult = emptyGpu2DRenderResult('Canvas 2D selected');
   const indicator = document.createElement('button');
   indicator.dataset.gpuPrototype = 'indicator';
   indicator.textContent = 'Experimental: Canvas 2D';
@@ -28,9 +29,9 @@ export function installGpuPrototype(editor: Editor): void {
   const setMode = (next: 'canvas' | 'gpu') => { mode = next; editor.render(); };
   indicator.addEventListener('click', () => setMode(mode === 'canvas' ? 'gpu' : 'canvas'));
   view.experimentalSceneRenderer = (vp, overlay) => {
-    const reject = (reason: string) => {
+    const reject = (reason: string, metrics = emptyGpu2DRenderResult(reason)) => {
       canvas.style.display = 'none';
-      last = { ...last, rendered: false, reason };
+      last = { ...metrics, rendered: false, reason };
       indicator.textContent = `Experimental: Canvas 2D${mode === 'gpu' ? ' fallback' : ''}`;
       indicator.title = reason;
       return false;
@@ -40,9 +41,9 @@ export function installGpuPrototype(editor: Editor): void {
     if (vp.layoutPainter || vp.underlay || vp.fitRect) return reject('Layouts and underlays use Canvas 2D');
     if (overlay.preview.length || overlay.ghost.length) return reject('Tool previews use Canvas 2D');
     try {
-      renderer ??= new Gpu2DRenderer(canvas, () => editor.render());
+      renderer ??= new Gpu2DRenderer(canvas, () => { if (!resettingRenderer) editor.render(); });
       last = renderer.render(editor.doc.snapshot, { width: vp.width, height: vp.height, dpr: vp.dpr, scale: vp.scale, center: vp.center, twist: vp.twist, background: vp.settings.background, lineweights: lineweightDisplay.enabled }, { selection: overlay.selection, hover: overlay.hover, solidSelection: vp.settings.selectionEffect === 'solid' });
-      if (!last.rendered) return reject(last.reason ?? 'GPU rendering unavailable');
+      if (!last.rendered) return reject(last.reason ?? 'GPU rendering unavailable', last);
       canvas.style.display = 'block';
       indicator.textContent = 'Experimental: WebGL2';
       indicator.title = 'Drawing base scene: WebGL2; grid, cursor and editing overlays: Canvas 2D';
@@ -68,9 +69,47 @@ export function installGpuPrototype(editor: Editor): void {
   // Development harness for reproducible tests. Never exposed by ordinary builds.
   Object.assign(window, { gpuPrototype: {
     setMode,
+    // Cold-frame measurement resets only the owner-created experimental 2D context resources.
+    // Do this before starting the benchmark timer; setMode then renders the actual first frame.
+    reset2DRenderer: () => {
+      const previous = renderer;
+      renderer = null;
+      lossControl = null;
+      resettingRenderer = true;
+      try { previous?.dispose(); }
+      finally { resettingRenderer = false; }
+      last = emptyGpu2DRenderResult('Experimental renderer reset');
+      canvas.style.display = 'none';
+    },
     loadFixture: (name: string) => {
       const base = bigDrawing(name === 'dense-lines' ? 38000 : 5000, name === 'mixed-schematic' ? 1000 : 0, name === 'mixed-schematic' ? 500 : 0);
-      if (name === 'curves' || name === 'precision') {
+      if (name === 'precision-trillion') {
+        const origin = { x: 1e12, y: -1e12 };
+        const p = (x: number, y: number) => ({ x: origin.x + x, y: origin.y + y });
+        const style = { layer: '0', color: 7 };
+        editor.loadState({ ...base, entities: [
+          { ...style, id: 'L', type: 'line', a: p(-1 / 16, 1 / 8192), b: p(1 / 16, 1 / 8192) },
+          { ...style, color: 1, id: 'C', type: 'circle', center: p(-1 / 32, 1 / 32), radius: 1 / 64 },
+          { ...style, color: 3, id: 'A', type: 'arc', center: p(1 / 32, -1 / 64), radius: 3 / 128, startAngle: 0.2, endAngle: 3.8 },
+          { ...style, color: 5, id: 'P', type: 'polyline', points: [p(-1 / 32, -1 / 32), p(1 / 32, -1 / 32), p(1 / 16, -1 / 64)], closed: false, bulges: [1, 0] },
+        ] }, null);
+        // All coordinates are representable at 1e12; two CSS pixels are four world ULPs.
+        view.center = origin;
+        view.scale = 4096;
+        view.twist = 0.63;
+      } else if (name === 'lineweights' || name === 'wide-curve-fallback') {
+        const style = { layer: '0', color: 7 };
+        editor.loadState({ ...base, entities: [
+          { ...style, id: 'L', type: 'line', a: { x: -4, y: -1 }, b: { x: 4, y: 1 }, lineWeight: 1 },
+          { ...style, color: 1, id: 'X', type: 'line', a: { x: -4, y: 1 }, b: { x: 4, y: -1 }, lineWeight: 2 },
+          { ...style, color: 3, id: 'C', type: 'circle', center: { x: -2, y: 1.5 }, radius: name === 'wide-curve-fallback' ? 0.1 : 0.4, lineWeight: 10 },
+          { ...style, color: 5, id: 'A', type: 'arc', center: { x: 2, y: 1 }, radius: name === 'wide-curve-fallback' ? 0.2 : 0.3, startAngle: 0.2, endAngle: 3.8, lineWeight: 6 },
+          { ...style, color: 2, id: 'P', type: 'polyline', points: [{ x: -2, y: -1.5 }, { x: -1, y: -1.5 }, { x: -0.5, y: -0.75 }], closed: false, bulges: [0.6, 0], lineWeight: 4 },
+        ] }, null);
+        view.center = { x: 0, y: 0 };
+        view.scale = 80;
+        view.twist = 0;
+      } else if (name === 'curves' || name === 'precision') {
         const shift = name === 'precision' ? 1e9 : 0;
         const p = (x: number, y: number) => ({ x: x + shift, y: y + shift });
         const style = { layer: '0', color: 7 };
@@ -81,10 +120,14 @@ export function installGpuPrototype(editor: Editor): void {
           { ...style, color: 5, id: 'P', type: 'polyline', points: [p(0, 4), p(1, 5), p(2, 4)], closed: false, bulges: [0.5, 0] },
         ] }, null);
       } else editor.loadState(base, null);
+      // Fixture-local display state must not leak into the ordinary comparison scenes.
+      lineweightDisplay.enabled = name === 'lineweights' || name === 'wide-curve-fallback';
+      lineweightDisplay.pxPerMm = undefined;
       editor.viewport.settings.gridVisible = false;
       editor.viewport.renderCurrent();
     },
     status: () => ({ mode, ...last, device: renderer?.device.state ?? 'not-created', capabilities: renderer?.device.capabilities() ?? null, demo: demoHandle?.status() ?? null }),
+    renderStats: () => ({ ...last }),
     renderNow: () => { editor.viewport.renderCurrent(); return { ...last }; },
     completed: () => renderer?.device.completed() ?? Promise.resolve(null),
     loseContext: () => { lossControl = renderer?.device.gl.getExtension('WEBGL_lose_context') ?? null; lossControl?.loseContext(); },
