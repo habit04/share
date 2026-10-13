@@ -217,8 +217,8 @@ export async function runCadMetadataChecks({ app, page, repo, outDir, check, cur
   };
   try {
     assert.equal((await page.evaluate(() => window.jcad.dwgExportStatus())).available, true, 'Verified Windows writer is required');
-    const nativeRecords = await nativeOracle(source, oracle);
     let state = await open(source, true);
+    const nativeRecords = await nativeOracle(source, oracle);
     oracleCameras(state, oracle);
     assert.equal(state.entities.length, 3); assert.equal(state.entities.filter(entity => entity.type === 'line').length, 2);
     assert.equal(state.graph.nodes.filter(node => node.type === 'FIELD').length, 2);
@@ -317,8 +317,8 @@ export async function runCadMetadataChecks({ app, page, repo, outDir, check, cur
       const bytes = readFileSync(fixture); assert.equal(hash(bytes), expected.source.dwgSha256); assert.deepEqual(expected.source.audit, { errors: 0, fixed: 0 });
       const source = join(directory, name + '-source.dwg'), copy = join(directory, name + '-copy.dwg'), pasted = join(directory, name + '-clipboard.dwg');
       copyFileSync(fixture, source);
+      let state = await open(source, true);
       const nativeRecords = await nativeOracle(source, expected);
-      let state = await open(source);
       assert.equal(state.entities.length, 4); assert.equal(state.graph.nodes.filter(node => node.type === 'FIELD').length, 4);
       assert.equal(state.views.length, 3); assert.ok(state.views.every(view => view.camera));
       oracleCameras(state, expected);

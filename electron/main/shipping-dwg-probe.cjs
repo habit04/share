@@ -206,7 +206,7 @@ const metadataRenderer = [
   "  ed.hooks.saveError = async info => { throw new Error('Fixed metadata Save failed: ' + info.message); };",
   "  try {",
   "    if (config.stage === 'prepare') {",
-  "      ed.cancel(); ed.sessions.add(); need(await ed.openFile(config.input), 'source DWG did not open');",
+  "      ed.cancel(); ed.sessions.add(); need(await ed.openFile(), 'fixed source DWG picker did not open its admitted input');",
   "      const original = capture(), initial = validate(original, 1);",
   "      if (config.name === 'r2018-views-fields') { await ed.runCommand('CANNOSCALE 1:2'); await ed.runCommand('ANNOALLVISIBLE 0'); same(capture().annotationSettings, { cannoscale: '1:2', annoAllVisible: false }, 'annotation commands did not edit the main fixture'); }",
   "      ed.selection = new Set(ed.doc.entities.map(entity => entity.id)); ed.runCommand('COPY'); ed.submitInput('0,0'); ed.submitInput('30,0'); ed.cancel();",
@@ -309,9 +309,21 @@ async function runShippingDwgProbe(ctx, testBuild) {
     }
   `;
   const previousDialog = dialog.showSaveDialog;
-  let exportPicks = 0, savePicks = 0, dxfPicks = 0, metadataPicks = 0;
+  const previousOpenDialog = dialog.showOpenDialog;
+  let exportPicks = 0, savePicks = 0, dxfPicks = 0, metadataPicks = 0, metadataOpenPicks = 0;
   let metadataTarget = null;
+  let metadataOpenTarget = null;
   let metadataMode = false;
+  // Admit each hash-validated source through the normal Open Drawing picker and path registry.
+  /** @param {Electron.BaseWindow | Electron.OpenDialogOptions} _window @param {Electron.OpenDialogOptions} [options] */
+  const fixedOpenDialog = async (_window, options) => {
+    const picked = /** @type {Electron.OpenDialogOptions} */ (options || _window);
+    if (!(metadataMode && metadataOpenTarget && picked?.title === 'Open Drawing' && picked.properties?.includes('openFile') && picked.filters?.some(filter => filter.extensions.includes('dwg') && filter.extensions.includes('dxf')))) throw new Error('Unexpected native Open picker during fixed DWG probe.');
+    metadataOpenPicks += 1;
+    const filePath = metadataOpenTarget;
+    metadataOpenTarget = null;
+    return { canceled: false, filePaths: [filePath] };
+  };
   // This fixed diagnostic answers only its own copy / drawing pickers, never a path argument.
   /** @param {Electron.BaseWindow | Electron.SaveDialogOptions} _window @param {Electron.SaveDialogOptions} [options] */
   const fixedDialog = async (_window, options) => {
@@ -333,6 +345,7 @@ async function runShippingDwgProbe(ctx, testBuild) {
     throw new Error('Unexpected Save dialog during fixed DWG probe.');
   };
   dialog.showSaveDialog = fixedDialog;
+  dialog.showOpenDialog = fixedOpenDialog;
   try {
     const result = await win.webContents.executeJavaScript(`(async () => {
       const fixture = ${JSON.stringify(fixture)}, target = ${JSON.stringify(target)}, saveTarget = ${JSON.stringify(saveTarget)}, dxfTarget = ${JSON.stringify(dxfTarget)};
@@ -435,15 +448,16 @@ async function runShippingDwgProbe(ctx, testBuild) {
       metadataMode=true;
       const seed=Buffer.from('previous fixed metadata destination '+pin.file);fs.writeFileSync(pin.output,seed,{flag:'wx'});
       metadataTarget=pin.output;
+      metadataOpenTarget=pin.input;
       const prepared=await win.webContents.executeJavaScript('('+metadataRenderer+')('+JSON.stringify({...pin,stage:'prepare'})+')');
       const before=metadataBytes(profile,pin.output);
-      if(before.subarray(0,6).toString('ascii')!=='AC1032'||!metadataBytes(profile,pin.output+'.bak').equals(seed)||metadataTarget) throw new Error('Metadata Save As output/backup/picker proof missing.');
+      if(before.subarray(0,6).toString('ascii')!=='AC1032'||!metadataBytes(profile,pin.output+'.bak').equals(seed)||metadataTarget||metadataOpenTarget) throw new Error('Metadata Open/Save As output/backup/picker proof missing.');
       const reopened=await win.webContents.executeJavaScript('('+metadataRenderer+')('+JSON.stringify({...pin,stage:'save',signature:prepared.signature})+')');
       const after=metadataBytes(profile,pin.output),backup=metadataBytes(profile,pin.output+'.bak'),original=metadataBytes(profile,pin.input);
       if(after.subarray(0,6).toString('ascii')!=='AC1032'||!backup.equals(before)||after.equals(before)||digest(original)!==pin.sha256) throw new Error('Metadata normal Save, exact prior backup or unchanged source proof failed.');
       metadataEvidence.fixtures.push({name:pin.name,sourceSha256:pin.sha256,sourceBytes:pin.sourceBytes,entities:prepared.initial.entities,fields:prepared.initial.fields,views:prepared.initial.views,copiedEntities:prepared.counts.entities,copiedFields:prepared.counts.fields,finalEntities:reopened.counts.entities,finalFields:reopened.counts.fields,sourceUnchanged:true,saveAsBackup:true,saveBackup:true,saveAsReopened:reopened.saveAsReopened,saveReopened:reopened.saveReopened,connectedReferences:reopened.connectedReferences,opaqueLiteralPreserved:reopened.opaqueLiteralPreserved,atomicDeleteRefused:prepared.atomicDeleteRefused,sourceLossConsent:reopened.sourceLossConsent,annotationSettings:{edited:prepared.signature.annotationSettings,...reopened.annotationSettings},metadataSnapshot:reopened.signature,saveAsSha256:digest(before),outputSha256:digest(after),backupSha256:digest(backup)});
     }
-    if(metadataPicks!==metadataInputs.length) throw new Error('Metadata probe did not use one native picker for every fixed fixture.');
+    if(metadataPicks!==metadataInputs.length||metadataOpenPicks!==metadataInputs.length) throw new Error('Metadata probe did not use one native Open and Save As picker for every fixed fixture.');
     const metadataResult=metadataRequired?{metadataNamedViews:true,metadataFields:true,metadataXRecords:true,metadataReferences:true,metadataConnectedCopy:true,metadataSaveReopen:true,metadataDeleteRefused:true,metadataAnnotationSettings:true,metadataEvidence}:{};
     const sourceLocations = app.isPackaged
       ? { directory: path.join(process.resourcesPath, 'dwg-writer'), manifest: path.join(app.getAppPath(), 'electron', 'dwg-writer-integrity.json') }
@@ -459,7 +473,7 @@ async function runShippingDwgProbe(ctx, testBuild) {
     let missing = false; try { await verifyPortableWriter({ directory: copy, manifest: sourceLocations.manifest }); } catch { missing = true; }
     if (!tampered || !missing) throw new Error('Missing or tampered helper passed verification.');
     return { ...result, ...normalSave, ...metadataResult, phase: 'dwg', testBuild, backup: true, normalSaveBackup: true, integrityRefused: true };
-  } finally { dialog.showSaveDialog = previousDialog; }
+  } finally { dialog.showSaveDialog = previousDialog; dialog.showOpenDialog = previousOpenDialog; }
 }
 
 module.exports = { runShippingDwgProbe };

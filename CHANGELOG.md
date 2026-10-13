@@ -13,7 +13,8 @@ messages). The date of each version is the date of the commit that set that vers
 
 ### Upgrade notes
 
-Unpublished candidate; actual DWG save/reopen and signed installed-release proof are pending.
+Unpublished candidate; actual DWG Save As/Save/reopen and fresh signed Windows installation
+without AutoCAD proof are pending.
 
 - This update targets Windows x64 and requires no installed AutoCAD. Its bounded metadata
   coverage includes named VIEW cameras and native FIELD relationships. Full camera coordinates
@@ -41,6 +42,8 @@ Unpublished candidate; actual DWG save/reopen and signed installed-release proof
   model view rotation survives document tabs and layout transitions.
 - The Windows DWG reader exposes bounded native DXF metadata with an exact object inventory,
   verifies source coverage and reports fallback imports when the projection is incomplete.
+- Independent source checks verify all 58 VISUALSTYLE properties, every ordered TABLESTYLE
+  override format, and stored DWG creation/update clocks and timers in the three fixtures.
 - Portable DWG saving checks source schema/identity coverage, exact opaque strings and its typed
   metadata/reference snapshot. A mandatory independent LibreDWG postflight then compares emitted
   DWG metadata with source DXF before replacing a destination: retained OBJECTS records, full VIEW
