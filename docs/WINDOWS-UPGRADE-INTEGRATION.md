@@ -97,6 +97,29 @@ commits may be published to the draft branch for fresh CI, while normal-suite cl
 all four exact-head CI jobs and actual matching-helper/C postflight remain integration
 gates. No ancestry merge or next-stage source adoption is cleared by these partial results.
 
+The following normal uninstrumented `a44cc60` full run passes 4,098 tests/28 skips,
+with unchanged original limits and source hashes: extended PDF295 ms, 512 drawings5,836 ms.
+The earlier two timeouts remain retained, with cause unproven. Exact CI passes both Nodes
+and UI (Node22 original512 case5,831 ms); Windows passes54 Rust +3 CLI/containment cases,
+then safely refuses MATERIAL12E expansion110-to-151. The recovery-row failure is the same
+aborted-export setup cascade. No failed-run native artifact is downloaded.
+
+Complete object-payload review scopes the next correction to three verified AC1032 built-in
+MATERIAL grammars and two retained style representations. Its 519 focused tests, all three
+typechecks and scoped lint pass, including183 new material and32 style regressions.
+Every one of41 added material defaults is checked exactly; all96 matrix components,
+source flags, dictionary ownership, common/opaque/XDATA and referenced objects remain
+checked. MLEADERSTYLE only normalizes proved block-null slots/independent attachment order;
+MLINESTYLE must resolve both operands to the same matched LTYPE record and table control.
+Malformed modern claims/known fields interleaved with unknown fields refuse. Legacy raw
+comparison remains unchanged. General/VPORT/VISUALSTYLE/TABLESTYLE guards and native assets
+are unchanged. New full/static/build/app/fresh CI gates remain required before integration.
+The actual first/second matching-helper/C fixed point is mandatory: MATERIAL is outside
+the native snapshot whitelist, and expanded DXF can populate transient advanced fields.
+This is a qualified dependency, not a confirmed persisted defect or permission to waive
+equivalence. The linked GPU session owns its adapter measurements; heavy local gates wait
+for that timing run to close while source review/remote CI preparation continue.
+
 The corrected full local Windows suite passes serially with every original deadline and
 freshness assertion. A private phase trace of the 33-file project case passed in 18.7 seconds;
 backup/write guards account for most elapsed time. Parallel native-filesystem contention and

@@ -233,6 +233,19 @@ full run passes 4,098 with 28 skips. Tracing is diagnostic only. Normal-suite cl
 fresh exact-head CI and matching-helper/C postflight remain required before integration;
 the draft repair commits do not certify those gates.
 
+A later normal uninstrumented full run on `a44cc60` passes 4,098 tests with 28 skips;
+its original PDF/512-drawing cases take 295 ms/5,836 ms. Earlier timeouts remain recorded.
+Exact-head CI passes both Node jobs/UI and all 54 Rust + three CLI/containment cases, then
+refuses built-in MATERIAL110-to-151 expansion. Its new checker-only correction passes
+519 focused tests, all typechecks and scoped lint: 41 exact contextual defaults preserve
+96 mapper values, source flags and owner/reference/opaque metadata. MLEADERSTYLE handles
+only verified optional block-null/attachment semantics; MLINESTYLE spelling must resolve
+to the same matched actual LTYPE and table control. Ambiguous typed bodies refuse, while
+legacy raw behavior remains unchanged. The new source still requires full/app/exact-head
+validation and actual matching-helper/C first/second-save equivalence. Material transient
+advanced fields are not certified by the native snapshot whitelist; no reader/pin change
+or broader material/3D feature completion is claimed.
+
 Modern VISUALSTYLE RGB comparisons are confined to its eight typed color slots in a complete
 58-property bag. Valid raw/C2 RGB storage compares all color bytes; a derived palette companion
 belongs to that same color property. Standalone ACI, lighting177, operations, order/count,

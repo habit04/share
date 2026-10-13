@@ -73,6 +73,13 @@ messages). The date of each version is the date of the commit that set that vers
 
 ### Fixed
 
+- Native postflight checks expand only verified compact AC1032 built-in materials, checking
+  every added default exactly while retaining all six mapper matrices, flags and object links.
+  Custom, procedural and unknown payloads keep their existing full comparison/refusal.
+- Retained MLEADERSTYLE checks preserve optional null block references and independent
+  attachment fields; MLINESTYLE spelling differences require the same matched LTYPE object
+  and table control. Legacy raw records remain exact; ambiguous typed bodies refuse.
+
 - Native VISUALSTYLE postflight checks recognize RGB storage only in the eight typed color
   slots of its complete modern property bag. Derived palette companions can differ when
   explicit RGB agrees; standalone ACI, lighting, operations, framing and opaque data remain

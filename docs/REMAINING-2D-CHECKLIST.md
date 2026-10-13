@@ -16,8 +16,8 @@ The user has paused further work through the long roadmap. The current batch fin
 priority **24**, including confirmed direct text/PDF export ordering and source-protection
 defects. Its frozen commit `739950c` passed local validation and all four exact-head CI jobs.
 The completed #9 source is now combined with this batch; prior combined heads passed
-their local gates. The current color/path repair has focused, static/build and app
-passes, with an unresolved normal full-suite timeout recorded below.
+their local gates. The color/path head now passes its normal full suite; the current
+material/style repair has focused/static passes and awaits combined local/native CI gates.
 Each combined published head must clear fresh CI before adopting the next milestone.
 The next work is deliberate integration of completed 3D and eligible GPU development milestones;
 partial rows below remain recorded scope rather than new implementation assignments.
@@ -92,6 +92,21 @@ proof that their implementation or external verification has passed.
   established. The original source, limits and assertions are preserved while sparse
   phase tracing investigates the stall. Publishing independently tested repair commits
   for fresh CI does not clear this gate or authorize ancestry/3D/GPU integration.
+- Fresh uninstrumented `a44cc60` validation passes **4,098 tests / 28 skips**, with the
+  original PDF case in 295 ms and 512-drawing case in 5,836 ms. Both earlier timeouts remain
+  recorded with unproven cause. Exact-head CI passes both Node jobs and UI; Windows passes
+  **54 Rust + three CLI tests** and containment, then safely refuses MATERIAL expansion
+  `110 -> 151`. The later recovery-row failure follows the aborted export setup.
+- The next checker-only repair passes **519 focused tests**, including **183 new material
+  and 32 retained-style cases**, all three typechecks and scoped lint. Only recognized compact
+  AC1032 materials get 41 exactly checked defaults; all 96 matrix values, source flags,
+  ownership, opaque data and references remain checked. Modern MLEADERSTYLE null/attachment
+  normalization and MLINESTYLE matched-LTYPE identities preserve legacy raw behavior and
+  refuse ambiguous fields. Full/static/build/app and fresh exact-head CI remain gates for
+  this new source. Actual matching-helper first/second-save and independent C comparison
+  are mandatory: native typed snapshots do not certify every MATERIAL convenience field.
+  Heavy local gates are held while the linked GPU session performs native adapter timing;
+  review and remote CI preparation continue. No ancestry/3D/GPU adoption has begun.
 - First combined CI at `e477954` found a Node 22 512-drawing deadline failure, a safely refused
   legacy-to-modern TABLESTYLE difference and a stale browser report check. The recovery failure
   followed the aborted export setup. The correction keeps the original 15-second test and limits
