@@ -17,6 +17,9 @@ export function dwgCompatibilityProblem(state: Partial<Pick<DrawingState, 'layou
   if (lists.some((entities) => entities.some((e) => e.type === 'hatch' && e.gradient !== undefined))) {
     return 'DWG saving and export are unavailable for drawings with retained hatch gradient settings, including inactive gradients. Use Save As and choose DXF to keep them.';
   }
+  if (lists.some((entities) => entities.some((e) => e.type === 'dimension' && e.kind === 'ordinate'))) {
+    return 'DWG saving and export are unavailable for drawings with ordinate dimensions, including unused blocks and paper layouts. Use Save As and choose DXF to keep them.';
+  }
   // These new DXF resources have no verified portable DWG conversion yet. Unused definitions
   // and shape STYLE entries still carry imported data and must not disappear during saving.
   if (state.header?.linetypes.some((linetype) => linetype.complex !== undefined) || Object.keys(shapeStylesOf(state)).length) {

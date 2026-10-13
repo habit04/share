@@ -3,18 +3,30 @@ import { entityBounds } from './entities';
 import type { Bounds, Point } from './geometry';
 import { unionBounds } from './geometry';
 import type { DimStyle } from './dimension';
-import { STANDARD_DIMSTYLE } from './dimension';
+import { STANDARD_DIMSTYLE, ordinateDimensionProblem } from './dimension';
 import type { Linetype } from './linetypes';
 import type { UnitSettings } from './units';
 import { DEFAULT_UNITS } from './units';
 // Paper-space layouts (Track E): the layout model and the paper-space entity projection.
 import type { Layout, SpaceRef } from './layouts';
 import { applyPaperEntities, layoutsOf, paperEntities, paperSpaceLayout, sheetBounds, withLayout } from './layouts';
-import { prepareDrawingState } from './geometry-budget';
+import { prepareDrawingState as prepareGeometryState } from './geometry-budget';
 import { sealImmutableData } from './immutable-data';
 import { textStylesOf, type TextStyle } from '../io/encoding';
 import { textGeometryForStyles, EMPTY_TEXT_STYLES } from '../render/font-metrics';
 import type { TextGeometryContext } from './text-metrics';
+
+function prepareDrawingState(state: DrawingState, previous?: DrawingState): DrawingState {
+  const unchanged = previous ? new Set([previous.entities, ...Object.values(previous.blocks).map((b) => b.entities), ...(previous.layouts ?? []).map((l) => l.entities)]) : undefined;
+  for (const list of [state.entities, ...Object.values(state.blocks).map((b) => b.entities), ...(state.layouts ?? []).map((l) => l.entities)]) {
+    if (unchanged?.has(list)) continue;
+    for (const entity of list) if (entity.type === 'dimension' && entity.kind === 'ordinate') {
+      const problem = ordinateDimensionProblem(entity);
+      if (problem) throw new Error(problem);
+    }
+  }
+  return prepareGeometryState(state, previous);
+}
 
 /** A named view (VIEW command): world centre and view height. */
 export interface NamedView {

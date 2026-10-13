@@ -18,7 +18,7 @@ import { appearanceProperties } from './appearance';
 import type { DrawingState } from './document';
 import { formatLength, formatAngle, cadPrecision, type LinearUnits } from './units';
 
-export type DimKind = 'linear' | 'aligned' | 'radius' | 'diameter' | 'angular';
+export type DimKind = 'linear' | 'aligned' | 'radius' | 'diameter' | 'angular' | 'ordinate';
 
 /** Arrowhead shapes (DIMBLK / DIMBLK1 / DIMBLK2). */
 export type DimArrow = 'closed-filled' | 'closed-blank' | 'closed' | 'open' | 'oblique' | 'arch-tick' | 'dot' | 'dot-small' | 'dot-blank' | 'none';
@@ -249,6 +249,7 @@ export interface DimensionEntity extends EntityBase {
    * linear/aligned: extension line origins.
    * radius/diameter: p1 = centre, p2 = a point on the circle (sets the direction).
    * angular: points on the two legs.
+   * ordinate: p1 = datum origin, p2 = measured feature (native groups 10 and 13).
    */
   readonly p1: Point;
   readonly p2: Point;
@@ -256,10 +257,16 @@ export interface DimensionEntity extends EntityBase {
    * linear/aligned: a point on the dimension line.
    * radius/diameter: where the text goes (inside or outside the circle).
    * angular: a point on the dimension arc.
+   * ordinate: leader endpoint (native group 14).
    */
   readonly linePoint: Point;
   /** linear only: direction of the dimension line (0 horizontal, π/2 vertical). */
   readonly rotation: number;
+  /** Ordinate coordinate to measure in its datum frame. */
+  readonly ordinateAxis?: 'x' | 'y';
+  /** Ordinate datum's world angle, radians. Native group 51 stores its negative in degrees.
+   * Direct ROTATE/MIRROR keep this frame; block references compose it with their transform. */
+  readonly ordinateRotation?: number;
   /** angular: the vertex. */
   readonly center?: Point;
   /** Text override: undefined/'' = measurement, '<>' inserts the measurement, ' ' suppresses. */
@@ -283,6 +290,26 @@ export interface DimensionEntity extends EntityBase {
 export type DimPart = LineEntity | PolylineEntity | TextEntity | ArcEntity | CircleEntity;
 export type Measure = (text: string, height: number) => number;
 
+/** Refuse invalid new ordinate data before rendering or writing a different native dimension. */
+export function ordinateDimensionProblem(d: DimensionEntity): string | null {
+  if (d.kind !== 'ordinate') return null;
+  if (d.ordinateAxis !== 'x' && d.ordinateAxis !== 'y') return 'Ordinate dimensions require an x or y datum axis.';
+  for (const point of [d.p1, d.p2, d.linePoint, ...(d.textPosition ? [d.textPosition] : [])]) {
+    if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return 'Ordinate dimension points must be finite XY coordinates.';
+  }
+  if (!Number.isFinite(d.ordinateRotation ?? 0) || !Number.isFinite(d.textRotation ?? 0)) return 'Ordinate dimension angles must be finite.';
+  const feature = g.sub(d.p2, d.p1), leader = g.sub(d.linePoint, d.p2);
+  const angle = (d.ordinateRotation ?? 0) + (d.ordinateAxis === 'y' ? Math.PI / 2 : 0);
+  if (![feature.x, feature.y, leader.x, leader.y, g.dot(feature, { x: Math.cos(angle), y: Math.sin(angle) })].every(Number.isFinite)) return 'Ordinate dimension coordinates exceed the finite geometry range.';
+  const style = resolveDimStyle(d.style);
+  if ([...Object.values(d.style), ...Object.values(d.styleOverrides ?? {})].some((value) => typeof value === 'number' && !Number.isFinite(value))) return 'Ordinate dimension style values must be finite.';
+  for (const value of [style.textHeight, style.arrowSize, style.extOffset, style.textGap, style.scale]) {
+    if (!Number.isFinite(value) || value < 0) return 'Ordinate dimension sizes must be finite and nonnegative.';
+  }
+  if (![style.textHeight, style.arrowSize, style.extOffset, style.textGap].every((value) => Number.isFinite(value * (style.scale || 1)))) return 'Ordinate dimension scaled sizes exceed the finite geometry range.';
+  return null;
+}
+
 /** Measured value of a dimension in drawing units (radians for angular). */
 export function dimensionMeasurement(d: DimensionEntity): number {
   switch (d.kind) {
@@ -296,6 +323,12 @@ export function dimensionMeasurement(d: DimensionEntity): number {
       return g.dist(d.p1, d.p2);
     case 'diameter':
       return 2 * g.dist(d.p1, d.p2);
+    case 'ordinate': {
+      const problem = ordinateDimensionProblem(d);
+      if (problem) throw new Error(problem);
+      const frame = (d.ordinateRotation ?? 0) + (d.ordinateAxis === 'y' ? Math.PI / 2 : 0);
+      return Math.abs(g.dot(g.sub(d.p2, d.p1), { x: Math.cos(frame), y: Math.sin(frame) }));
+    }
     case 'angular': {
       if (!d.center) return 0;
       const [s, e] = angularSweep(d);
@@ -867,6 +900,49 @@ function angularParts(c: Ctx): void {
   }
 }
 
+/** Native ordinate leaders have no dimension arrows; DIMASZ controls their dogleg lengths. */
+function ordinateParts(c: Ctx): void {
+  const { d, s, k } = c;
+  const problem = ordinateDimensionProblem(d);
+  if (problem) throw new Error(problem);
+  const frame = d.ordinateRotation ?? 0;
+  const leaderAngle = frame + (d.ordinateAxis === 'x' ? Math.PI / 2 : 0);
+  const unit = { x: Math.cos(leaderAngle), y: Math.sin(leaderAngle) };
+  const across = { x: -unit.y, y: unit.x };
+  const delta = g.sub(d.linePoint, d.p2);
+  const along = g.dot(delta, unit);
+  const sign = along > 1e-9 ? 1 : -1;
+  const dir = g.scale(unit, sign);
+  const block = measureBlock(c);
+  if (![block.w, block.h].every(Number.isFinite)) throw new Error('Ordinate text layout exceeds the finite geometry range.');
+  const rotation = d.textRotation ?? leaderAngle;
+  const gap = s.textGap * k;
+  // Native explicit text rotation overrides DIMTAD for ordinate dimensions.
+  const centered = d.textRotation !== undefined || s.textVertical === 'centered';
+  const relative = rotation - leaderAngle;
+  // Intersection of the leader's ray with the padded text rectangle. Projection of the
+  // rectangle's bounding box gives a different native position for manually rotated text.
+  const halfAlong = Math.abs(Math.cos(relative)) > 1e-12 ? (block.w / 2 + gap) / Math.abs(Math.cos(relative)) : Infinity;
+  const halfAcross = Math.abs(Math.sin(relative)) > 1e-12 ? (block.h / 2 + gap) / Math.abs(Math.sin(relative)) : Infinity;
+  const offset = block.w || block.h ? Math.min(halfAlong, halfAcross) : 0;
+  const normal = { x: -Math.sin(rotation), y: Math.cos(rotation) };
+  const side = s.textVertical === 'below' ? -1 : 1;
+  const center = d.textPosition ?? g.add(g.add(d.linePoint, g.scale(dir, offset)), centered ? { x: 0, y: 0 } : g.scale(normal, side * (block.h / 2 + gap)));
+  c.textCenter = center;
+  let end = d.linePoint;
+  if (!centered && (block.w || block.h)) end = g.add(d.linePoint, g.scale(dir, offset + block.w / 2));
+  const start = g.add(d.p2, g.scale(dir, s.extOffset * k));
+  const finite = (points: readonly Point[]) => { if (!points.every((p) => Number.isFinite(p.x) && Number.isFinite(p.y))) throw new Error('Ordinate layout exceeds the finite geometry range.'); };
+  finite([center, start, end]);
+  if (Math.abs(g.dot(delta, across)) > 1e-9) {
+    const a = g.add(d.p2, g.scale(dir, Math.max(Math.abs(along) - 4 * s.arrowSize * k, 2 * s.arrowSize * k)));
+    const b = g.sub(d.linePoint, g.scale(dir, 2 * s.arrowSize * k));
+    finite([a, b]);
+    line(c, start, a, 'ext'); line(c, a, b, 'ext'); line(c, b, end, 'ext');
+  } else line(c, start, end, 'ext');
+  drawBlock(c, block, center, rotation);
+}
+
 function run(d: DimensionEntity, measure: Measure): Ctx {
   const s = resolveDimStyle(d.style);
   const c: Ctx = { d, s, k: s.scale || 1, measure, out: [], n: 0, texts: 0, textCenter: null };
@@ -881,6 +957,9 @@ function run(d: DimensionEntity, measure: Measure): Ctx {
       break;
     case 'angular':
       angularParts(c);
+      break;
+    case 'ordinate':
+      ordinateParts(c);
       break;
   }
   return c;

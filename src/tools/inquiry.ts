@@ -256,7 +256,7 @@ export function listEntity(e: Entity, doc: Drawing): string[] {
       lines.push(`               base point, ${P(e.base)}`, `             unit direction, ${P(e.direction)}`, `                    angle  ${formatAngle(Math.atan2(e.direction.y, e.direction.x), 2)}`);
       break;
     case 'dimension': {
-      const kind = { linear: 'rotated', aligned: 'aligned', radius: 'radial', diameter: 'diametric', angular: '3-point angular' }[e.kind];
+      const kind = { linear: 'rotated', aligned: 'aligned', radius: 'radial', diameter: 'diametric', angular: '3-point angular', ordinate: 'Ordinate' }[e.kind];
       lines.push(`                      type: ${kind}`, `           dimension style: "${e.style.name}"`, `        1st extension defining point: ${P(e.p1)}`, `        2nd extension defining point: ${P(e.p2)}`, `            dimension line defining point: ${P(e.linePoint)}`);
       if (e.kind === 'linear') lines.push(`            rotation angle: ${formatAngle(e.rotation, 2)}`);
       lines.push(`           default text: ${dimensionText({ ...e, text: undefined })}`);

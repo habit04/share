@@ -1,7 +1,7 @@
 import type { Point, Bounds } from './geometry';
 import * as g from './geometry';
 import { strokeTextWidth } from '../render/hershey';
-import { dimensionGeometry, type DimensionEntity } from './dimension';
+import { dimensionGeometry, dimensionTextPoint, type DimensionEntity } from './dimension';
 import { mtextLayoutFull, type MTextEntity, type MTextAttachment, type MTextColumns, type MTextBackground, type MTextStyle, type Measure, type InkMeasure } from './mtext';
 import { metricTextPlacement, type TextGeometryContext } from './text-metrics';
 import { interpolateFitPoints, isValidNurbs, nurbsPoints, type NurbsCurve } from './spline';
@@ -588,19 +588,24 @@ interface GeneratedParts {
   readonly parts: Entity[];
 }
 const dimCache = new WeakMap<DimensionEntity, GeneratedParts>();
+function dimensionMeasure(d: DimensionEntity, context?: TextGeometryContext) {
+  // The dimension's style object is a DIMSTYLE; only DIMTXSTY names the emitted font.
+  const appearance = context?.resolve({ style: d.style.textStyle });
+  return context && (appearance?.kind === 'canvas' || appearance?.kind === 'stroke' && appearance.shxResourceId)
+    ? (text: string, height: number) => {
+      const metric = context.measure(text, height, appearance);
+      // Native ordinate text placement uses the visible span; the font's trailing advance
+      // would move the label away from its leader (notably for ordinary SHX numerals).
+      return ((d.kind === 'ordinate' ? metric.right : Math.max(metric.advance, metric.right)) - Math.min(0, metric.left)) * appearance.widthFactor;
+    }
+    : textWidth;
+}
+
 /** Primitive entities (lines, arrow solids, text) that draw a dimension. Cached per entity. */
 export function dimensionParts(d: DimensionEntity, context?: TextGeometryContext): Entity[] {
   const hit = dimCache.get(d);
   if (hit && hit.contextKey === context?.cacheKey) return hit.parts;
-  // The dimension's style object is a DIMSTYLE; only DIMTXSTY names the emitted font.
-  const appearance = context?.resolve({ style: d.style.textStyle });
-  const measure = context && (appearance?.kind === 'canvas' || appearance?.kind === 'stroke' && appearance.shxResourceId)
-    ? (text: string, height: number) => {
-      const metric = context.measure(text, height, appearance);
-      return (Math.max(metric.advance, metric.right) - Math.min(0, metric.left)) * appearance.widthFactor;
-    }
-    : textWidth;
-  const parts = dimensionGeometry(d, measure) as Entity[];
+  const parts = dimensionGeometry(d, dimensionMeasure(d, context)) as Entity[];
   dimCache.set(d, { contextKey: context?.cacheKey, parts });
   return parts;
 }
@@ -1085,6 +1090,7 @@ export function blockTransform(e: Entity, tf: (p: Point) => Point, rotation: num
   const uniform = Math.abs(sx - sy) < 1e-12;
   const k = Math.sqrt(Math.abs(sx * sy));
   const vec = (v: Point): Point => g.rotate({ x: v.x * sx * (mirror ? -1 : 1), y: v.y * sy }, rotation);
+  const directionAngle = (angle: number): number => { const v = vec({ x: Math.cos(angle), y: Math.sin(angle) }); return normAngle(Math.atan2(v.y, v.x)); };
   // Angle of a block-space direction after the transform (mirror flips it, then rotation adds).
   const ang = (t: number): number => normAngle((mirror ? Math.PI - t : t) + rotation);
   switch (e.type) {
@@ -1123,6 +1129,7 @@ export function blockTransform(e: Entity, tf: (p: Point) => Point, rotation: num
     case 'ray':
       return { ...e, base: tf(e.base), direction: vec(e.direction) };
     case 'dimension':
+      if (e.kind === 'ordinate' && !uniform) throw new Error('Nonuniform ordinate block transforms require primitive expansion.');
       return {
         ...e,
         p1: tf(e.p1),
@@ -1130,9 +1137,11 @@ export function blockTransform(e: Entity, tf: (p: Point) => Point, rotation: num
         linePoint: tf(e.linePoint),
         center: e.center ? tf(e.center) : e.center,
         textPosition: e.textPosition ? tf(e.textPosition) : e.textPosition,
-        rotation: e.kind === 'linear' ? ang(e.rotation) : e.rotation + rotation,
-        style: k === 1 ? e.style : { ...e.style, scale: e.style.scale * k },
-        ...(k !== 1 && e.styleOverrides !== undefined ? { styleOverrides: { ...e.styleOverrides, DIMSCALE: e.style.scale * k } } : {}),
+        rotation: e.kind === 'ordinate' ? e.rotation : e.kind === 'linear' ? ang(e.rotation) : e.rotation + rotation,
+        ...(e.kind === 'ordinate' ? { ordinateRotation: directionAngle(e.ordinateRotation ?? 0),
+          ...(e.textRotation !== undefined ? { textRotation: directionAngle(e.textRotation) } : {}) } : {}),
+        style: e.kind === 'ordinate' || k === 1 ? e.style : { ...e.style, scale: e.style.scale * k },
+        ...(e.kind !== 'ordinate' && k !== 1 && e.styleOverrides !== undefined ? { styleOverrides: { ...e.styleOverrides, DIMSCALE: e.style.scale * k } } : {}),
       };
     case 'spline':
     case 'hatch':
@@ -1256,10 +1265,12 @@ interface ExpansionBudget {
   truncated: boolean;
   /** A block inserts itself (directly or through others): the repeated reference was skipped. */
   cyclic: boolean;
+  /** Primitive annotation positions were measured in the current font/style context. */
+  contextGeometry: boolean;
   /** Optional plot-only resolver of an insertion's unplotted physical lineweight. */
   readonly resolveLineweight?: (entity: EntityBase) => number;
 }
-const newBudget = (maxObjects = MAX_INSERT_EXPANSION, resolveLineweight?: (entity: EntityBase) => number): ExpansionBudget => ({ remaining: MAX_BLOCK_EXPANSION_WORK, left: maxObjects, visits: maxObjects, chain: [], deps: new Map(), truncated: false, cyclic: false, resolveLineweight });
+const newBudget = (maxObjects = MAX_INSERT_EXPANSION, resolveLineweight?: (entity: EntityBase) => number): ExpansionBudget => ({ remaining: MAX_BLOCK_EXPANSION_WORK, left: maxObjects, visits: maxObjects, chain: [], deps: new Map(), truncated: false, cyclic: false, contextGeometry: false, resolveLineweight });
 
 function spendExpansion(budget: ExpansionBudget, work = 1): void {
   budget.remaining -= work;
@@ -1279,6 +1290,7 @@ interface InsertCache {
   bounds: Bounds | null;
   /** The expansion was cut short (the cap, or a block that inserts itself). */
   limited: boolean;
+  readonly contextGeometry: boolean;
 }
 /** Only accepted immutable inserts and definitions qualify for identity caching. */
 const insertCache = new WeakMap<InsertEntity, InsertCache>();
@@ -1290,19 +1302,22 @@ function cachedInsert(ins: InsertEntity, lookup: BlockLookup): InsertCache | nul
   const hit = immutable ? insertCache.get(ins) : undefined;
   if (hit && hit.block === block && depsCurrent(hit.deps, lookup)) {
     if (hit.contextKey === lookup.textGeometry?.cacheKey) return hit;
-    // A style/font change affects bounds, not the block's transformed source geometry.
-    let bounds: Bounds | null = null;
-    for (const sub of hit.exploded) bounds = g.unionBounds(bounds, entityBounds(sub, lookup));
-    const refreshed = { ...hit, contextKey: lookup.textGeometry?.cacheKey, bounds: bounds ?? g.boundsOfPoints([ins.position]) };
-    insertCache.set(ins, refreshed);
-    return refreshed;
+    if (!hit.contextGeometry) {
+      // Retained source entities only need new bounds; flattened annotations also need
+      // their measured text/leader positions rebuilt with the new context below.
+      let bounds: Bounds | null = null;
+      for (const sub of hit.exploded) bounds = g.unionBounds(bounds, entityBounds(sub, lookup));
+      const refreshed = { ...hit, contextKey: lookup.textGeometry?.cacheKey, bounds: bounds ?? g.boundsOfPoints([ins.position]) };
+      insertCache.set(ins, refreshed);
+      return refreshed;
+    }
   }
   const budget = newBudget();
   const exploded: Entity[] = [];
   explodeInto(exploded, ins, lookup, 0, budget);
   let bounds: Bounds | null = null;
   for (const sub of exploded) bounds = g.unionBounds(bounds, entityBounds(sub, lookup));
-  const entry = { block, contextKey: lookup.textGeometry?.cacheKey, deps: budget.deps, exploded, bounds: bounds ?? g.boundsOfPoints([ins.position]), limited: budget.truncated || budget.cyclic };
+  const entry = { block, contextKey: lookup.textGeometry?.cacheKey, deps: budget.deps, exploded, bounds: bounds ?? g.boundsOfPoints([ins.position]), limited: budget.truncated || budget.cyclic, contextGeometry: budget.contextGeometry };
   if (immutable && [...budget.deps.values()].every((definition) => !definition || isImmutableData(definition))) insertCache.set(ins, entry);
   return entry;
 }
@@ -1545,9 +1560,11 @@ export function similarityTransform(e: Entity, tf: (p: Point) => Point, rotation
         linePoint: tf(e.linePoint),
         center: e.center ? tf(e.center) : e.center,
         textPosition: e.textPosition ? tf(e.textPosition) : e.textPosition,
-        rotation: e.rotation + rotation,
-        style: k === 1 ? e.style : { ...e.style, scale: e.style.scale * k },
-        ...(k !== 1 && e.styleOverrides !== undefined ? { styleOverrides: { ...e.styleOverrides, DIMSCALE: e.style.scale * k } } : {}),
+        rotation: e.kind === 'ordinate' ? e.rotation : e.rotation + rotation,
+        // Native ordinate SCALE regenerates the measurement without scaling its style
+        // sizes, including automatic DIMSCALE=0. INSERT display scales local primitives.
+        style: e.kind === 'ordinate' || k === 1 ? e.style : { ...e.style, scale: e.style.scale * k },
+        ...(e.kind !== 'ordinate' && k !== 1 && e.styleOverrides !== undefined ? { styleOverrides: { ...e.styleOverrides, DIMSCALE: e.style.scale * k } } : {}),
       };
     case 'spline':
     case 'hatch':
@@ -1632,18 +1649,39 @@ function transformInto(out: Entity[], e: Entity, tf: (p: Point) => Point, ins: I
     Object.assign(styled, styled.type === 'leader' ? { textBackground: { ...bg, ...inherited } } : { background: { ...bg, ...inherited } });
   }
   if (styled.type === 'leader' && styled.textLayer === '0') Object.assign(styled, { textLayer: ins.layer });
+  if ((!similar || Math.abs(ins.scale) !== 1) && styled.type === 'dimension' && styled.kind === 'ordinate') {
+    // A scaled native reference displays its original local label, whereas native
+    // EXPLODE regenerates a new measurement. Preserve display as bounded primitives;
+    // the editable source dimension remains in the saved block definition.
+    budget.contextGeometry = true;
+    for (const part of dimensionParts(styled, lookup.textGeometry)) {
+      if (budget.left <= 0) { budget.truncated = true; break; }
+      budget.left -= 1;
+      out.push(blockTransform(part, tf, ins.rotation, ins.scale, ins.scaleY ?? ins.scale, Boolean(ins.mirror)));
+    }
+    return;
+  }
   if (!similar && styled.type === 'insert') {
     // Applying anisotropic scale after a rotated nested INSERT produces shear. Combining
     // its rotation/scales as scalar INSERT fields would lose that affine geometry. Expand
     // in the nested reference's own coordinates, then apply this ancestor to its primitives.
     const children: Entity[] = [];
     explodeInto(children, styled, lookup, depth, budget);
-    for (const child of children) out.push(blockTransform(child, tf, ins.rotation, ins.scale, ins.scaleY ?? ins.scale, Boolean(ins.mirror)));
+    for (const child of children) {
+      if (child.type === 'dimension' && child.kind === 'ordinate') {
+        budget.contextGeometry = true;
+        for (const part of dimensionParts(child, lookup.textGeometry)) {
+          if (budget.left <= 0) { budget.truncated = true; break; }
+          budget.left -= 1;
+          out.push(blockTransform(part, tf, ins.rotation, ins.scale, ins.scaleY ?? ins.scale, Boolean(ins.mirror)));
+        }
+      } else out.push(blockTransform(child, tf, ins.rotation, ins.scale, ins.scaleY ?? ins.scale, Boolean(ins.mirror)));
+    }
     return;
   }
   // Direct similarity commands keep a native gradient world-aligned. Even a uniform
   // INSERT evaluates its gradient in definition space before applying the reference.
-  const directSimilarity = similar && !(styled.type === 'hatch' && styled.gradient !== undefined);
+  const directSimilarity = similar && !(styled.type === 'hatch' && styled.gradient !== undefined) && !(styled.type === 'dimension' && styled.kind === 'ordinate');
   const moved = directSimilarity ? similarityTransform(styled, tf, ins.rotation, ins.scale) : blockTransform(styled, tf, ins.rotation, ins.scale, ins.scaleY ?? ins.scale, Boolean(ins.mirror));
   if (moved.type === 'insert') {
     explodeInto(out, moved, lookup, depth, budget);
@@ -1938,7 +1976,8 @@ export function gripPoints(e: Entity, context?: TextGeometryContext): Point[] {
     case 'mtext':
       return [e.position];
     case 'dimension': {
-      const textPos = dimensionParts(e, context).find((p): p is TextEntity => p.type === 'text')?.position ?? e.linePoint;
+      const textPos = e.kind === 'ordinate' ? e.textPosition ?? dimensionTextPoint(e, dimensionMeasure(e, context))
+        : dimensionParts(e, context).find((p): p is TextEntity => p.type === 'text')?.position ?? e.linePoint;
       return e.kind === 'angular' && e.center ? [e.p1, e.p2, e.linePoint, e.center, textPos] : [e.p1, e.p2, e.linePoint, textPos];
     }
     case 'spline':

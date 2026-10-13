@@ -10,7 +10,7 @@ import { textStyleOf } from '../encoding';
 import { MTEXT_COLUMNS_APP, MTEXT_BACKGROUND_APP, DIM_TYPE, DIMSTYLE_APP, TABLE_APP } from './codes';
 import { backgroundMetadataChunks } from './mtext-background-data';
 import * as g from '../../core/geometry';
-import { dimensionTextPoint, dimensionMeasurement, dimensionStyleOverrides, dimStyleOverrideCode, DIM_VARIABLES } from '../../core/dimension';
+import { dimensionTextPoint, dimensionMeasurement, dimensionStyleOverrides, dimStyleOverrideCode, DIM_VARIABLES, ordinateDimensionProblem } from '../../core/dimension';
 import { textWidth, leaderParts, leaderPath } from '../../core/entities';
 import type { WriteExtras } from './write-core';
 
@@ -72,6 +72,8 @@ function radialPoints(e: DimensionEntity): { q: g.Point; far: g.Point } {
 }
 
 export function writeDimension(w: Writer, e: DimensionEntity, owner: string, blockName: string): void {
+  const problem = ordinateDimensionProblem(e);
+  if (problem) throw new Error(problem);
   // (No group 280: it is not part of an AC1015 DIMENSION, and AutoCAD's AUDIT reports it.)
   writeEntityCommon(w, e, owner, 'DIMENSION', 'AcDbDimension');
   w.pair(2, blockName);
@@ -84,6 +86,7 @@ export function writeDimension(w: Writer, e: DimensionEntity, owner: string, blo
       break;
     }
     case 'radius':
+    case 'ordinate':
       defpoint = e.p1;
       break;
     case 'diameter':
@@ -100,15 +103,21 @@ export function writeDimension(w: Writer, e: DimensionEntity, owner: string, blo
   w.pair(11, tp.x);
   w.pair(21, tp.y);
   w.pair(31, 0);
-  w.pair(70, DIM_TYPE[e.kind] | 32 | (e.textPosition ? 128 : 0));
+  w.pair(70, DIM_TYPE[e.kind] | 32 | (e.kind === 'ordinate' && e.ordinateAxis === 'x' ? 64 : 0) | (e.textPosition ? 128 : 0));
   w.pair(71, 5);
   w.pair(42, dimensionMeasurement(e));
   if (e.text !== undefined && e.text !== '') w.pair(1, e.text);
   // 52 is listed under AcDbAlignedDimension in the DXF reference, but files carry it with these groups.
   if (e.oblique !== undefined && (e.kind === 'linear' || e.kind === 'aligned')) w.pair(52, dimAngleDeg(e.oblique));
-  if (e.textRotation !== undefined) w.pair(53, dimAngleDeg(e.textRotation));
+  if (e.textRotation !== undefined) w.pair(53, dimAngleDeg(e.textRotation - (e.kind === 'ordinate' ? e.ordinateRotation ?? 0 : 0)));
+  if (e.kind === 'ordinate') w.pair(51, dimAngleDeg(-(e.ordinateRotation ?? 0)));
   w.pair(3, e.style.name);
   switch (e.kind) {
+    case 'ordinate':
+      w.pair(100, 'AcDbOrdinateDimension');
+      w.pair(13, e.p2.x); w.pair(23, e.p2.y); w.pair(33, 0);
+      w.pair(14, e.linePoint.x); w.pair(24, e.linePoint.y); w.pair(34, 0);
+      break;
     case 'linear':
     case 'aligned':
       w.pair(100, 'AcDbAlignedDimension');

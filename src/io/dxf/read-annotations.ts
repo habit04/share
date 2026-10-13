@@ -5,9 +5,9 @@
  */
 import type { Obj, Pair } from './groups';
 import type { DimStyle, Entity, LeaderEntity, ImageEntity, TableEntity, TableCell } from '../../core/entities';
-import { str, xdata, num, pt, has, flt, int, afterSubclass, pointList } from './groups';
-import { dimStyleFromRecordPairs, dimStyleOverrideName, dimVarValue, arrowFromBlockName, arrowBlockName, DIM_ARROWS, DIM_VARIABLES } from '../../core/dimension';
-import { DIMSTYLE_APP, MTEXT_COLUMNS_APP, TABLE_APP } from './codes';
+import { str, xdata, num, pt, has, flt, int, afterSubclass, pointList, DxfReadError, isIntegerText } from './groups';
+import { dimStyleFromRecordPairs, dimStyleOverrideName, dimVarValue, arrowFromBlockName, arrowBlockName, DIM_ARROWS, DIM_VARIABLES, ordinateDimensionProblem } from '../../core/dimension';
+import { DIMSTYLE_APP, MTEXT_COLUMNS_APP, TABLE_APP, isRealText, isRealCode, isIntCode } from './codes';
 import { applyDimStyleXdata } from './dimstyles';
 import { commonProps } from './read-core';
 import * as g from '../../core/geometry';
@@ -74,6 +74,25 @@ export function readDimension(o: Obj, base: ReturnType<typeof commonProps>, styl
   const common = { ...base, type: 'dimension' as const, text, textPosition: userText, ...angles, style, styleOverrides };
   const subclasses = o.groups.filter((x) => x.code === 100).map((x) => x.value);
   switch (type) {
+    case 6: {
+      const refuse = (reason: string): never => { throw new DxfReadError(`Ordinate dimension cannot be imported without changing its data: ${reason}`, o.groups[0]?.line ?? 1); };
+      if (!Number.isSafeInteger(Number(str(o, 70))) || flags < 0 || flags > 230 || flags & ~230) refuse('unsupported dimension flags');
+      if (o.groups.some((p) => isRealCode(p.code) && (!isRealText(p.value) || !Number.isFinite(Number(p.value))) || isIntCode(p.code) && !isIntegerText(p.value.trim()))) refuse('invalid native numeric group');
+      if (!subclasses.includes('AcDbOrdinateDimension')) refuse('missing native ordinate subclass');
+      for (const code of [10, 13, 14]) if (!has(o, code)) refuse(`missing definition point ${code}`);
+      if (flags & 128 && !has(o, 11)) refuse('missing manually positioned text point');
+      const coordinates = new Set([10, 20, 30, 11, 21, 31, 13, 23, 33, 14, 24, 34, 51, 53, 210, 220, 230]);
+      if (o.groups.some((p) => coordinates.has(p.code) && (!isRealText(p.value) || !Number.isFinite(Number(p.value))))) refuse('invalid numeric coordinate or angle');
+      if ([30, 31, 33, 34].some((code) => num(o, code) !== 0) || num(o, 210) !== 0 || num(o, 220) !== 0 || num(o, 230, 1) !== 1) refuse('only XY dimensions with the positive Z normal are supported');
+      if (num(o, 71, 5) !== 5 || num(o, 72, 1) !== 1 || num(o, 41, 1) !== 1 || num(o, 52) !== 0) refuse('unsupported native text attachment, spacing or oblique mode');
+      const frame = g.normAngle(-g.rad(num(o, 51)));
+      const result = { ...common, kind: 'ordinate' as const, p1: pt(o, 10), p2: pt(o, 13), linePoint: pt(o, 14), rotation: 0,
+        ordinateAxis: flags & 64 ? 'x' as const : 'y' as const, ordinateRotation: frame,
+        ...(Math.abs(rot) > 1e-9 ? { textRotation: g.normAngle(frame + g.rad(rot)) } : {}) };
+      const problem = ordinateDimensionProblem(result);
+      if (problem) refuse(problem);
+      return result;
+    }
     case 0: {
       const p1 = pt(o, 13);
       const p2 = pt(o, 14);

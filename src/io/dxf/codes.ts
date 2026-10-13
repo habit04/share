@@ -11,7 +11,7 @@ export const ANNO_APP = 'AcadAnnotative';
 
 
 
-export const DIM_TYPE: Record<DimensionEntity['kind'], number> = { linear: 0, aligned: 1, angular: 5, diameter: 3, radius: 4 };
+export const DIM_TYPE: Record<DimensionEntity['kind'], number> = { linear: 0, aligned: 1, angular: 5, diameter: 3, radius: 4, ordinate: 6 };
 
 // ---------------------------------------------------------------- dimension styles
 
