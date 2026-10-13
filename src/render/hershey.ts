@@ -212,7 +212,9 @@ export function fontWeight(s: Pick<TextStyle, 'font' | 'bold' | 'italic'>): { bo
 /** Look a style up by name, ignoring case (AutoCAD style names are case-insensitive). */
 export function findTextStyle(name: string | undefined, styles: Readonly<Record<string, TextStyle>> = textStyleRegistry.styles): TextStyle | undefined {
   const n = name || 'Standard';
-  return styles[n] ?? Object.values(styles).find((x) => x.name.toUpperCase() === n.toUpperCase());
+  const valid = (value: TextStyle | undefined): value is TextStyle => !!value && typeof value === 'object' && typeof value.name === 'string' && typeof value.font === 'string';
+  const direct = Object.hasOwn(styles, n) ? styles[n] : undefined;
+  return valid(direct) ? direct : Object.values(styles).find((x) => valid(x) && x.name.toUpperCase() === n.toUpperCase());
 }
 
 /** The renderer for a style name (unknown names and SHX fonts draw with the Hershey strokes). */

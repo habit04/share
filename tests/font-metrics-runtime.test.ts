@@ -5,7 +5,7 @@ import { spatialIndexFor, spatialIndexSettings } from '../src/core/spatial-index
 import { metricTextPlacement, type NativeFontMetrics } from '../src/core/text-metrics';
 import { FontMetricsRegistry, createTextGeometryContext, fontMetrics, nativeFontMetricsProblem } from '../src/render/font-metrics';
 import { capturedPlotLookup } from '../src/app/plot-fonts';
-import { drawStyledText, setTextStyles, fontStack, fontWeight, type TextCanvas } from '../src/render/hershey';
+import { drawStyledText, setTextStyles, fontStack, fontWeight, textRenderer, type TextCanvas } from '../src/render/hershey';
 import { renderPageToCanvas } from '../src/render/layouts';
 import { drawingContext, type PdfPageSpec } from '../src/io/pdf-vector';
 import { STANDARD_TEXT_STYLE, type TextStyle } from '../src/io/encoding';
@@ -38,6 +38,12 @@ function canvasRecorder() {
 }
 
 describe('native font metrics runtime', () => {
+  it('uses only valid owned STYLE records, including a legitimate constructor name', () => {
+    expect(textRenderer('constructor', {})).toMatchObject({ kind: 'stroke' });
+    expect(textRenderer('toString', {})).toMatchObject({ kind: 'stroke' });
+    expect(textRenderer('FACE', { broken: { name: 'FACE', font: null } as unknown as TextStyle })).toMatchObject({ kind: 'stroke' });
+    expect(textRenderer('constructor', { constructor: { ...style(), name: 'constructor' } })).toMatchObject({ kind: 'canvas' });
+  });
   it.each([
     ['arialnbi.ttf', '"Arial Narrow"', true, true], ['consolab.ttf', 'Consolas', true, false],
     ['trebucit.ttf', '"Trebuchet MS"', false, true], ['georgiaz.ttf', 'Georgia', true, true],
