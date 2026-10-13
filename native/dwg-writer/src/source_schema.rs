@@ -314,7 +314,12 @@ fn object_group(
         "GROUP" => matches!(code, 300 | 70 | 71 | 340),
         "DBCOLOR" => matches!(code, 1 | 2 | 62 | 420 | 430),
         "DICTIONARYVAR" => matches!(code, 1 | 280),
-        "SCALE" => matches!(code, 300 | 140 | 141 | 290),
+        // The pinned binary SCALE encoder emits a literal BS zero before its
+        // name. Native DXF projection exposes that version word as group 70.
+        "SCALE" => {
+            matches!(code, 300 | 140 | 141 | 290)
+                || code == 70 && value.trim().parse::<i32>() == Ok(0)
+        }
         "MLEADERSTYLE" => {
             matches!(code, 3 | 300 | 304 | 40..=47 | 49 | 90..=94 | 140..=143 | 170..=178 | 271..=273 | 290..=298 | 340..=343)
                 || code == 179 && value.trim().parse::<i32>() == Ok(2)

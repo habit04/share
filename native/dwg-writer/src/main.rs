@@ -1710,6 +1710,9 @@ mod tests {
         }
         source_schema::capture(include_str!("../tests/fixtures/autocad-header.dxf")).unwrap();
         source_schema::capture(include_str!("../tests/fixtures/autocad-mleaderstyle.dxf")).unwrap();
+        let scale = "0\nSECTION\n2\nOBJECTS\n0\nSCALE\n5\n200\n330\n0\n100\nAcDbScale\n70\n0\n300\n1:1\n140\n1\n141\n1\n290\n1\n0\nENDSEC\n0\nEOF\n";
+        source_schema::capture(scale).unwrap();
+        assert!(source_schema::capture(&scale.replace("70\n0\n", "70\n1\n")).is_err());
     }
 
     #[test]
@@ -1798,6 +1801,45 @@ mod tests {
     }
 
     #[test]
+    fn native_class_object_common_links_are_not_hidden_by_empty_side_caches() {
+        let mut document = metadata_document(0);
+        let mut object = acadrust::objects::ClassObject::default();
+        object.handle = Handle::new(0x299);
+        object.owner = Handle::new(0x200);
+        object.reactors = vec![object.owner];
+        object.xdictionary_handle = Some(Handle::new(0x29A));
+        let mut dictionary = acadrust::objects::Dictionary::new();
+        dictionary.handle = Handle::new(0x29A);
+        dictionary.owner = object.handle;
+        document
+            .objects
+            .insert(dictionary.handle, ObjectType::Dictionary(dictionary));
+        document
+            .objects
+            .insert(object.handle, ObjectType::ClassObject(object));
+        assert_eq!(
+            document.object_reactors(Handle::new(0x299)),
+            vec![Handle::new(0x200)]
+        );
+        assert_eq!(
+            document.extension_dictionary_handle(Handle::new(0x299)),
+            Some(Handle::new(0x29A))
+        );
+        let baseline = metadata_snapshot(&document).unwrap();
+        let ObjectType::ClassObject(value) = document.objects.get_mut(&Handle::new(0x299)).unwrap()
+        else {
+            unreachable!()
+        };
+        value.reactors.clear();
+        assert!(equivalent(
+            &baseline,
+            &metadata_snapshot(&document).unwrap(),
+            "CLASS common mutation"
+        )
+        .is_err());
+    }
+
+    #[test]
     fn explicit_annotation_headers_materialize_owned_objects_and_refuse_retained_conflicts() {
         let text = "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1032\n9\n$CANNOSCALE\n2\n1:4\n9\n$ANNOALLVISIBLE\n70\n0\n0\nENDSEC\n0\nEOF\n";
         let source = source_schema::capture(text).unwrap();
@@ -1831,6 +1873,16 @@ mod tests {
             &before,
             &metadata_snapshot(&document).unwrap(),
             "idempotent annotations",
+        )
+        .unwrap();
+        let mut output = std::io::Cursor::new(Vec::new());
+        DwgWriter::write_to_writer(&mut output, &document).unwrap();
+        output.set_position(0);
+        let reopened = DwgReader::from_stream(output).read().unwrap();
+        equivalent(
+            &before,
+            &metadata_snapshot(&reopened).unwrap(),
+            "owned annotation registry DWG",
         )
         .unwrap();
         for (paper, drawing) in [(f64::MAX, f64::MIN_POSITIVE), (f64::MIN_POSITIVE, f64::MAX)] {
