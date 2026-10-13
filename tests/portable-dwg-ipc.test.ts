@@ -80,6 +80,18 @@ async function setup(platform: NodeJS.Platform = 'win32') {
 }
 
 describe('portable DWG IPC', () => {
+  it('does not authorize an unchosen Unicode-equivalent Windows export destination', async () => {
+    const f = await setup('win32');
+    const chosen = path.join(f.root, 'Jos\u00e9.dwg');
+    const unchosen = path.join(f.root, 'Jose\u0301.dwg');
+    f.showSaveDialog.mockResolvedValue({ canceled: false, filePath: chosen });
+    await f.invoke('choose-dwg-path');
+    // Existing working-file authority is independent of the Export Copy picker.
+    f.registry.grant(unchosen);
+    await expect(f.invoke('export-dwg', unchosen, DXF)).rejects.toThrow(/Save dialog first/);
+    expect(f.exportCall).not.toHaveBeenCalled();
+    expect(await f.invoke('export-dwg', chosen, DXF)).toBe(chosen);
+  });
   it('uses a dedicated native picker and publishes portable availability', async () => {
     const f = await setup();
     expect(await f.invoke('dwg-export-status')).toEqual({ available: true, reason: undefined });
