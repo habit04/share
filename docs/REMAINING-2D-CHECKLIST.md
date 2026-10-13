@@ -7,10 +7,15 @@ This is development work; no release, installer, signing or GPU renderer changes
 Status distinguishes a tested correction from completion of the entire priority. Source evidence
 is the current branch and `SUPPORT-MATRIX.md`, rather than an earlier planning list.
 
+The current batch is complete: polygon viewport DXF/display/input compatibility, dimension
+style correctness, text/default override correctness, declared-height MTEXT flow and Windows
+path/save protection. Independent review findings are fixed and covered by regressions. The
+remaining feature/dependency rows below form later batches; no release or installer is implied.
+
 | Priority | Current evidence and status | Ownership / dependency | Completion validation |
 | --- | --- | --- | --- |
-| 9 | Polygon DXF milestone implemented and tested: native closed straight-polyline boundaries, appearance, enable flag, copy/edit/undo/reopen, Canvas and vector/raster clips. Curved boundaries and DWG clip exposure remain missing. Graphical selection excludes fully hidden entities but keeps whole-entity tests for partially visible objects. | Lead; DWG boundary exposure depends on #19. | Import/edit/undo/save/reopen clip; Canvas, vector/raster plots and viewport activation agree. Unsupported curves stay reported. |
-| 10 | Confirmed angular suppression, arrow ownership and gap defects corrected; 137 targeted tests pass, including style traversal/override preservation and paper-space undo/redo. Ordinate/arc-length types still missing. | Dimension agent. | Styles/overrides, every space, native fixture edit/save/reopen, undo/redo, geometry/bounds and plots. |
+| 9 | Polygon DXF milestone implemented and tested: native closed straight-polyline boundaries, appearance, enable flag, copy/edit/undo/reopen, Canvas and vector/raster clips. Review corrections include enclosing hatch-pattern visibility and retained boundary layer/linetype resources during purge/export. Curved boundaries and DWG clip exposure remain missing. Graphical selection excludes fully hidden entities but keeps whole-entity tests for partially visible objects. | Lead; DWG boundary exposure depends on #19. | Import/edit/undo/save/reopen clip; Canvas, vector/raster plots and viewport activation agree. Unsupported curves stay reported. |
+| 10 | Confirmed angular suppression, arrow ownership and gap defects corrected; style traversal and paper-space undo/redo implemented. Supported native override presence/value survives matching named styles and later redefinitions; scaling, Match Properties and existing direct-style editing remain compatible. Ordinate/arc-length types still missing. | Dimension agent; native DWG exposure remains #19. | Styles/overrides, every space, native fixture edit/save/reopen, undo/redo, geometry/bounds and plots. |
 | 11 | Confirmed paragraph-ending justification, negative word gaps, phantom trailing-space lines and explicit Canvas style overrides corrected; 79 targeted tests and 3 PDF override tests pass. Installed-font wrapping/bounds still use stroke metrics; inline font/tracking/alignment incomplete. | Text agent and lead; PDF overrides aligned. | Canvas/PDF/bounds agree, installed/missing fonts, wrapping, alignment, Unicode and import-edit-reopen. |
 | 12 | Missing: `pdf-vector.ts` uses standard Helvetica or stroke paths, without embedding exact fonts. | Independent; font resolution/licensing required. | Inspect embedded font resources, Unicode mapping and real PDF rasterization; permitted font redistribution. |
 | 13 | Missing CTB/STB interpretation; layout sheet names select built-in color modes in `dxf-layouts.ts`. | Independent; real style table fixtures required. | Named/color-dependent tables, lineweight/screening/colors, layouts, save/reopen and external plot comparison. |
@@ -58,14 +63,35 @@ proof that their implementation or external verification has passed.
 - UI gate: 611 command runs, 796 clicks, 52 Electron menu commands resolved; passed in isolated
   Chrome. Three actual Electron launches passed origin migration, acknowledged checkpoint,
   deletion persistence and lost-storage recovery using private worktree profiles.
-- Final exact-source serial suite: **2,331 passed, 0 failed, 27 conditional skips** across
-  187 files. The opt-in dense suite ran separately: all 8 benchmarks passed. Final lint,
+- Initial batch snapshot `c1b2587` serial suite: **2,331 passed, 0 failed, 27 conditional skips** across
+  187 files. The opt-in dense suite ran separately: all 8 benchmarks passed. Initial lint,
   renderer/Electron/scripts TypeScript checks and production renderer build passed.
+- Final review added 34 regressions: 18 dimension-override cases, 12 viewport hatch-visibility
+  cases and 4 retained boundary-resource cases. Native integer overrides normalize safely;
+  native DIMTIH/DIMTOH values remain distinct despite the existing ISO display approximation.
+  Ordinary immutable style edits still work without callers supplying override metadata.
+- AutoCAD 2027 accepted the matching-style dimension export with **zero AUDIT errors**.
+  DXFOUT retained native explicit DIMTXT=5 / DIMDEC=0 even when the named style matched.
+  Exact-source JCad reimport and a later named-style change to 3 / 1 kept the entity at 5 / 0.
+  The oracle used a private synthetic export and isolated AutoCAD profile in this worktree.
+- `npm run e2e:2d-batch`: **7 checks passed in actual source Electron 44.7.0**, using only
+  queued native Open/Save dialog answers. Real renderer, codecs, preload, IPC permissions,
+  Windows disk writes and backups exercised polygon edit/undo/reopen, native pointer ownership,
+  text default presence, MTEXT columns, safe clip-DWG refusal and distinct NFC/NFD files/tabs.
+  The reopened paper-space screenshot shows the concave boundary and clipped model line.
+  This gate does not certify the native DWG helper or an installed release.
+- Final combined source snapshot `3d3198a`: **2,365 passed, 0 failed, 27 conditional skips**
+  across 190 files. Required fixtures, broad lint, renderer/Electron/scripts TypeScript and
+  production renderer build passed; all **8 dense benchmarks** passed separately. The full
+  native-helper Electron gate remains unavailable
+  in this private worktree because its signed portable helper is absent; no helper was copied
+  from the other workstream and no installer was built.
 
 ## Integration notes and next milestones
 
-- PR #9 was still active at the last read-only snapshot, narrowing native writer failures to
-  table-style defaults/expectations and awaiting a refreshed reader before six real save cases.
+- PR #9 remains open at the final review's read-only snapshot, head `83da418537777b7d5b09a2b7fd9a2ebe92784ded`.
+  Unit checks passed there; UI/Windows end-to-end checks still required attention. Its native
+  reader/writer and real-file saving verification remain that workstream's responsibility.
   No commits were copied from it. Resolve shared codec/layout conflicts deliberately and rerun
   native equivalence, combined 2D regressions and real-file saving before considering release.
 - The baseline native helper removes object handles during its comparison. Newly retained

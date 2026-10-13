@@ -31,6 +31,13 @@ messages). The date of each version is the date of the commit that set that vers
 - Named dimension-style edits update model space, every block and every paper layout while
   preserving per-entity overrides. Paper-space style commands use a document-wide undoable
   transition; usage checks protect styles referenced by block or layout dimensions.
+- Supported native dimension overrides keep their explicit values when a named style
+  temporarily matches them, including across DXF save/reopen and later style redefinitions.
+  Scaling, Match Properties and assigning current dimension settings retain the corresponding
+  override behavior.
+- Clipped viewport selection includes visible hatch pattern strokes and dots, including
+  nested inserts. Retained clip outlines keep their layer and linetype resources through
+  purge and DXF export, even when clipping is disabled.
 - MTEXT justification uses each paragraph's final line, prevents negative spacing around long
   words and avoids phantom lines from trailing spaces. Canvas and vector PDF honor explicit
   text width overrides consistently, including width factor 1 and Canvas oblique angle 0.
