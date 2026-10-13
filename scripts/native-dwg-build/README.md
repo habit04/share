@@ -98,6 +98,17 @@ unknown proprietary object schemas, raw DWG object bytes, arbitrary FIELD
 evaluators, or all files and DWG versions. Retention through the portable writer
 requires a separate typed graph comparison after saving and reopening.
 
+Normal CI also runs `validate-vendored-metadata.mjs` against the accepted runtime
+for all three tracked, independently authored AutoCAD fixtures: named views and
+filename fields; real AcObjProp Length fields with both indexed and cached object
+references; and Unicode view/dictionary/FIELD strings plus an opaque XRECORD
+literal containing `\U+0041` and escaped JSON. The last literal is independently
+checked through native .NET after DWG reopen and compared exactly without Unicode
+substitution. Reports bind each fixture to the accepted factory/WASM byte hashes.
+This check does not rebuild or modify the runtime. Fixture and validator changes
+use normal CI; source-recipe and toolchain changes trigger the controlled native
+build, which also remains available through manual workflow dispatch.
+
 ## Pins and commands
 
 The decoder also reads inline ENC RGB before its optional alpha word, following
@@ -143,9 +154,10 @@ when integrating the candidate. Matching factory glue and WASM must always be in
 
 ## Native acceptance gate
 
-The workflow is manually dispatchable and also runs on pushes to `codex/cad-fidelity-five` that
-change this workflow, this directory, or the two controlled fixture files. This allows the first
-feature-branch build before the workflow is registered on the default branch. It uses read-only
+The workflow is manually dispatchable and also runs on the two configured feature branches when
+the checked native patch, source/toolchain pins, patch applicator or isolated declaration compiler
+changes. Ordinary fixture/tooling changes are checked against the accepted pair in normal CI.
+This allows the first feature-branch build before registration on the default branch. It uses read-only
 repository permissions, no signing credentials/secrets, a 60-minute job bound, and a 90-second
 native fixture process bound.
 
@@ -189,6 +201,16 @@ source (including the pinned submodule), `COPYING`, checked patch/build scripts,
 reports, provenance and SHA256 checksums. No failed candidate is uploaded under the validated
 artifact name. This gate establishes the fixture's native decoding, not complete CAD compatibility,
 all DWG versions, browser adapter behavior, or final signed installer behavior.
+
+The metadata gate also compares every projected CLASS definition against copied native values
+from the existing `dwg_get_class` getter, within the same live read. It checks complete class
+coverage, DXF/CPP/application names, proxy flags, zombie/entity discriminators and stored counts.
+The private `out_dxf.c` repair retains the native ACDBPLACEHOLDER/LAYOUT definitions that modern
+DXF export otherwise omits, and keeps the stored SPATIAL_INDEX application name. DATATABLE's
+specified DXF spelling is the only name alias in this gate. No class pointer leaves the read.
+The report retains both the copied native values and projected class groups; provenance requires
+their verification before accepting the factory/WASM pair. This does not certify unexposed
+class-maintenance/version fields or opaque native object bytes.
 
 ## License and primary sources
 

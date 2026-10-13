@@ -32,7 +32,7 @@ async function regularFile(root, name, maxBytes) {
 }
 
 /** All inputs are mandatory. Byte hashes establish consistency, not GitHub run authenticity. */
-export async function verifyNativeRuntime(directory, fixturePath, expectedPath, { repairPolicy = 'appearance-arrays' } = {}) {
+export async function verifyNativeRuntime(directory, fixturePath, expectedPath, { repairPolicy = 'metadata-graph' } = {}) {
   assert.ok(['background', 'appearance-arrays', 'metadata-graph'].includes(repairPolicy), 'Unknown native repair policy.');
   const metadataPolicy = repairPolicy === 'metadata-graph', appearancePolicy = repairPolicy !== 'background';
   const assets = metadataPolicy ? METADATA_ASSETS : appearancePolicy ? APPEARANCE_ASSETS : ASSETS;
