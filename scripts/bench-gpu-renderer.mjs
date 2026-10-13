@@ -23,7 +23,7 @@ const worktreeModified = !!execFileSync('git', ['status', '--porcelain', '--untr
 const started = performance.now();
 const profile = resolve(out, `profile-${Date.now()}`);
 const app = await electron.launch({ args: ['.', `--user-data-dir=${profile}`, ...(highPerformance ? ['--force_high_performance_gpu'] : [])], cwd: root, env, timeout: 60000 });
-const result = { sourceSha, worktreeModified, platform: process.platform, arch: process.arch, applicationLaunchMs: 0, hardware: null, viewport: null, comparisons: {}, contextRecovery: [], validation: [], scope: null, measurementSemantics: { firstSubmissionMs: 'CPU wall time of the actual mode-triggered viewport frame; firstFrame.completedFrameWallMs also includes mode/rAF scheduling and completion observation.', cpuSubmissionMedianMs: 'Legacy field: complete viewport render CPU wall time, not just GL submission.', totalRenderMedianMs: 'Observed completed-frame wall time including camera/document mutation for moving/edit workloads; excludes next-rAF wait and desktop presentation.', preparationMs: 'Legacy GPU pre-GL CPU total; detailed cache lookup and geometry preparation are separate.', submissionMs: 'Legacy GPU GL CPU total including initialization/upload/draw; detailed stages are separate.' }, gpuPreference: { requested: highPerformance ? 'high-performance' : 'default', electronSwitch: highPerformance ? '--force_high_performance_gpu' : null, scope: 'Private launched app only; requested preference is not proof of active hardware.' }, limitations: ['Single Windows machine or CI runner; OS caches not purged.', 'Cold frames reset renderer resources and the Canvas scene cache, not process/driver caches; drawing fixture loading precedes measurement.', 'Mode-triggered first-frame latency includes animation-frame scheduling; frame CPU and completion waits are also reported separately.', 'Drawing pointer input is disabled during comparisons so hover changes cannot alter the measured scene; hover invalidation is covered by regression tests.', 'GPU fence wall waits include driver/CPU scheduling and exclude final desktop presentation.', 'Canvas readback completion is not a pure GPU timer.', 'GPU memory is uploaded buffer bytes only; JS heap is approximate and shared with the whole application.', 'Edit/undo uses one visible line and may rebuild the whole scene; these measurements do not establish an editing speed gain.'] };
+const result = { sourceSha, worktreeModified, platform: process.platform, arch: process.arch, applicationLaunchMs: 0, hardware: null, viewport: null, comparisons: {}, contextRecovery: [], validation: [], scope: null, measurementSemantics: { firstSubmissionMs: 'CPU wall time of the actual mode-triggered viewport frame; firstFrame.completedFrameWallMs also includes mode/rAF scheduling and completion observation.', cpuSubmissionMedianMs: 'Legacy field: complete viewport render CPU wall time, not just GL submission.', totalRenderMedianMs: 'Observed completed-frame wall time including camera/document mutation for moving/edit workloads; excludes next-rAF wait and desktop presentation.', preparationMs: 'Legacy GPU pre-GL CPU total; detailed cache lookup and geometry preparation are separate.', submissionMs: 'Legacy GPU GL CPU total including initialization/upload/draw; detailed stages are separate.', gpuAttempt: 'Requested-GPU attempt CPU stages and requested uploads, including refused attempts; null means unavailable. actualRenderer labels the completed frame. Canvas fallback wall time includes the refused attempt and full Canvas rendering/readback.' }, gpuPreference: { requested: highPerformance ? 'high-performance' : 'default', electronSwitch: highPerformance ? '--force_high_performance_gpu' : null, scope: 'Private launched app only; requested preference is not proof of active hardware.' }, limitations: ['Single Windows machine or CI runner; OS caches not purged.', 'Cold frames reset renderer resources and the Canvas scene cache, not process/driver caches; drawing fixture loading precedes measurement.', 'Mode-triggered first-frame latency includes animation-frame scheduling; frame CPU and completion waits are also reported separately.', 'Drawing pointer input is disabled during comparisons so hover changes cannot alter the measured scene; hover invalidation is covered by regression tests.', 'GPU fence wall waits include driver/CPU scheduling and exclude final desktop presentation.', 'Canvas readback completion is not a pure GPU timer.', 'GPU memory is uploaded buffer bytes only; JS heap is approximate and shared with the whole application.', 'Edit/undo uses one visible line and may rebuild the whole scene; these measurements do not establish an editing speed gain.'] };
 
 /** Inspect only an owner-created, currently rendering context; missing proof remains Unknown. */
 async function prototypeContext(page) {
@@ -115,7 +115,16 @@ try {
   await page.addStyleTag({ content: '[data-gpu-prototype="indicator"] { visibility:hidden !important } #drawing { pointer-events:none !important }' });
   await page.mouse.move(0, 0);
   await page.evaluate(() => window.editor.setHover(null));
-  for (const fixture of ['curves', 'precision', 'precision-trillion', 'lineweights', 'dense-lines', 'mixed-schematic']) {
+  const fixtures = [
+    { name: 'curves', supportsGPU: true },
+    { name: 'precision', supportsGPU: true },
+    { name: 'precision-trillion', supportsGPU: true },
+    { name: 'lineweights', supportsGPU: true },
+    { name: 'dense-lines', supportsGPU: true },
+    { name: 'mixed-schematic', supportsGPU: false },
+    { name: 'wide-curve-fallback', supportsGPU: false },
+  ];
+  for (const { name: fixture, supportsGPU } of fixtures) {
     await page.evaluate((name) => { window.gpuPrototype.setMode('canvas'); window.editor.viewport.twist = 0; window.gpuPrototype.loadFixture(name); }, fixture);
     await page.waitForTimeout(100);
     const measure = async (mode, motion = 'pan-zoom', retainEndCamera = false) => page.evaluate(async ({ mode, samples, motion, retainEndCamera }) => {
@@ -141,7 +150,15 @@ try {
           }
           if (typeof status.cacheHit !== 'boolean' || !['cold', 'mutable', 'document', 'view-style', 'zoom-range', 'pan-range', 'precision', 'hit', 'not-checked'].includes(status.cacheReason)) throw new Error(`${label}: invalid or missing GPU cache telemetry`);
         } else if (typeof status.reason !== 'string' || !status.reason.trim()) throw new Error(`${label}: Canvas fallback must record its reason`);
-        const sample = { label, rendered: status.rendered, reason: status.reason ?? null, cpuSubmissionMs: renderEnded - renderStarted, renderToCompletionWallMs: completedAt - renderStarted, workflowWallMs: completedAt - started, completedFrameWallMs: completedAt - started, completionWaitMs: completedAt - completionStart, reportedCompletionMs, uploadBytes: status.rendered ? status.bytes : null, uploadCalls: status.rendered ? status.uploadCalls : null, geometryVertices: status.rendered ? status.geometryVertices : null, cacheHit: status.rendered ? status.cacheHit : null, cacheReason: status.rendered ? status.cacheReason : 'not-checked', center: { ...v.center }, scale: v.scale, twist: v.twist, ...extra };
+        const available = (key) => {
+          if (status[key] === undefined || status[key] === null) return null;
+          if (!(typeof status[key] === 'number' && Number.isFinite(status[key]) && status[key] >= 0)) throw new Error(`${label}: invalid provided GPU-attempt telemetry ${key}`);
+          return status[key];
+        };
+        // A refused GPU attempt still incurs CPU preparation before Canvas completes
+        // the frame. Keep those measurements separate from successful GPU work.
+        const gpuAttempt = mode === 'gpu' ? { rendered: status.rendered, reason: status.reason ?? null, ...Object.fromEntries(stages.map((stage) => [stage, available(stage)])), requestedUploadBytes: available('bytes'), uploadCalls: available('uploadCalls'), geometryVertices: available('geometryVertices'), cacheHit: typeof status.cacheHit === 'boolean' ? status.cacheHit : null, cacheReason: status.cacheReason ?? null } : null;
+        const sample = { label, requestedRenderer: mode, actualRenderer: status.rendered ? 'gpu' : 'canvas', gpuAttempt, rendered: status.rendered, reason: status.reason ?? null, cpuSubmissionMs: renderEnded - renderStarted, renderToCompletionWallMs: completedAt - renderStarted, workflowWallMs: completedAt - started, completedFrameWallMs: completedAt - started, completionWaitMs: completedAt - completionStart, reportedCompletionMs, uploadBytes: status.rendered ? status.bytes : null, uploadCalls: status.rendered ? status.uploadCalls : null, geometryVertices: status.rendered ? status.geometryVertices : null, cacheHit: status.rendered ? status.cacheHit : null, cacheReason: status.rendered ? status.cacheReason : 'not-checked', center: { ...v.center }, scale: v.scale, twist: v.twist, ...extra };
         for (const stage of stages) sample[stage] = status.rendered && typeof status[stage] === 'number' ? status[stage] : null;
         return sample;
       };
@@ -149,7 +166,10 @@ try {
         const rebuilds = frames.filter((frame) => frame.rendered && (frame.cacheHit === false || frame.uploadCalls > 0));
         const numeric = ['cpuSubmissionMs', 'renderToCompletionWallMs', 'workflowWallMs', 'completedFrameWallMs', 'completionWaitMs', 'uploadBytes', 'uploadCalls', 'geometryVertices', 'documentMutationMs', 'cameraUpdateMs', ...stages];
         const aggregate = (samples) => Object.fromEntries(numeric.map((key) => [key, summarize(samples.map((frame) => frame[key]))]));
-        return { all: aggregate(frames), rebuild: aggregate(rebuilds), byAction: Object.fromEntries([...new Set(frames.map((frame) => frame.label))].map((label) => [label, aggregate(frames.filter((frame) => frame.label === label))])), rebuildFrameIndices: frames.flatMap((frame, index) => rebuilds.includes(frame) ? [index] : []), cacheReasons: frames.reduce((counts, frame) => { counts[frame.cacheReason ?? 'missing-telemetry'] = (counts[frame.cacheReason ?? 'missing-telemetry'] ?? 0) + 1; return counts; }, {}) };
+        const attempts = frames.filter((frame) => frame.gpuAttempt);
+        const attemptedStages = [...stages, 'requestedUploadBytes', 'uploadCalls', 'geometryVertices'];
+        const aggregateAttempts = (samples) => Object.fromEntries(attemptedStages.map((key) => [key, summarize(samples.map((frame) => frame.gpuAttempt?.[key]))]));
+        return { all: aggregate(frames), rebuild: aggregate(rebuilds), gpuAttempts: { count: attempts.length, completedGpuFrames: attempts.filter((frame) => frame.rendered).length, canvasFallbackFrames: attempts.filter((frame) => !frame.rendered).length, all: aggregateAttempts(attempts), byAction: Object.fromEntries([...new Set(attempts.map((frame) => frame.label))].map((label) => [label, aggregateAttempts(attempts.filter((frame) => frame.label === label))])) }, byAction: Object.fromEntries([...new Set(frames.map((frame) => frame.label))].map((label) => [label, aggregate(frames.filter((frame) => frame.label === label))])), rebuildFrameIndices: frames.flatMap((frame, index) => rebuilds.includes(frame) ? [index] : []), cacheReasons: frames.reduce((counts, frame) => { counts[frame.cacheReason ?? 'missing-telemetry'] = (counts[frame.cacheReason ?? 'missing-telemetry'] ?? 0) + 1; return counts; }, {}) };
       };
       // Observe the actual setMode-triggered frame. Calling renderNow afterwards would
       // measure a second, warmed frame and hide initialization/geometry/upload costs.
@@ -260,20 +280,6 @@ try {
       const heap = /** @type {any} */ (performance).memory?.usedJSHeapSize ?? null;
       return { firstSubmissionMs: firstFrame.cpuSubmissionMs, first, firstFrame, coldSetup, redrawCpuMedianMs: redrawSummary.all.cpuSubmissionMs.median, redrawTotalMedianMs: redrawSummary.all.completedFrameWallMs.median, cpuSubmissionMedianMs: summary.all.cpuSubmissionMs.median, completionWaitMedianMs: summary.all.completionWaitMs.median, totalRenderMedianMs: summary.all.completedFrameWallMs.median, totalRenderP95Ms: summary.all.completedFrameWallMs.p95, totalRenderMaxMs: summary.all.completedFrameWallMs.max, preparationMedianMs: summary.all.preparationMs.median, rafWaitMedianMs: summarize(intervals).median, uploadedBytes: frames.map((frame) => frame.uploadBytes), uploadedCalls: frames.map((frame) => frame.uploadCalls), frameSamples: frames, summary, warmRedraw: { samples: redrawFrames, summary: redrawSummary }, camera: { initial: { center, scale, twist }, last: lastCamera, terminalRetained: retainEndCamera, untimedReset: cameraReset }, editUndo: motion === 'edit-undo' ? { entityId: editLine.id, visible: true, snapshotRestored: true } : null, samples, motion, heapBytes: heap, status: api.status() };
     }, { mode, samples: 30, motion, retainEndCamera });
-    const canvasResult = await measure('canvas');
-    await page.locator('#drawing').screenshot({ path: resolve(out, `${fixture}-canvas.png`) });
-    const gpuResult = await measure('gpu');
-    const context = await prototypeContext(page);
-    await page.locator('#drawing').screenshot({ path: resolve(out, `${fixture}-gpu.png`) });
-    const a = PNG.sync.read(readFileSync(resolve(out, `${fixture}-canvas.png`)));
-    const b = PNG.sync.read(readFileSync(resolve(out, `${fixture}-gpu.png`)));
-    assert.equal(a.width, b.width); assert.equal(a.height, b.height);
-    const diff = new PNG({ width: a.width, height: a.height });
-    const pixels = pixelmatch(a.data, b.data, diff.data, a.width, a.height, { threshold: 0.15 });
-    writeFileSync(resolve(out, `${fixture}-diff.png`), PNG.sync.write(diff));
-    const coverageMiss = Math.max(missedForeground(a, b), missedForeground(b, a));
-    const panCanvas = await measure('canvas', 'pan');
-    const panGpu = await measure('gpu', 'pan');
     const compareTrajectoryEnd = async (label, camera, initialCamera) => {
       const terminal = await page.evaluate(() => ({ center: { ...window.editor.viewport.center }, scale: window.editor.viewport.scale, twist: window.editor.viewport.twist }));
       assert.deepEqual(terminal, camera, `${fixture}: ${label} proof starts on the actual terminal camera/cache`);
@@ -284,7 +290,7 @@ try {
           const frame = await modeFrame(page, mode);
           if (mode === 'gpu') {
             gpuFrame = frame;
-            if (fixture !== 'mixed-schematic') {
+            if (supportsGPU) {
               assert.equal(frame.rendered, true, `${fixture}: ${label} comparison uses GPU`);
               assert.equal(frame.bytes, 0, `${fixture}: ${label} comparison reuses the terminal geometry bytes`);
               assert.equal(frame.uploadCalls, 0, `${fixture}: ${label} comparison makes no upload calls`);
@@ -300,8 +306,10 @@ try {
         writeFileSync(resolve(out, `${fixture}-${label}-diff.png`), PNG.sync.write(diff));
         const miss = Math.max(missedForeground(images[0], images[1]), missedForeground(images[1], images[0]));
         assert.ok(miss < 0.005, `${fixture}: ${label} endpoint retains geometry within two pixels`);
-        if (fixture === 'mixed-schematic') assert.equal(pixels, 0, `${fixture}: ${label} whole-view fallback matches Canvas exactly`);
-        else if (fixture !== 'dense-lines') assert.ok(pixels / (diff.width * diff.height) < 0.001, `${fixture}: ${label} endpoint retains the existing raster accuracy gate`);
+        if (!supportsGPU) {
+          assert.equal(pixels, 0, `${fixture}: ${label} whole-view fallback matches Canvas exactly`);
+          assert.equal(Buffer.compare(images[0].data, images[1].data), 0, `${fixture}: ${label} whole-view fallback has identical RGBA pixels`);
+        } else if (fixture !== 'dense-lines') assert.ok(pixels / (diff.width * diff.height) < 0.001, `${fixture}: ${label} endpoint retains the existing raster accuracy gate`);
         evidence = { camera, gpuFrame, imageDifferenceFraction: pixels / (diff.width * diff.height), twoPixelCoverageMissFraction: miss, untimedCameraReset: null };
       } finally {
         const reset = await page.evaluate(async (next) => {
@@ -320,6 +328,22 @@ try {
       }
       return evidence;
     };
+    const canvasResult = await measure('canvas');
+    await page.locator('#drawing').screenshot({ path: resolve(out, `${fixture}-canvas.png`) });
+    const gpuResult = await measure('gpu', 'pan-zoom', !supportsGPU);
+    const fallbackPanZoomImage = supportsGPU ? null : await compareTrajectoryEnd('pan-zoom', gpuResult.camera.last, gpuResult.camera.initial);
+    const context = await prototypeContext(page);
+    await page.locator('#drawing').screenshot({ path: resolve(out, `${fixture}-gpu.png`) });
+    const a = PNG.sync.read(readFileSync(resolve(out, `${fixture}-canvas.png`)));
+    const b = PNG.sync.read(readFileSync(resolve(out, `${fixture}-gpu.png`)));
+    assert.equal(a.width, b.width); assert.equal(a.height, b.height);
+    const diff = new PNG({ width: a.width, height: a.height });
+    const pixels = pixelmatch(a.data, b.data, diff.data, a.width, a.height, { threshold: 0.15 });
+    writeFileSync(resolve(out, `${fixture}-diff.png`), PNG.sync.write(diff));
+    const coverageMiss = Math.max(missedForeground(a, b), missedForeground(b, a));
+    const panCanvas = await measure('canvas', 'pan');
+    const panGpu = await measure('gpu', 'pan', !supportsGPU);
+    const fallbackPanImage = supportsGPU ? null : await compareTrajectoryEnd('pan-only', panGpu.camera.last, panGpu.camera.initial);
     const boundedCanvas = await measure('canvas', 'bounded-zoom');
     const boundedGpu = await measure('gpu', 'bounded-zoom', true);
     const boundedImage = await compareTrajectoryEnd('bounded-zoom', boundedGpu.camera.last, boundedGpu.camera.initial);
@@ -336,19 +360,21 @@ try {
     const maxEdgeGpu = await measure('gpu', 'max-edge', true);
     const maxEdgeImage = await compareTrajectoryEnd('max-edge', maxEdgeGpu.camera.last, maxEdgeGpu.camera.initial);
     const editCanvas = await measure('canvas', 'edit-undo');
-    const editGpu = await measure('gpu', 'edit-undo');
-    result.comparisons[fixture] = { canvas: canvasResult, gpu: gpuResult, prototypeContext: context, panOnly: { canvas: panCanvas, gpu: panGpu }, boundedZoom: { canvas: boundedCanvas, gpu: boundedGpu, endpoint: boundedImage }, sustainedZoom: { canvas: sustainedCanvas, gpu: sustainedGpu, endpoint: sustainedImage }, offCenterZoom: { canvas: offCenterCanvas, gpu: offCenterGpu, endpoint: offCenterImage }, cacheEnvelopeEdges: { min: { canvas: minEdgeCanvas, gpu: minEdgeGpu, endpoint: minEdgeImage }, max: { canvas: maxEdgeCanvas, gpu: maxEdgeGpu, endpoint: maxEdgeImage } }, editUndo: { canvas: editCanvas, gpu: editGpu }, imageDifferenceFraction: pixels / (a.width * a.height), twoPixelCoverageMissFraction: coverageMiss };
+    const editGpu = await measure('gpu', 'edit-undo', !supportsGPU);
+    const fallbackEditImage = supportsGPU ? null : await compareTrajectoryEnd('edit-undo', editGpu.camera.last, editGpu.camera.initial);
+    result.comparisons[fixture] = { expectedSupportsGPU: supportsGPU, canvas: canvasResult, gpu: gpuResult, prototypeContext: context, panOnly: { canvas: panCanvas, gpu: panGpu }, boundedZoom: { canvas: boundedCanvas, gpu: boundedGpu, endpoint: boundedImage }, sustainedZoom: { canvas: sustainedCanvas, gpu: sustainedGpu, endpoint: sustainedImage }, offCenterZoom: { canvas: offCenterCanvas, gpu: offCenterGpu, endpoint: offCenterImage }, cacheEnvelopeEdges: { min: { canvas: minEdgeCanvas, gpu: minEdgeGpu, endpoint: minEdgeImage }, max: { canvas: maxEdgeCanvas, gpu: maxEdgeGpu, endpoint: maxEdgeImage } }, editUndo: { canvas: editCanvas, gpu: editGpu }, wholeViewFallbackEndpoints: supportsGPU ? null : { panZoom: fallbackPanZoomImage, pan: fallbackPanImage, boundedZoom: boundedImage, sustainedZoom: sustainedImage, offCenterZoom: offCenterImage, minimumZoom: minEdgeImage, maximumZoom: maxEdgeImage, editUndo: fallbackEditImage }, imageDifferenceFraction: pixels / (a.width * a.height), twoPixelCoverageMissFraction: coverageMiss };
     for (const [name, canvas, gpu] of [['pan/zoom', canvasResult, gpuResult], ['pan', panCanvas, panGpu], ['bounded zoom', boundedCanvas, boundedGpu], ['sustained zoom', sustainedCanvas, sustainedGpu], ['off-center zoom', offCenterCanvas, offCenterGpu], ['minimum zoom with edge pan', minEdgeCanvas, minEdgeGpu], ['maximum zoom with edge pan', maxEdgeCanvas, maxEdgeGpu], ['edit/undo', editCanvas, editGpu]]) {
       assert.deepEqual(canvas.camera.initial, gpu.camera.initial, `${fixture}: ${name} pairs start at identical cameras`);
       assert.ok([canvas.firstFrame, ...canvas.warmRedraw.samples, ...canvas.frameSamples].every((frame) => frame.rendered === false), `${fixture}: ${name} baseline samples must use Canvas`);
     }
     for (const [name, workload] of [['pan/zoom', gpuResult], ['pan', panGpu], ['bounded zoom', boundedGpu], ['sustained zoom', sustainedGpu], ['off-center zoom', offCenterGpu], ['minimum zoom with edge pan', minEdgeGpu], ['maximum zoom with edge pan', maxEdgeGpu], ['edit/undo', editGpu]]) {
-      assert.ok([workload.firstFrame, ...workload.warmRedraw.samples, ...workload.frameSamples].every((frame) => frame.rendered === (fixture !== 'mixed-schematic')), `${fixture}: ${name} samples must not silently mix GPU and Canvas renderers`);
-      if (fixture !== 'mixed-schematic') assert.equal(workload.firstFrame.cacheReason, 'cold', `${fixture}: ${name} mode-triggered first frame includes cold geometry work`);
+      assert.ok([workload.firstFrame, ...workload.warmRedraw.samples, ...workload.frameSamples].every((frame) => frame.rendered === supportsGPU), `${fixture}: ${name} samples must not silently mix GPU and Canvas renderers`);
+      if (supportsGPU) assert.equal(workload.firstFrame.cacheReason, 'cold', `${fixture}: ${name} mode-triggered first frame includes cold geometry work`);
     }
-    if (fixture === 'mixed-schematic') {
-      assert.equal(gpuResult.status.rendered, false, 'unsupported full schematic must fall back');
+    if (!supportsGPU) {
+      assert.equal(gpuResult.status.rendered, false, `${fixture}: unsupported full scene must fall back`);
       assert.equal(pixels, 0, 'whole-view fallback must match Canvas exactly');
+      assert.equal(Buffer.compare(a.data, b.data), 0, `${fixture}: centered whole-view fallback has identical RGBA pixels`);
     } else {
       assert.equal(gpuResult.status.rendered, true, `${fixture} uses GPU`);
       assert.equal(gpuResult.firstFrame.cacheReason, 'cold', `${fixture}: mode-triggered first frame includes cold geometry work`);
@@ -360,8 +386,8 @@ try {
       assert.ok(coverageMiss < 0.005, `${fixture}: supported geometry matches within two pixels`);
       if (fixture !== 'dense-lines') assert.ok(pixels / (a.width * a.height) < 0.001, `${fixture}: bounded raster differences`);
     }
-    console.log(`${fixture}: Canvas ${canvasResult.totalRenderMedianMs.toFixed(2)} ms, requested GPU ${gpuResult.totalRenderMedianMs.toFixed(2)} ms; image difference ${(100 * pixels / (a.width * a.height)).toFixed(3)}%; ${gpuResult.status.reason ?? 'GPU'}`);
-    console.log(`${fixture} pan only: Canvas ${panCanvas.totalRenderMedianMs.toFixed(2)} ms, requested GPU ${panGpu.totalRenderMedianMs.toFixed(2)} ms; GPU CPU ${panGpu.cpuSubmissionMedianMs.toFixed(2)} ms, uploads ${panGpu.uploadedBytes.filter((bytes) => bytes > 0).length}/${panGpu.samples}`);
+    console.log(`${fixture}: Canvas ${canvasResult.totalRenderMedianMs.toFixed(2)} ms, requested GPU ${gpuResult.totalRenderMedianMs.toFixed(2)} ms (actual ${gpuResult.firstFrame.actualRenderer}); image difference ${(100 * pixels / (a.width * a.height)).toFixed(3)}%; ${gpuResult.status.reason ?? 'GPU'}`);
+    console.log(`${fixture} pan only: Canvas ${panCanvas.totalRenderMedianMs.toFixed(2)} ms, requested GPU ${panGpu.totalRenderMedianMs.toFixed(2)} ms (actual ${panGpu.firstFrame.actualRenderer}); requested-GPU viewport CPU ${panGpu.cpuSubmissionMedianMs.toFixed(2)} ms, uploads ${panGpu.uploadedBytes.filter((bytes) => bytes > 0).length}/${panGpu.samples}`);
     for (const [name, canvas, gpu] of [['bounded zoom', boundedCanvas, boundedGpu], ['sustained zoom', sustainedCanvas, sustainedGpu], ['off-center zoom', offCenterCanvas, offCenterGpu], ['minimum zoom with edge pan', minEdgeCanvas, minEdgeGpu], ['maximum zoom with edge pan', maxEdgeCanvas, maxEdgeGpu], ['edit/undo', editCanvas, editGpu]]) {
       console.log(`${fixture} ${name}: completed-frame median/p95/max Canvas ${canvas.totalRenderMedianMs.toFixed(2)}/${canvas.totalRenderP95Ms.toFixed(2)}/${canvas.totalRenderMaxMs.toFixed(2)} ms, requested GPU ${gpu.totalRenderMedianMs.toFixed(2)}/${gpu.totalRenderP95Ms.toFixed(2)}/${gpu.totalRenderMaxMs.toFixed(2)} ms; rebuild frames ${gpu.summary.rebuildFrameIndices.join(',') || 'none'}`);
     }
@@ -371,7 +397,7 @@ try {
     const pannedImages = [];
     for (const mode of ['canvas', 'gpu']) {
       const status = await modeFrame(page, mode);
-      if (mode === 'gpu' && fixture !== 'mixed-schematic') {
+      if (mode === 'gpu' && supportsGPU) {
         assert.equal(status.rendered, true, `${fixture}: panned comparison uses GPU`);
         assert.equal(status.bytes, 0, `${fixture}: panned comparison reuses uploaded geometry`);
       }
@@ -380,6 +406,10 @@ try {
       pannedImages.push(PNG.sync.read(readFileSync(path)));
     }
     const panMiss = Math.max(missedForeground(pannedImages[0], pannedImages[1]), missedForeground(pannedImages[1], pannedImages[0]));
+    if (!supportsGPU) {
+      assert.equal(pixelmatch(pannedImages[0].data, pannedImages[1].data, null, pannedImages[0].width, pannedImages[0].height, { threshold: 0.15 }), 0, `${fixture}: legacy panned whole-view fallback matches Canvas exactly`);
+      assert.equal(Buffer.compare(pannedImages[0].data, pannedImages[1].data), 0, `${fixture}: legacy panned whole-view fallback has identical RGBA pixels`);
+    }
     result.comparisons[fixture].pannedTwoPixelCoverageMissFraction = panMiss;
     assert.ok(panMiss < 0.005, `${fixture}: cached panned frame matches geometry within two pixels`);
   }

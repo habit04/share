@@ -828,7 +828,7 @@ describe('GPU bounded zoom correctness and separate CPU telemetry', () => {
   });
 
   it.each([1, 1.25, 2, 3])('bounds thin and wide native circle envelopes throughout zoom at DPR %s', (dpr) => {
-    for (const { radius, weight } of [{ radius: 2, weight: 0.25 }, { radius: 0.1, weight: 10 }]) {
+    for (const { radius, weight } of [{ radius: 2, weight: 0.25 }, { radius: 1, weight: 10 }]) {
       const circle: Entity = { ...line, type: 'circle', center: { x: 0, y: 0 }, radius, lineWeight: weight };
       const weighted = { ...view, dpr, lineweights: true };
       const geometry = prepareZoom2D(drawing([circle]), weighted, overlay);
@@ -841,11 +841,63 @@ describe('GPU bounded zoom correctness and separate CPU telemetry', () => {
           const at = (distance: number): Point => ({ x: view.width / 2 + Math.cos(angle) * distance, y: view.height / 2 - Math.sin(angle) * distance });
           expect(covers(actual, at(r + half - allowance))).toBe(true);
           expect(covers(actual, at(r + half + allowance))).toBe(false);
-          if (r > half + allowance) expect(covers(actual, at(r - half - allowance))).toBe(false);
-          else if (r < half - allowance) expect(covers(actual, { x: view.width / 2, y: view.height / 2 })).toBe(true);
+          expect(covers(actual, at(r - half - allowance))).toBe(false);
+          expect(covers(actual, { x: view.width / 2, y: view.height / 2 })).toBe(false);
         }
       }
     }
+  });
+
+  it.each(['circle', 'arc', 'polyline'] as const)('refuses self-overlapping %s strokes before drawing any part of the view', (type) => {
+    const base = { id: 'wide', layer: '0', color: 3, lineWeight: 10 } as const;
+    const curve: Entity = type === 'circle' ? { ...base, type, center: { x: 0, y: 0 }, radius: 0.1 }
+      : type === 'arc' ? { ...base, type, center: { x: 0, y: 0 }, radius: 0.1, startAngle: 0.2, endAngle: 3.8 }
+        : { ...base, type, points: [{ x: -0.1, y: 0 }, { x: 0.1, y: 0 }], closed: false, bulges: [1] };
+    const weighted = { ...view, scale: 80, lineweights: true };
+    const state = sealImmutableData(drawing([line, curve]));
+    expect(() => prepareZoom2D(state, weighted, overlay)).toThrow(/Curve stroke overlap.*Canvas/);
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas);
+    expect(renderer.render(state, weighted, overlay)).toMatchObject({ rendered: false, bytes: 0, uploadCalls: 0, submissionMs: 0, reason: expect.stringContaining('Curve stroke overlap') });
+    expect(gl.createProgram).not.toHaveBeenCalled(); expect(gl.createBuffer).not.toHaveBeenCalled();
+    expect(gl.clear).not.toHaveBeenCalled(); expect(gl.drawArrays).not.toHaveBeenCalled();
+    renderer.dispose();
+  });
+
+  it.each([1, 2, 3])('keeps a quarter-physical-pixel inner-radius margin, including equality, at DPR %s', (dpr) => {
+    const weighted = { ...view, scale: 80, dpr, lineweights: true };
+    for (const projectedRadius of [20, 20 + 0.125 / dpr, 20 + 0.25 / dpr]) {
+      const circle: Entity = { ...line, type: 'circle', center: { x: 0, y: 0 }, radius: projectedRadius / weighted.scale, lineWeight: 10 };
+      expect(() => prepareZoom2D(drawing([circle]), weighted, overlay)).toThrow(/Curve stroke overlap.*Canvas/);
+    }
+  });
+
+  it('narrows zoom admission for a safe current curve and refuses before a cached zoom crosses the overlap margin', () => {
+    const circle: Entity = { ...line, id: 'circle', type: 'circle', center: { x: 0, y: 0 }, radius: 0.7, lineWeight: 10 };
+    const state = sealImmutableData(drawing([line, circle]));
+    const weighted = { ...view, lineweights: true };
+    const geometry = prepareZoom2D(state, weighted, overlay);
+    expect(geometry.minRatio).toBeGreaterThan(0.8);
+    expect(geometry.minRatio).toBeLessThan(1);
+    expect(circle.radius * weighted.scale * geometry.minRatio).toBeGreaterThan(20 + 0.25 / weighted.dpr);
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas);
+    expect(renderer.render(state, weighted, overlay).rendered).toBe(true);
+    expect(renderer.render(state, { ...weighted, scale: view.scale * 0.97 }, overlay)).toMatchObject({ rendered: true, cacheHit: true, bytes: 0 });
+    gl.clear.mockClear(); gl.drawArrays.mockClear();
+    expect(renderer.render(state, { ...weighted, scale: view.scale * 0.96 }, overlay)).toMatchObject({ rendered: false, cacheReason: 'zoom-range', bytes: 0, uploadCalls: 0, submissionMs: 0, reason: expect.stringContaining('Curve stroke overlap') });
+    expect(gl.bufferData).toHaveBeenCalledOnce();
+    expect(gl.clear).not.toHaveBeenCalled(); expect(gl.drawArrays).not.toHaveBeenCalled();
+    renderer.dispose();
+  });
+
+  it('refuses offscreen wide curves as well as visible ones so complete-view fallback remains explicit', () => {
+    const circle: Entity = { ...line, id: 'offscreen-wide', type: 'circle', center: { x: 1000, y: 1000 }, radius: 0.1, lineWeight: 10 };
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas);
+    expect(renderer.render(sealImmutableData(drawing([line, circle])), { ...view, scale: 80, lineweights: true }, overlay)).toMatchObject({ rendered: false, bytes: 0, uploadCalls: 0, reason: expect.stringContaining('offscreen-wide') });
+    expect(gl.clear).not.toHaveBeenCalled(); expect(gl.drawArrays).not.toHaveBeenCalled();
+    renderer.dispose();
   });
 
   it.each([1, 2, 3])('bounds wide open-arc butt-cap tangent error independently at DPR %s', (dpr) => {

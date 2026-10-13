@@ -97,13 +97,13 @@ export function installGpuPrototype(editor: Editor): void {
         view.center = origin;
         view.scale = 4096;
         view.twist = 0.63;
-      } else if (name === 'lineweights') {
+      } else if (name === 'lineweights' || name === 'wide-curve-fallback') {
         const style = { layer: '0', color: 7 };
         editor.loadState({ ...base, entities: [
           { ...style, id: 'L', type: 'line', a: { x: -4, y: -1 }, b: { x: 4, y: 1 }, lineWeight: 1 },
           { ...style, color: 1, id: 'X', type: 'line', a: { x: -4, y: 1 }, b: { x: 4, y: -1 }, lineWeight: 2 },
-          { ...style, color: 3, id: 'C', type: 'circle', center: { x: -2, y: 1.5 }, radius: 0.1, lineWeight: 10 },
-          { ...style, color: 5, id: 'A', type: 'arc', center: { x: 2, y: 1 }, radius: 0.2, startAngle: 0.2, endAngle: 3.8, lineWeight: 6 },
+          { ...style, color: 3, id: 'C', type: 'circle', center: { x: -2, y: 1.5 }, radius: name === 'wide-curve-fallback' ? 0.1 : 0.4, lineWeight: 10 },
+          { ...style, color: 5, id: 'A', type: 'arc', center: { x: 2, y: 1 }, radius: name === 'wide-curve-fallback' ? 0.2 : 0.3, startAngle: 0.2, endAngle: 3.8, lineWeight: 6 },
           { ...style, color: 2, id: 'P', type: 'polyline', points: [{ x: -2, y: -1.5 }, { x: -1, y: -1.5 }, { x: -0.5, y: -0.75 }], closed: false, bulges: [0.6, 0], lineWeight: 4 },
         ] }, null);
         view.center = { x: 0, y: 0 };
@@ -121,7 +121,7 @@ export function installGpuPrototype(editor: Editor): void {
         ] }, null);
       } else editor.loadState(base, null);
       // Fixture-local display state must not leak into the ordinary comparison scenes.
-      lineweightDisplay.enabled = name === 'lineweights';
+      lineweightDisplay.enabled = name === 'lineweights' || name === 'wide-curve-fallback';
       lineweightDisplay.pxPerMm = undefined;
       editor.viewport.settings.gridVisible = false;
       editor.viewport.renderCurrent();

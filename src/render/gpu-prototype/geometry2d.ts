@@ -91,9 +91,11 @@ function curveCount(radius: number, sweep: number, view: Gpu2DView, pixelError =
   return count;
 }
 
-function arcPath(center: Point, radius: number, start: number, sweep: number, view: Gpu2DView, curveScale = view.scale, pixelError = PIXEL_ERROR, strokeWidth = 0, buttCaps = false): Point[] {
+function arcPath(center: Point, radius: number, start: number, sweep: number, view: Gpu2DView, curveScale = view.scale, pixelError = PIXEL_ERROR, strokeWidth = 0, buttCaps = false, onCurve?: (radius: number) => void): Point[] {
   checked(center);
   if (![radius, start, sweep].every(Number.isFinite)) throw new Error('Invalid arc geometry');
+  if (radius < 0) throw new Error('Invalid curve radius or scale');
+  onCurve?.(radius);
   // At steps <= pi/2, outer miter excess h*(sec(step/2)-1) is bounded by
   // sqrt(2)*h*(1-cos(step/2)). Wide strokes need this budget as well as center sagitta.
   const count = curveCount(radius, sweep, { ...view, scale: curveScale }, pixelError, Math.SQRT2 * strokeWidth / 2, buttCaps ? strokeWidth / 2 : 0);
@@ -108,12 +110,12 @@ function arcPath(center: Point, radius: number, start: number, sweep: number, vi
   return path;
 }
 
-function entityPath(entity: Entity, view: Gpu2DView, curveScale = view.scale, pixelError = PIXEL_ERROR, strokeWidth = 0): { points: Point[]; closed: boolean } {
+function entityPath(entity: Entity, view: Gpu2DView, curveScale = view.scale, pixelError = PIXEL_ERROR, strokeWidth = 0, onCurve?: (radius: number) => void): { points: Point[]; closed: boolean } {
   const local = (point: Point): Point => checked({ x: point.x - view.center.x, y: point.y - view.center.y });
   switch (entity.type) {
     case 'line': return { points: [screenPoint(entity.a, view), screenPoint(entity.b, view)], closed: false };
     case 'circle': {
-      const points = arcPath(local(entity.center), entity.radius, 0, Math.PI * 2, view, curveScale, pixelError, strokeWidth);
+      const points = arcPath(local(entity.center), entity.radius, 0, Math.PI * 2, view, curveScale, pixelError, strokeWidth, false, onCurve);
       points.pop();
       return { points, closed: true };
     }
@@ -121,7 +123,7 @@ function entityPath(entity: Entity, view: Gpu2DView, curveScale = view.scale, pi
       if (![entity.startAngle, entity.endAngle].every(Number.isFinite)) throw new Error('Invalid arc angles');
       let sweep = normAngle(entity.endAngle - entity.startAngle);
       if (sweep < EPS) sweep = Math.PI * 2;
-      return { points: arcPath(local(entity.center), entity.radius, entity.startAngle, sweep, view, curveScale, pixelError, strokeWidth, true), closed: false };
+      return { points: arcPath(local(entity.center), entity.radius, entity.startAngle, sweep, view, curveScale, pixelError, strokeWidth, true, onCurve), closed: false };
     }
     case 'polyline': {
       // Rebase BEFORE bulgeArc computes its midpoint/center, preserving close-zoom arcs.
@@ -131,7 +133,7 @@ function entityPath(entity: Entity, view: Gpu2DView, curveScale = view.scale, pi
         if (!Number.isFinite(segment.bulge)) throw new Error('Invalid polyline bulge');
         if (segment.arc) {
           const arc = segment.arc;
-          const curve = arcPath(arc.center, arc.radius, arc.sweep > 0 ? arc.startAngle : arc.endAngle, arc.sweep, view, curveScale, pixelError, strokeWidth, true);
+          const curve = arcPath(arc.center, arc.radius, arc.sweep > 0 ? arc.startAngle : arc.endAngle, arc.sweep, view, curveScale, pixelError, strokeWidth, true, onCurve);
           // Native endpoints are authoritative; avoid accumulating trigonometric seam errors.
           curve[curve.length - 1] = projectLocal(segment.b, view);
           points.push(...curve.slice(1));
@@ -234,6 +236,7 @@ export interface PreparedZoom2D {
   /** Anchor-local center XY, fixed CSS-pixel extrusion XY, RGB. Never world Float32s. */
   vertices: Float32Array<ArrayBuffer>;
   batches: StrokeBatch[];
+  /** May narrow the requested interval to keep every curve's inner radius safely positive. */
   minRatio: number;
   maxRatio: number;
   padding: number;
@@ -362,8 +365,20 @@ export function prepareZoom2D(state: DrawingState, view: Gpu2DView, overlay: Gpu
     if (!Number.isFinite(magnitude) || magnitude * 12 * 2 ** -23 * view.dpr > ZOOM_FLOAT_PIXEL_ERROR) throw new Error('GPU zoom geometry exceeds Float32 precision budget');
     const vertices: number[] = [], batches: StrokeBatch[] = [];
     const sourceBounds = { min: { x: Infinity, y: Infinity }, max: { x: -Infinity, y: -Infinity } };
+    let admittedMinRatio = minRatio;
     for (const { entity, color, width, alpha } of styled) {
-      const path = entityPath(entity, view, view.scale * maxRatio, ZOOM_CURVE_PIXEL_ERROR, width);
+      const admitCurve = entity.type === 'line' ? undefined : (radius: number): void => {
+        const projectedRadius = radius * view.scale;
+        if (!Number.isFinite(projectedRadius)) throw new Error('Invalid curve radius or scale');
+        // Tested Canvas/Skia wide-circle overlap preserves a hole that this strip union fills.
+        // Other overlapping curve strokes are unproven; keep the complete view on Canvas.
+        // Reserve the entire quarter-physical-pixel curve/Float32 budget at the inner edge.
+        const innerLimit = width / 2 + PIXEL_ERROR / view.dpr;
+        if (!(projectedRadius > innerLimit)) throw new Error(`Curve stroke overlap or precision margin requires Canvas rendering (${entity.id})`);
+        const required = innerLimit / projectedRadius * (1 + 16 * Number.EPSILON);
+        admittedMinRatio = Math.max(admittedMinRatio, Math.min(1, required));
+      };
+      const path = entityPath(entity, view, view.scale * maxRatio, ZOOM_CURVE_PIXEL_ERROR, width, admitCurve);
       const points = path.points.map((point) => {
         const center = checked({ x: point.x - view.width / 2, y: point.y - view.height / 2 });
         for (const axis of ['x', 'y'] as const) {
@@ -380,7 +395,9 @@ export function prepareZoom2D(state: DrawingState, view: Gpu2DView, overlay: Gpu
     if (!Number.isFinite(sourceBounds.min.x)) sourceBounds.min = sourceBounds.max = { x: 0, y: 0 };
     const packed = new Float32Array(vertices);
     if (!packed.every(Number.isFinite)) throw new Error('Float32 stroke geometry exceeds finite limits');
-    return { vertices: packed, batches, minRatio, maxRatio, padding, sourceBounds, extent };
+    // The rectangle was retained for the full requested interval. Narrowing admission above
+    // keeps it conservative without a second geometry/rebase pass or larger GPU uploads.
+    return { vertices: packed, batches, minRatio: admittedMinRatio, maxRatio, padding, sourceBounds, extent };
   } finally {
     colorDisplay.paper = previousPaper;
     Object.assign(lineweightDisplay, previousWeights);
