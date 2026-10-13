@@ -18,16 +18,20 @@ type Scope = { signal: AbortSignal; commit(data: string | Uint8Array, writer: (d
 type Handler = (ev: unknown, ...args: unknown[]) => unknown;
 const privateRoot = path.resolve('.codex-local/windows-export-admission-tests');
 const hosts: any[] = [], windows: EventEmitter[] = [], releases: Array<() => void> = [], tasks: Promise<unknown>[] = [];
+const completedFixtureCleanup = new Set<string>();
 let dir: string;
 function deferred() { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done; }); releases.push(() => resolve()); return { promise, resolve }; }
 function track<T>(promise: Promise<T>) { tasks.push(promise); void promise.catch(() => {}); return promise; }
 beforeEach(async () => { await fs.mkdir(privateRoot, { recursive: true }); dir = await fs.mkdtemp(path.join(privateRoot, 'case-')); });
 afterEach(async () => {
+  const directory = dir;
   vi.restoreAllMocks(); for (const release of releases.splice(0)) release();
   for (const win of windows.splice(0)) win.emit('closed');
   await Promise.allSettled(tasks.splice(0)); await Promise.all(hosts.splice(0).map(host => host.dispose()));
-  if (path.dirname(dir) !== privateRoot || !path.basename(dir).startsWith('case-')) throw new Error('Unsafe private export test cleanup');
-  await fs.rm(dir, { recursive: true, force: true });
+  if (path.dirname(directory) !== privateRoot || !path.basename(directory).startsWith('case-')) throw new Error('Unsafe private export test cleanup');
+  // A large fixture is removed and its absence asserted within its body deadline.
+  // Never repeat native removal in the hook or use a later test's global directory.
+  if (!completedFixtureCleanup.delete(directory)) await fs.rm(directory, { recursive: true, force: true });
 });
 function manager(options: Record<string, unknown> = {}) {
   const owner = {}, identity = createWindowsPathIdentity();
@@ -154,7 +158,7 @@ describe.runIf(process.platform === 'win32')('Windows generic export owner/order
     release.resolve(); await Promise.all([first, second]); expect(f.host.stats()).toMatchObject({ queuedBytes: 0, ordinaryQueuedBytes: 0, pdfQueuedBytes: 0 });
   });
   it('requires explicit PDF eligibility for an extended file beyond 128 MiB, keeps 256 KiB hash scratch, and preserves ordinary refusal', async () => {
-    const file = path.join(dir, 'large-existing.pdf'); let created = false, heldDescriptors = 0;
+    const directory = dir, file = path.join(directory, 'large-existing.pdf'); let created = false, heldDescriptors = 0;
     let owned: ReturnType<typeof manager> | undefined;
     try {
     const handle = await fs.open(file, 'wx'); created = true;
@@ -185,14 +189,22 @@ describe.runIf(process.platform === 'win32')('Windows generic export owner/order
     expect(reads).toHaveLength(completedReads); expect(heldDescriptors).toBe(0);
     expect(f.host.stats()).toMatchObject({ pending: 0, queuedBytes: 0, ordinaryQueuedBytes: 0, pdfQueuedBytes: 0 });
     } finally {
-      // Join all owned readers before altering the fixture. Deallocate its large
-      // extent within this test's existing body deadline; the shared 10s cleanup
-      // hook should only remove an empty file and its private directory.
+      // Join all owned readers before altering the fixture. The truncated file
+      // remained after a full-suite hook timeout; complete its entire
+      // teardown within the existing 60s body, retaining the shared 10s hook.
       await owned?.host.dispose(); expect(heldDescriptors).toBe(0);
-      if (owned) expect(owned.host.stats()).toMatchObject({ pending: 0, queuedBytes: 0, ordinaryQueuedBytes: 0, pdfQueuedBytes: 0, queues: 0, metadataActive: 0, metadataQueued: 0 });
+      if (owned) {
+        expect(owned.host.stats()).toMatchObject({ pending: 0, queuedBytes: 0, ordinaryQueuedBytes: 0, pdfQueuedBytes: 0, queues: 0, metadataActive: 0, metadataQueued: 0 });
+        const index = hosts.indexOf(owned.host); expect(index).toBeGreaterThanOrEqual(0); hosts.splice(index, 1);
+      }
       if (created) {
         const reset = await fs.open(file, 'r+'); try { await reset.truncate(0); } finally { await reset.close(); }
         expect((await fs.stat(file)).size).toBe(0);
+        expect(path.dirname(directory)).toBe(privateRoot); expect(path.basename(directory)).toMatch(/^case-/);
+        await fs.unlink(file); await expect(fs.lstat(file)).rejects.toMatchObject({ code: 'ENOENT' });
+        expect(await fs.readdir(directory)).toEqual([]); await fs.rmdir(directory);
+        await expect(fs.lstat(directory)).rejects.toMatchObject({ code: 'ENOENT' });
+        completedFixtureCleanup.add(directory);
       }
     }
   }, 60000);
