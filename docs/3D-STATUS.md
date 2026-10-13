@@ -59,7 +59,24 @@ Baseline on Windows x64, Node 22.23.3: typecheck, lint and 177 test files / 2,21
 
 ## Milestone 3: modelling
 
-Pending.
+- Works (core, no UI yet): `sketch.ts` turns closed polylines (with bulges), circles, ellipses,
+  closed splines and chained lines/arcs into planar profiles with hole ordering, refusing open or
+  self-intersecting loops with a message; `triangulate.ts` (ear clipping with holes);
+  `sweep.ts` extrude and revolve (closed, outward for either sign; analytic volume tests);
+  `feature-eval.ts` re-evaluates feature trees with depth and node limits; the Manifold 3.5.4
+  (Apache-2.0) Boolean kernel runs in a module Worker with timeouts and one restart, inputs and
+  results validated (closed, budget, winding), float32 recentring with exact coordinate restore,
+  and an in-process variant for Node tests. The worker runs under the renderer's strict CSP;
+  main-thread WebAssembly is never used. manifold-3d is a devDependency bundled by Vite.
+- Tested: 5 vitest files (exact volumes: cube extrude 1, washer, half turn, two-cube
+  union/subtract/intersect 1.5/0.5/0.5 within 1e-9, edge-touching union, refused open meshes,
+  worker transport with a structured-clone fake worker: matching, timeout, crash, restart,
+  pre-ready failure). Independent review done; all findings fixed. Measured: two-cube union
+  0.7 ms in Node, 8-16 ms through the worker; 50k-triangle union 156-255 ms.
+- Remains: the modelling commands (BOX ... TORUS, EXTRUDE, REVOLVE, UNION, SUBTRACT, INTERSECT),
+  construction plane and previews (in progress on feature/3d-tools3d).
+- Known: a timed-out Boolean recycles the worker and fails the other pending calls; closedness
+  and welding checks of large operands run on the main thread (milestone 6).
 
 ## Milestone 4: editing
 
@@ -67,7 +84,25 @@ Pending.
 
 ## Milestone 5: persistence
 
-Pending.
+- Works: solids are saved in DXF as polyface meshes (POLYLINE flag 64, VERTEX, SEQEND) carrying
+  `JCAD_3D` XDATA with a versioned, size-bounded, strictly validated JSON history (id, name,
+  feature). Round trips preserve ids, layers, colours, names, feature trees and meshes exactly.
+  JCad-written solids are read back even with the setting off (hidden, never lost, written back
+  on save, reported). Polyfaces from other programs become mesh solids only when 3D reading is
+  on; otherwise the old drop-and-report behaviour is unchanged. Over-limit models are refused
+  at Save / Save As with the triangle count and limit; autosave writes the copy without them and
+  the Drawing Recovery Manager shows the omission. DWG Save, Save As and EXPORTDWG refuse
+  drawings with solids with a message to save DXF. Undo after load works.
+- Tested: 46+ tests (round trips of every feature kind, malformed and newer payloads, quads,
+  bad indices, prototype-pollution keys, oversized chunks and payloads, parts out of range,
+  nesting past the limit, polyfaces in blocks, colours, DWG refusals, autosave and recovery);
+  golden DXF outputs of four fixtures prove byte-identical 2D files; the reviewer additionally
+  confirmed identical output and import reports for all 25 fixture drawings. Full suite
+  195 files / 2,465 tests green.
+- Unsupported: reading solids from DWG files (the DWG converter drops polyface meshes and
+  reports them); opening the files in AutoCAD or other programs has not been verified.
+- Known: split meshes (over 32,767 vertices or faces) weld exact-duplicate vertices on read;
+  negative zero reads as 0; solids keep an ACI colour only.
 
 ## Milestone 6: hardening
 
@@ -75,7 +110,6 @@ Pending.
 
 ## Known limitations (always current)
 
-- 3D objects are not written to DXF or DWG files; saving a drawing that has them asks for
-  confirmation and the saved file omits them. Recovery snapshots omit them too.
-- DWG files are never written with 3D objects.
+- DWG files are never written with 3D objects (Save, Save As and EXPORTDWG refuse; save DXF).
+- Models whose DXF would exceed the reader's limits cannot be saved; reduce the model.
 - Reading `3DSOLID`, `REGION`, `BODY` (ACIS) bodies is unsupported; they stay retained raw records.
