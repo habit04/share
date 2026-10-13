@@ -40,8 +40,15 @@ method in both modern and legacy style parsing. Explicit zero override lists
 remain empty, and retained full native flag words are not truncated or masked.
 The helper compares actual modern TABLESTYLE slots and typed references after
 binary reopening. Legacy row/margin convenience fields are derived from those
-formats; constructor-generated legacy templates remain covered by the mandatory
-independent raw-DXF host comparison. The controlled `projected-table-style.dxf`
+formats. Before the checked baseline, styles absent from the source OBJECTS
+inventory and without any retained raw or modern payload receive the exact
+generated formats emitted by the pinned encoder. Both the original generated
+path and its prepared representation are checked through binary readback;
+malformed text-style resolution refuses rather than changing a reference.
+Explicit imported legacy records remain in the full typed snapshot, including
+their row fields; a representation the native engine cannot preserve refuses.
+The mandatory independent raw-DXF host comparison also remains required.
+The controlled `projected-table-style.dxf`
 unit fixture exercises grammar and one supplied override; it does not replace
 the complete independent three-override source/readback fixture proof.
 

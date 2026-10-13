@@ -505,11 +505,42 @@ impl SourceSchema {
                 "MLEADERSTYLE" => matches!(object, ObjectType::MultiLeaderStyle(_)),
                 "DICTIONARYVAR" => matches!(object, ObjectType::DictionaryVariable(_)),
                 "SCALE" => matches!(object, ObjectType::Scale(_)),
+                "TABLESTYLE" => matches!(object, ObjectType::TableStyle(_)),
                 _ => true,
             };
             if !compatible {
                 return Err(refusal("source object class changed during import"));
             }
+        }
+        // The constructor adds native defaults absent from the input OBJECTS
+        // section. Prepare only those objects' exact pinned binary payloads
+        // before baseline, so freshly generated styles are compared on both
+        // sides. Source presence is checked independently of decoded shape:
+        // explicit legacy/raw styles and existing modern slots stay untouched.
+        let generated_styles: Vec<_> = document
+            .objects
+            .iter()
+            .filter_map(|(handle, object)| match object {
+                ObjectType::TableStyle(style)
+                    if !self.objects.contains_key(&handle.value())
+                        && style.raw_dxf_codes.is_none()
+                        && style.modern_style.is_none() =>
+                {
+                    Some(*handle)
+                }
+                _ => None,
+            })
+            .collect();
+        for handle in generated_styles {
+            let Some(ObjectType::TableStyle(style)) = document.objects.get(&handle) else {
+                unreachable!()
+            };
+            let prepared =
+                crate::generated_table_style::canonical_generated_table_style(document, style)
+                    .map_err(|detail| refusal(&detail))?;
+            document
+                .objects
+                .insert(handle, ObjectType::TableStyle(prepared));
         }
         if self.headers.contains_key("$CANNOSCALE") || self.headers.contains_key("$ANNOALLVISIBLE")
         {

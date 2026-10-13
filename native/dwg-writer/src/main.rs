@@ -1,4 +1,5 @@
 //! Offline Windows DWG copies with strict protocol, preflight, OS budget, and reopening checks.
+mod generated_table_style;
 mod source_schema;
 mod spline_packet;
 mod validation;
@@ -321,12 +322,6 @@ fn canonicalize_names(value: &mut Value, aliases: &BTreeMap<String, String>) {
 /// in the bounded interchange contract. Unknown records are never certified by
 /// stripping their raw fields or treating their handles as harmless storage.
 fn retained_metadata(object: &ObjectType) -> bool {
-    if let ObjectType::TableStyle(style) = object {
-        // Modern retained TABLESTYLE data is authoritative. Constructor-generated
-        // legacy templates have no such source payload and remain covered by the
-        // mandatory independent raw-DXF postflight.
-        return style.modern_style.is_some();
-    }
     matches!(
         object,
         ObjectType::Dictionary(_)
@@ -341,6 +336,7 @@ fn retained_metadata(object: &ObjectType) -> bool {
             | ObjectType::Scale(_)
             | ObjectType::MLineStyle(_)
             | ObjectType::VisualStyle(_)
+            | ObjectType::TableStyle(_)
     )
 }
 
@@ -594,10 +590,11 @@ fn typed_metadata_value(object: &ObjectType) -> Result<Value, String> {
     if let ObjectType::XRecord(value) = object {
         checked_xrecord(value)?;
     }
-    let mut value = if let ObjectType::TableStyle(style) = object {
-        // Compare actual native slots. Legacy row/margin convenience fields are
-        // derived from these formats and do not have independent modern slots.
-        serde_json::json!({ "TableStyle": {
+    let mut value = match object {
+        ObjectType::TableStyle(style) if style.modern_style.is_some() => {
+            // Compare actual native slots. Legacy row/margin convenience fields are
+            // derived from these formats and do not have independent modern slots.
+            serde_json::json!({ "TableStyle": {
             "handle": style.handle,
             "owner_handle": style.owner_handle,
             "name": style.name,
@@ -608,8 +605,10 @@ fn typed_metadata_value(object: &ObjectType) -> Result<Value, String> {
             "modern_style": style.modern_style,
             "modern_overrides": style.modern_overrides,
         } })
-    } else {
-        serde_json::to_value(object).map_err(|_| "Cannot verify typed metadata fields.")?
+        }
+        // Explicit imported legacy styles keep their complete typed payload.
+        // No decoded-shape exemption can remove them from before/after checks.
+        _ => serde_json::to_value(object).map_err(|_| "Cannot verify typed metadata fields.")?,
     };
     // GROUP and MLEADERSTYLE names live in their owning dictionary keys, which
     // the graph compares separately. Their binary records have no name slot;
@@ -1713,17 +1712,23 @@ mod tests {
                 unreachable!()
             };
             assert_eq!(style.properties.len(), 58);
+            let mut expected = vec![if handle == 0x140 { 1 } else { 0 }; 58];
             if handle == 0x140 {
-                assert!(style
-                    .properties
-                    .iter()
-                    .any(|property| property.enabled == 1));
+                expected[51] = 0;
+                expected[52] = 0;
             } else {
-                assert!(style
+                // The original off styles retain an inherited selector2 at
+                // edge-modifier slot14; it is not a boolean enable flag.
+                expected[14] = 2;
+            }
+            assert_eq!(
+                style
                     .properties
                     .iter()
-                    .all(|property| property.enabled == 0));
-            }
+                    .map(|property| property.enabled)
+                    .collect::<Vec<_>>(),
+                expected
+            );
         }
         assert_eq!(
             source.object_reactors(Handle::new(0x157)),
@@ -1948,8 +1953,126 @@ mod tests {
     }
 
     #[test]
+    fn generated_table_style_is_prepared_before_baseline_with_exact_binary_semantics() {
+        use acadrust::objects::{CellAlignment, TableStyleFlags};
+        use acadrust::types::Color;
+        let text = "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1032\n0\nENDSEC\n0\nEOF\n";
+        let mut document = DxfReader::from_reader(std::io::Cursor::new(text.as_bytes()))
+            .unwrap()
+            .read()
+            .unwrap();
+        let handle = document
+            .objects
+            .iter()
+            .find_map(|(handle, object)| {
+                matches!(object, ObjectType::TableStyle(style) if style.name == "Standard")
+                    .then_some(*handle)
+            })
+            .unwrap();
+        let ObjectType::TableStyle(style) = document.objects.get_mut(&handle).unwrap() else {
+            unreachable!()
+        };
+        assert!(style.raw_dxf_codes.is_none() && style.modern_style.is_none());
+        style.horizontal_margin = 0.37;
+        style.vertical_margin = 0.23;
+        style.flags =
+            TableStyleFlags::from_bits_retain(8 | TableStyleFlags::TITLE_SUPPRESSED.bits());
+        style.data_row_style.text_height = 2.75;
+        style.data_row_style.alignment = CellAlignment::BottomRight;
+        style.data_row_style.text_color = Color::None;
+        style.data_row_style.fill_enabled = true;
+        style.data_row_style.fill_color = Color::from_rgb(17, 128, 255);
+        style.data_row_style.format_string = "Literal Δ".into();
+        style.data_row_style.top_border.is_invisible = true;
+        // A dangling explicit reference and missing row name use Standard.
+        style.data_row_style.text_style_handle = Some(Handle::new(0xFFFFFF));
+        style.data_row_style.text_style_name = "Missing".into();
+        let original = style.clone();
+        let prepared =
+            generated_table_style::canonical_generated_table_style(&document, &original).unwrap();
+        let expected = typed_metadata_value(&ObjectType::TableStyle(prepared.clone())).unwrap();
+        // Compare the materialization with the actual original generated writer
+        // path, not another copy of its construction algorithm.
+        let check_binary = |document: &CadDocument| {
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            DwgWriter::write_to_writer(&mut bytes, document).unwrap();
+            bytes.set_position(0);
+            let reopened = DwgReader::from_stream(bytes).read().unwrap();
+            equivalent(
+                &expected,
+                &typed_metadata_value(&reopened.objects[&handle]).unwrap(),
+                "generated TABLESTYLE DWG",
+            )
+            .unwrap();
+        };
+        check_binary(&document);
+        source_schema::capture(text)
+            .unwrap()
+            .verify(&mut document)
+            .unwrap();
+        assert_eq!(
+            document.objects[&handle],
+            ObjectType::TableStyle(prepared.clone())
+        );
+        check_binary(&document);
+        assert_eq!(prepared.modern_unknown_long1 & 8, 0);
+        assert_eq!(
+            prepared
+                .modern_overrides
+                .iter()
+                .map(|entry| entry.0)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        let base = &prepared.modern_style.as_ref().unwrap().cell_style;
+        assert_eq!(base.content_format.text_height, 0.18);
+        assert_eq!((base.horizontal_margin, base.vertical_margin), (0.37, 0.23));
+        let data = &prepared.modern_overrides[2].1.cell_style;
+        assert_eq!(data.content_format.text_height, 2.75);
+        assert_eq!(data.content_format.content_color, Color::None);
+        assert_eq!(data.background_color, Color::from_rgb(17, 128, 255));
+        assert_eq!(
+            data.borders
+                .iter()
+                .map(|grid| grid.index_mask)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 4, 8, 16, 32]
+        );
+        assert!(!data.borders[0].border.is_invisible);
+        assert_eq!(
+            data.content_format.text_style,
+            document.text_styles.get("Standard").unwrap().handle
+        );
+        // Existing native slots stay untouched even for source-absent objects.
+        source_schema::capture(text)
+            .unwrap()
+            .verify(&mut document)
+            .unwrap();
+        assert_eq!(document.objects[&handle], ObjectType::TableStyle(prepared));
+        assert!(generated_table_style::canonical_generated_table_style(
+            &document,
+            match &document.objects[&handle] {
+                ObjectType::TableStyle(style) => style,
+                _ => unreachable!(),
+            }
+        )
+        .is_err());
+        let mut malformed = document.clone();
+        malformed.text_styles.get_mut("Standard").unwrap().handle = Handle::NULL;
+        let mut alternate = acadrust::tables::TextStyle::new("Alternate");
+        alternate.handle = Handle::new(0xFFFFFE);
+        malformed.text_styles.add(alternate).unwrap();
+        assert!(
+            generated_table_style::canonical_generated_table_style(&malformed, &original)
+                .unwrap_err()
+                .contains("NULL handle")
+        );
+    }
+
+    #[test]
     fn table_style_native_wrapper_and_format_budget_are_not_optional() {
-        let text = include_str!("../tests/fixtures/projected-table-style.dxf");
+        let text =
+            include_str!("../tests/fixtures/projected-table-style.dxf").replace("\r\n", "\n");
         for changed in [
             text.replace("{JCAD_TABLESTYLE_NATIVE_V1", "{JCAD_TABLESTYLE_NATIVE_V2"),
             text.replace("92\n1\n93\n1\n102\n}", "92\n2\n93\n1\n102\n}"),
@@ -1969,7 +2092,7 @@ mod tests {
     #[test]
     fn table_style_legacy_none_colors_and_trailing_xdata_are_preserved_or_refused() {
         let legacy = "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1032\n0\nENDSEC\n0\nSECTION\n2\nOBJECTS\n0\nTABLESTYLE\n5\n200\n330\nC\n100\nAcDbTableStyle\n3\nControlled\n70\n0\n71\n0\n7\nStandard\n62\n257\n63\n257\n64\n257\n0\nENDSEC\n0\nEOF\n";
-        let document = DxfReader::from_reader(std::io::Cursor::new(legacy.as_bytes()))
+        let mut document = DxfReader::from_reader(std::io::Cursor::new(legacy.as_bytes()))
             .unwrap()
             .read()
             .unwrap();
@@ -1988,6 +2111,46 @@ mod tests {
             style.data_row_style.top_border.color,
             acadrust::types::Color::None
         );
+        let retained = style.clone();
+        source_schema::capture(legacy)
+            .unwrap()
+            .verify(&mut document)
+            .unwrap();
+        assert_eq!(
+            document.objects[&Handle::new(0x200)],
+            ObjectType::TableStyle(retained)
+        );
+        // Source identity, not raw/modern shape, excludes an explicit record
+        // from constructor materialization even if its raw cache is cleared.
+        let mut without_raw_cache = document.clone();
+        let ObjectType::TableStyle(style) = without_raw_cache
+            .objects
+            .get_mut(&Handle::new(0x200))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        style.raw_dxf_codes = None;
+        source_schema::capture(legacy)
+            .unwrap()
+            .verify(&mut without_raw_cache)
+            .unwrap();
+        assert!(
+            matches!(&without_raw_cache.objects[&Handle::new(0x200)], ObjectType::TableStyle(style) if style.modern_style.is_none())
+        );
+        assert!(retained_metadata(&document.objects[&Handle::new(0x200)]));
+        let baseline = typed_metadata_value(&document.objects[&Handle::new(0x200)]).unwrap();
+        let ObjectType::TableStyle(style) = document.objects.get_mut(&Handle::new(0x200)).unwrap()
+        else {
+            unreachable!()
+        };
+        style.data_row_style.text_height += 1.0;
+        assert!(equivalent(
+            &baseline,
+            &typed_metadata_value(&document.objects[&Handle::new(0x200)]).unwrap(),
+            "retained legacy TABLESTYLE mutation"
+        )
+        .is_err());
         let invalid = legacy.replace("257", "258");
         assert!(
             DxfReader::from_reader(std::io::Cursor::new(invalid.as_bytes().to_vec()))
@@ -1995,7 +2158,8 @@ mod tests {
                 .read()
                 .is_err()
         );
-        let original = include_str!("../tests/fixtures/projected-table-style.dxf");
+        let original =
+            include_str!("../tests/fixtures/projected-table-style.dxf").replace("\r\n", "\n");
         let text = original.replace(
             "0\nENDSEC\n0\nEOF\n",
             "1001\nJCAD_STYLE_PROOF\n1000\nLiteral \\U+0041 Δ\n1070\n7\n0\nENDSEC\n0\nEOF\n",
