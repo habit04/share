@@ -1255,8 +1255,10 @@ interface ExpansionBudget {
   truncated: boolean;
   /** A block inserts itself (directly or through others): the repeated reference was skipped. */
   cyclic: boolean;
+  /** Optional plot-only resolver of an insertion's unplotted physical lineweight. */
+  readonly resolveLineweight?: (entity: EntityBase) => number;
 }
-const newBudget = (maxObjects = MAX_INSERT_EXPANSION): ExpansionBudget => ({ remaining: MAX_BLOCK_EXPANSION_WORK, left: maxObjects, visits: maxObjects, chain: [], deps: new Map(), truncated: false, cyclic: false });
+const newBudget = (maxObjects = MAX_INSERT_EXPANSION, resolveLineweight?: (entity: EntityBase) => number): ExpansionBudget => ({ remaining: MAX_BLOCK_EXPANSION_WORK, left: maxObjects, visits: maxObjects, chain: [], deps: new Map(), truncated: false, cyclic: false, resolveLineweight });
 
 function spendExpansion(budget: ExpansionBudget, work = 1): void {
   budget.remaining -= work;
@@ -1332,9 +1334,11 @@ export function explodeInsert(ins: InsertEntity, lookup: BlockLookup, depth = 0)
 /**
  * Expand an insert (uncached) into at most `maxObjects` objects and tell whether it was cut short
  * (`truncated`: the limit; `cyclic`: a block inserts itself, its repeated reference skipped).
+ * A plot may supply a source-width resolver to retain nested ByBlock physical widths without
+ * changing the default expansion or its public caches. Plot table overrides happen afterwards.
  */
-export function expandInsert(ins: InsertEntity, lookup: BlockLookup, maxObjects = MAX_INSERT_EXPANSION): { entities: Entity[]; truncated: boolean; cyclic: boolean } {
-  const budget = newBudget(maxObjects);
+export function expandInsert(ins: InsertEntity, lookup: BlockLookup, maxObjects = MAX_INSERT_EXPANSION, resolveLineweight?: (entity: EntityBase) => number): { entities: Entity[]; truncated: boolean; cyclic: boolean } {
+  const budget = newBudget(maxObjects, resolveLineweight);
   const entities: Entity[] = [];
   explodeInto(entities, ins, lookup, 0, budget);
   return { entities, truncated: budget.truncated, cyclic: budget.cyclic };
@@ -1407,7 +1411,10 @@ function explodeSingleInto(out: Entity[], ins: InsertEntity, lookup: BlockLookup
       break;
     }
     budget.left -= 1;
-    out.push(attributeText(ins, block, a, value));
+    const text = attributeText(ins, block, a, value);
+    const inheritedWeight = text.lineWeight === -2 ? budget.resolveLineweight?.(ins) : undefined;
+    if (inheritedWeight !== undefined && (!Number.isFinite(inheritedWeight) || inheritedWeight < 0)) throw new Error('Plot lineweight resolver must return finite nonnegative millimetres.');
+    out.push(inheritedWeight === undefined ? text : { ...text, lineWeight: inheritedWeight });
   }
   budget.chain.pop();
 }
@@ -1611,7 +1618,9 @@ function transformInto(out: Entity[], e: Entity, tf: (p: Point) => Point, ins: I
   const lay = e.layer === '0' ? ins.layer : e.layer;
   const lt = e.linetype && e.linetype.toUpperCase() === 'BYBLOCK' ? ins.linetype : e.linetype;
   const { trueColor: _t, colorLayer: _c, colorName: _n, transparency: _a, transparencyLayer: _al, ...plain } = e;
-  const styled = { ...plain, layer: lay, ...inheritedColor(e, ins), ...inheritedTransparency(e, ins), linetype: lt } as Entity;
+  const inheritedWeight = e.lineWeight === -2 ? budget.resolveLineweight?.(ins) : undefined;
+  if (inheritedWeight !== undefined && (!Number.isFinite(inheritedWeight) || inheritedWeight < 0)) throw new Error('Plot lineweight resolver must return finite nonnegative millimetres.');
+  const styled = { ...plain, layer: lay, ...inheritedColor(e, ins), ...inheritedTransparency(e, ins), linetype: lt, ...(inheritedWeight === undefined ? {} : { lineWeight: inheritedWeight }) } as Entity;
   if (e.type === 'leader' && e.textAppearance) {
     const annotation: EntityBase = { id: e.id, layer: e.textLayer ?? e.layer, color: e.textAppearance.color ?? 'ByLayer', ...e.textAppearance };
     Object.assign(styled, { textAppearance: { ...e.textAppearance, ...inheritedColor(annotation, ins), ...inheritedTransparency(annotation, ins) } });
