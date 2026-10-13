@@ -156,6 +156,9 @@ export function withByBlockLibrarySymbols(state: DrawingState): DrawingState {
  * A library block is referenced when an insert in model space, in a referenced block or
  * in any drawing-private block (those are always kept) names it, so a user symbol nested
  * inside another block survives.
+ * Imported definitions with retained CAD identities also survive: their block records,
+ * geometry or owned metadata may be referenced without a visible INSERT. Only library
+ * definitions added after import can be discarded by this save-time optimization.
  *
  * Not pure: which blocks count as user symbols depends on `userLibrary` having loaded.
  * A drawing saved before `userLibrary.load()` resolves keeps its unused user blocks
@@ -164,6 +167,17 @@ export function withByBlockLibrarySymbols(state: DrawingState): DrawingState {
 export function withoutUnusedLibraryBlocks(state: DrawingState): DrawingState {
   const isLibrary = (name: string) => LIBRARY_NAMES.has(name) || userLibrary.has(name);
   const used = referencedBlocks(state);
+  const retainedBlocks = new Set<string>();
+  const retainedEntities = new Set<string>();
+  for (const node of state.cadGraph?.nodes ?? []) {
+    if (node.anchor?.kind === 'table' && node.anchor.table.toUpperCase() === 'BLOCK_RECORD') retainedBlocks.add(node.anchor.name.toUpperCase());
+    else if (node.anchor?.kind === 'entity') retainedEntities.add(node.anchor.id);
+    // Older DXF versions can expose a handled BLOCK without a BLOCK_RECORD table.
+    if (node.type === 'BLOCK') {
+      const name = node.groups.find(([code]) => code === 2)?.[1].trim();
+      if (name) retainedBlocks.add(name.toUpperCase());
+    }
+  }
   // Private blocks are kept whatever references them, so whatever they reference is used too.
   const visit = (list: readonly Entity[]) => {
     for (const e of list) {
@@ -173,7 +187,11 @@ export function withoutUnusedLibraryBlocks(state: DrawingState): DrawingState {
       if (b) visit(b.entities);
     }
   };
-  for (const [name, def] of Object.entries(state.blocks)) if (!isLibrary(name)) visit(def.entities);
+  for (const [name, def] of Object.entries(state.blocks)) {
+    const retained = retainedBlocks.has(name.toUpperCase()) || def.entities.some((entity) => retainedEntities.has(entity.id));
+    if (retained) used.add(name);
+    if (retained || !isLibrary(name)) visit(def.entities);
+  }
   const blocks: Record<string, BlockDef> = {};
   let dropped = 0;
   for (const [name, def] of Object.entries(state.blocks)) {

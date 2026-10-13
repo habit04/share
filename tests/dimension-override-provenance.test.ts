@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { Drawing, DEFAULT_HEADER, type DrawingState } from '../src/core/document';
+import { reconcileCadGraph } from '../src/core/cad-graph';
 import { defaultLayout } from '../src/core/layouts';
 import { scaleEntityBy, blockTransform } from '../src/core/entities';
 import {
@@ -54,11 +55,11 @@ describe('dimension override presence across named style redefinitions', () => {
     const base = findDimStyle(imported, 'ISO-25')!;
     expect(original.style).toMatchObject({ textHeight: 5, decimals: 0 });
     expect(original.styleOverrides).toMatchObject({ DIMTXT: 5, DIMDEC: 0 });
-    const doc = new Drawing({ ...imported,
+    const doc = new Drawing(reconcileCadGraph(imported, { ...imported,
       blocks: { ...imported.blocks, DETAIL: { name: 'DETAIL', basePoint: { x: 0, y: 0 }, attributes: [], entities: [{ ...original, id: 'block-dimension' }] } },
-      layouts: [{ ...defaultLayout('Paper'), pristine: false, entities: [{ ...original, id: 'paper-dimension' }] }],
+      layouts: [...(imported.layouts ?? []), { ...defaultLayout('Paper'), pristine: false, entities: [{ ...original, id: 'paper-dimension' }] }],
       space: { layout: 'Paper' },
-    });
+    }));
     const before = doc.snapshot;
     doc.transactDrawing((s) => withDimStyle(s, { ...base, textHeight: 5, decimals: 0 }));
     const equal = doc.snapshot;

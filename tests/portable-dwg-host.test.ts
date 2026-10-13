@@ -11,23 +11,27 @@ const require = createRequire(import.meta.url);
 type RunOptions = { cwd?: string; env?: NodeJS.ProcessEnv; signal?: AbortSignal; timeoutMs?: number; maxBytes?: number; spawn?: (...args: unknown[]) => unknown; stopTimeoutMs?: number; checkLimits?: () => Promise<void>; limitIntervalMs?: number };
 type Run = (exe: string, args: string[], options: RunOptions) => Promise<string>;
 type Locations = { directory: string; manifest: string };
-type ConvertOptions = { fs?: typeof fs; locations?: () => Locations; temporaryRoot?: string; signal?: AbortSignal; run?: Run };
+type NativeMetadata = { schemaVersion: number; dxf: string; objects: unknown[]; readError: number; writeError: number; complete: boolean; notes: string[] };
+type ReadMetadata = (bytes: Buffer, signal?: AbortSignal) => Promise<NativeMetadata>;
+type ConvertOptions = { fs?: typeof fs; locations?: () => Locations; temporaryRoot?: string; signal?: AbortSignal; run?: Run; readMetadata?: ReadMetadata };
 type Commit = (file: string, data: Buffer, check: () => Promise<void>) => Promise<void>;
 type Exporter = { status(): Promise<{ available: boolean; reason?: string }>; export(file: string, text: string, commit: Commit, signal?: AbortSignal): Promise<string> };
 const host = require('../electron/portable-dwg.cjs') as {
   convertDxfToDwg(text: string, options: ConvertOptions): Promise<Buffer>;
-  createPortableDwgExporter(options: { platform?: string; locations?: () => Locations; convert?: (text: string, options: ConvertOptions) => Promise<Buffer> }): Exporter;
+  createPortableDwgExporter(options: { platform?: string; locations?: () => Locations; convert?: (text: string, options: ConvertOptions) => Promise<Buffer>; readMetadata?: ReadMetadata }): Exporter;
   verifyPortableWriter(locations: Locations): Promise<{ executable: string; check(): Promise<void> }>;
   validateExportDxf(text: unknown): void;
   writerTimeout(bytes: number): number;
   writerEnvironment(workspace: string, inherited: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
   verifyWriterReport(report: Buffer, output: Buffer): unknown;
+  verifyPortableMetadata(text: string, metadata: NativeMetadata): Promise<unknown>;
 };
 const { runBoundedWriter } = require('../electron/portable-dwg-process.cjs') as { runBoundedWriter: Run };
 
 const roots: string[] = [];
 const DXF = '0\r\nSECTION\r\n2\r\nHEADER\r\n0\r\nENDSEC\r\n0\r\nEOF\r\n';
 const OUTPUT = Buffer.concat([Buffer.from('AC1032'), Buffer.alloc(130, 1)]);
+const nativeMetadata = (dxf = DXF, patch: Partial<NativeMetadata> = {}): NativeMetadata => ({ schemaVersion: 1, dxf, objects: [], readError: 0, writeError: 0, complete: true, notes: [], ...patch });
 const sha256 = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 const report = (patch: Record<string, unknown> = {}) => Buffer.from(JSON.stringify({ schemaVersion: 1, success: true, outputFormat: 'AC1032', outputSha256: sha256(OUTPUT), warnings: [], errors: [], processMemoryLimitBytes: 1073741824, inputEntityCount: 2, outputEntityCount: 2, ...patch }));
 
@@ -267,7 +271,9 @@ describe('portable DWG helper integrity and protocol', () => {
       await fs.writeFile(path.join(workspace, 'report.json'), report());
       return 'done';
     };
-    expect(await host.convertDxfToDwg(DXF, { locations: f.locations, temporaryRoot: f.root, run })).toEqual(OUTPUT);
+    const readMetadata = vi.fn(async (bytes: Buffer) => { expect(bytes).toEqual(OUTPUT); return nativeMetadata(); });
+    expect(await host.convertDxfToDwg(DXF, { locations: f.locations, temporaryRoot: f.root, run, readMetadata })).toEqual(OUTPUT);
+    expect(readMetadata).toHaveBeenCalledOnce();
     await expect(fs.access(workspace)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
@@ -285,6 +291,58 @@ describe('portable DWG helper integrity and protocol', () => {
 });
 
 describe('portable DWG export destination and admission', () => {
+  it('refuses a verified helper output when the separate reader finds a changed header before committing', async () => {
+    const f = await fixture();
+    await fs.writeFile(f.target, 'original drawing');
+    const backup = `${f.target}.bak`;
+    await fs.writeFile(backup, 'previous backup');
+    const source = DXF.replace('0\r\nENDSEC', '9\r\n$PSOLHEIGHT\r\n40\r\n4\r\n0\r\nENDSEC');
+    const decoded = source.replace('40\r\n4\r\n', '40\r\n0.25\r\n');
+    const run: Run = async (_exe, _args, opts) => {
+      await fs.writeFile(path.join(opts.cwd!, 'output.dwg'), OUTPUT);
+      await fs.writeFile(path.join(opts.cwd!, 'report.json'), report());
+      return 'verified by helper';
+    };
+    const commit = vi.fn();
+    const exporter = host.createPortableDwgExporter({ platform: 'win32', convert: (text, options) => host.convertDxfToDwg(text, { ...options, locations: f.locations, temporaryRoot: f.root, run, readMetadata: async () => nativeMetadata(decoded) }) });
+    await expect(exporter.export(f.target, source, commit)).rejects.toThrow(/HEADER.*PSOLHEIGHT|PSOLHEIGHT.*changed/);
+    expect(commit).not.toHaveBeenCalled();
+    expect(await fs.readFile(f.target, 'utf8')).toBe('original drawing');
+    expect(await fs.readFile(backup, 'utf8')).toBe('previous backup');
+    expect((await fs.readdir(f.root)).filter(name => name.startsWith('jcad-dwg-'))).toEqual([]);
+  });
+
+  it.each([{ complete: false }, { readError: 1 }, { writeError: 1 }])('refuses uncertified independent projections: %j', async (fault) => {
+    await expect(host.verifyPortableMetadata(DXF, nativeMetadata(DXF, fault))).rejects.toThrow(/separate DWG reader/);
+  });
+
+  it('refuses a decoder inventory whose retained object is absent from its raw projection', async () => {
+    const metadata = nativeMetadata(DXF, { objects: [{ handle: 'A1', type: 'XRECORD', dxfType: 'XRECORD', supertype: 'object' }] });
+    await expect(host.verifyPortableMetadata(DXF, metadata)).rejects.toThrow(/inventory|A1|projection/);
+  });
+
+  it('does not release converted output if cancellation arrives during independent readback', async () => {
+    const f = await fixture();
+    await fs.writeFile(f.target, 'original');
+    const controller = new AbortController();
+    const run: Run = async (_exe, _args, opts) => {
+      await fs.writeFile(path.join(opts.cwd!, 'output.dwg'), OUTPUT);
+      await fs.writeFile(path.join(opts.cwd!, 'report.json'), report());
+      return 'verified by helper';
+    };
+    const readMetadata: ReadMetadata = async (_bytes, signal) => {
+      expect(signal).toBe(controller.signal);
+      controller.abort();
+      return nativeMetadata();
+    };
+    const commit = vi.fn();
+    const exporter = host.createPortableDwgExporter({ platform: 'win32', convert: (text, options) => host.convertDxfToDwg(text, { ...options, locations: f.locations, temporaryRoot: f.root, run, readMetadata }) });
+    await expect(exporter.export(f.target, DXF, commit, controller.signal)).rejects.toThrow(/canceled/);
+    expect(commit).not.toHaveBeenCalled();
+    expect(await fs.readFile(f.target, 'utf8')).toBe('original');
+    expect((await fs.readdir(f.root)).filter(name => name.startsWith('jcad-dwg-'))).toEqual([]);
+  });
+
   it('preserves the original and refuses another program changing it while conversion runs', async () => {
     const f = await fixture();
     await fs.writeFile(f.target, 'original');

@@ -9,6 +9,7 @@ import { newId } from '../core/entities';
 import type { DrawingState } from '../core/document';
 import type { Tool } from './types';
 import { scriptTool, point, pointOrKeyword, text, number, keyword, select, dflt } from './script';
+import { cadCloneBatch } from './cad-edits';
 
 export const blockDefaults = { lastInserted: '' };
 
@@ -106,7 +107,7 @@ export function blockTool(): Tool {
       ...s,
       blocks: { ...s.blocks, [name]: def },
       entities: [...s.entities.filter((e) => !set.has(e.id)), insert],
-    }));
+    }), { cloneBatches: [cadCloneBatch(ents, def.entities)] });
     ctx.selection = new Set();
     blockDefaults.lastInserted = name;
     ctx.log(`Block "${name}" defined with ${ents.length} object(s).`);

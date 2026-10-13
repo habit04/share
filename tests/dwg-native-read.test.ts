@@ -27,6 +27,15 @@ function stub(result: unknown = { data: 17, error: 0 }) {
 const checked = (module: ReturnType<typeof stub>, input: Uint8Array | ArrayBuffer = badBytes) => readNativeDwg(module as unknown as NativeDwgModule, input);
 
 describe('checked native drawing read ownership', () => {
+  it('reports accepted native flags independently of the pointer and releases on diagnostic failure', () => {
+    const status = vi.fn();
+    expect(readNativeDwg(stub() as unknown as NativeDwgModule, badBytes, 'dwg', status)).toBe(17);
+    expect(status).toHaveBeenCalledExactlyOnceWith(0);
+    const module = stub();
+    expect(() => readNativeDwg(module as unknown as NativeDwgModule, badBytes, 'dwg', () => { throw new Error('diagnostic failed'); })).toThrow('diagnostic failed');
+    expect(module.dwg_free).toHaveBeenCalledExactlyOnceWith(17);
+    expect(module.FS.unlink).toHaveBeenCalledExactlyOnceWith('/jcad-input.dwg');
+  });
   it('transfers a successful pointer only after deleting the native FS input', () => {
     const module = stub();
     expect(checked(module)).toBe(17);

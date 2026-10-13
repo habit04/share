@@ -32,6 +32,7 @@ import type { TextStyle } from '../encoding';
 import { readTextPlacement } from './read-text';
 import { geometryProblem } from '../import-report';
 import { commonProps } from './read-core';
+import { namedCameraCenter, planarNamedCamera, type NativeViewCamera } from '../../core/named-view';
 
 export function readHeaderSection(pairs: Pair[], from: number, to: number, headerVars: Map<string, Pair[]>, ctx: ReadContext): string {
   let cur: Pair[] | null = null;
@@ -100,7 +101,7 @@ export function readTablesSection(objs: Obj[], tables: TableRecords, dimStyles: 
         linetype: lt && lt.toUpperCase() !== 'CONTINUOUS' ? lt : undefined,
       });
       const apps = o.groups.filter((q) => q.code === 1001 && !isQuietXdataApp(q.value) && q.value !== transparencyApp).map((q) => q.value);
-      if (apps.length) report.add({ type: 'LAYER', action: 'simplified', reason: `layer extended metadata (${[...new Set(apps)].join(', ')}) is not kept`, ...(o.line ? { line: o.line } : {}) });
+      if (apps.length) report.add({ type: 'LAYER', action: has(o, 5) ? 'kept' : 'simplified', reason: `layer extended metadata (${[...new Set(apps)].join(', ')}) ${has(o, 5) ? 'is retained in the object graph' : 'has no source identity and cannot be retained'}`, ...(o.line ? { line: o.line } : {}) });
       if ((rawTransparency !== undefined || transparencyApp) && transparency === undefined) report.add({ type: 'LAYER', action: 'simplified', reason: 'invalid layer transparency is not kept; opaque is used', line: o.line });
       if (has(o, 430) && !validColorName(colorName)) report.add({ type: 'LAYER', action: 'simplified', reason: 'invalid named/color-book identity is not kept; RGB/ACI color is kept', line: o.line });
     } else if (o.kind === 'LTYPE') {
@@ -117,7 +118,7 @@ export function readTablesSection(objs: Obj[], tables: TableRecords, dimStyles: 
       const unsupported = o.groups.filter((p) => UNSUPPORTED_DIM_CODES[p.code] && Number(p.value) !== 0).map((p) => UNSUPPORTED_DIM_CODES[p.code]);
       if (unsupported.length) report.add({ type: 'DIMSTYLE', action: 'simplified', reason: `${[...new Set(unsupported)].join(', ')} settings are not modeled or written back; supported style variables are kept`, ...(o.line ? { line: o.line } : {}) });
       const apps = o.groups.filter((p) => p.code === 1001 && !isQuietXdataApp(p.value)).map((p) => p.value);
-      if (apps.length) report.add({ type: 'DIMSTYLE', action: 'simplified', reason: `extended style data (XDATA) of ${[...new Set(apps)].join(', ')} is not kept`, ...(o.line ? { line: o.line } : {}) });
+      if (apps.length) report.add({ type: 'DIMSTYLE', action: has(o, 105) ? 'kept' : 'simplified', reason: `extended style data (XDATA) of ${[...new Set(apps)].join(', ')} ${has(o, 105) ? 'is retained in the object graph' : 'has no source identity and cannot be retained'}`, ...(o.line ? { line: o.line } : {}) });
     } else if (o.kind === 'STYLE') {
       const ts = textStyleFromGroups(o.groups);
       if (ts) textStyles[ts.name] = ts;
@@ -126,7 +127,17 @@ export function readTablesSection(objs: Obj[], tables: TableRecords, dimStyles: 
       if (fontWarning) report.add({ type: 'STYLE', action: 'unsupported', reason: fontWarning, ...(o.line ? { line: o.line } : {}) });
     } else if (o.kind === 'VIEW') {
       const vname = str(o, 2);
-      if (vname) views.push({ name: vname, center: pt(o, 10), height: num(o, 40, 10) || 10 });
+      if (vname) {
+        const height = num(o, 40, 10), width = num(o, 41, height * 1.5);
+        const camera: NativeViewCamera = { displayCenter: pt(o, 10), direction: { ...pt(o, 11), z: num(o, 31, 1) }, target: { ...pt(o, 12), z: num(o, 32) }, width, twist: g.rad(num(o, 50)), lensLength: num(o, 42, 50), frontClip: num(o, 43), backClip: num(o, 44), mode: Math.trunc(num(o, 71)), flags: Math.trunc(num(o, 70)) };
+        if (!(height > 0 && width > 0) || !Object.values(camera.direction).every(Number.isFinite) || !Object.values(camera.target).every(Number.isFinite)) {
+          report.add({ type: 'VIEW', action: 'dropped', reason: `named view "${vname}" has invalid camera coordinates or dimensions`, line: o.line });
+          continue;
+        }
+        const planar = planarNamedCamera(camera);
+        if (!planar) report.add({ type: 'VIEW', action: 'kept', reason: `named view "${vname}" retains its full 3D camera; the current planar editor cannot restore its tilted or perspective projection`, handle: str(o, 5), line: o.line });
+        views.push({ name: vname, center: planar ? namedCameraCenter(camera) : camera.displayCenter, height, width, twist: camera.twist, camera });
+      }
     }
   }
   // The current style: header variables over the named record of the same name.
@@ -201,11 +212,11 @@ export function readObjectsSection(objs: Obj[], imageDefs: Map<string, string>, 
   // Named object groups (GROUP command) are not modelled: the objects stay, the grouping goes.
   for (const o of objs) {
     if (o.kind !== 'GROUP') {
-      if (!['SECTION', 'DICTIONARY', 'ACDBDICTIONARYWDFLT', 'ACDBPLACEHOLDER', 'LAYOUT', 'IMAGEDEF', 'IMAGEDEF_REACTOR', 'TABLESTYLE'].includes(o.kind)) report.add({ type: o.kind, action: 'dropped', reason: 'object metadata is not modeled or written back; linked drawing geometry is kept when supported', ...(has(o, 5) ? { handle: str(o, 5) } : {}), ...(o.line ? { line: o.line } : {}) });
+      if (!['SECTION', 'DICTIONARY', 'ACDBDICTIONARYWDFLT', 'ACDBPLACEHOLDER', 'LAYOUT', 'IMAGEDEF', 'IMAGEDEF_REACTOR', 'TABLESTYLE'].includes(o.kind)) report.add({ type: o.kind, action: has(o, 5) ? 'kept' : 'dropped', reason: has(o, 5) ? 'exposed object metadata and typed references are retained; its application-specific behavior is not simulated' : 'object metadata has no source identity and cannot be retained', ...(has(o, 5) ? { handle: str(o, 5) } : {}), ...(o.line ? { line: o.line } : {}) });
       continue;
     }
     const desc = str(o, 300);
-    report.add({ type: 'GROUP', action: 'dropped', reason: `object group${desc ? ` "${desc}"` : ''} is not kept (its objects are)`, ...(has(o, 5) ? { handle: str(o, 5) } : {}), ...(o.line ? { line: o.line } : {}) });
+    report.add({ type: 'GROUP', action: has(o, 5) ? 'kept' : 'dropped', reason: `object group${desc ? ` "${desc}"` : ''} ${has(o, 5) ? 'and its typed membership references are retained' : 'has no source identity and cannot be retained'}`, ...(has(o, 5) ? { handle: str(o, 5) } : {}), ...(o.line ? { line: o.line } : {}) });
   }
 }
 

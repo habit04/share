@@ -23,6 +23,8 @@ import { tableParts, dimensionParts } from '../../core/entities';
 import { entityMTextBackground } from '../../core/mtext-background';
 import { materializePolylineWidthFrames } from './polyline-width-blocks';
 import { LAYER_TRANSPARENCY_APP, transparencyToDxf, validColorName } from '../../core/appearance';
+import { namedCameraDisplayCenter, planarNamedCamera } from '../../core/named-view';
+import { preserveDxfCadGraph } from '../cad-graph-dxf';
 
 /** Linetype names referenced anywhere in the drawing (layers, entities, block entities). */
 function usedLinetypes(state: DrawingState): Linetype[] {
@@ -86,10 +88,12 @@ export function writeDxf(state: DrawingState): string {
   // Choose the highest native format required anywhere, including associated text/attributes.
   const appearances = [...allEntities, ...state.layers, ...blockList.flatMap((b) => b.attributes),
     ...allEntities.flatMap<AttributeAppearance>((e) => e.type === 'insert' ? Object.values(e.attributePlacements ?? {}) : e.type === 'leader' && e.textAppearance ? [e.textAppearance] : [])];
-  const acadVersion = allEntities.some((e) => (entityMTextBackground(e)?.flags ?? 0) & 16) ? 'AC1032'
+  const appearanceVersion = allEntities.some((e) => (entityMTextBackground(e)?.flags ?? 0) & 16) ? 'AC1032'
     : appearances.some((e) => e.transparency !== undefined) ? 'AC1024'
       : allEntities.some((e) => entityMTextBackground(e)) ? 'AC1021'
         : appearances.some((e) => e.colorName !== undefined || e.trueColor !== undefined) ? 'AC1018' : 'AC1015';
+  const sourceVersion = state.cadGraph?.sourceVersion;
+  const acadVersion = sourceVersion && /^AC10(?:15|18|21|24|27|32)$/.test(sourceVersion) && sourceVersion > appearanceVersion ? sourceVersion : appearanceVersion;
   let imageDict: string | null = null;
   let anon = 0;
   for (const e of allEntities) {
@@ -229,7 +233,8 @@ export function writeDxf(state: DrawingState): string {
   });
   const layerHandles = new Map<string, string>();
   // Layers of retained raw records that were deleted since: written so the records stay valid.
-  const rawRecords = rawEntitiesOf(state);
+  const graphHandles = new Set(state.cadGraph?.nodes.flatMap(node => node.sourceHandle ? [node.sourceHandle.toUpperCase()] : []) ?? []);
+  const rawRecords = rawEntitiesOf(state).filter(record => !record.handle || !graphHandles.has(record.handle.toUpperCase()));
   const layerList: Layer[] = [...state.layers];
   for (const r of rawRecords) if (!layerList.some((l) => l.name === r.layer)) layerList.push({ name: r.layer, color: 7, visible: true, locked: false, lineWeight: 0.25 });
   table('LAYER', '2', layerList.length, () => {
@@ -265,22 +270,24 @@ export function writeDxf(state: DrawingState): string {
   });
   table('VIEW', '6', header.views.length, () => {
     for (const v of header.views) {
-      record('VIEW', '6', 'AcDbViewTableRecord', v.name);
+      record('VIEW', '6', 'AcDbViewTableRecord', v.name, v.camera?.flags ?? 0);
+      const camera = v.camera;
+      const center = camera ? planarNamedCamera(camera) ? namedCameraDisplayCenter({ ...camera, twist: v.twist ?? camera.twist }, v.center) : camera.displayCenter : v.center;
       w.pair(40, v.height);
-      w.pair(10, v.center.x);
-      w.pair(20, v.center.y);
-      w.pair(41, v.height * 1.5);
-      w.pair(11, 0);
-      w.pair(21, 0);
-      w.pair(31, 1);
-      w.pair(12, 0);
-      w.pair(22, 0);
-      w.pair(32, 0);
-      w.pair(42, 50);
-      w.pair(43, 0);
-      w.pair(44, 0);
-      w.pair(50, 0);
-      w.pair(71, 0);
+      w.pair(10, center.x);
+      w.pair(20, center.y);
+      w.pair(41, v.width ?? camera?.width ?? v.height * 1.5);
+      w.pair(11, camera?.direction.x ?? 0);
+      w.pair(21, camera?.direction.y ?? 0);
+      w.pair(31, camera?.direction.z ?? 1);
+      w.pair(12, camera?.target.x ?? 0);
+      w.pair(22, camera?.target.y ?? 0);
+      w.pair(32, camera?.target.z ?? 0);
+      w.pair(42, camera?.lensLength ?? 50);
+      w.pair(43, camera?.frontClip ?? 0);
+      w.pair(44, camera?.backClip ?? 0);
+      w.pair(50, g.deg(v.twist ?? camera?.twist ?? 0));
+      w.pair(71, camera?.mode ?? 0);
     }
   });
   table('UCS', '7', 0, () => {});
@@ -506,5 +513,6 @@ export function writeDxf(state: DrawingState): string {
   w.pair(0, 'EOF');
   // The handle seed must exceed every handle used in the file.
   // AC1015 is read in the $DWGCODEPAGE page: non-ASCII goes out as \U+XXXX escapes (see io/encoding.ts).
-  return encodeDxfText(w.toString().replace('HANDSEED_PLACEHOLDER', (w.lastHandle() + 1).toString(16).toUpperCase()), acadVersion);
+  const plain = preserveDxfCadGraph(w.toString(), state, w.cadAnchors);
+  return encodeDxfText(plain.replace('HANDSEED_PLACEHOLDER', (w.lastHandle() + 1).toString(16).toUpperCase()), acadVersion);
 }

@@ -4,7 +4,7 @@
   "fixtureSha256": "f982246c6e529c286b89fefec07fc5e6e6c3fc0f984e679961ace29c8de83c53",
   "expectedSha256": "459da44bbcd883825bcbfa45593e177bb1a0e7a97b080313948b0ef5ef7a736e",
   "factorySha256": "2665f1fe5c798d8557642124be62036ccbaf825a6043766042a06e1108009a95",
-  "wasmSha256": "0e97b1cce3a7fb05d89ff69c2c8a5399d76e2726c5d9c7b2aed2ae453f84380a",
+  "wasmSha256": "26b3c4bd76ee3bd5da0bfd47eedaf8e9a8ae38cac5a2c4625e973ed2c299bf2e",
   "masks": [
     {
       "text": "ACI MASK",

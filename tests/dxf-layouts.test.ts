@@ -129,16 +129,46 @@ describe('DXF layouts: round trip', () => {
   });
   it('a second round trip is stable', () => {
     const again = readDxf(writeDxf(back));
-    const strip = (l: Layout) => ({ ...l, entities: l.entities.map((e) => ({ ...e, id: '' })), viewports: l.viewports.map((v) => ({ ...v, id: '' })) });
+    const strip = (l: Layout) => ({ ...l, entities: l.entities.map((e) => ({ ...e, id: '', cadIdentity: '' })), viewports: l.viewports.map((v) => ({ ...v, id: '' })) });
     expect(again.layouts!.map(strip)).toEqual(back.layouts!.map(strip));
   });
-  it('a drawing that never used layouts writes Layout1 and reads back without layouts', () => {
+  it('retains the declared pristine Layout1 and its identities when a new sheet is added', () => {
     const plain = new Drawing({ entities: [{ id: 'x', layer: '0', color: 'ByLayer', type: 'line', a: { x: 0, y: 0 }, b: { x: 1, y: 1 } }] }).snapshot;
     const t = writeDxf(plain);
     expect(t).toContain('Layout1');
     const r = readDxf(t);
-    expect(r.layouts).toBeUndefined();
+    expect(r.layouts).toHaveLength(1);
+    expect(r.layouts![0]).toMatchObject({ name: 'Layout1', pristine: true, entities: [], viewports: [] });
+    expect(r.cadGraph!.nodes.find(node => node.type === 'LAYOUT' && node.anchor?.kind === 'layout')?.anchor).toEqual({ kind: 'layout', name: 'Layout1' });
     expect(r.entities).toHaveLength(1);
+    const added: Layout = { ...defaultLayout('Rotated sheet'), pristine: undefined,
+      viewports: [{ id: 'added', center: { x: 5, y: 4 }, width: 8, height: 6, view: { center: { x: 50, y: 40 }, scale: 0.25, twist: 0.25 }, layer: '0', on: true }],
+      entities: [{ id: 'new-paper', type: 'text', layer: '0', color: 'ByLayer', position: { x: 1, y: 1 }, text: 'Paper note', height: 0.125, rotation: 0, align: 'left' }],
+    };
+    const expanded = { ...r, layouts: [...r.layouts!, added] };
+    const written = writeDxf(expanded), lines = written.trimEnd().split(/\r\n|\r|\n/);
+    const records: { type: string; groups: [number, string][] }[] = [];
+    let current: (typeof records)[number] | undefined;
+    for (let index = 0; index < lines.length; index += 2) {
+      const code = Number(lines[index]), value = lines[index + 1]!;
+      if (code === 0) { current = { type: value, groups: [] }; records.push(current); }
+      else current?.groups.push([code, value]);
+    }
+    const group = (record: (typeof records)[number], code: number) => record.groups.find(([key]) => key === code)?.[1];
+    const papers = records.filter(record => record.type === 'BLOCK_RECORD' && group(record, 2)?.startsWith('*Paper_Space'));
+    expect(papers.map(record => group(record, 2))).toEqual(['*Paper_Space', '*Paper_Space0']);
+    expect(new Set(papers.map(record => group(record, 5))).size).toBe(2);
+    const declared = records.filter(record => record.type === 'LAYOUT').map(record => {
+      const start = record.groups.findIndex(([code, value]) => code === 100 && value === 'AcDbLayout');
+      const groups = record.groups.slice(start + 1);
+      return { name: groups.find(([code]) => code === 1)?.[1], owner: groups.find(([code]) => code === 330)?.[1] };
+    });
+    expect(declared.find(layout => layout.name === 'Layout1')?.owner).toBe(group(papers[0]!, 5));
+    expect(declared.find(layout => layout.name === 'Rotated sheet')?.owner).toBe(group(papers[1]!, 5));
+    const reopened = readDxf(written);
+    expect(reopened.layouts!.map(layout => [layout.name, layout.entities.length, layout.viewports.length])).toEqual([['Layout1', 0, 0], ['Rotated sheet', 1, 1]]);
+    expect(reopened.layouts![1]!.viewports[0]!.view.twist).toBeCloseTo(0.25, 9);
+    expect(reopened.entities).toHaveLength(1);
   });
 });
 
