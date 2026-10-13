@@ -15,7 +15,7 @@ import type { Dimension3D, PrimitiveFeature } from '../src/model3d/types';
 import { STANDARD_DIMSTYLE } from '../src/core/dimension';
 import { autoLinearAxis, dimension3dTool, frameFrom3Points } from '../src/tools3d/dimension3d-tool';
 import { move3dTool, resetTransformDefaults } from '../src/tools3d/transform';
-import { dimension3dRows, setDimension3DText } from '../src/tools3d/properties';
+import { dimension3dRows, mixedSelectionLabel, patchMixedSelection, setDimension3DText } from '../src/tools3d/properties';
 import { EraseTool, MoveTool } from '../src/tools/modify';
 import { MirrorTool } from '../src/tools/edit';
 import { drive } from './fake-context';
@@ -224,6 +224,30 @@ describe('editing 3D dimensions', () => {
     expect(last(doc)).toEqual(d);
     expect(setDimension3DText(doc, 'nope', 'x')).toBe(false);
   });
+
+  it('Properties on mixed selections: every group counted, Layer / Color edit all of them in one step', () => {
+    const doc = new Drawing();
+    doc.addLayer({ ...doc.layers[0]!, name: 'L2' });
+    const d = dimAt(doc);
+    const s = newSolid({ feature: box(0, 0, 0, 1, 1, 1), mesh: primitiveMesh(box(0, 0, 0, 1, 1, 1)) });
+    doc.updateModel3D((m) => addSolids(m, [s]));
+    const line: LineEntity = { id: 'L1', type: 'line', layer: '0', color: 'ByLayer', a: { x: 0, y: 0 }, b: { x: 1, y: 0 }, trueColor: 0x123456 };
+    doc.addEntities([line]);
+    expect(mixedSelectionLabel(1, 1, 1)).toBe('All (3: 1 object, 1 solid, 1 3D dimension)');
+    expect(mixedSelectionLabel(0, 2, 3)).toBe('All (5: 2 solids, 3 3D dimensions)');
+    const steps = doc.history().undo.length;
+    patchMixedSelection(doc, [doc.entities[0]!], [s.id], [d.id], { layer: 'L2' });
+    patchMixedSelection(doc, [doc.entities[0]!], [s.id], [d.id], { color: 3 });
+    expect(doc.history().undo.length).toBe(steps + 2);
+    expect(doc.entities[0]).toMatchObject({ layer: 'L2', color: 3 });
+    expect(doc.entities[0]!.trueColor).toBeUndefined();
+    expect(model3dOf(doc.snapshot).solids[0]).toMatchObject({ layer: 'L2', color: 3 });
+    expect(last(doc)).toMatchObject({ layer: 'L2', color: 3 });
+    doc.undo();
+    doc.undo();
+    expect(last(doc)).toEqual(d);
+    expect(doc.entities[0]).toEqual(line);
+  });
 });
 
 // ------------------------------------------------------------------ the editor (flag on)
@@ -326,6 +350,20 @@ describe('DIM3D in the editor', () => {
     expect(vp.pick(screenOf(2, 3).x, screenOf(2, 3).y)).toBe(id);
     expect(c.dimensionPoint(id)).toEqual(v3(5, 3, 0));
     expect(c.dimensionPoint('nope')).toBeNull();
+    c.viewport = null;
+  });
+
+  it('in 3D mode: a dimension hidden under a solid is not picked through it', () => {
+    const { ed, jcad3d: c } = editor();
+    const s = newSolid({ feature: box(0, 0, 0, 10, 10, 5), mesh: primitiveMesh(box(0, 0, 0, 10, 10, 5)) });
+    const under = makeDimension3D({ kind: 'aligned', plane: WORLD_XY_FRAME, p1: v3(1, 1, 0), p2: v3(9, 1, 0), location: v3(5, 3, 0), style: STANDARD_DIMSTYLE });
+    const onTop = makeDimension3D({ kind: 'aligned', plane: at(0, 0, 5), p1: v3(1, 6, 5), p2: v3(9, 6, 5), location: v3(5, 8, 5), style: STANDARD_DIMSTYLE });
+    ed.doc.updateModel3D((m) => addDimensions3D(addSolids(m, [s]), [under, onTop]));
+    const vp = fakeViewport3d(ed.doc);
+    c.viewport = vp;
+    const at2 = (x: number, y: number) => vp.pick(screenOf(x, y).x, screenOf(x, y).y);
+    expect(at2(5, 3)).toBe(s.id); // under the top face (z = 5): the solid wins
+    expect(at2(5, 8)).toBe(onTop.id); // on the top face: the dimension wins
     c.viewport = null;
   });
 

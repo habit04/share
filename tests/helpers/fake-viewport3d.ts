@@ -3,14 +3,14 @@
  * (clicks, cursor moves, 3D snaps, grips) can be tested: a plan view looking straight down -Z with
  * `PX` CSS pixels per drawing unit, screen (0, 0) at world (0, H / PX) and y growing downward.
  * Picking is the real CPU path (`pickSolids`); 3D dimensions are picked first by their display
- * segments within `dimensionAperture` px (`pickDimension3D`), as Viewport3D does.
+ * segments within `dimensionAperture` px unless a solid face is nearer, as Viewport3D does.
  */
 import type { Drawing } from '../../src/core/document';
 import type { Ray, Vec3 } from '../../src/model3d/math';
 import { model3dOf } from '../../src/model3d/model';
 import { type PickHit, pickSolids } from '../../src/render3d/picking';
 import { hiddenLayerNames } from '../../src/render3d/scene-sink';
-import { pickDimension3D, visibleDimensions3D } from '../../src/render3d/dimension3d-scene';
+import { dimensionInFront, pickDimension3DHit, visibleDimensions3D } from '../../src/render3d/dimension3d-scene';
 import type { Viewport3D, Viewport3DOverlay } from '../../src/render3d/viewport3d';
 
 export const PX = 10;
@@ -44,7 +44,10 @@ export function fakeViewport3d(doc: Drawing): FakeViewport3D & Viewport3D {
     pick: (x, y) => {
       const state = doc.snapshot;
       const dims = visibleDimensions3D(state.model3d?.dimensions, state.layers);
-      return pickDimension3D(dims, vp.toScreen, x, y, vp.dimensionAperture, state.layers) ?? vp.pickExact(x, y)?.id ?? null;
+      const dim = pickDimension3DHit(dims, vp.toScreen, x, y, vp.dimensionAperture, state.layers);
+      const solid = vp.pickExact(x, y);
+      if (dim && (!solid || dimensionInFront(dim.point, solid.point, vp.pixelRay(x, y)))) return dim.id;
+      return solid?.id ?? null;
     },
     requestRender: (ov) => void vp.overlays.push(ov),
   };

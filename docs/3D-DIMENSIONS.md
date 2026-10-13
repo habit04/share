@@ -25,7 +25,7 @@ the 3D view the face under the cursor with the 3D object snaps (END / MID / CEN 
 | Prompt | Answers |
 | --- | --- |
 | `Specify first extension line origin or [Linear/Angular/Plane/Text]:` | a point; `L` Linear, `A` Angular (`AL` back to Aligned), `P` Plane, `T` Text; Enter ends |
-| (Linear) `... or [Aligned/ANgular/Plane/Text]:` | `A` Aligned, `AN` Angular |
+| (Linear) `... or [Aligned/ANgular/Plane/Text]:` | `A` Aligned, `AN` Angular (a click on an option sends its capitals, so clicking ANgular sends AN) |
 | (Angular) `Specify angle vertex or [Aligned/Linear/Plane/Text]:` | the vertex |
 | `Specify second extension line origin:` | aligned / linear |
 | `Specify first angle endpoint:` · `Specify second angle endpoint:` | angular: a point on each leg |
@@ -87,10 +87,12 @@ plane normal):
 - **angular** = the counter-clockwise angle (about the normal) from the leg through `p1` to the leg
   through `p2`; the arc location chooses which of the two angles (the legs are ordered so the arc
   runs counter-clockwise through it).
-- A point is **in the plane** when it is within 1e-6 of it relative to the size of the coordinates
-  (`DIM3D_PLANE_TOLERANCE`, max(1, |plane origin|, |points|)). Otherwise the dimension is
-  `projected`: it measures the projection and its text gets ` (projected)` appended (after an
-  override too: `Gap <>` shows `Gap 5.0000 (projected)`).
+- A point is **in the plane** when it is within 1e-6 of the dimension's own size (the largest
+  distance between its definition points; `DIM3D_PLANE_TOLERANCE`), but at least 100 x the rounding
+  noise of its coordinates (1e-12 x their magnitude): a 5-unit dimension at x = 100,000 with a point
+  0.05 off the plane is projected. Otherwise the dimension is `projected`: it measures the
+  projection and its text gets ` (projected)` appended (after an override too: `Gap <>` shows
+  `Gap 5.0000 (projected)`); a hidden text (override `' '`) stays hidden.
 
 Text and units follow the dimension style exactly as for 2D dimensions (DIMDEC, DIMPOST, DIMLFAC,
 tolerances, alternate units ...), because the text is made by the 2D code from the equivalent 2D
@@ -105,8 +107,11 @@ dimension (`dimension3dTo2d`).
   view draws them through its line batch, depth-tested (a solid in front hides them).
 - Off or frozen layers hide 3D dimensions, as they hide solids.
 - **Selection**: a click in the 3D view picks a dimension whose drawn segments pass within the 2D
-  pick box of the cursor (CPU, before solids; the GPU id buffer holds solids only); the hover
-  highlights it; selected dimensions are drawn in the selection colour. `ALL` and a typed id (as
+  pick box of the cursor (CPU; the GPU id buffer holds solids only) unless the solid face under the
+  cursor is nearer along the cursor ray (a dimension on the face counts as in front; the depth
+  slack is twice the hit's distance from the ray, so on faces seen very obliquely a dimension just
+  behind the face may still win); the hover highlights it; selected dimensions are drawn in the
+  selection colour. `ALL` and a typed id (as
   `jcad3d.dimensionIds()` lists them) select dimensions at `Select objects:`.
 - **ERASE** removes them (with solids and 2D objects, one undo step).
 - **3DMOVE / 3DROTATE / 3DSCALE** transform their plane, points and location with the selected
@@ -115,8 +120,10 @@ dimension (`dimension3dTo2d`).
 - **MOVE / COPY / ROTATE / SCALE / MIRROR** carry them in the drawing plane like solids (COPY and
   MIRROR add copies with new ids; a mirror keeps the plane right-handed and the dimension line on
   the mirrored side).
-- **Properties** palette (a selection of 3D dimensions only): Layer and Color (editable, also for
-  several), and for one dimension Kind, Measurement (read-only, "(projected)" when it is),
+- **Properties** palette: a mixed selection (2D objects, solids and 3D dimensions) names every group
+  in its header (`All (3: 1 object, 1 solid, 1 3D dimension)`) and its Layer and Color rows edit all
+  of them in one undo step. A selection of 3D dimensions only shows Layer and Color, and for one
+  dimension Kind, Measurement (read-only, "(projected)" when it is),
   Text override (editable; empty = the measurement), Dimension text, Plane (`XY at z = 5.0000`,
   `XZ at y = 0.0000`, `YZ at x = 2.0000` or `Custom (normal ...)`). Each edit is one undo step.
 - Undo / redo restore dimensions with everything else (whole-state history).
@@ -138,6 +145,7 @@ AutoCAD** or other programs.
 | `10/20/30` | WCS: the dimension-line definition point (aligned / linear, where the 2D writer puts it), or the point on the arc (angular) |
 | `11/21/31` | OCS: the text midpoint; 31 = the plane's elevation along the normal |
 | `70` | type (aligned 1, linear 0, three-point angular 5, as the 2D writer) + 32 |
+| `100` | after 3: `AcDbAlignedDimension` (aligned), `AcDbAlignedDimension` + `AcDbRotatedDimension` (linear), `AcDb3PointAngularDimension` only (angular) |
 | `71`, `42` | attachment 5; the measurement (radians for angular, as 2D) |
 | `1` | the shown override: the text override, with ` (projected)` for a projected dimension (`<> (projected)` without one) |
 | `210/220/230` | the plane normal (extrusion direction) |
@@ -167,14 +175,17 @@ AutoCAD** or other programs.
 - A `DIMENSION` with `JCAD_3D` data is a 3D dimension **whatever the experimental setting**
   (JCad wrote it, and Save writes it back); with the setting off the import report notes that the
   drawing holds 3D dimensions that are kept but shown only with Experimental 3D on.
-- Another program's `DIMENSION` whose extrusion is **not (0, 0, +-1)** becomes a 3D dimension only
-  when 3D reading is enabled (the experimental setting): plane = the OCS of its normal through
+- Another program's `DIMENSION` whose extrusion is **not (0, 0, +1)** (a tilted plane, or the XY
+  plane seen from below, (0, 0, -1)) becomes a 3D dimension only when 3D reading is enabled (the
+  experimental setting): plane = the OCS of its normal through
   point 10; aligned, linear (50 turns the plane frame about its normal when it is no plane axis),
   three-point and two-line angular (legs 13 -> 14 and 15 -> 10, arc point 16 in OCS) are read.
   Other types fall back to the 2D path.
-- **Everything else takes the unchanged 2D path**: 3D off, extrusion +-Z, other types, and
-  dimensions inside blocks or on layouts. The 2D reader still reads a tilted DIMENSION flat (the
-  x, y of its WCS points) with the same report items as before.
+- **Everything else takes the unchanged 2D path**: 3D off, extrusion +Z, other types, and
+  dimensions inside blocks or on layouts. The 2D reader still reads a tilted (or -Z) DIMENSION flat
+  (the x, y of its WCS points) with the same report items as before; with 3D off the import report
+  adds one note counting such dimensions (`2 dimensions of this drawing lie in a plane other than
+  the XY plane (or face -Z) and were read flat ...`).
 - The stored plane is used when its normal matches 210 (1e-6) and point 10 lies on it; otherwise
   the plane is rebuilt from the extrusion and the report says so. The stored offset is used only
   while it agrees with point 10 (1e-9). A trailing ` (projected)` in group 1 of a projected
@@ -208,7 +219,6 @@ for real 3D dimensions.
 - The 2D view, plots and PDF output do not show 3D dimensions (model space in 3D mode only).
 - Text is drawn with the built-in stroke font whatever the text style (as the 3D underlay), always
   readable from the normal side of the plane (seen from behind it is mirrored).
-- In Linear mode the shown "ANgular" option, when clicked, sends "A" (Aligned): type AN.
 - Not verified in AutoCAD or other CAD programs (the DXF follows the reference).
 
 ## Replaying in a browser (supervisor checks)

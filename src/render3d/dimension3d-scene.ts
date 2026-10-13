@@ -12,11 +12,14 @@
  * plane.
  *
  * Picking (`pickDimension3D`) projects those segments to the screen and takes the dimension whose
- * nearest segment is within the aperture (CSS px); the GPU id buffer does not hold dimensions.
+ * nearest segment is within the aperture (CSS px); the GPU id buffer does not hold dimensions. The
+ * hit's world point is compared with the solid face under the cursor along the cursor ray
+ * (`dimensionInFront`): the nearer one wins, so a dimension hidden behind a solid is not picked
+ * through it.
  */
 import type { DimStyle } from '../core/dimension';
 import type { Layer } from '../core/entities';
-import { type Aabb, type Vec3, aabbFromPoints } from '../model3d/math';
+import { type Aabb, type Ray, type Vec3, aabbFromPoints, dot3, len3, lerp3, scale3, sub3 } from '../model3d/math';
 import { dimension3dTo2d, planeWorld } from '../model3d/dimension3d';
 import type { Dimension3D } from '../model3d/types';
 import { type SceneSink, type SinkStyle, emitEntity, hiddenLayerNames } from './scene-sink';
@@ -77,12 +80,56 @@ export function visibleDimensions3D(dims: readonly Dimension3D[] | undefined, la
   return hidden.size ? dims.filter((d) => !hidden.has(d.layer)) : dims;
 }
 
-/** Distance from (px, py) to the segment a-b (screen coordinates). */
-function segmentDistance(px: number, py: number, a: { x: number; y: number }, b: { x: number; y: number }): number {
+/** Distance from (px, py) to the segment a-b (screen coordinates) and the segment parameter there. */
+function segmentDistance(px: number, py: number, a: { x: number; y: number }, b: { x: number; y: number }): { d: number; t: number } {
   const dx = b.x - a.x, dy = b.y - a.y;
   const l2 = dx * dx + dy * dy;
   const t = l2 > 0 ? Math.max(0, Math.min(1, ((px - a.x) * dx + (py - a.y) * dy) / l2)) : 0;
-  return Math.hypot(px - (a.x + t * dx), py - (a.y + t * dy));
+  return { d: Math.hypot(px - (a.x + t * dx), py - (a.y + t * dy)), t };
+}
+
+/** A dimension under the cursor: its id and the world point of the nearest display segment. */
+export interface Dimension3DHit {
+  readonly id: string;
+  readonly point: Vec3;
+}
+
+/**
+ * The dimension whose display segments pass closest to screen point (sx, sy), within `aperture`
+ * CSS px, with the world point there (interpolated along the segment), or null. `project` maps a
+ * world point to CSS px (null behind the eye, which skips that segment).
+ */
+export function pickDimension3DHit(dims: readonly Dimension3D[], project: (p: Vec3) => { x: number; y: number } | null, sx: number, sy: number, aperture: number, layers: readonly Layer[] = NO_LAYERS): Dimension3DHit | null {
+  let best: Dimension3DHit | null = null;
+  let bestD = aperture;
+  for (const d of dims) {
+    for (const s of dimension3dGeometry(d, d.style, layers)) {
+      const a = project(s.a), b = project(s.b);
+      if (!a || !b) continue;
+      const hit = segmentDistance(sx, sy, a, b);
+      if (hit.d <= bestD) {
+        bestD = hit.d;
+        best = { id: d.id, point: lerp3(s.a, s.b, hit.t) };
+      }
+    }
+  }
+  return best;
+}
+
+/**
+ * True when a dimension hit at `dimPoint` is not behind the solid face hit at `solidPoint` along
+ * the cursor `ray` (so the dimension is picked). A dimension lying on the face counts as in front:
+ * the tolerance is twice the dimension point's distance from the ray (the aperture slack, which
+ * covers faces up to about 60 degrees oblique to the view) plus 1e-6 of the depth.
+ */
+export function dimensionInFront(dimPoint: Vec3, solidPoint: Vec3, ray: Ray): boolean {
+  const len = len3(ray.dir);
+  if (!(len > 0)) return true;
+  const dir = scale3(ray.dir, 1 / len);
+  const depth = (p: Vec3) => dot3(sub3(p, ray.origin), dir);
+  const dd = depth(dimPoint), ds = depth(solidPoint);
+  const off = len3(sub3(sub3(dimPoint, ray.origin), scale3(dir, dd)));
+  return dd <= ds + 2 * off + 1e-6 * Math.max(1, Math.abs(ds));
 }
 
 /**
@@ -91,18 +138,5 @@ function segmentDistance(px: number, py: number, a: { x: number; y: number }, b:
  * skips that segment).
  */
 export function pickDimension3D(dims: readonly Dimension3D[], project: (p: Vec3) => { x: number; y: number } | null, sx: number, sy: number, aperture: number, layers: readonly Layer[] = NO_LAYERS): string | null {
-  let best: string | null = null;
-  let bestD = aperture;
-  for (const d of dims) {
-    for (const s of dimension3dGeometry(d, d.style, layers)) {
-      const a = project(s.a), b = project(s.b);
-      if (!a || !b) continue;
-      const dist = segmentDistance(sx, sy, a, b);
-      if (dist <= bestD) {
-        bestD = dist;
-        best = d.id;
-      }
-    }
-  }
-  return best;
+  return pickDimension3DHit(dims, project, sx, sy, aperture, layers)?.id ?? null;
 }

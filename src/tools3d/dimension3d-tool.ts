@@ -31,7 +31,7 @@ import { formatAngle, formatLength } from '../core/units';
 import { type Frame3, type Vec3, cross3, frameFromPlane, len3, normalize3, sub3 } from '../model3d/math';
 import { addDimensions3D } from '../model3d/model';
 import {
-  dimension3dKindLabel, dimension3dMeasurement, dimension3dText, dimension3dTrueDistance, makeDimension3D, planeDescription, planeLocal, planeTolerance, planeWorld,
+  dimension3dKindLabel, dimension3dMeasurement, dimension3dText, dimension3dTrueDistance, coincidenceTolerance, makeDimension3D, planeDescription, planeLocal, planeWorld,
 } from '../model3d/dimension3d';
 import type { Dimension3D, Dimension3DKind } from '../model3d/types';
 import type { Answer } from '../tools/script';
@@ -176,7 +176,7 @@ function* dim3dScript(ctx: ToolContext): Step3<void> {
     const l = planeLocal(plane, q);
     return { x: l.x, y: l.y };
   };
-  const tiny = (q: readonly Vec3[]) => planeTolerance(plane, q) * 1e-6;
+  const tiny = (q: readonly Vec3[]) => coincidenceTolerance(plane, q);
   // Remaining definition points.
   let p1: Vec3, p2: Vec3, vertex: Vec3 | undefined;
   if (kind === 'angular') {

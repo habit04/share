@@ -4,9 +4,11 @@
  *
  * Which records: a DIMENSION with `JCAD_3D` XDATA (written by JCad's DIM3D) always, whatever the
  * experimental 3D setting, because Save writes it back (as for JCad's solids); another program's
- * DIMENSION whose extrusion (210) is not (0, 0, +-1) only when the reader is told 3D is enabled
- * (`DxfReadOptions.model3d`). Every other DIMENSION, and every DIMENSION in a block or on a layout,
- * takes the unchanged 2D path (which draws it flat in the XY plane, as before).
+ * DIMENSION whose extrusion (210) is not (0, 0, +1) (a tilted plane, or the XY plane seen from
+ * below, (0, 0, -1)) only when the reader is told 3D is enabled (`DxfReadOptions.model3d`). Every
+ * other DIMENSION, and every DIMENSION in a block or on a layout, takes the unchanged 2D path (which
+ * draws it flat in the XY plane, as before; with 3D off the import report notes how many such
+ * dimensions were read flat).
  *
  * The record is read in its OCS (io/dxf/dim3d-write.ts lists the groups): world definition points
  * 10 / 13 / 14 / 15, the OCS point 16 of two-line angular dimensions, the 210 normal, the style
@@ -39,16 +41,20 @@ function extrusionOf(o: Obj): Vec3 {
   return v3(num(o, 210, 0), num(o, 220, 0), num(o, 230, 1));
 }
 
+/** True when the record's extrusion is not +Z (another plane, or the XY plane with the normal -Z). */
+export function offPlusZ(o: Obj): boolean {
+  const n = extrusionOf(o);
+  return !(Math.abs(n.x) < 1e-9 && Math.abs(n.y) < 1e-9 && n.z > 0);
+}
+
 /**
  * True when the 3D dimension reader takes this model-space DIMENSION (see the module comment):
- * JCad 3D data, or (3D enabled) an extrusion that is not +-Z.
+ * JCad 3D data, or (3D enabled) an extrusion that is not +Z.
  */
 export function acceptsDimension3D(o: Obj, enabled: boolean): boolean {
   if (o.kind !== 'DIMENSION') return false;
   if (hasJcad3dData(o)) return true;
-  if (!enabled) return false;
-  const n = extrusionOf(o);
-  return !(Math.abs(n.x) < 1e-9 && Math.abs(n.y) < 1e-9);
+  return enabled && offPlusZ(o);
 }
 
 const pt3 = (o: Obj, code: number): Vec3 => v3(num(o, code, 0), num(o, code + 10, 0), num(o, code + 20, 0));
@@ -95,7 +101,7 @@ export function readDimension3DRecord(o: Obj, ctx: ReadContext): Dimension3DRead
   let plane: Frame3;
   const defaultPlane = (): Frame3 => frameFromPlane({ origin: scale3(n, dot3(p10, n)), normal: n });
   if (stored) {
-    const onPlane = Math.abs(dot3(sub3(p10, stored.origin), stored.zAxis)) <= planeTolerance(stored, [p10]);
+    const onPlane = Math.abs(dot3(sub3(p10, stored.origin), stored.zAxis)) <= planeTolerance(stored, [p10, p13, p14, has(o, 15) ? p15 : undefined]);
     if (len3(sub3(stored.zAxis, n)) <= 1e-6 && onPlane) plane = stored;
     else {
       storedOffset = undefined;

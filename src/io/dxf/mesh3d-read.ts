@@ -24,7 +24,7 @@ import type { ColorSpec } from '../../core/entities';
 import { newId } from '../../core/entities';
 import type { ImportReportBuilder } from '../import-report';
 import type { Dimension3D, Feature3D, Solid3D } from '../../model3d/types';
-import { acceptsDimension3D, readDimension3DRecord } from './dim3d-read';
+import { acceptsDimension3D, offPlusZ, readDimension3DRecord } from './dim3d-read';
 import { type Mesh3D, meshIsClosed, validateMesh, weldVertices } from '../../model3d/mesh';
 import { newSolid } from '../../model3d/model';
 import { decodeSolidPayload, MAX_PAYLOAD_BYTES, MAX_SOLID_NAME_LENGTH, MODEL3D_FILE_VERSION, type SolidPayload } from '../../model3d/file-format';
@@ -182,6 +182,8 @@ export class Model3DReader {
   private readonly records: PartRecord[] = [];
   /** True 3D dimensions read so far (model space, file order). */
   private readonly dims: Array<{ readonly obj: Obj; readonly where?: string; readonly dim: Dimension3D }> = [];
+  /** Other programs' DIMENSIONs off the +Z plane read flat by the 2D path because 3D is off. */
+  private flatDims = 0;
 
   constructor(
     /** Import polyfaces without JCad data as mesh solids (the experimental 3D setting is on). */
@@ -200,7 +202,10 @@ export class Model3DReader {
    * (read or dropped with a report item); false sends it down the unchanged 2D path.
    */
   dimension(o: Obj, ctx: ReadContext): boolean {
-    if (!acceptsDimension3D(o, this.enabled)) return false;
+    if (!acceptsDimension3D(o, this.enabled)) {
+      if (!this.enabled && o.kind === 'DIMENSION' && offPlusZ(o)) this.flatDims += 1;
+      return false;
+    }
     const r = readDimension3DRecord(o, ctx);
     if ('twoD' in r) return false;
     if ('drop' in r) {
@@ -222,6 +227,9 @@ export class Model3DReader {
       used.add(d.id);
       return d;
     });
+    if (this.flatDims) {
+      this.report?.note(`${plural(this.flatDims, 'dimension')} of this drawing ${this.flatDims === 1 ? 'lies' : 'lie'} in a plane other than the XY plane (or ${this.flatDims === 1 ? 'faces' : 'face'} -Z) and ${this.flatDims === 1 ? 'was' : 'were'} read flat in the XY plane; enable Experimental 3D (Options > Files) to read ${this.flatDims === 1 ? 'it' : 'them'} as 3D dimensions in ${this.flatDims === 1 ? 'its plane' : 'their planes'}.`);
+    }
     if (out.length && !this.enabled) {
       this.report?.note(`This drawing contains ${plural(out.length, 'experimental 3D dimension')}. ${out.length === 1 ? 'It is' : 'They are'} kept and saved with the drawing, but shown only when Experimental 3D is on: enable Experimental 3D (Options > Files) to view or erase ${out.length === 1 ? 'it' : 'them'}.`);
     }

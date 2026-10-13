@@ -10,7 +10,7 @@ import type { DimensionEntity } from '../src/core/entities';
 import { readDxf, writeDxf } from '../src/io/dxf';
 import { importReportOf } from '../src/io/import-report';
 import { type Frame3, type Vec3, dot3, frameFromPlane, v3 } from '../src/model3d/math';
-import { dimension3dMeasurement, dimension3dText, makeDimension3D, planeWorld } from '../src/model3d/dimension3d';
+import { dimension3dLocation, dimension3dMeasurement, dimension3dText, makeDimension3D, planeWorld } from '../src/model3d/dimension3d';
 import { decodeDimensionPayload, encodeDimensionPayload } from '../src/model3d/file-format';
 import { addDimensions3D, addSolids, model3dOf, newSolid, withModel3D } from '../src/model3d/model';
 import { boxMesh } from '../src/model3d/primitives';
@@ -177,7 +177,65 @@ function foreign(f: Frame3, kind: 'aligned' | 'angular' = 'aligned'): string {
   return text.replace(/\r\n1001\r\nJCAD_3D\r\n1000\r\n[^\r]*(?:\r\n1000\r\n[^\r]*)*/, '');
 }
 
+/** The 100 subclass markers of a DIMENSION record, in order. */
+const subclasses = (rec: Array<[string, string]>) => rec.filter(([c]) => c === '100').map(([, v]) => v);
+
+/** A minimal ENTITIES-only DXF with one DIMENSION record (groups after the layer). */
+function dimensionFile(groups: string): string {
+  return `0\r\nSECTION\r\n2\r\nENTITIES\r\n0\r\nDIMENSION\r\n5\r\n100\r\n100\r\nAcDbEntity\r\n8\r\n0\r\n100\r\nAcDbDimension\r\n2\r\n*D1\r\n${groups}0\r\nENDSEC\r\n0\r\nEOF\r\n`;
+}
+const g3 = (code: number, q: Vec3) => `${code}\r\n${q.x}\r\n${code + 10}\r\n${q.y}\r\n${code + 20}\r\n${q.z}\r\n`;
+const ext = (n: Vec3) => `210\r\n${n.x}\r\n220\r\n${n.y}\r\n230\r\n${n.z}\r\n`;
+
+describe('DIMENSION subclass markers', () => {
+  it('aligned: AcDbDimension, AcDbAlignedDimension; linear: + AcDbRotatedDimension; angular: AcDb3PointAngularDimension only', () => {
+    const recs = dimensionRecords(writeDxf(stateWith(dimsIn(PLANES[0]![1], 'sub'))));
+    expect(recs.map(subclasses)).toEqual([
+      ['AcDbEntity', 'AcDbDimension', 'AcDbAlignedDimension'],
+      ['AcDbEntity', 'AcDbDimension', 'AcDbAlignedDimension', 'AcDbRotatedDimension'],
+      ['AcDbEntity', 'AcDbDimension', 'AcDbAlignedDimension', 'AcDbRotatedDimension'],
+      ['AcDbEntity', 'AcDbDimension', 'AcDb3PointAngularDimension'],
+      ['AcDbEntity', 'AcDbDimension', 'AcDbAlignedDimension'],
+    ]);
+  });
+});
+
 describe('reading DIMENSIONs of other programs', () => {
+  it('a rotated linear DIMENSION (50 = 30 degrees in a tilted plane) measures along that direction', () => {
+    const n = PLANES[0]![1].zAxis;
+    const ocs = frameFromPlane({ origin: v3(0, 0, 0), normal: n });
+    const w = (x: number, y: number) => planeWorld(ocs, { x, y }, 2);
+    const a = Math.PI / 6;
+    const text = dimensionFile(g3(10, w(0, 3)) + '70\r\n0\r\n' + ext(n) + '100\r\nAcDbAlignedDimension\r\n' + g3(13, w(0, 0)) + g3(14, w(4, 1)) + '50\r\n30\r\n100\r\nAcDbRotatedDimension\r\n');
+    const [d] = readDxf(text, { model3d: true }).model3d?.dimensions ?? [];
+    expect(d?.kind).toBe('linear');
+    expect(d!.axis).toBe('x');
+    // The plane X axis runs at 30 degrees in the OCS.
+    expect(dot3(d!.plane.xAxis, ocs.xAxis)).toBeCloseTo(Math.cos(a), 12);
+    expect(dot3(d!.plane.xAxis, ocs.yAxis)).toBeCloseTo(Math.sin(a), 12);
+    expect(dimension3dMeasurement(d!)).toBeCloseTo(4 * Math.cos(a) + 1 * Math.sin(a), 12);
+  });
+
+  it('a DIMENSION with extrusion (0, 0, -1): the 3D path with 3D on, flat (with a note) with 3D off', () => {
+    const n = v3(0, 0, -1);
+    const text = dimensionFile(g3(10, v3(2, 3, -1)) + '70\r\n1\r\n' + ext(n) + '100\r\nAcDbAlignedDimension\r\n' + g3(13, v3(0, 0, -1)) + g3(14, v3(4, 0, -1)));
+    const on = readDxf(text, { model3d: true });
+    const [d] = on.model3d?.dimensions ?? [];
+    expect(d?.plane.zAxis).toEqual(n);
+    // The Arbitrary Axis Algorithm: the OCS X axis of -Z is world -X.
+    expect(d!.plane.xAxis).toEqual(v3(-1, 0, 0));
+    expect(d!.plane.origin.z).toBeCloseTo(-1, 12);
+    expect(dimension3dMeasurement(d!)).toBeCloseTo(4, 12);
+    expect(d!.projected).toBeUndefined();
+    // The dimension line is where 10 says (y = 3), whatever the orientation.
+    expect(dimension3dLocation(d!).y).toBeCloseTo(3, 12);
+    const off = readDxf(text, { model3d: false });
+    expect(off.model3d).toBeUndefined();
+    expect(off.entities.filter((e) => e.type === 'dimension')).toHaveLength(1);
+    expect(importReportOf(off)?.notes.some((t) => /1 dimension of this drawing lies in a plane other than the XY plane \(or faces -Z\) and was read flat/.test(t))).toBe(true);
+    expect((importReportOf(off)?.items ?? []).filter((i) => i.type === 'DIMENSION')).toEqual([]);
+  });
+
   const f = PLANES[0]![1];
   it('with 3D off: the unchanged 2D path (flat, no 3D model, no new report items)', () => {
     const text = foreign(f);

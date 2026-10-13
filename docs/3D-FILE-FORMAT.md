@@ -178,7 +178,7 @@ reported as unsupported.
 
 Reading: a model-space DIMENSION with `JCAD_3D` data is a 3D dimension whatever the experimental
 setting (with the setting off the report notes it is kept but hidden). Another program's DIMENSION
-whose extrusion is not (0, 0, +-1) becomes a 3D dimension only when 3D reading is enabled
+whose extrusion is not (0, 0, +1) (tilted, or (0, 0, -1)) becomes a 3D dimension only when 3D reading is enabled
 (`DxfReadOptions.model3d`); every other DIMENSION, and every one in a block or on a layout, takes
 the unchanged 2D path. Re-saving what was read is byte-identical
 (`tests/model3d-dxf-dimension3d.test.ts`); `tests/fuzz-model3d-file.test.ts` fuzzes the records.

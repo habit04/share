@@ -25,7 +25,9 @@ import type { Dimension3D, Dimension3DKind } from './types';
 
 /**
  * A definition point is in the measurement plane when its distance from it is at most this much
- * relative to the size of the coordinates (max(1, |origin|, |points|)), as for the 3DDIM prototype.
+ * relative to the dimension's own size (the largest distance between its definition points), but
+ * never less than the rounding of coordinates of that magnitude (`coincidenceTolerance` x 100):
+ * a 5-unit dimension at x = 100,000 with a point 0.05 off its plane is projected.
  */
 export const DIM3D_PLANE_TOLERANCE = 1e-6;
 
@@ -70,11 +72,26 @@ export interface Dimension3DSpec {
   readonly style: DimStyle;
 }
 
-/** The tolerance for "in the plane" of a dimension with these points (DIM3D_PLANE_TOLERANCE). */
-export function planeTolerance(plane: Frame3, points: readonly (Vec3 | undefined)[]): number {
+/**
+ * Distances below this are rounding noise for coordinates of this magnitude (1e-12 x max(1,
+ * |plane origin|, |points|)): two points closer than it coincide.
+ */
+export function coincidenceTolerance(plane: Frame3, points: readonly (Vec3 | undefined)[]): number {
   let size = Math.max(1, len3(plane.origin));
   for (const p of points) if (p) size = Math.max(size, len3(p));
-  return DIM3D_PLANE_TOLERANCE * size;
+  return 1e-12 * size;
+}
+
+/**
+ * The tolerance for "in the plane" of a dimension with these definition points:
+ * DIM3D_PLANE_TOLERANCE x their largest distance from each other, at least 100 x the rounding
+ * noise of their coordinates (`coincidenceTolerance`).
+ */
+export function planeTolerance(plane: Frame3, points: readonly (Vec3 | undefined)[]): number {
+  const pts = points.filter((p): p is Vec3 => !!p);
+  let spread = 0;
+  for (let i = 0; i < pts.length; i++) for (let j = i + 1; j < pts.length; j++) spread = Math.max(spread, len3(sub3(pts[i]!, pts[j]!)));
+  return Math.max(DIM3D_PLANE_TOLERANCE * spread, 100 * coincidenceTolerance(plane, pts));
 }
 
 /** Distance of `q` from the plane (signed, along the normal). */
@@ -97,6 +114,7 @@ export function makeDimension3D(spec: Dimension3DSpec): Dimension3D {
   const pts = [spec.p1, spec.p2, spec.location, ...(spec.vertex ? [spec.vertex] : [])];
   if (!pts.every((p) => !!p && finite3(p))) throw new RangeError('The dimension points must be finite.');
   const tol = planeTolerance(plane, [spec.p1, spec.p2, spec.vertex]);
+  const tiny = coincidenceTolerance(plane, [spec.p1, spec.p2, spec.vertex, spec.location]);
   const a = flat(planeLocal(plane, spec.p1)), b = flat(planeLocal(plane, spec.p2)), loc = flat(planeLocal(plane, spec.location));
   let p1 = spec.p1, p2 = spec.p2;
   let offset: number;
@@ -104,7 +122,7 @@ export function makeDimension3D(spec: Dimension3DSpec): Dimension3D {
   switch (kind) {
     case 'aligned': {
       const len = g.dist(a, b);
-      if (!(len > tol * 1e-6)) throw new RangeError('The two points coincide in the measurement plane; there is nothing to dimension.');
+      if (!(len > tiny)) throw new RangeError('The two points coincide in the measurement plane; there is nothing to dimension.');
       const u = { x: (b.x - a.x) / len, y: (b.y - a.y) / len };
       offset = g.dot(g.sub(loc, g.mid(a, b)), { x: -u.y, y: u.x });
       break;
@@ -118,7 +136,6 @@ export function makeDimension3D(spec: Dimension3DSpec): Dimension3D {
     case 'angular': {
       if (!spec.vertex) throw new RangeError('An angular dimension needs a vertex.');
       const c = flat(planeLocal(plane, spec.vertex));
-      const tiny = tol * 1e-6;
       if (!(g.dist(a, c) > tiny) || !(g.dist(b, c) > tiny)) throw new RangeError('A leg point coincides with the vertex in the measurement plane.');
       const ua = g.normalize(g.sub(a, c)), ub = g.normalize(g.sub(b, c));
       if (Math.abs(g.cross(ua, ub)) < 1e-12 && g.dot(ua, ub) > 0) throw new RangeError('The two legs have the same direction; there is no angle to dimension.');
@@ -159,9 +176,10 @@ export function dimension3dSpec(dim: Dimension3D): Dimension3DSpec {
   };
 }
 
-/** The text the dimension shows as a 2D text override: the user's override, plus " (projected)" when projected. */
+/** The text the dimension shows as a 2D text override: the user's override, plus " (projected)" when projected (a hidden text, ' ', stays hidden). */
 export function effectiveTextOverride(dim: Pick<Dimension3D, 'textOverride' | 'projected'>): string | undefined {
-  if (!dim.projected) return dim.textOverride;
+  // ' ' hides the text (as in 2D): it stays hidden when projected.
+  if (!dim.projected || dim.textOverride === ' ') return dim.textOverride;
   const base = dim.textOverride ?? '<>';
   return base.endsWith(PROJECTED_SUFFIX) ? base : base + PROJECTED_SUFFIX;
 }

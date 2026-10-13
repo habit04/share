@@ -23,7 +23,8 @@
  * dimension colours (src/render3d/dimension3d-scene.ts), selection-tinted and hover-lightened like
  * solid edges, after the solids (depth-tested, so a solid in front hides them). `pick` tries them
  * first on the CPU: the dimension with a display segment within `dimensionAperture` CSS px of the
- * cursor wins over the solid under it; the id buffer holds solids only. Rubber-band dimensions of a
+ * cursor wins over the solid under it unless that solid's face is nearer along the cursor ray
+ * (`dimensionInFront`); the id buffer holds solids only. Rubber-band dimensions of a
  * running DIM3D (`Viewport3DOverlay.previewDimensions`) are drawn the same way but never picked.
  */
 import type { Drawing, DrawingState } from '../core/document';
@@ -41,7 +42,7 @@ import { ATTR_COLOR, ATTR_POSITION, MeshBufferCache, type Programs, createProgra
 import { type PickHit, pickSolids } from './picking';
 import { type GridSpec, type Rgba, LineBatchBuilder, gridLines, gridSpec, parseCssColor, solidDisplayColor } from './scene-data';
 import { emitDrawingUnderlay, hiddenLayerNames } from './scene-sink';
-import { dimension3dGeometry, pickDimension3D, visibleDimensions3D } from './dimension3d-scene';
+import { type Dimension3DHit, dimension3dGeometry, dimensionInFront, pickDimension3DHit, visibleDimensions3D } from './dimension3d-scene';
 import { GRIP_EDGE_RGBA, GRIP_FILL_RGBA, type MarkerKind, SNAP_MARKER_RGBA, type Segment2, gripSegments, markerSegments } from './markers';
 
 /** What changes between frames without changing the document. */
@@ -268,13 +269,15 @@ export class Viewport3D {
 
   /**
    * Id of the object under (sx, sy) CSS px, or null: a visible 3D dimension within
-   * `dimensionAperture` (CPU), else the front-most visible solid (GPU first, CPU fallback).
+   * `dimensionAperture` (CPU) unless a solid face is nearer along the cursor ray, else the
+   * front-most visible solid (GPU first, CPU fallback).
    */
   pick(sx: number, sy: number): string | null {
-    const dim = this.pickDimension(sx, sy);
+    const dim = this.pickDimensionHit(sx, sy);
     if (dim) {
       this.lastPickPath = 'cpu';
-      return dim;
+      const solid = this.pickExact(sx, sy);
+      return solid && !dimensionInFront(dim.point, solid.point, this.pixelRay(sx, sy)) ? solid.id : dim.id;
     }
     const solids = this.visibleSolids(this.doc.snapshot);
     if (solids.length === 0) {
@@ -292,8 +295,8 @@ export class Viewport3D {
     return this.pickExact(sx, sy)?.id ?? null;
   }
 
-  /** The visible 3D dimension with a display segment within `dimensionAperture` CSS px of (sx, sy), or null. */
-  pickDimension(sx: number, sy: number): string | null {
+  /** The visible 3D dimension with a display segment within `dimensionAperture` CSS px of (sx, sy), with the world point there, or null. */
+  pickDimensionHit(sx: number, sy: number): Dimension3DHit | null {
     const state = this.doc.snapshot;
     const dims = visibleDimensions3D(state.model3d?.dimensions, state.layers);
     if (!dims.length) return null;
@@ -303,7 +306,7 @@ export class Viewport3D {
       const s = projectToScreen(cam, p, W, H);
       return s ? { x: s.x / dpr, y: s.y / dpr } : null;
     };
-    return pickDimension3D(dims, project, sx, sy, this.dimensionAperture, state.layers);
+    return pickDimension3DHit(dims, project, sx, sy, this.dimensionAperture, state.layers);
   }
 
   /** Exact CPU pick at the centre of the device pixel under (sx, sy): the nearest hit, or null. */

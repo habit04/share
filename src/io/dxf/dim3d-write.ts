@@ -86,13 +86,14 @@ export function writeDimension3D(w: Writer, dim: Dimension3D, owner: string, blo
   if (shown !== undefined && shown !== '') w.pair(1, shown);
   extrusion(w, ocs);
   w.pair(3, dim.style.name);
-  w.pair(100, 'AcDbAlignedDimension');
   if (dim.kind === 'angular') {
+    // Three-point angular: only its own subclass marker (no AcDbAlignedDimension).
     w.pair(100, 'AcDb3PointAngularDimension');
     point(w, 13, dim.p1);
     point(w, 14, dim.p2);
     point(w, 15, dim.vertex ?? dim.p1);
   } else {
+    w.pair(100, 'AcDbAlignedDimension');
     point(w, 13, dim.p1);
     point(w, 14, dim.p2);
     if (dim.kind === 'linear') {

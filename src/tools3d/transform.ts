@@ -106,7 +106,7 @@ function objectCount(o: Objects3D): string {
  * true when the drawing changed.
  */
 export function applyTransform(ctx: ToolContext, NAME: string, objects: readonly Solid3D[] | Objects3D, m: Mat4, verb: string): boolean {
-  const o: Objects3D = Array.isArray(objects) ? { solids: objects, dimensions: [] } : (objects as Objects3D);
+  const o: Objects3D = 'solids' in objects ? objects : { solids: objects, dimensions: [] };
   try {
     commitSolidEdit(ctx, { solids: o.solids, ...(o.dimensions.length ? { dimensions: o.dimensions } : {}), matrix: m });
   } catch (err) {

@@ -17,7 +17,7 @@ import {
 import { addDimensions3D, addSolids, dimensionById, model3dOf, newSolid, removeObjects3D, withModel3D } from '../src/model3d/model';
 import { boxMesh } from '../src/model3d/primitives';
 import type { Dimension3D } from '../src/model3d/types';
-import { dimension3dGeometry, pickDimension3D, visibleDimensions3D } from '../src/render3d/dimension3d-scene';
+import { dimension3dGeometry, dimensionInFront, pickDimension3D, pickDimension3DHit, visibleDimensions3D } from '../src/render3d/dimension3d-scene';
 import { aboutPoint, mirrorAcrossPlane, scalingAbout, transformDimension3D, translationMatrix } from '../src/tools3d/solid-edit';
 import { axesFrame } from '../src/tools3d/context';
 
@@ -93,6 +93,23 @@ describe('3D dimensions: measurement in the plane', () => {
     expect(makeDimension3D({ kind: 'angular', plane: f, vertex: P(f, 0, 0, 0.5), p1: P(f, 1, 0), p2: P(f, 0, 1), location: P(f, 1, 1), style }).projected).toBe(true);
   });
 
+  it('the plane tolerance follows the dimension size, not the coordinates', () => {
+    const far = axesFrame('XY', v3(100000, 0, 0));
+    const d = makeDimension3D({ kind: 'aligned', plane: far, p1: v3(100000, 0, 0), p2: v3(100005, 0, 0.05), location: v3(100002, 1, 0), style });
+    expect(d.projected).toBe(true);
+    expect(dimension3dText(d)).toBe('5.0000 (projected)');
+    // Rounding noise of such coordinates is still in the plane.
+    expect(makeDimension3D({ kind: 'aligned', plane: far, p1: v3(100000, 0, 0), p2: v3(100005, 0, 1e-9), location: v3(100002, 1, 0), style }).projected).toBeUndefined();
+  });
+
+  it('a hidden text (" ") stays hidden when projected', () => {
+    const f = tilted;
+    const d = makeDimension3D({ kind: 'aligned', plane: f, p1: P(f, 0, 0), p2: P(f, 3, 4, 2), location: P(f, 0, 3), style, textOverride: ' ' });
+    expect(d.projected).toBe(true);
+    expect(dimension3dTo2d(d).text).toBe(' ');
+    expect(dimension3dText(d)).toBe('');
+  });
+
   it('refuses input that cannot make a dimension', () => {
     const f = tilted;
     expect(() => makeDimension3D({ kind: 'aligned', plane: f, p1: P(f, 1, 1), p2: P(f, 1, 1, 5), location: P(f, 0, 0), style })).toThrow(/coincide in the measurement plane/);
@@ -145,6 +162,14 @@ describe('3D dimensions: display geometry', () => {
     expect(pickDimension3D([d], project, 50, -20, 3)).toBe(d.id); // on the dimension line
     expect(pickDimension3D([d], project, 50, -60, 3)).toBeNull();
     expect(pickDimension3D([], project, 50, -20, 3)).toBeNull();
+    // The hit carries the world point on the segment, compared with a solid along the cursor ray.
+    const hit = pickDimension3DHit([d], project, 50, -20, 3)!;
+    expect(hit.id).toBe(d.id);
+    expect(dist3(hit.point, v3(5, 2, 0))).toBeLessThan(0.3); // within the 3 px (0.3 unit) aperture
+    const ray = { origin: v3(5, 2, 100), dir: v3(0, 0, -1) };
+    expect(dimensionInFront(v3(5, 2, 0), v3(5, 2, 0), ray)).toBe(true); // on the face
+    expect(dimensionInFront(v3(5, 2, 0), v3(5, 2, 3), ray)).toBe(false); // a face 3 above hides it
+    expect(dimensionInFront(v3(5, 2, 4), v3(5, 2, 3), ray)).toBe(true); // in front of the face
   });
 
   it('describes the measurement plane', () => {
@@ -183,15 +208,21 @@ describe('3D dimensions: transforms', () => {
     const z = mirrored.plane.zAxis, x = mirrored.plane.xAxis, y = mirrored.plane.yAxis;
     expect(dot3(z, v3(x.y * y.z - x.z * y.y, x.z * y.x - x.x * y.z, x.x * y.y - x.y * y.x))).toBeCloseTo(1, 12);
     // The dimension line location is the mirror image of the original one.
-    const loc = dimension3dLocation(d), mloc = dimension3dLocation(mirrored);
     const n = v3(1, 0.2, -0.3), nl = Math.hypot(1, 0.2, 0.3);
-    const h = dot3(sub3(loc, c), n) / nl;
-    expect(dist3(mloc, v3(loc.x - (2 * h * n.x) / nl, loc.y - (2 * h * n.y) / nl, loc.z - (2 * h * n.z) / nl))).toBeCloseTo(0, 10);
+    const reflect = (q: Vec3): Vec3 => {
+      const h = dot3(sub3(q, c), n) / nl;
+      return v3(q.x - (2 * h * n.x) / nl, q.y - (2 * h * n.y) / nl, q.z - (2 * h * n.z) / nl);
+    };
+    expect(dist3(dimension3dLocation(mirrored), reflect(dimension3dLocation(d)))).toBeCloseTo(0, 10);
+    // Angular: the mirror reverses the turning sense; the legs are swapped so the same angle (and
+    // the mirrored arc) is measured.
     const a60 = Math.PI / 3;
     const ang = makeDimension3D({ kind: 'angular', plane: tilted, vertex: P(tilted, 0, 0), p1: P(tilted, 2, 0), p2: P(tilted, Math.cos(a60), Math.sin(a60)), location: P(tilted, 1, 0.3), style });
     const mang = transformDimension3D(ang, m);
     expect(dimension3dMeasurement(mang)).toBeCloseTo(a60, 12);
-    expect(dist3(dimension3dLocation(mang), dimension3dLocation(transformDimension3D(ang, m)))).toBe(0);
+    expect(dist3(dimension3dLocation(mang), reflect(dimension3dLocation(ang)))).toBeCloseTo(0, 10);
+    expect(dist3(mang.p1, reflect(ang.p2))).toBeCloseTo(0, 10);
+    expect(dist3(mang.vertex!, reflect(ang.vertex!))).toBeCloseTo(0, 10);
   });
 
   it('rebuilding from the spec gives the same dimension', () => {
