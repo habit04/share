@@ -41,6 +41,7 @@ export interface DxfSink {
   pair(code: number, value: string | number): void;
   nextHandle(): string;
   reserveEntityHandle(entity: Entity): string;
+  anchor?(handle: string, anchor: import('../core/cad-graph').CadAnchor): void;
 }
 
 interface Pair {
@@ -195,16 +196,19 @@ export function writeLayoutContent(w: DxfSink, rec: LayoutRecord, writeEntity: (
     flags: 32768 | 32,
     frozen: [],
   });
+  const boundaries = new Map<Entity, string>();
   lay.viewports.forEach((v, i) => {
     if (v.clipBoundary && !supportedViewportClip(v.clipBoundary)) throw new Error('Cannot save an invalid or curved viewport clip boundary.');
-    // Layout/viewport copies may share immutable source geometry. Each emitted boundary
-    // needs its own handle and owner, even when its source object is shared.
-    const boundary = v.clipBoundary ? { ...v.clipBoundary } : undefined;
-    const clipHandle = boundary ? w.reserveEntityHandle(boundary) : undefined;
+    // Multiple native viewports can reference the same boundary in one paper owner.
+    // A separate layout still emits its own boundary with its own handle and owner.
+    const existing = v.clipBoundary && boundaries.get(v.clipBoundary);
+    const boundary = !existing && v.clipBoundary ? { ...v.clipBoundary } : undefined;
+    const clipHandle = existing ?? (boundary ? w.reserveEntityHandle(boundary) : undefined);
+    if (v.clipBoundary && boundary && clipHandle) boundaries.set(v.clipBoundary, clipHandle);
     const frozen = (v.frozenLayers ?? []).map((n) => layerHandles.get(n)).filter((h): h is string => !!h);
     const twist = viewTwist(v.view) % (2 * Math.PI);
     const cos = Math.cos(twist), sin = Math.sin(twist);
-    writeViewport(w, rec.blockRecord, {
+    const handle = writeViewport(w, rec.blockRecord, {
       center: v.center,
       width: v.width,
       height: v.height,
@@ -220,8 +224,9 @@ export function writeLayoutContent(w: DxfSink, rec: LayoutRecord, writeEntity: (
       clipHandle,
     });
     if (boundary) writeEntity(boundary, rec.blockRecord);
+    w.anchor?.(handle, { kind: 'viewport', id: v.id });
   });
-  for (const e of lay.entities) writeEntity(e, rec.blockRecord);
+  for (const e of lay.entities) if (!boundaries.has(e)) writeEntity(e, rec.blockRecord);
 }
 
 const STYLE_SHEETS: Record<PlotStyleMode, string> = {
@@ -293,6 +298,7 @@ export function writeLayoutObjects(w: DxfSink, plan: LayoutPlan, modelRecord: st
   w.pair(3, 'Model');
   w.pair(350, plan.modelLayout);
   const layoutObject = (handle: string, name: string, tab: number, lay: Layout | null, record: string) => {
+    w.anchor?.(handle, { kind: 'layout', name });
     w.pair(0, 'LAYOUT');
     w.pair(5, handle);
     w.pair(102, '{ACAD_REACTORS');
@@ -372,6 +378,7 @@ export type LayoutEntityReader = (objs: Obj[], where: string) => Entity[];
 
 /** Collects paper-space data while io/dxf/reader.ts walks the sections, then builds the layouts. */
 export class LayoutReader {
+  readonly viewportHandles = new Map<string, string>();
   /** `report` receives viewports that are dropped or simplified. */
   constructor(private readonly report?: ImportReportBuilder) {}
   private recordNames = new Map<string, string>();
@@ -412,7 +419,7 @@ export class LayoutReader {
     for (const o of objs) if (o.kind === 'LAYOUT') this.layoutObjs.push(o);
   }
 
-  /** Build the layouts; `readEntities` is the DXF reader's entity parser. Undefined = only an untouched Layout1. */
+  /** Build declared layouts; `readEntities` is the DXF reader's entity parser. */
   build(readEntities: LayoutEntityReader, host: LayoutHost): Layout[] | undefined {
     const units = unitsOfHost(host);
     const out: Array<{ layout: Layout; tab: number }> = [];
@@ -433,7 +440,8 @@ export class LayoutReader {
     out.sort((a, b) => a.tab - b.tab);
     const layouts = out.map((o) => o.layout);
     if (layouts.length === 0) return undefined;
-    if (layouts.length === 1 && layouts[0]!.pristine && /^layout1$/i.test(layouts[0]!.name)) return undefined;
+    // Even an untouched source Layout1 has its own retained LAYOUT/BLOCK_RECORD
+    // identities. Keep it explicit so a newly added sheet gets a distinct block.
     return layouts;
   }
 
@@ -486,6 +494,7 @@ export class LayoutReader {
     const overall = vps.find((o) => Math.trunc(num(o, 69)) === 1) ?? vps[0];
     const viewports: LayoutViewport[] = [];
     const clipObjects = new Set<Obj>();
+    const clipBoundaries = new Map<Obj, import('../core/entities').PolylineEntity>();
     const byHandle = new Map(rest.map((o) => [str(o, 5).toUpperCase(), o]));
     for (const o of vps) {
       if (o === overall) continue;
@@ -519,16 +528,24 @@ export class LayoutReader {
       for (const reason of view.warnings) this.report?.add({ ...item, action: 'simplified', reason });
       const clipHandle = str(v, 340).trim().toUpperCase();
       const clipObject = clipHandle && clipHandle !== '0' ? byHandle.get(clipHandle) : undefined;
-      const boundary = clipObject?.kind === 'LWPOLYLINE' ? readEntities([clipObject], where)[0] : undefined;
-      const clipBoundary = boundary && supportedViewportClip(boundary) ? translateEntity(boundary, offset) as import('../core/entities').PolylineEntity : undefined;
+      let clipBoundary = clipObject ? clipBoundaries.get(clipObject) : undefined;
+      if (!clipBoundary && clipObject?.kind === 'LWPOLYLINE') {
+        const boundary = readEntities([clipObject], where)[0];
+        if (boundary && supportedViewportClip(boundary)) {
+          clipBoundary = translateEntity(boundary, offset) as import('../core/entities').PolylineEntity;
+          clipBoundaries.set(clipObject, clipBoundary);
+        }
+      }
       if (clipBoundary && clipObject) clipObjects.add(clipObject);
       else if (flags & VP_NONRECT_CLIP || clipHandle && clipHandle !== '0') {
         this.report?.add({ ...item, action: 'simplified', reason: 'its clipping boundary is not a supported closed straight polyline: the viewport shows its whole rectangle; readable boundary geometry is kept' });
       }
       const status = Math.trunc(num(v, 68, 1));
       const frozen = v.groups.filter((x) => x.code === 331).map((x) => this.layerNames.get(x.value.toUpperCase())).filter((x): x is string => !!x);
+      const id = newViewportId();
+      if (str(o, 5)) this.viewportHandles.set(str(o, 5).trim().toUpperCase(), id);
       viewports.push({
-        id: newViewportId(),
+        id,
         center,
         width,
         height,

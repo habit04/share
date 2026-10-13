@@ -47,7 +47,7 @@ describe('STYLE table', () => {
 
   it('writes the STYLE table and group 7 back', () => {
     const out = writeDxf(state);
-    expect(out).toMatch(/STYLE\r\n5\r\n[0-9A-F]+\r\n330\r\n3\r\n100\r\nAcDbSymbolTableRecord\r\n100\r\nAcDbTextStyleTableRecord\r\n2\r\nARIAL\r\n70\r\n0\r\n/);
+    expect(out).toMatch(/STYLE\r\n5\r\n[0-9A-F]+\r\n330\r\n[0-9A-F]+\r\n100\r\nAcDbSymbolTableRecord\r\n100\r\nAcDbTextStyleTableRecord\r\n2\r\nARIAL\r\n70\r\n0\r\n/);
     expect(out).toContain('3\r\narial.ttf');
     expect(out).toContain('1000\r\nSegoe UI');
     const back = readDxf(out);

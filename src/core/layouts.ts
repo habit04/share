@@ -471,7 +471,7 @@ function viewportFromFrame(f: ViewportFrame): LayoutViewport {
     const angle = viewTwist(vp.view);
     const view = moved ? vp.view : { ...vp.view, center: g.add(vp.view.center, angle ? g.rotate(delta, -angle) : delta) };
     const { vport: _view, ...outline } = f;
-    return { ...vp, id: f.id, center, view, ...(!moved ? { width: Math.max(next.max.x - next.min.x, 1e-6), height: Math.max(next.max.y - next.min.y, 1e-6) } : {}), clipBoundary: { ...outline, id: vp.clipBoundary.id } };
+    return { ...vp, id: f.id, center, view, ...(!moved ? { width: Math.max(next.max.x - next.min.x, 1e-6), height: Math.max(next.max.y - next.min.y, 1e-6) } : {}), clipBoundary: { ...outline, id: f.id === vp.id ? vp.clipBoundary.id : `${f.id}:clip` } };
   }
   let minX = Infinity;
   let minY = Infinity;
@@ -491,7 +491,7 @@ function viewportFromFrame(f: ViewportFrame): LayoutViewport {
   const delta = g.scale(g.sub(center, vp.center), 1 / vp.view.scale);
   const angle = viewTwist(vp.view);
   const view = resized ? { ...vp.view, center: g.add(vp.view.center, angle ? g.rotate(delta, -angle) : delta) } : vp.view;
-  const clipBoundary = vp.clipBoundary ? { ...vp.clipBoundary, points: vp.clipBoundary.points.map((p) => ({ x: center.x + (p.x - vp.center.x) * width / vp.width, y: center.y + (p.y - vp.center.y) * height / vp.height })) } : undefined;
+  const clipBoundary = vp.clipBoundary ? { ...vp.clipBoundary, id: f.id === vp.id ? vp.clipBoundary.id : `${f.id}:clip`, points: vp.clipBoundary.points.map((p) => ({ x: center.x + (p.x - vp.center.x) * width / vp.width, y: center.y + (p.y - vp.center.y) * height / vp.height })) } : undefined;
   return { ...vp, id: f.id, layer: f.layer, center, width, height, view, ...(clipBoundary ? { clipBoundary } : {}) };
 }
 

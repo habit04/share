@@ -24,7 +24,7 @@ export function writeMText(w: Writer, e: MTextEntity, owner: string): void {
   w.pair(71, e.attachment);
   w.pair(72, 1);
   // A live field writes its expression; otherwise the formatted source while it still matches the text.
-  const text = e.field && e.field.value === e.text ? e.field.code : formattedSource(e) ?? mtextToDxf(e.text);
+  const text = e.field && e.field.value === e.text ? e.field.native ? mtextToDxf(e.text) : e.field.code : formattedSource(e) ?? mtextToDxf(e.text);
   // Long strings go in 250-char chunks of code 3 followed by a final code 1.
   let rest = text;
   while (rest.length > 250) {
@@ -216,12 +216,14 @@ export function writeLeader(w: Writer, e: LeaderEntity, owner: string, extras: W
     if (m) {
       writeMText(w, { ...m, id: e.id }, owner);
       textHandle = w.lastHandle().toString(16).toUpperCase();
+      w.anchor(textHandle, { kind: 'entity', id: e.id, part: 'annotation' });
     }
   }
   const paths: g.Point[][] = [leaderPath(e), ...(e.extraPaths ?? []).map((p) => [...p])];
   paths.forEach((path, i) => {
     if (path.length < 2) return;
     writeEntityCommon(w, e, owner, 'LEADER', 'AcDbLeader');
+    if (i) w.anchor(w.lastHandle().toString(16).toUpperCase(), { kind: 'entity', id: e.id, part: `leader-path:${i}` });
     w.pair(3, 'Standard');
     w.pair(71, e.arrow ? 1 : 0);
     w.pair(72, e.spline ? 1 : 0);

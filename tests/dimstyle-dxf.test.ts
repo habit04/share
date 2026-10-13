@@ -82,8 +82,8 @@ describe('dimension styles in DXF', () => {
   it('reports unsupported native dimension style/header semantics and extra ACAD XDATA', () => {
     const text = ['0', 'SECTION', '2', 'HEADER', '9', '$DIMAUNIT', '70', '3', '0', 'ENDSEC', '0', 'SECTION', '2', 'TABLES', '0', 'DIMSTYLE', '105', 'A1', '2', 'Radians', '275', '3', '0', 'ENDSEC', '0', 'EOF'].join('\n');
     const report = importReportOf(readDxf(text))!;
-    expect(report.items).toContainEqual(expect.objectContaining({ type: 'HEADER', action: 'simplified', reason: expect.stringContaining('$DIMAUNIT') }));
-    expect(report.items).toContainEqual(expect.objectContaining({ type: 'DIMSTYLE', action: 'simplified', reason: expect.stringContaining('DIMAUNIT') }));
+    expect(report.items).toContainEqual(expect.objectContaining({ type: 'HEADER', action: 'kept', reason: expect.stringContaining('$DIMAUNIT') }));
+    expect(report.items).toContainEqual(expect.objectContaining({ type: 'DIMSTYLE', action: 'kept', reason: expect.stringContaining('DIMAUNIT') }));
     const named = { ...STANDARD_DIMSTYLE, name: 'Overrides' };
     const state = withDimStyle({ entities: [dim('d', { ...named, decimals: 2 })], layers, blocks: {}, currentLayer: '0' }, named, false);
     const out = writeDxf(state).replace('1001\r\nACAD\r\n1000\r\nDSTYLE', '1001\r\nACAD\r\n1000\r\nOTHER_METADATA\r\n1000\r\nDSTYLE');

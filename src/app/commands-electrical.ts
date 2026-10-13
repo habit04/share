@@ -7,8 +7,7 @@
 import { backupOutcome, type Editor, type FileBridge, type OpenResult } from './editor';
 import type { Point } from '../core/geometry';
 import type { Entity, InsertEntity } from '../core/entities';
-import { Drawing, type DrawingState, type DrawingHistory } from '../core/document';
-import { prepareDrawingState } from '../core/geometry-budget';
+import { Drawing, prepareDrawingTransition, type DrawingState, type DrawingHistory } from '../core/document';
 import type { DocumentSession } from './sessions';
 import { confirmSaveOver } from './import-open';
 import { ComponentTool, componentDialogInit, componentAttributes, lookupSymbol } from '../tools/electrical';
@@ -784,7 +783,7 @@ export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[
   const batch = batches[0];
   for (const [index, change] of changes) {
     const sheet = sheets[index]!;
-    const next = prepareDrawingState(withSpaceOf(change.state, sheet.base), sheet.base ?? sheet.doc.snapshot);
+    const next = prepareDrawingTransition(sheet.base ?? sheet.doc.snapshot, withSpaceOf(change.state, sheet.base));
     batch?.budget.addState(next); prepared.set(index, next);
   }
   const items: AffectedDrawing[] = [...changes].map(([i, c]) => ({ name: sheets[i]!.name, kind: sheets[i]!.source === 'file' ? 'file' : 'open', detail: c.detail }));

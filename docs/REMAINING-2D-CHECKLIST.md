@@ -14,9 +14,14 @@ is the current branch and `SUPPORT-MATRIX.md`, rather than an earlier planning l
 
 The user has paused further work through the long roadmap. The current batch finishes
 priority **24**, including confirmed direct text/PDF export ordering and source-protection
-defects, then freezes only after local validation and clean CI on its final commit. The
-next work is deliberate integration of completed #9, 3D and GPU development milestones;
+defects. Its frozen commit `739950c` passed local validation and all four exact-head CI jobs.
+The completed #9 source is now combined with this batch and has passed its local gates.
+Each combined published head must clear fresh CI before adopting the next milestone.
+The next work is deliberate integration of completed 3D and eligible GPU development milestones;
 partial rows below remain recorded scope rather than new implementation assignments.
+
+The #24 freeze at `739950c` passed all four exact-head CI jobs. Completed #9 source
+integration is now the first combined milestone; its tests and CI are separate gates.
 
 Completed corrections so far include: polygon viewport DXF/display/input compatibility, dimension
 style correctness, text/default override correctness, declared-height MTEXT flow and Windows
@@ -39,15 +44,15 @@ remain open where full compatibility is unverified.
 | 16 | Partial milestone implemented: native DXF gradient name/angle/shift/dialog mode/tint/color records and inactive descriptors retained; all nine names and both endpoint shifts externally reopened. Unshifted LINEAR Canvas and vector/raster plotting verified, including holes, opacity, ACI/RGB, direct transforms and affine block instances. HATCHEDIT angle/shift is undoable; explicit SOLID conversion retains an inactive descriptor. Named-pattern conversion is refused because native DXF cannot retain the combination. Nonlinear/nonzero-shift rendering uses a reported solid fallback. Destructive EXPLODE and unverified DWG saving are guarded. See `HATCH-GRADIENTS.md`. | Independent; native DWG fields/conversion still #19. | Complete nonlinear/shifted fields from native reference; native DWG metadata equivalence; retain current DXF/Canvas/PDF/edit/reopen checks. |
 | 17 | Missing associations: HATCH export writes flag 71=0; links reported lost. | Object-reference integration #29. | Boundary edits/undo/erase update hatch; native ownership/reference roundtrip. |
 | 18 | Partial: MULTILEADER becomes LEADER+MTEXT; block content not drawn. | Independent 2D model, native preservation with #19/#29. | Text/block content, leader context/style, editing, native export/reopen, no silent substitution. |
-| 19 | **Completed externally and released in Windows v0.4.9. Integration only on this branch.** PR #9 merged at head 14cb3f9 (merge 8dfe1ca); the release was published on 2026-10-13. Its reader/writer metadata, named views, FIELD/object links and installed save/reopen verification without AutoCAD are completed work, not new implementation assignments here. This v0.4.8-based branch has applied only the helper byte-admission repair so far. | Completed by "Check GitHub access to JCad", [PR #9](https://github.com/habit04/share/pull/9), `codex/windows-dwg-metadata-reference-graph`; verified [v0.4.9](https://github.com/habit04/share/releases/tag/v0.4.9). Lead owns compatibility integration only. | Reuse verified completed slices, resolve shared codecs deliberately and test the combined branch. Do not duplicate reader/writer repairs or release work. |
+| 19 | **Completed externally and released in Windows v0.4.9. Integration only on this branch.** PR #9 merged at head 14cb3f9 (merge 8dfe1ca); the release was published on 2026-10-13. Its reader/writer metadata, named views, FIELD/object links and installed save/reopen verification without AutoCAD are completed work, not new implementation assignments here. This v0.4.8-based branch is now combining the completed graph, codecs and matching native source with the #24 freeze; combined validation remains a separate gate. | Completed by "Check GitHub access to JCad", [PR #9](https://github.com/habit04/share/pull/9), `codex/windows-dwg-metadata-reference-graph`; verified [v0.4.9](https://github.com/habit04/share/releases/tag/v0.4.9). Lead owns compatibility integration only. | Reuse verified completed slices, resolve shared codecs deliberately and test the combined branch. Do not duplicate reader/writer repairs or release work. |
 | 20 | Missing: xref block path/overlay flags retained, `xrefPlaceholder` shows frame; no external drawing loading/refresh. | Independent; Windows path grants and recursion/geometry limits required. | Relative paths, nesting/cycles, refresh/undo, missing files, no rewriting original references. |
 | 21 | Horizontal SHX milestone implemented: bounded native shape/unifont decoder, explicit Windows SHXFONT/SHXLOAD picker, per-session resources, native TEXT ink/space/fitting/descent rules and shared Canvas/raster/eligible vector paths. Native/actual app proof passes 1,477 checks plus the final rebuilt save/default/backup/reopen gate. Unsupported glyphs/modes retain substitutes. BigFont, vertical/mirrored text, fractional arcs and complex-linetype glyph painting remain open. See `SHX-FONTS.md`. | Independent; no proprietary font bytes committed. DWG exposure/reference dependencies remain #19. | Retain native fixture, metrics/plot/real IPC/undo/save/reopen proof; extend each encoding/mode and linetype placement with native fixtures. |
 | 22 | Partial: table cells edited in JCad, export is INSERT + `JCAD_TABLE` XDATA. | Native table model/export; #19 for omitted DWG cells. | Native editable ACAD_TABLE reopened externally and in JCad, styles/cell values retained. |
 | 23 | Partial: electrical attributes, WD_M settings and project metadata exist; remaining proprietary extensions require fixture-based audit. | Electrical audit; application dictionaries #29. | Real AutoCAD Electrical cases preserve exposed tags/catalog/connectivity/settings; report unmodeled metadata. |
-| 24 | Current milestone implemented: native admissions, Unicode grants, byte-digest and completed-open lineage protection, stored leaf preservation, guarded backups and bounded whole-project preparation. Text/PDF exports share order/source guards; PDF resources and direct CSV report inputs are captured before awaits, stale/retired output refuses, cancellation joins cleanup and exports preserve dirty/history/recovery. Detached report proofs release, and unverified replacements warn explicitly. A final-gate native plugin collision was repaired with bounded fresh-byte verification; source-read policy is unchanged. Native/app regression evidence is recorded below. The complete final suite and exact-final-head CI must clear before integration. Provider/UNC/case-sensitive fixtures and Node's final OS race remain limitations. See `WINDOWS-SAVE-ADMISSIONS.md`. | Lead/reliability; host-owned orders, native identity and bytes. Completed helper hunk credited to PR #9; completed reader/metadata integration is separate. | Retain all save/export/read regressions and original limits/deadlines, clear final local/CI gates, then freeze this milestone and begin deliberate integration. Externally unavailable provider fixtures remain explicit requirements rather than a universal race-free claim. |
+| 24 | Current milestone implemented: native admissions, Unicode grants, byte-digest and completed-open lineage protection, stored leaf preservation, guarded backups and bounded whole-project preparation. Text/PDF exports share order/source guards; PDF resources and direct CSV report inputs are captured before awaits, stale/retired output refuses, cancellation joins cleanup and exports preserve dirty/history/recovery. Detached report proofs release, and unverified replacements warn explicitly. A final-gate native plugin collision was repaired with bounded fresh-byte verification; source-read policy is unchanged. Native/app regression evidence is recorded below. The final suite and all four exact-final-head CI jobs passed at 739950c before source integration began. Provider/UNC/case-sensitive fixtures and Node's final OS race remain limitations. See `WINDOWS-SAVE-ADMISSIONS.md`. | Lead/reliability; host-owned orders, native identity and bytes. Completed helper hunk credited to PR #9; completed reader/metadata integration is separate. | Frozen milestone; retain every save/export/read regression and original limit/deadline through each combined integration gate. Externally unavailable provider fixtures remain explicit requirements rather than a universal race-free claim. |
 | 25 | Plugin read races/Unicode escapes and lifecycle revocation implemented: bounded descriptors, stale-load/reload ownership, scoped prompt/dialog/picker cleanup and nested transaction rollback. API v1 remains full-trust page code; capability isolation is missing. See `PLUGIN-SOURCE-READS.md`. | Independent source/lifecycle fixes; separate realm/RPC compatibility architecture for full isolation. | Retain real file-read and unload/reload regressions, then enforce declared caps outside plugin globals with actual denied operations and explicit migration. |
 | 28 | Missing specialized entities and PDF/DGN/DWF underlays; unsupported records reported (`SUPPORT-MATRIX.md`). | Independent per-entity milestones; parsers/licensing required for underlays. | Preserve source/reference metadata; fixture import/edit/save/reopen and visible unsupported feedback. |
-| 29 | **Completed externally in PR #9/v0.4.9; integration only.** Bounded metadata/object-reference preservation is already implemented. This branch still uses the earlier codecs and strips unsupported cross-object links pending deliberate integration. | Same completed external work as #19; lead owns compatibility integration, not duplicate implementation. | Reuse the completed graph and verify metadata equivalence, ownership and real-file edit/save/reopen on the combined branch. |
+| 29 | **Completed externally in PR #9/v0.4.9; integration only.** Bounded metadata/object-reference preservation is already implemented. The completed graph/codecs are now being combined with current compatibility and save guards; combined native equivalence remains required. | Same completed external work as #19; lead owns compatibility integration, not duplicate implementation. | Reuse the completed graph and verify metadata equivalence, ownership and real-file edit/save/reopen on the combined branch. |
 | 30 | Missing dynamic-block actions/parameters and constraints; static INSERT representation exists. | #29 reference graph prerequisite. | Native actions/parameters/constraints retained, safe supported edits, explicit unsupported cases. |
 | 31 | Missing sheet sets, data links and drawing digital signatures. Drawing signatures differ from installer signing. | Formats/reference graph/licensed validation prerequisites. | Real sheet/data-link fixtures; signature validity and explicit invalidation on edits, no false signing claim. |
 | 32 | **Planned 3D milestones 0–7 completed externally; experimental and unreleased.** Verified published branch `feature/3d-development` at a4d5526 and all four exact-commit CI jobs. AutoCAD 2027 Core Console records zero-error mesh/dimension round trips; development and packaged-archive kernel security checks passed. Final unsigned executable launch is blocked by Windows Application Control. Known 3D format/display/tool limits remain documented by that workstream. | Separate 3D workstream; [plan/status](https://github.com/habit04/share/blob/feature/3d-development/docs/3D-PLAN.md), [CI](https://github.com/habit04/share/actions/runs/38356844755). No 3D implementation or integration in this 2D branch. | Read-only verification completed 2026-10-13. Distinguish delivered development milestones from installed/released production support; do not duplicate or alter that work. |
@@ -60,6 +65,26 @@ proof that their implementation or external verification has passed.
 
 ## Current validation and integration
 
+- Combined #9 + #24 source: **3,907 tests / 28 conditional skips**, all three TypeScript
+  projects, broad lint, fixtures and production build pass. **32 actual Windows source-Electron
+  workflows** pass together: 14 opened-source/save/recovery, seven tracked 2D import/edit/save/
+  reopen and 11 PDF/CSV export workflows. All private app processes close; production bundle,
+  source/native/config/harness hashes remain unchanged through the app run. Independent native
+  ATTRIB handle uniqueness and exact reopened identity checks supplement every previous text
+  comparison. The only change after the full suite was this app-harness comparison; fresh static
+  checks/build and all 32 app workflows then passed on it. Original deadlines and guards remain.
+  Three existing native metadata fixture families pass the adopted decoder/projection validators
+  with zero native/write errors and complete bounded inventories. This reuses completed #9
+  native assets; it does not certify a locally rebuilt writer, new installer or AutoCAD roundtrip.
+  [Current PR checks](https://github.com/habit04/share/pull/11/checks) must pass on the exact
+  published combination before the 3D stage. Parent CI and local decoder evidence do not
+  replace that matching-helper/Windows gate.
+- Integration corrections retain modeled complex-LTYPE edits and opaque extensions, distinct
+  anonymous STYLE identities, enabled/disabled/shared viewport boundary ownership, graph-aware
+  copies/transforms/layout copies and fixed-point native 340 export. Full session/history and
+  project preflight refuse invalid graph/ordinate proposals before tab, proof, backup or write
+  mutation. Two required metadata runtime modules are included in existing builder filters;
+  version, dependencies, signing and release workflows are unchanged.
 - Final #24 batch: **3,663 tests / 28 conditional skips**, all three TypeScript projects,
   broad lint, fixtures and production build pass on frozen source. The export follow-up adds
   **110 regressions** (34 native foundation, 32 guarded IPC and 44 renderer/report cases).
@@ -70,8 +95,10 @@ proof that their implementation or external verification has passed.
   (38 real metadata collisions) and **six actual source-Electron IPC checks**. The renderer
   bundle is unchanged; those app runs are separate source snapshots, not 38 checks on one SHA.
   All owned processes close. Original test deadlines/guards remain; only stale source-contract
-  assertions and owned large-fixture teardown were corrected. Exact-final-head CI must pass
-  before integration; source/provider/large-IPC limits remain documented.
+  assertions and owned large-fixture teardown were corrected. [All four exact-final-head CI
+  jobs at 739950c pass](https://github.com/habit04/share/actions/runs/38434090041), including
+  actual Windows Electron/native helper and UI checks, before source integration began.
+  Source/provider/large-IPC limits remain documented.
 - Previous completed-open branch: **3,546 tests / 28 conditional skips**, all three TypeScript projects,
   broad lint, fixtures and production build pass. The rebuilt source Electron passes **14 new
   opened-source/recovery workflows + 7 existing tracked 2D workflows**, with unchanged production
@@ -87,7 +114,7 @@ proof that their implementation or external verification has passed.
   corrected standalone-backup/unused-proof/clean-tab-close harness paths. Full local general
   Electron E2E is unavailable without its matching native helper; [all four corrected-head CI
   jobs at 26c9dac pass](https://github.com/habit04/share/actions/runs/38417374158). That evidence
-  does not cover the subsequent export follow-up, which needs a fresh final-head run.
+  does not cover the subsequent export follow-up; the separate 739950c run above does.
 - Ordinate: **42 regressions**, **263 native save/reopen comparisons**, two zero-error AUDITs,
   **214 geometry + 19 scaling comparisons** at 1e-8, and **66 Canvas/raster/Poppler checks**.
   Cross-renderer bounds use two pixels; they are not native PDF pixel equality.
@@ -110,8 +137,8 @@ proof that their implementation or external verification has passed.
   workflows** plus **7 tracked 2D workflows**, with unchanged source/bundle hashes. Real IPC,
   codecs, NTFS files, backups and recovery UI ran; only native destination answers were queued.
   Both owned app profiles/processes were closed. This does not certify a new installer/DWG helper.
-- PR #9 merged head `14cb3f9` / merge `8dfe1ca`; only its completed helper check-loop repair
-  has been integrated. The owner subsequently verified and published Windows v0.4.9. Shared
-  codecs/native assets require deliberate integration and combined native equivalence checks.
+- PR #9 merged head `14cb3f9` / merge `8dfe1ca` was verified and published as Windows v0.4.9
+  by its owner. Its completed graph/codecs/native source and assets are reused in the combined
+  stage above. This is compatibility integration, not a second implementation of #19/#29.
 - Historical source snapshots and provenance remain in [REMAINING-2D-EVIDENCE.md](REMAINING-2D-EVIDENCE.md).
   This checklist records tested corrections and partial features, not completion of the roadmap.

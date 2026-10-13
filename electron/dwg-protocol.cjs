@@ -11,6 +11,42 @@ const MAX_METADATA_DEPTH = 64;
 const MAX_STRING_CHARS = 1024 * 1024;
 const MAX_TOTAL_STRING_CHARS = 64 * 1024 * 1024;
 const MAX_DWG_RECORDS = 250_000;
+const MAX_NATIVE_METADATA_DXF_CHARS = 32 * 1024 * 1024;
+const MAX_NATIVE_METADATA_OBJECTS = 100_000;
+
+/** The native projection is data only; no worker pointers or extra transport fields. */
+function validateNativeMetadata(metadata, isPlain) {
+  const record = (value, keys) => {
+    if (!isPlain(value) || Object.getOwnPropertySymbols(value).length ||
+        Object.getOwnPropertyNames(value).length !== keys.length) throw new Error('Invalid DWG native metadata record.');
+    for (const key of keys) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor?.enumerable || !Object.hasOwn(descriptor, 'value')) throw new Error('Invalid DWG native metadata record.');
+    }
+  };
+  const list = (value, maximum) => {
+    if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype || value.length > maximum ||
+        Object.getOwnPropertySymbols(value).length || Object.getOwnPropertyNames(value).length !== value.length + 1) throw new Error('Invalid DWG native metadata list.');
+    for (let index = 0; index < value.length; index++) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+      if (!descriptor?.enumerable || !Object.hasOwn(descriptor, 'value')) throw new Error('Invalid DWG native metadata list.');
+    }
+  };
+  const errorCode = (value) => Number.isSafeInteger(value) && value >= 0 && value <= 0x3fff;
+  const name = (value) => typeof value === 'string' && value.length > 0 && value.length <= 256;
+  record(metadata, ['schemaVersion', 'dxf', 'objects', 'readError', 'writeError', 'complete', 'notes']);
+  if (metadata.schemaVersion !== 1 || typeof metadata.dxf !== 'string' || !errorCode(metadata.readError) ||
+      (metadata.writeError !== null && !errorCode(metadata.writeError)) || typeof metadata.complete !== 'boolean') throw new Error('Invalid DWG native metadata projection.');
+  if (!Array.isArray(metadata.objects) || metadata.objects.length > MAX_NATIVE_METADATA_OBJECTS) throw new Error('DWG native metadata exceeds the object limit (100000).');
+  list(metadata.objects, MAX_NATIVE_METADATA_OBJECTS);
+  for (const object of metadata.objects) {
+    record(object, ['handle', 'type', 'dxfType', 'supertype']);
+    if (typeof object.handle !== 'string' || !/^[1-9A-F][0-9A-F]{0,15}$/.test(object.handle) ||
+        !name(object.type) || !name(object.dxfType) || !['entity', 'object', 'unknown'].includes(object.supertype)) throw new Error('Invalid DWG native metadata object.');
+  }
+  list(metadata.notes, MAX_METADATA_NODES);
+  if (metadata.notes.some((note) => typeof note !== 'string')) throw new Error('Invalid DWG native metadata notes.');
+}
 
 function validRequestId(id) { return Number.isSafeInteger(id) && id > 0; }
 function validByteLength(bytes, maximum) { return Number.isSafeInteger(bytes) && bytes > 0 && bytes <= maximum; }
@@ -53,16 +89,20 @@ function validateDwgPayload(payload, version = '') {
   const isPlain = (value) => value && typeof value === 'object' &&
     (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
   if (!isPlain(payload) || typeof version !== 'string') throw new Error('Invalid DWG reader result.');
+  const nativeDescriptor = Object.getOwnPropertyDescriptor(payload, 'nativeMetadata');
+  if (nativeDescriptor && (!nativeDescriptor.enumerable || !Object.hasOwn(nativeDescriptor, 'value'))) throw new Error('Invalid DWG native metadata projection.');
   let nodes = 0, stringChars = 0;
   const ancestors = new WeakSet();
-  const string = (value) => {
-    if (value.length > MAX_STRING_CHARS) throw new Error('DWG value exceeds the import string length limit (1048576).');
+  const string = (value, maximum = MAX_STRING_CHARS) => {
+    if (value.length > maximum) throw new Error(`DWG value exceeds the import string length limit (${maximum}).`);
     if ((stringChars += value.length) > MAX_TOTAL_STRING_CHARS) throw new Error('DWG strings exceed the total import size limit.');
   };
-  const visit = (value, depth) => {
+  // A small path state avoids allocating recursive path strings. Only the root
+  // nativeMetadata.dxf value receives the native stream's larger string budget.
+  const visit = (value, depth, nativePath = 0) => {
     if (++nodes > MAX_METADATA_NODES) throw new Error('DWG metadata exceeds the import allocation budget.');
     if (depth > MAX_METADATA_DEPTH) throw new Error('DWG metadata nesting exceeds the import limit.');
-    if (typeof value === 'string') { string(value); return; }
+    if (typeof value === 'string') { string(value, nativePath === 2 ? MAX_NATIVE_METADATA_DXF_CHARS : MAX_STRING_CHARS); return; }
     if (value === null || value === undefined || typeof value === 'number' || typeof value === 'boolean') return;
     // Native 64-bit XDATA integers can exceed Number's precise range. Keep their identity,
     // while refusing huge arbitrary-precision values that could amplify serialization.
@@ -88,7 +128,8 @@ function validateDwgPayload(payload, version = '') {
       string(key);
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
       if (!descriptor || !Object.hasOwn(descriptor, 'value')) throw new Error('DWG reader result contains unsupported metadata.');
-      visit(descriptor.value, depth + 1);
+      const childPath = depth === 0 && key === 'nativeMetadata' ? 1 : nativePath === 1 && key === 'dxf' ? 2 : 0;
+      visit(descriptor.value, depth + 1, childPath);
     }
     // Object.values omits holes. Count them too, so many sparse arrays cannot conceal
     // millions of later converter iterations in a tiny serialized payload.
@@ -97,6 +138,7 @@ function validateDwgPayload(payload, version = '') {
   };
   visit(payload, 0);
   string(version);
+  if (nativeDescriptor) validateNativeMetadata(nativeDescriptor.value, isPlain);
   let records = 0;
   const countRecords = (value, required = false) => {
     if (value === undefined && !required) return;
@@ -110,9 +152,11 @@ function validateDwgPayload(payload, version = '') {
     countRecords(block.entities, true);
   }
   for (const key of ['imageDefs', 'styles', 'dimStyles', 'linetypes', 'layouts']) countRecords(payload[key]);
+  if (nativeDescriptor) countRecords(nativeDescriptor.value.objects);
 }
 
 module.exports = { PROTOCOL_VERSION, DWG_PROTOCOL_VERSION, MAX_DWG_INPUT_BYTES, MAX_DWG_PAYLOAD_BYTES, MAX_DWG_CHUNK_BYTES,
   MAX_DWG_MESSAGE_CHARS, WORKER_RESOURCE_LIMITS, MAX_METADATA_NODES, MAX_METADATA_DEPTH,
-  MAX_STRING_CHARS, MAX_TOTAL_STRING_CHARS, MAX_DWG_RECORDS, validRequestId, validByteLength,
+  MAX_STRING_CHARS, MAX_TOTAL_STRING_CHARS, MAX_DWG_RECORDS, MAX_NATIVE_METADATA_DXF_CHARS,
+  MAX_NATIVE_METADATA_OBJECTS, validRequestId, validByteLength,
   validOffset, validateResourceLimits, validateChunk, boundedErrorMessage, validateDwgPayload };

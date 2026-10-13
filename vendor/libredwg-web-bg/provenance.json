@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "purpose": "Controlled native MTEXT/color-reference/MINSERT facade repair; no release publication or installed dependency mutation",
+  "purpose": "Controlled native appearance and bounded VIEW/FIELD/typed metadata projection repair; no release publication or installed dependency mutation",
   "source": {
     "repository": "https://github.com/mlightcad/libredwg-web",
     "tag": "v0.7.14",
@@ -77,42 +77,60 @@
         "expectedSha256": "d845128e4bc5f69c257ac7bb7a91a3c15b9a123384ff259d6aa592b9c7ea053b",
         "nativeError": 0
       }
-    ]
+    ],
+    "metadata": {
+      "report": "metadata-report.json",
+      "fixtureSha256": "5f5a9bd4a0ffd2e545f6f5404bed9edb27f2c41411c3b26a264f0696a649f105",
+      "expectedSha256": "28b458ef8f507b3b3693bc881a1d93e88773f9f9f80cf862f2ed4f857dc5748e",
+      "nativeError": 0,
+      "writeError": 0,
+      "complete": true,
+      "recordCount": 12,
+      "maxOutputBytes": 33554432,
+      "limitedOutputRejected": true,
+      "classProjectionVerified": true,
+      "nativeClassCount": 13,
+      "classOracleVerified": true,
+      "sourceDxfSha256": "2630c55169a36ed81951e132b3a946feb57426197e64d4e5747c3bde6821dcad",
+      "declaredClassCount": 12,
+      "sourceScalarOracleVerified": true,
+      "sourceTableStyleOracleVerified": true
+    }
   },
   "workflow": {
     "repository": "habit04/share",
-    "commit": "b6b29e5469cddcf1d085622c67750296adcd0494",
-    "runId": "38288017841",
+    "commit": "a807d7d64811bd9be6c153cb07f35834704806d6",
+    "runId": "38338479231",
     "runAttempt": "1"
   },
   "patchedFiles": [
     {
       "path": "include/dwg.h",
       "beforeSha256": "5343c827df7c305ad21c3f534ced72a79f5885eb50119a25fb9ae40cf8a69696",
-      "afterSha256": "717114dc4bc732cef58eaa3eccb04b2285461047dc23df27a998f8a942453edd",
-      "replacements": 2,
-      "builtSourceSha256": "717114dc4bc732cef58eaa3eccb04b2285461047dc23df27a998f8a942453edd"
+      "afterSha256": "f5335fd2c5f42f9978cd1820e09e1e47f5a776911b4cd32d466a1476e9bff665",
+      "replacements": 4,
+      "builtSourceSha256": "f5335fd2c5f42f9978cd1820e09e1e47f5a776911b4cd32d466a1476e9bff665"
     },
     {
       "path": "src/dwg.spec",
       "beforeSha256": "c3c6dec791321721b0ff75854d3ac2e8832986b62fce832cc053e2ac85f2e9fd",
-      "afterSha256": "b71557ff995822c2314d57d3728fd9a56ffa68a090f4932b921e58fe4fc1d1f7",
-      "replacements": 2,
-      "builtSourceSha256": "b71557ff995822c2314d57d3728fd9a56ffa68a090f4932b921e58fe4fc1d1f7"
+      "afterSha256": "958492c150f41a9bb999aaf92b40aae49b139e09e0f04b10d118e5acb6311a49",
+      "replacements": 5,
+      "builtSourceSha256": "958492c150f41a9bb999aaf92b40aae49b139e09e0f04b10d118e5acb6311a49"
     },
     {
       "path": "src/dwg_spec_shared.h",
       "beforeSha256": "fce80dd4c234293ef9a5bf3acc3ffeb13efce67bd60bb127a961bba0b06ef91c",
-      "afterSha256": "35e6758075cf1c2e315aaed0574695d47b949f1eee86027dd6202b5914b48656",
-      "replacements": 1,
-      "builtSourceSha256": "35e6758075cf1c2e315aaed0574695d47b949f1eee86027dd6202b5914b48656"
+      "afterSha256": "62fbfa43598d95b30c915284d46e7e4945e7bf2a5d51cd6f07dba3554d2f5951",
+      "replacements": 4,
+      "builtSourceSha256": "62fbfa43598d95b30c915284d46e7e4945e7bf2a5d51cd6f07dba3554d2f5951"
     },
     {
       "path": "src/dynapi.c",
       "beforeSha256": "7f605d7de91f8a9e216a71cd40df8851930279b00a47afa754f0417d1a982f35",
-      "afterSha256": "7f889f4d0cf231c332a5bf7e8de7efa1f35ec9166dfce3f3ae77dfafeb4115a3",
-      "replacements": 2,
-      "builtSourceSha256": "7f889f4d0cf231c332a5bf7e8de7efa1f35ec9166dfce3f3ae77dfafeb4115a3"
+      "afterSha256": "150ab161b7f07aa4eca7fc0db11ddad12cee30e71f8c947fa9dace8162a400ac",
+      "replacements": 4,
+      "builtSourceSha256": "150ab161b7f07aa4eca7fc0db11ddad12cee30e71f8c947fa9dace8162a400ac"
     },
     {
       "path": "test/unit-testing/mtext.c",
@@ -152,9 +170,9 @@
     {
       "path": "src/decode.c",
       "beforeSha256": "8350a8b648a4cc2e817b539da2273adac7f6d801020467cfb083111135428eb2",
-      "afterSha256": "3b0805c4a7448ffde977d66ecadf19d5bff21d6327df5ea0b9b54fed9ad0faa3",
-      "replacements": 1,
-      "builtSourceSha256": "3b0805c4a7448ffde977d66ecadf19d5bff21d6327df5ea0b9b54fed9ad0faa3"
+      "afterSha256": "be1fa5ba174fee1a513de35c7a32a2344a009e00a45c39a7480fb444cf10829a",
+      "replacements": 4,
+      "builtSourceSha256": "be1fa5ba174fee1a513de35c7a32a2344a009e00a45c39a7480fb444cf10829a"
     },
     {
       "path": "src/common_entity_handle_data.spec",
@@ -162,6 +180,62 @@
       "afterSha256": "1140eedbd1a93824dc9a7f0dbae23c182b1342bc939005b6a2427da97a45ca2a",
       "replacements": 1,
       "builtSourceSha256": "1140eedbd1a93824dc9a7f0dbae23c182b1342bc939005b6a2427da97a45ca2a"
+    },
+    {
+      "path": "bindings/javascript/embind/binding_func.cpp",
+      "beforeSha256": "772a7321760ccc6acb87a591a14feb9a5764b5ce8011199d02ac0528217d03c5",
+      "afterSha256": "daed8b9d3eb0c870124d5061c84a70607ac09ef7f40f2d90118e6d4d4c8421d3",
+      "replacements": 5,
+      "builtSourceSha256": "daed8b9d3eb0c870124d5061c84a70607ac09ef7f40f2d90118e6d4d4c8421d3"
+    },
+    {
+      "path": "src/out_dxf.c",
+      "beforeSha256": "91c12ce650f9c072b6e487418247bd8ed6075e55cfac0510d885faaf61b4f079",
+      "afterSha256": "a71f7f67c1a4db977cabcccb3fc511ad5774fe86dc0e391f78fc4fe631ccedf2",
+      "replacements": 7,
+      "builtSourceSha256": "a71f7f67c1a4db977cabcccb3fc511ad5774fe86dc0e391f78fc4fe631ccedf2"
+    },
+    {
+      "path": "src/header_variables_dxf.spec",
+      "beforeSha256": "4b619e37ee8f01ad8066e54d9466d905fab825d1596385834f3edb1c1ee5818b",
+      "afterSha256": "afe664204275f1d13223881dd56b6a3e838c72e7d3b2267df6cd16d3b5064357",
+      "replacements": 1,
+      "builtSourceSha256": "afe664204275f1d13223881dd56b6a3e838c72e7d3b2267df6cd16d3b5064357"
+    },
+    {
+      "path": "src/decode_r2007.c",
+      "beforeSha256": "f7e0c5b8620001801e84e8e7cae93d16957920ba0db6560f13ac623442e1fb76",
+      "afterSha256": "652e1cfb470996dc9cc486f27ef5dd045ed6e1c3ef3891a725fc904c275fd793",
+      "replacements": 2,
+      "builtSourceSha256": "652e1cfb470996dc9cc486f27ef5dd045ed6e1c3ef3891a725fc904c275fd793"
+    },
+    {
+      "path": "src/bits.c",
+      "beforeSha256": "64a6025d323d78f90348ca8ca477a1a77a4d77972df33cb94513993539184bcb",
+      "afterSha256": "6f6d03075b86bac9bc66fce9353fe9e9c2ac65732ed19cb95cc88d1f91a4ff83",
+      "replacements": 2,
+      "builtSourceSha256": "6f6d03075b86bac9bc66fce9353fe9e9c2ac65732ed19cb95cc88d1f91a4ff83"
+    },
+    {
+      "path": "src/header_variables.spec",
+      "beforeSha256": "129251c47997c7be273b2264bbeff1e3526a6e88dd2310742efc9375dc7b3f58",
+      "afterSha256": "e90f4fd3798e98debde513aa5b5a611efe1ffb4323643f9f5745a7f54674e54b",
+      "replacements": 3,
+      "builtSourceSha256": "e90f4fd3798e98debde513aa5b5a611efe1ffb4323643f9f5745a7f54674e54b"
+    },
+    {
+      "path": "src/header_variables_r11.spec",
+      "beforeSha256": "3cd32295da413cbd77b3d32d3e4faf333bf7753b97b609977db41f006c793ed0",
+      "afterSha256": "0ef0ac122c2b5eb9136c9ce98fd8b7fb253d8c6a4d6a132e02843fadd9a6a3ed",
+      "replacements": 3,
+      "builtSourceSha256": "0ef0ac122c2b5eb9136c9ce98fd8b7fb253d8c6a4d6a132e02843fadd9a6a3ed"
+    },
+    {
+      "path": "src/dwg2.spec",
+      "beforeSha256": "2bb3602b2867277868ebb488ea236b07d7cdf605128987f767114d68dd501499",
+      "afterSha256": "b314ff4ca8912ad0438d161fb01a497a7a131efeffd714b4361c75b0fcf743ab",
+      "replacements": 6,
+      "builtSourceSha256": "b314ff4ca8912ad0438d161fb01a497a7a131efeffd714b4361c75b0fcf743ab"
     }
   ],
   "assets": [
@@ -172,8 +246,8 @@
     },
     {
       "path": "factory/libredwg-web.wasm",
-      "bytes": 10816938,
-      "sha256": "0e97b1cce3a7fb05d89ff69c2c8a5399d76e2726c5d9c7b2aed2ae453f84380a"
+      "bytes": 10846223,
+      "sha256": "26b3c4bd76ee3bd5da0bfd47eedaf8e9a8ae38cac5a2c4625e973ed2c299bf2e"
     },
     {
       "path": "factory/package.json",
@@ -182,8 +256,8 @@
     },
     {
       "path": "modified-source.tar.gz",
-      "bytes": 24736924,
-      "sha256": "baf7e77bdbcd1c686723ed8ac6cfcd78f79ee185ae457df7fd69f80b8d4f4521"
+      "bytes": 24730063,
+      "sha256": "96d407e96047237200360b1669768f80aaffbb003c34c6fe57228fc4cd345d5a"
     },
     {
       "path": "COPYING",
@@ -192,18 +266,18 @@
     },
     {
       "path": "pins.json",
-      "bytes": 1608,
-      "sha256": "1e46b97080eb4e530db2960620136911597dca82df9c5856dffb4ece00c3d696"
+      "bytes": 1767,
+      "sha256": "847f23b5008c70ed3b13430c33fb49bbf5d5f8c16c5554979f56a5491d7842f1"
     },
     {
       "path": "mtext-background-scale.patch.json",
-      "bytes": 15214,
-      "sha256": "98c701b374f44baeebf36aca079b9258da87b6ecef13784b7e1a6d294e222aae"
+      "bytes": 43617,
+      "sha256": "de07b26d5371f5807504c12a03faa34206745327faf2b71e100f444171f4a50b"
     },
     {
       "path": "README.md",
-      "bytes": 10848,
-      "sha256": "f2463c804104574023302f36c46b155472d41b549bb00f5ed8a4ac6263161517"
+      "bytes": 22359,
+      "sha256": "e161889f036fe4f25b6f28f854b548e8354a2f7dde95d87c8707edeb1ddf9fa1"
     },
     {
       "path": "patch-source.mjs",
@@ -217,28 +291,38 @@
     },
     {
       "path": "validate-appearance-fixture.mjs",
-      "bytes": 7878,
-      "sha256": "ff26cc20f60127f27b5907ada2282cf87098463eb54e697952123a46fa343679"
+      "bytes": 14756,
+      "sha256": "a0d36978a990fb96b5d77499145fec98b54177c1155afe98ca270d0668a36e7f"
+    },
+    {
+      "path": "validate-metadata-fixture.mjs",
+      "bytes": 45947,
+      "sha256": "f9ee9e288a10f1839c85e84c22af5e2f563a044fb0423a4722927eaf58602382"
     },
     {
       "path": "write-provenance.mjs",
-      "bytes": 7907,
-      "sha256": "a6a27b0fcbe340bf6c068174d59401e9b113b59a7f6286581e27359462822249"
+      "bytes": 10666,
+      "sha256": "5e2b8aeafdd440048cbe47e0f4373e82cef510c0bcff9c09acb1e1f90813e69b"
     },
     {
       "path": "patch-report.json",
-      "bytes": 3150,
-      "sha256": "e72df903afffeb03c4831dd88a64439c00749b1112517d8ad4890b8684c0b4da"
+      "bytes": 5202,
+      "sha256": "0d68cab80406fa47b6e2b60247498bbef81cf55c684392ab27e8cb213121b330"
     },
     {
       "path": "fixture-report.json",
       "bytes": 2904,
-      "sha256": "599a2ca54279f109849d3b7053f4e3e09de2da75064f1f4c857c00e4f9ebe1f5"
+      "sha256": "b451e65ea62e4ef63559c04b9e47c65339c392448e1d73cefe966611714293fb"
     },
     {
       "path": "appearance-report.json",
-      "bytes": 33600,
-      "sha256": "90c0493be845bd52bb48424ff1d510434a06424b561c934a115ea2a3bc8e1d1d"
+      "bytes": 34314,
+      "sha256": "8e4b2811235bc306c8e1348d67a17b9506e02056d3b08436bae9cd2368868b43"
+    },
+    {
+      "path": "metadata-report.json",
+      "bytes": 335450,
+      "sha256": "c1dc3c7318a5e95ffc2aab05554eed42cedf694e2f386f8bc08e6e9838b8c56f"
     },
     {
       "path": "declaration-tools/package.json",
@@ -253,8 +337,9 @@
   ],
   "limitations": [
     "The original npm binary compiler version is not recorded upstream; this rebuild uses the pinned compiler above.",
-    "This fixture validates native decoder fields, not all DWG versions/entities or final application adapters.",
-    "Its column layout is JCAD_MTEXT_COLUMNS XDATA; native columns are absent, and this raw API does not decode/certify application XDATA or embedded MTEXT containers.",
+    "The independent fixtures validate these native decoder fields and selected typed metadata records, not all DWG versions/entities or final application adapters.",
+    "The native DXF projection is bounded to 32 MiB and 100000 source objects; its complete flag requires application reconciliation of projected objects with the source inventory.",
+    "Unknown DWG schemas, raw binary objects, native embedded MTEXT and arbitrary FIELD evaluators are not certified by this fixture.",
     "SHA256 records bind artifact bytes; this workflow does not sign or publish artifacts."
   ]
 }

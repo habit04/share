@@ -23,6 +23,7 @@ import { updateCrossReferences } from '../electrical/xref';
 import { withInsertAttributes } from '../electrical/attributes';
 import { modal, button } from '../ui/dialogkit';
 import { ensureFileLimit, MAX_DRAWING_FILE_BYTES } from '../io/file-limits';
+import { CadGraphError, reconcileCadGraph, type CadGraphEditIntent } from '../core/cad-graph';
 
 export const API_VERSION = 1;
 const APP_VERSION: string = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : 'dev';
@@ -492,10 +493,10 @@ export function createApi(editor: Editor, owner: string): ApiHandle {
   const hub = hubOf(editor);
   const doc = () => { guard(); return editor.doc; };
   const state = () => { guard(); return hub.pending ?? editor.doc.snapshot; };
-  const mutate = (fn: (s: DrawingState) => DrawingState) => {
+  const mutate = (fn: (s: DrawingState) => DrawingState, intent?: CadGraphEditIntent) => {
     guard();
-    if (hub.pending) hub.pending = fn(hub.pending);
-    else editor.doc.transact(fn);
+    if (hub.pending) hub.pending = reconcileCadGraph(hub.pending, fn(hub.pending), intent);
+    else editor.doc.transact(fn, intent);
   };
   const myCommands = new Set<CommandDef>();
   const myListeners: Array<{ ev: ApiEvent; entry: OwnedListener }> = [];
@@ -652,7 +653,19 @@ export function createApi(editor: Editor, owner: string): ApiHandle {
         if (ids.has(e.id)) throw new Error(`Duplicate id "${e.id}" in add().`);
         ids.add(e.id);
       }
-      if (list.length) mutate((s) => withMissingLayers({ ...s, entities: [...s.entities, ...list] }, list));
+      const entityIds: Record<string, string> = {};
+      for (const entity of list) if (entity.cadIdentity) {
+        const source = s0.entities.find(item => item.cadIdentity === entity.cadIdentity);
+        if (!source) throw new CadGraphError('copy', 'CAD-bearing API copies require their source drawing; use the drawing clipboard to copy between documents.');
+        if (entityIds[source.id]) throw new CadGraphError('copy', 'Add one explicit CAD copy set at a time; duplicate source entities cannot share a copy batch.');
+        const comparable = (item: Entity) => {
+          const { id: _id, cadIdentity: _identity, ...data } = item;
+          return JSON.stringify(data, (_key, value: unknown) => value && typeof value === 'object' && !Array.isArray(value) ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))) : value);
+        };
+        if (comparable(entity) !== comparable(source)) throw new CadGraphError('copy', 'Copy the CAD entity unchanged first, then use MOVE, ROTATE, SCALE or a supported edit so its retained metadata receives an explicit edit intent.');
+        entityIds[source.id] = entity.id;
+      }
+      if (list.length) mutate((s) => withMissingLayers({ ...s, entities: [...s.entities, ...list] }, list), Object.keys(entityIds).length ? { cloneBatches: [{ entityIds, sourceState: s0 }] } : undefined);
       return list.map((e) => e.id);
     },
     replace(input) {

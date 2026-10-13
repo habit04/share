@@ -213,7 +213,7 @@ describe('DXF round trip of the new entities', () => {
     expect(h.limits).toEqual({ min: { x: -1, y: -2 }, max: { x: 30, y: 20 } });
     expect(h.pdmode).toBe(34);
     expect(h.pdsize).toBe(0.25);
-    expect(h.views).toEqual([{ name: 'PLAN', center: { x: 5, y: 6 }, height: 12 }]);
+    expect(h.views).toEqual([expect.objectContaining({ name: 'PLAN', center: { x: 5, y: 6 }, height: 12, twist: 0 })]);
     expect(h.celtype).toBe('DASHED');
     expect(h.celweight).toBeCloseTo(0.5);
   });

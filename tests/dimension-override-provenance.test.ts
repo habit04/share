@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { Drawing, DEFAULT_HEADER, type DrawingState } from '../src/core/document';
+import { Drawing, DEFAULT_HEADER, prepareDrawingTransition, type DrawingState } from '../src/core/document';
 import { defaultLayout } from '../src/core/layouts';
 import { scaleEntityBy, blockTransform } from '../src/core/entities';
 import {
@@ -54,11 +54,12 @@ describe('dimension override presence across named style redefinitions', () => {
     const base = findDimStyle(imported, 'ISO-25')!;
     expect(original.style).toMatchObject({ textHeight: 5, decimals: 0 });
     expect(original.styleOverrides).toMatchObject({ DIMTXT: 5, DIMDEC: 0 });
-    const doc = new Drawing({ ...imported,
+    const prepared = prepareDrawingTransition(imported, { ...imported,
       blocks: { ...imported.blocks, DETAIL: { name: 'DETAIL', basePoint: { x: 0, y: 0 }, attributes: [], entities: [{ ...original, id: 'block-dimension' }] } },
-      layouts: [{ ...defaultLayout('Paper'), pristine: false, entities: [{ ...original, id: 'paper-dimension' }] }],
+      layouts: [...imported.layouts ?? [], { ...defaultLayout('Paper'), pristine: false, entities: [{ ...original, id: 'paper-dimension' }] }],
       space: { layout: 'Paper' },
-    });
+    }, { cloneBatches: [{ entityIds: { [original.id]: 'block-dimension' } }, { entityIds: { [original.id]: 'paper-dimension' } }] });
+    const doc = new Drawing(prepared);
     const before = doc.snapshot;
     doc.transactDrawing((s) => withDimStyle(s, { ...base, textHeight: 5, decimals: 0 }));
     const equal = doc.snapshot;
@@ -68,6 +69,8 @@ describe('dimension override presence across named style redefinitions', () => {
     expect(doc.redo()).toBe(true);
     expect(doc.snapshot).toBe(equal);
     let reopened = readDxf(writeDxf(equal));
+    for (const layout of imported.layouts ?? []) expect(reopened.layouts!.some(item => item.name === layout.name)).toBe(true);
+    for (const retained of imported.cadGraph!.nodes.filter(node => node.type === 'LAYOUT')) expect(reopened.cadGraph!.nodes.some(node => node.type === 'LAYOUT' && node.sourceHandle === retained.sourceHandle)).toBe(true);
     // Equal values are still native ACAD DSTYLE groups, not only JCad state metadata.
     const nativeOverrides = nativeDimensions(writeDxf(equal)).filter((o) => o.groups.some((p) => p.code === 23 && p.value === '120'));
     expect(nativeOverrides).toHaveLength(3);

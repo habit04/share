@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { Drawing } from '../src/core/document';
+import { mapCadEntities } from '../src/core/cad-graph';
 import { moveGrip, translateEntity, type PolylineEntity } from '../src/core/entities';
 import { defaultLayout, paperEntities, pointInViewport, viewportAt, type LayoutViewport } from '../src/core/layouts';
 import { readDxf, writeDxf } from '../src/io/dxf';
@@ -17,7 +18,11 @@ const viewport = (): LayoutViewport => ({ id: 'v', center: { x: 5, y: 5 }, width
   view: { center: { x: 100, y: 200 }, scale: 0.5, twist: Math.PI / 6 }, layer: '0', on: true, clipBoundary: clip });
 function scene() {
   const source = readDxf(readFileSync(new URL('./fixtures/interchange/r2000-layouts-titleblock.dxf', import.meta.url), 'utf8'));
-  return new Drawing({ ...source, layouts: [{ ...defaultLayout('Polygon'), pristine: undefined, viewports: [viewport()] }], space: { layout: 'Polygon' } });
+  // This scene tests authored geometry/rendering. Native graph-bearing layout
+  // replacement is tested separately and must require an explicit transition.
+  const { cadGraph: _graph, ...bare } = source;
+  const geometry = mapCadEntities(bare, entity => { const { cadIdentity: _identity, ...plain } = entity; return plain; });
+  return new Drawing({ ...geometry, layouts: [{ ...defaultLayout('Polygon'), pristine: undefined, viewports: [viewport()] }], space: { layout: 'Polygon' } });
 }
 
 describe('native polygon viewport clipping', () => {
@@ -143,7 +148,7 @@ describe('native polygon viewport clipping', () => {
   it('includes retained clip geometry when revalidating the drawing budget', () => {
     const doc = scene(), before = doc.snapshot;
     const points = Array.from({ length: 8192 }, (_, i) => ({ x: i, y: i % 2 }));
-    const many = Array.from({ length: 130 }, (_, i) => ({ ...viewport(), id: String(i), clipBoundary: { ...clip, points } }));
+    const many = Array.from({ length: 130 }, (_, i) => ({ ...viewport(), id: String(i), clipBoundary: { ...clip, id: `clip-${i}`, points } }));
     expect(() => doc.transactDrawing((s) => ({ ...s, layouts: [{ ...s.layouts![0]!, viewports: many }] }))).toThrow(/geometry budget|expansion exceeds/);
     expect(doc.snapshot).toBe(before); expect(doc.dirty).toBe(false);
   });

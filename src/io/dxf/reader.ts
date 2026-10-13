@@ -20,8 +20,12 @@ import { readTableStyle, type TableStyleData } from './read-annotations';
 import { readHeaderSection, readObjectsSection, readTablesSection, readBlocksSection, readEntitiesSection, drawingHeader } from './read-sections';
 import { DEFAULT_LAYERS } from '../../core/document';
 import { readEntities } from './read-pass';
+import { attachDxfCadGraph } from '../cad-graph-dxf';
+import { canonicalCadHandle } from '../../core/cad-graph';
 
 export interface DxfReadOptions {
+  /** Internal interchange check: every exposed source record, including unsupported geometry. */
+  recordInventory?: (handle: string, type: string, tableName?: string) => void;
   /** Allocation budgets; callers may lower them for untrusted or constrained imports. */
   maxSourceLength?: number;
   maxStringLength?: number;
@@ -52,6 +56,13 @@ export function readDxf(text: string, opts: DxfReadOptions = {}): DrawingState {
   const report = new ImportReportBuilder();
   const raw: RawDxfEntity[] = [];
   const state = withDimStylesMeta(readDxfState(text, opts, dimStyles, report, raw), dimStyles);
+  if (state.cadGraph) report.retainItems(
+    item => ['HEADER', 'DIMSTYLE'].includes(item.type) && item.reason.includes('not modeled or written back')
+      || item.type === 'LTYPE' && item.reason.startsWith('complex linetype'),
+    item => item.type === 'LTYPE'
+      ? 'Native complex linetype definitions and their style references are retained; the editor displays their dash pattern.'
+      : item.reason.replace('not modeled or written back', 'retained as source metadata; these settings are not modeled by the editor'),
+  );
   return withImportData(state, report.empty ? null : report.build('DXF', opts.filePath), raw);
 }
 
@@ -84,7 +95,10 @@ function tableStylesOf(pairs: readonly Pair[]): Map<string, TableStyleData> {
 /** The reader proper; DIMSTYLE records are collected into `dimStyles`. */
 function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string, DimStyle>, report: ImportReportBuilder, raw: RawDxfEntity[]): DrawingState {
   if (text.length > (opts.maxSourceLength ?? 128 * 1024 * 1024)) throw new DxfReadError('DXF exceeds the source text size limit.', 1);
-  const pairs = tokenize(decodeUnicodeEscapes(text), opts.recover, report, opts);
+  const retainedPairs = tokenize(text, opts.recover, report, opts);
+  // Application payloads can contain literal Unicode-looking escape sequences. Geometry/text
+  // decoding must not rewrite their opaque values before the retained graph sees them.
+  const pairs = text.includes('\\U+') ? retainedPairs.map(pair => ({ ...pair, value: decodeUnicodeEscapes(pair.value) })) : retainedPairs;
   const textStyles: Record<string, TextStyle> = {};
   const shapeStyles: Record<string, LinetypeShapeStyle> = {};
   const layers: Layer[] = [];
@@ -120,6 +134,10 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
       let j = i + 2;
       while (j < pairs.length && !(pairs[j]!.code === 0 && pairs[j]!.value === 'ENDSEC')) j += 1;
       const objs = objects(pairs, i + 2, j);
+      if (name !== 'HEADER' && opts.recordInventory) for (const object of objs) {
+        const handle = str(object, object.kind === 'DIMSTYLE' ? 105 : 5).trim();
+        if (handle) opts.recordInventory(canonicalCadHandle(handle), object.kind, object.kind === 'TABLE' ? str(object, 2).trim() : undefined);
+      }
       if (name === 'HEADER') {
         currentLayer = readHeaderSection(pairs, i + 2, j, headerVars, ctx);
       } else if (name === 'OBJECTS') {
@@ -197,5 +215,9 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
   }
   const textMeta = textStylesMeta(textStyles), shapeMeta = shapeStylesMeta(shapeStyles);
   const styleMeta = textMeta || shapeMeta ? { ...textMeta, ...shapeMeta } : undefined;
-  return { entities, layers, blocks, currentLayer, header, ...(styleMeta ? { meta: styleMeta } : {}), ...(layouts ? { layouts } : {}) };
+  const base = withDimStylesMeta({ entities, layers, blocks, currentLayer, header, ...(styleMeta ? { meta: styleMeta } : {}), ...(layouts ? { layouts } : {}) }, dimStyles);
+  return attachDxfCadGraph(base, retainedPairs, { fields: ctx.fields, viewportHandles: layoutReader.viewportHandles,
+    rawEntityHandles: new Set(raw.flatMap(record => record.handle ? [record.handle.trim().toUpperCase()] : [])),
+    ...(!opts.recordInventory ? { onGraphUnavailable(reason: string) { report.add({ type: 'CAD_METADATA', action: 'dropped', reason }); } } : {}),
+    onFieldUnavailable(handle, reason) { report.add({ type: 'FIELD', action: 'kept', handle, reason }); } });
 }

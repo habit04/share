@@ -78,8 +78,9 @@ describe('native MTEXT background masks', () => {
     expect(frame.get(90)).toBe('16');
     expect(frame.get(45)).toBe('1.5'); expect(frame.get(63)).toBe('256');
     for (const code of [421, 431, 441]) expect(frame.has(code)).toBe(false);
-    expect(version(writeDxf({ ...s, entities: [mask('ACI MASK')] }))).toBe('AC1021');
-    expect(version(writeDxf({ ...s, entities: [{ ...mask('ACI MASK'), background: undefined }] }))).toBe('AC1015');
+    expect(version(writeDxf({ ...s, entities: [mask('ACI MASK')] }))).toBe('AC1032');
+    expect(version(writeDxf({ ...s, cadGraph: undefined, entities: [mask('ACI MASK')] }))).toBe('AC1021');
+    expect(version(writeDxf({ ...s, cadGraph: undefined, entities: [{ ...mask('ACI MASK'), background: undefined }] }))).toBe('AC1015');
     const reopened = readDxf(decodeDxfBytes(new TextEncoder().encode(written)).text);
     for (const e of s.entities) if (e.type === 'mtext' && e.background?.flags) expect(reopened.entities.find((p) => p.type === 'mtext' && p.text === e.text)).toMatchObject({ background: e.background });
   });
@@ -196,7 +197,7 @@ describe('native MTEXT background masks', () => {
     expect(leaderParts(moved).find((e): e is MTextEntity => e.type === 'mtext')?.background).toEqual(attached.background);
     const scaled = scaleEntityBy(leader, { x: 0, y: 0 }, 2) as LeaderEntity;
     expect((leaderParts(scaled).find((e): e is MTextEntity => e.type === 'mtext')!).height).toBe(4);
-    const written = writeDxf({ ...s, entities: [leader] }); expect(version(written)).toBe('AC1021');
+    const written = writeDxf({ ...s, entities: [leader] }); expect(version(written)).toBe('AC1032');
     expect(records(written)[0]?.get(90)).toBe('1'); expect(records(written)[0]?.get(63)).toBe('1');
     const reopened = readDxf(written).entities.find((e): e is LeaderEntity => e.type === 'leader')!;
     expect(reopened.textBackground).toEqual(leader.textBackground); expect(reopened.textLayer).toBe('0');

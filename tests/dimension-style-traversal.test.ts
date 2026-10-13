@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { Drawing, DEFAULT_HEADER, type DrawingState } from '../src/core/document';
+import { Drawing, DEFAULT_HEADER, prepareDrawingTransition, type DrawingState } from '../src/core/document';
 import type { BlockDef, Entity } from '../src/core/entities';
 import {
   dimStyleUsage,
@@ -213,15 +213,18 @@ describe('imported native dimension-style overrides after global redefinition', 
     const overridden = source.entities.find((e): e is DimensionEntity => e.type === 'dimension' && e.p1.y === 120)!;
     expect(overridden.style).toMatchObject({ name: 'ISO-25', textHeight: 5, decimals: 0 });
     const base = findDimStyle(source, 'ISO-25')!;
-    const doc = new Drawing({
+    const prepared = prepareDrawingTransition(source, {
       ...source,
       blocks: { ...source.blocks, DIMBLOCK: block('DIMBLOCK', [{ ...overridden, id: 'block-override' }]) },
-      layouts: [{ ...defaultLayout('Paper'), entities: [{ ...overridden, id: 'paper-override' }], pristine: false }],
+      layouts: [...source.layouts ?? [], { ...defaultLayout('Paper'), entities: [{ ...overridden, id: 'paper-override' }], pristine: false }],
       space: { layout: 'Paper' },
-    });
+    }, { cloneBatches: [{ entityIds: { [overridden.id]: 'block-override' } }, { entityIds: { [overridden.id]: 'paper-override' } }] });
+    const doc = new Drawing(prepared);
     doc.transactDrawing((s) => withDimStyle(s, { ...base, textHeight: 3, extExtend: 4 }));
     const saved = writeDxf(doc.snapshot);
     const reopened = readDxf(saved);
+    for (const layout of source.layouts ?? []) expect(reopened.layouts!.some(item => item.name === layout.name)).toBe(true);
+    for (const retained of source.cadGraph!.nodes.filter(node => node.type === 'LAYOUT')) expect(reopened.cadGraph!.nodes.some(node => node.type === 'LAYOUT' && node.sourceHandle === retained.sourceHandle)).toBe(true);
     expect(findDimStyle(reopened, 'ISO-25')).toMatchObject({ textHeight: 3, extExtend: 4 });
     const retained = dimensions(reopened).filter((d) => d.p1.y === 120);
     expect(retained).toHaveLength(3);

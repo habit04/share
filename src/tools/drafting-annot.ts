@@ -10,7 +10,7 @@ import { HATCH_PATTERNS, findPattern, loopPolygon, pointInLoops, polygonArea } f
 import { hasHatchGradient, hatchGradientRenderProblem } from '../core/hatch-gradient';
 import { newTable, cellAt, setCellText, TABLE_DEFAULTS } from '../core/table';
 import { mtextFromDxf, hasFormatting } from '../core/mtext';
-import { evaluateFields, acVarField, ACVAR_FIELDS, type FieldContext } from '../core/fields';
+import { evaluateFields, acVarField, ACVAR_FIELDS, FIELD_UNAVAILABLE, type FieldContext } from '../core/fields';
 import type { Drawing } from '../core/document';
 import type { Tool, ToolContext } from './types';
 import { scriptTool, point, pointOrKeyword, text, number, keyword, select, dflt, type Step } from './script';
@@ -481,17 +481,19 @@ export function fieldContextFor(doc: Drawing, extra: FieldContext = {}): FieldCo
 export function updateEntityFields(e: Entity, fc: FieldContext): Entity {
   if (e.type === 'text' && e.field) {
     const value = evaluateFields(e.field.code, fc);
+    if (e.field.native && value.includes(FIELD_UNAVAILABLE)) return e;
     // A stale link (text edited since) is left alone.
     if (e.field.value !== e.text || value === e.text) return e;
-    return { ...e, text: value, field: { code: e.field.code, value } };
+    return { ...e, text: value, field: { ...e.field, value } };
   }
   if (e.type === 'mtext' && e.field) {
     if (e.field.value !== e.text) return e;
     const raw = evaluateFields(e.field.code, fc);
+    if (e.field.native && raw.includes(FIELD_UNAVAILABLE)) return e;
     const value = mtextFromDxf(raw);
     if (value === e.text) return e;
     const { raw: _old, ...rest } = e;
-    return { ...rest, text: value, ...(hasFormatting(raw) ? { raw } : {}), field: { code: e.field.code, value } } as MTextEntity;
+    return { ...rest, text: value, ...(hasFormatting(raw) ? { raw } : {}), field: { ...e.field, value } } as MTextEntity;
   }
   return e;
 }
@@ -555,5 +557,7 @@ export function updateFieldTool(): Tool {
     if (changed.length) ctx.doc.replaceEntities(changed);
     ctx.log(`${found} field(s) found.`);
     ctx.log(`${changed.length} field(s) updated.`);
+    const unsupported = ctx.doc.entities.filter(e => set.has(e.id) && (e.type === 'text' || e.type === 'mtext') && e.field?.native && evaluateFields(e.field.code, fieldContextFor(ctx.doc)).includes(FIELD_UNAVAILABLE)).length;
+    if (unsupported) ctx.log(`${unsupported} native field(s) retain their cached value because this evaluator is not supported.`);
   });
 }

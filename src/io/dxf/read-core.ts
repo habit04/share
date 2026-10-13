@@ -28,7 +28,7 @@ export function commonProps(o: Obj): EntityBase {
   const layer = str(o, 8, '0');
   const rawColor = o.groups.find((x) => x.code === 62);
   const color: ColorSpec = rawColor && Number(rawColor.value) !== 256 ? Number(rawColor.value) : 'ByLayer';
-  const base: { id: string; layer: string; color: ColorSpec; linetype?: string; lineWeight?: number; ltscale?: number } = { id: newId(), layer, color };
+  const base: { id: string; cadIdentity?: string; layer: string; color: ColorSpec; linetype?: string; lineWeight?: number; ltscale?: number } = { id: newId(), ...(has(o, 5) ? { cadIdentity: str(o, 5).trim() } : {}), layer, color };
   const lt = str(o, 6);
   if (lt && lt.toUpperCase() !== 'BYLAYER') base.linetype = lt;
   if (has(o, 370)) {

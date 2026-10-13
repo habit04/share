@@ -163,7 +163,15 @@ try {
   });
   const textSignature = () => page.evaluate(() => {
     const ed = window.editor, keys = ['type', 'text', 'raw', 'position', 'height', 'rotation', 'align', 'style', 'widthFactor', 'oblique', 'attachment', 'lineSpacing', 'width', 'columns', 'attributes', 'attributePlacements'];
-    const pick = (entity) => Object.fromEntries(keys.filter((key) => entity[key] !== undefined).map((key) => [key, entity[key]]));
+    const pick = (entity) => Object.fromEntries(keys.filter((key) => entity[key] !== undefined).map((key) => {
+      if (key !== 'attributePlacements') return [key, entity[key]];
+      // Native handles are allocated for this handwritten handle-less input on save.
+      // Compare every previous placement field here; verify the new identity separately below.
+      return [key, Object.fromEntries(Object.entries(entity[key]).map(([tag, placement]) => {
+        const { cadIdentity: _cadIdentity, ...semantic } = /** @type {any} */ (placement);
+        return [tag, semantic];
+      }))];
+    }));
     return JSON.parse(JSON.stringify({ entities: ed.doc.snapshot.entities.filter((e) => e.type === 'text' || e.type === 'mtext' || e.type === 'insert').map(pick),
       attributes: ed.doc.snapshot.blocks.LABEL?.attributes.map((a) => ({ tag: a.tag, default: a.default, ...pick(a) })) }));
   });
@@ -265,7 +273,18 @@ try {
     }
     const absent = textNative.find((r) => r.kind === 'TEXT' && valueOf(r, 1) === 'Absent defaults edited');
     assert.equal(valueOf(absent, 41), '1'); assert.equal(valueOf(absent, 51), '0');
+    const editedAttributes = textNative.filter((r) => r.kind === 'ATTRIB' && valueOf(r, 2) === 'TAG');
+    assert.equal(editedAttributes.length, 1, 'Edited attribute is emitted once.');
+    const attributeHandle = valueOf(editedAttributes[0], 5);
+    assert.match(attributeHandle ?? '', /^[0-9a-f]+$/i, 'Saved ATTRIB has a native hexadecimal handle.');
+    assert.notEqual(BigInt('0x' + attributeHandle), 0n, 'Saved ATTRIB handle is nonzero.');
+    assert.equal(textNative.filter((r) => valueOf(r, 5)?.toUpperCase() === attributeHandle.toUpperCase()).length, 1,
+      'Saved ATTRIB handle identifies exactly one native record.');
     await reopen(textSaved); assert.deepEqual(await textSignature(), editedText);
+    assert.equal(await page.evaluate(() => {
+      const insert = window.editor.doc.snapshot.entities.find((e) => e.type === 'insert' && e.block === 'LABEL');
+      return insert?.type === 'insert' ? insert.attributePlacements?.TAG?.cadIdentity : undefined;
+    }), attributeHandle, 'Fresh reopen retains the exact native ATTRIB handle.');
     assert.equal(readFileSync(textSource, 'utf8'), defaultsSource);
     ok('TEXT/ATTDEF/ATTRIB: explicit and omitted native1/0 defaults, real edits, undo/redo, canonical records and IPC save/reopen');
 

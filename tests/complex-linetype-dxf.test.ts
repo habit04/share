@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { readDxf, writeDxf } from '../src/io/dxf';
-import { Drawing, type DrawingState } from '../src/core/document';
+import { Drawing, prepareDrawingTransition, type DrawingState } from '../src/core/document';
 import { complexLinetypeProblem, MAX_LINETYPE_ELEMENTS, type Linetype } from '../src/core/linetypes';
 import { shapeStylesOf, textStylesOf } from '../src/io/encoding';
 import { importReportOf } from '../src/io/import-report';
@@ -52,7 +52,8 @@ describe('native complex linetype definitions and STYLE references', () => {
     const pointers = records(written, 'LTYPE').flatMap((record) => record.filter(([code]) => code === 340).map(([, handle]) => handle));
     const styleHandles = records(written, 'STYLE').map((record) => value(record, 5));
     expect(pointers.every((handle) => styleHandles.includes(handle))).toBe(true);
-    expect(pointers).not.toContain('11'); expect(pointers).not.toContain('32');
+    expect(pointers).toContain('11'); expect(pointers).toContain('32');
+    expect(new Set(styleHandles).size).toBe(styleHandles.length);
   });
   it('retains trailing/leading literal text, native radians, and absolute/unknown rotation flags', () => {
     for (const flags of [2, 3, 10]) {
@@ -85,7 +86,7 @@ describe('native complex linetype definitions and STYLE references', () => {
     const shape: Pair[] = [[49, -6], [74, 5], [75, 133], [340, 'CC'], [50, Math.PI / 6]];
     const input = readDxf(native([...shape, ...shape], 2));
     expect(linetype(input).complex!.elements.map((element) => element.style)).toEqual([{ kind: 'shape', sourceId: 'CC' }, { kind: 'shape', sourceId: 'CC' }]);
-    const written = writeDxf({ ...input, entities: [], header: { ...input.header!, linetypes: [] } });
+    const written = writeDxf(prepareDrawingTransition(input, { ...input, entities: [], header: { ...input.header!, linetypes: [] } }));
     expect(records(written, 'STYLE').filter((record) => Number(value(record, 70)) & 1)).toHaveLength(1);
     expect(Object.values(shapeStylesOf(readDxf(written)))[0]!.font).toBe('ltypeshp.shx');
   });
@@ -127,9 +128,14 @@ describe('explicit complex linetype safety and unsupported-data reporting', () =
     expect(() => writeDxf({ ...input, header: { ...input.header!, linetypes: [sparse] } })).toThrow(/element/);
     expect(() => writeDxf({ ...input, meta: { ...input.meta, shapeStyles: { CC: { ...shapeStylesOf(input)['CC'], lastHeight: NaN } } } })).toThrow('shape STYLE');
   });
-  it('reports unsupported extension metadata explicitly while retaining known descriptors', () => {
+  it('retains opaque extension metadata alongside the modeled descriptors', () => {
     const input = readDxf(native(text, 1, 'CUSTOM', [[1001, 'UNKNOWN_APP'], [1000, 'UNMODELED']]));
     expect(linetype(input).complex!.elements[0]!.text).toBe(' GAS  ');
-    expect(importReportOf(input)?.items.some((item) => item.type === 'LTYPE' && item.action === 'simplified' && item.reason.includes('extension metadata'))).toBe(true);
+    const reopened = readDxf(writeDxf(input));
+    expect(linetype(reopened).complex!.elements[0]!.text).toBe(' GAS  ');
+    const retained = reopened.cadGraph!.nodes.find(node => node.type === 'LTYPE' && node.anchor?.kind === 'table' && node.anchor.name === 'CUSTOM')!;
+    expect(retained.groups).toContainEqual([1001, 'UNKNOWN_APP']);
+    expect(retained.groups).toContainEqual([1000, 'UNMODELED']);
+    expect(importReportOf(reopened)?.items.some((item) => item.type === 'LTYPE' && item.action === 'dropped')).toBe(false);
   });
 });

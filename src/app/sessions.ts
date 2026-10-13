@@ -6,11 +6,18 @@
  * dirty flag, view and selection) so switching tabs swaps that state in and out.
  * Pure of DOM so it can be unit tested with a fake host.
  */
-import { Drawing, type DrawingState } from '../core/document';
+import { Drawing, validateDrawingState, type DrawingState } from '../core/document';
 import type { Point } from '../core/geometry';
 import { fileBaseName, samePath, shortNames } from './paths';
-import { prepareDrawingState, validateGeometryBudget } from '../core/geometry-budget';
+import { prepareDrawingState } from '../core/geometry-budget';
 import { forgetOpenedSourceProof } from './opened-source-proof';
+
+/** Per-document views parked behind Model/paper/viewport context switches, independent of CAD data. */
+export interface ParkedSpaceViews {
+  readonly views: readonly (readonly [string, { readonly center: Point; readonly scale: number; readonly twist?: number }])[];
+  readonly histories: readonly (readonly [string, readonly { readonly center: Point; readonly scale: number; readonly twist: number }[]])[];
+  readonly lastLayout: string;
+}
 
 export interface DocumentSession {
   readonly id: number;
@@ -30,7 +37,8 @@ export interface DocumentSession {
   undo: DrawingState[];
   redo: DrawingState[];
   /** null until the document has been shown once (then the host's zoom-extents view is kept). */
-  view: { center: Point; scale: number } | null;
+  view: { center: Point; scale: number; twist?: number } | null;
+  parkedSpaceViews: ParkedSpaceViews | null;
   selection: Set<string>;
   /** Name shown for drawings without a file (Drawing1.dxf, Drawing2.dxf ...). */
   untitledName: string;
@@ -38,14 +46,22 @@ export interface DocumentSession {
 
 export interface SessionHost {
   readonly doc: Drawing;
-  readonly viewport: { center: Point; scale: number };
+  readonly viewport: { center: Point; scale: number; twist?: number };
   selection: Set<string>;
   /** Replace the active document (the Editor's loadState: load, ensure library blocks, zoom extents). */
   loadState(state: DrawingState, path: string | null): void;
   notify?(ev: 'file' | 'selection' | 'view'): void;
   render?(): void;
+  captureParkedSpaceViews?(): ParkedSpaceViews;
+  restoreParkedSpaceViews?(views: ParkedSpaceViews | null): void;
 }
 
+/** A refused restore must precede tab removal, proof retirement and live-document loading. */
+function validateRestoredSession(session: DocumentSession): void {
+  for (const state of [session.state, ...session.undo, ...session.redo]) {
+    validateDrawingState(state);
+  }
+}
 
 /** A random RFC 4122 version 4 UUID (crypto.randomUUID where available). */
 export function newDocumentId(): string {
@@ -82,6 +98,7 @@ export class SessionManager {
   }
 
   private make(state: DrawingState, filePath: string | null): DocumentSession {
+    validateDrawingState(state);
     prepareDrawingState(state);
     this.untitledCounter += 1;
     return {
@@ -95,6 +112,7 @@ export class SessionManager {
       undo: [],
       redo: [],
       view: null,
+      parkedSpaceViews: null,
       selection: new Set(),
       untitledName: `Drawing${this.untitledCounter}.dxf`,
     };
@@ -164,7 +182,8 @@ export class SessionManager {
     s.dirty = doc.dirty;
     s.undo = [...h.undo];
     s.redo = [...h.redo];
-    if (viewport) s.view = { center: { ...viewport.center }, scale: viewport.scale };
+    if (viewport) s.view = { center: { ...viewport.center }, scale: viewport.scale, ...(viewport.twist ? { twist: viewport.twist } : {}) };
+    s.parkedSpaceViews = this.host.captureParkedSpaceViews?.() ?? null;
     s.selection = new Set(this.host.selection);
   }
 
@@ -185,8 +204,10 @@ export class SessionManager {
     if (s.view && host.viewport) {
       host.viewport.center = { ...s.view.center };
       host.viewport.scale = s.view.scale;
+      if ('twist' in host.viewport) host.viewport.twist = s.view.twist ?? 0;
     }
     host.selection = new Set(s.selection);
+    host.restoreParkedSpaceViews?.(s.parkedSpaceViews);
     host.notify?.('file');
     host.notify?.('selection');
     host.notify?.('view');
@@ -196,7 +217,7 @@ export class SessionManager {
 
   switchTo(i: number): boolean {
     if (i < 0 || i >= this.list.length || i === this.activeIndex) return false;
-    validateGeometryBudget(this.list[i]!.state);
+    validateRestoredSession(this.list[i]!);
     this.sync();
     this.activeIndex = i;
     this.restore(this.list[i]!);
@@ -241,7 +262,7 @@ export class SessionManager {
     target = Math.max(0, Math.min(remaining.length - 1, target));
     const restores = i === this.activeIndex || target !== (i < this.activeIndex ? this.activeIndex - 1 : this.activeIndex);
     // A rejected target must leave the outgoing tab and active index untouched.
-    if (remaining.length && restores) validateGeometryBudget(remaining[target]!.state);
+    if (remaining.length && restores) validateRestoredSession(remaining[target]!);
     forgetOpenedSourceProof(this.list[i]!);
     this.list.splice(i, 1);
     if (this.list.length === 0) {
@@ -283,6 +304,7 @@ export class SessionManager {
   loadInto(id: number, state: DrawingState, filePath: string | null, dirty = false): boolean {
     const i = this.indexOfId(id);
     if (i < 0) return false;
+    validateDrawingState(state);
     prepareDrawingState(state);
     if (i === this.activeIndex) {
       this.host.loadState(state, filePath);
@@ -300,6 +322,7 @@ export class SessionManager {
     s.undo = [];
     s.redo = [];
     s.view = null;
+    s.parkedSpaceViews = null;
     s.selection = new Set();
     this.onChange?.();
     return true;

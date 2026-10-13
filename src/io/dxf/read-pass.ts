@@ -160,7 +160,7 @@ export function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): En
     if (has(appearance, 430) && !validColorName(str(appearance, 430))) reportObj(ctx, o, 'simplified', 'invalid named/color-book identity is not kept; RGB/ACI color is kept');
     // IMAGE's IMAGEDEF reactor is reconstructed on export; other object links are unmodeled.
     const unmodeledLinks = o.kind === 'IMAGE' ? o.groups.some((p) => p.code === 102 && p.value !== '{ACAD_REACTORS' && p.value !== '}') : has(o, 102) || has(o, 360);
-    if (unmodeledLinks) reportObj(ctx, o, 'simplified', 'reactor/extension-dictionary links are not kept; supported drawing geometry is kept');
+    if (unmodeledLinks) reportObj(ctx, o, has(o, 5) ? 'kept' : 'simplified', has(o, 5) ? 'reactor and extension-dictionary links are retained as typed object references; application-driven behavior is not simulated' : 'reactor/extension-dictionary links have no source identity and cannot be retained');
     if (e.type === 'mtext' && e.background) {
       if (e.background.flags & ~19) reportObj(ctx, o, 'simplified', 'unmodeled MTEXT background flag bits are retained but their effects are not drawn');
       if (e.background.transparency) reportObj(ctx, o, 'simplified', 'MTEXT background transparency is retained but not applied; native AutoCAD does not implement group 441');
@@ -170,7 +170,7 @@ export function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): En
       const unsupportedOverrides = o.kind === 'DIMENSION' ? dstylePairs(o).filter(([code]) => ![71, 72, 73, 74, 78, 340].includes(code) && !DIM_VARIABLES.some((v) => v.code === code)) : o.kind === 'LEADER' ? dstylePairs(o).filter(([code]) => code !== 41) : [];
       if (unsupportedOverrides.length) reportObj(ctx, o, 'simplified', `DSTYLE override groups ${unsupportedOverrides.map(([code]) => code).join(', ')} are not modeled or written back`);
       const apps = [...new Set(o.groups.filter((x) => x.code === 1001 && !isQuietXdataApp(x.value.trim(), o.kind) && !(x.value.trim() === 'ACAD' && consumedDstyle && !hasUnconsumedAcadXdata(o))).map((x) => x.value.trim()))];
-      if (apps.length) reportObj(ctx, o, 'simplified', `extended data (XDATA) of ${apps.join(', ')} is not kept`);
+      if (apps.length) reportObj(ctx, o, has(o, 5) ? 'kept' : 'simplified', `extended data (XDATA) of ${apps.join(', ')} ${has(o, 5) ? 'is retained with typed handle references' : 'has no source identity and cannot be retained'}`);
     }
     return placed;
   };

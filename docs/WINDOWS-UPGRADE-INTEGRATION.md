@@ -3,6 +3,44 @@
 Read-only GitHub/history audit: 2026-10-13, 14:43 UTC. This is a planning record;
 no stable-branch merge, installer, signing change or release was performed.
 
+Execution update: #24 is frozen at `739950c576ea48f9de7666dfa964732db896d6d4`.
+All four [exact-head CI jobs](https://github.com/habit04/share/actions/runs/38434090041)
+passed, including native Windows writer/containment, Electron, origin migration,
+both Node suites, UI screenshots and performance gates. The long roadmap is paused.
+The first source integration stage combines completed #9 with this freeze in the
+same isolated worktree. Its full local suite passes **3,907 tests / 28 conditional
+skips**, all three TypeScript projects, broad lint, fixtures and the production build.
+All **32 actual Windows app workflows** pass on the final unchanged production bundle:
+14 opened-source/save/recovery, seven tracked 2D and 11 PDF/CSV export checks. Full
+source/native/config/harness hashes remain fixed during that run and all owned
+processes close without fallback termination. The [exact-head PR checks](https://github.com/habit04/share/pull/11/checks)
+must clear before adopting 3D or selecting a corrected, published GPU stack.
+No release-branch merge is authorized.
+
+This stage resolves shared clip-boundary identities and copies, duplicate modeled
+VIEWPORT 340 export, anonymous STYLE identity and complex-LTYPE overlay conflicts.
+Project proposals and restored session/history states now validate graph identities,
+ordinate properties and budgets before tab, proof, backup or write mutation. Existing
+save/export admissions remain intact. Graph-aware native-layout test setup retains
+the original layouts and all prior metadata/undo/reopen assertions. The app text
+comparison excludes only newly allocated attribute identities and independently
+checks their native uniqueness and exact fresh-reopen value; every prior appearance
+assertion remains. The final large-file test completes and verifies its owned cleanup
+inside the original body deadline, leaving the hook no duplicate filesystem cleanup.
+
+The completed native reader bundle, matching writer source/pins and three metadata
+fixture families are reused as one dependency. Decoder/projection validators report
+zero native/write errors and complete bounded inventories. No matching native helper
+was rebuilt locally and no new AutoCAD roundtrip, packaged artifact or installer is
+claimed; current-source matching-helper/Windows execution remains an exact-head CI gate.
+
+The first combined full suite exposed missing runtime-module coverage in the existing
+builder filters. The two completed #9 metadata `.mjs` modules are now listed explicitly,
+and the real-filter regression retains every prior adapter/source assertion while checking
+the two additional provenance assets. This is a narrow runtime dependency addition;
+application version, dependencies, signing and release workflows are unchanged. No
+installer or packaged artifact was created.
+
 There is enough delivered work to plan a substantial combined Windows upgrade.
 There is not yet a validated combined release candidate. Keep ordinary Canvas as
 the default and preserve the existing experimental controls for GPU and 3D.
@@ -29,14 +67,27 @@ separately. Private source records remain in the worktree's `.codex-local` audit
 | [8](https://github.com/habit04/share/pull/8) | Rotated rectangular layout viewports in display, editing and plotting. | Merged/released v0.4.8; current-head CI passes. Polygon/curved clips are separate scope. |
 | [9](https://github.com/habit04/share/pull/9) | Named views, FIELD links, bounded CAD metadata/reference graph and independently verified native save preservation. | Merged/released v0.4.9, stable 8dfe1caa; final-head and publication checks pass. Priorities #19/#29 are completed externally. Reuse this work. |
 | [10](https://github.com/habit04/share/pull/10) | Immutable pan cache, graphics-loss recovery and complete Canvas fallback. | Delivered draft milestone at a0eea698; latest push/PR CI passes all five jobs. Unmerged/unreleased. |
-| [11](https://github.com/habit04/share/pull/11) | Windows 2D compatibility, fonts/plots, plugin lifecycle and save/recovery corrections. | Final #24 local batch: 3,663 tests/28 skips, build/static and native/application export/read/save gates pass; see the checklist for separate snapshots and limitations. Earlier published 26c9dac has [all four exact-head CI jobs passing](https://github.com/habit04/share/actions/runs/38417374158). Require [all final-head checks](https://github.com/habit04/share/pull/11/checks) green before integration; the earlier run does not cover this follow-up. Remaining roadmap rows are paused and still partial. |
+| [11](https://github.com/habit04/share/pull/11) | Windows 2D compatibility, fonts/plots, plugin lifecycle and save/recovery corrections; completed #9 source integration. | Frozen #24 at 739950c: [all four exact-head CI jobs pass](https://github.com/habit04/share/actions/runs/38434090041). Combined #9 + #24 local validation: 3,907 tests/28 skips, static/build and 32 actual Windows workflows pass. [Combined exact-head checks](https://github.com/habit04/share/pull/11/checks) are required before the next stage; parent CI does not certify the combination. Roadmap rows remain paused and partial. |
 | [12](https://github.com/habit04/share/pull/12) | Pinned first 2D batch plus GPU foundations, Intel/NVIDIA native cache recovery and adapter selection. | Delivered draft milestone at b145ea39; all five latest CI jobs pass. Pins only old 2D 3ce7e10a, not current #11 or released #9. |
 | [13](https://github.com/habit04/share/pull/13) | Bounded zoom reuse with fixed pixel lineweights and separately measured frame stages. | Delivered draft at 734de794; measured renderer fd7fac07. Both producer/evidence CI records pass. Unmerged/unreleased. |
 | [14](https://github.com/habit04/share/pull/14) | Eligible LINE edit/undo caching and 168-byte subrange uploads, with failure repair. | Delivered draft at 6e00136f; measured renderer fe653933. Latest five CI jobs pass. Arbitrary edits remain separate. |
 | [15](https://github.com/habit04/share/pull/15) | Faster full preparation for visible LINE scenes at cache boundaries. | Delivered draft at 47625347; measured renderer 72d70630. Latest five CI jobs pass. First-frame/boundary costs and broader coverage remain. |
+| [16](https://github.com/habit04/share/pull/16) | Experimental blocks and stroke TEXT/ATTRIB, precision checks and retry refinements. | New draft at a2eac656, explicitly blocked. Native Intel checks found a missing open-bulge connector, an extra tiny-polyline Float32 spur, failed dense edit visibility and a 172 ms zoom boundary. Corrective source is unpublished; ordinary green CI cannot close these native gates. Do not select this head for integration. |
 
 Stacked PRs contain shared commits; do not add their test counts or feature scopes
 as independent implementations. An open PR's computed merge SHA is not a merge.
+
+GPU source selection remains blocked until a completed corrective head passes the
+unchanged native accuracy, visible-edit and responsiveness gates. An older green
+stack head is not a waiver for a known inherited defect. PR #16's full paginated
+commit/file/review/comment/timeline record is saved privately alongside the earlier
+14-PR audit; its explicit blocked status is preserved here.
+
+The separate GPU owner is also investigating fractional-DPR Canvas cache behavior,
+paint-width budget accounting and resource contention in unchanged clip-compatibility
+CI tests. Those are unpublished corrections and pending validation, not adopted fixes.
+Retain the original clip assertions/deadlines and require ordinary Canvas image parity
+as well as the corrected GPU's native evidence before selecting its published head.
 
 Follow-up to the #11 audit: the harness correction retains all original assertions,
 uses explicitly scoped POSIX protocol doubles instead of treating POSIX paths as
@@ -53,8 +104,8 @@ messages. A native final-gate plugin race was fixed with bounded same-FD byte ve
 the old reader accepted 25/64 changed-file trials, while the fixed reader refuses 64/64,
 including 38 genuine metadata collisions. No original deadline/guard was relaxed. The
 whole suite passes 3,663/28 skips. Actual export/save/2D and plugin IPC evidence is recorded
-as separate immutable source runs. The final publication must still clear exact-head CI
-before any integration. No incoming branch has been applied by this follow-up.
+as separate immutable source runs. Final publication 739950c subsequently cleared all
+four exact-head CI jobs before the first #9 source adoption began.
 
 A fresh read-only head check confirms the 14-PR inventory, published 3D a4d55263 and
 GPU #15 47625347 remain unchanged. The sharper GPU join limitation below has no new
@@ -103,6 +154,11 @@ roadmap implementation is part of this freeze.
    kernel controls, bounded persistence and refusal of unsupported DWG output.
    Review shared document/state validation, undo, commands, DXF codecs, autosave,
    worker/CSP handling and dependency/license changes against the combined branch.
+   Include model3d solids and DIM3D in graph carrier/identity/owner reconciliation;
+   do not emit duplicate retained POLYLINE/DIMENSION records. Validate shared IDs,
+   dimensions-only DXF reopen budgets, strict native dimension flags and mixed
+   hard-reference refusal/copy/delete/undo. Keep the declared 3D stroke-font behavior
+   explicit; 2D native font providers do not automatically certify 3D text parity.
 4. Integrate the GPU stack as one reviewed dependency chain, preferably from the
    latest verified leaf (#15 plus any subsequently completed reviewed milestone).
    It already carries diagnostics/prototype and #10/#12–14. Do not independently
@@ -112,9 +168,9 @@ roadmap implementation is part of this freeze.
    feature/limitation report for review. Version naming and public rollout follow
    that result; a substantial upgrade does not itself establish production readiness.
 
-No new worktree/branch or dependency was created for this plan. Actual combined
-integration, stable merges, packaging and release are later actions, not performed
-by the read-only history audit.
+No new worktree/branch or dependency was created for this plan. The read-only history
+audit did not integrate source. Source adoption began only after the #24 freeze cleared
+all four CI jobs; stable merges, installers, signing and publication remain excluded.
 
 The file-history comparison already identifies shared implementation surfaces:
 20 production files between #9 and current #11, 13 between delivered 3D and #11,
