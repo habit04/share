@@ -25,7 +25,9 @@ const fixtures = join(__dirname, '..', 'fixtures');
 const dwg = async (f: string) => convertDwg((await readDwgPayload(readFileSync(join(fixtures, f)), 'dwg')).payload, f);
 
 describe('DWG fixtures against their DXF equivalent', () => {
-  it('retains an AutoCAD-authored pristine Layout1 when a second sheet is added', async () => {
+  // The native metadata reader is enabled only for the Windows update. The DXF
+  // layout identity regression also runs on CI's other operating systems.
+  it.skipIf(process.platform !== 'win32')('retains an AutoCAD-authored pristine Layout1 when a second sheet is added', async () => {
     const original = readFileSync(join(__dirname, 'fixtures', 'interchange', 'r2018-mtext-background.dwg'));
     const { payload } = await readDwgPayload(original);
     const { state } = convertDwg(payload);

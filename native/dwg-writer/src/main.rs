@@ -1466,12 +1466,16 @@ mod tests {
         DwgWriter::write_to_writer(&mut output, &explicit).unwrap();
         output.set_position(0);
         let reopened = DwgReader::from_stream(output).read().unwrap();
-        let refusal = equivalent(
+        equivalent(
             &snapshot,
             &metadata_snapshot(&reopened).unwrap(),
             "explicit imported Model plot flag",
         )
-        .unwrap_err();
+        .unwrap();
+        // Layout scalar fields belong to the full semantic reopening guard,
+        // while the metadata snapshot above checks its complete reference graph.
+        assert!(layouts(&reopened)["Model"].plot_flags.model_type);
+        let refusal = verify_reopening(&explicit, &reopened).unwrap_err();
         assert!(refusal.contains("layout.plot_flags.model_type"));
     }
 
