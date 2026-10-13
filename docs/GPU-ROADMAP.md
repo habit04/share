@@ -573,6 +573,72 @@ must report the actual renderer separately. Correctness endpoints force actual
 admission and retain exact Canvas pixels or the existing admitted-GPU coverage
 gate. Fresh full-suite, paired native and exact-commit CI gates remain open.
 
+### Block and stroke-text checkpoint: native gates still open
+
+Clean source `9df70df05cb7f2f473f1d989d3535659160e6a45` passed all nine local
+checks: 3,190 regressions with 28 conditional skips, the three TypeScript
+projects, full lint, fixture/workflow verification and both builds. Ordinary
+Windows default-renderer, diagnostics and seven real 2D batch checks also passed.
+The Intel native benchmark failed an untimed edit-visibility assertion in the
+preserved long-label `compound-dense` input. Archived raw captures show the same
+24 changed RGBA pixels in Canvas and complete-view GPU fallback; later text
+overdraws the midpoint-visible line. The visual threshold was not relaxed.
+Candidate selection must prove a visible edit before this benchmark can pass.
+
+The exact selected sharp arc-to-LINE case was tested first on Intel UHD Graphics
+(`0x4688`, driver `32.0.101.7088`), Electron `44.7.0` / Chromium
+`152.0.7977.130`, DPR 1, width 2.5 and miter limit 10. At camera center
+`(3.5, 2.5)`, scale `95.17241379310344`, unchanged source points
+`(0,4), (1,5), (2,4)` and bulges `[0.5,0]`, the unproved native curved join
+required complete-view Canvas. It uploaded zero bytes and produced exactly the
+reference RGBA image. This safely closes that refusal case on this sample; it
+does not claim a corrected GPU join or relax the 0.25 physical-pixel limit.
+
+The failed run's fresh, readback-free Intel phase provides diagnostic observations,
+not accepted milestone performance. Short-tag compounds recorded 1.1 ms median
+GPU CPU work for pan and bounded zoom, with zero geometry preparation/uploads,
+versus Canvas 18.6 / 17.2 ms. A top-level LINE edit used 168-byte subrange uploads,
+at most 0.2 ms partial geometry, and 10.6 ms median workflow CPU versus Canvas
+22.7 ms. Sustained zoom still reached 155 ms geometry preparation, 10.8 ms upload
+issuance and 172.1 ms workflow CPU at an envelope boundary; the maximum consecutive
+rAF interval was 166.7 ms. This redraw-delay gate remains open. Complete long-label
+Canvas fallback avoided repeated preparation during those moving samples.
+
+NVIDIA, cached-process recovery/unavailability and exact published-head CI have
+not run for this checkpoint. Native timing and correctness must be repeated for
+the next clean producer after the harness and redraw-delay issues are resolved.
+
+Two additional Intel native audits used the unchanged compiled `9df70df0`
+assets, with current working source explicitly labelled modified. Asset hashes
+matched the successful clean-source build before and after each private process.
+These are correctness observations, not performance measurements:
+
+* At an exact 8192 x 800 backing viewport, scale 1 and DPR 1, an open bulge with
+  points `(0.00015,0), (2000.00035,0)` and bulge 1 makes Canvas insert a float
+  connector. At width 16, Canvas paints an 8 x 8 region above the ideal butt cap;
+  the independent Canvas ARC without initial move and GPU each omit it.
+  Repeated Canvas RGBA is exact. The larger 10000 x 4000 request safely refuses
+  when the actual GPU drawing buffer cannot match it.
+* At the ordinary 1216 x 552 viewport, scale 10 and DPR 1, an unbulged POLYLINE
+  with points `(-0.000001,0), (0,0), (0,10)` has its first native float segment
+  collapse. At width 16, GPU adds an 8 x 8 region below the cap; Canvas exactly
+  matches the independent vertical LINE and repeated Canvas RGBA. A separate
+  width-2.5 capture was not self-consistent and remains inconclusive.
+
+See the [failed performance observations](benchmarks/windows-gpu-compound-9df-intel-failed.json),
+[open-bulge audit](benchmarks/windows-gpu-9df-open-bulge-intel-audit.json) and
+[straight-collapse audit](benchmarks/windows-gpu-9df-straight-collapse-intel-audit.json).
+The audit-wide outcome remains inconclusive because some smaller-width or larger
+allocation cases were unstable or blocked; the specific stable width-16 defects
+above are confirmed independently. No aggregate audit pass is claimed.
+
+Both width-16 defects exceed the unchanged quarter-pixel limit. Bulged POLYLINE
+topology must use complete-view Canvas until it is proved. Straight-path
+certification must include native Float32 point/direction/join effects in the
+existing 0.0625 construction reserve, before admitting or reusing a mesh. Direct
+ARC/CIRCLE controls remain distinct. These gates block compound milestone
+acceptance and any production/default change, even if ordinary CI passes.
+
 ### NVIDIA validation on the pinned GPU source
 
 A separate private process using Electron's documented
