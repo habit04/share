@@ -433,11 +433,16 @@
     {
       "path": "src/io/dwg/dwg_document_builder.rs",
       "beforeSha256": "c128bff77b804107066518d24cd627ec93bae392ac5bd45da8cb3fd9bb5da95c",
-      "afterSha256": "f002569dccdc3a366514990e4846c3c3142e9a6d91a52e378d25bb5ab052b0b8",
+      "afterSha256": "62d3978e0046fc5f4743f9af64f72cd7caaad4b19391e1f4d0a9dda701127be2",
       "replacements": [
         {
           "before": "                OBJ_DICTIONARY => {\r\n                    let data = objects::read_dictionary(&mut reader, self.obj_reader.version());\r\n                    let mut obj = crate::objects::Dictionary::new();\r\n                    obj.handle = Handle::from(handle);\r\n                    obj.owner = owner_handle;",
           "after": "                OBJ_DICTIONARY => {\r\n                    let data = objects::read_dictionary(&mut reader, self.obj_reader.version());\r\n                    let mut obj = crate::objects::Dictionary::new();\r\n                    obj.handle = Handle::from(handle);\r\n                    obj.owner = owner_handle;\r\n                    // The common stream already supplies these actual links.\r\n                    // Keep the typed record consistent with its side cache.\r\n                    obj.reactors = non_entity_data.reactors.iter().copied().map(Handle::from).collect();\r\n                    obj.xdictionary_handle = non_entity_data.xdictionary_handle.map(Handle::from);",
+          "count": 1
+        },
+        {
+          "before": "                    obj.duplicate_cloning = data.duplicate_cloning;\r\n                    for entry in data.entries {\r\n                        obj.add_entry(entry.name, Handle::from(entry.handle));\r\n                    }",
+          "after": "                    obj.duplicate_cloning = data.duplicate_cloning;\r\n                    for entry in data.entries {\r\n                        // DXF exposes the global hard-owner byte on every entry.\r\n                        // Mirror its typed decoder and canonical FIELD policy;\r\n                        // DWG dictionary item handles themselves remain code 2.\r\n                        if obj.hard_owner || crate::objects::Dictionary::is_canonical_hard_owner_key(&entry.name) {\r\n                            obj.set_entry_hard_owner(&entry.name, true);\r\n                        }\r\n                        obj.add_entry(entry.name, Handle::from(entry.handle));\r\n                    }",
           "count": 1
         }
       ]

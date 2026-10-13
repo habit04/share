@@ -4,7 +4,7 @@ The Windows DXF-to-DWG helper links acadrust 0.6.4, pinned by its published crat
 SHA-256 and matching upstream commit in `pins.json`. It is MPL-2.0 licensed; the
 unmodified full license is included here. The helper itself is GPL-3.0-only.
 
-Seventy exact source replacements in eleven files correct standalone MTEXT frame
+Seventy-one exact source replacements in eleven files correct standalone MTEXT frame
 output, its matching private validator, owned ATTRIB parent relationships,
 MINSERT's owned-attribute count before array fields, FIELD/FIELDLIST common DXF
 groups, the VIEW front-clipping mode bit, opaque DXF metadata strings, MLEADERSTYLE
@@ -35,6 +35,10 @@ This keeps the before/after comparison tied to actual links, including owned
 annotation registry dictionaries. SCALE group 70 is accepted only at zero,
 the exact version word emitted by the pinned binary encoder; nonzero values
 remain unsupported and refuse export.
+The DICTIONARY builder also restores per-entry hard-owner metadata from the
+decoded dictionary-wide flag, matching the DXF decoder's existing canonical
+FIELD policy. Dictionary item handles keep the specified DWG code 2; the
+encoder's global ownership flag and source/target ownership checks stay intact.
 
 Eighteen new typed header fields replace binary constants or discarded reads for
 DIMFXL, DIMJOGANG, DIMTFILL/CLR, DIMARCSYM, DIMFXLON, DIMTXTDIRECTION,

@@ -1801,6 +1801,47 @@ mod tests {
     }
 
     #[test]
+    fn native_dictionary_global_ownership_keeps_actual_entry_kinds() {
+        let text = "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1032\n0\nENDSEC\n0\nSECTION\n2\nOBJECTS\n0\nDICTIONARY\n5\n200\n330\nC\n100\nAcDbDictionary\n280\n1\n281\n1\n3\nLinkedMetadata\n360\n201\n0\nXRECORD\n5\n201\n330\n200\n100\nAcDbXrecord\n280\n1\n1\nNative owned metadata\n0\nENDSEC\n0\nEOF\n";
+        let mut document = DxfReader::from_reader(std::io::Cursor::new(text.as_bytes()))
+            .unwrap()
+            .read()
+            .unwrap();
+        source_schema::capture(text)
+            .unwrap()
+            .verify(&mut document)
+            .unwrap();
+        let before = metadata_snapshot(&document).unwrap();
+        let mut output = std::io::Cursor::new(Vec::new());
+        DwgWriter::write_to_writer(&mut output, &document).unwrap();
+        output.set_position(0);
+        let mut reopened = DwgReader::from_stream(output).read().unwrap();
+        equivalent(
+            &before,
+            &metadata_snapshot(&reopened).unwrap(),
+            "hard-owner dictionary DWG",
+        )
+        .unwrap();
+        let ObjectType::Dictionary(dictionary) =
+            reopened.objects.get_mut(&Handle::new(0x200)).unwrap()
+        else {
+            unreachable!()
+        };
+        assert!(dictionary.hard_owner);
+        assert_eq!(
+            dictionary.hard_owner_entries,
+            vec!["LinkedMetadata".to_string()]
+        );
+        dictionary.hard_owner = false;
+        assert!(equivalent(
+            &before,
+            &metadata_snapshot(&reopened).unwrap(),
+            "hard-owner mutation"
+        )
+        .is_err());
+    }
+
+    #[test]
     fn native_class_object_common_links_are_not_hidden_by_empty_side_caches() {
         let mut document = metadata_document(0);
         let mut object = acadrust::objects::ClassObject::default();
