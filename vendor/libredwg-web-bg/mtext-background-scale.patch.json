@@ -14,6 +14,16 @@
           "before": "BITCODE_BL bg_fill_scale;",
           "after": "BITCODE_BD bg_fill_scale;",
           "count": 2
+        },
+        {
+          "before": "  struct _dwg_CellStyle cellstyle;\n} Dwg_TABLESTYLE_CellStyle;",
+          "after": "  struct _dwg_CellStyle cellstyle;\n  BITCODE_BL key; /* Ordered TABLESTYLE override key; CELLSTYLEMAP does not serialize it. */\n} Dwg_TABLESTYLE_CellStyle;",
+          "count": 1
+        },
+        {
+          "before": "  Dwg_TABLESTYLE_CellStyle ovr;  // ??",
+          "after": "  Dwg_TABLESTYLE_CellStyle ovr;  // legacy first-override scalar convenience\n  Dwg_TABLESTYLE_CellStyle *overrides; // owned ordered R2010+ override array",
+          "count": 1
         }
       ]
     },
@@ -82,6 +92,16 @@
           "before": "\"bg_fill_scale\",\t\"BL\", sizeof (BITCODE_BL)",
           "after": "\"bg_fill_scale\",\t\"BD\", sizeof (BITCODE_BD)",
           "count": 2
+        },
+        {
+          "before": "  { \"num_rowstyles\",\t\"BL\", sizeof (BITCODE_BL),  OFF (struct _dwg_object_TABLESTYLE, num_rowstyles),",
+          "after": "  { \"overrides\",\t\"Dwg_TABLESTYLE_CellStyle*\", sizeof (Dwg_TABLESTYLE_CellStyle*),  OFF (struct _dwg_object_TABLESTYLE, overrides),\n    1,1,0, 0 },\n  { \"num_rowstyles\",\t\"BL\", sizeof (BITCODE_BL),  OFF (struct _dwg_object_TABLESTYLE, num_rowstyles),",
+          "count": 1
+        },
+        {
+          "before": "  { \"cellstyle\",\t\"struct _dwg_CellStyle\", sizeof (struct _dwg_CellStyle),  OFF (struct _dwg_TABLESTYLE_CellStyle, cellstyle),\n    1,0,0, 0 },\n",
+          "after": "  { \"cellstyle\",\t\"struct _dwg_CellStyle\", sizeof (struct _dwg_CellStyle),  OFF (struct _dwg_TABLESTYLE_CellStyle, cellstyle),\n    1,0,0, 0 },\n  { \"key\",\t\"BL\", sizeof (BITCODE_BL),  OFF (struct _dwg_TABLESTYLE_CellStyle, key),\n    0,0,0, 0 },\n",
+          "count": 1
         }
       ]
     },
@@ -261,6 +281,21 @@
           "before": "          VALUE_TV (name, dxf + 430 - 62);\n        }\n      else if (color->flag & 1 && color->name)",
           "after": "          /* TU components were already converted to UTF-8 above. */\n          if (IS_FROM_TU (dat))\n            dxf_fixup_string (dat, name, 1, dxf + 430 - 62);\n          else\n            VALUE_TV (name, dxf + 430 - 62);\n        }\n      else if (color->flag & 1 && color->name)",
           "count": 1
+        },
+        {
+          "before": "  VALUE_RS (dwg->header_vars.nam.index, dxf)",
+          "after": "  /* C0/C1 are ByLayer/ByBlock; C3 may store its ACI in packed RGB. */       \\\n  VALUE_RS (dwg->header_vars.nam.method == 0xc0 ? 256                         \\\n            : dwg->header_vars.nam.method == 0xc1 ? 0                         \\\n            : (dwg->header_vars.nam.method == 0xc3                            \\\n               && (abs (dwg->header_vars.nam.index) == 0                     \\\n                   || abs (dwg->header_vars.nam.index) >= 256))               \\\n                ? dwg->header_vars.nam.rgb & 0xff                            \\\n                : dwg->header_vars.nam.index, dxf)",
+          "count": 1
+        },
+        {
+          "before": "      if (!opt || color->index || color->method == 0xc1)\n        {\n          VALUE_RSd (color->index, dxf);\n        }",
+          "after": "      if (color->method == 0xc0 || color->method == 0xc1)\n        {\n          VALUE_RS (color->method == 0xc0 ? 256 : 0, dxf);\n          return;\n        }\n      if (!opt || color->index)\n        {\n          VALUE_RSd (color->index, dxf);\n        }",
+          "count": 1
+        },
+        {
+          "before": "      if (dxf >= 90)\n        {\n          VALUE_RLd (color->rgb, dxf);\n          return;\n        }",
+          "after": "      /* Only DIMSTYLE uses CMC group176..178. Its ACI methods are indices;\n         VISUALSTYLE group91/93 and truecolor methods retain packed storage. */\n      if (dxf >= 176 && dxf <= 178\n          && (color->method == 0xc0 || color->method == 0xc1\n              || color->method == 0xc3))\n        {\n          const int aci = color->method == 0xc0 ? 256\n            : color->method == 0xc1 ? 0\n            : abs (color->index) > 0 && abs (color->index) < 256\n              ? color->index : color->rgb & 0xff;\n          VALUE_RS (aci, dxf);\n          return;\n        }\n      if (dxf >= 90)\n        {\n          VALUE_RLd (color->rgb, dxf);\n          return;\n        }",
+          "count": 1
         }
       ]
     },
@@ -287,6 +322,95 @@
         {
           "before": "dwg->dwg_class[i].maint_version = bit_read_BS (&sec_dat);",
           "after": "dwg->dwg_class[i].maint_version = bit_read_BL (&sec_dat);",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "path": "src/bits.c",
+      "gitBlob": "30b2e9e486cf4e4887c802783a7d12d7fec60e33",
+      "replacements": [
+        {
+          "before": "  date.value = date.days + (date.ms * 1e-8);",
+          "after": "  /* TIMEBLL/TIMERLL store milliseconds since midnight, not decimal day digits. */\n  date.value = date.days + ((double)date.ms / 86400000.0);",
+          "count": 2
+        }
+      ]
+    },
+    {
+      "path": "src/header_variables.spec",
+      "gitBlob": "da34d2567fcf56d5d7a148485e61f7060d40768e",
+      "replacements": [
+        {
+          "before": "    if (!_obj->TDCREATE.days) {",
+          "after": "    if (!_obj->TDCREATE.days && _obj->TDUCREATE.days) {",
+          "count": 1
+        },
+        {
+          "before": "      _obj->TDCREATE.days  = _obj->TDUCREATE.days;\n      // adjust for timezone offset\n      _obj->TDCREATE.ms    = _obj->TDUCREATE.ms + off;\n      _obj->TDCREATE.value = _obj->TDCREATE.days + (_obj->TDCREATE.ms * 1e-8);",
+          "after": "      /* Normalize the signed timezone shift before assigning unsigned milliseconds. */\n      const int64_t tdcreate_ms = (int64_t)_obj->TDUCREATE.ms + off;\n      int64_t tdcreate_days = tdcreate_ms / 86400000;\n      if (tdcreate_ms < 0 && tdcreate_ms % 86400000)\n        tdcreate_days--;\n      _obj->TDCREATE.days = _obj->TDUCREATE.days + tdcreate_days;\n      _obj->TDCREATE.ms = (BITCODE_BL)(tdcreate_ms - tdcreate_days * 86400000);\n      _obj->TDCREATE.value = _obj->TDCREATE.days + ((double)_obj->TDCREATE.ms / 86400000.0);",
+          "count": 1
+        },
+        {
+          "before": "      _obj->TDUPDATE.days  = _obj->TDUUPDATE.days;\n      _obj->TDUPDATE.ms    = _obj->TDUUPDATE.ms + off;\n      _obj->TDUPDATE.value = _obj->TDUPDATE.days + (_obj->TDUPDATE.ms * 1e-8);",
+          "after": "      if (_obj->TDUUPDATE.days) {\n        /* Normalize the signed timezone shift before assigning unsigned milliseconds. */\n        const int64_t tdupdate_ms = (int64_t)_obj->TDUUPDATE.ms + off;\n        int64_t tdupdate_days = tdupdate_ms / 86400000;\n        if (tdupdate_ms < 0 && tdupdate_ms % 86400000)\n          tdupdate_days--;\n        _obj->TDUPDATE.days = _obj->TDUUPDATE.days + tdupdate_days;\n        _obj->TDUPDATE.ms = (BITCODE_BL)(tdupdate_ms - tdupdate_days * 86400000);\n        _obj->TDUPDATE.value = _obj->TDUPDATE.days + ((double)_obj->TDUPDATE.ms / 86400000.0);\n      }",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "path": "src/header_variables_r11.spec",
+      "gitBlob": "18a734e2ca3ebab205e92dbbcc52c9c750986766",
+      "replacements": [
+        {
+          "before": "    if (!_obj->TDUCREATE.days && dat->version >= R_13) {",
+          "after": "    if (!_obj->TDUCREATE.days && _obj->TDCREATE.days && dat->version >= R_13) {",
+          "count": 1
+        },
+        {
+          "before": "      _obj->TDUCREATE.days  = _obj->TDCREATE.days;\n      // adjust for timezone offset\n      _obj->TDUCREATE.ms    = _obj->TDUCREATE.ms - off;\n      _obj->TDUCREATE.value = _obj->TDUCREATE.days + (_obj->TDUCREATE.ms * 1e-8);",
+          "after": "      /* Normalize the signed timezone shift before assigning unsigned milliseconds. */\n      const int64_t tducreate_ms = (int64_t)_obj->TDCREATE.ms - off;\n      int64_t tducreate_days = tducreate_ms / 86400000;\n      if (tducreate_ms < 0 && tducreate_ms % 86400000)\n        tducreate_days--;\n      _obj->TDUCREATE.days = _obj->TDCREATE.days + tducreate_days;\n      _obj->TDUCREATE.ms = (BITCODE_BL)(tducreate_ms - tducreate_days * 86400000);\n      _obj->TDUCREATE.value = _obj->TDUCREATE.days + ((double)_obj->TDUCREATE.ms / 86400000.0);",
+          "count": 1
+        },
+        {
+          "before": "      _obj->TDUUPDATE.days  = _obj->TDUPDATE.days;\n      _obj->TDUUPDATE.ms    = _obj->TDUPDATE.ms - off;\n      _obj->TDUUPDATE.value = _obj->TDUPDATE.days + (_obj->TDUPDATE.ms * 1e-8);",
+          "after": "      if (_obj->TDUPDATE.days) {\n        /* Normalize the signed timezone shift before assigning unsigned milliseconds. */\n        const int64_t tduupdate_ms = (int64_t)_obj->TDUPDATE.ms - off;\n        int64_t tduupdate_days = tduupdate_ms / 86400000;\n        if (tduupdate_ms < 0 && tduupdate_ms % 86400000)\n          tduupdate_days--;\n        _obj->TDUUPDATE.days = _obj->TDUPDATE.days + tduupdate_days;\n        _obj->TDUUPDATE.ms = (BITCODE_BL)(tduupdate_ms - tduupdate_days * 86400000);\n        _obj->TDUUPDATE.value = _obj->TDUUPDATE.days + ((double)_obj->TDUUPDATE.ms / 86400000.0);\n      }",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "path": "src/dwg2.spec",
+      "gitBlob": "c23b82adc6767feb65921c659ec42c714201245d",
+      "replacements": [
+        {
+          "before": "FIELD_BS (b_prop1f_int, 0);",
+          "after": "FIELD_BS (b_prop1f_int, 176);",
+          "count": 1
+        },
+        {
+          "before": "FIELD_BS (b_prop21_int, 0);",
+          "after": "FIELD_BS (b_prop21_int, 176);",
+          "count": 1
+        },
+        {
+          "before": "DWG_OBJECT (TABLESTYLE)\n  HANDLE_UNKNOWN_BITS;\n  SUBCLASS (AcDbTableStyle)",
+          "after": "DWG_OBJECT (TABLESTYLE)\n  HANDLE_UNKNOWN_BITS;\n  DXF {\n    if (dwg->header.version > R_2007) {\n      if (_obj->numoverrides > 64 || (_obj->numoverrides && !_obj->overrides))\n        return DWG_ERR_VALUEOUTOFBOUNDS;\n      /* Application-defined native interchange data; regenerate from decoded DWG fields. */\n      VALUE_TFF (\"{JCAD_TABLESTYLE_NATIVE_V1\", 102);\n      VALUE_BL (_obj->unknown_bl1, 90);\n      VALUE_BL (_obj->unknown_bl2, 91);\n      FIELD_HANDLE (cellstyle, DWG_HDL_HARDOWN, 360);\n      VALUE_BL (_obj->numoverrides, 92);\n      for (BITCODE_BL jcad_override = 0; jcad_override < _obj->numoverrides; jcad_override++) {\n        VALUE_BL (_obj->overrides[jcad_override].key, 93);\n      }\n      VALUE_TFF (\"}\", 102);\n    }\n  }\n  SUBCLASS (AcDbTableStyle)",
+          "count": 1
+        },
+        {
+          "before": "    FIELD_BL (numoverrides, 0);\n    // FIXME style overrides for 0-6\n    if (FIELD_VALUE (numoverrides))\n      {\n        FIELD_BL (unknown_bl3, 0);\n        CellStyle_fields (ovr.cellstyle);\n        DXF { VALUE_TFF (\"CELLSTYLE_BEGIN\", 1) }\n        FIELD_BL0 (ovr.id, 90);\n        FIELD_BL0 (ovr.type, 91);\n        FIELD_T0 (ovr.name, 300);\n        DXF { VALUE_TFF (\"CELLSTYLE_END\", 309) }\n        LOG_WARN (\"TODO TABLESTYLE r2010+ missing fields\");\n      }",
+          "after": "    FIELD_BL (numoverrides, 0);\n    VALUEOUTOFBOUNDS (numoverrides, 64);\n    DECODER {\n      /* Five mandatory BL/BS fields consume at least ten main-stream bits per record.\n         The usual sizeof(type)-in-bits repeat heuristic rejects valid compact cell styles. */\n      if (AVAIL_BITS (dat) < 0 || (uint64_t)_obj->numoverrides * 10 > (uint64_t)AVAIL_BITS (dat)) {\n        _obj->numoverrides = 0;\n        RETURN_VALUEOUTOFBOUNDS;\n      }\n    }\n    REPEAT_C (numoverrides, overrides, Dwg_TABLESTYLE_CellStyle)\n    REPEAT_BLOCK\n      DECODER { if (!_obj->overrides) return DWG_ERR_OUTOFMEM; }\n      SUB_FIELD_BL (overrides[rcount1], key, 0);\n      CellStyle_fields (overrides[rcount1].cellstyle);\n      DXF { VALUE_TFF (\"CELLSTYLE_BEGIN\", 1) }\n      SUB_FIELD_BL0 (overrides[rcount1], id, 90);\n      SUB_FIELD_BL0 (overrides[rcount1], type, 91);\n      FIELD_T0 (overrides[rcount1].name, 300);\n      DXF { VALUE_TFF (\"CELLSTYLE_END\", 309) }\n      SET_PARENT_OBJ (overrides[rcount1]);\n      DECODER {\n        if (!rcount1) {\n          /* Scalar compatibility only: never alias owned strings or border arrays. */\n          _obj->unknown_bl3 = _obj->overrides[0].key;\n          _obj->ovr.id = _obj->overrides[0].id;\n          _obj->ovr.type = _obj->overrides[0].type;\n        }\n      }\n    END_REPEAT_BLOCK\n    END_REPEAT (overrides);",
+          "count": 1
+        },
+        {
+          "before": "\tDXF {\t\t\t\t\t\t\t\t\\\n\t  if (FIELD_VALUE (sty.borders[rcount2].index_mask))\t\t\\\n\t    {\t\t\t\t\t\t\t\t\\\n\t      SUB_FIELD_BL (sty.borders[rcount2],index_mask, 95);\t\\\n\t      VALUE_TFF (\"GRIDFORMAT\", 302);\t\t\t\t\\\n\t      VALUE_TFF (\"GRIDFORMAT_BEGIN\", 1);\t\t\t\\\n\t    }\t\t\t\t\t\t\t\t\\\n\t}\t\t\t\t\t\t\t\t\\\n",
+          "after": "\tDXF { \\\n\t  SUB_FIELD_BL (sty.borders[rcount2],index_mask, 95); \\\n\t  VALUE_TFF (\"GRIDFORMAT\", 302); \\\n\t  VALUE_TFF (\"GRIDFORMAT_BEGIN\", 1); \\\n\t} \\\n",
+          "count": 1
+        },
+        {
+          "before": "\tDXF { VALUE_TFF (\"GRIDFORMAT_END\", 309) }",
+          "after": "\tSET_PARENT (sty.borders[rcount2], &FIELD_VALUE (sty)); \\\n\tDXF { VALUE_TFF (\"GRIDFORMAT_END\", 309) }",
           "count": 1
         }
       ]

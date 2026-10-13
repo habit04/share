@@ -5,13 +5,13 @@
     "tag": "v0.7.14",
     "commit": "1dd682f46339f37b67c5ff1085d10d04a8c16d7e"
   },
-  "patchSha256": "3d346e6b394845ece1e7495171d39d06016c0bacf4514fd83ad4091cb48fc89b",
+  "patchSha256": "de07b26d5371f5807504c12a03faa34206745327faf2b71e100f444171f4a50b",
   "files": [
     {
       "path": "include/dwg.h",
       "beforeSha256": "5343c827df7c305ad21c3f534ced72a79f5885eb50119a25fb9ae40cf8a69696",
-      "afterSha256": "717114dc4bc732cef58eaa3eccb04b2285461047dc23df27a998f8a942453edd",
-      "replacements": 2
+      "afterSha256": "f5335fd2c5f42f9978cd1820e09e1e47f5a776911b4cd32d466a1476e9bff665",
+      "replacements": 4
     },
     {
       "path": "src/dwg.spec",
@@ -28,8 +28,8 @@
     {
       "path": "src/dynapi.c",
       "beforeSha256": "7f605d7de91f8a9e216a71cd40df8851930279b00a47afa754f0417d1a982f35",
-      "afterSha256": "7f889f4d0cf231c332a5bf7e8de7efa1f35ec9166dfce3f3ae77dfafeb4115a3",
-      "replacements": 2
+      "afterSha256": "150ab161b7f07aa4eca7fc0db11ddad12cee30e71f8c947fa9dace8162a400ac",
+      "replacements": 4
     },
     {
       "path": "test/unit-testing/mtext.c",
@@ -82,8 +82,8 @@
     {
       "path": "src/out_dxf.c",
       "beforeSha256": "91c12ce650f9c072b6e487418247bd8ed6075e55cfac0510d885faaf61b4f079",
-      "afterSha256": "0b9e9e3bc74f50c1271fb82a251e1da6542cf1f5f9039f2cbe956b0b028b561a",
-      "replacements": 4
+      "afterSha256": "a71f7f67c1a4db977cabcccb3fc511ad5774fe86dc0e391f78fc4fe631ccedf2",
+      "replacements": 7
     },
     {
       "path": "src/header_variables_dxf.spec",
@@ -96,6 +96,30 @@
       "beforeSha256": "f7e0c5b8620001801e84e8e7cae93d16957920ba0db6560f13ac623442e1fb76",
       "afterSha256": "652e1cfb470996dc9cc486f27ef5dd045ed6e1c3ef3891a725fc904c275fd793",
       "replacements": 2
+    },
+    {
+      "path": "src/bits.c",
+      "beforeSha256": "64a6025d323d78f90348ca8ca477a1a77a4d77972df33cb94513993539184bcb",
+      "afterSha256": "6f6d03075b86bac9bc66fce9353fe9e9c2ac65732ed19cb95cc88d1f91a4ff83",
+      "replacements": 2
+    },
+    {
+      "path": "src/header_variables.spec",
+      "beforeSha256": "129251c47997c7be273b2264bbeff1e3526a6e88dd2310742efc9375dc7b3f58",
+      "afterSha256": "e90f4fd3798e98debde513aa5b5a611efe1ffb4323643f9f5745a7f54674e54b",
+      "replacements": 3
+    },
+    {
+      "path": "src/header_variables_r11.spec",
+      "beforeSha256": "3cd32295da413cbd77b3d32d3e4faf333bf7753b97b609977db41f006c793ed0",
+      "afterSha256": "0ef0ac122c2b5eb9136c9ce98fd8b7fb253d8c6a4d6a132e02843fadd9a6a3ed",
+      "replacements": 3
+    },
+    {
+      "path": "src/dwg2.spec",
+      "beforeSha256": "2bb3602b2867277868ebb488ea236b07d7cdf605128987f767114d68dd501499",
+      "afterSha256": "b314ff4ca8912ad0438d161fb01a497a7a131efeffd714b4361c75b0fcf743ab",
+      "replacements": 6
     }
   ]
 }

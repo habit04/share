@@ -92,22 +92,24 @@
       "nativeClassCount": 13,
       "classOracleVerified": true,
       "sourceDxfSha256": "2630c55169a36ed81951e132b3a946feb57426197e64d4e5747c3bde6821dcad",
-      "declaredClassCount": 12
+      "declaredClassCount": 12,
+      "sourceScalarOracleVerified": true,
+      "sourceTableStyleOracleVerified": true
     }
   },
   "workflow": {
     "repository": "habit04/share",
-    "commit": "67414a4a350767d422e959e62f84ff0bdf742fae",
-    "runId": "38331882379",
+    "commit": "a807d7d64811bd9be6c153cb07f35834704806d6",
+    "runId": "38338479231",
     "runAttempt": "1"
   },
   "patchedFiles": [
     {
       "path": "include/dwg.h",
       "beforeSha256": "5343c827df7c305ad21c3f534ced72a79f5885eb50119a25fb9ae40cf8a69696",
-      "afterSha256": "717114dc4bc732cef58eaa3eccb04b2285461047dc23df27a998f8a942453edd",
-      "replacements": 2,
-      "builtSourceSha256": "717114dc4bc732cef58eaa3eccb04b2285461047dc23df27a998f8a942453edd"
+      "afterSha256": "f5335fd2c5f42f9978cd1820e09e1e47f5a776911b4cd32d466a1476e9bff665",
+      "replacements": 4,
+      "builtSourceSha256": "f5335fd2c5f42f9978cd1820e09e1e47f5a776911b4cd32d466a1476e9bff665"
     },
     {
       "path": "src/dwg.spec",
@@ -126,9 +128,9 @@
     {
       "path": "src/dynapi.c",
       "beforeSha256": "7f605d7de91f8a9e216a71cd40df8851930279b00a47afa754f0417d1a982f35",
-      "afterSha256": "7f889f4d0cf231c332a5bf7e8de7efa1f35ec9166dfce3f3ae77dfafeb4115a3",
-      "replacements": 2,
-      "builtSourceSha256": "7f889f4d0cf231c332a5bf7e8de7efa1f35ec9166dfce3f3ae77dfafeb4115a3"
+      "afterSha256": "150ab161b7f07aa4eca7fc0db11ddad12cee30e71f8c947fa9dace8162a400ac",
+      "replacements": 4,
+      "builtSourceSha256": "150ab161b7f07aa4eca7fc0db11ddad12cee30e71f8c947fa9dace8162a400ac"
     },
     {
       "path": "test/unit-testing/mtext.c",
@@ -189,9 +191,9 @@
     {
       "path": "src/out_dxf.c",
       "beforeSha256": "91c12ce650f9c072b6e487418247bd8ed6075e55cfac0510d885faaf61b4f079",
-      "afterSha256": "0b9e9e3bc74f50c1271fb82a251e1da6542cf1f5f9039f2cbe956b0b028b561a",
-      "replacements": 4,
-      "builtSourceSha256": "0b9e9e3bc74f50c1271fb82a251e1da6542cf1f5f9039f2cbe956b0b028b561a"
+      "afterSha256": "a71f7f67c1a4db977cabcccb3fc511ad5774fe86dc0e391f78fc4fe631ccedf2",
+      "replacements": 7,
+      "builtSourceSha256": "a71f7f67c1a4db977cabcccb3fc511ad5774fe86dc0e391f78fc4fe631ccedf2"
     },
     {
       "path": "src/header_variables_dxf.spec",
@@ -206,6 +208,34 @@
       "afterSha256": "652e1cfb470996dc9cc486f27ef5dd045ed6e1c3ef3891a725fc904c275fd793",
       "replacements": 2,
       "builtSourceSha256": "652e1cfb470996dc9cc486f27ef5dd045ed6e1c3ef3891a725fc904c275fd793"
+    },
+    {
+      "path": "src/bits.c",
+      "beforeSha256": "64a6025d323d78f90348ca8ca477a1a77a4d77972df33cb94513993539184bcb",
+      "afterSha256": "6f6d03075b86bac9bc66fce9353fe9e9c2ac65732ed19cb95cc88d1f91a4ff83",
+      "replacements": 2,
+      "builtSourceSha256": "6f6d03075b86bac9bc66fce9353fe9e9c2ac65732ed19cb95cc88d1f91a4ff83"
+    },
+    {
+      "path": "src/header_variables.spec",
+      "beforeSha256": "129251c47997c7be273b2264bbeff1e3526a6e88dd2310742efc9375dc7b3f58",
+      "afterSha256": "e90f4fd3798e98debde513aa5b5a611efe1ffb4323643f9f5745a7f54674e54b",
+      "replacements": 3,
+      "builtSourceSha256": "e90f4fd3798e98debde513aa5b5a611efe1ffb4323643f9f5745a7f54674e54b"
+    },
+    {
+      "path": "src/header_variables_r11.spec",
+      "beforeSha256": "3cd32295da413cbd77b3d32d3e4faf333bf7753b97b609977db41f006c793ed0",
+      "afterSha256": "0ef0ac122c2b5eb9136c9ce98fd8b7fb253d8c6a4d6a132e02843fadd9a6a3ed",
+      "replacements": 3,
+      "builtSourceSha256": "0ef0ac122c2b5eb9136c9ce98fd8b7fb253d8c6a4d6a132e02843fadd9a6a3ed"
+    },
+    {
+      "path": "src/dwg2.spec",
+      "beforeSha256": "2bb3602b2867277868ebb488ea236b07d7cdf605128987f767114d68dd501499",
+      "afterSha256": "b314ff4ca8912ad0438d161fb01a497a7a131efeffd714b4361c75b0fcf743ab",
+      "replacements": 6,
+      "builtSourceSha256": "b314ff4ca8912ad0438d161fb01a497a7a131efeffd714b4361c75b0fcf743ab"
     }
   ],
   "assets": [
@@ -216,8 +246,8 @@
     },
     {
       "path": "factory/libredwg-web.wasm",
-      "bytes": 10831130,
-      "sha256": "e93b4201a36f04f02ce537302248da1d6a0c7153f6b3a862a925eabc7d7a3c90"
+      "bytes": 10846223,
+      "sha256": "26b3c4bd76ee3bd5da0bfd47eedaf8e9a8ae38cac5a2c4625e973ed2c299bf2e"
     },
     {
       "path": "factory/package.json",
@@ -226,8 +256,8 @@
     },
     {
       "path": "modified-source.tar.gz",
-      "bytes": 24729573,
-      "sha256": "a155dade7ef6a18ac610ade9c58f990570a675ce2d614055d6bdbdf92743fb4a"
+      "bytes": 24730063,
+      "sha256": "96d407e96047237200360b1669768f80aaffbb003c34c6fe57228fc4cd345d5a"
     },
     {
       "path": "COPYING",
@@ -241,13 +271,13 @@
     },
     {
       "path": "mtext-background-scale.patch.json",
-      "bytes": 31284,
-      "sha256": "3d346e6b394845ece1e7495171d39d06016c0bacf4514fd83ad4091cb48fc89b"
+      "bytes": 43617,
+      "sha256": "de07b26d5371f5807504c12a03faa34206745327faf2b71e100f444171f4a50b"
     },
     {
       "path": "README.md",
-      "bytes": 18003,
-      "sha256": "f0612cf9be9b8276a1af325260edfc0b9bdd921fcc72d82dfe4487f6424d25a5"
+      "bytes": 22359,
+      "sha256": "e161889f036fe4f25b6f28f854b548e8354a2f7dde95d87c8707edeb1ddf9fa1"
     },
     {
       "path": "patch-source.mjs",
@@ -266,33 +296,33 @@
     },
     {
       "path": "validate-metadata-fixture.mjs",
-      "bytes": 20760,
-      "sha256": "23e5a16ec42ba517f2a9c899a000a9f606745aa0e447b0171f899830af81be25"
+      "bytes": 45947,
+      "sha256": "f9ee9e288a10f1839c85e84c22af5e2f563a044fb0423a4722927eaf58602382"
     },
     {
       "path": "write-provenance.mjs",
-      "bytes": 10267,
-      "sha256": "cfcb9e00090b9d5a64293514cbc8c8e8fb49ee9530cde7911d721e12841d64d1"
+      "bytes": 10666,
+      "sha256": "5e2b8aeafdd440048cbe47e0f4373e82cef510c0bcff9c09acb1e1f90813e69b"
     },
     {
       "path": "patch-report.json",
-      "bytes": 4189,
-      "sha256": "4f44f46183c7ea2bbf1efdc944c71cd3dd9e871eef51c7e2e7b3b91d17e6ff80"
+      "bytes": 5202,
+      "sha256": "0d68cab80406fa47b6e2b60247498bbef81cf55c684392ab27e8cb213121b330"
     },
     {
       "path": "fixture-report.json",
       "bytes": 2904,
-      "sha256": "871e01cdadeef313ae7f26de38a8bd6f180364b51d0731c4375d5ec53552eea0"
+      "sha256": "b451e65ea62e4ef63559c04b9e47c65339c392448e1d73cefe966611714293fb"
     },
     {
       "path": "appearance-report.json",
       "bytes": 34314,
-      "sha256": "76511005f6e9407f5b2d426f2cfd534b65843cbbbf85b6178e06fc0371f096f3"
+      "sha256": "8e4b2811235bc306c8e1348d67a17b9506e02056d3b08436bae9cd2368868b43"
     },
     {
       "path": "metadata-report.json",
-      "bytes": 45957,
-      "sha256": "382ef26b4b4f092656fdb034f24eff3ddb5a660da3f7b49965344193c9866f97"
+      "bytes": 335450,
+      "sha256": "c1dc3c7318a5e95ffc2aab05554eed42cedf694e2f386f8bc08e6e9838b8c56f"
     },
     {
       "path": "declaration-tools/package.json",

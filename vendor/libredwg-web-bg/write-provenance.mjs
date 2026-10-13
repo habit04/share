@@ -4,7 +4,7 @@ import { readFile, writeFile, copyFile, lstat, mkdir } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pins, sha256, validatePatchedSource } from './patch-source.mjs';
-import { validateMetadataReport } from './validate-metadata-fixture.mjs';
+import { validateMetadataReport, loadNativeDateOracle } from './validate-metadata-fixture.mjs';
 import { validateBookColorProjectionReport } from './validate-appearance-fixture.mjs';
 
 const [sourceArg, sdkArg, artifactArg] = process.argv.slice(2);
@@ -46,7 +46,9 @@ assert.match(metadataExpected.source?.software || '', /AutoCAD/);
 assert.deepEqual(metadataExpected.source?.audit, { errors: 0, fixed: 0 });
 assert.equal(metadata.fixtureSha256, sha256(metadataFixture));
 assert.equal(metadata.expectedSha256, sha256(Buffer.from(metadataExpectedBytes.toString('utf8').replace(/\r\n/g, '\n'))));
-validateMetadataReport(metadata, metadataExpected);
+const metadataOriginalDxf = await readFile(resolve(here, '../..', pins.metadataFixture.replace(/\.dwg$/i, '.dxf')), 'utf8');
+const nativeDateOracle = await loadNativeDateOracle(resolve(here, '../..', pins.metadataExpected), metadataExpected.source.dwgSha256);
+validateMetadataReport(metadata, metadataExpected, metadataOriginalDxf, nativeDateOracle);
 assert.equal(metadata.classProjectionVerified, true, 'Every stored native CLASS definition must be exposed and checked.');
 const packageManifest = JSON.parse(await readFile(join(source, 'bindings/javascript/package.json'), 'utf8'));
 for (const filename of ['pins.json', 'mtext-background-scale.patch.json', 'README.md', 'patch-source.mjs', 'validate-fixture.mjs', 'validate-appearance-fixture.mjs', 'validate-metadata-fixture.mjs', 'write-provenance.mjs']) await copyFile(join(here, filename), join(artifact, filename));
@@ -80,7 +82,8 @@ const provenance = {
     metadata: { report: 'metadata-report.json', fixtureSha256: metadata.fixtureSha256, expectedSha256: metadata.expectedSha256, nativeError: 0, writeError: 0, complete: true, recordCount: metadata.records.length, maxOutputBytes: metadata.maxOutputBytes, limitedOutputRejected: true,
       classProjectionVerified: true, nativeClassCount: metadata.nativeClassCount,
       classOracleVerified: true, sourceDxfSha256: metadata.sourceDxfSha256,
-      declaredClassCount: metadata.declaredClassCount } },
+      declaredClassCount: metadata.declaredClassCount, sourceScalarOracleVerified: true,
+      sourceTableStyleOracleVerified: true } },
   workflow: { repository: process.env.GITHUB_REPOSITORY || '', commit: process.env.GITHUB_SHA || '', runId: process.env.GITHUB_RUN_ID || '', runAttempt: process.env.GITHUB_RUN_ATTEMPT || '' },
   patchedFiles: await Promise.all(patchReport.files.map(async (file) => ({ ...file, builtSourceSha256: sha256(await readFile(join(source, file.path))) }))),
   assets,

@@ -114,6 +114,14 @@ inventory before exporting metadata. The original AutoCAD DXF CLASS definitions
 are checked separately from the native copied values, so a decoder and projection
 agreeing on the same corrupt flags does not pass the acceptance gate.
 
+CLASS group 91 is the cached or derived instance count, rather than a class
+schema field. AutoCAD DXFOUT materializes the TABLESTYLE's inline CELLSTYLEMAP
+as a separate object: the independent Unicode fixture has a native cached
+count of 0 and a DXF count of 1. The copied native getter and C projection must
+still agree exactly on group 91. The independent class oracle compares every
+other group exactly and reports these count differences explicitly as
+`classCountDifferences`; it does not replace source fixture counts.
+
 CMC color-book components from R2007+ are already converted from UTF-16 to UTF-8
 when joined. Their DXF output now uses the UTF-8 path directly, preserving the
 original Unicode name instead of interpreting its bytes again as a legacy code
@@ -239,6 +247,54 @@ specified DXF spelling is the only name alias in this gate. No class pointer lea
 The report retains both the copied native values and projected class groups; provenance requires
 their verification before accepting the factory/WASM pair. This does not certify unexposed
 class-maintenance/version fields or opaque native object bytes.
+
+The native date projection uses Julian days plus milliseconds divided by 86,400,000.
+Both compacted TIMEBLL and uncompressed TIMERLL readers follow that unit. Derived local/UTC
+dates normalize signed timezone shifts across midnight before storing unsigned milliseconds;
+an absent source date remains absent. The pre-R13 reverse conversion takes milliseconds from
+the actual local source date. These changes prevent the verified 32-bit underflow which turned
+UTC 01:17:54 into a local creation date 42 days in the future.
+
+Header colors serialize method C0 as ByLayer 256 and C1 as ByBlock 0; method C3 recovers
+the packed ACI when the native index is 0/256. Ordinary CMC ACI groups also serialize C0/C1
+as ByLayer/ByBlock. DIMSTYLE color groups 176–178 serialize ByLayer, ByBlock and indexed colors as ACI; other CMC groups retain
+their existing packed representation. The two omitted VISUALSTYLE property selectors now emit
+group176, restoring the independently exported 58-property sequence. Every additional native
+file has a complete pinned Git-blob preimage and repeated patch application is refused.
+
+Modern TABLESTYLE decoding retains the complete ordered override array and each stored key,
+including all three independently materialized TITLE/HEADER/DATA formats in the source fixtures.
+The decoder bounds the array to 64 elements, checks the minimum available bit budget before
+allocation, and frees each owned name, nested border array and override exactly once. The old
+embedded first-override convenience field copies scalars only. Zero-mask border slots keep their
+explicit GRIDFORMAT framing and decoded border parent links.
+
+The private native interchange projection emits a standard application-defined braced group102
+block `{JCAD_TABLESTYLE_NATIVE_V1` immediately before `AcDbTableStyle`. It contains group90
+`unknown_bl1`, group91 `unknown_bl2`, hard-owned group360 `cellstyle` (including 0), group92 the
+override count, ordered group93 override keys, then group102 `}`. Existing group70 retains the
+byte flag. This extension records stored fields absent from the ordinary DXF projection; it is
+regenerated from decoded native fields on every read, and requires no APPID. It does not infer
+keys from style identities or copy retained wrapper text into the native proof.
+
+The independent source gate compares stored UTC dates and timers against the DWG-hash-bound
+`native-dwg-date-oracle.json`. Its reproducible C# command reads detached AutoCAD databases on
+isolated copies without saving, captures exact DateTime/TimeSpan ticks, and verifies unchanged
+original/copy hashes. AutoCAD DATE uses the calendar Julian day number at midnight plus the
+day fraction. Derived host-local dates are checked using the reported timezone. The Unicode
+DWG's later update clock and four-second stored timer reflect a save after its companion DXF;
+both source clocks are recorded, and no date comparison is waived.
+
+Header ACI colors, declared DIMSTYLE colors, all 58 VISUALSTYLE selectors and their complete
+property sequence, and every ordered TABLESTYLE format match the original AutoCAD DXF. The gate reports
+explicit ByBlock-zero DIMSTYLE defaults omitted by DXFOUT, host timezone offset, and the pinned
+VISUALSTYLE binary lighting representation 2 versus AutoCAD's DXF representation 3. Color
+comparison uses the exact RGB bytes when a C2 packed method and its ordinary DXF RGB represent
+the same color; its fallback ACI is retained in the report. Source-to-output postflight retains
+its strict native representation comparison. TABLESTYLE headers, counts, keys and style identities
+also match copied typed native getters. Offline provenance/adoption rechecks the captured scalar
+and style records against the local original DXF, including its committed SHA256; a verification
+boolean alone cannot satisfy these gates.
 
 ## License and primary sources
 
