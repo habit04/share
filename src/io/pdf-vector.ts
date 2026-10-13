@@ -768,7 +768,7 @@ class PageWriter {
     const text = expandControlCodes(raw);
     if (!text.trim()) return;
     const r = textRenderer(textStyleOf(e), this.ctx.textStyles);
-    const initialWidthFactor = (e.widthFactor && e.widthFactor > 0 ? e.widthFactor : 1) * r.widthFactor;
+    const initialWidthFactor = e.widthFactor !== undefined && Number.isFinite(e.widthFactor) && e.widthFactor > 0 ? e.widthFactor : r.widthFactor;
     e = placedText({ ...e, widthFactor: initialWidthFactor }, r.kind === 'canvas' && isWinAnsi(text) ? (_text, height) => helveticaWidth(text, r.bold || !!e.bold) * height / CAP_HEIGHT_EM : strokeTextWidth);
     const wf = e.widthFactor ?? 1;
     const oblique = e.oblique ?? r.oblique;
