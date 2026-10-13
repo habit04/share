@@ -13,6 +13,11 @@ messages). The date of each version is the date of the commit that set that vers
 
 ### Added
 
+- Native DXF complex linetypes retain ordered text/shape descriptors, literal padded text,
+  flags, radians, scales/offsets and remapped STYLE links. Anonymous/unused shape-file resources
+  survive export and linetype purge. Missing/malformed resources refuse saving; DWG conversion
+  is guarded until verified. Embedded text/shape display remains a reported dash fallback.
+
 - Windows installed TrueType metrics use bounded background workers and a per-drawing context
   for Canvas painting, text bounds/selection, wrapping, masks, annotation fitting and raster plots.
   Native height, bearings, FIT/ALIGNED and verified vertical placement replace stroke measurements.
@@ -48,6 +53,10 @@ messages). The date of each version is the date of the commit that set that vers
   report a plotting error instead of emitting corrupt shading matrices.
 
 ### Fixed
+
+- Canvas linetypes follow signed lengths, merging consecutive gaps/dashes without inverting
+  the next repetition. Leading gaps, dots and terminal dashes keep their phase; positive-only
+  patterns no longer invent spaces. Standard patterns and the visibility threshold remain compatible.
 
 - Installed TrueType MTEXT uses glyph ink for wrapping and attachment while retaining independent
   pen advances. Default line anchors include bearings and vertical descenders; explicit paragraph
