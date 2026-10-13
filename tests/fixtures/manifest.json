@@ -2,6 +2,9 @@
   "schemaVersion": 1,
   "description": "Required committed regression inputs. Optional private customer files and external AutoCAD results are deliberately outside this inventory.",
   "files": [
+    "tests/fixtures/interchange/r2018-shx-text.dxf",
+    "tests/fixtures/shx/jcad-test-font.shp",
+    "tests/fixtures/shx/jcad-test-shapes.shp",
     "tests/fixtures/interchange/r2018-complex-linetypes.dxf",
     "tests/fixtures/interchange/r2018-font-metrics.dxf",
     "tests/fixtures/interchange/r2018-gradient-hatches.dxf",
