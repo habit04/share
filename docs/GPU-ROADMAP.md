@@ -6,7 +6,11 @@ head `a0eea698e4af721b7fd0fb4199534d2c9ec46290` with pinned
 [PR #11](https://github.com/habit04/share/pull/11) head
 `3ce7e10a8aade41407c0b38f07b52c113225bbcd`. The local merge is `8e78a036`;
 `a481a48e` adds integrated Windows CI checks. Both source heads passed their
-exact-head CI; **integration CI and experimental integration validation are pending**.
+exact-head CI. Combined source `4bad60b2` passed local ordinary/experimental checks,
+both adapter benchmarks and native cached-scene recovery; its exact-head
+[PR CI passed](https://github.com/habit04/share/actions/runs/38350338690).
+The candidate is [draft PR #12](https://github.com/habit04/share/pull/12), stacked
+on PR #10; every subsequent candidate still requires its own exact-head CI.
 Canvas remains the ordinary renderer. Feature branches are review candidates;
 completion here does not authorize a release, default switch or merge.
 
@@ -14,10 +18,10 @@ completion here does not authorize a release, default switch or merge.
 
 | Stage | Current evidence and ownership | Gate before completion |
 | --- | --- | --- |
-| 1. GPU diagnostics | Implemented initially at `16abc740`; PR #10 adds bounded collection and clipboard-completion repairs. The integrated ordinary Windows build passed collector/About/copy/report checks locally. Adapter activity and unavailable/software states remain explicit. Intel and NVIDIA evidence are recorded below with their source commits. | Exact integration CI must pass. Missing adapter data must stay Unknown; capabilities must remain distinct from the renderer actually in use. Stable-branch integration still requires separate approval. |
-| 2. Experimental 2D/simple 3D | The prototype at `2fbae728` and PR #10's pan-cache/recovery milestone have successful source CI. Lines/curves, complete-view Canvas fallback, context recovery and the isolated mesh demo exist. See [prototype evidence](GPU-RENDERER-PROTOTYPE.md). | Keep the development flag. Experimental build, native failure/unavailable-device probes and benchmarks are pending on the combined branch. Record source SHA, viewport, actual adapter/limits, CPU preparation/submission, completion observations and drawing differences before interpreting speed. |
-| 3. Remaining 2D/reliability | Partly complete: PR #11's validated batch is integrated locally, with seven real Windows batch checks passed. The [remaining checklist](REMAINING-2D-CHECKLIST.md) stays open with its active owners. DWG graph/reader/writer work remains owned by [PR #9](https://github.com/habit04/share/pull/9), whose published `a320ee2d` CI failed. | Each remaining fix needs regression and relevant import-edit-save-reopen evidence. Require metadata, undo/dirty state, backups/recovery and exact integration CI. Complete the PR #9 transaction/codec review and independent native preservation gates below; a signed-helper-only workflow does not prove an installed application. |
-| 4. Production GPU renderer | Incomplete. Bounded pan caching, diagnostics liveness, Canvas restoration repaint and native recovery/unavailability passed on the PR #10 source. NVIDIA RTX A3000 benchmark and native recovery passed on that pinned source. Combined experimental validation, zoom, broad entity/style coverage, PR #9 integration and additional consumer hardware coverage remain open. | Pass every production gate below on the combined, corrected 2D baseline before considering a default change. |
+| 1. GPU diagnostics | Implemented initially at `16abc740`; PR #10 adds bounded collection and clipboard-completion repairs. Combined source `4bad60b2` passed collector/About/copy/report checks and exact-head CI. Adapter activity and unavailable/software states remain explicit. Intel and NVIDIA evidence are recorded below with their source commits. | Require exact CI for each new candidate. Missing adapter data must stay Unknown; capabilities must remain distinct from the renderer actually in use. Stable-branch integration still requires separate approval. |
+| 2. Experimental 2D/simple 3D | The prototype at `2fbae728` and PR #10's pan-cache/recovery milestone have successful source CI. Combined source `4bad60b2` passed both builds, native failure/unavailability, benchmarks and the existing isolated demo checks. See [prototype evidence](GPU-RENDERER-PROTOTYPE.md). | Keep the development flag. Repeat these checks on each changed renderer candidate. Record source SHA, viewport, actual adapter/limits, CPU preparation/submission, completion observations and drawing differences before interpreting speed. |
+| 3. Remaining 2D/reliability | Partly complete: PR #11's pinned batch is integrated in draft PR #12, with seven real Windows batch checks and exact source CI passed. The [remaining checklist](REMAINING-2D-CHECKLIST.md) stays open with its active owners. DWG graph/reader/writer work remains owned by [PR #9](https://github.com/habit04/share/pull/9), whose published `b3ddf85a` CI failed. | Each remaining fix needs regression and relevant import-edit-save-reopen evidence. Require metadata, undo/dirty state, backups/recovery and exact integration CI. Complete the PR #9 transaction/codec review and independent native preservation gates below; a signed-helper-only workflow does not prove an installed application. |
+| 4. Production GPU renderer | Incomplete. The corrected first 2D batch plus bounded pan caching, diagnostics, 254-entity cached Canvas recovery and unavailable-context fallback passed on combined source `4bad60b2`. Intel UHD and NVIDIA RTX A3000 benchmarks/native failures passed. Current work is limited to item 4: bounded zoom/redraw caching and separate preparation/upload/completed-frame metrics, then incremental block/text, dimension and common-hatch coverage. Broad compatibility, PR #9 integration and more hardware remain open. | Pass every production gate below before considering a default change. Canvas stays default; no general performance or untested hardware claim. |
 | 5. Full 3D development | Already begun on `share/feature/3d-development`, `0f644a7`; [CI passed](https://github.com/habit04/share/actions/runs/38336811063). A separate Open CASCADE/three.js application also exists in [habit04/jcad-3d](https://github.com/habit04/jcad-3d), `c3802fc`, with [successful CI](https://github.com/habit04/jcad-3d/actions/runs/38202841903). | Resolve which architecture owns future 3D integration. Require direct modeling, selection/snapping, dimensions, undo and persistent save/reopen/recovery evidence for the chosen track. Keep stable public 2D independent. Embedded 3D status/validation: [3D-STATUS](https://github.com/habit04/share/blob/feature/3d-development/docs/3D-STATUS.md); separate-app limits: [NOT-TESTED](https://github.com/habit04/jcad-3d/blob/main/docs/NOT-TESTED.md). |
 
 The [October 11 remediation record](REVIEW-FIXES.md) tracks the original **53
@@ -152,12 +156,13 @@ Canvas, diagnostics copying and problem-report checks passed. All seven
 `e2e-2d-batch` checks passed: polygon paper-space editing/undo and native DXF
 save/reopen with exact backup bytes; safe DWG clip refusal; TEXT/ATTDEF/ATTRIB
 overrides; manual MTEXT flow; and distinct Unicode files/backups. These are local
-results. Both ordinary and experimental integration builds passed. **Native
-failure/unavailable-device probes, benchmark artifacts and exact integration CI
-remain pending.**
+results. Both ordinary and experimental integration builds passed. The later
+`4bad60b2` source's cached native probes, unavailable-context test, paired
+benchmarks and exact-head CI passed, as recorded below.
 
-PR #9 remains an owner-managed dependency. At published head `a320ee2d`,
-[CI failed](https://github.com/habit04/share/actions/runs/38344080551) in unit,
+PR #9 remains an owner-managed dependency. At published head `b3ddf85a`,
+[PR CI failed](https://github.com/habit04/share/actions/runs/38347152610) and
+[push CI failed](https://github.com/habit04/share/actions/runs/38347148163) in unit,
 UI and Windows Electron checks. Its successful installer workflow ran only the
 signed portable-helper job; application build, smoke, artifact verification and
 release jobs were skipped. PR #9 and PR #11 share 14 files, including the same
@@ -166,7 +171,67 @@ reconciliation and edit-intent forwarding through both PR #11 transaction scopes
 (`commitTransition`/`transactDrawing`). Require owner-completed native repairs,
 deliberate codec/transaction review and fresh combined tests for clips, dimension
 overrides through DWG, saving/backups/recovery and both build modes. Keep DWG clip
-refusal until native pointer ownership is independently proven.
+refusal until native pointer ownership is independently proven. The owner's
+reported six generated save inputs and independent postflight do not replace
+successful combined CI, packaged save/backup/reopen or a fresh Windows installer
+check without AutoCAD installed; those remain separate gates.
+
+### Combined cached-recovery and performance baseline
+
+Clean source `4bad60b2f2fac8c2676d704f2f07f45d1076b431` passed 2,514 regression
+tests with 27 conditional skips, all three typecheck targets, lint, fixtures,
+workflow checks and both builds. Real ordinary-build default Canvas/LINE/no
+prototype controls, diagnostics/clipboard/report and all seven native 2D batch
+checks passed. Its exact-head [PR CI](https://github.com/habit04/share/actions/runs/38350338690)
+passed all five jobs. CI now exercises the larger `--cached-scene` native fixture
+on future candidates.
+
+The detached Canvas scene cache now owns loss/restoration listeners. A lost
+bitmap is retired immediately and cannot be copied into the main view. The 14
+viewport regressions cover independently lost caches, stale callbacks, latest
+document/view/overlay, replacement ownership, copy failures and disposal.
+
+Both native probes warmed and proved real reuse of a 254-entity bitmap before
+terminating only the GPU child identified twice by the private app's PID and
+creation time. Actual WebGL strings before and after replacement established
+Intel UHD `0x4688`/driver `32.0.101.7088` and NVIDIA RTX A3000
+`0x24b9`/driver `32.0.15.9671`, respectively. Both main and cache contexts lost;
+the retired cache was discarded, a healthy current replacement appeared, and
+complete Canvas repaint preceded WebGL restoration. On Intel, automatic repaint
+was observed at 1,642.5 ms vs WebGL restoration at 2,123.2 ms; on NVIDIA, 1,773.4
+vs 2,239.5 ms. These times are relative to the probe's observation clock and
+include process/driver recovery. They do not claim uninterrupted rendering or
+native cache-only loss coverage. Both pixelmatch difference and bidirectional
+two-pixel miss were zero; raw channel differences were 213 and 205. LINE and
+private 255-entity DXF save/reopen passed. Evidence:
+[Intel](benchmarks/windows-gpu-integration-intel-process.json) and
+[NVIDIA](benchmarks/windows-gpu-integration-nvidia-process.json).
+
+The unavailable-context probe observed actual null WebGL/WebGL2 contexts. Small
+and 6,500-entity mixed drawings fell back to complete Canvas with every channel
+equal; LINE and private 6,501-entity DXF save/reopen passed. See
+[unavailable evidence](benchmarks/windows-gpu-integration-unavailable.json).
+
+The baseline benchmarks ran sequentially with our own tests/builds paused on
+Windows kernel `10.0.26200`, Electron `44.7.0` / Chromium `152.0.7977.130`,
+1216 x 552 CSS pixels, DPR 1. Other user/system activity and OS caches remained
+uncontrolled. The old harness's first render was already warmed by `setMode`;
+it must not be interpreted as cold preparation or upload evidence.
+
+| Dense 38,000-wire workload, 30 moving frames | Intel Canvas | Intel GPU | NVIDIA Canvas | NVIDIA GPU |
+| --- | ---: | ---: | ---: | ---: |
+| Pan: render plus completion median | 49.6 ms | 11.1 ms | 58.8 ms | 6.8 ms |
+| Combined pan/zoom: render plus completion median | 51.9 ms | 78.7 ms | 63.4 ms | 81.0 ms |
+
+GPU pan CPU submission was 0.6 ms on both adapters, with zero uploads in all 30
+pan samples. Curves/precision pixelmatch differences were 0.006%, dense geometry
+3.335%, and mixed fallback exactly zero; all centered/panned two-pixel coverage
+misses were zero. Selection/grips, two real WebGL context cycles, existing demo
+checks and resource disposal passed. See [Intel benchmark](benchmarks/windows-gpu-integration-intel-comparison.json)
+and [NVIDIA benchmark](benchmarks/windows-gpu-integration-nvidia-comparison.json).
+Fence observations and Canvas flushes are wall measurements, not pure GPU time
+or desktop presentation. These establish a baseline to improve zoom, not a
+general speed gain or production completion.
 
 ### NVIDIA validation on the pinned GPU source
 
@@ -198,8 +263,8 @@ Missing or anomalous vendor metadata is not inferred from a preference request.
 
 ## Production gates still open
 
-1. **Correct 2D baseline:** complete the remaining owned checklist and validate
-   the pinned PR #10/PR #11 combination. Integrate PR #9 only after its owner
+1. **Correct 2D baseline:** the pinned PR #10/PR #11 combination passed locally
+   and in exact source CI; complete the remaining owned checklist. Integrate PR #9 only after its owner
    finishes native preservation and the shared transaction/codec review above.
 2. **Renderer coverage:** text/fonts, hatches, blocks, images, dimensions,
    linetypes/weights, layouts, grids, underlays and active editing need faithful
@@ -216,13 +281,15 @@ Missing or anomalous vendor metadata is not inferred from a preference request.
 5. **Graphics failure:** directly test context loss, repeated restore, resource
    disposal and unsupported devices. One private native GPU-process termination
    and explicit context unavailability passed on Delly; driver resets, persistent
-   failures, larger cached native scenes and more runtimes still require evidence.
+   failures and more runtimes still require evidence. The 254-entity cached native
+   scene passed on both adapters in combined source `4bad60b2`; native cache-only
+   loss remains unobserved, while selective cache loss is covered by regressions.
    Forced WebGL loss and mocks alone do not prove these cases. A failed graphics
    path must return to usable Canvas without changing drawings.
 6. **Integration evidence:** full regressions, both builds, Windows interaction,
    save/reopen and exact-commit CI must pass on the final integrated candidate.
-   Local ordinary-build integration checks have passed; experimental integration
-   checks and exact integration CI are pending. Obtain separate approval before
+   Ordinary/experimental integration checks and exact source CI passed at
+   `4bad60b2`; repeat them for each new renderer candidate. Obtain separate approval before
    switching the default, merging or deploying.
 
 ## Publication boundaries
