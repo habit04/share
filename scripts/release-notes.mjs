@@ -67,6 +67,8 @@ export function releaseNotes(changelog, version, repo = 'habit04/share', options
   const [owner, name] = repo.split('/');
   const { macSigning } = options;
   const windowsOnly = options.releasePolicy === 'windows-only';
+  const unpublished = /^Unpublished candidate\b/m.test(body);
+  const downloadLabel = unpublished ? 'Planned Windows artifact' : 'Downloads';
   if (options.releasePolicy !== undefined && !['all-platforms', 'windows-only'].includes(options.releasePolicy)) throw new Error('unknown release policy');
   if (macSigning !== undefined && !MAC_SIGNING.includes(macSigning)) throw new Error(`unknown macOS signing status: ${macSigning}`);
   const mac = macSigning === undefined ? MAC_UNKNOWN : MAC_FIRST_LAUNCH[/** @type {keyof typeof MAC_FIRST_LAUNCH} */ (macSigning)];
@@ -74,12 +76,12 @@ export function releaseNotes(changelog, version, repo = 'habit04/share', options
     '',
     '---',
     '',
-    windowsOnly ? `**Downloads:** Windows \`jcad-electrical-${v}-win-x64.exe\`. macOS and Linux desktop updates are paused; their last release is [v0.4.5](https://github.com/${repo}/releases/tag/v0.4.5).` : `**Downloads:** Windows \`jcad-electrical-${v}-win-x64.exe\` · macOS \`jcad-electrical-${v}-mac-arm64.dmg\` (Apple Silicon) / \`jcad-electrical-${v}-mac-x64.dmg\` (Intel) · Linux \`.AppImage\` / \`.deb\`.`,
+    windowsOnly ? `**${downloadLabel}:**${unpublished ? '' : ' Windows'} \`jcad-electrical-${v}-win-x64.exe\`. macOS and Linux desktop updates are paused; their last release is [v0.4.5](https://github.com/${repo}/releases/tag/v0.4.5).` : `**Downloads:** Windows \`jcad-electrical-${v}-win-x64.exe\` · macOS \`jcad-electrical-${v}-mac-arm64.dmg\` (Apple Silicon) / \`jcad-electrical-${v}-mac-x64.dmg\` (Intel) · Linux \`.AppImage\` / \`.deb\`.`,
     windowsOnly ? 'Signed Windows installations offer a verified update only after you choose Restart Now.' : 'Installed copies offer the release download. Windows builds configured with a trusted signing publisher install a verified update only after you choose Restart Now; unsigned Windows and all Linux/macOS builds use manual installation.',
     '',
     'Signing varies by release. When published, inspect `release-provenance.json` and its signed attestation for the verified status.',
     windowsOnly ? 'First launch: Windows SmartScreen may say "Windows protected your PC" (More info > Run anyway).' : `First launch: Windows SmartScreen may say "Windows protected your PC" (More info > Run anyway); ${mac}`,
-    `Website and browser edition: https://${owner}.github.io/${name}/ · Full history: https://github.com/${repo}/blob/v${v}/CHANGELOG.md`,
+    `Website and browser edition: https://${owner}.github.io/${name}/ · ${unpublished ? 'History when published' : 'Full history'}: https://github.com/${repo}/blob/v${v}/CHANGELOG.md`,
   ];
   return `${body}\n${footer.join('\n')}\n`;
 }

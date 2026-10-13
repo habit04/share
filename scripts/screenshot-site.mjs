@@ -135,13 +135,13 @@ check(n > 0, `browser edition opened fixtures/example_2000.dwg: ${n} entities in
 check((await app.locator('.import-report-dialog').count()) === 1, 'Import Report dialog shown for the DWG');
 const reportCounts = await app.locator('.import-report-dialog .import-report-counts li').allTextContents();
 check(reportCounts.some((line) => /^DICTIONARY:\s+\d+ dropped/.test(line)), 'DWG report warns that dictionary metadata is dropped');
-check(reportCounts.some((line) => /^DIMENSION:.*\d+ simplified/.test(line)), 'DWG report lists simplified dimensions');
+check(reportCounts.some((line) => /^DIMENSION:\s+3 dropped$/.test(line)), 'DWG report lists the three unsupported dimensions that were dropped');
 check(reportCounts.some((line) => /^DIMSTYLE:.*\d+ simplified/.test(line)), 'DWG report lists unsupported dimension-style settings');
 const reportDetails = await app.locator('.import-report-dialog .import-report-row').allTextContents();
 check(reportDetails.some((line) => /^XDATA unsupported.*cannot be guaranteed on DXF save/.test(line)), 'DWG report explains the reader cannot guarantee application metadata on DXF save');
 await closeImportReport();
 const importHistory = await app.locator('#command-window').textContent();
-check(/DICTIONARY:\s+\d+ dropped/.test(importHistory) && /DIMENSION:.*\d+ simplified/.test(importHistory) && /DIMSTYLE:.*\d+ simplified/.test(importHistory), 'DWG warning summaries remain in command history after the report closes');
+check(/DICTIONARY:\s+\d+ dropped/.test(importHistory) && /DIMENSION:\s+3 dropped/.test(importHistory) && /DIMSTYLE:.*\d+ simplified/.test(importHistory), 'DWG warning summaries remain in command history after the report closes');
 await app.evaluate(() => window.editor.zoomExtents());
 await app.mouse.move(800, 480);
 await app.waitForTimeout(200);
