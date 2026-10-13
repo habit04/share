@@ -4,7 +4,7 @@
  * and the audit. Registered at the end of Editor.registerCommands; dialogs
  * come from `editor.hooks.electrical` (default: src/ui/electrical-dialogs.ts).
  */
-import { backupOutcome, type Editor } from './editor';
+import { backupOutcome, type Editor, type FileBridge, type OpenResult } from './editor';
 import type { Point } from '../core/geometry';
 import type { Entity, InsertEntity } from '../core/entities';
 import { Drawing, type DrawingState, type DrawingHistory } from '../core/document';
@@ -72,9 +72,10 @@ import { findRails, nearestReference, rungReferences } from '../electrical/ladde
 import { projectDrawingIndex, projectEntryFor, resolveDrawingPath, resolveProjectPath, baseName } from './project';
 import { samePath, shortNames } from './paths';
 import { captureRevision, contentHash, saveQueue } from './savequeue';
-import { SaveAdmission, hasSaveAdmissions, isStaleSaveAdmission, isCommittedSaveAdmissionError, unverifiedImportSource, UNVERIFIED_SOURCE_WARNING, UNVERIFIED_COMMITTED_SAVE_WARNING } from './save-admission';
+import { SaveAdmission, hasSaveAdmissions, isStaleSaveAdmission, isCommittedSaveAdmissionError, committedSaveAdmissionError, unverifiedImportSource, UNVERIFIED_SOURCE_WARNING, UNVERIFIED_COMMITTED_SAVE_WARNING } from './save-admission';
+import { releaseOpenedSourceProof } from './opened-source-proof';
 import { ProjectSaveBatch, ProjectBatchChild, hasProjectSaveBatch } from './project-save-batch';
-import { fileErrorText, exportFailed, exportErrorText } from './file-error-text';
+import { fileErrorText, exportFailed } from './file-error-text';
 import { fileErrorCode } from './file-errors';
 import { readDxf, writeDxf, DxfReadError } from '../io/dxf';
 import { convertDwg } from '../io/dwg';
@@ -104,26 +105,41 @@ export function electricalUi(editor: Editor): ElectricalUi {
   return editor.hooks.electrical;
 }
 
-/** Load every drawing of the project (current one from memory) for project-wide reports. */
-export async function projectDocuments(editor: Editor): Promise<Array<{ name: string; doc: Drawing }>> {
-  const out: Array<{ name: string; doc: Drawing }> = [{ name: editor.fileName(), doc: editor.doc }];
-  const bridge = editor.fileBridge;
-  if (!bridge?.openDrawing) return out;
-  const sessions = editor.sessions.all;
+interface ReportSources {
+  readonly bridge: FileBridge | null;
+  readonly active: { readonly name: string; readonly path: string | null; readonly state: DrawingState };
+  readonly parked: readonly { readonly filePath: string | null; readonly state: DrawingState }[];
+  readonly paths: readonly string[];
+}
+function reportDrawing(state: DrawingState, path: string | null): Drawing { const doc = new Drawing(); doc.load(state, path); return doc; }
+/** Capture after issuing export order, before even the admission response can await. */
+function captureReportSources(editor: Editor, bridge: FileBridge | null): ReportSources {
   const activeId = editor.sessions.current.id;
-  for (const d of editor.project.drawings) {
-    const path = resolveDrawingPath(editor.project, d);
-    if (samePath(path, editor.doc.filePath)) continue;
+  return { bridge, active: { name: editor.fileName(), path: editor.doc.filePath, state: editor.doc.snapshot },
+    parked: editor.sessions.all.filter(session => session.id !== activeId).map(session => ({ filePath: session.filePath, state: session.state })),
+    paths: editor.project.drawings.map(entry => resolveDrawingPath(editor.project, entry)) };
+}
+
+/** Load every drawing of the project (current one from memory) for project-wide reports. */
+export async function projectDocuments(editor: Editor, sources?: ReportSources): Promise<Array<{ name: string; doc: Drawing }>> {
+  const out: Array<{ name: string; doc: Drawing }> = [sources ? { name: sources.active.name, doc: reportDrawing(sources.active.state, sources.active.path) } : { name: editor.fileName(), doc: editor.doc }];
+  const bridge = sources ? sources.bridge : editor.fileBridge;
+  if (!bridge?.openDrawing) return out;
+  const sessions = sources?.parked ?? editor.sessions.all.filter(session => session.id !== editor.sessions.current.id);
+  for (const entry of sources?.paths ?? editor.project.drawings) {
+    const path = typeof entry === 'string' ? entry : resolveDrawingPath(editor.project, entry);
+    if (samePath(path, sources ? sources.active.path : editor.doc.filePath)) continue;
     // Drawings open in another tab are reported from memory (unsaved edits included).
-    const open = sessions.find((x) => x.id !== activeId && samePath(x.filePath, path));
+    const open = sessions.find((x) => samePath(x.filePath, path));
     if (open) {
       const doc = new Drawing();
       doc.load(open.state, path);
       out.push({ name: baseName(path), doc });
       continue;
     }
+    let res: OpenResult | null = null;
     try {
-      const res = await bridge.openDrawing(path);
+      res = await bridge.openDrawing(path);
       if (!res) continue;
       const state = res.kind === 'dwg' ? convertDwg(res.payload, path).state : readClosedDxfForReport(editor, res.text, path);
       const doc = new Drawing();
@@ -132,7 +148,7 @@ export async function projectDocuments(editor: Editor): Promise<Array<{ name: st
       out.push({ name: baseName(path), doc });
     } catch (err) {
       editor.log(`Skipped ${baseName(path)}: ${closedReadError(err, path)}`);
-    }
+    } finally { await releaseOpenedSourceProof(bridge, res?.openedSourceProof); }
   }
   return out;
 }
@@ -159,22 +175,35 @@ function closedReadError(err: unknown, path: string): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-async function buildReport(editor: Editor, key: string, projectWide: boolean): Promise<Report> {
+async function buildReport(editor: Editor, key: string, projectWide: boolean, sources?: ReportSources): Promise<Report> {
   const def = REPORTS.find((r) => r.key === key) ?? REPORTS[0]!;
-  if (!projectWide) return def.build(editor.doc);
-  const docs = await projectDocuments(editor);
+  if (!projectWide) return def.build(sources ? reportDrawing(sources.active.state, sources.active.path) : editor.doc);
+  const docs = await projectDocuments(editor, sources);
   return mergeReports(docs.map((d) => ({ drawing: d.name, report: def.build(d.doc) })));
 }
 
-async function saveCsv(editor: Editor, name: string, csv: string): Promise<string | null> {
-  if (editor.fileBridge?.saveText) {
-    try {
-      return await editor.fileBridge.saveText(name, csv, 'CSV', 'csv');
-    } catch (err) {
-      // A write error is reported on the command line instead of being lost as an unhandled rejection.
-      editor.log(`Export not saved: ${exportErrorText(err, name)}`);
-      return null;
+interface CsvExport {
+  readonly bridge: FileBridge | null;
+  readonly admission: SaveAdmission | null;
+}
+/** Capture before project reads; earlier hosts keep their original four-argument export API. */
+function captureCsvExport(editor: Editor): CsvExport {
+  const bridge = editor.fileBridge ?? null;
+  const guarded = hasSaveAdmissions(bridge) && typeof bridge.choosePdfPath === 'function';
+  return { bridge, admission: guarded ? new SaveAdmission(bridge, 'text-export') : null };
+}
+
+async function saveCsv(editor: Editor, name: string, csv: string, request: CsvExport = captureCsvExport(editor)): Promise<string | null> {
+  const { bridge, admission } = request;
+  try {
+  if (admission) await admission.ready;
+  if (bridge?.saveText) {
+    const path = admission ? await bridge.saveText(name, csv, 'CSV', 'csv', { admission: admission.ticket }) : await bridge.saveText(name, csv, 'CSV', 'csv');
+    if (path && admission) {
+      if (!bridge.saveAdmissionResult) throw committedSaveAdmissionError('The text export commit receipt is unavailable. Review the destination before exporting again.');
+      await admission.confirmSaved(path);
     }
+    return path;
   }
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
@@ -182,6 +211,8 @@ async function saveCsv(editor: Editor, name: string, csv: string): Promise<strin
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   return name;
+  } catch (err) { return exportFailed((message) => editor.log(message), name)(err); }
+  finally { await admission?.close(); }
 }
 
 function openReports(editor: Editor, key: string): void {
@@ -503,7 +534,17 @@ export function registerElectricalCommands(editor: Editor): void {
     ui().audit(run(), (issue) => issue.position && zoomTo(ed, issue.position, issue.entityId), run);
   });
   reg('AEREPORTCSV', [], 'Write a report straight to CSV [key]', (ed, arg) => {
-    void buildReport(ed, (arg ?? 'bom').toLowerCase(), false).then((r) => saveCsv(ed, `${r.title.replace(/[^A-Za-z0-9]+/g, '_')}.csv`, reportToCsv(r)).then((p) => p && ed.log(`Report saved: ${p}`)));
+    const exporting = captureCsvExport(ed);
+    return (async () => {
+      try {
+        const sources = captureReportSources(ed, exporting.bridge);
+        if (exporting.admission) await exporting.admission.ready;
+        const r = await buildReport(ed, (arg ?? 'bom').toLowerCase(), false, sources);
+        const p = await saveCsv(ed, `${r.title.replace(/[^A-Za-z0-9]+/g, '_')}.csv`, reportToCsv(r), exporting);
+        if (p) ed.log(`Report saved: ${p}`);
+      } catch (error) { exportFailed(message => ed.log(message), 'Report.csv')(error); }
+      finally { await exporting.admission?.close(); }
+    })();
   });
   reg('AESYMBOLINFO', [], 'List the pin / data attributes of a symbol', (ed, arg) => {
     const def = arg ? lookupSymbol(arg.toUpperCase()) : undefined;
@@ -1225,19 +1266,24 @@ function placeReport(editor: Editor, report: Report): void {
 
 /** Run a report template: build (drawing or project), filter / sort / pick columns, then show, place or write CSV. */
 export async function runReportTemplate(editor: Editor, t: ReportTemplate): Promise<void> {
+  const exporting = t.output === 'csv' ? captureCsvExport(editor) : undefined;
+  try {
+  const sources = exporting ? captureReportSources(editor, exporting.bridge) : undefined;
   const def = REPORTS.find((r) => r.key === t.report);
   if (!def) {
     editor.log(`Report template ${t.name}: unknown report "${t.report}".`);
     return;
   }
-  const base = t.projectWide ? mergeReports((await projectDocuments(editor)).map((d) => ({ drawing: d.name, report: def.build(d.doc) }))) : def.build(editor.doc);
+  if (exporting?.admission) await exporting.admission.ready;
+  const base = t.projectWide ? mergeReports((await projectDocuments(editor, sources)).map((d) => ({ drawing: d.name, report: def.build(d.doc) }))) : def.build(sources ? reportDrawing(sources.active.state, sources.active.path) : editor.doc);
   const r = applyTemplate(base, t);
   if (t.output === 'table') placeReport(editor, r);
   else if (t.output === 'csv') {
-    const p = await saveCsv(editor, `${(t.title || t.name).replace(/[^A-Za-z0-9]+/g, '_')}.csv`, reportToCsv(r));
+    const p = await saveCsv(editor, `${(t.title || t.name).replace(/[^A-Za-z0-9]+/g, '_')}.csv`, reportToCsv(r), exporting);
     if (p) editor.log(`Report ${t.name} saved: ${p}`);
   } else reportTableDialog(editor, r, { saveCsv: (n, c) => saveCsv(editor, n, c), putOnDrawing: (rep) => placeReport(editor, rep), hint: `${r.rows.length} row(s) — template ${t.name}` });
   editor.log(`Report template ${t.name}: ${r.rows.length} row(s).`);
+  } finally { await exporting?.admission?.close(); }
 }
 
 /** Title block values for one sheet through the project mapping. */
@@ -1367,7 +1413,10 @@ function registerProjectCommands(editor: Editor): void {
     reportTemplatesDialog({
       templates: ed.project.reportTemplates ?? [],
       columnsOf: (key) => (REPORTS.find((r) => r.key === key) ?? REPORTS[0]!).build(ed.doc).columns,
-      run: (t) => void runReportTemplate(ed, t),
+      run: (t) => void runReportTemplate(ed, t).catch(error => {
+        if (t.output === 'csv') exportFailed(message => ed.log(message), `${(t.title || t.name).replace(/[^A-Za-z0-9]+/g, '_')}.csv`)(error);
+        else ed.log(`Report template ${t.name} failed: ${error instanceof Error ? error.message : String(error)}`);
+      }),
       save: (list) => {
         ed.updateProject({ ...ed.project, reportTemplates: list.length ? list : undefined });
       },
