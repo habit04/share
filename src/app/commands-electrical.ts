@@ -932,12 +932,22 @@ async function commitProjectBatch(editor: Editor, sheets: readonly LoadedSheet[]
   const warnings: string[] = [];
   const targets = new Map<number, { child: ProjectBatchChild; text: string; withoutBackup: boolean }>();
   const ownedOpen = new Map<LoadedSheet, { state: DrawingState; revision: number; history: DrawingHistory }>();
-  const projectChanged = (sheet: LoadedSheet) => !!sheet.projectState && (editor.projectState.generation !== sheet.projectState.generation || editor.projectState.revision !== sheet.projectState.revision);
-  const openProblem = (sheet: LoadedSheet): { conflict?: string; failure?: string } | null => {
-    if (projectChanged(sheet)) return { conflict: 'project changed while the command ran' };
-    if (sheet.source === 'file') return editor.sessions.indexOfPath(sheet.path!) >= 0 ? { conflict: 'opened in a tab while the command ran' } : null;
-    const current = editor.sessions.all.find(session => session.id === sheet.sessionId);
-    if (!current || sheet.session && current !== sheet.session) return { failure: 'tab closed or replaced' };
+  // Synchronising the active session copies its history, selection and view. A
+  // complete synchronous basis scan needs that capture once, not once per sheet.
+  // Every new scan (including those on either side of an await) captures again.
+  const captureTabs = () => {
+    const sessions = editor.sessions.all.map(session => ({ session, id: session.id, filePath: session.filePath, state: session.state, revision: session.revision, undo: session.undo, redo: session.redo }));
+    const byId = new Map(sessions.map(session => [session.id, session]));
+    // Synchronisation hooks can replace the project; read its revision last.
+    return { sessions, byId, project: editor.projectState };
+  };
+  type TabBasis = ReturnType<typeof captureTabs>;
+  const projectChanged = (sheet: LoadedSheet, project = editor.projectState) => !!sheet.projectState && (project.generation !== sheet.projectState.generation || project.revision !== sheet.projectState.revision);
+  const openProblem = (sheet: LoadedSheet, tabs: TabBasis = captureTabs()): { conflict?: string; failure?: string } | null => {
+    if (projectChanged(sheet, tabs.project)) return { conflict: 'project changed while the command ran' };
+    if (sheet.source === 'file') return tabs.sessions.some(session => samePath(session.filePath, sheet.path)) ? { conflict: 'opened in a tab while the command ran' } : null;
+    const current = tabs.byId.get(sheet.sessionId!);
+    if (!current || sheet.session && current.session !== sheet.session) return { failure: 'tab closed or replaced' };
     const owned = ownedOpen.get(sheet), state = owned?.state ?? sheet.base, revision = owned?.revision ?? sheet.sessionRevision, history = owned?.history ?? sheet.history;
     if (state && current.state !== state || revision !== undefined && current.revision !== revision || !(current.filePath === sheet.path || samePath(current.filePath, sheet.path)) || history && (history.undo.length !== current.undo.length || history.undo.some((item, index) => item !== current.undo[index]) || history.redo.length !== current.redo.length || history.redo.some((item, index) => item !== current.redo[index]))) return { conflict: 'edited while the command ran' };
     return null;
@@ -948,15 +958,17 @@ async function commitProjectBatch(editor: Editor, sheets: readonly LoadedSheet[]
   };
   const preflightTabs = (): boolean => {
     let okay = true;
+    const tabs = captureTabs();
     // Unchanged sheets can still supply tags/references used in another sheet's result.
-    for (const sheet of sheets) { const problem = openProblem(sheet); if (problem) { recordProblem(sheet, problem); okay = false; } }
+    for (const sheet of sheets) { const problem = openProblem(sheet, tabs); if (problem) { recordProblem(sheet, problem); okay = false; } }
     return okay;
   };
   let invalidatedBasis: string | null = null;
   const changedOpenBasis = (): string | null => {
     // Accept only the transitions this batch planned, never a listener's newer edits as basis.
     if (invalidatedBasis) return invalidatedBasis;
-    for (const source of sheets) { const basis = openProblem(source); if (basis) return `source ${source.name}: ${basis.conflict ?? basis.failure}`; }
+    const tabs = captureTabs();
+    for (const source of sheets) { const basis = openProblem(source, tabs); if (basis) return `source ${source.name}: ${basis.conflict ?? basis.failure}`; }
     return null;
   };
   const changedFile = async (sheet: LoadedSheet): Promise<string | null> => {
