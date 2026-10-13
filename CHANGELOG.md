@@ -13,6 +13,12 @@ messages). The date of each version is the date of the commit that set that vers
 
 ### Added
 
+- Native XY ordinate dimensions import and export as editable DXF dimensions, retaining datum
+  frames, axes, text placement and supported style overrides. Geometry, block expansion and
+  undo/redo use independently checked native reference cases. Unsupported modes refuse import;
+  DWG saving remains guarded until native conversion is verified. Arc-length dimensions and an
+  ordinate creation tool remain open.
+
 - Windows SHXFONT/SHXLOAD reads selected SHX fonts/shapes through a confined native picker.
   Supported horizontal glyph paths and native metrics are local to each drawing tab, with
   captured raster/vector plotting and reported unsupported runs. Work, decoded data, pending
@@ -66,6 +72,19 @@ messages). The date of each version is the date of the commit that set that vers
   report a plotting error instead of emitting corrupt shading matrices.
 
 ### Fixed
+
+- Windows save versions include fresh descriptor-read byte digests, refusing same-size external
+  edits even when native timestamps collide. Returned drawing bytes match their original pins,
+  and post-decode checks retain coherent opens. Own committed versions must match the exact write
+  payload; unverified replacements retain dirty/recovery state, require destination review and
+  stop dependent project writes. This protects in-flight saves; completed-open source protection
+  against external edits before a later Save begins remains open.
+
+- Project calculations capture one Windows save order before snapshots, bind all sources before
+  reading and check the complete calculation basis before backups and every write. Bounded
+  preparation supports larger projects, preserves paper-space undo, refuses duplicate sheet rows
+  and cancels dependent writes when an open source changes. Committed files are reported
+  individually; this does not make a multi-file save atomic.
 
 - Windows saves capture host ordering before slow work and refuse older native path aliases.
   Unicode sibling grants remain separate, stored leaf casing is preserved, and every sharing
