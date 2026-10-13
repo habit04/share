@@ -130,7 +130,13 @@ export function installGpuPrototype(editor: Editor): void {
   view.canvas.parentElement!.append(indicator);
   let demoHandle: ReturnType<typeof mountGpuDemo> | null = null;
   setDiagnosticRenderer(() => mode === 'gpu' && last.rendered && renderer?.device.state === 'ready' ? 'WebGL2 drawing base scene + Canvas 2D editing overlays (experimental)' : 'Canvas 2D');
-  const setMode = (next: 'canvas' | 'gpu') => { mode = next; editor.render(); };
+  const setMode = (next: 'canvas' | 'gpu') => {
+    // Mode toggles retry admission, while retaining any valid prepared/uploaded
+    // scene so Canvas reference comparisons do not force an unrelated rebuild.
+    if (mode !== next) renderer?.clearRefusalCache();
+    mode = next;
+    editor.render();
+  };
   indicator.addEventListener('click', () => setMode(mode === 'canvas' ? 'gpu' : 'canvas'));
   view.experimentalSceneRenderer = (vp, overlay) => {
     const reject = (reason: string, metrics = emptyGpu2DRenderResult(reason)) => {
@@ -188,7 +194,17 @@ export function installGpuPrototype(editor: Editor): void {
     loadFixture: (name: string) => {
       fixtureMetadata = null;
       const base = bigDrawing(name === 'dense-lines' ? 38000 : 5000, name === 'mixed-schematic' ? 1000 : 0, name === 'mixed-schematic' ? 500 : 0);
-      if (name === 'compound-dense') {
+      if (name === 'arc-full-huge' || name === 'arc-sweep-fallback' || name === 'arc-angle-fallback') {
+        const startAngle = name === 'arc-full-huge' ? 1e20 : name === 'arc-angle-fallback' ? 1e12 : 0;
+        const endAngle = name === 'arc-full-huge' ? startAngle : name === 'arc-angle-fallback' ? startAngle + Math.PI / 2 : 5 * Math.PI / 2;
+        const style = { layer: '0', color: 7 };
+        editor.loadState({ ...base, entities: [
+          { ...style, id: 'L', type: 'line', trueColor: 0xffffff, a: { x: -3, y: -3 }, b: { x: 3, y: -3 } },
+          { ...style, id: 'A', type: 'arc', trueColor: 0x22cc66, center: { x: 0, y: 0 }, radius: 2, startAngle, endAngle },
+        ] }, null);
+        view.center = { x: 0, y: 0 }; view.scale = 64; view.twist = 0;
+        fixtureMetadata = { name, probes: [] };
+      } else if (name === 'compound-dense') {
         editor.loadState(denseCompoundFixture(), null);
         fixtureMetadata = { name, block: 'GPU-DENSE-SYM', probes: [] };
       } else if (name.startsWith('compound-')) {
@@ -246,6 +262,6 @@ export function installGpuPrototype(editor: Editor): void {
     completed: () => renderer?.device.completed() ?? Promise.resolve(null),
     loseContext: () => { lossControl = renderer?.device.gl.getExtension('WEBGL_lose_context') ?? null; lossControl?.loseContext(); },
     restoreContext: () => lossControl?.restoreContext(),
-    dispose: () => { demoHandle?.dispose(); demoHandle = null; mode = 'canvas'; renderer?.dispose(); renderer = null; canvas.style.display = 'none'; view.experimentalSceneRenderer = null; canvas.remove(); indicator.remove(); editor.render(); },
+    dispose: () => { demoHandle?.dispose(); demoHandle = null; if (mode !== 'canvas') renderer?.clearRefusalCache(); mode = 'canvas'; renderer?.dispose(); renderer = null; canvas.style.display = 'none'; view.experimentalSceneRenderer = null; canvas.remove(); indicator.remove(); editor.render(); },
   } });
 }

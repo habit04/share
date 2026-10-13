@@ -7,7 +7,7 @@ import { GpuDevice } from './device';
 import { cssRgb, GPU_ZOOM_VERTEX_STRIDE, prepareZoom2D, prepareZoomLine, replacementZoomBounds, validateGpu2DView, zoomPrecisionSafe, type Gpu2DView, type Gpu2DOverlay, type PreparedZoom2D, type PreparedZoomEntity, type PreparedZoomLine } from './geometry2d';
 
 export type { Gpu2DView, Gpu2DOverlay } from './geometry2d';
-export type Gpu2DCacheReason = 'not-checked' | 'cold' | 'mutable' | 'document' | 'document-delta' | 'view-style' | 'zoom-range' | 'pan-range' | 'precision' | 'hit';
+export type Gpu2DCacheReason = 'not-checked' | 'cold' | 'mutable' | 'document' | 'document-delta' | 'view-style' | 'zoom-range' | 'pan-range' | 'precision' | 'hit' | 'refusal-hit';
 export const GPU_EDIT_HISTORY_BYTES = 1024 * 1024;
 export const GPU_EDIT_HISTORY_ENTRIES = 256;
 export interface Gpu2DRenderResult {
@@ -90,6 +90,40 @@ interface PreparationCache {
 interface SubrangeUpload { baseGeneration: number; byteOffset: number; vertices: Float32Array<ArrayBuffer> }
 interface PreparedFrame { geometry: PreparedZoom2D; pan: Gpu2DView['center']; ratio: number; generation: number; delta?: SubrangeUpload }
 
+interface GeometryRefusalCache {
+  /** A sealed whole snapshot conservatively certifies every current/future scene dependency. */
+  state: DrawingState;
+  view: Gpu2DView;
+  selection: ReadonlySet<string>;
+  hover: string | null;
+  solidSelection: boolean;
+  reason: string;
+}
+
+class GeometryRefusalMemoError extends Error {}
+
+/** Only deliberate admission errors from pure geometry preparation qualify. Unknown
+ * failures keep retrying; native allocation/programming exceptions are never memoized. */
+function geometryAdmissionRefusal(error: unknown): error is Error {
+  if (!(error instanceof Error) || error.message.length > 4096 ||
+    !/^(?:Unsupported (?:entity:|annotative|dashed linetype:|transparency|filled circle|polyline|display color|Canvas (?:font|ARC)|block (?:transform|array)|external reference:|bold stroke text|stroke-scene display color)|Dashed selection |Nonfinite |Projected coordinates |Invalid (?:curve|arc|ARC|polyline|TEXT|placed TEXT|lineweight)|Curve |Stroke (?:geometry|length)|Polyline |GPU zoom geometry|Float32 stroke geometry|Stroke-scene (?:expansion|geometry|text preflight|block nesting)|Cyclic block reference:|Missing block definition:|Incomplete block expansion|Canvas (?:world|text preflight|ARC)|TEXT is too close)/.test(error.message)) return false;
+  // The compound lowerer wraps its original failure. Reject non-admission native
+  // exceptions rather than allowing the wrapper to erase their provenance.
+  let source: unknown = error;
+  for (let depth = 0; depth < 4; depth++) {
+    if (!(source instanceof Error) || Object.getPrototypeOf(source) !== Error.prototype) return false;
+    const descriptor = Object.getOwnPropertyDescriptor(source, 'cause');
+    if (descriptor && !('value' in descriptor)) return false;
+    if (!descriptor || descriptor.value === undefined) return true;
+    source = descriptor.value;
+  }
+  return false;
+}
+
+function sameRefusalView(a: Gpu2DView, b: Gpu2DView): boolean {
+  return Object.is(a.width, b.width) && Object.is(a.height, b.height) && Object.is(a.dpr, b.dpr) && Object.is(a.scale, b.scale) && Object.is(a.center.x, b.center.x) && Object.is(a.center.y, b.center.y) && Object.is(a.twist, b.twist) && a.background === b.background && a.lineweights === (b.lineweights ?? lineweightDisplay.enabled);
+}
+
 function sameStrokeStyle(a: Pick<PreparedZoomEntity, 'color' | 'width' | 'alpha'>, b: Pick<PreparedZoomLine, 'color' | 'width' | 'alpha'>): boolean {
   return a.width === b.width && a.alpha === b.alpha && a.color.every((value, index) => value === b.color[index]);
 }
@@ -120,6 +154,7 @@ export class Gpu2DRenderer {
   private uploadedGeneration: number | null = null;
   private generation = 0;
   private cache: PreparationCache | null = null;
+  private refusalCache: GeometryRefusalCache | null = null;
   private readonly editHistory = new Map<Entity, PreparedZoomLine>();
   private editHistoryBytes = 0;
   private initializationError: string | null = null;
@@ -137,6 +172,7 @@ export class Gpu2DRenderer {
       this.alphaUniform = null;
       this.uploadedGeneration = null;
       this.cache = null;
+      this.clearRefusalCache();
       this.clearEditHistory();
       this.initializationError = null;
       this.viewportLimits = null;
@@ -144,6 +180,9 @@ export class Gpu2DRenderer {
       onStateChange?.();
     });
   }
+
+  /** Mode changes clear refused admission only; healthy CPU/upload caches remain reusable. */
+  clearRefusalCache(): void { this.refusalCache = null; }
 
   private clearEditHistory(): void {
     this.editHistory.clear();
@@ -217,7 +256,15 @@ export class Gpu2DRenderer {
 
   private prepare(state: DrawingState, view: Gpu2DView, overlay: Gpu2DOverlay, metrics: Gpu2DRenderResult): PreparedFrame {
     const lookupStart = performance.now();
+    const refused = this.refusalCache;
+    this.clearRefusalCache(); // Only the immediately preceding exact pose can qualify.
     validateGpu2DView(view);
+    if (refused && isImmutableData(state) && refused.state === state && sameRefusalView(refused.view, view) && sameSelection(refused.selection, overlay.selection) && refused.hover === (overlay.hover ?? null) && refused.solidSelection === !!overlay.solidSelection) {
+      this.refusalCache = refused;
+      metrics.cacheReason = 'refusal-hit';
+      metrics.cacheLookupMs = Math.max(0, performance.now() - lookupStart);
+      throw new GeometryRefusalMemoError(refused.reason);
+    }
     const linetypes = state.header?.linetypes;
     // Identity is safe only for snapshots certified immutable by the drawing core.
     const cache = this.cache;
@@ -267,6 +314,13 @@ export class Gpu2DRenderer {
     const geometryStart = performance.now();
     let geometry: PreparedZoom2D;
     try { geometry = cacheable ? prepareZoom2D(state, view, overlay) : prepareZoom2D(state, view, overlay, 1, 1, 0); }
+    catch (error) {
+      if (isImmutableData(state) && geometryAdmissionRefusal(error)) {
+        this.refusalCache = { state, view: { ...view, center: { ...view.center }, lineweights: view.lineweights ?? lineweightDisplay.enabled }, selection: new Set(overlay.selection), hover: overlay.hover ?? null, solidSelection: !!overlay.solidSelection, reason: error.message };
+        throw new GeometryRefusalMemoError(error.message);
+      }
+      throw error;
+    }
     finally { metrics.geometryPreparationMs += Math.max(0, performance.now() - geometryStart); }
     metrics.preparedEntities += geometry.entityCount;
     const generation = ++this.generation;
@@ -296,7 +350,10 @@ export class Gpu2DRenderer {
     const metrics = emptyGpu2DRenderResult('');
     let submissionStart: number | null = null;
     const finish = (rendered: boolean, reason?: string): Gpu2DRenderResult => ({ ...metrics, rendered, reason, editHistoryBytes: this.editHistoryBytes, editHistoryEntries: this.editHistory.size, preparationMs: submissionStart === null ? Math.max(0, performance.now() - start) : metrics.preparationMs, submissionMs: submissionStart === null ? 0 : Math.max(0, performance.now() - submissionStart) });
-    const refusal = (reason: string): Gpu2DRenderResult => finish(false, reason);
+    const refusal = (reason: string, geometryMemo = false): Gpu2DRenderResult => {
+      if (!geometryMemo) this.clearRefusalCache();
+      return finish(false, reason);
+    };
     if (this.device.state !== 'ready') return refusal(`WebGL2 device is ${this.device.state}`);
     try {
       const background = cssRgb(view.background);
@@ -426,12 +483,13 @@ export class Gpu2DRenderer {
       return finish(true);
     } catch (error) {
       if (submissionStart !== null) this.uploadedGeneration = null;
-      return refusal(error instanceof Error ? error.message : 'GPU rendering failed');
+      return refusal(error instanceof Error ? error.message : 'GPU rendering failed', error instanceof GeometryRefusalMemoError);
     }
   }
 
   dispose(): void {
     this.cache = null;
+    this.clearRefusalCache();
     this.uploadedGeneration = null;
     this.clearEditHistory();
     this.device.dispose();

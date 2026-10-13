@@ -135,6 +135,9 @@ try {
     // radius is inside the stroke/precision margin, so the whole view uses Canvas.
     { name: 'mixed-schematic', supportsGPU: false, supportsDeltas: false, fallbackReason: 'Curve stroke overlap or precision margin requires Canvas rendering' },
     { name: 'wide-curve-fallback', supportsGPU: false },
+    { name: 'arc-full-huge', supportsGPU: true },
+    { name: 'arc-sweep-fallback', supportsGPU: false, fallbackReason: 'Unsupported Canvas ARC sweep beyond one revolution' },
+    { name: 'arc-angle-fallback', supportsGPU: false, fallbackReason: 'Unsupported Canvas ARC angular precision range' },
     { name: 'compound-dense', supportsGPU: true, supportsDeltas: false },
     { name: 'compound-ordered', supportsGPU: true, supportsDeltas: false },
     { name: 'compound-trillion-reference', supportsGPU: true, supportsDeltas: false },
@@ -143,22 +146,122 @@ try {
     { name: 'compound-trillion', supportsGPU: false, supportsDeltas: false },
     ...['ttf', 'mtext', 'dash', 'alpha', 'geometry'].map((kind) => ({ name: `compound-fallback-${kind}`, supportsGPU: false, supportsDeltas: false })),
   ];
+  const describeFixture = () => page.evaluate(() => {
+    const state = window.editor.doc.snapshot, scale = window.editor.viewport.scale;
+    const counts = state.entities.reduce((counts, entity) => { counts[entity.type] = (counts[entity.type] ?? 0) + 1; return counts; }, {});
+    const pending = state.entities.filter((entity) => entity.type === 'insert').map((insert) => insert.block), referenced = new Set();
+    for (let index = 0; index < pending.length; index++) {
+      const name = pending[index];
+      if (referenced.has(name)) continue;
+      referenced.add(name);
+      const block = state.blocks[name];
+      if (block) for (const entity of block.entities) if (entity.type === 'insert') pending.push(entity.block);
+    }
+    // loadState supplies unused ElectricalCatalog definitions. Preserve them in
+    // the document; scene/setup proof describes only actually referenced blocks.
+    const referencedBlockNames = [...referenced].sort();
+    const usedBlocks = referencedBlockNames.map((name) => state.blocks[name]).filter(Boolean);
+    return { entityCount: state.entities.length, counts, metadata: window.gpuPrototype.fixtureMetadata(), catalogBlockCount: Object.keys(state.blocks).length, referencedBlockNames,
+      blocks: referencedBlockNames.map((name) => state.blocks[name] ? { name, childTypes: state.blocks[name].entities.map((entity) => entity.type), attributeCount: state.blocks[name].attributes.length } : { name, missing: true, childTypes: [], attributeCount: 0 }),
+      textPixels: state.entities.filter((entity) => entity.type === 'text').map((entity) => entity.height * scale), attributePixels: usedBlocks.flatMap((block) => block.attributes.map((attribute) => attribute.height * scale)) };
+  });
+  const assertFixtureSetup = (name, description) => {
+    if (name !== 'compound-dense') return;
+    assert.equal(description.entityCount, 6500);
+    assert.deepEqual(description.counts, { line: 5000, insert: 1000, text: 500 });
+    assert.deepEqual(description.referencedBlockNames, ['GPU-DENSE-SYM']);
+    assert.deepEqual(description.blocks, [{ name: 'GPU-DENSE-SYM', childTypes: ['line', 'line', 'line', 'line'], attributeCount: 1 }]);
+    assert.ok([...description.textPixels, ...description.attributePixels].every((pixels) => pixels * 0.8 > 2.5), 'Distinct dense compound glyphs remain readable inside the admitted minimum zoom band');
+  };
+  const fixturePreflight = [];
+  Object.assign(result, { fixturePreflight });
+  // Fail new fixture setup/admission/image gates before expensive timed loops.
+  // This uses the same native data and camera and is explicitly untimed. The
+  // measured loops reload fixtures and retain their existing cold resource reset.
+  for (const { name, supportsGPU, fallbackReason = null } of fixtures.filter((fixture) => fixture.name.startsWith('compound-') || fixture.name.startsWith('arc-'))) {
+    activeFixture = `preflight:${name}`;
+    await page.evaluate((name) => { window.gpuPrototype.setMode('canvas'); window.editor.viewport.twist = 0; window.gpuPrototype.loadFixture(name); }, name);
+    const description = await describeFixture();
+    const preflightEvidence = { name, untimed: true, outcome: 'started', description, expectedSupportsGPU: supportsGPU };
+    fixturePreflight.push(preflightEvidence);
+    assertFixtureSetup(name, description);
+    const baseline = await page.evaluate(() => { const v = window.editor.viewport; return { document: JSON.stringify(window.editor.doc.snapshot), camera: { center: { ...v.center }, scale: v.scale, twist: v.twist } }; });
+    const images = [];
+    let gpuFrame;
+    if (name === 'arc-full-huge') {
+      await page.evaluate(() => {
+        const g = /** @type {any} */ (window), original = CanvasRenderingContext2D.prototype.arc;
+        g.__gpuBenchmarkArcProbe = { original, calls: [] };
+        CanvasRenderingContext2D.prototype.arc = /** @this {CanvasRenderingContext2D} */ function (x, y, radius, start, end, counterclockwise) {
+          g.__gpuBenchmarkArcProbe.calls.push({ radius, start, end, counterclockwise: counterclockwise ?? false, color: this.strokeStyle });
+          return original.call(this, x, y, radius, start, end, counterclockwise);
+        };
+        // Observe the real painter, not an already-cached Canvas bitmap. This is
+        // untimed instrumentation; measured cold/reset semantics stay unchanged.
+        window.editor.viewport.discardScene();
+      });
+    }
+    let canvasArcCalls = [];
+    try {
+      for (const mode of ['canvas', 'gpu']) {
+        const frame = await modeFrame(page, mode);
+        if (mode === 'gpu') {
+          gpuFrame = frame;
+          assert.equal(frame.rendered, supportsGPU, `${name}: untimed admission preflight; refusal: ${frame.reason ?? 'none'}`);
+          if (fallbackReason) assert.ok(frame.reason?.includes(fallbackReason), `${name}: preflight refusal matches '${fallbackReason}', actual: ${frame.reason ?? 'none'}`);
+          if (name === 'compound-dense') assert.equal(frame.preparedEntities + frame.reusedEntities, 10_500, 'Dense admission visits only the 5,000 wires, 4,000 block strokes, 1,000 attributes and 500 labels; unused catalog definitions remain unrendered');
+        }
+        const path = resolve(out, `${name}-preflight-${mode}.png`);
+        await page.locator('#drawing').screenshot({ path });
+        images.push(PNG.sync.read(readFileSync(path)));
+      }
+    } finally {
+      if (name === 'arc-full-huge') canvasArcCalls = await page.evaluate(() => {
+        const g = /** @type {any} */ (window), probe = g.__gpuBenchmarkArcProbe;
+        if (!probe) return [];
+        CanvasRenderingContext2D.prototype.arc = probe.original;
+        delete g.__gpuBenchmarkArcProbe;
+        return probe.calls;
+      });
+    }
+    assert.equal(images[0].width, images[1].width); assert.equal(images[0].height, images[1].height);
+    const diff = new PNG({ width: images[0].width, height: images[0].height });
+    const pixels = pixelmatch(images[0].data, images[1].data, diff.data, diff.width, diff.height, { threshold: 0.15 });
+    const miss = Math.max(missedForeground(images[0], images[1]), missedForeground(images[1], images[0]));
+    writeFileSync(resolve(out, `${name}-preflight-diff.png`), PNG.sync.write(diff));
+    assert.ok(miss < 0.005, `${name}: preflight preserves the existing geometric coverage gate`);
+    if (!supportsGPU) {
+      assert.equal(pixels, 0, `${name}: preflight fallback matches Canvas exactly`);
+      assert.equal(Buffer.compare(images[0].data, images[1].data), 0, `${name}: preflight fallback has identical RGBA pixels`);
+    } else if (name !== 'compound-dense') assert.ok(pixels / (diff.width * diff.height) < 0.001, `${name}: preflight preserves the strict small-scene raster gate`);
+    if (name === 'arc-full-huge') {
+      assert.ok(canvasArcCalls.some((call) => call.radius === 128 && call.start === 0 && call.end === Math.PI * 2), 'Huge equal angles invoke the actual Canvas full-circle painter with canonical start zero');
+      const cardinalPixels = await page.evaluate(() => {
+        const v = window.editor.viewport;
+        return [{ x: 2, y: 0 }, { x: -2, y: 0 }, { x: 0, y: 2 }, { x: 0, y: -2 }].map((point) => ({ screen: v.toScreen(point), width: v.width, height: v.height }));
+      });
+      for (const image of images) for (const point of cardinalPixels) {
+        const x = Math.round(point.screen.x * image.width / point.width), y = Math.round(point.screen.y * image.height / point.height);
+        let foundGreen = false;
+        for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
+          const index = ((y + dy) * image.width + x + dx) * 4;
+          if (image.data[index + 1] - image.data[index] > 60 && image.data[index + 1] - image.data[index + 2] > 30) foundGreen = true;
+        }
+        assert.ok(foundGreen, 'Completed full-circle image contains the actual green ARC at every cardinal point');
+      }
+      Object.assign(preflightEvidence, { canvasArcCalls, fullCircleCardinalCoverage: true });
+    }
+    const after = await page.evaluate(() => { const v = window.editor.viewport; return { document: JSON.stringify(window.editor.doc.snapshot), camera: { center: { ...v.center }, scale: v.scale, twist: v.twist } }; });
+    assert.deepEqual(after, baseline, `${name}: admission preflight leaves the complete drawing/catalog and camera unchanged`);
+    Object.assign(preflightEvidence, { outcome: 'passed', gpuFrame, imageDifferenceFraction: pixels / (diff.width * diff.height), twoPixelCoverageMissFraction: miss, documentUnchanged: true, cameraUnchanged: true, rendererResourcesReset: false });
+  }
   for (const { name: fixture, supportsGPU, supportsDeltas = supportsGPU, fallbackReason = null } of fixtures) {
     activeFixture = fixture;
     const denseRaster = fixture === 'dense-lines' || fixture === 'compound-dense';
     await page.evaluate((name) => { window.gpuPrototype.setMode('canvas'); window.editor.viewport.twist = 0; window.gpuPrototype.loadFixture(name); }, fixture);
     await page.waitForTimeout(100);
-    const fixtureDescription = await page.evaluate(() => {
-      const state = window.editor.doc.snapshot, scale = window.editor.viewport.scale;
-      const counts = state.entities.reduce((counts, entity) => { counts[entity.type] = (counts[entity.type] ?? 0) + 1; return counts; }, {});
-      return { entityCount: state.entities.length, counts, metadata: window.gpuPrototype.fixtureMetadata(), blocks: Object.values(state.blocks).map((block) => ({ name: block.name, childTypes: block.entities.map((entity) => entity.type), attributeCount: block.attributes.length })), textPixels: state.entities.filter((entity) => entity.type === 'text').map((entity) => entity.height * scale), attributePixels: Object.values(state.blocks).flatMap((block) => block.attributes.map((attribute) => attribute.height * scale)) };
-    });
-    if (fixture === 'compound-dense') {
-      assert.equal(fixtureDescription.entityCount, 6500);
-      assert.deepEqual(fixtureDescription.counts, { line: 5000, insert: 1000, text: 500 });
-      assert.deepEqual(fixtureDescription.blocks, [{ name: 'GPU-DENSE-SYM', childTypes: ['line', 'line', 'line', 'line'], attributeCount: 1 }]);
-      assert.ok([...fixtureDescription.textPixels, ...fixtureDescription.attributePixels].every((pixels) => pixels * 0.8 > 2.5), 'Distinct dense compound glyphs remain readable inside the admitted minimum zoom band');
-    }
+    const fixtureDescription = await describeFixture();
+    assertFixtureSetup(fixture, fixtureDescription);
     const measure = async (mode, motion = 'pan-zoom', retainEndCamera = false) => page.evaluate(async ({ mode, samples, motion, retainEndCamera }) => {
       const ed = window.editor, api = window.gpuPrototype, v = ed.viewport;
       const canvas = /** @type {HTMLCanvasElement} */ (document.getElementById('drawing'));
@@ -216,7 +319,7 @@ try {
         const attemptedStages = [...stages, ...entityMetrics, 'requestedUploadBytes', 'uploadCalls', 'subrangeUploadBytes', 'subrangeUploadCalls', 'geometryVertices'];
         const aggregateAttempts = (samples) => Object.fromEntries(attemptedStages.map((key) => [key, summarize(samples.map((frame) => frame.gpuAttempt?.[key]))]));
         const indices = (samples) => frames.flatMap((frame, index) => samples.includes(frame) ? [index] : []);
-        return { all: aggregate(frames), rebuild: aggregate(rebuilds), documentDelta: aggregate(deltas), uploads: { full: aggregate(fullUploads), subrange: aggregate(subrangeUploads), none: aggregate(zeroUploads) }, editMemoHits: frames.filter((frame) => frame.rendered && frame.editMemoHit).length, gpuAttempts: { count: attempts.length, completedGpuFrames: attempts.filter((frame) => frame.rendered).length, canvasFallbackFrames: attempts.filter((frame) => !frame.rendered).length, all: aggregateAttempts(attempts), byAction: Object.fromEntries([...new Set(attempts.map((frame) => frame.label))].map((label) => [label, aggregateAttempts(attempts.filter((frame) => frame.label === label))])) }, byAction: Object.fromEntries([...new Set(frames.map((frame) => frame.label))].map((label) => [label, aggregate(frames.filter((frame) => frame.label === label))])), rebuildFrameIndices: indices(rebuilds), documentDeltaFrameIndices: indices(deltas), fullUploadFrameIndices: indices(fullUploads), subrangeUploadFrameIndices: indices(subrangeUploads), zeroUploadFrameIndices: indices(zeroUploads), cacheReasons: frames.reduce((counts, frame) => { counts[frame.cacheReason ?? 'missing-telemetry'] = (counts[frame.cacheReason ?? 'missing-telemetry'] ?? 0) + 1; return counts; }, {}) };
+        return { all: aggregate(frames), rebuild: aggregate(rebuilds), documentDelta: aggregate(deltas), uploads: { full: aggregate(fullUploads), subrange: aggregate(subrangeUploads), none: aggregate(zeroUploads) }, editMemoHits: frames.filter((frame) => frame.rendered && frame.editMemoHit).length, gpuAttempts: { cacheReasons: attempts.reduce((counts, frame) => { const reason = frame.gpuAttempt.cacheReason ?? 'missing-telemetry'; counts[reason] = (counts[reason] ?? 0) + 1; return counts; }, {}), count: attempts.length, completedGpuFrames: attempts.filter((frame) => frame.rendered).length, canvasFallbackFrames: attempts.filter((frame) => !frame.rendered).length, all: aggregateAttempts(attempts), byAction: Object.fromEntries([...new Set(attempts.map((frame) => frame.label))].map((label) => [label, aggregateAttempts(attempts.filter((frame) => frame.label === label))])) }, byAction: Object.fromEntries([...new Set(frames.map((frame) => frame.label))].map((label) => [label, aggregate(frames.filter((frame) => frame.label === label))])), rebuildFrameIndices: indices(rebuilds), documentDeltaFrameIndices: indices(deltas), fullUploadFrameIndices: indices(fullUploads), subrangeUploadFrameIndices: indices(subrangeUploads), zeroUploadFrameIndices: indices(zeroUploads), cacheReasons: frames.reduce((counts, frame) => { counts[frame.cacheReason ?? 'missing-telemetry'] = (counts[frame.cacheReason ?? 'missing-telemetry'] ?? 0) + 1; return counts; }, {}) };
       };
       // Observe the actual setMode-triggered frame. Calling renderNow afterwards would
       // measure a second, warmed frame and hide initialization/geometry/upload costs.
@@ -380,7 +483,7 @@ try {
     const canvasResult = await measure('canvas');
     await page.locator('#drawing').screenshot({ path: resolve(out, `${fixture}-canvas.png`) });
     const gpuResult = await measure('gpu', 'pan-zoom', true);
-    if (fallbackReason) assert.ok(gpuResult.firstFrame.reason?.includes(fallbackReason), `${fixture}: original tiny-circle admission refuses with '${fallbackReason}', actual: ${gpuResult.firstFrame.reason ?? 'none'}`);
+    if (fallbackReason) assert.ok(gpuResult.firstFrame.reason?.includes(fallbackReason), `${fixture}: admission refuses with '${fallbackReason}', actual: ${gpuResult.firstFrame.reason ?? 'none'}`);
     const panZoomImage = await compareTrajectoryEnd('pan-zoom', gpuResult.camera.last, gpuResult.camera.initial);
     const context = await prototypeContext(page);
     await page.locator('#drawing').screenshot({ path: resolve(out, `${fixture}-gpu.png`) });
@@ -578,8 +681,60 @@ try {
     for (const [name, workload] of [['pan/zoom', gpuResult], ['pan', panGpu], ['bounded zoom', boundedGpu], ['sustained zoom', sustainedGpu], ['off-center zoom', offCenterGpu], ['minimum zoom with edge pan', minEdgeGpu], ['maximum zoom with edge pan', maxEdgeGpu], ['edit/undo', editGpu]]) {
       const completedSamples = [workload.firstFrame, ...workload.warmRedraw.samples, ...workload.frameSamples];
       assert.ok(completedSamples.every((frame) => frame.rendered === supportsGPU), `${fixture}: ${name} samples must not silently mix GPU and Canvas renderers; refusal: ${completedSamples.find((frame) => frame.rendered !== supportsGPU)?.reason ?? 'none'}`);
-      if (fallbackReason) assert.ok(completedSamples.every((frame) => frame.reason?.includes(fallbackReason)), `${fixture}: ${name} keeps the original tiny-circle safety refusal; actual: ${completedSamples.find((frame) => !frame.reason?.includes(fallbackReason))?.reason ?? 'none'}`);
+      if (fallbackReason) assert.ok(completedSamples.every((frame) => frame.reason?.includes(fallbackReason)), `${fixture}: ${name} keeps its expected safety refusal; actual: ${completedSamples.find((frame) => !frame.reason?.includes(fallbackReason))?.reason ?? 'none'}`);
       if (supportsGPU) assert.equal(workload.firstFrame.cacheReason, 'cold', `${fixture}: ${name} mode-triggered first frame includes cold geometry work`);
+    }
+    if (fixture === 'mixed-schematic') {
+      const refusalMemoProof = { warmRedrawFrames: 0, movingPoseRetries: [], unchangedViewImage: null };
+      for (const [label, workload] of [['pan/zoom', gpuResult], ['pan', panGpu], ['bounded zoom', boundedGpu], ['sustained zoom', sustainedGpu], ['off-center zoom', offCenterGpu], ['minimum zoom with edge pan', minEdgeGpu], ['maximum zoom with edge pan', maxEdgeGpu], ['edit/undo', editGpu]]) {
+        assert.notEqual(workload.firstFrame.gpuAttempt.cacheReason, 'refusal-hit', `${fixture}: ${label} cold resource setup retries actual geometry admission`);
+        assert.ok(workload.firstFrame.gpuAttempt.geometryPreparationMs > 0, `${fixture}: ${label} cold refusal includes actual geometry preparation`);
+        assert.equal(workload.warmRedraw.samples.length, 15);
+        for (const frame of workload.warmRedraw.samples) {
+          const attempt = frame.gpuAttempt;
+          assert.equal(frame.actualRenderer, 'canvas');
+          assert.equal(attempt.cacheReason, 'refusal-hit', `${fixture}: unchanged ${label} redraw reuses only its exact-view refusal`);
+          assert.equal(attempt.geometryPreparationMs, 0);
+          assert.equal(attempt.partialPreparationMs, 0);
+          assert.equal(attempt.uploadKind, 'none');
+          assert.equal(attempt.requestedUploadBytes, 0);
+          assert.equal(attempt.uploadCalls, 0);
+          refusalMemoProof.warmRedrawFrames++;
+        }
+        if (workload.motion !== 'edit-undo') {
+          let previous = workload.warmRedraw.samples.at(-1);
+          let changedPoses = 0;
+          for (const frame of workload.frameSamples) {
+            const changedPose = !Object.is(previous.scale, frame.scale) || !Object.is(previous.twist, frame.twist) || !Object.is(previous.center.x, frame.center.x) || !Object.is(previous.center.y, frame.center.y);
+            if (changedPose) {
+              assert.notEqual(frame.gpuAttempt.cacheReason, 'refusal-hit', `${fixture}: ${label} changed camera retries instead of reusing a stale refusal`);
+              assert.ok(frame.gpuAttempt.geometryPreparationMs > 0, `${fixture}: ${label} retry measures actual geometry preparation`);
+              assert.equal(frame.actualRenderer, 'canvas');
+              assert.ok(frame.reason?.includes(fallbackReason));
+              assert.equal(frame.gpuAttempt.requestedUploadBytes, 0);
+              assert.equal(frame.gpuAttempt.uploadCalls, 0);
+              changedPoses++;
+            }
+            previous = frame;
+          }
+          assert.ok(changedPoses > 0, `${fixture}: ${label} includes actual camera transitions`);
+          refusalMemoProof.movingPoseRetries.push({ label, changedPoses, samples: workload.frameSamples.length });
+        }
+      }
+      // Endpoint references toggle the mode and deliberately clear refusal memo.
+      // Prove one completed Canvas image through the unchanged memo-hit path too.
+      const memoFrame = await page.evaluate(() => window.gpuPrototype.renderNow());
+      assert.equal(memoFrame.rendered, false);
+      assert.equal(memoFrame.cacheReason, 'refusal-hit');
+      assert.equal(memoFrame.geometryPreparationMs, 0);
+      assert.equal(memoFrame.bytes, 0); assert.equal(memoFrame.uploadCalls, 0);
+      assert.deepEqual(await page.evaluate(() => { const v = window.editor.viewport; return { center: { ...v.center }, scale: v.scale, twist: v.twist }; }), canvasResult.camera.initial);
+      const memoImagePath = resolve(out, `${fixture}-unchanged-refusal-memo.png`);
+      await page.locator('#drawing').screenshot({ path: memoImagePath });
+      const memoImage = PNG.sync.read(readFileSync(memoImagePath));
+      assert.equal(Buffer.compare(a.data, memoImage.data), 0, 'Unchanged refusal-memo frame still completes the exact original Canvas view');
+      refusalMemoProof.unchangedViewImage = { frame: memoFrame, identicalCanvasRgba: true, actualRenderer: 'canvas', untimed: true };
+      Object.assign(result.comparisons[fixture], { refusalMemoProof });
     }
     if (!supportsGPU) {
       assert.equal(gpuResult.status.rendered, false, `${fixture}: unsupported full scene must fall back`);

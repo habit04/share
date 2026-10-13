@@ -10,6 +10,7 @@ import { TEXT_STYLES_META_KEY, textStyleOf, textStylesOf } from '../../io/encodi
 import { colorDisplay, lineweightDisplay, resolveColor, resolveLineWidth } from '../draw';
 import { expandControlCodes, glyphFor, hasStrokeFont, strokeText, strokeTextWidth, textRenderer } from '../hershey';
 import type { Gpu2DOverlay, Gpu2DView } from './geometry2d';
+import { canvasArcAdmission } from './arc-admission';
 
 export type LocalStrokeEntity = LineEntity | PolylineEntity | CircleEntity | ArcEntity;
 /** All coordinates are world doubles relative to the copied camera anchor. */
@@ -38,7 +39,7 @@ export interface StrokeSceneOptions {
 }
 
 export type LoweredStrokeScene =
-  | { readonly ok: false; readonly reason: string }
+  | { readonly ok: false; readonly reason: string; readonly cause?: unknown }
   | {
     readonly ok: true;
     readonly operations: readonly StrokePaintOperation[];
@@ -105,7 +106,10 @@ function primitiveProblem(entity: Entity, state: DrawingState): string | null {
     case 'line': return null;
     case 'text': return entity.bold ? `Unsupported bold stroke text (${entity.id})` : null;
     case 'circle': return entity.filled ? `Unsupported filled circle (${entity.id})` : null;
-    case 'arc': return null;
+    case 'arc': {
+      const admission = canvasArcAdmission(entity);
+      return admission.ok ? null : `${admission.reason} (${entity.id})`;
+    }
     case 'polyline': {
       const problem = polylineWidthProblem(entity);
       if (problem) return `${problem} (${entity.id})`;
@@ -322,7 +326,11 @@ export function lowerStrokeScene(state: DrawingState, view: Gpu2DView, overlay: 
     }
     return { ok: true, operations, minRatio, maxRatio, blockDependencies: dependencies, textStylesDependency: state.meta?.[TEXT_STYLES_META_KEY], preparedEntities };
   } catch (error) {
-    return { ok: false, reason: error instanceof Error ? error.message : 'Stroke-scene preparation failed' };
+    const failure = { ok: false as const, reason: error instanceof Error ? error.message : 'Stroke-scene preparation failed' };
+    // Internal admission provenance must survive wrapping without changing public JSON
+    // or exact refusal shapes. Unexpected allocation/graph/glyph errors must stay retryable.
+    Object.defineProperty(failure, 'cause', { value: error });
+    return failure;
   } finally {
     colorDisplay.paper = previousPaper;
     Object.assign(lineweightDisplay, previousWeights);

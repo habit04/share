@@ -2,12 +2,12 @@ import type { DrawingState } from '../../core/document';
 import type { Entity, LineEntity, PolylineEntity } from '../../core/entities';
 import { polylineSegments } from '../../core/entities';
 import type { Point } from '../../core/geometry';
-import { EPS, normAngle } from '../../core/geometry';
 import { resolveAlpha } from '../../core/appearance';
 import { effectiveLinetype, findLinetype } from '../../core/linetypes';
 import { polylineWidthProblem } from '../../core/polyline-widths';
 import { colorDisplay, lineweightDisplay, resolveColor, resolveLineWidth } from '../draw';
 import { lowerStrokeScene, type LoweredStrokeScene } from './stroke-scene';
+import { canvasArcAdmission } from './arc-admission';
 
 export interface Gpu2DView {
   width: number;
@@ -104,7 +104,12 @@ function arcPath(center: Point, radius: number, start: number, sweep: number, vi
   onCurve?.(radius);
   // At steps <= pi/2, outer miter excess h*(sec(step/2)-1) is bounded by
   // sqrt(2)*h*(1-cos(step/2)). Wide strokes need this budget as well as center sagitta.
-  const count = curveCount(radius, sweep, { ...view, scale: curveScale }, pixelError, Math.SQRT2 * strokeWidth / 2, buttCaps ? strokeWidth / 2 : 0);
+  // Bounded admitted angles leave room for binary64 normalization, interpolation and
+  // trigonometric construction inside the existing curve reserve, never in addition to it.
+  const angularError = Number.EPSILON * 16 * (1 + Math.abs(start) + Math.abs(sweep));
+  const remainingError = pixelError - radius * curveScale * view.dpr * angularError;
+  if (!Number.isFinite(remainingError) || remainingError <= 0) throw new Error('Curve angular construction exceeds precision budget');
+  const count = curveCount(radius, sweep, { ...view, scale: curveScale }, remainingError, Math.SQRT2 * strokeWidth / 2, buttCaps ? strokeWidth / 2 : 0);
   const path: Point[] = [];
   // Open curves also bound h*sin(step/2): their first/last strip approximates native
   // butt-cap tangents. Uniform refinement prevents a nearby coarse strip crossing the cap.
@@ -126,10 +131,9 @@ function entityPath(entity: Entity, view: Gpu2DView, curveScale = view.scale, pi
       return { points, closed: true };
     }
     case 'arc': {
-      if (![entity.startAngle, entity.endAngle].every(Number.isFinite)) throw new Error('Invalid arc angles');
-      let sweep = normAngle(entity.endAngle - entity.startAngle);
-      if (sweep < EPS) sweep = Math.PI * 2;
-      return { points: arcPath(local(entity.center), entity.radius, entity.startAngle, sweep, view, curveScale, pixelError, strokeWidth, true, onCurve), closed: false };
+      const admission = canvasArcAdmission(entity);
+      if (!admission.ok) throw new Error(`${admission.reason} (${entity.id})`);
+      return { points: arcPath(local(entity.center), entity.radius, admission.startAngle, admission.sweep, view, curveScale, pixelError, strokeWidth, true, onCurve), closed: false };
     }
     case 'polyline': {
       // Rebase BEFORE bulgeArc computes its midpoint/center, preserving close-zoom arcs.
@@ -226,6 +230,10 @@ function styleProblem(entity: Entity, state: DrawingState): string | null {
   if (findLinetype(name, state.header?.linetypes)?.pattern.length) return `Unsupported dashed linetype: ${name} (${entity.id})`;
   if (resolveAlpha(entity, state.layers) !== 1) return `Unsupported transparency (${entity.id})`;
   if (entity.type === 'circle' && entity.filled) return `Unsupported filled circle (${entity.id})`;
+  if (entity.type === 'arc') {
+    const admission = canvasArcAdmission(entity);
+    if (!admission.ok) return `${admission.reason} (${entity.id})`;
+  }
   if (entity.type === 'polyline') {
     const problem = polylineWidthProblem(entity);
     if (problem) return `${problem} (${entity.id})`;
@@ -406,7 +414,7 @@ export function prepareCompiledZoom2D(state: DrawingState, view: Gpu2DView, over
   if (!Number.isFinite(padding) || padding < 0 || padding > GPU_PAN_CACHE_BORDER / Math.max(1, view.dpr)) throw new Error('Invalid GPU pan cache border');
   // Nothing is uploaded or cleared until every visible expansion/font/style has passed.
   const lowered = lowerStrokeScene(state, view, overlay, { minRatio, maxRatio });
-  if (!lowered.ok) throw new Error(lowered.reason);
+  if (!lowered.ok) throw new Error(lowered.reason, { cause: lowered.cause });
   minRatio = lowered.minRatio;
   maxRatio = lowered.maxRatio;
   const extrusion = lowered.operations.reduce((maximum, operation) => Math.max(maximum, operation.widthCss * 5), 0);
