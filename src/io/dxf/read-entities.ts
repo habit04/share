@@ -6,8 +6,9 @@
  */
 import type { Obj } from './groups';
 import { commonProps, reportObj } from './read-core';
-import type { SplineEntity, HatchLoop, HatchEntity, WorldPatternLine, FieldLink, Entity } from '../../core/entities';
-import { afterSubclass, num, pointList, flt, Cursor, int, HatchReadError, pt, has, str } from './groups';
+import type { SplineEntity, HatchLoop, HatchEntity, HatchGradient, HatchGradientColor, WorldPatternLine, FieldLink, Entity } from '../../core/entities';
+import { afterSubclass, num, pointList, flt, Cursor, int, HatchReadError, pt, has, str, isIntegerText, shortText } from './groups';
+import { isRealText } from './codes';
 import * as g from '../../core/geometry';
 import { splineWorkProblem, SplineWorkLimitError, isValidNurbs, nurbsPoints, interpolateFitPoints } from '../../core/spline';
 import { LoopBuilder, edgeArc, fitPatternToLines, findPattern } from '../../core/hatch';
@@ -19,6 +20,7 @@ import { mtextFromDxf, hasFormatting } from '../../core/mtext';
 import { readTextPlacement } from './read-text';
 import { insertArrayFields } from '../../core/insert-array';
 import { readBackgroundMetadata } from './mtext-background-data';
+import { MAX_HATCH_GRADIENT_COLORS } from '../../core/hatch-gradient';
 
 function readSpline(o: Obj, base: ReturnType<typeof commonProps>): SplineEntity | null {
   const gs = afterSubclass(o, 'AcDbSpline');
@@ -127,7 +129,63 @@ function readHatchLoop(c: Cursor): HatchLoop | null {
   return b.loop();
 }
 
+/** Native AcDbHatch gradient data is independent of the ordinary pattern angle/scale. */
+function readHatchGradient(o: Obj): HatchGradient | undefined {
+  // Only the HATCH subclass owns these codes: 421 may also appear in unrelated XDATA.
+  const gs = afterSubclass(o, 'AcDbHatch');
+  const end = gs.findIndex((p) => p.code >= 1000);
+  const data = end < 0 ? gs : gs.slice(0, end);
+  const fields = [450, 451, 452, 453, 460, 461, 462, 470];
+  if (!data.some((p) => fields.includes(p.code) || p.code === 463 || p.code === 421 || p.code === 63)) return undefined;
+  const scalar = (code: number): string => {
+    const matches = data.filter((p) => p.code === code);
+    if (matches.length !== 1) throw new HatchReadError(`gradient group ${code} must occur exactly once`);
+    return matches[0]!.value;
+  };
+  const number = (code: number, integer = false, min = -Infinity, max = Infinity): number => {
+    const value = scalar(code);
+    const n = Number(value);
+    if (!(integer ? isIntegerText(value.trim()) : isRealText(value)) || !Number.isFinite(n) || n < min || n > max) {
+      throw new HatchReadError(`invalid gradient group ${code}: "${shortText(value)}"`);
+    }
+    return n;
+  };
+  const kind = number(450, true, -0x80000000, 0x7fffffff);
+  const reserved = number(451, true, -0x80000000, 0x7fffffff);
+  const colorMode = number(452, true, -0x80000000, 0x7fffffff);
+  const count = number(453, true, 0, MAX_HATCH_GRADIENT_COLORS);
+  const angle = number(460);
+  const shift = number(461, false, 0, 1);
+  const tint = number(462, false, 0, 1);
+  const name = scalar(470);
+  if (!name.trim() || name.length > 256 || /[\u0000-\u001f\u007f]/.test(name)) throw new HatchReadError('gradient name must contain 1 to 256 printable characters');
+  const colors: HatchGradientColor[] = [];
+  for (const p of data) {
+    if (p.code === 463) {
+      if (colors.length >= MAX_HATCH_GRADIENT_COLORS) throw new HatchReadError(`gradient exceeds the ${MAX_HATCH_GRADIENT_COLORS} color limit`);
+      const position = Number(p.value);
+      if (!isRealText(p.value) || !Number.isFinite(position) || position < 0 || position > 1) throw new HatchReadError(`invalid gradient group 463: "${shortText(p.value)}"`);
+      colors.push({ position });
+    } else if (p.code === 63 || p.code === 421) {
+      const last = colors[colors.length - 1];
+      const key = p.code === 63 ? 'color' : 'trueColor';
+      const value = Number(p.value);
+      if (!last || last[key] !== undefined || !isIntegerText(p.value.trim()) || value < 0 || value > (p.code === 63 ? 256 : 0xffffff)) throw new HatchReadError(`invalid gradient group ${p.code}: "${shortText(p.value)}"`);
+      colors[colors.length - 1] = { ...last, [key]: value };
+    }
+  }
+  if (colors.length !== count || colors.some((c) => c.color === undefined && c.trueColor === undefined)) throw new HatchReadError(`gradient group 453 declares ${count} colors but complete color records do not match`);
+  return {
+    name, angle, shift, singleColor: colorMode === 1, tint, colors,
+    ...(kind !== 1 ? { kind } : {}),
+    ...(reserved !== 0 ? { reserved } : {}),
+    ...(![0, 1].includes(colorMode) ? { colorMode } : {}),
+    ...(count !== 2 ? { colorCount: count } : {}),
+  };
+}
+
 function readHatch(o: Obj, base: ReturnType<typeof commonProps>): HatchEntity | null {
+  const gradient = readHatchGradient(o);
   const c = new Cursor(afterSubclass(o, 'AcDbHatch'));
   let pattern = 'SOLID';
   let solid = false;
@@ -215,6 +273,7 @@ function readHatch(o: Obj, base: ReturnType<typeof commonProps>): HatchEntity | 
     ...(style ? { style } : {}),
     patternType,
     ...(dbl ? { double: true } : {}),
+    ...(gradient ? { gradient } : {}),
   };
 }
 

@@ -13,11 +13,13 @@ import { mtextBackgroundPolygons, hasMTextFill, hasMTextFrame, entityMTextBackgr
 import { polylineWidthGeometry, polylineWidthFrame, transformWidthFrame, polylineFramePoint, polylineFrameSource, polylineWidthProblem, moveWidthFrameGrip } from './polyline-widths';
 import { appearanceProperties, inheritedTransparency, resolveAlpha, type TransparencySpec } from './appearance';
 import { insertArrayCount, insertArrayInstances, MAX_INSERT_ARRAY_INSTANCES } from './insert-array';
+import { hasHatchGradient, hatchGradientDataProblem, hatchGradientFrame, hatchGradientFrameProblem, transformHatchGradientFrame, type HatchGradient, type HatchGradientFrame } from './hatch-gradient';
 
 export type { DimensionEntity, DimStyle, DimKind } from './dimension';
 export type { MTextEntity, MTextAttachment } from './mtext';
 export type { TableEntity, TableCell } from './table';
 export type { HatchLoop, WorldPatternLine } from './hatch';
+export type { HatchGradient, HatchGradientColor, HatchGradientFrame } from './hatch-gradient';
 
 /**
  * AutoCAD Color Index (1..255). 'ByLayer' (DXF 256) inherits the colour of the object's layer;
@@ -231,6 +233,10 @@ export interface HatchEntity extends EntityBase {
   /** 0 user defined, 1 predefined, 2 custom (DXF 76). */
   readonly patternType?: number;
   readonly double?: boolean;
+  /** Native gradient descriptor, retained separately from the hatch pattern. */
+  readonly gradient?: HatchGradient;
+  /** Affine display frame after a block transform; native block definitions remain unchanged. */
+  readonly gradientFrame?: HatchGradientFrame;
 }
 
 /** LEADER / MLEADER: a leader line with arrowhead, optional landing and attached text. */
@@ -639,7 +645,7 @@ export function splineThroughPoints(base: EntityBase, fit: readonly Point[], clo
 
 /** World line families of a hatch's pattern ([] for SOLID). */
 export function hatchPatternLines(h: HatchEntity): WorldPatternLine[] {
-  if (h.solid) return [];
+  if (h.solid || hasHatchGradient(h)) return [];
   // Lines from the file win (double hatches, custom and non-matching definitions).
   if (h.patternLines?.length) return [...h.patternLines];
   const pat = findPattern(h.pattern);
@@ -660,7 +666,7 @@ export function hatchGeometry(h: HatchEntity): HatchGeometry {
   const hit = hatchCache.get(h);
   if (hit) return hit;
   const polys = h.loops.map((l) => loopPolygon(l)).filter((p) => p.length >= 3);
-  const pat = h.solid ? { segments: [], dense: false } : patternSegments(polys, hatchPatternLines(h));
+  const pat = h.solid || hasHatchGradient(h) ? { segments: [], dense: false } : patternSegments(polys, hatchPatternLines(h));
   const geom = { polys, segments: pat.segments, dense: pat.dense };
   hatchCache.set(h, geom);
   return geom;
@@ -831,6 +837,8 @@ interface Affine {
   kx: number;
   ky: number;
   mirrored: boolean;
+  /** A block's gradient is evaluated in definition coordinates before its insert transform. */
+  gradientInBlock?: boolean;
 }
 
 type Compound = SplineEntity | HatchEntity | LeaderEntity | TableEntity | ImageEntity;
@@ -862,12 +870,17 @@ function affineCompound(e: Compound, A: Affine): Entity {
         if (!conformal && l.bulges?.some((b) => Math.abs(b) > 1e-12)) return { points: loopPolygon(l).map(A.tf) };
         return { points: l.points.map(A.tf), ...(l.bulges ? { bulges: A.mirrored ? l.bulges.map((b) => -b) : l.bulges } : {}) };
       });
+      const gradientConformal = Math.abs(A.kx) === Math.abs(A.ky);
+      const frame = e.gradientFrame ?? (A.gradientInBlock || !gradientConformal ? hatchGradientFrame(e) : null);
       return {
         ...e,
         loops,
         angle: normAngle(e.angle + A.rotation),
         scale: e.scale * k,
         origin: A.tf(e.origin ?? { x: 0, y: 0 }),
+        // Native direct ROTATE/MIRROR/SCALE keep the gradient's world angle; block display instead
+        // carries its definition-space frame through the insert transform.
+        ...(frame ? { gradientFrame: transformHatchGradientFrame(frame, A.tf) } : {}),
         ...(e.patternLines ? { patternLines: e.patternLines.map((l) => ({ angle: dirAngle(l.angle), base: A.tf(l.base), offset: A.vec(l.offset), dashes: l.dashes.map((d) => d * k) })) } : {}),
       };
     }
@@ -938,6 +951,8 @@ export function explodeCompound(e: Entity): Entity[] | null {
       return [{ ...style, id: newId(), type: 'polyline', points: closed ? pts.slice(0, -1) : pts, closed }];
     }
     case 'hatch': {
+      // Ordinary lines/fills cannot retain an active or inactive native gradient descriptor.
+      if (e.gradient !== undefined) return null;
       const geo = hatchGeometry(e);
       const style = { layer: e.layer, color: e.color, ...appearanceProperties(e), linetype: e.linetype, lineWeight: e.lineWeight };
       if (e.solid) return geo.polys.map((points) => ({ ...style, id: newId(), type: 'polyline' as const, points, closed: true, filled: true }));
@@ -1060,7 +1075,7 @@ export function blockTransform(e: Entity, tf: (p: Point) => Point, rotation: num
     case 'leader':
     case 'table':
     case 'image':
-      return affineCompound(e, { tf, vec, rotation, kx: sx, ky: sy, mirrored: mirror });
+      return affineCompound(e, { tf, vec, rotation, kx: sx, ky: sy, mirrored: mirror, gradientInBlock: true });
   }
 }
 
@@ -1092,6 +1107,16 @@ export function entityGeometryWork(entity: Entity): number {
     case 'hatch':
       for (const loop of entity.loops) work += loop.points.length * (loop.bulges?.some((value) => Math.abs(value) > 1e-12) ? 32 : 1);
       for (const line of entity.patternLines ?? []) work += 1 + line.dashes.length;
+      if (entity.gradient) {
+        const invalid = hatchGradientDataProblem(entity.gradient);
+        if (invalid) throw new GeometryBudgetError(invalid);
+        work += entity.gradient.name.length + entity.gradient.colors.length * 3;
+      }
+      if (entity.gradientFrame) {
+        const invalid = hatchGradientFrameProblem(entity.gradientFrame);
+        if (invalid || !entity.gradient) throw new GeometryBudgetError(invalid ?? 'gradient hatch frame requires a native gradient descriptor');
+        work += 6;
+      }
       break;
     case 'leader':
       work += entity.vertices.length + (entity.text?.length ?? 0) + (entity.raw?.length ?? 0) + (entity.textColumns?.heights.length ?? 0);
@@ -1534,7 +1559,10 @@ function transformInto(out: Entity[], e: Entity, tf: (p: Point) => Point, ins: I
     for (const child of children) out.push(blockTransform(child, tf, ins.rotation, ins.scale, ins.scaleY ?? ins.scale, Boolean(ins.mirror)));
     return;
   }
-  const moved = similar ? similarityTransform(styled, tf, ins.rotation, ins.scale) : blockTransform(styled, tf, ins.rotation, ins.scale, ins.scaleY ?? ins.scale, Boolean(ins.mirror));
+  // Direct similarity commands keep a native gradient world-aligned. Even a uniform
+  // INSERT evaluates its gradient in definition space before applying the reference.
+  const directSimilarity = similar && !(styled.type === 'hatch' && styled.gradient !== undefined);
+  const moved = directSimilarity ? similarityTransform(styled, tf, ins.rotation, ins.scale) : blockTransform(styled, tf, ins.rotation, ins.scale, ins.scaleY ?? ins.scale, Boolean(ins.mirror));
   if (moved.type === 'insert') {
     explodeInto(out, moved, lookup, depth, budget);
     return;
@@ -1689,7 +1717,7 @@ export function distanceToEntity(p: Point, e: Entity, lookup: BlockLookup): numb
     }
     case 'hatch': {
       const geo = hatchGeometry(e);
-      if ((e.solid || geo.dense) && pointInLoops(p, geo.polys)) return 0;
+      if ((e.solid || hasHatchGradient(e) || geo.dense) && pointInLoops(p, geo.polys)) return 0;
       let best = Infinity;
       for (const poly of geo.polys) for (let i = 0; i < poly.length; i += 1) best = Math.min(best, g.distToSegment(p, poly[i]!, poly[(i + 1) % poly.length]!));
       for (const [a, b] of geo.segments) best = Math.min(best, g.distToSegment(p, a, b));

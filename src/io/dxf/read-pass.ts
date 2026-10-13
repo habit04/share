@@ -23,6 +23,7 @@ import { withTextStyle } from '../encoding';
 import { readTextPlacement } from './read-text';
 import { localAttributePlacement } from '../../core/entities';
 import type { TextPlacement } from '../../core/text-placement';
+import { hatchGradientRenderProblem, hatchGradientExportProblem } from '../../core/hatch-gradient';
 
 /** Entity types the reader converts (anything else is reported, or kept raw when safe). */
 const READ_KINDS = new Set(['LINE', 'CIRCLE', 'ARC', 'LWPOLYLINE', 'POLYLINE', 'SOLID', 'TRACE', 'TEXT', 'MTEXT', 'ELLIPSE', 'POINT', 'XLINE', 'RAY', 'DIMENSION', 'SPLINE', 'HATCH', 'LEADER', 'MULTILEADER', 'MLEADER', 'IMAGE', 'ACAD_TABLE', 'INSERT']);
@@ -146,7 +147,12 @@ export function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): En
     }
     if (e.type === 'hatch' && e.associative) reportObj(ctx, o, 'simplified', 'associative hatch boundary links are not kept; its boundary geometry is kept and saved non-associative');
     if (o.kind === 'ACAD_TABLE') reportObj(ctx, o, 'simplified', 'table cells, sizes and supported style defaults are kept; native table editing, formulas, style font names, advanced borders and fills are not modeled, and export uses an INSERT picture with JCAD_TABLE data');
-    if (o.kind === 'HATCH' && num(o, 450) === 1) reportObj(ctx, o, 'simplified', 'gradient hatch settings are not kept; boundary geometry and the solid/pattern fill are retained');
+    if (e.type === 'hatch' && e.gradient) {
+      const gradientProblem = hatchGradientRenderProblem(e.gradient);
+      const exportProblem = hatchGradientExportProblem(e);
+      if (exportProblem) reportObj(ctx, o, 'kept', `gradient hatch data and pattern are retained; native export is unavailable: ${exportProblem}${gradientProblem ? ` Display fallback: ${gradientProblem}` : ''}`);
+      else if (gradientProblem) reportObj(ctx, o, 'kept', `gradient hatch definition is retained for DXF saving; solid/pattern fallback is drawn: ${gradientProblem}`);
+    }
     if (e.type === 'mtext' && e.columns) reportObj(ctx, o, 'simplified', `column definitions are kept in JCAD_MTEXT_COLUMNS on AutoCAD 2000 export; other CAD programs show one column${e.columns.type === 2 || !formattedSource(e)?.includes('\\N') ? '; automatic column flow is approximated in JCad' : ''}`);
     if (has(o, 39) && num(o, 39) !== 0) reportObj(ctx, o, 'simplified', 'nonzero thickness is not kept in the 2D drawing');
     const appearance = commonAppearanceObject(o);
