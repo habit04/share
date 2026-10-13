@@ -49,7 +49,7 @@ afterEach(async () => {
 describe('Save admission configuration and ownership', () => {
   it('requires explicit authorization and bounded configuration', () => {
     expect(() => createSaveAdmissions({ identity: createWindowsPathIdentity() })).toThrow();
-    for (const [field, bad] of [['maxPending', 33], ['maxLedger', 513], ['maxPayloadBytes', SAVE_ADMISSION_LIMITS.payload + 1], ['maxQueuedBytes', SAVE_ADMISSION_LIMITS.queuedBytes + 1], ['ttlMs', 600001], ['maxPending', 0], ['maxPending', 1.5]]) expect(() => createSaveAdmissions({ identity: createWindowsPathIdentity(), authorize: () => ({ allowed: true }), [field]: bad })).toThrow();
+    for (const [field, bad] of [['maxPending', 33], ['maxLedger', 641], ['maxPayloadBytes', SAVE_ADMISSION_LIMITS.payload + 1], ['maxQueuedBytes', SAVE_ADMISSION_LIMITS.queuedBytes + 1], ['ttlMs', 600001], ['maxPending', 0], ['maxPending', 1.5]]) expect(() => createSaveAdmissions({ identity: createWindowsPathIdentity(), authorize: () => ({ allowed: true }), [field]: bad })).toThrow();
   });
   it('rejects renderer-shaped owners, unsupported kinds, forged tickets and cross-owner/kind transfer', () => {
     const host = createSaveAdmissions({ identity: createWindowsPathIdentity(), authorize: () => ({ allowed: true }) }); hosts.push(host); const owner = {}, foreign = {};

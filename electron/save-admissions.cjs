@@ -7,7 +7,8 @@ if (!byteLengthDescriptor || typeof byteLengthDescriptor.get !== 'function') thr
 const typedByteLength = byteLengthDescriptor.get;
 
 const SAVE_KINDS = Object.freeze(['drawing', 'project', 'export-copy']);
-const LIMITS = Object.freeze({ pending: 32, ledger: 512, payload: 128 * 1024 * 1024, queuedBytes: 256 * 1024 * 1024, ttlMs: 120000 });
+const LIMITS = Object.freeze({ pending: 32, ledger: 640, payload: 128 * 1024 * 1024, queuedBytes: 256 * 1024 * 1024, ttlMs: 120000,
+  batchParents: 2, batchChildren: 512, batchInputBytes: 128 * 1024 * 1024, batchPinChars: 16 * 1024 * 1024, batchHardLifeMs: 600000 });
 const fail = (code, message) => Object.assign(new Error(message), { code });
 /** @typedef {import('./windows-path-identity.cjs').WindowsWriteTarget} WriteTarget */
 /** @typedef {{allowed:true, root?:string}|{allowed:false}} Authorization */
@@ -17,7 +18,9 @@ const fail = (code, message) => Object.assign(new Error(message), { code });
 /** @typedef {{logicalPath:string,destinationPath:string,canonicalPath:string,root?:string,signal:AbortSignal,guard:()=>Promise<void>,guardParents:()=>Promise<void>}} PreparationContext */
 /** @typedef {{signal:AbortSignal, target:WriteTarget, commit:(payload:string|Uint8Array,writer:SaveWriter)=>Promise<unknown>}} SaveScope */
 /** @typedef {{order:bigint, after:string|null, origins:Set<string|null>,parentPath:string,targetPath:string}} LedgerEntry */
-/** @typedef {{ticket:string,owner:object,kind:string,order:bigint,deadline:number,state:'issued'|'binding'|'bound'|'preparing'|'running',abort:AbortController,pin?:WriteTarget,root?:string,task?:Promise<unknown>}} Admission */
+/** @typedef {{pin:WriteTarget,signal:AbortSignal,inputBytes:number,guard:()=>Promise<void>}} ProjectBatchReadScope */
+/** @typedef {{ticket:string,owner:object,kind:string,order:bigint,deadline:number,state:'issued'|'binding'|'bound'|'reading'|'preparing'|'running',abort:AbortController,pin?:WriteTarget,root?:string,task?:Promise<unknown>,batch?:ProjectBatch,readDone?:boolean}} Admission */
+/** @typedef {{ticket:string,owner:object,order:bigint,deadline:number,hardDeadline:number,state:'issued'|'binding'|'bound'|'sealing'|'sealed'|'beginning'|'committing'|'closing',abort:AbortController,children:Map<string,Admission>,selected:Set<string>,reserved:Set<string>,transitions:Map<string,string|null>,declarations:number,pinChars:number,inputBytes:number,task?:Promise<unknown>,closing?:Promise<void>}} ProjectBatch */
 
 /**
  * Tickets must be issued before serialization/conversion begins. The owner is a
@@ -31,7 +34,7 @@ const fail = (code, message) => Object.assign(new Error(message), { code });
  * guardParents is for cleanup/verification and never relaxes junction/root pins.
  * No portable Node API can eliminate the last check-to-rename race with an
  * adversarial local process. File versions use native stat evidence, not hashes.
- * @param {{identity:PathIdentity, authorize:(owner:object,kind:string,path:string)=>Authorization|Promise<Authorization>, maxPending?:number,maxLedger?:number,maxPayloadBytes?:number,maxQueuedBytes?:number,ttlMs?:number,now?:()=>number}} options
+ * @param {{identity:PathIdentity, authorize:(owner:object,kind:string,path:string)=>Authorization|Promise<Authorization>, maxPending?:number,maxLedger?:number,maxPayloadBytes?:number,maxQueuedBytes?:number,ttlMs?:number,maxBatchParents?:number,maxBatchChildren?:number,maxBatchInputBytes?:number,maxBatchPinChars?:number,batchHardLifeMs?:number,now?:()=>number}} options
  */
 function createSaveAdmissions(options) {
   if (!options || !options.identity || typeof options.authorize !== 'function') throw fail('ERR_SAVE_CONFIGURATION', 'Native identity and explicit main-owned authorization are required.');
@@ -44,28 +47,66 @@ function createSaveAdmissions(options) {
   const maxPending = limit(options.maxPending, LIMITS.pending, LIMITS.pending), maxLedger = limit(options.maxLedger, LIMITS.ledger, LIMITS.ledger);
   const maxPayloadBytes = limit(options.maxPayloadBytes, LIMITS.payload, LIMITS.payload), maxQueuedBytes = limit(options.maxQueuedBytes, LIMITS.queuedBytes, LIMITS.queuedBytes);
   const ttlMs = limit(options.ttlMs, LIMITS.ttlMs, 600000);
+  const maxBatchParents = limit(options.maxBatchParents, LIMITS.batchParents, LIMITS.batchParents), maxBatchChildren = limit(options.maxBatchChildren, LIMITS.batchChildren, LIMITS.batchChildren);
+  const maxBatchInputBytes = limit(options.maxBatchInputBytes, LIMITS.batchInputBytes, LIMITS.batchInputBytes), maxBatchPinChars = limit(options.maxBatchPinChars, LIMITS.batchPinChars, LIMITS.batchPinChars);
+  const batchHardLifeMs = limit(options.batchHardLifeMs, LIMITS.batchHardLifeMs, LIMITS.batchHardLifeMs);
   /** @type {Map<string,Admission>} */ const pending = new Map();
   /** @type {Map<string,LedgerEntry>} */ const ledger = new Map();
   /** @type {Map<string,Promise<void>>} */ const tails = new Map();
+  /** @type {Map<string,ProjectBatch>} */ const batches = new Map();
+  /** @type {Map<string,Set<ProjectBatch>>} */ const reservedTargets = new Map();
   const retired = new WeakSet();
-  let order = 0n, queuedBytes = 0, disposed = false;
+  let order = 0n, queuedBytes = 0, disposed = false, batchActive = 0, batchChildren = 0, batchInputs = 0, batchPinChars = 0, metadataActive = 0;
+  /** @type {Array<()=>void>} */ const metadataWaiters = [];
+  async function withBatchMetadata(operation) {
+    if (metadataActive >= 8) await new Promise((resolve) => metadataWaiters.push(() => resolve(undefined)));
+    else metadataActive++;
+    try { return await operation(); }
+    finally { const next = metadataWaiters.shift(); if (next) next(); else metadataActive--; }
+  }
+  /** Join each bounded chunk in full before failure/cancellation is propagated. */
+  async function checkBatchSources(sources, operation) {
+    for (let index = 0; index < sources.length; index += 8) {
+      const results = await Promise.allSettled(sources.slice(index, index + 8).map(operation));
+      const rejected = results.find((result) => result.status === 'rejected');
+      if (rejected?.status === 'rejected') throw rejected.reason;
+    }
+  }
+
+  const ordinaryPending = () => [...pending.values()].filter((entry) => !entry.batch).length;
+  function claimBatchOperation() {
+    if (ordinaryPending() + batchActive >= maxPending) throw fail('ERR_SAVE_CAPACITY', 'Too many saves or project operations are active.');
+    batchActive++;
+    let released = false;
+    return () => { if (!released) { released = true; batchActive--; } };
+  }
+  const orderingSlots = () => new Set([...ledger.keys(), ...reservedTargets.keys()]).size;
 
   function checkOwner(owner, kind) {
     if (!owner || typeof owner !== 'object' || !SAVE_KINDS.includes(kind)) throw fail('ERR_SAVE_TICKET', 'A main-owned save owner and supported kind are required.');
     if (disposed || retired.has(owner)) throw fail('ERR_SAVE_DISPOSED', 'This save owner is no longer active.');
   }
   function prune() {
-    let oldest = order + 1n;
-    for (const entry of pending.values()) if (entry.order < oldest) oldest = entry.order;
+    const sources = [...pending.values(), ...[...batches.values()].flatMap((batch) => [...batch.children.values()])];
     for (const [key, entry] of ledger) {
-      const needed = [...pending.values()].some(({ pin }) => pin && pin.canonicalParent === entry.parentPath && (!pin.exists || pin.canonicalPath === entry.targetPath) && fileVersionKey(pin.fileVersion) !== entry.after && entry.origins.has(fileVersionKey(pin.fileVersion)));
-      if (entry.order < oldest && !needed) ledger.delete(key);
+      // Unknown destinations need global ordering protection. Once the manifest
+      // is fixed, only relevant native targets and retained own-version origins
+      // need history; unrelated ordinary writes must keep their headroom.
+      const unknown = [...pending.values()].some((item) => !item.batch && !item.pin && item.order <= entry.order)
+        || [...batches.values()].some((batch) => (batch.state === 'issued' || batch.state === 'binding') && batch.order <= entry.order);
+      const needed = sources.some(({ pin, order: sourceOrder }) => pin && pin.canonicalParent === entry.parentPath && (!pin.exists || pin.canonicalPath === entry.targetPath)
+        && (sourceOrder <= entry.order || fileVersionKey(pin.fileVersion) !== entry.after && entry.origins.has(fileVersionKey(pin.fileVersion))));
+      if (!unknown && !needed) ledger.delete(key);
     }
   }
   function finish(entry) { pending.delete(entry.ticket); prune(); }
   function reap() {
     const time = now();
-    for (const entry of pending.values()) if ((entry.state === 'issued' || entry.state === 'bound') && entry.deadline <= time) { entry.abort.abort(); pending.delete(entry.ticket); }
+    for (const entry of pending.values()) if (!entry.batch && (entry.state === 'issued' || entry.state === 'bound') && entry.deadline <= time) { entry.abort.abort(); pending.delete(entry.ticket); }
+    for (const batch of batches.values()) {
+      const idle = [...batch.children.values()].every((child) => child.state === 'bound');
+      if (batch.state !== 'closing' && (time >= batch.hardDeadline || (idle && (batch.state === 'issued' || batch.state === 'bound' || batch.state === 'sealed') && time >= batch.deadline))) void closeProjectBatch(batch);
+    }
     prune();
   }
   function get(ticket, owner, kind) {
@@ -74,7 +115,10 @@ function createSaveAdmissions(options) {
     if (!entry || entry.owner !== owner || entry.kind !== kind) throw fail('ERR_SAVE_TICKET', 'The save ticket is invalid, expired, consumed, or belongs to another owner.');
     return entry;
   }
-  function abortCheck(entry) { if (entry.abort.signal.aborted) throw fail('ERR_SAVE_CANCELLED', 'The save was cancelled.'); }
+  function abortCheck(entry) {
+    if (entry.batch && now() >= entry.batch.hardDeadline) void closeProjectBatch(entry.batch);
+    if (entry.abort.signal.aborted || entry.batch?.abort.signal.aborted) throw fail('ERR_SAVE_CANCELLED', 'The save was cancelled.');
+  }
   async function permission(entry, logicalPath, binding = false) {
     const result = await authorize(entry.owner, entry.kind, logicalPath);
     if (!result || result.allowed !== true) throw fail('ERR_SAVE_AUTHORIZATION', 'This save destination is not authorized.');
@@ -84,7 +128,7 @@ function createSaveAdmissions(options) {
   }
   function issue(owner, kind) {
     reap(); checkOwner(owner, kind);
-    if (pending.size >= maxPending) throw fail('ERR_SAVE_CAPACITY', 'Too many saves are pending.');
+    if (ordinaryPending() + batchActive >= maxPending) throw fail('ERR_SAVE_CAPACITY', 'Too many saves are pending.');
     const ticket = randomBytes(24).toString('hex');
     pending.set(ticket, { ticket, owner, kind, order: ++order, deadline: now() + ttlMs, state: 'issued', abort: new AbortController() });
     return ticket;
@@ -113,6 +157,10 @@ function createSaveAdmissions(options) {
     void tail.then(() => { if (tails.get(key) === tail) tails.delete(key); });
     return result;
   }
+  /** Parent order is always acquired outside a native namespace; callbacks do not nest parents. */
+  function enqueueProjectWrite(entry, key, job) {
+    return entry.batch ? enqueue(`project-batch:${entry.batch.ticket}`, () => enqueue(key, job)) : enqueue(key, job);
+  }
   function samePath(entry, value) {
     const logicalPath = absoluteWindowsPath(value);
     if (!entry.pin || logicalPath !== entry.pin.logicalPath) throw fail('ERR_SAVE_TICKET', 'A save ticket cannot be transferred to another logical path.');
@@ -140,6 +188,215 @@ function createSaveAdmissions(options) {
     const out = fail(error?.code || 'ERR_SAVE_OPERATION', error?.message || 'The save failed.');
     return Object.assign(out, { cause: error, committed });
   }
+  function getProjectBatch(ticket, owner) {
+    reap(); checkOwner(owner, 'drawing');
+    const batch = typeof ticket === 'string' && batches.get(ticket);
+    if (!batch || batch.owner !== owner) throw fail('ERR_SAVE_TICKET', 'The project batch is invalid, expired, consumed, or belongs to another owner.');
+    return batch;
+  }
+  function batchCheck(batch) {
+    if (now() >= batch.hardDeadline) void closeProjectBatch(batch);
+    if (batch.abort.signal.aborted || batch.state === 'closing') throw fail('ERR_SAVE_CANCELLED', 'The project batch was cancelled.');
+  }
+  function releaseBatchTargets(batch, keep = new Set()) {
+    for (const key of batch.reserved) {
+      if (keep.has(key)) continue;
+      const owners = reservedTargets.get(key); owners?.delete(batch);
+      if (owners?.size === 0) reservedTargets.delete(key);
+      batch.reserved.delete(key);
+    }
+  }
+  function dropProjectBatch(batch) {
+    if (batches.get(batch.ticket) !== batch) return;
+    releaseBatchTargets(batch);
+    for (const child of batch.children.values()) pending.delete(child.ticket);
+    batchChildren -= batch.declarations; batchInputs -= batch.inputBytes; batchPinChars -= batch.pinChars;
+    batches.delete(batch.ticket); prune();
+  }
+  /** Abort is immediate; occupied operations, pins and capacity survive until cleanup settles. */
+  function closeProjectBatch(batch) {
+    if (batch.closing) return batch.closing;
+    batch.state = 'closing'; batch.abort.abort();
+    for (const child of batch.children.values()) child.abort.abort();
+    batch.closing = Promise.resolve().then(async () => {
+      const tasks = [...batch.children.values()].map((child) => child.task).filter((task) => task !== undefined);
+      if (batch.task) tasks.push(batch.task);
+      await Promise.allSettled(tasks); dropProjectBatch(batch);
+    });
+    return batch.closing;
+  }
+  function issueProjectBatch(owner) {
+    reap(); checkOwner(owner, 'drawing');
+    if (batches.size >= maxBatchParents || [...batches.values()].some((batch) => batch.owner === owner)) throw fail('ERR_SAVE_BATCH_CAPACITY', 'Only one project batch per owner and two host batches may be pending.');
+    const ticket = randomBytes(24).toString('hex'), time = now();
+    batches.set(ticket, { ticket, owner, order: ++order, deadline: time + ttlMs, hardDeadline: time + batchHardLifeMs,
+      state: 'issued', abort: new AbortController(), children: new Map(), selected: new Set(), reserved: new Set(), transitions: new Map(), declarations: 0, pinChars: 0, inputBytes: 0 });
+    return ticket;
+  }
+  /** Bind every native pin before exposing a manifest or allowing any source read. */
+  function bindProjectBatch(ticket, owner, values) {
+    const batch = getProjectBatch(ticket, owner); batchCheck(batch);
+    if (batch.state !== 'issued' || !Array.isArray(values) || values.length > maxBatchChildren) throw fail('ERR_SAVE_BATCH_MANIFEST', 'A project batch requires a bounded, dense path manifest.');
+    // Array.prototype.map does not visit holes; validate all indices explicitly.
+    const paths = []; let chars = 0;
+    for (let index = 0; index < values.length; index++) {
+      if (!Object.hasOwn(values, index)) throw fail('ERR_SAVE_BATCH_MANIFEST', 'A project batch requires a dense path manifest.');
+      const logicalPath = absoluteWindowsPath(values[index]); paths.push(logicalPath); chars += logicalPath.length;
+    }
+    if (values.length > maxBatchChildren - batchChildren || chars > maxBatchPinChars - batchPinChars) throw fail('ERR_SAVE_BATCH_LIMIT', 'The project path or child budget is exhausted.');
+    const release = claimBatchOperation();
+    batch.declarations = values.length; batchChildren += values.length; batch.pinChars = chars; batchPinChars += chars; batch.state = 'binding';
+    const task = (async () => {
+      try {
+        const targets = new Set(), manifest = [];
+        for (let index = 0; index < paths.length; index++) {
+          batchCheck(batch);
+          const entry = { ticket: randomBytes(24).toString('hex'), owner, kind: 'drawing', order: batch.order, deadline: batch.deadline,
+            state: /** @type {'bound'} */ ('bound'), abort: new AbortController(), batch };
+          const root = await permission(entry, paths[index], true); batchCheck(batch);
+          const pin = await identity.captureWriteTarget(paths[index], root); batchCheck(batch);
+          if (!pin.parentExists) throw fail('ENOENT', 'A project source parent does not exist.');
+          const retainedChars = JSON.stringify(pin).length;
+          if (retainedChars > maxBatchPinChars - batchPinChars) throw fail('ERR_SAVE_BATCH_LIMIT', 'The project native-pin character budget is exhausted.');
+          batch.pinChars += retainedChars; batchPinChars += retainedChars;
+          if (!pin.exists) { manifest.push(Object.freeze({ index, path: paths[index], missing: true })); continue; }
+          if (targets.has(pin.targetKey)) throw fail('ERR_SAVE_BATCH_DUPLICATE', 'Multiple project drawings resolve to the same native file.');
+          targets.add(pin.targetKey);
+          if (!pin.fileVersion || !/^\d+$/.test(pin.fileVersion.size)) throw fail('ERR_SAVE_BATCH_LIMIT', 'A native bounded project source size is required.');
+          const size = BigInt(pin.fileVersion.size);
+          if (size > BigInt(maxBatchInputBytes - batchInputs)) throw fail('ERR_SAVE_BATCH_LIMIT', 'The aggregate project source budget is exhausted.');
+          const inputBytes = Number(size); batch.inputBytes += inputBytes; batchInputs += inputBytes;
+          const child = Object.assign(entry, { pin, root });
+          batch.children.set(child.ticket, child); pending.set(child.ticket, child);
+          manifest.push(Object.freeze({ index, path: paths[index], childTicket: child.ticket, identityPath: pin.canonicalPath, exists: true }));
+        }
+        // Recheck the entire source basis: a late bind must not conceal an edit
+        // to an earlier file or grant while this manifest was being assembled.
+        await checkBatchSources([...batch.children.values()], (child) => strictBatchGuard(child));
+        batchCheck(batch); batch.state = 'bound'; batch.deadline = now() + ttlMs;
+        return Object.freeze(manifest);
+      } catch (error) { batch.abort.abort(); dropProjectBatch(batch); throw annotate(error, false); }
+      finally { release(); }
+    })();
+    batch.task = task; return task;
+  }
+  async function strictBatchGuard(entry, basis = false, allowCommitted = false) {
+    const pin = entry.pin;
+    if (!pin || !entry.batch) throw fail('ERR_SAVE_TICKET', 'A native project source pin is required.');
+    return withBatchMetadata(async () => {
+      batchCheck(entry.batch); if (!basis) abortCheck(entry);
+      await permission(entry, pin.logicalPath); batchCheck(entry.batch); if (!basis) abortCheck(entry);
+      const current = await identity.revalidate(pin, { preserveLeaf: true, preserveVersion: !allowCommitted });
+      const actual = fileVersionKey(current.fileVersion);
+      if (allowCommitted && actual !== fileVersionKey(pin.fileVersion)
+        && (!entry.batch.transitions.has(pin.targetKey) || entry.batch.transitions.get(pin.targetKey) !== actual)) throw targetChanged();
+      const previous = ledger.get(current.targetKey);
+      if (previous && previous.order > entry.order) throw fail('ERR_SAVE_STALE', 'A newer host save has already reached this project source.');
+      batchCheck(entry.batch);
+    });
+  }
+  /** O(n) per guard, O(n²) for all outputs; no atomic multi-file guarantee. */
+  async function guardProjectBasis(batch) {
+    await checkBatchSources([...batch.children.values()].filter((child) => child.readDone), (child) => strictBatchGuard(child, true, true));
+  }
+  /**
+   * The trusted host reader must compare its held FD version to scope.pin before
+   * allocating bytes. Read/decode is once-only, and the same original basis is
+   * checked before/after; legitimate earlier host saves still invalidate it.
+   * @param {string} ticket @param {object} owner @param {string} childTicket
+   * @param {(scope:ProjectBatchReadScope)=>Promise<unknown>} operation
+   */
+  function readProjectBatch(ticket, owner, childTicket, operation) {
+    const batch = getProjectBatch(ticket, owner); batchCheck(batch);
+    const entry = batch.children.get(childTicket);
+    if (batch.state !== 'bound' || !entry || entry.state !== 'bound' || entry.readDone || typeof operation !== 'function') throw fail('ERR_SAVE_TICKET', 'A bound project child can be read only once.');
+    const pin = entry.pin;
+    if (!pin?.fileVersion) throw fail('ERR_SAVE_TICKET', 'A captured native project source is required.');
+    const inputBytes = Number(pin.fileVersion.size);
+    const release = claimBatchOperation(); entry.state = 'reading';
+    const task = (async () => {
+      let active = true;
+      const guard = async () => {
+        if (!active || entry.state !== 'reading' || pending.get(entry.ticket) !== entry) throw fail('ERR_SAVE_TICKET', 'The project source read is no longer active.');
+        await strictBatchGuard(entry);
+      };
+      try {
+        await guard();
+        const result = await operation(Object.freeze({ pin, signal: entry.abort.signal, inputBytes, guard }));
+        await guard(); entry.readDone = true; batch.deadline = now() + ttlMs; return result;
+      } catch (error) { void closeProjectBatch(batch); throw annotate(error, false); }
+      finally { active = false; entry.state = 'bound'; release(); }
+    })();
+    entry.task = task; return task;
+  }
+  function selectedBatchChildren(batch, values, subset = false) {
+    if (!Array.isArray(values) || values.length > maxBatchChildren) throw fail('ERR_SAVE_BATCH_MANIFEST', 'A bounded project child selection is required.');
+    const selected = new Set();
+    for (let index = 0; index < values.length; index++) {
+      const ticket = values[index], child = batch.children.get(ticket);
+      if (!Object.hasOwn(values, index) || typeof ticket !== 'string' || selected.has(ticket) || !child || child.state !== 'bound' || !child.readDone || pending.get(ticket) !== child || subset && !batch.selected.has(ticket)) throw fail('ERR_SAVE_TICKET', 'The selected project children must be unique, read and bound to this parent.');
+      selected.add(ticket);
+    }
+    return selected;
+  }
+  function reserveBatchTargets(batch, selected) {
+    prune(); const keys = batchTargetKeys(batch, selected);
+    const union = new Set([...ledger.keys(), ...reservedTargets.keys(), ...keys]);
+    if (union.size > maxLedger) throw fail('ERR_SAVE_LEDGER_LIMIT', 'Project save ordering capacity is unavailable before mutation.');
+    for (const key of keys) {
+      let owners = reservedTargets.get(key); if (!owners) { owners = new Set(); reservedTargets.set(key, owners); }
+      owners.add(batch); batch.reserved.add(key);
+    }
+  }
+  function batchTargetKeys(batch, selected) {
+    return new Set([...selected].map((ticket) => {
+      const pin = batch.children.get(ticket)?.pin;
+      if (!pin) throw fail('ERR_SAVE_TICKET', 'The project child pin is no longer active.');
+      return pin.targetKey;
+    }));
+  }
+  function discardBatchChildren(batch, selected) {
+    for (const [ticket, entry] of batch.children) if (!selected.has(ticket)) {
+      pending.delete(ticket);
+      // Successfully read sources remain the immutable calculation basis even
+      // when unchanged or declined for writing. Only their write capability ends.
+      if (!entry.readDone) { entry.abort.abort(); batch.children.delete(ticket); }
+    }
+  }
+  /** Reserve capacity only; aborted calculation must not publish attempted save orders. */
+  function sealProjectBatch(ticket, owner, values) {
+    const batch = getProjectBatch(ticket, owner); batchCheck(batch);
+    if (batch.state !== 'bound') throw fail('ERR_SAVE_TICKET', 'The project batch can be sealed only once after source reads.');
+    const selected = selectedBatchChildren(batch, values), release = claimBatchOperation(); batch.state = 'sealing';
+    const task = (async () => {
+      try {
+        await checkBatchSources([...batch.children.values()].filter((child) => child.readDone), (child) => strictBatchGuard(child, true));
+        batchCheck(batch); reserveBatchTargets(batch, selected); discardBatchChildren(batch, selected);
+        batch.selected = selected; batch.state = 'sealed'; batch.deadline = now() + ttlMs;
+      } catch (error) { if (!batch.abort.signal.aborted) batch.state = 'bound'; throw annotate(error, false); }
+      finally { release(); }
+    })();
+    batch.task = task; return task;
+  }
+  /** Final preflight permits a subset after declined backups; it does not rebind sources. */
+  function beginProjectBatchCommit(ticket, owner, values) {
+    const batch = getProjectBatch(ticket, owner); batchCheck(batch);
+    if (batch.state !== 'sealed') throw fail('ERR_SAVE_TICKET', 'A sealed project batch is required before committing.');
+    const selected = selectedBatchChildren(batch, values === undefined ? [...batch.selected] : values, true);
+    const release = claimBatchOperation(); batch.state = 'beginning';
+    const task = (async () => {
+      try {
+        await checkBatchSources([...batch.children.values()].filter((child) => child.readDone), (child) => strictBatchGuard(child, true));
+        batchCheck(batch);
+        const keys = batchTargetKeys(batch, selected);
+        releaseBatchTargets(batch, keys); discardBatchChildren(batch, selected);
+        batch.selected = selected; batch.state = 'committing';
+      } catch (error) { void closeProjectBatch(batch); throw annotate(error, false); }
+      finally { release(); }
+    })();
+    batch.task = task; return task;
+  }
+  function cancelProjectBatch(ticket, owner) { return closeProjectBatch(getProjectBatch(ticket, owner)); }
   /**
    * Copy preparation (such as a bulk command's backup) uses the same namespace
    * queue as its subsequent save, without consuming the ticket or claiming that
@@ -154,12 +411,14 @@ function createSaveAdmissions(options) {
   function prepare(ticket, owner, kind, value, operation) {
     const entry = get(ticket, owner, kind);
     if (entry.state !== 'bound' || typeof operation !== 'function') throw fail('ERR_SAVE_TICKET', 'A bound ticket and copy preparation are required.');
+    if (entry.batch && (!entry.batch.selected.has(ticket) || entry.batch.state !== 'sealed' && entry.batch.state !== 'committing')) throw fail('ERR_SAVE_TICKET', 'Project backups require a selected child of a sealed batch.');
     const initial = samePath(entry, value);
+    const release = entry.batch ? claimBatchOperation() : () => {};
     entry.state = 'preparing';
     const task = (async () => {
       try {
         abortCheck(entry); await permission(entry, initial.logicalPath); abortCheck(entry);
-        return await enqueue(initial.queueKey, async () => {
+        return await enqueueProjectWrite(entry, initial.queueKey, async () => {
           abortCheck(entry); await permission(entry, initial.logicalPath); abortCheck(entry);
           const current = await identity.revalidate(initial);
           if (!current.parentExists) throw fail('ENOENT', 'The save parent does not exist.');
@@ -173,7 +432,9 @@ function createSaveAdmissions(options) {
           const activeCheck = () => { if (!active || entry.state !== 'preparing' || pending.get(entry.ticket) !== entry) throw fail('ERR_SAVE_TICKET', 'The backup preparation is no longer active.'); };
           const guardParents = async () => { activeCheck(); await identity.revalidate(current, { preserveLeaf: true }); };
           const guard = async () => {
-            activeCheck(); abortCheck(entry); await permission(entry, initial.logicalPath); abortCheck(entry);
+            activeCheck(); abortCheck(entry);
+            if (entry.batch) await guardProjectBasis(entry.batch);
+            abortCheck(entry); await permission(entry, initial.logicalPath); abortCheck(entry);
             const target = await identity.revalidate(current, { preserveLeaf: true, preserveVersion: true });
             checkOrder(target);
           };
@@ -189,7 +450,8 @@ function createSaveAdmissions(options) {
         throw annotate(error, false);
       } finally {
         if (entry.abort.signal.aborted) finish(entry);
-        else { entry.state = 'bound'; entry.deadline = now() + ttlMs; prune(); }
+        else { entry.state = 'bound'; entry.deadline = now() + ttlMs; if (entry.batch) entry.batch.deadline = entry.deadline; prune(); }
+        release();
       }
     })();
     entry.task = task; return task;
@@ -197,7 +459,9 @@ function createSaveAdmissions(options) {
   function run(ticket, owner, kind, value, operation) {
     const entry = get(ticket, owner, kind);
     if (entry.state !== 'bound' || typeof operation !== 'function') throw fail('ERR_SAVE_TICKET', 'A bound ticket and save operation are required.');
+    if (entry.batch && (!entry.batch.selected.has(ticket) || entry.batch.state !== 'committing')) throw fail('ERR_SAVE_TICKET', 'Project child saves require a completed batch preflight.');
     const initial = samePath(entry, value);
+    const release = entry.batch ? claimBatchOperation() : () => {};
     entry.state = 'running';
     let attempted = false, committed = false, stale = false, writeResult;
     /** @type {Promise<unknown>|undefined} */ let commitTask;
@@ -215,7 +479,7 @@ function createSaveAdmissions(options) {
         try {
           // Copy only after authorization and reserve before allocation/queueing.
           const snapshot = typeof payload === 'string' ? payload : new Uint8Array(payload);
-          return await enqueue(initial.queueKey, async () => {
+          return await enqueueProjectWrite(entry, initial.queueKey, async () => {
             abortCheck(entry); await permission(entry, initial.logicalPath); abortCheck(entry);
             const current = await identity.revalidate(initial);
             if (!current.parentExists) throw fail('ENOENT', 'The save parent does not exist.');
@@ -223,11 +487,13 @@ function createSaveAdmissions(options) {
             if (previous && previous.order > entry.order) { stale = true; throw fail('ERR_SAVE_STALE', 'A newer host save has already reached this file.'); }
             checkVersion(initial, current, previous);
             prune();
-            if (!ledger.has(current.targetKey) && ledger.size >= maxLedger) throw fail('ERR_SAVE_LEDGER_LIMIT', 'Save ordering history is full while older work remains pending.');
+            if (!ledger.has(current.targetKey) && !reservedTargets.has(current.targetKey) && orderingSlots() >= maxLedger) throw fail('ERR_SAVE_LEDGER_LIMIT', 'Save ordering history is full while older work remains pending.');
             const record = { order: entry.order, after: fileVersionKey(current.fileVersion), origins: originsFor(current, previous), parentPath: current.canonicalParent, targetPath: current.canonicalPath };
             ledger.set(current.targetKey, record);
             const guardParents = async () => { await identity.revalidate(current, { preserveLeaf: true }); };
             const guard = async () => {
+              abortCheck(entry);
+              if (entry.batch) await guardProjectBasis(entry.batch);
               abortCheck(entry); await permission(entry, initial.logicalPath); abortCheck(entry);
               await identity.revalidate(current, { preserveLeaf: true, preserveVersion: true });
             };
@@ -238,6 +504,7 @@ function createSaveAdmissions(options) {
               markTask = (async () => {
                 const after = await identity.revalidate(current, { preserveLeaf: true });
                 record.after = fileVersionKey(after.fileVersion); record.origins.add(record.after);
+                if (entry.batch) entry.batch.transitions.set(current.targetKey, record.after);
               })();
               void markTask.catch(() => {}); return markTask;
             };
@@ -275,7 +542,7 @@ function createSaveAdmissions(options) {
         if (!committed) { abortCheck(entry); throw fail('ERR_SAVE_NO_COMMIT', 'The save operation finished without committing a file.'); }
         return Object.freeze({ status: 'saved', committed: true, cancelledAfterCommit: entry.abort.signal.aborted, value: result, writeResult });
       } catch (failure) { throw annotate(failure, committed); }
-      finally { finish(entry); }
+      finally { finish(entry); release(); }
     })();
     entry.task = task; return task;
   }
@@ -287,16 +554,20 @@ function createSaveAdmissions(options) {
   function retireOwner(owner) {
     if (!owner || typeof owner !== 'object') throw fail('ERR_SAVE_TICKET', 'A main-owned save owner is required.');
     retired.add(owner);
+    for (const batch of batches.values()) if (batch.owner === owner) void closeProjectBatch(batch);
     for (const entry of pending.values()) if (entry.owner === owner) { entry.abort.abort(); if (entry.state === 'issued' || entry.state === 'bound') pending.delete(entry.ticket); }
     prune();
   }
   async function dispose() {
     disposed = true;
     const tasks = [];
+    for (const batch of batches.values()) tasks.push(closeProjectBatch(batch));
     for (const entry of pending.values()) { entry.abort.abort(); if (entry.state === 'issued' || entry.state === 'bound') pending.delete(entry.ticket); else if (entry.task) tasks.push(entry.task); }
     prune(); await Promise.allSettled(tasks); prune();
   }
-  const stats = () => Object.freeze({ pending: pending.size, ledger: ledger.size, queuedBytes, queues: tails.size });
-  return Object.freeze({ issue, bind, prepare, run, cancel, retireOwner, dispose, stats });
+  const stats = () => Object.freeze({ pending: ordinaryPending(), ledger: ledger.size, queuedBytes, queues: tails.size,
+    batchParents: batches.size, batchChildren, batchInputBytes: batchInputs, batchPinChars, activeBatchOperations: batchActive, metadataActive, metadataQueued: metadataWaiters.length, reservedTargets: reservedTargets.size, orderingSlots: orderingSlots() });
+  return Object.freeze({ issue, bind, prepare, run, cancel, retireOwner, dispose, stats,
+    issueProjectBatch, bindProjectBatch, readProjectBatch, sealProjectBatch, beginProjectBatchCommit, cancelProjectBatch });
 }
 module.exports = { SAVE_KINDS, SAVE_ADMISSION_LIMITS: LIMITS, createSaveAdmissions };
