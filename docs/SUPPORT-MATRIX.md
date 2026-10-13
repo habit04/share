@@ -195,7 +195,7 @@ Electrical, so it survives a round trip through other programs that keep blocks 
 - Parametric constraints, dynamic-block actions, sheet sets, data links, digital signatures.
 
 Development integration note: the completed metadata source and matching reader/writer pins
-are combined with the current 2D/save protections. Local validation passes 3,943 tests with
+are combined with the current 2D/save protections. Local validation passes 3,950 tests with
 28 conditional skips, all static/build checks and 32 actual Windows app workflows. Native
 decoder/projection fixture validation is separate from matching-helper and combined exact-head
 CI. Both metadata modules are included by the existing builder filters;
@@ -204,8 +204,12 @@ development source does not certify a new installer.
 
 Legacy TABLESTYLE encoding uses a checked modern representation: retained row overrides,
 STYLE links, margins, colors, borders and common links are compared independently. Values
-without a verified native slot refuse before writing. Original implicit-margin DWG data is
-not an oracle for explicit-margin DXFOUT conversion. Local authored projection checks pass;
+without a verified native slot refuse before writing. Native preparation retains imported
+compatibility dictionaries and their children; cleanup is limited to generated styles without
+DXF/native DWG provenance. The first compiled native regression exposed that dictionary loss;
+corrected matching-helper CI and actual independent C postflight remain required.
+Original implicit-margin DWG data is not an oracle for explicit-margin DXFOUT conversion.
+Local authored projection checks pass;
 the changed Rust helper's binary roundtrip and independent C postflight require fresh CI.
 
 ## Platforms

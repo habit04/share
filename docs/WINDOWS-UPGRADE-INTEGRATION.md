@@ -8,7 +8,7 @@ All four [exact-head CI jobs](https://github.com/habit04/share/actions/runs/3843
 passed, including native Windows writer/containment, Electron, origin migration,
 both Node suites, UI screenshots and performance gates. The long roadmap is paused.
 The first source integration stage combines completed #9 with this freeze in the
-same isolated worktree. Its full local suite passes **3,943 tests / 28 conditional
+same isolated worktree. Its full local suite passes **3,950 tests / 28 conditional
 skips**, all three TypeScript projects, broad lint, fixtures and the production build.
 All **32 actual Windows app workflows** pass on the final unchanged production bundle:
 14 opened-source/save/recovery, seven tracked 2D and 11 PDF/CSV export checks. Full
@@ -30,11 +30,21 @@ The native repair checks all three source rows against retained CELLSTYLEMAP for
 and exact links, colors, borders and margins. Unsupported inactive values explicitly
 refuse. All 239 targeted checks, including 36 new cases, pass; strict typed snapshots
 and independent C postflight are unchanged. The added Rust binary/mutation cases are
-uncompiled locally and must pass with the changed matching helper in fresh CI. The
-original AutoCAD body's implicit margins cannot certify explicit DXFOUT margins or
+compiled in Windows CI: `eb692896` clears both Node jobs and UI, while 50/51 native tests pass.
+The genuine binary case detects deleted imported TABLESTYLE compatibility dictionary entries.
+The authenticated writer patch retains those entries and children for explicit DXF or native
+DWG input; original cleanup applies only to generated styles without either source provenance.
+Corrected native tests, Windows application checks and independent C postflight must pass in
+fresh exact-head validation before integration proceeds. The original AutoCAD body's implicit
+margins cannot certify explicit DXFOUT margins or
 converted common links. CI retains only the development helper, corresponding source,
 notices and integrity manifest for private reproduction; release/signing workflows
 remain unchanged. No next-stage source or actual ancestry merge proceeds before this gate.
+
+The corrected full local Windows suite passes serially with every original deadline and
+freshness assertion. A private phase trace of the 33-file project case passed in 18.7 seconds;
+backup/write guards account for most elapsed time. Parallel native-filesystem contention and
+the initial restricted runner's denied link fixtures remain separate failed-run evidence.
 
 This stage resolves shared clip-boundary identities and copies, duplicate modeled
 VIEWPORT 340 export, anonymous STYLE identity and complex-LTYPE overlay conflicts.
@@ -86,7 +96,7 @@ separately. Private source records remain in the worktree's `.codex-local` audit
 | [8](https://github.com/habit04/share/pull/8) | Rotated rectangular layout viewports in display, editing and plotting. | Merged/released v0.4.8; current-head CI passes. Polygon/curved clips are separate scope. |
 | [9](https://github.com/habit04/share/pull/9) | Named views, FIELD links, bounded CAD metadata/reference graph and independently verified native save preservation. | Merged/released v0.4.9, stable 8dfe1caa; final-head and publication checks pass. Priorities #19/#29 are completed externally. Reuse this work. |
 | [10](https://github.com/habit04/share/pull/10) | Immutable pan cache, graphics-loss recovery and complete Canvas fallback. | Delivered draft milestone at a0eea698; latest push/PR CI passes all five jobs. Unmerged/unreleased. |
-| [11](https://github.com/habit04/share/pull/11) | Windows 2D compatibility, fonts/plots, plugin lifecycle and save/recovery corrections; completed #9 source integration. | Frozen #24 at 739950c: [all four exact-head CI jobs pass](https://github.com/habit04/share/actions/runs/38434090041). Combined #9 + #24 local validation: 3,943 tests/28 skips, static/build and 32 actual Windows workflows pass after first-CI corrections. [Combined exact-head checks](https://github.com/habit04/share/pull/11/checks), changed native helper and C postflight are required before the next stage. Roadmap rows remain paused and partial. |
+| [11](https://github.com/habit04/share/pull/11) | Windows 2D compatibility, fonts/plots, plugin lifecycle and save/recovery corrections; completed #9 source integration. | Frozen #24 at 739950c: [all four exact-head CI jobs pass](https://github.com/habit04/share/actions/runs/38434090041). Combined #9 + #24 local validation: 3,950 tests/28 skips, static/build and 32 actual Windows workflows pass after first-CI corrections. [Combined exact-head checks](https://github.com/habit04/share/pull/11/checks), changed native helper and C postflight are required before the next stage. Roadmap rows remain paused and partial. |
 | [12](https://github.com/habit04/share/pull/12) | Pinned first 2D batch plus GPU foundations, Intel/NVIDIA native cache recovery and adapter selection. | Delivered draft milestone at b145ea39; all five latest CI jobs pass. Pins only old 2D 3ce7e10a, not current #11 or released #9. |
 | [13](https://github.com/habit04/share/pull/13) | Bounded zoom reuse with fixed pixel lineweights and separately measured frame stages. | Delivered draft at 734de794; measured renderer fd7fac07. Both producer/evidence CI records pass. Unmerged/unreleased. |
 | [14](https://github.com/habit04/share/pull/14) | Eligible LINE edit/undo caching and 168-byte subrange uploads, with failure repair. | Delivered draft at 6e00136f; measured renderer fe653933. Latest five CI jobs pass. Arbitrary edits remain separate. |

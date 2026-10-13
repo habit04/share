@@ -65,7 +65,7 @@ proof that their implementation or external verification has passed.
 
 ## Current validation and integration
 
-- Combined #9 + #24 source: **3,943 tests / 28 conditional skips**, all three TypeScript
+- Combined #9 + #24 source: **3,950 tests / 28 conditional skips**, all three TypeScript
   projects, broad lint, fixtures and production build pass. **32 actual Windows source-Electron
   workflows** pass together: 14 opened-source/save/recovery, seven tracked 2D import/edit/save/
   reopen and 11 PDF/CSV export workflows. All private app processes close; production bundle,
@@ -89,9 +89,17 @@ proof that their implementation or external verification has passed.
   formats, exact STYLE links, margins, colors, grids and common links. Unsupported inactive values
   refuse before encoding; strict typed snapshots and independent C postflight remain intact.
   **239 targeted checks, including 36 new cases**, pass. A genuine Rust binary-roundtrip fixture
-  and mutation/refusal cases are added but were not compiled locally. Matching changed-helper
-  compilation and C postflight remain required in fresh CI; an original DWG with implicit margins
-  cannot certify its DXFOUT's explicit-margin conversion. Development helper/source/notices/
+  and mutation/refusal cases compile in Windows CI. At `eb692896`, Node 22, Node 24 and UI pass,
+  while native tests pass 50/51: the new binary case detects removed imported compatibility
+  dictionary entries. The authenticated writer patch limits cleanup to generated styles without
+  DXF or native DWG source provenance, preserving imported entries and child records. Strict
+  assertions remain unchanged; corrected matching-helper CI and actual C postflight must pass.
+  Seven authenticated-source regressions pass; added native controls check both saves and the
+  complete map payload. The full local Windows suite runs serially with original deadlines:
+  its 33-file native project case passed in 18.7 seconds when measured separately, with most
+  time in fresh backup/write guards. Parallel local filesystem contention is recorded separately.
+  An original DWG with implicit margins cannot certify its DXFOUT's explicit-margin conversion.
+  Development helper/source/notices/
   integrity artifacts support private reproduction; no installer/signing workflow was changed.
 - Integration corrections retain modeled complex-LTYPE edits and opaque extensions, distinct
   anonymous STYLE identities, enabled/disabled/shared viewport boundary ownership, graph-aware

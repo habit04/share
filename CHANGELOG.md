@@ -81,8 +81,10 @@ messages). The date of each version is the date of the commit that set that vers
 
 - Legacy TABLESTYLE conversion checks retained row formats, inherited overrides, links,
   colors, grids and margins before choosing a modern native representation. Unsupported
-  inactive values refuse before encoding. Strict metadata snapshots and independent native
-  postflight remain required; local projection tests do not certify a compiled helper.
+  inactive values refuse before encoding. Native writer preparation preserves imported
+  compatibility dictionary entries and child records; constructor cleanup remains bounded
+  to styles without DXF or native DWG source provenance. Strict metadata snapshots and
+  independent native postflight remain required; local projection tests do not certify a compiled helper.
 
 - Windows text/PDF exports share drawing saves' native ordering and opened-source guards.
   PDF orders precede dialogs and slow font/image/conversion work; direct CSV reports capture
