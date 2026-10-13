@@ -879,6 +879,22 @@ and both exact-head CI runs are pending. Publish source-bound Intel/NVIDIA/proce
 and unavailable-device evidence only after its gates pass. Canvas remains default;
 production approval and the broader hardware/curve gates remain open.
 
+Clean `c39984ab` passed all ten local checks (3,469 tests, 28 conditional skips),
+all five native preflight checks, and fresh producer-bound backing/cache/unsafe-ARC
+fallback gates. Both native audit aggregates remain inconclusive, retaining the
+48-pixel thin-reference and 1,228-pixel ARC-reference changes. Its Intel full
+benchmark and experimental GPU CI then failed a missing argument in the boundary
+probe's cleanup callback. The preserved dense probe body passed both inside/beyond
+accuracy and unchanged-document checks; camera restoration had not run. NVIDIA
+timing and later fixture gates were not reached. This is a harness failure, and
+the complete benchmark remains failed until the corrected callback is exercised.
+Its diagnostic dense sustained-zoom samples prepared/uploaded nothing and measured
+completed-frame median 13.0 ms GPU versus 53.0 ms Canvas, with GPU max 17.5 ms.
+Cold boundary setup still took 88.8 ms geometry preparation and 140.8 ms completed
+wall time; a genuine fourfold crossing took 62.9 ms preparation and 71.2 ms completed
+wall time. Preserve these costs and the failed source; no aggregate acceptance or
+general responsiveness claim follows from the provisional improvement.
+
 ### NVIDIA validation on the pinned GPU source
 
 A separate private process using Electron's documented

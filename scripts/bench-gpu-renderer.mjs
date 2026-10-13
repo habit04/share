@@ -1658,7 +1658,7 @@ try {
         assert.equal(await page.evaluate(() => JSON.stringify(window.editor.doc.snapshot)), saved.document);
         boundary.documentUnchanged = true; boundary.outcome = 'passed';
       } finally {
-        await page.evaluate(({ camera, mode }) => { const v = window.editor.viewport; v.center = camera.center; v.scale = camera.scale; v.twist = camera.twist; window.gpuPrototype.setMode(mode); });
+        await page.evaluate(({ camera, mode }) => { const v = window.editor.viewport; v.center = camera.center; v.scale = camera.scale; v.twist = camera.twist; window.gpuPrototype.setMode(mode); }, { camera: saved.camera, mode: saved.mode });
         await modeFrame(page, saved.mode);
         const restored = await page.evaluate(() => { const v = window.editor.viewport; return { center: { ...v.center }, scale: v.scale, twist: v.twist }; });
         assert.deepEqual(restored, saved.camera); boundary.cameraRestored = true;
