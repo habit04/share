@@ -73,6 +73,18 @@ messages). The date of each version is the date of the commit that set that vers
 
 ### Fixed
 
+- Windows text/PDF exports share drawing saves' native ordering and opened-source guards.
+  PDF orders precede dialogs and slow font/image/conversion work; direct CSV reports capture
+  before project reads and serialization. Older output, outside edits and retired owners
+  refuse replacement. Cancellation joins owned conversion/write cleanup, detached report
+  reads release unused source proofs, and unverified replacements explicitly require review.
+  Plotting preserves drawing dirty/history/recovery state and obvious empty-model behavior.
+  Existing project backups and the separate 512 MiB PDF ceiling remain supported.
+
+- Plugin manifest/code reads compare fresh held-descriptor bytes, refusing same-size changes
+  hidden by Windows timestamp collisions. Bounded scratch, size limits, confinement and
+  existing trust policy are preserved; this does not implement plugin capability isolation.
+
 - Windows save versions include fresh descriptor-read byte digests, refusing same-size external
   edits even when native timestamps collide. Returned drawing bytes match their original pins,
   and post-decode checks retain coherent opens. Own committed versions must match the exact write

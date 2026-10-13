@@ -38,9 +38,10 @@ recovery state. Unverified recovered/imported source aliases require an explicit
 
 ## Bounds and remaining requirements
 
-- Host limits: 32 ordinary pending reservations/shared active operations, 640 ordering records,
-  128 MiB per payload and 256 MiB
-  queued payloads. Unclaimed/bound tickets expire after two minutes; running work joins cleanup.
+- Host limits: 32 non-batch pending reservations/shared active operations and 640 ordering
+  records. Ordinary payloads retain 128 MiB each / 256 MiB queued; PDF exports have separate
+  512 MiB payload / 512 MiB queued bounds and a 768 MiB combined retained-payload ceiling.
+  Unclaimed/bound tickets expire after two minutes; running work joins cleanup.
 - Project calculations issue one opaque parent order before any project/tab snapshot or producer.
   Up to 512 declared sources share inherited child orders, with at most two parents/one per owner,
   128 MiB aggregate native input and 16 MiB retained pin characters. Missing sources with an existing
@@ -73,13 +74,16 @@ recovery state. Unverified recovered/imported source aliases require an explicit
   refuses marking a newly saved drawing clean rather than guessing its current file identity.
 - Content checks retain native dev/ino/size/mtime/ctime plus actual-byte SHA256 evidence. Metadata
   lookups remain read-only and do not read contents; authorized admissions add the content pin.
-  Hash reads use a fixed 256 KiB buffer and explicit 128 MiB per-file bounds, with cancellation
-  between chunks. Cleanup may verify metadata alone; write/version checks cannot select that mode.
+  Hash reads use a fixed 256 KiB buffer and explicit 128 MiB per-file drawing/source bounds,
+  with cancellation between chunks. Main-owned PDF exports seal a separate 512 MiB content
+  budget, preserving the existing PDF ceiling without increasing reader/drawing/project limits.
+  Cleanup may verify metadata alone; write/version checks cannot select that mode.
   Node has no portable openat/renameat API; a hostile external process can still race the final
   check and OS replacement. Dedicated case-sensitive directories, UNC shares and virtual/RAM
   drive providers need additional fixtures. Native identity-unavailable providers are not certified.
-- Direct non-project text/PDF export producer ordering is a separate follow-up. Native DWG
-  converter/reference equivalence and real-file verification remain with priorities 19/29.
+- Direct text/PDF exports use the same owner/order/native-target service; the final follow-up's
+  validation is tracked below. Native DWG converter/reference equivalence and real-file
+  verification reuse the completed external work in priorities 19/29.
 
 A private native audit proved that dev/ino/size/mtime/ctime alone are insufficient on this Windows
 filesystem: 10/64 same-size edited DXFs retained identical native fields after restoring mtime,
@@ -148,4 +152,58 @@ unchanged and owned processes closed. These are separate from the earlier 33-wor
 Nine additional actual Windows checks validate the corrected general-E2E proof/backup harness;
 the DWG IPC unit suite explicitly labels POSIX identity protocol doubles and retains real native
 Windows checks. Full local general E2E needs a matching native helper, absent in this worktree;
-the corrected-head full Windows CI run must pass separately.
+[all four corrected-head CI jobs at 26c9dac pass](https://github.com/habit04/share/actions/runs/38417374158),
+including the full Windows Electron workflow. These results precede the export follow-up.
+
+## Direct text and PDF export follow-up
+
+Confirmed old defects used native Windows files and the production main handlers: a delayed
+raster PDF could overwrite a newer vector PDF; an older native text picker could obtain a
+fresh order after a newer export; text export could overwrite an opened drawing without its
+source protection; a retired raster owner could still write. That initial component probe
+mocked dialog/hidden PDF conversion and did not establish actual desktop producer behavior.
+
+Generic text and PDF writes now share drawing saves' owner, target ledger, native namespace
+and content guards. Text/project intent is captured before the picker. A renderer PDF order
+is issued before the Plot options dialog, and the selected output is bound before fonts,
+images, compression or raster production. Drawing/resource state is captured after the Plot
+choice and before its destination picker, retaining the existing plot-choice timing. Modern
+bound output cannot acquire a new ticket or fresh baseline when it arrives at the writer;
+legacy payload-only main calls capture before their own picker/conversion. Direct CSV report
+commands capture before project reads and report serialization, using the original bridge and
+report source snapshots through awaits. Detached report reads release their unused Open proofs
+after parsing, including errors, so repeated reports cannot consume live-tab proof capacity.
+
+Native choices are rechecked before grants. Generic exports refuse every active opened-source
+alias/hardlink rather than adopting a drawing proof. Every atomic replacement repeats source,
+namespace, digest and order checks and returns a one-use verified receipt. Export receipts do
+not install renderer drawing aliases, bind a drawing path, clear dirty/history/recovery or mint
+opened-source proofs. Obvious empty/all-hidden model plots still skip the destination dialog.
+Unverified text replacements report destination review rather than claiming no file was saved.
+Project JSON keeps its 8 MiB bound and exact prior backup; ordinary text
+keeps the 128 MiB drawing/text ceiling and no automatic backup. Unexpected project extensions
+retain their original order while applying project size/backup policy.
+
+PDF payload and queued snapshot ceilings are 512 MiB each; the ordinary queued arena remains
+256 MiB, and combined retained payloads are capped at 768 MiB. These are admission budgets,
+not estimates of process memory or IPC transfer costs. PDF content pins seal their larger
+budget; drawing/source pins cannot request it through the renderer. Cancellation aborts owned
+hidden conversion and joins bind/producer/descriptor/writer cleanup. Renderer export cleanup
+also joins its sends and receipt handling, including concurrent cancellation/finally calls.
+
+Final local validation passes 3,663 tests / 28 conditional skips, all three TypeScript projects,
+lint, fixtures and production build. Export coverage adds 110 regressions and 11 actual Windows
+workflows, with real vector/native raster PDFs and controlled dialog/font/conversion timing.
+The previous 14 opened-source + seven tracked 2D workflows also pass on that export build.
+A subsequent CJS-only plugin-byte repair passes seven additional regressions, 132 targeted
+checks, 64/64 unmasked native changed-file refusals and six actual Electron IPC checks; those
+app runs are separate snapshots with an unchanged renderer. See `PLUGIN-SOURCE-READS.md`.
+All owned processes close and production hashes remain unchanged within each proof.
+
+Native file tests accept an existing PDF above 128 MiB and refuse a real file above 512 MiB
+before additional hashing; scratch, arenas and joined descriptor cleanup are checked. Payload
+budget tests use reduced limits. Actual desktop PDFs are small; there is no full 512 MiB native
+IPC or installed-build claim. Original deadlines/guards remain. Two obsolete source-contract
+checks now trace the guarded shared writer and invoke paper validation; the large private file
+is joined and emptied before recursive fixture cleanup. Exact-final-head CI must pass before
+integration, separately from the earlier green 26c9dac run.

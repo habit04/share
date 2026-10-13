@@ -23,6 +23,14 @@ retain dirty state and recovery. Verified own saves advance that source, and sep
 starts a new one. Evidence is bounded and runtime-only; filesystem provider and final OS race
 limits remain in [Windows save admissions](WINDOWS-SAVE-ADMISSIONS.md).
 
+Windows text/PDF exports share that native owner/order and opened-source protection.
+PDFs bind before slow resource/conversion work, and CSV reports reserve before project
+reads. Exports cannot overwrite active drawing sources through aliases, mark drawings
+clean or change recovery state. Unverified replacements explicitly require destination
+review. Ordinary payload limits remain 128 MiB; PDF exports retain a separate 512 MiB
+ceiling with bounded content hashing and queued snapshots. Large native IPC transfers,
+provider/UNC fixtures and the final check-to-rename race are separate limitations.
+
 Legend: **yes** = kept; **partly** = kept with the limits in the last column; **no** = not read or
 not written (the object is dropped; on DWG import the dropped types are counted in the "Skipped
 unsupported" line on the command line). Sources: `src/io/dxf/` (the reader is `reader.ts` and

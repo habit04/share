@@ -29,7 +29,7 @@ separately. Private source records remain in the worktree's `.codex-local` audit
 | [8](https://github.com/habit04/share/pull/8) | Rotated rectangular layout viewports in display, editing and plotting. | Merged/released v0.4.8; current-head CI passes. Polygon/curved clips are separate scope. |
 | [9](https://github.com/habit04/share/pull/9) | Named views, FIELD links, bounded CAD metadata/reference graph and independently verified native save preservation. | Merged/released v0.4.9, stable 8dfe1caa; final-head and publication checks pass. Priorities #19/#29 are completed externally. Reuse this work. |
 | [10](https://github.com/habit04/share/pull/10) | Immutable pan cache, graphics-loss recovery and complete Canvas fallback. | Delivered draft milestone at a0eea698; latest push/PR CI passes all five jobs. Unmerged/unreleased. |
-| [11](https://github.com/habit04/share/pull/11) | Windows 2D compatibility, fonts/plots, plugin lifecycle and save/recovery corrections. | This branch, 00a850a: 3,544 local Windows tests/28 skips, build/static and 21 rebuilt app checks pass. Current CI exposed Ubuntu Windows-simulation and Windows E2E harness failures; correction and clean CI are required before integration. Remaining roadmap rows are still partial. |
+| [11](https://github.com/habit04/share/pull/11) | Windows 2D compatibility, fonts/plots, plugin lifecycle and save/recovery corrections. | Final #24 local batch: 3,663 tests/28 skips, build/static and native/application export/read/save gates pass; see the checklist for separate snapshots and limitations. Earlier published 26c9dac has [all four exact-head CI jobs passing](https://github.com/habit04/share/actions/runs/38417374158). Require [all final-head checks](https://github.com/habit04/share/pull/11/checks) green before integration; the earlier run does not cover this follow-up. Remaining roadmap rows are paused and still partial. |
 | [12](https://github.com/habit04/share/pull/12) | Pinned first 2D batch plus GPU foundations, Intel/NVIDIA native cache recovery and adapter selection. | Delivered draft milestone at b145ea39; all five latest CI jobs pass. Pins only old 2D 3ce7e10a, not current #11 or released #9. |
 | [13](https://github.com/habit04/share/pull/13) | Bounded zoom reuse with fixed pixel lineweights and separately measured frame stages. | Delivered draft at 734de794; measured renderer fd7fac07. Both producer/evidence CI records pass. Unmerged/unreleased. |
 | [14](https://github.com/habit04/share/pull/14) | Eligible LINE edit/undo caching and 168-byte subrange uploads, with failure repair. | Delivered draft at 6e00136f; measured renderer fe653933. Latest five CI jobs pass. Arbitrary edits remain separate. |
@@ -42,8 +42,23 @@ Follow-up to the #11 audit: the harness correction retains all original assertio
 uses explicitly scoped POSIX protocol doubles instead of treating POSIX paths as
 native Windows paths, and adds protected-source backup/refusal checks. Local full
 suite now passes 3,546/28 skips; nine additional actual Windows checks and all static
-checks pass. No product guard or timeout changed. Corrected-head full CI is still
-required; the general local E2E driver needs a matching native helper, absent here.
+checks pass. No product guard or timeout changed. Corrected-head full CI at
+26c9dac passes all four jobs, including full Windows Electron E2E. The general
+local E2E driver needs a matching native helper, absent here. These results do
+not cover subsequent export changes.
+
+The final #24 batch has now passed its local gates, including shared text/PDF order,
+captured CSV inputs, released detached read proofs and explicit unverified-replacement
+messages. A native final-gate plugin race was fixed with bounded same-FD byte verification;
+the old reader accepted 25/64 changed-file trials, while the fixed reader refuses 64/64,
+including 38 genuine metadata collisions. No original deadline/guard was relaxed. The
+whole suite passes 3,663/28 skips. Actual export/save/2D and plugin IPC evidence is recorded
+as separate immutable source runs. The final publication must still clear exact-head CI
+before any integration. No incoming branch has been applied by this follow-up.
+
+A fresh read-only head check confirms the 14-PR inventory, published 3D a4d55263 and
+GPU #15 47625347 remain unchanged. The sharper GPU join limitation below has no new
+published corrective head at this check; unfinished isolated fixes are not adopted.
 
 ## Delivered work without its own PR
 
@@ -55,13 +70,35 @@ required; the general local E2E driver needs a matching native helper, absent he
 
 ## Integration order after #24
 
-1. Finish the #24 CI corrections, freeze this branch and confirm all required checks.
-   Preserve the original file/backup/recovery assertions; do not weaken source-proof
-   guards or raise tolerances/timeouts to make the harness pass.
+The user has paused the long 2D roadmap. Finish only the current #24 milestone
+before beginning the integration sequence; no further font, hatch, xref or other
+roadmap implementation is part of this freeze.
+
+1. Finish #24's confirmed text/PDF export gaps: capture host order before native
+   pickers and slow font/image/PDF work; use the same ordering and opened-source
+   protections as drawing saves; join cancellation/conversion/writer cleanup.
+   Include the exposed plugin-read timestamp collision repair: fresh same-FD raw
+   bytes with bounded scratch, preserving size/confinement/trust policy. This is
+   read reliability; capability isolation stays paused with the long roadmap.
+   Preserve existing text/project behavior and the 512 MiB PDF ceiling without
+   increasing ordinary drawing limits or marking plotted drawings clean.
+   Add native-file regressions and rebuilt application checks, then run the full
+   suite, three TypeScript projects, lint, fixtures and production build. Commit
+   and freeze this batch, and require all checks green on its exact final SHA.
+   Preserve original file/backup/recovery assertions; do not weaken guards or
+   raise tolerances/timeouts. Do not start integration while checks are pending
+   or failing. Provider/UNC/case-sensitive fixtures and Node's final OS race remain
+   explicit limitations, rather than claims that all filesystem races are solved.
 2. Use released v0.4.9 / 8dfe1caa as the candidate's stable foundation. Integrate the
    completed #11 corrections deliberately with #9's graph-aware codecs, transactions
    and matching native assets. Current #11 is based on v0.4.8 and has shared-file
    conflicts; neither side's changes can be accepted wholesale.
+   Reuse completed source/native dependencies as coherent units, including graph
+   transaction reconciliation and matching reader/writer provenance. Resolve the
+   demonstrated LTYPE/anonymous STYLE and prepared-project/viewport conflicts.
+   Retain the final #24 CSV/PDF/read lifecycle and guards. No release-branch merge,
+   installer, signing or new release-workflow changes are part of this development
+   integration. Keep each combined milestone independently validated before the next.
 3. Integrate delivered document 3D source a4d55263, retaining its default-off flag,
    kernel controls, bounded persistence and refusal of unsupported DWG output.
    Review shared document/state validation, undo, commands, DXF codecs, autosave,
@@ -105,6 +142,14 @@ those existing fixes must be retained once, not replayed over the newer versions
   accuracy, clipping/twist/lineweights/text/font-context changes, edits/undo/recovery,
   context loss/unavailability and complete fallback. Remeasure representative pan,
   zoom, boundary, first-frame and editing workflows on the combined source.
+  The GPU owner subsequently reported a positive-bulge-to-LINE join displacement
+  of 0.271 physical pixels against a 0.25 target in an existing fixture. Historical
+  raster/coverage CI did not detect it. Require the original fixture unchanged,
+  independent mathematical accuracy checks and complete Canvas fallback for
+  ineligible joins before accepting a new published GPU candidate. Block/text
+  editing responsiveness is also under correction in that isolated workstream.
+  Its unpublished fixes are not integration inputs; recheck published source and
+  exact-head evidence before selecting the GPU leaf.
 - Keep remaining limits visible: GPU blocks/text acceptance, dimensions/hatches and
   other coverage, AMD/remote/other drivers and persistent failures; 3D DWG/ACIS,
   plotting/grips/advanced modelling limits; outstanding 2D checklist rows. These

@@ -12,6 +12,12 @@ the complete inventory of all JCad work.
 Status distinguishes a tested correction from completion of the entire priority. Source evidence
 is the current branch and `SUPPORT-MATRIX.md`, rather than an earlier planning list.
 
+The user has paused further work through the long roadmap. The current batch finishes
+priority **24**, including confirmed direct text/PDF export ordering and source-protection
+defects, then freezes only after local validation and clean CI on its final commit. The
+next work is deliberate integration of completed #9, 3D and GPU development milestones;
+partial rows below remain recorded scope rather than new implementation assignments.
+
 Completed corrections so far include: polygon viewport DXF/display/input compatibility, dimension
 style correctness, text/default override correctness, declared-height MTEXT flow and Windows
 path/save protection. Independent review findings are fixed and covered by regressions. The
@@ -38,7 +44,7 @@ remain open where full compatibility is unverified.
 | 21 | Horizontal SHX milestone implemented: bounded native shape/unifont decoder, explicit Windows SHXFONT/SHXLOAD picker, per-session resources, native TEXT ink/space/fitting/descent rules and shared Canvas/raster/eligible vector paths. Native/actual app proof passes 1,477 checks plus the final rebuilt save/default/backup/reopen gate. Unsupported glyphs/modes retain substitutes. BigFont, vertical/mirrored text, fractional arcs and complex-linetype glyph painting remain open. See `SHX-FONTS.md`. | Independent; no proprietary font bytes committed. DWG exposure/reference dependencies remain #19. | Retain native fixture, metrics/plot/real IPC/undo/save/reopen proof; extend each encoding/mode and linetype placement with native fixtures. |
 | 22 | Partial: table cells edited in JCad, export is INSERT + `JCAD_TABLE` XDATA. | Native table model/export; #19 for omitted DWG cells. | Native editable ACAD_TABLE reopened externally and in JCad, styles/cell values retained. |
 | 23 | Partial: electrical attributes, WD_M settings and project metadata exist; remaining proprietary extensions require fixture-based audit. | Electrical audit; application dictionaries #29. | Real AutoCAD Electrical cases preserve exposed tags/catalog/connectivity/settings; report unmodeled metadata. |
-| 24 | Native admissions, Unicode grants, coherent reads, commit receipts, stored leaf preservation and guarded backups are tested. Bounded whole-project preparation and byte-digest protection pass. Completed Open now retains bounded owner-bound source evidence: outside edits before a later Save refuse before backup/replacement, retaining dirty/recovery state. Verified own saves advance the lineage; separate Save As creates a new one. Duplicate opens, aliases, reloads, overlapping saves and omitted source contexts cannot silently refresh it. Provider/UNC/case-sensitive fixtures and direct export ordering remain open. See `WINDOWS-SAVE-ADMISSIONS.md`. | Lead/reliability; host-owned orders, native identity and bytes. Completed helper hunk credited to PR #9; completed reader/metadata integration is separate. | Retain aliases, backups, restored-stat edits, retries, cancel/reload, dirty/recovery and complete project bases. Current source-proof slice has real Windows IPC/app coverage; provider and final OS race limits are explicit. |
+| 24 | Current milestone implemented: native admissions, Unicode grants, byte-digest and completed-open lineage protection, stored leaf preservation, guarded backups and bounded whole-project preparation. Text/PDF exports share order/source guards; PDF resources and direct CSV report inputs are captured before awaits, stale/retired output refuses, cancellation joins cleanup and exports preserve dirty/history/recovery. Detached report proofs release, and unverified replacements warn explicitly. A final-gate native plugin collision was repaired with bounded fresh-byte verification; source-read policy is unchanged. Native/app regression evidence is recorded below. The complete final suite and exact-final-head CI must clear before integration. Provider/UNC/case-sensitive fixtures and Node's final OS race remain limitations. See `WINDOWS-SAVE-ADMISSIONS.md`. | Lead/reliability; host-owned orders, native identity and bytes. Completed helper hunk credited to PR #9; completed reader/metadata integration is separate. | Retain all save/export/read regressions and original limits/deadlines, clear final local/CI gates, then freeze this milestone and begin deliberate integration. Externally unavailable provider fixtures remain explicit requirements rather than a universal race-free claim. |
 | 25 | Plugin read races/Unicode escapes and lifecycle revocation implemented: bounded descriptors, stale-load/reload ownership, scoped prompt/dialog/picker cleanup and nested transaction rollback. API v1 remains full-trust page code; capability isolation is missing. See `PLUGIN-SOURCE-READS.md`. | Independent source/lifecycle fixes; separate realm/RPC compatibility architecture for full isolation. | Retain real file-read and unload/reload regressions, then enforce declared caps outside plugin globals with actual denied operations and explicit migration. |
 | 28 | Missing specialized entities and PDF/DGN/DWF underlays; unsupported records reported (`SUPPORT-MATRIX.md`). | Independent per-entity milestones; parsers/licensing required for underlays. | Preserve source/reference metadata; fixture import/edit/save/reopen and visible unsupported feedback. |
 | 29 | **Completed externally in PR #9/v0.4.9; integration only.** Bounded metadata/object-reference preservation is already implemented. This branch still uses the earlier codecs and strips unsupported cross-object links pending deliberate integration. | Same completed external work as #19; lead owns compatibility integration, not duplicate implementation. | Reuse the completed graph and verify metadata equivalence, ownership and real-file edit/save/reopen on the combined branch. |
@@ -54,7 +60,19 @@ proof that their implementation or external verification has passed.
 
 ## Current validation and integration
 
-- Latest combined branch: **3,546 tests / 28 conditional skips**, all three TypeScript projects,
+- Final #24 batch: **3,663 tests / 28 conditional skips**, all three TypeScript projects,
+  broad lint, fixtures and production build pass on frozen source. The export follow-up adds
+  **110 regressions** (34 native foundation, 32 guarded IPC and 44 renderer/report cases).
+  **11 actual Windows export workflows** use real vector/native raster PDFs, files, backups,
+  source protection and recovery, with joined cancellation/reload. **14 existing opened-source
+  + 7 tracked 2D workflows** pass on the same export build. A subsequent CJS-only plugin-byte
+  repair adds seven regressions, **132 targeted checks**, **64/64 native changed-file refusals**
+  (38 real metadata collisions) and **six actual source-Electron IPC checks**. The renderer
+  bundle is unchanged; those app runs are separate source snapshots, not 38 checks on one SHA.
+  All owned processes close. Original test deadlines/guards remain; only stale source-contract
+  assertions and owned large-fixture teardown were corrected. Exact-final-head CI must pass
+  before integration; source/provider/large-IPC limits remain documented.
+- Previous completed-open branch: **3,546 tests / 28 conditional skips**, all three TypeScript projects,
   broad lint, fixtures and production build pass. The rebuilt source Electron passes **14 new
   opened-source/recovery workflows + 7 existing tracked 2D workflows**, with unchanged production
   source/bundle hashes and closed owned processes. The prior byte-digest milestone passed
@@ -67,7 +85,9 @@ proof that their implementation or external verification has passed.
 - CI follow-up keeps all existing DWG IPC assertions and explicitly separates native Windows
   identity checks from POSIX protocol doubles. Nine additional actual Windows checks verify the
   corrected standalone-backup/unused-proof/clean-tab-close harness paths. Full local general
-  Electron E2E is unavailable without its matching native helper; corrected-head CI is required.
+  Electron E2E is unavailable without its matching native helper; [all four corrected-head CI
+  jobs at 26c9dac pass](https://github.com/habit04/share/actions/runs/38417374158). That evidence
+  does not cover the subsequent export follow-up, which needs a fresh final-head run.
 - Ordinate: **42 regressions**, **263 native save/reopen comparisons**, two zero-error AUDITs,
   **214 geometry + 19 scaling comparisons** at 1e-8, and **66 Canvas/raster/Poppler checks**.
   Cross-renderer bounds use two pixels; they are not native PDF pixel equality.
