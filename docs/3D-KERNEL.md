@@ -40,6 +40,10 @@ meshes").
   within 1e-9 (relative to the profile extent) of the axis become single pole vertices and edges
   on the axis sweep no faces, so a rectangle with one side on the axis gives a closed cylinder. A
   profile that touches the axis at one vertex only gives a pinch vertex (edge-manifold, accepted).
+- Revolve features store their `segments` (steps per full turn, default 32, clamped 3..256), so
+  re-evaluation rebuilds the mesh it was made with.
+- Caps use exactly the profile vertices. A stored profile with exactly collinear vertices may get
+  zero-area cap triangles from the triangulator's fallback; they keep the mesh closed.
 - Limits: 20 000 profile points; every sweep checks `MAX_SOLID_TRIANGLES` before building;
   feature trees at most 32 deep and 1 024 features (checked iteratively before any work).
 
@@ -54,8 +58,8 @@ Every call goes through the same checks, on the calling thread:
 2. Kernel: Manifold builds both solids, runs `add` / `subtract` / `intersect`, returns the mesh.
    If Manifold refuses an input (`Not manifold`, `Non-finite vertex`, ...) the error names it.
 3. Result (`finishResult`): exact duplicate vertices welded, re-validated, must be non-empty
-   (`empty-result`), closed, within `MAX_SOLID_TRIANGLES` (`budget`), and `invertWinding` is applied
-   if the volume comes back negative. Where welding would join vertices Manifold kept apart on
+   (`empty-result`), closed, within `MAX_SOLID_TRIANGLES` (`budget`), and of positive volume: an
+   inside-out result is a `kernel-failure` (the message gives the volume), never flipped silently. Where welding would join vertices Manifold kept apart on
    purpose (parts touching along an edge or at a point), the unwelded closed mesh is kept.
 
 Precision: Manifold's mesh format is 32-bit float. Operands are shifted by the centre of their
@@ -82,7 +86,11 @@ rejects with a `timeout` error saying the kernel was restarted after an earlier 
 out, and the next call starts a fresh worker. Timeouts do not count toward the crash-restart limit. A worker
 `error` event (crash, out-of-memory abort) rejects all pending calls (`worker-crash`); the next
 call starts a new worker once, and a second crash makes the kernel unavailable for the session.
-A failing WebAssembly start (`init-error`) makes it unavailable with the reason, without retries.
+An unreadable reply (`messageerror`) after start-up counts as a crash. Start-up failures are
+final for the session, each with its own message: the worker script failing to load or erroring
+before `ready`, the WebAssembly module failing to start (`init-error`), or no `ready` within
+`startTimeoutMs` (default 20 s; the worker is terminated). Pending calls then reject as
+`unavailable` and `ready()` reports the reason.
 The constructor takes `createWorker` so tests inject a fake worker
 (`tests/model3d-kernel.test.ts`).
 

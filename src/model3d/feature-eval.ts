@@ -52,10 +52,12 @@ function checkTree(root: Feature3D, maxDepth: number, maxNodes: number): void {
     const { f, depth } = stack.pop()!;
     if (++nodes > maxNodes) throw new FeatureEvalError(`The solid's history has more than ${maxNodes} features; it is too complex to re-evaluate.`);
     if (depth > maxDepth) throw new FeatureEvalError(`The solid's history is nested more than ${maxDepth} levels deep; it is too complex to re-evaluate.`);
-    if (!f || typeof f !== 'object' || !KINDS.has((f as { kind?: unknown }).kind as string)) throw new FeatureEvalError('The solid\'s history contains an unknown feature.');
+    const kind = f && typeof f === 'object' ? (f as { kind?: unknown }).kind : undefined;
+    if (typeof kind !== 'string' || !KINDS.has(kind)) throw new FeatureEvalError('The solid\'s history contains an unknown feature.');
     if (f.kind === 'mesh') throw meshError(f.source);
     if (f.kind === 'boolean') {
-      if (!Array.isArray(f.operands) || f.operands.length !== 2) throw new FeatureEvalError(`A Boolean feature must have exactly two operands (found ${Array.isArray(f.operands) ? f.operands.length : 0}).`);
+      const count = Array.isArray(f.operands) ? f.operands.length : 0;
+      if (count !== 2) throw new FeatureEvalError(`A Boolean feature must have exactly two operands (found ${count}).`);
       if (f.op !== 'union' && f.op !== 'subtract' && f.op !== 'intersect') throw new FeatureEvalError(`Unknown Boolean operation "${String(f.op)}".`);
       for (let i = f.operands.length - 1; i >= 0; i--) stack.push({ f: f.operands[i]!, depth: depth + 1 });
     }
@@ -69,7 +71,7 @@ async function evaluate(f: Feature3D, kernel: GeometryKernel): Promise<Mesh3D> {
     case 'extrude':
       return extrudeMesh(f.profile, f.distance);
     case 'revolve':
-      return revolveMesh(f.profile, f.axis, f.angle);
+      return revolveMesh(f.profile, f.axis, f.angle, f.segments);
     case 'boolean': {
       const a = await evaluate(f.operands[0]!, kernel);
       const b = await evaluate(f.operands[1]!, kernel);

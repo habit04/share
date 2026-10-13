@@ -5,8 +5,9 @@ import { DEFAULT_FEATURE_MAX_DEPTH, FeatureEvalError, evaluateFeature } from '..
 import { KernelError } from '../src/model3d/kernel/kernel';
 import { ManifoldDirectKernel } from '../src/model3d/kernel/manifold-direct';
 import { WORLD_XY_FRAME, v3 } from '../src/model3d/math';
-import { meshIsClosed, meshVolume } from '../src/model3d/mesh';
+import { meshIsClosed, meshTriangleCount, meshVolume } from '../src/model3d/mesh';
 import { primitiveMesh } from '../src/model3d/primitives';
+import { revolveMesh } from '../src/model3d/sweep';
 import type { BoxFeature, Feature3D } from '../src/model3d/types';
 
 const kernel = new ManifoldDirectKernel();
@@ -28,6 +29,15 @@ describe('evaluateFeature', () => {
     const rev = await evaluateFeature({ kind: 'revolve', profile: { frame: WORLD_XY_FRAME, loops: [square.map((p) => ({ x: p.x + 1, y: p.y }))] }, axis: { origin: v3(0, 0, 0), dir: v3(0, 1, 0) }, angle: Math.PI }, kernel);
     expect(meshIsClosed(rev)).toBe(true);
     expect(meshVolume(rev)).toBeGreaterThan(0);
+  });
+
+  it('rebuilds a revolve with the segment count stored in the feature', async () => {
+    const profile = { frame: WORLD_XY_FRAME, loops: [square.map((p) => ({ x: p.x + 1, y: p.y }))] };
+    const axis = { origin: v3(0, 0, 0), dir: v3(0, 1, 0) };
+    const eight = await evaluateFeature({ kind: 'revolve', profile, axis, angle: 2 * Math.PI, segments: 8 }, kernel);
+    expect(eight).toEqual(revolveMesh(profile, axis, 2 * Math.PI, 8));
+    expect(meshTriangleCount(eight)).toBe(4 * 2 * 8);
+    expect(await evaluateFeature({ kind: 'revolve', profile, axis, angle: 2 * Math.PI }, kernel)).toEqual(revolveMesh(profile, axis, 2 * Math.PI));
   });
 
   it('evaluates nested Booleans through the kernel', async () => {

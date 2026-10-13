@@ -10,7 +10,9 @@
  *   profile point becomes shared vertices, no duplicates), wound counter-clockwise seen from
  *   outside, so `meshIsClosed` holds and `meshVolume` is positive whatever the sign of the
  *   distance or angle. Caps are triangulated with triangulate.ts and use exactly the profile
- *   vertices, so they meet the side walls edge for edge.
+ *   vertices, so they meet the side walls edge for edge. A stored profile with exactly collinear
+ *   vertices may give zero-area cap triangles (the triangulator's `allowFlat` fallback); they keep
+ *   the mesh closed and add no volume.
  * - Angles are radians, right-hand rule about the axis direction. A revolution of 2 pi (within
  *   1e-9) is full: it has no end caps and its last step reuses the first ring (the seam is welded).
  * - Triangle counts are checked against MAX_SOLID_TRIANGLES before anything is built.
@@ -51,6 +53,8 @@ export function extrudeMesh(profile: Profile3D, distance: number): Mesh3D {
   requireValidProfile('extrude', profile);
   const n = profilePointCount(profile);
   const holes = profile.loops.length - 1;
+  // About 4 triangles per profile point: unreachable while MAX_PROFILE_POINTS (20 000) bounds the
+  // profile, kept so the budget still holds if that limit is ever raised.
   checkBudget('extrusion', 2 * (n + 2 * holes - 2) + 2 * n);
   const cap = triangulatePolygon(profile.loops);
   const positions: number[] = [];

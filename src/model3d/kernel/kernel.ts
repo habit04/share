@@ -11,11 +11,11 @@
  *   triangle budget. Bad input is refused with a message naming the operand, never repaired.
  * - Results are checked on the calling side as well (`finishResult`): exact duplicate vertices are
  *   welded, the mesh is re-validated, must be closed and non-empty, must fit MAX_SOLID_TRIANGLES,
- *   and is flipped with `invertWinding` if its volume comes back negative.
+ *   and must have a positive volume (an inside-out result is a kernel failure, never flipped).
  * - `subtract` is a - b. Errors are `KernelError`s whose message is fit to show the user.
  */
 import { MAX_SOLID_TRIANGLES } from '../budget';
-import { type Mesh3D, invertWinding, meshIsClosed, meshTriangleCount, meshVolume, validateMesh, weldVertices } from '../mesh';
+import { type Mesh3D, meshIsClosed, meshTriangleCount, meshVolume, validateMesh, weldVertices } from '../mesh';
 
 /** A solid Boolean operation; `subtract` removes the second operand from the first. */
 export type BooleanOp = 'union' | 'subtract' | 'intersect';
@@ -90,7 +90,7 @@ export function crashError(detail?: string): KernelError {
 
 /** KernelError for an environment without a usable kernel. */
 export function unavailableError(reason: string): KernelError {
-  return new KernelError('unavailable', `Solid Boolean operations are unavailable in this environment: ${reason}`);
+  return new KernelError('unavailable', `Solid Boolean operations are unavailable in this environment: ${reason.replace(/\.$/, '')}.`);
 }
 
 function checkOperand(op: BooleanOp, which: 'a' | 'b', mesh: Mesh3D): void {
@@ -111,7 +111,7 @@ export function prepareOperands(op: BooleanOp, a: Mesh3D, b: Mesh3D): void {
 
 /**
  * Check and normalise a kernel result: weld exact duplicate vertices, re-validate, require a
- * closed, non-empty mesh within the triangle budget, and make the volume positive. When welding
+ * closed, non-empty mesh within the triangle budget and a positive volume. When welding
  * would join vertices that the kernel kept apart on purpose (two parts touching along an edge or at
  * a point, where one shared vertex would make the edge non-manifold), the unwelded mesh is kept.
  */
@@ -131,8 +131,10 @@ export function finishResult(op: BooleanOp, raw: Mesh3D): Mesh3D {
   else if (meshIsClosed(raw)) mesh = raw;
   else throw new KernelError('kernel-failure', `The geometry kernel returned an open mesh for the ${opName(op)}; the result was discarded.`);
   const volume = meshVolume(mesh);
-  if (volume < 0) mesh = invertWinding(mesh);
-  else if (!(volume > 0)) throw new KernelError('empty-result', `The ${opName(op)} has no volume.`);
+  if (volume < 0) {
+    throw new KernelError('kernel-failure', `The geometry kernel returned an inside-out mesh for the ${opName(op)} (volume ${volume.toPrecision(6)}); the result was discarded.`);
+  }
+  if (!(volume > 0)) throw new KernelError('empty-result', `The ${opName(op)} has no volume.`);
   return mesh;
 }
 

@@ -29,12 +29,17 @@ export interface Solid3D {
 }
 
 /**
- * Optional tessellation detail for curved primitives. Absent values use the documented defaults
- * in primitives.ts; out-of-range values are clamped there, never rejected, so stored features
- * always regenerate.
+ * Optional tessellation detail for curved primitives and revolutions. Absent values use the
+ * documented defaults in primitives.ts; out-of-range values are clamped there, never rejected, so
+ * stored features always regenerate. The value is part of the stored history (and of the
+ * `JCAD_3D` payload written to DXF in milestone 5), so a solid re-evaluates with the count it was
+ * made with.
  */
 interface Tessellated {
-  /** Divisions around the circle (around the Z axis of the frame). */
+  /**
+   * Divisions per full turn: around the frame's Z axis for primitives, around the revolution axis
+   * for a revolve (a partial turn uses proportionally fewer steps).
+   */
   readonly segments?: number;
 }
 
@@ -126,9 +131,10 @@ export interface ExtrudeFeature {
 
 /**
  * Revolution of a profile about an axis (world coordinates; `dir` need not be unit length) by
- * `angle` radians, right-hand rule about `dir`; 2 * PI gives a full revolution.
+ * `angle` radians, right-hand rule about `dir`; 2 * PI gives a full revolution. `segments` (steps
+ * per full turn) defaults to DEFAULT_SEGMENTS and is clamped like the primitives' (see sweep.ts).
  */
-export interface RevolveFeature {
+export interface RevolveFeature extends Tessellated {
   readonly kind: 'revolve';
   readonly profile: Profile3D;
   readonly axis: { readonly origin: Vec3; readonly dir: Vec3 };
