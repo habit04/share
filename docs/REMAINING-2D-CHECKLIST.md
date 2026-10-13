@@ -66,10 +66,11 @@ proof that their implementation or external verification has passed.
 - Initial batch snapshot `c1b2587` serial suite: **2,331 passed, 0 failed, 27 conditional skips** across
   187 files. The opt-in dense suite ran separately: all 8 benchmarks passed. Initial lint,
   renderer/Electron/scripts TypeScript checks and production renderer build passed.
-- Final review added 34 regressions: 18 dimension-override cases, 12 viewport hatch-visibility
+- Final review added 35 regressions: 19 dimension-override cases, 12 viewport hatch-visibility
   cases and 4 retained boundary-resource cases. Native integer overrides normalize safely;
   native DIMTIH/DIMTOH values remain distinct despite the existing ISO display approximation.
-  Ordinary immutable style edits still work without callers supplying override metadata.
+  Ordinary immutable style edits still work without callers supplying override metadata;
+  malformed prototype names cannot become supported native override codes.
 - AutoCAD 2027 accepted the matching-style dimension export with **zero AUDIT errors**.
   DXFOUT retained native explicit DIMTXT=5 / DIMDEC=0 even when the named style matched.
   Exact-source JCad reimport and a later named-style change to 3 / 1 kept the entity at 5 / 0.
@@ -79,13 +80,21 @@ proof that their implementation or external verification has passed.
   Windows disk writes and backups exercised polygon edit/undo/reopen, native pointer ownership,
   text default presence, MTEXT columns, safe clip-DWG refusal and distinct NFC/NFD files/tabs.
   The reopened paper-space screenshot shows the concave boundary and clipped model line.
-  This gate does not certify the native DWG helper or an installed release.
-- Final combined source snapshot `3d3198a`: **2,365 passed, 0 failed, 27 conditional skips**
+  This gate passed again on the fresh `4e0b047` production build. It does not certify the
+  native DWG helper or an installed release. Equal DSTYLE preservation through portable
+  DWG conversion still requires native verification with PR #9.
+- Combined source snapshot `3d3198a`: **2,365 passed, 0 failed, 27 conditional skips**
   across 190 files. Required fixtures, broad lint, renderer/Electron/scripts TypeScript and
   production renderer build passed; all **8 dense benchmarks** passed separately. The full
   native-helper Electron gate remains unavailable
   in this private worktree because its signed portable helper is absent; no helper was copied
   from the other workstream and no installer was built.
+- Final source `4e0b047` full run: **2,365 passed, 1 failed, 27 conditional skips**. The failure
+  was the previously observed unchanged `portable-dwg-host.test.ts` same-size-byte-rewrite
+  integrity assertion, not a batch regression. Its focused two-suite rerun passed **28/28**;
+  final dimension checks passed **93/93** and the fresh source Electron gate passed **7/7**.
+  This intermittent native helper check remains unresolved and must be assessed with the
+  native saving workstream before integration/release; rerun success is not a repair claim.
 
 ## Integration notes and next milestones
 
