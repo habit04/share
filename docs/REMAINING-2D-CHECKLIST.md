@@ -65,14 +65,14 @@ proof that their implementation or external verification has passed.
 
 ## Current validation and integration
 
-- Combined #9 + #24 source: **3,950 tests / 28 conditional skips**, all three TypeScript
+- Combined #9 + #24 source including the scoped CI repairs: **3,954 tests / 28 conditional skips**, all three TypeScript
   projects, broad lint, fixtures and production build pass. **32 actual Windows source-Electron
   workflows** pass together: 14 opened-source/save/recovery, seven tracked 2D import/edit/save/
   reopen and 11 PDF/CSV export workflows. All private app processes close; production bundle,
   source/native/config/harness hashes remain unchanged through the app run. Independent native
   ATTRIB handle uniqueness and exact reopened identity checks supplement every previous text
-  comparison. The latest full suite, fresh static/build and all 32 app workflows cover the
-  checked legacy TABLESTYLE repair below. Original deadlines and guards remain.
+  comparison. The complete suite/static/build and all 32 workflows were repeated for the
+  fresh session-basis/common-link changes below. Original deadlines and guards remain.
   Three existing native metadata fixture families pass the adopted decoder/projection validators
   with zero native/write errors and complete bounded inventories. This reuses completed #9
   native assets; it does not certify a locally rebuilt writer, new installer or AutoCAD roundtrip.
@@ -101,6 +101,14 @@ proof that their implementation or external verification has passed.
   An original DWG with implicit margins cannot certify its DXFOUT's explicit-margin conversion.
   Development helper/source/notices/
   integrity artifacts support private reproduction; no installer/signing workflow was changed.
+- At `208bede7`, Node 24/UI pass, Node 22 exceeds the original 512-drawing deadline and
+  native Rust passes 51/53. Two scoped repairs are under validation: capture sessions once
+  per synchronous project-basis scan, with fresh scans around awaits; expose existing typed
+  DataObject reactors/extension dictionaries through authenticated native accessors.
+  **163 project tests** pass, including four added regressions and the unchanged 512 case
+  in 7.7 seconds (8.4 seconds in the full suite). **246 native/metadata targeted checks** pass. Transport doubles and local
+  source checks do not certify Node 22 CI or the 54 native Rust cases; fresh exact-head CI,
+  matching-helper roundtrips and independent C postflight must clear before integration.
 - Integration corrections retain modeled complex-LTYPE edits and opaque extensions, distinct
   anonymous STYLE identities, enabled/disabled/shared viewport boundary ownership, graph-aware
   copies/transforms/layout copies and fixed-point native 340 export. Full session/history and

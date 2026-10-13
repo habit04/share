@@ -73,6 +73,15 @@ messages). The date of each version is the date of the commit that set that vers
 
 ### Fixed
 
+- Project batch preparation captures the active session once per synchronous source-basis
+  scan, retaining fresh scans around asynchronous reads and writes. Project replacement,
+  newly opened path aliases and tab/history changes still refuse stale writes. The existing
+  512-drawing regression keeps its original deadline and preservation assertions.
+
+- Native DataObject common-link accessors expose parsed reactors and extension dictionaries
+  without requiring DWG-reader side caches. Strict metadata comparisons detect reordered,
+  removed or changed links; binary roundtrip and independent postflight remain mandatory.
+
 - Development source combines completed PR #9 metadata/reference support with the Windows
   2D and reliability corrections. Graph-aware project preparation and session restore checks
   protect tabs, history and source proofs before mutations. Complex linetype edits, anonymous
