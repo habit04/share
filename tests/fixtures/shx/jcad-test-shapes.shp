@@ -1,0 +1,13 @@
+; Original JCad regression shapes. No third-party font data.
+*200,5,JCADBOX
+040,044,048,04C,0
+*201,4,JCADCIRCLE
+10,4,0,0
+*202,5,JCADBULGE
+12,8,0,127,0
+*203,9,JCADSUB
+5,7,200,6,2,8,6,0,0
+*204,11,JCADXY
+8,-3,4,9,3,1,2,-3,0,0,0
+*205,6,JCADVECTOR
+013,012,011,01F,01E,0
