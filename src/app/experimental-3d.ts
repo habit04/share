@@ -34,6 +34,12 @@
  * drawn at the snap, and grips on a single selected solid (dragging the centre grip moves it). In
  * 3D mode 2D commands also get cursor moves (their ghosts, and ghosts of selected solids for MOVE /
  * COPY / ROTATE / SCALE / MIRROR) and a click on a snapped solid point hands them its x, y.
+ *
+ * True 3D dimensions (docs/3D-DIMENSIONS.md): DIM3D (src/tools3d/dimension3d-tool.ts) adds them to
+ * `model3d.dimensions`; the 3D view draws them (and DIM3D's rubber band, `previewDimensions`),
+ * picks them by their display segments within the 2D pick box (a click selects one, the hover
+ * highlights it), ALL and a typed id select them like solids, and ERASE, 3DMOVE / 3DROTATE /
+ * 3DSCALE and the 2D modify commands carry them along with solids.
  */
 import type { Editor } from './editor';
 import type { Tool, ToolContext } from '../tools/types';
@@ -41,9 +47,10 @@ import type { Point } from '../core/geometry';
 import { GeometryBudgetError } from '../core/geometry-budget-error';
 import { RIBBON, type RibbonTab } from '../ui/ribbon';
 import { type Frame3, type Vec3, WORLD_XY_FRAME, intersectRayPlane, add3, len3, scale3, sub3, v3 } from '../model3d/math';
-import { addSolids, model3dOf, newSolid, solidById, withModel3D } from '../model3d/model';
+import { addSolids, dimensionById, model3dOf, newSolid, solidById, withModel3D } from '../model3d/model';
+import { dimension3dLocation } from '../model3d/dimension3d';
 import { primitiveMesh } from '../model3d/primitives';
-import type { PrimitiveFeature, Solid3D } from '../model3d/types';
+import type { Dimension3D, PrimitiveFeature, Solid3D } from '../model3d/types';
 import type { GeometryKernel } from '../model3d/kernel/kernel';
 import { createDefaultKernel, kernelTestHooksRequested } from '../model3d/kernel/index';
 import { Viewport3D } from '../render3d/viewport3d';
@@ -60,6 +67,7 @@ import { planeTool } from '../tools3d/plane';
 import { move3dTool, rotate3dTool, scale3dTool } from '../tools3d/transform';
 import { area3dTool, dist3dTool, massProp3dTool } from '../tools3d/measure';
 import { dim3dTool } from '../tools3d/dim3d';
+import { dimension3dTool } from '../tools3d/dimension3d-tool';
 import { type Snap3DKind, snapPick3 } from '../tools3d/snap3d';
 import { CENTER_GRIP, gripDragNormal, gripDragPoint, solidGrips } from '../tools3d/grips';
 import { commitSolidEdit, ghostSolids, translationMatrix } from '../tools3d/solid-edit';
@@ -122,7 +130,8 @@ export const RIBBON_3D_TAB: RibbonTab = {
         { label: '3D Distance', icon: 'dist', command: '3DDIST', size: 'small', tooltip: 'Distance, deltas and angles between two 3D points (3DDIST)' },
         { label: 'Mass Properties', icon: 'props', command: '3DMASSPROP', size: 'small', tooltip: 'Volume, surface area, bounding box and centroid of solids (3DMASSPROP)' },
         { label: 'Face Area', icon: 'area', command: '3DAREA', size: 'small', tooltip: 'Area and perimeter of a picked planar face (3DAREA)' },
-        { label: '3D Dimension', icon: 'dimaligned', command: '3DDIM', size: 'small', tooltip: 'Prototype: aligned 2D dimension between two 3D points projected onto the plane (3DDIM)' },
+        { label: '3D Dimension', icon: 'dimaligned', command: 'DIM3D', size: 'small', tooltip: 'True 3D dimension in its measurement plane: aligned, linear or angular [Plane: current / face / 3 points] (DIM3D)' },
+        { label: 'Projected Dim', icon: 'dimaligned', command: '3DDIM', size: 'small', tooltip: 'Interim prototype: 2D aligned dimension of two 3D points projected onto the drawing plane, labelled "(projected)" when off it (3DDIM)' },
       ],
     },
     {
@@ -193,6 +202,8 @@ export class Experimental3d {
   private kernelInstance: GeometryKernel | null = null;
   /** Ghost solids of the running 3D command. */
   previewSolids: readonly Solid3D[] = [];
+  /** Rubber-band 3D dimensions of a running DIM3D. */
+  previewDimensions: readonly Dimension3D[] = [];
   /** The 3D pick of the click / cursor move being handed to a 3D command (set only during that call). */
   private clickPick: Pick3 | null = null;
   private cursorPick: Pick3 | null = null;
@@ -261,6 +272,14 @@ export class Experimental3d {
     this.render();
   }
 
+  /** Rubber-band 3D dimensions for the 3D view ([] clears; none outside 3D mode). */
+  setPreviewDimensions3d(dims: readonly Dimension3D[]): void {
+    if (!this.active) dims = [];
+    if (dims.length === 0 && this.previewDimensions.length === 0) return;
+    this.previewDimensions = dims;
+    this.render();
+  }
+
   /**
    * The 3D pick of the click or cursor move being handed to the tool right now (`deliverClick`,
    * `deliverMove`); null at any other time, so typed points never pick up a 3D hit. The point
@@ -310,6 +329,7 @@ export class Experimental3d {
     kernel: () => this.kernel(),
     setPreview3d: (solids) => this.setPreview3d(solids),
     wantsPreview3d: () => this.active,
+    setPreviewDimensions3d: (dims) => this.setPreviewDimensions3d(dims),
   };
 
   /**
@@ -426,6 +446,7 @@ export class Experimental3d {
         if (!ed.tool) {
           this.snapMarker = null;
           this.setPreview3d([]);
+          this.setPreviewDimensions3d([]);
         }
         this.render();
       }),
@@ -464,6 +485,7 @@ export class Experimental3d {
     this.snapMarker = null;
     this.gripDrag = null;
     this.previewSolids = [];
+    this.previewDimensions = [];
     // The kernel's worker and WebAssembly memory go with 3D mode (a Boolean still running is
     // rejected and changes nothing); the next Boolean starts a new kernel.
     this.disposeKernel();
@@ -486,9 +508,13 @@ export class Experimental3d {
 
   /** Redraw on the next frame with the current selection and hover. */
   render(): void {
-    this.viewport?.requestRender({
+    const vp = this.viewport;
+    if (!vp) return;
+    vp.dimensionAperture = Math.max(1, this.editor.viewport.settings.pickBox);
+    vp.requestRender({
       selection: this.editor.selection, hover: this.hover, previewSolids: this.previewSolids,
       grips3d: this.grips(), gripSize: this.editor.settings.gripSize, snap3d: this.snapMarker,
+      ...(this.previewDimensions.length ? { previewDimensions: this.previewDimensions } : {}),
     });
   }
 
@@ -719,6 +745,17 @@ export class Experimental3d {
   /** Ids of the drawing's solids in model order (type one at "Select objects:" to pick it). */
   solidIds(): string[] {
     return model3dOf(this.editor.doc.snapshot).solids.map((s) => s.id);
+  }
+
+  /** Ids of the drawing's 3D dimensions in model order (type one at "Select objects:" to pick it). */
+  dimensionIds(): string[] {
+    return (model3dOf(this.editor.doc.snapshot).dimensions ?? []).map((d) => d.id);
+  }
+
+  /** World point on the dimension line (arc) of the 3D dimension `id`, or null (e2e helper: project it, click it). */
+  dimensionPoint(id: string): Vec3 | null {
+    const d = dimensionById(model3dOf(this.editor.doc.snapshot), id);
+    return d ? dimension3dLocation(d) : null;
   }
 
   /** Resolves when the running 3D command is not computing (await after a Boolean's last input). */
@@ -962,7 +999,8 @@ function registerCommands(editor: Editor, c: Experimental3d): void {
   tool('3DDIST', [], 'distance between two 3D points', () => dist3dTool());
   tool('3DMASSPROP', [], 'volume, surface area, bounding box and centroid of solids', massProp3dTool);
   tool('3DAREA', [], 'area and perimeter of a planar face of a solid', area3dTool);
-  tool('3DDIM', [], 'prototype: aligned 2D dimension between two 3D points', dim3dTool);
+  tool('3DDIM', [], 'interim prototype: aligned 2D dimension of two 3D points projected onto the drawing plane, labelled "(projected)" when a point is off it (see DIM3D)', dim3dTool);
+  tool('DIM3D', [], 'true 3D dimension in its measurement plane [Aligned/Linear/Angular/Plane/Text]', dimension3dTool);
   // DIST measures 3D points while 3D mode is on; otherwise it is the unchanged 2D command.
   const dist = editor.commands.get('DIST');
   if (dist) {
@@ -974,8 +1012,9 @@ function registerCommands(editor: Editor, c: Experimental3d): void {
 }
 
 /**
- * "Select objects:" keywords with the flag on: ALL also takes the visible solids, and a solid's id
- * (as `jcad3d.solidIds()` lists them) takes that solid. Everything else goes to the 2D handler.
+ * "Select objects:" keywords with the flag on: ALL also takes the visible solids and 3D dimensions,
+ * and a solid's or 3D dimension's id (as `jcad3d.solidIds()` / `dimensionIds()` list them) takes
+ * it. Everything else goes to the 2D handler.
  */
 function extendSelectionKeywords(editor: Editor): void {
   const base = editor.selectionKeyword;
@@ -984,13 +1023,15 @@ function extendSelectionKeywords(editor: Editor): void {
     const t = text.trim();
     const state = editor.doc.snapshot;
     const solids = model3dOf(state).solids;
+    const dims = model3dOf(state).dimensions ?? [];
     if (t.toUpperCase() === 'ALL') {
       if (!base) for (const e of editor.doc.entities) ids.add(e.id);
       const hidden = hiddenLayerNames(state.layers);
       for (const s of solids) if (!hidden.has(s.layer)) ids.add(s.id);
+      for (const d of dims) if (!hidden.has(d.layer)) ids.add(d.id);
       return true;
     }
-    const solid = solids.find((s) => s.id.toLowerCase() === t.toLowerCase());
+    const solid = solids.find((s) => s.id.toLowerCase() === t.toLowerCase()) ?? dims.find((d) => d.id.toLowerCase() === t.toLowerCase());
     if (solid) {
       ids.add(solid.id);
       return true;

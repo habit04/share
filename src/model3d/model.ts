@@ -9,7 +9,7 @@ import { newId } from '../core/entities';
 import { sealImmutableData } from '../core/immutable-data';
 import { type Aabb, aabbUnion } from './math';
 import { meshBounds, meshTriangleCount } from './mesh';
-import type { Model3D, Solid3D } from './types';
+import type { Dimension3D, Model3D, Solid3D } from './types';
 
 /**
  * Throw an Error when a solid has no triangles. An empty solid has nothing to show, pick or save
@@ -33,13 +33,40 @@ export function hasSolids(state: DrawingState): boolean {
   return (state.model3d?.solids.length ?? 0) > 0;
 }
 
+/** True when the drawing holds at least one true 3D dimension (DIM3D). */
+export function hasDimensions3D(state: DrawingState): boolean {
+  return (state.model3d?.dimensions?.length ?? 0) > 0;
+}
+
+/** True when the drawing holds any 3D object (a solid or a 3D dimension). */
+export function hasObjects3D(state: DrawingState): boolean {
+  return hasSolids(state) || hasDimensions3D(state);
+}
+
+/** The model's 3D dimensions ([] when it has none). */
+export function dimensionsOf(model: Model3D): readonly Dimension3D[] {
+  return model.dimensions ?? [];
+}
+
+/** Every id used by the model's solids and 3D dimensions. */
+function objectIds(model: Model3D): Set<string> {
+  const ids = new Set(model.solids.map((s) => s.id));
+  for (const d of model.dimensions ?? []) ids.add(d.id);
+  return ids;
+}
+
 /**
- * The state with `model` as its 3D model. An empty model removes the field instead, so a drawing
- * whose last solid was deleted has exactly the shape of a plain 2D drawing again. Returns `state`
+ * The state with `model` as its 3D model. An empty model (no solids and no 3D dimensions)
+ * removes the field instead, so a drawing whose last 3D object was deleted has exactly the shape
+ * of a plain 2D drawing again; an empty `dimensions` list is dropped likewise. Returns `state`
  * itself when nothing changes.
  */
 export function withModel3D(state: DrawingState, model: Model3D): DrawingState {
-  if (model.solids.length === 0) {
+  if (model.dimensions !== undefined && model.dimensions.length === 0) {
+    const { dimensions: _none, ...rest } = model;
+    model = rest;
+  }
+  if (model.solids.length === 0 && model.dimensions === undefined) {
     if (state.model3d === undefined) return state;
     const { model3d: _drop, ...rest } = state;
     return rest;
@@ -55,7 +82,7 @@ export function withModel3D(state: DrawingState, model: Model3D): DrawingState {
  */
 export function addSolids(model: Model3D, solids: readonly Solid3D[]): Model3D {
   if (solids.length === 0) return model;
-  const ids = new Set(model.solids.map((s) => s.id));
+  const ids = objectIds(model);
   for (const s of solids) {
     assertSolidNotEmpty(s);
     if (ids.has(s.id)) throw new Error(`3D solid id ${s.id} is already in use.`);
@@ -89,6 +116,50 @@ export function replaceSolid(model: Model3D, solid: Solid3D): Model3D {
 /** The solid with this id, if any. */
 export function solidById(model: Model3D, id: string): Solid3D | undefined {
   return model.solids.find((s) => s.id === id);
+}
+
+/**
+ * The model with `dims` appended in order. Throws an Error when an id is already used by a solid
+ * or a dimension of the model, or twice in `dims` (as `addSolids`).
+ */
+export function addDimensions3D(model: Model3D, dims: readonly Dimension3D[]): Model3D {
+  if (dims.length === 0) return model;
+  const ids = objectIds(model);
+  for (const d of dims) {
+    if (ids.has(d.id)) throw new Error(`3D object id ${d.id} is already in use.`);
+    ids.add(d.id);
+  }
+  return { ...model, dimensions: [...dimensionsOf(model), ...dims] };
+}
+
+/** The model without the 3D dimensions whose ids are listed (`withModel3D` drops an empty list). */
+export function removeDimensions3D(model: Model3D, ids: Iterable<string>): Model3D {
+  const drop = new Set(ids);
+  const list = model.dimensions;
+  if (drop.size === 0 || !list) return model;
+  const dimensions = list.filter((d) => !drop.has(d.id));
+  return dimensions.length === list.length ? model : { ...model, dimensions };
+}
+
+/** The model without the solids and 3D dimensions whose ids are listed (ERASE). */
+export function removeObjects3D(model: Model3D, ids: Iterable<string>): Model3D {
+  const drop = [...ids];
+  return removeDimensions3D(removeSolids(model, drop), drop);
+}
+
+/** The model with the 3D dimension of the same id replaced in place; unchanged when there is none. */
+export function replaceDimension3D(model: Model3D, dim: Dimension3D): Model3D {
+  const list = model.dimensions;
+  const i = list ? list.findIndex((d) => d.id === dim.id) : -1;
+  if (!list || i < 0 || list[i] === dim) return model;
+  const dimensions = [...list];
+  dimensions[i] = dim;
+  return { ...model, dimensions };
+}
+
+/** The 3D dimension with this id, if any. */
+export function dimensionById(model: Model3D, id: string): Dimension3D | undefined {
+  return model.dimensions?.find((d) => d.id === id);
 }
 
 /** World-space bounding box of every solid's mesh (drawing units), or null for an empty model. */

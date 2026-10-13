@@ -9,7 +9,7 @@ import type { Point } from '../../src/core/geometry';
 import { type Frame3, WORLD_XY_FRAME } from '../../src/model3d/math';
 import type { GeometryKernel } from '../../src/model3d/kernel/kernel';
 import { ManifoldDirectKernel } from '../../src/model3d/kernel/manifold-direct';
-import type { Solid3D } from '../../src/model3d/types';
+import type { Dimension3D, Solid3D } from '../../src/model3d/types';
 import { type Pick3, extendContext3d } from '../../src/tools3d/context';
 import type { Script3DTool } from '../../src/tools3d/script3d';
 import { type FakeContext, type Input, fakeContext } from '../fake-context';
@@ -19,6 +19,10 @@ export interface Fake3DContext extends FakeContext {
   preview3d: readonly Solid3D[];
   /** Every non-empty ghost list the tool showed. */
   previews: (readonly Solid3D[])[];
+  /** Rubber-band 3D dimensions the tool shows now (DIM3D). */
+  previewDims: readonly Dimension3D[];
+  /** Every non-empty rubber-band dimension list the tool showed. */
+  dimPreviews: (readonly Dimension3D[])[];
   /** 3D picks by tool point (what a click or the cursor in the 3D view records). */
   picks: Pick3[];
   plane: Frame3;
@@ -45,6 +49,8 @@ export function fake3dContext(doc = new Drawing(), opts: Fake3DOptions = {}): Fa
   const ctx = fakeContext(doc) as Fake3DContext;
   ctx.preview3d = [];
   ctx.previews = [];
+  ctx.previewDims = [];
+  ctx.dimPreviews = [];
   ctx.picks = [];
   ctx.plane = opts.plane ?? WORLD_XY_FRAME;
   ctx.planeName = 'World';
@@ -65,6 +71,10 @@ export function fake3dContext(doc = new Drawing(), opts: Fake3DOptions = {}): Fa
     setPreview3d: (s) => {
       ctx.preview3d = s;
       if (s.length) ctx.previews.push(s);
+    },
+    setPreviewDimensions3d: (d) => {
+      ctx.previewDims = d;
+      if (d.length) ctx.dimPreviews.push(d);
     },
   });
   return ctx;

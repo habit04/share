@@ -138,6 +138,7 @@ export class Editor {
       // Drop selection ids that no longer exist (experimental 3D solids count as existing).
       const ids = new Set(this.doc.entities.map((e) => e.id));
       for (const s of this.doc.snapshot.model3d?.solids ?? []) ids.add(s.id);
+      for (const d of this.doc.snapshot.model3d?.dimensions ?? []) ids.add(d.id);
       let changed = false;
       for (const id of this.selection) if (!ids.has(id)) {
         this.selection.delete(id);

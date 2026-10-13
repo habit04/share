@@ -161,7 +161,7 @@ const DERIVED_DIMVAR_CODES: Readonly<Record<string, number>> = { DIMTOL: 71, DIM
  * XDATA for what DIMSTYLE records keep there (arrowheads, basic tolerance, alternate placement).
  * Ported from PR #2 (codex/electrical-review-fixes 2f89b0e).
  */
-function writeDimStyleOverrides(w: Writer, e: DimensionEntity): void {
+export function writeDimStyleOverrides(w: Writer, e: DimensionEntity): void {
   const inherited = w.dimensionStyles.get(e.style.name.toUpperCase());
   if (!inherited) return;
   const differences = diffDimStyles(e.style, inherited).filter((v) => DIM_VARIABLES.some((def) => def.name === v.name && def.code !== undefined) || DERIVED_DIMVAR_CODES[v.name] !== undefined);

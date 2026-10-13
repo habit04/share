@@ -9,6 +9,7 @@
  * a feature and re-evaluate) and is never re-evaluated implicitly on load.
  */
 import type { ColorSpec } from '../core/entities';
+import type { DimStyle } from '../core/dimension';
 import type { Point } from '../core/geometry';
 import type { Frame3, Vec3 } from './math';
 import type { Mesh3D } from './mesh';
@@ -160,6 +161,55 @@ export type Feature3D = BoxFeature | CylinderFeature | SphereFeature | ConeFeatu
 /** The analytic primitives that `primitiveMesh` can evaluate directly. */
 export type PrimitiveFeature = BoxFeature | CylinderFeature | SphereFeature | ConeFeature | TorusFeature | WedgeFeature;
 
+/** What a 3D dimension measures (docs/3D-DIMENSIONS.md). */
+export type Dimension3DKind = 'aligned' | 'linear' | 'angular';
+
+/**
+ * A true 3D dimension: a dimension drawn in its own measurement plane in space (DIM3D). It looks
+ * exactly like a 2D dimension of the same style drawn in `plane`'s XY plane: the definition
+ * points are mapped into the plane's 2D coordinates (projected along its normal), measured and
+ * laid out there by the 2D dimension code (src/core/dimension.ts) and mapped back to world
+ * coordinates. Build one with `makeDimension3D` (src/model3d/dimension3d.ts), which derives
+ * `offset`, the leg order of an angular dimension and the `projected` flag consistently.
+ *
+ * Measurement (in the plane): aligned = the distance between the in-plane projections of `p1`
+ * and `p2` (equal to |p2 - p1| when both lie in the plane); linear = their separation along the
+ * plane's X or Y axis (`axis`); angular = the counter-clockwise angle (about the plane normal)
+ * from the leg through `p1` to the leg through `p2` at `vertex`, in radians.
+ */
+export interface Dimension3D {
+  /** Stable id from `newId()` (the same id space as solids and 2D entities). */
+  readonly id: string;
+  readonly layer: string;
+  readonly color: ColorSpec;
+  readonly kind: Dimension3DKind;
+  /** The measurement plane: origin, in-plane X / Y axes and normal (`zAxis`); orthonormal, right-handed. */
+  readonly plane: Frame3;
+  /** Aligned / linear: the extension line origins. Angular: a point on the first / second leg. World coordinates. */
+  readonly p1: Vec3;
+  readonly p2: Vec3;
+  /** Angular only: the angle vertex (world). */
+  readonly vertex?: Vec3;
+  /** Linear only: the plane axis the dimension measures along. */
+  readonly axis?: 'x' | 'y';
+  /**
+   * Aligned / linear: signed distance of the dimension line from the midpoint of the in-plane
+   * definition points, along n = (-u.y, u.x) in plane coordinates (u = the measurement direction:
+   * p1 -> p2 for aligned, the plane axis for linear), so positive is to the left of u seen from
+   * the normal side. Angular: the radius of the dimension arc (> 0).
+   */
+  readonly offset: number;
+  /** Text override as in 2D (`<>` stands for the measurement, ' ' hides the text); absent = the measurement. */
+  readonly textOverride?: string;
+  /** The dimension style (embedded like the 2D `DimensionEntity.style`; its name is the DXF style). */
+  readonly style: DimStyle;
+  /**
+   * Present when a definition point lies off the plane (beyond DIM3D_PLANE_TOLERANCE): the
+   * dimension measures the in-plane projection and its text says "(projected)".
+   */
+  readonly projected?: true;
+}
+
 /**
  * The 3D content of a drawing. `version` lets a future file format or migration recognise the
  * layout of this data.
@@ -167,4 +217,6 @@ export type PrimitiveFeature = BoxFeature | CylinderFeature | SphereFeature | Co
 export interface Model3D {
   readonly version: 1;
   readonly solids: readonly Solid3D[];
+  /** True 3D dimensions (DIM3D); absent = none (a model without them keeps the milestone-6 shape). */
+  readonly dimensions?: readonly Dimension3D[];
 }

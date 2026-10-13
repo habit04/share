@@ -3,7 +3,7 @@ import * as g from '../core/geometry';
 import type { Entity } from '../core/entities';
 import { newId, translateEntity, rotateEntity } from '../core/entities';
 import type { Tool, ToolContext } from './types';
-import { removeSolids } from '../model3d/model';
+import { removeObjects3D } from '../model3d/model';
 import { v3 } from '../model3d/math';
 import { commitWithSolids, previewSolidsFor, rotationAbout, translationMatrix } from '../tools3d/solid-edit';
 
@@ -55,12 +55,13 @@ abstract class SelectionTool implements Tool {
 export class EraseTool extends SelectionTool {
   readonly name = 'ERASE';
   protected begin(ctx: ToolContext): void {
-    // Experimental 3D: selected solids (DrawingState.model3d) go in the same undo step; a
-    // selection without solids takes exactly the 2D path it always took.
+    // Experimental 3D: selected solids and 3D dimensions (DrawingState.model3d) go in the same
+    // undo step; a selection without them takes exactly the 2D path it always took.
     const ids = new Set(this.ids);
-    const solids = (ctx.doc.snapshot.model3d?.solids ?? []).filter((s) => ids.has(s.id));
-    if (solids.length === 0) ctx.doc.removeEntities(this.ids);
-    else ctx.doc.updateModel3D((m) => removeSolids(m, solids.map((s) => s.id)), this.ids);
+    const model = ctx.doc.snapshot.model3d;
+    const has3d = !!model && (model.solids.some((s) => ids.has(s.id)) || (model.dimensions ?? []).some((d) => ids.has(d.id)));
+    if (!has3d) ctx.doc.removeEntities(this.ids);
+    else ctx.doc.updateModel3D((m) => removeObjects3D(m, ids), this.ids);
     ctx.selection = new Set();
     ctx.finish();
   }

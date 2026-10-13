@@ -23,7 +23,8 @@ import { reportObj, type ReadContext } from './read-core';
 import type { ColorSpec } from '../../core/entities';
 import { newId } from '../../core/entities';
 import type { ImportReportBuilder } from '../import-report';
-import type { Feature3D, Solid3D } from '../../model3d/types';
+import type { Dimension3D, Feature3D, Solid3D } from '../../model3d/types';
+import { acceptsDimension3D, offPlusZ, readDimension3DRecord } from './dim3d-read';
 import { type Mesh3D, meshIsClosed, validateMesh, weldVertices } from '../../model3d/mesh';
 import { newSolid } from '../../model3d/model';
 import { decodeSolidPayload, MAX_PAYLOAD_BYTES, MAX_SOLID_NAME_LENGTH, MODEL3D_FILE_VERSION, type SolidPayload } from '../../model3d/file-format';
@@ -56,7 +57,7 @@ interface PartRecord {
 }
 
 /** The `JCAD_3D` payload text of a record, null when it has none, or a problem. */
-function payloadText(o: Obj): { text: string } | { problem: string } | null {
+export function payloadText(o: Obj): { text: string } | { problem: string } | null {
   let found = false, active = false, bytes = 0;
   const chunks: string[] = [];
   for (const p of o.groups) {
@@ -77,7 +78,7 @@ function payloadText(o: Obj): { text: string } | { problem: string } | null {
 }
 
 /** The first unreadable numeric group of the record or its vertices, described for the report. */
-function invalidNumber(objs: readonly Obj[]): string | null {
+export function invalidNumber(objs: readonly Obj[]): string | null {
   for (const o of objs) {
     for (const p of o.groups) {
       if (p.code >= 1000) break;
@@ -89,7 +90,7 @@ function invalidNumber(objs: readonly Obj[]): string | null {
 }
 
 /** The record's ACI colour (62); an out-of-range value gives ByLayer and a report reason. */
-function colorOf(o: Obj): { color: ColorSpec; problem?: string } {
+export function colorOf(o: Obj): { color: ColorSpec; problem?: string } {
   if (!has(o, 62)) return { color: 'ByLayer' };
   const c = Math.trunc(num(o, 62));
   if (c === 256) return { color: 'ByLayer' };
@@ -179,6 +180,10 @@ function plural(n: number, one: string, many = `${one}s`): string {
  */
 export class Model3DReader {
   private readonly records: PartRecord[] = [];
+  /** True 3D dimensions read so far (model space, file order). */
+  private readonly dims: Array<{ readonly obj: Obj; readonly where?: string; readonly dim: Dimension3D }> = [];
+  /** Other programs' DIMENSIONs off the +Z plane read flat by the 2D path because 3D is off. */
+  private flatDims = 0;
 
   constructor(
     /** Import polyfaces without JCad data as mesh solids (the experimental 3D setting is on). */
@@ -189,6 +194,46 @@ export class Model3DReader {
   /** True when this record would be read by `polyface` (JCad data, or 3D enabled). */
   accepts(o: Obj): boolean {
     return this.enabled || o.groups.some((p) => p.code === 1001 && p.value.trim() === MODEL3D_APP);
+  }
+
+  /**
+   * Read a model-space DIMENSION as a true 3D dimension when it is one (io/dxf/dim3d-read.ts:
+   * JCad 3D data, or a non-Z extrusion with 3D enabled). Returns true when the record was consumed
+   * (read or dropped with a report item); false sends it down the unchanged 2D path.
+   */
+  dimension(o: Obj, ctx: ReadContext): boolean {
+    if (!acceptsDimension3D(o, this.enabled)) {
+      if (!this.enabled && o.kind === 'DIMENSION' && offPlusZ(o)) this.flatDims += 1;
+      return false;
+    }
+    const r = readDimension3DRecord(o, ctx);
+    if ('twoD' in r) return false;
+    if ('drop' in r) {
+      reportObj(ctx, o, 'dropped', r.drop);
+      return true;
+    }
+    this.dims.push({ obj: o, ...(ctx.where ? { where: ctx.where } : {}), dim: r.dim });
+    return true;
+  }
+
+  /**
+   * The 3D dimensions read, in file order; an id already used (by a solid in `taken` or an earlier
+   * dimension) gets a fresh `newId()`. With 3D disabled, a note says they are kept but hidden.
+   */
+  buildDimensions(taken: ReadonlySet<string>): Dimension3D[] {
+    const used = new Set(taken);
+    const out = this.dims.map(({ dim }) => {
+      const d = used.has(dim.id) ? { ...dim, id: newId() } : dim;
+      used.add(d.id);
+      return d;
+    });
+    if (this.flatDims) {
+      this.report?.note(`${plural(this.flatDims, 'dimension')} of this drawing ${this.flatDims === 1 ? 'lies' : 'lie'} in a plane other than the XY plane (or ${this.flatDims === 1 ? 'faces' : 'face'} -Z) and ${this.flatDims === 1 ? 'was' : 'were'} read flat in the XY plane; enable Experimental 3D (Options > Files) to read ${this.flatDims === 1 ? 'it' : 'them'} as 3D dimensions in ${this.flatDims === 1 ? 'its plane' : 'their planes'}.`);
+    }
+    if (out.length && !this.enabled) {
+      this.report?.note(`This drawing contains ${plural(out.length, 'experimental 3D dimension')}. ${out.length === 1 ? 'It is' : 'They are'} kept and saved with the drawing, but shown only when Experimental 3D is on: enable Experimental 3D (Options > Files) to view or erase ${out.length === 1 ? 'it' : 'them'}.`);
+    }
+    return out;
   }
 
   /** Read one model-space polyface record (`o` and the VERTEX records that follow it). */

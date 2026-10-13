@@ -22,13 +22,13 @@
 import {
   type Frame3, type Mat4, type Vec3, cross3, dist3, dot3, frameFromPlane, len3, normalize3, sub3,
 } from '../model3d/math';
-import type { Solid3D } from '../model3d/types';
+import type { Dimension3D, Solid3D } from '../model3d/types';
 import { select } from '../tools/script';
 import type { ToolContext } from '../tools/types';
 import { constructionPlaneOf, planeToWorld, point3Of, worldToPlane } from './context';
 import { modelSpaceOnly } from './primitives';
 import { type InputState, type Script3DTool, type Step3, ask3, clearingSelection, point3, script3d } from './script3d';
-import { commitSolidEdit, ghostSolids, rotationAbout, scalingAbout, solidsInSelection, translationMatrix } from './solid-edit';
+import { commitSolidEdit, dimensionsInSelection, ghostSolids, rotationAbout, scalingAbout, solidsInSelection, translationMatrix } from './solid-edit';
 import type { Point } from '../core/geometry';
 import { GeometryBudgetError } from '../core/geometry-budget-error';
 
@@ -69,16 +69,52 @@ export function* selectSolids(ctx: ToolContext, NAME: string): Step3<Solid3D[]> 
   return solids;
 }
 
-/** Apply the transform (one undo step) or log why not; returns true when the drawing changed. */
-export function applyTransform(ctx: ToolContext, NAME: string, solids: readonly Solid3D[], m: Mat4, verb: string): boolean {
+/** The 3D objects a transform command works on: solids and true 3D dimensions. */
+export interface Objects3D {
+  readonly solids: readonly Solid3D[];
+  readonly dimensions: readonly Dimension3D[];
+}
+
+/**
+ * "Select objects:" then the solids and 3D dimensions among the answer (3DMOVE, 3DROTATE,
+ * 3DSCALE). Logs how many 2D objects were ignored (as `selectSolids`) and returns null (after
+ * "no 3D solids selected") when the answer holds neither.
+ */
+export function* selectObjects3D(ctx: ToolContext, NAME: string): Step3<Objects3D | null> {
+  const ids = yield* select(ctx, 'Select objects:');
+  if (ids.length === 0) return null;
+  const solids = solidsInSelection(ctx, ids);
+  const dimensions = dimensionsInSelection(ctx, ids);
+  const others = new Set(ids).size - solids.length - dimensions.length;
+  if (others > 0) ctx.log(others === 1 ? '1 object is not a 3D solid and was ignored.' : `${others} objects are not 3D solids and were ignored.`);
+  if (solids.length === 0 && dimensions.length === 0) {
+    ctx.log(`${NAME}: no 3D solids selected.`);
+    return null;
+  }
+  return { solids, dimensions };
+}
+
+/** "1 solid", "2 solids and 1 dimension", "1 dimension". */
+function objectCount(o: Objects3D): string {
+  const n = (k: number, one: string) => `${k} ${one}${k === 1 ? '' : 's'}`;
+  const parts = [o.solids.length || !o.dimensions.length ? n(o.solids.length, 'solid') : null, o.dimensions.length ? n(o.dimensions.length, 'dimension') : null];
+  return parts.filter(Boolean).join(' and ');
+}
+
+/**
+ * Apply the transform (one undo step) to the solids and 3D dimensions, or log why not; returns
+ * true when the drawing changed.
+ */
+export function applyTransform(ctx: ToolContext, NAME: string, objects: readonly Solid3D[] | Objects3D, m: Mat4, verb: string): boolean {
+  const o: Objects3D = 'solids' in objects ? objects : { solids: objects, dimensions: [] };
   try {
-    commitSolidEdit(ctx, { solids, matrix: m });
+    commitSolidEdit(ctx, { solids: o.solids, ...(o.dimensions.length ? { dimensions: o.dimensions } : {}), matrix: m });
   } catch (err) {
     if (!(err instanceof RangeError) && !(err instanceof GeometryBudgetError)) throw err;
     ctx.log(`${NAME}: ${err.message} The drawing is unchanged.`);
     return false;
   }
-  ctx.log(`${NAME}: ${solids.length} solid${solids.length === 1 ? '' : 's'} ${verb}.`);
+  ctx.log(`${NAME}: ${objectCount(o)} ${verb}.`);
   return true;
 }
 
@@ -92,8 +128,9 @@ function planeVector(frame: Frame3, d: Vec3): Vec3 {
 function* moveScript(ctx: ToolContext): Step3<void> {
   const NAME = '3DMOVE';
   if (!modelSpaceOnly(ctx, NAME)) return;
-  const solids = yield* selectSolids(ctx, NAME);
-  if (solids.length === 0) return;
+  const objects = yield* selectObjects3D(ctx, NAME);
+  if (!objects) return;
+  const solids = objects.solids;
   const plane = constructionPlaneOf(ctx);
   const st: InputState = { last: null };
   let base: Vec3 | null = null;
@@ -139,7 +176,7 @@ function* moveScript(ctx: ToolContext): Step3<void> {
     ctx.log(`${NAME}: zero displacement; nothing moved.`);
     return;
   }
-  if (applyTransform(ctx, NAME, solids, translationMatrix(d), 'moved')) {
+  if (applyTransform(ctx, NAME, objects, translationMatrix(d), 'moved')) {
     const local = worldToPlane({ ...plane, origin: { x: 0, y: 0, z: 0 } }, d);
     transformDefaults.displacement = local;
     ctx.log(`Displacement: ${num(local.x)}, ${num(local.y)}, ${num(local.z)}`);
@@ -225,8 +262,9 @@ function* referenceAngle(ctx: ToolContext, st: InputState, ax: RotationAxis): St
 function* rotateScript(ctx: ToolContext): Step3<void> {
   const NAME = '3DROTATE';
   if (!modelSpaceOnly(ctx, NAME)) return;
-  const solids = yield* selectSolids(ctx, NAME);
-  if (solids.length === 0) return;
+  const objects = yield* selectObjects3D(ctx, NAME);
+  if (!objects) return;
+  const solids = objects.solids;
   const plane = constructionPlaneOf(ctx);
   const st: InputState = { last: null };
   const b = yield* point3(ctx, st, 'Specify base point:');
@@ -301,7 +339,7 @@ function* rotateScript(ctx: ToolContext): Step3<void> {
     ctx.log(`${NAME}: zero rotation; nothing changed.`);
     return;
   }
-  if (applyTransform(ctx, NAME, solids, matrix(angle), 'rotated')) {
+  if (applyTransform(ctx, NAME, objects, matrix(angle), 'rotated')) {
     transformDefaults.angle = angle / DEG;
     ctx.log(`Rotation angle: ${num(angle / DEG)} degrees.`);
   }
@@ -332,8 +370,9 @@ function* lengthInput(ctx: ToolContext, st: InputState, prompt: string, from: Ve
 function* scaleScript(ctx: ToolContext): Step3<void> {
   const NAME = '3DSCALE';
   if (!modelSpaceOnly(ctx, NAME)) return;
-  const solids = yield* selectSolids(ctx, NAME);
-  if (solids.length === 0) return;
+  const objects = yield* selectObjects3D(ctx, NAME);
+  if (!objects) return;
+  const solids = objects.solids;
   const st: InputState = { last: null };
   const b = yield* point3(ctx, st, 'Specify base point:');
   if (!b) return;
@@ -380,7 +419,7 @@ function* scaleScript(ctx: ToolContext): Step3<void> {
     ctx.log(`${NAME}: scale factor 1; nothing changed.`);
     return;
   }
-  if (applyTransform(ctx, NAME, solids, scalingAbout(base, factor), 'scaled')) {
+  if (applyTransform(ctx, NAME, objects, scalingAbout(base, factor), 'scaled')) {
     transformDefaults.scale = factor;
     ctx.log(`Scale factor: ${num(factor)}.`);
   }

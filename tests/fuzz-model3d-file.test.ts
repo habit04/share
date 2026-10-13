@@ -13,6 +13,10 @@
  * - Every POLYLINE record is accounted for: it became a solid, a 2D polyline, or a `dropped`
  *   import-report item (so nothing disappears silently). Only a file opened with `recover` may lose
  *   its last, incomplete record, and then the report says the file was recovered.
+ * - True 3D dimensions (DIMENSION records with `JCAD_3D` data, docs/3D-DIMENSIONS.md): mutated
+ *   records read without anything but DxfReadError escaping, every DIMENSION becomes a 3D or 2D
+ *   dimension or a `dropped` item, and every 3D dimension read is consistent (valid plane, finite
+ *   numbers, rebuildable by `makeDimension3D`, unique id); `decodeDimensionPayload` never throws.
  * - `evaluateFeature` either gives a closed, outward, in-budget mesh or rejects with one of the
  *   documented errors: Model3DInputError (FeatureEvalError is one), GeometryBudgetError or
  *   KernelError. A plain RangeError, TypeError or Error is a failure.
@@ -26,14 +30,16 @@ import { importReportOf } from '../src/io/import-report';
 import { MAX_SOLID_TRIANGLES } from '../src/model3d/budget';
 import { isModel3DUserError } from '../src/model3d/errors';
 import { evaluateFeature } from '../src/model3d/feature-eval';
-import { MAX_SOLID_NAME_LENGTH, decodeSolidPayload, validSolidId, validateFeature } from '../src/model3d/file-format';
+import { MAX_SOLID_NAME_LENGTH, decodeDimensionPayload, decodeSolidPayload, validSolidId, validateFeature } from '../src/model3d/file-format';
 import { ManifoldDirectKernel } from '../src/model3d/kernel/manifold-direct';
-import { type Frame3, frameFromPlane, v3, WORLD_XY_FRAME } from '../src/model3d/math';
+import { type Frame3, frameFromPlane, isOrthonormalFrame, v3, WORLD_XY_FRAME } from '../src/model3d/math';
+import { STANDARD_DIMSTYLE } from '../src/core/dimension';
+import { dimension3dMeasurement, dimension3dSpec, dimension3dText, makeDimension3D, planeWorld } from '../src/model3d/dimension3d';
 import { meshIsClosed, meshTriangleCount, meshVolume, validateMesh } from '../src/model3d/mesh';
-import { addSolids, model3dOf, newSolid, withModel3D } from '../src/model3d/model';
+import { addDimensions3D, addSolids, model3dOf, newSolid, withModel3D } from '../src/model3d/model';
 import { boxMesh, primitiveMesh, sphereMesh } from '../src/model3d/primitives';
 import { extrudeMesh, revolveMesh } from '../src/model3d/sweep';
-import type { Feature3D, Profile3D, Solid3D } from '../src/model3d/types';
+import type { Dimension3D, Feature3D, Profile3D, Solid3D } from '../src/model3d/types';
 import { Rng, check, fuzz, fuzzSync, fuzzTimeout } from './helpers/fuzz';
 
 const RUNS = 2000;
@@ -530,5 +536,195 @@ describe('fuzzing Feature3D trees through evaluateFeature', () => {
     if (!REPLAY) expect(tally.get('KernelError') ?? 0).toBeGreaterThan(10);
     if (!REPLAY) expect(tally.get('Model3DInputError') ?? 0).toBeGreaterThan(100);
     if (!REPLAY) expect(tally.get('FeatureEvalError') ?? 0).toBeGreaterThan(50);
+  }, fuzzTimeout());
+});
+
+// ------------------------------------------------------------------ 3D dimensions (DIMENSION records with JCAD_3D data)
+
+const DIM_RUNS = 1000;
+
+/** Dimensions of every kind in a tilted plane, a negative-normal plane and a world plane. */
+function corpusDimensions(): Dimension3D[] {
+  const s = STANDARD_DIMSTYLE;
+  const neg = frameFromPlane({ origin: v3(-4, 0.5, 2), normal: v3(-0.2, -0.9, -0.4) });
+  const xz: Frame3 = { origin: v3(0, 3, 0), xAxis: v3(1, 0, 0), yAxis: v3(0, 0, 1), zAxis: v3(0, -1, 0) };
+  const P = (f: Frame3, x: number, y: number, z = 0) => planeWorld(f, { x, y }, z);
+  return [
+    makeDimension3D({ id: 'dim-al', kind: 'aligned', plane: tilted, p1: P(tilted, 0, 0), p2: P(tilted, 3, 4), location: P(tilted, 0, 3), style: s, layer: 'DIMS', color: 2 }),
+    makeDimension3D({ id: 'dim-lx', kind: 'linear', axis: 'x', plane: neg, p1: P(neg, 1, 1), p2: P(neg, 4, 5), location: P(neg, 2, 7), style: s }),
+    makeDimension3D({ id: 'dim-ly', kind: 'linear', axis: 'y', plane: xz, p1: P(xz, 1, 1), p2: P(xz, 4, 5), location: P(xz, 7, 3), style: s, textOverride: 'H <>' }),
+    makeDimension3D({ id: 'dim-an', kind: 'angular', plane: tilted, vertex: P(tilted, 0, 0), p1: P(tilted, 2, 0), p2: P(tilted, 0, 2), location: P(tilted, 1, 1), style: s }),
+    makeDimension3D({ id: 'dim-pr', kind: 'aligned', plane: xz, p1: P(xz, 0, 0), p2: P(xz, 3, 4, 2), location: P(xz, -1, 2), style: s }),
+  ];
+}
+
+const dimCorpusState: DrawingState = withModel3D({ ...base, layers: [...base.layers, { name: 'DIMS', color: 3, visible: true, locked: false, lineWeight: 0.25 }] }, addDimensions3D(model3dOf(base), corpusDimensions()));
+const DIM_TEXT = entitiesOnly(writeDxf(dimCorpusState));
+
+/** [start, end) pair ranges of each DIMENSION record. */
+function dimensionRanges(pairs: readonly Pair[]): Array<[number, number]> {
+  const out: Array<[number, number]> = [];
+  for (let i = 0; i < pairs.length; i++) {
+    if (pairs[i]![0] !== '0' || pairs[i]![1] !== 'DIMENSION') continue;
+    let j = i + 1;
+    while (j < pairs.length && pairs[j]![0] !== '0') j++;
+    out.push([i, j]);
+  }
+  return out;
+}
+
+type DimMutation = 'truncate' | 'number' | 'payload' | 'xdata' | 'flags' | 'strip-jcad' | 'extrusion' | 'swap-codes' | 'text';
+
+/** Apply one mutation to a DIMENSION record; returns its name (for the failure message). */
+function mutateDimension(rng: Rng, pairs: Pair[], payloads: string[]): DimMutation {
+  const ranges = dimensionRanges(pairs);
+  if (!ranges.length) return 'truncate';
+  const [lo, hi] = rng.pick(ranges);
+  const m = rng.weighted<DimMutation>([[1, 'truncate'], [4, 'number'], [4, 'payload'], [2, 'xdata'], [2, 'flags'], [1, 'strip-jcad'], [2, 'extrusion'], [1, 'swap-codes'], [1, 'text']]);
+  switch (m) {
+    case 'truncate':
+      pairs.length = rng.int(lo, hi);
+      break;
+    case 'number': {
+      const numeric = [];
+      for (let i = lo; i < hi; i++) if (['10', '20', '30', '11', '21', '31', '13', '23', '33', '14', '24', '34', '15', '25', '35', '42', '50', '70', '71', '62'].includes(pairs[i]![0])) numeric.push(i);
+      if (numeric.length) pairs[rng.pick(numeric)]![1] = rng.pick([...HOSTILE_NUMBERS, '0', '1', '-1', '1e300']);
+      break;
+    }
+    case 'payload': {
+      const text = payloadAt(pairs, lo);
+      if (text === null) break;
+      let mutated: string;
+      try {
+        mutated = mutatePayloadJson(rng, text);
+      } catch {
+        mutated = text.slice(0, rng.int(0, text.length));
+      }
+      const encoded = rng.bool(0.9) ? escapePayload(mutated) : mutated;
+      payloads.push(encoded);
+      setPayload(rng, pairs, lo, encoded);
+      break;
+    }
+    case 'xdata': {
+      let i = lo + 1;
+      while (i < hi && !(pairs[i]![0] === '1001' && pairs[i]![1] === 'JCAD_3D')) i++;
+      if (i >= hi) break;
+      const kind = rng.int(0, 3);
+      if (kind === 0) {
+        let j = i + 1;
+        while (j < hi && pairs[j]![0] === '1000') j++;
+        spliceIn(pairs, j, 0, pairs.slice(i, j).map((p) => [...p] as Pair));
+      } else if (kind === 1) pairs.splice(rng.int(i + 1, i + 2), 0, [rng.pick(['1002', '1040', '1070']), rng.pick(['{', '1.5', 'NaN'])]);
+      else if (kind === 2) pairs.splice(i, 0, ['1001', 'OTHER_APP'], ['1000', 'data']);
+      else pairs.splice(i + 1, 0, ['1000', 'x'.repeat(rng.pick([255, 256, 20000]))]);
+      break;
+    }
+    case 'flags':
+      for (let i = lo; i < hi; i++) if (pairs[i]![0] === '70') { pairs[i]![1] = rng.pick(['0', '1', '2', '3', '4', '5', '6', '32', '33', '37', '160', '-1', '1.5']); break; }
+      break;
+    case 'strip-jcad':
+      for (let i = hi - 1; i > lo; i--) if (pairs[i]![0] === '1001' && pairs[i]![1] === 'JCAD_3D') {
+        let j = i + 1;
+        while (j < pairs.length && pairs[j]![0] === '1000') j++;
+        pairs.splice(i, j - i);
+      }
+      break;
+    case 'extrusion':
+      for (let i = lo; i < hi; i++) if (['210', '220', '230'].includes(pairs[i]![0]) && rng.bool(0.5)) pairs[i]![1] = rng.pick(['0', '1', '-1', '0.5', '1e-300', 'NaN']);
+      break;
+    case 'swap-codes': {
+      const a = rng.int(lo, hi - 1), b = rng.int(lo, hi - 1);
+      const t = pairs[a]![0];
+      pairs[a]![0] = pairs[b]![0];
+      pairs[b]![0] = t;
+      break;
+    }
+    case 'text':
+      for (let i = lo; i < hi; i++) if (pairs[i]![0] === '1' || pairs[i]![0] === '3') { pairs[i]![1] = rng.pick(['', '<>', ' ', '<> (projected)', ' (projected)', '\\U+0041', rng.pick(UNICODE).repeat(rng.int(1, 80))]); break; }
+      break;
+  }
+  return m;
+}
+
+/** Number of DIMENSION records the reader sees. */
+function dimensionRecords(text: string): number {
+  const lines = text.split(/\r?\n/);
+  let n = 0;
+  for (let i = 0; i + 1 < lines.length; i += 2) if (lines[i]!.trim() === '0' && lines[i + 1]!.trim() === 'DIMENSION') n++;
+  return n;
+}
+
+/** Check the read drawing's dimensions (see the module comment); `text` is what was read. */
+function checkDimensions(state: DrawingState, text: string, recovered: boolean): void {
+  prepareDrawingState(state);
+  const dims3 = state.model3d?.dimensions ?? [];
+  check(state.model3d === undefined || state.model3d.solids.length > 0 || dims3.length > 0, 'an empty 3D model was kept');
+  check(state.model3d?.dimensions === undefined || dims3.length > 0, 'an empty dimension list was kept');
+  check(dims3.every((d) => Object.isFrozen(d)), 'dimension not sealed');
+  const ids = new Set<string>();
+  for (const d of dims3) {
+    check(validSolidId(d.id) === d.id && !ids.has(d.id), `bad or duplicate id ${JSON.stringify(d.id)}`);
+    ids.add(d.id);
+    check(isOrthonormalFrame(d.plane, 1e-6), `dimension ${d.id}: plane is not orthonormal`);
+    check([d.p1, d.p2, ...(d.vertex ? [d.vertex] : [])].every((p) => Number.isFinite(p.x + p.y + p.z)) && Number.isFinite(d.offset), `dimension ${d.id}: non-finite numbers`);
+    check(Number.isFinite(dimension3dMeasurement(d)), `dimension ${d.id}: measurement not finite`);
+    // Rebuilding through the constructor works (the data is consistent) and the text can be laid out.
+    makeDimension3D(dimension3dSpec(d));
+    check(typeof dimension3dText(d) === 'string', 'no text');
+    check(state.layers.some((l) => l.name === d.layer), `dimension layer ${d.layer} missing from the layer table`);
+    check(d.color === 'ByLayer' || (typeof d.color === 'number' && Number.isInteger(d.color) && d.color >= 0 && d.color <= 255), () => `bad colour ${JSON.stringify(d.color)}`);
+  }
+  // Every DIMENSION is accounted for: a 3D dimension, a 2D dimension, or a dropped report item.
+  const report = importReportOf(state);
+  check((report?.omitted ?? 0) === 0, 'report items were capped');
+  const dropped = new Set((report?.items ?? []).filter((i) => i.type === 'DIMENSION' && i.action === 'dropped').map((i) => i.line ?? -1));
+  const accounted = dims3.length + state.entities.filter((e) => e.type === 'dimension').length + dropped.size;
+  const expected = dimensionRecords(text);
+  if (recovered) check(accounted === expected || (accounted === expected - 1 && !!report?.recovered), () => `recovered: ${accounted} of ${expected} DIMENSION records accounted for`);
+  else check(accounted === expected, () => `${accounted} of ${expected} DIMENSION records accounted for (3D ${dims3.length})`);
+}
+
+describe('fuzzing 3D dimension records', () => {
+  it('reads the unmutated dimension corpus exactly', () => {
+    const state = readDxf(DIM_TEXT, { model3d: true });
+    expect(state.model3d?.dimensions?.map((d) => d.id)).toEqual(corpusDimensions().map((d) => d.id));
+    expect(importReportOf(state)).toBeUndefined();
+  });
+
+  it('readDxf throws only DxfReadError, keeps every DIMENSION accounted for and yields valid dimensions', () => {
+    const tally = new Map<string, number>();
+    fuzzSync('model3d-dimension-mutation', DIM_RUNS, (rng) => {
+      const pairs = toPairs(DIM_TEXT);
+      const payloads: string[] = [];
+      const applied: DimMutation[] = [];
+      for (let k = rng.int(1, 3); k > 0; k--) applied.push(mutateDimension(rng, pairs, payloads));
+      let text = fromPairs(pairs);
+      if (applied.includes('truncate') && rng.bool(0.3)) text = text.slice(0, text.lastIndexOf(CRLF, text.length - 3) + 2);
+      for (const p of payloads) {
+        const decoded = decodeDimensionPayload(p); // documented never to throw
+        tally.set(`payload:${decoded.status}`, (tally.get(`payload:${decoded.status}`) ?? 0) + 1);
+      }
+      const recover = rng.bool(0.5);
+      let state: DrawingState;
+      try {
+        state = readDxf(text, { model3d: rng.bool(0.7), recover });
+      } catch (err) {
+        check(err instanceof DxfReadError, () => `[${applied.join(', ')}] readDxf threw ${err instanceof Error ? `${err.name}: ${err.message}` : String(err)}`);
+        tally.set('DxfReadError', (tally.get('DxfReadError') ?? 0) + 1);
+        return;
+      }
+      try {
+        checkDimensions(state, text, recover);
+      } catch (err) {
+        throw new Error(`[${applied.join(', ')}] ${err instanceof Error ? err.message : String(err)}`);
+      }
+      const n = state.model3d?.dimensions?.length ?? 0;
+      const key = n === 5 ? 'five dimensions' : 'fewer dimensions';
+      tally.set(key, (tally.get(key) ?? 0) + 1);
+    });
+    console.log(`fuzz model3d-dimension-mutation outcomes: ${JSON.stringify(Object.fromEntries(tally))}`);
+    if (!REPLAY) expect(tally.get('five dimensions') ?? 0).toBeGreaterThan(200);
+    if (!REPLAY) expect(tally.get('fewer dimensions') ?? 0).toBeGreaterThan(20);
+    if (!REPLAY) expect(tally.get('payload:invalid') ?? 0).toBeGreaterThan(20);
   }, fuzzTimeout());
 });

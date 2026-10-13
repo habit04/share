@@ -44,6 +44,7 @@ describe('DXF output of drawings without 3D solids', () => {
       const text = writeDxf(state);
       expect(writeDxf({ ...state, model3d: EMPTY_MODEL3D })).toBe(text);
       expect(writeDxf({ ...state, model3d: { version: 1, solids: [] } })).toBe(text);
+      expect(writeDxf({ ...state, model3d: { version: 1, solids: [], dimensions: [] } })).toBe(text);
       expect(text).not.toContain('JCAD_3D');
       expect(text).not.toContain('AcDbPolyFaceMesh');
       expect(text).not.toMatch(/\r\nPOLYLINE\r\n(?:(?!\r\n0\r\n)[\s\S])*\r\n70\r\n64\r\n/);

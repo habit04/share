@@ -18,13 +18,21 @@
  * demand into an offscreen framebuffer and reused while the camera and model are unchanged) and
  * falls back to `pickExact` (CPU ray casting, src/render3d/picking.ts) when read-back fails. Both
  * sample the centre of the device pixel under the cursor, so they agree.
+ *
+ * True 3D dimensions (DIM3D, docs/3D-DIMENSIONS.md) are drawn through the line batch with the 2D
+ * dimension colours (src/render3d/dimension3d-scene.ts), selection-tinted and hover-lightened like
+ * solid edges, after the solids (depth-tested, so a solid in front hides them). `pick` tries them
+ * first on the CPU: the dimension with a display segment within `dimensionAperture` CSS px of the
+ * cursor wins over the solid under it unless that solid's face is nearer along the cursor ray
+ * (`dimensionInFront`); the id buffer holds solids only. Rubber-band dimensions of a
+ * running DIM3D (`Viewport3DOverlay.previewDimensions`) are drawn the same way but never picked.
  */
 import type { Drawing, DrawingState } from '../core/document';
 import { backingSize } from '../render/viewport';
 import { type Aabb, type Mat4, type Ray, type Vec3, aabbUnion, mat4LookAt, mat4Multiply, mat4Orthographic, scale3, sub3, v3 } from '../model3d/math';
 import { model3dOf } from '../model3d/model';
 import { meshBounds } from '../model3d/mesh';
-import type { Solid3D } from '../model3d/types';
+import type { Dimension3D, Solid3D } from '../model3d/types';
 import {
   type Camera3D, cameraBasis, cameraProjection, cameraViewRelative, clipRange, defaultCamera, eyeDirection, orbit, pan, projectToScreen,
   rayFromScreen, viewHeightAtTarget, withOrthoClearance, zoom, zoomToBounds,
@@ -34,6 +42,7 @@ import { ATTR_COLOR, ATTR_POSITION, MeshBufferCache, type Programs, createProgra
 import { type PickHit, pickSolids } from './picking';
 import { type GridSpec, type Rgba, LineBatchBuilder, gridLines, gridSpec, parseCssColor, solidDisplayColor } from './scene-data';
 import { emitDrawingUnderlay, hiddenLayerNames } from './scene-sink';
+import { type Dimension3DHit, dimension3dGeometry, dimensionInFront, pickDimension3DHit, visibleDimensions3D } from './dimension3d-scene';
 import { GRIP_EDGE_RGBA, GRIP_FILL_RGBA, type MarkerKind, SNAP_MARKER_RGBA, type Segment2, gripSegments, markerSegments } from './markers';
 
 /** What changes between frames without changing the document. */
@@ -56,6 +65,8 @@ export interface Viewport3DOverlay {
   readonly gripSize?: number;
   /** The 3D object snap under the cursor: the 2D snap marker shape is drawn at its projection. */
   readonly snap3d?: { readonly point: Vec3; readonly kind: MarkerKind } | null;
+  /** 3D dimensions a running DIM3D is placing (not in the document): drawn, never picked. Absent = none. */
+  readonly previewDimensions?: readonly Dimension3D[];
 }
 
 export interface Viewport3DSettings {
@@ -99,10 +110,14 @@ export class Viewport3D {
   lastPickPath: 'gpu' | 'cpu' | null = null;
   /** Called after every rendered frame (view label updates). */
   onRendered: (() => void) | null = null;
+  /** Pick aperture for 3D dimensions in CSS px (the 2D pick box; set by the owner). */
+  dimensionAperture = 4;
 
   private programs: Programs;
   private readonly meshes: MeshBufferCache;
   private underlay: { entities: DrawingState['entities']; layers: DrawingState['layers']; blocks: DrawingState['blocks']; batch: LineBatchGpu | null } | null = null;
+  /** The 3D dimensions' line batch, rebuilt when the dimensions, layers, selection or hover change. */
+  private dims: { key: string; source: readonly Dimension3D[] | undefined; layers: DrawingState['layers']; batch: LineBatchGpu | null } | null = null;
   private grid: { key: string; spec: GridSpec; batch: LineBatchGpu | null } | null = null;
   private triad: LineBatchGpu | null = null;
   /** Reused buffer of the screen-space marks (grips, snap marker); rebuilt after a context loss. */
@@ -141,6 +156,7 @@ export class Viewport3D {
       }
       this.meshes.reset();
       this.underlay = null;
+      this.dims = null;
       this.grid = null;
       this.triad = null;
       this.marks = null;
@@ -251,8 +267,18 @@ export class Viewport3D {
 
   // ------------------------------------------------------------------ picking
 
-  /** Id of the front-most visible solid under (sx, sy) CSS px, or null. GPU first, CPU fallback. */
+  /**
+   * Id of the object under (sx, sy) CSS px, or null: a visible 3D dimension within
+   * `dimensionAperture` (CPU) unless a solid face is nearer along the cursor ray, else the
+   * front-most visible solid (GPU first, CPU fallback).
+   */
   pick(sx: number, sy: number): string | null {
+    const dim = this.pickDimensionHit(sx, sy);
+    if (dim) {
+      this.lastPickPath = 'cpu';
+      const solid = this.pickExact(sx, sy);
+      return solid && !dimensionInFront(dim.point, solid.point, this.pixelRay(sx, sy)) ? solid.id : dim.id;
+    }
     const solids = this.visibleSolids(this.doc.snapshot);
     if (solids.length === 0) {
       this.lastPickPath = null;
@@ -267,6 +293,20 @@ export class Viewport3D {
     }
     this.lastPickPath = 'cpu';
     return this.pickExact(sx, sy)?.id ?? null;
+  }
+
+  /** The visible 3D dimension with a display segment within `dimensionAperture` CSS px of (sx, sy), with the world point there, or null. */
+  pickDimensionHit(sx: number, sy: number): Dimension3DHit | null {
+    const state = this.doc.snapshot;
+    const dims = visibleDimensions3D(state.model3d?.dimensions, state.layers);
+    if (!dims.length) return null;
+    this.prepareCamera();
+    const W = this.canvas.width, H = this.canvas.height, cam = this.camera, dpr = this.dpr;
+    const project = (p: Vec3) => {
+      const s = projectToScreen(cam, p, W, H);
+      return s ? { x: s.x / dpr, y: s.y / dpr } : null;
+    };
+    return pickDimension3DHit(dims, project, sx, sy, this.dimensionAperture, state.layers);
   }
 
   /** Exact CPU pick at the centre of the device pixel under (sx, sy): the nearest hit, or null. */
@@ -375,17 +415,18 @@ export class Viewport3D {
     return hidden.size ? solids.filter((s) => !hidden.has(s.layer)) : solids;
   }
 
-  /** Bounds of the visible solids and the 2D underlay (what ZOOM Extents frames). */
+  /** Bounds of the visible solids, 3D dimensions and the 2D underlay (what ZOOM Extents frames). */
   contentBounds(): Aabb | null {
     const state = this.doc.snapshot;
     this.ensureUnderlay(state);
-    let box: Aabb | null = this.underlay?.batch?.bounds ?? null;
+    this.ensureDimensions(state, this.lastOverlay);
+    let box: Aabb | null = aabbUnion(this.underlay?.batch?.bounds ?? null, this.dims?.batch?.bounds ?? null);
     for (const s of this.visibleSolids(state)) box = aabbUnion(box, meshBounds(s.mesh));
     return box;
   }
 
   private sceneBounds(solids: readonly Solid3D[], grid: GridSpec | null): Aabb | null {
-    let box: Aabb | null = this.underlay?.batch?.bounds ?? null;
+    let box: Aabb | null = aabbUnion(this.underlay?.batch?.bounds ?? null, this.dims?.batch?.bounds ?? null);
     for (const s of solids) box = aabbUnion(box, meshBounds(s.mesh));
     if (grid) box = aabbUnion(box, { min: v3(grid.center.x - grid.half, grid.center.y - grid.half, 0), max: v3(grid.center.x + grid.half, grid.center.y + grid.half, grid.half * 0.25) });
     return box;
@@ -445,6 +486,24 @@ export class Viewport3D {
     this.underlay = { entities: state.entities, layers: state.layers, blocks: state.blocks, batch: this.uploadLines(builder.build()) };
   }
 
+  /**
+   * (Re)build the 3D dimensions' line batch when the dimensions, layers, or the selection / hover
+   * among them changed. Selected dimensions are tinted like selected solid edges, the hovered one
+   * lightened.
+   */
+  private ensureDimensions(state: DrawingState, ov: Viewport3DOverlay): void {
+    const source = state.model3d?.dimensions;
+    const dims = visibleDimensions3D(source, state.layers);
+    const key = dims.length ? JSON.stringify([dims.filter((d) => ov.selection.has(d.id)).map((d) => d.id), dims.some((d) => d.id === ov.hover) ? ov.hover : null]) : '';
+    const cur = this.dims;
+    if (cur && cur.source === source && cur.layers === state.layers && cur.key === key) return;
+    if (this.device.lost) return;
+    const builder = new LineBatchBuilder();
+    for (const d of dims) addDimensionLines(builder, d, state.layers, ov.selection.has(d.id) ? 'selected' : ov.hover === d.id ? 'hover' : 'plain');
+    this.deleteLines(cur?.batch);
+    this.dims = { key, source, layers: state.layers, batch: this.uploadLines(builder.build()) };
+  }
+
   private ensureGrid(spec: GridSpec | null): void {
     if (!spec) return;
     const key = JSON.stringify(spec);
@@ -477,6 +536,7 @@ export class Viewport3D {
     this.meshes.frame += 1;
     const solids = this.visibleSolids(state);
     this.ensureUnderlay(state);
+    this.ensureDimensions(state, ov);
     const spec = this.gridFor(this.camera);
     const ghosts = ov.previewSolids ?? [];
     const bounds = this.sceneBounds(ghosts.length ? [...solids, ...ghosts] : solids, spec);
@@ -552,6 +612,8 @@ export class Viewport3D {
     gl.enable(gl.DEPTH_TEST);
     const under = this.underlay?.batch;
     if (under) drawLines(under.vao, under.count, under.origin, [1, 1, 1, 1]);
+    const dimBatch = this.dims?.batch;
+    if (dimBatch) drawLines(dimBatch.vao, dimBatch.count, dimBatch.origin, [1, 1, 1, 1]);
     this.ensureGrid(spec);
     if (spec && this.grid?.batch) {
       gl.depthMask(false);
@@ -584,6 +646,21 @@ export class Viewport3D {
       }
       gl.enable(gl.DEPTH_TEST);
       gl.depthMask(true);
+    }
+
+    // Rubber-band dimensions of a running DIM3D: a small batch rebuilt per frame, on top.
+    const previewDims = ov.previewDimensions ?? [];
+    if (previewDims.length) {
+      const pb = new LineBatchBuilder();
+      for (const d of previewDims) addDimensionLines(pb, d, state.layers, 'plain');
+      const built = pb.build();
+      const gpu = this.uploadLines(built);
+      if (gpu) {
+        gl.disable(gl.DEPTH_TEST);
+        drawLines(gpu.vao, gpu.count, gpu.origin, [1, 1, 1, 1]);
+        gl.enable(gl.DEPTH_TEST);
+        this.deleteLines(gpu);
+      }
     }
 
     // Screen-space marks on top of everything: grips of the selected solid, the 3D snap marker.
@@ -665,6 +742,14 @@ export class Viewport3D {
     this.meshes.prune();
     if (t0) this.device.lastFrameMs = performance.now() - t0;
     this.onRendered?.();
+  }
+}
+
+/** Add a 3D dimension's display segments to a line batch (2D dimension colours, or the selection / hover tint). */
+function addDimensionLines(b: LineBatchBuilder, d: Dimension3D, layers: DrawingState['layers'], look: 'plain' | 'selected' | 'hover'): void {
+  for (const s of dimension3dGeometry(d, d.style, layers)) {
+    const base = parseCssColor(s.color);
+    b.add(s.a, s.b, look === 'selected' ? SELECT_EDGE : look === 'hover' ? mix(base, [1, 1, 1, 1], 0.5) : base);
   }
 }
 

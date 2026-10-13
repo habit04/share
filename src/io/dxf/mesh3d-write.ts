@@ -27,7 +27,7 @@ export const MAX_POLYFACE_FACES = 32767;
  * accept `1e-7`). Negative zero is written as 0.
  */
 export function exactReal(n: number): string {
-  if (!Number.isFinite(n)) throw new RangeError('3D solid coordinates must be finite numbers.');
+  if (!Number.isFinite(n)) throw new RangeError('DXF coordinates of 3D objects must be finite numbers.');
   if (n === 0) return '0';
   const s = String(n);
   const e = s.indexOf('e');

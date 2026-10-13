@@ -231,6 +231,11 @@ export function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): En
         continue;
       }
     }
+    // Model-space DIMENSIONs in their own plane: experimental true 3D dimensions (dim3d-read.ts).
+    if (o.kind === 'DIMENSION' && keepRaw && ctx.solids?.dimension(o, ctx)) {
+      i += 1;
+      continue;
+    }
     let read: Entity | null;
     try {
       read = readEntityObj(o, ctx);

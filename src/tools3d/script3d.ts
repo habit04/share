@@ -13,7 +13,7 @@
 import type { Point } from '../core/geometry';
 import { parseDistance } from '../core/units';
 import type { Vec3 } from '../model3d/math';
-import type { Solid3D } from '../model3d/types';
+import type { Dimension3D, Solid3D } from '../model3d/types';
 import type { Answer, Request } from '../tools/script';
 import { matchKeyword } from '../tools/script';
 import type { Tool, ToolContext } from '../tools/types';
@@ -23,6 +23,8 @@ import { constructionPlaneOf, parsePoint3, point3Of, worldToPlane } from './cont
 export interface Request3D extends Request {
   /** Ghost solids for the cursor (null before the cursor has moved). */
   preview3d?: (cursor: Point | null) => readonly Solid3D[];
+  /** Rubber-band 3D dimensions for the cursor (DIM3D; null before the cursor has moved). */
+  previewDimensions?: (cursor: Point | null) => readonly Dimension3D[];
   /** An asynchronous step: the script resumes (with Enter) when it settles. Must not reject. */
   wait?: Promise<void>;
 }
@@ -44,6 +46,8 @@ export class Script3DTool implements Tool {
   private busy: Promise<void> | null = null;
   /** True while 2D rubber-band entities (`Request.preview`) are shown. */
   private preview2d = false;
+  /** True while rubber-band 3D dimensions (`Request3D.previewDimensions`) are shown. */
+  private previewDims = false;
 
   constructor(
     readonly name: string,
@@ -92,6 +96,7 @@ export class Script3DTool implements Tool {
     this.current = null;
     ctx.setPreview3d?.([]);
     this.clearPreview2d(ctx);
+    this.clearPreviewDims(ctx);
     ctx.finish();
   }
 
@@ -122,6 +127,7 @@ export class Script3DTool implements Tool {
     }
     if (req.select) {
       ctx.setPreview3d?.([]);
+      this.clearPreviewDims(ctx);
       ctx.requestSelection(req.prompt, (ids) => this.advance(ctx, { type: 'select', ids }));
       return;
     }
@@ -135,6 +141,33 @@ export class Script3DTool implements Tool {
     ctx.setPreview([]);
   }
 
+  private clearPreviewDims(ctx: ToolContext): void {
+    if (!this.previewDims) return;
+    this.previewDims = false;
+    ctx.setPreviewDimensions3d?.([]);
+  }
+
+  /** Rubber-band 3D dimensions (DIM3D) for the cursor, drawn by the 3D view. */
+  private showPreviewDims(ctx: ToolContext): void {
+    const fn = this.current?.previewDimensions;
+    if (!fn || !ctx.setPreviewDimensions3d || ctx.wantsPreview3d?.() === false) {
+      this.clearPreviewDims(ctx);
+      return;
+    }
+    let dims: readonly Dimension3D[] = [];
+    try {
+      dims = fn(this.cursor);
+    } catch {
+      dims = [];
+    }
+    if (dims.length === 0) {
+      this.clearPreviewDims(ctx);
+      return;
+    }
+    ctx.setPreviewDimensions3d(dims);
+    this.previewDims = true;
+  }
+
   private showPreview(ctx: ToolContext): void {
     // 2D rubber band (3DDIM's dimension): drawn by the 2D view's overlay (the 3D view does not show it).
     const fn2 = this.current?.preview;
@@ -146,6 +179,7 @@ export class Script3DTool implements Tool {
         this.clearPreview2d(ctx);
       }
     } else this.clearPreview2d(ctx);
+    this.showPreviewDims(ctx);
     const fn = this.current?.preview3d;
     if (!ctx.setPreview3d) return;
     if (!fn || ctx.wantsPreview3d?.() === false) {
@@ -199,6 +233,7 @@ export class Script3DTool implements Tool {
     }
     ctx.setPreview3d?.([]);
     this.clearPreview2d(ctx);
+    this.clearPreviewDims(ctx);
   }
 }
 
@@ -228,6 +263,8 @@ export interface AskOptions {
   readonly preview3d?: Request3D['preview3d'];
   /** 2D rubber-band entities for the cursor (plane-local tool point). */
   readonly preview?: Request3D['preview'];
+  /** Rubber-band 3D dimensions for the cursor (DIM3D). */
+  readonly previewDimensions?: Request3D['previewDimensions'];
 }
 
 /**
@@ -238,7 +275,7 @@ export interface AskOptions {
 export function* ask3(ctx: ToolContext, st: InputState, prompt: string, opts: AskOptions = {}): Step3<Ans3> {
   const points = opts.points ?? true;
   for (;;) {
-    const a: Answer = yield { prompt, distance: false, preview3d: opts.preview3d, preview: opts.preview };
+    const a: Answer = yield { prompt, distance: false, preview3d: opts.preview3d, preview: opts.preview, ...(opts.previewDimensions ? { previewDimensions: opts.previewDimensions } : {}) };
     if (a.type === 'enter') return { kind: 'enter' };
     if (a.type === 'select') continue;
     if (a.type === 'point') {

@@ -13,7 +13,7 @@
  */
 import type { Point } from '../core/geometry';
 import type { Frame3, Vec3 } from './math';
-import type { BooleanFeature, Feature3D, Profile3D, Solid3D } from './types';
+import type { BooleanFeature, Dimension3D, Feature3D, Profile3D, Solid3D } from './types';
 
 /** Schema version of the payload JCad writes ("v"). Readers refuse larger values explicitly. */
 export const MODEL3D_FILE_VERSION = 1;
@@ -335,4 +335,72 @@ export function decodeSolidPayload(text: string): SolidPayload {
   const checked = validateFeature(data.feature);
   if ('problem' in checked) return { status: 'bad-feature', ...base, reason: checked.problem };
   return { status: 'ok', ...base, feature: checked.feature };
+}
+
+// ---------------------------------------------------------------- 3D dimensions
+
+/**
+ * The `JCAD_3D` payload of a true 3D dimension's DIMENSION record (docs/3D-DIMENSIONS.md): only
+ * what DXF cannot express. `kind` is always "dimension3d" (it tells a dimension's data from a
+ * solid's), `plane` is the measurement plane frame (DXF keeps only its normal), `offset` the
+ * exact dimension-line offset (DXF has the definition point it was computed into, which rounds; the
+ * reader uses it only while it agrees with that point), `projected` is present (true) when the
+ * dimension measures a projection.
+ */
+export function encodeDimensionPayload(dim: Pick<Dimension3D, 'id' | 'plane' | 'projected' | 'offset'>): string {
+  const body: Json = { v: MODEL3D_FILE_VERSION, id: dim.id, kind: 'dimension3d', plane: dim.plane, offset: dim.offset };
+  if (dim.projected) body.projected = true;
+  return escapeJson(JSON.stringify(body));
+}
+
+/** What a reader learns from a 3D dimension's payload. */
+export type DimensionPayload =
+  | { readonly status: 'ok'; readonly id?: string; readonly plane?: Frame3; readonly offset?: number; readonly projected: boolean }
+  /** Written by a newer JCad: the id when it looks valid, the rest is not interpreted. */
+  | { readonly status: 'newer'; readonly version: number; readonly id?: string }
+  | { readonly status: 'invalid'; readonly reason: string };
+
+/** True when the payload text is a 3D dimension's (`"kind":"dimension3d"` at the top level). */
+export function isDimensionPayloadText(text: string): boolean {
+  try {
+    const data: unknown = JSON.parse(text);
+    return isObject(data) && data.kind === 'dimension3d';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Decode a 3D dimension's payload strictly (unknown fields, a bad plane frame or a non-boolean
+ * `projected` make it invalid). Never throws.
+ */
+export function decodeDimensionPayload(text: string): DimensionPayload {
+  if (text.length > MAX_PAYLOAD_BYTES) return { status: 'invalid', reason: `the data exceeds ${MAX_PAYLOAD_BYTES.toLocaleString('en-US')} bytes` };
+  let data: unknown;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    return { status: 'invalid', reason: 'the data is not valid JSON' };
+  }
+  if (!isObject(data)) return { status: 'invalid', reason: 'the data is not a JSON object' };
+  const v = data.v;
+  if (typeof v !== 'number' || !Number.isInteger(v) || v < 1) return { status: 'invalid', reason: 'the data has no valid version "v"' };
+  const id = validSolidId(data.id);
+  if (v > MODEL3D_FILE_VERSION) return { status: 'newer', version: v, ...(id !== undefined ? { id } : {}) };
+  if (data.kind !== 'dimension3d') return { status: 'invalid', reason: 'the data is not 3D dimension data' };
+  const unknown = Object.keys(data).find((k) => !['v', 'id', 'kind', 'plane', 'offset', 'projected'].includes(k));
+  if (unknown) return { status: 'invalid', reason: `the data has an unknown field "${unknown.slice(0, 40)}"` };
+  if (data.projected !== undefined && data.projected !== true) return { status: 'invalid', reason: '"projected" must be true when present' };
+  const offset = data.offset;
+  if (offset !== undefined && (typeof offset !== 'number' || !Number.isFinite(offset))) return { status: 'invalid', reason: '"offset" must be a finite number' };
+  let plane: Frame3 | undefined;
+  if (data.plane !== undefined) {
+    try {
+      plane = frame(data.plane, 'plane');
+    } catch (err) {
+      if (!(err instanceof FeatureError)) throw err;
+      return { status: 'invalid', reason: err.message };
+    }
+  }
+  return { status: 'ok', ...(id !== undefined ? { id } : {}), ...(plane ? { plane } : {}), ...(offset !== undefined ? { offset } : {}), projected: data.projected === true };
 }
