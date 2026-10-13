@@ -65,8 +65,8 @@ together with the 2D objects, as one undo step:
   construction plane when that is World (or XY at z = 0); with another plane use 3DMOVE /
   3DROTATE / 3DSCALE.
 - A selection without solids takes exactly the old 2D path. In a mixed selection, copied 2D objects
-  keep their own properties (the 2D path's current-colour / linetype defaults for new objects are
-  not applied to copies made together with solids).
+  get the same CECOLOR / CELTYPE / CELWEIGHT defaults as a 2D-only COPY / MIRROR
+  (`Drawing.withEntityDefaults`).
 - These commands keep their selection afterwards (2D behaviour): press Esc before the next command
   if it should ask again.
 
@@ -90,7 +90,10 @@ hit) to:
   holds `{ kind, point }`.
 - A 2D command in 3D mode (MOVE etc.) gets the **x, y** of a snapped solid point when it clicks on
   a solid with a snap, else where the cursor ray meets z = 0, and now also gets cursor moves
-  (its ghosts, and ghosts of selected solids).
+  (its ghosts, and ghosts of selected solids). Limitation: these cursor moves do not go through the
+  2D cursor pipeline (`resolveCursor`, which works on the 2D view's screen coordinates), so in 3D
+  mode 2D commands get no grid snap, ortho / polar constraint, 2D object snaps or tracking, and
+  typed direct-distance entry uses the last 2D-view cursor position.
 - Faces of curved surfaces are their facet strips, so END / MID snap to tessellation points there.
 
 ### Grips (prototype)
@@ -100,7 +103,8 @@ squares like the 2D grips, GRIPSIZE) at the eight bounding-box corners and the c
 **centre** grip moves the solid by the cursor's motion on the plane through the grip parallel to
 the construction plane (the plane facing the viewer when the construction plane is seen edge-on);
 a ghost follows the cursor and releasing applies the move as one undo step
-(`Grip: solid moved by dx, dy, dz.`). Corner grips are display-only: no stretching, no snaps or
+(`Grip: solid moved by dx, dy, dz.`). Esc (or a command starting, or the selection changing)
+abandons the drag; the release then changes nothing. Corner grips are display-only: no stretching, no snaps or
 typed input during the drag, no hover colour.
 
 ### Measurement
@@ -134,8 +138,10 @@ Height; Cylinder Radius, Height, Segments; Cone Base radius, Top radius, Height,
 Radius, Segments; Torus Radius, Tube radius, Segments; Extrusion Height; Revolution Angle
 (degrees), Segments. A Boolean solid lists its operands' parameters (`Operand 1.2 (Cylinder)
 radius`, at most 32 rows). Editing a value re-evaluates the feature and replaces the solid **under
-the same id** in one undo step: primitives and sweeps in-process at once; a Boolean re-runs its
-whole history through the kernel asynchronously behind the Boolean commands' guard (`Computing the
+the same id** in one undo step: primitives and sweeps in-process at once, without interrupting a
+running command (like the Name and Layer rows); a Boolean re-runs its whole history through the
+kernel asynchronously as the PROPERTIES command (refused with a message while another command
+runs) behind the Boolean commands' guard (`Computing the
 solid… (Esc abandons it)`, other input refused, nothing applied when the solid changed meanwhile).
 Invalid values are refused on the command line (`PROPERTIES: Width must be positive and finite
 (got -1). The solid is unchanged.`) and the row shows the stored value again. Name, Layer and

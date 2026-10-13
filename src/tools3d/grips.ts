@@ -9,16 +9,25 @@
  * snapping and no typed input while dragging.
  */
 import { type Frame3, type Ray, type Vec3, add3, aabbCenter, dot3, intersectRayPlane, len3, normalize3, scale3, sub3 } from '../model3d/math';
-import { meshBounds } from '../model3d/mesh';
+import { type Mesh3D, meshBounds } from '../model3d/mesh';
 import type { Solid3D } from '../model3d/types';
 
-/** Grip points of a solid: the 8 bounding-box corners, then the centre (index 8). */
-export function solidGrips(solid: Solid3D): Vec3[] {
+const gripCache = new WeakMap<Mesh3D, readonly Vec3[]>();
+
+/**
+ * Grip points of a solid: the 8 bounding-box corners, then the centre (index 8). Cached per mesh
+ * (sealed meshes never change), so drawing a frame does not rescan the vertices.
+ */
+export function solidGrips(solid: Solid3D): readonly Vec3[] {
+  const hit = gripCache.get(solid.mesh);
+  if (hit) return hit;
   const box = meshBounds(solid.mesh);
-  if (!box) return [];
   const out: Vec3[] = [];
-  for (let i = 0; i < 8; i++) out.push({ x: i & 1 ? box.max.x : box.min.x, y: i & 2 ? box.max.y : box.min.y, z: i & 4 ? box.max.z : box.min.z });
-  out.push(aabbCenter(box));
+  if (box) {
+    for (let i = 0; i < 8; i++) out.push({ x: i & 1 ? box.max.x : box.min.x, y: i & 2 ? box.max.y : box.min.y, z: i & 4 ? box.max.z : box.min.z });
+    out.push(aabbCenter(box));
+  }
+  gripCache.set(solid.mesh, out);
   return out;
 }
 

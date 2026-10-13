@@ -156,13 +156,12 @@ export class RotateTool extends SelectionTool {
       ctx.prompt('Specify rotation angle or pick a point:');
       return;
     }
-    this.rotate(ctx, g.angleOf(this.base, p));
+    this.rotate(ctx, this.base, g.angleOf(this.base, p));
     ctx.finish();
   }
 
-  /** Rotate the selection by `ang` radians about the base point (solids about the world Z axis through it). */
-  private rotate(ctx: ToolContext, ang: number): void {
-    const base = this.base!;
+  /** Rotate the selection by `ang` radians about `base` (solids about the world Z axis through it). */
+  private rotate(ctx: ToolContext, base: Point, ang: number): void {
     const turned = this.entities(ctx).map((e) => rotateEntity(e, base, ang));
     if (!commitWithSolids(ctx, this.ids, rotationAbout(v3(base.x, base.y), v3(0, 0, 1), ang), { replace: turned })) ctx.doc.replaceEntities(turned);
   }
@@ -181,7 +180,7 @@ export class RotateTool extends SelectionTool {
   override onText(text: string, ctx: ToolContext): void {
     const v = parseFloat(text);
     if (this.base && Number.isFinite(v)) {
-      this.rotate(ctx, g.rad(v));
+      this.rotate(ctx, this.base, g.rad(v));
       ctx.finish();
       return;
     }

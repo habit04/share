@@ -16,11 +16,15 @@
  * at the hit's depth, the 2D aperture box measured in the 3D view). The closest candidate wins;
  * ties go END, then MID, then CEN. The 2D OSNAP toggles decide which modes are on (F3 off: none).
  *
+ * Tolerances are relative to the mesh's bounding-box diagonal (coplanarity 1e-6 of it, normals
+ * within 1e-4 radians), loose enough for Boolean results, whose coordinates come from the kernel's
+ * single-precision-like arithmetic, even far from the origin.
+ *
  * Topology is by vertex index (meshes are welded: primitives and sweeps by construction, Boolean
  * results by the kernel), so two triangles are neighbours when they share an edge's two indices.
  */
 import { type Ray, type Vec3, add3, cross3, dist3, dot3, len3, normalize3, scale3, sub3 } from '../model3d/math';
-import { type Mesh3D, meshTriangleCount, meshVertex } from '../model3d/mesh';
+import { type Mesh3D, meshBounds, meshTriangleCount, meshVertex } from '../model3d/mesh';
 import { solidById } from '../model3d/model';
 import type { Model3D } from '../model3d/types';
 import type { SnapSettings } from '../core/snap';
@@ -56,6 +60,18 @@ export interface FaceRegion {
 }
 
 const adjacencyCache = new WeakMap<Mesh3D, Int32Array>();
+const diagonalCache = new WeakMap<Mesh3D, number>();
+
+/** Bounding-box diagonal of a mesh (cached per mesh). */
+function meshDiagonal(mesh: Mesh3D): number {
+  let d = diagonalCache.get(mesh);
+  if (d === undefined) {
+    const b = meshBounds(mesh);
+    d = b ? dist3(b.min, b.max) : 0;
+    diagonalCache.set(mesh, d);
+  }
+  return d;
+}
 
 /** For each triangle edge (3 per triangle) the neighbouring triangle across it, or -1. */
 export function triangleAdjacency(mesh: Mesh3D): Int32Array {
@@ -91,18 +107,17 @@ function triangleNormal(a: Vec3, b: Vec3, c: Vec3): Vec3 {
 
 /**
  * The planar face containing triangle `tri`: neighbours are added while their normal is parallel
- * to the seed's (within `angleTol` radians) and their vertices lie on the seed's plane (within a
- * relative distance tolerance). Throws RangeError for a triangle index out of range.
+ * to the seed's (within `angleTol` radians) and their vertices lie on the seed's plane (within
+ * 1e-6 of the mesh's bounding-box diagonal). Throws RangeError for a triangle index out of range.
  */
-export function faceRegion(mesh: Mesh3D, tri: number, angleTol = 1e-6): FaceRegion {
+export function faceRegion(mesh: Mesh3D, tri: number, angleTol = 1e-4): FaceRegion {
   const n = meshTriangleCount(mesh);
   if (!(Number.isInteger(tri) && tri >= 0 && tri < n)) throw new RangeError(`Triangle ${tri} is not in the mesh.`);
   const idx = mesh.indices;
   const corner = (t: number, k: number) => meshVertex(mesh, idx[t * 3 + k]!);
   const a0 = corner(tri, 0), b0 = corner(tri, 1), c0 = corner(tri, 2);
   const nrm = normalize3(triangleNormal(a0, b0, c0));
-  const size = Math.max(dist3(a0, b0), dist3(b0, c0), dist3(c0, a0), 1e-12);
-  const planeTol = 1e-7 * Math.max(size, len3(a0));
+  const planeTol = 1e-6 * Math.max(meshDiagonal(mesh), 1e-12);
   const cosTol = Math.cos(angleTol);
   const adj = triangleAdjacency(mesh);
   const inRegion = new Set<number>([tri]);
@@ -173,7 +188,7 @@ function dropCollinear(loop: readonly Vec3[]): Vec3[] {
     const u = sub3(q, p), w = sub3(r, q);
     const lu = len3(u), lw = len3(w);
     if (lu === 0 || lw === 0) continue;
-    if (len3(cross3(u, w)) <= 1e-9 * lu * lw && dot3(u, w) > 0) continue;
+    if (len3(cross3(u, w)) <= 1e-6 * lu * lw && dot3(u, w) > 0) continue;
     out.push(q);
   }
   return out.length >= 3 ? out : [...loop];

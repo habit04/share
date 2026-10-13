@@ -148,7 +148,7 @@ export class Script3DTool implements Tool {
     } else this.clearPreview2d(ctx);
     const fn = this.current?.preview3d;
     if (!ctx.setPreview3d) return;
-    if (!fn) {
+    if (!fn || ctx.wantsPreview3d?.() === false) {
       ctx.setPreview3d([]);
       return;
     }

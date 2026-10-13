@@ -208,7 +208,10 @@ export interface SolidEdit {
   readonly copy?: boolean;
   /** 2D entities to replace by id in the same step (MOVE / ROTATE / SCALE of a mixed selection). */
   readonly replaceEntities?: readonly Entity[];
-  /** 2D entities to add in the same step (COPY / MIRROR of a mixed selection), added as given. */
+  /**
+   * 2D entities to add in the same step (COPY / MIRROR of a mixed selection); they get the same
+   * CECOLOR / CELTYPE / CELWEIGHT defaults as `Drawing.addEntities` (`withEntityDefaults`).
+   */
   readonly addEntities?: readonly Entity[];
 }
 
@@ -220,7 +223,7 @@ export interface SolidEdit {
 export function commitSolidEdit(ctx: Pick<ToolContext, 'doc'>, edit: SolidEdit): Solid3D[] {
   const out = edit.solids.map((s) => transformSolid(s, edit.matrix, edit.copy ? newId() : undefined));
   const repl = new Map((edit.replaceEntities ?? []).map((e) => [e.id, e]));
-  const adds = edit.addEntities ?? [];
+  const adds = edit.addEntities?.length ? ctx.doc.withEntityDefaults(edit.addEntities) : [];
   ctx.doc.transact((st) => {
     let entities = st.entities;
     if (repl.size) entities = entities.map((e) => repl.get(e.id) ?? e);
@@ -261,7 +264,7 @@ export function ghostSolids(solids: readonly Solid3D[], m: Mat4): Solid3D[] {
 
 /** Show ghosts of the selection's solids under `m` (no-op without solids or a 3D view). */
 export function previewSolidsFor(ctx: ToolContext, ids: Iterable<string>, m: Mat4): void {
-  if (!ctx.setPreview3d) return;
+  if (!ctx.setPreview3d || ctx.wantsPreview3d?.() === false) return;
   const solids = solidsInSelection(ctx, ids);
   if (solids.length) ctx.setPreview3d(ghostSolids(solids, m));
 }

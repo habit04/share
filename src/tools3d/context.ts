@@ -51,6 +51,8 @@ export interface Context3DSource {
   /** The kernel (created on first call). */
   kernel(): GeometryKernel;
   setPreview3d(solids: readonly Solid3D[]): void;
+  /** False when ghosts would not be drawn (3D mode off); absent = always draw. */
+  wantsPreview3d?(): boolean;
 }
 
 /** Plane axes by name (AutoCAD UCS orientation: XZ is the Front view plane, YZ the Right one). */
@@ -212,5 +214,6 @@ export function extendContext3d(ctx: ToolContext, src: Context3DSource): ToolCon
   ctx.setConstructionPlane = (frame, name) => src.setPlane(frame, name);
   ctx.solids = () => model3dOf(ctx.doc.snapshot);
   ctx.setPreview3d = (solids) => src.setPreview3d(solids);
+  ctx.wantsPreview3d = () => src.wantsPreview3d?.() ?? true;
   return ctx;
 }

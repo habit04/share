@@ -360,20 +360,29 @@ export class Drawing {
    */
   addEntities(entities: readonly Entity[], applyDefaults = true): void {
     if (entities.length === 0) return;
-    const h = this.header;
-    const wantLt = applyDefaults && h.celtype && h.celtype.toUpperCase() !== 'BYLAYER';
-    const wantLw = applyDefaults && h.celweight !== undefined;
-    const wantColor = applyDefaults && this.currentColor !== 'ByLayer';
-    const list = wantLt || wantLw || wantColor
-      ? entities.map((e) => {
-          let out: Entity = e;
-          if (wantLt && e.linetype === undefined) out = { ...out, linetype: h.celtype } as Entity;
-          if (wantLw && e.lineWeight === undefined) out = { ...out, lineWeight: h.celweight } as Entity;
-          if (wantColor && e.color === 'ByLayer') out = { ...out, color: this.currentColor } as Entity;
-          return out;
-        })
-      : entities;
+    const list = applyDefaults ? this.withEntityDefaults(entities) : entities;
     this.transact((s) => ({ ...s, entities: [...s.entities, ...list] }));
+  }
+
+  /**
+   * The defaults `addEntities` gives new objects: the current linetype / lineweight (CELTYPE /
+   * CELWEIGHT) unless an object already carries one, and the current colour (CECOLOR) for objects
+   * created ByLayer. Returns the input array itself when no default applies. Used by edits that add
+   * objects in a larger single step (experimental 3D: COPY / MIRROR of mixed selections).
+   */
+  withEntityDefaults(entities: readonly Entity[]): readonly Entity[] {
+    const h = this.header;
+    const wantLt = h.celtype && h.celtype.toUpperCase() !== 'BYLAYER';
+    const wantLw = h.celweight !== undefined;
+    const wantColor = this.currentColor !== 'ByLayer';
+    if (!(wantLt || wantLw || wantColor)) return entities;
+    return entities.map((e) => {
+      let out: Entity = e;
+      if (wantLt && e.linetype === undefined) out = { ...out, linetype: h.celtype } as Entity;
+      if (wantLw && e.lineWeight === undefined) out = { ...out, lineWeight: h.celweight } as Entity;
+      if (wantColor && e.color === 'ByLayer') out = { ...out, color: this.currentColor } as Entity;
+      return out;
+    });
   }
 
   /**
