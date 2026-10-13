@@ -1,7 +1,7 @@
 /** Real Windows IPC/export/import checks shared by source Electron and the unpublished test ASAR. */
 import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync, copyFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { extname, join } from 'node:path';
 
 /** @param {{ app: import('playwright').ElectronApplication, page: import('playwright').Page, repo: string, outDir: string, check: (ok: boolean, text: string) => void, current: boolean }} opts */
 export async function runPortableDwgChecks({ app, page, repo, outDir, check, current }) {
@@ -38,13 +38,40 @@ export async function runPortableDwgChecks({ app, page, repo, outDir, check, cur
   let selectedTarget = '';
   let validDxf = '';
   try {
-    for (const [label, source] of [['arrays', 'interchange/r2018-minsert.dxf'], ['widths', 'polyline-widths.dxf'], ['appearance', 'interchange/r2010-appearance.dxf'], ['attributes', 'interchange/r2000-text-justification.dxf']]) {
-      const file = join(directory, `${label}-source.dxf`);
+    // Explicit legacy TABLESTYLE definitions have no proven AC1032 transcoding
+    // contract. Keep the actual application/export refusal and byte fences,
+    // then prove array saving through the independently authored native DWG.
+    const legacySource = join(directory, 'legacy-table-style-source.dxf');
+    copyFileSync(join(repo, 'tests/fixtures/interchange/r2018-minsert.dxf'), legacySource);
+    const legacyBytes = readFileSync(legacySource), legacyTarget = join(directory, 'legacy-table-style.dwg');
+    const legacyDestination = Buffer.from('prior legacy destination'), legacyBackup = Buffer.from('prior legacy backup');
+    writeFileSync(legacyTarget, legacyDestination, { flag: 'wx' }); writeFileSync(legacyTarget + '.bak', legacyBackup, { flag: 'wx' });
+    await page.evaluate(() => window.editor.sessions.add());
+    await app.evaluate((_e, p) => globalThis.__e2e.openPaths.push(p), legacySource);
+    assert.equal(await page.evaluate(() => window.editor.openFile()), true, 'Legacy TABLESTYLE source opens'); await closeReports();
+    await page.evaluate(() => {
+      const w = /** @type {any} */ (window), ed = w.editor;
+      ed.doc.addEntities([{ id: 'legacy-refusal-marker', type: 'line', layer: '0', color: 'ByLayer', a: { x: -5, y: -5 }, b: { x: -4, y: -4 } }]);
+      w.__portableBefore = { state: ed.doc.snapshot, path: ed.doc.filePath, history: ed.doc.history(), session: ed.sessions.activeId, dirty: ed.doc.dirty };
+    });
+    await app.evaluate((_e, p) => globalThis.__e2e.savePaths.push(p), legacyTarget);
+    await page.evaluate(() => window.editor.commands.get('EXPORTDWG').run(window.editor));
+    const legacyLog = await page.evaluate(() => window.editor.history.slice(-12));
+    assert.ok(legacyLog.some(text => /DWG export failed:.*DWG reopening changed metadata .*TableStyle fields/.test(text)), 'Legacy TABLESTYLE must refuse on the full retained payload: ' + legacyLog.join(' | '));
+    assert.deepEqual(readFileSync(legacyTarget), legacyDestination); assert.deepEqual(readFileSync(legacyTarget + '.bak'), legacyBackup);
+    assert.deepEqual(readFileSync(legacySource), legacyBytes);
+    assert.equal(await page.evaluate(() => {
+      const ed = window.editor, saved = /** @type {any} */ (window).__portableBefore, history = ed.doc.history();
+      return ed.doc.snapshot === saved.state && ed.doc.filePath === saved.path && ed.doc.dirty === saved.dirty && ed.doc.dirty && ed.sessions.activeId === saved.session && ['undo', 'redo'].every(key => history[key].length === saved.history[key].length && history[key].every((state, index) => state === saved.history[key][index]));
+    }), true, 'Legacy TABLESTYLE refusal preserves the working revision and history');
+    check(true, 'Explicit legacy TABLESTYLE export refuses, preserving source, destination, backup and working drawing');
+    for (const [label, source] of [['arrays', 'interchange/r2018-minsert.dwg'], ['widths', 'polyline-widths.dxf'], ['appearance', 'interchange/r2010-appearance.dxf'], ['attributes', 'interchange/r2000-text-justification.dxf']]) {
+      const file = join(directory, `${label}-source${extname(source)}`);
       copyFileSync(join(repo, 'tests', 'fixtures', source), file);
       const originalSource = readFileSync(file);
       await page.evaluate(() => window.editor.sessions.add());
       await app.evaluate((_e, p) => globalThis.__e2e.openPaths.push(p), file);
-      assert.equal(await page.evaluate(() => window.editor.openFile()), true, label + ': real native DXF open'); await closeReports();
+      assert.equal(await page.evaluate(() => window.editor.openFile()), true, label + ': real native source open'); await closeReports();
       await page.evaluate(() => {
         const w = /** @type {any} */ (window), ed = w.editor;
         ed.doc.addEntities([{ id: 'portable-export-dirty-marker', type: 'line', layer: '0', color: 'ByLayer', a: { x: -10, y: -10 }, b: { x: -9, y: -9 } }]);
@@ -56,7 +83,7 @@ export async function runPortableDwgChecks({ app, page, repo, outDir, check, cur
       const exportLog = await page.evaluate(() => window.editor.history.slice(-12));
       assert.equal(readFileSync(target).subarray(0, 6).toString('ascii'), 'AC1032', label + ': real portable output; ' + exportLog.join(' | '));
       assert.deepEqual(readFileSync(target + '.bak'), previous, label + ': exact prior destination backup');
-      assert.deepEqual(readFileSync(file), originalSource, label + ': supplied DXF source remains unchanged');
+      assert.deepEqual(readFileSync(file), originalSource, label + ': supplied source remains unchanged');
       const preserved = await page.evaluate(() => {
         const ed = window.editor, saved = /** @type {any} */ (window).__portableBefore, history = ed.doc.history();
         return ed.doc.snapshot === saved.state && ed.doc.filePath === saved.path && ed.doc.dirty === saved.dirty && ed.doc.dirty && ed.sessions.activeId === saved.session && ['undo', 'redo'].every(k => history[k].length === saved.history[k].length && history[k].every((state, i) => state === saved.history[k][i]));
