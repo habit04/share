@@ -39,6 +39,7 @@ const { registerPlotIpc } = require('./main/ipc-plot.cjs');
 const { registerStoreIpc } = require('./main/ipc-stores.cjs');
 const { registerUpdatesIpc } = require('./main/updates.cjs');
 const { createHandover } = require('./main/handover.cjs');
+const { createFontMetricsHost } = require('./font-metrics-host.cjs');
 const { runShippingProbe, shippingProbePhase } = require('./main/shipping-probe.cjs');
 let probePhase = null;
 try { probePhase = shippingProbePhase(process.argv); }
@@ -115,6 +116,9 @@ registerPlotIpc(ctx);
 registerStoreIpc(ctx);
 registerMenuIpc(ctx);
 registerUpdatesIpc(ctx);
+const fontMetricsHost = process.platform === 'win32' ? createFontMetricsHost() : null;
+if (fontMetricsHost) ipcMain.handle('font-metrics', (_event, request) => fontMetricsHost.read(request).catch(() => null));
+app.on('will-quit', () => { void fontMetricsHost?.dispose(); });
 
 // Headless probe used by packaging smoke tests:  jcad --probe-dwg <file.dwg>
 const probeIndex = process.argv.indexOf('--probe-dwg');
