@@ -10,6 +10,11 @@
  * Behaviour:
  * - The worker is created lazily on the first `ready()` or `boolean()` call. Requests carry
  *   increasing ids; replies are matched by id, so concurrent calls resolve independently.
+ * - Requests are posted only after the worker has reported `ready`; calls made earlier wait in a
+ *   queue. So a worker that fails before `ready` can never have answered a request, and every
+ *   call made before or after the failure rejects with the start-up reason, whatever order the
+ *   worker's events and the caller's timers run in. A result message that arrives while the
+ *   worker is not ready is a protocol violation and is ignored.
  * - Each call has a timeout (option `timeoutMs`, default 20 s). On timeout the call rejects, the
  *   worker (busy with the runaway operation, which cannot be cancelled) is terminated, every other
  *   pending call rejects too, and the next call starts a fresh worker.
@@ -79,6 +84,8 @@ export class ManifoldWorkerKernel implements GeometryKernel {
   private workerReady = false;
   private startTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly pending = new Map<number, Pending>();
+  /** Requests made before the current worker reported `ready`, posted (in order) when it does. */
+  private queued: WorkerRequest[] = [];
   private nextId = 1;
   private crashes = 0;
   /** Set when the kernel can no longer be used (init failure, repeated crashes, dispose). */
@@ -106,21 +113,30 @@ export class ManifoldWorkerKernel implements GeometryKernel {
       return Promise.reject(err);
     }
     if (!this.ensureWorker() || !this.worker) return Promise.reject(unavailableError(this.deadReason()));
-    const worker = this.worker;
     const id = this.nextId++;
     const pa = packMesh(a), pb = packMesh(b);
     const ms = opts.timeoutMs ?? this.timeoutMs;
     return new Promise<Mesh3D>((resolve, reject) => {
       const timer = setTimeout(() => this.onTimeout(id, ms), ms);
       this.pending.set(id, { op, resolve, reject, timer });
-      try {
-        worker.postMessage({ id, op, a: pa, b: pb }, [pa.positions.buffer, pa.indices.buffer, pb.positions.buffer, pb.indices.buffer]);
-      } catch (err) {
-        clearTimeout(timer);
-        this.pending.delete(id);
-        reject(new KernelError('kernel-failure', `The ${opName(op)} could not be sent to the geometry kernel (${err instanceof Error ? err.message : String(err)}).`));
-      }
+      const request: WorkerRequest = { id, op, a: pa, b: pb };
+      if (this.workerReady && this.worker) this.send(this.worker, request);
+      else this.queued.push(request);
     });
+  }
+
+  /** Post one request (its operand buffers are transferred); a failed post rejects that call. */
+  private send(worker: WorkerLike, request: WorkerRequest): void {
+    const { a, b } = request;
+    try {
+      worker.postMessage(request, [a.positions.buffer, a.indices.buffer, b.positions.buffer, b.indices.buffer]);
+    } catch (err) {
+      const call = this.pending.get(request.id);
+      if (!call) return;
+      clearTimeout(call.timer);
+      this.pending.delete(request.id);
+      call.reject(new KernelError('kernel-failure', `The ${opName(call.op)} could not be sent to the geometry kernel (${err instanceof Error ? err.message : String(err)}).`));
+    }
   }
 
   dispose(): void {
@@ -171,11 +187,17 @@ export class ManifoldWorkerKernel implements GeometryKernel {
         this.clearStartTimer();
         this.settleStart?.({ available: true, version: msg.version });
         this.settleStart = null;
+        const worker = this.worker, queued = this.queued;
+        this.queued = [];
+        // Calls that timed out (or were rejected) while waiting are no longer pending: skip them.
+        if (worker) for (const request of queued) if (this.pending.has(request.id)) this.send(worker, request);
       } else {
         this.failStart(`the WebAssembly kernel failed to start (${msg.message})`);
       }
       return;
     }
+    // A reply before `ready` cannot answer anything this kernel posted (requests wait for ready).
+    if (!this.workerReady) return;
     const call = this.pending.get(msg.id);
     if (!call) return; // timed out or rejected already
     this.pending.delete(msg.id);
@@ -229,6 +251,9 @@ export class ManifoldWorkerKernel implements GeometryKernel {
 
   private stopWorker(): void {
     this.clearStartTimer();
+    // Their calls are rejected by the caller (rejectAll); a new worker starts with an empty queue.
+    this.queued = [];
+    this.workerReady = false;
     const w = this.worker;
     this.worker = null;
     this.started = null;

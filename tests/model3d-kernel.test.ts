@@ -174,7 +174,8 @@ describe('Manifold in-process kernel', () => {
 
 // ---- worker transport -------------------------------------------------------------------------
 
-type Mode = 'normal' | 'reverse' | 'hang' | 'crash' | 'init-error' | 'silent' | 'load-error' | 'messageerror';
+/** 'manual': nothing happens until the test calls failNow / readyNow / emitNow (event order under test control). */
+type Mode = 'normal' | 'reverse' | 'hang' | 'crash' | 'init-error' | 'silent' | 'load-error' | 'messageerror' | 'manual';
 
 /**
  * A fake module worker running the real Manifold core in-process, with scripted failures. Messages
@@ -194,7 +195,7 @@ class FakeWorker implements WorkerLike {
 
   constructor(private readonly mode: Mode) {
     setTimeout(() => {
-      if (mode === 'silent') return;
+      if (mode === 'silent' || mode === 'manual') return;
       if (mode === 'load-error') { this.fail('Failed to fetch dynamically imported module'); return; }
       this.emit(mode === 'init-error' ? { type: 'init-error', message: 'WebAssembly.instantiate(): blocked' } : { type: 'ready', version: MANIFOLD_VERSION });
     }, 0);
@@ -215,6 +216,13 @@ class FakeWorker implements WorkerLike {
   }
 
   terminate(): void { this.terminated = true; }
+
+  /** Manual mode: fire the worker's `error` event now. */
+  failNow(message: string): void { this.fail(message); }
+  /** Manual mode: post `ready` now. */
+  readyNow(): void { this.emit({ type: 'ready', version: MANIFOLD_VERSION }); }
+  /** Manual mode: post any message now (e.g. a result nobody asked for yet). */
+  emitNow(data: WorkerMessage): void { this.emit(data); }
 
   private fail(message: string): void {
     if (!this.terminated) this.onerror?.({ message, preventDefault() {} } as ErrorEvent);
@@ -352,7 +360,49 @@ describe('Manifold worker kernel transport', () => {
     expect(e.message).not.toMatch(/crashed/);
     expect((await k.ready()).available).toBe(false);
     expect(workers).toHaveLength(1);
+    // Requests wait for `ready`: a worker that never got ready never received one. This used to be
+    // a race (flaky on Node 24): the fake answered the request before its load error fired.
+    expect(workers[0]!.posted).toHaveLength(0);
     k.dispose();
+  });
+
+  it('rejects ready() and every call with the pre-ready failure whatever order the events run in', async () => {
+    const preReady = /^Solid Boolean operations are unavailable in this environment: the geometry kernel worker failed to load or start \(boom\)\.$/;
+    // Order 1: calls and ready() first, then the error event (synchronously, no timers involved).
+    {
+      const { k, workers } = fakeKernel(['manual']);
+      const before = k.boolean('union', cube(), cube(0.5));
+      const status = k.ready();
+      workers[0]!.failNow('boom');
+      expect(await status).toEqual({ available: false, reason: 'the geometry kernel worker failed to load or start (boom)' });
+      expect((await rejection(before)).message).toMatch(preReady);
+      expect((await rejection(k.boolean('union', cube(), cube(0.5)))).message).toMatch(preReady);
+      expect(workers[0]!.posted).toHaveLength(0);
+      expect(workers).toHaveLength(1);
+      k.dispose();
+    }
+    // Order 2: the error event before any call, then ready() and calls.
+    {
+      const { k, workers } = fakeKernel(['manual']);
+      void k.ready();
+      workers[0]!.failNow('boom');
+      expect((await k.ready()).available).toBe(false);
+      expect((await rejection(k.boolean('union', cube(), cube(0.5)))).message).toMatch(preReady);
+      expect(workers).toHaveLength(1);
+      k.dispose();
+    }
+    // Order 3: a result message before ready (a misbehaving worker) is ignored; the queued call is
+    // posted on ready and resolves normally.
+    {
+      const { k, workers } = fakeKernel(['manual']);
+      const call = k.boolean('union', cube(), cube(0.5));
+      workers[0]!.emitNow({ id: 1, ok: true, positions: new Float64Array(0), indices: new Uint32Array(0) });
+      expect(workers[0]!.posted).toHaveLength(0);
+      workers[0]!.readyNow();
+      expect(workers[0]!.posted).toHaveLength(1);
+      expect(meshVolume(await call)).toBeCloseTo(1.5, 9);
+      k.dispose();
+    }
   });
 
   it('gives up for the session when the worker does not start in time', async () => {
