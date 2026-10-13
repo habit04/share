@@ -5,7 +5,7 @@
  *  - separators: a Windows-style path (drive letter, UNC share, or the app runs on Windows)
  *    uses backslashes; a POSIX path keeps forward slashes;
  *  - "." and ".." segments are resolved and repeated separators collapsed;
- *  - Unicode NFC (macOS hands out decomposed names, typed names are composed);
+ *  - Unicode NFC for POSIX paths; Windows preserves distinct composed/decomposed filenames;
  *  - comparison is case-insensitive for Windows paths and case-sensitive elsewhere;
  *  - project-relative entries resolve against the folder of the project file, and are
  *    stored with forward slashes so a project opens on any system.
@@ -52,8 +52,10 @@ interface Parsed {
 }
 
 function parse(input: string): Parsed {
-  const p = input.normalize('NFC');
-  const windows = isWindowsPath(p);
+  const windows = isWindowsPath(input);
+  // NTFS can store both "Jos\u00e9.dxf" and "Jose\u0301.dxf" in the same folder. Normalising
+  // their Unicode spelling would redirect a project reference or save to a different file.
+  const p = windows ? input : input.normalize('NFC');
   let rest = p;
   let root = '';
   if (windows) {
@@ -94,7 +96,7 @@ function format(p: Parsed): string {
   return p.root + body;
 }
 
-/** Normalised form of a path: one separator style, no "." / ".." / repeated separators, NFC. */
+/** Normalised separators / dot segments, preserving Windows filenames' Unicode spelling. */
 export function normalizePath(p: string): string {
   if (!p) return p;
   return format(parse(p));
@@ -190,7 +192,8 @@ export function rebaseProjectEntry(file: string, oldProjectFile: string | null |
 
 /** Short names for a list of paths: the file name, plus parent folders only where names collide. */
 export function shortNames(paths: ReadonlyArray<string | null>, fallback: ReadonlyArray<string> = []): string[] {
-  // Names come from the normalised (NFC) path: "José.dxf" typed and "Jose\u0301.dxf" from macOS look alike.
+  // Preserve the actual filename, but compare displayed labels in NFC: distinct Windows
+  // "Jos\u00e9.dxf" and "Jose\u0301.dxf" look alike and still need disambiguating.
   const norm = paths.map((p) => (p ? normalizePath(p) : null));
   const names = norm.map((p, i) => (p ? fileBaseName(p) : (fallback[i] ?? '')));
   const parts = norm.map((p) => (p ? p.split(/[\\/]/).filter(Boolean) : []));
@@ -207,7 +210,7 @@ export function shortNames(paths: ReadonlyArray<string | null>, fallback: Readon
   };
   const maxDepth = Math.max(0, ...parts.map((s) => s.length));
   for (let depth = 1; depth <= maxDepth; depth += 1) {
-    const groups = clashes((s) => s.toLowerCase());
+    const groups = clashes((s) => s.normalize('NFC').toLowerCase());
     if (groups.length === 0) break;
     for (const idx of groups) {
       for (const i of idx) {
@@ -218,6 +221,11 @@ export function shortNames(paths: ReadonlyArray<string | null>, fallback: Readon
     }
   }
   // Still alike with every folder shown ("/srv/share/a.dxf" and "\\srv\share\a.dxf"): the full path.
-  for (const idx of clashes((s) => s)) for (const i of idx) out[i] = norm[i]!;
+  for (const idx of clashes((s) => s.normalize('NFC'))) for (const i of idx) out[i] = norm[i]!;
+  // Even the full paths can look identical for separate Windows Unicode spellings. A list
+  // suffix distinguishes those labels without rewriting the paths used to open/save them.
+  for (const idx of clashes((s) => s.normalize('NFC'))) {
+    idx.forEach((i, order) => { out[i] = `${out[i]} (${order + 1})`; });
+  }
   return out;
 }

@@ -170,7 +170,15 @@ npm run e2e                                  # Windows / macOS
 xvfb-run -a npm run e2e                      # Linux without a display
 JCAD_E2E_OUT=e2e-output npm run e2e          # keep the plotted PDFs and a window screenshot
 npm run e2e:origin                           # migration, immediate restart and lost-storage recovery
+npm run e2e:2d-batch                         # Windows source: 2D compatibility and real file saves
 ```
+
+`scripts/e2e-2d-batch.mjs` exercises native polygon clips, text override presence, manual
+MTEXT column edits, undo/redo, DXF save/reopen and Windows composed/decomposed filename
+identity through the real source app and filesystem. It also checks the retained-clip DWG
+refusal dialog. Only native Open/Save dialog answers are queued. Profiles, drawings, backups,
+screenshots and evidence stay in a fresh `.codex-local/e2e-2d-batch-*` directory. Native DWG
+helper and installed-build verification remain separate gates.
 
 `scripts/e2e-electron.mjs` launches Electron on `dist/` with Playwright and drives the real main
 process, preload bridge and IPC (native dialogs are replaced inside the main process; see the

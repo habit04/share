@@ -4,6 +4,8 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync,
 import * as fsp from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Drawing } from '../src/core/document';
+import { readDxf, writeDxf } from '../src/io/dxf';
 
 const require = createRequire(import.meta.url);
 type Options = { backup?: boolean; root?: string; expectedDestination?: string };
@@ -51,6 +53,52 @@ function aliases() {
 }
 
 describe('main-process canonical user-file queues', () => {
+  it.runIf(process.platform === 'win32')('distinct Unicode DXF names save, back up and reopen independently', async () => {
+    const composed = join(dir, 'Jos\u00e9.dxf');
+    const decomposed = join(dir, 'Jose\u0301.dxf');
+    const nativeDxf = (label: string) => {
+      const drawing = new Drawing();
+      drawing.addEntities([{ id: label, type: 'text', layer: '0', color: 'ByLayer', position: { x: 1, y: 2 }, text: label, height: 1, rotation: 0, align: 'left' }]);
+      return writeDxf(drawing.snapshot);
+    };
+    const originalComposed = nativeDxf('COMPOSED ORIGINAL');
+    const originalDecomposed = nativeDxf('DECOMPOSED ORIGINAL');
+    writeFileSync(composed, originalComposed);
+    writeFileSync(decomposed, originalDecomposed);
+    expect(readFileSync(composed, 'utf8')).not.toBe(readFileSync(decomposed, 'utf8'));
+    const writer = atomic.createAtomicWriter(fsp);
+    expect(await writer.canonicalWriteKey(composed)).not.toBe(await writer.canonicalWriteKey(decomposed));
+    const write = userWriter(writer, writer.canonicalWriteKey);
+    const editedDxf = (file: string, label: string) => {
+      const drawing = new Drawing();
+      drawing.load(readDxf(readFileSync(file, 'utf8')));
+      drawing.addEntities([{ id: label, type: 'text', layer: '0', color: 'ByLayer', position: { x: 3, y: 4 }, text: label, height: 1, rotation: 0, align: 'left' }]);
+      return writeDxf(drawing.snapshot);
+    };
+    await Promise.all([write(composed, editedDxf(composed, 'COMPOSED EDIT'), { backup: true }), write(decomposed, editedDxf(decomposed, 'DECOMPOSED EDIT'), { backup: true })]);
+    const reopened = [composed, decomposed].map((file) => readDxf(readFileSync(file, 'utf8')).entities.filter((entity) => entity.type === 'text').map((entity) => entity.text));
+    expect(reopened).toEqual([['COMPOSED ORIGINAL', 'COMPOSED EDIT'], ['DECOMPOSED ORIGINAL', 'DECOMPOSED EDIT']]);
+    expect(readFileSync(`${composed}.bak`, 'utf8')).toBe(originalComposed);
+    expect(readFileSync(`${decomposed}.bak`, 'utf8')).toBe(originalDecomposed);
+    expect(readdirSync(dir).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+  });
+
+  it.runIf(process.platform === 'win32')('Unicode-equivalent sibling directories cannot satisfy a project write root', async () => {
+    const composed = join(dir, 'Jos\u00e9');
+    const decomposed = join(dir, 'Jose\u0301');
+    mkdirSync(composed);
+    mkdirSync(decomposed);
+    const outside = join(decomposed, 'drawing.dxf');
+    writeFileSync(outside, 'OUTSIDE ORIGINAL');
+    const writer = atomic.createAtomicWriter(fsp);
+    await expect(writer.atomicWriteFile(outside, 'REJECTED', { root: composed, backup: true })).rejects.toMatchObject({ code: 'ELOOP', path: outside });
+    expect(readFileSync(outside, 'utf8')).toBe('OUTSIDE ORIGINAL');
+    expect(readdirSync(decomposed)).toEqual(['drawing.dxf']);
+    const inside = join(composed, 'drawing.dxf');
+    await writer.atomicWriteFile(inside, 'INSIDE', { root: composed });
+    expect(readFileSync(inside, 'utf8')).toBe('INSIDE');
+  });
+
   it('real/junction aliases reserve in invocation order despite reversed resolution, and write serially', async () => {
     const { real, target, alias } = aliases();
     writeFileSync(target, 'ORIGINAL');

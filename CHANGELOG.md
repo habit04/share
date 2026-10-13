@@ -11,6 +11,42 @@ messages). The date of each version is the date of the commit that set that vers
 
 ## [Unreleased]
 
+### Added
+
+- DXF layouts retain native closed straight-polyline viewport clips, including concave
+  outlines, boundary appearance and the native enable flag. Canvas display, viewport
+  activation, snapping and vector/raster plots honor the clip. Editing, copying and
+  save/reopen retain its native boundary pointer. Curved clips and DWG clip import remain
+  reported limitations. An AutoCAD 2027 normalized polygon fixture passed AUDIT with zero errors.
+  DWG Save/Save As and Export Copy refuse retained clip boundaries until native reference
+  preservation is verified; the save-error fallback selects DXF and keeps unsaved/recovery data.
+- MTEXT flows through declared-height static and dynamic-manual columns, retaining explicit
+  column breaks, formatting, reversed placement and overflow. Automatic-height balancing and
+  native column export remain open.
+
+### Fixed
+
+- Angular dimensions honor DIMSD1/DIMSD2 and keep distinct arrows attached to their defining
+  legs when the displayed arc reverses. Text gaps cannot overrun blank-arrow backoffs.
+- Named dimension-style edits update model space, every block and every paper layout while
+  preserving per-entity overrides. Paper-space style commands use a document-wide undoable
+  transition; usage checks protect styles referenced by block or layout dimensions.
+- Supported native dimension overrides keep their explicit values when a named style
+  temporarily matches them, including across DXF save/reopen and later style redefinitions.
+  Scaling, Match Properties and assigning current dimension settings retain the corresponding
+  override behavior.
+- Clipped viewport selection includes visible hatch pattern strokes and dots, including
+  nested inserts. Retained clip outlines keep their layer and linetype resources through
+  purge and DXF export, even when clipping is disabled.
+- MTEXT justification uses each paragraph's final line, prevents negative spacing around long
+  words and avoids phantom lines from trailing spaces. Canvas and vector PDF honor explicit
+  text width overrides consistently, including width factor 1 and Canvas oblique angle 0.
+  Explicit native width 1 and oblique 0 survive TEXT, ATTDEF and ATTRIB DXF save/reopen.
+- Windows paths preserve distinct composed/decomposed Unicode filenames across tabs, recent
+  files, project references, persisted permissions, save queues and DWG export destination
+  selection. Atomic writes and image permissions reject a differently spelled sibling folder
+  outside the selected project, while each real file keeps its own exact previous-file backup.
+
 ## [0.4.8] - 2026-10-12
 
 ### Upgrade notes

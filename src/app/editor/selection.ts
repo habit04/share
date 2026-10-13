@@ -8,6 +8,7 @@ import type { Entity } from '../../core/entities';
 import type { Editor } from './editor';
 import type { EditorInternals } from './internals';
 import { activeViewport } from '../../core/layouts';
+import { viewportSelectionEntities } from '../../core/selection';
 
 export function listSelection(ed: Editor): void {
   if (ed.selection.size === 0) {
@@ -41,6 +42,11 @@ export function listSelection(ed: Editor): void {
 
 export function entitiesSelected(ed: Editor): Entity[] {
   return ed.doc.entities.filter((e) => ed.selection.has(e.id));
+}
+
+/** Model objects with visible geometry in the active enabled viewport clip. */
+export function graphicalSelectionEntities(ed: Editor): readonly Entity[] {
+  return viewportSelectionEntities(ed.doc.snapshot, ed.doc.entities, ed.doc.lookupBlock);
 }
 
 export function toggleSelect(ed: Editor, st: EditorInternals, ids: string[], remove: boolean): void {

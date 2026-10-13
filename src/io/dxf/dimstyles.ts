@@ -31,7 +31,7 @@ export function applyDimStyleXdata(s: DimStyle, xd: readonly Pair[]): DimStyle {
     const value = strs[k + 1]!;
     if (key === 'DIMBLK1') out = { ...out, arrow: arrowFromBlockName(value) };
     else if (key === 'DIMBLK2') out = { ...out, arrow2: arrowFromBlockName(value) };
-    else if (key === 'TOLERANCE' && value === 'basic') out = { ...out, tolerance: 'basic' };
+    else if (key === 'TOLERANCE' && ['none', 'symmetrical', 'deviation', 'limits', 'basic'].includes(value)) out = { ...out, tolerance: value as DimStyle['tolerance'] };
     else if (key === 'ALTPLACEMENT' && (value === 'below' || value === 'after')) out = { ...out, altPlacement: value };
   }
   if (out.arrow2 !== undefined && out.arrow2 === (out.arrow ?? 'closed-filled')) out = { ...out, arrow2: undefined };

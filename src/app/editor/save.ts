@@ -12,6 +12,7 @@ import { describeFileError } from '../file-errors';
 import { confirmSaveOver } from '../import-open';
 import { saveOverwriteWarning } from '../../io/import-report';
 import { hasDwgSave } from '../drawing-save';
+import { dwgCompatibilityProblem } from '../dwg-compatibility';
 import type { Editor } from './editor';
 import { fallbackUi, type EditorInternals } from './internals';
 import { rememberRecent } from './documents';
@@ -29,6 +30,7 @@ export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean,
   const sessionRevision = session.revision;
   const contentGeneration = session.contentGeneration;
   const savedState = ed.doc.snapshot;
+  const compatibilityProblem = dwgCompatibilityProblem(savedState);
   const revision = captureRevision();
   let target = saveAs || format === 'dxf' ? null : ed.doc.filePath;
   const fileName = ed.fileName();
@@ -57,6 +59,7 @@ export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean,
       const dwg = /\.dwg$/i.test(target);
       if (dwg && format === 'dxf') throw new Error('The DXF save destination must end in .dxf. Choose a DXF destination with Save As.');
       if (dwg && !canSaveDwg) throw new Error('DWG saving is available in the Windows desktop edition. Choose a DXF destination with Save As.');
+      if (dwg && compatibilityProblem) throw new Error(compatibilityProblem);
       if (dwg && !sessionExists()) return changed();
       const needsReview = !!saveOverwriteWarning(savedState, target);
       const permitted = await confirmSaveOver(savedState, target, (t, m) => (ed.ui ?? fallbackUi).confirm(t, m), session, stillCurrent);
@@ -93,7 +96,7 @@ export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean,
     if (!sessionExists()) return false;
     const choice = ed.hooks.saveError ? await ed.hooks.saveError(info, fileName, { saveAs: true }) : 'cancel';
     if (choice === 'cancel' || ed.sessions.current.id !== sessionId || !sessionExists()) return false;
-    return ed.saveFile(choice === 'saveas' ? true : saveAs, format);
+    return ed.saveFile(choice === 'saveas' ? true : saveAs, choice === 'saveas' && compatibilityProblem ? 'dxf' : format);
   }
   if (!path) return false;
   if ((st.savedRevisions.get(sessionId) ?? 0) > revision) {

@@ -748,7 +748,7 @@ export function dimStyleManager(editor: Editor, selectName?: string): void {
   /** Save an edited style: the named set, dimensions drawn with it and (when current) the header. */
   const save = (style: DimStyle, previousName?: string) => {
     const wasCurrent = (previousName ?? style.name).toUpperCase() === current().name.toUpperCase();
-    doc.transact((s) => withDimStyle(s, style));
+    doc.transactDrawing((s) => withDimStyle(s, style));
     if (wasCurrent) doc.setHeader({ dimStyle: style });
     editor.render();
   };
@@ -798,7 +798,7 @@ export function dimStyleManager(editor: Editor, selectName?: string): void {
       }
       const r = await messageDialog('Dimension Style - Delete', `Delete dimension style "${s.name}"?`, ['Yes', 'No']);
       if (r === 'Yes') {
-        doc.transact((st) => withoutDimStyle(st, s.name));
+        doc.transactDrawing((st) => withoutDimStyle(st, s.name));
         editor.log(`Dimension style "${s.name}" deleted.`);
         dimStyleManager(editor, current().name);
       } else back();

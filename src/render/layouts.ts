@@ -69,6 +69,12 @@ export function viewportScreenRect(vp: LayoutViewport, pv: PaperView, width: num
   return { x: tl.x, y: tl.y, w: vp.width * pv.scale, h: vp.height * pv.scale };
 }
 
+function polygonPath(ctx: CanvasRenderingContext2D, points: readonly Point[]): void {
+  ctx.beginPath();
+  points.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
+  ctx.closePath();
+}
+
 /** Pixels per millimetre on the paper at a paper view (lineweights are drawn at paper size). */
 export function paperPxPerMm(layout: Layout, pv: PaperView): number {
   return (pv.scale * (1 / unitInches(layout.paper.units))) / 25.4;
@@ -138,6 +144,10 @@ export function paintLayout(ctx: CanvasRenderingContext2D, vp: Viewport, ov: Vie
       ctx.beginPath();
       ctx.rect(r.x, r.y, r.w, r.h);
       ctx.clip();
+      if (v.clipBoundary && v.clipOn !== false) {
+        polygonPath(ctx, v.clipBoundary.points.map(paper.toScreen));
+        ctx.clip('evenodd');
+      }
       for (const e of state.entities) {
         if (frozen.has(e.layer) || !cullBounds(e, lookup, view)) continue;
         if (active && ov.selection.has(e.id)) drawEntity(ctx, e, tf, layers, lookup, { dashed: true, alpha: 0.95, hidden: frozen });
@@ -156,17 +166,25 @@ export function paintLayout(ctx: CanvasRenderingContext2D, vp: Viewport, ov: Vie
       else if (inPaper && ov.hover === e.id) drawEntity(ctx, e, paper, layers, lookup, { lineWidthOverride: 2, alpha: 0.95, hidden });
       else drawEntity(ctx, e, paper, layers, lookup, { hidden });
     }
+    for (const v of layout.viewports) {
+      if (v.clipBoundary && !hidden.has(v.clipBoundary.layer)) drawEntity(ctx, v.clipBoundary, paper, layers, lookup, { hidden });
+    }
     // ---- viewport frames (hidden with their layer, like AutoCAD; the active one is bold)
     for (const v of layout.viewports) {
       const active = v.id === spaceVp;
-      if (hidden.has(v.layer) && !active) continue;
+      const frameLayer = v.clipBoundary && v.clipOn !== false ? v.clipBoundary.layer : v.layer;
+      if (hidden.has(frameLayer) && !active) continue;
       const r = viewportScreenRect(v, pv, W, H);
       ctx.save();
       const selected = inPaper && ov.selection.has(v.id);
+      if (v.clipBoundary && v.clipOn !== false && !active && !selected && ov.hover !== v.id) { ctx.restore(); continue; }
       ctx.strokeStyle = active ? LAYOUT_COLORS.activeFrame : LAYOUT_COLORS.frame;
       ctx.lineWidth = active ? 3 : inPaper && ov.hover === v.id ? 2 : 1;
       if (selected) ctx.setLineDash([6, 4]);
-      ctx.strokeRect(vp.px(r.x, ctx.lineWidth), vp.px(r.y, ctx.lineWidth), Math.round(r.w), Math.round(r.h));
+      if (v.clipBoundary && v.clipOn !== false) {
+        polygonPath(ctx, v.clipBoundary.points.map(paper.toScreen));
+        ctx.stroke();
+      } else ctx.strokeRect(vp.px(r.x, ctx.lineWidth), vp.px(r.y, ctx.lineWidth), Math.round(r.w), Math.round(r.h));
       ctx.restore();
     }
   } finally {
@@ -213,6 +231,10 @@ export function renderPageToCanvas(canvas: HTMLCanvasElement, page: PdfPageSpec,
         ctx.rect(grp.clip.x * s, H - (grp.clip.y + grp.clip.h) * s, grp.clip.w * s, grp.clip.h * s);
         ctx.clip();
       }
+      if (grp.clipPolygon) {
+        polygonPath(ctx, grp.clipPolygon.map((p) => ({ x: p.x * s, y: H - p.y * s })));
+        ctx.clip('evenodd');
+      }
       annotationDisplay.factor = grp.annoFactor;
       annotationDisplay.hide = !!grp.hideAnnotative;
       for (const e of grp.entities) {
@@ -224,7 +246,10 @@ export function renderPageToCanvas(canvas: HTMLCanvasElement, page: PdfPageSpec,
         if (grp.hidden.has(f.layer)) continue;
         ctx.strokeStyle = '#000000';
         ctx.lineWidth = Math.max(1, dpi / 100);
-        ctx.strokeRect(f.x * s, H - (f.y + f.h) * s, f.w * s, f.h * s);
+        if (f.polygon) {
+          polygonPath(ctx, f.polygon.map((p) => ({ x: p.x * s, y: H - p.y * s })));
+          ctx.stroke();
+        } else ctx.strokeRect(f.x * s, H - (f.y + f.h) * s, f.w * s, f.h * s);
       }
     }
   } finally {

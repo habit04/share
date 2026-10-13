@@ -1,9 +1,75 @@
 import type { Point, Bounds } from './geometry';
 import * as g from './geometry';
 import type { Entity, BlockLookup } from './entities';
-import { distanceToEntity, entityBounds, entitySegments, pointInPolygon, textCorners, mtextParts, mtextDecorations, mtextMasks, explodeInsert, dimensionParts, compoundParts } from './entities';
+import { distanceToEntity, entityBounds, entitySegments, pointInPolygon, textCorners, mtextParts, mtextDecorations, mtextMasks, explodeInsert, dimensionParts, compoundParts, hatchGeometry } from './entities';
 import { spatialIndexFor } from './spatial-index';
 import { polylineWidthGeometry } from './polyline-widths';
+import { activeViewport, modelToPaper, paperToModel, pointInViewport, viewportPaperBounds, type LayoutHost, type LayoutViewport } from './layouts';
+
+/** Enabled floating-viewport clip, expressed in model coordinates for all input paths. */
+export interface ViewportSelectionClip {
+  readonly polygon: readonly Point[];
+  readonly edges: ReadonlyArray<readonly [Point, Point]>;
+  readonly bounds: Bounds;
+  contains(p: Point): boolean;
+}
+
+const viewportClipCache = new WeakMap<LayoutViewport, ViewportSelectionClip>();
+
+/** Unclipped/disabled viewports retain the existing whole-space input behavior. */
+export function activeSelectionClip(state: LayoutHost): ViewportSelectionClip | null {
+  const vp = activeViewport(state)?.viewport;
+  if (!vp?.clipBoundary || vp.clipOn === false) return null;
+  let clip = viewportClipCache.get(vp);
+  if (!clip) {
+    const polygon = vp.clipBoundary.points.map((p) => paperToModel(vp, p));
+    const rectangle = boundsEdges(viewportPaperBounds(vp)).map(([a, b]): [Point, Point] => [paperToModel(vp, a), paperToModel(vp, b)]);
+    clip = {
+      polygon,
+      edges: [...polygon.map((p, i): [Point, Point] => [p, polygon[(i + 1) % polygon.length]!]), ...rectangle],
+      bounds: g.boundsOfPoints(polygon)!,
+      contains: (p) => pointInViewport(vp, modelToPaper(vp, p)),
+    };
+    viewportClipCache.set(vp, clip);
+  }
+  return clip;
+}
+
+const viewportEntitiesCache = new WeakMap<LayoutHost, { source: readonly Entity[]; lookup: BlockLookup; visible: readonly Entity[] }>();
+
+/**
+ * Exclude fully masked geometry from graphical selection and snaps. Cache by immutable drawing
+ * snapshot, so edits, block redefinitions, undo/redo and viewport view/clip changes invalidate it.
+ * Curves and text use the same tessellated outlines/text areas as polygon selection.
+ */
+export function viewportSelectionEntities(state: LayoutHost, entities: readonly Entity[], lookup: BlockLookup): readonly Entity[] {
+  const clip = activeSelectionClip(state);
+  if (!clip) return entities;
+  const cached = viewportEntitiesCache.get(state);
+  if (cached?.source === entities && cached.lookup === lookup) return cached.visible;
+  const visible: Entity[] = [];
+  const { order, bounds } = candidates(entities, lookup, clip.bounds);
+  const count = order ? order.length : entities.length;
+  for (let k = 0; k < count; k += 1) {
+    const i = order ? order[k]! : k;
+    const e = entities[i]!;
+    const box = bounds(i);
+    if (!box || !g.boundsIntersect(box, clip.bounds)) continue;
+    const segments = polygonSegments(e, lookup, true);
+    const touches = segments.some(([a, b]) => {
+      if (clip.contains(a) || clip.contains(b)) return true;
+      return clip.edges.some(([c, d]) => {
+        const intersection = g.segmentIntersection(a, b, c, d);
+        return !!intersection && clip.contains(intersection);
+      });
+    });
+    // A clip can lie wholly inside a filled hatch, image, wide polyline or text area without
+    // crossing its outline. The ordinary distance test also respects hatch holes.
+    if (touches || clip.polygon.some((p) => clip.contains(p) && distanceToEntity(p, e, lookup) <= 1e-9)) visible.push(e);
+  }
+  viewportEntitiesCache.set(state, { source: entities, lookup, visible });
+  return visible;
+}
 
 /**
  * The entities to test against `box`, in drawing order, with their bounds: every entity
@@ -148,7 +214,7 @@ function boundsEdges(b: Bounds): Array<[Point, Point]> {
 }
 
 /** Oriented text and compound geometry, rather than their world-axis bounding rectangles. */
-function polygonSegments(e: Entity, lookup: BlockLookup): Array<[Point, Point]> {
+function polygonSegments(e: Entity, lookup: BlockLookup, includeHatchPattern = false): Array<[Point, Point]> {
   const edges = (points: readonly Point[]): Array<[Point, Point]> => points.map((p, i) => [p, points[(i + 1) % points.length]!]);
   switch (e.type) {
     case 'text': return edges(textCorners(e));
@@ -159,11 +225,15 @@ function polygonSegments(e: Entity, lookup: BlockLookup): Array<[Point, Point]> 
       const geometry = polylineWidthGeometry(e);
       return [...geometry.polygons.flatMap(edges), ...geometry.thin.flatMap((spine) => spine.slice(1).map((p, i): [Point, Point] => [spine[i]!, p]))];
     }
-    case 'insert': return explodeInsert(e, lookup).flatMap((part) => polygonSegments(part, lookup));
-    case 'dimension': return dimensionParts(e).flatMap((part) => polygonSegments(part, lookup));
+    // An enclosing hatch outline can miss the clip entirely while its bounded, cached
+    // pattern strokes or dots remain visible. Ordinary polygon selection keeps its
+    // established boundary tests; viewport visibility also needs the rendered strokes.
+    case 'hatch': return [...entitySegments(e, lookup), ...(includeHatchPattern ? hatchGeometry(e).segments : [])];
+    case 'insert': return explodeInsert(e, lookup).flatMap((part) => polygonSegments(part, lookup, includeHatchPattern));
+    case 'dimension': return dimensionParts(e).flatMap((part) => polygonSegments(part, lookup, includeHatchPattern));
     case 'leader':
     case 'table':
-    case 'image': return compoundParts(e).flatMap((part) => polygonSegments(part, lookup));
+    case 'image': return compoundParts(e).flatMap((part) => polygonSegments(part, lookup, includeHatchPattern));
     default: return entitySegments(e, lookup);
   }
 }

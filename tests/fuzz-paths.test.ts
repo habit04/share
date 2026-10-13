@@ -28,13 +28,13 @@ function posixSegments(rng: Rng, min = 0, max = 5): string[] {
   return genSegments(rng, min, max).map((s) => (rng.bool(0.05) ? `${s}\\${rng.pick(NAMES)}` : s));
 }
 
-/** Random spelling of the same location: "." segments, "x/.." detours, repeated / mixed separators, NFD, trailing separator. */
-function spell(rng: Rng, segs: string[], sepChoices: string[]): string {
+/** Same location through dot segments / separators; only POSIX treats Unicode NFD as an alias. */
+function spell(rng: Rng, segs: string[], sepChoices: string[], unicodeAliases = true): string {
   const out: string[] = [];
   for (const s of segs) {
     if (rng.bool(0.15)) out.push('.');
     if (rng.bool(0.15)) out.push(rng.pick(NAMES), '..');
-    out.push(rng.bool(0.2) ? s.normalize('NFD') : s);
+    out.push(unicodeAliases && rng.bool(0.2) ? s.normalize('NFD') : s);
   }
   if (rng.bool(0.1)) out.push('.');
   let text = '';
@@ -73,7 +73,7 @@ function genPath(rng: Rng, win32: boolean, style?: Style, root?: string, segs?: 
   const r = root ?? (st === 'drive' ? rng.pick(['C', 'D', 'c']) : st === 'unc' ? `${rng.pick(['srv', 'Srv', 'nas'])}|${rng.pick(['share', 'Share', 'proj'])}` : '/');
   const sg = segs ?? (st === 'posix' && !win32 ? posixSegments(rng) : genSegments(rng));
   const seps = st === 'posix' ? ['/', '//'] : ['\\', '/', '\\\\', '/\\'];
-  return { style: st, root: r, segs: sg, text: rootText(rng, st, r, win32) + spell(rng, sg, seps) };
+  return { style: st, root: r, segs: sg, text: rootText(rng, st, r, win32) + spell(rng, sg, seps, st === 'posix') };
 }
 
 /** Another spelling of exactly the same file (case-changed only where the path is a Windows path). */
@@ -106,13 +106,13 @@ describe('fuzz: path normalisation properties', () => {
     it(`normalisation is idempotent and keys are stable (${platform})`, () => {
       setPathPlatform(platform);
       const runs = fuzzSync(`paths/idempotent/${platform}`, 1500, (rng) => {
-        const p = rng.bool(0.15) ? spell(rng, genSegments(rng, 1, 5), win32 ? ['\\', '/'] : ['/']) : genPath(rng, win32).text;
+        const p = rng.bool(0.15) ? spell(rng, genSegments(rng, 1, 5), win32 ? ['\\', '/'] : ['/'], !win32) : genPath(rng, win32).text;
         const n = normalizePath(p);
         check(normalizePath(n) === n, () => `normalizePath not idempotent: ${JSON.stringify(p)} -> ${JSON.stringify(n)} -> ${JSON.stringify(normalizePath(n))}`);
         check(pathKey(n) === pathKey(p), () => `pathKey(normalizePath(p)) !== pathKey(p) for ${JSON.stringify(p)}`);
         check(pathKey(pathKey(p)) === pathKey(p), () => `pathKey not idempotent for ${JSON.stringify(p)}`);
         check(isAbsolutePath(n) === isAbsolutePath(p), () => `absoluteness changed by normalisation: ${JSON.stringify(p)} -> ${JSON.stringify(n)}`);
-        check(n === n.normalize('NFC'), () => `not NFC: ${JSON.stringify(n)}`);
+        if (!isWindowsPath(n)) check(n === n.normalize('NFC'), () => `not NFC: ${JSON.stringify(n)}`);
         check(!/[\\/]{2,}/.test(n.replace(/^\\\\/, '')), () => `repeated separators left in ${JSON.stringify(n)}`);
         const segs = n.replace(/^\\\\[^\\]+\\[^\\]+\\|^[A-Z]:\\|^[\\/]/, '').split(/[\\/]/);
         if (isAbsolutePath(n)) check(!segs.includes('.') && !segs.includes('..'), () => `dot segment left in absolute ${JSON.stringify(n)}`);

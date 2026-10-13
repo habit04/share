@@ -10,9 +10,8 @@ import { textStyleOf } from '../encoding';
 import { MTEXT_COLUMNS_APP, MTEXT_BACKGROUND_APP, DIM_TYPE, DIMSTYLE_APP, TABLE_APP } from './codes';
 import { backgroundMetadataChunks } from './mtext-background-data';
 import * as g from '../../core/geometry';
-import { dimensionTextPoint, dimensionMeasurement, diffDimStyles, DIM_VARIABLES } from '../../core/dimension';
+import { dimensionTextPoint, dimensionMeasurement, dimensionStyleOverrides, dimStyleOverrideCode, DIM_VARIABLES } from '../../core/dimension';
 import { textWidth, leaderParts, leaderPath } from '../../core/entities';
-import { dimStyleXdata } from './dimstyles';
 import type { WriteExtras } from './write-core';
 
 export function writeMText(w: Writer, e: MTextEntity, owner: string): void {
@@ -151,9 +150,6 @@ export function writeDimension(w: Writer, e: DimensionEntity, owner: string, blo
   writeDimStyleOverrides(w, e);
 }
 
-/** DIM* variables that dimStyleRecordPairs writes under codes of their own. */
-const DERIVED_DIMVAR_CODES: Readonly<Record<string, number>> = { DIMTOL: 71, DIMLIM: 72, DIMTIH: 73, DIMTOH: 74, DIMZIN: 78 };
-
 /**
  * Per-dimension overrides of its named style, as AutoCAD writes them: ACAD XDATA
  * "DSTYLE" { 1070 code, value ... } for the DIM* variables that differ from the DIMSTYLE record
@@ -164,29 +160,31 @@ const DERIVED_DIMVAR_CODES: Readonly<Record<string, number>> = { DIMTOL: 71, DIM
 function writeDimStyleOverrides(w: Writer, e: DimensionEntity): void {
   const inherited = w.dimensionStyles.get(e.style.name.toUpperCase());
   if (!inherited) return;
-  const differences = diffDimStyles(e.style, inherited).filter((v) => DIM_VARIABLES.some((def) => def.name === v.name && def.code !== undefined) || DERIVED_DIMVAR_CODES[v.name] !== undefined);
-  const textStyle = e.style.textStyle ?? 'Standard';
-  const textStyleDiffers = textStyle.toUpperCase() !== (inherited.textStyle ?? 'Standard').toUpperCase();
-  if (differences.length || textStyleDiffers) {
+  const overrides = dimensionStyleOverrides(e.style, inherited, e.styleOverrides);
+  const native = Object.entries(overrides).filter(([name]) => dimStyleOverrideCode(name) !== undefined && name !== 'DIMTXSTY');
+  const textStyle = String(overrides.DIMTXSTY ?? e.style.textStyle ?? 'Standard');
+  const textStyleOverridden = overrides.DIMTXSTY !== undefined;
+  if (native.length || textStyleOverridden) {
     w.pair(1001, 'ACAD');
     w.pair(1000, 'DSTYLE');
     w.pair(1002, '{');
-    for (const change of differences) {
-      const def = DIM_VARIABLES.find((v) => v.name === change.name);
-      w.pair(1070, DERIVED_DIMVAR_CODES[change.name] ?? def!.code!);
-      w.pair(def?.kind === 'string' ? 1000 : def?.kind === 'number' && def.code !== 371 && def.code !== 372 ? 1040 : 1070, change.a);
+    for (const [name, value] of native) {
+      const def = DIM_VARIABLES.find((v) => v.name === name);
+      w.pair(1070, dimStyleOverrideCode(name)!);
+      w.pair(def?.kind === 'string' ? 1000 : def?.kind === 'number' && def.code !== 371 && def.code !== 372 ? 1040 : 1070, value);
     }
-    if (textStyleDiffers) {
+    if (textStyleOverridden) {
       w.pair(1070, 340);
       w.pair(1005, w.textStyleHandles.get(textStyle.toUpperCase()) ?? w.textStyleHandles.get('STANDARD') ?? '0');
     }
     w.pair(1002, '}');
   }
-  if (e.style.arrow !== inherited.arrow || e.style.arrow2 !== inherited.arrow2 || e.style.altPlacement !== inherited.altPlacement || (e.style.tolerance === 'basic') !== (inherited.tolerance === 'basic')) {
+  const fields = Object.entries(overrides).filter(([name]) => ['DIMBLK1', 'DIMBLK2', 'TOLERANCE', 'ALTPLACEMENT'].includes(name));
+  if (fields.length) {
     w.pair(1001, DIMSTYLE_APP);
-    for (const [key, value] of dimStyleXdata(e.style)) {
+    for (const [key, value] of fields) {
       w.pair(1000, key);
-      w.pair(1000, value);
+      w.pair(1000, value === '' && (key === 'DIMBLK1' || key === 'DIMBLK2') ? '.' : String(value));
     }
   }
 }

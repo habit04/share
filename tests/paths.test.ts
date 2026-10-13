@@ -6,6 +6,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { normalizePath, pathKey, samePath, dirName, resolveFromFile, resolvePath, relativePath, rebaseProjectEntry, shortNames, isAbsolutePath, setPathPlatform } from '../src/app/paths';
 import { parseProject, serializeProject, rebaseProject, resolveDrawingPath, resolveProjectPath, projectDrawingIndex, projectEntryFor, type Project } from '../src/app/project';
 import { pushRecent } from '../src/app/settings';
+import { SaveQueue } from '../src/app/savequeue';
 
 afterEach(() => setPathPlatform(null));
 
@@ -28,6 +29,31 @@ describe('path normalisation', () => {
     expect(samePath('C:\\Jobs\\Line1\\A.DXF', 'c:/jobs/line1/a.dxf')).toBe(true);
     expect(samePath('C:\\Jobs\\Line1\\a.dxf', 'C:\\Jobs\\Line2\\a.dxf')).toBe(false);
     expect(pathKey('C:\\Jobs\\A.dxf')).toBe(pathKey('c:\\JOBS\\a.DXF'));
+  });
+  it('keeps distinct Windows Unicode filenames and project references in their original spelling', () => {
+    setPathPlatform('win32');
+    const composed = 'C:\\Jobs\\Jos\u00e9.dxf';
+    const decomposed = 'C:\\Jobs\\Jose\u0301.dxf';
+    expect(normalizePath(decomposed)).toBe(decomposed);
+    expect(samePath(composed, decomposed)).toBe(false);
+    expect(resolveFromFile('C:\\Jobs\\p.jcadproj.json', 'Jose\u0301.dxf')).toBe(decomposed);
+    expect(rebaseProjectEntry('Jose\u0301.dxf', 'C:\\Jobs\\p.jcadproj.json', 'C:\\Archive\\p.jcadproj.json')).toBe(decomposed);
+    expect(pushRecent(pushRecent([], composed), decomposed)).toEqual([decomposed, composed]);
+    const names = shortNames([composed, decomposed]);
+    expect(new Set(names.map((name) => name.normalize('NFC'))).size).toBe(2);
+  });
+  it('a completed Windows Unicode filename save cannot make the other filename stale', async () => {
+    setPathPlatform('win32');
+    const composed = 'C:\\Jobs\\Jos\u00e9.dxf';
+    const decomposed = 'C:\\Jobs\\Jose\u0301.dxf';
+    const queue = new SaveQueue();
+    queue.markCompleted(composed, 2);
+    let written = false;
+    const result = await queue.run(decomposed, 1, async () => { written = true; return decomposed; });
+    expect(result.status).toBe('written');
+    expect(written).toBe(true);
+    expect(queue.lastCompleted(composed)).toBe(2);
+    expect(queue.lastCompleted(decomposed)).toBe(1);
   });
   it('on Windows, relative and forward-slash paths are Windows paths too', () => {
     setPathPlatform('win32');

@@ -1053,6 +1053,7 @@ export function blockTransform(e: Entity, tf: (p: Point) => Point, rotation: num
         textPosition: e.textPosition ? tf(e.textPosition) : e.textPosition,
         rotation: e.kind === 'linear' ? ang(e.rotation) : e.rotation + rotation,
         style: k === 1 ? e.style : { ...e.style, scale: e.style.scale * k },
+        ...(k !== 1 && e.styleOverrides !== undefined ? { styleOverrides: { ...e.styleOverrides, DIMSCALE: e.style.scale * k } } : {}),
       };
     case 'spline':
     case 'hatch':
@@ -1441,6 +1442,7 @@ export function similarityTransform(e: Entity, tf: (p: Point) => Point, rotation
         textPosition: e.textPosition ? tf(e.textPosition) : e.textPosition,
         rotation: e.rotation + rotation,
         style: k === 1 ? e.style : { ...e.style, scale: e.style.scale * k },
+        ...(k !== 1 && e.styleOverrides !== undefined ? { styleOverrides: { ...e.styleOverrides, DIMSCALE: e.style.scale * k } } : {}),
       };
     case 'spline':
     case 'hatch':
@@ -1851,7 +1853,8 @@ export function gripPoints(e: Entity): Point[] {
 /** Move grip `index` of an entity to `p` (AutoCAD grip stretch semantics). */
 export function moveGrip(e: Entity, index: number, p: Point): Entity | null {
   // Layout viewport frames (core/layouts.ts ViewportFrame) stretch as rectangles: the opposite corner stays.
-  if (e.type === 'polyline' && (e as { vport?: unknown }).vport && e.points.length === 4 && index >= 0 && index < 4) {
+  const viewportFrame = (e as { vport?: { clipBoundary?: unknown; clipOn?: boolean } }).vport;
+  if (e.type === 'polyline' && viewportFrame && (!viewportFrame.clipBoundary || viewportFrame.clipOn === false) && e.points.length === 4 && index >= 0 && index < 4) {
     const o = e.points[(index + 2) % 4]!;
     const lo = { x: Math.min(o.x, p.x), y: Math.min(o.y, p.y) };
     const hi = { x: Math.max(o.x, p.x), y: Math.max(o.y, p.y) };
