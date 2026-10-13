@@ -19,8 +19,8 @@ this milestone does not complete the entire gradient priority or remaining roadm
 | --- | --- | --- | --- |
 | 9 | Polygon DXF milestone implemented and tested: native closed straight-polyline boundaries, appearance, enable flag, copy/edit/undo/reopen, Canvas and vector/raster clips. Review corrections include enclosing hatch-pattern visibility and retained boundary layer/linetype resources during purge/export. Curved boundaries and DWG clip exposure remain missing. Graphical selection excludes fully hidden entities but keeps whole-entity tests for partially visible objects. | Lead; DWG boundary exposure depends on #19. | Import/edit/undo/save/reopen clip; Canvas, vector/raster plots and viewport activation agree. Unsupported curves stay reported. |
 | 10 | Confirmed angular suppression, arrow ownership and gap defects corrected; style traversal and paper-space undo/redo implemented. Supported native override presence/value survives matching named styles and later redefinitions; scaling, Match Properties and existing direct-style editing remain compatible. Ordinate/arc-length types still missing. | Dimension agent; native DWG exposure remains #19. | Styles/overrides, every space, native fixture edit/save/reopen, undo/redo, geometry/bounds and plots. |
-| 11 | Earlier paragraph/override fixes complete. Windows font metric milestone implemented and tested: bounded installed TrueType reader, per-drawing geometry, bearings/height/fitting, STYLE/font-arrival cache invalidation, annotation fitting and captured raster plots. Missing/unsupported faces, bitmap glyphs and unverified origins use Canvas measurement; contextual scripts retain shaping. Native MTEXT attachment/leading, inline font/tracking and Unicode edge cases remain incomplete; vector PDF still substitutes fonts. See `WINDOWS-FONT-METRICS.md`. | Text agent and lead; reader-omitted annotation font fields depend on #19. | Native references, actual Windows IPC/Canvas/raster, STYLE edit/undo/DXF reopen, fallback/Unicode bounds, eventual embedded PDF fidelity. |
-| 12 | Missing: `pdf-vector.ts` uses standard Helvetica or stroke paths, without embedding exact fonts. | Independent; font resolution/licensing required. | Inspect embedded font resources, Unicode mapping and real PDF rasterization; permitted font redistribution. |
+| 11 | Windows font metrics, native TEXT placement and ink-based MTEXT attachment/wrapping implemented and tested. Per-drawing geometry drives Canvas, bounds/selection, masks, annotation fitting and captured raster/eligible vector plots. Missing/unsupported faces, bitmap glyphs and unverified origins use Canvas measurement; contextual scripts retain shaping. Tall-glyph MTEXT leading, inline font/tracking and Unicode edge cases remain open. See `WINDOWS-FONT-METRICS.md`. | Text agent and lead; reader-omitted annotation font fields depend on #19. | Retain native/actual Windows IPC/Canvas/raster/STYLE edit/undo/DXF reopen checks; extend tall leading and formatted Unicode fixtures. |
+| 12 | Standalone TrueType slice implemented: confined same-read font programs/metrics, version-aware embedding permissions, full Type0/CIDFontType2 programs, native advances/placement and ToUnicode. Captured plot scope, clip/annotation font budgeting and explicit substitutes tested. TTC/CFF/variable/color fonts, contextual shaping, subsetting and preview/print-only read-only PDFs remain open. See `PDF-FONT-EMBEDDING.md`. | Lead; installed fonts read only, no font programs committed. | Retain resource/extraction/Poppler/native reference/UI plot checks; add fixtures before extending font formats or licensing modes. |
 | 13 | Missing CTB/STB interpretation; layout sheet names select built-in color modes in `dxf-layouts.ts`. | Independent; real style table fixtures required. | Named/color-dependent tables, lineweight/screening/colors, layouts, save/reopen and external plot comparison. |
 | 14 | Partial: `core/linetypes.ts` retains dash sequences, complex text/shapes absent. | Independent; #21 for SHX shapes. | Native definitions retain text/shape/style/placement and render at correct scale across segments and plots. |
 | 15 | Partial: `mtext.ts` honors explicit column breaks/count/width/gutter/reversal; declared-height static/dynamic-manual flow now implemented (26 new tests), with overflow retained. Auto-height balancing remains missing. Native export replaced by `JCAD_MTEXT_COLUMNS` XDATA. | Independent; DWG embedded-object exposure #19. | Auto-flow/static heights, masks, edits, native column fixtures and external CAD reopen. |
@@ -45,6 +45,19 @@ coverage, not rebuild work. #7 was superseded by portable saving. #26 (Mac/Linux
 proof that their implementation or external verification has passed.
 
 ## Validation record
+
+- Standalone Windows PDF embedding: 75 program-reader, 97 metric-reader, 18 worker-host,
+  36 resource and 17 integration regressions pass. Actual source Electron/Chrome/Poppler
+  proof passes **1,496 checks** with four exact installed programs, Unicode extraction,
+  native TEXT positions and 66 rendered crop comparisons. The production Plot dialog and
+  real Windows Save PDF route pass on a private native fixture copy, preserving snapshot/clean state.
+  Only destination dialogs use test doubles; font bytes and reference PDFs stay private.
+  Native MTEXT remains **198/216**: 18 Times tall multiline leading differences are recorded,
+  with the original 0.12 tolerance. PDF source was frozen and source hashes verified.
+- PDF milestone combined suite: **2,773 passed, 1 failed, 27 conditional skips** across
+  203 files. The unchanged portable-helper identity-cache test is the failure described in #24;
+  it remains owned by PR #9. Broad lint, all three TypeScript projects, fixtures and production
+  renderer build pass. Existing eight dense benchmarks passed in the preceding font milestone.
 
 - Private Node 24.19.0, locked `npm ci --ignore-scripts`, worktree-local npm cache and TEMP/TMP.
 - Dimension milestones: 137 tests, including 25 new regression cases; baseline angular probes fail and fixed

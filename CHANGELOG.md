@@ -18,8 +18,13 @@ messages). The date of each version is the date of the commit that set that vers
   Native height, bearings, FIT/ALIGNED and verified vertical placement replace stroke measurements.
   Missing/unsupported font structures and glyph origins use Canvas fallback measurement; source
   STYLE data is retained. Font arrival and STYLE edits refresh caches without dirty/history changes.
-  Pending plots await metrics and retain captured drawing definitions. Native MTEXT layout details,
-  exact vector PDF embedding and SHX decoding remain open.
+  Pending plots await metrics and retain captured drawing definitions. Tall-glyph MTEXT leading,
+  inline font changes and SHX decoding remain open.
+- Windows vector PDF embeds permitted installed standalone TrueType programs with exact native
+  advances, placement and Unicode maps. Font resources stay local to the captured plot, with
+  eight-face/128 MiB limits and the same clip/layer/annotation culling as PDF painting. Missing,
+  restricted, unsupported or shaping-dependent faces/runs use a reported substitute. TrueType
+  collections, CFF/variable/color fonts, subsetting and preview/print-only embedding remain open.
 - DXF layouts retain native closed straight-polyline viewport clips, including concave
   outlines, boundary appearance and the native enable flag. Canvas display, viewport
   activation, snapping and vector/raster plots honor the clip. Editing, copying and

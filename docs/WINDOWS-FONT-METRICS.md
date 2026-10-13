@@ -5,8 +5,9 @@ a per-drawing font context. It does not complete priorities 11, 12 or 21.
 
 The Windows desktop bridge reads installed fonts from the Windows Fonts directory. A bounded
 SFNT parser validates TrueType outlines, character maps, advances, face names and embedding
-permission metadata in separate workers. Only metrics cross this bridge. Source font names
-remain unchanged in drawing data; font programs are neither saved in drawings nor redistributed.
+permission metadata in separate workers. The metric bridge returns only geometry. A separate
+Windows PDF bridge returns eligible installed programs for a captured plot; see `PDF-FONT-EMBEDDING.md`.
+Source font names remain unchanged in drawing data; font programs are never saved in drawings.
 Unsupported or missing faces keep actual Canvas fallback measurement and retain their source
 STYLE records. SHX text keeps its existing Hershey substitute.
 
@@ -43,7 +44,8 @@ comparisons pass. Exact tall-glyph line leading, inline font changes/tracking an
 balancing remain open. Existing formatting source is
 retained. Reader-omitted leader/table font fields require the separate DWG workstream.
 
-Vector PDF still uses Helvetica/Helvetica-Bold or stroke paths and does not embed installed fonts.
-This milestone improves Canvas and raster plotting; exact vector PDF font fidelity remains priority 12.
+Windows vector PDF now embeds eligible standalone TrueType faces and uses the same native geometry.
+Unsupported font formats, uncertain glyph origins and contextual shaping still use reported substitutes;
+the browser edition retains its legacy PDF path. Full font-format coverage remains priority 12.
 Real SHX decoding remains priority 21. CFF OpenType, variable/color fonts and unverified font structures
 fall back without claiming native metric support. No installer or installed-release validation is implied.
