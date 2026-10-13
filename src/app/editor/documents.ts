@@ -152,7 +152,7 @@ export function showImportReport(ed: Editor, force: boolean, state: DrawingState
 }
 
 export function readDxfText(ed: Editor, text: string, path: string | null): Promise<DrawingState | null> {
-  return readDxfForOpen(text, path, (t, m) => (ed.ui ?? fallbackUi).confirm(t, m));
+  return readDxfForOpen(text, path, (t, m) => (ed.ui ?? fallbackUi).confirm(t, m), ed.settings.experimental3d === true);
 }
 
 /** The import report of a drawing just opened, also when it went to a background tab (see deliverOpened). */

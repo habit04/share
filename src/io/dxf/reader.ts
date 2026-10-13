@@ -1,7 +1,8 @@
 /**
  * readDxf: a DXF file into a drawing. The sections are read in file order (HEADER, TABLES,
  * BLOCKS, ENTITIES, OBJECTS); tables read from anonymous blocks, the layers every entity refers
- * to, the header, paper space (io/dxf-layouts.ts) and then the IMAGE paths are settled at the end.
+ * to, the header, paper space (io/dxf-layouts.ts), the IMAGE paths and the experimental 3D solids
+ * (io/dxf/mesh3d-read.ts) are settled at the end.
  */
 import type { FieldContext } from '../../core/fields';
 import type { DrawingState, NamedView } from '../../core/document';
@@ -20,6 +21,9 @@ import { readTableStyle, type TableStyleData } from './read-annotations';
 import { readHeaderSection, readObjectsSection, readTablesSection, readBlocksSection, readEntitiesSection, drawingHeader } from './read-sections';
 import { DEFAULT_LAYERS } from '../../core/document';
 import { readEntities } from './read-pass';
+import { Model3DReader } from './mesh3d-read';
+import { EMPTY_MODEL3D } from '../../model3d/model';
+import { DXF_READ_LIMITS } from '../../model3d/file-format';
 
 export interface DxfReadOptions {
   /** Allocation budgets; callers may lower them for untrusted or constrained imports. */
@@ -38,6 +42,12 @@ export interface DxfReadOptions {
    * is marked as recovered in its import report.
    */
   recover?: boolean;
+  /**
+   * The experimental 3D setting is on: model-space polyface meshes from other programs become
+   * mesh solids (`DrawingState.model3d`) instead of being dropped. Polyfaces JCad wrote (with
+   * `JCAD_3D` data) are read either way; see io/dxf/mesh3d-read.ts.
+   */
+  model3d?: boolean;
 }
 
 /**
@@ -83,7 +93,7 @@ function tableStylesOf(pairs: readonly Pair[]): Map<string, TableStyleData> {
 
 /** The reader proper; DIMSTYLE records are collected into `dimStyles`. */
 function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string, DimStyle>, report: ImportReportBuilder, raw: RawDxfEntity[]): DrawingState {
-  if (text.length > (opts.maxSourceLength ?? 128 * 1024 * 1024)) throw new DxfReadError('DXF exceeds the source text size limit.', 1);
+  if (text.length > (opts.maxSourceLength ?? DXF_READ_LIMITS.maxSourceLength)) throw new DxfReadError('DXF exceeds the source text size limit.', 1);
   const pairs = tokenize(decodeUnicodeEscapes(text), opts.recover, report, opts);
   const textStyles: Record<string, TextStyle> = {};
   const layers: Layer[] = [];
@@ -106,6 +116,7 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
     notes: opts.notes ?? [],
     report,
     raw,
+    solids: new Model3DReader(opts.model3d === true, report),
   };
   const imageDefs = new Map<string, string>();
   const layoutReader = new LayoutReader(report);
@@ -159,6 +170,9 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
   for (const e of entities) ensureEntityLayers(e);
   for (const b of Object.values(blocks)) for (const e of b.entities) ensureEntityLayers(e);
   for (const r of raw) ensure(r.layer);
+  // Experimental 3D solids from the model-space polyface meshes (their layers must exist too).
+  const solids = ctx.solids!.build();
+  for (const s of solids) ensure(s.layer);
   ensure(currentLayer);
 
   const header = drawingHeader(headerVars, ctx.dimStyle, linetypes, views);
@@ -195,5 +209,5 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
     if (name && !styleNames.has(name.toUpperCase())) { report.add({ type: 'STYLE', action: 'unsupported', reason: `referenced text style "${name}" has no STYLE definition; its name is kept with a default stroke-font substitute`, layer: entity.layer }); styleNames.add(name.toUpperCase()); }
   }
   const styleMeta = textStylesMeta(textStyles);
-  return { entities, layers, blocks, currentLayer, header, ...(styleMeta ? { meta: styleMeta } : {}), ...(layouts ? { layouts } : {}) };
+  return { entities, layers, blocks, currentLayer, header, ...(styleMeta ? { meta: styleMeta } : {}), ...(layouts ? { layouts } : {}), ...(solids.length ? { model3d: { ...EMPTY_MODEL3D, solids } } : {}) };
 }

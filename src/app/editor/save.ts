@@ -15,7 +15,7 @@ import { hasDwgSave } from '../drawing-save';
 import type { Editor } from './editor';
 import { fallbackUi, type EditorInternals } from './internals';
 import { rememberRecent } from './documents';
-import { confirmModel3DLoss, MODEL3D_NO_UI_REASON, MODEL3D_SAVED_WITHOUT } from '../../model3d/save-guard';
+import { model3dDwgRefusal, model3dDxfLimitRefusal, model3dDxfSaveNotes } from '../../model3d/save-guard';
 
 export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean, format?: 'dxf'): Promise<boolean> {
   if (!ed.fileBridge) {
@@ -46,24 +46,25 @@ export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean,
     return false;
   };
   ed.lastFileError = null;
-  // DXF and DWG files cannot hold the experimental 3D solids yet. Unsupported geometry is never
-  // dropped silently: ask (once per state, shared with EXPORTDWG), refuse without an interface.
-  const loss3d = await confirmModel3DLoss(savedState, ed.ui ? (t, m) => ed.ui!.confirm(t, m) : null, stillCurrent);
-  if (loss3d === 'changed') return changed();
-  if (loss3d === 'no-ui') {
-    ed.lastFileError = MODEL3D_NO_UI_REASON;
-    ed.log(`Not saved: ${MODEL3D_NO_UI_REASON}.`);
+  // DXF holds the experimental 3D solids (polyface meshes with JCAD_3D data). DWG cannot: a DWG
+  // destination is refused as soon as it is known, so solids are never written away silently.
+  const dwgRefusal = model3dDwgRefusal(savedState);
+  const refuse3d = (reason: string) => {
+    ed.lastFileError = reason;
+    ed.log(`Not saved: ${reason}.`);
     return false;
-  }
-  if (loss3d === 'declined') {
-    ed.log('Not saved: the drawing contains 3D objects that DXF and DWG files cannot hold in this version.');
-    return false;
-  }
-  // The file will not hold everything: bind it, but keep the drawing modified (close prompt, recovery copy).
-  const lossy = loss3d === 'accepted';
+  };
+  if (dwgRefusal && target && /\.dwg$/i.test(target)) return refuse3d(dwgRefusal);
   let path: string | null;
+  let notes3d: string[] = [];
   try {
     const text = writeDxf(withoutUnusedLibraryBlocks(savedState));
+    // A file JCad could not reopen is never written: solids beyond the reader's limits refuse the save
+    // (the drawing stays modified). Oversized 3D histories are stored as meshes: logged, not blocking.
+    const tooLarge = model3dDxfLimitRefusal(savedState, text);
+    if (tooLarge) return refuse3d(tooLarge);
+    // Logged after a successful write only (see below).
+    notes3d = model3dDxfSaveNotes(savedState);
     // Save As picks the file first and then queues the write behind any save of that file still on its way.
     if (!target && bridge.chooseDrawingPath) {
       target = format ? await bridge.chooseDrawingPath(suggest, format) : await bridge.chooseDrawingPath(suggest);
@@ -71,6 +72,7 @@ export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean,
     }
     if (target) {
       const dwg = /\.dwg$/i.test(target);
+      if (dwg && dwgRefusal) return refuse3d(dwgRefusal);
       if (dwg && format === 'dxf') throw new Error('The DXF save destination must end in .dxf. Choose a DXF destination with Save As.');
       if (dwg && !canSaveDwg) throw new Error('DWG saving is available in the Windows desktop edition. Choose a DXF destination with Save As.');
       if (dwg && !sessionExists()) return changed();
@@ -86,6 +88,8 @@ export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean,
       const r = await saveQueue.run(target, revision, async () => {
         if ((needsReview && !stillCurrent()) || (dwg && !sessionExists())) return null;
         if (!dwg) return bridge.saveDxf(target, text, suggest);
+        // Never reached with solids (refused above; the state is immutable): the DWG writer would drop them.
+        if (dwgRefusal) throw new Error(dwgRefusal);
         const status = await bridge.dwgExportStatus!();
         if (!sessionExists() || (needsReview && !stillCurrent())) return null;
         if (!status.available) throw new Error(`DWG saving is unavailable: ${status.reason || 'the portable DWG writer could not be loaded.'} Use Save As to save a DXF copy.`);
@@ -116,25 +120,22 @@ export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean,
     // A newer revision of this drawing was saved while this (slower) save ran, possibly to another
     // file: the drawing stays bound to that newer save - its file and its clean / modified state.
     ed.log(`Saved ${path} (an older revision: the drawing was saved again meanwhile and keeps that file).`);
+    for (const line of notes3d) ed.log(line);
     rememberRecent(ed, path);
     return true;
   }
   st.savedRevisions.set(sessionId, revision);
-  const outcome = applySaveResult(ed.sessions, ed, sessionId, savedState, path, contentGeneration, !lossy);
+  const outcome = applySaveResult(ed.sessions, ed, sessionId, savedState, path, contentGeneration);
   if (outcome === 'replaced') {
     ed.log(`Saved ${path} (another drawing replaced this tab while saving; it keeps its current file).`);
+    for (const line of notes3d) ed.log(line);
     rememberRecent(ed, path);
     return true;
   }
   if (outcome === 'clean' && ed.sessions.current.id === sessionId) ed.suggestedName = null;
   ed.log(outcome === 'newer-edits' ? `Saved ${path} (edits made during the save are still unsaved).` : `Saved ${path}`);
+  for (const line of notes3d) ed.log(line);
   rememberRecent(ed, path);
-  if (lossy) {
-    // Not a complete save: the recovery copy (which drawingSaved would discard) stays too.
-    ed.log(MODEL3D_SAVED_WITHOUT);
-    ed.notify('file');
-    return true;
-  }
   ed.hooks.drawingSaved?.(sessionId, savedState, path);
   ed.notify('file');
   return true;

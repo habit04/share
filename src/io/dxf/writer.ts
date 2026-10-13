@@ -1,7 +1,8 @@
 /**
  * writeDxf: an AC1015 (AutoCAD 2000) DXF file from a drawing. Handles are allocated in file
  * order, so the sections are written in sequence: HEADER, CLASSES, TABLES, BLOCKS, ENTITIES and
- * OBJECTS (paper space comes from io/dxf-layouts.ts).
+ * OBJECTS (paper space comes from io/dxf-layouts.ts). Experimental 3D solids are polyface meshes at
+ * the end of ENTITIES (io/dxf/mesh3d-write.ts); a drawing without solids writes none of them.
  */
 import type { DrawingState } from '../../core/document';
 import type { Linetype } from '../../core/linetypes';
@@ -15,7 +16,8 @@ import type { WriteExtras } from './write-core';
 import * as g from '../../core/geometry';
 import { dimHeaderVars, dimStylesToWrite, dimStyleXdata } from './dimstyles';
 import { textStylesForWrite, textStyleOf, STANDARD_TEXT_STYLE, textStyleGroups, encodeDxfText } from '../encoding';
-import { DIMSTYLE_APP, TABLE_APP, ANNO_APP, MTEXT_COLUMNS_APP, MTEXT_BACKGROUND_APP } from './codes';
+import { DIMSTYLE_APP, TABLE_APP, ANNO_APP, MTEXT_COLUMNS_APP, MTEXT_BACKGROUND_APP, MODEL3D_APP } from './codes';
+import { writeSolid } from './mesh3d-write';
 import { dimStyleRecordPairs } from '../../core/dimension';
 import { writeEntityAnno, writeEntity } from './write-entities';
 import { attdefFlags } from '../../electrical/symbol-builder-core';
@@ -228,6 +230,8 @@ export function writeDxf(state: DrawingState): string {
   const rawRecords = rawEntitiesOf(state);
   const layerList: Layer[] = [...state.layers];
   for (const r of rawRecords) if (!layerList.some((l) => l.name === r.layer)) layerList.push({ name: r.layer, color: 7, visible: true, locked: false, lineWeight: 0.25 });
+  // Likewise the layers of 3D solids (the model3d helpers do not keep the layer table in step).
+  for (const s of state.model3d?.solids ?? []) if (!layerList.some((l) => l.name === s.layer)) layerList.push({ name: s.layer, color: 7, visible: true, locked: false, lineWeight: 0.25 });
   table('LAYER', '2', layerList.length, () => {
     for (const l of layerList) {
       // Flags 16 / 32 (xref-dependent, resolved) are kept from the source file.
@@ -284,7 +288,9 @@ export function writeDxf(state: DrawingState): string {
   const columnMtext = allEntities.some((e) => e.type === 'mtext' ? e.columns : e.type === 'leader' && e.textColumns);
   const layerTransparency = state.layers.some((l) => l.transparency !== undefined);
   const inactiveMtext = allEntities.some((e) => entityMTextBackground(e)?.flags === 0);
-  table('APPID', '9', (tableList.length ? 3 : 2) + (annotative ? 1 : 0) + (columnMtext ? 1 : 0) + (layerTransparency ? 1 : 0) + (inactiveMtext ? 1 : 0), () => {
+  // Experimental 3D solids (polyface meshes with JCAD_3D data); a 2D drawing writes none of this.
+  const solids = state.model3d?.solids ?? [];
+  table('APPID', '9', (tableList.length ? 3 : 2) + (annotative ? 1 : 0) + (columnMtext ? 1 : 0) + (layerTransparency ? 1 : 0) + (inactiveMtext ? 1 : 0) + (solids.length ? 1 : 0), () => {
     record('APPID', '9', 'AcDbRegAppTableRecord', 'ACAD');
     record('APPID', '9', 'AcDbRegAppTableRecord', DIMSTYLE_APP);
     if (tableList.length) record('APPID', '9', 'AcDbRegAppTableRecord', TABLE_APP);
@@ -292,6 +298,7 @@ export function writeDxf(state: DrawingState): string {
     if (columnMtext) record('APPID', '9', 'AcDbRegAppTableRecord', MTEXT_COLUMNS_APP);
     if (layerTransparency) record('APPID', '9', 'AcDbRegAppTableRecord', LAYER_TRANSPARENCY_APP);
     if (inactiveMtext) record('APPID', '9', 'AcDbRegAppTableRecord', MTEXT_BACKGROUND_APP);
+    if (solids.length) record('APPID', '9', 'AcDbRegAppTableRecord', MODEL3D_APP);
   });
   // Dimensions on layouts count too, so their (unnamed) styles get a record.
   const dimStyleList = dimStylesToWrite(state, allEntities);
@@ -416,6 +423,8 @@ export function writeDxf(state: DrawingState): string {
     w.pair(330, MODEL_SPACE);
     for (const [code, value] of r.groups) w.pair(code, value);
   }
+  // Experimental 3D solids: one polyface mesh (or several for a very large mesh) each, in model space.
+  for (const s of solids) writeSolid(w, s, MODEL_SPACE);
   w.pair(0, 'ENDSEC');
 
   // OBJECTS: root dictionary with the mandatory ACAD_GROUP entry

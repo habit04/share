@@ -23,7 +23,8 @@ function heavyMesh(triangles: number): Mesh3D {
 const feature = { kind: 'mesh', source: 'imported' } as const;
 
 function modelOf(...meshes: Mesh3D[]): Model3D {
-  return { version: 1, solids: meshes.map((mesh) => newSolid({ mesh, feature })) };
+  // Literal solids: the budget must also reject states no model helper would build (empty meshes).
+  return { version: 1, solids: meshes.map((mesh, i) => ({ id: `b${i}`, layer: '0', color: 'ByLayer' as const, mesh, feature })) };
 }
 
 describe('validateModel3DBudget', () => {

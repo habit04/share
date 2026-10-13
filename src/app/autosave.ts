@@ -3,9 +3,9 @@
  * startup. The store is the Electron app-data folder (IPC) or localStorage in the browser.
  */
 import type { DrawingState } from '../core/document';
-import { writeDxf } from '../io/dxf';
 import { withoutUnusedLibraryBlocks } from '../electrical/library';
 import { sessionTitle } from './sessions';
+import { recoveryDxf } from '../model3d/save-guard';
 
 export interface AutosaveMeta {
   /** Path of the drawing being edited, or null for an untitled drawing. */
@@ -13,13 +13,26 @@ export interface AutosaveMeta {
   title: string;
   savedAt: number;
   /**
-   * Experimental 3D solids the DXF recovery copy could not hold (absent = none). Recorded so the
-   * recovery dialog can say what is missing (milestone 5 surfaces it).
+   * Experimental 3D solids the DXF recovery copy does not hold (absent = none). The copy normally
+   * holds every solid (polyface meshes with JCAD_3D data); only when they would make a file JCad
+   * cannot reopen (DXF_READ_LIMITS) is the copy written without them, and this records how many,
+   * so the Drawing Recovery Manager says what is missing. Milestone-1 builds wrote it for every
+   * solid (electron/autosave-store.cjs validates it).
    */
   omitted3d?: number;
 }
 export interface AutosaveEntry extends AutosaveMeta {
   name: string;
+}
+
+/**
+ * What the Drawing Recovery Manager says about 3D objects missing from a backup (its row and the
+ * log after Open), or null when the backup holds everything.
+ */
+export function omitted3dText(meta: Pick<AutosaveMeta, 'omitted3d'>): string | null {
+  const n = meta.omitted3d ?? 0;
+  if (!(n > 0)) return null;
+  return `This backup does not contain ${n === 1 ? '1 3D object' : `${n} 3D objects`}: ${n === 1 ? 'it was' : 'they were'} too large for a recovery file JCad can reopen.`;
 }
 export interface AutosaveStore {
   write(name: string, text: string, meta: AutosaveMeta): Promise<void>;
@@ -232,12 +245,10 @@ export class Autosaver {
     let n = 0;
     for (const job of jobs) {
       try {
-        // Recovery copies are DXF and omit experimental 3D solids (state.model3d) until milestone 5
-        // adds a 3D-aware format. writeDxf ignores the field, so this never blocks or fails, and
-        // autosave must not raise the interactive "save without 3D objects?" question; the
-        // metadata records how many solids the copy omitted instead.
-        const text = writeDxf(withoutUnusedLibraryBlocks(job.state));
-        const omitted3d = job.state.model3d?.solids.length ?? 0;
+        // Recovery copies are DXF, which holds the experimental 3D solids (state.model3d) as
+        // polyface meshes with JCAD_3D data; nothing is asked. Solids too large for a file JCad can
+        // reopen are left out of the copy (never silently: omitted3d records how many).
+        const { text, omitted3d } = recoveryDxf(withoutUnusedLibraryBlocks(job.state));
         const meta: AutosaveMeta = { originalPath: job.originalPath, title: job.title, savedAt: job.savedAt, ...(omitted3d > 0 ? { omitted3d } : {}) };
         await this.store.write(job.name, text, meta);
         this.backedUp.set(job.id, job.state);

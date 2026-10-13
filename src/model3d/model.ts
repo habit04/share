@@ -8,8 +8,17 @@ import type { DrawingState } from '../core/document';
 import { newId } from '../core/entities';
 import { sealImmutableData } from '../core/immutable-data';
 import { type Aabb, aabbUnion } from './math';
-import { meshBounds } from './mesh';
+import { meshBounds, meshTriangleCount } from './mesh';
 import type { Model3D, Solid3D } from './types';
+
+/**
+ * Throw an Error when a solid has no triangles. An empty solid has nothing to show, pick or save
+ * (a polyface record without faces is not valid DXF), so the model never holds one: a command
+ * whose result is empty removes the solid instead.
+ */
+export function assertSolidNotEmpty(solid: Pick<Solid3D, 'id' | 'mesh'>): void {
+  if (meshTriangleCount(solid.mesh) === 0) throw new Error(`3D solid ${solid.id} has no triangles; an empty solid cannot be stored.`);
+}
 
 /** The empty model (sealed, shared): what a drawing without 3D content behaves like. */
 export const EMPTY_MODEL3D: Model3D = sealImmutableData<Model3D>({ version: 1, solids: [] });
@@ -41,12 +50,14 @@ export function withModel3D(state: DrawingState, model: Model3D): DrawingState {
 /**
  * The model with `solids` appended in order. Throws an Error when an id is already used (in the
  * model or twice in `solids`): ids identify solids across undo states and selections, so a
- * duplicate is a programming error rather than something to repair silently.
+ * duplicate is a programming error rather than something to repair silently. An empty solid
+ * (no triangles) throws too (`assertSolidNotEmpty`).
  */
 export function addSolids(model: Model3D, solids: readonly Solid3D[]): Model3D {
   if (solids.length === 0) return model;
   const ids = new Set(model.solids.map((s) => s.id));
   for (const s of solids) {
+    assertSolidNotEmpty(s);
     if (ids.has(s.id)) throw new Error(`3D solid id ${s.id} is already in use.`);
     ids.add(s.id);
   }
@@ -63,11 +74,13 @@ export function removeSolids(model: Model3D, ids: Iterable<string>): Model3D {
 
 /**
  * The model with the solid of the same id replaced in place (order kept). Returns the model
- * unchanged when no solid has that id or the replacement is the same object.
+ * unchanged when no solid has that id or the replacement is the same object. Throws an Error
+ * when the replacement has no triangles (`assertSolidNotEmpty`).
  */
 export function replaceSolid(model: Model3D, solid: Solid3D): Model3D {
   const i = model.solids.findIndex((s) => s.id === solid.id);
   if (i < 0 || model.solids[i] === solid) return model;
+  assertSolidNotEmpty(solid);
   const solids = [...model.solids];
   solids[i] = solid;
   return { ...model, solids };
@@ -90,11 +103,14 @@ export type NewSolidInput = Pick<Solid3D, 'mesh' | 'feature'> & Partial<Pick<Sol
 
 /**
  * A new solid with a fresh `newId()` id unless one is given, layer '0' and colour ByLayer by
- * default. An absent `name` is left out entirely (no `name: undefined` key).
+ * default. An absent `name` is left out entirely (no `name: undefined` key). Throws an Error for
+ * a mesh without triangles (`assertSolidNotEmpty`).
  */
 export function newSolid(partial: NewSolidInput): Solid3D {
+  const id = partial.id ?? newId();
+  assertSolidNotEmpty({ id, mesh: partial.mesh });
   const solid: Solid3D = {
-    id: partial.id ?? newId(),
+    id,
     layer: partial.layer ?? '0',
     color: partial.color ?? 'ByLayer',
     mesh: partial.mesh,

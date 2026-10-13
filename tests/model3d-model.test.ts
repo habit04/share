@@ -25,6 +25,17 @@ describe('model helpers', () => {
     expect(named).toMatchObject({ id: 'p1', layer: 'SYMS', color: 3, name: 'Part' });
   });
 
+  it('never holds an empty solid: newSolid, addSolids and replaceSolid throw on a mesh without triangles', () => {
+    const empty = { positions: [0, 0, 0], indices: [] };
+    expect(() => newSolid({ mesh: empty, feature: { kind: 'mesh', source: 'edited' } })).toThrow(/has no triangles; an empty solid cannot be stored/);
+    const a = box(0, 'a');
+    const hollow: Solid3D = { ...a, mesh: empty };
+    expect(() => addSolids(EMPTY_MODEL3D, [hollow])).toThrow(/3D solid a has no triangles/);
+    const m = addSolids(EMPTY_MODEL3D, [a]);
+    expect(() => replaceSolid(m, hollow)).toThrow(/no triangles/);
+    expect(model3dOf(withModel3D(new Drawing().snapshot, m)).solids).toEqual([a]);
+  });
+
   it('add / remove / replace keep ids and order and never mutate the input', () => {
     const a = box(0, 'a'), b = box(2, 'b'), c = box(4, 'c');
     const m1 = addSolids(EMPTY_MODEL3D, [a, b]);
