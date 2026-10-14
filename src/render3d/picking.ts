@@ -5,12 +5,16 @@
  * at most BVH_LEAF_SIZE triangles), built on first use and cached in a WeakMap keyed by the sealed
  * mesh object (meshes in drawing state never change, so identity is a safe key and the cache dies
  * with the mesh). Triangles are tested from both sides (`intersectRayTriangle` does no culling), so
- * a solid is hit whichever way its triangles are wound and from inside too.
+ * a solid is hit whichever way its triangles are wound and from inside too. Node boxes are padded
+ * (`BOX_PAD`, `COORD_PAD`) before the ray test, so the hierarchy only accelerates: for every ray
+ * that is not within about 1e-8 rad of a triangle's plane the result is the one a brute-force pass
+ * over every triangle gives; for such grazing rays the triangle test's own t is uncertain by more
+ * than the pad and the hit returned can be slightly farther along the ray, never a miss.
  *
  * This is the exact path and the fallback for the GPU id-buffer (`Viewport3D.pick`); both must
  * agree, which scripts/e2e-3d.mjs checks on a rendered scene.
  */
-import { type Aabb, type Ray, type Vec3, add3, intersectRayAabb, intersectRayTriangle, scale3 } from '../model3d/math';
+import { type Aabb, type Ray, type Vec3, EPS3, add3, intersectRayAabb, intersectRayTriangle, scale3 } from '../model3d/math';
 import { type Mesh3D, flatNormals, meshTriangleCount, meshVertex } from '../model3d/mesh';
 import type { Model3D, Solid3D } from '../model3d/types';
 
@@ -111,9 +115,25 @@ function buildBvh(mesh: Mesh3D): MeshBvh {
   };
 }
 
-function nodeEntry(bvh: MeshBvh, n: number, ray: Ray): number | null {
+/**
+ * Padding of a node box in the ray test, relative to the box extents: `intersectRayTriangle` accepts
+ * hits up to EPS3 (barycentric) outside a triangle and both tests round, so an exact box test can
+ * reject a ray that grazes a solid's outline (the typed corner of a box at a "Select a face" prompt
+ * on an oblique construction plane) or report an entry beyond a hit inside the box and prune it.
+ * `COORD_PAD` adds the slab test's rounding, a few ulps of the coordinate magnitude; a pad
+ * proportional to the magnitude itself would swallow small parts far from the origin and turn the
+ * hierarchy into a brute-force pass. Hits are still decided by the triangle test alone.
+ */
+const BOX_PAD = 4 * EPS3;
+const COORD_PAD = 16 * Number.EPSILON;
+
+/** Ray entry parameter of node `n`'s padded box, or null. `mag` is the ray origin's largest |coordinate|. */
+function nodeEntry(bvh: MeshBvh, n: number, ray: Ray, mag: number): number | null {
   const b = bvh.bounds, o = n * 6;
-  const box: Aabb = { min: { x: b[o]!, y: b[o + 1]!, z: b[o + 2]! }, max: { x: b[o + 3]!, y: b[o + 4]!, z: b[o + 5]! } };
+  let m = mag;
+  for (let k = 0; k < 6; k++) m = Math.max(m, Math.abs(b[o + k]!));
+  const pad = BOX_PAD * ((b[o + 3]! - b[o]!) + (b[o + 4]! - b[o + 1]!) + (b[o + 5]! - b[o + 2]!)) + COORD_PAD * m;
+  const box: Aabb = { min: { x: b[o]! - pad, y: b[o + 1]! - pad, z: b[o + 2]! - pad }, max: { x: b[o + 3]! + pad, y: b[o + 4]! + pad, z: b[o + 5]! + pad } };
   return intersectRayAabb(ray, box);
 }
 
@@ -122,7 +142,8 @@ export function intersectMesh(mesh: Mesh3D, ray: Ray): { t: number; triangle: nu
   const bvh = meshBvh(mesh);
   if (bvh.nodeCount === 0) return null;
   let best: { t: number; triangle: number } | null = null;
-  const rootEntry = nodeEntry(bvh, 0, ray);
+  const mag = Math.max(Math.abs(ray.origin.x), Math.abs(ray.origin.y), Math.abs(ray.origin.z));
+  const rootEntry = nodeEntry(bvh, 0, ray, mag);
   if (rootEntry === null) return null;
   // Stack of [node, entry t]; the nearer child is pushed last so it is searched first, and any
   // node entered beyond the best hit so far is skipped.
@@ -142,7 +163,7 @@ export function intersectMesh(mesh: Mesh3D, ray: Ray): { t: number; triangle: nu
       }
     } else {
       const l = bvh.left[n]!, r = bvh.right[n]!;
-      const tl = nodeEntry(bvh, l, ray), tr = nodeEntry(bvh, r, ray);
+      const tl = nodeEntry(bvh, l, ray, mag), tr = nodeEntry(bvh, r, ray, mag);
       if (tl !== null && tr !== null) {
         if (tl <= tr) stack.push([r, tr], [l, tl]);
         else stack.push([l, tl], [r, tr]);

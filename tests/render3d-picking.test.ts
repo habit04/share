@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { BVH_LEAF_SIZE, intersectMesh, meshBvh, pickSolid, pickSolids } from '../src/render3d/picking';
-import { type Ray, WORLD_XY_FRAME, dot3, intersectRayTriangle, normalize3, v3 } from '../src/model3d/math';
-import { invertWinding, meshTriangles } from '../src/model3d/mesh';
+import { type Ray, type Vec3, WORLD_XY_FRAME, add3, dot3, frameFromPlane, intersectRayTriangle, normalize3, scale3, sub3, v3 } from '../src/model3d/math';
+import { invertWinding, meshTriangles, meshVertex, meshVertexCount } from '../src/model3d/mesh';
 import { boxMesh, primitiveMesh, sphereMesh } from '../src/model3d/primitives';
 import { newSolid } from '../src/model3d/model';
 import type { Model3D, PrimitiveFeature, Solid3D } from '../src/model3d/types';
@@ -17,6 +17,16 @@ function brute(mesh: Solid3D['mesh'], ray: Ray): number | null {
   for (const { a, b, c } of meshTriangles(mesh)) {
     const h = intersectRayTriangle(ray, a, b, c);
     if (h && (best === null || h.t < best)) best = h.t;
+  }
+  return best;
+}
+
+/** Brute force with the documented tie rule: nearest t, ties to the lowest triangle index. */
+function bruteHit(mesh: Solid3D['mesh'], ray: Ray): { t: number; triangle: number } | null {
+  let best: { t: number; triangle: number } | null = null;
+  for (const { index, a, b, c } of meshTriangles(mesh)) {
+    const h = intersectRayTriangle(ray, a, b, c);
+    if (h && (!best || h.t < best.t)) best = { t: h.t, triangle: index };
   }
   return best;
 }
@@ -112,6 +122,47 @@ describe('mesh BVH', () => {
       }
     }
     expect(hits).toBeGreaterThan(50);
+  });
+
+  it('a ray grazing a solid outline hits like brute force (the box test is padded, the triangle test decides)', () => {
+    // Just outside the box top's silhouette but inside the triangle test's EPS3 slack (2e-9 on a
+    // 2-unit edge): the exact box test rejects the ray while the triangle test accepts it.
+    const box = boxMesh(2, 2, 1);
+    const graze: Ray = { origin: v3(1 + 1.9e-9, 0.3, 100), dir: v3(0, 0, -1) };
+    expect(bruteHit(box, graze)).not.toBeNull();
+    expect(intersectMesh(box, graze)).toEqual(bruteHit(box, graze));
+    // An oblique ray through a box corner.
+    const corner: Ray = { origin: v3(-4.612999759614468, -1.6477847062051296, -5.061008527874947), dir: v3(0.7425394505159308, 0.019550325893431447, 0.669516952126651) };
+    const wide = boxMesh(2, 3, 4);
+    expect(bruteHit(wide, corner)).not.toBeNull();
+    expect(intersectMesh(wide, corner)).toEqual(bruteHit(wide, corner));
+  });
+
+  it('rays down an oblique construction plane through every box corner hit (typed corners at "Select a face")', () => {
+    // faceBelow casts origin + reach * n toward -n through the typed point; the plane coordinates of a
+    // corner round-trip world -> plane -> world. Every corner must be hit, as brute force hits it.
+    const r = rng(5);
+    let corners = 0, misses = 0, mismatches = 0;
+    for (let k = 0; k < 40; k++) {
+      const plane = frameFromPlane({ origin: v3(r() * 10, r() * 10, r() * 10), normal: normalize3(v3(r() - 0.5, r() - 0.5, r() + 0.2)) });
+      const b = solid('b', { kind: 'box', frame: at(Math.round(r() * 100), Math.round(r() * 100)), width: 10 + Math.round(r() * 50), depth: 10 + Math.round(r() * 50), height: 5 + Math.round(r() * 20) });
+      for (let i = 0; i < meshVertexCount(b.mesh); i++) {
+        const p = meshVertex(b.mesh, i);
+        const d = sub3(p, plane.origin);
+        const local = { x: dot3(d, plane.xAxis), y: dot3(d, plane.yAxis) };
+        const q: Vec3 = add3(plane.origin, add3(scale3(plane.xAxis, local.x), scale3(plane.yAxis, local.y)));
+        const ray: Ray = { origin: add3(q, scale3(plane.zAxis, 500)), dir: scale3(plane.zAxis, -1) };
+        const slow = bruteHit(b.mesh, ray);
+        if (!slow) continue;
+        corners++;
+        const hit = pickSolid(b, ray);
+        if (!hit) misses++;
+        else if (hit.t !== slow.t || hit.triangle !== slow.triangle) mismatches++;
+      }
+    }
+    expect(corners).toBeGreaterThan(200);
+    expect(misses).toBe(0);
+    expect(mismatches).toBe(0);
   });
 
   it('handles empty and tiny meshes', () => {
