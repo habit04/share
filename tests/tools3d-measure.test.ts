@@ -60,6 +60,23 @@ describe('3DDIST', () => {
     expect(ctx2.finished).toBe(true);
   });
 
+  it('an elevation that rounds to zero prints an unsigned zero (AUPREC 5 and 6, the threshold value)', async () => {
+    // At AUPREC 5 and 6 the double 0.5e-p lies just below the decimal half-unit, so an elevation equal
+    // to it slipped past the threshold test and printed "-0.00000"; a value one step larger still rounds away.
+    for (const [auprec, zero, nonZero, nonZeroText] of [[5, '-8.72664625997167e-8', '-8.7266462599717e-8', '-0.00001'], [6, '-8.726646259971647e-9', '-8.72664625997165e-9', '-0.000001']] as [number, string, string, string][]) {
+      // The typed point must land exactly on the threshold double, or the case would not tell the fix apart.
+      expect((measureDistance(WORLD_XY_FRAME, v3(0, 0, 0), v3(1, 0, Number(zero))).angleFromPlane * 180) / Math.PI).toBe(-(0.5 * 10 ** -auprec));
+      const doc = new Drawing();
+      doc.setHeader({ units: { ...doc.header.units, auprec } });
+      const ctx = fake3dContext(doc);
+      await drive3d(dist3dTool(), ctx, ['0,0,0', `1,0,${zero}`]);
+      expect(ctx.logs[0]).toBe(`Distance = 1.0000, Angle in XY Plane = ${(0).toFixed(auprec)}, Angle from XY Plane = ${(0).toFixed(auprec)}`);
+      ctx.logs.length = 0;
+      await drive3d(dist3dTool(), ctx, ['0,0,0', `1,0,${nonZero}`]);
+      expect(ctx.logs[0]).toMatch(new RegExp(`Angle from XY Plane = ${nonZeroText.replace('.', '\\.')}$`));
+    }
+  });
+
   it('refuses text that is not a point', async () => {
     const ctx = fake3dContext();
     await drive3d(dist3dTool(), ctx, ['nonsense', '0,0', '1,0']);

@@ -58,7 +58,10 @@ export function measureDistance(frame: Frame3, a: Vec3, b: Vec3): Distance3 {
 export function distanceReport(ctx: ToolContext, m: Distance3): string[] {
   const elev = (m.angleFromPlane * 180) / Math.PI;
   const p = auprec(ctx);
-  const elevText = Math.abs(elev) < 0.5 * 10 ** -p ? (0).toFixed(p) : elev.toFixed(p);
+  // Format first, then drop the sign of a value that rounds to zero: a threshold test against the
+  // double 0.5e-p misses the one value equal to it (which toFixed rounds toward zero at p = 4..7).
+  const fixed = elev.toFixed(p);
+  const elevText = /^-0(\.0*)?$/.test(fixed) ? fixed.slice(1) : fixed;
   const planeName = ctx.constructionPlaneName ?? 'World';
   return [
     `Distance = ${fl(ctx, m.distance)}, Angle in XY Plane = ${formatAngle(m.angleInPlane, p)}, Angle from XY Plane = ${elevText}`,
