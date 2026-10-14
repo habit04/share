@@ -127,6 +127,13 @@ proof that their implementation or external verification has passed.
   expose no raw Aux API in the current binary. The isolated source-built diagnostic passes
   14 tooling and 77 workflow regressions; native compilation/raw date measurement is pending.
   Production dates, strict comparison and pins remain unchanged.
+- At `1a3a511`, the native diagnostic compiles/links with the factory class configuration;
+  17 tooling and 77 workflow regressions pass. Exact CI passes both Node jobs/UI and still
+  refuses the creation-date mismatch on Windows. The first diagnostic read reports invalid
+  Aux dates and refuses certification; seven reads remain unrun. Source review finds no
+  supported ABI mismatch, but C/Rust AC1032 maintenance widths and trailing fields disagree.
+  Bounded field-span/raw-section observations and failure-path input rehashing are next;
+  neither original stored dates nor a production parser repair is certified.
 - First combined CI at `e477954` found a Node 22 512-drawing deadline failure, a safely refused
   legacy-to-modern TABLESTYLE difference and a stale browser report check. The recovery failure
   followed the aborted export setup. The correction keeps the original 15-second test and limits

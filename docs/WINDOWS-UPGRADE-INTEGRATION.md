@@ -155,6 +155,17 @@ and byte counts. Two independent source reviews pass. The feature-branch diagnos
 must still compile the native GCC decoder and read both zones; these preparation checks do
 not certify native date semantics or the shipped Emscripten reader.
 
+Exact `1a3a511` CI again passes both Node jobs/UI; Windows retains the same creation-date
+refusal after 54 Rust + three CLI checks. The development diagnostic passes 17 tooling and
+77 workflow regressions, then genuinely compiles/links using the factory's debug-class
+configuration with recorded effective flags. Its first read reports out-of-range Aux dates
+and refuses certification; the seven later reads do not run. Source review finds no supported
+driver/library ABI difference. C/Rust AC1032 maintenance widths and trailing fields disagree;
+the next observation-only milestone records source-defined field spans/raw bytes and rehashes
+inputs even after a native refusal. These results do not establish damaged originals, a stored
+local/UTC interpretation, or an approved parser/date repair. Production assets/guards remain
+unchanged; all-green CI and genuine helper/C first/second-save gates still block integration.
+
 The corrected full local Windows suite passes serially with every original deadline and
 freshness assertion. A private phase trace of the 33-file project case passed in 18.7 seconds;
 backup/write guards account for most elapsed time. Parallel native-filesystem contention and

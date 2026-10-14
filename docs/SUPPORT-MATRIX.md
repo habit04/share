@@ -264,6 +264,12 @@ Aux local data remains unmeasured because the existing decoder exposes no raw Au
 A development diagnostic must qualify that evidence before any producer/reader date fix.
 Current source-desktop passes do not certify the matching compiled writer/C fixed point.
 
+The `1a3a511` development diagnostic now compiles/links, but refuses its first invalid Aux
+date result. Seventeen tooling and 77 workflow regressions pass; exact production CI remains
+three green / Windows creation-date refusal. Source review does not support an ABI mismatch;
+the C/Rust AC1032 maintenance-width/tail disagreement needs bounded field-span/raw-byte
+evidence. No original Aux interpretation or production date correction is certified.
+
 Modern VISUALSTYLE RGB comparisons are confined to its eight typed color slots in a complete
 58-property bag. Valid raw/C2 RGB storage compares all color bytes; a derived palette companion
 belongs to that same color property. Standalone ACI, lighting177, operations, order/count,
