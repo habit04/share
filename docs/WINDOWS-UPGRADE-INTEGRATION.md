@@ -30,10 +30,14 @@ Actual 3D mode hides the experimental 2D GPU backing. Focused regressions preced
 a fresh committed-source freeze, complete checks, CI and actual Intel/NVIDIA gates.
 Producer GPU evidence does not certify this combined source.
 
-Claude's seven 3D picking/camera/measurement patches have an authenticated archive
-based on `a4d5526`. Independent review precedes adoption. The proposed DIST
-world-magnitude residue threshold is held because it can erase a real small delta
-at large coordinates; accepted fixes must retain a regression for that case.
+Claude's authenticated 3D archive based on `a4d5526` supplied five independently
+accepted picking/camera/measurement patches, adopted as separate commits. Two
+proposed residue rules were replaced with narrow repairs: actual determinant error
+protects well-resolved thin imported volumes, and displacement projection preserves
+small real deltas at large origins. Display-only rounding keeps scientific values.
+Exact-zero overflow and platform-exact signed-zero report regressions are retained.
+All 62 focused tests, renderer types and scoped lint pass; independent final review
+accepts the corrected two-file source. Complete combined gates remain pending.
 No release branch merge is authorized.
 
 The following checkpoints are historical evidence, not the current candidate's clearance.

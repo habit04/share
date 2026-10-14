@@ -117,9 +117,17 @@ typed input during the drag, no hover colour.
   plane), `Delta X = , Delta Y = , Delta Z =` in construction-plane coordinates, and
   `Planar distance (XY plane of the <name> construction plane) = p`. Lengths use the drawing's
   LUNITS / LUPREC (`formatLength`), angles AUPREC (at least 2 decimals, as the 2D DIST).
+  Measurements project the world displacement once, preserving small components at large
+  frame origins. Near-normal directions whose two printed XY components are zero show a zero
+  XY angle; raw values remain intact and scientific notation can expose tiny components.
 - 3DMASSPROP: `Solids`, `Volume`, `Surface area`, `Bounding box` (X / Y / Z ranges) and `Centroid`,
   in construction-plane coordinates (WCS with the default plane, otherwise it says which plane).
   Several solids are summed (overlapping volume counts once per solid; the command says so).
+  Imported meshes with negative winding contribute their volume magnitude and retain their
+  own centroid. The report adds a note when that winding correction is used. When every
+  selected mesh has zero volume, the reported centroid averages their individual vertex centroids.
+  Numerically unresolved determinant cancellation uses that fallback; well-resolved thin
+  imported volumes remain measurable. This does not change the imported mesh or its winding.
 - 3DAREA: `Area = , Perimeter =` of the planar face under the pick (connected coplanar triangles;
   holes count in the perimeter), and the face's triangle count, outline loops and normal. Typed
   points pick the face seen looking down the plane normal.

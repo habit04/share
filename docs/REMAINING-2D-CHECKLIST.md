@@ -22,9 +22,10 @@ The frozen GPU leaf is now being integrated with three source owners. Newer
 viewport/metadata safeguards stay intact; GPU text/dimensions use captured drawing
 font context, unqualified fonts/SHX/active gradients use complete Canvas fallback,
 and 3D mode hides the GPU 2D backing. Focused tests precede fresh complete combined
-checks, CI and both actual adapter gates. Claude's authenticated 3D patch archive
-is under independent review; a DIST threshold that erases real small deltas at
-large coordinates is held for correction. Full native fixed-point checks stay intact.
+checks, CI and both actual adapter gates. Five reviewed Claude patches are adopted;
+two unsafe tolerance proposals are replaced with repairs retaining real thin volumes
+and small/scientific deltas. The corrected measurement source passes 62 focused
+tests and independent review. Full native fixed-point checks stay intact.
 
 The following checkpoints are historical evidence, not the current candidate's clearance.
 
@@ -123,7 +124,7 @@ remain open where full compatibility is unverified.
 | 29 | **Completed externally in PR #9/v0.4.9; integration only.** Bounded metadata/object-reference preservation is already implemented. The completed graph/codecs are integrated with current compatibility/save guards and clear fccba52 validation. 3D carrier extensions receive new combined native/reference checks. | Same completed external work as #19; lead owns compatibility integration, not duplicate implementation. | Reuse the completed graph and verify metadata equivalence, ownership and real-file edit/save/reopen on the combined branch. |
 | 30 | Missing dynamic-block actions/parameters and constraints; static INSERT representation exists. | #29 reference graph prerequisite. | Native actions/parameters/constraints retained, safe supported edits, explicit unsupported cases. |
 | 31 | Missing sheet sets, data links and drawing digital signatures. Drawing signatures differ from installer signing. | Formats/reference graph/licensed validation prerequisites. | Real sheet/data-link fixtures; signature validity and explicit invalidation on edits, no false signing claim. |
-| 32 | **Delivered 3D milestones0–7 integrated and validated at7b2fdea.** Local5,083/0/38, all static/build checks, four exact-head CI jobs, native10/app32, kernel-security19, private AutoCAD DXF/DWG reference audits, 3D visual and mixed2D/3D file6 gates pass. Default off; native ACIS/DWG solid export and full font/view/plot parity remain limited. Claude picking/camera/measurement follow-ups are reviewed separately; combined GPU adoption needs fresh gates. | Lead integration with separate core, codec and reliability owners; [delivered plan/status](https://github.com/habit04/share/blob/feature/3d-development/docs/3D-PLAN.md). | Retain complete source/native/app/AutoCAD/security/CI assertions on each combined source. Producer or mock-only passes never substitute for actual combined hardware checks. No installer stage here. |
+| 32 | **Delivered 3D milestones 0–7 integrated and validated at 7b2fdea.** The local suite passes 5,083 tests with zero failures/38 skips; all static/build checks and four CI jobs pass. Actual gates pass ten native cases, 32 app workflows, 19 kernel-security checks, private AutoCAD DXF/DWG audits, 3D visual checks and six mixed 2D/3D file workflows. Default off; native ACIS/DWG solid export and full font/view/plot parity remain limited. Claude follow-ups are reviewed separately; combined GPU adoption needs fresh gates. | Lead integration with separate core, codec and reliability owners; [delivered plan/status](https://github.com/habit04/share/blob/feature/3d-development/docs/3D-PLAN.md). | Retain complete source/native/app/AutoCAD/security/CI assertions on each combined source. Producer or mock-only passes never substitute for actual combined hardware checks. No installer stage here. |
 
 Completed baseline priorities 1–6, 8 and portable Windows DWG saving #27 remain regression
 coverage, not rebuild work. #7 was superseded by portable saving. #26 (Mac/Linux updates) and

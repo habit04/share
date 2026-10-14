@@ -120,9 +120,9 @@ function buildBvh(mesh: Mesh3D): MeshBvh {
  * hits up to EPS3 (barycentric) outside a triangle and both tests round, so an exact box test can
  * reject a ray that grazes a solid's outline (the typed corner of a box at a "Select a face" prompt
  * on an oblique construction plane) or report an entry beyond a hit inside the box and prune it.
- * `COORD_PAD` adds the slab test's rounding, a few ulps of the coordinate magnitude; a pad
- * proportional to the magnitude itself would swallow small parts far from the origin and turn the
- * hierarchy into a brute-force pass. Hits are still decided by the triangle test alone.
+ * `COORD_PAD` adds a small coordinate-rounding allowance. This conservative expansion can still
+ * exceed tiny part extents at large offsets; it is not a universal near-parallel error bound or a
+ * guarantee of unchanged traversal cost. Hits are decided by the triangle test alone.
  */
 const BOX_PAD = 4 * EPS3;
 const COORD_PAD = 16 * Number.EPSILON;

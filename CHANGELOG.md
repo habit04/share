@@ -89,6 +89,14 @@ messages). The date of each version is the date of the commit that set that vers
 
 ### Fixed
 
+- Experimental 3D picking pads culling bounds for tested grazing/oblique rays and retains
+  double-precision hit normals. Camera aliases cannot resolve inherited object properties.
+  Measurement reports count negative-winding volume magnitudes with a note and keep finite
+  zero-volume centroids. Actual determinant error replaces an aspect-ratio cutoff; thin
+  imported volumes stay measurable. Distance projection retains small/scientific components
+  at large origins, while display-only rules remove rounded negative zero and near-normal
+  XY angle residue. Exact threshold and overflow regressions are checked on Windows.
+
 - Experimental 3D objects participate in the retained CAD graph, shared identity checks,
   clone remapping and atomic edit/history validation. Native parent/follower and dimension
   picture identities remain bound to proven source records; unsupported topology or payload
