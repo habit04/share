@@ -72,6 +72,9 @@
     "tests/fixtures/interchange/r2018-table.dxf",
     "tests/fixtures/interchange/r2018-truecolor-linetypes.dxf",
     "tests/fixtures/unsupported-content.dxf",
-    "tests/fixtures/polyline-widths.dxf"
+    "tests/fixtures/polyline-widths.dxf",
+    "tests/fixtures/3d/enclosure.dxf",
+    "tests/fixtures/3d/cable-tray.dxf",
+    "tests/fixtures/3d/schematic-with-solids.dxf"
   ]
 }

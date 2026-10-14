@@ -83,6 +83,10 @@ Core Console installed. Set `JCAD_AUTOCAD_CONSOLE` if it is outside the default 
 DXFs, requires `AUDIT` to report zero errors, saves a normalized DXF and checks reimported
 entity types/counts. Logs and vendor outputs stay outside the repository. This validates those
 exports only; it does not prove arbitrary AutoCAD drawing or semantic compatibility.
+For the experimental 3D output (polyface solids and DIM3D dimensions), run
+`npm run check:autocad:3d` the same way: AUDIT 0 / 0, polyface and dimension inventory,
+AutoCAD-computed measurements, and DXF / DWG round trips read back by JCad; see
+[3D-AUTOCAD-VALIDATION](3D-AUTOCAD-VALIDATION.md) for what it covers and the last recorded results.
 
 ---
 

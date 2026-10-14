@@ -12,6 +12,12 @@ import type { Editor } from './editor';
 import { fallbackUi, type EditorInternals } from './internals';
 
 export function makeContext(ed: Editor, st: EditorInternals): ToolContext {
+  const ctx = baseContext(ed, st);
+  // Experimental 3D adds its optional members here (flag on only; null otherwise).
+  return ed.toolContextExtension ? ed.toolContextExtension(ctx) : ctx;
+}
+
+function baseContext(ed: Editor, st: EditorInternals): ToolContext {
   return {
     doc: ed.doc,
     snap: ed.snap,
@@ -169,6 +175,8 @@ export function submitInput(ed: Editor, st: EditorInternals, raw: string): unkno
     if (ed.acceptsFreeText()) {
       return ed.tool.onText(raw, makeContext(ed, st));
     }
+    // Tools that parse points themselves (experimental 3D) get the text as typed.
+    if (ed.tool.acceptsRawPoints?.()) return ed.tool.onText(text, makeContext(ed, st));
     const p = ed.parsePoint(text);
     if (p) {
       return acceptPoint(ed, st, p);

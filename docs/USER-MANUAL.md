@@ -1314,6 +1314,41 @@ for 2007 and later use UTF-8.
 Arcs, circles, polylines and block references drawn in a mirrored plane (extrusion 0,0,-1, as
 MIRROR leaves them) open in their true place.
 
+### Experimental 3D objects in files
+
+3D objects (solids made with the experimental 3D tools, available when the experimental 3D
+setting is on; unfinished and off by default) are saved in the DXF file. Each one is a
+*polyface mesh* on its layer and in its colour, following the DXF reference layout (not yet
+verified in AutoCAD or other CAD programs). JCad Electrical also stores, with each mesh, the object's
+name and how it was built (box, cylinder, extrusion, revolution, boolean ...), and reads that
+back when the file is opened again; the stored mesh is what you see, exactly as it was saved.
+The file layout is described in [3D-FILE-FORMAT.md](3D-FILE-FORMAT.md).
+
+- **Save, Save As (DXF) and autosave** keep every 3D object without asking.
+- **Which formats keep the 3D model**: JCad DXF (Save, or Save As and choose DXF) keeps the 3D
+  objects and their construction histories, where they fit the file limits (see the points below
+  and [3D-FILE-FORMAT.md](3D-FILE-FORMAT.md)); the autosave recovery copies (always DXF, also for
+  DWG working files) keep them the same way; DWG keeps none.
+- **DWG** cannot hold them in this version: saving a drawing with 3D objects as DWG, or
+  `EXPORTDWG`, is refused with "DWG files cannot hold 3D objects, so no DWG was written and nothing was removed from the drawing. To keep the 3D model, save as JCad DXF (Save, or Save As and choose DXF): DXF keeps the 3D objects and their construction histories (where they fit the file limits; see 3D-FILE-FORMAT), and so do the autosave recovery copies. To view or erase the 3D objects, turn on Experimental 3D (Options > Files).".
+  Nothing is written and nothing is removed from the drawing: JCad never deletes or simplifies 3D
+  objects to make a DWG save work. Use Save As and choose DXF.
+- A construction history too large for the file (about 15,000 characters of data per object,
+  for example an extrusion of a profile with thousands of points) is saved as a plain mesh: the
+  shape is kept, but after reopening the object is no longer editable by its parameters. The
+  command line says so when you save.
+- Very dense meshes make large files. JCad never writes a file it cannot open again (2,000,000
+  group pairs, 250,000 records or 128 MB; roughly 100,000 triangles in total): such a Save or
+  Save As is refused with the triangle count, and the drawing stays modified; reduce the 3D model
+  and save again. Autosave then writes its recovery copy without the 3D objects, and the Drawing
+  Recovery Manager says how many the backup does not contain.
+- Drawings with 3D objects opened while the experimental setting is off keep their 3D objects
+  (they are not shown, and they are saved back); the import report says how many there are.
+- Polyface meshes made by other programs are imported as 3D mesh objects when the experimental
+  setting is on (listed as *simplified* in the import report: they are not editable by
+  parameters; four-sided faces are split into triangles). With the setting off they are dropped
+  and reported, as in earlier versions.
+
 ### Import report
 
 Opening a DXF or DWG file lists everything that could not be brought in unchanged: the
@@ -1323,12 +1358,9 @@ gives the count per object type and the first 50 objects with their handle, laye
 space, a layout, a block) and the reason; **Copy Report** copies the complete list as text.
 `IMPORTREPORT` shows it again.
 
-- **Dropped**: not imported (for example wipeouts, multilines, polyface meshes, attribute
-  definitions outside a block, objects with invalid geometry).
-- **Simplified**: imported with some of its data left out (a multileader keeps its leader and
-  text, a 3D polyline is flattened, a viewport loses its clipping boundary). Unsupported or
-  unreadable application data is reported; exposed groups, dictionaries, XRECORDs and XDATA
-  can remain in the checked retained graph.
+- **Dropped**: not imported (for example wipeouts, multilines, polygon meshes, attribute definitions outside a block, or invalid geometry). Review the report before saving over an imported original.
+- **Simplified**: imported with some of its data left out (a multileader keeps its leader and text; supported foreign polyface quads are triangulated; a 3D polyline is flattened). Unsupported clipping or view directions are reported. Exposed groups, dictionaries, XRECORDs and XDATA can remain in the checked retained graph.
+- Foreign polyfaces with Experimental 3D off retain their source records without becoming editable mesh objects. Unsupported block/layout polyfaces also retain available source records, but saving refuses an unproven placement. Unchanged unsupported own payloads remain exact where supported; edits or regeneration that cannot preserve them refuse explicitly.
 - **Kept (not shown)**: 3D faces, and 3D solids, regions and bodies with their data stored in
   the object (DXF files up to AutoCAD 2010) cannot be shown or edited, but stay in the drawing
   as retained records and are written back, on their layer, at the end of the drawing's
@@ -1501,6 +1533,9 @@ disabled, so a double click opens a backup only once.
   overwrites a backup you have not recovered yet. `autosave/index.json` lists the title, original
   path and time of each backup. Backups from 0.4.0 and earlier are renamed to this scheme the
   first time the new version starts.
+- Recovery snapshots hold the drawing's experimental 3D objects as well (see
+  [Experimental 3D objects in files](#experimental-3d-objects-in-files)); recovering a drawing
+  brings them back, also when the experimental setting is off.
 - Recovery snapshots are DXF even when the working file is DWG. A recovered DWG keeps a
   conservative warning before replacing its original: the recovery snapshot cannot prove that
   all original DWG metadata was retained. On Windows it can be saved as DWG; other editions

@@ -12,6 +12,7 @@ import { dwgCompatibilityProblem } from './dwg-compatibility';
 import type { Editor, FileBridge } from './editor';
 import type { DrawingState } from '../core/document';
 import { SaveAdmission, isStaleSaveAdmission, unverifiedImportSource, UNVERIFIED_SOURCE_WARNING } from './save-admission';
+import { model3dDwgRefusal } from '../model3d/save-guard';
 
 type DwgExportBridge = FileBridge & Required<Pick<FileBridge, 'dwgExportStatus' | 'chooseDwgPath' | 'exportDwg'>>;
 
@@ -69,8 +70,16 @@ export async function exportDwgCopy(ed: Editor): Promise<boolean> {
     return false;
   };
   let target: string | null = null;
+  // A DWG copy cannot hold the experimental 3D solids (the portable writer would drop them), so
+  // the export is refused, never written without them: same policy as a DWG Save.
+  const refusal = model3dDwgRefusal(state);
   try {
     await admission.ready;
+    if (refusal) {
+      ed.lastFileError = refusal;
+      ed.log(`DWG export canceled: ${refusal}.`);
+      return false;
+    }
     const status = await bridge.dwgExportStatus();
     if (!unchanged()) return changed();
     if (!status.available) {

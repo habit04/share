@@ -1,7 +1,10 @@
 /**
  * writeDxf: an AC1015 (AutoCAD 2000) DXF file from a drawing. Handles are allocated in file
  * order, so the sections are written in sequence: HEADER, CLASSES, TABLES, BLOCKS, ENTITIES and
- * OBJECTS (paper space comes from io/dxf-layouts.ts).
+ * OBJECTS (paper space comes from io/dxf-layouts.ts). Experimental 3D solids are polyface meshes at
+ * the end of ENTITIES (io/dxf/mesh3d-write.ts), followed by true 3D dimensions as DIMENSIONs in
+ * their planes (io/dxf/dim3d-write.ts, each with a *D picture block after the 2D dimensions'); a
+ * drawing without them writes none of this.
  */
 import type { DrawingState } from '../../core/document';
 import type { Linetype } from '../../core/linetypes';
@@ -16,7 +19,12 @@ import * as g from '../../core/geometry';
 import { dimHeaderVars, dimStylesToWrite, dimStyleXdata } from './dimstyles';
 import { textStylesForWrite, textStyleOf, STANDARD_TEXT_STYLE, textStyleGroups, encodeDxfText, shapeStylesOf, shapeStyleGroups } from '../encoding';
 import { writeComplexLinetypeElements } from './complex-linetypes';
-import { DIMSTYLE_APP, TABLE_APP, ANNO_APP, MTEXT_COLUMNS_APP, MTEXT_BACKGROUND_APP } from './codes';
+import { DIMSTYLE_APP, TABLE_APP, ANNO_APP, MTEXT_COLUMNS_APP, MTEXT_BACKGROUND_APP, MODEL3D_APP } from './codes';
+import { writeSolid } from './mesh3d-write';
+import { writeDimension3D, writeDimension3DPicture } from './dim3d-write';
+import { dimension3dTo2d } from '../../model3d/dimension3d';
+import { writeRetainedSolid } from './model3d-carriers';
+import type { CadNode } from '../../core/cad-graph';
 import { dimStyleRecordPairs } from '../../core/dimension';
 import { writeEntityAnno, writeEntity } from './write-entities';
 import { attdefFlags } from '../../electrical/symbol-builder-core';
@@ -81,6 +89,18 @@ export function writeDxf(state: DrawingState): string {
     dimBlocks.set(d.id, name);
     blockRecordHandles.set(name, w.nextHandle());
   });
+  // Experimental true 3D dimensions: a picture block each, numbered after the 2D dimensions'.
+  const dims3d = state.model3d?.dimensions ?? [];
+  const dim3dBlocks = new Map<string, string>();
+  dims3d.forEach((d, i) => {
+    const name = `*D${dimEntities.length + i + 1}`;
+    dim3dBlocks.set(d.id, name);
+    const handle = w.nextHandle();
+    blockRecordHandles.set(name, handle);
+    w.anchor(handle, { kind: 'dimension3d', id: d.id, part: 'picture-block' });
+  });
+  // Their 2D equivalents (plane coordinates) for the style tables (DIMSTYLE, STYLE).
+  const dims3dAs2d = dims3d.map(dimension3dTo2d);
   const linetypes = usedLinetypes(state);
   // Images (IMAGEDEF + reactor per image) and tables (an anonymous block each) anywhere in the drawing.
   const extras: WriteExtras = { ...emptyExtras(), arrowSize: ds.arrowSize * (ds.scale || 1) };
@@ -98,7 +118,7 @@ export function writeDxf(state: DrawingState): string {
       }
     }
   }
-  const requiredTextStyles = new Set([header.textStyle, ds.textStyle, ...allEntities.map((e) => e.type === 'dimension' ? e.style.textStyle : textStyleOf(e))].filter((n): n is string => !!n));
+  const requiredTextStyles = new Set([header.textStyle, ds.textStyle, ...allEntities.map((e) => e.type === 'dimension' ? e.style.textStyle : textStyleOf(e)), ...dims3dAs2d.map(d => d.style.textStyle)].filter((n): n is string => !!n));
   for (const name of requiredTextStyles) if (!textStyles.some((style) => style.name.toUpperCase() === name.toUpperCase())) textStyles.push({ ...STANDARD_TEXT_STYLE, name });
   for (const style of textStyles) w.textStyleHandles.set(style.name.toUpperCase(), w.nextHandle());
   const shapeHandles = new Map<string, string>();
@@ -256,6 +276,8 @@ export function writeDxf(state: DrawingState): string {
   const rawRecords = rawEntitiesOf(state).filter(record => !record.handle || !graphHandles.has(record.handle.toUpperCase()));
   const layerList: Layer[] = [...state.layers];
   for (const r of rawRecords) if (!layerList.some((l) => l.name === r.layer)) layerList.push({ name: r.layer, color: 7, visible: true, locked: false, lineWeight: 0.25 });
+  // Likewise the layers of 3D solids and dimensions (the model3d helpers do not keep the layer table in step).
+  for (const s of [...(state.model3d?.solids ?? []), ...dims3d]) if (!layerList.some((l) => l.name === s.layer)) layerList.push({ name: s.layer, color: 7, visible: true, locked: false, lineWeight: 0.25 });
   table('LAYER', '2', layerList.length, () => {
     for (const l of layerList) {
       // Flags 16 / 32 (xref-dependent, resolved) are kept from the source file.
@@ -315,7 +337,10 @@ export function writeDxf(state: DrawingState): string {
   const columnMtext = allEntities.some((e) => e.type === 'mtext' ? e.columns : e.type === 'leader' && e.textColumns);
   const layerTransparency = state.layers.some((l) => l.transparency !== undefined);
   const inactiveMtext = allEntities.some((e) => entityMTextBackground(e)?.flags === 0);
-  table('APPID', '9', (tableList.length ? 3 : 2) + (annotative ? 1 : 0) + (columnMtext ? 1 : 0) + (layerTransparency ? 1 : 0) + (inactiveMtext ? 1 : 0), () => {
+  // Experimental 3D solids (polyface meshes with JCAD_3D data); a 2D drawing writes none of this.
+  const solids = state.model3d?.solids ?? [];
+  const model3dApp = solids.length > 0 || dims3d.length > 0;
+  table('APPID', '9', (tableList.length ? 3 : 2) + (annotative ? 1 : 0) + (columnMtext ? 1 : 0) + (layerTransparency ? 1 : 0) + (inactiveMtext ? 1 : 0) + (model3dApp ? 1 : 0), () => {
     record('APPID', '9', 'AcDbRegAppTableRecord', 'ACAD');
     record('APPID', '9', 'AcDbRegAppTableRecord', DIMSTYLE_APP);
     if (tableList.length) record('APPID', '9', 'AcDbRegAppTableRecord', TABLE_APP);
@@ -323,9 +348,10 @@ export function writeDxf(state: DrawingState): string {
     if (columnMtext) record('APPID', '9', 'AcDbRegAppTableRecord', MTEXT_COLUMNS_APP);
     if (layerTransparency) record('APPID', '9', 'AcDbRegAppTableRecord', LAYER_TRANSPARENCY_APP);
     if (inactiveMtext) record('APPID', '9', 'AcDbRegAppTableRecord', MTEXT_BACKGROUND_APP);
+    if (model3dApp) record('APPID', '9', 'AcDbRegAppTableRecord', MODEL3D_APP);
   });
   // Dimensions on layouts count too, so their (unnamed) styles get a record.
-  const dimStyleList = dimStylesToWrite(state, allEntities);
+  const dimStyleList = dimStylesToWrite(state, dims3dAs2d.length ? [...allEntities, ...dims3dAs2d] : allEntities);
   for (const style of dimStyleList) w.dimensionStyles.set(style.name.toUpperCase(), style);
   table('DIMSTYLE', 'A', dimStyleList.length, () => {
     w.pair(100, 'AcDbDimStyleTable');
@@ -430,6 +456,11 @@ export function writeDxf(state: DrawingState): string {
       for (const part of dimensionParts(d)) writeEntity(w, { ...part, color: part.color === 'ByLayer' ? 0 : part.color } as Entity, owner, state.blocks);
     });
   }
+  for (const d of dims3d) {
+    const name = dim3dBlocks.get(d.id)!;
+    const owner = blockRecordHandles.get(name)!;
+    blockShell(owner, name, { x: 0, y: 0 }, 1, undefined, () => writeDimension3DPicture(w, d, owner));
+  }
   w.pair(0, 'ENDSEC');
 
   // ENTITIES
@@ -445,6 +476,15 @@ export function writeDxf(state: DrawingState): string {
     w.pair(330, MODEL_SPACE);
     for (const [code, value] of r.groups) w.pair(code, value);
   }
+  // Experimental 3D solids: one polyface mesh (or several for a very large mesh) each, in model space.
+  const solidNodes = new Map<string, CadNode[]>();
+  for (const node of state.cadGraph?.nodes ?? []) if (node.anchor?.kind === 'solid3d') {
+    const list = solidNodes.get(node.anchor.id);
+    if (list) list.push(node); else solidNodes.set(node.anchor.id, [node]);
+  }
+  for (const s of solids) if (!writeRetainedSolid(w, state, s, MODEL_SPACE, solidNodes.get(s.id) ?? [])) writeSolid(w, s, MODEL_SPACE);
+  // Experimental true 3D dimensions: DIMENSIONs in their planes (OCS), with JCAD_3D data.
+  for (const d of dims3d) writeDimension3D(w, d, MODEL_SPACE, dim3dBlocks.get(d.id)!);
   w.pair(0, 'ENDSEC');
 
   // OBJECTS: root dictionary with the mandatory ACAD_GROUP entry

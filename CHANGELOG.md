@@ -13,6 +13,15 @@ messages). The date of each version is the date of the commit that set that vers
 
 ### Added
 
+- Experimental 3D modelling behind Options > Files > Experimental 3D (off by default):
+  a WebGL2 viewport, primitives, extrusion/revolution, Manifold Boolean operations,
+  construction planes, transforms, measurement, snaps and grips. DIM3D supports aligned,
+  linear and angular dimensions in measurement planes. Own solids and dimensions persist
+  in DXF even when hidden, with typed metadata identities and checked edit transactions.
+  DWG saves with a 3D model refuse safely; native ACIS modelling and full camera/font/plot
+  parity remain outside this bounded feature. Canvas remains the default 2D renderer.
+  See `docs/3D-STATUS.md` and `docs/WINDOWS-UPGRADE-INTEGRATION.md` for validation and limits.
+
 - Native XY ordinate dimensions import and export as editable DXF dimensions, retaining datum
   frames, axes, text placement and supported style overrides. Geometry, block expansion and
   undo/redo use independently checked native reference cases. Unsupported modes refuse import;
@@ -72,6 +81,13 @@ messages). The date of each version is the date of the commit that set that vers
   report a plotting error instead of emitting corrupt shading matrices.
 
 ### Fixed
+
+- Experimental 3D objects participate in the retained CAD graph, shared identity checks,
+  clone remapping and atomic edit/history validation. Native parent/follower and dimension
+  picture identities remain bound to proven source records; unsupported topology or payload
+  changes refuse. Opaque application groups cannot supply native geometry flags or coordinates.
+  Dimensions-only models receive DXF reopen-budget checks, and unsafe partial recovery cannot
+  replace a previous good backup. Worker assets use native canonical containment on Windows.
 
 - Native layout rewrites retain physical page setup independently of drawing limits,
   unmodeled limits/extents/UCS and the overall paper viewport's identity and camera

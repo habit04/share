@@ -19,6 +19,7 @@ import { rememberRecent } from './documents';
 import { SaveAdmission, isStaleSaveAdmission, isCommittedSaveAdmissionError, isSaveAdmissionAuthorizationError, unverifiedImportSource, UNVERIFIED_SOURCE_WARNING } from '../save-admission';
 import { adoptOpenedSourceProof, captureOpenedSourceProof, releaseOpenedSourceProof } from '../opened-source-proof';
 import { importReportOf } from '../../io/import-report';
+import { model3dDwgRefusal, model3dDxfLimitRefusal, model3dDxfSaveNotes } from '../../model3d/save-guard';
 
 export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean, format?: 'dxf'): Promise<boolean> {
   if (!ed.fileBridge) {
@@ -55,11 +56,31 @@ export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean,
     return false;
   };
   ed.lastFileError = null;
+  // DXF holds the experimental 3D solids (polyface meshes with JCAD_3D data). DWG cannot: a DWG
+  // destination is refused as soon as it is known, so solids are never written away silently.
+  const dwgRefusal = model3dDwgRefusal(savedState);
+  const refuse3d = (reason: string) => {
+    ed.lastFileError = reason;
+    ed.log(`Not saved: ${reason}.`);
+    return false;
+  };
   let path: string | null;
+  let notes3d: string[] = [];
+  let preparedText: string | undefined;
+  const dxfText = () => preparedText ??= writeDxf(withoutUnusedLibraryBlocks(savedState));
   try {
     await admission.ready;
     if (source && !admission.enabled) throw new Error('The Windows opened-source proof requires a guarded save admission. Reload the drawing or use a supported desktop bridge.');
     compatibilityProblem = dwgCompatibilityProblem(savedState);
+    if (dwgRefusal) {
+      // Keep refusal and all borrowed source/admission cleanup inside this try/finally.
+      if (target && /\.dwg$/i.test(target)) return refuse3d(dwgRefusal);
+      // The captured host order precedes this pure DXF producer. Refuse an unreopenable
+      // 3D file before requesting its destination, including a dimensions-only model.
+      const tooLarge = model3dDxfLimitRefusal(savedState, dxfText());
+      if (tooLarge) return refuse3d(tooLarge);
+      notes3d = model3dDxfSaveNotes(savedState);
+    }
     // Save As picks the file first and then queues the write behind any save of that file still on its way.
     if (!target && bridge.chooseDrawingPath) {
       target = format ? await bridge.chooseDrawingPath(suggest, format) : await bridge.chooseDrawingPath(suggest);
@@ -74,6 +95,7 @@ export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean,
       }
       const unverified = await unverifiedImportSource(bridge, savedState);
       const dwg = /\.dwg$/i.test(target);
+      if (dwg && dwgRefusal) return refuse3d(dwgRefusal);
       if (dwg && format === 'dxf') throw new Error('The DXF save destination must end in .dxf. Choose a DXF destination with Save As.');
       if (dwg && !canSaveDwg) throw new Error('DWG saving is available in the Windows desktop edition. Choose a DXF destination with Save As.');
       if (dwg && compatibilityProblem) throw new Error(compatibilityProblem);
@@ -88,13 +110,15 @@ export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean,
         await admission.close();
         return ed.saveFile(true, format);
       }
-      const text = writeDxf(withoutUnusedLibraryBlocks(savedState));
+      const text = dxfText();
       const r = await saveQueue.run(target, revision, async () => {
         if ((needsReview && !stillCurrent()) || (dwg && !sessionExists())) return null;
         if (!dwg) {
           const saved = admission.ticket ? await bridge.saveDxf(target, text, suggest, { admission: admission.ticket }) : await bridge.saveDxf(target, text, suggest);
           savedProof = await admission.confirmSaved(saved); return saved;
         }
+        // The captured immutable revision must never reach a DWG producer with 3D data.
+        if (dwgRefusal) throw new Error(dwgRefusal);
         const status = await bridge.dwgExportStatus!();
         if (!sessionExists() || (needsReview && !stillCurrent())) return null;
         if (!status.available) throw new Error(`DWG saving is unavailable: ${status.reason || 'the portable DWG writer could not be loaded.'} Use Save As to save a DXF copy.`);
@@ -108,7 +132,7 @@ export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean,
       path = r.value;
       if (!path && dwg && (!sessionExists() || (needsReview && !stillCurrent()))) return changed();
     } else {
-      path = await bridge.saveDxf(null, writeDxf(withoutUnusedLibraryBlocks(savedState)), suggest);
+      path = await bridge.saveDxf(null, dxfText(), suggest);
       if (path) saveQueue.markCompleted(path, revision);
     }
     completed = true;
@@ -136,6 +160,7 @@ export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean,
     // file: the drawing stays bound to that newer save - its file and its clean / modified state.
     ed.log(`Saved ${path} (an older revision: the drawing was saved again meanwhile and keeps that file).`);
     await releaseOpenedSourceProof(bridge, savedProof);
+    for (const line of notes3d) ed.log(line);
     rememberRecent(ed, path);
     return true;
   }
@@ -144,6 +169,7 @@ export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean,
   if (outcome === 'replaced') {
     await releaseOpenedSourceProof(bridge, savedProof);
     ed.log(`Saved ${path} (another drawing replaced this tab while saving; it keeps its current file).`);
+    for (const line of notes3d) ed.log(line);
     rememberRecent(ed, path);
     return true;
   }
@@ -151,6 +177,7 @@ export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean,
   else if (savedProof) adoptOpenedSourceProof(session, contentGeneration, bridge, savedProof, path);
   if (outcome === 'clean' && ed.sessions.current.id === sessionId) ed.suggestedName = null;
   ed.log(outcome === 'newer-edits' ? `Saved ${path} (edits made during the save are still unsaved).` : `Saved ${path}`);
+  for (const line of notes3d) ed.log(line);
   rememberRecent(ed, path);
   ed.hooks.drawingSaved?.(sessionId, savedState, path);
   ed.notify('file');

@@ -142,8 +142,10 @@ export class Editor {
     this.doc.ensureBlocks([...LIBRARY_SYMBOLS, WIRE_DOT, TITLE_BLOCK, SOURCE_ARROW, DEST_ARROW]);
     this.applySettings();
     this.doc.subscribe(() => {
-      // Drop selection ids that no longer exist.
+      // Drop selection ids that no longer exist (experimental 3D solids count as existing).
       const ids = new Set(this.doc.entities.map((e) => e.id));
+      for (const s of this.doc.snapshot.model3d?.solids ?? []) ids.add(s.id);
+      for (const d of this.doc.snapshot.model3d?.dimensions ?? []) ids.add(d.id);
       let changed = false;
       for (const id of this.selection) if (!ids.has(id)) {
         this.selection.delete(id);
@@ -284,6 +286,38 @@ export class Editor {
 
   layerDialogRequested: (() => void) | null = null;
 
+  /**
+   * Experimental 3D (src/app/experimental-3d.ts, flag on only): adds the optional 3D members to
+   * every tool context the editor builds. Null (the default) leaves contexts exactly as before.
+   */
+  toolContextExtension: ((ctx: ToolContext) => ToolContext) | null = null;
+
+  /** The context the running tool gets (for input that does not come through the 2D canvas). */
+  toolContext(): ToolContext {
+    return prompter.makeContext(this, this.internals);
+  }
+
+  /**
+   * Hand a point to the running tool as a picked point (what a click on the 2D canvas does after
+   * snapping), without going through typed input. Used by the experimental 3D view.
+   */
+  acceptPoint(p: Point): void {
+    this.geometryAction(() => prompter.acceptPoint(this, this.internals, p), undefined);
+  }
+
+  /** True while a tool waits on "Select objects:". */
+  get selectionPending(): boolean {
+    return this.internals.selReq !== null;
+  }
+
+  /**
+   * Add (or with `remove`, take away) objects picked by id: into the pending "Select objects:"
+   * request when there is one, else into the selection (the same path a 2D pick takes).
+   */
+  pickIds(ids: string[], remove = false): void {
+    select.toggleSelect(this, this.internals, ids, remove);
+  }
+
   runCommand(input: string): void | Promise<void> {
     return this.geometryAction(() => prompter.runCommand(this, input), undefined);
   }
@@ -348,7 +382,9 @@ export class Editor {
 
   /**
    * Read DXF text the way OPEN does (see import-open.ts readDxfForOpen): a file that ends early
-   * asks whether to open what was readable (marked as recovered); null = declined.
+   * asks whether to open what was readable (marked as recovered); null = declined. Used by OPEN
+   * and the Drawing Recovery Manager; the experimental 3D setting decides whether polyface meshes
+   * of other programs become solids (JCad's own solids, as in recovery copies, are always read).
    */
   readDxfText(text: string, path: string | null): Promise<DrawingState | null> {
     return documents.readDxfText(this, text, path);

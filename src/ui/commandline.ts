@@ -2,6 +2,22 @@ import type { Editor } from '../app/editor';
 import { icon } from './icons';
 import { rankSuggestions, cycleIndex, pushRecentInput, looksLikeCommandText, type Suggestion } from './autocomplete';
 import { esc } from './dom';
+import { matchKeyword } from '../tools/script';
+
+/**
+ * What a click on prompt option `opt` (one of the `[A/B/C]` options in `group`) submits: its
+ * capitalised abbreviation, the rule `matchKeyword` (src/tools/script.ts) uses, so "WPolygon"
+ * sends "WP", "ON" / "OFF" send themselves and "ANgular" next to "Aligned" sends "AN". When the
+ * abbreviation would select another option of the same prompt ("TS35" / "TS32", "Center" / "Cube",
+ * "M" taken as a prefix of an earlier "mEthod") the whole option is sent, which matchKeyword takes
+ * as a full match. An option without capitals sends its first letter as before, and one without
+ * letters ("?") itself. Every option whose first letter already selected it still sends that letter.
+ */
+export function optionInput(opt: string, group: readonly string[]): string {
+  const abbrev = opt.replace(/[^A-Z]/g, '');
+  if (!abbrev) return opt.replace(/[^A-Za-z]/g, '').slice(0, 1) || opt.trim();
+  return matchKeyword(abbrev, group) === opt.toUpperCase() ? abbrev : opt.trim();
+}
 
 /** Docked command window: scrolling history, AutoComplete list and the input line. */
 export class CommandLine {
@@ -259,7 +275,7 @@ export class CommandLine {
             b.className = 'prompt-option';
             b.textContent = opt;
             b.title = `Option: ${opt}`;
-            b.addEventListener('click', () => this.editor.submitInput(opt.replace(/[^A-Za-z]/g, '').slice(0, 1)));
+            b.addEventListener('click', () => this.editor.submitInput(optionInput(opt, arr)));
             this.promptEl.appendChild(b);
             if (i < arr.length - 1) this.promptEl.appendChild(document.createTextNode('/'));
           });

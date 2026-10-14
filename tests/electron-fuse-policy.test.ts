@@ -29,6 +29,23 @@ describe('production inspection separation', () => {
     const { validateConfiguration } = require('app-builder-lib/out/util/config/config.js');
     await expect(validateConfiguration(testBuild, { isEnabled:false })).resolves.toBeUndefined();
   });
+  it('builds without the DWG writer only on explicit local request, into its own folder, never on CI', async () => {
+    const make = (require('../scripts/electron-test-build-config.cjs') as { testBuildConfig(env: Record<string, string | undefined>): typeof testBuild }).testBuildConfig;
+    expect(make({})).toEqual({ ...testBuild });
+    const noDwg = make({ JCAD_TEST_BUILD_WITHOUT_DWG_WRITER: '1' });
+    expect(noDwg.directories.output).toBe('release-test-no-dwg');
+    expect(noDwg.win.extraResources).toEqual([]);
+    expect(pkg.build.win.extraResources.map((r: { to: string }) => r.to)).toEqual(['dwg-writer']);
+    expect(noDwg.extraMetadata).toEqual({ jcadTestBuild: true, jcadTestBuildWithoutDwgWriter: true });
+    expect(noDwg.artifactName).toMatch(/^TEST-ONLY-NO-DWG-WRITER-/);
+    expect(noDwg.electronFuses).toEqual(testBuild.electronFuses);
+    expect(noDwg.publish).toBeNull();
+    expect(noDwg.npmRebuild).toBe(false);
+    for (const env of [{ CI: 'true' }, { GITHUB_ACTIONS: 'true' }]) expect(() => make({ ...env, JCAD_TEST_BUILD_WITHOUT_DWG_WRITER: '1' })).toThrow(/local test builds only/);
+    expect(make({ JCAD_TEST_BUILD_WITHOUT_DWG_WRITER: 'yes' }).directories.output).toBe('release-test');
+    const { validateConfiguration } = require('app-builder-lib/out/util/config/config.js');
+    await expect(validateConfiguration(noDwg, { isEnabled:false })).resolves.toBeUndefined();
+  });
   it('reads fuse bytes from an executable and fails closed on an inspection-enabled or incomplete wire', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'jcad-fuse-test-'));
     try {

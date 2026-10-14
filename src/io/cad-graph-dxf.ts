@@ -5,16 +5,26 @@ import { newId } from '../core/entities';
 import { canonicalCadHandle, cadReferences, cadAnchorKey, cadReferenceKind, cadEntityLists, mapCadEntities, CadGraphError, reconcileCadGraph, validateCadState, type CadAnchor, type CadGraph, type CadGroup, type CadNode } from '../core/cad-graph';
 import { evaluateFields, FIELD_UNAVAILABLE, type FieldContext } from '../core/fields';
 import type { Pair } from './dxf/groups';
+import { isIntegerText } from './dxf/groups';
 import { isQuietXdataApp } from './dxf/codes';
 import { decodeUnicodeEscapes, shapeStylesOf } from './encoding';
 import { retainNativeLayoutPaper } from './dxf-layouts';
 import { DIM_VARIABLES } from '../core/dimension';
 import { isScaleName } from '../core/layouts';
+import { solidCarrierGroups } from './dxf/model3d-carriers';
+import { MODEL3D_APP } from './dxf/codes';
+import { payloadText, polyfaceStructureProblem, native3dObject } from './dxf/mesh3d-read';
+import { decodeDimensionPayload } from '../model3d/file-format';
 
-interface RecordData { type: string; section: string; groups: CadGroup[]; handle?: string }
+interface RecordData { type: string; section: string; groups: CadGroup[]; handle?: string; line?: number }
 const value = (record: { readonly groups: readonly CadGroup[] }, code: number) => record.groups.find(([c]) => c === code)?.[1].trim() ?? '';
 /** Decode a proven CAD identifier for matching only; stored metadata groups remain raw. */
 const identifierValue = (record: { readonly groups: readonly CadGroup[] }, code: number) => decodeUnicodeEscapes(value(record, code));
+const native3dValue = (record: { readonly type: string; readonly groups: readonly CadGroup[] }, code: number) => native3dObject({ kind: record.type, groups: record.groups.map(([code, value]) => ({ code, value })) }).groups.find(group => group.code === code)?.value.trim() ?? '';
+const native3dFlags = (record: { readonly type: string; readonly groups: readonly CadGroup[] }, maximum = 0xffff): number | undefined => {
+  const raw = native3dValue(record, 70), flags = Number(raw);
+  return isIntegerText(raw) && flags >= 0 && flags <= maximum ? flags : undefined;
+};
 /** Structural identity must not read a reactor or opaque application field as the common owner. */
 function scopedValues(record: { readonly groups: readonly CadGroup[] }, code: number, subclass?: string): string[] {
   const found: string[] = [];
@@ -106,7 +116,7 @@ function recordsOf(pairs: readonly Pair[]): RecordData[] {
         section = pairs[++index]?.value.trim().toUpperCase() ?? '';
         if (section === 'HEADER') { record = { type: 'HEADER', section, groups: [] }; records.push(record); }
       } else if (type === 'ENDSEC') section = '';
-      else if (!['EOF', 'ENDTAB'].includes(type)) { record = { type, section, groups: [] }; records.push(record); }
+      else if (!['EOF', 'ENDTAB'].includes(type)) { record = { type, section, groups: [], ...(pair.line !== undefined ? { line: pair.line } : {}) }; records.push(record); }
     } else if (record) record.groups.push([pair.code, pair.value]);
   }
   for (const record of records) if (record.type !== 'HEADER') {
@@ -258,7 +268,7 @@ function interpretFields(state: DrawingState, graph: CadGraph, context: FieldCon
 }
 
 /** Entity cadIdentity is temporarily its source handle until this complete graph is attached. */
-export function attachDxfCadGraph(state: DrawingState, pairs: readonly Pair[], options: { sourceFormat?: 'DXF' | 'DWG'; fields?: FieldContext; viewportHandles?: ReadonlyMap<string, string>; rawEntityHandles?: ReadonlySet<string>; onFieldUnavailable?: FieldExpansion['unavailable']; onGraphUnavailable?: (reason: string) => void } = {}): DrawingState {
+export function attachDxfCadGraph(state: DrawingState, pairs: readonly Pair[], options: { sourceFormat?: 'DXF' | 'DWG'; fields?: FieldContext; viewportHandles?: ReadonlyMap<string, string>; model3dHandles?: ReadonlyMap<string, CadAnchor>; model3dLines?: ReadonlyMap<number, CadAnchor>; rawEntityHandles?: ReadonlySet<string>; onFieldUnavailable?: FieldExpansion['unavailable']; onGraphUnavailable?: (reason: string) => void } = {}): DrawingState {
   let sourceRecords: RecordData[];
   // Only malformed file identities may fall back to bounded semantic import with an explicit loss
   // report. Allocation limits and missing hard dependencies remain strict throughout the codec.
@@ -273,7 +283,8 @@ export function attachDxfCadGraph(state: DrawingState, pairs: readonly Pair[], o
       for (const [code, raw] of record.groups) if (cadReferenceKind(code)) canonicalCadHandle(raw.trim());
     }
   } catch (error) {
-    if (!(error instanceof CadGraphError) || error.code !== 'invalid' || !options.onGraphUnavailable || options.sourceFormat === 'DWG') throw error;
+    if (!(error instanceof CadGraphError) || error.code !== 'invalid' || !options.onGraphUnavailable || options.sourceFormat === 'DWG'
+      || options.model3dHandles?.size || pairs.some(pair => pair.code === 1001 && pair.value.trim() === MODEL3D_APP)) throw error;
     options.onGraphUnavailable(`${error.message} Retained metadata and object-reference identities could not be imported safely; readable drawing geometry is kept.`);
     const { cadGraph: _graph, ...bare } = state;
     return replaceEntities(bare, entity => { const { cadIdentity: _drop, ...rest } = entity; return rest as Entity; });
@@ -286,8 +297,23 @@ export function attachDxfCadGraph(state: DrawingState, pairs: readonly Pair[], o
     shapeIds.set(handle, sourceId);
   }
   const entities = lists(state).flat(), entityHandles = new Map<string, Entity>();
+  const solids = new Map(state.model3d?.solids.map(solid => [solid.id, solid]));
+  const dimensions3d = new Map(state.model3d?.dimensions?.map(dimension => [dimension.id, dimension]));
   for (const entity of entities) if (entity.cadIdentity) entityHandles.set(canonicalCadHandle(entity.cadIdentity), entity);
   const followerHandles = new Set<string>(); let sourceInsert = false;
+  const raw3d = new Set<RecordData>();
+  let polyface = false;
+  for (const record of sourceRecords) {
+    if (record.type === 'POLYLINE') {
+      const flags = native3dFlags(record);
+      polyface = flags !== undefined && (flags & 64) !== 0
+        || payloadText({ kind: record.type, groups: record.groups.map(([code, value]) => ({ code, value })) }) !== null;
+    } else if (!['VERTEX', 'SEQEND'].includes(record.type)) polyface = false;
+    if (polyface || record.type === 'DIMENSION' && record.groups.some(([code, app]) => code === 1001 && app.trim() === MODEL3D_APP)) {
+      raw3d.add(record);
+    }
+    if (record.type === 'SEQEND') polyface = false;
+  }
   for (const record of sourceRecords) if (record.type === 'LEADER' && record.handle && entityHandles.has(record.handle)) {
     const annotation = value(record, 340); if (annotation) followerHandles.add(canonicalCadHandle(annotation));
   }
@@ -300,12 +326,29 @@ export function attachDxfCadGraph(state: DrawingState, pairs: readonly Pair[], o
   const sourceByHandle = new Map(sourceRecords.flatMap(record => record.handle ? [[record.handle, record] as const] : []));
   const overallViewports = new Set(sourceRecords.filter(record => overallPaperOwner(record, sourceByHandle)));
   const tablePictures = new Set(sourceRecords.filter(record => record.type === 'INSERT' && record.groups.some(([code, app]) => code === 1001 && app.trim() === 'JCAD_TABLE')).map(record => identifierValue(record, 2)));
+  const dimensionPictures3d = new Map<string, CadAnchor>();
+  const pictureRecordsByName = new Map<string, RecordData[]>();
+  for (const record of sourceRecords) if (record.type === 'BLOCK_RECORD') {
+    const name = identifierValue(record, 2), list = pictureRecordsByName.get(name);
+    if (list) list.push(record); else pictureRecordsByName.set(name, [record]);
+  }
+  for (const record of sourceRecords) if (record.type === 'DIMENSION') {
+    const anchor = record.handle ? options.model3dHandles?.get(record.handle) : record.line !== undefined ? options.model3dLines?.get(record.line) : undefined;
+    if (anchor?.kind !== 'dimension3d') continue;
+    const name = identifierValue(record, 2);
+    const matches = pictureRecordsByName.get(name) ?? [];
+    if (!matches.length) continue; // Legacy/minimal dimensions may have no picture; generate a new one.
+    if (matches.length !== 1 || !matches[0]!.handle) throw new CadGraphError('dependency', 'A 3D dimension picture has no unique source BLOCK_RECORD.');
+    const handle = matches[0]!.handle!;
+    if (dimensionPictures3d.has(handle)) throw new CadGraphError('dependency', '3D dimensions share a source picture block; independent regeneration is unsafe.');
+    dimensionPictures3d.set(handle, { kind: 'dimension3d', id: anchor.id, part: 'picture-block' });
+  }
   const synthetic = (record: RecordData): boolean => {
     const owner = sourceByHandle.get(value(record, 330)), block = record.type === 'BLOCK_RECORD' || record.type === 'BLOCK' ? identifierValue(record, 2) : owner?.type === 'BLOCK_RECORD' ? identifierValue(owner, 2) : '';
     return record.type === 'VIEWPORT' && value(record, 69) === '1' && !overallViewports.has(record) || (/^\*[DT]\d+$/i.test(block) || tablePictures.has(block)) && !state.blocks[block];
   };
-  const records = sourceRecords.filter(record => !synthetic(record) && (!['ENTITIES', 'BLOCKS'].includes(record.section) || ['BLOCK', 'ENDBLK', 'ATTDEF'].includes(record.type) || overallViewports.has(record)
-    || !!record.handle && (entityHandles.has(record.handle) || followerHandles.has(record.handle) || options.viewportHandles?.has(record.handle))
+  const records = sourceRecords.filter(record => (!synthetic(record) || raw3d.has(record) || !!record.handle && dimensionPictures3d.has(record.handle)) && (!['ENTITIES', 'BLOCKS'].includes(record.section) || ['BLOCK', 'ENDBLK', 'ATTDEF'].includes(record.type) || overallViewports.has(record)
+    || raw3d.has(record) || record.line !== undefined && options.model3dLines?.has(record.line) || !!record.handle && (entityHandles.has(record.handle) || followerHandles.has(record.handle) || options.viewportHandles?.has(record.handle) || options.model3dHandles?.has(record.handle))
     || record.section === 'ENTITIES' && Number(value(record, 67)) !== 1 && ['3DFACE', '3DSOLID', 'REGION', 'BODY'].includes(record.type)
       && (record.type === '3DFACE' || record.groups.some(([code]) => code === 1 || code === 3))
       && (!options.rawEntityHandles || !!record.handle && options.rawEntityHandles.has(record.handle))));
@@ -325,14 +368,15 @@ export function attachDxfCadGraph(state: DrawingState, pairs: readonly Pair[], o
       if (entity && target) parts.set(canonicalCadHandle(target), { kind: 'entity', id: entity.id, part: 'annotation' });
     }
   }
-  const nodes: CadNode[] = records.filter(r => r.handle || r.type === 'CLASS' || r.type === 'HEADER').map((record, index) => {
+  const nodes: CadNode[] = records.filter(r => r.handle || raw3d.has(r) || r.line !== undefined && options.model3dLines?.has(r.line) || r.type === 'CLASS' || r.type === 'HEADER').map((record, index) => {
     const entity = record.handle ? entityHandles.get(record.handle) : undefined;
     const viewportId = record.handle ? options.viewportHandles?.get(record.handle) : undefined;
     const path = record.handle && dictionaries.has(record.type) ? paths.get(record.handle) : undefined;
-    const anchor: CadAnchor = entity ? { kind: 'entity', id: entity.id } : record.handle && parts.get(record.handle) ? parts.get(record.handle)!
+    const carrier = record.handle ? options.model3dHandles?.get(record.handle) ?? dimensionPictures3d.get(record.handle) : record.line !== undefined ? options.model3dLines?.get(record.line) : undefined;
+    const anchor: CadAnchor = carrier || (entity ? { kind: 'entity', id: entity.id } : record.handle && parts.get(record.handle) ? parts.get(record.handle)!
       : viewportId ? { kind: 'viewport', id: viewportId } : path ? { kind: 'dictionary', path }
         : record.type === 'LAYOUT' && (state.layouts ?? []).some(l => l.name.toUpperCase() === layoutName(record).toUpperCase()) ? { kind: 'layout', name: layoutName(record) }
-          : tableAnchor(record, modeledTables, shapeIds) ?? { kind: 'raw' };
+          : tableAnchor(record, modeledTables, shapeIds) ?? { kind: 'raw' });
     const contexts: string[] = []; let currentContext = '';
     const commonAt = record.groups.findIndex(([code]) => code === 100);
     for (const [code, text] of record.groups) { if (code === 102) currentContext = text === '}' ? '' : text; contexts.push(currentContext); }
@@ -340,10 +384,13 @@ export function attachDxfCadGraph(state: DrawingState, pairs: readonly Pair[], o
       const context = contexts[ref.groupIndex];
       return { ...ref, ...(context === '{ACAD_XDICTIONARY' ? { role: 'extension' as const } : context === '{ACAD_REACTORS' ? { role: 'reactor' as const } : record.groups[ref.groupIndex]![0] === 330 && !context && ref.groupIndex < commonAt ? { role: 'owner' as const } : {}) };
     });
-    return { id: record.handle ? byHandle.get(record.handle)! : `${prefix}:${record.type}:${index}`, ...(record.handle ? { sourceHandle: record.handle } : {}), type: record.type, section: record.section, groups: record.groups, anchor, references, ...(entity ? { baselineEntity: entity } : {}) };
+    return { id: record.handle ? byHandle.get(record.handle)! : `${prefix}:${record.type}:${index}`, ...(record.handle ? { sourceHandle: record.handle } : {}), type: record.type, section: record.section, groups: record.groups, anchor, references, ...(entity ? { baselineEntity: entity } : {}),
+      ...(anchor.kind === 'solid3d' && !anchor.part ? { baselineSolid: solids.get(anchor.id) } : {}),
+      ...(anchor.kind === 'dimension3d' && !anchor.part ? { baselineDimension3D: dimensions3d.get(anchor.id) } : {}),
+    };
   });
   const header = records.find(r => r.type === 'HEADER'), versionAt = header?.groups.findIndex(([code, val]) => code === 9 && val === '$ACADVER') ?? -1;
-  const structural = structuralKeys(sourceRecords), generatedHandles = sourceRecords.flatMap(record => synthetic(record) && record.handle && structural.has(record) ? [{ key: structural.get(record)!, handle: record.handle }] : []);
+  const structural = structuralKeys(sourceRecords), generatedHandles = sourceRecords.flatMap(record => synthetic(record) && record.handle && !dimensionPictures3d.has(record.handle) && structural.has(record) ? [{ key: structural.get(record)!, handle: record.handle }] : []);
   const graph: CadGraph = { schema: 1, documentId: prefix, sourceFormat: options.sourceFormat ?? 'DXF', sourceVersion: versionAt >= 0 ? header!.groups[versionAt + 1]?.[1] : undefined, nodes, ...(generatedHandles.length ? { generatedHandles } : {}) };
   const metadataIds = new Set<string>();
   const byId = new Map(nodes.map(node => [node.id, node]));
@@ -361,9 +408,19 @@ export function attachDxfCadGraph(state: DrawingState, pairs: readonly Pair[], o
     const { cadIdentity: _drop, ...rest } = entity; return rest as Entity;
   });
   state = readAnnotationVariables(state, sourceRecords);
+  const solidNodeIds = new Map(nodes.flatMap(node => node.anchor?.kind === 'solid3d' && !node.anchor.part ? [[node.anchor.id, node.id] as const] : []));
+  const dimensionNodeIds = new Map(nodes.flatMap(node => node.anchor?.kind === 'dimension3d' && !node.anchor.part ? [[node.anchor.id, node.id] as const] : []));
+  if (state.model3d) state = { ...state, model3d: { ...state.model3d,
+    solids: state.model3d.solids.map(solid => solidNodeIds.has(solid.id) ? { ...solid, cadIdentity: solidNodeIds.get(solid.id)! } : solid),
+    ...(state.model3d.dimensions ? { dimensions: state.model3d.dimensions.map(dimension => dimensionNodeIds.has(dimension.id) ? { ...dimension, cadIdentity: dimensionNodeIds.get(dimension.id)! } : dimension) } : {}),
+  } };
   state = interpretFields(state, graph, options.fields ?? {}, options.onFieldUnavailable);
   const live = new Map(lists(state).flat().map(e => [e.id, e]));
-  const finalGraph = { ...graph, nodes: graph.nodes.map(node => node.anchor?.kind === 'entity' && !node.anchor.part ? { ...node, baselineEntity: live.get(node.anchor.id) } : node) };
+  const liveSolids = new Map(state.model3d?.solids.map(solid => [solid.id, solid]));
+  const liveDimensions3d = new Map(state.model3d?.dimensions?.map(dimension => [dimension.id, dimension]));
+  const finalGraph = { ...graph, nodes: graph.nodes.map(node => node.anchor?.kind === 'entity' && !node.anchor.part ? { ...node, baselineEntity: live.get(node.anchor.id) }
+    : node.anchor?.kind === 'solid3d' && !node.anchor.part ? { ...node, baselineSolid: liveSolids.get(node.anchor.id) }
+      : node.anchor?.kind === 'dimension3d' && !node.anchor.part ? { ...node, baselineDimension3D: liveDimensions3d.get(node.anchor.id) } : node) };
   const result = { ...state, cadGraph: finalGraph }; validateCadState(result); return result;
 }
 
@@ -523,6 +580,13 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
   const orphaned = graph.nodes.flatMap(node => node.anchor?.kind === 'entity' && !node.anchor.part && !entityIds.has(node.anchor.id) && node.baselineEntity ? [node.baselineEntity] : []);
   if (orphaned.length) { state = reconcileCadGraph({ ...state, entities: [...state.entities, ...orphaned] }, state); graph = state.cadGraph!; }
   validateCadState(state);
+  const liveSolids = new Map(state.model3d?.solids.map(solid => [solid.id, solid]));
+  const liveDimensions3d = new Map(state.model3d?.dimensions?.map(dimension => [dimension.id, dimension]));
+  const primarySolids = new Map(graph.nodes.flatMap(node => node.anchor?.kind === 'solid3d' && !node.anchor.part && node.baselineSolid ? [[node.anchor.id, node.baselineSolid] as const] : []));
+  const solidParts = new Map<string, number>();
+  const solidParents = new Map<string, CadNode>();
+  for (const node of graph.nodes) if (node.anchor?.kind === 'solid3d' && node.type === 'POLYLINE') solidParts.set(node.anchor.id, (solidParts.get(node.anchor.id) ?? 0) + 1);
+  for (const node of graph.nodes) if (node.anchor?.kind === 'solid3d' && node.type === 'POLYLINE') solidParents.set(JSON.stringify([node.anchor.id, node.anchor.part ?? 'polyface:0']), node);
   const generated = recordsOf(pairsOf(text)), sources = graph.nodes.map(node => ({ type: node.type, section: node.section, groups: [...node.groups], ...(node.sourceHandle ? { handle: canonicalCadHandle(node.sourceHandle) } : {}) }));
   const sourceKeys = logicalKeys(sources), generatedKeys = logicalKeys(generated), byAnchor = new Map<string, CadNode>(), byKey = new Map<string, CadNode>();
   const overallSourceIds = new Set(graph.nodes.flatMap((node, index) => sourceKeys.get(sources[index]!)?.startsWith('["mainviewport",') ? [node.id] : []));
@@ -530,7 +594,7 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
     const anchor = cadAnchorKey(node.anchor); if (anchor) byAnchor.set(anchor, node);
     // Synthesized document registries have no source file handle. Their proven dictionary path
     // still identifies the canonical generated NOD, so no disconnected second root is emitted.
-    const key = node.anchor?.kind === 'dictionary' ? anchor : sourceKeys.get(sources[index]!);
+    const key = node.anchor?.kind === 'dictionary' ? anchor : node.anchor?.kind === 'solid3d' || node.anchor?.kind === 'dimension3d' ? undefined : sourceKeys.get(sources[index]!);
     if (key) byKey.set(key, node);
   });
   const match = new Map<RecordData, CadNode>(), matched = new Set<string>();
@@ -565,6 +629,28 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
   const overallByOwner = new Map([...overallOwners].map(([viewport, owner]) => [owner, viewport]));
   const modelRecord = generated.find(record => record.type === 'BLOCK_RECORD' && identifierValue(record, 2).toUpperCase() === '*MODEL_SPACE');
   const modelOwner = modelRecord?.handle && generatedHandles.get(modelRecord.handle);
+  const rawPolyfaceOwners = new Map<string, string | null>();
+  let rawSequence: { parent: CadNode; vertices: CadNode[] } | undefined;
+  const objectOf = (node: CadNode) => ({ kind: node.type, groups: node.groups.map(([code, value]) => ({ code, value })) });
+  for (const node of graph.nodes) {
+    if (node.anchor?.kind === 'raw' && node.type === 'POLYLINE') {
+      const flags = native3dFlags(node);
+      if (flags !== undefined && (flags & 64)) {
+        if (rawSequence) throw new CadGraphError('dependency', 'A retained polyface sequence is incomplete.');
+        rawSequence = { parent: node, vertices: [] }; rawPolyfaceOwners.set(node.id, null); continue;
+      }
+    }
+    if (!rawSequence) continue;
+    if (node.type === 'VERTEX' && node.anchor?.kind === 'raw') { rawSequence.vertices.push(node); rawPolyfaceOwners.set(node.id, rawSequence.parent.id); continue; }
+    if (node.type === 'SEQEND' && node.anchor?.kind === 'raw') {
+      rawPolyfaceOwners.set(node.id, rawSequence.parent.id);
+      const problem = polyfaceStructureProblem(objectOf(rawSequence.parent), rawSequence.vertices.map(objectOf), true);
+      if (problem) throw new CadGraphError('dependency', `Cannot save malformed retained polyface: ${problem}. Its original records are retained.`);
+      rawSequence = undefined; continue;
+    }
+    throw new CadGraphError('dependency', 'A retained polyface sequence is incomplete or interleaved.');
+  }
+  if (rawSequence) throw new CadGraphError('dependency', 'A retained polyface sequence is missing its SEQEND.');
   const retainedModelGeometry = (node: CadNode) => node.section === 'ENTITIES' && (!node.anchor || node.anchor.kind === 'raw') && Number(value(node, 67)) !== 1 && ['3DFACE', '3DSOLID', 'REGION', 'BODY'].includes(node.type);
   const sourceGroups = (node: CadNode, selected?: ReadonlySet<number>): CadGroup[] => {
     const references = new Map((node.references ?? []).map(ref => [ref.groupIndex, ref]));
@@ -592,6 +678,40 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
     });
     const node = match.get(record);
     if (!node) continue;
+    if (node.anchor?.kind === 'solid3d') {
+      const solid = liveSolids.get(node.anchor.id), baseline = primarySolids.get(node.anchor.id);
+      if (!solid || !baseline) throw new CadGraphError('dependency', 'Retained 3D carrier has no current solid or proven source baseline.');
+      record.groups = solidCarrierGroups(sourceGroups(node), node, solid, baseline, solidParts.get(solid.id)!);
+      if (!node.sourceHandle) record.groups.unshift([5, nodeHandles.get(node.id)!]);
+      if (!scopedValues(node, 330).length) {
+        const part = node.anchor.part?.match(/^polyface:(\d+)/)?.[1] ?? '0';
+        const parent = solidParents.get(JSON.stringify([solid.id, `polyface:${part}`]));
+        const owner = node.type === 'POLYLINE' ? modelOwner : parent && nodeHandles.get(parent.id);
+        if (!owner) throw new CadGraphError('dependency', 'Imported 3D carrier has no exported owner.');
+        record.groups.splice(1, 0, [330, owner]);
+      }
+      continue;
+    }
+    let retainOwn3d = false;
+    if (node.anchor?.kind === 'dimension3d' && !node.anchor.part) {
+      const dimension = liveDimensions3d.get(node.anchor.id), baseline = node.baselineDimension3D;
+      if (!dimension || !baseline) throw new CadGraphError('dependency', 'Retained 3D dimension has no current dimension or source baseline.');
+      const flags = native3dFlags(node, 255);
+      if (flags === undefined) throw new CadGraphError('dependency', 'Cannot regenerate retained 3D dimension with malformed native flags.');
+      if (flags & 128 || Number(native3dValue(node, 52)) !== 0 || Number(native3dValue(node, 53)) !== 0) throw new CadGraphError('dependency', 'Cannot regenerate a 3D dimension with retained moved/rotated text or oblique extension lines. Its source fields remain retained.');
+      const payload = payloadText({ kind: node.type, groups: node.groups.map(([code, value]) => ({ code, value })) });
+      const decoded = payload && 'text' in payload ? decodeDimensionPayload(payload.text) : undefined;
+      retainOwn3d = !!payload && decoded?.status !== 'ok';
+      if (retainOwn3d) {
+        throw new CadGraphError('dependency', 'Cannot regenerate a 3D dimension with unknown, newer or invalid JCAD_3D payload. Its original data is retained; use the original drawing until that payload is supported.');
+      }
+      // ACI/layer are modeled; the unexposed truecolor/book/transparency fields remain exact
+      // while their corresponding modeled color is unchanged.
+      if (dimension.color === baseline.color) {
+        const appearance = native3dObject({ kind: node.type, groups: sourceGroups(node).map(([code, value]) => ({ code, value })) }).groups.filter(({ code }) => [420, 430, 440].includes(code)).map(({ code, value }) => [code, value] as const);
+        appendBeforeXdata(record.groups, ...appearance);
+      }
+    }
     if (dictionaries.has(node.type)) {
       // The fallback writer does not model dictionary ownership flags, default340 or arbitrary
       // native properties. Keep their complete source record and every typed target, including
@@ -695,9 +815,9 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
       if (nesting) { if (!retainedLayoutBlock) selected.add(index); return; }
       if (code === 100) layoutSubclass = true;
       if (code === 1001) selectedApp = raw.trim();
-      if (selectedApp) { if (!isQuietXdataApp(selectedApp, node.type) && !(selectedApp === 'AcCmTransparency' && node.type === 'LAYER')) selected.add(index); return; }
+      if (selectedApp) { if (!(selectedApp === MODEL3D_APP && node.anchor?.kind === 'dimension3d' && !retainOwn3d) && !isQuietXdataApp(selectedApp, node.type) && !(selectedApp === 'AcCmTransparency' && node.type === 'LAYER')) selected.add(index); return; }
       if (rebuilt.has(code)) return;
-      if (node.anchor?.kind === 'entity' || node.anchor?.kind === 'viewport') {
+      if (node.anchor?.kind === 'entity' || node.anchor?.kind === 'viewport' || node.anchor?.kind === 'dimension3d') {
         if (cadReferenceKind(code) && code !== 330) selected.add(index);
       } else if (![5, 105, 100, 330].includes(code) && !generatedCodes.has(code)) selected.add(index);
     });
@@ -715,8 +835,8 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
       if (brace) { metadata.push(group); continue; }
       if (code === 1001) { app = raw; apps.add(raw.trim().toUpperCase()); }
       if (app) { metadata.push(group); continue; }
-      if (node.anchor?.kind !== 'entity' && node.anchor?.kind !== 'viewport' && ![5, 105, 100, 330].includes(code) && !generatedCodes.has(code)) appendBeforeXdata(record.groups, group);
-      else if ((node.anchor?.kind === 'entity' || node.anchor?.kind === 'viewport') && cadReferenceKind(code)) appendBeforeXdata(record.groups, group);
+      if (node.anchor?.kind !== 'entity' && node.anchor?.kind !== 'viewport' && node.anchor?.kind !== 'dimension3d' && ![5, 105, 100, 330].includes(code) && !generatedCodes.has(code)) appendBeforeXdata(record.groups, group);
+      else if ((node.anchor?.kind === 'entity' || node.anchor?.kind === 'viewport' || node.anchor?.kind === 'dimension3d') && cadReferenceKind(code)) appendBeforeXdata(record.groups, group);
     }
     // Source extension/reactor blocks precede the common subclass; each XDATA application occurs once.
     let active: string | undefined, activeDepth = 0;
@@ -737,8 +857,22 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
   for (let index = 0; index < graph.nodes.length; index++) {
     const node = graph.nodes[index]!;
     if (matched.has(node.id)) continue;
+    if (node.anchor?.kind === 'raw' && node.type === 'POLYLINE') {
+      const flags = native3dFlags(node);
+      if (payloadText({ kind: node.type, groups: node.groups.map(([code, value]) => ({ code, value })) })) throw new CadGraphError('dependency', 'Cannot regenerate an unconsumed JCAD_3D polyface carrier. Its original source records are retained.');
+      if (flags !== undefined && flags & 64 && (node.section !== 'ENTITIES' || Number(value(node, 67)) === 1)) throw new CadGraphError('dependency', 'Cannot save an unconsumed polyface outside model space: its block/layout carrier placement is not modeled. The original records are retained.');
+    }
+    if (node.anchor?.kind === 'raw' && node.type === 'DIMENSION' && node.groups.some(([code, app]) => code === 1001 && app.trim() === MODEL3D_APP)) throw new CadGraphError('dependency', 'Cannot regenerate an unsupported JCAD_3D dimension carrier. Its original data is retained.');
     if (node.anchor && node.anchor.kind !== 'raw' && node.anchor.kind !== 'dictionary') throw new CadGraphError('dependency', `Cannot save retained ${node.type}: its edited object has no generated record.`);
     const groups = sourceGroups(node);
+    if (rawPolyfaceOwners.has(node.id)) {
+      if (!node.sourceHandle) groups.unshift([5, nodeHandles.get(node.id)!]);
+      if (!scopedValues(node, 330).length) {
+        const parent = rawPolyfaceOwners.get(node.id), owner = parent ? nodeHandles.get(parent) : modelOwner;
+        if (!owner) throw new CadGraphError('dependency', 'Retained polyface has no exported owner.');
+        groups.splice(1, 0, [330, owner]);
+      }
+    }
     if (retainedModelGeometry(node) && !node.references?.some(ref => ref.role === 'owner' && node.groups[ref.groupIndex]?.[0] === 330)) {
       if (!modelOwner) throw new CadGraphError('dependency', `Cannot save retained ${node.type}: the generated model-space owner is missing.`);
       groups.splice(referenceBlockPosition(groups), 0, [330, modelOwner]);

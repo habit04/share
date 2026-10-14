@@ -75,6 +75,12 @@ export interface UserSettings {
   // --- Options > Display > Language
   /** UI language: 'auto' follows the system (navigator.languages), else a locale code (src/app/i18n.ts). */
   language: LanguageSetting;
+  // --- Experimental
+  /**
+   * Experimental 3D modelling (unfinished; off by default). Gates the 3D commands and view while
+   * the feature is incomplete; a drawing's 3D content is kept whatever this setting says.
+   */
+  experimental3d: boolean;
 }
 
 export const SETTINGS_KEY = 'jcad.settings.v2';
@@ -133,6 +139,7 @@ export const DEFAULT_SETTINGS: UserSettings = {
   commandWindowVisible: true,
   recentInput: [],
   language: 'auto',
+  experimental3d: false,
 };
 
 const RANGES: Partial<Record<keyof UserSettings, [number, number]>> = {

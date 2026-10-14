@@ -2,7 +2,8 @@
  * The entity pass, reader side: a list of entity records (model space, a block definition or a
  * layout) into entities. VERTEX, ATTRIB and SEQEND are folded into their POLYLINE or INSERT, the
  * entity's plane (extrusion) is applied, invalid geometry and lost XDATA are reported, unknown
- * records are reported or kept raw when that is safe, and LEADERs take the MTEXT they point to.
+ * records are reported or kept raw when that is safe, LEADERs take the MTEXT they point to, and
+ * model-space polyface meshes go to the 3D solid reader (mesh3d-read.ts).
  */
 import type { Obj } from './groups';
 import type { RawDxfEntity } from '../import-report';
@@ -24,6 +25,7 @@ import { readTextPlacement } from './read-text';
 import { localAttributePlacement } from '../../core/entities';
 import type { TextPlacement } from '../../core/text-placement';
 import { hatchGradientRenderProblem, hatchGradientExportProblem } from '../../core/hatch-gradient';
+import { POLYFACE_UNSUPPORTED_REASON, payloadText, native3dObject } from './mesh3d-read';
 
 /** Entity types the reader converts (anything else is reported, or kept raw when safe). */
 const READ_KINDS = new Set(['LINE', 'CIRCLE', 'ARC', 'LWPOLYLINE', 'POLYLINE', 'SOLID', 'TRACE', 'TEXT', 'MTEXT', 'ELLIPSE', 'POINT', 'XLINE', 'RAY', 'DIMENSION', 'SPLINE', 'HATCH', 'LEADER', 'MULTILEADER', 'MLEADER', 'IMAGE', 'ACAD_TABLE', 'INSERT']);
@@ -186,7 +188,8 @@ export function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): En
       const widths: Array<{ start: number; end: number }> = [];
       const defaultStart = num(o, 40, 0), defaultEnd = num(o, 41, 0);
       let variableWidth = has(o, 40) || has(o, 41);
-      const flags = Math.trunc(num(o, 70));
+      const native = native3dObject(o);
+      const flags = num(native, 70);
       const closed = (flags & 1) === 1;
       let j = i + 1;
       const vertexStart = j;
@@ -199,9 +202,24 @@ export function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): En
       }
       if (j < objs.length && objs[j]!.kind === 'SEQEND') j += 1;
       i = j;
-      if (flags & (16 | 64)) {
-        // Polygon / polyface meshes: their vertex list holds face records, not an outline.
-        reportObj(ctx, o, 'dropped', `${flags & 64 ? 'polyface' : 'polygon'} meshes are not supported`);
+      if (has(native, 70) && !isIntegerText(str(native, 70).trim()) || !Number.isSafeInteger(flags) || flags < 0 || flags > 0xffff) {
+        reportObj(ctx, o, 'dropped', 'invalid POLYLINE structural flags: group 70 must be an integer from 0 to 65535');
+        continue;
+      }
+      if (!(flags & 64) && payloadText(o)) {
+        reportObj(ctx, o, 'dropped', 'JCAD_3D POLYLINE data has no native polyface flag; its original carrier is retained and unsafe save is refused');
+        continue;
+      }
+      if (flags & 64) {
+        // Polyface meshes: their vertex list holds face records, not an outline. In model space
+        // they become experimental 3D solids (JCad's own always, others when 3D is enabled).
+        const vertices = objs.slice(vertexStart, j).filter((child) => child.kind === 'VERTEX');
+        if (keepRaw && ctx.solids) ctx.solids.polyface(o, vertices, ctx, objs[j - 1]?.kind === 'SEQEND' ? objs[j - 1] : undefined);
+        else reportObj(ctx, o, 'dropped', ctx.solids?.accepts(o) ? '3D polyface meshes are read in model space only' : POLYFACE_UNSUPPORTED_REASON);
+        continue;
+      }
+      if (flags & 16) {
+        reportObj(ctx, o, 'dropped', 'polygon meshes are not supported');
         continue;
       }
       if (flags & 8) reportObj(ctx, o, 'simplified', '3D polyline: flattened to its XY projection');
@@ -227,6 +245,11 @@ export function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): En
         i += 1;
         continue;
       }
+    }
+    // Model-space DIMENSIONs in their own plane: experimental true 3D dimensions (dim3d-read.ts).
+    if (o.kind === 'DIMENSION' && keepRaw && ctx.solids?.dimension(o, ctx)) {
+      i += 1;
+      continue;
     }
     let read: Entity | null;
     try {

@@ -5,6 +5,7 @@
 import { ImportReportBuilder } from '../import-report';
 import type { DxfReadOptions } from './reader';
 import { isRealText, isRealCode } from './codes';
+import { DXF_READ_LIMITS } from '../../model3d/file-format';
 import * as g from '../../core/geometry';
 
 // ---------------------------------------------------------------- reading
@@ -46,6 +47,32 @@ export function isIntegerText(t: string): boolean {
   return Number.isSafeInteger(Number(t));
 }
 
+/** Group pairs a DXF may hold when the caller sets no `maxPairs` (an allocation bound). */
+export const DEFAULT_MAX_PAIRS = DXF_READ_LIMITS.maxPairs;
+/** Records (0 groups) a DXF may hold when the caller sets no `maxRecords`. */
+export const DEFAULT_MAX_RECORDS = DXF_READ_LIMITS.maxRecords;
+
+/**
+ * Why DXF text this program wrote would exceed the default read limits (so OPEN would refuse
+ * it), or null. Counts lines and 0 groups without allocating; the save flow refuses drawings
+ * whose 3D meshes push the file past them (model3d/save-guard.ts).
+ */
+export function defaultReadLimitExcess(text: string): string | null {
+  if (text.length > DXF_READ_LIMITS.maxSourceLength) return `the file has ${text.length.toLocaleString('en-US')} characters; JCad opens at most ${DXF_READ_LIMITS.maxSourceLength.toLocaleString('en-US')}`;
+  let lines = 0, records = 0, start = 0;
+  for (;;) {
+    const end = text.indexOf('\n', start);
+    if (end < 0) break;
+    if (lines % 2 === 0 && text.charCodeAt(start) === 48 && (end - start === 1 || (end - start === 2 && text.charCodeAt(start + 1) === 13))) records += 1;
+    lines += 1;
+    start = end + 1;
+  }
+  const pairs = Math.floor(lines / 2);
+  if (pairs > DEFAULT_MAX_PAIRS) return `the file has ${pairs.toLocaleString('en-US')} group pairs; JCad opens at most ${DEFAULT_MAX_PAIRS.toLocaleString('en-US')}`;
+  if (records > DEFAULT_MAX_RECORDS) return `the file has ${records.toLocaleString('en-US')} records; JCad opens at most ${DEFAULT_MAX_RECORDS.toLocaleString('en-US')}`;
+  return null;
+}
+
 /**
  * Split DXF text into group pairs and check the file structure: every group code is an integer,
  * every code has a value, SECTION / ENDSEC pairs balance and the file ends with EOF. A file that
@@ -54,10 +81,10 @@ export function isIntegerText(t: string): boolean {
  */
 export function tokenize(text: string, recover = false, report?: ImportReportBuilder, limits: DxfReadOptions = {}): Pair[] {
   if (text.startsWith('AutoCAD Binary DXF')) throw new DxfReadError('This is a binary DXF file. Save it as an ASCII DXF (DXFOUT, ASCII format) to open it.', 1);
-  if (text.length > (limits.maxSourceLength ?? 128 * 1024 * 1024)) throw new DxfReadError('DXF exceeds the source text size limit.', 1);
+  if (text.length > (limits.maxSourceLength ?? DXF_READ_LIMITS.maxSourceLength)) throw new DxfReadError('DXF exceeds the source text size limit.', 1);
   // Check before split(): many tiny lines or one enormous string must not allocate an unbounded array.
   let lineLength = 0, lineCount = 1;
-  const maxLines = 2 * (limits.maxPairs ?? 2_000_000) + 2;
+  const maxLines = 2 * (limits.maxPairs ?? DEFAULT_MAX_PAIRS) + 2;
   for (let offset = 0; offset < text.length; offset += 1) {
     const ch = text.charCodeAt(offset);
     if (ch === 10 || ch === 13) {
@@ -87,8 +114,8 @@ export function tokenize(text: string, recover = false, report?: ImportReportBui
     // character (security review E-6: a crafted line froze the renderer).
     const raw = lines[i + 1]!;
     if (raw.length > (limits.maxStringLength ?? 1024 * 1024)) throw new DxfReadError(`Line ${i + 2}: DXF value exceeds the string length limit.`, i + 2);
-    if (pairs.length >= (limits.maxPairs ?? 2_000_000)) throw new DxfReadError(`Line ${i + 1}: DXF exceeds the group pair limit.`, i + 1);
-    if (code === 0 && ++records > (limits.maxRecords ?? 250_000)) throw new DxfReadError(`Line ${i + 1}: DXF exceeds the record limit.`, i + 1);
+    if (pairs.length >= (limits.maxPairs ?? DEFAULT_MAX_PAIRS)) throw new DxfReadError(`Line ${i + 1}: DXF exceeds the group pair limit.`, i + 1);
+    if (code === 0 && ++records > (limits.maxRecords ?? DEFAULT_MAX_RECORDS)) throw new DxfReadError(`Line ${i + 1}: DXF exceeds the record limit.`, i + 1);
     // Complex LTYPE9 is literal embedded text; trailing spaces affect its glyph placement.
     const value = code === 1 || code === 3 || code === 304 || code === 9 && recordKind === 'LTYPE' ? raw : raw.trimEnd();
     if (code === 0) recordKind = value.trim();

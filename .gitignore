@@ -8,6 +8,7 @@ node_modules/
 dist/
 release/
 release-test/
+release-test-no-dwg/
 *.log
 .DS_Store
 screenshots/*.png
@@ -29,3 +30,4 @@ screenshots/bench/
 e2e-output/
 packaged-smoke-output/
 bench-output/
+screenshots-3d/

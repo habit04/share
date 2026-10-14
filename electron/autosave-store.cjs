@@ -57,6 +57,8 @@ function cleanMeta(m, fallbackTitle) {
     originalPath: typeof o.originalPath === 'string' && o.originalPath.length <= 4096 ? o.originalPath : null,
     title: String(o.title || fallbackTitle).slice(0, 260),
     savedAt: Number.isFinite(savedAt) && savedAt > 0 ? Math.round(savedAt) : Date.now(),
+    // Experimental 3D solids the DXF copy could not hold; absent (older entries) = none.
+    ...(Number.isSafeInteger(o.omitted3d) && o.omitted3d > 0 ? { omitted3d: o.omitted3d } : {}),
   };
 }
 

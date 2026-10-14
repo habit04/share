@@ -13,6 +13,7 @@ import { ImportReportBuilder } from '../import-report';
 import { transparencyFromDxf, validColorName } from '../../core/appearance';
 import type { EntityBase } from '../../core/entities';
 import type { RawDxfEntity } from '../import-report';
+import type { Model3DReader } from './mesh3d-read';
 
 /** Entity properties common to every DXF entity (layer, colour, linetype, lineweight, ltscale). */
 /** Separate class-level appearance from MTEXT/ATTRIB background color groups. */
@@ -68,6 +69,8 @@ export interface ReadContext {
   report?: ImportReportBuilder;
   /** Unknown model-space records kept as raw group codes. */
   raw?: RawDxfEntity[];
+  /** Model-space polyface meshes into experimental 3D solids (io/dxf/mesh3d-read.ts). */
+  solids?: Model3DReader;
   /** Where the objects being read are (report text). */
   where?: string;
 }

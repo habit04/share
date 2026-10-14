@@ -31,6 +31,7 @@ import type {
   DwgTableEntity,
 } from '@mlightcad/libredwg-web';
 import { insertScales, insertScaleFields } from './dxf';
+import { isIntegerText } from './dxf/groups';
 import { insertArrayFields } from '../core/insert-array';
 import type { Entity, BlockDef, Layer, AttributeDef, ColorSpec, MTextAttachment, SplineEntity, HatchEntity, HatchLoop, LeaderEntity, ImageEntity, TableEntity, TableCell, FieldLink } from '../core/entities';
 import { translateEntity, localAttributePlacement, type InsertEntity, type AttributeAppearance } from '../core/entities';
@@ -1195,6 +1196,24 @@ function readHeader(h: DwgImportPayload['header']): DrawingHeader {
   };
 }
 
+/** Linear, bounded observation of own carriers; opaque 102 data cannot create a 3D claim. */
+function hasOwn3dProjection(text: string): boolean {
+  let start = 0, code: number | undefined, kind = '', depth = 0;
+  for (let end = 0; end <= text.length; end++) {
+    if (end < text.length && text.charCodeAt(end) !== 10 && text.charCodeAt(end) !== 13) continue;
+    if (code === undefined) { const raw = text.slice(start, end).trim(); code = isIntegerText(raw) ? Number(raw) : NaN; }
+    else {
+      if (code === 0) { kind = text.slice(start, end).trim().toUpperCase(); depth = 0; }
+      else if (code === 102) { const value = text.slice(start, end).trim(); depth += value.startsWith('{') ? 1 : value === '}' ? -1 : 0; }
+      else if (code === 1001 && depth === 0 && (kind === 'POLYLINE' || kind === 'DIMENSION') && text.slice(start, end).trim() === 'JCAD_3D') return true;
+      code = undefined;
+    }
+    if (text.charCodeAt(end) === 13 && text.charCodeAt(end + 1) === 10) end++;
+    start = end + 1;
+  }
+  return false;
+}
+
 export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null): DwgImportResult {
   let records = payload.entities.length + payload.layers.length + payload.blocks.length;
   for (const block of payload.blocks) records += block.entities.length;
@@ -1234,12 +1253,16 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
       if (missing.length) throw new Error(`${missing.length} source object(s) are absent or have a different type in the native metadata projection (${missing.slice(0, 6).map(object => `${object.type} ${object.handle}`).join(', ')}).`);
       nativeProjected = projected;
       projectionNotes = metadata.notes;
-    } catch (error) { metadataFailure = error instanceof Error ? error.message : 'Native metadata could not be interpreted.'; }
+    } catch (error) {
+      if (typeof payload.nativeMetadata.dxf === 'string' && hasOwn3dProjection(payload.nativeMetadata.dxf)) throw new Error(`Native own 3D source data cannot be imported safely: ${error instanceof Error ? error.message : 'unknown source identity'}`);
+      metadataFailure = error instanceof Error ? error.message : 'Native metadata could not be interpreted.';
+    }
   }
   const skipped: Record<string, number> = {};
   const notes: string[] = [];
   const report = new ImportReportBuilder();
   if (payload.nativeMetadata && !nativeProjected) {
+    if (typeof payload.nativeMetadata.dxf === 'string' && hasOwn3dProjection(payload.nativeMetadata.dxf)) throw new Error('Native own 3D source data has no complete validated projection; a 2D fallback would lose its retained carriers.');
     report.add({ type: 'CAD_METADATA', action: 'unsupported', reason: `The native DWG metadata projection is incomplete; supported geometry was imported through the fallback reader. ${metadataFailure ?? payload.nativeMetadata.notes.slice(0, 4).join(' ')}` });
   }
   for (const source of [payload.header, ...(payload.dimStyles ?? [])]) for (const name of ['DIMDEC', 'DIMADEC', 'DIMALTD', 'DIMTDEC', 'LUPREC', 'AUPREC']) {
@@ -1583,6 +1606,12 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
       for (const item of imported?.items ?? []) if (item.action === 'kept' || item.type === 'FIELD') report.add(item);
       for (const note of [...(imported?.notes ?? []), ...projectionNotes]) report.note(note);
     } catch (error) {
+        if (nativeProjected.cadGraph?.nodes.some(node => node.anchor?.kind === 'solid3d' || node.anchor?.kind === 'dimension3d'
+          || node.type === 'POLYLINE' && Number.isSafeInteger(Number(node.groups.find(([code]) => code === 70)?.[1]))
+            && Number(node.groups.find(([code]) => code === 70)?.[1]) >= 0 && Number(node.groups.find(([code]) => code === 70)?.[1]) <= 0xffff && (Number(node.groups.find(([code]) => code === 70)?.[1]) & 64)
+          || node.type === 'DIMENSION' && node.groups.some(([code, app]) => code === 1001 && app.trim() === 'JCAD_3D'))) {
+          throw new Error(`The native DWG 3D carriers could not be joined safely; importing only its 2D geometry would lose retained data: ${error instanceof Error ? error.message : 'unknown source identity'}`);
+        }
       report.add({ type: 'CAD_METADATA', action: 'unsupported', reason: `Retained metadata could not be matched safely to the native drawing: ${error instanceof Error ? error.message : 'unknown source identity'}` });
       nativeProjected = undefined;
     }

@@ -287,6 +287,13 @@ for (const [file, id] of [['ci.yml', 'e2e-electron'], ['release.yml', 'test-buil
 const manualSmoke = parsed['packaged-smoke.yml']?.jobs?.smoke;
 if (JSON.stringify(manualSmoke?.strategy?.matrix?.include) !== JSON.stringify([{ os:'windows-latest', patterns:'*.exe' }])) problems.push('packaged-smoke.yml: existing-release checks must target only Windows installers');
 
+// The local no-DWG-writer test build (scripts/electron-test-build.cjs, docs/3D-PACKAGED-TEST.md)
+// must never be used by a workflow: CI test builds always carry the DWG writer.
+for (const f of files) {
+  const text = readFileSync(join(dir, f), 'utf8');
+  if (/JCAD_TEST_BUILD_WITHOUT_DWG_WRITER|dist:test:no-dwg|release-test-no-dwg/.test(text)) problems.push(`${f}: must not use the local test build without the DWG writer`);
+}
+
 if (problems.length) {
   console.error(`check-workflows: ${problems.length} problem(s)\n${problems.map((p) => `  - ${p}`).join('\n')}`);
   process.exit(1);

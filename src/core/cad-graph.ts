@@ -3,11 +3,14 @@ import type { DrawingState } from './document';
 import type { Entity } from './entities';
 import { newId } from './entities';
 import { isImmutableData } from './immutable-data';
+import type { Solid3D, Dimension3D } from '../model3d/types';
 
 export type CadGroup = readonly [number, string];
 export type CadReferenceKind = 'soft-pointer' | 'hard-pointer' | 'soft-owner' | 'hard-owner' | 'arbitrary';
 export type CadAnchor =
   | { readonly kind: 'entity'; readonly id: string; readonly part?: string }
+  | { readonly kind: 'solid3d'; readonly id: string; readonly part?: string }
+  | { readonly kind: 'dimension3d'; readonly id: string; readonly part?: string }
   | { readonly kind: 'table'; readonly table: string; readonly name: string }
   | { readonly kind: 'shape-style'; readonly sourceId: string }
   | { readonly kind: 'layout'; readonly name: string }
@@ -31,6 +34,9 @@ export interface CadNode {
   readonly references?: readonly CadReference[];
   /** Original logical entity, used only to detect manual field overrides and type replacement. */
   readonly baselineEntity?: Entity;
+  /** Exact mesh topology at import: follower mappings cannot be inferred after retessellation. */
+  readonly baselineSolid?: Solid3D;
+  readonly baselineDimension3D?: Dimension3D;
 }
 export interface CadGraphDiagnostic {
   readonly code: 'external-soft-reference';
@@ -60,6 +66,8 @@ export interface CadAffineTransform {
 export interface CadCloneBatch {
   /** One map per copy set / array cell; several copies of one source cannot share a batch. */
   readonly entityIds: Readonly<Record<string, string>>;
+  readonly solidIds?: Readonly<Record<string, string>>;
+  readonly dimension3dIds?: Readonly<Record<string, string>>;
   /** Required for cross-document copies. The captured immutable source travels with the clipboard. */
   readonly sourceState?: DrawingState;
   readonly transform?: CadAffineTransform;
@@ -68,7 +76,7 @@ export interface CadCloneBatch {
 }
 export interface CadGraphEditIntent {
   readonly cloneBatches?: readonly CadCloneBatch[];
-  readonly transforms?: readonly { readonly entityIds: readonly string[]; readonly transform: CadAffineTransform }[];
+  readonly transforms?: readonly { readonly entityIds: readonly string[]; readonly solidIds?: readonly string[]; readonly dimension3dIds?: readonly string[]; readonly transform: CadAffineTransform }[];
 }
 export class CadGraphError extends Error {
   constructor(readonly code: 'invalid' | 'dependency' | 'copy' | 'transform', message: string) {
@@ -112,6 +120,8 @@ export function cadAnchorKey(anchor: CadAnchor | undefined): string | undefined 
   if (!anchor || anchor.kind === 'raw') return undefined;
   switch (anchor.kind) {
     case 'entity': return JSON.stringify(['entity', anchor.id, anchor.part ?? '']);
+    case 'solid3d': return JSON.stringify(['solid3d', anchor.id, anchor.part ?? '']);
+    case 'dimension3d': return JSON.stringify(['dimension3d', anchor.id, anchor.part ?? '']);
     case 'table': return JSON.stringify(['table', anchor.table.toUpperCase(), anchor.name.toUpperCase()]);
     case 'shape-style': return JSON.stringify(['shape-style', anchor.sourceId]);
     case 'layout': return JSON.stringify(['layout', anchor.name.toUpperCase()]);
@@ -137,7 +147,7 @@ export function validateCadGraph(graph: CadGraph): void {
     }
     if (node.anchor) {
       const anchor = node.anchor;
-      if (anchor.kind === 'entity' ? !identifier(anchor.id) || anchor.part !== undefined && !identifier(anchor.part)
+      if (anchor.kind === 'entity' || anchor.kind === 'solid3d' || anchor.kind === 'dimension3d' ? !identifier(anchor.id) || anchor.part !== undefined && !identifier(anchor.part)
         : anchor.kind === 'table' ? !identifier(anchor.table) || !identifier(anchor.name)
           : anchor.kind === 'shape-style' ? !identifier(anchor.sourceId)
           : anchor.kind === 'layout' ? !identifier(anchor.name)
@@ -214,16 +224,52 @@ export function mapCadEntities(state: DrawingState, fn: (entity: Entity) => Enti
 }
 const entityLists = cadEntityLists;
 const allEntities = (state: DrawingState): Entity[] => entityLists(state).flat();
+/** Typed model carriers remain outside Entity and all 2D renderer/geometry APIs. */
+export type CadModelCarrier = { readonly kind: 'solid3d'; readonly object: Solid3D } | { readonly kind: 'dimension3d'; readonly object: Dimension3D };
+export function cadModelCarriers(state: DrawingState): readonly CadModelCarrier[] {
+  return [...(state.model3d?.solids ?? []).map(object => ({ kind: 'solid3d' as const, object })), ...(state.model3d?.dimensions ?? []).map(object => ({ kind: 'dimension3d' as const, object }))];
+}
+export function mapCadModelCarriers(state: DrawingState, mappers: { readonly solid?: (solid: Solid3D) => Solid3D; readonly dimension3d?: (dimension: Dimension3D) => Dimension3D }): DrawingState {
+  const model = state.model3d;
+  if (!model) return state;
+  const solids = mappers.solid ? model.solids.map(mappers.solid) : model.solids;
+  const dimensions = mappers.dimension3d ? model.dimensions?.map(mappers.dimension3d) : model.dimensions;
+  if (solids.every((solid, index) => solid === model.solids[index]) && dimensions?.every((dimension, index) => dimension === model.dimensions?.[index]) !== false) return state;
+  return { ...state, model3d: { ...model, solids, ...(dimensions ? { dimensions } : {}) } };
+}
+/** One ID namespace for selections and typed references, including inactive clip boundaries. */
+function modelCarriers(state: DrawingState): Map<string, CadModelCarrier> {
+  const result = new Map<string, CadModelCarrier>();
+  if (!state.model3d) return result;
+  const occupied = new Set<string>();
+  const add = (id: string) => {
+    if (occupied.has(id)) invalid('3D drawings need unique IDs across their 2D entities and viewport carriers.');
+    occupied.add(id);
+  };
+  for (const entity of allEntities(state)) add(entity.id);
+  for (const layout of state.layouts ?? []) for (const viewport of layout.viewports) add(viewport.id);
+  for (const carrier of cadModelCarriers(state)) {
+    if (occupied.has(carrier.object.id) || result.has(carrier.object.id)) invalid('3D objects need unique IDs across solids, dimensions, 2D entities, blocks, layouts and viewports.');
+    result.set(carrier.object.id, carrier);
+  }
+  return result;
+}
+function replaceModelIdentities(state: DrawingState, identities: ReadonlyMap<string, string>): DrawingState {
+  return mapCadModelCarriers(state, {
+    solid: solid => identities.has(solid.id) ? { ...solid, cadIdentity: identities.get(solid.id)! } : solid,
+    dimension3d: dimension => identities.has(dimension.id) ? { ...dimension, cadIdentity: identities.get(dimension.id)! } : dimension,
+  });
+}
 const isOwner = (ref: CadReference): boolean => ref.kind === 'hard-owner' || ref.kind === 'soft-owner' || ref.role === 'extension';
 function owned(graph: CadGraph, roots: ReadonlySet<string>): Set<string> {
   const children = new Map<string, string[]>();
   const owners = new Map<string, string>();
   const add = (parent: string, child: string) => { const list = children.get(parent) ?? []; list.push(child); children.set(parent, list); };
-  const mainEntities = new Map(graph.nodes.flatMap((node) => node.anchor?.kind === 'entity' && !node.anchor.part ? [[node.anchor.id, node.id] as const] : []));
+  const mainEntities = new Map(graph.nodes.flatMap((node) => (node.anchor?.kind === 'entity' || node.anchor?.kind === 'solid3d' || node.anchor?.kind === 'dimension3d') && !node.anchor.part ? [[cadAnchorKey(node.anchor)!, node.id] as const] : []));
   // INSERT followers and consumed LEADER annotations have logical ownership even if their
   // source common-owner handle names a block record rather than the modeled parent entity.
-  for (const node of graph.nodes) if (node.anchor?.kind === 'entity' && node.anchor.part) {
-    const parent = mainEntities.get(node.anchor.id); if (parent) add(parent, node.id);
+  for (const node of graph.nodes) if ((node.anchor?.kind === 'entity' || node.anchor?.kind === 'solid3d' || node.anchor?.kind === 'dimension3d') && node.anchor.part) {
+    const parent = mainEntities.get(cadAnchorKey({ ...node.anchor, part: undefined })!); if (parent) add(parent, node.id);
   }
   for (const node of graph.nodes) for (const ref of node.references ?? []) if (ref.target && ref.role === 'owner') owners.set(node.id, ref.target);
   for (const node of graph.nodes) for (const ref of node.references ?? []) if (ref.target) {
@@ -296,12 +342,14 @@ export function cloneCadEntitySets(targetState: DrawingState, batches: readonly 
     const sameDocument = source === targetGraph || !!targetGraph && (source.documentId && targetGraph.documentId ? source.documentId === targetGraph.documentId : source.nodes.some(node => targetIds.has(node.id)));
     const crossDocument = !sameDocument, nodes = [...(graph?.nodes ?? [])];
     const sourceEntities = new Map(allEntities(sourceState).map((entity) => [entity.id, entity])), destinations = new Map(allEntities(state).map((entity) => [entity.id, entity]));
+    const sourceModels = modelCarriers(sourceState), destinationModels = modelCarriers(state);
     const sourceNodes = new Map(source.nodes.map((node) => [node.id, node]));
     const selected = new Set(Object.keys(batch.entityIds));
+    const selectedSolids = new Set(Object.keys(batch.solidIds ?? {})), selectedDimensions = new Set(Object.keys(batch.dimension3dIds ?? {}));
     const anchorRemaps = new Map((batch.anchorRemaps ?? []).map(remap => [cadAnchorKey(remap.from), remap.to]));
     if (anchorRemaps.has(undefined)) throw new CadGraphError('copy', 'Structural CAD copies require a specific source anchor.');
-    const roots = new Set(source.nodes.filter((node) => node.anchor?.kind === 'entity' && selected.has(node.anchor.id) || anchorRemaps.has(cadAnchorKey(node.anchor))).map((node) => node.id));
-    const closure = owned(source, roots), remap = new Map<string, string>(), identities = new Map<string, string>();
+    const roots = new Set(source.nodes.filter((node) => node.anchor?.kind === 'entity' && selected.has(node.anchor.id) || node.anchor?.kind === 'solid3d' && selectedSolids.has(node.anchor.id) || node.anchor?.kind === 'dimension3d' && selectedDimensions.has(node.anchor.id) || anchorRemaps.has(cadAnchorKey(node.anchor))).map((node) => node.id));
+    const closure = owned(source, roots), remap = new Map<string, string>(), identities = new Map<string, string>(), modelIdentities = new Map<string, string>();
     if (crossDocument) {
       const className = (node: CadNode) => node.section === 'CLASSES' && node.type === 'CLASS' ? node.groups.find(([code]) => code === 1)?.[1].toUpperCase() : undefined;
       const targetClasses = new Map(nodes.flatMap((node) => { const name = className(node); return name ? [[name, node] as const] : []; }));
@@ -322,6 +370,12 @@ export function cloneCadEntitySets(targetState: DrawingState, batches: readonly 
     const diagnostics = [...(graph?.diagnostics ?? [])];
     for (const [oldId, newId] of Object.entries(batch.entityIds)) {
       if (!sourceEntities.has(oldId) || !destinations.has(newId) || oldId === newId && !crossDocument) throw new CadGraphError('copy', 'CAD copy intent does not name an existing source and distinct destination entity.');
+    }
+    for (const kind of ['solid3d', 'dimension3d'] as const) {
+      const mapping = kind === 'solid3d' ? batch.solidIds : batch.dimension3dIds;
+      for (const [oldId, newId] of Object.entries(mapping ?? {})) {
+        if (sourceModels.get(oldId)?.kind !== kind || destinationModels.get(newId)?.kind !== kind || oldId === newId && !crossDocument) throw new CadGraphError('copy', 'CAD 3D copy intent needs an existing source and distinct destination of the same carrier kind.');
+      }
     }
     for (const node of source.nodes) if (closure.has(node.id)) {
       let id: string;
@@ -363,14 +417,27 @@ export function cloneCadEntitySets(targetState: DrawingState, batches: readonly 
         // The importer marks metadata-bearing owners and retained-reference targets explicitly.
         // Plain geometry stays usable in previews/derived primitives without carrying a graph.
         if (!anchor.part && sourceEntity?.cadIdentity) identities.set(destination, id);
+      } else if (anchor?.kind === 'solid3d' || anchor?.kind === 'dimension3d') {
+        const destination = (anchor.kind === 'solid3d' ? batch.solidIds : batch.dimension3dIds)?.[anchor.id];
+        if (!destination) throw new CadGraphError('dependency', 'An owned CAD object refers to a 3D carrier outside its declared copy batch.');
+        anchor = { ...anchor, id: destination };
+        if (!anchor.part) modelIdentities.set(destination, id);
       } else if (anchorRemaps.has(cadAnchorKey(anchor))) anchor = anchorRemaps.get(cadAnchorKey(anchor))!;
       else if (anchor?.kind === 'dictionary') anchor = { kind: 'raw' };
-      const { sourceHandle: _source, baselineEntity: _baseline, ...rest } = node;
+      const { sourceHandle: _source, baselineEntity: _baseline, baselineSolid: _solid, baselineDimension3D: _dimension, ...rest } = node;
       const keptGroups = groups.filter((_, index) => !removedGroups.has(index));
-      nodes.push({ ...rest, id, anchor, groups: batch.transform ? transformCadGroups(keptGroups, batch.transform) : keptGroups, references: references.map(ref => ({ ...ref, groupIndex: ref.groupIndex - [...removedGroups].filter(index => index < ref.groupIndex).length })), ...(anchor?.kind === 'entity' && !anchor.part ? { baselineEntity: destinations.get(anchor.id)! } : {}) });
+      // Imported follower identities describe the source topology, including copy transforms.
+      // Preserve that proof instead of making a retessellated destination its own new baseline.
+      const sourceCarrier = node.anchor?.kind === 'solid3d' ? sourceModels.get(node.anchor.id) : undefined;
+      const destinationCarrier = anchor?.kind === 'dimension3d' ? destinationModels.get(anchor.id) : undefined;
+      const baseline = anchor?.kind === 'solid3d' && !anchor.part ? { baselineSolid: node.baselineSolid ?? (sourceCarrier?.kind === 'solid3d' ? sourceCarrier.object : undefined) }
+        : anchor?.kind === 'dimension3d' && !anchor.part ? { baselineDimension3D: destinationCarrier?.kind === 'dimension3d' ? destinationCarrier.object : undefined }
+          : anchor?.kind === 'entity' && !anchor.part ? { baselineEntity: destinations.get(anchor.id)! } : {};
+      nodes.push({ ...rest, id, anchor, groups: batch.transform ? transformCadGroups(keptGroups, batch.transform) : keptGroups, references: references.map(ref => ({ ...ref, groupIndex: ref.groupIndex - [...removedGroups].filter(index => index < ref.groupIndex).length })), ...baseline });
     }
     if (closure.size) {
       state = replaceEntityIdentities(state, identities);
+      state = replaceModelIdentities(state, modelIdentities);
       state = withCadGraph(state, { schema: 1, documentId: graph?.documentId ?? (sameDocument ? source.documentId : undefined) ?? newId(), sourceFormat: graph?.sourceFormat ?? source.sourceFormat, ...(graph?.sourceVersion ?? source.sourceVersion ? { sourceVersion: graph?.sourceVersion ?? source.sourceVersion } : {}), nodes, ...(graph?.generatedHandles ? { generatedHandles: graph.generatedHandles } : {}), ...(diagnostics.length ? { diagnostics } : {}) });
     }
   }
@@ -484,6 +551,7 @@ function manualFieldTextChanged(node: CadNode, current: Entity, before: Entity |
 }
 /** State-level identity guard also applies to load and restored undo/redo snapshots. */
 export function validateCadState(state: DrawingState): void {
+  const carriers = modelCarriers(state);
   const graph = graphOf(state);
   if (!graph) {
     for (const entities of entityLists(state)) {
@@ -491,6 +559,7 @@ export function validateCadState(state: DrawingState): void {
       if (entities.some((entity) => entity.cadIdentity)) throw new CadGraphError('copy', 'Entity CAD identities require their retained object graph; copy with a captured source state.');
       if (isImmutableData(entities)) withoutIdentity.add(entities);
     }
+    if ([...carriers.values()].some(carrier => carrier.object.cadIdentity !== undefined)) throw new CadGraphError('copy', '3D CAD identities require their retained object graph.');
     return;
   }
   validateCadGraph(graph);
@@ -498,6 +567,16 @@ export function validateCadState(state: DrawingState): void {
   for (const entity of allEntities(state)) if (entity.cadIdentity) {
     if (identities.has(entity.cadIdentity) || main.get(entity.cadIdentity) !== entity.id) throw new CadGraphError('copy', 'An entity CAD identity is shared or missing its retained object anchor.');
     identities.add(entity.cadIdentity);
+  }
+  const modelMain = new Map(graph.nodes.flatMap(node => (node.anchor?.kind === 'solid3d' || node.anchor?.kind === 'dimension3d') && !node.anchor.part ? [[cadAnchorKey(node.anchor)!, node.id] as const] : []));
+  for (const node of graph.nodes) if (node.anchor?.kind === 'solid3d' || node.anchor?.kind === 'dimension3d') {
+    const carrier = carriers.get(node.anchor.id), primary = modelMain.get(cadAnchorKey({ ...node.anchor, part: undefined })!);
+    if (!carrier || carrier.kind !== node.anchor.kind || !primary || carrier.object.cadIdentity !== primary) invalid('A retained 3D carrier or follower is missing its live typed object identity.');
+  }
+  for (const carrier of carriers.values()) if (carrier.object.cadIdentity !== undefined) {
+    const identity = carrier.object.cadIdentity;
+    if (identities.has(identity) || modelMain.get(cadAnchorKey({ kind: carrier.kind, id: carrier.object.id })!) !== identity) throw new CadGraphError('copy', 'A 3D CAD identity is shared or missing its retained typed object anchor.');
+    identities.add(identity);
   }
 }
 /**
@@ -514,6 +593,7 @@ export function reconcileCadGraph(previous: DrawingState, next: DrawingState, in
   if (!graph) return state;
   validateCadGraph(graph);
   const before = graphEntities(previous), after = graphEntities(state), identities = new Map<string, string>();
+  const beforeModels = modelCarriers(previous), afterModels = modelCarriers(state), modelIdentities = new Map<string, string>();
   const beforeAnchors = anchorPresence(previous), afterAnchors = anchorPresence(state);
   const removed = new Set<string>(), mainNodes = graph.nodes.filter((node) => node.anchor?.kind === 'entity' && !node.anchor.part);
   for (const node of graph.nodes) if (node.anchor && node.anchor.kind !== 'entity') { const key = cadAnchorKey(node.anchor); if (key && beforeAnchors.has(key) && !afterAnchors.has(key)) removed.add(node.id); }
@@ -532,18 +612,49 @@ export function reconcileCadGraph(previous: DrawingState, next: DrawingState, in
     const current = after.get(node.anchor.id), old = before.get(node.anchor.id);
     if (current && manualFieldTextChanged(node, current, old)) for (const field of owned(graph, fieldBranchRoots(graph, node.id))) removed.add(field);
   }
+  const modelMain = graph.nodes.filter(node => (node.anchor?.kind === 'solid3d' || node.anchor?.kind === 'dimension3d') && !node.anchor.part);
+  const solidFollowers = new Set(graph.nodes.flatMap(node => node.anchor?.kind === 'solid3d' && node.anchor.part ? [node.anchor.id] : []));
+  for (const node of modelMain) {
+    const anchor = node.anchor;
+    if (anchor?.kind !== 'solid3d' && anchor?.kind !== 'dimension3d') continue;
+    const carrier = afterModels.get(anchor.id), old = beforeModels.get(anchor.id);
+    if (!carrier) { removed.add(node.id); continue; }
+    if (carrier.kind !== anchor.kind || old && old.kind !== carrier.kind) throw new CadGraphError('dependency', 'Cannot change the kind of a retained 3D carrier without a supported conversion.');
+    if (carrier.object.cadIdentity && carrier.object.cadIdentity !== node.id) throw new CadGraphError('copy', 'A 3D CAD identity does not match its retained anchor. Declare its copy batch.');
+    modelIdentities.set(anchor.id, node.id);
+    if (carrier.kind === 'solid3d' && solidFollowers.has(anchor.id)) {
+      const baseline = node.baselineSolid ?? (old?.kind === 'solid3d' ? old.object : undefined);
+      const mesh = carrier.object.mesh;
+      if (!baseline || baseline.mesh.positions.length !== mesh.positions.length || baseline.mesh.indices.length !== mesh.indices.length || baseline.mesh.indices.some((value, index) => value !== mesh.indices[index])) throw new CadGraphError('dependency', 'Cannot change imported 3D topology: retained polyface follower correspondence is not proven.');
+    }
+    if (carrier.kind === 'dimension3d') {
+      const baseline = old?.kind === 'dimension3d' ? old.object : node.baselineDimension3D;
+      if (baseline && baseline.kind !== carrier.object.kind) throw new CadGraphError('dependency', 'Cannot change the kind of a retained 3D dimension without an explicit conversion.');
+    }
+  }
+  // Missing carrier roots also erase every structural follower through the owned closure.
+  for (const node of graph.nodes) if ((node.anchor?.kind === 'solid3d' || node.anchor?.kind === 'dimension3d') && !afterModels.has(node.anchor.id)) removed.add(node.id);
   const used = new Set<string>();
   const anchored = new Map(mainNodes.map((node) => [node.id, node.anchor!.kind === 'entity' ? node.anchor!.id : '']));
   for (const entity of after.values()) if (entity.cadIdentity) {
     if (used.has(entity.cadIdentity) || anchored.get(entity.cadIdentity) !== entity.id) throw new CadGraphError('copy', 'Copied entities with retained CAD data require an explicit clone batch; original identities cannot be shared.');
     used.add(entity.cadIdentity);
   }
+  const anchoredModels = new Map(modelMain.map(node => [node.id, cadAnchorKey(node.anchor)]));
+  for (const carrier of afterModels.values()) if (carrier.object.cadIdentity) {
+    const identity = carrier.object.cadIdentity;
+    if (used.has(identity) || anchoredModels.get(identity) !== cadAnchorKey({ kind: carrier.kind, id: carrier.object.id })) throw new CadGraphError('copy', 'Copied 3D objects with retained CAD data require an explicit clone batch.');
+    used.add(identity);
+  }
   if (removed.size) graph = removeNodes(graph, owned(graph, removed));
   for (const edit of intent.transforms ?? []) {
-    const selected = new Set(edit.entityIds), roots = new Set(graph.nodes.filter((node) => (node.anchor?.kind === 'entity' || node.anchor?.kind === 'viewport') && selected.has(node.anchor.id)).map((node) => node.id)), closure = owned(graph, roots);
+    const selected = new Set(edit.entityIds), solids = new Set(edit.solidIds), dimensions = new Set(edit.dimension3dIds);
+    const roots = new Set(graph.nodes.filter(node => (node.anchor?.kind === 'entity' || node.anchor?.kind === 'viewport') && selected.has(node.anchor.id) || node.anchor?.kind === 'solid3d' && solids.has(node.anchor.id) || node.anchor?.kind === 'dimension3d' && dimensions.has(node.anchor.id)).map(node => node.id)), closure = owned(graph, roots);
     graph = { ...graph, nodes: graph.nodes.map((node) => closure.has(node.id) ? { ...node, groups: transformCadGroups(node.groups, edit.transform) } : node) };
   }
   if ([...identities].some(([id, identity]) => after.get(id)!.cadIdentity !== identity)) state = replaceEntityIdentities(state, identities);
+  if ([...modelIdentities].some(([id, identity]) => afterModels.get(id)!.object.cadIdentity !== identity)) state = replaceModelIdentities(state, modelIdentities);
   if (graph !== graphOf(state)) state = withCadGraph(state, graph);
+  validateCadState(state);
   return state;
 }

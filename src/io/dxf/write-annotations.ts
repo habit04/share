@@ -166,7 +166,7 @@ export function writeDimension(w: Writer, e: DimensionEntity, owner: string, blo
  * XDATA for what DIMSTYLE records keep there (arrowheads, basic tolerance, alternate placement).
  * Ported from PR #2 (codex/electrical-review-fixes 2f89b0e).
  */
-function writeDimStyleOverrides(w: Writer, e: DimensionEntity): void {
+export function writeDimStyleOverrides(w: Writer, e: DimensionEntity): void {
   const inherited = w.dimensionStyles.get(e.style.name.toUpperCase());
   if (!inherited) return;
   const overrides = dimensionStyleOverrides(e.style, inherited, e.styleOverrides);
