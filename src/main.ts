@@ -2,6 +2,7 @@ import './styles/app.css';
 import './styles/parity.css';
 import { Editor, type FileBridge } from './app/editor';
 import { installGpuPrototype } from './app/gpu-prototype';
+import { installGpu2dCandidateSelector } from './app/gpu-2d-candidate';
 import { setDiagnosticRenderer } from './app/gpu-diagnostics';
 import { Ribbon, ELECTRICAL_TABS } from './ui/ribbon';
 import { CommandLine } from './ui/commandline';
@@ -526,6 +527,7 @@ function boot(): void {
   const experimental3d = installExperimental3d(editor);
   setDiagnosticRenderer(() => experimental3d?.active ? 'WebGL2 experimental 3D modelling viewport' : 'Canvas 2D');
   if (__JCAD_GPU_EXPERIMENTAL__) installGpuPrototype(editor, () => experimental3d?.active ?? false);
+  else installGpu2dCandidateSelector(editor, () => experimental3d?.active ?? false);
 
   // ------------------------------------------------------------ chrome
   buildTitleBar(editor, document.getElementById('titlebar')!, (anchor) => showAppMenu(editor, anchor, { exit: () => (window.jcad?.quit ? window.jcad.quit() : window.close()) }));

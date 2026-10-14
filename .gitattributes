@@ -5,3 +5,6 @@ native/dwg-writer/tests/fixtures/autocad-multilayout-app.dxf -text
 native/dwg-writer/tests/fixtures/legacy-minsert.dxf -text
 # The original MPL crate preimage is an authenticated source-patch fixture.
 tests/fixtures/acadrust-0.6.4-dwg-writer.rs -text
+
+# Keep audited native CRLF and significant TEXT spaces; byte pins check this fixture.
+tests/fixtures/interchange/r2018-shx-text.dxf -text -whitespace

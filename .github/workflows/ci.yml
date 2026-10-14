@@ -180,8 +180,9 @@ jobs:
           path: e2e-output/
           if-no-files-found: warn
 
-  # This checks the development flag and real WebGL lifecycle separately from the
-  # ordinary Windows build. Runner graphics capabilities are recorded, not treated
+  # Ordinary production keeps Canvas default and tests explicit candidate/fallback;
+  # the development flag and full prototype lifecycle are then checked separately.
+  # Runner graphics capabilities are recorded, not treated
   # as proof of consumer hardware support; timing comparisons have no speed gate.
   gpu-experimental:
     runs-on: windows-latest
@@ -208,6 +209,8 @@ jobs:
         run: |
           node scripts/e2e-gpu-default.mjs
           node scripts/e2e-gpu-diagnostics.mjs
+      - name: Explicit 2D GPU candidate through the ordinary production entry point
+        run: node scripts/shipping-gpu-2d-smoke.mjs --source
       - name: Integrated 2D compatibility, real saving and backups
         run: node scripts/e2e-2d-batch.mjs
       - run: npm run build:gpu

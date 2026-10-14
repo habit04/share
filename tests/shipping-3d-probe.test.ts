@@ -121,8 +121,8 @@ describe('fixed shipping 3D phases and profile confinement', () => {
   it('admits only the fixed phase names and rejects duplicate or supplied JavaScript phases', () => {
     const f = load(profile());
     expect(f.phases([])).toBeNull();
-    for (const phase of ['first', 'second', 'dwg', '3d-default', '3d-enable', '3d']) expect(f.phases([`--probe-startup=${phase}`])).toBe(phase);
-    for (const args of [['--probe-startup=eval(1)'], ['--probe-startup=3d;process.exit()'], ['--probe-startup=3d\n'], ['--probe-startup=3d', '--probe-startup=3d-enable']]) expect(() => f.phases(args)).toThrow(/Invalid startup probe phase/);
+    for (const phase of ['first', 'second', 'dwg', '3d-default', '3d-enable', '3d', 'gpu2d', 'gpu2d-shx']) expect(f.phases([`--probe-startup=${phase}`])).toBe(phase);
+    for (const args of [['--probe-startup=eval(1)'], ['--probe-startup=3d;process.exit()'], ['--probe-startup=3d\n'], ['--probe-startup=3d', '--probe-startup=3d-enable'], ['--probe-startup=3d-default', '--probe-startup=gpu2d']]) expect(() => f.phases(args)).toThrow(/Invalid startup probe phase/);
   });
   it('refuses a normal profile and a test ASAR before executing renderer code or writing destinations', async () => {
     const normal = profile('jcad-3d-control-'), f = load(normal); fixture(normal);
