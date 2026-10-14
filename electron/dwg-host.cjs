@@ -8,6 +8,7 @@
  * Every read, cancellation, timeout and failure tears down its process before the next starts.
  */
 const path = require('node:path');
+const { assertInternalTimeContext } = require('./dwg-time-context.cjs');
 const { randomUUID } = require('node:crypto');
 const { deserialize } = require('node:v8');
 const { MAX_DRAWING_BYTES } = require('./resource-limits.cjs');
@@ -45,10 +46,11 @@ function defaultMemoryGuard({ pid, onFailure }) {
   const getMetrics = createProcessMetricsReader({ pid, getMetrics: () => app.getAppMetrics() });
   return createProcessMemoryGuard({ pid, getMetrics, onFailure });
 }
-function childEnvironment(allowTestHooks) {
+function childEnvironment(allowTestHooks, timeContext) {
   const env = { ...process.env };
   for (const name of ['NODE_OPTIONS', 'NODE_PATH', 'ELECTRON_RUN_AS_NODE']) delete env[name];
   if (!allowTestHooks) delete env.JCAD_DWG_TEST_DELAY_MS;
+  if (timeContext) env.TZ = timeContext.timezone;
   return env;
 }
 
@@ -137,6 +139,8 @@ function createDwgHost({ scriptsDir, timeoutMs, maxBytes = MAX_DRAWING_BYTES, re
     if (!msg || typeof msg !== 'object') return protocolFailure(state);
     if (msg.type === 'ready') {
       if (state.ready || msg.protocol !== PROTOCOL_VERSION || msg.pid !== state.child.pid) return protocolFailure(state);
+      if (state.item.timeContext && (msg.timezone !== state.item.timeContext.timezone ||
+          !Number.isInteger(msg.timezoneOffsetMinutes) || msg.timezoneOffsetMinutes !== -state.item.timeContext.offsetMinutes)) return protocolFailure(state);
       state.ready = true;
       beginInput(state);
       return;
@@ -188,7 +192,7 @@ function createDwgHost({ scriptsDir, timeoutMs, maxBytes = MAX_DRAWING_BYTES, re
     current = state;
     state.startTimer = setTimeout(() => finish(state, new Error('The isolated DWG reader did not start in time.')), START_TIMEOUT_MS);
     try {
-      state.child = launchProcess(entry, { env: childEnvironment(allowTestHooks), serviceName: state.serviceName });
+      state.child = launchProcess(entry, { env: childEnvironment(allowTestHooks, item.timeContext), serviceName: state.serviceName });
       state.child.on('message', (msg) => {
         try { message(state, msg); } catch (error) { finish(state, error); }
       });
@@ -217,15 +221,17 @@ function createDwgHost({ scriptsDir, timeoutMs, maxBytes = MAX_DRAWING_BYTES, re
   }
 
   return {
-    read(bytes, id = nextId++) {
+    read(bytes, id = nextId++, context) {
       if (disposed) return Promise.reject(new Error('The DWG reader was closed.'));
+      let timeContext;
+      try { timeContext = assertInternalTimeContext(context); } catch (error) { return Promise.reject(error); }
       if (!(bytes instanceof Uint8Array)) return Promise.reject(new Error('Invalid DWG payload'));
       if (!Number.isSafeInteger(id) || id <= 0) return Promise.reject(new Error('Invalid DWG request id.'));
       if (bytes.byteLength > maxBytes) return Promise.reject(new Error('The DWG file is larger than the supported ' + Math.round(maxBytes / (1024 * 1024)) + ' MB.'));
       if (requests.has(id)) return Promise.reject(new Error('A DWG read already uses this request id.'));
       if (requests.size >= MAX_OUTSTANDING_READS || bytes.byteLength > MAX_QUEUED_BYTES - reservedBytes) return Promise.reject(new Error('Too many DWG files are being opened. Wait for a current read to finish.'));
       return new Promise((resolve, reject) => {
-        const item = { id, byteLength: bytes.byteLength, bytes: new Uint8Array(bytes), resolve, reject, settled: false, output: null };
+        const item = { id, timeContext, byteLength: bytes.byteLength, bytes: new Uint8Array(bytes), resolve, reject, settled: false, output: null };
         requests.set(id, item);
         reservedBytes += item.byteLength;
         queue.push(item);

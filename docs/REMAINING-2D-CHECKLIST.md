@@ -15,6 +15,18 @@ progress. Production date assertions, native assets and reader/writer pins remai
 unchanged. A single lead integrates the delivered 3D source and the GPU owner's
 frozen handoff after clean gates; the remaining partial features below are deferred.
 
+The corrected original-reference diagnostic at `3c3592` now passes all eight native
+reads with unchanged originals/copies and complete typed/raw Aux agreement. The
+next development repair sets a captured fixed-hour source creation context only
+in the isolated postflight child and verifies its actual offset before input.
+Existing creation/fixed-point guards, reader/writer assets and ordinary opens stay
+unchanged. Twelve private Node cases plus the permanent CI adapter pass; four real
+shipped-WASM UTC-parent reads pass exact creation checks and 24 refusal controls.
+A normal-disconnect harness error prevented the second parent run; all children
+closed and the failed overall run remains recorded. Chicago repeat, broad local
+checks, actual Windows/Electron/native writer and helper/C fixed-point gates remain
+due before stable/3D/GPU merges. This does not reopen the long feature list.
+
 The full PR/branch history, delivered GPU milestones and proposed combined Windows
 upgrade are recorded in [WINDOWS-UPGRADE-INTEGRATION.md](WINDOWS-UPGRADE-INTEGRATION.md).
 GPU milestones remain owned by their separate workstreams; this checklist is not

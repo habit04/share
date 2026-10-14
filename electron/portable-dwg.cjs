@@ -4,6 +4,7 @@ const { constants } = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
+const { deriveSourceTimeContext } = require('./dwg-time-context.cjs');
 const { runBoundedWriter } = require('./portable-dwg-process.cjs');
 const { MAX_DRAWING_BYTES, readLimitedFile, validateTextSize } = require('./resource-limits.cjs');
 
@@ -14,14 +15,14 @@ const FORMAT = 'AC1032';
 const UNAVAILABLE = 'The bundled portable DWG writer is missing or failed its integrity check. Reinstall the Windows desktop app, or save a DXF copy.';
 
 /** Reopen through the independently built reader, using its existing bounded utility process. */
-async function readPortableMetadata(bytes, signal) {
+async function readPortableMetadata(bytes, signal, timeContext) {
   if (signal?.aborted) throw new Error('DWG export canceled.');
   const { dwgHost } = require('./main/dwg.cjs');
   const id = dwgHost.newId();
   const abort = () => dwgHost.cancel(id);
   signal?.addEventListener('abort', abort, { once: true });
   try {
-    const result = await dwgHost.read(bytes, id);
+    const result = await dwgHost.read(bytes, id, timeContext);
     if (signal?.aborted) throw new Error('DWG export canceled.');
     return result.payload?.nativeMetadata;
   } finally { signal?.removeEventListener('abort', abort); }
@@ -185,6 +186,7 @@ function verifyWriterReport(bytes, output) {
  */
 async function convertDxfToDwg(text, opts = {}) {
   validateExportDxf(text);
+  const timeContext = deriveSourceTimeContext(text);
   const fileSystem = opts.fs || fs;
   if (opts.signal?.aborted) throw new Error('DWG export canceled.');
   const installation = await verifyPortableWriter((opts.locations || defaultLocations)(), fileSystem);
@@ -211,7 +213,7 @@ async function convertDxfToDwg(text, opts = {}) {
     const output = /** @type {Buffer} */ (await readLimitedFile(fileSystem, path.join(workspace, 'output.dwg'), MAX_DRAWING_BYTES));
     const report = /** @type {Buffer} */ (await readLimitedFile(fileSystem, path.join(workspace, 'report.json'), MAX_REPORT_BYTES));
     verifyWriterReport(report, output);
-    const metadata = await (opts.readMetadata || readPortableMetadata)(output, opts.signal);
+    const metadata = await (opts.readMetadata || readPortableMetadata)(output, opts.signal, timeContext);
     await verifyPortableMetadata(text, metadata);
     if (opts.signal?.aborted) throw new Error('DWG export canceled.');
     await installation.check();

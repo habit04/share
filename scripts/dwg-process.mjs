@@ -153,4 +153,5 @@ if (electronTransport) {
   process.on('message', receive);
   process.on('disconnect', stop);
 }
-send({ type: 'ready', protocol: PROTOCOL_VERSION, pid: process.pid });
+send({ type: 'ready', protocol: PROTOCOL_VERSION, pid: process.pid, timezone: process.env.TZ ?? null,
+  timezoneOffsetMinutes: new Date().getTimezoneOffset() });

@@ -9,6 +9,15 @@ a date repair or the remaining native cases. Production date guards and matching
 native assets are unchanged. Delivered 3D and the separately owned GPU stack have
 not yet been integrated here; see [integration status](WINDOWS-UPGRADE-INTEGRATION.md).
 
+The corrected reference diagnostic now passes eight original reads. A development
+repair preserves exact date comparisons by capturing a verified fixed-hour source
+creation context for the postflight child, checking its actual timezone before
+input. Ordinary opens and native assets are unchanged. Twelve private Node cases
+and four real shipped-WASM UTC-parent reads pass, including creation mutation and
+deletion refusals. A private normal-disconnect harness failure is retained; Chicago
+repeat and actual Electron/native-writer/full validation remain pending. Missing
+date pairs keep the strict path, and unsupported contexts refuse DWG output.
+
 What JCad Electrical reads from DXF and DWG files, what it writes back, and what is lost on the
 way. JCad is a 2D program: it works in the drawing plane and keeps 2D geometry. DXF is the native
 format (AutoCAD 2000, `AC1015`, unless native properties require a newer version: MTEXT masks use

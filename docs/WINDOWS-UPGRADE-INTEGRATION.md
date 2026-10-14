@@ -7,6 +7,25 @@ asked to freeze new features after its current dimension gate. Its PR #16 contai
 the earlier GPU stack; integrate one verified leaf, preserving Canvas as default.
 Delivered 3D source remains `a4d5526380c844a93821fd7d61317856c715e5cb`.
 
+The corrected `3c3592` diagnostic passes all four originals in UTC and Chicago:
+eight source/private-copy hashes stay unchanged, all 19 ABI facts and 28 typed
+fields match the complete 129-byte Aux section, and creation/update tuples match
+qualified original references. Aux and main UTC agree for all cases. Production
+decoder assets remain unchanged; this is a development grammar experiment.
+
+The next development repair captures the source creation pair's verified fixed-hour
+timezone for the isolated postflight reader only. A branded context follows its
+queue item; the child proves its actual offset before input. Parent environment,
+ordinary opens, saved bytes and every existing metadata/date/fixed-point assertion
+remain unchanged. Missing pairs retain the strict path; unsupported offsets refuse.
+Twelve private Node regression cases and the permanent Vitest adapter pass, with
+independent source/test review. Four actual shipped-WASM reads under a UTC parent
+pass exact creation checks and 24 mutation/deletion refusals with unmodified full
+payloads and closed children. The private harness then misreports its intentional
+disconnect as exit2; that failure is retained. Chicago repeat, full source/static
+checks, actual Electron/native-writer CI and genuine helper/C first/second-save gates
+remain pending. Publication is a development candidate, not merge clearance.
+
 At `f76d392`, both Node jobs and UI pass; Windows still refuses the creation-date
 comparison. The isolated native candidate compiles and reads two original drawings
 in both UTC and Chicago: the complete Aux tuples match main UTC values, rather
