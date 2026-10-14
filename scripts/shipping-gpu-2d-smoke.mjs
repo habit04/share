@@ -145,6 +145,17 @@ export function validateShippingGpu2dRecord(record, options = {}) {
   return preflightShippingGpu2dRecord(record, options).map(compareShippingGpu2dPair);
 }
 
+/** Bounded fixed main-process failure reason; raw stdout/stderr remain preserved. */
+export function shippingGpu2dProbeFailure(stdout) {
+  if (typeof stdout !== 'string') return null;
+  const prefix = 'SHIPPING_PROBE_FAIL ';
+  const failures = stdout.split(/\r?\n/).filter(line => line.startsWith(prefix));
+  if (failures.length !== 1) return null;
+  const reason = failures[0].slice(prefix.length).replace(/[\u0000-\u001f\u007f]/g, ' ').trim();
+  if (!reason) return null;
+  return reason.length > 1000 ? reason.slice(0, 1000) + ' [truncated]' : reason;
+}
+
 export async function runShippingGpu2dSmoke(args = process.argv.slice(2)) {
   assert.equal(process.platform, 'win32', 'This acceptance runner targets Windows');
   const source = args.includes('--source'), highPerformance = args.includes('--high-performance');
@@ -166,13 +177,14 @@ export async function runShippingGpu2dSmoke(args = process.argv.slice(2)) {
   const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE; delete env.VITE_DEV_SERVER_URL;
   const switches = highPerformance ? ['--force_high_performance_gpu'] : [];
   const argumentsList = [...(source ? ['.'] : []), '--probe-startup=gpu2d', `--user-data-dir=${profile}`, ...switches, realpathSync.native(fixture)];
-  let result;
+  let result, probeFailure = null;
   try {
     const fuses = source ? null : await verifyExecutableFuses(executable, 'shipping');
     const child = spawnSync(executable, argumentsList, { cwd: repo, env, encoding: 'utf8', windowsHide: true, timeout: 90_000, maxBuffer: 48 * 1024 * 1024 });
     writeFileSync(join(out, 'stdout.txt'), child.stdout || ''); writeFileSync(join(out, 'stderr.txt'), child.stderr || '');
+    probeFailure = shippingGpu2dProbeFailure(child.stdout);
     assert.equal(child.error, undefined, 'Acceptance process did not time out');
-    assert.equal(child.signal, null, 'Acceptance process was not killed'); assert.equal(child.status, 0, 'Acceptance process exited cleanly');
+    assert.equal(child.signal, null, 'Acceptance process was not killed'); assert.equal(child.status, 0, 'Acceptance process exited cleanly' + (probeFailure ? ': ' + probeFailure : ' (see preserved stdout/stderr)'));
     const markers = (child.stdout || '').split(/\r?\n/).filter(line => line.startsWith('SHIPPING_PROBE_OK '));
     assert.equal(markers.length, 1, 'One fixed main-authored result');
     result = JSON.parse(markers[0].slice('SHIPPING_PROBE_OK '.length));
@@ -195,7 +207,7 @@ export async function runShippingGpu2dSmoke(args = process.argv.slice(2)) {
     console.log(`Fixed ordinary GPU2D acceptance passed: ${out}; actual ${hardwareClass}; ${source ? 'source execution is not installed security evidence' : 'exact shipping executable'}.`);
     return report;
   } catch (error) {
-    writeFileSync(join(out, 'failure.json'), JSON.stringify({ message: error instanceof Error ? error.message : String(error), resultCaptured: !!result, source, requestedPreference: highPerformance ? 'high-performance' : 'default' }, null, 2) + '\n');
+    writeFileSync(join(out, 'failure.json'), JSON.stringify({ message: error instanceof Error ? error.message : String(error), resultCaptured: !!result, probeFailure, source, requestedPreference: highPerformance ? 'high-performance' : 'default' }, null, 2) + '\n');
     throw error;
   } finally {
     for (const name of ['shipping-startup.dxf', 'shipping-gpu2d-output.dxf', 'shipping-gpu2d-output.dxf.bak']) {

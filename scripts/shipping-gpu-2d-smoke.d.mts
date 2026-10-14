@@ -5,3 +5,5 @@ export function classifyShippingGpu2dAdapter(adapter: unknown): 'software' | 'nv
 export function preflightShippingGpu2dRecord(record: unknown, options?: { requireAdapter?: string }): unknown[];
 export function validateShippingGpu2dRecord(record: unknown, options?: { requireAdapter?: string }): ReturnType<typeof compareShippingGpu2dPair>[];
 export function runShippingGpu2dSmoke(args?: string[]): Promise<unknown>;
+
+export function shippingGpu2dProbeFailure(stdout: unknown): string | null;
