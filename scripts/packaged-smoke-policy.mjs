@@ -9,6 +9,21 @@ export function needsPackagedOrigin(version) {
   return major > 0 || minor > 4 || (minor === 4 && patch >= 1);
 }
 
+/** Historical installers remain testable; every 0.5 prerelease and later requires actual 3D. */
+export function needsExperimental3d(version) {
+  const parsed = versionTools.parseVersion(version);
+  if (!parsed) throw new Error(`Invalid packaged smoke version: ${version}`);
+  const [major, minor] = parsed.parts;
+  return major > 0 || minor >= 5;
+}
+
+/** Installed evidence must cover the real opt-in restart, rendering, worker and both saves. */
+export function experimental3dProbeSucceeded(record) {
+  const flags = ['optionRestarted', 'webgl2', 'visibleInk', 'gpuPicked', 'kernelWorker', 'dxfSaveAsReopened', 'dwgRefused', 'canvasRestored', 'workerDisposed', 'dxfSecondSaveReopened', 'backupExact', 'sourceUnchanged'];
+  if (!record || flags.some(key => record[key] !== true)) return false;
+  return record.phase === '3d' && record.testBuild === false && /^Manifold .* \(worker\)$/.test(record.kernelName) && record.workers === 1 && Number.isFinite(record.unionVolume) && Math.abs(record.unionVolume - 1.5) < 1e-9 && record.secondSaveEntities === 2 && record.beforeRenderer === 'Canvas 2D' && record.activeRenderer === 'WebGL2 experimental 3D modelling viewport' && record.afterRenderer === 'Canvas 2D' && /WebGL 2/.test(record.capabilities?.version) && Number.isInteger(record.capabilities?.maxTextureSize) && record.capabilities.maxTextureSize > 0 && ['sourceSha256', 'firstSaveSha256', 'outputSha256', 'backupSha256'].every(key => typeof record[key] === 'string' && /^[a-f0-9]{64}$/.test(record[key])) && record.backupSha256 === record.firstSaveSha256 && record.outputSha256 !== record.firstSaveSha256;
+}
+
 export function needsPortableDwgExport(version, platform = process.platform) {
   const parsed = versionTools.parseVersion(version);
   if (!parsed) throw new Error(`Invalid packaged smoke version: ${version}`);
