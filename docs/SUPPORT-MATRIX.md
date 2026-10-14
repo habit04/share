@@ -1,21 +1,21 @@
 # DXF / DWG support matrix
 
 Integration status: #24 is complete; the remaining feature roadmap is paused while
-the combined Windows branch is validated. The current native save gate still
-refuses a creation-date representation difference. A development diagnostic has
-decoded two original drawings in two time zones, while a third paired DXF contains
-an older update time than its original-DWG AutoCAD oracle. This does not certify
-a date repair or the remaining native cases. Production date guards and matching
-native assets are unchanged. Delivered 3D and the separately owned GPU stack have
+the combined Windows branch is validated. A source timezone repair preserves exact
+creation-date checks in the isolated postflight reader. Production date guards and
+matching native assets are unchanged. Delivered 3D and the separately owned GPU stack have
 not yet been integrated here; see [integration status](WINDOWS-UPGRADE-INTEGRATION.md).
 
 The corrected reference diagnostic now passes eight original reads. A development
 repair preserves exact date comparisons by capturing a verified fixed-hour source
 creation context for the postflight child, checking its actual timezone before
 input. Ordinary opens and native assets are unchanged. Twelve private Node cases
-and four real shipped-WASM UTC-parent reads pass, including creation mutation and
-deletion refusals. A private normal-disconnect harness failure is retained; Chicago
-repeat and actual Electron/native-writer/full validation remain pending. Missing
+and eight real shipped-WASM reads under UTC and Chicago parents pass, including 48
+creation mutation/deletion refusals, unchanged complete payloads and closed children.
+The probe covers creation and one retained scalar; whole-metadata/native-writer/OS
+containment certification is separate. A prior normal-disconnect harness failure is
+retained. Fresh exact-head CI and full local/native fixed-point validation remain
+pending after typing and explicit-DXF version-test corrections. Missing
 date pairs keep the strict path, and unsupported contexts refuse DWG output.
 
 What JCad Electrical reads from DXF and DWG files, what it writes back, and what is lost on the

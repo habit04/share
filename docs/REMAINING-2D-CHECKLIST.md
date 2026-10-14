@@ -4,28 +4,27 @@ Baseline: `83aedbcc7b145ff87293a35d9001cb56f127a2b0` (Windows v0.4.8).
 Worktree: `C:\Users\justi\Chad\jcad-2d-reliability`, branch `feature/remaining-2d-reliability`.
 This is development work; no release, installer, signing or GPU renderer changes.
 
-Current work is the integration blocker, not another checklist feature: #24 is
-frozen and the long list stays paused. At `f76d392`, both Node jobs and UI pass;
-Windows still refuses the strict creation-date comparison. The native diagnostic
-decodes two originals in both time zones and disproves a stored-local Aux theory
-for those drawings. A third paired DXF has an update time 181 seconds older than
-its original-DWG-bound AutoCAD oracle; its candidate tuple remains unlogged and
-the fourth drawing was not attempted. The reference/evidence correction is in
-progress. Production date assertions, native assets and reader/writer pins remain
-unchanged. A single lead integrates the delivered 3D source and the GPU owner's
-frozen handoff after clean gates; the remaining partial features below are deferred.
+Current work is the integration blocker: #24 is frozen and the long list stays
+paused. A single lead integrates the delivered 3D source and the completed GPU
+handoff `dc89bb0cbec839d489dce578034736c7cdb77dac` after clean gates. Both GPU
+first-attempt CI runs and actual Intel/NVIDIA native checks pass. The remaining
+partial features below are deferred; Canvas remains the default renderer.
 
 The corrected original-reference diagnostic at `3c3592` now passes all eight native
 reads with unchanged originals/copies and complete typed/raw Aux agreement. The
-next development repair sets a captured fixed-hour source creation context only
+development repair sets a captured fixed-hour source creation context only
 in the isolated postflight child and verifies its actual offset before input.
 Existing creation/fixed-point guards, reader/writer assets and ordinary opens stay
-unchanged. Twelve private Node cases plus the permanent CI adapter pass; four real
-shipped-WASM UTC-parent reads pass exact creation checks and 24 refusal controls.
-A normal-disconnect harness error prevented the second parent run; all children
-closed and the failed overall run remains recorded. Chicago repeat, broad local
-checks, actual Windows/Electron/native writer and helper/C fixed-point gates remain
-due before stable/3D/GPU merges. This does not reopen the long feature list.
+unchanged. Twelve Node cases plus the permanent CI adapter pass; the current tracked
+runtime passes eight actual shipped-WASM reads under UTC and Chicago parents and 48
+creation mutation/deletion refusals. Complete payloads, original/private-copy hashes
+and 20 native assets remain unchanged; all owned children close. The probe covers
+creation and one retained scalar, not whole-metadata/native-writer/OS containment.
+The earlier normal-disconnect harness failure remains recorded. Corrections address
+17 checkJS diagnostics and the stale explicit-DXF version assertion while retaining
+all deadlines and other checks. All three TypeScript projects, scoped lint and 115
+focused tests pass locally. Full local/build/app, fresh exact-head CI and genuine
+helper/C first/second-save gates remain due before stable/3D/GPU merges.
 
 The full PR/branch history, delivered GPU milestones and proposed combined Windows
 upgrade are recorded in [WINDOWS-UPGRADE-INTEGRATION.md](WINDOWS-UPGRADE-INTEGRATION.md).

@@ -5,6 +5,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { fork } = require('node:child_process');
 const { EventEmitter } = require('node:events');
+const Module = require('node:module');
 const { pathToFileURL } = require('node:url');
 const crypto = require('node:crypto');
 const root = path.resolve(__dirname, '..');
@@ -14,7 +15,12 @@ if (path.dirname(path.resolve(privateRoot)) !== temporaryParent || fs.realpathSy
   throw new Error('Invalid time-context test temporary root');
 const contextApi = require('../electron/dwg-time-context.cjs');
 const { deriveSourceTimeContext, sourceCreationOffsetMinutes } = contextApi;
-const live = new Set(), hosts = new Set();
+/** @typedef {{type:string, id?:number, byteLength?:number, offset?:number, bytes?:Uint8Array, resourceLimits?:Record<string, number>}} ReaderMessage */
+/** @typedef {EventEmitter & {sent:ReaderMessage[], messages:unknown[], readonly pid:number|undefined, postMessage(message:ReaderMessage):void, kill():boolean, closed:Promise<void>}} TestReaderProcess */
+/** @typedef {{events:TestReaderProcess, env:NodeJS.ProcessEnv}} LaunchedReader */
+/** @type {Set<TestReaderProcess>} */
+const live = new Set();
+const hosts = new Set();
 const sha = value => crypto.createHash('sha256').update(value).digest('hex');
 const empty = new Uint8Array([20]);
 const number = (milliseconds) => {
@@ -52,21 +58,25 @@ parentPort.on('message', async ({id,bytes}) => {
  parentPort.postMessage({id,ok:true,serialized:copy},[copy]);
 });
 `);
+/** @param {string} entry @param {{env:NodeJS.ProcessEnv}} options @param {LaunchedReader[]} [launched] @returns {TestReaderProcess} */
 function launch(entry, options, launched) {
   const child = fork(entry, [], { env: options.env, execArgv: [], serialization: 'advanced',
     stdio: ['ignore', 'ignore', 'ignore', 'ipc'], windowsHide: true });
-  const events = new EventEmitter();
+  const events = /** @type {TestReaderProcess} */ (new EventEmitter());
   events.sent = []; events.messages = [];
   Object.defineProperty(events, 'pid', { get: () => child.pid });
   events.postMessage = message => { events.sent.push(message); child.send(message, error => { if(error)events.emit('error',error); }); };
   events.kill = () => child.kill('SIGKILL');
-  events.closed = new Promise(resolve => child.once('exit', () => {live.delete(events);resolve();}));
+  /** @type {Promise<void>} */
+  const closed = new Promise(resolve => child.once('exit', () => {live.delete(events);resolve();}));
+  events.closed = closed;
   for (const name of ['spawn','message','error','exit']) child.on(name, (...args) => {
     if(name==='message')events.messages.push(args[0]); events.emit(name,...args);
   });
   live.add(events); launched?.push({events,env:options.env});
   return events;
 }
+/** @param {LaunchedReader[]} [launched] @param {string} [scriptsDir] */
 function host(launched = [], scriptsDir = probeScripts) {
   const value = candidateHost.createDwgHost({ scriptsDir, timeoutMs: 5000,
     launchProcess: (entry, options) => launch(entry, options, launched),
@@ -120,7 +130,7 @@ test('ignored raw-inventory i32 groups keep extractor grammar and do not add a l
     assert.throws(()=>sourceCreationOffsetMinutes(drawing().replace('9\n$TDCREATE',`${code}\nignored\n9\n$TDCREATE`)),/group/);
 });
 test('original strict verifier still rejects altered/missing creation and universal dates', async () => {
-  const { verifyDwgMetadataEquivalence: verify }=await import(pathToFileURL(path.join(root,'scripts/dwg-metadata-equivalence.mjs')));
+  const { verifyDwgMetadataEquivalence: verify }=await import(pathToFileURL(path.join(root,'scripts/dwg-metadata-equivalence.mjs')).href);
   const source=drawing();assert.equal(verify(source,source).headerVariables,2);
   for(const variable of ['$TDCREATE','$TDUCREATE']) {
     const expression=new RegExp(`9\\n\\${variable}\\n40\\n([^\\n]+)\\n`);
@@ -217,27 +227,35 @@ test('real portable conversion forwards captured context and preserves malformed
   const service={newId:()=>++nextId,cancel:id=>cancelled.push(id),read:async(...args)=>{
     reads.push(args);return {payload:{nativeMetadata:metadata}};
   }};
-  require.cache[servicePath]={id:servicePath,filename:servicePath,loaded:true,exports:{dwgHost:service}};
+  const serviceModule = new Module(servicePath);
+  serviceModule.filename = servicePath;
+  serviceModule.loaded = true;
+  serviceModule.exports = {dwgHost:service};
+  require.cache[servicePath]=serviceModule;
   try {
     const completed=new AbortController();
     assert.deepEqual(await portable.convertDxfToDwg(source,{...options,readMetadata:undefined,signal:completed.signal}),output);
     assert.equal(reads[0][1],71);assert.equal(reads[0][2].timezone,'Etc/GMT+5');
     assert.equal(contextApi.assertInternalTimeContext(reads[0][2]),reads[0][2]);
     completed.abort();assert.deepEqual(cancelled,[],'completed default postflight detaches abort listener');
-    let entered,release;
-    const entry=new Promise(resolve=>{entered=resolve;}),gate=new Promise(resolve=>{release=resolve;});
-    service.read=async(...args)=>{reads.push(args);entered();await gate;return {payload:{nativeMetadata:metadata}};};
+    /** @type {{entered?:()=>void, release?:()=>void}} */
+    const callbacks = {};
+    /** @type {Promise<void>} */
+    const entry=new Promise(resolve=>{callbacks.entered=resolve;});
+    /** @type {Promise<void>} */
+    const gate=new Promise(resolve=>{callbacks.release=resolve;});
+    service.read=async(...args)=>{reads.push(args);assert(callbacks.entered);callbacks.entered();await gate;return {payload:{nativeMetadata:metadata}};};
     const active=new AbortController();
     const pending=portable.convertDxfToDwg(source,{...options,readMetadata:undefined,signal:active.signal});
     const rejected=pending.then(()=>null,error=>error);
-    await entry;active.abort();assert.deepEqual(cancelled,[72]);release();
+    await entry;active.abort();assert.deepEqual(cancelled,[72]);assert(callbacks.release);callbacks.release();
     assert.match((await rejected).message,/canceled/);
   } finally {
     if(previous===undefined)delete require.cache[servicePath];else require.cache[servicePath]=previous;
   }
 });
 test('ordinary absent-context behavior and strict creation comparisons remain unchanged', async () => {
-  const {verifyDwgMetadataEquivalence:verify}=await import(pathToFileURL(path.join(root,'scripts/dwg-metadata-equivalence.mjs')));
+  const {verifyDwgMetadataEquivalence:verify}=await import(pathToFileURL(path.join(root,'scripts/dwg-metadata-equivalence.mjs')).href);
   const source=drawing();assert.equal(verify(source,source).headerVariables,2);
   for(const variable of ['$TDCREATE','$TDUCREATE']) {
     const marker='9\n'+variable+'\n40\n';const at=source.indexOf(marker)+marker.length;

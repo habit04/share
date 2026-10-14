@@ -1,16 +1,23 @@
 /** Captured source creation timezone for independent native postflight. */
+/** @typedef {Readonly<{schemaVersion:1, offsetMinutes:number, timezone:string}>} DwgTimeContext */
+/** @type {WeakSet<DwgTimeContext>} */
 const contexts = new WeakSet();
 const MAX_SOURCE_CHARS = 128 * 1024 * 1024;
 const DAY_MS = 86400000n;
 const MAX_DAY = 0x7fffffffn;
 
+/** @param {string} message @returns {never} */
 function invalid(message) {
+  /** @type {NodeJS.ErrnoException} */
   const error = new Error('DWG source time context: ' + message + '. Save a DXF copy instead.');
   error.code = 'ERR_DWG_TIME_CONTEXT';
   throw error;
 }
 
-/** Decimal arithmetic rounds each declared date to integer milliseconds, without float subtraction. */
+/**
+ * Decimal arithmetic rounds each declared date to integer milliseconds, without float subtraction.
+ * @param {unknown} text @returns {bigint}
+ */
 function dateMilliseconds(text) {
   if (typeof text !== 'string' || text.length > 64) invalid('invalid creation date');
   const match = /^([+]?)(\d+(?:\.\d*)?|\.\d+)(?:[eE]([+-]?\d{1,2}))?$/.exec(text);
@@ -29,9 +36,13 @@ function dateMilliseconds(text) {
   return milliseconds;
 }
 
-/** Only one exactly framed group40 for each known creation variable may establish a context. */
+/**
+ * Only one exactly framed group40 for each known creation variable may establish a context.
+ * @param {unknown} text @returns {number|null}
+ */
 function sourceCreationOffsetMinutes(text) {
   if (typeof text !== 'string' || text.length > MAX_SOURCE_CHARS || text.includes('\0')) invalid('invalid source drawing');
+  /** @type {Map<string, bigint>} */
   const dates = new Map();
   let index = 0, section = '', expectSection = false, headers = 0, variable = null, values = [], sawPair = false;
   const nextLine = () => {
@@ -90,12 +101,14 @@ function sourceCreationOffsetMinutes(text) {
   }
   if (expectSection || section === 'HEADER') invalid('unterminated source HEADER');
   // Missing date pairs retain the original strict metadata path. No baseline is invented.
-  if (!dates.has('$TDCREATE') || !dates.has('$TDUCREATE')) return null;
-  const delta = dates.get('$TDCREATE') - dates.get('$TDUCREATE');
+  const local = dates.get('$TDCREATE'), universal = dates.get('$TDUCREATE');
+  if (local === undefined || universal === undefined) return null;
+  const delta = local - universal;
   if (delta % 60000n || delta < -14n * 3600000n || delta > 14n * 3600000n) invalid('unsupported creation offset');
   return Number(delta / 60000n);
 }
 
+/** @param {unknown} text @param {number} [currentOffset] @returns {DwgTimeContext|null} */
 function deriveSourceTimeContext(text, currentOffset = -new Date().getTimezoneOffset()) {
   const offsetMinutes = sourceCreationOffsetMinutes(text);
   if (offsetMinutes === null) return null;
@@ -105,15 +118,18 @@ function deriveSourceTimeContext(text, currentOffset = -new Date().getTimezoneOf
   }
   const hours = offsetMinutes / 60;
   const timezone = hours === 0 ? 'Etc/GMT' : `Etc/GMT${hours > 0 ? '-' : '+'}${Math.abs(hours)}`;
+  /** @type {DwgTimeContext} */
   const context = Object.freeze({ schemaVersion: 1, offsetMinutes, timezone });
   contexts.add(context);
   return context;
 }
 
+/** @param {unknown} context @returns {DwgTimeContext|null} */
 function assertInternalTimeContext(context) {
   if (context === undefined || context === null) return null;
-  if (!contexts.has(context)) invalid('untrusted reader context');
-  return context;
+  const retained = /** @type {DwgTimeContext} */ (context);
+  if (!contexts.has(retained)) invalid('untrusted reader context');
+  return retained;
 }
 
 module.exports = { deriveSourceTimeContext, assertInternalTimeContext, sourceCreationOffsetMinutes };

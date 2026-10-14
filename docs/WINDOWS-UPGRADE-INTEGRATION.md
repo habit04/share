@@ -3,8 +3,10 @@
 Current integration checkpoint: #24 is complete and frozen; the long 2D roadmap
 is paused. One lead owns the combined candidate on this branch. The linked
 "JCad integration coordination" session owns the final GPU handoff and has been
-asked to freeze new features after its current dimension gate. Its PR #16 contains
-the earlier GPU stack; integrate one verified leaf, preserving Canvas as default.
+asked to freeze new features after its current dimension gate. Its final handoff
+is complete at `dc89bb0cbec839d489dce578034736c7cdb77dac`: both first-attempt CI
+runs and actual Intel/NVIDIA native gates pass. PR #16 contains the earlier GPU
+stack; integrate that leaf once, preserving Canvas as default and newer PR #11 fixes.
 Delivered 3D source remains `a4d5526380c844a93821fd7d61317856c715e5cb`.
 
 The corrected `3c3592` diagnostic passes all four originals in UTC and Chicago:
@@ -13,18 +15,27 @@ fields match the complete 129-byte Aux section, and creation/update tuples match
 qualified original references. Aux and main UTC agree for all cases. Production
 decoder assets remain unchanged; this is a development grammar experiment.
 
-The next development repair captures the source creation pair's verified fixed-hour
+The development repair captures the source creation pair's verified fixed-hour
 timezone for the isolated postflight reader only. A branded context follows its
 queue item; the child proves its actual offset before input. Parent environment,
 ordinary opens, saved bytes and every existing metadata/date/fixed-point assertion
 remain unchanged. Missing pairs retain the strict path; unsupported offsets refuse.
-Twelve private Node regression cases and the permanent Vitest adapter pass, with
-independent source/test review. Four actual shipped-WASM reads under a UTC parent
-pass exact creation checks and 24 mutation/deletion refusals with unmodified full
-payloads and closed children. The private harness then misreports its intentional
-disconnect as exit2; that failure is retained. Chicago repeat, full source/static
-checks, actual Electron/native-writer CI and genuine helper/C first/second-save gates
-remain pending. Publication is a development candidate, not merge clearance.
+Twelve Node regression cases and the permanent Vitest adapter pass, with independent
+source/test review. The current tracked runtime passes eight actual shipped-WASM
+reads under UTC and Chicago parents, exact creation checks and 48 mutation/deletion
+refusals. Full payloads, original/private-copy hashes and all 20 native assets remain
+unchanged; all owned children close. This diagnostic certifies creation checks and
+one retained scalar, not whole-metadata, native-writer or OS-containment behavior.
+The earlier intentional-disconnect harness failure remains recorded.
+
+At `bde6a0a`, UI CI passes; Windows passes 54 Rust tests, three CLI tests and four
+portable DWG cases, then fails a stale explicit-DXF version assertion and its recovery
+setup cascade. Both Node jobs report 17 checkJS errors. The corrections add precise
+types and assert the retained `AC1032` HEADER version, preserving runtime semantics,
+all other assertions and deadlines. Local validation passes all three TypeScript
+projects, scoped lint and 115 focused tests across five files. Full local/build/app
+checks, fresh exact-head CI and genuine helper/C first/second-save gates remain due.
+Publication is a development candidate, not merge clearance.
 
 At `f76d392`, both Node jobs and UI pass; Windows still refuses the creation-date
 comparison. The isolated native candidate compiles and reads two original drawings

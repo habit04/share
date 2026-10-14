@@ -93,10 +93,26 @@ export async function runPortableDwgChecks({ app, page, repo, outDir, check, cur
     assert.match(await warning.innerText(), /properties JCad cannot read|object\(s\) JCad cannot keep/);
     await warning.locator('button', { hasText: /^Yes$/ }).click();
     assert.equal(await overwrite, true, 'Normal DWG source overwrite requires and accepts loss consent');
+    // The reopened native drawing retains its metadata source version; DXF Save As
+    // preserves AC1032 even when the modeled appearance alone needs only AC1015.
+    const explicitSourceVersion = await page.evaluate(() => window.editor.doc.snapshot.cadGraph?.sourceVersion);
+    assert.equal(explicitSourceVersion, 'AC1032', 'Reopened native DWG retains its AC1032 metadata source version');
     const explicitDxf = join(directory, 'explicit-dxf-copy.dxf');
     await app.evaluate((_e, p) => globalThis.__e2e.savePaths.push(p), explicitDxf);
     assert.equal(await page.evaluate(() => window.editor.saveFile(true, 'dxf')), true, 'Explicit DXF export from DWG uses DXF Save As');
-    assert.match(readFileSync(explicitDxf, 'utf8'), /AC1015/);
+    const explicitHeaders = [...readFileSync(explicitDxf, 'utf8').matchAll(/^[ \t]*0[ \t]*\r?\nSECTION[ \t]*\r?\n[ \t]*2[ \t]*\r?\nHEADER[ \t]*\r?\n([\s\S]*?)^[ \t]*0[ \t]*\r?\nENDSEC[ \t]*\r?$/gm)];
+    assert.equal(explicitHeaders.length, 1, 'Explicit DXF contains exactly one HEADER section');
+    const explicitHeaderPairs = explicitHeaders[0][1].split(/\r?\n/);
+    assert.equal(explicitHeaderPairs.pop(), '', 'Explicit DXF HEADER ends with a complete group pair');
+    assert.equal(explicitHeaderPairs.length % 2, 0, 'Explicit DXF HEADER has complete group pairs');
+    const explicitVersions = [];
+    for (let i = 0; i < explicitHeaderPairs.length; i += 2) {
+      if (explicitHeaderPairs[i].trim() === '9' && explicitHeaderPairs[i + 1].trim() === '$ACADVER') {
+        assert.equal(explicitHeaderPairs[i + 2]?.trim(), '1', 'Explicit DXF $ACADVER uses native group 1');
+        explicitVersions.push(explicitHeaderPairs[i + 3]?.trim());
+      }
+    }
+    assert.deepEqual(explicitVersions, ['AC1032'], 'Explicit DXF has one exact retained HEADER.$ACADVER');
     assert.equal(await page.evaluate(() => window.editor.doc.filePath), explicitDxf);
     check(true, 'Normal DWG Save As and in-place Save preserve semantics and exact backups, source overwrite requires loss consent, and explicit DXF stays DXF');
     const prior = readFileSync(selectedTarget), backup = readFileSync(selectedTarget + '.bak');
