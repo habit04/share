@@ -1,6 +1,7 @@
 /* Development-only typed header evidence; never linked into JCad's reader. */
 #include <inttypes.h>
 #include <stdint.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -9,22 +10,96 @@
 
 static unsigned attempts, parses;
 static int decompression_error = -1, parse_error = -1, chain_present;
-static unsigned long long decoded_size;
+static unsigned long long decoded_size, final_byte;
+static unsigned final_bit;
+static int decoded_version, decoded_from_version, parsed_version, parsed_from_version;
+#define RAW_AUX_LIMIT 256
+#define LAYOUT_COUNT 16
+#define FIELD_COUNT 6
+static unsigned char decoded_bytes[RAW_AUX_LIMIT];
+static unsigned captured_bytes, layout_calls, observation_error;
+static unsigned long long library_layout[LAYOUT_COUNT];
+static const char *layout_names[LAYOUT_COUNT] = {
+  "rsBytes", "rlBytes", "rllBytes", "timeBytes", "daysOffset", "msOffset",
+  "valueOffset", "drawingBytes", "auxOffset", "auxBytes", "maintenanceOffset",
+  "maintenance1Offset", "maintenance2Offset", "creationOffset", "updateOffset", "tailOffset"
+};
+static const char *field_names[FIELD_COUNT] = {
+  "maint_version", "maint_version_1", "maint_version_2", "TDCREATE", "TDUPDATE", "zero_18"
+};
+static const unsigned field_counts[FIELD_COUNT] = {1, 1, 1, 2, 2, 3};
+static const unsigned field_widths[FIELD_COUNT] = {16, 16, 16, 64, 64, 48};
+static struct field_observation {
+  unsigned before_calls, after_calls;
+  unsigned long long before_bits, after_bits, values[3];
+} fields[FIELD_COUNT];
 
 /* Observation hooks are injected only into the authenticated runner-temp copy. */
 void jcad_header_diagnostic_aux_decompressed(int error, int present,
-                                            unsigned long long size)
+                                            unsigned long long size,
+                                            const unsigned char *raw,
+                                            int version, int from_version)
 {
   attempts++;
   decompression_error = error;
   chain_present = present;
   decoded_size = size;
+  decoded_version = version;
+  decoded_from_version = from_version;
+  if (present && raw && size <= 4 * 1024 * 1024)
+    {
+      captured_bytes = size < RAW_AUX_LIMIT ? (unsigned)size : RAW_AUX_LIMIT;
+      memcpy(decoded_bytes, raw, captured_bytes);
+    }
 }
 
-void jcad_header_diagnostic_aux_parsed(int error)
+void jcad_header_diagnostic_aux_parsed(int error, unsigned long long byte,
+                                     unsigned bit, int version, int from_version)
 {
   parses++;
   parse_error = error;
+  final_byte = byte;
+  final_bit = bit;
+  parsed_version = version;
+  parsed_from_version = from_version;
+}
+
+void jcad_header_diagnostic_aux_layout(const unsigned long long *facts, unsigned count)
+{
+  layout_calls++;
+  if (!facts || count != LAYOUT_COUNT)
+    { observation_error = 1; return; }
+  memcpy(library_layout, facts, sizeof library_layout);
+}
+
+void jcad_header_diagnostic_aux_field(const char *name, int phase,
+                                    unsigned long long byte, unsigned bit,
+                                    unsigned long long a, unsigned long long b,
+                                    unsigned long long c, unsigned count)
+{
+  unsigned index;
+  if (!name || bit > 7 || byte > 4 * 1024 * 1024)
+    { observation_error = 1; return; }
+  for (index = 0; index < FIELD_COUNT; index++)
+    if (!strcmp(name, field_names[index]))
+      break;
+  if (index == FIELD_COUNT || count != field_counts[index])
+    { observation_error = 1; return; }
+  if (phase == 0)
+    {
+      fields[index].before_calls++;
+      fields[index].before_bits = byte * 8 + bit;
+    }
+  else if (phase == 1)
+    {
+      fields[index].after_calls++;
+      fields[index].after_bits = byte * 8 + bit;
+      fields[index].values[0] = a;
+      fields[index].values[1] = b;
+      fields[index].values[2] = c;
+    }
+  else
+    observation_error = 1;
 }
 
 static int valid_date(BITCODE_TIMEBLL date)
@@ -48,6 +123,16 @@ int main(int argc, char **argv)
   int64_t section_size = 0;
   unsigned section_pages = 0;
   int section_name_valid = 0, native_error, accepted;
+  const unsigned long long driver_layout[LAYOUT_COUNT] = {
+    sizeof(BITCODE_RS), sizeof(BITCODE_RL), sizeof(BITCODE_RLL), sizeof(BITCODE_TIMEBLL),
+    offsetof(Dwg_Bitcode_TimeBLL, days), offsetof(Dwg_Bitcode_TimeBLL, ms),
+    offsetof(Dwg_Bitcode_TimeBLL, value), sizeof(Dwg_Data), offsetof(Dwg_Data, auxheader),
+    sizeof(Dwg_AuxHeader), offsetof(Dwg_AuxHeader, maint_version),
+    offsetof(Dwg_AuxHeader, maint_version_1), offsetof(Dwg_AuxHeader, maint_version_2),
+    offsetof(Dwg_AuxHeader, TDCREATE), offsetof(Dwg_AuxHeader, TDUPDATE),
+    offsetof(Dwg_AuxHeader, zero_18)
+  };
+  int layout_matches, fields_valid = 1;
   if (argc != 2 || strlen(argv[1]) > 4096 || stat(argv[1], &info)
       || !S_ISREG(info.st_mode) || info.st_size <= 0
       || info.st_size > 4 * 1024 * 1024)
@@ -76,6 +161,14 @@ int main(int argc, char **argv)
                                  && !strcmp(section->name, "AcDb:AuxHeader");
           }
       }
+  layout_matches = layout_calls == 1 && !memcmp(driver_layout, library_layout, sizeof driver_layout);
+  for (unsigned i = 0; i < FIELD_COUNT; i++)
+    if (fields[i].before_calls != 1 || fields[i].after_calls != 1
+        || fields[i].after_bits < fields[i].before_bits
+        || fields[i].after_bits - fields[i].before_bits != field_widths[i]
+        || fields[i].after_bits > decoded_size * 8
+        || (i && fields[i].before_bits < fields[i - 1].after_bits))
+      fields_valid = 0;
   accepted = native_error == 0 && dwg.header.version == R_2018
              && section_count == 1 && section_name_valid && section_size > 0
              && section_size <= 4 * 1024 * 1024 && section_pages > 0
@@ -89,7 +182,12 @@ int main(int argc, char **argv)
              && valid_date(dwg.header_vars.TDUCREATE)
              && valid_date(dwg.header_vars.TDUUPDATE)
              && valid_date(dwg.auxheader.TDCREATE)
-             && valid_date(dwg.auxheader.TDUPDATE);
+             && valid_date(dwg.auxheader.TDUPDATE)
+             && !observation_error && layout_matches && fields_valid
+             && decoded_version == R_2018 && decoded_from_version == R_2018
+             && parsed_version == R_2018 && parsed_from_version == R_2018
+             && captured_bytes == decoded_size && final_bit <= 7
+             && final_byte <= decoded_size && (final_byte < decoded_size || final_bit == 0);
   printf("{\"schemaVersion\":1,\"inputBytes\":%" PRIu64
          ",\"nativeError\":%d,\"nativeVersion\":%d,\"auxSection\":{"
          "\"count\":%u,\"nameValid\":%s,\"size\":%" PRId64
@@ -112,8 +210,35 @@ int main(int argc, char **argv)
   date("update", dwg.header_vars.TDUPDATE); printf("},\"elapsed\":{");
   date("drawing", dwg.header_vars.TDINDWG); printf(",");
   date("user", dwg.header_vars.TDUSRTIMER);
+  printf("},\"unverifiedObservations\":{\"observationError\":%u,\"layoutCalls\":%u,"
+         "\"layoutMatches\":%s,\"driverLayout\":{", observation_error, layout_calls,
+         layout_matches ? "true" : "false");
+  for (unsigned i = 0; i < LAYOUT_COUNT; i++)
+    printf("%s\"%s\":%llu", i ? "," : "", layout_names[i], driver_layout[i]);
+  printf("},\"libraryLayout\":{");
+  for (unsigned i = 0; i < LAYOUT_COUNT; i++)
+    printf("%s\"%s\":%llu", i ? "," : "", layout_names[i], library_layout[i]);
+  printf("},\"decodedVersion\":%d,\"decodedFromVersion\":%d,\"parsedVersion\":%d,"
+         "\"parsedFromVersion\":%d,\"finalByte\":%llu,\"finalBit\":%u,"
+         "\"capturedBytes\":%u,\"rawComplete\":%s,\"rawHex\":\"", decoded_version,
+         decoded_from_version, parsed_version, parsed_from_version, final_byte, final_bit,
+         captured_bytes, captured_bytes == decoded_size ? "true" : "false");
+  for (unsigned i = 0; i < captured_bytes; i++)
+    printf("%02x", (unsigned)decoded_bytes[i]);
+  printf("\",\"fields\":[");
+  for (unsigned i = 0; i < FIELD_COUNT; i++)
+    {
+      printf("%s{\"name\":\"%s\",\"beforeCalls\":%u,\"afterCalls\":%u,"
+             "\"beforeBits\":%llu,\"afterBits\":%llu,\"values\":[", i ? "," : "",
+             field_names[i], fields[i].before_calls, fields[i].after_calls,
+             fields[i].before_bits, fields[i].after_bits);
+      for (unsigned j = 0; j < field_counts[i]; j++)
+        printf("%s%llu", j ? "," : "", fields[i].values[j]);
+      printf("]}");
+    }
+  printf("]}");
   dwg_free(&dwg);
-  printf("},\"nativeFreed\":true,\"rawAuxCertified\":%s}\n",
+  printf(",\"nativeFreed\":true,\"rawAuxCertified\":%s}\n",
          accepted ? "true" : "false");
   return accepted ? 0 : 1;
 }

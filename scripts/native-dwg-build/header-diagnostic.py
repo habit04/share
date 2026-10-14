@@ -12,6 +12,7 @@ import tarfile
 
 ARCHIVE_SHA = "96d407e96047237200360b1669768f80aaffbb003c34c6fe57228fc4cd345d5a"
 DECODE_SHA = "be1fa5ba174fee1a513de35c7a32a2344a009e00a45c39a7480fb444cf10829a"
+AUX_SPEC_SHA = "80fd1928f65b68d69fba973448320a7d268df2272de8d80602905bac8b48f5dd"
 # Authenticated include/dwg.h DWG_VERSION_TYPE: R_12 aliases R_11; R_2018 is 40.
 NATIVE_R2018 = 40
 LIBRARY_CFLAGS = "-O2 -DNDEBUG"
@@ -40,11 +41,59 @@ MAX_INPUT = 4 * 1024 * 1024
 MAX_OUTPUT = 64 * 1024
 DECOMPRESSED_CALL = b"  error = read_2004_compressed_section (dat, dwg, &sec_dat, SECTION_AUXHEADER);"
 PARSED_CALL = b"  error = auxheader_private (dat, dwg);"
+LAYOUT_ANCHOR = (b"auxheader_private (Bit_Chain *restrict dat, Dwg_Data *restrict dwg)\n"
+                b"{\n  Bit_Chain *str_dat = dat;\n  Dwg_AuxHeader *_obj = &dwg->auxheader;")
+LAYOUT_EXPRESSIONS = ["sizeof(BITCODE_RS)", "sizeof(BITCODE_RL)", "sizeof(BITCODE_RLL)",
+    "sizeof(BITCODE_TIMEBLL)", "offsetof(Dwg_Bitcode_TimeBLL, days)",
+    "offsetof(Dwg_Bitcode_TimeBLL, ms)", "offsetof(Dwg_Bitcode_TimeBLL, value)",
+    "sizeof(Dwg_Data)", "offsetof(Dwg_Data, auxheader)", "sizeof(Dwg_AuxHeader)",
+    "offsetof(Dwg_AuxHeader, maint_version)", "offsetof(Dwg_AuxHeader, maint_version_1)",
+    "offsetof(Dwg_AuxHeader, maint_version_2)", "offsetof(Dwg_AuxHeader, TDCREATE)",
+    "offsetof(Dwg_AuxHeader, TDUPDATE)", "offsetof(Dwg_AuxHeader, zero_18)"]
+LAYOUT_NAMES = ["rsBytes", "rlBytes", "rllBytes", "timeBytes", "daysOffset", "msOffset",
+    "valueOffset", "drawingBytes", "auxOffset", "auxBytes", "maintenanceOffset",
+    "maintenance1Offset", "maintenance2Offset", "creationOffset", "updateOffset", "tailOffset"]
+FIELD_ROLES = [("maint_version", 16, 1), ("maint_version_1", 16, 1),
+               ("maint_version_2", 16, 1), ("TDCREATE", 64, 2),
+               ("TDUPDATE", 64, 2), ("zero_18", 48, 3)]
+MAX_RAW_AUX = 256
 DECLARATIONS = (
     b"/* Development-only observation; authenticated copy, no decode changes. */\n"
-    b"extern void jcad_header_diagnostic_aux_decompressed (int, int, unsigned long long);\n"
-    b"extern void jcad_header_diagnostic_aux_parsed (int);\n"
+    b"#include <stddef.h>\n"
+    b"extern void jcad_header_diagnostic_aux_decompressed (int, int, unsigned long long, const unsigned char *, int, int);\n"
+    b"extern void jcad_header_diagnostic_aux_parsed (int, unsigned long long, unsigned, int, int);\n"
+    b"extern void jcad_header_diagnostic_aux_layout (const unsigned long long *, unsigned);\n"
+    b"extern void jcad_header_diagnostic_aux_field (const char *, int, unsigned long long, unsigned, unsigned long long, unsigned long long, unsigned long long, unsigned);\n"
 )
+DECODE_REPLACEMENTS = [(DECOMPRESSED_CALL, DECOMPRESSED_CALL +
+    b"\n  jcad_header_diagnostic_aux_decompressed (error, sec_dat.chain != NULL, (unsigned long long)sec_dat.size, sec_dat.chain, (int)sec_dat.version, (int)sec_dat.from_version);"),
+    (PARSED_CALL, PARSED_CALL +
+    b"\n  jcad_header_diagnostic_aux_parsed (error, (unsigned long long)dat->byte, dat->bit, (int)dat->version, (int)dat->from_version);"),
+    (LAYOUT_ANCHOR, LAYOUT_ANCHOR + b"\n  { const unsigned long long facts[] = { " +
+     ", ".join("(unsigned long long)" + value for value in LAYOUT_EXPRESSIONS).encode() +
+     b" }; jcad_header_diagnostic_aux_layout (facts, sizeof facts / sizeof facts[0]); }")]
+
+
+def aux_observation_replacements():
+    replacements = []
+    for name, _, count in FIELD_ROLES:
+        if count == 1:
+            anchor = f"  FIELD_RSx ({name}, 0);"
+            values = [f"_obj->{name}", "0", "0"]
+        elif count == 2:
+            anchor = f"  FIELD_TIMERLL ({name}, 0);"
+            values = [f"_obj->{name}.days", f"_obj->{name}.ms", "0"]
+        else:
+            anchor = "    FIELD_VECTOR_INL (zero_18, RS, 3, 0);"
+            values = [f"_obj->{name}[{index}]" for index in range(3)]
+        indent = anchor[:len(anchor) - len(anchor.lstrip())]
+        before = f'#ifdef IS_DECODER\n{indent}jcad_header_diagnostic_aux_field ("{name}", 0, (unsigned long long)dat->byte, dat->bit, 0, 0, 0, {count});\n#endif\n'
+        after = f'\n#ifdef IS_DECODER\n{indent}jcad_header_diagnostic_aux_field ("{name}", 1, (unsigned long long)dat->byte, dat->bit, ' + ", ".join("(unsigned long long)" + value for value in values) + f", {count});\n#endif"
+        replacements.append((anchor.encode(), (before + anchor + after).encode()))
+    return replacements
+
+
+AUX_REPLACEMENTS = aux_observation_replacements()
 
 
 def sha(data):
@@ -63,13 +112,24 @@ def checked_file(path, limit):
 def patch_decoder(data):
     if sha(data) != DECODE_SHA:
         raise ValueError("Authenticated decode.c preimage changed")
-    for call in (DECOMPRESSED_CALL, PARSED_CALL):
+    for call, _ in DECODE_REPLACEMENTS:
         if data.count(call) != 1:
             raise ValueError("Aux observation anchor is not unique")
-    result = DECLARATIONS + data.replace(DECOMPRESSED_CALL, DECOMPRESSED_CALL +
-        b"\n  jcad_header_diagnostic_aux_decompressed (error, sec_dat.chain != NULL, (unsigned long long)sec_dat.size);", 1)
-    return result.replace(PARSED_CALL, PARSED_CALL +
-        b"\n  jcad_header_diagnostic_aux_parsed (error);", 1)
+    result = data
+    for original, observed in DECODE_REPLACEMENTS:
+        result = result.replace(original, observed, 1)
+    return DECLARATIONS + result
+
+
+def patch_aux_spec(data):
+    if sha(data) != AUX_SPEC_SHA:
+        raise ValueError("Authenticated auxheader.spec preimage changed")
+    result = data
+    for original, observed in AUX_REPLACEMENTS:
+        if data.count(original) != 1:
+            raise ValueError("Aux field observation anchor is not unique")
+        result = result.replace(original, observed, 1)
+    return result
 
 
 def archive_name(name):
@@ -173,6 +233,9 @@ def prepare(workspace, directory, revision):
     decode = directory / "source/src/decode.c"
     before = decode.read_bytes()
     decode.write_bytes(patch_decoder(before))
+    aux_spec = directory / "source/src/auxheader.spec"
+    aux_before = aux_spec.read_bytes()
+    aux_spec.write_bytes(patch_aux_spec(aux_before))
     inputs = directory / "inputs"
     inputs.mkdir()
     fixtures = []
@@ -191,12 +254,14 @@ def prepare(workspace, directory, revision):
     proof = {"schemaVersion": 1, "revision": revision, "source": provenance["source"],
         "archiveSha256": ARCHIVE_SHA, "decodeBeforeSha256": sha(before),
         "decodeObservedSha256": sha(decode.read_bytes()), "observerOnly": True,
+        "auxSpecBeforeSha256": sha(aux_before), "auxSpecObservedSha256": sha(aux_spec.read_bytes()),
         "ignoredToolSymlinks": ignored, "sourceHashes": source_hashes(directory / "source"),
         "fixtures": fixtures, "driverSha256": sha(checked_file(workspace /
             "scripts/native-dwg-build/header-diagnostic.c", 64 * 1024))}
     (directory / "prepared.json").write_text(json.dumps(proof, indent=2) + "\n")
     print(json.dumps({"diagnosticPrepared": True, "revision": revision,
         "archiveSha256": ARCHIVE_SHA, "decodeObservedSha256": proof["decodeObservedSha256"],
+        "auxSpecObservedSha256": proof["auxSpecObservedSha256"],
         "originals": fixtures, "sourceFileCount": len(proof["sourceHashes"])}))
 
 
@@ -223,7 +288,7 @@ def validated_result(data, returncode, input_bytes):
         raise ValueError("Diagnostic output budget exceeded")
     result = json.loads(data, object_pairs_hook=unique_object,
                         parse_constant=lambda _: (_ for _ in ()).throw(ValueError("Non-finite JSON")))
-    if not isinstance(result, dict) or set(result) != {"schemaVersion", "inputBytes", "nativeError", "nativeVersion", "auxSection", "auxRead", "aux", "mainUtc", "hostDerivedLocal", "elapsed", "nativeFreed", "rawAuxCertified"}:
+    if not isinstance(result, dict) or set(result) != {"schemaVersion", "inputBytes", "nativeError", "nativeVersion", "auxSection", "auxRead", "aux", "mainUtc", "hostDerivedLocal", "elapsed", "unverifiedObservations", "nativeFreed", "rawAuxCertified"}:
         raise ValueError("Invalid diagnostic JSON schema")
     for field in ("schemaVersion", "inputBytes", "nativeError", "nativeVersion"):
         if type(result[field]) is not int:
@@ -244,12 +309,63 @@ def validated_result(data, returncode, input_bytes):
         raise ValueError("Auxiliary section was not successfully decoded")
     if aux["magic"] != [255, 119, 1] or aux["version"] != 33:
         raise ValueError("Auxiliary header magic/version changed")
+    validated_observations(result["unverifiedObservations"], observed["decodedSize"], aux)
     for group in ("aux", "mainUtc", "hostDerivedLocal", "elapsed"):
         for name in (("drawing", "user") if group == "elapsed" else ("creation", "update")):
             date = result[group][name]
             if type(date["days"]) is not int or type(date["ms"]) is not int or not 0 <= date["days"] <= 0x7fffffff or not 0 <= date["ms"] < 86400000:
                 raise ValueError("Invalid raw native date tuple")
     return result
+
+
+def validated_observations(value, decoded_size, aux):
+    required = {"observationError", "layoutCalls", "layoutMatches", "driverLayout", "libraryLayout",
+        "decodedVersion", "decodedFromVersion", "parsedVersion", "parsedFromVersion",
+        "finalByte", "finalBit", "capturedBytes", "rawComplete", "rawHex", "fields"}
+    if not isinstance(value, dict) or set(value) != required:
+        raise ValueError("Invalid source observation schema")
+    integer_fields = ["observationError", "layoutCalls", "decodedVersion", "decodedFromVersion",
+                      "parsedVersion", "parsedFromVersion", "finalByte", "finalBit", "capturedBytes"]
+    if any(type(value[key]) is not int for key in integer_fields):
+        raise ValueError("Invalid source observation integer storage")
+    if value["observationError"] != 0 or value["layoutCalls"] != 1 or value["layoutMatches"] is not True:
+        raise ValueError("Library and driver layout evidence disagrees")
+    for layout in (value["driverLayout"], value["libraryLayout"]):
+        if not isinstance(layout, dict) or set(layout) != set(LAYOUT_NAMES) or any(type(number) is not int or not 0 <= number <= 1024 * 1024 for number in layout.values()):
+            raise ValueError("Invalid bounded library layout evidence")
+    if value["driverLayout"] != value["libraryLayout"]:
+        raise ValueError("Library and driver layouts differ")
+    layout = value["driverLayout"]
+    if (layout["rsBytes"], layout["rlBytes"], layout["rllBytes"], layout["timeBytes"], layout["daysOffset"], layout["msOffset"], layout["valueOffset"]) != (2, 4, 8, 16, 0, 4, 8):
+        raise ValueError("Unexpected fixed-width date layout")
+    if any(value[key] != NATIVE_R2018 for key in ("decodedVersion", "decodedFromVersion", "parsedVersion", "parsedFromVersion")):
+        raise ValueError("Aux source cursor version changed")
+    if not 0 <= value["finalBit"] <= 7 or not 0 <= value["finalByte"] <= decoded_size or value["finalByte"] * 8 + value["finalBit"] > decoded_size * 8:
+        raise ValueError("Aux source cursor exceeds its decoded section")
+    if value["rawComplete"] is not True or value["capturedBytes"] != decoded_size or not 0 < value["capturedBytes"] <= MAX_RAW_AUX or not isinstance(value["rawHex"], str) or not re.fullmatch(r"[0-9a-f]{" + str(value["capturedBytes"] * 2) + r"}", value["rawHex"]):
+        raise ValueError("Incomplete or oversized raw Aux observation")
+    fields = value["fields"]
+    if not isinstance(fields, list) or len(fields) != len(FIELD_ROLES):
+        raise ValueError("Missing source-defined Aux field observations")
+    previous_end = 0
+    for field, (name, width, count) in zip(fields, FIELD_ROLES):
+        if not isinstance(field, dict) or set(field) != {"name", "beforeCalls", "afterCalls", "beforeBits", "afterBits", "values"} or field["name"] != name:
+            raise ValueError("Aux field role/order changed")
+        if any(type(field[key]) is not int for key in ("beforeCalls", "afterCalls", "beforeBits", "afterBits")) or field["beforeCalls"] != 1 or field["afterCalls"] != 1 or not previous_end <= field["beforeBits"] <= field["afterBits"] <= decoded_size * 8 or field["afterBits"] - field["beforeBits"] != width:
+            raise ValueError("Invalid source-defined Aux field span")
+        values = field["values"]
+        maximum = 0xffff if count in (1, 3) else 0xffffffff
+        if not isinstance(values, list) or len(values) != count or any(type(number) is not int or not 0 <= number <= maximum for number in values):
+            raise ValueError("Invalid observed Aux field value")
+        if name in ("TDCREATE", "TDUPDATE"):
+            date = aux["creation" if name == "TDCREATE" else "update"]
+            if values != [date["days"], date["ms"]]:
+                raise ValueError("Library observed date differs from driver date")
+        elif name == "maint_version" and values != [aux["maintenance"]]:
+            raise ValueError("Library observed maintenance differs from driver value")
+        previous_end = field["afterBits"]
+    if previous_end > value["finalByte"] * 8 + value["finalBit"]:
+        raise ValueError("Final Aux cursor precedes a source field read")
 
 
 def validated_build_config(make_bytes, config_bytes):
@@ -331,11 +447,44 @@ def run_one(binary, copy, output, zone):
         raise
 
 
-def checked_original_pair(fixture, original, copy):
+def original_pair_evidence(original, copy):
     original_bytes = checked_file(original, MAX_INPUT)
     copied_bytes = checked_file(copy, MAX_INPUT)
-    if type(fixture["bytes"]) is not int or len(original_bytes) != fixture["bytes"] or len(copied_bytes) != fixture["bytes"] or sha(original_bytes) != fixture["sha256"] or sha(copied_bytes) != fixture["sha256"]:
+    return {"originalSha256": sha(original_bytes), "copySha256": sha(copied_bytes),
+            "originalBytes": len(original_bytes), "copyBytes": len(copied_bytes)}
+
+
+def pair_matches(fixture, evidence):
+    return (type(fixture["bytes"]) is int and evidence["originalBytes"] == fixture["bytes"]
+        and evidence["copyBytes"] == fixture["bytes"]
+        and evidence["originalSha256"] == fixture["sha256"]
+        and evidence["copySha256"] == fixture["sha256"])
+
+
+def checked_original_pair(fixture, original, copy):
+    evidence = original_pair_evidence(original, copy)
+    if not pair_matches(fixture, evidence):
         raise ValueError("Original or private copy changed")
+    return evidence
+
+
+def run_checked_original(fixture, original, copy, binary, output, zone):
+    checked_original_pair(fixture, original, copy)
+    try:
+        return run_one(binary, copy, output, zone)
+    finally:
+        # Even a refused read/timeout must leave explicit after-read input evidence.
+        try:
+            after = original_pair_evidence(original, copy)
+        except (ValueError, OSError):
+            print(json.dumps({"diagnosticAfterReadInputs": {"stem": fixture["stem"],
+                "zone": zone, "unchanged": False}}))
+            raise
+        unchanged = pair_matches(fixture, after)
+        print(json.dumps({"diagnosticAfterReadInputs": {"stem": fixture["stem"],
+            "zone": zone, "unchanged": unchanged, **after}}))
+        if not unchanged:
+            raise ValueError("Original or private copy changed after native read")
 
 
 def run(workspace, directory, revision):
@@ -366,8 +515,8 @@ def run(workspace, directory, revision):
         checked_original_pair(fixture, original, copy)
         zones = {}
         for zone, label in (("UTC", "utc"), ("America/Chicago", "chicago")):
-            zones[zone] = run_one(binary, copy, directory / f"{stem}-{label}", zone)
-            checked_original_pair(fixture, original, copy)
+            zones[zone] = run_checked_original(fixture, original, copy, binary,
+                                              directory / f"{stem}-{label}", zone)
         for field in ("aux", "mainUtc"):
             if zones["UTC"][field] != zones["America/Chicago"][field]:
                 raise ValueError("Raw stored header evidence changed with host timezone")
@@ -377,6 +526,8 @@ def run(workspace, directory, revision):
     proof = {"schemaVersion": 1, "revision": revision, "archiveSha256": ARCHIVE_SHA,
         "source": prepared["source"], "decodeBeforeSha256": prepared["decodeBeforeSha256"],
         "decodeObservedSha256": prepared["decodeObservedSha256"], "driverSha256": prepared["driverSha256"],
+        "auxSpecBeforeSha256": prepared["auxSpecBeforeSha256"],
+        "auxSpecObservedSha256": prepared["auxSpecObservedSha256"],
         "binarySha256": binary_sha, "cases": cases, "observerOnly": True,
         "build": compiled,
         "noProductionChanges": True, "ownedChildrenJoined": True, "passed": True}

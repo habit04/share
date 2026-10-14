@@ -20,6 +20,13 @@ spec.loader.exec_module(diagnostic)
 
 def authored_result():
     date = {"days": 2461325, "ms": 70498000}
+    layout = dict(zip(diagnostic.LAYOUT_NAMES, [2, 4, 8, 16, 0, 4, 8, 8192, 4096, 160,
+                                               6, 26, 30, 64, 80, 132]))
+    positions = [40, 200, 232, 504, 568, 984]
+    values = [[4], [4], [4], [date['days'], date['ms']], [date['days'], date['ms']], [0, 0, 0]]
+    fields = [{'name': name, 'beforeCalls': 1, 'afterCalls': 1, 'beforeBits': before,
+               'afterBits': before + width, 'values': actual}
+              for (name, width, _), before, actual in zip(diagnostic.FIELD_ROLES, positions, values)]
     return {"schemaVersion": 1, "inputBytes": 18644, "nativeError": 0, "nativeVersion": 40,
         "auxSection": {"count": 1, "nameValid": True, "size": 129, "pages": 1},
         "auxRead": {"attempts": 1, "parses": 1, "decompressionError": 0, "parseError": 0,
@@ -29,6 +36,11 @@ def authored_result():
         "mainUtc": {"creation": {"days": 2461326, "ms": 2098000}, "update": {"days": 2461326, "ms": 2098000}},
         "hostDerivedLocal": {"creation": date.copy(), "update": date.copy()},
         "elapsed": {"drawing": {"days": 0, "ms": 1000}, "user": {"days": 0, "ms": 1000}},
+        "unverifiedObservations": {"observationError": 0, "layoutCalls": 1, "layoutMatches": True,
+            "driverLayout": layout.copy(), "libraryLayout": layout.copy(),
+            "decodedVersion": 40, "decodedFromVersion": 40, "parsedVersion": 40, "parsedFromVersion": 40,
+            "finalByte": 129, "finalBit": 0, "capturedBytes": 129, "rawComplete": True,
+            "rawHex": "00" * 129, "fields": fields},
         "nativeFreed": True, "rawAuxCertified": True}
 
 
@@ -39,6 +51,7 @@ class DiagnosticTests(unittest.TestCase):
         assert hashlib.sha256(archive.read_bytes()).hexdigest() == diagnostic.ARCHIVE_SHA
         with tarfile.open(archive, "r:gz") as source:
             cls.original = source.extractfile("./src/decode.c").read()
+            cls.aux_original = source.extractfile("./src/auxheader.spec").read()
             cls.header = source.extractfile("./include/dwg.h").read().decode()
             cls.makefile = source.extractfile("./src/Makefile.in").read().decode()
             cls.configure = source.extractfile("./configure.ac").read().decode()
@@ -73,9 +86,39 @@ class DiagnosticTests(unittest.TestCase):
         self.assertEqual(observed.count(b"jcad_header_diagnostic_aux_decompressed (error"), 1)
         self.assertEqual(observed.count(b"jcad_header_diagnostic_aux_parsed (error"), 1)
         restored = observed.removeprefix(diagnostic.DECLARATIONS)
-        restored = restored.replace(diagnostic.DECOMPRESSED_CALL + b"\n  jcad_header_diagnostic_aux_decompressed (error, sec_dat.chain != NULL, (unsigned long long)sec_dat.size);", diagnostic.DECOMPRESSED_CALL)
-        restored = restored.replace(diagnostic.PARSED_CALL + b"\n  jcad_header_diagnostic_aux_parsed (error);", diagnostic.PARSED_CALL)
+        for original, replacement in diagnostic.DECODE_REPLACEMENTS:
+            self.assertEqual(observed.count(replacement), 1)
+            restored = restored.replace(replacement, original, 1)
         self.assertEqual(restored, self.original)
+
+    def test_named_aux_observations_reverse_without_any_field_grammar_change(self):
+        observed = diagnostic.patch_aux_spec(self.aux_original)
+        restored = observed
+        for original, replacement in diagnostic.AUX_REPLACEMENTS:
+            self.assertEqual(observed.count(replacement), 1)
+            restored = restored.replace(replacement, original, 1)
+        self.assertEqual(restored, self.aux_original)
+        # Six before/after pairs exist only in the decoder, never the shared free/print includes.
+        self.assertEqual(observed.count(b'#ifdef IS_DECODER'), 12)
+        for name, _, _ in diagnostic.FIELD_ROLES:
+            self.assertEqual(observed.count(('aux_field ("' + name + '", 0').encode()), 1)
+            self.assertEqual(observed.count(('aux_field ("' + name + '", 1').encode()), 1)
+        self.assertEqual(observed.count(b'FIELD_RSx'), self.aux_original.count(b'FIELD_RSx'))
+        self.assertNotIn(b'FIELD_RL (maint_version', observed)
+        for changed in (self.aux_original + b'\n', observed):
+            with self.assertRaises(ValueError):
+                diagnostic.patch_aux_spec(changed)
+
+    def test_abi_facts_are_actual_type_and_member_expressions_not_wire_offsets(self):
+        observed = diagnostic.patch_decoder(self.original).decode()
+        driver = (WORKSPACE / 'scripts/native-dwg-build/header-diagnostic.c').read_text()
+        for expression in diagnostic.LAYOUT_EXPRESSIONS:
+            self.assertIn(expression, observed)
+            self.assertIn(expression, driver)
+        self.assertIn('memcmp(driver_layout, library_layout, sizeof driver_layout)', driver)
+        self.assertIn('#define RAW_AUX_LIMIT 256', driver)
+        self.assertIn('memcpy(decoded_bytes, raw, captured_bytes)', driver)
+        self.assertNotIn('config.h', driver)
 
     def test_source_drift_and_reapplication_refuse(self):
         for changed in (self.original + b"\n", diagnostic.patch_decoder(self.original),
@@ -187,6 +230,45 @@ class DiagnosticTests(unittest.TestCase):
             with self.subTest(group=group, key=key), self.assertRaises(ValueError):
                 diagnostic.validated_result(json.dumps(result).encode(), 0, 18644)
 
+    def test_mismatched_or_unbounded_layout_cannot_certify_dates(self):
+        for key, value in [('layoutCalls', 0), ('layoutCalls', 2), ('layoutMatches', False),
+                           ('observationError', 1), ('decodedVersion', 0), ('parsedFromVersion', True)]:
+            result = authored_result(); result['unverifiedObservations'][key] = value
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                diagnostic.validated_result(json.dumps(result).encode(), 0, 18644)
+        for group, key, value in [('libraryLayout', 'auxOffset', 4097), ('driverLayout', 'rsBytes', 4),
+                                   ('libraryLayout', 'drawingBytes', 1048577), ('libraryLayout', 'timeBytes', True)]:
+            result = authored_result(); result['unverifiedObservations'][group][key] = value
+            with self.subTest(group=group, key=key), self.assertRaises(ValueError):
+                diagnostic.validated_result(json.dumps(result).encode(), 0, 18644)
+
+    def test_raw_aux_bytes_cursor_and_field_roles_are_bounded_and_complete(self):
+        for key, value in [('finalByte', 130), ('finalBit', 8), ('finalByte', 0), ('rawComplete', False),
+                           ('capturedBytes', 257), ('rawHex', '00' * 128), ('rawHex', 'zz' * 129)]:
+            result = authored_result(); result['unverifiedObservations'][key] = value
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                diagnostic.validated_result(json.dumps(result).encode(), 0, 18644)
+        for index, key, value in [(0, 'beforeCalls', 2), (1, 'afterCalls', 0), (2, 'beforeBits', True),
+                                   (3, 'name', 'TDUPDATE'), (4, 'afterBits', 1040), (5, 'values', [0, 0]),
+                                   (3, 'values', [2461326, 2098000]), (0, 'values', [65536])]:
+            result = authored_result(); result['unverifiedObservations']['fields'][index][key] = value
+            with self.subTest(index=index, key=key), self.assertRaises(ValueError):
+                diagnostic.validated_result(json.dumps(result).encode(), 0, 18644)
+        result = authored_result(); result['unverifiedObservations']['fields'].reverse()
+        with self.assertRaises(ValueError):
+            diagnostic.validated_result(json.dumps(result).encode(), 0, 18644)
+
+    def test_invalid_genuine_aux_tuple_stays_refused_despite_matching_abi(self):
+        result = authored_result()
+        result['aux']['creation'] = {'days': 65536, 'ms': 2391670785}
+        result['unverifiedObservations']['fields'][3]['values'] = [65536, 2391670785]
+        result['rawAuxCertified'] = False
+        with self.assertRaises(ValueError):
+            diagnostic.validated_result(json.dumps(result).encode(), 1, 18644)
+        result['rawAuxCertified'] = True
+        with self.assertRaisesRegex(ValueError, 'Invalid raw native date tuple'):
+            diagnostic.validated_result(json.dumps(result).encode(), 0, 18644)
+
     def test_invalid_date_storage_each_stream_refuses(self):
         for group, name in [('aux', 'creation'), ('aux', 'update'), ('mainUtc', 'creation'),
                             ('mainUtc', 'update'), ('hostDerivedLocal', 'creation'), ('elapsed', 'drawing')]:
@@ -234,6 +316,34 @@ class DiagnosticTests(unittest.TestCase):
         copied.write_bytes(b'AC1032edit')
         with self.assertRaises(ValueError):
             diagnostic.checked_original_pair(fixture, original, copied)
+
+    def test_refused_or_timed_out_native_read_rehashes_original_and_copy_in_finally(self):
+        original = self.root / 'failure-original'; original.write_bytes(b'AC1032test')
+        copied = self.root / 'failure-copy'; copied.write_bytes(original.read_bytes())
+        fixture = {'stem': 'authored-private', 'sha256': diagnostic.sha(original.read_bytes()), 'bytes': 10}
+        for failure in (ValueError('refused native result'), diagnostic.subprocess.TimeoutExpired('diagnostic', 20)):
+            with self.subTest(error=type(failure).__name__), patch.object(diagnostic, 'run_one', side_effect=failure), patch('builtins.print') as emitted:
+                with self.assertRaises(type(failure)):
+                    diagnostic.run_checked_original(fixture, original, copied, self.root / 'not-executed', self.root / 'out', 'UTC')
+                evidence = json.loads(emitted.call_args[0][0])['diagnosticAfterReadInputs']
+                self.assertTrue(evidence['unchanged'])
+                self.assertEqual(evidence['originalSha256'], fixture['sha256'])
+                self.assertEqual(evidence['copySha256'], fixture['sha256'])
+
+    def test_refused_read_records_actual_changed_after_hash_and_never_certifies(self):
+        original = self.root / 'changed-original'; original.write_bytes(b'AC1032test')
+        copied = self.root / 'changed-copy'; copied.write_bytes(original.read_bytes())
+        fixture = {'stem': 'authored-private', 'sha256': diagnostic.sha(original.read_bytes()), 'bytes': 10}
+        def refuse_after_change(*_):
+            copied.write_bytes(b'AC1032edit')
+            raise ValueError('invalid native output')
+        with patch.object(diagnostic, 'run_one', side_effect=refuse_after_change), patch('builtins.print') as emitted:
+            with self.assertRaisesRegex(ValueError, 'changed after native read'):
+                diagnostic.run_checked_original(fixture, original, copied, self.root / 'not-executed', self.root / 'out', 'UTC')
+            evidence = json.loads(emitted.call_args[0][0])['diagnosticAfterReadInputs']
+            self.assertFalse(evidence['unchanged'])
+            self.assertEqual(evidence['originalSha256'], fixture['sha256'])
+            self.assertEqual(evidence['copySha256'], diagnostic.sha(b'AC1032edit'))
 
     def test_wrong_revision_and_private_directory_escape_refuse(self):
         with patch.object(diagnostic.subprocess, 'check_output', return_value='a' * 40):
