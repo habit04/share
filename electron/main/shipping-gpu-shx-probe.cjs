@@ -149,24 +149,39 @@ function shippingShxInputs(profile) {
 function shippingShxExportCheck(bytes, fonts) {
   if (!Buffer.isBuffer(bytes) || !bytes.length || bytes.length > 4 * 1024 * 1024) throw new Error('SHX saved DXF byte budget');
   const text = bytes.toString('utf8'), lines = text.split(/\r?\n/);
-  /** @type {Array<{ type: string, groups: Array<[number, string]> }>} */
+  /** @type {Array<{ type: string, section: string | null, groups: Array<[number, string]> }>} */
   const records = [];
-  /** @type {{ type: string, groups: Array<[number, string]> } | null} */
-  let current = null;
+  /** @type {{ type: string, section: string | null, groups: Array<[number, string]> } | null} */
+  let current = null, section = null, entitySections = 0;
   for (let i = 0; i + 1 < lines.length; i += 2) {
     const code = Number(lines[i].trim()), value = lines[i + 1];
     if (!Number.isSafeInteger(code)) throw new Error('SHX saved DXF group shape');
-    if (code === 0) { current = { type: value.trim(), groups: [] }; records.push(current); }
-    else if (current) current.groups.push([code, value]);
+    if (code === 0) {
+      if (value.trim() === 'ENDSEC') section = null;
+      current = { type: value.trim(), section, groups: [] }; records.push(current);
+    } else if (current) {
+      current.groups.push([code, value]);
+      if (current.type === 'SECTION' && code === 2) {
+        section = value.trim(); current.section = section;
+        if (section === 'ENTITIES') entitySections++;
+      }
+    }
   }
-  const texts = records.filter(record => record.type === 'TEXT');
-  if (texts.length !== 20 || texts.some(record => [41, 51].some(code => record.groups.filter(group => group[0] === code).length !== 1))) {
+  const allTexts = records.filter(record => record.type === 'TEXT');
+  // The production open path adds library block labels; those are not model rows.
+  const texts = allTexts.filter(record => record.section === 'ENTITIES');
+  const blockTexts = allTexts.filter(record => record.section === 'BLOCKS');
+  if (entitySections !== 1 || texts.length !== 20 || allTexts.length !== texts.length + blockTexts.length
+    || texts.some(record => record.groups.some(([code, value]) => (code === 67 && Number(value) !== 0)
+      || (code === 410 && value.trim().toUpperCase() !== 'MODEL')))
+    || allTexts.some(record => [41, 51].some(code => record.groups.filter(group => group[0] === code).length !== 1))) {
     throw new Error('SHX DXF must retain twenty TEXTs with one explicit width/oblique default each');
   }
   for (const marker of ['shxResourceId', 'resourceId', 'FontFile', ...fonts.flatMap(font => [font.path, font.path.replace(/\\/g, '/'), font.resourceId])]) {
     if (text.includes(marker)) throw new Error('Runtime SHX authority leaked into saved DXF');
   }
-  return { textCount: texts.length, explicitDefaults: true, runtimeProgramsAbsent: true };
+  return { textCount: texts.length, blockTextCount: blockTexts.length, totalTextCount: allTexts.length,
+    explicitDefaults: true, runtimeProgramsAbsent: true };
 }
 
 /**

@@ -54,6 +54,8 @@ export function preflightShippingShxRecord(record, options = {}) {
   assert.equal(record.backupSha256, record.firstSaveSha256); assert.notEqual(record.outputSha256, record.firstSaveSha256);
   for (const key of ['firstExport', 'finalExport']) {
     assert.ok(object(record[key])); assert.equal(record[key].textCount, 20);
+    assert.ok(Number.isSafeInteger(record[key].blockTextCount) && record[key].blockTextCount >= 0);
+    assert.equal(record[key].totalTextCount, 20 + record[key].blockTextCount, 'Every generated block TEXT accounted for separately');
     assert.equal(record[key].explicitDefaults, true); assert.equal(record[key].runtimeProgramsAbsent, true);
   }
   assert.ok(Array.isArray(record.fonts) && record.fonts.length === 4, 'Exactly four genuine private resource provenance records');

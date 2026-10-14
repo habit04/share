@@ -14,6 +14,10 @@ import { translateEntity, type TextEntity } from '../src/core/entities';
 import { metricTextPlacement, type TextGeometryContext, type TextMetricStyle } from '../src/core/text-metrics';
 import { textStylesOf, type TextStyle } from '../src/io/encoding';
 import { PNG } from 'pngjs';
+import { LIBRARY_SYMBOLS, withByBlockLibrarySymbols, withoutUnusedLibraryBlocks } from '../src/electrical/library';
+import { WIRE_DOT } from '../src/electrical/symbols';
+import { TITLE_BLOCK } from '../src/electrical/templates';
+import { SOURCE_ARROW, DEST_ARROW } from '../src/tools/plc';
 import { classifyShippingShxAdapter, compareShippingShxPair, SHX_COMPARISON_LABELS, type ShxPair } from '../scripts/shipping-gpu-shx-smoke.mjs';
 
 // Resolve the fixture from the repository root without a cwd assumption.
@@ -102,7 +106,7 @@ interface Probe {
   shippingShxStamp(editor: StampEditor): Stamp;
   shippingShxSameStamp(editor: StampEditor, before: Stamp): boolean;
   shippingShxExportCheck(bytes: Buffer, fonts: readonly ExportFont[]): {
-    textCount: number; explicitDefaults: boolean; runtimeProgramsAbsent: boolean;
+    textCount: number; blockTextCount: number; totalTextCount: number; explicitDefaults: boolean; runtimeProgramsAbsent: boolean;
   };
   shippingShxObservedFrame(control: {
     resetCounts(): void; render(): boolean; counts(): ShxPair['glCalls'];
@@ -393,9 +397,45 @@ describe('real Drawing edits and placement with explicitly mock-only glyph metri
 describe('private SHX saved-file authority and explicit-default guards', () => {
   it('accepts actual writer output with canonical 41/51 on every TEXT', () => {
     const saved = Buffer.from(writeDxf(readFixture()));
-    expect(probe.shippingShxExportCheck(saved, exportFonts)).toEqual({ textCount: 20, explicitDefaults: true, runtimeProgramsAbsent: true });
+    expect(probe.shippingShxExportCheck(saved, exportFonts)).toEqual({ textCount: 20, blockTextCount: 0, totalTextCount: 20, explicitDefaults: true, runtimeProgramsAbsent: true });
     // Native fixture intentionally omits entity defaults; the first JCad export adds them.
     expect(() => probe.shippingShxExportCheck(fixtureBytes, exportFonts)).toThrow(/explicit width\/oblique/);
+  });
+
+  function productionDefaultExport() {
+    const doc = new Drawing(withByBlockLibrarySymbols(readFixture()));
+    doc.ensureBlocks([...LIBRARY_SYMBOLS, TITLE_BLOCK, SOURCE_ARROW, DEST_ARROW, WIRE_DOT]);
+    return writeDxf(withoutUnusedLibraryBlocks(doc.snapshot));
+  }
+  it('counts the actual production default block labels separately from twenty model TEXTs', () => {
+    const saved = productionDefaultExport();
+    expect(probe.shippingShxExportCheck(Buffer.from(saved), exportFonts)).toEqual({
+      textCount: 20, blockTextCount: 7, totalTextCount: 27, explicitDefaults: true, runtimeProgramsAbsent: true,
+    });
+    expect(probe.shippingShxSemantic(readDxf(saved)).rows).toHaveLength(20);
+  });
+  it('still requires explicit defaults on generated block labels', () => {
+    const damaged = rewriteFirstText(productionDefaultExport(), pairs => pairs.filter(([code]) => Number(code) !== 41));
+    expect(() => probe.shippingShxExportCheck(damaged, exportFonts)).toThrow(/explicit width\/oblique/);
+  });
+  it('cannot replace a missing model TEXT with a valid block TEXT to meet the total count', () => {
+    const state = readFixture(), first = state.entities[0]!;
+    const damaged = writeDxf({ ...state, entities: state.entities.slice(1), blocks: {
+      ...state.blocks, SHX_EXPORT_DIAGNOSTIC: { name: 'SHX_EXPORT_DIAGNOSTIC', basePoint: { x: 0, y: 0 }, attributes: [],
+        entities: [{ ...first, id: 'private-block-label', cadIdentity: undefined }] },
+    } });
+    expect(() => probe.shippingShxExportCheck(Buffer.from(damaged), exportFonts)).toThrow(/twenty TEXTs/);
+  });
+
+  it.each(['paper flag', 'paper layout', 'unknown section', 'duplicate entity section'] as const)('rejects %s as twenty model TEXT records', damage => {
+    const saved = writeDxf(readFixture());
+    const changed = damage === 'unknown section'
+      ? Buffer.from(saved.replace('2\r\nENTITIES\r\n', '2\r\nUNRECOGNIZED\r\n'))
+      : damage === 'duplicate entity section'
+        ? Buffer.from(saved.replace('0\r\nEOF\r\n', '0\r\nSECTION\r\n2\r\nENTITIES\r\n0\r\nENDSEC\r\n0\r\nEOF\r\n'))
+        : rewriteFirstText(saved, pairs => [...pairs.filter(([code]) => ![67, 410].includes(Number(code))),
+          damage === 'paper flag' ? ['67', '1'] : ['410', 'Layout1']]);
+    expect(() => probe.shippingShxExportCheck(changed, exportFonts)).toThrow(/twenty TEXTs/);
   });
 
   it.each(['missing width', 'duplicate oblique', 'missing TEXT'] as const)('rejects %s independently of semantic renderer claims', damage => {
