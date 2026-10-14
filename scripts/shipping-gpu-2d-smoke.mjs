@@ -202,7 +202,7 @@ export async function runShippingGpu2dSmoke(args = process.argv.slice(2)) {
       writeFileSync(join(out, comparison.label + '-actual.png'), comparison.actualBytes);
     }
     const hardwareClass = classifyShippingGpu2dAdapter(result.adapter);
-    const report = { mode: source ? 'source-development-only' : 'shipping-no-inspection', requestedPreference: highPerformance ? 'high-performance' : 'default', actualHardwareClass: hardwareClass, requireAdapter: requireAdapter || null, expectedVersion, executable, fuses, noInstalledSecurityClaim: source, fixtureSha256: createHash('sha256').update(GPU2D_STARTUP_DXF).digest('hex'), ...result, comparisons: comparisons.map(({ referenceBytes, actualBytes, ...comparison }) => comparison), shxResourceOnlyCase: 'unrun-no-licensed-native-SHX-fixture' };
+    const report = { mode: source ? 'source-development-only' : 'shipping-no-inspection', requestedPreference: highPerformance ? 'high-performance' : 'default', actualHardwareClass: hardwareClass, requireAdapter: requireAdapter || null, expectedVersion, executable, fuses, noInstalledSecurityClaim: true, packagedExecutableVerified: !source, fixtureSha256: createHash('sha256').update(GPU2D_STARTUP_DXF).digest('hex'), ...result, comparisons: comparisons.map(({ referenceBytes, actualBytes, ...comparison }) => comparison), shxResourceOnlyCase: 'not-covered-by-this-fixed-phase' };
     writeFileSync(join(out, 'report.json'), JSON.stringify(report, null, 2) + '\n');
     console.log(`Fixed ordinary GPU2D acceptance passed: ${out}; actual ${hardwareClass}; ${source ? 'source execution is not installed security evidence' : 'exact shipping executable'}.`);
     return report;

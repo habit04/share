@@ -1,93 +1,24 @@
 # Windows production 2D GPU acceptance — bounded step 4
 
-Candidate branch: `feature/windows-gpu-production-acceptance`.
-Starting source: released `a580c9c6e27952c2b15e0a75b940facd3ec4f1fc` (v0.5.0).
-Owned worktree: `C:/Users/justi/Documents/Codex/2026-10-12/task/jcad-gpu-compound-coverage`.
-The completed `feature/windows-gpu-compound-coverage` branch remains at `dc89bb0c`.
+Owned branch: `feature/windows-gpu-production-acceptance`, draft PR #19. Baseline is released v0.5.0 (`a580c9c6`). The completed compound-coverage branch remains at `dc89bb0c`; PR #18, other 3D/codec worktrees and the released installer remain separate. Canvas stays the default. No merge, release, installer, signing/security change or default switch is authorized by this development batch.
 
-This milestone adds explicit, ephemeral production-build candidate selection while
-preserving the shipping Canvas default. It does not authorize a merge, release,
-deployment, renderer default change, signing/security change or new 3D work.
-The active 2D/3D follow-up owns its separate checkout and preferences/axis-label work.
-
-| Acceptance | Current status | Required evidence |
+| Acceptance | Evidence/status | Next validation / ownership |
 | --- | --- | --- |
-| Production entry | Implemented; ordinary/default diagnostics pass in Windows CI; full candidate phase under correction | Ordinary build registers explicit GPU/CANVAS selection; fresh process is Canvas with no allocated GPU |
-| Developer isolation | Ordinary Windows CI default/diagnostics pass; no development globals or default backing | No prototype global, fixture loaders, reset/demo UI or debug transport in ordinary build |
-| Certified drawing | Strict fixed 20-pair native gate implemented; hardware unrun | Actual owner-created WebGL2 ink; strict native Canvas raster and coverage comparison |
-| Complete fallback | Native fixed controls implemented; hardware unrun; unit coverage retained | Unsupported geometry/fonts, grid, layouts/clipping, previews, unavailable/lost/failed context return complete exact Canvas without stale backing or data edits |
-| Edit and history | Native LINE edit/undo/redo gate implemented; hardware unrun | Visible line/block/attribute changes, exact undo/redo and current selection; drawing/history/dirty state unchanged by mode selection |
-| Font/display resources | Pending/first automatic font-frame proof reviewed and tested; hardware unrun; real SHX fixture absent | Same-snapshot resource epoch, fractional DPR/background/lineweights; current GPU content or complete Canvas fallback; distinguish mock checks from native evidence |
-| Private persistence | Actual DXF codec roundtrips and owner-reassignment controls pass; native file gate unrun | Imported retained data, exact private DXF saves/reopens and previous-save backup; no original/user drawing rewritten |
-| Hardware identity | Unrun | Serial actual Intel and NVIDIA owner-context reports; requested power preference alone is insufficient |
-| Final checkpoint | Unrun | Independent review, full applicable checks, exact-head CI and one stable-source paired native run |
+| Explicit ordinary entry and developer isolation | Completed at `052f640`: ephemeral GPURENDERER GPU/CANVAS, default Canvas without GPU allocation, no development globals | Existing19 focused app-boundary tests; root integrates |
+| Drawing correctness, fallback and editing | Completed at `052f640`: source and ordinary packaged folder each pass20 fixed cases on actual Intel UHD and NVIDIA RTX A3000;12 GPU/8 complete Canvas controls per run | Unchanged raster threshold0.15/mismatch<0.001, bidirectional ±2px foreground miss<0.005; fallback exactRGBA/GL0 |
+| Font/display/context resources | Tahoma pending/first automatic loaded frame and loss/first restored frame pass at `052f640`; genuineSHX is a separate gate | New fixed gpu2d-shx phase in progress; no font/GPU/reader formulas changed |
+| Private persistence and retained data | `052f640` saves/reopens/backups pass; exact full opaque XDATA remains on original LINE;5/6 model entities plus paper VIEWPORT accounted for | Original/user drawings untouched; independent byte/owner audit |
+| Actual ordinary Windows folder | Completed at `052f640`:205 artifact files,183 exact ASAR source files,125 unpacked files; exact successful CI DWG helper, all shipping fuses intact | Unsigned/uninstalled candidate; no installer/publisher/Windows-trust claim |
+| Broad checks and CI | `052f640`:6247 passed/38 conditional skips, full lint/all3 TypeScript scopes/fixtures/9 workflows/ordinary build; all5 jobs green on PR38596741501 and push38596732791 | Original full benchmark ran in software CI; local full development matrix not repeated |
+| Genuine SHX fixture/resources | Installed AutoCAD2027 txt/simplex/romans/romant hashes/header provenance audited privately; native20-TEXT fixture committed | New fixed phase exercises normal no-argument SHXFONT, automatic loaded resource epoch/complete Canvas, style/text undo, real saves/backups/fresh reopen/reload |
+| Fresh native font oracle | Current AutoCAD attempt blocked before opening fixture by `/isolate` profile-copy/setup failure; fonts/exe/fixture unchanged, owned processes closed | Earlier documented numeric oracle remains labeled historical; no current TEXTBOX/AUDIT/PDF or licensing verdict |
+| Current source addition | SHX proposal62 pure tests/syntax/scoped lint pass; actual project checkJs correction/review and native gate remain pending | Root owns integration, actual checks and stable serial native checkpoints |
+| Combined integration/release | Unrun/outside this batch | PR #18 integration, full packaged DWG/3D/migration gate and signed-installer acceptance are separate prerequisites |
 
-Original certified geometry, fixtures and guards remain unchanged. Small admitted
-scenes retain pixelmatch threshold 0.15 and mismatch <0.001, bidirectional two-pixel
-foreground misses <0.005; complete fallback uses exact RGBA. No accuracy, workload,
-render deadline or security gate is waived. Source-build evidence does not certify
-an installed or signed artifact. Missing licensed native fixtures remain explicit.
+The `052f640` paired hardware results have maximum raster mismatch0.0000715103 and foreground misses0. Source/dist/physical dependencies and complete artifacts remained unchanged before/after each run; independent review matched all PNGs, source/backup/final drawing bytes and XDATA owners. Closure is limited to observed live lineage and exact private executable/absolute Node-command identities; polling cannot certify arbitrary unobserved external descendants. No other process was stopped. Native windows are coordinated with the local lead.
 
-Ownership: runtime controller/production selector and focused unit tests — controller
-agent; fixed main-authored probe/runner and confinement tests — probe agent; ordinary
-smoke/CI/checklist and branch integration — root; resource/policy audit — read-only agent.
-No concurrent edits or commits to shared files. Private dependencies, npm cache,
-TEMP/TMP and test outputs stay in this worktree. Native app/GPU runs are coordinated
-with the active lead before the paired checkpoint.
+Source evidence: `.codex-local/production-acceptance-work/final-source-milestone-052f640.json`. Packaged evidence: `.codex-local/packaged-shx-acceptance/packaged-milestone-052f640.json` (SHA256 `b4e30abc9185f6e1779f94bcc75335c80b3705e93ffaf86694ac16711970dbb9`); independent review `package-audit/PACKAGED-GPU-052f640.json`. These certify that historical source/artifact checkpoint; a later source change requires fresh applicable checks.
 
-Validation receipts: first runtime checkpoint passed 19 focused mock app-boundary tests, renderer/test TypeScript and scoped lint. Independent static review found no blockers; the added selector-first-during-active-3D regression passed. Native production and installed gates are unrun. Initial checkout was
-verified clean; locked dependencies refreshed privately, with preserved Electron
-44.7.0 bytes SHA256 `2529b494f4123f152bce346051f7bd855ef95006424a561953cf17c49a3d1ba8`.
+All original failures remain private evidence: the first broad suite had a worktree-depth-sensitive test cap and unchanged30-second IPC contention failure; test-only path admission was corrected without changing production limits/deadlines. Original CI exposed an invented Editor.state overlay access; the fixed probe observes the actual Editor/Viewport overlay. First packaged verification used POSIX paths with the Windows ASAR library; the bundle was complete. Native path extraction and private path/process guards were corrected, all byte assertions retained, and one corrected frozen-input build passed. No product/Vite, security, fixture, workload, accuracy or deadline waiver occurred.
 
-The second checkpoint adds a fixed main-authored `gpu2d` phase through the existing
-bounded shipping-probe entry, with no renderer test global, supplied-code IPC,
-inspector, deadline change or fuse/CSP change. It checks 20 mandatory comparisons,
-real GL identity/counters, exact fallback bytes, automatic font/context frames,
-and private five-primitive DXF saves, reopens and previous-save backup. Its
-`fixtureSha256` identifies the authored drawing, not the application source.
-
-Regression validation: 79 focused probe tests (63 2D GPU, 16 existing 3D transport)
-pass. Font tests reject already-settled metrics, capture-time epoch changes and
-async selector callbacks. Real codec tests preserve the full opaque XDATA span on
-the original LINE across regenerated IDs and reject reassignment to other owners.
-These checks double browser/GL transport and do not certify native execution.
-Independent delta reviews cleared the two probe proof gaps. Full lint, all three
-TypeScript scopes, fixture validation and nine workflow checks pass; full suite,
-ordinary build, actual Intel/NVIDIA and exact-head CI remain pending.
-
-The CI gate runs the ordinary production acceptance before the separate
-experimental build. Software CI is reported honestly; a physical-adapter request
-rejects known software renderers even when their identity contains a hardware
-vendor name. Local native receipts additionally bind clean Git HEAD, tracked
-source, ordinary `dist`, pinned Node/Electron and all private dependency bytes
-before/after. Process evidence is limited to observed live lineage and exact
-private executable/absolute Node-command ownership; polling does not certify
-arbitrary unobserved external descendants. No other owner's process is stopped.
-
-First broad checkpoint at `4fdb3d2`: 6,239 Windows tests passed, 38 skipped and
-2 failed. The native pin-budget test's fixed 100-character cap rejected this
-134-character logical fixture path before its intended native-pin assertion.
-Its test-only correction derives that cap from the actual fixture path, verifies
-native capture occurred and retains exact rejection/cleanup assertions; all
-47 tests pass. The unchanged 33-file IPC case passed its original 30-second
-limit in one short-private-TEMP targeted diagnostic. Path depth and reduced
-contention remain confounded; no production saving code or deadline changed.
-
-Both original push and PR CI runs had four passing jobs and one failed GPU job.
-Their preserved child logs identify `Cannot set properties of undefined
-(setting 'cursor')`: the probe used an invented Editor `state` property.
-The correction observes the actual render overlay through the existing viewport
-request seam, restores its descriptor and tests real Editor/Viewport forwarding.
-Bounded fixed main failure reasons are now surfaced in CI after complete raw
-stdout/stderr preservation. This was an early probe error; no successful GPU
-accuracy, physical-adapter or installed-artifact proof is inferred. Full source,
-fixture, security and deadline gates remain unchanged; corrected native acceptance
-and exact-head CI are required before this draft can be considered complete.
-
-The real-overlay corrective checkpoint passes 81 focused probe tests (65 GPU2D,
-16 existing 3D transport), strict probe checkJs, normal renderer/test TypeScript,
-scoped lint and diff checks. Its two added tests use actual Editor/Viewport code
-with minimal Canvas/RAF doubles, a real LINE command, pointer preview and cancel,
-and verify viewport-method descriptor restoration on publication failure.
-Four failure-visibility tests separately pass. These remain app-boundary tests;
-physical GPU, native fonts and full corrected CI are still acceptance gates.
+The SHX phase is additional acceptance diagnostics. Its compiled programs stay private and per-session; no programs are committed/packaged or saved in drawings. The public reader, glyph/layout math and Canvas behavior remain unchanged. Recorded numeric reference checks do not establish fresh AutoCAD raster/PDF accuracy, BigFont/vertical/mirrored/contextual glyph coverage or complex-linetype support. Filename-only unloaded SHX styles retain the existing substitute policy.
