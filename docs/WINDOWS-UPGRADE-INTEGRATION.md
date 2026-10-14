@@ -16,9 +16,22 @@ Windows CI passes 54 Rust tests, three CLI tests and 252 Electron checks, includ
 both metadata clipboard destinations through DWG Save As/Save/exact backup/fresh
 reopen. The ten genuine native cases ran at `29abcec`; the later three-file test/doc
 correction leaves all other 926 source files and the authenticated native recipe
-unchanged. Delivered 3D adoption is now in progress after those gates cleared.
-Core object identities/history, codecs and save/recovery have separate file owners;
-combined 3D validation and subsequent frozen GPU adoption remain pending.
+unchanged.
+
+Delivered 3D is integrated on this development branch at `338ef82382f4f99b96c7d7d9a6369702568a4b7d`.
+Its complete 1,061-file static/build gate and UI CI pass. The first combined
+[CI run](https://github.com/habit04/share/actions/runs/38516177100) records 4,708
+Node test passes, 17 failures and 378 skips; Windows passes its 54 Rust and three
+CLI tests before failing an outdated imported-loss expectation. The candidate
+is not cleared. Separate owners are correcting report/fixture expectations,
+the DXF reader's leaked graph-error contract and a retained polyface owner lost
+during saving. Four incoming 2D golden baselines
+were independently proven stale: current output exactly matches `fccba52`.
+Existing fixtures and full native metadata/fixed-point assertions remain intact.
+Fresh combined full-suite, app, native save/reopen and CI gates must pass before
+the frozen GPU leaf is adopted. No release branch merge is authorized.
+
+The following checkpoints are historical evidence, not the current candidate's clearance.
 
 The pre-integration checkpoint `0447081` is fully green: 4,394 local tests (28
 existing skips), all static/build checks, 32 actual Windows source-app workflows,

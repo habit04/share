@@ -22,7 +22,7 @@ import { readHeaderSection, readObjectsSection, readTablesSection, readBlocksSec
 import { DEFAULT_LAYERS } from '../../core/document';
 import { readEntities } from './read-pass';
 import { attachDxfCadGraph } from '../cad-graph-dxf';
-import { canonicalCadHandle } from '../../core/cad-graph';
+import { CadGraphError, canonicalCadHandle } from '../../core/cad-graph';
 import { Model3DReader, native3dObject } from './mesh3d-read';
 import { EMPTY_MODEL3D } from '../../model3d/model';
 import { DXF_READ_LIMITS } from '../../model3d/file-format';
@@ -62,6 +62,17 @@ export interface DxfReadOptions {
  * as raw records (`meta.dxfRawEntities`) and written back by writeDxf.
  */
 export function readDxf(text: string, opts: DxfReadOptions = {}): DrawingState {
+  try {
+    return readDxfImport(text, opts);
+  } catch (error) {
+    // Graph identities, dependencies and allocation limits are file input errors here.
+    // They are not truncation: recovery must never skip unsafe retained metadata.
+    if (error instanceof CadGraphError) throw new DxfReadError(error.message, 1);
+    throw error;
+  }
+}
+
+function readDxfImport(text: string, opts: DxfReadOptions): DrawingState {
   const dimStyles = new Map<string, DimStyle>();
   const report = new ImportReportBuilder();
   const raw: RawDxfEntity[] = [];

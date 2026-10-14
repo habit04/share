@@ -34,7 +34,7 @@ import { newFromTemplate, SHEET_SIZES, TITLE_BLOCK } from '../src/electrical/tem
 
 const fixture = (name: string) => readFileSync(join(__dirname, 'fixtures', name), 'latin1');
 const SOURCE = '/drawings/plant.dxf';
-const state = readDxf(fixture('unsupported-content.dxf'), { filePath: SOURCE });
+const state = readDxf(fixture('unsupported-content.dxf'), { filePath: SOURCE, model3d: false });
 const report = importReportOf(state)!;
 const item = (type: string, handle: string): ImportReportItem | undefined => report.items.find((i) => i.type === type && i.handle === handle);
 
@@ -49,6 +49,50 @@ function entitiesSection(text: string): Array<[number, string]> {
 }
 /** Entity types in the ENTITIES section, in order. */
 const entityKinds = (text: string) => entitiesSection(text).filter(([c]) => c === 0).map(([, v]) => v);
+const polyfaceHandles = ['107', '108', '109', '10A', '10B', '10C'];
+function polyfaceCommonOwners(groups: readonly (readonly [number, string])[]): number[] {
+  const owners: number[] = []; let depth = 0;
+  for (let index = 0; index < groups.length; index++) {
+    const [code, value] = groups[index]!;
+    if (code === 102) { depth += value.startsWith('{') ? 1 : value === '}' ? -1 : 0; continue; }
+    if (!depth && [100, 8, 1001].includes(code)) break;
+    if (!depth && code === 330) owners.push(index);
+  }
+  return owners;
+}
+function polyfaceSource(s: DrawingState) {
+  expect(s.cadGraph!.nodes.filter(node => polyfaceHandles.includes(node.sourceHandle ?? '')).map(node => node.sourceHandle)).toEqual(polyfaceHandles);
+  return polyfaceHandles.map(handle => {
+    const records = s.cadGraph!.nodes.filter(node => node.sourceHandle === handle);
+    expect(records).toHaveLength(1);
+    return records[0]!;
+  });
+}
+function expectPolyfaceRetained(s: DrawingState) {
+  const original = polyfaceSource(state), saved = polyfaceSource(s);
+  expect(saved.map(node => node.type)).toEqual(['POLYLINE', 'VERTEX', 'VERTEX', 'VERTEX', 'VERTEX', 'SEQEND']);
+  const modelOwner = s.cadGraph!.nodes.find(node => node.type === 'BLOCK_RECORD' && node.groups.some(([code, value]) => code === 2 && value === '*Model_Space'))!;
+  expect(modelOwner.sourceHandle).toEqual(expect.any(String));
+  saved.forEach((node, index) => {
+    const source = original[index]!, sourceOwners = polyfaceCommonOwners(source.groups);
+    const savedOwners = polyfaceCommonOwners(node.groups);
+    expect(savedOwners).toHaveLength(1);
+    const expected = [...source.groups];
+    // Preserve every original pair. Only the proven model owner is rebound; the
+    // old writer also supplies an absent follower's structural parent after handle5.
+    if (index === 0) {
+      expect(sourceOwners).toHaveLength(1);
+      expected[sourceOwners[0]!] = [330, modelOwner.sourceHandle!];
+    } else if (sourceOwners.length === 0) {
+      expect(source.groups[0]).toEqual([5, polyfaceHandles[index]]);
+      expect(savedOwners[0]).toBe(1);
+      expect(node.groups[1]).toEqual([330, '107']);
+      expected.splice(1, 0, [330, '107']);
+    }
+    expect(node.groups).toEqual(expected);
+  });
+  expect(saved[0]!.groups).toContainEqual([330, modelOwner.sourceHandle]);
+}
 
 describe('import report of unsupported DXF content', () => {
   it('warns about unreadable DWG metadata even when no drawing objects were dropped', () => {
@@ -79,7 +123,9 @@ describe('import report of unsupported DXF content', () => {
     expect(report.sourcePath).toBe(SOURCE);
     expect(item('WIPEOUT', '104')).toMatchObject({ action: 'dropped', layer: '0', where: 'model space', reason: expect.stringMatching(/wipeout/i) });
     expect(item('MLINE', '105')).toMatchObject({ action: 'dropped', reason: expect.stringMatching(/multiline/i) });
-    expect(item('POLYLINE', '107')).toMatchObject({ action: 'dropped', reason: expect.stringMatching(/polyface/) });
+    expect(item('POLYLINE', '107')).toMatchObject({ action: 'kept', reason: expect.stringMatching(/source records.*retained.*without being displayed/i) });
+    expect(state.model3d).toBeUndefined();
+    expect(polyfaceSource(state).map(node => node.type)).toEqual(['POLYLINE', 'VERTEX', 'VERTEX', 'VERTEX', 'VERTEX', 'SEQEND']);
     expect(item('INSERT', '106')).toBeUndefined();
     expect(state.entities.find((e) => e.type === 'insert' && e.columns === 3 && e.rows === 2)).toBeDefined();
     expect(item('LINE', '100')).toMatchObject({ action: 'kept', layer: 'WIRES', reason: expect.stringMatching(/VIA_WD_WIRE/) });
@@ -92,14 +138,14 @@ describe('import report of unsupported DXF content', () => {
     expect(item('3DSOLID', '102')).toMatchObject({ action: 'kept', layer: 'SOLIDS' });
     expect(item('WIPEOUT', '104')!.line).toBeGreaterThan(1);
     expect(report.counts['3DFACE']).toEqual({ dropped: 2, kept: 1 });
-    expect(lossCount(report)).toBe(7);
-    expect(countOf(report, 'kept')).toBe(4);
+    expect(lossCount(report)).toBe(6);
+    expect(countOf(report, 'kept')).toBe(5);
   });
 
   it('the copied report lists counts and every item', () => {
     const text = formatImportReport(report, 'plant.dxf');
     expect(text).toMatch(/DXF import report: plant\.dxf/);
-    expect(text).toMatch(/7 object\(s\) dropped or simplified, 4 kept/);
+    expect(text).toMatch(/6 object\(s\) dropped or simplified, 5 kept/);
     expect(text).toMatch(/3DFACE: 2 dropped, 1 kept/);
     expect(text).toMatch(/WIPEOUT dropped \(handle 104, layer "0", model space, line \d+\)/);
   });
@@ -119,10 +165,10 @@ describe('import report of unsupported DXF content', () => {
     const keptOnly = readDxf(writeDxf(state));
     const r = importReportOf(keptOnly)!;
     expect(lossCount(r)).toBe(0);
-    expect(countOf(r, 'kept')).toBe(4);
+    expect(countOf(r, 'kept')).toBe(5);
     expect(reportNeedsAttention(r)).toBe(false);
     expect(reportNeedsAttention(report)).toBe(true);
-    expect(importReportLog(report).join('\n')).toMatch(/7 object\(s\) dropped or simplified, 4 kept/);
+    expect(importReportLog(report).join('\n')).toMatch(/6 object\(s\) dropped or simplified, 5 kept/);
   });
   it('reports malformed table cell metadata without throwing during format validation', () => {
     const metadata = JSON.stringify({ position: { x: 0, y: 0 }, rowHeights: [1], columnWidths: [1], cells: [[null]], textHeight: 1 });
@@ -134,6 +180,33 @@ describe('import report of unsupported DXF content', () => {
 });
 
 describe('retained raw records', () => {
+  it('retains an unconsumed paper-space polyface but refuses its unproven save placement', () => {
+    const source = polyfaceSource(state).flatMap(node => {
+      const groups = [...node.groups];
+      if (node.type === 'POLYLINE') {
+        const subclass = groups.findIndex(([code, value]) => code === 100 && value === 'AcDbPolyFaceMesh');
+        expect(subclass).toBeGreaterThan(0); groups.splice(subclass, 0, [67, '1'], [410, 'Paper1']);
+      }
+      return [[0, node.type] as const, ...groups];
+    });
+    const text = ['0', 'SECTION', '2', 'ENTITIES', ...source.flatMap(([code, value]) => [String(code), value]), '0', 'ENDSEC', '0', 'EOF'].join('\n');
+    const imported = readDxf(text, { model3d: false }), before = JSON.stringify(imported);
+    expect(polyfaceSource(imported)[0]!.groups).toContainEqual([67, '1']);
+    expect(() => writeDxf(imported)).toThrow(/polyface outside model space.*placement is not modeled/i);
+    expect(JSON.stringify(imported)).toBe(before);
+  });
+  it('keeps the foreign default-off polyface and all follower records exact through edits/undo/redo and two saves', () => {
+    const drawing = new Drawing(state);
+    drawing.addEntities([{ id: 'foreign-polyface-edit', type: 'line', layer: '0', color: 'ByLayer', a: { x: 0, y: 0 }, b: { x: 7, y: 9 } }]);
+    expect(drawing.undo()).toBe(true); expect(drawing.redo()).toBe(true);
+    const first = readDxf(writeDxf(drawing.snapshot), { model3d: false });
+    expectPolyfaceRetained(first); expect(first.model3d).toBeUndefined();
+    expect(importReportOf(first)?.counts.POLYLINE).toEqual({ kept: 1 });
+    expect(lossCount(importReportOf(first)!)).toBe(0);
+    const second = readDxf(writeDxf(first), { model3d: false });
+    expectPolyfaceRetained(second);
+    expect(polyfaceSource(second).map(node => node.groups)).toEqual(polyfaceSource(first).map(node => node.groups));
+  });
   it('keeps safe unknown model-space records without handles, owners, reactors or extended data', () => {
     const raw = rawEntitiesOf(state);
     expect(raw.map((r) => `${r.type}@${r.layer}`)).toEqual(['3DFACE@SOLIDS', '3DSOLID@SOLIDS']);
@@ -260,7 +333,7 @@ describe('project-wide rewrite keeps the retained records', () => {
 describe('Save over the source file', () => {
   it('warns while the drawing came from that file and content was lost', () => {
     const w = saveOverwriteWarning(state, SOURCE);
-    expect(w).toMatch(/plant\.dxf contained 7 object\(s\) JCad cannot keep/);
+    expect(w).toMatch(/plant\.dxf contained 6 object\(s\) JCad cannot keep/);
     expect(w).toMatch(/Save As/);
     expect(saveOverwriteWarning(state, '/drawings/copy.dxf')).toBeNull();
     expect(saveOverwriteWarning(state, null)).toBeNull();

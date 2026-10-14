@@ -2,20 +2,29 @@
  * 2D byte identity guard for 3D persistence (milestone 5): a drawing without solids must produce
  * the DXF it produced before 3D support.
  *
- * - Golden outputs: tests/golden/dxf-3d/<fixture>.dxf is the text `writeDxf` produced for
- *   tests/fixtures/<fixture>.dxf before 3D persistence (generated with the writer at the branch base
- *   and confirmed byte-identical). The comparison ignores only the line-ending style, which Git may
- *   convert on checkout; the writer's own CRLF is checked separately. A difference means the 2D
- *   output changed: regenerating a golden is a deliberate decision that needs a review of the diff,
- *   never a way to make this test pass (there is intentionally no update switch).
+ * - Exact output hashes are from the verified pre-integration fccba52 reader/writer (all 59
+ *   dependency blobs authenticated against that commit). The earlier incoming 3D branch goldens
+ *   predate the completed 2D/native preservation work and remain unchanged as provenance.
+ *   Only checkout line endings are normalized; the writer's own CRLF is checked separately.
+ *   There is intentionally no fixture/golden update switch.
  * - Every fixture's output is also compared with the output for the same state carrying an empty
  *   model, and checked for any trace of the 3D records.
  */
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 
 const GOLDEN = ['block-colors', 'hatch', 'polyline-widths', 'acad-table'];
 const lf = (t: string) => t.replace(/\r\n/g, '\n');
+const sha = (text: string) => createHash('sha256').update(lf(text)).digest('hex');
+// Independently executed immutable fccba52b9c8ce25d90a2fcb96261ddc4502eae32 source.
+// Tuple: fixture input, pre-integration output, unchanged incoming legacy golden.
+const BASELINES: Readonly<Record<string, readonly [string, string, string]>> = {
+  'block-colors': ['d44dd28a3a2d19a88de28c2b6ef18ce4622109b709c8add8ddf27826f37de98f', '6ea83f9d5b4ca1bcc220953a4e308b15e33829183fc9bf4ec0ec01379848a3c1', '712755e567e4b52f3dd87f501eccfe6269ef930d1a754f93019a917c41af4a6e'],
+  hatch: ['99872d47f2af1a55fd8462083b25926fabd788fead26427f9d7202839b7aaa82', 'eb83d0613f5bc107a2762c8b89c5328c69e345e8f18817ce3b9f65a79dee0cf4', '2f683468b3d721d2170c8dd2bc1c5c3eebaa20fffcb5891e9092e6a673e4e34b'],
+  'polyline-widths': ['41ff2357bdb4653396400d44113273203ea0fdc10e8efec283b56ec5108818fb', 'f26d5d03e3340e5d9cc7f689f69e1569011dc4dd4d05fc2c2a21a7a31f2a736b', '67fbdf3d4849505709756959a95e0ed0a001619554d80209a7f5f58ee22c4dc5'],
+  'acad-table': ['0e3a7e374c9372782fc73c1875fe3ba80f43836e4a6217cb681b36734ccbfd29', '1281c26362e7e8fb61fab1cae24f160ab0ae9c29dac5d489523d5a2a4ad050e4', '495a35c874461dfafc244d185ad1c3a070ebf93df346581a33b9ab0913a7c4b5'],
+};
 import { Drawing, type DrawingState } from '../src/core/document';
 import { readDxf, writeDxf } from '../src/io/dxf';
 import { EMPTY_MODEL3D, newSolid, withModel3D } from '../src/model3d/model';
@@ -30,10 +39,13 @@ function section(text: string, name: string): string {
 
 describe('DXF output of drawings without 3D solids', () => {
   for (const name of GOLDEN) {
-    it(`matches the pre-3D golden output: ${name}`, () => {
-      const text = writeDxf(readDxf(readFileSync(`tests/fixtures/${name}.dxf`, 'utf8')));
+    it(`matches the verified pre-integration 2D bytes: ${name}`, () => {
+      const input = readFileSync(`tests/fixtures/${name}.dxf`, 'utf8'), baseline = BASELINES[name]!;
+      expect(sha(input)).toBe(baseline[0]);
+      expect(sha(readFileSync(`tests/golden/dxf-3d/${name}.dxf`, 'utf8'))).toBe(baseline[2]);
+      const text = writeDxf(readDxf(input));
       expect(text.split('\n').every((line, i, all) => i === all.length - 1 || line.endsWith('\r'))).toBe(true);
-      expect(lf(text)).toBe(lf(readFileSync(`tests/golden/dxf-3d/${name}.dxf`, 'utf8')));
+      expect(sha(text)).toBe(baseline[1]);
     });
   }
 

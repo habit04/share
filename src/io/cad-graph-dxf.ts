@@ -630,6 +630,7 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
   const modelRecord = generated.find(record => record.type === 'BLOCK_RECORD' && identifierValue(record, 2).toUpperCase() === '*MODEL_SPACE');
   const modelOwner = modelRecord?.handle && generatedHandles.get(modelRecord.handle);
   const rawPolyfaceOwners = new Map<string, string | null>();
+  const rawPolyfaceParents = new Map<string, CadNode>();
   let rawSequence: { parent: CadNode; vertices: CadNode[] } | undefined;
   const objectOf = (node: CadNode) => ({ kind: node.type, groups: node.groups.map(([code, value]) => ({ code, value })) });
   for (const node of graph.nodes) {
@@ -637,7 +638,7 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
       const flags = native3dFlags(node);
       if (flags !== undefined && (flags & 64)) {
         if (rawSequence) throw new CadGraphError('dependency', 'A retained polyface sequence is incomplete.');
-        rawSequence = { parent: node, vertices: [] }; rawPolyfaceOwners.set(node.id, null); continue;
+        rawSequence = { parent: node, vertices: [] }; rawPolyfaceParents.set(node.id, node); rawPolyfaceOwners.set(node.id, null); continue;
       }
     }
     if (!rawSequence) continue;
@@ -651,12 +652,66 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
     throw new CadGraphError('dependency', 'A retained polyface sequence is incomplete or interleaved.');
   }
   if (rawSequence) throw new CadGraphError('dependency', 'A retained polyface sequence is missing its SEQEND.');
+  const polyfaceOwners = new Map(rawPolyfaceOwners), polyfaceParents = new Map(rawPolyfaceParents);
+  for (const node of graph.nodes) if (node.anchor?.kind === 'solid3d') {
+    if (node.type === 'POLYLINE') { polyfaceOwners.set(node.id, null); polyfaceParents.set(node.id, node); }
+    else if (node.type === 'VERTEX' || node.type === 'SEQEND') {
+      const part = node.anchor.part?.match(/^polyface:(\d+):/)?.[1];
+      const parent = part !== undefined && solidParents.get(JSON.stringify([node.anchor.id, `polyface:${part}`]));
+      if (!parent) throw new CadGraphError('dependency', 'Imported 3D carrier has no proven source parent.');
+      polyfaceOwners.set(node.id, parent.id);
+    }
+  }
+  const polyfaceOwnerIndices = new Map<string, number>();
+  const sourceModelOwners = new Set(graph.nodes.filter(node => node.section === 'TABLES' && node.type === 'BLOCK_RECORD'
+    && decodeUnicodeEscapes(native3dValue(node, 2)).toUpperCase() === '*MODEL_SPACE').map(node => node.id));
+  for (const node of graph.nodes) if (polyfaceOwners.has(node.id)) {
+    const native = native3dObject(objectOf(node));
+    const paper = native.groups.filter(group => group.code === 67), layout = native.groups.filter(group => group.code === 410);
+    if (node.section !== 'ENTITIES' || paper.length > 1 || layout.length > 1
+      || paper.some(group => !isIntegerText(group.value.trim()) || Number(group.value) !== 0)
+      || layout.some(group => decodeUnicodeEscapes(group.value.trim()).toUpperCase() !== 'MODEL')) {
+      throw new CadGraphError('dependency', 'Cannot save an unconsumed polyface outside model space: its block/layout carrier placement is not modeled. The original records are retained.');
+    }
+    // Only the top-level common owner is structural. Reactor, subclass and application
+    // pointers (including a fake subclass inside 102) cannot identify its container.
+    let depth = 0;
+    const owners: number[] = [];
+    for (let index = 0; index < node.groups.length; index++) {
+      const [code, raw] = node.groups[index]!;
+      if (code === 102) { depth += raw.trim().startsWith('{') ? 1 : raw.trim() === '}' ? -1 : 0; continue; }
+      if (depth) continue;
+      if (code === 100 || code === 1001) break;
+      if (code === 330) owners.push(index);
+    }
+    if (owners.length > 1) throw new CadGraphError('dependency', 'Cannot save a retained polyface with ambiguous common ownership. Its original records are retained.');
+    if (!owners.length) continue;
+    const index = owners[0]!, sourceOwner = canonicalCadHandle(node.groups[index]![1].trim());
+    const sourceReference = node.references?.find(ref => ref.groupIndex === index);
+    const parentId = polyfaceOwners.get(node.id);
+    if (parentId) {
+      const parent = polyfaceParents.get(parentId)!;
+      // Explicit clone maps can rekey a proven target before file handles are allocated.
+      if (sourceReference?.target ? sourceReference.target !== parent.id : !parent.sourceHandle || sourceOwner !== canonicalCadHandle(parent.sourceHandle)) {
+        throw new CadGraphError('dependency', 'Cannot save a retained polyface follower with unproven parent ownership. Its original records are retained.');
+      }
+    } else {
+      const target = sourceReference?.target;
+      if (target && !sourceModelOwners.has(target)) throw new CadGraphError('dependency', 'Cannot save a retained polyface with a non-model source owner. Its original records are retained.');
+    }
+    polyfaceOwnerIndices.set(node.id, index);
+  }
   const retainedModelGeometry = (node: CadNode) => node.section === 'ENTITIES' && (!node.anchor || node.anchor.kind === 'raw') && Number(value(node, 67)) !== 1 && ['3DFACE', '3DSOLID', 'REGION', 'BODY'].includes(node.type);
   const sourceGroups = (node: CadNode, selected?: ReadonlySet<number>): CadGroup[] => {
     const references = new Map((node.references ?? []).map(ref => [ref.groupIndex, ref]));
     return node.groups.flatMap(([code, raw], index): CadGroup[] => {
       if (selected && !selected.has(index)) return [];
       if (node.type !== 'HEADER' && (code === 5 || code === 105)) return [[code, nodeHandles.get(node.id)!]];
+      if (polyfaceOwnerIndices.get(node.id) === index) {
+        const parent = polyfaceOwners.get(node.id), owner = parent ? nodeHandles.get(parent) : modelOwner;
+        if (!owner) throw new CadGraphError('dependency', 'Retained polyface has no exported owner.');
+        return [[code, owner]];
+      }
       const ref = references.get(index);
       if (!ref || ref.kind === 'arbitrary') return [[code, raw]];
       if (retainedModelGeometry(node) && ref.role === 'owner' && code === 330) {
@@ -683,7 +738,7 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
       if (!solid || !baseline) throw new CadGraphError('dependency', 'Retained 3D carrier has no current solid or proven source baseline.');
       record.groups = solidCarrierGroups(sourceGroups(node), node, solid, baseline, solidParts.get(solid.id)!);
       if (!node.sourceHandle) record.groups.unshift([5, nodeHandles.get(node.id)!]);
-      if (!scopedValues(node, 330).length) {
+      if (!polyfaceOwnerIndices.has(node.id)) {
         const part = node.anchor.part?.match(/^polyface:(\d+)/)?.[1] ?? '0';
         const parent = solidParents.get(JSON.stringify([solid.id, `polyface:${part}`]));
         const owner = node.type === 'POLYLINE' ? modelOwner : parent && nodeHandles.get(parent.id);
@@ -860,14 +915,14 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
     if (node.anchor?.kind === 'raw' && node.type === 'POLYLINE') {
       const flags = native3dFlags(node);
       if (payloadText({ kind: node.type, groups: node.groups.map(([code, value]) => ({ code, value })) })) throw new CadGraphError('dependency', 'Cannot regenerate an unconsumed JCAD_3D polyface carrier. Its original source records are retained.');
-      if (flags !== undefined && flags & 64 && (node.section !== 'ENTITIES' || Number(value(node, 67)) === 1)) throw new CadGraphError('dependency', 'Cannot save an unconsumed polyface outside model space: its block/layout carrier placement is not modeled. The original records are retained.');
+      if (flags !== undefined && flags & 64 && (node.section !== 'ENTITIES' || Number(native3dValue(node, 67)) === 1)) throw new CadGraphError('dependency', 'Cannot save an unconsumed polyface outside model space: its block/layout carrier placement is not modeled. The original records are retained.');
     }
     if (node.anchor?.kind === 'raw' && node.type === 'DIMENSION' && node.groups.some(([code, app]) => code === 1001 && app.trim() === MODEL3D_APP)) throw new CadGraphError('dependency', 'Cannot regenerate an unsupported JCAD_3D dimension carrier. Its original data is retained.');
     if (node.anchor && node.anchor.kind !== 'raw' && node.anchor.kind !== 'dictionary') throw new CadGraphError('dependency', `Cannot save retained ${node.type}: its edited object has no generated record.`);
     const groups = sourceGroups(node);
     if (rawPolyfaceOwners.has(node.id)) {
       if (!node.sourceHandle) groups.unshift([5, nodeHandles.get(node.id)!]);
-      if (!scopedValues(node, 330).length) {
+      if (!polyfaceOwnerIndices.has(node.id)) {
         const parent = rawPolyfaceOwners.get(node.id), owner = parent ? nodeHandles.get(parent) : modelOwner;
         if (!owner) throw new CadGraphError('dependency', 'Retained polyface has no exported owner.');
         groups.splice(1, 0, [330, owner]);

@@ -88,6 +88,10 @@ messages). The date of each version is the date of the commit that set that vers
   changes refuse. Opaque application groups cannot supply native geometry flags or coordinates.
   Dimensions-only models receive DXF reopen-budget checks, and unsafe partial recovery cannot
   replace a previous good backup. Worker assets use native canonical containment on Windows.
+- Invalid or duplicate native 3D handles produce the public DXF read error. They remain
+  non-recoverable input errors, so damaged-file recovery cannot skip unsafe object identities.
+- Retained foreign polyfaces bind their model-space and parent owners during DXF saving.
+  Opaque application fields remain intact; unproven or contradictory placement refuses saving.
 
 - Native layout rewrites retain physical page setup independently of drawing limits,
   unmodeled limits/extents/UCS and the overall paper viewport's identity and camera

@@ -10,8 +10,8 @@
  * - A returned drawing passes `prepareDrawingState` (sealed, within the geometry budget) and every
  *   solid in it is well-formed: valid non-empty mesh, unique valid id, clean name, a history that
  *   passes the strict validator.
- * - Every POLYLINE record is accounted for: it became a solid, a 2D polyline, or a `dropped`
- *   import-report item (so nothing disappears silently). Only a file opened with `recover` may lose
+ * - Every POLYLINE record is accounted for: it became a solid, a 2D polyline, an exactly retained
+ *   native carrier with a `kept` report, or a `dropped` item. Only a file opened with `recover` may lose
  *   its last, incomplete record, and then the report says the file was recovered.
  * - True 3D dimensions (DIMENSION records with `JCAD_3D` data, docs/3D-DIMENSIONS.md): mutated
  *   records read without anything but DxfReadError escaping, every DIMENSION becomes a 3D or 2D
@@ -26,7 +26,7 @@ import { Drawing, type DrawingState } from '../src/core/document';
 import type { Point } from '../src/core/geometry';
 import { prepareDrawingState } from '../src/core/geometry-budget';
 import { DxfReadError, readDxf, writeDxf } from '../src/io/dxf';
-import { importReportOf } from '../src/io/import-report';
+import { importReportOf, withImportData } from '../src/io/import-report';
 import { MAX_SOLID_TRIANGLES } from '../src/model3d/budget';
 import { isModel3DUserError } from '../src/model3d/errors';
 import { evaluateFeature } from '../src/model3d/feature-eval';
@@ -344,6 +344,68 @@ function polylineRecords(text: string): number {
   return n;
 }
 
+interface NativeRecord {
+  type: string;
+  line: number;
+  groups: Array<readonly [number, string]>;
+}
+
+/** Independent source record inventory, using the reader's documented whitespace rules. */
+function nativeRecords(text: string): NativeRecord[] {
+  const lines = text.split(/\r\n|\r|\n/), out: NativeRecord[] = [];
+  let record: NativeRecord | undefined;
+  for (let i = 0; i + 1 < lines.length; i += 2) {
+    const code = Number(lines[i]!.trim()), raw = lines[i + 1]!;
+    if (code === 0) {
+      record = { type: raw.trim().toUpperCase(), line: i + 1, groups: [] };
+      out.push(record);
+    } else if (record) {
+      record.groups.push([code, code === 1 || code === 3 || code === 304 ? raw : raw.trimEnd()]);
+    }
+  }
+  return out;
+}
+
+/** A kept report alone cannot account for geometry: prove the exact raw parent and followers. */
+function retainedPolylineLines(state: DrawingState, text: string): Set<number> {
+  const records = nativeRecords(text), nodes = state.cadGraph?.nodes ?? [], kept = new Set<number>();
+  const report = importReportOf(state);
+  const sameGroups = (a: readonly (readonly [number, string])[], b: readonly (readonly [number, string])[]) =>
+    a.length === b.length && a.every(([code, value], i) => b[i]![0] === code && b[i]![1] === value);
+  const canonicalHandle = (value: string | undefined) => !value?.trim() ? undefined : BigInt(`0x${value.trim()}`).toString(16).toUpperCase();
+  const handle = (groups: readonly (readonly [number, string])[]) => canonicalHandle(groups.find(([code]) => code === 5)?.[1]);
+  for (const item of report?.items ?? []) {
+    if (item.type !== 'POLYLINE' || item.action !== 'kept') continue;
+    const sourceIndex = records.findIndex(r => r.type === 'POLYLINE' && r.line === item.line);
+    check(sourceIndex >= 0, 'kept POLYLINE has no native source record');
+    const source = records[sourceIndex]!, sourceHandle = handle(source.groups);
+    const matches = nodes.flatMap((node, index) => node.type === 'POLYLINE' && node.anchor?.kind === 'raw'
+      && (sourceHandle ? node.sourceHandle === sourceHandle : sameGroups(node.groups, source.groups)) ? [index] : []);
+    // Other kept property notes can belong to a modeled solid; those are counted separately.
+    if (!matches.length && !item.reason.startsWith('Original 3D source records are retained')) continue;
+    check(matches.length === 1, 'kept POLYLINE has no unique retained native carrier');
+    const nodeIndex = matches[0]!, parent = nodes[nodeIndex]!;
+    check(canonicalHandle(item.handle) === sourceHandle && parent.sourceHandle === sourceHandle, 'retained POLYLINE source handle differs');
+    check(sameGroups(parent.groups, source.groups), 'retained POLYLINE differs from its native source record');
+    for (let offset = 1; sourceIndex + offset < records.length; offset++) {
+      const follower = records[sourceIndex + offset]!;
+      if (follower.type !== 'VERTEX' && follower.type !== 'SEQEND') break;
+      const node = nodes[nodeIndex + offset];
+      // Existing recovery policy removes just the last incomplete object. It must be the
+      // actual tail and separately reported; a missing complete follower is still a failure.
+      if (!node && sourceIndex + offset === records.length - 1 && report?.recovered && report.recovered.line >= follower.line
+        && report.items.some(i => i.type === follower.type && i.action === 'dropped' && i.line === follower.line
+          && i.handle?.trim() === follower.groups.find(([code]) => code === 5)?.[1].trim()
+          && i.reason === 'incomplete: the file ends inside this object')) break;
+      check(node?.anchor?.kind === 'raw' && node.type === follower.type && node.sourceHandle === handle(follower.groups)
+        && sameGroups(node.groups, follower.groups), () => `retained POLYLINE follower differs from its native source record (source line ${follower.line}, node ${node?.type ?? 'missing'})`);
+      if (follower.type === 'SEQEND') break;
+    }
+    kept.add(source.line);
+  }
+  return kept;
+}
+
 /** Check the read drawing (see the module comment); `text` is what was read. */
 function checkDrawing(state: DrawingState, text: string, recovered: boolean): void {
   prepareDrawingState(state);
@@ -366,17 +428,83 @@ function checkDrawing(state: DrawingState, text: string, recovered: boolean): vo
     check(state.layers.some((l) => l.name === s.layer), `solid layer ${s.layer} missing from the layer table`);
   }
   check(tris <= text.length, 'more triangles than the file could describe');
-  // Every POLYLINE is accounted for: a solid, a 2D polyline, or a dropped report item.
+  // Every POLYLINE is accounted for, including source-bound raw carriers kept without display.
   const report = importReportOf(state);
   const droppedLines = new Set((report?.items ?? []).filter((i) => i.type === 'POLYLINE' && i.action === 'dropped').map((i) => i.line ?? -1));
   check((report?.omitted ?? 0) === 0, 'report items were capped; the accounting below would be incomplete');
-  const accounted = solids.length + state.entities.filter((e) => e.type === 'polyline').length + droppedLines.size;
+  const retained = retainedPolylineLines(state, text);
+  check([...retained].every(line => !droppedLines.has(line)), 'POLYLINE counted as both retained and dropped');
+  const accounted = solids.length + state.entities.filter((e) => e.type === 'polyline').length + droppedLines.size + retained.size;
   const expected = polylineRecords(text);
   if (recovered) check(accounted === expected || (accounted === expected - 1 && !!report?.recovered), () => `recovered file: ${accounted} of ${expected} POLYLINE records accounted for`);
   else check(accounted === expected, () => `${accounted} of ${expected} POLYLINE records accounted for (solids ${solids.length}, report ${JSON.stringify(report?.items.filter((i) => i.type === 'POLYLINE'))})`);
 }
 
 describe('fuzzing JCAD_3D payloads and polyface records', () => {
+  it('accounts for the exact retained malformed carrier from CI seed 2894937482 without treating kept reports as geometry', () => {
+    const rng = new Rng(2894937482), pairs = toPairs(rng.bool(0.95) ? ENTITIES_TEXT : FULL_TEXT), payloads: string[] = [], applied: Mutation[] = [];
+    for (let k = rng.int(1, 3); k > 0; k--) applied.push(mutate(rng, pairs, payloads));
+    const text = fromPairs(pairs), recover = rng.bool(0.5), state = readDxf(text, { model3d: rng.bool(0.7), recover });
+    expect(applied).toEqual(['index', 'payload']);
+    expect(state.model3d?.solids).toHaveLength(5);
+    expect(polylineRecords(text)).toBe(6);
+    expect(importReportOf(state)?.items.filter(i => i.type === 'POLYLINE' && i.action === 'dropped')).toEqual([]);
+    expect(importReportOf(state)?.items).toContainEqual(expect.objectContaining({ type: 'POLYLINE', action: 'kept', handle: '1E0', line: 4983 }));
+    expect([...retainedPolylineLines(state, text)]).toEqual([4983]);
+    checkDrawing(state, text, recover);
+    expect(() => writeDxf(state)).toThrow('Cannot save malformed retained polyface: polyface face indices must be integers from -32767 to 32767. Its original records are retained.');
+    const index = state.cadGraph!.nodes.findIndex(node => node.type === 'POLYLINE' && node.sourceHandle === '1E0');
+    const withoutParent = { ...state, cadGraph: { ...state.cadGraph!, nodes: state.cadGraph!.nodes.filter((_, i) => i !== index) } };
+    expect(() => retainedPolylineLines(withoutParent, text)).toThrow('kept POLYLINE has no unique retained native carrier');
+    const alteredFollower = { ...state, cadGraph: { ...state.cadGraph!, nodes: state.cadGraph!.nodes.map((node, i) => i === index + 1 ? { ...node, groups: [...node.groups, [999, 'changed'] as const] } : node) } };
+    expect(() => retainedPolylineLines(alteredFollower, text)).toThrow('retained POLYLINE follower differs from its native source record');
+  });
+
+  it('refuses malformed native carrier handles as non-truncated DxfReadError even when recovery is requested', () => {
+    for (const malformed of ['not-hex', '10000000000000000']) for (const recover of [false, true]) {
+      const pairs = toPairs(ENTITIES_TEXT), [start, end] = polyfaceRanges(pairs)[0]!;
+      const handleIndex = pairs.findIndex(([code], i) => i > start && i < end && code === '5');
+      pairs[handleIndex]![1] = malformed;
+      let error: unknown;
+      try { readDxf(fromPairs(pairs), { model3d: true, recover }); } catch (caught) { error = caught; }
+      expect(error).toBeInstanceOf(DxfReadError);
+      expect(error).toMatchObject({ message: 'CAD object handle must be a hexadecimal string of at most 64 bits.', truncated: false });
+    }
+  });
+
+  it('accounts for a recovered carrier only when its exact incomplete final follower is separately reported', () => {
+    for (const seed of [4113270891, 2484124663]) {
+      const rng = new Rng(seed), pairs = toPairs(rng.bool(0.95) ? ENTITIES_TEXT : FULL_TEXT), payloads: string[] = [], applied: Mutation[] = [];
+      for (let k = rng.int(1, 3); k > 0; k--) applied.push(mutate(rng, pairs, payloads));
+      let text = fromPairs(pairs);
+      if (applied.includes('truncate') && rng.bool(0.3)) text = text.slice(0, text.lastIndexOf(CRLF, text.length - 3) + 2);
+      const recover = rng.bool(0.5), state = readDxf(text, { model3d: rng.bool(0.7), recover });
+      expect(recover).toBe(true);
+      const report = importReportOf(state)!;
+      expect(report.recovered).toBeDefined();
+      const last = nativeRecords(text).at(-1)!;
+      expect(last.type).toBe('VERTEX');
+      expect(report.items).toContainEqual(expect.objectContaining({ type: last.type, action: 'dropped', line: last.line, reason: 'incomplete: the file ends inside this object' }));
+      expect(retainedPolylineLines(state, text).size).toBe(seed === 4113270891 ? 1 : 2);
+      checkDrawing(state, text, recover);
+      const withoutTailReport = withImportData(state, { ...report, items: report.items.filter(i => i.line !== last.line) });
+      expect(() => retainedPolylineLines(withoutTailReport, text)).toThrow('retained POLYLINE follower differs from its native source record');
+      const { recovered: _recovered, ...withoutRecovery } = report;
+      expect(() => retainedPolylineLines(withImportData(state, withoutRecovery), text)).toThrow('retained POLYLINE follower differs from its native source record');
+    }
+  });
+
+  it('refuses duplicate native carrier handles with the public read error instead of a RangeError', () => {
+    const pairs = toPairs(ENTITIES_TEXT), ranges = polyfaceRanges(pairs);
+    const firstHandle = pairs.findIndex(([code], i) => i > ranges[0]![0] && i < ranges[0]![1] && code === '5');
+    const secondHandle = pairs.findIndex(([code], i) => i > ranges[1]![0] && i < ranges[1]![1] && code === '5');
+    pairs[secondHandle]![1] = pairs[firstHandle]![1];
+    let error: unknown;
+    try { readDxf(fromPairs(pairs), { model3d: true, recover: true }); } catch (caught) { error = caught; }
+    expect(error).toBeInstanceOf(DxfReadError);
+    expect(error).toMatchObject({ message: `3D carriers share source handle ${pairs[firstHandle]![1]}.`, truncated: false });
+  });
+
   it('reads the unmutated corpus exactly (entities-only and full file)', () => {
     for (const text of [ENTITIES_TEXT, FULL_TEXT]) {
       const state = readDxf(text, { model3d: true });
@@ -685,6 +813,19 @@ function checkDimensions(state: DrawingState, text: string, recovered: boolean):
 }
 
 describe('fuzzing 3D dimension records', () => {
+  it('refuses CI seed 3103900443 with the public non-recoverable read error', () => {
+    const rng = new Rng(3103900443), pairs = toPairs(DIM_TEXT), payloads: string[] = [], applied: DimMutation[] = [];
+    for (let k = rng.int(1, 3); k > 0; k--) applied.push(mutateDimension(rng, pairs, payloads));
+    const text = fromPairs(pairs), recover = rng.bool(0.5), model3d = rng.bool(0.7);
+    expect(applied).toEqual(['payload', 'extrusion', 'swap-codes']);
+    for (const recovery of [recover, true]) {
+      let error: unknown;
+      try { readDxf(text, { model3d, recover: recovery }); } catch (caught) { error = caught; }
+      expect(error).toBeInstanceOf(DxfReadError);
+      expect(error).toMatchObject({ message: 'CAD object handle must be a hexadecimal string of at most 64 bits.', truncated: false });
+    }
+  });
+
   it('reads the unmutated dimension corpus exactly', () => {
     const state = readDxf(DIM_TEXT, { model3d: true });
     expect(state.model3d?.dimensions?.map((d) => d.id)).toEqual(corpusDimensions().map((d) => d.id));

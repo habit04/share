@@ -37,7 +37,105 @@ function carrier(state: DrawingState, kind: 'solid3d' | 'dimension3d', part?: st
   return result;
 }
 
+/** Legacy native foreign polyface: its implicit model-space owner has no table record. */
+function implicitForeignPolyface(parentExtra: readonly Pair[] = [], followerExtra: readonly Pair[] = []): string {
+  const record = (kind: string, handle: string, groups: readonly Pair[]) => [pair(0, kind), pair(5, handle), ...groups];
+  const vertex = (handle: string, x: number, y: number) => record('VERTEX', handle, [
+    ...followerExtra, pair(330, 'A1'), pair(100, 'AcDbEntity'), pair(8, '0'), pair(100, 'AcDbVertex'),
+    pair(100, 'AcDbPolyFaceMeshVertex'), pair(10, String(x)), pair(20, String(y)), pair(30, '0'), pair(70, '192'),
+  ]);
+  return encode([
+    pair(0, 'SECTION'), pair(2, 'ENTITIES'),
+    ...record('POLYLINE', 'A1', [...parentExtra, pair(330, '1F'), pair(100, 'AcDbEntity'), pair(8, '0'), pair(100, 'AcDbPolyFaceMesh'), pair(70, '64')]),
+    ...vertex('A2', 0, 0), ...vertex('A3', 2, 0), ...vertex('A4', 0, 3),
+    ...record('VERTEX', 'A5', [pair(330, 'A1'), pair(100, 'AcDbEntity'), pair(8, '0'), pair(100, 'AcDbFaceRecord'), pair(70, '128'), pair(71, '1'), pair(72, '2'), pair(73, '3')]),
+    ...record('SEQEND', 'A6', [pair(330, 'A1'), pair(100, 'AcDbEntity'), pair(8, '0')]),
+    pair(0, 'ENDSEC'), pair(0, 'EOF'),
+  ]);
+}
+
 describe('3D source carrier identities joined to the retained CAD graph', () => {
+  it('rebinds an implicit raw model-space owner while retaining every native parent/follower pair through two saves', () => {
+    const state = readDxf(implicitForeignPolyface()), original = state.cadGraph!.nodes.filter(node => ['A1', 'A2', 'A3', 'A4', 'A5', 'A6'].includes(node.sourceHandle!));
+    expect(state.model3d).toBeUndefined();
+    expect(original.map(node => node.type)).toEqual(['POLYLINE', 'VERTEX', 'VERTEX', 'VERTEX', 'VERTEX', 'SEQEND']);
+    let current = state;
+    for (let pass = 0; pass < 2; pass++) {
+      current = readDxf(writeDxf(current));
+      const owner = current.cadGraph!.nodes.find(node => node.type === 'BLOCK_RECORD' && node.groups.some(([code, value]) => code === 2 && value === '*Model_Space'))!.sourceHandle!;
+      expect(owner).not.toBe('0');
+      const records = current.cadGraph!.nodes.filter(node => original.some(source => source.sourceHandle === node.sourceHandle));
+      expect(records.map(node => node.sourceHandle)).toEqual(original.map(node => node.sourceHandle));
+      records.forEach((node, index) => expect(node.groups).toEqual(original[index]!.groups.map(group => index === 0 && group[0] === 330 ? [330, owner] : group)));
+    }
+  });
+
+  it('keeps opaque 67/410 and 330 fields distinct from a depth-aware common polyface owner', () => {
+    const opaque = [pair(102, '{OPAQUE_PLACEMENT'), pair(100, 'FakeSubclass'), pair(67, '1'), pair(410, 'Paper1'), pair(330, 'A3'), pair(102, '}')];
+    const state = readDxf(implicitForeignPolyface(opaque, opaque));
+    const reopened = readDxf(writeDxf(state));
+    const owner = reopened.cadGraph!.nodes.find(node => node.type === 'BLOCK_RECORD' && node.groups.some(([code, value]) => code === 2 && value === '*Model_Space'))!.sourceHandle!;
+    for (const handle of ['A1', 'A2', 'A3', 'A4']) {
+      const original = state.cadGraph!.nodes.find(node => node.sourceHandle === handle)!, saved = reopened.cadGraph!.nodes.find(node => node.sourceHandle === handle)!;
+      const commonIndex = original.groups.findIndex(([code], index) => code === 330 && index > opaque.length);
+      expect(commonIndex).toBeGreaterThan(opaque.length);
+      expect(saved.groups).toEqual(original.groups.map((group, index) => handle === 'A1' && index === commonIndex ? [330, owner] : group));
+    }
+  });
+
+  it('rebinds the same implicit model-space owner when the foreign polyface is consumed as a typed solid', () => {
+    const state = readDxf(implicitForeignPolyface(), { model3d: true });
+    expect(state.model3d?.solids).toHaveLength(1);
+    const reopened = readDxf(writeDxf(state), { model3d: true });
+    const modelOwner = reopened.cadGraph!.nodes.find(node => node.type === 'BLOCK_RECORD' && node.groups.some(([code, value]) => code === 2 && value === '*Model_Space'))!.sourceHandle!;
+    expect(modelOwner).not.toBe('0');
+    expect(carrier(reopened, 'solid3d').groups).toContainEqual([330, modelOwner]);
+    expect(reopened.model3d!.solids[0]!.mesh).toEqual(state.model3d!.solids[0]!.mesh);
+    const followers = reopened.cadGraph!.nodes.filter(node => node.anchor?.kind === 'solid3d' && node.anchor.part);
+    expect(followers.map(node => node.sourceHandle)).toEqual(['A2', 'A3', 'A4', 'A5', 'A6']);
+    expect(followers.every(node => node.groups.some(([code, value]) => code === 330 && value === 'A1'))).toBe(true);
+  });
+
+  it('binds cloned typed polyface followers through their explicit source-reference targets', () => {
+    const state = readDxf(implicitForeignPolyface(), { model3d: true }), original = state.model3d!.solids[0]!, clone = { ...original, id: 'copied-solid' };
+    const prepared = prepareDrawingTransition(state, { ...state, model3d: { ...state.model3d!, solids: [original, clone] } },
+      { cloneBatches: [{ entityIds: {}, solidIds: { [original.id]: clone.id } }] });
+    const reopened = readDxf(writeDxf(prepared), { model3d: true });
+    expect(reopened.model3d!.solids).toHaveLength(2);
+    const modelOwner = reopened.cadGraph!.nodes.find(node => node.type === 'BLOCK_RECORD' && node.groups.some(([code, value]) => code === 2 && value === '*Model_Space'))!.sourceHandle!;
+    const parents = reopened.cadGraph!.nodes.filter(node => node.anchor?.kind === 'solid3d' && !node.anchor.part);
+    expect(new Set(parents.map(node => node.sourceHandle)).size).toBe(2);
+    for (const parent of parents) {
+      if (parent.anchor?.kind !== 'solid3d') throw new Error('Missing typed solid parent anchor.');
+      const solidId = parent.anchor.id;
+      expect(parent.groups).toContainEqual([330, modelOwner]);
+      const followers = reopened.cadGraph!.nodes.filter(node => node.anchor?.kind === 'solid3d' && node.anchor.id === solidId && node.anchor.part);
+      expect(followers).toHaveLength(5);
+      followers.forEach(node => expect(node.groups).toContainEqual([330, parent.sourceHandle]));
+    }
+    expect(reopened.model3d!.solids.map(solid => solid.mesh)).toEqual([original.mesh, clone.mesh]);
+  });
+
+  it.each([
+    ['named paper space without flag 67', [pair(410, 'Paper1')]],
+    ['native paper flag', [pair(67, '1')]],
+    ['contradictory paper flag and Model name', [pair(67, '1'), pair(410, 'Model')]],
+    ['ambiguous model/paper names', [pair(410, 'Model'), pair(410, 'Paper1')]],
+  ] as const)('refuses unproven raw polyface placement: %s', (_name, groups) => {
+    const state = readDxf(implicitForeignPolyface(groups));
+    expect(state.cadGraph!.nodes.some(node => node.type === 'POLYLINE' && node.sourceHandle === 'A1')).toBe(true);
+    expect(() => writeDxf(state)).toThrow('Cannot save an unconsumed polyface outside model space: its block/layout carrier placement is not modeled. The original records are retained.');
+  });
+
+  it('refuses ambiguous common ownership and a follower bound to a different source parent', () => {
+    const duplicate = readDxf(implicitForeignPolyface([pair(330, '1F')]));
+    expect(() => writeDxf(duplicate)).toThrow('Cannot save a retained polyface with ambiguous common ownership.');
+    const wrongFollower = readDxf(mutate(implicitForeignPolyface(), 'VERTEX', groups => groups.map(group => group.code === 330 ? pair(330, 'A3') : group)));
+    expect(() => writeDxf(wrongFollower)).toThrow('Cannot save a retained polyface follower with unproven parent ownership.');
+    const wrongContainer = readDxf(mutate(implicitForeignPolyface(), 'POLYLINE', groups => groups.map(group => group.code === 330 ? pair(330, 'A3') : group)));
+    expect(() => writeDxf(wrongContainer)).toThrow('Cannot save a retained polyface with a non-model source owner.');
+  });
+
   it('binds exact parents, every follower and the dimension picture, with 3D display disabled', () => {
     const state = readDxf(source());
     expect(state.model3d?.solids).toHaveLength(1);

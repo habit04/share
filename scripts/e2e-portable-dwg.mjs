@@ -24,6 +24,48 @@ export async function runPortableDwgChecks({ app, page, repo, outDir, check, cur
       dropped: total('dropped'), simplified: total('simplified'), unsupported: total('unsupported'), kept: total('kept'),
       layoutsKept: report.counts.LAYOUT?.kept ?? 0, counts: report.counts };
   });
+  // This fixed control's foreign polyface is retained raw with Experimental 3D off.
+  // All original pairs stay exact. Compare raw source data before No, then check
+  // only the proven model-owner rebind and absent structural follower owners on reopen.
+  const lossPolyface = (requireOwners = false) => page.evaluate(requireOwners => {
+    const ed = window.editor, graph = ed.doc.snapshot.cadGraph;
+    if (!graph || ed.settings.experimental3d) throw new Error('The loss control requires the default-off retained source graph.');
+    const model = graph.nodes.find(node => node.type === 'BLOCK_RECORD' && node.groups.some(([code, value]) => code === 2 && value === '*Model_Space'));
+    const handles = ['107', '108', '109', '10A', '10B', '10C'];
+    const ordered = graph.nodes.filter(node => handles.includes(node.sourceHandle));
+    if (ordered.length !== handles.length || ordered.some((node, index) => node.sourceHandle !== handles[index])) throw new Error('The loss control changed its physical polyface parent/follower order.');
+    const commonOwners = groups => {
+      const owners = []; let depth = 0;
+      for (let index = 0; index < groups.length; index++) {
+        const [code, value] = groups[index];
+        if (code === 102) { depth += value.startsWith('{') ? 1 : value === '}' ? -1 : 0; continue; }
+        if (!depth && [100, 8, 1001].includes(code)) break;
+        if (!depth && code === 330) owners.push(index);
+      }
+      return owners;
+    };
+    const records = handles.map((handle, index) => {
+      const matches = graph.nodes.filter(node => node.sourceHandle === handle);
+      if (matches.length !== 1) throw new Error('The loss control has a missing/duplicated retained polyface record: ' + handle);
+      const node = matches[0], expectedType = index === 0 ? 'POLYLINE' : index === 5 ? 'SEQEND' : 'VERTEX';
+      if (node.type !== expectedType) throw new Error('The loss control changed its parent/follower type: ' + handle);
+      const owners = commonOwners(node.groups), groups = [...node.groups];
+      if (index === 0) {
+        const paper = node.groups.find(([code]) => code === 67)?.[1], layout = node.groups.find(([code]) => code === 410)?.[1];
+        if (owners.length !== 1 || paper !== undefined && Number(paper) !== 0 || layout !== undefined && layout !== 'Model'
+          || requireOwners && !model || model && node.groups[owners[0]]?.[1] !== model.sourceHandle) throw new Error('The raw control polyface has no proven model-space owner.');
+        groups[owners[0]] = [330, '*Model_Space'];
+      } else if (owners.length === 0 && !requireOwners) {
+        if (node.groups[0]?.[0] !== 5 || node.groups[0][1] !== handle) throw new Error('The raw follower has no original leading handle.');
+        groups.splice(1, 0, [330, '107']);
+      } else if (owners.length !== 1 || owners[0] !== 1 || node.groups[1]?.[0] !== 330 || node.groups[1][1] !== '107') {
+        throw new Error('The fresh raw follower has no unique structural parent owner after handle5.');
+      }
+      return { handle, type: node.type, raw: node.groups, comparable: groups };
+    });
+    return { raw: records.map(record => ({ handle: record.handle, type: record.type, groups: record.raw })),
+      comparable: records.map(record => ({ handle: record.handle, type: record.type, groups: record.comparable })) };
+  }, requireOwners);
   const signature = () => page.evaluate(() => {
     const ed = window.editor;
     // Match the independent native oracle: explicit RGB is authoritative and AutoCAD may
@@ -162,8 +204,11 @@ export async function runPortableDwgChecks({ app, page, repo, outDir, check, cur
     assert.equal(await page.evaluate(() => window.editor.openFile()), true, 'Real unsupported-data control opens');await closeReports();
     const lossImport = await importSummary();
     assert.equal(lossImport?.format, 'DXF');assert.equal(lossImport.sourcePath, lossSource);
-    assert.equal(lossImport.dropped + lossImport.simplified, 7, 'Actual fixture reader reports its seven source losses');
+    assert.equal(lossImport.dropped + lossImport.simplified, 6, 'Actual fixture reader reports its six remaining source losses');
     assert.equal(lossImport.counts.WIPEOUT.dropped, 1);assert.equal(lossImport.counts.MLINE.dropped, 1);
+    assert.equal(lossImport.counts.REGION.dropped, 1);assert.equal(lossImport.counts['3DFACE'].dropped, 2);assert.equal(lossImport.counts.TEXT.simplified, 1);
+    assert.equal(lossImport.counts.POLYLINE.kept, 1, 'The foreign polyface is retained instead of counted as dropped');
+    assert.equal(lossImport.kept, 5);const originalPolyface = await lossPolyface();
     assert.equal(lossImport.counts['3DSOLID'].kept, 1, 'Safe opaque solid payload remains retained alongside the reported losses');
     await page.evaluate(() => {
       const ed = window.editor;
@@ -174,7 +219,7 @@ export async function runPortableDwgChecks({ app, page, repo, outDir, check, cur
     const refusedOverwrite = page.evaluate(() => window.editor.saveFile(false));
     const warning = page.locator('.modal', { hasText: 'Save over the original file?' });
     await warning.waitFor({ timeout: 10000 });
-    assert.match(await warning.innerText(), /7 object\(s\) JCad cannot keep.*Save As to keep the original/s);
+    assert.match(await warning.innerText(), /6 object\(s\) JCad cannot keep.*Save As to keep the original/s);
     assert.deepEqual(readFileSync(lossSource), originalLossSource);assert.equal(existsSync(lossSource + '.bak'), false);
     await warning.locator('button', { hasText: /^No$/ }).click();
     assert.equal(await refusedOverwrite, false, 'No uses the canceled Save As picker, without granting source-loss consent');
@@ -184,9 +229,10 @@ export async function runPortableDwgChecks({ app, page, repo, outDir, check, cur
       return ed.doc.snapshot === saved.state && ed.doc.dirty && ed.doc.filePath.endsWith('loss-consent-control.dxf') && ed.sessions.activeId === saved.session
         && ['undo', 'redo'].every(key => history[key].length === saved.history[key].length && history[key].every((state, index) => state === saved.history[key][index]));
     }), true, 'Declined source overwrite leaves the edited document and undo history untouched');
+    assert.deepEqual((await lossPolyface()).raw, originalPolyface.raw, 'Declined source overwrite keeps every raw polyface parent/follower pair exact');
     const allowedOverwrite = page.evaluate(() => window.editor.saveFile(false));
     await warning.waitFor({ timeout: 10000 });
-    assert.match(await warning.innerText(), /7 object\(s\) JCad cannot keep.*Save As to keep the original/s);
+    assert.match(await warning.innerText(), /6 object\(s\) JCad cannot keep.*Save As to keep the original/s);
     await warning.locator('button', { hasText: /^Yes$/ }).click();
     assert.equal(await allowedOverwrite, true, 'Yes explicitly acknowledges the actual unsupported-data source loss');
     assert.deepEqual(readFileSync(lossSource + '.bak'), originalLossSource, 'Consented write keeps the exact unsupported original in its backup');
@@ -196,7 +242,9 @@ export async function runPortableDwgChecks({ app, page, repo, outDir, check, cur
     const controlReopened = await importSummary();assert.ok(controlReopened);
     assert.equal(controlReopened.dropped + controlReopened.simplified, 0, 'Actual consented DXF reopens with its remaining content retained');
     assert.equal(controlReopened.counts['3DSOLID'].kept, 1);
-    check(true, 'Actual unsupported-data source still requires No/Yes loss consent; No preserves source/history and Yes preserves exact backup and safe retained content');
+    assert.equal(controlReopened.counts.POLYLINE.kept, 1);
+    assert.deepEqual((await lossPolyface(true)).comparable, originalPolyface.comparable, 'Consented save and actual fresh reopen retain all original polyface fields/order with proven model and structural parent owners');
+    check(true, 'Actual six-loss source still requires No/Yes consent; No preserves source/history and Yes preserves exact backup, raw polyface records and safe retained content');
     const prior = readFileSync(selectedTarget), backup = readFileSync(selectedTarget + '.bak');
     for (const [label, text] of [['malformed', 'not DXF'], ['unsupported 3D', '0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1032\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\n3DSOLID\n5\n101\n100\nAcDbEntity\n8\n0\n100\nAcDbModelerGeometry\n70\n1\n1\nunsupported ACIS\n0\nENDSEC\n0\nEOF\n']]) {
       const refused = await page.evaluate(([p, text]) => window.jcad.exportDwg(p, text).then(() => false, () => true), [selectedTarget, text]);

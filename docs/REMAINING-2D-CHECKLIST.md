@@ -14,9 +14,17 @@ Current cleared checkpoint `fccba52` passes 4,436 local tests/29 explicit skips,
 all static/build checks, 32 actual Windows source workflows and all four CI jobs.
 Windows CI includes 54 Rust tests, three CLI tests and 252 actual Electron checks
 with source-bound metadata clipboard Save As/Save/exact backup/fresh reopen.
-Completed #19/#29 source is integrated; delivered 3D adoption is now underway.
-Its core gate passes 205 tests and save/recovery 137; combined 3D native/app/full
-CI validation and subsequent frozen GPU adoption remain pending.
+Completed #19/#29 source is integrated. Delivered 3D is now integrated on this
+development branch at `338ef82382f4f99b96c7d7d9a6369702568a4b7d`; its complete
+1,061-file static/build gate and UI CI pass. Its first combined CI run records
+4,708 Node test passes, 17 failures and 378 skips. Three owners are correcting
+stale fixture/report assumptions, a leaked DXF graph-error contract and a retained
+polyface owner lost during saving. Four
+pure-2D outputs are independently byte-identical to the cleared `fccba52` baseline.
+The candidate remains uncleared: fresh full-suite, app, native save/reopen and CI
+gates precede frozen GPU adoption. Existing native fixed-point checks stay intact.
+
+The following checkpoints are historical evidence, not the current candidate's clearance.
 
 Earlier `0447081` cleared the prerequisite: 4,394 local tests/28 existing skips,
 static/build, 32 actual Windows source workflows, ten genuine native cases with

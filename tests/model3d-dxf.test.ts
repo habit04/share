@@ -1,7 +1,6 @@
 /** DXF persistence of experimental 3D solids: polyface meshes with JCAD_3D XDATA (milestone 5). */
 import { describe, expect, it } from 'vitest';
 import { Drawing, type DrawingState } from '../src/core/document';
-import { CadGraphError } from '../src/core/cad-graph';
 import { defaultReadLimitExcess, DxfReadError, readDxf, writeDxf } from '../src/io/dxf';
 import { importReportOf, type ImportReportItem } from '../src/io/import-report';
 import { convertDwg } from '../src/io/dwg';
@@ -201,8 +200,8 @@ describe('3D solids round trip through DXF', () => {
     // limit. Every source face has an identity now, so this earlier specific guard refuses it.
     let error: unknown;
     try { readDxf(text, { model3d: true, maxPairs: 4_000_000, maxRecords: 1_000_000 }); } catch (caught) { error = caught; }
-    expect(error).toBeInstanceOf(CadGraphError);
-    expect(error).toMatchObject({ code: 'invalid', message: 'Invalid or oversized retained CAD object graph.' });
+    expect(error).toBeInstanceOf(DxfReadError);
+    expect(error).toMatchObject({ message: 'Invalid or oversized retained CAD object graph.', truncated: false });
     expect(faces).toBe(500_001);
     // Two reads of a 2.5-million-pair file: about 4 s alone, more with the suite in parallel.
   }, 30_000);

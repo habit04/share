@@ -17,7 +17,7 @@
  * Every drop or simplification is an import-report item: geometry is never discarded silently.
  */
 import type { Obj } from './groups';
-import { has, isIntegerText, num, shortText, str } from './groups';
+import { DxfReadError, has, isIntegerText, num, shortText, str } from './groups';
 import { isIntCode, isRealCode, isRealText, MODEL3D_APP } from './codes';
 import { reportObj, type ReadContext } from './read-core';
 import type { ColorSpec } from '../../core/entities';
@@ -350,12 +350,12 @@ export class Model3DReader {
    */
   private bind(obj: Obj, anchor: CadAnchor): void {
     if (obj.line !== undefined) {
-      if (this.carrierLines.has(obj.line)) throw new RangeError('3D carriers share a source record line.');
+      if (this.carrierLines.has(obj.line)) throw new DxfReadError('3D carriers share a source record line.', obj.line);
       this.carrierLines.set(obj.line, anchor);
     }
     if (!has(obj, 5)) return;
     const handle = canonicalCadHandle(str(obj, 5).trim());
-    if (this.carrierAnchors.has(handle)) throw new RangeError(`3D carriers share source handle ${handle}.`);
+    if (this.carrierAnchors.has(handle)) throw new DxfReadError(`3D carriers share source handle ${handle}.`, obj.line ?? 1);
     this.carrierAnchors.set(handle, anchor);
   }
 

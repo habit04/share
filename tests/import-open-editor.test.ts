@@ -8,9 +8,19 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ImportReport } from '../src/io/import-report';
 import { Drawing } from '../src/core/document';
-import { writeDxf } from '../src/io/dxf';
+import { readDxf, writeDxf } from '../src/io/dxf';
 
 const text = (p: string) => readFileSync(join(__dirname, 'fixtures', p), 'latin1');
+function polyfaceCommonOwners(groups: readonly (readonly [number, string])[]): number[] {
+  const owners: number[] = []; let depth = 0;
+  for (let index = 0; index < groups.length; index++) {
+    const [code, value] = groups[index]!;
+    if (code === 102) { depth += value.startsWith('{') ? 1 : value === '}' ? -1 : 0; continue; }
+    if (!depth && [100, 8, 1001].includes(code)) break;
+    if (!depth && code === 330) owners.push(index);
+  }
+  return owners;
+}
 
 async function makeEditor(files: Record<string, string>, answers: boolean[]) {
   const g = globalThis as Record<string, unknown>;
@@ -112,13 +122,38 @@ describe('import report in the editor', () => {
     await ed.openFile('/d/plant.dxf');
     expect(reports).toHaveLength(1);
     expect(reports[0]!.report.sourcePath).toBe('/d/plant.dxf');
-    expect(logs.join('\n')).toMatch(/DXF import: 7 object\(s\) dropped or simplified, 4 kept without being shown/);
-    await ed.saveFile(false);
+    expect(logs.join('\n')).toMatch(/DXF import: 6 object\(s\) dropped or simplified, 5 kept without being shown/);
+    expect(reports[0]!.report.counts.POLYLINE).toEqual({ kept: 1 });
+    const before = ed.doc.snapshot, history = ed.doc.history();
+    expect(await ed.saveFile(false)).toBe(true);
     expect(asked.map((a) => a.title)).toEqual(['Save over the original file?']);
-    expect(asked[0]!.message).toMatch(/plant\.dxf contained 7 object\(s\) JCad cannot keep/);
+    expect(asked[0]!.message).toMatch(/plant\.dxf contained 6 object\(s\) JCad cannot keep/);
     // No -> Save As: the bridge is asked for a new path (null), the original is not written.
     expect(saves.map((s) => s.path)).toEqual([null]);
     expect(saves[0]!.text).toContain('3DSOLID');
+    expect(ed.doc.snapshot).toBe(before); expect(ed.doc.history()).toEqual(history);
+    expect(ed.doc.filePath).toBe('/out/copy.dxf'); expect(ed.doc.dirty).toBe(false);
+    const reopened = readDxf(saves[0]!.text, { model3d: false });
+    const handles = ['107', '108', '109', '10A', '10B', '10C'];
+    for (const snapshot of [before, reopened]) {
+      expect(snapshot.cadGraph!.nodes.filter(node => handles.includes(node.sourceHandle ?? '')).map(node => node.sourceHandle)).toEqual(handles);
+    }
+    for (const handle of handles) {
+      const source = before.cadGraph!.nodes.filter(node => node.sourceHandle === handle), saved = reopened.cadGraph!.nodes.filter(node => node.sourceHandle === handle);
+      expect(source).toHaveLength(1); expect(saved).toHaveLength(1); expect(saved[0]!.type).toBe(source[0]!.type);
+      const owner = reopened.cadGraph!.nodes.find(node => node.type === 'BLOCK_RECORD' && node.groups.some(([code, value]) => code === 2 && value === '*Model_Space'))!.sourceHandle!;
+      const sourceOwners = polyfaceCommonOwners(source[0]!.groups), savedOwners = polyfaceCommonOwners(saved[0]!.groups);
+      expect(savedOwners).toHaveLength(1);
+      const expected = [...source[0]!.groups];
+      if (handle === '107') {
+        expect(sourceOwners).toHaveLength(1); expected[sourceOwners[0]!] = [330, owner];
+      } else if (sourceOwners.length === 0) {
+        expect(source[0]!.groups[0]).toEqual([5, handle]);
+        expect(savedOwners[0]).toBe(1); expect(saved[0]!.groups[1]).toEqual([330, '107']);
+        expected.splice(1, 0, [330, '107']);
+      }
+      expect(saved[0]!.groups).toEqual(expected);
+    }
     ed.runCommand('IMPORTREPORT');
     expect(reports).toHaveLength(2);
   }, 30000);
