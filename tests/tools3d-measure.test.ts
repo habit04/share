@@ -82,8 +82,11 @@ describe('3DDIST', () => {
         expect(Math.abs(degrees) < threshold).toBe(false); // The old report prints signed zero.
         expect(distanceReport(ctx, exact)[0]).toBe('Distance = 1.0000, Angle in XY Plane = 0.000000, Angle from XY Plane = 0.000000');
       } else {
-        // The binary64 AUPREC5 threshold is just above the decimal half-unit.
-        expect(distanceReport(ctx, exact)[0]).toBe('Distance = 1.0000, Angle in XY Plane = 0.00000, Angle from XY Plane = -0.00001');
+        // The runtime's last bit at AUPREC5 may lie on either side of the decimal half-unit.
+        const intrinsic = degrees.toFixed(auprec);
+        expect(['-0.00000', '-0.00001']).toContain(intrinsic);
+        const expectedElevation = intrinsic === '-0.00000' ? '0.00000' : '-0.00001';
+        expect(distanceReport(ctx, exact)[0]).toBe(`Distance = 1.0000, Angle in XY Plane = 0.00000, Angle from XY Plane = ${expectedElevation}`);
       }
       await drive3d(dist3dTool(), ctx, ['0,0,0', `1,0,${zero}`]);
       // Keep both original typed boundary controls, but use their ACTUAL libm
