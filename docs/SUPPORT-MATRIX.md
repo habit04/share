@@ -1,5 +1,14 @@
 # DXF / DWG support matrix
 
+Integration status: #24 is complete; the remaining feature roadmap is paused while
+the combined Windows branch is validated. The current native save gate still
+refuses a creation-date representation difference. A development diagnostic has
+decoded two original drawings in two time zones, while a third paired DXF contains
+an older update time than its original-DWG AutoCAD oracle. This does not certify
+a date repair or the remaining native cases. Production date guards and matching
+native assets are unchanged. Delivered 3D and the separately owned GPU stack have
+not yet been integrated here; see [integration status](WINDOWS-UPGRADE-INTEGRATION.md).
+
 What JCad Electrical reads from DXF and DWG files, what it writes back, and what is lost on the
 way. JCad is a 2D program: it works in the drawing plane and keeps 2D geometry. DXF is the native
 format (AutoCAD 2000, `AC1015`, unless native properties require a newer version: MTEXT masks use

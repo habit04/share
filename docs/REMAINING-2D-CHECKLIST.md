@@ -4,6 +4,17 @@ Baseline: `83aedbcc7b145ff87293a35d9001cb56f127a2b0` (Windows v0.4.8).
 Worktree: `C:\Users\justi\Chad\jcad-2d-reliability`, branch `feature/remaining-2d-reliability`.
 This is development work; no release, installer, signing or GPU renderer changes.
 
+Current work is the integration blocker, not another checklist feature: #24 is
+frozen and the long list stays paused. At `f76d392`, both Node jobs and UI pass;
+Windows still refuses the strict creation-date comparison. The native diagnostic
+decodes two originals in both time zones and disproves a stored-local Aux theory
+for those drawings. A third paired DXF has an update time 181 seconds older than
+its original-DWG-bound AutoCAD oracle; its candidate tuple remains unlogged and
+the fourth drawing was not attempted. The reference/evidence correction is in
+progress. Production date assertions, native assets and reader/writer pins remain
+unchanged. A single lead integrates the delivered 3D source and the GPU owner's
+frozen handoff after clean gates; the remaining partial features below are deferred.
+
 The full PR/branch history, delivered GPU milestones and proposed combined Windows
 upgrade are recorded in [WINDOWS-UPGRADE-INTEGRATION.md](WINDOWS-UPGRADE-INTEGRATION.md).
 GPU milestones remain owned by their separate workstreams; this checklist is not

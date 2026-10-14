@@ -10,6 +10,7 @@ import signal
 import subprocess
 import tarfile
 from decimal import Decimal, InvalidOperation, ROUND_FLOOR, ROUND_HALF_UP
+from datetime import datetime
 
 ARCHIVE_SHA = "96d407e96047237200360b1669768f80aaffbb003c34c6fe57228fc4cd345d5a"
 DECODE_SHA = "be1fa5ba174fee1a513de35c7a32a2344a009e00a45c39a7480fb444cf10829a"
@@ -42,6 +43,9 @@ DXF_REFERENCE_SHA = {
     "r2018-views-fields": "2630c55169a36ed81951e132b3a946feb57426197e64d4e5747c3bde6821dcad",
     "r2018-unicode-metadata": "b3ad96ebc4a0ae041d63fdb171430216f037a892718002399008cbdd024b50f1",
     "r2018-field-object-reference": "b6f356c4333ea9e3daf57c605ecbdbce636363b6486632cf55082e96e6583ed8"}
+ORACLE_SHA = {"native-dwg-date-oracle.json": "146e63d48e18ec4178330ec016bafe0013fa283cec48979081fed11ee02c235e",
+              "native-dwg-date-oracle.cs": "9813831b6073881aba852c2792e536ef005bc4bae832bf35a8bb9737e1463a8c"}
+DAY_TICKS = 864000000000
 IGNORED_LINKS = {
     "m4/ltoptions.m4", "m4/ltversion.m4", "m4/ltsugar.m4", "m4/lt~obsolete.m4",
     "m4/libtool.m4", "INSTALL", "build-aux/depcomp", "build-aux/compile",
@@ -307,6 +311,7 @@ def prepare(workspace, directory, revision):
         "headerBeforeSha256": sha(header_before), "headerCandidateSha256": sha(header.read_bytes()),
         "sourceVariant": SOURCE_VARIANT, "baselineReference": BASELINE_REFERENCE,
         "dxfReferences": {stem: read_dxf_reference(workspace, stem) for stem in FIXTURES},
+        "qualifiedDateReferences": {stem: read_qualified_date_reference(workspace, stem) for stem in FIXTURES},
         "ignoredToolSymlinks": ignored, "sourceHashes": source_hashes(directory / "source"),
         "fixtures": fixtures, "driverSha256": sha(checked_file(workspace /
             "scripts/native-dwg-build/header-diagnostic.c", 64 * 1024))}
@@ -497,15 +502,98 @@ def read_dxf_reference(workspace, stem):
             "bytes": len(data), "dates": dxf_reference_values(data)}
 
 
-def compare_date_reference(result, reference):
+def validated_native_date_oracle(data):
+    value = json.loads(data, object_pairs_hook=unique_object)
+    if not isinstance(value, dict) or set(value) != {"schemaVersion", "software", "oracle", "procedure", "cases"} or type(value["schemaVersion"]) is not int or value["schemaVersion"] != 1 or value["oracle"] != "native-dwg-date-oracle.cs" or not isinstance(value["software"], str) or not value["software"].startswith("AutoCAD 2027 Core Engine X.60.0.0;") or not isinstance(value["procedure"], str) or not value["procedure"].startswith("ReadDwgFile on isolated byte-identical private copies; never save; verify original and copy SHA256 before/after;"):
+        raise ValueError("Unqualified original DWG date oracle")
+    cases = value["cases"]
+    if not isinstance(cases, list) or len(cases) != 3:
+        raise ValueError("Expected three original DWG oracle cases")
+    references = {}
+    for case in cases:
+        if not isinstance(case, dict) or set(case) != {"stem", "values", "software", "sourceDwgSha256", "sourceAndCopyUnchanged", "readOnly"}:
+            raise ValueError("Invalid native date oracle case")
+        stem = case["stem"]
+        if not isinstance(stem, str) or stem not in FIXTURES or stem == "r2018-minsert" or stem in references or case["sourceDwgSha256"] != FIXTURES[stem] or case["readOnly"] is not True or case["sourceAndCopyUnchanged"] is not True or not isinstance(case["software"], str) or not case["software"].startswith("AutoCAD 2027 Core Engine X.60.0.0;"):
+            raise ValueError("Native date oracle original-file binding changed")
+        dates = {}
+        values = case["values"]
+        if not isinstance(values, dict) or set(values) != {"TDCREATE", "TDUCREATE", "TDUPDATE", "TDUUPDATE", "TDINDWG", "TDUSRTIMER"}:
+            raise ValueError("Native date oracle roles changed")
+        for name, raw in values.items():
+            duration = name in ("TDINDWG", "TDUSRTIMER")
+            if not isinstance(raw, dict) or set(raw) != ({"ticks", "days"} if duration else {"ticks", "iso", "julian"}) or not isinstance(raw["ticks"], str) or not re.fullmatch(r"\d{1,19}", raw["ticks"]):
+                raise ValueError("Invalid exact native date ticks")
+            ticks = int(raw["ticks"])
+            if ticks % 10000 or ticks > 3155378975999999999:
+                raise ValueError("Native date oracle has no exact millisecond tuple")
+            if duration:
+                if not isinstance(raw["days"], str) or float(raw["days"]) != ticks / DAY_TICKS:
+                    raise ValueError("Native duration decimal disagrees with ticks")
+                continue
+            iso = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.(\d{7})", raw["iso"]) if isinstance(raw["iso"], str) else None
+            if not iso:
+                raise ValueError("Invalid native date ISO storage")
+            year, month, day, hour, minute, second, fraction = map(int, iso.groups())
+            calendar = datetime(year, month, day, hour, minute, second)
+            iso_ticks = (calendar.toordinal() - 1) * DAY_TICKS + (hour * 3600 + minute * 60 + second) * 10000000 + fraction
+            # Reproduce the authenticated C# ToOADate()+2415019 operation exactly,
+            # rather than accepting a numerical tolerance around rounded dates.
+            oa_origin = (datetime(1899, 12, 30).toordinal() - 1) * DAY_TICKS
+            expected_julian = ((ticks - oa_origin) // 10000) / 86400000 + 2415019.0
+            if iso_ticks != ticks or not isinstance(raw["julian"], str) or float(raw["julian"]) != expected_julian:
+                raise ValueError("Native date ISO/decimal disagrees with exact ticks")
+            dates["$" + name] = {"sourceDecimal": raw["julian"], "ticks": raw["ticks"], "iso": raw["iso"],
+                "tuple": {"days": ticks // DAY_TICKS + 1721426, "ms": (ticks % DAY_TICKS) // 10000}}
+        references[stem] = {"kind": "original-dwg-bound-autocad-oracle", "sourceDwgSha256": case["sourceDwgSha256"], "dates": dates}
+    if set(references) != set(FIXTURES) - {"r2018-minsert"}:
+        raise ValueError("Missing original DWG date oracle case")
+    return references
+
+
+def read_qualified_date_reference(workspace, stem):
+    artifacts = {}
+    for name, expected in ORACLE_SHA.items():
+        data = checked_file(workspace / f"tests/fixtures/interchange/{name}", 64 * 1024)
+        canonical_sha = sha(data.replace(b"\r\n", b"\n"))
+        if canonical_sha != expected:
+            raise ValueError("Authenticated native date oracle artifact changed")
+        artifacts[name] = {"rawSha256": sha(data), "canonicalLfSha256": canonical_sha, "bytes": len(data)}
+        if name.endswith(".json"):
+            references = validated_native_date_oracle(data)
+    reference = references.get(stem)
+    if reference is None:
+        if stem != "r2018-minsert":
+            raise ValueError("Unknown qualified date reference")
+        reference = {"kind": "pinned-minsert-dxf-control", "sourceDwgSha256": FIXTURES[stem],
+                     "dates": read_dxf_reference(workspace, stem)["dates"]}
+    return {**reference, "oracleArtifacts": artifacts}
+
+
+class DateReferenceMismatch(ValueError):
+    def __init__(self, mismatches):
+        super().__init__("Native mainUTC differs from exact qualified date reference")
+        self.mismatches = mismatches
+
+
+def compare_date_reference(result, reference, primary=None):
     comparisons = {}
+    mismatches = []
+    wanted = primary or reference
     for name, local, universal in (("creation", "$TDCREATE", "$TDUCREATE"),
                                     ("update", "$TDUPDATE", "$TDUUPDATE")):
-        if result["mainUtc"][name] != reference["dates"][universal]["tuple"]:
-            raise ValueError("Native mainUTC differs from exact original DXF reference")
-        comparisons[name] = {"mainUtcMatchesSourceUniversal": True,
+        if result["mainUtc"][name] != wanted["dates"][universal]["tuple"]:
+            mismatches.append({"role": "mainUtc." + name, "sourceRole": universal,
+                "referenceKind": wanted.get("kind", "pinned-dxf-control"),
+                "actual": result["mainUtc"][name], "expected": wanted["dates"][universal]["tuple"],
+                "sourceDecimal": wanted["dates"][universal]["sourceDecimal"]})
+        comparisons[name] = {"mainUtcMatchesQualifiedPrimary": result["mainUtc"][name] == wanted["dates"][universal]["tuple"],
+            "candidateAuxMatchesQualifiedPrimary": result["aux"][name] == wanted["dates"][universal]["tuple"],
+            "mainUtcMatchesSourceUniversal": result["mainUtc"][name] == reference["dates"][universal]["tuple"],
             "candidateAuxMatchesSourceLocal": result["aux"][name] == reference["dates"][local]["tuple"],
             "candidateAuxMatchesSourceUniversal": result["aux"][name] == reference["dates"][universal]["tuple"]}
+    if mismatches:
+        raise DateReferenceMismatch(mismatches)
     return comparisons
 
 
@@ -629,6 +717,69 @@ def run_checked_original(fixture, original, copy, binary, output, zone):
             raise ValueError("Original or private copy changed after native read")
 
 
+def collect_candidate_cases(workspace, directory, binary, prepared):
+    """A reference mismatch fails the gate without hiding independent later raw cases."""
+    cases, mismatches = [], []
+    for fixture in prepared["fixtures"]:
+        stem = fixture["stem"]
+        original = workspace / f"tests/fixtures/interchange/{stem}.dwg"
+        copy = directory / f"inputs/{stem}.dwg"
+        checked_original_pair(fixture, original, copy)
+        reference = read_dxf_reference(workspace, stem)
+        if reference != prepared["dxfReferences"].get(stem):
+            raise ValueError("Original DXF reference changed after preparation")
+        primary = read_qualified_date_reference(workspace, stem)
+        if primary != prepared["qualifiedDateReferences"].get(stem):
+            raise ValueError("Original DWG-bound date reference changed after preparation")
+        zones = {}
+        for zone, label in (("UTC", "utc"), ("America/Chicago", "chicago")):
+            zones[zone] = run_checked_original(fixture, original, copy, binary,
+                                              directory / f"{stem}-{label}", zone)
+            print(json.dumps({"validatedRawCandidateObservation": {"stem": stem, "zone": zone,
+                "candidateOnly": True, "rawAuxCertified": False, "result": zones[zone]}}, separators=(",", ":")))
+        for field in ("aux", "auxFields", "mainUtc"):
+            if zones["UTC"][field] != zones["America/Chicago"][field]:
+                raise ValueError("Raw stored header evidence changed with host timezone")
+        if read_dxf_reference(workspace, stem) != reference:
+            raise ValueError("Original DXF reference changed during native read")
+        if read_qualified_date_reference(workspace, stem) != primary:
+            raise ValueError("Original DWG-bound date reference changed during native read")
+        reference_differences = [{"role": role, "dxf": reference["dates"][role],
+            "qualifiedPrimary": primary["dates"][role]} for role in reference["dates"]
+            if reference["dates"][role]["tuple"] != primary["dates"][role]["tuple"]]
+        if reference_differences:
+            print(json.dumps({"dxfAndOriginalDwgDateDisagreements": {"stem": stem,
+                "qualifiedReferenceKind": primary["kind"], "roles": reference_differences}}, separators=(",", ":")))
+        comparisons, case_mismatches = {}, []
+        for zone, result in zones.items():
+            try:
+                comparisons[zone] = compare_date_reference(result, reference, primary)
+            except DateReferenceMismatch as error:
+                exact = [{"stem": stem, "zone": zone, **item} for item in error.mismatches]
+                case_mismatches.extend(exact)
+                comparisons[zone] = {"matches": False, "mismatches": exact}
+                print(json.dumps({"dateReferenceMismatches": exact}, separators=(",", ":")))
+        case = {**fixture, "zones": zones, "originalAndCopyUnchanged": True,
+            "dxfReference": reference, "dateComparisons": comparisons,
+            "qualifiedDateReference": primary, "dxfAndPrimaryDateDisagreements": reference_differences,
+            "dateReferenceMismatches": case_mismatches,
+            "candidateRawSectionSha256": sha(bytes.fromhex(zones["UTC"]["unverifiedObservations"]["rawHex"]))}
+        cases.append(case)
+        mismatches.extend(case_mismatches)
+        print(json.dumps({"rawHeaderEvidence": case}, separators=(",", ":")))
+    return cases, mismatches
+
+
+def finish_candidate_proof(directory, proof, mismatches):
+    proof = {**proof, "dateReferenceMismatches": mismatches, "passed": not mismatches}
+    (directory / "raw-header-proof.json").write_text(json.dumps(proof, indent=2) + "\n")
+    print(json.dumps({"rawHeaderDiagnosticPassed": proof["passed"], "revision": proof["revision"],
+        "cases": len(proof["cases"]), "archiveSha256": proof["archiveSha256"],
+        "binarySha256": proof["binarySha256"], "referenceMismatchCount": len(mismatches)}))
+    if mismatches:
+        raise DateReferenceMismatch(mismatches)
+
+
 def run(workspace, directory, revision):
     workspace, directory = checked_context(workspace, directory, revision)
     prepared = json.loads(checked_file(directory / "prepared.json", 512 * 1024))
@@ -653,30 +804,7 @@ def run(workspace, directory, revision):
         raise ValueError("Configured diagnostic provenance changed")
     if any(compiled[key] != value for key, value in validated_build_config(make_bytes, config_bytes).items()):
         raise ValueError("Effective diagnostic configuration changed")
-    cases = []
-    for fixture in prepared["fixtures"]:
-        stem, expected = fixture["stem"], fixture["sha256"]
-        original = workspace / f"tests/fixtures/interchange/{stem}.dwg"
-        copy = directory / f"inputs/{stem}.dwg"
-        checked_original_pair(fixture, original, copy)
-        reference = read_dxf_reference(workspace, stem)
-        if reference != prepared["dxfReferences"].get(stem):
-            raise ValueError("Original DXF reference changed after preparation")
-        zones = {}
-        for zone, label in (("UTC", "utc"), ("America/Chicago", "chicago")):
-            zones[zone] = run_checked_original(fixture, original, copy, binary,
-                                              directory / f"{stem}-{label}", zone)
-        for field in ("aux", "auxFields", "mainUtc"):
-            if zones["UTC"][field] != zones["America/Chicago"][field]:
-                raise ValueError("Raw stored header evidence changed with host timezone")
-        if read_dxf_reference(workspace, stem) != reference:
-            raise ValueError("Original DXF reference changed during native read")
-        comparisons = {zone: compare_date_reference(result, reference) for zone, result in zones.items()}
-        case = {**fixture, "zones": zones, "originalAndCopyUnchanged": True,
-            "dxfReference": reference, "dateComparisons": comparisons,
-            "candidateRawSectionSha256": sha(bytes.fromhex(zones["UTC"]["unverifiedObservations"]["rawHex"]))}
-        cases.append(case)
-        print(json.dumps({"rawHeaderEvidence": case}, separators=(",", ":")))
+    cases, mismatches = collect_candidate_cases(workspace, directory, binary, prepared)
     proof = {"schemaVersion": 1, "revision": revision, "archiveSha256": ARCHIVE_SHA,
         "source": prepared["source"], "decodeBeforeSha256": prepared["decodeBeforeSha256"],
         "decodeObservedSha256": prepared["decodeObservedSha256"], "driverSha256": prepared["driverSha256"],
@@ -688,10 +816,8 @@ def run(workspace, directory, revision):
         "binarySha256": binary_sha, "cases": cases, "observerOnly": False,
         "candidateSchemaExperiment": True,
         "build": compiled,
-        "noProductionChanges": True, "ownedChildrenJoined": True, "passed": True}
-    (directory / "raw-header-proof.json").write_text(json.dumps(proof, indent=2) + "\n")
-    print(json.dumps({"rawHeaderDiagnosticPassed": True, "revision": revision,
-        "cases": len(cases), "archiveSha256": ARCHIVE_SHA, "binarySha256": binary_sha}))
+        "noProductionChanges": True, "ownedChildrenJoined": True}
+    finish_candidate_proof(directory, proof, mismatches)
 
 
 if __name__ == "__main__":

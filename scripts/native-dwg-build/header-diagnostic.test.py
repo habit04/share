@@ -365,8 +365,107 @@ class DiagnosticTests(unittest.TestCase):
         self.assertTrue(comparisons['creation']['candidateAuxMatchesSourceUniversal'])
         self.assertFalse(comparisons['creation']['candidateAuxMatchesSourceLocal'])
         result['mainUtc']['creation']['ms'] += 1
-        with self.assertRaisesRegex(ValueError, 'exact original DXF reference'):
+        with self.assertRaisesRegex(ValueError, 'exact qualified date reference'):
             diagnostic.compare_date_reference(result, reference)
+
+    def test_original_dwg_bound_oracle_is_pinned_exact_ticks_not_stale_paired_dxf(self):
+        wanted = {'r2018-views-fields': 81137000, 'r2018-unicode-metadata': 83615000,
+                  'r2018-field-object-reference': 82676000}
+        for stem, ms in wanted.items():
+            primary = diagnostic.read_qualified_date_reference(WORKSPACE, stem)
+            self.assertEqual(primary['sourceDwgSha256'], diagnostic.FIXTURES[stem])
+            self.assertEqual(primary['kind'], 'original-dwg-bound-autocad-oracle')
+            self.assertEqual(primary['dates']['$TDUUPDATE']['tuple'], {'days': 2461326, 'ms': ms})
+            self.assertEqual(primary['dates']['$TDUCREATE']['tuple'], {'days': 2461326, 'ms': 4674000})
+            for name, artifact in primary['oracleArtifacts'].items():
+                self.assertEqual(artifact['canonicalLfSha256'], diagnostic.ORACLE_SHA[name])
+        dxf = diagnostic.read_dxf_reference(WORKSPACE, 'r2018-unicode-metadata')
+        primary = diagnostic.read_qualified_date_reference(WORKSPACE, 'r2018-unicode-metadata')
+        self.assertEqual(primary['dates']['$TDUUPDATE']['tuple']['ms'] - dxf['dates']['$TDUUPDATE']['tuple']['ms'], 181000)
+        self.assertEqual(diagnostic.read_qualified_date_reference(WORKSPACE, 'r2018-minsert')['kind'], 'pinned-minsert-dxf-control')
+
+    def test_oracle_duplicate_cases_binding_flags_and_exact_ticks_iso_decimal_refuse(self):
+        original = json.loads((WORKSPACE / 'tests/fixtures/interchange/native-dwg-date-oracle.json').read_bytes())
+        cases = [dict(original, cases=original['cases'][:-1]), dict(original, cases=[original['cases'][0]] * 3)]
+        for key, wrong in [('sourceDwgSha256', '0' * 64), ('readOnly', False), ('readOnly', 1),
+                           ('sourceAndCopyUnchanged', False), ('stem', 'r2018-minsert')]:
+            changed = json.loads(json.dumps(original)); changed['cases'][0][key] = wrong; cases.append(changed)
+        for key, wrong in [('ticks', '639273646740000001'), ('ticks', True),
+                           ('iso', '2026-10-12T01:17:55.0000000'), ('julian', '2461326.1')]:
+            changed = json.loads(json.dumps(original)); changed['cases'][0]['values']['TDUCREATE'][key] = wrong; cases.append(changed)
+        for changed in cases:
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                diagnostic.validated_native_date_oracle(json.dumps(changed).encode())
+        with patch.object(diagnostic, 'checked_file', return_value=b'changed pinned oracle artifact'):
+            with self.assertRaisesRegex(ValueError, 'artifact changed'):
+                diagnostic.read_qualified_date_reference(WORKSPACE, 'r2018-unicode-metadata')
+
+    def test_qualified_reference_mismatch_retains_exact_both_roles_actual_and_expected(self):
+        reference = diagnostic.read_dxf_reference(WORKSPACE, 'r2018-unicode-metadata')
+        primary = diagnostic.read_qualified_date_reference(WORKSPACE, 'r2018-unicode-metadata')
+        result = authored_result()
+        result['mainUtc'] = {name: primary['dates'][role]['tuple'].copy()
+                             for name, role in [('creation', '$TDUCREATE'), ('update', '$TDUUPDATE')]}
+        result['aux']['update'] = primary['dates']['$TDUUPDATE']['tuple'].copy()
+        comparison = diagnostic.compare_date_reference(result, reference, primary)
+        self.assertTrue(comparison['update']['mainUtcMatchesQualifiedPrimary'])
+        self.assertTrue(comparison['update']['candidateAuxMatchesQualifiedPrimary'])
+        self.assertFalse(comparison['update']['mainUtcMatchesSourceUniversal'])
+        self.assertFalse(comparison['update']['candidateAuxMatchesSourceUniversal'])
+        result['mainUtc']['creation']['ms'] += 1
+        result['mainUtc']['update']['ms'] += 2
+        with self.assertRaises(diagnostic.DateReferenceMismatch) as error:
+            diagnostic.compare_date_reference(result, reference, primary)
+        self.assertEqual([item['role'] for item in error.exception.mismatches], ['mainUtc.creation', 'mainUtc.update'])
+        self.assertEqual(error.exception.mismatches[1]['actual']['ms'], 83615002)
+        self.assertEqual(error.exception.mismatches[1]['expected']['ms'], 83615000)
+
+    def test_mismatch_logs_third_and_fourth_native_cases_and_final_gate_still_fails(self):
+        # Only native transport is mocked. Real private copies and pinned reference reads remain.
+        directory = self.root / 'continue-cases'; (directory / 'inputs').mkdir(parents=True)
+        fixtures = [{'stem': stem, 'sha256': expected, 'bytes': diagnostic.FIXTURE_BYTES[stem]}
+                    for stem, expected in diagnostic.FIXTURES.items()]
+        for fixture in fixtures:
+            (directory / 'inputs' / (fixture['stem'] + '.dwg')).write_bytes(
+                (WORKSPACE / 'tests/fixtures/interchange' / (fixture['stem'] + '.dwg')).read_bytes())
+        prepared = {'fixtures': fixtures,
+            'dxfReferences': {stem: diagnostic.read_dxf_reference(WORKSPACE, stem) for stem in diagnostic.FIXTURES},
+            'qualifiedDateReferences': {stem: diagnostic.read_qualified_date_reference(WORKSPACE, stem) for stem in diagnostic.FIXTURES}}
+        calls = []
+        def native_transport(_binary, copy, _output, zone):
+            calls.append((copy.stem, zone))
+            result = authored_result(); result['inputBytes'] = copy.stat().st_size
+            primary = prepared['qualifiedDateReferences'][copy.stem]
+            result['mainUtc'] = {name: primary['dates'][role]['tuple'].copy()
+                for name, role in [('creation', '$TDUCREATE'), ('update', '$TDUUPDATE')]}
+            if copy.stem == 'r2018-unicode-metadata':
+                result['mainUtc']['update']['ms'] += 1
+            return diagnostic.validated_result(json.dumps(result).encode(), 0, copy.stat().st_size)
+        with patch.object(diagnostic, 'run_one', side_effect=native_transport), patch('builtins.print') as emitted:
+            cases, mismatches = diagnostic.collect_candidate_cases(WORKSPACE, directory, self.root / 'mock-transport', prepared)
+            proof = {'revision': 'a' * 40, 'archiveSha256': diagnostic.ARCHIVE_SHA,
+                     'binarySha256': 'b' * 64, 'candidateOnly': True, 'rawAuxCertified': False, 'cases': cases}
+            with self.assertRaises(diagnostic.DateReferenceMismatch):
+                diagnostic.finish_candidate_proof(directory, proof, mismatches)
+            events = [json.loads(call.args[0]) for call in emitted.call_args_list]
+        self.assertEqual(len(calls), 8)
+        self.assertEqual(len(cases), 4)
+        raw = [event['validatedRawCandidateObservation'] for event in events if 'validatedRawCandidateObservation' in event]
+        self.assertEqual(len(raw), 8)
+        self.assertEqual([item['stem'] for item in raw[-2:]], ['r2018-field-object-reference'] * 2)
+        mismatch_index = next(index for index, event in enumerate(events) if 'dateReferenceMismatches' in event)
+        third_raw = [index for index, event in enumerate(events)
+                     if event.get('validatedRawCandidateObservation', {}).get('stem') == 'r2018-unicode-metadata']
+        self.assertTrue(all(index < mismatch_index for index in third_raw))
+        saved = json.loads((directory / 'raw-header-proof.json').read_bytes())
+        self.assertFalse(saved['passed'])
+        self.assertFalse(saved['rawAuxCertified'])
+        self.assertTrue(saved['candidateOnly'])
+        self.assertEqual(len(saved['cases']), 4)
+        self.assertEqual(len(saved['dateReferenceMismatches']), 2)
+        self.assertEqual(saved['dateReferenceMismatches'][0]['actual']['ms'], 83615001)
+        self.assertEqual(saved['dateReferenceMismatches'][0]['expected']['ms'], 83615000)
+        self.assertTrue(any('dxfAndOriginalDwgDateDisagreements' in event for event in events))
 
     def test_duplicate_missing_malformed_nonfinite_dxf_references_refuse(self):
         source = (WORKSPACE / 'tests/fixtures/interchange/r2018-minsert.dxf').read_bytes()

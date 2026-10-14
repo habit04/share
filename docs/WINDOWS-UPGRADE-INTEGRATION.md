@@ -1,5 +1,28 @@
 # Windows JCad upgrade: verified work and integration plan
 
+Current integration checkpoint: #24 is complete and frozen; the long 2D roadmap
+is paused. One lead owns the combined candidate on this branch. The linked
+"JCad integration coordination" session owns the final GPU handoff and has been
+asked to freeze new features after its current dimension gate. Its PR #16 contains
+the earlier GPU stack; integrate one verified leaf, preserving Canvas as default.
+Delivered 3D source remains `a4d5526380c844a93821fd7d61317856c715e5cb`.
+
+At `f76d392`, both Node jobs and UI pass; Windows still refuses the creation-date
+comparison. The isolated native candidate compiles and reads two original drawings
+in both UTC and Chicago: the complete Aux tuples match main UTC values, rather
+than the DXF local dates. The third drawing's paired DXF has an update timestamp
+181 seconds older than its original DWG. The existing unchanged, DWG-hash-bound
+AutoCAD oracle records the original value. This is a reference defect; the third
+candidate tuple was not logged, and the fourth case did not run. All six attempted
+reads leave originals and private copies unchanged. No eight-case certification
+or production date repair is claimed. The next bounded diagnostic uses the existing
+original-DWG oracle for its three covered drawings and retains the independently
+matched minsert DXF control, with exact comparisons and complete failure evidence.
+
+Merge sequence remains: clear the date/native gate, record stable ancestry, adopt
+delivered 3D, adopt the GPU handoff, then validate the combined source and exact CI.
+No release-branch merge, installer or release is part of this development stage.
+
 Read-only GitHub/history audit: 2026-10-13, 14:43 UTC. This is a planning record;
 no stable-branch merge, installer, signing change or release was performed.
 
