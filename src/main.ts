@@ -2,6 +2,7 @@ import './styles/app.css';
 import './styles/parity.css';
 import { Editor, type FileBridge } from './app/editor';
 import { installGpuPrototype } from './app/gpu-prototype';
+import { setDiagnosticRenderer } from './app/gpu-diagnostics';
 import { Ribbon, ELECTRICAL_TABS } from './ui/ribbon';
 import { CommandLine } from './ui/commandline';
 import { StatusBar } from './ui/statusbar';
@@ -523,6 +524,7 @@ function boot(): void {
 
   // Experimental 3D (inert unless Options > Experimental > 3D modelling was on at startup).
   const experimental3d = installExperimental3d(editor);
+  setDiagnosticRenderer(() => experimental3d?.active ? 'WebGL2 experimental 3D modelling viewport' : 'Canvas 2D');
   if (__JCAD_GPU_EXPERIMENTAL__) installGpuPrototype(editor, () => experimental3d?.active ?? false);
 
   // ------------------------------------------------------------ chrome
