@@ -89,6 +89,11 @@ messages). The date of each version is the date of the commit that set that vers
 
 ### Fixed
 
+- Experimental GPU aligned dimensions retain their exact Canvas text orientation during
+  camera rebasing after native DXF reopen. This prevents a two-step floating-point angle
+  difference from causing unnecessary Canvas fallback, while preserving strict source,
+  glyph and triangle certificates, accuracy tolerances and the three-layout work budget.
+
 - Experimental 3D picking pads culling bounds for tested grazing/oblique rays and retains
   double-precision hit normals. Camera aliases cannot resolve inherited object properties.
   Measurement reports count negative-winding volume magnitudes with a note and keep finite

@@ -1,5 +1,6 @@
 import type { DrawingState } from '../../core/document';
 import type { DimensionEntity, DimStyle } from '../../core/dimension';
+import { resolveDimStyle } from '../../core/dimension';
 import type { ArcEntity, BlockLookup, CircleEntity, LineEntity, PolylineEntity, TextEntity } from '../../core/entities';
 import type { TextGeometryContext } from '../../core/text-metrics';
 import { dimensionParts } from '../../core/entities';
@@ -130,16 +131,27 @@ export function lowerDimensionStrokes(dimension: DimensionEntity, state: Drawing
     // Bound large text overrides and prefixes before the core layout allocates formatted parts.
     const inputCharacters = (dimension.text?.length ?? 0) + (dimension.style.post?.length ?? 0) + (dimension.style.altPost?.length ?? 0);
     if (inputCharacters > maxTextCharacters) throw sourceTopologyAdmissionError('Dimension text exceeds character budget');
+    const styles = textStylesOf(state);
+    const appearance = textGeometry?.resolve({ style: dimension.style.textStyle }) ?? textRenderer(dimension.style.textStyle, styles);
+    if (appearance.kind !== 'stroke') throw sourceTopologyAdmissionError('Unsupported dimension Canvas font');
+    if (appearance.shxResourceId !== undefined) throw sourceTopologyAdmissionError('Loaded SHX dimension text requires Canvas rendering');
+    let worldTextRotation: number | undefined;
+    if (options.nativeView && dimension.kind === 'aligned' && dimension.textRotation === undefined && resolveDimStyle(dimension.style).textAlign === 'aligned') {
+      // Translation cannot rotate Canvas's text frame. Recomputing aligned feet after
+      // subtraction can change atan2's last bit, especially after native DXF reopen.
+      // The certificate reuses these cached WORLD parts, then independently checks
+      // their fresh layout; WORLD, local and fresh remain the same three layout passes.
+      const worldParts = dimensionParts(dimension, textGeometry);
+      if (worldParts.length > maxParts || worldParts.length > DIMENSION_PART_BOUND) throw sourceTopologyAdmissionError('Dimension exceeds part budget');
+      worldTextRotation = worldParts.find((part): part is TextEntity => part.type === 'text')?.rotation;
+    }
     const local = (point: Point): Point => finitePoint({ x: point.x - options.anchor.x, y: point.y - options.anchor.y });
     const rebased: DimensionEntity = {
       ...dimension, p1: local(dimension.p1), p2: local(dimension.p2), linePoint: local(dimension.linePoint),
       ...(dimension.center ? { center: local(dimension.center) } : {}),
       ...(dimension.textPosition ? { textPosition: local(dimension.textPosition) } : {}),
+      ...(worldTextRotation !== undefined ? { textRotation: worldTextRotation } : {}),
     };
-    const styles = textStylesOf(state);
-    const appearance = textGeometry?.resolve({ style: dimension.style.textStyle }) ?? textRenderer(dimension.style.textStyle, styles);
-    if (appearance.kind !== 'stroke') throw sourceTopologyAdmissionError('Unsupported dimension Canvas font');
-    if (appearance.shxResourceId !== undefined) throw sourceTopologyAdmissionError('Loaded SHX dimension text requires Canvas rendering');
     const sources = dimensionParts(rebased, textGeometry);
     if (sources.length > maxParts || (options.nativeView && sources.length > DIMENSION_PART_BOUND)) throw sourceTopologyAdmissionError('Dimension exceeds part budget');
     const ownColor = displayColor(options.strokeOverride ?? options.ownColorCss ?? resolveColor(dimension, state.layers));

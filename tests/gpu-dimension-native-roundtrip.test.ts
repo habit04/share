@@ -1,15 +1,24 @@
 // Real current DXF reader/writer and immutable Drawing contracts; no app/IPC/native raster claim.
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Drawing } from '../src/core/document';
 import { readDxf, writeDxf } from '../src/io/dxf';
 import type { DimensionEntity, DimKind } from '../src/core/dimension';
+import * as dimensions from '../src/core/dimension';
 import type { Entity } from '../src/core/entities';
+import * as entities from '../src/core/entities';
+import { dimensionParts } from '../src/core/entities';
+import type { TextGeometryContext } from '../src/core/text-metrics';
+import { lowerDimensionStrokes } from '../src/render/gpu-prototype/dimension-strokes';
+import { lowerStrokeScene } from '../src/render/gpu-prototype/stroke-scene';
+import type { Gpu2DView } from '../src/render/gpu-prototype/geometry2d';
+import { DIMENSION_POINT_PREPARATION_BOUND } from '../src/render/gpu-prototype/dimension-budget';
 // @ts-expect-error Independent Node-side JavaScript source fixture, also checked by typecheck:scripts.
 import { originalDimensionEntities, dimensionKinds } from '../scripts/gpu-dimension-cases.mjs';
 // @ts-expect-error Independent Node-side JavaScript codec contract, also checked by typecheck:scripts.
 import { measurement, verifyReopenedDimension, verifySavedNativeDimensions } from '../scripts/gpu-dimension-roundtrip.mjs';
 const kinds = dimensionKinds as readonly DimKind[];
 const isDimension = (entity: Entity): entity is DimensionEntity => entity.type === 'dimension';
+afterEach(() => vi.restoreAllMocks());
 function linearSource(entities: readonly Entity[]): DimensionEntity {
   const source = entities.find((entity) => entity.id === 'linear');
   if (!source || source.type !== 'dimension') throw new Error('Original linear dimension is required');
@@ -65,5 +74,82 @@ describe('field-specific DIMENSION native DXF contract (real codec, no apps)', (
   it.each(defects)('rejects %s loss rather than broadly exempting canonicalized fields', (_name, index, alter) => {
     const data = roundtrip(true), [original, actual] = pair(data, index), changed = alter(structuredClone(actual), original);
     expect(() => verifyReopenedDimension(changed, original)).toThrow();
+  });
+});
+
+describe('native reopened aligned text orientation under camera translation (real codec, no GPU)', () => {
+  const camera = (center: { x: number; y: number }): Gpu2DView => ({ width: 800, height: 600, scale: 42, dpr: 1, center, twist: 0, background: '#212830' });
+  const capturedContext = (): TextGeometryContext => ({
+    cacheKey: {}, resolve: vi.fn(() => ({ kind: 'stroke' as const, widthFactor: 1, oblique: 0 })),
+    measure: vi.fn(() => { throw new Error('Hershey native certification must not consume uncertified metrics'); }),
+  });
+  const alignedSource = (doc: Drawing): DimensionEntity => {
+    const source = doc.entities.find((entity): entity is DimensionEntity => entity.type === 'dimension' && entity.kind === 'aligned');
+    if (!source) throw new Error('Native aligned dimension is required');
+    return source;
+  };
+  it.each([{ x: -0.1, y: 0.1 }, { x: -18 / 42, y: -12 / 42 }, { x: -18 / (1.25 * 42), y: -12 / (1.25 * 42) }, { x: 2.125, y: -1.375 }])('keeps actual WORLD orientation at pan %j with every original source and certificate check', center => {
+    const geometry = capturedContext(), data = roundtrip(true), doc = new Drawing(data.after, () => geometry);
+    const source = alignedSource(doc), before = JSON.stringify(doc.snapshot), history = doc.history();
+    const world = dimensionParts(source, geometry), worldText = world.find(part => part.type === 'text')!;
+    const lower = lowerDimensionStrokes(source, doc.snapshot, { lookup: doc.lookupBlock, anchor: center, widthCss: 1, nativeView: camera(center), minRatio: 0.8, maxRatio: 1.25 });
+    expect(lower.ok).toBe(true);
+    if (!lower.ok) throw lower.cause;
+    const certificate = lower.nativeSourceCertificate!;
+    expect(certificate.originalWorldParts).toEqual(world);
+    expect(certificate.localParts.find(part => part.type === 'text')!.rotation).toBe(worldText.rotation);
+    expect(certificate.textGeometryDependency).toBe(geometry); expect(certificate.metricKeyDependency).toBe(geometry.cacheKey);
+    expect(certificate.layoutPasses).toBe(3);
+    // Full Hershey glyph/world precision certification still runs before a scene is returned.
+    expect(lowerStrokeScene(doc.snapshot, camera(center), { selection: new Set() }, { lookup: doc.lookupBlock }).ok).toBe(true);
+    expect(dimensionParts(source, geometry)).toBe(world);
+    expect(JSON.stringify(doc.snapshot)).toBe(before); expect(doc.history()).toEqual(history);
+    expect(source.textRotation).toBeUndefined(); expect(geometry.measure).not.toHaveBeenCalled();
+  });
+
+  it.each([{ textRotation: 0.37 }, { style: { textAlign: 'horizontal' as const } }, { style: { textAlign: 'iso' as const } }])('retains explicit and alternate text layout %j without adding an orientation override', patch => {
+    const geometry = capturedContext(), doc = new Drawing(roundtrip(true).after, () => geometry), original = alignedSource(doc);
+    doc.replaceEntities([{ ...original, ...patch, style: { ...original.style, ...('style' in patch ? patch.style : {}) } }]);
+    const source = alignedSource(doc), before = JSON.stringify(source), center = { x: -0.1, y: 0.1 };
+    const spy = vi.spyOn(entities, 'dimensionParts');
+    const result = lowerDimensionStrokes(source, doc.snapshot, { lookup: doc.lookupBlock, anchor: center, widthCss: 1, nativeView: camera(center) });
+    if ('style' in patch && patch.style?.textAlign === 'iso') {
+      // ISO placement is outside this construction change: its actual angle drift
+      // keeps the original exact certificate refusal, with no partial parts.
+      expect(result).toMatchObject({ ok: false, reason: expect.stringContaining('layout, string, font, role or painter order changes') });
+      expect(result).not.toHaveProperty('parts');
+    } else expect(result.ok).toBe(true);
+    const localCall = spy.mock.calls.find(([dimension]) => dimension !== source)!;
+    expect(localCall[0].textRotation).toBe(source.textRotation);
+    expect(JSON.stringify(source)).toBe(before);
+  });
+
+  it('reuses the captured WORLD cache within the original three layout passes and point/work budgets', () => {
+    const geometry = capturedContext(), doc = new Drawing(roundtrip(true).after, () => geometry), source = alignedSource(doc), center = { x: -0.1, y: 0.1 };
+    const partSpy = vi.spyOn(entities, 'dimensionParts'), layoutSpy = vi.spyOn(dimensions, 'dimensionGeometry');
+    const result = lowerDimensionStrokes(source, doc.snapshot, { lookup: doc.lookupBlock, anchor: center, widthCss: 1, nativeView: camera(center) });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw result.cause;
+    expect(layoutSpy).toHaveBeenCalledTimes(3);
+    expect(partSpy.mock.calls.filter(([dimension]) => dimension === source)).toHaveLength(2);
+    expect(partSpy.mock.results[0]!.value).toBe(partSpy.mock.results[2]!.value);
+    expect(partSpy.mock.calls.every(([, context]) => context === geometry)).toBe(true);
+    // The original conservative preparation bound remains larger than the
+    // returned point charge; it must not be replaced by that smaller count.
+    expect(result.pointCount).toBeLessThanOrEqual(DIMENSION_POINT_PREPARATION_BOUND);
+    const bounded = lowerDimensionStrokes(source, doc.snapshot, { lookup: doc.lookupBlock, anchor: center, widthCss: 1, nativeView: camera(center), maxPoints: DIMENSION_POINT_PREPARATION_BOUND, maxWork: result.preparationWork });
+    expect(bounded.ok).toBe(true);
+    expect(lowerDimensionStrokes(source, doc.snapshot, { lookup: doc.lookupBlock, anchor: center, widthCss: 1, nativeView: camera(center), maxPoints: result.pointCount - 1 })).toMatchObject({ ok: false, reason: expect.stringContaining('point budget') });
+    expect(lowerDimensionStrokes(source, doc.snapshot, { lookup: doc.lookupBlock, anchor: center, widthCss: 1, nativeView: camera(center), maxWork: result.preparationWork! - 1 })).toMatchObject({ ok: false, reason: expect.stringContaining('work') });
+  });
+
+  it('preserves the pure helper construction rather than silently pinning its text angle', () => {
+    const doc = new Drawing(roundtrip(true).after), source = alignedSource(doc), center = { x: -0.1, y: 0.1 }, spy = vi.spyOn(entities, 'dimensionParts');
+    const result = lowerDimensionStrokes(source, doc.snapshot, { anchor: center, widthCss: 1 });
+    expect(result.ok).toBe(true); expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy.mock.calls[0]![0].textRotation).toBeUndefined();
+    const localText = spy.mock.results[0]!.value.find((part: Entity) => part.type === 'text');
+    const worldText = dimensionParts(source).find(part => part.type === 'text');
+    expect(localText.rotation).not.toBe(worldText!.rotation); // This was the native-admission counterexample.
   });
 });

@@ -30,6 +30,16 @@ Actual 3D mode hides the experimental 2D GPU backing. Focused regressions preced
 a fresh committed-source freeze, complete checks, CI and actual Intel/NVIDIA gates.
 Producer GPU evidence does not certify this combined source.
 
+Checkpoint `d68d8ac` passes 6,135 local tests/38 explicit skips, complete static/build
+checks, native ten-case fixed points, 32 source-app workflows, 3D visual/security,
+private AutoCAD audits and six mixed file workflows. Both runs' ordinary CI jobs
+pass; push GPU passes, while PR GPU exposes an aligned text-angle change after
+edited native DXF reopen and pan. A narrow construction repair reuses the exact
+WORLD Canvas orientation in the rebased copy. It retains every strict certificate,
+tolerance and work limit; 419 focused Node 22 tests and the actual failed drawing
+and snapshot pass source checks. Independent review accepts the repair. Fresh
+combined CI and actual Intel/NVIDIA rendering remain required.
+
 Claude's authenticated 3D archive based on `a4d5526` supplied five independently
 accepted picking/camera/measurement patches, adopted as separate commits. Two
 proposed residue rules were replaced with narrow repairs: actual determinant error
