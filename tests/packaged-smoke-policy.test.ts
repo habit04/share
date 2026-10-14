@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest';
+import { shipping3dProbePhases } from '../scripts/packaged-smoke-policy.mjs';
 import { needsPackagedOrigin, needsExperimental3d, needsDefault3dTools, default3dToolsProbeSucceeded, experimental3dProbeSucceeded, needsPortableDwgExport, needsPortableDwgSave, needsRotatedLayoutViewports, needsDwgMetadataPreservation, metadataProbeSucceeded, METADATA_SMOKE_FIXTURES, METADATA_SMOKE_FLAGS, processResult, childSucceeded, dwgProbeSucceeded, validateSmokeArchitecture, macDmgTargets } from '../scripts/packaged-smoke-policy.mjs';
 
 describe('installed default-on 3D tools gate', () => {
+  it('keeps the source default/opt-out/restart sequence explicit even with the unchanged 0.5.0 version', () => {
+    expect(shipping3dProbePhases('0.5.0', { source: true })).toEqual(['3d-default', '3d-enable', '3d']);
+    expect(shipping3dProbePhases('0.5.0')).toEqual(['3d-enable', '3d']);
+    expect(shipping3dProbePhases('0.5.1-alpha.1')).toEqual(['3d-default', '3d-enable', '3d']);
+    expect(shipping3dProbePhases('0.4.9', { source: true })).toEqual([]);
+    expect(() => shipping3dProbePhases('invalid', { source: true })).toThrow(/Invalid packaged smoke version/);
+  });
   it('requires lazy default-on tools from 0.5.1 including prereleases and preserves historical opt-in smoke', () => {
     for (const version of ['0.5.1', 'v0.5.1-alpha.1', '0.5.2', '0.6.0', '1.0.0-rc.1', '1.0.0', '2.0.0']) expect(needsDefault3dTools(version), version).toBe(true);
     for (const version of ['0.5.0', 'v0.5.0-alpha.1', '0.4.99', '0.3.0']) expect(needsDefault3dTools(version), version).toBe(false);

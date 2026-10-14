@@ -39,11 +39,13 @@ function transport(root: string, damage = '') {
   const f = load(root), input = fixture(root), output = join(root, 'shipping-gpu2d-output.dxf');
   f.executeJavaScript.mockImplementationOnce(async code => {
     expect(code).toContain("async function shippingGpu2dRenderer(stage, fixture, output, previous)");
+    expect(code).toContain('const shippingGpuAssertLazy3d=(function shippingGpuAssertLazy3d(w, dom)');
     expect(code).toContain(")('first',");
     expect(await f.dialog.showSaveDialog({}, { title: 'Save Drawing As', filters: [{ extensions: ['dxf'] }] })).toEqual({ canceled: false, filePath: output });
     writeFileSync(output, damage === 'marker' ? 'missing metadata' : firstBytes);
     return { phase: 'gpu2d', semantic: 'fixed authored primitive signature', metadata: 'fixed full application span', comparisons: [{ label: 'first-dxf-reopen' }] };
   }).mockImplementationOnce(async code => {
+    expect(code).toContain('const shippingGpuAssertLazy3d=(function shippingGpuAssertLazy3d(w, dom)');
     expect(code).toContain(")('second',");
     expect(code).toContain('fixed authored primitive signature');
     copyFileSync(output, output + '.bak');

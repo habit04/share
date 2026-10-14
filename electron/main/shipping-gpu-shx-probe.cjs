@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { createHash } = require('node:crypto');
+const { shippingGpuAssertLazy3d } = require('./shipping-gpu-lazy-3d.cjs');
 
 const SHX_FIXTURE_SHA256 = '6169a8575aa3ce34fbd778b3b8b6a93fc20217a58c321069e8a58c12e9044737';
 const SHX_FIXTURE_BYTES = 88877;
@@ -220,7 +221,8 @@ async function shippingShxRenderer(stage, fixture, output, fonts, previous, rend
   const ed = w.editor, vp = ed.viewport;
   need(isSecureContext && location.href === 'jcad://app/index.html' && crypto.subtle, 'SHX requires secure ordinary entry');
   need(!w.gpuPrototype && !document.querySelector('[data-gpu-prototype]') && !ed.commands.has('GPU3DDEMO')
-    && ed.commands.has('GPURENDERER') && ed.commands.has('SHXFONT') && !ed.settings.experimental3d && !w.jcad3d, 'SHX may not use development APIs');
+    && ed.commands.has('GPURENDERER') && ed.commands.has('SHXFONT'), 'SHX may not use development APIs');
+  shippingGpuAssertLazy3d(w, document);
   const info = await w.jcad.appInfo(), semantic = () => shippingShxSemantic(ed.doc.snapshot);
   const originalSettings = { background: vp.settings.background, gridVisible: vp.settings.gridVisible };
   const originalView = { center: vp.center, scale: vp.scale, twist: vp.twist };
@@ -511,6 +513,7 @@ async function runShippingGpuShxProbe(ctx, testBuild, renderOverlay) {
     return { canceled: false, filePath: output };
   };
   const helperSource = [
+    ['shippingGpuAssertLazy3d', shippingGpuAssertLazy3d],
     ['shippingShxSemantic', shippingShxSemantic], ['shippingShxAssertSemantic', shippingShxAssertSemantic],
     ['shippingShxStamp', shippingShxStamp], ['shippingShxSameStamp', shippingShxSameStamp], ['shippingShxAssertFixture', shippingShxAssertFixture],
     ['shippingGpu2dRenderOverlay', renderOverlay], ['shippingShxObservedFrame', shippingShxObservedFrame],

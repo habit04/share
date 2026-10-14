@@ -8,6 +8,7 @@ const os = require('node:os');
 const { createHash } = require('node:crypto');
 const { runShippingDwgProbe } = require('./shipping-dwg-probe.cjs');
 const { runShippingGpuShxProbe } = require('./shipping-gpu-shx-probe.cjs');
+const { shippingGpuAssertLazy3d } = require('./shipping-gpu-lazy-3d.cjs');
 
 /** Fixed renderer code, serialized by the main process; never supplied by a CLI argument. */
 async function shipping3dRenderer(phase, fixture, output) {
@@ -272,7 +273,8 @@ async function shippingGpu2dRenderer(stage, fixture, output, previous) {
   const ed = w.editor, vp = ed.viewport;
   need(isSecureContext && location.href === 'jcad://app/index.html' && crypto.subtle, 'GPU2D requires secure ordinary entry');
   need(!w.gpuPrototype && !document.querySelector('[data-gpu-prototype]') && !ed.commands.has('GPU3DDEMO'), 'GPU2D cannot use development globals or demo commands');
-  need(ed.commands.has('GPURENDERER') && !ed.settings.experimental3d && !w.jcad3d, 'Ordinary GPU command and default-off 3D are required');
+  need(ed.commands.has('GPURENDERER'), 'Ordinary GPU command is required');
+  shippingGpuAssertLazy3d(w, document);
   const info = await w.jcad.appInfo();
   // Bind the complete application span to the original semantic LINE owner.
   const metadata = () => shippingGpu2dMetadata(ed.doc.snapshot);
@@ -573,7 +575,7 @@ async function runShippingGpu2dProbe(ctx, testBuild) {
   };
   const hash = bytes => createHash('sha256').update(bytes).digest('hex');
   // Only these main-authored fixed helpers are serialized; callers cannot supply code.
-  const helpers = `const shippingGpu2dMetadata=(${shippingGpu2dMetadata.toString()});const shippingGpu2dPendingFontFrame=(${shippingGpu2dPendingFontFrame.toString()});const shippingGpu2dRenderOverlay=(${shippingGpu2dRenderOverlay.toString()});`;
+  const helpers = `const shippingGpuAssertLazy3d=(${shippingGpuAssertLazy3d.toString()});const shippingGpu2dMetadata=(${shippingGpu2dMetadata.toString()});const shippingGpu2dPendingFontFrame=(${shippingGpu2dPendingFontFrame.toString()});const shippingGpu2dRenderOverlay=(${shippingGpu2dRenderOverlay.toString()});`;
   try {
     const first = await win.webContents.executeJavaScript(`(() => {${helpers} return (${shippingGpu2dRenderer.toString()})('first',${JSON.stringify(fixture)},${JSON.stringify(output)},null);})()`);
     const firstSaved = fs.readFileSync(output);

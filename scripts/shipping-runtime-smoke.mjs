@@ -7,7 +7,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { verifyExecutableFuses } from './electron-fuse-policy.mjs';
-import { needsPortableDwgExport, needsPortableDwgSave, needsRotatedLayoutViewports, needsDwgMetadataPreservation, needsExperimental3d, needsDefault3dTools, default3dToolsProbeSucceeded, experimental3dProbeSucceeded, metadataProbeSucceeded, METADATA_SMOKE_FIXTURES, METADATA_SMOKE_FLAGS } from './packaged-smoke-policy.mjs';
+import { needsPortableDwgExport, needsPortableDwgSave, needsRotatedLayoutViewports, needsDwgMetadataPreservation, needsExperimental3d, shipping3dProbePhases, default3dToolsProbeSucceeded, experimental3dProbeSucceeded, metadataProbeSucceeded, METADATA_SMOKE_FIXTURES, METADATA_SMOKE_FLAGS } from './packaged-smoke-policy.mjs';
 
 const repo = resolve(import.meta.dirname, '..');
 const source = process.argv[2] === '--source';
@@ -107,9 +107,10 @@ w.webContents.session.flushStorageData(); w.destroy(); app.quit();
     const threeDFixture = join(threeDProfile, 'shipping-startup.dxf');
     writeFileSync(threeDFixture, '0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1015\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nLINE\n8\n0\n10\n10\n20\n10\n11\n20\n21\n20\n0\nENDSEC\n0\nEOF\n', { flag:'wx' });
     let enabled = null;
-    const defaultToolsRequired = source || needsDefault3dTools(expectedVersion);
+    const phases = shipping3dProbePhases(expectedVersion, { source });
+    const defaultToolsRequired = phases.includes('3d-default');
     default3dTools = { required: defaultToolsRequired, evidence: null };
-    for (const phase of [...(defaultToolsRequired ? ['3d-default'] : []), '3d-enable', '3d']) {
+    for (const phase of phases) {
       const output = run(executable, [...appArgs, `--probe-startup=${phase}`, `--user-data-dir=${threeDProfile}`, ...linuxArgs, realpathSync.native(threeDFixture)], phase === '3d' ? 120_000 : 90_000);
       const line = output.split(/\r?\n/).find(entry => entry.startsWith('SHIPPING_PROBE_OK '));
       assert.ok(line, `Missing successful shipping 3D result (${phase})`);

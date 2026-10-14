@@ -25,6 +25,13 @@ export function needsDefault3dTools(version) {
   return major > 0 || minor > 5 || (minor === 5 && patch >= 1);
 }
 
+/** Source candidates always prove lazy defaults, persisted opt-out and separate restart launches. */
+export function shipping3dProbePhases(version, { source = false } = {}) {
+  if (!needsExperimental3d(version)) return [];
+  const defaultsRequired = needsDefault3dTools(version) || source;
+  return [...(defaultsRequired ? ['3d-default'] : []), '3d-enable', '3d'];
+}
+
 /** Fresh-profile evidence must show available tools, inactive resources and persisted opt-out. */
 export function default3dToolsProbeSucceeded(record) {
   const flags = ['toolsAvailable', 'controllerInstalled', 'controllerInactive', 'canvasDefault', 'no3dCanvas', 'kernelUnstarted', 'foreignImportDisabled', 'optionInitiallyChecked', 'disabledPersisted', 'controllerStillInactive', 'restartRequired'];
