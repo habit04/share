@@ -49,6 +49,8 @@ import {
 import { paintLayout, paperTransform, viewportScreenRect, type PaperView } from '../render/layouts';
 import { scriptTool, pointOrKeyword, point, keyword, text, select, matchKeyword } from './script';
 import { sheetEntities, TITLE_BLOCK, SHEET_SIZES, type SheetSize } from '../electrical/templates';
+import { cadCloneBatch } from './cad-edits';
+import type { ParkedSpaceViews } from '../app/sessions';
 
 /** Dialogs the UI layer (src/ui/layouts.ts) provides; commands fall back to the command line without them. */
 export interface LayoutUi {
@@ -85,7 +87,7 @@ export class LayoutController {
   /** Paper view while a floating viewport is active (in paper space the canvas view is the paper view). */
   private paperView: PaperView | null = null;
   private applied: SpaceRef | undefined = undefined;
-  private views = new Map<string, { center: Point; scale: number }>();
+  private views = new Map<string, { center: Point; scale: number; twist?: number }>();
   /** ZOOM Previous belongs to a model tab, paper tab or individual floating viewport. */
   private histories = new Map<string, Editor['viewport']['viewHistory']>();
   /** Layout that TILEMODE 0 / the MODEL button returns to. */
@@ -106,12 +108,36 @@ export class LayoutController {
     this.ed.doc.subscribe(() => this.sync());
     this.ed.on('file', () => this.resync());
     this.ed.on('view', () => this.reconcile());
+    this.ed.captureParkedSpaceViews = () => this.captureParkedViews();
+    this.ed.restoreParkedSpaceViews = views => this.restoreParkedViews(views);
     this.ed.layoutInput = {
       doubleClick: (s) => this.onDoubleClick(s),
       mouseDown: (s) => this.onMouseDown(s),
       hoverBlocked: (s) => this.outsideActiveViewport(s),
     };
     this.resync();
+  }
+
+  private captureParkedViews(): ParkedSpaceViews {
+    const vp = this.ed.viewport, views = new Map(this.views), histories = new Map(this.histories);
+    if (!this.space) views.set('MODEL', { center: { ...vp.center }, scale: vp.scale, twist: vp.twist });
+    else views.set(`L:${this.space.layout.toUpperCase()}`, this.currentPaperView());
+    histories.set(spaceKey(this.space), [...vp.viewHistory]);
+    return {
+      views: [...views].map(([key, view]) => [key, { ...view, center: { ...view.center } }] as const),
+      histories: [...histories].map(([key, history]) => [key, history.map(view => ({ ...view, center: { ...view.center } }))] as const),
+      lastLayout: this.lastLayout,
+    };
+  }
+
+  private restoreParkedViews(snapshot: ParkedSpaceViews | null): void {
+    this.views.clear(); this.histories.clear();
+    if (snapshot) {
+      for (const [key, view] of snapshot.views) this.views.set(key, { ...view, center: { ...view.center } });
+      for (const [key, history] of snapshot.histories) this.histories.set(key, history.map(view => ({ ...view, center: { ...view.center } })));
+      this.lastLayout = snapshot.lastLayout;
+    }
+    this.ed.viewport.viewHistory.splice(0, this.ed.viewport.viewHistory.length, ...(this.histories.get(spaceKey(this.space)) ?? []));
   }
 
   // ------------------------------------------------------------ queries
@@ -183,6 +209,7 @@ export class LayoutController {
     if (this.ed.doc.loadCount !== this.loads) {
       // Another document (open, new, tab switch): its views are not ours; `resync` follows on 'file'.
       this.loads = this.ed.doc.loadCount;
+      this.ed.viewport.twist = 0;
       this.views.clear();
       this.histories.clear();
       this.ed.viewport.viewHistory.splice(0);
@@ -216,7 +243,7 @@ export class LayoutController {
         vp.twist = viewTwist(v.view);
         this.paperView = { scale: vp.scale / k, center: g.add(v.center, g.scale(g.rotate(g.sub(vp.center, v.view.center), vp.twist), k)) };
       }
-    } else this.ed.viewport.twist = 0;
+    } else if (s) this.ed.viewport.twist = 0;
     if (s) this.lastLayout = s.layout;
     this.updatePainter();
     this.ed.notify('space');
@@ -228,13 +255,13 @@ export class LayoutController {
     this.histories.set(spaceKey(prev), [...vp.viewHistory]);
     vp.viewHistory.splice(0, vp.viewHistory.length, ...(this.histories.get(spaceKey(next)) ?? []));
     // Remember the outgoing view.
-    if (!prev) this.views.set('MODEL', { center: { ...vp.center }, scale: vp.scale });
+    if (!prev) this.views.set('MODEL', { center: { ...vp.center }, scale: vp.scale, twist: vp.twist });
     else this.views.set(`L:${prev.layout.toUpperCase()}`, this.currentPaperView());
     const outgoingPaper = prev ? this.currentPaperView() : null;
     this.applied = next;
     vp.fitRect = null;
     if (!next) {
-      vp.twist = 0;
+      vp.twist = this.views.get('MODEL')?.twist ?? 0;
       this.paperView = null;
       vp.layoutPainter = null;
       const saved = this.views.get('MODEL');
@@ -418,12 +445,16 @@ export class LayoutController {
       entities: src.entities.map((e) => ({ ...e, id: newId() }) as Entity),
       viewports: src.viewports.map((v) => ({ ...v, id: newId() })),
     };
+    const anchorRemaps = [
+      { from: { kind: 'layout' as const, name: src.name }, to: { kind: 'layout' as const, name: copy.name } },
+      ...src.viewports.map((viewport, index) => ({ from: { kind: 'viewport' as const, id: viewport.id }, to: { kind: 'viewport' as const, id: copy.viewports[index]!.id } })),
+    ];
     this.ed.doc.transact((s) => {
       const list = [...layoutsOf(s)];
       const i = list.findIndex((l) => l.name === src.name);
       list.splice(i + 1, 0, copy);
       return { ...s, layouts: list };
-    });
+    }, { cloneBatches: [{ ...cadCloneBatch(src.entities, copy.entities), anchorRemaps }] });
     return n;
   }
 

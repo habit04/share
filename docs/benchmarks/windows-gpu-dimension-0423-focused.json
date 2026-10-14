@@ -1,0 +1,1287 @@
+{
+  "schemaVersion": 1,
+  "sourceSha": "0423d095d50b1a9755c5f398d6708a5742604ebd",
+  "scope": "Focused native correctness of the adopted conservative dimension compiler; no full benchmark, performance, production or default-switch acceptance.",
+  "runs": [
+    {
+      "adapter": "intel",
+      "outcome": "passed-focused-correctness",
+      "sourceResult": {
+        "path": ".codex-local/dimension-native-validation-draft/native-focused-default-TyM5Ks/result.json",
+        "bytes": 44875239,
+        "sha256": "e0d2ce604150297940f32e315abec359ff03178ecb9126ba04018daa225304d9"
+      },
+      "startedAt": "2026-10-14T00:42:29.799Z",
+      "finishedAt": "2026-10-14T00:43:13.552Z",
+      "actualContext": {
+        "state": "ready",
+        "rendered": true,
+        "unmaskedVendor": "Google Inc. (Intel)",
+        "unmaskedRenderer": "ANGLE (Intel, Intel(R) UHD Graphics (0x00004688) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+      },
+      "activeAdapters": [
+        {
+          "name": "Intel(R) UHD Graphics",
+          "vendorId": "0x8086",
+          "deviceId": "0x4688",
+          "driverVersion": "32.0.101.7088"
+        }
+      ],
+      "versions": {
+        "jcad": "0.4.9",
+        "electron": "44.7.0",
+        "chromium": "152.0.7977.130",
+        "windows": "10.0.26200"
+      },
+      "viewport": {
+        "width": 1216,
+        "height": 552,
+        "dpr": 1,
+        "drawingWidth": 1216,
+        "drawingHeight": 552
+      },
+      "buildBinding": {
+        "manifestSha256": "4edb17b6eccd6974eb07f3dd177a1d0f7a791e8c249443b6367560d44353d7ef",
+        "builtAssetCount": 43,
+        "builtArtifactsMapSha256": "223717b3d09b64cf17b9bedeb2ea2b26870bd3623fb1bea99f91bd9f267b2eb3",
+        "helpers": {
+          "focused-run.mjs": "3107e5be79157f08edbdc6a3e6e46fcb2b27553aa19a21962d40cbcf3f23860e",
+          "gpu-dimension-validation.mjs": "2b7e15460183a244f672168a653a4d0d3c4d9fd38435a8aac9b67e785decb09b",
+          "gpu-dimension-cases.mjs": "c36b89275544f0c407554141a066a36e80b68226b93c5d2dadb44d2d24457713",
+          "gpu-dimension-roundtrip.mjs": "a36e8bbdfd7955ab0c0671c969fa501fefd615b5ea1b5169efc959428174df80"
+        },
+        "sourceToBuildDerivationLimit": "Lead supplies the build. This separately recorded clean-source manifest, exact file hashes and feature marker bind replay; hashes alone do not independently establish source-to-build derivation."
+      },
+      "cases": [
+        {
+          "name": "dimension-linear-zero",
+          "sourceHash": "f37e54842ead6187439fb510a64535b3b79ca2dba1653a3197d23a3c6edfcdca",
+          "kinds": [
+            "linear"
+          ],
+          "originalCamera": {
+            "center": {
+              "x": 0,
+              "y": 0
+            },
+            "scale": 40,
+            "twist": 0,
+            "lineweights": true,
+            "selection": []
+          }
+        },
+        {
+          "name": "dimension-aligned-zero",
+          "sourceHash": "204d227602b3555f1fdb4f3af46bc7fe08a8879e666232d1e8da6fc311105bd7",
+          "kinds": [
+            "aligned"
+          ],
+          "originalCamera": {
+            "center": {
+              "x": 0,
+              "y": 0
+            },
+            "scale": 40,
+            "twist": 0,
+            "lineweights": true,
+            "selection": []
+          }
+        },
+        {
+          "name": "dimension-radius-zero",
+          "sourceHash": "376d55bb757d752392d1274aff91b5cf4d2ae61a210f240ba691cafcd4c85530",
+          "kinds": [
+            "radius"
+          ],
+          "originalCamera": {
+            "center": {
+              "x": 0,
+              "y": 0
+            },
+            "scale": 40,
+            "twist": 0,
+            "lineweights": true,
+            "selection": []
+          }
+        },
+        {
+          "name": "dimension-diameter-zero",
+          "sourceHash": "5dd7fb208496142a242240bbc071f9e1665a7990c6722b5ed25aa8395cb57740",
+          "kinds": [
+            "diameter"
+          ],
+          "originalCamera": {
+            "center": {
+              "x": 0,
+              "y": 0
+            },
+            "scale": 40,
+            "twist": 0,
+            "lineweights": true,
+            "selection": []
+          }
+        },
+        {
+          "name": "dimension-angular-zero",
+          "sourceHash": "2f51f4731b7d21c349450d08489cba53c81a06d7d95aec0c7f191e2e2abbee6b",
+          "kinds": [
+            "angular"
+          ],
+          "originalCamera": {
+            "center": {
+              "x": 0,
+              "y": 0
+            },
+            "scale": 40,
+            "twist": 0,
+            "lineweights": true,
+            "selection": []
+          }
+        },
+        {
+          "name": "dimensions-common-zero",
+          "sourceHash": "33c491083ff8f8d5129d39f4c724648333c253e81e6e8448f21ef781c0ebbb1a",
+          "kinds": [
+            "linear",
+            "aligned",
+            "radius",
+            "diameter",
+            "angular"
+          ],
+          "originalCamera": {
+            "center": {
+              "x": 0,
+              "y": 0
+            },
+            "scale": 40,
+            "twist": 0,
+            "lineweights": true,
+            "selection": []
+          }
+        }
+      ],
+      "comparisons": {
+        "total": 29,
+        "gpu": 23,
+        "exactCanvas": 6,
+        "maxImageDifferenceFraction": 0.000020857170099160946,
+        "maxTwoPixelCoverageMissFraction": 0,
+        "gpuExactRgbaClaim": false
+      },
+      "originalGeometryInteriorOracles": [
+        {
+          "label": "same-ACI dimension role keeps parent truecolor",
+          "point": {
+            "x": -2,
+            "y": -2
+          },
+          "rgb": [
+            209,
+            154,
+            102
+          ],
+          "screen": {
+            "x": 528.5,
+            "y": 356.5
+          },
+          "actualRgba": [
+            [
+              209,
+              154,
+              102,
+              255
+            ],
+            [
+              209,
+              154,
+              102,
+              255
+            ]
+          ],
+          "provenance": "Fixed original source/role color and painter-order probe; no GPU mesh input"
+        },
+        {
+          "label": "different-ACI extension role overrides parent truecolor",
+          "point": {
+            "x": -8,
+            "y": -3
+          },
+          "rgb": [
+            0,
+            0,
+            255
+          ],
+          "screen": {
+            "x": 288.5,
+            "y": 396.5
+          },
+          "actualRgba": [
+            [
+              0,
+              0,
+              255,
+              255
+            ],
+            [
+              0,
+              0,
+              255,
+              255
+            ]
+          ],
+          "provenance": "Fixed original source/role color and painter-order probe; no GPU mesh input"
+        },
+        {
+          "label": "later ORDER red covers earlier linear dimension brown",
+          "point": {
+            "x": -7,
+            "y": -2
+          },
+          "rgb": [
+            255,
+            0,
+            0
+          ],
+          "screen": {
+            "x": 328.5,
+            "y": 356.5
+          },
+          "actualRgba": [
+            [
+              255,
+              0,
+              0,
+              255
+            ],
+            [
+              255,
+              0,
+              0,
+              255
+            ]
+          ],
+          "provenance": "Fixed original source/role color and painter-order probe; no GPU mesh input"
+        },
+        {
+          "role": "original fill-only arrow",
+          "originalTriangle": {
+            "owner": "linear",
+            "points": [
+              {
+                "x": -1,
+                "y": -2
+              },
+              {
+                "x": -1.35,
+                "y": -1.9416666666666667
+              },
+              {
+                "x": -1.35,
+                "y": -2.058333333333333
+              }
+            ],
+            "rgb": [
+              209,
+              154,
+              102
+            ],
+            "background": [
+              33,
+              40,
+              48
+            ],
+            "expectedPaint": "fill only; no extruded outline",
+            "basis": "src/core/dimension.ts arrowParts/linearParts and src/render/draw.ts filled closed polyline"
+          },
+          "physicalTriangle": [
+            {
+              "x": 568.5,
+              "y": 356.5
+            },
+            {
+              "x": 554.5,
+              "y": 354.16666666666663
+            },
+            {
+              "x": 554.5,
+              "y": 358.8333333333333
+            }
+          ],
+          "fixedInteriorPixels": 15,
+          "canvasSelectedExteriorPixels": 92
+        }
+      ],
+      "textCanvasReference": {
+        "owner": "linear",
+        "corners": [
+          {
+            "x": -5.8,
+            "y": -1.95
+          },
+          {
+            "x": -4.2,
+            "y": -1.84
+          }
+        ],
+        "rgb": [
+          209,
+          154,
+          102
+        ],
+        "provenance": "Canvas-reference ink region from original explicit textPosition(-5,-2)/height.35 above the dimension-line band; not an independent font/content oracle",
+        "comparedInkPixels": 55,
+        "derivedFormattedStrings": [
+          "7.0000",
+          "5.0000",
+          "R2.0000",
+          "%%c4.0000",
+          "90%%d"
+        ],
+        "independentFontOrContentProof": false
+      },
+      "editTransitions": [
+        {
+          "kind": "line-edit",
+          "action": "line-edit",
+          "uploadKind": "subrange",
+          "bytes": 168,
+          "preparedEntities": 1,
+          "partialPreparationMs": 0.40000009536743164,
+          "editMemoHit": false
+        },
+        {
+          "kind": "line-edit",
+          "action": "undo",
+          "uploadKind": "subrange",
+          "bytes": 168,
+          "preparedEntities": 0,
+          "partialPreparationMs": 0,
+          "editMemoHit": true
+        },
+        {
+          "kind": "line-edit",
+          "action": "redo",
+          "uploadKind": "subrange",
+          "bytes": 168,
+          "preparedEntities": 0,
+          "partialPreparationMs": 0,
+          "editMemoHit": true
+        },
+        {
+          "kind": "line-edit",
+          "action": "undo",
+          "uploadKind": "subrange",
+          "bytes": 168,
+          "preparedEntities": 0,
+          "partialPreparationMs": 0,
+          "editMemoHit": true
+        },
+        {
+          "kind": "dimension-edit",
+          "action": "dimension-edit",
+          "uploadKind": "full",
+          "bytes": 134736,
+          "preparedEntities": 7,
+          "partialPreparationMs": 0,
+          "editMemoHit": false
+        },
+        {
+          "kind": "dimension-edit",
+          "action": "undo",
+          "uploadKind": "full",
+          "bytes": 134904,
+          "preparedEntities": 7,
+          "partialPreparationMs": 0,
+          "editMemoHit": false
+        },
+        {
+          "kind": "dimension-edit",
+          "action": "redo",
+          "uploadKind": "full",
+          "bytes": 134736,
+          "preparedEntities": 7,
+          "partialPreparationMs": 0,
+          "editMemoHit": false
+        },
+        {
+          "kind": "dimension-edit",
+          "action": "undo",
+          "uploadKind": "full",
+          "bytes": 134904,
+          "preparedEntities": 7,
+          "partialPreparationMs": 0,
+          "editMemoHit": false
+        },
+        {
+          "kind": "dimension-style-edit",
+          "action": "dimension-style-edit",
+          "uploadKind": "full",
+          "bytes": 134904,
+          "preparedEntities": 7,
+          "partialPreparationMs": 0,
+          "editMemoHit": false
+        },
+        {
+          "kind": "dimension-style-edit",
+          "action": "undo",
+          "uploadKind": "full",
+          "bytes": 134904,
+          "preparedEntities": 7,
+          "partialPreparationMs": 0,
+          "editMemoHit": false
+        },
+        {
+          "kind": "dimension-style-edit",
+          "action": "redo",
+          "uploadKind": "full",
+          "bytes": 134904,
+          "preparedEntities": 7,
+          "partialPreparationMs": 0,
+          "editMemoHit": false
+        },
+        {
+          "kind": "dimension-style-edit",
+          "action": "undo",
+          "uploadKind": "full",
+          "bytes": 134904,
+          "preparedEntities": 7,
+          "partialPreparationMs": 0,
+          "editMemoHit": false
+        }
+      ],
+      "contextRecovery": {
+        "ownerTriggered": true,
+        "automaticFrames": 1,
+        "firstFrame": {
+          "rendered": true,
+          "cacheReason": "cold",
+          "cacheHit": false,
+          "cacheMinRatio": 0.8,
+          "cacheMaxRatio": 1.25,
+          "uploadKind": "full",
+          "bytes": 134904,
+          "uploadCalls": 1,
+          "subrangeUploadBytes": 0,
+          "subrangeUploadCalls": 0,
+          "geometryVertices": 4818,
+          "geometryPreparationMs": 3.5,
+          "partialPreparationMs": 0,
+          "preparedEntities": 7,
+          "reusedEntities": 0,
+          "editMemoHit": false,
+          "drawSubmissionMs": 0.2999999523162842,
+          "submissionMs": 2.3999998569488525
+        },
+        "rendererResourcesReset": false
+      },
+      "nativeEditedDxf": {
+        "actualIpc": true,
+        "actualAtomicSave": true,
+        "sha256": "258aa61a429cdaab5c0b37c8ef729222944798b6689b26f783ec4b28479b6c35",
+        "nativeEditableDimensionRecords": [
+          {
+            "originalId": "linear",
+            "nativeKind": 0,
+            "measurement": 8,
+            "pictureName": "*D1",
+            "owner": "1F",
+            "pictureOwner": "109"
+          },
+          {
+            "originalId": "aligned",
+            "nativeKind": 1,
+            "measurement": 5,
+            "pictureName": "*D2",
+            "owner": "1F",
+            "pictureOwner": "10A"
+          },
+          {
+            "originalId": "radius",
+            "nativeKind": 4,
+            "measurement": 2,
+            "pictureName": "*D3",
+            "owner": "1F",
+            "pictureOwner": "10B"
+          },
+          {
+            "originalId": "diameter",
+            "nativeKind": 3,
+            "measurement": 4,
+            "pictureName": "*D4",
+            "owner": "1F",
+            "pictureOwner": "10C"
+          },
+          {
+            "originalId": "angular",
+            "nativeKind": 5,
+            "measurement": 1.5707963268,
+            "pictureName": "*D5",
+            "owner": "1F",
+            "pictureOwner": "10D"
+          }
+        ],
+        "exactRawAuthoringSource": false,
+        "anchorPolicy": "Only field-specific native projections and radius definitions predicted by the current writer/reader are accepted; arbitrary anchor changes are refused.",
+        "independentOriginalPreSaveCanvas": {
+          "imageDifferenceFraction": 0,
+          "twoPixelCoverageMissFraction": 0,
+          "rawDifferentPixels": 0
+        },
+        "dialogCleanup": {
+          "outcome": "passed"
+        }
+      },
+      "originalControls": [
+        {
+          "name": "dimensions-original-017",
+          "sourceHash": "de423ceab1ffd3969d2721caf27d1a3d36e4c0b9e9761e90cc5158fb2b4987ee",
+          "reason": "Unsupported Canvas stroke construction: native context rotation is unproved",
+          "guardVerified": true,
+          "reviewedAt": "0423d095d50b1a9755c5f398d6708a5742604ebd"
+        },
+        {
+          "name": "dimensions-original-clip-063",
+          "sourceHash": "fbee042540b1672ee88894897a1bd94c0bb5564afc1648a21866b0c0da92e7fd",
+          "reason": "Unsupported Canvas stroke construction: native context rotation is unproved",
+          "guardVerified": true,
+          "reviewedAt": "0423d095d50b1a9755c5f398d6708a5742604ebd"
+        },
+        {
+          "name": "dimensions-original-precision-063",
+          "sourceHash": "a1b8eb6588cc16895d1dfe2cbae5bc515eccbb140a43d8fa7f70494be8a3c55e",
+          "reason": "Unsupported Canvas stroke construction: native context rotation is unproved",
+          "guardVerified": true,
+          "reviewedAt": "0423d095d50b1a9755c5f398d6708a5742604ebd"
+        },
+        {
+          "name": "dimensions-original-selected-arrow-037",
+          "sourceHash": "8cddcb693acbf71fb19604624ab9bf17264ecc63d6c5dece4961647ba57182d9",
+          "reason": "Unsupported Canvas stroke construction: dimension highlight requires Canvas",
+          "guardVerified": true,
+          "reviewedAt": "0423d095d50b1a9755c5f398d6708a5742604ebd"
+        },
+        {
+          "name": "dimensions-original-giant-close-zoom",
+          "sourceHash": "772b3e0d32ba560a00ff359e6d0a26348d68d6bb93c30cd5d5bb92697ee4bb20",
+          "reason": "Unsupported Canvas stroke construction: dimension native context rotation is unproved",
+          "guardVerified": true,
+          "reviewedAt": "0423d095d50b1a9755c5f398d6708a5742604ebd"
+        }
+      ],
+      "cleanup": {
+        "outcome": "passed",
+        "documentRestored": true,
+        "historyRestored": true,
+        "cameraRestored": true,
+        "savingStateRestored": true,
+        "rendererResourcesReset": false
+      },
+      "ownedAppsRemaining": 0,
+      "pageErrors": 0
+    },
+    {
+      "adapter": "nvidia",
+      "outcome": "passed-focused-correctness",
+      "sourceResult": {
+        "path": ".codex-local/dimension-native-validation-draft/native-focused-high-performance-SCloYT/result.json",
+        "bytes": 44875574,
+        "sha256": "ddca3bd4f83896281b3bfa71db4d4714c52459179c6e5c794d8871b723910951"
+      },
+      "startedAt": "2026-10-14T00:46:57.301Z",
+      "finishedAt": "2026-10-14T00:47:43.343Z",
+      "actualContext": {
+        "state": "ready",
+        "rendered": true,
+        "unmaskedVendor": "Google Inc. (NVIDIA)",
+        "unmaskedRenderer": "ANGLE (NVIDIA, NVIDIA RTX A3000 12GB Laptop GPU (0x000024B9) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+      },
+      "activeAdapters": [
+        {
+          "name": "NVIDIA RTX A3000 12GB Laptop GPU",
+          "vendorId": "0x10de",
+          "deviceId": "0x24b9",
+          "driverVersion": "32.0.15.9671"
+        }
+      ],
+      "versions": {
+        "jcad": "0.4.9",
+        "electron": "44.7.0",
+        "chromium": "152.0.7977.130",
+        "windows": "10.0.26200"
+      },
+      "viewport": {
+        "width": 1216,
+        "height": 552,
+        "dpr": 1,
+        "drawingWidth": 1216,
+        "drawingHeight": 552
+      },
+      "buildBinding": {
+        "manifestSha256": "4edb17b6eccd6974eb07f3dd177a1d0f7a791e8c249443b6367560d44353d7ef",
+        "builtAssetCount": 43,
+        "builtArtifactsMapSha256": "223717b3d09b64cf17b9bedeb2ea2b26870bd3623fb1bea99f91bd9f267b2eb3",
+        "helpers": {
+          "focused-run.mjs": "3107e5be79157f08edbdc6a3e6e46fcb2b27553aa19a21962d40cbcf3f23860e",
+          "gpu-dimension-validation.mjs": "2b7e15460183a244f672168a653a4d0d3c4d9fd38435a8aac9b67e785decb09b",
+          "gpu-dimension-cases.mjs": "c36b89275544f0c407554141a066a36e80b68226b93c5d2dadb44d2d24457713",
+          "gpu-dimension-roundtrip.mjs": "a36e8bbdfd7955ab0c0671c969fa501fefd615b5ea1b5169efc959428174df80"
+        },
+        "sourceToBuildDerivationLimit": "Lead supplies the build. This separately recorded clean-source manifest, exact file hashes and feature marker bind replay; hashes alone do not independently establish source-to-build derivation."
+      },
+      "cases": [
+        {
+          "name": "dimension-linear-zero",
+          "sourceHash": "f37e54842ead6187439fb510a64535b3b79ca2dba1653a3197d23a3c6edfcdca",
+          "kinds": [
+            "linear"
+          ],
+          "originalCamera": {
+            "center": {
+              "x": 0,
+              "y": 0
+            },
+            "scale": 40,
+            "twist": 0,
+            "lineweights": true,
+            "selection": []
+          }
+        },
+        {
+          "name": "dimension-aligned-zero",
+          "sourceHash": "204d227602b3555f1fdb4f3af46bc7fe08a8879e666232d1e8da6fc311105bd7",
+          "kinds": [
+            "aligned"
+          ],
+          "originalCamera": {
+            "center": {
+              "x": 0,
+              "y": 0
+            },
+            "scale": 40,
+            "twist": 0,
+            "lineweights": true,
+            "selection": []
+          }
+        },
+        {
+          "name": "dimension-radius-zero",
+          "sourceHash": "376d55bb757d752392d1274aff91b5cf4d2ae61a210f240ba691cafcd4c85530",
+          "kinds": [
+            "radius"
+          ],
+          "originalCamera": {
+            "center": {
+              "x": 0,
+              "y": 0
+            },
+            "scale": 40,
+            "twist": 0,
+            "lineweights": true,
+            "selection": []
+          }
+        },
+        {
+          "name": "dimension-diameter-zero",
+          "sourceHash": "5dd7fb208496142a242240bbc071f9e1665a7990c6722b5ed25aa8395cb57740",
+          "kinds": [
+            "diameter"
+          ],
+          "originalCamera": {
+            "center": {
+              "x": 0,
+              "y": 0
+            },
+            "scale": 40,
+            "twist": 0,
+            "lineweights": true,
+            "selection": []
+          }
+        },
+        {
+          "name": "dimension-angular-zero",
+          "sourceHash": "2f51f4731b7d21c349450d08489cba53c81a06d7d95aec0c7f191e2e2abbee6b",
+          "kinds": [
+            "angular"
+          ],
+          "originalCamera": {
+            "center": {
+              "x": 0,
+              "y": 0
+            },
+            "scale": 40,
+            "twist": 0,
+            "lineweights": true,
+            "selection": []
+          }
+        },
+        {
+          "name": "dimensions-common-zero",
+          "sourceHash": "33c491083ff8f8d5129d39f4c724648333c253e81e6e8448f21ef781c0ebbb1a",
+          "kinds": [
+            "linear",
+            "aligned",
+            "radius",
+            "diameter",
+            "angular"
+          ],
+          "originalCamera": {
+            "center": {
+              "x": 0,
+              "y": 0
+            },
+            "scale": 40,
+            "twist": 0,
+            "lineweights": true,
+            "selection": []
+          }
+        }
+      ],
+      "comparisons": {
+        "total": 29,
+        "gpu": 23,
+        "exactCanvas": 6,
+        "maxImageDifferenceFraction": 0.000020857170099160946,
+        "maxTwoPixelCoverageMissFraction": 0,
+        "gpuExactRgbaClaim": false
+      },
+      "originalGeometryInteriorOracles": [
+        {
+          "label": "same-ACI dimension role keeps parent truecolor",
+          "point": {
+            "x": -2,
+            "y": -2
+          },
+          "rgb": [
+            209,
+            154,
+            102
+          ],
+          "screen": {
+            "x": 528.5,
+            "y": 356.5
+          },
+          "actualRgba": [
+            [
+              209,
+              154,
+              102,
+              255
+            ],
+            [
+              209,
+              154,
+              102,
+              255
+            ]
+          ],
+          "provenance": "Fixed original source/role color and painter-order probe; no GPU mesh input"
+        },
+        {
+          "label": "different-ACI extension role overrides parent truecolor",
+          "point": {
+            "x": -8,
+            "y": -3
+          },
+          "rgb": [
+            0,
+            0,
+            255
+          ],
+          "screen": {
+            "x": 288.5,
+            "y": 396.5
+          },
+          "actualRgba": [
+            [
+              0,
+              0,
+              255,
+              255
+            ],
+            [
+              0,
+              0,
+              255,
+              255
+            ]
+          ],
+          "provenance": "Fixed original source/role color and painter-order probe; no GPU mesh input"
+        },
+        {
+          "label": "later ORDER red covers earlier linear dimension brown",
+          "point": {
+            "x": -7,
+            "y": -2
+          },
+          "rgb": [
+            255,
+            0,
+            0
+          ],
+          "screen": {
+            "x": 328.5,
+            "y": 356.5
+          },
+          "actualRgba": [
+            [
+              255,
+              0,
+              0,
+              255
+            ],
+            [
+              255,
+              0,
+              0,
+              255
+            ]
+          ],
+          "provenance": "Fixed original source/role color and painter-order probe; no GPU mesh input"
+        },
+        {
+          "role": "original fill-only arrow",
+          "originalTriangle": {
+            "owner": "linear",
+            "points": [
+              {
+                "x": -1,
+                "y": -2
+              },
+              {
+                "x": -1.35,
+                "y": -1.9416666666666667
+              },
+              {
+                "x": -1.35,
+                "y": -2.058333333333333
+              }
+            ],
+            "rgb": [
+              209,
+              154,
+              102
+            ],
+            "background": [
+              33,
+              40,
+              48
+            ],
+            "expectedPaint": "fill only; no extruded outline",
+            "basis": "src/core/dimension.ts arrowParts/linearParts and src/render/draw.ts filled closed polyline"
+          },
+          "physicalTriangle": [
+            {
+              "x": 568.5,
+              "y": 356.5
+            },
+            {
+              "x": 554.5,
+              "y": 354.16666666666663
+            },
+            {
+              "x": 554.5,
+              "y": 358.8333333333333
+            }
+          ],
+          "fixedInteriorPixels": 15,
+          "canvasSelectedExteriorPixels": 92
+        }
+      ],
+      "textCanvasReference": {
+        "owner": "linear",
+        "corners": [
+          {
+            "x": -5.8,
+            "y": -1.95
+          },
+          {
+            "x": -4.2,
+            "y": -1.84
+          }
+        ],
+        "rgb": [
+          209,
+          154,
+          102
+        ],
+        "provenance": "Canvas-reference ink region from original explicit textPosition(-5,-2)/height.35 above the dimension-line band; not an independent font/content oracle",
+        "comparedInkPixels": 55,
+        "derivedFormattedStrings": [
+          "7.0000",
+          "5.0000",
+          "R2.0000",
+          "%%c4.0000",
+          "90%%d"
+        ],
+        "independentFontOrContentProof": false
+      },
+      "editTransitions": [
+        {
+          "kind": "line-edit",
+          "action": "line-edit",
+          "uploadKind": "subrange",
+          "bytes": 168,
+          "preparedEntities": 1,
+          "partialPreparationMs": 0.2999999523162842,
+          "editMemoHit": false
+        },
+        {
+          "kind": "line-edit",
+          "action": "undo",
+          "uploadKind": "subrange",
+          "bytes": 168,
+          "preparedEntities": 0,
+          "partialPreparationMs": 0,
+          "editMemoHit": true
+        },
+        {
+          "kind": "line-edit",
+          "action": "redo",
+          "uploadKind": "subrange",
+          "bytes": 168,
+          "preparedEntities": 0,
+          "partialPreparationMs": 0,
+          "editMemoHit": true
+        },
+        {
+          "kind": "line-edit",
+          "action": "undo",
+          "uploadKind": "subrange",
+          "bytes": 168,
+          "preparedEntities": 0,
+          "partialPreparationMs": 0,
+          "editMemoHit": true
+        },
+        {
+          "kind": "dimension-edit",
+          "action": "dimension-edit",
+          "uploadKind": "full",
+          "bytes": 134736,
+          "preparedEntities": 7,
+          "partialPreparationMs": 0,
+          "editMemoHit": false
+        },
+        {
+          "kind": "dimension-edit",
+          "action": "undo",
+          "uploadKind": "full",
+          "bytes": 134904,
+          "preparedEntities": 7,
+          "partialPreparationMs": 0,
+          "editMemoHit": false
+        },
+        {
+          "kind": "dimension-edit",
+          "action": "redo",
+          "uploadKind": "full",
+          "bytes": 134736,
+          "preparedEntities": 7,
+          "partialPreparationMs": 0,
+          "editMemoHit": false
+        },
+        {
+          "kind": "dimension-edit",
+          "action": "undo",
+          "uploadKind": "full",
+          "bytes": 134904,
+          "preparedEntities": 7,
+          "partialPreparationMs": 0,
+          "editMemoHit": false
+        },
+        {
+          "kind": "dimension-style-edit",
+          "action": "dimension-style-edit",
+          "uploadKind": "full",
+          "bytes": 134904,
+          "preparedEntities": 7,
+          "partialPreparationMs": 0,
+          "editMemoHit": false
+        },
+        {
+          "kind": "dimension-style-edit",
+          "action": "undo",
+          "uploadKind": "full",
+          "bytes": 134904,
+          "preparedEntities": 7,
+          "partialPreparationMs": 0,
+          "editMemoHit": false
+        },
+        {
+          "kind": "dimension-style-edit",
+          "action": "redo",
+          "uploadKind": "full",
+          "bytes": 134904,
+          "preparedEntities": 7,
+          "partialPreparationMs": 0,
+          "editMemoHit": false
+        },
+        {
+          "kind": "dimension-style-edit",
+          "action": "undo",
+          "uploadKind": "full",
+          "bytes": 134904,
+          "preparedEntities": 7,
+          "partialPreparationMs": 0,
+          "editMemoHit": false
+        }
+      ],
+      "contextRecovery": {
+        "ownerTriggered": true,
+        "automaticFrames": 1,
+        "firstFrame": {
+          "rendered": true,
+          "cacheReason": "cold",
+          "cacheHit": false,
+          "cacheMinRatio": 0.8,
+          "cacheMaxRatio": 1.25,
+          "uploadKind": "full",
+          "bytes": 134904,
+          "uploadCalls": 1,
+          "subrangeUploadBytes": 0,
+          "subrangeUploadCalls": 0,
+          "geometryVertices": 4818,
+          "geometryPreparationMs": 3.799999952316284,
+          "partialPreparationMs": 0,
+          "preparedEntities": 7,
+          "reusedEntities": 0,
+          "editMemoHit": false,
+          "drawSubmissionMs": 0.19999980926513672,
+          "submissionMs": 2.5999999046325684
+        },
+        "rendererResourcesReset": false
+      },
+      "nativeEditedDxf": {
+        "actualIpc": true,
+        "actualAtomicSave": true,
+        "sha256": "258aa61a429cdaab5c0b37c8ef729222944798b6689b26f783ec4b28479b6c35",
+        "nativeEditableDimensionRecords": [
+          {
+            "originalId": "linear",
+            "nativeKind": 0,
+            "measurement": 8,
+            "pictureName": "*D1",
+            "owner": "1F",
+            "pictureOwner": "109"
+          },
+          {
+            "originalId": "aligned",
+            "nativeKind": 1,
+            "measurement": 5,
+            "pictureName": "*D2",
+            "owner": "1F",
+            "pictureOwner": "10A"
+          },
+          {
+            "originalId": "radius",
+            "nativeKind": 4,
+            "measurement": 2,
+            "pictureName": "*D3",
+            "owner": "1F",
+            "pictureOwner": "10B"
+          },
+          {
+            "originalId": "diameter",
+            "nativeKind": 3,
+            "measurement": 4,
+            "pictureName": "*D4",
+            "owner": "1F",
+            "pictureOwner": "10C"
+          },
+          {
+            "originalId": "angular",
+            "nativeKind": 5,
+            "measurement": 1.5707963268,
+            "pictureName": "*D5",
+            "owner": "1F",
+            "pictureOwner": "10D"
+          }
+        ],
+        "exactRawAuthoringSource": false,
+        "anchorPolicy": "Only field-specific native projections and radius definitions predicted by the current writer/reader are accepted; arbitrary anchor changes are refused.",
+        "independentOriginalPreSaveCanvas": {
+          "imageDifferenceFraction": 0,
+          "twoPixelCoverageMissFraction": 0,
+          "rawDifferentPixels": 0
+        },
+        "dialogCleanup": {
+          "outcome": "passed"
+        }
+      },
+      "originalControls": [
+        {
+          "name": "dimensions-original-017",
+          "sourceHash": "de423ceab1ffd3969d2721caf27d1a3d36e4c0b9e9761e90cc5158fb2b4987ee",
+          "reason": "Unsupported Canvas stroke construction: native context rotation is unproved",
+          "guardVerified": true,
+          "reviewedAt": "0423d095d50b1a9755c5f398d6708a5742604ebd"
+        },
+        {
+          "name": "dimensions-original-clip-063",
+          "sourceHash": "fbee042540b1672ee88894897a1bd94c0bb5564afc1648a21866b0c0da92e7fd",
+          "reason": "Unsupported Canvas stroke construction: native context rotation is unproved",
+          "guardVerified": true,
+          "reviewedAt": "0423d095d50b1a9755c5f398d6708a5742604ebd"
+        },
+        {
+          "name": "dimensions-original-precision-063",
+          "sourceHash": "a1b8eb6588cc16895d1dfe2cbae5bc515eccbb140a43d8fa7f70494be8a3c55e",
+          "reason": "Unsupported Canvas stroke construction: native context rotation is unproved",
+          "guardVerified": true,
+          "reviewedAt": "0423d095d50b1a9755c5f398d6708a5742604ebd"
+        },
+        {
+          "name": "dimensions-original-selected-arrow-037",
+          "sourceHash": "8cddcb693acbf71fb19604624ab9bf17264ecc63d6c5dece4961647ba57182d9",
+          "reason": "Unsupported Canvas stroke construction: dimension highlight requires Canvas",
+          "guardVerified": true,
+          "reviewedAt": "0423d095d50b1a9755c5f398d6708a5742604ebd"
+        },
+        {
+          "name": "dimensions-original-giant-close-zoom",
+          "sourceHash": "772b3e0d32ba560a00ff359e6d0a26348d68d6bb93c30cd5d5bb92697ee4bb20",
+          "reason": "Unsupported Canvas stroke construction: dimension native context rotation is unproved",
+          "guardVerified": true,
+          "reviewedAt": "0423d095d50b1a9755c5f398d6708a5742604ebd"
+        }
+      ],
+      "cleanup": {
+        "outcome": "passed",
+        "documentRestored": true,
+        "historyRestored": true,
+        "cameraRestored": true,
+        "savingStateRestored": true,
+        "rendererResourcesReset": false
+      },
+      "ownedAppsRemaining": 0,
+      "pageErrors": 0
+    }
+  ],
+  "requiredRemaining": [
+    "Permanent benchmark hook and regression integration",
+    "Full real benchmark callback with following gates",
+    "Exact CI for that frozen candidate and final combined integration"
+  ],
+  "limits": [
+    "Only actual Intel UHD and NVIDIA RTX A3000 contexts at the recorded viewport/driver/runtime were tested; no AMD or broad hardware claim.",
+    "Canvas text ink is a reference comparison, not independent font/content correctness.",
+    "DXF checks use authored fixtures; no external CAD interoperability, portable DWG or installer validation claim.",
+    "Original nonzero-twist huge-world and extreme-zoom controls refuse at rotation; they do not prove zero-twist behavior at those coordinates.",
+    "The original CPU control metadata is distinct from the actual native viewport/DPR."
+  ],
+  "compilerCi": {
+    "schemaVersion": 1,
+    "scope": "Read-only original first-attempt CI observation. Both exact-source producers passed all five jobs. GPU CI covers the currently wired old32 plus hatch40 integrated benchmark on this runtime; the private DIM helper is not wired to these CI runs and is not certified by this proof.",
+    "eventHead": "0423d095d50b1a9755c5f398d6708a5742604ebd",
+    "repository": "habit04/share",
+    "pullRequest": 16,
+    "pullRequestMergeProducer": "dc47b4faf2e0a8536a47ca9428f8c8fd79756bea",
+    "pinnedBase": "4762534751977c72de57f5e39b543a5bd8595765",
+    "runs": [
+      {
+        "event": "pull_request",
+        "eventHead": "0423d095d50b1a9755c5f398d6708a5742604ebd",
+        "producerCheckout": "dc47b4faf2e0a8536a47ca9428f8c8fd79756bea",
+        "runId": 38491347075,
+        "url": "https://github.com/habit04/share/actions/runs/38491347075",
+        "attempt": 1,
+        "conclusion": "success",
+        "jobs": [
+          {
+            "name": "test (22)",
+            "jobId": 115617013718,
+            "conclusion": "success"
+          },
+          {
+            "name": "gpu-experimental",
+            "jobId": 115617013807,
+            "conclusion": "success"
+          },
+          {
+            "name": "e2e-electron (windows-latest)",
+            "jobId": 115617013903,
+            "conclusion": "success"
+          },
+          {
+            "name": "ui",
+            "jobId": 115617013933,
+            "conclusion": "success"
+          },
+          {
+            "name": "test (24)",
+            "jobId": 115617014036,
+            "conclusion": "success"
+          }
+        ]
+      },
+      {
+        "event": "push",
+        "eventHead": "0423d095d50b1a9755c5f398d6708a5742604ebd",
+        "producerCheckout": "0423d095d50b1a9755c5f398d6708a5742604ebd",
+        "runId": 38491341130,
+        "url": "https://github.com/habit04/share/actions/runs/38491341130",
+        "attempt": 1,
+        "conclusion": "success",
+        "jobs": [
+          {
+            "name": "gpu-experimental",
+            "jobId": 115616994593,
+            "conclusion": "success"
+          },
+          {
+            "name": "test (24)",
+            "jobId": 115616994769,
+            "conclusion": "success"
+          },
+          {
+            "name": "e2e-electron (windows-latest)",
+            "jobId": 115616994782,
+            "conclusion": "success"
+          },
+          {
+            "name": "ui",
+            "jobId": 115616994804,
+            "conclusion": "success"
+          },
+          {
+            "name": "test (22)",
+            "jobId": 115616994875,
+            "conclusion": "success"
+          }
+        ]
+      }
+    ],
+    "allFiveJobsPassedFirstAttemptsInBothRuns": true,
+    "gpuLogs": [
+      {
+        "event": "pull_request",
+        "jobId": 115617013807,
+        "file": "pr-gpu-job-115617013807-full.log",
+        "bytes": 115344,
+        "sha256": "4a87ff448251f5aef20bbf871969e4aa61cd56a7e462c942a4dd10c2d00f0190",
+        "producerCheckout": "dc47b4faf2e0a8536a47ca9428f8c8fd79756bea",
+        "successMarker": "GPU renderer Windows prototype checks passed.",
+        "assertionOrErrorMarkersPresent": false
+      },
+      {
+        "event": "push",
+        "jobId": 115616994593,
+        "file": "push-gpu-job-115616994593-full.log",
+        "bytes": 115315,
+        "sha256": "9b6d60b58f14e32b20e6e4e5b5ef6b1b48f2e09a45fe2d1df7fa08c4e9ce7c16",
+        "producerCheckout": "0423d095d50b1a9755c5f398d6708a5742604ebd",
+        "successMarker": "GPU renderer Windows prototype checks passed.",
+        "assertionOrErrorMarkersPresent": false
+      }
+    ],
+    "immutableProof": {
+      "file": "observer-final-20261014T010123933Z.json",
+      "sha256": "dc9ce8b1b3a47818830917321a3e9d8ef805c141c27356068a8b0af15dd3a798"
+    },
+    "previousCancellation": {
+      "head": "2bfe98df5551d3e61b63ac6fe29be59e742b66b1",
+      "path": "../ci-2bfe98df/observer-final-20261013T231117995Z.json",
+      "status": "Original PR cancellation retained. Timing consistent with old20-minute job budget, inferred cause only; not relabeled as accuracy failure or accepted completion."
+    },
+    "limits": "Local native DIM positive/raster/edited-DXF gates and integration acceptance remain lead-owned; these CI results do not certify later sources or general hardware/performance adoption."
+  }
+}

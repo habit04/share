@@ -137,7 +137,7 @@ export class Viewport {
     if (this.sceneHasImages) return null;
     // Set order is stable during cursor motion; a different order only causes a safe cache miss.
     // Avoid sorting large selections on every frame, while still detecting in-place Set edits.
-    return JSON.stringify([this.width, this.height, this.dpr, this.scale, this.center.x, this.center.y, this.twist, this.settings, lineweightDisplay, [...ov.selection], ov.hover]);
+    return JSON.stringify([this.width, this.height, this.canvas.width, this.canvas.height, this.dpr, this.scale, this.center.x, this.center.y, this.twist, this.settings, lineweightDisplay, [...ov.selection], ov.hover]);
   }
 
   private rememberScene(key: string): void {
@@ -146,7 +146,10 @@ export class Viewport {
     canvas.width = this.canvas.width; canvas.height = this.canvas.height;
     const context = canvas.getContext('2d');
     if (!context || context.isContextLost?.()) { this.discardScene(); return; }
-    try { context.drawImage(this.canvas, 0, 0); }
+    try {
+      context.setTransform(1, 0, 0, 1, 0, 0);
+      context.drawImage(this.canvas, 0, 0);
+    }
     catch { this.discardScene(); return; } // A bitmap cache must never prevent the main view from drawing.
     const onContextChange = this.baseScene?.onContextChange ?? (() => {
       if (this.disposed || this.baseScene?.canvas !== canvas) return;
@@ -350,18 +353,29 @@ export class Viewport {
     const key = gpuScene ? null : this.sceneKey(ov);
     const cached = key && this.baseScene?.state === this.doc.snapshot && this.baseScene.key === key ? this.baseScene : null;
     if (!cached) {
-      if (gpuScene) ctx.clearRect(0, 0, this.width, this.height);
-      else {
-        ctx.fillStyle = this.settings.background;
-        ctx.fillRect(0, 0, this.width, this.height);
-      }
+      // Rounded backing dimensions can include a fraction of an extra CSS pixel.
+      // Fill/clear whole physical pixels, then keep geometry on the original DPR.
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      try {
+        if (gpuScene) ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+        else {
+          ctx.fillStyle = this.settings.background;
+          ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+        }
+      } finally { ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0); }
       if (this.settings.gridVisible && !this.layoutPainter) this.drawGrid();
       if (this.underlay) {
         ctx.save();
         this.underlay(ctx, this);
         ctx.restore();
       }
-    } else ctx.drawImage(cached.canvas, 0, 0, this.width, this.height);
+    } else {
+      // Saved scenes already have the exact physical backing size. A CSS-sized
+      // destination would resample them when logical size * DPR is fractional.
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      try { ctx.drawImage(cached.canvas, 0, 0); }
+      finally { ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0); }
+    }
 
     const header = this.doc.header;
     renderSettings.ltscale = header.ltscale;

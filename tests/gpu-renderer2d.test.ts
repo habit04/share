@@ -1,12 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { DrawingState } from '../src/core/document';
 import { DEFAULT_HEADER } from '../src/core/document';
-import type { Entity, Layer, LineEntity, PolylineEntity } from '../src/core/entities';
+import type { BlockDef, Entity, InsertEntity, Layer, LineEntity, PolylineEntity, TextEntity } from '../src/core/entities';
 import type { Point } from '../src/core/geometry';
 import { sealImmutableData } from '../src/core/immutable-data';
-import { colorDisplay, lineweightDisplay } from '../src/render/draw';
-import { prepare2D, prepareZoom2D, screenPoint, GPU_ZOOM_VERTEX_STRIDE, type Gpu2DView, type Prepared2D } from '../src/render/gpu-prototype/geometry2d';
+import { colorDisplay, drawEntity, lineweightDisplay } from '../src/render/draw';
+import { STANDARD_TEXT_STYLE } from '../src/io/encoding';
+import { strokeText } from '../src/render/hershey';
+import { prepare2D, prepareCompiledZoom2D, prepareZoom2D, screenPoint, zoomPrecisionSafe, GPU_ZOOM_VERTEX_STRIDE, type Gpu2DView, type Prepared2D } from '../src/render/gpu-prototype/geometry2d';
 import { Gpu2DRenderer, GPU_EDIT_HISTORY_BYTES, GPU_EDIT_HISTORY_ENTRIES } from '../src/render/gpu-prototype/renderer2d';
+import { isSourcePrecisionCertificateError, isSourceTopologyAdmissionError } from '../src/render/gpu-prototype/stroke-precision-error';
 
 const layer: Layer = { name: '0', color: 3, visible: true, locked: false, lineWeight: 0.5 };
 const line: LineEntity = { id: 'line', type: 'line', layer: '0', color: 'ByLayer', a: { x: -2, y: 0 }, b: { x: 2, y: 0 } };
@@ -33,6 +36,21 @@ function covers(geometry: Prepared2D, point: Point): boolean {
     if (signs.every((value) => value >= -1e-5) || signs.every((value) => value <= 1e-5)) return true;
   }
   return false;
+}
+
+/** Record the current Canvas painter's world construction before viewport rotation. */
+function nativePolylineCommands(entity: PolylineEntity, camera: Gpu2DView) {
+  const ctx = {
+    globalAlpha: 1, save: vi.fn(), restore: vi.fn(), setLineDash: vi.fn(),
+    beginPath: vi.fn(), closePath: vi.fn(), lineTo: vi.fn(), stroke: vi.fn(),
+    moveTo: vi.fn<(x: number, y: number) => void>(),
+    arc: vi.fn<(x: number, y: number, radius: number, start: number, end: number, anticlockwise: boolean) => void>(),
+  };
+  drawEntity(ctx as unknown as CanvasRenderingContext2D, entity, {
+    scale: camera.scale,
+    toScreen: (point) => ({ x: camera.width / 2 + (point.x - camera.center.x) * camera.scale, y: camera.height / 2 - (point.y - camera.center.y) * camera.scale }),
+  }, [layer], () => undefined, { lineWidthOverride: 1 });
+  return ctx;
 }
 
 function rendererFixture() {
@@ -81,6 +99,21 @@ function uploadedGeometry(gl: ReturnType<typeof rendererFixture>['gl']): Prepare
   return zoomToScreen(gl.bufferVertices, { width: size[1], height: size[2] });
 }
 
+/** A deliberate source refusal leaves the entire current view for Canvas. */
+function expectOwnedCanvasRefusal(state: DrawingState, camera: Gpu2DView, reason: string): void {
+  let failure: unknown;
+  try { prepareZoom2D(state, camera, overlay); } catch (error) { failure = error; }
+  expect(failure).toBeInstanceOf(Error);
+  const error = failure as Error, original = error.cause ?? error;
+  expect(error.message).toContain(reason);
+  expect(isSourcePrecisionCertificateError(original) || isSourceTopologyAdmissionError(original)).toBe(true);
+  const { canvas, gl } = rendererFixture(), renderer = new Gpu2DRenderer(canvas), snapshot = JSON.stringify(state);
+  expect(renderer.render(state, camera, overlay)).toMatchObject({ rendered: false, reason: expect.stringContaining(reason), cacheHit: false, uploadKind: 'none', bytes: 0, uploadCalls: 0, submissionMs: 0 });
+  for (const method of [gl.createShader, gl.createBuffer, gl.bufferData, gl.bufferSubData, gl.clear, gl.drawArrays]) expect(method).not.toHaveBeenCalled();
+  expect(JSON.stringify(state)).toBe(snapshot);
+  renderer.dispose();
+}
+
 /** Emulate the actual shader's Float32 center, zoom, pan and fixed-offset arithmetic. */
 function zoomToScreen(source: Float32Array<ArrayBuffer>, size: { width: number; height: number }, ratio = 1, pan: Point = { x: 0, y: 0 }): Prepared2D {
   const vertices = new Float32Array(source.length / GPU_ZOOM_VERTEX_STRIDE * 5);
@@ -127,7 +160,10 @@ describe('GPU double-precision preparation', () => {
     const origin = { x: 1e12, y: -1e12 };
     const local: LineEntity = { ...line, a: { x: -1 / 32, y: delta }, b: { x: 1 / 32, y: delta } };
     const translated: LineEntity = { ...local, a: { x: origin.x + local.a.x, y: origin.y + local.a.y }, b: { x: origin.x + local.b.x, y: origin.y + local.b.y } };
-    const close = { ...view, scale: 1024, twist: 0.63 };
+    const originalClose = { ...view, scale: 1024, twist: 0.63 };
+    expectOwnedCanvasRefusal(drawing([local]), originalClose, 'native context rotation is unproved');
+    expectOwnedCanvasRefusal(drawing([translated]), { ...originalClose, center: origin }, 'native context rotation is unproved');
+    const close = { ...originalClose, twist: 0 }; // Separate admitted native construction control.
     const baseline = prepare2D(drawing([local]), close, overlay);
     const shifted = prepare2D(drawing([translated]), { ...close, center: origin }, overlay);
     expect(shifted.vertices).toEqual(baseline.vertices);
@@ -136,16 +172,71 @@ describe('GPU double-precision preparation', () => {
     expect(new Float32Array([translated.a.x, translated.b.x])[0]).toBe(new Float32Array([translated.a.x, translated.b.x])[1]);
   });
 
-  it('rebases circle centers and bulge helpers before adding small curve offsets', () => {
+  it('keeps the original rotated near/trillion circle construction on complete Canvas', () => {
+    const origin = { x: 1e12, y: -1e12 };
+    const small = { ...view, scale: 1024, twist: 0.2 };
+    const circle: Entity = { ...line, type: 'circle', center: { x: 0, y: 0 }, radius: 1 / 32 };
+    expectOwnedCanvasRefusal(drawing([circle]), small, 'native context rotation is unproved');
+    expectOwnedCanvasRefusal(drawing([{ ...circle, center: origin }]), { ...small, center: origin }, 'native context rotation is unproved');
+  });
+
+  it('rebases representable circle centers in a separately admitted zero-twist control', () => {
+    const origin = { x: 1e12, y: -1e12 }, small = { ...view, scale: 1024, twist: 0 };
+    const circle: Entity = { ...line, type: 'circle', center: { x: 0, y: 0 }, radius: 1 / 32 };
+    expect(prepare2D(drawing([{ ...circle, center: origin }]), { ...small, center: origin }, overlay).vertices).toEqual(prepare2D(drawing([circle]), small, overlay).vertices);
+  });
+
+  it('refuses the original world bulge construction when its native center and sweep quantize', () => {
     const origin = { x: 1e12, y: -1e12 };
     const small = { ...view, scale: 1024, twist: 0.2 };
     const circle: Entity = { ...line, type: 'circle', center: { x: 0, y: 0 }, radius: 1 / 32 };
     const curved: PolylineEntity = { ...polyline, points: [{ x: -1 / 32, y: 0 }, { x: 1 / 32, y: 0 }], bulges: [0.6] };
-    const translated = [
-      { ...circle, center: origin },
-      { ...curved, points: curved.points.map((point) => ({ x: origin.x + point.x, y: origin.y + point.y })) },
-    ];
-    expect(prepare2D(drawing(translated), { ...small, center: origin }, overlay).vertices).toEqual(prepare2D(drawing([circle, curved]), small, overlay).vertices);
+    const worldCurve = { ...curved, points: curved.points.map((point) => ({ x: origin.x + point.x, y: origin.y + point.y })) };
+    const farView = { ...small, center: origin };
+    const nearNative = nativePolylineCommands(curved, small), farNative = nativePolylineCommands(worldCurve, farView);
+    expect(nearNative.arc).toHaveBeenCalledOnce(); expect(farNative.arc).toHaveBeenCalledOnce();
+    const nearArc = nearNative.arc.mock.calls[0]!, farArc = farNative.arc.mock.calls[0]!;
+    expect(farArc[2]).toBe(nearArc[2]); // The native chord radius survives, its world center does not.
+    expect(Math.abs(farArc[1] - nearArc[1])).toBeGreaterThan(0.05);
+    expect(Math.abs(farArc[3] - nearArc[3])).toBeGreaterThan(0.001);
+    expect(() => prepare2D(drawing([circle, curved]), small, overlay)).toThrow(/native float arc connection is unproved/);
+    const state = sealImmutableData(drawing([{ ...circle, center: origin }, worldCurve]));
+    expect(() => prepare2D(state, farView, overlay)).toThrow(/Unsupported Canvas stroke construction: native float arc connection is unproved/);
+    const { canvas, gl } = rendererFixture(), renderer = new Gpu2DRenderer(canvas);
+    expect(renderer.render(state, farView, overlay)).toMatchObject({ rendered: false, reason: expect.stringContaining('native float arc connection is unproved'), uploadKind: 'none', bytes: 0, uploadCalls: 0, submissionMs: 0 });
+    for (const method of [gl.createShader, gl.createBuffer, gl.bufferData, gl.bufferSubData, gl.clear, gl.drawArrays]) expect(method).not.toHaveBeenCalled();
+    renderer.dispose();
+  });
+
+  it('keeps the original representable semicircle bulge on complete Canvas at near and trillion-unit origins', () => {
+    const origin = { x: 1e12, y: -1e12 };
+    const small = { ...view, scale: 1024, twist: 0.2 };
+    const circle: Entity = { ...line, type: 'circle', center: { x: 0, y: 0 }, radius: 1 / 32 };
+    const curved: PolylineEntity = { ...polyline, points: [{ x: -1 / 32, y: 0 }, { x: 1 / 32, y: 0 }], bulges: [1] };
+    const translated = [{ ...circle, center: origin }, { ...curved, points: curved.points.map((point) => ({ x: origin.x + point.x, y: origin.y + point.y })) }];
+    const { canvas, gl } = rendererFixture(), renderer = new Gpu2DRenderer(canvas);
+    for (const [entities, camera] of [[translated, { ...small, center: origin }], [[circle, curved], small]] as const) {
+      const state = sealImmutableData(drawing(entities));
+      expect(() => prepare2D(state, camera, overlay)).toThrow(/native float arc connection is unproved/);
+      expect(renderer.render(state, camera, overlay)).toMatchObject({ rendered: false, reason: expect.stringContaining('native float arc connection is unproved'), uploadKind: 'none', bytes: 0, uploadCalls: 0, submissionMs: 0 });
+    }
+    for (const method of [gl.createShader, gl.createBuffer, gl.bufferData, gl.bufferSubData, gl.clear, gl.drawArrays]) expect(method).not.toHaveBeenCalled();
+    renderer.dispose();
+  });
+
+  it('keeps the original rotated direct ARC/CIRCLE combination on complete Canvas at near/trillion origins', () => {
+    const origin = { x: 1e12, y: -1e12 }, small = { ...view, scale: 1024, twist: 0.2 };
+    const circle: Entity = { ...line, type: 'circle', center: { x: 0, y: 0 }, radius: 1 / 32 };
+    const arc: Entity = { ...line, id: 'direct-arc', type: 'arc', center: { x: 0, y: 0 }, radius: 1 / 32, startAngle: Math.PI, endAngle: Math.PI * 2 };
+    expectOwnedCanvasRefusal(drawing([circle, arc]), small, 'native context rotation is unproved');
+    expectOwnedCanvasRefusal(drawing([{ ...circle, center: origin }, { ...arc, center: origin }]), { ...small, center: origin }, 'native context rotation is unproved');
+  });
+
+  it('keeps separately admitted zero-twist ARC/CIRCLE bytes equal at trillion-unit origins', () => {
+    const origin = { x: 1e12, y: -1e12 }, small = { ...view, scale: 1024, twist: 0 };
+    const circle: Entity = { ...line, type: 'circle', center: { x: 0, y: 0 }, radius: 1 / 32 };
+    const arc: Entity = { ...line, id: 'direct-arc', type: 'arc', center: { x: 0, y: 0 }, radius: 1 / 32, startAngle: Math.PI, endAngle: Math.PI * 2 };
+    expect(prepare2D(drawing([{ ...circle, center: origin }, { ...arc, center: origin }]), { ...small, center: origin }, overlay).vertices).toEqual(prepare2D(drawing([circle, arc]), small, overlay).vertices);
   });
 
   it('matches viewport twist, center and Y-up coordinates', () => {
@@ -156,7 +247,9 @@ describe('GPU double-precision preparation', () => {
   });
 
   it('clips remote endpoints in doubles before Float32 packing', () => {
-    const geometry = prepare2D(drawing([{ ...line, a: { x: -1e9, y: 0 }, b: { x: 1e9, y: 0 } }]), view, overlay);
+    const original = drawing([{ ...line, a: { x: -1e9, y: 0 }, b: { x: 1e9, y: 0 } }]);
+    expectOwnedCanvasRefusal(original, view, 'native float point, normal or miter exceeds precision budget');
+    const geometry = prepare2D(drawing([{ ...line, a: { x: -100, y: 0 }, b: { x: 100, y: 0 } }]), view, overlay);
     expect(covers(geometry, { x: 160, y: 120 })).toBe(true);
     for (const point of xy(geometry)) {
       expect(point.x).toBeGreaterThanOrEqual(0); expect(point.x).toBeLessThanOrEqual(view.width);
@@ -167,25 +260,66 @@ describe('GPU double-precision preparation', () => {
   it('refuses extreme projected endpoints before subpixel stroke offsets lose precision', () => {
     const extreme = drawing([{ ...line, a: { x: -1e9, y: -1e9 }, b: { x: 1e9, y: 1e9 } }]);
     const close = { ...view, scale: 1e6 };
-    expect(() => prepare2D(extreme, close, overlay)).toThrow(/stroke precision bound/);
+    expect(() => prepare2D(extreme, close, overlay)).toThrow(/native float point, normal or miter exceeds precision budget/);
     const { canvas, gl } = rendererFixture();
     const renderer = new Gpu2DRenderer(canvas);
-    expect(renderer.render(extreme, close, overlay)).toMatchObject({ rendered: false, reason: expect.stringContaining('precision bound'), submissionMs: 0, bytes: 0 });
+    expect(renderer.render(extreme, close, overlay)).toMatchObject({ rendered: false, reason: expect.stringContaining('native float point, normal or miter exceeds precision budget'), submissionMs: 0, bytes: 0 });
     expect(gl.clear).not.toHaveBeenCalled(); expect(gl.drawArrays).not.toHaveBeenCalled();
     renderer.dispose();
   });
 });
 
 describe('GPU curves and triangle strokes', () => {
-  it.each([1, -1])('preserves the signed direction of semicircle bulge %i', (bulge) => {
-    const geometry = prepare2D(drawing([{ ...polyline, bulges: [bulge] }]), view, overlay);
-    expect(covers(geometry, screenPoint({ x: 0, y: -2 * bulge }, view))).toBe(true);
-    expect(covers(geometry, screenPoint({ x: 0, y: 2 * bulge }, view))).toBe(false);
+  it('keeps the original positive semicircle bulge 1 on complete Canvas with its native arc command', () => {
+    const positive = { ...polyline, bulges: [1] }, native = nativePolylineCommands(positive, view);
+    expect(native.moveTo.mock.calls[0]).toEqual([100, 120]); expect(native.arc).toHaveBeenCalledOnce();
+    const arc = native.arc.mock.calls[0]!;
+    expect(arc[0]).toBe(160); expect(arc[1]).toBe(120); expect(arc[2]).toBe(60); expect(arc[5]).toBe(true);
+    const state = sealImmutableData(drawing([line, positive]));
+    expect(() => prepare2D(state, view, overlay)).toThrow(/native float arc connection is unproved/);
+    const { canvas, gl } = rendererFixture(), renderer = new Gpu2DRenderer(canvas);
+    expect(renderer.render(state, view, overlay)).toMatchObject({ rendered: false, reason: expect.stringContaining('native float arc connection is unproved'), uploadKind: 'none', bytes: 0, uploadCalls: 0, submissionMs: 0 });
+    for (const method of [gl.createShader, gl.createBuffer, gl.bufferData, gl.bufferSubData, gl.clear, gl.drawArrays]) expect(method).not.toHaveBeenCalled();
+    renderer.dispose();
+  });
+
+  it('preserves the actual curve coverage of a separate direct semicircle ARC', () => {
+    const arc: Entity = { ...line, type: 'arc', center: { x: 0, y: 0 }, radius: 2, startAngle: Math.PI, endAngle: Math.PI * 2 };
+    const geometry = prepare2D(drawing([arc]), view, overlay);
+    expect(covers(geometry, screenPoint({ x: 0, y: -2 }, view))).toBe(true);
+    expect(covers(geometry, screenPoint({ x: 0, y: 2 }, view))).toBe(false);
     expect(covers(geometry, screenPoint({ x: 0, y: 0 }, view))).toBe(false);
   });
 
-  it('keeps both arcs of a closed two-vertex polyline', () => {
-    const geometry = prepare2D(drawing([{ ...polyline, closed: true, bulges: [1, 1] }]), view, overlay);
+  it('keeps the complete view on Canvas for negative semicircle bulge -1 with its native connector', () => {
+    const negative = { ...polyline, bulges: [-1] };
+    const native = nativePolylineCommands(negative, view), arc = native.arc.mock.calls[0]!;
+    expect(native.moveTo.mock.calls[0]).toEqual([100, 120]);
+    expect(native.arc).toHaveBeenCalledOnce(); expect(arc[5]).toBe(true);
+    // Canvas connects the current A point to its swapped arc start B across the diameter.
+    expect(arc[0] + arc[2] * Math.cos(arc[3])).toBeCloseTo(220, 12);
+    expect(arc[1] + arc[2] * Math.sin(arc[3])).toBeCloseTo(120, 12);
+    const state = sealImmutableData(drawing([line, negative]));
+    expect(() => prepare2D(state, view, overlay)).toThrow(/negative bulge has native connector/);
+    const { canvas, gl } = rendererFixture(), renderer = new Gpu2DRenderer(canvas);
+    expect(renderer.render(state, view, overlay)).toMatchObject({ rendered: false, reason: expect.stringContaining('negative bulge has native connector'), uploadKind: 'none', bytes: 0, uploadCalls: 0, submissionMs: 0 });
+    for (const method of [gl.createShader, gl.createBuffer, gl.bufferData, gl.bufferSubData, gl.clear, gl.drawArrays]) expect(method).not.toHaveBeenCalled();
+    renderer.dispose();
+  });
+
+  it('keeps the original closed two-vertex bulged polyline on complete Canvas with both native arc commands', () => {
+    const closed = { ...polyline, closed: true, bulges: [1, 1] }, native = nativePolylineCommands(closed, view);
+    expect(native.arc).toHaveBeenCalledTimes(2); expect(native.closePath).toHaveBeenCalledOnce();
+    const state = sealImmutableData(drawing([line, closed]));
+    expect(() => prepare2D(state, view, overlay)).toThrow(/native float arc connection is unproved/);
+    const { canvas, gl } = rendererFixture(), renderer = new Gpu2DRenderer(canvas);
+    expect(renderer.render(state, view, overlay)).toMatchObject({ rendered: false, reason: expect.stringContaining('native float arc connection is unproved'), uploadKind: 'none', bytes: 0, uploadCalls: 0, submissionMs: 0 });
+    for (const method of [gl.createShader, gl.createBuffer, gl.bufferData, gl.bufferSubData, gl.clear, gl.drawArrays]) expect(method).not.toHaveBeenCalled();
+    renderer.dispose();
+  });
+
+  it('keeps both halves of a separate direct CIRCLE', () => {
+    const geometry = prepare2D(drawing([{ ...line, type: 'circle', center: { x: 0, y: 0 }, radius: 2 }]), view, overlay);
     expect(covers(geometry, screenPoint({ x: 0, y: -2 }, view))).toBe(true);
     expect(covers(geometry, screenPoint({ x: 0, y: 2 }, view))).toBe(true);
   });
@@ -299,7 +433,12 @@ describe('CAD appearance and strict fallback', () => {
   it('refuses malformed geometry and excessive tessellation rather than omitting it', () => {
     expect(() => prepare2D(drawing([{ ...line, a: { x: NaN, y: 0 } }]), view, overlay)).toThrow(/Nonfinite/);
     expect(() => prepare2D(drawing([{ ...polyline, bulges: [NaN] }]), view, overlay)).toThrow(/bulge/);
-    for (const radius of [-1, NaN, 1e12]) expect(() => prepare2D(drawing([{ ...line, type: 'circle', center: { x: 0, y: 0 }, radius }]), view, overlay)).toThrow(/radius|budget|geometry/);
+    for (const radius of [-1, NaN, 1e12]) {
+      const state = drawing([{ ...line, type: 'circle', center: { x: 0, y: 0 }, radius }]);
+      const reason = radius === 1e12 ? 'native float curve parameters exceed precision budget' : 'invalid native float curve parameter envelope';
+      expect(() => prepare2D(state, view, overlay)).toThrow(`Unsupported Canvas stroke construction: ${reason}`);
+      expectOwnedCanvasRefusal(state, view, reason);
+    }
     expect(() => prepare2D(drawing(), { ...view, scale: Infinity }, overlay)).toThrow(/view/);
   });
 
@@ -360,7 +499,10 @@ describe('GPU renderer submission, caching and lifecycle', () => {
     const renderer = new Gpu2DRenderer(canvas);
     const entering: LineEntity = { ...line, a: { x: -6, y: -1 }, b: { x: -6, y: 1 } };
     const spanning: LineEntity = { ...line, id: 'spanning', a: { x: -1e6, y: 2 }, b: { x: 1e6, y: 2 } };
-    const state = sealImmutableData(drawing([entering, spanning]));
+    const originalState = sealImmutableData(drawing([entering, spanning]));
+    expectOwnedCanvasRefusal(originalState, view, 'native float point, normal or miter exceeds precision budget');
+    expectOwnedCanvasRefusal(originalState, { ...view, center: { x: -1, y: 0 } }, 'native float point, normal or miter exceeds precision budget');
+    const state = sealImmutableData(drawing([entering, { ...spanning, a: { x: -100, y: 2 }, b: { x: 100, y: 2 } }]));
     renderer.render(state, view, overlay);
     const geometry = uploadedGeometry(gl);
     expect(covers(geometry, { x: 10, y: 120 })).toBe(false);
@@ -395,19 +537,48 @@ describe('GPU renderer submission, caching and lifecycle', () => {
     renderer.dispose();
   });
 
-  it.each([1, 2, 3])('rebases tiny pans at trillion-unit origins and preserves rotated curves at DPR %s', (dpr) => {
-    const { canvas, gl } = rendererFixture();
-    const renderer = new Gpu2DRenderer(canvas);
+  it.each([1, 2, 3])('keeps quantized original bulge construction on Canvas through tiny pans at DPR %s', (dpr) => {
+    const { canvas, gl } = rendererFixture(), renderer = new Gpu2DRenderer(canvas);
     const center = { x: 1e12, y: -1e12 };
     const state = sealImmutableData(drawing([
       { ...line, a: { x: center.x - 1 / 32, y: center.y }, b: { x: center.x + 1 / 32, y: center.y }, lineWeight: 1 },
       { ...polyline, points: [{ x: center.x - 1 / 32, y: center.y }, { x: center.x + 1 / 32, y: center.y }], bulges: [0.6] },
     ]));
     const close = { ...view, center, scale: 1024, twist: 0.63, dpr, lineweights: true };
-    renderer.render(state, close, overlay);
+    const moved = { ...close, center: { x: center.x + 1 / 8192, y: center.y - 1 / 4096 } };
+    for (const camera of [close, moved]) expect(renderer.render(state, camera, overlay)).toMatchObject({ rendered: false, reason: expect.stringContaining('native float arc connection is unproved'), uploadKind: 'none', bytes: 0, uploadCalls: 0, submissionMs: 0 });
+    for (const method of [gl.createShader, gl.createBuffer, gl.bufferData, gl.bufferSubData, gl.clear, gl.drawArrays]) expect(method).not.toHaveBeenCalled();
+    renderer.dispose();
+  });
+
+  it.each([1, 2, 3])('keeps the original representable semicircle bulge on complete Canvas through trillion-unit tiny pans at DPR %s', (dpr) => {
+    const { canvas, gl } = rendererFixture(), renderer = new Gpu2DRenderer(canvas), center = { x: 1e12, y: -1e12 };
+    const state = sealImmutableData(drawing([
+      { ...line, a: { x: center.x - 1 / 32, y: center.y }, b: { x: center.x + 1 / 32, y: center.y }, lineWeight: 1 },
+      { ...polyline, points: [{ x: center.x - 1 / 32, y: center.y }, { x: center.x + 1 / 32, y: center.y }], bulges: [1] },
+    ]));
+    const close = { ...view, center, scale: 1024, twist: 0.63, dpr, lineweights: true };
+    const moved = { ...close, center: { x: center.x + 1 / 8192, y: center.y - 1 / 4096 } };
+    for (const camera of [close, moved]) expect(renderer.render(state, camera, overlay)).toMatchObject({ rendered: false, reason: expect.stringContaining('native float arc connection is unproved'), uploadKind: 'none', bytes: 0, uploadCalls: 0, submissionMs: 0 });
+    for (const method of [gl.createShader, gl.createBuffer, gl.bufferData, gl.bufferSubData, gl.clear, gl.drawArrays]) expect(method).not.toHaveBeenCalled();
+    renderer.dispose();
+  });
+
+  it.each([1, 2, 3])('keeps the original rotated mixed scene on Canvas and admits a separate zero-twist trillion-unit control at DPR %s', (dpr) => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas);
+    const center = { x: 1e12, y: -1e12 };
+    const state = sealImmutableData(drawing([
+      { ...line, a: { x: center.x - 1 / 32, y: center.y }, b: { x: center.x + 1 / 32, y: center.y }, lineWeight: 1 },
+      { ...line, id: 'direct-arc', type: 'arc', center, radius: 1 / 32, startAngle: Math.PI, endAngle: Math.PI * 2 },
+    ]));
+    const originalClose = { ...view, center, scale: 1024, twist: 0.63, dpr, lineweights: true };
+    expectOwnedCanvasRefusal(state, originalClose, 'native context rotation is unproved');
+    const close = { ...originalClose, twist: 0 };
+    expect(renderer.render(state, close, overlay)).toMatchObject({ rendered: true, uploadKind: 'full', uploadCalls: 1 });
     const original = uploadedGeometry(gl);
     const moved = { ...close, center: { x: center.x + 1 / 8192, y: center.y - 1 / 4096 } };
-    expect(renderer.render(state, moved, overlay).bytes).toBe(0);
+    expect(renderer.render(state, moved, overlay)).toMatchObject({ rendered: true, cacheHit: true, geometryPreparationMs: 0, uploadKind: 'none', bytes: 0, uploadCalls: 0 });
     const pan = gl.uniform2f.mock.lastCall!;
     expect(pan[1]).toBeCloseTo((-Math.cos(close.twist) / 8 - Math.sin(close.twist) / 4), 12);
     expect(pan[2]).toBeCloseTo((Math.sin(close.twist) / 8 - Math.cos(close.twist) / 4), 12);
@@ -417,6 +588,34 @@ describe('GPU renderer submission, caching and lifecycle', () => {
     actual.vertices.forEach((value, index) => expect(value).toBeCloseTo(fresh.vertices[index]!, 3));
     expect(gl.bufferData).toHaveBeenCalledOnce();
     renderer.dispose();
+  });
+
+  it.each([1, 2, 3])('keeps the original rotated ARC-only scene on complete Canvas through tiny pans, DPR %s', (dpr) => {
+    const center = { x: 1e12, y: -1e12 }, close = { ...view, center, scale: 1024, twist: 0.63, dpr, lineweights: true };
+    const arc: Entity = { ...line, id: 'direct-arc', type: 'arc', center, radius: 1 / 32, startAngle: Math.PI, endAngle: Math.PI * 2 };
+    const state = sealImmutableData(drawing([arc])), moved = { ...close, center: { x: center.x + 1 / 8192, y: center.y - 1 / 4096 } };
+    expectOwnedCanvasRefusal(state, close, 'native context rotation is unproved');
+    expectOwnedCanvasRefusal(state, moved, 'native context rotation is unproved');
+    // This is an independent JS/shader coordinate identity, not native rotation admission.
+    const atOrigin = screenPoint(center, close), afterPan = screenPoint(center, moved);
+    expect(afterPan.x - atOrigin.x).toBeCloseTo((-Math.cos(close.twist) / 8 - Math.sin(close.twist) / 4), 12);
+    expect(afterPan.y - atOrigin.y).toBeCloseTo((Math.sin(close.twist) / 8 - Math.cos(close.twist) / 4), 12);
+  });
+
+  it.each([1, 2, 3])('retains cached ARC tiny-pan geometry in a separately admitted zero-twist control, DPR %s', (dpr) => {
+    const center = { x: 1e12, y: -1e12 }, close = { ...view, center, scale: 1024, twist: 0, dpr, lineweights: true };
+    const arc: Entity = { ...line, id: 'direct-arc', type: 'arc', center, radius: 1 / 32, startAngle: Math.PI, endAngle: Math.PI * 2 };
+    const state = sealImmutableData(drawing([arc])), { canvas, gl } = rendererFixture(), renderer = new Gpu2DRenderer(canvas);
+    expect(renderer.render(state, close, overlay)).toMatchObject({ rendered: true, uploadKind: 'full', uploadCalls: 1 });
+    const original = uploadedGeometry(gl), moved = { ...close, center: { x: center.x + 1 / 8192, y: center.y - 1 / 4096 } };
+    expect(renderer.render(state, moved, overlay)).toMatchObject({ rendered: true, cacheHit: true, geometryPreparationMs: 0, uploadKind: 'none', bytes: 0, uploadCalls: 0 });
+    const pan = gl.uniform2f.mock.lastCall!;
+    expect(pan[1]).toBeCloseTo((-Math.cos(close.twist) / 8 - Math.sin(close.twist) / 4), 12);
+    expect(pan[2]).toBeCloseTo((Math.sin(close.twist) / 8 - Math.cos(close.twist) / 4), 12);
+    const actual = translatedGeometry(original, { x: pan[1], y: pan[2] }), fresh = zoomToScreen(prepareZoom2D(state, moved, overlay).vertices, moved);
+    expect(actual.vertices).toHaveLength(fresh.vertices.length);
+    actual.vertices.forEach((value, index) => expect(value).toBeCloseTo(fresh.vertices[index]!, 3));
+    expect(gl.bufferData).toHaveBeenCalledOnce(); renderer.dispose();
   });
 
   it.each(['x', 'y'] as const)('reuses the exact physical border and rebuilds beyond it on the %s axis', (axis) => {
@@ -468,6 +667,14 @@ describe('GPU renderer submission, caching and lifecycle', () => {
     const state = sealImmutableData(drawing());
     renderer.render(state, view, overlay);
     renderer.render(state, { ...view, center: { x: 0.25, y: 0 } }, overlay);
+    if ('twist' in change) {
+      gl.clear.mockClear(); gl.drawArrays.mockClear();
+      expect(renderer.render(state, { ...view, ...change }, overlay)).toMatchObject({ rendered: false, cacheReason: 'view-style', uploadKind: 'none', bytes: 0, reason: expect.stringContaining('native context rotation is unproved') });
+      expect(gl.bufferData).toHaveBeenCalledOnce(); expect(gl.clear).not.toHaveBeenCalled(); expect(gl.drawArrays).not.toHaveBeenCalled();
+      expect(renderer.render(state, view, overlay)).toMatchObject({ rendered: true, cacheHit: true, bytes: 0 });
+      renderer.dispose();
+      return;
+    }
     expect(renderer.render(state, { ...view, ...change }, overlay).bytes).toBeGreaterThan(0);
     expect(gl.uniform2f).toHaveBeenLastCalledWith({ name: 'u_pan' }, 0, 0);
     renderer.dispose();
@@ -486,7 +693,7 @@ describe('GPU renderer submission, caching and lifecycle', () => {
     const dashed = sealImmutableData({ ...changed, layers: [{ ...layer, linetype: 'custom' }], header: { ...DEFAULT_HEADER, linetypes: [{ name: 'custom', description: '', pattern: [1, -1] }] } });
     gl.clear.mockClear(); gl.drawArrays.mockClear();
     expect(renderer.render(dashed, moved, overlay).reason).toMatch(/dashed/);
-    const unsupported = { ...line, id: 'offscreen', type: 'text', a: { x: 1000, y: 1000 } } as unknown as Entity;
+    const unsupported = { ...line, id: 'offscreen', type: 'mtext', a: { x: 1000, y: 1000 } } as unknown as Entity;
     expect(renderer.render(sealImmutableData({ ...changed, entities: [line, unsupported] }), moved, overlay).reason).toMatch(/Unsupported entity/);
     expect(gl.clear).not.toHaveBeenCalled(); expect(gl.drawArrays).not.toHaveBeenCalled();
     renderer.dispose();
@@ -509,10 +716,15 @@ describe('GPU renderer submission, caching and lifecycle', () => {
     const bound = 2 ** 36;
     const state = sealImmutableData(drawing([{ ...line, a: { x: 0, y: 0 }, b: { x: bound - view.width / 2 - 1, y: 0 } }]));
     const unit = { ...view, scale: 1 };
-    expect(renderer.render(state, unit, overlay).rendered).toBe(true);
-    gl.clear.mockClear(); gl.drawArrays.mockClear();
-    expect(renderer.render(state, { ...unit, center: { x: -2, y: 0 } }, overlay)).toMatchObject({ rendered: false, bytes: 0, reason: expect.stringContaining('precision bound') });
-    expect(gl.clear).not.toHaveBeenCalled(); expect(gl.drawArrays).not.toHaveBeenCalled();
+    expectOwnedCanvasRefusal(state, unit, 'native float point, normal or miter exceeds precision budget');
+    expectOwnedCanvasRefusal(state, { ...unit, center: { x: -2, y: 0 } }, 'native float point, normal or miter exceeds precision budget');
+    const safe = prepareZoom2D(drawing(), unit, overlay);
+    const originalBounds = { ...safe, sourceBounds: { min: { x: 0, y: 0 }, max: { x: bound - unit.width / 2 - 1, y: 0 } } };
+    // The original shader-coordinate boundary proof remains independently checked;
+    // native source refusal happens earlier and does not certify this scene for GPU.
+    expect(zoomPrecisionSafe(originalBounds, unit, 1, { x: 0, y: 0 })).toBe(true);
+    expect(zoomPrecisionSafe(originalBounds, unit, 1, { x: 2, y: 0 })).toBe(false);
+    expect(gl.bufferData).not.toHaveBeenCalled(); expect(gl.clear).not.toHaveBeenCalled(); expect(gl.drawArrays).not.toHaveBeenCalled();
     renderer.dispose();
   });
 
@@ -556,7 +768,7 @@ describe('GPU renderer submission, caching and lifecycle', () => {
   it('makes unsupported full-scene refusal before clearing or submitting any geometry', () => {
     const { canvas, gl } = rendererFixture();
     const renderer = new Gpu2DRenderer(canvas);
-    const text = { id: 'text', type: 'text', layer: '0', color: 'ByLayer', position: { x: 0, y: 0 }, text: 'visible', height: 1, rotation: 0, align: 'left' } as const;
+    const text = { id: 'text', type: 'text', layer: '0', color: 'ByLayer', position: { x: 0, y: 0 }, text: 'visible', height: 1, rotation: 0, align: 'left', bold: true } as const;
     const result = renderer.render(drawing([line, text]), view, overlay);
     expect(result).toMatchObject({ rendered: false, reason: expect.stringContaining('text'), submissionMs: 0, bytes: 0 });
     expect(gl.clear).not.toHaveBeenCalled(); expect(gl.drawArrays).not.toHaveBeenCalled(); expect(gl.createProgram).not.toHaveBeenCalled();
@@ -642,6 +854,284 @@ describe('GPU renderer submission, caching and lifecycle', () => {
   });
 });
 
+describe('GPU compiled block and stroke-text integration', () => {
+  const text = (patch: Partial<TextEntity> = {}): TextEntity => ({ id: 'label', type: 'text', layer: '0', color: 'ByLayer', position: { x: 0, y: 0 }, text: 'ABC', height: 1, rotation: 0, align: 'left', ...patch });
+  const insert = (block: string, patch: Partial<InsertEntity> = {}): InsertEntity => ({ id: 'owner', type: 'insert', layer: '0', color: 'ByLayer', block, position: { x: 0, y: 0 }, scale: 1, rotation: 0, attributes: {}, ...patch });
+  const block = (entities: readonly Entity[], name = 'B'): BlockDef => ({ name, basePoint: { x: 0, y: 0 }, entities, attributes: [] });
+  const scene = (entities: readonly Entity[], blocks: Readonly<Record<string, BlockDef>> = {}): DrawingState => ({ ...drawing(entities), blocks });
+
+  it('keeps separate ordered child/attribute paint batches and groups each TEXT glyph stroke', () => {
+    const definition: BlockDef = { ...block([line, text()]), attributes: [{ tag: 'TAG', prompt: '', default: 'ATTR', position: { x: 0, y: -1 }, height: 1, align: 'left' }] };
+    const state = scene([{ ...line, id: 'before' }, insert('B'), { ...line, id: 'after' }], { B: definition });
+    const prepared = prepareCompiledZoom2D(state, view, overlay);
+    expect(prepared.entities).toHaveLength(state.entities.length);
+    prepared.entities!.forEach((entry, index) => expect(entry!.entity).toBe(state.entities[index]));
+    expect(prepared.entities!.map((entry) => entry!.editableLine)).toEqual([true, false, true]);
+    expect(prepared.entityCount).toBe(5);
+    expect(prepared.batches.map((batch) => batch.id)).toEqual(['before:0', 'owner:1', 'owner:2', 'owner:3', 'after:4']);
+    expect(prepared.batches[2]!.count).toBeGreaterThan(6);
+    expect(prepared.compound.blockDependencies.get('B')).toBe(definition);
+    expect(prepareZoom2D(state, view, overlay).vertices).toEqual(prepared.vertices);
+    expect(prepareZoom2D(drawing(), view, overlay).compound).toBeUndefined();
+  });
+
+  it.each([1, 2])('preserves near-origin compound preparation and refuses unsafe trillion-coordinate Canvas construction at DPR %s', (dpr) => {
+    const unit = 1 / 8192;
+    const definition = { ...block([{ ...line, a: { x: unit, y: unit }, b: { x: 5 * unit, y: unit } }, text({ height: unit, position: { x: unit, y: unit }, alignmentPoint: { x: 5 * unit, y: 2 * unit }, firstAlignmentPoint: { x: unit, y: unit }, justification: { horizontal: 5, vertical: 0 } })]), basePoint: { x: unit, y: unit } };
+    const near = insert('B', { position: { x: 3 * unit, y: -2 * unit }, rotation: 0.3 });
+    const origin = { x: 1e12, y: -1e12 };
+    const far = { ...near, position: { x: origin.x + near.position.x, y: origin.y + near.position.y } };
+    const originalCamera = { ...view, scale: 65536, twist: 0.63, dpr };
+    expectOwnedCanvasRefusal(scene([near], { B: definition }), originalCamera, 'native context rotation is unproved');
+    expectOwnedCanvasRefusal(scene([far], { B: definition }), { ...originalCamera, center: origin }, 'world-coordinate quantization');
+    const camera = { ...originalCamera, twist: 0 };
+    const baseline = prepareZoom2D(scene([near], { B: definition }), camera, overlay);
+    expect(baseline.vertices.length).toBeGreaterThan(0);
+    expect(() => prepareZoom2D(scene([far], { B: definition }), { ...camera, center: origin }, overlay)).toThrow(/world-coordinate quantization/);
+  });
+
+  it('reuses immutable compiled scenes for redraw, pan and bounded zoom with absent styles', () => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas), state = sealImmutableData(scene([insert('B')], { B: block([line, text()]) }));
+    expect(renderer.render(state, view, overlay).rendered).toBe(true);
+    const first = gl.bufferData.mock.lastCall![1];
+    for (const camera of [view, { ...view, scale: 33 }, { ...view, scale: 33, center: { x: 0.25, y: -0.25 } }]) {
+      expect(renderer.render(state, camera, overlay)).toMatchObject({ rendered: true, cacheHit: true, bytes: 0, uploadCalls: 0, geometryPreparationMs: 0 });
+      expect(gl.bufferData.mock.lastCall![1]).toBe(first);
+    }
+    expect(gl.bufferData).toHaveBeenCalledOnce();
+    renderer.dispose();
+  });
+
+  it('patches a certified same-ID top-level line while retaining the compiled scene anchor', () => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas);
+    const before = sealImmutableData(scene([line, insert('B')], { B: block([text()]) }));
+    const after = sealImmutableData({ ...before, entities: [{ ...line, a: { x: -2, y: 0.2 }, b: { x: 2, y: 0.2 } }, before.entities[1]!] });
+    expect(renderer.render(before, view, overlay).rendered).toBe(true);
+    expect(renderer.render(after, { ...view, scale: 33 }, overlay)).toMatchObject({ rendered: true, cacheReason: 'document-delta', uploadKind: 'subrange', bytes: 168, uploadCalls: 1, subrangeUploadCalls: 1, preparedEntities: 1, reusedEntities: 1, editHistoryEntries: 1 });
+    expect(gl.bufferSubData).toHaveBeenCalledOnce(); expect(gl.bufferData).toHaveBeenCalledOnce();
+    expect(gl.bufferVertices).toEqual(prepareZoom2D(after, view, overlay).vertices);
+    expect(renderer.render(after, { ...view, scale: 34 }, overlay)).toMatchObject({ rendered: true, cacheHit: true, bytes: 0, reusedEntities: 2 });
+    renderer.dispose();
+  });
+
+  it('clears delta history when entering a compiled scene and restores a full simple image before deltas resume', () => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas);
+    const before = sealImmutableData(drawing([line, { ...line, id: 'last' }]));
+    const edited = sealImmutableData({ ...before, entities: [{ ...line, a: { x: -2, y: 0.2 }, b: { x: 2, y: 0.2 } }, before.entities[1]!] });
+    renderer.render(before, view, overlay);
+    expect(renderer.render(edited, view, overlay)).toMatchObject({ rendered: true, uploadKind: 'subrange', editHistoryEntries: 1 });
+    const compiled = sealImmutableData({ ...edited, entities: [edited.entities[0]!, insert('B', { id: 'last' })], blocks: { B: block([text()]) } });
+    expect(renderer.render(compiled, view, overlay)).toMatchObject({ rendered: true, uploadKind: 'full', subrangeUploadCalls: 0, editHistoryBytes: 0, editHistoryEntries: 0 });
+    expect(gl.bufferVertices).toEqual(prepareZoom2D(compiled, view, overlay).vertices);
+    expect(renderer.render(edited, view, overlay)).toMatchObject({ rendered: true, uploadKind: 'full', subrangeUploadCalls: 0, editHistoryEntries: 0 });
+    expect(gl.bufferVertices).toEqual(prepareZoom2D(edited, view, overlay).vertices);
+    expect(renderer.render(before, view, overlay)).toMatchObject({ rendered: true, uploadKind: 'subrange', cacheReason: 'document-delta', editMemoHit: false, preparedEntities: 1 });
+    expect(gl.bufferVertices).toEqual(prepareZoom2D(before, view, overlay).vertices);
+    expect(gl.bufferData).toHaveBeenCalledTimes(3);
+    expect(gl.bufferSubData).toHaveBeenCalledTimes(2);
+    renderer.dispose();
+  });
+
+  it('repairs a failed simple subrange with the latest complete compiled scene', () => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas);
+    const before = sealImmutableData(drawing([line, { ...line, id: 'last' }]));
+    const edited = sealImmutableData({ ...before, entities: [{ ...line, a: { x: -2, y: 0.2 }, b: { x: 2, y: 0.2 } }, before.entities[1]!] });
+    renderer.render(before, view, overlay);
+    gl.bufferSubData.mockImplementationOnce((_target, byteOffset, data) => { gl.bufferVertices.set(data.subarray(0, data.length / 2), byteOffset / 4); });
+    gl.getError.mockReturnValueOnce(gl.OUT_OF_MEMORY);
+    gl.clear.mockClear(); gl.drawArrays.mockClear();
+    expect(renderer.render(edited, view, overlay)).toMatchObject({ rendered: false, uploadKind: 'subrange', subrangeUploadCalls: 1 });
+    expect(gl.clear).not.toHaveBeenCalled(); expect(gl.drawArrays).not.toHaveBeenCalled();
+    const latest = sealImmutableData({ ...edited, entities: [{ ...line, a: { x: -2, y: 0.4 }, b: { x: 2, y: 0.4 } }, insert('B', { id: 'last' })], blocks: { B: block([text({ text: 'LATEST', color: 1 })]) } });
+    expect(renderer.render(latest, view, overlay)).toMatchObject({ rendered: true, uploadKind: 'full', subrangeUploadCalls: 0, editHistoryEntries: 0, editMemoHit: false });
+    expect(gl.bufferVertices).toEqual(prepareZoom2D(latest, view, overlay).vertices);
+    expect(gl.bufferSubData).toHaveBeenCalledOnce();
+    expect(gl.createBuffer).toHaveBeenCalledOnce();
+    expect(renderer.render(latest, { ...view, scale: 33 }, overlay)).toMatchObject({ rendered: true, cacheHit: true, bytes: 0 });
+    renderer.dispose();
+  });
+
+  it('revalidates simultaneous entity and nested block/STYLE changes before any GPU write', () => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas);
+    const before = sealImmutableData(scene([line, insert('B')], { B: block([insert('N', { id: 'nested' })]), N: block([text()], 'N') }));
+    renderer.render(before, view, overlay);
+    const editedLine = { ...line, a: { x: -2, y: 0.2 }, b: { x: 2, y: 0.2 } };
+    const changed = sealImmutableData({ ...before, entities: [editedLine, before.entities[1]!], blocks: { ...before.blocks, N: block([text({ text: 'NEW', color: 1 })], 'N') }, meta: { textStyles: { Standard: { ...STANDARD_TEXT_STYLE, font: 'romans.shx' } } } });
+    expect(renderer.render(changed, view, overlay)).toMatchObject({ rendered: true, uploadKind: 'full', cacheReason: 'document', subrangeUploadCalls: 0 });
+    expect(gl.bufferVertices).toEqual(prepareZoom2D(changed, view, overlay).vertices);
+    const previousImage = gl.bufferVertices.slice();
+    const unsafe = sealImmutableData({ ...changed, entities: [{ ...editedLine, b: { x: 2, y: 0.4 } }, changed.entities[1]!], blocks: { ...changed.blocks, N: block([text({ text: 'UNSAFE' })], 'N') }, meta: { textStyles: { Standard: { ...STANDARD_TEXT_STYLE, font: 'arial.ttf' } } } });
+    gl.bufferData.mockClear(); gl.bufferSubData.mockClear(); gl.clear.mockClear(); gl.drawArrays.mockClear();
+    expect(renderer.render(unsafe, view, overlay)).toMatchObject({ rendered: false, reason: expect.stringContaining('Canvas font'), bytes: 0, submissionMs: 0, subrangeUploadCalls: 0 });
+    expect(gl.bufferData).not.toHaveBeenCalled(); expect(gl.bufferSubData).not.toHaveBeenCalled();
+    expect(gl.clear).not.toHaveBeenCalled(); expect(gl.drawArrays).not.toHaveBeenCalled();
+    expect(gl.bufferVertices).toEqual(previousImage);
+    expect(renderer.render(changed, view, overlay)).toMatchObject({ rendered: true, cacheHit: true, bytes: 0 });
+    renderer.dispose();
+  });
+
+  it.each([1, 2])('retains entering glyph strokes and fixed lineweights at zoom/pan extremes at DPR %s', (dpr) => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas);
+    const label = text({ text: 'C', position: { x: 5.2, y: 0 }, lineWeight: 1 });
+    const state = sealImmutableData(scene([label]));
+    const originalCamera = { ...view, dpr, twist: 0.3, lineweights: true };
+    expectOwnedCanvasRefusal(state, originalCamera, 'native context rotation is unproved');
+    const camera = { ...originalCamera, twist: 0 };
+    expect(renderer.render(state, camera, overlay).rendered).toBe(true);
+    for (const ratio of [0.8, 1.25]) {
+      const scale = camera.scale * ratio, pan = { x: -120 / dpr, y: 110 / dpr };
+      const c = Math.cos(camera.twist), s = Math.sin(camera.twist);
+      const current = { ...camera, scale, center: { x: (-c * pan.x + s * pan.y) / scale, y: (s * pan.x + c * pan.y) / scale } };
+      expect(renderer.render(state, current, overlay)).toMatchObject({ rendered: true, cacheHit: true, bytes: 0, uploadCalls: 0 });
+      const actual = ndcGeometry(drawnGeometry(gl), current);
+      let visible = 0;
+      for (const path of strokeText(label.text, label.position, label.height, label.rotation, label.align)) {
+        for (let index = 1; index < path.length; index++) {
+          const a = path[index - 1]!, b = path[index]!;
+          const midpoint = screenPoint({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, current);
+          if (midpoint.x <= 2 || midpoint.x >= current.width - 2 || midpoint.y <= 2 || midpoint.y >= current.height - 2) continue;
+          visible++;
+          expect(covers(actual, midpoint)).toBe(true);
+          const length = Math.hypot(b.x - a.x, b.y - a.y), worldNormal = { x: -(b.y - a.y) / length, y: (b.x - a.x) / length };
+          const normal = { x: worldNormal.x * c - worldNormal.y * s, y: -(worldNormal.x * s + worldNormal.y * c) };
+          expect(covers(actual, { x: midpoint.x + normal.x * 1.95, y: midpoint.y + normal.y * 1.95 })).toBe(true);
+        }
+      }
+      expect(visible).toBeGreaterThan(5);
+    }
+    expect(gl.bufferData).toHaveBeenCalledOnce();
+    renderer.dispose();
+  });
+
+  it('invalidates nested block redefinition and undo without relying on top-level entity changes', () => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas);
+    const nested = block([line], 'N');
+    const before = sealImmutableData(scene([insert('B')], { B: block([insert('N', { id: 'nested' })]), N: nested }));
+    const after = sealImmutableData({ ...before, blocks: { ...before.blocks, N: { ...nested, entities: [{ ...line, color: 1, b: { x: 1, y: 1 } }] } } });
+    renderer.render(before, view, overlay);
+    const original = (gl.bufferData.mock.lastCall![1] as Float32Array).slice();
+    for (const current of [after, before, after]) {
+      expect(renderer.render(current, view, overlay)).toMatchObject({ rendered: true, cacheHit: false, cacheReason: 'document', uploadCalls: 1 });
+      if (current === before) expect(gl.bufferData.mock.lastCall![1]).toEqual(original);
+      else expect(gl.bufferData.mock.lastCall![1]).not.toEqual(original);
+      expect(renderer.render(current, { ...view, scale: 33 }, overlay)).toMatchObject({ rendered: true, cacheHit: true, bytes: 0 });
+    }
+    const unrelated = sealImmutableData({ ...after, blocks: { ...after.blocks, UNUSED: block([text()], 'UNUSED') } });
+    expect(renderer.render(unrelated, view, overlay)).toMatchObject({ rendered: true, cacheHit: true, bytes: 0 });
+    expect(gl.bufferData).toHaveBeenCalledTimes(4);
+    renderer.dispose();
+  });
+
+  it('invalidates the raw document STYLE identity and refuses a changed Canvas font before submitting', () => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas);
+    const before = sealImmutableData(scene([text()]));
+    renderer.render(before, view, overlay);
+    const stroke = sealImmutableData({ ...before, meta: { textStyles: { Standard: { ...STANDARD_TEXT_STYLE, font: 'romans.shx' } } } });
+    expect(renderer.render(stroke, view, overlay)).toMatchObject({ rendered: true, cacheHit: false, cacheReason: 'document', uploadCalls: 1 });
+    const canvasFont = sealImmutableData({ ...stroke, meta: { textStyles: { Standard: { ...STANDARD_TEXT_STYLE, font: 'arial.ttf' } } } });
+    gl.clear.mockClear(); gl.drawArrays.mockClear(); gl.bufferData.mockClear();
+    expect(renderer.render(canvasFont, view, overlay)).toMatchObject({ rendered: false, reason: expect.stringContaining('Canvas font'), bytes: 0, submissionMs: 0 });
+    expect(gl.clear).not.toHaveBeenCalled(); expect(gl.drawArrays).not.toHaveBeenCalled(); expect(gl.bufferData).not.toHaveBeenCalled();
+    expect(renderer.render(stroke, view, overlay)).toMatchObject({ rendered: true, cacheHit: true, bytes: 0 });
+    expect(renderer.render(before, view, overlay)).toMatchObject({ rendered: true, cacheHit: false, cacheReason: 'document', uploadCalls: 1 });
+    renderer.dispose();
+  });
+
+  it('does not reuse mutable block definitions or text-style tables', () => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas);
+    const state = { ...sealImmutableData(scene([insert('B')])), blocks: { B: block([line]) } };
+    expect(renderer.render(state, view, overlay)).toMatchObject({ rendered: true, cacheReason: 'mutable', uploadCalls: 1 });
+    state.blocks.B = block([{ ...line, color: 1 }]);
+    expect(renderer.render(state, view, overlay)).toMatchObject({ rendered: true, cacheHit: false, cacheReason: 'mutable', uploadCalls: 1 });
+    const styles = { Standard: { ...STANDARD_TEXT_STYLE, font: 'romans.shx' } };
+    const labels = { ...sealImmutableData(scene([text()])), meta: { textStyles: styles } };
+    expect(renderer.render(labels, view, overlay)).toMatchObject({ rendered: true, cacheReason: 'mutable', uploadCalls: 1 });
+    styles.Standard.font = 'arial.ttf';
+    gl.clear.mockClear(); gl.drawArrays.mockClear();
+    expect(renderer.render(labels, view, overlay)).toMatchObject({ rendered: false, cacheReason: 'mutable', bytes: 0, submissionMs: 0 });
+    expect(gl.clear).not.toHaveBeenCalled(); expect(gl.drawArrays).not.toHaveBeenCalled();
+    renderer.dispose();
+  });
+
+  it('refuses a late unsupported child before allocating, clearing or drawing any part of the view', () => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas);
+    const state = sealImmutableData(scene([line, insert('B')], { B: block([text(), text({ id: 'late', bold: true })]) }));
+    expect(renderer.render(state, view, overlay)).toMatchObject({ rendered: false, reason: expect.stringContaining('late'), bytes: 0, submissionMs: 0 });
+    expect(gl.createProgram).not.toHaveBeenCalled(); expect(gl.createBuffer).not.toHaveBeenCalled();
+    expect(gl.bufferData).not.toHaveBeenCalled(); expect(gl.clear).not.toHaveBeenCalled(); expect(gl.drawArrays).not.toHaveBeenCalled();
+    renderer.dispose();
+  });
+
+  it('uses a separate stencil/compositing batch for each selected child stroke and attribute', () => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas);
+    const definition = { ...block([line, text()]), attributes: [{ tag: 'TAG', prompt: '', default: 'ATTR', position: { x: 0, y: -1 }, height: 1, align: 'left' as const }] };
+    const state = sealImmutableData(scene([{ ...line, id: 'before' }, insert('B'), { ...line, id: 'after' }], { B: definition }));
+    const selected = { selection: new Set(['owner']), solidSelection: true };
+    const prepared = prepareZoom2D(state, view, selected);
+    expect(renderer.render(state, view, selected).rendered).toBe(true);
+    expect(gl.drawArrays.mock.calls).toEqual(prepared.batches.map((batch) => [gl.TRIANGLES, batch.first, batch.count]));
+    expect(gl.stencilFunc).toHaveBeenCalledTimes(3);
+    expect(gl.clear.mock.calls.filter((call) => call[0] === gl.STENCIL_BUFFER_BIT)).toHaveLength(3);
+    const alpha = gl.uniform1f.mock.calls.filter((call) => (call[0] as { name: string }).name === 'u_alpha').map((call) => call[1]);
+    expect(alpha).toEqual([1, 0.95, 0.95, 0.95, 1]);
+    expect(renderer.render(state, { ...view, scale: 33 }, selected)).toMatchObject({ rendered: true, cacheHit: true, bytes: 0 });
+    renderer.dispose();
+  });
+
+  it.each([1, 2])('rebuilds across exact and neighboring QTEXT scales instead of reusing the wrong form at DPR %s', (dpr) => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas), state = sealImmutableData(scene([text({ height: 1 })]));
+    const originalCamera = { ...view, dpr, twist: 0.3, scale: 2.51, center: { x: 0.25, y: -0.25 } };
+    expectOwnedCanvasRefusal(state, originalCamera, 'native context rotation is unproved');
+    const camera = { ...originalCamera, twist: 0 };
+    renderer.render(state, camera, overlay);
+    expect((gl.bufferData.mock.lastCall![1] as Float32Array).length).toBeGreaterThan(42);
+    expect(renderer.render(state, { ...camera, scale: 2.5 }, overlay)).toMatchObject({ rendered: true, cacheHit: false, cacheReason: 'zoom-range', uploadCalls: 1 });
+    expect((gl.bufferData.mock.lastCall![1] as Float32Array).length).toBeGreaterThan(42);
+    gl.clear.mockClear(); gl.drawArrays.mockClear();
+    expect(renderer.render(state, { ...camera, scale: 2.5 - Number.EPSILON * 2 }, overlay)).toMatchObject({ rendered: false, cacheHit: false, cacheReason: 'zoom-range', bytes: 0, submissionMs: 0, reason: expect.stringContaining('QTEXT threshold') });
+    expect(gl.clear).not.toHaveBeenCalled(); expect(gl.drawArrays).not.toHaveBeenCalled();
+    expect(renderer.render(state, { ...camera, scale: 2.49 }, overlay)).toMatchObject({ rendered: true, cacheHit: false, cacheReason: 'zoom-range', uploadCalls: 1 });
+    expect((gl.bufferData.mock.lastCall![1] as Float32Array).length).toBe(42);
+    expect(renderer.render(state, { ...camera, scale: 2.5 }, overlay)).toMatchObject({ rendered: true, cacheHit: false, cacheReason: 'zoom-range', uploadCalls: 1 });
+    expect(renderer.render(state, { ...camera, scale: 2.51 }, overlay)).toMatchObject({ rendered: true, cacheHit: true, bytes: 0 });
+    renderer.dispose();
+  });
+
+  it.each(['circle', 'arc', 'polyline'] as const)('keeps offscreen wide nested %s strokes on complete-view fallback', (type) => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas);
+    const curve: Entity = type === 'circle' ? { ...line, type, center: { x: 1000, y: 1000 }, radius: 0.1 }
+      : type === 'arc' ? { ...line, type, center: { x: 1000, y: 1000 }, radius: 0.1, startAngle: 0, endAngle: 1 }
+        : { ...polyline, points: [{ x: 999.9, y: 1000 }, { x: 1000.1, y: 1000 }], bulges: [1] };
+    const state = sealImmutableData(scene([text(), insert('B', { lineWeight: 10 })], { B: block([curve]) }));
+    expect(renderer.render(state, { ...view, lineweights: true }, overlay)).toMatchObject({ rendered: false, reason: expect.stringContaining(type === 'polyline' ? 'native float arc connection is unproved' : 'native float curve parameters exceed precision budget'), bytes: 0, submissionMs: 0 });
+    expect(gl.bufferData).not.toHaveBeenCalled(); expect(gl.clear).not.toHaveBeenCalled(); expect(gl.drawArrays).not.toHaveBeenCalled();
+    renderer.dispose();
+  });
+
+  it('checks remote original glyph points before clipping rather than hiding a precision failure', () => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas);
+    const state = sealImmutableData(scene([line, text({ position: { x: 1e10, y: 1e10 } })]));
+    expectOwnedCanvasRefusal(state, view, 'native float segment topology is unproved');
+    expect(renderer.render(state, view, overlay)).toMatchObject({ rendered: false, reason: 'Unsupported Canvas stroke construction: native float segment topology is unproved', uploadKind: 'none', bytes: 0, uploadCalls: 0, submissionMs: 0 });
+    for (const method of [gl.createShader, gl.createBuffer, gl.bufferData, gl.bufferSubData, gl.clear, gl.drawArrays]) expect(method).not.toHaveBeenCalled();
+    renderer.dispose();
+  });
+});
+
 describe('GPU immutable line subrange edits', () => {
   const nextState = (state: DrawingState, entities: readonly Entity[]): DrawingState => sealImmutableData({ ...state, entities });
   const shifted = (entity: LineEntity, offset = 0.2): LineEntity => ({ ...entity, a: { x: entity.a.x, y: entity.a.y + offset }, b: { x: entity.b.x, y: entity.b.y + offset } });
@@ -714,10 +1204,13 @@ describe('GPU immutable line subrange edits', () => {
     const origin = { x: 1e12, y: -1e12 }, delta = 1 / 8192;
     const local: LineEntity = { ...line, a: { x: -1 / 32, y: 0 }, b: { x: 1 / 32, y: 0 }, lineWeight: 1 };
     const translated: LineEntity = { ...local, a: { x: origin.x + local.a.x, y: origin.y }, b: { x: origin.x + local.b.x, y: origin.y } };
-    const close = { ...view, center: origin, scale: 4096, twist: 0.63, dpr, lineweights: true };
+    const originalClose = { ...view, center: origin, scale: 4096, twist: 0.63, dpr, lineweights: true };
     const before = sealImmutableData(drawing([translated]));
-    renderer.render(before, close, overlay);
     const after = nextState(before, [shifted(translated, delta)]);
+    expectOwnedCanvasRefusal(before, originalClose, 'native context rotation is unproved');
+    expectOwnedCanvasRefusal(after, { ...originalClose, scale: 4505.6 }, 'native context rotation is unproved');
+    const close = { ...originalClose, twist: 0 };
+    renderer.render(before, close, overlay);
     expect(renderer.render(after, { ...close, scale: 4505.6 }, overlay)).toMatchObject({ rendered: true, uploadKind: 'subrange', bytes: 168 });
     const expected = prepareZoom2D(drawing([shifted(local, delta)]), { ...close, center: { x: 0, y: 0 } }, overlay);
     expect(gl.bufferVertices).toEqual(expected.vertices);
@@ -738,10 +1231,13 @@ describe('GPU immutable line subrange edits', () => {
     const bound = 2 ** 36;
     const far: LineEntity = { ...remote, a: { x: bound - unit.width / 2 - 3, y: 0 }, b: { x: bound - unit.width / 2 - 2, y: 0 } };
     const after = nextState(before, [far, before.entities[1]!]);
-    expect(renderer.render(after, unit, overlay)).toMatchObject({ rendered: true, cacheReason: 'document-delta', uploadKind: 'none', bytes: 0, uploadCalls: 0, preparedEntities: 1, reusedEntities: 1 });
+    const safeAfter = nextState(before, [{ ...remote, a: { x: 2000, y: 0 }, b: { x: 2001, y: 0 } }, before.entities[1]!]);
+    expect(renderer.render(safeAfter, unit, overlay)).toMatchObject({ rendered: true, cacheReason: 'document-delta', uploadKind: 'none', bytes: 0, uploadCalls: 0, preparedEntities: 1, reusedEntities: 1 });
     expect(gl.bufferSubData).not.toHaveBeenCalled(); expect(gl.bufferData).toHaveBeenCalledOnce();
     gl.clear.mockClear(); gl.drawArrays.mockClear();
-    expect(renderer.render(after, { ...unit, scale: 1.1 }, overlay)).toMatchObject({ rendered: false, bytes: 0, uploadCalls: 0, reason: expect.stringContaining('precision bound') });
+    expectOwnedCanvasRefusal(after, unit, 'native float segment topology is unproved');
+    expect(renderer.render(after, unit, overlay)).toMatchObject({ rendered: false, bytes: 0, uploadCalls: 0, reason: expect.stringContaining('native float segment topology is unproved') });
+    expect(renderer.render(after, { ...unit, scale: 1.1 }, overlay)).toMatchObject({ rendered: false, bytes: 0, uploadCalls: 0, reason: expect.stringContaining('native float segment topology is unproved') });
     expect(gl.clear).not.toHaveBeenCalled(); expect(gl.drawArrays).not.toHaveBeenCalled();
     renderer.dispose();
   });
@@ -753,7 +1249,8 @@ describe('GPU immutable line subrange edits', () => {
     const saved = gl.bufferVertices.slice();
     const after = nextState(before, [{ ...line, b: { x: 1e12, y: 0 } }]);
     gl.clear.mockClear(); gl.drawArrays.mockClear();
-    expect(renderer.render(after, view, overlay)).toMatchObject({ rendered: false, uploadKind: 'none', bytes: 0, uploadCalls: 0, reason: expect.stringContaining('precision bound') });
+    expectOwnedCanvasRefusal(after, view, 'native float point, normal or miter exceeds precision budget');
+    expect(renderer.render(after, view, overlay)).toMatchObject({ rendered: false, uploadKind: 'none', bytes: 0, uploadCalls: 0, reason: expect.stringContaining('native float point, normal or miter exceeds precision budget') });
     expect(gl.bufferVertices).toEqual(saved); expect(gl.bufferSubData).not.toHaveBeenCalled();
     expect(gl.clear).not.toHaveBeenCalled(); expect(gl.drawArrays).not.toHaveBeenCalled();
     renderer.dispose();
@@ -813,10 +1310,23 @@ describe('GPU immutable line subrange edits', () => {
     const renderer = new Gpu2DRenderer(canvas), before = sealImmutableData(drawing());
     const after = nextState(before, [shifted(line)]);
     renderer.render(before, view, overlay); renderer.render(after, view, overlay);
-    const camera = kind === 'zoom' ? { ...view, scale: 38 } : kind === 'pan' ? { ...view, center: { x: -5, y: 0 } } : view;
+    const camera = kind === 'zoom' ? { ...view, scale: view.scale * 4 + 0.0001 } : kind === 'pan' ? { ...view, center: { x: -5, y: 0 } } : view;
     const selection = kind === 'selection' ? { selection: new Set(['line']), solidSelection: true } : overlay;
     expect(renderer.render(before, camera, selection)).toMatchObject({ rendered: true, uploadKind: 'full', editMemoHit: false, editHistoryBytes: 0, editHistoryEntries: 0 });
     expect(gl.bufferData).toHaveBeenCalledTimes(2); expect(gl.bufferSubData).toHaveBeenCalledOnce();
+    renderer.dispose();
+  });
+
+  it('reuses the immutable LINE undo memo at the original scale38 inside the fourfold interval', () => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas), before = sealImmutableData(drawing());
+    const after = nextState(before, [shifted(line)]);
+    expect(renderer.render(before, view, overlay)).toMatchObject({ rendered: true, cacheMaxRatio: 4, uploadKind: 'full' });
+    expect(renderer.render(after, view, overlay)).toMatchObject({ rendered: true, cacheReason: 'document-delta', uploadKind: 'subrange', bytes: 168 });
+    // The current slot owns its CPU bytes; only the other immutable version is memoized.
+    expect(renderer.render(before, { ...view, scale: 38 }, overlay)).toMatchObject({ rendered: true, cacheMaxRatio: 4, cacheReason: 'document-delta', uploadKind: 'subrange', bytes: 168, editMemoHit: true, editHistoryBytes: 168, editHistoryEntries: 1, preparedEntities: 0, reusedEntities: 1 });
+    expect(gl.bufferData).toHaveBeenCalledOnce(); expect(gl.bufferSubData).toHaveBeenCalledTimes(2);
+    expect(gl.bufferVertices).toEqual(prepareZoom2D(before, view, overlay).vertices);
     renderer.dispose();
   });
 
@@ -964,17 +1474,38 @@ describe('GPU bounded zoom correctness and separate CPU telemetry', () => {
     renderer.dispose();
   });
 
-  it('copies the scale anchor, admits both exact boundaries and rebuilds after crossing either', () => {
+  it('copies the ordinary1.25 scale anchor, admits both exact boundaries and rebuilds after crossing either', () => {
     const { canvas, gl } = rendererFixture();
-    const renderer = new Gpu2DRenderer(canvas), state = sealImmutableData(drawing());
+    // Sealed children allow identity caching; the explicitly unsealed outer
+    // snapshot preserves the original ordinary request and exact camera inputs.
+    const renderer = new Gpu2DRenderer(canvas), state = { ...sealImmutableData(drawing()) };
     const camera = { ...view, center: { ...view.center } };
-    renderer.render(state, camera, overlay);
+    expect(renderer.render(state, camera, overlay)).toMatchObject({ rendered: true, cacheMinRatio: 0.8, cacheMaxRatio: 1.25 });
     for (const scale of [33, 24, 37.5, 30]) {
       camera.scale = scale;
       expect(renderer.render(state, camera, overlay)).toMatchObject({ rendered: true, bytes: 0, cacheReason: 'hit' });
     }
     camera.scale = 37.5001;
     expect(renderer.render(state, camera, overlay)).toMatchObject({ rendered: true, bytes: 168, cacheReason: 'zoom-range' });
+    expect(gl.uniform1f).toHaveBeenCalledWith({ name: 'u_zoom' }, 1);
+    camera.scale = 30;
+    expect(renderer.render(state, camera, overlay)).toMatchObject({ rendered: true, bytes: 168, cacheReason: 'zoom-range' });
+    expect(gl.bufferData).toHaveBeenCalledTimes(3);
+    renderer.dispose();
+  });
+
+  it('copies the immutable fourfold scale anchor and prepares only outside its actual boundaries', () => {
+    const { canvas, gl } = rendererFixture();
+    const renderer = new Gpu2DRenderer(canvas), state = sealImmutableData(drawing());
+    const camera = { ...view, center: { ...view.center } };
+    expect(renderer.render(state, camera, overlay)).toMatchObject({ rendered: true, cacheMinRatio: 0.8, cacheMaxRatio: 4 });
+    for (const scale of [33, 24, 37.5, 30, 120]) {
+      camera.scale = scale;
+      expect(renderer.render(state, camera, overlay)).toMatchObject({ rendered: true, bytes: 0, uploadCalls: 0, geometryPreparationMs: 0, cacheReason: 'hit', cacheMaxRatio: 4 });
+    }
+    expect(gl.bufferData).toHaveBeenCalledOnce();
+    camera.scale = 120.0001;
+    expect(renderer.render(state, camera, overlay)).toMatchObject({ rendered: true, bytes: 168, cacheReason: 'zoom-range', cacheMaxRatio: 4 });
     expect(gl.uniform1f).toHaveBeenCalledWith({ name: 'u_zoom' }, 1);
     camera.scale = 30;
     expect(renderer.render(state, camera, overlay)).toMatchObject({ rendered: true, bytes: 168, cacheReason: 'zoom-range' });
@@ -1013,11 +1544,13 @@ describe('GPU bounded zoom correctness and separate CPU telemetry', () => {
     const unit = { ...view, scale: 1, dpr: 2 };
     const bound = 2 ** 36 / unit.dpr;
     const state = sealImmutableData(drawing([{ ...line, a: { x: 0, y: 0 }, b: { x: bound - unit.width / 2 - 2, y: 0 } }]));
-    expect(renderer.render(state, unit, overlay).rendered).toBe(true);
-    expect(renderer.render(state, { ...unit, scale: 0.8 }, overlay)).toMatchObject({ rendered: true, bytes: 0 });
-    gl.clear.mockClear(); gl.drawArrays.mockClear();
-    expect(renderer.render(state, { ...unit, scale: 1.1 }, overlay)).toMatchObject({ rendered: false, cacheReason: 'precision', bytes: 0, uploadCalls: 0, submissionMs: 0, reason: expect.stringContaining('precision bound') });
-    expect(gl.bufferData).toHaveBeenCalledOnce();
+    for (const ratio of [1, 0.8, 1.1]) expectOwnedCanvasRefusal(state, { ...unit, scale: ratio }, 'native float point, normal or miter exceeds precision budget');
+    const safe = prepareZoom2D(drawing(), unit, overlay);
+    const originalBounds = { ...safe, sourceBounds: { min: { x: 0, y: 0 }, max: { x: bound - unit.width / 2 - 2, y: 0 } } };
+    expect(zoomPrecisionSafe(originalBounds, unit, 1, { x: 0, y: 0 })).toBe(true);
+    expect(zoomPrecisionSafe(originalBounds, unit, 0.8, { x: 0, y: 0 })).toBe(true);
+    expect(zoomPrecisionSafe(originalBounds, unit, 1.1, { x: 0, y: 0 })).toBe(false);
+    expect(gl.bufferData).not.toHaveBeenCalled();
     expect(gl.clear).not.toHaveBeenCalled(); expect(gl.drawArrays).not.toHaveBeenCalled();
     renderer.dispose();
   });
@@ -1036,7 +1569,10 @@ describe('GPU bounded zoom correctness and separate CPU telemetry', () => {
     const center = { x: 1e12, y: -1e12 };
     const translated: LineEntity = { ...line, a: { x: center.x - 1 / 32, y: center.y + 1 / 8192 }, b: { x: center.x + 1 / 32, y: center.y + 1 / 8192 }, lineWeight: 1 };
     const state = sealImmutableData(drawing([translated]));
-    const close = { ...view, scale: 1024, center, twist: 0.63, dpr, lineweights: true };
+    const originalClose = { ...view, scale: 1024, center, twist: 0.63, dpr, lineweights: true };
+    expectOwnedCanvasRefusal(state, originalClose, 'native context rotation is unproved');
+    for (const ratio of [0.8, 1.037, 1.25]) expectOwnedCanvasRefusal(state, { ...originalClose, scale: originalClose.scale * ratio, center: { x: center.x + 1 / 8192, y: center.y - 1 / 4096 } }, 'native context rotation is unproved');
+    const close = { ...originalClose, twist: 0 };
     renderer.render(state, close, overlay);
     for (const ratio of [0.8, 1.037, 1.25]) {
       const moved = { ...close, scale: close.scale * ratio, center: { x: center.x + 1 / 8192, y: center.y - 1 / 4096 } };
@@ -1061,17 +1597,23 @@ describe('GPU bounded zoom correctness and separate CPU telemetry', () => {
     const padding = 128 / dpr;
     const x = (view.width / 2 + padding - 10) / 0.8 / view.scale;
     const y = (view.height / 2 + padding - 10) / 0.8 / view.scale;
-    const state = sealImmutableData(drawing([
+    const originalState = sealImmutableData(drawing([
       ...[-x, x].map((value, index): LineEntity => ({ ...line, id: `vertical${index}`, a: { x: value, y: -1e8 }, b: { x: value, y: 1e8 } })),
       ...[-y, y].map((value, index): LineEntity => ({ ...line, id: `horizontal${index}`, a: { x: -1e8, y: value }, b: { x: 1e8, y: value } })),
       { ...line, id: 'diagonal', a: { x: -1e8, y: -1e8 }, b: { x: 1e8, y: 1e8 } },
     ]));
     const anchor = { ...view, dpr };
+    expectOwnedCanvasRefusal(originalState, anchor, 'native float point, normal or miter exceeds precision budget');
+    const state = sealImmutableData(drawing(originalState.entities.map((entity): LineEntity => {
+      const original = entity as LineEntity;
+      return { ...original, a: { x: Math.max(-100, Math.min(100, original.a.x)), y: Math.max(-100, Math.min(100, original.a.y)) }, b: { x: Math.max(-100, Math.min(100, original.b.x)), y: Math.max(-100, Math.min(100, original.b.y)) } };
+    })));
     renderer.render(state, anchor, overlay);
     let enteringSamples = 0;
     for (const ratio of [0.8, 1.25]) for (const signX of [-1, 1]) for (const signY of [-1, 1]) {
       const pan = { x: signX * padding, y: signY * padding };
       const next = { ...anchor, scale: view.scale * ratio, center: { x: -pan.x / (view.scale * ratio), y: pan.y / (view.scale * ratio) } };
+      expectOwnedCanvasRefusal(originalState, next, 'native float point, normal or miter exceeds precision budget');
       expect(renderer.render(state, next, overlay)).toMatchObject({ rendered: true, bytes: 0, cacheHit: true });
       const actual = ndcGeometry(drawnGeometry(gl), next);
       for (const value of [-x, x]) {
@@ -1124,10 +1666,10 @@ describe('GPU bounded zoom correctness and separate CPU telemetry', () => {
         : { ...base, type, points: [{ x: -0.1, y: 0 }, { x: 0.1, y: 0 }], closed: false, bulges: [1] };
     const weighted = { ...view, scale: 80, lineweights: true };
     const state = sealImmutableData(drawing([line, curve]));
-    expect(() => prepareZoom2D(state, weighted, overlay)).toThrow(/Curve stroke overlap.*Canvas/);
+    expect(() => prepareZoom2D(state, weighted, overlay)).toThrow(type === 'polyline' ? /native float arc connection is unproved/ : /Curve stroke overlap.*Canvas/);
     const { canvas, gl } = rendererFixture();
     const renderer = new Gpu2DRenderer(canvas);
-    expect(renderer.render(state, weighted, overlay)).toMatchObject({ rendered: false, bytes: 0, uploadCalls: 0, submissionMs: 0, reason: expect.stringContaining('Curve stroke overlap') });
+    expect(renderer.render(state, weighted, overlay)).toMatchObject({ rendered: false, bytes: 0, uploadCalls: 0, submissionMs: 0, reason: expect.stringContaining(type === 'polyline' ? 'native float arc connection is unproved' : 'Curve stroke overlap') });
     expect(gl.createProgram).not.toHaveBeenCalled(); expect(gl.createBuffer).not.toHaveBeenCalled();
     expect(gl.clear).not.toHaveBeenCalled(); expect(gl.drawArrays).not.toHaveBeenCalled();
     renderer.dispose();
@@ -1164,14 +1706,20 @@ describe('GPU bounded zoom correctness and separate CPU telemetry', () => {
     const circle: Entity = { ...line, id: 'offscreen-wide', type: 'circle', center: { x: 1000, y: 1000 }, radius: 0.1, lineWeight: 10 };
     const { canvas, gl } = rendererFixture();
     const renderer = new Gpu2DRenderer(canvas);
-    expect(renderer.render(sealImmutableData(drawing([line, circle])), { ...view, scale: 80, lineweights: true }, overlay)).toMatchObject({ rendered: false, bytes: 0, uploadCalls: 0, reason: expect.stringContaining('offscreen-wide') });
+    expect(renderer.render(sealImmutableData(drawing([line, circle])), { ...view, scale: 80, lineweights: true }, overlay)).toMatchObject({ rendered: false, bytes: 0, uploadCalls: 0, reason: 'Unsupported Canvas stroke construction: native float curve parameters exceed precision budget' });
     expect(gl.clear).not.toHaveBeenCalled(); expect(gl.drawArrays).not.toHaveBeenCalled();
     renderer.dispose();
   });
 
-  it.each([1, 2, 3])('bounds wide open-arc butt-cap tangent error independently at DPR %s', (dpr) => {
+  it.each([1, 2, 3])('keeps the original rotated wide open ARC on complete Canvas at DPR %s', (dpr) => {
     const arc: Entity = { ...line, type: 'arc', center: { x: 0, y: 0 }, radius: 2, startAngle: 0.2, endAngle: 3.8, lineWeight: 10 };
     const weighted = { ...view, dpr, twist: 0.4, lineweights: true };
+    expectOwnedCanvasRefusal(drawing([arc]), weighted, 'native context rotation is unproved');
+  });
+
+  it.each([1, 2, 3])('bounds wide open-arc butt-cap tangent error in a separately admitted zero-twist control at DPR %s', (dpr) => {
+    const arc: Entity = { ...line, type: 'arc', center: { x: 0, y: 0 }, radius: 2, startAngle: 0.2, endAngle: 3.8, lineWeight: 10 };
+    const weighted = { ...view, dpr, twist: 0, lineweights: true };
     const prepared = prepareZoom2D(drawing([arc]), weighted, overlay);
     for (const angle of [arc.startAngle, arc.endAngle]) {
       const rotated = angle + weighted.twist;

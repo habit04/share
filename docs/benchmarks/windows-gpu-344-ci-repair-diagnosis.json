@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "sourceSha": "344ec1a11f6d8897e9b8ae1098081b4fd3793bf9",
+  "scope": "Diagnosis of preserved exact-head CI failures; replacement validation remains required",
+  "runs": [
+    {
+      "event": "pull_request",
+      "id": 38451183798,
+      "url": "https://github.com/habit04/share/actions/runs/38451183798",
+      "passedJobs": ["test (22)", "test (24)", "ui", "e2e-electron (windows-latest)"],
+      "failedJobs": ["gpu-experimental"]
+    },
+    {
+      "event": "push",
+      "id": 38451175567,
+      "url": "https://github.com/habit04/share/actions/runs/38451175567",
+      "passedJobs": ["test (24)", "ui", "e2e-electron (windows-latest)"],
+      "failedJobs": ["test (22)", "gpu-experimental"]
+    }
+  ],
+  "node22Failure": {
+    "file": "tests/dwg-clip-compatibility.test.ts",
+    "originalLine": 61,
+    "case": "refuses a reopened DXF clip with retained graph metadata before any destination write (enabled: true)",
+    "timeoutMs": 5000,
+    "pushElapsedMs": 5266,
+    "passingPrElapsedMs": 4997,
+    "bundledFreshWorkflows": ["save", "saveas", "export"],
+    "repair": "Separate enabled and operation combinations into six independent cases, each retaining fresh setup, every original assertion and the default 5000ms limit",
+    "focusedLocalRuntime": "Node24.19.0",
+    "focusedLocalPassedTests": 15,
+    "changedLocalCaseElapsedMs": [1161, 1095, 818, 962, 775, 598],
+    "twoWorkerPolicyProvenSufficient": false,
+    "replacementNode22CiPassed": false
+  },
+  "gpuFailure": {
+    "file": "scripts/bench-gpu-renderer.mjs",
+    "originalLine": 735,
+    "fixture": "direct-arc-control",
+    "assertion": "actual selected curve has independently expected 0.95 opacity",
+    "originalProbeCss": {"x": 691.3500722998217, "y": 193.77616044626475},
+    "expectedSelectedRgba": [2, 244, 2, 255],
+    "observedCanvasAndGpu5x5Rgba": [26, 61, 255, 255],
+    "observedColor": "#1a3dff",
+    "cause": "The analytic ARC midpoint coincides with an actual midpoint selection grip; the original probe excluded only endpoint grips",
+    "sourceGripConstruction": "src/core/entities.ts:1816",
+    "sourceGripPainter": "src/render/viewport.ts:585",
+    "preservedFixtureAndCamera": true,
+    "replacementProbeRule": "Choose a deterministic analytic curve point clear of all actual ARC selection grips; retain original occluded samples in diagnostics",
+    "unchangedChannelTolerance": 2,
+    "unchangedRasterAndCoverageGates": true,
+    "hardwareCoverageClaim": false,
+    "replacementNativeAndCiPassed": false
+  },
+  "exportProvenance": {
+    "privateHostPathsOmitted": true,
+    "originalLogsAndArtifactsPreservedPrivately": true,
+    "failureIsNotPerformanceAcceptance": true
+  }
+}

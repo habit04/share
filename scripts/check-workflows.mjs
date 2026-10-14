@@ -56,6 +56,19 @@ for (const f of files) {
   }
 }
 
+// The accepted native binary must keep its independent real-file regression gate.
+const nativeMetadataJob = parsed['ci.yml']?.jobs?.test;
+if (!nativeMetadataJob?.strategy?.matrix?.node?.includes(24) || nativeMetadataJob?.if !== undefined || nativeMetadataJob?.strategy?.matrix?.exclude !== undefined)
+  problems.push('ci.yml: native metadata fixtures require an unconditional Node 24 test target');
+const nativeMetadataSteps = nativeMetadataJob?.steps ?? [];
+const nativeMetadataGates = nativeMetadataSteps.filter(step => /^\s*node scripts\/native-dwg-build\/validate-vendored-metadata\.mjs native-metadata-output\s*$/m.test(String(step.run ?? '')));
+if (nativeMetadataGates.length !== 1 || nativeMetadataGates[0].if !== 'matrix.node == 24' || nativeMetadataGates[0]['continue-on-error'] ||
+    !/^\s*node --test scripts\/native-dwg-build\/tooling\.test\.mjs scripts\/native-dwg-build\/metadata-tools\.test\.mjs\s*$/m.test(String(nativeMetadataGates[0].run ?? '')))
+  problems.push('ci.yml: accepted native metadata fixture and tooling gates must run on Node 24 without bypassing errors');
+const nativeMetadataUploads = nativeMetadataSteps.filter(step => String(step.uses ?? '').startsWith('actions/upload-artifact') && step.with?.name === 'native-metadata-fixtures');
+if (nativeMetadataUploads.length !== 1 || nativeMetadataUploads[0].if !== 'matrix.node == 24' || nativeMetadataUploads[0].with?.path !== 'native-metadata-output/' || nativeMetadataUploads[0].with?.['if-no-files-found'] !== 'error' || nativeMetadataUploads[0]['continue-on-error'])
+  problems.push('ci.yml: native metadata fixtures must retain the actual native proof reports');
+
 // ------------------------------------------------------------------ release pipeline gates
 const release = parsed['release.yml'];
 if (!release) problems.push('release.yml: missing');

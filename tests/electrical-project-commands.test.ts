@@ -111,7 +111,7 @@ describe('project-wide command glue', () => {
     expect(again.skipped).toEqual(['c.dxf (not open)']);
   });
   it('AEXREF project-wide updates open tabs in memory and saves the closed drawing after confirmation', async () => {
-    const { editor, saved, backups } = fakeEditor();
+    const { editor, saved, backups, logs } = fakeEditor();
     await runProjectXref(editor);
     expect(confirms).toHaveLength(1);
     expect(confirms[0]!.items.map((i) => `${i.name}:${i.kind}`)).toEqual(['a.dxf:open', 'b.dxf:open', 'c.dxf:file']);
@@ -127,6 +127,7 @@ describe('project-wide command glue', () => {
     expect(b.state.entities.find((e): e is InsertEntity => e.type === 'insert' && e.block === 'HCR1_NO')!.attributes.XREF).toBe('1.100');
     // closed file: written as DXF after a .bak
     expect(backups).toEqual(['/p/c.dxf']);
+    expect(saved.has('/p/c.dxf'), logs.join('\n')).toBe(true);
     const c = readDxf(saved.get('/p/c.dxf')!);
     expect(c.entities.find((e): e is InsertEntity => e.type === 'insert' && e.block === 'HCR1_NC')!.attributes.XREF).toBe('1.100');
     // running again changes nothing: no confirmation needed

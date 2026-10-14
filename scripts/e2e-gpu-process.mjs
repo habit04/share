@@ -30,7 +30,7 @@ const result = /** @type {any} */ ({
   worktreeModified: !!execFileSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' }).trim(),
   platform: process.platform, arch: process.arch, outcome: 'running', scope: null,
   termination: null, nativeEvents: [], observation: null, restoration: null, checks: [],
-  scene: { requested: cachedScene ? 'cached-curves-and-lines' : 'curves', addedLines: cachedScene ? 250 : 0 },
+  scene: { requested: cachedScene ? 'cached-direct-arc-control-and-lines' : 'direct-arc-control', fixture: 'direct-arc-control', directArcWithoutInitialMoveControl: true, baseEntityCount: 3, expectedEntityCount: cachedScene ? 253 : 3, originalCurvesInputUnchanged: true, originalPositiveBulgeControlsUnchanged: true, addedLines: cachedScene ? 250 : 0 },
   gpuPreference: { requested: highPerformance ? 'high-performance' : 'default', electronSwitch: highPerformance ? '--force_high_performance_gpu' : null, scope: 'Private launched app only; requested preference is not proof of active hardware.' },
   limitations: [
     'One Windows runtime and one app-owned GPU-process termination; no hardware coverage matrix.',
@@ -147,7 +147,9 @@ try {
   await page.addStyleTag({ content: '#drawing { pointer-events:none !important }' });
   await page.mouse.move(0, 0);
   await page.evaluate((useCache) => {
-    window.gpuPrototype.setMode('canvas'); window.gpuPrototype.loadFixture('curves'); window.editor.setHover(null);
+    window.gpuPrototype.setMode('canvas'); window.gpuPrototype.loadFixture('direct-arc-control'); window.editor.setHover(null);
+    const entities = window.editor.doc.entities;
+    if (entities.length !== 3 || JSON.stringify(entities.map((entity) => entity.type)) !== JSON.stringify(['line', 'circle', 'arc']) || JSON.stringify(entities.map((entity) => entity.id)) !== JSON.stringify(['L', 'C', 'A']) || window.gpuPrototype.fixtureMetadata().name !== 'direct-arc-control' || window.gpuPrototype.fixtureMetadata().controlArc.initialMoveTo !== false) throw new Error('Native GPU-process probe requires the distinct three-entity direct-ARC control');
     if (useCache) {
       const lines = Array.from({ length: 250 }, (_, index) => {
         const x = 0.15 + index % 25 * 0.27, y = 0.15 + Math.floor(index / 25) * 0.5;
@@ -167,7 +169,7 @@ try {
     const cache = /** @type {any} */ (v).baseScene;
     let cacheCopies = 0;
     if (useCache) {
-      if (ed.doc.entities.length !== 254 || !cache || cache.state !== ed.doc.snapshot || !cache.key || cache.canvas.width !== canvas.width || cache.canvas.height !== canvas.height || cache.canvas.width <= 0 || cache.canvas.height <= 0) throw new Error('The large private scene did not create a current, correctly sized bitmap cache');
+      if (ed.doc.entities.length !== 253 || !cache || cache.state !== ed.doc.snapshot || !cache.key || cache.canvas.width !== canvas.width || cache.canvas.height !== canvas.height || cache.canvas.width <= 0 || cache.canvas.height <= 0) throw new Error('The large private scene did not create a current, correctly sized bitmap cache');
       const drawImage = ctx.drawImage;
       /** @type {any} */ (ctx).drawImage = function (source, ...args) {
         if (source === cache.canvas) cacheCopies++;
@@ -251,7 +253,7 @@ try {
   result.before = before;
   result.scene.entityCount = await page.evaluate(() => window.editor.doc.entities.length);
   result.scene.cacheWarmProof = await page.evaluate(() => /** @type {any} */ (window).__gpuProcessProbe.cacheWarmProof);
-  if (cachedScene) result.checks.push('254-entity scene warmed and reused its real private Canvas bitmap cache before GPU rendering');
+  if (cachedScene) result.checks.push('253-entity direct-arc-control plus 250 LINE scene warmed and reused its real private Canvas bitmap cache before GPU rendering');
   result.graphics = { before: await captureGraphics(page) };
   await page.screenshot({ path: resolve(run, 'before.png') });
   result.referenceInput = await page.evaluate(() => /** @type {any} */ (window).__gpuProcessProbe.referenceInput);

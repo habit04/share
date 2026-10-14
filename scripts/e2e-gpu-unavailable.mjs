@@ -88,7 +88,8 @@ try {
   assert.ok(!JSON.stringify(result.diagnostics).includes(profile), 'Diagnostic summary does not disclose the private profile');
   result.checks.push('Diagnostics settled with reasons, feature status and versions recorded');
 
-  for (const fixture of ['curves', 'mixed-schematic']) {
+  for (const fixture of ['direct-arc-control', 'curves', 'precision', 'precision-trillion', 'lineweights', 'mixed-schematic', 'curve-control', 'precision-control', 'lineweights-control']) {
+    const deviceFailureRequired = fixture === 'direct-arc-control';
     await page.evaluate((name) => {
       const api = window.gpuPrototype, ed = window.editor;
       api.setMode('canvas'); api.loadFixture(name); ed.selection.clear(); ed.setHover(null);
@@ -117,18 +118,25 @@ try {
       return { beforeInput, afterInput: input(), status, canvasContextLost: ctx.isContextLost(),
         referenceBytes: reference.length, actualBytes: actual.length, differentChannels, nontransparentPixels, referenceForegroundPixels,
         documentUnchanged: JSON.stringify(ed.doc.snapshot) === beforeDocument,
-        entityCount: ed.doc.entities.length, entityKinds: [...new Set(ed.doc.entities.map((entity) => entity.type))],
+        entityCount: ed.doc.entities.length, entityKinds: [...new Set(ed.doc.entities.map((entity) => entity.type))], fixtureMetadata: api.fixtureMetadata(),
         gpuCanvasHidden: /** @type {HTMLElement} */ (document.querySelector('[data-gpu-prototype="2d"]')).style.display === 'none',
         referenceImage, fallbackImage: canvas.toDataURL('image/png') };
     });
     saveImage(`${fixture}-canvas-reference.png`, observation.referenceImage);
     saveImage(`${fixture}-gpu-unavailable-fallback.png`, observation.fallbackImage);
     delete observation.referenceImage; delete observation.fallbackImage;
-    result.cases.push({ fixture, ...observation });
+    result.cases.push({ fixture, deviceFailureRequired, expectedAdmissionWithAvailableDevice: deviceFailureRequired, evidenceCategory: deviceFailureRequired ? 'Direct-ARC control: actual WebGL initialization failure required' : 'Preserved geometry-fallback input: exact whole Canvas required; the failed device may refuse before geometry admission, so this case does not prove the geometry-specific reason', ...observation });
     assert.deepEqual(observation.afterInput, observation.beforeInput, `${fixture}: fixed camera, settings and overlay inputs`);
     assert.equal(observation.documentUnchanged, true, `${fixture}: fallback cannot change the document`);
     assert.equal(observation.status.mode, 'gpu'); assert.equal(observation.status.rendered, false);
-    assert.equal(observation.status.device, 'failed'); assert.match(observation.status.reason, /failed|unavailable/i);
+    if (deviceFailureRequired) {
+      assert.equal(observation.fixtureMetadata.name, 'direct-arc-control');
+      assert.equal(observation.fixtureMetadata.controlArc.initialMoveTo, false);
+      assert.equal(observation.entityCount, 3);
+      assert.deepEqual(observation.entityKinds, ['line', 'circle', 'arc']);
+      assert.equal(observation.status.device, 'failed'); assert.match(observation.status.reason, /failed|unavailable/i);
+      result.checks.push('Distinct GPU eligibility control reaches actual WebGL initialization failure; geometry refusal cannot substitute for this device proof');
+    } else assert.ok(typeof observation.status.reason === 'string' && observation.status.reason.trim(), `${fixture}: preserved whole-view fallback explains its reason without claiming isolated device failure`);
     assert.equal(observation.gpuCanvasHidden, true); assert.equal(observation.canvasContextLost, false);
     assert.equal(observation.actualBytes, observation.referenceBytes); assert.equal(observation.differentChannels, 0);
     assert.equal(observation.nontransparentPixels, observation.actualBytes / 4, `${fixture}: Canvas paints the complete opaque view`);

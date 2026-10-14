@@ -8,6 +8,7 @@ import * as g from '../../core/geometry';
 import { STANDARD_DIMSTYLE } from '../../core/dimension';
 import type { TextPlacement } from '../../core/text-placement';
 import { transparencyToDxf, validColorName } from '../../core/appearance';
+import type { CadAnchor } from '../../core/cad-graph';
 
 // ---------------------------------------------------------------- writing
 
@@ -30,6 +31,8 @@ export class Writer {
     this.reservedEntityHandles.set(entity, handle);
     return handle;
   }
+  readonly cadAnchors = new Map<string, CadAnchor>();
+  anchor(handle: string, anchor: CadAnchor): void { this.cadAnchors.set(handle, anchor); }
   pair(code: number, value: string | number): void {
     this.out.push(String(code), typeof value === 'number' ? fmt(value) : value);
   }
@@ -61,12 +64,18 @@ export function writeAnnotativeXdata(w: Writer): void {
   w.pair(1002, '}');
 }
 
-export function writeEntityCommon(w: Writer, e: Entity, owner: string, kind: string, subclass: string): void {
+export function writePaperSpaceFlag(w: Writer, spaceOwner: string): void {
+  if (paperOwners.has(spaceOwner)) w.pair(67, 1);
+}
+
+export function writeEntityCommon(w: Writer, e: Entity, owner: string, kind: string, subclass: string, spaceOwner = owner): void {
   w.pair(0, kind);
-  w.pair(5, w.reservedEntityHandles.get(e) ?? w.nextHandle());
+  const handle = w.reservedEntityHandles.get(e) ?? w.nextHandle();
+  w.pair(5, handle);
+  w.anchor(handle, { kind: 'entity', id: e.id });
   w.pair(330, owner);
   w.pair(100, 'AcDbEntity');
-  if (paperOwners.has(owner)) w.pair(67, 1);
+  writePaperSpaceFlag(w, spaceOwner);
   w.pair(8, e.layer);
   if (e.linetype && e.linetype.toUpperCase() !== 'BYLAYER') w.pair(6, e.linetype);
   if (e.color !== 'ByLayer') w.pair(62, colorCode(e.color));

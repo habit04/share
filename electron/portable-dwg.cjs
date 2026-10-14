@@ -13,6 +13,31 @@ const HELPER_NAME = 'JcadDwgWriter.exe';
 const FORMAT = 'AC1032';
 const UNAVAILABLE = 'The bundled portable DWG writer is missing or failed its integrity check. Reinstall the Windows desktop app, or save a DXF copy.';
 
+/** Reopen through the independently built reader, using its existing bounded utility process. */
+async function readPortableMetadata(bytes, signal) {
+  if (signal?.aborted) throw new Error('DWG export canceled.');
+  const { dwgHost } = require('./main/dwg.cjs');
+  const id = dwgHost.newId();
+  const abort = () => dwgHost.cancel(id);
+  signal?.addEventListener('abort', abort, { once: true });
+  try {
+    const result = await dwgHost.read(bytes, id);
+    if (signal?.aborted) throw new Error('DWG export canceled.');
+    return result.payload?.nativeMetadata;
+  } finally { signal?.removeEventListener('abort', abort); }
+}
+
+/** Source metadata is compared to a separate decoder before bytes may leave the private workspace. */
+async function verifyPortableMetadata(text, metadata) {
+  const scripts = path.join(__dirname, '..', 'scripts').replace(/app\.asar([\\/])/, 'app.asar.unpacked$1');
+  const url = require('node:url').pathToFileURL;
+  const native = await import(url(path.join(scripts, 'dwg-native-metadata.mjs')).href);
+  const checked = native.validateNativeMetadata(metadata, metadata?.readError);
+  if (!checked.complete || checked.readError !== 0 || checked.writeError !== 0) throw new Error('The separate DWG reader could not verify retained metadata. Save a DXF copy instead.');
+  const verifier = await import(url(path.join(scripts, 'dwg-metadata-equivalence.mjs')).href);
+  return verifier.verifyDwgMetadataEquivalence(text, checked.dxf, checked.objects);
+}
+
 function validateExportDxf(text) {
   validateTextSize(text, MAX_DRAWING_BYTES, 'DXF');
   if (text.includes('\0') || !/^\s*0\s*\r?\nSECTION\s*\r?\n/i.test(text) || !/\r?\n\s*0\s*\r?\nEOF\s*$/i.test(text)) throw new Error('DWG export requires a complete DXF drawing.');
@@ -109,13 +134,11 @@ async function verifyPortableWriter(locations, fileSystem = fs) {
     for (const item of verified) {
       const stat = await fileSystem.lstat(item.file);
       if (!stat.isFile() || stat.isSymbolicLink() || stat.dev !== item.dev || stat.ino !== item.ino || stat.size !== item.size) throw new Error('DWG writer changed after its integrity check.');
-      if (fileIdentity(stat) !== item.identity) {
-        // Windows can update executable metadata on first use without changing its contents.
-        // A timestamp change permits only a fresh bounded hash of the same regular file.
-        const result = await hashHelper(item.file, item.size, fileSystem);
-        if (result.dev !== item.dev || result.ino !== item.ino || result.sha256 !== item.sha256) throw new Error('DWG writer changed after its integrity check.');
-        item.identity = result.identity;
-      }
+      // Windows timestamps can collide or be restored after a same-size edit. Each admission
+      // checks actual bounded bytes; harmless executable timestamp changes still pass.
+      const result = await hashHelper(item.file, item.size, fileSystem);
+      if (result.dev !== item.dev || result.ino !== item.ino || result.sha256 !== item.sha256) throw new Error('DWG writer changed after its integrity check.');
+      item.identity = result.identity;
     }
     if ((await fileSystem.readdir(directory)).some((name) => name !== 'integrity.json' && !names.has(name.toLowerCase()))) throw new Error('DWG writer bundle contains an unverified file.');
   };
@@ -157,7 +180,7 @@ function verifyWriterReport(bytes, output) {
 
 /**
  * @param {string} text
- * @param {{ fs?: typeof fs, locations?: () => { directory: string, manifest: string }, temporaryRoot?: string, signal?: AbortSignal, run?: typeof runBoundedWriter }} [opts]
+ * @param {{ fs?: typeof fs, locations?: () => { directory: string, manifest: string }, temporaryRoot?: string, signal?: AbortSignal, run?: typeof runBoundedWriter, readMetadata?: typeof readPortableMetadata }} [opts]
  * @returns {Promise<Buffer>}
  */
 async function convertDxfToDwg(text, opts = {}) {
@@ -188,6 +211,10 @@ async function convertDxfToDwg(text, opts = {}) {
     const output = /** @type {Buffer} */ (await readLimitedFile(fileSystem, path.join(workspace, 'output.dwg'), MAX_DRAWING_BYTES));
     const report = /** @type {Buffer} */ (await readLimitedFile(fileSystem, path.join(workspace, 'report.json'), MAX_REPORT_BYTES));
     verifyWriterReport(report, output);
+    const metadata = await (opts.readMetadata || readPortableMetadata)(output, opts.signal);
+    await verifyPortableMetadata(text, metadata);
+    if (opts.signal?.aborted) throw new Error('DWG export canceled.');
+    await installation.check();
     return output;
   } catch (error) {
     let failure = error;
@@ -218,7 +245,7 @@ async function convertDxfToDwg(text, opts = {}) {
   }
 }
 
-/** @param {{ platform?: string, fs?: typeof fs, locations?: () => { directory: string, manifest: string }, convert?: typeof convertDxfToDwg }} [opts] */
+/** @param {{ platform?: string, fs?: typeof fs, locations?: () => { directory: string, manifest: string }, convert?: typeof convertDxfToDwg, readMetadata?: typeof readPortableMetadata }} [opts] */
 function createPortableDwgExporter(opts = {}) {
   let busy = false;
   let poisoned = false;
@@ -241,7 +268,7 @@ function createPortableDwgExporter(opts = {}) {
         validateExportDxf(text);
         const checkDestination = await destinationGuard(file, fileSystem);
         const check = async () => { if (signal?.aborted) throw new Error('DWG export canceled.'); await checkDestination(); };
-        const data = await (opts.convert || convertDxfToDwg)(text, { locations: opts.locations, fs: fileSystem, signal });
+        const data = await (opts.convert || convertDxfToDwg)(text, { locations: opts.locations, fs: fileSystem, signal, readMetadata: opts.readMetadata });
         await check();
         await commit(file, data, check);
         return file;
@@ -256,4 +283,4 @@ function createPortableDwgExporter(opts = {}) {
   };
 }
 
-module.exports = { createPortableDwgExporter, convertDxfToDwg, verifyPortableWriter, verifyWriterReport, destinationGuard, validateExportDxf, writerTimeout, writerEnvironment, FORMAT, HELPER_NAME, MAX_REPORT_BYTES };
+module.exports = { createPortableDwgExporter, convertDxfToDwg, verifyPortableWriter, verifyWriterReport, verifyPortableMetadata, destinationGuard, validateExportDxf, writerTimeout, writerEnvironment, FORMAT, HELPER_NAME, MAX_REPORT_BYTES };

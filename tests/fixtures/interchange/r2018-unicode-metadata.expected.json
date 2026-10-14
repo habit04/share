@@ -1,0 +1,1712 @@
+{
+  "schemaVersion": 1,
+  "source": {
+    "creator": "JCad Electrical independent Unicode metadata fixture generator",
+    "software": "AutoCAD 2027 Core Engine X.60.0.0, .NET 10.0",
+    "version": "AC1032",
+    "audit": {
+      "errors": 0,
+      "fixed": 0
+    },
+    "dwgSha256": "cf75bd2670ad88b29694fa4f96db4309fc2f8689f7bfa63cf9d0906447cb54f6",
+    "oracle": "r2018-unicode-metadata.oracle.cs",
+    "expectedFrom": "Native AutoCAD DXFOUT 2018 and independent native DWG .NET reopen, never JCad output",
+    "dxfSha256": "b3ad96ebc4a0ae041d63fdb171430216f037a892718002399008cbdd024b50f1",
+    "dxfHashEncoding": "UTF-8; CRLF normalized to LF"
+  },
+  "opaqueStrings": [
+    {
+      "handle": "19E",
+      "code": 1,
+      "value": "Unicode Δ 雷 F0A \\U+0041 JSON {\"literal\":\"\\\\U+0041\",\"unicode\":\"Δ雷\",\"hex\":\"F0A\"}"
+    }
+  ],
+  "records": [
+    {
+      "type": "VIEW",
+      "handle": "19A",
+      "groups": [
+        {
+          "code": 5,
+          "value": "19A"
+        },
+        {
+          "code": 330,
+          "value": "6"
+        },
+        {
+          "code": 100,
+          "value": "AcDbSymbolTableRecord"
+        },
+        {
+          "code": 100,
+          "value": "AcDbViewTableRecord"
+        },
+        {
+          "code": 2,
+          "value": "SITE_NORTH_Δ雷"
+        },
+        {
+          "code": 70,
+          "value": "0"
+        },
+        {
+          "code": 40,
+          "value": "20.0"
+        },
+        {
+          "code": 10,
+          "value": "5.0"
+        },
+        {
+          "code": 20,
+          "value": "2.5"
+        },
+        {
+          "code": 41,
+          "value": "40.0"
+        },
+        {
+          "code": 11,
+          "value": "0.0"
+        },
+        {
+          "code": 21,
+          "value": "0.0"
+        },
+        {
+          "code": 31,
+          "value": "1.0"
+        },
+        {
+          "code": 12,
+          "value": "100.0"
+        },
+        {
+          "code": 22,
+          "value": "200.0"
+        },
+        {
+          "code": 32,
+          "value": "7.0"
+        },
+        {
+          "code": 42,
+          "value": "50.0"
+        },
+        {
+          "code": 43,
+          "value": "0.0"
+        },
+        {
+          "code": 44,
+          "value": "0.0"
+        },
+        {
+          "code": 50,
+          "value": "0.0"
+        },
+        {
+          "code": 71,
+          "value": "0"
+        },
+        {
+          "code": 281,
+          "value": "0"
+        },
+        {
+          "code": 72,
+          "value": "0"
+        },
+        {
+          "code": 73,
+          "value": "0"
+        }
+      ]
+    },
+    {
+      "type": "VIEW",
+      "handle": "19B",
+      "groups": [
+        {
+          "code": 5,
+          "value": "19B"
+        },
+        {
+          "code": 330,
+          "value": "6"
+        },
+        {
+          "code": 100,
+          "value": "AcDbSymbolTableRecord"
+        },
+        {
+          "code": 100,
+          "value": "AcDbViewTableRecord"
+        },
+        {
+          "code": 2,
+          "value": "SITE_ANGLE_Δ雷"
+        },
+        {
+          "code": 70,
+          "value": "0"
+        },
+        {
+          "code": 40,
+          "value": "20.0"
+        },
+        {
+          "code": 10,
+          "value": "5.0"
+        },
+        {
+          "code": 20,
+          "value": "2.5"
+        },
+        {
+          "code": 41,
+          "value": "40.0"
+        },
+        {
+          "code": 11,
+          "value": "0.0"
+        },
+        {
+          "code": 21,
+          "value": "0.0"
+        },
+        {
+          "code": 31,
+          "value": "1.0"
+        },
+        {
+          "code": 12,
+          "value": "100.0"
+        },
+        {
+          "code": 22,
+          "value": "200.0"
+        },
+        {
+          "code": 32,
+          "value": "7.0"
+        },
+        {
+          "code": 42,
+          "value": "50.0"
+        },
+        {
+          "code": 43,
+          "value": "0.0"
+        },
+        {
+          "code": 44,
+          "value": "0.0"
+        },
+        {
+          "code": 50,
+          "value": "30.0"
+        },
+        {
+          "code": 71,
+          "value": "0"
+        },
+        {
+          "code": 281,
+          "value": "0"
+        },
+        {
+          "code": 72,
+          "value": "0"
+        },
+        {
+          "code": 73,
+          "value": "0"
+        }
+      ]
+    },
+    {
+      "type": "VIEW",
+      "handle": "19C",
+      "groups": [
+        {
+          "code": 5,
+          "value": "19C"
+        },
+        {
+          "code": 330,
+          "value": "6"
+        },
+        {
+          "code": 100,
+          "value": "AcDbSymbolTableRecord"
+        },
+        {
+          "code": 100,
+          "value": "AcDbViewTableRecord"
+        },
+        {
+          "code": 2,
+          "value": "FUTURE_3D_Δ雷"
+        },
+        {
+          "code": 70,
+          "value": "0"
+        },
+        {
+          "code": 40,
+          "value": "20.0"
+        },
+        {
+          "code": 10,
+          "value": "5.0"
+        },
+        {
+          "code": 20,
+          "value": "2.5"
+        },
+        {
+          "code": 41,
+          "value": "40.0"
+        },
+        {
+          "code": 11,
+          "value": "1.0"
+        },
+        {
+          "code": 21,
+          "value": "2.0"
+        },
+        {
+          "code": 31,
+          "value": "3.0"
+        },
+        {
+          "code": 12,
+          "value": "100.0"
+        },
+        {
+          "code": 22,
+          "value": "200.0"
+        },
+        {
+          "code": 32,
+          "value": "12.0"
+        },
+        {
+          "code": 42,
+          "value": "50.0"
+        },
+        {
+          "code": 43,
+          "value": "0.0"
+        },
+        {
+          "code": 44,
+          "value": "0.0"
+        },
+        {
+          "code": 50,
+          "value": "0.0"
+        },
+        {
+          "code": 71,
+          "value": "0"
+        },
+        {
+          "code": 281,
+          "value": "0"
+        },
+        {
+          "code": 72,
+          "value": "0"
+        },
+        {
+          "code": 73,
+          "value": "0"
+        }
+      ]
+    },
+    {
+      "type": "DICTIONARY",
+      "handle": "19F",
+      "groups": [
+        {
+          "code": 5,
+          "value": "19F"
+        },
+        {
+          "code": 330,
+          "value": "18D"
+        },
+        {
+          "code": 100,
+          "value": "AcDbDictionary"
+        },
+        {
+          "code": 280,
+          "value": "1"
+        },
+        {
+          "code": 281,
+          "value": "1"
+        },
+        {
+          "code": 3,
+          "value": "LinkedMetadata"
+        },
+        {
+          "code": 360,
+          "value": "1A0"
+        }
+      ]
+    },
+    {
+      "type": "DICTIONARY",
+      "handle": "190",
+      "groups": [
+        {
+          "code": 5,
+          "value": "190"
+        },
+        {
+          "code": 330,
+          "value": "18F"
+        },
+        {
+          "code": 100,
+          "value": "AcDbDictionary"
+        },
+        {
+          "code": 280,
+          "value": "1"
+        },
+        {
+          "code": 281,
+          "value": "1"
+        },
+        {
+          "code": 3,
+          "value": "ACAD_FIELD"
+        },
+        {
+          "code": 360,
+          "value": "191"
+        }
+      ]
+    },
+    {
+      "type": "DICTIONARY",
+      "handle": "196",
+      "groups": [
+        {
+          "code": 5,
+          "value": "196"
+        },
+        {
+          "code": 330,
+          "value": "195"
+        },
+        {
+          "code": 100,
+          "value": "AcDbDictionary"
+        },
+        {
+          "code": 280,
+          "value": "1"
+        },
+        {
+          "code": 281,
+          "value": "1"
+        },
+        {
+          "code": 3,
+          "value": "ACAD_FIELD"
+        },
+        {
+          "code": 360,
+          "value": "197"
+        }
+      ]
+    },
+    {
+      "type": "FIELDLIST",
+      "handle": "194",
+      "groups": [
+        {
+          "code": 5,
+          "value": "194"
+        },
+        {
+          "code": 102,
+          "value": "{ACAD_REACTORS"
+        },
+        {
+          "code": 330,
+          "value": "C"
+        },
+        {
+          "code": 102,
+          "value": "}"
+        },
+        {
+          "code": 330,
+          "value": "C"
+        },
+        {
+          "code": 100,
+          "value": "AcDbIdSet"
+        },
+        {
+          "code": 90,
+          "value": "4"
+        },
+        {
+          "code": 330,
+          "value": "192"
+        },
+        {
+          "code": 330,
+          "value": "193"
+        },
+        {
+          "code": 330,
+          "value": "198"
+        },
+        {
+          "code": 330,
+          "value": "199"
+        },
+        {
+          "code": 100,
+          "value": "AcDbFieldList"
+        }
+      ]
+    },
+    {
+      "type": "DICTIONARY",
+      "handle": "19D",
+      "groups": [
+        {
+          "code": 5,
+          "value": "19D"
+        },
+        {
+          "code": 102,
+          "value": "{ACAD_REACTORS"
+        },
+        {
+          "code": 330,
+          "value": "C"
+        },
+        {
+          "code": 102,
+          "value": "}"
+        },
+        {
+          "code": 330,
+          "value": "C"
+        },
+        {
+          "code": 100,
+          "value": "AcDbDictionary"
+        },
+        {
+          "code": 281,
+          "value": "1"
+        },
+        {
+          "code": 3,
+          "value": "TypedPayload_Δ雷"
+        },
+        {
+          "code": 350,
+          "value": "19E"
+        }
+      ]
+    },
+    {
+      "type": "XRECORD",
+      "handle": "1A0",
+      "groups": [
+        {
+          "code": 5,
+          "value": "1A0"
+        },
+        {
+          "code": 102,
+          "value": "{ACAD_REACTORS"
+        },
+        {
+          "code": 330,
+          "value": "19F"
+        },
+        {
+          "code": 102,
+          "value": "}"
+        },
+        {
+          "code": 330,
+          "value": "19F"
+        },
+        {
+          "code": 100,
+          "value": "AcDbXrecord"
+        },
+        {
+          "code": 280,
+          "value": "1"
+        },
+        {
+          "code": 1,
+          "value": "owned by the line"
+        },
+        {
+          "code": 330,
+          "value": "18E"
+        }
+      ]
+    },
+    {
+      "type": "DICTIONARY",
+      "handle": "191",
+      "groups": [
+        {
+          "code": 5,
+          "value": "191"
+        },
+        {
+          "code": 102,
+          "value": "{ACAD_REACTORS"
+        },
+        {
+          "code": 330,
+          "value": "190"
+        },
+        {
+          "code": 102,
+          "value": "}"
+        },
+        {
+          "code": 330,
+          "value": "190"
+        },
+        {
+          "code": 100,
+          "value": "AcDbDictionary"
+        },
+        {
+          "code": 280,
+          "value": "1"
+        },
+        {
+          "code": 281,
+          "value": "1"
+        },
+        {
+          "code": 3,
+          "value": "TEXT"
+        },
+        {
+          "code": 360,
+          "value": "192"
+        }
+      ]
+    },
+    {
+      "type": "DICTIONARY",
+      "handle": "197",
+      "groups": [
+        {
+          "code": 5,
+          "value": "197"
+        },
+        {
+          "code": 102,
+          "value": "{ACAD_REACTORS"
+        },
+        {
+          "code": 330,
+          "value": "196"
+        },
+        {
+          "code": 102,
+          "value": "}"
+        },
+        {
+          "code": 330,
+          "value": "196"
+        },
+        {
+          "code": 100,
+          "value": "AcDbDictionary"
+        },
+        {
+          "code": 280,
+          "value": "1"
+        },
+        {
+          "code": 281,
+          "value": "1"
+        },
+        {
+          "code": 3,
+          "value": "TEXT"
+        },
+        {
+          "code": 360,
+          "value": "198"
+        }
+      ]
+    },
+    {
+      "type": "XRECORD",
+      "handle": "19E",
+      "groups": [
+        {
+          "code": 5,
+          "value": "19E"
+        },
+        {
+          "code": 102,
+          "value": "{ACAD_REACTORS"
+        },
+        {
+          "code": 330,
+          "value": "19D"
+        },
+        {
+          "code": 102,
+          "value": "}"
+        },
+        {
+          "code": 330,
+          "value": "19D"
+        },
+        {
+          "code": 100,
+          "value": "AcDbXrecord"
+        },
+        {
+          "code": 280,
+          "value": "1"
+        },
+        {
+          "code": 1,
+          "value": "Unicode Δ 雷 F0A \\U+0041 JSON {\"literal\":\"\\\\U+0041\",\"unicode\":\"Δ雷\",\"hex\":\"F0A\"}"
+        },
+        {
+          "code": 160,
+          "value": "9007199254740993"
+        },
+        {
+          "code": 310,
+          "value": "00017F80FF"
+        },
+        {
+          "code": 330,
+          "value": "18D"
+        },
+        {
+          "code": 340,
+          "value": "18E"
+        }
+      ]
+    },
+    {
+      "type": "FIELD",
+      "handle": "192",
+      "groups": [
+        {
+          "code": 5,
+          "value": "192"
+        },
+        {
+          "code": 102,
+          "value": "{ACAD_REACTORS"
+        },
+        {
+          "code": 330,
+          "value": "191"
+        },
+        {
+          "code": 102,
+          "value": "}"
+        },
+        {
+          "code": 330,
+          "value": "191"
+        },
+        {
+          "code": 100,
+          "value": "AcDbField"
+        },
+        {
+          "code": 1,
+          "value": "_text"
+        },
+        {
+          "code": 2,
+          "value": "Drawing Δ雷: %<\\_FldIdx 0>%"
+        },
+        {
+          "code": 90,
+          "value": "1"
+        },
+        {
+          "code": 360,
+          "value": "193"
+        },
+        {
+          "code": 97,
+          "value": "0"
+        },
+        {
+          "code": 91,
+          "value": "63"
+        },
+        {
+          "code": 92,
+          "value": "0"
+        },
+        {
+          "code": 94,
+          "value": "13"
+        },
+        {
+          "code": 95,
+          "value": "2"
+        },
+        {
+          "code": 96,
+          "value": "0"
+        },
+        {
+          "code": 300,
+          "value": ""
+        },
+        {
+          "code": 93,
+          "value": "1"
+        },
+        {
+          "code": 6,
+          "value": "ACFD_FIELDTEXT_CHECKSUM"
+        },
+        {
+          "code": 93,
+          "value": "2"
+        },
+        {
+          "code": 90,
+          "value": "2"
+        },
+        {
+          "code": 140,
+          "value": "1911728.0"
+        },
+        {
+          "code": 94,
+          "value": "0"
+        },
+        {
+          "code": 300,
+          "value": ""
+        },
+        {
+          "code": 302,
+          "value": ""
+        },
+        {
+          "code": 304,
+          "value": "ACVALUE_END"
+        },
+        {
+          "code": 7,
+          "value": "ACFD_FIELD_VALUE"
+        },
+        {
+          "code": 93,
+          "value": "3"
+        },
+        {
+          "code": 90,
+          "value": "0"
+        },
+        {
+          "code": 94,
+          "value": "0"
+        },
+        {
+          "code": 300,
+          "value": ""
+        },
+        {
+          "code": 302,
+          "value": ""
+        },
+        {
+          "code": 304,
+          "value": "ACVALUE_END"
+        },
+        {
+          "code": 301,
+          "value": ""
+        },
+        {
+          "code": 98,
+          "value": "0"
+        }
+      ]
+    },
+    {
+      "type": "FIELD",
+      "handle": "198",
+      "groups": [
+        {
+          "code": 5,
+          "value": "198"
+        },
+        {
+          "code": 102,
+          "value": "{ACAD_REACTORS"
+        },
+        {
+          "code": 330,
+          "value": "197"
+        },
+        {
+          "code": 102,
+          "value": "}"
+        },
+        {
+          "code": 330,
+          "value": "197"
+        },
+        {
+          "code": 100,
+          "value": "AcDbField"
+        },
+        {
+          "code": 1,
+          "value": "_text"
+        },
+        {
+          "code": 2,
+          "value": "Length: %<\\_FldIdx 0>%"
+        },
+        {
+          "code": 90,
+          "value": "1"
+        },
+        {
+          "code": 360,
+          "value": "199"
+        },
+        {
+          "code": 97,
+          "value": "0"
+        },
+        {
+          "code": 91,
+          "value": "63"
+        },
+        {
+          "code": 92,
+          "value": "0"
+        },
+        {
+          "code": 94,
+          "value": "13"
+        },
+        {
+          "code": 95,
+          "value": "2"
+        },
+        {
+          "code": 96,
+          "value": "0"
+        },
+        {
+          "code": 300,
+          "value": ""
+        },
+        {
+          "code": 93,
+          "value": "1"
+        },
+        {
+          "code": 6,
+          "value": "ACFD_FIELDTEXT_CHECKSUM"
+        },
+        {
+          "code": 93,
+          "value": "2"
+        },
+        {
+          "code": 90,
+          "value": "2"
+        },
+        {
+          "code": 140,
+          "value": "6905.0"
+        },
+        {
+          "code": 94,
+          "value": "0"
+        },
+        {
+          "code": 300,
+          "value": ""
+        },
+        {
+          "code": 302,
+          "value": ""
+        },
+        {
+          "code": 304,
+          "value": "ACVALUE_END"
+        },
+        {
+          "code": 7,
+          "value": "ACFD_FIELD_VALUE"
+        },
+        {
+          "code": 93,
+          "value": "3"
+        },
+        {
+          "code": 90,
+          "value": "0"
+        },
+        {
+          "code": 94,
+          "value": "0"
+        },
+        {
+          "code": 300,
+          "value": ""
+        },
+        {
+          "code": 302,
+          "value": ""
+        },
+        {
+          "code": 304,
+          "value": "ACVALUE_END"
+        },
+        {
+          "code": 301,
+          "value": ""
+        },
+        {
+          "code": 98,
+          "value": "0"
+        }
+      ]
+    },
+    {
+      "type": "FIELD",
+      "handle": "193",
+      "groups": [
+        {
+          "code": 5,
+          "value": "193"
+        },
+        {
+          "code": 330,
+          "value": "192"
+        },
+        {
+          "code": 100,
+          "value": "AcDbField"
+        },
+        {
+          "code": 1,
+          "value": "AcVar"
+        },
+        {
+          "code": 2,
+          "value": "\\AcVar Filename \\f \"%fn2\""
+        },
+        {
+          "code": 90,
+          "value": "0"
+        },
+        {
+          "code": 97,
+          "value": "0"
+        },
+        {
+          "code": 91,
+          "value": "63"
+        },
+        {
+          "code": 92,
+          "value": "0"
+        },
+        {
+          "code": 94,
+          "value": "59"
+        },
+        {
+          "code": 95,
+          "value": "2"
+        },
+        {
+          "code": 96,
+          "value": "0"
+        },
+        {
+          "code": 300,
+          "value": ""
+        },
+        {
+          "code": 93,
+          "value": "1"
+        },
+        {
+          "code": 6,
+          "value": "Variable"
+        },
+        {
+          "code": 93,
+          "value": "2"
+        },
+        {
+          "code": 90,
+          "value": "4"
+        },
+        {
+          "code": 1,
+          "value": "Filename"
+        },
+        {
+          "code": 94,
+          "value": "0"
+        },
+        {
+          "code": 300,
+          "value": ""
+        },
+        {
+          "code": 302,
+          "value": ""
+        },
+        {
+          "code": 304,
+          "value": "ACVALUE_END"
+        },
+        {
+          "code": 7,
+          "value": "ACFD_FIELD_VALUE"
+        },
+        {
+          "code": 93,
+          "value": "4"
+        },
+        {
+          "code": 90,
+          "value": "4"
+        },
+        {
+          "code": 1,
+          "value": "C:\\Users\\justi\\Chad\\jcad-portable-dwg\\.codex-local\\cad-metadata-oracle\\r2018-unicode-metadata-Δ雷.dwg"
+        },
+        {
+          "code": 94,
+          "value": "0"
+        },
+        {
+          "code": 300,
+          "value": "%fn2"
+        },
+        {
+          "code": 302,
+          "value": "r2018-unicode-metadata-Δ雷"
+        },
+        {
+          "code": 304,
+          "value": "ACVALUE_END"
+        },
+        {
+          "code": 301,
+          "value": "r2018-unicode-metadata-Δ雷"
+        },
+        {
+          "code": 98,
+          "value": "25"
+        }
+      ]
+    },
+    {
+      "type": "FIELD",
+      "handle": "199",
+      "groups": [
+        {
+          "code": 5,
+          "value": "199"
+        },
+        {
+          "code": 330,
+          "value": "198"
+        },
+        {
+          "code": 100,
+          "value": "AcDbField"
+        },
+        {
+          "code": 1,
+          "value": "AcObjProp"
+        },
+        {
+          "code": 2,
+          "value": "\\AcObjProp Object(%<\\_ObjIdx 0>%).Length \\f \"%lu2%pr4\""
+        },
+        {
+          "code": 90,
+          "value": "0"
+        },
+        {
+          "code": 97,
+          "value": "1"
+        },
+        {
+          "code": 331,
+          "value": "18D"
+        },
+        {
+          "code": 91,
+          "value": "63"
+        },
+        {
+          "code": 92,
+          "value": "0"
+        },
+        {
+          "code": 94,
+          "value": "59"
+        },
+        {
+          "code": 95,
+          "value": "2"
+        },
+        {
+          "code": 96,
+          "value": "0"
+        },
+        {
+          "code": 300,
+          "value": ""
+        },
+        {
+          "code": 93,
+          "value": "2"
+        },
+        {
+          "code": 6,
+          "value": "ObjectPropertyId"
+        },
+        {
+          "code": 93,
+          "value": "2"
+        },
+        {
+          "code": 90,
+          "value": "64"
+        },
+        {
+          "code": 330,
+          "value": "18D"
+        },
+        {
+          "code": 94,
+          "value": "0"
+        },
+        {
+          "code": 300,
+          "value": ""
+        },
+        {
+          "code": 302,
+          "value": ""
+        },
+        {
+          "code": 304,
+          "value": "ACVALUE_END"
+        },
+        {
+          "code": 6,
+          "value": "ObjectPropertyName"
+        },
+        {
+          "code": 93,
+          "value": "2"
+        },
+        {
+          "code": 90,
+          "value": "4"
+        },
+        {
+          "code": 1,
+          "value": "Length"
+        },
+        {
+          "code": 94,
+          "value": "0"
+        },
+        {
+          "code": 300,
+          "value": ""
+        },
+        {
+          "code": 302,
+          "value": ""
+        },
+        {
+          "code": 304,
+          "value": "ACVALUE_END"
+        },
+        {
+          "code": 7,
+          "value": "ACFD_FIELD_VALUE"
+        },
+        {
+          "code": 93,
+          "value": "4"
+        },
+        {
+          "code": 90,
+          "value": "2"
+        },
+        {
+          "code": 140,
+          "value": "10.0"
+        },
+        {
+          "code": 94,
+          "value": "0"
+        },
+        {
+          "code": 300,
+          "value": "%lu2%pr4"
+        },
+        {
+          "code": 302,
+          "value": "10.0000"
+        },
+        {
+          "code": 304,
+          "value": "ACVALUE_END"
+        },
+        {
+          "code": 301,
+          "value": "10.0000"
+        },
+        {
+          "code": 98,
+          "value": "7"
+        }
+      ]
+    }
+  ],
+  "classDefinitions": [
+    {
+      "type": "CLASS",
+      "groups": [
+        {
+          "code": 1,
+          "value": "ACDBDICTIONARYWDFLT"
+        },
+        {
+          "code": 2,
+          "value": "AcDbDictionaryWithDefault"
+        },
+        {
+          "code": 3,
+          "value": "ObjectDBX Classes"
+        },
+        {
+          "code": 90,
+          "value": "        0"
+        },
+        {
+          "code": 91,
+          "value": "        1"
+        },
+        {
+          "code": 280,
+          "value": "     0"
+        },
+        {
+          "code": 281,
+          "value": "     0"
+        }
+      ]
+    },
+    {
+      "type": "CLASS",
+      "groups": [
+        {
+          "code": 1,
+          "value": "MATERIAL"
+        },
+        {
+          "code": 2,
+          "value": "AcDbMaterial"
+        },
+        {
+          "code": 3,
+          "value": "ObjectDBX Classes"
+        },
+        {
+          "code": 90,
+          "value": "     1153"
+        },
+        {
+          "code": 91,
+          "value": "        3"
+        },
+        {
+          "code": 280,
+          "value": "     0"
+        },
+        {
+          "code": 281,
+          "value": "     0"
+        }
+      ]
+    },
+    {
+      "type": "CLASS",
+      "groups": [
+        {
+          "code": 1,
+          "value": "VISUALSTYLE"
+        },
+        {
+          "code": 2,
+          "value": "AcDbVisualStyle"
+        },
+        {
+          "code": 3,
+          "value": "ObjectDBX Classes"
+        },
+        {
+          "code": 90,
+          "value": "     4095"
+        },
+        {
+          "code": 91,
+          "value": "       24"
+        },
+        {
+          "code": 280,
+          "value": "     0"
+        },
+        {
+          "code": 281,
+          "value": "     0"
+        }
+      ]
+    },
+    {
+      "type": "CLASS",
+      "groups": [
+        {
+          "code": 1,
+          "value": "TABLESTYLE"
+        },
+        {
+          "code": 2,
+          "value": "AcDbTableStyle"
+        },
+        {
+          "code": 3,
+          "value": "ObjectDBX Classes"
+        },
+        {
+          "code": 90,
+          "value": "     4095"
+        },
+        {
+          "code": 91,
+          "value": "        1"
+        },
+        {
+          "code": 280,
+          "value": "     0"
+        },
+        {
+          "code": 281,
+          "value": "     0"
+        }
+      ]
+    },
+    {
+      "type": "CLASS",
+      "groups": [
+        {
+          "code": 1,
+          "value": "SCALE"
+        },
+        {
+          "code": 2,
+          "value": "AcDbScale"
+        },
+        {
+          "code": 3,
+          "value": "ObjectDBX Classes"
+        },
+        {
+          "code": 90,
+          "value": "     1153"
+        },
+        {
+          "code": 91,
+          "value": "       17"
+        },
+        {
+          "code": 280,
+          "value": "     0"
+        },
+        {
+          "code": 281,
+          "value": "     0"
+        }
+      ]
+    },
+    {
+      "type": "CLASS",
+      "groups": [
+        {
+          "code": 1,
+          "value": "MLEADERSTYLE"
+        },
+        {
+          "code": 2,
+          "value": "AcDbMLeaderStyle"
+        },
+        {
+          "code": 3,
+          "value": "ACDB_MLEADERSTYLE_CLASS"
+        },
+        {
+          "code": 90,
+          "value": "     4095"
+        },
+        {
+          "code": 91,
+          "value": "        1"
+        },
+        {
+          "code": 280,
+          "value": "     0"
+        },
+        {
+          "code": 281,
+          "value": "     0"
+        }
+      ]
+    },
+    {
+      "type": "CLASS",
+      "groups": [
+        {
+          "code": 1,
+          "value": "ACDBSECTIONVIEWSTYLE"
+        },
+        {
+          "code": 2,
+          "value": "AcDbSectionViewStyle"
+        },
+        {
+          "code": 3,
+          "value": "ObjectDBX Classes"
+        },
+        {
+          "code": 90,
+          "value": "     1025"
+        },
+        {
+          "code": 91,
+          "value": "        1"
+        },
+        {
+          "code": 280,
+          "value": "     0"
+        },
+        {
+          "code": 281,
+          "value": "     0"
+        }
+      ]
+    },
+    {
+      "type": "CLASS",
+      "groups": [
+        {
+          "code": 1,
+          "value": "ACDBDETAILVIEWSTYLE"
+        },
+        {
+          "code": 2,
+          "value": "AcDbDetailViewStyle"
+        },
+        {
+          "code": 3,
+          "value": "ObjectDBX Classes"
+        },
+        {
+          "code": 90,
+          "value": "     1025"
+        },
+        {
+          "code": 91,
+          "value": "        1"
+        },
+        {
+          "code": 280,
+          "value": "     0"
+        },
+        {
+          "code": 281,
+          "value": "     0"
+        }
+      ]
+    },
+    {
+      "type": "CLASS",
+      "groups": [
+        {
+          "code": 1,
+          "value": "DICTIONARYVAR"
+        },
+        {
+          "code": 2,
+          "value": "AcDbDictionaryVar"
+        },
+        {
+          "code": 3,
+          "value": "ObjectDBX Classes"
+        },
+        {
+          "code": 90,
+          "value": "        0"
+        },
+        {
+          "code": 91,
+          "value": "        5"
+        },
+        {
+          "code": 280,
+          "value": "     0"
+        },
+        {
+          "code": 281,
+          "value": "     0"
+        }
+      ]
+    },
+    {
+      "type": "CLASS",
+      "groups": [
+        {
+          "code": 1,
+          "value": "CELLSTYLEMAP"
+        },
+        {
+          "code": 2,
+          "value": "AcDbCellStyleMap"
+        },
+        {
+          "code": 3,
+          "value": "ObjectDBX Classes"
+        },
+        {
+          "code": 90,
+          "value": "     1152"
+        },
+        {
+          "code": 91,
+          "value": "        1"
+        },
+        {
+          "code": 280,
+          "value": "     0"
+        },
+        {
+          "code": 281,
+          "value": "     0"
+        }
+      ]
+    },
+    {
+      "type": "CLASS",
+      "groups": [
+        {
+          "code": 1,
+          "value": "FIELD"
+        },
+        {
+          "code": 2,
+          "value": "AcDbField"
+        },
+        {
+          "code": 3,
+          "value": "ObjectDBX Classes"
+        },
+        {
+          "code": 90,
+          "value": "     1152"
+        },
+        {
+          "code": 91,
+          "value": "        4"
+        },
+        {
+          "code": 280,
+          "value": "     0"
+        },
+        {
+          "code": 281,
+          "value": "     0"
+        }
+      ]
+    },
+    {
+      "type": "CLASS",
+      "groups": [
+        {
+          "code": 1,
+          "value": "FIELDLIST"
+        },
+        {
+          "code": 2,
+          "value": "AcDbFieldList"
+        },
+        {
+          "code": 3,
+          "value": "ObjectDBX Classes"
+        },
+        {
+          "code": 90,
+          "value": "     1152"
+        },
+        {
+          "code": 91,
+          "value": "        1"
+        },
+        {
+          "code": 280,
+          "value": "     0"
+        },
+        {
+          "code": 281,
+          "value": "     0"
+        }
+      ]
+    }
+  ]
+}

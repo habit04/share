@@ -34,7 +34,20 @@ jobs:
       - run: npm run lint
       - name: Type check (renderer + tests, Electron main / preload, scripts)
         run: npm run typecheck:all
-      - run: npm test
+      - name: Accepted native reader matches all three independent metadata fixtures
+        if: matrix.node == 24
+        run: |
+          node --test scripts/native-dwg-build/tooling.test.mjs scripts/native-dwg-build/metadata-tools.test.mjs
+          node scripts/native-dwg-build/validate-vendored-metadata.mjs native-metadata-output
+      - uses: actions/upload-artifact@v4
+        if: matrix.node == 24
+        with:
+          name: native-metadata-fixtures
+          path: native-metadata-output/
+          if-no-files-found: error
+      # Keep CPU-heavy geometry and retained-graph regressions from competing
+      # across the automatic worker pool. Assertions and 5-second budgets stay.
+      - run: npm test -- --maxWorkers=2
         env:
           # tests/perf.test.ts budgets are 3x the development machine; allow shared runners 2x more.
           JCAD_PERF_FACTOR: 2
@@ -162,7 +175,9 @@ jobs:
   # as proof of consumer hardware support; timing comparisons have no speed gate.
   gpu-experimental:
     runs-on: windows-latest
-    timeout-minutes: 20
+    # Includes setup/build, the native benchmark, recovery and unavailable-device checks.
+    # Individual accuracy, performance and render deadlines remain unchanged.
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -191,7 +206,9 @@ jobs:
       - name: Private GPU-process failure, Canvas recovery and DXF persistence
         run: node scripts/e2e-gpu-process.mjs --cached-scene
       - name: Experimental geometry, pan cache, fallback and context restoration
-        run: npm run bench:gpu
+        run: |
+          node --test scripts/gpu-edit-candidate.test.mjs scripts/gpu-fallback-restoration.test.mjs scripts/gpu-benchmark-fallback.test.mjs scripts/gpu-benchmark-admission.test.mjs scripts/gpu-hatch-cleanup.test.mjs scripts/gpu-dimension-cleanup.test.mjs
+          npm run bench:gpu
       - uses: actions/upload-artifact@v4
         if: always()
         with:

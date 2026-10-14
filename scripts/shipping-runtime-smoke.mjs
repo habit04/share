@@ -2,11 +2,12 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, realpathSync, lstatSync, copyFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { verifyExecutableFuses } from './electron-fuse-policy.mjs';
-import { needsPortableDwgExport, needsPortableDwgSave, needsRotatedLayoutViewports } from './packaged-smoke-policy.mjs';
+import { needsPortableDwgExport, needsPortableDwgSave, needsRotatedLayoutViewports, needsDwgMetadataPreservation, metadataProbeSucceeded, METADATA_SMOKE_FIXTURES, METADATA_SMOKE_FLAGS } from './packaged-smoke-policy.mjs';
 
 const repo = resolve(import.meta.dirname, '..');
 const source = process.argv[2] === '--source';
@@ -36,6 +37,13 @@ function run(binary, args, timeout = 90_000) {
 }
 try {
   writeFileSync(fixture, '0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1015\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nLINE\n8\n0\n10\n10\n20\n10\n11\n20\n21\n20\n0\nENDSEC\n0\nEOF\n');
+  if (needsDwgMetadataPreservation(expectedVersion)) for (const pin of METADATA_SMOKE_FIXTURES) {
+    const file = join(repo, 'tests/fixtures/interchange', pin.name + '.dwg'), stat = lstatSync(file);
+    assert.ok(stat.isFile() && !stat.isSymbolicLink() && stat.size > 0 && stat.size <= 8 * 1024 * 1024, 'Metadata smoke source must be a bounded regular fixture');
+    const bytes = readFileSync(file);
+    assert.equal(createHash('sha256').update(bytes).digest('hex'), pin.sha256, pin.name + ': independent source preimage');
+    writeFileSync(join(profile, pin.file), bytes, { flag: 'wx' });
+  }
   const fuses = source ? null : await verifyExecutableFuses(executable, 'shipping');
   const seed = join(profile, 'legacy-seed.cjs');
   writeFileSync(seed, `const {app,BrowserWindow,protocol}=require('electron');
@@ -62,14 +70,18 @@ w.webContents.session.flushStorageData(); w.destroy(); app.quit();
   assert.ok(existsSync(`${fixture}.bak`), 'A real drawing save must preserve its backup');
   let portableDwg = null;
   if (needsPortableDwgExport(expectedVersion)) {
-    const output = run(executable, [...appArgs, '--probe-startup=dwg', `--user-data-dir=${profile}`, realpathSync.native(fixture)]);
+    const output = run(executable, [...appArgs, '--probe-startup=dwg', `--user-data-dir=${profile}`, realpathSync.native(fixture)], needsDwgMetadataPreservation(expectedVersion) ? 240_000 : 90_000);
     const line = output.split(/\r?\n/).find(entry => entry.startsWith('SHIPPING_PROBE_OK '));
     assert.ok(line, 'Missing successful portable DWG shipping result');
     portableDwg = JSON.parse(line.slice('SHIPPING_PROBE_OK '.length));
     assert.equal(portableDwg.phase, 'dwg'); assert.equal(portableDwg.version, expectedVersion); assert.equal(portableDwg.packaged, !source); assert.equal(portableDwg.testBuild, false);
     for (const key of ['writer', 'reopened', 'arrays', 'attributes', 'widths', 'appearance', 'workingPreserved', 'rejectedContent', 'backup', 'integrityRefused']) assert.equal(portableDwg[key], true, key);
-    if (needsPortableDwgSave(expectedVersion)) for (const key of ['saveAsDwg', 'saveDwg', 'normalSaveBackup']) assert.equal(portableDwg[key], true, key);
+    if (needsPortableDwgSave(expectedVersion)) for (const key of ['saveAsDwg', 'saveDwg', 'normalSaveBackup', 'normalSaveLossConsent']) assert.equal(portableDwg[key], true, key);
     if (needsRotatedLayoutViewports(expectedVersion)) assert.equal(portableDwg.viewportRotation, true, 'viewportRotation');
+    if (needsDwgMetadataPreservation(expectedVersion)) {
+      for (const key of METADATA_SMOKE_FLAGS) assert.equal(portableDwg[key], true, key);
+      assert.equal(metadataProbeSucceeded(portableDwg), true, 'All three fixed metadata fixtures require complete source/copy/save/reopen evidence');
+    }
     assert.equal(portableDwg.entities, 4);
   }
   const errors = join(profile, 'error.log');
@@ -81,7 +93,7 @@ w.webContents.session.flushStorageData(); w.destroy(); app.quit();
   }
   const record = { mode:source ? 'source-probe-development' : 'shipping-no-inspection', expectedVersion, executable, fuses, launches, portableDwg, remoteDebugRejected:!source, noMainErrors:true };
   writeFileSync(join(out, 'shipping-runtime-result.json'), `${JSON.stringify(record, null, 2)}\n`);
-  console.log(`${source ? 'Source probe validation (no shipping fuse/signature evidence)' : 'Exact shipping runtime smoke'}: startup, DXF open/save/backup/reopen${portableDwg?.saveDwg ? ', DWG Save As/save/backup/reopen' : ''}${portableDwg?.viewportRotation ? ', rotated layout viewports' : ''}, secure origin, two-launch migration, private persistent storage and clean exit passed.`);
+  console.log(`${source ? 'Source probe validation (no shipping fuse/signature evidence)' : 'Exact shipping runtime smoke'}: startup, DXF open/save/backup/reopen${portableDwg?.saveDwg ? ', DWG Save As/save/backup/reopen' : ''}${portableDwg?.viewportRotation ? ', rotated layout viewports' : ''}${portableDwg?.metadataSaveReopen ? ', three native metadata fixtures with connected copies and exact literals' : ''}, secure origin, two-launch migration, private persistent storage and clean exit passed.`);
 } finally {
   // Preserve only fixed, generated smoke artifacts for native-reader diagnosis. The private
   // profile is still removed, and ordinary user files can never be selected by this probe.
@@ -90,6 +102,13 @@ w.webContents.session.flushStorageData(); w.destroy(); app.quit();
     if (existsSync(file)) {
       const stat = lstatSync(file);
       if (stat.isFile() && !stat.isSymbolicLink() && dirname(realpathSync.native(file)) === realpathSync.native(profile)) copyFileSync(file, join(out, saved));
+    }
+  }
+  for (const pin of METADATA_SMOKE_FIXTURES) for (const suffix of ['.dwg', '.dwg.bak']) {
+    const name = pin.file.replace(/\.dwg$/, '-copy') + suffix, file = join(profile, name);
+    if (existsSync(file)) {
+      const stat = lstatSync(file);
+      if (stat.isFile() && !stat.isSymbolicLink() && dirname(realpathSync.native(file)) === realpathSync.native(profile)) copyFileSync(file, join(out, name));
     }
   }
   cleanProfile();
