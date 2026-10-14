@@ -14,7 +14,7 @@ static unsigned long long decoded_size, final_byte;
 static unsigned final_bit;
 static int decoded_version, decoded_from_version, parsed_version, parsed_from_version;
 #define RAW_AUX_LIMIT 256
-#define LAYOUT_COUNT 16
+#define LAYOUT_COUNT 19
 #define FIELD_COUNT 6
 static unsigned char decoded_bytes[RAW_AUX_LIMIT];
 static unsigned captured_bytes, layout_calls, observation_error;
@@ -22,13 +22,14 @@ static unsigned long long library_layout[LAYOUT_COUNT];
 static const char *layout_names[LAYOUT_COUNT] = {
   "rsBytes", "rlBytes", "rllBytes", "timeBytes", "daysOffset", "msOffset",
   "valueOffset", "drawingBytes", "auxOffset", "auxBytes", "maintenanceOffset",
-  "maintenance1Offset", "maintenance2Offset", "creationOffset", "updateOffset", "tailOffset"
+  "maintenance1Offset", "maintenance2Offset", "creationOffset", "updateOffset", "tailOffset",
+  "maintenanceBytes", "maintenance1Bytes", "maintenance2Bytes"
 };
 static const char *field_names[FIELD_COUNT] = {
   "maint_version", "maint_version_1", "maint_version_2", "TDCREATE", "TDUPDATE", "zero_18"
 };
-static const unsigned field_counts[FIELD_COUNT] = {1, 1, 1, 2, 2, 3};
-static const unsigned field_widths[FIELD_COUNT] = {16, 16, 16, 64, 64, 48};
+static const unsigned field_counts[FIELD_COUNT] = {1, 1, 1, 2, 2, 0};
+static const unsigned field_widths[FIELD_COUNT] = {32, 32, 32, 64, 64, 0};
 static struct field_observation {
   unsigned before_calls, after_calls;
   unsigned long long before_bits, after_bits, values[3];
@@ -113,6 +114,49 @@ static void date(const char *name, BITCODE_TIMEBLL value)
          name, (uint32_t)value.days, (uint32_t)value.ms);
 }
 
+static void aux_fields(const Dwg_AuxHeader *aux)
+{
+  const char *separator = "";
+#define AUX_FIELD(name, ...) do { \
+  const unsigned long long values[] = {__VA_ARGS__}; \
+  printf("%s\"" #name "\":[", separator); \
+  for (unsigned i = 0; i < sizeof values / sizeof values[0]; i++) \
+    printf("%s%llu", i ? "," : "", values[i]); \
+  printf("]"); separator = ","; \
+} while (0)
+  AUX_FIELD(aux_intro, aux->aux_intro[0], aux->aux_intro[1], aux->aux_intro[2]);
+  AUX_FIELD(dwg_version, aux->dwg_version);
+  AUX_FIELD(maint_version, aux->maint_version);
+  AUX_FIELD(numsaves, aux->numsaves);
+  AUX_FIELD(minus_1, aux->minus_1);
+  AUX_FIELD(numsaves_1, aux->numsaves_1);
+  AUX_FIELD(numsaves_2, aux->numsaves_2);
+  AUX_FIELD(zero, aux->zero);
+  AUX_FIELD(dwg_version_1, aux->dwg_version_1);
+  AUX_FIELD(maint_version_1, aux->maint_version_1);
+  AUX_FIELD(dwg_version_2, aux->dwg_version_2);
+  AUX_FIELD(maint_version_2, aux->maint_version_2);
+  AUX_FIELD(unknown_6rs, aux->unknown_6rs[0], aux->unknown_6rs[1], aux->unknown_6rs[2],
+            aux->unknown_6rs[3], aux->unknown_6rs[4], aux->unknown_6rs[5]);
+  AUX_FIELD(unknown_5rl, aux->unknown_5rl[0], aux->unknown_5rl[1], aux->unknown_5rl[2],
+            aux->unknown_5rl[3], aux->unknown_5rl[4]);
+  AUX_FIELD(TDCREATE, aux->TDCREATE.days, aux->TDCREATE.ms);
+  AUX_FIELD(TDUPDATE, aux->TDUPDATE.days, aux->TDUPDATE.ms);
+  AUX_FIELD(HANDSEED, aux->HANDSEED);
+  AUX_FIELD(plot_stamp, aux->plot_stamp);
+  AUX_FIELD(zero_1, aux->zero_1);
+  AUX_FIELD(numsaves_3, aux->numsaves_3);
+  AUX_FIELD(zero_2, aux->zero_2);
+  AUX_FIELD(zero_3, aux->zero_3);
+  AUX_FIELD(zero_4, aux->zero_4);
+  AUX_FIELD(numsaves_4, aux->numsaves_4);
+  AUX_FIELD(zero_5, aux->zero_5);
+  AUX_FIELD(zero_6, aux->zero_6);
+  AUX_FIELD(zero_7, aux->zero_7);
+  AUX_FIELD(zero_8, aux->zero_8);
+#undef AUX_FIELD
+}
+
 int main(int argc, char **argv)
 {
   struct stat info;
@@ -130,7 +174,8 @@ int main(int argc, char **argv)
     sizeof(Dwg_AuxHeader), offsetof(Dwg_AuxHeader, maint_version),
     offsetof(Dwg_AuxHeader, maint_version_1), offsetof(Dwg_AuxHeader, maint_version_2),
     offsetof(Dwg_AuxHeader, TDCREATE), offsetof(Dwg_AuxHeader, TDUPDATE),
-    offsetof(Dwg_AuxHeader, zero_18)
+    offsetof(Dwg_AuxHeader, zero_18), sizeof(((Dwg_AuxHeader *)0)->maint_version),
+    sizeof(((Dwg_AuxHeader *)0)->maint_version_1), sizeof(((Dwg_AuxHeader *)0)->maint_version_2)
   };
   int layout_matches, fields_valid = 1;
   if (argc != 2 || strlen(argv[1]) > 4096 || stat(argv[1], &info)
@@ -184,11 +229,12 @@ int main(int argc, char **argv)
              && valid_date(dwg.auxheader.TDCREATE)
              && valid_date(dwg.auxheader.TDUPDATE)
              && !observation_error && layout_matches && fields_valid
+             && driver_layout[16] == 4 && driver_layout[17] == 4 && driver_layout[18] == 4
              && decoded_version == R_2018 && decoded_from_version == R_2018
              && parsed_version == R_2018 && parsed_from_version == R_2018
-             && captured_bytes == decoded_size && final_bit <= 7
-             && final_byte <= decoded_size && (final_byte < decoded_size || final_bit == 0);
-  printf("{\"schemaVersion\":1,\"inputBytes\":%" PRIu64
+             && decoded_size == 129 && captured_bytes == decoded_size
+             && final_byte == decoded_size && final_bit == 0;
+  printf("{\"schemaVersion\":1,\"sourceVariant\":\"candidate-exact-r2018-maintenance-rl-no-wire-zero18-v1\",\"inputBytes\":%" PRIu64
          ",\"nativeError\":%d,\"nativeVersion\":%d,\"auxSection\":{"
          "\"count\":%u,\"nameValid\":%s,\"size\":%" PRId64
          ",\"pages\":%u},\"auxRead\":{\"attempts\":%u,\"parses\":%u,"
@@ -203,7 +249,9 @@ int main(int argc, char **argv)
          (unsigned)dwg.auxheader.aux_intro[2], (unsigned)dwg.auxheader.dwg_version,
          (unsigned)dwg.auxheader.maint_version);
   date("creation", dwg.auxheader.TDCREATE); printf(",");
-  date("update", dwg.auxheader.TDUPDATE); printf("},\"mainUtc\":{");
+  date("update", dwg.auxheader.TDUPDATE); printf("},\"auxFields\":{");
+  aux_fields(&dwg.auxheader);
+  printf("},\"mainUtc\":{");
   date("creation", dwg.header_vars.TDUCREATE); printf(",");
   date("update", dwg.header_vars.TDUUPDATE); printf("},\"hostDerivedLocal\":{");
   date("creation", dwg.header_vars.TDCREATE); printf(",");
@@ -238,7 +286,7 @@ int main(int argc, char **argv)
     }
   printf("]}");
   dwg_free(&dwg);
-  printf(",\"nativeFreed\":true,\"rawAuxCertified\":%s}\n",
+  printf(",\"nativeFreed\":true,\"rawAuxCertified\":false,\"candidateDecoded\":%s}\n",
          accepted ? "true" : "false");
   return accepted ? 0 : 1;
 }

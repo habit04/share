@@ -1,4 +1,4 @@
-name: Development DWG raw header diagnostic
+name: Development DWG R2018 candidate header diagnostic
 
 # Manual read-only evidence; no production runtime, installer, release or upload.
 on:
@@ -52,7 +52,7 @@ jobs:
           make -C "$build_dir/src" -j2 libredwg.la
           gcc -std=c11 -O2 -Wall -Wextra -Werror -I"$source_dir/include" -I"$build_dir/src" scripts/native-dwg-build/header-diagnostic.c "$build_dir/src/.libs/libredwg.a" -lm -lz -o "$RUNNER_TEMP/jcad-header-diagnostic/diagnostic"
           python3 scripts/native-dwg-build/header-diagnostic.py record-build --workspace "$GITHUB_WORKSPACE" --directory "$RUNNER_TEMP/jcad-header-diagnostic" --revision "$GITHUB_SHA"
-      - name: Four unchanged originals, typed layout and unverified source field observations
+      - name: Four unchanged originals, exact R2018 candidate fields and two host zones
         timeout-minutes: 3
         shell: bash
         run: |

@@ -20,19 +20,31 @@ spec.loader.exec_module(diagnostic)
 
 def authored_result():
     date = {"days": 2461325, "ms": 70498000}
-    layout = dict(zip(diagnostic.LAYOUT_NAMES, [2, 4, 8, 16, 0, 4, 8, 8192, 4096, 160,
-                                               6, 26, 30, 64, 80, 132]))
-    positions = [40, 200, 232, 504, 568, 984]
-    values = [[4], [4], [4], [date['days'], date['ms']], [date['days'], date['ms']], [0, 0, 0]]
+    layout = dict(zip(diagnostic.LAYOUT_NAMES, [2, 4, 8, 16, 0, 4, 8, 8192, 4096, 176,
+                                               8, 28, 36, 72, 88, 148, 4, 4, 4]))
+    typed = {name: [0] * count for name, _, count in diagnostic.AUX_FIELDS}
+    typed.update(aux_intro=[255, 119, 1], dwg_version=[33], dwg_version_1=[33], dwg_version_2=[33],
+                 maint_version=[4], maint_version_1=[4], maint_version_2=[4], numsaves=[1],
+                 minus_1=[0xffffffff], numsaves_1=[1], numsaves_3=[1], numsaves_4=[1],
+                 unknown_6rs=[0, 0, 0, 0, 0, 1], unknown_5rl=[0, 0, 0, 256, 65537],
+                 TDCREATE=[date['days'], date['ms']], TDUPDATE=[date['days'], date['ms']], HANDSEED=[399])
+    raw = bytearray(); positions = {}
+    for name, width, count in diagnostic.AUX_FIELDS:
+        positions[name] = len(raw) * 8
+        for value in typed[name]:
+            raw.extend(value.to_bytes(width // 8, 'little'))
     fields = [{'name': name, 'beforeCalls': 1, 'afterCalls': 1, 'beforeBits': before,
                'afterBits': before + width, 'values': actual}
-              for (name, width, _), before, actual in zip(diagnostic.FIELD_ROLES, positions, values)]
-    return {"schemaVersion": 1, "inputBytes": 18644, "nativeError": 0, "nativeVersion": 40,
+              for name, width, count in diagnostic.FIELD_ROLES
+              for before, actual in [(positions.get(name, len(raw) * 8), typed.get(name, []))]]
+    return {"schemaVersion": 1, "sourceVariant": diagnostic.SOURCE_VARIANT,
+        "inputBytes": 18644, "nativeError": 0, "nativeVersion": 40,
         "auxSection": {"count": 1, "nameValid": True, "size": 129, "pages": 1},
         "auxRead": {"attempts": 1, "parses": 1, "decompressionError": 0, "parseError": 0,
                     "chainPresent": True, "decodedSize": 129},
         "aux": {"magic": [255, 119, 1], "version": 33, "maintenance": 4,
                 "creation": date.copy(), "update": date.copy()},
+        "auxFields": typed,
         "mainUtc": {"creation": {"days": 2461326, "ms": 2098000}, "update": {"days": 2461326, "ms": 2098000}},
         "hostDerivedLocal": {"creation": date.copy(), "update": date.copy()},
         "elapsed": {"drawing": {"days": 0, "ms": 1000}, "user": {"days": 0, "ms": 1000}},
@@ -40,8 +52,8 @@ def authored_result():
             "driverLayout": layout.copy(), "libraryLayout": layout.copy(),
             "decodedVersion": 40, "decodedFromVersion": 40, "parsedVersion": 40, "parsedFromVersion": 40,
             "finalByte": 129, "finalBit": 0, "capturedBytes": 129, "rawComplete": True,
-            "rawHex": "00" * 129, "fields": fields},
-        "nativeFreed": True, "rawAuxCertified": True}
+            "rawHex": raw.hex(), "fields": fields},
+        "nativeFreed": True, "rawAuxCertified": False, "candidateDecoded": True}
 
 
 class DiagnosticTests(unittest.TestCase):
@@ -52,6 +64,7 @@ class DiagnosticTests(unittest.TestCase):
         with tarfile.open(archive, "r:gz") as source:
             cls.original = source.extractfile("./src/decode.c").read()
             cls.aux_original = source.extractfile("./src/auxheader.spec").read()
+            cls.header_original = source.extractfile("./include/dwg.h").read()
             cls.header = source.extractfile("./include/dwg.h").read().decode()
             cls.makefile = source.extractfile("./src/Makefile.in").read().decode()
             cls.configure = source.extractfile("./configure.ac").read().decode()
@@ -99,15 +112,40 @@ class DiagnosticTests(unittest.TestCase):
             restored = restored.replace(replacement, original, 1)
         self.assertEqual(restored, self.aux_original)
         # Six before/after pairs exist only in the decoder, never the shared free/print includes.
-        self.assertEqual(observed.count(b'#ifdef IS_DECODER'), 12)
+        self.assertEqual(observed.count(b'#ifdef IS_DECODER'), 16)
         for name, _, _ in diagnostic.FIELD_ROLES:
             self.assertEqual(observed.count(('aux_field ("' + name + '", 0').encode()), 1)
             self.assertEqual(observed.count(('aux_field ("' + name + '", 1').encode()), 1)
         self.assertEqual(observed.count(b'FIELD_RSx'), self.aux_original.count(b'FIELD_RSx'))
-        self.assertNotIn(b'FIELD_RL (maint_version', observed)
+        self.assertIn(b'if (dat->from_version == R_2018)', observed)
+        self.assertIn(b'if (dat->from_version != R_2018)', observed)
         for changed in (self.aux_original + b'\n', observed):
             with self.assertRaises(ValueError):
                 diagnostic.patch_aux_spec(changed)
+
+    def test_candidate_storage_is_three_full_raw_longs_only_in_aux_header(self):
+        observed = diagnostic.patch_header(self.header_original)
+        start = observed.index(b'typedef struct _dwg_auxheader\n')
+        end = observed.index(b'} Dwg_AuxHeader;', start)
+        restored = observed[start:end]
+        for name in ('maint_version', 'maint_version_1', 'maint_version_2'):
+            self.assertEqual(restored.count(f'  BITCODE_RL {name};'.encode()), 1)
+            restored = restored.replace(f'  BITCODE_RL {name};'.encode(), f'  BITCODE_RS {name};'.encode(), 1)
+        self.assertEqual(observed[:start] + restored + observed[end:], self.header_original)
+        for changed in (self.header_original + b'\n', observed):
+            with self.assertRaises(ValueError):
+                diagnostic.patch_header(changed)
+
+    def test_exact_version_schema_branches_keep_legacy_reads_and_no_auto_offsets(self):
+        observed = diagnostic.patch_aux_spec(self.aux_original).decode()
+        for name in ('maint_version', 'maint_version_1', 'maint_version_2'):
+            expected = ('if (dat->from_version == R_2018)\n'
+                        f'    {{ FIELD_RL ({name}, 0); }}\n  else\n#endif\n'
+                        f'    {{ FIELD_RSx ({name}, 0); }}')
+            self.assertIn(expected, observed)
+        self.assertIn('SINCE (R_2018)', observed)
+        self.assertIn('if (dat->from_version != R_2018)\n#endif\n      { FIELD_VECTOR_INL (zero_18, RS, 3, 0); }', observed)
+        self.assertEqual(sum(width * count // 8 for _, width, count in diagnostic.AUX_FIELDS), 129)
 
     def test_abi_facts_are_actual_type_and_member_expressions_not_wire_offsets(self):
         observed = diagnostic.patch_decoder(self.original).decode()
@@ -215,7 +253,7 @@ class DiagnosticTests(unittest.TestCase):
         self.assertNotEqual(original['aux']['creation'], original['mainUtc']['creation'])
 
     def test_failed_read_parse_free_and_section_evidence_refuse(self):
-        mutations = [('nativeError', 1), ('nativeFreed', False), ('rawAuxCertified', False), ('inputBytes', 18645)]
+        mutations = [('nativeError', 1), ('nativeFreed', False), ('rawAuxCertified', True), ('inputBytes', 18645), ('candidateDecoded', False), ('sourceVariant', 'baseline')]
         for key, value in mutations:
             result = authored_result(); result[key] = value
             with self.subTest(key=key), self.assertRaises(ValueError):
@@ -250,7 +288,7 @@ class DiagnosticTests(unittest.TestCase):
                 diagnostic.validated_result(json.dumps(result).encode(), 0, 18644)
         for index, key, value in [(0, 'beforeCalls', 2), (1, 'afterCalls', 0), (2, 'beforeBits', True),
                                    (3, 'name', 'TDUPDATE'), (4, 'afterBits', 1040), (5, 'values', [0, 0]),
-                                   (3, 'values', [2461326, 2098000]), (0, 'values', [65536])]:
+                                   (3, 'values', [2461326, 2098000]), (0, 'values', [0x100000000])]:
             result = authored_result(); result['unverifiedObservations']['fields'][index][key] = value
             with self.subTest(index=index, key=key), self.assertRaises(ValueError):
                 diagnostic.validated_result(json.dumps(result).encode(), 0, 18644)
@@ -265,9 +303,82 @@ class DiagnosticTests(unittest.TestCase):
         result['rawAuxCertified'] = False
         with self.assertRaises(ValueError):
             diagnostic.validated_result(json.dumps(result).encode(), 1, 18644)
-        result['rawAuxCertified'] = True
+        result['auxFields']['TDCREATE'] = [65536, 2391670785]
+        raw = bytearray.fromhex(result['unverifiedObservations']['rawHex'])
+        position = result['unverifiedObservations']['fields'][3]['beforeBits'] // 8
+        raw[position:position + 8] = (65536).to_bytes(4, 'little') + (2391670785).to_bytes(4, 'little')
+        result['unverifiedObservations']['rawHex'] = raw.hex()
         with self.assertRaisesRegex(ValueError, 'Invalid raw native date tuple'):
             diagnostic.validated_result(json.dumps(result).encode(), 0, 18644)
+
+    def test_all_named_typed_fields_and_unknown_arrays_must_match_full_raw_sequence(self):
+        for name, width, count in diagnostic.AUX_FIELDS:
+            for index in range(count):
+                result = authored_result()
+                result['auxFields'][name][index] = (result['auxFields'][name][index] + 1) % 2 ** width
+                with self.subTest(field=name, index=index), self.assertRaises(ValueError):
+                    diagnostic.validated_result(json.dumps(result).encode(), 0, 18644)
+        for name, wrong in [('unknown_6rs', [0] * 5), ('unknown_5rl', [0] * 6),
+                             ('unknown_5rl', [0, 0, 0, True, 65537])]:
+            result = authored_result(); result['auxFields'][name] = wrong
+            with self.subTest(field=name), self.assertRaises(ValueError):
+                diagnostic.validated_result(json.dumps(result).encode(), 0, 18644)
+        result = authored_result(); result['auxFields'] = dict(reversed(list(result['auxFields'].items())))
+        with self.assertRaises(ValueError):
+            diagnostic.validated_result(json.dumps(result).encode(), 0, 18644)
+
+    def test_full_32_bit_maintenance_is_retained_in_every_slot(self):
+        result = authored_result()
+        result['aux']['maintenance'] = 0xfedcba98
+        raw = bytearray.fromhex(result['unverifiedObservations']['rawHex'])
+        for field in result['unverifiedObservations']['fields'][:3]:
+            result['auxFields'][field['name']] = field['values'] = [0xfedcba98]
+            offset = field['beforeBits'] // 8
+            raw[offset:offset + 4] = (0xfedcba98).to_bytes(4, 'little')
+        result['unverifiedObservations']['rawHex'] = raw.hex()
+        self.assertEqual(diagnostic.validated_result(json.dumps(result).encode(), 0, 18644), result)
+        result['unverifiedObservations']['libraryLayout']['maintenance1Bytes'] = 2
+        with self.assertRaises(ValueError):
+            diagnostic.validated_result(json.dumps(result).encode(), 0, 18644)
+
+    def test_four_actual_original_dxf_date_references_are_pinned_and_read_independently(self):
+        for stem in diagnostic.FIXTURES:
+            with self.subTest(stem=stem):
+                reference = diagnostic.read_dxf_reference(WORKSPACE, stem)
+                self.assertEqual(reference['canonicalLfSha256'], diagnostic.DXF_REFERENCE_SHA[stem])
+                self.assertEqual(set(reference['dates']), {'$TDCREATE', '$TDUCREATE', '$TDUPDATE', '$TDUUPDATE'})
+                source = (WORKSPACE / f'tests/fixtures/interchange/{stem}.dxf').read_bytes()
+                self.assertEqual(diagnostic.dxf_reference_values(source.replace(b'\r\n', b'\n')), reference['dates'])
+        reference = diagnostic.read_dxf_reference(WORKSPACE, 'r2018-minsert')
+        self.assertEqual(reference['dates']['$TDUCREATE']['tuple'], {'days': 2461326, 'ms': 2098000})
+        self.assertEqual(reference['dates']['$TDCREATE']['tuple'], {'days': 2461325, 'ms': 70498000})
+
+    def test_reference_compares_main_exactly_and_reports_aux_without_date_policy(self):
+        reference = diagnostic.read_dxf_reference(WORKSPACE, 'r2018-minsert')
+        result = authored_result()
+        comparisons = diagnostic.compare_date_reference(result, reference)
+        self.assertTrue(comparisons['creation']['mainUtcMatchesSourceUniversal'])
+        self.assertTrue(comparisons['creation']['candidateAuxMatchesSourceLocal'])
+        self.assertFalse(comparisons['creation']['candidateAuxMatchesSourceUniversal'])
+        result['aux']['creation'] = result['mainUtc']['creation'].copy()
+        comparisons = diagnostic.compare_date_reference(result, reference)
+        self.assertTrue(comparisons['creation']['candidateAuxMatchesSourceUniversal'])
+        self.assertFalse(comparisons['creation']['candidateAuxMatchesSourceLocal'])
+        result['mainUtc']['creation']['ms'] += 1
+        with self.assertRaisesRegex(ValueError, 'exact original DXF reference'):
+            diagnostic.compare_date_reference(result, reference)
+
+    def test_duplicate_missing_malformed_nonfinite_dxf_references_refuse(self):
+        source = (WORKSPACE / 'tests/fixtures/interchange/r2018-minsert.dxf').read_bytes()
+        lines = source.decode().splitlines()
+        index = next(index for index in range(0, len(lines), 2) if lines[index].strip() == '9' and lines[index + 1].strip() == '$TDUCREATE')
+        for value in ('NaN', 'Infinity', '-1', '2147483648', 'bogus'):
+            changed = lines.copy(); changed[index + 3] = value
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                diagnostic.dxf_reference_values(('\n'.join(changed) + '\n').encode())
+        for changed in (lines[:index] + lines[index + 4:], lines[:index] + lines[index:index + 4] + lines[index:]):
+            with self.assertRaises(ValueError):
+                diagnostic.dxf_reference_values(('\n'.join(changed) + '\n').encode())
 
     def test_invalid_date_storage_each_stream_refuses(self):
         for group, name in [('aux', 'creation'), ('aux', 'update'), ('mainUtc', 'creation'),
